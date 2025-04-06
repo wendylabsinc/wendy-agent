@@ -18,6 +18,26 @@ jobs:
     - uses: actions/checkout@v4
     - name: Build
       run: swift build --product edge-agent
+    - name: Find binary path
+      id: get-binary
+      run: |
+        BIN_PATH=$(swift build --show-bin-path)
+        echo "Build directory contents:"
+        
+        if [ -f "$BIN_PATH/edge-agent" ]; then
+          echo "BINARY_PATH=$BIN_PATH/edge-agent" >> $GITHUB_ENV
+          echo "Binary found at $BIN_PATH/edge-agent"
+        else
+          echo "Searching for binary recursively in $BIN_PATH"
+          FOUND_PATH=$(find $BIN_PATH -name "edge-agent" -type f | head -n 1)
+          if [ -n "$FOUND_PATH" ]; then
+            echo "BINARY_PATH=$FOUND_PATH" >> $GITHUB_ENV
+            echo "Binary found at $FOUND_PATH"
+          else
+            echo "::error::Binary not found in build directory"
+            exit 1
+          fi
+        fi
     - name: Upload binary artifact
       id: upload-artifact
       uses: actions/upload-artifact@v4
