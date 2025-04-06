@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [ main ]
 
+# Add permissions needed for creating releases
+permissions:
+  contents: write
+
 jobs:
   build-linux:
     name: Build and Test on Linux
@@ -38,7 +42,14 @@ jobs:
             exit 1
           fi
         fi
-    
+    - name: Upload binary artifact
+      id: upload-artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: edge-agent-linux
+        path: ${{ env.BINARY_PATH }}
+        retention-days: 14
+        if-no-files-found: error
     # Get version from Git
     - name: Set version
       if: github.event_name == 'push' && github.ref == 'refs/heads/main'
