@@ -17,4 +17,18 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     - name: Build
-      run: swift build
+      run: swift build --product edge-agent
+    - name: Upload binary artifact
+      id: upload-artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: edge-agent-${{ matrix.os }}
+        path: ${{ env.BINARY_PATH }}
+        retention-days: 14
+        if-no-files-found: error
+    - name: Output download info
+      run: |
+        echo "::notice::Binary artifact uploaded with ID: ${{ steps.upload-artifact.outputs.artifact-id }}"
+        echo "::notice::Download URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+
