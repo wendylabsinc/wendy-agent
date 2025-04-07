@@ -28,7 +28,7 @@ jobs:
     - name: Find binary path
       id: get-binary
       run: |
-        BIN_PATH=$(swift build --configuration release --show-bin-path)
+        BIN_PATH=$(swift build --configuration release --show-bin-path --swift-sdk aarch64-swift-linux-musl)
         echo "Build directory contents:"
         
         if [ -f "$BIN_PATH/edge-agent" ]; then
