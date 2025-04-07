@@ -20,8 +20,11 @@ jobs:
     
     steps:
     - uses: actions/checkout@v4
+    - name: Install Static Linux SDK
+      run: |
+        swift sdk install https://download.swift.org/swift-6.1-release/static-sdk/swift-6.1-RELEASE/swift-6.1-RELEASE_static-linux-0.0.1.artifactbundle.tar.gz --checksum 111c6f7d280a651208b8c74c0521dd99365d785c1976a6e23162f55f65379ac6
     - name: Build
-      run: swift build --configuration release --product edge-agent
+      run: swift build --configuration release --product edge-agent --swift-sdk aarch64-swift-linux-musl
     - name: Find binary path
       id: get-binary
       run: |
@@ -46,7 +49,7 @@ jobs:
       id: upload-artifact
       uses: actions/upload-artifact@v4
       with:
-        name: edge-agent-linux
+        name: edge-agent-linux-aarch64
         path: ${{ env.BINARY_PATH }}
         retention-days: 14
         if-no-files-found: error
@@ -65,7 +68,7 @@ jobs:
       id: create_release
       uses: softprops/action-gh-release@v2
       with:
-        name: Release ${{ env.VERSION }}
+        name: Release ${{ env.VERSION }} (aarch64)
         tag_name: ${{ env.VERSION }}
         draft: false
         prerelease: false
