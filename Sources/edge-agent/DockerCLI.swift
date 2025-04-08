@@ -28,6 +28,12 @@ public struct DockerCLI: Sendable {
         /// Security options.
         case securityOpt(String)
 
+        /// Connect a container to a network
+        case network(String)
+
+        /// Assign a name to the container
+        case name(String)
+
         /// The arguments to pass to the Docker run command.
         var arguments: [String] {
             switch self {
@@ -43,6 +49,24 @@ public struct DockerCLI: Sendable {
                 return ["--cap-add=\(capability)"]
             case .securityOpt(let option):
                 return ["--security-opt", option]
+            case .network(let network):
+                return ["--network", network]
+            case .name(let name):
+                return ["--name", name]
+            }
+        }
+    }
+
+    /// Options for the Docker rm command.
+    public enum RmOption: Sendable {
+        /// Force the removal of a running container (uses SIGKILL).
+        case force
+
+        /// The arguments to pass to the Docker rm command.
+        var arguments: [String] {
+            switch self {
+            case .force:
+                return ["--force"]
             }
         }
     }
@@ -51,6 +75,13 @@ public struct DockerCLI: Sendable {
     @discardableResult
     public func load(filePath: String) async throws -> String {
         let arguments = [command, "load", "-i", filePath]
+        return try await Shell.run(arguments)
+    }
+
+    /// Kill a Docker container.
+    @discardableResult
+    public func rm(options: [RmOption] = [], container: String) async throws -> String {
+        let arguments = [command, "rm"] + options.flatMap(\.arguments) + [container]
         return try await Shell.run(arguments)
     }
 

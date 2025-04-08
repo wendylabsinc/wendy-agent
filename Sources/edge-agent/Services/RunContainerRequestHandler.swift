@@ -142,7 +142,16 @@ struct RunContainerRequestHandler {
             try await dockerCLI.load(filePath: imagePath)
 
             let imageName = acceptingState.header.imageName
-            var runOptions: [DockerCLI.RunOption] = [.rm]
+            let containerName = "container-\(imageName)"
+            
+            // Kill any existing containers using this image
+            logger.info(
+                "Removing any existing containers with the same name",
+                metadata: ["container": .string(containerName)]
+            )
+            try await dockerCLI.rm(options: [.force], container: containerName)
+            
+            var runOptions: [DockerCLI.RunOption] = [.rm, .network("host"), .name(containerName)]
             var debugPort: UInt32 = 0
 
             if run.debug {
@@ -153,7 +162,6 @@ struct RunContainerRequestHandler {
                     metadata: ["image": .string(imageName), "port": .string("\(debugPort)")]
                 )
                 runOptions.append(contentsOf: [
-                    .publishPort(hostPort: UInt16(debugPort), containerPort: 4242),
                     .capAdd("SYS_PTRACE"),
                     .securityOpt("seccomp=unconfined"),
                 ])
