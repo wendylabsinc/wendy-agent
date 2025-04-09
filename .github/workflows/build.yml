@@ -1,0 +1,122 @@
+name: Build products and release
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Add permissions needed for creating releases
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - artifact-name: edge-agent-linux-static-musl-aarch64
+            os: ubuntu-22.04-arm
+            container: swift:6.1.0
+            swift-sdk: aarch64-swift-linux-musl
+            swift-sdk-url: https://download.swift.org/swift-6.1-release/static-sdk/swift-6.1-RELEASE/swift-6.1-RELEASE_static-linux-0.0.1.artifactbundle.tar.gz
+            swift-sdk-checksum: 111c6f7d280a651208b8c74c0521dd99365d785c1976a6e23162f55f65379ac6
+            product: edge-agent
+          - artifact-name: edge-agent-linux-static-musl-x86_64
+            os: ubuntu-22.04-arm
+            container: swift:6.1.0
+            swift-sdk: x86_64-swift-linux-musl
+            swift-sdk-url: https://download.swift.org/swift-6.1-release/static-sdk/swift-6.1-RELEASE/swift-6.1-RELEASE_static-linux-0.0.1.artifactbundle.tar.gz
+            swift-sdk-checksum: 111c6f7d280a651208b8c74c0521dd99365d785c1976a6e23162f55f65379ac6
+            product: edge-agent
+          - artifact-name: edge-cli-linux-static-musl-aarch64
+            os: ubuntu-22.04-arm
+            container: swift:6.1.0
+            swift-sdk: aarch64-swift-linux-musl
+            swift-sdk-url: https://download.swift.org/swift-6.1-release/static-sdk/swift-6.1-RELEASE/swift-6.1-RELEASE_static-linux-0.0.1.artifactbundle.tar.gz
+            swift-sdk-checksum: 111c6f7d280a651208b8c74c0521dd99365d785c1976a6e23162f55f65379ac6
+            product: edge
+          - artifact-name: edge-cli-linux-static-musl-x86_64
+            os: ubuntu-22.04-arm
+            container: swift:6.1.0
+            swift-sdk: x86_64-swift-linux-musl
+            swift-sdk-url: https://download.swift.org/swift-6.1-release/static-sdk/swift-6.1-RELEASE/swift-6.1-RELEASE_static-linux-0.0.1.artifactbundle.tar.gz
+            swift-sdk-checksum: 111c6f7d280a651208b8c74c0521dd99365d785c1976a6e23162f55f65379ac6
+            product: edge
+          - artifact-name: edge-cli-macos-arm64
+            os: macos-15
+            xcode-select: /Applications/Xcode_16.3.app
+            product: edge
+
+    name: Build ${{ matrix.product }}
+    runs-on: ${{ matrix.os }}
+    container: ${{ matrix.container }}
+
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Static Linux SDK
+        if: ${{ matrix.swift-sdk-url != '' }}
+        run: |
+          swift sdk install ${{ matrix.swift-sdk-url }} --checksum ${{ matrix.swift-sdk-checksum }}
+      - name: xcode-select
+        if: ${{ matrix.xcode-select != '' }}
+        run: |
+          xcode-select --switch ${{ matrix.xcode-select }}
+      - name: Build
+        shell: bash
+        run: |
+          args=(
+            --configuration release
+            --product "${{ matrix.product }}"
+          )
+
+          if [ -n "${{ matrix.swift-sdk }}" ]; then
+            args+=(--swift-sdk "${{ matrix.swift-sdk }}")
+          fi
+
+          swift build "${args[@]}"
+
+          # Copy built binary to the output directory
+          OUTPUT_DIR=${{ matrix.artifact-name }}
+          BIN_PATH=$(swift build --show-bin-path "${args[@]}")
+          mkdir $OUTPUT_DIR
+          cp $BIN_PATH/${{ matrix.product }} $OUTPUT_DIR/
+
+          # If a folder exists at $BIN_PATH/edge-agent_${{ matrix.product }}.bundle, copy it to output/
+          if [ -d "$BIN_PATH/edge-agent_${{ matrix.product }}.bundle" ]; then
+            cp -r $BIN_PATH/edge-agent_${{ matrix.product }}.bundle $OUTPUT_DIR/
+          fi
+      - name: Create tarball
+        run: |
+          tar -czvf ${{ matrix.artifact-name }}.tar.gz ${{ matrix.artifact-name }}/
+      - name: Upload binary artifact
+        id: upload-artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact-name }}.tar.gz
+          path: ${{ matrix.artifact-name }}.tar.gz
+          retention-days: 14
+          if-no-files-found: error
+
+      # Get version from Git
+      - name: Set version
+        id: version
+        run: |
+          VERSION=$(date +'v%Y.%m.%d-%H%M%S')
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      # # Create GitHub Release when pushing to main
+      # - name: Create Release
+      #   if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      #   id: create_release
+      #   uses: softprops/action-gh-release@v2
+      #   with:
+      #     name: Release ${{ env.VERSION }} (aarch64)
+      #     tag_name: ${{ env.VERSION }}
+      #     draft: false
+      #     prerelease: false
+      #     files: ${{ env.BINARY_PATH }}
+      #     generate_release_notes: true
+      #   env:
+      #     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
