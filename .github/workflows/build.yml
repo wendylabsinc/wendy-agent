@@ -119,7 +119,12 @@ jobs:
       - name: List files
         run: |
           ls -la
-          echo "FILES=$(find . -name "*.tar.gz" | tr '\n' ' ')" >> $GITHUB_ENV
+          # Create a newline-delimited list of tar.gz files
+          {
+            echo 'FILES<<EOF'
+            find . -name "*.tar.gz" | sort
+            echo 'EOF'
+          } >> $GITHUB_ENV
       - name: Create Release
         id: create_release
         uses: softprops/action-gh-release@v2
@@ -130,5 +135,6 @@ jobs:
           prerelease: true
           files: ${{ env.FILES }}
           generate_release_notes: true
+          fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
