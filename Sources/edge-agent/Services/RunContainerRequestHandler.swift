@@ -143,14 +143,14 @@ struct RunContainerRequestHandler {
 
             let imageName = acceptingState.header.imageName
             let containerName = "container-\(imageName)"
-            
+
             // Kill any existing containers using this image
             logger.info(
                 "Removing any existing containers with the same name",
                 metadata: ["container": .string(containerName)]
             )
             try await dockerCLI.rm(options: [.force], container: containerName)
-            
+
             var runOptions: [DockerCLI.RunOption] = [.rm, .network("host"), .name(containerName)]
             var debugPort: UInt32 = 0
 
