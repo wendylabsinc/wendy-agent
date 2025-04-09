@@ -1,0 +1,58 @@
+syntax = "proto3";
+
+package edge.agent.services.v1;
+
+service EdgeAgentService {
+    // Upload a container image to the agent, and run it.
+    // The first message in the stream MUST be the header.
+    rpc RunContainer(stream RunContainerRequest) returns (stream RunContainerResponse);
+}
+
+message RunContainerRequest {
+    oneof request_type {
+        /// The first message in the stream MUST be the header.
+        Header header = 1;
+
+        /// A chunk of the container tarball.
+        Chunk chunk = 2;
+
+        /// After uploading the container, control messages can be sent to the agent.
+        ControlCommand control = 3;
+    }
+
+    message Header {
+        // Unique name for the container image
+        string image_name = 1;
+
+        // The command to run when the container starts.
+        string cmd = 2;
+    }
+
+    message Chunk {
+        // Binary chunk of the container tarball
+        bytes data = 1;
+    }
+
+    message ControlCommand {
+        oneof command {
+            Run run = 1;
+        }
+
+        message Run {
+            // Whether to run the container with a debugger
+            bool debug = 1;
+        }
+    }
+}
+
+message RunContainerResponse {
+    oneof response_type {
+        Started started = 1;
+    }
+
+    message Started {
+        // The port that the debugger is listening on.
+        // If this is 0, the container is not running with a debugger.
+        uint32 debug_port = 1;
+    }
+}
