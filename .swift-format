@@ -26,9 +26,9 @@
     },
     "respectsExistingLineBreaks": true,
     "rules": {
-        "AllPublicDeclarationsHaveDocumentation": true,
+        "AllPublicDeclarationsHaveDocumentation": false,
         "AlwaysUseLiteralForEmptyCollectionInit": false,
-        "AlwaysUseLowerCamelCase": true,
+        "AlwaysUseLowerCamelCase": false,
         "AmbiguousTrailingClosureOverload": true,
         "BeginDocumentationCommentWithOneLineSummary": false,
         "DoNotUseSemicolons": true,
