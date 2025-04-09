@@ -1,14 +1,6 @@
 {
-  "originHash" : "836640497ab02c40795237016eac4d244d34590600087a85c207d3d14aa24bc9",
+  "originHash" : "f5c739301125cfe05904d34b63cac2cc463a75f1edc6b81c6185182905bd3759",
   "pins" : [
-    {
-      "identity" : "edge-agent-common",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/apache-edge/edge-agent-common.git",
-      "state" : {
-        "revision" : "952035635c630d366dfbcff04af1934c7c051f23"
-      }
-    },
     {
       "identity" : "grpc-swift",
       "kind" : "remoteSourceControl",
@@ -64,6 +56,15 @@
       }
     },
     {
+      "identity" : "swift-asn1",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-asn1.git",
+      "state" : {
+        "revision" : "ae33e5941bb88d88538d0a6b19ca0b01e6c76dcf",
+        "version" : "1.3.1"
+      }
+    },
+    {
       "identity" : "swift-async-algorithms",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/apple/swift-async-algorithms.git",
@@ -88,6 +89,15 @@
       "state" : {
         "revision" : "671108c96644956dddcd89dd59c203dcdb36cec7",
         "version" : "1.1.4"
+      }
+    },
+    {
+      "identity" : "swift-crypto",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-crypto.git",
+      "state" : {
+        "revision" : "e8d6eba1fef23ae5b359c46b03f7d94be2f41fed",
+        "version" : "3.12.3"
       }
     },
     {

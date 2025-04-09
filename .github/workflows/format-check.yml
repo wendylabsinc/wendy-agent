@@ -1,0 +1,18 @@
+name: Swift Format Check
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  format-check:
+    name: Swift Format Check
+    runs-on: ubuntu-latest
+    container: swift:6.1.0
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Run Swift Format
+        run: swift format lint --recursive --strict Sources
