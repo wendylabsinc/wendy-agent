@@ -98,13 +98,11 @@ jobs:
           retention-days: 14
           if-no-files-found: error
 
-      # Get version from Git
-
   release:
     name: Release
     runs-on: ubuntu-22.04-arm
     needs: build
-    # if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     steps:
       - name: Set version
         id: version
