@@ -48,7 +48,7 @@ jobs:
             xcode-select: /Applications/Xcode_16.3.app
             product: edge
 
-    name: Build ${{ matrix.product }}
+    name: ${{ matrix.artifact-name }}
     runs-on: ${{ matrix.os }}
     container: ${{ matrix.container }}
 
@@ -61,7 +61,7 @@ jobs:
       - name: xcode-select
         if: ${{ matrix.xcode-select != '' }}
         run: |
-          xcode-select --switch ${{ matrix.xcode-select }}
+          sudo xcode-select --switch ${{ matrix.xcode-select }}
       - name: Build
         shell: bash
         run: |
