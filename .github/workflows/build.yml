@@ -99,24 +99,36 @@ jobs:
           if-no-files-found: error
 
       # Get version from Git
+
+  release:
+    name: Release
+    runs-on: ubuntu-22.04-arm
+    needs: build
+    # if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
       - name: Set version
         id: version
         run: |
           VERSION=$(date +'v%Y.%m.%d-%H%M%S')
           echo "VERSION=$VERSION" >> $GITHUB_ENV
           echo "version=$VERSION" >> $GITHUB_OUTPUT
-
-      # # Create GitHub Release when pushing to main
-      # - name: Create Release
-      #   if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-      #   id: create_release
-      #   uses: softprops/action-gh-release@v2
-      #   with:
-      #     name: Release ${{ env.VERSION }} (aarch64)
-      #     tag_name: ${{ env.VERSION }}
-      #     draft: false
-      #     prerelease: false
-      #     files: ${{ env.BINARY_PATH }}
-      #     generate_release_notes: true
-      #   env:
-      #     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+      - name: List files
+        run: |
+          ls -la
+          echo "FILES=$(find . -name "*.tar.gz" | tr '\n' ' ')" >> $GITHUB_ENV
+      - name: Create Release
+        id: create_release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ env.VERSION }}
+          tag_name: ${{ env.VERSION }}
+          draft: false
+          prerelease: true
+          files: ${{ env.FILES }}
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
