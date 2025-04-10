@@ -160,7 +160,12 @@ struct RunContainerRequestHandler {
             )
             try await dockerCLI.rm(options: [.force], container: containerName)
 
-            var runOptions: [DockerCLI.RunOption] = [.rm, .network("host"), .name(containerName)]
+            var runOptions: [DockerCLI.RunOption] = [
+                .rm,
+                .network("host"),
+                .name(containerName),
+                .detach,
+            ]
             var debugPort: UInt32 = 0
 
             if run.debug {
