@@ -19,27 +19,33 @@ struct EdgeAgentService: Edge_Agent_Services_V1_EdgeAgentService.ServiceProtocol
                     }
                 }
 
-                // Iterate over incoming messages, converting each from protobuf before passing it
-                // to the request handler.
-                for try await message in request.messages {
-                    switch message.requestType {
-                    case .header(let header):
-                        let header = try RunContainerRequestHandler.Header(validating: header)
-                        try await handler.handle(header)
-                    case .chunk(let chunk):
-                        let chunk = try RunContainerRequestHandler.Chunk(validating: chunk)
-                        try await handler.handle(chunk)
-                    case .control(let control):
-                        let control = try RunContainerRequestHandler.ControlCommand(
-                            validating: control
-                        )
-                        try await handler.handle(control)
-                    case nil:
-                        throw RPCError(
-                            code: .invalidArgument,
-                            message: "Invalid request: Unknown message type"
-                        )
+                do {
+                    // Iterate over incoming messages, converting each from protobuf before passing it
+                    // to the request handler.
+                    for try await message in request.messages {
+                        switch message.requestType {
+                        case .header(let header):
+                            let header = try RunContainerRequestHandler.Header(validating: header)
+                            try await handler.handle(header)
+                        case .chunk(let chunk):
+                            let chunk = try RunContainerRequestHandler.Chunk(validating: chunk)
+                            try await handler.handle(chunk)
+                        case .control(let control):
+                            let control = try RunContainerRequestHandler.ControlCommand(
+                                validating: control
+                            )
+                            try await handler.handle(control)
+                        case nil:
+                            throw RPCError(
+                                code: .invalidArgument,
+                                message: "Invalid request: Unknown message type"
+                            )
+                        }
                     }
+                    await handler.cleanup()
+                } catch {
+                    await handler.cleanup()
+                    throw error
                 }
             }
 
