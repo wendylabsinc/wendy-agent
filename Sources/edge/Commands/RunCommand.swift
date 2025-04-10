@@ -52,13 +52,15 @@ struct RunCommand: AsyncParsableCommand {
 
         try await swiftPM.build(
             .product(executableTarget.name),
-            .swiftSDK(swiftSDK)
+            .swiftSDK(swiftSDK),
+            .scratchPath(".edge-build")
         )
 
         let binPath = try await swiftPM.build(
             .showBinPath,
             .swiftSDK(swiftSDK),
-            .quiet
+            .quiet,
+            .scratchPath(".edge-build")
         ).trimmingCharacters(in: .whitespacesAndNewlines)
         let executable = URL(fileURLWithPath: binPath).appendingPathComponent(executableTarget.name)
 

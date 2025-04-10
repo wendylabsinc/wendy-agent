@@ -22,7 +22,11 @@ public struct SwiftPM: Sendable {
         /// Build the specified product.
         case product(String)
 
+        /// Decrease verbosity to only include error output.
         case quiet
+
+        /// Specify a custom scratch directory path (default .build)
+        case scratchPath(String)
 
         /// The arguments to pass to the Swift build command.
         var arguments: [String] {
@@ -37,6 +41,8 @@ public struct SwiftPM: Sendable {
                 return ["--product", product]
             case .quiet:
                 return ["--quiet"]
+            case .scratchPath(let path):
+                return ["--scratch-path", path]
             }
         }
     }
