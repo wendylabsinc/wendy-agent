@@ -158,14 +158,18 @@ struct RunCommand: AsyncParsableCommand {
                 for try await message in response.messages {
                     switch message.responseType {
                     case .started(let started):
+                        if started.debugPort != 0 {
+                            logger.info(
+                                "Started container with debug port \(started.debugPort)"
+                            )
+                        } else {
+                            logger.info("Started container")
+                        }
                         if detach {
-                            if started.debugPort != 0 {
-                                print("Started container with debug port \(started.debugPort)")
-                            }
                             return
                         }
                     case nil:
-                        ()
+                        logger.warning("Unknown message received from agent")
                     }
                 }
             }
