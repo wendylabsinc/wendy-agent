@@ -87,6 +87,15 @@ struct RunContainerRequestHandler {
         self.eventsContinuation = continuation
     }
 
+    func cleanup() async {
+        switch state {
+        case .acceptingChunks(let acceptingChunks):
+            try? await acceptingChunks.fileHandle.close()
+        case .waitingForHeader, .running:
+            ()
+        }
+    }
+
     mutating func handle(_ header: Header) async throws {
         guard case .waitingForHeader = self.state else {
             throw Error.unexpectedHeader
