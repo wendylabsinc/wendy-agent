@@ -34,6 +34,9 @@ public struct DockerCLI: Sendable {
         /// Assign a name to the container
         case name(String)
 
+        /// Run container in background and print container ID
+        case detach
+
         /// The arguments to pass to the Docker run command.
         var arguments: [String] {
             switch self {
@@ -53,6 +56,8 @@ public struct DockerCLI: Sendable {
                 return ["--network", network]
             case .name(let name):
                 return ["--name", name]
+            case .detach:
+                return ["--detach"]
             }
         }
     }

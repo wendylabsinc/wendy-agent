@@ -1,6 +1,9 @@
 import EdgeAgentGRPC
+import Logging
 
 struct EdgeAgentService: Edge_Agent_Services_V1_EdgeAgentService.ServiceProtocol {
+    let logger = Logger(label: "EdgeAgentService")
+
     func runContainer(
         request: StreamingServerRequest<Edge_Agent_Services_V1_RunContainerRequest>,
         context: ServerContext
@@ -15,6 +18,7 @@ struct EdgeAgentService: Edge_Agent_Services_V1_EdgeAgentService.ServiceProtocol
                 // Add a task to write outgoing events to the response.
                 group.addTask { [events = handler.events] in
                     for try await event in events {
+                        logger.debug("Sending event: \(event)")
                         try await writer.write(event.proto)
                     }
                 }
