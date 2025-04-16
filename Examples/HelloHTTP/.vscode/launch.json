@@ -1,0 +1,36 @@
+{
+    "configurations": [
+        {
+            "name": "edge run HelloHTTP --debug",
+            "type": "lldb",
+            "request": "launch",
+            "preLaunchTask": "Run Edge App",
+            "targetCreateCommands": [
+                "target create ${workspaceFolder}/.build/debug/helloworld",
+                "settings set target.sdk-path ~/Library/org.swift.swiftpm/swift-sdks/swift-6.0.3-RELEASE_static-linux-0.0.1.artifactbundle/swift-6.0.3-RELEASE_static-linux-0.0.1/swift-linux-musl/musl-1.2.5.sdk/aarch64",
+                "settings set target.swift-module-search-paths ~/Library/swift-6.0.3-RELEASE_static-linux-0.0.1.artifactbundle/swift-6.0.3-RELEASE_static-linux-0.0.1/swift-linux-musl/musl-1.2.5.sdk/aarch64/usr/lib/swift_static/linux-static"
+            ],
+            "processCreateCommands": [
+                "gdb-remote edge-device.local:4242"
+            ]
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:HelloHTTP}",
+            "name": "Debug HelloHTTP",
+            "program": "${workspaceFolder:HelloHTTP}/.build/debug/HelloHTTP",
+            "preLaunchTask": "swift: Build Debug HelloHTTP"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:HelloHTTP}",
+            "name": "Release HelloHTTP",
+            "program": "${workspaceFolder:HelloHTTP}/.build/release/HelloHTTP",
+            "preLaunchTask": "swift: Build Release HelloHTTP"
+        }
+    ]
+}
