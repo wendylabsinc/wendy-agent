@@ -32,6 +32,7 @@ let package = Package(
                 .product(name: "GRPCNIOTransportHTTP2", package: "grpc-swift-nio-transport"),
                 .target(name: "EdgeAgentGRPC"),
                 .target(name: "EdgeCLI"),
+                .target(name: "EdgeShared"),
             ],
             resources: [
                 .copy("Resources")
@@ -70,7 +71,14 @@ let package = Package(
                 .product(name: "_NIOFileSystem", package: "swift-nio"),
                 .target(name: "EdgeAgentGRPC"),
                 .target(name: "Shell"),
+                .target(name: "EdgeShared"),
             ]
+        ),
+
+        /// Shared components used by both edge and edge-agent.
+        .target(
+            name: "EdgeShared",
+            dependencies: []
         ),
 
         .target(
