@@ -85,11 +85,10 @@ jobs:
         run: |
           sudo xcode-select --switch ${{ matrix.xcode-select }}
       - name: Inject Version
-        if: ${{ matrix.product == 'edge' }}
         run: |
           # Use the version from the needs context
           echo "Using version: ${{ needs.determine-version.outputs.version }}"
-          ./Scripts/inject-version.sh Sources/edge/Version.swift "${{ needs.determine-version.outputs.version }}"
+          ./Scripts/inject-version.sh "${{ needs.determine-version.outputs.version }}"
       - name: Build
         shell: bash
         run: |

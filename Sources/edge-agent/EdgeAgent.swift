@@ -1,5 +1,6 @@
 import ArgumentParser
 import EdgeAgentGRPC
+import EdgeShared
 import Foundation
 import GRPCHealthService
 import GRPCNIOTransportHTTP2
@@ -11,7 +12,8 @@ import ServiceLifecycle
 struct EdgeAgent: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "edge-agent",
-        abstract: "Edge Agent"
+        abstract: "Edge Agent",
+        version: Version.current
     )
 
     @Option(name: .shortAndLong, help: "The port to listen on for incoming connections.")
@@ -28,7 +30,7 @@ struct EdgeAgent: AsyncParsableCommand {
 
         let logger = Logger(label: "apache-edge.agent")
 
-        logger.info("Starting Edge Agent on port \(port)")
+        logger.info("Starting Edge Agent version \(Version.current) on port \(port)")
 
         let healthService = HealthService()
         healthService.provider.updateStatus(

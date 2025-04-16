@@ -1,17 +1,18 @@
 #!/bin/bash
 
-# This script injects the version information into the edge binary
+# This script injects the version information into the agent and CLI
 # It's intended to be called from the GitHub Actions workflow or during other release processes
 
 set -e
 
-if [ $# -ne 2 ]; then
-    echo "Usage: $0 <source-file> <version>"
+SOURCE_FILE="Sources/EdgeShared/Version.swift"
+
+if [ $# -ne 1 ]; then
+    echo "Usage: $0 <version>"
     exit 1
 fi
 
-SOURCE_FILE=$1
-VERSION=$2
+VERSION=$1
 
 # Remove the 'v' prefix if it exists
 VERSION_WITHOUT_PREFIX=${VERSION#v}
@@ -25,5 +26,3 @@ else
     # Linux and other Unix systems
     sed -i -E "s/static let current = \"[^\"]*\"/static let current = \"$VERSION_WITHOUT_PREFIX\"/" "$SOURCE_FILE"
 fi
-
-echo "Version injection complete"
