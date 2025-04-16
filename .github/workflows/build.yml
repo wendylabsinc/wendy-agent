@@ -12,7 +12,28 @@ permissions:
   contents: write
 
 jobs:
+  determine-version:
+    name: Determine Version
+    runs-on: ubuntu-22.04-arm
+    outputs:
+      version: ${{ steps.set-version.outputs.version }}
+    steps:
+      - name: Set version
+        id: set-version
+        run: |
+          TIMESTAMP=$(date +'v%Y.%m.%d-%H%M%S')
+
+          if [ "${{ github.ref }}" == "refs/heads/main" ]; then
+            VERSION="${TIMESTAMP}"
+          else
+            VERSION="${TIMESTAMP}-dev"
+          fi
+
+          echo "Setting version to $VERSION"
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
   build:
+    needs: determine-version
     strategy:
       matrix:
         include:
@@ -63,6 +84,12 @@ jobs:
         if: ${{ matrix.xcode-select != '' }}
         run: |
           sudo xcode-select --switch ${{ matrix.xcode-select }}
+      - name: Inject Version
+        if: ${{ matrix.product == 'edge' }}
+        run: |
+          # Use the version from the needs context
+          echo "Using version: ${{ needs.determine-version.outputs.version }}"
+          ./Scripts/inject-version.sh Sources/edge/Version.swift "${{ needs.determine-version.outputs.version }}"
       - name: Build
         shell: bash
         run: |
@@ -102,15 +129,9 @@ jobs:
   release:
     name: Release
     runs-on: ubuntu-22.04-arm
-    needs: build
+    needs: [determine-version, build]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     steps:
-      - name: Set version
-        id: version
-        run: |
-          VERSION=$(date +'v%Y.%m.%d-%H%M%S')
-          echo "VERSION=$VERSION" >> $GITHUB_ENV
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
       - name: Download artifact
         uses: actions/download-artifact@v4
         with:
@@ -128,8 +149,8 @@ jobs:
         id: create_release
         uses: softprops/action-gh-release@v2
         with:
-          name: ${{ env.VERSION }}
-          tag_name: ${{ env.VERSION }}
+          name: ${{ needs.determine-version.outputs.version }}
+          tag_name: ${{ needs.determine-version.outputs.version }}
           draft: false
           prerelease: true
           files: ${{ env.FILES }}
