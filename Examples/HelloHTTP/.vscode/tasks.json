@@ -4,7 +4,7 @@
     {
       "label": "Run Edge App",
       "type": "shell",
-      "command": "edge run --debug --detach --agent-host edge-device.local",
+      "command": "edge run --debug --detach --agent-host edgeos-device.local",
       "options": {
         "cwd": "${workspaceFolder}"
       },
