@@ -5,33 +5,38 @@ import Network
 import Foundation
 import SystemConfiguration
 import Logging
+
 struct DevicesCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "devices",
         abstract: "List USB and Ethernet devices connected to the system"
     )
+
+    @Flag(name: .long, help: "List Ethernet interfaces")
+    var showEthernet = false
     
-    // @Flag(name: .long, help: "List Ethernet interfaces")
-    // var showEthernet = false
+    @Flag(name: .long, help: "List USB devices")
+    var showUSB = true
     
-    // @Flag(name: .long, help: "List USB devices")
-    // var showUSB = true
+    // Empty string argument to make it conform to Decodable
+    @Argument(help: ArgumentHelp("", visibility: .hidden))
+    var dummyArgument: String = ""
 
     func run() async throws {
-        let logger = Logger(label: "apache-edge.cli.run")
-        // If no specific flag is set, show both
-        // let showBoth = !showEthernet
-        listUSBDevices(logger: logger)
-        listEthernetInterfaces()
-        // if showUSB || showBoth {
-        //     // USB Devices
-        //     listUSBDevices()
-        // }
+        let logger = Logger(label: "edge.cli.devices")
         
-        // if showEthernet || showBoth {
-        //     // List Ethernet interfaces
-        //     listEthernetInterfaces()
-        // }
+        // If no specific flag is set, show both
+        let showBoth = !showEthernet && !showUSB
+        
+        if showUSB || showBoth {
+            // USB Devices
+            listUSBDevices(logger: logger)
+        }
+        
+        if showEthernet || showBoth {
+            // List Ethernet interfaces
+            listEthernetInterfaces(logger: logger)
+        }
     }
     
     func listUSBDevices(logger: Logger) {
@@ -40,7 +45,7 @@ struct DevicesCommand: AsyncParsableCommand {
     
         let result = IOServiceGetMatchingServices(kIOMainPortDefault, matchingDict, &iterator)
         if result != KERN_SUCCESS {
-            logger.error("Error: \(result)")
+            logger.error("Error: Failed to get matching services", metadata: ["result": .string(String(result))])
             return
         }
 
@@ -49,17 +54,19 @@ struct DevicesCommand: AsyncParsableCommand {
         
         logger.info("USB Devices:")
         while usbDevice != 0 {
-            logger.debug("usbDevice: \(usbDevice)")
+            logger.debug("usbDevice: \(usbDevice)", metadata: ["usbDevice": .string(String(usbDevice))])
             // Get device properties
             let deviceRef = IORegistryEntryCreateCFProperty(usbDevice, "USB Product Name" as CFString, kCFAllocatorDefault, 0)
             if let deviceName = deviceRef?.takeRetainedValue() as? String {
-                logger.debug("deviceName: \(deviceName)")
+                logger.debug("Device found", metadata: ["deviceName": .string(deviceName)])
                 // Only display devices that include "EdgeOS" in their name
                 if !deviceName.contains("EdgeOS") {
+                    IOObjectRelease(usbDevice)
+                    usbDevice = IOIteratorNext(iterator)
                     continue
                 }
                 foundEdgeOSDevices = true
-                logger.info("USB Device: \(deviceName)")
+                logger.info("EdgeOS device found", metadata: ["deviceName": .string(deviceName)])
                 
                 // Get vendor ID and product ID
                 let vendorIdRef = IORegistryEntryCreateCFProperty(usbDevice, "idVendor" as CFString, kCFAllocatorDefault, 0)
@@ -67,7 +74,7 @@ struct DevicesCommand: AsyncParsableCommand {
                 
                 if let vendorId = vendorIdRef?.takeRetainedValue() as? Int,
                     let productId = productIdRef?.takeRetainedValue() as? Int {
-                    logger.info("  Vendor ID: \(String(format: "0x%04X", vendorId)), Product ID: \(String(format: "0x%04X", productId))")
+                    print("\(deviceName) - Vendor ID: \(String(format: "0x%04X", vendorId)), Product ID: \(String(format: "0x%04X", productId))")
                 }
             }
             
@@ -82,9 +89,9 @@ struct DevicesCommand: AsyncParsableCommand {
         IOObjectRelease(iterator)
     }
 
-    func listEthernetInterfaces() {
+    func listEthernetInterfaces(logger: Logger) {
         guard let interfaces = SCNetworkInterfaceCopyAll() as? [SCNetworkInterface] else {
-            print("Failed to get network interfaces")
+            logger.error("Failed to get network interfaces")
             return
         }
         
@@ -127,6 +134,8 @@ struct DevicesCommand: AsyncParsableCommand {
 
     func listNetworkInterfaces() {
         let monitor = NWPathMonitor()
+        let semaphore = DispatchSemaphore(value: 0)
+        
         monitor.pathUpdateHandler = { path in
             if path.status == .satisfied {
                 if path.usesInterfaceType(.wifi) {
@@ -144,13 +153,19 @@ struct DevicesCommand: AsyncParsableCommand {
             } else {
                 print("No connection")
             }
+            
+            // Signal that we're done processing the network information
+            semaphore.signal()
         }
         
         // Start monitoring on a background queue
         let queue = DispatchQueue(label: "NetworkMonitor")
         monitor.start(queue: queue)
         
-        // Keep the monitor running (in a real app, you'd manage this differently)
-        RunLoop.main.run(until: Date(timeIntervalSinceNow: 5))
+        // Wait for the path update handler to be called, with a timeout
+        _ = semaphore.wait(timeout: .now() + 3.0)
+        
+        // Cancel the monitor
+        monitor.cancel()
     }
 }
