@@ -12,12 +12,13 @@ struct DevicesCommand: AsyncParsableCommand {
         abstract: "List USB and Ethernet devices connected to the system"
     )
 
-    @Flag(name: .long, help: "List Ethernet interfaces")
-    var showEthernet = false
-    
-    @Flag(name: .long, help: "List USB devices")
-    var showUSB = true
-    
+    enum DeviceType: String, ExpressibleByArgument {
+        case usb, ethernet, both
+    }
+
+    @Option(help: "Device types to list (usb, ethernet, or both)")
+    var type: DeviceType = .both
+
     // Empty string argument to make it conform to Decodable
     @Argument(help: ArgumentHelp("", visibility: .hidden))
     var dummyArgument: String = ""
@@ -25,16 +26,14 @@ struct DevicesCommand: AsyncParsableCommand {
     func run() async throws {
         let logger = Logger(label: "edge.cli.devices")
         
-        // If no specific flag is set, show both
-        let showBoth = !showEthernet && !showUSB
-        
-        if showUSB || showBoth {
-            // USB Devices
+        // List devices based on the type option
+        switch type {
+        case .usb:
             listUSBDevices(logger: logger)
-        }
-        
-        if showEthernet || showBoth {
-            // List Ethernet interfaces
+        case .ethernet:
+            listEthernetInterfaces(logger: logger)
+        case .both:
+            listUSBDevices(logger: logger)
             listEthernetInterfaces(logger: logger)
         }
     }
