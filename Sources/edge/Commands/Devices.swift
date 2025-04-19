@@ -27,7 +27,7 @@ struct DevicesCommand: AsyncParsableCommand {
     func run() async throws {
         let logger = Logger(label: "edge.cli.devices")
         let discovery = PlatformDeviceDiscovery()
-        
+
         // List devices based on the type option
         switch type {
         case .usb:
