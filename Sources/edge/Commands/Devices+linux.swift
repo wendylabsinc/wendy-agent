@@ -1,7 +1,6 @@
 #if os(Linux)
 import Foundation
 import Logging
-import Glibc
 
 struct PlatformDeviceDiscovery: DeviceDiscovery {
     func listUSBDevices(logger: Logger) {
