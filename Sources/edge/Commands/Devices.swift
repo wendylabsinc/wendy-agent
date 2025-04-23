@@ -14,7 +14,7 @@ struct DevicesCommand: AsyncParsableCommand {
     )
 
     enum DeviceType: String, ExpressibleByArgument {
-        case usb, ethernet, both
+        case usb, ethernet, all
     }
 
     @Option(help: "Device types to list (usb, ethernet, or both)")
