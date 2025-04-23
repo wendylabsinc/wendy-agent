@@ -76,14 +76,27 @@ To debug the `HelloWorld` example, you can use the following command:
 swift run --package-path ../../ -- edge run --agent-host <hostname-of-device> --debug
 ```
 
-You can now attach the LLDB debugger using port `4242` like this:
+You can now attach the LLDB debugger through using port `4242`.
+
+#### LLDB
+
+To start an LLDB debugging session from the CLI, run `lldb` from the Terminal:
 
 ```sh
 lldb
-(lldb) target create .build/debug/HelloWorld
+```
+
+Then, from within LLDB's prompt run the following to connect to your app's debugging session:
+
+```sh
+(lldb) target create .edge-build/debug/HelloWorld
 (lldb) settings set target.sdk-path "<path-to-sdk.artifactbundle>/swift-6.0.3-RELEASE_static-linux-0.0.1/swift-linux-musl/musl-1.2.5.sdk/aarch64"
 (lldb) settings set target.swift-module-search-paths "<path-to-sdk.artifactbundle>/swift-6.0.3-RELEASE_static-linux-0.0.1/swift-linux-musl/musl-1.2.5.sdk/aarch64/usr/lib/swift_static/linux-static"
 (lldb) gdb-remote localhost:4242
 ```
+
+- **target create** refers to the binary you've created
+- **settings set** selects the swift-sdk you built the binary with. This is optional, but necessary for debugging support.
+- **gdb-remote**'s value `localhost:4242` refers to the host (and port) where the debug server is running. If you're starting a remote debugging session on another machine, replace this with your device's hostname or IP.
 
 Unfortunately, running expressions (e.g. `po`) doesn't work yet.
