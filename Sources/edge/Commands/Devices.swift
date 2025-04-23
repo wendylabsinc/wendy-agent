@@ -20,10 +20,6 @@ struct DevicesCommand: AsyncParsableCommand {
     @Option(help: "Device types to list (usb, ethernet, or both)")
     var type: DeviceType = .both
 
-    // Empty string argument to make it conform to Decodable
-    @Argument(help: ArgumentHelp("", visibility: .hidden))
-    var dummyArgument: String = ""
-
     func run() async throws {
         let logger = Logger(label: "edge.cli.devices")
         let discovery = PlatformDeviceDiscovery()
