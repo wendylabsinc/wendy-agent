@@ -3,8 +3,8 @@ import Foundation
 import Logging
 
 protocol DeviceDiscovery {
-    func listUSBDevices(logger: Logger)
-    func listEthernetInterfaces(logger: Logger)
+    func listUSBDevices(logger: Logger) async
+    func listEthernetInterfaces(logger: Logger) async
 }
 
 struct DevicesCommand: AsyncParsableCommand {
@@ -18,7 +18,7 @@ struct DevicesCommand: AsyncParsableCommand {
     }
 
     @Option(help: "Device types to list (usb, ethernet, or both)")
-    var type: DeviceType = .both
+    var type: DeviceType = .all
 
     // Empty string argument to make it conform to Decodable
     @Argument(help: ArgumentHelp("", visibility: .hidden))
@@ -31,12 +31,12 @@ struct DevicesCommand: AsyncParsableCommand {
         // List devices based on the type option
         switch type {
         case .usb:
-            discovery.listUSBDevices(logger: logger)
+            await discovery.listUSBDevices(logger: logger)
         case .ethernet:
-            discovery.listEthernetInterfaces(logger: logger)
-        case .both:
-            discovery.listUSBDevices(logger: logger)
-            discovery.listEthernetInterfaces(logger: logger)
+            await discovery.listEthernetInterfaces(logger: logger)
+        case .all:
+            await discovery.listUSBDevices(logger: logger)
+            await discovery.listEthernetInterfaces(logger: logger)
         }
     }
 }

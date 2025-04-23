@@ -7,7 +7,7 @@
     import SystemConfiguration
 
     struct PlatformDeviceDiscovery: DeviceDiscovery {
-        func listUSBDevices(logger: Logger) {
+        func listUSBDevices(logger: Logger) async {
             let matchingDict = IOServiceMatching(kIOUSBDeviceClassName)
             var iterator: io_iterator_t = 0
 
@@ -84,7 +84,7 @@
             IOObjectRelease(iterator)
         }
 
-        func listEthernetInterfaces(logger: Logger) {
+        func listEthernetInterfaces(logger: Logger) async {
             guard let interfaces = SCNetworkInterfaceCopyAll() as? [SCNetworkInterface] else {
                 logger.error("Failed to get network interfaces")
                 return

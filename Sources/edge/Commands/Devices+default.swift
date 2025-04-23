@@ -3,12 +3,12 @@
     import Logging
 
     struct PlatformDeviceDiscovery: DeviceDiscovery {
-        func listUSBDevices(logger: Logger) {
+        func listUSBDevices(logger: Logger) async {
             print("Device listing is not supported on this platform")
             logger.warning("Device listing is not supported on this platform")
         }
 
-        func listEthernetInterfaces(logger: Logger) {
+        func listEthernetInterfaces(logger: Logger) async {
             print("Interface listing is not supported on this platform")
             logger.warning("Interface listing is not supported on this platform")
         }

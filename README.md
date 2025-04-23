@@ -2,6 +2,10 @@
 
 ## Requirements
 
+### Linux
+
+For the cli to work properly on linux, `usbutils` needs to be installed.
+
 ### Swift Toolchain
 
 The CLI currently assumes that the Swift toolchain is installed at `/Library/Developer/Toolchains/swift-6.0.3-RELEASE.xctoolchain`. You can obtain a copy of this toolchain [here](https://download.swift.org/swift-6.0.3-release/xcode/swift-6.0.3-RELEASE/swift-6.0.3-RELEASE-osx.pkg). During the installation of the toolchain pkg, you need to select "Install for all users of this computer".
