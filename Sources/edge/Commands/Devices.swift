@@ -27,6 +27,32 @@ struct DevicesCommand: AsyncParsableCommand {
     @Flag(name: [.customShort("j"), .long], help: "Output in JSON format")
     var json: Bool = false
     
+    func listDevices(usbDevices: [USBDevice], ethernetInterfaces: [EthernetInterface], logger: Logger) async {
+        let format = json ? OutputFormat.json : OutputFormat.text
+        
+        // If using JSON format and we have both types of devices,
+        // use the DevicesCollection struct for combined output
+        if format == .json && type == .all {
+            let collection = DevicesCollection(usb: usbDevices, ethernet: ethernetInterfaces)
+            do {
+                let jsonString = try collection.toJSON()
+                print(jsonString)
+            } catch {
+                logger.error("Error serializing to JSON: \(error)")
+            }
+            return
+        }
+        
+        // Otherwise, handle each type separately
+        if type == .usb || type == .all {
+            await listUSBDevices(devices: usbDevices, logger: logger)
+        }
+        
+        if type == .ethernet || type == .all {
+            await listEthernetInterfaces(interfaces: ethernetInterfaces, logger: logger)
+        }
+    }
+    
     func listUSBDevices(devices: [USBDevice], logger: Logger) async {
         if devices.isEmpty {
             let message = "No EdgeOS devices found."
@@ -111,10 +137,12 @@ struct DevicesCommand: AsyncParsableCommand {
             let interfaces = await discovery.findEthernetInterfaces(logger: logger)
             await listEthernetInterfaces(interfaces: interfaces, logger: logger)
         case .all:
+            // Fetch all device types
             let devices = await discovery.findUSBDevices(logger: logger)
-            await listUSBDevices(devices: devices, logger: logger)
             let interfaces = await discovery.findEthernetInterfaces(logger: logger)
-            await listEthernetInterfaces(interfaces: interfaces, logger: logger)
+            
+            // Use the combined list function
+            await listDevices(usbDevices: devices, ethernetInterfaces: interfaces, logger: logger)
         }
     }
 }

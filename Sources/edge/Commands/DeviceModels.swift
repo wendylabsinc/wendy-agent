@@ -1,5 +1,22 @@
 import Foundation
 
+struct DevicesCollection: Codable {
+    let usb: [USBDevice]
+    let ethernet: [EthernetInterface]
+    
+    init(usb: [USBDevice] = [], ethernet: [EthernetInterface] = []) {
+        self.usb = usb
+        self.ethernet = ethernet
+    }
+    
+    func toJSON() throws -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let data = try encoder.encode(self)
+        return String(data: data, encoding: .utf8) ?? "{}"
+    }
+}
+
 struct EthernetInterface: Codable {
     let name: String
     let displayName: String
