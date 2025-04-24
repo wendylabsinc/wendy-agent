@@ -7,15 +7,15 @@ final class USBDeviceTests: XCTestCase {
         // Test initialization with an EdgeOS device
         let edgeOSDevice = USBDevice(name: "EdgeOS Device", vendorId: 0x1234, productId: 0xABCD)
         XCTAssertEqual(edgeOSDevice.name, "EdgeOS Device")
-        XCTAssertEqual(edgeOSDevice.vendorId, 0x1234)
-        XCTAssertEqual(edgeOSDevice.productId, 0xABCD)
+        XCTAssertEqual(edgeOSDevice.vendorId, "0x1234")
+        XCTAssertEqual(edgeOSDevice.productId, "0xABCD")
         XCTAssertTrue(edgeOSDevice.isEdgeOSDevice)
         
         // Test initialization with a non-EdgeOS device
         let nonEdgeOSDevice = USBDevice(name: "Generic USB Device", vendorId: 0x5678, productId: 0xDEF0)
         XCTAssertEqual(nonEdgeOSDevice.name, "Generic USB Device")
-        XCTAssertEqual(nonEdgeOSDevice.vendorId, 0x5678)
-        XCTAssertEqual(nonEdgeOSDevice.productId, 0xDEF0)
+        XCTAssertEqual(nonEdgeOSDevice.vendorId, "0x5678")
+        XCTAssertEqual(nonEdgeOSDevice.productId, "0xDEF0")
         XCTAssertFalse(nonEdgeOSDevice.isEdgeOSDevice)
     }
     
@@ -32,8 +32,8 @@ final class USBDeviceTests: XCTestCase {
         
         // Verify JSON contains all fields with correct values
         XCTAssertTrue(jsonString.contains("\"name\" : \"EdgeOS Device\""))
-        XCTAssertTrue(jsonString.contains("\"vendorId\" : 4660")) // 0x1234 in decimal
-        XCTAssertTrue(jsonString.contains("\"productId\" : 43981")) // 0xABCD in decimal
+        XCTAssertTrue(jsonString.contains("\"vendorId\" : \"0x1234\""))
+        XCTAssertTrue(jsonString.contains("\"productId\" : \"0xABCD\""))
         XCTAssertTrue(jsonString.contains("\"isEdgeOSDevice\" : true"))
     }
     
@@ -71,8 +71,8 @@ final class USBDeviceTests: XCTestCase {
         // Verify the array is properly serialized
         XCTAssertTrue(jsonString.contains("\"name\" : \"EdgeOS Device 1\""))
         XCTAssertTrue(jsonString.contains("\"name\" : \"EdgeOS Device 2\""))
-        XCTAssertTrue(jsonString.contains("\"vendorId\" : 4660")) // 0x1234
-        XCTAssertTrue(jsonString.contains("\"vendorId\" : 22136")) // 0x5678
+        XCTAssertTrue(jsonString.contains("\"vendorId\" : \"0x1234\""))
+        XCTAssertTrue(jsonString.contains("\"vendorId\" : \"0x5678\""))
         
         // Verify we can deserialize it back
         let decodedDevices = try JSONDecoder().decode([USBDevice].self, from: data)

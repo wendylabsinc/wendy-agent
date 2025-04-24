@@ -241,8 +241,8 @@ final class DevicesCommandTests: XCTestCase {
         XCTAssertEqual(foundDevices.count, 2, "Should find 2 EdgeOS devices")
         XCTAssertEqual(foundDevices[0].name, "EdgeOS Device 1", "First device name should match")
         XCTAssertEqual(foundDevices[1].name, "EdgeOS Device 2", "Second device name should match")
-        XCTAssertEqual(foundDevices[0].vendorId, 0x1234, "First device vendor ID should match")
-        XCTAssertEqual(foundDevices[0].productId, 0xABCD, "First device product ID should match")
+        XCTAssertEqual(foundDevices[0].vendorId, "0x1234", "First device vendor ID should match")
+        XCTAssertEqual(foundDevices[0].productId, "0xABCD", "First device product ID should match")
     }
     
     func testUSBDevicesWithIOKitFailure() async throws {
@@ -341,8 +341,8 @@ final class DevicesCommandTests: XCTestCase {
         
         // Verify JSON content
         XCTAssertTrue(jsonString.contains("\"name\" : \"EdgeOS Device 1\""), "JSON should contain the correct name")
-        XCTAssertTrue(jsonString.contains("\"vendorId\" : 4660"), "JSON should contain the correct vendor ID (0x1234 = 4660)")
-        XCTAssertTrue(jsonString.contains("\"productId\" : 43981"), "JSON should contain the correct product ID (0xABCD = 43981)")
+        XCTAssertTrue(jsonString.contains("\"vendorId\" : \"0x1234\""), "JSON should contain the correct vendor ID")
+        XCTAssertTrue(jsonString.contains("\"productId\" : \"0xABCD\""), "JSON should contain the correct product ID")
         XCTAssertTrue(jsonString.contains("\"isEdgeOSDevice\" : true"), "JSON should show this is an EdgeOS device")
     }
     
