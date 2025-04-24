@@ -23,24 +23,60 @@ public class MacOSDiskWriter: DiskWriter {
         // Get image file size to track total progress
         let totalBytes = try? FileManager.default.attributesOfItem(atPath: imagePath)[.size] as? Int64
         
-        // Create a task to run the dd command
+        // Send initial progress update
+        progressHandler(DiskWriteProgress(bytesWritten: 0, totalBytes: totalBytes))
+        
         do {
-            // Capture progressHandler in a local variable to avoid data races
-            let localProgressHandler = progressHandler
+            // First, unmount the disk to ensure it's not busy
+            print("Unmounting disk \(drive.id)...")
+            let unmountResult = try await Subprocess.run(
+                Subprocess.Executable.name("sudo"),
+                arguments: ["diskutil", "unmountDisk", drive.id],
+                output: .string,
+                error: .string
+            )
             
+            if !unmountResult.terminationStatus.isSuccess {
+                if let errorOutput = unmountResult.standardError, !errorOutput.isEmpty {
+                    throw DiskWriterError.writeFailed(reason: "Failed to unmount disk: \(errorOutput)")
+                } else {
+                    throw DiskWriterError.writeFailed(reason: "Failed to unmount disk with status: \(unmountResult.terminationStatus)")
+                }
+            }
+            
+            // Run the dd command with a custom script that sends progress updates
+            print("Writing image to \(drive.id)...")
+            
+            // Create a bash script that runs dd and sends SIGINFO to it periodically
+            let script = """
+            dd if="\(imagePath)" of="\(drive.id)" bs=1m status=progress 2>&1 & DD_PID=$!
+            while kill -0 $DD_PID 2>/dev/null; do
+                kill -INFO $DD_PID 2>/dev/null
+                sleep 1
+            done
+            wait $DD_PID
+            exit $?
+            """
+            
+            // Store the progress handler in a local variable to avoid capturing it in the closure
+            let localProgressHandler = progressHandler
+            let localTotalBytes = totalBytes
+            
+            // Use the Subprocess API with a closure to capture output in real-time
             let result = try await Subprocess.run(
                 Subprocess.Executable.name("sudo"),
-                arguments: ["dd", "if=\(imagePath)", "of=\(drive.id)", "bs=1m", "status=progress"],
+                arguments: ["bash", "-c", script],
                 output: .sequence,
-                error: .sequence
+                error: .discarded
             ) { execution in
                 // Process standard output for progress updates
                 for try await chunk in execution.standardOutput {
-                    // Try to parse dd output for progress
+                    // Convert the chunk to a string
                     let outputString = chunk.withUnsafeBytes { 
                         String(decoding: $0, as: UTF8.self) 
                     }
                     
+                    // Parse the progress information
                     // dd outputs progress like: "1234567890 bytes (1.2 GB, 1.1 GiB) copied, 10 s, 123 MB/s"
                     let pattern = #"(\d+)\s+bytes"#
                     if let range = outputString.range(of: pattern, options: .regularExpression),
@@ -48,27 +84,7 @@ public class MacOSDiskWriter: DiskWriter {
                         
                         let progress = DiskWriteProgress(
                             bytesWritten: bytes,
-                            totalBytes: totalBytes
-                        )
-                        
-                        localProgressHandler(progress)
-                    }
-                }
-                
-                // Process standard error for progress updates (dd sometimes writes to stderr)
-                for try await chunk in execution.standardError {
-                    // Similar parsing as above
-                    let errorString = chunk.withUnsafeBytes { 
-                        String(decoding: $0, as: UTF8.self) 
-                    }
-                    
-                    let pattern = #"(\d+)\s+bytes"#
-                    if let range = errorString.range(of: pattern, options: .regularExpression),
-                       let bytes = Int64(errorString[range].split(separator: " ")[0]) {
-                        
-                        let progress = DiskWriteProgress(
-                            bytesWritten: bytes,
-                            totalBytes: totalBytes
+                            totalBytes: localTotalBytes
                         )
                         
                         localProgressHandler(progress)
@@ -78,12 +94,25 @@ public class MacOSDiskWriter: DiskWriter {
                 return execution
             }
             
-            // If we get here, the command completed successfully
+            // Check if the command was successful
             if !result.terminationStatus.isSuccess {
                 throw DiskWriterError.writeFailed(reason: "dd command failed with status: \(result.terminationStatus)")
             }
+            
+            // If we get here, the command completed successfully
+            // Send a final progress update showing 100% completion
+            if let totalBytes = totalBytes {
+                progressHandler(DiskWriteProgress(bytesWritten: totalBytes, totalBytes: totalBytes))
+            }
+            
+            print("Image successfully written to \(drive.id)")
+        } catch let error as DiskWriterError {
+            // Re-throw DiskWriterError
+            throw error
         } catch {
-            throw DiskWriterError.writeFailed(reason: error.localizedDescription)
+            // Convert other errors to DiskWriterError with detailed message
+            print("Error details: \(error)")
+            throw DiskWriterError.writeFailed(reason: "Error: \(error.localizedDescription)")
         }
     }
 }

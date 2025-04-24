@@ -1,5 +1,4 @@
 import Foundation
-import Imager
 
 /// Factory for creating platform-specific DiskWriter implementations.
 public enum DiskWriterFactory {
