@@ -54,4 +54,20 @@ lldb
 (lldb) gdb-remote localhost:4242
 ```
 
+### Imager
+
+The Imager is a tool for writing EdgeOS images to USB drives. You can use it to write an EdgeOS image to a USB drive by running the following command:
+
+```sh
+swift run --package-path ../../ -- imager write <image-path> <drive-id>
+```
+
+### List
+
+You can list available external drives by running the following command:
+
+```sh
+swift run --package-path ../../ -- imager list
+```
+
 Unfortunately, running expressions (e.g. `po`) doesn't work yet.

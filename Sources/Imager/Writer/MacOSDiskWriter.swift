@@ -102,10 +102,16 @@ public class MacOSDiskWriter: DiskWriter {
             // If we get here, the command completed successfully
             // Send a final progress update showing 100% completion
             if let totalBytes = totalBytes {
-                progressHandler(DiskWriteProgress(bytesWritten: totalBytes, totalBytes: totalBytes))
+                // Ensure we show exactly 100% by setting bytesWritten = totalBytes
+                let finalProgress = DiskWriteProgress(
+                    bytesWritten: totalBytes,
+                    totalBytes: totalBytes
+                )
+                progressHandler(finalProgress)
             }
             
             print("Image successfully written to \(drive.id)")
+            print("✅ Image successfully written to \(drive.name)")
         } catch let error as DiskWriterError {
             // Re-throw DiskWriterError
             throw error
