@@ -14,15 +14,15 @@ export TOOLCHAINS=$(plutil -extract CFBundleIdentifier raw /Library/Developer/To
 
 ### Static Linux SDK
 
-After installing the toolchain and exporting the `TOOLCHAINS` variable, you need to install the Swift Static Linux SDK.
+After installing the toolchain and exporting the `TOOLCHAINS` variable, you need to install the Swift Static Linux SDK. This step is necessary on all platforms (including macOS).
 
 ```sh
 swift sdk install https://download.swift.org/swift-6.0.3-release/static-sdk/swift-6.0.3-RELEASE/swift-6.0.3-RELEASE_static-linux-0.0.1.artifactbundle.tar.gz --checksum 67f765e0030e661a7450f7e4877cfe008db4f57f177d5a08a6e26fd661cdd0bd
 ```
 
-### Developing on macOS
+### Installing the CLI
 
-We have a [Homebrew Tap](https://github.com/apache-edge/homebrew-tap) to install the developer CLI.
+We have a [Homebrew Tap](https://github.com/apache-edge/homebrew-tap) to install the developer CLI on macOS.
 
 ```sh
 brew tap apache-edge/tap
