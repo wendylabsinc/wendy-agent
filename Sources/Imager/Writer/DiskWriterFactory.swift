@@ -1,0 +1,20 @@
+import Foundation
+import Imager
+
+/// Factory for creating platform-specific DiskWriter implementations.
+public enum DiskWriterFactory {
+    
+    /// Creates a DiskWriter instance appropriate for the current platform.
+    /// - Returns: A DiskWriter implementation for the current platform.
+    public static func createDiskWriter() -> DiskWriter {
+        #if os(macOS)
+        return MacOSDiskWriter()
+        #elseif os(Linux)
+        // Linux implementation is not yet available
+        fatalError("Linux disk writing is not yet implemented")
+        #else
+        // Default to macOS implementation for other platforms
+        return MacOSDiskWriter()
+        #endif
+    }
+}

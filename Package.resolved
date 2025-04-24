@@ -1,5 +1,5 @@
 {
-  "originHash" : "f5c739301125cfe05904d34b63cac2cc463a75f1edc6b81c6185182905bd3759",
+  "originHash" : "7a8d6309821e31dfd4b1e4c904737a8db5fd24d507eba3800fca964219797570",
   "pins" : [
     {
       "identity" : "grpc-swift",
@@ -114,8 +114,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/apple/swift-http-structured-headers.git",
       "state" : {
-        "revision" : "8e769facea6b7d46ea60e5e93635a384fd573480",
-        "version" : "1.2.1"
+        "revision" : "f280fc7676b9940ff2c6598642751ea333c6544f",
+        "version" : "1.2.2"
       }
     },
     {
@@ -168,8 +168,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/apple/swift-nio-ssl.git",
       "state" : {
-        "revision" : "0cc3528ff48129d64ab9cab0b1cd621634edfc6b",
-        "version" : "2.29.3"
+        "revision" : "6df102a39c8da5fdc2eae29a0f63546d660866fc",
+        "version" : "2.30.0"
       }
     },
     {
@@ -215,6 +215,15 @@
       "state" : {
         "revision" : "7ee57f99fbe0073c3700997186721e74d925b59b",
         "version" : "2.7.0"
+      }
+    },
+    {
+      "identity" : "swift-subprocess",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/iCharlesHu/swift-subprocess.git",
+      "state" : {
+        "branch" : "charles/mutex-fallback",
+        "revision" : "808f0593bc841f06f623a8b55dc8f585b47542fb"
       }
     },
     {
