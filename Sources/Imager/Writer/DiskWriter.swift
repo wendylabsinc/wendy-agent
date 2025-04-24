@@ -43,6 +43,16 @@ public struct DiskWriteProgress {
     /// - Returns: A string representing the progress bar
     public func asciiProgress(totalBlocks: Int = 20, appendPercentageText: Bool = true) -> String {
         guard let percent = percentComplete else { return "" }
+        
+        // Special case: if we're at 100%, fill all blocks
+        if percent >= 100.0 {
+            var progress = "[" + String(repeating: "█", count: totalBlocks) + "]"
+            if appendPercentageText {
+                progress += " \(String(format: "%.1f%%", percent))"
+            }
+            return progress
+        }
+        
         let completedBlocks = Int(Double(totalBlocks) * percent / 100.0)
         let remainingBlocks = totalBlocks - completedBlocks
         var progress = "[" + String(repeating: "█", count: completedBlocks) + 
