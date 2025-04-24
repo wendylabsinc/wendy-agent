@@ -9,30 +9,32 @@
     // macOS specific extension for USBDevice
     extension USBDevice {
         static func fromIORegistryEntry(_ device: io_service_t) -> USBDevice? {
-            guard let nameRef = IORegistryEntryCreateCFProperty(
-                device,
-                "USB Product Name" as CFString,
-                kCFAllocatorDefault,
-                0
-            ),
-            let deviceName = nameRef.takeRetainedValue() as? String,
-            let vendorIdRef = IORegistryEntryCreateCFProperty(
-                device,
-                "idVendor" as CFString,
-                kCFAllocatorDefault,
-                0
-            ),
-            let vendorId = vendorIdRef.takeRetainedValue() as? Int,
-            let productIdRef = IORegistryEntryCreateCFProperty(
-                device,
-                "idProduct" as CFString,
-                kCFAllocatorDefault,
-                0
-            ),
-            let productId = productIdRef.takeRetainedValue() as? Int else {
+            guard
+                let nameRef = IORegistryEntryCreateCFProperty(
+                    device,
+                    "USB Product Name" as CFString,
+                    kCFAllocatorDefault,
+                    0
+                ),
+                let deviceName = nameRef.takeRetainedValue() as? String,
+                let vendorIdRef = IORegistryEntryCreateCFProperty(
+                    device,
+                    "idVendor" as CFString,
+                    kCFAllocatorDefault,
+                    0
+                ),
+                let vendorId = vendorIdRef.takeRetainedValue() as? Int,
+                let productIdRef = IORegistryEntryCreateCFProperty(
+                    device,
+                    "idProduct" as CFString,
+                    kCFAllocatorDefault,
+                    0
+                ),
+                let productId = productIdRef.takeRetainedValue() as? Int
+            else {
                 return nil
             }
-            
+
             return USBDevice(name: deviceName, vendorId: vendorId, productId: productId)
         }
     }
@@ -43,7 +45,7 @@
             let matchingDict = IOServiceMatching(kIOUSBDeviceClassName)
             var iterator: io_iterator_t = 0
             defer { IOObjectRelease(iterator) }
-            
+
             let result = IOServiceGetMatchingServices(kIOMainPortDefault, matchingDict, &iterator)
             if result != KERN_SUCCESS {
                 logger.error(
@@ -54,10 +56,13 @@
             }
 
             var usbDevice = IOIteratorNext(iterator)
-            
+
             while usbDevice != 0 {
                 if let device = USBDevice.fromIORegistryEntry(usbDevice) {
-                    logger.debug("Found device", metadata: ["device": .string(device.toHumanReadableString())])
+                    logger.debug(
+                        "Found device",
+                        metadata: ["device": .string(device.toHumanReadableString())]
+                    )
                     // Only track EdgeOS devices
                     if device.isEdgeOSDevice {
                         devices.append(device)
@@ -81,7 +86,7 @@
 
         func findEthernetInterfaces(logger: Logger) async -> [EthernetInterface] {
             var interfaces: [EthernetInterface] = []
-            
+
             guard let scInterfaces = SCNetworkInterfaceCopyAll() as? [SCNetworkInterface] else {
                 logger.error("Failed to get network interfaces")
                 return interfaces
@@ -100,7 +105,8 @@
 
                 // Get interface details
                 let name = SCNetworkInterfaceGetBSDName(interface) as? String ?? "Unknown"
-                let displayName = SCNetworkInterfaceGetLocalizedDisplayName(interface) as? String ?? "Unknown"
+                let displayName =
+                    SCNetworkInterfaceGetLocalizedDisplayName(interface) as? String ?? "Unknown"
 
                 // Only collect interfaces containing "EdgeOS" in their name
                 if !displayName.contains("EdgeOS") && !name.contains("EdgeOS") {
@@ -114,14 +120,14 @@
                 {
                     macAddress = SCNetworkInterfaceGetHardwareAddressString(interface) as? String
                 }
-                
+
                 let ethernetInterface = EthernetInterface(
                     name: name,
                     displayName: displayName,
                     interfaceType: interfaceType,
                     macAddress: macAddress
                 )
-                
+
                 interfaces.append(ethernetInterface)
                 logger.info("EdgeOS interface found", metadata: ["interface": .string(displayName)])
             }
@@ -129,7 +135,7 @@
             if interfaces.isEmpty {
                 logger.info("No EdgeOS Ethernet interfaces found.")
             }
-            
+
             return interfaces
         }
     }
