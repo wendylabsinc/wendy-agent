@@ -1,8 +1,9 @@
 import Foundation
 import Subprocess
 
-/// A disk writer implementation for macOS that uses the `dd` command.
-public class MacOSDiskWriter: DiskWriter {
+#if os(Linux)
+/// A disk writer implementation for Linux that uses the `dd` command.
+public class LinuxDiskWriter: DiskWriter {
     public init() {}
     
     public func write(
@@ -28,26 +29,32 @@ public class MacOSDiskWriter: DiskWriter {
         
         do {
             // First, unmount the disk to ensure it's not busy
+            // On Linux, we use umount command
             let unmountResult = try await Subprocess.run(
                 Subprocess.Executable.name("sudo"),
-                arguments: ["diskutil", "unmountDisk", drive.id],
+                arguments: ["umount", drive.id],
                 output: .string,
                 error: .string
             )
             
+            // On Linux, umount may fail if the drive is not mounted, which is fine for our purposes
+            // We only care if there's an actual error that would prevent writing
+            // Note: We ignore the specific exit code and just check if it's successful or not
             if !unmountResult.terminationStatus.isSuccess {
-                if let errorOutput = unmountResult.standardError, !errorOutput.isEmpty {
+                // Check if there's an error message that indicates a real problem
+                if let errorOutput = unmountResult.standardError, 
+                   !errorOutput.isEmpty && 
+                   !errorOutput.contains("not mounted") {
                     throw DiskWriterError.writeFailed(reason: "Failed to unmount disk: \(errorOutput)")
-                } else {
-                    throw DiskWriterError.writeFailed(reason: "Failed to unmount disk with status: \(unmountResult.terminationStatus)")
                 }
+                // Otherwise, we assume it's just not mounted, which is fine
             }
             
-            // Create a bash script that runs dd and sends SIGINFO to it periodically
+            // Create a bash script that runs dd and sends SIGUSR1 to it periodically (Linux equivalent of SIGINFO)
             let script = """
-            dd if="\(imagePath)" of="\(drive.id)" bs=1m status=progress 2>&1 & DD_PID=$!
+            dd if="\(imagePath)" of="\(drive.id)" bs=1M status=progress 2>&1 & DD_PID=$!
             while kill -0 $DD_PID 2>/dev/null; do
-                kill -INFO $DD_PID 2>/dev/null
+                kill -USR1 $DD_PID 2>/dev/null
                 sleep 1
             done
             wait $DD_PID
@@ -73,7 +80,7 @@ public class MacOSDiskWriter: DiskWriter {
                     }
                     
                     // Parse the progress information
-                    // dd outputs progress like: "1234567890 bytes (1.2 GB, 1.1 GiB) copied, 10 s, 123 MB/s"
+                    // dd on Linux outputs progress like: "1234567890 bytes (1.2 GB, 1.1 GiB) copied, 10 s, 123 MB/s"
                     let pattern = #"(\d+)\s+bytes"#
                     if let range = outputString.range(of: pattern, options: .regularExpression),
                        let bytes = Int64(outputString[range].split(separator: " ")[0]) {
@@ -114,3 +121,17 @@ public class MacOSDiskWriter: DiskWriter {
         }
     }
 }
+#else
+// Empty implementation for non-Linux platforms
+public class LinuxDiskWriter: DiskWriter {
+    public init() {}
+    
+    public func write(
+        imagePath: String,
+        drive: Drive,
+        progressHandler: @escaping (DiskWriteProgress) -> Void
+    ) async throws {
+        fatalError("LinuxDiskWriter is only available on Linux platforms")
+    }
+}
+#endif

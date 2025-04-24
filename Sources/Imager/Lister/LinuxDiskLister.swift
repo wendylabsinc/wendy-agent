@@ -4,33 +4,55 @@ import Subprocess
 /// Linux implementation of the DiskLister protocol.
 public struct LinuxDiskLister: DiskLister {
     
+    // MARK: - Codable Structs for lsblk JSON Output
+    
+    /// Represents the root JSON structure returned by lsblk -J
+    private struct LsblkOutput: Codable {
+        let blockdevices: [BlockDevice]
+    }
+    
+    /// Represents a block device in the lsblk JSON output
+    private struct BlockDevice: Codable {
+        let name: String
+        let model: String?
+        let size: String?  // Size comes as a string like "123456789"
+        let hotplug: String?  // "0" or "1" as a string
+        let children: [BlockDevice]?
+        
+        // Computed properties for convenience
+        var isExternal: Bool {
+            return hotplug == "1"
+        }
+        
+        var displayName: String {
+            return model?.isEmpty == false ? model! : "Linux Disk"
+        }
+        
+        var sizeInBytes: Int64 {
+            return Int64(size ?? "0") ?? 0
+        }
+    }
+    
     public init() {}
     
     /// Lists available drives on Linux.
     /// - Parameter all: If true, lists all drives, not just external drives.
     /// - Returns: An array of Drive objects representing the available drives.
-    public func list(all: Bool) async throws -> [Drive] {
+    public func list(all: Bool = false) async throws -> [Drive] {
         do {
-            // Use lsblk command to list block devices on Linux
+            // Use lsblk to get information about all block devices in JSON format
             let result = try await Subprocess.run(
                 Subprocess.Executable.name("lsblk"),
-                arguments: ["-b", "-J", "-o", "NAME,SIZE,MOUNTPOINT,HOTPLUG,MODEL"],
+                arguments: ["-J", "-b", "-o", "NAME,SIZE,MODEL,HOTPLUG,TYPE"],
                 output: .string,
                 error: .string
             )
             
-            if result.terminationStatus.isSuccess {
-                if let output = result.standardOutput, !output.isEmpty {
-                    // Parse the output into Drive objects
-                    return parseLsblkOutput(output, all: all)
-                } else {
-                    return []
-                }
+            if result.terminationStatus.isSuccess, let output = result.standardOutput {
+                return parseLsblkOutput(output, all: all)
             } else {
-                if result.standardError != nil {
-                    // Error occurred, but we're not using the error output
-                }
-                return []
+                let errorOutput = result.standardError ?? "Unknown error"
+                throw NSError(domain: "LinuxDiskLister", code: 1, userInfo: [NSLocalizedDescriptionKey: "Failed to list drives: \(errorOutput)"])
             }
         } catch {
             throw error
@@ -39,8 +61,8 @@ public struct LinuxDiskLister: DiskLister {
     
     /// Finds a drive by its identifier.
     /// - Parameter id: The identifier of the drive to find.
-    /// - Returns: The Drive object if found.
-    /// - Throws: If the drive cannot be found.
+    /// - Returns: A Drive object representing the found drive.
+    /// - Throws: An error if the drive is not found.
     public func findDrive(byId id: String) async throws -> Drive {
         do {
             // Use lsblk to get information about a specific device
@@ -49,104 +71,35 @@ public struct LinuxDiskLister: DiskLister {
             
             let result = try await Subprocess.run(
                 Subprocess.Executable.name("lsblk"),
-                arguments: ["-b", "-J", "-o", "NAME,SIZE,MOUNTPOINT,HOTPLUG,MODEL", "/dev/\(deviceId)"],
+                arguments: ["-J", "-b", "-o", "NAME,SIZE,MODEL,HOTPLUG,TYPE", "/dev/\(deviceId)"],
                 output: .string,
                 error: .string
             )
             
-            if result.terminationStatus.isSuccess {
-                if let output = result.standardOutput, !output.isEmpty {
-                    // Parse the output to get drive information
-                    let drives = parseLsblkOutput(output, all: true)
-                    if let drive = drives.first {
-                        return drive
-                    }
+            if result.terminationStatus.isSuccess, let output = result.standardOutput {
+                let drives = parseLsblkOutput(output, all: true)
+                
+                if let drive = drives.first {
+                    return drive
+                } else {
+                    throw NSError(domain: "LinuxDiskLister", code: 2, userInfo: [NSLocalizedDescriptionKey: "Drive not found: \(id)"])
                 }
+            } else {
+                let errorOutput = result.standardError ?? "Unknown error"
+                throw NSError(domain: "LinuxDiskLister", code: 1, userInfo: [NSLocalizedDescriptionKey: "Failed to find drive: \(errorOutput)"])
             }
-            
-            // If we couldn't find the drive with lsblk, try another approach
-            // Use df to get available space information
-            var available: Int64 = 0
-            var capacity: Int64 = 0
-            var name = "Unknown"
-            var isExternal = false
-            
-            // Try to get device information using udevadm
-            let udevResult = try await Subprocess.run(
-                Subprocess.Executable.name("udevadm"),
-                arguments: ["info", "--query=property", "--name=/dev/\(deviceId)"],
-                output: .string,
-                error: .string
-            )
-            
-            if udevResult.terminationStatus.isSuccess, let udevOutput = udevResult.standardOutput {
-                // Parse udevadm output
-                let lines = udevOutput.split(separator: "\n")
-                for line in lines {
-                    if line.hasPrefix("ID_MODEL=") {
-                        name = String(line.dropFirst(9)).replacingOccurrences(of: "\"", with: "")
-                    } else if line.hasPrefix("ID_BUS=") {
-                        // Check if it's external (usb, firewire, etc.)
-                        let bus = String(line.dropFirst(7))
-                        isExternal = (bus == "usb" || bus == "ieee1394")
-                    }
-                }
-            }
-            
-            // Get size information from /sys/block
-            let sizeResult = try? await Subprocess.run(
-                Subprocess.Executable.name("cat"),
-                arguments: ["/sys/block/\(deviceId)/size"],
-                output: .string,
-                error: .string
-            )
-            
-            if let sizeResult = sizeResult, 
-               sizeResult.terminationStatus.isSuccess, 
-               let sizeOutput = sizeResult.standardOutput,
-               let sizeBlocks = Int64(sizeOutput.trimmingCharacters(in: .whitespacesAndNewlines)) {
-                // Convert 512-byte blocks to bytes
-                capacity = sizeBlocks * 512
-            }
-            
-            // Get available space using df
-            let dfResult = try? await Subprocess.run(
-                Subprocess.Executable.name("df"),
-                arguments: ["-B1", "/dev/\(deviceId)"],
-                output: .string,
-                error: .string
-            )
-            
-            if let dfResult = dfResult,
-               dfResult.terminationStatus.isSuccess,
-               let dfOutput = dfResult.standardOutput {
-                let lines = dfOutput.split(separator: "\n")
-                if lines.count > 1 {
-                    let parts = lines[1].split(separator: " ").filter { !$0.isEmpty }
-                    if parts.count >= 4, let availableBytes = Int64(parts[3]) {
-                        available = availableBytes
-                    }
-                }
-            }
-            
-            // If we have at least the capacity, return a Drive object
-            if capacity > 0 {
-                return Drive(
-                    id: "/dev/\(deviceId)",
-                    name: name,
-                    available: available,
-                    capacity: capacity,
-                    isExternal: isExternal
-                )
-            }
-            
-            // If we couldn't find the drive, throw an error
-            throw DiskListerError.driveNotFound(id: id)
         } catch {
-            throw DiskListerError.driveNotFound(id: id)
+            throw error
         }
     }
     
+    // MARK: - Private Methods
+    
+    /// Parses the JSON output from lsblk.
+    /// - Parameters:
+    ///   - output: The JSON output from lsblk.
+    ///   - all: If true, includes all drives, not just external ones.
+    /// - Returns: An array of Drive objects.
     private func parseLsblkOutput(_ output: String, all: Bool) -> [Drive] {
         var drives: [Drive] = []
         
@@ -156,40 +109,26 @@ public struct LinuxDiskLister: DiskLister {
         }
         
         do {
-            // Parse the JSON output
-            if let json = try JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
-               let blockdevices = json["blockdevices"] as? [[String: Any]] {
-                
-                for device in blockdevices {
-                    // Skip loop devices and partitions
-                    if let name = device["name"] as? String,
-                       !name.starts(with: "loop") {
+            // Use JSONDecoder to parse the JSON output
+            let decoder = JSONDecoder()
+            let lsblkOutput = try decoder.decode(LsblkOutput.self, from: jsonData)
+            
+            for device in lsblkOutput.blockdevices {
+                // Skip loop devices
+                if !device.name.starts(with: "loop") {
+                    // Only include external devices unless all is true
+                    if all || device.isExternal {
+                        let id = "/dev/\(device.name)"
                         
-                        let isExternal = (device["hotplug"] as? Int) == 1
+                        let drive = Drive(
+                            id: id,
+                            name: device.displayName,
+                            available: 0, // Would need df command for accurate values
+                            capacity: device.sizeInBytes,
+                            isExternal: device.isExternal
+                        )
                         
-                        // Only include external devices unless all is true
-                        if all || isExternal {
-                            let id = "/dev/\(name)"
-                            let model = device["model"] as? String ?? "Disk"
-                            let displayName = model.isEmpty ? "Linux Disk" : model
-                            
-                            // Size is in bytes
-                            let capacity = device["size"] as? Int64 ?? 0
-                            
-                            // Calculate available space (would need df command for accurate values)
-                            // For now, we'll set it to 0 and could improve this in the future
-                            let available: Int64 = 0
-                            
-                            let drive = Drive(
-                                id: id,
-                                name: displayName,
-                                available: available,
-                                capacity: capacity,
-                                isExternal: isExternal
-                            )
-                            
-                            drives.append(drive)
-                        }
+                        drives.append(drive)
                     }
                 }
             }
@@ -220,31 +159,19 @@ public struct LinuxDiskLister: DiskLister {
                 // Skip loop devices and partitions
                 if !name.starts(with: "loop") && !name.contains("├") && !name.contains("└") {
                     let id = "/dev/\(name)"
-                    let sizeStr = components[1]
+                    let displayName = components.count > 2 ? components[2] : "Linux Disk"
                     
-                    // Parse size (convert from human-readable to bytes)
-                    var capacity: Int64 = 0
-                    if sizeStr.hasSuffix("G") {
-                        let sizeValue = Double(sizeStr.dropLast()) ?? 0
-                        capacity = Int64(sizeValue * 1_000_000_000)
-                    } else if sizeStr.hasSuffix("T") {
-                        let sizeValue = Double(sizeStr.dropLast()) ?? 0
-                        capacity = Int64(sizeValue * 1_000_000_000_000)
-                    } else if sizeStr.hasSuffix("M") {
-                        let sizeValue = Double(sizeStr.dropLast()) ?? 0
-                        capacity = Int64(sizeValue * 1_000_000)
-                    }
+                    // Size is in bytes (assuming it's the second column)
+                    let capacity = Int64(components[1]) ?? 0
                     
-                    // We don't have a reliable way to determine if a drive is external from text output
-                    // Assume all drives are internal unless they have a specific pattern
-                    let isExternal = name.starts(with: "sd") && !name.starts(with: "sda")
+                    // Assume all devices are external in fallback mode if not filtering
+                    let isExternal = true
                     
-                    // Only include external devices unless all is true
                     if all || isExternal {
                         let drive = Drive(
                             id: id,
-                            name: "Linux Disk \(name)",
-                            available: 0, // We don't have this information
+                            name: displayName.isEmpty ? "Linux Disk" : displayName,
+                            available: 0,
                             capacity: capacity,
                             isExternal: isExternal
                         )

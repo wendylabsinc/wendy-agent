@@ -9,8 +9,7 @@ public enum DiskWriterFactory {
         #if os(macOS)
         return MacOSDiskWriter()
         #elseif os(Linux)
-        // Linux implementation is not yet available
-        fatalError("Linux disk writing is not yet implemented")
+        return LinuxDiskWriter()
         #else
         // Default to macOS implementation for other platforms
         return MacOSDiskWriter()
