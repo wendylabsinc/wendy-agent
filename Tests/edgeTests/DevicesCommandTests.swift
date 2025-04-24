@@ -91,6 +91,32 @@ extension DevicesCommand {
         return foundDevices
     }
     
+    // Test version for the updated findUSBDevices method
+    func findUSBDevicesForTesting() async -> [USBDevice] {
+        let mock = IOKitMock.shared
+        
+        if await mock.shouldFailGetMatchingServices {
+            return []
+        }
+        
+        var foundDevices: [USBDevice] = []
+        
+        let deviceNames = await mock.deviceNames
+        let vendorIds = await mock.vendorIds
+        let productIds = await mock.productIds
+        
+        for (index, deviceName) in deviceNames.enumerated() {
+            if index < vendorIds.count && index < productIds.count {
+                let device = USBDevice(name: deviceName, vendorId: vendorIds[index], productId: productIds[index])
+                if device.isEdgeOSDevice {
+                    foundDevices.append(device)
+                }
+            }
+        }
+        
+        return foundDevices
+    }
+    
     func listEthernetInterfacesForTesting() async -> [String] {
         let mock = SCNetworkMock.shared
         
@@ -125,6 +151,43 @@ extension DevicesCommand {
         
         return foundInterfaces
     }
+    
+    // Test version for the updated findEthernetInterfaces method
+    func findEthernetInterfacesForTesting() async -> [EthernetInterface] {
+        let mock = SCNetworkMock.shared
+        
+        if await mock.shouldFailCopyAll {
+            return []
+        }
+        
+        var foundInterfaces: [EthernetInterface] = []
+        
+        let interfaceNames = await mock.interfaceNames
+        let displayNames = await mock.displayNames
+        let interfaceTypes = await mock.interfaceTypes
+        let macAddresses = await mock.macAddresses
+        
+        for (index, name) in interfaceNames.enumerated() {
+            let displayName = index < displayNames.count ? displayNames[index] : "Unknown"
+            let interfaceType = index < interfaceTypes.count ? interfaceTypes[index] : "Unknown"
+            
+            let hasMAC = index < macAddresses.count && !macAddresses[index].isEmpty
+            let macAddress = hasMAC ? macAddresses[index] : nil
+            
+            let interface = EthernetInterface(
+                name: name,
+                displayName: displayName,
+                interfaceType: interfaceType,
+                macAddress: macAddress
+            )
+            
+            if interface.isEdgeOSDevice {
+                foundInterfaces.append(interface)
+            }
+        }
+        
+        return foundInterfaces
+    }
 }
 
 final class DevicesCommandTests: XCTestCase {
@@ -153,7 +216,7 @@ final class DevicesCommandTests: XCTestCase {
         )
         
         // Test
-        let foundDevices = await devicesCommand.listUSBDevicesForTesting()
+        let foundDevices = await devicesCommand.findUSBDevicesForTesting()
         
         // Verify
         XCTAssertEqual(foundDevices.count, 0, "Should not find any EdgeOS devices")
@@ -172,14 +235,14 @@ final class DevicesCommandTests: XCTestCase {
         )
         
         // Test
-        let foundDevices = await devicesCommand.listUSBDevicesForTesting()
+        let foundDevices = await devicesCommand.findUSBDevicesForTesting()
         
         // Verify
         XCTAssertEqual(foundDevices.count, 2, "Should find 2 EdgeOS devices")
-        XCTAssertTrue(foundDevices[0].contains("EdgeOS Device 1"), "First device should match")
-        XCTAssertTrue(foundDevices[1].contains("EdgeOS Device 2"), "Second device should match")
-        XCTAssertTrue(foundDevices[0].contains("0x1234"), "First device should contain vendor ID")
-        XCTAssertTrue(foundDevices[0].contains("0xABCD"), "First device should contain product ID")
+        XCTAssertEqual(foundDevices[0].name, "EdgeOS Device 1", "First device name should match")
+        XCTAssertEqual(foundDevices[1].name, "EdgeOS Device 2", "Second device name should match")
+        XCTAssertEqual(foundDevices[0].vendorId, 0x1234, "First device vendor ID should match")
+        XCTAssertEqual(foundDevices[0].productId, 0xABCD, "First device product ID should match")
     }
     
     func testUSBDevicesWithIOKitFailure() async throws {
@@ -191,7 +254,7 @@ final class DevicesCommandTests: XCTestCase {
         await IOKitMock.shared.setFailure(shouldFail: true)
         
         // Test
-        let foundDevices = await devicesCommand.listUSBDevicesForTesting()
+        let foundDevices = await devicesCommand.findUSBDevicesForTesting()
         
         // Verify
         XCTAssertEqual(foundDevices.count, 0, "Should not find any devices when IOKit fails")
@@ -211,7 +274,7 @@ final class DevicesCommandTests: XCTestCase {
         )
         
         // Test
-        let foundInterfaces = await devicesCommand.listEthernetInterfacesForTesting()
+        let foundInterfaces = await devicesCommand.findEthernetInterfacesForTesting()
         
         // Verify
         XCTAssertEqual(foundInterfaces.count, 0, "Should not find any EdgeOS interfaces")
@@ -231,13 +294,14 @@ final class DevicesCommandTests: XCTestCase {
         )
         
         // Test
-        let foundInterfaces = await devicesCommand.listEthernetInterfacesForTesting()
+        let foundInterfaces = await devicesCommand.findEthernetInterfacesForTesting()
         
         // Verify
         XCTAssertEqual(foundInterfaces.count, 2, "Should find 2 EdgeOS interfaces")
-        XCTAssertTrue(foundInterfaces[0].contains("EdgeOS Ethernet"), "First interface should match")
-        XCTAssertTrue(foundInterfaces[1].contains("EdgeOS Wi-Fi"), "Second interface should match")
-        XCTAssertTrue(foundInterfaces[0].contains("11:22:33:44:55:66"), "First interface should contain MAC address")
+        XCTAssertEqual(foundInterfaces[0].name, "edgeOS0", "First interface name should match")
+        XCTAssertEqual(foundInterfaces[0].displayName, "EdgeOS Ethernet", "First interface display name should match")
+        XCTAssertEqual(foundInterfaces[0].interfaceType, "Ethernet", "First interface type should match")
+        XCTAssertEqual(foundInterfaces[0].macAddress, "11:22:33:44:55:66", "First interface MAC should match")
     }
     
     func testEthernetInterfacesWithSCNetworkFailure() async throws {
@@ -249,9 +313,108 @@ final class DevicesCommandTests: XCTestCase {
         await SCNetworkMock.shared.setFailure(shouldFail: true)
         
         // Test
-        let foundInterfaces = await devicesCommand.listEthernetInterfacesForTesting()
+        let foundInterfaces = await devicesCommand.findEthernetInterfacesForTesting()
         
         // Verify
         XCTAssertEqual(foundInterfaces.count, 0, "Should not find any interfaces when SCNetwork fails")
+    }
+    
+    // Test JSON serialization for USB devices
+    func testUSBDeviceJSONSerialization() async throws {
+        // Reset at the beginning of each test
+        await IOKitMock.shared.reset()
+        
+        // Setup mock with an EdgeOS device
+        await IOKitMock.shared.setup(
+            deviceNames: ["EdgeOS Device 1"],
+            vendorIds: [0x1234],
+            productIds: [0xABCD]
+        )
+        
+        // Get the devices
+        let devices = await devicesCommand.findUSBDevicesForTesting()
+        XCTAssertEqual(devices.count, 1, "Should find 1 EdgeOS device")
+        
+        // Test JSON serialization
+        let device = devices[0]
+        let jsonString = try device.toJSON()
+        
+        // Verify JSON content
+        XCTAssertTrue(jsonString.contains("\"name\" : \"EdgeOS Device 1\""), "JSON should contain the correct name")
+        XCTAssertTrue(jsonString.contains("\"vendorId\" : 4660"), "JSON should contain the correct vendor ID (0x1234 = 4660)")
+        XCTAssertTrue(jsonString.contains("\"productId\" : 43981"), "JSON should contain the correct product ID (0xABCD = 43981)")
+        XCTAssertTrue(jsonString.contains("\"isEdgeOSDevice\" : true"), "JSON should show this is an EdgeOS device")
+    }
+    
+    // Test human-readable format for USB devices
+    func testUSBDeviceHumanReadableFormat() async throws {
+        // Reset at the beginning of each test
+        await IOKitMock.shared.reset()
+        
+        // Setup mock with an EdgeOS device
+        await IOKitMock.shared.setup(
+            deviceNames: ["EdgeOS Device 1"],
+            vendorIds: [0x1234],
+            productIds: [0xABCD]
+        )
+        
+        // Get the devices
+        let devices = await devicesCommand.findUSBDevicesForTesting()
+        XCTAssertEqual(devices.count, 1, "Should find 1 EdgeOS device")
+        
+        // Test human-readable format
+        let humanReadable = devices[0].toHumanReadableString()
+        XCTAssertEqual(humanReadable, "EdgeOS Device 1 - Vendor ID: 0x1234, Product ID: 0xABCD")
+    }
+    
+    // Test JSON serialization for Ethernet interfaces
+    func testEthernetInterfaceJSONSerialization() async throws {
+        // Reset at the beginning of each test
+        await SCNetworkMock.shared.reset()
+        
+        // Setup mock with an EdgeOS interface
+        await SCNetworkMock.shared.setup(
+            interfaceNames: ["edgeOS0"],
+            displayNames: ["EdgeOS Ethernet"],
+            interfaceTypes: ["Ethernet"],
+            macAddresses: ["11:22:33:44:55:66"]
+        )
+        
+        // Get the interfaces
+        let interfaces = await devicesCommand.findEthernetInterfacesForTesting()
+        XCTAssertEqual(interfaces.count, 1, "Should find 1 EdgeOS interface")
+        
+        // Test JSON serialization
+        let interface = interfaces[0]
+        let jsonString = try interface.toJSON()
+        
+        // Verify JSON content
+        XCTAssertTrue(jsonString.contains("\"name\" : \"edgeOS0\""), "JSON should contain the correct name")
+        XCTAssertTrue(jsonString.contains("\"displayName\" : \"EdgeOS Ethernet\""), "JSON should contain the correct display name")
+        XCTAssertTrue(jsonString.contains("\"interfaceType\" : \"Ethernet\""), "JSON should contain the correct interface type")
+        XCTAssertTrue(jsonString.contains("\"macAddress\" : \"11:22:33:44:55:66\""), "JSON should contain the correct MAC address")
+        XCTAssertTrue(jsonString.contains("\"isEdgeOSDevice\" : true"), "JSON should show this is an EdgeOS device")
+    }
+    
+    // Test human-readable format for Ethernet interfaces
+    func testEthernetInterfaceHumanReadableFormat() async throws {
+        // Reset at the beginning of each test
+        await SCNetworkMock.shared.reset()
+        
+        // Setup mock with an EdgeOS interface
+        await SCNetworkMock.shared.setup(
+            interfaceNames: ["edgeOS0"],
+            displayNames: ["EdgeOS Ethernet"],
+            interfaceTypes: ["Ethernet"],
+            macAddresses: ["11:22:33:44:55:66"]
+        )
+        
+        // Get the interfaces
+        let interfaces = await devicesCommand.findEthernetInterfacesForTesting()
+        XCTAssertEqual(interfaces.count, 1, "Should find 1 EdgeOS interface")
+        
+        // Test human-readable format
+        let humanReadable = interfaces[0].toHumanReadableString()
+        XCTAssertEqual(humanReadable, "- EdgeOS Ethernet (edgeOS0) [Ethernet]\n  MAC Address: 11:22:33:44:55:66")
     }
 } 
