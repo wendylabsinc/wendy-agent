@@ -1,42 +1,48 @@
-import XCTest
+import Testing
+import Foundation
 @testable import edge
 
-final class USBDeviceTests: XCTestCase {
+@Suite("USB Device Tests")
+struct USBDeviceTests {
     
-    func testUSBDeviceInitialization() {
+    @Test("USBDevice initialization and validation")
+    func testUSBDeviceInitialization() throws {
         // Test initialization with an EdgeOS device
         let edgeOSDevice = USBDevice(name: "EdgeOS Device", vendorId: 0x1234, productId: 0xABCD)
-        XCTAssertEqual(edgeOSDevice.name, "EdgeOS Device")
-        XCTAssertEqual(edgeOSDevice.vendorId, "0x1234")
-        XCTAssertEqual(edgeOSDevice.productId, "0xABCD")
-        XCTAssertTrue(edgeOSDevice.isEdgeOSDevice)
+        #expect(edgeOSDevice.name == "EdgeOS Device")
+        #expect(edgeOSDevice.vendorId == "0x1234")
+        #expect(edgeOSDevice.productId == "0xABCD")
+        #expect(edgeOSDevice.isEdgeOSDevice)
         
         // Test initialization with a non-EdgeOS device
         let nonEdgeOSDevice = USBDevice(name: "Generic USB Device", vendorId: 0x5678, productId: 0xDEF0)
-        XCTAssertEqual(nonEdgeOSDevice.name, "Generic USB Device")
-        XCTAssertEqual(nonEdgeOSDevice.vendorId, "0x5678")
-        XCTAssertEqual(nonEdgeOSDevice.productId, "0xDEF0")
-        XCTAssertFalse(nonEdgeOSDevice.isEdgeOSDevice)
+        #expect(nonEdgeOSDevice.name == "Generic USB Device")
+        #expect(nonEdgeOSDevice.vendorId == "0x5678")
+        #expect(nonEdgeOSDevice.productId == "0xDEF0")
+        #expect(!nonEdgeOSDevice.isEdgeOSDevice)
     }
     
-    func testHumanReadableFormat() {
+    @Test("Human readable string format")
+    func testHumanReadableFormat() throws {
         let device = USBDevice(name: "EdgeOS Device", vendorId: 0x1234, productId: 0xABCD)
         let humanReadable = device.toHumanReadableString()
         
-        XCTAssertEqual(humanReadable, "EdgeOS Device - Vendor ID: 0x1234, Product ID: 0xABCD")
+        #expect(humanReadable == "EdgeOS Device - Vendor ID: 0x1234, Product ID: 0xABCD")
     }
     
+    @Test("JSON serialization")
     func testJSONSerialization() throws {
         let device = USBDevice(name: "EdgeOS Device", vendorId: 0x1234, productId: 0xABCD)
         let jsonString = try device.toJSON()
         
         // Verify JSON contains all fields with correct values
-        XCTAssertTrue(jsonString.contains("\"name\" : \"EdgeOS Device\""))
-        XCTAssertTrue(jsonString.contains("\"vendorId\" : \"0x1234\""))
-        XCTAssertTrue(jsonString.contains("\"productId\" : \"0xABCD\""))
-        XCTAssertTrue(jsonString.contains("\"isEdgeOSDevice\" : true"))
+        #expect(jsonString.contains("\"name\" : \"EdgeOS Device\""))
+        #expect(jsonString.contains("\"vendorId\" : \"0x1234\""))
+        #expect(jsonString.contains("\"productId\" : \"0xABCD\""))
+        #expect(jsonString.contains("\"isEdgeOSDevice\" : true"))
     }
     
+    @Test("Codable conformance")
     func testCodableConformance() throws {
         let originalDevice = USBDevice(name: "EdgeOS Device", vendorId: 0x1234, productId: 0xABCD)
         
@@ -49,12 +55,13 @@ final class USBDeviceTests: XCTestCase {
         let decodedDevice = try decoder.decode(USBDevice.self, from: data)
         
         // Verify all properties match
-        XCTAssertEqual(decodedDevice.name, originalDevice.name)
-        XCTAssertEqual(decodedDevice.vendorId, originalDevice.vendorId)
-        XCTAssertEqual(decodedDevice.productId, originalDevice.productId)
-        XCTAssertEqual(decodedDevice.isEdgeOSDevice, originalDevice.isEdgeOSDevice)
+        #expect(decodedDevice.name == originalDevice.name)
+        #expect(decodedDevice.vendorId == originalDevice.vendorId)
+        #expect(decodedDevice.productId == originalDevice.productId)
+        #expect(decodedDevice.isEdgeOSDevice == originalDevice.isEdgeOSDevice)
     }
     
+    @Test("Device list JSON serialization")
     func testDeviceListJSONSerialization() throws {
         // Create a collection of devices
         let devices = [
@@ -64,27 +71,29 @@ final class USBDeviceTests: XCTestCase {
         
         // Serialize the array to JSON
         let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.outputFormatting = [JSONEncoder.OutputFormatting.prettyPrinted, JSONEncoder.OutputFormatting.sortedKeys]
         let data = try encoder.encode(devices)
         let jsonString = String(data: data, encoding: .utf8)!
         
         // Verify the array is properly serialized
-        XCTAssertTrue(jsonString.contains("\"name\" : \"EdgeOS Device 1\""))
-        XCTAssertTrue(jsonString.contains("\"name\" : \"EdgeOS Device 2\""))
-        XCTAssertTrue(jsonString.contains("\"vendorId\" : \"0x1234\""))
-        XCTAssertTrue(jsonString.contains("\"vendorId\" : \"0x5678\""))
+        #expect(jsonString.contains("\"name\" : \"EdgeOS Device 1\""))
+        #expect(jsonString.contains("\"name\" : \"EdgeOS Device 2\""))
+        #expect(jsonString.contains("\"vendorId\" : \"0x1234\""))
+        #expect(jsonString.contains("\"vendorId\" : \"0x5678\""))
         
         // Verify we can deserialize it back
         let decodedDevices = try JSONDecoder().decode([USBDevice].self, from: data)
-        XCTAssertEqual(decodedDevices.count, 2)
-        XCTAssertEqual(decodedDevices[0].name, "EdgeOS Device 1")
-        XCTAssertEqual(decodedDevices[1].name, "EdgeOS Device 2")
+        #expect(decodedDevices.count == 2)
+        #expect(decodedDevices[0].name == "EdgeOS Device 1")
+        #expect(decodedDevices[1].name == "EdgeOS Device 2")
     }
 }
 
-final class EthernetInterfaceTests: XCTestCase {
+@Suite("Ethernet Interface Tests")
+struct EthernetInterfaceTests {
     
-    func testEthernetInterfaceInitialization() {
+    @Test("Ethernet interface initialization")
+    func testEthernetInterfaceInitialization() throws {
         // Test initialization with an EdgeOS interface
         let edgeOSInterface = EthernetInterface(
             name: "edgeOS0",
@@ -93,11 +102,11 @@ final class EthernetInterfaceTests: XCTestCase {
             macAddress: "11:22:33:44:55:66"
         )
         
-        XCTAssertEqual(edgeOSInterface.name, "edgeOS0")
-        XCTAssertEqual(edgeOSInterface.displayName, "EdgeOS Ethernet")
-        XCTAssertEqual(edgeOSInterface.interfaceType, "Ethernet")
-        XCTAssertEqual(edgeOSInterface.macAddress, "11:22:33:44:55:66")
-        XCTAssertTrue(edgeOSInterface.isEdgeOSDevice)
+        #expect(edgeOSInterface.name == "edgeOS0")
+        #expect(edgeOSInterface.displayName == "EdgeOS Ethernet")
+        #expect(edgeOSInterface.interfaceType == "Ethernet")
+        #expect(edgeOSInterface.macAddress == "11:22:33:44:55:66")
+        #expect(edgeOSInterface.isEdgeOSDevice)
         
         // Test initialization with a non-EdgeOS interface
         let nonEdgeOSInterface = EthernetInterface(
@@ -107,14 +116,15 @@ final class EthernetInterfaceTests: XCTestCase {
             macAddress: "aa:bb:cc:dd:ee:ff"
         )
         
-        XCTAssertEqual(nonEdgeOSInterface.name, "en0")
-        XCTAssertEqual(nonEdgeOSInterface.displayName, "Wi-Fi")
-        XCTAssertEqual(nonEdgeOSInterface.interfaceType, "IEEE80211")
-        XCTAssertEqual(nonEdgeOSInterface.macAddress, "aa:bb:cc:dd:ee:ff")
-        XCTAssertFalse(nonEdgeOSInterface.isEdgeOSDevice)
+        #expect(nonEdgeOSInterface.name == "en0")
+        #expect(nonEdgeOSInterface.displayName == "Wi-Fi")
+        #expect(nonEdgeOSInterface.interfaceType == "IEEE80211")
+        #expect(nonEdgeOSInterface.macAddress == "aa:bb:cc:dd:ee:ff")
+        #expect(!nonEdgeOSInterface.isEdgeOSDevice)
     }
     
-    func testHumanReadableFormat() {
+    @Test("Human readable string format for interfaces")
+    func testHumanReadableFormat() throws {
         // With MAC address
         let interface1 = EthernetInterface(
             name: "edgeOS0",
@@ -124,9 +134,8 @@ final class EthernetInterfaceTests: XCTestCase {
         )
         
         let humanReadable1 = interface1.toHumanReadableString()
-        XCTAssertEqual(
-            humanReadable1,
-            "- EdgeOS Ethernet (edgeOS0) [Ethernet]\n  MAC Address: 11:22:33:44:55:66"
+        #expect(
+            humanReadable1 == "- EdgeOS Ethernet (edgeOS0) [Ethernet]\n  MAC Address: 11:22:33:44:55:66"
         )
         
         // Without MAC address
@@ -138,9 +147,10 @@ final class EthernetInterfaceTests: XCTestCase {
         )
         
         let humanReadable2 = interface2.toHumanReadableString()
-        XCTAssertEqual(humanReadable2, "- EdgeOS PPP (edgeOS1) [PPP]")
+        #expect(humanReadable2 == "- EdgeOS PPP (edgeOS1) [PPP]")
     }
     
+    @Test("Interface JSON serialization")
     func testJSONSerialization() throws {
         let interface = EthernetInterface(
             name: "edgeOS0",
@@ -152,13 +162,14 @@ final class EthernetInterfaceTests: XCTestCase {
         let jsonString = try interface.toJSON()
         
         // Verify JSON contains all fields with correct values
-        XCTAssertTrue(jsonString.contains("\"name\" : \"edgeOS0\""))
-        XCTAssertTrue(jsonString.contains("\"displayName\" : \"EdgeOS Ethernet\""))
-        XCTAssertTrue(jsonString.contains("\"interfaceType\" : \"Ethernet\""))
-        XCTAssertTrue(jsonString.contains("\"macAddress\" : \"11:22:33:44:55:66\""))
-        XCTAssertTrue(jsonString.contains("\"isEdgeOSDevice\" : true"))
+        #expect(jsonString.contains("\"name\" : \"edgeOS0\""))
+        #expect(jsonString.contains("\"displayName\" : \"EdgeOS Ethernet\""))
+        #expect(jsonString.contains("\"interfaceType\" : \"Ethernet\""))
+        #expect(jsonString.contains("\"macAddress\" : \"11:22:33:44:55:66\""))
+        #expect(jsonString.contains("\"isEdgeOSDevice\" : true"))
     }
     
+    @Test("Interface Codable conformance")
     func testCodableConformance() throws {
         let originalInterface = EthernetInterface(
             name: "edgeOS0",
@@ -176,13 +187,14 @@ final class EthernetInterfaceTests: XCTestCase {
         let decodedInterface = try decoder.decode(EthernetInterface.self, from: data)
         
         // Verify all properties match
-        XCTAssertEqual(decodedInterface.name, originalInterface.name)
-        XCTAssertEqual(decodedInterface.displayName, originalInterface.displayName)
-        XCTAssertEqual(decodedInterface.interfaceType, originalInterface.interfaceType)
-        XCTAssertEqual(decodedInterface.macAddress, originalInterface.macAddress)
-        XCTAssertEqual(decodedInterface.isEdgeOSDevice, originalInterface.isEdgeOSDevice)
+        #expect(decodedInterface.name == originalInterface.name)
+        #expect(decodedInterface.displayName == originalInterface.displayName)
+        #expect(decodedInterface.interfaceType == originalInterface.interfaceType)
+        #expect(decodedInterface.macAddress == originalInterface.macAddress)
+        #expect(decodedInterface.isEdgeOSDevice == originalInterface.isEdgeOSDevice)
     }
     
+    @Test("Interface list JSON serialization")
     func testInterfaceListJSONSerialization() throws {
         // Create a collection of interfaces
         let interfaces = [
@@ -202,20 +214,20 @@ final class EthernetInterfaceTests: XCTestCase {
         
         // Serialize the array to JSON
         let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.outputFormatting = [JSONEncoder.OutputFormatting.prettyPrinted, JSONEncoder.OutputFormatting.sortedKeys]
         let data = try encoder.encode(interfaces)
         let jsonString = String(data: data, encoding: .utf8)!
         
         // Verify the array is properly serialized
-        XCTAssertTrue(jsonString.contains("\"name\" : \"edgeOS0\""))
-        XCTAssertTrue(jsonString.contains("\"name\" : \"edgeOS1\""))
-        XCTAssertTrue(jsonString.contains("\"displayName\" : \"EdgeOS Ethernet\""))
-        XCTAssertTrue(jsonString.contains("\"displayName\" : \"EdgeOS Wi-Fi\""))
+        #expect(jsonString.contains("\"name\" : \"edgeOS0\""))
+        #expect(jsonString.contains("\"name\" : \"edgeOS1\""))
+        #expect(jsonString.contains("\"displayName\" : \"EdgeOS Ethernet\""))
+        #expect(jsonString.contains("\"displayName\" : \"EdgeOS Wi-Fi\""))
         
         // Verify we can deserialize it back
         let decodedInterfaces = try JSONDecoder().decode([EthernetInterface].self, from: data)
-        XCTAssertEqual(decodedInterfaces.count, 2)
-        XCTAssertEqual(decodedInterfaces[0].name, "edgeOS0")
-        XCTAssertEqual(decodedInterfaces[1].name, "edgeOS1")
+        #expect(decodedInterfaces.count == 2)
+        #expect(decodedInterfaces[0].name == "edgeOS0")
+        #expect(decodedInterfaces[1].name == "edgeOS1")
     }
 } 

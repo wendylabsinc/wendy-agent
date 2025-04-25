@@ -1,12 +1,14 @@
-import XCTest
+import Testing
 @testable import edge
 
-final class USBDeviceIterationTests: XCTestCase {
+@Suite("USB Device Iteration Tests")
+struct USBDeviceIterationTests {
     
     // This test validates the key iteration logic that was fixed:
     // - Properly releasing device objects
     // - Correctly advancing the iterator
     // - Handling the continue statement within nested conditionals
+    @Test("Device iteration logic with different device sequences")
     func testDeviceIteration() async throws {
         // Create a controlled test environment to verify the iteration logic
         let testCases = [
@@ -59,27 +61,23 @@ final class USBDeviceIterationTests: XCTestCase {
             
             let result = tracker.simulateDeviceIteration()
             
-            XCTAssertEqual(
-                result.processedCount, 
-                testCase.expectedCallCount,
+            #expect(
+                result.processedCount == testCase.expectedCallCount,
                 "Test case \(index): Should process correct number of devices"
             )
             
-            XCTAssertEqual(
-                result.releasedCount, 
-                testCase.expectedCallCount,
+            #expect(
+                result.releasedCount == testCase.expectedCallCount,
                 "Test case \(index): Should release all processed devices"
             )
             
-            XCTAssertEqual(
-                result.edgeOSDevicesCount, 
-                testCase.expectedDeviceCount,
+            #expect(
+                result.edgeOSDevicesCount == testCase.expectedDeviceCount,
                 "Test case \(index): Should find correct number of EdgeOS devices"
             )
             
-            XCTAssertEqual(
-                tracker.iteratorAdvanceCalls, 
-                testCase.expectedCallCount,
+            #expect(
+                tracker.iteratorAdvanceCalls == testCase.expectedCallCount,
                 "Test case \(index): Should advance iterator correct number of times"
             )
         }
