@@ -1,9 +1,54 @@
 import ArgumentParser
+import Foundation
 
 struct AgentConnectionOptions: ParsableArguments {
-    @Option(name: .long, help: "The host of the Edge Agent to connect to.")
-    var agentHost: String
+    struct Endpoint: ExpressibleByArgument {
+        let host: String
+        let port: Int
 
-    @Option(name: .long, help: "The port of the Edge Agent to connect to.")
-    var agentPort: Int = 50051
+        init?(argument: String) {
+            // Create a dummy URL to use URLComponents parsing capabilities
+            var urlString = argument
+            let hasScheme = urlString.contains("://")
+
+            // Only allow edge:// scheme or no scheme
+            if hasScheme {
+                if !urlString.starts(with: "edge://") {
+                    return nil
+                }
+            } else {
+                urlString = "edge://" + urlString
+            }
+
+            guard let components = URLComponents(string: urlString),
+                let host = components.host, !host.isEmpty
+            else {
+                return nil
+            }
+
+            // Handle IPv6 addresses by removing the brackets if present
+            var cleanHost = host
+            if cleanHost.first == "[" && cleanHost.last == "]" {
+                cleanHost = String(cleanHost.dropFirst().dropLast())
+            }
+
+            self.host = cleanHost
+            self.port = components.port ?? 50051
+        }
+
+        static var defaultValueDescription: String {
+            "localhost:50051"
+        }
+
+        var description: String {
+            "\(host):\(port)"
+        }
+    }
+
+    @Option(
+        name: .shortAndLong,
+        help:
+            "The host and port of the Edge Agent to connect to (format: host or host:port). IPv6 addresses must be enclosed in square brackets, e.g. [2001:db8::1] or [2001:db8::1]:8080."
+    )
+    var agent: Endpoint
 }

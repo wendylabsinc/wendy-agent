@@ -126,9 +126,10 @@ struct RunCommand: AsyncParsableCommand {
             outputPath: outputPath
         )
 
+        let agentEndpoint = agentConnectionOptions.agent
         let target = ResolvableTargets.DNS(
-            host: agentConnectionOptions.agentHost,
-            port: agentConnectionOptions.agentPort
+            host: agentEndpoint.host,
+            port: agentEndpoint.port
         )
         #if os(macOS)
             let transport = try HTTP2ClientTransport.TransportServices(

@@ -98,5 +98,13 @@ let package = Package(
                 .product(name: "Logging", package: "swift-log")
             ]
         ),
+
+        /// Tests for EdgeCLI components
+        .testTarget(
+            name: "EdgeCLITests",
+            dependencies: [
+                .target(name: "edge"),
+            ]
+        ),
     ]
 )
