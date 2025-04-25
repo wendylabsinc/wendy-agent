@@ -13,11 +13,18 @@ import Shell
 struct RunCommand: AsyncParsableCommand {
     enum Error: Swift.Error, CustomStringConvertible {
         case noExecutableTarget
+        case invalidExecutableTarget(String)
+        case multipleExecutableTargets([String])
 
         var description: String {
             switch self {
             case .noExecutableTarget:
                 return "No executable target found in package"
+            case .invalidExecutableTarget(let name):
+                return "No executable target named '\(name)' found in package"
+            case .multipleExecutableTargets(let names):
+                return
+                    "multiple executable targets available, but none specified: \(names.joined(separator: ", "))"
             }
         }
     }
@@ -36,6 +43,11 @@ struct RunCommand: AsyncParsableCommand {
     @Option(name: .long, help: "The Swift SDK to use.")
     var swiftSDK: String = "aarch64-swift-linux-musl"
 
+    @Argument(
+        help: "The executable to run. Required when a package has multiple executable targets."
+    )
+    var executable: String?
+
     @OptionGroup var agentConnectionOptions: AgentConnectionOptions
 
     func run() async throws {
@@ -44,10 +56,25 @@ struct RunCommand: AsyncParsableCommand {
         let swiftPM = SwiftPM()
         let package = try await swiftPM.dumpPackage()
 
-        // For now, just use the first executable target.
-        guard let executableTarget = package.targets.first(where: { $0.type == "executable" })
-        else {
-            throw Error.noExecutableTarget
+        // Get all executable targets
+        let executableTargets = package.targets.filter { $0.type == "executable" }
+
+        // Use specified executable or handle multiple executable targets
+        let executableTarget: SwiftPM.Package.Target
+        if let executableName = executable {
+            guard let target = executableTargets.first(where: { $0.name == executableName }) else {
+                throw Error.invalidExecutableTarget(executableName)
+            }
+            executableTarget = target
+        } else {
+            // If no executable specified, ensure there's only one executable target
+            if executableTargets.isEmpty {
+                throw Error.noExecutableTarget
+            } else if executableTargets.count > 1 {
+                throw Error.multipleExecutableTargets(executableTargets.map(\.name))
+            } else {
+                executableTarget = executableTargets[0]
+            }
         }
 
         try await swiftPM.build(
@@ -58,6 +85,7 @@ struct RunCommand: AsyncParsableCommand {
 
         let binPath = try await swiftPM.build(
             .showBinPath,
+            .product(executableTarget.name),
             .swiftSDK(swiftSDK),
             .quiet,
             .scratchPath(".edge-build")
@@ -70,7 +98,6 @@ struct RunCommand: AsyncParsableCommand {
         var imageSpec = ContainerImageSpec.withExecutable(executable: executable)
 
         if debug {
-
             // Include the ds2 executable in the container image.
             guard
                 let ds2URL = Bundle.module.url(
