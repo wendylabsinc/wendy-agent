@@ -21,7 +21,7 @@ struct DevicesCommand: AsyncParsableCommand {
         case json, text
     }
 
-    @Option(help: "Device types to list (usb, ethernet, or both)")
+    @Option(help: "Device types to list (usb, ethernet, or all)")
     var type: DeviceType = .all
 
     @Flag(name: [.customShort("j"), .long], help: "Output in JSON format")
