@@ -315,7 +315,9 @@ struct DevicesCollectionTests {
         
         // Test JSON output
         let json = try emptyCollection.toJSON()
-        #expect(json == "{}")
+        // Allow for possible whitespace in the JSON output
+        let jsonNormalized = json.replacingOccurrences(of: "\\s", with: "", options: .regularExpression)
+        #expect(jsonNormalized == "{}")
         
         // Test human readable output
         let humanReadable = emptyCollection.toHumanReadableString()
