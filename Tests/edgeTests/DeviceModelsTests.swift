@@ -30,9 +30,11 @@ struct USBDeviceTests {
         #expect(humanReadable == "EdgeOS Device - Vendor ID: 0x1234, Product ID: 0xABCD")
     }
     
-    @Test("JSON serialization")
-    func testJSONSerialization() throws {
+    @Test("JSON serialization and Codable conformance")
+    func testJSONSerializationAndCodable() throws {
         let device = USBDevice(name: "EdgeOS Device", vendorId: 0x1234, productId: 0xABCD)
+        
+        // Test custom toJSON() method
         let jsonString = try device.toJSON()
         
         // Verify JSON contains all fields with correct values
@@ -40,25 +42,21 @@ struct USBDeviceTests {
         #expect(jsonString.contains("\"vendorId\" : \"0x1234\""))
         #expect(jsonString.contains("\"productId\" : \"0xABCD\""))
         #expect(jsonString.contains("\"isEdgeOSDevice\" : true"))
-    }
-    
-    @Test("Codable conformance")
-    func testCodableConformance() throws {
-        let originalDevice = USBDevice(name: "EdgeOS Device", vendorId: 0x1234, productId: 0xABCD)
         
+        // Test Codable conformance
         // Encode to Data
         let encoder = JSONEncoder()
-        let data = try encoder.encode(originalDevice)
+        let data = try encoder.encode(device)
         
         // Decode back to USBDevice
         let decoder = JSONDecoder()
         let decodedDevice = try decoder.decode(USBDevice.self, from: data)
         
         // Verify all properties match
-        #expect(decodedDevice.name == originalDevice.name)
-        #expect(decodedDevice.vendorId == originalDevice.vendorId)
-        #expect(decodedDevice.productId == originalDevice.productId)
-        #expect(decodedDevice.isEdgeOSDevice == originalDevice.isEdgeOSDevice)
+        #expect(decodedDevice.name == device.name)
+        #expect(decodedDevice.vendorId == device.vendorId)
+        #expect(decodedDevice.productId == device.productId)
+        #expect(decodedDevice.isEdgeOSDevice == device.isEdgeOSDevice)
     }
     
     @Test("Device list JSON serialization")
@@ -150,8 +148,8 @@ struct EthernetInterfaceTests {
         #expect(humanReadable2 == "- EdgeOS PPP (edgeOS1) [PPP]")
     }
     
-    @Test("Interface JSON serialization")
-    func testJSONSerialization() throws {
+    @Test("Interface JSON serialization and Codable conformance")
+    func testInterfaceJSONSerializationAndCodable() throws {
         let interface = EthernetInterface(
             name: "edgeOS0",
             displayName: "EdgeOS Ethernet",
@@ -159,6 +157,7 @@ struct EthernetInterfaceTests {
             macAddress: "11:22:33:44:55:66"
         )
         
+        // Test custom toJSON() method
         let jsonString = try interface.toJSON()
         
         // Verify JSON contains all fields with correct values
@@ -167,31 +166,22 @@ struct EthernetInterfaceTests {
         #expect(jsonString.contains("\"interfaceType\" : \"Ethernet\""))
         #expect(jsonString.contains("\"macAddress\" : \"11:22:33:44:55:66\""))
         #expect(jsonString.contains("\"isEdgeOSDevice\" : true"))
-    }
-    
-    @Test("Interface Codable conformance")
-    func testCodableConformance() throws {
-        let originalInterface = EthernetInterface(
-            name: "edgeOS0",
-            displayName: "EdgeOS Ethernet",
-            interfaceType: "Ethernet",
-            macAddress: "11:22:33:44:55:66"
-        )
         
+        // Test Codable conformance
         // Encode to Data
         let encoder = JSONEncoder()
-        let data = try encoder.encode(originalInterface)
+        let data = try encoder.encode(interface)
         
         // Decode back to EthernetInterface
         let decoder = JSONDecoder()
         let decodedInterface = try decoder.decode(EthernetInterface.self, from: data)
         
         // Verify all properties match
-        #expect(decodedInterface.name == originalInterface.name)
-        #expect(decodedInterface.displayName == originalInterface.displayName)
-        #expect(decodedInterface.interfaceType == originalInterface.interfaceType)
-        #expect(decodedInterface.macAddress == originalInterface.macAddress)
-        #expect(decodedInterface.isEdgeOSDevice == originalInterface.isEdgeOSDevice)
+        #expect(decodedInterface.name == interface.name)
+        #expect(decodedInterface.displayName == interface.displayName)
+        #expect(decodedInterface.interfaceType == interface.interfaceType)
+        #expect(decodedInterface.macAddress == interface.macAddress)
+        #expect(decodedInterface.isEdgeOSDevice == interface.isEdgeOSDevice)
     }
     
     @Test("Interface list JSON serialization")
@@ -229,5 +219,151 @@ struct EthernetInterfaceTests {
         #expect(decodedInterfaces.count == 2)
         #expect(decodedInterfaces[0].name == "edgeOS0")
         #expect(decodedInterfaces[1].name == "edgeOS1")
+    }
+}
+
+@Suite("DeviceFormatter Tests")
+struct DeviceFormatterTests {
+    
+    @Test("DeviceFormatter formats USB devices correctly")
+    func testUSBDeviceFormatting() throws {
+        // Create test USB devices
+        let devices = [
+            USBDevice(name: "EdgeOS USB 1", vendorId: 0x1234, productId: 0x5678),
+            USBDevice(name: "EdgeOS USB 2", vendorId: 0x9ABC, productId: 0xDEF0)
+        ]
+        
+        // Test text formatting
+        let textOutput = DeviceFormatter.formatCollection(devices, as: .text, collectionName: "USB Devices")
+        #expect(textOutput.contains("USB Devices:"))
+        #expect(textOutput.contains("EdgeOS USB 1"))
+        #expect(textOutput.contains("EdgeOS USB 2"))
+        
+        // Test JSON formatting
+        let jsonOutput = DeviceFormatter.formatCollection(devices, as: .json, collectionName: "USB Devices")
+        #expect(jsonOutput.contains("\"name\" : \"EdgeOS USB 1\""))
+        #expect(jsonOutput.contains("\"name\" : \"EdgeOS USB 2\""))
+    }
+    
+    @Test("DeviceFormatter handles empty collections")
+    func testEmptyCollectionFormatting() throws {
+        // Test empty USB devices
+        let emptyUSBDevices: [USBDevice] = []
+        let emptyUSBOutput = DeviceFormatter.formatCollection(
+            emptyUSBDevices, 
+            as: .text, 
+            collectionName: "USB Devices"
+        )
+        #expect(emptyUSBOutput == "No EdgeOS USB Devices found.")
+        
+        // Test empty Ethernet interfaces
+        let emptyEthernetInterfaces: [EthernetInterface] = []
+        let emptyEthernetOutput = DeviceFormatter.formatCollection(
+            emptyEthernetInterfaces, 
+            as: .text, 
+            collectionName: "Ethernet Interfaces"
+        )
+        #expect(emptyEthernetOutput == "No EdgeOS Ethernet Interfaces found.")
+    }
+}
+
+@Suite("DevicesCollection Tests")
+struct DevicesCollectionTests {
+    
+    @Test("DevicesCollection initialization and handling heterogeneous devices")
+    func testDevicesCollectionInitialization() throws {
+        // Create test devices
+        let usbDevice = USBDevice(name: "EdgeOS USB", vendorId: 0x1234, productId: 0x5678)
+        let ethernetInterface = EthernetInterface(
+            name: "edgeOS0",
+            displayName: "EdgeOS Ethernet",
+            interfaceType: "Ethernet",
+            macAddress: "11:22:33:44:55:66"
+        )
+        
+        // Test initialization with specific device types
+        let collection1 = DevicesCollection(usb: [usbDevice], ethernet: [ethernetInterface])
+        
+        // Test initialization with generic device array
+        var devices: [Device] = []
+        devices.append(usbDevice)
+        devices.append(ethernetInterface)
+        let collection2 = DevicesCollection(devices: devices)
+        
+        // Verify both collections can generate proper JSON
+        let json1 = try collection1.toJSON()
+        let json2 = try collection2.toJSON()
+        
+        // Both collections should contain the same devices
+        #expect(json1.contains("\"name\" : \"EdgeOS USB\""))
+        #expect(json1.contains("\"name\" : \"edgeOS0\""))
+        #expect(json2.contains("\"name\" : \"EdgeOS USB\""))
+        #expect(json2.contains("\"name\" : \"edgeOS0\""))
+        
+        // Test that the human readable output contains both device types
+        let humanReadable = collection1.toHumanReadableString()
+        #expect(humanReadable.contains("USB Devices:"))
+        #expect(humanReadable.contains("Ethernet Interfaces:"))
+        #expect(humanReadable.contains("EdgeOS USB"))
+        #expect(humanReadable.contains("EdgeOS Ethernet"))
+    }
+    
+    @Test("DevicesCollection handles empty collections properly")
+    func testEmptyDevicesCollection() throws {
+        // Create an empty collection
+        let emptyCollection = DevicesCollection(devices: [])
+        
+        // Test JSON output
+        let json = try emptyCollection.toJSON()
+        #expect(json == "{}")
+        
+        // Test human readable output
+        let humanReadable = emptyCollection.toHumanReadableString()
+        #expect(humanReadable == "No devices found.")
+    }
+    
+    @Test("DevicesCollection properly groups device types")
+    func testDeviceTypeGrouping() throws {
+        // Create multiple devices of each type
+        let usbDevices = [
+            USBDevice(name: "EdgeOS USB 1", vendorId: 0x1234, productId: 0x5678),
+            USBDevice(name: "EdgeOS USB 2", vendorId: 0x9ABC, productId: 0xDEF0)
+        ]
+        
+        let ethernetInterfaces = [
+            EthernetInterface(
+                name: "edgeOS0",
+                displayName: "EdgeOS Ethernet 1",
+                interfaceType: "Ethernet",
+                macAddress: "11:22:33:44:55:66"
+            ),
+            EthernetInterface(
+                name: "edgeOS1",
+                displayName: "EdgeOS Ethernet 2",
+                interfaceType: "Ethernet",
+                macAddress: "AA:BB:CC:DD:EE:FF"
+            )
+        ]
+        
+        // Create a collection with multiple devices
+        let collection = DevicesCollection(usb: usbDevices, ethernet: ethernetInterfaces)
+        
+        // Verify JSON contains all devices properly grouped
+        let json = try collection.toJSON()
+        #expect(json.contains("\"usbDevices\""))
+        #expect(json.contains("\"ethernetDevices\""))
+        #expect(json.contains("EdgeOS USB 1"))
+        #expect(json.contains("EdgeOS USB 2"))
+        #expect(json.contains("EdgeOS Ethernet 1"))
+        #expect(json.contains("EdgeOS Ethernet 2"))
+        
+        // Verify human readable output contains all devices properly grouped
+        let humanReadable = collection.toHumanReadableString()
+        #expect(humanReadable.contains("USB Devices:"))
+        #expect(humanReadable.contains("Ethernet Interfaces:"))
+        #expect(humanReadable.contains("EdgeOS USB 1"))
+        #expect(humanReadable.contains("EdgeOS USB 2"))
+        #expect(humanReadable.contains("EdgeOS Ethernet 1"))
+        #expect(humanReadable.contains("EdgeOS Ethernet 2"))
     }
 } 
