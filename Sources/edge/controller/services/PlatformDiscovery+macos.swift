@@ -7,9 +7,14 @@
     import SystemConfiguration
     struct PlatformDeviceDiscovery: DeviceDiscovery {
         private let ioServiceProvider: IOServiceProvider
+        private let networkInterfaceProvider: NetworkInterfaceProvider
 
-        init(ioServiceProvider: IOServiceProvider = DefaultIOServiceProvider()) {
+        init(
+            ioServiceProvider: IOServiceProvider = DefaultIOServiceProvider(),
+            networkInterfaceProvider: NetworkInterfaceProvider = DefaultNetworkInterfaceProvider()
+        ) {
             self.ioServiceProvider = ioServiceProvider
+            self.networkInterfaceProvider = networkInterfaceProvider
         }
 
         func findUSBDevices(logger: Logger) async -> [USBDevice] {
@@ -69,14 +74,17 @@
         func findEthernetInterfaces(logger: Logger) async -> [EthernetInterface] {
             var interfaces: [EthernetInterface] = []
 
-            guard let scInterfaces = SCNetworkInterfaceCopyAll() as? [SCNetworkInterface] else {
+            guard let scInterfaces = networkInterfaceProvider.copyAllNetworkInterfaces() else {
                 logger.error("Failed to get network interfaces")
                 return interfaces
             }
 
             for interface in scInterfaces {
                 // Check if it's an Ethernet interface
-                guard let interfaceType = SCNetworkInterfaceGetInterfaceType(interface) as? String,
+                guard
+                    let interfaceType = networkInterfaceProvider.getInterfaceType(
+                        interface: interface
+                    ),
                     interfaceType == kSCNetworkInterfaceTypeEthernet as String
                         || interfaceType == kSCNetworkInterfaceTypeIEEE80211 as String  // WiFi
                         || interfaceType == kSCNetworkInterfaceTypePPP as String
@@ -86,9 +94,10 @@
                 }
 
                 // Get interface details
-                let name = SCNetworkInterfaceGetBSDName(interface) as? String ?? "Unknown"
+                let name = networkInterfaceProvider.getBSDName(interface: interface) ?? "Unknown"
                 let displayName =
-                    SCNetworkInterfaceGetLocalizedDisplayName(interface) as? String ?? "Unknown"
+                    networkInterfaceProvider.getLocalizedDisplayName(interface: interface)
+                    ?? "Unknown"
 
                 // Only collect interfaces containing "EdgeOS" in their name
                 if !displayName.contains("EdgeOS") && !name.contains("EdgeOS") {
@@ -100,7 +109,9 @@
                 if interfaceType == kSCNetworkInterfaceTypeEthernet as String
                     || interfaceType == kSCNetworkInterfaceTypeIEEE80211 as String
                 {
-                    macAddress = SCNetworkInterfaceGetHardwareAddressString(interface) as? String
+                    macAddress = networkInterfaceProvider.getHardwareAddressString(
+                        interface: interface
+                    )
                 }
 
                 let ethernetInterface = EthernetInterface(

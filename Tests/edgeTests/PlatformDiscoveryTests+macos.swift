@@ -1,5 +1,6 @@
 import Foundation
 import Logging
+import SystemConfiguration
 import Testing
 
 @testable import edge
@@ -121,24 +122,108 @@ import Testing
             #expect(mockProvider.getNextItemCalls.count > 0)  // At least one call to check for devices
         }
 
-        @Test("PlatformDeviceDiscovery finds Ethernet interfaces")
+        @Test("Successfully finds EdgeOS Ethernet interfaces")
         func testFindEthernetInterfaces() async throws {
-            let discovery = PlatformDeviceDiscovery()
-            let logger = createTestLogger()
+            let mockNetworkProvider = MockNetworkInterfaceProvider()
 
+            // Configure mock interfaces
+            mockNetworkProvider.mockInterfaces = [
+                MockNetworkInterfaceData(
+                    bsdName: "en0",
+                    displayName: "EdgeOS Ethernet",
+                    interfaceType: kSCNetworkInterfaceTypeEthernet as String,
+                    macAddress: "00:11:22:33:44:55"
+                ),
+                MockNetworkInterfaceData(
+                    bsdName: "en1",
+                    displayName: "EdgeOS WiFi",
+                    interfaceType: kSCNetworkInterfaceTypeIEEE80211 as String,
+                    macAddress: "aa:bb:cc:dd:ee:ff"
+                ),
+                MockNetworkInterfaceData(
+                    bsdName: "en2",
+                    displayName: "Regular Ethernet",  // Not EdgeOS - should be filtered out
+                    interfaceType: kSCNetworkInterfaceTypeEthernet as String,
+                    macAddress: "ff:ee:dd:cc:bb:aa"
+                ),
+                MockNetworkInterfaceData(
+                    bsdName: "ppp0",
+                    displayName: "EdgeOS PPP",
+                    interfaceType: kSCNetworkInterfaceTypePPP as String,
+                    macAddress: nil
+                ),
+                MockNetworkInterfaceData(
+                    bsdName: "lo0",
+                    displayName: "EdgeOS Loopback",
+                    interfaceType: "Loopback",  // Not a supported type - should be filtered out
+                    macAddress: nil
+                ),
+            ]
+
+            // Create discovery with mock provider
+            let discovery = PlatformDeviceDiscovery(
+                ioServiceProvider: MockIOServiceProvider(),
+                networkInterfaceProvider: mockNetworkProvider
+            )
+            let logger = Logger(label: "test.ethernet.discovery")
+
+            // Run the discovery
             let interfaces = await discovery.findEthernetInterfaces(logger: logger)
 
-            // Verify the function returns an array of EthernetInterface objects
-            #expect(interfaces is [EthernetInterface])
+            // Verify results
+            #expect(interfaces.count == 3, "Should find 3 EdgeOS interfaces")
 
-            // If any interfaces are found, verify their properties
-            for interface in interfaces {
-                #expect(!interface.name.isEmpty)
-                #expect(!interface.displayName.isEmpty)
-                #expect(!interface.interfaceType.isEmpty)
-                // MAC address is optional, so we don't check it
-                #expect(interface.isEdgeOSDevice)  // Should be true since we filter for EdgeOS interfaces
-            }
+            // Find Ethernet interface
+            let ethernetInterface = interfaces.first { $0.name == "en0" }
+            #expect(ethernetInterface != nil, "Should find EdgeOS Ethernet interface")
+            #expect(ethernetInterface?.displayName == "EdgeOS Ethernet")
+            #expect(ethernetInterface?.interfaceType == kSCNetworkInterfaceTypeEthernet as String)
+            #expect(ethernetInterface?.macAddress == "00:11:22:33:44:55")
+
+            // Find WiFi interface
+            let wifiInterface = interfaces.first { $0.name == "en1" }
+            #expect(wifiInterface != nil, "Should find EdgeOS WiFi interface")
+            #expect(wifiInterface?.displayName == "EdgeOS WiFi")
+            #expect(wifiInterface?.interfaceType == kSCNetworkInterfaceTypeIEEE80211 as String)
+            #expect(wifiInterface?.macAddress == "aa:bb:cc:dd:ee:ff")
+
+            // Find PPP interface
+            let pppInterface = interfaces.first { $0.name == "ppp0" }
+            #expect(pppInterface != nil, "Should find EdgeOS PPP interface")
+            #expect(pppInterface?.displayName == "EdgeOS PPP")
+            #expect(pppInterface?.interfaceType == kSCNetworkInterfaceTypePPP as String)
+            #expect(pppInterface?.macAddress == nil, "PPP interface should not have MAC address")
+
+            // Verify the non-EdgeOS interface was filtered out
+            #expect(
+                interfaces.first { $0.name == "en2" } == nil,
+                "Regular Ethernet should be filtered out"
+            )
+
+            // Verify the unsupported type was filtered out
+            #expect(interfaces.first { $0.name == "lo0" } == nil, "Loopback should be filtered out")
+
+            // Verify all SC function calls were made
+            #expect(
+                mockNetworkProvider.copyAllNetworkInterfacesCalls == 1,
+                "Should call copyAllNetworkInterfaces once"
+            )
+            #expect(
+                mockNetworkProvider.getInterfaceTypeCalls.count == 5,
+                "Should call getInterfaceType for all interfaces"
+            )
+            #expect(
+                mockNetworkProvider.getBSDNameCalls.count >= 3,
+                "Should call getBSDName for valid interfaces"
+            )
+            #expect(
+                mockNetworkProvider.getLocalizedDisplayNameCalls.count >= 3,
+                "Should call getLocalizedDisplayName for valid interfaces"
+            )
+            #expect(
+                mockNetworkProvider.getHardwareAddressStringCalls.count >= 2,
+                "Should call getHardwareAddressString for Ethernet/WiFi interfaces"
+            )
         }
 
         @Test("Handles IOKit errors gracefully")
@@ -248,175 +333,141 @@ import Testing
             #expect(regularInterface == nil)
         }
 
-        @Test("Empty or No EdgeOS Interface Case")
-        func testEmptyInterfaceList() async throws {
-            let discovery = MockMacOSPlatformDeviceDiscovery()
-            let logger = Logger(label: "test.edge.discovery")
+        @Test("No interfaces found when")
+        func testNoInterfacesFoundWhenCopyAllReturnsNil() async throws {
+            let mockNetworkProvider = MockNetworkInterfaceProvider()
 
-            // Configure mock with only non-EdgeOS interfaces
-            discovery.mockNetworkInterfaces = [
-                MockNetworkInterface(
-                    bsdName: "en0",
-                    displayName: "Regular Ethernet",
-                    interfaceType: "Ethernet",
-                    macAddress: "00:11:22:33:44:55"
-                )
-            ]
+            // Configure to return nil from copyAllNetworkInterfaces
+            mockNetworkProvider.mockInterfaces = []
+
+            // Create discovery with mock provider
+            let discovery = PlatformDeviceDiscovery(
+                ioServiceProvider: MockIOServiceProvider(),
+                networkInterfaceProvider: mockNetworkProvider
+            )
+            let logger = Logger(label: "test.ethernet.discovery")
 
             // Run the discovery
             let interfaces = await discovery.findEthernetInterfaces(logger: logger)
 
-            // Verify we got an empty list
-            #expect(interfaces.isEmpty)
+            // Verify results
+            #expect(interfaces.isEmpty, "Should find no interfaces")
+            #expect(
+                mockNetworkProvider.copyAllNetworkInterfacesCalls == 1,
+                "Should call copyAllNetworkInterfaces once"
+            )
         }
 
-        @Test("Interface Type Filtering")
-        func testInterfaceTypeFiltering() async throws {
-            let discovery = MockMacOSPlatformDeviceDiscovery()
-            let logger = Logger(label: "test.edge.discovery")
+        @Test("No EdgeOS interfaces found among available interfaces")
+        func testNoEdgeOSInterfacesFound() async throws {
+            let mockNetworkProvider = MockNetworkInterfaceProvider()
 
-            // Configure with various interface types
-            discovery.mockNetworkInterfaces = [
-                // Supported types
-                MockNetworkInterface(
+            // Configure with only non-EdgeOS interfaces
+            mockNetworkProvider.mockInterfaces = [
+                MockNetworkInterfaceData(
                     bsdName: "en0",
-                    displayName: "EdgeOS Ethernet",
-                    interfaceType: "Ethernet",
+                    displayName: "Ethernet",
+                    interfaceType: kSCNetworkInterfaceTypeEthernet as String,
                     macAddress: "00:11:22:33:44:55"
                 ),
-                MockNetworkInterface(
+                MockNetworkInterfaceData(
                     bsdName: "en1",
-                    displayName: "EdgeOS WiFi",
-                    interfaceType: "IEEE80211",
+                    displayName: "Wi-Fi",
+                    interfaceType: kSCNetworkInterfaceTypeIEEE80211 as String,
                     macAddress: "aa:bb:cc:dd:ee:ff"
                 ),
-                MockNetworkInterface(
-                    bsdName: "ppp0",
-                    displayName: "EdgeOS PPP",
-                    interfaceType: "PPP",
-                    macAddress: nil
-                ),
-                MockNetworkInterface(
-                    bsdName: "bond0",
-                    displayName: "EdgeOS Bond",
-                    interfaceType: "Bond",
-                    macAddress: nil
-                ),
-                // Unsupported type
-                MockNetworkInterface(
-                    bsdName: "lo0",
-                    displayName: "EdgeOS Loopback",
-                    interfaceType: "Loopback",
-                    macAddress: nil
-                ),
             ]
+
+            // Create discovery with mock provider
+            let discovery = PlatformDeviceDiscovery(
+                ioServiceProvider: MockIOServiceProvider(),
+                networkInterfaceProvider: mockNetworkProvider
+            )
+            let logger = Logger(label: "test.ethernet.discovery")
 
             // Run the discovery
             let interfaces = await discovery.findEthernetInterfaces(logger: logger)
 
-            // Verify only supported interfaces are included
-            #expect(interfaces.count == 4)
-
-            // Check interface types
-            let types = interfaces.map { $0.interfaceType }
-            #expect(types.contains("Ethernet"))
-            #expect(types.contains("IEEE80211"))
-            #expect(types.contains("PPP"))
-            #expect(types.contains("Bond"))
-            #expect(!types.contains("Loopback"))
-        }
-    }
-
-    // Mock classes for testing
-    class MockNetworkInterface {
-        let bsdName: String
-        let displayName: String
-        let interfaceType: String
-        let macAddress: String?
-
-        init(bsdName: String, displayName: String, interfaceType: String, macAddress: String?) {
-            self.bsdName = bsdName
-            self.displayName = displayName
-            self.interfaceType = interfaceType
-            self.macAddress = macAddress
-        }
-    }
-
-    class MockMacOSPlatformDeviceDiscovery: DeviceDiscovery {
-        var mockNetworkInterfaces: [MockNetworkInterface] = []
-
-        func findUSBDevices(logger: Logger) async -> [USBDevice] {
-            // Implementation not relevant for these tests
-            return []
+            // Verify results
+            #expect(interfaces.isEmpty, "Should find no EdgeOS interfaces")
+            #expect(
+                mockNetworkProvider.copyAllNetworkInterfacesCalls == 1,
+                "Should call copyAllNetworkInterfaces once"
+            )
+            #expect(
+                mockNetworkProvider.getInterfaceTypeCalls.count == 2,
+                "Should call getInterfaceType for all interfaces"
+            )
+            #expect(mockNetworkProvider.getBSDNameCalls.count >= 0, "May call getBSDName")
+            #expect(
+                mockNetworkProvider.getLocalizedDisplayNameCalls.count >= 0,
+                "May call getLocalizedDisplayName"
+            )
         }
 
-        func findEthernetInterfaces(logger: Logger) async -> [EthernetInterface] {
-            var interfaces: [EthernetInterface] = []
+        // Mock classes for testing
+        class MockNetworkInterface {
+            let bsdName: String
+            let displayName: String
+            let interfaceType: String
+            let macAddress: String?
 
-            for interface in mockNetworkInterfaces {
-                // Check if it's a supported interface type
-                guard
-                    interface.interfaceType == "Ethernet" || interface.interfaceType == "IEEE80211"
-                        || interface.interfaceType == "PPP" || interface.interfaceType == "Bond"
-                else {
-                    continue
-                }
+            init(bsdName: String, displayName: String, interfaceType: String, macAddress: String?) {
+                self.bsdName = bsdName
+                self.displayName = displayName
+                self.interfaceType = interfaceType
+                self.macAddress = macAddress
+            }
+        }
 
-                // Only collect interfaces containing "EdgeOS" in their name
-                if !interface.displayName.contains("EdgeOS")
-                    && !interface.bsdName.contains("EdgeOS")
-                {
-                    continue
-                }
+        class MockMacOSPlatformDeviceDiscovery: DeviceDiscovery {
+            var mockNetworkInterfaces: [MockNetworkInterface] = []
 
-                let ethernetInterface = EthernetInterface(
-                    name: interface.bsdName,
-                    displayName: interface.displayName,
-                    interfaceType: interface.interfaceType,
-                    macAddress: interface.macAddress
-                )
-
-                interfaces.append(ethernetInterface)
-                logger.info(
-                    "EdgeOS interface found",
-                    metadata: ["interface": .string(interface.displayName)]
-                )
+            func findUSBDevices(logger: Logger) async -> [USBDevice] {
+                // Implementation not relevant for these tests
+                return []
             }
 
-            if interfaces.isEmpty {
-                logger.info("No EdgeOS Ethernet interfaces found.")
-            }
+            func findEthernetInterfaces(logger: Logger) async -> [EthernetInterface] {
+                var interfaces: [EthernetInterface] = []
 
-            return interfaces
-        }
-    }
-#endif
+                for interface in mockNetworkInterfaces {
+                    // Check if it's a supported interface type
+                    guard
+                        interface.interfaceType == "Ethernet"
+                            || interface.interfaceType == "IEEE80211"
+                            || interface.interfaceType == "PPP" || interface.interfaceType == "Bond"
+                    else {
+                        continue
+                    }
 
-// Create a mock implementation for non-macOS testing
-#if !os(macOS)
-    @Suite("Platform Device Discovery Mock Tests")
-    struct PlatformDeviceDiscoveryMockTests {
-        @Test("Mock device discovery returns empty arrays on non-macOS platforms")
-        func testMockDiscovery() async throws {
-            // Create a test implementation for non-macOS platforms
-            struct MockDeviceDiscovery: DeviceDiscovery {
-                func findUSBDevices(logger: Logger) async -> [USBDevice] {
-                    return []
+                    // Only collect interfaces containing "EdgeOS" in their name
+                    if !interface.displayName.contains("EdgeOS")
+                        && !interface.bsdName.contains("EdgeOS")
+                    {
+                        continue
+                    }
+
+                    let ethernetInterface = EthernetInterface(
+                        name: interface.bsdName,
+                        displayName: interface.displayName,
+                        interfaceType: interface.interfaceType,
+                        macAddress: interface.macAddress
+                    )
+
+                    interfaces.append(ethernetInterface)
+                    logger.info(
+                        "EdgeOS interface found",
+                        metadata: ["interface": .string(interface.displayName)]
+                    )
                 }
 
-                func findEthernetInterfaces(logger: Logger) async -> [EthernetInterface] {
-                    return []
+                if interfaces.isEmpty {
+                    logger.info("No EdgeOS Ethernet interfaces found.")
                 }
+
+                return interfaces
             }
-
-            let discovery = MockDeviceDiscovery()
-            let logger = Logger(label: "test.edge.discovery")
-
-            let usbDevices = await discovery.findUSBDevices(logger: logger)
-            let ethernetInterfaces = await discovery.findEthernetInterfaces(logger: logger)
-
-            #expect(usbDevices.isEmpty)
-            #expect(ethernetInterfaces.isEmpty)
         }
     }
 #endif
