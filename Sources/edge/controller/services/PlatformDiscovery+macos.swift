@@ -6,13 +6,26 @@
     import Network
     import SystemConfiguration
     struct PlatformDeviceDiscovery: DeviceDiscovery {
+        private let ioServiceProvider: IOServiceProvider
+
+        init(ioServiceProvider: IOServiceProvider = DefaultIOServiceProvider()) {
+            self.ioServiceProvider = ioServiceProvider
+        }
+
         func findUSBDevices(logger: Logger) async -> [USBDevice] {
             var devices: [USBDevice] = []
-            let matchingDict = IOServiceMatching(kIOUSBDeviceClassName)
+            let matchingDict = ioServiceProvider.createMatchingDictionary(
+                className: kIOUSBDeviceClassName
+            )
             var iterator: io_iterator_t = 0
-            defer { IOObjectRelease(iterator) }
+            defer { ioServiceProvider.releaseIOObject(object: iterator) }
 
-            let result = IOServiceGetMatchingServices(kIOMainPortDefault, matchingDict, &iterator)
+            let result = ioServiceProvider.getMatchingServices(
+                masterPort: kIOMainPortDefault,
+                matchingDict: matchingDict,
+                iterator: &iterator
+            )
+
             if result != KERN_SUCCESS {
                 logger.error(
                     "Error: Failed to get matching services",
@@ -21,10 +34,13 @@
                 return devices
             }
 
-            var usbDevice = IOIteratorNext(iterator)
+            var usbDevice = ioServiceProvider.getNextItem(iterator: iterator)
 
             while usbDevice != 0 {
-                if let device = USBDevice.fromIORegistryEntry(usbDevice) {
+                if let device = USBDevice.fromIORegistryEntry(
+                    usbDevice,
+                    provider: ioServiceProvider
+                ) {
                     logger.debug(
                         "Found device",
                         metadata: ["device": .string(device.toHumanReadableString())]
@@ -39,8 +55,8 @@
                     }
                 }
 
-                IOObjectRelease(usbDevice)
-                usbDevice = IOIteratorNext(iterator)
+                ioServiceProvider.releaseIOObject(object: usbDevice)
+                usbDevice = ioServiceProvider.getNextItem(iterator: iterator)
             }
 
             if devices.isEmpty {

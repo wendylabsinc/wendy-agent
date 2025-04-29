@@ -37,7 +37,7 @@ struct DevicesCollection {
         // Since Device is a protocol, we need to handle heterogeneous collection
         // One approach is to create a dictionary with device types as keys
         var devicesByType: [String: [Any]] = [:]
-        
+
         for device in devices {
             if let usbDevice = device as? USBDevice {
                 if devicesByType["usbDevices"] == nil {
@@ -52,15 +52,15 @@ struct DevicesCollection {
             }
             // Add more device types as needed
         }
-        
+
         // If there are no devices, return an empty object without pretty printing
         if devicesByType.isEmpty {
             return "{}"
         }
-        
+
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        
+
         // We need to convert to a custom structure for encoding
         let encodableDict = EncodableDict(dict: devicesByType)
         let data = try encoder.encode(encodableDict)
