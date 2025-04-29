@@ -1,11 +1,11 @@
-import Foundation
-import Logging
-import SystemConfiguration
-import Testing
-
-@testable import edge
-
 #if os(macOS)
+    import Foundation
+    import Logging
+    import SystemConfiguration
+    import Testing
+
+    @testable import edge
+
     @Suite("macOS Platform Device Discovery Tests")
     struct PlatformDeviceDiscoveryMacOSTests {
 
