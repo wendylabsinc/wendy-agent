@@ -76,7 +76,7 @@ public struct ContainerImageSpec {
 
         return ContainerImageSpec(
             architecture: architecture,
-            cmd: ["/bin/\(executableName)"],
+            cmd: ["/bin/\(executableName.lowercased())"],
             layers: [layer],
             created: created
         )

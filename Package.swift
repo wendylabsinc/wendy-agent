@@ -99,10 +99,11 @@ let package = Package(
             ]
         ),
 
+        /// Tests for EdgeCLI components
         .testTarget(
-            name: "edgeTests",
+            name: "EdgeCLITests",
             dependencies: [
-                .target(name: "edge")
+                .target(name: "edge"),
             ]
         ),
     ]
