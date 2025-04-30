@@ -138,25 +138,6 @@ struct DevicesCollection {
             try dict.encode(to: encoder)
         }
     }
-
-    // Helper for dynamic coding keys
-    private struct StringCodingKey: CodingKey {
-        var stringValue: String
-        var intValue: Int?
-
-        init(string: String) {
-            self.stringValue = string
-        }
-
-        init?(stringValue: String) {
-            self.stringValue = stringValue
-        }
-
-        init?(intValue: Int) {
-            self.intValue = intValue
-            self.stringValue = String(intValue)
-        }
-    }
 }
 
 struct EthernetInterface: Device, Encodable {
