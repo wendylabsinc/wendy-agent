@@ -36,25 +36,14 @@ struct DevicesCollection {
     func toJSON() throws -> String {
         // Since Device is a protocol, we need to handle heterogeneous collection
         // One approach is to create a dictionary with device types as keys
-        var devicesByType: [String: [Any]] = [:]
+        var devicesByType: EncodableDict = EncodableDict(dict: [:])
 
         for device in devices {
-            if let usbDevice = device as? USBDevice {
-                if devicesByType["usbDevices"] == nil {
-                    devicesByType["usbDevices"] = []
-                }
-                devicesByType["usbDevices"]?.append(usbDevice)
-            } else if let ethernetDevice = device as? EthernetInterface {
-                if devicesByType["ethernetDevices"] == nil {
-                    devicesByType["ethernetDevices"] = []
-                }
-                devicesByType["ethernetDevices"]?.append(ethernetDevice)
-            }
-            // Add more device types as needed
+            devicesByType.append(device: device)
         }
 
         // If there are no devices, return an empty object without pretty printing
-        if devicesByType.isEmpty {
+        if devicesByType.dict.isEmpty {
             return "{}"
         }
 
@@ -62,8 +51,7 @@ struct DevicesCollection {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
 
         // We need to convert to a custom structure for encoding
-        let encodableDict = EncodableDict(dict: devicesByType)
-        let data = try encoder.encode(encodableDict)
+        let data = try encoder.encode(devicesByType)
         return String(data: data, encoding: .utf8) ?? "{}"
     }
 
@@ -99,20 +87,52 @@ struct DevicesCollection {
     // Helper struct for encoding heterogeneous collections
     private struct EncodableDict: Encodable {
         enum AnyDevice: Encodable {
-          case usb(USBDevice)
-          case ethernet(EthernetDevice)
-          
-          func encode(to encoder: Encoder) throws {
-              switch self {
-              case .usb(let device):
-                try device.encode(to: encoder)
-              case .ethernet(let device):
-                try device.encode(to: encoder)
-              }
-          }
+            case usb(USBDevice)
+            case ethernet(EthernetInterface)
+            
+            private enum CodingKeys: String, CodingKey {
+                case type
+                case device
+            }
+            
+            func encode(to encoder: Encoder) throws {
+                var container = encoder.container(keyedBy: CodingKeys.self)
+                
+                switch self {
+                case .usb(let device):
+                    try container.encode("usb", forKey: .type)
+                    try container.encode(device, forKey: .device)
+                case .ethernet(let device):
+                    try container.encode("ethernet", forKey: .type)
+                    try container.encode(device, forKey: .device)
+                }
+            }
         }
         
-        let dict: [String: [AnyDevice]]
+        var dict: [String: [AnyDevice]]
+        
+        // Add a custom append function to simplify adding devices
+        mutating func append(device: Device) {
+            switch device {
+            case let usbDevice as USBDevice:
+                let key = "usbDevices"
+                if dict[key] == nil {
+                    dict[key] = []
+                }
+                dict[key]?.append(AnyDevice.usb(usbDevice))
+                
+            case let ethernetDevice as EthernetInterface:
+                let key = "ethernetDevices"
+                if dict[key] == nil {
+                    dict[key] = []
+                }
+                dict[key]?.append(AnyDevice.ethernet(ethernetDevice))
+                
+            default:
+                // Handle unknown device types if needed
+                break
+            }
+        }
 
         func encode(to encoder: Encoder) throws {
             try dict.encode(to: encoder)
@@ -139,7 +159,7 @@ struct DevicesCollection {
     }
 }
 
-struct EthernetInterface: Device {
+struct EthernetInterface: Device, Encodable {
     let name: String
     let displayName: String
     let interfaceType: String
@@ -181,7 +201,7 @@ struct EthernetInterface: Device {
     }
 }
 
-struct USBDevice: Device {
+struct USBDevice: Device, Encodable {
     let name: String
     let vendorId: String
     let productId: String
