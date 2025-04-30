@@ -8,12 +8,16 @@ public enum Shell {
     /// Error thrown when a process execution fails.
     public enum Error: Swift.Error, LocalizedError {
         case nonZeroExit(command: [String], exitCode: Int32)
+        case processExecutionFailed(command: [String], error: Swift.Error)
 
         public var errorDescription: String? {
             switch self {
             case .nonZeroExit(let command, let exitCode):
                 return
                     "Command '\(command.joined(separator: " "))' failed with exit code \(exitCode)"
+            case .processExecutionFailed(let command, let error):
+                return
+                    "Command '\(command.joined(separator: " "))' failed with error: \(error)"
             }
         }
     }
