@@ -89,15 +89,15 @@ struct DevicesCollection {
         enum AnyDevice: Encodable {
             case usb(USBDevice)
             case ethernet(EthernetInterface)
-            
+
             private enum CodingKeys: String, CodingKey {
                 case type
                 case device
             }
-            
+
             func encode(to encoder: Encoder) throws {
                 var container = encoder.container(keyedBy: CodingKeys.self)
-                
+
                 switch self {
                 case .usb(let device):
                     try container.encode("usb", forKey: .type)
@@ -108,9 +108,9 @@ struct DevicesCollection {
                 }
             }
         }
-        
+
         var dict: [String: [AnyDevice]]
-        
+
         // Add a custom append function to simplify adding devices
         mutating func append(device: Device) {
             switch device {
@@ -120,14 +120,14 @@ struct DevicesCollection {
                     dict[key] = []
                 }
                 dict[key]?.append(AnyDevice.usb(usbDevice))
-                
+
             case let ethernetDevice as EthernetInterface:
                 let key = "ethernetDevices"
                 if dict[key] == nil {
                     dict[key] = []
                 }
                 dict[key]?.append(AnyDevice.ethernet(ethernetDevice))
-                
+
             default:
                 // Handle unknown device types if needed
                 break
