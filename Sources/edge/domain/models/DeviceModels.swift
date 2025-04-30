@@ -98,19 +98,24 @@ struct DevicesCollection {
 
     // Helper struct for encoding heterogeneous collections
     private struct EncodableDict: Encodable {
-        let dict: [String: [Any]]
+        enum AnyDevice: Encodable {
+          case usb(USBDevice)
+          case ethernet(EthernetDevice)
+          
+          func encode(to encoder: Encoder) throws {
+              switch self {
+              case .usb(let device):
+                try device.encode(to: encoder)
+              case .ethernet(let device):
+                try device.encode(to: encoder)
+              }
+          }
+        }
+        
+        let dict: [String: [AnyDevice]]
 
         func encode(to encoder: Encoder) throws {
-            var container = encoder.container(keyedBy: StringCodingKey.self)
-
-            for (key, value) in dict {
-                if let usbDevices = value as? [USBDevice] {
-                    try container.encode(usbDevices, forKey: StringCodingKey(string: key))
-                } else if let ethernetDevices = value as? [EthernetInterface] {
-                    try container.encode(ethernetDevices, forKey: StringCodingKey(string: key))
-                }
-                // Add more types as needed
-            }
+            try dict.encode(to: encoder)
         }
     }
 
