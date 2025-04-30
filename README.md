@@ -29,6 +29,12 @@ brew tap apache-edge/tap
 brew install edge
 ```
 
+To update the CLI on macOS:
+
+```sh
+brew upgrade edge
+```
+
 ## Setting Up the Device
 
 The device needs to run the `edge-agent` utility. We provide pre-build [EdgeOS](https://edgeos.io) images for the Raspberry Pi and the NVIDIA Jetson Orin Nano. These are preconfigured for remote debugging and have the edge-agent preinstalled.
