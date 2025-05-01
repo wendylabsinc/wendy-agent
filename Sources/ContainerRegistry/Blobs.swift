@@ -14,6 +14,7 @@
 
 import Foundation
 import HTTPTypes
+
 import struct Crypto.SHA256
 
 /// Calculates the digest of a blob of data.
@@ -66,8 +67,8 @@ extension RegistryClient {
 // The spec says that Docker- prefix headers are no longer to be used, but also specifies that the registry digest is returned in this header.
 extension HTTPField.Name { static let dockerContentDigest = Self("Docker-Content-Digest")! }
 
-public extension RegistryClient {
-    func blobExists(repository: String, digest: String) async throws -> Bool {
+extension RegistryClient {
+    public func blobExists(repository: String, digest: String) async throws -> Bool {
         precondition(repository.count > 0, "repository must not be an empty string")
         precondition(digest.count > 0)
 
@@ -87,7 +88,7 @@ public extension RegistryClient {
     ///   - digest: Digest of the blob.
     /// - Returns: The downloaded data.
     /// - Throws: If the blob download fails.
-    func getBlob(repository: String, digest: String) async throws -> Data {
+    public func getBlob(repository: String, digest: String) async throws -> Data {
         precondition(repository.count > 0, "repository must not be an empty string")
         precondition(digest.count > 0, "digest must not be an empty string")
 
@@ -110,7 +111,10 @@ public extension RegistryClient {
     /// in the registry as plain blobs with MIME type "application/octet-stream".
     /// This function attempts to decode the received data without reference
     /// to the MIME type.
-    func getBlob<Response: Decodable>(repository: String, digest: String) async throws -> Response {
+    public func getBlob<Response: Decodable>(
+        repository: String,
+        digest: String
+    ) async throws -> Response {
         precondition(repository.count > 0, "repository must not be an empty string")
         precondition(digest.count > 0, "digest must not be an empty string")
 
@@ -132,7 +136,11 @@ public extension RegistryClient {
     /// - Returns: An ContentDescriptor object representing the
     ///            uploaded blob.
     /// - Throws: If the blob cannot be encoded or the upload fails.
-    func putBlob(repository: String, mediaType: String = "application/octet-stream", data: Data) async throws
+    public func putBlob(
+        repository: String,
+        mediaType: String = "application/octet-stream",
+        data: Data
+    ) async throws
         -> ContentDescriptor
     {
         precondition(repository.count > 0, "repository must not be an empty string")
@@ -144,7 +152,9 @@ public extension RegistryClient {
         // The server's URL is arbitrary and might already contain query items which we must not overwrite.
         // The URL could even point to a different host.
         let digest = digest(of: data)
-        let uploadURL = location.appending(queryItems: [.init(name: "digest", value: "\(digest.utf8)")])
+        let uploadURL = location.appending(queryItems: [
+            .init(name: "digest", value: "\(digest.utf8)")
+        ])
 
         let httpResponse = try await executeRequestThrowing(
             // All blob uploads have Content-Type: application/octet-stream on the wire, even if mediatype is different
@@ -179,7 +189,11 @@ public extension RegistryClient {
     ///  Some JSON objects, such as ImageConfiguration, are stored
     /// in the registry as plain blobs with MIME type "application/octet-stream".
     /// This function encodes the data parameter and uploads it as a generic blob.
-    func putBlob<Body: Encodable>(repository: String, mediaType: String = "application/octet-stream", data: Body)
+    public func putBlob<Body: Encodable>(
+        repository: String,
+        mediaType: String = "application/octet-stream",
+        data: Body
+    )
         async throws -> ContentDescriptor
     {
         let encoded = try encoder.encode(data)

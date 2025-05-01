@@ -13,10 +13,11 @@
 //===----------------------------------------------------------------------===//
 
 import Foundation
+
 import struct Crypto.SHA256
 
-public extension ImageManifest {
-    var digest: String {
+extension ImageManifest {
+    public var digest: String {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .prettyPrinted]
         encoder.dateEncodingStrategy = .iso8601

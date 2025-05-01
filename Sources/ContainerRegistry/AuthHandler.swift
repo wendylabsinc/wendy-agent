@@ -12,10 +12,12 @@
 //
 //===----------------------------------------------------------------------===//
 
-import Basics
+// NOTE: This file was modified from the original SwiftContainerPlugin to remove
+// authentication support from the Basics module.
+
 import Foundation
-import RegexBuilder
 import HTTPTypes
+import RegexBuilder
 
 struct BearerTokenResponse: Codable {
     /// An opaque Bearer token that clients should supply to
@@ -51,11 +53,13 @@ struct BearerChallenge {
         guard let realm else { return nil }
 
         if let service {
-            components.queryItems = (components.queryItems ?? []) + [URLQueryItem(name: "service", value: service)]
+            components.queryItems =
+                (components.queryItems ?? []) + [URLQueryItem(name: "service", value: service)]
         }
 
         for s in scope {
-            components.queryItems = (components.queryItems ?? []) + [URLQueryItem(name: "scope", value: s)]
+            components.queryItems =
+                (components.queryItems ?? []) + [URLQueryItem(name: "scope", value: s)]
         }
 
         return components.url(relativeTo: .init(string: realm))
@@ -85,7 +89,9 @@ func parseChallenge(_ s: String) throws -> BearerChallenge {
 
     var s = Substring(s)
 
-    guard let match = s.prefixMatch(of: kv) else { throw ChallengeParserError.prefixMatchFailed(String(s)) }
+    guard let match = s.prefixMatch(of: kv) else {
+        throw ChallengeParserError.prefixMatchFailed(String(s))
+    }
 
     switch match.1 {
     case "realm": res.realm = String(match.2)
@@ -131,22 +137,17 @@ public struct AuthHandler {
     var username: String?
     var password: String?
 
-    var auth: AuthorizationProvider? = nil
     /// Create an AuthHandler
     /// - Parameters:
     ///   - username: Default username, used if no other suitable credentials are available.
     ///   - password: Default password, used if no other suitable credentials are available.
-    ///   - auth: AuthorizationProvider capable of querying credential stores such as netrc files.
-    public init(username: String? = nil, password: String? = nil, auth: AuthorizationProvider? = nil) {
+    public init(username: String? = nil, password: String? = nil) {
         self.username = username
         self.password = password
-        self.auth = auth
     }
 
-    /// Get locally-configured credentials, such as netrc or username/password, for a host
+    /// Get locally-configured credentials, such as username/password, for a host
     func localCredentials(forURL url: URL) -> String? {
-        if let netrcEntry = auth?.httpAuthorizationHeader(for: url) { return netrcEntry }
-
         if let username, let password {
             let authorization = Data("\(username):\(password)".utf8).base64EncodedString()
             return "Basic \(authorization)"
@@ -182,7 +183,10 @@ public struct AuthHandler {
                 tokenRequest.headerFields[.authorization] = credentials
             }
 
-            let (data, _) = try await client.executeRequestThrowing(tokenRequest, expectingStatus: .ok)
+            let (data, _) = try await client.executeRequestThrowing(
+                tokenRequest,
+                expectingStatus: .ok
+            )
             let tokenResponse = try JSONDecoder().decode(BearerTokenResponse.self, from: data)
             return "Bearer \(tokenResponse.token)"
         }

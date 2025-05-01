@@ -12,8 +12,12 @@
 //
 //===----------------------------------------------------------------------===//
 
-public extension RegistryClient {
-    func putManifest(repository: String, reference: String, manifest: ImageManifest) async throws -> String {
+extension RegistryClient {
+    public func putManifest(
+        repository: String,
+        reference: String,
+        manifest: ImageManifest
+    ) async throws -> String {
         // See https://github.com/opencontainers/distribution-spec/blob/main/spec.md#pushing-manifests
         precondition(repository.count > 0, "repository must not be an empty string")
         precondition(reference.count > 0, "reference must not be an empty string")
@@ -37,11 +41,14 @@ public extension RegistryClient {
         // If the header is not present, create a suitable value.
         // https://github.com/opencontainers/distribution-spec/blob/main/spec.md#pulling-manifests
         return httpResponse.response.headerFields[.location]
-            ?? registryURL.distributionEndpoint(forRepository: repository, andEndpoint: "manifests/\(manifest.digest)")
+            ?? registryURL.distributionEndpoint(
+                forRepository: repository,
+                andEndpoint: "manifests/\(manifest.digest)"
+            )
             .absoluteString
     }
 
-    func getManifest(repository: String, reference: String) async throws -> ImageManifest {
+    public func getManifest(repository: String, reference: String) async throws -> ImageManifest {
         // See https://github.com/opencontainers/distribution-spec/blob/main/spec.md#pulling-manifests
         precondition(repository.count > 0, "repository must not be an empty string")
         precondition(reference.count > 0, "reference must not be an empty string")
@@ -60,7 +67,7 @@ public extension RegistryClient {
         .data
     }
 
-    func getIndex(repository: String, reference: String) async throws -> ImageIndex {
+    public func getIndex(repository: String, reference: String) async throws -> ImageIndex {
         precondition(repository.count > 0, "repository must not be an empty string")
         precondition(reference.count > 0, "reference must not be an empty string")
 

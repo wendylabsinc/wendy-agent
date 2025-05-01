@@ -12,11 +12,14 @@
 //
 //===----------------------------------------------------------------------===//
 
-public extension RegistryClient {
-    func getTags(repository: String) async throws -> Tags {
+extension RegistryClient {
+    public func getTags(repository: String) async throws -> Tags {
         // See https://github.com/opencontainers/distribution-spec/blob/main/spec.md#listing-tags
         precondition(repository.count > 0, "repository must not be an empty string")
 
-        return try await executeRequestThrowing(.get(repository, path: "tags/list"), decodingErrors: [.notFound]).data
+        return try await executeRequestThrowing(
+            .get(repository, path: "tags/list"),
+            decodingErrors: [.notFound]
+        ).data
     }
 }

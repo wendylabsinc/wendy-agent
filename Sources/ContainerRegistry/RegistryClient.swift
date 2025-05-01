@@ -12,12 +12,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+// NOTE: This file was modified from the original SwiftContainerPlugin to remove
+// the Basics module import.
+
 import Foundation
-#if canImport(FoundationNetworking)
-import FoundationNetworking
-#endif
 import HTTPTypes
-import Basics
+
+#if canImport(FoundationNetworking)
+    import FoundationNetworking
+#endif
 
 enum RegistryClientError: Error {
     case registryParseError(String)
@@ -29,15 +32,18 @@ extension RegistryClientError: CustomStringConvertible {
     var description: String {
         switch self {
         case let .registryParseError(reference): return "Unable to parse registry: \(reference)"
-        case let .invalidRegistryPath(path): return "Unable to construct URL for registry path: \(path)"
-        case let .invalidUploadLocation(location): return "Received invalid upload location from registry: \(location)"
+        case let .invalidRegistryPath(path):
+            return "Unable to construct URL for registry path: \(path)"
+        case let .invalidUploadLocation(location):
+            return "Received invalid upload location from registry: \(location)"
         }
     }
 }
 
 // Connections to localhost, 127.0.0.1 and ::1 are typically allowed to use plain HTTP.
 func isLocalRegistry(_ registry: String) -> Bool {
-    registry.starts(with: "localhost") || registry.starts(with: "127.0.0.1") || registry.starts(with: "::1")
+    registry.starts(with: "localhost") || registry.starts(with: "127.0.0.1")
+        || registry.starts(with: "::1")
 }
 
 /// RegistryClient handles a connection to container registry.
@@ -93,7 +99,10 @@ public struct RegistryClient {
         self.decoder = decoder ?? JSONDecoder()
 
         // Verify that we can talk to the registry
-        self.authChallenge = try await RegistryClient.checkAPI(client: self.client, registryURL: self.registryURL)
+        self.authChallenge = try await RegistryClient.checkAPI(
+            client: self.client,
+            registryURL: self.registryURL
+        )
     }
 
     /// Creates a new RegistryClient, constructing a suitable URLSession-based client.
@@ -127,7 +136,8 @@ extension URL {
     ///   - repository: The name of the repository.   May include path separators.
     ///   - endpoint: The distribution endpoint e.g. "tags/list"
     /// - Returns: A fully-qualified URL for the endpoint.
-    func distributionEndpoint(forRepository repository: String, andEndpoint endpoint: String) -> URL {
+    func distributionEndpoint(forRepository repository: String, andEndpoint endpoint: String) -> URL
+    {
         self.appendingPathComponent("/v2/\(repository)/\(endpoint)")
     }
 }
@@ -150,7 +160,8 @@ extension RegistryClient {
         func url(relativeTo registry: URL) -> URL {
             switch destination {
             case .url(let url): return url
-            case .subpath(let path): return registry.distributionEndpoint(forRepository: repository, andEndpoint: path)
+            case .subpath(let path):
+                return registry.distributionEndpoint(forRepository: repository, andEndpoint: path)
             }
         }
 
@@ -357,7 +368,11 @@ extension RegistryClient {
         )
 
         do {
-            return try await client.executeRequestThrowing(request, uploading: payload, expectingStatus: success)
+            return try await client.executeRequestThrowing(
+                request,
+                uploading: payload,
+                expectingStatus: success
+            )
         } catch HTTPClientError.unexpectedStatusCode(let status, _, let .some(responseData))
             where errors.contains(status)
         {

@@ -26,7 +26,9 @@ func splitReference(_ reference: String) throws -> (String?, String) {
 
     // assert splits == 2
     // Hostname heuristic: contains a '.' or a ':', or is localhost
-    if splits[0] != "localhost", !splits[0].contains("."), !splits[0].contains(":") { return (nil, reference) }
+    if splits[0] != "localhost", !splits[0].contains("."), !splits[0].contains(":") {
+        return (nil, reference)
+    }
 
     return (String(splits[0]), String(splits[1]))
 }
@@ -48,7 +50,9 @@ func splitName(_ name: String) throws -> (String, String) {
 }
 
 /// ImageReference points to an image stored on a container registry
-public struct ImageReference: Sendable, Equatable, CustomStringConvertible, CustomDebugStringConvertible {
+public struct ImageReference: Sendable, Equatable, CustomStringConvertible,
+    CustomDebugStringConvertible
+{
     /// The registry which contains this image
     public var registry: String
     /// The repository which contains this image

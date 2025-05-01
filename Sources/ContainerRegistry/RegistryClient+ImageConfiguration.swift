@@ -21,8 +21,10 @@ extension RegistryClient {
     /// - Throws: If the blob cannot be decoded as an `ImageConfiguration`.
     ///
     /// Image configuration records are stored as blobs in the registry.  This function retrieves the requested blob and tries to decode it as a configuration record.
-    public func getImageConfiguration(forImage image: ImageReference, digest: String) async throws -> ImageConfiguration
-    {
+    public func getImageConfiguration(
+        forImage image: ImageReference,
+        digest: String
+    ) async throws -> ImageConfiguration {
         try await getBlob(repository: image.repository, digest: digest)
     }
 
@@ -34,7 +36,10 @@ extension RegistryClient {
     /// - Throws: If the blob upload fails.
     ///
     /// Image configuration records are stored as blobs in the registry.  This function encodes the provided configuration record and stores it as a blob in the registry.
-    public func putImageConfiguration(forImage image: ImageReference, configuration: ImageConfiguration) async throws
+    public func putImageConfiguration(
+        forImage image: ImageReference,
+        configuration: ImageConfiguration
+    ) async throws
         -> ContentDescriptor
     {
         try await putBlob(

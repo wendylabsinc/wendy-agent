@@ -13,11 +13,12 @@
 //===----------------------------------------------------------------------===//
 
 import Foundation
-#if canImport(FoundationNetworking)
-import FoundationNetworking
-#endif
 import HTTPTypes
 import HTTPTypesFoundation
+
+#if canImport(FoundationNetworking)
+    import FoundationNetworking
+#endif
 
 // HEAD does not include a response body so if an error is thrown, data will be nil
 public enum HTTPClientError: Error {
@@ -37,7 +38,10 @@ public protocol HTTPClient {
     ///   - expectingStatus: The HTTP status code expected if the request is successful.
     /// - Returns: An asynchronously-delivered tuple that contains the raw response body as a Data instance, and a HTTPResponse.
     /// - Throws: If the server response is unexpected or indicates that an error occurred.
-    func executeRequestThrowing(_ request: HTTPRequest, expectingStatus: HTTPResponse.Status) async throws -> (
+    func executeRequestThrowing(
+        _ request: HTTPRequest,
+        expectingStatus: HTTPResponse.Status
+    ) async throws -> (
         Data, HTTPResponse
     )
 
@@ -48,7 +52,11 @@ public protocol HTTPClient {
     ///   - expectingStatus: The HTTP status code expected if the request is successful.
     /// - Returns: An asynchronously-delivered tuple that contains the raw response body as a Data instance, and a HTTPResponse.
     /// - Throws: If the server response is unexpected or indicates that an error occurred.
-    func executeRequestThrowing(_ request: HTTPRequest, uploading: Data, expectingStatus: HTTPResponse.Status)
+    func executeRequestThrowing(
+        _ request: HTTPRequest,
+        uploading: Data,
+        expectingStatus: HTTPResponse.Status
+    )
         async throws -> (Data, HTTPResponse)
 }
 
@@ -83,9 +91,17 @@ extension URLSession: HTTPClient {
 
             // A HEAD request has no response body and cannot be decoded
             if request.method == .head {
-                throw HTTPClientError.unexpectedStatusCode(status: response.status, response: response, data: nil)
+                throw HTTPClientError.unexpectedStatusCode(
+                    status: response.status,
+                    response: response,
+                    data: nil
+                )
             }
-            throw HTTPClientError.unexpectedStatusCode(status: response.status, response: response, data: responseData)
+            throw HTTPClientError.unexpectedStatusCode(
+                status: response.status,
+                response: response,
+                data: responseData
+            )
         }
 
         return response
@@ -97,7 +113,10 @@ extension URLSession: HTTPClient {
     ///   - success: The HTTP status code expected if the request is successful.
     /// - Returns: An asynchronously-delivered tuple that contains the raw response body as a Data instance, and a HTTPResponse.
     /// - Throws: If the server response is unexpected or indicates that an error occurred.
-    public func executeRequestThrowing(_ request: HTTPRequest, expectingStatus success: HTTPResponse.Status)
+    public func executeRequestThrowing(
+        _ request: HTTPRequest,
+        expectingStatus success: HTTPResponse.Status
+    )
         async throws -> (Data, HTTPResponse)
     {
         let (responseData, urlResponse) = try await data(for: request)
@@ -166,6 +185,12 @@ extension HTTPRequest {
         contentType: String? = nil,
         withAuthorization authorization: String? = nil
     ) -> HTTPRequest {
-        .init(method: .get, url: url, accepting: accepting, contentType: contentType, withAuthorization: authorization)
+        .init(
+            method: .get,
+            url: url,
+            accepting: accepting,
+            contentType: contentType,
+            withAuthorization: authorization
+        )
     }
 }
