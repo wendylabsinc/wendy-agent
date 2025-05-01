@@ -28,6 +28,9 @@ public struct SwiftPM: Sendable {
         /// Specify a custom scratch directory path (default .build)
         case scratchPath(String)
 
+        /// Use the static Swift standard library.
+        case staticSwiftStdlib
+
         /// The arguments to pass to the Swift build command.
         var arguments: [String] {
             switch self {
@@ -43,6 +46,8 @@ public struct SwiftPM: Sendable {
                 return ["--quiet"]
             case .scratchPath(let path):
                 return ["--scratch-path", path]
+            case .staticSwiftStdlib:
+                return ["--static-swift-stdlib"]
             }
         }
     }

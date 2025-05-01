@@ -34,6 +34,7 @@ let package = Package(
                 .target(name: "EdgeAgentGRPC"),
                 .target(name: "EdgeCLI"),
                 .target(name: "EdgeShared"),
+                .target(name: "ContainerRegistry"),
             ],
             resources: [
                 .copy("Resources")
@@ -56,6 +57,7 @@ let package = Package(
             dependencies: [
                 .target(name: "Shell"),
                 .product(name: "Crypto", package: "swift-crypto"),
+                .target(name: "ContainerRegistry"),
             ]
         ),
 

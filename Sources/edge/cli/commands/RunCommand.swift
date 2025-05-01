@@ -1,5 +1,6 @@
 import ArgumentParser
 import ContainerBuilder
+import ContainerRegistry
 import EdgeAgentGRPC
 import EdgeCLI
 import Foundation
@@ -41,7 +42,10 @@ struct RunCommand: AsyncParsableCommand {
     var detach: Bool = false
 
     @Option(name: .long, help: "The Swift SDK to use.")
-    var swiftSDK: String = "aarch64-swift-linux-musl"
+    var swiftSDK: String = "6.1-RELEASE_edgeos_aarch64"
+
+    @Option(name: .long, help: "The base image to use. Defaults to debian:bookworm-slim.")
+    var baseImage: String = "debian:bookworm-slim"
 
     @Argument(
         help: "The executable to run. Required when a package has multiple executable targets."
@@ -80,7 +84,8 @@ struct RunCommand: AsyncParsableCommand {
         try await swiftPM.build(
             .product(executableTarget.name),
             .swiftSDK(swiftSDK),
-            .scratchPath(".edge-build")
+            .scratchPath(".edge-build"),
+            .staticSwiftStdlib
         )
 
         let binPath = try await swiftPM.build(
@@ -88,14 +93,19 @@ struct RunCommand: AsyncParsableCommand {
             .product(executableTarget.name),
             .swiftSDK(swiftSDK),
             .quiet,
-            .scratchPath(".edge-build")
+            .scratchPath(".edge-build"),
+            .staticSwiftStdlib
         ).trimmingCharacters(in: .whitespacesAndNewlines)
         let executable = URL(fileURLWithPath: binPath).appendingPathComponent(executableTarget.name)
 
-        logger.info("Building container")
+        logger.info("Building container with base image \(baseImage)")
         let imageName = executableTarget.name.lowercased()
 
-        var imageSpec = ContainerImageSpec.withExecutable(executable: executable)
+        // Use the debian:bookworm-slim base image instead of a blank image
+        var imageSpec = try await ContainerImageSpec.withBaseImage(
+            baseImage: baseImage,
+            executable: executable
+        )
 
         if debug {
             // Include the ds2 executable in the container image.
@@ -116,7 +126,7 @@ struct RunCommand: AsyncParsableCommand {
                 )
             ]
             let ds2Layer = ContainerImageSpec.Layer(files: ds2Files)
-            imageSpec.layers.insert(ds2Layer, at: 0)
+            imageSpec.layers.append(ds2Layer)
         }
 
         let outputPath = "\(executableTarget.name)-container.tar"
