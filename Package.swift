@@ -20,6 +20,7 @@ let package = Package(
         .package(url: "https://github.com/grpc/grpc-swift-extras.git", from: "1.0.0"),
         .package(url: "https://github.com/apple/swift-nio.git", from: "2.81.0"),
         .package(url: "https://github.com/apple/swift-crypto.git", from: "3.12.2"),
+        .package(url: "https://github.com/apple/swift-http-types.git", from: "1.4.0"),
     ],
     targets: [
         /// The main executable provided by edge-cli.
@@ -99,11 +100,21 @@ let package = Package(
             ]
         ),
 
+        // Vendored from https://github.com/apple/swift-container-plugin
+        .target(
+            name: "ContainerRegistry",
+            dependencies: [
+                .product(name: "Crypto", package: "swift-crypto"),
+                .product(name: "HTTPTypes", package: "swift-http-types"),
+                .product(name: "HTTPTypesFoundation", package: "swift-http-types"),
+            ]
+        ),
+
         /// Tests for EdgeCLI components
         .testTarget(
             name: "EdgeCLITests",
             dependencies: [
-                .target(name: "edge"),
+                .target(name: "edge")
             ]
         ),
     ]
