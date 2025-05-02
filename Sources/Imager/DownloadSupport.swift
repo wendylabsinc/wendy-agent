@@ -3,7 +3,7 @@ import Foundation
 #if os(macOS)
     import Darwin
 #elseif os(Linux)
-    import Glibc
+    import libc
 #endif
 
 // MARK: - Protocols

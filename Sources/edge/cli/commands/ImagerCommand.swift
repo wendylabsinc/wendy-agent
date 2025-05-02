@@ -5,7 +5,7 @@ import Imager
 #if os(macOS)
     import Darwin
 #elseif os(Linux)
-    import Glibc
+    import libc
 #endif
 
 struct ImagerCommand: AsyncParsableCommand {
