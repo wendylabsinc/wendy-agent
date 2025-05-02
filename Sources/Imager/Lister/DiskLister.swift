@@ -12,7 +12,7 @@ public protocol DiskLister {
     /// - Parameter all: If true, lists all drives, not just external drives.
     /// - Returns: An array of Drive objects representing the available drives.
     func list(all: Bool) async throws -> [Drive]
-    
+
     /// Find a drive by its ID
     /// - Parameter id: The ID of the drive to find
     /// - Returns: The Drive object if found

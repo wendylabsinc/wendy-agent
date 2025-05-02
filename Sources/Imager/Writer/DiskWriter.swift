@@ -4,16 +4,16 @@ import Foundation
 public struct DiskWriteProgress {
     /// Number of bytes written so far
     public let bytesWritten: Int64
-    
+
     /// Total bytes to write (if known)
     public let totalBytes: Int64?
-    
+
     /// Estimated percentage complete (0-100)
     public var percentComplete: Double? {
         guard let total = totalBytes, total > 0 else { return nil }
         return min(100.0, Double(bytesWritten) / Double(total) * 100.0)
     }
-    
+
     /// Human-readable representation of bytes written
     public var bytesWrittenText: String {
         // Use a synchronized approach to access the formatter
@@ -22,7 +22,7 @@ public struct DiskWriteProgress {
         formatter.countStyle = .file
         return formatter.string(fromByteCount: bytesWritten)
     }
-    
+
     /// Human-readable representation of total bytes
     public var totalBytesText: String? {
         guard let total = totalBytes else { return nil }
@@ -38,12 +38,12 @@ public struct DiskWriteProgress {
     /// Uses ▒ for incomplete blocks
     /// Uses █ for completed blocks
     /// - Parameters:
-    ///   - totalBlocks: Total number of blocks of ascii characters to complete excluding brackets  
+    ///   - totalBlocks: Total number of blocks of ascii characters to complete excluding brackets
     ///   - appendPercentageText: Whether to append the percentage text
     /// - Returns: A string representing the progress bar
     public func asciiProgress(totalBlocks: Int = 20, appendPercentageText: Bool = true) -> String {
         guard let percent = percentComplete else { return "" }
-        
+
         // Special case: if we're at 100%, fill all blocks
         if percent >= 100.0 {
             var progress = "[" + String(repeating: "█", count: totalBlocks) + "]"
@@ -52,11 +52,12 @@ public struct DiskWriteProgress {
             }
             return progress
         }
-        
+
         let completedBlocks = Int(Double(totalBlocks) * percent / 100.0)
         let remainingBlocks = totalBlocks - completedBlocks
-        var progress = "[" + String(repeating: "█", count: completedBlocks) + 
-               String(repeating: "▒", count: remainingBlocks) + "]"
+        var progress =
+            "[" + String(repeating: "█", count: completedBlocks)
+            + String(repeating: "▒", count: remainingBlocks) + "]"
         if appendPercentageText {
             progress += " \(String(format: "%.1f%%", percent))"
         }
@@ -93,8 +94,8 @@ public protocol DiskWriter {
     ///   - progressHandler: Callback that will be called periodically with progress updates
     /// - Throws: If the write operation fails
     func write(
-        imagePath: String, 
-        drive: Drive, 
+        imagePath: String,
+        drive: Drive,
         progressHandler: @escaping (DiskWriteProgress) -> Void
     ) async throws
 }

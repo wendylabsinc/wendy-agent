@@ -31,32 +31,32 @@ public struct Drive: Identifiable, Equatable, Hashable, Sendable {
     /// On macOS, this is typically in the format `/dev/diskN` (e.g., `/dev/disk0`).
     /// On Linux, this is typically in the format `/dev/sdX` (e.g., `/dev/sda`).
     public var id: String
-    
+
     /// The human-readable name of the drive.
     ///
     /// This is typically the volume name if available, or a generic name based on
     /// the drive type (e.g., "Internal Disk", "External Disk").
     public var name: String
-    
+
     /// The available space on the drive in bytes.
     ///
     /// This represents the amount of free space available for writing.
     /// A value of 0 indicates either no available space or that the available space
     /// could not be determined.
     public var available: Int64
-    
+
     /// The total capacity of the drive in bytes.
     ///
     /// This represents the total size of the drive, regardless of how much
     /// is currently in use.
     public var capacity: Int64
-    
+
     /// Indicates whether the drive is an external device.
     ///
     /// `true` if the drive is an external device (e.g., USB drive, SD card),
     /// `false` if it's an internal drive.
     public var isExternal: Bool
-    
+
     /// Returns a human-readable string representation of the available space.
     ///
     /// The string includes both the value and the unit (e.g., "500 GB", "2 TB").
@@ -76,7 +76,7 @@ public struct Drive: Identifiable, Equatable, Hashable, Sendable {
         formatter.includesCount = true
         return formatter.string(fromByteCount: available)
     }
-    
+
     /// Returns a human-readable string representation of the total capacity.
     ///
     /// The string includes both the value and the unit (e.g., "1 TB", "128 GB").

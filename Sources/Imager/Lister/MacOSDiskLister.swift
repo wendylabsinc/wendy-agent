@@ -17,7 +17,7 @@ public struct MacOSDiskLister: DiskLister {
                 output: .string,
                 error: .string
             )
-            
+
             if result.terminationStatus.isSuccess {
                 if let output = result.standardOutput, !output.isEmpty {
                     // Parse the output into Drive objects
@@ -35,7 +35,7 @@ public struct MacOSDiskLister: DiskLister {
             throw error
         }
     }
-    
+
     /// Finds a drive by its identifier.
     /// - Parameter id: The identifier of the drive to find.
     /// - Returns: The Drive object if found.
@@ -48,7 +48,7 @@ public struct MacOSDiskLister: DiskLister {
                 output: .string,
                 error: .string
             )
-            
+
             if result.terminationStatus.isSuccess {
                 if let output = result.standardOutput, !output.isEmpty {
                     // Parse the output to get drive information
@@ -70,41 +70,50 @@ public struct MacOSDiskLister: DiskLister {
             throw error
         }
     }
-    
+
     private func parseDiskUtilInfoOutput(_ output: String, id: String) async throws -> Drive? {
         // Extract drive information from diskutil info output
         var name = "Unknown"
         var capacity: Int64 = 0
         var available: Int64 = 0
         var isExternal = false
-        
+
         // Parse name
         if let nameRange = output.range(of: "Device / Media Name:.*", options: .regularExpression) {
             let nameLine = String(output[nameRange])
-            if let nameValue = nameLine.split(separator: ":").last?.trimmingCharacters(in: .whitespacesAndNewlines) {
+            if let nameValue = nameLine.split(separator: ":").last?.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            ) {
                 name = nameValue
             }
         }
-        
+
         // Parse capacity
         if let sizeRange = output.range(of: "Disk Size:.*", options: .regularExpression) {
             let sizeLine = String(output[sizeRange])
-            if let sizeString = sizeLine.split(separator: "(").first?.trimmingCharacters(in: .whitespacesAndNewlines),
-               let sizeValue = sizeString.split(separator: ":").last?.trimmingCharacters(in: .whitespacesAndNewlines) {
+            if let sizeString = sizeLine.split(separator: "(").first?.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            ),
+                let sizeValue = sizeString.split(separator: ":").last?.trimmingCharacters(
+                    in: .whitespacesAndNewlines
+                )
+            {
                 // Extract numeric value from string like "500.3 GB"
-                let numericPart = sizeValue.components(separatedBy: CharacterSet.decimalDigits.inverted).joined()
+                let numericPart = sizeValue.components(
+                    separatedBy: CharacterSet.decimalDigits.inverted
+                ).joined()
                 if let sizeNumber = Int64(numericPart) {
-                    capacity = sizeNumber * 1_000_000 // Approximate conversion to bytes
+                    capacity = sizeNumber * 1_000_000  // Approximate conversion to bytes
                 }
             }
         }
-        
+
         // Check if external
         if let locationRange = output.range(of: "Device Location:.*", options: .regularExpression) {
             let locationLine = String(output[locationRange])
             isExternal = locationLine.contains("External")
         }
-        
+
         // For available space, we'll need to use df command
         do {
             let dfResult = try await Subprocess.run(
@@ -113,41 +122,50 @@ public struct MacOSDiskLister: DiskLister {
                 output: .string,
                 error: .string
             )
-            
-            if dfResult.terminationStatus.isSuccess, 
-               let dfOutput = dfResult.standardOutput {
+
+            if dfResult.terminationStatus.isSuccess,
+                let dfOutput = dfResult.standardOutput
+            {
                 let lines = dfOutput.split(separator: "\n")
                 if lines.count > 1 {
                     let parts = lines[1].split(separator: " ").filter { !$0.isEmpty }
                     if parts.count >= 4, let availableKB = Int64(parts[3]) {
-                        available = availableKB * 1024 // Convert KB to bytes
+                        available = availableKB * 1024  // Convert KB to bytes
                     }
                 }
             }
         } catch {
         }
-        
-        return Drive(id: id, name: name, available: available, capacity: capacity, isExternal: isExternal)
+
+        return Drive(
+            id: id,
+            name: name,
+            available: available,
+            capacity: capacity,
+            isExternal: isExternal
+        )
     }
-    
+
     private func parseDiskUtilOutput(_ output: String, all: Bool) -> [Drive] {
         var drives: [Drive] = []
-        
+
         // Split the output by lines
         let lines = output.split(separator: "\n")
-        
+
         // Variables to track the current disk being processed
         var currentDiskId: String?
         var currentDiskName: String?
         var currentDiskSize: Int64 = 0
         var freeSpace: Int64 = 0
         var isExternal: Bool = false
-        
+
         for line in lines {
             let trimmedLine = line.trimmingCharacters(in: .whitespacesAndNewlines)
-            
+
             // Check if this is a disk header line
-            if trimmedLine.contains("(external, physical)") || trimmedLine.contains("(internal, physical)") {
+            if trimmedLine.contains("(external, physical)")
+                || trimmedLine.contains("(internal, physical)")
+            {
                 // If we were processing a disk, add it to the list
                 if let id = currentDiskId, let name = currentDiskName, currentDiskSize > 0 {
                     // Only add the drive if we want all drives or if it's external
@@ -162,17 +180,21 @@ public struct MacOSDiskLister: DiskLister {
                         drives.append(drive)
                     }
                 }
-                
+
                 // Start tracking a new disk
                 let components = trimmedLine.split(separator: " ")
                 currentDiskId = String(components[0])
-                currentDiskName = trimmedLine.contains("(external, physical)") ? "External Disk" : "Internal Disk" // Default name
+                currentDiskName =
+                    trimmedLine.contains("(external, physical)") ? "External Disk" : "Internal Disk"
+                    // Default name
                 currentDiskSize = 0
                 freeSpace = 0
                 isExternal = trimmedLine.contains("(external, physical)")
             }
             // Check if this is a size line
-            else if trimmedLine.contains("*") && (trimmedLine.contains("GB") || trimmedLine.contains("TB")) {
+            else if trimmedLine.contains("*")
+                && (trimmedLine.contains("GB") || trimmedLine.contains("TB"))
+            {
                 // Extract the size information
                 let sizeComponents = trimmedLine.split(separator: "*")
                 if sizeComponents.count > 1 {
@@ -180,9 +202,9 @@ public struct MacOSDiskLister: DiskLister {
                     if let size = Double(sizeString) {
                         // Check if it's TB or GB
                         if trimmedLine.contains("TB") {
-                            currentDiskSize = Int64(size * 1_000_000_000_000) // Convert TB to bytes
+                            currentDiskSize = Int64(size * 1_000_000_000_000)  // Convert TB to bytes
                         } else {
-                            currentDiskSize = Int64(size * 1_000_000_000) // Convert GB to bytes
+                            currentDiskSize = Int64(size * 1_000_000_000)  // Convert GB to bytes
                         }
                     }
                 }
@@ -192,11 +214,11 @@ public struct MacOSDiskLister: DiskLister {
                 let components = trimmedLine.split(separator: " ")
                 for (index, component) in components.enumerated() {
                     if (component.contains("GB") || component.contains("TB")) && index > 0 {
-                        if let freeSize = Double(components[index-1]) {
+                        if let freeSize = Double(components[index - 1]) {
                             if component.contains("TB") {
-                                freeSpace = Int64(freeSize * 1_000_000_000_000) // Convert TB to bytes
+                                freeSpace = Int64(freeSize * 1_000_000_000_000)  // Convert TB to bytes
                             } else {
-                                freeSpace = Int64(freeSize * 1_000_000_000) // Convert GB to bytes
+                                freeSpace = Int64(freeSize * 1_000_000_000)  // Convert GB to bytes
                             }
                         }
                         break
@@ -219,7 +241,7 @@ public struct MacOSDiskLister: DiskLister {
                 }
             }
         }
-        
+
         // Add the last disk if we were processing one
         if let id = currentDiskId, let name = currentDiskName, currentDiskSize > 0 {
             // Only add the drive if we want all drives or if it's external
@@ -234,7 +256,7 @@ public struct MacOSDiskLister: DiskLister {
                 drives.append(drive)
             }
         }
-        
+
         return drives
     }
 }
