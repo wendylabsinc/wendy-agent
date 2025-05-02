@@ -108,5 +108,13 @@ let package = Package(
                 .product(name: "Subprocess", package: "swift-subprocess")
             ]
         ),
+        /// Tests for EdgeCLI components
+        .testTarget(
+            name: "EdgeCLITests",
+            dependencies: [
+                .target(name: "edge"),
+            ]
+        ),
+
     ]
 )

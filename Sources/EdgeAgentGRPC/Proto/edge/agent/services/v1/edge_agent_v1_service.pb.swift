@@ -75,6 +75,9 @@ public struct Edge_Agent_Services_V1_RunContainerRequest: Sendable {
     /// Unique name for the container image
     public var imageName: String = String()
 
+    /// The command to run when the container starts.
+    public var cmd: String = String()
+
     public var unknownFields = SwiftProtobuf.UnknownStorage()
 
     public init() {}
@@ -269,6 +272,7 @@ extension Edge_Agent_Services_V1_RunContainerRequest.Header: SwiftProtobuf.Messa
   public static let protoMessageName: String = Edge_Agent_Services_V1_RunContainerRequest.protoMessageName + ".Header"
   public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
     1: .standard(proto: "image_name"),
+    2: .same(proto: "cmd"),
   ]
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
@@ -278,6 +282,7 @@ extension Edge_Agent_Services_V1_RunContainerRequest.Header: SwiftProtobuf.Messa
       // enabled. https://github.com/apple/swift-protobuf/issues/1034
       switch fieldNumber {
       case 1: try { try decoder.decodeSingularStringField(value: &self.imageName) }()
+      case 2: try { try decoder.decodeSingularStringField(value: &self.cmd) }()
       default: break
       }
     }
@@ -287,11 +292,15 @@ extension Edge_Agent_Services_V1_RunContainerRequest.Header: SwiftProtobuf.Messa
     if !self.imageName.isEmpty {
       try visitor.visitSingularStringField(value: self.imageName, fieldNumber: 1)
     }
+    if !self.cmd.isEmpty {
+      try visitor.visitSingularStringField(value: self.cmd, fieldNumber: 2)
+    }
     try unknownFields.traverse(visitor: &visitor)
   }
 
   public static func ==(lhs: Edge_Agent_Services_V1_RunContainerRequest.Header, rhs: Edge_Agent_Services_V1_RunContainerRequest.Header) -> Bool {
     if lhs.imageName != rhs.imageName {return false}
+    if lhs.cmd != rhs.cmd {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
