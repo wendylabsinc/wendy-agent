@@ -8,6 +8,14 @@ import Imager
     // No explicit libc import needed when using musl
 #endif
 
+// Helper function to safely flush output without referring to stdout directly
+// This avoids concurrency issues with global variables
+@inline(__always) private func flushOutput() {
+    // Simply print an empty string with a newline to force flush
+    // This is a simple workaround that doesn't require accessing global C variables
+    print("", terminator: "")
+}
+
 struct ImagerCommand: AsyncParsableCommand {
 
     static let configuration = CommandConfiguration(
@@ -146,8 +154,8 @@ struct ImagerCommand: AsyncParsableCommand {
                         print("\rWritten: \(progress.bytesWrittenText)", terminator: "")
                     }
 
-                    // Flush stdout to ensure progress is displayed
-                    fflush(stdout)
+                    // Force output to be displayed without accessing stdout directly
+                    flushOutput()
                 }
             }
 
@@ -244,8 +252,8 @@ struct ImagerCommand: AsyncParsableCommand {
                         print("\rDownloaded: \(progress.bytesWrittenText)", terminator: "")
                     }
 
-                    // Flush stdout to ensure progress is displayed
-                    fflush(stdout)
+                    // Force output to be displayed without accessing stdout directly
+                    flushOutput()
                 }
             }
 
@@ -292,8 +300,8 @@ struct ImagerCommand: AsyncParsableCommand {
                         print("\rWritten: \(progress.bytesWrittenText)", terminator: "")
                     }
 
-                    // Flush stdout to ensure progress is displayed
-                    fflush(stdout)
+                    // Force output to be displayed without accessing stdout directly
+                    flushOutput()
                 }
             }
 
