@@ -219,10 +219,10 @@ public struct MacOSDiskLister: DiskLister {
                         if let freeSize = Double(components[index - 1]) {
                             if component.contains("TB") {
                                 // Convert TB to bytes
-                                freeSpace = Int64(freeSize * 1_000_000_000_000) 
+                                freeSpace = Int64(freeSize * 1_000_000_000_000)
                             } else {
                                 // Convert GB to bytes
-                                freeSpace = Int64(freeSize * 1_000_000_000)  
+                                freeSpace = Int64(freeSize * 1_000_000_000)
                             }
                         }
                         break
