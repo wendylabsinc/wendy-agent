@@ -1,5 +1,5 @@
 {
-  "originHash" : "7a8d6309821e31dfd4b1e4c904737a8db5fd24d507eba3800fca964219797570",
+  "originHash" : "1e56f8cd106373302a629412187a8b4facd0f8bc33b484bd5dd08e835b591162",
   "pins" : [
     {
       "identity" : "grpc-swift",
@@ -220,10 +220,10 @@
     {
       "identity" : "swift-subprocess",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/iCharlesHu/swift-subprocess.git",
+      "location" : "https://github.com/swiftlang/swift-subprocess.git",
       "state" : {
-        "branch" : "charles/mutex-fallback",
-        "revision" : "808f0593bc841f06f623a8b55dc8f585b47542fb"
+        "branch" : "main",
+        "revision" : "c0bbfa57d0ad36c993e8aa7be909b46c919403f3"
       }
     },
     {
