@@ -1,5 +1,9 @@
 import Foundation
 
+#if os(Linux)
+    import FoundationNetworking
+#endif
+
 // MARK: - Data Models
 
 /// Represents device manifest information

@@ -3,7 +3,8 @@ import Foundation
 #if os(macOS)
     import Darwin
 #elseif os(Linux)
-    import libc
+    // No explicit libc import needed when using musl
+    import FoundationNetworking
 #endif
 
 // MARK: - Protocols
