@@ -202,9 +202,11 @@ public struct MacOSDiskLister: DiskLister {
                     if let size = Double(sizeString) {
                         // Check if it's TB or GB
                         if trimmedLine.contains("TB") {
-                            currentDiskSize = Int64(size * 1_000_000_000_000)  // Convert TB to bytes
+                            // Convert TB to bytes
+                            currentDiskSize = Int64(size * 1_000_000_000_000)
                         } else {
-                            currentDiskSize = Int64(size * 1_000_000_000)  // Convert GB to bytes
+                            // Convert GB to bytes
+                            currentDiskSize = Int64(size * 1_000_000_000)
                         }
                     }
                 }
@@ -216,9 +218,11 @@ public struct MacOSDiskLister: DiskLister {
                     if (component.contains("GB") || component.contains("TB")) && index > 0 {
                         if let freeSize = Double(components[index - 1]) {
                             if component.contains("TB") {
-                                freeSpace = Int64(freeSize * 1_000_000_000_000)  // Convert TB to bytes
+                                // Convert TB to bytes
+                                freeSpace = Int64(freeSize * 1_000_000_000_000) 
                             } else {
-                                freeSpace = Int64(freeSize * 1_000_000_000)  // Convert GB to bytes
+                                // Convert GB to bytes
+                                freeSpace = Int64(freeSize * 1_000_000_000)  
                             }
                         }
                         break
