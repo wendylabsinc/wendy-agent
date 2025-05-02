@@ -143,33 +143,60 @@ public class ImageDownloader: ImageDownloading {
         progressHandler(extractionProgress)
 
         // Unzip the file using the unzip command line tool
-        #if os(macOS)
-            let task = Process()
-            task.executableURL = URL(fileURLWithPath: "/usr/bin/unzip")
-            task.arguments = [localZipURL.path, "-d", extractionDirectoryURL.path]
-            try task.run()
-            task.waitUntilExit()
+        let unzipProcess = Process()
 
-            // Check if the unzipping was successful
-            if task.terminationStatus != 0 {
-                throw DownloadError.extractionFailed(
-                    "Failed to extract ZIP file, exit code: \(task.terminationStatus)"
-                )
-            }
-        #elseif os(Linux)
-            let task = Process()
-            task.executableURL = URL(fileURLWithPath: "/usr/bin/unzip")
-            task.arguments = [localZipURL.path, "-d", extractionDirectoryURL.path]
-            try task.run()
-            task.waitUntilExit()
+        // Check if unzip is available at the standard locations
+        var unzipPath = "/usr/bin/unzip"
+        if !fileManager.fileExists(atPath: unzipPath) {
+            unzipPath = "/bin/unzip"
+            if !fileManager.fileExists(atPath: unzipPath) {
+                // Try to find unzip in PATH
+                let whichUnzip = Process()
+                whichUnzip.executableURL = URL(fileURLWithPath: "/bin/sh")
+                whichUnzip.arguments = ["-c", "which unzip"]
 
-            // Check if the unzipping was successful
-            if task.terminationStatus != 0 {
-                throw DownloadError.extractionFailed(
-                    "Failed to extract ZIP file, exit code: \(task.terminationStatus)"
-                )
+                let outputPipe = Pipe()
+                whichUnzip.standardOutput = outputPipe
+
+                try whichUnzip.run()
+                whichUnzip.waitUntilExit()
+
+                if whichUnzip.terminationStatus == 0 {
+                    let outputData = outputPipe.fileHandleForReading.readDataToEndOfFile()
+                    if let path = String(data: outputData, encoding: .utf8)?.trimmingCharacters(
+                        in: .whitespacesAndNewlines
+                    ) {
+                        unzipPath = path
+                    }
+                }
             }
-        #endif
+        }
+
+        if !fileManager.fileExists(atPath: unzipPath) {
+            throw DownloadError.extractionFailed("Could not find 'unzip' utility on the system")
+        }
+
+        unzipProcess.executableURL = URL(fileURLWithPath: unzipPath)
+        unzipProcess.arguments = [localZipURL.path, "-d", extractionDirectoryURL.path]
+
+        // Set up pipes for output
+        let outputPipe = Pipe()
+        let errorPipe = Pipe()
+        unzipProcess.standardOutput = outputPipe
+        unzipProcess.standardError = errorPipe
+
+        // Run the unzip process
+        try unzipProcess.run()
+        unzipProcess.waitUntilExit()
+
+        // Check if unzip was successful
+        if unzipProcess.terminationStatus != 0 {
+            let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+            let errorMessage = String(data: errorData, encoding: .utf8) ?? "Unknown error"
+            throw DownloadError.extractionFailed(
+                "Failed to extract ZIP file: \(errorMessage.trimmingCharacters(in: .whitespacesAndNewlines))"
+            )
+        }
 
         // Update extraction progress
         extractionProgress.completedUnitCount = 50
