@@ -186,7 +186,7 @@ public struct MacOSDiskLister: DiskLister {
                 currentDiskId = String(components[0])
                 currentDiskName =
                     trimmedLine.contains("(external, physical)") ? "External Disk" : "Internal Disk"
-                    // Default name
+                // Default name
                 currentDiskSize = 0
                 freeSpace = 0
                 isExternal = trimmedLine.contains("(external, physical)")
