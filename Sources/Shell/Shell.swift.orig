@@ -49,7 +49,11 @@ public enum Shell {
             // TODO: Don't hardcode the path to the Swift toolchain – manage our own toolchain instead.
             "PATH":
                 "/Library/Developer/Toolchains/swift-6.1-RELEASE.xctoolchain/usr/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+<<<<<<< HEAD
+            "TOOLCHAINS": "org.swift.610202503301a",
+=======
             "TOOLCHAINS": "org.swift.6120250501a",
+>>>>>>> main
         ]
 
         stdoutPipe.fileHandleForReading.readabilityHandler = { fileHandle in

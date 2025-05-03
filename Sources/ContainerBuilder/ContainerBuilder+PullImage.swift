@@ -92,7 +92,9 @@ extension ContainerImageSpec {
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
 
         // Create a cache directory for layers
-        let cacheDir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".edge-cache")
+        let cacheDir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(
+            ".edge-cache"
+        )
         try FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
 
         // Download each layer and store as tarball layer
