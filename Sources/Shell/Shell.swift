@@ -48,8 +48,8 @@ public enum Shell {
         process.environment = [
             // TODO: Don't hardcode the path to the Swift toolchain – manage our own toolchain instead.
             "PATH":
-                "/Library/Developer/Toolchains/swift-6.0.3-RELEASE.xctoolchain/usr/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
-            "TOOLCHAINS": "org.swift.603202412101a",
+                "/Library/Developer/Toolchains/swift-6.1-RELEASE.xctoolchain/usr/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+            "TOOLCHAINS": "org.swift.6120250501a",
         ]
 
         stdoutPipe.fileHandleForReading.readabilityHandler = { fileHandle in

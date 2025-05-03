@@ -105,8 +105,4 @@ Then, from within LLDB's prompt run the following to connect to your app's debug
 (lldb) gdb-remote localhost:4242
 ```
 
-- **target create** refers to the binary you've created
-- **settings set** selects the swift-sdk you built the binary with. This is optional, but necessary for debugging support.
-- **gdb-remote**'s value `localhost:4242` refers to the host (and port) where the debug server is running. If you're starting a remote debugging session on another machine, replace this with your device's hostname or IP.
-
 Unfortunately, running expressions (e.g. `po`) doesn't work yet.
