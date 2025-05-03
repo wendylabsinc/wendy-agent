@@ -6,11 +6,11 @@ struct InitCommand: AsyncParsableCommand {
         commandName: "init",
         abstract: "Initialize a new EdgeOS project in the current directory."
     )
-    
+
     func run() async throws {
         print("Initializing new EdgeOS project...")
         try await Shell.run([
-            "swift", "package", "init", "--type", "executable"
+            "swift", "package", "init", "--type", "executable",
         ])
     }
 }
