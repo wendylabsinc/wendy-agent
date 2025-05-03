@@ -91,6 +91,10 @@ extension ContainerImageSpec {
         )
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
 
+        // Create a cache directory for layers
+        let cacheDir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".edge-cache")
+        try FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
+
         // Download each layer and store as tarball layer
         var baseLayers: [Layer] = []
 
@@ -104,15 +108,21 @@ extension ContainerImageSpec {
 
         for (index, layer) in manifest.layers.enumerated() {
             logger.info("Downloading layer \(index+1)/\(manifest.layers.count): \(layer.digest)")
-            let layerData = try await client.getBlob(
-                repository: imageRef.repository,
-                digest: layer.digest
-            )
 
-            // Save layer to temporary file
-            let layerFilename = layer.digest.replacingOccurrences(of: ":", with: "-")
-            let layerPath = tempDir.appendingPathComponent(layerFilename)
-            try layerData.write(to: layerPath)
+            // Prepare cache path for this layer
+            let layerCacheFilename = layer.digest.replacingOccurrences(of: ":", with: "-")
+            let layerPath = cacheDir.appendingPathComponent(layerCacheFilename)
+
+            if FileManager.default.fileExists(atPath: layerPath.path) {
+                logger.info("Layer found in cache: \(layerPath.lastPathComponent)")
+            } else {
+                logger.info("Layer not found in cache, downloading: \(layer.digest)")
+                let layerData = try await client.getBlob(
+                    repository: imageRef.repository,
+                    digest: layer.digest
+                )
+                try layerData.write(to: layerPath)
+            }
 
             // Use the tarball directly as a layer with the original diffID
             if index < originalDiffIDs.count {
