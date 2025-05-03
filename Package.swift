@@ -1,4 +1,4 @@
-// swift-tools-version: 6.1
+// swift-tools-version: 6.0.3
 import PackageDescription
 
 let package = Package(
@@ -20,6 +20,7 @@ let package = Package(
         .package(url: "https://github.com/grpc/grpc-swift-extras.git", from: "1.0.0"),
         .package(url: "https://github.com/apple/swift-nio.git", from: "2.81.0"),
         .package(url: "https://github.com/apple/swift-crypto.git", from: "3.12.2"),
+         .package(url: "https://github.com/swiftlang/swift-subprocess.git", branch: "main")
     ],
     targets: [
         /// The main executable provided by edge-cli.
@@ -33,6 +34,7 @@ let package = Package(
                 .target(name: "EdgeAgentGRPC"),
                 .target(name: "EdgeCLI"),
                 .target(name: "EdgeShared"),
+                .target(name: "Imager"),
             ],
             resources: [
                 .copy("Resources")
@@ -45,6 +47,7 @@ let package = Package(
             dependencies: [
                 .target(name: "ContainerBuilder"),
                 .target(name: "Shell"),
+                .product(name: "Subprocess", package: "swift-subprocess"),
                 .product(name: "Logging", package: "swift-log"),
             ]
         ),
@@ -99,6 +102,12 @@ let package = Package(
             ]
         ),
 
+        .target(
+            name: "Imager",
+            dependencies: [
+                .product(name: "Subprocess", package: "swift-subprocess")
+            ]
+        ),
         /// Tests for EdgeCLI components
         .testTarget(
             name: "EdgeCLITests",
@@ -106,5 +115,6 @@ let package = Package(
                 .target(name: "edge"),
             ]
         ),
+
     ]
 )
