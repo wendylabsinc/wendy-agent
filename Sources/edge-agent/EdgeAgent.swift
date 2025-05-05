@@ -28,7 +28,7 @@ struct EdgeAgent: AsyncParsableCommand {
             return handler
         }
 
-        let logger = Logger(label: "apache-edge.agent")
+        let logger = Logger(label: "edgeengineer.agent")
 
         logger.info("Starting Edge Agent version \(Version.current) on port \(port)")
 

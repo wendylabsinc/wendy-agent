@@ -20,7 +20,7 @@ let package = Package(
         .package(url: "https://github.com/grpc/grpc-swift-extras.git", from: "1.0.0"),
         .package(url: "https://github.com/apple/swift-nio.git", from: "2.81.0"),
         .package(url: "https://github.com/apple/swift-crypto.git", from: "3.12.2"),
-         .package(url: "https://github.com/swiftlang/swift-subprocess.git", branch: "main"),
+        .package(url: "https://github.com/swiftlang/swift-subprocess.git", branch: "main"),
         .package(url: "https://github.com/apple/swift-http-types.git", from: "1.4.0")
     ],
     targets: [

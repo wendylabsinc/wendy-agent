@@ -55,7 +55,7 @@ struct RunCommand: AsyncParsableCommand {
     @OptionGroup var agentConnectionOptions: AgentConnectionOptions
 
     func run() async throws {
-        let logger = Logger(label: "apache-edge.cli.run")
+        let logger = Logger(label: "edgeengineer.cli.run")
 
         let swiftPM = SwiftPM()
         let package = try await swiftPM.dumpPackage()

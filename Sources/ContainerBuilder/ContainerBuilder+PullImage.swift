@@ -1,11 +1,10 @@
-import Compression
 import ContainerRegistry
 import Foundation
 import Logging
 import Shell
 
 extension ContainerImageSpec {
-    private static let logger = Logger(label: "apache-edge.container-builder")
+    private static let logger = Logger(label: "edgeengineer.container-builder")
 
     /// Creates a container image specification with a base image from a registry and an executable to add.
     ///
