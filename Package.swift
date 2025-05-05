@@ -83,6 +83,14 @@ let package = Package(
 
         /// Shared components used by both edge and edge-agent.
         .target(
+            name: "ContainerRegistry",
+            dependencies: [
+                .product(name: "Crypto", package: "swift-crypto"),
+                .product(name: "HTTPTypes", package: "swift-http-types"),
+                .product(name: "HTTPTypesFoundation", package: "swift-http-types"),
+            ]
+        ),
+        .target(
             name: "EdgeShared",
             dependencies: []
         ),
