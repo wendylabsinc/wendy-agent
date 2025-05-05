@@ -97,7 +97,12 @@ let package = Package(
                 "Proto/edge_agent.protoset"
             ]
         ),
-
+        .target(
+            name: "Imager",
+            dependencies: [
+                .product(name: "Subprocess", package: "swift-subprocess")
+            ]
+        ),
         .target(
             name: "Shell",
             dependencies: [
