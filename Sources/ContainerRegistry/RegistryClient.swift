@@ -31,10 +31,10 @@ enum RegistryClientError: Error {
 extension RegistryClientError: CustomStringConvertible {
     var description: String {
         switch self {
-        case let .registryParseError(reference): return "Unable to parse registry: \(reference)"
-        case let .invalidRegistryPath(path):
+        case .registryParseError(let reference): return "Unable to parse registry: \(reference)"
+        case .invalidRegistryPath(let path):
             return "Unable to construct URL for registry path: \(path)"
-        case let .invalidUploadLocation(location):
+        case .invalidUploadLocation(let location):
             return "Received invalid upload location from registry: \(location)"
         }
     }
@@ -146,16 +146,22 @@ extension RegistryClient {
     /// Represents an operation to be executed on the registry.
     struct RegistryOperation {
         enum Destination {
-            case subpath(String)  // Repository subpath on the registry
-            case url(URL)  // Full destination URL, for example from a Location header returned by the registry
+            // Repository subpath on the registry
+            case subpath(String)
+            // Full destination URL, for example from a Location header returned by the registry
+            case url(URL)
         }
 
         var method: HTTPRequest.Method  // HTTP method
         var repository: String  // Repository path on the registry
-        var destination: Destination  // Destination of the operation: can be a subpath or remote URL
-        var actions: [String]  // Actions required by this operation
-        var accepting: [String] = []  // Acceptable response types
-        var contentType: String? = nil  // Request data type
+        // Destination of the operation: can be a subpath or remote URL
+        var destination: Destination
+        // Actions required by this operation
+        var actions: [String]
+        // Acceptable response types
+        var accepting: [String] = []
+        // Request data type
+        var contentType: String? = nil
 
         func url(relativeTo registry: URL) -> URL {
             switch destination {
@@ -225,7 +231,8 @@ extension RegistryClient {
             accepting: [String] = [],
             contentType: String? = nil
         ) -> RegistryOperation {
-            .init(
+            // This handles the 'put' case where the registry gives us a location URL which we must not alter, aside from adding the digest to it
+            return .init(
                 method: .put,
                 repository: repository,
                 destination: .url(url),
@@ -304,7 +311,7 @@ extension RegistryClient {
 
         do {
             return try await client.executeRequestThrowing(request, expectingStatus: success)
-        } catch HTTPClientError.unexpectedStatusCode(let status, _, let .some(responseData))
+        } catch HTTPClientError.unexpectedStatusCode(let status, _, .some(let responseData))
             where errors.contains(status)
         {
             let decoded = try decoder.decode(DistributionErrors.self, from: responseData)
@@ -373,7 +380,7 @@ extension RegistryClient {
                 uploading: payload,
                 expectingStatus: success
             )
-        } catch HTTPClientError.unexpectedStatusCode(let status, _, let .some(responseData))
+        } catch HTTPClientError.unexpectedStatusCode(let status, _, .some(let responseData))
             where errors.contains(status)
         {
             let decoded = try decoder.decode(DistributionErrors.self, from: responseData)

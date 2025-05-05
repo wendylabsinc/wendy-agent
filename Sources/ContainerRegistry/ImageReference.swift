@@ -70,7 +70,8 @@ public struct ImageReference: Sendable, Equatable, CustomStringConvertible,
         let (repository, reference) = try splitName(remainder)
         self.registry = registry ?? defaultRegistry
         if self.registry == "docker.io" {
-            self.registry = "index.docker.io"  // Special case for docker client, there is no network-level redirect
+            // Special case for docker client, there is no network-level redirect
+            self.registry = "index.docker.io"
         }
         // As a special case, official images can be referred to by a single name, such as `swift` or `swift:slim`.
         // moby/moby assumes that these names refer to images in `library`: `library/swift` or `library/swift:slim`.
