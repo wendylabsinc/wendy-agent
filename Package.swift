@@ -20,7 +20,8 @@ let package = Package(
         .package(url: "https://github.com/grpc/grpc-swift-extras.git", from: "1.0.0"),
         .package(url: "https://github.com/apple/swift-nio.git", from: "2.81.0"),
         .package(url: "https://github.com/apple/swift-crypto.git", from: "3.12.2"),
-         .package(url: "https://github.com/swiftlang/swift-subprocess.git", branch: "main")
+        .package(url: "https://github.com/swiftlang/swift-subprocess.git", branch: "main"),
+        .package(url: "https://github.com/apple/swift-http-types.git", from: "1.4.0")
     ],
     targets: [
         /// The main executable provided by edge-cli.
@@ -35,6 +36,7 @@ let package = Package(
                 .target(name: "EdgeCLI"),
                 .target(name: "EdgeShared"),
                 .target(name: "Imager"),
+                .target(name: "ContainerRegistry")
             ],
             resources: [
                 .copy("Resources")
@@ -58,6 +60,7 @@ let package = Package(
             dependencies: [
                 .target(name: "Shell"),
                 .product(name: "Crypto", package: "swift-crypto"),
+                .target(name: "ContainerRegistry"),
             ]
         ),
 
@@ -80,6 +83,14 @@ let package = Package(
 
         /// Shared components used by both edge and edge-agent.
         .target(
+            name: "ContainerRegistry",
+            dependencies: [
+                .product(name: "Crypto", package: "swift-crypto"),
+                .product(name: "HTTPTypes", package: "swift-http-types"),
+                .product(name: "HTTPTypesFoundation", package: "swift-http-types"),
+            ]
+        ),
+        .target(
             name: "EdgeShared",
             dependencies: []
         ),
@@ -94,7 +105,12 @@ let package = Package(
                 "Proto/edge_agent.protoset"
             ]
         ),
-
+        .target(
+            name: "Imager",
+            dependencies: [
+                .product(name: "Subprocess", package: "swift-subprocess")
+            ]
+        ),
         .target(
             name: "Shell",
             dependencies: [
@@ -102,17 +118,11 @@ let package = Package(
             ]
         ),
 
-        .target(
-            name: "Imager",
-            dependencies: [
-                .product(name: "Subprocess", package: "swift-subprocess")
-            ]
-        ),
         /// Tests for EdgeCLI components
         .testTarget(
             name: "EdgeCLITests",
             dependencies: [
-                .target(name: "edge"),
+                .target(name: "edge")
             ]
         ),
 

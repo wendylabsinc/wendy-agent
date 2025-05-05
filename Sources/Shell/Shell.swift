@@ -3,7 +3,7 @@ import Logging
 
 /// Utility for executing shell commands.
 public enum Shell {
-    static let logger = Logger(label: "apache-edge.shell")
+    static let logger = Logger(label: "edgeengineer.shell")
 
     /// Error thrown when a process execution fails.
     public enum Error: Swift.Error, LocalizedError {
