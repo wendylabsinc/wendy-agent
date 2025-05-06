@@ -22,49 +22,66 @@ public func buildDockerContainerImage(
     var layerPaths: [URL] = []
 
     for (index, layer) in image.layers.enumerated() {
-        let layerDir = tempDir.appendingPathComponent("layer\(index)")
-        try FileManager.default.createDirectory(at: layerDir, withIntermediateDirectories: true)
+        let layerTarPath = tempDir.appendingPathComponent("layer\(index).tar")
 
-        // Create each file in the layer
-        for file in layer.files {
-            // Handle absolute paths in container file system by removing the leading slash
-            var relativePath = file.destination
-            if relativePath.hasPrefix("/") {
-                relativePath = String(relativePath.dropFirst())
-            }
+        switch layer.content {
+        case .files(let files):
+            // Create a directory for this layer
+            let layerDir = tempDir.appendingPathComponent("layer\(index)")
+            try FileManager.default.createDirectory(at: layerDir, withIntermediateDirectories: true)
 
-            let destinationURL = layerDir.appendingPathComponent(relativePath)
+            // Create each file in the layer
+            for file in files {
+                // Handle absolute paths in container file system by removing the leading slash
+                var relativePath = file.destination
+                if relativePath.hasPrefix("/") {
+                    relativePath = String(relativePath.dropFirst())
+                }
 
-            // Ensure the parent directory exists with proper permissions
-            let parentDir = destinationURL.deletingLastPathComponent()
-            try FileManager.default.createDirectory(
-                at: parentDir,
-                withIntermediateDirectories: true,
-                attributes: [FileAttributeKey.posixPermissions: 0o755]
-            )
+                let destinationURL = layerDir.appendingPathComponent(relativePath)
 
-            // Copy the file
-            try FileManager.default.copyItem(at: file.source, to: destinationURL)
-
-            // Set permissions if specified
-            if let permissions = file.permissions {
-                try FileManager.default.setAttributes(
-                    [.posixPermissions: permissions],
-                    ofItemAtPath: destinationURL.path
+                // Ensure the parent directory exists with proper permissions
+                let parentDir = destinationURL.deletingLastPathComponent()
+                try FileManager.default.createDirectory(
+                    at: parentDir,
+                    withIntermediateDirectories: true,
+                    attributes: [FileAttributeKey.posixPermissions: 0o755]
                 )
+
+                // Copy the file
+                try FileManager.default.copyItem(at: file.source, to: destinationURL)
+
+                // Set permissions if specified
+                if let permissions = file.permissions {
+                    try FileManager.default.setAttributes(
+                        [.posixPermissions: permissions],
+                        ofItemAtPath: destinationURL.path
+                    )
+                }
             }
+
+            // Create a tarball from the directory
+            try await createTarball(from: layerDir, to: layerTarPath)
+
+        case .tarball(let tarballURL):
+            // Use the tarball directly
+            try FileManager.default.copyItem(at: tarballURL, to: layerTarPath)
         }
 
-        let layerTarPath = tempDir.appendingPathComponent("layer\(index).tar")
-        try await createTarball(from: layerDir, to: layerTarPath)
+        // If the layer has a predefined diffID, use it
+        if let diffID = layer.diffID, diffID.starts(with: "sha256:") {
+            let layerSHA = diffID.replacingOccurrences(of: "sha256:", with: "")
+            layerSHAs.append(layerSHA)
+            layerPaths.append(layerTarPath)
+        } else {
+            // Calculate the SHA256 checksum of the layer tarball
+            // TODO: Switch to NIOFilesystem instead of Data(contentsOf:), so we don't have to load the entire layer into memory
+            let layerData = try Data(contentsOf: layerTarPath)
+            let layerSHA = sha256(data: layerData)
 
-        // Calculate the SHA256 checksum of the layer tarball
-        // TODO: Switch to NIOFilesystem instead of Data(contentsOf:), so we don't have to load the entire layer into memory
-        let layerData = try Data(contentsOf: layerTarPath)
-        let layerSHA = sha256(data: layerData)
-
-        layerSHAs.append(layerSHA)
-        layerPaths.append(layerTarPath)
+            layerSHAs.append(layerSHA)
+            layerPaths.append(layerTarPath)
+        }
     }
 
     // Create config.json

@@ -26,10 +26,10 @@ swift sdk install https://download.swift.org/swift-6.0.3-release/static-sdk/swif
 
 ### Installing the CLI
 
-We have a [Homebrew Tap](https://github.com/apache-edge/homebrew-tap) to install the developer CLI on macOS.
+We have a [Homebrew Tap](https://github.com/edgeengineer/homebrew-tap) to install the developer CLI on macOS.
 
 ```sh
-brew tap apache-edge/tap
+brew tap edgeengineer/tap
 brew install edge
 ```
 
@@ -58,7 +58,7 @@ sudo systemctl enable docker
 sudo usermod -aG docker $USER
 ```
 
-Then, you can download and run your `edge-agent` on the device. We provide nightly tags with the latest `edge-agent` builds [in this repository](https://github.com/apache-edge/edge-agent/tags).
+Then, you can download and run your `edge-agent` on the device. We provide nightly tags with the latest `edge-agent` builds [in this repository](https://github.com/edgeengineer/edge-agent/tags).
 
 If you're planning to test the edge-agent on macOS, you'll need to build and run the agent yourself from this repository.
 

@@ -1,8 +1,7 @@
 Apache Edge CLI
 Copyright 2025 Wendy Labs Inc.
 
-This product includes software developed as part of:
-- ds2 (https://github.com/compnerd/ds2)
+This product includes software developed as part of ds2 (https://github.com/compnerd/ds2).
 
 ==============================================================================
 ds2 License:
@@ -78,3 +77,10 @@ necessarily infringed by the Software standing alone.
 A "Patent Assertion" is any lawsuit or other action alleging direct, indirect,
 or contributory infringement or inducement to infringe any patent, including a
 cross-claim or counterclaim.
+
+-------------------------------------------------------------------------------
+
+This product includes software from the SwiftContainerPlugin project
+developed by Apple Inc. and the SwiftContainerPlugin project authors
+(https://github.com/apple/swift-container-plugin).
+Licensed under Apache License v2.0.
