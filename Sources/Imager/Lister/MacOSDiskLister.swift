@@ -1,8 +1,10 @@
 import Foundation
 import Subprocess
+import Logging
 
 /// macOS implementation of the DiskLister protocol.
 public struct MacOSDiskLister: DiskLister {
+    let logger = Logger(label: "MacOSDiskLister")
 
     public init() {}
 
@@ -10,29 +12,32 @@ public struct MacOSDiskLister: DiskLister {
     /// - Parameter all: If true, lists all drives, not just external drives.
     /// - Returns: An array of Drive objects representing the available drives.
     public func list(all: Bool) async throws -> [Drive] {
-        do {
-            let result = try await Subprocess.run(
-                Subprocess.Executable.name("diskutil"),
-                arguments: all ? ["list"] : ["list", "external"],
-                output: .string,
-                error: .string
-            )
+        let result = try await Subprocess.run(
+            Subprocess.Executable.name("diskutil"),
+            arguments: ["list"],
+            output: .string,
+            error: .string
+        )
 
-            if result.terminationStatus.isSuccess {
-                if let output = result.standardOutput, !output.isEmpty {
-                    // Parse the output into Drive objects
-                    return parseDiskUtilOutput(output, all: all)
-                } else {
-                    return []
-                }
-            } else {
-                if result.standardError != nil {
-                    // Error occurred, but we're not using the error output
-                }
-                return []
+        if result.terminationStatus.isSuccess {
+            guard let output = result.standardOutput, !output.isEmpty else {
+                throw DiskListerError.unknownOutput
             }
-        } catch {
-            throw error
+
+            // Parse the output into Drive objects
+            let drives = parseDiskUtilOutput(output, all: all)
+
+            if all {
+                return drives
+            } else {
+                return drives.filter(\.isExternal)
+            }
+        } else {
+            guard let stderr = result.standardError else {
+                throw DiskListerError.listFailed(error: "Unknown error")
+            }
+
+            throw DiskListerError.listFailed(error: stderr)
         }
     }
 
@@ -41,33 +46,29 @@ public struct MacOSDiskLister: DiskLister {
     /// - Returns: The Drive object if found.
     /// - Throws: If the drive cannot be found.
     public func findDrive(byId id: String) async throws -> Drive {
-        do {
-            let result = try await Subprocess.run(
-                Subprocess.Executable.name("diskutil"),
-                arguments: ["info", id],
-                output: .string,
-                error: .string
-            )
+        let result = try await Subprocess.run(
+            Subprocess.Executable.name("diskutil"),
+            arguments: ["info", id],
+            output: .string,
+            error: .string
+        )
 
-            if result.terminationStatus.isSuccess {
-                if let output = result.standardOutput, !output.isEmpty {
-                    // Parse the output to get drive information
-                    if let drive = try await parseDiskUtilInfoOutput(output, id: id) {
-                        return drive
-                    } else {
-                        throw DiskListerError.driveNotFound(id: id)
-                    }
+        if result.terminationStatus.isSuccess {
+            if let output = result.standardOutput, !output.isEmpty {
+                // Parse the output to get drive information
+                if let drive = try await parseDiskUtilInfoOutput(output, id: id) {
+                    return drive
                 } else {
                     throw DiskListerError.driveNotFound(id: id)
                 }
             } else {
-                if result.standardError != nil {
-                    // Error occurred, but we're not using the error output
-                }
                 throw DiskListerError.driveNotFound(id: id)
             }
-        } catch {
-            throw error
+        } else {
+            if result.standardError != nil {
+                // Error occurred, but we're not using the error output
+            }
+            throw DiskListerError.driveNotFound(id: id)
         }
     }
 
