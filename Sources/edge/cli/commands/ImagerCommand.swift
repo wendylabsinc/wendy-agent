@@ -74,7 +74,9 @@ struct ImagerCommand: AsyncParsableCommand {
         var json: Bool = false
 
         func run() async throws {
-            print("📱 Fetching available device images...")
+            if !json {
+                print("📱 Fetching available device images...")
+            }
 
             let manifestManager = ManifestManagerFactory.createManifestManager()
             let deviceList = try await manifestManager.getAvailableDevices()
