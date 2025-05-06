@@ -115,7 +115,8 @@ public struct SwiftPM: Sendable {
         }
     }
 
-    public func dumpPackage(_ options: BuildOption...) async throws -> Package {
+<<<<<<< HEAD
+    public func dumpPackage() async throws -> Package {
         // Find the executable path
         let executablePath = try await findExecutablePath(
             for: path.split(separator: " ").first.map(String.init) ?? path
@@ -124,8 +125,7 @@ public struct SwiftPM: Sendable {
 
         // Use the executable path instead of just the command name
         let runArgs = path.split(separator: " ").dropFirst().map(String.init)
-        let allArgs =
-            [executablePath] + runArgs + ["package", "dump-package"] + options.flatMap(\.arguments)
+        let allArgs = [executablePath] + runArgs + ["package", "dump-package"]
 
         let result = try await Subprocess.run(
             Subprocess.Executable.path("/usr/bin/env"),
@@ -156,6 +156,12 @@ public struct SwiftPM: Sendable {
                 return "Command '\(command)' failed with exit code \(exitCode): \(error)"
             }
         }
+=======
+    public func dumpPackage(_ options: BuildOption...) async throws -> Package {
+        let arguments = [path, "package", "dump-package"] + options.flatMap(\.arguments)
+        let output = try await Shell.run(arguments)
+        return try JSONDecoder().decode(Package.self, from: Data(output.utf8))
+>>>>>>> main
     }
 
     /// The return type of the `dumpPackage` method.
