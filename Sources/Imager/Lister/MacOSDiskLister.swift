@@ -1,6 +1,6 @@
 import Foundation
-import Subprocess
 import Logging
+import Subprocess
 
 /// macOS implementation of the DiskLister protocol.
 public struct MacOSDiskLister: DiskLister {
