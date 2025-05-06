@@ -468,6 +468,11 @@
 
                 return interfaces
             }
+
+            func findLANDevices(logger: Logger) async throws -> [LANDevice] {
+                // Implementation not relevant for these tests
+                return []
+            }
         }
     }
 #endif

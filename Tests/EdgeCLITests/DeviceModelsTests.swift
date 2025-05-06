@@ -246,7 +246,7 @@ struct LANDeviceTests {
             interfaceType: "LAN",
             isEdgeOSDevice: true
         )
-        
+
         #expect(edgeOSDevice.id == "device123")
         #expect(edgeOSDevice.displayName == "EdgeOS LAN Device")
         #expect(edgeOSDevice.hostname == "edgeos.local")
@@ -265,7 +265,7 @@ struct LANDeviceTests {
             interfaceType: "LAN",
             isEdgeOSDevice: true
         )
-        
+
         let humanReadable = device.toHumanReadableString()
         #expect(humanReadable == "EdgeOS LAN Device (edgeos.local:8080) [device123]")
     }
@@ -391,7 +391,7 @@ struct DeviceFormatterTests {
         let devices = [
             LANDevice(
                 id: "device123",
-                displayName: "EdgeOS LAN 1", 
+                displayName: "EdgeOS LAN 1",
                 hostname: "edgeos1.local",
                 port: 8080,
                 interfaceType: "LAN",
@@ -399,7 +399,7 @@ struct DeviceFormatterTests {
             ),
             LANDevice(
                 id: "device456",
-                displayName: "EdgeOS LAN 2", 
+                displayName: "EdgeOS LAN 2",
                 hostname: "edgeos2.local",
                 port: 8081,
                 interfaceType: "LAN",
@@ -482,7 +482,7 @@ struct DevicesCollectionTests {
 
         // Test initialization with specific device types
         let collection1 = DevicesCollection(
-            usb: [usbDevice], 
+            usb: [usbDevice],
             ethernet: [ethernetInterface],
             lan: [lanDevice]
         )
@@ -494,7 +494,7 @@ struct DevicesCollectionTests {
         devices.append(lanDevice)
         // The 'devices' constructor was removed, so we use the named parameters instead
         let collection2 = DevicesCollection(
-            usb: [usbDevice], 
+            usb: [usbDevice],
             ethernet: [ethernetInterface],
             lan: [lanDevice]
         )
@@ -528,7 +528,7 @@ struct DevicesCollectionTests {
 
         // Test JSON output
         let json = try emptyCollection.toJSON()
-        
+
         // Check for empty arrays with the exact formatting from the output
         #expect(json.contains("\"usbDevices\" : ["))
         #expect(json.contains("\"ethernetDevices\" : ["))
@@ -565,7 +565,7 @@ struct DevicesCollectionTests {
         let lanDevices = [
             LANDevice(
                 id: "device123",
-                displayName: "EdgeOS LAN 1", 
+                displayName: "EdgeOS LAN 1",
                 hostname: "edgeos1.local",
                 port: 8080,
                 interfaceType: "LAN",
@@ -573,7 +573,7 @@ struct DevicesCollectionTests {
             ),
             LANDevice(
                 id: "device456",
-                displayName: "EdgeOS LAN 2", 
+                displayName: "EdgeOS LAN 2",
                 hostname: "edgeos2.local",
                 port: 8081,
                 interfaceType: "LAN",
@@ -583,7 +583,7 @@ struct DevicesCollectionTests {
 
         // Create a collection with multiple devices
         let collection = DevicesCollection(
-            usb: usbDevices, 
+            usb: usbDevices,
             ethernet: ethernetInterfaces,
             lan: lanDevices
         )

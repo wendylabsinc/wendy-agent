@@ -75,8 +75,14 @@
 
         func findEthernetInterfaces(logger: Logger) async -> [EthernetInterface] {
             logger.error("Listing Ethernet interfaces on Linux is not implemented")
-            var interfaces: [EthernetInterface] = []
+            let interfaces: [EthernetInterface] = []
             return interfaces
+        }
+
+        func findLANDevices(logger: Logger) async throws -> [LANDevice] {
+            logger.error("Listing LAN devices on Linux is not implemented")
+            let lanDevices: [LANDevice] = []
+            return lanDevices
         }
     }
 #endif
