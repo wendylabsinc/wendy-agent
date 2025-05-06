@@ -25,7 +25,7 @@ import Foundation
 ///     isExternal: false
 /// )
 /// ```
-public struct Drive: Identifiable, Equatable, Hashable, Sendable {
+public struct Drive: Identifiable, Equatable, Hashable, Sendable, Codable {
     /// The unique identifier for the drive.
     ///
     /// On macOS, this is typically in the format `/dev/diskN` (e.g., `/dev/disk0`).
