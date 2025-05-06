@@ -93,7 +93,11 @@ struct LANDevice: Device, Encodable {
     }
 
     static func formatCollection(_ interfaces: [LANDevice], as format: OutputFormat) -> String {
-        return DeviceFormatter.formatCollection(interfaces, as: format, collectionName: "LAN Interfaces")
+        return DeviceFormatter.formatCollection(
+            interfaces,
+            as: format,
+            collectionName: "LAN Interfaces"
+        )
     }
 }
 

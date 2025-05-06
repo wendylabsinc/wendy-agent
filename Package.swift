@@ -22,7 +22,7 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-crypto.git", from: "3.12.2"),
         .package(url: "https://github.com/swiftlang/swift-subprocess.git", branch: "main"),
         .package(url: "https://github.com/apple/swift-http-types.git", from: "1.4.0"),
-        .package(url: "https://github.com/apple/swift-async-dns-resolver.git", from: "0.4.0")
+        .package(url: "https://github.com/apple/swift-async-dns-resolver.git", from: "0.4.0"),
     ],
     targets: [
         /// The main executable provided by edge-cli.
@@ -38,7 +38,7 @@ let package = Package(
                 .target(name: "EdgeCLI"),
                 .target(name: "EdgeShared"),
                 .target(name: "Imager"),
-                .target(name: "ContainerRegistry")
+                .target(name: "ContainerRegistry"),
             ],
             resources: [
                 .copy("Resources")
