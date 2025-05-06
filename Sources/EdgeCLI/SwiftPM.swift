@@ -58,8 +58,8 @@ public struct SwiftPM: Sendable {
         return try await Shell.run(arguments)
     }
 
-    public func dumpPackage() async throws -> Package {
-        let arguments = [path, "package", "dump-package"]
+    public func dumpPackage(_ options: BuildOption...) async throws -> Package {
+        let arguments = [path, "package", "dump-package"] + options.flatMap(\.arguments)
         let output = try await Shell.run(arguments)
         return try JSONDecoder().decode(Package.self, from: Data(output.utf8))
     }
