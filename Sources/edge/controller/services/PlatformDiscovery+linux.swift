@@ -1,4 +1,5 @@
 #if os(Linux)
+    import AsyncDNSResolver
     import Foundation
     import Logging
     import Shell

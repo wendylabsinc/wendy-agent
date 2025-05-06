@@ -21,7 +21,8 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-nio.git", from: "2.81.0"),
         .package(url: "https://github.com/apple/swift-crypto.git", from: "3.12.2"),
         .package(url: "https://github.com/swiftlang/swift-subprocess.git", branch: "main"),
-        .package(url: "https://github.com/apple/swift-http-types.git", from: "1.4.0")
+        .package(url: "https://github.com/apple/swift-http-types.git", from: "1.4.0"),
+        .package(url: "https://github.com/apple/swift-async-dns-resolver.git", from: "0.4.0")
     ],
     targets: [
         /// The main executable provided by edge-cli.
@@ -32,6 +33,7 @@ let package = Package(
                 .product(name: "Logging", package: "swift-log"),
                 .product(name: "_NIOFileSystem", package: "swift-nio"),
                 .product(name: "GRPCNIOTransportHTTP2", package: "grpc-swift-nio-transport"),
+                .product(name: "AsyncDNSResolver", package: "swift-async-dns-resolver"),
                 .target(name: "EdgeAgentGRPC"),
                 .target(name: "EdgeCLI"),
                 .target(name: "EdgeShared"),
