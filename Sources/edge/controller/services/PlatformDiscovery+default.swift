@@ -12,5 +12,10 @@
             logger.warning("Interface listing is not supported on this platform")
             return []
         }
+
+        func findLANDevices(logger: Logger) async throws -> [LANDevice] {
+            logger.warning("LAN device listing is not supported on this platform")
+            return []
+        }
     }
 #endif
