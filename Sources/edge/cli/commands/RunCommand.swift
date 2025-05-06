@@ -58,7 +58,9 @@ struct RunCommand: AsyncParsableCommand {
         let logger = Logger(label: "edgeengineer.cli.run")
 
         let swiftPM = SwiftPM()
-        let package = try await swiftPM.dumpPackage()
+        let package = try await swiftPM.dumpPackage(
+            .scratchPath(".edge-build")
+        )
 
         // Get all executable targets
         let executableTargets = package.targets.filter { $0.type == "executable" }
