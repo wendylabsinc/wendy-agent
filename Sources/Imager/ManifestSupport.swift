@@ -31,7 +31,7 @@ public struct MainManifest: Codable {
 }
 
 /// Information about a device from the manifest
-public struct DeviceInfo {
+public struct DeviceInfo: Codable {
     public let name: String
     public let latestVersion: String
 
