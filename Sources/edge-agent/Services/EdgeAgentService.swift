@@ -84,7 +84,9 @@ struct EdgeAgentService: Edge_Agent_Services_V1_EdgeAgentService.ServiceProtocol
             }
 
             logger.info("Creating temporary directory")
-            let tempDir = try await filesystem.createTemporaryDirectory(template: "edge-agent-update-XXX")
+            let tempDir = try await filesystem.createTemporaryDirectory(
+                template: "edge-agent-update-XXX"
+            )
             let updateFile = tempDir.appending("edge-agent")
 
             logger.info("Writing update to \(updateFile)")
@@ -118,9 +120,11 @@ struct EdgeAgentService: Edge_Agent_Services_V1_EdgeAgentService.ServiceProtocol
             logger.info("Restarting agent")
             try await shouldRestart()
 
-            try await writer.write(.with {
-                $0.updated = .init()
-            })
+            try await writer.write(
+                .with {
+                    $0.updated = .init()
+                }
+            )
 
             return Metadata()
         }

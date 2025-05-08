@@ -167,7 +167,8 @@ struct RunCommand: AsyncParsableCommand {
 
                 // Send the chunks
                 logger.info("Sending container image to agent")
-                try await FileSystem.shared.withFileHandle(forReadingAt: FilePath(outputPath)) { fileHandle in
+                try await FileSystem.shared.withFileHandle(forReadingAt: FilePath(outputPath)) {
+                    fileHandle in
                     for try await chunk in fileHandle.readChunks() {
                         try await writer.write(
                             .with {

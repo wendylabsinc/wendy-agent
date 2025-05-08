@@ -1,17 +1,17 @@
 import ArgumentParser
 import EdgeAgentGRPC
+import Foundation
 import GRPCCore
 import GRPCNIOTransportHTTP2
-import _NIOFileSystem
 import NIOFoundationCompat
-import Foundation
+import _NIOFileSystem
 
 struct AgentCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "agent",
         abstract: "Manage the EdgeOS agent.",
         subcommands: [
-            UpdateCommand.self,
+            UpdateCommand.self
         ]
     )
 
@@ -53,22 +53,27 @@ struct AgentCommand: AsyncParsableCommand {
                 try await agent.updateAgent { writer in
                     print("Opening file...")
                     do {
-                        try await FileSystem.shared.withFileHandle(forReadingAt: FilePath(binary)) { handle in
+                        try await FileSystem.shared.withFileHandle(forReadingAt: FilePath(binary)) {
+                            handle in
                             print("Uploading binary...")
                             for try await chunk in handle.readChunks() {
-                                try await writer.write(.with {
-                                    $0.chunk = .with {
-                                        $0.data = Data(buffer: chunk)
+                                try await writer.write(
+                                    .with {
+                                        $0.chunk = .with {
+                                            $0.data = Data(buffer: chunk)
+                                        }
                                     }
-                                })
+                                )
                             }
 
                             print("Finalizing update")
-                            try await writer.write(.with {
-                                $0.control = .with {
-                                    $0.command = .update(.init())
+                            try await writer.write(
+                                .with {
+                                    $0.control = .with {
+                                        $0.command = .update(.init())
+                                    }
                                 }
-                            })
+                            )
                         }
                     } catch {
                         print("Failed to upload binary: \(error)")
