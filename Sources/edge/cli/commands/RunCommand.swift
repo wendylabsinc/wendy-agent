@@ -166,11 +166,8 @@ struct RunCommand: AsyncParsableCommand {
                 )
 
                 // Send the chunks
-                let fileHandle = try await FileSystem.shared.openFile(
-                    forReadingAt: FilePath(outputPath)
-                )
-
-                do {
+                logger.info("Sending container image to agent")
+                try await FileSystem.shared.withFileHandle(forReadingAt: FilePath(outputPath)) { fileHandle in
                     for try await chunk in fileHandle.readChunks() {
                         try await writer.write(
                             .with {
@@ -180,13 +177,10 @@ struct RunCommand: AsyncParsableCommand {
                             }
                         )
                     }
-                } catch {
-                    try await fileHandle.close()
-                    throw error
                 }
-                try await fileHandle.close()
 
                 // Send the control command to start the container.
+                logger.info("Sending control command to start container")
                 try await writer.write(
                     .with {
                         $0.requestType = .control(

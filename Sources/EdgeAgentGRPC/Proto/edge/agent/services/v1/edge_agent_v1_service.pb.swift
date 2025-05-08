@@ -176,6 +176,124 @@ public struct Edge_Agent_Services_V1_RunContainerResponse: Sendable {
   public init() {}
 }
 
+public struct Edge_Agent_Services_V1_UpdateAgentRequest: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  public var requestType: Edge_Agent_Services_V1_UpdateAgentRequest.OneOf_RequestType? = nil
+
+  public var chunk: Edge_Agent_Services_V1_UpdateAgentRequest.Chunk {
+    get {
+      if case .chunk(let v)? = requestType {return v}
+      return Edge_Agent_Services_V1_UpdateAgentRequest.Chunk()
+    }
+    set {requestType = .chunk(newValue)}
+  }
+
+  public var control: Edge_Agent_Services_V1_UpdateAgentRequest.ControlCommand {
+    get {
+      if case .control(let v)? = requestType {return v}
+      return Edge_Agent_Services_V1_UpdateAgentRequest.ControlCommand()
+    }
+    set {requestType = .control(newValue)}
+  }
+
+  public var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  public enum OneOf_RequestType: Equatable, Sendable {
+    case chunk(Edge_Agent_Services_V1_UpdateAgentRequest.Chunk)
+    case control(Edge_Agent_Services_V1_UpdateAgentRequest.ControlCommand)
+
+  }
+
+  public struct Chunk: @unchecked Sendable {
+    // SwiftProtobuf.Message conformance is added in an extension below. See the
+    // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+    // methods supported on all messages.
+
+    public var data: Data = Data()
+
+    public var unknownFields = SwiftProtobuf.UnknownStorage()
+
+    public init() {}
+  }
+
+  public struct ControlCommand: Sendable {
+    // SwiftProtobuf.Message conformance is added in an extension below. See the
+    // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+    // methods supported on all messages.
+
+    public var command: Edge_Agent_Services_V1_UpdateAgentRequest.ControlCommand.OneOf_Command? = nil
+
+    /// Triggers the replacement of the running agent with the new binary.
+    public var update: Edge_Agent_Services_V1_UpdateAgentRequest.ControlCommand.Update {
+      get {
+        if case .update(let v)? = command {return v}
+        return Edge_Agent_Services_V1_UpdateAgentRequest.ControlCommand.Update()
+      }
+      set {command = .update(newValue)}
+    }
+
+    public var unknownFields = SwiftProtobuf.UnknownStorage()
+
+    public enum OneOf_Command: Equatable, Sendable {
+      /// Triggers the replacement of the running agent with the new binary.
+      case update(Edge_Agent_Services_V1_UpdateAgentRequest.ControlCommand.Update)
+
+    }
+
+    public struct Update: Sendable {
+      // SwiftProtobuf.Message conformance is added in an extension below. See the
+      // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+      // methods supported on all messages.
+
+      public var unknownFields = SwiftProtobuf.UnknownStorage()
+
+      public init() {}
+    }
+
+    public init() {}
+  }
+
+  public init() {}
+}
+
+public struct Edge_Agent_Services_V1_UpdateAgentResponse: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  public var responseType: Edge_Agent_Services_V1_UpdateAgentResponse.OneOf_ResponseType? = nil
+
+  public var updated: Edge_Agent_Services_V1_UpdateAgentResponse.Updated {
+    get {
+      if case .updated(let v)? = responseType {return v}
+      return Edge_Agent_Services_V1_UpdateAgentResponse.Updated()
+    }
+    set {responseType = .updated(newValue)}
+  }
+
+  public var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  public enum OneOf_ResponseType: Equatable, Sendable {
+    case updated(Edge_Agent_Services_V1_UpdateAgentResponse.Updated)
+
+  }
+
+  public struct Updated: Sendable {
+    // SwiftProtobuf.Message conformance is added in an extension below. See the
+    // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+    // methods supported on all messages.
+
+    public var unknownFields = SwiftProtobuf.UnknownStorage()
+
+    public init() {}
+  }
+
+  public init() {}
+}
+
 // MARK: - Code below here is support for the SwiftProtobuf runtime.
 
 fileprivate let _protobuf_package = "edge.agent.services.v1"
@@ -493,6 +611,242 @@ extension Edge_Agent_Services_V1_RunContainerResponse.Started: SwiftProtobuf.Mes
 
   public static func ==(lhs: Edge_Agent_Services_V1_RunContainerResponse.Started, rhs: Edge_Agent_Services_V1_RunContainerResponse.Started) -> Bool {
     if lhs.debugPort != rhs.debugPort {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+extension Edge_Agent_Services_V1_UpdateAgentRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = _protobuf_package + ".UpdateAgentRequest"
+  public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
+    1: .same(proto: "chunk"),
+    2: .same(proto: "control"),
+  ]
+
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try {
+        var v: Edge_Agent_Services_V1_UpdateAgentRequest.Chunk?
+        var hadOneofValue = false
+        if let current = self.requestType {
+          hadOneofValue = true
+          if case .chunk(let m) = current {v = m}
+        }
+        try decoder.decodeSingularMessageField(value: &v)
+        if let v = v {
+          if hadOneofValue {try decoder.handleConflictingOneOf()}
+          self.requestType = .chunk(v)
+        }
+      }()
+      case 2: try {
+        var v: Edge_Agent_Services_V1_UpdateAgentRequest.ControlCommand?
+        var hadOneofValue = false
+        if let current = self.requestType {
+          hadOneofValue = true
+          if case .control(let m) = current {v = m}
+        }
+        try decoder.decodeSingularMessageField(value: &v)
+        if let v = v {
+          if hadOneofValue {try decoder.handleConflictingOneOf()}
+          self.requestType = .control(v)
+        }
+      }()
+      default: break
+      }
+    }
+  }
+
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    // The use of inline closures is to circumvent an issue where the compiler
+    // allocates stack space for every if/case branch local when no optimizations
+    // are enabled. https://github.com/apple/swift-protobuf/issues/1034 and
+    // https://github.com/apple/swift-protobuf/issues/1182
+    switch self.requestType {
+    case .chunk?: try {
+      guard case .chunk(let v)? = self.requestType else { preconditionFailure() }
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 1)
+    }()
+    case .control?: try {
+      guard case .control(let v)? = self.requestType else { preconditionFailure() }
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 2)
+    }()
+    case nil: break
+    }
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  public static func ==(lhs: Edge_Agent_Services_V1_UpdateAgentRequest, rhs: Edge_Agent_Services_V1_UpdateAgentRequest) -> Bool {
+    if lhs.requestType != rhs.requestType {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+extension Edge_Agent_Services_V1_UpdateAgentRequest.Chunk: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = Edge_Agent_Services_V1_UpdateAgentRequest.protoMessageName + ".Chunk"
+  public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
+    1: .same(proto: "data"),
+  ]
+
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try { try decoder.decodeSingularBytesField(value: &self.data) }()
+      default: break
+      }
+    }
+  }
+
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    if !self.data.isEmpty {
+      try visitor.visitSingularBytesField(value: self.data, fieldNumber: 1)
+    }
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  public static func ==(lhs: Edge_Agent_Services_V1_UpdateAgentRequest.Chunk, rhs: Edge_Agent_Services_V1_UpdateAgentRequest.Chunk) -> Bool {
+    if lhs.data != rhs.data {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+extension Edge_Agent_Services_V1_UpdateAgentRequest.ControlCommand: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = Edge_Agent_Services_V1_UpdateAgentRequest.protoMessageName + ".ControlCommand"
+  public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
+    1: .same(proto: "update"),
+  ]
+
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try {
+        var v: Edge_Agent_Services_V1_UpdateAgentRequest.ControlCommand.Update?
+        var hadOneofValue = false
+        if let current = self.command {
+          hadOneofValue = true
+          if case .update(let m) = current {v = m}
+        }
+        try decoder.decodeSingularMessageField(value: &v)
+        if let v = v {
+          if hadOneofValue {try decoder.handleConflictingOneOf()}
+          self.command = .update(v)
+        }
+      }()
+      default: break
+      }
+    }
+  }
+
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    // The use of inline closures is to circumvent an issue where the compiler
+    // allocates stack space for every if/case branch local when no optimizations
+    // are enabled. https://github.com/apple/swift-protobuf/issues/1034 and
+    // https://github.com/apple/swift-protobuf/issues/1182
+    try { if case .update(let v)? = self.command {
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 1)
+    } }()
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  public static func ==(lhs: Edge_Agent_Services_V1_UpdateAgentRequest.ControlCommand, rhs: Edge_Agent_Services_V1_UpdateAgentRequest.ControlCommand) -> Bool {
+    if lhs.command != rhs.command {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+extension Edge_Agent_Services_V1_UpdateAgentRequest.ControlCommand.Update: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = Edge_Agent_Services_V1_UpdateAgentRequest.ControlCommand.protoMessageName + ".Update"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap()
+
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    // Load everything into unknown fields
+    while try decoder.nextFieldNumber() != nil {}
+  }
+
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  public static func ==(lhs: Edge_Agent_Services_V1_UpdateAgentRequest.ControlCommand.Update, rhs: Edge_Agent_Services_V1_UpdateAgentRequest.ControlCommand.Update) -> Bool {
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+extension Edge_Agent_Services_V1_UpdateAgentResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = _protobuf_package + ".UpdateAgentResponse"
+  public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
+    1: .same(proto: "updated"),
+  ]
+
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try {
+        var v: Edge_Agent_Services_V1_UpdateAgentResponse.Updated?
+        var hadOneofValue = false
+        if let current = self.responseType {
+          hadOneofValue = true
+          if case .updated(let m) = current {v = m}
+        }
+        try decoder.decodeSingularMessageField(value: &v)
+        if let v = v {
+          if hadOneofValue {try decoder.handleConflictingOneOf()}
+          self.responseType = .updated(v)
+        }
+      }()
+      default: break
+      }
+    }
+  }
+
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    // The use of inline closures is to circumvent an issue where the compiler
+    // allocates stack space for every if/case branch local when no optimizations
+    // are enabled. https://github.com/apple/swift-protobuf/issues/1034 and
+    // https://github.com/apple/swift-protobuf/issues/1182
+    try { if case .updated(let v)? = self.responseType {
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 1)
+    } }()
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  public static func ==(lhs: Edge_Agent_Services_V1_UpdateAgentResponse, rhs: Edge_Agent_Services_V1_UpdateAgentResponse) -> Bool {
+    if lhs.responseType != rhs.responseType {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+extension Edge_Agent_Services_V1_UpdateAgentResponse.Updated: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = Edge_Agent_Services_V1_UpdateAgentResponse.protoMessageName + ".Updated"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap()
+
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    // Load everything into unknown fields
+    while try decoder.nextFieldNumber() != nil {}
+  }
+
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  public static func ==(lhs: Edge_Agent_Services_V1_UpdateAgentResponse.Updated, rhs: Edge_Agent_Services_V1_UpdateAgentResponse.Updated) -> Bool {
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }

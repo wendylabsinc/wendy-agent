@@ -38,9 +38,14 @@ struct EdgeAgent: AsyncParsableCommand {
             forService: Edge_Agent_Services_V1_EdgeAgentService.descriptor
         )
 
+        let (signal, continuation) = AsyncStream<Void>.makeStream()
+
         let services: [any RegistrableRPCService] = [
             healthService,
-            EdgeAgentService(),
+            EdgeAgentService {
+                print("Shutting down server")
+                continuation.yield()
+            },
         ]
 
         let grpcServer = GRPCServer(
@@ -58,6 +63,22 @@ struct EdgeAgent: AsyncParsableCommand {
             logger: logger
         )
 
-        try await group.run()
+        try await withThrowingTaskGroup(of: Void.self) { taskGroup in
+            taskGroup.addTask {
+                try await group.run()
+                continuation.finish()
+            }
+
+            for try await () in signal {
+                logger.info("Received signal, restarting")
+                try await Task.sleep(for: .seconds(3))
+                await group.triggerGracefulShutdown()
+                taskGroup.cancelAll()
+                return
+            }
+
+            await group.triggerGracefulShutdown()
+            taskGroup.cancelAll()
+        }
     }
 }

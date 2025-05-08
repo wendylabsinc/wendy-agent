@@ -13,6 +13,7 @@ struct EdgeCLI: AsyncParsableCommand {
             RunCommand.self,
             DevicesCommand.self,
             ImagerCommand.self,
+            AgentCommand.self,
         ]
     )
 }
