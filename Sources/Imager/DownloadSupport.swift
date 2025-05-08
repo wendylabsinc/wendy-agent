@@ -1,7 +1,7 @@
-import Foundation
 import AsyncHTTPClient
-import _NIOFileSystem
+import Foundation
 import NIOCore
+import _NIOFileSystem
 
 #if os(macOS)
     import Darwin
@@ -50,8 +50,11 @@ public class ImageDownloader: ImageDownloading {
         let totalSize: Int64
 
         let request = HTTPClientRequest(url: url.absoluteString)
-        let response = try await HTTPClient.shared.execute(request, deadline: NIODeadline.now() + .seconds(60))
-        guard 
+        let response = try await HTTPClient.shared.execute(
+            request,
+            deadline: NIODeadline.now() + .seconds(60)
+        )
+        guard
             let contentLength = response.headers.first(name: "Content-Length").flatMap(Int64.init),
             contentLength > 0
         else {
@@ -76,7 +79,7 @@ public class ImageDownloader: ImageDownloading {
 
             try await writer.flush()
         }
-        
+
         // Ensure final progress is reported
         progress.completedUnitCount = totalSize
         progressHandler(progress)
@@ -84,7 +87,7 @@ public class ImageDownloader: ImageDownloading {
 
     private func extractImage(
         from path: String,
-        to directory: String, 
+        to directory: String,
         progressHandler: @escaping (Progress) -> Void
     ) async throws -> String {
         // Report extraction progress
@@ -203,7 +206,11 @@ public class ImageDownloader: ImageDownloading {
         let localZipURL = temporaryDirectory.appendingPathComponent("\(tempFilename).zip")
 
         func redownloadImage() async throws -> String {
-            try await downloadFile(from: url, to: localZipURL.path, progressHandler: progressHandler)
+            try await downloadFile(
+                from: url,
+                to: localZipURL.path,
+                progressHandler: progressHandler
+            )
 
             // Create the extraction directory
             try fileManager.createDirectory(
@@ -214,14 +221,16 @@ public class ImageDownloader: ImageDownloading {
 
             // Extract the .img file from the zip archive
             return try await extractImage(
-                from: localZipURL.path, 
-                to: extractionDirectoryURL.path, 
+                from: localZipURL.path,
+                to: extractionDirectoryURL.path,
                 progressHandler: progressHandler
             )
         }
 
-        let isValidCache = try (!fileManager.fileExists(atPath: extractionDirectoryURL.path) ||
-            FileManager.default.contentsOfDirectory(atPath: extractionDirectoryURL.path).isEmpty)
+        let isValidCache =
+            try
+            (!fileManager.fileExists(atPath: extractionDirectoryURL.path)
+            || FileManager.default.contentsOfDirectory(atPath: extractionDirectoryURL.path).isEmpty)
 
         if redownload || isValidCache {
             return try await redownloadImage()
