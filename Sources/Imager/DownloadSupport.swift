@@ -32,11 +32,9 @@ public protocol ImageDownloading {
 
 /// Manages downloading device images from GCS
 public class ImageDownloader: ImageDownloading {
-    private let urlSession: URLSession
     private let fileManager: FileManager
 
-    public init(urlSession: URLSession = .shared, fileManager: FileManager = .default) {
-        self.urlSession = urlSession
+    public init(fileManager: FileManager = .default) {
         self.fileManager = fileManager
     }
 
