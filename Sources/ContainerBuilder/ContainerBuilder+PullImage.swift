@@ -92,7 +92,7 @@ extension ContainerImageSpec {
 
         // Create a cache directory for layers
         let cacheDir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(
-            ".edge-cache"
+            ".edge-cache/layers"
         )
         try FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
 

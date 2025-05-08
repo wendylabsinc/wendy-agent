@@ -11,6 +11,7 @@ let package = Package(
         .executable(name: "edge", targets: ["edge"]),
     ],
     dependencies: [
+        .package(url: "https://github.com/swift-server/async-http-client.git", from: "1.25.2"),
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.5.0"),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.6.3"),
         .package(url: "https://github.com/grpc/grpc-swift.git", from: "2.0.0"),
@@ -110,7 +111,9 @@ let package = Package(
         .target(
             name: "Imager",
             dependencies: [
-                .product(name: "Subprocess", package: "swift-subprocess")
+                .product(name: "Subprocess", package: "swift-subprocess"),
+                .product(name: "AsyncHTTPClient", package: "async-http-client"),
+                .product(name: "_NIOFileSystem", package: "swift-nio"),
             ]
         ),
         .target(

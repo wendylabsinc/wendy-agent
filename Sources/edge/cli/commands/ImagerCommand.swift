@@ -195,6 +195,9 @@ struct ImagerCommand: AsyncParsableCommand {
         @Flag(name: .long, help: "Skip confirmation before writing")
         var force: Bool = false
 
+        @Flag(name: .long, help: "Force redownload and write the image")
+        var redownload: Bool = false
+
         func run() async throws {
             // Use DiskLister to find the drive
             let diskLister = DiskListerFactory.createDiskLister()
@@ -232,7 +235,9 @@ struct ImagerCommand: AsyncParsableCommand {
 
             let localImagePath = try await imageDownloader.downloadImage(
                 from: imageUrl,
-                expectedSize: imageSize
+                deviceName: deviceName,
+                expectedSize: imageSize,
+                redownload: redownload
             ) { progress in
                 // Update progress at most once per second
                 let now = Date()

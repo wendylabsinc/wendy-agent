@@ -59,16 +59,16 @@ public struct MacOSDiskLister: DiskLister {
                 if let drive = try await parseDiskUtilInfoOutput(output, id: id) {
                     return drive
                 } else {
-                    throw DiskListerError.driveNotFound(id: id)
+                    throw DiskListerError.driveNotFound(id: id, error: result.standardError ?? "Unknown error")
                 }
             } else {
-                throw DiskListerError.driveNotFound(id: id)
+                throw DiskListerError.driveNotFound(id: id, error: result.standardError ?? "Unknown error")
             }
         } else {
             if result.standardError != nil {
                 // Error occurred, but we're not using the error output
             }
-            throw DiskListerError.driveNotFound(id: id)
+            throw DiskListerError.driveNotFound(id: id, error: result.standardError ?? "Unknown error")
         }
     }
 
