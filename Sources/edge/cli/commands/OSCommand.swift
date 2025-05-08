@@ -181,6 +181,9 @@ struct OSCommand: AsyncParsableCommand {
         @Flag(name: .long, help: "Skip confirmation before writing")
         var force: Bool = false
 
+        @Flag(name: .long, help: "Force redownload and write the image")
+        var redownload: Bool = false
+
         func run() async throws {
             // Use DiskLister to find the drive
             let diskLister = DiskListerFactory.createDiskLister()
@@ -214,47 +217,42 @@ struct OSCommand: AsyncParsableCommand {
             // Download the image
             print("\n📥 Downloading image...")
             let imageDownloader = ImageDownloaderFactory.createImageDownloader()
-            var lastUpdateTime = Date()
 
             let localImagePath = try await imageDownloader.downloadImage(
                 from: imageUrl,
-                expectedSize: imageSize
+                deviceName: deviceName,
+                expectedSize: imageSize,
+                redownload: redownload
             ) { progress in
-                // Update progress at most once per second
-                let now = Date()
-                if now.timeIntervalSince(lastUpdateTime) >= 1.0 {
-                    lastUpdateTime = now
+                // Clear the current line
+                print("\r\u{1B}[K", terminator: "")
 
-                    // Clear the current line
-                    print("\r\u{1B}[K", terminator: "")
+                if let percent = progress.percentComplete {
+                    // Use ASCII progress bar
+                    let progressBar = progress.asciiProgress(
+                        totalBlocks: 30,
+                        appendPercentageText: false
+                    )
 
-                    if let percent = progress.percentComplete {
-                        // Use ASCII progress bar
-                        let progressBar = progress.asciiProgress(
-                            totalBlocks: 30,
-                            appendPercentageText: false
+                    // Print progress with percentage and downloaded/total bytes
+                    if let totalText = progress.totalBytesText {
+                        print(
+                            "\r\(progressBar) \(String(format: "%.1f%%", percent)) - \(progress.bytesWrittenText)/\(totalText)",
+                            terminator: ""
                         )
-
-                        // Print progress with percentage and downloaded/total bytes
-                        if let totalText = progress.totalBytesText {
-                            print(
-                                "\r\(progressBar) \(String(format: "%.1f%%", percent)) - \(progress.bytesWrittenText)/\(totalText)",
-                                terminator: ""
-                            )
-                        } else {
-                            print(
-                                "\r\(progressBar) \(String(format: "%.1f%%", percent)) - \(progress.bytesWrittenText)",
-                                terminator: ""
-                            )
-                        }
                     } else {
-                        // If we don't know the percentage, just show bytes downloaded
-                        print("\rDownloaded: \(progress.bytesWrittenText)", terminator: "")
+                        print(
+                            "\r\(progressBar) \(String(format: "%.1f%%", percent)) - \(progress.bytesWrittenText)",
+                            terminator: ""
+                        )
                     }
-
-                    // Force output to be displayed without accessing stdout directly
-                    flushOutput()
+                } else {
+                    // If we don't know the percentage, just show bytes downloaded
+                    print("\rDownloaded: \(progress.bytesWrittenText)", terminator: "")
                 }
+
+                // Force output to be displayed without accessing stdout directly
+                flushOutput()
             }
 
             // Clear the line and print completion message
@@ -265,44 +263,37 @@ struct OSCommand: AsyncParsableCommand {
 
             // Use DiskWriter to write the image
             let diskWriter = DiskWriterFactory.createDiskWriter()
-            lastUpdateTime = Date()
 
             try await diskWriter.write(imagePath: localImagePath, drive: drive) { progress in
-                // Update progress at most once per second
-                let now = Date()
-                if now.timeIntervalSince(lastUpdateTime) >= 1.0 {
-                    lastUpdateTime = now
+                // Clear the current line
+                print("\r\u{1B}[K", terminator: "")
 
-                    // Clear the current line
-                    print("\r\u{1B}[K", terminator: "")
+                if let percent = progress.percentComplete {
+                    // Use ASCII progress bar
+                    let progressBar = progress.asciiProgress(
+                        totalBlocks: 30,
+                        appendPercentageText: false
+                    )
 
-                    if let percent = progress.percentComplete {
-                        // Use ASCII progress bar
-                        let progressBar = progress.asciiProgress(
-                            totalBlocks: 30,
-                            appendPercentageText: false
+                    // Print progress with percentage and written/total bytes
+                    if let totalText = progress.totalBytesText {
+                        print(
+                            "\r\(progressBar) \(String(format: "%.1f%%", percent)) - \(progress.bytesWrittenText)/\(totalText)",
+                            terminator: ""
                         )
-
-                        // Print progress with percentage and written/total bytes
-                        if let totalText = progress.totalBytesText {
-                            print(
-                                "\r\(progressBar) \(String(format: "%.1f%%", percent)) - \(progress.bytesWrittenText)/\(totalText)",
-                                terminator: ""
-                            )
-                        } else {
-                            print(
-                                "\r\(progressBar) \(String(format: "%.1f%%", percent)) - \(progress.bytesWrittenText)",
-                                terminator: ""
-                            )
-                        }
                     } else {
-                        // If we don't know the percentage, just show bytes written
-                        print("\rWritten: \(progress.bytesWrittenText)", terminator: "")
+                        print(
+                            "\r\(progressBar) \(String(format: "%.1f%%", percent)) - \(progress.bytesWrittenText)",
+                            terminator: ""
+                        )
                     }
-
-                    // Force output to be displayed without accessing stdout directly
-                    flushOutput()
+                } else {
+                    // If we don't know the percentage, just show bytes written
+                    print("\rWritten: \(progress.bytesWrittenText)", terminator: "")
                 }
+
+                // Force output to be displayed without accessing stdout directly
+                flushOutput()
             }
 
             // Clear the line and print completion message

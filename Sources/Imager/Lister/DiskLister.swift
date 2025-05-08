@@ -2,7 +2,7 @@ import Foundation
 
 /// Errors that can occur during disk listing operations.
 public enum DiskListerError: Error {
-    case driveNotFound(id: String)
+    case driveNotFound(id: String, error: String)
     case commandFailed(error: Error)
     case listFailed(error: String)
     case unknownOutput
