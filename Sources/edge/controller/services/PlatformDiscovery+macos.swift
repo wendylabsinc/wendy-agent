@@ -1,4 +1,5 @@
 #if os(macOS)
+    import AsyncDNSResolver
     import Foundation
     import Logging
     import IOKit
@@ -127,6 +128,38 @@
 
             if interfaces.isEmpty {
                 logger.info("No EdgeOS Ethernet interfaces found.")
+            }
+
+            return interfaces
+        }
+
+        func findLANDevices(logger: Logger) async throws -> [LANDevice] {
+            var interfaces: [LANDevice] = []
+
+            let resolver = try AsyncDNSResolver()
+            let ptr = try await resolver.queryPTR(name: "_edgeos._tcp.local")
+            for name in ptr.names {
+                guard
+                    let srv = try await resolver.querySRV(name: name).first,
+                    let txt = try await resolver.queryTXT(name: name).first,
+                    let id = txt.txt.split(separator: "=").last.map(String.init)
+                else {
+                    continue
+                }
+
+                let lanDevice = LANDevice(
+                    id: id,
+                    displayName: "EdgeOS Device",
+                    hostname: srv.host,
+                    port: Int(srv.port),
+                    interfaceType: "LAN",
+                    isEdgeOSDevice: true
+                )
+
+                // Prevent duplicates
+                if !interfaces.contains(where: { $0.id == id || $0.hostname == srv.host }) {
+                    interfaces.append(lanDevice)
+                }
             }
 
             return interfaces

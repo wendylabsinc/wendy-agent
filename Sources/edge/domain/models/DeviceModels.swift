@@ -18,49 +18,26 @@ extension Device {
     }
 }
 
-struct DevicesCollection {
-    private let devices: [Device]
+struct DevicesCollection: Encodable {
+    let usbDevices: [USBDevice]
+    let ethernetDevices: [EthernetInterface]
+    let lanDevices: [LANDevice]
 
-    init(devices: [Device]) {
-        self.devices = devices
-    }
-
-    // Convenience initializer for backward compatibility
-    init(usb: [USBDevice] = [], ethernet: [EthernetInterface] = []) {
-        var allDevices: [Device] = []
-        allDevices.append(contentsOf: usb)
-        allDevices.append(contentsOf: ethernet)
-        self.devices = allDevices
+    init(usb: [USBDevice] = [], ethernet: [EthernetInterface] = [], lan: [LANDevice] = []) {
+        self.usbDevices = usb
+        self.ethernetDevices = ethernet
+        self.lanDevices = lan
     }
 
     func toJSON() throws -> String {
-        // Since Device is a protocol, we need to handle heterogeneous collection
-        // One approach is to create a dictionary with device types as keys
-        var devicesByType: EncodableDict = EncodableDict(dict: [:])
-
-        for device in devices {
-            devicesByType.append(device: device)
-        }
-
-        // If there are no devices, return an empty object without pretty printing
-        if devicesByType.dict.isEmpty {
-            return "{}"
-        }
-
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-
-        // We need to convert to a custom structure for encoding
-        let data = try encoder.encode(devicesByType)
+        let data = try encoder.encode(self)
         return String(data: data, encoding: .utf8) ?? "{}"
     }
 
     func toHumanReadableString() -> String {
         var result = ""
-
-        // Group devices by type
-        let usbDevices = devices.compactMap { $0 as? USBDevice }
-        let ethernetDevices = devices.compactMap { $0 as? EthernetInterface }
 
         // Add USB devices section
         if !usbDevices.isEmpty {
@@ -81,62 +58,46 @@ struct DevicesCollection {
             }
         }
 
+        // Add LAN devices section
+        if !lanDevices.isEmpty {
+            if !result.isEmpty {
+                result += "\n"
+            }
+            result += "\nLAN Devices:"
+            for device in lanDevices {
+                result += "\n" + device.toHumanReadableString()
+            }
+        }
+
         return result.isEmpty ? "No devices found." : result
     }
+}
 
-    // Helper struct for encoding heterogeneous collections
-    private struct EncodableDict: Encodable {
-        enum AnyDevice: Encodable {
-            case usb(USBDevice)
-            case ethernet(EthernetInterface)
+struct LANDevice: Device, Encodable {
+    let id: String
+    let displayName: String
+    let hostname: String
+    let port: Int
+    let interfaceType: String
+    let isEdgeOSDevice: Bool
 
-            private enum CodingKeys: String, CodingKey {
-                case type
-                case device
-            }
+    func toJSON() throws -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let data = try encoder.encode(self)
+        return String(data: data, encoding: .utf8) ?? "{}"
+    }
 
-            func encode(to encoder: Encoder) throws {
-                var container = encoder.container(keyedBy: CodingKeys.self)
+    func toHumanReadableString() -> String {
+        return "\(displayName) (\(hostname):\(port)) [\(id)]"
+    }
 
-                switch self {
-                case .usb(let device):
-                    try container.encode("usb", forKey: .type)
-                    try container.encode(device, forKey: .device)
-                case .ethernet(let device):
-                    try container.encode("ethernet", forKey: .type)
-                    try container.encode(device, forKey: .device)
-                }
-            }
-        }
-
-        var dict: [String: [AnyDevice]]
-
-        // Add a custom append function to simplify adding devices
-        mutating func append(device: Device) {
-            switch device {
-            case let usbDevice as USBDevice:
-                let key = "usbDevices"
-                if dict[key] == nil {
-                    dict[key] = []
-                }
-                dict[key]?.append(AnyDevice.usb(usbDevice))
-
-            case let ethernetDevice as EthernetInterface:
-                let key = "ethernetDevices"
-                if dict[key] == nil {
-                    dict[key] = []
-                }
-                dict[key]?.append(AnyDevice.ethernet(ethernetDevice))
-
-            default:
-                // Handle unknown device types if needed
-                break
-            }
-        }
-
-        func encode(to encoder: Encoder) throws {
-            try dict.encode(to: encoder)
-        }
+    static func formatCollection(_ interfaces: [LANDevice], as format: OutputFormat) -> String {
+        return DeviceFormatter.formatCollection(
+            interfaces,
+            as: format,
+            collectionName: "LAN Interfaces"
+        )
     }
 }
 
@@ -157,7 +118,7 @@ struct EthernetInterface: Device, Encodable {
 
     func toJSON() throws -> String {
         let encoder = JSONEncoder()
-        encoder.outputFormatting = .prettyPrinted
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let data = try encoder.encode(self)
         return String(data: data, encoding: .utf8) ?? "{}"
     }
@@ -184,12 +145,14 @@ struct EthernetInterface: Device, Encodable {
 
 struct USBDevice: Device, Encodable {
     let name: String
+    let displayName: String
     let vendorId: String
     let productId: String
     let isEdgeOSDevice: Bool
 
     init(name: String, vendorId: Int, productId: Int) {
         self.name = name
+        self.displayName = name
         self.vendorId = String(format: "0x%04X", vendorId)
         self.productId = String(format: "0x%04X", productId)
         self.isEdgeOSDevice = name.contains("EdgeOS")
@@ -197,7 +160,7 @@ struct USBDevice: Device, Encodable {
 
     func toJSON() throws -> String {
         let encoder = JSONEncoder()
-        encoder.outputFormatting = .prettyPrinted
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let data = try encoder.encode(self)
         return String(data: data, encoding: .utf8) ?? "{}"
     }

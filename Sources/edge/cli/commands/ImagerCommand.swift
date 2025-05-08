@@ -36,11 +36,17 @@ struct ImagerCommand: AsyncParsableCommand {
         @Flag(name: .long, help: "List all drives, not just external drives")
         var all: Bool = false
 
+        @Flag(name: [.customShort("j"), .long], help: "Output in JSON format")
+        var json: Bool = false
+
         func run() async throws {
             let diskLister = DiskListerFactory.createDiskLister()
             let drives = try await diskLister.list(all: all)
 
-            if drives.isEmpty {
+            if json {
+                let jsonString = try JSONEncoder().encode(drives)
+                print(String(data: jsonString, encoding: .utf8)!)
+            } else if drives.isEmpty {
                 print("No external drives found.")
             } else {
                 print("\nAvailable external drives:")
@@ -64,13 +70,21 @@ struct ImagerCommand: AsyncParsableCommand {
             abstract: "List available device images."
         )
 
+        @Flag(name: [.customShort("j"), .long], help: "Output in JSON format")
+        var json: Bool = false
+
         func run() async throws {
-            print("📱 Fetching available device images...")
+            if !json {
+                print("📱 Fetching available device images...")
+            }
 
             let manifestManager = ManifestManagerFactory.createManifestManager()
             let deviceList = try await manifestManager.getAvailableDevices()
 
-            if deviceList.isEmpty {
+            if json {
+                let jsonString = try JSONEncoder().encode(deviceList)
+                print(String(data: jsonString, encoding: .utf8)!)
+            } else if deviceList.isEmpty {
                 print("No devices found in the manifest.")
             } else {
                 print("\nAvailable devices:")
@@ -181,6 +195,9 @@ struct ImagerCommand: AsyncParsableCommand {
         @Flag(name: .long, help: "Skip confirmation before writing")
         var force: Bool = false
 
+        @Flag(name: .long, help: "Force redownload and write the image")
+        var redownload: Bool = false
+
         func run() async throws {
             // Use DiskLister to find the drive
             let diskLister = DiskListerFactory.createDiskLister()
@@ -218,7 +235,9 @@ struct ImagerCommand: AsyncParsableCommand {
 
             let localImagePath = try await imageDownloader.downloadImage(
                 from: imageUrl,
-                expectedSize: imageSize
+                deviceName: deviceName,
+                expectedSize: imageSize,
+                redownload: redownload
             ) { progress in
                 // Update progress at most once per second
                 let now = Date()

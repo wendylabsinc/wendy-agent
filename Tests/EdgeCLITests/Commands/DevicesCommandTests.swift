@@ -6,7 +6,7 @@ import Testing
 
 // Define these enums for testing
 enum DeviceTypeForTesting: String {
-    case usb, ethernet, all
+    case usb, ethernet, lan, all
 }
 
 enum OutputFormatForTesting: String {
@@ -47,6 +47,17 @@ struct DeviceDiscoveryTests {
 
         #expect(interfaces.count == 1)
         #expect(interfaces[0].name == "eth0")
+    }
+
+    @Test("List only LAN devices")
+    func testLANDevicesOnly() async throws {
+        let mockDiscovery = createMockDiscovery()
+        let lanDevices = mockDiscovery.lanDevices
+
+        #expect(lanDevices.count == 1)
+        #expect(lanDevices[0].id == "device123")
+        #expect(lanDevices[0].displayName == "Test LAN Device")
+        #expect(lanDevices[0].hostname == "test.local")
     }
 
     @Test("JSON formatting of devices")
@@ -90,11 +101,13 @@ struct DeviceDiscoveryTests {
         // Test equality for different types
         #expect(DeviceTypeForTesting.usb == .usb)
         #expect(DeviceTypeForTesting.ethernet == .ethernet)
+        #expect(DeviceTypeForTesting.lan == .lan)
         #expect(DeviceTypeForTesting.all == .all)
 
         // Test string representation
         #expect(DeviceTypeForTesting.usb.rawValue == "usb")
         #expect(DeviceTypeForTesting.ethernet.rawValue == "ethernet")
+        #expect(DeviceTypeForTesting.lan.rawValue == "lan")
         #expect(DeviceTypeForTesting.all.rawValue == "all")
     }
 
@@ -175,6 +188,16 @@ struct DeviceDiscoveryTests {
                     interfaceType: "Ethernet",
                     macAddress: "00:11:22:33:44:55"
                 )
+            ],
+            lanDevices: [
+                LANDevice(
+                    id: "device123",
+                    displayName: "Test LAN Device",
+                    hostname: "test.local",
+                    port: 8080,
+                    interfaceType: "LAN",
+                    isEdgeOSDevice: true
+                )
             ]
         )
     }
@@ -184,6 +207,17 @@ struct DeviceDiscoveryTests {
 struct MockDeviceDiscovery: DeviceDiscovery {
     let usbDevices: [USBDevice]
     let ethernetInterfaces: [EthernetInterface]
+    let lanDevices: [LANDevice]
+
+    init(
+        usbDevices: [USBDevice] = [],
+        ethernetInterfaces: [EthernetInterface] = [],
+        lanDevices: [LANDevice] = []
+    ) {
+        self.usbDevices = usbDevices
+        self.ethernetInterfaces = ethernetInterfaces
+        self.lanDevices = lanDevices
+    }
 
     func findUSBDevices(logger: Logger) async -> [USBDevice] {
         return usbDevices
@@ -191,6 +225,10 @@ struct MockDeviceDiscovery: DeviceDiscovery {
 
     func findEthernetInterfaces(logger: Logger) async -> [EthernetInterface] {
         return ethernetInterfaces
+    }
+
+    func findLANDevices(logger: Logger) async throws -> [LANDevice] {
+        return lanDevices
     }
 }
 
