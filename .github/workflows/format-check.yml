@@ -1,4 +1,4 @@
-name: Swift Format Check
+name: Swift Format Check and Fix
 
 on:
   pull_request:
@@ -14,5 +14,21 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Run Swift Format
+      - name: Run Swift Format Check
+        id: format_check
         run: swift format lint --recursive --strict Sources
+        continue-on-error: true
+
+      - name: Fix Formatting Issues
+        if: steps.format_check.outcome != 'success'
+        run: swift format --recursive --in-place Sources
+
+      - name: Create Pull Request with Formatting Fixes
+        if: steps.format_check.outcome != 'success'
+        uses: peter-evans/create-pull-request@v5
+        with:
+          commit-message: "style: fix code formatting with swift-format"
+          title: "style: fix code formatting"
+          body: "This PR fixes code formatting issues using swift-format."
+          branch: fix-code-formatting
+          base: ${{ github.head_ref }}
