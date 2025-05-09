@@ -6,6 +6,10 @@ service EdgeAgentService {
     // Upload a container image to the agent, and run it.
     // The first message in the stream MUST be the header.
     rpc RunContainer(stream RunContainerRequest) returns (stream RunContainerResponse);
+
+    rpc UpdateAgent(stream UpdateAgentRequest) returns (stream UpdateAgentResponse);
+
+    rpc GetAgentVersion(GetAgentVersionRequest) returns (GetAgentVersionResponse);
 }
 
 message RunContainerRequest {
@@ -55,4 +59,44 @@ message RunContainerResponse {
         // If this is 0, the container is not running with a debugger.
         uint32 debug_port = 1;
     }
+}
+
+message UpdateAgentRequest {
+    oneof request_type {
+        Chunk chunk = 1;
+        ControlCommand control = 2;
+    }
+
+    message Chunk {
+        bytes data = 1;
+    }
+
+    message ControlCommand {
+        oneof command {
+            // Triggers the replacement of the running agent with the new binary.
+            Update update = 1;
+        }
+
+        message Update {
+            
+        }
+    }
+}
+
+message UpdateAgentResponse {
+    oneof response_type {
+        Updated updated = 1;
+    }
+
+    message Updated {
+        
+    }
+}
+
+message GetAgentVersionRequest {
+
+}
+
+message GetAgentVersionResponse {
+    string version = 1;
 }

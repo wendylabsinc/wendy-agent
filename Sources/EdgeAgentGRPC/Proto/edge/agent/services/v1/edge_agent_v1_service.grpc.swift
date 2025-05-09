@@ -30,9 +30,35 @@ public enum Edge_Agent_Services_V1_EdgeAgentService {
                 method: "RunContainer"
             )
         }
+        /// Namespace for "UpdateAgent" metadata.
+        public enum UpdateAgent {
+            /// Request type for "UpdateAgent".
+            public typealias Input = Edge_Agent_Services_V1_UpdateAgentRequest
+            /// Response type for "UpdateAgent".
+            public typealias Output = Edge_Agent_Services_V1_UpdateAgentResponse
+            /// Descriptor for "UpdateAgent".
+            public static let descriptor = GRPCCore.MethodDescriptor(
+                service: GRPCCore.ServiceDescriptor(fullyQualifiedService: "edge.agent.services.v1.EdgeAgentService"),
+                method: "UpdateAgent"
+            )
+        }
+        /// Namespace for "GetAgentVersion" metadata.
+        public enum GetAgentVersion {
+            /// Request type for "GetAgentVersion".
+            public typealias Input = Edge_Agent_Services_V1_GetAgentVersionRequest
+            /// Response type for "GetAgentVersion".
+            public typealias Output = Edge_Agent_Services_V1_GetAgentVersionResponse
+            /// Descriptor for "GetAgentVersion".
+            public static let descriptor = GRPCCore.MethodDescriptor(
+                service: GRPCCore.ServiceDescriptor(fullyQualifiedService: "edge.agent.services.v1.EdgeAgentService"),
+                method: "GetAgentVersion"
+            )
+        }
         /// Descriptors for all methods in the "edge.agent.services.v1.EdgeAgentService" service.
         public static let descriptors: [GRPCCore.MethodDescriptor] = [
-            RunContainer.descriptor
+            RunContainer.descriptor,
+            UpdateAgent.descriptor,
+            GetAgentVersion.descriptor
         ]
     }
 }
@@ -74,6 +100,34 @@ extension Edge_Agent_Services_V1_EdgeAgentService {
             request: GRPCCore.StreamingServerRequest<Edge_Agent_Services_V1_RunContainerRequest>,
             context: GRPCCore.ServerContext
         ) async throws -> GRPCCore.StreamingServerResponse<Edge_Agent_Services_V1_RunContainerResponse>
+
+        /// Handle the "UpdateAgent" method.
+        ///
+        /// - Parameters:
+        ///   - request: A streaming request of `Edge_Agent_Services_V1_UpdateAgentRequest` messages.
+        ///   - context: Context providing information about the RPC.
+        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
+        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
+        ///     to an internal error.
+        /// - Returns: A streaming response of `Edge_Agent_Services_V1_UpdateAgentResponse` messages.
+        func updateAgent(
+            request: GRPCCore.StreamingServerRequest<Edge_Agent_Services_V1_UpdateAgentRequest>,
+            context: GRPCCore.ServerContext
+        ) async throws -> GRPCCore.StreamingServerResponse<Edge_Agent_Services_V1_UpdateAgentResponse>
+
+        /// Handle the "GetAgentVersion" method.
+        ///
+        /// - Parameters:
+        ///   - request: A streaming request of `Edge_Agent_Services_V1_GetAgentVersionRequest` messages.
+        ///   - context: Context providing information about the RPC.
+        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
+        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
+        ///     to an internal error.
+        /// - Returns: A streaming response of `Edge_Agent_Services_V1_GetAgentVersionResponse` messages.
+        func getAgentVersion(
+            request: GRPCCore.StreamingServerRequest<Edge_Agent_Services_V1_GetAgentVersionRequest>,
+            context: GRPCCore.ServerContext
+        ) async throws -> GRPCCore.StreamingServerResponse<Edge_Agent_Services_V1_GetAgentVersionResponse>
     }
 
     /// Service protocol for the "edge.agent.services.v1.EdgeAgentService" service.
@@ -102,6 +156,34 @@ extension Edge_Agent_Services_V1_EdgeAgentService {
             request: GRPCCore.StreamingServerRequest<Edge_Agent_Services_V1_RunContainerRequest>,
             context: GRPCCore.ServerContext
         ) async throws -> GRPCCore.StreamingServerResponse<Edge_Agent_Services_V1_RunContainerResponse>
+
+        /// Handle the "UpdateAgent" method.
+        ///
+        /// - Parameters:
+        ///   - request: A streaming request of `Edge_Agent_Services_V1_UpdateAgentRequest` messages.
+        ///   - context: Context providing information about the RPC.
+        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
+        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
+        ///     to an internal error.
+        /// - Returns: A streaming response of `Edge_Agent_Services_V1_UpdateAgentResponse` messages.
+        func updateAgent(
+            request: GRPCCore.StreamingServerRequest<Edge_Agent_Services_V1_UpdateAgentRequest>,
+            context: GRPCCore.ServerContext
+        ) async throws -> GRPCCore.StreamingServerResponse<Edge_Agent_Services_V1_UpdateAgentResponse>
+
+        /// Handle the "GetAgentVersion" method.
+        ///
+        /// - Parameters:
+        ///   - request: A request containing a single `Edge_Agent_Services_V1_GetAgentVersionRequest` message.
+        ///   - context: Context providing information about the RPC.
+        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
+        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
+        ///     to an internal error.
+        /// - Returns: A response containing a single `Edge_Agent_Services_V1_GetAgentVersionResponse` message.
+        func getAgentVersion(
+            request: GRPCCore.ServerRequest<Edge_Agent_Services_V1_GetAgentVersionRequest>,
+            context: GRPCCore.ServerContext
+        ) async throws -> GRPCCore.ServerResponse<Edge_Agent_Services_V1_GetAgentVersionResponse>
     }
 
     /// Simple service protocol for the "edge.agent.services.v1.EdgeAgentService" service.
@@ -129,6 +211,35 @@ extension Edge_Agent_Services_V1_EdgeAgentService {
             response: GRPCCore.RPCWriter<Edge_Agent_Services_V1_RunContainerResponse>,
             context: GRPCCore.ServerContext
         ) async throws
+
+        /// Handle the "UpdateAgent" method.
+        ///
+        /// - Parameters:
+        ///   - request: A stream of `Edge_Agent_Services_V1_UpdateAgentRequest` messages.
+        ///   - response: A response stream of `Edge_Agent_Services_V1_UpdateAgentResponse` messages.
+        ///   - context: Context providing information about the RPC.
+        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
+        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
+        ///     to an internal error.
+        func updateAgent(
+            request: GRPCCore.RPCAsyncSequence<Edge_Agent_Services_V1_UpdateAgentRequest, any Swift.Error>,
+            response: GRPCCore.RPCWriter<Edge_Agent_Services_V1_UpdateAgentResponse>,
+            context: GRPCCore.ServerContext
+        ) async throws
+
+        /// Handle the "GetAgentVersion" method.
+        ///
+        /// - Parameters:
+        ///   - request: A `Edge_Agent_Services_V1_GetAgentVersionRequest` message.
+        ///   - context: Context providing information about the RPC.
+        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
+        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
+        ///     to an internal error.
+        /// - Returns: A `Edge_Agent_Services_V1_GetAgentVersionResponse` to respond with.
+        func getAgentVersion(
+            request: Edge_Agent_Services_V1_GetAgentVersionRequest,
+            context: GRPCCore.ServerContext
+        ) async throws -> Edge_Agent_Services_V1_GetAgentVersionResponse
     }
 }
 
@@ -146,11 +257,43 @@ extension Edge_Agent_Services_V1_EdgeAgentService.StreamingServiceProtocol {
                 )
             }
         )
+        router.registerHandler(
+            forMethod: Edge_Agent_Services_V1_EdgeAgentService.Method.UpdateAgent.descriptor,
+            deserializer: GRPCProtobuf.ProtobufDeserializer<Edge_Agent_Services_V1_UpdateAgentRequest>(),
+            serializer: GRPCProtobuf.ProtobufSerializer<Edge_Agent_Services_V1_UpdateAgentResponse>(),
+            handler: { request, context in
+                try await self.updateAgent(
+                    request: request,
+                    context: context
+                )
+            }
+        )
+        router.registerHandler(
+            forMethod: Edge_Agent_Services_V1_EdgeAgentService.Method.GetAgentVersion.descriptor,
+            deserializer: GRPCProtobuf.ProtobufDeserializer<Edge_Agent_Services_V1_GetAgentVersionRequest>(),
+            serializer: GRPCProtobuf.ProtobufSerializer<Edge_Agent_Services_V1_GetAgentVersionResponse>(),
+            handler: { request, context in
+                try await self.getAgentVersion(
+                    request: request,
+                    context: context
+                )
+            }
+        )
     }
 }
 
 // Default implementation of streaming methods from 'StreamingServiceProtocol'.
 extension Edge_Agent_Services_V1_EdgeAgentService.ServiceProtocol {
+    public func getAgentVersion(
+        request: GRPCCore.StreamingServerRequest<Edge_Agent_Services_V1_GetAgentVersionRequest>,
+        context: GRPCCore.ServerContext
+    ) async throws -> GRPCCore.StreamingServerResponse<Edge_Agent_Services_V1_GetAgentVersionResponse> {
+        let response = try await self.getAgentVersion(
+            request: GRPCCore.ServerRequest(stream: request),
+            context: context
+        )
+        return GRPCCore.StreamingServerResponse(single: response)
+    }
 }
 
 // Default implementation of methods from 'ServiceProtocol'.
@@ -169,6 +312,36 @@ extension Edge_Agent_Services_V1_EdgeAgentService.SimpleServiceProtocol {
                 )
                 return [:]
             }
+        )
+    }
+
+    public func updateAgent(
+        request: GRPCCore.StreamingServerRequest<Edge_Agent_Services_V1_UpdateAgentRequest>,
+        context: GRPCCore.ServerContext
+    ) async throws -> GRPCCore.StreamingServerResponse<Edge_Agent_Services_V1_UpdateAgentResponse> {
+        return GRPCCore.StreamingServerResponse<Edge_Agent_Services_V1_UpdateAgentResponse>(
+            metadata: [:],
+            producer: { writer in
+                try await self.updateAgent(
+                    request: request.messages,
+                    response: writer,
+                    context: context
+                )
+                return [:]
+            }
+        )
+    }
+
+    public func getAgentVersion(
+        request: GRPCCore.ServerRequest<Edge_Agent_Services_V1_GetAgentVersionRequest>,
+        context: GRPCCore.ServerContext
+    ) async throws -> GRPCCore.ServerResponse<Edge_Agent_Services_V1_GetAgentVersionResponse> {
+        return GRPCCore.ServerResponse<Edge_Agent_Services_V1_GetAgentVersionResponse>(
+            message: try await self.getAgentVersion(
+                request: request.message,
+                context: context
+            ),
+            metadata: [:]
         )
     }
 }
@@ -203,6 +376,44 @@ extension Edge_Agent_Services_V1_EdgeAgentService {
             deserializer: some GRPCCore.MessageDeserializer<Edge_Agent_Services_V1_RunContainerResponse>,
             options: GRPCCore.CallOptions,
             onResponse handleResponse: @Sendable @escaping (GRPCCore.StreamingClientResponse<Edge_Agent_Services_V1_RunContainerResponse>) async throws -> Result
+        ) async throws -> Result where Result: Sendable
+
+        /// Call the "UpdateAgent" method.
+        ///
+        /// - Parameters:
+        ///   - request: A streaming request producing `Edge_Agent_Services_V1_UpdateAgentRequest` messages.
+        ///   - serializer: A serializer for `Edge_Agent_Services_V1_UpdateAgentRequest` messages.
+        ///   - deserializer: A deserializer for `Edge_Agent_Services_V1_UpdateAgentResponse` messages.
+        ///   - options: Options to apply to this RPC.
+        ///   - handleResponse: A closure which handles the response, the result of which is
+        ///       returned to the caller. Returning from the closure will cancel the RPC if it
+        ///       hasn't already finished.
+        /// - Returns: The result of `handleResponse`.
+        func updateAgent<Result>(
+            request: GRPCCore.StreamingClientRequest<Edge_Agent_Services_V1_UpdateAgentRequest>,
+            serializer: some GRPCCore.MessageSerializer<Edge_Agent_Services_V1_UpdateAgentRequest>,
+            deserializer: some GRPCCore.MessageDeserializer<Edge_Agent_Services_V1_UpdateAgentResponse>,
+            options: GRPCCore.CallOptions,
+            onResponse handleResponse: @Sendable @escaping (GRPCCore.StreamingClientResponse<Edge_Agent_Services_V1_UpdateAgentResponse>) async throws -> Result
+        ) async throws -> Result where Result: Sendable
+
+        /// Call the "GetAgentVersion" method.
+        ///
+        /// - Parameters:
+        ///   - request: A request containing a single `Edge_Agent_Services_V1_GetAgentVersionRequest` message.
+        ///   - serializer: A serializer for `Edge_Agent_Services_V1_GetAgentVersionRequest` messages.
+        ///   - deserializer: A deserializer for `Edge_Agent_Services_V1_GetAgentVersionResponse` messages.
+        ///   - options: Options to apply to this RPC.
+        ///   - handleResponse: A closure which handles the response, the result of which is
+        ///       returned to the caller. Returning from the closure will cancel the RPC if it
+        ///       hasn't already finished.
+        /// - Returns: The result of `handleResponse`.
+        func getAgentVersion<Result>(
+            request: GRPCCore.ClientRequest<Edge_Agent_Services_V1_GetAgentVersionRequest>,
+            serializer: some GRPCCore.MessageSerializer<Edge_Agent_Services_V1_GetAgentVersionRequest>,
+            deserializer: some GRPCCore.MessageDeserializer<Edge_Agent_Services_V1_GetAgentVersionResponse>,
+            options: GRPCCore.CallOptions,
+            onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Edge_Agent_Services_V1_GetAgentVersionResponse>) async throws -> Result
         ) async throws -> Result where Result: Sendable
     }
 
@@ -254,6 +465,64 @@ extension Edge_Agent_Services_V1_EdgeAgentService {
                 onResponse: handleResponse
             )
         }
+
+        /// Call the "UpdateAgent" method.
+        ///
+        /// - Parameters:
+        ///   - request: A streaming request producing `Edge_Agent_Services_V1_UpdateAgentRequest` messages.
+        ///   - serializer: A serializer for `Edge_Agent_Services_V1_UpdateAgentRequest` messages.
+        ///   - deserializer: A deserializer for `Edge_Agent_Services_V1_UpdateAgentResponse` messages.
+        ///   - options: Options to apply to this RPC.
+        ///   - handleResponse: A closure which handles the response, the result of which is
+        ///       returned to the caller. Returning from the closure will cancel the RPC if it
+        ///       hasn't already finished.
+        /// - Returns: The result of `handleResponse`.
+        public func updateAgent<Result>(
+            request: GRPCCore.StreamingClientRequest<Edge_Agent_Services_V1_UpdateAgentRequest>,
+            serializer: some GRPCCore.MessageSerializer<Edge_Agent_Services_V1_UpdateAgentRequest>,
+            deserializer: some GRPCCore.MessageDeserializer<Edge_Agent_Services_V1_UpdateAgentResponse>,
+            options: GRPCCore.CallOptions = .defaults,
+            onResponse handleResponse: @Sendable @escaping (GRPCCore.StreamingClientResponse<Edge_Agent_Services_V1_UpdateAgentResponse>) async throws -> Result
+        ) async throws -> Result where Result: Sendable {
+            try await self.client.bidirectionalStreaming(
+                request: request,
+                descriptor: Edge_Agent_Services_V1_EdgeAgentService.Method.UpdateAgent.descriptor,
+                serializer: serializer,
+                deserializer: deserializer,
+                options: options,
+                onResponse: handleResponse
+            )
+        }
+
+        /// Call the "GetAgentVersion" method.
+        ///
+        /// - Parameters:
+        ///   - request: A request containing a single `Edge_Agent_Services_V1_GetAgentVersionRequest` message.
+        ///   - serializer: A serializer for `Edge_Agent_Services_V1_GetAgentVersionRequest` messages.
+        ///   - deserializer: A deserializer for `Edge_Agent_Services_V1_GetAgentVersionResponse` messages.
+        ///   - options: Options to apply to this RPC.
+        ///   - handleResponse: A closure which handles the response, the result of which is
+        ///       returned to the caller. Returning from the closure will cancel the RPC if it
+        ///       hasn't already finished.
+        /// - Returns: The result of `handleResponse`.
+        public func getAgentVersion<Result>(
+            request: GRPCCore.ClientRequest<Edge_Agent_Services_V1_GetAgentVersionRequest>,
+            serializer: some GRPCCore.MessageSerializer<Edge_Agent_Services_V1_GetAgentVersionRequest>,
+            deserializer: some GRPCCore.MessageDeserializer<Edge_Agent_Services_V1_GetAgentVersionResponse>,
+            options: GRPCCore.CallOptions = .defaults,
+            onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Edge_Agent_Services_V1_GetAgentVersionResponse>) async throws -> Result = { response in
+                try response.message
+            }
+        ) async throws -> Result where Result: Sendable {
+            try await self.client.unary(
+                request: request,
+                descriptor: Edge_Agent_Services_V1_EdgeAgentService.Method.GetAgentVersion.descriptor,
+                serializer: serializer,
+                deserializer: deserializer,
+                options: options,
+                onResponse: handleResponse
+            )
+        }
     }
 }
 
@@ -282,6 +551,54 @@ extension Edge_Agent_Services_V1_EdgeAgentService.ClientProtocol {
             request: request,
             serializer: GRPCProtobuf.ProtobufSerializer<Edge_Agent_Services_V1_RunContainerRequest>(),
             deserializer: GRPCProtobuf.ProtobufDeserializer<Edge_Agent_Services_V1_RunContainerResponse>(),
+            options: options,
+            onResponse: handleResponse
+        )
+    }
+
+    /// Call the "UpdateAgent" method.
+    ///
+    /// - Parameters:
+    ///   - request: A streaming request producing `Edge_Agent_Services_V1_UpdateAgentRequest` messages.
+    ///   - options: Options to apply to this RPC.
+    ///   - handleResponse: A closure which handles the response, the result of which is
+    ///       returned to the caller. Returning from the closure will cancel the RPC if it
+    ///       hasn't already finished.
+    /// - Returns: The result of `handleResponse`.
+    public func updateAgent<Result>(
+        request: GRPCCore.StreamingClientRequest<Edge_Agent_Services_V1_UpdateAgentRequest>,
+        options: GRPCCore.CallOptions = .defaults,
+        onResponse handleResponse: @Sendable @escaping (GRPCCore.StreamingClientResponse<Edge_Agent_Services_V1_UpdateAgentResponse>) async throws -> Result
+    ) async throws -> Result where Result: Sendable {
+        try await self.updateAgent(
+            request: request,
+            serializer: GRPCProtobuf.ProtobufSerializer<Edge_Agent_Services_V1_UpdateAgentRequest>(),
+            deserializer: GRPCProtobuf.ProtobufDeserializer<Edge_Agent_Services_V1_UpdateAgentResponse>(),
+            options: options,
+            onResponse: handleResponse
+        )
+    }
+
+    /// Call the "GetAgentVersion" method.
+    ///
+    /// - Parameters:
+    ///   - request: A request containing a single `Edge_Agent_Services_V1_GetAgentVersionRequest` message.
+    ///   - options: Options to apply to this RPC.
+    ///   - handleResponse: A closure which handles the response, the result of which is
+    ///       returned to the caller. Returning from the closure will cancel the RPC if it
+    ///       hasn't already finished.
+    /// - Returns: The result of `handleResponse`.
+    public func getAgentVersion<Result>(
+        request: GRPCCore.ClientRequest<Edge_Agent_Services_V1_GetAgentVersionRequest>,
+        options: GRPCCore.CallOptions = .defaults,
+        onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Edge_Agent_Services_V1_GetAgentVersionResponse>) async throws -> Result = { response in
+            try response.message
+        }
+    ) async throws -> Result where Result: Sendable {
+        try await self.getAgentVersion(
+            request: request,
+            serializer: GRPCProtobuf.ProtobufSerializer<Edge_Agent_Services_V1_GetAgentVersionRequest>(),
+            deserializer: GRPCProtobuf.ProtobufDeserializer<Edge_Agent_Services_V1_GetAgentVersionResponse>(),
             options: options,
             onResponse: handleResponse
         )
@@ -317,6 +634,63 @@ extension Edge_Agent_Services_V1_EdgeAgentService.ClientProtocol {
             producer: producer
         )
         return try await self.runContainer(
+            request: request,
+            options: options,
+            onResponse: handleResponse
+        )
+    }
+
+    /// Call the "UpdateAgent" method.
+    ///
+    /// - Parameters:
+    ///   - metadata: Additional metadata to send, defaults to empty.
+    ///   - options: Options to apply to this RPC, defaults to `.defaults`.
+    ///   - producer: A closure producing request messages to send to the server. The request
+    ///       stream is closed when the closure returns.
+    ///   - handleResponse: A closure which handles the response, the result of which is
+    ///       returned to the caller. Returning from the closure will cancel the RPC if it
+    ///       hasn't already finished.
+    /// - Returns: The result of `handleResponse`.
+    public func updateAgent<Result>(
+        metadata: GRPCCore.Metadata = [:],
+        options: GRPCCore.CallOptions = .defaults,
+        requestProducer producer: @Sendable @escaping (GRPCCore.RPCWriter<Edge_Agent_Services_V1_UpdateAgentRequest>) async throws -> Void,
+        onResponse handleResponse: @Sendable @escaping (GRPCCore.StreamingClientResponse<Edge_Agent_Services_V1_UpdateAgentResponse>) async throws -> Result
+    ) async throws -> Result where Result: Sendable {
+        let request = GRPCCore.StreamingClientRequest<Edge_Agent_Services_V1_UpdateAgentRequest>(
+            metadata: metadata,
+            producer: producer
+        )
+        return try await self.updateAgent(
+            request: request,
+            options: options,
+            onResponse: handleResponse
+        )
+    }
+
+    /// Call the "GetAgentVersion" method.
+    ///
+    /// - Parameters:
+    ///   - message: request message to send.
+    ///   - metadata: Additional metadata to send, defaults to empty.
+    ///   - options: Options to apply to this RPC, defaults to `.defaults`.
+    ///   - handleResponse: A closure which handles the response, the result of which is
+    ///       returned to the caller. Returning from the closure will cancel the RPC if it
+    ///       hasn't already finished.
+    /// - Returns: The result of `handleResponse`.
+    public func getAgentVersion<Result>(
+        _ message: Edge_Agent_Services_V1_GetAgentVersionRequest,
+        metadata: GRPCCore.Metadata = [:],
+        options: GRPCCore.CallOptions = .defaults,
+        onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Edge_Agent_Services_V1_GetAgentVersionResponse>) async throws -> Result = { response in
+            try response.message
+        }
+    ) async throws -> Result where Result: Sendable {
+        let request = GRPCCore.ClientRequest<Edge_Agent_Services_V1_GetAgentVersionRequest>(
+            message: message,
+            metadata: metadata
+        )
+        return try await self.getAgentVersion(
             request: request,
             options: options,
             onResponse: handleResponse
