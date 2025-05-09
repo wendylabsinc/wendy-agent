@@ -40,11 +40,19 @@ struct AgentCommand: AsyncParsableCommand {
         )
 
         @Option(help: "The path to the new version of the EdgeOS agent.")
-        var binary: String
+        var binary: String?
 
         @OptionGroup var agentConnectionOptions: AgentConnectionOptions
 
         func run() async throws {
+            let binary: String
+
+            if let location = self.binary {
+                binary = location
+            } else {
+                binary = try await downloadLatestRelease().path
+            }
+
             try await withGRPCClient(agentConnectionOptions) { client in
                 let agent = Edge_Agent_Services_V1_EdgeAgentService.Client(wrapping: client)
                 print("Pushing update...")
