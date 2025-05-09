@@ -11,9 +11,27 @@ struct AgentCommand: AsyncParsableCommand {
         commandName: "agent",
         abstract: "Manage the EdgeOS agent.",
         subcommands: [
-            UpdateCommand.self
+            VersionCommand.self,
+            UpdateCommand.self,
         ]
     )
+
+    struct VersionCommand: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(
+            commandName: "version",
+            abstract: "Get the version of the EdgeOS agent."
+        )
+
+        @OptionGroup var agentConnectionOptions: AgentConnectionOptions
+
+        func run() async throws {
+            try await withGRPCClient(agentConnectionOptions) { client in
+                let agent = Edge_Agent_Services_V1_EdgeAgentService.Client(wrapping: client)
+                let version = try await agent.getAgentVersion(request: .init(message: .init()))
+                print(version.version)
+            }
+        }
+    }
 
     struct UpdateCommand: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
@@ -27,27 +45,7 @@ struct AgentCommand: AsyncParsableCommand {
         @OptionGroup var agentConnectionOptions: AgentConnectionOptions
 
         func run() async throws {
-            let agentEndpoint = agentConnectionOptions.agent
-
-            let target = ResolvableTargets.DNS(
-                host: agentEndpoint.host,
-                port: agentEndpoint.port
-            )
-
-            #if os(macOS)
-                let transport = try HTTP2ClientTransport.TransportServices(
-                    target: target,
-                    transportSecurity: .plaintext
-                )
-            #else
-                let transport = try HTTP2ClientTransport.Posix(
-                    target: target,
-                    transportSecurity: .plaintext
-                )
-            #endif
-
-            print("Connecting to EdgeOS agent at \(agentEndpoint.host):\(agentEndpoint.port)")
-            try await withGRPCClient(transport: transport) { client in
+            try await withGRPCClient(agentConnectionOptions) { client in
                 let agent = Edge_Agent_Services_V1_EdgeAgentService.Client(wrapping: client)
                 print("Pushing update...")
                 try await agent.updateAgent { writer in

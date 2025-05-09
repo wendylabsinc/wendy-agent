@@ -138,24 +138,7 @@ struct RunCommand: AsyncParsableCommand {
             outputPath: outputPath
         )
 
-        let agentEndpoint = agentConnectionOptions.agent
-        let target = ResolvableTargets.DNS(
-            host: agentEndpoint.host,
-            port: agentEndpoint.port
-        )
-        #if os(macOS)
-            let transport = try HTTP2ClientTransport.TransportServices(
-                target: target,
-                transportSecurity: .plaintext
-            )
-        #else
-            let transport = try HTTP2ClientTransport.Posix(
-                target: target,
-                transportSecurity: .plaintext
-            )
-        #endif
-
-        try await withGRPCClient(transport: transport) { client in
+        try await withGRPCClient(agentConnectionOptions) { client in
             let agent = Edge_Agent_Services_V1_EdgeAgentService.Client(wrapping: client)
             try await agent.runContainer { writer in
                 // First, send the header.

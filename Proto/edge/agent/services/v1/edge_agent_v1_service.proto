@@ -8,6 +8,8 @@ service EdgeAgentService {
     rpc RunContainer(stream RunContainerRequest) returns (stream RunContainerResponse);
 
     rpc UpdateAgent(stream UpdateAgentRequest) returns (stream UpdateAgentResponse);
+
+    rpc GetAgentVersion(GetAgentVersionRequest) returns (GetAgentVersionResponse);
 }
 
 message RunContainerRequest {
@@ -89,4 +91,12 @@ message UpdateAgentResponse {
     message Updated {
         
     }
+}
+
+message GetAgentVersionRequest {
+
+}
+
+message GetAgentVersionResponse {
+    string version = 1;
 }
