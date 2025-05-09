@@ -1,10 +1,10 @@
 import EdgeAgentGRPC
+import EdgeShared
 import Foundation
 import Logging
 import NIOCore
 import NIOFoundationCompat
 import _NIOFileSystem
-import EdgeShared
 
 struct EdgeAgentService: Edge_Agent_Services_V1_EdgeAgentService.ServiceProtocol {
     let logger = Logger(label: "EdgeAgentService")
@@ -130,13 +130,15 @@ struct EdgeAgentService: Edge_Agent_Services_V1_EdgeAgentService.ServiceProtocol
             return Metadata()
         }
     }
-    
+
     func getAgentVersion(
         request: GRPCCore.ServerRequest<Edge_Agent_Services_V1_GetAgentVersionRequest>,
         context: GRPCCore.ServerContext
     ) async throws -> GRPCCore.ServerResponse<Edge_Agent_Services_V1_GetAgentVersionResponse> {
-        return ServerResponse(message: .with {
-            $0.version = Version.current
-        })
+        return ServerResponse(
+            message: .with {
+                $0.version = Version.current
+            }
+        )
     }
 }
