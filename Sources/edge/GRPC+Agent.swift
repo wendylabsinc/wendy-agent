@@ -11,7 +11,7 @@ func withGRPCClient<R: Sendable>(
     _ connectionOptions: AgentConnectionOptions,
     _ body: @escaping (GRPCClient<GRPCTransport>) async throws -> R
 ) async throws -> R {
-    let endpoint = connectionOptions.agent
+    let endpoint = try connectionOptions.endpoint
 
     let target = ResolvableTargets.DNS(
         host: endpoint.host,
