@@ -58,7 +58,7 @@ struct AgentConnectionOptions: ParsableArguments {
                 return agent
             }
 
-            guard 
+            guard
                 let endpoint = ProcessInfo.processInfo.environment["EDGE_AGENT"],
                 let endpoint = Endpoint(argument: endpoint)
             else {

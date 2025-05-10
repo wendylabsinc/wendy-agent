@@ -1,8 +1,8 @@
 import AsyncHTTPClient
 import Foundation
 import NIOCore
-import _NIOFileSystem
 import NIOFoundationCompat
+import _NIOFileSystem
 
 enum DownloadError: Error {
     case invalidResponse

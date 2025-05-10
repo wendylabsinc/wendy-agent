@@ -1,6 +1,7 @@
 import DownloadSupport
 import Foundation
 import Shell
+
 #if canImport(FoundationNetworking)
     import FoundationNetworking
 #endif
@@ -26,7 +27,11 @@ func downloadLatestRelease() async throws -> URL {
     guard let latestRelease = releases.first else {
         throw ReleasesError.noReleases
     }
-    guard let asset = latestRelease.assets.first(where: { $0.name.contains("edge-agent-linux-static-musl-aarch64") }) else {
+    guard
+        let asset = latestRelease.assets.first(where: {
+            $0.name.contains("edge-agent-linux-static-musl-aarch64")
+        })
+    else {
         throw ReleasesError.noAsset
     }
     let downloadedFileURL = try await downloadAsset(asset)
@@ -39,7 +44,9 @@ func downloadLatestRelease() async throws -> URL {
 }
 
 func fetchReleases() async throws -> [Release] {
-    let githubReleasesURL = URL(string: "https://api.github.com/repos/edgeengineer/edge-agent/releases")!
+    let githubReleasesURL = URL(
+        string: "https://api.github.com/repos/edgeengineer/edge-agent/releases"
+    )!
 
     // Fetch releases JSON
     print("Fetching all releases...")
@@ -82,7 +89,7 @@ func extract(
         print("File is not a tar.gz file")
         return url
     }
-    
+
     print("Extracting tar.gz file...")
     let extractDir = tempDir.appendingPathComponent("extract")
     try FileManager.default.createDirectory(at: extractDir, withIntermediateDirectories: true)
