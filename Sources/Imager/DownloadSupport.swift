@@ -1,4 +1,5 @@
 import AsyncHTTPClient
+import DownloadSupport
 import Foundation
 import NIOCore
 import _NIOFileSystem
@@ -38,53 +39,6 @@ public class ImageDownloader: ImageDownloading {
         self.fileManager = fileManager
     }
 
-    private func downloadFile(
-        from url: URL,
-        to path: String,
-        progressHandler: @escaping (Progress) -> Void
-    ) async throws {
-        // Track how much data we've downloaded and when we last reported progress
-        var bytesDownloaded: Int64 = 0
-
-        // Get the total size of the download if needed
-        let totalSize: Int64
-
-        let request = HTTPClientRequest(url: url.absoluteString)
-        let response = try await HTTPClient.shared.execute(
-            request,
-            deadline: NIODeadline.now() + .seconds(60)
-        )
-        guard
-            let contentLength = response.headers.first(name: "Content-Length").flatMap(Int64.init),
-            contentLength > 0
-        else {
-            throw DownloadError.invalidResponse
-        }
-
-        totalSize = contentLength
-        let progress = Progress(totalUnitCount: totalSize)
-
-        try await FileSystem.shared.withFileHandle(
-            forWritingAt: FilePath(path),
-            options: .newFile(replaceExisting: true)
-        ) { handle in
-            var writer = handle.bufferedWriter(startingAtAbsoluteOffset: 0)
-            try await writer.flush()
-            for try await chunk in response.body {
-                let bytesWritten = try await writer.write(contentsOf: chunk)
-                bytesDownloaded += Int64(bytesWritten)
-                progress.completedUnitCount = bytesDownloaded
-                progressHandler(progress)
-            }
-
-            try await writer.flush()
-        }
-
-        // Ensure final progress is reported
-        progress.completedUnitCount = totalSize
-        progressHandler(progress)
-    }
-
     private func extractImage(
         from path: String,
         to directory: String,
@@ -97,33 +51,7 @@ public class ImageDownloader: ImageDownloading {
 
         // Unzip the file using the unzip command line tool
         let unzipProcess = Process()
-
-        // Check if unzip is available at the standard locations
-        var unzipPath = "/usr/bin/unzip"
-        if !fileManager.fileExists(atPath: unzipPath) {
-            unzipPath = "/bin/unzip"
-            if !fileManager.fileExists(atPath: unzipPath) {
-                // Try to find unzip in PATH
-                let whichUnzip = Process()
-                whichUnzip.executableURL = URL(fileURLWithPath: "/bin/sh")
-                whichUnzip.arguments = ["-c", "which unzip"]
-
-                let outputPipe = Pipe()
-                whichUnzip.standardOutput = outputPipe
-
-                try whichUnzip.run()
-                whichUnzip.waitUntilExit()
-
-                if whichUnzip.terminationStatus == 0 {
-                    let outputData = outputPipe.fileHandleForReading.readDataToEndOfFile()
-                    if let path = String(data: outputData, encoding: .utf8)?.trimmingCharacters(
-                        in: .whitespacesAndNewlines
-                    ) {
-                        unzipPath = path
-                    }
-                }
-            }
-        }
+        let unzipPath = try findExecutable(name: "unzip", standardPath: "/usr/bin/unzip")
 
         if !fileManager.fileExists(atPath: unzipPath) {
             throw DownloadError.extractionFailed("Could not find 'unzip' utility on the system")
