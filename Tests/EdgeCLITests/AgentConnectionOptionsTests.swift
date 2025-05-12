@@ -117,7 +117,7 @@ struct AgentConnectionOptionsTests {
             "--agent", "test.server.com:9000",
         ])
 
-        #expect(command.agentConnectionOptions.agent.host == "test.server.com")
-        #expect(command.agentConnectionOptions.agent.port == 9000)
+        #expect(command.agentConnectionOptions.agent?.host == "test.server.com")
+        #expect(command.agentConnectionOptions.agent?.port == 9000)
     }
 }

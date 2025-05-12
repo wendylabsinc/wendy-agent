@@ -48,7 +48,26 @@ struct AgentConnectionOptions: ParsableArguments {
     @Option(
         name: .shortAndLong,
         help:
-            "The host and port of the Edge Agent to connect to (format: host or host:port). IPv6 addresses must be enclosed in square brackets, e.g. [2001:db8::1] or [2001:db8::1]:8080."
+            "The host and port of the Edge Agent to connect to (format: host or host:port). IPv6 addresses must be enclosed in square brackets, e.g. [2001:db8::1] or [2001:db8::1]:8080. Defaults to the `EDGE_AGENT` environment variable."
     )
-    var agent: Endpoint
+    var agent: Endpoint?
+
+    var endpoint: Endpoint {
+        get throws {
+            if let agent = agent {
+                return agent
+            }
+
+            guard
+                let endpoint = ProcessInfo.processInfo.environment["EDGE_AGENT"],
+                let endpoint = Endpoint(argument: endpoint)
+            else {
+                throw ValidationError(
+                    "The `--agent` option was not provided and the `EDGE_AGENT` environment variable is not set."
+                )
+            }
+
+            return endpoint
+        }
+    }
 }
