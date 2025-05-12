@@ -168,7 +168,14 @@ struct RunCommand: AsyncParsableCommand {
                 try await writer.write(
                     .with {
                         $0.requestType = .control(
-                            .with { $0.command = .run(.with { $0.debug = debug }) }
+                            .with { $0.command = .run(.with { run in
+                                run.debug = debug
+                                run.entitlements = .with { entitlements in
+                                    entitlements.entitlements.append(.with { entitlement in
+                                        entitlement.dbus = .init()
+                                    })
+                                }
+                            }) }
                         )
                     }
                 )

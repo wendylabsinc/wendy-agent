@@ -42,7 +42,12 @@ struct RunContainerRequestHandler {
         case run(Run)
 
         struct Run {
+            enum Entitlement {
+                case dbus
+            }
+
             var debug: Bool
+            var entitlements: [Entitlement]
         }
     }
 
@@ -166,6 +171,14 @@ struct RunContainerRequestHandler {
                 .name(containerName),
                 .detach,
             ]
+
+            for entitlement in run.entitlements {
+                switch entitlement {
+                case .dbus:
+                    runOptions.append(.volume(hostPath: "/var/run/dbus/system_bus_socket", containerPath: "/var/run/dbus/system_bus_socket"))
+                }
+            }
+
             var debugPort: UInt32 = 0
 
             if run.debug {

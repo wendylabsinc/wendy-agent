@@ -19,6 +19,9 @@ public struct DockerCLI: Sendable {
         /// Allocate a pseudo-TTY.
         case tty
 
+        /// Mount a volume from the host.
+        case volume(hostPath: String, containerPath: String)
+
         /// Publish a container's port to the host.
         case publishPort(hostPort: UInt16, containerPort: UInt16)
 
@@ -46,6 +49,8 @@ public struct DockerCLI: Sendable {
                 return ["-i"]
             case .tty:
                 return ["-t"]
+            case .volume(let path, let containerPath):
+                return ["-v", "\(path):\(containerPath)"]
             case .publishPort(let hostPort, let containerPort):
                 return ["-p", "\(hostPort):\(containerPort)"]
             case .capAdd(let capability):

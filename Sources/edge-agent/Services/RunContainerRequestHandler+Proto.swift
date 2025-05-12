@@ -25,7 +25,17 @@ extension RunContainerRequestHandler.ControlCommand {
     init(validating proto: Edge_Agent_Services_V1_RunContainerRequest.ControlCommand) throws {
         switch proto.command {
         case .run(let run):
-            self = .run(Run(debug: run.debug))
+            self = .run(Run(
+                debug: run.debug,
+                entitlements: run.entitlements.entitlements.compactMap { entitlement in
+                    switch entitlement.entitlement {
+                    case .dbus:
+                        return .dbus
+                    case nil:
+                        return nil
+                    }
+                }
+            ))
         case nil:
             throw RPCError(code: .invalidArgument, message: "Control command cannot be unspecified")
         }

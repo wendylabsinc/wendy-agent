@@ -45,8 +45,23 @@ message RunContainerRequest {
         message Run {
             // Whether to run the container with a debugger
             bool debug = 1;
+            
+            // The entitlements for the container.
+            ContainerEntitlements entitlements = 2;
         }
     }
+}
+
+message ContainerEntitlements {
+    repeated ContainerEntitlement entitlements = 1;
+}
+
+message ContainerEntitlement {
+    oneof entitlement {
+        Dbus dbus = 1;
+    }
+
+    message Dbus {}
 }
 
 message RunContainerResponse {
