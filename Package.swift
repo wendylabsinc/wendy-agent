@@ -24,6 +24,7 @@ let package = Package(
         .package(url: "https://github.com/swiftlang/swift-subprocess.git", branch: "main"),
         .package(url: "https://github.com/apple/swift-http-types.git", from: "1.4.0"),
         .package(url: "https://github.com/apple/swift-async-dns-resolver.git", from: "0.4.0"),
+        .package(url: "https://github.com/edgeengineer/dbus.git", branch: "jo/native-nio"),  
     ],
     targets: [
         /// The main executable provided by edge-cli.
@@ -79,9 +80,11 @@ let package = Package(
                 .product(name: "GRPCServiceLifecycle", package: "grpc-swift-extras"),
                 .product(name: "GRPCHealthService", package: "grpc-swift-extras"),
                 .product(name: "_NIOFileSystem", package: "swift-nio"),
+                .product(name: "DBusSwift", package: "dbus"),
                 .target(name: "EdgeAgentGRPC"),
                 .target(name: "Shell"),
                 .target(name: "EdgeShared"),
+                
             ]
         ),
 

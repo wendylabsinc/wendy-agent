@@ -316,6 +316,100 @@ public struct Edge_Agent_Services_V1_GetAgentVersionResponse: Sendable {
   public init() {}
 }
 
+/// Request message for listing WiFi networks
+public struct Edge_Agent_Services_V1_ListWiFiNetworksRequest: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  public var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  public init() {}
+}
+
+/// Response message for listing WiFi networks
+public struct Edge_Agent_Services_V1_ListWiFiNetworksResponse: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  /// List of available WiFi networks
+  public var networks: [Edge_Agent_Services_V1_ListWiFiNetworksResponse.WiFiNetwork] = []
+
+  public var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  /// Information about a WiFi network
+  public struct WiFiNetwork: Sendable {
+    // SwiftProtobuf.Message conformance is added in an extension below. See the
+    // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+    // methods supported on all messages.
+
+    /// SSID (name) of the WiFi network
+    public var ssid: String = String()
+
+    /// Signal strength indicator (if available)
+    public var signalStrength: Int32 {
+      get {return _signalStrength ?? 0}
+      set {_signalStrength = newValue}
+    }
+    /// Returns true if `signalStrength` has been explicitly set.
+    public var hasSignalStrength: Bool {return self._signalStrength != nil}
+    /// Clears the value of `signalStrength`. Subsequent reads from it will return its default value.
+    public mutating func clearSignalStrength() {self._signalStrength = nil}
+
+    public var unknownFields = SwiftProtobuf.UnknownStorage()
+
+    public init() {}
+
+    fileprivate var _signalStrength: Int32? = nil
+  }
+
+  public init() {}
+}
+
+/// Request message for connecting to a WiFi network
+public struct Edge_Agent_Services_V1_ConnectToWiFiRequest: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  /// SSID (name) of the WiFi network to connect to
+  public var ssid: String = String()
+
+  /// Password for the WiFi network
+  public var password: String = String()
+
+  public var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  public init() {}
+}
+
+/// Response message for connecting to a WiFi network
+public struct Edge_Agent_Services_V1_ConnectToWiFiResponse: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  /// Whether the connection was successful
+  public var success: Bool = false
+
+  /// Optional error message if connection failed
+  public var errorMessage: String {
+    get {return _errorMessage ?? String()}
+    set {_errorMessage = newValue}
+  }
+  /// Returns true if `errorMessage` has been explicitly set.
+  public var hasErrorMessage: Bool {return self._errorMessage != nil}
+  /// Clears the value of `errorMessage`. Subsequent reads from it will return its default value.
+  public mutating func clearErrorMessage() {self._errorMessage = nil}
+
+  public var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  public init() {}
+
+  fileprivate var _errorMessage: String? = nil
+}
+
 // MARK: - Code below here is support for the SwiftProtobuf runtime.
 
 fileprivate let _protobuf_package = "edge.agent.services.v1"
@@ -920,6 +1014,179 @@ extension Edge_Agent_Services_V1_GetAgentVersionResponse: SwiftProtobuf.Message,
 
   public static func ==(lhs: Edge_Agent_Services_V1_GetAgentVersionResponse, rhs: Edge_Agent_Services_V1_GetAgentVersionResponse) -> Bool {
     if lhs.version != rhs.version {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+extension Edge_Agent_Services_V1_ListWiFiNetworksRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = _protobuf_package + ".ListWiFiNetworksRequest"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap()
+
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    // Load everything into unknown fields
+    while try decoder.nextFieldNumber() != nil {}
+  }
+
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  public static func ==(lhs: Edge_Agent_Services_V1_ListWiFiNetworksRequest, rhs: Edge_Agent_Services_V1_ListWiFiNetworksRequest) -> Bool {
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+extension Edge_Agent_Services_V1_ListWiFiNetworksResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = _protobuf_package + ".ListWiFiNetworksResponse"
+  public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
+    1: .same(proto: "networks"),
+  ]
+
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try { try decoder.decodeRepeatedMessageField(value: &self.networks) }()
+      default: break
+      }
+    }
+  }
+
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    if !self.networks.isEmpty {
+      try visitor.visitRepeatedMessageField(value: self.networks, fieldNumber: 1)
+    }
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  public static func ==(lhs: Edge_Agent_Services_V1_ListWiFiNetworksResponse, rhs: Edge_Agent_Services_V1_ListWiFiNetworksResponse) -> Bool {
+    if lhs.networks != rhs.networks {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+extension Edge_Agent_Services_V1_ListWiFiNetworksResponse.WiFiNetwork: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = Edge_Agent_Services_V1_ListWiFiNetworksResponse.protoMessageName + ".WiFiNetwork"
+  public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
+    1: .same(proto: "ssid"),
+    2: .standard(proto: "signal_strength"),
+  ]
+
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try { try decoder.decodeSingularStringField(value: &self.ssid) }()
+      case 2: try { try decoder.decodeSingularInt32Field(value: &self._signalStrength) }()
+      default: break
+      }
+    }
+  }
+
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    // The use of inline closures is to circumvent an issue where the compiler
+    // allocates stack space for every if/case branch local when no optimizations
+    // are enabled. https://github.com/apple/swift-protobuf/issues/1034 and
+    // https://github.com/apple/swift-protobuf/issues/1182
+    if !self.ssid.isEmpty {
+      try visitor.visitSingularStringField(value: self.ssid, fieldNumber: 1)
+    }
+    try { if let v = self._signalStrength {
+      try visitor.visitSingularInt32Field(value: v, fieldNumber: 2)
+    } }()
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  public static func ==(lhs: Edge_Agent_Services_V1_ListWiFiNetworksResponse.WiFiNetwork, rhs: Edge_Agent_Services_V1_ListWiFiNetworksResponse.WiFiNetwork) -> Bool {
+    if lhs.ssid != rhs.ssid {return false}
+    if lhs._signalStrength != rhs._signalStrength {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+extension Edge_Agent_Services_V1_ConnectToWiFiRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = _protobuf_package + ".ConnectToWiFiRequest"
+  public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
+    1: .same(proto: "ssid"),
+    2: .same(proto: "password"),
+  ]
+
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try { try decoder.decodeSingularStringField(value: &self.ssid) }()
+      case 2: try { try decoder.decodeSingularStringField(value: &self.password) }()
+      default: break
+      }
+    }
+  }
+
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    if !self.ssid.isEmpty {
+      try visitor.visitSingularStringField(value: self.ssid, fieldNumber: 1)
+    }
+    if !self.password.isEmpty {
+      try visitor.visitSingularStringField(value: self.password, fieldNumber: 2)
+    }
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  public static func ==(lhs: Edge_Agent_Services_V1_ConnectToWiFiRequest, rhs: Edge_Agent_Services_V1_ConnectToWiFiRequest) -> Bool {
+    if lhs.ssid != rhs.ssid {return false}
+    if lhs.password != rhs.password {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+extension Edge_Agent_Services_V1_ConnectToWiFiResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = _protobuf_package + ".ConnectToWiFiResponse"
+  public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
+    1: .same(proto: "success"),
+    2: .standard(proto: "error_message"),
+  ]
+
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try { try decoder.decodeSingularBoolField(value: &self.success) }()
+      case 2: try { try decoder.decodeSingularStringField(value: &self._errorMessage) }()
+      default: break
+      }
+    }
+  }
+
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    // The use of inline closures is to circumvent an issue where the compiler
+    // allocates stack space for every if/case branch local when no optimizations
+    // are enabled. https://github.com/apple/swift-protobuf/issues/1034 and
+    // https://github.com/apple/swift-protobuf/issues/1182
+    if self.success != false {
+      try visitor.visitSingularBoolField(value: self.success, fieldNumber: 1)
+    }
+    try { if let v = self._errorMessage {
+      try visitor.visitSingularStringField(value: v, fieldNumber: 2)
+    } }()
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  public static func ==(lhs: Edge_Agent_Services_V1_ConnectToWiFiResponse, rhs: Edge_Agent_Services_V1_ConnectToWiFiResponse) -> Bool {
+    if lhs.success != rhs.success {return false}
+    if lhs._errorMessage != rhs._errorMessage {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }

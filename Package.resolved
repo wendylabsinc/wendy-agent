@@ -1,5 +1,5 @@
 {
-  "originHash" : "01265175661e42e0d634493474364d0cf896df0f19127b2f407a93022e63e01e",
+  "originHash" : "e1c125f18469255078831028fa16f570300f8651b09aaba4d073a367a36e9749",
   "pins" : [
     {
       "identity" : "async-http-client",
@@ -8,6 +8,15 @@
       "state" : {
         "revision" : "333f51104b75d1a5b94cb3b99e4c58a3b442c9f7",
         "version" : "1.25.2"
+      }
+    },
+    {
+      "identity" : "dbus",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/edgeengineer/dbus.git",
+      "state" : {
+        "branch" : "jo/native-nio",
+        "revision" : "8149f1de1688c5a754142cd25ca649557c169d27"
       }
     },
     {
