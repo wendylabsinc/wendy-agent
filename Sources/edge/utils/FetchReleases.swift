@@ -84,7 +84,6 @@ func extract(
 ) async throws -> URL {
     // Determine if it's a tar.gz or a binary
     let isTarGz = url.pathExtension == "gz" || url.lastPathComponent.contains("tar.gz")
-    var binaryPath: String? = nil
     guard isTarGz else {
         print("File is not a tar.gz file")
         return url
