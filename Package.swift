@@ -24,7 +24,7 @@ let package = Package(
         .package(url: "https://github.com/swiftlang/swift-subprocess.git", branch: "main"),
         .package(url: "https://github.com/apple/swift-http-types.git", from: "1.4.0"),
         .package(url: "https://github.com/apple/swift-async-dns-resolver.git", from: "0.4.0"),
-        .package(url: "https://github.com/edgeengineer/dbus.git", branch: "jo/native-nio"),  
+        .package(url: "https://github.com/edgeengineer/dbus.git", from:"0.1.0"),  
     ],
     targets: [
         /// The main executable provided by edge-cli.
