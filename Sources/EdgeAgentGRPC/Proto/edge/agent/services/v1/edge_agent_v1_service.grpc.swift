@@ -79,13 +79,39 @@ public enum Edge_Agent_Services_V1_EdgeAgentService {
                 method: "ConnectToWiFi"
             )
         }
+        /// Namespace for "GetWiFiStatus" metadata.
+        public enum GetWiFiStatus {
+            /// Request type for "GetWiFiStatus".
+            public typealias Input = Edge_Agent_Services_V1_GetWiFiStatusRequest
+            /// Response type for "GetWiFiStatus".
+            public typealias Output = Edge_Agent_Services_V1_GetWiFiStatusResponse
+            /// Descriptor for "GetWiFiStatus".
+            public static let descriptor = GRPCCore.MethodDescriptor(
+                service: GRPCCore.ServiceDescriptor(fullyQualifiedService: "edge.agent.services.v1.EdgeAgentService"),
+                method: "GetWiFiStatus"
+            )
+        }
+        /// Namespace for "DisconnectWiFi" metadata.
+        public enum DisconnectWiFi {
+            /// Request type for "DisconnectWiFi".
+            public typealias Input = Edge_Agent_Services_V1_DisconnectWiFiRequest
+            /// Response type for "DisconnectWiFi".
+            public typealias Output = Edge_Agent_Services_V1_DisconnectWiFiResponse
+            /// Descriptor for "DisconnectWiFi".
+            public static let descriptor = GRPCCore.MethodDescriptor(
+                service: GRPCCore.ServiceDescriptor(fullyQualifiedService: "edge.agent.services.v1.EdgeAgentService"),
+                method: "DisconnectWiFi"
+            )
+        }
         /// Descriptors for all methods in the "edge.agent.services.v1.EdgeAgentService" service.
         public static let descriptors: [GRPCCore.MethodDescriptor] = [
             RunContainer.descriptor,
             UpdateAgent.descriptor,
             GetAgentVersion.descriptor,
             ListWiFiNetworks.descriptor,
-            ConnectToWiFi.descriptor
+            ConnectToWiFi.descriptor,
+            GetWiFiStatus.descriptor,
+            DisconnectWiFi.descriptor
         ]
     }
 }
@@ -191,6 +217,42 @@ extension Edge_Agent_Services_V1_EdgeAgentService {
             request: GRPCCore.StreamingServerRequest<Edge_Agent_Services_V1_ConnectToWiFiRequest>,
             context: GRPCCore.ServerContext
         ) async throws -> GRPCCore.StreamingServerResponse<Edge_Agent_Services_V1_ConnectToWiFiResponse>
+
+        /// Handle the "GetWiFiStatus" method.
+        ///
+        /// > Source IDL Documentation:
+        /// >
+        /// > Get the current WiFi connection status
+        ///
+        /// - Parameters:
+        ///   - request: A streaming request of `Edge_Agent_Services_V1_GetWiFiStatusRequest` messages.
+        ///   - context: Context providing information about the RPC.
+        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
+        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
+        ///     to an internal error.
+        /// - Returns: A streaming response of `Edge_Agent_Services_V1_GetWiFiStatusResponse` messages.
+        func getWiFiStatus(
+            request: GRPCCore.StreamingServerRequest<Edge_Agent_Services_V1_GetWiFiStatusRequest>,
+            context: GRPCCore.ServerContext
+        ) async throws -> GRPCCore.StreamingServerResponse<Edge_Agent_Services_V1_GetWiFiStatusResponse>
+
+        /// Handle the "DisconnectWiFi" method.
+        ///
+        /// > Source IDL Documentation:
+        /// >
+        /// > Disconnect from the current WiFi network
+        ///
+        /// - Parameters:
+        ///   - request: A streaming request of `Edge_Agent_Services_V1_DisconnectWiFiRequest` messages.
+        ///   - context: Context providing information about the RPC.
+        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
+        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
+        ///     to an internal error.
+        /// - Returns: A streaming response of `Edge_Agent_Services_V1_DisconnectWiFiResponse` messages.
+        func disconnectWiFi(
+            request: GRPCCore.StreamingServerRequest<Edge_Agent_Services_V1_DisconnectWiFiRequest>,
+            context: GRPCCore.ServerContext
+        ) async throws -> GRPCCore.StreamingServerResponse<Edge_Agent_Services_V1_DisconnectWiFiResponse>
     }
 
     /// Service protocol for the "edge.agent.services.v1.EdgeAgentService" service.
@@ -283,6 +345,42 @@ extension Edge_Agent_Services_V1_EdgeAgentService {
             request: GRPCCore.ServerRequest<Edge_Agent_Services_V1_ConnectToWiFiRequest>,
             context: GRPCCore.ServerContext
         ) async throws -> GRPCCore.ServerResponse<Edge_Agent_Services_V1_ConnectToWiFiResponse>
+
+        /// Handle the "GetWiFiStatus" method.
+        ///
+        /// > Source IDL Documentation:
+        /// >
+        /// > Get the current WiFi connection status
+        ///
+        /// - Parameters:
+        ///   - request: A request containing a single `Edge_Agent_Services_V1_GetWiFiStatusRequest` message.
+        ///   - context: Context providing information about the RPC.
+        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
+        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
+        ///     to an internal error.
+        /// - Returns: A response containing a single `Edge_Agent_Services_V1_GetWiFiStatusResponse` message.
+        func getWiFiStatus(
+            request: GRPCCore.ServerRequest<Edge_Agent_Services_V1_GetWiFiStatusRequest>,
+            context: GRPCCore.ServerContext
+        ) async throws -> GRPCCore.ServerResponse<Edge_Agent_Services_V1_GetWiFiStatusResponse>
+
+        /// Handle the "DisconnectWiFi" method.
+        ///
+        /// > Source IDL Documentation:
+        /// >
+        /// > Disconnect from the current WiFi network
+        ///
+        /// - Parameters:
+        ///   - request: A request containing a single `Edge_Agent_Services_V1_DisconnectWiFiRequest` message.
+        ///   - context: Context providing information about the RPC.
+        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
+        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
+        ///     to an internal error.
+        /// - Returns: A response containing a single `Edge_Agent_Services_V1_DisconnectWiFiResponse` message.
+        func disconnectWiFi(
+            request: GRPCCore.ServerRequest<Edge_Agent_Services_V1_DisconnectWiFiRequest>,
+            context: GRPCCore.ServerContext
+        ) async throws -> GRPCCore.ServerResponse<Edge_Agent_Services_V1_DisconnectWiFiResponse>
     }
 
     /// Simple service protocol for the "edge.agent.services.v1.EdgeAgentService" service.
@@ -375,6 +473,42 @@ extension Edge_Agent_Services_V1_EdgeAgentService {
             request: Edge_Agent_Services_V1_ConnectToWiFiRequest,
             context: GRPCCore.ServerContext
         ) async throws -> Edge_Agent_Services_V1_ConnectToWiFiResponse
+
+        /// Handle the "GetWiFiStatus" method.
+        ///
+        /// > Source IDL Documentation:
+        /// >
+        /// > Get the current WiFi connection status
+        ///
+        /// - Parameters:
+        ///   - request: A `Edge_Agent_Services_V1_GetWiFiStatusRequest` message.
+        ///   - context: Context providing information about the RPC.
+        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
+        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
+        ///     to an internal error.
+        /// - Returns: A `Edge_Agent_Services_V1_GetWiFiStatusResponse` to respond with.
+        func getWiFiStatus(
+            request: Edge_Agent_Services_V1_GetWiFiStatusRequest,
+            context: GRPCCore.ServerContext
+        ) async throws -> Edge_Agent_Services_V1_GetWiFiStatusResponse
+
+        /// Handle the "DisconnectWiFi" method.
+        ///
+        /// > Source IDL Documentation:
+        /// >
+        /// > Disconnect from the current WiFi network
+        ///
+        /// - Parameters:
+        ///   - request: A `Edge_Agent_Services_V1_DisconnectWiFiRequest` message.
+        ///   - context: Context providing information about the RPC.
+        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
+        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
+        ///     to an internal error.
+        /// - Returns: A `Edge_Agent_Services_V1_DisconnectWiFiResponse` to respond with.
+        func disconnectWiFi(
+            request: Edge_Agent_Services_V1_DisconnectWiFiRequest,
+            context: GRPCCore.ServerContext
+        ) async throws -> Edge_Agent_Services_V1_DisconnectWiFiResponse
     }
 }
 
@@ -436,6 +570,28 @@ extension Edge_Agent_Services_V1_EdgeAgentService.StreamingServiceProtocol {
                 )
             }
         )
+        router.registerHandler(
+            forMethod: Edge_Agent_Services_V1_EdgeAgentService.Method.GetWiFiStatus.descriptor,
+            deserializer: GRPCProtobuf.ProtobufDeserializer<Edge_Agent_Services_V1_GetWiFiStatusRequest>(),
+            serializer: GRPCProtobuf.ProtobufSerializer<Edge_Agent_Services_V1_GetWiFiStatusResponse>(),
+            handler: { request, context in
+                try await self.getWiFiStatus(
+                    request: request,
+                    context: context
+                )
+            }
+        )
+        router.registerHandler(
+            forMethod: Edge_Agent_Services_V1_EdgeAgentService.Method.DisconnectWiFi.descriptor,
+            deserializer: GRPCProtobuf.ProtobufDeserializer<Edge_Agent_Services_V1_DisconnectWiFiRequest>(),
+            serializer: GRPCProtobuf.ProtobufSerializer<Edge_Agent_Services_V1_DisconnectWiFiResponse>(),
+            handler: { request, context in
+                try await self.disconnectWiFi(
+                    request: request,
+                    context: context
+                )
+            }
+        )
     }
 }
 
@@ -468,6 +624,28 @@ extension Edge_Agent_Services_V1_EdgeAgentService.ServiceProtocol {
         context: GRPCCore.ServerContext
     ) async throws -> GRPCCore.StreamingServerResponse<Edge_Agent_Services_V1_ConnectToWiFiResponse> {
         let response = try await self.connectToWiFi(
+            request: GRPCCore.ServerRequest(stream: request),
+            context: context
+        )
+        return GRPCCore.StreamingServerResponse(single: response)
+    }
+
+    public func getWiFiStatus(
+        request: GRPCCore.StreamingServerRequest<Edge_Agent_Services_V1_GetWiFiStatusRequest>,
+        context: GRPCCore.ServerContext
+    ) async throws -> GRPCCore.StreamingServerResponse<Edge_Agent_Services_V1_GetWiFiStatusResponse> {
+        let response = try await self.getWiFiStatus(
+            request: GRPCCore.ServerRequest(stream: request),
+            context: context
+        )
+        return GRPCCore.StreamingServerResponse(single: response)
+    }
+
+    public func disconnectWiFi(
+        request: GRPCCore.StreamingServerRequest<Edge_Agent_Services_V1_DisconnectWiFiRequest>,
+        context: GRPCCore.ServerContext
+    ) async throws -> GRPCCore.StreamingServerResponse<Edge_Agent_Services_V1_DisconnectWiFiResponse> {
+        let response = try await self.disconnectWiFi(
             request: GRPCCore.ServerRequest(stream: request),
             context: context
         )
@@ -543,6 +721,32 @@ extension Edge_Agent_Services_V1_EdgeAgentService.SimpleServiceProtocol {
     ) async throws -> GRPCCore.ServerResponse<Edge_Agent_Services_V1_ConnectToWiFiResponse> {
         return GRPCCore.ServerResponse<Edge_Agent_Services_V1_ConnectToWiFiResponse>(
             message: try await self.connectToWiFi(
+                request: request.message,
+                context: context
+            ),
+            metadata: [:]
+        )
+    }
+
+    public func getWiFiStatus(
+        request: GRPCCore.ServerRequest<Edge_Agent_Services_V1_GetWiFiStatusRequest>,
+        context: GRPCCore.ServerContext
+    ) async throws -> GRPCCore.ServerResponse<Edge_Agent_Services_V1_GetWiFiStatusResponse> {
+        return GRPCCore.ServerResponse<Edge_Agent_Services_V1_GetWiFiStatusResponse>(
+            message: try await self.getWiFiStatus(
+                request: request.message,
+                context: context
+            ),
+            metadata: [:]
+        )
+    }
+
+    public func disconnectWiFi(
+        request: GRPCCore.ServerRequest<Edge_Agent_Services_V1_DisconnectWiFiRequest>,
+        context: GRPCCore.ServerContext
+    ) async throws -> GRPCCore.ServerResponse<Edge_Agent_Services_V1_DisconnectWiFiResponse> {
+        return GRPCCore.ServerResponse<Edge_Agent_Services_V1_DisconnectWiFiResponse>(
+            message: try await self.disconnectWiFi(
                 request: request.message,
                 context: context
             ),
@@ -665,6 +869,52 @@ extension Edge_Agent_Services_V1_EdgeAgentService {
             deserializer: some GRPCCore.MessageDeserializer<Edge_Agent_Services_V1_ConnectToWiFiResponse>,
             options: GRPCCore.CallOptions,
             onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Edge_Agent_Services_V1_ConnectToWiFiResponse>) async throws -> Result
+        ) async throws -> Result where Result: Sendable
+
+        /// Call the "GetWiFiStatus" method.
+        ///
+        /// > Source IDL Documentation:
+        /// >
+        /// > Get the current WiFi connection status
+        ///
+        /// - Parameters:
+        ///   - request: A request containing a single `Edge_Agent_Services_V1_GetWiFiStatusRequest` message.
+        ///   - serializer: A serializer for `Edge_Agent_Services_V1_GetWiFiStatusRequest` messages.
+        ///   - deserializer: A deserializer for `Edge_Agent_Services_V1_GetWiFiStatusResponse` messages.
+        ///   - options: Options to apply to this RPC.
+        ///   - handleResponse: A closure which handles the response, the result of which is
+        ///       returned to the caller. Returning from the closure will cancel the RPC if it
+        ///       hasn't already finished.
+        /// - Returns: The result of `handleResponse`.
+        func getWiFiStatus<Result>(
+            request: GRPCCore.ClientRequest<Edge_Agent_Services_V1_GetWiFiStatusRequest>,
+            serializer: some GRPCCore.MessageSerializer<Edge_Agent_Services_V1_GetWiFiStatusRequest>,
+            deserializer: some GRPCCore.MessageDeserializer<Edge_Agent_Services_V1_GetWiFiStatusResponse>,
+            options: GRPCCore.CallOptions,
+            onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Edge_Agent_Services_V1_GetWiFiStatusResponse>) async throws -> Result
+        ) async throws -> Result where Result: Sendable
+
+        /// Call the "DisconnectWiFi" method.
+        ///
+        /// > Source IDL Documentation:
+        /// >
+        /// > Disconnect from the current WiFi network
+        ///
+        /// - Parameters:
+        ///   - request: A request containing a single `Edge_Agent_Services_V1_DisconnectWiFiRequest` message.
+        ///   - serializer: A serializer for `Edge_Agent_Services_V1_DisconnectWiFiRequest` messages.
+        ///   - deserializer: A deserializer for `Edge_Agent_Services_V1_DisconnectWiFiResponse` messages.
+        ///   - options: Options to apply to this RPC.
+        ///   - handleResponse: A closure which handles the response, the result of which is
+        ///       returned to the caller. Returning from the closure will cancel the RPC if it
+        ///       hasn't already finished.
+        /// - Returns: The result of `handleResponse`.
+        func disconnectWiFi<Result>(
+            request: GRPCCore.ClientRequest<Edge_Agent_Services_V1_DisconnectWiFiRequest>,
+            serializer: some GRPCCore.MessageSerializer<Edge_Agent_Services_V1_DisconnectWiFiRequest>,
+            deserializer: some GRPCCore.MessageDeserializer<Edge_Agent_Services_V1_DisconnectWiFiResponse>,
+            options: GRPCCore.CallOptions,
+            onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Edge_Agent_Services_V1_DisconnectWiFiResponse>) async throws -> Result
         ) async throws -> Result where Result: Sendable
     }
 
@@ -842,6 +1092,74 @@ extension Edge_Agent_Services_V1_EdgeAgentService {
                 onResponse: handleResponse
             )
         }
+
+        /// Call the "GetWiFiStatus" method.
+        ///
+        /// > Source IDL Documentation:
+        /// >
+        /// > Get the current WiFi connection status
+        ///
+        /// - Parameters:
+        ///   - request: A request containing a single `Edge_Agent_Services_V1_GetWiFiStatusRequest` message.
+        ///   - serializer: A serializer for `Edge_Agent_Services_V1_GetWiFiStatusRequest` messages.
+        ///   - deserializer: A deserializer for `Edge_Agent_Services_V1_GetWiFiStatusResponse` messages.
+        ///   - options: Options to apply to this RPC.
+        ///   - handleResponse: A closure which handles the response, the result of which is
+        ///       returned to the caller. Returning from the closure will cancel the RPC if it
+        ///       hasn't already finished.
+        /// - Returns: The result of `handleResponse`.
+        public func getWiFiStatus<Result>(
+            request: GRPCCore.ClientRequest<Edge_Agent_Services_V1_GetWiFiStatusRequest>,
+            serializer: some GRPCCore.MessageSerializer<Edge_Agent_Services_V1_GetWiFiStatusRequest>,
+            deserializer: some GRPCCore.MessageDeserializer<Edge_Agent_Services_V1_GetWiFiStatusResponse>,
+            options: GRPCCore.CallOptions = .defaults,
+            onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Edge_Agent_Services_V1_GetWiFiStatusResponse>) async throws -> Result = { response in
+                try response.message
+            }
+        ) async throws -> Result where Result: Sendable {
+            try await self.client.unary(
+                request: request,
+                descriptor: Edge_Agent_Services_V1_EdgeAgentService.Method.GetWiFiStatus.descriptor,
+                serializer: serializer,
+                deserializer: deserializer,
+                options: options,
+                onResponse: handleResponse
+            )
+        }
+
+        /// Call the "DisconnectWiFi" method.
+        ///
+        /// > Source IDL Documentation:
+        /// >
+        /// > Disconnect from the current WiFi network
+        ///
+        /// - Parameters:
+        ///   - request: A request containing a single `Edge_Agent_Services_V1_DisconnectWiFiRequest` message.
+        ///   - serializer: A serializer for `Edge_Agent_Services_V1_DisconnectWiFiRequest` messages.
+        ///   - deserializer: A deserializer for `Edge_Agent_Services_V1_DisconnectWiFiResponse` messages.
+        ///   - options: Options to apply to this RPC.
+        ///   - handleResponse: A closure which handles the response, the result of which is
+        ///       returned to the caller. Returning from the closure will cancel the RPC if it
+        ///       hasn't already finished.
+        /// - Returns: The result of `handleResponse`.
+        public func disconnectWiFi<Result>(
+            request: GRPCCore.ClientRequest<Edge_Agent_Services_V1_DisconnectWiFiRequest>,
+            serializer: some GRPCCore.MessageSerializer<Edge_Agent_Services_V1_DisconnectWiFiRequest>,
+            deserializer: some GRPCCore.MessageDeserializer<Edge_Agent_Services_V1_DisconnectWiFiResponse>,
+            options: GRPCCore.CallOptions = .defaults,
+            onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Edge_Agent_Services_V1_DisconnectWiFiResponse>) async throws -> Result = { response in
+                try response.message
+            }
+        ) async throws -> Result where Result: Sendable {
+            try await self.client.unary(
+                request: request,
+                descriptor: Edge_Agent_Services_V1_EdgeAgentService.Method.DisconnectWiFi.descriptor,
+                serializer: serializer,
+                deserializer: deserializer,
+                options: options,
+                onResponse: handleResponse
+            )
+        }
     }
 }
 
@@ -976,6 +1294,64 @@ extension Edge_Agent_Services_V1_EdgeAgentService.ClientProtocol {
             request: request,
             serializer: GRPCProtobuf.ProtobufSerializer<Edge_Agent_Services_V1_ConnectToWiFiRequest>(),
             deserializer: GRPCProtobuf.ProtobufDeserializer<Edge_Agent_Services_V1_ConnectToWiFiResponse>(),
+            options: options,
+            onResponse: handleResponse
+        )
+    }
+
+    /// Call the "GetWiFiStatus" method.
+    ///
+    /// > Source IDL Documentation:
+    /// >
+    /// > Get the current WiFi connection status
+    ///
+    /// - Parameters:
+    ///   - request: A request containing a single `Edge_Agent_Services_V1_GetWiFiStatusRequest` message.
+    ///   - options: Options to apply to this RPC.
+    ///   - handleResponse: A closure which handles the response, the result of which is
+    ///       returned to the caller. Returning from the closure will cancel the RPC if it
+    ///       hasn't already finished.
+    /// - Returns: The result of `handleResponse`.
+    public func getWiFiStatus<Result>(
+        request: GRPCCore.ClientRequest<Edge_Agent_Services_V1_GetWiFiStatusRequest>,
+        options: GRPCCore.CallOptions = .defaults,
+        onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Edge_Agent_Services_V1_GetWiFiStatusResponse>) async throws -> Result = { response in
+            try response.message
+        }
+    ) async throws -> Result where Result: Sendable {
+        try await self.getWiFiStatus(
+            request: request,
+            serializer: GRPCProtobuf.ProtobufSerializer<Edge_Agent_Services_V1_GetWiFiStatusRequest>(),
+            deserializer: GRPCProtobuf.ProtobufDeserializer<Edge_Agent_Services_V1_GetWiFiStatusResponse>(),
+            options: options,
+            onResponse: handleResponse
+        )
+    }
+
+    /// Call the "DisconnectWiFi" method.
+    ///
+    /// > Source IDL Documentation:
+    /// >
+    /// > Disconnect from the current WiFi network
+    ///
+    /// - Parameters:
+    ///   - request: A request containing a single `Edge_Agent_Services_V1_DisconnectWiFiRequest` message.
+    ///   - options: Options to apply to this RPC.
+    ///   - handleResponse: A closure which handles the response, the result of which is
+    ///       returned to the caller. Returning from the closure will cancel the RPC if it
+    ///       hasn't already finished.
+    /// - Returns: The result of `handleResponse`.
+    public func disconnectWiFi<Result>(
+        request: GRPCCore.ClientRequest<Edge_Agent_Services_V1_DisconnectWiFiRequest>,
+        options: GRPCCore.CallOptions = .defaults,
+        onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Edge_Agent_Services_V1_DisconnectWiFiResponse>) async throws -> Result = { response in
+            try response.message
+        }
+    ) async throws -> Result where Result: Sendable {
+        try await self.disconnectWiFi(
+            request: request,
+            serializer: GRPCProtobuf.ProtobufSerializer<Edge_Agent_Services_V1_DisconnectWiFiRequest>(),
+            deserializer: GRPCProtobuf.ProtobufDeserializer<Edge_Agent_Services_V1_DisconnectWiFiResponse>(),
             options: options,
             onResponse: handleResponse
         )
@@ -1134,6 +1510,72 @@ extension Edge_Agent_Services_V1_EdgeAgentService.ClientProtocol {
             metadata: metadata
         )
         return try await self.connectToWiFi(
+            request: request,
+            options: options,
+            onResponse: handleResponse
+        )
+    }
+
+    /// Call the "GetWiFiStatus" method.
+    ///
+    /// > Source IDL Documentation:
+    /// >
+    /// > Get the current WiFi connection status
+    ///
+    /// - Parameters:
+    ///   - message: request message to send.
+    ///   - metadata: Additional metadata to send, defaults to empty.
+    ///   - options: Options to apply to this RPC, defaults to `.defaults`.
+    ///   - handleResponse: A closure which handles the response, the result of which is
+    ///       returned to the caller. Returning from the closure will cancel the RPC if it
+    ///       hasn't already finished.
+    /// - Returns: The result of `handleResponse`.
+    public func getWiFiStatus<Result>(
+        _ message: Edge_Agent_Services_V1_GetWiFiStatusRequest,
+        metadata: GRPCCore.Metadata = [:],
+        options: GRPCCore.CallOptions = .defaults,
+        onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Edge_Agent_Services_V1_GetWiFiStatusResponse>) async throws -> Result = { response in
+            try response.message
+        }
+    ) async throws -> Result where Result: Sendable {
+        let request = GRPCCore.ClientRequest<Edge_Agent_Services_V1_GetWiFiStatusRequest>(
+            message: message,
+            metadata: metadata
+        )
+        return try await self.getWiFiStatus(
+            request: request,
+            options: options,
+            onResponse: handleResponse
+        )
+    }
+
+    /// Call the "DisconnectWiFi" method.
+    ///
+    /// > Source IDL Documentation:
+    /// >
+    /// > Disconnect from the current WiFi network
+    ///
+    /// - Parameters:
+    ///   - message: request message to send.
+    ///   - metadata: Additional metadata to send, defaults to empty.
+    ///   - options: Options to apply to this RPC, defaults to `.defaults`.
+    ///   - handleResponse: A closure which handles the response, the result of which is
+    ///       returned to the caller. Returning from the closure will cancel the RPC if it
+    ///       hasn't already finished.
+    /// - Returns: The result of `handleResponse`.
+    public func disconnectWiFi<Result>(
+        _ message: Edge_Agent_Services_V1_DisconnectWiFiRequest,
+        metadata: GRPCCore.Metadata = [:],
+        options: GRPCCore.CallOptions = .defaults,
+        onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Edge_Agent_Services_V1_DisconnectWiFiResponse>) async throws -> Result = { response in
+            try response.message
+        }
+    ) async throws -> Result where Result: Sendable {
+        let request = GRPCCore.ClientRequest<Edge_Agent_Services_V1_DisconnectWiFiRequest>(
+            message: message,
+            metadata: metadata
+        )
+        return try await self.disconnectWiFi(
             request: request,
             options: options,
             onResponse: handleResponse

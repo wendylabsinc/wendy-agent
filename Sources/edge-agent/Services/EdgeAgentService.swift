@@ -155,7 +155,7 @@ struct EdgeAgentService: Edge_Agent_Services_V1_EdgeAgentService.ServiceProtocol
         logger.info("Listing available WiFi networks")
 
         do {
-            let networkManager = NetworkManager(uid: currentUID, persistConnection: false)
+            let networkManager = NetworkManager(uid: currentUID)
             let wifiNetworks = try await networkManager.listWiFiNetworks()
 
             logger.info("Found \(wifiNetworks.count) WiFi networks")
@@ -165,7 +165,10 @@ struct EdgeAgentService: Edge_Agent_Services_V1_EdgeAgentService.ServiceProtocol
                     response.networks = wifiNetworks.map { network in
                         .with { protoNetwork in
                             protoNetwork.ssid = network.ssid
-                            // Signal strength not available in our current implementation
+                            // Include signal strength if available
+                            if let signalStrength = network.signalStrength {
+                                protoNetwork.signalStrength = Int32(signalStrength)
+                            }
                         }
                     }
                 }
@@ -189,7 +192,7 @@ struct EdgeAgentService: Edge_Agent_Services_V1_EdgeAgentService.ServiceProtocol
         logger.info("Connecting to WiFi network", metadata: ["ssid": "\(ssid)"])
 
         do {
-            let networkManager = NetworkManager(uid: currentUID, persistConnection: false)
+            let networkManager = NetworkManager(uid: currentUID)
             let success = try await networkManager.setupWiFi(ssid: ssid, password: password)
 
             if success {
@@ -214,6 +217,113 @@ struct EdgeAgentService: Edge_Agent_Services_V1_EdgeAgentService.ServiceProtocol
                     "error": "\(error)",
                 ]
             )
+
+            return ServerResponse(
+                message: .with {
+                    $0.success = false
+                    $0.errorMessage = error.localizedDescription
+                }
+            )
+        }
+    }
+
+    func getWiFiStatus(
+        request: GRPCCore.ServerRequest<Edge_Agent_Services_V1_GetWiFiStatusRequest>,
+        context: GRPCCore.ServerContext
+    ) async throws -> GRPCCore.ServerResponse<Edge_Agent_Services_V1_GetWiFiStatusResponse> {
+        logger.info("Getting WiFi connection status")
+
+        do {
+            let networkManager = NetworkManager(uid: currentUID)
+            let connectionInfo = try await networkManager.getCurrentConnection()
+
+            if let connectionInfo = connectionInfo {
+                logger.info(
+                    "Currently connected to WiFi network",
+                    metadata: ["ssid": "\(connectionInfo.ssid)"]
+                )
+                return ServerResponse(
+                    message: .with { response in
+                        response.connected = true
+                        response.ssid = connectionInfo.ssid
+                    }
+                )
+            } else {
+                logger.info("Not connected to any WiFi network")
+                return ServerResponse(
+                    message: .with { response in
+                        response.connected = false
+                    }
+                )
+            }
+        } catch {
+            logger.error("Error getting WiFi status: \(error)")
+
+            return ServerResponse(
+                message: .with { response in
+                    response.connected = false
+                    response.errorMessage = error.localizedDescription
+                }
+            )
+        }
+    }
+
+    func disconnectWiFi(
+        request: GRPCCore.ServerRequest<Edge_Agent_Services_V1_DisconnectWiFiRequest>,
+        context: GRPCCore.ServerContext
+    ) async throws -> GRPCCore.ServerResponse<Edge_Agent_Services_V1_DisconnectWiFiResponse> {
+        logger.info("Disconnecting from WiFi network")
+
+        do {
+            let networkManager = NetworkManager(uid: currentUID)
+
+            // Check current connection first
+            if let connectionInfo = try await networkManager.getCurrentConnection() {
+                logger.info(
+                    "Disconnecting from WiFi network",
+                    metadata: ["ssid": "\(connectionInfo.ssid)"]
+                )
+
+                let success = try await networkManager.disconnectFromNetwork()
+
+                if success {
+                    logger.info(
+                        "Successfully disconnected from WiFi network",
+                        metadata: ["ssid": "\(connectionInfo.ssid)"]
+                    )
+                    return ServerResponse(
+                        message: .with { $0.success = true }
+                    )
+                } else {
+                    logger.warning(
+                        "Failed to disconnect from WiFi network",
+                        metadata: ["ssid": "\(connectionInfo.ssid)"]
+                    )
+                    return ServerResponse(
+                        message: .with {
+                            $0.success = false
+                            $0.errorMessage = "Disconnection failed"
+                        }
+                    )
+                }
+            } else {
+                logger.info("Not connected to any WiFi network")
+                return ServerResponse(
+                    message: .with {
+                        $0.success = true
+                    }
+                )
+            }
+        } catch NetworkManagerError.noActiveConnection {
+            // Not being connected is not an error for disconnection
+            logger.info("Not connected to any WiFi network")
+            return ServerResponse(
+                message: .with {
+                    $0.success = true
+                }
+            )
+        } catch {
+            logger.error("Error disconnecting from WiFi network: \(error)")
 
             return ServerResponse(
                 message: .with {
