@@ -1,5 +1,5 @@
 {
-  "originHash" : "e1c125f18469255078831028fa16f570300f8651b09aaba4d073a367a36e9749",
+  "originHash" : "4abb0ce8db93a6faec6bc20cb119e6f4373b9cac70d910f7c286530635b70e50",
   "pins" : [
     {
       "identity" : "async-http-client",
@@ -16,7 +16,7 @@
       "location" : "https://github.com/edgeengineer/dbus.git",
       "state" : {
         "branch" : "jo/native-nio",
-        "revision" : "8149f1de1688c5a754142cd25ca649557c169d27"
+        "revision" : "3507d92fb4ca7eb9475a31ffdf84a3f7c7d835e9"
       }
     },
     {

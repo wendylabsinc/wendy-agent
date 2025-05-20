@@ -700,46 +700,84 @@ public actor NetworkManager {
                     method: "AddAndActivateConnection",
                     serial: requestSerial,
                     body: [
-                        .array([
-                            .dictionary([
-                                .string("connection"): .array([
-                                    .dictionary([.string("id"): .string(ssid)]),
-                                    .dictionary([.string("type"): .string("802-11-wireless")]),
-                                    .dictionary([.string("uuid"): .string(UUID().uuidString)]),
-                                    .dictionary([.string("autoconnect"): .boolean(true)]),
-                                ])
+                        // First parameter - a{sa{sv}} - A dictionary of settings
+                        .dictionary([
+                            // "connection" setting group
+                            .string("connection"): .dictionary([
+                                .string("id"): .variant(DBusVariant(.string(ssid))),
+                                .string("type"): .variant(DBusVariant(.string("802-11-wireless"))),
+                                .string("uuid"): .variant(DBusVariant(.string(UUID().uuidString))),
+                                .string("autoconnect"): .variant(DBusVariant(.boolean(true))),
                             ]),
-                            .dictionary([
-                                .string("802-11-wireless"): .array([
-                                    .dictionary([
-                                        .string("ssid"): .array(
-                                            ssid.utf8.map { DBusValue.byte($0) }
-                                        )
-                                    ]),
-                                    .dictionary([.string("mode"): .string("infrastructure")]),
-                                ])
+
+                            // "802-11-wireless" setting group
+                            .string("802-11-wireless"): .dictionary([
+                                .string("ssid"): .variant(
+                                    DBusVariant(
+                                        .array(ssid.utf8.map { DBusValue.byte($0) })
+                                    )
+                                ),
+                                .string("mode"): .variant(DBusVariant(.string("infrastructure"))),
                             ]),
-                            .dictionary([
-                                .string("802-11-wireless-security"): .array([
-                                    .dictionary([.string("key-mgmt"): .string("wpa-psk")]),
-                                    .dictionary([.string("psk"): .string(password)]),
-                                ])
+
+                            // "802-11-wireless-security" setting group
+                            .string("802-11-wireless-security"): .dictionary([
+                                .string("key-mgmt"): .variant(DBusVariant(.string("wpa-psk"))),
+                                .string("psk"): .variant(DBusVariant(.string(password))),
                             ]),
-                            .dictionary([
-                                .string("ipv4"): .array([
-                                    .dictionary([.string("method"): .string("auto")])
-                                ])
+
+                            // "ipv4" setting group
+                            .string("ipv4"): .dictionary([
+                                .string("method"): .variant(DBusVariant(.string("auto")))
                             ]),
-                            .dictionary([
-                                .string("ipv6"): .array([
-                                    .dictionary([.string("method"): .string("auto")])
-                                ])
+
+                            // "ipv6" setting group
+                            .string("ipv6"): .dictionary([
+                                .string("method"): .variant(DBusVariant(.string("auto")))
                             ]),
                         ]),
+
+                        // Second parameter - o - Device path
                         .objectPath(wifiDevicePath),
+
+                        // Third parameter - o - Access point path
                         .objectPath(network.path),
                     ]
                 )
+
+                // Log the full message details for debugging
+                self.logger.debug("==================== DBus MESSAGE DETAILS ====================")
+                self.logger.debug("DBUS CONNECTION REQUEST SIGNATURE:")
+                self.logger.debug("Full message: \(connectMessage)")
+                self.logger.debug("Message Type: \(connectMessage.messageType)")
+                self.logger.debug("Serial: \(connectMessage.serial)")
+                self.logger.debug("Body types count: \(connectMessage.body.count)")
+
+                // Print body details
+                for (index, value) in connectMessage.body.enumerated() {
+                    self.logger.debug("Body[\(index)] type: \(type(of: value))")
+                    self.logger.debug("Body[\(index)] value: \(value)")
+
+                    // For the first body parameter (connection settings)
+                    if index == 0, case .array(let connectionSettings) = value {
+                        self.logger.debug(
+                            "Connection settings array count: \(connectionSettings.count)"
+                        )
+                        for (i, setting) in connectionSettings.enumerated() {
+                            if case .dictionary(let dict) = setting {
+                                self.logger.debug(
+                                    "  Setting[\(i)] keys: \(dict.keys.map { String(describing: $0) })"
+                                )
+                            }
+                        }
+                    }
+
+                    // For object paths
+                    if case .objectPath(let path) = value {
+                        self.logger.debug("Body[\(index)] objectPath: \(path)")
+                    }
+                }
+                self.logger.debug("==================== END MESSAGE DETAILS ====================")
 
                 self.logger.debug("Sending connection request with serial: \(requestSerial)")
 
