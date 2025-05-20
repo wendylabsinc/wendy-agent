@@ -8,12 +8,12 @@ For the cli to work properly on linux, `usbutils` needs to be installed.
 
 ### Swift Toolchain
 
-The CLI currently assumes that the Swift toolchain is installed at `/Library/Developer/Toolchains/swift-6.0.3-RELEASE.xctoolchain`. You can obtain a copy of this toolchain [here](https://download.swift.org/swift-6.0.3-release/xcode/swift-6.0.3-RELEASE/swift-6.0.3-RELEASE-osx.pkg). During the installation of the toolchain pkg, you need to select "Install for all users of this computer".
+The CLI currently assumes that the Swift toolchain is installed at `/Library/Developer/Toolchains/swift-6.1-RELEASE.xctoolchain`. You can obtain a copy of this toolchain [here](https://download.swift.org/swift-6.1-release/xcode/swift-6.1-RELEASE/swift-6.1-RELEASE-osx.pkg). During the installation of the toolchain pkg, you need to select "Install for all users of this computer".
 
 Before installing the SDK in the next step, export the`TOOLCHAINS` environment variable:
 
 ```sh
-export TOOLCHAINS=$(plutil -extract CFBundleIdentifier raw /Library/Developer/Toolchains/swift-6.0.3-RELEASE.xctoolchain/Info.plist)
+export TOOLCHAINS=$(plutil -extract CFBundleIdentifier raw /Library/Developer/Toolchains/swift-6.1-RELEASE.xctoolchain/Info.plist)
 ```
 
 ### Static Linux SDK
@@ -21,7 +21,7 @@ export TOOLCHAINS=$(plutil -extract CFBundleIdentifier raw /Library/Developer/To
 After installing the toolchain and exporting the `TOOLCHAINS` variable, you need to install the Swift Static Linux SDK. This step is necessary on all platforms (including macOS).
 
 ```sh
-swift sdk install https://download.swift.org/swift-6.0.3-release/static-sdk/swift-6.0.3-RELEASE/swift-6.0.3-RELEASE_static-linux-0.0.1.artifactbundle.tar.gz --checksum 67f765e0030e661a7450f7e4877cfe008db4f57f177d5a08a6e26fd661cdd0bd
+swift sdk install https://download.swift.org/swift-6.1-release/static-sdk/swift-6.1-RELEASE/swift-6.1-RELEASE_static-linux-0.0.1.artifactbundle.tar.gz
 ```
 
 ### Installing the CLI
@@ -66,9 +66,11 @@ If you're planning to test the edge-agent on macOS, you'll need to build and run
 swift run edge-agent
 ```
 
-## Hello, world!
+## Examples
 
-You can then run the hello world example by executing the following command:
+### Hello, world!
+
+You can run the hello world example by executing the following command:
 
 ```sh
 cd Examples/HelloWorld
@@ -78,9 +80,18 @@ swift run --package-path ../../ -- edge run --agent <hostname-of-device>
 This will build the Edge CLI and execute it's `run` command. The Edge CLI will in turn build the
 `HelloWorld` example using the Swift Static Linux SDK, and run it in a Docker container.
 
+### Hello HTTP
+
+A more advanced example demonstrating HTTP server capabilities is available in the `HelloHTTP` directory:
+
+```sh
+cd Examples/HelloHTTP
+swift run --package-path ../../ -- edge run --agent <hostname-of-device>
+```
+
 ### Debugging
 
-To debug the `HelloWorld` example, you can use the following command:
+To debug examples, you can use the following command:
 
 ```sh
 swift run --package-path ../../ -- edge run --agent <hostname-of-device> --debug
@@ -100,8 +111,8 @@ Then, from within LLDB's prompt run the following to connect to your app's debug
 
 ```sh
 (lldb) target create .edge-build/debug/HelloWorld
-(lldb) settings set target.sdk-path "<path-to-sdk.artifactbundle>/swift-6.0.3-RELEASE_static-linux-0.0.1/swift-linux-musl/musl-1.2.5.sdk/aarch64"
-(lldb) settings set target.swift-module-search-paths "<path-to-sdk.artifactbundle>/swift-6.0.3-RELEASE_static-linux-0.0.1/swift-linux-musl/musl-1.2.5.sdk/aarch64/usr/lib/swift_static/linux-static"
+(lldb) settings set target.sdk-path "<path-to-sdk.artifactbundle>/swift-6.1-RELEASE_static-linux-0.0.1/swift-linux-musl/musl-1.2.5.sdk/aarch64"
+(lldb) settings set target.swift-module-search-paths "<path-to-sdk.artifactbundle>/swift-6.1-RELEASE_static-linux-0.0.1/swift-linux-musl/musl-1.2.5.sdk/aarch64/usr/lib/swift_static/linux-static"
 (lldb) gdb-remote localhost:4242
 ```
 
