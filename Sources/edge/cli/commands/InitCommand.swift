@@ -1,6 +1,6 @@
 import ArgumentParser
 import Subprocess
-import System
+import SystemPackage
 
 #if canImport(FoundationEssentials)
     import FoundationEssentials
@@ -40,18 +40,18 @@ struct InitCommand: AsyncParsableCommand {
             }
         }
 
-        // Run swift package init in the specified directory
+        // Run swift package init in the specified directory using bash -c to cd into the directory first
+        let command = "cd \"\(projectPath)\" && swift package init --type executable"
         let result = try await Subprocess.run(
-            Subprocess.Executable.name("swift"),
-            arguments: ["package", "init", "--type", "executable"],
-            workingDirectory: FilePath(projectPath),
+            Subprocess.Executable.name("bash"),
+            arguments: Subprocess.Arguments(["-c", command]),
             output: .string,
             error: .string
         )
 
         if !result.terminationStatus.isSuccess {
             throw InitError.commandFailed(
-                command: "swift package init --type executable",
+                command: command,
                 exitCode: Int(result.terminationStatus.description) ?? -1,
                 error: result.standardError ?? ""
             )
