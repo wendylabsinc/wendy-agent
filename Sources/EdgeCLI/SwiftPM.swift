@@ -1,5 +1,6 @@
 import Foundation
 import Subprocess
+import System
 
 /// Represents the Swift Package Manager interface for building and managing Swift packages.
 public struct SwiftPM: Sendable {
@@ -99,18 +100,18 @@ public struct SwiftPM: Sendable {
         let result = try await Subprocess.run(
             Subprocess.Executable.path("/usr/bin/env"),
             arguments: Subprocess.Arguments(allArgs),
-            output: .string,
-            error: .string
+            output: .fileDescriptor(.standardOutput, closeAfterSpawningProcess: false),
+            error: .fileDescriptor(.standardError, closeAfterSpawningProcess: false),
         )
 
         if result.terminationStatus.isSuccess {
-            return result.standardOutput ?? ""
+            return ""
         } else {
             throw SubprocessError.nonZeroExit(
                 command: allArgs.joined(separator: " "),
                 exitCode: Int(result.terminationStatus.description) ?? -1,
-                output: result.standardOutput ?? "",
-                error: result.standardError ?? ""
+                output: "",
+                error: ""
             )
         }
     }
@@ -152,8 +153,12 @@ public struct SwiftPM: Sendable {
 
         public var errorDescription: String? {
             switch self {
-            case .nonZeroExit(let command, let exitCode, _, let error):
-                return "Command '\(command)' failed with exit code \(exitCode): \(error)"
+            case .nonZeroExit(let command, let exitCode, let output, let error):
+                return """
+                Command '\(command)' failed with exit code \(exitCode): \(error)
+
+                \(output)
+                """
             }
         }
     }
