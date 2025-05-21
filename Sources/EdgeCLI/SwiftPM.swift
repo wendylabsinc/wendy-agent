@@ -155,10 +155,10 @@ public struct SwiftPM: Sendable {
             switch self {
             case .nonZeroExit(let command, let exitCode, let output, let error):
                 return """
-                Command '\(command)' failed with exit code \(exitCode): \(error)
+                    Command '\(command)' failed with exit code \(exitCode): \(error)
 
-                \(output)
-                """
+                    \(output)
+                    """
             }
         }
     }
