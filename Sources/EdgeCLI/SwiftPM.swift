@@ -1,6 +1,6 @@
 import Foundation
 import Subprocess
-import System
+import SystemPackage
 
 /// Represents the Swift Package Manager interface for building and managing Swift packages.
 public struct SwiftPM: Sendable {
