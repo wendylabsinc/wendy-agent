@@ -83,7 +83,41 @@ public struct SwiftPM: Sendable {
     }
 
     /// Build the Swift package.
-    @discardableResult public func build(_ options: BuildOption...) async throws -> String {
+    public func buildWithOutput(_ options: BuildOption...) async throws -> String {
+        let version = swiftVersion ?? Self.defaultSwiftVersion
+
+        // Find the executable path
+        let executablePath = try await findExecutablePath(
+            for: path.split(separator: " ").first.map(String.init) ?? path
+        )
+        // print("Using swiftly at path: \(executablePath)")
+
+        // Use the executable path instead of just the command name
+        let runArgs = path.split(separator: " ").dropFirst().map(String.init)
+        let allArgs =
+            [executablePath] + runArgs + ["build", version] + options.flatMap(\.arguments)
+
+        let result = try await Subprocess.run(
+            Subprocess.Executable.path("/usr/bin/env"),
+            arguments: Subprocess.Arguments(allArgs),
+            output: .string,
+            error: .fileDescriptor(.standardError, closeAfterSpawningProcess: false),
+        )
+
+        if result.terminationStatus.isSuccess {
+            return result.standardOutput ?? ""
+        } else {
+            throw SubprocessError.nonZeroExit(
+                command: allArgs.joined(separator: " "),
+                exitCode: Int(result.terminationStatus.description) ?? -1,
+                output: "",
+                error: ""
+            )
+        }
+    }
+
+    /// Build the Swift package.
+    public func build(_ options: BuildOption...) async throws {
         let version = swiftVersion ?? Self.defaultSwiftVersion
 
         // Find the executable path
@@ -105,7 +139,7 @@ public struct SwiftPM: Sendable {
         )
 
         if result.terminationStatus.isSuccess {
-            return ""
+            return result.standardOutput
         } else {
             throw SubprocessError.nonZeroExit(
                 command: allArgs.joined(separator: " "),

@@ -1,33 +1,29 @@
 import Crypto
 import Foundation
+import Logging
+import NIOFoundationCompat
 import Shell
+import _NIOFileSystem
 
-/// Builds a Docker-compatible container image from the given image specification.
-/// The image is saved to the given path.
-///
-/// This currently follows the format expected by `docker load`, which is not
-/// the same as the OCI Image Format Specification.
-public func buildDockerContainerImage(
+public struct ContainerLayer: Sendable {
+    let path: URL
+    let hash: String
+}
+
+public func buildDockerContainerLayers(
     image: ContainerImageSpec,
     imageName: String,
-    outputPath: String
-) async throws {
-    // TODO: Implement this using the OCI Image Format Specification instead of Docker's format?
-    // TODO: Write directly to a tar file instead of using a temporary directory
-
-    let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-    try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-
-    var layerSHAs: [String] = []
-    var layerPaths: [URL] = []
+    outputDirectoryPath: URL
+) async throws -> [ContainerLayer] {
+    var layers = [ContainerLayer]()
 
     for (index, layer) in image.layers.enumerated() {
-        let layerTarPath = tempDir.appendingPathComponent("layer\(index).tar")
+        let layerTarPath = outputDirectoryPath.appendingPathComponent("layer\(index).tar")
 
         switch layer.content {
         case .files(let files):
             // Create a directory for this layer
-            let layerDir = tempDir.appendingPathComponent("layer\(index)")
+            let layerDir = outputDirectoryPath.appendingPathComponent("layer\(index)")
             try FileManager.default.createDirectory(at: layerDir, withIntermediateDirectories: true)
 
             // Create each file in the layer
@@ -71,18 +67,50 @@ public func buildDockerContainerImage(
         // If the layer has a predefined diffID, use it
         if let diffID = layer.diffID, diffID.starts(with: "sha256:") {
             let layerSHA = diffID.replacingOccurrences(of: "sha256:", with: "")
-            layerSHAs.append(layerSHA)
-            layerPaths.append(layerTarPath)
+            layers.append(ContainerLayer(path: layerTarPath, hash: layerSHA))
         } else {
-            // Calculate the SHA256 checksum of the layer tarball
-            // TODO: Switch to NIOFilesystem instead of Data(contentsOf:), so we don't have to load the entire layer into memory
-            let layerData = try Data(contentsOf: layerTarPath)
-            let layerSHA = sha256(data: layerData)
+            let layer = try await FileSystem.shared.withFileHandle(
+                forReadingAt: FilePath(layerTarPath.path)
+            ) { fileHandle in
+                var sha = SHA256()
+                for try await chunk in fileHandle.readChunks() {
+                    sha.update(data: chunk.readableBytesView)
+                }
+                let layerSHA = sha.finalize()
+                    .map { String(format: "%02x", $0) }
+                    .joined()
 
-            layerSHAs.append(layerSHA)
-            layerPaths.append(layerTarPath)
+                return ContainerLayer(path: layerTarPath, hash: layerSHA)
+            }
+            layers.append(layer)
         }
     }
+
+    return layers
+}
+
+/// Builds a Docker-compatible container image from the given image specification.
+/// The image is saved to the given path.
+///
+/// This currently follows the format expected by `docker load`, which is not
+/// the same as the OCI Image Format Specification.
+public func buildDockerContainerImage(
+    image: ContainerImageSpec,
+    imageName: String,
+    outputPath: String
+) async throws {
+    let logger = Logger(label: "edgeengineer.container-builder")
+    // TODO: Implement this using the OCI Image Format Specification instead of Docker's format?
+    // TODO: Write directly to a tar file instead of using a temporary directory
+    let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+
+    logger.info("Building container layers")
+    let layers = try await buildDockerContainerLayers(
+        image: image,
+        imageName: imageName,
+        outputDirectoryPath: tempDir
+    )
 
     // Create config.json
     let dateFormatter = ISO8601DateFormatter()
@@ -97,17 +125,19 @@ public func buildDockerContainerImage(
         ),
         rootfs: RootFS(
             type: "layers",
-            diff_ids: layerSHAs.map { "sha256:\($0)" }
+            diff_ids: layers.map { "sha256:\($0.hash)" }
         )
     )
 
     // Serialize and save config
+    logger.info("Creating config.json")
     let configData = try JSONEncoder().encode(config)
     let configPath = tempDir.appendingPathComponent("config.json")
     try configData.write(to: configPath)
     let configSHA = sha256(data: configData)
 
     // Create image manifest
+    logger.info("Creating image manifest")
     let imageTag = "latest"
     let repositories = [
         imageName: [
@@ -119,13 +149,14 @@ public func buildDockerContainerImage(
     try repositoriesData.write(to: repositoriesPath)
 
     // Create final container image tarball
+    logger.info("Creating final container image tarball")
     let imageDir = tempDir.appendingPathComponent("image")
     try FileManager.default.createDirectory(at: imageDir, withIntermediateDirectories: true)
 
     // Copy layers and config to image directory
-    for (layerSHA, originPath) in zip(layerSHAs, layerPaths) {
-        let destinationPath = imageDir.appendingPathComponent("\(layerSHA).tar")
-        try FileManager.default.copyItem(at: originPath, to: destinationPath)
+    for layer in layers {
+        let destinationPath = imageDir.appendingPathComponent("\(layer.hash).tar")
+        try FileManager.default.copyItem(at: layer.path, to: destinationPath)
     }
 
     let imageConfigPath = imageDir.appendingPathComponent("\(configSHA).json")
@@ -140,7 +171,7 @@ public func buildDockerContainerImage(
         DockerManifestEntry(
             Config: "\(configSHA).json",
             RepoTags: ["\(imageName):\(imageTag)"],
-            Layers: layerSHAs.map { "\($0).tar" }
+            Layers: layers.map { "\($0.hash).tar" }
         )
     ]
 
