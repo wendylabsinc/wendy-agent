@@ -129,7 +129,7 @@ public struct SwiftPM: Sendable {
         // Use the executable path instead of just the command name
         let runArgs = path.split(separator: " ").dropFirst().map(String.init)
         let allArgs =
-        [executablePath] + runArgs + ["build", version] + options.flatMap(\.arguments)
+            [executablePath] + runArgs + ["build", version] + options.flatMap(\.arguments)
 
         let result = try await Subprocess.run(
             Subprocess.Executable.path("/usr/bin/env"),

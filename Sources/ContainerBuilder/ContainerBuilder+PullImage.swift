@@ -16,7 +16,9 @@ extension ContainerImageSpec {
             ".edge-cache/manifests"
         )
         try FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
-        let repoName = imageRef.repository.addingPercentEncoding(withAllowedCharacters: .alphanumerics)!
+        let repoName = imageRef.repository.addingPercentEncoding(
+            withAllowedCharacters: .alphanumerics
+        )!
         let manifestPath = cacheDir.appendingPathComponent(
             "\(repoName)-\(architecture).json"
         )
@@ -63,12 +65,15 @@ extension ContainerImageSpec {
             )
         }
 
-        logger.info("Saving manifest to cache", metadata: [
-            "path": .string(manifestPath.path),
-            "digest": .string(manifest.config.digest),
-            "repository": .string(imageRef.repository),
-            "reference": .string(imageRef.reference),
-        ])
+        logger.info(
+            "Saving manifest to cache",
+            metadata: [
+                "path": .string(manifestPath.path),
+                "digest": .string(manifest.config.digest),
+                "repository": .string(imageRef.repository),
+                "reference": .string(imageRef.reference),
+            ]
+        )
         let data = try JSONEncoder().encode(manifest)
         try data.write(to: manifestPath)
 
@@ -84,11 +89,13 @@ extension ContainerImageSpec {
             ".edge-cache/configs"
         )
         try FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
-        let repoName = imageRef.repository.addingPercentEncoding(withAllowedCharacters: .alphanumerics)!
+        let repoName = imageRef.repository.addingPercentEncoding(
+            withAllowedCharacters: .alphanumerics
+        )!
         let configPath = cacheDir.appendingPathComponent(
             "\(repoName)-\(configDigest).json"
         )
-        
+
         do {
             let data = try Data(contentsOf: configPath)
             return try JSONDecoder().decode(ImageConfiguration.self, from: data)

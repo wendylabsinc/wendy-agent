@@ -1,9 +1,9 @@
 import ArgumentParser
-import Logging
 import EdgeAgentGRPC
 import Foundation
 import GRPCCore
 import GRPCNIOTransportHTTP2
+import Logging
 import NIOFoundationCompat
 import _NIOFileSystem
 
