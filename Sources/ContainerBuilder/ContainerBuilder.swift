@@ -70,7 +70,7 @@ public func buildDockerContainerLayers(
             layers.append(ContainerLayer(path: layerTarPath, hash: layerSHA))
         } else {
             let layer = try await FileSystem.shared.withFileHandle(
-                forReadingAt: FilePath(layerTarPath.absoluteString)
+                forReadingAt: FilePath(layerTarPath.path)
             ) { fileHandle in
                 var sha = SHA256()
                 for try await chunk in fileHandle.readChunks() {
