@@ -6,6 +6,115 @@ import Shell
 extension ContainerImageSpec {
     private static let logger = Logger(label: "edgeengineer.container-builder")
 
+    private static func fetchManifest(
+        client: RegistryClient,
+        imageRef: ImageReference,
+        architecture: String
+    ) async throws -> ImageManifest {
+        // Try to fetch from `.edge-cache` first
+        let cacheDir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(
+            ".edge-cache/manifests"
+        )
+        try FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
+        let repoName = imageRef.repository.addingPercentEncoding(withAllowedCharacters: .alphanumerics)!
+        let manifestPath = cacheDir.appendingPathComponent(
+            "\(repoName)-\(architecture).json"
+        )
+        do {
+            let data = try Data(contentsOf: manifestPath)
+            return try JSONDecoder().decode(ImageManifest.self, from: data)
+        } catch {
+            logger.debug("Manifest not found in cache, fetching from registry...")
+        }
+
+        // Try to get manifest for the base image
+        // Some registries might return an index instead of a manifest for multi-platform images
+        let manifest: ImageManifest
+        do {
+            manifest = try await client.getManifest(
+                repository: imageRef.repository,
+                reference: imageRef.reference
+            )
+        } catch {
+            // If fetching manifest fails, try to get the index and select the appropriate manifest
+            logger.debug("Direct manifest fetch failed, trying to get image index...")
+            let index = try await client.getIndex(
+                repository: imageRef.repository,
+                reference: imageRef.reference
+            )
+
+            // Find the manifest for the requested architecture
+            guard
+                let manifestDesc = index.manifests.first(where: {
+                    $0.platform?.architecture == architecture && $0.platform?.os == "linux"
+                }) ?? index.manifests.first
+            else {
+                throw error  // Re-throw the original error if no suitable manifest found
+            }
+
+            logger.info(
+                "Using manifest for \(manifestDesc.platform?.architecture ?? "unknown") architecture"
+            )
+
+            // Now fetch the specific manifest using the digest
+            manifest = try await client.getManifest(
+                repository: imageRef.repository,
+                reference: manifestDesc.digest
+            )
+        }
+
+        logger.info("Saving manifest to cache", metadata: [
+            "path": .string(manifestPath.path),
+            "digest": .string(manifest.config.digest),
+            "repository": .string(imageRef.repository),
+            "reference": .string(imageRef.reference),
+        ])
+        let data = try JSONEncoder().encode(manifest)
+        try data.write(to: manifestPath)
+
+        return manifest
+    }
+
+    private static func fetchImageConfiguration(
+        client: RegistryClient,
+        imageRef: ImageReference,
+        configDigest: String
+    ) async throws -> ImageConfiguration {
+        let cacheDir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(
+            ".edge-cache/configs"
+        )
+        try FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
+        let repoName = imageRef.repository.addingPercentEncoding(withAllowedCharacters: .alphanumerics)!
+        let configPath = cacheDir.appendingPathComponent(
+            "\(repoName)-\(configDigest).json"
+        )
+        
+        do {
+            let data = try Data(contentsOf: configPath)
+            return try JSONDecoder().decode(ImageConfiguration.self, from: data)
+        } catch {
+            logger.debug("Image configuration not found in cache, fetching from registry...")
+        }
+
+        logger.info(
+            "Fetching image configuration",
+            metadata: [
+                "digest": .string(configDigest),
+                "repository": .string(imageRef.repository),
+                "reference": .string(imageRef.reference),
+            ]
+        )
+        let config = try await client.getImageConfiguration(
+            forImage: imageRef,
+            digest: configDigest
+        )
+
+        let data = try JSONEncoder().encode(config)
+        try data.write(to: configPath)
+
+        return config
+    }
+
     /// Creates a container image specification with a base image from a registry and an executable to add.
     ///
     /// - Parameters:
@@ -41,47 +150,18 @@ extension ContainerImageSpec {
             auth: auth
         )
 
-        // Try to get manifest for the base image
-        // Some registries might return an index instead of a manifest for multi-platform images
-        var manifest: ImageManifest
-        do {
-            manifest = try await client.getManifest(
-                repository: imageRef.repository,
-                reference: imageRef.reference
-            )
-        } catch {
-            // If fetching manifest fails, try to get the index and select the appropriate manifest
-            logger.debug("Direct manifest fetch failed, trying to get image index...")
-            let index = try await client.getIndex(
-                repository: imageRef.repository,
-                reference: imageRef.reference
-            )
-
-            // Find the manifest for the requested architecture
-            guard
-                let manifestDesc = index.manifests.first(where: {
-                    $0.platform?.architecture == architecture && $0.platform?.os == "linux"
-                }) ?? index.manifests.first
-            else {
-                throw error  // Re-throw the original error if no suitable manifest found
-            }
-
-            logger.info(
-                "Using manifest for \(manifestDesc.platform?.architecture ?? "unknown") architecture"
-            )
-
-            // Now fetch the specific manifest using the digest
-            manifest = try await client.getManifest(
-                repository: imageRef.repository,
-                reference: manifestDesc.digest
-            )
-        }
+        let manifest = try await Self.fetchManifest(
+            client: client,
+            imageRef: imageRef,
+            architecture: architecture
+        )
 
         // Get configuration for the base image
         let configDigest = manifest.config.digest
-        let config = try await client.getImageConfiguration(
-            forImage: imageRef,
-            digest: configDigest
+        let config = try await Self.fetchImageConfiguration(
+            client: client,
+            imageRef: imageRef,
+            configDigest: configDigest
         )
 
         // Create a temporary directory to store the base image layers
