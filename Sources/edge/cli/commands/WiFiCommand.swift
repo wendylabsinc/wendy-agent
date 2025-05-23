@@ -153,7 +153,12 @@ struct WiFiCommand: AsyncParsableCommand {
                         let errorMessage: String?
                     }
 
-                    let responseJSON = try JSONEncoder().encode(Response(success: response.success, errorMessage: response.hasErrorMessage ? response.errorMessage : nil))
+                    let responseJSON = try JSONEncoder().encode(
+                        Response(
+                            success: response.success,
+                            errorMessage: response.hasErrorMessage ? response.errorMessage : nil
+                        )
+                    )
                     print(String(data: responseJSON, encoding: .utf8)!)
                 } else if response.success {
                     print("✅ Successfully connected to \(ssid)")

@@ -152,7 +152,7 @@ struct RunCommand: AsyncParsableCommand {
         try await withGRPCClient(agentConnectionOptions) { client in
             let agent = Edge_Agent_Services_V1_EdgeAgentService.Client(wrapping: client)
             try await agent.runContainer { writer in
-                // let existingLayers = 
+                // let existingLayers =
 
                 try await builtContainer.value
 

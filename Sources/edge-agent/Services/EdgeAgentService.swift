@@ -194,9 +194,8 @@ struct EdgeAgentService: Edge_Agent_Services_V1_EdgeAgentService.ServiceProtocol
         do {
             let networkManager = NetworkManager(uid: currentUID)
             let success = try await networkManager.setupWiFi(ssid: ssid, password: password)
-            
-            if 
-                success, 
+
+            if success,
                 let (ssid, _) = try await networkManager.getCurrentConnection()
             {
                 logger.info("Successfully connected to WiFi network", metadata: ["ssid": "\(ssid)"])
