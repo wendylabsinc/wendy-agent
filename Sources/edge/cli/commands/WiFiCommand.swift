@@ -51,7 +51,11 @@ struct WiFiCommand: AsyncParsableCommand {
                 let networks = response.networks
 
                 if networks.isEmpty {
-                    print("No WiFi networks found.")
+                    if json {
+                        print("[]")
+                    } else {
+                        print("No WiFi networks found.")
+                    }
                     return
                 }
 
@@ -110,6 +114,9 @@ struct WiFiCommand: AsyncParsableCommand {
         @Option(name: .shortAndLong, help: "Password for the WiFi network")
         var password: String
 
+        @Flag(name: [.customShort("j"), .long], help: "Output in JSON format")
+        var json: Bool = false
+
         @OptionGroup var agentConnectionOptions: AgentConnectionOptions
 
         func run() async throws {
@@ -134,11 +141,21 @@ struct WiFiCommand: AsyncParsableCommand {
                 request.ssid = ssid
                 request.password = password
 
-                print("Connecting to WiFi network: \(ssid)...")
+                if !json {
+                    print("Connecting to WiFi network: \(ssid)...")
+                }
 
                 let response = try await agent.connectToWiFi(request)
 
-                if response.success {
+                if json {
+                    struct Response: Codable {
+                        let success: Bool
+                        let errorMessage: String?
+                    }
+
+                    let responseJSON = try JSONEncoder().encode(Response(success: response.success, errorMessage: response.hasErrorMessage ? response.errorMessage : nil))
+                    print(String(data: responseJSON, encoding: .utf8)!)
+                } else if response.success {
                     print("✅ Successfully connected to \(ssid)")
                 } else {
                     let errorMessage =
