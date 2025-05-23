@@ -66,6 +66,7 @@ let package = Package(
             name: "ContainerBuilder",
             dependencies: [
                 .target(name: "Shell"),
+                .product(name: "_NIOFileSystem", package: "swift-nio"),
                 .product(name: "Crypto", package: "swift-crypto"),
                 .target(name: "ContainerRegistry"),
             ]

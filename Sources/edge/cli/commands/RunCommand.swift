@@ -97,7 +97,7 @@ struct RunCommand: AsyncParsableCommand {
             .staticSwiftStdlib
         )
 
-        let binPath = try await swiftPM.build(
+        let binPath = try await swiftPM.buildWithOutput(
             .showBinPath,
             .product(executableTarget.name),
             .swiftSDK(swiftSDK),
