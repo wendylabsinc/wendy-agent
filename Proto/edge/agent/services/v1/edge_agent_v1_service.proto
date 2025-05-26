@@ -48,16 +48,16 @@ message RunContainerRequest {
         // Binary chunk of the container tarball
         bytes data = 1;
     }
+}
 
-    message ControlCommand {
-        oneof command {
-            Run run = 1;
-        }
+message ControlCommand {
+    oneof command {
+        Run run = 1;
+    }
 
-        message Run {
-            // Whether to run the container with a debugger
-            bool debug = 1;
-        }
+    message Run {
+        // Whether to run the container with a debugger
+        bool debug = 1;
     }
 }
 

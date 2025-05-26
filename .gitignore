@@ -9,3 +9,4 @@ DerivedData/
 .netrc
 .vscode
 coverage_report/
+Examples/HelloHTTP/HelloHTTP-container.tar

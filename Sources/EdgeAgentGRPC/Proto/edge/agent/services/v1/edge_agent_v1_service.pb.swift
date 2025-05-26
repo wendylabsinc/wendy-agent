@@ -47,10 +47,10 @@ public struct Edge_Agent_Services_V1_RunContainerRequest: Sendable {
   }
 
   //// After uploading the container, control messages can be sent to the agent.
-  public var control: Edge_Agent_Services_V1_RunContainerRequest.ControlCommand {
+  public var control: Edge_Agent_Services_V1_ControlCommand {
     get {
       if case .control(let v)? = requestType {return v}
-      return Edge_Agent_Services_V1_RunContainerRequest.ControlCommand()
+      return Edge_Agent_Services_V1_ControlCommand()
     }
     set {requestType = .control(newValue)}
   }
@@ -63,7 +63,7 @@ public struct Edge_Agent_Services_V1_RunContainerRequest: Sendable {
     //// A chunk of the container tarball.
     case chunk(Edge_Agent_Services_V1_RunContainerRequest.Chunk)
     //// After uploading the container, control messages can be sent to the agent.
-    case control(Edge_Agent_Services_V1_RunContainerRequest.ControlCommand)
+    case control(Edge_Agent_Services_V1_ControlCommand)
 
   }
 
@@ -96,40 +96,40 @@ public struct Edge_Agent_Services_V1_RunContainerRequest: Sendable {
     public init() {}
   }
 
-  public struct ControlCommand: Sendable {
+  public init() {}
+}
+
+public struct Edge_Agent_Services_V1_ControlCommand: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  public var command: Edge_Agent_Services_V1_ControlCommand.OneOf_Command? = nil
+
+  public var run: Edge_Agent_Services_V1_ControlCommand.Run {
+    get {
+      if case .run(let v)? = command {return v}
+      return Edge_Agent_Services_V1_ControlCommand.Run()
+    }
+    set {command = .run(newValue)}
+  }
+
+  public var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  public enum OneOf_Command: Equatable, Sendable {
+    case run(Edge_Agent_Services_V1_ControlCommand.Run)
+
+  }
+
+  public struct Run: Sendable {
     // SwiftProtobuf.Message conformance is added in an extension below. See the
     // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
     // methods supported on all messages.
 
-    public var command: Edge_Agent_Services_V1_RunContainerRequest.ControlCommand.OneOf_Command? = nil
-
-    public var run: Edge_Agent_Services_V1_RunContainerRequest.ControlCommand.Run {
-      get {
-        if case .run(let v)? = command {return v}
-        return Edge_Agent_Services_V1_RunContainerRequest.ControlCommand.Run()
-      }
-      set {command = .run(newValue)}
-    }
+    /// Whether to run the container with a debugger
+    public var debug: Bool = false
 
     public var unknownFields = SwiftProtobuf.UnknownStorage()
-
-    public enum OneOf_Command: Equatable, Sendable {
-      case run(Edge_Agent_Services_V1_RunContainerRequest.ControlCommand.Run)
-
-    }
-
-    public struct Run: Sendable {
-      // SwiftProtobuf.Message conformance is added in an extension below. See the
-      // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
-      // methods supported on all messages.
-
-      /// Whether to run the container with a debugger
-      public var debug: Bool = false
-
-      public var unknownFields = SwiftProtobuf.UnknownStorage()
-
-      public init() {}
-    }
 
     public init() {}
   }
@@ -540,7 +540,7 @@ extension Edge_Agent_Services_V1_RunContainerRequest: SwiftProtobuf.Message, Swi
         }
       }()
       case 3: try {
-        var v: Edge_Agent_Services_V1_RunContainerRequest.ControlCommand?
+        var v: Edge_Agent_Services_V1_ControlCommand?
         var hadOneofValue = false
         if let current = self.requestType {
           hadOneofValue = true
@@ -657,8 +657,8 @@ extension Edge_Agent_Services_V1_RunContainerRequest.Chunk: SwiftProtobuf.Messag
   }
 }
 
-extension Edge_Agent_Services_V1_RunContainerRequest.ControlCommand: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
-  public static let protoMessageName: String = Edge_Agent_Services_V1_RunContainerRequest.protoMessageName + ".ControlCommand"
+extension Edge_Agent_Services_V1_ControlCommand: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = _protobuf_package + ".ControlCommand"
   public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
     1: .same(proto: "run"),
   ]
@@ -670,7 +670,7 @@ extension Edge_Agent_Services_V1_RunContainerRequest.ControlCommand: SwiftProtob
       // enabled. https://github.com/apple/swift-protobuf/issues/1034
       switch fieldNumber {
       case 1: try {
-        var v: Edge_Agent_Services_V1_RunContainerRequest.ControlCommand.Run?
+        var v: Edge_Agent_Services_V1_ControlCommand.Run?
         var hadOneofValue = false
         if let current = self.command {
           hadOneofValue = true
@@ -698,15 +698,15 @@ extension Edge_Agent_Services_V1_RunContainerRequest.ControlCommand: SwiftProtob
     try unknownFields.traverse(visitor: &visitor)
   }
 
-  public static func ==(lhs: Edge_Agent_Services_V1_RunContainerRequest.ControlCommand, rhs: Edge_Agent_Services_V1_RunContainerRequest.ControlCommand) -> Bool {
+  public static func ==(lhs: Edge_Agent_Services_V1_ControlCommand, rhs: Edge_Agent_Services_V1_ControlCommand) -> Bool {
     if lhs.command != rhs.command {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
 }
 
-extension Edge_Agent_Services_V1_RunContainerRequest.ControlCommand.Run: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
-  public static let protoMessageName: String = Edge_Agent_Services_V1_RunContainerRequest.ControlCommand.protoMessageName + ".Run"
+extension Edge_Agent_Services_V1_ControlCommand.Run: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = Edge_Agent_Services_V1_ControlCommand.protoMessageName + ".Run"
   public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
     1: .same(proto: "debug"),
   ]
@@ -730,7 +730,7 @@ extension Edge_Agent_Services_V1_RunContainerRequest.ControlCommand.Run: SwiftPr
     try unknownFields.traverse(visitor: &visitor)
   }
 
-  public static func ==(lhs: Edge_Agent_Services_V1_RunContainerRequest.ControlCommand.Run, rhs: Edge_Agent_Services_V1_RunContainerRequest.ControlCommand.Run) -> Bool {
+  public static func ==(lhs: Edge_Agent_Services_V1_ControlCommand.Run, rhs: Edge_Agent_Services_V1_ControlCommand.Run) -> Bool {
     if lhs.debug != rhs.debug {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true

@@ -42,6 +42,7 @@ struct EdgeAgent: AsyncParsableCommand {
 
         let services: [any RegistrableRPCService] = [
             healthService,
+            EdgeContainerService(),
             EdgeAgentService(shouldRestart: {
                 print("Shutting down server")
                 continuation.yield()

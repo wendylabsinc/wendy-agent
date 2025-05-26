@@ -22,7 +22,7 @@ extension RunContainerRequestHandler.Chunk {
 }
 
 extension RunContainerRequestHandler.ControlCommand {
-    init(validating proto: Edge_Agent_Services_V1_RunContainerRequest.ControlCommand) throws {
+    init(validating proto: Edge_Agent_Services_V1_ControlCommand) throws {
         switch proto.command {
         case .run(let run):
             self = .run(Run(debug: run.debug))

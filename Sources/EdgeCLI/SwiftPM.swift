@@ -36,6 +36,12 @@ public struct SwiftPM: Sendable {
             return path
         }
 
+        if commandName == "swiftly",
+            let path = ProcessInfo.processInfo.environment["SWIFTLY_PATH"]
+        {
+            return path
+        }
+
         return commandName  // Fallback to original command name
     }
 
@@ -61,6 +67,8 @@ public struct SwiftPM: Sendable {
         /// Use the static Swift standard library.
         case staticSwiftStdlib
 
+        case disableResolution
+
         /// The arguments to pass to the Swift build command.
         var arguments: [String] {
             switch self {
@@ -78,6 +86,8 @@ public struct SwiftPM: Sendable {
                 return ["--scratch-path", path]
             case .staticSwiftStdlib:
                 return ["--static-swift-stdlib"]
+            case .disableResolution:
+                return ["--disable-automatic-resolution"]
             }
         }
     }

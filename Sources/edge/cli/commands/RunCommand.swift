@@ -55,6 +55,19 @@ struct RunCommand: AsyncParsableCommand {
     @OptionGroup var agentConnectionOptions: AgentConnectionOptions
 
     func run() async throws {
+        LoggingSystem.bootstrap { label in
+            var handler = StreamLogHandler.standardError(label: label)
+            if let level = ProcessInfo.processInfo.environment["LOG_LEVEL"].flatMap(Logger.Level.init) {
+                handler.logLevel = level
+            } else {
+                #if DEBUG
+                    handler.logLevel = .trace
+                #else
+                    handler.logLevel = .error
+                #endif
+            }
+            return handler
+        }
         let logger = Logger(label: "edgeengineer.cli.run")
 
         let swiftPM = SwiftPM()
@@ -131,66 +144,112 @@ struct RunCommand: AsyncParsableCommand {
             imageSpec.layers.append(ds2Layer)
         }
 
-        let outputPath = "\(executableTarget.name)-container.tar"
-        try await buildDockerContainerImage(
-            image: imageSpec,
-            imageName: imageName,
-            outputPath: outputPath
-        )
-
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: tempDir)
+        }
+        let container = try await buildDockerContainer(image: imageSpec, imageName: imageName, tempDir: tempDir)
+        logger.info("Container prepared, connecting to agent")
         try await withGRPCClient(agentConnectionOptions) { client in
             let agent = Edge_Agent_Services_V1_EdgeAgentService.Client(wrapping: client)
-            try await agent.runContainer { writer in
-                // First, send the header.
-                try await writer.write(
-                    .with {
-                        $0.header.imageName = imageName
-                    }
-                )
-
-                // Send the chunks
-                logger.info("Sending container image to agent")
-                try await FileSystem.shared.withFileHandle(forReadingAt: FilePath(outputPath)) {
-                    fileHandle in
-                    for try await chunk in fileHandle.readChunks() {
-                        try await writer.write(
-                            .with {
-                                $0.requestType = .chunk(
-                                    .with { $0.data = Data(chunk.readableBytesView) }
-                                )
-                            }
-                        )
-                    }
+            let agentContainers = Edge_Agent_Services_V1_EdgeContainerService.Client(wrapping: client)
+            // TODO: Can we cache this per-device to omit round-trips to the agent?
+            logger.info("Getting existing container layers from agent")
+            let existingLayers = try await agentContainers.listLayers(.init()) { response in
+                var layers = [Edge_Agent_Services_V1_LayerHeader]()
+                for try await layer in response.messages {
+                    layers.append(layer)
                 }
-
-                // Send the control command to start the container.
-                logger.info("Sending control command to start container")
-                try await writer.write(
-                    .with {
-                        $0.requestType = .control(
-                            .with { $0.command = .run(.with { $0.debug = debug }) }
-                        )
-                    }
-                )
-            } onResponse: { response in
-                for try await message in response.messages {
-                    switch message.responseType {
-                    case .started(let started):
-                        if started.debugPort != 0 {
-                            logger.info(
-                                "Started container with debug port \(started.debugPort)"
-                            )
-                        } else {
-                            logger.info("Started container")
-                        }
-                        if detach {
-                            return
-                        }
-                    case nil:
-                        logger.warning("Unknown message received from agent")
-                    }
-                }
+                return layers
             }
+
+            let existingHashes = existingLayers.map(\.digest)
+            logger.info("Existing layers: \(existingHashes)")
+            logger.info("Needed layers: \(container.layers.map(\.digest))")
+
+            logger.info("Sending changed container layers to agent")
+            // Upload layers in parallel
+            // This is useful because a stream can only handle one chunk at a time
+            // But the networking latency might be high enough over WiFi that we can
+            // satisfy the disk more by making more streams. Many streams share a TCP connection
+            try await withThrowingTaskGroup { taskGroup in
+                for layer in container.layers where !existingHashes.contains(layer.digest) {
+                    taskGroup.addTask {
+                        // Upload layers that have changed or are new
+                        logger.info("Uploading layer \(layer.digest)")
+                        try await agentContainers.writeLayer(request: .init { writer in
+                            try await FileSystem.shared.withFileHandle(forReadingAt: FilePath(layer.path.path)) {
+                                fileHandle in
+                                for try await chunk in fileHandle.readChunks() {
+                                    try await writer.write(
+                                        .with {
+                                            $0.digest = layer.digest
+                                            $0.data = Data(chunk.readableBytesView)
+                                        }
+                                    )
+                                }
+                            }
+                        }) { response in 
+                            for try await _ in response.messages {
+                                // Ignore responses
+                            }
+                        }
+                        logger.info("Uploaded layer \(layer.hash) successfully")
+                    }
+                }
+                try await taskGroup.waitForAll()
+            }
+
+            let response = try await agentContainers.runContainer(.with {
+                $0.imageName = "\(imageName):latest"
+                $0.appName = imageName
+                $0.cmd = "/bin/\(imageName)"
+                $0.layers = container.layers.map { layer in
+                    .with {
+                        $0.digest = layer.digest
+                        $0.size = layer.size
+                        $0.gzip = layer.gzip
+                        $0.diffID = layer.diffID
+                    }
+                }
+            })
+
+            if response.debugPort != 0 {
+                logger.info(
+                    "Started container with debug port \(response.debugPort)"
+                )
+            } else {
+                logger.info("Started container")
+            }
+            if detach {
+                return
+            }
+            
+            // Send the chunks
+            // logger.info("Sending container image to agent")
+            // try await FileSystem.shared.withFileHandle(forReadingAt: FilePath(outputPath)) {
+            //     fileHandle in
+            //     for try await chunk in fileHandle.readChunks() {
+            //         try await writer.write(
+            //             .with {
+            //                 $0.requestType = .chunk(
+            //                     .with { $0.data = Data(chunk.readableBytesView) }
+            //                 )
+            //             }
+            //         )
+            //     }
+            // }
+
+            // Send the control command to start the container.
+            // logger.info("Sending control command to start container")
+            // try await writer.write(
+            //     .with {
+            //         $0.requestType = .control(
+            //             .with { $0.command = .run(.with { $0.debug = debug }) }
+            //         )
+            //     }
+            // )
         }
     }
 }
