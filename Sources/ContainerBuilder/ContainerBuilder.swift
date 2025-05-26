@@ -38,6 +38,8 @@ public func buildDockerContainerLayers(
 
         switch layer.content {
         case .files(let files):
+            // TODO: Replace with custom .tar implementation for better throughput
+            
             // Create a directory for this layer
             let layerDir = outputDirectoryPath.appendingPathComponent("layer\(index)")
             try FileManager.default.createDirectory(at: layerDir, withIntermediateDirectories: true)
