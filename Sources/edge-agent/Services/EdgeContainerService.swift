@@ -86,6 +86,7 @@ struct EdgeContainerService: Edge_Agent_Services_V1_EdgeContainerService.Service
             logger.info("Creating image \(request.imageName)")
             try await client.createImage(named: request.imageName, manifestHash: manifestHash, manifestSize: manifestSize)
 
+            // TODO: Replace with a _real_ JSON API like Codable
             let spec = try JSONSerialization.data(withJSONObject: [
                 "ociVersion": "1.0.3",
                 "process": [

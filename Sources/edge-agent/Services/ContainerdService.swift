@@ -145,7 +145,7 @@ public struct Containerd: Sendable {
                     $0.name = "io.containerd.runc.v2"
                 }
                 $0.spec = .with {
-                    $0.typeURL = "containerd.runc.v1"
+                    $0.typeURL = "containerd.runc.v2"
                     $0.value = spec
                 }
                 $0.snapshotter = "overlayfs"

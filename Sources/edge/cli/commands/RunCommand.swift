@@ -184,7 +184,7 @@ struct RunCommand: AsyncParsableCommand {
                                 for try await chunk in fileHandle.readChunks() {
                                     try await writer.write(
                                         .with {
-                                            $0.digest = layer.digest
+                                            $0.digest = layer.diffID
                                             $0.data = Data(chunk.readableBytesView)
                                         }
                                     )

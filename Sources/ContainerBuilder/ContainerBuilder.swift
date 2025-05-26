@@ -32,7 +32,7 @@ public func buildDockerContainerLayers(
     var layers = [ContainerLayer]()
 
     for (index, layer) in image.layers.enumerated() {
-        let layerTarPath = outputDirectoryPath.appendingPathComponent("layer\(index).tar")
+        var layerTarPath = outputDirectoryPath.appendingPathComponent("layer\(index).tar")
         let gzip: Bool
         let precalculatedSize: Int64?
 
@@ -79,7 +79,7 @@ public func buildDockerContainerLayers(
 
         case .tarball(let tarballURL, let uncompressedSize):
             // Use the tarball directly
-            try FileManager.default.copyItem(at: tarballURL, to: layerTarPath)
+            layerTarPath = tarballURL
             gzip = tarballURL.path.hasSuffix(".gz")
             precalculatedSize = uncompressedSize
         }
