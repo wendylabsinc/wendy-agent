@@ -82,9 +82,12 @@ struct EdgeContainerService: Edge_Agent_Services_V1_EdgeContainerService.Service
             )
             let (manifestHash, manifestSize) = try await client.uploadJSON(manifest)
 
-            // TODO: Remove or update existing image
-            logger.info("Creating image \(request.imageName)")
-            try await client.createImage(named: request.imageName, manifestHash: manifestHash, manifestSize: manifestSize)
+            do {
+                logger.info("Creating image \(request.imageName)")
+                try await client.createImage(named: request.imageName, manifestHash: manifestHash, manifestSize: manifestSize)
+            } catch {
+                try await client.updateImage(named: request.imageName, manifestHash: manifestHash, manifestSize: manifestSize)
+            }
 
             // TODO: Replace with a _real_ JSON API like Codable
             let spec = try JSONSerialization.data(withJSONObject: [
@@ -92,13 +95,13 @@ struct EdgeContainerService: Edge_Agent_Services_V1_EdgeContainerService.Service
                 "process": [
                     "terminal": false,
                     "user": ["uid": 0, "gid": 0],
-                    "args": [request.cmd],
+                    "args": request.cmd.split(separator: " ").map(String.init),
                     "env": ["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"],
                     "cwd": "/"
                 ],
                 "root": [
                     "path": "rootfs",
-                    "readonly": false
+                    "readonly": true
                 ],
                 "hostname": request.appName,
                 "mounts": [
@@ -125,12 +128,28 @@ struct EdgeContainerService: Edge_Agent_Services_V1_EdgeContainerService.Service
                 ]
             ])
 
-            // TODO: Remove or update existing container?
-            logger.info("Creating container \(request.appName) from \(request.imageName)")
-            try await client.createContainer(imageName: request.imageName, appName: request.appName, ociSpec: spec)
+            let snapshotKey: String?
+
+            do {
+                snapshotKey = try await client.createSnapshot(imageName: request.imageName, layers: request.layers)
+            } catch let error as RPCError {
+                snapshotKey = ""
+                logger.error("Failed to create snapshot", metadata: [
+                    "error": .stringConvertible(error.description)
+                ])
+            }
+
+            do {
+                logger.info("Creating container \(request.appName) from \(request.imageName)")
+                try await client.createContainer(imageName: request.imageName, appName: request.appName, snapshotKey: snapshotKey ?? "", ociSpec: spec)
+            } catch {
+                try await client.updateContainer(imageName: request.imageName, appName: request.appName, snapshotKey: snapshotKey ?? "", ociSpec: spec)
+            }
 
             logger.info("Creating task")
-            try? await client.createTask(containerID: request.appName, appName: request.appName)
+            do {
+                try await client.createTask(containerID: request.appName, appName: request.appName, snapshotName: snapshotKey ?? "")
+            } catch let error as RPCError where error.code == .alreadyExists {}
 
             logger.info("Starting task")
             let execID = try await client.runTask(containerID: request.appName)

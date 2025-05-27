@@ -82,7 +82,7 @@ public func buildDockerContainerLayers(
         case .tarball(let tarballURL, let uncompressedSize):
             // Use the tarball directly
             layerTarPath = tarballURL
-            gzip = tarballURL.path.hasSuffix(".gz")
+            gzip = true //tarballURL.path.hasSuffix(".gz")
             precalculatedSize = uncompressedSize
         }
 
@@ -142,7 +142,7 @@ public func buildDockerContainer(
         ),
         rootfs: RootFS(
             type: "layers",
-            diff_ids: layers.map(\.diffID)
+            diff_ids: layers.map(\.digest)
         )
     )
 

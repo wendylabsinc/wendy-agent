@@ -31,7 +31,7 @@ public enum HTTPClientError: Error {
 }
 
 /// HTTPClient is an abstract HTTP client interface capable of uploads and downloads.
-public protocol HTTPClient {
+public protocol HTTPClient: Sendable {
     /// Execute an HTTP request with no request body.
     /// - Parameters:
     ///   - request: The HTTP request to execute.

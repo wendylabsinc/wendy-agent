@@ -47,7 +47,7 @@ func isLocalRegistry(_ registry: String) -> Bool {
 }
 
 /// RegistryClient handles a connection to container registry.
-public struct RegistryClient {
+public struct RegistryClient: Sendable {
     /// HTTPClient instance used to connect to the registry
     var client: HTTPClient
 
@@ -56,7 +56,7 @@ public struct RegistryClient {
 
     /// Authentication handler
     var auth: AuthHandler?
-    var authChallenge: AuthChallenge
+    var authChallenge: Task<AuthChallenge, Error>
 
     var encoder: JSONEncoder
     var decoder: JSONDecoder
@@ -99,10 +99,12 @@ public struct RegistryClient {
         self.decoder = decoder ?? JSONDecoder()
 
         // Verify that we can talk to the registry
-        self.authChallenge = try await RegistryClient.checkAPI(
-            client: self.client,
-            registryURL: self.registryURL
-        )
+        self.authChallenge = Task { [client, registryURL] in
+            try await RegistryClient.checkAPI(
+                client: client,
+                registryURL: registryURL
+            )
+        }
     }
 
     /// Creates a new RegistryClient, constructing a suitable URLSession-based client.
@@ -297,7 +299,7 @@ extension RegistryClient {
                 registry: registryURL,
                 repository: operation.repository,
                 actions: operation.actions,
-                withScheme: authChallenge,
+                withScheme: authChallenge.value,
                 usingClient: client
             )
 
@@ -362,7 +364,7 @@ extension RegistryClient {
                 registry: registryURL,
                 repository: operation.repository,
                 actions: operation.actions,
-                withScheme: authChallenge,
+                withScheme: authChallenge.value,
                 usingClient: client
             )
 

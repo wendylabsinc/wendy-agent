@@ -152,7 +152,6 @@ struct RunCommand: AsyncParsableCommand {
         let container = try await buildDockerContainer(image: imageSpec, imageName: imageName, tempDir: tempDir)
         logger.info("Container prepared, connecting to agent")
         try await withGRPCClient(agentConnectionOptions) { client in
-            let agent = Edge_Agent_Services_V1_EdgeAgentService.Client(wrapping: client)
             let agentContainers = Edge_Agent_Services_V1_EdgeContainerService.Client(wrapping: client)
             // TODO: Can we cache this per-device to omit round-trips to the agent?
             logger.info("Getting existing container layers from agent")
@@ -184,7 +183,7 @@ struct RunCommand: AsyncParsableCommand {
                                 for try await chunk in fileHandle.readChunks() {
                                     try await writer.write(
                                         .with {
-                                            $0.digest = layer.diffID
+                                            $0.digest = layer.digest
                                             $0.data = Data(chunk.readableBytesView)
                                         }
                                     )
@@ -222,6 +221,7 @@ struct RunCommand: AsyncParsableCommand {
             } else {
                 logger.info("Started container")
             }
+            
             if detach {
                 return
             }

@@ -1,9 +1,13 @@
 import GRPCCore
 import GRPCNIOTransportHTTP2
 import ContainerdGRPC
+import EdgeAgentGRPC
 import Foundation
 import Logging
 import Crypto
+#if canImport(Musl)
+import Musl
+#endif
 
 struct NamespaceInterceptor: ClientInterceptor {
     func intercept<Input, Output>(
@@ -12,7 +16,7 @@ struct NamespaceInterceptor: ClientInterceptor {
         next: (StreamingClientRequest<Input>, ClientContext) async throws -> StreamingClientResponse<Output>
     ) async throws -> StreamingClientResponse<Output> where Input : Sendable, Output : Sendable {
         var request = request
-        request.metadata.addString("moby", forKey: "containerd-namespace")
+        request.metadata.addString("default", forKey: "containerd-namespace")
         return try await next(request, context)
     }
 }
@@ -108,6 +112,13 @@ public struct Containerd: Sendable {
         }
     }
 
+    public func deleteImage(named name: String) async throws {
+        let images = Containerd_Services_Images_V1_Images.Client(wrapping: client)
+        try await images.delete(.with {
+            $0.name = name
+        })
+    }
+
     public func createImage(named name: String, manifestHash: String, manifestSize: Int64) async throws {
         let images = Containerd_Services_Images_V1_Images.Client(wrapping: client)
         try await images.create(.with {
@@ -132,9 +143,103 @@ public struct Containerd: Sendable {
         }
     }
 
+    public func updateImage(named name: String, manifestHash: String, manifestSize: Int64) async throws {
+        let images = Containerd_Services_Images_V1_Images.Client(wrapping: client)
+        try await images.update(.with {
+            $0.image = .with {
+                $0.name = name
+                $0.target = .with {
+                    $0.mediaType = "application/vnd.oci.image.manifest.v1+json"
+                    $0.digest = "sha256:\(manifestHash)"
+                    $0.size = manifestSize
+                }
+            }
+        }) { res in
+            if case .failure(let error) = res.accepted {
+                logger.error("Failed to update image", metadata: [
+                    "image-name": .stringConvertible(name),
+                    "manifest-digest": .stringConvertible("sha256:\(manifestHash)"),
+                    "manifest-size": .stringConvertible(manifestSize),
+                    "error": .stringConvertible(error.description)
+                ])
+                throw error
+            }
+        }
+    }
+
+    public func deleteContainer(named name: String) async throws {
+        let containers = Containerd_Services_Containers_V1_Containers.Client(wrapping: client)
+        try await containers.delete(.with {
+            $0.id = name
+        })
+    }
+
+    public func createSnapshot(
+        imageName: String,
+        layers: [Edge_Agent_Services_V1_RunContainerLayerHeader]
+    ) async throws -> String? {
+        let snapshots = Containerd_Services_Snapshots_V1_Snapshots.Client(wrapping: client)
+        let diffs = Containerd_Services_Diff_V1_Diff.Client(wrapping: client)
+        var parentSnapshot: String? = nil
+        for (index, layer) in layers.enumerated() {
+            let snapshotKey = "tmp-image-layer-\(index)-\(imageName)"
+            let snapshotName = "image-layer-\(index)-\(imageName)"
+            
+            try await snapshots.prepare(.with {
+                $0.key = snapshotKey
+                $0.snapshotter = "overlayfs"
+                $0.parent = parentSnapshot ?? ""
+            })
+
+            // Apply the layer diff to the snapshot
+            let mountPoint = "/run/containerd/mounts/\(snapshotKey)"
+            try FileManager.default.createDirectory(atPath: mountPoint, withIntermediateDirectories: true)
+
+            let mountsResponse = try await snapshots.mounts(.with {
+                $0.key = snapshotKey
+                $0.snapshotter = "overlayfs"
+            })
+
+            print(mountsResponse)
+            for _mount in mountsResponse.mounts {
+                let flags: UInt = 0
+                let filesystem = "overlay"
+                let options = _mount.options.joined(separator: ",")
+                options.withCString { cStr in
+                    mount(_mount.source, mountPoint, filesystem, flags, cStr)
+                }
+            }
+            
+            // let layerDescriptor = manifest.layers[index]
+            // let tarStream = try await client.contentStore.readBlob(forDigest: layerDescriptor.digest)
+
+            let applyResponse = try await diffs.apply(.with {
+                $0.diff = .with {
+                    $0.digest = layer.digest
+                    $0.size = layer.size
+                    $0.mediaType = layer.gzip ? "application/vnd.oci.image.layer.v1.tar+gzip" : "application/vnd.oci.image.layer.v1.tar"
+                }
+                // $0.payloads
+                $0.mounts = mountsResponse.mounts.map { mount in
+                    .with {
+                        $0.source = mount.source
+                        $0.options = ["bind"]
+                        $0.target = "/"
+                    }
+                }
+            })
+
+            print(applyResponse)
+
+            parentSnapshot = snapshotName
+        }
+        return parentSnapshot
+    }
+
     public func createContainer(
         imageName: String,
         appName: String,
+        snapshotKey: String,
         ociSpec spec: Data
     ) async throws {
         let containers = Containerd_Services_Containers_V1_Containers.Client(wrapping: client)
@@ -145,11 +250,11 @@ public struct Containerd: Sendable {
                     $0.name = "io.containerd.runc.v2"
                 }
                 $0.spec = .with {
-                    $0.typeURL = "containerd.runc.v2"
+                    $0.typeURL = "types.containerd.io/opencontainers/runtime-spec/1/Spec"
                     $0.value = spec
                 }
                 $0.snapshotter = "overlayfs"
-                $0.snapshotKey = "\(appName)-snapshot"
+                $0.snapshotKey = snapshotKey
                 $0.image = imageName
             }
         }) { res in
@@ -164,11 +269,48 @@ public struct Containerd: Sendable {
         }
     }
 
-    public func createTask(containerID: String, appName: String) async throws {
+    public func updateContainer(imageName: String, appName: String, snapshotKey: String, ociSpec: Data) async throws {
+        do {
+            let containers = Containerd_Services_Containers_V1_Containers.Client(wrapping: client)
+            try await containers.update(.with {
+                $0.container = .with {
+                    $0.id = appName
+                    $0.runtime = .with {
+                        $0.name = "io.containerd.runc.v2"
+                    }
+                    $0.spec = .with {
+                        $0.typeURL = "types.containerd.io/opencontainers/runtime-spec/1/Spec"
+                        $0.value = ociSpec
+                    }
+                    $0.snapshotter = "overlayfs"
+                    $0.snapshotKey = snapshotKey
+                    $0.image = imageName
+                }
+            })
+        } catch let error as RPCError {
+            logger.error("Failed to update container", metadata: [
+                "app-name": .stringConvertible(appName),
+                "image-name": .stringConvertible(imageName),
+                "snapshot-key": .stringConvertible(snapshotKey),
+                "error": .stringConvertible(error.description)
+            ])
+            throw error
+        }
+    }
+
+    public func createTask(containerID: String, appName: String, snapshotName: String) async throws {
         let tasks = Containerd_Services_Tasks_V1_Tasks.Client(wrapping: client)
         do {
             let result = try await tasks.create(.with {
                 $0.containerID = containerID
+                $0.runtimePath = "io.containerd.runc.v2"
+                $0.rootfs = [
+                    .with {
+                        $0.type = "bind"
+                        $0.source = "/run/containerd/io.containerd.snapshotter.v1.overlayfs/mounts/\(snapshotName)"
+                        $0.options = ["rbind", "ro"]
+                    }
+                ]
             })
         } catch let error as RPCError {
             logger.error("Failed to create task", metadata: [
@@ -178,6 +320,13 @@ public struct Containerd: Sendable {
             ])
             throw error
         }
+    }
+
+    public func deleteTask(containerID: String) async throws {
+        let tasks = Containerd_Services_Tasks_V1_Tasks.Client(wrapping: client)
+        try await tasks.delete(.with {
+            $0.containerID = containerID
+        })
     }
 
     public func runTask(containerID: String) async throws -> String {
