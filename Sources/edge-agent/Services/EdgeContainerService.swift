@@ -157,7 +157,7 @@ struct EdgeContainerService: Edge_Agent_Services_V1_EdgeContainerService.Service
             try await client.runTask(containerID: request.appName)
 
             return ServerResponse(message: .with {
-                $0.debugPort = 0
+                $0.debugPort = 4242
             })
         }
     }
