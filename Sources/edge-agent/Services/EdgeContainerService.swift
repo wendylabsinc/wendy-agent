@@ -96,13 +96,13 @@ struct EdgeContainerService: Edge_Agent_Services_V1_EdgeContainerService.Service
                 "process": [
                     "terminal": false,
                     "user": ["uid": 0, "gid": 0],
-                    "args": request.cmd,
+                    "args": [request.cmd],
                     "env": ["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"],
                     "cwd": "/"
                 ],
                 "root": [
                     "path": "rootfs",
-                    "readonly": true
+                    "readonly": false
                 ],
                 "hostname": request.appName,
                 "mounts": [
@@ -121,17 +121,9 @@ struct EdgeContainerService: Edge_Agent_Services_V1_EdgeContainerService.Service
                 "linux": [
                     "namespaces": [
                         ["type": "pid"],
-                        ["type": "network"],
                         ["type": "ipc"],
                         ["type": "uts"],
                         ["type": "mount"]
-                    ],
-                    "portMappings": [
-                        [
-                            "hostPort": 8080,
-                            "containerPort": 8080,
-                            "protocol": "tcp"
-                        ]
                     ],
                     "networkMode": "host"
                 ]
