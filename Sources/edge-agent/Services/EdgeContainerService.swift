@@ -96,7 +96,7 @@ struct EdgeContainerService: Edge_Agent_Services_V1_EdgeContainerService.Service
                 "process": [
                     "terminal": false,
                     "user": ["uid": 0, "gid": 0],
-                    "args": request.cmd.split(separator: " ").map(String.init),
+                    "args": request.cmd,
                     "env": ["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"],
                     "cwd": "/"
                 ],
@@ -125,7 +125,15 @@ struct EdgeContainerService: Edge_Agent_Services_V1_EdgeContainerService.Service
                         ["type": "ipc"],
                         ["type": "uts"],
                         ["type": "mount"]
-                    ]
+                    ],
+                    "portMappings": [
+                        [
+                            "hostPort": 8080,
+                            "containerPort": 8080,
+                            "protocol": "tcp"
+                        ]
+                    ],
+                    "networkMode": "host"
                 ]
             ])
 
@@ -133,7 +141,7 @@ struct EdgeContainerService: Edge_Agent_Services_V1_EdgeContainerService.Service
             let mounts: [Containerd_Types_Mount]
 
             do {
-                (snapshotKey, mounts) = try await client.createSnapshot(imageName: request.imageName, layers: request.layers)
+                (snapshotKey, mounts) = try await client.createSnapshot(imageName: request.imageName, appName: request.appName, layers: request.layers)
             } catch let error as RPCError {
                 logger.error("Failed to create snapshot", metadata: [
                     "error": .stringConvertible(error.description)
@@ -154,8 +162,7 @@ struct EdgeContainerService: Edge_Agent_Services_V1_EdgeContainerService.Service
             } catch let error as RPCError where error.code == .alreadyExists {}
 
             logger.info("Starting task")
-            let execID = try await client.runTask(containerID: request.appName)
-            print(execID)
+            try await client.runTask(containerID: request.appName)
 
             return ServerResponse(message: .with {
                 $0.debugPort = 0

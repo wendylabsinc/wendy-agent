@@ -176,6 +176,7 @@ public struct Containerd: Sendable {
 
     public func createSnapshot(
         imageName: String,
+        appName: String,
         layers: [Edge_Agent_Services_V1_RunContainerLayerHeader]
     ) async throws -> (snapshotKey: String?, mounts: [Containerd_Types_Mount]) {
         let snapshots = Containerd_Services_Snapshots_V1_Snapshots.Client(wrapping: client)
@@ -192,102 +193,171 @@ public struct Containerd: Sendable {
         logger.info("Preparing snapshot for layer", metadata: [
             "layer-diff-id": .stringConvertible(layer.diffID),
         ])
-        let snapshot = try await snapshots.prepare(.with {
-            $0.key = "tmp-snapshot-\(layerIndex)-\(imageName)"
-            $0.snapshotter = "overlayfs"
-        })
-        logger.info("Prepared snapshot", metadata: [
-            "layer-diff-id": .stringConvertible(layer.diffID),
-            "layer-digest": .stringConvertible(layer.digest),
-            "layer-size": .stringConvertible(layer.size),
-            "layer-gzip": .stringConvertible(layer.gzip),
-            "layer-media-type": .stringConvertible(layer.gzip ? "application/vnd.oci.image.layer.v1.tar+gzip" : "application/vnd.oci.image.layer.v1.tar"),
-            "snapshot-mounts": .stringConvertible(snapshot.mounts.map { $0.source }.joined(separator: ", "))
-        ])
-        var apply = try await diffs.apply(.with {
-            $0.diff = .with {
-                $0.digest = layer.digest
-                $0.size = layer.size
-                $0.mediaType = layer.gzip ? "application/vnd.oci.image.layer.v1.tar+gzip" : "application/vnd.oci.image.layer.v1.tar"
-            }
-            $0.mounts = snapshot.mounts
-        })
-        logger.info("Applied diff", metadata: [
-            "layer-diff-id": .stringConvertible(layer.diffID),
-            "layer-digest": .stringConvertible(layer.digest),
-            "layer-size": .stringConvertible(layer.size),
-            "layer-gzip": .stringConvertible(layer.gzip),
-            "layer-media-type": .stringConvertible(layer.gzip ? "application/vnd.oci.image.layer.v1.tar+gzip" : "application/vnd.oci.image.layer.v1.tar"),
-        ])
-        try await snapshots.commit(.with {
-            $0.key = "tmp-snapshot-\(layerIndex)-\(imageName)"
-            $0.name = apply.applied.digest
-            $0.snapshotter = "overlayfs"
-        })
-        logger.info("Committed snapshot", metadata: [
-            "layer-diff-id": .stringConvertible(layer.diffID),
-            "layer-digest": .stringConvertible(layer.digest),
-            "layer-size": .stringConvertible(layer.size),
-            "layer-gzip": .stringConvertible(layer.gzip),
-            "layer-media-type": .stringConvertible(layer.gzip ? "application/vnd.oci.image.layer.v1.tar+gzip" : "application/vnd.oci.image.layer.v1.tar"),
-        ])
-        var mounts = snapshot.mounts
 
-        while !layers.isEmpty {
-            layerIndex += 1
-            let nextLayer = layers.removeFirst()
+        var apply: Containerd_Services_Diff_V1_ApplyResponse
+        var layerKey = "\(appName)-\(layer.diffID)"
 
-            logger.info("Preparing snapshot for layer", metadata: [
-                "layer-diff-id": .stringConvertible(nextLayer.diffID),
-            ])
+        do {
+            let tmpKey = UUID().uuidString
             let snapshot = try await snapshots.prepare(.with {
-                $0.key = "tmp-snapshot-\(layerIndex)-\(imageName)"
-                $0.parent = apply.applied.digest
+                $0.key = tmpKey
                 $0.snapshotter = "overlayfs"
             })
-
             logger.info("Prepared snapshot", metadata: [
-                "layer-diff-id": .stringConvertible(nextLayer.diffID),
-                "layer-digest": .stringConvertible(nextLayer.digest),
-                "layer-size": .stringConvertible(nextLayer.size),
-                "layer-gzip": .stringConvertible(nextLayer.gzip),
-                "layer-media-type": .stringConvertible(nextLayer.gzip ? "application/vnd.oci.image.layer.v1.tar+gzip" : "application/vnd.oci.image.layer.v1.tar"),
+                "layer-diff-id": .stringConvertible(layer.diffID),
+                "layer-digest": .stringConvertible(layer.digest),
+                "layer-size": .stringConvertible(layer.size),
+                "layer-gzip": .stringConvertible(layer.gzip),
+                "layer-media-type": .stringConvertible(layer.gzip ? "application/vnd.oci.image.layer.v1.tar+gzip" : "application/vnd.oci.image.layer.v1.tar"),
+                "snapshot-mounts": .stringConvertible(snapshot.mounts.map { $0.source }.joined(separator: ", "))
             ])
-
             apply = try await diffs.apply(.with {
                 $0.diff = .with {
-                    $0.digest = nextLayer.digest
-                    $0.size = nextLayer.size
-                    $0.mediaType = nextLayer.gzip ? "application/vnd.oci.image.layer.v1.tar+gzip" : "application/vnd.oci.image.layer.v1.tar"
+                    $0.digest = layer.digest
+                    $0.size = layer.size
+                    $0.mediaType = layer.gzip ? "application/vnd.oci.image.layer.v1.tar+gzip" : "application/vnd.oci.image.layer.v1.tar"
                 }
                 $0.mounts = snapshot.mounts
             })
             logger.info("Applied diff", metadata: [
-                "layer-diff-id": .stringConvertible(nextLayer.diffID),
-                "layer-digest": .stringConvertible(nextLayer.digest),
-                "layer-size": .stringConvertible(nextLayer.size),
-                "layer-gzip": .stringConvertible(nextLayer.gzip),
-                "layer-media-type": .stringConvertible(nextLayer.gzip ? "application/vnd.oci.image.layer.v1.tar+gzip" : "application/vnd.oci.image.layer.v1.tar"),
+                "layer-diff-id": .stringConvertible(layer.diffID),
+                "layer-digest": .stringConvertible(layer.digest),
+                "layer-size": .stringConvertible(layer.size),
+                "layer-gzip": .stringConvertible(layer.gzip),
+                "layer-media-type": .stringConvertible(layer.gzip ? "application/vnd.oci.image.layer.v1.tar+gzip" : "application/vnd.oci.image.layer.v1.tar"),
             ])
-
             try await snapshots.commit(.with {
-                $0.key = "tmp-snapshot-\(layerIndex)-\(imageName)"
-                $0.name = apply.applied.digest
+                $0.key = tmpKey
+                $0.name = layerKey
                 $0.snapshotter = "overlayfs"
             })
             logger.info("Committed snapshot", metadata: [
-                "layer-diff-id": .stringConvertible(nextLayer.diffID),
-                "layer-digest": .stringConvertible(nextLayer.digest),
-                "layer-size": .stringConvertible(nextLayer.size),
-                "layer-gzip": .stringConvertible(nextLayer.gzip),
-                "layer-media-type": .stringConvertible(nextLayer.gzip ? "application/vnd.oci.image.layer.v1.tar+gzip" : "application/vnd.oci.image.layer.v1.tar"),
+                "layer-diff-id": .stringConvertible(layer.diffID),
+                "layer-digest": .stringConvertible(layer.digest),
+                "layer-size": .stringConvertible(layer.size),
+                "layer-gzip": .stringConvertible(layer.gzip),
+                "layer-media-type": .stringConvertible(layer.gzip ? "application/vnd.oci.image.layer.v1.tar+gzip" : "application/vnd.oci.image.layer.v1.tar"),
             ])
-
-            mounts = snapshot.mounts
-            layer = nextLayer
+        } catch let error as RPCError where error.code == .alreadyExists {
+            logger.info("Layer already exists", metadata: [
+                "layer-diff-id": .stringConvertible(layer.diffID),
+                "layer-digest": .stringConvertible(layer.digest),
+                "layer-size": .stringConvertible(layer.size),
+                "layer-gzip": .stringConvertible(layer.gzip),
+                "layer-media-type": .stringConvertible(layer.gzip ? "application/vnd.oci.image.layer.v1.tar+gzip" : "application/vnd.oci.image.layer.v1.tar"),
+            ])
+            let snapshot = try await snapshots.view(.with {
+                $0.key = layerKey
+                $0.snapshotter = "overlayfs"
+            })
+            apply = try await diffs.apply(.with {
+                $0.diff = .with {
+                    $0.digest = layer.digest
+                    $0.size = layer.size
+                    $0.mediaType = layer.gzip ? "application/vnd.oci.image.layer.v1.tar+gzip" : "application/vnd.oci.image.layer.v1.tar"
+                }
+                $0.mounts = snapshot.mounts
+            })
+            logger.info("Applied diff", metadata: [
+                "layer-diff-id": .stringConvertible(layer.diffID),
+                "layer-digest": .stringConvertible(layer.digest),
+                "layer-size": .stringConvertible(layer.size),
+                "layer-gzip": .stringConvertible(layer.gzip),
+                "layer-media-type": .stringConvertible(layer.gzip ? "application/vnd.oci.image.layer.v1.tar+gzip" : "application/vnd.oci.image.layer.v1.tar"),
+            ])
         }
 
-        return (snapshotKey: apply.applied.digest, mounts: mounts)
+        while !layers.isEmpty {
+            layerIndex += 1
+            let nextLayer = layers.removeFirst()
+            let nextLayerKey = "\(appName)-\(nextLayer.diffID)"
+            
+            do {
+                let tmpKey = UUID().uuidString
+                logger.info("Preparing snapshot for layer", metadata: [
+                    "layer-diff-id": .stringConvertible(nextLayer.diffID),
+                ])
+                let snapshot = try await snapshots.prepare(.with {
+                    $0.key = tmpKey
+                    $0.parent = layerKey
+                    $0.snapshotter = "overlayfs"
+                })
+
+                logger.info("Prepared snapshot", metadata: [
+                    "layer-diff-id": .stringConvertible(nextLayer.diffID),
+                    "layer-digest": .stringConvertible(nextLayer.digest),
+                    "layer-size": .stringConvertible(nextLayer.size),
+                    "layer-gzip": .stringConvertible(nextLayer.gzip),
+                    "layer-media-type": .stringConvertible(nextLayer.gzip ? "application/vnd.oci.image.layer.v1.tar+gzip" : "application/vnd.oci.image.layer.v1.tar"),
+                ])
+
+                apply = try await diffs.apply(.with {
+                    $0.diff = .with {
+                        $0.digest = nextLayer.digest
+                        $0.size = nextLayer.size
+                        $0.mediaType = nextLayer.gzip ? "application/vnd.oci.image.layer.v1.tar+gzip" : "application/vnd.oci.image.layer.v1.tar"
+                    }
+                    $0.mounts = snapshot.mounts
+                })
+                logger.info("Applied diff", metadata: [
+                    "layer-diff-id": .stringConvertible(nextLayer.diffID),
+                    "layer-digest": .stringConvertible(nextLayer.digest),
+                    "layer-size": .stringConvertible(nextLayer.size),
+                    "layer-gzip": .stringConvertible(nextLayer.gzip),
+                    "layer-media-type": .stringConvertible(nextLayer.gzip ? "application/vnd.oci.image.layer.v1.tar+gzip" : "application/vnd.oci.image.layer.v1.tar"),
+                ])
+
+                try await snapshots.commit(.with {
+                    $0.key = tmpKey
+                    $0.name = nextLayerKey
+                    $0.snapshotter = "overlayfs"
+                })
+                logger.info("Committed snapshot", metadata: [
+                    "layer-diff-id": .stringConvertible(nextLayer.diffID),
+                    "layer-digest": .stringConvertible(nextLayer.digest),
+                    "layer-size": .stringConvertible(nextLayer.size),
+                    "layer-gzip": .stringConvertible(nextLayer.gzip),
+                    "layer-media-type": .stringConvertible(nextLayer.gzip ? "application/vnd.oci.image.layer.v1.tar+gzip" : "application/vnd.oci.image.layer.v1.tar"),
+                ])
+            } catch let error as RPCError where error.code == .alreadyExists {
+                logger.info("Layer already exists", metadata: [
+                    "layer-diff-id": .stringConvertible(layer.diffID),
+                    "layer-digest": .stringConvertible(layer.digest),
+                    "layer-size": .stringConvertible(layer.size),
+                    "layer-gzip": .stringConvertible(layer.gzip),
+                    "layer-media-type": .stringConvertible(layer.gzip ? "application/vnd.oci.image.layer.v1.tar+gzip" : "application/vnd.oci.image.layer.v1.tar"),
+                ])
+                let snapshot = try await snapshots.view(.with {
+                    $0.key = nextLayerKey
+                    $0.snapshotter = "overlayfs"
+                })
+                apply = try await diffs.apply(.with {
+                    $0.diff = .with {
+                        $0.digest = nextLayer.digest
+                        $0.size = nextLayer.size
+                        $0.mediaType = nextLayer.gzip ? "application/vnd.oci.image.layer.v1.tar+gzip" : "application/vnd.oci.image.layer.v1.tar"
+                    }
+                    $0.mounts = snapshot.mounts
+                })
+            }
+
+            layer = nextLayer
+            layerKey = nextLayerKey
+        }
+
+        let ephemeralKey = UUID().uuidString
+
+        logger.info("Making ephemeral snapshot", metadata: [
+            "snapshot-key": .stringConvertible(ephemeralKey),
+            "parent-digest": .stringConvertible(layerKey),
+        ])
+        let ephemeralSnapshot = try await snapshots.prepare(.with {
+            $0.key = ephemeralKey
+            $0.parent = layerKey
+            $0.snapshotter = "overlayfs"
+        })
+
+        return (snapshotKey: ephemeralKey, mounts: ephemeralSnapshot.mounts)
     }
 
     public func createContainer(
@@ -382,22 +452,18 @@ public struct Containerd: Sendable {
         })
     }
 
-    public func runTask(containerID: String) async throws -> String {
-        let execID = UUID().uuidString
+    public func runTask(containerID: String) async throws {
         let tasks = Containerd_Services_Tasks_V1_Tasks.Client(wrapping: client)
         try await tasks.start(.with {
             $0.containerID = containerID
-            $0.execID = execID
         }) { res in
             if case .failure(let error) = res.accepted {
                 logger.error("Failed to run container", metadata: [
                     "container-id": .stringConvertible(containerID),
-                    "exec-id": .stringConvertible(execID),
                     "error": .stringConvertible(error.description)
                 ])
                 throw error
             }
         }
-        return execID
     }
 }
