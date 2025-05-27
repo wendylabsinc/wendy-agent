@@ -3,6 +3,7 @@ import EdgeAgentGRPC
 import Foundation
 import GRPCCore
 import GRPCNIOTransportHTTP2
+import Logging
 import NIOFoundationCompat
 import _NIOFileSystem
 
@@ -45,6 +46,7 @@ struct AgentCommand: AsyncParsableCommand {
         @OptionGroup var agentConnectionOptions: AgentConnectionOptions
 
         func run() async throws {
+            let logger = Logger(label: "edgeengineer.agent.update")
             let binary: String
 
             if let location = self.binary {
@@ -57,11 +59,11 @@ struct AgentCommand: AsyncParsableCommand {
                 let agent = Edge_Agent_Services_V1_EdgeAgentService.Client(wrapping: client)
                 print("Pushing update...")
                 try await agent.updateAgent { writer in
-                    print("Opening file...")
+                    logger.debug("Opening file...")
                     do {
                         try await FileSystem.shared.withFileHandle(forReadingAt: FilePath(binary)) {
                             handle in
-                            print("Uploading binary...")
+                            logger.debug("Uploading binary...")
                             for try await chunk in handle.readChunks() {
                                 try await writer.write(
                                     .with {
@@ -72,7 +74,7 @@ struct AgentCommand: AsyncParsableCommand {
                                 )
                             }
 
-                            print("Finalizing update")
+                            logger.debug("Finalizing update")
                             try await writer.write(
                                 .with {
                                     $0.control = .with {
@@ -82,7 +84,7 @@ struct AgentCommand: AsyncParsableCommand {
                             )
                         }
                     } catch {
-                        print("Failed to upload binary: \(error)")
+                        logger.error("Failed to upload binary: \(error)")
                         throw error
                     }
                 } onResponse: { response in

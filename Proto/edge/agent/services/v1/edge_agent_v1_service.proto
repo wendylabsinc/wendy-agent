@@ -10,6 +10,18 @@ service EdgeAgentService {
     rpc UpdateAgent(stream UpdateAgentRequest) returns (stream UpdateAgentResponse);
 
     rpc GetAgentVersion(GetAgentVersionRequest) returns (GetAgentVersionResponse);
+    
+    // List available WiFi networks
+    rpc ListWiFiNetworks(ListWiFiNetworksRequest) returns (ListWiFiNetworksResponse);
+    
+    // Connect to a specific WiFi network
+    rpc ConnectToWiFi(ConnectToWiFiRequest) returns (ConnectToWiFiResponse);
+    
+    // Get the current WiFi connection status
+    rpc GetWiFiStatus(GetWiFiStatusRequest) returns (GetWiFiStatusResponse);
+    
+    // Disconnect from the current WiFi network
+    rpc DisconnectWiFi(DisconnectWiFiRequest) returns (DisconnectWiFiResponse);
 }
 
 message RunContainerRequest {
@@ -99,4 +111,73 @@ message GetAgentVersionRequest {
 
 message GetAgentVersionResponse {
     string version = 1;
+}
+
+// Request message for listing WiFi networks
+message ListWiFiNetworksRequest {
+    // Empty request - no parameters needed
+}
+
+// Response message for listing WiFi networks
+message ListWiFiNetworksResponse {
+    // List of available WiFi networks
+    repeated WiFiNetwork networks = 1;
+    
+    // Information about a WiFi network
+    message WiFiNetwork {
+        // SSID (name) of the WiFi network
+        string ssid = 1;
+        
+        // Signal strength indicator (if available)
+        optional int32 signal_strength = 2;
+    }
+}
+
+// Request message for connecting to a WiFi network
+message ConnectToWiFiRequest {
+    // SSID (name) of the WiFi network to connect to
+    string ssid = 1;
+    
+    // Password for the WiFi network
+    string password = 2;
+}
+
+// Response message for connecting to a WiFi network
+message ConnectToWiFiResponse {
+    // Whether the connection was successful
+    bool success = 1;
+    
+    // Optional error message if connection failed
+    optional string error_message = 2;
+}
+
+// Request message for getting WiFi status
+message GetWiFiStatusRequest {
+    // Empty request - no parameters needed
+}
+
+// Response message for getting WiFi status
+message GetWiFiStatusResponse {
+    // Whether the device is currently connected to a WiFi network
+    bool connected = 1;
+    
+    // SSID of the connected network (only present if connected is true)
+    optional string ssid = 2;
+    
+    // Optional error message if status check failed
+    optional string error_message = 3;
+}
+
+// Request message for disconnecting from WiFi
+message DisconnectWiFiRequest {
+    // Empty request - no parameters needed
+}
+
+// Response message for disconnecting from WiFi
+message DisconnectWiFiResponse {
+    // Whether the disconnection was successful
+    bool success = 1;
+    
+    // Optional error message if disconnection failed
+    optional string error_message = 2;
 }

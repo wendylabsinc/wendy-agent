@@ -55,6 +55,13 @@ struct RunCommand: AsyncParsableCommand {
     @OptionGroup var agentConnectionOptions: AgentConnectionOptions
 
     func run() async throws {
+        LoggingSystem.bootstrap { label in
+            var handler = StreamLogHandler.standardError(label: label)
+            #if DEBUG
+                handler.logLevel = .trace
+            #endif
+            return handler
+        }
         let logger = Logger(label: "edgeengineer.cli.run")
 
         let swiftPM = SwiftPM()
@@ -90,7 +97,7 @@ struct RunCommand: AsyncParsableCommand {
             .staticSwiftStdlib
         )
 
-        let binPath = try await swiftPM.build(
+        let binPath = try await swiftPM.buildWithOutput(
             .showBinPath,
             .product(executableTarget.name),
             .swiftSDK(swiftSDK),
@@ -132,15 +139,23 @@ struct RunCommand: AsyncParsableCommand {
         }
 
         let outputPath = "\(executableTarget.name)-container.tar"
-        try await buildDockerContainerImage(
-            image: imageSpec,
-            imageName: imageName,
-            outputPath: outputPath
-        )
+
+        // Wrap the build in a task so we can parallelise starting up the gRPC client
+        let builtContainer = Task {
+            try await buildDockerContainerImage(
+                image: imageSpec,
+                imageName: imageName,
+                outputPath: outputPath
+            )
+        }
 
         try await withGRPCClient(agentConnectionOptions) { client in
             let agent = Edge_Agent_Services_V1_EdgeAgentService.Client(wrapping: client)
             try await agent.runContainer { writer in
+                // let existingLayers =
+
+                try await builtContainer.value
+
                 // First, send the header.
                 try await writer.write(
                     .with {

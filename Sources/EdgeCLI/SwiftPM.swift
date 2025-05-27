@@ -1,5 +1,6 @@
 import Foundation
 import Subprocess
+import SystemPackage
 
 /// Represents the Swift Package Manager interface for building and managing Swift packages.
 public struct SwiftPM: Sendable {
@@ -82,7 +83,7 @@ public struct SwiftPM: Sendable {
     }
 
     /// Build the Swift package.
-    @discardableResult public func build(_ options: BuildOption...) async throws -> String {
+    public func buildWithOutput(_ options: BuildOption...) async throws -> String {
         let version = swiftVersion ?? Self.defaultSwiftVersion
 
         // Find the executable path
@@ -100,7 +101,7 @@ public struct SwiftPM: Sendable {
             Subprocess.Executable.path("/usr/bin/env"),
             arguments: Subprocess.Arguments(allArgs),
             output: .string,
-            error: .string
+            error: .fileDescriptor(.standardError, closeAfterSpawningProcess: false),
         )
 
         if result.terminationStatus.isSuccess {
@@ -109,8 +110,42 @@ public struct SwiftPM: Sendable {
             throw SubprocessError.nonZeroExit(
                 command: allArgs.joined(separator: " "),
                 exitCode: Int(result.terminationStatus.description) ?? -1,
-                output: result.standardOutput ?? "",
-                error: result.standardError ?? ""
+                output: "",
+                error: ""
+            )
+        }
+    }
+
+    /// Build the Swift package.
+    public func build(_ options: BuildOption...) async throws {
+        let version = swiftVersion ?? Self.defaultSwiftVersion
+
+        // Find the executable path
+        let executablePath = try await findExecutablePath(
+            for: path.split(separator: " ").first.map(String.init) ?? path
+        )
+        // print("Using swiftly at path: \(executablePath)")
+
+        // Use the executable path instead of just the command name
+        let runArgs = path.split(separator: " ").dropFirst().map(String.init)
+        let allArgs =
+            [executablePath] + runArgs + ["build", version] + options.flatMap(\.arguments)
+
+        let result = try await Subprocess.run(
+            Subprocess.Executable.path("/usr/bin/env"),
+            arguments: Subprocess.Arguments(allArgs),
+            output: .fileDescriptor(.standardOutput, closeAfterSpawningProcess: false),
+            error: .fileDescriptor(.standardError, closeAfterSpawningProcess: false),
+        )
+
+        if result.terminationStatus.isSuccess {
+            return result.standardOutput
+        } else {
+            throw SubprocessError.nonZeroExit(
+                command: allArgs.joined(separator: " "),
+                exitCode: Int(result.terminationStatus.description) ?? -1,
+                output: "",
+                error: ""
             )
         }
     }
@@ -152,8 +187,12 @@ public struct SwiftPM: Sendable {
 
         public var errorDescription: String? {
             switch self {
-            case .nonZeroExit(let command, let exitCode, _, let error):
-                return "Command '\(command)' failed with exit code \(exitCode): \(error)"
+            case .nonZeroExit(let command, let exitCode, let output, let error):
+                return """
+                    Command '\(command)' failed with exit code \(exitCode): \(error)
+
+                    \(output)
+                    """
             }
         }
     }
