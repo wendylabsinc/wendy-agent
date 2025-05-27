@@ -177,63 +177,117 @@ public struct Containerd: Sendable {
     public func createSnapshot(
         imageName: String,
         layers: [Edge_Agent_Services_V1_RunContainerLayerHeader]
-    ) async throws -> String? {
+    ) async throws -> (snapshotKey: String?, mounts: [Containerd_Types_Mount]) {
         let snapshots = Containerd_Services_Snapshots_V1_Snapshots.Client(wrapping: client)
         let diffs = Containerd_Services_Diff_V1_Diff.Client(wrapping: client)
-        var parentSnapshot: String? = nil
-        for (index, layer) in layers.enumerated() {
-            let snapshotKey = "tmp-image-layer-\(index)-\(imageName)"
-            let snapshotName = "image-layer-\(index)-\(imageName)"
-            
-            try await snapshots.prepare(.with {
-                $0.key = snapshotKey
-                $0.snapshotter = "overlayfs"
-                $0.parent = parentSnapshot ?? ""
-            })
+        var layers = layers
 
-            // Apply the layer diff to the snapshot
-            let mountPoint = "/run/containerd/mounts/\(snapshotKey)"
-            try FileManager.default.createDirectory(atPath: mountPoint, withIntermediateDirectories: true)
-
-            let mountsResponse = try await snapshots.mounts(.with {
-                $0.key = snapshotKey
-                $0.snapshotter = "overlayfs"
-            })
-
-            print(mountsResponse)
-            for _mount in mountsResponse.mounts {
-                let flags: UInt = 0
-                let filesystem = "overlay"
-                let options = _mount.options.joined(separator: ",")
-                options.withCString { cStr in
-                    mount(_mount.source, mountPoint, filesystem, flags, cStr)
-                }
-            }
-            
-            // let layerDescriptor = manifest.layers[index]
-            // let tarStream = try await client.contentStore.readBlob(forDigest: layerDescriptor.digest)
-
-            let applyResponse = try await diffs.apply(.with {
-                $0.diff = .with {
-                    $0.digest = layer.digest
-                    $0.size = layer.size
-                    $0.mediaType = layer.gzip ? "application/vnd.oci.image.layer.v1.tar+gzip" : "application/vnd.oci.image.layer.v1.tar"
-                }
-                // $0.payloads
-                $0.mounts = mountsResponse.mounts.map { mount in
-                    .with {
-                        $0.source = mount.source
-                        $0.options = ["bind"]
-                        $0.target = "/"
-                    }
-                }
-            })
-
-            print(applyResponse)
-
-            parentSnapshot = snapshotName
+        if layers.isEmpty {
+            return (snapshotKey: nil, mounts: [])
         }
-        return parentSnapshot
+
+        var layer = layers.removeFirst()
+        var layerIndex = 0
+
+        logger.info("Preparing snapshot for layer", metadata: [
+            "layer-diff-id": .stringConvertible(layer.diffID),
+        ])
+        let snapshot = try await snapshots.prepare(.with {
+            $0.key = "tmp-snapshot-\(layerIndex)-\(imageName)"
+            $0.snapshotter = "overlayfs"
+        })
+        logger.info("Prepared snapshot", metadata: [
+            "layer-diff-id": .stringConvertible(layer.diffID),
+            "layer-digest": .stringConvertible(layer.digest),
+            "layer-size": .stringConvertible(layer.size),
+            "layer-gzip": .stringConvertible(layer.gzip),
+            "layer-media-type": .stringConvertible(layer.gzip ? "application/vnd.oci.image.layer.v1.tar+gzip" : "application/vnd.oci.image.layer.v1.tar"),
+            "snapshot-mounts": .stringConvertible(snapshot.mounts.map { $0.source }.joined(separator: ", "))
+        ])
+        var apply = try await diffs.apply(.with {
+            $0.diff = .with {
+                $0.digest = layer.digest
+                $0.size = layer.size
+                $0.mediaType = layer.gzip ? "application/vnd.oci.image.layer.v1.tar+gzip" : "application/vnd.oci.image.layer.v1.tar"
+            }
+            $0.mounts = snapshot.mounts
+        })
+        logger.info("Applied diff", metadata: [
+            "layer-diff-id": .stringConvertible(layer.diffID),
+            "layer-digest": .stringConvertible(layer.digest),
+            "layer-size": .stringConvertible(layer.size),
+            "layer-gzip": .stringConvertible(layer.gzip),
+            "layer-media-type": .stringConvertible(layer.gzip ? "application/vnd.oci.image.layer.v1.tar+gzip" : "application/vnd.oci.image.layer.v1.tar"),
+        ])
+        try await snapshots.commit(.with {
+            $0.key = "tmp-snapshot-\(layerIndex)-\(imageName)"
+            $0.name = apply.applied.digest
+            $0.snapshotter = "overlayfs"
+        })
+        logger.info("Committed snapshot", metadata: [
+            "layer-diff-id": .stringConvertible(layer.diffID),
+            "layer-digest": .stringConvertible(layer.digest),
+            "layer-size": .stringConvertible(layer.size),
+            "layer-gzip": .stringConvertible(layer.gzip),
+            "layer-media-type": .stringConvertible(layer.gzip ? "application/vnd.oci.image.layer.v1.tar+gzip" : "application/vnd.oci.image.layer.v1.tar"),
+        ])
+        var mounts = snapshot.mounts
+
+        while !layers.isEmpty {
+            layerIndex += 1
+            let nextLayer = layers.removeFirst()
+
+            logger.info("Preparing snapshot for layer", metadata: [
+                "layer-diff-id": .stringConvertible(nextLayer.diffID),
+            ])
+            let snapshot = try await snapshots.prepare(.with {
+                $0.key = "tmp-snapshot-\(layerIndex)-\(imageName)"
+                $0.parent = apply.applied.digest
+                $0.snapshotter = "overlayfs"
+            })
+
+            logger.info("Prepared snapshot", metadata: [
+                "layer-diff-id": .stringConvertible(nextLayer.diffID),
+                "layer-digest": .stringConvertible(nextLayer.digest),
+                "layer-size": .stringConvertible(nextLayer.size),
+                "layer-gzip": .stringConvertible(nextLayer.gzip),
+                "layer-media-type": .stringConvertible(nextLayer.gzip ? "application/vnd.oci.image.layer.v1.tar+gzip" : "application/vnd.oci.image.layer.v1.tar"),
+            ])
+
+            apply = try await diffs.apply(.with {
+                $0.diff = .with {
+                    $0.digest = nextLayer.digest
+                    $0.size = nextLayer.size
+                    $0.mediaType = nextLayer.gzip ? "application/vnd.oci.image.layer.v1.tar+gzip" : "application/vnd.oci.image.layer.v1.tar"
+                }
+                $0.mounts = snapshot.mounts
+            })
+            logger.info("Applied diff", metadata: [
+                "layer-diff-id": .stringConvertible(nextLayer.diffID),
+                "layer-digest": .stringConvertible(nextLayer.digest),
+                "layer-size": .stringConvertible(nextLayer.size),
+                "layer-gzip": .stringConvertible(nextLayer.gzip),
+                "layer-media-type": .stringConvertible(nextLayer.gzip ? "application/vnd.oci.image.layer.v1.tar+gzip" : "application/vnd.oci.image.layer.v1.tar"),
+            ])
+
+            try await snapshots.commit(.with {
+                $0.key = "tmp-snapshot-\(layerIndex)-\(imageName)"
+                $0.name = apply.applied.digest
+                $0.snapshotter = "overlayfs"
+            })
+            logger.info("Committed snapshot", metadata: [
+                "layer-diff-id": .stringConvertible(nextLayer.diffID),
+                "layer-digest": .stringConvertible(nextLayer.digest),
+                "layer-size": .stringConvertible(nextLayer.size),
+                "layer-gzip": .stringConvertible(nextLayer.gzip),
+                "layer-media-type": .stringConvertible(nextLayer.gzip ? "application/vnd.oci.image.layer.v1.tar+gzip" : "application/vnd.oci.image.layer.v1.tar"),
+            ])
+
+            mounts = snapshot.mounts
+            layer = nextLayer
+        }
+
+        return (snapshotKey: apply.applied.digest, mounts: mounts)
     }
 
     public func createContainer(
@@ -298,19 +352,18 @@ public struct Containerd: Sendable {
         }
     }
 
-    public func createTask(containerID: String, appName: String, snapshotName: String) async throws {
+    public func createTask(
+        containerID: String,
+        appName: String,
+        snapshotName: String,
+        mounts: [Containerd_Types_Mount]
+    ) async throws {
         let tasks = Containerd_Services_Tasks_V1_Tasks.Client(wrapping: client)
         do {
             let result = try await tasks.create(.with {
                 $0.containerID = containerID
                 $0.runtimePath = "io.containerd.runc.v2"
-                $0.rootfs = [
-                    .with {
-                        $0.type = "bind"
-                        $0.source = "/run/containerd/io.containerd.snapshotter.v1.overlayfs/mounts/\(snapshotName)"
-                        $0.options = ["rbind", "ro"]
-                    }
-                ]
+                $0.rootfs = mounts
             })
         } catch let error as RPCError {
             logger.error("Failed to create task", metadata: [

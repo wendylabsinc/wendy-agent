@@ -1,4 +1,5 @@
 import EdgeAgentGRPC
+import ContainerdGRPC
 import EdgeShared
 import Foundation
 import Logging
@@ -129,14 +130,15 @@ struct EdgeContainerService: Edge_Agent_Services_V1_EdgeContainerService.Service
             ])
 
             let snapshotKey: String?
+            let mounts: [Containerd_Types_Mount]
 
             do {
-                snapshotKey = try await client.createSnapshot(imageName: request.imageName, layers: request.layers)
+                (snapshotKey, mounts) = try await client.createSnapshot(imageName: request.imageName, layers: request.layers)
             } catch let error as RPCError {
-                snapshotKey = ""
                 logger.error("Failed to create snapshot", metadata: [
                     "error": .stringConvertible(error.description)
                 ])
+                throw error
             }
 
             do {
@@ -148,7 +150,7 @@ struct EdgeContainerService: Edge_Agent_Services_V1_EdgeContainerService.Service
 
             logger.info("Creating task")
             do {
-                try await client.createTask(containerID: request.appName, appName: request.appName, snapshotName: snapshotKey ?? "")
+                try await client.createTask(containerID: request.appName, appName: request.appName, snapshotName: snapshotKey ?? "", mounts: mounts)
             } catch let error as RPCError where error.code == .alreadyExists {}
 
             logger.info("Starting task")
