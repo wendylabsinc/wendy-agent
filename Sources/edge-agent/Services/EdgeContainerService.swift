@@ -58,7 +58,7 @@ struct EdgeContainerService: Edge_Agent_Services_V1_EdgeContainerService.Service
                 architecture: "arm64",
                 os: "linux",
                 config: ImageConfigurationConfig(
-                    Cmd: [request.cmd],
+                    Cmd: request.cmd.split(separator: " ").map(String.init),
                     StopSignal: "SIGTERM"
                 ),
                 rootfs: ImageConfigurationRootFS(diff_ids: request.layers.map(\.diffID))
@@ -96,7 +96,7 @@ struct EdgeContainerService: Edge_Agent_Services_V1_EdgeContainerService.Service
                 "process": [
                     "terminal": false,
                     "user": ["uid": 0, "gid": 0],
-                    "args": [request.cmd],
+                    "args": request.cmd.split(separator: " ").map(String.init),
                     "env": ["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"],
                     "cwd": "/"
                 ],
@@ -125,7 +125,18 @@ struct EdgeContainerService: Edge_Agent_Services_V1_EdgeContainerService.Service
                         ["type": "uts"],
                         ["type": "mount"]
                     ],
-                    "networkMode": "host"
+                    "networkMode": "host",
+                    "capabilities": [
+                        "bounding": ["SYS_PTRACE"],
+                        "effective": ["SYS_PTRACE"],
+                        "inheritable": ["SYS_PTRACE"],
+                        "permitted": ["SYS_PTRACE"]
+                    ],
+                    "seccomp": [
+                        "defaultAction": "SCMP_ACT_ALLOW",
+                        "architectures": ["SCMP_ARCH_AARCH64"],
+                        "syscalls": []
+                    ]
                 ]
             ])
 

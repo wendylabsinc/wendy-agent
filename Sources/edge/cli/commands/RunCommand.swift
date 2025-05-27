@@ -203,7 +203,11 @@ struct RunCommand: AsyncParsableCommand {
             let response = try await agentContainers.runContainer(.with {
                 $0.imageName = "\(imageName):latest"
                 $0.appName = imageName
-                $0.cmd = "/bin/\(imageName)"
+                if debug {
+                    $0.cmd = "ds2 gdbserver 0.0.0.0:4242 /bin/\(imageName)"
+                } else {
+                    $0.cmd = "/bin/\(imageName)"
+                }
                 $0.layers = container.layers.map { layer in
                     .with {
                         $0.digest = layer.digest
