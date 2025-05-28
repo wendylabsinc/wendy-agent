@@ -9,7 +9,7 @@ extension ContainerImageSpec {
             case files([File])
 
             /// A prebuilt layer tarball
-            case tarball(URL)
+            case tarball(URL, uncompressedSize: Int64)
         }
 
         /// The content of this layer
@@ -30,8 +30,8 @@ extension ContainerImageSpec {
         ///
         /// - Parameter tarballURL: The URL of the tarball containing the layer.
         /// - Parameter diffID: The diffID (uncompressed digest) of this layer, if known.
-        public init(tarball tarballURL: URL, diffID: String? = nil) {
-            self.content = .tarball(tarballURL)
+        public init(tarball tarballURL: URL, uncompressedSize: Int64, diffID: String? = nil) {
+            self.content = .tarball(tarballURL, uncompressedSize: uncompressedSize)
             self.diffID = diffID
         }
 

@@ -85,9 +85,10 @@ let package = Package(
                 .product(name: "_NIOFileSystem", package: "swift-nio"),
                 .product(name: "DBusSwift", package: "dbus"),
                 .target(name: "EdgeAgentGRPC"),
+                .target(name: "ContainerdGRPC"),
+                .target(name: "ContainerRegistry"),
                 .target(name: "Shell"),
                 .target(name: "EdgeShared"),
-
             ]
         ),
 
@@ -114,6 +115,21 @@ let package = Package(
             exclude: [
                 "Proto/edge_agent.protoset"
             ]
+        ),
+        .target(
+            name: "ContainerdGRPC",
+            dependencies: [
+                .product(name: "GRPCCore", package: "grpc-swift"),
+                .product(name: "GRPCProtobuf", package: "grpc-swift-protobuf"),
+                .target(name: "ContainerdGRPCTypes"),
+            ],
+        ),
+        .target(
+            name: "ContainerdGRPCTypes",
+            dependencies: [
+                .product(name: "GRPCCore", package: "grpc-swift"),
+                .product(name: "GRPCProtobuf", package: "grpc-swift-protobuf"),
+            ],
         ),
         .target(
             name: "Imager",

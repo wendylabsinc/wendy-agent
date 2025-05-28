@@ -6,9 +6,23 @@ import Shell
 import _NIOFileSystem
 
 public struct ContainerLayer: Sendable {
-    let path: URL
-    let hash: String
+    public let path: URL
+    public let hash: String
+    public let diffID: String
+    public let size: Int64
+    public let gzip: Bool
+
+    public var digest: String {
+        "sha256:\(hash)"
+    }
 }
+
+public struct Container: Sendable {
+    public let layers: [ContainerLayer]
+    public let config: DockerConfig
+}
+
+private let logger = Logger(label: "edgeengineer.container-builder")
 
 public func buildDockerContainerLayers(
     image: ContainerImageSpec,
@@ -18,10 +32,14 @@ public func buildDockerContainerLayers(
     var layers = [ContainerLayer]()
 
     for (index, layer) in image.layers.enumerated() {
-        let layerTarPath = outputDirectoryPath.appendingPathComponent("layer\(index).tar")
+        var layerTarPath = outputDirectoryPath.appendingPathComponent("layer\(index).tar")
+        let gzip: Bool
+        let precalculatedSize: Int64?
 
         switch layer.content {
         case .files(let files):
+            // TODO: Replace with custom .tar implementation for better throughput
+
             // Create a directory for this layer
             let layerDir = outputDirectoryPath.appendingPathComponent("layer\(index)")
             try FileManager.default.createDirectory(at: layerDir, withIntermediateDirectories: true)
@@ -58,53 +76,52 @@ public func buildDockerContainerLayers(
 
             // Create a tarball from the directory
             try await createTarball(from: layerDir, to: layerTarPath)
+            gzip = false
+            precalculatedSize = nil
 
-        case .tarball(let tarballURL):
+        case .tarball(let tarballURL, let uncompressedSize):
             // Use the tarball directly
-            try FileManager.default.copyItem(at: tarballURL, to: layerTarPath)
+            layerTarPath = tarballURL
+            gzip = true  //tarballURL.path.hasSuffix(".gz")
+            precalculatedSize = uncompressedSize
         }
 
         // If the layer has a predefined diffID, use it
-        if let diffID = layer.diffID, diffID.starts(with: "sha256:") {
-            let layerSHA = diffID.replacingOccurrences(of: "sha256:", with: "")
-            layers.append(ContainerLayer(path: layerTarPath, hash: layerSHA))
-        } else {
-            let layer = try await FileSystem.shared.withFileHandle(
-                forReadingAt: FilePath(layerTarPath.path)
-            ) { fileHandle in
-                var sha = SHA256()
-                for try await chunk in fileHandle.readChunks() {
-                    sha.update(data: chunk.readableBytesView)
-                }
-                let layerSHA = sha.finalize()
-                    .map { String(format: "%02x", $0) }
-                    .joined()
-
-                return ContainerLayer(path: layerTarPath, hash: layerSHA)
+        logger.info("Calculating diffID for layer \(layerTarPath.path)")
+        let layer = try await FileSystem.shared.withFileHandle(
+            forReadingAt: FilePath(layerTarPath.path)
+        ) { fileHandle in
+            var sha = SHA256()
+            var fileSize: Int64 = 0
+            for try await chunk in fileHandle.readChunks() {
+                sha.update(data: chunk.readableBytesView)
+                fileSize += Int64(chunk.readableBytesView.count)
             }
-            layers.append(layer)
+            let layerSHA = sha.finalize()
+                .map { String(format: "%02x", $0) }
+                .joined()
+
+            let diffID = layer.diffID ?? "sha256:\(layerSHA)"
+
+            return ContainerLayer(
+                path: layerTarPath,
+                hash: layerSHA,
+                diffID: diffID,
+                size: precalculatedSize ?? fileSize,
+                gzip: gzip
+            )
         }
+        layers.append(layer)
     }
 
     return layers
 }
 
-/// Builds a Docker-compatible container image from the given image specification.
-/// The image is saved to the given path.
-///
-/// This currently follows the format expected by `docker load`, which is not
-/// the same as the OCI Image Format Specification.
-public func buildDockerContainerImage(
+public func buildDockerContainer(
     image: ContainerImageSpec,
     imageName: String,
-    outputPath: String
-) async throws {
-    let logger = Logger(label: "edgeengineer.container-builder")
-    // TODO: Implement this using the OCI Image Format Specification instead of Docker's format?
-    // TODO: Write directly to a tar file instead of using a temporary directory
-    let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-    try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-
+    tempDir: URL
+) async throws -> Container {
     logger.info("Building container layers")
     let layers = try await buildDockerContainerLayers(
         image: image,
@@ -125,13 +142,37 @@ public func buildDockerContainerImage(
         ),
         rootfs: RootFS(
             type: "layers",
-            diff_ids: layers.map { "sha256:\($0.hash)" }
+            diff_ids: layers.map(\.diffID)
         )
+    )
+
+    return Container(layers: layers, config: config)
+}
+
+/// Builds a Docker-compatible container image from the given image specification.
+/// The image is saved to the given path.
+///
+/// This currently follows the format expected by `docker load`, which is not
+/// the same as the OCI Image Format Specification.
+public func buildDockerContainerImage(
+    image: ContainerImageSpec,
+    imageName: String,
+    outputPath: String
+) async throws {
+    // TODO: Implement this using the OCI Image Format Specification instead of Docker's format?
+    // TODO: Write directly to a tar file instead of using a temporary directory
+    let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+
+    let container = try await buildDockerContainer(
+        image: image,
+        imageName: imageName,
+        tempDir: tempDir
     )
 
     // Serialize and save config
     logger.info("Creating config.json")
-    let configData = try JSONEncoder().encode(config)
+    let configData = try JSONEncoder().encode(container.config)
     let configPath = tempDir.appendingPathComponent("config.json")
     try configData.write(to: configPath)
     let configSHA = sha256(data: configData)
@@ -154,7 +195,7 @@ public func buildDockerContainerImage(
     try FileManager.default.createDirectory(at: imageDir, withIntermediateDirectories: true)
 
     // Copy layers and config to image directory
-    for layer in layers {
+    for layer in container.layers {
         let destinationPath = imageDir.appendingPathComponent("\(layer.hash).tar")
         try FileManager.default.copyItem(at: layer.path, to: destinationPath)
     }
@@ -171,7 +212,7 @@ public func buildDockerContainerImage(
         DockerManifestEntry(
             Config: "\(configSHA).json",
             RepoTags: ["\(imageName):\(imageTag)"],
-            Layers: layers.map { "\($0.hash).tar" }
+            Layers: container.layers.map { "\($0.hash).tar" }
         )
     ]
 
@@ -201,27 +242,27 @@ private func createTarball(from sourceDir: URL, to destinationURL: URL) async th
     )
 }
 
-struct ContainerConfig: Codable {
-    var Cmd: [String]
-    var Env: [String]
-    var WorkingDir: String
+public struct ContainerConfig: Codable, Sendable {
+    public var Cmd: [String]
+    public var Env: [String]
+    public var WorkingDir: String
 }
 
-struct RootFS: Codable {
-    var type: String
-    var diff_ids: [String]
+public struct RootFS: Codable, Sendable {
+    public var type: String
+    public var diff_ids: [String]
 }
 
-struct DockerConfig: Codable {
-    var architecture: String
-    var created: String
-    var os: String
-    var config: ContainerConfig
-    var rootfs: RootFS
+public struct DockerConfig: Codable, Sendable {
+    public var architecture: String
+    public var created: String
+    public var os: String
+    public var config: ContainerConfig
+    public var rootfs: RootFS
 }
 
-struct DockerManifestEntry: Codable {
-    var Config: String
-    var RepoTags: [String]
-    var Layers: [String]
+public struct DockerManifestEntry: Codable, Sendable {
+    public var Config: String
+    public var RepoTags: [String]
+    public var Layers: [String]
 }

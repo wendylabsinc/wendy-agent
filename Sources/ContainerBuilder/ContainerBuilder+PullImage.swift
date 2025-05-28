@@ -195,7 +195,7 @@ extension ContainerImageSpec {
         }
 
         for (index, layer) in manifest.layers.enumerated() {
-            logger.info("Downloading layer \(index+1)/\(manifest.layers.count): \(layer.digest)")
+            logger.info("Fetching layer \(index+1)/\(manifest.layers.count): \(layer.digest)")
 
             // Prepare cache path for this layer
             let layerCacheFilename = layer.digest.replacingOccurrences(of: ":", with: "-")
@@ -215,10 +215,23 @@ extension ContainerImageSpec {
             // Use the tarball directly as a layer with the original diffID
             if index < originalDiffIDs.count {
                 let diffID = originalDiffIDs[index]
-                logger.debug("Using original diffID for layer \(index+1): \(diffID)")
-                baseLayers.append(Layer(tarball: layerPath, diffID: diffID))
+                logger.debug(
+                    "Using original diffID for layer \(index+1): \(diffID), size: \(layer.size)"
+                )
+                baseLayers.append(
+                    Layer(
+                        tarball: layerPath,
+                        uncompressedSize: layer.size,
+                        diffID: diffID
+                    )
+                )
             } else {
-                baseLayers.append(Layer(tarball: layerPath))
+                baseLayers.append(
+                    Layer(
+                        tarball: layerPath,
+                        uncompressedSize: layer.size
+                    )
+                )
             }
         }
 

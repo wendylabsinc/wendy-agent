@@ -116,7 +116,7 @@ func parseChallenge(_ s: String) throws -> BearerChallenge {
     return res
 }
 
-public enum AuthChallenge: Equatable {
+public enum AuthChallenge: Equatable, Sendable {
     case none
     case basic(String)
     case bearer(String)
@@ -133,7 +133,7 @@ public enum AuthChallenge: Equatable {
 }
 
 /// AuthHandler manages provides credentials for HTTP requests
-public struct AuthHandler {
+public struct AuthHandler: Sendable {
     var username: String?
     var password: String?
 

@@ -1,0 +1,56 @@
+syntax = "proto3";
+
+package edge.agent.services.v1;
+
+service EdgeContainerService {
+    rpc ListLayers(ListLayersRequest) returns (stream LayerHeader);
+    rpc WriteLayer(stream WriteLayerRequest) returns (stream WriteLayerResponse);
+    rpc RunContainer(RunContainerLayersRequest) returns (RunContainerLayersResponse);
+}
+
+message ListLayersRequest {}
+
+message WriteLayerRequest {
+    string digest = 1;
+
+    bytes data = 2;
+}
+
+message WriteLayerResponse {}
+
+message LayerHeader {
+    // The hash identity of the layer.
+    string digest = 1;
+
+    int64 size = 2;
+}
+
+message RunContainerLayersRequest {
+    // Unique name for the container image
+    string image_name = 1;
+
+    string app_name = 2;
+
+    // The commavar d to run when the container starts.
+    string cmd = 3;
+    
+    // The layers that will be uploaded to the agent.
+    repeated RunContainerLayerHeader layers = 4;
+}
+
+message RunContainerLayerHeader {
+    // The hash identity of the layer.
+    string digest = 1;
+
+    int64 size = 2;
+
+    string diff_id = 3;
+
+    bool gzip = 4;
+}
+
+message RunContainerLayersResponse {
+    // The port that the debugger is listening on.
+    // If this is 0, the container is not running with a debugger.
+    uint32 debug_port = 1;
+}
