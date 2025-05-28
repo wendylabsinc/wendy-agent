@@ -350,7 +350,7 @@ public struct Containerd: Sendable {
     public func updateContainer(imageName: String, appName: String, snapshotKey: String, ociSpec: Data) async throws {
         do {
             let containers = Containerd_Services_Containers_V1_Containers.Client(wrapping: client)
-            try await containers.update(.with {
+            _ = try await containers.update(.with {
                 $0.container = .with {
                     $0.id = appName
                     $0.runtime = .with {
@@ -399,6 +399,7 @@ public struct Containerd: Sendable {
                 $0.containerID = containerID
                 $0.runtimePath = "io.containerd.runc.v2"
                 $0.rootfs = mounts
+                $0.terminal = false
             })
         } catch let error as RPCError {
             logger.error("Failed to create task", metadata: [
@@ -412,9 +413,39 @@ public struct Containerd: Sendable {
 
     public func deleteTask(containerID: String) async throws {
         let tasks = Containerd_Services_Tasks_V1_Tasks.Client(wrapping: client)
-        _ = try await tasks.delete(.with {
-            $0.containerID = containerID
-        })
+        let runningTasks = try await tasks.list(.init())
+        for runningTask in runningTasks.tasks {
+            logger.info("Found running task", metadata: [
+                "container-id": .stringConvertible(runningTask.containerID),
+                "task-id": .stringConvertible(runningTask.id),
+            ])
+
+            guard runningTask.containerID == containerID || runningTask.id == containerID else {
+                logger.debug("Ignoring task due to containerID mismatch", metadata: [
+                    "expected-container-id": .stringConvertible(containerID),
+                    "found-container-id": .stringConvertible(runningTask.containerID),
+                    "found-task-id": .stringConvertible(runningTask.id),
+                ])
+                continue
+            }
+
+            if runningTask.hasExitedAt {
+                logger.debug("Task has exited, deleting process", metadata: [
+                    "container-id": .stringConvertible(containerID),
+                    "task-id": .stringConvertible(runningTask.id),
+                ])
+
+                _ = try await tasks.deleteProcess(.with {
+                    $0.containerID = containerID
+                    $0.execID = runningTask.id
+                })
+            } else {
+                logger.debug("Task is still running, skipping", metadata: [
+                    "container-id": .stringConvertible(containerID),
+                    "task-id": .stringConvertible(runningTask.id),
+                ])
+            }
+        }
     }
 
     public func runTask(containerID: String) async throws {
