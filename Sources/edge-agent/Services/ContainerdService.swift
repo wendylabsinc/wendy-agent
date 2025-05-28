@@ -573,10 +573,9 @@ public struct Containerd: Sendable {
                     ]
                 )
 
-                _ = try await tasks.deleteProcess(
+                _ = try await tasks.delete(
                     .with {
-                        $0.containerID = containerID
-                        $0.execID = runningTask.id
+                        $0.containerID = runningTask.id
                     }
                 )
             } else {
