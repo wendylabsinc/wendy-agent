@@ -126,7 +126,7 @@ public struct Containerd: Sendable {
 
     public func deleteImage(named name: String) async throws {
         let images = Containerd_Services_Images_V1_Images.Client(wrapping: client)
-        try await images.delete(
+        _ = try await images.delete(
             .with {
                 $0.name = name
             }
@@ -201,7 +201,7 @@ public struct Containerd: Sendable {
 
     public func deleteContainer(named name: String) async throws {
         let containers = Containerd_Services_Containers_V1_Containers.Client(wrapping: client)
-        try await containers.delete(
+        _ = try await containers.delete(
             .with {
                 $0.id = name
             }
@@ -287,7 +287,7 @@ public struct Containerd: Sendable {
         )
 
         do {
-            try await snapshots.commit(
+            _ = try await snapshots.commit(
                 .with {
                     $0.key = tmpKey
                     $0.name = layerKey
@@ -374,7 +374,7 @@ public struct Containerd: Sendable {
             )
 
             do {
-                try await snapshots.commit(
+                _ = try await snapshots.commit(
                     .with {
                         $0.key = tmpKey
                         $0.name = nextLayerKey
