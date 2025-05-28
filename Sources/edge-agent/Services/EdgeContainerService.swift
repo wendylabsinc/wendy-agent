@@ -53,6 +53,8 @@ struct EdgeContainerService: Edge_Agent_Services_V1_EdgeContainerService.Service
         try await Containerd.withClient { client in
             let request = request.message
 
+            async let killed: Void = try await client.stopTask(containerID: request.appName)
+
             logger.info("Creating container config.json")
             let config = ImageConfiguration(
                 architecture: "arm64",
@@ -65,7 +67,7 @@ struct EdgeContainerService: Edge_Agent_Services_V1_EdgeContainerService.Service
             )
             let (configHash, configSize) = try await client.uploadJSON(config)
 
-            logger.info("Creating container manifest")
+            logger.debug("Creating container manifest")
             let manifest = ImageManifest(
                 mediaType: "application/vnd.oci.image.manifest.v1+json",
                 config: ContentDescriptor(
@@ -155,14 +157,28 @@ struct EdgeContainerService: Edge_Agent_Services_V1_EdgeContainerService.Service
             do {
                 logger.info("Creating container \(request.appName) from \(request.imageName)")
                 try await client.createContainer(imageName: request.imageName, appName: request.appName, snapshotKey: snapshotKey ?? "", ociSpec: spec)
-            } catch {
+            } catch let error as RPCError where error.code == .alreadyExists {
+                logger.debug("Container already exists, updating container")
                 try await client.updateContainer(imageName: request.imageName, appName: request.appName, snapshotKey: snapshotKey ?? "", ociSpec: spec)
             }
+
+            do {
+                try await killed
+                logger.info("Killed running container", metadata: [
+                    "container-id": .stringConvertible(request.appName)
+                ])
+            } catch {}
 
             logger.info("Creating task")
             do {
                 try await client.createTask(containerID: request.appName, appName: request.appName, snapshotName: snapshotKey ?? "", mounts: mounts)
-            } catch let error as RPCError where error.code == .alreadyExists {}
+            } catch let error as RPCError where error.code == .alreadyExists {
+                logger.info("Task already exists, re-creating it", metadata: [
+                    "container-id": .stringConvertible(request.appName)
+                ])
+                try await client.deleteTask(containerID: request.appName)
+                try await client.createTask(containerID: request.appName, appName: request.appName, snapshotName: snapshotKey ?? "", mounts: mounts)
+            }
 
             logger.info("Starting task")
             try await client.runTask(containerID: request.appName)
