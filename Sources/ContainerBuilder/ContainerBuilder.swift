@@ -22,7 +22,7 @@ public struct Container: Sendable {
     public let config: DockerConfig
 }
 
-fileprivate let logger = Logger(label: "edgeengineer.container-builder")
+private let logger = Logger(label: "edgeengineer.container-builder")
 
 public func buildDockerContainerLayers(
     image: ContainerImageSpec,
@@ -39,7 +39,7 @@ public func buildDockerContainerLayers(
         switch layer.content {
         case .files(let files):
             // TODO: Replace with custom .tar implementation for better throughput
-            
+
             // Create a directory for this layer
             let layerDir = outputDirectoryPath.appendingPathComponent("layer\(index)")
             try FileManager.default.createDirectory(at: layerDir, withIntermediateDirectories: true)
@@ -82,7 +82,7 @@ public func buildDockerContainerLayers(
         case .tarball(let tarballURL, let uncompressedSize):
             // Use the tarball directly
             layerTarPath = tarballURL
-            gzip = true //tarballURL.path.hasSuffix(".gz")
+            gzip = true  //tarballURL.path.hasSuffix(".gz")
             precalculatedSize = uncompressedSize
         }
 
@@ -128,7 +128,7 @@ public func buildDockerContainer(
         imageName: imageName,
         outputDirectoryPath: tempDir
     )
-    
+
     // Create config.json
     let dateFormatter = ISO8601DateFormatter()
     let config = DockerConfig(

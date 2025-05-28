@@ -57,7 +57,9 @@ struct RunCommand: AsyncParsableCommand {
     func run() async throws {
         LoggingSystem.bootstrap { label in
             var handler = StreamLogHandler.standardError(label: label)
-            if let level = ProcessInfo.processInfo.environment["LOG_LEVEL"].flatMap(Logger.Level.init) {
+            if let level = ProcessInfo.processInfo.environment["LOG_LEVEL"].flatMap(
+                Logger.Level.init
+            ) {
                 handler.logLevel = level
             } else {
                 #if DEBUG
@@ -144,15 +146,23 @@ struct RunCommand: AsyncParsableCommand {
             imageSpec.layers.append(ds2Layer)
         }
 
-        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(
+            UUID().uuidString
+        )
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
         defer {
             try? FileManager.default.removeItem(at: tempDir)
         }
-        let container = try await buildDockerContainer(image: imageSpec, imageName: imageName, tempDir: tempDir)
+        let container = try await buildDockerContainer(
+            image: imageSpec,
+            imageName: imageName,
+            tempDir: tempDir
+        )
         logger.info("Container prepared, connecting to agent")
         try await withGRPCClient(agentConnectionOptions) { client in
-            let agentContainers = Edge_Agent_Services_V1_EdgeContainerService.Client(wrapping: client)
+            let agentContainers = Edge_Agent_Services_V1_EdgeContainerService.Client(
+                wrapping: client
+            )
             // TODO: Can we cache this per-device to omit round-trips to the agent?
             logger.info("Getting existing container layers from agent")
             let existingLayers = try await agentContainers.listLayers(.init()) { response in
@@ -177,19 +187,23 @@ struct RunCommand: AsyncParsableCommand {
                     taskGroup.addTask {
                         // Upload layers that have changed or are new
                         logger.info("Uploading layer \(layer.digest)")
-                        try await agentContainers.writeLayer(request: .init { writer in
-                            try await FileSystem.shared.withFileHandle(forReadingAt: FilePath(layer.path.path)) {
-                                fileHandle in
-                                for try await chunk in fileHandle.readChunks() {
-                                    try await writer.write(
-                                        .with {
-                                            $0.digest = layer.digest
-                                            $0.data = Data(chunk.readableBytesView)
-                                        }
-                                    )
+                        try await agentContainers.writeLayer(
+                            request: .init { writer in
+                                try await FileSystem.shared.withFileHandle(
+                                    forReadingAt: FilePath(layer.path.path)
+                                ) {
+                                    fileHandle in
+                                    for try await chunk in fileHandle.readChunks() {
+                                        try await writer.write(
+                                            .with {
+                                                $0.digest = layer.digest
+                                                $0.data = Data(chunk.readableBytesView)
+                                            }
+                                        )
+                                    }
                                 }
                             }
-                        }) { response in 
+                        ) { response in
                             for try await _ in response.messages {
                                 // Ignore responses
                             }
@@ -200,23 +214,25 @@ struct RunCommand: AsyncParsableCommand {
                 try await taskGroup.waitForAll()
             }
 
-            let response = try await agentContainers.runContainer(.with {
-                $0.imageName = "\(imageName):latest"
-                $0.appName = imageName
-                if debug {
-                    $0.cmd = "ds2 gdbserver 0.0.0.0:4242 /bin/\(imageName)"
-                } else {
-                    $0.cmd = "/bin/\(imageName)"
-                }
-                $0.layers = container.layers.map { layer in
-                    .with {
-                        $0.digest = layer.digest
-                        $0.size = layer.size
-                        $0.gzip = layer.gzip
-                        $0.diffID = layer.diffID
+            let response = try await agentContainers.runContainer(
+                .with {
+                    $0.imageName = "\(imageName):latest"
+                    $0.appName = imageName
+                    if debug {
+                        $0.cmd = "ds2 gdbserver 0.0.0.0:4242 /bin/\(imageName)"
+                    } else {
+                        $0.cmd = "/bin/\(imageName)"
+                    }
+                    $0.layers = container.layers.map { layer in
+                        .with {
+                            $0.digest = layer.digest
+                            $0.size = layer.size
+                            $0.gzip = layer.gzip
+                            $0.diffID = layer.diffID
+                        }
                     }
                 }
-            })
+            )
 
             if response.debugPort != 0 {
                 logger.info(
@@ -225,11 +241,11 @@ struct RunCommand: AsyncParsableCommand {
             } else {
                 logger.info("Started container")
             }
-            
+
             if detach {
                 return
             }
-            
+
             // Send the chunks
             // logger.info("Sending container image to agent")
             // try await FileSystem.shared.withFileHandle(forReadingAt: FilePath(outputPath)) {

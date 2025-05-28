@@ -215,17 +215,23 @@ extension ContainerImageSpec {
             // Use the tarball directly as a layer with the original diffID
             if index < originalDiffIDs.count {
                 let diffID = originalDiffIDs[index]
-                logger.debug("Using original diffID for layer \(index+1): \(diffID), size: \(layer.size)")
-                baseLayers.append(Layer(
-                    tarball: layerPath,
-                    uncompressedSize: layer.size,
-                    diffID: diffID
-                ))
+                logger.debug(
+                    "Using original diffID for layer \(index+1): \(diffID), size: \(layer.size)"
+                )
+                baseLayers.append(
+                    Layer(
+                        tarball: layerPath,
+                        uncompressedSize: layer.size,
+                        diffID: diffID
+                    )
+                )
             } else {
-                baseLayers.append(Layer(
-                    tarball: layerPath,
-                    uncompressedSize: layer.size
-                ))
+                baseLayers.append(
+                    Layer(
+                        tarball: layerPath,
+                        uncompressedSize: layer.size
+                    )
+                )
             }
         }
 
