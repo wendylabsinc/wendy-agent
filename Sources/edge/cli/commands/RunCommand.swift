@@ -11,7 +11,12 @@ import NIO
 import NIOFileSystem
 import Shell
 
-struct RunCommand: AsyncParsableCommand {
+public enum ContainerRuntime: String, ExpressibleByArgument, Sendable {
+    case docker
+    case containerd
+}
+
+struct RunCommand: AsyncParsableCommand, Sendable {
     enum Error: Swift.Error, CustomStringConvertible {
         case noExecutableTarget
         case invalidExecutableTarget(String)
@@ -40,6 +45,9 @@ struct RunCommand: AsyncParsableCommand {
 
     @Flag(name: .long, help: "Run the container in the background")
     var detach: Bool = false
+
+    @Option(name: .long, help: "The runtime to use, either `docker` or `containerd`")
+    var runtime: ContainerRuntime = .containerd
 
     @Option(name: .long, help: "The Swift SDK to use.")
     var swiftSDK: String = "6.1-RELEASE_edgeos_aarch64"
@@ -70,7 +78,17 @@ struct RunCommand: AsyncParsableCommand {
             }
             return handler
         }
-        let logger = Logger(label: "edgeengineer.cli.run")
+
+        switch runtime {
+        case .docker:
+            try await runDockerBased()
+        case .containerd:
+            try await runContainerdBased()
+        }
+    }
+
+    func runContainerdBased() async throws {
+        let logger = Logger(label: "edgeengineer.cli.run.containerd")
 
         let swiftPM = SwiftPM()
         let package = try await swiftPM.dumpPackage(
@@ -246,30 +264,155 @@ struct RunCommand: AsyncParsableCommand {
                 return
             }
 
-            // Send the chunks
-            // logger.info("Sending container image to agent")
-            // try await FileSystem.shared.withFileHandle(forReadingAt: FilePath(outputPath)) {
-            //     fileHandle in
-            //     for try await chunk in fileHandle.readChunks() {
-            //         try await writer.write(
-            //             .with {
-            //                 $0.requestType = .chunk(
-            //                     .with { $0.data = Data(chunk.readableBytesView) }
-            //                 )
-            //             }
-            //         )
-            //     }
-            // }
+            // TODO: Logs?
+        }
+    }
 
-            // Send the control command to start the container.
-            // logger.info("Sending control command to start container")
-            // try await writer.write(
-            //     .with {
-            //         $0.requestType = .control(
-            //             .with { $0.command = .run(.with { $0.debug = debug }) }
-            //         )
-            //     }
-            // )
+    func runDockerBased() async throws {
+        let logger = Logger(label: "edgeengineer.cli.run.docker")
+
+        let swiftPM = SwiftPM()
+        let package = try await swiftPM.dumpPackage(
+            .scratchPath(".edge-build")
+        )
+
+        // Get all executable targets
+        let executableTargets = package.targets.filter { $0.type == "executable" }
+
+        // Use specified executable or handle multiple executable targets
+        let executableTarget: SwiftPM.Package.Target
+        if let executableName = executable {
+            guard let target = executableTargets.first(where: { $0.name == executableName }) else {
+                throw Error.invalidExecutableTarget(executableName)
+            }
+            executableTarget = target
+        } else {
+            // If no executable specified, ensure there's only one executable target
+            if executableTargets.isEmpty {
+                throw Error.noExecutableTarget
+            } else if executableTargets.count > 1 {
+                throw Error.multipleExecutableTargets(executableTargets.map(\.name))
+            } else {
+                executableTarget = executableTargets[0]
+            }
+        }
+
+        try await swiftPM.build(
+            .product(executableTarget.name),
+            .swiftSDK(swiftSDK),
+            .scratchPath(".edge-build"),
+            .staticSwiftStdlib
+        )
+
+        let binPath = try await swiftPM.buildWithOutput(
+            .showBinPath,
+            .product(executableTarget.name),
+            .swiftSDK(swiftSDK),
+            .quiet,
+            .scratchPath(".edge-build"),
+            .staticSwiftStdlib
+        ).trimmingCharacters(in: .whitespacesAndNewlines)
+        let executable = URL(fileURLWithPath: binPath).appendingPathComponent(executableTarget.name)
+
+        logger.info("Building container with base image \(baseImage)")
+        let imageName = executableTarget.name.lowercased()
+
+        // Use the debian:bookworm-slim base image instead of a blank image
+        var imageSpec = try await ContainerImageSpec.withBaseImage(
+            baseImage: baseImage,
+            executable: executable
+        )
+
+        if debug {
+            // Include the ds2 executable in the container image.
+            guard
+                let ds2URL = Bundle.module.url(
+                    forResource: "ds2-124963fd-static-linux-arm64",
+                    withExtension: nil
+                )
+            else {
+                fatalError("Could not find ds2 executable in bundle resources")
+            }
+
+            let ds2Files = [
+                ContainerImageSpec.Layer.File(
+                    source: ds2URL,
+                    destination: "/bin/ds2",
+                    permissions: 0o755
+                )
+            ]
+            let ds2Layer = ContainerImageSpec.Layer(files: ds2Files)
+            imageSpec.layers.append(ds2Layer)
+        }
+
+        let outputPath = "\(executableTarget.name)-container.tar"
+
+        // Wrap the build in a task so we can parallelise starting up the gRPC client
+        let builtContainer = Task {
+            try await buildDockerContainerImage(
+                image: imageSpec,
+                imageName: imageName,
+                outputPath: outputPath
+            )
+        }
+
+        try await withGRPCClient(agentConnectionOptions) { client in
+            let agent = Edge_Agent_Services_V1_EdgeAgentService.Client(wrapping: client)
+            try await agent.runContainer { writer in
+                // let existingLayers =
+
+                try await builtContainer.value
+
+                // First, send the header.
+                try await writer.write(
+                    .with {
+                        $0.header.imageName = imageName
+                    }
+                )
+
+                // Send the chunks
+                logger.info("Sending container image to agent")
+                try await FileSystem.shared.withFileHandle(forReadingAt: FilePath(outputPath)) {
+                    fileHandle in
+                    for try await chunk in fileHandle.readChunks() {
+                        try await writer.write(
+                            .with {
+                                $0.requestType = .chunk(
+                                    .with { $0.data = Data(chunk.readableBytesView) }
+                                )
+                            }
+                        )
+                    }
+                }
+
+                // Send the control command to start the container.
+                logger.info("Sending control command to start container")
+                try await writer.write(
+                    .with {
+                        $0.requestType = .control(
+                            .with { $0.command = .run(.with { $0.debug = debug }) }
+                        )
+                    }
+                )
+            } onResponse: { response in
+                for try await message in response.messages {
+                    switch message.responseType {
+                    case .started(let started):
+                        if started.debugPort != 0 {
+                            logger.info(
+                                "Started container with debug port \(started.debugPort)"
+                            )
+                        } else {
+                            logger.info("Started container")
+                        }
+                        if detach {
+                            return
+                        }
+                    case nil:
+                        logger.warning("Unknown message received from agent")
+                    }
+                }
+            }
         }
     }
 }
