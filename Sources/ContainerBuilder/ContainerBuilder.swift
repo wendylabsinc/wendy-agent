@@ -142,7 +142,7 @@ public func buildDockerContainer(
         ),
         rootfs: RootFS(
             type: "layers",
-            diff_ids: layers.map(\.digest)
+            diff_ids: layers.map(\.diffID)
         )
     )
 
