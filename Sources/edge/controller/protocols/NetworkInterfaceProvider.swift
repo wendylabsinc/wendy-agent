@@ -3,7 +3,7 @@
     import SystemConfiguration
 
     /// Protocol that abstracts SystemConfiguration network interface operations to allow for dependency injection and testing
-    protocol NetworkInterfaceProvider {
+    protocol NetworkInterfaceProvider: Sendable {
         /// Gets all network interfaces
         func copyAllNetworkInterfaces() -> [SCNetworkInterface]?
 
@@ -21,7 +21,7 @@
     }
 
     /// Default implementation that uses the real SystemConfiguration APIs
-    class DefaultNetworkInterfaceProvider: NetworkInterfaceProvider {
+    final class DefaultNetworkInterfaceProvider: NetworkInterfaceProvider {
         func copyAllNetworkInterfaces() -> [SCNetworkInterface]? {
             return SCNetworkInterfaceCopyAll() as? [SCNetworkInterface]
         }
