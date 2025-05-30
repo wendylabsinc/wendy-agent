@@ -406,7 +406,7 @@
         }
 
         // Mock classes for testing
-        class MockNetworkInterface {
+        final class MockNetworkInterface {
             let bsdName: String
             let displayName: String
             let interfaceType: String
@@ -420,7 +420,7 @@
             }
         }
 
-        class MockMacOSPlatformDeviceDiscovery: DeviceDiscovery {
+        final class MockMacOSPlatformDeviceDiscovery: DeviceDiscovery {
             var mockNetworkInterfaces: [MockNetworkInterface] = []
 
             func findUSBDevices(logger: Logger) async -> [USBDevice] {

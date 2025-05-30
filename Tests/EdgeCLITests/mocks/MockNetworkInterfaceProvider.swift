@@ -4,10 +4,10 @@
     @testable import edge
 
     // Unique identifiers for mock interfaces that we can use as opaque SCNetworkInterface values
-    private class MockInterfaceID {}
+    private final class MockInterfaceID {}
 
     /// Mock implementation of NetworkInterfaceProvider for testing
-    class MockNetworkInterfaceProvider: NetworkInterfaceProvider {
+    final class MockNetworkInterfaceProvider: NetworkInterfaceProvider, @unchecked Sendable {
         /// Mock network interfaces to return during testing
         var mockInterfaces: [MockNetworkInterfaceData] = []
 

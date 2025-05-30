@@ -4,7 +4,7 @@
     @testable import edge
 
     /// Represents a mock device for testing
-    class MockDeviceEntry {
+    final class MockDeviceEntry {
         let id: UInt32
         let name: String
         let vendorId: Int
@@ -20,7 +20,7 @@
     }
 
     /// Mock implementation of IOServiceProvider for testing
-    class MockIOServiceProvider: IOServiceProvider {
+    final class MockIOServiceProvider: IOServiceProvider {
         // Mock devices to return during testing
         var mockDevices: [MockDeviceEntry] = []
 
