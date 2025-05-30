@@ -20,7 +20,7 @@
     }
 
     /// Mock implementation of IOServiceProvider for testing
-    final class MockIOServiceProvider: IOServiceProvider {
+    final class MockIOServiceProvider: IOServiceProvider, @unchecked Sendable {
         // Mock devices to return during testing
         var mockDevices: [MockDeviceEntry] = []
 

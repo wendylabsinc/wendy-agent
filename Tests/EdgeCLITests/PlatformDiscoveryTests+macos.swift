@@ -420,7 +420,7 @@
             }
         }
 
-        final class MockMacOSPlatformDeviceDiscovery: DeviceDiscovery {
+        final class MockMacOSPlatformDeviceDiscovery: DeviceDiscovery, @unchecked Sendable {
             var mockNetworkInterfaces: [MockNetworkInterface] = []
 
             func findUSBDevices(logger: Logger) async -> [USBDevice] {
