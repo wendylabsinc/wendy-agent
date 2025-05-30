@@ -115,13 +115,16 @@ struct DevicesCommand: AsyncParsableCommand {
 
         case .all:
             // Fetch all types of devices
-            usbDevices = await discovery.findUSBDevices(logger: logger)
+            async let _usbDevices = await discovery.findUSBDevices(logger: logger)
+            async let _ethernetDevices = await discovery.findEthernetInterfaces(logger: logger)
+            async let _lanDevices = try await discovery.findLANDevices(logger: logger)
+
+            usbDevices = await _usbDevices
+            ethernetDevices = await _ethernetDevices
+            lanDevices = try await _lanDevices
+
             logDevicesFound(usbDevices, deviceType: "USB device(s)", logger: logger)
-
-            ethernetDevices = await discovery.findEthernetInterfaces(logger: logger)
             logDevicesFound(ethernetDevices, deviceType: "Ethernet interface(s)", logger: logger)
-
-            lanDevices = try await discovery.findLANDevices(logger: logger)
             logDevicesFound(lanDevices, deviceType: "LAN device(s)", logger: logger)
         }
 

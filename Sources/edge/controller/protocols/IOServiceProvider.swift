@@ -3,7 +3,7 @@
     import IOKit
 
     /// Protocol that abstracts IOKit service operations to allow for dependency injection and testing
-    protocol IOServiceProvider {
+    protocol IOServiceProvider: Sendable {
         /// Creates a matching dictionary for service lookup
         func createMatchingDictionary(className: String) -> CFDictionary?
 
@@ -25,7 +25,7 @@
     }
 
     /// Default implementation that uses the real IOKit APIs
-    class DefaultIOServiceProvider: IOServiceProvider {
+    final class DefaultIOServiceProvider: IOServiceProvider {
         func createMatchingDictionary(className: String) -> CFDictionary? {
             return IOServiceMatching(className)
         }
