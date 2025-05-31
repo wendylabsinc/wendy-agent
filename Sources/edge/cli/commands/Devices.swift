@@ -19,8 +19,8 @@ struct DevicesCommand: AsyncParsableCommand {
     @Flag(name: [.customShort("j"), .long], help: "Output in JSON format")
     var json: Bool = false
 
-    @Flag(help: "Resolve the agent's version")
-    var resolveAgentVersion: Bool = false
+    @Flag(help: "Skip resolving the agent's version")
+    var skipResolveAgentVersion: Bool = false
 
     func listDevices(
         usbDevices: [USBDevice],
@@ -139,7 +139,7 @@ struct DevicesCommand: AsyncParsableCommand {
             lan: lanDevices
         )
 
-        if resolveAgentVersion {
+        if !skipResolveAgentVersion {
             collection = try await collection.resolveAgentVersions()
         }
 
