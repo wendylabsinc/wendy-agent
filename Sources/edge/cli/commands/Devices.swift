@@ -1,6 +1,7 @@
 import ArgumentParser
 import Foundation
 import Logging
+import EdgeAgentGRPC
 
 struct DevicesCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
@@ -17,6 +18,9 @@ struct DevicesCommand: AsyncParsableCommand {
 
     @Flag(name: [.customShort("j"), .long], help: "Output in JSON format")
     var json: Bool = false
+
+    @Flag(help: "Resolve the agent's version")
+    var resolveAgentVersion: Bool = false
 
     func listDevices(
         usbDevices: [USBDevice],
@@ -129,11 +133,15 @@ struct DevicesCommand: AsyncParsableCommand {
         }
 
         // Display devices in the requested format
-        let collection = DevicesCollection(
+        var collection = DevicesCollection(
             usb: usbDevices,
             ethernet: ethernetDevices,
             lan: lanDevices
         )
+
+        if resolveAgentVersion {
+            collection = try await collection.resolveAgentVersions()
+        }
 
         if format == .json {
             do {
@@ -144,6 +152,75 @@ struct DevicesCommand: AsyncParsableCommand {
             }
         } else {
             print(collection.toHumanReadableString())
+        }
+    }
+}
+
+extension DevicesCollection {
+    private func resolveUSBDeviceAgentVersions() async -> [USBDevice] {
+        // TODO: Agent version resolution unsupported
+        return usbDevices
+    }
+
+    private func resolveEthernetDeviceAgentVersions() async -> [EthernetInterface] {
+        // TODO: Agent version resolution unsupported
+        return ethernetDevices
+    }
+
+    private func resolveLANDeviceAgentVersions() async -> [LANDevice] {
+        await withTaskGroup(of: LANDevice?.self) { group in
+            for device in lanDevices {
+                group.addTask {
+                    do {
+                        return try await withGRPCClient(
+                            AgentConnectionOptions.Endpoint(host: device.hostname, port: 50051)
+                        ) { client in
+                            let agent = Edge_Agent_Services_V1_EdgeAgentService.Client(wrapping: client)
+                            let version = try await agent.getAgentVersion(request: .init(message: .init()))
+                            var device = device
+                            device.agentVersion = version.version
+                            return device
+                        }
+                    } catch {
+                        return device
+                    }
+                }
+            }
+
+            return await group.reduce(into: [LANDevice]()) { devices, device in
+                if let device {
+                    devices.append(device)
+                }
+            }
+        }
+    }
+
+    func resolveAgentVersions() async throws -> DevicesCollection {
+        return await withTaskGroup(of: DevicesCollection.self) { group in
+            group.addTask {
+                let devices = await resolveUSBDeviceAgentVersions()
+                return DevicesCollection(usb: devices)
+            }
+
+            group.addTask {
+                let devices = await resolveEthernetDeviceAgentVersions()
+                return DevicesCollection(ethernet: devices)
+            }
+
+            group.addTask {
+                let devices = await resolveLANDeviceAgentVersions()
+                return DevicesCollection(lan: devices)
+            }
+
+            var collection = DevicesCollection()
+            
+            for await devices in group {
+                collection.usbDevices.append(contentsOf: devices.usbDevices)
+                collection.ethernetDevices.append(contentsOf: devices.ethernetDevices)
+                collection.lanDevices.append(contentsOf: devices.lanDevices)
+            }
+
+            return collection
         }
     }
 }

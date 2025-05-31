@@ -80,9 +80,35 @@
         }
 
         func findLANDevices(logger: Logger) async throws -> [LANDevice] {
-            logger.error("Listing LAN devices on Linux is not implemented")
-            let lanDevices: [LANDevice] = []
-            return lanDevices
+            var interfaces: [LANDevice] = []
+
+            let resolver = try AsyncDNSResolver()
+            let ptr = try await resolver.queryPTR(name: "_edgeos._udp.local")
+            for name in ptr.names {
+                guard
+                    let srv = try await resolver.querySRV(name: name).first,
+                    let txt = try await resolver.queryTXT(name: name).first,
+                    let id = txt.txt.split(separator: "=").last.map(String.init)
+                else {
+                    continue
+                }
+
+                let lanDevice = LANDevice(
+                    id: id,
+                    displayName: "EdgeOS Device",
+                    hostname: srv.host,
+                    port: Int(srv.port),
+                    interfaceType: "LAN",
+                    isEdgeOSDevice: true
+                )
+
+                // Prevent duplicates
+                if !interfaces.contains(where: { $0.id == id || $0.hostname == srv.host }) {
+                    interfaces.append(lanDevice)
+                }
+            }
+
+            return interfaces
         }
     }
 #endif
