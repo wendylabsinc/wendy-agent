@@ -1,5 +1,6 @@
 import DownloadSupport
 import Foundation
+import Logging
 import Shell
 
 #if canImport(FoundationNetworking)
@@ -14,6 +15,7 @@ struct Release: Decodable {
     }
     let prerelease: Bool
     let assets: [Asset]
+    let name: String
 }
 
 enum ReleasesError: Error {
@@ -49,10 +51,11 @@ func fetchReleases() async throws -> [Release] {
     )!
 
     // Fetch releases JSON
-    print("Fetching all releases...")
+    let logger = Logger(label: "edge.utils.fetchReleases")
+    logger.info("Fetching all releases...")
     let (data, response) = try await URLSession.shared.data(from: githubReleasesURL)
     guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
-        print("Failed to fetch releases: HTTP error")
+        logger.error("Failed to fetch releases: HTTP error")
         throw ReleasesError.invalidResponse
     }
 
