@@ -23,13 +23,50 @@ struct AgentCommand: AsyncParsableCommand {
             abstract: "Get the version of the EdgeOS agent."
         )
 
+        @Flag(name: [.customShort("j"), .long], help: "Output in JSON format")
+        var json: Bool = false
+
+        @Flag(help: "Check for updates")
+        var checkUpdates: Bool = false
+
+        @Flag(help: "Check for pre-releases")
+        var prerelease: Bool = false
+
+        struct JSONOutput: Codable {
+            let currentVersion: String
+            let latestVersion: String?
+        }
+
         @OptionGroup var agentConnectionOptions: AgentConnectionOptions
 
         func run() async throws {
-            try await withGRPCClient(agentConnectionOptions) { client in
+            let version = try await withGRPCClient(agentConnectionOptions) { client in
                 let agent = Edge_Agent_Services_V1_EdgeAgentService.Client(wrapping: client)
-                let version = try await agent.getAgentVersion(request: .init(message: .init()))
-                print(version.version)
+                return try await agent.getAgentVersion(request: .init(message: .init()))
+            }
+
+            var latestVersion: String? = nil
+
+            if checkUpdates {
+                let releases = try await fetchReleases()
+                if prerelease {
+                    latestVersion = releases.first?.name
+                } else {
+                    latestVersion = releases.first(where: { $0.prerelease == false })?.name
+                }
+            }
+
+            if json {
+                let json = JSONOutput(currentVersion: version.version, latestVersion: latestVersion)
+                let data = try JSONEncoder().encode(json)
+                print(String(data: data, encoding: .utf8)!)
+            } else {
+                print("Current version: \(version.version)")
+                if let latestVersion, version.version != latestVersion {
+                    print("Update available: \(latestVersion)")
+                } else if checkUpdates {
+                    print("No update available")
+                }
             }
         }
     }

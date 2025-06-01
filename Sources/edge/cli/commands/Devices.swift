@@ -1,7 +1,7 @@
 import ArgumentParser
+import EdgeAgentGRPC
 import Foundation
 import Logging
-import EdgeAgentGRPC
 
 struct DevicesCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
@@ -175,8 +175,12 @@ extension DevicesCollection {
                         return try await withGRPCClient(
                             AgentConnectionOptions.Endpoint(host: device.hostname, port: 50051)
                         ) { client in
-                            let agent = Edge_Agent_Services_V1_EdgeAgentService.Client(wrapping: client)
-                            let version = try await agent.getAgentVersion(request: .init(message: .init()))
+                            let agent = Edge_Agent_Services_V1_EdgeAgentService.Client(
+                                wrapping: client
+                            )
+                            let version = try await agent.getAgentVersion(
+                                request: .init(message: .init())
+                            )
                             var device = device
                             device.agentVersion = version.version
                             return device
@@ -213,7 +217,7 @@ extension DevicesCollection {
             }
 
             var collection = DevicesCollection()
-            
+
             for await devices in group {
                 collection.usbDevices.append(contentsOf: devices.usbDevices)
                 collection.ethernetDevices.append(contentsOf: devices.ethernetDevices)

@@ -90,7 +90,8 @@ struct LANDevice: Device, Encodable {
     }
 
     func toHumanReadableString() -> String {
-        return "\(displayName)\(agentVersion.map { " (\($0))" } ?? "") @ \(hostname):\(port) [\(id)]"
+        return
+            "\(displayName)\(agentVersion.map { " (\($0))" } ?? "") @ \(hostname):\(port) [\(id)]"
     }
 
     static func formatCollection(_ interfaces: [LANDevice], as format: OutputFormat) -> String {
@@ -170,7 +171,8 @@ struct USBDevice: Device, Encodable {
     }
 
     func toHumanReadableString() -> String {
-        return "\(name)\(agentVersion.map { " (\($0))" } ?? "") - Vendor ID: \(vendorId), Product ID: \(productId)"
+        return
+            "\(name)\(agentVersion.map { " (\($0))" } ?? "") - Vendor ID: \(vendorId), Product ID: \(productId)"
     }
 
     static func formatCollection(_ devices: [USBDevice], as format: OutputFormat) -> String {
