@@ -6,6 +6,11 @@ struct AgentConnectionOptions: ParsableArguments {
         let host: String
         let port: Int
 
+        init(host: String, port: Int) {
+            self.host = host
+            self.port = port
+        }
+
         init?(argument: String) {
             // Create a dummy URL to use URLComponents parsing capabilities
             var urlString = argument

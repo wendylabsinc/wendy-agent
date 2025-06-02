@@ -267,7 +267,7 @@ struct LANDeviceTests {
         )
 
         let humanReadable = device.toHumanReadableString()
-        #expect(humanReadable == "EdgeOS LAN Device (edgeos.local:8080) [device123]")
+        #expect(humanReadable == "EdgeOS LAN Device @ edgeos.local:8080 [device123]")
     }
 
     @Test("LANDevice JSON serialization and Codable conformance")

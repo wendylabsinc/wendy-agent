@@ -19,9 +19,9 @@ extension Device {
 }
 
 struct DevicesCollection: Encodable {
-    let usbDevices: [USBDevice]
-    let ethernetDevices: [EthernetInterface]
-    let lanDevices: [LANDevice]
+    var usbDevices: [USBDevice]
+    var ethernetDevices: [EthernetInterface]
+    var lanDevices: [LANDevice]
 
     init(usb: [USBDevice] = [], ethernet: [EthernetInterface] = [], lan: [LANDevice] = []) {
         self.usbDevices = usb
@@ -80,6 +80,7 @@ struct LANDevice: Device, Encodable {
     let port: Int
     let interfaceType: String
     let isEdgeOSDevice: Bool
+    var agentVersion: String?
 
     func toJSON() throws -> String {
         let encoder = JSONEncoder()
@@ -89,7 +90,8 @@ struct LANDevice: Device, Encodable {
     }
 
     func toHumanReadableString() -> String {
-        return "\(displayName) (\(hostname):\(port)) [\(id)]"
+        return
+            "\(displayName)\(agentVersion.map { " (\($0))" } ?? "") @ \(hostname):\(port) [\(id)]"
     }
 
     static func formatCollection(_ interfaces: [LANDevice], as format: OutputFormat) -> String {
@@ -107,6 +109,7 @@ struct EthernetInterface: Device, Encodable {
     let interfaceType: String
     let macAddress: String?
     let isEdgeOSDevice: Bool
+    var agentVersion: String?
 
     init(name: String, displayName: String, interfaceType: String, macAddress: String?) {
         self.name = name
@@ -149,6 +152,7 @@ struct USBDevice: Device, Encodable {
     let vendorId: String
     let productId: String
     let isEdgeOSDevice: Bool
+    var agentVersion: String?
 
     init(name: String, vendorId: Int, productId: Int) {
         self.name = name
@@ -156,6 +160,7 @@ struct USBDevice: Device, Encodable {
         self.vendorId = String(format: "0x%04X", vendorId)
         self.productId = String(format: "0x%04X", productId)
         self.isEdgeOSDevice = name.contains("EdgeOS")
+        self.agentVersion = nil
     }
 
     func toJSON() throws -> String {
@@ -167,7 +172,7 @@ struct USBDevice: Device, Encodable {
 
     func toHumanReadableString() -> String {
         return
-            "\(name) - Vendor ID: \(vendorId), Product ID: \(productId)"
+            "\(name)\(agentVersion.map { " (\($0))" } ?? "") - Vendor ID: \(vendorId), Product ID: \(productId)"
     }
 
     static func formatCollection(_ devices: [USBDevice], as format: OutputFormat) -> String {

@@ -8,11 +8,9 @@ import GRPCNIOTransportHTTP2
 #endif
 
 func withGRPCClient<R: Sendable>(
-    _ connectionOptions: AgentConnectionOptions,
+    _ endpoint: AgentConnectionOptions.Endpoint,
     _ body: @escaping (GRPCClient<GRPCTransport>) async throws -> R
 ) async throws -> R {
-    let endpoint = try connectionOptions.endpoint
-
     let target = ResolvableTargets.DNS(
         host: endpoint.host,
         port: endpoint.port
@@ -26,4 +24,12 @@ func withGRPCClient<R: Sendable>(
     return try await withGRPCClient(transport: transport) { client in
         try await body(client)
     }
+}
+
+func withGRPCClient<R: Sendable>(
+    _ connectionOptions: AgentConnectionOptions,
+    _ body: @escaping (GRPCClient<GRPCTransport>) async throws -> R
+) async throws -> R {
+    let endpoint = try connectionOptions.endpoint
+    return try await withGRPCClient(endpoint, body)
 }
