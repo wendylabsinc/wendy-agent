@@ -79,7 +79,7 @@ extension OCI {
 
                 // Configure cgroup path and mode for device controller delegation
                 let path = appName.replacingOccurrences(of: "-", with: "_")
-                self.linux.cgroupsPath = "/edge-agent-running/\(path)"
+                self.linux.cgroupsPath = "system.slice:edge-agent-running:\(path)"
                 self.linux.namespaces.append(.init(type: "cgroup"))
 
                 // Apply resources to container, these are applies in order

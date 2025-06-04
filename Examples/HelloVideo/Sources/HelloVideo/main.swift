@@ -6,7 +6,7 @@ import LinuxVideo
 let router = Router()
 
 // Serve HTML page with video device information
-router.get("/") { _, _ -> String in
+router.get("/") { _, _ -> Response in
     var output = """
         <!DOCTYPE html>
         <html>
@@ -54,7 +54,9 @@ router.get("/") { _, _ -> String in
         </html>
         """
 
-    return output
+    return Response(status: .ok, headers: [
+        .contentType: "text/html"
+    ], body: ResponseBody(byteBuffer: ByteBuffer(string: output)))
 }
 
 // Add route to capture a frame

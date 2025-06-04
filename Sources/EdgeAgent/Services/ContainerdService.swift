@@ -434,13 +434,6 @@ public struct Containerd: Sendable {
                     $0.id = appName
                     $0.runtime = .with {
                         $0.name = "io.containerd.runc.v2"
-                        $0.options = .with {
-                            $0.typeURL = "containerd.runc.v1.Options"
-                            $0.value = try! Containerd_Runc_V1_Options.with {
-                                $0.systemdCgroup = true
-                                $0.shimCgroup = "system.slice:edge-agent-running:\(appName)"
-                            }.serializedData()
-                        }
                     }
                     $0.spec = .with {
                         $0.typeURL = "types.containerd.io/opencontainers/runtime-spec/1/Spec"
