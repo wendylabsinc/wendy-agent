@@ -21,7 +21,7 @@ jobs:
       - name: Set version
         id: set-version
         run: |
-          TIMESTAMP=$(date +'v%Y.%m.%d-%H%M%S')
+          TIMESTAMP=$(date +'%Y.%m.%d-%H%M%S')
 
           if [ "${{ github.ref }}" == "refs/heads/main" ]; then
             VERSION="${TIMESTAMP}"
