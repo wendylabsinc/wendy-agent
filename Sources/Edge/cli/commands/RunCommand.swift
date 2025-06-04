@@ -1,3 +1,4 @@
+import AppConfig
 import ArgumentParser
 import ContainerBuilder
 import ContainerRegistry
@@ -95,6 +96,15 @@ struct RunCommand: AsyncParsableCommand, Sendable {
             .scratchPath(".edge-build")
         )
 
+        var appConfigData: Data
+        do {
+            appConfigData = try Data(contentsOf: URL(fileURLWithPath: "edge.json"))
+            _ = try JSONDecoder().decode(AppConfig.self, from: appConfigData)
+        } catch {
+            logger.error("Failed to decode app config", metadata: ["error": .string("\(error)")])
+            appConfigData = Data()
+        }
+
         // Get all executable targets
         let executableTargets = package.targets.filter { $0.type == "executable" }
 
@@ -177,7 +187,7 @@ struct RunCommand: AsyncParsableCommand, Sendable {
             tempDir: tempDir
         )
         logger.info("Container prepared, connecting to agent")
-        try await withGRPCClient(agentConnectionOptions) { client in
+        try await withGRPCClient(agentConnectionOptions) { [appConfigData] client in
             let agentContainers = Edge_Agent_Services_V1_EdgeContainerService.Client(
                 wrapping: client
             )
@@ -192,8 +202,8 @@ struct RunCommand: AsyncParsableCommand, Sendable {
             }
 
             let existingHashes = existingLayers.map(\.digest)
-            logger.info("Existing layers: \(existingHashes)")
-            logger.info("Needed layers: \(container.layers.map(\.digest))")
+            logger.trace("Existing layers: \(existingHashes)")
+            logger.trace("Needed layers: \(container.layers.map(\.digest))")
 
             logger.info("Sending changed container layers to agent")
             // Upload layers in parallel
@@ -241,6 +251,8 @@ struct RunCommand: AsyncParsableCommand, Sendable {
                     } else {
                         $0.cmd = "/bin/\(imageName)"
                     }
+                    $0.appConfig = appConfigData
+                    $0.autoRestart = !debug
                     $0.layers = container.layers.map { layer in
                         .with {
                             $0.digest = layer.digest
@@ -252,10 +264,8 @@ struct RunCommand: AsyncParsableCommand, Sendable {
                 }
             )
 
-            if response.debugPort != 0 {
-                logger.info(
-                    "Started container with debug port \(response.debugPort)"
-                )
+            if debug {
+                logger.info("Started container with debug port 4242")
             } else {
                 logger.info("Started container")
             }
@@ -275,6 +285,15 @@ struct RunCommand: AsyncParsableCommand, Sendable {
         let package = try await swiftPM.dumpPackage(
             .scratchPath(".edge-build")
         )
+
+        var appConfigData: Data
+        do {
+            appConfigData = try Data(contentsOf: URL(fileURLWithPath: "edge.json"))
+            _ = try JSONDecoder().decode(AppConfig.self, from: appConfigData)
+        } catch {
+            logger.error("Failed to decode app config", metadata: ["error": .string("\(error)")])
+            appConfigData = Data()
+        }
 
         // Get all executable targets
         let executableTargets = package.targets.filter { $0.type == "executable" }
@@ -356,7 +375,7 @@ struct RunCommand: AsyncParsableCommand, Sendable {
             )
         }
 
-        try await withGRPCClient(agentConnectionOptions) { client in
+        try await withGRPCClient(agentConnectionOptions) { [appConfigData] client in
             let agent = Edge_Agent_Services_V1_EdgeAgentService.Client(wrapping: client)
             try await agent.runContainer { writer in
                 // let existingLayers =
@@ -367,6 +386,7 @@ struct RunCommand: AsyncParsableCommand, Sendable {
                 try await writer.write(
                     .with {
                         $0.header.imageName = imageName
+                        $0.header.appConfig = appConfigData
                     }
                 )
 

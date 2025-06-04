@@ -74,7 +74,7 @@ You can run the hello world example by executing the following command:
 
 ```sh
 cd Examples/HelloWorld
-swift run --package-path ../../ -- edge run --agent <hostname-of-device>
+swift run --package-path ../../ -- edge run --device <hostname-of-device>
 ```
 
 This will build the Edge CLI and execute it's `run` command. The Edge CLI will in turn build the
@@ -86,7 +86,7 @@ A more advanced example demonstrating HTTP server capabilities is available in t
 
 ```sh
 cd Examples/HelloHTTP
-swift run --package-path ../../ -- edge run --agent <hostname-of-device>
+swift run --package-path ../../ -- edge run --device <hostname-of-device>
 ```
 
 ### Debugging
@@ -94,7 +94,7 @@ swift run --package-path ../../ -- edge run --agent <hostname-of-device>
 To debug examples, you can use the following command:
 
 ```sh
-swift run --package-path ../../ -- edge run --agent <hostname-of-device> --debug
+swift run --package-path ../../ -- edge run --device <hostname-of-device> --debug
 ```
 
 You can now attach the LLDB debugger through using port `4242`.

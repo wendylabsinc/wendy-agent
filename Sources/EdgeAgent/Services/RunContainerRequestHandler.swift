@@ -1,3 +1,4 @@
+import AppConfig
 import Foundation
 import Logging
 import NIOFileSystem
@@ -32,6 +33,7 @@ struct RunContainerRequestHandler {
     /// The header of the request.
     struct Header {
         let imageName: String
+        let appConfig: Data
     }
 
     struct Chunk {
@@ -162,11 +164,36 @@ struct RunContainerRequestHandler {
 
             var runOptions: [DockerCLI.RunOption] = [
                 .rm,
-                .network("host"),
                 .name(containerName),
                 .detach,
                 .privileged,  // Add privileged access for all containers
             ]
+
+            do {
+                let appConfig = try JSONDecoder().decode(
+                    AppConfig.self,
+                    from: acceptingState.header.appConfig
+                )
+                for entitlement in appConfig.entitlements {
+                    switch entitlement {
+                    case .video:
+                        runOptions.append(.device("/dev/video0"))
+                    case .network(let network):
+                        switch network.mode {
+                        case .host:
+                            runOptions.append(.network("host"))
+                        case .none:
+                            runOptions.append(.network("none"))
+                        }
+                    }
+                }
+            } catch {
+                logger.error(
+                    "Failed to decode app config",
+                    metadata: ["error": .string("\(error)")]
+                )
+            }
+
             var debugPort: UInt32 = 0
 
             if run.debug {

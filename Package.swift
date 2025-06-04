@@ -46,6 +46,7 @@ let package = Package(
                 .target(name: "Imager"),
                 .target(name: "ContainerRegistry"),
                 .target(name: "DownloadSupport"),
+                .target(name: "AppConfig"),
                 .target(name: "CliXPCProtocol"),
             ],
             path: "Sources/Edge",
@@ -92,6 +93,7 @@ let package = Package(
                 .target(name: "ContainerRegistry"),
                 .product(name: "Subprocess", package: "swift-subprocess"),
                 .target(name: "EdgeShared"),
+                .target(name: "AppConfig"),
             ],
             path: "Sources/EdgeAgent"
         ),
@@ -113,7 +115,6 @@ let package = Package(
                 .product(name: "Subprocess", package: "swift-subprocess"),
             ]
         ),
-
         .target(
             name: "EdgeAgentGRPC",
             dependencies: [
@@ -154,6 +155,15 @@ let package = Package(
                 .product(name: "AsyncHTTPClient", package: "async-http-client"),
                 .product(name: "_NIOFileSystem", package: "swift-nio"),
                 .product(name: "Subprocess", package: "swift-subprocess"),
+            ]
+        ),
+        .target(
+            name: "AppConfig"
+        ),
+        .target(
+            name: "Shell",
+            dependencies: [
+                .product(name: "Logging", package: "swift-log")
             ]
         ),
 

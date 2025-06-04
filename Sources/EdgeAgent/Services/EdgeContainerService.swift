@@ -1,3 +1,4 @@
+import AppConfig
 import ContainerRegistry
 import ContainerdGRPC
 import EdgeAgentGRPC
@@ -114,38 +115,70 @@ struct EdgeContainerService: Edge_Agent_Services_V1_EdgeContainerService.Service
                     )
                 }
 
-                // TODO: Make this configurable via API when privileged field is added to proto
-                let privileged = true
+                let appConfig = try JSONDecoder().decode(AppConfig.self, from: request.appConfig)
 
-                logger.info(
-                    "Building OCI spec with privileged mode",
-                    metadata: [
-                        "privileged": .stringConvertible(privileged),
-                        "appName": .stringConvertible(request.appName),
-                    ]
-                )
-
-                // Build OCI spec with conditional privileged mode
-                let spec = try buildOCISpec(
-                    privileged: privileged,
-                    appName: request.appName,
-                    command: request.cmd
-                )
-
-                // Debug: Log the spec to verify capabilities are included
-                if let specJson = try? JSONSerialization.jsonObject(with: spec) as? [String: Any] {
-                    let process = specJson["process"] as? [String: Any]
-                    let linux = specJson["linux"] as? [String: Any]
-                    let hasCapabilities = process?["capabilities"] != nil
-                    logger.info(
-                        "OCI spec built",
-                        metadata: [
-                            "hasCapabilities": .stringConvertible(hasCapabilities),
-                            "hasDevices": .stringConvertible(linux?["devices"] != nil),
-                            "hasSeccomp": .stringConvertible(linux?["seccomp"] != nil),
-                        ]
+                var spec = OCI(
+                    process: .init(
+                        user: .root,
+                        args: request.cmd.split(separator: " ").map(String.init),
+                        env: [
+                            "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+                        ],
+                        cwd: "/"
+                    ),
+                    root: .init(path: "rootfs", readonly: false),
+                    hostname: request.appName,
+                    mounts: [
+                        .init(destination: "/proc", type: "proc", source: "proc"),
+                        // Needed for TTY support (requirement for DS2)
+                        .init(
+                            destination: "/dev/pts",
+                            type: "devpts",
+                            source: "devpts",
+                            options: [
+                                "nosuid", "noexec", "newinstance", "ptmxmode=0666", "mode=0620",
+                            ]
+                        ),
+                        .init(
+                            destination: "/dev/shm",
+                            type: "tmpfs",
+                            source: "shm",
+                            options: ["nosuid", "noexec", "nodev", "mode=1777", "size=65536k"]
+                        ),
+                        .init(
+                            destination: "/dev/mqueue",
+                            type: "mqueue",
+                            source: "mqueue",
+                            options: ["nosuid", "noexec", "nodev"]
+                        ),
+                    ],
+                    linux: .init(
+                        namespaces: [
+                            .init(type: "pid"),
+                            .init(type: "ipc"),
+                            .init(type: "uts"),
+                            .init(type: "mount"),
+                        ],
+                        networkMode: "host",
+                        capabilities: .init(
+                            bounding: ["SYS_PTRACE"],
+                            effective: ["SYS_PTRACE"],
+                            inheritable: ["SYS_PTRACE"],
+                            permitted: ["SYS_PTRACE"],
+                        ),
+                        seccomp: Seccomp(
+                            defaultAction: "SCMP_ACT_ALLOW",
+                            architectures: ["SCMP_ARCH_AARCH64"],
+                            syscalls: []
+                        ),
+                        devices: []
                     )
-                }
+                )
+
+                spec.applyEntitlements(
+                    entitlements: appConfig.entitlements,
+                    appName: request.appName
+                )
 
                 let snapshotKey: String?
                 let mounts: [Containerd_Types_Mount]
@@ -172,7 +205,7 @@ struct EdgeContainerService: Edge_Agent_Services_V1_EdgeContainerService.Service
                         imageName: request.imageName,
                         appName: request.appName,
                         snapshotKey: snapshotKey ?? "",
-                        ociSpec: spec
+                        ociSpec: try JSONEncoder().encode(spec)
                     )
                 } catch let error as RPCError where error.code == .alreadyExists {
                     logger.debug("Container already exists, updating container")
@@ -180,7 +213,7 @@ struct EdgeContainerService: Edge_Agent_Services_V1_EdgeContainerService.Service
                         imageName: request.imageName,
                         appName: request.appName,
                         snapshotKey: snapshotKey ?? "",
-                        ociSpec: spec
+                        ociSpec: try JSONEncoder().encode(spec)
                     )
                 }
 
@@ -255,9 +288,7 @@ struct EdgeContainerService: Edge_Agent_Services_V1_EdgeContainerService.Service
                 try await client.runTask(containerID: request.appName)
 
                 return ServerResponse(
-                    message: .with {
-                        $0.debugPort = 4242
-                    }
+                    message: .init()
                 )
             } catch let error as RPCError {
                 logger.error(

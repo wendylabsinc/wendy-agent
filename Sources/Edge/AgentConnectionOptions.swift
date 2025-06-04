@@ -62,7 +62,7 @@ struct AgentConnectionOptions: ParsableArguments {
         help:
             """
             Alias for the `--device` option. (Deprecated)
-            If both `--device` and `--agent` are provided, the `--device` option takes precedence.
+            If both `--device` and `--device` are provided, the `--device` option takes precedence.
             """
     )
     var agent: Endpoint?
@@ -82,7 +82,7 @@ struct AgentConnectionOptions: ParsableArguments {
                 let endpoint = Endpoint(argument: endpoint)
             else {
                 throw ValidationError(
-                    "The `--agent` option was not provided and the `EDGE_AGENT` environment variable is not set."
+                    "The `--device` option was not provided and the `EDGE_AGENT` environment variable is not set."
                 )
             }
 

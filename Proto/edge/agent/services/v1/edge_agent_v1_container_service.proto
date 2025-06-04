@@ -36,6 +36,12 @@ message RunContainerLayersRequest {
     
     // The layers that will be uploaded to the agent.
     repeated RunContainerLayerHeader layers = 4;
+
+    /// The `edge.json` file as found in the project
+    bytes app_config = 5;
+
+    // If true, the container will be automatically restarted on crash or device reboot.
+    bool auto_restart = 6;
 }
 
 message RunContainerLayerHeader {
@@ -46,11 +52,8 @@ message RunContainerLayerHeader {
 
     string diff_id = 3;
 
+    // Whether the layer is compressed with gzip.
     bool gzip = 4;
 }
 
-message RunContainerLayersResponse {
-    // The port that the debugger is listening on.
-    // If this is 0, the container is not running with a debugger.
-    uint32 debug_port = 1;
-}
+message RunContainerLayersResponse {}

@@ -114,7 +114,7 @@ struct AgentConnectionOptionsTests {
         }
 
         let command = try TestCommand.parse([
-            "--agent", "test.server.com:9000",
+            "--device", "test.server.com:9000",
         ])
 
         #expect(command.agentConnectionOptions.agent?.host == "test.server.com")

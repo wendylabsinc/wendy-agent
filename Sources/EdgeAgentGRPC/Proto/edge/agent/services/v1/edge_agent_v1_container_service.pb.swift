@@ -70,7 +70,7 @@ public struct Edge_Agent_Services_V1_LayerHeader: Sendable {
   public init() {}
 }
 
-public struct Edge_Agent_Services_V1_RunContainerLayersRequest: Sendable {
+public struct Edge_Agent_Services_V1_RunContainerLayersRequest: @unchecked Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -85,6 +85,12 @@ public struct Edge_Agent_Services_V1_RunContainerLayersRequest: Sendable {
 
   /// The layers that will be uploaded to the agent.
   public var layers: [Edge_Agent_Services_V1_RunContainerLayerHeader] = []
+
+  //// The `edge.json` file as found in the project
+  public var appConfig: Data = Data()
+
+  /// If true, the container will be automatically restarted on crash or device reboot.
+  public var autoRestart: Bool = false
 
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
@@ -103,6 +109,7 @@ public struct Edge_Agent_Services_V1_RunContainerLayerHeader: Sendable {
 
   public var diffID: String = String()
 
+  /// Whether the layer is compressed with gzip.
   public var gzip: Bool = false
 
   public var unknownFields = SwiftProtobuf.UnknownStorage()
@@ -114,10 +121,6 @@ public struct Edge_Agent_Services_V1_RunContainerLayersResponse: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
-
-  /// The port that the debugger is listening on.
-  /// If this is 0, the container is not running with a debugger.
-  public var debugPort: UInt32 = 0
 
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
@@ -249,6 +252,8 @@ extension Edge_Agent_Services_V1_RunContainerLayersRequest: SwiftProtobuf.Messag
     2: .standard(proto: "app_name"),
     3: .same(proto: "cmd"),
     4: .same(proto: "layers"),
+    5: .standard(proto: "app_config"),
+    6: .standard(proto: "auto_restart"),
   ]
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
@@ -261,6 +266,8 @@ extension Edge_Agent_Services_V1_RunContainerLayersRequest: SwiftProtobuf.Messag
       case 2: try { try decoder.decodeSingularStringField(value: &self.appName) }()
       case 3: try { try decoder.decodeSingularStringField(value: &self.cmd) }()
       case 4: try { try decoder.decodeRepeatedMessageField(value: &self.layers) }()
+      case 5: try { try decoder.decodeSingularBytesField(value: &self.appConfig) }()
+      case 6: try { try decoder.decodeSingularBoolField(value: &self.autoRestart) }()
       default: break
       }
     }
@@ -279,6 +286,12 @@ extension Edge_Agent_Services_V1_RunContainerLayersRequest: SwiftProtobuf.Messag
     if !self.layers.isEmpty {
       try visitor.visitRepeatedMessageField(value: self.layers, fieldNumber: 4)
     }
+    if !self.appConfig.isEmpty {
+      try visitor.visitSingularBytesField(value: self.appConfig, fieldNumber: 5)
+    }
+    if self.autoRestart != false {
+      try visitor.visitSingularBoolField(value: self.autoRestart, fieldNumber: 6)
+    }
     try unknownFields.traverse(visitor: &visitor)
   }
 
@@ -287,6 +300,8 @@ extension Edge_Agent_Services_V1_RunContainerLayersRequest: SwiftProtobuf.Messag
     if lhs.appName != rhs.appName {return false}
     if lhs.cmd != rhs.cmd {return false}
     if lhs.layers != rhs.layers {return false}
+    if lhs.appConfig != rhs.appConfig {return false}
+    if lhs.autoRestart != rhs.autoRestart {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
@@ -344,31 +359,18 @@ extension Edge_Agent_Services_V1_RunContainerLayerHeader: SwiftProtobuf.Message,
 
 extension Edge_Agent_Services_V1_RunContainerLayersResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".RunContainerLayersResponse"
-  public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
-    1: .standard(proto: "debug_port"),
-  ]
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap()
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
-    while let fieldNumber = try decoder.nextFieldNumber() {
-      // The use of inline closures is to circumvent an issue where the compiler
-      // allocates stack space for every case branch when no optimizations are
-      // enabled. https://github.com/apple/swift-protobuf/issues/1034
-      switch fieldNumber {
-      case 1: try { try decoder.decodeSingularUInt32Field(value: &self.debugPort) }()
-      default: break
-      }
-    }
+    // Load everything into unknown fields
+    while try decoder.nextFieldNumber() != nil {}
   }
 
   public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
-    if self.debugPort != 0 {
-      try visitor.visitSingularUInt32Field(value: self.debugPort, fieldNumber: 1)
-    }
     try unknownFields.traverse(visitor: &visitor)
   }
 
   public static func ==(lhs: Edge_Agent_Services_V1_RunContainerLayersResponse, rhs: Edge_Agent_Services_V1_RunContainerLayersResponse) -> Bool {
-    if lhs.debugPort != rhs.debugPort {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
