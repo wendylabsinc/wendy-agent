@@ -1,5 +1,5 @@
 {
-  "originHash" : "192f8e365f055680e6d4630b48d2dfb6bfd02ffdcb482019ccea6c68e015566c",
+  "originHash" : "df0512a16b1c556de87c710c007aeca54275f70f15cdb0ccc6c9f647f3c1e452",
   "pins" : [
     {
       "identity" : "async-http-client",
@@ -231,8 +231,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/apple/swift-service-context.git",
       "state" : {
-        "revision" : "8946c930cae601452149e45d31d8ddfac973c3c7",
-        "version" : "1.2.0"
+        "revision" : "1983448fefc717a2bc2ebde5490fe99873c5b8a6",
+        "version" : "1.2.1"
       }
     },
     {
