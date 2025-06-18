@@ -1,9 +1,19 @@
 import Foundation
 import Hummingbird
 import LinuxVideo
+import JPEG
 
 // Create router and add routes
 let router = Router()
+
+struct ResponseBodyJPEGWriter: JPEG.Bytestream.Destination {
+    let stream = AsyncStream<ByteBuffer>.makeStream()
+
+    mutating func write(_ bytes: [UInt8]) -> Void? {
+        stream.continuation.yield(ByteBuffer(bytes: bytes))
+        return ()
+    }
+}
 
 // Serve HTML page with video device information
 router.get("/") { _, _ -> Response in
@@ -60,21 +70,29 @@ router.get("/") { _, _ -> Response in
 }
 
 // Add route to capture a frame
-router.get("/capture") { _, _ in
+router.get("/capture") { req, context in
     let devices = try VideoDeviceManager.listDevices()
     guard let device = devices.first(where: { $0.supportsCapture }) else {
         throw VideoError.unsupportedOperation(message: "No video capture device found")
     }
 
-    // Capture frame in RGB format
-    let rgbData = try device.captureRGBFrame()
+    let width: UInt32 = req.uri.queryParameters["width"].flatMap {
+        UInt32(String($0))
+    } ?? 640
+    let height: UInt32 = req.uri.queryParameters["height"].flatMap {
+        UInt32(String($0))
+    } ?? 480
 
-    // Create response with the RGB data
-    let buffer = ByteBuffer(bytes: rgbData)
-    let body = ResponseBody(byteBuffer: buffer)
+    // Capture frame in RGB format
+    var writer = ResponseBodyJPEGWriter()
+    defer { writer.stream.continuation.finish() }
+    let body = ResponseBody(asyncSequence: writer.stream.stream)
+    try await device.captureRGBFrame(width: width, height: height, writer: &writer)
 
     // Set content type for raw RGB
-    return Response(status: .ok, body: body)
+    return Response(status: .ok, headers: [
+        .contentType: "image/jpeg"
+    ], body: body)
 }
 
 // List video devices in CLI as well
