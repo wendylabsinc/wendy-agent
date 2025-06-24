@@ -327,17 +327,6 @@ struct ImagerCommand: AsyncParsableCommand {
             // Clear the line and print completion message
             print("\r\u{1B}[K", terminator: "")
             print("✅ Image successfully written to \(drive.name)")
-
-            // Delete the temporary image file
-            do {
-                try FileManager.default.removeItem(atPath: localImagePath)
-                print("🗑️  Temporary image file removed")
-            } catch {
-                print(
-                    "⚠️  Warning: Could not remove temporary image file: \(error.localizedDescription)"
-                )
-            }
-
             print("\n🎉 Device \(deviceName) successfully imaged!")
         }
     }
