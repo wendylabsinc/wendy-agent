@@ -1,9 +1,14 @@
 import Foundation
+import Logging
 import Subprocess
 
 /// A disk writer implementation for macOS that uses the `dd` command.
 public class MacOSDiskWriter: DiskWriter {
-    public init() {}
+    private let logger: Logger
+
+    public init(logger: Logger = Logger(label: "edgeengineer.imager.macos")) {
+        self.logger = logger
+    }
 
     public func write(
         imagePath: String,
@@ -27,11 +32,22 @@ public class MacOSDiskWriter: DiskWriter {
         // Send initial progress update
         progressHandler(DiskWriteProgress(bytesWritten: 0, totalBytes: totalBytes))
 
+        // Ensure drive ID is properly formatted with /dev/ prefix
+        let devicePath: String
+        if drive.id.hasPrefix("/dev/") {
+            devicePath = drive.id
+        } else {
+            devicePath = "/dev/\(drive.id)"
+        }
+
+        // Use raw disk device for faster access
+        let rawDevicePath = devicePath.replacingOccurrences(of: "/dev/disk", with: "/dev/rdisk")
+
         do {
             // First, unmount the disk to ensure it's not busy
             let unmountResult = try await Subprocess.run(
                 Subprocess.Executable.name("sudo"),
-                arguments: ["diskutil", "unmountDisk", drive.id],
+                arguments: ["diskutil", "unmountDisk", devicePath],
                 output: .string,
                 error: .string
             )
@@ -51,7 +67,7 @@ public class MacOSDiskWriter: DiskWriter {
 
             // Create a bash script that runs dd and sends SIGINFO to it periodically
             let script = """
-                dd if="\(imagePath)" of="\(drive.id)" bs=1m status=progress 2>&1 & DD_PID=$!
+                dd if="\(imagePath)" of="\(rawDevicePath)" bs=1m status=progress 2>&1 & DD_PID=$!
                 while kill -0 $DD_PID 2>/dev/null; do
                     kill -INFO $DD_PID 2>/dev/null
                     sleep 1
