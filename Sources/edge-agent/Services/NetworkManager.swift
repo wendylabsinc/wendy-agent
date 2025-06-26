@@ -1,4 +1,4 @@
-import DBusSwift
+import DBUS
 import Logging
 import NIO
 
@@ -129,9 +129,6 @@ extension Bool: DBusDecodable {
 public actor NetworkManager {
     private let logger = Logger(label: "NetworkManager")
 
-    // Serial number for DBus requests
-    private var serial: UInt32 = 1
-
     // Connection configuration
     private let socketPath: String
     private let uid: String
@@ -144,30 +141,17 @@ public actor NetworkManager {
         self.socketPath = socketPath
     }
 
-    /// Get the next serial number for DBus requests
-    private func nextSerial() -> UInt32 {
-        defer { serial += 1 }
-        return serial
-    }
-
     /// Execute a DBus request and handle the response
     private func executeDBusRequest<T: DBusDecodable & Sendable>(
-        _ method: @Sendable @escaping (UInt32) -> DBusMessage
+        _ request: DBusRequest
     ) async throws -> T {
         // Create socket address
         let address = try SocketAddress(unixDomainSocketPath: socketPath)
 
-        // Get a serial number for the request
-        let requestSerial = nextSerial()
-        let requestMessage = method(requestSerial)
-
-        // Log request details
-        logger.debug("Starting DBus request with serial \(requestSerial)")
-
         return try await DBusClient.withConnection(
             to: address,
             auth: .external(userID: uid)
-        ) { [self] inbound, outbound in
+        ) { [self] connection in
             // Helper function to log signal details
             func logSignalDetails(_ signal: DBusMessage) {
                 self.logger.debug(
@@ -212,111 +196,25 @@ public actor NetworkManager {
                 }
             }
 
-            // Create a single iterator for the entire operation
-            var stream = inbound.makeAsyncIterator()
-
-            // Authenticate with DBus by sending Hello
-            let helloSerial = await self.nextSerial()
-            let helloMessage = DBusMessage.createMethodCall(
-                destination: "org.freedesktop.DBus",
-                path: "/org/freedesktop/DBus",
-                interface: "org.freedesktop.DBus",
-                method: "Hello",
-                serial: helloSerial
-            )
-
-            self.logger.debug("Sending Hello message with serial \(helloSerial)")
-            try await outbound.write(helloMessage)
-
-            // Look for Hello response
-            var receivedHello = false
-            while !receivedHello {
-                guard let reply = try await stream.next() else {
-                    self.logger.error("Stream ended without Hello response")
-                    throw NetworkManagerError.authenticationFailed
-                }
-
-                self.logger.debug(
-                    "Received message with serial: \(reply.serial), messageType: \(reply.messageType), replyTo: \(reply.replyTo ?? 0)"
-                )
-
-                // Skip signal messages (replyTo == 0)
-                if reply.replyTo == 0 {
-                    if case .signal = reply.messageType {
-                        logSignalDetails(reply)
-                    } else {
-                        self.logger.debug("Skipping message with replyTo=0")
-                    }
-                    continue
-                }
-
-                if reply.replyTo == helloSerial {
-                    if case .methodReturn = reply.messageType {
-                        self.logger.debug("Hello authentication successful")
-                        receivedHello = true
-                    } else {
-                        self.logger.error(
-                            "Authentication failed with message type \(reply.messageType)"
-                        )
-                        throw NetworkManagerError.authenticationFailed
-                    }
-                }
-            }
-
-            // Send the actual request
-            self.logger.debug("Sending request message with serial \(requestSerial)")
-
             do {
-                try await outbound.write(requestMessage)
+                guard let reply = try await connection.send(request) else {
+                    throw NetworkManagerError.noReply
+                }
+                guard case .methodReturn = reply.messageType else {
+                    // Extract error details from the body if possible
+                    var errorDetails = "No details available"
+                    if let bodyValue = reply.body.first, case .string(let message) = bodyValue {
+                        errorDetails = message
+                    }
+
+                    self.logger.error("DBus connection error: \(errorDetails)")
+                    self.logger.debug("Full error reply: \(reply)")
+                    throw NetworkManagerError.connectionFailed
+                }
+                return try T.decode(from: reply)
             } catch {
                 self.logger.error("Failed to write request to DBus: \(error)")
                 throw NetworkManagerError.connectionFailed
-            }
-
-            // Process messages until we find our response
-            while true {
-                guard let reply = try await stream.next() else {
-                    self.logger.error("Stream ended without response to request \(requestSerial)")
-                    throw NetworkManagerError.noReply
-                }
-
-                self.logger.debug(
-                    "Received message with serial: \(reply.serial), messageType: \(reply.messageType), replyTo: \(reply.replyTo ?? 0)"
-                )
-
-                // Skip signal messages (replyTo == 0)
-                if reply.replyTo == 0 {
-                    if case .signal = reply.messageType {
-                        logSignalDetails(reply)
-                    } else {
-                        self.logger.debug("Skipping message with replyTo=0")
-                    }
-                    continue
-                }
-
-                // Only process messages that match our request serial
-                if reply.replyTo == requestSerial {
-                    if case .methodReturn = reply.messageType {
-                        self.logger.debug("Found response for request \(requestSerial)")
-                        do {
-                            let result = try T.decode(from: reply)
-                            return result
-                        } catch {
-                            self.logger.error("Failed to decode response: \(error)")
-                            throw error
-                        }
-                    } else if case .error = reply.messageType {
-                        // Extract error details from the body if possible
-                        var errorDetails = "No details available"
-                        if let bodyValue = reply.body.first, case .string(let message) = bodyValue {
-                            errorDetails = message
-                        }
-
-                        self.logger.error("DBus connection error: \(errorDetails)")
-                        self.logger.debug("Full error reply: \(reply)")
-                        throw NetworkManagerError.connectionFailed
-                    }
-                }
             }
         }
     }
@@ -327,38 +225,11 @@ public actor NetworkManager {
             throw NetworkManagerError.noReply
         }
 
-        var paths: [String] = []
-
-        switch bodyValue {
-        case .array(let values):
-            paths = values.compactMap { value in
-                if case .objectPath(let path) = value {
-                    return path
-                } else if case .variant(let variant) = value,
-                    case .objectPath(let path) = variant.value
-                {
-                    return path
-                }
-                return nil
-            }
-        case .variant(let variant):
-            if case .array(let values) = variant.value {
-                paths = values.compactMap { value in
-                    if case .objectPath(let path) = value {
-                        return path
-                    } else if case .variant(let variant) = value,
-                        case .objectPath(let path) = variant.value
-                    {
-                        return path
-                    }
-                    return nil
-                }
-            }
-        default:
+        guard let array = bodyValue.array else {
             throw NetworkManagerError.invalidType
         }
 
-        return paths
+        return array.compactMap(\.objectPath)
     }
 
     /// Helper to decode an array of bytes from DBus message
@@ -366,101 +237,71 @@ public actor NetworkManager {
         guard let bodyValue = message.body.first else {
             throw NetworkManagerError.noReply
         }
-
-        var bytes: [UInt8] = []
-
-        switch bodyValue {
-        case .array(let values):
-            bytes = values.compactMap { value in
-                if case .byte(let byte) = value {
-                    return byte
-                } else if case .variant(let variant) = value, case .byte(let byte) = variant.value {
-                    return byte
-                }
-                return nil
-            }
-        case .variant(let variant):
-            if case .array(let values) = variant.value {
-                bytes = values.compactMap { value in
-                    if case .byte(let byte) = value {
-                        return byte
-                    } else if case .variant(let variant) = value,
-                        case .byte(let byte) = variant.value
-                    {
-                        return byte
-                    }
-                    return nil
-                }
-            }
-        default:
+        guard let array = bodyValue.array else {
             throw NetworkManagerError.invalidType
         }
 
-        return bytes
+        return array.compactMap(\.byte)
     }
 
     /// Get all network devices
     public func getNetworkDevices() async throws -> [String] {
-        let message: DBusMessage = try await executeDBusRequest { serial in
-            DBusMessage.createMethodCall(
+        let message: DBusMessage = try await executeDBusRequest(
+            .createMethodCall(
                 destination: "org.freedesktop.NetworkManager",
                 path: "/org/freedesktop/NetworkManager",
                 interface: "org.freedesktop.NetworkManager",
                 method: "GetDevices",
-                serial: serial
             )
-        }
+        )
 
         return try decodeStringArray(from: message)
     }
 
     /// Get device type for a specific device path
     public func getDeviceType(devicePath: String) async throws -> UInt32 {
-        return try await executeDBusRequest { serial in
-            DBusMessage.createMethodCall(
+        return try await executeDBusRequest(
+            .createMethodCall(
                 destination: "org.freedesktop.NetworkManager",
                 path: devicePath,
                 interface: "org.freedesktop.DBus.Properties",
                 method: "Get",
-                serial: serial,
                 body: [
                     .string("org.freedesktop.NetworkManager.Device"),
                     .string("DeviceType"),
                 ]
             )
-        }
+        )
     }
 
     /// Get all access points for a WiFi device
     public func getAccessPoints(devicePath: String) async throws -> [String] {
-        let message: DBusMessage = try await executeDBusRequest { serial in
-            DBusMessage.createMethodCall(
+        let message: DBusMessage = try await executeDBusRequest(
+            .createMethodCall(
                 destination: "org.freedesktop.NetworkManager",
                 path: devicePath,
                 interface: "org.freedesktop.NetworkManager.Device.Wireless",
-                method: "GetAllAccessPoints",
-                serial: serial
+                method: "GetAllAccessPoints"
             )
-        }
+        )
 
         return try decodeStringArray(from: message)
     }
 
     /// Get SSID for an access point
     public func getSSID(apPath: String) async throws -> String {
-        let message: DBusMessage = try await executeDBusRequest { serial in
-            DBusMessage.createMethodCall(
+        let message: DBusMessage = try await executeDBusRequest(
+            .createMethodCall(
                 destination: "org.freedesktop.NetworkManager",
                 path: apPath,
                 interface: "org.freedesktop.DBus.Properties",
                 method: "Get",
-                serial: serial,
                 body: [
                     .string("org.freedesktop.NetworkManager.AccessPoint"),
                     .string("Ssid"),
                 ]
             )
-        }
+        )
 
         let ssidBytes = try decodeByteArray(from: message)
 
@@ -473,19 +314,18 @@ public actor NetworkManager {
 
     /// Get the signal strength for an access point
     public func getSignalStrength(apPath: String) async throws -> Int8 {
-        return try await executeDBusRequest { serial in
-            DBusMessage.createMethodCall(
+        return try await executeDBusRequest(
+            .createMethodCall(
                 destination: "org.freedesktop.NetworkManager",
                 path: apPath,
                 interface: "org.freedesktop.DBus.Properties",
                 method: "Get",
-                serial: serial,
                 body: [
                     .string("org.freedesktop.NetworkManager.AccessPoint"),
                     .string("Strength"),
                 ]
             )
-        }
+        )
     }
 
     /// Find the WiFi device path among the available devices
@@ -567,7 +407,7 @@ public actor NetworkManager {
     }
 
     /// Connect to a WiFi network
-    public func connectToNetwork(ssid: String, password: String) async throws -> Bool {
+    public func connectToNetwork(ssid: String, password: String) async throws {
         do {
             // Get available networks
             let networks = try await listWiFiNetworks()
@@ -595,7 +435,7 @@ public actor NetworkManager {
             return try await DBusClient.withConnection(
                 to: address,
                 auth: .external(userID: uid)
-            ) { inbound, outbound in
+            ) { connection in
                 // Helper function to log signal details
                 func logSignalDetails(_ signal: DBusMessage) {
                     self.logger.debug(
@@ -640,65 +480,12 @@ public actor NetworkManager {
                     }
                 }
 
-                // Get a serial number for the request
-                let requestSerial = await self.nextSerial()
-
-                // Authenticate with DBus
-                let helloSerial = await self.nextSerial()
-                let helloMessage = DBusMessage.createMethodCall(
-                    destination: "org.freedesktop.DBus",
-                    path: "/org/freedesktop/DBus",
-                    interface: "org.freedesktop.DBus",
-                    method: "Hello",
-                    serial: helloSerial
-                )
-
-                self.logger.debug("Sending Hello message for connection request")
-                try await outbound.write(helloMessage)
-
-                var stream = inbound.makeAsyncIterator()
-
-                // Process Hello response
-                while true {
-                    guard let reply = try await stream.next() else {
-                        self.logger.error("Stream ended waiting for Hello response")
-                        throw NetworkManagerError.authenticationFailed
-                    }
-
-                    self.logger.debug(
-                        "Received message with serial: \(reply.serial), messageType: \(reply.messageType), replyTo: \(reply.replyTo ?? 0)"
-                    )
-
-                    // Skip signal messages (replyTo == 0)
-                    if reply.replyTo == 0 {
-                        if case .signal = reply.messageType {
-                            logSignalDetails(reply)
-                        } else {
-                            self.logger.debug("Skipping message with replyTo=0")
-                        }
-                        continue
-                    }
-
-                    if reply.replyTo == helloSerial {
-                        if case .methodReturn = reply.messageType {
-                            self.logger.debug("Hello authentication successful")
-                            break
-                        } else {
-                            self.logger.error(
-                                "Authentication failed with message type \(reply.messageType)"
-                            )
-                            throw NetworkManagerError.authenticationFailed
-                        }
-                    }
-                }
-
                 // Create the connection request
-                let connectMessage = DBusMessage.createMethodCall(
+                let connectMessage = DBusRequest.createMethodCall(
                     destination: "org.freedesktop.NetworkManager",
                     path: "/org/freedesktop/NetworkManager",
                     interface: "org.freedesktop.NetworkManager",
                     method: "AddAndActivateConnection",
-                    serial: requestSerial,
                     body: [
                         // First parameter - a{sa{sv}} - A dictionary of settings
                         .dictionary([
@@ -750,7 +537,6 @@ public actor NetworkManager {
                 self.logger.debug("DBUS CONNECTION REQUEST SIGNATURE:")
                 self.logger.debug("Full message: \(connectMessage)")
                 self.logger.debug("Message Type: \(connectMessage.messageType)")
-                self.logger.debug("Serial: \(connectMessage.serial)")
                 self.logger.debug("Body types count: \(connectMessage.body.count)")
 
                 // Print body details
@@ -779,116 +565,49 @@ public actor NetworkManager {
                 }
                 self.logger.debug("==================== END MESSAGE DETAILS ====================")
 
-                self.logger.debug("Sending connection request with serial: \(requestSerial)")
-
                 do {
-                    try await outbound.write(connectMessage)
+                    guard let reply = try await connection.send(connectMessage) else {
+                        throw NetworkManagerError.noReply
+                    }
+                    guard case .methodReturn = reply.messageType else {
+                        // Extract error details from the body if possible
+                        var errorDetails = "No details available"
+                        if let bodyValue = reply.body.first,
+                            case .string(let message) = bodyValue
+                        {
+                            errorDetails = message
+                        }
+
+                        // Check for common permission errors
+                        if errorDetails.contains("Permission denied")
+                            || errorDetails.contains("Not authorized")
+                        {
+                            self.logger.error(
+                                "DBus permission error: \(errorDetails) - Check that the user has permissions to manage NetworkManager"
+                            )
+                            throw NetworkManagerError.authenticationFailed
+                        }
+
+                        // Check for authentication/wrong password errors
+                        if errorDetails.contains("Failed to activate")
+                            && errorDetails.contains("Secrets were required")
+                        {
+                            self.logger.error(
+                                "WiFi authentication error: Invalid password or authentication failure"
+                            )
+                            throw NetworkManagerError.authenticationFailed
+                        }
+
+                        self.logger.error("DBus connection error: \(errorDetails)")
+                        self.logger.debug("Full error reply: \(reply)")
+                        throw NetworkManagerError.connectionFailed
+                    }
+                    self.logger.debug("Successfully connected to WiFi network: \(ssid)")
                 } catch {
                     self.logger.error("Failed to send connection request: \(error)")
                     throw NetworkManagerError.connectionFailed
                 }
 
-                // Process response
-                let maxAttempts = 5
-                var attemptCount = 0
-
-                while attemptCount < maxAttempts {
-                    do {
-                        guard let reply = try await stream.next() else {
-                            self.logger.error("Connection stream ended unexpectedly")
-                            throw NetworkManagerError.connectionFailed
-                        }
-
-                        self.logger.debug(
-                            "Received reply with serial: \(reply.serial), messageType: \(reply.messageType), replyTo: \(reply.replyTo ?? 0)"
-                        )
-
-                        // Skip signal messages (replyTo == 0)
-                        if reply.replyTo == 0 {
-                            if case .signal = reply.messageType {
-                                logSignalDetails(reply)
-                            } else {
-                                self.logger.debug("Skipping message with replyTo=0")
-                            }
-                            continue
-                        }
-
-                        if reply.replyTo == requestSerial {
-                            if case .methodReturn = reply.messageType {
-                                self.logger.debug("Successfully connected to WiFi network: \(ssid)")
-                                return true
-                            } else if case .error = reply.messageType {
-                                // Extract error details from the body if possible
-                                var errorDetails = "No details available"
-                                if let bodyValue = reply.body.first,
-                                    case .string(let message) = bodyValue
-                                {
-                                    errorDetails = message
-                                }
-
-                                // Check for common permission errors
-                                if errorDetails.contains("Permission denied")
-                                    || errorDetails.contains("Not authorized")
-                                {
-                                    self.logger.error(
-                                        "DBus permission error: \(errorDetails) - Check that the user has permissions to manage NetworkManager"
-                                    )
-                                    throw NetworkManagerError.authenticationFailed
-                                }
-
-                                // Check for authentication/wrong password errors
-                                if errorDetails.contains("Failed to activate")
-                                    && errorDetails.contains("Secrets were required")
-                                {
-                                    self.logger.error(
-                                        "WiFi authentication error: Invalid password or authentication failure"
-                                    )
-                                    throw NetworkManagerError.authenticationFailed
-                                }
-
-                                self.logger.error("DBus connection error: \(errorDetails)")
-                                self.logger.debug("Full error reply: \(reply)")
-                                throw NetworkManagerError.connectionFailed
-                            }
-                        }
-                    } catch {
-                        self.logger.error("Error while waiting for connection response: \(error)")
-
-                        // Special handling for earlyEOF errors - these often indicate permission problems
-                        if String(describing: error).contains("earlyEOF") {
-                            self.logger.error(
-                                """
-                                DBus connection closed unexpectedly. This often indicates one of:
-                                1. The user lacks permissions to manage NetworkManager connections
-                                2. The NetworkManager policy prevents this connection type
-                                3. The DBus message format for connection is incorrect
-
-                                Check the NetworkManager and DBus permissions for user: \(self.uid)
-                                """
-                            )
-
-                            // If we've already tried several times, change the error type
-                            if attemptCount >= 2 {
-                                throw NetworkManagerError.authenticationFailed
-                            }
-                        }
-
-                        attemptCount += 1
-
-                        if attemptCount >= maxAttempts {
-                            throw NetworkManagerError.connectionFailed
-                        }
-
-                        // Longer delay for earlyEOF errors
-                        if String(describing: error).contains("earlyEOF") {
-                            try await Task.sleep(for: .milliseconds(1000))
-                        } else {
-                            try await Task.sleep(for: .milliseconds(500))
-                        }
-                    }
-                }
-
-                self.logger.error("Connection attempt timed out after \(maxAttempts) attempts")
                 throw NetworkManagerError.timeout
             }
         } catch let error as NetworkManagerError {
@@ -915,8 +634,8 @@ public actor NetworkManager {
     }
 
     /// Setup WiFi (alias for connectToNetwork for backward compatibility)
-    public func setupWiFi(ssid: String, password: String) async throws -> Bool {
-        return try await connectToNetwork(ssid: ssid, password: password)
+    public func setupWiFi(ssid: String, password: String) async throws {
+        try await connectToNetwork(ssid: ssid, password: password)
     }
 
     /// Get the current active WiFi connection information
@@ -926,19 +645,18 @@ public actor NetworkManager {
 
         do {
             // Get the active connection path with enhanced debugging
-            let message: DBusMessage = try await executeDBusRequest { serial in
-                DBusMessage.createMethodCall(
+            let message: DBusMessage = try await executeDBusRequest(
+                .createMethodCall(
                     destination: "org.freedesktop.NetworkManager",
                     path: wifiDevicePath,
                     interface: "org.freedesktop.DBus.Properties",
                     method: "Get",
-                    serial: serial,
                     body: [
                         .string("org.freedesktop.NetworkManager.Device"),
                         .string("ActiveConnection"),
                     ]
                 )
-            }
+            )
 
             // Debug the response body
             self.logger.debug("ActiveConnection response: \(message)")
@@ -998,61 +716,39 @@ public actor NetworkManager {
             self.logger.debug("Found active connection at path: \(activeConnectionPath)")
 
             // Get the connection ID (SSID)
-            let ssidMessage: DBusMessage = try await executeDBusRequest {
-                [activeConnectionPath] serial in
-                DBusMessage.createMethodCall(
+            let ssidMessage: DBusMessage = try await executeDBusRequest(
+                .createMethodCall(
                     destination: "org.freedesktop.NetworkManager",
                     path: activeConnectionPath,
                     interface: "org.freedesktop.DBus.Properties",
                     method: "Get",
-                    serial: serial,
                     body: [
                         .string("org.freedesktop.NetworkManager.Connection.Active"),
                         .string("Id"),
                     ]
                 )
-            }
+            )
 
             // Debug the response
             self.logger.debug("SSID response: \(ssidMessage)")
 
-            // More robust extraction of SSID
-            var ssid = ""
-            if let bodyValue = ssidMessage.body.first {
-                switch bodyValue {
-                case .string(let value):
-                    ssid = value
-                case .variant(let variant):
-                    if case .string(let value) = variant.value {
-                        ssid = value
-                    } else {
-                        self.logger.error("Unexpected variant type for SSID: \(variant.value)")
-                    }
-                // Handle byte array (sometimes SSIDs are returned as byte arrays)
-                case .array(let array):
-                    let bytes = array.compactMap { value -> UInt8? in
-                        if case .byte(let byte) = value {
-                            return byte
-                        } else if case .variant(let variant) = value,
-                            case .byte(let byte) = variant.value
-                        {
-                            return byte
-                        }
-                        return nil
-                    }
-
-                    if let string = String(bytes: bytes, encoding: .utf8) {
-                        ssid = string
-                    } else {
-                        self.logger.error("Failed to decode SSID from byte array")
-                    }
-                default:
-                    self.logger.error("Unexpected type for SSID: \(bodyValue)")
-                }
+            guard let bodyValue = ssidMessage.body.first else {
+                throw NetworkManagerError.invalidType
             }
 
-            if ssid.isEmpty {
-                self.logger.error("Empty SSID returned")
+            // More robust extraction of SSID
+            let ssid: String
+
+            if let string = bodyValue.string {
+                ssid = string
+            } else if let array = bodyValue.array {
+                let bytes = array.compactMap(\.byte)
+                if let string = String(bytes: bytes, encoding: .utf8) {
+                    ssid = string
+                } else {
+                    throw NetworkManagerError.invalidSSID
+                }
+            } else {
                 throw NetworkManagerError.invalidSSID
             }
 
@@ -1085,15 +781,14 @@ public actor NetworkManager {
         }
 
         // Disconnect by bringing the device down
-        return try await executeDBusRequest { serial in
-            DBusMessage.createMethodCall(
+        return try await executeDBusRequest(
+            .createMethodCall(
                 destination: "org.freedesktop.NetworkManager",
                 path: wifiDevicePath,
                 interface: "org.freedesktop.NetworkManager.Device",
                 method: "Disconnect",
-                serial: serial
             )
-        }
+        )
     }
 }
 

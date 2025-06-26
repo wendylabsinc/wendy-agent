@@ -1,5 +1,5 @@
 {
-  "originHash" : "dd80147f0633a4b89c94718b2c79c9f8a0daac5b9b28efbf6cc926ac5c61561a",
+  "originHash" : "df0512a16b1c556de87c710c007aeca54275f70f15cdb0ccc6c9f647f3c1e452",
   "pins" : [
     {
       "identity" : "async-http-client",
@@ -15,8 +15,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/edgeengineer/dbus.git",
       "state" : {
-        "revision" : "73a648bd685f9b2db81de6110c8f38b0a42c4616",
-        "version" : "0.1.0"
+        "branch" : "jo/simpler-public-api",
+        "revision" : "b6b3ef33fc29247280e2c725260ce6328177c6e9"
       }
     },
     {
@@ -231,8 +231,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/apple/swift-service-context.git",
       "state" : {
-        "revision" : "8946c930cae601452149e45d31d8ddfac973c3c7",
-        "version" : "1.2.0"
+        "revision" : "1983448fefc717a2bc2ebde5490fe99873c5b8a6",
+        "version" : "1.2.1"
       }
     },
     {
