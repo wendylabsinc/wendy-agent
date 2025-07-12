@@ -55,7 +55,6 @@ let package = Package(
             name: "EdgeCLI",
             dependencies: [
                 .target(name: "ContainerBuilder"),
-                .target(name: "Shell"),
                 .product(name: "Subprocess", package: "swift-subprocess"),
                 .product(name: "Logging", package: "swift-log"),
             ]
@@ -65,7 +64,7 @@ let package = Package(
         .target(
             name: "ContainerBuilder",
             dependencies: [
-                .target(name: "Shell"),
+                .product(name: "Subprocess", package: "swift-subprocess"),
                 .product(name: "_NIOFileSystem", package: "swift-nio"),
                 .product(name: "Crypto", package: "swift-crypto"),
                 .target(name: "ContainerRegistry"),
@@ -87,7 +86,7 @@ let package = Package(
                 .target(name: "EdgeAgentGRPC"),
                 .target(name: "ContainerdGRPC"),
                 .target(name: "ContainerRegistry"),
-                .target(name: "Shell"),
+                .product(name: "Subprocess", package: "swift-subprocess"),
                 .target(name: "EdgeShared"),
             ]
         ),
@@ -145,12 +144,7 @@ let package = Package(
             dependencies: [
                 .product(name: "AsyncHTTPClient", package: "async-http-client"),
                 .product(name: "_NIOFileSystem", package: "swift-nio"),
-            ]
-        ),
-        .target(
-            name: "Shell",
-            dependencies: [
-                .product(name: "Logging", package: "swift-log")
+                .product(name: "Subprocess", package: "swift-subprocess"),
             ]
         ),
 

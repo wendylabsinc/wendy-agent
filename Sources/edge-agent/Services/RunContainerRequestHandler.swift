@@ -1,7 +1,7 @@
 import Foundation
 import Logging
 import NIOFileSystem
-import Shell
+import Subprocess
 
 /// A state machine that handles the request to run a container.
 struct RunContainerRequestHandler {

@@ -2,7 +2,7 @@
     import AsyncDNSResolver
     import Foundation
     import Logging
-    import Shell
+    import Subprocess
 
     struct PlatformDeviceDiscovery: DeviceDiscovery {
         func findUSBDevices(logger: Logger) async -> [USBDevice] {
@@ -10,7 +10,12 @@
             var devices: [USBDevice] = []
 
             do {
-                let output = try await Shell.run(["lsusb"])
+                let result = try await Subprocess.run(
+                    Subprocess.Executable.path("/usr/bin/lsusb"),
+                    arguments: Subprocess.Arguments([String]()),
+                    output: .string
+                )
+                let output = result.standardOutput ?? ""
 
                 for line in output.split(separator: "\n") {
                     let deviceInfo = String(line)
@@ -21,7 +26,7 @@
                         // Extract vendor and product IDs
                         if let idRange = deviceInfo.range(
                             of: "ID \\S+",
-                            options: .regularExpression
+                            options: String.CompareOptions.regularExpression
                         ) {
                             let idStr = deviceInfo[idRange].dropFirst(3)  // Drop "ID "
                             let parts = idStr.split(separator: ":")

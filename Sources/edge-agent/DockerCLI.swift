@@ -1,4 +1,5 @@
-import Shell
+import Foundation
+import Subprocess
 
 /// Represents the Docker CLI interface for managing container images and running containers.
 public struct DockerCLI: Sendable {
@@ -79,15 +80,24 @@ public struct DockerCLI: Sendable {
     /// Load a Docker image from a tar archive.
     @discardableResult
     public func load(filePath: String) async throws -> String {
-        let arguments = [command, "load", "-i", filePath]
-        return try await Shell.run(arguments)
+        let result = try await Subprocess.run(
+            Subprocess.Executable.name(command),
+            arguments: Subprocess.Arguments(["load", "-i", filePath]),
+            output: .string
+        )
+        return result.standardOutput ?? ""
     }
 
     /// Kill a Docker container.
     @discardableResult
     public func rm(options: [RmOption] = [], container: String) async throws -> String {
-        let arguments = [command, "rm"] + options.flatMap(\.arguments) + [container]
-        return try await Shell.run(arguments)
+        let allArguments = ["rm"] + options.flatMap(\.arguments) + [container]
+        let result = try await Subprocess.run(
+            Subprocess.Executable.name(command),
+            arguments: Subprocess.Arguments(allArguments),
+            output: .string
+        )
+        return result.standardOutput ?? ""
     }
 
     /// Run a Docker container.
@@ -97,7 +107,12 @@ public struct DockerCLI: Sendable {
         image: String,
         command: [String] = []
     ) async throws -> String {
-        let arguments = [self.command, "run"] + options.flatMap(\.arguments) + [image] + command
-        return try await Shell.run(arguments)
+        let allArguments = ["run"] + options.flatMap(\.arguments) + [image] + command
+        let result = try await Subprocess.run(
+            Subprocess.Executable.name(self.command),
+            arguments: Subprocess.Arguments(allArguments),
+            output: .string
+        )
+        return result.standardOutput ?? ""
     }
 }

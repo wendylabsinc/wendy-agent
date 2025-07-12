@@ -1,7 +1,7 @@
 import ContainerRegistry
 import Foundation
 import Logging
-import Shell
+import Subprocess
 
 extension ContainerImageSpec {
     private static let logger = Logger(label: "edgeengineer.container-builder")

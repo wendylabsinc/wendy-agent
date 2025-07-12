@@ -1,7 +1,7 @@
 import DownloadSupport
 import Foundation
 import Logging
-import Shell
+import Subprocess
 
 #if canImport(FoundationNetworking)
     import FoundationNetworking
