@@ -2,7 +2,7 @@ import Crypto
 import Foundation
 import Logging
 import NIOFoundationCompat
-import Shell
+import Subprocess
 import _NIOFileSystem
 
 public struct ContainerLayer: Sendable {
@@ -237,8 +237,9 @@ private func sha256(data: Data) -> String {
 /// - Parameter destinationURL: The URL to save the tarball to.
 /// - Throws: An error if the tarball cannot be created.
 private func createTarball(from sourceDir: URL, to destinationURL: URL) async throws {
-    try await Shell.run(
-        ["/usr/bin/tar", "-cf", destinationURL.path, "-C", sourceDir.path, "."]
+    _ = try await Subprocess.run(
+        Subprocess.Executable.path("/usr/bin/tar"),
+        arguments: Subprocess.Arguments(["-cf", destinationURL.path, "-C", sourceDir.path, "."])
     )
 }
 

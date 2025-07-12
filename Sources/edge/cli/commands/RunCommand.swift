@@ -9,7 +9,7 @@ import GRPCNIOTransportHTTP2
 import Logging
 import NIO
 import NIOFileSystem
-import Shell
+import Subprocess
 
 public enum ContainerRuntime: String, ExpressibleByArgument, Sendable {
     case docker

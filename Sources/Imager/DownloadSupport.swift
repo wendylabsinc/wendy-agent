@@ -134,9 +134,10 @@ public class ImageDownloader: ImageDownloading {
         let localZipURL = temporaryDirectory.appendingPathComponent("\(tempFilename).zip")
 
         func redownloadImage() async throws -> String {
-            try await downloadFile(
+            try await downloadFileWithProgress(
                 from: url,
                 to: localZipURL.path,
+                expectedSize: Int64(expectedSize),
                 progressHandler: progressHandler
             )
 

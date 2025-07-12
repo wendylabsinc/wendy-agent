@@ -140,36 +140,21 @@ struct ImagerCommand: AsyncParsableCommand {
                 if now.timeIntervalSince(lastUpdateTime) >= 1.0 {
                     lastUpdateTime = now
 
-                    // Clear the current line
-                    print("\r\u{1B}[K", terminator: "")
-
-                    // Print progress information
                     if let percent = progress.percentComplete {
-                        // Use the new ASCII progress bar
-                        let progressBar = progress.asciiProgress(
-                            totalBlocks: 30,
-                            appendPercentageText: false
-                        )
-
-                        // Print progress with percentage and written/total bytes
+                        let line: String
                         if let totalText = progress.totalBytesText {
-                            print(
-                                "\r\(progressBar) \(String(format: "%.1f%%", percent)) - \(progress.bytesWrittenText)/\(totalText)",
-                                terminator: ""
-                            )
+                            line = "\u{1B}[1G\u{1B}[2K   \(String(format: "%.1f%%", percent)) - \(progress.bytesWrittenText)/\(totalText)"
                         } else {
-                            print(
-                                "\r\(progressBar) \(String(format: "%.1f%%", percent)) - \(progress.bytesWrittenText)",
-                                terminator: ""
-                            )
+                            line = "\u{1B}[1G\u{1B}[2K   \(String(format: "%.1f%%", percent)) - \(progress.bytesWrittenText)"
                         }
-                    } else {
-                        // If we don't know the percentage, just show bytes written
-                        print("\rWritten: \(progress.bytesWrittenText)", terminator: "")
-                    }
 
-                    // Force output to be displayed without accessing stdout directly
-                    flushOutput()
+                        print(line, terminator: "")
+                        fflush(stdout)
+                    } else {
+                        // Fallback when percentage isn’t available
+                        print("\u{1B}[1G\u{1B}[2KWritten: \(progress.bytesWrittenText)", terminator: "")
+                        fflush(stdout)
+                    }
                 }
             }
 
@@ -239,40 +224,25 @@ struct ImagerCommand: AsyncParsableCommand {
                 expectedSize: imageSize,
                 redownload: redownload
             ) { progress in
-                // Update progress at most once per second
                 let now = Date()
                 if now.timeIntervalSince(lastUpdateTime) >= 1.0 {
                     lastUpdateTime = now
 
-                    // Clear the current line
-                    print("\r\u{1B}[K", terminator: "")
-
                     if let percent = progress.percentComplete {
-                        // Use ASCII progress bar
-                        let progressBar = progress.asciiProgress(
-                            totalBlocks: 30,
-                            appendPercentageText: false
-                        )
-
-                        // Print progress with percentage and downloaded/total bytes
+                        let line: String
                         if let totalText = progress.totalBytesText {
-                            print(
-                                "\r\(progressBar) \(String(format: "%.1f%%", percent)) - \(progress.bytesWrittenText)/\(totalText)",
-                                terminator: ""
-                            )
+                            line = "\u{1B}[1G\u{1B}[2K   \(String(format: "%.1f%%", percent)) - \(progress.bytesWrittenText)/\(totalText)"
                         } else {
-                            print(
-                                "\r\(progressBar) \(String(format: "%.1f%%", percent)) - \(progress.bytesWrittenText)",
-                                terminator: ""
-                            )
+                            line = "\u{1B}[1G\u{1B}[2K   \(String(format: "%.1f%%", percent)) - \(progress.bytesWrittenText)"
                         }
-                    } else {
-                        // If we don't know the percentage, just show bytes downloaded
-                        print("\rDownloaded: \(progress.bytesWrittenText)", terminator: "")
-                    }
 
-                    // Force output to be displayed without accessing stdout directly
-                    flushOutput()
+                        print(line, terminator: "")
+                        fflush(stdout)
+                    } else {
+                        // Fallback when percentage isn’t available
+                        print("\u{1B}[1G\u{1B}[2KWritten: \(progress.bytesWrittenText)", terminator: "")
+                        fflush(stdout)
+                    }
                 }
             }
 
@@ -292,35 +262,21 @@ struct ImagerCommand: AsyncParsableCommand {
                 if now.timeIntervalSince(lastUpdateTime) >= 1.0 {
                     lastUpdateTime = now
 
-                    // Clear the current line
-                    print("\r\u{1B}[K", terminator: "")
-
                     if let percent = progress.percentComplete {
-                        // Use ASCII progress bar
-                        let progressBar = progress.asciiProgress(
-                            totalBlocks: 30,
-                            appendPercentageText: false
-                        )
-
-                        // Print progress with percentage and written/total bytes
+                        let line: String
                         if let totalText = progress.totalBytesText {
-                            print(
-                                "\r\(progressBar) \(String(format: "%.1f%%", percent)) - \(progress.bytesWrittenText)/\(totalText)",
-                                terminator: ""
-                            )
+                            line = "\u{1B}[1G\u{1B}[2K   \(String(format: "%.1f%%", percent)) - \(progress.bytesWrittenText)/\(totalText)"
                         } else {
-                            print(
-                                "\r\(progressBar) \(String(format: "%.1f%%", percent)) - \(progress.bytesWrittenText)",
-                                terminator: ""
-                            )
+                            line = "\u{1B}[1G\u{1B}[2K   \(String(format: "%.1f%%", percent)) - \(progress.bytesWrittenText)"
                         }
-                    } else {
-                        // If we don't know the percentage, just show bytes written
-                        print("\rWritten: \(progress.bytesWrittenText)", terminator: "")
-                    }
 
-                    // Force output to be displayed without accessing stdout directly
-                    flushOutput()
+                        print(line, terminator: "")
+                        fflush(stdout)
+                    } else {
+                        // Fallback when percentage isn't available
+                        print("\u{1B}[1G\u{1B}[2KWritten: \(progress.bytesWrittenText)", terminator: "")
+                        fflush(stdout)
+                    }
                 }
             }
 

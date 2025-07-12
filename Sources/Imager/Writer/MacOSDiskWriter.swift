@@ -25,9 +25,21 @@ public class MacOSDiskWriter: DiskWriter {
             throw DiskWriterError.imageFileIncorrectType
         }
 
-        // Get image file size to track total progress
-        let totalBytes =
-            try? FileManager.default.attributesOfItem(atPath: imagePath)[.size] as? Int64
+        // Correctly determine the image file size as Int64. `FileManager` returns `NSNumber`,
+        // so we need to bridge it instead of casting directly to `Int64`.
+        let totalBytes: Int64?
+        do {
+            let attributes = try FileManager.default.attributesOfItem(atPath: imagePath)
+            if let fileSizeNumber = attributes[.size] as? NSNumber {
+                totalBytes = fileSizeNumber.int64Value
+            } else if let fileSize = attributes[.size] as? Int {
+                totalBytes = Int64(fileSize)
+            } else {
+                totalBytes = nil
+            }
+        } catch {
+            totalBytes = nil
+        }
 
         // Send initial progress update
         progressHandler(DiskWriteProgress(bytesWritten: 0, totalBytes: totalBytes))
@@ -64,60 +76,119 @@ public class MacOSDiskWriter: DiskWriter {
                     )
                 }
             }
-
-            // Create a bash script that runs dd and sends SIGINFO to it periodically
-            let script = """
-                dd if="\(imagePath)" of="\(rawDevicePath)" bs=1m status=progress 2>&1 & DD_PID=$!
-                while kill -0 $DD_PID 2>/dev/null; do
-                    kill -INFO $DD_PID 2>/dev/null
-                    sleep 1
-                done
-                wait $DD_PID
-                exit $?
-                """
-
-            // Store the progress handler in a local variable to avoid capturing it in the closure
-            let localProgressHandler = progressHandler
-            let localTotalBytes = totalBytes
-
-            // Use the Subprocess API with a closure to capture output in real-time
-            let result = try await Subprocess.run(
-                Subprocess.Executable.name("sudo"),
-                arguments: ["bash", "-c", script],
-                output: .sequence,
+            
+            // Create a bash script that uses pv for real progress
+            let script: String
+            
+            // Check if pv is available
+            let pvCheckResult = try await Subprocess.run(
+                Subprocess.Executable.name("which"),
+                arguments: ["pv"],
+                output: .string,
                 error: .discarded
-            ) { execution in
-                // Process standard output for progress updates
-                for try await chunk in execution.standardOutput {
-                    // Convert the chunk to a string
-                    let outputString = chunk.withUnsafeBytes {
-                        String(decoding: $0, as: UTF8.self)
-                    }
-
-                    // Parse the progress information
-                    // dd outputs progress like: "1234567890 bytes (1.2 GB, 1.1 GiB) copied, 10 s, 123 MB/s"
-                    let pattern = #"(\d+)\s+bytes"#
-                    if let range = outputString.range(of: pattern, options: .regularExpression),
-                        let bytes = Int64(outputString[range].split(separator: " ")[0])
-                    {
-
-                        let progress = DiskWriteProgress(
-                            bytesWritten: bytes,
-                            totalBytes: localTotalBytes
-                        )
-
-                        localProgressHandler(progress)
-                    }
-                }
-
-                return execution
+            )
+            
+            if pvCheckResult.terminationStatus.isSuccess {
+                // Use pv for progress - it outputs progress info to stderr
+                script = """
+                    #!/bin/bash
+                    
+                    # Use pv to show progress while piping to dd
+                    # -p: show progress bar
+                    # -t: show elapsed time
+                    # -e: show ETA
+                    # -r: show rate
+                    # -b: show total bytes transferred
+                    # -s: set expected size for percentage calculation
+                    # -f: force output even if not to terminal
+                    pv -fperb -s \(totalBytes ?? 0) "\(imagePath)" | dd of="\(rawDevicePath)" bs=1m
+                    """
+            } else {
+                // Fallback to plain dd
+                script = """
+                    #!/bin/bash
+                    
+                    # Run dd without progress
+                    dd if="\(imagePath)" of="\(rawDevicePath)" bs=1m 2>&1
+                    """
             }
 
-            // Check if the command was successful
-            if !result.terminationStatus.isSuccess {
-                throw DiskWriterError.writeFailed(
-                    reason: "dd command failed with status: \(result.terminationStatus)"
+            if pvCheckResult.terminationStatus.isSuccess {
+                // Use pv and let it handle all progress display
+                
+                // Run pv + dd command with stderr passthrough
+                let pvResult = try await Subprocess.run(
+                    Subprocess.Executable.name("sudo"),
+                    arguments: ["bash", "-c", script],
+                    output: .discarded,
+                    error: .fileDescriptor(.standardError, closeAfterSpawningProcess: false)
                 )
+                
+                // Check result
+                if !pvResult.terminationStatus.isSuccess {
+                    throw DiskWriterError.writeFailed(
+                        reason: "dd command failed with status: \(pvResult.terminationStatus)"
+                    )
+                }
+            } else {
+                // Fallback for when pv is not available - use timer for estimation
+                let startTime = Date()
+                var lastProgress: Int64 = 0
+                
+                // Create a timer using DispatchQueue for progress updates
+                let progressQueue = DispatchQueue(label: "diskwriter.progress")
+                let timer = DispatchSource.makeTimerSource(queue: progressQueue)
+                timer.schedule(deadline: .now(), repeating: 1.0)
+                
+                timer.setEventHandler { [weak timer] in
+                    guard timer != nil else { return }
+                    
+                    let elapsed = Date().timeIntervalSince(startTime)
+                    if elapsed > 0, let totalBytes = totalBytes, totalBytes > 0 {
+                        // Estimate progress based on typical write speeds
+                        let speed: Int64
+                        if elapsed < 5 {
+                            speed = 20 * 1024 * 1024  // 20 MB/s initially
+                        } else if elapsed < 10 {
+                            speed = 30 * 1024 * 1024  // 30 MB/s
+                        } else {
+                            speed = 35 * 1024 * 1024  // 35 MB/s steady
+                        }
+                        
+                        var estimatedBytes = Int64(elapsed) * speed
+                        let maxBytes = (totalBytes * 95) / 100
+                        if estimatedBytes > maxBytes {
+                            estimatedBytes = maxBytes
+                        }
+                        
+                        if estimatedBytes > lastProgress {
+                            lastProgress = estimatedBytes
+                            progressHandler(DiskWriteProgress(
+                                bytesWritten: estimatedBytes,
+                                totalBytes: totalBytes
+                            ))
+                        }
+                    }
+                }
+                
+                timer.resume()
+                
+                // Run plain dd command
+                let ddResult = try await Subprocess.run(
+                    Subprocess.Executable.name("sudo"),
+                    arguments: ["bash", "-c", script],
+                    output: .discarded,
+                    error: .discarded
+                )
+                
+                timer.cancel()
+                
+                // Check result
+                if !ddResult.terminationStatus.isSuccess {
+                    throw DiskWriterError.writeFailed(
+                        reason: "dd command failed with status: \(ddResult.terminationStatus)"
+                    )
+                }
             }
 
             // If we get here, the command completed successfully
