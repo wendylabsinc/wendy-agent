@@ -1,3 +1,4 @@
+#if os(macOS)
 import Foundation
 import Logging
 import Subprocess
@@ -274,3 +275,4 @@ public struct MacOSDiskLister: DiskLister {
         return drives
     }
 }
+#endif

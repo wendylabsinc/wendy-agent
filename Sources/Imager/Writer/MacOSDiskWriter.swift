@@ -1,3 +1,4 @@
+#if os(macOS)
 import Foundation
 import Logging
 import Subprocess
@@ -210,3 +211,4 @@ public class MacOSDiskWriter: DiskWriter {
         }
     }
 }
+#endif

@@ -11,8 +11,7 @@ public enum DiskListerFactory {
         #elseif os(Linux)
             return LinuxDiskLister()
         #else
-            // Default to macOS implementation for other platforms
-            return MacOSDiskLister()
+            fatalError("DiskLister is not implemented for this platform")
         #endif
     }
 }
