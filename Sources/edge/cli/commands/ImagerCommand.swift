@@ -151,14 +151,14 @@ struct ImagerCommand: AsyncParsableCommand {
                         }
 
                         print(line, terminator: "")
-                        fflush(stdout)
+                        flushOutput()
                     } else {
                         // Fallback when percentage isn’t available
                         print(
                             "\u{1B}[1G\u{1B}[2KWritten: \(progress.bytesWrittenText)",
                             terminator: ""
                         )
-                        fflush(stdout)
+                        flushOutput()
                     }
                 }
             }
@@ -244,14 +244,14 @@ struct ImagerCommand: AsyncParsableCommand {
                         }
 
                         print(line, terminator: "")
-                        fflush(stdout)
+                        flushOutput()
                     } else {
                         // Fallback when percentage isn’t available
                         print(
                             "\u{1B}[1G\u{1B}[2KWritten: \(progress.bytesWrittenText)",
                             terminator: ""
                         )
-                        fflush(stdout)
+                        flushOutput()
                     }
                 }
             }
@@ -283,14 +283,14 @@ struct ImagerCommand: AsyncParsableCommand {
                         }
 
                         print(line, terminator: "")
-                        fflush(stdout)
+                        flushOutput()
                     } else {
                         // Fallback when percentage isn't available
                         print(
                             "\u{1B}[1G\u{1B}[2KWritten: \(progress.bytesWrittenText)",
                             terminator: ""
                         )
-                        fflush(stdout)
+                        flushOutput()
                     }
                 }
             }
