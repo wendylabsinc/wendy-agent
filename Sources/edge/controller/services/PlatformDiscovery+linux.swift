@@ -12,7 +12,7 @@
             do {
                 let result = try await Subprocess.run(
                     Subprocess.Executable.path("/usr/bin/lsusb"),
-                    arguments: Subprocess.Arguments([]),
+                    arguments: Subprocess.Arguments([String]()),
                     output: .string
                 )
                 let output = result.standardOutput ?? ""
@@ -26,7 +26,7 @@
                         // Extract vendor and product IDs
                         if let idRange = deviceInfo.range(
                             of: "ID \\S+",
-                            options: .regularExpression
+                            options: String.CompareOptions.regularExpression
                         ) {
                             let idStr = deviceInfo[idRange].dropFirst(3)  // Drop "ID "
                             let parts = idStr.split(separator: ":")
