@@ -19,11 +19,11 @@ public func downloadFileWithPv(
         output: .string,
         error: .discarded
     )
-    
+
     guard pvCheckResult.terminationStatus.isSuccess else {
         throw PvDownloadError.pvNotInstalled
     }
-    
+
     // Create the download command
     // curl -L: Follow redirects
     // curl -f: Fail on HTTP errors
@@ -34,7 +34,7 @@ public func downloadFileWithPv(
     // pv -r: Show rate
     // pv -b: Show bytes transferred
     var script: String
-    
+
     if let expectedSize = expectedSize, expectedSize > 0 {
         // If we know the size, use it for percentage calculation
         script = """
@@ -46,7 +46,7 @@ public func downloadFileWithPv(
             curl -L -f -s "\(url.absoluteString)" | pv -ftrb > "\(path)"
             """
     }
-    
+
     // Run the download
     let result = try await Subprocess.run(
         Subprocess.Executable.name("bash"),
@@ -54,11 +54,13 @@ public func downloadFileWithPv(
         output: .discarded,
         error: .fileDescriptor(.standardError, closeAfterSpawningProcess: false)  // Let pv output to terminal
     )
-    
+
     if !result.terminationStatus.isSuccess {
         // Clean up partial download
         try? FileManager.default.removeItem(atPath: path)
-        throw PvDownloadError.downloadFailed("Download failed with status: \(result.terminationStatus)")
+        throw PvDownloadError.downloadFailed(
+            "Download failed with status: \(result.terminationStatus)"
+        )
     }
 }
 
@@ -72,7 +74,7 @@ public func downloadFileWithProgress(
     // First try with pv
     do {
         try await downloadFileWithPv(from: url, to: path, expectedSize: expectedSize)
-        
+
         // Send 100% completion if we have expected size
         if let expectedSize = expectedSize {
             let progress = Progress(totalUnitCount: expectedSize)

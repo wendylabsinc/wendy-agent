@@ -1,5 +1,5 @@
-import Subprocess
 import Foundation
+import Subprocess
 
 /// Represents the Docker CLI interface for managing container images and running containers.
 public struct DockerCLI: Sendable {

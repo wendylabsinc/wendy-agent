@@ -143,16 +143,21 @@ struct ImagerCommand: AsyncParsableCommand {
                     if let percent = progress.percentComplete {
                         let line: String
                         if let totalText = progress.totalBytesText {
-                            line = "\u{1B}[1G\u{1B}[2K   \(String(format: "%.1f%%", percent)) - \(progress.bytesWrittenText)/\(totalText)"
+                            line =
+                                "\u{1B}[1G\u{1B}[2K   \(String(format: "%.1f%%", percent)) - \(progress.bytesWrittenText)/\(totalText)"
                         } else {
-                            line = "\u{1B}[1G\u{1B}[2K   \(String(format: "%.1f%%", percent)) - \(progress.bytesWrittenText)"
+                            line =
+                                "\u{1B}[1G\u{1B}[2K   \(String(format: "%.1f%%", percent)) - \(progress.bytesWrittenText)"
                         }
 
                         print(line, terminator: "")
                         fflush(stdout)
                     } else {
                         // Fallback when percentage isn’t available
-                        print("\u{1B}[1G\u{1B}[2KWritten: \(progress.bytesWrittenText)", terminator: "")
+                        print(
+                            "\u{1B}[1G\u{1B}[2KWritten: \(progress.bytesWrittenText)",
+                            terminator: ""
+                        )
                         fflush(stdout)
                     }
                 }
@@ -231,16 +236,21 @@ struct ImagerCommand: AsyncParsableCommand {
                     if let percent = progress.percentComplete {
                         let line: String
                         if let totalText = progress.totalBytesText {
-                            line = "\u{1B}[1G\u{1B}[2K   \(String(format: "%.1f%%", percent)) - \(progress.bytesWrittenText)/\(totalText)"
+                            line =
+                                "\u{1B}[1G\u{1B}[2K   \(String(format: "%.1f%%", percent)) - \(progress.bytesWrittenText)/\(totalText)"
                         } else {
-                            line = "\u{1B}[1G\u{1B}[2K   \(String(format: "%.1f%%", percent)) - \(progress.bytesWrittenText)"
+                            line =
+                                "\u{1B}[1G\u{1B}[2K   \(String(format: "%.1f%%", percent)) - \(progress.bytesWrittenText)"
                         }
 
                         print(line, terminator: "")
                         fflush(stdout)
                     } else {
                         // Fallback when percentage isn’t available
-                        print("\u{1B}[1G\u{1B}[2KWritten: \(progress.bytesWrittenText)", terminator: "")
+                        print(
+                            "\u{1B}[1G\u{1B}[2KWritten: \(progress.bytesWrittenText)",
+                            terminator: ""
+                        )
                         fflush(stdout)
                     }
                 }
@@ -265,16 +275,21 @@ struct ImagerCommand: AsyncParsableCommand {
                     if let percent = progress.percentComplete {
                         let line: String
                         if let totalText = progress.totalBytesText {
-                            line = "\u{1B}[1G\u{1B}[2K   \(String(format: "%.1f%%", percent)) - \(progress.bytesWrittenText)/\(totalText)"
+                            line =
+                                "\u{1B}[1G\u{1B}[2K   \(String(format: "%.1f%%", percent)) - \(progress.bytesWrittenText)/\(totalText)"
                         } else {
-                            line = "\u{1B}[1G\u{1B}[2K   \(String(format: "%.1f%%", percent)) - \(progress.bytesWrittenText)"
+                            line =
+                                "\u{1B}[1G\u{1B}[2K   \(String(format: "%.1f%%", percent)) - \(progress.bytesWrittenText)"
                         }
 
                         print(line, terminator: "")
                         fflush(stdout)
                     } else {
                         // Fallback when percentage isn't available
-                        print("\u{1B}[1G\u{1B}[2KWritten: \(progress.bytesWrittenText)", terminator: "")
+                        print(
+                            "\u{1B}[1G\u{1B}[2KWritten: \(progress.bytesWrittenText)",
+                            terminator: ""
+                        )
                         fflush(stdout)
                     }
                 }
