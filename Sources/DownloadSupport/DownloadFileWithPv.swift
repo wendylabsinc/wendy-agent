@@ -52,7 +52,8 @@ public func downloadFileWithPv(
         Subprocess.Executable.name("bash"),
         arguments: ["-c", script],
         output: .discarded,
-        error: .fileDescriptor(.standardError, closeAfterSpawningProcess: false)  // Let pv output to terminal
+        // Let pv output to terminal
+        error: .fileDescriptor(.standardError, closeAfterSpawningProcess: false)
     )
 
     if !result.terminationStatus.isSuccess {
