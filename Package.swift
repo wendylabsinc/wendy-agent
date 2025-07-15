@@ -152,7 +152,9 @@ let package = Package(
         .testTarget(
             name: "EdgeCLITests",
             dependencies: [
-                .target(name: "edge")
+                .target(name: "edge"),
+                .target(name: "edge-agent"),
+                .target(name: "EdgeAgentGRPC")
             ]
         ),
 

@@ -103,6 +103,18 @@ public enum Edge_Agent_Services_V1_EdgeAgentService {
                 method: "DisconnectWiFi"
             )
         }
+        /// Namespace for "ListHardwareCapabilities" metadata.
+        public enum ListHardwareCapabilities {
+            /// Request type for "ListHardwareCapabilities".
+            public typealias Input = Edge_Agent_Services_V1_ListHardwareCapabilitiesRequest
+            /// Response type for "ListHardwareCapabilities".
+            public typealias Output = Edge_Agent_Services_V1_ListHardwareCapabilitiesResponse
+            /// Descriptor for "ListHardwareCapabilities".
+            public static let descriptor = GRPCCore.MethodDescriptor(
+                service: GRPCCore.ServiceDescriptor(fullyQualifiedService: "edge.agent.services.v1.EdgeAgentService"),
+                method: "ListHardwareCapabilities"
+            )
+        }
         /// Descriptors for all methods in the "edge.agent.services.v1.EdgeAgentService" service.
         public static let descriptors: [GRPCCore.MethodDescriptor] = [
             RunContainer.descriptor,
@@ -111,7 +123,8 @@ public enum Edge_Agent_Services_V1_EdgeAgentService {
             ListWiFiNetworks.descriptor,
             ConnectToWiFi.descriptor,
             GetWiFiStatus.descriptor,
-            DisconnectWiFi.descriptor
+            DisconnectWiFi.descriptor,
+            ListHardwareCapabilities.descriptor
         ]
     }
 }
@@ -253,6 +266,24 @@ extension Edge_Agent_Services_V1_EdgeAgentService {
             request: GRPCCore.StreamingServerRequest<Edge_Agent_Services_V1_DisconnectWiFiRequest>,
             context: GRPCCore.ServerContext
         ) async throws -> GRPCCore.StreamingServerResponse<Edge_Agent_Services_V1_DisconnectWiFiResponse>
+
+        /// Handle the "ListHardwareCapabilities" method.
+        ///
+        /// > Source IDL Documentation:
+        /// >
+        /// > List available hardware capabilities on the device
+        ///
+        /// - Parameters:
+        ///   - request: A streaming request of `Edge_Agent_Services_V1_ListHardwareCapabilitiesRequest` messages.
+        ///   - context: Context providing information about the RPC.
+        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
+        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
+        ///     to an internal error.
+        /// - Returns: A streaming response of `Edge_Agent_Services_V1_ListHardwareCapabilitiesResponse` messages.
+        func listHardwareCapabilities(
+            request: GRPCCore.StreamingServerRequest<Edge_Agent_Services_V1_ListHardwareCapabilitiesRequest>,
+            context: GRPCCore.ServerContext
+        ) async throws -> GRPCCore.StreamingServerResponse<Edge_Agent_Services_V1_ListHardwareCapabilitiesResponse>
     }
 
     /// Service protocol for the "edge.agent.services.v1.EdgeAgentService" service.
@@ -381,6 +412,24 @@ extension Edge_Agent_Services_V1_EdgeAgentService {
             request: GRPCCore.ServerRequest<Edge_Agent_Services_V1_DisconnectWiFiRequest>,
             context: GRPCCore.ServerContext
         ) async throws -> GRPCCore.ServerResponse<Edge_Agent_Services_V1_DisconnectWiFiResponse>
+
+        /// Handle the "ListHardwareCapabilities" method.
+        ///
+        /// > Source IDL Documentation:
+        /// >
+        /// > List available hardware capabilities on the device
+        ///
+        /// - Parameters:
+        ///   - request: A request containing a single `Edge_Agent_Services_V1_ListHardwareCapabilitiesRequest` message.
+        ///   - context: Context providing information about the RPC.
+        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
+        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
+        ///     to an internal error.
+        /// - Returns: A response containing a single `Edge_Agent_Services_V1_ListHardwareCapabilitiesResponse` message.
+        func listHardwareCapabilities(
+            request: GRPCCore.ServerRequest<Edge_Agent_Services_V1_ListHardwareCapabilitiesRequest>,
+            context: GRPCCore.ServerContext
+        ) async throws -> GRPCCore.ServerResponse<Edge_Agent_Services_V1_ListHardwareCapabilitiesResponse>
     }
 
     /// Simple service protocol for the "edge.agent.services.v1.EdgeAgentService" service.
@@ -509,6 +558,24 @@ extension Edge_Agent_Services_V1_EdgeAgentService {
             request: Edge_Agent_Services_V1_DisconnectWiFiRequest,
             context: GRPCCore.ServerContext
         ) async throws -> Edge_Agent_Services_V1_DisconnectWiFiResponse
+
+        /// Handle the "ListHardwareCapabilities" method.
+        ///
+        /// > Source IDL Documentation:
+        /// >
+        /// > List available hardware capabilities on the device
+        ///
+        /// - Parameters:
+        ///   - request: A `Edge_Agent_Services_V1_ListHardwareCapabilitiesRequest` message.
+        ///   - context: Context providing information about the RPC.
+        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
+        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
+        ///     to an internal error.
+        /// - Returns: A `Edge_Agent_Services_V1_ListHardwareCapabilitiesResponse` to respond with.
+        func listHardwareCapabilities(
+            request: Edge_Agent_Services_V1_ListHardwareCapabilitiesRequest,
+            context: GRPCCore.ServerContext
+        ) async throws -> Edge_Agent_Services_V1_ListHardwareCapabilitiesResponse
     }
 }
 
@@ -592,6 +659,17 @@ extension Edge_Agent_Services_V1_EdgeAgentService.StreamingServiceProtocol {
                 )
             }
         )
+        router.registerHandler(
+            forMethod: Edge_Agent_Services_V1_EdgeAgentService.Method.ListHardwareCapabilities.descriptor,
+            deserializer: GRPCProtobuf.ProtobufDeserializer<Edge_Agent_Services_V1_ListHardwareCapabilitiesRequest>(),
+            serializer: GRPCProtobuf.ProtobufSerializer<Edge_Agent_Services_V1_ListHardwareCapabilitiesResponse>(),
+            handler: { request, context in
+                try await self.listHardwareCapabilities(
+                    request: request,
+                    context: context
+                )
+            }
+        )
     }
 }
 
@@ -646,6 +724,17 @@ extension Edge_Agent_Services_V1_EdgeAgentService.ServiceProtocol {
         context: GRPCCore.ServerContext
     ) async throws -> GRPCCore.StreamingServerResponse<Edge_Agent_Services_V1_DisconnectWiFiResponse> {
         let response = try await self.disconnectWiFi(
+            request: GRPCCore.ServerRequest(stream: request),
+            context: context
+        )
+        return GRPCCore.StreamingServerResponse(single: response)
+    }
+
+    public func listHardwareCapabilities(
+        request: GRPCCore.StreamingServerRequest<Edge_Agent_Services_V1_ListHardwareCapabilitiesRequest>,
+        context: GRPCCore.ServerContext
+    ) async throws -> GRPCCore.StreamingServerResponse<Edge_Agent_Services_V1_ListHardwareCapabilitiesResponse> {
+        let response = try await self.listHardwareCapabilities(
             request: GRPCCore.ServerRequest(stream: request),
             context: context
         )
@@ -747,6 +836,19 @@ extension Edge_Agent_Services_V1_EdgeAgentService.SimpleServiceProtocol {
     ) async throws -> GRPCCore.ServerResponse<Edge_Agent_Services_V1_DisconnectWiFiResponse> {
         return GRPCCore.ServerResponse<Edge_Agent_Services_V1_DisconnectWiFiResponse>(
             message: try await self.disconnectWiFi(
+                request: request.message,
+                context: context
+            ),
+            metadata: [:]
+        )
+    }
+
+    public func listHardwareCapabilities(
+        request: GRPCCore.ServerRequest<Edge_Agent_Services_V1_ListHardwareCapabilitiesRequest>,
+        context: GRPCCore.ServerContext
+    ) async throws -> GRPCCore.ServerResponse<Edge_Agent_Services_V1_ListHardwareCapabilitiesResponse> {
+        return GRPCCore.ServerResponse<Edge_Agent_Services_V1_ListHardwareCapabilitiesResponse>(
+            message: try await self.listHardwareCapabilities(
                 request: request.message,
                 context: context
             ),
@@ -915,6 +1017,29 @@ extension Edge_Agent_Services_V1_EdgeAgentService {
             deserializer: some GRPCCore.MessageDeserializer<Edge_Agent_Services_V1_DisconnectWiFiResponse>,
             options: GRPCCore.CallOptions,
             onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Edge_Agent_Services_V1_DisconnectWiFiResponse>) async throws -> Result
+        ) async throws -> Result where Result: Sendable
+
+        /// Call the "ListHardwareCapabilities" method.
+        ///
+        /// > Source IDL Documentation:
+        /// >
+        /// > List available hardware capabilities on the device
+        ///
+        /// - Parameters:
+        ///   - request: A request containing a single `Edge_Agent_Services_V1_ListHardwareCapabilitiesRequest` message.
+        ///   - serializer: A serializer for `Edge_Agent_Services_V1_ListHardwareCapabilitiesRequest` messages.
+        ///   - deserializer: A deserializer for `Edge_Agent_Services_V1_ListHardwareCapabilitiesResponse` messages.
+        ///   - options: Options to apply to this RPC.
+        ///   - handleResponse: A closure which handles the response, the result of which is
+        ///       returned to the caller. Returning from the closure will cancel the RPC if it
+        ///       hasn't already finished.
+        /// - Returns: The result of `handleResponse`.
+        func listHardwareCapabilities<Result>(
+            request: GRPCCore.ClientRequest<Edge_Agent_Services_V1_ListHardwareCapabilitiesRequest>,
+            serializer: some GRPCCore.MessageSerializer<Edge_Agent_Services_V1_ListHardwareCapabilitiesRequest>,
+            deserializer: some GRPCCore.MessageDeserializer<Edge_Agent_Services_V1_ListHardwareCapabilitiesResponse>,
+            options: GRPCCore.CallOptions,
+            onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Edge_Agent_Services_V1_ListHardwareCapabilitiesResponse>) async throws -> Result
         ) async throws -> Result where Result: Sendable
     }
 
@@ -1160,6 +1285,40 @@ extension Edge_Agent_Services_V1_EdgeAgentService {
                 onResponse: handleResponse
             )
         }
+
+        /// Call the "ListHardwareCapabilities" method.
+        ///
+        /// > Source IDL Documentation:
+        /// >
+        /// > List available hardware capabilities on the device
+        ///
+        /// - Parameters:
+        ///   - request: A request containing a single `Edge_Agent_Services_V1_ListHardwareCapabilitiesRequest` message.
+        ///   - serializer: A serializer for `Edge_Agent_Services_V1_ListHardwareCapabilitiesRequest` messages.
+        ///   - deserializer: A deserializer for `Edge_Agent_Services_V1_ListHardwareCapabilitiesResponse` messages.
+        ///   - options: Options to apply to this RPC.
+        ///   - handleResponse: A closure which handles the response, the result of which is
+        ///       returned to the caller. Returning from the closure will cancel the RPC if it
+        ///       hasn't already finished.
+        /// - Returns: The result of `handleResponse`.
+        public func listHardwareCapabilities<Result>(
+            request: GRPCCore.ClientRequest<Edge_Agent_Services_V1_ListHardwareCapabilitiesRequest>,
+            serializer: some GRPCCore.MessageSerializer<Edge_Agent_Services_V1_ListHardwareCapabilitiesRequest>,
+            deserializer: some GRPCCore.MessageDeserializer<Edge_Agent_Services_V1_ListHardwareCapabilitiesResponse>,
+            options: GRPCCore.CallOptions = .defaults,
+            onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Edge_Agent_Services_V1_ListHardwareCapabilitiesResponse>) async throws -> Result = { response in
+                try response.message
+            }
+        ) async throws -> Result where Result: Sendable {
+            try await self.client.unary(
+                request: request,
+                descriptor: Edge_Agent_Services_V1_EdgeAgentService.Method.ListHardwareCapabilities.descriptor,
+                serializer: serializer,
+                deserializer: deserializer,
+                options: options,
+                onResponse: handleResponse
+            )
+        }
     }
 }
 
@@ -1352,6 +1511,35 @@ extension Edge_Agent_Services_V1_EdgeAgentService.ClientProtocol {
             request: request,
             serializer: GRPCProtobuf.ProtobufSerializer<Edge_Agent_Services_V1_DisconnectWiFiRequest>(),
             deserializer: GRPCProtobuf.ProtobufDeserializer<Edge_Agent_Services_V1_DisconnectWiFiResponse>(),
+            options: options,
+            onResponse: handleResponse
+        )
+    }
+
+    /// Call the "ListHardwareCapabilities" method.
+    ///
+    /// > Source IDL Documentation:
+    /// >
+    /// > List available hardware capabilities on the device
+    ///
+    /// - Parameters:
+    ///   - request: A request containing a single `Edge_Agent_Services_V1_ListHardwareCapabilitiesRequest` message.
+    ///   - options: Options to apply to this RPC.
+    ///   - handleResponse: A closure which handles the response, the result of which is
+    ///       returned to the caller. Returning from the closure will cancel the RPC if it
+    ///       hasn't already finished.
+    /// - Returns: The result of `handleResponse`.
+    public func listHardwareCapabilities<Result>(
+        request: GRPCCore.ClientRequest<Edge_Agent_Services_V1_ListHardwareCapabilitiesRequest>,
+        options: GRPCCore.CallOptions = .defaults,
+        onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Edge_Agent_Services_V1_ListHardwareCapabilitiesResponse>) async throws -> Result = { response in
+            try response.message
+        }
+    ) async throws -> Result where Result: Sendable {
+        try await self.listHardwareCapabilities(
+            request: request,
+            serializer: GRPCProtobuf.ProtobufSerializer<Edge_Agent_Services_V1_ListHardwareCapabilitiesRequest>(),
+            deserializer: GRPCProtobuf.ProtobufDeserializer<Edge_Agent_Services_V1_ListHardwareCapabilitiesResponse>(),
             options: options,
             onResponse: handleResponse
         )
@@ -1576,6 +1764,39 @@ extension Edge_Agent_Services_V1_EdgeAgentService.ClientProtocol {
             metadata: metadata
         )
         return try await self.disconnectWiFi(
+            request: request,
+            options: options,
+            onResponse: handleResponse
+        )
+    }
+
+    /// Call the "ListHardwareCapabilities" method.
+    ///
+    /// > Source IDL Documentation:
+    /// >
+    /// > List available hardware capabilities on the device
+    ///
+    /// - Parameters:
+    ///   - message: request message to send.
+    ///   - metadata: Additional metadata to send, defaults to empty.
+    ///   - options: Options to apply to this RPC, defaults to `.defaults`.
+    ///   - handleResponse: A closure which handles the response, the result of which is
+    ///       returned to the caller. Returning from the closure will cancel the RPC if it
+    ///       hasn't already finished.
+    /// - Returns: The result of `handleResponse`.
+    public func listHardwareCapabilities<Result>(
+        _ message: Edge_Agent_Services_V1_ListHardwareCapabilitiesRequest,
+        metadata: GRPCCore.Metadata = [:],
+        options: GRPCCore.CallOptions = .defaults,
+        onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Edge_Agent_Services_V1_ListHardwareCapabilitiesResponse>) async throws -> Result = { response in
+            try response.message
+        }
+    ) async throws -> Result where Result: Sendable {
+        let request = GRPCCore.ClientRequest<Edge_Agent_Services_V1_ListHardwareCapabilitiesRequest>(
+            message: message,
+            metadata: metadata
+        )
+        return try await self.listHardwareCapabilities(
             request: request,
             options: options,
             onResponse: handleResponse
