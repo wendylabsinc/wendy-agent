@@ -333,4 +333,35 @@ struct EdgeAgentService: Edge_Agent_Services_V1_EdgeAgentService.ServiceProtocol
             )
         }
     }
+
+    func listHardwareCapabilities(
+        request: GRPCCore.ServerRequest<Edge_Agent_Services_V1_ListHardwareCapabilitiesRequest>,
+        context: GRPCCore.ServerContext
+    ) async throws
+        -> GRPCCore.ServerResponse<Edge_Agent_Services_V1_ListHardwareCapabilitiesResponse>
+    {
+        logger.info("Listing hardware capabilities")
+
+        do {
+            let discoverer = SystemHardwareDiscoverer()
+            let capabilities = try await discoverer.discoverCapabilities(
+                categoryFilter: request.message.hasCategoryFilter
+                    ? request.message.categoryFilter : nil
+            )
+
+            logger.info("Found \(capabilities.count) hardware capabilities")
+
+            return ServerResponse(
+                message: .with { response in
+                    response.capabilities = capabilities.map { $0.toProto() }
+                }
+            )
+        } catch {
+            logger.error("Failed to discover hardware capabilities: \(error)")
+            throw RPCError(
+                code: .internalError,
+                message: "Failed to discover hardware capabilities: \(error.localizedDescription)"
+            )
+        }
+    }
 }

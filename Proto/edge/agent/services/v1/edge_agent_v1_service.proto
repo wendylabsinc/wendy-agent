@@ -22,6 +22,9 @@ service EdgeAgentService {
     
     // Disconnect from the current WiFi network
     rpc DisconnectWiFi(DisconnectWiFiRequest) returns (DisconnectWiFiResponse);
+    
+    // List available hardware capabilities on the device
+    rpc ListHardwareCapabilities(ListHardwareCapabilitiesRequest) returns (ListHardwareCapabilitiesResponse);
 }
 
 message RunContainerRequest {
@@ -180,4 +183,31 @@ message DisconnectWiFiResponse {
     
     // Optional error message if disconnection failed
     optional string error_message = 2;
+}
+
+// Request message for listing hardware capabilities
+message ListHardwareCapabilitiesRequest {
+    // Optional filter by hardware category (e.g., "gpu", "usb", "i2c")
+    optional string category_filter = 1;
+}
+
+// Response message for listing hardware capabilities
+message ListHardwareCapabilitiesResponse {
+    // List of available hardware capabilities
+    repeated HardwareCapability capabilities = 1;
+    
+    // Information about a hardware capability
+    message HardwareCapability {
+        // Category of hardware (e.g., "gpu", "usb", "i2c", "gpio", "camera")
+        string category = 1;
+        
+        // Device path (e.g., "/dev/video0", "/dev/i2c-1")
+        string device_path = 2;
+        
+        // Human-readable description
+        string description = 3;
+        
+        // Additional properties as key-value pairs
+        map<string, string> properties = 4;
+    }
 }

@@ -495,6 +495,66 @@ public struct Edge_Agent_Services_V1_DisconnectWiFiResponse: Sendable {
   fileprivate var _errorMessage: String? = nil
 }
 
+/// Request message for listing hardware capabilities
+public struct Edge_Agent_Services_V1_ListHardwareCapabilitiesRequest: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  /// Optional filter by hardware category (e.g., "gpu", "usb", "i2c")
+  public var categoryFilter: String {
+    get {return _categoryFilter ?? String()}
+    set {_categoryFilter = newValue}
+  }
+  /// Returns true if `categoryFilter` has been explicitly set.
+  public var hasCategoryFilter: Bool {return self._categoryFilter != nil}
+  /// Clears the value of `categoryFilter`. Subsequent reads from it will return its default value.
+  public mutating func clearCategoryFilter() {self._categoryFilter = nil}
+
+  public var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  public init() {}
+
+  fileprivate var _categoryFilter: String? = nil
+}
+
+/// Response message for listing hardware capabilities
+public struct Edge_Agent_Services_V1_ListHardwareCapabilitiesResponse: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  /// List of available hardware capabilities
+  public var capabilities: [Edge_Agent_Services_V1_ListHardwareCapabilitiesResponse.HardwareCapability] = []
+
+  public var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  /// Information about a hardware capability
+  public struct HardwareCapability: Sendable {
+    // SwiftProtobuf.Message conformance is added in an extension below. See the
+    // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+    // methods supported on all messages.
+
+    /// Category of hardware (e.g., "gpu", "usb", "i2c", "gpio", "camera")
+    public var category: String = String()
+
+    /// Device path (e.g., "/dev/video0", "/dev/i2c-1")
+    public var devicePath: String = String()
+
+    /// Human-readable description
+    public var description_p: String = String()
+
+    /// Additional properties as key-value pairs
+    public var properties: Dictionary<String,String> = [:]
+
+    public var unknownFields = SwiftProtobuf.UnknownStorage()
+
+    public init() {}
+  }
+
+  public init() {}
+}
+
 // MARK: - Code below here is support for the SwiftProtobuf runtime.
 
 fileprivate let _protobuf_package = "edge.agent.services.v1"
@@ -1400,6 +1460,124 @@ extension Edge_Agent_Services_V1_DisconnectWiFiResponse: SwiftProtobuf.Message, 
   public static func ==(lhs: Edge_Agent_Services_V1_DisconnectWiFiResponse, rhs: Edge_Agent_Services_V1_DisconnectWiFiResponse) -> Bool {
     if lhs.success != rhs.success {return false}
     if lhs._errorMessage != rhs._errorMessage {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+extension Edge_Agent_Services_V1_ListHardwareCapabilitiesRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = _protobuf_package + ".ListHardwareCapabilitiesRequest"
+  public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
+    1: .standard(proto: "category_filter"),
+  ]
+
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try { try decoder.decodeSingularStringField(value: &self._categoryFilter) }()
+      default: break
+      }
+    }
+  }
+
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    // The use of inline closures is to circumvent an issue where the compiler
+    // allocates stack space for every if/case branch local when no optimizations
+    // are enabled. https://github.com/apple/swift-protobuf/issues/1034 and
+    // https://github.com/apple/swift-protobuf/issues/1182
+    try { if let v = self._categoryFilter {
+      try visitor.visitSingularStringField(value: v, fieldNumber: 1)
+    } }()
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  public static func ==(lhs: Edge_Agent_Services_V1_ListHardwareCapabilitiesRequest, rhs: Edge_Agent_Services_V1_ListHardwareCapabilitiesRequest) -> Bool {
+    if lhs._categoryFilter != rhs._categoryFilter {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+extension Edge_Agent_Services_V1_ListHardwareCapabilitiesResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = _protobuf_package + ".ListHardwareCapabilitiesResponse"
+  public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
+    1: .same(proto: "capabilities"),
+  ]
+
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try { try decoder.decodeRepeatedMessageField(value: &self.capabilities) }()
+      default: break
+      }
+    }
+  }
+
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    if !self.capabilities.isEmpty {
+      try visitor.visitRepeatedMessageField(value: self.capabilities, fieldNumber: 1)
+    }
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  public static func ==(lhs: Edge_Agent_Services_V1_ListHardwareCapabilitiesResponse, rhs: Edge_Agent_Services_V1_ListHardwareCapabilitiesResponse) -> Bool {
+    if lhs.capabilities != rhs.capabilities {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+extension Edge_Agent_Services_V1_ListHardwareCapabilitiesResponse.HardwareCapability: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = Edge_Agent_Services_V1_ListHardwareCapabilitiesResponse.protoMessageName + ".HardwareCapability"
+  public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
+    1: .same(proto: "category"),
+    2: .standard(proto: "device_path"),
+    3: .same(proto: "description"),
+    4: .same(proto: "properties"),
+  ]
+
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try { try decoder.decodeSingularStringField(value: &self.category) }()
+      case 2: try { try decoder.decodeSingularStringField(value: &self.devicePath) }()
+      case 3: try { try decoder.decodeSingularStringField(value: &self.description_p) }()
+      case 4: try { try decoder.decodeMapField(fieldType: SwiftProtobuf._ProtobufMap<SwiftProtobuf.ProtobufString,SwiftProtobuf.ProtobufString>.self, value: &self.properties) }()
+      default: break
+      }
+    }
+  }
+
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    if !self.category.isEmpty {
+      try visitor.visitSingularStringField(value: self.category, fieldNumber: 1)
+    }
+    if !self.devicePath.isEmpty {
+      try visitor.visitSingularStringField(value: self.devicePath, fieldNumber: 2)
+    }
+    if !self.description_p.isEmpty {
+      try visitor.visitSingularStringField(value: self.description_p, fieldNumber: 3)
+    }
+    if !self.properties.isEmpty {
+      try visitor.visitMapField(fieldType: SwiftProtobuf._ProtobufMap<SwiftProtobuf.ProtobufString,SwiftProtobuf.ProtobufString>.self, value: self.properties, fieldNumber: 4)
+    }
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  public static func ==(lhs: Edge_Agent_Services_V1_ListHardwareCapabilitiesResponse.HardwareCapability, rhs: Edge_Agent_Services_V1_ListHardwareCapabilitiesResponse.HardwareCapability) -> Bool {
+    if lhs.category != rhs.category {return false}
+    if lhs.devicePath != rhs.devicePath {return false}
+    if lhs.description_p != rhs.description_p {return false}
+    if lhs.properties != rhs.properties {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
