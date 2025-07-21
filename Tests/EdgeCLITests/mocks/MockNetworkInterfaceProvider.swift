@@ -1,6 +1,7 @@
 #if os(macOS)
     import Foundation
     import SystemConfiguration
+    import EdgeShared
     @testable import edge
 
     // Unique identifiers for mock interfaces that we can use as opaque SCNetworkInterface values

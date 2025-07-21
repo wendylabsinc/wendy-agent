@@ -3,6 +3,7 @@
     import Logging
     import SystemConfiguration
     import Testing
+    import EdgeShared
 
     @testable import edge
 
