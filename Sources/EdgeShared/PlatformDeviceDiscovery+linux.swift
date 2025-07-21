@@ -4,8 +4,10 @@
     import Logging
     import Subprocess
 
-    struct PlatformDeviceDiscovery: DeviceDiscovery {
-        func findUSBDevices(logger: Logger) async -> [USBDevice] {
+    public struct PlatformDeviceDiscovery: DeviceDiscovery {
+        public init() {}
+
+        public func findUSBDevices(logger: Logger) async -> [USBDevice] {
             logger.info("Listing USB devices on Linux")
             var devices: [USBDevice] = []
 
@@ -78,13 +80,13 @@
             return devices
         }
 
-        func findEthernetInterfaces(logger: Logger) async -> [EthernetInterface] {
+        public func findEthernetInterfaces(logger: Logger) async -> [EthernetInterface] {
             logger.error("Listing Ethernet interfaces on Linux is not implemented")
             let interfaces: [EthernetInterface] = []
             return interfaces
         }
 
-        func findLANDevices(logger: Logger) async throws -> [LANDevice] {
+        public func findLANDevices(logger: Logger) async throws -> [LANDevice] {
             var interfaces: [LANDevice] = []
 
             let resolver = try AsyncDNSResolver()

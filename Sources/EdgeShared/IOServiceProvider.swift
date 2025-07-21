@@ -3,7 +3,7 @@
     import IOKit
 
     /// Protocol that abstracts IOKit service operations to allow for dependency injection and testing
-    protocol IOServiceProvider: Sendable {
+    public protocol IOServiceProvider: Sendable {
         /// Creates a matching dictionary for service lookup
         func createMatchingDictionary(className: String) -> CFDictionary?
 
@@ -25,12 +25,14 @@
     }
 
     /// Default implementation that uses the real IOKit APIs
-    final class DefaultIOServiceProvider: IOServiceProvider {
-        func createMatchingDictionary(className: String) -> CFDictionary? {
+    public final class DefaultIOServiceProvider: IOServiceProvider {
+        public init() {}
+
+        public func createMatchingDictionary(className: String) -> CFDictionary? {
             return IOServiceMatching(className)
         }
 
-        func getMatchingServices(
+        public func getMatchingServices(
             masterPort: mach_port_t,
             matchingDict: CFDictionary?,
             iterator: UnsafeMutablePointer<io_iterator_t>
@@ -38,15 +40,15 @@
             return IOServiceGetMatchingServices(masterPort, matchingDict, iterator)
         }
 
-        func getNextItem(iterator: io_iterator_t) -> io_service_t {
+        public func getNextItem(iterator: io_iterator_t) -> io_service_t {
             return IOIteratorNext(iterator)
         }
 
-        func releaseIOObject(object: io_service_t) {
+        public func releaseIOObject(object: io_service_t) {
             IOObjectRelease(object)
         }
 
-        func getRegistryEntryProperty(device: io_service_t, key: CFString) -> Any? {
+        public func getRegistryEntryProperty(device: io_service_t, key: CFString) -> Any? {
             guard
                 let propertyRef = IORegistryEntryCreateCFProperty(
                     device,
