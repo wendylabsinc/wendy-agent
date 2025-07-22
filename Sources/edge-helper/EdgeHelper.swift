@@ -38,8 +38,10 @@ struct EdgeHelper: AsyncParsableCommand {
         logger.info("Foreground mode: \(foreground)")
         logger.info("Debug logging: \(debug)")
 
+        let deviceDiscovery = PlatformDeviceDiscovery(logger: logger)
+
         // Create the main daemon service
-        let daemon = EdgeHelperDaemon(logger: logger)
+        let daemon = EdgeHelperDaemon(deviceDiscovery: deviceDiscovery, logger: logger)
 
         logger.info("Initializing daemon services...")
         await daemon.start()
@@ -66,9 +68,9 @@ actor EdgeHelperDaemon {
     private var isRunning = false
     private var monitoringTask: Task<Void, Error>?
 
-    init(logger: Logger) {
+    init(deviceDiscovery: DeviceDiscovery, logger: Logger) {
         self.logger = logger
-        self.deviceDiscovery = PlatformDeviceDiscovery()
+        self.deviceDiscovery = deviceDiscovery
     }
 
     func start() async {
@@ -124,7 +126,7 @@ actor EdgeHelperDaemon {
         logger.debug("Performing periodic device discovery...")
 
         // Discover current USB devices
-        let usbDevices = await deviceDiscovery.findUSBDevices(logger: logger)
+        let usbDevices = await deviceDiscovery.findUSBDevices()
         let edgeOSDevices = usbDevices.filter { $0.isEdgeOSDevice }
 
         logger.debug("Found \(edgeOSDevices.count) EdgeOS USB devices")

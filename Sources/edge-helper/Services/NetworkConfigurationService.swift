@@ -32,16 +32,16 @@ actor PlatformNetworkConfiguration: NetworkConfigurationService {
     private let logger: Logger
     private let deviceDiscovery: DeviceDiscovery
 
-    init(logger: Logger) {
+    init(deviceDiscovery: DeviceDiscovery, logger: Logger) {
         self.logger = logger
-        self.deviceDiscovery = PlatformDeviceDiscovery()
+        self.deviceDiscovery = deviceDiscovery
     }
 
     func findEdgeOSInterfaces(for device: USBDeviceInfo) async -> [NetworkInterface] {
         logger.debug("Finding network interfaces for EdgeOS device: \(device.name)")
 
         // Get all ethernet interfaces
-        let ethernetInterfaces = await deviceDiscovery.findEthernetInterfaces(logger: logger)
+        let ethernetInterfaces = await deviceDiscovery.findEthernetInterfaces()
 
         // Filter for EdgeOS interfaces
         let edgeOSInterfaces = ethernetInterfaces.filter { $0.isEdgeOSDevice }

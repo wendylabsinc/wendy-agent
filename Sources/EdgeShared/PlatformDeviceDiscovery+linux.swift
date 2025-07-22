@@ -5,9 +5,15 @@
     import Subprocess
 
     public struct PlatformDeviceDiscovery: DeviceDiscovery {
-        public init() {}
+        private let logger: Logger
 
-        public func findUSBDevices(logger: Logger) async -> [USBDevice] {
+        public init(
+            logger: Logger
+        ) {
+            self.logger = logger
+        }
+
+        public func findUSBDevices() async -> [USBDevice] {
             logger.info("Listing USB devices on Linux")
             var devices: [USBDevice] = []
 
@@ -80,13 +86,13 @@
             return devices
         }
 
-        public func findEthernetInterfaces(logger: Logger) async -> [EthernetInterface] {
+        public func findEthernetInterfaces() async -> [EthernetInterface] {
             logger.error("Listing Ethernet interfaces on Linux is not implemented")
             let interfaces: [EthernetInterface] = []
             return interfaces
         }
 
-        public func findLANDevices(logger: Logger) async throws -> [LANDevice] {
+        public func findLANDevices() async throws -> [LANDevice] {
             var interfaces: [LANDevice] = []
 
             let resolver = try AsyncDNSResolver()

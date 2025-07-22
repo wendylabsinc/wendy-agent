@@ -40,9 +40,9 @@ actor PlatformUSBMonitor: USBMonitorService {
     private var monitoringTask: Task<Void, Error>?
     private var lastKnownDevices: Set<USBDeviceInfo> = []
 
-    init(logger: Logger) {
+    init(deviceDiscovery: DeviceDiscovery, logger: Logger) {
         self.logger = logger
-        self.deviceDiscovery = PlatformDeviceDiscovery()
+        self.deviceDiscovery = deviceDiscovery
     }
 
     func start() async throws {
@@ -54,7 +54,7 @@ actor PlatformUSBMonitor: USBMonitorService {
         logger.info("Starting USB device monitoring...")
 
         // Get initial device state
-        let initialDevices = await deviceDiscovery.findUSBDevices(logger: logger)
+        let initialDevices = await deviceDiscovery.findUSBDevices()
         lastKnownDevices = Set(initialDevices.map(USBDeviceInfo.init))
 
         // Start monitoring task
@@ -82,21 +82,21 @@ actor PlatformUSBMonitor: USBMonitorService {
         while !Task.isCancelled {
             do {
                 // Discover current USB devices
-                let currentDevices = await deviceDiscovery.findUSBDevices(logger: logger)
+                let currentDevices = await deviceDiscovery.findUSBDevices()
                 let currentDeviceInfos = Set(currentDevices.map(USBDeviceInfo.init))
 
                 // Find newly connected devices
                 let connectedDevices = currentDeviceInfos.subtracting(lastKnownDevices)
                 for device in connectedDevices {
                     logger.debug("USB device connected: \(device.name)")
-                    await deviceHandler?(.connected(device))
+                    deviceHandler?(.connected(device))
                 }
 
                 // Find disconnected devices
                 let disconnectedDevices = lastKnownDevices.subtracting(currentDeviceInfos)
                 for device in disconnectedDevices {
                     logger.debug("USB device disconnected: \(device.name)")
-                    await deviceHandler?(.disconnected(device))
+                    deviceHandler?(.disconnected(device))
                 }
 
                 // Update known devices
