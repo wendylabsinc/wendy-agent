@@ -36,13 +36,16 @@ struct USBDeviceInfo: Sendable, Hashable {
 actor PlatformUSBMonitor: USBMonitorService {
     private let logger: Logger
     private let deviceDiscovery: DeviceDiscovery
+    private let pollingInterval: Duration
     private var deviceHandler: (@Sendable (USBDeviceEvent) -> Void)?
     private var monitoringTask: Task<Void, Error>?
     private var lastKnownDevices: Set<USBDeviceInfo> = []
 
-    init(deviceDiscovery: DeviceDiscovery, logger: Logger) {
+
+    init(deviceDiscovery: DeviceDiscovery, logger: Logger, pollingInterval: Duration) {
         self.logger = logger
         self.deviceDiscovery = deviceDiscovery
+        self.pollingInterval = pollingInterval
     }
 
     func start() async throws {
@@ -81,6 +84,7 @@ actor PlatformUSBMonitor: USBMonitorService {
     private func runMonitoringLoop() async throws {
         while !Task.isCancelled {
             do {
+                logger.debug("Polling for USB devices")
                 // Discover current USB devices
                 let currentDevices = await deviceDiscovery.findUSBDevices()
                 let currentDeviceInfos = Set(currentDevices.map(USBDeviceInfo.init))
@@ -102,9 +106,8 @@ actor PlatformUSBMonitor: USBMonitorService {
                 // Update known devices
                 lastKnownDevices = currentDeviceInfos
 
-                // Wait before next poll
-                try await Task.sleep(for: .seconds(2))
-
+                // Wait before next poll (now configurable)
+                try await Task.sleep(for: pollingInterval)
             } catch {
                 if !Task.isCancelled {
                     logger.error("Error during USB monitoring: \(error)")
