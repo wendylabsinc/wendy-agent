@@ -9,6 +9,7 @@ let package = Package(
     products: [
         .executable(name: "edge-agent", targets: ["edge-agent"]),
         .executable(name: "edge", targets: ["edge"]),
+        .executable(name: "edge-helper", targets: ["edge-helper"]),
     ],
     dependencies: [
         .package(url: "https://github.com/swift-server/async-http-client.git", from: "1.25.2"),
@@ -159,6 +160,19 @@ let package = Package(
                 .target(name: "edge"),
                 .target(name: "edge-agent"),
                 .target(name: "EdgeAgentGRPC")
+            ]
+        ),
+
+        /// The edge helper daemon for USB device monitoring
+        .executableTarget(
+            name: "edge-helper",
+            dependencies: [
+                .product(name: "ArgumentParser", package: "swift-argument-parser"),
+                .product(name: "Logging", package: "swift-log"),
+                .product(name: "SystemPackage", package: "swift-system"),
+                .target(name: "EdgeShared"),
+                // Reuse existing device discovery components
+                .target(name: "edge"), // For device discovery protocols
             ]
         ),
 
