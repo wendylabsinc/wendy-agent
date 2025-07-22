@@ -1,3 +1,6 @@
+#if os(macOS)
+import Darwin
+#endif
 import Foundation
 import Logging
 
@@ -8,7 +11,8 @@ protocol IPAddressManager: Sendable {
     func releaseIPAddress(for interface: NetworkInterface) async
 }
 
-/// Platform-specific IP address manager implementation
+#if os(macOS)
+/// Platform-specific IP address manager implementation using native macOS APIs
 actor PlatformIPAddressManager: IPAddressManager {
     private let logger: Logger
     private var assignedRanges: Set<String> = []
@@ -28,7 +32,7 @@ actor PlatformIPAddressManager: IPAddressManager {
         logger.info("Initializing IP address manager")
 
         // Scan for existing EdgeOS interfaces to avoid conflicts
-        try scanExistingInterfaces()
+        try await scanExistingInterfaces()
 
         logger.info("IP address manager initialized with \(assignedRanges.count) existing ranges")
     }
@@ -45,7 +49,7 @@ actor PlatformIPAddressManager: IPAddressManager {
         }
 
         // Find an available IP range
-        let availableRange = try findAvailableRange()
+        let availableRange = try await findAvailableRange()
         let ipAddress = "\(baseOctet1).\(baseOctet2).\(availableRange).1"
 
         // Mark range as assigned
@@ -78,114 +82,151 @@ actor PlatformIPAddressManager: IPAddressManager {
         }
     }
 
-    private func findAvailableRange() throws -> Int {
+    private func findAvailableRange() async throws -> Int {
         for range in rangeStart...rangeEnd {
             let rangeKey = "\(baseOctet1).\(baseOctet2).\(range)"
-            if !assignedRanges.contains(rangeKey) && !isRangeInUse(range) {
-                return range
+            
+            // Check if range is not already assigned and not in use
+            if !assignedRanges.contains(rangeKey) {
+                let inUse = await isRangeInUse(range)
+                if !inUse {
+                    return range
+                }
             }
         }
 
         throw IPAddressManagerError.noAvailableRanges
     }
 
-    private func isRangeInUse(_ range: Int) -> Bool {
-        do {
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/sbin/ifconfig")
-            process.arguments = []
-
-            let pipe = Pipe()
-            process.standardOutput = pipe
-            process.standardError = pipe
-
-            try process.run()
-            process.waitUntilExit()
-
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            let output = String(data: data, encoding: .utf8) ?? ""
-
-            // Check if any interface has an IP in this range
-            let rangePattern = "\(baseOctet1)\\.\(baseOctet2)\\.\(range)\\."
-            return output.range(of: rangePattern, options: .regularExpression) != nil
-
-        } catch {
-            logger.warning("Failed to check IP range usage: \(error)")
+    private func isRangeInUse(_ range: Int) async -> Bool {
+        // Use getifaddrs to check if the IP range is already in use on the system
+        var ifaddrs: UnsafeMutablePointer<ifaddrs>?
+        
+        guard getifaddrs(&ifaddrs) == 0 else {
+            logger.warning("Failed to get interface addresses for range check")
             return false
         }
-    }
-
-    private func scanExistingInterfaces() throws {
-        logger.debug("Scanning existing network interfaces for IP conflicts")
-
-        do {
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/sbin/ifconfig")
-            process.arguments = []
-
-            let pipe = Pipe()
-            process.standardOutput = pipe
-            process.standardError = pipe
-
-            try process.run()
-            process.waitUntilExit()
-
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            let output = String(data: data, encoding: .utf8) ?? ""
-
-            // Parse ifconfig output for IP addresses in our managed range
-            let lines = output.components(separatedBy: .newlines)
-            var currentInterface: String?
-
-            for line in lines {
-                // Check for interface name
-                if !line.hasPrefix("\t") && !line.hasPrefix(" ") && line.contains(":") {
-                    let parts = line.components(separatedBy: ":")
-                    currentInterface = parts.first?.trimmingCharacters(in: .whitespaces)
-                }
-
-                // Check for inet addresses in our range
-                if line.contains("inet ") {
-                    let pattern = "inet (\\d+\\.\\d+\\.\\d+\\.\\d+)"
-                    if let regex = try? NSRegularExpression(pattern: pattern),
-                        let match = regex.firstMatch(
-                            in: line,
-                            range: NSRange(line.startIndex..., in: line)
-                        )
-                    {
-                        let ipRange = Range(match.range(at: 1), in: line)!
-                        let ipAddress = String(line[ipRange])
-
-                        // Check if it's in our managed range
-                        let components = ipAddress.split(separator: ".")
-                        if components.count == 4,
-                            components[0] == String(baseOctet1),
-                            components[1] == String(baseOctet2),
-                            let thirdOctet = Int(components[2]),
-                            thirdOctet >= rangeStart && thirdOctet <= rangeEnd
-                        {
-
-                            let rangeKey = "\(baseOctet1).\(baseOctet2).\(thirdOctet)"
-                            assignedRanges.insert(rangeKey)
-
-                            if let interface = currentInterface {
-                                interfaceToIP[interface] = ipAddress
-                            }
-
-                            logger.debug(
-                                "Found existing IP \(ipAddress) on interface \(currentInterface ?? "unknown")"
-                            )
-                        }
-                    }
+        
+        defer { freeifaddrs(ifaddrs) }
+        
+        var current = ifaddrs
+        while current != nil {
+            let addr = current!.pointee
+            
+            // Get interface name from the fixed-size character array
+            let interfaceName = withUnsafePointer(to: addr.ifa_name) {
+                $0.withMemoryRebound(to: CChar.self, capacity: MemoryLayout.size(ofValue: addr.ifa_name)) {
+                    String(cString: $0)
                 }
             }
+            
+            if let ifaAddr = addr.ifa_addr,
+               ifaAddr.pointee.sa_family == AF_INET {
+                
+                let sockaddr = ifaAddr.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { $0.pointee }
+                let ip = inet_ntoa(sockaddr.sin_addr)
+                guard let ipCString = ip else {
+                    current = addr.ifa_next
+                    continue
+                }
+                let ipString = String(cString: ipCString)
+                
+                // Check if this IP is in our target range
+                let components = ipString.split(separator: ".")
+                if components.count == 4,
+                   components[0] == String(baseOctet1),
+                   components[1] == String(baseOctet2),
+                   let thirdOctet = Int(components[2]),
+                   thirdOctet == range {
+                    
+                    logger.debug("Range \(range) is in use by interface \(interfaceName) with IP \(ipString)")
+                    return true
+                }
+            }
+            
+            current = addr.ifa_next
+        }
+        
+        return false
+    }
 
-        } catch {
-            logger.warning("Failed to scan existing interfaces: \(error)")
-            throw IPAddressManagerError.scanFailed(error.localizedDescription)
+    private func scanExistingInterfaces() async throws {
+        logger.debug("Scanning existing network interfaces for IP conflicts")
+
+        var ifaddrs: UnsafeMutablePointer<ifaddrs>?
+        
+        guard getifaddrs(&ifaddrs) == 0 else {
+            logger.warning("Failed to get interface addresses for scanning")
+            throw IPAddressManagerError.scanFailed("Could not get interface addresses")
+        }
+        
+        defer { freeifaddrs(ifaddrs) }
+        
+        var current = ifaddrs
+        while current != nil {
+            let addr = current!.pointee
+            
+            // Get interface name from the fixed-size character array
+            let interfaceName = withUnsafePointer(to: addr.ifa_name) {
+                $0.withMemoryRebound(to: CChar.self, capacity: MemoryLayout.size(ofValue: addr.ifa_name)) {
+                    String(cString: $0)
+                }
+            }
+            
+            if let ifaAddr = addr.ifa_addr,
+               ifaAddr.pointee.sa_family == AF_INET {
+                
+                let sockaddr = ifaAddr.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { $0.pointee }
+                let ip = inet_ntoa(sockaddr.sin_addr)
+                guard let ipCString = ip else {
+                    current = addr.ifa_next
+                    continue
+                }
+                let ipAddress = String(cString: ipCString)
+                
+                // Check if it's in our managed range
+                let components = ipAddress.split(separator: ".")
+                if components.count == 4,
+                   components[0] == String(baseOctet1),
+                   components[1] == String(baseOctet2),
+                   let thirdOctet = Int(components[2]),
+                   thirdOctet >= rangeStart && thirdOctet <= rangeEnd {
+
+                    let rangeKey = "\(baseOctet1).\(baseOctet2).\(thirdOctet)"
+                    assignedRanges.insert(rangeKey)
+                    interfaceToIP[interfaceName] = ipAddress
+
+                    logger.debug("Found existing IP \(ipAddress) on interface \(interfaceName)")
+                }
+            }
+            
+            current = addr.ifa_next
         }
     }
 }
+
+#else
+/// Fallback implementation for non-macOS platforms
+actor PlatformIPAddressManager: IPAddressManager {
+    private let logger: Logger
+
+    init(logger: Logger) {
+        self.logger = logger
+    }
+
+    func initialize() async throws {
+        logger.warning("IP address management not supported on this platform")
+    }
+
+    func assignIPAddress(for interface: NetworkInterface) async throws -> IPConfiguration {
+        throw IPAddressManagerError.configurationFailed("IP address management not supported on this platform")
+    }
+
+    func releaseIPAddress(for interface: NetworkInterface) async {
+        logger.warning("IP address management not supported on this platform")
+    }
+}
+#endif
 
 /// Errors related to IP address management
 enum IPAddressManagerError: Error, LocalizedError {
