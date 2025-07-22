@@ -1,6 +1,7 @@
 #if os(macOS)
     import Foundation
     import IOKit
+    import EdgeShared
     @testable import edge
 
     /// Represents a mock device for testing

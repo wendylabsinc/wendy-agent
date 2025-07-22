@@ -6,11 +6,12 @@
     import IOKit.usb
     import Network
     import SystemConfiguration
-    struct PlatformDeviceDiscovery: DeviceDiscovery {
+
+    public struct PlatformDeviceDiscovery: DeviceDiscovery {
         private let ioServiceProvider: IOServiceProvider
         private let networkInterfaceProvider: NetworkInterfaceProvider
 
-        init(
+        public init(
             ioServiceProvider: IOServiceProvider = DefaultIOServiceProvider(),
             networkInterfaceProvider: NetworkInterfaceProvider = DefaultNetworkInterfaceProvider()
         ) {
@@ -18,7 +19,7 @@
             self.networkInterfaceProvider = networkInterfaceProvider
         }
 
-        func findUSBDevices(logger: Logger) async -> [USBDevice] {
+        public func findUSBDevices(logger: Logger) async -> [USBDevice] {
             var devices: [USBDevice] = []
             let matchingDict = ioServiceProvider.createMatchingDictionary(
                 className: kIOUSBDeviceClassName
@@ -72,7 +73,7 @@
             return devices
         }
 
-        func findEthernetInterfaces(logger: Logger) async -> [EthernetInterface] {
+        public func findEthernetInterfaces(logger: Logger) async -> [EthernetInterface] {
             var interfaces: [EthernetInterface] = []
 
             guard let scInterfaces = networkInterfaceProvider.copyAllNetworkInterfaces() else {
@@ -133,7 +134,7 @@
             return interfaces
         }
 
-        func findLANDevices(logger: Logger) async throws -> [LANDevice] {
+        public func findLANDevices(logger: Logger) async throws -> [LANDevice] {
             var interfaces: [LANDevice] = []
 
             let resolver = try AsyncDNSResolver()

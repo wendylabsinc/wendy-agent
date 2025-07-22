@@ -3,7 +3,7 @@
     import SystemConfiguration
 
     /// Protocol that abstracts SystemConfiguration network interface operations to allow for dependency injection and testing
-    protocol NetworkInterfaceProvider: Sendable {
+    public protocol NetworkInterfaceProvider: Sendable {
         /// Gets all network interfaces
         func copyAllNetworkInterfaces() -> [SCNetworkInterface]?
 
@@ -21,24 +21,26 @@
     }
 
     /// Default implementation that uses the real SystemConfiguration APIs
-    final class DefaultNetworkInterfaceProvider: NetworkInterfaceProvider {
-        func copyAllNetworkInterfaces() -> [SCNetworkInterface]? {
+    public final class DefaultNetworkInterfaceProvider: NetworkInterfaceProvider {
+        public init() {}
+
+        public func copyAllNetworkInterfaces() -> [SCNetworkInterface]? {
             return SCNetworkInterfaceCopyAll() as? [SCNetworkInterface]
         }
 
-        func getInterfaceType(interface: SCNetworkInterface) -> String? {
+        public func getInterfaceType(interface: SCNetworkInterface) -> String? {
             return SCNetworkInterfaceGetInterfaceType(interface) as? String
         }
 
-        func getBSDName(interface: SCNetworkInterface) -> String? {
+        public func getBSDName(interface: SCNetworkInterface) -> String? {
             return SCNetworkInterfaceGetBSDName(interface) as? String
         }
 
-        func getLocalizedDisplayName(interface: SCNetworkInterface) -> String? {
+        public func getLocalizedDisplayName(interface: SCNetworkInterface) -> String? {
             return SCNetworkInterfaceGetLocalizedDisplayName(interface) as? String
         }
 
-        func getHardwareAddressString(interface: SCNetworkInterface) -> String? {
+        public func getHardwareAddressString(interface: SCNetworkInterface) -> String? {
             return SCNetworkInterfaceGetHardwareAddressString(interface) as? String
         }
     }

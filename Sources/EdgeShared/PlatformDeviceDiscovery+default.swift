@@ -2,18 +2,20 @@
     import Foundation
     import Logging
 
-    struct PlatformDeviceDiscovery: DeviceDiscovery {
-        func findUSBDevices(logger: Logger) async -> [USBDevice] {
+    public struct PlatformDeviceDiscovery: DeviceDiscovery {
+        public init() {}
+
+        public func findUSBDevices(logger: Logger) async -> [USBDevice] {
             logger.warning("Device listing is not supported on this platform")
             return []
         }
 
-        func findEthernetInterfaces(logger: Logger) async -> [EthernetInterface] {
+        public func findEthernetInterfaces(logger: Logger) async -> [EthernetInterface] {
             logger.warning("Interface listing is not supported on this platform")
             return []
         }
 
-        func findLANDevices(logger: Logger) async throws -> [LANDevice] {
+        public func findLANDevices(logger: Logger) async throws -> [LANDevice] {
             logger.warning("LAN device listing is not supported on this platform")
             return []
         }

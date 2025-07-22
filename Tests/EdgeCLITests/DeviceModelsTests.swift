@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import EdgeShared
 
 @testable import edge
 

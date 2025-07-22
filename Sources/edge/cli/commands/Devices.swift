@@ -1,5 +1,6 @@
 import ArgumentParser
 import EdgeAgentGRPC
+import EdgeShared
 import Foundation
 import Logging
 

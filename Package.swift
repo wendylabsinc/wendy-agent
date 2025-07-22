@@ -102,7 +102,11 @@ let package = Package(
         ),
         .target(
             name: "EdgeShared",
-            dependencies: []
+            dependencies: [
+                .product(name: "Logging", package: "swift-log"),
+                .product(name: "AsyncDNSResolver", package: "swift-async-dns-resolver"),
+                .product(name: "Subprocess", package: "swift-subprocess"),
+            ]
         ),
 
         .target(

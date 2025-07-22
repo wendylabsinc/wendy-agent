@@ -6,37 +6,37 @@ public enum OutputFormat {
 }
 
 // Add to DeviceModels.swift or create a separate file like Device.swift in the domain folder
-protocol Device: Codable {
+public protocol Device: Codable {
     var isEdgeOSDevice: Bool { get }
     func toHumanReadableString() -> String
 }
 
 // Add a protocol extension for common functionality
 extension Device {
-    static func formatEmpty(type: String) -> String {
+    public static func formatEmpty(type: String) -> String {
         return "No EdgeOS \(type) found."
     }
 }
 
-struct DevicesCollection: Encodable {
-    var usbDevices: [USBDevice]
-    var ethernetDevices: [EthernetInterface]
-    var lanDevices: [LANDevice]
+public struct DevicesCollection: Encodable, Sendable {
+    public var usbDevices: [USBDevice]
+    public var ethernetDevices: [EthernetInterface]
+    public var lanDevices: [LANDevice]
 
-    init(usb: [USBDevice] = [], ethernet: [EthernetInterface] = [], lan: [LANDevice] = []) {
+    public init(usb: [USBDevice] = [], ethernet: [EthernetInterface] = [], lan: [LANDevice] = []) {
         self.usbDevices = usb
         self.ethernetDevices = ethernet
         self.lanDevices = lan
     }
 
-    func toJSON() throws -> String {
+    public func toJSON() throws -> String {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let data = try encoder.encode(self)
         return String(data: data, encoding: .utf8) ?? "{}"
     }
 
-    func toHumanReadableString() -> String {
+    public func toHumanReadableString() -> String {
         var result = ""
 
         // Add USB devices section
@@ -73,28 +73,49 @@ struct DevicesCollection: Encodable {
     }
 }
 
-struct LANDevice: Device, Encodable {
-    let id: String
-    let displayName: String
-    let hostname: String
-    let port: Int
-    let interfaceType: String
-    let isEdgeOSDevice: Bool
-    var agentVersion: String?
+public struct LANDevice: Device, Encodable, Sendable {
+    public let id: String
+    public let displayName: String
+    public let hostname: String
+    public let port: Int
+    public let interfaceType: String
+    public let isEdgeOSDevice: Bool
+    public var agentVersion: String?
 
-    func toJSON() throws -> String {
+    public init(
+        id: String,
+        displayName: String,
+        hostname: String,
+        port: Int,
+        interfaceType: String,
+        isEdgeOSDevice: Bool,
+        agentVersion: String? = nil
+    ) {
+        self.id = id
+        self.displayName = displayName
+        self.hostname = hostname
+        self.port = port
+        self.interfaceType = interfaceType
+        self.isEdgeOSDevice = isEdgeOSDevice
+        self.agentVersion = agentVersion
+    }
+
+    public func toJSON() throws -> String {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let data = try encoder.encode(self)
         return String(data: data, encoding: .utf8) ?? "{}"
     }
 
-    func toHumanReadableString() -> String {
+    public func toHumanReadableString() -> String {
         return
             "\(displayName)\(agentVersion.map { " (\($0))" } ?? "") @ \(hostname):\(port) [\(id)]"
     }
 
-    static func formatCollection(_ interfaces: [LANDevice], as format: OutputFormat) -> String {
+    public static func formatCollection(
+        _ interfaces: [LANDevice],
+        as format: OutputFormat
+    ) -> String {
         return DeviceFormatter.formatCollection(
             interfaces,
             as: format,
@@ -103,30 +124,31 @@ struct LANDevice: Device, Encodable {
     }
 }
 
-struct EthernetInterface: Device, Encodable {
-    let name: String
-    let displayName: String
-    let interfaceType: String
-    let macAddress: String?
-    let isEdgeOSDevice: Bool
-    var agentVersion: String?
+public struct EthernetInterface: Device, Encodable, Sendable {
+    public let name: String
+    public let displayName: String
+    public let interfaceType: String
+    public let macAddress: String?
+    public let isEdgeOSDevice: Bool
+    public var agentVersion: String?
 
-    init(name: String, displayName: String, interfaceType: String, macAddress: String?) {
+    public init(name: String, displayName: String, interfaceType: String, macAddress: String?) {
         self.name = name
         self.displayName = displayName
         self.interfaceType = interfaceType
         self.macAddress = macAddress
         self.isEdgeOSDevice = displayName.contains("EdgeOS") || name.contains("EdgeOS")
+        self.agentVersion = nil
     }
 
-    func toJSON() throws -> String {
+    public func toJSON() throws -> String {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let data = try encoder.encode(self)
         return String(data: data, encoding: .utf8) ?? "{}"
     }
 
-    func toHumanReadableString() -> String {
+    public func toHumanReadableString() -> String {
         var result = "- \(displayName) (\(name)) [\(interfaceType)]"
         if let mac = macAddress {
             result += "\n  MAC Address: \(mac)"
@@ -134,7 +156,7 @@ struct EthernetInterface: Device, Encodable {
         return result
     }
 
-    static func formatCollection(
+    public static func formatCollection(
         _ interfaces: [EthernetInterface],
         as format: OutputFormat
     ) -> String {
@@ -146,15 +168,15 @@ struct EthernetInterface: Device, Encodable {
     }
 }
 
-struct USBDevice: Device, Encodable {
-    let name: String
-    let displayName: String
-    let vendorId: String
-    let productId: String
-    let isEdgeOSDevice: Bool
-    var agentVersion: String?
+public struct USBDevice: Device, Encodable, Sendable {
+    public let name: String
+    public let displayName: String
+    public let vendorId: String
+    public let productId: String
+    public let isEdgeOSDevice: Bool
+    public var agentVersion: String?
 
-    init(name: String, vendorId: Int, productId: Int) {
+    public init(name: String, vendorId: Int, productId: Int) {
         self.name = name
         self.displayName = name
         self.vendorId = String(format: "0x%04X", vendorId)
@@ -163,25 +185,25 @@ struct USBDevice: Device, Encodable {
         self.agentVersion = nil
     }
 
-    func toJSON() throws -> String {
+    public func toJSON() throws -> String {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let data = try encoder.encode(self)
         return String(data: data, encoding: .utf8) ?? "{}"
     }
 
-    func toHumanReadableString() -> String {
+    public func toHumanReadableString() -> String {
         return
             "\(name)\(agentVersion.map { " (\($0))" } ?? "") - Vendor ID: \(vendorId), Product ID: \(productId)"
     }
 
-    static func formatCollection(_ devices: [USBDevice], as format: OutputFormat) -> String {
+    public static func formatCollection(_ devices: [USBDevice], as format: OutputFormat) -> String {
         return DeviceFormatter.formatCollection(devices, as: format, collectionName: "USB Devices")
     }
 }
 
-struct DeviceFormatter {
-    static func formatCollection<T: Device>(
+public struct DeviceFormatter {
+    public static func formatCollection<T: Device>(
         _ devices: [T],
         as format: OutputFormat,
         collectionName: String

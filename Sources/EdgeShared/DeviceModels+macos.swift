@@ -8,7 +8,7 @@
 
     // macOS specific extension for USBDevice
     extension USBDevice {
-        static func fromIORegistryEntry(
+        public static func fromIORegistryEntry(
             _ device: io_service_t,
             provider: IOServiceProvider? = nil
         ) -> USBDevice? {
