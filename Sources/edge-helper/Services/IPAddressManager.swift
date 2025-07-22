@@ -90,9 +90,6 @@ actor PlatformIPAddressManager: IPAddressManager {
     }
 
     private func isRangeInUse(_ range: Int) -> Bool {
-        // Check if the IP range is already in use on the system
-        let testIP = "\(baseOctet1).\(baseOctet2).\(range).1"
-
         do {
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/sbin/ifconfig")

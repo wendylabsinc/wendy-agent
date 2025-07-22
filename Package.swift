@@ -160,7 +160,7 @@ let package = Package(
                 .target(name: "edge"),
                 .target(name: "edge-agent"),
                 .target(name: "EdgeAgentGRPC"),
-                .target(name: "edge-helper")
+                .target(name: "edge-helper", condition: .when(platforms: [.macOS]))
             ]
         ),
 
@@ -174,6 +174,14 @@ let package = Package(
                 .target(name: "EdgeShared"),
                 // Reuse existing device discovery components
                 .target(name: "edge"), // For device discovery protocols
+            ]
+        ),
+
+        .testTarget(
+            name: "EdgeHelperMacOSTests",
+            dependencies: [
+                .target(name: "edge-helper"),
+                .target(name: "EdgeShared")
             ]
         ),
 
