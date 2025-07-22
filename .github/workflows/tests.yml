@@ -31,4 +31,25 @@ jobs:
         run: swift build
 
       - name: Run Tests
-        run: swift test
+        run: swift test --enable-code-coverage
+
+      # Generate code coverage report
+      - name: Generate Code Coverage Report
+        shell: bash
+        run: |
+          llvm-cov export -format="lcov" .build/release/*.xctest -instr-profile .build/release/codecov/default.profdata > coverage.lcov
+      
+      # Install dependencies for Codecov
+      - name: Install dependencies
+        shell: bash
+        run: |
+          apt-get update
+          apt-get install -y curl gnupg
+      
+      # Upload coverage to Codecov
+      - name: Upload coverage reports to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          slug: edgeengineer/edge-agent
+          fail_ci_if_error: false
