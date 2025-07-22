@@ -149,14 +149,25 @@ actor EdgeHelperDaemon {
         do {
             // 1. Find network interfaces for this device
             let interfaces = await networkConfig.findEdgeOSInterfaces(for: device)
-            logger.debug("Found \(interfaces.count) interfaces for device", metadata: ["device": .string(device.name), "interfaces": .array(interfaces.map { .string($0.bsdName) })])
+            logger.debug(
+                "Found \(interfaces.count) interfaces for device",
+                metadata: [
+                    "device": .string(device.name),
+                    "interfaces": .array(interfaces.map { .string($0.bsdName) }),
+                ]
+            )
 
             // 2. Configure each interface
             for interface in interfaces {
                 // Check if already configured
                 let isConfigured = await networkConfig.isInterfaceConfigured(interface)
                 if isConfigured {
-                    logger.debug("Interface \(interface.bsdName) already configured", metadata: ["device": .string(device.name), "interface": .string(interface.bsdName)])
+                    logger.debug(
+                        "Interface \(interface.bsdName) already configured",
+                        metadata: [
+                            "device": .string(device.name), "interface": .string(interface.bsdName),
+                        ]
+                    )
                     continue
                 }
 
@@ -166,7 +177,13 @@ actor EdgeHelperDaemon {
                 // 4. Apply network configuration
                 try await networkConfig.configureInterface(interface, with: ipConfig)
 
-                logger.debug("Configured interface \(interface.bsdName) with IP \(ipConfig.ipAddress)", metadata: ["device": .string(device.name), "interface": .string(interface.bsdName), "ip": .string(ipConfig.ipAddress)])
+                logger.debug(
+                    "Configured interface \(interface.bsdName) with IP \(ipConfig.ipAddress)",
+                    metadata: [
+                        "device": .string(device.name), "interface": .string(interface.bsdName),
+                        "ip": .string(ipConfig.ipAddress),
+                    ]
+                )
             }
         } catch {
             logger.error("Failed to configure EdgeOS device: \(error)")
