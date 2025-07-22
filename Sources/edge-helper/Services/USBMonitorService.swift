@@ -41,7 +41,6 @@ actor PlatformUSBMonitor: USBMonitorService {
     private var monitoringTask: Task<Void, Error>?
     private var lastKnownDevices: Set<USBDeviceInfo> = []
 
-
     init(deviceDiscovery: DeviceDiscovery, logger: Logger, pollingInterval: Duration) {
         self.logger = logger
         self.deviceDiscovery = deviceDiscovery

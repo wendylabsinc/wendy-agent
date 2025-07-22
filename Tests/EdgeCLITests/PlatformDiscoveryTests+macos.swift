@@ -266,7 +266,7 @@
         @Test("Find Ethernet Interfaces with real implementation and mocked dependencies")
         func testFindEthernetInterfacesReal() async throws {
             let logger = Logger(label: "test")
-            
+
             // Mock the system dependencies, not the whole discovery service
             let mockNetworkProvider = MockNetworkInterfaceProvider()
             mockNetworkProvider.mockInterfaces = [
@@ -297,16 +297,16 @@
                     macAddress: nil
                 ),
             ]
-            
+
             // Test the REAL implementation with mocked dependencies
             let discovery = PlatformDeviceDiscovery(
                 networkInterfaceProvider: mockNetworkProvider,
                 logger: logger
             )
-            
+
             // Now we're testing real logic: filtering, mapping, etc.
             let interfaces = await discovery.findEthernetInterfaces()
-            
+
             // Test the actual business rules
             #expect(interfaces.allSatisfy { $0.isEdgeOSDevice })
             #expect(interfaces.contains { $0.interfaceType == "Ethernet" })

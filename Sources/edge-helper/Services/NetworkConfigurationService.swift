@@ -38,7 +38,10 @@ actor PlatformNetworkConfiguration: NetworkConfigurationService {
     }
 
     func findEdgeOSInterfaces(for device: USBDeviceInfo) async -> [NetworkInterface] {
-        logger.debug("Finding network interfaces for EdgeOS device: \(device.name)")
+        logger.debug(
+            "Finding network interfaces for EdgeOS device",
+            metadata: ["device": .string(device.name)]
+        )
 
         // Get all ethernet interfaces
         let ethernetInterfaces = await deviceDiscovery.findEthernetInterfaces()
@@ -55,7 +58,10 @@ actor PlatformNetworkConfiguration: NetworkConfigurationService {
             )
         }
 
-        logger.debug("Found \(networkInterfaces.count) EdgeOS network interfaces")
+        logger.debug(
+            "Found \(networkInterfaces.count) EdgeOS network interfaces",
+            metadata: ["device": .string(device.name)]
+        )
         return networkInterfaces
     }
 

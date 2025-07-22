@@ -1,113 +1,117 @@
+import EdgeShared
 import Foundation
 import Logging
-import EdgeShared
 
 /// Mock device discovery service for testing USB monitor
 actor MockUSBDeviceDiscovery: DeviceDiscovery {
-    
+
     // Test control properties
     var mockUSBDevices: [USBDevice] = []
     var mockEthernetInterfaces: [EthernetInterface] = []
     var mockLANDevices: [LANDevice] = []
-    
+
     var shouldFailUSBDiscovery = false
     var shouldFailEthernetDiscovery = false
     var shouldFailLANDiscovery = false
-    
+
     // Call tracking
     var findUSBDevicesCallCount = 0
     var findEthernetInterfacesCallCount = 0
     var findLANDevicesCallCount = 0
-    
+
     private let logger: Logger
-    
+
     init(logger: Logger) {
         self.logger = logger
     }
-    
+
     func findUSBDevices() async -> [USBDevice] {
         findUSBDevicesCallCount += 1
-        
+
         if shouldFailUSBDiscovery {
             logger.error("Mock USB discovery failure")
             return []
         }
-        
+
         for device in mockUSBDevices {
             if device.isEdgeOSDevice {
                 logger.info("deviceName=\(device.name) [EdgeShared] EdgeOS device found")
             } else {
-                logger.debug("device=\(device.name) - Vendor ID: \(device.vendorId), Product ID: \(device.productId) [EdgeShared] Found device")
+                logger.debug(
+                    "device=\(device.name) - Vendor ID: \(device.vendorId), Product ID: \(device.productId) [EdgeShared] Found device"
+                )
             }
         }
-        
+
         return mockUSBDevices
     }
-    
+
     func findEthernetInterfaces() async -> [EthernetInterface] {
         findEthernetInterfacesCallCount += 1
-        
+
         if shouldFailEthernetDiscovery {
             logger.error("Mock ethernet discovery failure")
             return []
         }
-        
+
         for interface in mockEthernetInterfaces {
             if interface.isEdgeOSDevice {
-                logger.info("interface=\(interface.displayName) [EdgeShared] EdgeOS interface found")
+                logger.info(
+                    "interface=\(interface.displayName) [EdgeShared] EdgeOS interface found"
+                )
             }
         }
-        
+
         return mockEthernetInterfaces
     }
-    
+
     func findLANDevices() async throws -> [LANDevice] {
         findLANDevicesCallCount += 1
-        
+
         if shouldFailLANDiscovery {
             throw MockDeviceDiscoveryError.lanDiscoveryFailed
         }
-        
+
         return mockLANDevices
     }
-    
+
     // Test helper methods
     func addMockUSBDevice(_ device: USBDevice) async {
         mockUSBDevices.append(device)
     }
-    
+
     func addMockEthernetInterface(_ interface: EthernetInterface) async {
         mockEthernetInterfaces.append(interface)
     }
-    
+
     func addMockLANDevice(_ device: LANDevice) async {
         mockLANDevices.append(device)
     }
-    
+
     func clearMockDevices() async {
         mockUSBDevices.removeAll()
         mockEthernetInterfaces.removeAll()
         mockLANDevices.removeAll()
     }
-    
+
     func setShouldFailUSBDiscovery(_ value: Bool) async {
         shouldFailUSBDiscovery = value
     }
-    
+
     func setShouldFailEthernetDiscovery(_ value: Bool) async {
         shouldFailEthernetDiscovery = value
     }
-    
+
     func setShouldFailLANDiscovery(_ value: Bool) async {
         shouldFailLANDiscovery = value
     }
-    
+
     func resetCounts() async {
         findUSBDevicesCallCount = 0
         findEthernetInterfacesCallCount = 0
         findLANDevicesCallCount = 0
     }
-    
+
     func reset() async {
         await resetCounts()
         await clearMockDevices()
@@ -119,17 +123,28 @@ actor MockUSBDeviceDiscovery: DeviceDiscovery {
 
 /// Mock device creation helpers
 extension MockUSBDeviceDiscovery {
-    func addMockEdgeOSUSBDevice(name: String = "EdgeOS Device", vendorId: Int = 0x1D6B, productId: Int = 0x0104) async {
+    func addMockEdgeOSUSBDevice(
+        name: String = "EdgeOS Device",
+        vendorId: Int = 0x1D6B,
+        productId: Int = 0x0104
+    ) async {
         let device = USBDevice(name: name, vendorId: vendorId, productId: productId)
         await addMockUSBDevice(device)
     }
-    
-    func addMockRegularUSBDevice(name: String = "Regular Device", vendorId: Int = 0x1234, productId: Int = 0x5678) async {
+
+    func addMockRegularUSBDevice(
+        name: String = "Regular Device",
+        vendorId: Int = 0x1234,
+        productId: Int = 0x5678
+    ) async {
         let device = USBDevice(name: name, vendorId: vendorId, productId: productId)
         await addMockUSBDevice(device)
     }
-    
-    func addMockEdgeOSEthernetInterface(name: String = "EdgeOS Ethernet", bsdName: String = "en0") async {
+
+    func addMockEdgeOSEthernetInterface(
+        name: String = "EdgeOS Ethernet",
+        bsdName: String = "en0"
+    ) async {
         let interface = EthernetInterface(
             name: bsdName,
             displayName: name,
@@ -145,7 +160,7 @@ enum MockDeviceDiscoveryError: Error, LocalizedError {
     case usbDiscoveryFailed
     case ethernetDiscoveryFailed
     case lanDiscoveryFailed
-    
+
     var errorDescription: String? {
         switch self {
         case .usbDiscoveryFailed:
@@ -156,4 +171,4 @@ enum MockDeviceDiscoveryError: Error, LocalizedError {
             return "Mock LAN device discovery failed"
         }
     }
-} 
+}

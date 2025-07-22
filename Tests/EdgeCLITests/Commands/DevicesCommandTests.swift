@@ -1,7 +1,7 @@
+import EdgeShared
 import Foundation
 import Logging
 import Testing
-import EdgeShared
 
 @testable import edge
 

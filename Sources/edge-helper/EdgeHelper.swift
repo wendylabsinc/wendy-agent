@@ -39,12 +39,26 @@ struct EdgeHelper: AsyncParsableCommand {
         logger.info("Debug logging: \(debug)")
 
         let deviceDiscovery = PlatformDeviceDiscovery(logger: logger)
-
+        let usbMonitor = PlatformUSBMonitor(
+            deviceDiscovery: deviceDiscovery,
+            logger: logger,
+            pollingInterval: .seconds(30)
+        )
+        let networkConfig = PlatformNetworkConfiguration(
+            deviceDiscovery: deviceDiscovery,
+            logger: logger
+        )
+        let ipManager = PlatformIPAddressManager(logger: logger)
         // Create the main daemon service
-        let daemon = EdgeHelperDaemon(deviceDiscovery: deviceDiscovery, logger: logger)
+        let daemon = EdgeHelperDaemon(
+            usbMonitor: usbMonitor,
+            networkConfig: networkConfig,
+            ipManager: ipManager,
+            logger: logger
+        )
 
         logger.info("Initializing daemon services...")
-        await daemon.start()
+        try await daemon.start()
 
         // Keep the daemon running
         logger.info("EdgeOS Helper Daemon is running. Press Ctrl+C to stop.")
@@ -64,26 +78,43 @@ struct EdgeHelper: AsyncParsableCommand {
 /// Main daemon service that coordinates USB monitoring and network configuration
 actor EdgeHelperDaemon {
     private let logger: Logger
-    private let deviceDiscovery: DeviceDiscovery
+    private let usbMonitor: USBMonitorService
+    private let networkConfig: NetworkConfigurationService
+    private let ipManager: IPAddressManager
     private var isRunning = false
-    private var monitoringTask: Task<Void, Error>?
 
-    init(deviceDiscovery: DeviceDiscovery, logger: Logger) {
+    init(
+        usbMonitor: USBMonitorService,
+        networkConfig: NetworkConfigurationService,
+        ipManager: IPAddressManager,
+        logger: Logger
+    ) {
         self.logger = logger
-        self.deviceDiscovery = deviceDiscovery
+        self.usbMonitor = usbMonitor
+        self.networkConfig = networkConfig
+        self.ipManager = ipManager
     }
 
-    func start() async {
-        guard !isRunning else {
-            logger.warning("Daemon is already running")
-            return
-        }
+    func start() async throws {
+        guard !isRunning else { return }
 
         logger.info("Starting EdgeOS Helper Daemon services...")
 
-        // Start periodic device scanning
-        monitoringTask = Task {
-            await self.runPeriodicScan()
+        // Initialize IP manager
+        try await ipManager.initialize()
+
+        // Set up device event handling
+        await usbMonitor.setDeviceHandler { [weak self] event in
+            Task { await self?.handleDeviceEvent(event) }
+        }
+
+        // Start USB monitoring
+        do {
+            try await usbMonitor.start()
+        } catch {
+            logger.error("Failed to start USB monitoring: \(error)")
+            isRunning = false
+            return
         }
 
         isRunning = true
@@ -93,49 +124,68 @@ actor EdgeHelperDaemon {
     func stop() async {
         guard isRunning else { return }
 
-        logger.info("Stopping EdgeOS Helper Daemon...")
-
-        // Stop monitoring
-        monitoringTask?.cancel()
-
+        await usbMonitor.stop()
         isRunning = false
         logger.info("EdgeOS Helper Daemon stopped")
     }
 
-    private func runPeriodicScan() async {
-        while !Task.isCancelled {
-            do {
-                // Perform periodic device discovery
-                await performDeviceDiscovery()
-
-                // Wait 30 seconds before next scan
-                try await Task.sleep(for: .seconds(30))
-            } catch {
-                logger.error("Error during periodic scan: \(error)")
-                do {
-                    try await Task.sleep(for: .seconds(5))
-                } catch {
-                    // If we can't even sleep, break out of the loop
-                    break
-                }
-            }
+    private func handleDeviceEvent(_ event: USBDeviceEvent) async {
+        logger.info("Handling device event: \(event)")
+        switch event {
+        case .connected(let device) where device.isEdgeOS:
+            logger.info("Connected EdgeOS device: \(device.name)")
+            await configureEdgeOSDevice(device)
+        case .disconnected(let device) where device.isEdgeOS:
+            logger.info("Disconnected EdgeOS device: \(device.name)")
+            await cleanupEdgeOSDevice(device)
+        default:
+            break
         }
     }
 
-    private func performDeviceDiscovery() async {
-        logger.debug("Performing periodic device discovery...")
+    private func configureEdgeOSDevice(_ device: USBDeviceInfo) async {
+        logger.debug("Configuring EdgeOS device", metadata: ["device": .string(device.name)])
 
-        // Discover current USB devices
-        let usbDevices = await deviceDiscovery.findUSBDevices()
-        let edgeOSDevices = usbDevices.filter { $0.isEdgeOSDevice }
+        do {
+            // 1. Find network interfaces for this device
+            let interfaces = await networkConfig.findEdgeOSInterfaces(for: device)
+            logger.debug("Found \(interfaces.count) interfaces for device", metadata: ["device": .string(device.name), "interfaces": .array(interfaces.map { .string($0.bsdName) })])
 
-        logger.debug("Found \(edgeOSDevices.count) EdgeOS USB devices")
+            // 2. Configure each interface
+            for interface in interfaces {
+                // Check if already configured
+                let isConfigured = await networkConfig.isInterfaceConfigured(interface)
+                if isConfigured {
+                    logger.debug("Interface \(interface.bsdName) already configured", metadata: ["device": .string(device.name), "interface": .string(interface.bsdName)])
+                    continue
+                }
 
-        // For each EdgeOS device, log discovery (network configuration will be added later)
-        for device in edgeOSDevices {
-            logger.info(
-                "EdgeOS device detected: \(device.name) (VID: \(device.vendorId), PID: \(device.productId))"
-            )
+                // 3. Assign IP address
+                let ipConfig = try await ipManager.assignIPAddress(for: interface)
+
+                // 4. Apply network configuration
+                try await networkConfig.configureInterface(interface, with: ipConfig)
+
+                logger.debug("Configured interface \(interface.bsdName) with IP \(ipConfig.ipAddress)", metadata: ["device": .string(device.name), "interface": .string(interface.bsdName), "ip": .string(ipConfig.ipAddress)])
+            }
+        } catch {
+            logger.error("Failed to configure EdgeOS device: \(error)")
+        }
+    }
+
+    private func cleanupEdgeOSDevice(_ device: USBDeviceInfo) async {
+        logger.info("Cleaning up EdgeOS device: \(device.name)")
+
+        // Find and cleanup interfaces
+        let interfaces = await networkConfig.findEdgeOSInterfaces(for: device)
+        for interface in interfaces {
+            do {
+                try await networkConfig.cleanupInterface(interface)
+                await ipManager.releaseIPAddress(for: interface)
+                logger.info("Cleaned up interface \(interface.bsdName)")
+            } catch {
+                logger.error("Failed to cleanup interface \(interface.bsdName): \(error)")
+            }
         }
     }
 }
