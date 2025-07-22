@@ -97,7 +97,7 @@ struct DevicesCommand: AsyncParsableCommand {
         }
 
         let logger = Logger(label: "edge.cli.devices")
-        let discovery = PlatformDeviceDiscovery()
+        let discovery = PlatformDeviceDiscovery(logger: logger)
         let format = json ? OutputFormat.json : OutputFormat.text
 
         // Collect devices based on the requested type
@@ -107,22 +107,22 @@ struct DevicesCommand: AsyncParsableCommand {
 
         switch type {
         case .usb:
-            usbDevices = await discovery.findUSBDevices(logger: logger)
+            usbDevices = await discovery.findUSBDevices()
             logDevicesFound(usbDevices, deviceType: "USB device(s)", logger: logger)
 
         case .ethernet:
-            ethernetDevices = await discovery.findEthernetInterfaces(logger: logger)
+            ethernetDevices = await discovery.findEthernetInterfaces()
             logDevicesFound(ethernetDevices, deviceType: "Ethernet interface(s)", logger: logger)
 
         case .lan:
-            lanDevices = try await discovery.findLANDevices(logger: logger)
+            lanDevices = try await discovery.findLANDevices()
             logDevicesFound(lanDevices, deviceType: "LAN device(s)", logger: logger)
 
         case .all:
             // Fetch all types of devices
-            async let _usbDevices = await discovery.findUSBDevices(logger: logger)
-            async let _ethernetDevices = await discovery.findEthernetInterfaces(logger: logger)
-            async let _lanDevices = try await discovery.findLANDevices(logger: logger)
+            async let _usbDevices = await discovery.findUSBDevices()
+            async let _ethernetDevices = await discovery.findEthernetInterfaces()
+            async let _lanDevices = try await discovery.findLANDevices()
 
             usbDevices = await _usbDevices
             ethernetDevices = await _ethernetDevices

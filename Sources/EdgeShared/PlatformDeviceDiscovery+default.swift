@@ -3,19 +3,23 @@
     import Logging
 
     public struct PlatformDeviceDiscovery: DeviceDiscovery {
-        public init() {}
+        private let logger: Logger
 
-        public func findUSBDevices(logger: Logger) async -> [USBDevice] {
+        public init(logger: Logger) {
+            self.logger = logger
+        }
+
+        public func findUSBDevices() async -> [USBDevice] {
             logger.warning("Device listing is not supported on this platform")
             return []
         }
 
-        public func findEthernetInterfaces(logger: Logger) async -> [EthernetInterface] {
+        public func findEthernetInterfaces() async -> [EthernetInterface] {
             logger.warning("Interface listing is not supported on this platform")
             return []
         }
 
-        public func findLANDevices(logger: Logger) async throws -> [LANDevice] {
+        public func findLANDevices() async throws -> [LANDevice] {
             logger.warning("LAN device listing is not supported on this platform")
             return []
         }

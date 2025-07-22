@@ -1,7 +1,7 @@
 import Logging
 
 public protocol DeviceDiscovery: Sendable {
-    func findUSBDevices(logger: Logger) async -> [USBDevice]
-    func findEthernetInterfaces(logger: Logger) async -> [EthernetInterface]
-    func findLANDevices(logger: Logger) async throws -> [LANDevice]
+    func findUSBDevices() async -> [USBDevice]
+    func findEthernetInterfaces() async -> [EthernetInterface]
+    func findLANDevices() async throws -> [LANDevice]
 }
