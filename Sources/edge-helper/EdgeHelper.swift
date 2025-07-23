@@ -35,6 +35,7 @@ struct EdgeHelper: AsyncParsableCommand {
         let logger = Logger(label: "edge-helper")
 
         logger.info("Starting EdgeOS Helper Daemon")
+        logger.info("Version: \(Version.current)")
         logger.info("Foreground mode: \(foreground)")
         logger.info("Debug logging: \(debug)")
 
