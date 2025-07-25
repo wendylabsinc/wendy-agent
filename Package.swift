@@ -10,6 +10,7 @@ let package = Package(
         .executable(name: "edge-agent", targets: ["edge-agent"]),
         .executable(name: "edge", targets: ["edge"]),
         .executable(name: "edge-helper", targets: ["edge-helper"]),
+        .executable(name: "edge-network-daemon", targets: ["edge-network-daemon"]),
     ],
     dependencies: [
         .package(url: "https://github.com/swift-server/async-http-client.git", from: "1.25.2"),
@@ -174,6 +175,23 @@ let package = Package(
                 .target(name: "EdgeShared"),
                 // Reuse existing device discovery components
                 .target(name: "edge"), // For device discovery protocols
+            ]
+        ),
+
+        /// XPC Protocol for communication between CLI and privileged daemon
+        .target(
+            name: "CliXPCProtocol",
+            dependencies: []
+        ),
+
+        /// The privileged network daemon for macOS
+        .executableTarget(
+            name: "edge-network-daemon",
+            dependencies: [
+                .product(name: "ArgumentParser", package: "swift-argument-parser"),
+                .product(name: "Logging", package: "swift-log"),
+                .target(name: "EdgeShared"),
+                .target(name: "CliXPCProtocol"),
             ]
         ),
 

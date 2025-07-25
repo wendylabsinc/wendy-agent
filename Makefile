@@ -20,7 +20,7 @@ help: ## Show this help message
 	@echo 'Targets:'
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-20s %s\n", $$1, $$2}'
 
-all: build-cli build-helper build-agent ## Build all executables
+all: build-cli build-helper build-network-daemon build-agent ## Build all executables
 
 install-deps: ## Install dependencies needed for building
 	brew install protoc-gen-grpc-swift
@@ -37,6 +37,11 @@ build-helper: _protos ## Build the edge helper daemon executable
 	swift build --product edge-helper
 	echo "y" | cp -f .build/$(PLATFORM)/debug/edge-helper ~/bin/edge-helper
 	chmod +x ~/bin/edge-helper
+
+build-network-daemon: _protos ## Build the edge network daemon executable
+	swift build --product edge-network-daemon
+	echo "y" | cp -f .build/$(PLATFORM)/debug/edge-network-daemon ~/bin/edge-network-daemon
+	chmod +x ~/bin/edge-network-daemon
 
 build-cli-linux: _protos ## build the edge CLI for linux with musl
 	swiftly run swift build +6.1 --swift-sdk aarch64-swift-linux-musl --product edge -c release
