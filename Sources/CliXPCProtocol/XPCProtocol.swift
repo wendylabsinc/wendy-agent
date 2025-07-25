@@ -4,7 +4,7 @@ import Foundation
 @objc public protocol EdgeNetworkDaemonProtocol {
     /// Basic handshake to verify daemon is responding
     func handshake(completion: @escaping (Bool, Error?) -> Void)
-    
+
     /// Execute privileged network configuration with authorization
     func configureNetwork(
         authorizationData: Data,
@@ -12,7 +12,7 @@ import Foundation
         ipAddress: String,
         completion: @escaping (Bool, Error?) -> Void
     )
-    
+
     /// Get daemon version
     func getVersion(completion: @escaping (String?, Error?) -> Void)
 }
@@ -23,7 +23,7 @@ public enum XPCError: Error, LocalizedError {
     case authorizationInvalid
     case networkConfigurationFailed(String)
     case daemonNotRunning
-    
+
     public var errorDescription: String? {
         switch self {
         case .connectionFailed:
@@ -42,4 +42,4 @@ public enum XPCError: Error, LocalizedError {
 public let kEdgeNetworkDaemonServiceName = "com.edgeos.edge-network-daemon"
 
 /// Custom authorization right for network configuration
-public let kEdgeNetworkConfigurationRight = "com.edgeos.configure.network" 
+public let kEdgeNetworkConfigurationRight = "com.edgeos.configure.network"
