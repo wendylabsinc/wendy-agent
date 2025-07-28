@@ -48,8 +48,16 @@ build-agent: _protos ## Build the edge agent executable
 	@echo "Binary size: $$(du -h edge-agent | cut -f1)"
 
 build-agent-release: _protos ## Build the edge agent executable in release mode
-	swiftly run swift build +6.1 --swift-sdk aarch64-swift-linux-musl --product edge-agent -c release
+	swiftly run swift build +6.1 --swift-sdk aarch64-swift-linux-musl \
+	--product edge-agent \
+	-c release \
+	-Xswiftc -whole-module-optimization \
+	-Xlinker --gc-sections \
+	-Xlinker --strip-all
+
 	cp .build/aarch64-swift-linux-musl/release/edge-agent .
+	strip edge-agent 2>/dev/null || true
+
 	chmod +x edge-agent
 	@echo "Binary size: $$(du -h edge-agent | cut -f1)"
 
