@@ -101,6 +101,13 @@ jobs:
             args+=(--swift-sdk "${{ matrix.swift-sdk }}")
           fi
 
+          # Add optimization flags for edge-agent builds
+          if [ "${{ matrix.product }}" == "edge-agent" ]; then
+            args+=(-Xswiftc -whole-module-optimization)
+            args+=(-Xlinker --gc-sections)
+            args+=(-Xlinker --strip-all)
+          fi
+
           swift build "${args[@]}"
 
           # Copy built binary to the output directory
