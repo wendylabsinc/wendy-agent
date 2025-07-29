@@ -46,6 +46,7 @@ let package = Package(
                 .target(name: "Imager"),
                 .target(name: "ContainerRegistry"),
                 .target(name: "DownloadSupport"),
+                .target(name: "CliXPCProtocol"),
             ],
             resources: [
                 .copy("Resources")

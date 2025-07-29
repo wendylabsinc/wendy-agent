@@ -10,3 +10,6 @@ DerivedData/
 .vscode
 coverage_report/
 Examples/HelloHTTP/HelloHTTP-container.tar
+
+# Generated app bundle
+EdgeCLI.app/

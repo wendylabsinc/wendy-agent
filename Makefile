@@ -43,6 +43,30 @@ build-network-daemon: _protos ## Build the edge network daemon executable
 	echo "y" | cp -f .build/$(PLATFORM)/debug/edge-network-daemon ~/bin/edge-network-daemon
 	chmod +x ~/bin/edge-network-daemon
 
+build-app-bundle: build-cli build-helper build-network-daemon ## Build and codesign the EdgeCLI.app bundle
+	@echo "Building EdgeCLI.app bundle..."
+	mkdir -p EdgeCLI.app/Contents/MacOS
+	mkdir -p EdgeCLI.app/Contents/Resources
+	mkdir -p EdgeCLI.app/Contents/Library/LaunchDaemons
+	
+	# Copy binaries
+	cp .build/$(PLATFORM)/debug/edge EdgeCLI.app/Contents/MacOS/
+	cp .build/$(PLATFORM)/debug/edge-helper EdgeCLI.app/Contents/Resources/
+	cp .build/$(PLATFORM)/debug/edge-network-daemon EdgeCLI.app/Contents/MacOS/
+	
+	# Copy resources
+	cp Sources/edge/Resources/Info.plist EdgeCLI.app/Contents/
+	cp Sources/edge/Resources/com.edgeos.helper.plist EdgeCLI.app/Contents/Resources/
+	cp Sources/edge/Resources/com.edgeos.edge-network-daemon.plist EdgeCLI.app/Contents/Library/LaunchDaemons/
+	
+	# Codesign the bundle
+	codesign --force --options runtime --entitlements Sources/edge-network-daemon/edge-network-daemon.entitlements --sign "$(CODESIGN_IDENTITY)" EdgeCLI.app/Contents/MacOS/edge-network-daemon
+	codesign --force --options runtime --sign "$(CODESIGN_IDENTITY)" EdgeCLI.app/Contents/Resources/edge-helper
+	codesign --force --options runtime --sign "$(CODESIGN_IDENTITY)" EdgeCLI.app/Contents/MacOS/edge
+	codesign --force --options runtime --sign "$(CODESIGN_IDENTITY)" EdgeCLI.app
+	
+	@echo "✅ EdgeCLI.app bundle built and codesigned"
+
 build-cli-linux: _protos ## build the edge CLI for linux with musl
 	swiftly run swift build +6.1 --swift-sdk aarch64-swift-linux-musl --product edge -c release
 
