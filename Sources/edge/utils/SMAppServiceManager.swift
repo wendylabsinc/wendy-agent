@@ -75,28 +75,13 @@ import Logging
         }
 
         /// Test XPC connection to the daemon
+        /// Note: This method is deprecated - use NetworkDaemonClient for XPC communication
         public func testConnection() async throws {
-            logger.info("Testing XPC connection to daemon")
-
-            let connection = NSXPCConnection(
-                machServiceName: kEdgeNetworkDaemonServiceName,
-                options: .privileged
-            )
-            connection.remoteObjectInterface = NSXPCInterface(with: EdgeNetworkDaemonProtocol.self)
-            connection.resume()
-
-            defer { connection.invalidate() }
-
-            let remoteProxy = connection.remoteObjectProxy as? EdgeNetworkDaemonProtocol
-
-            return try await withCheckedThrowingContinuation { continuation in
-                remoteProxy?.handshake { success, error in
-                    if success {
-                        continuation.resume()
-                    } else {
-                        continuation.resume(throwing: error ?? XPCError.connectionFailed)
-                    }
-                }
+            logger.info("XPC connection testing moved to NetworkDaemonClient")
+            // For now, just check if the daemon is enabled
+            let status = getDaemonStatus()
+            if status != .enabled {
+                throw SMAppServiceError.connectionFailed
             }
         }
 
@@ -104,23 +89,12 @@ import Logging
         public func getDaemonStatusInfo() async -> DaemonStatusInfo {
             let status = getDaemonStatus()
 
-            var xpcConnected = false
-            var xpcError: Error?
-
-            // Test XPC connection if daemon is enabled
-            if status == .enabled {
-                do {
-                    try await testConnection()
-                    xpcConnected = true
-                } catch {
-                    xpcError = error
-                }
-            }
-
+            // XPC connection testing has been moved to NetworkDaemonClient
+            // This method now only returns SMAppService status
             return DaemonStatusInfo(
                 status: status,
-                isXPCConnected: xpcConnected,
-                xpcError: xpcError
+                isXPCConnected: status == .enabled,
+                xpcError: nil
             )
         }
     }

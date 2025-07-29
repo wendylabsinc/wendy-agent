@@ -15,5 +15,9 @@
 	<true/>
 	<key>KeepAlive</key>
 	<true/>
+	<key>StandardOutPath</key>
+	<string>/var/log/edge-network-daemon.log</string>
+	<key>StandardErrorPath</key>
+	<string>/var/log/edge-network-daemon.log</string>
 </dict>
 </plist> 
