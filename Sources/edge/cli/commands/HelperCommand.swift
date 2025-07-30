@@ -1,8 +1,9 @@
 import ArgumentParser
 import Foundation
 import Logging
+
 #if os(macOS)
-import ServiceManagement
+    import ServiceManagement
 #endif
 
 struct HelperCommand: AsyncParsableCommand {
@@ -109,15 +110,17 @@ extension HelperCommand {
 
         private func installNetworkDaemon() async throws {
             #if os(macOS)
-            if #available(macOS 13.0, *) {
-                let service = SMAppService.daemon(plistName: "com.edgeos.edge-network-daemon.plist")
-                try service.register()
-                print("📄 Registered network daemon with SMAppService")
-            } else {
-                throw HelperError.unsupportedMacOSVersion
-            }
+                if #available(macOS 13.0, *) {
+                    let service = SMAppService.daemon(
+                        plistName: "com.edgeos.edge-network-daemon.plist"
+                    )
+                    try service.register()
+                    print("📄 Registered network daemon with SMAppService")
+                } else {
+                    throw HelperError.unsupportedMacOSVersion
+                }
             #else
-            print("⚠️  Network daemon installation not supported on this platform")
+                print("⚠️  Network daemon installation not supported on this platform")
             #endif
         }
     }
@@ -175,15 +178,17 @@ extension HelperCommand {
 
         private func uninstallNetworkDaemon() async throws {
             #if os(macOS)
-            if #available(macOS 13.0, *) {
-                let service = SMAppService.daemon(plistName: "com.edgeos.edge-network-daemon.plist")
-                try await service.unregister()
-                print("🗑️  Unregistered network daemon from SMAppService")
-            } else {
-                print("⚠️  Network daemon uninstall skipped (requires macOS 13+)")
-            }
+                if #available(macOS 13.0, *) {
+                    let service = SMAppService.daemon(
+                        plistName: "com.edgeos.edge-network-daemon.plist"
+                    )
+                    try await service.unregister()
+                    print("🗑️  Unregistered network daemon from SMAppService")
+                } else {
+                    print("⚠️  Network daemon uninstall skipped (requires macOS 13+)")
+                }
             #else
-            print("⚠️  Network daemon uninstall not supported on this platform")
+                print("⚠️  Network daemon uninstall not supported on this platform")
             #endif
         }
     }

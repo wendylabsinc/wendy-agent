@@ -17,20 +17,14 @@
         func testDaemonStartsServices() async throws {
             let logger = createTestLogger()
             let mockDiscovery = MockUSBDeviceDiscovery(logger: logger)
-            let usbMonitor = PlatformUSBMonitor(
-                deviceDiscovery: mockDiscovery,
-                logger: logger,
-                pollingInterval: .milliseconds(50)
-            )
-            let networkConfig = PlatformNetworkConfiguration(
-                deviceDiscovery: mockDiscovery,
-                logger: logger
-            )
+            let usbMonitor = MockUSBMonitorService()
             let ipManager = PlatformIPAddressManager(logger: logger)
+            let networkDaemonClient = NetworkDaemonClient(logger: logger)
 
             let daemon = EdgeHelperDaemon(
                 usbMonitor: usbMonitor,
-                networkConfig: networkConfig,
+                deviceDiscovery: mockDiscovery,
+                networkDaemonClient: networkDaemonClient,
                 ipManager: ipManager,
                 logger: logger
             )
@@ -49,20 +43,14 @@
             let mockDiscovery = MockUSBDeviceDiscovery(logger: logger)
             await mockDiscovery.setShouldFailUSBDiscovery(true)
 
-            let usbMonitor = PlatformUSBMonitor(
-                deviceDiscovery: mockDiscovery,
-                logger: logger,
-                pollingInterval: .milliseconds(50)
-            )
-            let networkConfig = PlatformNetworkConfiguration(
-                deviceDiscovery: mockDiscovery,
-                logger: logger
-            )
+            let usbMonitor = MockUSBMonitorService()
             let ipManager = PlatformIPAddressManager(logger: logger)
+            let networkDaemonClient = NetworkDaemonClient(logger: logger)
 
             let daemon = EdgeHelperDaemon(
                 usbMonitor: usbMonitor,
-                networkConfig: networkConfig,
+                deviceDiscovery: mockDiscovery,
+                networkDaemonClient: networkDaemonClient,
                 ipManager: ipManager,
                 logger: logger
             )
@@ -80,17 +68,14 @@
         func testDaemonRespondsToDeviceConnections() async throws {
             let logger = createTestLogger()
             let mockDiscovery = MockUSBDeviceDiscovery(logger: logger)
-            let usbMonitor = PlatformUSBMonitor(
-                deviceDiscovery: mockDiscovery,
-                logger: logger,
-                pollingInterval: .milliseconds(50)
-            )
-            let networkConfig = MockNetworkConfigurationService()  // Use mock here!
+            let usbMonitor = MockUSBMonitorService()
             let ipManager = MockIPAddressManager()  // Use mock here!
+            let networkDaemonClient = NetworkDaemonClient(logger: logger)
 
             let daemon = EdgeHelperDaemon(
                 usbMonitor: usbMonitor,
-                networkConfig: networkConfig,
+                deviceDiscovery: mockDiscovery,
+                networkDaemonClient: networkDaemonClient,
                 ipManager: ipManager,
                 logger: logger
             )
@@ -107,38 +92,34 @@
 
             // 1. Simulate EdgeOS USB device connection
             await mockDiscovery.addMockUSBDevice(testDevice)
+            await usbMonitor.simulateDeviceConnection(deviceInfo)
 
-            // 2. ✅ Add corresponding network interface for this device!
-            let mockInterface = NetworkInterface.mockEdgeOSInterface(
-                name: "EdgeOS Ethernet",
-                bsdName: "en5",
-                deviceId: deviceId
+            // 2. ✅ Add corresponding ethernet interface for this device!
+            let mockInterface = EthernetInterface(
+                name: "en5",
+                displayName: "EdgeOS Ethernet",  // Must contain "EdgeOS" for isEdgeOSDevice
+                interfaceType: "Ethernet",
+                macAddress: "02:00:00:00:00:01"
             )
-            await networkConfig.addMockInterface(mockInterface)
+            await mockDiscovery.addMockEthernetInterface(mockInterface)
 
             // Wait for connection processing
             try await Task.sleep(for: .milliseconds(200))
 
-            // Verify configuration happened
-            #expect(await networkConfig.configureCallCount >= 1)
+            // Verify IP assignment happened (network config via XPC not testable here)
             #expect(await ipManager.assignCallCount >= 1)
 
             // 2. ✅ Test DISCONNECTION flow
-            // Remove the device (simulate disconnection)
-            await mockDiscovery.clearMockDevices()
+            // Simulate device disconnection event
+            await usbMonitor.simulateDeviceDisconnection(deviceInfo)
 
             // Wait for disconnection processing
             try await Task.sleep(for: .milliseconds(200))
 
             await daemon.stop()
 
-            // ✅ Verify cleanup happened
-            #expect(await networkConfig.cleanupCallCount >= 1)
+            // ✅ Verify IP cleanup happened (network cleanup via XPC not testable here)
             #expect(await ipManager.releaseCallCount >= 1)
-
-            // ✅ Verify the correct interface was cleaned up
-            let cleanupHistory = await networkConfig.getCleanupHistory()
-            #expect(cleanupHistory.contains { $0.bsdName == "en5" })
 
             let releaseHistory = await ipManager.getReleaseHistory()
             #expect(releaseHistory.contains { $0.bsdName == "en5" })
@@ -148,20 +129,14 @@
         func testDaemonStopsCleanly() async throws {
             let logger = createTestLogger()
             let mockDiscovery = MockUSBDeviceDiscovery(logger: logger)
-            let usbMonitor = PlatformUSBMonitor(
-                deviceDiscovery: mockDiscovery,
-                logger: logger,
-                pollingInterval: .milliseconds(50)
-            )
-            let networkConfig = PlatformNetworkConfiguration(
-                deviceDiscovery: mockDiscovery,
-                logger: logger
-            )
+            let usbMonitor = MockUSBMonitorService()
             let ipManager = PlatformIPAddressManager(logger: logger)
+            let networkDaemonClient = NetworkDaemonClient(logger: logger)
 
             let daemon = EdgeHelperDaemon(
                 usbMonitor: usbMonitor,
-                networkConfig: networkConfig,
+                deviceDiscovery: mockDiscovery,
+                networkDaemonClient: networkDaemonClient,
                 ipManager: ipManager,
                 logger: logger
             )
@@ -187,20 +162,14 @@
         func testMultipleStartCallsSafety() async throws {
             let logger = createTestLogger()
             let mockDiscovery = MockUSBDeviceDiscovery(logger: logger)
-            let usbMonitor = PlatformUSBMonitor(
-                deviceDiscovery: mockDiscovery,
-                logger: logger,
-                pollingInterval: .milliseconds(50)
-            )
-            let networkConfig = PlatformNetworkConfiguration(
-                deviceDiscovery: mockDiscovery,
-                logger: logger
-            )
+            let usbMonitor = MockUSBMonitorService()
             let ipManager = PlatformIPAddressManager(logger: logger)
+            let networkDaemonClient = NetworkDaemonClient(logger: logger)
 
             let daemon = EdgeHelperDaemon(
                 usbMonitor: usbMonitor,
-                networkConfig: networkConfig,
+                deviceDiscovery: mockDiscovery,
+                networkDaemonClient: networkDaemonClient,
                 ipManager: ipManager,
                 logger: logger
             )
@@ -213,8 +182,8 @@
 
             await daemon.stop()
 
-            // Should still work correctly
-            #expect(await mockDiscovery.findUSBDevicesCallCount >= 1)
+            // Should still work correctly - USB monitor should have started
+            #expect(await usbMonitor.startCallCount >= 1)
         }
 
         @Test("Daemon stops quickly, not after full polling interval")
@@ -226,15 +195,13 @@
                 logger: logger,
                 pollingInterval: .seconds(50)
             )
-            let networkConfig = PlatformNetworkConfiguration(
-                deviceDiscovery: mockDiscovery,
-                logger: logger
-            )
             let ipManager = PlatformIPAddressManager(logger: logger)
+            let networkDaemonClient = NetworkDaemonClient(logger: logger)
 
             let daemon = EdgeHelperDaemon(
                 usbMonitor: usbMonitor,
-                networkConfig: networkConfig,
+                deviceDiscovery: mockDiscovery,
+                networkDaemonClient: networkDaemonClient,
                 ipManager: ipManager,
                 logger: logger
             )
