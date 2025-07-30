@@ -76,19 +76,43 @@ struct EdgeHelper: AsyncParsableCommand {
 }
 
 /// Main daemon service that coordinates USB monitoring and network configuration via XPC
+/// Protocol for network daemon client functionality
+protocol NetworkDaemonClientProtocol: Actor {
+    func configureInterface(
+        name: String,
+        bsdName: String,
+        deviceId: String,
+        ipAddress: String,
+        subnetMask: String,
+        gateway: String?
+    ) async throws
+
+    func isInterfaceConfigured(
+        name: String,
+        bsdName: String,
+        deviceId: String
+    ) async throws -> Bool
+
+    func cleanupInterface(
+        name: String,
+        bsdName: String,
+        deviceId: String
+    ) async throws
+}
+
 @available(macOS 14.0, *)
 actor EdgeHelperDaemon {
     private let logger: Logger
     private let usbMonitor: USBMonitorService
     private let deviceDiscovery: DeviceDiscovery
-    private let networkDaemonClient: NetworkDaemonClient
+    private let networkDaemonClient: any NetworkDaemonClientProtocol
     private let ipManager: IPAddressManager
     private var isRunning = false
 
     init(
         usbMonitor: USBMonitorService,
         deviceDiscovery: DeviceDiscovery,
-        networkDaemonClient: NetworkDaemonClient,
+        networkDaemonClient: any NetworkDaemonClientProtocol,
         ipManager: IPAddressManager,
         logger: Logger
     ) {

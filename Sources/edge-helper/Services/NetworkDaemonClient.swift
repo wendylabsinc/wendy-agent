@@ -5,7 +5,7 @@ import Logging
 /// Client for communicating with the privileged network daemon via XPC
 /// Uses modern XPCSession with proper async/await patterns (macOS 14+)
 @available(macOS 14.0, *)
-actor NetworkDaemonClient {
+actor NetworkDaemonClient: NetworkDaemonClientProtocol {
     private let logger: Logger
     private var session: XPCSession?
 

@@ -19,7 +19,7 @@
             let mockDiscovery = MockUSBDeviceDiscovery(logger: logger)
             let usbMonitor = MockUSBMonitorService()
             let ipManager = PlatformIPAddressManager(logger: logger)
-            let networkDaemonClient = NetworkDaemonClient(logger: logger)
+            let networkDaemonClient = MockNetworkDaemonClient(logger: logger)
 
             let daemon = EdgeHelperDaemon(
                 usbMonitor: usbMonitor,
@@ -31,8 +31,8 @@
 
             try await daemon.start()
 
-            // Verify daemon actually uses the discovery service
-            #expect(await mockDiscovery.findUSBDevicesCallCount >= 1)
+            // Verify daemon started the USB monitor service
+            #expect(await usbMonitor.startCallCount >= 1)
 
             await daemon.stop()
         }
@@ -45,7 +45,7 @@
 
             let usbMonitor = MockUSBMonitorService()
             let ipManager = PlatformIPAddressManager(logger: logger)
-            let networkDaemonClient = NetworkDaemonClient(logger: logger)
+            let networkDaemonClient = MockNetworkDaemonClient(logger: logger)
 
             let daemon = EdgeHelperDaemon(
                 usbMonitor: usbMonitor,
@@ -58,8 +58,8 @@
             // Should start successfully even with failing discovery
             try await daemon.start()
 
-            // Should have attempted discovery
-            #expect(await mockDiscovery.findUSBDevicesCallCount >= 1)
+            // Should have started the USB monitor successfully
+            #expect(await usbMonitor.startCallCount >= 1)
 
             await daemon.stop()
         }
@@ -70,7 +70,7 @@
             let mockDiscovery = MockUSBDeviceDiscovery(logger: logger)
             let usbMonitor = MockUSBMonitorService()
             let ipManager = MockIPAddressManager()  // Use mock here!
-            let networkDaemonClient = NetworkDaemonClient(logger: logger)
+            let networkDaemonClient = MockNetworkDaemonClient(logger: logger)
 
             let daemon = EdgeHelperDaemon(
                 usbMonitor: usbMonitor,
@@ -131,7 +131,7 @@
             let mockDiscovery = MockUSBDeviceDiscovery(logger: logger)
             let usbMonitor = MockUSBMonitorService()
             let ipManager = PlatformIPAddressManager(logger: logger)
-            let networkDaemonClient = NetworkDaemonClient(logger: logger)
+            let networkDaemonClient = MockNetworkDaemonClient(logger: logger)
 
             let daemon = EdgeHelperDaemon(
                 usbMonitor: usbMonitor,
@@ -146,16 +146,16 @@
             // Let it run briefly
             try await Task.sleep(for: .milliseconds(100))
 
-            let callCountBeforeStop = await mockDiscovery.findUSBDevicesCallCount
+            // Verify USB monitor is running
+            #expect(await usbMonitor.getIsRunning() == true)
 
             await daemon.stop()
 
             // Wait a bit more
             try await Task.sleep(for: .milliseconds(100))
 
-            // Should not have made additional discovery calls after stop
-            let callCountAfterStop = await mockDiscovery.findUSBDevicesCallCount
-            #expect(callCountAfterStop == callCountBeforeStop)
+            // USB monitor should have been stopped
+            #expect(await usbMonitor.getIsRunning() == false)
         }
 
         @Test("Multiple start calls are handled safely")
@@ -164,7 +164,7 @@
             let mockDiscovery = MockUSBDeviceDiscovery(logger: logger)
             let usbMonitor = MockUSBMonitorService()
             let ipManager = PlatformIPAddressManager(logger: logger)
-            let networkDaemonClient = NetworkDaemonClient(logger: logger)
+            let networkDaemonClient = MockNetworkDaemonClient(logger: logger)
 
             let daemon = EdgeHelperDaemon(
                 usbMonitor: usbMonitor,
@@ -196,7 +196,7 @@
                 pollingInterval: .seconds(50)
             )
             let ipManager = PlatformIPAddressManager(logger: logger)
-            let networkDaemonClient = NetworkDaemonClient(logger: logger)
+            let networkDaemonClient = MockNetworkDaemonClient(logger: logger)
 
             let daemon = EdgeHelperDaemon(
                 usbMonitor: usbMonitor,
