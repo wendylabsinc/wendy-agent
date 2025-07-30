@@ -5,6 +5,27 @@ import Logging
 #if os(macOS)
     import ServiceManagement
 
+    /// Errors for SMAppService operations
+    public enum SMAppServiceError: Error, LocalizedError {
+        case registrationFailed
+        case requiresApproval
+        case daemonNotFound
+        case connectionFailed
+
+        public var errorDescription: String? {
+            switch self {
+            case .registrationFailed:
+                return "Failed to register daemon with SMAppService"
+            case .requiresApproval:
+                return "Daemon requires approval in System Settings > General > Login Items"
+            case .daemonNotFound:
+                return "Daemon executable not found"
+            case .connectionFailed:
+                return "Failed to connect to daemon via XPC"
+            }
+        }
+    }
+
     /// Modern SMAppService-based daemon management
     public actor SMAppServiceManager {
         private let logger: Logger
@@ -121,29 +142,18 @@ import Logging
         }
     }
 
-    /// Errors for SMAppService operations
-    public enum SMAppServiceError: Error, LocalizedError {
-        case registrationFailed
-        case requiresApproval
-        case daemonNotFound
-        case connectionFailed
+#else
+    // Fallback for non-macOS platforms
+
+    /// Errors for non-macOS platforms
+    public enum PlatformError: Error, LocalizedError {
+        case unsupportedPlatform
 
         public var errorDescription: String? {
-            switch self {
-            case .registrationFailed:
-                return "Failed to register daemon with SMAppService"
-            case .requiresApproval:
-                return "Daemon requires approval in System Settings > General > Login Items"
-            case .daemonNotFound:
-                return "Daemon executable not found"
-            case .connectionFailed:
-                return "Failed to connect to daemon via XPC"
-            }
+            return "SMAppService is only available on macOS"
         }
     }
 
-#else
-    // Fallback for non-macOS platforms
     public actor SMAppServiceManager {
         private let logger: Logger
 
@@ -153,24 +163,24 @@ import Logging
 
         public func installDaemon() async throws {
             logger.error("SMAppService is only available on macOS")
-            throw SMAppServiceError.registrationFailed
+            throw PlatformError.unsupportedPlatform
         }
 
         public func uninstallDaemon() async throws {
             logger.error("SMAppService is only available on macOS")
-            throw SMAppServiceError.registrationFailed
+            throw PlatformError.unsupportedPlatform
         }
 
         public func testConnection() async throws {
             logger.error("XPC is only available on macOS")
-            throw SMAppServiceError.connectionFailed
+            throw PlatformError.unsupportedPlatform
         }
 
         public func getDaemonStatusInfo() async -> DaemonStatusInfo {
             return DaemonStatusInfo(
                 status: .notFound,
                 isXPCConnected: false,
-                xpcError: SMAppServiceError.registrationFailed
+                xpcError: PlatformError.unsupportedPlatform
             )
         }
     }
