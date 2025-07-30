@@ -1,6 +1,7 @@
 import ArgumentParser
 import Foundation
 import Logging
+import ServiceManagement
 
 struct HelperCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
@@ -41,7 +42,13 @@ extension HelperCommand {
             try await loadService()
 
             logger.info("✅ EdgeOS Helper Daemon installed and started successfully")
-            logger.info("The daemon will automatically start on system boot.")
+
+            // Install the network daemon using SMAppService
+            logger.info("Installing EdgeOS Network Daemon...")
+            try await installNetworkDaemon()
+
+            logger.info("✅ EdgeOS Network Daemon installed successfully")
+            logger.info("Both daemons will automatically start on system boot.")
         }
 
         private func createLaunchdPlist(debug: Bool, logFile: String?) throws {
@@ -97,6 +104,16 @@ extension HelperCommand {
                 throw HelperError.launchctlFailed("Failed to load service: \(error)")
             }
         }
+
+        private func installNetworkDaemon() async throws {
+            if #available(macOS 13.0, *) {
+                let service = SMAppService.daemon(plistName: "com.edgeos.edge-network-daemon.plist")
+                try service.register()
+                print("📄 Registered network daemon with SMAppService")
+            } else {
+                throw HelperError.unsupportedMacOSVersion
+            }
+        }
     }
 
     struct Uninstall: AsyncParsableCommand {
@@ -120,6 +137,12 @@ extension HelperCommand {
             }
 
             logger.info("✅ EdgeOS Helper Daemon uninstalled successfully")
+
+            // Uninstall the network daemon
+            logger.info("Uninstalling EdgeOS Network Daemon...")
+            try await uninstallNetworkDaemon()
+
+            logger.info("✅ EdgeOS Network Daemon uninstalled successfully")
         }
 
         private func unloadService() async throws {
@@ -141,6 +164,16 @@ extension HelperCommand {
                 let data = pipe.fileHandleForReading.readDataToEndOfFile()
                 let error = String(data: data, encoding: .utf8) ?? "Unknown error"
                 print("⚠️  Warning: Failed to unload service: \(error)")
+            }
+        }
+
+        private func uninstallNetworkDaemon() async throws {
+            if #available(macOS 13.0, *) {
+                let service = SMAppService.daemon(plistName: "com.edgeos.edge-network-daemon.plist")
+                try await service.unregister()
+                print("🗑️  Unregistered network daemon from SMAppService")
+            } else {
+                print("⚠️  Network daemon uninstall skipped (requires macOS 13+)")
             }
         }
     }
@@ -391,6 +424,7 @@ enum HelperError: Error, LocalizedError {
     case serviceNotInstalled
     case helperExecutableNotFound
     case launchctlFailed(String)
+    case unsupportedMacOSVersion
 
     var errorDescription: String? {
         switch self {
@@ -400,6 +434,8 @@ enum HelperError: Error, LocalizedError {
             return "edge-helper executable not found. Make sure it's built and in your PATH."
         case .launchctlFailed(let message):
             return "launchctl command failed: \(message)"
+        case .unsupportedMacOSVersion:
+            return "SMAppService requires macOS 13.0 or later for privileged daemon installation."
         }
     }
 }
