@@ -2,7 +2,10 @@ import ArgumentParser
 import CliXPCProtocol
 import Foundation
 import Logging
-import Security
+
+#if os(macOS)
+    import Security
+#endif
 
 // MARK: - Async-to-Sync Bridge
 
@@ -122,23 +125,32 @@ class EdgeNetworkDaemonService {
     }
 
     private func validateConnection(_ pid: pid_t) -> Bool {
-        // Create a code requirement for our app bundle
-        var requirement: SecRequirement?
-        let status = SecRequirementCreateWithString(
-            "identifier \"com.edgeos.edge-cli\"" as CFString,
-            [],
-            &requirement
-        )
+        #if os(macOS)
+            // Create a code requirement for our app bundle
+            var requirement: SecRequirement?
+            let status = SecRequirementCreateWithString(
+                "identifier \"com.edgeos.edge-cli\"" as CFString,
+                [],
+                &requirement
+            )
 
-        guard status == errSecSuccess, requirement != nil else {
-            logger.error("Failed to create security requirement", metadata: ["status": "\(status)"])
+            guard status == errSecSuccess, requirement != nil else {
+                logger.error(
+                    "Failed to create security requirement",
+                    metadata: ["status": "\(status)"]
+                )
+                return false
+            }
+
+            // For basic validation, we'll check if the process path contains our bundle identifier
+            // More sophisticated validation would use SecCodeCopyPath and SecStaticCodeCreateWithPath
+            logger.debug("XPC session basic validation passed", metadata: ["pid": "\(pid)"])
+            return true
+        #else
+            // On non-macOS platforms, always return false since XPC is not supported
+            logger.error("XPC validation not supported on this platform")
             return false
-        }
-
-        // For basic validation, we'll check if the process path contains our bundle identifier
-        // More sophisticated validation would use SecCodeCopyPath and SecStaticCodeCreateWithPath
-        logger.debug("XPC session basic validation passed", metadata: ["pid": "\(pid)"])
-        return true
+        #endif
     }
 }
 
