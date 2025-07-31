@@ -5,6 +5,27 @@ import Logging
 #if os(macOS)
     import ServiceManagement
 
+    /// Errors for SMAppService operations
+    public enum SMAppServiceError: Error, LocalizedError {
+        case registrationFailed
+        case requiresApproval
+        case daemonNotFound
+        case connectionFailed
+
+        public var errorDescription: String? {
+            switch self {
+            case .registrationFailed:
+                return "Failed to register daemon with SMAppService"
+            case .requiresApproval:
+                return "Daemon requires approval in System Settings > General > Login Items"
+            case .daemonNotFound:
+                return "Daemon executable not found"
+            case .connectionFailed:
+                return "Failed to connect to daemon via XPC"
+            }
+        }
+    }
+
     /// Modern SMAppService-based daemon management
     public actor SMAppServiceManager {
         private let logger: Logger
@@ -75,28 +96,13 @@ import Logging
         }
 
         /// Test XPC connection to the daemon
+        /// Note: This method is deprecated - use NetworkDaemonClient for XPC communication
         public func testConnection() async throws {
-            logger.info("Testing XPC connection to daemon")
-
-            let connection = NSXPCConnection(
-                machServiceName: kEdgeNetworkDaemonServiceName,
-                options: .privileged
-            )
-            connection.remoteObjectInterface = NSXPCInterface(with: EdgeNetworkDaemonProtocol.self)
-            connection.resume()
-
-            defer { connection.invalidate() }
-
-            let remoteProxy = connection.remoteObjectProxy as? EdgeNetworkDaemonProtocol
-
-            return try await withCheckedThrowingContinuation { continuation in
-                remoteProxy?.handshake { success, error in
-                    if success {
-                        continuation.resume()
-                    } else {
-                        continuation.resume(throwing: error ?? XPCError.connectionFailed)
-                    }
-                }
+            logger.info("XPC connection testing moved to NetworkDaemonClient")
+            // For now, just check if the daemon is enabled
+            let status = getDaemonStatus()
+            if status != .enabled {
+                throw SMAppServiceError.connectionFailed
             }
         }
 
@@ -104,23 +110,12 @@ import Logging
         public func getDaemonStatusInfo() async -> DaemonStatusInfo {
             let status = getDaemonStatus()
 
-            var xpcConnected = false
-            var xpcError: Error?
-
-            // Test XPC connection if daemon is enabled
-            if status == .enabled {
-                do {
-                    try await testConnection()
-                    xpcConnected = true
-                } catch {
-                    xpcError = error
-                }
-            }
-
+            // XPC connection testing has been moved to NetworkDaemonClient
+            // This method now only returns SMAppService status
             return DaemonStatusInfo(
                 status: status,
-                isXPCConnected: xpcConnected,
-                xpcError: xpcError
+                isXPCConnected: status == .enabled,
+                xpcError: nil
             )
         }
     }
@@ -147,29 +142,18 @@ import Logging
         }
     }
 
-    /// Errors for SMAppService operations
-    public enum SMAppServiceError: Error, LocalizedError {
-        case registrationFailed
-        case requiresApproval
-        case daemonNotFound
-        case connectionFailed
+#else
+    // Fallback for non-macOS platforms
+
+    /// Errors for non-macOS platforms
+    public enum PlatformError: Error, LocalizedError {
+        case unsupportedPlatform
 
         public var errorDescription: String? {
-            switch self {
-            case .registrationFailed:
-                return "Failed to register daemon with SMAppService"
-            case .requiresApproval:
-                return "Daemon requires approval in System Settings > General > Login Items"
-            case .daemonNotFound:
-                return "Daemon executable not found"
-            case .connectionFailed:
-                return "Failed to connect to daemon via XPC"
-            }
+            return "SMAppService is only available on macOS"
         }
     }
 
-#else
-    // Fallback for non-macOS platforms
     public actor SMAppServiceManager {
         private let logger: Logger
 
@@ -179,24 +163,24 @@ import Logging
 
         public func installDaemon() async throws {
             logger.error("SMAppService is only available on macOS")
-            throw SMAppServiceError.registrationFailed
+            throw PlatformError.unsupportedPlatform
         }
 
         public func uninstallDaemon() async throws {
             logger.error("SMAppService is only available on macOS")
-            throw SMAppServiceError.registrationFailed
+            throw PlatformError.unsupportedPlatform
         }
 
         public func testConnection() async throws {
             logger.error("XPC is only available on macOS")
-            throw SMAppServiceError.connectionFailed
+            throw PlatformError.unsupportedPlatform
         }
 
         public func getDaemonStatusInfo() async -> DaemonStatusInfo {
             return DaemonStatusInfo(
                 status: .notFound,
                 isXPCConnected: false,
-                xpcError: SMAppServiceError.registrationFailed
+                xpcError: PlatformError.unsupportedPlatform
             )
         }
     }

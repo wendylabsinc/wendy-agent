@@ -3,6 +3,7 @@ import EdgeShared
 import Foundation
 import Logging
 
+@available(macOS 14.0, *)
 struct EdgeHelper: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "edge-helper",
@@ -35,6 +36,7 @@ struct EdgeHelper: AsyncParsableCommand {
         let logger = Logger(label: "edge-helper")
 
         logger.info("Starting EdgeOS Helper Daemon")
+        logger.info("Version: \(Version.current)")
         logger.info("Foreground mode: \(foreground)")
         logger.info("Debug logging: \(debug)")
 
@@ -44,15 +46,13 @@ struct EdgeHelper: AsyncParsableCommand {
             logger: logger,
             pollingInterval: .seconds(30)
         )
-        let networkConfig = PlatformNetworkConfiguration(
-            deviceDiscovery: deviceDiscovery,
-            logger: logger
-        )
+        let networkDaemonClient = NetworkDaemonClient(logger: logger)
         let ipManager = PlatformIPAddressManager(logger: logger)
         // Create the main daemon service
         let daemon = EdgeHelperDaemon(
             usbMonitor: usbMonitor,
-            networkConfig: networkConfig,
+            deviceDiscovery: deviceDiscovery,
+            networkDaemonClient: networkDaemonClient,
             ipManager: ipManager,
             logger: logger
         )
@@ -75,23 +75,51 @@ struct EdgeHelper: AsyncParsableCommand {
     }
 }
 
-/// Main daemon service that coordinates USB monitoring and network configuration
+/// Main daemon service that coordinates USB monitoring and network configuration via XPC
+/// Protocol for network daemon client functionality
+protocol NetworkDaemonClientProtocol: Actor {
+    func configureInterface(
+        name: String,
+        bsdName: String,
+        deviceId: String,
+        ipAddress: String,
+        subnetMask: String,
+        gateway: String?
+    ) async throws
+
+    func isInterfaceConfigured(
+        name: String,
+        bsdName: String,
+        deviceId: String
+    ) async throws -> Bool
+
+    func cleanupInterface(
+        name: String,
+        bsdName: String,
+        deviceId: String
+    ) async throws
+}
+
+@available(macOS 14.0, *)
 actor EdgeHelperDaemon {
     private let logger: Logger
     private let usbMonitor: USBMonitorService
-    private let networkConfig: NetworkConfigurationService
+    private let deviceDiscovery: DeviceDiscovery
+    private let networkDaemonClient: any NetworkDaemonClientProtocol
     private let ipManager: IPAddressManager
     private var isRunning = false
 
     init(
         usbMonitor: USBMonitorService,
-        networkConfig: NetworkConfigurationService,
+        deviceDiscovery: DeviceDiscovery,
+        networkDaemonClient: any NetworkDaemonClientProtocol,
         ipManager: IPAddressManager,
         logger: Logger
     ) {
         self.logger = logger
         self.usbMonitor = usbMonitor
-        self.networkConfig = networkConfig
+        self.deviceDiscovery = deviceDiscovery
+        self.networkDaemonClient = networkDaemonClient
         self.ipManager = ipManager
     }
 
@@ -148,7 +176,13 @@ actor EdgeHelperDaemon {
 
         do {
             // 1. Find network interfaces for this device
-            let interfaces = await networkConfig.findEdgeOSInterfaces(for: device)
+            let ethernetInterfaces = await deviceDiscovery.findEthernetInterfaces()
+            let edgeOSInterfaces = ethernetInterfaces.filter { $0.isEdgeOSDevice }
+
+            let interfaces = edgeOSInterfaces.map { interface in
+                (name: interface.displayName, bsdName: interface.name, deviceId: device.id)
+            }
+
             logger.debug(
                 "Found \(interfaces.count) interfaces for device",
                 metadata: [
@@ -157,10 +191,15 @@ actor EdgeHelperDaemon {
                 ]
             )
 
-            // 2. Configure each interface
+            // 2. Configure each interface via XPC
             for interface in interfaces {
-                // Check if already configured
-                let isConfigured = await networkConfig.isInterfaceConfigured(interface)
+                // Check if already configured via network daemon
+                let isConfigured = try await networkDaemonClient.isInterfaceConfigured(
+                    name: interface.name,
+                    bsdName: interface.bsdName,
+                    deviceId: interface.deviceId
+                )
+
                 if isConfigured {
                     logger.debug(
                         "Interface \(interface.bsdName) already configured",
@@ -172,10 +211,22 @@ actor EdgeHelperDaemon {
                 }
 
                 // 3. Assign IP address
-                let ipConfig = try await ipManager.assignIPAddress(for: interface)
+                let networkInterface = NetworkInterface(
+                    name: interface.name,
+                    bsdName: interface.bsdName,
+                    deviceId: interface.deviceId
+                )
+                let ipConfig = try await ipManager.assignIPAddress(for: networkInterface)
 
-                // 4. Apply network configuration
-                try await networkConfig.configureInterface(interface, with: ipConfig)
+                // 4. Apply network configuration via XPC to privileged daemon
+                try await networkDaemonClient.configureInterface(
+                    name: interface.name,
+                    bsdName: interface.bsdName,
+                    deviceId: interface.deviceId,
+                    ipAddress: ipConfig.ipAddress,
+                    subnetMask: ipConfig.subnetMask,
+                    gateway: ipConfig.gateway
+                )
 
                 logger.debug(
                     "Configured interface \(interface.bsdName) with IP \(ipConfig.ipAddress)",
@@ -193,20 +244,36 @@ actor EdgeHelperDaemon {
     private func cleanupEdgeOSDevice(_ device: USBDeviceInfo) async {
         logger.info("Cleaning up EdgeOS device: \(device.name)")
 
-        // Find and cleanup interfaces
-        let interfaces = await networkConfig.findEdgeOSInterfaces(for: device)
-        for interface in interfaces {
+        // Find and cleanup interfaces via XPC
+        let ethernetInterfaces = await deviceDiscovery.findEthernetInterfaces()
+        let edgeOSInterfaces = ethernetInterfaces.filter { $0.isEdgeOSDevice }
+
+        for interface in edgeOSInterfaces {
             do {
-                try await networkConfig.cleanupInterface(interface)
-                await ipManager.releaseIPAddress(for: interface)
-                logger.info("Cleaned up interface \(interface.bsdName)")
+                // Cleanup via network daemon
+                try await networkDaemonClient.cleanupInterface(
+                    name: interface.displayName,
+                    bsdName: interface.name,
+                    deviceId: device.id
+                )
+
+                // Release IP from local manager
+                let networkInterface = NetworkInterface(
+                    name: interface.displayName,
+                    bsdName: interface.name,
+                    deviceId: device.id
+                )
+                await ipManager.releaseIPAddress(for: networkInterface)
+
+                logger.info("Cleaned up interface \(interface.name)")
             } catch {
-                logger.error("Failed to cleanup interface \(interface.bsdName): \(error)")
+                logger.error("Failed to cleanup interface \(interface.name): \(error)")
             }
         }
     }
 }
 
+@available(macOS 14.0, *)
 @main
 enum Main {
     static func main() async {
