@@ -315,4 +315,17 @@
 
 // Entry point handled automatically by ArgumentParser
 
+#else  // !os(macOS)
+
+    import Foundation
+
+    // Provide a stub main entry point for non-macOS platforms
+    @main
+    struct EdgeNetworkDaemon {
+        static func main() {
+            print("edge-network-daemon is only supported on macOS")
+            exit(1)
+        }
+    }
+
 #endif  // os(macOS)
