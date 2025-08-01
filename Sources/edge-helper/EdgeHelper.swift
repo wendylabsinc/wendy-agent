@@ -44,11 +44,25 @@ struct EdgeHelper: AsyncParsableCommand {
 
         // Use event-driven monitoring on macOS, polling on other platforms
         let usbMonitor: USBMonitorService
+        let networkDaemonClient = NetworkDaemonClient(logger: logger)
+        let ipManager = PlatformIPAddressManager(logger: logger)
+
+        // Create the main daemon service
+        let daemon: EdgeHelperDaemon
         #if os(macOS)
             usbMonitor = IOKitUSBMonitor(logger: logger)
             logger.info("Using IOKit event-driven USB monitoring")
             let networkInterfaceMonitor = NetworkInterfaceMonitor(logger: logger)
             logger.info("Using SystemConfiguration event-driven network interface monitoring")
+
+            daemon = EdgeHelperDaemon(
+                usbMonitor: usbMonitor,
+                deviceDiscovery: deviceDiscovery,
+                networkDaemonClient: networkDaemonClient,
+                ipManager: ipManager,
+                logger: logger,
+                networkInterfaceMonitor: networkInterfaceMonitor
+            )
         #else
             usbMonitor = PlatformUSBMonitor(
                 deviceDiscovery: deviceDiscovery,
@@ -56,19 +70,15 @@ struct EdgeHelper: AsyncParsableCommand {
                 pollingInterval: .seconds(30)
             )
             logger.info("Using polling-based USB monitoring")
-            let networkInterfaceMonitor: NetworkInterfaceMonitor? = nil
+
+            daemon = EdgeHelperDaemon(
+                usbMonitor: usbMonitor,
+                deviceDiscovery: deviceDiscovery,
+                networkDaemonClient: networkDaemonClient,
+                ipManager: ipManager,
+                logger: logger
+            )
         #endif
-        let networkDaemonClient = NetworkDaemonClient(logger: logger)
-        let ipManager = PlatformIPAddressManager(logger: logger)
-        // Create the main daemon service
-        let daemon = EdgeHelperDaemon(
-            usbMonitor: usbMonitor,
-            deviceDiscovery: deviceDiscovery,
-            networkDaemonClient: networkDaemonClient,
-            ipManager: ipManager,
-            logger: logger,
-            networkInterfaceMonitor: networkInterfaceMonitor
-        )
 
         logger.info("Initializing daemon services...")
         try await daemon.start()
@@ -126,23 +136,37 @@ actor EdgeHelperDaemon {
     private var isRunning = false
     private var pendingUSBDevices: [String: USBDeviceInfo] = [:]
 
-    init(
-        usbMonitor: USBMonitorService,
-        deviceDiscovery: DeviceDiscovery,
-        networkDaemonClient: any NetworkDaemonClientProtocol,
-        ipManager: IPAddressManager,
-        logger: Logger,
-        networkInterfaceMonitor: NetworkInterfaceMonitorProtocol? = nil
-    ) {
-        self.logger = logger
-        self.usbMonitor = usbMonitor
-        self.deviceDiscovery = deviceDiscovery
-        self.networkDaemonClient = networkDaemonClient
-        self.ipManager = ipManager
-        #if os(macOS)
+    #if os(macOS)
+        init(
+            usbMonitor: USBMonitorService,
+            deviceDiscovery: DeviceDiscovery,
+            networkDaemonClient: any NetworkDaemonClientProtocol,
+            ipManager: IPAddressManager,
+            logger: Logger,
+            networkInterfaceMonitor: NetworkInterfaceMonitorProtocol? = nil
+        ) {
+            self.logger = logger
+            self.usbMonitor = usbMonitor
+            self.deviceDiscovery = deviceDiscovery
+            self.networkDaemonClient = networkDaemonClient
+            self.ipManager = ipManager
             self.networkInterfaceMonitor = networkInterfaceMonitor
-        #endif
-    }
+        }
+    #else
+        init(
+            usbMonitor: USBMonitorService,
+            deviceDiscovery: DeviceDiscovery,
+            networkDaemonClient: any NetworkDaemonClientProtocol,
+            ipManager: IPAddressManager,
+            logger: Logger
+        ) {
+            self.logger = logger
+            self.usbMonitor = usbMonitor
+            self.deviceDiscovery = deviceDiscovery
+            self.networkDaemonClient = networkDaemonClient
+            self.ipManager = ipManager
+        }
+    #endif
 
     func start() async throws {
         guard !isRunning else { return }
