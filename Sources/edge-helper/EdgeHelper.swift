@@ -41,11 +41,23 @@ struct EdgeHelper: AsyncParsableCommand {
         logger.info("Debug logging: \(debug)")
 
         let deviceDiscovery = PlatformDeviceDiscovery(logger: logger)
-        let usbMonitor = PlatformUSBMonitor(
-            deviceDiscovery: deviceDiscovery,
-            logger: logger,
-            pollingInterval: .seconds(30)
-        )
+
+        // Use event-driven monitoring on macOS, polling on other platforms
+        let usbMonitor: USBMonitorService
+        #if os(macOS)
+            usbMonitor = IOKitUSBMonitor(logger: logger)
+            logger.info("Using IOKit event-driven USB monitoring")
+            let networkInterfaceMonitor = NetworkInterfaceMonitor(logger: logger)
+            logger.info("Using SystemConfiguration event-driven network interface monitoring")
+        #else
+            usbMonitor = PlatformUSBMonitor(
+                deviceDiscovery: deviceDiscovery,
+                logger: logger,
+                pollingInterval: .seconds(30)
+            )
+            logger.info("Using polling-based USB monitoring")
+            let networkInterfaceMonitor: NetworkInterfaceMonitor? = nil
+        #endif
         let networkDaemonClient = NetworkDaemonClient(logger: logger)
         let ipManager = PlatformIPAddressManager(logger: logger)
         // Create the main daemon service
@@ -54,7 +66,8 @@ struct EdgeHelper: AsyncParsableCommand {
             deviceDiscovery: deviceDiscovery,
             networkDaemonClient: networkDaemonClient,
             ipManager: ipManager,
-            logger: logger
+            logger: logger,
+            networkInterfaceMonitor: networkInterfaceMonitor
         )
 
         logger.info("Initializing daemon services...")
@@ -107,20 +120,28 @@ actor EdgeHelperDaemon {
     private let deviceDiscovery: DeviceDiscovery
     private let networkDaemonClient: any NetworkDaemonClientProtocol
     private let ipManager: IPAddressManager
+    #if os(macOS)
+        private let networkInterfaceMonitor: NetworkInterfaceMonitorProtocol?
+    #endif
     private var isRunning = false
+    private var pendingUSBDevices: [String: USBDeviceInfo] = [:]
 
     init(
         usbMonitor: USBMonitorService,
         deviceDiscovery: DeviceDiscovery,
         networkDaemonClient: any NetworkDaemonClientProtocol,
         ipManager: IPAddressManager,
-        logger: Logger
+        logger: Logger,
+        networkInterfaceMonitor: NetworkInterfaceMonitorProtocol? = nil
     ) {
         self.logger = logger
         self.usbMonitor = usbMonitor
         self.deviceDiscovery = deviceDiscovery
         self.networkDaemonClient = networkDaemonClient
         self.ipManager = ipManager
+        #if os(macOS)
+            self.networkInterfaceMonitor = networkInterfaceMonitor
+        #endif
     }
 
     func start() async throws {
@@ -135,6 +156,18 @@ actor EdgeHelperDaemon {
         await usbMonitor.setDeviceHandler { [weak self] event in
             Task { await self?.handleDeviceEvent(event) }
         }
+
+        #if os(macOS)
+            // Set up network interface event handling
+            if let networkInterfaceMonitor = networkInterfaceMonitor {
+                await networkInterfaceMonitor.setInterfaceHandler { [weak self] event in
+                    Task { await self?.handleNetworkInterfaceEvent(event) }
+                }
+
+                // Start network interface monitoring
+                try await networkInterfaceMonitor.start()
+            }
+        #endif
 
         // Start USB monitoring
         do {
@@ -153,6 +186,14 @@ actor EdgeHelperDaemon {
         guard isRunning else { return }
 
         await usbMonitor.stop()
+
+        #if os(macOS)
+            if let networkInterfaceMonitor = networkInterfaceMonitor {
+                await networkInterfaceMonitor.stop()
+            }
+        #endif
+
+        pendingUSBDevices.removeAll()
         isRunning = false
         logger.info("EdgeOS Helper Daemon stopped")
     }
@@ -162,14 +203,56 @@ actor EdgeHelperDaemon {
         switch event {
         case .connected(let device) where device.isEdgeOS:
             logger.info("Connected EdgeOS device: \(device.name)")
-            await configureEdgeOSDevice(device)
+
+            #if os(macOS)
+                // On macOS, wait for network interface to appear via SystemConfiguration events
+                pendingUSBDevices[device.id] = device
+                logger.debug("Stored pending EdgeOS device: \(device.name)")
+            #else
+                // On other platforms, use the retry mechanism
+                await configureEdgeOSDevice(device)
+            #endif
+
         case .disconnected(let device) where device.isEdgeOS:
             logger.info("Disconnected EdgeOS device: \(device.name)")
+
+            #if os(macOS)
+                // Remove from pending if it was there
+                pendingUSBDevices.removeValue(forKey: device.id)
+            #endif
+
             await cleanupEdgeOSDevice(device)
         default:
             break
         }
     }
+
+    #if os(macOS)
+        private func handleNetworkInterfaceEvent(_ event: NetworkInterfaceEvent) async {
+            logger.info("Handling network interface event: \(event)")
+
+            switch event {
+            case .interfaceAppeared(let interfaceName):
+                logger.info("EdgeOS network interface appeared: \(interfaceName)")
+
+                // Check if we have a pending USB device that matches this interface
+                for (deviceId, device) in pendingUSBDevices {
+                    logger.debug(
+                        "Attempting to configure pending device: \(device.name) for interface: \(interfaceName)"
+                    )
+                    await configureEdgeOSDevice(device)
+
+                    // Remove from pending after attempting configuration
+                    pendingUSBDevices.removeValue(forKey: deviceId)
+                    break  // Configure one device at a time
+                }
+
+            case .interfaceDisappeared(let interfaceName):
+                logger.info("EdgeOS network interface disappeared: \(interfaceName)")
+            // Interface cleanup is handled by USB disconnect events
+            }
+        }
+    #endif
 
     private func configureEdgeOSDevice(_ device: USBDeviceInfo) async {
         logger.debug("Configuring EdgeOS device", metadata: ["device": .string(device.name)])
