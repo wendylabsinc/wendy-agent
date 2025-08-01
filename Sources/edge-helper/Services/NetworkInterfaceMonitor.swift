@@ -25,8 +25,15 @@
         private var monitoringTask: Task<Void, Never>?
         private var knownInterfaces: Set<String> = []
 
-        init(logger: Logger) {
+        // Dependency injection
+        private let systemConfigService: SystemConfigurationServiceProtocol
+
+        init(
+            logger: Logger,
+            systemConfigService: SystemConfigurationServiceProtocol? = nil
+        ) {
             self.logger = logger
+            self.systemConfigService = systemConfigService ?? RealSystemConfigurationService()
         }
 
         func start() async throws {
@@ -59,11 +66,10 @@
                 }
             }
 
-            dynamicStore = SCDynamicStoreCreate(
-                kCFAllocatorDefault,
-                "com.edgeos.edge-helper.network-monitor" as CFString,
-                callback,
-                &context
+            dynamicStore = systemConfigService.createDynamicStore(
+                name: "com.edgeos.edge-helper.network-monitor" as CFString,
+                callback: callback,
+                context: &context
             )
 
             guard let dynamicStore = dynamicStore else {
@@ -82,10 +88,10 @@
                     "State:/Network/Interface/.*/IPv4" as CFString,
                 ] as CFArray
 
-            let setKeysResult = SCDynamicStoreSetNotificationKeys(
-                dynamicStore,
-                notificationKeys,
-                notificationPatterns
+            let setKeysResult = systemConfigService.setNotificationKeys(
+                store: dynamicStore,
+                keys: notificationKeys,
+                patterns: notificationPatterns
             )
 
             guard setKeysResult else {
@@ -93,10 +99,9 @@
             }
 
             // Create run loop source
-            runLoopSource = SCDynamicStoreCreateRunLoopSource(
-                kCFAllocatorDefault,
-                dynamicStore,
-                0
+            runLoopSource = systemConfigService.createRunLoopSource(
+                store: dynamicStore,
+                order: 0
             )
 
             guard runLoopSource != nil else {
@@ -130,12 +135,19 @@
 
             // Clean up SystemConfiguration resources
             if let runLoopSource = runLoopSource {
-                CFRunLoopRemoveSource(CFRunLoopGetMain(), runLoopSource, CFRunLoopMode.defaultMode)
+                systemConfigService.removeRunLoopSource(
+                    source: runLoopSource,
+                    mode: CFRunLoopMode.defaultMode
+                )
                 self.runLoopSource = nil
             }
 
             if let dynamicStore = dynamicStore {
-                SCDynamicStoreSetNotificationKeys(dynamicStore, nil, nil)
+                _ = systemConfigService.setNotificationKeys(
+                    store: dynamicStore,
+                    keys: nil,
+                    patterns: nil
+                )
                 self.dynamicStore = nil
             }
 
@@ -159,7 +171,10 @@
 
             // Add the notification source to the main run loop
             if let source = runLoopSource {
-                CFRunLoopAddSource(CFRunLoopGetMain(), source, CFRunLoopMode.defaultMode)
+                systemConfigService.addRunLoopSource(
+                    source: source,
+                    mode: CFRunLoopMode.defaultMode
+                )
                 logger.debug("Added network interface notification source to main run loop")
             }
 
@@ -176,9 +191,10 @@
 
             // Get list of current network interfaces
             let interfaceListKey = "State:/Network/Interface" as CFString
-            if let interfaceList = SCDynamicStoreCopyValue(dynamicStore, interfaceListKey)
-                as? [String]
-            {
+            if let interfaceList = systemConfigService.copyValue(
+                store: dynamicStore,
+                key: interfaceListKey
+            ) as? [String] {
                 knownInterfaces = Set(interfaceList)
                 logger.debug("Initial network interfaces: \(knownInterfaces)")
             }
@@ -208,8 +224,10 @@
             // Get current interface list
             let interfaceListKey = "State:/Network/Interface" as CFString
             guard
-                let currentInterfaces = SCDynamicStoreCopyValue(dynamicStore, interfaceListKey)
-                    as? [String]
+                let currentInterfaces = systemConfigService.copyValue(
+                    store: dynamicStore,
+                    key: interfaceListKey
+                ) as? [String]
             else {
                 return
             }
@@ -239,12 +257,13 @@
             let interfaceName = components[3]
 
             // Check if this is an EdgeOS interface and if link is up
-            if let linkInfo = SCDynamicStoreCopyValue(dynamicStore, key as CFString)
-                as? [String: Any],
+            if let linkInfo = systemConfigService.copyValue(
+                store: dynamicStore,
+                key: key as CFString
+            ) as? [String: Any],
                 let linkStatus = linkInfo["Active"] as? Bool,
                 linkStatus
             {
-
                 await checkIfEdgeOSInterface(interface: interfaceName, isAppearing: true)
             }
         }
@@ -257,7 +276,10 @@
             let interfaceName = components[3]
 
             // Check if IPv4 configuration appeared (interface became ready)
-            if SCDynamicStoreCopyValue(dynamicStore, key as CFString) != nil {
+            if systemConfigService.copyValue(
+                store: dynamicStore,
+                key: key as CFString
+            ) != nil {
                 await checkIfEdgeOSInterface(interface: interfaceName, isAppearing: true)
             }
         }

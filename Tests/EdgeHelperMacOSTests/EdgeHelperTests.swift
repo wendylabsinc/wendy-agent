@@ -104,11 +104,7 @@
             let deviceInfo = USBDeviceInfo(from: testDevice)
             _ = deviceInfo.id
 
-            // 1. Simulate EdgeOS USB device connection
-            await mockDiscovery.addMockUSBDevice(testDevice)
-            await usbMonitor.simulateDeviceConnection(deviceInfo)
-
-            // 2. ✅ Add corresponding ethernet interface for this device!
+            // 1. Add corresponding ethernet interface for this device!
             let mockInterface = EthernetInterface(
                 name: "en5",
                 displayName: "EdgeOS Ethernet",  // Must contain "EdgeOS" for isEdgeOSDevice
@@ -117,8 +113,18 @@
             )
             await mockDiscovery.addMockEthernetInterface(mockInterface)
 
+            // 2. Simulate EdgeOS USB device connection FIRST (so it goes into pendingUSBDevices)
+            await mockDiscovery.addMockUSBDevice(testDevice)
+            await usbMonitor.simulateDeviceConnection(deviceInfo)
+
+            // Small delay to ensure USB device is processed
+            try await Task.sleep(for: .milliseconds(50))
+
             #if os(macOS)
-                // 3. ✅ Simulate network interface appearance (new event-driven approach)
+                // 3. ✅ Simulate network interface appearance (triggers configureEdgeOSDevice)
+                // Ensure the mock monitor is running before simulating the event
+                let isRunning = await mockNetworkInterfaceMonitor.getIsRunning()
+                #expect(isRunning, "Network interface monitor should be running")
                 await mockNetworkInterfaceMonitor.simulateInterfaceAppearance("en5")
             #endif
 

@@ -22,8 +22,18 @@
         private var runLoop: CFRunLoop?
         private var monitoringTask: Task<Void, Never>?
 
-        init(logger: Logger) {
+        // Dependency injection
+        private let deviceInfoExtractor: USBDeviceInfoExtractorProtocol
+        private let ioKitService: IOKitServiceProtocol
+
+        init(
+            logger: Logger,
+            deviceInfoExtractor: USBDeviceInfoExtractorProtocol? = nil,
+            ioKitService: IOKitServiceProtocol? = nil
+        ) {
             self.logger = logger
+            self.deviceInfoExtractor = deviceInfoExtractor ?? USBDeviceInfoExtractor(logger: logger)
+            self.ioKitService = ioKitService ?? RealIOKitService()
         }
 
         func start() async throws {
@@ -35,20 +45,19 @@
             logger.info("Starting IOKit USB device monitoring...")
 
             // Create notification port
-            notificationPort = IONotificationPortCreate(kIOMainPortDefault)
-            guard let notificationPort = notificationPort else {
+            guard let notificationPort = ioKitService.createNotificationPort() else {
                 throw USBMonitorError.failedToCreateNotificationPort
             }
+            self.notificationPort = notificationPort
 
             // Get the run loop source
-            if let unmanagedSource = IONotificationPortGetRunLoopSource(notificationPort) {
-                runLoopSource = unmanagedSource.takeUnretainedValue()
-            } else {
+            guard let source = ioKitService.getRunLoopSource(notificationPort) else {
                 throw USBMonitorError.failedToCreateNotificationPort
             }
+            self.runLoopSource = source
 
             // Create matching dictionary for USB devices
-            guard let matchingDict = IOServiceMatching(kIOUSBDeviceClassName) else {
+            guard let matchingDict = ioKitService.createUSBDeviceMatchingDictionary() else {
                 throw USBMonitorError.failedToCreateMatchingDictionary
             }
 
@@ -70,13 +79,13 @@
             }
 
             let selfPtr = Unmanaged.passUnretained(self).toOpaque()
-            let result = IOServiceAddMatchingNotification(
-                notificationPort,
-                kIOMatchedNotification,
-                matchingDict,
-                matchedCallback,
-                selfPtr,
-                &matchedIterator
+            let result = ioKitService.addMatchingNotification(
+                port: notificationPort,
+                type: kIOMatchedNotification,
+                matching: matchingDict,
+                callback: matchedCallback,
+                refcon: selfPtr,
+                iterator: &matchedIterator
             )
 
             guard result == KERN_SUCCESS else {
@@ -84,7 +93,7 @@
             }
 
             // Register for device terminated notifications (device disconnected)
-            guard let terminatedDict = IOServiceMatching(kIOUSBDeviceClassName) else {
+            guard let terminatedDict = ioKitService.createUSBDeviceMatchingDictionary() else {
                 throw USBMonitorError.failedToCreateMatchingDictionary
             }
 
@@ -95,13 +104,13 @@
                 }
             }
 
-            let terminatedResult = IOServiceAddMatchingNotification(
-                notificationPort,
-                kIOTerminatedNotification,
-                terminatedDict,
-                terminatedCallback,
-                selfPtr,
-                &terminatedIterator
+            let terminatedResult = ioKitService.addMatchingNotification(
+                port: notificationPort,
+                type: kIOTerminatedNotification,
+                matching: terminatedDict,
+                callback: terminatedCallback,
+                refcon: selfPtr,
+                iterator: &terminatedIterator
             )
 
             guard terminatedResult == KERN_SUCCESS else {
@@ -127,17 +136,17 @@
 
             // Clean up IOKit resources
             if matchedIterator != 0 {
-                IOObjectRelease(matchedIterator)
+                ioKitService.objectRelease(matchedIterator)
                 matchedIterator = 0
             }
 
             if terminatedIterator != 0 {
-                IOObjectRelease(terminatedIterator)
+                ioKitService.objectRelease(terminatedIterator)
                 terminatedIterator = 0
             }
 
             if let notificationPort = notificationPort {
-                IONotificationPortDestroy(notificationPort)
+                ioKitService.destroyNotificationPort(notificationPort)
                 self.notificationPort = nil
             }
 
@@ -198,9 +207,9 @@
             // Don't process them as events since they're already connected
             var device: io_service_t
             repeat {
-                device = IOIteratorNext(iterator)
+                device = ioKitService.iteratorNext(iterator)
                 if device != 0 {
-                    IOObjectRelease(device)
+                    ioKitService.objectRelease(device)
                 }
             } while device != 0
         }
@@ -209,10 +218,10 @@
             var device: io_service_t
 
             repeat {
-                device = IOIteratorNext(iterator)
+                device = ioKitService.iteratorNext(iterator)
                 if device != 0 {
                     await processUSBDevice(device: device, isConnection: isConnection)
-                    IOObjectRelease(device)
+                    ioKitService.objectRelease(device)
                 }
             } while device != 0
         }
@@ -240,50 +249,12 @@
         }
 
         private func extractUSBDeviceInfo(from device: io_service_t) -> USBDeviceInfo? {
-            // Get device properties
-            var properties: Unmanaged<CFMutableDictionary>?
-            let result = IORegistryEntryCreateCFProperties(
-                device,
-                &properties,
-                kCFAllocatorDefault,
-                0
-            )
-
-            guard result == KERN_SUCCESS, let props = properties?.takeRetainedValue() else {
+            guard let properties = ioKitService.getDeviceProperties(device) else {
                 logger.debug("Failed to get device properties")
                 return nil
             }
 
-            let propsDict = props as NSDictionary
-
-            // Extract vendor ID
-            guard let vendorIdNum = propsDict["idVendor"] as? NSNumber else {
-                logger.debug("No vendor ID found")
-                return nil
-            }
-            let vendorId = String(format: "%04X", vendorIdNum.uint16Value)
-
-            // Extract product ID
-            guard let productIdNum = propsDict["idProduct"] as? NSNumber else {
-                logger.debug("No product ID found")
-                return nil
-            }
-            let productId = String(format: "%04X", productIdNum.uint16Value)
-
-            // Extract device name (try multiple possible keys)
-            let deviceName =
-                (propsDict["USB Product Name"] as? String)
-                ?? (propsDict["kUSBProductString"] as? String)
-                ?? (propsDict["Product Name"] as? String) ?? "Unknown USB Device"
-
-            // Create USBDevice to check if it's EdgeOS
-            let usbDevice = USBDevice(
-                name: deviceName,
-                vendorId: Int(vendorId, radix: 16) ?? 0,
-                productId: Int(productId, radix: 16) ?? 0
-            )
-
-            return USBDeviceInfo(from: usbDevice)
+            return deviceInfoExtractor.extractUSBDeviceInfo(from: properties)
         }
     }
 
