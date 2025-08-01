@@ -26,7 +26,8 @@
                 deviceDiscovery: mockDiscovery,
                 networkDaemonClient: networkDaemonClient,
                 ipManager: ipManager,
-                logger: logger
+                logger: logger,
+                networkInterfaceMonitor: nil
             )
 
             try await daemon.start()
@@ -52,7 +53,8 @@
                 deviceDiscovery: mockDiscovery,
                 networkDaemonClient: networkDaemonClient,
                 ipManager: ipManager,
-                logger: logger
+                logger: logger,
+                networkInterfaceMonitor: nil
             )
 
             // Should start successfully even with failing discovery
@@ -72,13 +74,25 @@
             let ipManager = MockIPAddressManager()  // Use mock here!
             let networkDaemonClient = MockNetworkDaemonClient(logger: logger)
 
-            let daemon = EdgeHelperDaemon(
-                usbMonitor: usbMonitor,
-                deviceDiscovery: mockDiscovery,
-                networkDaemonClient: networkDaemonClient,
-                ipManager: ipManager,
-                logger: logger
-            )
+            #if os(macOS)
+                let mockNetworkInterfaceMonitor = MockNetworkInterfaceMonitor()
+                let daemon = EdgeHelperDaemon(
+                    usbMonitor: usbMonitor,
+                    deviceDiscovery: mockDiscovery,
+                    networkDaemonClient: networkDaemonClient,
+                    ipManager: ipManager,
+                    logger: logger,
+                    networkInterfaceMonitor: mockNetworkInterfaceMonitor
+                )
+            #else
+                let daemon = EdgeHelperDaemon(
+                    usbMonitor: usbMonitor,
+                    deviceDiscovery: mockDiscovery,
+                    networkDaemonClient: networkDaemonClient,
+                    ipManager: ipManager,
+                    logger: logger
+                )
+            #endif
 
             try await daemon.start()
 
@@ -88,13 +102,9 @@
             // Create the device manually first
             let testDevice = USBDevice(name: "EdgeOS Device", vendorId: 0x1D6B, productId: 0x0104)
             let deviceInfo = USBDeviceInfo(from: testDevice)
-            let deviceId = deviceInfo.id
+            _ = deviceInfo.id
 
-            // 1. Simulate EdgeOS USB device connection
-            await mockDiscovery.addMockUSBDevice(testDevice)
-            await usbMonitor.simulateDeviceConnection(deviceInfo)
-
-            // 2. ✅ Add corresponding ethernet interface for this device!
+            // 1. Add corresponding ethernet interface for this device!
             let mockInterface = EthernetInterface(
                 name: "en5",
                 displayName: "EdgeOS Ethernet",  // Must contain "EdgeOS" for isEdgeOSDevice
@@ -102,6 +112,21 @@
                 macAddress: "02:00:00:00:00:01"
             )
             await mockDiscovery.addMockEthernetInterface(mockInterface)
+
+            // 2. Simulate EdgeOS USB device connection FIRST (so it goes into pendingUSBDevices)
+            await mockDiscovery.addMockUSBDevice(testDevice)
+            await usbMonitor.simulateDeviceConnection(deviceInfo)
+
+            // Small delay to ensure USB device is processed
+            try await Task.sleep(for: .milliseconds(50))
+
+            #if os(macOS)
+                // 3. ✅ Simulate network interface appearance (triggers configureEdgeOSDevice)
+                // Ensure the mock monitor is running before simulating the event
+                let isRunning = await mockNetworkInterfaceMonitor.getIsRunning()
+                #expect(isRunning, "Network interface monitor should be running")
+                await mockNetworkInterfaceMonitor.simulateInterfaceAppearance("en5")
+            #endif
 
             // Wait for connection processing
             try await Task.sleep(for: .milliseconds(200))
@@ -133,13 +158,25 @@
             let ipManager = PlatformIPAddressManager(logger: logger)
             let networkDaemonClient = MockNetworkDaemonClient(logger: logger)
 
-            let daemon = EdgeHelperDaemon(
-                usbMonitor: usbMonitor,
-                deviceDiscovery: mockDiscovery,
-                networkDaemonClient: networkDaemonClient,
-                ipManager: ipManager,
-                logger: logger
-            )
+            #if os(macOS)
+                let mockNetworkInterfaceMonitor = MockNetworkInterfaceMonitor()
+                let daemon = EdgeHelperDaemon(
+                    usbMonitor: usbMonitor,
+                    deviceDiscovery: mockDiscovery,
+                    networkDaemonClient: networkDaemonClient,
+                    ipManager: ipManager,
+                    logger: logger,
+                    networkInterfaceMonitor: mockNetworkInterfaceMonitor
+                )
+            #else
+                let daemon = EdgeHelperDaemon(
+                    usbMonitor: usbMonitor,
+                    deviceDiscovery: mockDiscovery,
+                    networkDaemonClient: networkDaemonClient,
+                    ipManager: ipManager,
+                    logger: logger
+                )
+            #endif
 
             try await daemon.start()
 
@@ -171,7 +208,8 @@
                 deviceDiscovery: mockDiscovery,
                 networkDaemonClient: networkDaemonClient,
                 ipManager: ipManager,
-                logger: logger
+                logger: logger,
+                networkInterfaceMonitor: nil
             )
 
             // Start multiple times
@@ -203,7 +241,8 @@
                 deviceDiscovery: mockDiscovery,
                 networkDaemonClient: networkDaemonClient,
                 ipManager: ipManager,
-                logger: logger
+                logger: logger,
+                networkInterfaceMonitor: nil
             )
 
             let start = ContinuousClock.now
