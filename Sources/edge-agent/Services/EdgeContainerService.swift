@@ -138,10 +138,11 @@ struct EdgeContainerService: Edge_Agent_Services_V1_EdgeContainerService.Service
                             "source": "proc",
                         ],
                         [
+                            // Bind mount host's /dev for hardware access
                             "destination": "/dev",
-                            "type": "tmpfs",
-                            "source": "tmpfs",
-                            "options": ["nosuid", "strictatime", "mode=755", "size=65536k"],
+                            "type": "bind",
+                            "source": "/dev",
+                            "options": ["bind", "rw"],
                         ],
                         [
                             "destination": "/dev/pts",
@@ -163,8 +164,23 @@ struct EdgeContainerService: Edge_Agent_Services_V1_EdgeContainerService.Service
                             "source": "mqueue",
                             "options": ["nosuid", "noexec", "nodev"],
                         ],
+                        // Mount /sys for hardware visibility (GPU, USB controllers, etc.)
+                        [
+                            "destination": "/sys",
+                            "type": "sysfs",
+                            "source": "sysfs",
+                            "options": ["nosuid", "noexec", "nodev", "ro"],
+                        ],
+                        // Mount /sys/fs/cgroup for device cgroup access
+                        [
+                            "destination": "/sys/fs/cgroup",
+                            "type": "cgroup",
+                            "source": "cgroup",
+                            "options": ["nosuid", "noexec", "nodev", "relatime", "ro"],
+                        ],
                     ],
                     "linux": [
+                        // Keep standard namespace isolation for security
                         "namespaces": [
                             ["type": "pid"],
                             ["type": "ipc"],
@@ -172,16 +188,65 @@ struct EdgeContainerService: Edge_Agent_Services_V1_EdgeContainerService.Service
                             ["type": "mount"],
                         ],
                         "networkMode": "host",
+                        // Only add capabilities needed for hardware/device access
                         "capabilities": [
-                            "bounding": ["SYS_PTRACE"],
-                            "effective": ["SYS_PTRACE"],
-                            "inheritable": ["SYS_PTRACE"],
-                            "permitted": ["SYS_PTRACE"],
+                            "bounding": [
+                                "SYS_PTRACE",  // For debugging
+                                "SYS_RAWIO",  // For raw I/O port access
+                                "SYS_ADMIN",  // For device management
+                                "MKNOD",  // For creating device nodes
+                                "DAC_OVERRIDE",  // For accessing device files
+                            ],
+                            "effective": [
+                                "SYS_PTRACE",
+                                "SYS_RAWIO",
+                                "SYS_ADMIN",
+                                "MKNOD",
+                                "DAC_OVERRIDE",
+                            ],
+                            "inheritable": [
+                                "SYS_PTRACE",
+                                "SYS_RAWIO",
+                                "SYS_ADMIN",
+                                "MKNOD",
+                                "DAC_OVERRIDE",
+                            ],
+                            "permitted": [
+                                "SYS_PTRACE",
+                                "SYS_RAWIO",
+                                "SYS_ADMIN",
+                                "MKNOD",
+                                "DAC_OVERRIDE",
+                            ],
                         ],
                         "seccomp": [
                             "defaultAction": "SCMP_ACT_ALLOW",
                             "architectures": ["SCMP_ARCH_AARCH64"],
                             "syscalls": [],
+                        ],
+                        // Allow access to all device types for hardware access
+                        "devices": [
+                            // Allow all character and block devices
+                            [
+                                "allow": true,
+                                "type": "c",  // Character devices
+                                "access": "rwm",
+                            ],
+                            [
+                                "allow": true,
+                                "type": "b",  // Block devices
+                                "access": "rwm",
+                            ],
+                        ],
+                        // Let containerd manage the cgroup path
+                        "resources": [
+                            "devices": [
+                                [
+                                    "allow": true,
+                                    "type": "a",  // All types
+                                    "access": "rwm",
+                                ]
+                            ]
                         ],
                     ],
                 ])

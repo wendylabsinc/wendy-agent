@@ -38,6 +38,9 @@ public struct DockerCLI: Sendable {
         /// Run container in background and print container ID
         case detach
 
+        /// Give extended privileges to this container
+        case privileged
+
         /// The arguments to pass to the Docker run command.
         var arguments: [String] {
             switch self {
@@ -59,6 +62,8 @@ public struct DockerCLI: Sendable {
                 return ["--name", name]
             case .detach:
                 return ["--detach"]
+            case .privileged:
+                return ["--privileged"]
             }
         }
     }
