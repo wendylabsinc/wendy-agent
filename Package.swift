@@ -7,10 +7,10 @@ let package = Package(
         .macOS(.v15)
     ],
     products: [
-        .executable(name: "edge-agent", targets: ["edge-agent"]),
-        .executable(name: "edge", targets: ["edge"]),
-        .executable(name: "edge-helper", targets: ["edge-helper"]),
-        .executable(name: "edge-network-daemon", targets: ["edge-network-daemon"]),
+        .executable(name: "edge-agent", targets: ["EdgeAgent"]),
+        .executable(name: "edge", targets: ["Edge"]),
+        .executable(name: "edge-helper", targets: ["EdgeHelper"]),
+        .executable(name: "edge-network-daemon", targets: ["EdgeNetworkDaemon"]),
     ],
     dependencies: [
         .package(url: "https://github.com/swift-server/async-http-client.git", from: "1.25.2"),
@@ -32,7 +32,7 @@ let package = Package(
     targets: [
         /// The main executable provided by edge-cli.
         .executableTarget(
-            name: "edge",
+            name: "Edge",
             dependencies: [
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 .product(name: "Logging", package: "swift-log"),
@@ -76,7 +76,7 @@ let package = Package(
 
         /// The main executable provided by edge-agent.
         .executableTarget(
-            name: "edge-agent",
+            name: "EdgeAgent",
             dependencies: [
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 .product(name: "Logging", package: "swift-log"),
@@ -159,23 +159,23 @@ let package = Package(
         .testTarget(
             name: "EdgeCLITests",
             dependencies: [
-                .target(name: "edge"),
-                .target(name: "edge-agent"),
+                .target(name: "Edge"),
+                .target(name: "EdgeAgent"),
                 .target(name: "EdgeAgentGRPC"),
-                .target(name: "edge-helper", condition: .when(platforms: [.macOS]))
+                .target(name: "EdgeHelper", condition: .when(platforms: [.macOS]))
             ]
         ),
 
         /// The edge helper daemon for USB device monitoring
         .executableTarget(
-            name: "edge-helper",
+            name: "EdgeHelper",
             dependencies: [
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 .product(name: "Logging", package: "swift-log"),
                 .product(name: "SystemPackage", package: "swift-system"),
                 .target(name: "EdgeShared"),
                 // Reuse existing device discovery components
-                .target(name: "edge"), // For device discovery protocols
+                .target(name: "Edge"), // For device discovery protocols
             ]
         ),
 
@@ -187,7 +187,7 @@ let package = Package(
 
         /// The privileged network daemon for macOS
         .executableTarget(
-            name: "edge-network-daemon",
+            name: "EdgeNetworkDaemon",
             dependencies: [
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 .product(name: "Logging", package: "swift-log"),
@@ -199,7 +199,7 @@ let package = Package(
         .testTarget(
             name: "EdgeHelperMacOSTests",
             dependencies: [
-                .target(name: "edge-helper"),
+                .target(name: "EdgeHelper"),
                 .target(name: "EdgeShared")
             ]
         ),
