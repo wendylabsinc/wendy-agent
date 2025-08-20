@@ -7,10 +7,10 @@ let package = Package(
         .macOS(.v15)
     ],
     products: [
-        .executable(name: "edge-agent", targets: ["EdgeAgent"]),
-        .executable(name: "edge", targets: ["Edge"]),
-        .executable(name: "edge-helper", targets: ["EdgeHelper"]),
-        .executable(name: "edge-network-daemon", targets: ["EdgeNetworkDaemon"]),
+        .executable(name: "edge-agent", targets: ["edge-agent"]),
+        .executable(name: "edge", targets: ["edge"]),
+        .executable(name: "edge-helper", targets: ["edge-helper"]),
+        .executable(name: "edge-network-daemon", targets: ["edge-network-daemon"]),
     ],
     dependencies: [
         .package(url: "https://github.com/swift-server/async-http-client.git", from: "1.25.2"),
@@ -32,7 +32,7 @@ let package = Package(
     targets: [
         /// The main executable provided by edge-cli.
         .executableTarget(
-            name: "Edge",
+            name: "edge",
             dependencies: [
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 .product(name: "Logging", package: "swift-log"),
@@ -48,6 +48,7 @@ let package = Package(
                 .target(name: "DownloadSupport"),
                 .target(name: "CliXPCProtocol"),
             ],
+            path: "Sources/Edge",
             resources: [
                 .copy("Resources")
             ]
@@ -76,7 +77,7 @@ let package = Package(
 
         /// The main executable provided by edge-agent.
         .executableTarget(
-            name: "EdgeAgent",
+            name: "edge-agent",
             dependencies: [
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 .product(name: "Logging", package: "swift-log"),
@@ -91,7 +92,8 @@ let package = Package(
                 .target(name: "ContainerRegistry"),
                 .product(name: "Subprocess", package: "swift-subprocess"),
                 .target(name: "EdgeShared"),
-            ]
+            ],
+            path: "Sources/EdgeAgent"
         ),
 
         /// Shared components used by both edge and edge-agent.
@@ -159,24 +161,25 @@ let package = Package(
         .testTarget(
             name: "EdgeCLITests",
             dependencies: [
-                .target(name: "Edge"),
-                .target(name: "EdgeAgent"),
+                .target(name: "edge"),
+                .target(name: "edge-agent"),
                 .target(name: "EdgeAgentGRPC"),
-                .target(name: "EdgeHelper", condition: .when(platforms: [.macOS]))
+                .target(name: "edge-helper", condition: .when(platforms: [.macOS]))
             ]
         ),
 
         /// The edge helper daemon for USB device monitoring
         .executableTarget(
-            name: "EdgeHelper",
+            name: "edge-helper",
             dependencies: [
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 .product(name: "Logging", package: "swift-log"),
                 .product(name: "SystemPackage", package: "swift-system"),
                 .target(name: "EdgeShared"),
                 // Reuse existing device discovery components
-                .target(name: "Edge"), // For device discovery protocols
-            ]
+                .target(name: "edge"), // For device discovery protocols
+            ],
+            path: "Sources/EdgeHelper"
         ),
 
         /// XPC Protocol for communication between CLI and privileged daemon
@@ -187,19 +190,20 @@ let package = Package(
 
         /// The privileged network daemon for macOS
         .executableTarget(
-            name: "EdgeNetworkDaemon",
+            name: "edge-network-daemon",
             dependencies: [
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 .product(name: "Logging", package: "swift-log"),
                 .target(name: "EdgeShared"),
                 .target(name: "CliXPCProtocol"),
-            ]
+            ],
+            path: "Sources/EdgeNetworkDaemon"
         ),
 
         .testTarget(
             name: "EdgeHelperMacOSTests",
             dependencies: [
-                .target(name: "EdgeHelper"),
+                .target(name: "edge-helper"),
                 .target(name: "EdgeShared")
             ]
         ),
