@@ -48,6 +48,7 @@ let package = Package(
                 .target(name: "DownloadSupport"),
                 .target(name: "CliXPCProtocol"),
             ],
+            path: "Sources/Edge",
             resources: [
                 .copy("Resources")
             ]
@@ -91,7 +92,8 @@ let package = Package(
                 .target(name: "ContainerRegistry"),
                 .product(name: "Subprocess", package: "swift-subprocess"),
                 .target(name: "EdgeShared"),
-            ]
+            ],
+            path: "Sources/EdgeAgent"
         ),
 
         /// Shared components used by both edge and edge-agent.
@@ -176,7 +178,8 @@ let package = Package(
                 .target(name: "EdgeShared"),
                 // Reuse existing device discovery components
                 .target(name: "edge"), // For device discovery protocols
-            ]
+            ],
+            path: "Sources/EdgeHelper"
         ),
 
         /// XPC Protocol for communication between CLI and privileged daemon
@@ -193,7 +196,8 @@ let package = Package(
                 .product(name: "Logging", package: "swift-log"),
                 .target(name: "EdgeShared"),
                 .target(name: "CliXPCProtocol"),
-            ]
+            ],
+            path: "Sources/EdgeNetworkDaemon"
         ),
 
         .testTarget(
