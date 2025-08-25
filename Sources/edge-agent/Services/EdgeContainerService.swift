@@ -114,142 +114,38 @@ struct EdgeContainerService: Edge_Agent_Services_V1_EdgeContainerService.Service
                     )
                 }
 
-                // TODO: Replace with a _real_ JSON API like Codable
-                let spec = try JSONSerialization.data(withJSONObject: [
-                    "ociVersion": "1.0.3",
-                    "process": [
-                        "terminal": false,
-                        "user": ["uid": 0, "gid": 0],
-                        "args": request.cmd.split(separator: " ").map(String.init),
-                        "env": [
-                            "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-                        ],
-                        "cwd": "/",
-                    ],
-                    "root": [
-                        "path": "rootfs",
-                        "readonly": false,
-                    ],
-                    "hostname": request.appName,
-                    "mounts": [
-                        [
-                            "destination": "/proc",
-                            "type": "proc",
-                            "source": "proc",
-                        ],
-                        [
-                            // Bind mount host's /dev for hardware access
-                            "destination": "/dev",
-                            "type": "bind",
-                            "source": "/dev",
-                            "options": ["bind", "rw"],
-                        ],
-                        [
-                            "destination": "/dev/pts",
-                            "type": "devpts",
-                            "source": "devpts",
-                            "options": [
-                                "nosuid", "noexec", "newinstance", "ptmxmode=0666", "mode=0620",
-                            ],
-                        ],
-                        [
-                            "destination": "/dev/shm",
-                            "type": "tmpfs",
-                            "source": "shm",
-                            "options": ["nosuid", "noexec", "nodev", "mode=1777", "size=65536k"],
-                        ],
-                        [
-                            "destination": "/dev/mqueue",
-                            "type": "mqueue",
-                            "source": "mqueue",
-                            "options": ["nosuid", "noexec", "nodev"],
-                        ],
-                        // Mount /sys for hardware visibility (GPU, USB controllers, etc.)
-                        [
-                            "destination": "/sys",
-                            "type": "sysfs",
-                            "source": "sysfs",
-                            "options": ["nosuid", "noexec", "nodev", "ro"],
-                        ],
-                        // Mount /sys/fs/cgroup for device cgroup access
-                        [
-                            "destination": "/sys/fs/cgroup",
-                            "type": "cgroup",
-                            "source": "cgroup",
-                            "options": ["nosuid", "noexec", "nodev", "relatime", "ro"],
-                        ],
-                    ],
-                    "linux": [
-                        // Keep standard namespace isolation for security
-                        "namespaces": [
-                            ["type": "pid"],
-                            ["type": "ipc"],
-                            ["type": "uts"],
-                            ["type": "mount"],
-                        ],
-                        "networkMode": "host",
-                        // Only add capabilities needed for hardware/device access
-                        "capabilities": [
-                            "bounding": [
-                                "SYS_PTRACE",  // For debugging
-                                "SYS_RAWIO",  // For raw I/O port access
-                                "SYS_ADMIN",  // For device management
-                                "MKNOD",  // For creating device nodes
-                                "DAC_OVERRIDE",  // For accessing device files
-                            ],
-                            "effective": [
-                                "SYS_PTRACE",
-                                "SYS_RAWIO",
-                                "SYS_ADMIN",
-                                "MKNOD",
-                                "DAC_OVERRIDE",
-                            ],
-                            "inheritable": [
-                                "SYS_PTRACE",
-                                "SYS_RAWIO",
-                                "SYS_ADMIN",
-                                "MKNOD",
-                                "DAC_OVERRIDE",
-                            ],
-                            "permitted": [
-                                "SYS_PTRACE",
-                                "SYS_RAWIO",
-                                "SYS_ADMIN",
-                                "MKNOD",
-                                "DAC_OVERRIDE",
-                            ],
-                        ],
-                        "seccomp": [
-                            "defaultAction": "SCMP_ACT_ALLOW",
-                            "architectures": ["SCMP_ARCH_AARCH64"],
-                            "syscalls": [],
-                        ],
-                        // Allow access to all device types for hardware access
-                        "devices": [
-                            // Allow all character and block devices
-                            [
-                                "allow": true,
-                                "type": "c",  // Character devices
-                                "access": "rwm",
-                            ],
-                            [
-                                "allow": true,
-                                "type": "b",  // Block devices
-                                "access": "rwm",
-                            ],
-                        ],
-                        // Let containerd manage the cgroup path
-                        "resources": [
-                            "devices": [
-                                [
-                                    "allow": true,
-                                    "type": "a",  // All types
-                                    "access": "rwm",
-                                ]
-                            ]
-                        ],
-                    ],
-                ])
+                // TODO: Make this configurable via API when privileged field is added to proto
+                let privileged = true
+
+                logger.info(
+                    "Building OCI spec with privileged mode",
+                    metadata: [
+                        "privileged": .stringConvertible(privileged),
+                        "appName": .stringConvertible(request.appName),
+                    ]
+                )
+
+                // Build OCI spec with conditional privileged mode
+                let spec = try buildOCISpec(
+                    privileged: privileged,
+                    appName: request.appName,
+                    command: request.cmd
+                )
+
+                // Debug: Log the spec to verify capabilities are included
+                if let specJson = try? JSONSerialization.jsonObject(with: spec) as? [String: Any] {
+                    let process = specJson["process"] as? [String: Any]
+                    let linux = specJson["linux"] as? [String: Any]
+                    let hasCapabilities = process?["capabilities"] != nil
+                    logger.info(
+                        "OCI spec built",
+                        metadata: [
+                            "hasCapabilities": .stringConvertible(hasCapabilities),
+                            "hasDevices": .stringConvertible(linux?["devices"] != nil),
+                            "hasSeccomp": .stringConvertible(linux?["seccomp"] != nil),
+                        ]
+                    )
+                }
 
                 let snapshotKey: String?
                 let mounts: [Containerd_Types_Mount]
