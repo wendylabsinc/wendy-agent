@@ -165,6 +165,7 @@ struct RunContainerRequestHandler {
                 .network("host"),
                 .name(containerName),
                 .detach,
+                .privileged,  // Add privileged access for all containers
             ]
             var debugPort: UInt32 = 0
 

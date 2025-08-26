@@ -114,77 +114,38 @@ struct EdgeContainerService: Edge_Agent_Services_V1_EdgeContainerService.Service
                     )
                 }
 
-                // TODO: Replace with a _real_ JSON API like Codable
-                let spec = try JSONSerialization.data(withJSONObject: [
-                    "ociVersion": "1.0.3",
-                    "process": [
-                        "terminal": false,
-                        "user": ["uid": 0, "gid": 0],
-                        "args": request.cmd.split(separator: " ").map(String.init),
-                        "env": [
-                            "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-                        ],
-                        "cwd": "/",
-                    ],
-                    "root": [
-                        "path": "rootfs",
-                        "readonly": false,
-                    ],
-                    "hostname": request.appName,
-                    "mounts": [
-                        [
-                            "destination": "/proc",
-                            "type": "proc",
-                            "source": "proc",
-                        ],
-                        [
-                            "destination": "/dev",
-                            "type": "tmpfs",
-                            "source": "tmpfs",
-                            "options": ["nosuid", "strictatime", "mode=755", "size=65536k"],
-                        ],
-                        [
-                            "destination": "/dev/pts",
-                            "type": "devpts",
-                            "source": "devpts",
-                            "options": [
-                                "nosuid", "noexec", "newinstance", "ptmxmode=0666", "mode=0620",
-                            ],
-                        ],
-                        [
-                            "destination": "/dev/shm",
-                            "type": "tmpfs",
-                            "source": "shm",
-                            "options": ["nosuid", "noexec", "nodev", "mode=1777", "size=65536k"],
-                        ],
-                        [
-                            "destination": "/dev/mqueue",
-                            "type": "mqueue",
-                            "source": "mqueue",
-                            "options": ["nosuid", "noexec", "nodev"],
-                        ],
-                    ],
-                    "linux": [
-                        "namespaces": [
-                            ["type": "pid"],
-                            ["type": "ipc"],
-                            ["type": "uts"],
-                            ["type": "mount"],
-                        ],
-                        "networkMode": "host",
-                        "capabilities": [
-                            "bounding": ["SYS_PTRACE"],
-                            "effective": ["SYS_PTRACE"],
-                            "inheritable": ["SYS_PTRACE"],
-                            "permitted": ["SYS_PTRACE"],
-                        ],
-                        "seccomp": [
-                            "defaultAction": "SCMP_ACT_ALLOW",
-                            "architectures": ["SCMP_ARCH_AARCH64"],
-                            "syscalls": [],
-                        ],
-                    ],
-                ])
+                // TODO: Make this configurable via API when privileged field is added to proto
+                let privileged = true
+
+                logger.info(
+                    "Building OCI spec with privileged mode",
+                    metadata: [
+                        "privileged": .stringConvertible(privileged),
+                        "appName": .stringConvertible(request.appName),
+                    ]
+                )
+
+                // Build OCI spec with conditional privileged mode
+                let spec = try buildOCISpec(
+                    privileged: privileged,
+                    appName: request.appName,
+                    command: request.cmd
+                )
+
+                // Debug: Log the spec to verify capabilities are included
+                if let specJson = try? JSONSerialization.jsonObject(with: spec) as? [String: Any] {
+                    let process = specJson["process"] as? [String: Any]
+                    let linux = specJson["linux"] as? [String: Any]
+                    let hasCapabilities = process?["capabilities"] != nil
+                    logger.info(
+                        "OCI spec built",
+                        metadata: [
+                            "hasCapabilities": .stringConvertible(hasCapabilities),
+                            "hasDevices": .stringConvertible(linux?["devices"] != nil),
+                            "hasSeccomp": .stringConvertible(linux?["seccomp"] != nil),
+                        ]
+                    )
+                }
 
                 let snapshotKey: String?
                 let mounts: [Containerd_Types_Mount]
