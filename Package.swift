@@ -160,12 +160,6 @@ let package = Package(
         .target(
             name: "AppConfig"
         ),
-        .target(
-            name: "Shell",
-            dependencies: [
-                .product(name: "Logging", package: "swift-log")
-            ]
-        ),
 
         /// Tests for EdgeCLI components
         .testTarget(
