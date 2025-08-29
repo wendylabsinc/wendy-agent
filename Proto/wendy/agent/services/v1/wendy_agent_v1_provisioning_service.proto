@@ -1,0 +1,27 @@
+syntax = "proto3";
+
+package edge.agent.services.v1;
+
+service WendyProvisioningService {
+    rpc StartProvisioning(stream StartProvisioningRequest) returns (stream StartProvisioningResponse);
+}
+
+message StartProvisioningRequest {
+    oneof request {
+        CertificateSigningResponse csr = 1;
+    }
+}
+
+message CertificateSigningResponse {
+    bytes certificate_der = 1;
+}
+
+message StartProvisioningResponse {
+    oneof request {
+        CertificateSigningRequest csr = 1;
+    }
+}
+
+message CertificateSigningRequest {
+    bytes csr_der = 1;
+}
