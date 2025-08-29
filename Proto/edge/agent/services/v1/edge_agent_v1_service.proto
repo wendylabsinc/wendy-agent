@@ -45,6 +45,9 @@ message RunContainerRequest {
 
         // The command to run when the container starts.
         string cmd = 2;
+
+        // The app config for the container.
+        bytes app_config = 3;
     }
 
     message Chunk {

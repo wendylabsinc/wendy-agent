@@ -38,6 +38,7 @@ public struct DockerCLI: Sendable {
         /// Run container in background and print container ID
         case detach
 
+        case device(String)
         /// Give extended privileges to this container
         case privileged
 
@@ -62,6 +63,8 @@ public struct DockerCLI: Sendable {
                 return ["--name", name]
             case .detach:
                 return ["--detach"]
+            case .device(let device):
+                return ["--device", device]
             case .privileged:
                 return ["--privileged"]
             }

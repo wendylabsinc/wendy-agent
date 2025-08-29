@@ -1,0 +1,13 @@
+{
+    "appId": "engineer.edge.examples.hellohttp",
+    "version": "1.0.0",
+    "entitlements": [
+        {
+            "type": "network",
+            "mode": "host"
+        },
+        {
+            "type": "video"
+        }
+    ]
+}

@@ -8,6 +8,7 @@ extension RunContainerRequestHandler.Header {
         }
 
         self.imageName = proto.imageName
+        self.appConfig = proto.appConfig
     }
 }
 
