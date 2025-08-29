@@ -6,6 +6,9 @@ import GRPCNIOTransportHTTP2
 import Logging
 import NIOFoundationCompat
 import _NIOFileSystem
+import EdgeSDK
+import X509
+import Crypto
 
 struct AgentCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
@@ -13,6 +16,7 @@ struct AgentCommand: AsyncParsableCommand {
         abstract: "Manage the EdgeOS agent.",
         subcommands: [
             VersionCommand.self,
+            ProvisionCommand.self,
             UpdateCommand.self,
         ]
     )
@@ -66,6 +70,61 @@ struct AgentCommand: AsyncParsableCommand {
                     print("Update available: \(latestVersion)")
                 } else if checkUpdates {
                     print("No update available")
+                }
+            }
+        }
+    }
+    
+    struct ProvisionCommand: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(
+            commandName: "provision",
+            abstract: "Provision the EdgeOS agent to your organization."
+        )
+
+        @OptionGroup var agentConnectionOptions: AgentConnectionOptions
+
+        func run() async throws {
+            let name = try DistinguishedName {
+                CommonName("engineer")
+                CommonName("edge")
+                CommonName("companion")
+                CommonName(UUID().uuidString)
+            }
+            
+            try await withGRPCClient(agentConnectionOptions) { client in
+                let agent = Edge_Agent_Services_V1_EdgeProvisioningService.Client(wrapping: client)
+                let authority = Authority(
+                    privateKey: Certificate.PrivateKey(Curve25519.Signing.PrivateKey()),
+                    name: name
+                )
+                let (stream, continuation) = AsyncStream<Edge_Agent_Services_V1_StartProvisioningResponse>.makeStream()
+                
+                return try await agent.startProvisioning { writer in
+                    for await message in stream {
+                        switch message.request {
+                        case .csr(let csr):
+                            let signed = try authority.sign(
+                                CertificateSigningRequest(derEncoded: Array(csr.csrDer)),
+                                validUntil: Date().addingTimeInterval(3600)
+                            )
+                            
+                            print("Provisioning signed certificate..")
+                            let certificate = try Data(signed.serializeAsPEM().derBytes)
+                            try await writer.write(.with {
+                                $0.request = .csr(.with {
+                                    $0.certificateDer = certificate
+                                })
+                            })
+                        case .none:
+                            ()
+                        }
+                    }
+                    print("Provisioning complete!")
+                } onResponse: { response in
+                    defer { continuation.finish() }
+                    for try await response in response.messages {
+                        continuation.yield(response)
+                    }
                 }
             }
         }

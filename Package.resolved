@@ -274,7 +274,7 @@
     {
       "identity" : "swift-system",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/apple/swift-system.git",
+      "location" : "https://github.com/apple/swift-system",
       "state" : {
         "revision" : "61e4ca4b81b9e09e2ec863b00c340eb13497dac6",
         "version" : "1.5.0"

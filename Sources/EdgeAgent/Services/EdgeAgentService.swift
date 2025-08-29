@@ -20,10 +20,7 @@ struct EdgeAgentService: Edge_Agent_Services_V1_EdgeAgentService.ServiceProtocol
         request: StreamingServerRequest<Edge_Agent_Services_V1_RunContainerRequest>,
         context: ServerContext
     ) async throws -> StreamingServerResponse<Edge_Agent_Services_V1_RunContainerResponse> {
-        return StreamingServerResponse {
-            (
-                writer: RPCWriter<Edge_Agent_Services_V1_RunContainerResponse>
-            ) async throws -> Metadata in
+        return StreamingServerResponse { writer -> Metadata in
             try await withThrowingDiscardingTaskGroup { group in
                 var handler = RunContainerRequestHandler()
 

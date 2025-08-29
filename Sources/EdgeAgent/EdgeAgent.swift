@@ -5,6 +5,10 @@ import Foundation
 import GRPCCore
 import GRPCNIOTransportHTTP2
 import Logging
+import ServiceLifecycle
+import Crypto
+import X509
+import _NIOFileSystem
 
 @main
 struct EdgeAgent: AsyncParsableCommand {
@@ -16,6 +20,9 @@ struct EdgeAgent: AsyncParsableCommand {
 
     @Option(name: .shortAndLong, help: "The port to listen on for incoming connections.")
     var port: Int = 50051
+
+    @Option(name: .shortAndLong, help: "The directory to store configuration files in.")
+    var configDir: String = ".edge-agent"
 
     func run() async throws {
         LoggingSystem.bootstrap { label in
@@ -31,13 +38,39 @@ struct EdgeAgent: AsyncParsableCommand {
         logger.info("Starting Edge Agent version \(Version.current) on port \(port)")
 
         let (signal, continuation) = AsyncStream<Void>.makeStream()
+        
+        let provisioning: EdgeProvisioningService
+        let config: any AgentConfigService = try await {
+            try await FileSystemAgentConfigService(directory: FilePath(configDir))
+        }()
+        
+        if let certificate = await config.certificate {
+            provisioning = EdgeProvisioningService(
+                privateKey: await config.privateKey,
+                certificate: certificate
+            )
+        } else {
+            logger.notice("Agent requires provisioning")
+            provisioning = await EdgeProvisioningService(
+                privateKey: config.privateKey,
+                name: config.name
+            ) { provisionedDevice in
+                // TODO: Save to disk and restart server
+                try await config.provisionCertificate(
+                    provisionedDevice.certificate
+                )
+                logger.notice("Provisioning complete. Restarting server")
+                continuation.yield()
+            }
+        }
 
         let services: [any GRPCCore.RegistrableRPCService] = [
             EdgeContainerService(),
             EdgeAgentService(shouldRestart: {
-                print("Shutting down server")
+                logger.notice("Shutting down server")
                 continuation.yield()
             }),
+            provisioning
         ]
 
         let serverIPv4 = GRPCServer(
