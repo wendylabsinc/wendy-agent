@@ -45,15 +45,16 @@ struct WendyAgent: AsyncParsableCommand {
         }()
         
         if let certificate = await config.certificate {
-            provisioning = EdgeProvisioningService(
-                privateKey: await config.privateKey,
+            provisioning = await EdgeProvisioningService(
+                privateKey: config.privateKey,
+                deviceId: config.deviceId,
                 certificate: certificate
             )
         } else {
             logger.notice("Agent requires provisioning")
             provisioning = await EdgeProvisioningService(
                 privateKey: config.privateKey,
-                name: config.name
+                deviceId: config.deviceId
             ) { provisionedDevice in
                 // TODO: Save to disk and restart server
                 try await config.provisionCertificate(
