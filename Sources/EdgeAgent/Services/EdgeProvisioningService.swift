@@ -10,42 +10,44 @@ import X509
 
 enum ProvisioningError: Error {
     case alreadyProvisioned
+    case csrBeforeStartProvisioning
 }
 
 actor EdgeProvisioningService: Edge_Agent_Services_V1_EdgeProvisioningService.ServiceProtocol {
     let privateKey: Certificate.PrivateKey
-    let name: DistinguishedName
+    let deviceId: String
     var certificate: Certificate?
     private let logger = Logger(label: #fileID)
     let onProvisioned: @Sendable (Agent.Provisioned) async throws -> Void
     
     public init(
         privateKey: Certificate.PrivateKey,
-        name: DistinguishedName,
+        deviceId: String,
         onProvisioned: @escaping @Sendable (Agent.Provisioned) async throws -> Void
     ) {
         self.privateKey = privateKey
-        self.name = name
+        self.deviceId = deviceId
         self.certificate = nil
         self.onProvisioned = onProvisioned
     }
     
     public init(
         privateKey: Certificate.PrivateKey,
+        deviceId: String,
         certificate: Certificate
     ) {
         self.privateKey = privateKey
-        self.name = certificate.subject
+        self.deviceId = deviceId
         self.certificate = certificate
         self.onProvisioned = { _ in
             throw ProvisioningError.alreadyProvisioned
         }
     }
     
-    func startProvisioning(
-        request: StreamingServerRequest<Edge_Agent_Services_V1_StartProvisioningRequest>,
+    func provision(
+        request: StreamingServerRequest<Edge_Agent_Services_V1_ProvisioningRequest>,
         context: ServerContext
-    ) async throws -> StreamingServerResponse<Edge_Agent_Services_V1_StartProvisioningResponse> {
+    ) async throws -> StreamingServerResponse<Edge_Agent_Services_V1_ProvisioningResponse> {
         guard self.certificate == nil else {
             logger.warning("Agent is already provisioned")
             throw ProvisioningError.alreadyProvisioned
@@ -53,21 +55,32 @@ actor EdgeProvisioningService: Edge_Agent_Services_V1_EdgeProvisioningService.Se
         
         return StreamingServerResponse { writer -> Metadata in
             do {
-                let agent = try Agent.Unprovisioned(
-                    privateKey: self.privateKey,
-                    name: self.name
-                )
-                let csr = try agent.csr.serializeAsPEM().derBytes
-                
-                try await writer.write(.with {
-                    $0.csr = .with {
-                        $0.csrDer = Data(csr)
-                    }
-                })
-                
+                var agent: Agent.Unprovisioned?
                 for try await message in request.messages {
                     switch message.request {
+                    case .startProvisioning(let startProvisioning):
+                        let name = try DistinguishedName {
+                            CommonName("engineer")
+                            CommonName("edge")
+                            CommonName(startProvisioning.organisationID)
+                            CommonName(self.deviceId)
+                        }
+                        let unprovisionedAgent = try Agent.Unprovisioned(
+                            privateKey: self.privateKey,
+                            name: name
+                        )
+                        let csr = try unprovisionedAgent.csr.serializeAsPEM().derBytes
+                        
+                        try await writer.write(.with {
+                            $0.csr = .with {
+                                $0.csrDer = Data(csr)
+                            }
+                        })
+                        agent = unprovisionedAgent
                     case .csr(let csrReply):
+                        guard let agent else {
+                            throw ProvisioningError.csrBeforeStartProvisioning
+                        }
                         let cert = try Certificate(
                             derEncoded: Array(csrReply.certificateDer)
                         )

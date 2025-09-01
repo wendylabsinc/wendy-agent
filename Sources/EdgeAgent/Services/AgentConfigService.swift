@@ -7,7 +7,6 @@ public protocol AgentConfigService: Sendable {
     var privateKey: Certificate.PrivateKey { get async }
     var certificate: Certificate? { get async }
     var deviceId: String { get async }
-    var name: DistinguishedName { get async }
     
     func provisionCertificate(_ certificate: Certificate) async throws
 }
@@ -25,7 +24,6 @@ actor FileSystemAgentConfigService: AgentConfigService {
     }
     private var config: ConfigJSON
     var deviceId: String { config.deviceId }
-    let name: DistinguishedName
     let privateKey: Certificate.PrivateKey
     private(set) var certificate: Certificate?
     
@@ -58,12 +56,6 @@ actor FileSystemAgentConfigService: AgentConfigService {
         self.certificate = try config.certificateCer.map { data in
             try Certificate(derEncoded: Array(data))
         }
-        self.name = try DistinguishedName {
-            CommonName("engineer")
-            CommonName("edge")
-            CommonName("unprovisioned")
-            CommonName(config.deviceId)
-        }
     }
     
     public func provisionCertificate(_ certificate: Certificate) async throws {
@@ -91,19 +83,12 @@ actor InMemoryAgentConfigService: AgentConfigService {
     let privateKey: Certificate.PrivateKey
     private(set) var certificate: Certificate?
     let deviceId: String
-    private(set) var name: DistinguishedName
     
     public init() throws {
         let deviceId = UUID().uuidString
         
         self.privateKey = Certificate.PrivateKey(Curve25519.Signing.PrivateKey())
         self.deviceId = deviceId
-        self.name = try DistinguishedName {
-            CommonName("engineer")
-            CommonName("edge")
-            CommonName("unprovisioned")
-            CommonName(deviceId)
-        }
     }
     
     public func provisionCertificate(_ certificate: Certificate) async throws {

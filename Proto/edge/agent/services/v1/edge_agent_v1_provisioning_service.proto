@@ -3,20 +3,25 @@ syntax = "proto3";
 package edge.agent.services.v1;
 
 service EdgeProvisioningService {
-    rpc StartProvisioning(stream StartProvisioningRequest) returns (stream StartProvisioningResponse);
+    rpc Provision(stream ProvisioningRequest) returns (stream ProvisioningResponse);
+}
+
+message ProvisioningRequest {
+    oneof request {
+        StartProvisioningRequest start_provisioning = 1;
+        CertificateSigningResponse csr = 2;
+    }
 }
 
 message StartProvisioningRequest {
-    oneof request {
-        CertificateSigningResponse csr = 1;
-    }
+    string organisation_id = 1;
 }
 
 message CertificateSigningResponse {
     bytes certificate_der = 1;
 }
 
-message StartProvisioningResponse {
+message ProvisioningResponse {
     oneof request {
         CertificateSigningRequest csr = 1;
     }

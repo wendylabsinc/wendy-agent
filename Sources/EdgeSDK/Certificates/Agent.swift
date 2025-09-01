@@ -13,7 +13,7 @@ public struct Agent {
         case certificateNotValidYet, certificateNotValidAnymore
     }
     
-    public struct Unprovisioned: ~Copyable {
+    public struct Unprovisioned: Sendable {
         public let privateKey: Certificate.PrivateKey
         public let csr: CertificateSigningRequest
         

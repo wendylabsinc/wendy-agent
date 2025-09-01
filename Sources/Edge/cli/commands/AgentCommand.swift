@@ -81,13 +81,16 @@ struct AgentCommand: AsyncParsableCommand {
             abstract: "Provision the EdgeOS agent to your organization."
         )
 
+        @Argument(help: "The ID of the organisation to provision for")
+        var organisationID: String
+        
         @OptionGroup var agentConnectionOptions: AgentConnectionOptions
 
         func run() async throws {
             let name = try DistinguishedName {
                 CommonName("engineer")
                 CommonName("edge")
-                CommonName("companion")
+                CommonName(organisationID)
                 CommonName(UUID().uuidString)
             }
             
@@ -97,9 +100,15 @@ struct AgentCommand: AsyncParsableCommand {
                     privateKey: Certificate.PrivateKey(Curve25519.Signing.PrivateKey()),
                     name: name
                 )
-                let (stream, continuation) = AsyncStream<Edge_Agent_Services_V1_StartProvisioningResponse>.makeStream()
+                let (stream, continuation) = AsyncStream<Edge_Agent_Services_V1_ProvisioningResponse>.makeStream()
                 
-                return try await agent.startProvisioning { writer in
+                return try await agent.provision { writer in
+                    try await writer.write(.with {
+                        $0.request = .startProvisioning(.with {
+                            $0.organisationID = organisationID
+                        })
+                    })
+                    
                     for await message in stream {
                         switch message.request {
                         case .csr(let csr):
