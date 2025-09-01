@@ -56,6 +56,7 @@ let package = Package(
                 .product(name: "GRPCNIOTransportHTTP2", package: "grpc-swift-nio-transport"),
                 .product(name: "AsyncDNSResolver", package: "swift-async-dns-resolver"),
                 .product(name: "SystemPackage", package: "swift-system"),
+                .product(name: "NIOFoundationCompat", package: "swift-nio"),
                 .product(
                     name: "OpenAPIAsyncHTTPClient",
                     package: "swift-openapi-async-http-client"
@@ -110,6 +111,7 @@ let package = Package(
                 .product(name: "Subprocess", package: "swift-subprocess"),
                 .product(name: "_NIOFileSystem", package: "swift-nio"),
                 .product(name: "Crypto", package: "swift-crypto"),
+                .product(name: "NIOFoundationCompat", package: "swift-nio"),
                 .target(name: "ContainerRegistry"),
             ]
         ),
@@ -190,6 +192,7 @@ let package = Package(
                 .product(name: "AsyncHTTPClient", package: "async-http-client"),
                 .product(name: "_NIOFileSystem", package: "swift-nio"),
                 .product(name: "Subprocess", package: "swift-subprocess"),
+                .product(name: "NIOFoundationCompat", package: "swift-nio"),
             ]
         ),
         .target(
