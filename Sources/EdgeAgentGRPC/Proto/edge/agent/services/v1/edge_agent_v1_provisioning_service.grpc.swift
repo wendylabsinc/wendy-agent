@@ -14,30 +14,32 @@ import GRPCProtobuf
 // MARK: - edge.agent.services.v1.EdgeProvisioningService
 
 /// Namespace containing generated types for the "edge.agent.services.v1.EdgeProvisioningService" service.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 public enum Edge_Agent_Services_V1_EdgeProvisioningService {
     /// Service descriptor for the "edge.agent.services.v1.EdgeProvisioningService" service.
     public static let descriptor = GRPCCore.ServiceDescriptor(fullyQualifiedService: "edge.agent.services.v1.EdgeProvisioningService")
     /// Namespace for method metadata.
     public enum Method {
-        /// Namespace for "StartProvisioning" metadata.
-        public enum StartProvisioning {
-            /// Request type for "StartProvisioning".
-            public typealias Input = Edge_Agent_Services_V1_StartProvisioningRequest
-            /// Response type for "StartProvisioning".
-            public typealias Output = Edge_Agent_Services_V1_StartProvisioningResponse
-            /// Descriptor for "StartProvisioning".
+        /// Namespace for "Provision" metadata.
+        public enum Provision {
+            /// Request type for "Provision".
+            public typealias Input = Edge_Agent_Services_V1_ProvisioningRequest
+            /// Response type for "Provision".
+            public typealias Output = Edge_Agent_Services_V1_ProvisioningResponse
+            /// Descriptor for "Provision".
             public static let descriptor = GRPCCore.MethodDescriptor(
                 service: GRPCCore.ServiceDescriptor(fullyQualifiedService: "edge.agent.services.v1.EdgeProvisioningService"),
-                method: "StartProvisioning"
+                method: "Provision"
             )
         }
         /// Descriptors for all methods in the "edge.agent.services.v1.EdgeProvisioningService" service.
         public static let descriptors: [GRPCCore.MethodDescriptor] = [
-            StartProvisioning.descriptor
+            Provision.descriptor
         ]
     }
 }
 
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension GRPCCore.ServiceDescriptor {
     /// Service descriptor for the "edge.agent.services.v1.EdgeProvisioningService" service.
     public static let edge_agent_services_v1_EdgeProvisioningService = GRPCCore.ServiceDescriptor(fullyQualifiedService: "edge.agent.services.v1.EdgeProvisioningService")
@@ -45,6 +47,7 @@ extension GRPCCore.ServiceDescriptor {
 
 // MARK: edge.agent.services.v1.EdgeProvisioningService (server)
 
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Edge_Agent_Services_V1_EdgeProvisioningService {
     /// Streaming variant of the service protocol for the "edge.agent.services.v1.EdgeProvisioningService" service.
     ///
@@ -57,19 +60,19 @@ extension Edge_Agent_Services_V1_EdgeProvisioningService {
     /// Where possible, prefer using the stricter, less-verbose ``ServiceProtocol``
     /// or ``SimpleServiceProtocol`` instead.
     public protocol StreamingServiceProtocol: GRPCCore.RegistrableRPCService {
-        /// Handle the "StartProvisioning" method.
+        /// Handle the "Provision" method.
         ///
         /// - Parameters:
-        ///   - request: A streaming request of `Edge_Agent_Services_V1_StartProvisioningRequest` messages.
+        ///   - request: A streaming request of `Edge_Agent_Services_V1_ProvisioningRequest` messages.
         ///   - context: Context providing information about the RPC.
         /// - Throws: Any error which occurred during the processing of the request. Thrown errors
         ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
         ///     to an internal error.
-        /// - Returns: A streaming response of `Edge_Agent_Services_V1_StartProvisioningResponse` messages.
-        func startProvisioning(
-            request: GRPCCore.StreamingServerRequest<Edge_Agent_Services_V1_StartProvisioningRequest>,
+        /// - Returns: A streaming response of `Edge_Agent_Services_V1_ProvisioningResponse` messages.
+        func provision(
+            request: GRPCCore.StreamingServerRequest<Edge_Agent_Services_V1_ProvisioningRequest>,
             context: GRPCCore.ServerContext
-        ) async throws -> GRPCCore.StreamingServerResponse<Edge_Agent_Services_V1_StartProvisioningResponse>
+        ) async throws -> GRPCCore.StreamingServerResponse<Edge_Agent_Services_V1_ProvisioningResponse>
     }
 
     /// Service protocol for the "edge.agent.services.v1.EdgeProvisioningService" service.
@@ -80,19 +83,19 @@ extension Edge_Agent_Services_V1_EdgeProvisioningService {
     /// the ``SimpleServiceProtocol``. If you need fine grained control over your RPCs then
     /// use ``StreamingServiceProtocol``.
     public protocol ServiceProtocol: Edge_Agent_Services_V1_EdgeProvisioningService.StreamingServiceProtocol {
-        /// Handle the "StartProvisioning" method.
+        /// Handle the "Provision" method.
         ///
         /// - Parameters:
-        ///   - request: A streaming request of `Edge_Agent_Services_V1_StartProvisioningRequest` messages.
+        ///   - request: A streaming request of `Edge_Agent_Services_V1_ProvisioningRequest` messages.
         ///   - context: Context providing information about the RPC.
         /// - Throws: Any error which occurred during the processing of the request. Thrown errors
         ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
         ///     to an internal error.
-        /// - Returns: A streaming response of `Edge_Agent_Services_V1_StartProvisioningResponse` messages.
-        func startProvisioning(
-            request: GRPCCore.StreamingServerRequest<Edge_Agent_Services_V1_StartProvisioningRequest>,
+        /// - Returns: A streaming response of `Edge_Agent_Services_V1_ProvisioningResponse` messages.
+        func provision(
+            request: GRPCCore.StreamingServerRequest<Edge_Agent_Services_V1_ProvisioningRequest>,
             context: GRPCCore.ServerContext
-        ) async throws -> GRPCCore.StreamingServerResponse<Edge_Agent_Services_V1_StartProvisioningResponse>
+        ) async throws -> GRPCCore.StreamingServerResponse<Edge_Agent_Services_V1_ProvisioningResponse>
     }
 
     /// Simple service protocol for the "edge.agent.services.v1.EdgeProvisioningService" service.
@@ -101,32 +104,33 @@ extension Edge_Agent_Services_V1_EdgeProvisioningService {
     /// doesn't provide access to request or response metadata. If you need access to these
     /// then use ``ServiceProtocol`` instead.
     public protocol SimpleServiceProtocol: Edge_Agent_Services_V1_EdgeProvisioningService.ServiceProtocol {
-        /// Handle the "StartProvisioning" method.
+        /// Handle the "Provision" method.
         ///
         /// - Parameters:
-        ///   - request: A stream of `Edge_Agent_Services_V1_StartProvisioningRequest` messages.
-        ///   - response: A response stream of `Edge_Agent_Services_V1_StartProvisioningResponse` messages.
+        ///   - request: A stream of `Edge_Agent_Services_V1_ProvisioningRequest` messages.
+        ///   - response: A response stream of `Edge_Agent_Services_V1_ProvisioningResponse` messages.
         ///   - context: Context providing information about the RPC.
         /// - Throws: Any error which occurred during the processing of the request. Thrown errors
         ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
         ///     to an internal error.
-        func startProvisioning(
-            request: GRPCCore.RPCAsyncSequence<Edge_Agent_Services_V1_StartProvisioningRequest, any Swift.Error>,
-            response: GRPCCore.RPCWriter<Edge_Agent_Services_V1_StartProvisioningResponse>,
+        func provision(
+            request: GRPCCore.RPCAsyncSequence<Edge_Agent_Services_V1_ProvisioningRequest, any Swift.Error>,
+            response: GRPCCore.RPCWriter<Edge_Agent_Services_V1_ProvisioningResponse>,
             context: GRPCCore.ServerContext
         ) async throws
     }
 }
 
 // Default implementation of 'registerMethods(with:)'.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Edge_Agent_Services_V1_EdgeProvisioningService.StreamingServiceProtocol {
     public func registerMethods<Transport>(with router: inout GRPCCore.RPCRouter<Transport>) where Transport: GRPCCore.ServerTransport {
         router.registerHandler(
-            forMethod: Edge_Agent_Services_V1_EdgeProvisioningService.Method.StartProvisioning.descriptor,
-            deserializer: GRPCProtobuf.ProtobufDeserializer<Edge_Agent_Services_V1_StartProvisioningRequest>(),
-            serializer: GRPCProtobuf.ProtobufSerializer<Edge_Agent_Services_V1_StartProvisioningResponse>(),
+            forMethod: Edge_Agent_Services_V1_EdgeProvisioningService.Method.Provision.descriptor,
+            deserializer: GRPCProtobuf.ProtobufDeserializer<Edge_Agent_Services_V1_ProvisioningRequest>(),
+            serializer: GRPCProtobuf.ProtobufSerializer<Edge_Agent_Services_V1_ProvisioningResponse>(),
             handler: { request, context in
-                try await self.startProvisioning(
+                try await self.provision(
                     request: request,
                     context: context
                 )
@@ -136,19 +140,21 @@ extension Edge_Agent_Services_V1_EdgeProvisioningService.StreamingServiceProtoco
 }
 
 // Default implementation of streaming methods from 'StreamingServiceProtocol'.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Edge_Agent_Services_V1_EdgeProvisioningService.ServiceProtocol {
 }
 
 // Default implementation of methods from 'ServiceProtocol'.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Edge_Agent_Services_V1_EdgeProvisioningService.SimpleServiceProtocol {
-    public func startProvisioning(
-        request: GRPCCore.StreamingServerRequest<Edge_Agent_Services_V1_StartProvisioningRequest>,
+    public func provision(
+        request: GRPCCore.StreamingServerRequest<Edge_Agent_Services_V1_ProvisioningRequest>,
         context: GRPCCore.ServerContext
-    ) async throws -> GRPCCore.StreamingServerResponse<Edge_Agent_Services_V1_StartProvisioningResponse> {
-        return GRPCCore.StreamingServerResponse<Edge_Agent_Services_V1_StartProvisioningResponse>(
+    ) async throws -> GRPCCore.StreamingServerResponse<Edge_Agent_Services_V1_ProvisioningResponse> {
+        return GRPCCore.StreamingServerResponse<Edge_Agent_Services_V1_ProvisioningResponse>(
             metadata: [:],
             producer: { writer in
-                try await self.startProvisioning(
+                try await self.provision(
                     request: request.messages,
                     response: writer,
                     context: context
@@ -161,29 +167,30 @@ extension Edge_Agent_Services_V1_EdgeProvisioningService.SimpleServiceProtocol {
 
 // MARK: edge.agent.services.v1.EdgeProvisioningService (client)
 
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Edge_Agent_Services_V1_EdgeProvisioningService {
     /// Generated client protocol for the "edge.agent.services.v1.EdgeProvisioningService" service.
     ///
     /// You don't need to implement this protocol directly, use the generated
     /// implementation, ``Client``.
     public protocol ClientProtocol: Sendable {
-        /// Call the "StartProvisioning" method.
+        /// Call the "Provision" method.
         ///
         /// - Parameters:
-        ///   - request: A streaming request producing `Edge_Agent_Services_V1_StartProvisioningRequest` messages.
-        ///   - serializer: A serializer for `Edge_Agent_Services_V1_StartProvisioningRequest` messages.
-        ///   - deserializer: A deserializer for `Edge_Agent_Services_V1_StartProvisioningResponse` messages.
+        ///   - request: A streaming request producing `Edge_Agent_Services_V1_ProvisioningRequest` messages.
+        ///   - serializer: A serializer for `Edge_Agent_Services_V1_ProvisioningRequest` messages.
+        ///   - deserializer: A deserializer for `Edge_Agent_Services_V1_ProvisioningResponse` messages.
         ///   - options: Options to apply to this RPC.
         ///   - handleResponse: A closure which handles the response, the result of which is
         ///       returned to the caller. Returning from the closure will cancel the RPC if it
         ///       hasn't already finished.
         /// - Returns: The result of `handleResponse`.
-        func startProvisioning<Result>(
-            request: GRPCCore.StreamingClientRequest<Edge_Agent_Services_V1_StartProvisioningRequest>,
-            serializer: some GRPCCore.MessageSerializer<Edge_Agent_Services_V1_StartProvisioningRequest>,
-            deserializer: some GRPCCore.MessageDeserializer<Edge_Agent_Services_V1_StartProvisioningResponse>,
+        func provision<Result>(
+            request: GRPCCore.StreamingClientRequest<Edge_Agent_Services_V1_ProvisioningRequest>,
+            serializer: some GRPCCore.MessageSerializer<Edge_Agent_Services_V1_ProvisioningRequest>,
+            deserializer: some GRPCCore.MessageDeserializer<Edge_Agent_Services_V1_ProvisioningResponse>,
             options: GRPCCore.CallOptions,
-            onResponse handleResponse: @Sendable @escaping (GRPCCore.StreamingClientResponse<Edge_Agent_Services_V1_StartProvisioningResponse>) async throws -> Result
+            onResponse handleResponse: @Sendable @escaping (GRPCCore.StreamingClientResponse<Edge_Agent_Services_V1_ProvisioningResponse>) async throws -> Result
         ) async throws -> Result where Result: Sendable
     }
 
@@ -203,27 +210,27 @@ extension Edge_Agent_Services_V1_EdgeProvisioningService {
             self.client = client
         }
 
-        /// Call the "StartProvisioning" method.
+        /// Call the "Provision" method.
         ///
         /// - Parameters:
-        ///   - request: A streaming request producing `Edge_Agent_Services_V1_StartProvisioningRequest` messages.
-        ///   - serializer: A serializer for `Edge_Agent_Services_V1_StartProvisioningRequest` messages.
-        ///   - deserializer: A deserializer for `Edge_Agent_Services_V1_StartProvisioningResponse` messages.
+        ///   - request: A streaming request producing `Edge_Agent_Services_V1_ProvisioningRequest` messages.
+        ///   - serializer: A serializer for `Edge_Agent_Services_V1_ProvisioningRequest` messages.
+        ///   - deserializer: A deserializer for `Edge_Agent_Services_V1_ProvisioningResponse` messages.
         ///   - options: Options to apply to this RPC.
         ///   - handleResponse: A closure which handles the response, the result of which is
         ///       returned to the caller. Returning from the closure will cancel the RPC if it
         ///       hasn't already finished.
         /// - Returns: The result of `handleResponse`.
-        public func startProvisioning<Result>(
-            request: GRPCCore.StreamingClientRequest<Edge_Agent_Services_V1_StartProvisioningRequest>,
-            serializer: some GRPCCore.MessageSerializer<Edge_Agent_Services_V1_StartProvisioningRequest>,
-            deserializer: some GRPCCore.MessageDeserializer<Edge_Agent_Services_V1_StartProvisioningResponse>,
+        public func provision<Result>(
+            request: GRPCCore.StreamingClientRequest<Edge_Agent_Services_V1_ProvisioningRequest>,
+            serializer: some GRPCCore.MessageSerializer<Edge_Agent_Services_V1_ProvisioningRequest>,
+            deserializer: some GRPCCore.MessageDeserializer<Edge_Agent_Services_V1_ProvisioningResponse>,
             options: GRPCCore.CallOptions = .defaults,
-            onResponse handleResponse: @Sendable @escaping (GRPCCore.StreamingClientResponse<Edge_Agent_Services_V1_StartProvisioningResponse>) async throws -> Result
+            onResponse handleResponse: @Sendable @escaping (GRPCCore.StreamingClientResponse<Edge_Agent_Services_V1_ProvisioningResponse>) async throws -> Result
         ) async throws -> Result where Result: Sendable {
             try await self.client.bidirectionalStreaming(
                 request: request,
-                descriptor: Edge_Agent_Services_V1_EdgeProvisioningService.Method.StartProvisioning.descriptor,
+                descriptor: Edge_Agent_Services_V1_EdgeProvisioningService.Method.Provision.descriptor,
                 serializer: serializer,
                 deserializer: deserializer,
                 options: options,
@@ -234,25 +241,26 @@ extension Edge_Agent_Services_V1_EdgeProvisioningService {
 }
 
 // Helpers providing default arguments to 'ClientProtocol' methods.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Edge_Agent_Services_V1_EdgeProvisioningService.ClientProtocol {
-    /// Call the "StartProvisioning" method.
+    /// Call the "Provision" method.
     ///
     /// - Parameters:
-    ///   - request: A streaming request producing `Edge_Agent_Services_V1_StartProvisioningRequest` messages.
+    ///   - request: A streaming request producing `Edge_Agent_Services_V1_ProvisioningRequest` messages.
     ///   - options: Options to apply to this RPC.
     ///   - handleResponse: A closure which handles the response, the result of which is
     ///       returned to the caller. Returning from the closure will cancel the RPC if it
     ///       hasn't already finished.
     /// - Returns: The result of `handleResponse`.
-    public func startProvisioning<Result>(
-        request: GRPCCore.StreamingClientRequest<Edge_Agent_Services_V1_StartProvisioningRequest>,
+    public func provision<Result>(
+        request: GRPCCore.StreamingClientRequest<Edge_Agent_Services_V1_ProvisioningRequest>,
         options: GRPCCore.CallOptions = .defaults,
-        onResponse handleResponse: @Sendable @escaping (GRPCCore.StreamingClientResponse<Edge_Agent_Services_V1_StartProvisioningResponse>) async throws -> Result
+        onResponse handleResponse: @Sendable @escaping (GRPCCore.StreamingClientResponse<Edge_Agent_Services_V1_ProvisioningResponse>) async throws -> Result
     ) async throws -> Result where Result: Sendable {
-        try await self.startProvisioning(
+        try await self.provision(
             request: request,
-            serializer: GRPCProtobuf.ProtobufSerializer<Edge_Agent_Services_V1_StartProvisioningRequest>(),
-            deserializer: GRPCProtobuf.ProtobufDeserializer<Edge_Agent_Services_V1_StartProvisioningResponse>(),
+            serializer: GRPCProtobuf.ProtobufSerializer<Edge_Agent_Services_V1_ProvisioningRequest>(),
+            deserializer: GRPCProtobuf.ProtobufDeserializer<Edge_Agent_Services_V1_ProvisioningResponse>(),
             options: options,
             onResponse: handleResponse
         )
@@ -260,8 +268,9 @@ extension Edge_Agent_Services_V1_EdgeProvisioningService.ClientProtocol {
 }
 
 // Helpers providing sugared APIs for 'ClientProtocol' methods.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Edge_Agent_Services_V1_EdgeProvisioningService.ClientProtocol {
-    /// Call the "StartProvisioning" method.
+    /// Call the "Provision" method.
     ///
     /// - Parameters:
     ///   - metadata: Additional metadata to send, defaults to empty.
@@ -272,17 +281,17 @@ extension Edge_Agent_Services_V1_EdgeProvisioningService.ClientProtocol {
     ///       returned to the caller. Returning from the closure will cancel the RPC if it
     ///       hasn't already finished.
     /// - Returns: The result of `handleResponse`.
-    public func startProvisioning<Result>(
+    public func provision<Result>(
         metadata: GRPCCore.Metadata = [:],
         options: GRPCCore.CallOptions = .defaults,
-        requestProducer producer: @Sendable @escaping (GRPCCore.RPCWriter<Edge_Agent_Services_V1_StartProvisioningRequest>) async throws -> Void,
-        onResponse handleResponse: @Sendable @escaping (GRPCCore.StreamingClientResponse<Edge_Agent_Services_V1_StartProvisioningResponse>) async throws -> Result
+        requestProducer producer: @Sendable @escaping (GRPCCore.RPCWriter<Edge_Agent_Services_V1_ProvisioningRequest>) async throws -> Void,
+        onResponse handleResponse: @Sendable @escaping (GRPCCore.StreamingClientResponse<Edge_Agent_Services_V1_ProvisioningResponse>) async throws -> Result
     ) async throws -> Result where Result: Sendable {
-        let request = GRPCCore.StreamingClientRequest<Edge_Agent_Services_V1_StartProvisioningRequest>(
+        let request = GRPCCore.StreamingClientRequest<Edge_Agent_Services_V1_ProvisioningRequest>(
             metadata: metadata,
             producer: producer
         )
-        return try await self.startProvisioning(
+        return try await self.provision(
             request: request,
             options: options,
             onResponse: handleResponse
