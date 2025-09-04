@@ -1,0 +1,43 @@
+codecov:
+  require_ci_to_pass: false
+
+coverage:
+  precision: 2
+  round: down
+  range: "50...90"
+
+  status:
+    project:
+      default:
+        target: auto
+        threshold: 1%
+        if_ci_failed: error
+        only_pulls: false
+    patch:
+      default:
+        target: auto
+        threshold: 1%
+        if_ci_failed: error
+
+flags:
+  macOS:
+    paths:
+      - Sources/
+    carryforward: true
+  Linux:
+    paths:
+      - Sources/
+    carryforward: true
+
+ignore:
+  - "Tests/"
+  - "Examples/"
+  - ".build/"
+  - "**/*Tests.swift"
+  - "**/*Mock*.swift"
+  - "**/resource_bundle_accessor.swift"
+
+comment:
+  layout: "reach, diff, flags, files"
+  behavior: default
+  require_changes: false
