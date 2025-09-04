@@ -1,7 +1,7 @@
+import EdgeShared
 import Foundation
 import Logging
 import Testing
-import EdgeShared
 
 @testable import edge
 
@@ -129,14 +129,12 @@ struct DeviceDiscoveryTests {
         let mockDiscovery = createMockDiscovery()
 
         // Verify the mock discovery returns the expected devices
-        let usbDevices = await mockDiscovery.findUSBDevices(logger: Logger(label: "test"))
+        let usbDevices = await mockDiscovery.findUSBDevices()
         #expect(usbDevices.count == 2)
         #expect(usbDevices[0].name == "TestDevice1")
 
         // Verify mock discovery returns the expected interfaces
-        let ethernetInterfaces = await mockDiscovery.findEthernetInterfaces(
-            logger: Logger(label: "test")
-        )
+        let ethernetInterfaces = await mockDiscovery.findEthernetInterfaces()
         #expect(ethernetInterfaces.count == 1)
         #expect(ethernetInterfaces[0].name == "eth0")
     }
@@ -220,15 +218,15 @@ struct MockDeviceDiscovery: DeviceDiscovery {
         self.lanDevices = lanDevices
     }
 
-    func findUSBDevices(logger: Logger) async -> [USBDevice] {
+    func findUSBDevices() async -> [USBDevice] {
         return usbDevices
     }
 
-    func findEthernetInterfaces(logger: Logger) async -> [EthernetInterface] {
+    func findEthernetInterfaces() async -> [EthernetInterface] {
         return ethernetInterfaces
     }
 
-    func findLANDevices(logger: Logger) async throws -> [LANDevice] {
+    func findLANDevices() async throws -> [LANDevice] {
         return lanDevices
     }
 }

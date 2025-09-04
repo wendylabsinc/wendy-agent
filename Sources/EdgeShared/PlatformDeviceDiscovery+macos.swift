@@ -10,16 +10,19 @@
     public struct PlatformDeviceDiscovery: DeviceDiscovery {
         private let ioServiceProvider: IOServiceProvider
         private let networkInterfaceProvider: NetworkInterfaceProvider
+        private let logger: Logger
 
         public init(
             ioServiceProvider: IOServiceProvider = DefaultIOServiceProvider(),
-            networkInterfaceProvider: NetworkInterfaceProvider = DefaultNetworkInterfaceProvider()
+            networkInterfaceProvider: NetworkInterfaceProvider = DefaultNetworkInterfaceProvider(),
+            logger: Logger
         ) {
             self.ioServiceProvider = ioServiceProvider
             self.networkInterfaceProvider = networkInterfaceProvider
+            self.logger = logger
         }
 
-        public func findUSBDevices(logger: Logger) async -> [USBDevice] {
+        public func findUSBDevices() async -> [USBDevice] {
             var devices: [USBDevice] = []
             let matchingDict = ioServiceProvider.createMatchingDictionary(
                 className: kIOUSBDeviceClassName
@@ -73,7 +76,7 @@
             return devices
         }
 
-        public func findEthernetInterfaces(logger: Logger) async -> [EthernetInterface] {
+        public func findEthernetInterfaces() async -> [EthernetInterface] {
             var interfaces: [EthernetInterface] = []
 
             guard let scInterfaces = networkInterfaceProvider.copyAllNetworkInterfaces() else {
@@ -134,7 +137,7 @@
             return interfaces
         }
 
-        public func findLANDevices(logger: Logger) async throws -> [LANDevice] {
+        public func findLANDevices() async throws -> [LANDevice] {
             var interfaces: [LANDevice] = []
 
             let resolver = try AsyncDNSResolver()

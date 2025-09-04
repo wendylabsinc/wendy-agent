@@ -9,6 +9,8 @@ let package = Package(
     products: [
         .executable(name: "edge-agent", targets: ["edge-agent"]),
         .executable(name: "edge", targets: ["edge"]),
+        .executable(name: "edge-helper", targets: ["edge-helper"]),
+        .executable(name: "edge-network-daemon", targets: ["edge-network-daemon"]),
     ],
     dependencies: [
         .package(url: "https://github.com/swift-server/async-http-client.git", from: "1.25.2"),
@@ -44,7 +46,10 @@ let package = Package(
                 .target(name: "Imager"),
                 .target(name: "ContainerRegistry"),
                 .target(name: "DownloadSupport"),
+                .target(name: "AppConfig"),
+                .target(name: "CliXPCProtocol"),
             ],
+            path: "Sources/Edge",
             resources: [
                 .copy("Resources")
             ]
@@ -88,7 +93,9 @@ let package = Package(
                 .target(name: "ContainerRegistry"),
                 .product(name: "Subprocess", package: "swift-subprocess"),
                 .target(name: "EdgeShared"),
-            ]
+                .target(name: "AppConfig"),
+            ],
+            path: "Sources/EdgeAgent"
         ),
 
         /// Shared components used by both edge and edge-agent.
@@ -108,7 +115,6 @@ let package = Package(
                 .product(name: "Subprocess", package: "swift-subprocess"),
             ]
         ),
-
         .target(
             name: "EdgeAgentGRPC",
             dependencies: [
@@ -151,6 +157,9 @@ let package = Package(
                 .product(name: "Subprocess", package: "swift-subprocess"),
             ]
         ),
+        .target(
+            name: "AppConfig"
+        ),
 
         /// Tests for EdgeCLI components
         .testTarget(
@@ -158,7 +167,48 @@ let package = Package(
             dependencies: [
                 .target(name: "edge"),
                 .target(name: "edge-agent"),
-                .target(name: "EdgeAgentGRPC")
+                .target(name: "EdgeAgentGRPC"),
+                .target(name: "edge-helper", condition: .when(platforms: [.macOS]))
+            ]
+        ),
+
+        /// The edge helper daemon for USB device monitoring
+        .executableTarget(
+            name: "edge-helper",
+            dependencies: [
+                .product(name: "ArgumentParser", package: "swift-argument-parser"),
+                .product(name: "Logging", package: "swift-log"),
+                .product(name: "SystemPackage", package: "swift-system"),
+                .target(name: "EdgeShared"),
+                // Reuse existing device discovery components
+                .target(name: "edge"), // For device discovery protocols
+            ],
+            path: "Sources/EdgeHelper"
+        ),
+
+        /// XPC Protocol for communication between CLI and privileged daemon
+        .target(
+            name: "CliXPCProtocol",
+            dependencies: []
+        ),
+
+        /// The privileged network daemon for macOS
+        .executableTarget(
+            name: "edge-network-daemon",
+            dependencies: [
+                .product(name: "ArgumentParser", package: "swift-argument-parser"),
+                .product(name: "Logging", package: "swift-log"),
+                .target(name: "EdgeShared"),
+                .target(name: "CliXPCProtocol"),
+            ],
+            path: "Sources/EdgeNetworkDaemon"
+        ),
+
+        .testTarget(
+            name: "EdgeHelperMacOSTests",
+            dependencies: [
+                .target(name: "edge-helper"),
+                .target(name: "EdgeShared")
             ]
         ),
 

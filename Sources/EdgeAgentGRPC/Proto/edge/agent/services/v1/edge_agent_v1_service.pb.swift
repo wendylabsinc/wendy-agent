@@ -67,7 +67,7 @@ public struct Edge_Agent_Services_V1_RunContainerRequest: Sendable {
 
   }
 
-  public struct Header: Sendable {
+  public struct Header: @unchecked Sendable {
     // SwiftProtobuf.Message conformance is added in an extension below. See the
     // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
     // methods supported on all messages.
@@ -77,6 +77,9 @@ public struct Edge_Agent_Services_V1_RunContainerRequest: Sendable {
 
     /// The command to run when the container starts.
     public var cmd: String = String()
+
+    /// The app config for the container.
+    public var appConfig: Data = Data()
 
     public var unknownFields = SwiftProtobuf.UnknownStorage()
 
@@ -652,6 +655,7 @@ extension Edge_Agent_Services_V1_RunContainerRequest.Header: SwiftProtobuf.Messa
   public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
     1: .standard(proto: "image_name"),
     2: .same(proto: "cmd"),
+    3: .standard(proto: "app_config"),
   ]
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
@@ -662,6 +666,7 @@ extension Edge_Agent_Services_V1_RunContainerRequest.Header: SwiftProtobuf.Messa
       switch fieldNumber {
       case 1: try { try decoder.decodeSingularStringField(value: &self.imageName) }()
       case 2: try { try decoder.decodeSingularStringField(value: &self.cmd) }()
+      case 3: try { try decoder.decodeSingularBytesField(value: &self.appConfig) }()
       default: break
       }
     }
@@ -674,12 +679,16 @@ extension Edge_Agent_Services_V1_RunContainerRequest.Header: SwiftProtobuf.Messa
     if !self.cmd.isEmpty {
       try visitor.visitSingularStringField(value: self.cmd, fieldNumber: 2)
     }
+    if !self.appConfig.isEmpty {
+      try visitor.visitSingularBytesField(value: self.appConfig, fieldNumber: 3)
+    }
     try unknownFields.traverse(visitor: &visitor)
   }
 
   public static func ==(lhs: Edge_Agent_Services_V1_RunContainerRequest.Header, rhs: Edge_Agent_Services_V1_RunContainerRequest.Header) -> Bool {
     if lhs.imageName != rhs.imageName {return false}
     if lhs.cmd != rhs.cmd {return false}
+    if lhs.appConfig != rhs.appConfig {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }

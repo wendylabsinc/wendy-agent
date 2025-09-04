@@ -1,0 +1,4 @@
+module CLinuxVideo {
+  header "CLinuxVideo.h"
+  export *
+}
