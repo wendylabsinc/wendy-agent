@@ -38,18 +38,37 @@ jobs:
         if: runner.os == 'macOS'
         shell: bash
         run: |
-          # Find the test binary name
-          TEST_BINARY=$(find .build/debug -name "*.xctest" -type d | head -1)
+          # Debug: Show build directory structure
+          echo "Build directory structure:"
+          find .build -name "*.xctest" -type d 2>/dev/null | head -5
+          
+          # Find the test binary - look in multiple possible locations
+          TEST_BINARY=$(find .build -name "*.xctest" -type d 2>/dev/null | grep -E "(debug|arm64-apple-macosx/debug|x86_64-apple-macosx/debug)" | head -1)
           if [ -z "$TEST_BINARY" ]; then
             echo "Error: Could not find test binary"
+            echo "Contents of .build:"
+            find .build -type d -name "*debug*" 2>/dev/null
             exit 1
           fi
+          
+          echo "Found test binary: $TEST_BINARY"
           TEST_BINARY_NAME=$(basename "$TEST_BINARY" .xctest)
+          
+          # Find profdata file
+          PROF_DATA=$(find .build -name "default.profdata" -path "*/codecov/*" 2>/dev/null | head -1)
+          if [ -z "$PROF_DATA" ]; then
+            echo "Error: Could not find profdata file"
+            echo "Looking for profdata:"
+            find .build -name "*.profdata" 2>/dev/null
+            exit 1
+          fi
+          
+          echo "Found profdata: $PROF_DATA"
           
           # Generate LCOV report
           xcrun llvm-cov export \
             "$TEST_BINARY/Contents/MacOS/$TEST_BINARY_NAME" \
-            -instr-profile=.build/debug/codecov/default.profdata \
+            -instr-profile="$PROF_DATA" \
             --format=lcov > coverage.lcov
           
           echo "Generated coverage.lcov for macOS"
@@ -69,17 +88,41 @@ jobs:
             apt-get install -y llvm
           fi
           
-          # Find the test binary
-          TEST_BINARY=$(find .build/debug -name "*.xctest" -type f | head -1)
+          # Debug: Show build directory structure
+          echo "Build directory structure:"
+          find .build -type f -name "*PackageTests*" 2>/dev/null | head -10
+          
+          # Find the test binary - look for the actual binary name pattern
+          TEST_BINARY=$(find .build -type f -name "*PackageTests.xctest" 2>/dev/null | head -1)
+          if [ -z "$TEST_BINARY" ]; then
+            # Fallback: try to find any executable in the debug directory
+            TEST_BINARY=$(find .build/debug -type f -executable -name "*PackageTests*" 2>/dev/null | head -1)
+          fi
+          
           if [ -z "$TEST_BINARY" ]; then
             echo "Error: Could not find test binary"
+            echo "Contents of .build/debug:"
+            ls -la .build/debug/ || echo ".build/debug not found"
             exit 1
           fi
+          
+          echo "Found test binary: $TEST_BINARY"
+          
+          # Find profdata file
+          PROF_DATA=$(find .build -name "default.profdata" -path "*/codecov/*" 2>/dev/null | head -1)
+          if [ -z "$PROF_DATA" ]; then
+            echo "Error: Could not find profdata file"
+            echo "Looking for profdata:"
+            find .build -name "*.profdata" 2>/dev/null
+            exit 1
+          fi
+          
+          echo "Found profdata: $PROF_DATA"
           
           # Generate LCOV report
           llvm-cov export \
             "$TEST_BINARY" \
-            -instr-profile=.build/debug/codecov/default.profdata \
+            -instr-profile="$PROF_DATA" \
             --format=lcov > coverage.lcov
           
           echo "Generated coverage.lcov for Linux"
