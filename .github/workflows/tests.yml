@@ -33,18 +33,57 @@ jobs:
       - name: Run Tests
         run: swift test --enable-code-coverage
 
-      # Generate code coverage report
-      - name: Generate Code Coverage Report
+      # Generate code coverage report for macOS
+      - name: Generate Code Coverage Report (macOS)
+        if: runner.os == 'macOS'
         shell: bash
         run: |
-          llvm-cov export -format="lcov" .build/release/*.xctest -instr-profile .build/release/codecov/default.profdata > coverage.lcov
-      
-      # Install dependencies for Codecov
-      - name: Install dependencies
+          # Find the test binary name
+          TEST_BINARY=$(find .build/debug -name "*.xctest" -type d | head -1)
+          if [ -z "$TEST_BINARY" ]; then
+            echo "Error: Could not find test binary"
+            exit 1
+          fi
+          TEST_BINARY_NAME=$(basename "$TEST_BINARY" .xctest)
+          
+          # Generate LCOV report
+          xcrun llvm-cov export \
+            "$TEST_BINARY/Contents/MacOS/$TEST_BINARY_NAME" \
+            -instr-profile=.build/debug/codecov/default.profdata \
+            --format=lcov > coverage.lcov
+          
+          echo "Generated coverage.lcov for macOS"
+          ls -la coverage.lcov
+
+      # Generate code coverage report for Linux
+      - name: Generate Code Coverage Report (Linux)
+        if: runner.os == 'Linux'
         shell: bash
         run: |
+          # Install required dependencies
           apt-get update
           apt-get install -y curl gnupg
+          
+          # Install llvm tools if not available
+          if ! command -v llvm-cov &> /dev/null; then
+            apt-get install -y llvm
+          fi
+          
+          # Find the test binary
+          TEST_BINARY=$(find .build/debug -name "*.xctest" -type f | head -1)
+          if [ -z "$TEST_BINARY" ]; then
+            echo "Error: Could not find test binary"
+            exit 1
+          fi
+          
+          # Generate LCOV report
+          llvm-cov export \
+            "$TEST_BINARY" \
+            -instr-profile=.build/debug/codecov/default.profdata \
+            --format=lcov > coverage.lcov
+          
+          echo "Generated coverage.lcov for Linux"
+          ls -la coverage.lcov
       
       # Upload coverage to Codecov
       - name: Upload coverage reports to Codecov
@@ -53,3 +92,5 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
           slug: edgeengineer/edge-agent
           fail_ci_if_error: false
+          flags: ${{ runner.os }}
+          name: ${{ matrix.os }}-coverage
