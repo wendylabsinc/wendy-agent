@@ -117,10 +117,19 @@ public struct Edge_Agent_Services_V1_ControlCommand: Sendable {
     set {command = .run(newValue)}
   }
 
+  public var stop: Edge_Agent_Services_V1_ControlCommand.Stop {
+    get {
+      if case .stop(let v)? = command {return v}
+      return Edge_Agent_Services_V1_ControlCommand.Stop()
+    }
+    set {command = .stop(newValue)}
+  }
+
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public enum OneOf_Command: Equatable, Sendable {
     case run(Edge_Agent_Services_V1_ControlCommand.Run)
+    case stop(Edge_Agent_Services_V1_ControlCommand.Stop)
 
   }
 
@@ -131,6 +140,50 @@ public struct Edge_Agent_Services_V1_ControlCommand: Sendable {
 
     /// Whether to run the container with a debugger
     public var debug: Bool = false
+
+    public enum RestartPolicy: SwiftProtobuf.Enum, Sendable {
+      public typealias RawValue = Int
+      case defaultPolicy // 0
+      case unlessStopped // 1
+      case no            // 2
+      case onFailure     // 3
+      case UNRECOGNIZED(Int)
+
+      public init() { self = .defaultPolicy }
+      public init?(rawValue: Int) {
+        switch rawValue {
+        case 0: self = .defaultPolicy
+        case 1: self = .unlessStopped
+        case 2: self = .no
+        case 3: self = .onFailure
+        default: self = .UNRECOGNIZED(rawValue)
+        }
+      }
+      public var rawValue: Int {
+        switch self {
+        case .defaultPolicy: return 0
+        case .unlessStopped: return 1
+        case .no: return 2
+        case .onFailure: return 3
+        case .UNRECOGNIZED(let i): return i
+        }
+      }
+    }
+
+    /// Optional restart policy override
+    public var restartPolicy: Edge_Agent_Services_V1_ControlCommand.Run.RestartPolicy = .defaultPolicy
+    /// Used with restartPolicy == .onFailure
+    public var onFailureMaxRetries: Int32 = 0
+
+    public var unknownFields = SwiftProtobuf.UnknownStorage()
+
+    public init() {}
+  }
+
+  public struct Stop: Sendable {
+    // SwiftProtobuf.Message conformance is added in an extension below. See the
+    // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+    // methods supported on all messages.
 
     public var unknownFields = SwiftProtobuf.UnknownStorage()
 
@@ -155,10 +208,19 @@ public struct Edge_Agent_Services_V1_RunContainerResponse: Sendable {
     set {responseType = .started(newValue)}
   }
 
+  public var stopped: Edge_Agent_Services_V1_RunContainerResponse.Stopped {
+    get {
+      if case .stopped(let v)? = responseType {return v}
+      return Edge_Agent_Services_V1_RunContainerResponse.Stopped()
+    }
+    set {responseType = .stopped(newValue)}
+  }
+
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public enum OneOf_ResponseType: Equatable, Sendable {
     case started(Edge_Agent_Services_V1_RunContainerResponse.Started)
+    case stopped(Edge_Agent_Services_V1_RunContainerResponse.Stopped)
 
   }
 
@@ -170,6 +232,16 @@ public struct Edge_Agent_Services_V1_RunContainerResponse: Sendable {
     /// The port that the debugger is listening on.
     /// If this is 0, the container is not running with a debugger.
     public var debugPort: UInt32 = 0
+
+    public var unknownFields = SwiftProtobuf.UnknownStorage()
+
+    public init() {}
+  }
+
+  public struct Stopped: Sendable {
+    // SwiftProtobuf.Message conformance is added in an extension below. See the
+    // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+    // methods supported on all messages.
 
     public var unknownFields = SwiftProtobuf.UnknownStorage()
 
@@ -730,6 +802,7 @@ extension Edge_Agent_Services_V1_ControlCommand: SwiftProtobuf.Message, SwiftPro
   public static let protoMessageName: String = _protobuf_package + ".ControlCommand"
   public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
     1: .same(proto: "run"),
+    2: .same(proto: "stop"),
   ]
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
@@ -751,6 +824,19 @@ extension Edge_Agent_Services_V1_ControlCommand: SwiftProtobuf.Message, SwiftPro
           self.command = .run(v)
         }
       }()
+      case 2: try {
+        var v: Edge_Agent_Services_V1_ControlCommand.Stop?
+        var hadOneofValue = false
+        if let current = self.command {
+          hadOneofValue = true
+          if case .stop(let m) = current {v = m}
+        }
+        try decoder.decodeSingularMessageField(value: &v)
+        if let v = v {
+          if hadOneofValue {try decoder.handleConflictingOneOf()}
+          self.command = .stop(v)
+        }
+      }()
       default: break
       }
     }
@@ -763,6 +849,9 @@ extension Edge_Agent_Services_V1_ControlCommand: SwiftProtobuf.Message, SwiftPro
     // https://github.com/apple/swift-protobuf/issues/1182
     try { if case .run(let v)? = self.command {
       try visitor.visitSingularMessageField(value: v, fieldNumber: 1)
+    } }()
+    try { if case .stop(let v)? = self.command {
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 2)
     } }()
     try unknownFields.traverse(visitor: &visitor)
   }
@@ -778,6 +867,8 @@ extension Edge_Agent_Services_V1_ControlCommand.Run: SwiftProtobuf.Message, Swif
   public static let protoMessageName: String = Edge_Agent_Services_V1_ControlCommand.protoMessageName + ".Run"
   public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
     1: .same(proto: "debug"),
+    2: .standard(proto: "restart_policy"),
+    3: .standard(proto: "on_failure_max_retries"),
   ]
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
@@ -787,6 +878,8 @@ extension Edge_Agent_Services_V1_ControlCommand.Run: SwiftProtobuf.Message, Swif
       // enabled. https://github.com/apple/swift-protobuf/issues/1034
       switch fieldNumber {
       case 1: try { try decoder.decodeSingularBoolField(value: &self.debug) }()
+      case 2: try { try decoder.decodeSingularEnumField(value: &self.restartPolicy) }()
+      case 3: try { try decoder.decodeSingularInt32Field(value: &self.onFailureMaxRetries) }()
       default: break
       }
     }
@@ -796,11 +889,39 @@ extension Edge_Agent_Services_V1_ControlCommand.Run: SwiftProtobuf.Message, Swif
     if self.debug != false {
       try visitor.visitSingularBoolField(value: self.debug, fieldNumber: 1)
     }
+    if self.restartPolicy != .defaultPolicy {
+      try visitor.visitSingularEnumField(value: self.restartPolicy, fieldNumber: 2)
+    }
+    if self.onFailureMaxRetries != 0 {
+      try visitor.visitSingularInt32Field(value: self.onFailureMaxRetries, fieldNumber: 3)
+    }
     try unknownFields.traverse(visitor: &visitor)
   }
 
   public static func ==(lhs: Edge_Agent_Services_V1_ControlCommand.Run, rhs: Edge_Agent_Services_V1_ControlCommand.Run) -> Bool {
     if lhs.debug != rhs.debug {return false}
+    if lhs.restartPolicy != rhs.restartPolicy {return false}
+    if lhs.onFailureMaxRetries != rhs.onFailureMaxRetries {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+extension Edge_Agent_Services_V1_ControlCommand.Stop: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = Edge_Agent_Services_V1_ControlCommand.protoMessageName + ".Stop"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap()
+
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let _ = try decoder.nextFieldNumber() {
+      // No fields
+    }
+  }
+
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  public static func ==(lhs: Edge_Agent_Services_V1_ControlCommand.Stop, rhs: Edge_Agent_Services_V1_ControlCommand.Stop) -> Bool {
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
@@ -810,6 +931,7 @@ extension Edge_Agent_Services_V1_RunContainerResponse: SwiftProtobuf.Message, Sw
   public static let protoMessageName: String = _protobuf_package + ".RunContainerResponse"
   public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
     1: .same(proto: "started"),
+    2: .same(proto: "stopped"),
   ]
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
@@ -831,6 +953,19 @@ extension Edge_Agent_Services_V1_RunContainerResponse: SwiftProtobuf.Message, Sw
           self.responseType = .started(v)
         }
       }()
+      case 2: try {
+        var v: Edge_Agent_Services_V1_RunContainerResponse.Stopped?
+        var hadOneofValue = false
+        if let current = self.responseType {
+          hadOneofValue = true
+          if case .stopped(let m) = current {v = m}
+        }
+        try decoder.decodeSingularMessageField(value: &v)
+        if let v = v {
+          if hadOneofValue {try decoder.handleConflictingOneOf()}
+          self.responseType = .stopped(v)
+        }
+      }()
       default: break
       }
     }
@@ -843,6 +978,9 @@ extension Edge_Agent_Services_V1_RunContainerResponse: SwiftProtobuf.Message, Sw
     // https://github.com/apple/swift-protobuf/issues/1182
     try { if case .started(let v)? = self.responseType {
       try visitor.visitSingularMessageField(value: v, fieldNumber: 1)
+    } }()
+    try { if case .stopped(let v)? = self.responseType {
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 2)
     } }()
     try unknownFields.traverse(visitor: &visitor)
   }
@@ -882,6 +1020,24 @@ extension Edge_Agent_Services_V1_RunContainerResponse.Started: SwiftProtobuf.Mes
   public static func ==(lhs: Edge_Agent_Services_V1_RunContainerResponse.Started, rhs: Edge_Agent_Services_V1_RunContainerResponse.Started) -> Bool {
     if lhs.debugPort != rhs.debugPort {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+extension Edge_Agent_Services_V1_RunContainerResponse.Stopped: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = Edge_Agent_Services_V1_RunContainerResponse.protoMessageName + ".Stopped"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap()
+
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    // Load everything into unknown fields
+    while try decoder.nextFieldNumber() != nil {}
+  }
+
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  public static func ==(lhs: Edge_Agent_Services_V1_RunContainerResponse.Stopped, rhs: Edge_Agent_Services_V1_RunContainerResponse.Stopped) -> Bool {
     return true
   }
 }

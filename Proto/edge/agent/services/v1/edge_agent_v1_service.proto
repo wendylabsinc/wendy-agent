@@ -59,23 +59,45 @@ message RunContainerRequest {
 message ControlCommand {
     oneof command {
         Run run = 1;
+        Stop stop = 2;
     }
 
     message Run {
         // Whether to run the container with a debugger
         bool debug = 1;
+
+        // Optional restart policy override for Docker runtime.
+        enum RestartPolicy {
+            DEFAULT = 0;          // Agent chooses default (unless-stopped for normal runs)
+            UNLESS_STOPPED = 1;   // --restart unless-stopped
+            NO = 2;               // --restart no
+            ON_FAILURE = 3;       // --restart on-failure:N (see on_failure_max_retries)
+        }
+
+        optional RestartPolicy restart_policy = 2;
+        // Only used when restart_policy==ON_FAILURE
+        optional int32 on_failure_max_retries = 3;
+    }
+
+    message Stop {
+        // No fields needed; acts on the current container in this stream
     }
 }
 
 message RunContainerResponse {
     oneof response_type {
         Started started = 1;
+        Stopped stopped = 2;
     }
 
     message Started {
         // The port that the debugger is listening on.
         // If this is 0, the container is not running with a debugger.
         uint32 debug_port = 1;
+    }
+
+    message Stopped {
+        // No fields; indicates container has been stopped
     }
 }
 

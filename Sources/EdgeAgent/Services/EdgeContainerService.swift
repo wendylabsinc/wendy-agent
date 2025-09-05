@@ -309,4 +309,31 @@ struct EdgeContainerService: Edge_Agent_Services_V1_EdgeContainerService.Service
             }
         }
     }
+
+    func stopContainer(
+        request: ServerRequest<Edge_Agent_Services_V1_StopContainerRequest>,
+        context: ServerContext
+    ) async throws -> ServerResponse<Edge_Agent_Services_V1_StopContainerResponse> {
+        try await Containerd.withClient { client in
+            let appName = request.message.appName
+            logger.info("Stopping container", metadata: ["container-id": .stringConvertible(appName)])
+            do {
+                try await client.stopTask(containerID: appName)
+                logger.info("Stopped container", metadata: ["container-id": .stringConvertible(appName)])
+            } catch let error as RPCError where error.code == .notFound {
+                logger.info("Container wasn't running", metadata: ["container-id": .stringConvertible(appName)])
+            } catch let error as RPCError {
+                logger.error(
+                    "Failed to stop container",
+                    metadata: [
+                        "container-id": .stringConvertible(appName),
+                        "error": .stringConvertible(error.description),
+                    ]
+                )
+                throw error
+            }
+
+            return ServerResponse(message: .init())
+        }
+    }
 }

@@ -42,14 +42,23 @@ struct RunContainerRequestHandler {
 
     enum ControlCommand {
         case run(Run)
+        case stop
 
         struct Run {
             var debug: Bool
+            enum RestartPolicy {
+                case `default`
+                case unlessStopped
+                case no
+                case onFailure(Int)
+            }
+            var restartPolicy: RestartPolicy = .default
         }
     }
 
     enum Event {
         case containerStarted(ContainerStarted)
+        case containerStopped
 
         struct ContainerStarted {
             let debugPort: UInt32
@@ -155,7 +164,23 @@ struct RunContainerRequestHandler {
             let imageName = acceptingState.header.imageName
             let containerName = "container-\(imageName)"
 
-            // Kill any existing containers using this image
+            // Stop and remove any existing container with this name
+            logger.info(
+                "Stopping any existing container with the same name",
+                metadata: ["container": .string(containerName)]
+            )
+            do {
+                _ = try await dockerCLI.stop(container: containerName, timeoutSeconds: 10)
+                logger.info(
+                    "Stopped existing container",
+                    metadata: ["container": .string(containerName)]
+                )
+            } catch {
+                logger.debug(
+                    "No running container to stop or stop failed",
+                    metadata: ["container": .string(containerName), "error": .string("\(error)")]
+                )
+            }
             logger.info(
                 "Removing any existing containers with the same name",
                 metadata: ["container": .string(containerName)]
@@ -163,7 +188,6 @@ struct RunContainerRequestHandler {
             try await dockerCLI.rm(options: [.force], container: containerName)
 
             var runOptions: [DockerCLI.RunOption] = [
-                .rm,
                 .name(containerName),
                 .detach,
                 .privileged,  // Add privileged access for all containers
@@ -192,6 +216,19 @@ struct RunContainerRequestHandler {
                     "Failed to decode app config",
                     metadata: ["error": .string("\(error)")]
                 )
+            }
+
+            // Apply restart policy overrides or defaults
+            switch run.restartPolicy {
+            case .unlessStopped:
+                runOptions.append(.restartUnlessStopped)
+            case .no:
+                runOptions.append(.restartNo)
+            case .onFailure(let retries):
+                runOptions.append(.restartOnFailure(retries))
+            case .default:
+                // Default: no restart when debugging, unless-stopped otherwise
+                runOptions.append(run.debug ? .restartNo : .restartUnlessStopped)
             }
 
             var debugPort: UInt32 = 0
@@ -248,6 +285,49 @@ struct RunContainerRequestHandler {
                 )
             )
 
+        case (.acceptingChunks(let acceptingState), .stop):
+            // Stop any running container with this image name
+            let imageName = acceptingState.header.imageName
+            let containerName = "container-\(imageName)"
+            logger.info(
+                "Stopping container on request",
+                metadata: ["container": .string(containerName)]
+            )
+            do {
+                _ = try await dockerCLI.stop(container: containerName, timeoutSeconds: 10)
+                logger.info(
+                    "Container stopped",
+                    metadata: ["container": .string(containerName)]
+                )
+                eventsContinuation.yield(.containerStopped)
+            } catch {
+                logger.error(
+                    "Failed to stop container",
+                    metadata: ["container": .string(containerName), "error": .string("\(error)")]
+                )
+                throw error
+            }
+            // Keep state; caller may still upload/run a new image
+        case (.running(let running), .stop):
+            let containerName = "container-\(running.imageName)"
+            logger.info(
+                "Stopping running container on request",
+                metadata: ["container": .string(containerName)]
+            )
+            do {
+                _ = try await dockerCLI.stop(container: containerName, timeoutSeconds: 10)
+                logger.info(
+                    "Container stopped",
+                    metadata: ["container": .string(containerName)]
+                )
+                eventsContinuation.yield(.containerStopped)
+            } catch {
+                logger.error(
+                    "Failed to stop container",
+                    metadata: ["container": .string(containerName), "error": .string("\(error)")]
+                )
+                throw error
+            }
         case (.running, _):
             throw Error.unexpectedControlCommand(control)
         }
