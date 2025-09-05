@@ -9,7 +9,7 @@ struct ContainerCommand: AsyncParsableCommand {
         commandName: "container",
         abstract: "Manage containers on the device",
         subcommands: [
-            Stop.self,
+            Stop.self
         ]
     )
 
@@ -27,7 +27,9 @@ struct ContainerCommand: AsyncParsableCommand {
         func run() async throws {
             let logger = Logger(label: "edgeengineer.cli.container.stop")
             try await withGRPCClient(agentConnectionOptions) { client in
-                let containers = Edge_Agent_Services_V1_EdgeContainerService.Client(wrapping: client)
+                let containers = Edge_Agent_Services_V1_EdgeContainerService.Client(
+                    wrapping: client
+                )
                 _ = try await containers.stopContainer(
                     .with { $0.appName = appName }
                 )

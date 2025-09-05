@@ -153,11 +153,11 @@ struct AgentConnectionOptionsTests {
         // Device should be populated
         #expect(command.agentConnectionOptions.device?.host == "device.server.com")
         #expect(command.agentConnectionOptions.device?.port == 9000)
-        
+
         // Agent should also be populated
         #expect(command.agentConnectionOptions.agent?.host == "agent.server.com")
         #expect(command.agentConnectionOptions.agent?.port == 8000)
-        
+
         // But endpoint should return device (takes precedence)
         let endpoint = try command.agentConnectionOptions.endpoint
         #expect(endpoint.host == "device.server.com")

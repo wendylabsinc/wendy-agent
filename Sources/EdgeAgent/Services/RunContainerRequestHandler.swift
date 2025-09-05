@@ -307,7 +307,7 @@ struct RunContainerRequestHandler {
                 )
                 throw error
             }
-            // Keep state; caller may still upload/run a new image
+        // Keep state; caller may still upload/run a new image
         case (.running(let running), .stop):
             let containerName = "container-\(running.imageName)"
             logger.info(
