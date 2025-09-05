@@ -31,4 +31,109 @@ jobs:
         run: swift build
 
       - name: Run Tests
-        run: swift test
+        run: swift test --enable-code-coverage
+
+      # Generate code coverage report for macOS
+      - name: Generate Code Coverage Report (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          # Debug: Show build directory structure
+          echo "Build directory structure:"
+          find .build -name "*.xctest" -type d 2>/dev/null | head -5
+          
+          # Find the test binary - look in multiple possible locations
+          TEST_BINARY=$(find .build -name "*.xctest" -type d 2>/dev/null | grep -E "(debug|arm64-apple-macosx/debug|x86_64-apple-macosx/debug)" | head -1)
+          if [ -z "$TEST_BINARY" ]; then
+            echo "Error: Could not find test binary"
+            echo "Contents of .build:"
+            find .build -type d -name "*debug*" 2>/dev/null
+            exit 1
+          fi
+          
+          echo "Found test binary: $TEST_BINARY"
+          TEST_BINARY_NAME=$(basename "$TEST_BINARY" .xctest)
+          
+          # Find profdata file
+          PROF_DATA=$(find .build -name "default.profdata" -path "*/codecov/*" 2>/dev/null | head -1)
+          if [ -z "$PROF_DATA" ]; then
+            echo "Error: Could not find profdata file"
+            echo "Looking for profdata:"
+            find .build -name "*.profdata" 2>/dev/null
+            exit 1
+          fi
+          
+          echo "Found profdata: $PROF_DATA"
+          
+          # Generate LCOV report
+          xcrun llvm-cov export \
+            "$TEST_BINARY/Contents/MacOS/$TEST_BINARY_NAME" \
+            -instr-profile="$PROF_DATA" \
+            --format=lcov > coverage.lcov
+          
+          echo "Generated coverage.lcov for macOS"
+          ls -la coverage.lcov
+
+      # Generate code coverage report for Linux
+      - name: Generate Code Coverage Report (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          # Install required dependencies
+          apt-get update
+          apt-get install -y curl gnupg
+          
+          # Install llvm tools if not available
+          if ! command -v llvm-cov &> /dev/null; then
+            apt-get install -y llvm
+          fi
+          
+          # Debug: Show build directory structure
+          echo "Build directory structure:"
+          find .build -type f -name "*PackageTests*" 2>/dev/null | head -10
+          
+          # Find the test binary - look for the actual binary name pattern
+          TEST_BINARY=$(find .build -type f -name "*PackageTests.xctest" 2>/dev/null | head -1)
+          if [ -z "$TEST_BINARY" ]; then
+            # Fallback: try to find any executable in the debug directory
+            TEST_BINARY=$(find .build/debug -type f -executable -name "*PackageTests*" 2>/dev/null | head -1)
+          fi
+          
+          if [ -z "$TEST_BINARY" ]; then
+            echo "Error: Could not find test binary"
+            echo "Contents of .build/debug:"
+            ls -la .build/debug/ || echo ".build/debug not found"
+            exit 1
+          fi
+          
+          echo "Found test binary: $TEST_BINARY"
+          
+          # Find profdata file
+          PROF_DATA=$(find .build -name "default.profdata" -path "*/codecov/*" 2>/dev/null | head -1)
+          if [ -z "$PROF_DATA" ]; then
+            echo "Error: Could not find profdata file"
+            echo "Looking for profdata:"
+            find .build -name "*.profdata" 2>/dev/null
+            exit 1
+          fi
+          
+          echo "Found profdata: $PROF_DATA"
+          
+          # Generate LCOV report
+          llvm-cov export \
+            "$TEST_BINARY" \
+            -instr-profile="$PROF_DATA" \
+            --format=lcov > coverage.lcov
+          
+          echo "Generated coverage.lcov for Linux"
+          ls -la coverage.lcov
+      
+      # Upload coverage to Codecov
+      - name: Upload coverage reports to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          slug: edgeengineer/edge-agent
+          fail_ci_if_error: false
+          flags: ${{ runner.os }}
+          name: ${{ matrix.os }}-coverage
