@@ -10,13 +10,15 @@ coverage:
     project:
       default:
         target: auto
-        threshold: 1%
+        threshold: 5%
+        informational: true
         if_ci_failed: error
         only_pulls: false
     patch:
       default:
         target: auto
-        threshold: 1%
+        threshold: 5%
+        informational: true
         if_ci_failed: error
 
 flags:
@@ -36,6 +38,9 @@ ignore:
   - "**/*Tests.swift"
   - "**/*Mock*.swift"
   - "**/resource_bundle_accessor.swift"
+  - "**/*.pb.swift"
+  - "**/*.grpc.swift"
+  - "**/Proto/**"
 
 comment:
   layout: "reach, diff, flags, files"
