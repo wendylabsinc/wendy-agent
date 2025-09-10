@@ -25,52 +25,23 @@ jobs:
         if: steps.format_check.outcome != 'success'
         run: swift format --recursive --in-place Sources
 
-      - name: Create Git Patch with Fixes
-        if: steps.format_check.outcome != 'success'
-        id: create_patch
-        run: |
-          git config --global user.name "GitHub Actions"
-          git config --global user.email "github-actions@github.com"
-          git diff > format_fixes.patch
-          echo "::set-output name=patch_created::true"
-
-      - name: Add Suggestions to PR
-        if: steps.create_patch.outputs.patch_created == 'true'
-        uses: github/codeql-action/upload-sarif@v2
-        with:
-          sarif_file: ${{ github.workspace }}/format_fixes.patch
-          checkout_path: ${{ github.workspace }}
-          category: format
-
       - name: Comment on PR
         if: steps.format_check.outcome != 'success'
         uses: actions/github-script@v6
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const fs = require('fs');
-            const patchContent = fs.readFileSync('format_fixes.patch', 'utf8');
-            
             github.rest.issues.createComment({
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: `## Swift Format Suggestions
+              body: `## Swift Format Check Failed
             
-            The Swift formatter found issues with your code. Here are the suggested fixes:
+            The Swift formatter found issues with your code. Please run the following command to fix them:
             
-            <details>
-            <summary>View formatting fixes</summary>
-            
-            \`\`\`diff
-            ${patchContent}
-            \`\`\`
-            
-            </details>
-            
-            You can apply these changes by running:
             \`\`\`
             swift format --recursive --in-place Sources
             \`\`\`
-            `
+            
+            Then commit and push the changes.`
             });
