@@ -12,9 +12,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+import AsyncHTTPClient
 import Foundation
 import HTTPTypes
 import HTTPTypesFoundation
+import NIOCore
+import NIOFoundationCompat
 
 #if canImport(FoundationNetworking)
     import FoundationNetworking
@@ -192,5 +195,178 @@ extension HTTPRequest {
             contentType: contentType,
             withAuthorization: authorization
         )
+    }
+}
+
+/// AsyncHTTPClient wrapper that implements the HTTPClient protocol
+public struct AsyncHTTPClientWrapper: HTTPClient {
+    private let client: AsyncHTTPClient.HTTPClient
+
+    public init() {
+        self.client = AsyncHTTPClient.HTTPClient.shared
+    }
+
+    public init(httpClient: AsyncHTTPClient.HTTPClient) {
+        self.client = httpClient
+    }
+
+    private func convertRequest(_ request: HTTPRequest) -> HTTPClientRequest {
+        var clientRequest = HTTPClientRequest(url: request.url?.absoluteString ?? "")
+
+        // Set the HTTP method by switching on the known cases
+        switch request.method {
+        case .get:
+            clientRequest.method = .GET
+        case .post:
+            clientRequest.method = .POST
+        case .put:
+            clientRequest.method = .PUT
+        case .head:
+            clientRequest.method = .HEAD
+        case .delete:
+            clientRequest.method = .DELETE
+        default:
+            // For any other method, try to use the raw value
+            clientRequest.method = .RAW(value: request.method.rawValue.uppercased())
+        }
+
+        // Convert headers
+        for field in request.headerFields {
+            clientRequest.headers.add(name: field.name.rawName, value: field.value)
+        }
+
+        return clientRequest
+    }
+
+    private func convertResponse(_ response: HTTPClientResponse) -> HTTPResponse {
+        var httpResponse = HTTPResponse(
+            status: HTTPResponse.Status(code: Int(response.status.code))
+        )
+
+        // Convert headers
+        for (name, value) in response.headers {
+            if let fieldName = HTTPField.Name(name) {
+                httpResponse.headerFields[fieldName] = value
+            }
+        }
+
+        return httpResponse
+    }
+
+    public func executeRequestThrowing(
+        _ request: HTTPRequest,
+        expectingStatus: HTTPResponse.Status
+    ) async throws -> (Data, HTTPResponse) {
+        let clientRequest = convertRequest(request)
+
+        do {
+            let response = try await client.execute(
+                clientRequest,
+                deadline: NIODeadline.now() + .seconds(60)
+            )
+
+            let httpResponse = convertResponse(response)
+
+            // Collect response body
+            var data = Data()
+            for try await chunk in response.body {
+                data.append(contentsOf: chunk.readableBytesView)
+            }
+
+            // Validate response
+            try validateResponse(
+                request: request,
+                response: httpResponse,
+                responseData: data,
+                expectingStatus: expectingStatus
+            )
+
+            return (data, httpResponse)
+        } catch let error as HTTPClientError {
+            throw error
+        } catch {
+            throw HTTPClientError.unexpectedStatusCode(
+                status: .internalServerError,
+                response: HTTPResponse(status: .internalServerError),
+                data: nil
+            )
+        }
+    }
+
+    public func executeRequestThrowing(
+        _ request: HTTPRequest,
+        uploading: Data,
+        expectingStatus: HTTPResponse.Status
+    ) async throws -> (Data, HTTPResponse) {
+        var clientRequest = convertRequest(request)
+        clientRequest.body = .bytes(ByteBuffer(bytes: uploading))
+
+        do {
+            let response = try await client.execute(
+                clientRequest,
+                deadline: NIODeadline.now() + .seconds(60)
+            )
+
+            let httpResponse = convertResponse(response)
+
+            // Collect response body
+            var data = Data()
+            for try await chunk in response.body {
+                data.append(contentsOf: chunk.readableBytesView)
+            }
+
+            // Validate response
+            try validateResponse(
+                request: request,
+                response: httpResponse,
+                responseData: data,
+                expectingStatus: expectingStatus
+            )
+
+            return (data, httpResponse)
+        } catch let error as HTTPClientError {
+            throw error
+        } catch {
+            throw HTTPClientError.unexpectedStatusCode(
+                status: .internalServerError,
+                response: HTTPResponse(status: .internalServerError),
+                data: nil
+            )
+        }
+    }
+
+    private func validateResponse(
+        request: HTTPRequest,
+        response: HTTPResponse,
+        responseData: Data,
+        expectingStatus: HTTPResponse.Status
+    ) throws {
+        guard response.status == expectingStatus else {
+            // If the response includes an authentication challenge the client can try again,
+            // presenting the challenge response.
+            if response.status == .unauthorized {
+                if let authChallenge = response.headerFields[.wwwAuthenticate] {
+                    throw HTTPClientError.authenticationChallenge(
+                        challenge: authChallenge.trimmingCharacters(in: .whitespacesAndNewlines),
+                        request: request,
+                        response: response
+                    )
+                }
+            }
+
+            // A HEAD request has no response body and cannot be decoded
+            if request.method == .head {
+                throw HTTPClientError.unexpectedStatusCode(
+                    status: response.status,
+                    response: response,
+                    data: nil
+                )
+            }
+            throw HTTPClientError.unexpectedStatusCode(
+                status: response.status,
+                response: response,
+                data: responseData
+            )
+        }
     }
 }

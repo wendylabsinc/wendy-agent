@@ -105,6 +105,7 @@ let package = Package(
                 .product(name: "Crypto", package: "swift-crypto"),
                 .product(name: "HTTPTypes", package: "swift-http-types"),
                 .product(name: "HTTPTypesFoundation", package: "swift-http-types"),
+                .product(name: "AsyncHTTPClient", package: "async-http-client"),
             ]
         ),
         .target(
