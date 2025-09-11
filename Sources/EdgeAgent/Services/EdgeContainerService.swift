@@ -116,9 +116,13 @@ struct EdgeContainerService: Edge_Agent_Services_V1_EdgeContainerService.Service
                 }
 
                 let appConfig: AppConfig
-                
+
                 if request.appConfig.isEmpty {
-                    appConfig = AppConfig(appId: request.appName, version: "0.0.0", entitlements: [])
+                    appConfig = AppConfig(
+                        appId: request.appName,
+                        version: "0.0.0",
+                        entitlements: []
+                    )
                 } else {
                     appConfig = try JSONDecoder().decode(AppConfig.self, from: request.appConfig)
                 }

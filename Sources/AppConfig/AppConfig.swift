@@ -2,7 +2,7 @@ public struct AppConfig: Codable {
     public let appId: String
     public let version: String
     public let entitlements: [Entitlement]
-    
+
     public init(appId: String, version: String, entitlements: [Entitlement]) {
         self.appId = appId
         self.version = version
