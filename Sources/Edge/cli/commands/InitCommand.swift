@@ -1,3 +1,4 @@
+import AppConfig
 import ArgumentParser
 import Subprocess
 import SystemPackage
@@ -67,12 +68,54 @@ struct InitCommand: AsyncParsableCommand {
         } catch {
             print("Warning: Failed to create .edge directory: \(error.localizedDescription)")
         }
+
+        // Create default edge.json configuration file
+        try await createDefaultEdgeJson(in: projectPath)
+    }
+
+    private func createDefaultEdgeJson(in projectPath: String) async throws {
+        let fileManager = FileManager.default
+        let edgeJsonPath =
+            projectPath.hasSuffix("/") ? "\(projectPath)edge.json" : "\(projectPath)/edge.json"
+
+        // Don't overwrite existing edge.json
+        if fileManager.fileExists(atPath: edgeJsonPath) {
+            print("edge.json already exists, skipping creation")
+            return
+        }
+
+        // Get project name from directory
+        let projectName = URL(fileURLWithPath: projectPath).lastPathComponent
+        let appId =
+            "com.example.\(projectName.lowercased().replacingOccurrences(of: "-", with: ""))"
+
+        // Create default AppConfig
+        let defaultConfig = AppConfig(
+            appId: appId,
+            version: "1.0.0",
+            entitlements: []
+        )
+
+        do {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            let jsonData = try encoder.encode(defaultConfig)
+
+            try jsonData.write(to: URL(fileURLWithPath: edgeJsonPath))
+            print("Created edge.json configuration file")
+        } catch {
+            throw InitError.edgeJsonCreationFailed(
+                path: edgeJsonPath,
+                error: error.localizedDescription
+            )
+        }
     }
 }
 
 enum InitError: Error {
     case commandFailed(command: String, exitCode: Int, error: String)
     case directoryCreationFailed(path: String, error: String)
+    case edgeJsonCreationFailed(path: String, error: String)
 
     var localizedDescription: String {
         switch self {
@@ -80,6 +123,8 @@ enum InitError: Error {
             return "Command '\(command)' failed with exit code \(exitCode): \(error)"
         case .directoryCreationFailed(let path, let error):
             return "Failed to create directory at '\(path)': \(error)"
+        case .edgeJsonCreationFailed(let path, let error):
+            return "Failed to create edge.json at '\(path)': \(error)"
         }
     }
 }
