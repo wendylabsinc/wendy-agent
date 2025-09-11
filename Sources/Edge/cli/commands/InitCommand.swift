@@ -1,5 +1,6 @@
 import AppConfig
 import ArgumentParser
+import Logging
 import Subprocess
 import SystemPackage
 
@@ -20,9 +21,13 @@ struct InitCommand: AsyncParsableCommand {
         help: "Path where the project should be created (defaults to current directory)"
     )
     var projectPath: String = "."
+    
+    private var logger: Logger {
+        Logger(label: "edgeengineer.cli.init")
+    }
 
     func run() async throws {
-        print("Initializing new EdgeOS project at \(projectPath)...")
+        logger.info("Initializing new EdgeOS project", metadata: ["path": .string(projectPath)])
 
         // Create the directory if it doesn't exist
         let fileManager = FileManager.default
@@ -92,7 +97,7 @@ struct InitCommand: AsyncParsableCommand {
         // Create default AppConfig
         let defaultConfig = AppConfig(
             appId: appId,
-            version: "1.0.0",
+            version: "0.0.1",
             entitlements: []
         )
 
@@ -102,7 +107,7 @@ struct InitCommand: AsyncParsableCommand {
             let jsonData = try encoder.encode(defaultConfig)
 
             try jsonData.write(to: URL(fileURLWithPath: edgeJsonPath))
-            print("Created edge.json configuration file")
+            logger.info("Created edge.json configuration file", metadata: ["appId": .string(appId), "version": .string("0.0.1")])
         } catch {
             throw InitError.edgeJsonCreationFailed(
                 path: edgeJsonPath,
