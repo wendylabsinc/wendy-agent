@@ -202,6 +202,10 @@ extension HTTPRequest {
 public struct AsyncHTTPClientWrapper: HTTPClient {
     private let client: AsyncHTTPClient.HTTPClient
 
+    // Set reasonable limit for container registry API responses
+    // Registry manifests, configs are typically small (few KB to few MB)
+    private static let maxResponseSize: Int = 50 * 1024 * 1024  // 50MB
+
     public init() {
         self.client = AsyncHTTPClient.HTTPClient.shared
     }
@@ -267,11 +271,9 @@ public struct AsyncHTTPClientWrapper: HTTPClient {
 
             let httpResponse = convertResponse(response)
 
-            // Collect response body
-            var data = Data()
-            for try await chunk in response.body {
-                data.append(contentsOf: chunk.readableBytesView)
-            }
+            // Collect response body with size limit to prevent memory issues
+            let buffer = try await response.body.collect(upTo: Self.maxResponseSize)
+            let data = Data(buffer: buffer)
 
             // Validate response
             try validateResponse(
@@ -309,11 +311,9 @@ public struct AsyncHTTPClientWrapper: HTTPClient {
 
             let httpResponse = convertResponse(response)
 
-            // Collect response body
-            var data = Data()
-            for try await chunk in response.body {
-                data.append(contentsOf: chunk.readableBytesView)
-            }
+            // Collect response body with size limit to prevent memory issues
+            let buffer = try await response.body.collect(upTo: Self.maxResponseSize)
+            let data = Data(buffer: buffer)
 
             // Validate response
             try validateResponse(
