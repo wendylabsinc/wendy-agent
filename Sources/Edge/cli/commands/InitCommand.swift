@@ -21,7 +21,7 @@ struct InitCommand: AsyncParsableCommand {
         help: "Path where the project should be created (defaults to current directory)"
     )
     var projectPath: String = "."
-    
+
     private var logger: Logger {
         Logger(label: "edgeengineer.cli.init")
     }
@@ -107,7 +107,10 @@ struct InitCommand: AsyncParsableCommand {
             let jsonData = try encoder.encode(defaultConfig)
 
             try jsonData.write(to: URL(fileURLWithPath: edgeJsonPath))
-            logger.info("Created edge.json configuration file", metadata: ["appId": .string(appId), "version": .string("0.0.1")])
+            logger.info(
+                "Created edge.json configuration file",
+                metadata: ["appId": .string(appId), "version": .string("0.0.1")]
+            )
         } catch {
             throw InitError.edgeJsonCreationFailed(
                 path: edgeJsonPath,
