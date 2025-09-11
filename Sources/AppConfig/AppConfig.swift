@@ -50,11 +50,15 @@ public enum EntitlementType: String, Codable {
 }
 
 public struct VideoEntitlements: Codable {
-
+    public init() {}
 }
 
 public struct NetworkEntitlements: Codable {
     public let mode: NetworkMode
+
+    public init(mode: NetworkMode) {
+        self.mode = mode
+    }
 }
 
 public enum NetworkMode: String, Codable {
