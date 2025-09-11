@@ -169,6 +169,7 @@ let package = Package(
                 .target(name: "edge"),
                 .target(name: "edge-agent"),
                 .target(name: "EdgeAgentGRPC"),
+                .target(name: "ContainerRegistry"),
                 .target(name: "edge-helper", condition: .when(platforms: [.macOS]))
             ]
         ),
