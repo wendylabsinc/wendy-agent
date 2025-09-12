@@ -26,7 +26,7 @@ public struct SwiftPM: Sendable {
         let result = try await Subprocess.run(
             Subprocess.Executable.path("/usr/bin/which"),
             arguments: Subprocess.Arguments([commandName]),
-            output: .string,
+            output: .string(limit: .max),
             error: .discarded
         )
 
@@ -110,7 +110,7 @@ public struct SwiftPM: Sendable {
         let result = try await Subprocess.run(
             Subprocess.Executable.path("/usr/bin/env"),
             arguments: Subprocess.Arguments(allArgs),
-            output: .string,
+            output: .string(limit: .max),
             error: .fileDescriptor(.standardError, closeAfterSpawningProcess: false),
         )
 
@@ -175,8 +175,8 @@ public struct SwiftPM: Sendable {
         let result = try await Subprocess.run(
             Subprocess.Executable.path("/usr/bin/env"),
             arguments: Subprocess.Arguments(allArgs),
-            output: .string,
-            error: .string
+            output: .string(limit: .max),
+            error: .string(limit: .max)
         )
 
         if result.terminationStatus.isSuccess, let output = result.standardOutput {

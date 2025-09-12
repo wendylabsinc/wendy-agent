@@ -104,7 +104,7 @@ public struct DockerCLI: Sendable {
         let result = try await Subprocess.run(
             Subprocess.Executable.name(command),
             arguments: Subprocess.Arguments(["load", "-i", filePath]),
-            output: .string
+            output: .string(limit: .max)
         )
         return result.standardOutput ?? ""
     }
@@ -116,7 +116,7 @@ public struct DockerCLI: Sendable {
         let result = try await Subprocess.run(
             Subprocess.Executable.name(command),
             arguments: Subprocess.Arguments(allArguments),
-            output: .string
+            output: .string(limit: .max)
         )
         return result.standardOutput ?? ""
     }
@@ -136,7 +136,7 @@ public struct DockerCLI: Sendable {
         let result = try await Subprocess.run(
             Subprocess.Executable.name(self.command),
             arguments: Subprocess.Arguments(args),
-            output: .string
+            output: .string(limit: .max)
         )
         return result.standardOutput ?? ""
     }
@@ -152,7 +152,7 @@ public struct DockerCLI: Sendable {
         let result = try await Subprocess.run(
             Subprocess.Executable.name(self.command),
             arguments: Subprocess.Arguments(allArguments),
-            output: .string
+            output: .string(limit: .max)
         )
         return result.standardOutput ?? ""
     }

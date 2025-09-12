@@ -255,7 +255,7 @@ struct RunCommand: AsyncParsableCommand, Sendable {
                 try await taskGroup.waitForAll()
             }
 
-            let response = try await agentContainers.runContainer(
+            try await agentContainers.runContainer(
                 .with {
                     $0.imageName = "\(imageName):latest"
                     $0.appName = imageName
@@ -265,7 +265,6 @@ struct RunCommand: AsyncParsableCommand, Sendable {
                         $0.cmd = "/bin/\(imageName)"
                     }
                     $0.appConfig = appConfigData
-                    $0.autoRestart = !debug
                     $0.layers = container.layers.map { layer in
                         .with {
                             $0.digest = layer.digest
@@ -428,14 +427,22 @@ struct RunCommand: AsyncParsableCommand, Sendable {
                                     .with {
                                         $0.debug = debug
                                         if noRestart {
-                                            $0.restartPolicy = .no
+                                            $0.restartPolicy = .with {
+                                                $0.mode = .no
+                                            }
                                         } else if let retries = restartOnFailureRetries {
-                                            $0.restartPolicy = .onFailure
-                                            $0.onFailureMaxRetries = Int32(retries)
+                                            $0.restartPolicy = .with {
+                                                $0.mode = .onFailure
+                                                $0.onFailureMaxRetries = Int32(retries)
+                                            }
                                         } else if restartUnlessStoppedFlag {
-                                            $0.restartPolicy = .unlessStopped
+                                            $0.restartPolicy = .with {
+                                                $0.mode = .unlessStopped
+                                            }
                                         } else {
-                                            $0.restartPolicy = .defaultPolicy
+                                            $0.restartPolicy = .with {
+                                                $0.mode = .default
+                                            }
                                         }
                                     }
                                 )

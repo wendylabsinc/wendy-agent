@@ -231,7 +231,6 @@ public struct Containerd: Sendable {
             ]
         )
 
-        var apply: Containerd_Services_Diff_V1_ApplyResponse
         var layerKey = "\(appName)-\(layer.diffID)"
 
         let tmpKey = UUID().uuidString
@@ -258,7 +257,7 @@ public struct Containerd: Sendable {
                 ),
             ]
         )
-        apply = try await diffs.apply(
+        _ = try await diffs.apply(
             .with {
                 $0.diff = .with {
                     $0.digest = layer.digest
@@ -345,7 +344,7 @@ public struct Containerd: Sendable {
                 ]
             )
 
-            apply = try await diffs.apply(
+            _ = try await diffs.apply(
                 .with {
                     $0.diff = .with {
                         $0.digest = nextLayer.digest
@@ -594,7 +593,6 @@ public struct Containerd: Sendable {
 
     public func runTask(containerID: String) async throws {
         let tasks = Containerd_Services_Tasks_V1_Tasks.Client(wrapping: client)
-        try await tasks.cont
         try await tasks.start(
             .with {
                 $0.containerID = containerID
