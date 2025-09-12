@@ -107,7 +107,7 @@ public struct RegistryClient: Sendable {
         }
     }
 
-    /// Creates a new RegistryClient, constructing a suitable URLSession-based client.
+    /// Creates a new RegistryClient, constructing a suitable AsyncHTTPClient-based client.
     /// - Parameters:
     ///   - registry: Container registry name.  This is not a conventional URL, and does not include a transport.
     ///   - insecure: If `true`, allow connections to this registry over plaintext HTTP.
@@ -121,11 +121,9 @@ public struct RegistryClient: Sendable {
             throw RegistryClientError.registryParseError(registry)
         }
 
-        // URLSessionConfiguration.default allows request and credential caching, making testing confusing.
-        // The SwiftPM sandbox also prevents URLSession from writing to the cache, which causes warnings.
-        // .ephemeral has no caches.
-        let urlsession = URLSession(configuration: .ephemeral)
-        try await self.init(registry: registryURL, client: urlsession, auth: auth)
+        // Use AsyncHTTPClient instead of URLSession to resolve SSL certificate issues on Linux
+        let asyncHttpClient = AsyncHTTPClientWrapper()
+        try await self.init(registry: registryURL, client: asyncHttpClient, auth: auth)
     }
 }
 
