@@ -425,7 +425,8 @@ public struct Containerd: Sendable {
         imageName: String,
         appName: String,
         snapshotKey: String,
-        ociSpec spec: Data
+        ociSpec spec: Data,
+        labels: [String: String]
     ) async throws {
         let containers = Containerd_Services_Containers_V1_Containers.Client(wrapping: client)
         try await containers.create(
@@ -441,6 +442,7 @@ public struct Containerd: Sendable {
                     }
                     $0.snapshotter = "overlayfs"
                     $0.snapshotKey = snapshotKey
+                    $0.labels = labels
                     $0.image = imageName
                 }
             }
@@ -592,6 +594,7 @@ public struct Containerd: Sendable {
 
     public func runTask(containerID: String) async throws {
         let tasks = Containerd_Services_Tasks_V1_Tasks.Client(wrapping: client)
+        try await tasks.cont
         try await tasks.start(
             .with {
                 $0.containerID = containerID

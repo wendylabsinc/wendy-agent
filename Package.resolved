@@ -1,5 +1,5 @@
 {
-  "originHash" : "ba384cb54a43f7310fa2c2db264e2625e451615dde3797a205cc0234ecbf458f",
+  "originHash" : "18312baeda3565be843f06f86905b7b96d631cee28bd954e303746dfc590c3cb",
   "pins" : [
     {
       "identity" : "async-http-client",
@@ -15,8 +15,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/edgeengineer/dbus.git",
       "state" : {
-        "revision" : "272c98be1c2b5acc6dad5ee422c18c512bf3bf8a",
-        "version" : "0.2.1"
+        "revision" : "a5caca44538663af7d8a30586a69fc3590f63a82",
+        "version" : "0.2.2"
       }
     },
     {
@@ -222,8 +222,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/apple/swift-protobuf.git",
       "state" : {
-        "revision" : "d72aed98f8253ec1aa9ea1141e28150f408cf17f",
-        "version" : "1.29.0"
+        "revision" : "e3f69fd321d0c9fcdc16fb576a0cdd956675face",
+        "version" : "1.31.0"
       }
     },
     {
@@ -249,8 +249,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/swiftlang/swift-subprocess.git",
       "state" : {
-        "branch" : "main",
-        "revision" : "c0bbfa57d0ad36c993e8aa7be909b46c919403f3"
+        "branch" : "0.1",
+        "revision" : "44be5d56aa4b26dc2003a67c0288a6a68366a87d"
       }
     },
     {
@@ -258,8 +258,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/apple/swift-system.git",
       "state" : {
-        "revision" : "a34201439c74b53f0fd71ef11741af7e7caf01e1",
-        "version" : "1.4.2"
+        "revision" : "61e4ca4b81b9e09e2ec863b00c340eb13497dac6",
+        "version" : "1.5.0"
       }
     }
   ],

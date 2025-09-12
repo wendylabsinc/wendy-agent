@@ -65,6 +65,7 @@ struct EdgeContainerService: Edge_Agent_Services_V1_EdgeContainerService.Service
         try await Containerd.withClient { client in
             do {
                 let request = request.message
+                var labels = [String: String]()
 
                 async let killed: Void = try await client.stopTask(containerID: request.appName)
 
@@ -205,7 +206,8 @@ struct EdgeContainerService: Edge_Agent_Services_V1_EdgeContainerService.Service
                         imageName: request.imageName,
                         appName: request.appName,
                         snapshotKey: snapshotKey ?? "",
-                        ociSpec: try JSONEncoder().encode(spec)
+                        ociSpec: try JSONEncoder().encode(spec),
+                        labels: labels
                     )
                 } catch let error as RPCError where error.code == .alreadyExists {
                     logger.debug("Container already exists, updating container")

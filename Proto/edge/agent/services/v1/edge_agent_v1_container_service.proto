@@ -2,6 +2,8 @@ syntax = "proto3";
 
 package edge.agent.services.v1;
 
+import "edge/agent/services/v1/shared.proto";
+
 service EdgeContainerService {
     rpc ListLayers(ListLayersRequest) returns (stream LayerHeader);
     rpc WriteLayer(stream WriteLayerRequest) returns (stream WriteLayerResponse);
@@ -40,9 +42,9 @@ message RunContainerLayersRequest {
 
     /// The `edge.json` file as found in the project
     bytes app_config = 5;
-
-    // If true, the container will be automatically restarted on crash or device reboot.
-    bool auto_restart = 6;
+    
+    // Optional restart policy override for Docker runtime.
+    optional RestartPolicy restart_policy = 6;
 }
 
 message RunContainerLayerHeader {

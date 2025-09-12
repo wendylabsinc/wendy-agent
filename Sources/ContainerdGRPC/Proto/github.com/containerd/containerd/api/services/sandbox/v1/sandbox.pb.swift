@@ -587,9 +587,7 @@ fileprivate let _protobuf_package = "containerd.services.sandbox.v1"
 
 extension Containerd_Services_Sandbox_V1_StoreCreateRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".StoreCreateRequest"
-  public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
-    1: .same(proto: "sandbox"),
-  ]
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}sandbox\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -623,9 +621,7 @@ extension Containerd_Services_Sandbox_V1_StoreCreateRequest: SwiftProtobuf.Messa
 
 extension Containerd_Services_Sandbox_V1_StoreCreateResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".StoreCreateResponse"
-  public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
-    1: .same(proto: "sandbox"),
-  ]
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}sandbox\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -659,10 +655,7 @@ extension Containerd_Services_Sandbox_V1_StoreCreateResponse: SwiftProtobuf.Mess
 
 extension Containerd_Services_Sandbox_V1_StoreUpdateRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".StoreUpdateRequest"
-  public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
-    1: .same(proto: "sandbox"),
-    2: .same(proto: "fields"),
-  ]
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}sandbox\0\u{1}fields\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -701,9 +694,7 @@ extension Containerd_Services_Sandbox_V1_StoreUpdateRequest: SwiftProtobuf.Messa
 
 extension Containerd_Services_Sandbox_V1_StoreUpdateResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".StoreUpdateResponse"
-  public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
-    1: .same(proto: "sandbox"),
-  ]
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}sandbox\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -737,9 +728,7 @@ extension Containerd_Services_Sandbox_V1_StoreUpdateResponse: SwiftProtobuf.Mess
 
 extension Containerd_Services_Sandbox_V1_StoreDeleteRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".StoreDeleteRequest"
-  public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
-    1: .standard(proto: "sandbox_id"),
-  ]
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}sandbox_id\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -788,9 +777,7 @@ extension Containerd_Services_Sandbox_V1_StoreDeleteResponse: SwiftProtobuf.Mess
 
 extension Containerd_Services_Sandbox_V1_StoreListRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".StoreListRequest"
-  public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
-    1: .same(proto: "filters"),
-  ]
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}filters\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -820,9 +807,7 @@ extension Containerd_Services_Sandbox_V1_StoreListRequest: SwiftProtobuf.Message
 
 extension Containerd_Services_Sandbox_V1_StoreListResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".StoreListResponse"
-  public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
-    1: .same(proto: "list"),
-  ]
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}list\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -852,9 +837,7 @@ extension Containerd_Services_Sandbox_V1_StoreListResponse: SwiftProtobuf.Messag
 
 extension Containerd_Services_Sandbox_V1_StoreGetRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".StoreGetRequest"
-  public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
-    1: .standard(proto: "sandbox_id"),
-  ]
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}sandbox_id\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -884,9 +867,7 @@ extension Containerd_Services_Sandbox_V1_StoreGetRequest: SwiftProtobuf.Message,
 
 extension Containerd_Services_Sandbox_V1_StoreGetResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".StoreGetResponse"
-  public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
-    1: .same(proto: "sandbox"),
-  ]
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}sandbox\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -920,15 +901,7 @@ extension Containerd_Services_Sandbox_V1_StoreGetResponse: SwiftProtobuf.Message
 
 extension Containerd_Services_Sandbox_V1_ControllerCreateRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ControllerCreateRequest"
-  public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
-    1: .standard(proto: "sandbox_id"),
-    2: .same(proto: "rootfs"),
-    3: .same(proto: "options"),
-    4: .standard(proto: "netns_path"),
-    5: .same(proto: "annotations"),
-    6: .same(proto: "sandbox"),
-    10: .same(proto: "sandboxer"),
-  ]
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}sandbox_id\0\u{1}rootfs\0\u{1}options\0\u{3}netns_path\0\u{1}annotations\0\u{1}sandbox\0\u{2}\u{4}sandboxer\0")
 
   fileprivate class _StorageClass {
     var _sandboxID: String = String()
@@ -939,15 +912,11 @@ extension Containerd_Services_Sandbox_V1_ControllerCreateRequest: SwiftProtobuf.
     var _sandbox: Containerd_Types_Sandbox? = nil
     var _sandboxer: String = String()
 
-    #if swift(>=5.10)
       // This property is used as the initial default value for new instances of the type.
       // The type itself is protecting the reference to its storage via CoW semantics.
       // This will force a copy to be made of this reference when the first mutation occurs;
       // hence, it is safe to mark this as `nonisolated(unsafe)`.
       static nonisolated(unsafe) let defaultInstance = _StorageClass()
-    #else
-      static let defaultInstance = _StorageClass()
-    #endif
 
     private init() {}
 
@@ -1044,9 +1013,7 @@ extension Containerd_Services_Sandbox_V1_ControllerCreateRequest: SwiftProtobuf.
 
 extension Containerd_Services_Sandbox_V1_ControllerCreateResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ControllerCreateResponse"
-  public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
-    1: .standard(proto: "sandbox_id"),
-  ]
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}sandbox_id\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -1076,10 +1043,7 @@ extension Containerd_Services_Sandbox_V1_ControllerCreateResponse: SwiftProtobuf
 
 extension Containerd_Services_Sandbox_V1_ControllerStartRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ControllerStartRequest"
-  public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
-    1: .standard(proto: "sandbox_id"),
-    10: .same(proto: "sandboxer"),
-  ]
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}sandbox_id\0\u{2}\u{9}sandboxer\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -1114,14 +1078,7 @@ extension Containerd_Services_Sandbox_V1_ControllerStartRequest: SwiftProtobuf.M
 
 extension Containerd_Services_Sandbox_V1_ControllerStartResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ControllerStartResponse"
-  public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
-    1: .standard(proto: "sandbox_id"),
-    2: .same(proto: "pid"),
-    3: .standard(proto: "created_at"),
-    4: .same(proto: "labels"),
-    5: .same(proto: "address"),
-    6: .same(proto: "version"),
-  ]
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}sandbox_id\0\u{1}pid\0\u{3}created_at\0\u{1}labels\0\u{1}address\0\u{1}version\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -1180,10 +1137,7 @@ extension Containerd_Services_Sandbox_V1_ControllerStartResponse: SwiftProtobuf.
 
 extension Containerd_Services_Sandbox_V1_ControllerPlatformRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ControllerPlatformRequest"
-  public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
-    1: .standard(proto: "sandbox_id"),
-    10: .same(proto: "sandboxer"),
-  ]
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}sandbox_id\0\u{2}\u{9}sandboxer\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -1218,9 +1172,7 @@ extension Containerd_Services_Sandbox_V1_ControllerPlatformRequest: SwiftProtobu
 
 extension Containerd_Services_Sandbox_V1_ControllerPlatformResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ControllerPlatformResponse"
-  public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
-    1: .same(proto: "platform"),
-  ]
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}platform\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -1254,11 +1206,7 @@ extension Containerd_Services_Sandbox_V1_ControllerPlatformResponse: SwiftProtob
 
 extension Containerd_Services_Sandbox_V1_ControllerStopRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ControllerStopRequest"
-  public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
-    1: .standard(proto: "sandbox_id"),
-    2: .standard(proto: "timeout_secs"),
-    10: .same(proto: "sandboxer"),
-  ]
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}sandbox_id\0\u{3}timeout_secs\0\u{2}\u{8}sandboxer\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -1317,10 +1265,7 @@ extension Containerd_Services_Sandbox_V1_ControllerStopResponse: SwiftProtobuf.M
 
 extension Containerd_Services_Sandbox_V1_ControllerWaitRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ControllerWaitRequest"
-  public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
-    1: .standard(proto: "sandbox_id"),
-    10: .same(proto: "sandboxer"),
-  ]
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}sandbox_id\0\u{2}\u{9}sandboxer\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -1355,10 +1300,7 @@ extension Containerd_Services_Sandbox_V1_ControllerWaitRequest: SwiftProtobuf.Me
 
 extension Containerd_Services_Sandbox_V1_ControllerWaitResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ControllerWaitResponse"
-  public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
-    1: .standard(proto: "exit_status"),
-    2: .standard(proto: "exited_at"),
-  ]
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}exit_status\0\u{3}exited_at\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -1397,11 +1339,7 @@ extension Containerd_Services_Sandbox_V1_ControllerWaitResponse: SwiftProtobuf.M
 
 extension Containerd_Services_Sandbox_V1_ControllerStatusRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ControllerStatusRequest"
-  public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
-    1: .standard(proto: "sandbox_id"),
-    2: .same(proto: "verbose"),
-    10: .same(proto: "sandboxer"),
-  ]
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}sandbox_id\0\u{1}verbose\0\u{2}\u{8}sandboxer\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -1441,17 +1379,7 @@ extension Containerd_Services_Sandbox_V1_ControllerStatusRequest: SwiftProtobuf.
 
 extension Containerd_Services_Sandbox_V1_ControllerStatusResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ControllerStatusResponse"
-  public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
-    1: .standard(proto: "sandbox_id"),
-    2: .same(proto: "pid"),
-    3: .same(proto: "state"),
-    4: .same(proto: "info"),
-    5: .standard(proto: "created_at"),
-    6: .standard(proto: "exited_at"),
-    7: .same(proto: "extra"),
-    8: .same(proto: "address"),
-    9: .same(proto: "version"),
-  ]
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}sandbox_id\0\u{1}pid\0\u{1}state\0\u{1}info\0\u{3}created_at\0\u{3}exited_at\0\u{1}extra\0\u{1}address\0\u{1}version\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -1525,10 +1453,7 @@ extension Containerd_Services_Sandbox_V1_ControllerStatusResponse: SwiftProtobuf
 
 extension Containerd_Services_Sandbox_V1_ControllerShutdownRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ControllerShutdownRequest"
-  public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
-    1: .standard(proto: "sandbox_id"),
-    10: .same(proto: "sandboxer"),
-  ]
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}sandbox_id\0\u{2}\u{9}sandboxer\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -1582,10 +1507,7 @@ extension Containerd_Services_Sandbox_V1_ControllerShutdownResponse: SwiftProtob
 
 extension Containerd_Services_Sandbox_V1_ControllerMetricsRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ControllerMetricsRequest"
-  public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
-    1: .standard(proto: "sandbox_id"),
-    10: .same(proto: "sandboxer"),
-  ]
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}sandbox_id\0\u{2}\u{9}sandboxer\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -1620,9 +1542,7 @@ extension Containerd_Services_Sandbox_V1_ControllerMetricsRequest: SwiftProtobuf
 
 extension Containerd_Services_Sandbox_V1_ControllerMetricsResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ControllerMetricsResponse"
-  public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
-    1: .same(proto: "metrics"),
-  ]
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}metrics\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -1656,12 +1576,7 @@ extension Containerd_Services_Sandbox_V1_ControllerMetricsResponse: SwiftProtobu
 
 extension Containerd_Services_Sandbox_V1_ControllerUpdateRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ControllerUpdateRequest"
-  public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
-    1: .standard(proto: "sandbox_id"),
-    2: .same(proto: "sandboxer"),
-    3: .same(proto: "sandbox"),
-    4: .same(proto: "fields"),
-  ]
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}sandbox_id\0\u{1}sandboxer\0\u{1}sandbox\0\u{1}fields\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {

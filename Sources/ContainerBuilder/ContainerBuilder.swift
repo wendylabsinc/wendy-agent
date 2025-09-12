@@ -239,7 +239,8 @@ private func sha256(data: Data) -> String {
 private func createTarball(from sourceDir: URL, to destinationURL: URL) async throws {
     _ = try await Subprocess.run(
         Subprocess.Executable.path("/usr/bin/tar"),
-        arguments: Subprocess.Arguments(["-cf", destinationURL.path, "-C", sourceDir.path, "."])
+        arguments: Subprocess.Arguments(["-cf", destinationURL.path, "-C", sourceDir.path, "."]),
+        output: .string(limit: .max)
     )
 }
 
