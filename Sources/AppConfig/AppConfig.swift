@@ -12,6 +12,7 @@ public struct AppConfig: Codable {
 
 public enum Entitlement: Codable {
     case network(NetworkEntitlements)
+    case bluetooth(BluetoothEntitlements)
     case video(VideoEntitlements)
 
     public func encode(to encoder: Encoder) throws {
@@ -23,6 +24,9 @@ public enum Entitlement: Codable {
             try entitlement.encode(to: encoder)
         case .video(let entitlement):
             try container.encode(EntitlementType.video, forKey: .type)
+            try entitlement.encode(to: encoder)
+        case .bluetooth(let entitlement):
+            try container.encode(EntitlementType.bluetooth, forKey: .type)
             try entitlement.encode(to: encoder)
         }
     }
@@ -36,6 +40,8 @@ public enum Entitlement: Codable {
             self = .network(try NetworkEntitlements(from: decoder))
         case .video:
             self = .video(try VideoEntitlements(from: decoder))
+        case .bluetooth:
+            self = .bluetooth(try BluetoothEntitlements(from: decoder))
         }
     }
 
@@ -47,6 +53,19 @@ public enum Entitlement: Codable {
 public enum EntitlementType: String, Codable {
     case network
     case video
+    case bluetooth
+}
+
+public struct BluetoothEntitlements: Codable {
+    public enum BluetoothMode: String, Codable {
+        case bluez, kernel
+    }
+    
+    public let mode: BluetoothMode
+    
+    public init(mode: BluetoothMode) {
+        self.mode = mode
+    }
 }
 
 public struct VideoEntitlements: Codable {
