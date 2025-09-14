@@ -87,6 +87,38 @@ struct RunCommand: AsyncParsableCommand, Sendable {
             try await runContainerdBased()
         }
     }
+    
+    func addSwiftPMResources(
+        at buildDir: URL,
+        to spec: inout ContainerImageSpec
+    ) async throws {
+        let logger = Logger(label: "edgeengineer.cli.run.swiftpm-resources")
+        let items = try FileManager.default.contentsOfDirectory(at: buildDir, includingPropertiesForKeys: nil)
+        
+        var files = [ContainerImageSpec.Layer.File]()
+        
+        for item in items where item.lastPathComponent.hasSuffix(".resources") {
+            logger.info("Found resources in build dir", metadata: [
+                "path": "\(item.path())"
+            ])
+            files.append(
+                .init(
+                    source: item,
+                    destination: "/bin/\(item.lastPathComponent)",
+                    permissions: 0o700
+                )
+            )
+        }
+        
+        if !files.isEmpty {
+            logger.info("Appending layer to spec", metadata: [
+                "resources": .stringConvertible(files.count)
+            ])
+            spec.layers.append(
+                ContainerImageSpec.Layer(files: files)
+            )
+        }
+    }
 
     func runContainerdBased() async throws {
         let logger = Logger(label: "edgeengineer.cli.run.containerd")
@@ -141,7 +173,8 @@ struct RunCommand: AsyncParsableCommand, Sendable {
             .scratchPath(".edge-build"),
             .staticSwiftStdlib
         ).trimmingCharacters(in: .whitespacesAndNewlines)
-        let executable = URL(fileURLWithPath: binPath).appendingPathComponent(executableTarget.name)
+        let buildDir = URL(fileURLWithPath: binPath)
+        let executable = buildDir.appendingPathComponent(executableTarget.name)
 
         logger.info("Building container with base image \(baseImage)")
         let imageName = executableTarget.name.lowercased()
@@ -151,6 +184,8 @@ struct RunCommand: AsyncParsableCommand, Sendable {
             baseImage: baseImage,
             executable: executable
         )
+        
+        try await addSwiftPMResources(at: buildDir, to: &imageSpec)
 
         if debug {
             // Include the ds2 executable in the container image.
@@ -331,7 +366,8 @@ struct RunCommand: AsyncParsableCommand, Sendable {
             .scratchPath(".edge-build"),
             .staticSwiftStdlib
         ).trimmingCharacters(in: .whitespacesAndNewlines)
-        let executable = URL(fileURLWithPath: binPath).appendingPathComponent(executableTarget.name)
+        let buildDir = URL(fileURLWithPath: binPath)
+        let executable = buildDir.appendingPathComponent(executableTarget.name)
 
         logger.info("Building container with base image \(baseImage)")
         let imageName = executableTarget.name.lowercased()
@@ -341,6 +377,8 @@ struct RunCommand: AsyncParsableCommand, Sendable {
             baseImage: baseImage,
             executable: executable
         )
+        
+        try await addSwiftPMResources(at: buildDir, to: &imageSpec)
 
         if debug {
             // Include the ds2 executable in the container image.
