@@ -48,15 +48,15 @@ struct RunCommand: AsyncParsableCommand, Sendable {
     var detach: Bool = false
 
     // Docker restart policy flags (mutually exclusive). Only applies to docker runtime.
-    @Flag(name: .customLong("no-restart"), help: "Do not restart the container (Docker only)")
+    @Flag(name: .customLong("no-restart"), help: "Do not restart the container")
     var noRestart: Bool = false
 
-    @Flag(name: .customLong("restart-unless-stopped"), help: "Restart unless stopped (Docker only)")
+    @Flag(name: .customLong("restart-unless-stopped"), help: "Restart unless stopped")
     var restartUnlessStoppedFlag: Bool = false
 
     @Option(
         name: .customLong("restart-on-failure"),
-        help: "Restart on failure up to N times (Docker only)"
+        help: "Restart on failure up to N times"
     )
     var restartOnFailureRetries: Int?
 
