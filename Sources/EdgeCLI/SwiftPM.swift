@@ -12,7 +12,10 @@ public struct SwiftPM: Sendable {
     /// Custom Swift version, defaults to defaultSwiftVersion if nil
     public let swiftVersion: String?
 
-    public init(path: String = "swiftly run swift", swiftVersion: String? = SwiftPM.defaultSwiftVersion) {
+    public init(
+        path: String = "swiftly run swift",
+        swiftVersion: String? = SwiftPM.defaultSwiftVersion
+    ) {
         self.path = path
         self.swiftVersion = swiftVersion
     }

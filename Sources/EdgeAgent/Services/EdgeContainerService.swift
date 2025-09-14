@@ -66,18 +66,19 @@ struct EdgeContainerService: Edge_Agent_Services_V1_EdgeContainerService.Service
             do {
                 let request = request.message
                 var labels = [String: String]()
-                
+
                 do {
                     let restartPolicy = request.restartPolicy
                     let restartPolicyLabel = "containerd.io/restart.policy"
-                    
+
                     switch restartPolicy.mode {
                     case .default, .unlessStopped, .UNRECOGNIZED:
                         labels[restartPolicyLabel] = "unless-stopped"
                     case .no:
                         labels[restartPolicyLabel] = "no"
                     case .onFailure:
-                        labels[restartPolicyLabel] = "on-failure:\(restartPolicy.onFailureMaxRetries)"
+                        labels[restartPolicyLabel] =
+                            "on-failure:\(restartPolicy.onFailureMaxRetries)"
                     }
                 }
 

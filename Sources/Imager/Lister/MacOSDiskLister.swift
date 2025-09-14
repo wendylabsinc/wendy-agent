@@ -52,7 +52,7 @@
                 arguments: ["info", id],
                 output: .string(limit: .max),
                 error: .string(limit: .max)
-                
+
             )
 
             if result.terminationStatus.isSuccess {
