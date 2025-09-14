@@ -136,7 +136,7 @@ public struct Syscall: Codable {
     let names: [String]
     let action: String
     var args: [Argument]?
-    
+
     struct Argument: Codable {
         enum Op: String, Codable {
             case NE = "SCMP_CMP_NE"
@@ -147,7 +147,7 @@ public struct Syscall: Codable {
             case GT = "SCMP_CMP_GT"
             case MASKED_EQ = "SCMP_CMP_MASKED_EQ"
         }
-        
+
         let index: UInt
         let value: UInt64
         let valueTwo: UInt64?

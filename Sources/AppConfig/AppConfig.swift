@@ -60,9 +60,9 @@ public struct BluetoothEntitlements: Codable {
     public enum BluetoothMode: String, Codable {
         case bluez, kernel
     }
-    
+
     public let mode: BluetoothMode
-    
+
     public init(mode: BluetoothMode) {
         self.mode = mode
     }

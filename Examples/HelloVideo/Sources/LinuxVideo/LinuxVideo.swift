@@ -1,6 +1,6 @@
 import CLinuxVideo
-import JPEG
 import Foundation
+import JPEG
 
 // V4L2 capability constants
 // These must match the values from linux/videodev2.h
@@ -135,7 +135,14 @@ public struct VideoDevice {
 
         // Map the buffer
         guard
-            let data = mmap(nil, Int(buffer.length), PROT_READ | PROT_WRITE, MAP_SHARED, fd, Int(buffer.m.offset)),
+            let data = mmap(
+                nil,
+                Int(buffer.length),
+                PROT_READ | PROT_WRITE,
+                MAP_SHARED,
+                fd,
+                Int(buffer.m.offset)
+            ),
             data != MAP_FAILED
         else {
             throw VideoError.unsupportedOperation(message: "Failed to map buffer")
@@ -194,12 +201,12 @@ public struct VideoDevice {
             format: .ycc8,
             process: .baseline,
             components: [
-            1: (factor: (2, 2), qi: 0), // Y
-            2: (factor: (1, 1), qi: 1), // Cb
-            3: (factor: (1, 1), qi: 1), // Cr
+                1: (factor: (2, 2), qi: 0),  // Y
+                2: (factor: (1, 1), qi: 1),  // Cb
+                3: (factor: (1, 1), qi: 1),  // Cr
             ],
             scans: [
-                .sequential((1, \.0, \.0), (2, \.1, \.1), (3, \.1, \.1)),
+                .sequential((1, \.0, \.0), (2, \.1, \.1), (3, \.1, \.1))
             ]
         )
 
@@ -213,10 +220,13 @@ public struct VideoDevice {
             pixels: rgbData
         )
 
-        try image.compress(stream: &writer, quanta: [
-            0: JPEG.CompressionLevel.luminance(compression).quanta,
-            1: JPEG.CompressionLevel.chrominance(compression).quanta,
-        ])
+        try image.compress(
+            stream: &writer,
+            quanta: [
+                0: JPEG.CompressionLevel.luminance(compression).quanta,
+                1: JPEG.CompressionLevel.chrominance(compression).quanta,
+            ]
+        )
     }
 }
 
@@ -408,7 +418,7 @@ public func yuyvSRGBToRGB(yuyvSRGBData: Data, width: Int, height: Int) throws ->
             // Extract YUYV values for two pixels
             let y1 = yuyvSRGBData[index]
             let u = yuyvSRGBData[index + 1]
-            let y2 = yuyvSRGBData[index + 2] 
+            let y2 = yuyvSRGBData[index + 2]
             let v = yuyvSRGBData[index + 3]
 
             // Convert first pixel

@@ -19,22 +19,21 @@ extension OCI {
             case .bluetooth(let bluetooth):
                 switch bluetooth.mode {
                 case .bluez:
-                    () // TODO: Unsupported for now
+                    ()  // TODO: Unsupported for now
                 case .kernel:
                     for entitlement in entitlements {
-                        if
-                            case .network(let networkEntitlements) = entitlement,
+                        if case .network(let networkEntitlements) = entitlement,
                             networkEntitlements.mode == .none
                         {
                             // TODO: Throw error
                         }
                     }
-                    
+
                     // These already exist
-//                    self.linux.namespaces.append(.init(type: "pid"))
-//                    self.linux.namespaces.append(.init(type: "ipc"))
-//                    self.linux.namespaces.append(.init(type: "uts"))
-                    
+                    //                    self.linux.namespaces.append(.init(type: "pid"))
+                    //                    self.linux.namespaces.append(.init(type: "ipc"))
+                    //                    self.linux.namespaces.append(.init(type: "uts"))
+
                     let deviceCapabilities = [
                         "CAP_NET_ADMIN",
                         "CAP_NET_RAW",
@@ -43,10 +42,13 @@ extension OCI {
                     self.linux.capabilities.effective.formUnion(deviceCapabilities)
                     self.linux.capabilities.inheritable.formUnion(deviceCapabilities)
                     self.linux.capabilities.permitted.formUnion(deviceCapabilities)
-                    
+
                     self.linux.seccomp = .init(
                         defaultAction: "SCMP_ACT_ERRNO",
-                        architectures: ["SCMP_ARCH_X86_64","SCMP_ARCH_AARCH64","SCMP_ARCH_X86","SCMP_ARCH_ARM"],
+                        architectures: [
+                            "SCMP_ARCH_X86_64", "SCMP_ARCH_AARCH64", "SCMP_ARCH_X86",
+                            "SCMP_ARCH_ARM",
+                        ],
                         syscalls: [
                             Syscall(
                                 names: ["socket"],
@@ -54,7 +56,7 @@ extension OCI {
                                 args: [
                                     .init(
                                         index: 0,
-                                        value: 31, // AF_BLUETOOTH
+                                        value: 31,  // AF_BLUETOOTH
                                         valueTwo: nil,
                                         op: .EQ
                                     )
@@ -66,25 +68,33 @@ extension OCI {
                                 args: [
                                     .init(
                                         index: 0,
-                                        value: 16, // AF_NETLINK
+                                        value: 16,  // AF_NETLINK
                                         valueTwo: nil,
                                         op: .EQ
                                     )
                                 ]
                             ),
                             Syscall(
-                                names: ["bind","connect","getsockopt","setsockopt","ioctl","sendmsg","recvmsg","sendto","recvfrom"],
+                                names: [
+                                    "bind", "connect", "getsockopt", "setsockopt", "ioctl",
+                                    "sendmsg", "recvmsg", "sendto", "recvfrom",
+                                ],
                                 action: "SCMP_ACT_ALLOW"
                             ),
                             Syscall(
-                                names:
-                                    ["poll","ppoll","epoll_create1","epoll_ctl","epoll_wait"],
+                                names: [
+                                    "poll", "ppoll", "epoll_create1", "epoll_ctl", "epoll_wait",
+                                ],
                                 action: "SCMP_ACT_ALLOW"
                             ),
                             Syscall(
-                                names: ["read","write","close","futex","nanosleep","clock_gettime","getrandom","eventfd2", "timerfd_create","timerfd_settime","signalfd4","mmap","mprotect","munmap"],
+                                names: [
+                                    "read", "write", "close", "futex", "nanosleep", "clock_gettime",
+                                    "getrandom", "eventfd2", "timerfd_create", "timerfd_settime",
+                                    "signalfd4", "mmap", "mprotect", "munmap",
+                                ],
                                 action: "SCMP_ACT_ALLOW"
-                            )
+                            ),
                         ]
                     )
                 }
