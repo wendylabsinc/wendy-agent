@@ -87,20 +87,26 @@ struct RunCommand: AsyncParsableCommand, Sendable {
             try await runContainerdBased()
         }
     }
-    
+
     func addSwiftPMResources(
         at buildDir: URL,
         to spec: inout ContainerImageSpec
     ) async throws {
         let logger = Logger(label: "edgeengineer.cli.run.swiftpm-resources")
-        let items = try FileManager.default.contentsOfDirectory(at: buildDir, includingPropertiesForKeys: nil)
-        
+        let items = try FileManager.default.contentsOfDirectory(
+            at: buildDir,
+            includingPropertiesForKeys: nil
+        )
+
         var files = [ContainerImageSpec.Layer.File]()
-        
+
         for item in items where item.lastPathComponent.hasSuffix(".resources") {
-            logger.info("Found resources in build dir", metadata: [
-                "path": "\(item.path())"
-            ])
+            logger.info(
+                "Found resources in build dir",
+                metadata: [
+                    "path": "\(item.path())"
+                ]
+            )
             files.append(
                 .init(
                     source: item,
@@ -109,11 +115,14 @@ struct RunCommand: AsyncParsableCommand, Sendable {
                 )
             )
         }
-        
+
         if !files.isEmpty {
-            logger.info("Appending layer to spec", metadata: [
-                "resources": .stringConvertible(files.count)
-            ])
+            logger.info(
+                "Appending layer to spec",
+                metadata: [
+                    "resources": .stringConvertible(files.count)
+                ]
+            )
             spec.layers.append(
                 ContainerImageSpec.Layer(files: files)
             )
@@ -184,7 +193,7 @@ struct RunCommand: AsyncParsableCommand, Sendable {
             baseImage: baseImage,
             executable: executable
         )
-        
+
         try await addSwiftPMResources(at: buildDir, to: &imageSpec)
 
         if debug {
@@ -377,7 +386,7 @@ struct RunCommand: AsyncParsableCommand, Sendable {
             baseImage: baseImage,
             executable: executable
         )
-        
+
         try await addSwiftPMResources(at: buildDir, to: &imageSpec)
 
         if debug {
