@@ -16,8 +16,8 @@
             let result = try await Subprocess.run(
                 Subprocess.Executable.name("diskutil"),
                 arguments: ["list"],
-                output: .string,
-                error: .string
+                output: .string(limit: .max),
+                error: .string(limit: .max)
             )
 
             if result.terminationStatus.isSuccess {
@@ -50,8 +50,8 @@
             let result = try await Subprocess.run(
                 Subprocess.Executable.name("diskutil"),
                 arguments: ["info", id],
-                output: .string,
-                error: .string
+                output: .string(limit: .max),
+                error: .string(limit: .max)
             )
 
             if result.terminationStatus.isSuccess {
@@ -136,8 +136,8 @@
                 let dfResult = try await Subprocess.run(
                     Subprocess.Executable.name("df"),
                     arguments: ["-k", id],
-                    output: .string,
-                    error: .string
+                    output: .string(limit: .max),
+                    error: .string(limit: .max)
                 )
 
                 if dfResult.terminationStatus.isSuccess,

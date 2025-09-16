@@ -16,7 +16,7 @@ public func downloadFileWithPv(
     let pvCheckResult = try await Subprocess.run(
         Subprocess.Executable.name("which"),
         arguments: ["pv"],
-        output: .string,
+        output: .string(limit: .max),
         error: .discarded
     )
 
