@@ -13,7 +13,7 @@ struct DeviceDetailsPage: View {
     @State private var password = ""
     @State private var isHiddenNetwork = false
     @State private var securityType = "WPA2"
-    
+
     var body: some View {
         Form {
             Section("Info") {
@@ -24,7 +24,7 @@ struct DeviceDetailsPage: View {
                     Text(device.id)
                         .font(.system(.body, design: .monospaced))
                 }
-                
+
                 HStack {
                     Text("Device Name")
                         .foregroundColor(.secondary)
@@ -32,20 +32,20 @@ struct DeviceDetailsPage: View {
                     Text(device.name)
                 }
             }
-            
+
             Section("Wi-Fi") {
                 TextField("SSID", text: $ssid)
                     #if os(iOS)
-                    .textInputAutocapitalization(.never)
+                        .textInputAutocapitalization(.never)
                     #endif
                     .autocorrectionDisabled()
-                
+
                 SecureField("Password", text: $password)
                     #if os(iOS)
-                    .textInputAutocapitalization(.never)
+                        .textInputAutocapitalization(.never)
                     #endif
                     .autocorrectionDisabled()
-                
+
                 Picker("Security", selection: $securityType) {
                     Text("None").tag("None")
                     Text("WEP").tag("WEP")
@@ -53,28 +53,28 @@ struct DeviceDetailsPage: View {
                     Text("WPA2").tag("WPA2")
                     Text("WPA3").tag("WPA3")
                 }
-                
+
                 Toggle("Hidden Network", isOn: $isHiddenNetwork)
-                
+
                 Button(action: saveChanges) {
                     Text("Save Changes")
                         .frame(maxWidth: .infinity)
                 }
                 #if os(macOS)
-                .controlSize(.large)
+                    .controlSize(.large)
                 #endif
             }
         }
         #if os(macOS)
-        .formStyle(.grouped)
-        .padding()
-        .navigationTitle(device.name)
+            .formStyle(.grouped)
+            .padding()
+            .navigationTitle(device.name)
         #else
-        .navigationTitle(device.name)
-        .navigationBarTitleDisplayMode(.inline)
+            .navigationTitle(device.name)
+            .navigationBarTitleDisplayMode(.inline)
         #endif
     }
-    
+
     private func saveChanges() {
         // TODO: Implement save logic
         print("Saving Wi-Fi settings for \(device.name)")
