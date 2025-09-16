@@ -155,12 +155,10 @@ struct RunCommand: AsyncParsableCommand, Sendable {
         if debug {
             // Include the ds2 executable in the container image.
             let ds2URL: URL
-            if
-                let url = Bundle.module.url(
-                    forResource: "ds2-124963fd-static-linux-arm64",
-                    withExtension: nil
-                )
-            {
+            if let url = Bundle.module.url(
+                forResource: "ds2-124963fd-static-linux-arm64",
+                withExtension: nil
+            ) {
                 ds2URL = url
             } else {
                 let url = URL(fileURLWithPath: CommandLine.arguments[0])
@@ -170,11 +168,11 @@ struct RunCommand: AsyncParsableCommand, Sendable {
                     .appending(path: "Resources")
                     .appending(path: "Resources")
                     .appending(component: "ds2-124963fd-static-linux-arm64")
-                
+
                 guard FileManager.default.fileExists(atPath: url.path()) else {
                     fatalError("Could not find ds2 executable in bundle resources")
                 }
-                
+
                 ds2URL = url
             }
 
@@ -360,12 +358,10 @@ struct RunCommand: AsyncParsableCommand, Sendable {
         if debug {
             // Include the ds2 executable in the container image.
             let ds2URL: URL
-            if
-                let url = Bundle.module.url(
-                    forResource: "ds2-124963fd-static-linux-arm64",
-                    withExtension: nil
-                )
-            {
+            if let url = Bundle.module.url(
+                forResource: "ds2-124963fd-static-linux-arm64",
+                withExtension: nil
+            ) {
                 ds2URL = url
             } else {
                 let url = URL(fileURLWithPath: CommandLine.arguments[0])
@@ -375,11 +371,11 @@ struct RunCommand: AsyncParsableCommand, Sendable {
                     .appending(path: "Resources")
                     .appending(path: "Resources")
                     .appending(component: "ds2-124963fd-static-linux-arm64")
-                
+
                 guard FileManager.default.fileExists(atPath: url.path()) else {
                     fatalError("Could not find ds2 executable in bundle resources")
                 }
-                
+
                 ds2URL = url
             }
 
