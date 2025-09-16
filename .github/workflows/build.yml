@@ -164,3 +164,15 @@ jobs:
           fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+       # NEW: move/update a 'latest' tag to this prerelease's commit
+      - name: Update 'latest' tag
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch --tags --force
+          TARGET_REF="refs/tags/${{ needs.determine-version.outputs.version }}"
+          TARGET_SHA="$(git rev-list -n 1 "$TARGET_REF" || true)"
+          if [ -z "$TARGET_SHA" ]; then TARGET_SHA="$GITHUB_SHA"; fi
+          git tag -fa latest "$TARGET_SHA" -m "Latest prerelease: ${{ needs.determine-version.outputs.version }}"
+          git push -f origin refs/tags/latest
