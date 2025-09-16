@@ -107,7 +107,8 @@ public struct Containerd: Sendable {
     }
 
     public func listContent(
-        withContent: @Sendable @escaping ([Containerd_Services_Content_V1_Info]) async throws ->
+        withContent:
+            @Sendable @escaping ([Containerd_Services_Content_V1_Info]) async throws ->
             Void
     ) async throws {
         let content = Containerd_Services_Content_V1_Content.Client(wrapping: client)
