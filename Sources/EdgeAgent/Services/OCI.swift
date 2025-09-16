@@ -135,6 +135,24 @@ public struct Seccomp: Codable {
 public struct Syscall: Codable {
     let names: [String]
     let action: String
+    var args: [Argument]?
+
+    struct Argument: Codable {
+        enum Op: String, Codable {
+            case NE = "SCMP_CMP_NE"
+            case LT = "SCMP_CMP_LT"
+            case LE = "SCMP_CMP_LE"
+            case EQ = "SCMP_CMP_EQ"
+            case GE = "SCMP_CMP_GE"
+            case GT = "SCMP_CMP_GT"
+            case MASKED_EQ = "SCMP_CMP_MASKED_EQ"
+        }
+
+        let index: UInt
+        let value: UInt64
+        let valueTwo: UInt64?
+        let op: Op
+    }
 }
 
 public struct Device: Codable {

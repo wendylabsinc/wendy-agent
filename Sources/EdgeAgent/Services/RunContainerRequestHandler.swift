@@ -178,6 +178,9 @@ struct RunContainerRequestHandler {
                     switch entitlement {
                     case .video:
                         runOptions.append(.device("/dev/video0"))
+                    case .bluetooth:
+                        runOptions.append(.capAdd("NET_ADMIN"))
+                        runOptions.append(.capAdd("NET_RAW"))
                     case .network(let network):
                         switch network.mode {
                         case .host:
