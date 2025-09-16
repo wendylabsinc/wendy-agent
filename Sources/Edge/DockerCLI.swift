@@ -5,7 +5,6 @@
 //  Created by Joannis Orlandos on 16/09/2025.
 //
 
-
 import Foundation
 import Subprocess
 
@@ -16,7 +15,7 @@ public struct DockerCLI: Sendable {
     public init(command: String = "docker") {
         self.command = command
     }
-    
+
     /// Build a Docker container.
     public func build(
         name: String,
@@ -28,7 +27,7 @@ public struct DockerCLI: Sendable {
             output: .discarded
         )
     }
-    
+
     /// Export a Docker container.
     public func save(
         name: String,

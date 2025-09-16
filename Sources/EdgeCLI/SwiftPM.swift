@@ -57,7 +57,7 @@ public struct SwiftPM: Sendable {
 
         /// Build the specified product.
         case product(String)
-        
+
         /// `release` or `debug`
         case configuration(String)
 

@@ -22,7 +22,7 @@ struct RunCommand: AsyncParsableCommand, Sendable {
         case noExecutableTarget
         case invalidExecutableTarget(String)
         case multipleExecutableTargets([String])
-        
+
         var description: String {
             switch self {
             case .noExecutableTarget:
@@ -30,41 +30,42 @@ struct RunCommand: AsyncParsableCommand, Sendable {
             case .invalidExecutableTarget(let name):
                 return "No executable target named '\(name)' found in package"
             case .multipleExecutableTargets(let names):
-                return "multiple executable targets available, but none specified: \(names.joined(separator: ", "))"
+                return
+                    "multiple executable targets available, but none specified: \(names.joined(separator: ", "))"
             }
         }
     }
-    
+
     static let configuration = CommandConfiguration(
         commandName: "run",
         abstract: "Run EdgeOS projects."
     )
-    
+
     @Flag(name: .long, help: "Attach a debugger to the container")
     var debug: Bool = false
-    
+
     @Flag(name: .long, help: "Run the container in the background")
     var detach: Bool = false
 
     @Option(name: .long, help: "The runtime to use, either `docker` or `containerd`")
     var runtime: ContainerRuntime = .containerd
-    
+
     @Option(name: .long, help: "The Swift SDK to use.")
     var swiftSDK: String = "6.2-RELEASE_edgeos_aarch64"
-    
+
     @Option(name: .long, help: "The Swift SDK to use.")
     var swiftVersion: String = "+6.2-snapshot"
-    
+
     @Option(name: .long, help: "The base image to use. Defaults to debian:bookworm-slim.")
     var baseImage: String = "debian:bookworm-slim"
-    
+
     @Argument(
         help: "The executable to run. Required when a package has multiple executable targets."
     )
     var executable: String?
-    
+
     @OptionGroup var agentConnectionOptions: AgentConnectionOptions
-    
+
     func run() async throws {
         LoggingSystem.bootstrap { label in
             var handler = StreamLogHandler.standardError(label: label)
@@ -73,18 +74,18 @@ struct RunCommand: AsyncParsableCommand, Sendable {
             ) {
                 handler.logLevel = level
             } else {
-#if DEBUG
-                handler.logLevel = .trace
-#else
-                handler.logLevel = .error
-#endif
+                #if DEBUG
+                    handler.logLevel = .trace
+                #else
+                    handler.logLevel = .error
+                #endif
             }
             return handler
         }
-        
+
         let logger = Logger(label: "edgeengineer.cli.run")
         let isSwiftPackage = FileManager.default.fileExists(atPath: "Package.swift")
-        
+
         if isSwiftPackage {
             switch runtime {
             case .docker:
@@ -93,8 +94,10 @@ struct RunCommand: AsyncParsableCommand, Sendable {
                 try await runSwiftContainerdBased()
             }
         } else {
-            let directory = try FileManager.default.contentsOfDirectory(atPath: FileManager.default.currentDirectoryPath)
-            
+            let directory = try FileManager.default.contentsOfDirectory(
+                atPath: FileManager.default.currentDirectoryPath
+            )
+
             for item in directory where item.lowercased().contains("dockerfile") {
                 switch runtime {
                 case .docker:
@@ -104,8 +107,10 @@ struct RunCommand: AsyncParsableCommand, Sendable {
                 }
                 return
             }
-            
-            logger.error("Directory is not a Swift Package, nor can it be built as a docker container")
+
+            logger.error(
+                "Directory is not a Swift Package, nor can it be built as a docker container"
+            )
         }
     }
 }
@@ -114,13 +119,14 @@ extension RunCommand {
     func runDockerBased() async throws {
         let url = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
         let name = url.lastPathComponent.lowercased()
-        
+
         let readAppConfigData = try await readAppConfigData(
             logger: Logger(label: "edgeengineer.cli.run.docker.container.docker")
         )
-        
+
         try await buildDockerBased(name: name)
-        let output = FileManager.default.temporaryDirectory.appending(component: UUID().uuidString).path()
+        let output = FileManager.default.temporaryDirectory.appending(component: UUID().uuidString)
+            .path()
         try await uploadDockerTar(
             imageName: url.lastPathComponent.lowercased(),
             appConfigData: readAppConfigData,
@@ -133,13 +139,15 @@ extension RunCommand {
             }
         )
     }
-    
+
     func runContainerdBased() async throws {
         let logger = Logger(label: "edgeengineer.cli.run.docker.container.containerd")
-        logger.notice("Containerd-based execution are unsupported for Dockerfile based builds. Falling back to Docker based execution")
+        logger.notice(
+            "Containerd-based execution are unsupported for Dockerfile based builds. Falling back to Docker based execution"
+        )
         try await runDockerBased()
     }
-    
+
     func buildDockerBased(name: String) async throws {
         let logger = Logger(label: "edgeengineer.cli.run.docker.container.build")
         let docker = DockerCLI()
@@ -147,21 +155,27 @@ extension RunCommand {
         logger.info("Container built successfully!")
     }
 }
- 
+
 extension RunCommand {
     func addSwiftPMResources(
         at buildDir: URL,
         to spec: inout ContainerImageSpec
     ) async throws {
         let logger = Logger(label: "edgeengineer.cli.run.swiftpm-resources")
-        let items = try FileManager.default.contentsOfDirectory(at: buildDir, includingPropertiesForKeys: nil)
-        
+        let items = try FileManager.default.contentsOfDirectory(
+            at: buildDir,
+            includingPropertiesForKeys: nil
+        )
+
         var files = [ContainerImageSpec.Layer.File]()
-        
+
         for item in items where item.lastPathComponent.hasSuffix(".resources") {
-            logger.info("Found resources in build dir", metadata: [
-                "path": "\(item.path())"
-            ])
+            logger.info(
+                "Found resources in build dir",
+                metadata: [
+                    "path": "\(item.path())"
+                ]
+            )
             files.append(
                 .init(
                     source: item,
@@ -170,11 +184,14 @@ extension RunCommand {
                 )
             )
         }
-        
+
         if !files.isEmpty {
-            logger.info("Appending layer to spec", metadata: [
-                "resources": .stringConvertible(files.count)
-            ])
+            logger.info(
+                "Appending layer to spec",
+                metadata: [
+                    "resources": .stringConvertible(files.count)
+                ]
+            )
             spec.layers.append(
                 ContainerImageSpec.Layer(files: files)
             )
@@ -243,12 +260,10 @@ extension RunCommand {
         if debug {
             // Include the ds2 executable in the container image.
             let ds2URL: URL
-            if
-                let url = Bundle.module.url(
-                    forResource: "ds2-124963fd-static-linux-arm64",
-                    withExtension: nil
-                )
-            {
+            if let url = Bundle.module.url(
+                forResource: "ds2-124963fd-static-linux-arm64",
+                withExtension: nil
+            ) {
                 ds2URL = url
             } else {
                 let url = URL(fileURLWithPath: CommandLine.arguments[0])
@@ -258,11 +273,11 @@ extension RunCommand {
                     .appending(path: "Resources")
                     .appending(path: "Resources")
                     .appending(component: "ds2-124963fd-static-linux-arm64")
-                
+
                 guard FileManager.default.fileExists(atPath: url.path()) else {
                     fatalError("Could not find ds2 executable in bundle resources")
                 }
-                
+
                 ds2URL = url
             }
 
@@ -450,12 +465,10 @@ extension RunCommand {
         if debug {
             // Include the ds2 executable in the container image.
             let ds2URL: URL
-            if
-                let url = Bundle.module.url(
-                    forResource: "ds2-124963fd-static-linux-arm64",
-                    withExtension: nil
-                )
-            {
+            if let url = Bundle.module.url(
+                forResource: "ds2-124963fd-static-linux-arm64",
+                withExtension: nil
+            ) {
                 ds2URL = url
             } else {
                 let url = URL(fileURLWithPath: CommandLine.arguments[0])
@@ -465,11 +478,11 @@ extension RunCommand {
                     .appending(path: "Resources")
                     .appending(path: "Resources")
                     .appending(component: "ds2-124963fd-static-linux-arm64")
-                
+
                 guard FileManager.default.fileExists(atPath: url.path()) else {
                     fatalError("Could not find ds2 executable in bundle resources")
                 }
-                
+
                 ds2URL = url
             }
 
@@ -499,14 +512,14 @@ extension RunCommand {
             }
         )
     }
-    
+
     private func uploadDockerTar(
         imageName: String,
         appConfigData: Data,
         builtContainer: Task<String, any Swift.Error>
     ) async throws {
         let logger = Logger(label: "edgeengineer.cli.run.docker-upload")
-        
+
         try await withGRPCClient(agentConnectionOptions) { [appConfigData] client in
             let agent = Edge_Agent_Services_V1_EdgeAgentService.Client(wrapping: client)
             try await agent.runContainer { writer in
@@ -565,7 +578,7 @@ extension RunCommand {
             }
         }
     }
-    
+
     private func readAppConfigData(logger: Logger) async throws -> Data {
         do {
             let appConfigData = try Data(contentsOf: URL(fileURLWithPath: "edge.json"))
