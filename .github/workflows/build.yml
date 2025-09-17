@@ -164,3 +164,20 @@ jobs:
           fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+       # NEW: move/update a 'latest' tag to this prerelease's commit
+      # needed so .git exists in the workspace
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # grab history + tags
+      - name: Update 'latest' tag
+        run: |
+          set -euo pipefail
+          git fetch origin --tags --force
+          TAG='${{ needs.determine-version.outputs.version }}'   # your tag, e.g. 2025.09.16-224322
+          TARGET_SHA="$(git rev-list -n 1 "refs/tags/$TAG" || true)"
+          if [ -z "$TARGET_SHA" ]; then TARGET_SHA="$GITHUB_SHA"; fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -fa latest "$TARGET_SHA" -m "Latest prerelease: $TAG"
+          git push -f origin refs/tags/latest
