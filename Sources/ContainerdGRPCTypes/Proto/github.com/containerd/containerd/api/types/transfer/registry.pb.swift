@@ -241,29 +241,16 @@ public struct Containerd_Types_Transfer_AuthResponse: Sendable {
 fileprivate let _protobuf_package = "containerd.types.transfer"
 
 extension Containerd_Types_Transfer_HTTPDebug: SwiftProtobuf._ProtoNameProviding {
-  public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
-    0: .same(proto: "DISABLED"),
-    1: .same(proto: "DEBUG"),
-    2: .same(proto: "TRACE"),
-    3: .same(proto: "BOTH"),
-  ]
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0DISABLED\0\u{1}DEBUG\0\u{1}TRACE\0\u{1}BOTH\0")
 }
 
 extension Containerd_Types_Transfer_AuthType: SwiftProtobuf._ProtoNameProviding {
-  public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
-    0: .same(proto: "NONE"),
-    1: .same(proto: "CREDENTIALS"),
-    2: .same(proto: "REFRESH"),
-    3: .same(proto: "HEADER"),
-  ]
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0NONE\0\u{1}CREDENTIALS\0\u{1}REFRESH\0\u{1}HEADER\0")
 }
 
 extension Containerd_Types_Transfer_OCIRegistry: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".OCIRegistry"
-  public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
-    1: .same(proto: "reference"),
-    2: .same(proto: "resolver"),
-  ]
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}reference\0\u{1}resolver\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -302,14 +289,7 @@ extension Containerd_Types_Transfer_OCIRegistry: SwiftProtobuf.Message, SwiftPro
 
 extension Containerd_Types_Transfer_RegistryResolver: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".RegistryResolver"
-  public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
-    1: .standard(proto: "auth_stream"),
-    2: .same(proto: "headers"),
-    3: .standard(proto: "host_dir"),
-    4: .standard(proto: "default_scheme"),
-    5: .standard(proto: "http_debug"),
-    6: .standard(proto: "logs_stream"),
-  ]
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}auth_stream\0\u{1}headers\0\u{3}host_dir\0\u{3}default_scheme\0\u{3}http_debug\0\u{3}logs_stream\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -364,11 +344,7 @@ extension Containerd_Types_Transfer_RegistryResolver: SwiftProtobuf.Message, Swi
 
 extension Containerd_Types_Transfer_AuthRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".AuthRequest"
-  public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
-    1: .same(proto: "host"),
-    2: .same(proto: "reference"),
-    3: .same(proto: "wwwauthenticate"),
-  ]
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}host\0\u{1}reference\0\u{1}wwwauthenticate\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -408,12 +384,7 @@ extension Containerd_Types_Transfer_AuthRequest: SwiftProtobuf.Message, SwiftPro
 
 extension Containerd_Types_Transfer_AuthResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".AuthResponse"
-  public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
-    1: .same(proto: "authType"),
-    2: .same(proto: "secret"),
-    3: .same(proto: "username"),
-    4: .standard(proto: "expire_at"),
-  ]
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}authType\0\u{1}secret\0\u{1}username\0\u{3}expire_at\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {

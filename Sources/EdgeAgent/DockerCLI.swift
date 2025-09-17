@@ -42,6 +42,13 @@ public struct DockerCLI: Sendable {
         /// Give extended privileges to this container
         case privileged
 
+        /// Set restart policy to unless-stopped
+        case restartUnlessStopped
+        /// Set restart policy to no
+        case restartNo
+        /// Set restart policy to on-failure with max retries
+        case restartOnFailure(Int)
+
         /// The arguments to pass to the Docker run command.
         var arguments: [String] {
             switch self {
@@ -67,6 +74,12 @@ public struct DockerCLI: Sendable {
                 return ["--device", device]
             case .privileged:
                 return ["--privileged"]
+            case .restartUnlessStopped:
+                return ["--restart", "unless-stopped"]
+            case .restartNo:
+                return ["--restart", "no"]
+            case .restartOnFailure(let retries):
+                return ["--restart", "on-failure:\(retries)"]
             }
         }
     }
@@ -103,6 +116,26 @@ public struct DockerCLI: Sendable {
         let result = try await Subprocess.run(
             Subprocess.Executable.name(command),
             arguments: Subprocess.Arguments(allArguments),
+            output: .string(limit: .max)
+        )
+        return result.standardOutput ?? ""
+    }
+
+    /// Stop a Docker container gracefully.
+    /// - Parameters:
+    ///   - container: The container name or ID to stop.
+    ///   - timeoutSeconds: Optional timeout to wait before killing the container.
+    /// - Returns: Standard output from the Docker CLI.
+    @discardableResult
+    public func stop(container: String, timeoutSeconds: Int? = nil) async throws -> String {
+        var args = ["stop"]
+        if let timeoutSeconds {
+            args += ["--time", String(timeoutSeconds)]
+        }
+        args.append(container)
+        let result = try await Subprocess.run(
+            Subprocess.Executable.name(self.command),
+            arguments: Subprocess.Arguments(args),
             output: .string(limit: .max)
         )
         return result.standardOutput ?? ""

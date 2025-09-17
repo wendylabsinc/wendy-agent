@@ -232,7 +232,6 @@ public struct Containerd: Sendable {
             ]
         )
 
-        var apply: Containerd_Services_Diff_V1_ApplyResponse
         var layerKey = "\(appName)-\(layer.diffID)"
 
         let tmpKey = UUID().uuidString
@@ -259,7 +258,7 @@ public struct Containerd: Sendable {
                 ),
             ]
         )
-        apply = try await diffs.apply(
+        _ = try await diffs.apply(
             .with {
                 $0.diff = .with {
                     $0.digest = layer.digest
@@ -346,7 +345,7 @@ public struct Containerd: Sendable {
                 ]
             )
 
-            apply = try await diffs.apply(
+            _ = try await diffs.apply(
                 .with {
                     $0.diff = .with {
                         $0.digest = nextLayer.digest
@@ -426,7 +425,8 @@ public struct Containerd: Sendable {
         imageName: String,
         appName: String,
         snapshotKey: String,
-        ociSpec spec: Data
+        ociSpec spec: Data,
+        labels: [String: String]
     ) async throws {
         let containers = Containerd_Services_Containers_V1_Containers.Client(wrapping: client)
         try await containers.create(
@@ -442,6 +442,7 @@ public struct Containerd: Sendable {
                     }
                     $0.snapshotter = "overlayfs"
                     $0.snapshotKey = snapshotKey
+                    $0.labels = labels
                     $0.image = imageName
                 }
             }

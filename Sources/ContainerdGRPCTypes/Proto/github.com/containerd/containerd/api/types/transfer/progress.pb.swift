@@ -72,14 +72,7 @@ fileprivate let _protobuf_package = "containerd.types.transfer"
 
 extension Containerd_Types_Transfer_Progress: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".Progress"
-  public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
-    1: .same(proto: "event"),
-    2: .same(proto: "name"),
-    3: .same(proto: "parents"),
-    4: .same(proto: "progress"),
-    5: .same(proto: "total"),
-    6: .same(proto: "desc"),
-  ]
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}event\0\u{1}name\0\u{1}parents\0\u{1}progress\0\u{1}total\0\u{1}desc\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {

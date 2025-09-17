@@ -156,30 +156,12 @@ public struct Containerd_V1_Types_ProcessInfo: Sendable {
 fileprivate let _protobuf_package = "containerd.v1.types"
 
 extension Containerd_V1_Types_Status: SwiftProtobuf._ProtoNameProviding {
-  public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
-    0: .same(proto: "UNKNOWN"),
-    1: .same(proto: "CREATED"),
-    2: .same(proto: "RUNNING"),
-    3: .same(proto: "STOPPED"),
-    4: .same(proto: "PAUSED"),
-    5: .same(proto: "PAUSING"),
-  ]
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0UNKNOWN\0\u{1}CREATED\0\u{1}RUNNING\0\u{1}STOPPED\0\u{1}PAUSED\0\u{1}PAUSING\0")
 }
 
 extension Containerd_V1_Types_Process: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".Process"
-  public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
-    1: .standard(proto: "container_id"),
-    2: .same(proto: "id"),
-    3: .same(proto: "pid"),
-    4: .same(proto: "status"),
-    5: .same(proto: "stdin"),
-    6: .same(proto: "stdout"),
-    7: .same(proto: "stderr"),
-    8: .same(proto: "terminal"),
-    9: .standard(proto: "exit_status"),
-    10: .standard(proto: "exited_at"),
-  ]
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}container_id\0\u{1}id\0\u{1}pid\0\u{1}status\0\u{1}stdin\0\u{1}stdout\0\u{1}stderr\0\u{1}terminal\0\u{3}exit_status\0\u{3}exited_at\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -258,10 +240,7 @@ extension Containerd_V1_Types_Process: SwiftProtobuf.Message, SwiftProtobuf._Mes
 
 extension Containerd_V1_Types_ProcessInfo: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ProcessInfo"
-  public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
-    1: .same(proto: "pid"),
-    2: .same(proto: "info"),
-  ]
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}pid\0\u{1}info\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {

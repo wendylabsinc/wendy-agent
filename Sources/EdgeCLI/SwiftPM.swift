@@ -12,7 +12,10 @@ public struct SwiftPM: Sendable {
     /// Custom Swift version, defaults to defaultSwiftVersion if nil
     public let swiftVersion: String?
 
-    public init(path: String = "swiftly run swift", swiftVersion: String? = nil) {
+    public init(
+        path: String = "swiftly run swift",
+        swiftVersion: String? = SwiftPM.defaultSwiftVersion
+    ) {
         self.path = path
         self.swiftVersion = swiftVersion
     }
@@ -99,7 +102,7 @@ public struct SwiftPM: Sendable {
 
     /// Build the Swift package.
     public func buildWithOutput(_ options: BuildOption...) async throws -> String {
-        let version = swiftVersion ?? Self.defaultSwiftVersion
+        let version = swiftVersion.map { [$0] } ?? []
 
         // Find the executable path
         let executablePath = try await findExecutablePath(
@@ -110,7 +113,7 @@ public struct SwiftPM: Sendable {
         // Use the executable path instead of just the command name
         let runArgs = path.split(separator: " ").dropFirst().map(String.init)
         let allArgs =
-            [executablePath] + runArgs + ["build", version] + options.flatMap(\.arguments)
+            [executablePath] + runArgs + ["build"] + version + options.flatMap(\.arguments)
 
         let result = try await Subprocess.run(
             Subprocess.Executable.path("/usr/bin/env"),
@@ -133,7 +136,7 @@ public struct SwiftPM: Sendable {
 
     /// Build the Swift package.
     public func build(_ options: BuildOption...) async throws {
-        let version = swiftVersion ?? Self.defaultSwiftVersion
+        let version = swiftVersion.map { [$0] } ?? []
 
         // Find the executable path
         let executablePath = try await findExecutablePath(
@@ -144,7 +147,7 @@ public struct SwiftPM: Sendable {
         // Use the executable path instead of just the command name
         let runArgs = path.split(separator: " ").dropFirst().map(String.init)
         let allArgs =
-            [executablePath] + runArgs + ["build", version] + options.flatMap(\.arguments)
+            [executablePath] + runArgs + ["build"] + version + options.flatMap(\.arguments)
 
         let result = try await Subprocess.run(
             Subprocess.Executable.path("/usr/bin/env"),
