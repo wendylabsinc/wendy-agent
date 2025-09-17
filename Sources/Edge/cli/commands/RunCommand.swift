@@ -101,6 +101,47 @@ struct RunCommand: AsyncParsableCommand, Sendable {
         }
     }
 
+    func addSwiftPMResources(
+        at buildDir: URL,
+        to spec: inout ContainerImageSpec
+    ) async throws {
+        let logger = Logger(label: "edgeengineer.cli.run.swiftpm-resources")
+        let items = try FileManager.default.contentsOfDirectory(
+            at: buildDir,
+            includingPropertiesForKeys: nil
+        )
+
+        var files = [ContainerImageSpec.Layer.File]()
+
+        for item in items where item.lastPathComponent.hasSuffix(".resources") {
+            logger.info(
+                "Found resources in build dir",
+                metadata: [
+                    "path": "\(item.path())"
+                ]
+            )
+            files.append(
+                .init(
+                    source: item,
+                    destination: "/bin/\(item.lastPathComponent)",
+                    permissions: 0o700
+                )
+            )
+        }
+
+        if !files.isEmpty {
+            logger.info(
+                "Appending layer to spec",
+                metadata: [
+                    "resources": .stringConvertible(files.count)
+                ]
+            )
+            spec.layers.append(
+                ContainerImageSpec.Layer(files: files)
+            )
+        }
+    }
+
     func runContainerdBased() async throws {
         let logger = Logger(label: "edgeengineer.cli.run.containerd")
 
@@ -154,7 +195,8 @@ struct RunCommand: AsyncParsableCommand, Sendable {
             .scratchPath(".edge-build"),
             .staticSwiftStdlib
         ).trimmingCharacters(in: .whitespacesAndNewlines)
-        let executable = URL(fileURLWithPath: binPath).appendingPathComponent(executableTarget.name)
+        let buildDir = URL(fileURLWithPath: binPath)
+        let executable = buildDir.appendingPathComponent(executableTarget.name)
 
         logger.info("Building container with base image \(baseImage)")
         let imageName = executableTarget.name.lowercased()
@@ -165,15 +207,30 @@ struct RunCommand: AsyncParsableCommand, Sendable {
             executable: executable
         )
 
+        try await addSwiftPMResources(at: buildDir, to: &imageSpec)
+
         if debug {
             // Include the ds2 executable in the container image.
-            guard
-                let ds2URL = Bundle.module.url(
-                    forResource: "ds2-124963fd-static-linux-arm64",
-                    withExtension: nil
-                )
-            else {
-                fatalError("Could not find ds2 executable in bundle resources")
+            let ds2URL: URL
+            if let url = Bundle.module.url(
+                forResource: "ds2-124963fd-static-linux-arm64",
+                withExtension: nil
+            ) {
+                ds2URL = url
+            } else {
+                let url = URL(fileURLWithPath: CommandLine.arguments[0])
+                    .deletingLastPathComponent()
+                    .appending(path: "edge-agent_edge.bundle")
+                    .appending(path: "Contents")
+                    .appending(path: "Resources")
+                    .appending(path: "Resources")
+                    .appending(component: "ds2-124963fd-static-linux-arm64")
+
+                guard FileManager.default.fileExists(atPath: url.path()) else {
+                    fatalError("Could not find ds2 executable in bundle resources")
+                }
+
+                ds2URL = url
             }
 
             let ds2Files = [
@@ -344,7 +401,8 @@ struct RunCommand: AsyncParsableCommand, Sendable {
             .scratchPath(".edge-build"),
             .staticSwiftStdlib
         ).trimmingCharacters(in: .whitespacesAndNewlines)
-        let executable = URL(fileURLWithPath: binPath).appendingPathComponent(executableTarget.name)
+        let buildDir = URL(fileURLWithPath: binPath)
+        let executable = buildDir.appendingPathComponent(executableTarget.name)
 
         logger.info("Building container with base image \(baseImage)")
         let imageName = executableTarget.name.lowercased()
@@ -355,15 +413,30 @@ struct RunCommand: AsyncParsableCommand, Sendable {
             executable: executable
         )
 
+        try await addSwiftPMResources(at: buildDir, to: &imageSpec)
+
         if debug {
             // Include the ds2 executable in the container image.
-            guard
-                let ds2URL = Bundle.module.url(
-                    forResource: "ds2-124963fd-static-linux-arm64",
-                    withExtension: nil
-                )
-            else {
-                fatalError("Could not find ds2 executable in bundle resources")
+            let ds2URL: URL
+            if let url = Bundle.module.url(
+                forResource: "ds2-124963fd-static-linux-arm64",
+                withExtension: nil
+            ) {
+                ds2URL = url
+            } else {
+                let url = URL(fileURLWithPath: CommandLine.arguments[0])
+                    .deletingLastPathComponent()
+                    .appending(path: "edge-agent_edge.bundle")
+                    .appending(path: "Contents")
+                    .appending(path: "Resources")
+                    .appending(path: "Resources")
+                    .appending(component: "ds2-124963fd-static-linux-arm64")
+
+                guard FileManager.default.fileExists(atPath: url.path()) else {
+                    fatalError("Could not find ds2 executable in bundle resources")
+                }
+
+                ds2URL = url
             }
 
             let ds2Files = [
