@@ -34,7 +34,7 @@ import Subprocess
                 let unmountResult = try await Subprocess.run(
                     Subprocess.Executable.name("sudo"),
                     arguments: ["umount", drive.id],
-                    output: .string,
+                    output: .string(limit: .max),
                     error: .string
                 )
 

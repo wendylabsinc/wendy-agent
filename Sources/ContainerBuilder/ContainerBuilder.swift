@@ -241,7 +241,8 @@ private func createTarball(from sourceDir: URL, to destinationURL: URL) async th
         Subprocess.Executable.path("/usr/bin/env"),
         arguments: Subprocess.Arguments([
             "tar", "-cf", destinationURL.path, "-C", sourceDir.path, ".",
-        ])
+        ]),
+        output: .discarded
     )
 }
 

@@ -65,6 +65,22 @@ struct EdgeContainerService: Edge_Agent_Services_V1_EdgeContainerService.Service
         try await Containerd.withClient { client in
             do {
                 let request = request.message
+                var labels = [String: String]()
+
+                do {
+                    let restartPolicy = request.restartPolicy
+                    let restartPolicyLabel = "containerd.io/restart.policy"
+
+                    switch restartPolicy.mode {
+                    case .default, .unlessStopped, .UNRECOGNIZED:
+                        labels[restartPolicyLabel] = "unless-stopped"
+                    case .no:
+                        labels[restartPolicyLabel] = "no"
+                    case .onFailure:
+                        labels[restartPolicyLabel] =
+                            "on-failure:\(restartPolicy.onFailureMaxRetries)"
+                    }
+                }
 
                 async let killed: Void = try await client.stopTask(containerID: request.appName)
 
@@ -215,7 +231,8 @@ struct EdgeContainerService: Edge_Agent_Services_V1_EdgeContainerService.Service
                         imageName: request.imageName,
                         appName: request.appName,
                         snapshotKey: snapshotKey ?? "",
-                        ociSpec: try JSONEncoder().encode(spec)
+                        ociSpec: try JSONEncoder().encode(spec),
+                        labels: labels
                     )
                 } catch let error as RPCError where error.code == .alreadyExists {
                     logger.debug("Container already exists, updating container")

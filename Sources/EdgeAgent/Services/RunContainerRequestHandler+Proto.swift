@@ -27,15 +27,15 @@ extension RunContainerRequestHandler.ControlCommand {
         switch proto.command {
         case .run(let run):
             var restart: Run.RestartPolicy = .default
-            switch run.restartPolicy {
+            switch run.restartPolicy.mode {
             case .unlessStopped:
                 restart = .unlessStopped
             case .no:
                 restart = .no
             case .onFailure:
-                let retries = Int(run.onFailureMaxRetries)
+                let retries = Int(run.restartPolicy.onFailureMaxRetries)
                 restart = .onFailure(max(0, retries))
-            case .defaultPolicy:
+            case .default:
                 restart = .default
             case .UNRECOGNIZED:
                 restart = .default

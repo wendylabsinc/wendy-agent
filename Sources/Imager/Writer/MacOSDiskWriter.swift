@@ -61,8 +61,8 @@
                 let unmountResult = try await Subprocess.run(
                     Subprocess.Executable.name("sudo"),
                     arguments: ["diskutil", "unmountDisk", devicePath],
-                    output: .string,
-                    error: .string
+                    output: .string(limit: .max),
+                    error: .string(limit: .max)
                 )
 
                 if !unmountResult.terminationStatus.isSuccess {
@@ -85,7 +85,7 @@
                 let pvCheckResult = try await Subprocess.run(
                     Subprocess.Executable.name("which"),
                     arguments: ["pv"],
-                    output: .string,
+                    output: .string(limit: .max),
                     error: .discarded
                 )
 

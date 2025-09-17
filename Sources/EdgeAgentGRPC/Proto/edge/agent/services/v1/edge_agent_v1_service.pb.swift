@@ -67,7 +67,7 @@ public struct Edge_Agent_Services_V1_RunContainerRequest: Sendable {
 
   }
 
-  public struct Header: @unchecked Sendable {
+  public struct Header: Sendable {
     // SwiftProtobuf.Message conformance is added in an extension below. See the
     // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
     // methods supported on all messages.
@@ -86,7 +86,7 @@ public struct Edge_Agent_Services_V1_RunContainerRequest: Sendable {
     public init() {}
   }
 
-  public struct Chunk: @unchecked Sendable {
+  public struct Chunk: Sendable {
     // SwiftProtobuf.Message conformance is added in an extension below. See the
     // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
     // methods supported on all messages.
@@ -141,45 +141,24 @@ public struct Edge_Agent_Services_V1_ControlCommand: Sendable {
     /// Whether to run the container with a debugger
     public var debug: Bool = false
 
-    public enum RestartPolicy: SwiftProtobuf.Enum, Sendable {
-      public typealias RawValue = Int
-      case defaultPolicy // 0
-      case unlessStopped // 1
-      case no            // 2
-      case onFailure     // 3
-      case UNRECOGNIZED(Int)
-
-      public init() { self = .defaultPolicy }
-      public init?(rawValue: Int) {
-        switch rawValue {
-        case 0: self = .defaultPolicy
-        case 1: self = .unlessStopped
-        case 2: self = .no
-        case 3: self = .onFailure
-        default: self = .UNRECOGNIZED(rawValue)
-        }
-      }
-      public var rawValue: Int {
-        switch self {
-        case .defaultPolicy: return 0
-        case .unlessStopped: return 1
-        case .no: return 2
-        case .onFailure: return 3
-        case .UNRECOGNIZED(let i): return i
-        }
-      }
+    /// Optional restart policy override for Docker runtime.
+    public var restartPolicy: RestartPolicy {
+      get {return _restartPolicy ?? RestartPolicy()}
+      set {_restartPolicy = newValue}
     }
-
-    /// Optional restart policy override
-    public var restartPolicy: Edge_Agent_Services_V1_ControlCommand.Run.RestartPolicy = .defaultPolicy
-    /// Used with restartPolicy == .onFailure
-    public var onFailureMaxRetries: Int32 = 0
+    /// Returns true if `restartPolicy` has been explicitly set.
+    public var hasRestartPolicy: Bool {return self._restartPolicy != nil}
+    /// Clears the value of `restartPolicy`. Subsequent reads from it will return its default value.
+    public mutating func clearRestartPolicy() {self._restartPolicy = nil}
 
     public var unknownFields = SwiftProtobuf.UnknownStorage()
 
     public init() {}
+
+    fileprivate var _restartPolicy: RestartPolicy? = nil
   }
 
+  /// No fields needed; acts on the current container in this stream
   public struct Stop: Sendable {
     // SwiftProtobuf.Message conformance is added in an extension below. See the
     // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
@@ -238,6 +217,7 @@ public struct Edge_Agent_Services_V1_RunContainerResponse: Sendable {
     public init() {}
   }
 
+  /// No fields; indicates container has been stopped
   public struct Stopped: Sendable {
     // SwiftProtobuf.Message conformance is added in an extension below. See the
     // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
@@ -282,7 +262,7 @@ public struct Edge_Agent_Services_V1_UpdateAgentRequest: Sendable {
 
   }
 
-  public struct Chunk: @unchecked Sendable {
+  public struct Chunk: Sendable {
     // SwiftProtobuf.Message conformance is added in an extension below. See the
     // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
     // methods supported on all messages.
@@ -636,11 +616,7 @@ fileprivate let _protobuf_package = "edge.agent.services.v1"
 
 extension Edge_Agent_Services_V1_RunContainerRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".RunContainerRequest"
-  public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
-    1: .same(proto: "header"),
-    2: .same(proto: "chunk"),
-    3: .same(proto: "control"),
-  ]
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}header\0\u{1}chunk\0\u{1}control\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -724,11 +700,7 @@ extension Edge_Agent_Services_V1_RunContainerRequest: SwiftProtobuf.Message, Swi
 
 extension Edge_Agent_Services_V1_RunContainerRequest.Header: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = Edge_Agent_Services_V1_RunContainerRequest.protoMessageName + ".Header"
-  public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
-    1: .standard(proto: "image_name"),
-    2: .same(proto: "cmd"),
-    3: .standard(proto: "app_config"),
-  ]
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}image_name\0\u{1}cmd\0\u{3}app_config\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -768,9 +740,7 @@ extension Edge_Agent_Services_V1_RunContainerRequest.Header: SwiftProtobuf.Messa
 
 extension Edge_Agent_Services_V1_RunContainerRequest.Chunk: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = Edge_Agent_Services_V1_RunContainerRequest.protoMessageName + ".Chunk"
-  public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
-    1: .same(proto: "data"),
-  ]
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}data\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -800,10 +770,7 @@ extension Edge_Agent_Services_V1_RunContainerRequest.Chunk: SwiftProtobuf.Messag
 
 extension Edge_Agent_Services_V1_ControlCommand: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ControlCommand"
-  public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
-    1: .same(proto: "run"),
-    2: .same(proto: "stop"),
-  ]
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}run\0\u{1}stop\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -847,12 +814,17 @@ extension Edge_Agent_Services_V1_ControlCommand: SwiftProtobuf.Message, SwiftPro
     // allocates stack space for every if/case branch local when no optimizations
     // are enabled. https://github.com/apple/swift-protobuf/issues/1034 and
     // https://github.com/apple/swift-protobuf/issues/1182
-    try { if case .run(let v)? = self.command {
+    switch self.command {
+    case .run?: try {
+      guard case .run(let v)? = self.command else { preconditionFailure() }
       try visitor.visitSingularMessageField(value: v, fieldNumber: 1)
-    } }()
-    try { if case .stop(let v)? = self.command {
+    }()
+    case .stop?: try {
+      guard case .stop(let v)? = self.command else { preconditionFailure() }
       try visitor.visitSingularMessageField(value: v, fieldNumber: 2)
-    } }()
+    }()
+    case nil: break
+    }
     try unknownFields.traverse(visitor: &visitor)
   }
 
@@ -865,11 +837,7 @@ extension Edge_Agent_Services_V1_ControlCommand: SwiftProtobuf.Message, SwiftPro
 
 extension Edge_Agent_Services_V1_ControlCommand.Run: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = Edge_Agent_Services_V1_ControlCommand.protoMessageName + ".Run"
-  public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
-    1: .same(proto: "debug"),
-    2: .standard(proto: "restart_policy"),
-    3: .standard(proto: "on_failure_max_retries"),
-  ]
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}debug\0\u{3}restart_policy\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -878,30 +846,29 @@ extension Edge_Agent_Services_V1_ControlCommand.Run: SwiftProtobuf.Message, Swif
       // enabled. https://github.com/apple/swift-protobuf/issues/1034
       switch fieldNumber {
       case 1: try { try decoder.decodeSingularBoolField(value: &self.debug) }()
-      case 2: try { try decoder.decodeSingularEnumField(value: &self.restartPolicy) }()
-      case 3: try { try decoder.decodeSingularInt32Field(value: &self.onFailureMaxRetries) }()
+      case 2: try { try decoder.decodeSingularMessageField(value: &self._restartPolicy) }()
       default: break
       }
     }
   }
 
   public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    // The use of inline closures is to circumvent an issue where the compiler
+    // allocates stack space for every if/case branch local when no optimizations
+    // are enabled. https://github.com/apple/swift-protobuf/issues/1034 and
+    // https://github.com/apple/swift-protobuf/issues/1182
     if self.debug != false {
       try visitor.visitSingularBoolField(value: self.debug, fieldNumber: 1)
     }
-    if self.restartPolicy != .defaultPolicy {
-      try visitor.visitSingularEnumField(value: self.restartPolicy, fieldNumber: 2)
-    }
-    if self.onFailureMaxRetries != 0 {
-      try visitor.visitSingularInt32Field(value: self.onFailureMaxRetries, fieldNumber: 3)
-    }
+    try { if let v = self._restartPolicy {
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 2)
+    } }()
     try unknownFields.traverse(visitor: &visitor)
   }
 
   public static func ==(lhs: Edge_Agent_Services_V1_ControlCommand.Run, rhs: Edge_Agent_Services_V1_ControlCommand.Run) -> Bool {
     if lhs.debug != rhs.debug {return false}
-    if lhs.restartPolicy != rhs.restartPolicy {return false}
-    if lhs.onFailureMaxRetries != rhs.onFailureMaxRetries {return false}
+    if lhs._restartPolicy != rhs._restartPolicy {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
@@ -912,9 +879,8 @@ extension Edge_Agent_Services_V1_ControlCommand.Stop: SwiftProtobuf.Message, Swi
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap()
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
-    while let _ = try decoder.nextFieldNumber() {
-      // No fields
-    }
+    // Load everything into unknown fields
+    while try decoder.nextFieldNumber() != nil {}
   }
 
   public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
@@ -929,10 +895,7 @@ extension Edge_Agent_Services_V1_ControlCommand.Stop: SwiftProtobuf.Message, Swi
 
 extension Edge_Agent_Services_V1_RunContainerResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".RunContainerResponse"
-  public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
-    1: .same(proto: "started"),
-    2: .same(proto: "stopped"),
-  ]
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}started\0\u{1}stopped\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -976,12 +939,17 @@ extension Edge_Agent_Services_V1_RunContainerResponse: SwiftProtobuf.Message, Sw
     // allocates stack space for every if/case branch local when no optimizations
     // are enabled. https://github.com/apple/swift-protobuf/issues/1034 and
     // https://github.com/apple/swift-protobuf/issues/1182
-    try { if case .started(let v)? = self.responseType {
+    switch self.responseType {
+    case .started?: try {
+      guard case .started(let v)? = self.responseType else { preconditionFailure() }
       try visitor.visitSingularMessageField(value: v, fieldNumber: 1)
-    } }()
-    try { if case .stopped(let v)? = self.responseType {
+    }()
+    case .stopped?: try {
+      guard case .stopped(let v)? = self.responseType else { preconditionFailure() }
       try visitor.visitSingularMessageField(value: v, fieldNumber: 2)
-    } }()
+    }()
+    case nil: break
+    }
     try unknownFields.traverse(visitor: &visitor)
   }
 
@@ -994,9 +962,7 @@ extension Edge_Agent_Services_V1_RunContainerResponse: SwiftProtobuf.Message, Sw
 
 extension Edge_Agent_Services_V1_RunContainerResponse.Started: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = Edge_Agent_Services_V1_RunContainerResponse.protoMessageName + ".Started"
-  public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
-    1: .standard(proto: "debug_port"),
-  ]
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}debug_port\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -1038,16 +1004,14 @@ extension Edge_Agent_Services_V1_RunContainerResponse.Stopped: SwiftProtobuf.Mes
   }
 
   public static func ==(lhs: Edge_Agent_Services_V1_RunContainerResponse.Stopped, rhs: Edge_Agent_Services_V1_RunContainerResponse.Stopped) -> Bool {
+    if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
 }
 
 extension Edge_Agent_Services_V1_UpdateAgentRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".UpdateAgentRequest"
-  public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
-    1: .same(proto: "chunk"),
-    2: .same(proto: "control"),
-  ]
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}chunk\0\u{1}control\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -1114,9 +1078,7 @@ extension Edge_Agent_Services_V1_UpdateAgentRequest: SwiftProtobuf.Message, Swif
 
 extension Edge_Agent_Services_V1_UpdateAgentRequest.Chunk: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = Edge_Agent_Services_V1_UpdateAgentRequest.protoMessageName + ".Chunk"
-  public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
-    1: .same(proto: "data"),
-  ]
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}data\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -1146,9 +1108,7 @@ extension Edge_Agent_Services_V1_UpdateAgentRequest.Chunk: SwiftProtobuf.Message
 
 extension Edge_Agent_Services_V1_UpdateAgentRequest.ControlCommand: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = Edge_Agent_Services_V1_UpdateAgentRequest.protoMessageName + ".ControlCommand"
-  public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
-    1: .same(proto: "update"),
-  ]
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}update\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -1213,9 +1173,7 @@ extension Edge_Agent_Services_V1_UpdateAgentRequest.ControlCommand.Update: Swift
 
 extension Edge_Agent_Services_V1_UpdateAgentResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".UpdateAgentResponse"
-  public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
-    1: .same(proto: "updated"),
-  ]
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}updated\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -1299,9 +1257,7 @@ extension Edge_Agent_Services_V1_GetAgentVersionRequest: SwiftProtobuf.Message, 
 
 extension Edge_Agent_Services_V1_GetAgentVersionResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".GetAgentVersionResponse"
-  public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
-    1: .same(proto: "version"),
-  ]
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}version\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -1350,9 +1306,7 @@ extension Edge_Agent_Services_V1_ListWiFiNetworksRequest: SwiftProtobuf.Message,
 
 extension Edge_Agent_Services_V1_ListWiFiNetworksResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ListWiFiNetworksResponse"
-  public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
-    1: .same(proto: "networks"),
-  ]
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}networks\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -1382,10 +1336,7 @@ extension Edge_Agent_Services_V1_ListWiFiNetworksResponse: SwiftProtobuf.Message
 
 extension Edge_Agent_Services_V1_ListWiFiNetworksResponse.WiFiNetwork: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = Edge_Agent_Services_V1_ListWiFiNetworksResponse.protoMessageName + ".WiFiNetwork"
-  public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
-    1: .same(proto: "ssid"),
-    2: .standard(proto: "signal_strength"),
-  ]
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}ssid\0\u{3}signal_strength\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -1424,10 +1375,7 @@ extension Edge_Agent_Services_V1_ListWiFiNetworksResponse.WiFiNetwork: SwiftProt
 
 extension Edge_Agent_Services_V1_ConnectToWiFiRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ConnectToWiFiRequest"
-  public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
-    1: .same(proto: "ssid"),
-    2: .same(proto: "password"),
-  ]
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}ssid\0\u{1}password\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -1462,10 +1410,7 @@ extension Edge_Agent_Services_V1_ConnectToWiFiRequest: SwiftProtobuf.Message, Sw
 
 extension Edge_Agent_Services_V1_ConnectToWiFiResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ConnectToWiFiResponse"
-  public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
-    1: .same(proto: "success"),
-    2: .standard(proto: "error_message"),
-  ]
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}success\0\u{3}error_message\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -1523,11 +1468,7 @@ extension Edge_Agent_Services_V1_GetWiFiStatusRequest: SwiftProtobuf.Message, Sw
 
 extension Edge_Agent_Services_V1_GetWiFiStatusResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".GetWiFiStatusResponse"
-  public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
-    1: .same(proto: "connected"),
-    2: .same(proto: "ssid"),
-    3: .standard(proto: "error_message"),
-  ]
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}connected\0\u{1}ssid\0\u{3}error_message\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -1590,10 +1531,7 @@ extension Edge_Agent_Services_V1_DisconnectWiFiRequest: SwiftProtobuf.Message, S
 
 extension Edge_Agent_Services_V1_DisconnectWiFiResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".DisconnectWiFiResponse"
-  public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
-    1: .same(proto: "success"),
-    2: .standard(proto: "error_message"),
-  ]
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}success\0\u{3}error_message\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -1632,9 +1570,7 @@ extension Edge_Agent_Services_V1_DisconnectWiFiResponse: SwiftProtobuf.Message, 
 
 extension Edge_Agent_Services_V1_ListHardwareCapabilitiesRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ListHardwareCapabilitiesRequest"
-  public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
-    1: .standard(proto: "category_filter"),
-  ]
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}category_filter\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -1668,9 +1604,7 @@ extension Edge_Agent_Services_V1_ListHardwareCapabilitiesRequest: SwiftProtobuf.
 
 extension Edge_Agent_Services_V1_ListHardwareCapabilitiesResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ListHardwareCapabilitiesResponse"
-  public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
-    1: .same(proto: "capabilities"),
-  ]
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}capabilities\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -1700,12 +1634,7 @@ extension Edge_Agent_Services_V1_ListHardwareCapabilitiesResponse: SwiftProtobuf
 
 extension Edge_Agent_Services_V1_ListHardwareCapabilitiesResponse.HardwareCapability: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = Edge_Agent_Services_V1_ListHardwareCapabilitiesResponse.protoMessageName + ".HardwareCapability"
-  public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
-    1: .same(proto: "category"),
-    2: .standard(proto: "device_path"),
-    3: .same(proto: "description"),
-    4: .same(proto: "properties"),
-  ]
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}category\0\u{3}device_path\0\u{1}description\0\u{1}properties\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {

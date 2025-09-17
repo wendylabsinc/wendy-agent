@@ -1,0 +1,15 @@
+syntax = "proto3";
+
+enum RestartPolicyMode {
+    DEFAULT = 0;          // Agent chooses default (unless-stopped for normal runs)
+    UNLESS_STOPPED = 1;   // --restart unless-stopped
+    NO = 2;               // --restart no
+    ON_FAILURE = 3;       // --restart on-failure:N (see on_failure_max_retries)
+}
+
+message RestartPolicy {
+    RestartPolicyMode mode = 1;
+    
+    // Only used when mode==ON_FAILURE
+    int32 on_failure_max_retries = 2;
+}

@@ -130,15 +130,7 @@ fileprivate let _protobuf_package = "containerd.types.transfer"
 
 extension Containerd_Types_Transfer_ImageStore: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ImageStore"
-  public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
-    1: .same(proto: "name"),
-    2: .same(proto: "labels"),
-    3: .same(proto: "platforms"),
-    4: .standard(proto: "all_metadata"),
-    5: .standard(proto: "manifest_limit"),
-    6: .standard(proto: "extra_references"),
-    10: .same(proto: "unpacks"),
-  ]
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}name\0\u{1}labels\0\u{1}platforms\0\u{3}all_metadata\0\u{3}manifest_limit\0\u{3}extra_references\0\u{2}\u{4}unpacks\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -198,10 +190,7 @@ extension Containerd_Types_Transfer_ImageStore: SwiftProtobuf.Message, SwiftProt
 
 extension Containerd_Types_Transfer_UnpackConfiguration: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".UnpackConfiguration"
-  public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
-    1: .same(proto: "platform"),
-    2: .same(proto: "snapshotter"),
-  ]
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}platform\0\u{1}snapshotter\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -240,13 +229,7 @@ extension Containerd_Types_Transfer_UnpackConfiguration: SwiftProtobuf.Message, 
 
 extension Containerd_Types_Transfer_ImageReference: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ImageReference"
-  public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
-    1: .same(proto: "name"),
-    2: .standard(proto: "is_prefix"),
-    3: .standard(proto: "allow_overwrite"),
-    4: .standard(proto: "add_digest"),
-    5: .standard(proto: "skip_named_digest"),
-  ]
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}name\0\u{3}is_prefix\0\u{3}allow_overwrite\0\u{3}add_digest\0\u{3}skip_named_digest\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {

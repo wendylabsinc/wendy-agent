@@ -141,12 +141,12 @@ extension Edge_Agent_Services_V1_EdgeContainerService {
         /// Handle the "StopContainer" method.
         ///
         /// - Parameters:
-        ///   - request: A request containing a single `Edge_Agent_Services_V1_StopContainerRequest` message.
+        ///   - request: A streaming request of `Edge_Agent_Services_V1_StopContainerRequest` messages.
         ///   - context: Context providing information about the RPC.
         /// - Throws: Any error which occurred during the processing of the request. Thrown errors
         ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
         ///     to an internal error.
-        /// - Returns: A response containing a single `Edge_Agent_Services_V1_StopContainerResponse` message.
+        /// - Returns: A streaming response of `Edge_Agent_Services_V1_StopContainerResponse` messages.
         func stopContainer(
             request: GRPCCore.StreamingServerRequest<Edge_Agent_Services_V1_StopContainerRequest>,
             context: GRPCCore.ServerContext
@@ -206,7 +206,7 @@ extension Edge_Agent_Services_V1_EdgeContainerService {
         /// Handle the "StopContainer" method.
         ///
         /// - Parameters:
-        ///   - request: A request of `Edge_Agent_Services_V1_StopContainerRequest`.
+        ///   - request: A request containing a single `Edge_Agent_Services_V1_StopContainerRequest` message.
         ///   - context: Context providing information about the RPC.
         /// - Throws: Any error which occurred during the processing of the request. Thrown errors
         ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
