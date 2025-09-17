@@ -51,8 +51,8 @@ struct InitCommand: AsyncParsableCommand {
         let result = try await Subprocess.run(
             Subprocess.Executable.name("bash"),
             arguments: Subprocess.Arguments(["-c", command]),
-            output: .string,
-            error: .string
+            output: .string(limit: .max),
+            error: .string(limit: .max)
         )
 
         if !result.terminationStatus.isSuccess {

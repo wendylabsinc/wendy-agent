@@ -89,11 +89,7 @@ fileprivate let _protobuf_package = "containerd.types.transfer"
 
 extension Containerd_Types_Transfer_ImageImportStream: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ImageImportStream"
-  public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
-    1: .same(proto: "stream"),
-    2: .standard(proto: "media_type"),
-    3: .standard(proto: "force_compress"),
-  ]
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}stream\0\u{3}media_type\0\u{3}force_compress\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -133,14 +129,7 @@ extension Containerd_Types_Transfer_ImageImportStream: SwiftProtobuf.Message, Sw
 
 extension Containerd_Types_Transfer_ImageExportStream: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ImageExportStream"
-  public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
-    1: .same(proto: "stream"),
-    2: .standard(proto: "media_type"),
-    3: .same(proto: "platforms"),
-    4: .standard(proto: "all_platforms"),
-    5: .standard(proto: "skip_compatibility_manifest"),
-    6: .standard(proto: "skip_non_distributable"),
-  ]
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}stream\0\u{3}media_type\0\u{1}platforms\0\u{3}all_platforms\0\u{3}skip_compatibility_manifest\0\u{3}skip_non_distributable\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {

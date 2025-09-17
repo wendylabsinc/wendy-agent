@@ -2,6 +2,8 @@ syntax = "proto3";
 
 package edge.agent.services.v1;
 
+import "edge/agent/services/v1/shared.proto";
+
 service EdgeAgentService {
     // Upload a container image to the agent, and run it.
     // The first message in the stream MUST be the header.
@@ -59,23 +61,36 @@ message RunContainerRequest {
 message ControlCommand {
     oneof command {
         Run run = 1;
+        Stop stop = 2;
     }
 
     message Run {
         // Whether to run the container with a debugger
         bool debug = 1;
+
+        // Optional restart policy override for Docker runtime.
+        optional RestartPolicy restart_policy = 2;
+    }
+
+    message Stop {
+        // No fields needed; acts on the current container in this stream
     }
 }
 
 message RunContainerResponse {
     oneof response_type {
         Started started = 1;
+        Stopped stopped = 2;
     }
 
     message Started {
         // The port that the debugger is listening on.
         // If this is 0, the container is not running with a debugger.
         uint32 debug_port = 1;
+    }
+
+    message Stopped {
+        // No fields; indicates container has been stopped
     }
 }
 

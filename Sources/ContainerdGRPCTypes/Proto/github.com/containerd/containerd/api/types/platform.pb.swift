@@ -61,12 +61,7 @@ fileprivate let _protobuf_package = "containerd.types"
 
 extension Containerd_Types_Platform: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".Platform"
-  public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
-    1: .same(proto: "os"),
-    2: .same(proto: "architecture"),
-    3: .same(proto: "variant"),
-    4: .standard(proto: "os_version"),
-  ]
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}os\0\u{1}architecture\0\u{1}variant\0\u{3}os_version\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {

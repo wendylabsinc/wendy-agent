@@ -137,16 +137,7 @@ fileprivate let _protobuf_package = "containerd.types"
 
 extension Containerd_Types_Sandbox: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".Sandbox"
-  public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
-    1: .standard(proto: "sandbox_id"),
-    2: .same(proto: "runtime"),
-    3: .same(proto: "spec"),
-    4: .same(proto: "labels"),
-    5: .standard(proto: "created_at"),
-    6: .standard(proto: "updated_at"),
-    7: .same(proto: "extensions"),
-    10: .same(proto: "sandboxer"),
-  ]
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}sandbox_id\0\u{1}runtime\0\u{1}spec\0\u{1}labels\0\u{3}created_at\0\u{3}updated_at\0\u{1}extensions\0\u{2}\u{3}sandboxer\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -215,10 +206,7 @@ extension Containerd_Types_Sandbox: SwiftProtobuf.Message, SwiftProtobuf._Messag
 
 extension Containerd_Types_Sandbox.Runtime: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = Containerd_Types_Sandbox.protoMessageName + ".Runtime"
-  public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
-    1: .same(proto: "name"),
-    2: .same(proto: "options"),
-  ]
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}name\0\u{1}options\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {

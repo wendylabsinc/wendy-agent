@@ -47,6 +47,19 @@ struct RunCommand: AsyncParsableCommand, Sendable {
     @Flag(name: .long, help: "Run the container in the background")
     var detach: Bool = false
 
+    // Docker restart policy flags (mutually exclusive). Only applies to docker runtime.
+    @Flag(name: .customLong("no-restart"), help: "Do not restart the container")
+    var noRestart: Bool = false
+
+    @Flag(name: .customLong("restart-unless-stopped"), help: "Restart unless stopped")
+    var restartUnlessStoppedFlag: Bool = false
+
+    @Option(
+        name: .customLong("restart-on-failure"),
+        help: "Restart on failure up to N times"
+    )
+    var restartOnFailureRetries: Int?
+
     @Option(name: .long, help: "The runtime to use, either `docker` or `containerd`")
     var runtime: ContainerRuntime = .containerd
 
@@ -299,7 +312,7 @@ struct RunCommand: AsyncParsableCommand, Sendable {
                 try await taskGroup.waitForAll()
             }
 
-            let response = try await agentContainers.runContainer(
+            try await agentContainers.runContainer(
                 .with {
                     $0.imageName = "\(imageName):latest"
                     $0.appName = imageName
@@ -309,7 +322,6 @@ struct RunCommand: AsyncParsableCommand, Sendable {
                         $0.cmd = "/bin/\(imageName)"
                     }
                     $0.appConfig = appConfigData
-                    $0.autoRestart = !debug
                     $0.layers = container.layers.map { layer in
                         .with {
                             $0.digest = layer.digest
@@ -483,7 +495,31 @@ struct RunCommand: AsyncParsableCommand, Sendable {
                 try await writer.write(
                     .with {
                         $0.requestType = .control(
-                            .with { $0.command = .run(.with { $0.debug = debug }) }
+                            .with {
+                                $0.command = .run(
+                                    .with {
+                                        $0.debug = debug
+                                        if noRestart {
+                                            $0.restartPolicy = .with {
+                                                $0.mode = .no
+                                            }
+                                        } else if let retries = restartOnFailureRetries {
+                                            $0.restartPolicy = .with {
+                                                $0.mode = .onFailure
+                                                $0.onFailureMaxRetries = Int32(retries)
+                                            }
+                                        } else if restartUnlessStoppedFlag {
+                                            $0.restartPolicy = .with {
+                                                $0.mode = .unlessStopped
+                                            }
+                                        } else {
+                                            $0.restartPolicy = .with {
+                                                $0.mode = .default
+                                            }
+                                        }
+                                    }
+                                )
+                            }
                         )
                     }
                 )
@@ -501,6 +537,8 @@ struct RunCommand: AsyncParsableCommand, Sendable {
                         if detach {
                             return
                         }
+                    case .stopped:
+                        logger.info("Container stopped")
                     case nil:
                         logger.warning("Unknown message received from agent")
                     }

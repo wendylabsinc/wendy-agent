@@ -64,12 +64,7 @@ fileprivate let _protobuf_package = "containerd.types"
 
 extension Containerd_Types_Descriptor: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".Descriptor"
-  public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
-    1: .standard(proto: "media_type"),
-    2: .same(proto: "digest"),
-    3: .same(proto: "size"),
-    5: .same(proto: "annotations"),
-  ]
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}media_type\0\u{1}digest\0\u{1}size\0\u{2}\u{2}annotations\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {

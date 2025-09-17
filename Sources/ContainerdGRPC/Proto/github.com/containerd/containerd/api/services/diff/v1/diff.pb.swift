@@ -162,12 +162,7 @@ fileprivate let _protobuf_package = "containerd.services.diff.v1"
 
 extension Containerd_Services_Diff_V1_ApplyRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ApplyRequest"
-  public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
-    1: .same(proto: "diff"),
-    2: .same(proto: "mounts"),
-    3: .same(proto: "payloads"),
-    4: .standard(proto: "sync_fs"),
-  ]
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}diff\0\u{1}mounts\0\u{1}payloads\0\u{3}sync_fs\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -216,9 +211,7 @@ extension Containerd_Services_Diff_V1_ApplyRequest: SwiftProtobuf.Message, Swift
 
 extension Containerd_Services_Diff_V1_ApplyResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ApplyResponse"
-  public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
-    1: .same(proto: "applied"),
-  ]
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}applied\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -252,14 +245,7 @@ extension Containerd_Services_Diff_V1_ApplyResponse: SwiftProtobuf.Message, Swif
 
 extension Containerd_Services_Diff_V1_DiffRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".DiffRequest"
-  public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
-    1: .same(proto: "left"),
-    2: .same(proto: "right"),
-    3: .standard(proto: "media_type"),
-    4: .same(proto: "ref"),
-    5: .same(proto: "labels"),
-    6: .standard(proto: "source_date_epoch"),
-  ]
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}left\0\u{1}right\0\u{3}media_type\0\u{1}ref\0\u{1}labels\0\u{3}source_date_epoch\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -318,9 +304,7 @@ extension Containerd_Services_Diff_V1_DiffRequest: SwiftProtobuf.Message, SwiftP
 
 extension Containerd_Services_Diff_V1_DiffResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".DiffResponse"
-  public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
-    3: .same(proto: "diff"),
-  ]
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\u{3}diff\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {

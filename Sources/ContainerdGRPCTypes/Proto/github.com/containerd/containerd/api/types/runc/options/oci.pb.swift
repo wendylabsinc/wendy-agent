@@ -123,20 +123,7 @@ fileprivate let _protobuf_package = "containerd.runc.v1"
 
 extension Containerd_Runc_V1_Options: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".Options"
-  public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
-    1: .standard(proto: "no_pivot_root"),
-    2: .standard(proto: "no_new_keyring"),
-    3: .standard(proto: "shim_cgroup"),
-    4: .standard(proto: "io_uid"),
-    5: .standard(proto: "io_gid"),
-    6: .standard(proto: "binary_name"),
-    7: .same(proto: "root"),
-    9: .standard(proto: "systemd_cgroup"),
-    10: .standard(proto: "criu_image_path"),
-    11: .standard(proto: "criu_work_path"),
-    12: .standard(proto: "task_api_address"),
-    13: .standard(proto: "task_api_version"),
-  ]
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}no_pivot_root\0\u{3}no_new_keyring\0\u{3}shim_cgroup\0\u{3}io_uid\0\u{3}io_gid\0\u{3}binary_name\0\u{1}root\0\u{4}\u{2}systemd_cgroup\0\u{3}criu_image_path\0\u{3}criu_work_path\0\u{3}task_api_address\0\u{3}task_api_version\0\u{c}\u{8}\u{1}")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -221,17 +208,7 @@ extension Containerd_Runc_V1_Options: SwiftProtobuf.Message, SwiftProtobuf._Mess
 
 extension Containerd_Runc_V1_CheckpointOptions: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".CheckpointOptions"
-  public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
-    1: .same(proto: "exit"),
-    2: .standard(proto: "open_tcp"),
-    3: .standard(proto: "external_unix_sockets"),
-    4: .same(proto: "terminal"),
-    5: .standard(proto: "file_locks"),
-    6: .standard(proto: "empty_namespaces"),
-    7: .standard(proto: "cgroups_mode"),
-    8: .standard(proto: "image_path"),
-    9: .standard(proto: "work_path"),
-  ]
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}exit\0\u{3}open_tcp\0\u{3}external_unix_sockets\0\u{1}terminal\0\u{3}file_locks\0\u{3}empty_namespaces\0\u{3}cgroups_mode\0\u{3}image_path\0\u{3}work_path\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -301,9 +278,7 @@ extension Containerd_Runc_V1_CheckpointOptions: SwiftProtobuf.Message, SwiftProt
 
 extension Containerd_Runc_V1_ProcessDetails: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ProcessDetails"
-  public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
-    1: .standard(proto: "exec_id"),
-  ]
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}exec_id\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {

@@ -26,7 +26,23 @@ extension RunContainerRequestHandler.ControlCommand {
     init(validating proto: Edge_Agent_Services_V1_ControlCommand) throws {
         switch proto.command {
         case .run(let run):
-            self = .run(Run(debug: run.debug))
+            var restart: Run.RestartPolicy = .default
+            switch run.restartPolicy.mode {
+            case .unlessStopped:
+                restart = .unlessStopped
+            case .no:
+                restart = .no
+            case .onFailure:
+                let retries = Int(run.restartPolicy.onFailureMaxRetries)
+                restart = .onFailure(max(0, retries))
+            case .default:
+                restart = .default
+            case .UNRECOGNIZED:
+                restart = .default
+            }
+            self = .run(Run(debug: run.debug, restartPolicy: restart))
+        case .stop:
+            self = .stop
         case nil:
             throw RPCError(code: .invalidArgument, message: "Control command cannot be unspecified")
         }
@@ -43,6 +59,8 @@ extension RunContainerRequestHandler.Event {
                         $0.debugPort = containerStarted.debugPort
                     }
                 )
+            case .containerStopped:
+                $0.responseType = .stopped(.init())
             }
         }
     }
