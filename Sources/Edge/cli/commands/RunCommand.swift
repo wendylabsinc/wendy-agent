@@ -140,47 +140,6 @@ extension RunCommand {
         )
     }
 
-    func addSwiftPMResources(
-        at buildDir: URL,
-        to spec: inout ContainerImageSpec
-    ) async throws {
-        let logger = Logger(label: "edgeengineer.cli.run.swiftpm-resources")
-        let items = try FileManager.default.contentsOfDirectory(
-            at: buildDir,
-            includingPropertiesForKeys: nil
-        )
-
-        var files = [ContainerImageSpec.Layer.File]()
-
-        for item in items where item.lastPathComponent.hasSuffix(".resources") {
-            logger.info(
-                "Found resources in build dir",
-                metadata: [
-                    "path": "\(item.path())"
-                ]
-            )
-            files.append(
-                .init(
-                    source: item,
-                    destination: "/bin/\(item.lastPathComponent)",
-                    permissions: 0o700
-                )
-            )
-        }
-
-        if !files.isEmpty {
-            logger.info(
-                "Appending layer to spec",
-                metadata: [
-                    "resources": .stringConvertible(files.count)
-                ]
-            )
-            spec.layers.append(
-                ContainerImageSpec.Layer(files: files)
-            )
-        }
-    }
-
     func runContainerdBased() async throws {
         let logger = Logger(label: "edgeengineer.cli.run.docker.container.containerd")
         logger.notice(
