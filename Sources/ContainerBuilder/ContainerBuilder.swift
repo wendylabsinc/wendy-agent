@@ -237,11 +237,12 @@ private func sha256(data: Data) -> String {
 /// - Parameter destinationURL: The URL to save the tarball to.
 /// - Throws: An error if the tarball cannot be created.
 private func createTarball(from sourceDir: URL, to destinationURL: URL) async throws {
-    _ = try await Subprocess.run(Z
+    _ = try await Subprocess.run(
         Subprocess.Executable.path("/usr/bin/env"),
         arguments: Subprocess.Arguments([
             "tar", "-cf", destinationURL.path, "-C", sourceDir.path, ".",
-        ])
+        ]),
+        output: .discarded
     )
 }
 
