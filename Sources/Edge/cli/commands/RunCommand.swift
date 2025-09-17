@@ -64,7 +64,10 @@ struct RunCommand: AsyncParsableCommand, Sendable {
     var runtime: ContainerRuntime = .containerd
 
     @Option(name: .long, help: "The Swift SDK to use.")
-    var swiftSDK: String = "6.1-RELEASE_edgeos_aarch64"
+    var swiftSDK: String = "6.2-RELEASE_edgeos_aarch64"
+
+    @Option(name: .long, help: "The Swift SDK to use.")
+    var swiftVersion: String = "+6.2-snapshot"
 
     @Option(name: .long, help: "The base image to use. Defaults to debian:bookworm-slim.")
     var baseImage: String = "debian:bookworm-slim"
@@ -93,14 +96,80 @@ struct RunCommand: AsyncParsableCommand, Sendable {
             return handler
         }
 
-        switch runtime {
-        case .docker:
-            try await runDockerBased()
-        case .containerd:
-            try await runContainerdBased()
+        let logger = Logger(label: "edgeengineer.cli.run")
+        let isSwiftPackage = FileManager.default.fileExists(atPath: "Package.swift")
+
+        if isSwiftPackage {
+            switch runtime {
+            case .docker:
+                try await runSwiftDockerBased()
+            case .containerd:
+                try await runSwiftContainerdBased()
+            }
+        } else {
+            let directory = try FileManager.default.contentsOfDirectory(
+                atPath: FileManager.default.currentDirectoryPath
+            )
+
+            for item in directory where item.lowercased().contains("dockerfile") {
+                switch runtime {
+                case .docker:
+                    try await runDockerBased()
+                case .containerd:
+                    try await runContainerdBased()
+                }
+                return
+            }
+
+            logger.error(
+                "Directory is not a Swift Package, nor can it be built as a docker container"
+            )
         }
     }
+}
 
+extension RunCommand {
+    func runDockerBased() async throws {
+        let url = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        let name = url.lastPathComponent.lowercased()
+
+        let readAppConfigData = try await readAppConfigData(
+            logger: Logger(label: "edgeengineer.cli.run.docker.container.docker")
+        )
+
+        try await buildDockerBased(name: name)
+        let output = FileManager.default.temporaryDirectory.appending(component: UUID().uuidString)
+            .path()
+        try await uploadDockerTar(
+            imageName: url.lastPathComponent.lowercased(),
+            appConfigData: readAppConfigData,
+            builtContainer: Task {
+                try await DockerCLI().save(
+                    name: name,
+                    output: output
+                )
+                return output
+            }
+        )
+    }
+
+    func runContainerdBased() async throws {
+        let logger = Logger(label: "edgeengineer.cli.run.docker.container.containerd")
+        logger.notice(
+            "Containerd-based execution are unsupported for Dockerfile based builds. Falling back to Docker based execution"
+        )
+        try await runDockerBased()
+    }
+
+    func buildDockerBased(name: String) async throws {
+        let logger = Logger(label: "edgeengineer.cli.run.docker.container.build")
+        let docker = DockerCLI()
+        try await docker.build(name: name)
+        logger.info("Container built successfully!")
+    }
+}
+
+extension RunCommand {
     func addSwiftPMResources(
         at buildDir: URL,
         to spec: inout ContainerImageSpec
@@ -142,7 +211,7 @@ struct RunCommand: AsyncParsableCommand, Sendable {
         }
     }
 
-    func runContainerdBased() async throws {
+    func runSwiftContainerdBased() async throws {
         let logger = Logger(label: "edgeengineer.cli.run.containerd")
 
         let swiftPM = SwiftPM()
@@ -150,14 +219,7 @@ struct RunCommand: AsyncParsableCommand, Sendable {
             .scratchPath(".edge-build")
         )
 
-        var appConfigData: Data
-        do {
-            appConfigData = try Data(contentsOf: URL(fileURLWithPath: "edge.json"))
-            _ = try JSONDecoder().decode(AppConfig.self, from: appConfigData)
-        } catch {
-            logger.error("Failed to decode app config", metadata: ["error": .string("\(error)")])
-            appConfigData = Data()
-        }
+        let appConfigData = try await readAppConfigData(logger: logger)
 
         // Get all executable targets
         let executableTargets = package.targets.filter { $0.type == "executable" }
@@ -183,6 +245,7 @@ struct RunCommand: AsyncParsableCommand, Sendable {
         try await swiftPM.build(
             .product(executableTarget.name),
             .swiftSDK(swiftSDK),
+            .configuration(debug ? "debug" : "release"),
             .scratchPath(".edge-build"),
             .staticSwiftStdlib
         )
@@ -191,6 +254,7 @@ struct RunCommand: AsyncParsableCommand, Sendable {
             .showBinPath,
             .product(executableTarget.name),
             .swiftSDK(swiftSDK),
+            .configuration(debug ? "debug" : "release"),
             .quiet,
             .scratchPath(".edge-build"),
             .staticSwiftStdlib
@@ -312,7 +376,7 @@ struct RunCommand: AsyncParsableCommand, Sendable {
                 try await taskGroup.waitForAll()
             }
 
-            try await agentContainers.runContainer(
+            _ = try await agentContainers.runContainer(
                 .with {
                     $0.imageName = "\(imageName):latest"
                     $0.appName = imageName
@@ -347,8 +411,8 @@ struct RunCommand: AsyncParsableCommand, Sendable {
         }
     }
 
-    func runDockerBased() async throws {
-        let logger = Logger(label: "edgeengineer.cli.run.docker")
+    func runSwiftDockerBased() async throws {
+        let logger = Logger(label: "edgeengineer.cli.run.docker.swift")
 
         let swiftPM = SwiftPM()
         let package = try await swiftPM.dumpPackage(
@@ -388,6 +452,7 @@ struct RunCommand: AsyncParsableCommand, Sendable {
         try await swiftPM.build(
             .product(executableTarget.name),
             .swiftSDK(swiftSDK),
+            .configuration(debug ? "debug" : "release"),
             .scratchPath(".edge-build"),
             .staticSwiftStdlib
         )
@@ -396,6 +461,7 @@ struct RunCommand: AsyncParsableCommand, Sendable {
             .showBinPath,
             .product(executableTarget.name),
             .swiftSDK(swiftSDK),
+            .configuration(debug ? "debug" : "release"),
             .quiet,
             .scratchPath(".edge-build"),
             .staticSwiftStdlib
@@ -449,23 +515,33 @@ struct RunCommand: AsyncParsableCommand, Sendable {
             imageSpec.layers.append(ds2Layer)
         }
 
-        let outputPath = "\(executableTarget.name)-container.tar"
+        try await uploadDockerTar(
+            imageName: imageName,
+            appConfigData: appConfigData,
+            builtContainer: Task {
+                // Wrap the build in a task so we can parallelise starting up the gRPC client
+                let outputPath = "\(executableTarget.name)-container.tar"
+                try await buildDockerContainerImage(
+                    image: imageSpec,
+                    imageName: imageName,
+                    outputPath: outputPath
+                )
+                return outputPath
+            }
+        )
+    }
 
-        // Wrap the build in a task so we can parallelise starting up the gRPC client
-        let builtContainer = Task {
-            try await buildDockerContainerImage(
-                image: imageSpec,
-                imageName: imageName,
-                outputPath: outputPath
-            )
-        }
+    private func uploadDockerTar(
+        imageName: String,
+        appConfigData: Data,
+        builtContainer: Task<String, any Swift.Error>
+    ) async throws {
+        let logger = Logger(label: "edgeengineer.cli.run.docker-upload")
 
         try await withGRPCClient(agentConnectionOptions) { [appConfigData] client in
             let agent = Edge_Agent_Services_V1_EdgeAgentService.Client(wrapping: client)
             try await agent.runContainer { writer in
-                // let existingLayers =
-
-                try await builtContainer.value
+                let outputPath = try await builtContainer.value
 
                 // First, send the header.
                 try await writer.write(
@@ -544,6 +620,18 @@ struct RunCommand: AsyncParsableCommand, Sendable {
                     }
                 }
             }
+        }
+    }
+
+    private func readAppConfigData(logger: Logger) async throws -> Data {
+        do {
+            let appConfigData = try Data(contentsOf: URL(fileURLWithPath: "edge.json"))
+            // Validate data
+            _ = try JSONDecoder().decode(AppConfig.self, from: appConfigData)
+            return appConfigData
+        } catch {
+            logger.error("Failed to decode app config", metadata: ["error": .string("\(error)")])
+            return Data()
         }
     }
 }

@@ -61,6 +61,9 @@ public struct SwiftPM: Sendable {
         /// Build the specified product.
         case product(String)
 
+        /// `release` or `debug`
+        case configuration(String)
+
         /// Decrease verbosity to only include error output.
         case quiet
 
@@ -75,6 +78,8 @@ public struct SwiftPM: Sendable {
         /// The arguments to pass to the Swift build command.
         var arguments: [String] {
             switch self {
+            case .configuration(let configuration):
+                return ["--configuration", configuration]
             case .swiftSDK(let sdk):
                 return ["--swift-sdk", sdk]
             case .showBinPath:
