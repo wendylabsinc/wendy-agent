@@ -71,12 +71,10 @@ import Subprocess
                 // Use the Subprocess API with a closure to capture output in real-time
                 let result = try await Subprocess.run(
                     Subprocess.Executable.name("sudo"),
-                    arguments: ["bash", "-c", script],
-                    output: .sequence,
-                    error: .discarded
-                ) { execution in
+                    arguments: ["bash", "-c", script]
+                ) { execution, stdin, stdout, strerr in
                     // Process standard output for progress updates
-                    for try await chunk in execution.standardOutput {
+                    for try await chunk in stdout {
                         // Convert the chunk to a string
                         let outputString = chunk.withUnsafeBytes {
                             String(decoding: $0, as: UTF8.self)
