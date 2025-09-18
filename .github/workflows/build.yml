@@ -66,8 +66,8 @@ jobs:
             swift-sdk-checksum: d2225840e592389ca517bbf71652f7003dbf45ac35d1e57d98b9250368769378
             product: edge
           - artifact-name: edge-cli-macos-arm64
-            os: macos-15
-            xcode-select: /Applications/Xcode_16.3.app
+            os: macos-26
+            xcode-select: /Applications/Xcode_26.0.app
             product: edge
 
     name: ${{ matrix.artifact-name }}

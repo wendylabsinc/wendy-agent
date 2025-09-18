@@ -12,8 +12,8 @@ jobs:
         include:
           - os: ubuntu-22.04-arm
             container: swift:6.2.0
-          - os: macos-15
-            xcode-select: /Applications/Xcode_16.3.app
+          - os: macos-26
+            xcode-select: /Applications/Xcode_26.0.app
 
     runs-on: ${{ matrix.os }}
     container: ${{ matrix.container }}
