@@ -30,6 +30,7 @@ import SwiftProtobuf
 // MARK: - containerd.services.events.v1.Events
 
 /// Namespace containing generated types for the "containerd.services.events.v1.Events" service.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 public enum Containerd_Services_Events_V1_Events {
     /// Service descriptor for the "containerd.services.events.v1.Events" service.
     public static let descriptor = GRPCCore.ServiceDescriptor(fullyQualifiedService: "containerd.services.events.v1.Events")
@@ -80,6 +81,7 @@ public enum Containerd_Services_Events_V1_Events {
     }
 }
 
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension GRPCCore.ServiceDescriptor {
     /// Service descriptor for the "containerd.services.events.v1.Events" service.
     public static let containerd_services_events_v1_Events = GRPCCore.ServiceDescriptor(fullyQualifiedService: "containerd.services.events.v1.Events")
@@ -87,6 +89,7 @@ extension GRPCCore.ServiceDescriptor {
 
 // MARK: containerd.services.events.v1.Events (server)
 
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Events_V1_Events {
     /// Streaming variant of the service protocol for the "containerd.services.events.v1.Events" service.
     ///
@@ -320,6 +323,7 @@ extension Containerd_Services_Events_V1_Events {
 }
 
 // Default implementation of 'registerMethods(with:)'.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Events_V1_Events.StreamingServiceProtocol {
     public func registerMethods<Transport>(with router: inout GRPCCore.RPCRouter<Transport>) where Transport: GRPCCore.ServerTransport {
         router.registerHandler(
@@ -359,6 +363,7 @@ extension Containerd_Services_Events_V1_Events.StreamingServiceProtocol {
 }
 
 // Default implementation of streaming methods from 'StreamingServiceProtocol'.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Events_V1_Events.ServiceProtocol {
     public func publish(
         request: GRPCCore.StreamingServerRequest<Containerd_Services_Events_V1_PublishRequest>,
@@ -395,6 +400,7 @@ extension Containerd_Services_Events_V1_Events.ServiceProtocol {
 }
 
 // Default implementation of methods from 'ServiceProtocol'.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Events_V1_Events.SimpleServiceProtocol {
     public func publish(
         request: GRPCCore.ServerRequest<Containerd_Services_Events_V1_PublishRequest>,
@@ -442,6 +448,7 @@ extension Containerd_Services_Events_V1_Events.SimpleServiceProtocol {
 
 // MARK: containerd.services.events.v1.Events (client)
 
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Events_V1_Events {
     /// Generated client protocol for the "containerd.services.events.v1.Events" service.
     ///
@@ -663,6 +670,7 @@ extension Containerd_Services_Events_V1_Events {
 }
 
 // Helpers providing default arguments to 'ClientProtocol' methods.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Events_V1_Events.ClientProtocol {
     /// Call the "Publish" method.
     ///
@@ -764,6 +772,7 @@ extension Containerd_Services_Events_V1_Events.ClientProtocol {
 }
 
 // Helpers providing sugared APIs for 'ClientProtocol' methods.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Events_V1_Events.ClientProtocol {
     /// Call the "Publish" method.
     ///

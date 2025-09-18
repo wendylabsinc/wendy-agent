@@ -30,6 +30,7 @@ import SwiftProtobuf
 // MARK: - containerd.services.introspection.v1.Introspection
 
 /// Namespace containing generated types for the "containerd.services.introspection.v1.Introspection" service.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 public enum Containerd_Services_Introspection_V1_Introspection {
     /// Service descriptor for the "containerd.services.introspection.v1.Introspection" service.
     public static let descriptor = GRPCCore.ServiceDescriptor(fullyQualifiedService: "containerd.services.introspection.v1.Introspection")
@@ -80,6 +81,7 @@ public enum Containerd_Services_Introspection_V1_Introspection {
     }
 }
 
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension GRPCCore.ServiceDescriptor {
     /// Service descriptor for the "containerd.services.introspection.v1.Introspection" service.
     public static let containerd_services_introspection_v1_Introspection = GRPCCore.ServiceDescriptor(fullyQualifiedService: "containerd.services.introspection.v1.Introspection")
@@ -87,6 +89,7 @@ extension GRPCCore.ServiceDescriptor {
 
 // MARK: containerd.services.introspection.v1.Introspection (server)
 
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Introspection_V1_Introspection {
     /// Streaming variant of the service protocol for the "containerd.services.introspection.v1.Introspection" service.
     ///
@@ -289,6 +292,7 @@ extension Containerd_Services_Introspection_V1_Introspection {
 }
 
 // Default implementation of 'registerMethods(with:)'.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Introspection_V1_Introspection.StreamingServiceProtocol {
     public func registerMethods<Transport>(with router: inout GRPCCore.RPCRouter<Transport>) where Transport: GRPCCore.ServerTransport {
         router.registerHandler(
@@ -328,6 +332,7 @@ extension Containerd_Services_Introspection_V1_Introspection.StreamingServicePro
 }
 
 // Default implementation of streaming methods from 'StreamingServiceProtocol'.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Introspection_V1_Introspection.ServiceProtocol {
     public func plugins(
         request: GRPCCore.StreamingServerRequest<Containerd_Services_Introspection_V1_PluginsRequest>,
@@ -364,6 +369,7 @@ extension Containerd_Services_Introspection_V1_Introspection.ServiceProtocol {
 }
 
 // Default implementation of methods from 'ServiceProtocol'.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Introspection_V1_Introspection.SimpleServiceProtocol {
     public func plugins(
         request: GRPCCore.ServerRequest<Containerd_Services_Introspection_V1_PluginsRequest>,
@@ -407,6 +413,7 @@ extension Containerd_Services_Introspection_V1_Introspection.SimpleServiceProtoc
 
 // MARK: containerd.services.introspection.v1.Introspection (client)
 
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Introspection_V1_Introspection {
     /// Generated client protocol for the "containerd.services.introspection.v1.Introspection" service.
     ///
@@ -610,6 +617,7 @@ extension Containerd_Services_Introspection_V1_Introspection {
 }
 
 // Helpers providing default arguments to 'ClientProtocol' methods.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Introspection_V1_Introspection.ClientProtocol {
     /// Call the "Plugins" method.
     ///
@@ -703,6 +711,7 @@ extension Containerd_Services_Introspection_V1_Introspection.ClientProtocol {
 }
 
 // Helpers providing sugared APIs for 'ClientProtocol' methods.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Introspection_V1_Introspection.ClientProtocol {
     /// Call the "Plugins" method.
     ///

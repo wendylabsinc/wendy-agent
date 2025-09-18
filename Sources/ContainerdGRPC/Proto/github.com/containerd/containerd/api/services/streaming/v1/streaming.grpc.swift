@@ -30,6 +30,7 @@ import SwiftProtobuf
 // MARK: - containerd.services.streaming.v1.Streaming
 
 /// Namespace containing generated types for the "containerd.services.streaming.v1.Streaming" service.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 public enum Containerd_Services_Streaming_V1_Streaming {
     /// Service descriptor for the "containerd.services.streaming.v1.Streaming" service.
     public static let descriptor = GRPCCore.ServiceDescriptor(fullyQualifiedService: "containerd.services.streaming.v1.Streaming")
@@ -54,6 +55,7 @@ public enum Containerd_Services_Streaming_V1_Streaming {
     }
 }
 
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension GRPCCore.ServiceDescriptor {
     /// Service descriptor for the "containerd.services.streaming.v1.Streaming" service.
     public static let containerd_services_streaming_v1_Streaming = GRPCCore.ServiceDescriptor(fullyQualifiedService: "containerd.services.streaming.v1.Streaming")
@@ -61,6 +63,7 @@ extension GRPCCore.ServiceDescriptor {
 
 // MARK: containerd.services.streaming.v1.Streaming (server)
 
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Streaming_V1_Streaming {
     /// Streaming variant of the service protocol for the "containerd.services.streaming.v1.Streaming" service.
     ///
@@ -135,6 +138,7 @@ extension Containerd_Services_Streaming_V1_Streaming {
 }
 
 // Default implementation of 'registerMethods(with:)'.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Streaming_V1_Streaming.StreamingServiceProtocol {
     public func registerMethods<Transport>(with router: inout GRPCCore.RPCRouter<Transport>) where Transport: GRPCCore.ServerTransport {
         router.registerHandler(
@@ -152,10 +156,12 @@ extension Containerd_Services_Streaming_V1_Streaming.StreamingServiceProtocol {
 }
 
 // Default implementation of streaming methods from 'StreamingServiceProtocol'.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Streaming_V1_Streaming.ServiceProtocol {
 }
 
 // Default implementation of methods from 'ServiceProtocol'.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Streaming_V1_Streaming.SimpleServiceProtocol {
     public func stream(
         request: GRPCCore.StreamingServerRequest<SwiftProtobuf.Google_Protobuf_Any>,
@@ -177,6 +183,7 @@ extension Containerd_Services_Streaming_V1_Streaming.SimpleServiceProtocol {
 
 // MARK: containerd.services.streaming.v1.Streaming (client)
 
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Streaming_V1_Streaming {
     /// Generated client protocol for the "containerd.services.streaming.v1.Streaming" service.
     ///
@@ -250,6 +257,7 @@ extension Containerd_Services_Streaming_V1_Streaming {
 }
 
 // Helpers providing default arguments to 'ClientProtocol' methods.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Streaming_V1_Streaming.ClientProtocol {
     /// Call the "Stream" method.
     ///
@@ -276,6 +284,7 @@ extension Containerd_Services_Streaming_V1_Streaming.ClientProtocol {
 }
 
 // Helpers providing sugared APIs for 'ClientProtocol' methods.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Streaming_V1_Streaming.ClientProtocol {
     /// Call the "Stream" method.
     ///

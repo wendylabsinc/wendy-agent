@@ -3,15 +3,14 @@
 # This scripts generates the EdgeAgentGRPC Swift code. It requires `protoc` to be available in the PATH.
 # It should be run from the root of the project.
 
-# Get the binary path
-BIN_PATH=$(swift build --show-bin-path)
-PROTOC_GEN_GRPC_PATH="$BIN_PATH/protoc-gen-grpc-swift"
-PROTOC_GEN_SWIFT_PATH="$BIN_PATH/protoc-gen-swift"
+# Use system-installed protoc plugins (from Homebrew) instead of building locally
+PROTOC_GEN_GRPC_PATH=$(which protoc-gen-grpc-swift-2 || echo "/opt/homebrew/bin/protoc-gen-grpc-swift-2")
+PROTOC_GEN_SWIFT_PATH=$(which protoc-gen-swift || echo "/opt/homebrew/bin/protoc-gen-swift")
 
-# Check if protoc-gen-grpc-swift exists, and build it if needed
+# Check if system protoc plugins are available
 if [ ! -f "$PROTOC_GEN_GRPC_PATH" ]; then
-    echo "protoc-gen-grpc-swift not found. Building it now..."
-    swift build --product protoc-gen-grpc-swift
+    echo "protoc-gen-grpc-swift not found. Please install with: brew install protoc-gen-grpc-swift"
+    exit 1
 fi
 
 rm -rf Sources/EdgeAgentGRPC/Proto
@@ -23,7 +22,7 @@ rm -rf Sources/ContainerdGRPCTypes/Proto
 mkdir -p Sources/ContainerdGRPCTypes/Proto
 
 protoc \
-    --plugin $PROTOC_GEN_GRPC_PATH \
+    --plugin=protoc-gen-grpc-swift=$PROTOC_GEN_GRPC_PATH \
     --grpc-swift_out=Sources/EdgeAgentGRPC/Proto \
     --grpc-swift_opt=Visibility=Public \
     --grpc-swift_opt=Server=True \
@@ -36,7 +35,7 @@ protoc \
 
 # Containerd Services
 protoc \
-    --plugin $PROTOC_GEN_GRPC_PATH \
+    --plugin=protoc-gen-grpc-swift=$PROTOC_GEN_GRPC_PATH \
     --grpc-swift_out=Sources/ContainerdGRPC/Proto \
     --grpc-swift_opt=Visibility=Public \
     --grpc-swift_opt=Client=True \
@@ -49,12 +48,12 @@ protoc \
 
 # Check if protoc-gen-swift exists
 if [ ! -f "$PROTOC_GEN_SWIFT_PATH" ]; then
-    echo "protoc-gen-swift not found. Building it now..."
-    swift build --product protoc-gen-swift
+    echo "protoc-gen-swift not found. Please install with: brew install swift-protobuf"
+    exit 1
 fi
 
 protoc \
-    --plugin $PROTOC_GEN_SWIFT_PATH \
+    --plugin=protoc-gen-swift=$PROTOC_GEN_SWIFT_PATH \
     --swift_out=Sources/EdgeAgentGRPC/Proto \
     --swift_opt=Visibility=Public \
     --experimental_allow_proto3_optional \
@@ -63,7 +62,7 @@ protoc \
 
 # Containerd Services
 protoc \
-    --plugin $PROTOC_GEN_SWIFT_PATH \
+    --plugin=protoc-gen-swift=$PROTOC_GEN_SWIFT_PATH \
     --swift_out=Sources/ContainerdGRPC/Proto \
     --swift_opt=Visibility=Public \
     --experimental_allow_proto3_optional \
@@ -73,7 +72,7 @@ protoc \
 
 # Containerd Types
 protoc \
-    --plugin $PROTOC_GEN_SWIFT_PATH \
+    --plugin=protoc-gen-swift=$PROTOC_GEN_SWIFT_PATH \
     --swift_out=Sources/ContainerdGRPCTypes/Proto \
     --swift_opt=Visibility=Public \
     --experimental_allow_proto3_optional \
@@ -83,7 +82,7 @@ protoc \
 
 # Google Types (for Containerd)
 protoc \
-    --plugin $PROTOC_GEN_SWIFT_PATH \
+    --plugin=protoc-gen-swift=$PROTOC_GEN_SWIFT_PATH \
     --swift_out=Sources/ContainerdGRPCTypes/Proto \
     --swift_opt=Visibility=Public \
     --experimental_allow_proto3_optional \

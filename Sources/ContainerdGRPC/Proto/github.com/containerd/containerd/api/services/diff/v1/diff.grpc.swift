@@ -25,11 +25,11 @@
 
 import GRPCCore
 import GRPCProtobuf
-import SwiftProtobuf
 
 // MARK: - containerd.services.diff.v1.Diff
 
 /// Namespace containing generated types for the "containerd.services.diff.v1.Diff" service.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 public enum Containerd_Services_Diff_V1_Diff {
     /// Service descriptor for the "containerd.services.diff.v1.Diff" service.
     public static let descriptor = GRPCCore.ServiceDescriptor(fullyQualifiedService: "containerd.services.diff.v1.Diff")
@@ -67,6 +67,7 @@ public enum Containerd_Services_Diff_V1_Diff {
     }
 }
 
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension GRPCCore.ServiceDescriptor {
     /// Service descriptor for the "containerd.services.diff.v1.Diff" service.
     public static let containerd_services_diff_v1_Diff = GRPCCore.ServiceDescriptor(fullyQualifiedService: "containerd.services.diff.v1.Diff")
@@ -74,6 +75,7 @@ extension GRPCCore.ServiceDescriptor {
 
 // MARK: containerd.services.diff.v1.Diff (server)
 
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Diff_V1_Diff {
     /// Streaming variant of the service protocol for the "containerd.services.diff.v1.Diff" service.
     ///
@@ -234,6 +236,7 @@ extension Containerd_Services_Diff_V1_Diff {
 }
 
 // Default implementation of 'registerMethods(with:)'.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Diff_V1_Diff.StreamingServiceProtocol {
     public func registerMethods<Transport>(with router: inout GRPCCore.RPCRouter<Transport>) where Transport: GRPCCore.ServerTransport {
         router.registerHandler(
@@ -262,6 +265,7 @@ extension Containerd_Services_Diff_V1_Diff.StreamingServiceProtocol {
 }
 
 // Default implementation of streaming methods from 'StreamingServiceProtocol'.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Diff_V1_Diff.ServiceProtocol {
     public func apply(
         request: GRPCCore.StreamingServerRequest<Containerd_Services_Diff_V1_ApplyRequest>,
@@ -287,6 +291,7 @@ extension Containerd_Services_Diff_V1_Diff.ServiceProtocol {
 }
 
 // Default implementation of methods from 'ServiceProtocol'.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Diff_V1_Diff.SimpleServiceProtocol {
     public func apply(
         request: GRPCCore.ServerRequest<Containerd_Services_Diff_V1_ApplyRequest>,
@@ -317,6 +322,7 @@ extension Containerd_Services_Diff_V1_Diff.SimpleServiceProtocol {
 
 // MARK: containerd.services.diff.v1.Diff (client)
 
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Diff_V1_Diff {
     /// Generated client protocol for the "containerd.services.diff.v1.Diff" service.
     ///
@@ -471,6 +477,7 @@ extension Containerd_Services_Diff_V1_Diff {
 }
 
 // Helpers providing default arguments to 'ClientProtocol' methods.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Diff_V1_Diff.ClientProtocol {
     /// Call the "Apply" method.
     ///
@@ -535,6 +542,7 @@ extension Containerd_Services_Diff_V1_Diff.ClientProtocol {
 }
 
 // Helpers providing sugared APIs for 'ClientProtocol' methods.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Diff_V1_Diff.ClientProtocol {
     /// Call the "Apply" method.
     ///

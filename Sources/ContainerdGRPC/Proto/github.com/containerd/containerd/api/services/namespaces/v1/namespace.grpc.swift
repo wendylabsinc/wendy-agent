@@ -30,6 +30,7 @@ import SwiftProtobuf
 // MARK: - containerd.services.namespaces.v1.Namespaces
 
 /// Namespace containing generated types for the "containerd.services.namespaces.v1.Namespaces" service.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 public enum Containerd_Services_Namespaces_V1_Namespaces {
     /// Service descriptor for the "containerd.services.namespaces.v1.Namespaces" service.
     public static let descriptor = GRPCCore.ServiceDescriptor(fullyQualifiedService: "containerd.services.namespaces.v1.Namespaces")
@@ -106,6 +107,7 @@ public enum Containerd_Services_Namespaces_V1_Namespaces {
     }
 }
 
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension GRPCCore.ServiceDescriptor {
     /// Service descriptor for the "containerd.services.namespaces.v1.Namespaces" service.
     public static let containerd_services_namespaces_v1_Namespaces = GRPCCore.ServiceDescriptor(fullyQualifiedService: "containerd.services.namespaces.v1.Namespaces")
@@ -113,6 +115,7 @@ extension GRPCCore.ServiceDescriptor {
 
 // MARK: containerd.services.namespaces.v1.Namespaces (server)
 
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Namespaces_V1_Namespaces {
     /// Streaming variant of the service protocol for the "containerd.services.namespaces.v1.Namespaces" service.
     ///
@@ -396,6 +399,7 @@ extension Containerd_Services_Namespaces_V1_Namespaces {
 }
 
 // Default implementation of 'registerMethods(with:)'.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Namespaces_V1_Namespaces.StreamingServiceProtocol {
     public func registerMethods<Transport>(with router: inout GRPCCore.RPCRouter<Transport>) where Transport: GRPCCore.ServerTransport {
         router.registerHandler(
@@ -457,6 +461,7 @@ extension Containerd_Services_Namespaces_V1_Namespaces.StreamingServiceProtocol 
 }
 
 // Default implementation of streaming methods from 'StreamingServiceProtocol'.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Namespaces_V1_Namespaces.ServiceProtocol {
     public func get(
         request: GRPCCore.StreamingServerRequest<Containerd_Services_Namespaces_V1_GetNamespaceRequest>,
@@ -515,6 +520,7 @@ extension Containerd_Services_Namespaces_V1_Namespaces.ServiceProtocol {
 }
 
 // Default implementation of methods from 'ServiceProtocol'.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Namespaces_V1_Namespaces.SimpleServiceProtocol {
     public func get(
         request: GRPCCore.ServerRequest<Containerd_Services_Namespaces_V1_GetNamespaceRequest>,
@@ -584,6 +590,7 @@ extension Containerd_Services_Namespaces_V1_Namespaces.SimpleServiceProtocol {
 
 // MARK: containerd.services.namespaces.v1.Namespaces (client)
 
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Namespaces_V1_Namespaces {
     /// Generated client protocol for the "containerd.services.namespaces.v1.Namespaces" service.
     ///
@@ -883,6 +890,7 @@ extension Containerd_Services_Namespaces_V1_Namespaces {
 }
 
 // Helpers providing default arguments to 'ClientProtocol' methods.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Namespaces_V1_Namespaces.ClientProtocol {
     /// Call the "Get" method.
     ///
@@ -1011,6 +1019,7 @@ extension Containerd_Services_Namespaces_V1_Namespaces.ClientProtocol {
 }
 
 // Helpers providing sugared APIs for 'ClientProtocol' methods.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Namespaces_V1_Namespaces.ClientProtocol {
     /// Call the "Get" method.
     ///

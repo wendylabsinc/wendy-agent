@@ -30,6 +30,7 @@ import SwiftProtobuf
 // MARK: - containerd.services.containers.v1.Containers
 
 /// Namespace containing generated types for the "containerd.services.containers.v1.Containers" service.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 public enum Containerd_Services_Containers_V1_Containers {
     /// Service descriptor for the "containerd.services.containers.v1.Containers" service.
     public static let descriptor = GRPCCore.ServiceDescriptor(fullyQualifiedService: "containerd.services.containers.v1.Containers")
@@ -119,6 +120,7 @@ public enum Containerd_Services_Containers_V1_Containers {
     }
 }
 
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension GRPCCore.ServiceDescriptor {
     /// Service descriptor for the "containerd.services.containers.v1.Containers" service.
     public static let containerd_services_containers_v1_Containers = GRPCCore.ServiceDescriptor(fullyQualifiedService: "containerd.services.containers.v1.Containers")
@@ -126,6 +128,7 @@ extension GRPCCore.ServiceDescriptor {
 
 // MARK: containerd.services.containers.v1.Containers (server)
 
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Containers_V1_Containers {
     /// Streaming variant of the service protocol for the "containerd.services.containers.v1.Containers" service.
     ///
@@ -467,6 +470,7 @@ extension Containerd_Services_Containers_V1_Containers {
 }
 
 // Default implementation of 'registerMethods(with:)'.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Containers_V1_Containers.StreamingServiceProtocol {
     public func registerMethods<Transport>(with router: inout GRPCCore.RPCRouter<Transport>) where Transport: GRPCCore.ServerTransport {
         router.registerHandler(
@@ -539,6 +543,7 @@ extension Containerd_Services_Containers_V1_Containers.StreamingServiceProtocol 
 }
 
 // Default implementation of streaming methods from 'StreamingServiceProtocol'.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Containers_V1_Containers.ServiceProtocol {
     public func get(
         request: GRPCCore.StreamingServerRequest<Containerd_Services_Containers_V1_GetContainerRequest>,
@@ -608,6 +613,7 @@ extension Containerd_Services_Containers_V1_Containers.ServiceProtocol {
 }
 
 // Default implementation of methods from 'ServiceProtocol'.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Containers_V1_Containers.SimpleServiceProtocol {
     public func get(
         request: GRPCCore.ServerRequest<Containerd_Services_Containers_V1_GetContainerRequest>,
@@ -694,6 +700,7 @@ extension Containerd_Services_Containers_V1_Containers.SimpleServiceProtocol {
 
 // MARK: containerd.services.containers.v1.Containers (client)
 
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Containers_V1_Containers {
     /// Generated client protocol for the "containerd.services.containers.v1.Containers" service.
     ///
@@ -1050,6 +1057,7 @@ extension Containerd_Services_Containers_V1_Containers {
 }
 
 // Helpers providing default arguments to 'ClientProtocol' methods.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Containers_V1_Containers.ClientProtocol {
     /// Call the "Get" method.
     ///
@@ -1201,6 +1209,7 @@ extension Containerd_Services_Containers_V1_Containers.ClientProtocol {
 }
 
 // Helpers providing sugared APIs for 'ClientProtocol' methods.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Containers_V1_Containers.ClientProtocol {
     /// Call the "Get" method.
     ///

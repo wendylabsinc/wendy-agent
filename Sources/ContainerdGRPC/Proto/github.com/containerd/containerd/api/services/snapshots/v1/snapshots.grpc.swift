@@ -30,6 +30,7 @@ import SwiftProtobuf
 // MARK: - containerd.services.snapshots.v1.Snapshots
 
 /// Namespace containing generated types for the "containerd.services.snapshots.v1.Snapshots" service.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 public enum Containerd_Services_Snapshots_V1_Snapshots {
     /// Service descriptor for the "containerd.services.snapshots.v1.Snapshots" service.
     public static let descriptor = GRPCCore.ServiceDescriptor(fullyQualifiedService: "containerd.services.snapshots.v1.Snapshots")
@@ -171,6 +172,7 @@ public enum Containerd_Services_Snapshots_V1_Snapshots {
     }
 }
 
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension GRPCCore.ServiceDescriptor {
     /// Service descriptor for the "containerd.services.snapshots.v1.Snapshots" service.
     public static let containerd_services_snapshots_v1_Snapshots = GRPCCore.ServiceDescriptor(fullyQualifiedService: "containerd.services.snapshots.v1.Snapshots")
@@ -178,6 +180,7 @@ extension GRPCCore.ServiceDescriptor {
 
 // MARK: containerd.services.snapshots.v1.Snapshots (server)
 
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Snapshots_V1_Snapshots {
     /// Streaming variant of the service protocol for the "containerd.services.snapshots.v1.Snapshots" service.
     ///
@@ -642,6 +645,7 @@ extension Containerd_Services_Snapshots_V1_Snapshots {
 }
 
 // Default implementation of 'registerMethods(with:)'.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Snapshots_V1_Snapshots.StreamingServiceProtocol {
     public func registerMethods<Transport>(with router: inout GRPCCore.RPCRouter<Transport>) where Transport: GRPCCore.ServerTransport {
         router.registerHandler(
@@ -758,6 +762,7 @@ extension Containerd_Services_Snapshots_V1_Snapshots.StreamingServiceProtocol {
 }
 
 // Default implementation of streaming methods from 'StreamingServiceProtocol'.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Snapshots_V1_Snapshots.ServiceProtocol {
     public func prepare(
         request: GRPCCore.StreamingServerRequest<Containerd_Services_Snapshots_V1_PrepareSnapshotRequest>,
@@ -871,6 +876,7 @@ extension Containerd_Services_Snapshots_V1_Snapshots.ServiceProtocol {
 }
 
 // Default implementation of methods from 'ServiceProtocol'.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Snapshots_V1_Snapshots.SimpleServiceProtocol {
     public func prepare(
         request: GRPCCore.ServerRequest<Containerd_Services_Snapshots_V1_PrepareSnapshotRequest>,
@@ -1009,6 +1015,7 @@ extension Containerd_Services_Snapshots_V1_Snapshots.SimpleServiceProtocol {
 
 // MARK: containerd.services.snapshots.v1.Snapshots (client)
 
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Snapshots_V1_Snapshots {
     /// Generated client protocol for the "containerd.services.snapshots.v1.Snapshots" service.
     ///
@@ -1531,6 +1538,7 @@ extension Containerd_Services_Snapshots_V1_Snapshots {
 }
 
 // Helpers providing default arguments to 'ClientProtocol' methods.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Snapshots_V1_Snapshots.ClientProtocol {
     /// Call the "Prepare" method.
     ///
@@ -1782,6 +1790,7 @@ extension Containerd_Services_Snapshots_V1_Snapshots.ClientProtocol {
 }
 
 // Helpers providing sugared APIs for 'ClientProtocol' methods.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Snapshots_V1_Snapshots.ClientProtocol {
     /// Call the "Prepare" method.
     ///

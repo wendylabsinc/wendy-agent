@@ -30,6 +30,7 @@ import SwiftProtobuf
 // MARK: - containerd.services.version.v1.Version
 
 /// Namespace containing generated types for the "containerd.services.version.v1.Version" service.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 public enum Containerd_Services_Version_V1_Version {
     /// Service descriptor for the "containerd.services.version.v1.Version" service.
     public static let descriptor = GRPCCore.ServiceDescriptor(fullyQualifiedService: "containerd.services.version.v1.Version")
@@ -54,6 +55,7 @@ public enum Containerd_Services_Version_V1_Version {
     }
 }
 
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension GRPCCore.ServiceDescriptor {
     /// Service descriptor for the "containerd.services.version.v1.Version" service.
     public static let containerd_services_version_v1_Version = GRPCCore.ServiceDescriptor(fullyQualifiedService: "containerd.services.version.v1.Version")
@@ -61,6 +63,7 @@ extension GRPCCore.ServiceDescriptor {
 
 // MARK: containerd.services.version.v1.Version (server)
 
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Version_V1_Version {
     /// Streaming variant of the service protocol for the "containerd.services.version.v1.Version" service.
     ///
@@ -134,6 +137,7 @@ extension Containerd_Services_Version_V1_Version {
 }
 
 // Default implementation of 'registerMethods(with:)'.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Version_V1_Version.StreamingServiceProtocol {
     public func registerMethods<Transport>(with router: inout GRPCCore.RPCRouter<Transport>) where Transport: GRPCCore.ServerTransport {
         router.registerHandler(
@@ -151,6 +155,7 @@ extension Containerd_Services_Version_V1_Version.StreamingServiceProtocol {
 }
 
 // Default implementation of streaming methods from 'StreamingServiceProtocol'.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Version_V1_Version.ServiceProtocol {
     public func version(
         request: GRPCCore.StreamingServerRequest<SwiftProtobuf.Google_Protobuf_Empty>,
@@ -165,6 +170,7 @@ extension Containerd_Services_Version_V1_Version.ServiceProtocol {
 }
 
 // Default implementation of methods from 'ServiceProtocol'.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Version_V1_Version.SimpleServiceProtocol {
     public func version(
         request: GRPCCore.ServerRequest<SwiftProtobuf.Google_Protobuf_Empty>,
@@ -182,6 +188,7 @@ extension Containerd_Services_Version_V1_Version.SimpleServiceProtocol {
 
 // MARK: containerd.services.version.v1.Version (client)
 
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Version_V1_Version {
     /// Generated client protocol for the "containerd.services.version.v1.Version" service.
     ///
@@ -257,6 +264,7 @@ extension Containerd_Services_Version_V1_Version {
 }
 
 // Helpers providing default arguments to 'ClientProtocol' methods.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Version_V1_Version.ClientProtocol {
     /// Call the "Version" method.
     ///
@@ -285,6 +293,7 @@ extension Containerd_Services_Version_V1_Version.ClientProtocol {
 }
 
 // Helpers providing sugared APIs for 'ClientProtocol' methods.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Version_V1_Version.ClientProtocol {
     /// Call the "Version" method.
     ///

@@ -68,16 +68,16 @@ build-app-bundle: build-cli build-helper build-network-daemon ## Build and codes
 	@echo "✅ EdgeCLI.app bundle built and codesigned"
 
 build-cli-linux: _protos ## build the edge CLI for linux with musl
-	swiftly run swift build +6.1 --swift-sdk aarch64-swift-linux-musl --product edge -c release
+	swiftly run swift build +6.2 --swift-sdk aarch64-swift-linux-musl --product edge -c release
 
 build-agent: _protos ## Build the edge agent executable
-	swiftly run swift build +6.1 --swift-sdk aarch64-swift-linux-musl --product edge-agent -c debug 
+	swiftly run swift build +6.2 --swift-sdk aarch64-swift-linux-musl --product edge-agent -c debug 
 	cp .build/aarch64-swift-linux-musl/debug/edge-agent .
 	chmod +x edge-agent
 	@echo "Binary size: $$(du -h edge-agent | cut -f1)"
 
 build-agent-release: _protos ## Build the edge agent executable in release mode
-	swiftly run swift build +6.1 --swift-sdk aarch64-swift-linux-musl \
+	swiftly run swift build +6.2 --swift-sdk aarch64-swift-linux-musl \
 	--product edge-agent \
 	-c release \
 	-Xswiftc -whole-module-optimization \

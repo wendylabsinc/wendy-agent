@@ -30,6 +30,7 @@ import SwiftProtobuf
 // MARK: - containerd.services.transfer.v1.Transfer
 
 /// Namespace containing generated types for the "containerd.services.transfer.v1.Transfer" service.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 public enum Containerd_Services_Transfer_V1_Transfer {
     /// Service descriptor for the "containerd.services.transfer.v1.Transfer" service.
     public static let descriptor = GRPCCore.ServiceDescriptor(fullyQualifiedService: "containerd.services.transfer.v1.Transfer")
@@ -54,6 +55,7 @@ public enum Containerd_Services_Transfer_V1_Transfer {
     }
 }
 
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension GRPCCore.ServiceDescriptor {
     /// Service descriptor for the "containerd.services.transfer.v1.Transfer" service.
     public static let containerd_services_transfer_v1_Transfer = GRPCCore.ServiceDescriptor(fullyQualifiedService: "containerd.services.transfer.v1.Transfer")
@@ -61,6 +63,7 @@ extension GRPCCore.ServiceDescriptor {
 
 // MARK: containerd.services.transfer.v1.Transfer (server)
 
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Transfer_V1_Transfer {
     /// Streaming variant of the service protocol for the "containerd.services.transfer.v1.Transfer" service.
     ///
@@ -134,6 +137,7 @@ extension Containerd_Services_Transfer_V1_Transfer {
 }
 
 // Default implementation of 'registerMethods(with:)'.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Transfer_V1_Transfer.StreamingServiceProtocol {
     public func registerMethods<Transport>(with router: inout GRPCCore.RPCRouter<Transport>) where Transport: GRPCCore.ServerTransport {
         router.registerHandler(
@@ -151,6 +155,7 @@ extension Containerd_Services_Transfer_V1_Transfer.StreamingServiceProtocol {
 }
 
 // Default implementation of streaming methods from 'StreamingServiceProtocol'.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Transfer_V1_Transfer.ServiceProtocol {
     public func transfer(
         request: GRPCCore.StreamingServerRequest<Containerd_Services_Transfer_V1_TransferRequest>,
@@ -165,6 +170,7 @@ extension Containerd_Services_Transfer_V1_Transfer.ServiceProtocol {
 }
 
 // Default implementation of methods from 'ServiceProtocol'.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Transfer_V1_Transfer.SimpleServiceProtocol {
     public func transfer(
         request: GRPCCore.ServerRequest<Containerd_Services_Transfer_V1_TransferRequest>,
@@ -182,6 +188,7 @@ extension Containerd_Services_Transfer_V1_Transfer.SimpleServiceProtocol {
 
 // MARK: containerd.services.transfer.v1.Transfer (client)
 
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Transfer_V1_Transfer {
     /// Generated client protocol for the "containerd.services.transfer.v1.Transfer" service.
     ///
@@ -257,6 +264,7 @@ extension Containerd_Services_Transfer_V1_Transfer {
 }
 
 // Helpers providing default arguments to 'ClientProtocol' methods.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Transfer_V1_Transfer.ClientProtocol {
     /// Call the "Transfer" method.
     ///
@@ -285,6 +293,7 @@ extension Containerd_Services_Transfer_V1_Transfer.ClientProtocol {
 }
 
 // Helpers providing sugared APIs for 'ClientProtocol' methods.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Transfer_V1_Transfer.ClientProtocol {
     /// Call the "Transfer" method.
     ///

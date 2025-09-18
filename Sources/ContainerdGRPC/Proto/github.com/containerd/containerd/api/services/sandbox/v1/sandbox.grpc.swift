@@ -25,11 +25,11 @@
 
 import GRPCCore
 import GRPCProtobuf
-import SwiftProtobuf
 
 // MARK: - containerd.services.sandbox.v1.Store
 
 /// Namespace containing generated types for the "containerd.services.sandbox.v1.Store" service.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 public enum Containerd_Services_Sandbox_V1_Store {
     /// Service descriptor for the "containerd.services.sandbox.v1.Store" service.
     public static let descriptor = GRPCCore.ServiceDescriptor(fullyQualifiedService: "containerd.services.sandbox.v1.Store")
@@ -106,6 +106,7 @@ public enum Containerd_Services_Sandbox_V1_Store {
     }
 }
 
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension GRPCCore.ServiceDescriptor {
     /// Service descriptor for the "containerd.services.sandbox.v1.Store" service.
     public static let containerd_services_sandbox_v1_Store = GRPCCore.ServiceDescriptor(fullyQualifiedService: "containerd.services.sandbox.v1.Store")
@@ -113,6 +114,7 @@ extension GRPCCore.ServiceDescriptor {
 
 // MARK: containerd.services.sandbox.v1.Store (server)
 
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Sandbox_V1_Store {
     /// Streaming variant of the service protocol for the "containerd.services.sandbox.v1.Store" service.
     ///
@@ -372,6 +374,7 @@ extension Containerd_Services_Sandbox_V1_Store {
 }
 
 // Default implementation of 'registerMethods(with:)'.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Sandbox_V1_Store.StreamingServiceProtocol {
     public func registerMethods<Transport>(with router: inout GRPCCore.RPCRouter<Transport>) where Transport: GRPCCore.ServerTransport {
         router.registerHandler(
@@ -433,6 +436,7 @@ extension Containerd_Services_Sandbox_V1_Store.StreamingServiceProtocol {
 }
 
 // Default implementation of streaming methods from 'StreamingServiceProtocol'.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Sandbox_V1_Store.ServiceProtocol {
     public func create(
         request: GRPCCore.StreamingServerRequest<Containerd_Services_Sandbox_V1_StoreCreateRequest>,
@@ -491,6 +495,7 @@ extension Containerd_Services_Sandbox_V1_Store.ServiceProtocol {
 }
 
 // Default implementation of methods from 'ServiceProtocol'.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Sandbox_V1_Store.SimpleServiceProtocol {
     public func create(
         request: GRPCCore.ServerRequest<Containerd_Services_Sandbox_V1_StoreCreateRequest>,
@@ -560,6 +565,7 @@ extension Containerd_Services_Sandbox_V1_Store.SimpleServiceProtocol {
 
 // MARK: containerd.services.sandbox.v1.Store (client)
 
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Sandbox_V1_Store {
     /// Generated client protocol for the "containerd.services.sandbox.v1.Store" service.
     ///
@@ -843,6 +849,7 @@ extension Containerd_Services_Sandbox_V1_Store {
 }
 
 // Helpers providing default arguments to 'ClientProtocol' methods.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Sandbox_V1_Store.ClientProtocol {
     /// Call the "Create" method.
     ///
@@ -971,6 +978,7 @@ extension Containerd_Services_Sandbox_V1_Store.ClientProtocol {
 }
 
 // Helpers providing sugared APIs for 'ClientProtocol' methods.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Sandbox_V1_Store.ClientProtocol {
     /// Call the "Create" method.
     ///
@@ -1121,6 +1129,7 @@ extension Containerd_Services_Sandbox_V1_Store.ClientProtocol {
 // MARK: - containerd.services.sandbox.v1.Controller
 
 /// Namespace containing generated types for the "containerd.services.sandbox.v1.Controller" service.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 public enum Containerd_Services_Sandbox_V1_Controller {
     /// Service descriptor for the "containerd.services.sandbox.v1.Controller" service.
     public static let descriptor = GRPCCore.ServiceDescriptor(fullyQualifiedService: "containerd.services.sandbox.v1.Controller")
@@ -1249,6 +1258,7 @@ public enum Containerd_Services_Sandbox_V1_Controller {
     }
 }
 
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension GRPCCore.ServiceDescriptor {
     /// Service descriptor for the "containerd.services.sandbox.v1.Controller" service.
     public static let containerd_services_sandbox_v1_Controller = GRPCCore.ServiceDescriptor(fullyQualifiedService: "containerd.services.sandbox.v1.Controller")
@@ -1256,6 +1266,7 @@ extension GRPCCore.ServiceDescriptor {
 
 // MARK: containerd.services.sandbox.v1.Controller (server)
 
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Sandbox_V1_Controller {
     /// Streaming variant of the service protocol for the "containerd.services.sandbox.v1.Controller" service.
     ///
@@ -1677,6 +1688,7 @@ extension Containerd_Services_Sandbox_V1_Controller {
 }
 
 // Default implementation of 'registerMethods(with:)'.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Sandbox_V1_Controller.StreamingServiceProtocol {
     public func registerMethods<Transport>(with router: inout GRPCCore.RPCRouter<Transport>) where Transport: GRPCCore.ServerTransport {
         router.registerHandler(
@@ -1782,6 +1794,7 @@ extension Containerd_Services_Sandbox_V1_Controller.StreamingServiceProtocol {
 }
 
 // Default implementation of streaming methods from 'StreamingServiceProtocol'.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Sandbox_V1_Controller.ServiceProtocol {
     public func create(
         request: GRPCCore.StreamingServerRequest<Containerd_Services_Sandbox_V1_ControllerCreateRequest>,
@@ -1884,6 +1897,7 @@ extension Containerd_Services_Sandbox_V1_Controller.ServiceProtocol {
 }
 
 // Default implementation of methods from 'ServiceProtocol'.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Sandbox_V1_Controller.SimpleServiceProtocol {
     public func create(
         request: GRPCCore.ServerRequest<Containerd_Services_Sandbox_V1_ControllerCreateRequest>,
@@ -2005,6 +2019,7 @@ extension Containerd_Services_Sandbox_V1_Controller.SimpleServiceProtocol {
 
 // MARK: containerd.services.sandbox.v1.Controller (client)
 
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Sandbox_V1_Controller {
     /// Generated client protocol for the "containerd.services.sandbox.v1.Controller" service.
     ///
@@ -2480,6 +2495,7 @@ extension Containerd_Services_Sandbox_V1_Controller {
 }
 
 // Helpers providing default arguments to 'ClientProtocol' methods.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Sandbox_V1_Controller.ClientProtocol {
     /// Call the "Create" method.
     ///
@@ -2708,6 +2724,7 @@ extension Containerd_Services_Sandbox_V1_Controller.ClientProtocol {
 }
 
 // Helpers providing sugared APIs for 'ClientProtocol' methods.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Sandbox_V1_Controller.ClientProtocol {
     /// Call the "Create" method.
     ///

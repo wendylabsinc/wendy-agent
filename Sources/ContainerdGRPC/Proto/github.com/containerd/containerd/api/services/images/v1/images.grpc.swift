@@ -30,6 +30,7 @@ import SwiftProtobuf
 // MARK: - containerd.services.images.v1.Images
 
 /// Namespace containing generated types for the "containerd.services.images.v1.Images" service.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 public enum Containerd_Services_Images_V1_Images {
     /// Service descriptor for the "containerd.services.images.v1.Images" service.
     public static let descriptor = GRPCCore.ServiceDescriptor(fullyQualifiedService: "containerd.services.images.v1.Images")
@@ -106,6 +107,7 @@ public enum Containerd_Services_Images_V1_Images {
     }
 }
 
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension GRPCCore.ServiceDescriptor {
     /// Service descriptor for the "containerd.services.images.v1.Images" service.
     public static let containerd_services_images_v1_Images = GRPCCore.ServiceDescriptor(fullyQualifiedService: "containerd.services.images.v1.Images")
@@ -113,6 +115,7 @@ extension GRPCCore.ServiceDescriptor {
 
 // MARK: containerd.services.images.v1.Images (server)
 
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Images_V1_Images {
     /// Streaming variant of the service protocol for the "containerd.services.images.v1.Images" service.
     ///
@@ -465,6 +468,7 @@ extension Containerd_Services_Images_V1_Images {
 }
 
 // Default implementation of 'registerMethods(with:)'.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Images_V1_Images.StreamingServiceProtocol {
     public func registerMethods<Transport>(with router: inout GRPCCore.RPCRouter<Transport>) where Transport: GRPCCore.ServerTransport {
         router.registerHandler(
@@ -526,6 +530,7 @@ extension Containerd_Services_Images_V1_Images.StreamingServiceProtocol {
 }
 
 // Default implementation of streaming methods from 'StreamingServiceProtocol'.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Images_V1_Images.ServiceProtocol {
     public func get(
         request: GRPCCore.StreamingServerRequest<Containerd_Services_Images_V1_GetImageRequest>,
@@ -584,6 +589,7 @@ extension Containerd_Services_Images_V1_Images.ServiceProtocol {
 }
 
 // Default implementation of methods from 'ServiceProtocol'.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Images_V1_Images.SimpleServiceProtocol {
     public func get(
         request: GRPCCore.ServerRequest<Containerd_Services_Images_V1_GetImageRequest>,
@@ -653,6 +659,7 @@ extension Containerd_Services_Images_V1_Images.SimpleServiceProtocol {
 
 // MARK: containerd.services.images.v1.Images (client)
 
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Images_V1_Images {
     /// Generated client protocol for the "containerd.services.images.v1.Images" service.
     ///
@@ -998,6 +1005,7 @@ extension Containerd_Services_Images_V1_Images {
 }
 
 // Helpers providing default arguments to 'ClientProtocol' methods.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Images_V1_Images.ClientProtocol {
     /// Call the "Get" method.
     ///
@@ -1149,6 +1157,7 @@ extension Containerd_Services_Images_V1_Images.ClientProtocol {
 }
 
 // Helpers providing sugared APIs for 'ClientProtocol' methods.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Images_V1_Images.ClientProtocol {
     /// Call the "Get" method.
     ///

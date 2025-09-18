@@ -30,6 +30,7 @@ import SwiftProtobuf
 // MARK: - containerd.services.leases.v1.Leases
 
 /// Namespace containing generated types for the "containerd.services.leases.v1.Leases" service.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 public enum Containerd_Services_Leases_V1_Leases {
     /// Service descriptor for the "containerd.services.leases.v1.Leases" service.
     public static let descriptor = GRPCCore.ServiceDescriptor(fullyQualifiedService: "containerd.services.leases.v1.Leases")
@@ -119,6 +120,7 @@ public enum Containerd_Services_Leases_V1_Leases {
     }
 }
 
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension GRPCCore.ServiceDescriptor {
     /// Service descriptor for the "containerd.services.leases.v1.Leases" service.
     public static let containerd_services_leases_v1_Leases = GRPCCore.ServiceDescriptor(fullyQualifiedService: "containerd.services.leases.v1.Leases")
@@ -126,6 +128,7 @@ extension GRPCCore.ServiceDescriptor {
 
 // MARK: containerd.services.leases.v1.Leases (server)
 
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Leases_V1_Leases {
     /// Streaming variant of the service protocol for the "containerd.services.leases.v1.Leases" service.
     ///
@@ -505,6 +508,7 @@ extension Containerd_Services_Leases_V1_Leases {
 }
 
 // Default implementation of 'registerMethods(with:)'.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Leases_V1_Leases.StreamingServiceProtocol {
     public func registerMethods<Transport>(with router: inout GRPCCore.RPCRouter<Transport>) where Transport: GRPCCore.ServerTransport {
         router.registerHandler(
@@ -577,6 +581,7 @@ extension Containerd_Services_Leases_V1_Leases.StreamingServiceProtocol {
 }
 
 // Default implementation of streaming methods from 'StreamingServiceProtocol'.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Leases_V1_Leases.ServiceProtocol {
     public func create(
         request: GRPCCore.StreamingServerRequest<Containerd_Services_Leases_V1_CreateRequest>,
@@ -646,6 +651,7 @@ extension Containerd_Services_Leases_V1_Leases.ServiceProtocol {
 }
 
 // Default implementation of methods from 'ServiceProtocol'.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Leases_V1_Leases.SimpleServiceProtocol {
     public func create(
         request: GRPCCore.ServerRequest<Containerd_Services_Leases_V1_CreateRequest>,
@@ -728,6 +734,7 @@ extension Containerd_Services_Leases_V1_Leases.SimpleServiceProtocol {
 
 // MARK: containerd.services.leases.v1.Leases (client)
 
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Leases_V1_Leases {
     /// Generated client protocol for the "containerd.services.leases.v1.Leases" service.
     ///
@@ -1112,6 +1119,7 @@ extension Containerd_Services_Leases_V1_Leases {
 }
 
 // Helpers providing default arguments to 'ClientProtocol' methods.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Leases_V1_Leases.ClientProtocol {
     /// Call the "Create" method.
     ///
@@ -1293,6 +1301,7 @@ extension Containerd_Services_Leases_V1_Leases.ClientProtocol {
 }
 
 // Helpers providing sugared APIs for 'ClientProtocol' methods.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Leases_V1_Leases.ClientProtocol {
     /// Call the "Create" method.
     ///
