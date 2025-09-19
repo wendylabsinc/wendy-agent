@@ -30,6 +30,7 @@ import SwiftProtobuf
 // MARK: - containerd.services.events.ttrpc.v1.Events
 
 /// Namespace containing generated types for the "containerd.services.events.ttrpc.v1.Events" service.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 public enum Containerd_Services_Events_Ttrpc_V1_Events {
     /// Service descriptor for the "containerd.services.events.ttrpc.v1.Events" service.
     public static let descriptor = GRPCCore.ServiceDescriptor(fullyQualifiedService: "containerd.services.events.ttrpc.v1.Events")
@@ -54,158 +55,15 @@ public enum Containerd_Services_Events_Ttrpc_V1_Events {
     }
 }
 
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension GRPCCore.ServiceDescriptor {
     /// Service descriptor for the "containerd.services.events.ttrpc.v1.Events" service.
     public static let containerd_services_events_ttrpc_v1_Events = GRPCCore.ServiceDescriptor(fullyQualifiedService: "containerd.services.events.ttrpc.v1.Events")
 }
 
-// MARK: containerd.services.events.ttrpc.v1.Events (server)
-
-extension Containerd_Services_Events_Ttrpc_V1_Events {
-    /// Streaming variant of the service protocol for the "containerd.services.events.ttrpc.v1.Events" service.
-    ///
-    /// This protocol is the lowest-level of the service protocols generated for this service
-    /// giving you the most flexibility over the implementation of your service. This comes at
-    /// the cost of more verbose and less strict APIs. Each RPC requires you to implement it in
-    /// terms of a request stream and response stream. Where only a single request or response
-    /// message is expected, you are responsible for enforcing this invariant is maintained.
-    ///
-    /// Where possible, prefer using the stricter, less-verbose ``ServiceProtocol``
-    /// or ``SimpleServiceProtocol`` instead.
-    public protocol StreamingServiceProtocol: GRPCCore.RegistrableRPCService {
-        /// Handle the "Forward" method.
-        ///
-        /// > Source IDL Documentation:
-        /// >
-        /// > Forward sends an event that has already been packaged into an envelope
-        /// > with a timestamp and namespace.
-        /// > 
-        /// > This is useful if earlier timestamping is required or when forwarding on
-        /// > behalf of another component, namespace or publisher.
-        ///
-        /// - Parameters:
-        ///   - request: A streaming request of `Containerd_Services_Events_Ttrpc_V1_ForwardRequest` messages.
-        ///   - context: Context providing information about the RPC.
-        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
-        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
-        ///     to an internal error.
-        /// - Returns: A streaming response of `SwiftProtobuf.Google_Protobuf_Empty` messages.
-        func forward(
-            request: GRPCCore.StreamingServerRequest<Containerd_Services_Events_Ttrpc_V1_ForwardRequest>,
-            context: GRPCCore.ServerContext
-        ) async throws -> GRPCCore.StreamingServerResponse<SwiftProtobuf.Google_Protobuf_Empty>
-    }
-
-    /// Service protocol for the "containerd.services.events.ttrpc.v1.Events" service.
-    ///
-    /// This protocol is higher level than ``StreamingServiceProtocol`` but lower level than
-    /// the ``SimpleServiceProtocol``, it provides access to request and response metadata and
-    /// trailing response metadata. If you don't need these then consider using
-    /// the ``SimpleServiceProtocol``. If you need fine grained control over your RPCs then
-    /// use ``StreamingServiceProtocol``.
-    public protocol ServiceProtocol: Containerd_Services_Events_Ttrpc_V1_Events.StreamingServiceProtocol {
-        /// Handle the "Forward" method.
-        ///
-        /// > Source IDL Documentation:
-        /// >
-        /// > Forward sends an event that has already been packaged into an envelope
-        /// > with a timestamp and namespace.
-        /// > 
-        /// > This is useful if earlier timestamping is required or when forwarding on
-        /// > behalf of another component, namespace or publisher.
-        ///
-        /// - Parameters:
-        ///   - request: A request containing a single `Containerd_Services_Events_Ttrpc_V1_ForwardRequest` message.
-        ///   - context: Context providing information about the RPC.
-        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
-        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
-        ///     to an internal error.
-        /// - Returns: A response containing a single `SwiftProtobuf.Google_Protobuf_Empty` message.
-        func forward(
-            request: GRPCCore.ServerRequest<Containerd_Services_Events_Ttrpc_V1_ForwardRequest>,
-            context: GRPCCore.ServerContext
-        ) async throws -> GRPCCore.ServerResponse<SwiftProtobuf.Google_Protobuf_Empty>
-    }
-
-    /// Simple service protocol for the "containerd.services.events.ttrpc.v1.Events" service.
-    ///
-    /// This is the highest level protocol for the service. The API is the easiest to use but
-    /// doesn't provide access to request or response metadata. If you need access to these
-    /// then use ``ServiceProtocol`` instead.
-    public protocol SimpleServiceProtocol: Containerd_Services_Events_Ttrpc_V1_Events.ServiceProtocol {
-        /// Handle the "Forward" method.
-        ///
-        /// > Source IDL Documentation:
-        /// >
-        /// > Forward sends an event that has already been packaged into an envelope
-        /// > with a timestamp and namespace.
-        /// > 
-        /// > This is useful if earlier timestamping is required or when forwarding on
-        /// > behalf of another component, namespace or publisher.
-        ///
-        /// - Parameters:
-        ///   - request: A `Containerd_Services_Events_Ttrpc_V1_ForwardRequest` message.
-        ///   - context: Context providing information about the RPC.
-        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
-        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
-        ///     to an internal error.
-        /// - Returns: A `SwiftProtobuf.Google_Protobuf_Empty` to respond with.
-        func forward(
-            request: Containerd_Services_Events_Ttrpc_V1_ForwardRequest,
-            context: GRPCCore.ServerContext
-        ) async throws -> SwiftProtobuf.Google_Protobuf_Empty
-    }
-}
-
-// Default implementation of 'registerMethods(with:)'.
-extension Containerd_Services_Events_Ttrpc_V1_Events.StreamingServiceProtocol {
-    public func registerMethods<Transport>(with router: inout GRPCCore.RPCRouter<Transport>) where Transport: GRPCCore.ServerTransport {
-        router.registerHandler(
-            forMethod: Containerd_Services_Events_Ttrpc_V1_Events.Method.Forward.descriptor,
-            deserializer: GRPCProtobuf.ProtobufDeserializer<Containerd_Services_Events_Ttrpc_V1_ForwardRequest>(),
-            serializer: GRPCProtobuf.ProtobufSerializer<SwiftProtobuf.Google_Protobuf_Empty>(),
-            handler: { request, context in
-                try await self.forward(
-                    request: request,
-                    context: context
-                )
-            }
-        )
-    }
-}
-
-// Default implementation of streaming methods from 'StreamingServiceProtocol'.
-extension Containerd_Services_Events_Ttrpc_V1_Events.ServiceProtocol {
-    public func forward(
-        request: GRPCCore.StreamingServerRequest<Containerd_Services_Events_Ttrpc_V1_ForwardRequest>,
-        context: GRPCCore.ServerContext
-    ) async throws -> GRPCCore.StreamingServerResponse<SwiftProtobuf.Google_Protobuf_Empty> {
-        let response = try await self.forward(
-            request: GRPCCore.ServerRequest(stream: request),
-            context: context
-        )
-        return GRPCCore.StreamingServerResponse(single: response)
-    }
-}
-
-// Default implementation of methods from 'ServiceProtocol'.
-extension Containerd_Services_Events_Ttrpc_V1_Events.SimpleServiceProtocol {
-    public func forward(
-        request: GRPCCore.ServerRequest<Containerd_Services_Events_Ttrpc_V1_ForwardRequest>,
-        context: GRPCCore.ServerContext
-    ) async throws -> GRPCCore.ServerResponse<SwiftProtobuf.Google_Protobuf_Empty> {
-        return GRPCCore.ServerResponse<SwiftProtobuf.Google_Protobuf_Empty>(
-            message: try await self.forward(
-                request: request.message,
-                context: context
-            ),
-            metadata: [:]
-        )
-    }
-}
-
 // MARK: containerd.services.events.ttrpc.v1.Events (client)
 
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Events_Ttrpc_V1_Events {
     /// Generated client protocol for the "containerd.services.events.ttrpc.v1.Events" service.
     ///
@@ -297,6 +155,7 @@ extension Containerd_Services_Events_Ttrpc_V1_Events {
 }
 
 // Helpers providing default arguments to 'ClientProtocol' methods.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Events_Ttrpc_V1_Events.ClientProtocol {
     /// Call the "Forward" method.
     ///
@@ -333,6 +192,7 @@ extension Containerd_Services_Events_Ttrpc_V1_Events.ClientProtocol {
 }
 
 // Helpers providing sugared APIs for 'ClientProtocol' methods.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Events_Ttrpc_V1_Events.ClientProtocol {
     /// Call the "Forward" method.
     ///

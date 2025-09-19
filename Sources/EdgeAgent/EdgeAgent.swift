@@ -2,11 +2,9 @@ import ArgumentParser
 import EdgeAgentGRPC
 import EdgeShared
 import Foundation
-import GRPCHealthService
+import GRPCCore
 import GRPCNIOTransportHTTP2
-import GRPCServiceLifecycle
 import Logging
-import ServiceLifecycle
 
 @main
 struct EdgeAgent: AsyncParsableCommand {
@@ -32,16 +30,9 @@ struct EdgeAgent: AsyncParsableCommand {
 
         logger.info("Starting Edge Agent version \(Version.current) on port \(port)")
 
-        let healthService = HealthService()
-        healthService.provider.updateStatus(
-            .serving,
-            forService: Edge_Agent_Services_V1_EdgeAgentService.descriptor
-        )
-
         let (signal, continuation) = AsyncStream<Void>.makeStream()
 
-        let services: [any RegistrableRPCService] = [
-            healthService,
+        let services: [any GRPCCore.RegistrableRPCService] = [
             EdgeContainerService(),
             EdgeAgentService(shouldRestart: {
                 print("Shutting down server")
@@ -49,36 +40,32 @@ struct EdgeAgent: AsyncParsableCommand {
             }),
         ]
 
-        let grpcServer = GRPCServer(
-            transport: .http2NIOPosix(
-                address: .ipv6(host: "::", port: port),
-                transportSecurity: .plaintext
-            ),
-            services: services
+        let transport = GRPCNIOTransportHTTP2.HTTP2ServerTransport.Posix(
+            address: .ipv6(host: "::", port: port),
+            transportSecurity: .plaintext,
+            config: .defaults
         )
 
-        let group = ServiceGroup(
-            services: [
-                grpcServer
-            ],
-            logger: logger
+        let server = GRPCServer(
+            transport: transport,
+            services: services
         )
 
         try await withThrowingTaskGroup(of: Void.self) { taskGroup in
             taskGroup.addTask {
-                try await group.run()
+                try await server.serve()
                 continuation.finish()
             }
 
             for try await () in signal {
                 logger.info("Received signal, restarting")
                 try await Task.sleep(for: .seconds(3))
-                await group.triggerGracefulShutdown()
+                server.beginGracefulShutdown()
                 taskGroup.cancelAll()
                 return
             }
 
-            await group.triggerGracefulShutdown()
+            server.beginGracefulShutdown()
             taskGroup.cancelAll()
         }
     }

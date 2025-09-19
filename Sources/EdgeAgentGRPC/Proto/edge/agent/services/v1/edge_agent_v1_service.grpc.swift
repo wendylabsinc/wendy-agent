@@ -14,6 +14,7 @@ import GRPCProtobuf
 // MARK: - edge.agent.services.v1.EdgeAgentService
 
 /// Namespace containing generated types for the "edge.agent.services.v1.EdgeAgentService" service.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 public enum Edge_Agent_Services_V1_EdgeAgentService {
     /// Service descriptor for the "edge.agent.services.v1.EdgeAgentService" service.
     public static let descriptor = GRPCCore.ServiceDescriptor(fullyQualifiedService: "edge.agent.services.v1.EdgeAgentService")
@@ -129,6 +130,7 @@ public enum Edge_Agent_Services_V1_EdgeAgentService {
     }
 }
 
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension GRPCCore.ServiceDescriptor {
     /// Service descriptor for the "edge.agent.services.v1.EdgeAgentService" service.
     public static let edge_agent_services_v1_EdgeAgentService = GRPCCore.ServiceDescriptor(fullyQualifiedService: "edge.agent.services.v1.EdgeAgentService")
@@ -136,6 +138,7 @@ extension GRPCCore.ServiceDescriptor {
 
 // MARK: edge.agent.services.v1.EdgeAgentService (server)
 
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Edge_Agent_Services_V1_EdgeAgentService {
     /// Streaming variant of the service protocol for the "edge.agent.services.v1.EdgeAgentService" service.
     ///
@@ -580,6 +583,7 @@ extension Edge_Agent_Services_V1_EdgeAgentService {
 }
 
 // Default implementation of 'registerMethods(with:)'.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Edge_Agent_Services_V1_EdgeAgentService.StreamingServiceProtocol {
     public func registerMethods<Transport>(with router: inout GRPCCore.RPCRouter<Transport>) where Transport: GRPCCore.ServerTransport {
         router.registerHandler(
@@ -674,6 +678,7 @@ extension Edge_Agent_Services_V1_EdgeAgentService.StreamingServiceProtocol {
 }
 
 // Default implementation of streaming methods from 'StreamingServiceProtocol'.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Edge_Agent_Services_V1_EdgeAgentService.ServiceProtocol {
     public func getAgentVersion(
         request: GRPCCore.StreamingServerRequest<Edge_Agent_Services_V1_GetAgentVersionRequest>,
@@ -743,6 +748,7 @@ extension Edge_Agent_Services_V1_EdgeAgentService.ServiceProtocol {
 }
 
 // Default implementation of methods from 'ServiceProtocol'.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Edge_Agent_Services_V1_EdgeAgentService.SimpleServiceProtocol {
     public func runContainer(
         request: GRPCCore.StreamingServerRequest<Edge_Agent_Services_V1_RunContainerRequest>,
@@ -859,6 +865,7 @@ extension Edge_Agent_Services_V1_EdgeAgentService.SimpleServiceProtocol {
 
 // MARK: edge.agent.services.v1.EdgeAgentService (client)
 
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Edge_Agent_Services_V1_EdgeAgentService {
     /// Generated client protocol for the "edge.agent.services.v1.EdgeAgentService" service.
     ///
@@ -1323,6 +1330,7 @@ extension Edge_Agent_Services_V1_EdgeAgentService {
 }
 
 // Helpers providing default arguments to 'ClientProtocol' methods.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Edge_Agent_Services_V1_EdgeAgentService.ClientProtocol {
     /// Call the "RunContainer" method.
     ///
@@ -1547,6 +1555,7 @@ extension Edge_Agent_Services_V1_EdgeAgentService.ClientProtocol {
 }
 
 // Helpers providing sugared APIs for 'ClientProtocol' methods.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Edge_Agent_Services_V1_EdgeAgentService.ClientProtocol {
     /// Call the "RunContainer" method.
     ///

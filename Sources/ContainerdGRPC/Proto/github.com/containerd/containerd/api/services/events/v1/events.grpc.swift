@@ -30,6 +30,7 @@ import SwiftProtobuf
 // MARK: - containerd.services.events.v1.Events
 
 /// Namespace containing generated types for the "containerd.services.events.v1.Events" service.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 public enum Containerd_Services_Events_V1_Events {
     /// Service descriptor for the "containerd.services.events.v1.Events" service.
     public static let descriptor = GRPCCore.ServiceDescriptor(fullyQualifiedService: "containerd.services.events.v1.Events")
@@ -80,368 +81,15 @@ public enum Containerd_Services_Events_V1_Events {
     }
 }
 
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension GRPCCore.ServiceDescriptor {
     /// Service descriptor for the "containerd.services.events.v1.Events" service.
     public static let containerd_services_events_v1_Events = GRPCCore.ServiceDescriptor(fullyQualifiedService: "containerd.services.events.v1.Events")
 }
 
-// MARK: containerd.services.events.v1.Events (server)
-
-extension Containerd_Services_Events_V1_Events {
-    /// Streaming variant of the service protocol for the "containerd.services.events.v1.Events" service.
-    ///
-    /// This protocol is the lowest-level of the service protocols generated for this service
-    /// giving you the most flexibility over the implementation of your service. This comes at
-    /// the cost of more verbose and less strict APIs. Each RPC requires you to implement it in
-    /// terms of a request stream and response stream. Where only a single request or response
-    /// message is expected, you are responsible for enforcing this invariant is maintained.
-    ///
-    /// Where possible, prefer using the stricter, less-verbose ``ServiceProtocol``
-    /// or ``SimpleServiceProtocol`` instead.
-    public protocol StreamingServiceProtocol: GRPCCore.RegistrableRPCService {
-        /// Handle the "Publish" method.
-        ///
-        /// > Source IDL Documentation:
-        /// >
-        /// > Publish an event to a topic.
-        /// > 
-        /// > The event will be packed into a timestamp envelope with the namespace
-        /// > introspected from the context. The envelope will then be dispatched.
-        ///
-        /// - Parameters:
-        ///   - request: A streaming request of `Containerd_Services_Events_V1_PublishRequest` messages.
-        ///   - context: Context providing information about the RPC.
-        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
-        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
-        ///     to an internal error.
-        /// - Returns: A streaming response of `SwiftProtobuf.Google_Protobuf_Empty` messages.
-        func publish(
-            request: GRPCCore.StreamingServerRequest<Containerd_Services_Events_V1_PublishRequest>,
-            context: GRPCCore.ServerContext
-        ) async throws -> GRPCCore.StreamingServerResponse<SwiftProtobuf.Google_Protobuf_Empty>
-
-        /// Handle the "Forward" method.
-        ///
-        /// > Source IDL Documentation:
-        /// >
-        /// > Forward sends an event that has already been packaged into an envelope
-        /// > with a timestamp and namespace.
-        /// > 
-        /// > This is useful if earlier timestamping is required or when forwarding on
-        /// > behalf of another component, namespace or publisher.
-        ///
-        /// - Parameters:
-        ///   - request: A streaming request of `Containerd_Services_Events_V1_ForwardRequest` messages.
-        ///   - context: Context providing information about the RPC.
-        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
-        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
-        ///     to an internal error.
-        /// - Returns: A streaming response of `SwiftProtobuf.Google_Protobuf_Empty` messages.
-        func forward(
-            request: GRPCCore.StreamingServerRequest<Containerd_Services_Events_V1_ForwardRequest>,
-            context: GRPCCore.ServerContext
-        ) async throws -> GRPCCore.StreamingServerResponse<SwiftProtobuf.Google_Protobuf_Empty>
-
-        /// Handle the "Subscribe" method.
-        ///
-        /// > Source IDL Documentation:
-        /// >
-        /// > Subscribe to a stream of events, possibly returning only that match any
-        /// > of the provided filters.
-        /// > 
-        /// > Unlike many other methods in containerd, subscribers will get messages
-        /// > from all namespaces unless otherwise specified. If this is not desired,
-        /// > a filter can be provided in the format 'namespace==<namespace>' to
-        /// > restrict the received events.
-        ///
-        /// - Parameters:
-        ///   - request: A streaming request of `Containerd_Services_Events_V1_SubscribeRequest` messages.
-        ///   - context: Context providing information about the RPC.
-        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
-        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
-        ///     to an internal error.
-        /// - Returns: A streaming response of `Containerd_Types_Envelope` messages.
-        func subscribe(
-            request: GRPCCore.StreamingServerRequest<Containerd_Services_Events_V1_SubscribeRequest>,
-            context: GRPCCore.ServerContext
-        ) async throws -> GRPCCore.StreamingServerResponse<Containerd_Types_Envelope>
-    }
-
-    /// Service protocol for the "containerd.services.events.v1.Events" service.
-    ///
-    /// This protocol is higher level than ``StreamingServiceProtocol`` but lower level than
-    /// the ``SimpleServiceProtocol``, it provides access to request and response metadata and
-    /// trailing response metadata. If you don't need these then consider using
-    /// the ``SimpleServiceProtocol``. If you need fine grained control over your RPCs then
-    /// use ``StreamingServiceProtocol``.
-    public protocol ServiceProtocol: Containerd_Services_Events_V1_Events.StreamingServiceProtocol {
-        /// Handle the "Publish" method.
-        ///
-        /// > Source IDL Documentation:
-        /// >
-        /// > Publish an event to a topic.
-        /// > 
-        /// > The event will be packed into a timestamp envelope with the namespace
-        /// > introspected from the context. The envelope will then be dispatched.
-        ///
-        /// - Parameters:
-        ///   - request: A request containing a single `Containerd_Services_Events_V1_PublishRequest` message.
-        ///   - context: Context providing information about the RPC.
-        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
-        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
-        ///     to an internal error.
-        /// - Returns: A response containing a single `SwiftProtobuf.Google_Protobuf_Empty` message.
-        func publish(
-            request: GRPCCore.ServerRequest<Containerd_Services_Events_V1_PublishRequest>,
-            context: GRPCCore.ServerContext
-        ) async throws -> GRPCCore.ServerResponse<SwiftProtobuf.Google_Protobuf_Empty>
-
-        /// Handle the "Forward" method.
-        ///
-        /// > Source IDL Documentation:
-        /// >
-        /// > Forward sends an event that has already been packaged into an envelope
-        /// > with a timestamp and namespace.
-        /// > 
-        /// > This is useful if earlier timestamping is required or when forwarding on
-        /// > behalf of another component, namespace or publisher.
-        ///
-        /// - Parameters:
-        ///   - request: A request containing a single `Containerd_Services_Events_V1_ForwardRequest` message.
-        ///   - context: Context providing information about the RPC.
-        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
-        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
-        ///     to an internal error.
-        /// - Returns: A response containing a single `SwiftProtobuf.Google_Protobuf_Empty` message.
-        func forward(
-            request: GRPCCore.ServerRequest<Containerd_Services_Events_V1_ForwardRequest>,
-            context: GRPCCore.ServerContext
-        ) async throws -> GRPCCore.ServerResponse<SwiftProtobuf.Google_Protobuf_Empty>
-
-        /// Handle the "Subscribe" method.
-        ///
-        /// > Source IDL Documentation:
-        /// >
-        /// > Subscribe to a stream of events, possibly returning only that match any
-        /// > of the provided filters.
-        /// > 
-        /// > Unlike many other methods in containerd, subscribers will get messages
-        /// > from all namespaces unless otherwise specified. If this is not desired,
-        /// > a filter can be provided in the format 'namespace==<namespace>' to
-        /// > restrict the received events.
-        ///
-        /// - Parameters:
-        ///   - request: A request containing a single `Containerd_Services_Events_V1_SubscribeRequest` message.
-        ///   - context: Context providing information about the RPC.
-        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
-        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
-        ///     to an internal error.
-        /// - Returns: A streaming response of `Containerd_Types_Envelope` messages.
-        func subscribe(
-            request: GRPCCore.ServerRequest<Containerd_Services_Events_V1_SubscribeRequest>,
-            context: GRPCCore.ServerContext
-        ) async throws -> GRPCCore.StreamingServerResponse<Containerd_Types_Envelope>
-    }
-
-    /// Simple service protocol for the "containerd.services.events.v1.Events" service.
-    ///
-    /// This is the highest level protocol for the service. The API is the easiest to use but
-    /// doesn't provide access to request or response metadata. If you need access to these
-    /// then use ``ServiceProtocol`` instead.
-    public protocol SimpleServiceProtocol: Containerd_Services_Events_V1_Events.ServiceProtocol {
-        /// Handle the "Publish" method.
-        ///
-        /// > Source IDL Documentation:
-        /// >
-        /// > Publish an event to a topic.
-        /// > 
-        /// > The event will be packed into a timestamp envelope with the namespace
-        /// > introspected from the context. The envelope will then be dispatched.
-        ///
-        /// - Parameters:
-        ///   - request: A `Containerd_Services_Events_V1_PublishRequest` message.
-        ///   - context: Context providing information about the RPC.
-        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
-        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
-        ///     to an internal error.
-        /// - Returns: A `SwiftProtobuf.Google_Protobuf_Empty` to respond with.
-        func publish(
-            request: Containerd_Services_Events_V1_PublishRequest,
-            context: GRPCCore.ServerContext
-        ) async throws -> SwiftProtobuf.Google_Protobuf_Empty
-
-        /// Handle the "Forward" method.
-        ///
-        /// > Source IDL Documentation:
-        /// >
-        /// > Forward sends an event that has already been packaged into an envelope
-        /// > with a timestamp and namespace.
-        /// > 
-        /// > This is useful if earlier timestamping is required or when forwarding on
-        /// > behalf of another component, namespace or publisher.
-        ///
-        /// - Parameters:
-        ///   - request: A `Containerd_Services_Events_V1_ForwardRequest` message.
-        ///   - context: Context providing information about the RPC.
-        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
-        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
-        ///     to an internal error.
-        /// - Returns: A `SwiftProtobuf.Google_Protobuf_Empty` to respond with.
-        func forward(
-            request: Containerd_Services_Events_V1_ForwardRequest,
-            context: GRPCCore.ServerContext
-        ) async throws -> SwiftProtobuf.Google_Protobuf_Empty
-
-        /// Handle the "Subscribe" method.
-        ///
-        /// > Source IDL Documentation:
-        /// >
-        /// > Subscribe to a stream of events, possibly returning only that match any
-        /// > of the provided filters.
-        /// > 
-        /// > Unlike many other methods in containerd, subscribers will get messages
-        /// > from all namespaces unless otherwise specified. If this is not desired,
-        /// > a filter can be provided in the format 'namespace==<namespace>' to
-        /// > restrict the received events.
-        ///
-        /// - Parameters:
-        ///   - request: A `Containerd_Services_Events_V1_SubscribeRequest` message.
-        ///   - response: A response stream of `Containerd_Types_Envelope` messages.
-        ///   - context: Context providing information about the RPC.
-        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
-        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
-        ///     to an internal error.
-        func subscribe(
-            request: Containerd_Services_Events_V1_SubscribeRequest,
-            response: GRPCCore.RPCWriter<Containerd_Types_Envelope>,
-            context: GRPCCore.ServerContext
-        ) async throws
-    }
-}
-
-// Default implementation of 'registerMethods(with:)'.
-extension Containerd_Services_Events_V1_Events.StreamingServiceProtocol {
-    public func registerMethods<Transport>(with router: inout GRPCCore.RPCRouter<Transport>) where Transport: GRPCCore.ServerTransport {
-        router.registerHandler(
-            forMethod: Containerd_Services_Events_V1_Events.Method.Publish.descriptor,
-            deserializer: GRPCProtobuf.ProtobufDeserializer<Containerd_Services_Events_V1_PublishRequest>(),
-            serializer: GRPCProtobuf.ProtobufSerializer<SwiftProtobuf.Google_Protobuf_Empty>(),
-            handler: { request, context in
-                try await self.publish(
-                    request: request,
-                    context: context
-                )
-            }
-        )
-        router.registerHandler(
-            forMethod: Containerd_Services_Events_V1_Events.Method.Forward.descriptor,
-            deserializer: GRPCProtobuf.ProtobufDeserializer<Containerd_Services_Events_V1_ForwardRequest>(),
-            serializer: GRPCProtobuf.ProtobufSerializer<SwiftProtobuf.Google_Protobuf_Empty>(),
-            handler: { request, context in
-                try await self.forward(
-                    request: request,
-                    context: context
-                )
-            }
-        )
-        router.registerHandler(
-            forMethod: Containerd_Services_Events_V1_Events.Method.Subscribe.descriptor,
-            deserializer: GRPCProtobuf.ProtobufDeserializer<Containerd_Services_Events_V1_SubscribeRequest>(),
-            serializer: GRPCProtobuf.ProtobufSerializer<Containerd_Types_Envelope>(),
-            handler: { request, context in
-                try await self.subscribe(
-                    request: request,
-                    context: context
-                )
-            }
-        )
-    }
-}
-
-// Default implementation of streaming methods from 'StreamingServiceProtocol'.
-extension Containerd_Services_Events_V1_Events.ServiceProtocol {
-    public func publish(
-        request: GRPCCore.StreamingServerRequest<Containerd_Services_Events_V1_PublishRequest>,
-        context: GRPCCore.ServerContext
-    ) async throws -> GRPCCore.StreamingServerResponse<SwiftProtobuf.Google_Protobuf_Empty> {
-        let response = try await self.publish(
-            request: GRPCCore.ServerRequest(stream: request),
-            context: context
-        )
-        return GRPCCore.StreamingServerResponse(single: response)
-    }
-
-    public func forward(
-        request: GRPCCore.StreamingServerRequest<Containerd_Services_Events_V1_ForwardRequest>,
-        context: GRPCCore.ServerContext
-    ) async throws -> GRPCCore.StreamingServerResponse<SwiftProtobuf.Google_Protobuf_Empty> {
-        let response = try await self.forward(
-            request: GRPCCore.ServerRequest(stream: request),
-            context: context
-        )
-        return GRPCCore.StreamingServerResponse(single: response)
-    }
-
-    public func subscribe(
-        request: GRPCCore.StreamingServerRequest<Containerd_Services_Events_V1_SubscribeRequest>,
-        context: GRPCCore.ServerContext
-    ) async throws -> GRPCCore.StreamingServerResponse<Containerd_Types_Envelope> {
-        let response = try await self.subscribe(
-            request: GRPCCore.ServerRequest(stream: request),
-            context: context
-        )
-        return response
-    }
-}
-
-// Default implementation of methods from 'ServiceProtocol'.
-extension Containerd_Services_Events_V1_Events.SimpleServiceProtocol {
-    public func publish(
-        request: GRPCCore.ServerRequest<Containerd_Services_Events_V1_PublishRequest>,
-        context: GRPCCore.ServerContext
-    ) async throws -> GRPCCore.ServerResponse<SwiftProtobuf.Google_Protobuf_Empty> {
-        return GRPCCore.ServerResponse<SwiftProtobuf.Google_Protobuf_Empty>(
-            message: try await self.publish(
-                request: request.message,
-                context: context
-            ),
-            metadata: [:]
-        )
-    }
-
-    public func forward(
-        request: GRPCCore.ServerRequest<Containerd_Services_Events_V1_ForwardRequest>,
-        context: GRPCCore.ServerContext
-    ) async throws -> GRPCCore.ServerResponse<SwiftProtobuf.Google_Protobuf_Empty> {
-        return GRPCCore.ServerResponse<SwiftProtobuf.Google_Protobuf_Empty>(
-            message: try await self.forward(
-                request: request.message,
-                context: context
-            ),
-            metadata: [:]
-        )
-    }
-
-    public func subscribe(
-        request: GRPCCore.ServerRequest<Containerd_Services_Events_V1_SubscribeRequest>,
-        context: GRPCCore.ServerContext
-    ) async throws -> GRPCCore.StreamingServerResponse<Containerd_Types_Envelope> {
-        return GRPCCore.StreamingServerResponse<Containerd_Types_Envelope>(
-            metadata: [:],
-            producer: { writer in
-                try await self.subscribe(
-                    request: request.message,
-                    response: writer,
-                    context: context
-                )
-                return [:]
-            }
-        )
-    }
-}
-
 // MARK: containerd.services.events.v1.Events (client)
 
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Events_V1_Events {
     /// Generated client protocol for the "containerd.services.events.v1.Events" service.
     ///
@@ -663,6 +311,7 @@ extension Containerd_Services_Events_V1_Events {
 }
 
 // Helpers providing default arguments to 'ClientProtocol' methods.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Events_V1_Events.ClientProtocol {
     /// Call the "Publish" method.
     ///
@@ -764,6 +413,7 @@ extension Containerd_Services_Events_V1_Events.ClientProtocol {
 }
 
 // Helpers providing sugared APIs for 'ClientProtocol' methods.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Events_V1_Events.ClientProtocol {
     /// Call the "Publish" method.
     ///

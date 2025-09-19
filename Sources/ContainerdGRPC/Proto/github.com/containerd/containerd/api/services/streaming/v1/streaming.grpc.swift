@@ -30,6 +30,7 @@ import SwiftProtobuf
 // MARK: - containerd.services.streaming.v1.Streaming
 
 /// Namespace containing generated types for the "containerd.services.streaming.v1.Streaming" service.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 public enum Containerd_Services_Streaming_V1_Streaming {
     /// Service descriptor for the "containerd.services.streaming.v1.Streaming" service.
     public static let descriptor = GRPCCore.ServiceDescriptor(fullyQualifiedService: "containerd.services.streaming.v1.Streaming")
@@ -54,129 +55,15 @@ public enum Containerd_Services_Streaming_V1_Streaming {
     }
 }
 
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension GRPCCore.ServiceDescriptor {
     /// Service descriptor for the "containerd.services.streaming.v1.Streaming" service.
     public static let containerd_services_streaming_v1_Streaming = GRPCCore.ServiceDescriptor(fullyQualifiedService: "containerd.services.streaming.v1.Streaming")
 }
 
-// MARK: containerd.services.streaming.v1.Streaming (server)
-
-extension Containerd_Services_Streaming_V1_Streaming {
-    /// Streaming variant of the service protocol for the "containerd.services.streaming.v1.Streaming" service.
-    ///
-    /// This protocol is the lowest-level of the service protocols generated for this service
-    /// giving you the most flexibility over the implementation of your service. This comes at
-    /// the cost of more verbose and less strict APIs. Each RPC requires you to implement it in
-    /// terms of a request stream and response stream. Where only a single request or response
-    /// message is expected, you are responsible for enforcing this invariant is maintained.
-    ///
-    /// Where possible, prefer using the stricter, less-verbose ``ServiceProtocol``
-    /// or ``SimpleServiceProtocol`` instead.
-    public protocol StreamingServiceProtocol: GRPCCore.RegistrableRPCService {
-        /// Handle the "Stream" method.
-        ///
-        /// - Parameters:
-        ///   - request: A streaming request of `SwiftProtobuf.Google_Protobuf_Any` messages.
-        ///   - context: Context providing information about the RPC.
-        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
-        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
-        ///     to an internal error.
-        /// - Returns: A streaming response of `SwiftProtobuf.Google_Protobuf_Any` messages.
-        func stream(
-            request: GRPCCore.StreamingServerRequest<SwiftProtobuf.Google_Protobuf_Any>,
-            context: GRPCCore.ServerContext
-        ) async throws -> GRPCCore.StreamingServerResponse<SwiftProtobuf.Google_Protobuf_Any>
-    }
-
-    /// Service protocol for the "containerd.services.streaming.v1.Streaming" service.
-    ///
-    /// This protocol is higher level than ``StreamingServiceProtocol`` but lower level than
-    /// the ``SimpleServiceProtocol``, it provides access to request and response metadata and
-    /// trailing response metadata. If you don't need these then consider using
-    /// the ``SimpleServiceProtocol``. If you need fine grained control over your RPCs then
-    /// use ``StreamingServiceProtocol``.
-    public protocol ServiceProtocol: Containerd_Services_Streaming_V1_Streaming.StreamingServiceProtocol {
-        /// Handle the "Stream" method.
-        ///
-        /// - Parameters:
-        ///   - request: A streaming request of `SwiftProtobuf.Google_Protobuf_Any` messages.
-        ///   - context: Context providing information about the RPC.
-        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
-        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
-        ///     to an internal error.
-        /// - Returns: A streaming response of `SwiftProtobuf.Google_Protobuf_Any` messages.
-        func stream(
-            request: GRPCCore.StreamingServerRequest<SwiftProtobuf.Google_Protobuf_Any>,
-            context: GRPCCore.ServerContext
-        ) async throws -> GRPCCore.StreamingServerResponse<SwiftProtobuf.Google_Protobuf_Any>
-    }
-
-    /// Simple service protocol for the "containerd.services.streaming.v1.Streaming" service.
-    ///
-    /// This is the highest level protocol for the service. The API is the easiest to use but
-    /// doesn't provide access to request or response metadata. If you need access to these
-    /// then use ``ServiceProtocol`` instead.
-    public protocol SimpleServiceProtocol: Containerd_Services_Streaming_V1_Streaming.ServiceProtocol {
-        /// Handle the "Stream" method.
-        ///
-        /// - Parameters:
-        ///   - request: A stream of `SwiftProtobuf.Google_Protobuf_Any` messages.
-        ///   - response: A response stream of `SwiftProtobuf.Google_Protobuf_Any` messages.
-        ///   - context: Context providing information about the RPC.
-        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
-        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
-        ///     to an internal error.
-        func stream(
-            request: GRPCCore.RPCAsyncSequence<SwiftProtobuf.Google_Protobuf_Any, any Swift.Error>,
-            response: GRPCCore.RPCWriter<SwiftProtobuf.Google_Protobuf_Any>,
-            context: GRPCCore.ServerContext
-        ) async throws
-    }
-}
-
-// Default implementation of 'registerMethods(with:)'.
-extension Containerd_Services_Streaming_V1_Streaming.StreamingServiceProtocol {
-    public func registerMethods<Transport>(with router: inout GRPCCore.RPCRouter<Transport>) where Transport: GRPCCore.ServerTransport {
-        router.registerHandler(
-            forMethod: Containerd_Services_Streaming_V1_Streaming.Method.Stream.descriptor,
-            deserializer: GRPCProtobuf.ProtobufDeserializer<SwiftProtobuf.Google_Protobuf_Any>(),
-            serializer: GRPCProtobuf.ProtobufSerializer<SwiftProtobuf.Google_Protobuf_Any>(),
-            handler: { request, context in
-                try await self.stream(
-                    request: request,
-                    context: context
-                )
-            }
-        )
-    }
-}
-
-// Default implementation of streaming methods from 'StreamingServiceProtocol'.
-extension Containerd_Services_Streaming_V1_Streaming.ServiceProtocol {
-}
-
-// Default implementation of methods from 'ServiceProtocol'.
-extension Containerd_Services_Streaming_V1_Streaming.SimpleServiceProtocol {
-    public func stream(
-        request: GRPCCore.StreamingServerRequest<SwiftProtobuf.Google_Protobuf_Any>,
-        context: GRPCCore.ServerContext
-    ) async throws -> GRPCCore.StreamingServerResponse<SwiftProtobuf.Google_Protobuf_Any> {
-        return GRPCCore.StreamingServerResponse<SwiftProtobuf.Google_Protobuf_Any>(
-            metadata: [:],
-            producer: { writer in
-                try await self.stream(
-                    request: request.messages,
-                    response: writer,
-                    context: context
-                )
-                return [:]
-            }
-        )
-    }
-}
-
 // MARK: containerd.services.streaming.v1.Streaming (client)
 
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Streaming_V1_Streaming {
     /// Generated client protocol for the "containerd.services.streaming.v1.Streaming" service.
     ///
@@ -250,6 +137,7 @@ extension Containerd_Services_Streaming_V1_Streaming {
 }
 
 // Helpers providing default arguments to 'ClientProtocol' methods.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Streaming_V1_Streaming.ClientProtocol {
     /// Call the "Stream" method.
     ///
@@ -276,6 +164,7 @@ extension Containerd_Services_Streaming_V1_Streaming.ClientProtocol {
 }
 
 // Helpers providing sugared APIs for 'ClientProtocol' methods.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Streaming_V1_Streaming.ClientProtocol {
     /// Call the "Stream" method.
     ///
