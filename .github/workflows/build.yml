@@ -60,14 +60,14 @@ jobs:
             product: edge
           - artifact-name: edge-cli-linux-static-musl-x86_64
             os: ubuntu-22.04-arm
-            container: swift:6.1.0
+            container: swift:6.2.0
             swift-sdk: x86_64-swift-linux-musl
             swift-sdk-url: https://download.swift.org/swift-6.2-release/static-sdk/swift-6.2-RELEASE/swift-6.2-RELEASE_static-linux-0.0.1.artifactbundle.tar.gz
             swift-sdk-checksum: d2225840e592389ca517bbf71652f7003dbf45ac35d1e57d98b9250368769378
             product: edge
           - artifact-name: edge-cli-macos-arm64
             os: macos-15
-            xcode-select: /Applications/Xcode_16.3.app
+            xcode-select: /Applications/Xcode_26.app
             product: edge
 
     name: ${{ matrix.artifact-name }}
