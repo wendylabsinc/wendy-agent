@@ -1,4 +1,4 @@
-// swift-tools-version: 6.0.3
+// swift-tools-version: 6.1.2
 import PackageDescription
 
 let package = Package(
@@ -16,17 +16,17 @@ let package = Package(
         .package(url: "https://github.com/swift-server/async-http-client.git", from: "1.25.2"),
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.5.0"),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.6.3"),
-        .package(url: "https://github.com/grpc/grpc-swift.git", from: "2.0.0"),
-        .package(url: "https://github.com/grpc/grpc-swift-protobuf.git", from: "1.0.0"),
-        .package(url: "https://github.com/grpc/grpc-swift-nio-transport.git", from: "1.0.0"),
+        .package(url: "https://github.com/grpc/grpc-swift-2.git", from: "2.0.0"),
+        .package(url: "https://github.com/grpc/grpc-swift-protobuf.git", from: "2.0.0"),
+        .package(url: "https://github.com/grpc/grpc-swift-nio-transport.git", from: "2.0.0"),
+        .package(url: "https://github.com/apple/swift-protobuf.git", from: "1.30.0"),
         .package(url: "https://github.com/swift-server/swift-service-lifecycle.git", from: "2.7.0"),
-        .package(url: "https://github.com/grpc/grpc-swift-extras.git", from: "1.0.0"),
         .package(url: "https://github.com/apple/swift-nio.git", from: "2.81.0"),
         .package(url: "https://github.com/apple/swift-crypto.git", from: "3.12.2"),
-        .package(url: "https://github.com/swiftlang/swift-subprocess.git", branch: "main"),
+        .package(url: "https://github.com/swiftlang/swift-subprocess.git", from: "0.1.0"),
         .package(url: "https://github.com/apple/swift-http-types.git", from: "1.4.0"),
         .package(url: "https://github.com/apple/swift-async-dns-resolver.git", from: "0.4.0"),
-        .package(url: "https://github.com/edgeengineer/dbus.git", from: "0.2.1"),
+        .package(url: "https://github.com/edgeengineer/dbus.git", from: "0.2.2"),
         .package(url: "https://github.com/apple/swift-system.git", from: "1.4.2"),
     ],
     targets: [
@@ -84,8 +84,6 @@ let package = Package(
                 .product(name: "Logging", package: "swift-log"),
                 .product(name: "GRPCNIOTransportHTTP2", package: "grpc-swift-nio-transport"),
                 .product(name: "ServiceLifecycle", package: "swift-service-lifecycle"),
-                .product(name: "GRPCServiceLifecycle", package: "grpc-swift-extras"),
-                .product(name: "GRPCHealthService", package: "grpc-swift-extras"),
                 .product(name: "_NIOFileSystem", package: "swift-nio"),
                 .product(name: "DBUS", package: "dbus"),
                 .target(name: "EdgeAgentGRPC"),
@@ -119,25 +117,22 @@ let package = Package(
         .target(
             name: "EdgeAgentGRPC",
             dependencies: [
-                .product(name: "GRPCCore", package: "grpc-swift"),
+                .product(name: "GRPCCore", package: "grpc-swift-2"),
                 .product(name: "GRPCProtobuf", package: "grpc-swift-protobuf"),
-            ],
-            exclude: [
-                "Proto/edge_agent.protoset"
             ]
         ),
         .target(
             name: "ContainerdGRPC",
             dependencies: [
-                .product(name: "GRPCCore", package: "grpc-swift"),
+                .product(name: "GRPCCore", package: "grpc-swift-2"),
                 .product(name: "GRPCProtobuf", package: "grpc-swift-protobuf"),
                 .target(name: "ContainerdGRPCTypes"),
-            ],
+            ]
         ),
         .target(
             name: "ContainerdGRPCTypes",
             dependencies: [
-                .product(name: "GRPCCore", package: "grpc-swift"),
+                .product(name: "GRPCCore", package: "grpc-swift-2"),
                 .product(name: "GRPCProtobuf", package: "grpc-swift-protobuf"),
             ],
         ),
@@ -169,8 +164,7 @@ let package = Package(
                 .target(name: "edge"),
                 .target(name: "edge-agent"),
                 .target(name: "EdgeAgentGRPC"),
-                .target(name: "ContainerRegistry"),
-                .target(name: "edge-helper", condition: .when(platforms: [.macOS]))
+                .target(name: "edge-helper", condition: .when(platforms: [.macOS])),
             ]
         ),
 
@@ -183,7 +177,7 @@ let package = Package(
                 .product(name: "SystemPackage", package: "swift-system"),
                 .target(name: "EdgeShared"),
                 // Reuse existing device discovery components
-                .target(name: "edge"), // For device discovery protocols
+                .target(name: "edge"),  // For device discovery protocols
             ],
             path: "Sources/EdgeHelper"
         ),
@@ -203,14 +197,17 @@ let package = Package(
                 .target(name: "EdgeShared"),
                 .target(name: "CliXPCProtocol"),
             ],
-            path: "Sources/EdgeNetworkDaemon"
+            path: "Sources/EdgeNetworkDaemon",
+            exclude: [
+                "edge-network-daemon.entitlements"
+            ]
         ),
 
         .testTarget(
             name: "EdgeHelperMacOSTests",
             dependencies: [
                 .target(name: "edge-helper"),
-                .target(name: "EdgeShared")
+                .target(name: "EdgeShared"),
             ]
         ),
 

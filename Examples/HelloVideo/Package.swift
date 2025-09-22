@@ -19,7 +19,7 @@ let package = Package(
             name: "LinuxVideo",
             dependencies: [
                 .target(name: "CLinuxVideo"),
-                .product(name: "JPEG", package: "swift-jpeg")
+                .product(name: "JPEG", package: "swift-jpeg"),
             ]
         ),
         .systemLibrary(

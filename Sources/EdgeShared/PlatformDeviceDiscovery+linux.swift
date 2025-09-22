@@ -21,7 +21,7 @@
                 let result = try await Subprocess.run(
                     Subprocess.Executable.path("/usr/bin/lsusb"),
                     arguments: Subprocess.Arguments([String]()),
-                    output: .string
+                    output: .string(limit: .max)
                 )
                 let output = result.standardOutput ?? ""
 

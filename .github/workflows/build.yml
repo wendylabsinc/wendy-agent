@@ -39,35 +39,35 @@ jobs:
         include:
           - artifact-name: edge-agent-linux-static-musl-aarch64
             os: ubuntu-22.04-arm
-            container: swift:6.1.0
+            container: swift:6.2.0
             swift-sdk: aarch64-swift-linux-musl
-            swift-sdk-url: https://download.swift.org/swift-6.1-release/static-sdk/swift-6.1-RELEASE/swift-6.1-RELEASE_static-linux-0.0.1.artifactbundle.tar.gz
-            swift-sdk-checksum: 111c6f7d280a651208b8c74c0521dd99365d785c1976a6e23162f55f65379ac6
+            swift-sdk-url: https://download.swift.org/swift-6.2-release/static-sdk/swift-6.2-RELEASE/swift-6.2-RELEASE_static-linux-0.0.1.artifactbundle.tar.gz
+            swift-sdk-checksum: d2225840e592389ca517bbf71652f7003dbf45ac35d1e57d98b9250368769378
             product: edge-agent
           - artifact-name: edge-agent-linux-static-musl-x86_64
             os: ubuntu-22.04-arm
-            container: swift:6.1.0
+            container: swift:6.2.0
             swift-sdk: x86_64-swift-linux-musl
-            swift-sdk-url: https://download.swift.org/swift-6.1-release/static-sdk/swift-6.1-RELEASE/swift-6.1-RELEASE_static-linux-0.0.1.artifactbundle.tar.gz
-            swift-sdk-checksum: 111c6f7d280a651208b8c74c0521dd99365d785c1976a6e23162f55f65379ac6
+            swift-sdk-url: https://download.swift.org/swift-6.2-release/static-sdk/swift-6.2-RELEASE/swift-6.2-RELEASE_static-linux-0.0.1.artifactbundle.tar.gz
+            swift-sdk-checksum: d2225840e592389ca517bbf71652f7003dbf45ac35d1e57d98b9250368769378
             product: edge-agent
           - artifact-name: edge-cli-linux-static-musl-aarch64
             os: ubuntu-22.04-arm
-            container: swift:6.1.0
+            container: swift:6.2.0
             swift-sdk: aarch64-swift-linux-musl
-            swift-sdk-url: https://download.swift.org/swift-6.1-release/static-sdk/swift-6.1-RELEASE/swift-6.1-RELEASE_static-linux-0.0.1.artifactbundle.tar.gz
-            swift-sdk-checksum: 111c6f7d280a651208b8c74c0521dd99365d785c1976a6e23162f55f65379ac6
+            swift-sdk-url: https://download.swift.org/swift-6.2-release/static-sdk/swift-6.2-RELEASE/swift-6.2-RELEASE_static-linux-0.0.1.artifactbundle.tar.gz
+            swift-sdk-checksum: d2225840e592389ca517bbf71652f7003dbf45ac35d1e57d98b9250368769378
             product: edge
           - artifact-name: edge-cli-linux-static-musl-x86_64
             os: ubuntu-22.04-arm
-            container: swift:6.1.0
+            container: swift:6.2.0
             swift-sdk: x86_64-swift-linux-musl
-            swift-sdk-url: https://download.swift.org/swift-6.1-release/static-sdk/swift-6.1-RELEASE/swift-6.1-RELEASE_static-linux-0.0.1.artifactbundle.tar.gz
-            swift-sdk-checksum: 111c6f7d280a651208b8c74c0521dd99365d785c1976a6e23162f55f65379ac6
+            swift-sdk-url: https://download.swift.org/swift-6.2-release/static-sdk/swift-6.2-RELEASE/swift-6.2-RELEASE_static-linux-0.0.1.artifactbundle.tar.gz
+            swift-sdk-checksum: d2225840e592389ca517bbf71652f7003dbf45ac35d1e57d98b9250368769378
             product: edge
           - artifact-name: edge-cli-macos-arm64
             os: macos-15
-            xcode-select: /Applications/Xcode_16.3.app
+            xcode-select: /Applications/Xcode_26.app
             product: edge
 
     name: ${{ matrix.artifact-name }}
@@ -164,3 +164,20 @@ jobs:
           fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+       # NEW: move/update a 'latest' tag to this prerelease's commit
+      # needed so .git exists in the workspace
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # grab history + tags
+      - name: Update 'latest' tag
+        run: |
+          set -euo pipefail
+          git fetch origin --tags --force
+          TAG='${{ needs.determine-version.outputs.version }}'   # your tag, e.g. 2025.09.16-224322
+          TARGET_SHA="$(git rev-list -n 1 "refs/tags/$TAG" || true)"
+          if [ -z "$TARGET_SHA" ]; then TARGET_SHA="$GITHUB_SHA"; fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -fa latest "$TARGET_SHA" -m "Latest prerelease: $TAG"
+          git push -f origin refs/tags/latest

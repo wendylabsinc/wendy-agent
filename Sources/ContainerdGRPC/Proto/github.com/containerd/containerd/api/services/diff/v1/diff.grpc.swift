@@ -25,11 +25,11 @@
 
 import GRPCCore
 import GRPCProtobuf
-import SwiftProtobuf
 
 // MARK: - containerd.services.diff.v1.Diff
 
 /// Namespace containing generated types for the "containerd.services.diff.v1.Diff" service.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 public enum Containerd_Services_Diff_V1_Diff {
     /// Service descriptor for the "containerd.services.diff.v1.Diff" service.
     public static let descriptor = GRPCCore.ServiceDescriptor(fullyQualifiedService: "containerd.services.diff.v1.Diff")
@@ -67,256 +67,15 @@ public enum Containerd_Services_Diff_V1_Diff {
     }
 }
 
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension GRPCCore.ServiceDescriptor {
     /// Service descriptor for the "containerd.services.diff.v1.Diff" service.
     public static let containerd_services_diff_v1_Diff = GRPCCore.ServiceDescriptor(fullyQualifiedService: "containerd.services.diff.v1.Diff")
 }
 
-// MARK: containerd.services.diff.v1.Diff (server)
-
-extension Containerd_Services_Diff_V1_Diff {
-    /// Streaming variant of the service protocol for the "containerd.services.diff.v1.Diff" service.
-    ///
-    /// This protocol is the lowest-level of the service protocols generated for this service
-    /// giving you the most flexibility over the implementation of your service. This comes at
-    /// the cost of more verbose and less strict APIs. Each RPC requires you to implement it in
-    /// terms of a request stream and response stream. Where only a single request or response
-    /// message is expected, you are responsible for enforcing this invariant is maintained.
-    ///
-    /// Where possible, prefer using the stricter, less-verbose ``ServiceProtocol``
-    /// or ``SimpleServiceProtocol`` instead.
-    ///
-    /// > Source IDL Documentation:
-    /// >
-    /// > Diff service creates and applies diffs
-    public protocol StreamingServiceProtocol: GRPCCore.RegistrableRPCService {
-        /// Handle the "Apply" method.
-        ///
-        /// > Source IDL Documentation:
-        /// >
-        /// > Apply applies the content associated with the provided digests onto
-        /// > the provided mounts. Archive content will be extracted and
-        /// > decompressed if necessary.
-        ///
-        /// - Parameters:
-        ///   - request: A streaming request of `Containerd_Services_Diff_V1_ApplyRequest` messages.
-        ///   - context: Context providing information about the RPC.
-        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
-        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
-        ///     to an internal error.
-        /// - Returns: A streaming response of `Containerd_Services_Diff_V1_ApplyResponse` messages.
-        func apply(
-            request: GRPCCore.StreamingServerRequest<Containerd_Services_Diff_V1_ApplyRequest>,
-            context: GRPCCore.ServerContext
-        ) async throws -> GRPCCore.StreamingServerResponse<Containerd_Services_Diff_V1_ApplyResponse>
-
-        /// Handle the "Diff" method.
-        ///
-        /// > Source IDL Documentation:
-        /// >
-        /// > Diff creates a diff between the given mounts and uploads the result
-        /// > to the content store.
-        ///
-        /// - Parameters:
-        ///   - request: A streaming request of `Containerd_Services_Diff_V1_DiffRequest` messages.
-        ///   - context: Context providing information about the RPC.
-        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
-        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
-        ///     to an internal error.
-        /// - Returns: A streaming response of `Containerd_Services_Diff_V1_DiffResponse` messages.
-        func diff(
-            request: GRPCCore.StreamingServerRequest<Containerd_Services_Diff_V1_DiffRequest>,
-            context: GRPCCore.ServerContext
-        ) async throws -> GRPCCore.StreamingServerResponse<Containerd_Services_Diff_V1_DiffResponse>
-    }
-
-    /// Service protocol for the "containerd.services.diff.v1.Diff" service.
-    ///
-    /// This protocol is higher level than ``StreamingServiceProtocol`` but lower level than
-    /// the ``SimpleServiceProtocol``, it provides access to request and response metadata and
-    /// trailing response metadata. If you don't need these then consider using
-    /// the ``SimpleServiceProtocol``. If you need fine grained control over your RPCs then
-    /// use ``StreamingServiceProtocol``.
-    ///
-    /// > Source IDL Documentation:
-    /// >
-    /// > Diff service creates and applies diffs
-    public protocol ServiceProtocol: Containerd_Services_Diff_V1_Diff.StreamingServiceProtocol {
-        /// Handle the "Apply" method.
-        ///
-        /// > Source IDL Documentation:
-        /// >
-        /// > Apply applies the content associated with the provided digests onto
-        /// > the provided mounts. Archive content will be extracted and
-        /// > decompressed if necessary.
-        ///
-        /// - Parameters:
-        ///   - request: A request containing a single `Containerd_Services_Diff_V1_ApplyRequest` message.
-        ///   - context: Context providing information about the RPC.
-        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
-        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
-        ///     to an internal error.
-        /// - Returns: A response containing a single `Containerd_Services_Diff_V1_ApplyResponse` message.
-        func apply(
-            request: GRPCCore.ServerRequest<Containerd_Services_Diff_V1_ApplyRequest>,
-            context: GRPCCore.ServerContext
-        ) async throws -> GRPCCore.ServerResponse<Containerd_Services_Diff_V1_ApplyResponse>
-
-        /// Handle the "Diff" method.
-        ///
-        /// > Source IDL Documentation:
-        /// >
-        /// > Diff creates a diff between the given mounts and uploads the result
-        /// > to the content store.
-        ///
-        /// - Parameters:
-        ///   - request: A request containing a single `Containerd_Services_Diff_V1_DiffRequest` message.
-        ///   - context: Context providing information about the RPC.
-        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
-        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
-        ///     to an internal error.
-        /// - Returns: A response containing a single `Containerd_Services_Diff_V1_DiffResponse` message.
-        func diff(
-            request: GRPCCore.ServerRequest<Containerd_Services_Diff_V1_DiffRequest>,
-            context: GRPCCore.ServerContext
-        ) async throws -> GRPCCore.ServerResponse<Containerd_Services_Diff_V1_DiffResponse>
-    }
-
-    /// Simple service protocol for the "containerd.services.diff.v1.Diff" service.
-    ///
-    /// This is the highest level protocol for the service. The API is the easiest to use but
-    /// doesn't provide access to request or response metadata. If you need access to these
-    /// then use ``ServiceProtocol`` instead.
-    ///
-    /// > Source IDL Documentation:
-    /// >
-    /// > Diff service creates and applies diffs
-    public protocol SimpleServiceProtocol: Containerd_Services_Diff_V1_Diff.ServiceProtocol {
-        /// Handle the "Apply" method.
-        ///
-        /// > Source IDL Documentation:
-        /// >
-        /// > Apply applies the content associated with the provided digests onto
-        /// > the provided mounts. Archive content will be extracted and
-        /// > decompressed if necessary.
-        ///
-        /// - Parameters:
-        ///   - request: A `Containerd_Services_Diff_V1_ApplyRequest` message.
-        ///   - context: Context providing information about the RPC.
-        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
-        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
-        ///     to an internal error.
-        /// - Returns: A `Containerd_Services_Diff_V1_ApplyResponse` to respond with.
-        func apply(
-            request: Containerd_Services_Diff_V1_ApplyRequest,
-            context: GRPCCore.ServerContext
-        ) async throws -> Containerd_Services_Diff_V1_ApplyResponse
-
-        /// Handle the "Diff" method.
-        ///
-        /// > Source IDL Documentation:
-        /// >
-        /// > Diff creates a diff between the given mounts and uploads the result
-        /// > to the content store.
-        ///
-        /// - Parameters:
-        ///   - request: A `Containerd_Services_Diff_V1_DiffRequest` message.
-        ///   - context: Context providing information about the RPC.
-        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
-        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
-        ///     to an internal error.
-        /// - Returns: A `Containerd_Services_Diff_V1_DiffResponse` to respond with.
-        func diff(
-            request: Containerd_Services_Diff_V1_DiffRequest,
-            context: GRPCCore.ServerContext
-        ) async throws -> Containerd_Services_Diff_V1_DiffResponse
-    }
-}
-
-// Default implementation of 'registerMethods(with:)'.
-extension Containerd_Services_Diff_V1_Diff.StreamingServiceProtocol {
-    public func registerMethods<Transport>(with router: inout GRPCCore.RPCRouter<Transport>) where Transport: GRPCCore.ServerTransport {
-        router.registerHandler(
-            forMethod: Containerd_Services_Diff_V1_Diff.Method.Apply.descriptor,
-            deserializer: GRPCProtobuf.ProtobufDeserializer<Containerd_Services_Diff_V1_ApplyRequest>(),
-            serializer: GRPCProtobuf.ProtobufSerializer<Containerd_Services_Diff_V1_ApplyResponse>(),
-            handler: { request, context in
-                try await self.apply(
-                    request: request,
-                    context: context
-                )
-            }
-        )
-        router.registerHandler(
-            forMethod: Containerd_Services_Diff_V1_Diff.Method.Diff.descriptor,
-            deserializer: GRPCProtobuf.ProtobufDeserializer<Containerd_Services_Diff_V1_DiffRequest>(),
-            serializer: GRPCProtobuf.ProtobufSerializer<Containerd_Services_Diff_V1_DiffResponse>(),
-            handler: { request, context in
-                try await self.diff(
-                    request: request,
-                    context: context
-                )
-            }
-        )
-    }
-}
-
-// Default implementation of streaming methods from 'StreamingServiceProtocol'.
-extension Containerd_Services_Diff_V1_Diff.ServiceProtocol {
-    public func apply(
-        request: GRPCCore.StreamingServerRequest<Containerd_Services_Diff_V1_ApplyRequest>,
-        context: GRPCCore.ServerContext
-    ) async throws -> GRPCCore.StreamingServerResponse<Containerd_Services_Diff_V1_ApplyResponse> {
-        let response = try await self.apply(
-            request: GRPCCore.ServerRequest(stream: request),
-            context: context
-        )
-        return GRPCCore.StreamingServerResponse(single: response)
-    }
-
-    public func diff(
-        request: GRPCCore.StreamingServerRequest<Containerd_Services_Diff_V1_DiffRequest>,
-        context: GRPCCore.ServerContext
-    ) async throws -> GRPCCore.StreamingServerResponse<Containerd_Services_Diff_V1_DiffResponse> {
-        let response = try await self.diff(
-            request: GRPCCore.ServerRequest(stream: request),
-            context: context
-        )
-        return GRPCCore.StreamingServerResponse(single: response)
-    }
-}
-
-// Default implementation of methods from 'ServiceProtocol'.
-extension Containerd_Services_Diff_V1_Diff.SimpleServiceProtocol {
-    public func apply(
-        request: GRPCCore.ServerRequest<Containerd_Services_Diff_V1_ApplyRequest>,
-        context: GRPCCore.ServerContext
-    ) async throws -> GRPCCore.ServerResponse<Containerd_Services_Diff_V1_ApplyResponse> {
-        return GRPCCore.ServerResponse<Containerd_Services_Diff_V1_ApplyResponse>(
-            message: try await self.apply(
-                request: request.message,
-                context: context
-            ),
-            metadata: [:]
-        )
-    }
-
-    public func diff(
-        request: GRPCCore.ServerRequest<Containerd_Services_Diff_V1_DiffRequest>,
-        context: GRPCCore.ServerContext
-    ) async throws -> GRPCCore.ServerResponse<Containerd_Services_Diff_V1_DiffResponse> {
-        return GRPCCore.ServerResponse<Containerd_Services_Diff_V1_DiffResponse>(
-            message: try await self.diff(
-                request: request.message,
-                context: context
-            ),
-            metadata: [:]
-        )
-    }
-}
-
 // MARK: containerd.services.diff.v1.Diff (client)
 
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Diff_V1_Diff {
     /// Generated client protocol for the "containerd.services.diff.v1.Diff" service.
     ///
@@ -471,6 +230,7 @@ extension Containerd_Services_Diff_V1_Diff {
 }
 
 // Helpers providing default arguments to 'ClientProtocol' methods.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Diff_V1_Diff.ClientProtocol {
     /// Call the "Apply" method.
     ///
@@ -535,6 +295,7 @@ extension Containerd_Services_Diff_V1_Diff.ClientProtocol {
 }
 
 // Helpers providing sugared APIs for 'ClientProtocol' methods.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Containerd_Services_Diff_V1_Diff.ClientProtocol {
     /// Call the "Apply" method.
     ///

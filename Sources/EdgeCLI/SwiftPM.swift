@@ -7,12 +7,15 @@ public struct SwiftPM: Sendable {
     public let path: String
 
     /// Default Swift version to use for building packages
-    public static let defaultSwiftVersion = "+6.1"
+    public static let defaultSwiftVersion = "+6.2"
 
     /// Custom Swift version, defaults to defaultSwiftVersion if nil
     public let swiftVersion: String?
 
-    public init(path: String = "swiftly run swift", swiftVersion: String? = nil) {
+    public init(
+        path: String = "swiftly run swift",
+        swiftVersion: String? = SwiftPM.defaultSwiftVersion
+    ) {
         self.path = path
         self.swiftVersion = swiftVersion
     }
@@ -26,7 +29,7 @@ public struct SwiftPM: Sendable {
         let result = try await Subprocess.run(
             Subprocess.Executable.path("/usr/bin/which"),
             arguments: Subprocess.Arguments([commandName]),
-            output: .string,
+            output: .string(limit: .max),
             error: .discarded
         )
 
@@ -58,6 +61,9 @@ public struct SwiftPM: Sendable {
         /// Build the specified product.
         case product(String)
 
+        /// `release` or `debug`
+        case configuration(String)
+
         /// Decrease verbosity to only include error output.
         case quiet
 
@@ -72,6 +78,8 @@ public struct SwiftPM: Sendable {
         /// The arguments to pass to the Swift build command.
         var arguments: [String] {
             switch self {
+            case .configuration(let configuration):
+                return ["--configuration", configuration]
             case .swiftSDK(let sdk):
                 return ["--swift-sdk", sdk]
             case .showBinPath:
@@ -94,7 +102,7 @@ public struct SwiftPM: Sendable {
 
     /// Build the Swift package.
     public func buildWithOutput(_ options: BuildOption...) async throws -> String {
-        let version = swiftVersion ?? Self.defaultSwiftVersion
+        let version = swiftVersion.map { [$0] } ?? []
 
         // Find the executable path
         let executablePath = try await findExecutablePath(
@@ -105,12 +113,12 @@ public struct SwiftPM: Sendable {
         // Use the executable path instead of just the command name
         let runArgs = path.split(separator: " ").dropFirst().map(String.init)
         let allArgs =
-            [executablePath] + runArgs + ["build", version] + options.flatMap(\.arguments)
+            [executablePath] + runArgs + ["build"] + version + options.flatMap(\.arguments)
 
         let result = try await Subprocess.run(
             Subprocess.Executable.path("/usr/bin/env"),
             arguments: Subprocess.Arguments(allArgs),
-            output: .string,
+            output: .string(limit: .max),
             error: .fileDescriptor(.standardError, closeAfterSpawningProcess: false),
         )
 
@@ -128,7 +136,7 @@ public struct SwiftPM: Sendable {
 
     /// Build the Swift package.
     public func build(_ options: BuildOption...) async throws {
-        let version = swiftVersion ?? Self.defaultSwiftVersion
+        let version = swiftVersion.map { [$0] } ?? []
 
         // Find the executable path
         let executablePath = try await findExecutablePath(
@@ -139,7 +147,7 @@ public struct SwiftPM: Sendable {
         // Use the executable path instead of just the command name
         let runArgs = path.split(separator: " ").dropFirst().map(String.init)
         let allArgs =
-            [executablePath] + runArgs + ["build", version] + options.flatMap(\.arguments)
+            [executablePath] + runArgs + ["build"] + version + options.flatMap(\.arguments)
 
         let result = try await Subprocess.run(
             Subprocess.Executable.path("/usr/bin/env"),
@@ -175,8 +183,8 @@ public struct SwiftPM: Sendable {
         let result = try await Subprocess.run(
             Subprocess.Executable.path("/usr/bin/env"),
             arguments: Subprocess.Arguments(allArgs),
-            output: .string,
-            error: .string
+            output: .string(limit: .max),
+            error: .string(limit: .max)
         )
 
         if result.terminationStatus.isSuccess, let output = result.standardOutput {

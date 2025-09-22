@@ -14,6 +14,7 @@ import GRPCProtobuf
 // MARK: - edge.agent.services.v1.EdgeContainerService
 
 /// Namespace containing generated types for the "edge.agent.services.v1.EdgeContainerService" service.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 public enum Edge_Agent_Services_V1_EdgeContainerService {
     /// Service descriptor for the "edge.agent.services.v1.EdgeContainerService" service.
     public static let descriptor = GRPCCore.ServiceDescriptor(fullyQualifiedService: "edge.agent.services.v1.EdgeContainerService")
@@ -55,15 +56,29 @@ public enum Edge_Agent_Services_V1_EdgeContainerService {
                 method: "RunContainer"
             )
         }
+        /// Namespace for "StopContainer" metadata.
+        public enum StopContainer {
+            /// Request type for "StopContainer".
+            public typealias Input = Edge_Agent_Services_V1_StopContainerRequest
+            /// Response type for "StopContainer".
+            public typealias Output = Edge_Agent_Services_V1_StopContainerResponse
+            /// Descriptor for "StopContainer".
+            public static let descriptor = GRPCCore.MethodDescriptor(
+                service: GRPCCore.ServiceDescriptor(fullyQualifiedService: "edge.agent.services.v1.EdgeContainerService"),
+                method: "StopContainer"
+            )
+        }
         /// Descriptors for all methods in the "edge.agent.services.v1.EdgeContainerService" service.
         public static let descriptors: [GRPCCore.MethodDescriptor] = [
             ListLayers.descriptor,
             WriteLayer.descriptor,
-            RunContainer.descriptor
+            RunContainer.descriptor,
+            StopContainer.descriptor
         ]
     }
 }
 
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension GRPCCore.ServiceDescriptor {
     /// Service descriptor for the "edge.agent.services.v1.EdgeContainerService" service.
     public static let edge_agent_services_v1_EdgeContainerService = GRPCCore.ServiceDescriptor(fullyQualifiedService: "edge.agent.services.v1.EdgeContainerService")
@@ -71,6 +86,7 @@ extension GRPCCore.ServiceDescriptor {
 
 // MARK: edge.agent.services.v1.EdgeContainerService (server)
 
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Edge_Agent_Services_V1_EdgeContainerService {
     /// Streaming variant of the service protocol for the "edge.agent.services.v1.EdgeContainerService" service.
     ///
@@ -124,6 +140,20 @@ extension Edge_Agent_Services_V1_EdgeContainerService {
             request: GRPCCore.StreamingServerRequest<Edge_Agent_Services_V1_RunContainerLayersRequest>,
             context: GRPCCore.ServerContext
         ) async throws -> GRPCCore.StreamingServerResponse<Edge_Agent_Services_V1_RunContainerLayersResponse>
+
+        /// Handle the "StopContainer" method.
+        ///
+        /// - Parameters:
+        ///   - request: A streaming request of `Edge_Agent_Services_V1_StopContainerRequest` messages.
+        ///   - context: Context providing information about the RPC.
+        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
+        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
+        ///     to an internal error.
+        /// - Returns: A streaming response of `Edge_Agent_Services_V1_StopContainerResponse` messages.
+        func stopContainer(
+            request: GRPCCore.StreamingServerRequest<Edge_Agent_Services_V1_StopContainerRequest>,
+            context: GRPCCore.ServerContext
+        ) async throws -> GRPCCore.StreamingServerResponse<Edge_Agent_Services_V1_StopContainerResponse>
     }
 
     /// Service protocol for the "edge.agent.services.v1.EdgeContainerService" service.
@@ -175,6 +205,20 @@ extension Edge_Agent_Services_V1_EdgeContainerService {
             request: GRPCCore.ServerRequest<Edge_Agent_Services_V1_RunContainerLayersRequest>,
             context: GRPCCore.ServerContext
         ) async throws -> GRPCCore.ServerResponse<Edge_Agent_Services_V1_RunContainerLayersResponse>
+
+        /// Handle the "StopContainer" method.
+        ///
+        /// - Parameters:
+        ///   - request: A request containing a single `Edge_Agent_Services_V1_StopContainerRequest` message.
+        ///   - context: Context providing information about the RPC.
+        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
+        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
+        ///     to an internal error.
+        /// - Returns: A response containing a single `Edge_Agent_Services_V1_StopContainerResponse` message.
+        func stopContainer(
+            request: GRPCCore.ServerRequest<Edge_Agent_Services_V1_StopContainerRequest>,
+            context: GRPCCore.ServerContext
+        ) async throws -> GRPCCore.ServerResponse<Edge_Agent_Services_V1_StopContainerResponse>
     }
 
     /// Simple service protocol for the "edge.agent.services.v1.EdgeContainerService" service.
@@ -226,10 +270,25 @@ extension Edge_Agent_Services_V1_EdgeContainerService {
             request: Edge_Agent_Services_V1_RunContainerLayersRequest,
             context: GRPCCore.ServerContext
         ) async throws -> Edge_Agent_Services_V1_RunContainerLayersResponse
+
+        /// Handle the "StopContainer" method.
+        ///
+        /// - Parameters:
+        ///   - request: A `Edge_Agent_Services_V1_StopContainerRequest` message.
+        ///   - context: Context providing information about the RPC.
+        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
+        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
+        ///     to an internal error.
+        /// - Returns: A `Edge_Agent_Services_V1_StopContainerResponse` to respond with.
+        func stopContainer(
+            request: Edge_Agent_Services_V1_StopContainerRequest,
+            context: GRPCCore.ServerContext
+        ) async throws -> Edge_Agent_Services_V1_StopContainerResponse
     }
 }
 
 // Default implementation of 'registerMethods(with:)'.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Edge_Agent_Services_V1_EdgeContainerService.StreamingServiceProtocol {
     public func registerMethods<Transport>(with router: inout GRPCCore.RPCRouter<Transport>) where Transport: GRPCCore.ServerTransport {
         router.registerHandler(
@@ -265,10 +324,22 @@ extension Edge_Agent_Services_V1_EdgeContainerService.StreamingServiceProtocol {
                 )
             }
         )
+        router.registerHandler(
+            forMethod: Edge_Agent_Services_V1_EdgeContainerService.Method.StopContainer.descriptor,
+            deserializer: GRPCProtobuf.ProtobufDeserializer<Edge_Agent_Services_V1_StopContainerRequest>(),
+            serializer: GRPCProtobuf.ProtobufSerializer<Edge_Agent_Services_V1_StopContainerResponse>(),
+            handler: { request, context in
+                try await self.stopContainer(
+                    request: request,
+                    context: context
+                )
+            }
+        )
     }
 }
 
 // Default implementation of streaming methods from 'StreamingServiceProtocol'.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Edge_Agent_Services_V1_EdgeContainerService.ServiceProtocol {
     public func listLayers(
         request: GRPCCore.StreamingServerRequest<Edge_Agent_Services_V1_ListLayersRequest>,
@@ -291,9 +362,21 @@ extension Edge_Agent_Services_V1_EdgeContainerService.ServiceProtocol {
         )
         return GRPCCore.StreamingServerResponse(single: response)
     }
+
+    public func stopContainer(
+        request: GRPCCore.StreamingServerRequest<Edge_Agent_Services_V1_StopContainerRequest>,
+        context: GRPCCore.ServerContext
+    ) async throws -> GRPCCore.StreamingServerResponse<Edge_Agent_Services_V1_StopContainerResponse> {
+        let response = try await self.stopContainer(
+            request: GRPCCore.ServerRequest(stream: request),
+            context: context
+        )
+        return GRPCCore.StreamingServerResponse(single: response)
+    }
 }
 
 // Default implementation of methods from 'ServiceProtocol'.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Edge_Agent_Services_V1_EdgeContainerService.SimpleServiceProtocol {
     public func listLayers(
         request: GRPCCore.ServerRequest<Edge_Agent_Services_V1_ListLayersRequest>,
@@ -341,10 +424,24 @@ extension Edge_Agent_Services_V1_EdgeContainerService.SimpleServiceProtocol {
             metadata: [:]
         )
     }
+
+    public func stopContainer(
+        request: GRPCCore.ServerRequest<Edge_Agent_Services_V1_StopContainerRequest>,
+        context: GRPCCore.ServerContext
+    ) async throws -> GRPCCore.ServerResponse<Edge_Agent_Services_V1_StopContainerResponse> {
+        return GRPCCore.ServerResponse<Edge_Agent_Services_V1_StopContainerResponse>(
+            message: try await self.stopContainer(
+                request: request.message,
+                context: context
+            ),
+            metadata: [:]
+        )
+    }
 }
 
 // MARK: edge.agent.services.v1.EdgeContainerService (client)
 
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Edge_Agent_Services_V1_EdgeContainerService {
     /// Generated client protocol for the "edge.agent.services.v1.EdgeContainerService" service.
     ///
@@ -406,6 +503,25 @@ extension Edge_Agent_Services_V1_EdgeContainerService {
             deserializer: some GRPCCore.MessageDeserializer<Edge_Agent_Services_V1_RunContainerLayersResponse>,
             options: GRPCCore.CallOptions,
             onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Edge_Agent_Services_V1_RunContainerLayersResponse>) async throws -> Result
+        ) async throws -> Result where Result: Sendable
+
+        /// Call the "StopContainer" method.
+        ///
+        /// - Parameters:
+        ///   - request: A request containing a single `Edge_Agent_Services_V1_StopContainerRequest` message.
+        ///   - serializer: A serializer for `Edge_Agent_Services_V1_StopContainerRequest` messages.
+        ///   - deserializer: A deserializer for `Edge_Agent_Services_V1_StopContainerResponse` messages.
+        ///   - options: Options to apply to this RPC.
+        ///   - handleResponse: A closure which handles the response, the result of which is
+        ///       returned to the caller. Returning from the closure will cancel the RPC if it
+        ///       hasn't already finished.
+        /// - Returns: The result of `handleResponse`.
+        func stopContainer<Result>(
+            request: GRPCCore.ClientRequest<Edge_Agent_Services_V1_StopContainerRequest>,
+            serializer: some GRPCCore.MessageSerializer<Edge_Agent_Services_V1_StopContainerRequest>,
+            deserializer: some GRPCCore.MessageDeserializer<Edge_Agent_Services_V1_StopContainerResponse>,
+            options: GRPCCore.CallOptions,
+            onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Edge_Agent_Services_V1_StopContainerResponse>) async throws -> Result
         ) async throws -> Result where Result: Sendable
     }
 
@@ -510,10 +626,41 @@ extension Edge_Agent_Services_V1_EdgeContainerService {
                 onResponse: handleResponse
             )
         }
+
+        /// Call the "StopContainer" method.
+        ///
+        /// - Parameters:
+        ///   - request: A request containing a single `Edge_Agent_Services_V1_StopContainerRequest` message.
+        ///   - serializer: A serializer for `Edge_Agent_Services_V1_StopContainerRequest` messages.
+        ///   - deserializer: A deserializer for `Edge_Agent_Services_V1_StopContainerResponse` messages.
+        ///   - options: Options to apply to this RPC.
+        ///   - handleResponse: A closure which handles the response, the result of which is
+        ///       returned to the caller. Returning from the closure will cancel the RPC if it
+        ///       hasn't already finished.
+        /// - Returns: The result of `handleResponse`.
+        public func stopContainer<Result>(
+            request: GRPCCore.ClientRequest<Edge_Agent_Services_V1_StopContainerRequest>,
+            serializer: some GRPCCore.MessageSerializer<Edge_Agent_Services_V1_StopContainerRequest>,
+            deserializer: some GRPCCore.MessageDeserializer<Edge_Agent_Services_V1_StopContainerResponse>,
+            options: GRPCCore.CallOptions = .defaults,
+            onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Edge_Agent_Services_V1_StopContainerResponse>) async throws -> Result = { response in
+                try response.message
+            }
+        ) async throws -> Result where Result: Sendable {
+            try await self.client.unary(
+                request: request,
+                descriptor: Edge_Agent_Services_V1_EdgeContainerService.Method.StopContainer.descriptor,
+                serializer: serializer,
+                deserializer: deserializer,
+                options: options,
+                onResponse: handleResponse
+            )
+        }
     }
 }
 
 // Helpers providing default arguments to 'ClientProtocol' methods.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Edge_Agent_Services_V1_EdgeContainerService.ClientProtocol {
     /// Call the "ListLayers" method.
     ///
@@ -585,9 +732,35 @@ extension Edge_Agent_Services_V1_EdgeContainerService.ClientProtocol {
             onResponse: handleResponse
         )
     }
+
+    /// Call the "StopContainer" method.
+    ///
+    /// - Parameters:
+    ///   - request: A request containing a single `Edge_Agent_Services_V1_StopContainerRequest` message.
+    ///   - options: Options to apply to this RPC.
+    ///   - handleResponse: A closure which handles the response, the result of which is
+    ///       returned to the caller. Returning from the closure will cancel the RPC if it
+    ///       hasn't already finished.
+    /// - Returns: The result of `handleResponse`.
+    public func stopContainer<Result>(
+        request: GRPCCore.ClientRequest<Edge_Agent_Services_V1_StopContainerRequest>,
+        options: GRPCCore.CallOptions = .defaults,
+        onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Edge_Agent_Services_V1_StopContainerResponse>) async throws -> Result = { response in
+            try response.message
+        }
+    ) async throws -> Result where Result: Sendable {
+        try await self.stopContainer(
+            request: request,
+            serializer: GRPCProtobuf.ProtobufSerializer<Edge_Agent_Services_V1_StopContainerRequest>(),
+            deserializer: GRPCProtobuf.ProtobufDeserializer<Edge_Agent_Services_V1_StopContainerResponse>(),
+            options: options,
+            onResponse: handleResponse
+        )
+    }
 }
 
 // Helpers providing sugared APIs for 'ClientProtocol' methods.
+@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Edge_Agent_Services_V1_EdgeContainerService.ClientProtocol {
     /// Call the "ListLayers" method.
     ///
@@ -667,6 +840,35 @@ extension Edge_Agent_Services_V1_EdgeContainerService.ClientProtocol {
             metadata: metadata
         )
         return try await self.runContainer(
+            request: request,
+            options: options,
+            onResponse: handleResponse
+        )
+    }
+
+    /// Call the "StopContainer" method.
+    ///
+    /// - Parameters:
+    ///   - message: request message to send.
+    ///   - metadata: Additional metadata to send, defaults to empty.
+    ///   - options: Options to apply to this RPC, defaults to `.defaults`.
+    ///   - handleResponse: A closure which handles the response, the result of which is
+    ///       returned to the caller. Returning from the closure will cancel the RPC if it
+    ///       hasn't already finished.
+    /// - Returns: The result of `handleResponse`.
+    public func stopContainer<Result>(
+        _ message: Edge_Agent_Services_V1_StopContainerRequest,
+        metadata: GRPCCore.Metadata = [:],
+        options: GRPCCore.CallOptions = .defaults,
+        onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Edge_Agent_Services_V1_StopContainerResponse>) async throws -> Result = { response in
+            try response.message
+        }
+    ) async throws -> Result where Result: Sendable {
+        let request = GRPCCore.ClientRequest<Edge_Agent_Services_V1_StopContainerRequest>(
+            message: message,
+            metadata: metadata
+        )
+        return try await self.stopContainer(
             request: request,
             options: options,
             onResponse: handleResponse

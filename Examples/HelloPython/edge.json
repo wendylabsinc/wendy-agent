@@ -1,0 +1,10 @@
+{
+    "appId": "engineer.edge.examples.hellopython",
+    "version": "1.0.0",
+    "entitlements": [
+        {
+            "type": "network",
+            "mode": "host"
+        }
+    ]
+}

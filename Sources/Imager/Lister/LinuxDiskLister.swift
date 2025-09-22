@@ -44,8 +44,8 @@ public struct LinuxDiskLister: DiskLister {
             let result = try await Subprocess.run(
                 Subprocess.Executable.name("lsblk"),
                 arguments: ["-J", "-b", "-o", "NAME,SIZE,MODEL,HOTPLUG,TYPE"],
-                output: .string,
-                error: .string
+                output: .string(limit: .max),
+                error: .string(limit: .max)
             )
 
             if result.terminationStatus.isSuccess, let output = result.standardOutput {
@@ -76,8 +76,8 @@ public struct LinuxDiskLister: DiskLister {
             let result = try await Subprocess.run(
                 Subprocess.Executable.name("lsblk"),
                 arguments: ["-J", "-b", "-o", "NAME,SIZE,MODEL,HOTPLUG,TYPE", "/dev/\(deviceId)"],
-                output: .string,
-                error: .string
+                output: .string(limit: .max),
+                error: .string(limit: .max)
             )
 
             if result.terminationStatus.isSuccess, let output = result.standardOutput {

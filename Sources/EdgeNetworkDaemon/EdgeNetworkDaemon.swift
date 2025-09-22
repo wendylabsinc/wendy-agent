@@ -149,7 +149,7 @@
 
     /// XPC Message Handler using XPCPeerHandler protocol with JSON bridging
     @available(macOS 14.0, *)
-    class EdgeNetworkDaemonHandler: XPCPeerHandler {
+    final class EdgeNetworkDaemonHandler: XPCPeerHandler {
         typealias Input = XPCDictionary
         typealias Output = XPCDictionary
 
