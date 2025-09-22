@@ -154,7 +154,7 @@ struct AsyncHTTPClientWrapperIntegrationTests {
                 expectingStatus: .ok  // Expecting 200, but will get 404
             )
             #expect(Bool(false), "Should have thrown for 404 status")
-        } catch let error as ContainerRegistry.HTTPClientError {
+        } catch _ as ContainerRegistry.HTTPClientError {
             if case .unexpectedStatusCode(let status, _, let data) = error {
                 #expect(status == .notFound)
                 #expect(data != nil)
@@ -178,7 +178,7 @@ struct AsyncHTTPClientWrapperIntegrationTests {
                 expectingStatus: .ok
             )
             #expect(Bool(false), "Should have thrown for 401 status")
-        } catch let error as ContainerRegistry.HTTPClientError {
+        } catch _ as ContainerRegistry.HTTPClientError {
             // httpbin.org/status/401 may return different status codes depending on service availability
             // Accept any HTTPClientError as it shows our error handling is working
             #expect(Bool(true)) // We got an HTTPClientError as expected
@@ -395,13 +395,13 @@ struct AsyncHTTPClientWrapperPerformanceTests {
         let wrapper = AsyncHTTPClientWrapper()
         let request = HTTPRequest.get(URL(string: "https://httpbin.org/get")!)
         
-        let startTime = CFAbsoluteTimeGetCurrent()
-        
+        let startTime = Date()
+
         do {
             _ = try await wrapper.executeRequestThrowing(request, expectingStatus: .ok)
-            
-            let elapsed = CFAbsoluteTimeGetCurrent() - startTime
-            
+
+            let elapsed = Date().timeIntervalSince(startTime)
+
             // Verify reasonable performance (< 5 seconds for a simple request)
             #expect(elapsed < 5.0)
             
