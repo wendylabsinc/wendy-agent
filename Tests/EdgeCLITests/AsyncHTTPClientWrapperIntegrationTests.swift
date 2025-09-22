@@ -154,7 +154,7 @@ struct AsyncHTTPClientWrapperIntegrationTests {
                 expectingStatus: .ok  // Expecting 200, but will get 404
             )
             #expect(Bool(false), "Should have thrown for 404 status")
-        } catch _ as ContainerRegistry.HTTPClientError {
+        } catch let error as ContainerRegistry.HTTPClientError {
             if case .unexpectedStatusCode(let status, _, let data) = error {
                 #expect(status == .notFound)
                 #expect(data != nil)
