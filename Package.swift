@@ -1,6 +1,12 @@
 // swift-tools-version: 6.1.2
 import PackageDescription
 
+#if compiler(>=6.2.1)
+let hasSpan = true
+#else
+let hasSpan = false
+#endif
+
 let package = Package(
     name: "edge-agent",
     platforms: [
@@ -23,7 +29,10 @@ let package = Package(
         .package(url: "https://github.com/swift-server/swift-service-lifecycle.git", from: "2.7.0"),
         .package(url: "https://github.com/apple/swift-nio.git", from: "2.81.0"),
         .package(url: "https://github.com/apple/swift-crypto.git", from: "3.12.2"),
-        .package(url: "https://github.com/swiftlang/swift-subprocess.git", from: "0.1.0"),
+        .package(
+          url: "https://github.com/swiftlang/swift-subprocess.git",
+          from: "0.1.0", traits: hasSpan ? [.trait(name: "SubprocessSpan")] : []
+        ),
         .package(url: "https://github.com/apple/swift-http-types.git", from: "1.4.0"),
         .package(url: "https://github.com/apple/swift-async-dns-resolver.git", from: "0.4.0"),
         .package(url: "https://github.com/edgeengineer/dbus.git", from: "0.2.2"),
