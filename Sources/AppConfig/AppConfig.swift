@@ -1,3 +1,5 @@
+import ArgumentParser
+
 public struct AppConfig: Codable {
     public let appId: String
     public let version: String
@@ -50,7 +52,7 @@ public enum Entitlement: Codable {
     }
 }
 
-public enum EntitlementType: String, Codable {
+public enum EntitlementType: String, Codable, ExpressibleByArgument, Sendable {
     case network
     case video
     case bluetooth
