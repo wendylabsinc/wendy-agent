@@ -201,7 +201,7 @@ struct AddCommand: AsyncParsableCommand {
                 }
                 bluetoothMode = parsedMode
             } else {
-                bluetoothMode = .bluez // Default
+                bluetoothMode = .kernel // Default
             }
             return .bluetooth(BluetoothEntitlements(mode: bluetoothMode))
             
