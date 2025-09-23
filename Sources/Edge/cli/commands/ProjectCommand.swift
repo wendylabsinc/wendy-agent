@@ -10,7 +10,7 @@ struct ProjectCommand: AsyncParsableCommand {
         abstract: "Manage EdgeOS projects",
         subcommands: [
             InitCommand.self,
-            EntitlementsCommand.self
+            EntitlementsCommand.self,
         ]
     )
 }
@@ -22,7 +22,7 @@ struct EntitlementsCommand: AsyncParsableCommand {
         subcommands: [
             ListCommand.self,
             AddCommand.self,
-            RemoveCommand.self
+            RemoveCommand.self,
         ]
     )
 }
@@ -34,49 +34,51 @@ struct ListCommand: AsyncParsableCommand {
         commandName: "list",
         abstract: "List project entitlements"
     )
-    
+
     @Flag(name: [.customShort("a"), .long], help: "Show all entitlements (enabled and disabled)")
     var showAll: Bool = false
-    
+
     private var logger: Logger {
         Logger(label: "edgeengineer.cli.project.entitlements.list")
     }
-    
+
     func run() async throws {
         let edgeJsonPath = getEdgeJsonPath()
-        
+
         // Check if edge.json exists
         guard FileManager.default.fileExists(atPath: edgeJsonPath) else {
             print("❌ No edge.json found in current directory")
             print("Run 'edge project init' to initialize a new project")
             throw ProjectError.configNotFound(path: edgeJsonPath)
         }
-        
+
         // Load configuration
         let config = try loadConfig(from: edgeJsonPath)
-        
+
         // Get all available entitlement types
         let allEntitlementTypes: [EntitlementType] = [.network, .bluetooth, .video]
-        
+
         if showAll {
             // Show all entitlements with status
             print("📋 Project Entitlements (all):")
             print("Project: \(config.appId)")
             print("Version: \(config.version)")
             print("")
-            
+
             for entitlementType in allEntitlementTypes {
                 let isEnabled = config.entitlements.contains { entitlement in
                     entitlementType == entitlement.type
                 }
-                
+
                 let status = isEnabled ? "✅" : "❌"
                 let statusText = isEnabled ? "enabled" : "disabled"
                 print("\(status) \(entitlementType.rawValue.capitalized) (\(statusText))")
-                
+
                 // Show details for enabled entitlements
                 if isEnabled {
-                    if let entitlement = config.entitlements.first(where: { $0.type == entitlementType }) {
+                    if let entitlement = config.entitlements.first(where: {
+                        $0.type == entitlementType
+                    }) {
                         printEntitlementDetails(entitlement)
                     }
                 }
@@ -88,7 +90,7 @@ struct ListCommand: AsyncParsableCommand {
             print("Project: \(config.appId)")
             print("Version: \(config.version)")
             print("")
-            
+
             if config.entitlements.isEmpty {
                 print("No entitlements configured")
                 print("Use 'edge project entitlements add <type>' to add entitlements")
@@ -101,7 +103,7 @@ struct ListCommand: AsyncParsableCommand {
             }
         }
     }
-    
+
     private func printEntitlementDetails(_ entitlement: Entitlement) {
         switch entitlement {
         case .network(let networkEntitlement):
@@ -112,11 +114,11 @@ struct ListCommand: AsyncParsableCommand {
             print("   No additional configuration")
         }
     }
-    
+
     private func getEdgeJsonPath() -> String {
         return "./edge.json"
     }
-    
+
     private func loadConfig(from path: String) throws -> AppConfig {
         let data = try Data(contentsOf: URL(fileURLWithPath: path))
         return try JSONDecoder().decode(AppConfig.self, from: data)
@@ -130,55 +132,55 @@ struct AddCommand: AsyncParsableCommand {
         commandName: "add",
         abstract: "Add an entitlement to the project"
     )
-    
+
     @Argument(help: "Type of entitlement to add (network, bluetooth, video)")
     var entitlementType: EntitlementType
-    
+
     @Option(name: [.customShort("m"), .long], help: "Mode for the entitlement")
     var mode: String?
-    
+
     private var logger: Logger {
         Logger(label: "edgeengineer.cli.project.entitlements.add")
     }
-    
+
     func run() async throws {
         let edgeJsonPath = getEdgeJsonPath()
-        
+
         // Check if edge.json exists
         guard FileManager.default.fileExists(atPath: edgeJsonPath) else {
             print("❌ No edge.json found in current directory")
             print("Run 'edge project init' to initialize a new project")
             throw ProjectError.configNotFound(path: edgeJsonPath)
         }
-        
+
         // Load current configuration
         var config = try loadConfig(from: edgeJsonPath)
-        
+
         // Check if entitlement already exists
         if config.entitlements.contains(where: { $0.type == entitlementType }) {
             print("⚠️  \(entitlementType.rawValue.capitalized) entitlement already exists")
             return
         }
-        
+
         // Create new entitlement based on type and mode
         let newEntitlement = try createEntitlement(type: entitlementType, mode: mode)
-        
+
         // Add to configuration
         config = AppConfig(
             appId: config.appId,
             version: config.version,
             entitlements: config.entitlements + [newEntitlement]
         )
-        
+
         // Save configuration
         try saveConfig(config, to: edgeJsonPath)
-        
+
         print("✅ Added \(entitlementType.rawValue) entitlement")
         if let mode = mode {
             print("   Mode: \(mode)")
         }
     }
-    
+
     private func createEntitlement(type: EntitlementType, mode: String?) throws -> Entitlement {
         switch type {
         case .network:
@@ -189,36 +191,37 @@ struct AddCommand: AsyncParsableCommand {
                 }
                 networkMode = parsedMode
             } else {
-                networkMode = .host // Default
+                networkMode = .host  // Default
             }
             return .network(NetworkEntitlements(mode: networkMode))
-            
+
         case .bluetooth:
             let bluetoothMode: BluetoothEntitlements.BluetoothMode
             if let modeString = mode {
-                guard let parsedMode = BluetoothEntitlements.BluetoothMode(rawValue: modeString) else {
+                guard let parsedMode = BluetoothEntitlements.BluetoothMode(rawValue: modeString)
+                else {
                     throw ProjectError.invalidMode(mode: modeString, for: type)
                 }
                 bluetoothMode = parsedMode
             } else {
-                bluetoothMode = .kernel // Default
+                bluetoothMode = .kernel  // Default
             }
             return .bluetooth(BluetoothEntitlements(mode: bluetoothMode))
-            
+
         case .video:
             return .video(VideoEntitlements())
         }
     }
-    
+
     private func getEdgeJsonPath() -> String {
         return "./edge.json"
     }
-    
+
     private func loadConfig(from path: String) throws -> AppConfig {
         let data = try Data(contentsOf: URL(fileURLWithPath: path))
         return try JSONDecoder().decode(AppConfig.self, from: data)
     }
-    
+
     private func saveConfig(_ config: AppConfig, to path: String) throws {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -234,49 +237,52 @@ struct RemoveCommand: AsyncParsableCommand {
         commandName: "remove",
         abstract: "Remove an entitlement from the project"
     )
-    
+
     @Argument(help: "Type of entitlement to remove (network, bluetooth, video)")
     var entitlementType: EntitlementType
-    
-    @Option(name: [.customShort("p"), .long], help: "Path to the project directory (defaults to current directory)")
+
+    @Option(
+        name: [.customShort("p"), .long],
+        help: "Path to the project directory (defaults to current directory)"
+    )
     var projectPath: String = "."
-    
+
     private var logger: Logger {
         Logger(label: "edgeengineer.cli.project.entitlements.remove")
     }
-    
+
     func run() async throws {
         let edgeJsonPath = getEdgeJsonPath()
-        
+
         // Check if edge.json exists
         guard FileManager.default.fileExists(atPath: edgeJsonPath) else {
             print("❌ No edge.json found in \(projectPath)")
             print("Run 'edge project init' to initialize a new project")
             throw ProjectError.configNotFound(path: edgeJsonPath)
         }
-        
+
         // Load current configuration
         var config = try loadConfig(from: edgeJsonPath)
-        
+
         // Check if entitlement exists
         guard config.entitlements.contains(where: { $0.type == entitlementType }) else {
             print("⚠️  \(entitlementType.rawValue.capitalized) entitlement not found")
             return
         }
-        
+
         // Remove entitlement
         config = AppConfig(
             appId: config.appId,
             version: config.version,
             entitlements: config.entitlements.filter { $0.type != entitlementType }
         )
-        
+
         // Save configuration
         try saveConfig(config, to: edgeJsonPath)
-        
+
         print("✅ Removed \(entitlementType.rawValue) entitlement")
     }
-    
+
     private func getEdgeJsonPath() -> String {
         if projectPath.hasSuffix("/") {
             return "\(projectPath)edge.json"
@@ -284,12 +290,12 @@ struct RemoveCommand: AsyncParsableCommand {
             return "\(projectPath)/edge.json"
         }
     }
-    
+
     private func loadConfig(from path: String) throws -> AppConfig {
         let data = try Data(contentsOf: URL(fileURLWithPath: path))
         return try JSONDecoder().decode(AppConfig.self, from: data)
     }
-    
+
     private func saveConfig(_ config: AppConfig, to path: String) throws {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -319,7 +325,7 @@ enum ProjectError: Error {
     case configNotFound(path: String)
     case invalidMode(mode: String, for: EntitlementType)
     case saveFailed(path: String, error: String)
-    
+
     var localizedDescription: String {
         switch self {
         case .configNotFound(let path):

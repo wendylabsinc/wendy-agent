@@ -2,9 +2,9 @@
 import PackageDescription
 
 #if compiler(>=6.2.1)
-let hasSpan = true
+    let hasSpan = true
 #else
-let hasSpan = false
+    let hasSpan = false
 #endif
 
 let package = Package(
@@ -30,8 +30,9 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-nio.git", from: "2.81.0"),
         .package(url: "https://github.com/apple/swift-crypto.git", from: "3.12.2"),
         .package(
-          url: "https://github.com/swiftlang/swift-subprocess.git",
-          from: "0.1.0", traits: hasSpan ? [.trait(name: "SubprocessSpan")] : []
+            url: "https://github.com/swiftlang/swift-subprocess.git",
+            from: "0.1.0",
+            traits: hasSpan ? [.trait(name: "SubprocessSpan")] : []
         ),
         .package(url: "https://github.com/apple/swift-http-types.git", from: "1.4.0"),
         .package(url: "https://github.com/apple/swift-async-dns-resolver.git", from: "0.4.0"),
@@ -163,7 +164,10 @@ let package = Package(
             ]
         ),
         .target(
-            name: "AppConfig"
+            name: "AppConfig",
+            dependencies: [
+                .product(name: "ArgumentParser", package: "swift-argument-parser")
+            ]
         ),
 
         /// Tests for EdgeCLI components
