@@ -27,9 +27,35 @@ struct EntitlementsCommand: AsyncParsableCommand {
     )
 }
 
+protocol ModifyProjectCommand: AsyncParsableCommand {
+    var project: String { get }
+}
+
+extension ModifyProjectCommand {
+    func getEdgeJsonPath() -> String {
+        if project.hasSuffix("/") {
+            return "\(project)edge.json"
+        } else {
+            return "\(project)/edge.json"
+        }
+    }
+    
+    func loadConfig(from path: String) throws -> AppConfig {
+        let data = try Data(contentsOf: URL(fileURLWithPath: path))
+        return try JSONDecoder().decode(AppConfig.self, from: data)
+    }
+
+    func saveConfig(_ config: AppConfig, to path: String) throws {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let data = try encoder.encode(config)
+        try data.write(to: URL(fileURLWithPath: path))
+    }
+}
+
 // MARK: - List Command
 
-struct ListCommand: AsyncParsableCommand {
+struct ListCommand: ModifyProjectCommand {
     static let configuration = CommandConfiguration(
         commandName: "list",
         abstract: "List project entitlements"
@@ -37,6 +63,11 @@ struct ListCommand: AsyncParsableCommand {
 
     @Flag(name: [.customShort("a"), .long], help: "Show all entitlements (enabled and disabled)")
     var showAll: Bool = false
+    
+    @Option(
+        help: "Path to the project directory (defaults to current directory)"
+    )
+    var project: String = "."
 
     private var logger: Logger {
         Logger(label: "edgeengineer.cli.project.entitlements.list")
@@ -114,20 +145,11 @@ struct ListCommand: AsyncParsableCommand {
             print("   No additional configuration")
         }
     }
-
-    private func getEdgeJsonPath() -> String {
-        return "./edge.json"
-    }
-
-    private func loadConfig(from path: String) throws -> AppConfig {
-        let data = try Data(contentsOf: URL(fileURLWithPath: path))
-        return try JSONDecoder().decode(AppConfig.self, from: data)
-    }
 }
 
 // MARK: - Add Command
 
-struct AddCommand: AsyncParsableCommand {
+struct AddCommand: ModifyProjectCommand {
     static let configuration = CommandConfiguration(
         commandName: "add",
         abstract: "Add an entitlement to the project"
@@ -138,6 +160,11 @@ struct AddCommand: AsyncParsableCommand {
 
     @Option(name: [.customShort("m"), .long], help: "Mode for the entitlement")
     var mode: String?
+    
+    @Option(
+        help: "Path to the project directory (defaults to current directory)"
+    )
+    var project: String = "."
 
     private var logger: Logger {
         Logger(label: "edgeengineer.cli.project.entitlements.add")
@@ -176,7 +203,7 @@ struct AddCommand: AsyncParsableCommand {
         try saveConfig(config, to: edgeJsonPath)
 
         print("✅ Added \(entitlementType.rawValue) entitlement")
-        if let mode = mode {
+        if let mode {
             print("   Mode: \(mode)")
         }
     }
@@ -212,27 +239,11 @@ struct AddCommand: AsyncParsableCommand {
             return .video(VideoEntitlements())
         }
     }
-
-    private func getEdgeJsonPath() -> String {
-        return "./edge.json"
-    }
-
-    private func loadConfig(from path: String) throws -> AppConfig {
-        let data = try Data(contentsOf: URL(fileURLWithPath: path))
-        return try JSONDecoder().decode(AppConfig.self, from: data)
-    }
-
-    private func saveConfig(_ config: AppConfig, to path: String) throws {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        let data = try encoder.encode(config)
-        try data.write(to: URL(fileURLWithPath: path))
-    }
 }
 
 // MARK: - Remove Command
 
-struct RemoveCommand: AsyncParsableCommand {
+struct RemoveCommand: ModifyProjectCommand {
     static let configuration = CommandConfiguration(
         commandName: "remove",
         abstract: "Remove an entitlement from the project"
@@ -240,12 +251,11 @@ struct RemoveCommand: AsyncParsableCommand {
 
     @Argument(help: "Type of entitlement to remove (network, bluetooth, video)")
     var entitlementType: EntitlementType
-
+    
     @Option(
-        name: [.customShort("p"), .long],
         help: "Path to the project directory (defaults to current directory)"
     )
-    var projectPath: String = "."
+    var project: String = "."
 
     private var logger: Logger {
         Logger(label: "edgeengineer.cli.project.entitlements.remove")
@@ -256,7 +266,7 @@ struct RemoveCommand: AsyncParsableCommand {
 
         // Check if edge.json exists
         guard FileManager.default.fileExists(atPath: edgeJsonPath) else {
-            print("❌ No edge.json found in \(projectPath)")
+            print("❌ No edge.json found in \(project)")
             print("Run 'edge project init' to initialize a new project")
             throw ProjectError.configNotFound(path: edgeJsonPath)
         }
@@ -281,26 +291,6 @@ struct RemoveCommand: AsyncParsableCommand {
         try saveConfig(config, to: edgeJsonPath)
 
         print("✅ Removed \(entitlementType.rawValue) entitlement")
-    }
-
-    private func getEdgeJsonPath() -> String {
-        if projectPath.hasSuffix("/") {
-            return "\(projectPath)edge.json"
-        } else {
-            return "\(projectPath)/edge.json"
-        }
-    }
-
-    private func loadConfig(from path: String) throws -> AppConfig {
-        let data = try Data(contentsOf: URL(fileURLWithPath: path))
-        return try JSONDecoder().decode(AppConfig.self, from: data)
-    }
-
-    private func saveConfig(_ config: AppConfig, to path: String) throws {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        let data = try encoder.encode(config)
-        try data.write(to: URL(fileURLWithPath: path))
     }
 }
 
