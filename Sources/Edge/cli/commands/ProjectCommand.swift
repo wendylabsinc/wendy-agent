@@ -39,7 +39,7 @@ extension ModifyProjectCommand {
             return "\(project)/edge.json"
         }
     }
-    
+
     func loadConfig(from path: String) throws -> AppConfig {
         let data = try Data(contentsOf: URL(fileURLWithPath: path))
         return try JSONDecoder().decode(AppConfig.self, from: data)
@@ -63,7 +63,7 @@ struct ListCommand: ModifyProjectCommand {
 
     @Flag(name: [.customShort("a"), .long], help: "Show all entitlements (enabled and disabled)")
     var showAll: Bool = false
-    
+
     @Option(
         help: "Path to the project directory (defaults to current directory)"
     )
@@ -160,7 +160,7 @@ struct AddCommand: ModifyProjectCommand {
 
     @Option(name: [.customShort("m"), .long], help: "Mode for the entitlement")
     var mode: String?
-    
+
     @Option(
         help: "Path to the project directory (defaults to current directory)"
     )
@@ -251,7 +251,7 @@ struct RemoveCommand: ModifyProjectCommand {
 
     @Argument(help: "Type of entitlement to remove (network, bluetooth, video)")
     var entitlementType: EntitlementType
-    
+
     @Option(
         help: "Path to the project directory (defaults to current directory)"
     )
