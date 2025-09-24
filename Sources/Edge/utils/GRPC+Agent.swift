@@ -1,5 +1,7 @@
 import GRPCCore
 import GRPCNIOTransportHTTP2
+import Logging
+import NIOCore
 
 #if os(macOS)
     typealias GRPCTransport = HTTP2ClientTransport.TransportServices
@@ -30,6 +32,29 @@ func withGRPCClient<R: Sendable>(
     _ connectionOptions: AgentConnectionOptions,
     _ body: @escaping (GRPCClient<GRPCTransport>) async throws -> R
 ) async throws -> R {
+    let logger = Logger(label: "edgeengineer.grpc-client")
     let endpoint = try connectionOptions.endpoint
-    return try await withGRPCClient(endpoint, body)
+    // TODO: If the host is unreachable, this fails on the first command
+    do {
+        return try await withGRPCClient(endpoint, body)
+    } catch let error as RPCError where error.code == .unavailable {
+        logger.warning(
+            "Could not connect to host",
+            metadata: [
+                "host": "\(endpoint.host)",
+                "port": "\(endpoint.port)",
+            ]
+        )
+        throw error
+    } catch let error as ChannelError {
+        // This is the error we expect, but gRPC kicks off its own error
+        logger.warning(
+            "Could not connect to host",
+            metadata: [
+                "host": "\(endpoint.host)",
+                "port": "\(endpoint.port)",
+            ]
+        )
+        throw error
+    }
 }
