@@ -223,6 +223,14 @@ let package = Package(
                 .target(name: "EdgeShared"),
             ]
         ),
+        
+            .testTarget(
+                name: "IntegrationTests",
+                dependencies: [
+                    .target(name: "edge"),
+                    .target(name: "edge-agent"),
+                ]
+            ),
 
     ]
 )
