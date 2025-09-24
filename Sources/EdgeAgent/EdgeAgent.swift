@@ -40,33 +40,45 @@ struct EdgeAgent: AsyncParsableCommand {
             }),
         ]
 
-        let transport = GRPCNIOTransportHTTP2.HTTP2ServerTransport.Posix(
-            address: .ipv6(host: "::", port: port),
-            transportSecurity: .plaintext,
-            config: .defaults
+        let serverIPv4 = GRPCServer(
+            transport: GRPCNIOTransportHTTP2.HTTP2ServerTransport.Posix(
+                address: .ipv4(host: "0.0.0.0", port: port),
+                transportSecurity: .plaintext,
+                config: .defaults
+            ),
+            services: services
         )
 
-        let server = GRPCServer(
-            transport: transport,
+        let serverIPv6 = GRPCServer(
+            transport: GRPCNIOTransportHTTP2.HTTP2ServerTransport.Posix(
+                address: .ipv6(host: "::", port: port),
+                transportSecurity: .plaintext,
+                config: .defaults
+            ),
             services: services
         )
 
         try await withThrowingTaskGroup(of: Void.self) { taskGroup in
             taskGroup.addTask {
-                try await server.serve()
+                try await serverIPv4.serve()
                 continuation.finish()
+            }
+            taskGroup.addTask {
+                try await serverIPv6.serve()
+                continuation.finish()
+            }
+
+            defer {
+                serverIPv4.beginGracefulShutdown()
+                serverIPv6.beginGracefulShutdown()
+                taskGroup.cancelAll()
             }
 
             for try await () in signal {
                 logger.info("Received signal, restarting")
                 try await Task.sleep(for: .seconds(3))
-                server.beginGracefulShutdown()
-                taskGroup.cancelAll()
                 return
             }
-
-            server.beginGracefulShutdown()
-            taskGroup.cancelAll()
         }
     }
 }
