@@ -424,7 +424,8 @@ extension RunCommand {
             appConfigData = try Data(contentsOf: URL(fileURLWithPath: "edge.json"))
             _ = try JSONDecoder().decode(AppConfig.self, from: appConfigData)
         } catch {
-            logger.error("Failed to decode app config", metadata: ["error": .string("\(error)")])
+            logger.debug("Failed to decode app config", metadata: ["error": .string("\(error)")])
+            logger.info("No valid edge.json was found. Using default settings.")
             appConfigData = Data()
         }
 
