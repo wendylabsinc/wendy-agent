@@ -150,7 +150,7 @@ struct EdgeContainerService: Edge_Agent_Services_V1_EdgeContainerService.Service
                         env: [
                             "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
                         ],
-                        cwd: "/"
+                        cwd: request.workingDir.isEmpty ? "/" : request.workingDir
                     ),
                     root: .init(path: "rootfs", readonly: false),
                     hostname: request.appName,

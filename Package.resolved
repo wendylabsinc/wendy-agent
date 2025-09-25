@@ -1,5 +1,5 @@
 {
-  "originHash" : "1e62be5830503604662e0882077d78d4108078e1da3cf9f28bf76e71c99eca4a",
+  "originHash" : "108250a097750e1e1ad073303f9a8b21d21b5ba865789cd842c152317699acfe",
   "pins" : [
     {
       "identity" : "async-http-client",
@@ -44,6 +44,15 @@
       "state" : {
         "revision" : "c008d356d9e9c2255602711888bf25b542a30919",
         "version" : "2.1.1"
+      }
+    },
+    {
+      "identity" : "openapikit",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/mattpolzin/OpenAPIKit",
+      "state" : {
+        "revision" : "c1dcd65ccbcc1f3e132293ff2338c72c49a9026d",
+        "version" : "3.8.0"
       }
     },
     {
@@ -209,6 +218,33 @@
       }
     },
     {
+      "identity" : "swift-openapi-async-http-client",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/swift-server/swift-openapi-async-http-client.git",
+      "state" : {
+        "revision" : "915aeff168625b0f88a5810ee7ab8e9c00af671b",
+        "version" : "1.1.0"
+      }
+    },
+    {
+      "identity" : "swift-openapi-generator",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-openapi-generator.git",
+      "state" : {
+        "revision" : "d74223cc5595a8165181c4d9579243c932e5cd07",
+        "version" : "1.10.3"
+      }
+    },
+    {
+      "identity" : "swift-openapi-runtime",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-openapi-runtime",
+      "state" : {
+        "revision" : "7722cf8eac05c1f1b5b05895b04cfcc29576d9be",
+        "version" : "1.8.3"
+      }
+    },
+    {
       "identity" : "swift-protobuf",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/apple/swift-protobuf.git",
@@ -242,6 +278,15 @@
       "state" : {
         "revision" : "61e4ca4b81b9e09e2ec863b00c340eb13497dac6",
         "version" : "1.5.0"
+      }
+    },
+    {
+      "identity" : "yams",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/jpsim/Yams",
+      "state" : {
+        "revision" : "d41ba4e7164c0838c6d48351f7575f7f762151fe",
+        "version" : "6.1.0"
       }
     }
   ],

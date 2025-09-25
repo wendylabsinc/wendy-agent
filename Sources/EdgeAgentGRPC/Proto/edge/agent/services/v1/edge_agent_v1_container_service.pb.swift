@@ -99,6 +99,8 @@ public struct Edge_Agent_Services_V1_RunContainerLayersRequest: Sendable {
   /// Clears the value of `restartPolicy`. Subsequent reads from it will return its default value.
   public mutating func clearRestartPolicy() {self._restartPolicy = nil}
 
+  public var workingDir: String = String()
+
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public init() {}
@@ -272,7 +274,7 @@ extension Edge_Agent_Services_V1_LayerHeader: SwiftProtobuf.Message, SwiftProtob
 
 extension Edge_Agent_Services_V1_RunContainerLayersRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".RunContainerLayersRequest"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}image_name\0\u{3}app_name\0\u{1}cmd\0\u{1}layers\0\u{3}app_config\0\u{3}restart_policy\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}image_name\0\u{3}app_name\0\u{1}cmd\0\u{1}layers\0\u{3}app_config\0\u{3}restart_policy\0\u{3}working_dir\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -286,6 +288,7 @@ extension Edge_Agent_Services_V1_RunContainerLayersRequest: SwiftProtobuf.Messag
       case 4: try { try decoder.decodeRepeatedMessageField(value: &self.layers) }()
       case 5: try { try decoder.decodeSingularBytesField(value: &self.appConfig) }()
       case 6: try { try decoder.decodeSingularMessageField(value: &self._restartPolicy) }()
+      case 7: try { try decoder.decodeSingularStringField(value: &self.workingDir) }()
       default: break
       }
     }
@@ -314,6 +317,9 @@ extension Edge_Agent_Services_V1_RunContainerLayersRequest: SwiftProtobuf.Messag
     try { if let v = self._restartPolicy {
       try visitor.visitSingularMessageField(value: v, fieldNumber: 6)
     } }()
+    if !self.workingDir.isEmpty {
+      try visitor.visitSingularStringField(value: self.workingDir, fieldNumber: 7)
+    }
     try unknownFields.traverse(visitor: &visitor)
   }
 
@@ -324,6 +330,7 @@ extension Edge_Agent_Services_V1_RunContainerLayersRequest: SwiftProtobuf.Messag
     if lhs.layers != rhs.layers {return false}
     if lhs.appConfig != rhs.appConfig {return false}
     if lhs._restartPolicy != rhs._restartPolicy {return false}
+    if lhs.workingDir != rhs.workingDir {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
