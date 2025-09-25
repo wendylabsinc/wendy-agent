@@ -1,3 +1,5 @@
+import ArgumentParser
+
 public struct AppConfig: Codable {
     public let appId: String
     public let version: String
@@ -10,7 +12,7 @@ public struct AppConfig: Codable {
     }
 }
 
-public enum Entitlement: Codable {
+public enum Entitlement: Codable, Sendable, Hashable {
     case network(NetworkEntitlements)
     case bluetooth(BluetoothEntitlements)
     case video(VideoEntitlements)
@@ -50,14 +52,14 @@ public enum Entitlement: Codable {
     }
 }
 
-public enum EntitlementType: String, Codable {
+public enum EntitlementType: String, Codable, ExpressibleByArgument, Sendable {
     case network
     case video
     case bluetooth
 }
 
-public struct BluetoothEntitlements: Codable {
-    public enum BluetoothMode: String, Codable {
+public struct BluetoothEntitlements: Codable, Sendable, Hashable {
+    public enum BluetoothMode: String, Codable, Sendable, Hashable {
         case bluez, kernel
     }
 
@@ -68,11 +70,11 @@ public struct BluetoothEntitlements: Codable {
     }
 }
 
-public struct VideoEntitlements: Codable {
+public struct VideoEntitlements: Codable, Sendable, Hashable {
     public init() {}
 }
 
-public struct NetworkEntitlements: Codable {
+public struct NetworkEntitlements: Codable, Sendable, Hashable {
     public let mode: NetworkMode
 
     public init(mode: NetworkMode) {
@@ -80,7 +82,7 @@ public struct NetworkEntitlements: Codable {
     }
 }
 
-public enum NetworkMode: String, Codable {
+public enum NetworkMode: String, Codable, Sendable, Hashable {
     case host
     case none
 }

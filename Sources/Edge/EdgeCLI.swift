@@ -18,6 +18,7 @@ struct EdgeCLI: AsyncParsableCommand {
             AgentCommand.self,
             WiFiCommand.self,
             HelperCommand.self,
+            ProjectCommand.self,
         ]
     )
 }

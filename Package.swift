@@ -164,7 +164,10 @@ let package = Package(
             ]
         ),
         .target(
-            name: "AppConfig"
+            name: "AppConfig",
+            dependencies: [
+                .product(name: "ArgumentParser", package: "swift-argument-parser")
+            ]
         ),
 
         /// Tests for EdgeCLI components
@@ -220,6 +223,14 @@ let package = Package(
                 .target(name: "EdgeShared"),
             ]
         ),
+        
+            .testTarget(
+                name: "IntegrationTests",
+                dependencies: [
+                    .target(name: "edge"),
+                    .target(name: "edge-agent"),
+                ]
+            ),
 
     ]
 )
