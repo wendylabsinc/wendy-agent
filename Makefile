@@ -29,7 +29,7 @@ _protos:
 	./scripts/generate-proto.sh
 
 build-cli: _protos ## Build the edge CLI executable
-	swift build --product edge
+	swiftly run swift build --product edge
 	echo "y" | cp -f .build/$(PLATFORM)/debug/edge ~/bin/edge-dev
 	chmod +x ~/bin/edge-dev
 
@@ -39,7 +39,7 @@ build-helper: _protos ## Build the edge helper daemon executable
 	chmod +x ~/bin/edge-helper
 
 build-network-daemon: _protos ## Build the edge network daemon executable
-	swift build --product edge-network-daemon
+	swiftly run swift build --product edge-network-daemon
 	echo "y" | cp -f .build/$(PLATFORM)/debug/edge-network-daemon ~/bin/edge-network-daemon
 	chmod +x ~/bin/edge-network-daemon
 
@@ -116,13 +116,13 @@ cov-report: ## Run the tests and generate coverage report
 		--include-directory=Sources/ \
 		-format=lcov > coverage.lcov
 format: ## Format Swift code using swift-format
-	swift format --recursive --in-place Sources/ Tests/
+	swiftly run wift format --recursive --in-place Sources/ Tests/
 
 setup-hooks: ## Install git hooks
 	./Scripts/install-hooks.sh
 
 clean: ## Clean build artifacts and remove executables
-	swift package clean
+	swiftly run swift package clean
 	rm -f edge EdgeAgent
 
 # Default build target
