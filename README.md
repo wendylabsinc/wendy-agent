@@ -52,6 +52,37 @@ brew upgrade edge
 
 The device needs to run the `edge-agent` utility. We provide pre-build [EdgeOS](https://edgeos.io) images for the Raspberry Pi and the NVIDIA Jetson Orin Nano. These are preconfigured for remote debugging and have the edge-agent preinstalled.
 
+### Network Manager Support
+
+EdgeAgent supports both NetworkManager and ConnMan for WiFi configuration. The agent will automatically detect which network manager is available on the system:
+
+- **ConnMan** is preferred for embedded/IoT devices due to its lighter resource usage
+- **NetworkManager** is supported for desktop and server environments
+- The agent will automatically detect and use the available network manager
+
+#### Configuration
+
+You can configure the network manager preference using the `EDGE_NETWORK_MANAGER` environment variable:
+
+```sh
+# Auto-detect (default)
+export EDGE_NETWORK_MANAGER=auto
+
+# Prefer ConnMan if available, fall back to NetworkManager
+export EDGE_NETWORK_MANAGER=connman
+
+# Prefer NetworkManager if available
+export EDGE_NETWORK_MANAGER=networkmanager
+
+# Force ConnMan (will fail if not available)
+export EDGE_NETWORK_MANAGER=force-connman
+
+# Force NetworkManager (will fail if not available)
+export EDGE_NETWORK_MANAGER=force-networkmanager
+```
+
+If no environment variable is set, the agent will auto-detect the available network manager.
+
 #### Manual Setup
 
 The `edge` CLI communicates with an `edge-agent`. The agent needs uses Docker for running your apps, so Docker needs to be running.

@@ -18,7 +18,7 @@ public protocol DBusDecodable {
 extension String: DBusDecodable {
     public static func decode(from message: DBusMessage) throws -> String {
         guard let value = message.body.first else {
-            throw NetworkManagerError.noReply
+            throw NetworkConnectionError.noReply
         }
 
         switch value {
@@ -28,9 +28,9 @@ extension String: DBusDecodable {
             if case .string(let string) = variant.value {
                 return string
             }
-            throw NetworkManagerError.invalidType
+            throw NetworkConnectionError.invalidType
         default:
-            throw NetworkManagerError.invalidType
+            throw NetworkConnectionError.invalidType
         }
     }
 }
@@ -38,7 +38,7 @@ extension String: DBusDecodable {
 extension UInt32: DBusDecodable {
     public static func decode(from message: DBusMessage) throws -> UInt32 {
         guard let bodyValue = message.body.first else {
-            throw NetworkManagerError.noReply
+            throw NetworkConnectionError.noReply
         }
 
         switch bodyValue {
@@ -48,9 +48,9 @@ extension UInt32: DBusDecodable {
             if case .uint32(let value) = variant.value {
                 return value
             }
-            throw NetworkManagerError.invalidType
+            throw NetworkConnectionError.invalidType
         default:
-            throw NetworkManagerError.invalidType
+            throw NetworkConnectionError.invalidType
         }
     }
 }
@@ -58,7 +58,7 @@ extension UInt32: DBusDecodable {
 extension Int8: DBusDecodable {
     public static func decode(from message: DBusMessage) throws -> Int8 {
         guard let bodyValue = message.body.first else {
-            throw NetworkManagerError.noReply
+            throw NetworkConnectionError.noReply
         }
 
         switch bodyValue {
@@ -66,17 +66,17 @@ extension Int8: DBusDecodable {
             return Int8(byte)
         case .int16(let value):
             guard value >= Int16(Int8.min) && value <= Int16(Int8.max) else {
-                throw NetworkManagerError.invalidType
+                throw NetworkConnectionError.invalidType
             }
             return Int8(value)
         case .int32(let value):
             guard value >= Int32(Int8.min) && value <= Int32(Int8.max) else {
-                throw NetworkManagerError.invalidType
+                throw NetworkConnectionError.invalidType
             }
             return Int8(value)
         case .int64(let value):
             guard value >= Int64(Int8.min) && value <= Int64(Int8.max) else {
-                throw NetworkManagerError.invalidType
+                throw NetworkConnectionError.invalidType
             }
             return Int8(value)
         case .variant(let variant):
@@ -98,9 +98,9 @@ extension Int8: DBusDecodable {
             {
                 return Int8(value)
             }
-            throw NetworkManagerError.invalidType
+            throw NetworkConnectionError.invalidType
         default:
-            throw NetworkManagerError.invalidType
+            throw NetworkConnectionError.invalidType
         }
     }
 }
@@ -108,7 +108,7 @@ extension Int8: DBusDecodable {
 extension Bool: DBusDecodable {
     public static func decode(from message: DBusMessage) throws -> Bool {
         guard let bodyValue = message.body.first else {
-            throw NetworkManagerError.noReply
+            throw NetworkConnectionError.noReply
         }
 
         switch bodyValue {
@@ -118,9 +118,9 @@ extension Bool: DBusDecodable {
             if case .boolean(let value) = variant.value {
                 return value
             }
-            throw NetworkManagerError.invalidType
+            throw NetworkConnectionError.invalidType
         default:
-            throw NetworkManagerError.invalidType
+            throw NetworkConnectionError.invalidType
         }
     }
 }
@@ -198,7 +198,7 @@ public actor NetworkManager {
 
             do {
                 guard let reply = try await connection.send(request) else {
-                    throw NetworkManagerError.noReply
+                    throw NetworkConnectionError.noReply
                 }
                 guard case .methodReturn = reply.messageType else {
                     // Extract error details from the body if possible
@@ -209,12 +209,12 @@ public actor NetworkManager {
 
                     self.logger.error("DBus connection error: \(errorDetails)")
                     self.logger.debug("Full error reply: \(reply)")
-                    throw NetworkManagerError.connectionFailed
+                    throw NetworkConnectionError.connectionFailed
                 }
                 return try T.decode(from: reply)
             } catch {
                 self.logger.error("Failed to write request to DBus: \(error)")
-                throw NetworkManagerError.connectionFailed
+                throw NetworkConnectionError.connectionFailed
             }
         }
     }
@@ -222,11 +222,11 @@ public actor NetworkManager {
     /// Helper to decode an array of strings from DBus message
     private func decodeStringArray(from message: DBusMessage) throws -> [String] {
         guard let bodyValue = message.body.first else {
-            throw NetworkManagerError.noReply
+            throw NetworkConnectionError.noReply
         }
 
         guard let array = bodyValue.array else {
-            throw NetworkManagerError.invalidType
+            throw NetworkConnectionError.invalidType
         }
 
         return array.compactMap(\.objectPath)
@@ -235,10 +235,10 @@ public actor NetworkManager {
     /// Helper to decode an array of bytes from DBus message
     private func decodeByteArray(from message: DBusMessage) throws -> [UInt8] {
         guard let bodyValue = message.body.first else {
-            throw NetworkManagerError.noReply
+            throw NetworkConnectionError.noReply
         }
         guard let array = bodyValue.array else {
-            throw NetworkManagerError.invalidType
+            throw NetworkConnectionError.invalidType
         }
 
         return array.compactMap(\.byte)
@@ -306,7 +306,7 @@ public actor NetworkManager {
         let ssidBytes = try decodeByteArray(from: message)
 
         guard let ssid = String(bytes: ssidBytes, encoding: .utf8) else {
-            throw NetworkManagerError.invalidSSID
+            throw NetworkConnectionError.invalidSSID
         }
 
         return ssid
@@ -335,7 +335,7 @@ public actor NetworkManager {
         self.logger.debug("Found \(devicePaths.count) network devices")
 
         if devicePaths.isEmpty {
-            throw NetworkManagerError.noWiFiDevice
+            throw NetworkConnectionError.noWiFiDevice
         }
 
         // Try to find a WiFi device (type 2)
@@ -354,7 +354,7 @@ public actor NetworkManager {
         }
 
         // If we get here, no WiFi device was found
-        throw NetworkManagerError.noWiFiDevice
+        throw NetworkConnectionError.noWiFiDevice
     }
 
     /// List all available WiFi networks
@@ -419,7 +419,7 @@ public actor NetworkManager {
             guard let network = networks.first(where: { $0.ssid == ssid }) else {
                 self.logger.error("Network not found: '\(ssid)'")
                 self.logger.debug("Available networks: \(networks.map { $0.ssid })")
-                throw NetworkManagerError.networkNotFound
+                throw NetworkConnectionError.networkNotFound
             }
 
             // Find the WiFi device
@@ -567,7 +567,7 @@ public actor NetworkManager {
 
                 do {
                     guard let reply = try await connection.send(connectMessage) else {
-                        throw NetworkManagerError.noReply
+                        throw NetworkConnectionError.noReply
                     }
                     guard case .methodReturn = reply.messageType else {
                         // Extract error details from the body if possible
@@ -585,7 +585,7 @@ public actor NetworkManager {
                             self.logger.error(
                                 "DBus permission error: \(errorDetails) - Check that the user has permissions to manage NetworkManager"
                             )
-                            throw NetworkManagerError.authenticationFailed
+                            throw NetworkConnectionError.authenticationFailed
                         }
 
                         // Check for authentication/wrong password errors
@@ -595,23 +595,23 @@ public actor NetworkManager {
                             self.logger.error(
                                 "WiFi authentication error: Invalid password or authentication failure"
                             )
-                            throw NetworkManagerError.authenticationFailed
+                            throw NetworkConnectionError.authenticationFailed
                         }
 
                         self.logger.error("DBus connection error: \(errorDetails)")
                         self.logger.debug("Full error reply: \(reply)")
-                        throw NetworkManagerError.connectionFailed
+                        throw NetworkConnectionError.connectionFailed
                     }
                     self.logger.debug("Successfully connected to WiFi network: \(ssid)")
                 } catch {
                     self.logger.error("Failed to send connection request: \(error)")
-                    throw NetworkManagerError.connectionFailed
+                    throw NetworkConnectionError.connectionFailed
                 }
 
-                throw NetworkManagerError.timeout
+                throw NetworkConnectionError.timeout
             }
-        } catch let error as NetworkManagerError {
-            // Just re-throw NetworkManagerErrors
+        } catch let error as NetworkConnectionError {
+            // Just re-throw NetworkConnectionErrors
             throw error
         } catch {
             // Wrap other errors
@@ -623,13 +623,13 @@ public actor NetworkManager {
                 self.logger.error(
                     "Permission denied accessing DBus socket. Check if the user has correct permissions."
                 )
-                throw NetworkManagerError.authenticationFailed
+                throw NetworkConnectionError.authenticationFailed
             } else if errorString.contains("Connection refused") {
                 self.logger.error("Connection refused to DBus. Check if NetworkManager is running.")
-                throw NetworkManagerError.notConnected
+                throw NetworkConnectionError.notConnected
             }
 
-            throw NetworkManagerError.connectionFailed
+            throw NetworkConnectionError.connectionFailed
         }
     }
 
@@ -710,7 +710,7 @@ public actor NetworkManager {
             // Verify the path looks valid
             if !activeConnectionPath.hasPrefix("/org/freedesktop/NetworkManager") {
                 self.logger.error("Invalid ActiveConnection path: \(activeConnectionPath)")
-                throw NetworkManagerError.invalidType
+                throw NetworkConnectionError.invalidType
             }
 
             self.logger.debug("Found active connection at path: \(activeConnectionPath)")
@@ -733,7 +733,7 @@ public actor NetworkManager {
             self.logger.debug("SSID response: \(ssidMessage)")
 
             guard let bodyValue = ssidMessage.body.first else {
-                throw NetworkManagerError.invalidType
+                throw NetworkConnectionError.invalidType
             }
 
             // More robust extraction of SSID
@@ -746,16 +746,16 @@ public actor NetworkManager {
                 if let string = String(bytes: bytes, encoding: .utf8) {
                     ssid = string
                 } else {
-                    throw NetworkManagerError.invalidSSID
+                    throw NetworkConnectionError.invalidSSID
                 }
             } else {
-                throw NetworkManagerError.invalidSSID
+                throw NetworkConnectionError.invalidSSID
             }
 
             return (ssid: ssid, connectionPath: activeConnectionPath)
         } catch {
             // Handle specific errors for better debugging
-            if let nmError = error as? NetworkManagerError {
+            if let nmError = error as? NetworkConnectionError {
                 if nmError == .invalidType {
                     self.logger.error(
                         "Invalid DBus response type when getting WiFi status. This might indicate NetworkManager version mismatch or interface changes."
@@ -777,7 +777,7 @@ public actor NetworkManager {
 
         // Check if there's an active connection
         guard (try await getCurrentConnection()) != nil else {
-            throw NetworkManagerError.noActiveConnection
+            throw NetworkConnectionError.noActiveConnection
         }
 
         // Disconnect by bringing the device down
@@ -792,22 +792,7 @@ public actor NetworkManager {
     }
 }
 
-// MARK: - Errors
-
-/// Errors that can occur when using NetworkManager
-public enum NetworkManagerError: Error {
-    case notConnected
-    case noReply
-    case authenticationFailed
-    case noWiFiDevice
-    case networkNotFound
-    case invalidSSID
-    case connectionFailed
-    case timeout
-    case invalidType
-    case noActiveConnection
-    case disconnectionFailed
-}
+// MARK: - DBusMessage Conformance
 
 // Add conformance for DBusMessage
 extension DBusMessage: DBusDecodable {

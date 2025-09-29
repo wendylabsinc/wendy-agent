@@ -10,10 +10,14 @@ struct EdgeAgentService: Edge_Agent_Services_V1_EdgeAgentService.ServiceProtocol
     let logger = Logger(label: "EdgeAgentService")
     let shouldRestart: @Sendable () async throws -> Void
     let currentUID: String
+    let networkManagerFactory: NetworkManagerFactory
+    let configuration: EdgeAgentConfiguration
 
     init(shouldRestart: @escaping @Sendable () async throws -> Void) {
         self.shouldRestart = shouldRestart
         self.currentUID = String(getuid())
+        self.networkManagerFactory = NetworkManagerFactory(uid: currentUID)
+        self.configuration = EdgeAgentConfiguration.fromEnvironment()
     }
 
     func runContainer(
@@ -155,7 +159,9 @@ struct EdgeAgentService: Edge_Agent_Services_V1_EdgeAgentService.ServiceProtocol
         logger.info("Listing available WiFi networks")
 
         do {
-            let networkManager = NetworkManager(uid: currentUID)
+            let networkManager = try await networkManagerFactory.createNetworkManager(
+                preference: configuration.networkManagerPreference
+            )
             let wifiNetworks = try await networkManager.listWiFiNetworks()
 
             logger.info("Found \(wifiNetworks.count) WiFi networks")
@@ -192,11 +198,13 @@ struct EdgeAgentService: Edge_Agent_Services_V1_EdgeAgentService.ServiceProtocol
         logger.info("Connecting to WiFi network", metadata: ["ssid": "\(ssid)"])
 
         do {
-            let networkManager = NetworkManager(uid: currentUID)
+            let networkManager = try await networkManagerFactory.createNetworkManager(
+                preference: configuration.networkManagerPreference
+            )
             try await networkManager.setupWiFi(ssid: ssid, password: password)
 
-            if let (ssid, _) = try await networkManager.getCurrentConnection() {
-                logger.info("Successfully connected to WiFi network", metadata: ["ssid": "\(ssid)"])
+            if let connection = try await networkManager.getCurrentConnection() {
+                logger.info("Successfully connected to WiFi network", metadata: ["ssid": "\(connection.ssid)"])
                 return ServerResponse(
                     message: .with { $0.success = true }
                 )
@@ -234,7 +242,9 @@ struct EdgeAgentService: Edge_Agent_Services_V1_EdgeAgentService.ServiceProtocol
         logger.info("Getting WiFi connection status")
 
         do {
-            let networkManager = NetworkManager(uid: currentUID)
+            let networkManager = try await networkManagerFactory.createNetworkManager(
+                preference: configuration.networkManagerPreference
+            )
             let connectionInfo = try await networkManager.getCurrentConnection()
 
             if let connectionInfo = connectionInfo {
@@ -275,7 +285,9 @@ struct EdgeAgentService: Edge_Agent_Services_V1_EdgeAgentService.ServiceProtocol
         logger.info("Disconnecting from WiFi network")
 
         do {
-            let networkManager = NetworkManager(uid: currentUID)
+            let networkManager = try await networkManagerFactory.createNetworkManager(
+                preference: configuration.networkManagerPreference
+            )
 
             // Check current connection first
             if let connectionInfo = try await networkManager.getCurrentConnection() {
@@ -314,7 +326,7 @@ struct EdgeAgentService: Edge_Agent_Services_V1_EdgeAgentService.ServiceProtocol
                     }
                 )
             }
-        } catch NetworkManagerError.noActiveConnection {
+        } catch NetworkConnectionError.noActiveConnection {
             // Not being connected is not an error for disconnection
             logger.info("Not connected to any WiFi network")
             return ServerResponse(
