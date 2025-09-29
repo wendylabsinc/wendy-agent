@@ -51,16 +51,22 @@ public actor ConnMan: NetworkConnectionManager {
                         errorDetails = message
                     }
 
-                    self.logger.error("DBus connection error", metadata: [
-                        "error": "\(errorDetails)"
-                    ])
+                    self.logger.error(
+                        "DBus connection error",
+                        metadata: [
+                            "error": "\(errorDetails)"
+                        ]
+                    )
                     throw NetworkConnectionError.connectionFailed
                 }
                 return try T.decode(from: reply)
             } catch {
-                self.logger.error("Failed to execute DBus request", metadata: [
-                    "error": "\(error)"
-                ])
+                self.logger.error(
+                    "Failed to execute DBus request",
+                    metadata: [
+                        "error": "\(error)"
+                    ]
+                )
                 throw NetworkConnectionError.connectionFailed
             }
         }
@@ -78,22 +84,25 @@ public actor ConnMan: NetworkConnectionManager {
         )
 
         guard let bodyValue = message.body.first,
-              let array = bodyValue.array else {
+            let array = bodyValue.array
+        else {
             throw NetworkConnectionError.invalidType
         }
 
         for item in array {
             guard case .structure(let structValues) = item,
-                  structValues.count >= 2,
-                  let path = structValues[0].objectPath,
-                  case .dictionary(let properties) = structValues[1] else {
+                structValues.count >= 2,
+                let path = structValues[0].objectPath,
+                case .dictionary(let properties) = structValues[1]
+            else {
                 continue
             }
 
             if let typeValue = properties[DBusValue.string("Type")],
-               case .variant(let variant) = typeValue,
-               case .string(let type) = variant.value,
-               type == "wifi" {
+                case .variant(let variant) = typeValue,
+                case .string(let type) = variant.value,
+                type == "wifi"
+            {
                 return path
             }
         }
@@ -120,7 +129,8 @@ public actor ConnMan: NetworkConnectionManager {
     }
 
     /// Get all services (networks)
-    private func getServices() async throws -> [(path: String, properties: [DBusValue: DBusValue])] {
+    private func getServices() async throws -> [(path: String, properties: [DBusValue: DBusValue])]
+    {
         let message: DBusMessage = try await executeDBusRequest(
             .createMethodCall(
                 destination: connManDestination,
@@ -131,7 +141,8 @@ public actor ConnMan: NetworkConnectionManager {
         )
 
         guard let bodyValue = message.body.first,
-              let array = bodyValue.array else {
+            let array = bodyValue.array
+        else {
             throw NetworkConnectionError.invalidType
         }
 
@@ -139,9 +150,10 @@ public actor ConnMan: NetworkConnectionManager {
 
         for item in array {
             guard case .structure(let structValues) = item,
-                  structValues.count >= 2,
-                  let path = structValues[0].objectPath,
-                  case .dictionary(let properties) = structValues[1] else {
+                structValues.count >= 2,
+                let path = structValues[0].objectPath,
+                case .dictionary(let properties) = structValues[1]
+            else {
                 continue
             }
 
@@ -154,8 +166,9 @@ public actor ConnMan: NetworkConnectionManager {
     /// Extract SSID from service properties
     private func extractSSID(from properties: [DBusValue: DBusValue]) -> String? {
         guard let nameValue = properties[DBusValue.string("Name")],
-              case .variant(let variant) = nameValue,
-              case .string(let name) = variant.value else {
+            case .variant(let variant) = nameValue,
+            case .string(let name) = variant.value
+        else {
             return nil
         }
         return name
@@ -164,8 +177,9 @@ public actor ConnMan: NetworkConnectionManager {
     /// Extract signal strength from service properties
     private func extractSignalStrength(from properties: [DBusValue: DBusValue]) -> Int8? {
         guard let strengthValue = properties[DBusValue.string("Strength")],
-              case .variant(let variant) = strengthValue,
-              case .byte(let strength) = variant.value else {
+            case .variant(let variant) = strengthValue,
+            case .byte(let strength) = variant.value
+        else {
             return nil
         }
         return Int8(strength)
@@ -174,15 +188,17 @@ public actor ConnMan: NetworkConnectionManager {
     /// Extract security type from service properties
     private func extractSecurity(from properties: [DBusValue: DBusValue]) -> Bool {
         guard let securityValue = properties[DBusValue.string("Security")],
-              case .variant(let variant) = securityValue,
-              let array = variant.value.array,
-              !array.isEmpty else {
+            case .variant(let variant) = securityValue,
+            let array = variant.value.array,
+            !array.isEmpty
+        else {
             return false
         }
 
         for item in array {
             if case .string(let security) = item,
-               security != "none" {
+                security != "none"
+            {
                 return true
             }
         }
@@ -193,8 +209,9 @@ public actor ConnMan: NetworkConnectionManager {
     /// Extract service type from properties
     private func extractServiceType(from properties: [DBusValue: DBusValue]) -> String? {
         guard let typeValue = properties[DBusValue.string("Type")],
-              case .variant(let variant) = typeValue,
-              case .string(let type) = variant.value else {
+            case .variant(let variant) = typeValue,
+            case .string(let type) = variant.value
+        else {
             return nil
         }
         return type
@@ -203,8 +220,9 @@ public actor ConnMan: NetworkConnectionManager {
     /// Extract service state from properties
     private func extractServiceState(from properties: [DBusValue: DBusValue]) -> String? {
         guard let stateValue = properties[DBusValue.string("State")],
-              case .variant(let variant) = stateValue,
-              case .string(let state) = variant.value else {
+            case .variant(let variant) = stateValue,
+            case .string(let state) = variant.value
+        else {
             return nil
         }
         return state
@@ -213,11 +231,12 @@ public actor ConnMan: NetworkConnectionManager {
     /// Extract IP address from service properties
     private func extractIPAddress(from properties: [DBusValue: DBusValue]) -> String? {
         guard let ipv4Value = properties[DBusValue.string("IPv4")],
-              case .variant(let ipv4Variant) = ipv4Value,
-              case .dictionary(let ipv4Dict) = ipv4Variant.value,
-              let addressValue = ipv4Dict[DBusValue.string("Address")],
-              case .variant(let addressVariant) = addressValue,
-              case .string(let address) = addressVariant.value else {
+            case .variant(let ipv4Variant) = ipv4Value,
+            case .dictionary(let ipv4Dict) = ipv4Variant.value,
+            let addressValue = ipv4Dict[DBusValue.string("Address")],
+            case .variant(let addressVariant) = addressValue,
+            case .string(let address) = addressVariant.value
+        else {
             return nil
         }
         return address
@@ -230,9 +249,12 @@ public actor ConnMan: NetworkConnectionManager {
         do {
             try await scanWiFiNetworks()
         } catch {
-            logger.warning("WiFi scan failed, continuing with cached results", metadata: [
-                "error": "\(error)"
-            ])
+            logger.warning(
+                "WiFi scan failed, continuing with cached results",
+                metadata: [
+                    "error": "\(error)"
+                ]
+            )
         }
 
         let services = try await getServices()
@@ -241,27 +263,33 @@ public actor ConnMan: NetworkConnectionManager {
 
         for (path, properties) in services {
             guard let type = extractServiceType(from: properties),
-                  type == "wifi",
-                  let ssid = extractSSID(from: properties),
-                  !ssid.isEmpty else {
+                type == "wifi",
+                let ssid = extractSSID(from: properties),
+                !ssid.isEmpty
+            else {
                 continue
             }
 
             let signalStrength = extractSignalStrength(from: properties)
             let isSecured = extractSecurity(from: properties)
 
-            networks.append(WiFiNetwork(
-                ssid: ssid,
-                path: path,
-                signalStrength: signalStrength,
-                isSecured: isSecured
-            ))
+            networks.append(
+                WiFiNetwork(
+                    ssid: ssid,
+                    path: path,
+                    signalStrength: signalStrength,
+                    isSecured: isSecured
+                )
+            )
 
-            logger.debug("Found network", metadata: [
-                "ssid": "\(ssid)",
-                "signal": "\(signalStrength?.description ?? "unknown")",
-                "secured": "\(isSecured)"
-            ])
+            logger.debug(
+                "Found network",
+                metadata: [
+                    "ssid": "\(ssid)",
+                    "signal": "\(signalStrength?.description ?? "unknown")",
+                    "secured": "\(isSecured)",
+                ]
+            )
         }
 
         return networks
@@ -292,7 +320,7 @@ public actor ConnMan: NetworkConnectionManager {
                     method: "SetProperty",
                     body: [
                         .string("Passphrase"),
-                        .variant(DBusVariant(.string(password)))
+                        .variant(DBusVariant(.string(password))),
                     ]
                 )
 
@@ -320,25 +348,31 @@ public actor ConnMan: NetworkConnectionManager {
             guard case .methodReturn = connectReply.messageType else {
                 var errorDetails = "No details available"
                 if let bodyValue = connectReply.body.first,
-                   case .string(let message) = bodyValue {
+                    case .string(let message) = bodyValue
+                {
                     errorDetails = message
                 }
 
-                if errorDetails.contains("Invalid key") ||
-                   errorDetails.contains("invalid-key") {
+                if errorDetails.contains("Invalid key") || errorDetails.contains("invalid-key") {
                     self.logger.error("Invalid WiFi password")
                     throw NetworkConnectionError.authenticationFailed
                 }
 
-                self.logger.error("Connection failed", metadata: [
-                    "error": "\(errorDetails)"
-                ])
+                self.logger.error(
+                    "Connection failed",
+                    metadata: [
+                        "error": "\(errorDetails)"
+                    ]
+                )
                 throw NetworkConnectionError.connectionFailed
             }
 
-            self.logger.info("Successfully connected to WiFi network", metadata: [
-                "ssid": "\(ssid)"
-            ])
+            self.logger.info(
+                "Successfully connected to WiFi network",
+                metadata: [
+                    "ssid": "\(ssid)"
+                ]
+            )
         }
     }
 
@@ -348,10 +382,11 @@ public actor ConnMan: NetworkConnectionManager {
 
         for (path, properties) in services {
             guard let type = extractServiceType(from: properties),
-                  type == "wifi",
-                  let state = extractServiceState(from: properties),
-                  (state == "ready" || state == "online"),
-                  let ssid = extractSSID(from: properties) else {
+                type == "wifi",
+                let state = extractServiceState(from: properties),
+                state == "ready" || state == "online",
+                let ssid = extractSSID(from: properties)
+            else {
                 continue
             }
 
@@ -395,9 +430,12 @@ public actor ConnMan: NetworkConnectionManager {
             )
         )
 
-        logger.info("Disconnected from WiFi network", metadata: [
-            "ssid": "\(connection.ssid)"
-        ])
+        logger.info(
+            "Disconnected from WiFi network",
+            metadata: [
+                "ssid": "\(connection.ssid)"
+            ]
+        )
 
         return true
     }

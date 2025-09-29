@@ -58,8 +58,9 @@ public actor NetworkManagerFactory {
                 )
 
                 guard let reply = try await connection.send(request),
-                      case .methodReturn = reply.messageType,
-                      let bodyValue = reply.body.first else {
+                    case .methodReturn = reply.messageType,
+                    let bodyValue = reply.body.first
+                else {
                     return false
                 }
 
@@ -76,10 +77,13 @@ public actor NetworkManagerFactory {
                 }
             }
         } catch {
-            logger.debug("Failed to check service availability", metadata: [
-                "service": "\(serviceName)",
-                "error": "\(error)"
-            ])
+            logger.debug(
+                "Failed to check service availability",
+                metadata: [
+                    "service": "\(serviceName)",
+                    "error": "\(error)",
+                ]
+            )
             return false
         }
     }
@@ -87,9 +91,12 @@ public actor NetworkManagerFactory {
     /// Detect which network manager is available
     private func detectNetworkManager() async -> NetworkManagerType {
         if let cached = cachedManager {
-            logger.debug("Using cached network manager detection", metadata: [
-                "manager": "\(cached.rawValue)"
-            ])
+            logger.debug(
+                "Using cached network manager detection",
+                metadata: [
+                    "manager": "\(cached.rawValue)"
+                ]
+            )
             return cached
         }
 

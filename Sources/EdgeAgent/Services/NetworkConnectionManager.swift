@@ -53,7 +53,12 @@ public struct WiFiConnection: Sendable {
         case failed = "failed"
     }
 
-    public init(ssid: String, connectionPath: String, ipAddress: String? = nil, state: ConnectionState = .connected) {
+    public init(
+        ssid: String,
+        connectionPath: String,
+        ipAddress: String? = nil,
+        state: ConnectionState = .connected
+    ) {
         self.ssid = ssid
         self.connectionPath = connectionPath
         self.ipAddress = ipAddress
