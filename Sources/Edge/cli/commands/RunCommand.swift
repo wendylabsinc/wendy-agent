@@ -211,7 +211,7 @@ extension RunCommand {
             let digest = "sha256:" + String(layerPath.dropFirst("blobs/sha256/".count))
 
             // Get layer metadata from LayerSources
-            guard let layerSource = manifest.layerSources[digest] else {
+            guard let layerSource = manifest.layerSources?[digest] else {
                 logger.warning("No layer source found for digest: \(digest)")
                 continue
             }
@@ -278,7 +278,7 @@ extension RunCommand {
         let config: String
         let repoTags: [String]
         let layers: [String]
-        let layerSources: [String: LayerSource]
+        let layerSources: [String: LayerSource]?
 
         enum CodingKeys: String, CodingKey {
             case config = "Config"
