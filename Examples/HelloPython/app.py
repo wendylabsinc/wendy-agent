@@ -6,6 +6,7 @@ Simple Hello World Python HTTP Server
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import json
 import os
+import socket
 
 class HelloWorldHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -110,22 +111,23 @@ class HelloWorldHandler(BaseHTTPRequestHandler):
             self.wfile.write(json.dumps(error_response).encode())
 
     def log_message(self, format, *args):
-        print(f"[{self.date_time_string()}] {format % args}")
+        print(f"[{self.date_time_string()}] {format % args}", flush=True)
 
 def run_server(port=8000):
-    server_address = ('', port)
+    server_address = ('0.0.0.0', port)
     httpd = HTTPServer(server_address, HelloWorldHandler)
-    print(f"Server running on port {port}")
-    print(f"Visit http://localhost:{port} to see the Hello World page")
-    print(f"API endpoints available:")
-    print(f"  GET  /api/hello - JSON hello message")
-    print(f"  GET  /health - Health check")
-    print(f"  POST /api/echo - Echo back posted data")
+    print(f"Starting server on {server_address[0]}:{server_address[1]}", flush=True)
+    print(f"Visit http://localhost:{port} to see the Hello World page", flush=True)
+    print(f"API endpoints available:", flush=True)
+    print(f"  GET  /api/hello - JSON hello message", flush=True)
+    print(f"  GET  /health - Health check", flush=True)
+    print(f"  POST /api/echo - Echo back posted data", flush=True)
+    print("Server is ready to accept connections...", flush=True)
     
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
-        print("\nShutting down server...")
+        print("\nShutting down server...", flush=True)
         httpd.shutdown()
 
 if __name__ == '__main__':

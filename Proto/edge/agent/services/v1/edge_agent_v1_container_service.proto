@@ -45,6 +45,8 @@ message RunContainerLayersRequest {
     
     // Optional restart policy override for Docker runtime.
     optional RestartPolicy restart_policy = 6;
+
+    string working_dir = 7;
 }
 
 message RunContainerLayerHeader {

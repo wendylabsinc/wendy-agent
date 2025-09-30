@@ -34,7 +34,7 @@ func withGRPCClient<R: Sendable>(
 ) async throws -> R {
     let logger = Logger(label: "edgeengineer.grpc-client")
     let endpoint = try connectionOptions.endpoint
-    // TODO: If the host is unreachable, this fails on the first command
+
     do {
         return try await withGRPCClient(endpoint, body)
     } catch let error as RPCError where error.code == .unavailable {

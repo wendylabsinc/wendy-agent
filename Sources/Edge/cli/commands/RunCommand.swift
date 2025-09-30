@@ -2,6 +2,7 @@ import AppConfig
 import ArgumentParser
 import ContainerBuilder
 import ContainerRegistry
+import Crypto
 import EdgeAgentGRPC
 import EdgeCLI
 import Foundation
@@ -22,6 +23,7 @@ struct RunCommand: AsyncParsableCommand, Sendable {
         case noExecutableTarget
         case invalidExecutableTarget(String)
         case multipleExecutableTargets([String])
+        case noManifestFound
 
         var description: String {
             switch self {
@@ -32,6 +34,8 @@ struct RunCommand: AsyncParsableCommand, Sendable {
             case .multipleExecutableTargets(let names):
                 return
                     "multiple executable targets available, but none specified: \(names.joined(separator: ", "))"
+            case .noManifestFound:
+                return "No manifest found in Docker image"
             }
         }
     }
@@ -133,7 +137,7 @@ extension RunCommand {
         let url = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
         let name = url.lastPathComponent.lowercased()
 
-        let readAppConfigData = try await readAppConfigData(
+        let appConfigData = try await readAppConfigData(
             logger: Logger(label: "edgeengineer.cli.run.docker.container.docker")
         )
 
@@ -142,7 +146,7 @@ extension RunCommand {
             .path()
         try await uploadDockerTar(
             imageName: url.lastPathComponent.lowercased(),
-            appConfigData: readAppConfigData,
+            appConfigData: appConfigData,
             builtContainer: Task {
                 try await DockerCLI().save(
                     name: name,
@@ -155,10 +159,282 @@ extension RunCommand {
 
     func runContainerdBased() async throws {
         let logger = Logger(label: "edgeengineer.cli.run.docker.container.containerd")
-        logger.notice(
-            "Containerd-based execution are unsupported for Dockerfile based builds. Falling back to Docker based execution"
+
+        let url = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        let name = url.lastPathComponent.lowercased()
+
+        try await buildDockerBased(name: name)
+
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(
+            UUID().uuidString
         )
-        try await runDockerBased()
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+
+        let imageTarPath = tempDir.appendingPathComponent("\(name).tar")
+
+        let docker = DockerCLI()
+        try await docker.save(name: name, output: imageTarPath.path())
+        var layers = [ContainerdLayer]()
+
+        // Extract file (tar) to temp FS
+        let extractDir = tempDir.appendingPathComponent("extract")
+        try FileManager.default.createDirectory(at: extractDir, withIntermediateDirectories: true)
+        try await extractTar(from: imageTarPath, to: extractDir)
+
+        // Parse manifest.json to get layer order and metadata
+        let manifestPath = extractDir.appendingPathComponent("manifest.json")
+        let manifestData = try Data(contentsOf: manifestPath)
+        let manifests = try JSONDecoder().decode([DockerManifest].self, from: manifestData)
+
+        guard let manifest = manifests.first else {
+            throw Error.noManifestFound
+        }
+
+        // Load and parse the config file
+        let configPath = extractDir.appendingPathComponent(manifest.config)
+        let configData = try Data(contentsOf: configPath)
+        let imageConfig = try JSONDecoder().decode(ImageConfig.self, from: configData)
+
+        logger.info(
+            "Loaded container config",
+            metadata: [
+                "architecture": .string(imageConfig.architecture),
+                "os": .string(imageConfig.os),
+                "cmd": .string(imageConfig.config.cmd?.joined(separator: " ") ?? "none"),
+                "workingDir": .string(imageConfig.config.workingDir ?? "none"),
+            ]
+        )
+
+        // Process layers in the correct order from manifest
+        for layerPath in manifest.layers {
+            // Extract the digest from the layer path (e.g., "blobs/sha256/abc123..." -> "sha256:abc123...")
+            let digest = "sha256:" + String(layerPath.dropFirst("blobs/sha256/".count))
+
+            // Get layer metadata from LayerSources
+            guard let layerSource = manifest.layerSources[digest] else {
+                logger.warning("No layer source found for digest: \(digest)")
+                continue
+            }
+
+            // Construct the full path to the layer file
+            let layerFile = extractDir.appendingPathComponent(layerPath)
+
+            // Verify the file exists
+            guard FileManager.default.fileExists(atPath: layerFile.path) else {
+                logger.warning("Layer file not found: \(layerFile.path)")
+                continue
+            }
+
+            layers.append(
+                ContainerdLayer(
+                    source: .path(layerFile),
+                    digest: digest,
+                    diffID: digest,
+                    size: layerSource.size,
+                    gzip: false
+                )
+            )
+        }
+
+        try await uploadAndRunContainerdContainer(
+            layers: layers,
+            imageName: name,
+            config: imageConfig,
+            logger: logger
+        )
+    }
+
+    struct ContainerdLayer: Sendable {
+        enum Source: @unchecked Sendable {
+            case path(URL)
+            case stream(any AsyncSequence<ArraySlice<UInt8>, any Swift.Error>)
+        }
+
+        let source: Source
+        let digest: String
+        let diffID: String
+        let size: Int64
+        let gzip: Bool
+
+        func withStream(_ write: (ArraySlice<UInt8>) async throws -> Void) async throws {
+            switch source {
+            case .path(let url):
+                try await FileSystem.shared.withFileHandle(
+                    forReadingAt: FilePath(url.path())
+                ) { fileHandle in
+                    for try await chunk in fileHandle.readChunks() {
+                        try await write(Array(buffer: chunk)[...])
+                    }
+                }
+            case .stream(let asyncSequence):
+                for try await chunk in asyncSequence {
+                    try await write(chunk)
+                }
+            }
+        }
+    }
+
+    struct DockerManifest: Codable, Sendable {
+        let config: String
+        let repoTags: [String]
+        let layers: [String]
+        let layerSources: [String: LayerSource]
+
+        enum CodingKeys: String, CodingKey {
+            case config = "Config"
+            case repoTags = "RepoTags"
+            case layers = "Layers"
+            case layerSources = "LayerSources"
+        }
+    }
+
+    struct LayerSource: Codable, Sendable {
+        let mediaType: String
+        let size: Int64
+        let digest: String
+
+        enum CodingKeys: String, CodingKey {
+            case mediaType = "mediaType"
+            case size = "size"
+            case digest = "digest"
+        }
+    }
+
+    struct ContainerConfig: Codable, Sendable {
+        let cmd: [String]?
+        let env: [String]?
+        let workingDir: String?
+        let user: String?
+        let exposedPorts: [String: [String: String]]?
+        let labels: [String: String]?
+
+        enum CodingKeys: String, CodingKey {
+            case cmd = "Cmd"
+            case env = "Env"
+            case workingDir = "WorkingDir"
+            case user = "User"
+            case exposedPorts = "ExposedPorts"
+            case labels = "Labels"
+        }
+    }
+
+    struct ImageConfig: Codable, Sendable {
+        let architecture: String
+        let os: String
+        let config: ContainerConfig
+        let rootfs: RootFS
+
+        enum CodingKeys: String, CodingKey {
+            case architecture = "architecture"
+            case os = "os"
+            case config = "config"
+            case rootfs = "rootfs"
+        }
+    }
+
+    struct RootFS: Codable, Sendable {
+        let type: String
+        let diffIds: [String]
+
+        enum CodingKeys: String, CodingKey {
+            case type = "type"
+            case diffIds = "diff_ids"
+        }
+    }
+
+    func uploadAndRunContainerdContainer(
+        layers: [ContainerdLayer],
+        imageName: String,
+        config: ImageConfig,
+        logger: Logger
+    ) async throws {
+        if layers.isEmpty {
+            logger.warning("No layers to run")
+            return
+        }
+
+        let appConfigData = try await readAppConfigData(logger: logger)
+
+        try await withGRPCClient(agentConnectionOptions) { [appConfigData] client in
+            let agentContainers = Edge_Agent_Services_V1_EdgeContainerService.Client(
+                wrapping: client
+            )
+            // TODO: Can we cache this per-device to omit round-trips to the agent?
+            logger.info("Getting existing container layers from agent")
+            let existingLayers = try await agentContainers.listLayers(.init()) { response in
+                var layers = [Edge_Agent_Services_V1_LayerHeader]()
+                for try await layer in response.messages {
+                    layers.append(layer)
+                }
+                return layers
+            }
+
+            let existingHashes = existingLayers.map(\.digest)
+            logger.trace("Existing layers: \(existingHashes)")
+            logger.trace("Needed layers: \(layers.map(\.digest))")
+
+            logger.info("Sending changed container layers to agent")
+            // Upload layers in parallel
+            // This is useful because a stream can only handle one chunk at a time
+            // But the networking latency might be high enough over WiFi that we can
+            // satisfy the disk more by making more streams. Many streams share a TCP connection
+            try await withThrowingTaskGroup { taskGroup in
+                for layer in layers where !existingHashes.contains(layer.digest) {
+                    taskGroup.addTask {
+                        // Upload layers that have changed or are new
+                        logger.info("Uploading layer \(layer.digest)")
+                        try await agentContainers.writeLayer(
+                            request: .init { writer in
+                                try await layer.withStream { chunk in
+                                    try await writer.write(
+                                        .with {
+                                            $0.digest = layer.digest
+                                            $0.data = Data(chunk)
+                                        }
+                                    )
+                                }
+                            }
+                        ) { response in
+                            for try await _ in response.messages {
+                                // Ignore responses
+                            }
+                        }
+                        logger.info("Uploaded layer \(layer.digest) successfully")
+                    }
+                }
+                try await taskGroup.waitForAll()
+            }
+
+            _ = try await agentContainers.runContainer(
+                .with {
+                    $0.imageName = "\(imageName):latest"
+                    $0.appName = imageName
+                    $0.workingDir = config.config.workingDir ?? "/"
+                    $0.cmd = config.config.cmd?.joined(separator: " ") ?? "/bin/\(imageName)"
+                    $0.appConfig = appConfigData
+                    $0.layers = layers.map { layer in
+                        .with {
+                            $0.digest = layer.digest
+                            $0.size = layer.size
+                            $0.gzip = layer.gzip
+                            $0.diffID = layer.diffID
+                        }
+                    }
+                }
+            )
+
+            if debug {
+                logger.info("Started container with debug port 4242")
+            } else {
+                logger.info("Started container")
+            }
+
+            if detach {
+                return
+            }
+
+            // TODO: Logs?
+        }
     }
 
     func buildDockerBased(name: String) async throws {
@@ -218,8 +494,6 @@ extension RunCommand {
         let package = try await swiftPM.dumpPackage(
             .scratchPath(".edge-build")
         )
-
-        let appConfigData = try await readAppConfigData(logger: logger)
 
         // Get all executable targets
         let executableTargets = package.targets.filter { $0.type == "executable" }
@@ -321,94 +595,51 @@ extension RunCommand {
             tempDir: tempDir
         )
         logger.info("Container prepared, connecting to agent")
-        try await withGRPCClient(agentConnectionOptions) { [appConfigData] client in
-            let agentContainers = Edge_Agent_Services_V1_EdgeContainerService.Client(
-                wrapping: client
-            )
-            // TODO: Can we cache this per-device to omit round-trips to the agent?
-            logger.info("Getting existing container layers from agent")
-            let existingLayers = try await agentContainers.listLayers(.init()) { response in
-                var layers = [Edge_Agent_Services_V1_LayerHeader]()
-                for try await layer in response.messages {
-                    layers.append(layer)
-                }
-                return layers
-            }
 
-            let existingHashes = existingLayers.map(\.digest)
-            logger.trace("Existing layers: \(existingHashes)")
-            logger.trace("Needed layers: \(container.layers.map(\.digest))")
-
-            logger.info("Sending changed container layers to agent")
-            // Upload layers in parallel
-            // This is useful because a stream can only handle one chunk at a time
-            // But the networking latency might be high enough over WiFi that we can
-            // satisfy the disk more by making more streams. Many streams share a TCP connection
-            try await withThrowingTaskGroup { taskGroup in
-                for layer in container.layers where !existingHashes.contains(layer.digest) {
-                    taskGroup.addTask {
-                        // Upload layers that have changed or are new
-                        logger.info("Uploading layer \(layer.digest)")
-                        try await agentContainers.writeLayer(
-                            request: .init { writer in
-                                try await FileSystem.shared.withFileHandle(
-                                    forReadingAt: FilePath(layer.path.path)
-                                ) {
-                                    fileHandle in
-                                    for try await chunk in fileHandle.readChunks() {
-                                        try await writer.write(
-                                            .with {
-                                                $0.digest = layer.digest
-                                                $0.data = Data(chunk.readableBytesView)
-                                            }
-                                        )
-                                    }
-                                }
-                            }
-                        ) { response in
-                            for try await _ in response.messages {
-                                // Ignore responses
-                            }
-                        }
-                        logger.info("Uploaded layer \(layer.hash) successfully")
-                    }
-                }
-                try await taskGroup.waitForAll()
-            }
-
-            _ = try await agentContainers.runContainer(
-                .with {
-                    $0.imageName = "\(imageName):latest"
-                    $0.appName = imageName
-                    if debug {
-                        $0.cmd = "ds2 gdbserver 0.0.0.0:4242 /bin/\(imageName)"
-                    } else {
-                        $0.cmd = "/bin/\(imageName)"
-                    }
-                    $0.appConfig = appConfigData
-                    $0.layers = container.layers.map { layer in
-                        .with {
-                            $0.digest = layer.digest
-                            $0.size = layer.size
-                            $0.gzip = layer.gzip
-                            $0.diffID = layer.diffID
-                        }
-                    }
-                }
-            )
-
-            if debug {
-                logger.info("Started container with debug port 4242")
-            } else {
-                logger.info("Started container")
-            }
-
-            if detach {
-                return
-            }
-
-            // TODO: Logs?
+        let cmd: [String]
+        if debug {
+            cmd = [
+                "ds2",
+                "gdbserver",
+                "0.0.0.0:4242",
+                "/bin/\(imageName)",
+            ]
+        } else {
+            // Use the command from the config, or fallback to the image name
+            cmd = ["/bin/\(imageName)"]
         }
+        // Create a default config for Swift-based containers
+        let defaultConfig = ImageConfig(
+            architecture: "arm64",
+            os: "linux",
+            config: ContainerConfig(
+                cmd: cmd,
+                env: nil,
+                workingDir: "/",
+                user: nil,
+                exposedPorts: nil,
+                labels: nil
+            ),
+            rootfs: RootFS(
+                type: "layers",
+                diffIds: container.layers.map(\.diffID)
+            )
+        )
+
+        try await uploadAndRunContainerdContainer(
+            layers: container.layers.map { layer in
+                ContainerdLayer(
+                    source: .path(layer.path),
+                    digest: layer.digest,
+                    diffID: layer.diffID,
+                    size: layer.size,
+                    gzip: layer.gzip
+                )
+            },
+            imageName: imageName,
+            config: defaultConfig,
+            logger: logger
+        )
     }
 
     func runSwiftDockerBased() async throws {
@@ -633,6 +864,46 @@ extension RunCommand {
         } catch {
             logger.error("Failed to decode app config", metadata: ["error": .string("\(error)")])
             return Data()
+        }
+    }
+
+    private func writeHTTPBodyToFile(
+        body: any AsyncSequence<ArraySlice<UInt8>, any Swift.Error>,
+        to url: URL
+    ) async throws {
+        try await FileSystem.shared.withFileHandle(
+            forWritingAt: FilePath(url.path()),
+            options: .newFile(replaceExisting: true)
+        ) { fileHandle in
+            var writer = fileHandle.bufferedWriter()
+            for try await chunk in body {
+                try await writer.write(contentsOf: chunk)
+            }
+        }
+    }
+
+    private func extractTar(from sourceURL: URL, to destinationURL: URL) async throws {
+        _ = try await Subprocess.run(
+            Subprocess.Executable.path("/usr/bin/env"),
+            arguments: Subprocess.Arguments([
+                "tar", "-xf", sourceURL.path, "-C", destinationURL.path,
+            ]),
+            output: .discarded
+        )
+    }
+
+    private func calculateDigest(for fileURL: URL) async throws -> String {
+        return try await FileSystem.shared.withFileHandle(
+            forReadingAt: FilePath(fileURL.path)
+        ) { fileHandle in
+            var sha = SHA256()
+            for try await chunk in fileHandle.readChunks() {
+                sha.update(data: chunk.readableBytesView)
+            }
+            let hash = sha.finalize()
+                .map { String(format: "%02x", $0) }
+                .joined()
+            return "sha256:\(hash)"
         }
     }
 }
