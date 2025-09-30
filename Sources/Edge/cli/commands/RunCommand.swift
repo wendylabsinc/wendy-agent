@@ -210,17 +210,10 @@ extension RunCommand {
             // Extract the digest from the layer path (e.g., "blobs/sha256/abc123..." -> "sha256:abc123...")
             let digest = "sha256:" + String(layerPath.dropFirst("blobs/sha256/".count))
 
-            // Get layer metadata from LayerSources
-            guard let layerSource = manifest.layerSources?[digest] else {
-                logger.warning("No layer source found for digest: \(digest)")
-                continue
-            }
-
             // Construct the full path to the layer file
             let layerFile = extractDir.appendingPathComponent(layerPath)
-
-            // Verify the file exists
-            guard FileManager.default.fileExists(atPath: layerFile.path) else {
+            
+            guard let info = try await FileSystem.shared.info(forFileAt: FilePath(layerFile.path())) else {
                 logger.warning("Layer file not found: \(layerFile.path)")
                 continue
             }
@@ -230,7 +223,7 @@ extension RunCommand {
                     source: .path(layerFile),
                     digest: digest,
                     diffID: digest,
-                    size: layerSource.size,
+                    size: info.size,
                     gzip: false
                 )
             )
@@ -278,13 +271,11 @@ extension RunCommand {
         let config: String
         let repoTags: [String]
         let layers: [String]
-        let layerSources: [String: LayerSource]?
 
         enum CodingKeys: String, CodingKey {
             case config = "Config"
             case repoTags = "RepoTags"
             case layers = "Layers"
-            case layerSources = "LayerSources"
         }
     }
 
