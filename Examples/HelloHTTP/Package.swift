@@ -9,7 +9,8 @@ let package = Package(
         .macOS(.v15)
     ],
     dependencies: [
-        .package(url: "https://github.com/hummingbird-project/hummingbird.git", from: "2.10.0")
+        .package(url: "https://github.com/hummingbird-project/hummingbird.git", from: "2.10.0"),
+        .package(url: "https://github.com/swift-otel/swift-otel.git", from: "1.0.0-beta.1"),
     ],
     targets: [
         // Targets are the basic building blocks of a package, defining a module or a test suite.
@@ -17,7 +18,8 @@ let package = Package(
         .executableTarget(
             name: "HelloHTTP",
             dependencies: [
-                .product(name: "Hummingbird", package: "hummingbird")
+                .product(name: "Hummingbird", package: "hummingbird"),
+                .product(name: "OTel", package: "swift-otel"),
             ]
         )
     ]
