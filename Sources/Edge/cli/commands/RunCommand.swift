@@ -210,6 +210,18 @@ extension RunCommand {
             // Extract the digest from the layer path (e.g., "blobs/sha256/abc123..." -> "sha256:abc123...")
             let digest = "sha256:" + String(layerPath.dropFirst("blobs/sha256/".count))
 
+            // Get layer metadata from LayerSources to detect gzip or not
+            let gzip: Bool
+            if let layerSource = manifest.layerSources?[digest] {
+                // LayerSources only exists in Docker format, not in OCI
+                // And Docker produces gzipped files
+                gzip = layerSource.mediaType.contains("gzip")
+            } else {
+                // Layer sources does not exist in OCI format
+                // OCI is not gzip-ed normally
+                gzip = true
+            }
+
             // Construct the full path to the layer file
             let layerFile = extractDir.appendingPathComponent(layerPath)
             
@@ -224,7 +236,7 @@ extension RunCommand {
                     digest: digest,
                     diffID: digest,
                     size: info.size,
-                    gzip: false
+                    gzip: gzip
                 )
             )
         }
@@ -271,11 +283,13 @@ extension RunCommand {
         let config: String
         let repoTags: [String]
         let layers: [String]
+        let layerSources: [String: LayerSource]?
 
         enum CodingKeys: String, CodingKey {
             case config = "Config"
             case repoTags = "RepoTags"
             case layers = "Layers"
+            case layerSources = "LayerSources"
         }
     }
 
