@@ -36,6 +36,11 @@ let package = Package(
         ),
         .package(url: "https://github.com/apple/swift-http-types.git", from: "1.4.0"),
         .package(url: "https://github.com/apple/swift-async-dns-resolver.git", from: "0.4.0"),
+        .package(url: "https://github.com/apple/swift-openapi-generator.git", from: "1.10.3"),
+        .package(
+            url: "https://github.com/swift-server/swift-openapi-async-http-client.git",
+            from: "1.1.0"
+        ),
         .package(url: "https://github.com/edgeengineer/dbus.git", from: "0.2.2"),
         .package(url: "https://github.com/apple/swift-system.git", from: "1.4.2"),
     ],
@@ -50,6 +55,10 @@ let package = Package(
                 .product(name: "GRPCNIOTransportHTTP2", package: "grpc-swift-nio-transport"),
                 .product(name: "AsyncDNSResolver", package: "swift-async-dns-resolver"),
                 .product(name: "SystemPackage", package: "swift-system"),
+                .product(
+                    name: "OpenAPIAsyncHTTPClient",
+                    package: "swift-openapi-async-http-client"
+                ),
                 .target(name: "EdgeAgentGRPC"),
                 .target(name: "EdgeCLI"),
                 .target(name: "EdgeShared"),
@@ -58,11 +67,20 @@ let package = Package(
                 .target(name: "DownloadSupport"),
                 .target(name: "AppConfig"),
                 .target(name: "CliXPCProtocol"),
+                .target(name: "DockerOpenAPI"),
             ],
             path: "Sources/Edge",
             resources: [
                 .copy("Resources")
             ]
+        ),
+
+        .target(
+            name: "DockerOpenAPI",
+            dependencies: [
+                .product(name: "OpenAPIAsyncHTTPClient", package: "swift-openapi-async-http-client")
+            ],
+            plugins: [.plugin(name: "OpenAPIGenerator", package: "swift-openapi-generator")]
         ),
 
         /// Contains everything EdgeCLI, except for the command line interface.
