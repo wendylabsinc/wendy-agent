@@ -18,7 +18,6 @@ public actor ConnMan: NetworkConnectionManager {
 
     // ConnMan DBus constants
     private let connManDestination = "net.connman"
-    private let connManManagerPath = "/net/connman"
     private let connManManagerInterface = "net.connman.Manager"
     private let connManTechnologyInterface = "net.connman.Technology"
     private let connManServiceInterface = "net.connman.Service"
@@ -77,7 +76,7 @@ public actor ConnMan: NetworkConnectionManager {
         let message: DBusMessage = try await executeDBusRequest(
             .createMethodCall(
                 destination: connManDestination,
-                path: connManManagerPath,
+                path: "/",
                 interface: connManManagerInterface,
                 method: "GetTechnologies"
             )
@@ -118,11 +117,11 @@ public actor ConnMan: NetworkConnectionManager {
 
         let _: DBusMessage = try await executeDBusRequest(
             .createMethodCall(
-                destination: connManDestination,
-                path: wifiTechPath,
-                interface: connManTechnologyInterface,
-                method: "Scan"
-            )
+                  destination: connManDestination,
+                  path: wifiTechPath,
+                  interface: connManTechnologyInterface,
+                  method: "Scan"
+               )
         )
 
         try await Task.sleep(for: .seconds(2))
@@ -134,7 +133,7 @@ public actor ConnMan: NetworkConnectionManager {
         let message: DBusMessage = try await executeDBusRequest(
             .createMethodCall(
                 destination: connManDestination,
-                path: connManManagerPath,
+                path: "/",
                 interface: connManManagerInterface,
                 method: "GetServices"
             )
