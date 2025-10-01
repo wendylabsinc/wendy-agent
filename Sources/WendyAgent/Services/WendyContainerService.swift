@@ -33,6 +33,39 @@ struct WendyContainerService: Wendy_Agent_Services_V1_WendyContainerService.Serv
             return Metadata()
         }
     }
+    func listContainers(
+        request: GRPCCore.ServerRequest<Edge_Agent_Services_V1_ListContainersRequest>,
+        context: GRPCCore.ServerContext
+    ) async throws -> GRPCCore.StreamingServerResponse<Edge_Agent_Services_V1_ListContainersResponse> {
+        return StreamingServerResponse { writer in
+            try await Containerd.withClient { client in
+                let tasks = try await client.listTasks()
+                let containers = try await client.listContainers()
+
+                for container in containers {
+                    try await writer.write(.with { 
+                        $0.container.appName = container.id
+                        $0.container.appVersion = container.labels["sh.wendy/app.version"] ?? "0.0.0"
+                        
+                        if 
+                            let restartCount = container.labels["containerd.io/restart.count"],
+                            let restartCount = UInt32(restartCount) 
+                        {
+                            $0.container.failureCount = restartCount
+                        }
+                        
+                        if let task: Containerd_V1_Types_Process = tasks.first(where: { $0.id == container.id }) {
+                            $0.container.runningState = task.status == .running ? .running : .stopped
+                        } else {
+                            $0.container.runningState = .stopped
+                        }
+                    })
+                }
+            }
+
+            return Metadata()
+        }
+    }
 
     func writeLayer(
         request: StreamingServerRequest<Wendy_Agent_Services_V1_WriteLayerRequest>,
@@ -142,6 +175,8 @@ struct WendyContainerService: Wendy_Agent_Services_V1_WendyContainerService.Serv
                 } else {
                     appConfig = try JSONDecoder().decode(AppConfig.self, from: request.appConfig)
                 }
+
+                labels["sh.wendy/app.version"] = appConfig.version
 
                 var spec = OCI(
                     process: .init(
