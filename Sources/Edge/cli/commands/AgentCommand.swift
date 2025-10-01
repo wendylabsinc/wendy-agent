@@ -83,13 +83,15 @@ struct AgentCommand: AsyncParsableCommand {
 
         @Argument(help: "The ID of the organisation to provision for")
         var organisationID: String
+
+        // TODO: Remote CSR authority support.
         
         @OptionGroup var agentConnectionOptions: AgentConnectionOptions
 
         func run() async throws {
             let name = try DistinguishedName {
-                CommonName("engineer")
-                CommonName("edge")
+                CommonName("sh")
+                CommonName("wendy")
                 CommonName(organisationID)
                 CommonName(UUID().uuidString)
             }
