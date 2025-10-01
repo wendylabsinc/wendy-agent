@@ -76,7 +76,7 @@ let package = Package(
                 .copy("Resources")
             ]
         ),
-        
+
         .target(
             name: "EdgeSDK",
             dependencies: [
@@ -210,7 +210,7 @@ let package = Package(
                 .target(name: "edge-agent"),
                 .target(name: "EdgeAgentGRPC"),
                 .target(name: "EdgeSDK"),
-                .target(name: "edge-helper", condition: .when(platforms: [.macOS]))
+                .target(name: "edge-helper", condition: .when(platforms: [.macOS])),
             ]
         ),
 

@@ -1,12 +1,18 @@
 import ArgumentParser
-import Foundation
-import Testing
 import Crypto
+import EdgeAgentGRPC
+import EdgeSDK
+import Foundation
+import GRPCHealthService
+import GRPCNIOTransportHTTP2
+import GRPCServiceLifecycle
+import NIOCore
+import NIOPosix
+import NIOSSL
+import Testing
 import X509
 
-import EdgeSDK
-
-fileprivate func makeAuthority() throws -> Authority {
+private func makeAuthority() throws -> Authority {
     try Authority(
         privateKey: Certificate.PrivateKey(Curve25519.Signing.PrivateKey()),
         name: DistinguishedName {
@@ -18,7 +24,7 @@ fileprivate func makeAuthority() throws -> Authority {
     )
 }
 
-fileprivate func makeAgent(agentId: String = "agent-id") throws -> Agent.Unprovisioned {
+private func makeAgent(agentId: String = "agent-id") throws -> Agent.Unprovisioned {
     try Agent.Unprovisioned(
         privateKey: Certificate.PrivateKey(Curve25519.Signing.PrivateKey()),
         name: DistinguishedName {
@@ -31,27 +37,27 @@ fileprivate func makeAgent(agentId: String = "agent-id") throws -> Agent.Unprovi
 
 @Suite("CSRTests")
 struct CSRTests {
-    
+
     @Test("CSR Authority Signs Agent")
     func signAgent() throws {
         let authority = try makeAuthority()
         let agent = try makeAgent()
-        
+
         let certificate = try authority.sign(
             agent.csr,
             validUntil: Date().addingTimeInterval(3600)
         )
-        
+
         let _ = try agent.receiveSignedCertificate(certificate)
     }
-    
+
     @Test("Agent Rejects Public-Key Mismatch")
     func agentRejectsMismatch() throws {
         #expect(throws: Agent.ProvisioningError.publicKeyMismatch) {
             let authority = try makeAuthority()
             let agent = try makeAgent(agentId: "1")
             let otherAgent = try makeAgent(agentId: "2")
-            
+
             _ = try agent.receiveSignedCertificate(
                 try authority.sign(
                     otherAgent.csr,
@@ -60,7 +66,7 @@ struct CSRTests {
             )
         }
     }
-    
+
     @Test("Agent Rejects Not Yet Valid Public-Key")
     func agentRejectsNotYetValidCert() throws {
         #expect(
@@ -68,7 +74,7 @@ struct CSRTests {
         ) {
             let authority = try makeAuthority()
             let agent = try makeAgent(agentId: "1")
-            
+
             let cert = try authority.sign(
                 agent.csr,
                 validFrom: Date().addingTimeInterval(60),
@@ -77,7 +83,7 @@ struct CSRTests {
             _ = try agent.receiveSignedCertificate(cert)
         }
     }
-    
+
     @Test("Agent Rejects Expired Public-Key")
     func agentRejectsExpiredCert() throws {
         #expect(
@@ -85,7 +91,7 @@ struct CSRTests {
         ) {
             let authority = try makeAuthority()
             let agent = try makeAgent(agentId: "1")
-            
+
             let cert = try authority.sign(
                 agent.csr,
                 validFrom: Date().addingTimeInterval(-60),
@@ -96,28 +102,20 @@ struct CSRTests {
     }
 }
 
-import EdgeAgentGRPC
-import NIOSSL
-import NIOCore
-import NIOPosix
-import GRPCHealthService
-import GRPCNIOTransportHTTP2
-import GRPCServiceLifecycle
-
 @Suite("MTLS Tests")
 struct MTLSTests {
     @Test func testMutualAuth() async throws {
         let authority = try makeAuthority()
         let agent = try makeAgent()
-        
+
         let privateKey = agent.privateKey
         let certificate = try authority.sign(
             agent.csr,
             validUntil: Date().addingTimeInterval(3600)
         )
-        
+
         let _ = try agent.receiveSignedCertificate(certificate)
-        
+
         try await confirmation { confirm in
             func runClient() async throws {
                 let clientPrivateKeyPEM = try privateKey.serializeAsPEM()
@@ -138,7 +136,7 @@ struct MTLSTests {
                     try await Task.sleep(for: .seconds(1))
                 }
             }
-            
+
             let agentPrivateKeyPEM = try privateKey.serializeAsPEM()
             try await withGRPCServer(
                 transport: .http2NIOPosix(

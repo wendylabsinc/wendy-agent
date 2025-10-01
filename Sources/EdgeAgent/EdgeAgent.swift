@@ -1,4 +1,5 @@
 import ArgumentParser
+import Crypto
 import EdgeAgentGRPC
 import EdgeShared
 import Foundation
@@ -6,7 +7,6 @@ import GRPCCore
 import GRPCNIOTransportHTTP2
 import Logging
 import ServiceLifecycle
-import Crypto
 import X509
 import _NIOFileSystem
 
@@ -38,12 +38,12 @@ struct EdgeAgent: AsyncParsableCommand {
         logger.info("Starting Edge Agent version \(Version.current) on port \(port)")
 
         let (signal, continuation) = AsyncStream<Void>.makeStream()
-        
+
         let provisioning: EdgeProvisioningService
         let config: any AgentConfigService = try await {
             try await FileSystemAgentConfigService(directory: FilePath(configDir))
         }()
-        
+
         if let certificate = await config.certificate {
             provisioning = await EdgeProvisioningService(
                 privateKey: config.privateKey,
@@ -71,7 +71,7 @@ struct EdgeAgent: AsyncParsableCommand {
                 logger.notice("Shutting down server")
                 continuation.yield()
             }),
-            provisioning
+            provisioning,
         ]
 
         let serverIPv4 = GRPCServer(

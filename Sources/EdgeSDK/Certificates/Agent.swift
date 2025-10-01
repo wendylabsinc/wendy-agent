@@ -2,9 +2,9 @@ import Crypto
 import X509
 
 #if canImport(FoundationEssentials)
-import FoundationEssentials
+    import FoundationEssentials
 #else
-import Foundation
+    import Foundation
 #endif
 
 public struct Agent {
@@ -12,11 +12,11 @@ public struct Agent {
         case publicKeyMismatch
         case certificateNotValidYet, certificateNotValidAnymore
     }
-    
+
     public struct Unprovisioned: Sendable {
         public let privateKey: Certificate.PrivateKey
         public let csr: CertificateSigningRequest
-        
+
         public init(
             privateKey: Certificate.PrivateKey,
             name: DistinguishedName
@@ -29,27 +29,27 @@ public struct Agent {
                 attributes: CertificateSigningRequest.Attributes()
             )
         }
-        
+
         public consuming func receiveSignedCertificate(
             _ certificate: Certificate
         ) throws -> Provisioned {
             guard certificate.publicKey == privateKey.publicKey else {
                 throw ProvisioningError.publicKeyMismatch
             }
-            
+
             let now = Date()
             guard certificate.notValidBefore ~= now || certificate.notValidBefore < now else {
                 throw ProvisioningError.certificateNotValidYet
             }
-            
+
             guard certificate.notValidAfter ~= now || certificate.notValidAfter > now else {
                 throw ProvisioningError.certificateNotValidAnymore
             }
-            
+
             return Provisioned(certificate: certificate)
         }
     }
-    
+
     public struct Provisioned: Sendable {
         public let certificate: Certificate
     }
