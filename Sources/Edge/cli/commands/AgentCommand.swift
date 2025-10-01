@@ -92,8 +92,8 @@ struct AgentCommand: AsyncParsableCommand {
                 binary = try await downloadLatestRelease().path
             }
 
-            try await withGRPCClient(agentConnectionOptions) { client in
-                let agent = Edge_Agent_Services_V1_EdgeAgentService.Client(wrapping: client)
+            try await withGRPCClient(agentConnectionOptions, overridePort: 50_052) { client in
+                let agent = Edge_Agent_Updater_Services_V1_EdgeAgentUpdateService.Client(wrapping: client)
                 print("Pushing update...")
                 try await agent.updateAgent { writer in
                     logger.debug("Opening file...")

@@ -30,10 +30,12 @@ func withGRPCClient<R: Sendable>(
 
 func withGRPCClient<R: Sendable>(
     _ connectionOptions: AgentConnectionOptions,
+    overridePort: Int? = nil,
     _ body: @escaping (GRPCClient<GRPCTransport>) async throws -> R
 ) async throws -> R {
     let logger = Logger(label: "edgeengineer.grpc-client")
-    let endpoint = try connectionOptions.endpoint
+    var endpoint = try connectionOptions.endpoint
+    endpoint.port = overridePort ?? endpoint.port
 
     do {
         return try await withGRPCClient(endpoint, body)
