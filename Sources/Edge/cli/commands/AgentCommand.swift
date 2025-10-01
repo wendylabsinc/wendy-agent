@@ -18,6 +18,7 @@ struct AgentCommand: AsyncParsableCommand {
             VersionCommand.self,
             ProvisionCommand.self,
             UpdateCommand.self,
+            AppsCommand.self,
         ]
     )
 

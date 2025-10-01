@@ -68,12 +68,25 @@ public enum Edge_Agent_Services_V1_EdgeContainerService {
                 method: "StopContainer"
             )
         }
+        /// Namespace for "ListContainers" metadata.
+        public enum ListContainers {
+            /// Request type for "ListContainers".
+            public typealias Input = Edge_Agent_Services_V1_ListContainersRequest
+            /// Response type for "ListContainers".
+            public typealias Output = Edge_Agent_Services_V1_ListContainersResponse
+            /// Descriptor for "ListContainers".
+            public static let descriptor = GRPCCore.MethodDescriptor(
+                service: GRPCCore.ServiceDescriptor(fullyQualifiedService: "edge.agent.services.v1.EdgeContainerService"),
+                method: "ListContainers"
+            )
+        }
         /// Descriptors for all methods in the "edge.agent.services.v1.EdgeContainerService" service.
         public static let descriptors: [GRPCCore.MethodDescriptor] = [
             ListLayers.descriptor,
             WriteLayer.descriptor,
             RunContainer.descriptor,
-            StopContainer.descriptor
+            StopContainer.descriptor,
+            ListContainers.descriptor
         ]
     }
 }
@@ -154,6 +167,20 @@ extension Edge_Agent_Services_V1_EdgeContainerService {
             request: GRPCCore.StreamingServerRequest<Edge_Agent_Services_V1_StopContainerRequest>,
             context: GRPCCore.ServerContext
         ) async throws -> GRPCCore.StreamingServerResponse<Edge_Agent_Services_V1_StopContainerResponse>
+
+        /// Handle the "ListContainers" method.
+        ///
+        /// - Parameters:
+        ///   - request: A streaming request of `Edge_Agent_Services_V1_ListContainersRequest` messages.
+        ///   - context: Context providing information about the RPC.
+        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
+        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
+        ///     to an internal error.
+        /// - Returns: A streaming response of `Edge_Agent_Services_V1_ListContainersResponse` messages.
+        func listContainers(
+            request: GRPCCore.StreamingServerRequest<Edge_Agent_Services_V1_ListContainersRequest>,
+            context: GRPCCore.ServerContext
+        ) async throws -> GRPCCore.StreamingServerResponse<Edge_Agent_Services_V1_ListContainersResponse>
     }
 
     /// Service protocol for the "edge.agent.services.v1.EdgeContainerService" service.
@@ -219,6 +246,20 @@ extension Edge_Agent_Services_V1_EdgeContainerService {
             request: GRPCCore.ServerRequest<Edge_Agent_Services_V1_StopContainerRequest>,
             context: GRPCCore.ServerContext
         ) async throws -> GRPCCore.ServerResponse<Edge_Agent_Services_V1_StopContainerResponse>
+
+        /// Handle the "ListContainers" method.
+        ///
+        /// - Parameters:
+        ///   - request: A request containing a single `Edge_Agent_Services_V1_ListContainersRequest` message.
+        ///   - context: Context providing information about the RPC.
+        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
+        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
+        ///     to an internal error.
+        /// - Returns: A streaming response of `Edge_Agent_Services_V1_ListContainersResponse` messages.
+        func listContainers(
+            request: GRPCCore.ServerRequest<Edge_Agent_Services_V1_ListContainersRequest>,
+            context: GRPCCore.ServerContext
+        ) async throws -> GRPCCore.StreamingServerResponse<Edge_Agent_Services_V1_ListContainersResponse>
     }
 
     /// Simple service protocol for the "edge.agent.services.v1.EdgeContainerService" service.
@@ -284,6 +325,21 @@ extension Edge_Agent_Services_V1_EdgeContainerService {
             request: Edge_Agent_Services_V1_StopContainerRequest,
             context: GRPCCore.ServerContext
         ) async throws -> Edge_Agent_Services_V1_StopContainerResponse
+
+        /// Handle the "ListContainers" method.
+        ///
+        /// - Parameters:
+        ///   - request: A `Edge_Agent_Services_V1_ListContainersRequest` message.
+        ///   - response: A response stream of `Edge_Agent_Services_V1_ListContainersResponse` messages.
+        ///   - context: Context providing information about the RPC.
+        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
+        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
+        ///     to an internal error.
+        func listContainers(
+            request: Edge_Agent_Services_V1_ListContainersRequest,
+            response: GRPCCore.RPCWriter<Edge_Agent_Services_V1_ListContainersResponse>,
+            context: GRPCCore.ServerContext
+        ) async throws
     }
 }
 
@@ -335,6 +391,17 @@ extension Edge_Agent_Services_V1_EdgeContainerService.StreamingServiceProtocol {
                 )
             }
         )
+        router.registerHandler(
+            forMethod: Edge_Agent_Services_V1_EdgeContainerService.Method.ListContainers.descriptor,
+            deserializer: GRPCProtobuf.ProtobufDeserializer<Edge_Agent_Services_V1_ListContainersRequest>(),
+            serializer: GRPCProtobuf.ProtobufSerializer<Edge_Agent_Services_V1_ListContainersResponse>(),
+            handler: { request, context in
+                try await self.listContainers(
+                    request: request,
+                    context: context
+                )
+            }
+        )
     }
 }
 
@@ -372,6 +439,17 @@ extension Edge_Agent_Services_V1_EdgeContainerService.ServiceProtocol {
             context: context
         )
         return GRPCCore.StreamingServerResponse(single: response)
+    }
+
+    public func listContainers(
+        request: GRPCCore.StreamingServerRequest<Edge_Agent_Services_V1_ListContainersRequest>,
+        context: GRPCCore.ServerContext
+    ) async throws -> GRPCCore.StreamingServerResponse<Edge_Agent_Services_V1_ListContainersResponse> {
+        let response = try await self.listContainers(
+            request: GRPCCore.ServerRequest(stream: request),
+            context: context
+        )
+        return response
     }
 }
 
@@ -435,6 +513,23 @@ extension Edge_Agent_Services_V1_EdgeContainerService.SimpleServiceProtocol {
                 context: context
             ),
             metadata: [:]
+        )
+    }
+
+    public func listContainers(
+        request: GRPCCore.ServerRequest<Edge_Agent_Services_V1_ListContainersRequest>,
+        context: GRPCCore.ServerContext
+    ) async throws -> GRPCCore.StreamingServerResponse<Edge_Agent_Services_V1_ListContainersResponse> {
+        return GRPCCore.StreamingServerResponse<Edge_Agent_Services_V1_ListContainersResponse>(
+            metadata: [:],
+            producer: { writer in
+                try await self.listContainers(
+                    request: request.message,
+                    response: writer,
+                    context: context
+                )
+                return [:]
+            }
         )
     }
 }
@@ -522,6 +617,25 @@ extension Edge_Agent_Services_V1_EdgeContainerService {
             deserializer: some GRPCCore.MessageDeserializer<Edge_Agent_Services_V1_StopContainerResponse>,
             options: GRPCCore.CallOptions,
             onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Edge_Agent_Services_V1_StopContainerResponse>) async throws -> Result
+        ) async throws -> Result where Result: Sendable
+
+        /// Call the "ListContainers" method.
+        ///
+        /// - Parameters:
+        ///   - request: A request containing a single `Edge_Agent_Services_V1_ListContainersRequest` message.
+        ///   - serializer: A serializer for `Edge_Agent_Services_V1_ListContainersRequest` messages.
+        ///   - deserializer: A deserializer for `Edge_Agent_Services_V1_ListContainersResponse` messages.
+        ///   - options: Options to apply to this RPC.
+        ///   - handleResponse: A closure which handles the response, the result of which is
+        ///       returned to the caller. Returning from the closure will cancel the RPC if it
+        ///       hasn't already finished.
+        /// - Returns: The result of `handleResponse`.
+        func listContainers<Result>(
+            request: GRPCCore.ClientRequest<Edge_Agent_Services_V1_ListContainersRequest>,
+            serializer: some GRPCCore.MessageSerializer<Edge_Agent_Services_V1_ListContainersRequest>,
+            deserializer: some GRPCCore.MessageDeserializer<Edge_Agent_Services_V1_ListContainersResponse>,
+            options: GRPCCore.CallOptions,
+            onResponse handleResponse: @Sendable @escaping (GRPCCore.StreamingClientResponse<Edge_Agent_Services_V1_ListContainersResponse>) async throws -> Result
         ) async throws -> Result where Result: Sendable
     }
 
@@ -656,6 +770,34 @@ extension Edge_Agent_Services_V1_EdgeContainerService {
                 onResponse: handleResponse
             )
         }
+
+        /// Call the "ListContainers" method.
+        ///
+        /// - Parameters:
+        ///   - request: A request containing a single `Edge_Agent_Services_V1_ListContainersRequest` message.
+        ///   - serializer: A serializer for `Edge_Agent_Services_V1_ListContainersRequest` messages.
+        ///   - deserializer: A deserializer for `Edge_Agent_Services_V1_ListContainersResponse` messages.
+        ///   - options: Options to apply to this RPC.
+        ///   - handleResponse: A closure which handles the response, the result of which is
+        ///       returned to the caller. Returning from the closure will cancel the RPC if it
+        ///       hasn't already finished.
+        /// - Returns: The result of `handleResponse`.
+        public func listContainers<Result>(
+            request: GRPCCore.ClientRequest<Edge_Agent_Services_V1_ListContainersRequest>,
+            serializer: some GRPCCore.MessageSerializer<Edge_Agent_Services_V1_ListContainersRequest>,
+            deserializer: some GRPCCore.MessageDeserializer<Edge_Agent_Services_V1_ListContainersResponse>,
+            options: GRPCCore.CallOptions = .defaults,
+            onResponse handleResponse: @Sendable @escaping (GRPCCore.StreamingClientResponse<Edge_Agent_Services_V1_ListContainersResponse>) async throws -> Result
+        ) async throws -> Result where Result: Sendable {
+            try await self.client.serverStreaming(
+                request: request,
+                descriptor: Edge_Agent_Services_V1_EdgeContainerService.Method.ListContainers.descriptor,
+                serializer: serializer,
+                deserializer: deserializer,
+                options: options,
+                onResponse: handleResponse
+            )
+        }
     }
 }
 
@@ -753,6 +895,29 @@ extension Edge_Agent_Services_V1_EdgeContainerService.ClientProtocol {
             request: request,
             serializer: GRPCProtobuf.ProtobufSerializer<Edge_Agent_Services_V1_StopContainerRequest>(),
             deserializer: GRPCProtobuf.ProtobufDeserializer<Edge_Agent_Services_V1_StopContainerResponse>(),
+            options: options,
+            onResponse: handleResponse
+        )
+    }
+
+    /// Call the "ListContainers" method.
+    ///
+    /// - Parameters:
+    ///   - request: A request containing a single `Edge_Agent_Services_V1_ListContainersRequest` message.
+    ///   - options: Options to apply to this RPC.
+    ///   - handleResponse: A closure which handles the response, the result of which is
+    ///       returned to the caller. Returning from the closure will cancel the RPC if it
+    ///       hasn't already finished.
+    /// - Returns: The result of `handleResponse`.
+    public func listContainers<Result>(
+        request: GRPCCore.ClientRequest<Edge_Agent_Services_V1_ListContainersRequest>,
+        options: GRPCCore.CallOptions = .defaults,
+        onResponse handleResponse: @Sendable @escaping (GRPCCore.StreamingClientResponse<Edge_Agent_Services_V1_ListContainersResponse>) async throws -> Result
+    ) async throws -> Result where Result: Sendable {
+        try await self.listContainers(
+            request: request,
+            serializer: GRPCProtobuf.ProtobufSerializer<Edge_Agent_Services_V1_ListContainersRequest>(),
+            deserializer: GRPCProtobuf.ProtobufDeserializer<Edge_Agent_Services_V1_ListContainersResponse>(),
             options: options,
             onResponse: handleResponse
         )
@@ -869,6 +1034,33 @@ extension Edge_Agent_Services_V1_EdgeContainerService.ClientProtocol {
             metadata: metadata
         )
         return try await self.stopContainer(
+            request: request,
+            options: options,
+            onResponse: handleResponse
+        )
+    }
+
+    /// Call the "ListContainers" method.
+    ///
+    /// - Parameters:
+    ///   - message: request message to send.
+    ///   - metadata: Additional metadata to send, defaults to empty.
+    ///   - options: Options to apply to this RPC, defaults to `.defaults`.
+    ///   - handleResponse: A closure which handles the response, the result of which is
+    ///       returned to the caller. Returning from the closure will cancel the RPC if it
+    ///       hasn't already finished.
+    /// - Returns: The result of `handleResponse`.
+    public func listContainers<Result>(
+        _ message: Edge_Agent_Services_V1_ListContainersRequest,
+        metadata: GRPCCore.Metadata = [:],
+        options: GRPCCore.CallOptions = .defaults,
+        onResponse handleResponse: @Sendable @escaping (GRPCCore.StreamingClientResponse<Edge_Agent_Services_V1_ListContainersResponse>) async throws -> Result
+    ) async throws -> Result where Result: Sendable {
+        let request = GRPCCore.ClientRequest<Edge_Agent_Services_V1_ListContainersRequest>(
+            message: message,
+            metadata: metadata
+        )
+        return try await self.listContainers(
             request: request,
             options: options,
             onResponse: handleResponse

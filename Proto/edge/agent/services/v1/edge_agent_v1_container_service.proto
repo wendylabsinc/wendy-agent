@@ -9,6 +9,13 @@ service EdgeContainerService {
     rpc WriteLayer(stream WriteLayerRequest) returns (stream WriteLayerResponse);
     rpc RunContainer(RunContainerLayersRequest) returns (RunContainerLayersResponse);
     rpc StopContainer(StopContainerRequest) returns (StopContainerResponse);
+    rpc ListContainers(ListContainersRequest) returns (stream ListContainersResponse);
+}
+
+message ListContainersRequest {}
+
+message ListContainersResponse {
+    AppContainer container = 1;
 }
 
 message ListLayersRequest {}

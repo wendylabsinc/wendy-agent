@@ -513,6 +513,17 @@ public struct Containerd: Sendable {
         )
     }
 
+    public func listContainers() async throws -> [Containerd_Services_Containers_V1_Container] {
+        let containers = Containerd_Services_Containers_V1_Containers.Client(wrapping: client)
+        let apps = try await containers.list(request: .init(message: .init()))
+        return apps.containers
+    }
+
+    public func listTasks() async throws -> [Containerd_V1_Types_Process] {
+        let tasks = Containerd_Services_Tasks_V1_Tasks.Client(wrapping: client)
+        return try await tasks.list(.init()).tasks
+    }
+
     public func createTask(
         containerID: String,
         appName: String,
