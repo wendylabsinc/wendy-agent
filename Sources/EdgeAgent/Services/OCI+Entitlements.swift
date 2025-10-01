@@ -53,13 +53,13 @@ extension OCI {
             DeviceAllowance(allow: true, access: "rwm")  // Default deny all
         )
     }
-    
+
     mutating func applyEntitlements(
         entitlements: [Entitlement],
         appName: String
     ) {
         var didSetDeviceCapabilities = false
-        
+
         for entitlement in entitlements {
             switch entitlement {
             case .network(let entitlement):
@@ -162,7 +162,7 @@ extension OCI {
                         options: ["rbind", "nosuid", "noexec"]
                     )
                 )
-                
+
                 // Add device allowance for ALSA sound devices (major 116)
                 if self.linux.resources == nil {
                     self.linux.resources = Resources()
@@ -170,11 +170,11 @@ extension OCI {
                 if self.linux.resources?.devices == nil {
                     self.linux.resources?.devices = []
                 }
-                
+
                 self.linux.resources?.devices?.append(
                     DeviceAllowance(allow: true, type: "c", major: 116, access: "rw")
                 )
-                
+
                 if !didSetDeviceCapabilities {
                     didSetDeviceCapabilities = true
                     self.setDeviceCapabilities(appName: appName)
@@ -200,11 +200,11 @@ extension OCI {
                         options: ["rbind", "nosuid", "noexec"]
                     )
                 )
-                
+
                 self.linux.resources?.devices?.append(
                     DeviceAllowance(allow: true, type: "c", major: 81, minor: 17, access: "rw")
                 )
-                
+
                 if !didSetDeviceCapabilities {
                     didSetDeviceCapabilities = true
                     self.setDeviceCapabilities(appName: appName)

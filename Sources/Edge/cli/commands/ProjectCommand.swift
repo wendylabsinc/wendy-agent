@@ -239,7 +239,7 @@ struct AddCommand: ModifyProjectCommand {
 
         case .video:
             return .video(VideoEntitlements())
-            
+
         case .audio:
             return .audio
         }

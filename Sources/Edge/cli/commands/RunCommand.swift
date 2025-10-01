@@ -224,8 +224,9 @@ extension RunCommand {
 
             // Construct the full path to the layer file
             let layerFile = extractDir.appendingPathComponent(layerPath)
-            
-            guard let info = try await FileSystem.shared.info(forFileAt: FilePath(layerFile.path())) else {
+
+            guard let info = try await FileSystem.shared.info(forFileAt: FilePath(layerFile.path()))
+            else {
                 logger.warning("Layer file not found: \(layerFile.path)")
                 continue
             }
