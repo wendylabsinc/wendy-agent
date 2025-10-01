@@ -14,6 +14,7 @@ let package = Package(
     ],
     products: [
         .executable(name: "edge-agent", targets: ["edge-agent"]),
+        .executable(name: "edge-agent-updater", targets: ["edge-agent-updater"]),
         .executable(name: "edge", targets: ["edge"]),
         .executable(name: "edge-helper", targets: ["edge-helper"]),
         .executable(name: "edge-network-daemon", targets: ["edge-network-daemon"]),
@@ -41,7 +42,8 @@ let package = Package(
             url: "https://github.com/swift-server/swift-openapi-async-http-client.git",
             from: "1.1.0"
         ),
-        .package(url: "https://github.com/edgeengineer/dbus.git", from: "0.2.2"),
+        //.package(url: "https://github.com/edgeengineer/dbus.git", from: "0.2.2"),
+        .package(path: "/Users/joannisorlandos/git/edge/dbus"),
         .package(url: "https://github.com/apple/swift-system.git", from: "1.4.2"),
     ],
     targets: [
@@ -122,6 +124,20 @@ let package = Package(
                 .target(name: "AppConfig"),
             ],
             path: "Sources/EdgeAgent"
+        ),
+
+        /// The main executable provided by edge-agent.
+        .executableTarget(
+            name: "edge-agent-updater",
+            dependencies: [
+                .product(name: "ArgumentParser", package: "swift-argument-parser"),
+                .product(name: "Logging", package: "swift-log"),
+                .product(name: "GRPCNIOTransportHTTP2", package: "grpc-swift-nio-transport"),
+                .product(name: "ServiceLifecycle", package: "swift-service-lifecycle"),
+                .product(name: "_NIOFileSystem", package: "swift-nio"),
+                .target(name: "EdgeAgentGRPC"),
+            ],
+            path: "Sources/EdgeAgentUpdater"
         ),
 
         /// Shared components used by both edge and edge-agent.
