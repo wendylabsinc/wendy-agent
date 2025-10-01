@@ -448,6 +448,7 @@ extension RunCommand {
     func buildDockerBased(name: String) async throws {
         let logger = Logger(label: "edgeengineer.cli.run.docker.container.build")
         let docker = DockerCLI()
+        logger.info("Building container from Dockerfile...")
         try await docker.build(name: name)
         logger.info("Container built successfully!")
     }

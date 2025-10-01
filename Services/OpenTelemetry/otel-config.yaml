@@ -14,6 +14,13 @@ processors:
     detectors: [env, system]
 
 exporters:
+  # Send to your Mac's OTel Dashboard
+  otlp:
+    endpoint: "192.168.7.2:4317"
+    tls:
+      insecure: true
+  
+  # Keep debug for local troubleshooting
   debug:
     verbosity: detailed
 
@@ -28,12 +35,12 @@ service:
     logs:
       receivers: [otlp]
       processors: [memory_limiter, batch, resourcedetection]
-      exporters: [debug]
+      exporters: [otlp, debug]
     metrics:
       receivers: [otlp]
       processors: [memory_limiter, batch, resourcedetection]
-      exporters: [debug]
+      exporters: [otlp, debug]
     traces:
       receivers: [otlp]
       processors: [memory_limiter, batch, resourcedetection]
-      exporters: [debug]
+      exporters: [otlp, debug]

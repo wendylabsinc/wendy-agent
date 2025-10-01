@@ -1,5 +1,5 @@
 {
-  "originHash" : "47226e1a38c99da34aa98e8f5b6525e00f374382fc39bb2afaadb592eb9b7065",
+  "originHash" : "4c377ab1e36d2cbec451528a93eb513080a4f5fa02fe9beecd7a9d35309c5ad4",
   "pins" : [
     {
       "identity" : "async-http-client",
@@ -213,8 +213,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/swift-otel/swift-otel.git",
       "state" : {
-        "revision" : "51841174d5ea818d13309d66d028f606332dcb1a",
-        "version" : "1.0.0-beta.1"
+        "revision" : "fa1ad6d8e031496962e0b40fa6047864ef289775",
+        "version" : "1.0.0"
       }
     },
     {
