@@ -2,15 +2,15 @@ import Crypto
 import X509
 
 #if canImport(FoundationEssentials)
-import FoundationEssentials
+    import FoundationEssentials
 #else
-import Foundation
+    import Foundation
 #endif
 
 public struct Authority: Sendable {
     let privateKey: Certificate.PrivateKey
     let name: DistinguishedName
-    
+
     public init(
         privateKey: Certificate.PrivateKey,
         name: DistinguishedName
@@ -18,7 +18,7 @@ public struct Authority: Sendable {
         self.privateKey = privateKey
         self.name = name
     }
-    
+
     public func sign(
         _ request: CertificateSigningRequest,
         validUntil: Date
@@ -30,7 +30,7 @@ public struct Authority: Sendable {
             validUntil: validUntil
         )
     }
-    
+
     package func sign(
         _ request: CertificateSigningRequest,
         validFrom: Date,
@@ -47,10 +47,10 @@ public struct Authority: Sendable {
             signatureAlgorithm: request.signatureAlgorithm,
             extensions: Certificate.Extensions {
                 Critical(
-                  KeyUsage(digitalSignature: true, keyCertSign: true)
+                    KeyUsage(digitalSignature: true, keyCertSign: true)
                 )
                 Critical(
-                  try ExtendedKeyUsage([.serverAuth, .clientAuth])
+                    try ExtendedKeyUsage([.serverAuth, .clientAuth])
                 )
             },
             issuerPrivateKey: self.privateKey

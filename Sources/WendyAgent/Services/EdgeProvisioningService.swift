@@ -1,4 +1,5 @@
 import EdgeAgentGRPC
+import EdgeSDK
 import EdgeShared
 import Foundation
 import Logging
@@ -7,6 +8,7 @@ import NIOFoundationCompat
 import _NIOFileSystem
 import WendySDK
 import X509
+import _NIOFileSystem
 
 enum ProvisioningError: Error {
     case alreadyProvisioned
@@ -19,7 +21,7 @@ actor EdgeProvisioningService: Edge_Agent_Services_V1_EdgeProvisioningService.Se
     var certificate: Certificate?
     private let logger = Logger(label: #fileID)
     let onProvisioned: @Sendable (Agent.Provisioned) async throws -> Void
-    
+
     public init(
         privateKey: Certificate.PrivateKey,
         deviceId: String,
@@ -30,7 +32,7 @@ actor EdgeProvisioningService: Edge_Agent_Services_V1_EdgeProvisioningService.Se
         self.certificate = nil
         self.onProvisioned = onProvisioned
     }
-    
+
     public init(
         privateKey: Certificate.PrivateKey,
         deviceId: String,
@@ -43,7 +45,7 @@ actor EdgeProvisioningService: Edge_Agent_Services_V1_EdgeProvisioningService.Se
             throw ProvisioningError.alreadyProvisioned
         }
     }
-    
+
     func provision(
         request: StreamingServerRequest<Edge_Agent_Services_V1_ProvisioningRequest>,
         context: ServerContext
@@ -52,7 +54,7 @@ actor EdgeProvisioningService: Edge_Agent_Services_V1_EdgeProvisioningService.Se
             logger.warning("Agent is already provisioned")
             throw RPCError(code: .permissionDenied, message: "Agent is already provisioned")
         }
-        
+
         return StreamingServerResponse { writer -> Metadata in
             do {
                 var agent: Agent.Unprovisioned?
@@ -70,12 +72,14 @@ actor EdgeProvisioningService: Edge_Agent_Services_V1_EdgeProvisioningService.Se
                             name: name
                         )
                         let csr = try unprovisionedAgent.csr.serializeAsPEM().derBytes
-                        
-                        try await writer.write(.with {
-                            $0.csr = .with {
-                                $0.csrDer = Data(csr)
+
+                        try await writer.write(
+                            .with {
+                                $0.csr = .with {
+                                    $0.csrDer = Data(csr)
+                                }
                             }
-                        })
+                        )
                         agent = unprovisionedAgent
                     case .csr(let csrReply):
                         guard let agent else {
@@ -84,7 +88,7 @@ actor EdgeProvisioningService: Edge_Agent_Services_V1_EdgeProvisioningService.Se
                         let cert = try Certificate(
                             derEncoded: Array(csrReply.certificateDer)
                         )
-                        
+
                         let provisioned = try agent.receiveSignedCertificate(cert)
                         guard await self.certificate == nil else {
                             self.logger.warning("Agent is already provisioned")
@@ -92,23 +96,26 @@ actor EdgeProvisioningService: Edge_Agent_Services_V1_EdgeProvisioningService.Se
                         }
                         try await self.onProvisioned(provisioned)
                         await self.setCertificate(provisioned.certificate)
-                        
+
                         return [:]
                     case .none:
                         ()
                     }
                 }
-                
+
                 return [:]
             } catch {
-                self.logger.warning("Failed to provision device", metadata: [
-                    "error": "\(error)"
-                ])
+                self.logger.warning(
+                    "Failed to provision device",
+                    metadata: [
+                        "error": "\(error)"
+                    ]
+                )
                 throw error
             }
         }
     }
-    
+
     private func setCertificate(_ certificate: Certificate) {
         self.certificate = certificate
     }

@@ -76,7 +76,7 @@ let package = Package(
                 .copy("Resources")
             ]
         ),
-        
+
         .target(
             name: "WendySDK",
             dependencies: [

@@ -1,4 +1,7 @@
 import ArgumentParser
+import Crypto
+import EdgeAgentGRPC
+import EdgeShared
 import Foundation
 import GRPCCore
 import GRPCNIOTransportHTTP2
@@ -6,7 +9,6 @@ import Logging
 import WendyAgentGRPC
 import WendyShared
 import ServiceLifecycle
-import Crypto
 import X509
 import _NIOFileSystem
 
@@ -38,12 +40,12 @@ struct WendyAgent: AsyncParsableCommand {
         logger.info("Starting Wendy Agent version \(Version.current) on port \(port)")
 
         let (signal, continuation) = AsyncStream<Void>.makeStream()
-        
+
         let provisioning: EdgeProvisioningService
         let config: any AgentConfigService = try await {
             try await FileSystemAgentConfigService(directory: FilePath(configDir))
         }()
-        
+
         if let certificate = await config.certificate {
             provisioning = await EdgeProvisioningService(
                 privateKey: config.privateKey,
@@ -71,7 +73,7 @@ struct WendyAgent: AsyncParsableCommand {
                 print("Shutting down server")
                 continuation.yield()
             }),
-            provisioning
+            provisioning,
         ]
 
         let serverIPv4 = GRPCServer(
