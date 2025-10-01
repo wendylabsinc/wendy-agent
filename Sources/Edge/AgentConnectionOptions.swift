@@ -4,7 +4,7 @@ import Foundation
 struct AgentConnectionOptions: ParsableArguments {
     struct Endpoint: ExpressibleByArgument {
         let host: String
-        let port: Int
+        var port: Int
 
         init(host: String, port: Int) {
             self.host = host
