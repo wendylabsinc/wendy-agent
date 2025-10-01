@@ -2,10 +2,64 @@ import AppConfig
 import Foundation
 
 extension OCI {
+    mutating func setDeviceCapabilities(appName: String) {
+        let deviceCapabilities = [
+            "CAP_CHOWN",
+            "CAP_DAC_OVERRIDE",
+            "CAP_FSETID",
+            "CAP_FOWNER",
+            "CAP_MKNOD",
+            "CAP_NET_RAW",
+            "CAP_SETGID",
+            "CAP_SETUID",
+            "CAP_SETFCAP",
+            "CAP_SETPCAP",
+            "CAP_NET_BIND_SERVICE",
+            "CAP_SYS_CHROOT",
+            "CAP_KILL",
+            "CAP_AUDIT_WRITE",
+            "CAP_SYS_PTRACE",
+        ]
+        self.linux.capabilities.bounding.formUnion(deviceCapabilities)
+        self.linux.capabilities.effective.formUnion(deviceCapabilities)
+        self.linux.capabilities.inheritable.formUnion(deviceCapabilities)
+        self.linux.capabilities.permitted.formUnion(deviceCapabilities)
+
+        self.mounts.append(
+            .init(
+                destination: "/sys/fs/cgroup",
+                type: "cgroup",
+                source: "cgroup",
+                options: ["ro", "nosuid", "noexec", "nodev"]
+            )
+        )
+
+        if self.linux.resources == nil {
+            self.linux.resources = Resources()
+        }
+
+        if self.linux.resources?.devices == nil {
+            self.linux.resources?.devices = []
+        }
+
+        // Configure cgroup path and mode for device controller delegation
+        let path = appName.replacingOccurrences(of: "-", with: "_")
+        self.linux.cgroupsPath = "system.slice:edge-agent:\(path)"
+        self.linux.namespaces.append(.init(type: "cgroup"))
+
+        // Apply resources to container, these are applies in order
+        // Default deny all devices
+        self.linux.resources?.devices?.append(
+            DeviceAllowance(allow: true, access: "rwm")  // Default deny all
+        )
+    }
+    
     mutating func applyEntitlements(
         entitlements: [Entitlement],
         appName: String
     ) {
+        var didSetDeviceCapabilities = false
+        
         for entitlement in entitlements {
             switch entitlement {
             case .network(let entitlement):
@@ -98,6 +152,33 @@ extension OCI {
                         ]
                     )
                 }
+            case .audio:
+                // Bind mount the entire /dev/snd directory
+                self.mounts.append(
+                    .init(
+                        destination: "/dev/snd",
+                        type: "bind",
+                        source: "/dev/snd",
+                        options: ["rbind", "nosuid", "noexec"]
+                    )
+                )
+                
+                // Add device allowance for ALSA sound devices (major 116)
+                if self.linux.resources == nil {
+                    self.linux.resources = Resources()
+                }
+                if self.linux.resources?.devices == nil {
+                    self.linux.resources?.devices = []
+                }
+                
+                self.linux.resources?.devices?.append(
+                    DeviceAllowance(allow: true, type: "c", major: 116, access: "rw")
+                )
+                
+                if !didSetDeviceCapabilities {
+                    didSetDeviceCapabilities = true
+                    self.setDeviceCapabilities(appName: appName)
+                }
             case .video:
                 self.linux.devices.append(
                     .init(
@@ -111,37 +192,6 @@ extension OCI {
                     )
                 )
 
-                let deviceCapabilities = [
-                    "CAP_CHOWN",
-                    "CAP_DAC_OVERRIDE",
-                    "CAP_FSETID",
-                    "CAP_FOWNER",
-                    "CAP_MKNOD",
-                    "CAP_NET_RAW",
-                    "CAP_SETGID",
-                    "CAP_SETUID",
-                    "CAP_SETFCAP",
-                    "CAP_SETPCAP",
-                    "CAP_NET_BIND_SERVICE",
-                    "CAP_SYS_CHROOT",
-                    "CAP_KILL",
-                    "CAP_AUDIT_WRITE",
-                    "CAP_SYS_PTRACE",
-                ]
-                self.linux.capabilities.bounding.formUnion(deviceCapabilities)
-                self.linux.capabilities.effective.formUnion(deviceCapabilities)
-                self.linux.capabilities.inheritable.formUnion(deviceCapabilities)
-                self.linux.capabilities.permitted.formUnion(deviceCapabilities)
-
-                self.mounts.append(
-                    .init(
-                        destination: "/sys/fs/cgroup",
-                        type: "cgroup",
-                        source: "cgroup",
-                        options: ["ro", "nosuid", "noexec", "nodev"]
-                    )
-                )
-
                 self.mounts.append(
                     .init(
                         destination: "/dev/video0",
@@ -150,31 +200,14 @@ extension OCI {
                         options: ["rbind", "nosuid", "noexec"]
                     )
                 )
-
-                if self.linux.resources == nil {
-                    self.linux.resources = Resources()
-                }
-
-                if self.linux.resources?.devices == nil {
-                    self.linux.resources?.devices = []
-                }
-
-                // Configure cgroup path and mode for device controller delegation
-                let path = appName.replacingOccurrences(of: "-", with: "_")
-                self.linux.cgroupsPath = "system.slice:edge-agent-running:\(path)"
-                self.linux.namespaces.append(.init(type: "cgroup"))
-
-                // Apply resources to container, these are applies in order
-                do {
-                    // Default deny all devices
-                    self.linux.resources?.devices?.append(
-                        DeviceAllowance(allow: false, access: "rwm")  // Default deny all
-                    )
-
-                    // Add device allowance for video device
-                    self.linux.resources?.devices?.append(
-                        DeviceAllowance(allow: true, type: "c", major: 81, minor: 17, access: "rwm")
-                    )
+                
+                self.linux.resources?.devices?.append(
+                    DeviceAllowance(allow: true, type: "c", major: 81, minor: 17, access: "rw")
+                )
+                
+                if !didSetDeviceCapabilities {
+                    didSetDeviceCapabilities = true
+                    self.setDeviceCapabilities(appName: appName)
                 }
             }
         }

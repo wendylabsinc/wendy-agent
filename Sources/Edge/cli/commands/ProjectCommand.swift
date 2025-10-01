@@ -143,6 +143,8 @@ struct ListCommand: ModifyProjectCommand {
             print("   Mode: \(bluetoothEntitlement.mode.rawValue)")
         case .video:
             print("   No additional configuration")
+        case .audio:
+            print("   No additional configuration")
         }
     }
 }
@@ -237,6 +239,9 @@ struct AddCommand: ModifyProjectCommand {
 
         case .video:
             return .video(VideoEntitlements())
+            
+        case .audio:
+            return .audio
         }
     }
 }
@@ -305,6 +310,8 @@ extension Entitlement {
             return .bluetooth
         case .video:
             return .video
+        case .audio:
+            return .audio
         }
     }
 }

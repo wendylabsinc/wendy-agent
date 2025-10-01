@@ -410,6 +410,8 @@ extension RunCommand {
                 try await taskGroup.waitForAll()
             }
 
+            logger.debug("Starting container")
+
             _ = try await agentContainers.runContainer(
                 .with {
                     $0.imageName = "\(imageName):latest"

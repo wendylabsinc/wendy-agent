@@ -13,3 +13,4 @@ Examples/HelloHTTP/HelloHTTP-container.tar
 
 # Generated app bundle
 EdgeCLI.app/
+.agent
