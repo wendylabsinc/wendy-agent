@@ -50,7 +50,7 @@ actor EdgeProvisioningService: Edge_Agent_Services_V1_EdgeProvisioningService.Se
     ) async throws -> StreamingServerResponse<Edge_Agent_Services_V1_ProvisioningResponse> {
         guard self.certificate == nil else {
             logger.warning("Agent is already provisioned")
-            throw ProvisioningError.alreadyProvisioned
+            throw RPCError(code: .permissionDenied, message: "Agent is already provisioned")
         }
         
         return StreamingServerResponse { writer -> Metadata in
@@ -60,8 +60,8 @@ actor EdgeProvisioningService: Edge_Agent_Services_V1_EdgeProvisioningService.Se
                     switch message.request {
                     case .startProvisioning(let startProvisioning):
                         let name = try DistinguishedName {
-                            CommonName("engineer")
-                            CommonName("edge")
+                            CommonName("sh")
+                            CommonName("wendy")
                             CommonName(startProvisioning.organisationID)
                             CommonName(self.deviceId)
                         }
