@@ -1,0 +1,23 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    monitor: 'otel-monitor'
+
+scrape_configs:
+  # Scrape metrics from the OpenTelemetry Collector's Prometheus exporter
+  - job_name: 'otel-collector'
+    static_configs:
+      - targets: ['otel-collector:8889']
+        labels:
+          instance: 'otel-collector'
+          service: 'opentelemetry-collector'
+
+  # Scrape metrics from the OpenTelemetry Collector itself
+  - job_name: 'otel-collector-internal'
+    static_configs:
+      - targets: ['otel-collector:8888']
+        labels:
+          instance: 'otel-collector-internal'
+          service: 'opentelemetry-collector-metrics'
+
