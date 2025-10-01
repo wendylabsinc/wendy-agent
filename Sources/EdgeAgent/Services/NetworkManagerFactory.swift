@@ -125,58 +125,81 @@ public actor NetworkManagerFactory {
     public func createNetworkManager(
         preference: Preference = .auto
     ) async throws -> NetworkConnectionManager {
-        let detected = await detectNetworkManager()
-
-        let managerType: NetworkManagerType
+        // Handle force preferences without auto-detection
         switch preference {
-        case .auto:
-            managerType = detected
-
-        case .preferConnMan:
-            if detected == .connMan || detected == .networkManager {
-                managerType = detected == .connMan ? .connMan : .networkManager
-            } else {
-                managerType = .none
-            }
-
-        case .preferNetworkManager:
-            if detected == .networkManager || detected == .connMan {
-                managerType = detected == .networkManager ? .networkManager : .connMan
-            } else {
-                managerType = .none
-            }
-
         case .forceConnMan:
-            if detected == .connMan {
-                managerType = .connMan
-            } else {
-                logger.warning("ConnMan forced but not available")
-                throw NetworkConnectionError.managerNotAvailable
+            // Check if ConnMan is available first
+            if await isServiceAvailable("net.connman") {
+                logger.info("Creating ConnMan instance (forced)")
+                return ConnMan(uid: uid, socketPath: socketPath)
             }
+            logger.error("ConnMan is not available, cannot use forced setting")
+            throw NetworkConnectionError.managerNotAvailable
 
         case .forceNetworkManager:
-            if detected == .networkManager {
-                managerType = .networkManager
-            } else {
-                logger.warning("NetworkManager forced but not available")
-                throw NetworkConnectionError.managerNotAvailable
+            // Check if NetworkManager is available first
+            if await isServiceAvailable("org.freedesktop.NetworkManager") {
+                logger.info("Creating NetworkManager instance (forced)")
+                return NetworkManagerAdapter(
+                    networkManager: NetworkManager(uid: uid, socketPath: socketPath)
+                )
             }
-        }
+            logger.error("NetworkManager is not available, cannot use forced setting")
+            throw NetworkConnectionError.managerNotAvailable
 
-        switch managerType {
-        case .connMan:
-            logger.info("Creating ConnMan instance")
-            return ConnMan(uid: uid, socketPath: socketPath)
-
-        case .networkManager:
-            logger.info("Creating NetworkManager instance")
-            return NetworkManagerAdapter(
-                networkManager: NetworkManager(uid: uid, socketPath: socketPath)
-            )
-
-        case .none:
+        case .preferConnMan:
+            logger.info("ConnMan preferred by configuration")
+            // Check if ConnMan is available first
+            if await isServiceAvailable("net.connman") {
+                logger.info("Creating ConnMan instance (preferred and available)")
+                return ConnMan(uid: uid, socketPath: socketPath)
+            }
+            // Fall back to NetworkManager if available
+            if await isServiceAvailable("org.freedesktop.NetworkManager") {
+                logger.info("ConnMan not available, falling back to NetworkManager")
+                return NetworkManagerAdapter(
+                    networkManager: NetworkManager(uid: uid, socketPath: socketPath)
+                )
+            }
             logger.error("No network manager available")
             throw NetworkConnectionError.managerNotAvailable
+
+        case .preferNetworkManager:
+            logger.info("NetworkManager preferred by configuration")
+            // Check if NetworkManager is available first
+            if await isServiceAvailable("org.freedesktop.NetworkManager") {
+                logger.info("Creating NetworkManager instance (preferred and available)")
+                return NetworkManagerAdapter(
+                    networkManager: NetworkManager(uid: uid, socketPath: socketPath)
+                )
+            }
+            // Fall back to ConnMan if available
+            if await isServiceAvailable("net.connman") {
+                logger.info("NetworkManager not available, falling back to ConnMan")
+                return ConnMan(uid: uid, socketPath: socketPath)
+            }
+            logger.error("No network manager available")
+            throw NetworkConnectionError.managerNotAvailable
+
+        case .auto:
+            // For auto, use the full detection logic with caching
+            let detected = await detectNetworkManager()
+
+            switch detected {
+            case .connMan:
+                logger.info("Creating ConnMan instance (auto-detected)")
+                return ConnMan(uid: uid, socketPath: socketPath)
+
+            case .networkManager:
+                logger.info("Creating NetworkManager instance (auto-detected)")
+                return NetworkManagerAdapter(
+                    networkManager: NetworkManager(uid: uid, socketPath: socketPath)
+                )
+
+            case .none:
+                logger.error("No network manager available")
+                throw NetworkConnectionError.managerNotAvailable
+            }
         }
     }
 
