@@ -14,7 +14,7 @@ public protocol Device: Codable {
 // Add a protocol extension for common functionality
 extension Device {
     public static func formatEmpty(type: String) -> String {
-        return "No Wendy Device \(type) found."
+        return "No Wendy \(type) found."
     }
 }
 
@@ -211,7 +211,7 @@ public struct DeviceFormatter {
         switch format {
         case .text:
             if devices.isEmpty {
-                return "No Wendy Device \(collectionName) found."
+                return "No Wendy \(collectionName) found."
             }
 
             var result = "\n\(collectionName):"

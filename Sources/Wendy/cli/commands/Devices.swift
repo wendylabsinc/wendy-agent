@@ -78,7 +78,7 @@ struct DevicesCommand: AsyncParsableCommand {
     // Helper method for logging device counts
     private func logDevicesFound<T: Device>(_ devices: [T], deviceType: String, logger: Logger) {
         if devices.isEmpty {
-            logger.info("No Wendy Device \(deviceType) found.")
+            logger.info("No Wendy \(deviceType) found.")
         } else {
             logger.info("Found \(devices.count) Wendy \(deviceType)")
         }

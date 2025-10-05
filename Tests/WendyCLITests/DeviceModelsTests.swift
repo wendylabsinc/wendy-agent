@@ -506,16 +506,16 @@ struct DevicesCollectionTests {
 
         // Both collections should contain the same devices
         #expect(json1.contains("\"name\" : \"Wendy USB\""))
-        #expect(json1.contains("\"name\" : \"Wendy0\""))
+        #expect(json1.contains("\"name\" : \"wendy0\""))
         #expect(json1.contains("\"id\" : \"device123\""))
         #expect(json2.contains("\"name\" : \"Wendy USB\""))
-        #expect(json2.contains("\"name\" : \"Wendy0\""))
+        #expect(json2.contains("\"name\" : \"wendy0\""))
         #expect(json2.contains("\"id\" : \"device123\""))
 
         // Test that the human readable output contains all device types
         let humanReadable = collection1.toHumanReadableString()
         #expect(humanReadable.contains("USB Devices:"))
-        #expect(humanReadable.contains("Wendy Ethernet Interfaces:"))
+        #expect(humanReadable.contains("Ethernet Interfaces:"))
         #expect(humanReadable.contains("LAN Devices:"))
         #expect(humanReadable.contains("Wendy USB"))
         #expect(humanReadable.contains("Wendy Ethernet"))

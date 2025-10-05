@@ -112,7 +112,7 @@
             // Verify the callback was invoked with the correct event
             #expect(eventCollector.count == 1)
             if case .connected(let deviceInfo) = eventCollector.events.first {
-                #expect(deviceInfo.isWendy == false)
+                #expect(deviceInfo.isWendyDevice == false)
                 #expect(deviceInfo.name == "Apple Keyboard")
                 #expect(deviceInfo.vendorId == "0x05AC")
                 #expect(deviceInfo.productId == "0x12A8")

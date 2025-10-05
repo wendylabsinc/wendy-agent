@@ -81,7 +81,7 @@
             if let firstEvent = events.first {
                 switch firstEvent {
                 case .connected(let deviceInfo):
-                    #expect(deviceInfo.isWendy == true)
+                    #expect(deviceInfo.isWendyDevice == true)
                     #expect(deviceInfo.name == "Wendy Device 12345")
                 case .disconnected:
                     #expect(Bool(false), "Expected connection event, got disconnection")
