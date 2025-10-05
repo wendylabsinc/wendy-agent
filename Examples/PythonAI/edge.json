@@ -1,11 +1,13 @@
 {
-    "appId": "engineer.edge.examples.hellopython",
+    "appId": "engineer.edge.examples.hello-python-ai",
     "version": "1.0.0",
-    "language": "python",
     "entitlements": [
         {
             "type": "network",
             "mode": "host"
+        },
+        {
+            "type": "audio"
         }
     ]
 }

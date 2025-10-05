@@ -1,7 +1,7 @@
 {
-    "appId": "engineer.edge.examples.hellopython",
+    "appId": "engineer.edge.examples.helloworld",
     "version": "1.0.0",
-    "language": "python",
+    "language": "swift",
     "entitlements": [
         {
             "type": "network",
