@@ -1,10 +1,10 @@
 import ArgumentParser
-import WendyAgentGRPC
 import Foundation
 import GRPCCore
 import GRPCNIOTransportHTTP2
 import Logging
 import NIOFoundationCompat
+import WendyAgentGRPC
 import _NIOFileSystem
 
 struct AgentCommand: AsyncParsableCommand {

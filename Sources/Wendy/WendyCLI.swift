@@ -1,6 +1,6 @@
 import ArgumentParser
-import WendyShared
 import Foundation
+import WendyShared
 
 @main
 struct WendyCLI: AsyncParsableCommand {

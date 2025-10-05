@@ -3,8 +3,6 @@ import ArgumentParser
 import ContainerBuilder
 import ContainerRegistry
 import Crypto
-import WendyAgentGRPC
-import WendyCLI
 import Foundation
 import GRPCCore
 import GRPCNIOTransportHTTP2
@@ -12,6 +10,8 @@ import Logging
 import NIO
 import NIOFileSystem
 import Subprocess
+import WendyAgentGRPC
+import WendyCLI
 
 public enum ContainerRuntime: String, ExpressibleByArgument, Sendable {
     case docker

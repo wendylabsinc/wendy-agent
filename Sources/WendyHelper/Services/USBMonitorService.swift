@@ -1,6 +1,6 @@
-import WendyShared
 import Foundation
 import Logging
+import WendyShared
 
 /// Service for monitoring USB device connections and disconnections
 protocol USBMonitorService: Sendable {

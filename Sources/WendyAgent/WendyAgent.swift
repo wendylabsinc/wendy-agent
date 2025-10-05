@@ -1,10 +1,10 @@
 import ArgumentParser
-import WendyAgentGRPC
-import WendyShared
 import Foundation
 import GRPCCore
 import GRPCNIOTransportHTTP2
 import Logging
+import WendyAgentGRPC
+import WendyShared
 
 @main
 struct WendyAgent: AsyncParsableCommand {

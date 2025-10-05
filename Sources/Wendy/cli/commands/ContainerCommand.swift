@@ -1,8 +1,8 @@
 import ArgumentParser
-import WendyAgentGRPC
 import GRPCCore
 import GRPCNIOTransportHTTP2
 import Logging
+import WendyAgentGRPC
 
 struct ContainerCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(

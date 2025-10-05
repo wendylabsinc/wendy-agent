@@ -1,9 +1,9 @@
-import WendyAgentGRPC
-import WendyShared
 import Foundation
 import Logging
 import NIOCore
 import NIOFoundationCompat
+import WendyAgentGRPC
+import WendyShared
 import _NIOFileSystem
 
 struct WendyAgentService: Wendy_Agent_Services_V1_WendyAgentService.ServiceProtocol {

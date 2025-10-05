@@ -1,6 +1,6 @@
-import WendyAgentGRPC
 import Foundation
 import Testing
+import WendyAgentGRPC
 
 @testable import wendy_agent
 

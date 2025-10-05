@@ -1,6 +1,6 @@
-import WendyAgentGRPC
 import Foundation
 import Logging
+import WendyAgentGRPC
 
 /// Represents a hardware capability discovered on the system
 public struct HardwareCapability: Sendable {

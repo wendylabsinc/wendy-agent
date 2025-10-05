@@ -1,9 +1,9 @@
 import ArgumentParser
-import WendyAgentGRPC
 import Foundation
 import GRPCCore
 import GRPCNIOTransportHTTP2
 import Logging
+import WendyAgentGRPC
 
 struct WiFiCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(

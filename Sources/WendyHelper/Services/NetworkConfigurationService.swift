@@ -1,6 +1,6 @@
-import WendyShared
 import Foundation
 import Logging
+import WendyShared
 
 /// Network interface information for Wendy devices
 struct NetworkInterface: Sendable, Hashable {

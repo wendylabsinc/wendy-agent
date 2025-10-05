@@ -1,7 +1,7 @@
 import ArgumentParser
-import WendyShared
 import Foundation
 import Logging
+import WendyShared
 
 @available(macOS 14.0, *)
 struct WendyHelper: AsyncParsableCommand {

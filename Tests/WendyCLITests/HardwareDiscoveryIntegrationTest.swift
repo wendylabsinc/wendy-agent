@@ -1,6 +1,6 @@
-import WendyAgentGRPC
 import Foundation
 import Testing
+import WendyAgentGRPC
 
 @Suite("Hardware Discovery Integration Test")
 struct HardwareDiscoveryIntegrationTest {

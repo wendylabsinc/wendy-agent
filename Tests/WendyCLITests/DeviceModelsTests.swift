@@ -1,6 +1,6 @@
-import WendyShared
 import Foundation
 import Testing
+import WendyShared
 
 @testable import wendy
 

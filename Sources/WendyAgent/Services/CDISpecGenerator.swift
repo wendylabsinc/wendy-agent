@@ -11,7 +11,7 @@ public struct CDISpecification: Codable, Sendable {
     public init(
         devices: [CDIDevice],
         cdiVersion: String = "0.6.0",
-        kind: String = "edge.com/hardware" // TODO: What's this?
+        kind: String = "edge.com/hardware"  // TODO: What's this?
     ) {
         self.devices = devices
         self.cdiVersion = cdiVersion

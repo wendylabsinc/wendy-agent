@@ -1,9 +1,9 @@
 import ArgumentParser
-import WendyAgentGRPC
 import Foundation
 import GRPCCore
 import GRPCNIOTransportHTTP2
 import Logging
+import WendyAgentGRPC
 
 struct HardwareCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
@@ -56,7 +56,8 @@ struct HardwareCommand: AsyncParsableCommand {
     }
 
     private func outputJSON(
-        _ capabilities: [Wendy_Agent_Services_V1_ListHardwareCapabilitiesResponse.HardwareCapability]
+        _ capabilities: [Wendy_Agent_Services_V1_ListHardwareCapabilitiesResponse
+            .HardwareCapability]
     ) throws {
         let jsonCapabilities = capabilities.map { capability in
             return [

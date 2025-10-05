@@ -1,7 +1,7 @@
-import WendyShared
 import Foundation
 import Logging
 import Testing
+import WendyShared
 
 @testable import wendy
 

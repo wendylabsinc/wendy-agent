@@ -1,12 +1,12 @@
 import AppConfig
 import ContainerRegistry
 import ContainerdGRPC
-import WendyAgentGRPC
-import WendyShared
 import Foundation
 import Logging
 import NIOCore
 import NIOFoundationCompat
+import WendyAgentGRPC
+import WendyShared
 import _NIOFileSystem
 
 struct WendyContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServiceProtocol {

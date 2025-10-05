@@ -1,10 +1,10 @@
 import ContainerdGRPC
 import Crypto
-import WendyAgentGRPC
 import Foundation
 import GRPCCore
 import GRPCNIOTransportHTTP2
 import Logging
+import WendyAgentGRPC
 
 #if canImport(Musl)
     import Musl
