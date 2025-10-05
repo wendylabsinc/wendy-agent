@@ -67,7 +67,7 @@ jobs:
             product: wendy
           - artifact-name: wendy-cli-macos-arm64
             os: macos-15
-            xcode-select: /Applications/Xcode_26.app
+            xcode-select: /Applications/Xcode_26.0.app
             product: wendy
 
     name: ${{ matrix.artifact-name }}
