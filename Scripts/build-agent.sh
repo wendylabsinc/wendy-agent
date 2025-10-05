@@ -1,1 +1,1 @@
-swiftly run swift build --product edge-agent --swift-sdk aarch64-swift-linux-musl
+swiftly run swift build --product wendy-agent --swift-sdk aarch64-swift-linux-musl

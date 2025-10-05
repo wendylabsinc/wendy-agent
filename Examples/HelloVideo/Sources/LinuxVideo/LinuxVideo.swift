@@ -81,7 +81,7 @@ public struct VideoDevice {
         print("Set format")
 
         // Set format
-        var result = ioctl(fd, UInt(EDGE_VIDIOC_S_FMT), &format)
+        var result = ioctl(fd, UInt(WENDY_VIDIOC_S_FMT), &format)
         if result < 0 {
             throw VideoError.ioctlFailed(command: "VIDIOC_S_FMT", errno: errno)
         }
@@ -94,7 +94,7 @@ public struct VideoDevice {
         reqbuf.memory = V4L2_MEMORY_MMAP
         reqbuf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE
 
-        result = ioctl(fd, UInt(EDGE_VIDIOC_REQBUFS), &reqbuf)
+        result = ioctl(fd, UInt(WENDY_VIDIOC_REQBUFS), &reqbuf)
         if result < 0 {
             throw VideoError.ioctlFailed(command: "VIDIOC_REQBUFS", errno: errno)
         }
@@ -107,7 +107,7 @@ public struct VideoDevice {
         buffer.memory = V4L2_MEMORY_MMAP
         buffer.index = 0
         buffer.length = width * height * 2
-        result = ioctl(fd, UInt(EDGE_VIDIOC_QUERYBUF), &buffer)
+        result = ioctl(fd, UInt(WENDY_VIDIOC_QUERYBUF), &buffer)
         if result < 0 {
             throw VideoError.ioctlFailed(command: "VIDIOC_QUERYBUF", errno: errno)
         }
@@ -117,7 +117,7 @@ public struct VideoDevice {
         buffer.type = V4L2_BUF_TYPE_VIDEO_CAPTURE
         buffer.index = 0
 
-        result = ioctl(fd, UInt(EDGE_VIDIOC_QBUF), &buffer)
+        result = ioctl(fd, UInt(WENDY_VIDIOC_QBUF), &buffer)
         if result < 0 {
             throw VideoError.ioctlFailed(command: "VIDIOC_QBUF", errno: errno)
         }
@@ -126,7 +126,7 @@ public struct VideoDevice {
 
         // Start streaming
         var type = V4L2_BUF_TYPE_VIDEO_CAPTURE
-        result = ioctl(fd, UInt(EDGE_VIDIOC_STREAMON), &type)
+        result = ioctl(fd, UInt(WENDY_VIDIOC_STREAMON), &type)
         if result < 0 {
             throw VideoError.ioctlFailed(command: "VIDIOC_STREAMON", errno: errno)
         }
@@ -156,7 +156,7 @@ public struct VideoDevice {
         var dqbuf = v4l2_buffer()
         dqbuf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE
         dqbuf.memory = V4L2_MEMORY_MMAP
-        result = ioctl(fd, UInt(EDGE_VIDIOC_DQBUF), &dqbuf)
+        result = ioctl(fd, UInt(WENDY_VIDIOC_DQBUF), &dqbuf)
         if result < 0 {
             print(errno)
             throw VideoError.ioctlFailed(command: "VIDIOC_DQBUF", errno: errno)
@@ -168,7 +168,7 @@ public struct VideoDevice {
         print("Stop streaming")
 
         // Stop streaming
-        result = ioctl(fd, UInt(EDGE_VIDIOC_STREAMOFF), &type)
+        result = ioctl(fd, UInt(WENDY_VIDIOC_STREAMOFF), &type)
         if result < 0 {
             print(errno)
             throw VideoError.ioctlFailed(command: "VIDIOC_STREAMOFF", errno: errno)
@@ -328,7 +328,7 @@ public class VideoDeviceManager {
         // Create a buffer large enough to hold v4l2_capability (typically 104 bytes)
         var capabilityBuffer = [UInt8](repeating: 0, count: 104)
 
-        let result = ioctl(fd, UInt(EDGE_VIDIOC_QUERYCAP), &capabilityBuffer)
+        let result = ioctl(fd, UInt(WENDY_VIDIOC_QUERYCAP), &capabilityBuffer)
 
         if result < 0 {
             throw VideoError.ioctlFailed(command: "VIDIOC_QUERYCAP", errno: errno)

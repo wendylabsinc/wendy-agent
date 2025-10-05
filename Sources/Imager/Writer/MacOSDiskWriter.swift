@@ -7,7 +7,7 @@
     public class MacOSDiskWriter: DiskWriter {
         private let logger: Logger
 
-        public init(logger: Logger = Logger(label: "edgeengineer.imager.macos")) {
+        public init(logger: Logger = Logger(label: "sh.wendy.imager.macos")) {
             self.logger = logger
         }
 

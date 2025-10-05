@@ -5,7 +5,7 @@
 
 set -e
 
-SOURCE_FILE="Sources/EdgeShared/Version.swift"
+SOURCE_FILE="Sources/WendyShared/Version.swift"
 
 if [ $# -ne 1 ]; then
     echo "Usage: $0 <version>"

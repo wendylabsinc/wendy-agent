@@ -133,7 +133,7 @@ jobs:
         uses: codecov/codecov-action@v5
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
-          slug: edgeengineer/edge-agent
+          slug: wendylabsinc/wendy-agent
           fail_ci_if_error: false
           flags: ${{ runner.os }}
           name: ${{ matrix.os }}-coverage
