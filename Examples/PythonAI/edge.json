@@ -1,14 +1,13 @@
 {
-    "appId": "sh.wendy.examples.hellohttp",
+    "appId": "engineer.edge.examples.hello-python-ai",
     "version": "1.0.0",
-    "language": "swift",
     "entitlements": [
         {
             "type": "network",
             "mode": "host"
         },
         {
-            "type": "video"
+            "type": "audio"
         }
     ]
 }

@@ -1,6 +1,7 @@
 {
     "appId": "sh.wendy.examples.hellopython",
     "version": "1.0.0",
+    "language": "python",
     "entitlements": [
         {
             "type": "network",
