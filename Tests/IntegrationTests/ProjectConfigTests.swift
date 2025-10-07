@@ -3,13 +3,13 @@ import ArgumentParser
 import Foundation
 import Testing
 
-@testable import edge
-@testable import edge_agent
+@testable import wendy
+@testable import wendy_agent
 
 @Suite
 struct ProjectConfigTests {
     func loadConfig(at url: URL) throws -> AppConfig {
-        let json = try Data(contentsOf: url.appending(path: "edge.json"))
+        let json = try Data(contentsOf: url.appending(path: "wendy.json"))
         return try JSONDecoder().decode(AppConfig.self, from: json)
     }
 

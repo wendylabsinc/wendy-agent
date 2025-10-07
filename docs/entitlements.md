@@ -10,7 +10,7 @@ A minimal version looks like this:
 }
 ```
 
-The app configuration is stored in the `edge.json` file in the root of the app's directory.
+The app configuration is stored in the `wendy.json` file in the root of the app's directory.
 
 ### Entitlements
 
