@@ -77,16 +77,13 @@ struct AgentConnectionOptions: ParsableArguments {
                 return agent
             }
 
-            guard
-                let endpoint = ProcessInfo.processInfo.environment["WENDY_AGENT"],
+            if let endpoint = ProcessInfo.processInfo.environment["WENDY_AGENT"],
                 let endpoint = Endpoint(argument: endpoint)
-            else {
-                throw ValidationError(
-                    "The `--device` option was not provided and the `WENDY_AGENT` environment variable is not set."
-                )
+            {
+                return endpoint
             }
 
-            return endpoint
+            return Endpoint(host: "edgeos-device.local", port: 50051)
         }
     }
 }
