@@ -162,10 +162,13 @@ public actor NetworkManager {
                     // Detailed body logging based on message body content type
                     self.logger.debug("Signal body contents:")
                     for (index, value) in signal.body.enumerated() {
-                        self.logger.debug("Body element", metadata: [
-                            "index": "\(index)",
-                            "value": "\(value)"
-                        ])
+                        self.logger.debug(
+                            "Body element",
+                            metadata: [
+                                "index": "\(index)",
+                                "value": "\(value)",
+                            ]
+                        )
 
                         // Try to extract more detailed information from body elements
                         switch value {
@@ -175,41 +178,65 @@ public actor NetworkManager {
                             {
                                 self.logger.error("⚠️ IMPORTANT ERROR MESSAGE: \(message)")
                             }
-                            self.logger.debug("String value", metadata: [
-                                "value": "\(message)"
-                            ])
+                            self.logger.debug(
+                                "String value",
+                                metadata: [
+                                    "value": "\(message)"
+                                ]
+                            )
                         case .uint32(let code):
-                            self.logger.debug("UInt32 value", metadata: [
-                                "value": "\(code)"
-                            ])
+                            self.logger.debug(
+                                "UInt32 value",
+                                metadata: [
+                                    "value": "\(code)"
+                                ]
+                            )
                         case .variant(let variant):
-                            self.logger.debug("Variant value", metadata: [
-                                "value": "\(variant.value)"
-                            ])
+                            self.logger.debug(
+                                "Variant value",
+                                metadata: [
+                                    "value": "\(variant.value)"
+                                ]
+                            )
                         case .dictionary(let dict):
-                            self.logger.debug("Dictionary entries", metadata: [
-                                "count": "\(dict.count)"
-                            ])
+                            self.logger.debug(
+                                "Dictionary entries",
+                                metadata: [
+                                    "count": "\(dict.count)"
+                                ]
+                            )
                             for (key, dictValue) in dict {
-                                self.logger.debug("Dictionary entry", metadata: [
-                                    "key": "\(key)",
-                                    "value": "\(dictValue)"
-                                ])
+                                self.logger.debug(
+                                    "Dictionary entry",
+                                    metadata: [
+                                        "key": "\(key)",
+                                        "value": "\(dictValue)",
+                                    ]
+                                )
                             }
                         case .array(let array):
-                            self.logger.debug("Array elements", metadata: [
-                                "count": "\(array.count)"
-                            ])
+                            self.logger.debug(
+                                "Array elements",
+                                metadata: [
+                                    "count": "\(array.count)"
+                                ]
+                            )
                             for (i, element) in array.enumerated() {
-                                self.logger.debug("Array element", metadata: [
-                                    "index": "\(i)",
-                                    "value": "\(element)"
-                                ])
+                                self.logger.debug(
+                                    "Array element",
+                                    metadata: [
+                                        "index": "\(i)",
+                                        "value": "\(element)",
+                                    ]
+                                )
                             }
                         default:
-                            self.logger.debug("Other value type", metadata: [
-                                "value": "\(value)"
-                            ])
+                            self.logger.debug(
+                                "Other value type",
+                                metadata: [
+                                    "value": "\(value)"
+                                ]
+                            )
                         }
                     }
                 } else {
