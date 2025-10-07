@@ -1,0 +1,84 @@
+import ArgumentParser
+import Foundation
+import GRPCCore
+import GRPCNIOTransportHTTP2
+import Logging
+import WendyAgentGRPC
+import WendyShared
+
+@main
+struct WendyAgent: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "wendy-agent",
+        abstract: "Wendy Agent",
+        version: Version.current
+    )
+
+    @Option(name: .shortAndLong, help: "The port to listen on for incoming connections.")
+    var port: Int = 50051
+
+    func run() async throws {
+        LoggingSystem.bootstrap { label in
+            var handler = StreamLogHandler.standardError(label: label)
+            #if DEBUG
+                handler.logLevel = .trace
+            #endif
+            return handler
+        }
+
+        let logger = Logger(label: "sh.wendy.agent")
+
+        logger.info("Starting Wendy Agent version \(Version.current) on port \(port)")
+
+        let (signal, continuation) = AsyncStream<Void>.makeStream()
+
+        let services: [any GRPCCore.RegistrableRPCService] = [
+            WendyContainerService(),
+            WendyAgentService(shouldRestart: {
+                print("Shutting down server")
+                continuation.yield()
+            }),
+        ]
+
+        let serverIPv4 = GRPCServer(
+            transport: GRPCNIOTransportHTTP2.HTTP2ServerTransport.Posix(
+                address: .ipv4(host: "0.0.0.0", port: port),
+                transportSecurity: .plaintext,
+                config: .defaults
+            ),
+            services: services
+        )
+
+        let serverIPv6 = GRPCServer(
+            transport: GRPCNIOTransportHTTP2.HTTP2ServerTransport.Posix(
+                address: .ipv6(host: "::", port: port),
+                transportSecurity: .plaintext,
+                config: .defaults
+            ),
+            services: services
+        )
+
+        try await withThrowingTaskGroup(of: Void.self) { taskGroup in
+            taskGroup.addTask {
+                try await serverIPv4.serve()
+                continuation.finish()
+            }
+            taskGroup.addTask {
+                try await serverIPv6.serve()
+                continuation.finish()
+            }
+
+            defer {
+                serverIPv4.beginGracefulShutdown()
+                serverIPv6.beginGracefulShutdown()
+                taskGroup.cancelAll()
+            }
+
+            for try await () in signal {
+                logger.info("Received signal, restarting")
+                try await Task.sleep(for: .seconds(3))
+                return
+            }
+        }
+    }
+}

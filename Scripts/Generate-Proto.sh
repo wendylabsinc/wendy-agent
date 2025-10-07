@@ -1,13 +1,13 @@
 #!/bin/bash
 
-# This script generates the EdgeAgentGRPC Swift code using Swift Package Manager plugins.
+# This script generates the WendyAgentGRPC Swift code using Swift Package Manager plugins.
 # It should be run from the root of the project.
 
 echo "Generating Swift gRPC code using Swift Package Manager plugins..."
 
 # Clean existing generated code
-rm -rf Sources/EdgeAgentGRPC/Proto
-mkdir -p Sources/EdgeAgentGRPC/Proto
+rm -rf Sources/WendyAgentGRPC/Proto
+mkdir -p Sources/WendyAgentGRPC/Proto
 
 rm -rf Sources/ContainerdGRPC/Proto  
 mkdir -p Sources/ContainerdGRPC/Proto
@@ -17,12 +17,12 @@ mkdir -p Sources/ContainerdGRPCTypes/Proto
 # Use Swift Package Manager plugin for gRPC code generation
 # Note: This uses the new grpc-swift-2 plugin system instead of protoc directly
 
-echo "Generating EdgeAgent gRPC code..."
+echo "Generating WendyAgent gRPC code..."
 swift package --allow-writing-to-package-directory generate-grpc-code-from-protos \
     --access-level public \
-    --output-path Sources/EdgeAgentGRPC/Proto \
+    --output-path Sources/WendyAgentGRPC/Proto \
     --import-path Proto \
-    -- Proto/edge/agent/services/v1/*.proto
+    -- Proto/wendy/agent/services/v1/*.proto
 
 echo "Generating Containerd gRPC code..."  
 swift package --allow-writing-to-package-directory generate-grpc-code-from-protos \

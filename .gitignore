@@ -1,5 +1,6 @@
 .DS_Store
 .build
+.wendy-build
 .edge-build
 /Packages
 xcuserdata/
@@ -12,4 +13,4 @@ coverage_report/
 Examples/HelloHTTP/HelloHTTP-container.tar
 
 # Generated app bundle
-EdgeCLI.app/
+WendyCLI.app/

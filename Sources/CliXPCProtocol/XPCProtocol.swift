@@ -48,10 +48,10 @@ public enum XPCError: Error, LocalizedError {
 }
 
 /// XPC Service identifier
-public let kEdgeNetworkDaemonServiceName = "com.edgeos.edge-network-daemon"
+public let kWendyNetworkDaemonServiceName = "com.wendyos.wendy-network-daemon"
 
 /// Custom authorization right for network configuration
-public let kEdgeNetworkConfigurationRight = "com.edgeos.configure.network"
+public let kWendyNetworkConfigurationRight = "com.wendyos.configure.network"
 
 // MARK: - Modern XPC Message Types (macOS 14+)
 

@@ -4,16 +4,16 @@ import Logging
 import Subprocess
 
 extension ContainerImageSpec {
-    private static let logger = Logger(label: "edgeengineer.container-builder")
+    private static let logger = Logger(label: "sh.wendy.container-builder")
 
     private static func fetchManifest(
         client: RegistryClient,
         imageRef: ImageReference,
         architecture: String
     ) async throws -> ImageManifest {
-        // Try to fetch from `.edge-cache` first
+        // Try to fetch from `.wendy-cache` first
         let cacheDir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(
-            ".edge-cache/manifests"
+            ".wendy-cache/manifests"
         )
         try FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
         let repoName = imageRef.repository.addingPercentEncoding(
@@ -86,7 +86,7 @@ extension ContainerImageSpec {
         configDigest: String
     ) async throws -> ImageConfiguration {
         let cacheDir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(
-            ".edge-cache/configs"
+            ".wendy-cache/configs"
         )
         try FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
         let repoName = imageRef.repository.addingPercentEncoding(
@@ -179,7 +179,7 @@ extension ContainerImageSpec {
 
         // Create a cache directory for layers
         let cacheDir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(
-            ".edge-cache/layers"
+            ".wendy-cache/layers"
         )
         try FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
 
