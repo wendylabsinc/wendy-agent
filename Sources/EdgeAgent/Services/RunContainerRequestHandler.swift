@@ -205,6 +205,8 @@ struct RunContainerRequestHandler {
                     case .bluetooth:
                         runOptions.append(.capAdd("NET_ADMIN"))
                         runOptions.append(.capAdd("NET_RAW"))
+                    case .audio:
+                        runOptions.append(.device("/dev/snd/"))
                     case .network(let network):
                         switch network.mode {
                         case .host:

@@ -39,6 +39,7 @@ public struct DockerCLI: Sendable {
         case detach
 
         case device(String)
+
         /// Give extended privileges to this container
         case privileged
 
