@@ -62,23 +62,23 @@ EdgeAgent supports both NetworkManager and ConnMan for WiFi configuration. The a
 
 #### Configuration
 
-You can configure the network manager preference using the `EDGE_NETWORK_MANAGER` environment variable:
+You can configure the network manager preference using the `WENDY_NETWORK_MANAGER` environment variable:
 
 ```sh
 # Auto-detect (default)
-export EDGE_NETWORK_MANAGER=auto
+export WENDY_NETWORK_MANAGER=auto
 
 # Prefer ConnMan if available, fall back to NetworkManager
-export EDGE_NETWORK_MANAGER=connman
+export WENDY_NETWORK_MANAGER=connman
 
 # Prefer NetworkManager if available
-export EDGE_NETWORK_MANAGER=networkmanager
+export WENDY_NETWORK_MANAGER=networkmanager
 
 # Force ConnMan (will fail if not available)
-export EDGE_NETWORK_MANAGER=force-connman
+export WENDY_NETWORK_MANAGER=force-connman
 
 # Force NetworkManager (will fail if not available)
-export EDGE_NETWORK_MANAGER=force-networkmanager
+export WENDY_NETWORK_MANAGER=force-networkmanager
 ```
 
 If no environment variable is set, the agent will auto-detect the available network manager.

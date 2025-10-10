@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import edge_agent
+@testable import wendy_agent
 
 @Suite("ConnMan")
 struct ConnManTests {

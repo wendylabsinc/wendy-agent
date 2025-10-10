@@ -5,7 +5,7 @@
 #endif
 
 /// Configuration for EdgeAgent services
-public struct EdgeAgentConfiguration: Sendable {
+public struct WendyAgentConfiguration: Sendable {
     /// Network manager preference
     public let networkManagerPreference: NetworkManagerFactory.Preference
 
@@ -14,9 +14,9 @@ public struct EdgeAgentConfiguration: Sendable {
     }
 
     /// Create configuration from environment variables
-    public static func fromEnvironment() -> EdgeAgentConfiguration {
-        // Check for EDGE_NETWORK_MANAGER environment variable
-        if let envValue = ProcessInfo.processInfo.environment["EDGE_NETWORK_MANAGER"] {
+    public static func fromEnvironment() -> WendyAgentConfiguration {
+        // Check for WENDY_NETWORK_MANAGER environment variable
+        if let envValue = ProcessInfo.processInfo.environment["WENDY_NETWORK_MANAGER"] {
             let preference: NetworkManagerFactory.Preference
             switch envValue.lowercased() {
             case "connman":
@@ -30,10 +30,10 @@ public struct EdgeAgentConfiguration: Sendable {
             default:
                 preference = .auto
             }
-            return EdgeAgentConfiguration(networkManagerPreference: preference)
+            return WendyAgentConfiguration(networkManagerPreference: preference)
         }
 
         // Return default configuration if no environment variable is set
-        return EdgeAgentConfiguration()
+        return WendyAgentConfiguration()
     }
 }

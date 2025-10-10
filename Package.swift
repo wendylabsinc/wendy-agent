@@ -243,10 +243,10 @@ let package = Package(
         ),
 
         .testTarget(
-            name: "EdgeAgentTests",
+            name: "WendyAgentTests",
             dependencies: [
-                .target(name: "edge-agent"),
-                .target(name: "EdgeAgentGRPC"),
+                .target(name: "wendy-agent"),
+                .target(name: "WendyAgentGRPC"),
             ]
         ),
 

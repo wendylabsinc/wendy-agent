@@ -1,5 +1,5 @@
 import Foundation
-@testable import edge_agent
+@testable import wendy_agent
 
 /// Mock implementation of NetworkConnectionManager for testing
 public actor MockNetworkConnectionManager: NetworkConnectionManager {
