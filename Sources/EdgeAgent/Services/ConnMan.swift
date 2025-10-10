@@ -88,13 +88,26 @@ public actor ConnMan: NetworkConnectionManager {
             throw NetworkConnectionError.invalidType
         }
 
+        logger.info("Found \(array.count) technologies")
+
         for item in array {
+            logger.info("\(item)")
             guard case .structure(let structValues) = item,
                 structValues.count >= 2,
                 let path = structValues[0].objectPath,
-                case .dictionary(let properties) = structValues[1]
+                case .array(let propertiesArray) = structValues[1]
             else {
                 continue
+            }
+
+            // Merge array of dictionaries into a single dictionary
+            var properties: [DBusValue: DBusValue] = [:]
+            for propItem in propertiesArray {
+                if case .dictionary(let dict) = propItem {
+                    for (key, value) in dict {
+                        properties[key] = value
+                    }
+                }
             }
 
             if let typeValue = properties[DBusValue.string("Type")],
@@ -115,16 +128,18 @@ public actor ConnMan: NetworkConnectionManager {
             throw NetworkConnectionError.noWiFiDevice
         }
 
-        let _: DBusMessage = try await executeDBusRequest(
+        let message: DBusMessage = try await executeDBusRequest(
             .createMethodCall(
-                  destination: connManDestination,
-                  path: wifiTechPath,
-                  interface: connManTechnologyInterface,
-                  method: "Scan"
-               )
+                destination: connManDestination,
+                path: wifiTechPath,
+                interface: connManTechnologyInterface,
+                method: "Scan"
+            )
         )
 
-        try await Task.sleep(for: .seconds(2))
+        logger.info("Scan result \(message)")
+
+        try await Task.sleep(for: .seconds(5))
     }
 
     /// Get all services (networks)
@@ -145,15 +160,28 @@ public actor ConnMan: NetworkConnectionManager {
             throw NetworkConnectionError.invalidType
         }
 
+        logger.info("Found \(array.count) services")
+
         var services: [(path: String, properties: [DBusValue: DBusValue])] = []
 
         for item in array {
+            logger.info("\(item)")
             guard case .structure(let structValues) = item,
                 structValues.count >= 2,
                 let path = structValues[0].objectPath,
-                case .dictionary(let properties) = structValues[1]
+                case .array(let propertiesArray) = structValues[1]
             else {
                 continue
+            }
+
+            // Merge array of dictionaries into a single dictionary
+            var properties: [DBusValue: DBusValue] = [:]
+            for propItem in propertiesArray {
+                if case .dictionary(let dict) = propItem {
+                    for (key, value) in dict {
+                        properties[key] = value
+                    }
+                }
             }
 
             services.append((path: path, properties: properties))
