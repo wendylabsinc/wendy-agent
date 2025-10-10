@@ -22,7 +22,7 @@ public struct Container: Sendable {
     public let config: DockerConfig
 }
 
-private let logger = Logger(label: "edgeengineer.container-builder")
+private let logger = Logger(label: "sh.wendy.container-builder")
 
 public func buildDockerContainerLayers(
     image: ContainerImageSpec,

@@ -8,15 +8,15 @@ import PackageDescription
 #endif
 
 let package = Package(
-    name: "edge-agent",
+    name: "wendy-agent",
     platforms: [
         .macOS(.v15)
     ],
     products: [
-        .executable(name: "edge-agent", targets: ["edge-agent"]),
-        .executable(name: "edge", targets: ["edge"]),
-        .executable(name: "edge-helper", targets: ["edge-helper"]),
-        .executable(name: "edge-network-daemon", targets: ["edge-network-daemon"]),
+        .executable(name: "wendy-agent", targets: ["wendy-agent"]),
+        .executable(name: "wendy", targets: ["wendy"]),
+        .executable(name: "wendy-helper", targets: ["wendy-helper"]),
+        .executable(name: "wendy-network-daemon", targets: ["wendy-network-daemon"]),
     ],
     dependencies: [
         .package(url: "https://github.com/swift-server/async-http-client.git", from: "1.25.2"),
@@ -45,9 +45,9 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-system.git", from: "1.4.2"),
     ],
     targets: [
-        /// The main executable provided by edge-cli.
+        /// The main executable provided by wendy-cli.
         .executableTarget(
-            name: "edge",
+            name: "wendy",
             dependencies: [
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 .product(name: "Logging", package: "swift-log"),
@@ -59,9 +59,9 @@ let package = Package(
                     name: "OpenAPIAsyncHTTPClient",
                     package: "swift-openapi-async-http-client"
                 ),
-                .target(name: "EdgeAgentGRPC"),
-                .target(name: "EdgeCLI"),
-                .target(name: "EdgeShared"),
+                .target(name: "WendyAgentGRPC"),
+                .target(name: "WendyCLI"),
+                .target(name: "WendyShared"),
                 .target(name: "Imager"),
                 .target(name: "ContainerRegistry"),
                 .target(name: "DownloadSupport"),
@@ -69,7 +69,7 @@ let package = Package(
                 .target(name: "CliXPCProtocol"),
                 .target(name: "DockerOpenAPI"),
             ],
-            path: "Sources/Edge",
+            path: "Sources/Wendy",
             resources: [
                 .copy("Resources")
             ]
@@ -83,9 +83,9 @@ let package = Package(
             plugins: [.plugin(name: "OpenAPIGenerator", package: "swift-openapi-generator")]
         ),
 
-        /// Contains everything EdgeCLI, except for the command line interface.
+        /// Contains everything WendyCLI, except for the command line interface.
         .target(
-            name: "EdgeCLI",
+            name: "WendyCLI",
             dependencies: [
                 .target(name: "ContainerBuilder"),
                 .product(name: "Subprocess", package: "swift-subprocess"),
@@ -104,9 +104,9 @@ let package = Package(
             ]
         ),
 
-        /// The main executable provided by edge-agent.
+        /// The main executable provided by wendy-agent.
         .executableTarget(
-            name: "edge-agent",
+            name: "wendy-agent",
             dependencies: [
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 .product(name: "Logging", package: "swift-log"),
@@ -114,17 +114,17 @@ let package = Package(
                 .product(name: "ServiceLifecycle", package: "swift-service-lifecycle"),
                 .product(name: "_NIOFileSystem", package: "swift-nio"),
                 .product(name: "DBUS", package: "dbus"),
-                .target(name: "EdgeAgentGRPC"),
+                .target(name: "WendyAgentGRPC"),
                 .target(name: "ContainerdGRPC"),
                 .target(name: "ContainerRegistry"),
                 .product(name: "Subprocess", package: "swift-subprocess"),
-                .target(name: "EdgeShared"),
+                .target(name: "WendyShared"),
                 .target(name: "AppConfig"),
             ],
-            path: "Sources/EdgeAgent"
+            path: "Sources/WendyAgent"
         ),
 
-        /// Shared components used by both edge and edge-agent.
+        /// Shared components used by both wendy and wendy-agent.
         .target(
             name: "ContainerRegistry",
             dependencies: [
@@ -135,7 +135,7 @@ let package = Package(
             ]
         ),
         .target(
-            name: "EdgeShared",
+            name: "WendyShared",
             dependencies: [
                 .product(name: "Logging", package: "swift-log"),
                 .product(name: "AsyncDNSResolver", package: "swift-async-dns-resolver"),
@@ -143,7 +143,7 @@ let package = Package(
             ]
         ),
         .target(
-            name: "EdgeAgentGRPC",
+            name: "WendyAgentGRPC",
             dependencies: [
                 .product(name: "GRPCCore", package: "grpc-swift-2"),
                 .product(name: "GRPCProtobuf", package: "grpc-swift-protobuf"),
@@ -188,29 +188,29 @@ let package = Package(
             ]
         ),
 
-        /// Tests for EdgeCLI components
+        /// Tests for WendyCLI components
         .testTarget(
-            name: "EdgeCLITests",
+            name: "WendyCLITests",
             dependencies: [
-                .target(name: "edge"),
-                .target(name: "edge-agent"),
-                .target(name: "EdgeAgentGRPC"),
-                .target(name: "edge-helper", condition: .when(platforms: [.macOS])),
+                .target(name: "wendy"),
+                .target(name: "wendy-agent"),
+                .target(name: "WendyAgentGRPC"),
+                .target(name: "wendy-helper", condition: .when(platforms: [.macOS])),
             ]
         ),
 
-        /// The edge helper daemon for USB device monitoring
+        /// The wendy helper daemon for USB device monitoring
         .executableTarget(
-            name: "edge-helper",
+            name: "wendy-helper",
             dependencies: [
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 .product(name: "Logging", package: "swift-log"),
                 .product(name: "SystemPackage", package: "swift-system"),
-                .target(name: "EdgeShared"),
+                .target(name: "WendyShared"),
                 // Reuse existing device discovery components
-                .target(name: "edge"),  // For device discovery protocols
+                .target(name: "wendy"),  // For device discovery protocols
             ],
-            path: "Sources/EdgeHelper"
+            path: "Sources/WendyHelper"
         ),
 
         /// XPC Protocol for communication between CLI and privileged daemon
@@ -221,24 +221,24 @@ let package = Package(
 
         /// The privileged network daemon for macOS
         .executableTarget(
-            name: "edge-network-daemon",
+            name: "wendy-network-daemon",
             dependencies: [
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 .product(name: "Logging", package: "swift-log"),
-                .target(name: "EdgeShared"),
+                .target(name: "WendyShared"),
                 .target(name: "CliXPCProtocol"),
             ],
-            path: "Sources/EdgeNetworkDaemon",
+            path: "Sources/WendyNetworkDaemon",
             exclude: [
-                "edge-network-daemon.entitlements"
+                "wendy-network-daemon.entitlements"
             ]
         ),
 
         .testTarget(
-            name: "EdgeHelperMacOSTests",
+            name: "WendyHelperMacOSTests",
             dependencies: [
-                .target(name: "edge-helper"),
-                .target(name: "EdgeShared"),
+                .target(name: "wendy-helper"),
+                .target(name: "WendyShared"),
             ]
         ),
 
@@ -253,8 +253,8 @@ let package = Package(
         .testTarget(
             name: "IntegrationTests",
             dependencies: [
-                .target(name: "edge"),
-                .target(name: "edge-agent"),
+                .target(name: "wendy"),
+                .target(name: "wendy-agent"),
             ]
         ),
 
