@@ -103,7 +103,7 @@ struct NetworkManagerIntegrationTests {
     @Test("Configuration integration with factory preference")
     func testConfigurationWithFactory() {
         // Create configuration with specific preference
-        let config = EdgeAgentConfiguration(networkManagerPreference: .preferConnMan)
+        let config = WendyAgentConfiguration(networkManagerPreference: .preferConnMan)
 
         // Verify factory preference matches
         #expect(config.networkManagerPreference == .preferConnMan)
@@ -118,7 +118,7 @@ struct NetworkManagerIntegrationTests {
         ]
 
         for pref in preferences {
-            let testConfig = EdgeAgentConfiguration(networkManagerPreference: pref)
+            let testConfig = WendyAgentConfiguration(networkManagerPreference: pref)
             #expect(testConfig.networkManagerPreference == pref)
         }
     }

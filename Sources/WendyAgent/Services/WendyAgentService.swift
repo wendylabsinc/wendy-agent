@@ -11,13 +11,13 @@ struct WendyAgentService: Wendy_Agent_Services_V1_WendyAgentService.ServiceProto
     let shouldRestart: @Sendable () async throws -> Void
     let currentUID: String
     let networkManagerFactory: NetworkManagerFactory
-    let configuration: EdgeAgentConfiguration
+    let configuration: WendyAgentConfiguration
 
     init(shouldRestart: @escaping @Sendable () async throws -> Void) {
         self.shouldRestart = shouldRestart
         self.currentUID = String(getuid())
         self.networkManagerFactory = NetworkManagerFactory(uid: currentUID)
-        self.configuration = EdgeAgentConfiguration.fromEnvironment()
+        self.configuration = WendyAgentConfiguration.fromEnvironment()
     }
 
     func runContainer(

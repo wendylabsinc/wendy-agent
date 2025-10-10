@@ -6,13 +6,13 @@ import Testing
 struct WendyAgentConfigurationTests {
     @Test("Default configuration uses auto preference")
     func testDefaultConfiguration() {
-        let config = EdgeAgentConfiguration()
+        let config = WendyAgentConfiguration()
         #expect(config.networkManagerPreference == .auto)
     }
 
     @Test("Configuration with specific network manager preference")
     func testConfigurationWithPreference() {
-        let config = EdgeAgentConfiguration(networkManagerPreference: .preferConnMan)
+        let config = WendyAgentConfiguration(networkManagerPreference: .preferConnMan)
         #expect(config.networkManagerPreference == .preferConnMan)
     }
 
@@ -24,7 +24,7 @@ struct WendyAgentConfigurationTests {
         // Set environment variable
         setenv("WENDY_NETWORK_MANAGER", "connman", 1)
 
-        let config = EdgeAgentConfiguration.fromEnvironment()
+        let config = WendyAgentConfiguration.fromEnvironment()
         #expect(config.networkManagerPreference == .preferConnMan)
 
         // Restore original environment
@@ -43,7 +43,7 @@ struct WendyAgentConfigurationTests {
         // Set environment variable
         setenv("WENDY_NETWORK_MANAGER", "networkmanager", 1)
 
-        let config = EdgeAgentConfiguration.fromEnvironment()
+        let config = WendyAgentConfiguration.fromEnvironment()
         #expect(config.networkManagerPreference == .preferNetworkManager)
 
         // Restore original environment
@@ -62,7 +62,7 @@ struct WendyAgentConfigurationTests {
         // Set environment variable
         setenv("WENDY_NETWORK_MANAGER", "force-connman", 1)
 
-        let config = EdgeAgentConfiguration.fromEnvironment()
+        let config = WendyAgentConfiguration.fromEnvironment()
         #expect(config.networkManagerPreference == .forceConnMan)
 
         // Restore original environment
@@ -81,7 +81,7 @@ struct WendyAgentConfigurationTests {
         // Set environment variable
         setenv("WENDY_NETWORK_MANAGER", "force-networkmanager", 1)
 
-        let config = EdgeAgentConfiguration.fromEnvironment()
+        let config = WendyAgentConfiguration.fromEnvironment()
         #expect(config.networkManagerPreference == .forceNetworkManager)
 
         // Restore original environment
@@ -100,7 +100,7 @@ struct WendyAgentConfigurationTests {
         // Set environment variable with invalid value
         setenv("WENDY_NETWORK_MANAGER", "invalid-manager", 1)
 
-        let config = EdgeAgentConfiguration.fromEnvironment()
+        let config = WendyAgentConfiguration.fromEnvironment()
         #expect(config.networkManagerPreference == .auto)
 
         // Restore original environment
@@ -119,7 +119,7 @@ struct WendyAgentConfigurationTests {
         // Unset environment variable
         unsetenv("WENDY_NETWORK_MANAGER")
 
-        let config = EdgeAgentConfiguration.fromEnvironment()
+        let config = WendyAgentConfiguration.fromEnvironment()
         #expect(config.networkManagerPreference == .auto)
 
         // Restore original environment
@@ -136,7 +136,7 @@ struct WendyAgentConfigurationTests {
         // Set environment variable
         setenv("WENDY_NETWORK_MANAGER", "network-manager", 1)
 
-        let config = EdgeAgentConfiguration.fromEnvironment()
+        let config = WendyAgentConfiguration.fromEnvironment()
         #expect(config.networkManagerPreference == .preferNetworkManager)
 
         // Restore original environment
