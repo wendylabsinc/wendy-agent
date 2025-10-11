@@ -70,6 +70,40 @@ public enum RestartPolicyMode: SwiftProtobuf.Enum, Swift.CaseIterable {
 
 }
 
+public enum AppRunningState: SwiftProtobuf.Enum, Swift.CaseIterable {
+  public typealias RawValue = Int
+  case stopped // = 0
+  case running // = 1
+  case UNRECOGNIZED(Int)
+
+  public init() {
+    self = .stopped
+  }
+
+  public init?(rawValue: Int) {
+    switch rawValue {
+    case 0: self = .stopped
+    case 1: self = .running
+    default: self = .UNRECOGNIZED(rawValue)
+    }
+  }
+
+  public var rawValue: Int {
+    switch self {
+    case .stopped: return 0
+    case .running: return 1
+    case .UNRECOGNIZED(let i): return i
+    }
+  }
+
+  // The compiler won't synthesize support with the UNRECOGNIZED case.
+  public static let allCases: [AppRunningState] = [
+    .stopped,
+    .running,
+  ]
+
+}
+
 public struct RestartPolicy: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
@@ -85,10 +119,32 @@ public struct RestartPolicy: Sendable {
   public init() {}
 }
 
+public struct AppContainer: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  public var appName: String = String()
+
+  public var appVersion: String = String()
+
+  public var runningState: AppRunningState = .stopped
+
+  public var failureCount: UInt32 = 0
+
+  public var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  public init() {}
+}
+
 // MARK: - Code below here is support for the SwiftProtobuf runtime.
 
 extension RestartPolicyMode: SwiftProtobuf._ProtoNameProviding {
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0DEFAULT\0\u{1}UNLESS_STOPPED\0\u{1}NO\0\u{1}ON_FAILURE\0")
+}
+
+extension AppRunningState: SwiftProtobuf._ProtoNameProviding {
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0STOPPED\0\u{1}RUNNING\0")
 }
 
 extension RestartPolicy: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
@@ -121,6 +177,51 @@ extension RestartPolicy: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementa
   public static func ==(lhs: RestartPolicy, rhs: RestartPolicy) -> Bool {
     if lhs.mode != rhs.mode {return false}
     if lhs.onFailureMaxRetries != rhs.onFailureMaxRetries {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+extension AppContainer: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = "AppContainer"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}app_name\0\u{3}app_version\0\u{3}running_state\0\u{3}failure_count\0")
+
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try { try decoder.decodeSingularStringField(value: &self.appName) }()
+      case 2: try { try decoder.decodeSingularStringField(value: &self.appVersion) }()
+      case 3: try { try decoder.decodeSingularEnumField(value: &self.runningState) }()
+      case 4: try { try decoder.decodeSingularUInt32Field(value: &self.failureCount) }()
+      default: break
+      }
+    }
+  }
+
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    if !self.appName.isEmpty {
+      try visitor.visitSingularStringField(value: self.appName, fieldNumber: 1)
+    }
+    if !self.appVersion.isEmpty {
+      try visitor.visitSingularStringField(value: self.appVersion, fieldNumber: 2)
+    }
+    if self.runningState != .stopped {
+      try visitor.visitSingularEnumField(value: self.runningState, fieldNumber: 3)
+    }
+    if self.failureCount != 0 {
+      try visitor.visitSingularUInt32Field(value: self.failureCount, fieldNumber: 4)
+    }
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  public static func ==(lhs: AppContainer, rhs: AppContainer) -> Bool {
+    if lhs.appName != rhs.appName {return false}
+    if lhs.appVersion != rhs.appVersion {return false}
+    if lhs.runningState != rhs.runningState {return false}
+    if lhs.failureCount != rhs.failureCount {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }

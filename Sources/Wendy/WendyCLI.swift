@@ -11,7 +11,7 @@ struct WendyCLI: AsyncParsableCommand {
         subcommands: [
             InitCommand.self,
             RunCommand.self,
-            ContainerCommand.self,
+            AppsCommand.self,
             DevicesCommand.self,
             HardwareCommand.self,
             ImagerCommand.self,

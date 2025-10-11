@@ -1,0 +1,32 @@
+syntax = "proto3";
+
+package wendy.agent.services.v1;
+
+service WendyProvisioningService {
+    rpc Provision(stream ProvisioningRequest) returns (stream ProvisioningResponse);
+}
+
+message ProvisioningRequest {
+    oneof request {
+        CertificateSigningResponse csr = 1;
+        StartProvisioningRequest start_provisioning = 2;
+    }
+}
+
+message StartProvisioningRequest {
+    string organisation_id = 1;
+}
+
+message CertificateSigningResponse {
+    bytes certificate_der = 1;
+}
+
+message ProvisioningResponse {
+    oneof request {
+        CertificateSigningRequest csr = 1;
+    }
+}
+
+message CertificateSigningRequest {
+    bytes csr_der = 1;
+}
