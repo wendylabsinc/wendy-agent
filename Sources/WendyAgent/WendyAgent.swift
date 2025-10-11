@@ -1,7 +1,7 @@
 import ArgumentParser
 import Crypto
-import EdgeAgentGRPC
-import EdgeShared
+import WendyAgentGRPC
+import WendyShared
 import Foundation
 import GRPCCore
 import GRPCNIOTransportHTTP2
@@ -41,20 +41,20 @@ struct WendyAgent: AsyncParsableCommand {
 
         let (signal, continuation) = AsyncStream<Void>.makeStream()
 
-        let provisioning: EdgeProvisioningService
+        let provisioning: WendyProvisioningService
         let config: any AgentConfigService = try await {
             try await FileSystemAgentConfigService(directory: FilePath(configDir))
         }()
 
         if let certificate = await config.certificate {
-            provisioning = await EdgeProvisioningService(
+            provisioning = await WendyProvisioningService(
                 privateKey: config.privateKey,
                 deviceId: config.deviceId,
                 certificate: certificate
             )
         } else {
             logger.notice("Agent requires provisioning")
-            provisioning = await EdgeProvisioningService(
+            provisioning = await WendyProvisioningService(
                 privateKey: config.privateKey,
                 deviceId: config.deviceId
             ) { provisionedDevice in

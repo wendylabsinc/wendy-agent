@@ -21,32 +21,53 @@ fileprivate struct _GeneratedWithProtocGenSwiftVersion: SwiftProtobuf.ProtobufAP
   typealias Version = _2
 }
 
-public struct Edge_Agent_Services_V1_StartProvisioningRequest: Sendable {
+public struct Wendy_Agent_Services_V1_ProvisioningRequest: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
 
-  public var request: Edge_Agent_Services_V1_StartProvisioningRequest.OneOf_Request? = nil
+  public var request: Wendy_Agent_Services_V1_ProvisioningRequest.OneOf_Request? = nil
 
-  public var csr: Edge_Agent_Services_V1_CertificateSigningResponse {
+  public var csr: Wendy_Agent_Services_V1_CertificateSigningResponse {
     get {
       if case .csr(let v)? = request {return v}
-      return Edge_Agent_Services_V1_CertificateSigningResponse()
+      return Wendy_Agent_Services_V1_CertificateSigningResponse()
     }
     set {request = .csr(newValue)}
+  }
+
+  public var startProvisioning: Wendy_Agent_Services_V1_StartProvisioningRequest {
+    get {
+      if case .startProvisioning(let v)? = request {return v}
+      return Wendy_Agent_Services_V1_StartProvisioningRequest()
+    }
+    set {request = .startProvisioning(newValue)}
   }
 
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public enum OneOf_Request: Equatable, Sendable {
-    case csr(Edge_Agent_Services_V1_CertificateSigningResponse)
+    case csr(Wendy_Agent_Services_V1_CertificateSigningResponse)
+    case startProvisioning(Wendy_Agent_Services_V1_StartProvisioningRequest)
 
   }
 
   public init() {}
 }
 
-public struct Edge_Agent_Services_V1_CertificateSigningResponse: Sendable {
+public struct Wendy_Agent_Services_V1_StartProvisioningRequest: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  public var organisationID: String = String()
+
+  public var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  public init() {}
+}
+
+public struct Wendy_Agent_Services_V1_CertificateSigningResponse: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -58,17 +79,17 @@ public struct Edge_Agent_Services_V1_CertificateSigningResponse: Sendable {
   public init() {}
 }
 
-public struct Edge_Agent_Services_V1_StartProvisioningResponse: Sendable {
+public struct Wendy_Agent_Services_V1_ProvisioningResponse: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
 
-  public var request: Edge_Agent_Services_V1_StartProvisioningResponse.OneOf_Request? = nil
+  public var request: Wendy_Agent_Services_V1_ProvisioningResponse.OneOf_Request? = nil
 
-  public var csr: Edge_Agent_Services_V1_CertificateSigningRequest {
+  public var csr: Wendy_Agent_Services_V1_CertificateSigningRequest {
     get {
       if case .csr(let v)? = request {return v}
-      return Edge_Agent_Services_V1_CertificateSigningRequest()
+      return Wendy_Agent_Services_V1_CertificateSigningRequest()
     }
     set {request = .csr(newValue)}
   }
@@ -76,14 +97,14 @@ public struct Edge_Agent_Services_V1_StartProvisioningResponse: Sendable {
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public enum OneOf_Request: Equatable, Sendable {
-    case csr(Edge_Agent_Services_V1_CertificateSigningRequest)
+    case csr(Wendy_Agent_Services_V1_CertificateSigningRequest)
 
   }
 
   public init() {}
 }
 
-public struct Edge_Agent_Services_V1_CertificateSigningRequest: Sendable {
+public struct Wendy_Agent_Services_V1_CertificateSigningRequest: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -97,11 +118,11 @@ public struct Edge_Agent_Services_V1_CertificateSigningRequest: Sendable {
 
 // MARK: - Code below here is support for the SwiftProtobuf runtime.
 
-fileprivate let _protobuf_package = "edge.agent.services.v1"
+fileprivate let _protobuf_package = "wendy.agent.services.v1"
 
-extension Edge_Agent_Services_V1_StartProvisioningRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
-  public static let protoMessageName: String = _protobuf_package + ".StartProvisioningRequest"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}csr\0")
+extension Wendy_Agent_Services_V1_ProvisioningRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = _protobuf_package + ".ProvisioningRequest"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}csr\0\u{3}start_provisioning\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -110,7 +131,7 @@ extension Edge_Agent_Services_V1_StartProvisioningRequest: SwiftProtobuf.Message
       // enabled. https://github.com/apple/swift-protobuf/issues/1034
       switch fieldNumber {
       case 1: try {
-        var v: Edge_Agent_Services_V1_CertificateSigningResponse?
+        var v: Wendy_Agent_Services_V1_CertificateSigningResponse?
         var hadOneofValue = false
         if let current = self.request {
           hadOneofValue = true
@@ -120,6 +141,19 @@ extension Edge_Agent_Services_V1_StartProvisioningRequest: SwiftProtobuf.Message
         if let v = v {
           if hadOneofValue {try decoder.handleConflictingOneOf()}
           self.request = .csr(v)
+        }
+      }()
+      case 2: try {
+        var v: Wendy_Agent_Services_V1_StartProvisioningRequest?
+        var hadOneofValue = false
+        if let current = self.request {
+          hadOneofValue = true
+          if case .startProvisioning(let m) = current {v = m}
+        }
+        try decoder.decodeSingularMessageField(value: &v)
+        if let v = v {
+          if hadOneofValue {try decoder.handleConflictingOneOf()}
+          self.request = .startProvisioning(v)
         }
       }()
       default: break
@@ -132,20 +166,58 @@ extension Edge_Agent_Services_V1_StartProvisioningRequest: SwiftProtobuf.Message
     // allocates stack space for every if/case branch local when no optimizations
     // are enabled. https://github.com/apple/swift-protobuf/issues/1034 and
     // https://github.com/apple/swift-protobuf/issues/1182
-    try { if case .csr(let v)? = self.request {
+    switch self.request {
+    case .csr?: try {
+      guard case .csr(let v)? = self.request else { preconditionFailure() }
       try visitor.visitSingularMessageField(value: v, fieldNumber: 1)
-    } }()
+    }()
+    case .startProvisioning?: try {
+      guard case .startProvisioning(let v)? = self.request else { preconditionFailure() }
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 2)
+    }()
+    case nil: break
+    }
     try unknownFields.traverse(visitor: &visitor)
   }
 
-  public static func ==(lhs: Edge_Agent_Services_V1_StartProvisioningRequest, rhs: Edge_Agent_Services_V1_StartProvisioningRequest) -> Bool {
+  public static func ==(lhs: Wendy_Agent_Services_V1_ProvisioningRequest, rhs: Wendy_Agent_Services_V1_ProvisioningRequest) -> Bool {
     if lhs.request != rhs.request {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
 }
 
-extension Edge_Agent_Services_V1_CertificateSigningResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+extension Wendy_Agent_Services_V1_StartProvisioningRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = _protobuf_package + ".StartProvisioningRequest"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}organisation_id\0")
+
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try { try decoder.decodeSingularStringField(value: &self.organisationID) }()
+      default: break
+      }
+    }
+  }
+
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    if !self.organisationID.isEmpty {
+      try visitor.visitSingularStringField(value: self.organisationID, fieldNumber: 1)
+    }
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  public static func ==(lhs: Wendy_Agent_Services_V1_StartProvisioningRequest, rhs: Wendy_Agent_Services_V1_StartProvisioningRequest) -> Bool {
+    if lhs.organisationID != rhs.organisationID {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+extension Wendy_Agent_Services_V1_CertificateSigningResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".CertificateSigningResponse"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}certificate_der\0")
 
@@ -168,15 +240,15 @@ extension Edge_Agent_Services_V1_CertificateSigningResponse: SwiftProtobuf.Messa
     try unknownFields.traverse(visitor: &visitor)
   }
 
-  public static func ==(lhs: Edge_Agent_Services_V1_CertificateSigningResponse, rhs: Edge_Agent_Services_V1_CertificateSigningResponse) -> Bool {
+  public static func ==(lhs: Wendy_Agent_Services_V1_CertificateSigningResponse, rhs: Wendy_Agent_Services_V1_CertificateSigningResponse) -> Bool {
     if lhs.certificateDer != rhs.certificateDer {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
 }
 
-extension Edge_Agent_Services_V1_StartProvisioningResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
-  public static let protoMessageName: String = _protobuf_package + ".StartProvisioningResponse"
+extension Wendy_Agent_Services_V1_ProvisioningResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = _protobuf_package + ".ProvisioningResponse"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}csr\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
@@ -186,7 +258,7 @@ extension Edge_Agent_Services_V1_StartProvisioningResponse: SwiftProtobuf.Messag
       // enabled. https://github.com/apple/swift-protobuf/issues/1034
       switch fieldNumber {
       case 1: try {
-        var v: Edge_Agent_Services_V1_CertificateSigningRequest?
+        var v: Wendy_Agent_Services_V1_CertificateSigningRequest?
         var hadOneofValue = false
         if let current = self.request {
           hadOneofValue = true
@@ -214,14 +286,14 @@ extension Edge_Agent_Services_V1_StartProvisioningResponse: SwiftProtobuf.Messag
     try unknownFields.traverse(visitor: &visitor)
   }
 
-  public static func ==(lhs: Edge_Agent_Services_V1_StartProvisioningResponse, rhs: Edge_Agent_Services_V1_StartProvisioningResponse) -> Bool {
+  public static func ==(lhs: Wendy_Agent_Services_V1_ProvisioningResponse, rhs: Wendy_Agent_Services_V1_ProvisioningResponse) -> Bool {
     if lhs.request != rhs.request {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
 }
 
-extension Edge_Agent_Services_V1_CertificateSigningRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+extension Wendy_Agent_Services_V1_CertificateSigningRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".CertificateSigningRequest"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}csr_der\0")
 
@@ -244,7 +316,7 @@ extension Edge_Agent_Services_V1_CertificateSigningRequest: SwiftProtobuf.Messag
     try unknownFields.traverse(visitor: &visitor)
   }
 
-  public static func ==(lhs: Edge_Agent_Services_V1_CertificateSigningRequest, rhs: Edge_Agent_Services_V1_CertificateSigningRequest) -> Bool {
+  public static func ==(lhs: Wendy_Agent_Services_V1_CertificateSigningRequest, rhs: Wendy_Agent_Services_V1_CertificateSigningRequest) -> Bool {
     if lhs.csrDer != rhs.csrDer {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true

@@ -1,6 +1,6 @@
 import ArgumentParser
-import EdgeAgentGRPC
-import EdgeShared
+import WendyAgentGRPC
+import WendyShared
 import Foundation
 import Logging
 
@@ -10,8 +10,34 @@ struct AppsCommand: AsyncParsableCommand {
         abstract: "Manage applications on the device",
         subcommands: [
             ListCommand.self,
+            Stop.self,
         ]
     )
+
+    struct Stop: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(
+            commandName: "stop",
+            abstract: "Stop a running application"
+        )
+
+        @Argument(help: "Application name used when the app was created")
+        var appName: String
+
+        @OptionGroup var agentConnectionOptions: AgentConnectionOptions
+
+        func run() async throws {
+            let logger = Logger(label: "sh.wendy.cli.apps.stop")
+            try await withGRPCClient(agentConnectionOptions) { client in
+                let containers = Wendy_Agent_Services_V1_WendyContainerService.Client(
+                    wrapping: client
+                )
+                _ = try await containers.stopContainer(
+                    .with { $0.appName = appName }
+                )
+                logger.info("Stop request sent", metadata: ["app": .string(appName)])
+            }
+        }
+    }
     
     struct ListCommand: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
@@ -23,7 +49,7 @@ struct AppsCommand: AsyncParsableCommand {
 
         func run() async throws {
             try await withGRPCClient(agentConnectionOptions) { client in
-                let agent = Edge_Agent_Services_V1_EdgeContainerService.Client(wrapping: client)
+                let agent = Wendy_Agent_Services_V1_WendyContainerService.Client(wrapping: client)
                 try await agent.listContainers(.init()) { containers in
                     for try await container in containers.messages {
                         let status = switch container.container.runningState {

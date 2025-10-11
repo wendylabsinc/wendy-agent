@@ -34,9 +34,9 @@ struct WendyContainerService: Wendy_Agent_Services_V1_WendyContainerService.Serv
         }
     }
     func listContainers(
-        request: GRPCCore.ServerRequest<Edge_Agent_Services_V1_ListContainersRequest>,
+        request: GRPCCore.ServerRequest<Wendy_Agent_Services_V1_ListContainersRequest>,
         context: GRPCCore.ServerContext
-    ) async throws -> GRPCCore.StreamingServerResponse<Edge_Agent_Services_V1_ListContainersResponse> {
+    ) async throws -> GRPCCore.StreamingServerResponse<Wendy_Agent_Services_V1_ListContainersResponse> {
         return StreamingServerResponse { writer in
             try await Containerd.withClient { client in
                 let tasks = try await client.listTasks()

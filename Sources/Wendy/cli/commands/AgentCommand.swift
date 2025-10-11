@@ -99,13 +99,13 @@ struct AgentCommand: AsyncParsableCommand {
             }
 
             try await withGRPCClient(agentConnectionOptions) { client in
-                let agent = Edge_Agent_Services_V1_EdgeProvisioningService.Client(wrapping: client)
+                let agent = Wendy_Agent_Services_V1_WendyProvisioningService.Client(wrapping: client)
                 let authority = Authority(
                     privateKey: Certificate.PrivateKey(Curve25519.Signing.PrivateKey()),
                     name: name
                 )
                 let (stream, continuation) = AsyncStream<
-                    Edge_Agent_Services_V1_ProvisioningResponse
+                    Wendy_Agent_Services_V1_ProvisioningResponse
                 >.makeStream()
 
                 return try await agent.provision { writer in

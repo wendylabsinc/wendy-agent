@@ -1,17 +1,15 @@
 syntax = "proto3";
 
-package edge.agent.services.v1;
+package wendy.agent.services.v1;
 
 service WendyProvisioningService {
     rpc Provision(stream ProvisioningRequest) returns (stream ProvisioningResponse);
 }
 
-message StartProvisioningRequest {
 message ProvisioningRequest {
     oneof request {
         CertificateSigningResponse csr = 1;
-        StartProvisioningRequest start_provisioning = 1;
-        CertificateSigningResponse csr = 2;
+        StartProvisioningRequest start_provisioning = 2;
     }
 }
 

@@ -1,7 +1,7 @@
 import ArgumentParser
 import Crypto
-import EdgeAgentGRPC
-import EdgeSDK
+import WendyAgentGRPC
+import WendySDK
 import Foundation
 import GRPCHealthService
 import GRPCNIOTransportHTTP2
