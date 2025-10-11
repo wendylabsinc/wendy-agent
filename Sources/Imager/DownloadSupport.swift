@@ -126,7 +126,7 @@ public class ImageDownloader: ImageDownloading {
         progressHandler: @escaping (Progress) -> Void
     ) async throws -> String {
         let cacheDir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(
-            ".wendy-cache/images"
+            ".wendy/cache/images"
         )
         let extractionDirectoryURL = cacheDir.appendingPathComponent(deviceName)
         let temporaryDirectory = fileManager.temporaryDirectory

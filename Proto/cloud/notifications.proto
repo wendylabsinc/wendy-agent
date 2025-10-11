@@ -1,0 +1,87 @@
+syntax = "proto3";
+
+package wendycloud.v1;
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/struct.proto";
+
+service NotificationService {
+  rpc CreateNotification(CreateNotificationRequest) returns (Notification);
+  rpc ListNotifications(ListNotificationsRequest) returns (ListNotificationsResponse);
+  rpc GetNotification(GetNotificationRequest) returns (Notification);
+  rpc DeleteNotification(DeleteNotificationRequest) returns (DeleteNotificationResponse);
+  rpc MarkAsRead(MarkAsReadRequest) returns (MarkAsReadResponse);
+  rpc GetUnreadCount(GetUnreadCountRequest) returns (GetUnreadCountResponse);
+}
+
+enum NotificationSeverity {
+  NOTIFICATION_SEVERITY_UNSPECIFIED = 0;
+  NOTIFICATION_SEVERITY_INFO = 1;
+  NOTIFICATION_SEVERITY_WARNING = 2;
+  NOTIFICATION_SEVERITY_ERROR = 3;
+  NOTIFICATION_SEVERITY_CRITICAL = 4;
+}
+
+message Notification {
+  int32 id = 1;
+  string user_id = 2;
+  int32 organization_id = 3;
+  string body = 4;
+  NotificationSeverity severity = 5;
+  google.protobuf.Struct related_entities = 6;
+  google.protobuf.Timestamp created_at = 7;
+  optional google.protobuf.Timestamp deleted_at = 8;
+}
+
+message CreateNotificationRequest {
+  string user_id = 1;
+  int32 organization_id = 2;
+  string body = 3;
+  NotificationSeverity severity = 4;
+  google.protobuf.Struct related_entities = 5;
+}
+
+message ListNotificationsRequest {
+  int32 organization_id = 1;
+  string user_id = 2;
+  int32 page_size = 3;
+  string page_token = 4;
+  optional NotificationSeverity severity_filter = 5;
+  bool include_deleted = 6;
+}
+
+message ListNotificationsResponse {
+  repeated Notification notifications = 1;
+  string next_page_token = 2;
+  int32 total_count = 3;
+}
+
+message GetNotificationRequest {
+  int32 id = 1;
+}
+
+message DeleteNotificationRequest {
+  int32 id = 1;
+}
+
+message DeleteNotificationResponse {
+  bool success = 1;
+}
+
+message MarkAsReadRequest {
+  repeated int32 notification_ids = 1;
+}
+
+message MarkAsReadResponse {
+  bool success = 1;
+  int32 marked_count = 2;
+}
+
+message GetUnreadCountRequest {
+  int32 organization_id = 1;
+  string user_id = 2;
+}
+
+message GetUnreadCountResponse {
+  int32 unread_count = 1;
+}

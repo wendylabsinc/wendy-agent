@@ -20,6 +20,8 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/swift-server/async-http-client.git", from: "1.25.2"),
+        .package(url: "https://github.com/hummingbird-project/hummingbird.git", from: "2.0.2"),
+        .package(url: "https://github.com/vapor/jwt-kit.git", from: "5.0.0"),
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.5.0"),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.6.3"),
         .package(url: "https://github.com/grpc/grpc-swift-2.git", from: "2.0.0"),
@@ -29,6 +31,7 @@ let package = Package(
         .package(url: "https://github.com/swift-server/swift-service-lifecycle.git", from: "2.7.0"),
         .package(url: "https://github.com/apple/swift-nio.git", from: "2.81.0"),
         .package(url: "https://github.com/apple/swift-crypto.git", from: "3.12.2"),
+        .package(url: "https://github.com/tuist/Noora.git", from: "0.32.0"),
         .package(
             url: "https://github.com/swiftlang/swift-subprocess.git",
             from: "0.1.0",
@@ -59,7 +62,17 @@ let package = Package(
                     name: "OpenAPIAsyncHTTPClient",
                     package: "swift-openapi-async-http-client"
                 ),
+                .product(
+                    name: "Hummingbird",
+                    package: "hummingbird"
+                ),
+                .product(
+                    name: "JWTKit",
+                    package: "jwt-kit"
+                ),
+                .product(name: "Noora", package: "Noora"),
                 .target(name: "WendyAgentGRPC"),
+                .target(name: "WendyCloudGRPC"),
                 .target(name: "WendyCLI"),
                 .target(name: "WendyShared"),
                 .target(name: "Imager"),
@@ -144,6 +157,13 @@ let package = Package(
         ),
         .target(
             name: "WendyAgentGRPC",
+            dependencies: [
+                .product(name: "GRPCCore", package: "grpc-swift-2"),
+                .product(name: "GRPCProtobuf", package: "grpc-swift-protobuf"),
+            ]
+        ),
+        .target(
+            name: "WendyCloudGRPC",
             dependencies: [
                 .product(name: "GRPCCore", package: "grpc-swift-2"),
                 .product(name: "GRPCProtobuf", package: "grpc-swift-protobuf"),

@@ -3,8 +3,10 @@ import Foundation
 import GRPCCore
 import GRPCNIOTransportHTTP2
 import Logging
+import Noora
 import NIOFoundationCompat
 import WendyAgentGRPC
+import WendyCloudGRPC
 import _NIOFileSystem
 
 struct AgentCommand: AsyncParsableCommand {
@@ -14,6 +16,7 @@ struct AgentCommand: AsyncParsableCommand {
         subcommands: [
             VersionCommand.self,
             UpdateCommand.self,
+            SetupCommand.self,
         ]
     )
 
@@ -40,7 +43,10 @@ struct AgentCommand: AsyncParsableCommand {
         @OptionGroup var agentConnectionOptions: AgentConnectionOptions
 
         func run() async throws {
-            let version = try await withGRPCClient(agentConnectionOptions) { client in
+            let version = try await withGRPCClient(
+                agentConnectionOptions,
+                title: "For which device do you want to get the agent version?"
+            ) { client in
                 let agent = Wendy_Agent_Services_V1_WendyAgentService.Client(wrapping: client)
                 return try await agent.getAgentVersion(request: .init(message: .init()))
             }
@@ -92,7 +98,10 @@ struct AgentCommand: AsyncParsableCommand {
                 binary = try await downloadLatestRelease().path
             }
 
-            try await withGRPCClient(agentConnectionOptions) { client in
+            try await withGRPCClient(
+                agentConnectionOptions,
+                title: "Which device do you want to update?"
+            ) { client in
                 let agent = Wendy_Agent_Services_V1_WendyAgentService.Client(wrapping: client)
                 print("Pushing update...")
                 try await agent.updateAgent { writer in
@@ -138,5 +147,68 @@ struct AgentCommand: AsyncParsableCommand {
                 }
             }
         }
+    }
+
+    struct SetupCommand: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(
+            commandName: "setup",
+            abstract: "Setup the Wendy agent."
+        )
+        
+        @OptionGroup var agentConnectionOptions: AgentConnectionOptions
+
+        @Option
+        var cloud = "cloud.wendy.sh"
+
+        func run() async throws {
+            let target = ResolvableTargets.DNS(
+                host: cloud,
+                port: 50051
+            )
+        
+            let transport = try GRPCTransport(
+                target: target,
+                transportSecurity: .plaintext
+            )
+
+            return try await withToken(
+                title: "Setup agent",
+                cloud: cloud
+            ) { token in
+                return try await withGRPCClient(transport: transport) { client in
+                    let token = Metadata(dictionaryLiteral: ("authorization", "Bearer \(token)"))
+                    let orgsAPI = Wendycloud_V1_OrganizationService.Client(wrapping: client)
+                    
+                    let orgs = try await orgsAPI.listOrganizations(
+                        .with {
+                            $0.pageSize = 100
+                        },
+                        metadata: token
+                    ).organizations
+                    
+                    let org = Noora().singleChoicePrompt(
+                        title: "Enroll device",
+                        question: "Which organization do you want to enroll into?",
+                        options: orgs
+                    )
+                    
+                    let certsAPI = Wendycloud_V1_CertificateService.Client(wrapping: client)
+                    let enrollmentToken = try await certsAPI.createEnrollmentToken(
+                        .with {
+                            $0.organizationID = org.id
+                        },
+                        metadata: token
+                    )
+                    
+                    print(enrollmentToken)
+                }
+            }
+        }
+    }
+}
+
+extension Wendycloud_V1_Organization: CustomStringConvertible {
+    public var description: String {
+        self.name
     }
 }

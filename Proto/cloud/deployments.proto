@@ -1,0 +1,135 @@
+syntax = "proto3";
+
+package wendycloud.v1;
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/struct.proto";
+
+service DeploymentService {
+  rpc CreateDeployment(CreateDeploymentRequest) returns (Deployment);
+  rpc GetDeployment(GetDeploymentRequest) returns (Deployment);
+  rpc ListDeployments(ListDeploymentsRequest) returns (ListDeploymentsResponse);
+  rpc CancelDeployment(CancelDeploymentRequest) returns (Deployment);
+
+  rpc GetDeploymentTarget(GetDeploymentTargetRequest) returns (DeploymentTarget);
+  rpc ListDeploymentTargets(ListDeploymentTargetsRequest) returns (ListDeploymentTargetsResponse);
+  rpc UpdateDeploymentTarget(UpdateDeploymentTargetRequest) returns (DeploymentTarget);
+
+  rpc RetryFailedDeployment(RetryFailedDeploymentRequest) returns (Deployment);
+}
+
+enum DeploymentType {
+  DEPLOYMENT_TYPE_UNSPECIFIED = 0;
+  DEPLOYMENT_TYPE_OS_UPDATE = 1;
+  DEPLOYMENT_TYPE_APP_DEPLOYMENT = 2;
+}
+
+enum DeploymentStatus {
+  DEPLOYMENT_STATUS_UNSPECIFIED = 0;
+  DEPLOYMENT_STATUS_PENDING = 1;
+  DEPLOYMENT_STATUS_IN_PROGRESS = 2;
+  DEPLOYMENT_STATUS_COMPLETED = 3;
+  DEPLOYMENT_STATUS_FAILED = 4;
+  DEPLOYMENT_STATUS_CANCELLED = 5;
+}
+
+enum DeploymentTargetStatus {
+  DEPLOYMENT_TARGET_STATUS_UNSPECIFIED = 0;
+  DEPLOYMENT_TARGET_STATUS_PENDING = 1;
+  DEPLOYMENT_TARGET_STATUS_DEPLOYING = 2;
+  DEPLOYMENT_TARGET_STATUS_DEPLOYED = 3;
+  DEPLOYMENT_TARGET_STATUS_FAILED = 4;
+}
+
+message Deployment {
+  int32 id = 1;
+  int32 organization_id = 2;
+  optional int32 parent_deployment_id = 3;
+  string name = 4;
+  string details = 5;
+  DeploymentType deployment_type = 6;
+  google.protobuf.Struct deployment_payload = 7;
+  DeploymentStatus status = 8;
+  google.protobuf.Timestamp created_at = 9;
+  google.protobuf.Timestamp updated_at = 10;
+  optional google.protobuf.Timestamp started_at = 11;
+  optional google.protobuf.Timestamp completed_at = 12;
+
+  // jq filter to select and filter assets for deployment
+  // Example: ".[] | select(.tags | contains([\"production\"]))"
+  // Example: ".[] | select(.device_type == \"raspberry-pi\" and .tags | contains([\"prod\"]))"
+  optional string jq_filter = 13;
+}
+
+message DeploymentTarget {
+  int32 id = 1;
+  int32 deployment_id = 2;
+  int32 asset_id = 3;
+  DeploymentTargetStatus status = 4;
+  optional string error_message = 5;
+  google.protobuf.Timestamp created_at = 6;
+  google.protobuf.Timestamp updated_at = 7;
+  optional google.protobuf.Timestamp started_at = 8;
+  optional google.protobuf.Timestamp completed_at = 9;
+}
+
+message CreateDeploymentRequest {
+  int32 organization_id = 1;
+  string name = 2;
+  string details = 3;
+  DeploymentType deployment_type = 4;
+  google.protobuf.Struct deployment_payload = 5;
+
+  // jq filter to select and filter assets for deployment
+  // Example: ".[] | select(.tags | contains([\"production\"]))"
+  // Example: ".[] | select(.device_type == \"raspberry-pi\" and .tags | contains([\"prod\"]))"
+  optional string jq_filter = 6;
+}
+
+message GetDeploymentRequest {
+  int32 id = 1;
+}
+
+message ListDeploymentsRequest {
+  int32 organization_id = 1;
+  optional DeploymentType deployment_type = 2;
+  int32 page_size = 3;
+  string page_token = 4;
+}
+
+message ListDeploymentsResponse {
+  repeated Deployment deployments = 1;
+  string next_page_token = 2;
+}
+
+message CancelDeploymentRequest {
+  int32 id = 1;
+}
+
+message GetDeploymentTargetRequest {
+  int32 id = 1;
+}
+
+message ListDeploymentTargetsRequest {
+  int32 deployment_id = 1;
+  optional DeploymentTargetStatus status = 2;
+  int32 page_size = 3;
+  string page_token = 4;
+}
+
+message ListDeploymentTargetsResponse {
+  repeated DeploymentTarget targets = 1;
+  string next_page_token = 2;
+}
+
+message UpdateDeploymentTargetRequest {
+  int32 id = 1;
+  DeploymentTargetStatus status = 2;
+  optional string error_message = 3;
+}
+
+message RetryFailedDeploymentRequest {
+  int32 parent_deployment_id = 1;
+  string name = 2;
+  string details = 3;
+}

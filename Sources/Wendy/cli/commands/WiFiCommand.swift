@@ -43,7 +43,10 @@ struct WiFiCommand: AsyncParsableCommand {
             let logger = Logger(label: "sh.wendy.cli.wifi.list")
             logger.info("Listing available WiFi networks")
 
-            try await withGRPCClient(agentConnectionOptions) { client in
+            try await withGRPCClient(
+                agentConnectionOptions,
+                title: "For which device do you want to list wifi networks?"
+            ) { client in
                 let agent = Wendy_Agent_Services_V1_WendyAgentService.Client(wrapping: client)
                 let request = Wendy_Agent_Services_V1_ListWiFiNetworksRequest()
                 let response = try await agent.listWiFiNetworks(request)
@@ -134,7 +137,10 @@ struct WiFiCommand: AsyncParsableCommand {
             let logger = Logger(label: "sh.wendy.cli.wifi.connect")
             logger.info("Connecting to WiFi network", metadata: ["ssid": "\(ssid)"])
 
-            try await withGRPCClient(agentConnectionOptions) { client in
+            try await withGRPCClient(
+                agentConnectionOptions,
+                title: "Select device to configure wifi on"
+            ) { client in
                 let agent = Wendy_Agent_Services_V1_WendyAgentService.Client(wrapping: client)
 
                 var request = Wendy_Agent_Services_V1_ConnectToWiFiRequest()
@@ -197,7 +203,10 @@ struct WiFiCommand: AsyncParsableCommand {
             let logger = Logger(label: "sh.wendy.cli.wifi.status")
             logger.info("Checking WiFi connection status")
 
-            try await withGRPCClient(agentConnectionOptions) { client in
+            try await withGRPCClient(
+                agentConnectionOptions,
+                title: "For which device do you want to check the wifi status?"
+            ) { client in
                 let agent = Wendy_Agent_Services_V1_WendyAgentService.Client(wrapping: client)
                 let request = Wendy_Agent_Services_V1_GetWiFiStatusRequest()
                 let response = try await agent.getWiFiStatus(request)
@@ -272,7 +281,10 @@ struct WiFiCommand: AsyncParsableCommand {
             let logger = Logger(label: "sh.wendy.cli.wifi.disconnect")
             logger.info("Disconnecting from WiFi network")
 
-            try await withGRPCClient(agentConnectionOptions) { client in
+            try await withGRPCClient(
+                agentConnectionOptions,
+                title: "Which device do you want to disconnect from wifi?"
+            ) { client in
                 let agent = Wendy_Agent_Services_V1_WendyAgentService.Client(wrapping: client)
                 let request = Wendy_Agent_Services_V1_DisconnectWiFiRequest()
 

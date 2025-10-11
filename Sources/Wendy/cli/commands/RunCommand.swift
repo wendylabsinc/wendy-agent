@@ -68,7 +68,7 @@ struct RunCommand: AsyncParsableCommand, Sendable {
     var runtime: ContainerRuntime = .containerd
 
     @Option(name: .long, help: "The Swift SDK to use.")
-    var swiftSDK: String = "6.2-RELEASE_wendyos_aarch64"
+    var swiftSDK: String = "6.2-RELEASE_edgeos_aarch64"
 
     @Option(name: .long, help: "The Swift SDK to use.")
     var swiftVersion: String = "+6.2-snapshot"
@@ -355,7 +355,10 @@ extension RunCommand {
 
         let appConfigData = try await readAppConfigData(logger: logger)
 
-        try await withGRPCClient(agentConnectionOptions) { [appConfigData] client in
+        try await withGRPCClient(
+            agentConnectionOptions,
+            title: "Which device do you want to run this app on?"
+        ) { [appConfigData] client in
             let agentContainers = Wendy_Agent_Services_V1_WendyContainerService.Client(
                 wrapping: client
             )
@@ -770,7 +773,10 @@ extension RunCommand {
     ) async throws {
         let logger = Logger(label: "sh.wendy.cli.run.docker-upload")
 
-        try await withGRPCClient(agentConnectionOptions) { [appConfigData] client in
+        try await withGRPCClient(
+            agentConnectionOptions,
+            title: "Which device do you want to run this app on?"
+        ) { [appConfigData] client in
             let agent = Wendy_Agent_Services_V1_WendyAgentService.Client(wrapping: client)
             try await agent.runContainer { writer in
                 let outputPath = try await builtContainer.value

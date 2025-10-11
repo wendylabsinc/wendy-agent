@@ -11,9 +11,9 @@ extension ContainerImageSpec {
         imageRef: ImageReference,
         architecture: String
     ) async throws -> ImageManifest {
-        // Try to fetch from `.wendy-cache` first
+        // Try to fetch from `.wendy/cache` first
         let cacheDir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(
-            ".wendy-cache/manifests"
+            ".wendy/cache/manifests"
         )
         try FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
         let repoName = imageRef.repository.addingPercentEncoding(
@@ -86,7 +86,7 @@ extension ContainerImageSpec {
         configDigest: String
     ) async throws -> ImageConfiguration {
         let cacheDir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(
-            ".wendy-cache/configs"
+            ".wendy/cache/configs"
         )
         try FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
         let repoName = imageRef.repository.addingPercentEncoding(
@@ -179,7 +179,7 @@ extension ContainerImageSpec {
 
         // Create a cache directory for layers
         let cacheDir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(
-            ".wendy-cache/layers"
+            ".wendy/cache/layers"
         )
         try FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
 

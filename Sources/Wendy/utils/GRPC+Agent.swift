@@ -2,6 +2,7 @@ import GRPCCore
 import GRPCNIOTransportHTTP2
 import Logging
 import NIOCore
+import Noora
 
 #if os(macOS)
     typealias GRPCTransport = HTTP2ClientTransport.TransportServices
@@ -30,10 +31,11 @@ func withGRPCClient<R: Sendable>(
 
 func withGRPCClient<R: Sendable>(
     _ connectionOptions: AgentConnectionOptions,
+    title: TerminalText,
     _ body: @escaping (GRPCClient<GRPCTransport>) async throws -> R
 ) async throws -> R {
     let logger = Logger(label: "sh.wendy.grpc-client")
-    let endpoint = try connectionOptions.endpoint
+    let endpoint = try await connectionOptions.read(title: title)
 
     do {
         return try await withGRPCClient(endpoint, body)

@@ -173,7 +173,6 @@ public struct SwiftPM: Sendable {
         let executablePath = try await findExecutablePath(
             for: path.split(separator: " ").first.map(String.init) ?? path
         )
-        print("Using swiftly at path: \(executablePath)")
 
         // Use the executable path instead of just the command name
         let runArgs = path.split(separator: " ").dropFirst().map(String.init)

@@ -9,6 +9,7 @@ struct WendyCLI: AsyncParsableCommand {
         abstract: "Wendy CLI",
         version: Version.current,
         subcommands: [
+            AuthCommand.self,
             InitCommand.self,
             RunCommand.self,
             ContainerCommand.self,

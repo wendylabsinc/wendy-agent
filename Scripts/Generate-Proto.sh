@@ -9,6 +9,9 @@ echo "Generating Swift gRPC code using Swift Package Manager plugins..."
 rm -rf Sources/WendyAgentGRPC/Proto
 mkdir -p Sources/WendyAgentGRPC/Proto
 
+rm -rf Sources/WendyCloudGRPC/Proto
+mkdir -p Sources/WendyCloudGRPC/Proto
+
 rm -rf Sources/ContainerdGRPC/Proto  
 mkdir -p Sources/ContainerdGRPC/Proto
 rm -rf Sources/ContainerdGRPCTypes/Proto
@@ -23,6 +26,13 @@ swift package --allow-writing-to-package-directory generate-grpc-code-from-proto
     --output-path Sources/WendyAgentGRPC/Proto \
     --import-path Proto \
     -- Proto/wendy/agent/services/v1/*.proto
+
+echo "Generating WendyCloud gRPC code..."
+swift package --allow-writing-to-package-directory generate-grpc-code-from-protos \
+    --access-level public \
+    --output-path Sources/WendyCloudGRPC/Proto \
+    --import-path Proto \
+    -- Proto/cloud/*.proto
 
 echo "Generating Containerd gRPC code..."  
 swift package --allow-writing-to-package-directory generate-grpc-code-from-protos \

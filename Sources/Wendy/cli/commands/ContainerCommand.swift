@@ -6,8 +6,8 @@ import WendyAgentGRPC
 
 struct ContainerCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
-        commandName: "container",
-        abstract: "Manage containers on the device",
+        commandName: "app",
+        abstract: "Manage apps on the device",
         subcommands: [
             Stop.self
         ]
@@ -16,17 +16,20 @@ struct ContainerCommand: AsyncParsableCommand {
     struct Stop: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
             commandName: "stop",
-            abstract: "Stop a running container (containerd runtime)"
+            abstract: "Stop a running app"
         )
 
-        @Argument(help: "Application name used when the container was created")
+        @Option(help: "Application name used when the app was created")
         var appName: String
 
         @OptionGroup var agentConnectionOptions: AgentConnectionOptions
 
         func run() async throws {
             let logger = Logger(label: "sh.wendy.cli.container.stop")
-            try await withGRPCClient(agentConnectionOptions) { client in
+            try await withGRPCClient(
+                agentConnectionOptions,
+                title: "Select device to manage apps on"
+            ) { client in
                 let containers = Wendy_Agent_Services_V1_WendyContainerService.Client(
                     wrapping: client
                 )

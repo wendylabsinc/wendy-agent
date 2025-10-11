@@ -6,7 +6,7 @@ public enum OutputFormat {
 }
 
 // Add to DeviceModels.swift or create a separate file like Device.swift in the domain folder
-public protocol Device: Codable {
+public protocol Device: Codable, Hashable {
     var isWendyDevice: Bool { get }
     func toHumanReadableString() -> String
 }

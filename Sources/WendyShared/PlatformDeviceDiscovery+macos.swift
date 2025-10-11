@@ -141,8 +141,9 @@
             var interfaces: [LANDevice] = []
 
             let resolver = try AsyncDNSResolver()
-            let ptr = try await resolver.queryPTR(name: "_wendy._udp.local")
-            for name in ptr.names {
+            let ptrWendy = try await resolver.queryPTR(name: "_wendyos._udp.local")
+            let ptrEdge = try await resolver.queryPTR(name: "_edgeos._udp.local")
+            for name in (ptrWendy.names + ptrEdge.names) {
                 guard
                     let srv = try await resolver.querySRV(name: name).first,
                     let txt = try await resolver.queryTXT(name: name).first,
