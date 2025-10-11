@@ -1,10 +1,16 @@
 import ArgumentParser
+import Crypto
+import WendyAgentGRPC
+import WendyShared
 import Foundation
 import GRPCCore
 import GRPCNIOTransportHTTP2
 import Logging
 import WendyAgentGRPC
 import WendyShared
+import ServiceLifecycle
+import X509
+import _NIOFileSystem
 
 @main
 struct WendyAgent: AsyncParsableCommand {
@@ -16,6 +22,9 @@ struct WendyAgent: AsyncParsableCommand {
 
     @Option(name: .shortAndLong, help: "The port to listen on for incoming connections.")
     var port: Int = 50051
+
+    @Option(name: .shortAndLong, help: "The directory to store configuration files in.")
+    var configDir: String = ".edge-agent"
 
     func run() async throws {
         LoggingSystem.bootstrap { label in
@@ -32,12 +41,39 @@ struct WendyAgent: AsyncParsableCommand {
 
         let (signal, continuation) = AsyncStream<Void>.makeStream()
 
+        let provisioning: WendyProvisioningService
+        let config: any AgentConfigService = try await {
+            try await FileSystemAgentConfigService(directory: FilePath(configDir))
+        }()
+
+        if let certificate = await config.certificate {
+            provisioning = await WendyProvisioningService(
+                privateKey: config.privateKey,
+                deviceId: config.deviceId,
+                certificate: certificate
+            )
+        } else {
+            logger.notice("Agent requires provisioning")
+            provisioning = await WendyProvisioningService(
+                privateKey: config.privateKey,
+                deviceId: config.deviceId
+            ) { provisionedDevice in
+                // TODO: Save to disk and restart server
+                try await config.provisionCertificate(
+                    provisionedDevice.certificate
+                )
+                logger.notice("Provisioning complete. Restarting server")
+                continuation.yield()
+            }
+        }
+
         let services: [any GRPCCore.RegistrableRPCService] = [
             WendyContainerService(),
             WendyAgentService(shouldRestart: {
                 print("Shutting down server")
                 continuation.yield()
             }),
+            provisioning,
         ]
 
         let serverIPv4 = GRPCServer(

@@ -1,4 +1,5 @@
 import ArgumentParser
+import Crypto
 import Foundation
 import GRPCCore
 import GRPCNIOTransportHTTP2
@@ -8,6 +9,9 @@ import NIOFoundationCompat
 import WendyAgentGRPC
 import WendyCloudGRPC
 import _NIOFileSystem
+import WendySDK
+import X509
+import _NIOFileSystem
 
 struct AgentCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
@@ -15,7 +19,9 @@ struct AgentCommand: AsyncParsableCommand {
         abstract: "Manage the Wendy agent.",
         subcommands: [
             VersionCommand.self,
+            ProvisionCommand.self,
             UpdateCommand.self,
+            AppsCommand.self,
             SetupCommand.self,
         ]
     )
@@ -72,6 +78,82 @@ struct AgentCommand: AsyncParsableCommand {
                     print("Update available: \(latestVersion)")
                 } else if checkUpdates {
                     print("No update available")
+                }
+            }
+        }
+    }
+
+    struct ProvisionCommand: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(
+            commandName: "provision",
+            abstract: "Provision the EdgeOS agent to your organization."
+        )
+
+        @Argument(help: "The ID of the organisation to provision for")
+        var organisationID: String
+
+        // TODO: Remote CSR authority support.
+
+        @OptionGroup var agentConnectionOptions: AgentConnectionOptions
+
+        func run() async throws {
+            let name = try DistinguishedName {
+                CommonName("sh")
+                CommonName("wendy")
+                CommonName(organisationID)
+                CommonName(UUID().uuidString)
+            }
+
+            try await withGRPCClient(agentConnectionOptions) { client in
+                let agent = Wendy_Agent_Services_V1_WendyProvisioningService.Client(wrapping: client)
+                let authority = Authority(
+                    privateKey: Certificate.PrivateKey(Curve25519.Signing.PrivateKey()),
+                    name: name
+                )
+                let (stream, continuation) = AsyncStream<
+                    Wendy_Agent_Services_V1_ProvisioningResponse
+                >.makeStream()
+
+                return try await agent.provision { writer in
+                    try await writer.write(
+                        .with {
+                            $0.request = .startProvisioning(
+                                .with {
+                                    $0.organisationID = organisationID
+                                }
+                            )
+                        }
+                    )
+
+                    for await message in stream {
+                        switch message.request {
+                        case .csr(let csr):
+                            let signed = try authority.sign(
+                                CertificateSigningRequest(derEncoded: Array(csr.csrDer)),
+                                validUntil: Date().addingTimeInterval(3600)
+                            )
+
+                            print("Provisioning signed certificate..")
+                            let certificate = try Data(signed.serializeAsPEM().derBytes)
+                            try await writer.write(
+                                .with {
+                                    $0.request = .csr(
+                                        .with {
+                                            $0.certificateDer = certificate
+                                        }
+                                    )
+                                }
+                            )
+                        case .none:
+                            ()
+                        }
+                    }
+                    print("Provisioning complete!")
+                } onResponse: { response in
+                    defer { continuation.finish() }
+                    for try await response in response.messages {
+                        continuation.yield(response)
+                    }
                 }
             }
         }

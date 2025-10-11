@@ -24,10 +24,10 @@ let package = Package(
         .package(url: "https://github.com/vapor/jwt-kit.git", from: "5.0.0"),
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.5.0"),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.6.3"),
-        .package(url: "https://github.com/grpc/grpc-swift-2.git", from: "2.0.0"),
+        .package(url: "https://github.com/grpc/grpc-swift-2.git", from: "2.1.0"),
         .package(url: "https://github.com/grpc/grpc-swift-protobuf.git", from: "2.0.0"),
         .package(url: "https://github.com/grpc/grpc-swift-nio-transport.git", from: "2.0.0"),
-        .package(url: "https://github.com/apple/swift-protobuf.git", from: "1.30.0"),
+        .package(url: "https://github.com/apple/swift-certificates.git", from: "1.12.0"),
         .package(url: "https://github.com/swift-server/swift-service-lifecycle.git", from: "2.7.0"),
         .package(url: "https://github.com/apple/swift-nio.git", from: "2.81.0"),
         .package(url: "https://github.com/apple/swift-crypto.git", from: "3.12.2"),
@@ -58,6 +58,7 @@ let package = Package(
                 .product(name: "GRPCNIOTransportHTTP2", package: "grpc-swift-nio-transport"),
                 .product(name: "AsyncDNSResolver", package: "swift-async-dns-resolver"),
                 .product(name: "SystemPackage", package: "swift-system"),
+                .product(name: "NIOFoundationCompat", package: "swift-nio"),
                 .product(
                     name: "OpenAPIAsyncHTTPClient",
                     package: "swift-openapi-async-http-client"
@@ -80,11 +81,20 @@ let package = Package(
                 .target(name: "DownloadSupport"),
                 .target(name: "AppConfig"),
                 .target(name: "CliXPCProtocol"),
+                .target(name: "WendySDK"),
                 .target(name: "DockerOpenAPI"),
             ],
             path: "Sources/Wendy",
             resources: [
                 .copy("Resources")
+            ]
+        ),
+
+        .target(
+            name: "WendySDK",
+            dependencies: [
+                .product(name: "X509", package: "swift-certificates"),
+                .product(name: "Crypto", package: "swift-crypto"),
             ]
         ),
 
@@ -113,6 +123,7 @@ let package = Package(
                 .product(name: "Subprocess", package: "swift-subprocess"),
                 .product(name: "_NIOFileSystem", package: "swift-nio"),
                 .product(name: "Crypto", package: "swift-crypto"),
+                .product(name: "NIOFoundationCompat", package: "swift-nio"),
                 .target(name: "ContainerRegistry"),
             ]
         ),
@@ -133,6 +144,7 @@ let package = Package(
                 .product(name: "Subprocess", package: "swift-subprocess"),
                 .target(name: "WendyShared"),
                 .target(name: "AppConfig"),
+                .target(name: "WendySDK"),
             ],
             path: "Sources/WendyAgent"
         ),
@@ -199,6 +211,7 @@ let package = Package(
                 .product(name: "AsyncHTTPClient", package: "async-http-client"),
                 .product(name: "_NIOFileSystem", package: "swift-nio"),
                 .product(name: "Subprocess", package: "swift-subprocess"),
+                .product(name: "NIOFoundationCompat", package: "swift-nio"),
             ]
         ),
         .target(
@@ -215,7 +228,8 @@ let package = Package(
                 .target(name: "wendy"),
                 .target(name: "wendy-agent"),
                 .target(name: "WendyAgentGRPC"),
-                .target(name: "wendy-helper", condition: .when(platforms: [.macOS])),
+                .target(name: "WendySDK"),
+                .target(name: "wendy-helper", condition: .when(platforms: [.macOS]))
             ]
         ),
 
