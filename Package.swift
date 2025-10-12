@@ -137,6 +137,8 @@ let package = Package(
                 .product(name: "GRPCNIOTransportHTTP2", package: "grpc-swift-nio-transport"),
                 .product(name: "ServiceLifecycle", package: "swift-service-lifecycle"),
                 .product(name: "_NIOFileSystem", package: "swift-nio"),
+                .target(name: "WendyCloudGRPC"),
+                .product(name: "GRPCCore", package: "grpc-swift-2"),
                 .product(name: "DBUS", package: "dbus"),
                 .target(name: "WendyAgentGRPC"),
                 .target(name: "ContainerdGRPC"),

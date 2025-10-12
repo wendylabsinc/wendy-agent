@@ -8,7 +8,6 @@
 // For information on using the generated types, please see the documentation:
 //   https://github.com/apple/swift-protobuf/
 
-import Foundation
 import SwiftProtobuf
 
 // If the compiler emits an error on this type, it is because this file
@@ -21,95 +20,26 @@ fileprivate struct _GeneratedWithProtocGenSwiftVersion: SwiftProtobuf.ProtobufAP
   typealias Version = _2
 }
 
-public struct Wendy_Agent_Services_V1_ProvisioningRequest: Sendable {
-  // SwiftProtobuf.Message conformance is added in an extension below. See the
-  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
-  // methods supported on all messages.
-
-  public var request: Wendy_Agent_Services_V1_ProvisioningRequest.OneOf_Request? = nil
-
-  public var csr: Wendy_Agent_Services_V1_CertificateSigningResponse {
-    get {
-      if case .csr(let v)? = request {return v}
-      return Wendy_Agent_Services_V1_CertificateSigningResponse()
-    }
-    set {request = .csr(newValue)}
-  }
-
-  public var startProvisioning: Wendy_Agent_Services_V1_StartProvisioningRequest {
-    get {
-      if case .startProvisioning(let v)? = request {return v}
-      return Wendy_Agent_Services_V1_StartProvisioningRequest()
-    }
-    set {request = .startProvisioning(newValue)}
-  }
-
-  public var unknownFields = SwiftProtobuf.UnknownStorage()
-
-  public enum OneOf_Request: Equatable, Sendable {
-    case csr(Wendy_Agent_Services_V1_CertificateSigningResponse)
-    case startProvisioning(Wendy_Agent_Services_V1_StartProvisioningRequest)
-
-  }
-
-  public init() {}
-}
-
 public struct Wendy_Agent_Services_V1_StartProvisioningRequest: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
 
-  public var organisationID: String = String()
+  public var organizationID: Int32 = 0
+
+  public var enrollmentToken: String = String()
+
+  public var cloudHost: String = String()
 
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public init() {}
 }
 
-public struct Wendy_Agent_Services_V1_CertificateSigningResponse: Sendable {
+public struct Wendy_Agent_Services_V1_StartProvisioningResponse: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
-
-  public var certificateDer: Data = Data()
-
-  public var unknownFields = SwiftProtobuf.UnknownStorage()
-
-  public init() {}
-}
-
-public struct Wendy_Agent_Services_V1_ProvisioningResponse: Sendable {
-  // SwiftProtobuf.Message conformance is added in an extension below. See the
-  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
-  // methods supported on all messages.
-
-  public var request: Wendy_Agent_Services_V1_ProvisioningResponse.OneOf_Request? = nil
-
-  public var csr: Wendy_Agent_Services_V1_CertificateSigningRequest {
-    get {
-      if case .csr(let v)? = request {return v}
-      return Wendy_Agent_Services_V1_CertificateSigningRequest()
-    }
-    set {request = .csr(newValue)}
-  }
-
-  public var unknownFields = SwiftProtobuf.UnknownStorage()
-
-  public enum OneOf_Request: Equatable, Sendable {
-    case csr(Wendy_Agent_Services_V1_CertificateSigningRequest)
-
-  }
-
-  public init() {}
-}
-
-public struct Wendy_Agent_Services_V1_CertificateSigningRequest: Sendable {
-  // SwiftProtobuf.Message conformance is added in an extension below. See the
-  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
-  // methods supported on all messages.
-
-  public var csrDer: Data = Data()
 
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
@@ -120,76 +50,9 @@ public struct Wendy_Agent_Services_V1_CertificateSigningRequest: Sendable {
 
 fileprivate let _protobuf_package = "wendy.agent.services.v1"
 
-extension Wendy_Agent_Services_V1_ProvisioningRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
-  public static let protoMessageName: String = _protobuf_package + ".ProvisioningRequest"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}csr\0\u{3}start_provisioning\0")
-
-  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
-    while let fieldNumber = try decoder.nextFieldNumber() {
-      // The use of inline closures is to circumvent an issue where the compiler
-      // allocates stack space for every case branch when no optimizations are
-      // enabled. https://github.com/apple/swift-protobuf/issues/1034
-      switch fieldNumber {
-      case 1: try {
-        var v: Wendy_Agent_Services_V1_CertificateSigningResponse?
-        var hadOneofValue = false
-        if let current = self.request {
-          hadOneofValue = true
-          if case .csr(let m) = current {v = m}
-        }
-        try decoder.decodeSingularMessageField(value: &v)
-        if let v = v {
-          if hadOneofValue {try decoder.handleConflictingOneOf()}
-          self.request = .csr(v)
-        }
-      }()
-      case 2: try {
-        var v: Wendy_Agent_Services_V1_StartProvisioningRequest?
-        var hadOneofValue = false
-        if let current = self.request {
-          hadOneofValue = true
-          if case .startProvisioning(let m) = current {v = m}
-        }
-        try decoder.decodeSingularMessageField(value: &v)
-        if let v = v {
-          if hadOneofValue {try decoder.handleConflictingOneOf()}
-          self.request = .startProvisioning(v)
-        }
-      }()
-      default: break
-      }
-    }
-  }
-
-  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
-    // The use of inline closures is to circumvent an issue where the compiler
-    // allocates stack space for every if/case branch local when no optimizations
-    // are enabled. https://github.com/apple/swift-protobuf/issues/1034 and
-    // https://github.com/apple/swift-protobuf/issues/1182
-    switch self.request {
-    case .csr?: try {
-      guard case .csr(let v)? = self.request else { preconditionFailure() }
-      try visitor.visitSingularMessageField(value: v, fieldNumber: 1)
-    }()
-    case .startProvisioning?: try {
-      guard case .startProvisioning(let v)? = self.request else { preconditionFailure() }
-      try visitor.visitSingularMessageField(value: v, fieldNumber: 2)
-    }()
-    case nil: break
-    }
-    try unknownFields.traverse(visitor: &visitor)
-  }
-
-  public static func ==(lhs: Wendy_Agent_Services_V1_ProvisioningRequest, rhs: Wendy_Agent_Services_V1_ProvisioningRequest) -> Bool {
-    if lhs.request != rhs.request {return false}
-    if lhs.unknownFields != rhs.unknownFields {return false}
-    return true
-  }
-}
-
 extension Wendy_Agent_Services_V1_StartProvisioningRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".StartProvisioningRequest"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}organisation_id\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}organization_id\0\u{3}enrollment_token\0\u{3}cloud_host\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -197,127 +60,50 @@ extension Wendy_Agent_Services_V1_StartProvisioningRequest: SwiftProtobuf.Messag
       // allocates stack space for every case branch when no optimizations are
       // enabled. https://github.com/apple/swift-protobuf/issues/1034
       switch fieldNumber {
-      case 1: try { try decoder.decodeSingularStringField(value: &self.organisationID) }()
+      case 1: try { try decoder.decodeSingularInt32Field(value: &self.organizationID) }()
+      case 2: try { try decoder.decodeSingularStringField(value: &self.enrollmentToken) }()
+      case 3: try { try decoder.decodeSingularStringField(value: &self.cloudHost) }()
       default: break
       }
     }
   }
 
   public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
-    if !self.organisationID.isEmpty {
-      try visitor.visitSingularStringField(value: self.organisationID, fieldNumber: 1)
+    if self.organizationID != 0 {
+      try visitor.visitSingularInt32Field(value: self.organizationID, fieldNumber: 1)
+    }
+    if !self.enrollmentToken.isEmpty {
+      try visitor.visitSingularStringField(value: self.enrollmentToken, fieldNumber: 2)
+    }
+    if !self.cloudHost.isEmpty {
+      try visitor.visitSingularStringField(value: self.cloudHost, fieldNumber: 3)
     }
     try unknownFields.traverse(visitor: &visitor)
   }
 
   public static func ==(lhs: Wendy_Agent_Services_V1_StartProvisioningRequest, rhs: Wendy_Agent_Services_V1_StartProvisioningRequest) -> Bool {
-    if lhs.organisationID != rhs.organisationID {return false}
+    if lhs.organizationID != rhs.organizationID {return false}
+    if lhs.enrollmentToken != rhs.enrollmentToken {return false}
+    if lhs.cloudHost != rhs.cloudHost {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
 }
 
-extension Wendy_Agent_Services_V1_CertificateSigningResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
-  public static let protoMessageName: String = _protobuf_package + ".CertificateSigningResponse"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}certificate_der\0")
+extension Wendy_Agent_Services_V1_StartProvisioningResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = _protobuf_package + ".StartProvisioningResponse"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap()
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
-    while let fieldNumber = try decoder.nextFieldNumber() {
-      // The use of inline closures is to circumvent an issue where the compiler
-      // allocates stack space for every case branch when no optimizations are
-      // enabled. https://github.com/apple/swift-protobuf/issues/1034
-      switch fieldNumber {
-      case 1: try { try decoder.decodeSingularBytesField(value: &self.certificateDer) }()
-      default: break
-      }
-    }
+    // Load everything into unknown fields
+    while try decoder.nextFieldNumber() != nil {}
   }
 
   public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
-    if !self.certificateDer.isEmpty {
-      try visitor.visitSingularBytesField(value: self.certificateDer, fieldNumber: 1)
-    }
     try unknownFields.traverse(visitor: &visitor)
   }
 
-  public static func ==(lhs: Wendy_Agent_Services_V1_CertificateSigningResponse, rhs: Wendy_Agent_Services_V1_CertificateSigningResponse) -> Bool {
-    if lhs.certificateDer != rhs.certificateDer {return false}
-    if lhs.unknownFields != rhs.unknownFields {return false}
-    return true
-  }
-}
-
-extension Wendy_Agent_Services_V1_ProvisioningResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
-  public static let protoMessageName: String = _protobuf_package + ".ProvisioningResponse"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}csr\0")
-
-  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
-    while let fieldNumber = try decoder.nextFieldNumber() {
-      // The use of inline closures is to circumvent an issue where the compiler
-      // allocates stack space for every case branch when no optimizations are
-      // enabled. https://github.com/apple/swift-protobuf/issues/1034
-      switch fieldNumber {
-      case 1: try {
-        var v: Wendy_Agent_Services_V1_CertificateSigningRequest?
-        var hadOneofValue = false
-        if let current = self.request {
-          hadOneofValue = true
-          if case .csr(let m) = current {v = m}
-        }
-        try decoder.decodeSingularMessageField(value: &v)
-        if let v = v {
-          if hadOneofValue {try decoder.handleConflictingOneOf()}
-          self.request = .csr(v)
-        }
-      }()
-      default: break
-      }
-    }
-  }
-
-  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
-    // The use of inline closures is to circumvent an issue where the compiler
-    // allocates stack space for every if/case branch local when no optimizations
-    // are enabled. https://github.com/apple/swift-protobuf/issues/1034 and
-    // https://github.com/apple/swift-protobuf/issues/1182
-    try { if case .csr(let v)? = self.request {
-      try visitor.visitSingularMessageField(value: v, fieldNumber: 1)
-    } }()
-    try unknownFields.traverse(visitor: &visitor)
-  }
-
-  public static func ==(lhs: Wendy_Agent_Services_V1_ProvisioningResponse, rhs: Wendy_Agent_Services_V1_ProvisioningResponse) -> Bool {
-    if lhs.request != rhs.request {return false}
-    if lhs.unknownFields != rhs.unknownFields {return false}
-    return true
-  }
-}
-
-extension Wendy_Agent_Services_V1_CertificateSigningRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
-  public static let protoMessageName: String = _protobuf_package + ".CertificateSigningRequest"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}csr_der\0")
-
-  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
-    while let fieldNumber = try decoder.nextFieldNumber() {
-      // The use of inline closures is to circumvent an issue where the compiler
-      // allocates stack space for every case branch when no optimizations are
-      // enabled. https://github.com/apple/swift-protobuf/issues/1034
-      switch fieldNumber {
-      case 1: try { try decoder.decodeSingularBytesField(value: &self.csrDer) }()
-      default: break
-      }
-    }
-  }
-
-  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
-    if !self.csrDer.isEmpty {
-      try visitor.visitSingularBytesField(value: self.csrDer, fieldNumber: 1)
-    }
-    try unknownFields.traverse(visitor: &visitor)
-  }
-
-  public static func ==(lhs: Wendy_Agent_Services_V1_CertificateSigningRequest, rhs: Wendy_Agent_Services_V1_CertificateSigningRequest) -> Bool {
-    if lhs.csrDer != rhs.csrDer {return false}
+  public static func ==(lhs: Wendy_Agent_Services_V1_StartProvisioningResponse, rhs: Wendy_Agent_Services_V1_StartProvisioningResponse) -> Bool {
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }

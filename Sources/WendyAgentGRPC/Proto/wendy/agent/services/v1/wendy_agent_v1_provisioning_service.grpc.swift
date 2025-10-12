@@ -20,21 +20,21 @@ public enum Wendy_Agent_Services_V1_WendyProvisioningService {
     public static let descriptor = GRPCCore.ServiceDescriptor(fullyQualifiedService: "wendy.agent.services.v1.WendyProvisioningService")
     /// Namespace for method metadata.
     public enum Method {
-        /// Namespace for "Provision" metadata.
-        public enum Provision {
-            /// Request type for "Provision".
-            public typealias Input = Wendy_Agent_Services_V1_ProvisioningRequest
-            /// Response type for "Provision".
-            public typealias Output = Wendy_Agent_Services_V1_ProvisioningResponse
-            /// Descriptor for "Provision".
+        /// Namespace for "StartProvisioning" metadata.
+        public enum StartProvisioning {
+            /// Request type for "StartProvisioning".
+            public typealias Input = Wendy_Agent_Services_V1_StartProvisioningRequest
+            /// Response type for "StartProvisioning".
+            public typealias Output = Wendy_Agent_Services_V1_StartProvisioningResponse
+            /// Descriptor for "StartProvisioning".
             public static let descriptor = GRPCCore.MethodDescriptor(
                 service: GRPCCore.ServiceDescriptor(fullyQualifiedService: "wendy.agent.services.v1.WendyProvisioningService"),
-                method: "Provision"
+                method: "StartProvisioning"
             )
         }
         /// Descriptors for all methods in the "wendy.agent.services.v1.WendyProvisioningService" service.
         public static let descriptors: [GRPCCore.MethodDescriptor] = [
-            Provision.descriptor
+            StartProvisioning.descriptor
         ]
     }
 }
@@ -60,19 +60,19 @@ extension Wendy_Agent_Services_V1_WendyProvisioningService {
     /// Where possible, prefer using the stricter, less-verbose ``ServiceProtocol``
     /// or ``SimpleServiceProtocol`` instead.
     public protocol StreamingServiceProtocol: GRPCCore.RegistrableRPCService {
-        /// Handle the "Provision" method.
+        /// Handle the "StartProvisioning" method.
         ///
         /// - Parameters:
-        ///   - request: A streaming request of `Wendy_Agent_Services_V1_ProvisioningRequest` messages.
+        ///   - request: A streaming request of `Wendy_Agent_Services_V1_StartProvisioningRequest` messages.
         ///   - context: Context providing information about the RPC.
         /// - Throws: Any error which occurred during the processing of the request. Thrown errors
         ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
         ///     to an internal error.
-        /// - Returns: A streaming response of `Wendy_Agent_Services_V1_ProvisioningResponse` messages.
-        func provision(
-            request: GRPCCore.StreamingServerRequest<Wendy_Agent_Services_V1_ProvisioningRequest>,
+        /// - Returns: A streaming response of `Wendy_Agent_Services_V1_StartProvisioningResponse` messages.
+        func startProvisioning(
+            request: GRPCCore.StreamingServerRequest<Wendy_Agent_Services_V1_StartProvisioningRequest>,
             context: GRPCCore.ServerContext
-        ) async throws -> GRPCCore.StreamingServerResponse<Wendy_Agent_Services_V1_ProvisioningResponse>
+        ) async throws -> GRPCCore.StreamingServerResponse<Wendy_Agent_Services_V1_StartProvisioningResponse>
     }
 
     /// Service protocol for the "wendy.agent.services.v1.WendyProvisioningService" service.
@@ -83,19 +83,19 @@ extension Wendy_Agent_Services_V1_WendyProvisioningService {
     /// the ``SimpleServiceProtocol``. If you need fine grained control over your RPCs then
     /// use ``StreamingServiceProtocol``.
     public protocol ServiceProtocol: Wendy_Agent_Services_V1_WendyProvisioningService.StreamingServiceProtocol {
-        /// Handle the "Provision" method.
+        /// Handle the "StartProvisioning" method.
         ///
         /// - Parameters:
-        ///   - request: A streaming request of `Wendy_Agent_Services_V1_ProvisioningRequest` messages.
+        ///   - request: A request containing a single `Wendy_Agent_Services_V1_StartProvisioningRequest` message.
         ///   - context: Context providing information about the RPC.
         /// - Throws: Any error which occurred during the processing of the request. Thrown errors
         ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
         ///     to an internal error.
-        /// - Returns: A streaming response of `Wendy_Agent_Services_V1_ProvisioningResponse` messages.
-        func provision(
-            request: GRPCCore.StreamingServerRequest<Wendy_Agent_Services_V1_ProvisioningRequest>,
+        /// - Returns: A response containing a single `Wendy_Agent_Services_V1_StartProvisioningResponse` message.
+        func startProvisioning(
+            request: GRPCCore.ServerRequest<Wendy_Agent_Services_V1_StartProvisioningRequest>,
             context: GRPCCore.ServerContext
-        ) async throws -> GRPCCore.StreamingServerResponse<Wendy_Agent_Services_V1_ProvisioningResponse>
+        ) async throws -> GRPCCore.ServerResponse<Wendy_Agent_Services_V1_StartProvisioningResponse>
     }
 
     /// Simple service protocol for the "wendy.agent.services.v1.WendyProvisioningService" service.
@@ -104,20 +104,19 @@ extension Wendy_Agent_Services_V1_WendyProvisioningService {
     /// doesn't provide access to request or response metadata. If you need access to these
     /// then use ``ServiceProtocol`` instead.
     public protocol SimpleServiceProtocol: Wendy_Agent_Services_V1_WendyProvisioningService.ServiceProtocol {
-        /// Handle the "Provision" method.
+        /// Handle the "StartProvisioning" method.
         ///
         /// - Parameters:
-        ///   - request: A stream of `Wendy_Agent_Services_V1_ProvisioningRequest` messages.
-        ///   - response: A response stream of `Wendy_Agent_Services_V1_ProvisioningResponse` messages.
+        ///   - request: A `Wendy_Agent_Services_V1_StartProvisioningRequest` message.
         ///   - context: Context providing information about the RPC.
         /// - Throws: Any error which occurred during the processing of the request. Thrown errors
         ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
         ///     to an internal error.
-        func provision(
-            request: GRPCCore.RPCAsyncSequence<Wendy_Agent_Services_V1_ProvisioningRequest, any Swift.Error>,
-            response: GRPCCore.RPCWriter<Wendy_Agent_Services_V1_ProvisioningResponse>,
+        /// - Returns: A `Wendy_Agent_Services_V1_StartProvisioningResponse` to respond with.
+        func startProvisioning(
+            request: Wendy_Agent_Services_V1_StartProvisioningRequest,
             context: GRPCCore.ServerContext
-        ) async throws
+        ) async throws -> Wendy_Agent_Services_V1_StartProvisioningResponse
     }
 }
 
@@ -126,11 +125,11 @@ extension Wendy_Agent_Services_V1_WendyProvisioningService {
 extension Wendy_Agent_Services_V1_WendyProvisioningService.StreamingServiceProtocol {
     public func registerMethods<Transport>(with router: inout GRPCCore.RPCRouter<Transport>) where Transport: GRPCCore.ServerTransport {
         router.registerHandler(
-            forMethod: Wendy_Agent_Services_V1_WendyProvisioningService.Method.Provision.descriptor,
-            deserializer: GRPCProtobuf.ProtobufDeserializer<Wendy_Agent_Services_V1_ProvisioningRequest>(),
-            serializer: GRPCProtobuf.ProtobufSerializer<Wendy_Agent_Services_V1_ProvisioningResponse>(),
+            forMethod: Wendy_Agent_Services_V1_WendyProvisioningService.Method.StartProvisioning.descriptor,
+            deserializer: GRPCProtobuf.ProtobufDeserializer<Wendy_Agent_Services_V1_StartProvisioningRequest>(),
+            serializer: GRPCProtobuf.ProtobufSerializer<Wendy_Agent_Services_V1_StartProvisioningResponse>(),
             handler: { request, context in
-                try await self.provision(
+                try await self.startProvisioning(
                     request: request,
                     context: context
                 )
@@ -142,25 +141,31 @@ extension Wendy_Agent_Services_V1_WendyProvisioningService.StreamingServiceProto
 // Default implementation of streaming methods from 'StreamingServiceProtocol'.
 @available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Wendy_Agent_Services_V1_WendyProvisioningService.ServiceProtocol {
+    public func startProvisioning(
+        request: GRPCCore.StreamingServerRequest<Wendy_Agent_Services_V1_StartProvisioningRequest>,
+        context: GRPCCore.ServerContext
+    ) async throws -> GRPCCore.StreamingServerResponse<Wendy_Agent_Services_V1_StartProvisioningResponse> {
+        let response = try await self.startProvisioning(
+            request: GRPCCore.ServerRequest(stream: request),
+            context: context
+        )
+        return GRPCCore.StreamingServerResponse(single: response)
+    }
 }
 
 // Default implementation of methods from 'ServiceProtocol'.
 @available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Wendy_Agent_Services_V1_WendyProvisioningService.SimpleServiceProtocol {
-    public func provision(
-        request: GRPCCore.StreamingServerRequest<Wendy_Agent_Services_V1_ProvisioningRequest>,
+    public func startProvisioning(
+        request: GRPCCore.ServerRequest<Wendy_Agent_Services_V1_StartProvisioningRequest>,
         context: GRPCCore.ServerContext
-    ) async throws -> GRPCCore.StreamingServerResponse<Wendy_Agent_Services_V1_ProvisioningResponse> {
-        return GRPCCore.StreamingServerResponse<Wendy_Agent_Services_V1_ProvisioningResponse>(
-            metadata: [:],
-            producer: { writer in
-                try await self.provision(
-                    request: request.messages,
-                    response: writer,
-                    context: context
-                )
-                return [:]
-            }
+    ) async throws -> GRPCCore.ServerResponse<Wendy_Agent_Services_V1_StartProvisioningResponse> {
+        return GRPCCore.ServerResponse<Wendy_Agent_Services_V1_StartProvisioningResponse>(
+            message: try await self.startProvisioning(
+                request: request.message,
+                context: context
+            ),
+            metadata: [:]
         )
     }
 }
@@ -174,23 +179,23 @@ extension Wendy_Agent_Services_V1_WendyProvisioningService {
     /// You don't need to implement this protocol directly, use the generated
     /// implementation, ``Client``.
     public protocol ClientProtocol: Sendable {
-        /// Call the "Provision" method.
+        /// Call the "StartProvisioning" method.
         ///
         /// - Parameters:
-        ///   - request: A streaming request producing `Wendy_Agent_Services_V1_ProvisioningRequest` messages.
-        ///   - serializer: A serializer for `Wendy_Agent_Services_V1_ProvisioningRequest` messages.
-        ///   - deserializer: A deserializer for `Wendy_Agent_Services_V1_ProvisioningResponse` messages.
+        ///   - request: A request containing a single `Wendy_Agent_Services_V1_StartProvisioningRequest` message.
+        ///   - serializer: A serializer for `Wendy_Agent_Services_V1_StartProvisioningRequest` messages.
+        ///   - deserializer: A deserializer for `Wendy_Agent_Services_V1_StartProvisioningResponse` messages.
         ///   - options: Options to apply to this RPC.
         ///   - handleResponse: A closure which handles the response, the result of which is
         ///       returned to the caller. Returning from the closure will cancel the RPC if it
         ///       hasn't already finished.
         /// - Returns: The result of `handleResponse`.
-        func provision<Result>(
-            request: GRPCCore.StreamingClientRequest<Wendy_Agent_Services_V1_ProvisioningRequest>,
-            serializer: some GRPCCore.MessageSerializer<Wendy_Agent_Services_V1_ProvisioningRequest>,
-            deserializer: some GRPCCore.MessageDeserializer<Wendy_Agent_Services_V1_ProvisioningResponse>,
+        func startProvisioning<Result>(
+            request: GRPCCore.ClientRequest<Wendy_Agent_Services_V1_StartProvisioningRequest>,
+            serializer: some GRPCCore.MessageSerializer<Wendy_Agent_Services_V1_StartProvisioningRequest>,
+            deserializer: some GRPCCore.MessageDeserializer<Wendy_Agent_Services_V1_StartProvisioningResponse>,
             options: GRPCCore.CallOptions,
-            onResponse handleResponse: @Sendable @escaping (GRPCCore.StreamingClientResponse<Wendy_Agent_Services_V1_ProvisioningResponse>) async throws -> Result
+            onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendy_Agent_Services_V1_StartProvisioningResponse>) async throws -> Result
         ) async throws -> Result where Result: Sendable
     }
 
@@ -210,27 +215,29 @@ extension Wendy_Agent_Services_V1_WendyProvisioningService {
             self.client = client
         }
 
-        /// Call the "Provision" method.
+        /// Call the "StartProvisioning" method.
         ///
         /// - Parameters:
-        ///   - request: A streaming request producing `Wendy_Agent_Services_V1_ProvisioningRequest` messages.
-        ///   - serializer: A serializer for `Wendy_Agent_Services_V1_ProvisioningRequest` messages.
-        ///   - deserializer: A deserializer for `Wendy_Agent_Services_V1_ProvisioningResponse` messages.
+        ///   - request: A request containing a single `Wendy_Agent_Services_V1_StartProvisioningRequest` message.
+        ///   - serializer: A serializer for `Wendy_Agent_Services_V1_StartProvisioningRequest` messages.
+        ///   - deserializer: A deserializer for `Wendy_Agent_Services_V1_StartProvisioningResponse` messages.
         ///   - options: Options to apply to this RPC.
         ///   - handleResponse: A closure which handles the response, the result of which is
         ///       returned to the caller. Returning from the closure will cancel the RPC if it
         ///       hasn't already finished.
         /// - Returns: The result of `handleResponse`.
-        public func provision<Result>(
-            request: GRPCCore.StreamingClientRequest<Wendy_Agent_Services_V1_ProvisioningRequest>,
-            serializer: some GRPCCore.MessageSerializer<Wendy_Agent_Services_V1_ProvisioningRequest>,
-            deserializer: some GRPCCore.MessageDeserializer<Wendy_Agent_Services_V1_ProvisioningResponse>,
+        public func startProvisioning<Result>(
+            request: GRPCCore.ClientRequest<Wendy_Agent_Services_V1_StartProvisioningRequest>,
+            serializer: some GRPCCore.MessageSerializer<Wendy_Agent_Services_V1_StartProvisioningRequest>,
+            deserializer: some GRPCCore.MessageDeserializer<Wendy_Agent_Services_V1_StartProvisioningResponse>,
             options: GRPCCore.CallOptions = .defaults,
-            onResponse handleResponse: @Sendable @escaping (GRPCCore.StreamingClientResponse<Wendy_Agent_Services_V1_ProvisioningResponse>) async throws -> Result
+            onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendy_Agent_Services_V1_StartProvisioningResponse>) async throws -> Result = { response in
+                try response.message
+            }
         ) async throws -> Result where Result: Sendable {
-            try await self.client.bidirectionalStreaming(
+            try await self.client.unary(
                 request: request,
-                descriptor: Wendy_Agent_Services_V1_WendyProvisioningService.Method.Provision.descriptor,
+                descriptor: Wendy_Agent_Services_V1_WendyProvisioningService.Method.StartProvisioning.descriptor,
                 serializer: serializer,
                 deserializer: deserializer,
                 options: options,
@@ -243,24 +250,26 @@ extension Wendy_Agent_Services_V1_WendyProvisioningService {
 // Helpers providing default arguments to 'ClientProtocol' methods.
 @available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Wendy_Agent_Services_V1_WendyProvisioningService.ClientProtocol {
-    /// Call the "Provision" method.
+    /// Call the "StartProvisioning" method.
     ///
     /// - Parameters:
-    ///   - request: A streaming request producing `Wendy_Agent_Services_V1_ProvisioningRequest` messages.
+    ///   - request: A request containing a single `Wendy_Agent_Services_V1_StartProvisioningRequest` message.
     ///   - options: Options to apply to this RPC.
     ///   - handleResponse: A closure which handles the response, the result of which is
     ///       returned to the caller. Returning from the closure will cancel the RPC if it
     ///       hasn't already finished.
     /// - Returns: The result of `handleResponse`.
-    public func provision<Result>(
-        request: GRPCCore.StreamingClientRequest<Wendy_Agent_Services_V1_ProvisioningRequest>,
+    public func startProvisioning<Result>(
+        request: GRPCCore.ClientRequest<Wendy_Agent_Services_V1_StartProvisioningRequest>,
         options: GRPCCore.CallOptions = .defaults,
-        onResponse handleResponse: @Sendable @escaping (GRPCCore.StreamingClientResponse<Wendy_Agent_Services_V1_ProvisioningResponse>) async throws -> Result
+        onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendy_Agent_Services_V1_StartProvisioningResponse>) async throws -> Result = { response in
+            try response.message
+        }
     ) async throws -> Result where Result: Sendable {
-        try await self.provision(
+        try await self.startProvisioning(
             request: request,
-            serializer: GRPCProtobuf.ProtobufSerializer<Wendy_Agent_Services_V1_ProvisioningRequest>(),
-            deserializer: GRPCProtobuf.ProtobufDeserializer<Wendy_Agent_Services_V1_ProvisioningResponse>(),
+            serializer: GRPCProtobuf.ProtobufSerializer<Wendy_Agent_Services_V1_StartProvisioningRequest>(),
+            deserializer: GRPCProtobuf.ProtobufDeserializer<Wendy_Agent_Services_V1_StartProvisioningResponse>(),
             options: options,
             onResponse: handleResponse
         )
@@ -270,28 +279,29 @@ extension Wendy_Agent_Services_V1_WendyProvisioningService.ClientProtocol {
 // Helpers providing sugared APIs for 'ClientProtocol' methods.
 @available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Wendy_Agent_Services_V1_WendyProvisioningService.ClientProtocol {
-    /// Call the "Provision" method.
+    /// Call the "StartProvisioning" method.
     ///
     /// - Parameters:
+    ///   - message: request message to send.
     ///   - metadata: Additional metadata to send, defaults to empty.
     ///   - options: Options to apply to this RPC, defaults to `.defaults`.
-    ///   - producer: A closure producing request messages to send to the server. The request
-    ///       stream is closed when the closure returns.
     ///   - handleResponse: A closure which handles the response, the result of which is
     ///       returned to the caller. Returning from the closure will cancel the RPC if it
     ///       hasn't already finished.
     /// - Returns: The result of `handleResponse`.
-    public func provision<Result>(
+    public func startProvisioning<Result>(
+        _ message: Wendy_Agent_Services_V1_StartProvisioningRequest,
         metadata: GRPCCore.Metadata = [:],
         options: GRPCCore.CallOptions = .defaults,
-        requestProducer producer: @Sendable @escaping (GRPCCore.RPCWriter<Wendy_Agent_Services_V1_ProvisioningRequest>) async throws -> Void,
-        onResponse handleResponse: @Sendable @escaping (GRPCCore.StreamingClientResponse<Wendy_Agent_Services_V1_ProvisioningResponse>) async throws -> Result
+        onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendy_Agent_Services_V1_StartProvisioningResponse>) async throws -> Result = { response in
+            try response.message
+        }
     ) async throws -> Result where Result: Sendable {
-        let request = GRPCCore.StreamingClientRequest<Wendy_Agent_Services_V1_ProvisioningRequest>(
-            metadata: metadata,
-            producer: producer
+        let request = GRPCCore.ClientRequest<Wendy_Agent_Services_V1_StartProvisioningRequest>(
+            message: message,
+            metadata: metadata
         )
-        return try await self.provision(
+        return try await self.startProvisioning(
             request: request,
             options: options,
             onResponse: handleResponse

@@ -16,13 +16,13 @@ import _NIOFileSystem
 struct AgentCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "agent",
-        abstract: "Manage the Wendy agent.",
+        abstract: "Manage the Wendy device.",
         subcommands: [
-            VersionCommand.self,
-            ProvisionCommand.self,
-            UpdateCommand.self,
-            AppsCommand.self,
             SetupCommand.self,
+            AppsCommand.self,
+            WiFiCommand.self,
+            VersionCommand.self,
+            UpdateCommand.self,
         ]
     )
 
@@ -78,82 +78,6 @@ struct AgentCommand: AsyncParsableCommand {
                     print("Update available: \(latestVersion)")
                 } else if checkUpdates {
                     print("No update available")
-                }
-            }
-        }
-    }
-
-    struct ProvisionCommand: AsyncParsableCommand {
-        static let configuration = CommandConfiguration(
-            commandName: "provision",
-            abstract: "Provision the EdgeOS agent to your organization."
-        )
-
-        @Argument(help: "The ID of the organisation to provision for")
-        var organisationID: String
-
-        // TODO: Remote CSR authority support.
-
-        @OptionGroup var agentConnectionOptions: AgentConnectionOptions
-
-        func run() async throws {
-            let name = try DistinguishedName {
-                CommonName("sh")
-                CommonName("wendy")
-                CommonName(organisationID)
-                CommonName(UUID().uuidString)
-            }
-
-            try await withGRPCClient(agentConnectionOptions) { client in
-                let agent = Wendy_Agent_Services_V1_WendyProvisioningService.Client(wrapping: client)
-                let authority = Authority(
-                    privateKey: Certificate.PrivateKey(Curve25519.Signing.PrivateKey()),
-                    name: name
-                )
-                let (stream, continuation) = AsyncStream<
-                    Wendy_Agent_Services_V1_ProvisioningResponse
-                >.makeStream()
-
-                return try await agent.provision { writer in
-                    try await writer.write(
-                        .with {
-                            $0.request = .startProvisioning(
-                                .with {
-                                    $0.organisationID = organisationID
-                                }
-                            )
-                        }
-                    )
-
-                    for await message in stream {
-                        switch message.request {
-                        case .csr(let csr):
-                            let signed = try authority.sign(
-                                CertificateSigningRequest(derEncoded: Array(csr.csrDer)),
-                                validUntil: Date().addingTimeInterval(3600)
-                            )
-
-                            print("Provisioning signed certificate..")
-                            let certificate = try Data(signed.serializeAsPEM().derBytes)
-                            try await writer.write(
-                                .with {
-                                    $0.request = .csr(
-                                        .with {
-                                            $0.certificateDer = certificate
-                                        }
-                                    )
-                                }
-                            )
-                        case .none:
-                            ()
-                        }
-                    }
-                    print("Provisioning complete!")
-                } onResponse: { response in
-                    defer { continuation.finish() }
-                    for try await response in response.messages {
-                        continuation.yield(response)
-                    }
                 }
             }
         }
@@ -253,13 +177,13 @@ struct AgentCommand: AsyncParsableCommand {
                 transportSecurity: .plaintext
             )
 
-            return try await withToken(
+            try await withToken(
                 title: "Setup agent",
                 cloud: cloud
             ) { token in
-                return try await withGRPCClient(transport: transport) { client in
+                return try await withGRPCClient(transport: transport) { cloudClient in
                     let token = Metadata(dictionaryLiteral: ("authorization", "Bearer \(token)"))
-                    let orgsAPI = Wendycloud_V1_OrganizationService.Client(wrapping: client)
+                    let orgsAPI = Wendycloud_V1_OrganizationService.Client(wrapping: cloudClient)
                     
                     let orgs = try await orgsAPI.listOrganizations(
                         .with {
@@ -274,17 +198,31 @@ struct AgentCommand: AsyncParsableCommand {
                         options: orgs
                     )
                     
-                    let certsAPI = Wendycloud_V1_CertificateService.Client(wrapping: client)
-                    let enrollmentToken = try await certsAPI.createEnrollmentToken(
+                    let certsAPI = Wendycloud_V1_CertificateService.Client(wrapping: cloudClient)
+                    let tokenResponse = try await certsAPI.createEnrollmentToken(
                         .with {
                             $0.organizationID = org.id
                         },
                         metadata: token
                     )
-                    
-                    print(enrollmentToken)
+
+                    try await withGRPCClient(
+                        agentConnectionOptions,
+                        title: "Provisioning device"
+                    ) { agentClient in
+                        let agent = Wendy_Agent_Services_V1_WendyProvisioningService.Client(wrapping: agentClient)
+                        let response = try await agent.startProvisioning(
+                            .with {
+                                $0.organizationID = org.id
+                                $0.enrollmentToken = tokenResponse.enrollmentToken
+                            }
+                        )
+                    }
                 }
             }
+            
+            // TODO: Prompt setup wifi
+            // TODO: Update agent?
         }
     }
 }

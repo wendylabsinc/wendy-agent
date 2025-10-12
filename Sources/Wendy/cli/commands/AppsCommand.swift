@@ -27,7 +27,10 @@ struct AppsCommand: AsyncParsableCommand {
 
         func run() async throws {
             let logger = Logger(label: "sh.wendy.cli.apps.stop")
-            try await withGRPCClient(agentConnectionOptions) { client in
+            try await withGRPCClient(
+                agentConnectionOptions,
+                title: "Stopping application"
+            ) { client in
                 let containers = Wendy_Agent_Services_V1_WendyContainerService.Client(
                     wrapping: client
                 )
@@ -48,7 +51,10 @@ struct AppsCommand: AsyncParsableCommand {
         @OptionGroup var agentConnectionOptions: AgentConnectionOptions
 
         func run() async throws {
-            try await withGRPCClient(agentConnectionOptions) { client in
+            try await withGRPCClient(
+                agentConnectionOptions,
+                title: "Listing applications"
+            ) { client in
                 let agent = Wendy_Agent_Services_V1_WendyContainerService.Client(wrapping: client)
                 try await agent.listContainers(.init()) { containers in
                     for try await container in containers.messages {

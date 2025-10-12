@@ -17,7 +17,6 @@ struct WendyCLI: AsyncParsableCommand {
             HardwareCommand.self,
             ImagerCommand.self,
             AgentCommand.self,
-            WiFiCommand.self,
             HelperCommand.self,
             ProjectCommand.self,
         ]
