@@ -3,9 +3,7 @@ import Crypto
 import WendyAgentGRPC
 import WendySDK
 import Foundation
-import GRPCHealthService
 import GRPCNIOTransportHTTP2
-import GRPCServiceLifecycle
 import NIOCore
 import NIOPosix
 import NIOSSL

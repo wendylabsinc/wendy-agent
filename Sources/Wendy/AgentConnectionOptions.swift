@@ -98,7 +98,14 @@ struct AgentConnectionOptions: ParsableArguments {
         let discovery = PlatformDeviceDiscovery(
             logger: Logger(label: "sh.wendy.cli.find-agent")
         )
-        let lanDevices = try await discovery.findLANDevices()
+        let lanDevices = try await Noora().progressStep(
+            message: "Searcing for Wendy devices",
+            successMessage: nil,
+            errorMessage: nil,
+            showSpinner: true
+        ) { _ in
+            try await discovery.findLANDevices()
+        }
         
         var endpoints = [DiscoveredEndpoint]()
         endpoints.append(

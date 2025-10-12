@@ -2,6 +2,7 @@ import ContainerRegistry
 import Foundation
 import Logging
 import Subprocess
+import Noora
 
 extension ContainerImageSpec {
     private static let logger = Logger(label: "sh.wendy.container-builder")
@@ -54,7 +55,7 @@ extension ContainerImageSpec {
                 throw error  // Re-throw the original error if no suitable manifest found
             }
 
-            logger.info(
+            logger.debug(
                 "Using manifest for \(manifestDesc.platform?.architecture ?? "unknown") architecture"
             )
 
@@ -65,7 +66,7 @@ extension ContainerImageSpec {
             )
         }
 
-        logger.info(
+        logger.debug(
             "Saving manifest to cache",
             metadata: [
                 "path": .string(manifestPath.path),
@@ -103,7 +104,7 @@ extension ContainerImageSpec {
             logger.debug("Image configuration not found in cache, fetching from registry...")
         }
 
-        logger.info(
+        logger.debug(
             "Fetching image configuration",
             metadata: [
                 "digest": .string(configDigest),
@@ -145,7 +146,7 @@ extension ContainerImageSpec {
         password: String? = nil
     ) async throws -> ContainerImageSpec {
         let imageRef = try ImageReference(fromString: baseImage, defaultRegistry: "docker.io")
-        logger.info("Pulling base image: \(imageRef)")
+        logger.debug("Downloading base image: \(imageRef)")
 
         // Create registry client - for Docker Hub we need to use index.docker.io
         // This automatically handles the redirect for docker.io to index.docker.io
@@ -195,16 +196,16 @@ extension ContainerImageSpec {
         }
 
         for (index, layer) in manifest.layers.enumerated() {
-            logger.info("Fetching layer \(index+1)/\(manifest.layers.count): \(layer.digest)")
+            logger.debug("Fetching layer \(index+1)/\(manifest.layers.count): \(layer.digest)")
 
             // Prepare cache path for this layer
             let layerCacheFilename = layer.digest.replacingOccurrences(of: ":", with: "-")
             let layerPath = cacheDir.appendingPathComponent(layerCacheFilename)
 
             if FileManager.default.fileExists(atPath: layerPath.path) {
-                logger.info("Layer found in cache: \(layerPath.lastPathComponent)")
+                logger.debug("Layer found in cache: \(layerPath.lastPathComponent)")
             } else {
-                logger.info("Layer not found in cache, downloading: \(layer.digest)")
+                logger.debug("Layer not found in cache, downloading: \(layer.digest)")
                 let layerData = try await client.getBlob(
                     repository: imageRef.repository,
                     digest: layer.digest

@@ -3,6 +3,7 @@ import WendyAgentGRPC
 import WendyShared
 import Foundation
 import Logging
+import Noora
 
 struct AppsCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
@@ -26,7 +27,6 @@ struct AppsCommand: AsyncParsableCommand {
         @OptionGroup var agentConnectionOptions: AgentConnectionOptions
 
         func run() async throws {
-            let logger = Logger(label: "sh.wendy.cli.apps.stop")
             try await withGRPCClient(
                 agentConnectionOptions,
                 title: "Stopping application"
@@ -37,7 +37,7 @@ struct AppsCommand: AsyncParsableCommand {
                 _ = try await containers.stopContainer(
                     .with { $0.appName = appName }
                 )
-                logger.info("Stop request sent", metadata: ["app": .string(appName)])
+                Noora().info("Stop request sent")
             }
         }
     }

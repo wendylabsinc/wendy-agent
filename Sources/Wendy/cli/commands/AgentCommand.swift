@@ -191,6 +191,11 @@ struct AgentCommand: AsyncParsableCommand {
                         },
                         metadata: token
                     ).organizations
+
+                    if orgs.isEmpty {
+                        Noora().error("No organizations found")
+                        return
+                    }
                     
                     let org = Noora().singleChoicePrompt(
                         title: "Enroll device",

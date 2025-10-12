@@ -4,6 +4,7 @@ import GRPCCore
 import GRPCNIOTransportHTTP2
 import Logging
 import WendyAgentGRPC
+import Noora
 
 struct WiFiCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
@@ -31,45 +32,43 @@ struct WiFiCommand: AsyncParsableCommand {
         func run() async throws {
             // Configure logger
             LoggingSystem.bootstrap { label in
-                var handler = StreamLogHandler.standardError(label: label)
-                #if DEBUG
-                    handler.logLevel = .trace
-                #else
-                    handler.logLevel = .error
-                #endif
-                return handler
+            StreamLogHandler.standardError(label: "sh.wendy.cli.wifi.list")
             }
 
             let logger = Logger(label: "sh.wendy.cli.wifi.list")
             logger.info("Listing available WiFi networks")
 
-            try await withGRPCClient(
+            let networks = try await withGRPCClient(
                 agentConnectionOptions,
                 title: "For which device do you want to list wifi networks?"
             ) { client in
                 let agent = Wendy_Agent_Services_V1_WendyAgentService.Client(wrapping: client)
                 let request = Wendy_Agent_Services_V1_ListWiFiNetworksRequest()
-                let response = try await agent.listWiFiNetworks(request)
 
-                let networks = response.networks
-
-                if networks.isEmpty {
-                    if json {
-                        print("[]")
-                    } else {
-                        print("No WiFi networks found.")
-                    }
-                    return
-                }
-
-                // Display networks
                 if json {
-                    let networksJSON = try formatNetworksAsJSON(networks)
-                    print(networksJSON)
+                    return try await agent.listWiFiNetworks(request).networks
                 } else {
-                    formatNetworksAsText(networks)
+                    return try await Noora().progressStep(
+                        message: "Listing available WiFi networks",
+                        successMessage: nil,
+                        errorMessage: nil,
+                        showSpinner: true
+                    ) { progress in
+                        try await agent.listWiFiNetworks(request)
+                    }.networks
                 }
             }
+
+            if json {
+                let networksJSON = try formatNetworksAsJSON(networks)
+                print(networksJSON)
+                return
+            }
+
+            Noora().info("No WiFi networks found.")
+
+            // Display networks
+            formatNetworksAsText(networks)
         }
 
         private func formatNetworksAsJSON(
@@ -125,13 +124,7 @@ struct WiFiCommand: AsyncParsableCommand {
         func run() async throws {
             // Configure logger
             LoggingSystem.bootstrap { label in
-                var handler = StreamLogHandler.standardError(label: label)
-                #if DEBUG
-                    handler.logLevel = .trace
-                #else
-                    handler.logLevel = .error
-                #endif
-                return handler
+                StreamLogHandler.standardError(label: label)
             }
 
             let logger = Logger(label: "sh.wendy.cli.wifi.connect")
@@ -191,13 +184,7 @@ struct WiFiCommand: AsyncParsableCommand {
         func run() async throws {
             // Configure logger
             LoggingSystem.bootstrap { label in
-                var handler = StreamLogHandler.standardError(label: label)
-                #if DEBUG
-                    handler.logLevel = .trace
-                #else
-                    handler.logLevel = .error
-                #endif
-                return handler
+                StreamLogHandler.standardError(label: label)
             }
 
             let logger = Logger(label: "sh.wendy.cli.wifi.status")
@@ -269,13 +256,7 @@ struct WiFiCommand: AsyncParsableCommand {
         func run() async throws {
             // Configure logger
             LoggingSystem.bootstrap { label in
-                var handler = StreamLogHandler.standardError(label: label)
-                #if DEBUG
-                    handler.logLevel = .trace
-                #else
-                    handler.logLevel = .error
-                #endif
-                return handler
+            StreamLogHandler.standardError(label: label)
             }
 
             let logger = Logger(label: "sh.wendy.cli.wifi.disconnect")

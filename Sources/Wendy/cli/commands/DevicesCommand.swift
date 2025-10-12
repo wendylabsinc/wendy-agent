@@ -3,6 +3,7 @@ import Foundation
 import Logging
 import WendyAgentGRPC
 import WendyShared
+import Noora
 
 struct DevicesCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
@@ -78,22 +79,16 @@ struct DevicesCommand: AsyncParsableCommand {
     // Helper method for logging device counts
     private func logDevicesFound<T: Device>(_ devices: [T], deviceType: String, logger: Logger) {
         if devices.isEmpty {
-            logger.info("No Wendy \(deviceType) found.")
+            logger.debug("No Wendy \(deviceType) found.")
         } else {
-            logger.info("Found \(devices.count) Wendy \(deviceType)")
+            Noora().info("Found \(devices.count) Wendy \(deviceType)")
         }
     }
 
     func run() async throws {
         // Configure logger
         LoggingSystem.bootstrap { label in
-            var handler = StreamLogHandler.standardError(label: label)
-            #if DEBUG
-                handler.logLevel = .trace
-            #else
-                handler.logLevel = .error
-            #endif
-            return handler
+            StreamLogHandler.standardError(label: label)
         }
 
         let logger = Logger(label: "sh.wendy.cli.devices")

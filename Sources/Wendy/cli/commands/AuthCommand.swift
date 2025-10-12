@@ -52,6 +52,11 @@ struct LogoutCommand: AsyncParsableCommand {
     
     func run() async throws {
         var config = try getConfig()
+
+        if config.auth.isEmpty {
+            Noora().error("No accounts found")
+            return
+        }
         
         let logout = Noora().singleChoicePrompt(
             title: "Logout",

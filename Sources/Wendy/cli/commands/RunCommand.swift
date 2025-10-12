@@ -12,6 +12,7 @@ import NIOFileSystem
 import Subprocess
 import WendyAgentGRPC
 import WendyCLI
+import Noora
 
 public enum ContainerRuntime: String, ExpressibleByArgument, Sendable {
     case docker
@@ -85,19 +86,7 @@ struct RunCommand: AsyncParsableCommand, Sendable {
 
     func run() async throws {
         LoggingSystem.bootstrap { label in
-            var handler = StreamLogHandler.standardError(label: label)
-            if let level = ProcessInfo.processInfo.environment["LOG_LEVEL"].flatMap(
-                Logger.Level.init
-            ) {
-                handler.logLevel = level
-            } else {
-                #if DEBUG
-                    handler.logLevel = .trace
-                #else
-                    handler.logLevel = .error
-                #endif
-            }
-            return handler
+            StreamLogHandler.standardError(label: label)
         }
 
         let logger = Logger(label: "sh.wendy.cli.run")
@@ -195,7 +184,7 @@ extension RunCommand {
         let configData = try Data(contentsOf: configPath)
         let imageConfig = try JSONDecoder().decode(ImageConfig.self, from: configData)
 
-        logger.info(
+        logger.debug(
             "Loaded container config",
             metadata: [
                 "architecture": .string(imageConfig.architecture),
@@ -363,7 +352,7 @@ extension RunCommand {
                 wrapping: client
             )
             // TODO: Can we cache this per-device to omit round-trips to the agent?
-            logger.info("Getting existing container layers from agent")
+            logger.debug("Getting existing container layers from agent")
             let existingLayers = try await agentContainers.listLayers(.init()) { response in
                 var layers = [Wendy_Agent_Services_V1_LayerHeader]()
                 for try await layer in response.messages {
@@ -376,16 +365,50 @@ extension RunCommand {
             logger.trace("Existing layers: \(existingHashes)")
             logger.trace("Needed layers: \(layers.map(\.digest))")
 
-            logger.info("Sending changed container layers to agent")
+            logger.debug("Sending changed container layers to agent")
             // Upload layers in parallel
             // This is useful because a stream can only handle one chunk at a time
             // But the networking latency might be high enough over WiFi that we can
             // satisfy the disk more by making more streams. Many streams share a TCP connection
             try await withThrowingTaskGroup { taskGroup in
+                actor LayersUploaded {
+                    var layersUploading = 0
+                    var layersUploaded = 0
+                    var status: String {
+                        "Layers uploading \(layersUploaded)/\(layersUploading)"
+                    }
+                    nonisolated let (statusChange, continuation) = AsyncStream<String>.makeStream()
+                    
+                    func incrementUploading() {
+                        layersUploading += 1
+                        continuation.yield(status)
+                    }
+
+                    func incrementUploaded() {
+                        layersUploaded += 1
+                        continuation.yield(status)
+
+                        if layersUploaded == layersUploading {
+                            finish()
+                        }
+                    }
+
+                    nonisolated func finish() {
+                        continuation.finish()
+                    }
+                    
+                    deinit {
+                        finish()
+                    }
+                }
+
+                let layersUploaded = LayersUploaded()
+
                 for layer in layers where !existingHashes.contains(layer.digest) {
+                    await layersUploaded.incrementUploading()
                     taskGroup.addTask {
                         // Upload layers that have changed or are new
-                        logger.info("Uploading layer \(layer.digest)")
+                        logger.debug("Uploading layer \(layer.digest)")
                         try await agentContainers.writeLayer(
                             request: .init { writer in
                                 try await layer.withStream { chunk in
@@ -402,9 +425,24 @@ extension RunCommand {
                                 // Ignore responses
                             }
                         }
-                        logger.info("Uploaded layer \(layer.digest) successfully")
+                        logger.debug("Uploaded layer \(layer.digest) successfully")
+                        await layersUploaded.incrementUploaded()
                     }
                 }
+
+                try await Noora().progressStep(
+                    message: "Uploading layers to agent",
+                    successMessage: "Layers uploaded to agent",
+                    errorMessage: "Failed to upload layers to agent",
+                    showSpinner: true
+                ) { progress in
+                    await progress(layersUploaded.status)
+
+                    for await status in layersUploaded.statusChange {
+                        progress(status)
+                    }
+                }
+
                 try await taskGroup.waitForAll()
             }
 
@@ -424,19 +462,32 @@ extension RunCommand {
                         }
                     }
                 }
-            )
+            ) { response in
+                for try await message in response.messages {
+                    switch message.responseType {
+                    case .started:
+                        if debug {
+                            Noora().success("Started container with debug port 4242")
+                        } else {
+                            Noora().success("Started app")
+                        }
 
-            if debug {
-                logger.info("Started container with debug port 4242")
-            } else {
-                logger.info("Started container")
+                        if detach {
+                            return
+                        }
+                    case .stdoutOutput(let stdoutOutput):
+                        stdoutOutput.data.withUnsafeBytes { data in
+                            _ = write(STDOUT_FILENO, data.baseAddress!, data.count)
+                        }
+                    case .stderrOutput(let stderrOutput):
+                        stderrOutput.data.withUnsafeBytes { data in
+                            _ = write(STDERR_FILENO, data.baseAddress!, data.count)
+                        }
+                    default:
+                        logger.warning("Unknown message received from agent")
+                    }
+                }
             }
-
-            if detach {
-                return
-            }
-
-            // TODO: Logs?
         }
     }
 
@@ -444,7 +495,7 @@ extension RunCommand {
         let logger = Logger(label: "sh.wendy.cli.run.docker.container.build")
         let docker = DockerCLI()
         try await docker.build(name: name)
-        logger.info("Container built successfully!")
+        logger.debug("Container built successfully!")
     }
 }
 
@@ -462,7 +513,7 @@ extension RunCommand {
         var files = [ContainerImageSpec.Layer.File]()
 
         for item in items where item.lastPathComponent.hasSuffix(".resources") {
-            logger.info(
+            logger.trace(
                 "Found resources in build dir",
                 metadata: [
                     "path": "\(item.path())"
@@ -478,10 +529,10 @@ extension RunCommand {
         }
 
         if !files.isEmpty {
-            logger.info(
-                "Appending layer to spec",
+            logger.debug(
+                "Appending resources layer to spec",
                 metadata: [
-                    "resources": .stringConvertible(files.count)
+                    "files": .stringConvertible(files.count)
                 ]
             )
             spec.layers.append(
@@ -539,7 +590,7 @@ extension RunCommand {
         let buildDir = URL(fileURLWithPath: binPath)
         let executable = buildDir.appendingPathComponent(executableTarget.name)
 
-        logger.info("Building container with base image \(baseImage)")
+        logger.debug("Building container with base image \(baseImage)")
         let imageName = executableTarget.name.lowercased()
 
         // Use the debian:bookworm-slim base image instead of a blank image
@@ -597,7 +648,6 @@ extension RunCommand {
             imageName: imageName,
             tempDir: tempDir
         )
-        logger.info("Container prepared, connecting to agent")
 
         let cmd: [String]
         if debug {
@@ -659,7 +709,7 @@ extension RunCommand {
             _ = try JSONDecoder().decode(AppConfig.self, from: appConfigData)
         } catch {
             logger.debug("Failed to decode app config", metadata: ["error": .string("\(error)")])
-            logger.info("No valid wendy.json was found. Using default settings.")
+            Noora().info("No valid wendy.json was found. Using default settings.")
             appConfigData = Data()
         }
 
@@ -704,7 +754,7 @@ extension RunCommand {
         let buildDir = URL(fileURLWithPath: binPath)
         let executable = buildDir.appendingPathComponent(executableTarget.name)
 
-        logger.info("Building container with base image \(baseImage)")
+        logger.debug("Building container with base image \(baseImage)")
         let imageName = executableTarget.name.lowercased()
 
         // Use the debian:bookworm-slim base image instead of a blank image
@@ -790,69 +840,83 @@ extension RunCommand {
                 )
 
                 // Send the chunks
-                logger.info("Sending container image to agent")
-                try await FileSystem.shared.withFileHandle(forReadingAt: FilePath(outputPath)) {
-                    fileHandle in
-                    for try await chunk in fileHandle.readChunks() {
-                        try await writer.write(
-                            .with {
-                                $0.requestType = .chunk(
-                                    .with { $0.data = Data(chunk.readableBytesView) }
-                                )
-                            }
-                        )
+                logger.debug("Uploading app image to agent")
+                try await Noora().progressStep(
+                    message: "Uploading app image to agent",
+                    successMessage: "App image uploaded to agent",
+                    errorMessage: "Failed to upload app image to agent",
+                    showSpinner: true
+                ) { progress in
+                    try await FileSystem.shared.withFileHandle(forReadingAt: FilePath(outputPath)) {
+                        fileHandle in
+                        for try await chunk in fileHandle.readChunks() {
+                            try await writer.write(
+                                .with {
+                                    $0.requestType = .chunk(
+                                        .with { $0.data = Data(chunk.readableBytesView) }
+                                    )
+                                }
+                            )
+                        }
                     }
                 }
 
                 // Send the control command to start the container.
-                logger.info("Sending control command to start container")
-                try await writer.write(
-                    .with {
-                        $0.requestType = .control(
-                            .with {
-                                $0.command = .run(
-                                    .with {
-                                        $0.debug = debug
-                                        if noRestart {
-                                            $0.restartPolicy = .with {
-                                                $0.mode = .no
-                                            }
-                                        } else if let retries = restartOnFailureRetries {
-                                            $0.restartPolicy = .with {
-                                                $0.mode = .onFailure
-                                                $0.onFailureMaxRetries = Int32(retries)
-                                            }
-                                        } else if restartUnlessStoppedFlag {
-                                            $0.restartPolicy = .with {
-                                                $0.mode = .unlessStopped
-                                            }
-                                        } else {
-                                            $0.restartPolicy = .with {
-                                                $0.mode = .default
+                logger.debug("Sending control command to start container")
+                try await Noora().progressStep(
+                    message: "Starting app",
+                    successMessage: nil,
+                    errorMessage: nil,
+                    showSpinner: true
+                ) { progress in
+                    try await writer.write(
+                        .with {
+                            $0.requestType = .control(
+                                .with {
+                                    $0.command = .run(
+                                        .with {
+                                            $0.debug = debug
+                                            if noRestart {
+                                                $0.restartPolicy = .with {
+                                                    $0.mode = .no
+                                                }
+                                            } else if let retries = restartOnFailureRetries {
+                                                $0.restartPolicy = .with {
+                                                    $0.mode = .onFailure
+                                                    $0.onFailureMaxRetries = Int32(retries)
+                                                }
+                                            } else if restartUnlessStoppedFlag {
+                                                $0.restartPolicy = .with {
+                                                    $0.mode = .unlessStopped
+                                                }
+                                            } else {
+                                                $0.restartPolicy = .with {
+                                                    $0.mode = .default
+                                                }
                                             }
                                         }
-                                    }
-                                )
-                            }
-                        )
-                    }
-                )
+                                    )
+                                }
+                            )
+                        }
+                    )
+                }
             } onResponse: { response in
                 for try await message in response.messages {
                     switch message.responseType {
                     case .started(let started):
                         if started.debugPort != 0 {
-                            logger.info(
+                            Noora().success(
                                 "Started container with debug port \(started.debugPort)"
                             )
                         } else {
-                            logger.info("Started container")
+                            Noora().success("Started container")
                         }
                         if detach {
                             return
                         }
                     case .stopped:
-                        logger.info("Container stopped")
+                        Noora().success("Container stopped")
                     case nil:
                         logger.warning("Unknown message received from agent")
                     }

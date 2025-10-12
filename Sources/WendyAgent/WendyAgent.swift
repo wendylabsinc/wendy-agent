@@ -24,15 +24,11 @@ struct WendyAgent: AsyncParsableCommand {
     var port: Int = 50051
 
     @Option(name: .shortAndLong, help: "The directory to store configuration files in.")
-    var configDir: String = ".edge-agent"
+    var configDir: String = "/etc/wendy-agent"
 
     func run() async throws {
         LoggingSystem.bootstrap { label in
-            var handler = StreamLogHandler.standardError(label: label)
-            #if DEBUG
-                handler.logLevel = .trace
-            #endif
-            return handler
+            StreamLogHandler.standardError(label: label)
         }
 
         let logger = Logger(label: "sh.wendy.agent")

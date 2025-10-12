@@ -1,6 +1,8 @@
 import ContainerdGRPC
 import Crypto
 import Foundation
+import NIOCore
+import NIOPosix
 import GRPCCore
 import GRPCNIOTransportHTTP2
 import Logging
@@ -528,7 +530,9 @@ public struct Containerd: Sendable {
         containerID: String,
         appName: String,
         snapshotName: String,
-        mounts: [Containerd_Types_Mount]
+        mounts: [Containerd_Types_Mount],
+        stdout: String?,
+        stderr: String?
     ) async throws {
         let tasks = Containerd_Services_Tasks_V1_Tasks.Client(wrapping: client)
         do {
@@ -538,6 +542,12 @@ public struct Containerd: Sendable {
                     $0.runtimePath = "io.containerd.runc.v2"
                     $0.rootfs = mounts
                     $0.terminal = false
+                    if let stdout {
+                        $0.stdout = stdout
+                    }
+                    if let stderr {
+                        $0.stderr = stderr
+                    }
                 }
             )
         } catch let error as RPCError {
@@ -550,6 +560,83 @@ public struct Containerd: Sendable {
                 ]
             )
             throw error
+        }
+    }
+
+    public func withStdout<T: Sendable>(
+        perform: (String, String) async throws -> T,
+        onStdout: @Sendable @escaping (ByteBuffer) async throws -> Void,
+        onStderr: @Sendable @escaping (ByteBuffer) async throws -> Void
+    ) async throws -> T {
+        let id = UUID().uuidString
+        let stdoutSocketPath = "/tmp/wendy-attach-\(id)-stdout.sock"
+        let stderrSocketPath = "/tmp/wendy-attach-\(id)-stderr.sock"
+
+        guard
+            mkfifo(stdoutSocketPath, 0o644) == 0,
+            mkfifo(stderrSocketPath, 0o644) == 0
+        else {
+            throw RPCError(code: .internalError, message: "Failed to create stderr FIFO")
+        }
+
+        logger.info("Creating task group")
+        return try await withThrowingTaskGroup(of: Void.self) { group in
+            group.addTask {
+                let stdoutFd = open(stdoutSocketPath, O_RDONLY)
+                defer { close(stdoutFd) }
+                guard stdoutFd >= 0 else {
+                    throw RPCError(code: .internalError, message: "Failed to open stdout FIFO")
+                }
+                logger.info("Creating stdout pipe")
+                let stdoutPipe = try await NIOPipeBootstrap(group: .singletonMultiThreadedEventLoopGroup)
+                    .takingOwnershipOfDescriptor(input: stdoutFd)
+                    .flatMapThrowing { channel in
+                        try NIOAsyncChannel<ByteBuffer, Never>(wrappingChannelSynchronously: channel)
+                    }
+                    .get()
+                logger.info("Executing stdout pipe")
+                try await stdoutPipe.executeThenClose { stdout in
+                    for try await bytes in stdout {
+                        try await onStdout(bytes)
+                    }
+                }
+            }
+            group.addTask {
+                let stderrFd = open(stderrSocketPath, O_RDONLY)
+                defer { close(stderrFd) }
+                guard stderrFd >= 0 else {
+                    throw RPCError(code: .internalError, message: "Failed to open stderr FIFO")
+                }
+                logger.info("Creating stderr pipe")
+                let stderrPipe = try await NIOPipeBootstrap(group: .singletonMultiThreadedEventLoopGroup)
+                    .takingOwnershipOfDescriptor(input: stderrFd)
+                    .flatMapThrowing { channel in
+                        try NIOAsyncChannel<ByteBuffer, Never>(wrappingChannelSynchronously: channel)
+                    }
+                    .get()
+                logger.info("Executing stderr pipe")
+                try await stderrPipe.executeThenClose { stderr in
+                    for try await bytes in stderr {
+                        try await onStderr(bytes)
+                    }
+                }
+            }
+
+            do {
+                logger.info("Performing task with stdout and stderr")
+                let result = try await perform(stdoutSocketPath, stderrSocketPath)
+                try await group.waitForAll()
+                return result
+            } catch {
+                logger.error(
+                    "Failed to run task with stdout and stderr",
+                    metadata: [
+                        "error": .stringConvertible(error.localizedDescription),
+                    ]
+                )
+                group.cancelAll()
+                throw error
+            }
         }
     }
 

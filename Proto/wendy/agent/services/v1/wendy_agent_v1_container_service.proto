@@ -7,7 +7,7 @@ import "wendy/agent/services/v1/shared.proto";
 service WendyContainerService {
     rpc ListLayers(ListLayersRequest) returns (stream LayerHeader);
     rpc WriteLayer(stream WriteLayerRequest) returns (stream WriteLayerResponse);
-    rpc RunContainer(RunContainerLayersRequest) returns (RunContainerLayersResponse);
+    rpc RunContainer(RunContainerLayersRequest) returns (stream RunContainerLayersResponse);
     rpc StopContainer(StopContainerRequest) returns (StopContainerResponse);
     rpc ListContainers(ListContainersRequest) returns (stream ListContainersResponse);
 }
@@ -68,7 +68,19 @@ message RunContainerLayerHeader {
     bool gzip = 4;
 }
 
-message RunContainerLayersResponse {}
+message RunContainerLayersResponse {
+    oneof response_type {
+        Started started = 1;
+        ConsoleOutput stdout_output = 2;
+        ConsoleOutput stderr_output = 3;
+    }
+
+    message Started {}
+
+    message ConsoleOutput {
+        bytes data = 1;
+    }
+}
 
 message StopContainerRequest {
     string app_name = 1;
