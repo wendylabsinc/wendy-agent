@@ -582,7 +582,7 @@ public struct Containerd: Sendable {
         logger.info("Creating task group")
         return try await withThrowingTaskGroup(of: Void.self) { group in
             group.addTask {
-                let stdoutFd = open(stdoutSocketPath, O_RDONLY)
+                let stdoutFd = open(stdoutSocketPath, O_RDONLY | O_NONBLOCK)
                 defer { close(stdoutFd) }
                 guard stdoutFd >= 0 else {
                     throw RPCError(code: .internalError, message: "Failed to open stdout FIFO")
@@ -602,7 +602,7 @@ public struct Containerd: Sendable {
                 }
             }
             group.addTask {
-                let stderrFd = open(stderrSocketPath, O_RDONLY)
+                let stderrFd = open(stderrSocketPath, O_RDONLY | O_NONBLOCK)
                 defer { close(stderrFd) }
                 guard stderrFd >= 0 else {
                     throw RPCError(code: .internalError, message: "Failed to open stderr FIFO")

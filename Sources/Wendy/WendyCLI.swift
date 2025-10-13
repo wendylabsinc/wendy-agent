@@ -9,16 +9,33 @@ struct WendyCLI: AsyncParsableCommand {
         abstract: "Wendy CLI",
         version: Version.current,
         subcommands: [
-            AuthCommand.self,
-            InitCommand.self,
             RunCommand.self,
-            AppsCommand.self,
-            DevicesCommand.self,
-            HardwareCommand.self,
-            ImagerCommand.self,
-            AgentCommand.self,
-            HelperCommand.self,
-            ProjectCommand.self,
+                    InitCommand.self,
+                    ProjectCommand.self,
+        ],
+        groupedSubcommands: [
+            CommandGroup(
+                name: "Manage your cloud",
+                subcommands: [
+                    AuthCommand.self,
+                ]
+            ),
+            CommandGroup(
+                name: "Manage your devices",
+                subcommands: [
+                    AppsCommand.self,
+                    AgentCommand.self,
+                    ImagerCommand.self,
+                    HardwareCommand.self,
+                    DevicesCommand.self,
+                ]
+            ),
+            CommandGroup(
+                name: "Misc.",
+                subcommands: [
+                    HelperCommand.self,
+                ]
+            ),
         ]
     )
 }

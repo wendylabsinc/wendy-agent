@@ -17,7 +17,8 @@ public struct Config: Sendable, Codable {
     public struct Auth: Sendable, Codable, Hashable, CustomStringConvertible {
         public var token: String
         public var expires: Date
-        public let cloud: String
+        public let cloudDashboard: String
+        public let cloudGRPC: String
         public let user: String
         
         public var description: String {
@@ -53,30 +54,56 @@ func getConfig() throws -> Config {
     }
 }
 
-func withToken(
+func withAuth(
     title: TerminalText,
-    cloud: String,
-    perform: @Sendable @escaping (String) async throws -> Void
+    perform: @Sendable @escaping (Config.Auth) async throws -> Void
 ) async throws {
     let config = try getConfig()
     
     if config.auth.isEmpty {
-        return try await loginFlow(cloud: cloud, withToken: perform)
+        var cloudDashboard = Noora().textPrompt(
+            title: title,
+            prompt: "Enter the cloud dashboard URL",
+            collapseOnAnswer: false
+        )
+
+        var cloudGRPC = Noora().textPrompt(
+            title: title,
+            prompt: "Enter the cloud gRPC URL",
+            collapseOnAnswer: false
+        )
+
+        if cloudDashboard.isEmpty {
+            cloudDashboard = "https://cloud.wendy.sh"
+        } else if !cloudDashboard.contains("://") {
+            cloudDashboard = "https://" + cloudDashboard
+        }
+
+        if cloudGRPC.isEmpty {
+            cloudGRPC = "cloud.wendy.sh"
+        }
+
+        return try await loginFlow(
+            cloudDashboard: cloudDashboard,
+            cloudGRPC: cloudGRPC,
+            withAuth: perform
+        )
     } else if config.auth.count == 1 {
-        return try await perform(config.auth[0].token)
+        return try await perform(config.auth[0])
     } else {
         let account = Noora().singleChoicePrompt(
             title: title,
             question: "Which account do you want to use?",
             options: config.auth
         )
-        return try await perform(account.token)
+        return try await perform(account)
     }
 }
 
 func loginFlow(
-    cloud: String,
-    withToken: @Sendable @escaping (String) async throws -> Void
+    cloudDashboard: String,
+    cloudGRPC: String,
+    withAuth: @Sendable @escaping (Config.Auth) async throws -> Void
 ) async throws {
     let router = Router().get("cli-callback") { req, context in
         do {
@@ -90,19 +117,26 @@ func loginFlow(
             let jwt: TokenWithSubject = try await JWTKeyCollection().unverified(token)
             let subject = jwt.sub
             
-            config.auth.removeAll { $0.user == subject && $0.cloud == cloud }
-            
-            config.auth.append(Config.Auth(
+            config.auth.removeAll {
+                $0.user == subject &&
+                $0.cloudDashboard == cloudDashboard &&
+                $0.cloudGRPC == cloudGRPC
+            }
+
+            let auth = Config.Auth(
                 token: token,
                 expires: Date().addingTimeInterval(TimeInterval(expiresIn)),
-                cloud: cloud,
+                cloudDashboard: cloudDashboard,
+                cloudGRPC: cloudGRPC,
                 user: subject
-            ))
+            )
+            
+            config.auth.append(auth)
             
             let data = try JSONEncoder().encode(config)
             try data.write(to: configURL)
             
-            try await withToken(token)
+            try await withAuth(auth)
             
             return Response(
                 status: .ok,
@@ -123,12 +157,12 @@ func loginFlow(
         ),
         onServerRunning: { channel in
             let port = channel.localAddress!.port!
-            let url = "\(cloud)/cli-auth?redirect_uri=http://localhost:\(port)/cli-callback"
+            let url = "\(cloudDashboard)/cli-auth?redirect_uri=http://localhost:\(port)/cli-callback"
             #if os(macOS)
             if NSWorkspace.shared.open(URL(string: url)!) {
                 Noora().info("""
                 Open the following link in your browser:
-                > \(cloud)/cli-auth?redirect_uri=http://localhost:\(port)/cli-callback
+                > \(cloudDashboard)/cli-auth?redirect_uri=http://localhost:\(port)/cli-callback
                 """)
                 return
             }
@@ -137,7 +171,7 @@ func loginFlow(
             let code = Noora().textPrompt(
                 title: """
                 Open the following link in your browser:
-                > \(cloud)/cli-auth
+                > \(cloudDashboard)/cli-auth
                 """,
                 prompt: "Provide the pairing code",
                 collapseOnAnswer: false,

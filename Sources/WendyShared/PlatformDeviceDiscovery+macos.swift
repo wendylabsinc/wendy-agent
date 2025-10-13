@@ -154,7 +154,7 @@
 
                 let lanDevice = LANDevice(
                     id: id,
-                    displayName: "Wendy Device",
+                    displayName: "WendyOS Device",
                     hostname: srv.host,
                     port: Int(srv.port),
                     interfaceType: "LAN",

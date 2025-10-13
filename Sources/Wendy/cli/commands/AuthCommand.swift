@@ -20,10 +20,16 @@ struct LoginCommand: AsyncParsableCommand {
     )
     
     @Option
-    var cloud = "https://cloud.wendy.sh"
+    var cloudDashboard = "https://cloud.wendy.sh"
+
+    @Option
+    var cloudGRPC = "https://cloud.wendy.sh"
     
     func run() async throws {
-        try await loginFlow(cloud: cloud) { token in
+        try await loginFlow(
+            cloudDashboard: cloudDashboard,
+            cloudGRPC: cloudGRPC
+        ) { token in
             #if canImport(Darwin)
             Task {
                 try await Task.sleep(for: .seconds(1))

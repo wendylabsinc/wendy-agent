@@ -265,13 +265,30 @@ public struct Wendycloud_V1_ListOrganizationsRequest: Sendable {
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
 
-  public var pageSize: Int32 = 0
+  public var offset: Int32 {
+    get {return _offset ?? 0}
+    set {_offset = newValue}
+  }
+  /// Returns true if `offset` has been explicitly set.
+  public var hasOffset: Bool {return self._offset != nil}
+  /// Clears the value of `offset`. Subsequent reads from it will return its default value.
+  public mutating func clearOffset() {self._offset = nil}
 
-  public var pageToken: String = String()
+  public var limit: Int32 {
+    get {return _limit ?? 0}
+    set {_limit = newValue}
+  }
+  /// Returns true if `limit` has been explicitly set.
+  public var hasLimit: Bool {return self._limit != nil}
+  /// Clears the value of `limit`. Subsequent reads from it will return its default value.
+  public mutating func clearLimit() {self._limit = nil}
 
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public init() {}
+
+  fileprivate var _offset: Int32? = nil
+  fileprivate var _limit: Int32? = nil
 }
 
 public struct Wendycloud_V1_ListOrganizationsResponse: Sendable {
@@ -279,13 +296,22 @@ public struct Wendycloud_V1_ListOrganizationsResponse: Sendable {
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
 
-  public var organizations: [Wendycloud_V1_Organization] = []
+  public var organization: Wendycloud_V1_Organization {
+    get {return _organization ?? Wendycloud_V1_Organization()}
+    set {_organization = newValue}
+  }
+  /// Returns true if `organization` has been explicitly set.
+  public var hasOrganization: Bool {return self._organization != nil}
+  /// Clears the value of `organization`. Subsequent reads from it will return its default value.
+  public mutating func clearOrganization() {self._organization = nil}
 
-  public var nextPageToken: String = String()
+  public var total: Int32 = 0
 
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public init() {}
+
+  fileprivate var _organization: Wendycloud_V1_Organization? = nil
 }
 
 public struct Wendycloud_V1_AddMemberRequest: Sendable {
@@ -750,7 +776,7 @@ extension Wendycloud_V1_DeleteOrganizationResponse: SwiftProtobuf.Message, Swift
 
 extension Wendycloud_V1_ListOrganizationsRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ListOrganizationsRequest"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}page_size\0\u{3}page_token\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}offset\0\u{1}limit\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -758,26 +784,30 @@ extension Wendycloud_V1_ListOrganizationsRequest: SwiftProtobuf.Message, SwiftPr
       // allocates stack space for every case branch when no optimizations are
       // enabled. https://github.com/apple/swift-protobuf/issues/1034
       switch fieldNumber {
-      case 1: try { try decoder.decodeSingularInt32Field(value: &self.pageSize) }()
-      case 2: try { try decoder.decodeSingularStringField(value: &self.pageToken) }()
+      case 1: try { try decoder.decodeSingularInt32Field(value: &self._offset) }()
+      case 2: try { try decoder.decodeSingularInt32Field(value: &self._limit) }()
       default: break
       }
     }
   }
 
   public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
-    if self.pageSize != 0 {
-      try visitor.visitSingularInt32Field(value: self.pageSize, fieldNumber: 1)
-    }
-    if !self.pageToken.isEmpty {
-      try visitor.visitSingularStringField(value: self.pageToken, fieldNumber: 2)
-    }
+    // The use of inline closures is to circumvent an issue where the compiler
+    // allocates stack space for every if/case branch local when no optimizations
+    // are enabled. https://github.com/apple/swift-protobuf/issues/1034 and
+    // https://github.com/apple/swift-protobuf/issues/1182
+    try { if let v = self._offset {
+      try visitor.visitSingularInt32Field(value: v, fieldNumber: 1)
+    } }()
+    try { if let v = self._limit {
+      try visitor.visitSingularInt32Field(value: v, fieldNumber: 2)
+    } }()
     try unknownFields.traverse(visitor: &visitor)
   }
 
   public static func ==(lhs: Wendycloud_V1_ListOrganizationsRequest, rhs: Wendycloud_V1_ListOrganizationsRequest) -> Bool {
-    if lhs.pageSize != rhs.pageSize {return false}
-    if lhs.pageToken != rhs.pageToken {return false}
+    if lhs._offset != rhs._offset {return false}
+    if lhs._limit != rhs._limit {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
@@ -785,7 +815,7 @@ extension Wendycloud_V1_ListOrganizationsRequest: SwiftProtobuf.Message, SwiftPr
 
 extension Wendycloud_V1_ListOrganizationsResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ListOrganizationsResponse"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}organizations\0\u{3}next_page_token\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}organization\0\u{1}total\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -793,26 +823,30 @@ extension Wendycloud_V1_ListOrganizationsResponse: SwiftProtobuf.Message, SwiftP
       // allocates stack space for every case branch when no optimizations are
       // enabled. https://github.com/apple/swift-protobuf/issues/1034
       switch fieldNumber {
-      case 1: try { try decoder.decodeRepeatedMessageField(value: &self.organizations) }()
-      case 2: try { try decoder.decodeSingularStringField(value: &self.nextPageToken) }()
+      case 1: try { try decoder.decodeSingularMessageField(value: &self._organization) }()
+      case 2: try { try decoder.decodeSingularInt32Field(value: &self.total) }()
       default: break
       }
     }
   }
 
   public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
-    if !self.organizations.isEmpty {
-      try visitor.visitRepeatedMessageField(value: self.organizations, fieldNumber: 1)
-    }
-    if !self.nextPageToken.isEmpty {
-      try visitor.visitSingularStringField(value: self.nextPageToken, fieldNumber: 2)
+    // The use of inline closures is to circumvent an issue where the compiler
+    // allocates stack space for every if/case branch local when no optimizations
+    // are enabled. https://github.com/apple/swift-protobuf/issues/1034 and
+    // https://github.com/apple/swift-protobuf/issues/1182
+    try { if let v = self._organization {
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 1)
+    } }()
+    if self.total != 0 {
+      try visitor.visitSingularInt32Field(value: self.total, fieldNumber: 2)
     }
     try unknownFields.traverse(visitor: &visitor)
   }
 
   public static func ==(lhs: Wendycloud_V1_ListOrganizationsResponse, rhs: Wendycloud_V1_ListOrganizationsResponse) -> Bool {
-    if lhs.organizations != rhs.organizations {return false}
-    if lhs.nextPageToken != rhs.nextPageToken {return false}
+    if lhs._organization != rhs._organization {return false}
+    if lhs.total != rhs.total {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }

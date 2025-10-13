@@ -163,34 +163,36 @@ struct AgentCommand: AsyncParsableCommand {
         
         @OptionGroup var agentConnectionOptions: AgentConnectionOptions
 
-        @Option
-        var cloud = "cloud.wendy.sh"
-
         func run() async throws {
-            let target = ResolvableTargets.DNS(
-                host: cloud,
-                port: 50051
-            )
-        
-            let transport = try GRPCTransport(
-                target: target,
-                transportSecurity: .plaintext
-            )
-
-            try await withToken(
-                title: "Setup agent",
-                cloud: cloud
-            ) { token in
-                return try await withGRPCClient(transport: transport) { cloudClient in
-                    let token = Metadata(dictionaryLiteral: ("authorization", "Bearer \(token)"))
+            try await withAuth(
+                title: "Setup agent"
+            ) { auth -> Void in
+                let target = ResolvableTargets.DNS(
+                    host: auth.cloudGRPC,
+                    port: 50051
+                )
+            
+                let transport = try GRPCTransport(
+                    target: target,
+                    transportSecurity: .plaintext
+                )
+                
+                return try await withGRPCClient(transport: transport) { cloudClient -> Void in
+                    let token = Metadata(dictionaryLiteral: ("authorization", "Bearer \(auth.token)"))
                     let orgsAPI = Wendycloud_V1_OrganizationService.Client(wrapping: cloudClient)
                     
                     let orgs = try await orgsAPI.listOrganizations(
                         .with {
-                            $0.pageSize = 100
+                            $0.limit = 25
                         },
                         metadata: token
-                    ).organizations
+                    ) { response in
+                        var orgs = [Wendycloud_V1_Organization]()
+                        for try await org in response.messages {
+                            orgs.append(org.organization)
+                        }
+                        return orgs
+                    }
 
                     if orgs.isEmpty {
                         Noora().error("No organizations found")

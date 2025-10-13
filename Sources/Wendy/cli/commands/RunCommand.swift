@@ -703,15 +703,7 @@ extension RunCommand {
             .scratchPath(".wendy-build")
         )
 
-        var appConfigData: Data
-        do {
-            appConfigData = try Data(contentsOf: URL(fileURLWithPath: "wendy.json"))
-            _ = try JSONDecoder().decode(AppConfig.self, from: appConfigData)
-        } catch {
-            logger.debug("Failed to decode app config", metadata: ["error": .string("\(error)")])
-            Noora().info("No valid wendy.json was found. Using default settings.")
-            appConfigData = Data()
-        }
+        let appConfigData = try await readAppConfigData(logger: logger)
 
         // Get all executable targets
         let executableTargets = package.targets.filter { $0.type == "executable" }
@@ -932,7 +924,8 @@ extension RunCommand {
             _ = try JSONDecoder().decode(AppConfig.self, from: appConfigData)
             return appConfigData
         } catch {
-            logger.error("Failed to decode app config", metadata: ["error": .string("\(error)")])
+            logger.debug("Failed to decode app config", metadata: ["error": .string("\(error)")])
+            Noora().info("No valid wendy.json was found. Using default settings.")
             return Data()
         }
     }

@@ -390,11 +390,11 @@ extension Wendycloud_V1_OrganizationService {
         /// - Throws: Any error which occurred during the processing of the request. Thrown errors
         ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
         ///     to an internal error.
-        /// - Returns: A response containing a single `Wendycloud_V1_ListOrganizationsResponse` message.
+        /// - Returns: A streaming response of `Wendycloud_V1_ListOrganizationsResponse` messages.
         func listOrganizations(
             request: GRPCCore.ServerRequest<Wendycloud_V1_ListOrganizationsRequest>,
             context: GRPCCore.ServerContext
-        ) async throws -> GRPCCore.ServerResponse<Wendycloud_V1_ListOrganizationsResponse>
+        ) async throws -> GRPCCore.StreamingServerResponse<Wendycloud_V1_ListOrganizationsResponse>
 
         /// Handle the "AddMember" method.
         ///
@@ -533,15 +533,16 @@ extension Wendycloud_V1_OrganizationService {
         ///
         /// - Parameters:
         ///   - request: A `Wendycloud_V1_ListOrganizationsRequest` message.
+        ///   - response: A response stream of `Wendycloud_V1_ListOrganizationsResponse` messages.
         ///   - context: Context providing information about the RPC.
         /// - Throws: Any error which occurred during the processing of the request. Thrown errors
         ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
         ///     to an internal error.
-        /// - Returns: A `Wendycloud_V1_ListOrganizationsResponse` to respond with.
         func listOrganizations(
             request: Wendycloud_V1_ListOrganizationsRequest,
+            response: GRPCCore.RPCWriter<Wendycloud_V1_ListOrganizationsResponse>,
             context: GRPCCore.ServerContext
-        ) async throws -> Wendycloud_V1_ListOrganizationsResponse
+        ) async throws
 
         /// Handle the "AddMember" method.
         ///
@@ -787,7 +788,7 @@ extension Wendycloud_V1_OrganizationService.ServiceProtocol {
             request: GRPCCore.ServerRequest(stream: request),
             context: context
         )
-        return GRPCCore.StreamingServerResponse(single: response)
+        return response
     }
 
     public func addMember(
@@ -904,13 +905,17 @@ extension Wendycloud_V1_OrganizationService.SimpleServiceProtocol {
     public func listOrganizations(
         request: GRPCCore.ServerRequest<Wendycloud_V1_ListOrganizationsRequest>,
         context: GRPCCore.ServerContext
-    ) async throws -> GRPCCore.ServerResponse<Wendycloud_V1_ListOrganizationsResponse> {
-        return GRPCCore.ServerResponse<Wendycloud_V1_ListOrganizationsResponse>(
-            message: try await self.listOrganizations(
-                request: request.message,
-                context: context
-            ),
-            metadata: [:]
+    ) async throws -> GRPCCore.StreamingServerResponse<Wendycloud_V1_ListOrganizationsResponse> {
+        return GRPCCore.StreamingServerResponse<Wendycloud_V1_ListOrganizationsResponse>(
+            metadata: [:],
+            producer: { writer in
+                try await self.listOrganizations(
+                    request: request.message,
+                    response: writer,
+                    context: context
+                )
+                return [:]
+            }
         )
     }
 
@@ -1081,7 +1086,7 @@ extension Wendycloud_V1_OrganizationService {
             serializer: some GRPCCore.MessageSerializer<Wendycloud_V1_ListOrganizationsRequest>,
             deserializer: some GRPCCore.MessageDeserializer<Wendycloud_V1_ListOrganizationsResponse>,
             options: GRPCCore.CallOptions,
-            onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendycloud_V1_ListOrganizationsResponse>) async throws -> Result
+            onResponse handleResponse: @Sendable @escaping (GRPCCore.StreamingClientResponse<Wendycloud_V1_ListOrganizationsResponse>) async throws -> Result
         ) async throws -> Result where Result: Sendable
 
         /// Call the "AddMember" method.
@@ -1332,11 +1337,9 @@ extension Wendycloud_V1_OrganizationService {
             serializer: some GRPCCore.MessageSerializer<Wendycloud_V1_ListOrganizationsRequest>,
             deserializer: some GRPCCore.MessageDeserializer<Wendycloud_V1_ListOrganizationsResponse>,
             options: GRPCCore.CallOptions = .defaults,
-            onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendycloud_V1_ListOrganizationsResponse>) async throws -> Result = { response in
-                try response.message
-            }
+            onResponse handleResponse: @Sendable @escaping (GRPCCore.StreamingClientResponse<Wendycloud_V1_ListOrganizationsResponse>) async throws -> Result
         ) async throws -> Result where Result: Sendable {
-            try await self.client.unary(
+            try await self.client.serverStreaming(
                 request: request,
                 descriptor: Wendycloud_V1_OrganizationService.Method.ListOrganizations.descriptor,
                 serializer: serializer,
@@ -1613,9 +1616,7 @@ extension Wendycloud_V1_OrganizationService.ClientProtocol {
     public func listOrganizations<Result>(
         request: GRPCCore.ClientRequest<Wendycloud_V1_ListOrganizationsRequest>,
         options: GRPCCore.CallOptions = .defaults,
-        onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendycloud_V1_ListOrganizationsResponse>) async throws -> Result = { response in
-            try response.message
-        }
+        onResponse handleResponse: @Sendable @escaping (GRPCCore.StreamingClientResponse<Wendycloud_V1_ListOrganizationsResponse>) async throws -> Result
     ) async throws -> Result where Result: Sendable {
         try await self.listOrganizations(
             request: request,
@@ -1885,9 +1886,7 @@ extension Wendycloud_V1_OrganizationService.ClientProtocol {
         _ message: Wendycloud_V1_ListOrganizationsRequest,
         metadata: GRPCCore.Metadata = [:],
         options: GRPCCore.CallOptions = .defaults,
-        onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendycloud_V1_ListOrganizationsResponse>) async throws -> Result = { response in
-            try response.message
-        }
+        onResponse handleResponse: @Sendable @escaping (GRPCCore.StreamingClientResponse<Wendycloud_V1_ListOrganizationsResponse>) async throws -> Result
     ) async throws -> Result where Result: Sendable {
         let request = GRPCCore.ClientRequest<Wendycloud_V1_ListOrganizationsRequest>(
             message: message,

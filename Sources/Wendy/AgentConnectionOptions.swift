@@ -99,7 +99,7 @@ struct AgentConnectionOptions: ParsableArguments {
             logger: Logger(label: "sh.wendy.cli.find-agent")
         )
         let lanDevices = try await Noora().progressStep(
-            message: "Searcing for Wendy devices",
+            message: "Searching for WendyOS devices",
             successMessage: nil,
             errorMessage: nil,
             showSpinner: true

@@ -9,7 +9,7 @@ service OrganizationService {
   rpc GetOrganization(GetOrganizationRequest) returns (Organization);
   rpc UpdateOrganization(UpdateOrganizationRequest) returns (Organization);
   rpc DeleteOrganization(DeleteOrganizationRequest) returns (DeleteOrganizationResponse);
-  rpc ListOrganizations(ListOrganizationsRequest) returns (ListOrganizationsResponse);
+  rpc ListOrganizations(ListOrganizationsRequest) returns (stream ListOrganizationsResponse);
 
   rpc AddMember(AddMemberRequest) returns (OrganizationMember);
   rpc AddMembersByEmails(AddMembersByEmailsRequest) returns (AddMembersByEmailsResponse);
@@ -71,13 +71,13 @@ message DeleteOrganizationResponse {
 }
 
 message ListOrganizationsRequest {
-  int32 page_size = 1;
-  string page_token = 2;
+  optional int32 offset = 1;
+  optional int32 limit = 2;
 }
 
 message ListOrganizationsResponse {
-  repeated Organization organizations = 1;
-  string next_page_token = 2;
+  Organization organization = 1;
+  int32 total = 2;
 }
 
 message AddMemberRequest {

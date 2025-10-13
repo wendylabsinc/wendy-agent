@@ -110,16 +110,43 @@ struct WiFiCommand: AsyncParsableCommand {
             abstract: "Connect to a WiFi network."
         )
 
-        @Argument(help: "SSID (name) of the WiFi network to connect to")
-        var ssid: String
+        @Option(help: "SSID (name) of the WiFi network to connect to")
+        var ssid: String?
 
         @Option(name: .shortAndLong, help: "Password for the WiFi network")
-        var password: String
+        var password: String?
 
         @Flag(name: [.customShort("j"), .long], help: "Output in JSON format")
         var json: Bool = false
 
         @OptionGroup var agentConnectionOptions: AgentConnectionOptions
+
+        func discoverSSID(client: GRPCClient<GRPCTransport>) async throws -> String {
+            let agent = Wendy_Agent_Services_V1_WendyAgentService.Client(wrapping: client)
+
+            let networks = try await Noora().progressStep(
+                message: "Listing available WiFi networks",
+                successMessage: nil,
+                errorMessage: nil,
+                showSpinner: true
+            ) { progress in
+                try await agent.listWiFiNetworks(.init())
+            }.networks
+
+            let ssids = Set(networks.map { $0.ssid })
+                .sorted()
+                .filter { !$0.isEmpty }
+
+            let index = try await Noora().selectableTable(
+                headers: ["SSID"], 
+                rows: ssids.map { ssid in
+                    [ssid]
+                }, 
+                pageSize: networks.count
+            )
+
+            return networks[index].ssid
+        }
 
         func run() async throws {
             // Configure logger
@@ -127,26 +154,41 @@ struct WiFiCommand: AsyncParsableCommand {
                 StreamLogHandler.standardError(label: label)
             }
 
-            let logger = Logger(label: "sh.wendy.cli.wifi.connect")
-            logger.info("Connecting to WiFi network", metadata: ["ssid": "\(ssid)"])
-
             try await withGRPCClient(
                 agentConnectionOptions,
-                title: "Select device to configure wifi on"
+                title: "Which device do you want to connect to the wifi network on?"
             ) { client in
+                let ssid: String
+                let password: String
+                
+                if let _ssid = self.ssid {
+                    ssid = _ssid
+                } else {
+                    ssid = try await discoverSSID(client: client)
+                }
+
+                if let _password = self.password {
+                    password = _password
+                } else if json {
+                    password = ""
+                } else {
+                    password = Noora().textPrompt(
+                        title: "Enter the password for the WiFi network",
+                        prompt: "Password"
+                    )
+                }
+
+                let logger = Logger(label: "sh.wendy.cli.wifi.connect")
+                logger.debug("Connecting to WiFi network", metadata: ["ssid": "\(ssid)"])
+                
                 let agent = Wendy_Agent_Services_V1_WendyAgentService.Client(wrapping: client)
 
                 var request = Wendy_Agent_Services_V1_ConnectToWiFiRequest()
                 request.ssid = ssid
                 request.password = password
 
-                if !json {
-                    print("Connecting to WiFi network: \(ssid)...")
-                }
-
-                let response = try await agent.connectToWiFi(request)
-
                 if json {
+                    let response = try await agent.connectToWiFi(request)
                     struct Response: Codable {
                         let success: Bool
                         let errorMessage: String?
@@ -159,12 +201,22 @@ struct WiFiCommand: AsyncParsableCommand {
                         )
                     )
                     print(String(data: responseJSON, encoding: .utf8)!)
-                } else if response.success {
-                    print("✅ Successfully connected to \(ssid)")
                 } else {
-                    let errorMessage =
-                        response.hasErrorMessage ? response.errorMessage : "Unknown error"
-                    print("❌ Failed to connect to \(ssid): \(errorMessage)")
+                    _ = try await Noora().progressStep(
+                        message: "Connecting to WiFi network: \(ssid)...",
+                        successMessage: "Connected to \(ssid)",
+                        errorMessage: "Failed to connect to \(ssid)",
+                        showSpinner: true
+                    ) { progress in
+                        let response = try await agent.connectToWiFi(request)
+                        guard response.success else {
+                            struct UnableToConnectToWiFiError: Error {
+                                let errorMessage: String
+                            }
+
+                            throw UnableToConnectToWiFiError(errorMessage: response.errorMessage)
+                        }
+                    }
                 }
             }
         }

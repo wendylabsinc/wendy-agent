@@ -1,6 +1,8 @@
 import ArgumentParser
 import Foundation
 import Imager
+import Noora
+import Logging
 
 #if os(macOS)
     import Darwin
@@ -19,15 +21,99 @@ import Imager
 struct ImagerCommand: AsyncParsableCommand {
 
     static let configuration = CommandConfiguration(
-        commandName: "imager",
-        abstract: "Image Wendy projects.",
+        commandName: "disk",
+        abstract: "Setup and manage device disks.",
         subcommands: [
-            ListCommand.self, ListDevicesCommand.self, WriteCommand.self, WriteDeviceCommand.self,
+            SetupDiskCommand.self,
+            ListDrivesCommand.self,
+            ListDevicesCommand.self,
+            WriteCommand.self,
+            WriteDeviceCommand.self,
         ]
     )
 
-    struct ListCommand: AsyncParsableCommand {
+    struct SetupDiskCommand: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(
+            commandName: "setup",
+            abstract: "Setup a disk."
+        )
+        
+        func run() async throws {
+            let diskLister = DiskListerFactory.createDiskLister()
+            let manifestManager = ManifestManagerFactory.createManifestManager()
 
+            var disks = try await diskLister.list(all: true)
+            disks.removeAll { $0.id.hasSuffix("disk0") }
+            
+            async let deviceList = try await manifestManager.getAvailableDevices()
+
+            let diskIndex = try await Noora().selectableTable(
+                headers: [
+                    "Disk",
+                    "Volume",
+                    "Size"
+                ], rows: disks.map {
+                    [
+                        $0.name,
+                        $0.id,
+                        $0.capacityHumanReadableText
+                    ]
+                },
+                pageSize: disks.count
+            )
+            let selectedDisk = disks[diskIndex]
+
+            let devices = try await deviceList
+
+            let deviceIndex = try await Noora().selectableTable(
+                headers: [
+                    "Device"
+                ], rows: devices.map {
+                    [
+                        $0.name
+                    ]
+                },
+                pageSize: devices.count
+            )
+            let selectedDevice = devices[deviceIndex]
+
+            let setup = Noora().yesOrNoChoicePrompt(
+                question: "Do you want to setup \(selectedDevice.name) on \(selectedDisk.name)?",
+                defaultAnswer: false
+            )
+
+            if !setup {
+                return
+            }
+            
+            let (imageUrl, imageSize) = try await manifestManager.getLatestImageInfo(
+                for: selectedDevice.name
+            )
+
+            let imageDownloader = ImageDownloaderFactory.createImageDownloader()
+            let (localImagePath, _) = try await Noora().progressStep(
+                message: "Retrieving image",
+                successMessage: "Image ready",
+                errorMessage: "Failed to retrieve image",
+                showSpinner: true
+            ) { progress in
+                try await imageDownloader.downloadImage(
+                    from: imageUrl,
+                    deviceName: selectedDevice.name,
+                    expectedSize: imageSize,
+                    redownload: false,
+                    progressHandler: { _ in}
+                )
+            }
+
+            let diskWriter = DiskWriterFactory.createDiskWriter()
+            try await diskWriter.write(imagePath: localImagePath, drive: selectedDisk) { _ in }
+
+            Noora().success("Setup complete")
+        }
+    }
+
+    struct ListDrivesCommand: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
             commandName: "list",
             abstract: "List available external drives."
@@ -66,8 +152,8 @@ struct ImagerCommand: AsyncParsableCommand {
     struct ListDevicesCommand: AsyncParsableCommand {
 
         static let configuration = CommandConfiguration(
-            commandName: "list-devices",
-            abstract: "List available device images."
+            commandName: "supported-devices",
+            abstract: "List supported device images."
         )
 
         @Flag(name: [.customShort("j"), .long], help: "Output in JSON format")
@@ -107,7 +193,6 @@ struct ImagerCommand: AsyncParsableCommand {
     }
 
     struct WriteCommand: AsyncParsableCommand {
-
         static let configuration = CommandConfiguration(
             commandName: "write",
             abstract: "Write an image to a drive."
@@ -189,6 +274,7 @@ struct ImagerCommand: AsyncParsableCommand {
         var redownload: Bool = false
 
         func run() async throws {
+            let logger = Logger(label: "wendy.imager")
             // Use DiskLister to find the drive
             let diskLister = DiskListerFactory.createDiskLister()
             let drive = try await diskLister.findDrive(byId: driveId)
@@ -221,9 +307,9 @@ struct ImagerCommand: AsyncParsableCommand {
             // Download the image
             print("\n📥 Downloading image...")
             let imageDownloader = ImageDownloaderFactory.createImageDownloader()
-            var lastUpdateTime = Date()
+            nonisolated(unsafe) var lastUpdateTime = Date()
 
-            let localImagePath = try await imageDownloader.downloadImage(
+            let (localImagePath, _) = try await imageDownloader.downloadImage(
                 from: imageUrl,
                 deviceName: deviceName,
                 expectedSize: imageSize,
@@ -258,7 +344,7 @@ struct ImagerCommand: AsyncParsableCommand {
 
             // Clear the line and print completion message
             print("\r\u{1B}[K", terminator: "")
-            print("✅ Image downloaded to: \(localImagePath)")
+            logger.debug("✅ Image downloaded to: \(localImagePath)")
             print("\n💾 Writing image to \(drive.name) (\(drive.id))...")
             print("   Press Ctrl+C to cancel")
 

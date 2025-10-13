@@ -3,6 +3,7 @@ import ArgumentParser
 import Foundation
 import Logging
 import SystemPackage
+import Noora
 
 struct ProjectCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
@@ -91,11 +92,11 @@ struct ListCommand: ModifyProjectCommand {
 
         if showAll {
             // Show all entitlements with status
-            print("📋 Project Entitlements (all):")
             print("Project: \(config.appId)")
             print("Version: \(config.version)")
             print("")
-
+            print("📋 Project Entitlements (all):")
+            
             for entitlementType in allEntitlementTypes {
                 let isEnabled = config.entitlements.contains { entitlement in
                     entitlementType == entitlement.type
@@ -117,7 +118,6 @@ struct ListCommand: ModifyProjectCommand {
             }
         } else {
             // Show only enabled entitlements
-            print("📋 Project Entitlements:")
             print("Project: \(config.appId)")
             print("Version: \(config.version)")
             print("")
@@ -126,6 +126,7 @@ struct ListCommand: ModifyProjectCommand {
                 print("No entitlements configured")
                 print("Use 'wendy project entitlements add <type>' to add entitlements")
             } else {
+                print("📋 Project Entitlements:")
                 for entitlement in config.entitlements {
                     print("✅ \(entitlement.type.rawValue.capitalized)")
                     printEntitlementDetails(entitlement)
@@ -155,8 +156,8 @@ struct AddCommand: ModifyProjectCommand {
         abstract: "Add an entitlement to the project"
     )
 
-    @Argument(help: "Type of entitlement to add (network, bluetooth, video)")
-    var entitlementType: EntitlementType
+    @Option(help: "Type of entitlement to add (network, bluetooth, video)")
+    var entitlementType: EntitlementType?
 
     @Option(name: [.customShort("m"), .long], help: "Mode for the entitlement")
     var mode: String?
@@ -175,22 +176,72 @@ struct AddCommand: ModifyProjectCommand {
 
         // Check if wendy.json exists
         guard FileManager.default.fileExists(atPath: wendyJsonPath) else {
-            print("❌ No wendy.json found in current directory")
-            print("Run 'wendy project init' to initialize a new project")
+            Noora().warning("""
+            No wendy.json found in current directory
+            Run 'wendy project init' to initialize a new project
+            """)
             throw ProjectError.configNotFound(path: wendyJsonPath)
         }
 
         // Load current configuration
         var config = try loadConfig(from: wendyJsonPath)
+        let newEntitlement: Entitlement
 
-        // Check if entitlement already exists
-        if config.entitlements.contains(where: { $0.type == entitlementType }) {
-            print("⚠️  \(entitlementType.rawValue.capitalized) entitlement already exists")
-            return
+        if let entitlementType {
+            // Check if entitlement already exists
+            if config.entitlements.contains(where: { $0.type == entitlementType }) {
+                Noora().warning("\(entitlementType.rawValue.capitalized) entitlement already exists")
+                return
+            }
+
+            // Create new entitlement based on type and mode
+            newEntitlement = try createEntitlement(type: entitlementType, mode: mode)
+        } else {
+            let availableEntitlementTypes = EntitlementType.allCases.filter { entitlement in
+                !config.entitlements.contains { $0.type == entitlement }
+            }
+
+            if availableEntitlementTypes.isEmpty {
+                Noora().info("All entitlements are already enabled")
+                return
+            }
+
+            Noora().info("Select an entitlement to enable")
+
+            let index = try await Noora().selectableTable(
+                headers: [
+                    .primary("Entitlement")
+                ],
+                rows: availableEntitlementTypes.map { entitlement in
+                    return [
+                        .plain(entitlement.rawValue.capitalized)
+                    ]
+                },
+                pageSize: EntitlementType.allCases.count
+            )
+
+            switch availableEntitlementTypes[index] {
+            case .network:
+                let host = Noora().yesOrNoChoicePrompt(
+                    question: TerminalText("Do you want to allow host network access?")
+                )
+
+                if host {
+                    newEntitlement = .network(NetworkEntitlements(mode: .host))
+                } else {
+                    newEntitlement = .network(NetworkEntitlements(mode: .none))
+                }
+            case .bluetooth:
+                let bluez = Noora().yesOrNoChoicePrompt(
+                    question: TerminalText("Do you want to use bluez?")
+                )
+                newEntitlement = .bluetooth(BluetoothEntitlements(
+                    mode: bluez ? .bluez : .kernel
+                ))
+            case .video:
+                newEntitlement = .video(VideoEntitlements())
+            }
         }
-
-        // Create new entitlement based on type and mode
-        let newEntitlement = try createEntitlement(type: entitlementType, mode: mode)
 
         // Add to configuration
         config = AppConfig(
@@ -202,7 +253,7 @@ struct AddCommand: ModifyProjectCommand {
         // Save configuration
         try saveConfig(config, to: wendyJsonPath)
 
-        print("✅ Added \(entitlementType.rawValue) entitlement")
+        Noora().success("Added \(newEntitlement.type.rawValue) entitlement")
         if let mode {
             print("   Mode: \(mode)")
         }
@@ -249,8 +300,8 @@ struct RemoveCommand: ModifyProjectCommand {
         abstract: "Remove an entitlement from the project"
     )
 
-    @Argument(help: "Type of entitlement to remove (network, bluetooth, video)")
-    var entitlementType: EntitlementType
+    @Option(help: "Type of entitlement to remove (network, bluetooth, video)")
+    var entitlementType: EntitlementType?
 
     @Option(
         help: "Path to the project directory (defaults to current directory)"
@@ -273,24 +324,45 @@ struct RemoveCommand: ModifyProjectCommand {
 
         // Load current configuration
         var config = try loadConfig(from: wendyJsonPath)
+        let removedEntitlementType: EntitlementType
 
-        // Check if entitlement exists
-        guard config.entitlements.contains(where: { $0.type == entitlementType }) else {
-            print("⚠️  \(entitlementType.rawValue.capitalized) entitlement not found")
-            return
+        if let entitlementType {
+            // Check if entitlement exists
+            guard config.entitlements.contains(where: { $0.type == entitlementType }) else {
+                Noora().warning("\(entitlementType.rawValue.capitalized) entitlement not found")
+                return
+            }
+
+            removedEntitlementType = entitlementType
+        } else {
+            Noora().info("Select an entitlement to remove")
+
+            let index = try await Noora().selectableTable(
+                headers: [
+                    .primary("Entitlement")
+                ],
+                rows: config.entitlements.map { entitlement in
+                    return [
+                        .plain(entitlement.type.rawValue.capitalized)
+                    ]
+                },
+                pageSize: config.entitlements.count
+            )
+
+            removedEntitlementType = config.entitlements[index].type
         }
 
         // Remove entitlement
         config = AppConfig(
             appId: config.appId,
             version: config.version,
-            entitlements: config.entitlements.filter { $0.type != entitlementType }
+            entitlements: config.entitlements.filter { $0.type != removedEntitlementType }
         )
 
         // Save configuration
         try saveConfig(config, to: wendyJsonPath)
 
-        print("✅ Removed \(entitlementType.rawValue) entitlement")
+        Noora().success("Removed \(removedEntitlementType.rawValue) entitlement")
     }
 }
 

@@ -1,6 +1,7 @@
 import Foundation
 import Subprocess
 import SystemPackage
+import Noora
 
 /// Represents the Swift Package Manager interface for building and managing Swift packages.
 public struct SwiftPM: Sendable {
@@ -149,12 +150,20 @@ public struct SwiftPM: Sendable {
         let allArgs =
             [executablePath] + runArgs + ["build"] + version + options.flatMap(\.arguments)
 
-        let result = try await Subprocess.run(
-            Subprocess.Executable.path("/usr/bin/env"),
-            arguments: Subprocess.Arguments(allArgs),
-            output: .fileDescriptor(.standardOutput, closeAfterSpawningProcess: false),
-            error: .fileDescriptor(.standardError, closeAfterSpawningProcess: false),
-        )
+
+        let result = try await Noora().progressStep(
+            message: "Building Swift package",
+            successMessage: "Swift package built successfully",
+            errorMessage: "Failed to build Swift package",
+            showSpinner: true
+        ) { _ in
+            try await Subprocess.run(
+                Subprocess.Executable.path("/usr/bin/env"),
+                arguments: Subprocess.Arguments(allArgs),
+                output: .fileDescriptor(.standardOutput, closeAfterSpawningProcess: false),
+                error: .fileDescriptor(.standardError, closeAfterSpawningProcess: false),
+            )
+        }
 
         if result.terminationStatus.isSuccess {
             return result.standardOutput

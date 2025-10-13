@@ -13,7 +13,7 @@ import _NIOFileSystem
 // MARK: - Protocols
 
 /// Protocol defining image downloading functionality
-public protocol ImageDownloading {
+public protocol ImageDownloading: Sendable {
     /// Downloads an image from a URL to a local temporary file and extracts the .img file if needed
     /// - Parameters:
     ///   - url: The URL to download from
@@ -25,14 +25,14 @@ public protocol ImageDownloading {
         deviceName: String,
         expectedSize: Int,
         redownload: Bool,
-        progressHandler: @escaping (Progress) -> Void
-    ) async throws -> String
+        progressHandler: @escaping @Sendable (Progress) -> Void
+    ) async throws -> (String, cached: Bool)
 }
 
 // MARK: - Implementations
 
 /// Manages downloading device images from GCS
-public class ImageDownloader: ImageDownloading {
+public actor ImageDownloader: ImageDownloading {
     private let fileManager: FileManager
 
     public init(fileManager: FileManager = .default) {
@@ -123,8 +123,8 @@ public class ImageDownloader: ImageDownloading {
         deviceName: String,
         expectedSize: Int,
         redownload: Bool = false,
-        progressHandler: @escaping (Progress) -> Void
-    ) async throws -> String {
+        progressHandler: @escaping @Sendable (Progress) -> Void
+    ) async throws -> (String, cached: Bool) {
         let cacheDir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(
             ".wendy/cache/images"
         )
@@ -162,16 +162,16 @@ public class ImageDownloader: ImageDownloading {
             || FileManager.default.contentsOfDirectory(atPath: extractionDirectoryURL.path).isEmpty)
 
         if redownload || isValidCache {
-            return try await redownloadImage()
+            return (try await redownloadImage(), cached: false)
         } else {
             print("Using cached image for \(deviceName)")
 
             do {
-                return try await validateImage(at: extractionDirectoryURL.path)
+                return (try await validateImage(at: extractionDirectoryURL.path), cached: true)
             } catch {
                 print("Invalid image found in cache, redownloading...")
 
-                return try await redownloadImage()
+                return (try await redownloadImage(), cached: false)
             }
         }
     }

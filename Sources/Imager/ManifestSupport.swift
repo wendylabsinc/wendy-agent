@@ -44,7 +44,7 @@ public struct DeviceInfo: Codable {
 // MARK: - Protocols
 
 /// Protocol defining manifest management functionality
-public protocol ManifestManaging {
+public protocol ManifestManaging: Sendable {
     /// Fetches the latest image information for a specific device
     /// - Parameter deviceName: The name of the device
     /// - Returns: The image URL and size
@@ -58,12 +58,12 @@ public protocol ManifestManaging {
 // MARK: - Implementations
 
 /// Manages fetching and parsing device manifests from GCS
-public class ManifestManager: ManifestManaging {
+public final class ManifestManager: ManifestManaging {
     private let baseUrl: String
     private let urlSession: URLSession
 
     public init(
-        baseUrl: String = "https://storage.googleapis.com/edge-images-public",
+        baseUrl: String = "https://storage.googleapis.com/edgeos-images-public",
         urlSession: URLSession = .shared
     ) {
         self.baseUrl = baseUrl

@@ -52,7 +52,7 @@ public enum Entitlement: Codable, Sendable, Hashable {
     }
 }
 
-public enum EntitlementType: String, Codable, ExpressibleByArgument, Sendable {
+public enum EntitlementType: String, Codable, CaseIterable, ExpressibleByArgument, Sendable {
     case network
     case video
     case bluetooth
