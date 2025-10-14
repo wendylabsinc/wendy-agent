@@ -2,8 +2,8 @@ import AppConfig
 import ArgumentParser
 import Foundation
 import Logging
-import SystemPackage
 import Noora
+import SystemPackage
 
 struct ProjectCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
@@ -96,7 +96,7 @@ struct ListCommand: ModifyProjectCommand {
             print("Version: \(config.version)")
             print("")
             print("📋 Project Entitlements (all):")
-            
+
             for entitlementType in allEntitlementTypes {
                 let isEnabled = config.entitlements.contains { entitlement in
                     entitlementType == entitlement.type
@@ -176,10 +176,12 @@ struct AddCommand: ModifyProjectCommand {
 
         // Check if wendy.json exists
         guard FileManager.default.fileExists(atPath: wendyJsonPath) else {
-            Noora().warning("""
-            No wendy.json found in current directory
-            Run 'wendy project init' to initialize a new project
-            """)
+            Noora().warning(
+                """
+                No wendy.json found in current directory
+                Run 'wendy project init' to initialize a new project
+                """
+            )
             throw ProjectError.configNotFound(path: wendyJsonPath)
         }
 
@@ -190,7 +192,9 @@ struct AddCommand: ModifyProjectCommand {
         if let entitlementType {
             // Check if entitlement already exists
             if config.entitlements.contains(where: { $0.type == entitlementType }) {
-                Noora().warning("\(entitlementType.rawValue.capitalized) entitlement already exists")
+                Noora().warning(
+                    "\(entitlementType.rawValue.capitalized) entitlement already exists"
+                )
                 return
             }
 
@@ -235,9 +239,11 @@ struct AddCommand: ModifyProjectCommand {
                 let bluez = Noora().yesOrNoChoicePrompt(
                     question: TerminalText("Do you want to use bluez?")
                 )
-                newEntitlement = .bluetooth(BluetoothEntitlements(
-                    mode: bluez ? .bluez : .kernel
-                ))
+                newEntitlement = .bluetooth(
+                    BluetoothEntitlements(
+                        mode: bluez ? .bluez : .kernel
+                    )
+                )
             case .video:
                 newEntitlement = .video(VideoEntitlements())
             }

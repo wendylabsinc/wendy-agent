@@ -231,7 +231,7 @@ let package = Package(
                 .target(name: "wendy-agent"),
                 .target(name: "WendyAgentGRPC"),
                 .target(name: "WendySDK"),
-                .target(name: "wendy-helper", condition: .when(platforms: [.macOS]))
+                .target(name: "wendy-helper", condition: .when(platforms: [.macOS])),
             ]
         ),
 

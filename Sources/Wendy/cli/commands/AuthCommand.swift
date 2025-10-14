@@ -1,11 +1,11 @@
 import ArgumentParser
+import Crypto
 import Foundation
 import Noora
-import WendySDK
-import Crypto
-import WendyCloudGRPC
-import X509
 import SwiftASN1
+import WendyCloudGRPC
+import WendySDK
+import X509
 
 struct AuthCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
@@ -24,13 +24,13 @@ struct LoginCommand: AsyncParsableCommand {
         commandName: "login",
         abstract: "Log into cloud services"
     )
-    
+
     @Option
     var cloudDashboard = "https://cloud.wendy.sh"
 
     @Option
     var cloudGRPC = "https://cloud.wendy.sh"
-    
+
     func run() async throws {
         try await loginFlow(
             cloudDashboard: cloudDashboard,
@@ -38,10 +38,10 @@ struct LoginCommand: AsyncParsableCommand {
         ) { token in
             Noora().success("Logged in")
             #if canImport(Darwin)
-            Task {
-                try await Task.sleep(for: .seconds(1))
-                Darwin.exit(0)
-            }
+                Task {
+                    try await Task.sleep(for: .seconds(1))
+                    Darwin.exit(0)
+                }
             #endif
         }
     }
@@ -52,7 +52,7 @@ struct TestCommand: AsyncParsableCommand {
         commandName: "test",
         abstract: "Test the login flow"
     )
-    
+
     func run() async throws {
         try await withCloudGRPCClient(title: "Test") { client in
             let certs = Wendycloud_V1_CertificateService.Client(wrapping: client.grpc)
@@ -66,7 +66,7 @@ struct EnrollmentTokenRule: ValidatableRule {
     var error: ValidatableError {
         "Code must be 6 alphanumeric characters"
     }
-    
+
     func validate(input: String) -> Bool {
         input.count >= 6 && !input.contains(where: \.isWhitespace)
     }
@@ -77,7 +77,7 @@ struct LogoutCommand: AsyncParsableCommand {
         commandName: "logout",
         abstract: "Log out of cloud services"
     )
-    
+
     func run() async throws {
         var config = try getConfig()
 
@@ -85,15 +85,15 @@ struct LogoutCommand: AsyncParsableCommand {
             Noora().error("No accounts found")
             return
         }
-        
+
         let logout = Noora().singleChoicePrompt(
             title: "Logout",
             question: "Which account do you want to log out of?",
             options: config.auth
         )
-        
+
         config.auth.removeAll { $0 == logout }
-        
+
         let data = try JSONEncoder().encode(config)
         try data.write(to: configURL)
     }

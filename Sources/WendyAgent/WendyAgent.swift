@@ -1,15 +1,13 @@
 import ArgumentParser
 import Crypto
-import WendyAgentGRPC
-import WendyShared
 import Foundation
 import GRPCCore
 import GRPCNIOTransportHTTP2
 import Logging
-import WendyCloudGRPC
-import WendyAgentGRPC
-import WendyShared
 import ServiceLifecycle
+import WendyAgentGRPC
+import WendyCloudGRPC
+import WendyShared
 import X509
 import _NIOFileSystem
 
@@ -43,8 +41,7 @@ struct WendyAgent: AsyncParsableCommand {
             try await FileSystemAgentConfigService(directory: FilePath(configDir))
         }()
 
-        if
-            let certificateChain = try? await config.certificateChain,
+        if let certificateChain = try? await config.certificateChain,
             let cloudHost = await config.cloudHost
         {
             provisioning = await WendyProvisioningService(
@@ -62,14 +59,17 @@ struct WendyAgent: AsyncParsableCommand {
                             host: cloudHost,
                             port: 50051
                         ),
-                        transportSecurity: 
-                        // .plaintext
-                        .mTLS(
-                            certificateChain: certificateChain.map { cert in
-                                return .bytes(try cert.serializeAsPEM().derBytes, format: .der)
-                            },
-                            privateKey: .bytes(config.privateKey.serializeAsPEM().derBytes, format: .der)
-                        )
+                        transportSecurity:
+                            // .plaintext
+                            .mTLS(
+                                certificateChain: certificateChain.map { cert in
+                                    return .bytes(try cert.serializeAsPEM().derBytes, format: .der)
+                                },
+                                privateKey: .bytes(
+                                    config.privateKey.serializeAsPEM().derBytes,
+                                    format: .der
+                                )
+                            )
                         // .tls { config in
                         //     config.serverCertificateVerification = .noVerification
                         // }
@@ -80,13 +80,19 @@ struct WendyAgent: AsyncParsableCommand {
                     print(response)
                 }
             } catch let error as RPCError {
-                logger.error("Failed to get asset id and organization id", metadata: [
-                    "error": "\(error.code) \(error.message) \(error.metadata)"
-                ])
+                logger.error(
+                    "Failed to get asset id and organization id",
+                    metadata: [
+                        "error": "\(error.code) \(error.message) \(error.metadata)"
+                    ]
+                )
             } catch {
-                logger.error("Failed to get asset id and organization id", metadata: [
-                    "error": .stringConvertible(error.localizedDescription)
-                ])
+                logger.error(
+                    "Failed to get asset id and organization id",
+                    metadata: [
+                        "error": .stringConvertible(error.localizedDescription)
+                    ]
+                )
             }
         } else {
             logger.notice("Agent requires provisioning")

@@ -1,8 +1,8 @@
 import ArgumentParser
 import Foundation
+import Logging
 import Noora
 import WendyShared
-import Logging
 
 struct AgentConnectionOptions: ParsableArguments {
     struct Endpoint: ExpressibleByArgument {
@@ -69,11 +69,11 @@ struct AgentConnectionOptions: ParsableArguments {
             """
     )
     var agent: Endpoint?
-    
+
     private enum DiscoveredEndpoint: Sendable, Hashable, CustomStringConvertible {
         case lan(LANDevice)
         case other
-        
+
         var description: String {
             switch self {
             case .lan(let device):
@@ -93,8 +93,9 @@ struct AgentConnectionOptions: ParsableArguments {
             return agent
         }
 
-        let defaultEndpoint = ProcessInfo.processInfo.environment["WENDY_AGENT"] ?? "edgeos-device.local:50051"
-        
+        let defaultEndpoint =
+            ProcessInfo.processInfo.environment["WENDY_AGENT"] ?? "edgeos-device.local:50051"
+
         let discovery = PlatformDeviceDiscovery(
             logger: Logger(label: "sh.wendy.cli.find-agent")
         )
@@ -106,19 +107,19 @@ struct AgentConnectionOptions: ParsableArguments {
         ) { _ in
             try await discovery.findLANDevices()
         }
-        
+
         var endpoints = [DiscoveredEndpoint]()
         endpoints.append(
             contentsOf: lanDevices.map(DiscoveredEndpoint.lan)
         )
         endpoints.append(.other)
-        
+
         let endpoint = Noora().singleChoicePrompt(
             title: title,
             question: "Select a device",
             options: endpoints
         )
-        
+
         switch endpoint {
         case .lan(let device):
             return Endpoint(
@@ -132,7 +133,7 @@ struct AgentConnectionOptions: ParsableArguments {
                 description: "Press empty to use the default"
             )
             .trimmingCharacters(in: .whitespacesAndNewlines)
-            
+
             if prompt.isEmpty, let endpoint = Endpoint(argument: defaultEndpoint) {
                 return endpoint
             } else if let endpoint = Endpoint(argument: prompt) {

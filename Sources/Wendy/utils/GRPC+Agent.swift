@@ -55,7 +55,7 @@ func withCloudGRPCClient<R: Sendable>(
 ) async throws -> R {
     return try await withAuth(title: title) { auth -> R in
         let endpoint = AgentConnectionOptions.Endpoint(
-            host: auth.cloudGRPC, 
+            host: auth.cloudGRPC,
             port: 50052
         )
         guard let cert = auth.certificates.first else {
@@ -65,7 +65,7 @@ func withCloudGRPCClient<R: Sendable>(
         return try await withGRPCClient(
             endpoint,
             security: .mTLS(
-                certificateChain: cert.certificateChainPEM.map { 
+                certificateChain: cert.certificateChainPEM.map {
                     .bytes(Array($0.utf8), format: .pem)
                 },
                 privateKey: .bytes(Array(cert.privateKeyPEM.utf8), format: .pem)

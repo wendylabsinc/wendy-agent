@@ -1,18 +1,16 @@
 import ArgumentParser
 import Crypto
-import WendyAgentGRPC
-import WendySDK
 import Foundation
 import GRPCNIOTransportHTTP2
 import NIOCore
 import NIOPosix
 import NIOSSL
 import Testing
+import WendyAgentGRPC
+import WendySDK
 import X509
 
-import WendySDK
-
-fileprivate func makeAuthority() throws -> Authority {
+private func makeAuthority() throws -> Authority {
     try Authority(
         privateKey: Certificate.PrivateKey(Curve25519.Signing.PrivateKey()),
         name: DistinguishedName {

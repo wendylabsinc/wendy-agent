@@ -1,21 +1,22 @@
-import Foundation
-import Synchronization
-import SwiftASN1
-import Hummingbird
-import Noora
-import JWTKit
 import Crypto
+import Foundation
+import Hummingbird
+import JWTKit
+import Noora
+import SwiftASN1
+import Synchronization
+import WendyCloudGRPC
 import WendySDK
 import X509
-import WendyCloudGRPC
+
 #if os(macOS)
-import AppKit
-import Darwin
+    import AppKit
+    import Darwin
 #endif
 
 struct TokenWithSubject: JWTPayload {
     let sub: String
-    
+
     func verify(using algorithm: some JWTKit.JWTAlgorithm) async throws {}
 }
 
@@ -31,23 +32,22 @@ public struct Config: Sendable, Codable {
             public let privateKeyPEM: String
             public let certificateChainPEM: [String]
         }
-        
+
         public var description: String {
             user
         }
     }
-    
+
     public var auth: [Auth]
-    
+
     public init() {
         self.auth = []
     }
 
     public mutating func addAuth(_ newAuth: Auth) {
         self.auth.removeAll {
-            $0.user == newAuth.user &&
-            $0.cloudDashboard == newAuth.cloudDashboard &&
-            $0.cloudGRPC == newAuth.cloudGRPC
+            $0.user == newAuth.user && $0.cloudDashboard == newAuth.cloudDashboard
+                && $0.cloudGRPC == newAuth.cloudGRPC
         }
         self.auth.append(newAuth)
     }
@@ -63,9 +63,9 @@ var configURL: URL {
         let wendyURL = FileManager.default
             .homeDirectoryForCurrentUser
             .appendingPathComponent(".wendy")
-        
+
         try FileManager.default.createDirectory(at: wendyURL, withIntermediateDirectories: true)
-        
+
         return wendyURL.appendingPathComponent("config.json")
     }
 }
@@ -84,7 +84,7 @@ func withAuth<R: Sendable>(
     perform: @Sendable @escaping (Config.Auth) async throws -> R
 ) async throws -> R {
     let config = try getConfig()
-    
+
     if config.auth.isEmpty {
         var cloudDashboard = Noora().textPrompt(
             title: title,
@@ -133,9 +133,9 @@ func setupConfig(
     cloudGRPC: String
 ) async throws -> Config.Auth {
     var config = try getConfig()
-        
+
     let endpoint = AgentConnectionOptions.Endpoint(
-        host: cloudGRPC, 
+        host: cloudGRPC,
         port: 50051
     )
     let auth = try await withGRPCClient(
@@ -160,11 +160,17 @@ func setupConfig(
             },
             privateKey: privateKey,
             attributes: CertificateSigningRequest.Attributes([
-                CertificateSigningRequest.Attribute(ExtensionRequest(extensions: .init {
-                    SubjectAlternativeNames([
-                        .uniformResourceIdentifier("urn:wendy:org:\(organizationId):user:\(userId)")
-                    ])
-                }))
+                CertificateSigningRequest.Attribute(
+                    ExtensionRequest(
+                        extensions: .init {
+                            SubjectAlternativeNames([
+                                .uniformResourceIdentifier(
+                                    "urn:wendy:org:\(organizationId):user:\(userId)"
+                                )
+                            ])
+                        }
+                    )
+                )
             ])
         )
 
@@ -180,11 +186,13 @@ func setupConfig(
             throw RPCError(code: .aborted, message: issued.error.message)
         }
 
-        let certificateChainPEM = try PEMDocument.parseMultiple(pemString: issued.certificate.pemCertificateChain)
+        let certificateChainPEM = try PEMDocument.parseMultiple(
+            pemString: issued.certificate.pemCertificateChain
+        )
         let certificateChain = try certificateChainPEM.map { pem in
             return try Certificate(pemDocument: pem)
         }
-        
+
         return Config.Auth(
             cloudDashboard: cloudDashboard,
             cloudGRPC: cloudGRPC,
@@ -199,7 +207,7 @@ func setupConfig(
         )
     }
     config.addAuth(auth)
-    
+
     let data = try JSONEncoder().encode(config)
     try data.write(to: configURL)
     return auth
@@ -217,7 +225,7 @@ func loginFlow<R: Sendable>(
             let enrollmentToken = try req.uri.queryParameters.require("token")
             let userId = try req.uri.queryParameters.require("user_id")
             let organizationId = try req.uri.queryParameters.require("org_id", as: Int32.self)
-            
+
             let auth = try await setupConfig(
                 enrollmentToken: enrollmentToken,
                 userId: userId,
@@ -226,9 +234,9 @@ func loginFlow<R: Sendable>(
                 cloudGRPC: cloudGRPC
             )
             continuation.yield(try await withAuth(auth))
-            // continuation.finish()
-            // isFinished.withLock { $0 = true }
-            
+            continuation.finish()
+            isFinished.withLock { $0 = true }
+
             return Response(
                 status: .ok,
                 body: ResponseBody(byteBuffer: ByteBuffer(string: "Enrolled!"))
@@ -240,7 +248,7 @@ func loginFlow<R: Sendable>(
             )
         }
     }
-    
+
     let server = Application(
         router: router,
         configuration: .init(
@@ -248,45 +256,48 @@ func loginFlow<R: Sendable>(
         ),
         onServerRunning: { channel in
             let port = channel.localAddress!.port!
-            let url = "\(cloudDashboard)/cli-auth?redirect_uri=http://localhost:\(port)/cli-callback"
+            let url =
+                "\(cloudDashboard)/cli-auth?redirect_uri=http://localhost:\(port)/cli-callback"
             #if os(macOS)
-            if NSWorkspace.shared.open(URL(string: url)!) {
-                Noora().info("""
-                Open the following link in your browser:
-                > \(cloudDashboard)/cli-auth?redirect_uri=http://localhost:\(port)/cli-callback
-                """)
-                return
-            }
+                if NSWorkspace.shared.open(URL(string: url)!) {
+                    Noora().info(
+                        """
+                        Open the following link in your browser:
+                        > \(cloudDashboard)/cli-auth?redirect_uri=http://localhost:\(port)/cli-callback
+                        """
+                    )
+                    return
+                }
             #endif
-            
-    //         repeat {
-    //             let enrollmentToken = Noora().textPrompt(
-    //                 title: "Provide the enrollment token",
-    //                 prompt: "Enter token",
-    //                 collapseOnAnswer: false,
-    //                 validationRules: [
-    //                     EnrollmentTokenRule()
-    //                 ]
-    //             )
-    //             .trimmingCharacters(in: .whitespacesAndNewlines)
 
-    //             do {
-    //                 let auth = try await setupConfig(
-    //                     enrollmentToken: enrollmentToken,
-    //                     userId: userId,
-    //                     organizationId: organizationId,
-    //                     cloudDashboard: cloudDashboard,
-    //                     cloudGRPC: cloudGRPC
-    //                 )
-    //                 continuation.yield(try await withAuth(auth))
-    //                 continuation.finish()
-    //             } catch {
-    //                 Noora().error("Failed to setup config: \(error)")
-    //             }
-    //         } while !isFinished.withLock(\.self)
+            //         repeat {
+            //             let enrollmentToken = Noora().textPrompt(
+            //                 title: "Provide the enrollment token",
+            //                 prompt: "Enter token",
+            //                 collapseOnAnswer: false,
+            //                 validationRules: [
+            //                     EnrollmentTokenRule()
+            //                 ]
+            //             )
+            //             .trimmingCharacters(in: .whitespacesAndNewlines)
+
+            //             do {
+            //                 let auth = try await setupConfig(
+            //                     enrollmentToken: enrollmentToken,
+            //                     userId: userId,
+            //                     organizationId: organizationId,
+            //                     cloudDashboard: cloudDashboard,
+            //                     cloudGRPC: cloudGRPC
+            //                 )
+            //                 continuation.yield(try await withAuth(auth))
+            //                 continuation.finish()
+            //             } catch {
+            //                 Noora().error("Failed to setup config: \(error)")
+            //             }
+            //         } while !isFinished.withLock(\.self)
         }
     )
-    
+
     return try await withThrowingTaskGroup { group in
         group.addTask {
             try await server.runService()

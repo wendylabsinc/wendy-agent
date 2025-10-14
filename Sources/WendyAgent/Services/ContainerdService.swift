@@ -1,11 +1,11 @@
 import ContainerdGRPC
 import Crypto
 import Foundation
-import NIOCore
-import NIOPosix
 import GRPCCore
 import GRPCNIOTransportHTTP2
 import Logging
+import NIOCore
+import NIOPosix
 import WendyAgentGRPC
 
 #if canImport(Musl)
@@ -588,12 +588,14 @@ public struct Containerd: Sendable {
                     throw RPCError(code: .internalError, message: "Failed to open stdout FIFO")
                 }
                 logger.info("Creating stdout pipe")
-                let stdoutPipe = try await NIOPipeBootstrap(group: .singletonMultiThreadedEventLoopGroup)
-                    .takingOwnershipOfDescriptor(input: stdoutFd)
-                    .flatMapThrowing { channel in
-                        try NIOAsyncChannel<ByteBuffer, Never>(wrappingChannelSynchronously: channel)
-                    }
-                    .get()
+                let stdoutPipe = try await NIOPipeBootstrap(
+                    group: .singletonMultiThreadedEventLoopGroup
+                )
+                .takingOwnershipOfDescriptor(input: stdoutFd)
+                .flatMapThrowing { channel in
+                    try NIOAsyncChannel<ByteBuffer, Never>(wrappingChannelSynchronously: channel)
+                }
+                .get()
                 logger.info("Executing stdout pipe")
                 try await stdoutPipe.executeThenClose { stdout in
                     for try await bytes in stdout {
@@ -608,12 +610,14 @@ public struct Containerd: Sendable {
                     throw RPCError(code: .internalError, message: "Failed to open stderr FIFO")
                 }
                 logger.info("Creating stderr pipe")
-                let stderrPipe = try await NIOPipeBootstrap(group: .singletonMultiThreadedEventLoopGroup)
-                    .takingOwnershipOfDescriptor(input: stderrFd)
-                    .flatMapThrowing { channel in
-                        try NIOAsyncChannel<ByteBuffer, Never>(wrappingChannelSynchronously: channel)
-                    }
-                    .get()
+                let stderrPipe = try await NIOPipeBootstrap(
+                    group: .singletonMultiThreadedEventLoopGroup
+                )
+                .takingOwnershipOfDescriptor(input: stderrFd)
+                .flatMapThrowing { channel in
+                    try NIOAsyncChannel<ByteBuffer, Never>(wrappingChannelSynchronously: channel)
+                }
+                .get()
                 logger.info("Executing stderr pipe")
                 try await stderrPipe.executeThenClose { stderr in
                     for try await bytes in stderr {
@@ -631,7 +635,7 @@ public struct Containerd: Sendable {
                 logger.error(
                     "Failed to run task with stdout and stderr",
                     metadata: [
-                        "error": .stringConvertible(error.localizedDescription),
+                        "error": .stringConvertible(error.localizedDescription)
                     ]
                 )
                 group.cancelAll()

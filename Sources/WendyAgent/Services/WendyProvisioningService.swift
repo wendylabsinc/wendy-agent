@@ -1,25 +1,25 @@
-import WendyAgentGRPC
-import WendySDK
-import WendyShared
 import Foundation
+import GRPCCore
+import GRPCNIOTransportHTTP2
 import Logging
 import NIOCore
 import NIOFoundationCompat
+import SwiftASN1
+import WendyAgentGRPC
 import WendyCloudGRPC
-import _NIOFileSystem
 import WendySDK
-import GRPCCore
-import GRPCNIOTransportHTTP2
+import WendyShared
 import X509
 import _NIOFileSystem
-import SwiftASN1
 
 enum ProvisioningError: Error {
     case alreadyProvisioned
     case csrBeforeStartProvisioning
 }
 
-actor WendyProvisioningService: Wendy_Agent_Services_V1_WendyProvisioningService.SimpleServiceProtocol {
+actor WendyProvisioningService: Wendy_Agent_Services_V1_WendyProvisioningService
+        .SimpleServiceProtocol
+{
     let privateKey: Certificate.PrivateKey
     let deviceId: String
     var certificateChain: [Certificate]?
@@ -29,7 +29,8 @@ actor WendyProvisioningService: Wendy_Agent_Services_V1_WendyProvisioningService
     public init(
         privateKey: Certificate.PrivateKey,
         deviceId: String,
-        onProvisioned: @escaping @Sendable (String, Agent.Provisioned, [Certificate]) async throws -> Void
+        onProvisioned:
+            @escaping @Sendable (String, Agent.Provisioned, [Certificate]) async throws -> Void
     ) {
         self.privateKey = privateKey
         self.deviceId = deviceId
@@ -58,7 +59,7 @@ actor WendyProvisioningService: Wendy_Agent_Services_V1_WendyProvisioningService
             logger.warning("Agent is already provisioned")
             throw RPCError(code: .permissionDenied, message: "Agent is already provisioned")
         }
-        
+
         let transport = try HTTP2ClientTransport.Posix(
             target: ResolvableTargets.DNS(
                 host: request.cloudHost,
@@ -67,12 +68,15 @@ actor WendyProvisioningService: Wendy_Agent_Services_V1_WendyProvisioningService
             transportSecurity: .plaintext
         )
 
-        logger.info("Starting provisioning", metadata: [
-            "cloudHost": "\(request.cloudHost)",
-            "organizationID": "\(request.organizationID)",
-            "deviceID": "\(self.deviceId)"
-        ])
-        
+        logger.info(
+            "Starting provisioning",
+            metadata: [
+                "cloudHost": "\(request.cloudHost)",
+                "organizationID": "\(request.organizationID)",
+                "deviceID": "\(self.deviceId)",
+            ]
+        )
+
         return try await withGRPCClient(
             transport: transport
         ) { cloudClient in
@@ -86,58 +90,74 @@ actor WendyProvisioningService: Wendy_Agent_Services_V1_WendyProvisioningService
                     CommonName(self.deviceId)
                 }
             } catch {
-                logger.error("Failed to create distinguished name", metadata: [
-                    "error": .stringConvertible(error.localizedDescription)
-                ])
+                logger.error(
+                    "Failed to create distinguished name",
+                    metadata: [
+                        "error": .stringConvertible(error.localizedDescription)
+                    ]
+                )
                 throw error
             }
 
             let unprovisionedAgent: Agent.Unprovisioned
-            
+
             do {
                 unprovisionedAgent = try Agent.Unprovisioned(
                     privateKey: self.privateKey,
                     name: name
                 )
             } catch {
-                logger.error("Failed to create unprovisioned agent", metadata: [
-                    "error": .stringConvertible(error.localizedDescription)
-                ])
+                logger.error(
+                    "Failed to create unprovisioned agent",
+                    metadata: [
+                        "error": .stringConvertible(error.localizedDescription)
+                    ]
+                )
                 throw error
             }
-            
 
             let csr: String
             do {
                 csr = try unprovisionedAgent.csr.serializeAsPEM().pemString
             } catch {
-                logger.error("Failed to serialize CSR", metadata: [
-                    "error": .stringConvertible(error.localizedDescription)
-                ])
+                logger.error(
+                    "Failed to serialize CSR",
+                    metadata: [
+                        "error": .stringConvertible(error.localizedDescription)
+                    ]
+                )
                 throw error
             }
-            
-            let response = try await certs.issueCertificate(.with {
-                $0.pemCsr = csr
-                $0.enrollmentToken = request.enrollmentToken
-            })
+
+            let response = try await certs.issueCertificate(
+                .with {
+                    $0.pemCsr = csr
+                    $0.enrollmentToken = request.enrollmentToken
+                }
+            )
 
             if response.hasError {
-                logger.error("Failed to issue certificate", metadata: [
-                    "error": .stringConvertible(response.error.message)
-                ])
+                logger.error(
+                    "Failed to issue certificate",
+                    metadata: [
+                        "error": .stringConvertible(response.error.message)
+                    ]
+                )
                 throw RPCError(code: .aborted, message: response.error.message)
             }
-            
+
             let cert: Certificate
             do {
                 cert = try Certificate(
                     pemEncoded: response.certificate.pemCertificate
                 )
             } catch {
-                logger.error("Failed to load certificate", metadata: [
-                    "error": .stringConvertible(error.localizedDescription)
-                ])
+                logger.error(
+                    "Failed to load certificate",
+                    metadata: [
+                        "error": .stringConvertible(error.localizedDescription)
+                    ]
+                )
                 throw error
             }
 
@@ -145,9 +165,12 @@ actor WendyProvisioningService: Wendy_Agent_Services_V1_WendyProvisioningService
             do {
                 provisioned = try unprovisionedAgent.receiveSignedCertificate(cert)
             } catch {
-                logger.error("Failed to receive signed certificate", metadata: [
-                    "error": .stringConvertible(error.localizedDescription)
-                ])
+                logger.error(
+                    "Failed to receive signed certificate",
+                    metadata: [
+                        "error": .stringConvertible(error.localizedDescription)
+                    ]
+                )
                 throw error
             }
 
@@ -156,14 +179,16 @@ actor WendyProvisioningService: Wendy_Agent_Services_V1_WendyProvisioningService
                 throw ProvisioningError.alreadyProvisioned
             }
 
-            let pems = try PEMDocument.parseMultiple(pemString: response.certificate.pemCertificateChain)
+            let pems = try PEMDocument.parseMultiple(
+                pemString: response.certificate.pemCertificateChain
+            )
             let certChain = try pems.map { pem in
                 return try Certificate(pemDocument: pem)
             }
-            
+
             try await self.onProvisioned(request.cloudHost, provisioned, certChain)
             self.setCertificateChain(certChain)
-            
+
             return Wendy_Agent_Services_V1_StartProvisioningResponse()
         }
     }

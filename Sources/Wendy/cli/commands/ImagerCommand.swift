@@ -1,8 +1,8 @@
 import ArgumentParser
 import Foundation
 import Imager
-import Noora
 import Logging
+import Noora
 
 #if os(macOS)
     import Darwin
@@ -37,26 +37,27 @@ struct ImagerCommand: AsyncParsableCommand {
             commandName: "setup",
             abstract: "Setup a disk."
         )
-        
+
         func run() async throws {
             let diskLister = DiskListerFactory.createDiskLister()
             let manifestManager = ManifestManagerFactory.createManifestManager()
 
             var disks = try await diskLister.list(all: true)
             disks.removeAll { $0.id.hasSuffix("disk0") }
-            
+
             async let deviceList = try await manifestManager.getAvailableDevices()
 
             let diskIndex = try await Noora().selectableTable(
                 headers: [
                     "Disk",
                     "Volume",
-                    "Size"
-                ], rows: disks.map {
+                    "Size",
+                ],
+                rows: disks.map {
                     [
                         $0.name,
                         $0.id,
-                        $0.capacityHumanReadableText
+                        $0.capacityHumanReadableText,
                     ]
                 },
                 pageSize: disks.count
@@ -68,7 +69,8 @@ struct ImagerCommand: AsyncParsableCommand {
             let deviceIndex = try await Noora().selectableTable(
                 headers: [
                     "Device"
-                ], rows: devices.map {
+                ],
+                rows: devices.map {
                     [
                         $0.name
                     ]
@@ -85,7 +87,7 @@ struct ImagerCommand: AsyncParsableCommand {
             if !setup {
                 return
             }
-            
+
             let (imageUrl, imageSize) = try await manifestManager.getLatestImageInfo(
                 for: selectedDevice.name
             )
@@ -102,7 +104,7 @@ struct ImagerCommand: AsyncParsableCommand {
                     deviceName: selectedDevice.name,
                     expectedSize: imageSize,
                     redownload: false,
-                    progressHandler: { _ in}
+                    progressHandler: { _ in }
                 )
             }
 

@@ -9,7 +9,10 @@ public protocol AgentConfigService: Sendable {
     var deviceId: String { get async }
     var cloudHost: String? { get async }
 
-    func provisionCertificateChain(_ certificateChain: [Certificate], cloudHost: String) async throws
+    func provisionCertificateChain(
+        _ certificateChain: [Certificate],
+        cloudHost: String
+    ) async throws
 }
 
 actor FileSystemAgentConfigService: AgentConfigService {
@@ -27,15 +30,15 @@ actor FileSystemAgentConfigService: AgentConfigService {
     private var config: ConfigJSON
     var deviceId: String { config.deviceId }
     var cloudHost: String? { config.cloudHost }
-    var certificateChain: [Certificate]? { 
+    var certificateChain: [Certificate]? {
         get throws {
             try config.certificateChain?.map { pem in
                 return try Certificate(pemEncoded: pem)
             }
         }
-     }
+    }
     let privateKey: Certificate.PrivateKey
-    
+
     public init(directory: FilePath) async throws {
         let configPath = directory.appending("config.json")
         var config: ConfigJSON
@@ -64,7 +67,10 @@ actor FileSystemAgentConfigService: AgentConfigService {
         self.privateKey = privateKey
     }
 
-    public func provisionCertificateChain(_ certificateChain: [Certificate], cloudHost: String) async throws {
+    public func provisionCertificateChain(
+        _ certificateChain: [Certificate],
+        cloudHost: String
+    ) async throws {
         self.config.certificateChain = try certificateChain.map { cert in
             return try cert.serializeAsPEM().pemString
         }
@@ -100,7 +106,10 @@ actor InMemoryAgentConfigService: AgentConfigService {
         self.deviceId = deviceId
     }
 
-    public func provisionCertificateChain(_ certificateChain: [Certificate], cloudHost: String) async throws {
+    public func provisionCertificateChain(
+        _ certificateChain: [Certificate],
+        cloudHost: String
+    ) async throws {
         self.cloudHost = cloudHost
         self.certificateChain = certificateChain
     }

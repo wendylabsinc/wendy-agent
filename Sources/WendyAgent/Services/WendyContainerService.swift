@@ -36,30 +36,37 @@ struct WendyContainerService: Wendy_Agent_Services_V1_WendyContainerService.Serv
     func listContainers(
         request: GRPCCore.ServerRequest<Wendy_Agent_Services_V1_ListContainersRequest>,
         context: GRPCCore.ServerContext
-    ) async throws -> GRPCCore.StreamingServerResponse<Wendy_Agent_Services_V1_ListContainersResponse> {
+    ) async throws
+        -> GRPCCore.StreamingServerResponse<Wendy_Agent_Services_V1_ListContainersResponse>
+    {
         return StreamingServerResponse { writer in
             try await Containerd.withClient { client in
                 let tasks = try await client.listTasks()
                 let containers = try await client.listContainers()
 
                 for container in containers {
-                    try await writer.write(.with { 
-                        $0.container.appName = container.id
-                        $0.container.appVersion = container.labels["sh.wendy/app.version"] ?? "0.0.0"
-                        
-                        if 
-                            let restartCount = container.labels["containerd.io/restart.count"],
-                            let restartCount = UInt32(restartCount) 
-                        {
-                            $0.container.failureCount = restartCount
+                    try await writer.write(
+                        .with {
+                            $0.container.appName = container.id
+                            $0.container.appVersion =
+                                container.labels["sh.wendy/app.version"] ?? "0.0.0"
+
+                            if let restartCount = container.labels["containerd.io/restart.count"],
+                                let restartCount = UInt32(restartCount)
+                            {
+                                $0.container.failureCount = restartCount
+                            }
+
+                            if let task: Containerd_V1_Types_Process = tasks.first(where: {
+                                $0.id == container.id
+                            }) {
+                                $0.container.runningState =
+                                    task.status == .running ? .running : .stopped
+                            } else {
+                                $0.container.runningState = .stopped
+                            }
                         }
-                        
-                        if let task: Containerd_V1_Types_Process = tasks.first(where: { $0.id == container.id }) {
-                            $0.container.runningState = task.status == .running ? .running : .stopped
-                        } else {
-                            $0.container.runningState = .stopped
-                        }
-                    })
+                    )
                 }
             }
 
@@ -174,7 +181,10 @@ struct WendyContainerService: Wendy_Agent_Services_V1_WendyContainerService.Serv
                             entitlements: []
                         )
                     } else {
-                        appConfig = try JSONDecoder().decode(AppConfig.self, from: request.appConfig)
+                        appConfig = try JSONDecoder().decode(
+                            AppConfig.self,
+                            from: request.appConfig
+                        )
                     }
 
                     labels["sh.wendy/app.version"] = appConfig.version
@@ -262,7 +272,9 @@ struct WendyContainerService: Wendy_Agent_Services_V1_WendyContainerService.Serv
                     }
 
                     do {
-                        logger.info("Creating container \(request.appName) from \(request.imageName)")
+                        logger.info(
+                            "Creating container \(request.appName) from \(request.imageName)"
+                        )
                         try await client.createContainer(
                             imageName: request.imageName,
                             appName: request.appName,
@@ -358,22 +370,28 @@ struct WendyContainerService: Wendy_Agent_Services_V1_WendyContainerService.Serv
                         logger.info("Starting task")
                         try await client.runTask(containerID: request.appName)
 
-                        try await writer.write(.with {
-                            $0.started = .init()
-                        })
+                        try await writer.write(
+                            .with {
+                                $0.started = .init()
+                            }
+                        )
                     }
 
                     logger.info("Running app")
-                    try await client.withStdout { stdout, stderr in 
+                    try await client.withStdout { stdout, stderr in
                         try await run(stdout: stdout, stderr: stderr)
                     } onStdout: { bytes in
-                        try await writer.write(.with {
-                            $0.stdoutOutput.data = Data(buffer: bytes)
-                        })
+                        try await writer.write(
+                            .with {
+                                $0.stdoutOutput.data = Data(buffer: bytes)
+                            }
+                        )
                     } onStderr: { bytes in
-                        try await writer.write(.with {
-                            $0.stderrOutput.data = Data(buffer: bytes)
-                        })
+                        try await writer.write(
+                            .with {
+                                $0.stderrOutput.data = Data(buffer: bytes)
+                            }
+                        )
                     }
 
                     return Metadata()

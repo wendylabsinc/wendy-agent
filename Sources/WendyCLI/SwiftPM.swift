@@ -1,7 +1,7 @@
 import Foundation
+import Noora
 import Subprocess
 import SystemPackage
-import Noora
 
 /// Represents the Swift Package Manager interface for building and managing Swift packages.
 public struct SwiftPM: Sendable {
@@ -149,7 +149,6 @@ public struct SwiftPM: Sendable {
         let runArgs = path.split(separator: " ").dropFirst().map(String.init)
         let allArgs =
             [executablePath] + runArgs + ["build"] + version + options.flatMap(\.arguments)
-
 
         let result = try await Noora().progressStep(
             message: "Building Swift package",

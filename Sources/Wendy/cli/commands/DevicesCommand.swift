@@ -1,9 +1,9 @@
 import ArgumentParser
 import Foundation
 import Logging
+import Noora
 import WendyAgentGRPC
 import WendyShared
-import Noora
 
 struct DevicesCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(

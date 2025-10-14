@@ -9,10 +9,10 @@ import GRPCNIOTransportHTTP2
 import Logging
 import NIO
 import NIOFileSystem
+import Noora
 import Subprocess
 import WendyAgentGRPC
 import WendyCLI
-import Noora
 
 public enum ContainerRuntime: String, ExpressibleByArgument, Sendable {
     case docker
@@ -380,7 +380,7 @@ extension RunCommand {
                         "Layers uploading \(layersUploaded)/\(layersUploading)"
                     }
                     nonisolated let (statusChange, continuation) = AsyncStream<String>.makeStream()
-                    
+
                     func incrementUploading() {
                         layersUploading += 1
                         continuation.yield(status)
@@ -398,7 +398,7 @@ extension RunCommand {
                     nonisolated func finish() {
                         continuation.finish()
                     }
-                    
+
                     deinit {
                         finish()
                     }

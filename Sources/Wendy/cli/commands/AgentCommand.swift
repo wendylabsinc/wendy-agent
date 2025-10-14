@@ -4,11 +4,10 @@ import Foundation
 import GRPCCore
 import GRPCNIOTransportHTTP2
 import Logging
-import Noora
 import NIOFoundationCompat
+import Noora
 import WendyAgentGRPC
 import WendyCloudGRPC
-import _NIOFileSystem
 import WendySDK
 import X509
 import _NIOFileSystem
@@ -160,7 +159,7 @@ struct AgentCommand: AsyncParsableCommand {
             commandName: "setup",
             abstract: "Setup the Wendy agent."
         )
-        
+
         @OptionGroup var agentConnectionOptions: AgentConnectionOptions
 
         func run() async throws {
@@ -171,13 +170,13 @@ struct AgentCommand: AsyncParsableCommand {
                     Noora().error("No organizations found")
                     return
                 }
-                
+
                 let org = Noora().singleChoicePrompt(
                     title: "Enroll device",
                     question: "Which organization do you want to enroll into?",
                     options: orgs
                 )
-                
+
                 let certsAPI = Wendycloud_V1_CertificateService.Client(wrapping: cloudClient.grpc)
                 let tokenResponse = try await certsAPI.createAssetEnrollmentToken(
                     .with {
@@ -190,7 +189,9 @@ struct AgentCommand: AsyncParsableCommand {
                     agentConnectionOptions,
                     title: "Provisioning device"
                 ) { agentClient in
-                    let agent = Wendy_Agent_Services_V1_WendyProvisioningService.Client(wrapping: agentClient)
+                    let agent = Wendy_Agent_Services_V1_WendyProvisioningService.Client(
+                        wrapping: agentClient
+                    )
                     let response = try await agent.startProvisioning(
                         .with {
                             $0.organizationID = org.id

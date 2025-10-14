@@ -3,8 +3,8 @@ import Foundation
 import GRPCCore
 import GRPCNIOTransportHTTP2
 import Logging
-import WendyAgentGRPC
 import Noora
+import WendyAgentGRPC
 
 struct WiFiCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
@@ -32,7 +32,7 @@ struct WiFiCommand: AsyncParsableCommand {
         func run() async throws {
             // Configure logger
             LoggingSystem.bootstrap { label in
-            StreamLogHandler.standardError(label: "sh.wendy.cli.wifi.list")
+                StreamLogHandler.standardError(label: "sh.wendy.cli.wifi.list")
             }
 
             let logger = Logger(label: "sh.wendy.cli.wifi.list")
@@ -138,10 +138,10 @@ struct WiFiCommand: AsyncParsableCommand {
                 .filter { !$0.isEmpty }
 
             let index = try await Noora().selectableTable(
-                headers: ["SSID"], 
+                headers: ["SSID"],
                 rows: ssids.map { ssid in
                     [ssid]
-                }, 
+                },
                 pageSize: networks.count
             )
 
@@ -160,7 +160,7 @@ struct WiFiCommand: AsyncParsableCommand {
             ) { client in
                 let ssid: String
                 let password: String
-                
+
                 if let _ssid = self.ssid {
                     ssid = _ssid
                 } else {
@@ -180,7 +180,7 @@ struct WiFiCommand: AsyncParsableCommand {
 
                 let logger = Logger(label: "sh.wendy.cli.wifi.connect")
                 logger.debug("Connecting to WiFi network", metadata: ["ssid": "\(ssid)"])
-                
+
                 let agent = Wendy_Agent_Services_V1_WendyAgentService.Client(wrapping: client)
 
                 var request = Wendy_Agent_Services_V1_ConnectToWiFiRequest()
@@ -308,7 +308,7 @@ struct WiFiCommand: AsyncParsableCommand {
         func run() async throws {
             // Configure logger
             LoggingSystem.bootstrap { label in
-            StreamLogHandler.standardError(label: label)
+                StreamLogHandler.standardError(label: label)
             }
 
             let logger = Logger(label: "sh.wendy.cli.wifi.disconnect")

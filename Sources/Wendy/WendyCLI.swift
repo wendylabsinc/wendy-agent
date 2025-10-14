@@ -10,14 +10,14 @@ struct WendyCLI: AsyncParsableCommand {
         version: Version.current,
         subcommands: [
             RunCommand.self,
-                    InitCommand.self,
-                    ProjectCommand.self,
+            InitCommand.self,
+            ProjectCommand.self,
         ],
         groupedSubcommands: [
             CommandGroup(
                 name: "Manage your cloud",
                 subcommands: [
-                    AuthCommand.self,
+                    AuthCommand.self
                 ]
             ),
             CommandGroup(
@@ -33,7 +33,7 @@ struct WendyCLI: AsyncParsableCommand {
             CommandGroup(
                 name: "Misc.",
                 subcommands: [
-                    HelperCommand.self,
+                    HelperCommand.self
                 ]
             ),
         ]

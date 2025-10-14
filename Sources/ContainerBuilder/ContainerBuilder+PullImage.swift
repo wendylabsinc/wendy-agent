@@ -1,8 +1,8 @@
 import ContainerRegistry
 import Foundation
 import Logging
-import Subprocess
 import Noora
+import Subprocess
 
 extension ContainerImageSpec {
     private static let logger = Logger(label: "sh.wendy.container-builder")
