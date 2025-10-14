@@ -71,8 +71,8 @@ public actor ConnMan: NetworkConnectionManager {
         }
     }
 
-    /// Get WiFi technology path
-    private func getWiFiTechnology() async throws -> String? {
+    /// Get WiFi technology path and its properties
+    private func getWiFiTechnologyInfo() async throws -> (path: String, properties: [DBusValue: DBusValue])? {
         let message: DBusMessage = try await executeDBusRequest(
             .createMethodCall(
                 destination: connManDestination,
@@ -91,7 +91,6 @@ public actor ConnMan: NetworkConnectionManager {
         logger.info("Found \(array.count) technologies")
 
         for item in array {
-            logger.info("\(item)")
             guard case .structure(let structValues) = item,
                 structValues.count >= 2,
                 let path = structValues[0].objectPath,
@@ -115,23 +114,68 @@ public actor ConnMan: NetworkConnectionManager {
                 case .string(let type) = variant.value,
                 type == "wifi"
             {
-                return path
+                return (path: path, properties: properties)
             }
         }
 
         return nil
     }
 
+    /// Check if WiFi technology is powered on
+    private func isWiFiPowered(properties: [DBusValue: DBusValue]) -> Bool {
+        guard let poweredValue = properties[DBusValue.string("Powered")],
+              case .variant(let variant) = poweredValue,
+              case .boolean(let powered) = variant.value
+        else {
+            return false
+        }
+        return powered
+    }
+
+    /// Enable WiFi technology if it's not powered on
+    private func ensureWiFiEnabled() async throws {
+        guard let wifiInfo = try await getWiFiTechnologyInfo() else {
+            throw NetworkConnectionError.noWiFiDevice
+        }
+
+        let path = wifiInfo.path
+        let properties = wifiInfo.properties
+
+        if !isWiFiPowered(properties: properties) {
+            logger.info("WiFi technology is powered off, enabling it...")
+
+            let _: DBusMessage = try await executeDBusRequest(
+                .createMethodCall(
+                    destination: connManDestination,
+                    path: path,
+                    interface: connManTechnologyInterface,
+                    method: "SetProperty",
+                    body: [
+                        .string("Powered"),
+                        .variant(DBusVariant(.boolean(true)))
+                    ]
+                )
+            )
+
+            logger.info("WiFi technology enabled successfully")
+
+            // Wait a moment for the technology to power up
+            try await Task.sleep(for: .seconds(2))
+        } else {
+            logger.debug("WiFi technology is already powered on")
+        }
+    }
+
     /// Scan for WiFi networks
     private func scanWiFiNetworks() async throws {
-        guard let wifiTechPath = try await getWiFiTechnology() else {
+        guard let wifiInfo = try await getWiFiTechnologyInfo() else {
             throw NetworkConnectionError.noWiFiDevice
         }
 
         let message: DBusMessage = try await executeDBusRequest(
             .createMethodCall(
                 destination: connManDestination,
-                path: wifiTechPath,
+                path: wifiInfo.path,
                 interface: connManTechnologyInterface,
                 method: "Scan"
             )
@@ -273,6 +317,9 @@ public actor ConnMan: NetworkConnectionManager {
     public func listWiFiNetworks() async throws -> [WiFiNetwork] {
         logger.debug("Scanning for WiFi networks")
 
+        // Ensure WiFi is enabled before scanning
+        try await ensureWiFiEnabled()
+
         do {
             try await scanWiFiNetworks()
         } catch {
@@ -325,6 +372,9 @@ public actor ConnMan: NetworkConnectionManager {
     /// Connect to a WiFi network
     public func connectToNetwork(ssid: String, password: String) async throws {
         logger.debug("Connecting to WiFi network", metadata: ["ssid": "\(ssid)"])
+
+        // Ensure WiFi is enabled before connecting
+        try await ensureWiFiEnabled()
 
         let networks = try await listWiFiNetworks()
 
