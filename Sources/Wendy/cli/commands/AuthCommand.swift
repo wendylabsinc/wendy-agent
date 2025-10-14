@@ -1,6 +1,11 @@
 import ArgumentParser
 import Foundation
 import Noora
+import WendySDK
+import Crypto
+import WendyCloudGRPC
+import X509
+import SwiftASN1
 
 struct AuthCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
@@ -9,6 +14,7 @@ struct AuthCommand: AsyncParsableCommand {
         subcommands: [
             LoginCommand.self,
             LogoutCommand.self,
+            TestCommand.self,
         ]
     )
 }
@@ -30,6 +36,7 @@ struct LoginCommand: AsyncParsableCommand {
             cloudDashboard: cloudDashboard,
             cloudGRPC: cloudGRPC
         ) { token in
+            Noora().success("Logged in")
             #if canImport(Darwin)
             Task {
                 try await Task.sleep(for: .seconds(1))
@@ -40,13 +47,28 @@ struct LoginCommand: AsyncParsableCommand {
     }
 }
 
-struct PairingCodeRule: ValidatableRule {
+struct TestCommand: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "test",
+        abstract: "Test the login flow"
+    )
+    
+    func run() async throws {
+        try await withCloudGRPCClient(title: "Test") { client in
+            let certs = Wendycloud_V1_CertificateService.Client(wrapping: client.grpc)
+            let response = try await certs.getCertificateMetadata(.init())
+            print(response)
+        }
+    }
+}
+
+struct EnrollmentTokenRule: ValidatableRule {
     var error: ValidatableError {
         "Code must be 6 alphanumeric characters"
     }
     
     func validate(input: String) -> Bool {
-        input.count == 6 && input.allSatisfy(\.isASCII) && !input.contains(where: \.isWhitespace)
+        input.count >= 6 && !input.contains(where: \.isWhitespace)
     }
 }
 

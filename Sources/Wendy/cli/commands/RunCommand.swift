@@ -344,6 +344,8 @@ extension RunCommand {
 
         let appConfigData = try await readAppConfigData(logger: logger)
 
+        print("Getting container layers")
+
         try await withGRPCClient(
             agentConnectionOptions,
             title: "Which device do you want to run this app on?"
@@ -403,45 +405,50 @@ extension RunCommand {
                 }
 
                 let layersUploaded = LayersUploaded()
+                let layersToUpload = layers.filter { !existingHashes.contains($0.digest) }
 
-                for layer in layers where !existingHashes.contains(layer.digest) {
-                    await layersUploaded.incrementUploading()
-                    taskGroup.addTask {
-                        // Upload layers that have changed or are new
-                        logger.debug("Uploading layer \(layer.digest)")
-                        try await agentContainers.writeLayer(
-                            request: .init { writer in
-                                try await layer.withStream { chunk in
-                                    try await writer.write(
-                                        .with {
-                                            $0.digest = layer.digest
-                                            $0.data = Data(chunk)
-                                        }
-                                    )
+                if !layersToUpload.isEmpty {
+                    for layer in layersToUpload {
+                        await layersUploaded.incrementUploading()
+                        taskGroup.addTask {
+                            // Upload layers that have changed or are new
+                            print("Uploading layer \(layer.digest)")
+                            try await agentContainers.writeLayer(
+                                request: .init { writer in
+                                    try await layer.withStream { chunk in
+                                        try await writer.write(
+                                            .with {
+                                                $0.digest = layer.digest
+                                                $0.data = Data(chunk)
+                                            }
+                                        )
+                                    }
+                                }
+                            ) { response in
+                                for try await _ in response.messages {
+                                    // Ignore responses
                                 }
                             }
-                        ) { response in
-                            for try await _ in response.messages {
-                                // Ignore responses
-                            }
+                            logger.debug("Uploaded layer \(layer.digest) successfully")
+                            await layersUploaded.incrementUploaded()
                         }
-                        logger.debug("Uploaded layer \(layer.digest) successfully")
-                        await layersUploaded.incrementUploaded()
+                    }
+
+                    try await Noora().progressStep(
+                        message: "Uploading layers to agent",
+                        successMessage: "Layers uploaded to agent",
+                        errorMessage: "Failed to upload layers to agent",
+                        showSpinner: true
+                    ) { progress in
+                        await progress(layersUploaded.status)
+
+                        for await status in layersUploaded.statusChange {
+                            progress(status)
+                        }
                     }
                 }
 
-                try await Noora().progressStep(
-                    message: "Uploading layers to agent",
-                    successMessage: "Layers uploaded to agent",
-                    errorMessage: "Failed to upload layers to agent",
-                    showSpinner: true
-                ) { progress in
-                    await progress(layersUploaded.status)
-
-                    for await status in layersUploaded.statusChange {
-                        progress(status)
-                    }
-                }
+                layersUploaded.finish()
 
                 try await taskGroup.waitForAll()
             }

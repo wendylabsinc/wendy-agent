@@ -37,9 +37,9 @@ struct ProjectConfigTests {
         command.project = projectDir.path()
 
         switch entitlement {
-        case .network(let networkEntitlements):
+        case .network:
             command.entitlementType = .network
-        case .bluetooth(let bluetoothEntitlements):
+        case .bluetooth:
             command.entitlementType = .bluetooth
         case .video:
             command.entitlementType = .video

@@ -6,6 +6,7 @@ import Foundation
 import GRPCCore
 import GRPCNIOTransportHTTP2
 import Logging
+import WendyCloudGRPC
 import WendyAgentGRPC
 import WendyShared
 import ServiceLifecycle
@@ -42,21 +43,61 @@ struct WendyAgent: AsyncParsableCommand {
             try await FileSystemAgentConfigService(directory: FilePath(configDir))
         }()
 
-        if let certificate = await config.certificate {
+        if
+            let certificateChain = try? await config.certificateChain,
+            let cloudHost = await config.cloudHost
+        {
             provisioning = await WendyProvisioningService(
                 privateKey: config.privateKey,
                 deviceId: config.deviceId,
-                certificate: certificate
+                certificateChain: certificateChain
             )
+
+            do {
+                print(cloudHost)
+                print(certificateChain)
+                try await withGRPCClient(
+                    transport: HTTP2ClientTransport.Posix(
+                        target: ResolvableTargets.DNS(
+                            host: cloudHost,
+                            port: 50051
+                        ),
+                        transportSecurity: 
+                        // .plaintext
+                        .mTLS(
+                            certificateChain: certificateChain.map { cert in
+                                return .bytes(try cert.serializeAsPEM().derBytes, format: .der)
+                            },
+                            privateKey: .bytes(config.privateKey.serializeAsPEM().derBytes, format: .der)
+                        )
+                        // .tls { config in
+                        //     config.serverCertificateVerification = .noVerification
+                        // }
+                    )
+                ) { client in
+                    let certs = Wendycloud_V1_CertificateService.Client(wrapping: client)
+                    let response = try await certs.getCertificateMetadata(.init())
+                    print(response)
+                }
+            } catch let error as RPCError {
+                logger.error("Failed to get asset id and organization id", metadata: [
+                    "error": "\(error.code) \(error.message) \(error.metadata)"
+                ])
+            } catch {
+                logger.error("Failed to get asset id and organization id", metadata: [
+                    "error": .stringConvertible(error.localizedDescription)
+                ])
+            }
         } else {
             logger.notice("Agent requires provisioning")
             provisioning = await WendyProvisioningService(
                 privateKey: config.privateKey,
                 deviceId: config.deviceId
-            ) { provisionedDevice in
+            ) { cloudHost, provisionedDevice, certificateChain in
                 // TODO: Save to disk and restart server
-                try await config.provisionCertificate(
-                    provisionedDevice.certificate
+                try await config.provisionCertificateChain(
+                    certificateChain,
+                    cloudHost: cloudHost
                 )
                 logger.notice("Provisioning complete. Restarting server")
                 continuation.yield()

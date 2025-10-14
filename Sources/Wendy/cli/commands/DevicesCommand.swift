@@ -78,6 +78,10 @@ struct DevicesCommand: AsyncParsableCommand {
 
     // Helper method for logging device counts
     private func logDevicesFound<T: Device>(_ devices: [T], deviceType: String, logger: Logger) {
+        if json {
+            return
+        }
+
         if devices.isEmpty {
             logger.debug("No Wendy \(deviceType) found.")
         } else {
@@ -169,7 +173,8 @@ extension DevicesCollection {
                 group.addTask {
                     do {
                         return try await withGRPCClient(
-                            AgentConnectionOptions.Endpoint(host: device.hostname, port: 50051)
+                            AgentConnectionOptions.Endpoint(host: device.hostname, port: 50051),
+                            security: .plaintext
                         ) { client in
                             let agent = Wendy_Agent_Services_V1_WendyAgentService.Client(
                                 wrapping: client

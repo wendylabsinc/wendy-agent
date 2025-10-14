@@ -7,6 +7,7 @@ import X509
     import Foundation
 #endif
 
+public typealias CLI = Agent
 public struct Agent {
     public enum ProvisioningError: Error, Equatable {
         case publicKeyMismatch

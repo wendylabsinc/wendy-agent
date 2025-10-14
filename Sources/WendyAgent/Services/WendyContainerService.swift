@@ -392,7 +392,7 @@ struct WendyContainerService: Wendy_Agent_Services_V1_WendyContainerService.Serv
                             "error": .stringConvertible(error.localizedDescription)
                         ]
                     )
-                    throw error
+                    throw RPCError(code: .aborted, message: "\(error)")
                 }
             }
         }

@@ -12,6 +12,7 @@ import GRPCCore
 import GRPCNIOTransportHTTP2
 import X509
 import _NIOFileSystem
+import SwiftASN1
 
 enum ProvisioningError: Error {
     case alreadyProvisioned
@@ -21,30 +22,30 @@ enum ProvisioningError: Error {
 actor WendyProvisioningService: Wendy_Agent_Services_V1_WendyProvisioningService.SimpleServiceProtocol {
     let privateKey: Certificate.PrivateKey
     let deviceId: String
-    var certificate: Certificate?
+    var certificateChain: [Certificate]?
     private let logger = Logger(label: #fileID)
-    let onProvisioned: @Sendable (Agent.Provisioned) async throws -> Void
+    let onProvisioned: @Sendable (String, Agent.Provisioned, [Certificate]) async throws -> Void
 
     public init(
         privateKey: Certificate.PrivateKey,
         deviceId: String,
-        onProvisioned: @escaping @Sendable (Agent.Provisioned) async throws -> Void
+        onProvisioned: @escaping @Sendable (String, Agent.Provisioned, [Certificate]) async throws -> Void
     ) {
         self.privateKey = privateKey
         self.deviceId = deviceId
-        self.certificate = nil
+        self.certificateChain = nil
         self.onProvisioned = onProvisioned
     }
 
     public init(
         privateKey: Certificate.PrivateKey,
         deviceId: String,
-        certificate: Certificate
+        certificateChain: [Certificate]
     ) {
         self.privateKey = privateKey
         self.deviceId = deviceId
-        self.certificate = certificate
-        self.onProvisioned = { _ in
+        self.certificateChain = certificateChain
+        self.onProvisioned = { _, _, _ in
             throw ProvisioningError.alreadyProvisioned
         }
     }
@@ -53,7 +54,7 @@ actor WendyProvisioningService: Wendy_Agent_Services_V1_WendyProvisioningService
         request: Wendy_Agent_Services_V1_StartProvisioningRequest,
         context: GRPCCore.ServerContext
     ) async throws -> Wendy_Agent_Services_V1_StartProvisioningResponse {
-        guard self.certificate == nil else {
+        guard self.certificateChain == nil else {
             logger.warning("Agent is already provisioned")
             throw RPCError(code: .permissionDenied, message: "Agent is already provisioned")
         }
@@ -65,47 +66,109 @@ actor WendyProvisioningService: Wendy_Agent_Services_V1_WendyProvisioningService
             ),
             transportSecurity: .plaintext
         )
+
+        logger.info("Starting provisioning", metadata: [
+            "cloudHost": "\(request.cloudHost)",
+            "organizationID": "\(request.organizationID)",
+            "deviceID": "\(self.deviceId)"
+        ])
         
         return try await withGRPCClient(
             transport: transport
         ) { cloudClient in
             let certs = Wendycloud_V1_CertificateService.Client(wrapping: cloudClient)
-            
-            let name = try DistinguishedName {
-                CommonName("sh")
-                CommonName("wendy")
-                CommonName(String(request.organizationID))
-                CommonName(self.deviceId)
+            let name: DistinguishedName
+            do {
+                name = try DistinguishedName {
+                    CommonName("sh")
+                    CommonName("wendy")
+                    CommonName(String(request.organizationID))
+                    CommonName(self.deviceId)
+                }
+            } catch {
+                logger.error("Failed to create distinguished name", metadata: [
+                    "error": .stringConvertible(error.localizedDescription)
+                ])
+                throw error
             }
-            let unprovisionedAgent = try Agent.Unprovisioned(
-                privateKey: self.privateKey,
-                name: name
-            )
-            let csr = try unprovisionedAgent.csr.serializeAsPEM().pemString
+
+            let unprovisionedAgent: Agent.Unprovisioned
             
-            let signed = try await certs.issueCertificate(.with {
+            do {
+                unprovisionedAgent = try Agent.Unprovisioned(
+                    privateKey: self.privateKey,
+                    name: name
+                )
+            } catch {
+                logger.error("Failed to create unprovisioned agent", metadata: [
+                    "error": .stringConvertible(error.localizedDescription)
+                ])
+                throw error
+            }
+            
+
+            let csr: String
+            do {
+                csr = try unprovisionedAgent.csr.serializeAsPEM().pemString
+            } catch {
+                logger.error("Failed to serialize CSR", metadata: [
+                    "error": .stringConvertible(error.localizedDescription)
+                ])
+                throw error
+            }
+            
+            let response = try await certs.issueCertificate(.with {
                 $0.pemCsr = csr
                 $0.enrollmentToken = request.enrollmentToken
             })
-            
-            let cert = try Certificate(
-                pemEncoded: signed.pemCertificate
-            )
 
-            let provisioned = try unprovisionedAgent.receiveSignedCertificate(cert)
-            guard self.certificate == nil else {
+            if response.hasError {
+                logger.error("Failed to issue certificate", metadata: [
+                    "error": .stringConvertible(response.error.message)
+                ])
+                throw RPCError(code: .aborted, message: response.error.message)
+            }
+            
+            let cert: Certificate
+            do {
+                cert = try Certificate(
+                    pemEncoded: response.certificate.pemCertificate
+                )
+            } catch {
+                logger.error("Failed to load certificate", metadata: [
+                    "error": .stringConvertible(error.localizedDescription)
+                ])
+                throw error
+            }
+
+            let provisioned: Agent.Provisioned
+            do {
+                provisioned = try unprovisionedAgent.receiveSignedCertificate(cert)
+            } catch {
+                logger.error("Failed to receive signed certificate", metadata: [
+                    "error": .stringConvertible(error.localizedDescription)
+                ])
+                throw error
+            }
+
+            guard self.certificateChain == nil else {
                 self.logger.warning("Agent is already provisioned")
                 throw ProvisioningError.alreadyProvisioned
             }
+
+            let pems = try PEMDocument.parseMultiple(pemString: response.certificate.pemCertificateChain)
+            let certChain = try pems.map { pem in
+                return try Certificate(pemDocument: pem)
+            }
             
-            try await self.onProvisioned(provisioned)
-            self.setCertificate(provisioned.certificate)
+            try await self.onProvisioned(request.cloudHost, provisioned, certChain)
+            self.setCertificateChain(certChain)
             
             return Wendy_Agent_Services_V1_StartProvisioningResponse()
         }
     }
 
-    private func setCertificate(_ certificate: Certificate) {
-        self.certificate = certificate
+    private func setCertificateChain(_ certificateChain: [Certificate]) {
+        self.certificateChain = certificateChain
     }
 }

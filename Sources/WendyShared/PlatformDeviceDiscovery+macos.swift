@@ -70,7 +70,7 @@
             }
 
             if devices.isEmpty {
-                logger.info("No Wendy devices found.")
+                logger.debug("No Wendy devices found.")
             }
 
             return devices
@@ -127,11 +127,11 @@
                 )
 
                 interfaces.append(ethernetInterface)
-                logger.info("Wendy interface found", metadata: ["interface": .string(displayName)])
+                logger.debug("Wendy interface found", metadata: ["interface": .string(displayName)])
             }
 
             if interfaces.isEmpty {
-                logger.info("No Wendy Ethernet interfaces found.")
+                logger.debug("No Wendy Ethernet interfaces found.")
             }
 
             return interfaces

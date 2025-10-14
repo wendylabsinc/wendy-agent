@@ -164,73 +164,45 @@ struct AgentCommand: AsyncParsableCommand {
         @OptionGroup var agentConnectionOptions: AgentConnectionOptions
 
         func run() async throws {
-            try await withAuth(
-                title: "Setup agent"
-            ) { auth -> Void in
-                let target = ResolvableTargets.DNS(
-                    host: auth.cloudGRPC,
-                    port: 50051
-                )
-            
-                let transport = try GRPCTransport(
-                    target: target,
-                    transportSecurity: .plaintext
+            return try await withCloudGRPCClient(title: "Setup agent") { cloudClient -> Void in
+                let orgs = try await cloudClient.listOrganizations()
+
+                if orgs.isEmpty {
+                    Noora().error("No organizations found")
+                    return
+                }
+                
+                let org = Noora().singleChoicePrompt(
+                    title: "Enroll device",
+                    question: "Which organization do you want to enroll into?",
+                    options: orgs
                 )
                 
-                return try await withGRPCClient(transport: transport) { cloudClient -> Void in
-                    let token = Metadata(dictionaryLiteral: ("authorization", "Bearer \(auth.token)"))
-                    let orgsAPI = Wendycloud_V1_OrganizationService.Client(wrapping: cloudClient)
-                    
-                    let orgs = try await orgsAPI.listOrganizations(
-                        .with {
-                            $0.limit = 25
-                        },
-                        metadata: token
-                    ) { response in
-                        var orgs = [Wendycloud_V1_Organization]()
-                        for try await org in response.messages {
-                            orgs.append(org.organization)
-                        }
-                        return orgs
-                    }
+                let certsAPI = Wendycloud_V1_CertificateService.Client(wrapping: cloudClient.grpc)
+                let tokenResponse = try await certsAPI.createAssetEnrollmentToken(
+                    .with {
+                        $0.organizationID = org.id
+                    },
+                    metadata: cloudClient.metadata
+                )
 
-                    if orgs.isEmpty {
-                        Noora().error("No organizations found")
-                        return
-                    }
-                    
-                    let org = Noora().singleChoicePrompt(
-                        title: "Enroll device",
-                        question: "Which organization do you want to enroll into?",
-                        options: orgs
-                    )
-                    
-                    let certsAPI = Wendycloud_V1_CertificateService.Client(wrapping: cloudClient)
-                    let tokenResponse = try await certsAPI.createEnrollmentToken(
+                try await withGRPCClient(
+                    agentConnectionOptions,
+                    title: "Provisioning device"
+                ) { agentClient in
+                    let agent = Wendy_Agent_Services_V1_WendyProvisioningService.Client(wrapping: agentClient)
+                    let response = try await agent.startProvisioning(
                         .with {
                             $0.organizationID = org.id
-                        },
-                        metadata: token
+                            $0.cloudHost = cloudClient.cloudHost
+                            $0.enrollmentToken = tokenResponse.enrollmentToken
+                        }
                     )
-
-                    try await withGRPCClient(
-                        agentConnectionOptions,
-                        title: "Provisioning device"
-                    ) { agentClient in
-                        let agent = Wendy_Agent_Services_V1_WendyProvisioningService.Client(wrapping: agentClient)
-                        let response = try await agent.startProvisioning(
-                            .with {
-                                $0.organizationID = org.id
-                                $0.enrollmentToken = tokenResponse.enrollmentToken
-                            }
-                        )
-                    }
                 }
             }
-            
-            // TODO: Prompt setup wifi
-            // TODO: Update agent?
         }
+        // TODO: Prompt setup wifi
+        // TODO: Update agent?
     }
 }
 

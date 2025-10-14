@@ -5,17 +5,19 @@ import _NIOFileSystem
 
 public protocol AgentConfigService: Sendable {
     var privateKey: Certificate.PrivateKey { get async }
-    var certificate: Certificate? { get async }
+    var certificateChain: [Certificate]? { get async throws }
     var deviceId: String { get async }
+    var cloudHost: String? { get async }
 
-    func provisionCertificate(_ certificate: Certificate) async throws
+    func provisionCertificateChain(_ certificateChain: [Certificate], cloudHost: String) async throws
 }
 
 actor FileSystemAgentConfigService: AgentConfigService {
     private struct ConfigJSON: Sendable, Codable {
         let deviceId: String
         let privateKeyDer: Data
-        var certificateCer: Data?
+        var cloudHost: String?
+        var certificateChain: [String]?
     }
 
     private let directory: FilePath
@@ -24,9 +26,16 @@ actor FileSystemAgentConfigService: AgentConfigService {
     }
     private var config: ConfigJSON
     var deviceId: String { config.deviceId }
+    var cloudHost: String? { config.cloudHost }
+    var certificateChain: [Certificate]? { 
+        get throws {
+            try config.certificateChain?.map { pem in
+                return try Certificate(pemEncoded: pem)
+            }
+        }
+     }
     let privateKey: Certificate.PrivateKey
-    private(set) var certificate: Certificate?
-
+    
     public init(directory: FilePath) async throws {
         let configPath = directory.appending("config.json")
         var config: ConfigJSON
@@ -41,11 +50,11 @@ actor FileSystemAgentConfigService: AgentConfigService {
             config = try JSONDecoder().decode(ConfigJSON.self, from: configData)
             privateKey = try Certificate.PrivateKey(derBytes: Array(config.privateKeyDer))
         } catch {
-            privateKey = Certificate.PrivateKey(Curve25519.Signing.PrivateKey())
+            privateKey = Certificate.PrivateKey(P256.Signing.PrivateKey())
             config = try ConfigJSON(
                 deviceId: UUID().uuidString,
                 privateKeyDer: Data(privateKey.serializeAsPEM().derBytes),
-                certificateCer: nil
+                certificateChain: nil
             )
             try await Self.writeConfig(config, toPath: configPath)
         }
@@ -53,14 +62,13 @@ actor FileSystemAgentConfigService: AgentConfigService {
         self.directory = directory
         self.config = config
         self.privateKey = privateKey
-        self.certificate = try config.certificateCer.map { data in
-            try Certificate(derEncoded: Array(data))
-        }
     }
 
-    public func provisionCertificate(_ certificate: Certificate) async throws {
-        self.certificate = certificate
-        self.config.certificateCer = try Data(certificate.serializeAsPEM().derBytes)
+    public func provisionCertificateChain(_ certificateChain: [Certificate], cloudHost: String) async throws {
+        self.config.certificateChain = try certificateChain.map { cert in
+            return try cert.serializeAsPEM().pemString
+        }
+        self.config.cloudHost = cloudHost
         try await Self.writeConfig(config, toPath: configPath)
     }
 
@@ -81,17 +89,19 @@ actor FileSystemAgentConfigService: AgentConfigService {
 
 actor InMemoryAgentConfigService: AgentConfigService {
     let privateKey: Certificate.PrivateKey
-    private(set) var certificate: Certificate?
+    private(set) var certificateChain: [Certificate]?
     let deviceId: String
+    var cloudHost: String?
 
     public init() throws {
         let deviceId = UUID().uuidString
 
-        self.privateKey = Certificate.PrivateKey(Curve25519.Signing.PrivateKey())
+        self.privateKey = Certificate.PrivateKey(P256.Signing.PrivateKey())
         self.deviceId = deviceId
     }
 
-    public func provisionCertificate(_ certificate: Certificate) async throws {
-        self.certificate = certificate
+    public func provisionCertificateChain(_ certificateChain: [Certificate], cloudHost: String) async throws {
+        self.cloudHost = cloudHost
+        self.certificateChain = certificateChain
     }
 }
