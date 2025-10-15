@@ -17,6 +17,11 @@ public struct LinuxDiskLister: DiskLister {
         let model: String?
         let size: String?  // Size comes as a string like "123456789"
         let hotplug: String?  // "0" or "1" as a string
+        let type: String?  // "disk", "part", "loop", "rom", etc.
+        let fsavail: String?  // Available filesystem space in bytes
+        let fsused: String?  // Used filesystem space in bytes
+        let fssize: String?  // Total filesystem size in bytes
+        let mountpoint: String?  // Mount point of the filesystem
         let children: [BlockDevice]?
 
         // Computed properties for convenience
@@ -24,12 +29,56 @@ public struct LinuxDiskLister: DiskLister {
             return hotplug == "1"
         }
 
+        var isDisk: Bool {
+            // Only consider actual disks and ROM drives (CD/DVD)
+            return type == "disk" || type == "rom"
+        }
+
         var displayName: String {
-            return model?.isEmpty == false ? model! : "Linux Disk"
+            if let model = model, !model.isEmpty {
+                return model
+            }
+            // Provide better default names based on device type
+            switch type {
+            case "rom":
+                return "Optical Drive (\(name))"
+            case "disk":
+                return "Disk (\(name))"
+            default:
+                return "Storage Device (\(name))"
+            }
         }
 
         var sizeInBytes: Int64 {
             return Int64(size ?? "0") ?? 0
+        }
+
+        var availableBytes: Int64 {
+            // Try to get available space from filesystem info
+            if let fsavail = fsavail, let availBytes = Int64(fsavail) {
+                return availBytes
+            }
+
+            // Check children partitions for available space (sum of all partitions)
+            if let children = children {
+                let totalAvailable = children.reduce(Int64(0)) { sum, child in
+                    if let fsavail = child.fsavail, let availBytes = Int64(fsavail) {
+                        return sum + availBytes
+                    }
+                    return sum
+                }
+                if totalAvailable > 0 {
+                    return totalAvailable
+                }
+            }
+
+            // If unmounted and no filesystem info, assume entire disk is available
+            if mountpoint == nil || mountpoint?.isEmpty == true {
+                return sizeInBytes
+            }
+
+            // Default to 0 if we can't determine
+            return 0
         }
     }
 
@@ -41,9 +90,10 @@ public struct LinuxDiskLister: DiskLister {
     public func list(all: Bool = false) async throws -> [Drive] {
         do {
             // Use lsblk to get information about all block devices in JSON format
+            // Include filesystem information for available space calculation
             let result = try await Subprocess.run(
                 Subprocess.Executable.name("lsblk"),
-                arguments: ["-J", "-b", "-o", "NAME,SIZE,MODEL,HOTPLUG,TYPE"],
+                arguments: ["-J", "-b", "-o", "NAME,SIZE,MODEL,HOTPLUG,TYPE,FSAVAIL,FSUSED,FSSIZE,MOUNTPOINT"],
                 output: .string(limit: .max),
                 error: .string(limit: .max)
             )
@@ -68,14 +118,43 @@ public struct LinuxDiskLister: DiskLister {
     /// - Returns: A Drive object representing the found drive.
     /// - Throws: An error if the drive is not found.
     public func findDrive(byId id: String) async throws -> Drive {
-        do {
-            // Use lsblk to get information about a specific device
-            // Normalize the id to remove /dev/ prefix if present
-            let deviceId = id.hasPrefix("/dev/") ? String(id.dropFirst(5)) : id
+        // Validate input to prevent injection or invalid paths
+        guard !id.isEmpty else {
+            throw NSError(
+                domain: "LinuxDiskLister",
+                code: 3,
+                userInfo: [NSLocalizedDescriptionKey: "Drive ID cannot be empty"]
+            )
+        }
 
+        // Normalize the id to remove /dev/ prefix if present
+        let deviceId = id.hasPrefix("/dev/") ? String(id.dropFirst(5)) : id
+
+        // Further validate the device ID - it should be alphanumeric with possible numbers
+        let validPattern = "^[a-zA-Z]+[a-zA-Z0-9]*$"
+        guard deviceId.range(of: validPattern, options: .regularExpression) != nil else {
+            throw NSError(
+                domain: "LinuxDiskLister",
+                code: 4,
+                userInfo: [NSLocalizedDescriptionKey: "Invalid drive ID format: \(id)"]
+            )
+        }
+
+        let devicePath = "/dev/\(deviceId)"
+
+        // First, check if the device exists
+        if !FileManager.default.fileExists(atPath: devicePath) {
+            throw NSError(
+                domain: "LinuxDiskLister",
+                code: 5,
+                userInfo: [NSLocalizedDescriptionKey: "Device does not exist: \(devicePath)"]
+            )
+        }
+
+        do {
             let result = try await Subprocess.run(
                 Subprocess.Executable.name("lsblk"),
-                arguments: ["-J", "-b", "-o", "NAME,SIZE,MODEL,HOTPLUG,TYPE", "/dev/\(deviceId)"],
+                arguments: ["-J", "-b", "-o", "NAME,SIZE,MODEL,HOTPLUG,TYPE,FSAVAIL,FSUSED,FSSIZE,MOUNTPOINT", devicePath],
                 output: .string(limit: .max),
                 error: .string(limit: .max)
             )
@@ -84,12 +163,19 @@ public struct LinuxDiskLister: DiskLister {
                 let drives = parseLsblkOutput(output, all: true)
 
                 if let drive = drives.first {
+                    // Ensure the drive ID is correctly formatted
+                    if !drive.id.hasPrefix("/dev/") {
+                        // Fix the drive ID if needed
+                        var correctedDrive = drive
+                        correctedDrive.id = devicePath
+                        return correctedDrive
+                    }
                     return drive
                 } else {
                     throw NSError(
                         domain: "LinuxDiskLister",
                         code: 2,
-                        userInfo: [NSLocalizedDescriptionKey: "Drive not found: \(id)"]
+                        userInfo: [NSLocalizedDescriptionKey: "Drive not found or not a valid disk: \(id)"]
                     )
                 }
             } else {
@@ -126,8 +212,8 @@ public struct LinuxDiskLister: DiskLister {
             let lsblkOutput = try decoder.decode(LsblkOutput.self, from: jsonData)
 
             for device in lsblkOutput.blockdevices {
-                // Skip loop devices
-                if !device.name.starts(with: "loop") {
+                // Only include actual disk devices (not partitions, loops, etc.)
+                if device.isDisk {
                     // Only include external devices unless all is true
                     if all || device.isExternal {
                         let id = "/dev/\(device.name)"
@@ -135,7 +221,7 @@ public struct LinuxDiskLister: DiskLister {
                         let drive = Drive(
                             id: id,
                             name: device.displayName,
-                            available: 0,  // Would need df command for accurate values
+                            available: device.availableBytes,
                             capacity: device.sizeInBytes,
                             isExternal: device.isExternal
                         )
@@ -154,48 +240,61 @@ public struct LinuxDiskLister: DiskLister {
 
     // Fallback parser for non-JSON lsblk output
     private func parseTextLsblkOutput(_ output: String, all: Bool) -> [Drive] {
-        var drives: [Drive] = []
+        print("Warning: Failed to parse lsblk JSON output. Disk listing may be incomplete.")
 
-        // Split the output by lines
-        let lines = output.split(separator: "\n")
+        // Try a simpler approach: run lsblk without JSON but with better formatting
+        // This is a synchronous fallback, not ideal but better than broken parsing
+        do {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/lsblk")
+            process.arguments = ["-rno", "NAME,SIZE,TYPE,MODEL,HOTPLUG,FSAVAIL"]  // -r for raw, -n for no headers
 
-        // Skip the header line
-        for i in 1..<lines.count {
-            let line = lines[i]
-            let components = line.split(separator: " ").map {
-                $0.trimmingCharacters(in: .whitespacesAndNewlines)
-            }
+            let pipe = Pipe()
+            process.standardOutput = pipe
+            process.standardError = Pipe()
 
-            // Basic parsing of lsblk text output
-            if components.count >= 2 {
-                let name = components[0]
+            try process.run()
+            process.waitUntilExit()
 
-                // Skip loop devices and partitions
-                if !name.starts(with: "loop") && !name.contains("├") && !name.contains("└") {
-                    let id = "/dev/\(name)"
-                    let displayName = components.count > 2 ? components[2] : "Linux Disk"
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            guard let output = String(data: data, encoding: .utf8) else { return [] }
 
-                    // Size is in bytes (assuming it's the second column)
-                    let capacity = Int64(components[1]) ?? 0
+            var drives: [Drive] = []
+            let lines = output.split(separator: "\n")
 
-                    // Assume all devices are external in fallback mode if not filtering
-                    let isExternal = true
+            for line in lines {
+                let components = line.split(separator: " ", maxSplits: 5).map { String($0) }
+                if components.count >= 3 {
+                    let name = components[0]
+                    let size = Int64(components[1]) ?? 0
+                    let type = components[2]
+                    let model = components.count > 3 ? components[3] : ""
+                    let hotplug = components.count > 4 ? components[4] : "0"
+                    let fsavail = components.count > 5 ? Int64(components[5]) : nil
 
-                    if all || isExternal {
-                        let drive = Drive(
-                            id: id,
-                            name: displayName.isEmpty ? "Linux Disk" : displayName,
-                            available: 0,
-                            capacity: capacity,
-                            isExternal: isExternal
-                        )
-
-                        drives.append(drive)
+                    // Only include actual disks
+                    if type == "disk" || type == "rom" {
+                        let isExternal = hotplug == "1"
+                        if all || isExternal {
+                            let displayName = !model.isEmpty ? model : "Disk (\(name))"
+                            // Use fsavail if available, otherwise assume entire disk is available if unmounted
+                            let available = fsavail ?? size
+                            let drive = Drive(
+                                id: "/dev/\(name)",
+                                name: displayName,
+                                available: available,
+                                capacity: size,
+                                isExternal: isExternal
+                            )
+                            drives.append(drive)
+                        }
                     }
                 }
             }
+            return drives
+        } catch {
+            print("Error running fallback lsblk: \(error)")
+            return []
         }
-
-        return drives
     }
 }
