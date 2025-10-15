@@ -53,7 +53,7 @@ public struct LinuxDiskLister: DiskLister {
             return Int64(size ?? "0") ?? 0
         }
 
-        var availableBytes: Int64 {
+       var availableBytes: Int64 {
             // Try to get available space from filesystem info
             if let fsavail = fsavail, let availBytes = Int64(fsavail) {
                 return availBytes
@@ -203,6 +203,7 @@ public struct LinuxDiskLister: DiskLister {
 
         // Try to parse the JSON output from lsblk -J
         guard let jsonData = output.data(using: .utf8) else {
+            print("Error: Could not convert lsblk output to data")
             return []
         }
 
@@ -230,24 +231,53 @@ public struct LinuxDiskLister: DiskLister {
                     }
                 }
             }
+        } catch let decodingError as DecodingError {
+            switch decodingError {
+            case .keyNotFound(let key, let context):
+                print("JSON parsing error - Missing key: \(key.stringValue)")
+                print("Context: \(context.debugDescription)")
+            case .typeMismatch(let type, let context):
+                print("JSON parsing error - Type mismatch for type: \(type)")
+                print("Context: \(context.debugDescription)")
+            case .valueNotFound(let type, let context):
+                print("JSON parsing error - Value not found for type: \(type)")
+                print("Context: \(context.debugDescription)")
+            case .dataCorrupted(let context):
+                print("JSON parsing error - Data corrupted")
+                print("Context: \(context.debugDescription)")
+            @unknown default:
+                print("JSON parsing error - Unknown decoding error: \(decodingError)")
+            }
+            return []
         } catch {
-            // Fallback to parsing text output if JSON parsing fails
-            return parseTextLsblkOutput(output, all: all)
+            print("lsblk JSON parsing failed with error: \(error)")
+            return []
         }
 
         return drives
     }
 
-    // Fallback parser for non-JSON lsblk output
-    private func parseTextLsblkOutput(_ output: String, all: Bool) -> [Drive] {
-        print("Warning: Failed to parse lsblk JSON output. Disk listing may be incomplete.")
+    // Helper function to find lsblk executable
+    private func findLsblkPath() -> String? {
+        // Common paths
+        let possiblePaths = [
+            "/usr/bin/lsblk",
+            "/bin/lsblk",
+            "/sbin/lsblk",
+            "/usr/sbin/lsblk"
+        ]
 
-        // Try a simpler approach: run lsblk without JSON but with better formatting
-        // This is a synchronous fallback, not ideal but better than broken parsing
+        for path in possiblePaths {
+            if FileManager.default.fileExists(atPath: path) {
+                return path
+            }
+        }
+
+        // Try using 'which' to find lsblk if it's not one of the common paths
         do {
             let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/lsblk")
-            process.arguments = ["-rno", "NAME,SIZE,TYPE,MODEL,HOTPLUG,FSAVAIL"]  // -r for raw, -n for no headers
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+            process.arguments = ["which", "lsblk"]
 
             let pipe = Pipe()
             process.standardOutput = pipe
@@ -256,45 +286,17 @@ public struct LinuxDiskLister: DiskLister {
             try process.run()
             process.waitUntilExit()
 
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            guard let output = String(data: data, encoding: .utf8) else { return [] }
-
-            var drives: [Drive] = []
-            let lines = output.split(separator: "\n")
-
-            for line in lines {
-                let components = line.split(separator: " ", maxSplits: 5).map { String($0) }
-                if components.count >= 3 {
-                    let name = components[0]
-                    let size = Int64(components[1]) ?? 0
-                    let type = components[2]
-                    let model = components.count > 3 ? components[3] : ""
-                    let hotplug = components.count > 4 ? components[4] : "0"
-                    let fsavail = components.count > 5 ? Int64(components[5]) : nil
-
-                    // Only include actual disks
-                    if type == "disk" || type == "rom" {
-                        let isExternal = hotplug == "1"
-                        if all || isExternal {
-                            let displayName = !model.isEmpty ? model : "Disk (\(name))"
-                            // Use fsavail if available, otherwise assume entire disk is available if unmounted
-                            let available = fsavail ?? size
-                            let drive = Drive(
-                                id: "/dev/\(name)",
-                                name: displayName,
-                                available: available,
-                                capacity: size,
-                                isExternal: isExternal
-                            )
-                            drives.append(drive)
-                        }
-                    }
+            if process.terminationStatus == 0 {
+                let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                if let path = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                   !path.isEmpty {
+                    return path
                 }
             }
-            return drives
         } catch {
-            print("Error running fallback lsblk: \(error)")
-            return []
+            // Ignore error, will return nil
         }
+
+        return nil
     }
 }
