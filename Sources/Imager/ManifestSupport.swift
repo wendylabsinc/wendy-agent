@@ -76,11 +76,13 @@ public class ManifestManager: ManifestManaging {
 
         // Check for successful response
         guard response.status == .ok else {
-            throw ManifestError.deviceNotFound("HTTP request failed with status: \(response.status)")
+            throw ManifestError.deviceNotFound(
+                "HTTP request failed with status: \(response.status)"
+            )
         }
 
         // Collect response body
-        let body = try await response.body.collect(upTo: 10 * 1024 * 1024) // 10MB limit for manifests
+        let body = try await response.body.collect(upTo: 10 * 1024 * 1024)  // 10MB limit for manifests
         return Data(buffer: body)
     }
 

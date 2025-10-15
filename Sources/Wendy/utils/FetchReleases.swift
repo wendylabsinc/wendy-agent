@@ -64,7 +64,7 @@ func fetchReleases() async throws -> [Release] {
     }
 
     // Collect response body
-    let body = try await response.body.collect(upTo: 10 * 1024 * 1024) // 10MB limit
+    let body = try await response.body.collect(upTo: 10 * 1024 * 1024)  // 10MB limit
     let data = Data(buffer: body)
 
     return try JSONDecoder().decode([Release].self, from: data)
