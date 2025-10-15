@@ -76,9 +76,7 @@ public class ManifestManager: ManifestManaging {
 
         // Check for successful response
         guard response.status == .ok else {
-            throw ManifestError.deviceNotFound(
-                "HTTP request failed with status: \(response.status)"
-            )
+            throw ManifestError.httpFailure(response.status.code)
         }
 
         // Collect response body
@@ -150,6 +148,7 @@ public enum ManifestError: Error, LocalizedError {
     case deviceNotFound(String)
     case noManifestForDevice(String)
     case noLatestVersion(String)
+    case httpFailure(UInt)
 
     public var errorDescription: String? {
         switch self {
@@ -159,6 +158,8 @@ public enum ManifestError: Error, LocalizedError {
             return "No manifest available for device '\(deviceName)'"
         case .noLatestVersion(let deviceName):
             return "No latest version found for device '\(deviceName)'"
+        case .httpFailure(let status):
+            return "HTTP request failed with status code: '\(status)'"
         }
     }
 }
