@@ -202,7 +202,7 @@ struct AgentCommand: AsyncParsableCommand {
                     let response = try await agent.startProvisioning(
                         .with {
                             $0.organizationID = org.id
-                            $0.cloudHost = "192.168.0.102" //cloudClient.cloudHost
+                            $0.cloudHost = cloudClient.cloudHost
                             $0.enrollmentToken = tokenResponse.enrollmentToken
                             $0.assetID = tokenResponse.assetID
                         }

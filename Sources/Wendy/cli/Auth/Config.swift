@@ -24,17 +24,17 @@ public struct Config: Sendable, Codable {
     public struct Auth: Sendable, Codable, Hashable, CustomStringConvertible {
         public let cloudDashboard: String
         public let cloudGRPC: String
-        public let user: String
         public var certificates: [Certificates]
 
         public struct Certificates: Sendable, Codable, Hashable {
             public let organizationID: Int32
+            public let userID: String
             public let privateKeyPEM: String
             public let certificateChainPEM: [String]
         }
 
         public var description: String {
-            user
+            certificates.first?.userID ?? "Unknown user"
         }
     }
 
@@ -46,7 +46,7 @@ public struct Config: Sendable, Codable {
 
     public mutating func addAuth(_ newAuth: Auth) {
         self.auth.removeAll {
-            $0.user == newAuth.user && $0.cloudDashboard == newAuth.cloudDashboard
+            $0.cloudDashboard == newAuth.cloudDashboard
                 && $0.cloudGRPC == newAuth.cloudGRPC
         }
         self.auth.append(newAuth)
@@ -79,6 +79,64 @@ func getConfig() throws -> Config {
     }
 }
 
+func authenticate<R: Sendable>(
+    title: TerminalText,
+    forOrganizationId orgId: Int32? = nil,
+    perform: @Sendable @escaping (Config.Auth) async throws -> R
+) async throws -> R {
+    var cloudDashboard = Noora().textPrompt(
+        title: title,
+        prompt: "Enter the cloud dashboard URL",
+        collapseOnAnswer: false
+    )
+
+    var cloudGRPC = Noora().textPrompt(
+        title: title,
+        prompt: "Enter the cloud gRPC URL",
+        collapseOnAnswer: false
+    )
+
+    // TODO: Add organisation ID preference to dashboard
+    if cloudDashboard.isEmpty {
+        cloudDashboard = "https://cloud.wendy.sh"
+    } else if !cloudDashboard.contains("://") {
+        cloudDashboard = "https://" + cloudDashboard
+    }
+
+    if cloudGRPC.isEmpty {
+        cloudGRPC = "cloud.wendy.sh"
+    }
+
+    return try await loginFlow(
+        cloudDashboard: cloudDashboard,
+        cloudGRPC: cloudGRPC,
+        withAuth: perform
+    )
+}
+
+func withCertificates<R: Sendable>(
+    title: TerminalText,
+    forOrganizationId orgId: Int32,
+    perform: @Sendable @escaping (Config.Auth.Certificates) async throws -> R
+) async throws -> R {
+    let config = try getConfig()
+
+    for auth in config.auth {
+        for certificate in auth.certificates {
+            if certificate.organizationID == orgId {
+                return try await perform(certificate)
+            }
+        }
+    }
+
+    return try await authenticate(title: title, forOrganizationId: orgId) { auth in
+        guard let certificate = auth.certificates.first(where: { $0.organizationID == orgId }) else {
+            throw RPCError(code: .aborted, message: "No certificate found for organization \(orgId)")
+        }
+        return try await perform(certificate)
+    }
+}
+
 func withAuth<R: Sendable>(
     title: TerminalText,
     perform: @Sendable @escaping (Config.Auth) async throws -> R
@@ -86,33 +144,7 @@ func withAuth<R: Sendable>(
     let config = try getConfig()
 
     if config.auth.isEmpty {
-        var cloudDashboard = Noora().textPrompt(
-            title: title,
-            prompt: "Enter the cloud dashboard URL",
-            collapseOnAnswer: false
-        )
-
-        var cloudGRPC = Noora().textPrompt(
-            title: title,
-            prompt: "Enter the cloud gRPC URL",
-            collapseOnAnswer: false
-        )
-
-        if cloudDashboard.isEmpty {
-            cloudDashboard = "https://cloud.wendy.sh"
-        } else if !cloudDashboard.contains("://") {
-            cloudDashboard = "https://" + cloudDashboard
-        }
-
-        if cloudGRPC.isEmpty {
-            cloudGRPC = "cloud.wendy.sh"
-        }
-
-        return try await loginFlow(
-            cloudDashboard: cloudDashboard,
-            cloudGRPC: cloudGRPC,
-            withAuth: perform
-        )
+        return try await authenticate(title: title, perform: perform)
     } else if config.auth.count == 1 {
         return try await perform(config.auth[0])
     } else {
@@ -198,10 +230,10 @@ func setupConfig(
         return Config.Auth(
             cloudDashboard: cloudDashboard,
             cloudGRPC: cloudGRPC,
-            user: UUID().uuidString,
             certificates: [
                 try .init(
-                    organizationID: issued.organizationID,
+                    organizationID: organizationId,
+                    userID: userId,
                     privateKeyPEM: try privateKey.serializeAsPEM().pemString,
                     certificateChainPEM: certificateChain.map { try $0.serializeAsPEM().pemString }
                 )

@@ -32,9 +32,22 @@ public enum Wendy_Agent_Services_V1_WendyProvisioningService {
                 method: "StartProvisioning"
             )
         }
+        /// Namespace for "IsProvisioned" metadata.
+        public enum IsProvisioned {
+            /// Request type for "IsProvisioned".
+            public typealias Input = Wendy_Agent_Services_V1_IsProvisionedRequest
+            /// Response type for "IsProvisioned".
+            public typealias Output = Wendy_Agent_Services_V1_IsProvisionedResponse
+            /// Descriptor for "IsProvisioned".
+            public static let descriptor = GRPCCore.MethodDescriptor(
+                service: GRPCCore.ServiceDescriptor(fullyQualifiedService: "wendy.agent.services.v1.WendyProvisioningService"),
+                method: "IsProvisioned"
+            )
+        }
         /// Descriptors for all methods in the "wendy.agent.services.v1.WendyProvisioningService" service.
         public static let descriptors: [GRPCCore.MethodDescriptor] = [
-            StartProvisioning.descriptor
+            StartProvisioning.descriptor,
+            IsProvisioned.descriptor
         ]
     }
 }
@@ -73,6 +86,20 @@ extension Wendy_Agent_Services_V1_WendyProvisioningService {
             request: GRPCCore.StreamingServerRequest<Wendy_Agent_Services_V1_StartProvisioningRequest>,
             context: GRPCCore.ServerContext
         ) async throws -> GRPCCore.StreamingServerResponse<Wendy_Agent_Services_V1_StartProvisioningResponse>
+
+        /// Handle the "IsProvisioned" method.
+        ///
+        /// - Parameters:
+        ///   - request: A streaming request of `Wendy_Agent_Services_V1_IsProvisionedRequest` messages.
+        ///   - context: Context providing information about the RPC.
+        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
+        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
+        ///     to an internal error.
+        /// - Returns: A streaming response of `Wendy_Agent_Services_V1_IsProvisionedResponse` messages.
+        func isProvisioned(
+            request: GRPCCore.StreamingServerRequest<Wendy_Agent_Services_V1_IsProvisionedRequest>,
+            context: GRPCCore.ServerContext
+        ) async throws -> GRPCCore.StreamingServerResponse<Wendy_Agent_Services_V1_IsProvisionedResponse>
     }
 
     /// Service protocol for the "wendy.agent.services.v1.WendyProvisioningService" service.
@@ -96,6 +123,20 @@ extension Wendy_Agent_Services_V1_WendyProvisioningService {
             request: GRPCCore.ServerRequest<Wendy_Agent_Services_V1_StartProvisioningRequest>,
             context: GRPCCore.ServerContext
         ) async throws -> GRPCCore.ServerResponse<Wendy_Agent_Services_V1_StartProvisioningResponse>
+
+        /// Handle the "IsProvisioned" method.
+        ///
+        /// - Parameters:
+        ///   - request: A request containing a single `Wendy_Agent_Services_V1_IsProvisionedRequest` message.
+        ///   - context: Context providing information about the RPC.
+        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
+        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
+        ///     to an internal error.
+        /// - Returns: A response containing a single `Wendy_Agent_Services_V1_IsProvisionedResponse` message.
+        func isProvisioned(
+            request: GRPCCore.ServerRequest<Wendy_Agent_Services_V1_IsProvisionedRequest>,
+            context: GRPCCore.ServerContext
+        ) async throws -> GRPCCore.ServerResponse<Wendy_Agent_Services_V1_IsProvisionedResponse>
     }
 
     /// Simple service protocol for the "wendy.agent.services.v1.WendyProvisioningService" service.
@@ -117,6 +158,20 @@ extension Wendy_Agent_Services_V1_WendyProvisioningService {
             request: Wendy_Agent_Services_V1_StartProvisioningRequest,
             context: GRPCCore.ServerContext
         ) async throws -> Wendy_Agent_Services_V1_StartProvisioningResponse
+
+        /// Handle the "IsProvisioned" method.
+        ///
+        /// - Parameters:
+        ///   - request: A `Wendy_Agent_Services_V1_IsProvisionedRequest` message.
+        ///   - context: Context providing information about the RPC.
+        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
+        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
+        ///     to an internal error.
+        /// - Returns: A `Wendy_Agent_Services_V1_IsProvisionedResponse` to respond with.
+        func isProvisioned(
+            request: Wendy_Agent_Services_V1_IsProvisionedRequest,
+            context: GRPCCore.ServerContext
+        ) async throws -> Wendy_Agent_Services_V1_IsProvisionedResponse
     }
 }
 
@@ -130,6 +185,17 @@ extension Wendy_Agent_Services_V1_WendyProvisioningService.StreamingServiceProto
             serializer: GRPCProtobuf.ProtobufSerializer<Wendy_Agent_Services_V1_StartProvisioningResponse>(),
             handler: { request, context in
                 try await self.startProvisioning(
+                    request: request,
+                    context: context
+                )
+            }
+        )
+        router.registerHandler(
+            forMethod: Wendy_Agent_Services_V1_WendyProvisioningService.Method.IsProvisioned.descriptor,
+            deserializer: GRPCProtobuf.ProtobufDeserializer<Wendy_Agent_Services_V1_IsProvisionedRequest>(),
+            serializer: GRPCProtobuf.ProtobufSerializer<Wendy_Agent_Services_V1_IsProvisionedResponse>(),
+            handler: { request, context in
+                try await self.isProvisioned(
                     request: request,
                     context: context
                 )
@@ -151,6 +217,17 @@ extension Wendy_Agent_Services_V1_WendyProvisioningService.ServiceProtocol {
         )
         return GRPCCore.StreamingServerResponse(single: response)
     }
+
+    public func isProvisioned(
+        request: GRPCCore.StreamingServerRequest<Wendy_Agent_Services_V1_IsProvisionedRequest>,
+        context: GRPCCore.ServerContext
+    ) async throws -> GRPCCore.StreamingServerResponse<Wendy_Agent_Services_V1_IsProvisionedResponse> {
+        let response = try await self.isProvisioned(
+            request: GRPCCore.ServerRequest(stream: request),
+            context: context
+        )
+        return GRPCCore.StreamingServerResponse(single: response)
+    }
 }
 
 // Default implementation of methods from 'ServiceProtocol'.
@@ -162,6 +239,19 @@ extension Wendy_Agent_Services_V1_WendyProvisioningService.SimpleServiceProtocol
     ) async throws -> GRPCCore.ServerResponse<Wendy_Agent_Services_V1_StartProvisioningResponse> {
         return GRPCCore.ServerResponse<Wendy_Agent_Services_V1_StartProvisioningResponse>(
             message: try await self.startProvisioning(
+                request: request.message,
+                context: context
+            ),
+            metadata: [:]
+        )
+    }
+
+    public func isProvisioned(
+        request: GRPCCore.ServerRequest<Wendy_Agent_Services_V1_IsProvisionedRequest>,
+        context: GRPCCore.ServerContext
+    ) async throws -> GRPCCore.ServerResponse<Wendy_Agent_Services_V1_IsProvisionedResponse> {
+        return GRPCCore.ServerResponse<Wendy_Agent_Services_V1_IsProvisionedResponse>(
+            message: try await self.isProvisioned(
                 request: request.message,
                 context: context
             ),
@@ -196,6 +286,25 @@ extension Wendy_Agent_Services_V1_WendyProvisioningService {
             deserializer: some GRPCCore.MessageDeserializer<Wendy_Agent_Services_V1_StartProvisioningResponse>,
             options: GRPCCore.CallOptions,
             onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendy_Agent_Services_V1_StartProvisioningResponse>) async throws -> Result
+        ) async throws -> Result where Result: Sendable
+
+        /// Call the "IsProvisioned" method.
+        ///
+        /// - Parameters:
+        ///   - request: A request containing a single `Wendy_Agent_Services_V1_IsProvisionedRequest` message.
+        ///   - serializer: A serializer for `Wendy_Agent_Services_V1_IsProvisionedRequest` messages.
+        ///   - deserializer: A deserializer for `Wendy_Agent_Services_V1_IsProvisionedResponse` messages.
+        ///   - options: Options to apply to this RPC.
+        ///   - handleResponse: A closure which handles the response, the result of which is
+        ///       returned to the caller. Returning from the closure will cancel the RPC if it
+        ///       hasn't already finished.
+        /// - Returns: The result of `handleResponse`.
+        func isProvisioned<Result>(
+            request: GRPCCore.ClientRequest<Wendy_Agent_Services_V1_IsProvisionedRequest>,
+            serializer: some GRPCCore.MessageSerializer<Wendy_Agent_Services_V1_IsProvisionedRequest>,
+            deserializer: some GRPCCore.MessageDeserializer<Wendy_Agent_Services_V1_IsProvisionedResponse>,
+            options: GRPCCore.CallOptions,
+            onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendy_Agent_Services_V1_IsProvisionedResponse>) async throws -> Result
         ) async throws -> Result where Result: Sendable
     }
 
@@ -244,6 +353,36 @@ extension Wendy_Agent_Services_V1_WendyProvisioningService {
                 onResponse: handleResponse
             )
         }
+
+        /// Call the "IsProvisioned" method.
+        ///
+        /// - Parameters:
+        ///   - request: A request containing a single `Wendy_Agent_Services_V1_IsProvisionedRequest` message.
+        ///   - serializer: A serializer for `Wendy_Agent_Services_V1_IsProvisionedRequest` messages.
+        ///   - deserializer: A deserializer for `Wendy_Agent_Services_V1_IsProvisionedResponse` messages.
+        ///   - options: Options to apply to this RPC.
+        ///   - handleResponse: A closure which handles the response, the result of which is
+        ///       returned to the caller. Returning from the closure will cancel the RPC if it
+        ///       hasn't already finished.
+        /// - Returns: The result of `handleResponse`.
+        public func isProvisioned<Result>(
+            request: GRPCCore.ClientRequest<Wendy_Agent_Services_V1_IsProvisionedRequest>,
+            serializer: some GRPCCore.MessageSerializer<Wendy_Agent_Services_V1_IsProvisionedRequest>,
+            deserializer: some GRPCCore.MessageDeserializer<Wendy_Agent_Services_V1_IsProvisionedResponse>,
+            options: GRPCCore.CallOptions = .defaults,
+            onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendy_Agent_Services_V1_IsProvisionedResponse>) async throws -> Result = { response in
+                try response.message
+            }
+        ) async throws -> Result where Result: Sendable {
+            try await self.client.unary(
+                request: request,
+                descriptor: Wendy_Agent_Services_V1_WendyProvisioningService.Method.IsProvisioned.descriptor,
+                serializer: serializer,
+                deserializer: deserializer,
+                options: options,
+                onResponse: handleResponse
+            )
+        }
     }
 }
 
@@ -270,6 +409,31 @@ extension Wendy_Agent_Services_V1_WendyProvisioningService.ClientProtocol {
             request: request,
             serializer: GRPCProtobuf.ProtobufSerializer<Wendy_Agent_Services_V1_StartProvisioningRequest>(),
             deserializer: GRPCProtobuf.ProtobufDeserializer<Wendy_Agent_Services_V1_StartProvisioningResponse>(),
+            options: options,
+            onResponse: handleResponse
+        )
+    }
+
+    /// Call the "IsProvisioned" method.
+    ///
+    /// - Parameters:
+    ///   - request: A request containing a single `Wendy_Agent_Services_V1_IsProvisionedRequest` message.
+    ///   - options: Options to apply to this RPC.
+    ///   - handleResponse: A closure which handles the response, the result of which is
+    ///       returned to the caller. Returning from the closure will cancel the RPC if it
+    ///       hasn't already finished.
+    /// - Returns: The result of `handleResponse`.
+    public func isProvisioned<Result>(
+        request: GRPCCore.ClientRequest<Wendy_Agent_Services_V1_IsProvisionedRequest>,
+        options: GRPCCore.CallOptions = .defaults,
+        onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendy_Agent_Services_V1_IsProvisionedResponse>) async throws -> Result = { response in
+            try response.message
+        }
+    ) async throws -> Result where Result: Sendable {
+        try await self.isProvisioned(
+            request: request,
+            serializer: GRPCProtobuf.ProtobufSerializer<Wendy_Agent_Services_V1_IsProvisionedRequest>(),
+            deserializer: GRPCProtobuf.ProtobufDeserializer<Wendy_Agent_Services_V1_IsProvisionedResponse>(),
             options: options,
             onResponse: handleResponse
         )
@@ -302,6 +466,35 @@ extension Wendy_Agent_Services_V1_WendyProvisioningService.ClientProtocol {
             metadata: metadata
         )
         return try await self.startProvisioning(
+            request: request,
+            options: options,
+            onResponse: handleResponse
+        )
+    }
+
+    /// Call the "IsProvisioned" method.
+    ///
+    /// - Parameters:
+    ///   - message: request message to send.
+    ///   - metadata: Additional metadata to send, defaults to empty.
+    ///   - options: Options to apply to this RPC, defaults to `.defaults`.
+    ///   - handleResponse: A closure which handles the response, the result of which is
+    ///       returned to the caller. Returning from the closure will cancel the RPC if it
+    ///       hasn't already finished.
+    /// - Returns: The result of `handleResponse`.
+    public func isProvisioned<Result>(
+        _ message: Wendy_Agent_Services_V1_IsProvisionedRequest,
+        metadata: GRPCCore.Metadata = [:],
+        options: GRPCCore.CallOptions = .defaults,
+        onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendy_Agent_Services_V1_IsProvisionedResponse>) async throws -> Result = { response in
+            try response.message
+        }
+    ) async throws -> Result where Result: Sendable {
+        let request = GRPCCore.ClientRequest<Wendy_Agent_Services_V1_IsProvisionedRequest>(
+            message: message,
+            metadata: metadata
+        )
+        return try await self.isProvisioned(
             request: request,
             options: options,
             onResponse: handleResponse

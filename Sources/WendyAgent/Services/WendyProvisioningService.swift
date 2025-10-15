@@ -21,33 +21,44 @@ actor WendyProvisioningService: Wendy_Agent_Services_V1_WendyProvisioningService
         .SimpleServiceProtocol
 {
     let privateKey: Certificate.PrivateKey
-    let deviceId: String
-    var certificateChainPEM: [String]?
+    var enrolled: Enrolled?
     private let logger = Logger(label: #fileID)
-    let onProvisioned: @Sendable (String, Agent.Provisioned, [String]) async throws -> Void
+    let onProvisioned: @Sendable (_ enrolled: Enrolled) async throws -> Void
 
     public init(
         privateKey: Certificate.PrivateKey,
-        deviceId: String,
         onProvisioned:
-            @escaping @Sendable (String, Agent.Provisioned, [String]) async throws -> Void
+            @escaping @Sendable (_ enrolled: Enrolled) async throws -> Void
     ) {
         self.privateKey = privateKey
-        self.deviceId = deviceId
-        self.certificateChainPEM = nil
+        self.enrolled = nil
         self.onProvisioned = onProvisioned
     }
 
     public init(
         privateKey: Certificate.PrivateKey,
-        deviceId: String,
-        certificateChainPEM: [String]
+        enrolled: Enrolled
     ) {
         self.privateKey = privateKey
-        self.deviceId = deviceId
-        self.certificateChainPEM = certificateChainPEM
-        self.onProvisioned = { _, _, _ in
+        self.enrolled = enrolled
+        self.onProvisioned = { _ in
             throw ProvisioningError.alreadyProvisioned
+        }
+    }
+
+    func isProvisioned(request: Wendy_Agent_Services_V1_IsProvisionedRequest, context: ServerContext) async throws -> Wendy_Agent_Services_V1_IsProvisionedResponse {
+        if let enrolled {
+            return .with {
+                $0.provisioned = .with {
+                    $0.cloudHost = enrolled.cloudHost
+                    $0.organizationID = enrolled.organizationId
+                    $0.assetID = enrolled.assetId
+                }
+            }
+        }
+
+        return .with {
+            $0.notProvisioned = .init()
         }
     }
 
@@ -55,7 +66,7 @@ actor WendyProvisioningService: Wendy_Agent_Services_V1_WendyProvisioningService
         request: Wendy_Agent_Services_V1_StartProvisioningRequest,
         context: GRPCCore.ServerContext
     ) async throws -> Wendy_Agent_Services_V1_StartProvisioningResponse {
-        guard self.certificateChainPEM == nil else {
+        guard self.enrolled == nil else {
             logger.warning("Agent is already provisioned")
             throw RPCError(code: .permissionDenied, message: "Agent is already provisioned")
         }
@@ -181,20 +192,7 @@ actor WendyProvisioningService: Wendy_Agent_Services_V1_WendyProvisioningService
                 throw error
             }
 
-            let provisioned: Agent.Provisioned
-            do {
-                provisioned = try unprovisionedAgent.receiveSignedCertificate(cert)
-            } catch {
-                logger.error(
-                    "Failed to receive signed certificate",
-                    metadata: [
-                        "error": .stringConvertible(error.localizedDescription)
-                    ]
-                )
-                throw error
-            }
-
-            guard self.certificateChainPEM == nil else {
+            guard self.enrolled == nil else {
                 self.logger.warning("Agent is already provisioned")
                 throw ProvisioningError.alreadyProvisioned
             }
@@ -208,8 +206,14 @@ actor WendyProvisioningService: Wendy_Agent_Services_V1_WendyProvisioningService
                     return try Certificate(pemDocument: pem)
                 }
                 let pems = try certificateChain.map { try $0.serializeAsPEM().pemString }
-                try await self.onProvisioned(request.cloudHost, provisioned, pems)
-                self.setCertificateChain(pems)
+                let enrolled = Enrolled(
+                    cloudHost: request.cloudHost,
+                    certificateChainPEM: pems,
+                    organizationId: request.organizationID,
+                    assetId: request.assetID
+                )
+                try await self.onProvisioned(enrolled)
+                self.setEnrolled(enrolled)
             } catch {
                 logger.error(
                     "Failed to set certificate chain",
@@ -224,7 +228,7 @@ actor WendyProvisioningService: Wendy_Agent_Services_V1_WendyProvisioningService
         }
     }
 
-    private func setCertificateChain(_ certificateChain: [String]) {
-        self.certificateChainPEM = certificateChain
+    private func setEnrolled(_ enrolled: Enrolled) {
+        self.enrolled = enrolled
     }
 }

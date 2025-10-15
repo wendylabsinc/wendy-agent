@@ -3,7 +3,9 @@ import GRPCNIOTransportHTTP2
 import Logging
 import NIOCore
 import Noora
+import NIOSSL
 import WendyCloudGRPC
+import WendyAgentGRPC
 
 typealias GRPCTransport = HTTP2ClientTransport.Posix
 
@@ -48,39 +50,53 @@ struct CloudGRPCClient {
 }
 
 func withCloudGRPCClient<R: Sendable>(
+    auth: Config.Auth,
+    _ body: @escaping @Sendable (CloudGRPCClient) async throws -> R
+) async throws -> R {
+    let endpoint = AgentConnectionOptions.Endpoint(
+        host: auth.cloudGRPC,
+        port: 50052
+    )
+    guard let cert = auth.certificates.first else {
+        throw RPCError(code: .aborted, message: "No certificate found")
+    }
+
+    return try await withGRPCClient(
+        endpoint,
+        security: .mTLS(
+            certificateChain: cert.certificateChainPEM.map { cert in
+                return TLSConfig.CertificateSource.bytes(Array(cert.utf8), format: .pem)
+            },
+            privateKey: .bytes(Array(cert.privateKeyPEM.utf8), format: .pem)
+        ) { tls in
+            #if DEBUG
+            tls.serverCertificateVerification = .noVerification
+            #endif
+        }
+    ) { client in
+        let client = CloudGRPCClient(
+            grpc: client,
+            cloudHost: auth.cloudGRPC,
+            metadata: Metadata()
+        )
+        return try await body(client)
+    }
+}
+
+func withCloudGRPCClient<R: Sendable>(
     title: TerminalText,
     _ body: @escaping @Sendable (CloudGRPCClient) async throws -> R
 ) async throws -> R {
     return try await withAuth(title: title) { auth -> R in
-        let endpoint = AgentConnectionOptions.Endpoint(
-            host: auth.cloudGRPC,
-            port: 50052
-        )
-        guard let cert = auth.certificates.first else {
-            throw RPCError(code: .aborted, message: "No certificate found")
-        }
-
-        return try await withGRPCClient(
-            endpoint,
-            security: .mTLS(
-                certificateChain: cert.certificateChainPEM.map { cert in
-                    return TLSConfig.CertificateSource.bytes(Array(cert.utf8), format: .pem)
-                },
-                privateKey: .bytes(Array(cert.privateKeyPEM.utf8), format: .pem)
-            ) { tls in
-                #if DEBUG
-                tls.serverCertificateVerification = .noVerification
-                #endif
-            }
-        ) { client in
-            let client = CloudGRPCClient(
-                grpc: client,
-                cloudHost: auth.cloudGRPC,
-                metadata: Metadata()
-            )
+        return try await withCloudGRPCClient(auth: auth) { client in
             return try await body(client)
         }
     }
+}
+
+fileprivate enum ProvisioningResult<R: Sendable>: Sendable {
+    case notProvisioned(R)
+    case retryWithProvisioned(assetId: Int32, organizationId: Int32)
 }
 
 func withGRPCClient<R: Sendable>(
@@ -92,7 +108,63 @@ func withGRPCClient<R: Sendable>(
     let endpoint = try await connectionOptions.read(title: title)
 
     do {
-        return try await withGRPCClient(endpoint, security: .plaintext, body)
+        let result = try await withGRPCClient(endpoint, security: .plaintext) { client -> ProvisioningResult<R> in
+            let provisioningAPI = Wendy_Agent_Services_V1_WendyProvisioningService.Client(wrapping: client)
+            let response = try await provisioningAPI.isProvisioned(.init())
+            switch response.response {
+            case .notProvisioned:
+                return .notProvisioned(try await body(client))
+            case .provisioned, .none:
+                return .retryWithProvisioned(
+                    assetId: response.provisioned.assetID,
+                    organizationId: response.provisioned.organizationID
+                )
+            }
+        }
+
+        switch result {
+        case .notProvisioned(let result):
+            return result
+        case .retryWithProvisioned(let assetId, let organizationId):
+            return try await withCertificates(
+                title: title,
+                forOrganizationId: organizationId
+            ) { certificate in
+                var endpoint = endpoint
+                endpoint.port += 1
+                return try await withGRPCClient(
+                    endpoint,
+                    security: .mTLS(
+                        certificateChain: certificate.certificateChainPEM.map { cert in
+                            return TLSConfig.CertificateSource.bytes(Array(cert.utf8), format: .pem)
+                        },
+                        privateKey: .bytes(
+                            Array(certificate.privateKeyPEM.utf8),
+                            format: .pem
+                        )
+                    ) { tls in
+                        tls.serverCertificateVerification = .noHostnameVerification
+                        tls.customVerificationCallback = { certs, promise in
+                            guard
+                                let cert = certs.first,
+                                cert._subjectAlternativeNames().contains(where: { name in
+                                    name.contents.contains("urn:wendy:org:\(organizationId)".utf8) &&
+                                    name.contents.contains("urn:wendy:org:\(organizationId):asset:\(assetId)".utf8)
+                                })
+                            else {
+                                promise.succeed(.failed)
+                                return
+                            }
+
+                            promise.succeed(.certificateVerified(.init(
+                                NIOSSL.ValidatedCertificateChain(certs)
+                            )))
+                        }
+                    },
+                    body
+                )
+            }
+        }
     } catch let error as RPCError where error.code == .unavailable {
         logger.warning(
             "Could not connect to host",

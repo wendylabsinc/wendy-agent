@@ -1,4 +1,5 @@
 import ArgumentParser
+import NIOSSL
 import Crypto
 import Foundation
 import GRPCCore
@@ -37,31 +38,52 @@ struct WendyAgent: AsyncParsableCommand {
         let (signal, continuation) = AsyncStream<Void>.makeStream()
 
         let provisioning: WendyProvisioningService
+        let mTLS: HTTP2ServerTransport.Posix.TransportSecurity?
         let config: any AgentConfigService = try await {
             try await FileSystemAgentConfigService(directory: FilePath(configDir))
         }()
 
-        if let certificateChain = await config.certificateChainPEM,
-            let cloudHost = await config.cloudHost
-        {
+        if let enrolled = await config.enrolled {
             provisioning = await WendyProvisioningService(
                 privateKey: config.privateKey,
-                deviceId: config.deviceId,
-                certificateChainPEM: certificateChain
+                enrolled: enrolled
             )
+            mTLS = try await .mTLS(
+                certificateChain: enrolled.certificateChainPEM.map { cert in
+                    return TLSConfig.CertificateSource.bytes(Array(cert.utf8), format: .pem)
+                },
+                privateKey: .bytes(Array(config.privateKey.serializeAsPEM().pemString.utf8), format: .pem)
+            ) { tls in
+                tls.clientCertificateVerification = .noHostnameVerification
+                tls.customVerificationCallback = { certs, promise in
+                    guard
+                        let cert = certs.first,
+                        cert._subjectAlternativeNames().contains(where: { name in
+                            name.contents.contains("urn:wendy:org:\(enrolled.organizationId)".utf8)
+                        })
+                    else {
+                        promise.succeed(.failed)
+                        return
+                    }
+
+                    promise.succeed(.certificateVerified(.init(
+                        NIOSSL.ValidatedCertificateChain(certs)
+                    )))
+                }
+            }
 
             do {
                 logger.info("Getting certificate metadata", metadata: [
-                    "cloudHost": "\(cloudHost)"
+                    "cloudHost": "\(enrolled.cloudHost)"
                 ])
                 try await withGRPCClient(
                     transport: HTTP2ClientTransport.Posix(
                         target: ResolvableTargets.DNS(
-                            host: cloudHost,
+                            host: enrolled.cloudHost,
                             port: 50052
                         ),
                         transportSecurity: .mTLS(
-                            certificateChain: certificateChain.map { cert in
+                            certificateChain: enrolled.certificateChainPEM.map { cert in
                                 return TLSConfig.CertificateSource.bytes(Array(cert.utf8), format: .pem)
                             },
                             privateKey: .bytes(
@@ -97,21 +119,20 @@ struct WendyAgent: AsyncParsableCommand {
             }
         } else {
             logger.notice("Agent requires provisioning")
+            mTLS = nil
             provisioning = await WendyProvisioningService(
-                privateKey: config.privateKey,
-                deviceId: config.deviceId
-            ) { cloudHost, provisionedDevice, certificateChain in
+                privateKey: config.privateKey
+            ) { enrolled in
                 // TODO: Save to disk and restart server
                 try await config.provisionCertificateChain(
-                    certificateChain,
-                    cloudHost: cloudHost
+                    enrolled: enrolled
                 )
                 logger.notice("Provisioning complete. Restarting server")
                 continuation.yield()
             }
         }
 
-        let services: [any GRPCCore.RegistrableRPCService] = [
+        let authenticatedServices: [any GRPCCore.RegistrableRPCService] = [
             WendyContainerService(),
             WendyAgentService(shouldRestart: {
                 print("Shutting down server")
@@ -120,37 +141,59 @@ struct WendyAgent: AsyncParsableCommand {
             provisioning,
         ]
 
-        let serverIPv4 = GRPCServer(
-            transport: GRPCNIOTransportHTTP2.HTTP2ServerTransport.Posix(
-                address: .ipv4(host: "0.0.0.0", port: port),
-                transportSecurity: .plaintext,
-                config: .defaults
-            ),
-            services: services
-        )
+        let unauthenticatedServices: [any GRPCCore.RegistrableRPCService] = [
+            provisioning,
+        ]
 
-        let serverIPv6 = GRPCServer(
-            transport: GRPCNIOTransportHTTP2.HTTP2ServerTransport.Posix(
-                address: .ipv6(host: "::", port: port),
-                transportSecurity: .plaintext,
-                config: .defaults
+        let plaintextServices = mTLS == nil ? authenticatedServices : unauthenticatedServices
+        
+        var servers = [GRPCServer<HTTP2ServerTransport.Posix>]()
+
+        if let mTLS {
+            servers.append(GRPCServer(
+                transport: HTTP2ServerTransport.Posix(
+                    address: .ipv4(host: "0.0.0.0", port: port + 1),
+                    transportSecurity: mTLS
+                ),
+                services: authenticatedServices
+            ))
+            servers.append(GRPCServer(
+                transport: HTTP2ServerTransport.Posix(
+                    address: .ipv6(host: "::", port: port + 1),
+                    transportSecurity: mTLS
+                ),
+                services: authenticatedServices
+            ))
+        }
+
+        servers.append(GRPCServer(
+            transport: HTTP2ServerTransport.Posix(
+                address: .ipv4(host: "0.0.0.0", port: port),
+                transportSecurity: .plaintext
             ),
-            services: services
-        )
+            services: plaintextServices
+        ))
+
+        servers.append(GRPCServer(
+            transport: HTTP2ServerTransport.Posix(
+                address: .ipv6(host: "::", port: port),
+                transportSecurity: .plaintext
+            ),
+            services: plaintextServices
+        ))
 
         try await withThrowingTaskGroup(of: Void.self) { taskGroup in
-            taskGroup.addTask {
-                try await serverIPv4.serve()
-                continuation.finish()
-            }
-            taskGroup.addTask {
-                try await serverIPv6.serve()
-                continuation.finish()
+            for server in servers {
+                taskGroup.addTask {
+                    try await server.serve()
+                    continuation.finish()
+                }
             }
 
             defer {
-                serverIPv4.beginGracefulShutdown()
-                serverIPv6.beginGracefulShutdown()
+                for server in servers {
+                    server.beginGracefulShutdown()
+                }
                 taskGroup.cancelAll()
             }
 
