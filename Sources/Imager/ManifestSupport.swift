@@ -79,8 +79,8 @@ public class ManifestManager: ManifestManaging {
             throw ManifestError.httpFailure(response.status.code)
         }
 
-        // Collect response body
-        let body = try await response.body.collect(upTo: 10 * 1024 * 1024)  // 10MB limit for manifests
+        // Collect response body (10MB limit)
+        let body = try await response.body.collect(upTo: 10 * 1024 * 1024)
         return Data(buffer: body)
     }
 
