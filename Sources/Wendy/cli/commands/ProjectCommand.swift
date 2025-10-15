@@ -248,6 +248,8 @@ struct AddCommand: ModifyProjectCommand {
                 )
             case .video:
                 newEntitlement = .video(VideoEntitlements())
+            case .audio:
+                newEntitlement = .audio
             }
         }
 
