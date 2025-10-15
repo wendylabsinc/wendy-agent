@@ -31,6 +31,8 @@ public struct Wendy_Agent_Services_V1_StartProvisioningRequest: Sendable {
 
   public var cloudHost: String = String()
 
+  public var assetID: Int32 = 0
+
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public init() {}
@@ -52,7 +54,7 @@ fileprivate let _protobuf_package = "wendy.agent.services.v1"
 
 extension Wendy_Agent_Services_V1_StartProvisioningRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".StartProvisioningRequest"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}organization_id\0\u{3}enrollment_token\0\u{3}cloud_host\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}organization_id\0\u{3}enrollment_token\0\u{3}cloud_host\0\u{3}asset_id\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -63,6 +65,7 @@ extension Wendy_Agent_Services_V1_StartProvisioningRequest: SwiftProtobuf.Messag
       case 1: try { try decoder.decodeSingularInt32Field(value: &self.organizationID) }()
       case 2: try { try decoder.decodeSingularStringField(value: &self.enrollmentToken) }()
       case 3: try { try decoder.decodeSingularStringField(value: &self.cloudHost) }()
+      case 4: try { try decoder.decodeSingularInt32Field(value: &self.assetID) }()
       default: break
       }
     }
@@ -78,6 +81,9 @@ extension Wendy_Agent_Services_V1_StartProvisioningRequest: SwiftProtobuf.Messag
     if !self.cloudHost.isEmpty {
       try visitor.visitSingularStringField(value: self.cloudHost, fieldNumber: 3)
     }
+    if self.assetID != 0 {
+      try visitor.visitSingularInt32Field(value: self.assetID, fieldNumber: 4)
+    }
     try unknownFields.traverse(visitor: &visitor)
   }
 
@@ -85,6 +91,7 @@ extension Wendy_Agent_Services_V1_StartProvisioningRequest: SwiftProtobuf.Messag
     if lhs.organizationID != rhs.organizationID {return false}
     if lhs.enrollmentToken != rhs.enrollmentToken {return false}
     if lhs.cloudHost != rhs.cloudHost {return false}
+    if lhs.assetID != rhs.assetID {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }

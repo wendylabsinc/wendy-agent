@@ -22,30 +22,30 @@ actor WendyProvisioningService: Wendy_Agent_Services_V1_WendyProvisioningService
 {
     let privateKey: Certificate.PrivateKey
     let deviceId: String
-    var certificateChain: [Certificate]?
+    var certificateChainPEM: [String]?
     private let logger = Logger(label: #fileID)
-    let onProvisioned: @Sendable (String, Agent.Provisioned, [Certificate]) async throws -> Void
+    let onProvisioned: @Sendable (String, Agent.Provisioned, [String]) async throws -> Void
 
     public init(
         privateKey: Certificate.PrivateKey,
         deviceId: String,
         onProvisioned:
-            @escaping @Sendable (String, Agent.Provisioned, [Certificate]) async throws -> Void
+            @escaping @Sendable (String, Agent.Provisioned, [String]) async throws -> Void
     ) {
         self.privateKey = privateKey
         self.deviceId = deviceId
-        self.certificateChain = nil
+        self.certificateChainPEM = nil
         self.onProvisioned = onProvisioned
     }
 
     public init(
         privateKey: Certificate.PrivateKey,
         deviceId: String,
-        certificateChain: [Certificate]
+        certificateChainPEM: [String]
     ) {
         self.privateKey = privateKey
         self.deviceId = deviceId
-        self.certificateChain = certificateChain
+        self.certificateChainPEM = certificateChainPEM
         self.onProvisioned = { _, _, _ in
             throw ProvisioningError.alreadyProvisioned
         }
@@ -55,13 +55,13 @@ actor WendyProvisioningService: Wendy_Agent_Services_V1_WendyProvisioningService
         request: Wendy_Agent_Services_V1_StartProvisioningRequest,
         context: GRPCCore.ServerContext
     ) async throws -> Wendy_Agent_Services_V1_StartProvisioningResponse {
-        guard self.certificateChain == nil else {
+        guard self.certificateChainPEM == nil else {
             logger.warning("Agent is already provisioned")
             throw RPCError(code: .permissionDenied, message: "Agent is already provisioned")
         }
 
         let transport = try HTTP2ClientTransport.Posix(
-            target: ResolvableTargets.DNS(
+            target: .dns(
                 host: request.cloudHost,
                 port: 50051
             ),
@@ -73,68 +73,88 @@ actor WendyProvisioningService: Wendy_Agent_Services_V1_WendyProvisioningService
             metadata: [
                 "cloudHost": "\(request.cloudHost)",
                 "organizationID": "\(request.organizationID)",
-                "deviceID": "\(self.deviceId)",
+                "assetID": "\(request.assetID)",
             ]
         )
+        let name: DistinguishedName
+        do {
+            name = try DistinguishedName {
+                CommonName("sh")
+                CommonName("wendy")
+                CommonName(String(request.organizationID))
+                CommonName(String(request.assetID))
+            }
+        } catch {
+            logger.error(
+                "Failed to create distinguished name",
+                metadata: [
+                    "error": .stringConvertible(error.localizedDescription)
+                ]
+            )
+            throw error
+        }
+
+        let unprovisionedAgent: Agent.Unprovisioned
+
+        do {
+            unprovisionedAgent = try Agent.Unprovisioned(
+                privateKey: self.privateKey,
+                name: name,
+                organizationId: request.organizationID,
+                assetId: request.assetID
+            )
+        } catch {
+            logger.error(
+                "Failed to create unprovisioned agent",
+                metadata: [
+                    "error": .stringConvertible(error.localizedDescription)
+                ]
+            )
+            throw error
+        }
+
+        let csr: String
+        do {
+            csr = try unprovisionedAgent.csr.serializeAsPEM().pemString
+        } catch {
+            logger.error(
+                "Failed to serialize CSR",
+                metadata: [
+                    "error": .stringConvertible(error.localizedDescription)
+                ]
+            )
+            throw error
+        }
 
         return try await withGRPCClient(
             transport: transport
         ) { cloudClient in
-            let certs = Wendycloud_V1_CertificateService.Client(wrapping: cloudClient)
-            let name: DistinguishedName
-            do {
-                name = try DistinguishedName {
-                    CommonName("sh")
-                    CommonName("wendy")
-                    CommonName(String(request.organizationID))
-                    CommonName(self.deviceId)
-                }
-            } catch {
-                logger.error(
-                    "Failed to create distinguished name",
-                    metadata: [
-                        "error": .stringConvertible(error.localizedDescription)
-                    ]
-                )
-                throw error
-            }
-
-            let unprovisionedAgent: Agent.Unprovisioned
-
-            do {
-                unprovisionedAgent = try Agent.Unprovisioned(
-                    privateKey: self.privateKey,
-                    name: name
-                )
-            } catch {
-                logger.error(
-                    "Failed to create unprovisioned agent",
-                    metadata: [
-                        "error": .stringConvertible(error.localizedDescription)
-                    ]
-                )
-                throw error
-            }
-
-            let csr: String
-            do {
-                csr = try unprovisionedAgent.csr.serializeAsPEM().pemString
-            } catch {
-                logger.error(
-                    "Failed to serialize CSR",
-                    metadata: [
-                        "error": .stringConvertible(error.localizedDescription)
-                    ]
-                )
-                throw error
-            }
-
-            let response = try await certs.issueCertificate(
-                .with {
-                    $0.pemCsr = csr
-                    $0.enrollmentToken = request.enrollmentToken
-                }
+            logger.info(
+                "Connected to cloud",
+                metadata: [
+                    "cloudHost": "\(request.cloudHost)"
+                ]
             )
+            let certs = Wendycloud_V1_CertificateService.Client(wrapping: cloudClient)
+            let response: Wendycloud_V1_IssueCertificateResponse
+            
+            do {
+                logger.info("Requesting certificate")
+                response = try await certs.issueCertificate(
+                    .with {
+                        $0.enrollmentToken = request.enrollmentToken
+                        $0.pemCsr = csr
+                    }
+                )
+            } catch let error as RPCError {
+                logger.error(
+                    "Failed to issue certificate",
+                    metadata: [
+                        "error": .stringConvertible(error.message)
+                    ]
+                )
+                throw error
+            }
 
             if response.hasError {
                 logger.error(
@@ -174,26 +194,37 @@ actor WendyProvisioningService: Wendy_Agent_Services_V1_WendyProvisioningService
                 throw error
             }
 
-            guard self.certificateChain == nil else {
+            guard self.certificateChainPEM == nil else {
                 self.logger.warning("Agent is already provisioned")
                 throw ProvisioningError.alreadyProvisioned
             }
 
-            let pems = try PEMDocument.parseMultiple(
-                pemString: response.certificate.pemCertificateChain
-            )
-            let certChain = try pems.map { pem in
-                return try Certificate(pemDocument: pem)
+            do {
+                let cert = try Certificate(pemEncoded: response.certificate.pemCertificate)
+                let certificateChainPEM = try PEMDocument.parseMultiple(
+                    pemString: response.certificate.pemCertificateChain
+                )
+                let certificateChain = try [cert] + certificateChainPEM.map { pem in
+                    return try Certificate(pemDocument: pem)
+                }
+                let pems = try certificateChain.map { try $0.serializeAsPEM().pemString }
+                try await self.onProvisioned(request.cloudHost, provisioned, pems)
+                self.setCertificateChain(pems)
+            } catch {
+                logger.error(
+                    "Failed to set certificate chain",
+                    metadata: [
+                        "error": .stringConvertible(error.localizedDescription)
+                    ]
+                )
+                throw error
             }
-
-            try await self.onProvisioned(request.cloudHost, provisioned, certChain)
-            self.setCertificateChain(certChain)
 
             return Wendy_Agent_Services_V1_StartProvisioningResponse()
         }
     }
 
-    private func setCertificateChain(_ certificateChain: [Certificate]) {
-        self.certificateChain = certificateChain
+    private func setCertificateChain(_ certificateChain: [String]) {
+        self.certificateChainPEM = certificateChain
     }
 }

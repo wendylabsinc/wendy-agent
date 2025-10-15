@@ -165,7 +165,7 @@ message GetCaBundleResponse {
 // This DOES use the Authorization: Bearer token since it's generated primarily by a user logged into the dashboard
 message CreateAssetEnrollmentTokenRequest {
   int32 organization_id = 1;
-  int32 asset_id = 2;
+  string name = 2;
   // Lifetime in seconds (default server policy, e.g., 600s)
   int32 ttl_seconds = 3;
 }

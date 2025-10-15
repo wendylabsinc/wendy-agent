@@ -29,7 +29,7 @@ struct LoginCommand: AsyncParsableCommand {
     var cloudDashboard = "https://cloud.wendy.sh"
 
     @Option
-    var cloudGRPC = "https://cloud.wendy.sh"
+    var cloudGRPC = "cloud.wendy.sh"
 
     func run() async throws {
         try await loginFlow(

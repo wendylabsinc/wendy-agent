@@ -161,13 +161,14 @@ func setupConfig(
             privateKey: privateKey,
             attributes: CertificateSigningRequest.Attributes([
                 CertificateSigningRequest.Attribute(
-                    ExtensionRequest(
+                    ExtensionRequest(   
                         extensions: .init {
-                            SubjectAlternativeNames([
+                            Critical(SubjectAlternativeNames([
+                                .uniformResourceIdentifier("urn:wendy:org:\(organizationId)"),
                                 .uniformResourceIdentifier(
                                     "urn:wendy:org:\(organizationId):user:\(userId)"
                                 )
-                            ])
+                            ]))
                         }
                     )
                 )
@@ -186,10 +187,11 @@ func setupConfig(
             throw RPCError(code: .aborted, message: issued.error.message)
         }
 
+        let cert = try Certificate(pemEncoded: issued.certificate.pemCertificate)
         let certificateChainPEM = try PEMDocument.parseMultiple(
             pemString: issued.certificate.pemCertificateChain
         )
-        let certificateChain = try certificateChainPEM.map { pem in
+        let certificateChain = try [cert] + certificateChainPEM.map { pem in
             return try Certificate(pemDocument: pem)
         }
 
@@ -249,7 +251,7 @@ func loginFlow<R: Sendable>(
         }
     }
 
-    let server = Application(
+    var server = Application(
         router: router,
         configuration: .init(
             address: .hostname("127.0.0.1", port: 0)
@@ -298,8 +300,10 @@ func loginFlow<R: Sendable>(
         }
     )
 
+    server.logger.logLevel = .critical
+
     return try await withThrowingTaskGroup { group in
-        group.addTask {
+        group.addTask { [server] in
             try await server.runService()
         }
 

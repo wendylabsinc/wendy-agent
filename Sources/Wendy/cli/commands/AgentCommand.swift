@@ -177,10 +177,17 @@ struct AgentCommand: AsyncParsableCommand {
                     options: orgs
                 )
 
+                let name = Noora().textPrompt(
+                    title: "Name your device",
+                    prompt: "Name",
+                    collapseOnAnswer: false
+                )
+
                 let certsAPI = Wendycloud_V1_CertificateService.Client(wrapping: cloudClient.grpc)
                 let tokenResponse = try await certsAPI.createAssetEnrollmentToken(
                     .with {
                         $0.organizationID = org.id
+                        $0.name = name
                     },
                     metadata: cloudClient.metadata
                 )
@@ -195,8 +202,9 @@ struct AgentCommand: AsyncParsableCommand {
                     let response = try await agent.startProvisioning(
                         .with {
                             $0.organizationID = org.id
-                            $0.cloudHost = cloudClient.cloudHost
+                            $0.cloudHost = "192.168.0.102" //cloudClient.cloudHost
                             $0.enrollmentToken = tokenResponse.enrollmentToken
+                            $0.assetID = tokenResponse.assetID
                         }
                     )
                 }

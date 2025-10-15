@@ -10,6 +10,7 @@ message StartProvisioningRequest {
     int32 organization_id = 1;
     string enrollment_token = 2;
     string cloud_host = 3;
+    int32 asset_id = 4;
 }
 
 message StartProvisioningResponse {

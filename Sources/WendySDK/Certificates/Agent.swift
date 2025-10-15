@@ -20,14 +20,29 @@ public struct Agent {
 
         public init(
             privateKey: Certificate.PrivateKey,
-            name: DistinguishedName
+            name: DistinguishedName,
+            organizationId: Int32,
+            assetId: Int32
         ) throws {
             self.privateKey = privateKey
             self.csr = try CertificateSigningRequest(
                 version: .v1,
                 subject: name,
                 privateKey: privateKey,
-                attributes: CertificateSigningRequest.Attributes()
+                attributes: CertificateSigningRequest.Attributes([
+                    CertificateSigningRequest.Attribute(
+                        ExtensionRequest(
+                            extensions: .init {
+                                Critical(SubjectAlternativeNames([
+                                    .uniformResourceIdentifier("urn:wendy:org:\(organizationId)"),
+                                    .uniformResourceIdentifier(
+                                        "urn:wendy:org:\(organizationId):asset:\(assetId)"
+                                    )
+                                ]))
+                            }
+                        )
+                    )
+                ])
             )
         }
 

@@ -589,7 +589,7 @@ public struct Wendycloud_V1_CreateAssetEnrollmentTokenRequest: Sendable {
 
   public var organizationID: Int32 = 0
 
-  public var assetID: Int32 = 0
+  public var name: String = String()
 
   /// Lifetime in seconds (default server policy, e.g., 600s)
   public var ttlSeconds: Int32 = 0
@@ -1333,7 +1333,7 @@ extension Wendycloud_V1_GetCaBundleResponse: SwiftProtobuf.Message, SwiftProtobu
 
 extension Wendycloud_V1_CreateAssetEnrollmentTokenRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".CreateAssetEnrollmentTokenRequest"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}organization_id\0\u{3}asset_id\0\u{3}ttl_seconds\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}organization_id\0\u{1}name\0\u{3}ttl_seconds\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -1342,7 +1342,7 @@ extension Wendycloud_V1_CreateAssetEnrollmentTokenRequest: SwiftProtobuf.Message
       // enabled. https://github.com/apple/swift-protobuf/issues/1034
       switch fieldNumber {
       case 1: try { try decoder.decodeSingularInt32Field(value: &self.organizationID) }()
-      case 2: try { try decoder.decodeSingularInt32Field(value: &self.assetID) }()
+      case 2: try { try decoder.decodeSingularStringField(value: &self.name) }()
       case 3: try { try decoder.decodeSingularInt32Field(value: &self.ttlSeconds) }()
       default: break
       }
@@ -1353,8 +1353,8 @@ extension Wendycloud_V1_CreateAssetEnrollmentTokenRequest: SwiftProtobuf.Message
     if self.organizationID != 0 {
       try visitor.visitSingularInt32Field(value: self.organizationID, fieldNumber: 1)
     }
-    if self.assetID != 0 {
-      try visitor.visitSingularInt32Field(value: self.assetID, fieldNumber: 2)
+    if !self.name.isEmpty {
+      try visitor.visitSingularStringField(value: self.name, fieldNumber: 2)
     }
     if self.ttlSeconds != 0 {
       try visitor.visitSingularInt32Field(value: self.ttlSeconds, fieldNumber: 3)
@@ -1364,7 +1364,7 @@ extension Wendycloud_V1_CreateAssetEnrollmentTokenRequest: SwiftProtobuf.Message
 
   public static func ==(lhs: Wendycloud_V1_CreateAssetEnrollmentTokenRequest, rhs: Wendycloud_V1_CreateAssetEnrollmentTokenRequest) -> Bool {
     if lhs.organizationID != rhs.organizationID {return false}
-    if lhs.assetID != rhs.assetID {return false}
+    if lhs.name != rhs.name {return false}
     if lhs.ttlSeconds != rhs.ttlSeconds {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true

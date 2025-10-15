@@ -41,38 +41,39 @@ struct WendyAgent: AsyncParsableCommand {
             try await FileSystemAgentConfigService(directory: FilePath(configDir))
         }()
 
-        if let certificateChain = try? await config.certificateChain,
+        if let certificateChain = await config.certificateChainPEM,
             let cloudHost = await config.cloudHost
         {
             provisioning = await WendyProvisioningService(
                 privateKey: config.privateKey,
                 deviceId: config.deviceId,
-                certificateChain: certificateChain
+                certificateChainPEM: certificateChain
             )
 
             do {
-                print(cloudHost)
-                print(certificateChain)
+                logger.info("Getting certificate metadata", metadata: [
+                    "cloudHost": "\(cloudHost)"
+                ])
                 try await withGRPCClient(
                     transport: HTTP2ClientTransport.Posix(
                         target: ResolvableTargets.DNS(
                             host: cloudHost,
-                            port: 50051
+                            port: 50052
                         ),
-                        transportSecurity:
-                            // .plaintext
-                            .mTLS(
-                                certificateChain: certificateChain.map { cert in
-                                    return .bytes(try cert.serializeAsPEM().derBytes, format: .der)
-                                },
-                                privateKey: .bytes(
-                                    config.privateKey.serializeAsPEM().derBytes,
-                                    format: .der
-                                )
+                        transportSecurity: .mTLS(
+                            certificateChain: certificateChain.map { cert in
+                                return TLSConfig.CertificateSource.bytes(Array(cert.utf8), format: .pem)
+                            },
+                            privateKey: .bytes(
+                                Array(config.privateKey.serializeAsPEM().pemString.utf8),
+                                format: .pem
                             )
-                        // .tls { config in
-                        //     config.serverCertificateVerification = .noVerification
-                        // }
+                        ) { tls in
+                            #if DEBUG
+                            tls.serverCertificateVerification = .noVerification
+                            #endif
+                        },
+                        resolverRegistry: .defaults
                     )
                 ) { client in
                     let certs = Wendycloud_V1_CertificateService.Client(wrapping: client)
@@ -83,7 +84,7 @@ struct WendyAgent: AsyncParsableCommand {
                 logger.error(
                     "Failed to get asset id and organization id",
                     metadata: [
-                        "error": "\(error.code) \(error.message) \(error.metadata)"
+                        "error": "\(error.code) \(error.message) \(error)"
                     ]
                 )
             } catch {

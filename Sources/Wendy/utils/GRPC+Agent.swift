@@ -12,13 +12,11 @@ func withGRPCClient<R: Sendable>(
     security: GRPCTransport.TransportSecurity,
     _ body: @escaping @Sendable (GRPCClient<GRPCTransport>) async throws -> R
 ) async throws -> R {
-    let target = ResolvableTargets.DNS(
-        host: endpoint.host,
-        port: endpoint.port
-    )
-
     let transport = try GRPCTransport(
-        target: target,
+        target: .dns(
+            host: endpoint.host,
+            port: endpoint.port
+        ),
         transportSecurity: security
     )
 
@@ -65,12 +63,14 @@ func withCloudGRPCClient<R: Sendable>(
         return try await withGRPCClient(
             endpoint,
             security: .mTLS(
-                certificateChain: cert.certificateChainPEM.map {
-                    .bytes(Array($0.utf8), format: .pem)
+                certificateChain: cert.certificateChainPEM.map { cert in
+                    return TLSConfig.CertificateSource.bytes(Array(cert.utf8), format: .pem)
                 },
                 privateKey: .bytes(Array(cert.privateKeyPEM.utf8), format: .pem)
             ) { tls in
+                #if DEBUG
                 tls.serverCertificateVerification = .noVerification
+                #endif
             }
         ) { client in
             let client = CloudGRPCClient(

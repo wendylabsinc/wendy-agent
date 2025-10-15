@@ -29,7 +29,9 @@ private func makeAgent(agentId: String = "agent-id") throws -> Agent.Unprovision
             CommonName("org-id")
             CommonName("project-id")
             CommonName(agentId)
-        }
+        },
+        organizationId: 1,
+        assetId: 1
     )
 }
 
