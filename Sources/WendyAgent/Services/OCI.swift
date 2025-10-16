@@ -6,6 +6,64 @@ struct OCI: Codable {
     var mounts: [Mount]
     var linux: Linux
 
+    init(args: [String], env: [String], workingDir: String, appName: String) {
+        self = OCI(
+            process: .init(
+                user: .root,
+                args: args,
+                env: env,
+                cwd: workingDir.isEmpty ? "/" : workingDir
+            ),
+            root: .init(path: "rootfs", readonly: false),
+            hostname: appName,
+            mounts: [
+                .init(destination: "/proc", type: "proc", source: "proc"),
+                // Needed for TTY support (requirement for DS2)
+                .init(
+                    destination: "/dev/pts",
+                    type: "devpts",
+                    source: "devpts",
+                    options: [
+                        "nosuid", "noexec", "newinstance", "ptmxmode=0666", "mode=0620",
+                    ]
+                ),
+                .init(
+                    destination: "/dev/shm",
+                    type: "tmpfs",
+                    source: "shm",
+                    options: ["nosuid", "noexec", "nodev", "mode=1777", "size=65536k"]
+                ),
+                .init(
+                    destination: "/dev/mqueue",
+                    type: "mqueue",
+                    source: "mqueue",
+                    options: ["nosuid", "noexec", "nodev"]
+                ),
+            ],
+            linux: .init(
+                namespaces: [
+                    .init(type: "pid"),
+                    .init(type: "ipc"),
+                    .init(type: "uts"),
+                    .init(type: "mount"),
+                ],
+                networkMode: "host",
+                capabilities: .init(
+                    bounding: ["SYS_PTRACE"],
+                    effective: ["SYS_PTRACE"],
+                    inheritable: ["SYS_PTRACE"],
+                    permitted: ["SYS_PTRACE"],
+                ),
+                seccomp: Seccomp(
+                    defaultAction: "SCMP_ACT_ALLOW",
+                    architectures: ["SCMP_ARCH_AARCH64"],
+                    syscalls: []
+                ),
+                devices: []
+            )
+        )
+    }
+
     init(
         ociVersion: String = "1.0.3",
         process: Process,

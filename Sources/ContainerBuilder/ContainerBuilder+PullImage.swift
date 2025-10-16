@@ -142,8 +142,7 @@ extension ContainerImageSpec {
         env: [String] = ["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"],
         created: Date = Date(),
         architecture: String = "arm64",
-        username: String? = nil,
-        password: String? = nil
+        auth: AuthHandler = AuthHandler()
     ) async throws -> ContainerImageSpec {
         let imageRef = try ImageReference(fromString: baseImage, defaultRegistry: "docker.io")
         logger.debug("Downloading base image: \(imageRef)")
@@ -151,7 +150,6 @@ extension ContainerImageSpec {
         // Create registry client - for Docker Hub we need to use index.docker.io
         // This automatically handles the redirect for docker.io to index.docker.io
         // Always provide an AuthHandler - use provided credentials if available, or empty auth for anonymous access
-        let auth = AuthHandler(username: username, password: password)
         let client = try await RegistryClient(
             registry: imageRef.registry,
             insecure: false,

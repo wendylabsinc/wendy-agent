@@ -1,4 +1,5 @@
 import ArgumentParser
+import AsyncHTTPClient
 import NIOSSL
 import Crypto
 import Foundation
@@ -168,6 +169,20 @@ struct WendyAgent: AsyncParsableCommand {
                     try await service.run()
                 }
             }
+
+            // taskGroup.addTask {
+            //     do {
+            //         try await PullImage().pullAndRun(
+            //             image: "cloud-c7e56/agent-test/hello-python:latest",
+            //             appName: "hello-python",
+            //             labels: [:],
+            //             bearerToken: "...",
+            //             registry: "us-central1-docker.pkg.dev"
+            //         )
+            //     } catch {
+            //         logger.error("Failed to pull and run image: \(error)")
+            //     }
+            // }
 
             for try await () in signal {
                 logger.info("Received signal, restarting")

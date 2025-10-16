@@ -127,6 +127,23 @@ public struct Containerd: Sendable {
         }
     }
 
+    public func collectContent() async throws -> [Containerd_Services_Content_V1_Info] {
+        let content = Containerd_Services_Content_V1_Content.Client(wrapping: client)
+        return try await content.list(
+            request: .init(
+                message: .with { req in
+                    // No filters
+                }
+            )
+        ) { response in
+            var allItems = [Containerd_Services_Content_V1_Info]()
+            for try await items in response.messages {
+                allItems.append(contentsOf: items.info)
+            }
+            return allItems
+        }
+    }
+
     public func deleteImage(named name: String) async throws {
         let images = Containerd_Services_Images_V1_Images.Client(wrapping: client)
         _ = try await images.delete(
