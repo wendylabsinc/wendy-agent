@@ -88,6 +88,7 @@ struct RefreshCertsCommand: AsyncParsableCommand {
                 var config = try getConfig()
                 config.addAuth(auth)
                 try config.save()
+                Noora().success("Refreshed certificates")
             }
         }
     }
