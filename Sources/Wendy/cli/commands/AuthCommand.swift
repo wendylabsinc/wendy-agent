@@ -14,7 +14,7 @@ struct AuthCommand: AsyncParsableCommand {
         subcommands: [
             LoginCommand.self,
             LogoutCommand.self,
-            TestCommand.self,
+            RefreshCertsCommand.self,
         ]
     )
 }
@@ -47,17 +47,48 @@ struct LoginCommand: AsyncParsableCommand {
     }
 }
 
-struct TestCommand: AsyncParsableCommand {
+struct RefreshCertsCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
-        commandName: "test",
-        abstract: "Test the login flow"
+        commandName: "refresh-certs",
+        abstract: "Refresh the development certificates for your CLI"
     )
 
     func run() async throws {
-        try await withCloudGRPCClient(title: "Test") { client in
-            let certs = Wendycloud_V1_CertificateService.Client(wrapping: client.grpc)
-            let response = try await certs.getCertificateMetadata(.init())
-            print(response)
+        try await withAuth(title: "Refresh certificates") { auth in
+            try await withCloudGRPCClient(auth: auth) { client in
+                let certs = Wendycloud_V1_CertificateService.Client(wrapping: client.grpc)
+
+                var auth = auth
+                for (index, cert) in auth.certificates.enumerated() {
+                    let privateKey = Certificate.PrivateKey(P256.Signing.PrivateKey())
+                    let issued = try await withCSR(
+                        userId: cert.userID,
+                        forOrganizationId: cert.organizationID,
+                        privateKey: privateKey
+                    ) { csr in
+                        try await certs.refreshCertificate(.with {
+                            $0.pemCsr = try csr.serializeAsPEM().pemString
+                        })
+                    }
+                    let newCert = try Certificate(pemEncoded: issued.certificate.pemCertificate)
+                    let newCertificateChainPEM = try PEMDocument.parseMultiple(
+                        pemString: issued.certificate.pemCertificateChain
+                    )
+                    let newCertificateChain = try [newCert] + newCertificateChainPEM.map { pem in
+                        return try Certificate(pemDocument: pem)
+                    }
+                    
+                    auth.certificates[index] = try Config.Auth.Certificates(
+                        organizationID: cert.organizationID,
+                        userID: cert.userID,
+                        privateKeyPEM: privateKey.serializeAsPEM().pemString,
+                        certificateChainPEM: newCertificateChain.map { try $0.serializeAsPEM().pemString }
+                    )
+                }
+                var config = try getConfig()
+                config.addAuth(auth)
+                try config.save()
+            }
         }
     }
 }

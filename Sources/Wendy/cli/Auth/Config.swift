@@ -157,6 +157,39 @@ func withAuth<R: Sendable>(
     }
 }
 
+func withCSR<R: Sendable>(
+    userId: String,
+    forOrganizationId orgId: Int32,
+    privateKey: Certificate.PrivateKey,
+    perform: @Sendable @escaping (CertificateSigningRequest) async throws -> R
+) async throws -> R {
+    let cliId = UUID().uuidString
+    return try await perform(try CertificateSigningRequest(
+        version: .v1,
+        subject: DistinguishedName {
+            CommonName("sh")
+            CommonName("wendy")
+            CommonName(userId)
+            CommonName(cliId)
+        },
+        privateKey: privateKey,
+        attributes: CertificateSigningRequest.Attributes([
+            CertificateSigningRequest.Attribute(
+                ExtensionRequest(   
+                    extensions: .init {
+                        Critical(SubjectAlternativeNames([
+                            .uniformResourceIdentifier("urn:wendy:org:\(orgId)"),
+                            .uniformResourceIdentifier(
+                                "urn:wendy:org:\(orgId):user:\(userId)"
+                            )
+                        ]))
+                    }
+                )
+            )
+        ])
+    ))
+}
+
 func setupConfig(
     enrollmentToken: String,
     userId: String,
@@ -180,40 +213,21 @@ func setupConfig(
             metadata: [:]
         )
         let certs = Wendycloud_V1_CertificateService.Client(wrapping: client.grpc)
-        let cliId = UUID().uuidString
+        
         let privateKey = Certificate.PrivateKey(P256.Signing.PrivateKey())
-        let csr = try CertificateSigningRequest(
-            version: .v1,
-            subject: DistinguishedName {
-                CommonName("sh")
-                CommonName("wendy")
-                CommonName(userId)
-                CommonName(cliId)
-            },
-            privateKey: privateKey,
-            attributes: CertificateSigningRequest.Attributes([
-                CertificateSigningRequest.Attribute(
-                    ExtensionRequest(   
-                        extensions: .init {
-                            Critical(SubjectAlternativeNames([
-                                .uniformResourceIdentifier("urn:wendy:org:\(organizationId)"),
-                                .uniformResourceIdentifier(
-                                    "urn:wendy:org:\(organizationId):user:\(userId)"
-                                )
-                            ]))
-                        }
-                    )
-                )
-            ])
-        )
-
-        let issued = try await certs.issueCertificate(
-            .with {
-                $0.enrollmentToken = enrollmentToken
-                $0.pemCsr = try csr.serializeAsPEM().pemString
-            },
-            metadata: client.metadata
-        )
+        let issued = try await withCSR(
+            userId: userId,
+            forOrganizationId: organizationId,
+            privateKey: privateKey
+        ) { csr in
+            try await certs.issueCertificate(
+                .with {
+                    $0.enrollmentToken = enrollmentToken
+                    $0.pemCsr = try csr.serializeAsPEM().pemString
+                },
+                metadata: client.metadata
+            )
+        }
 
         if issued.hasError {
             throw RPCError(code: .aborted, message: issued.error.message)
