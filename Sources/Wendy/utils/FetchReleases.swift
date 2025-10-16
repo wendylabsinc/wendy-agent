@@ -1,11 +1,10 @@
+import AsyncHTTPClient
 import DownloadSupport
 import Foundation
 import Logging
+import NIOCore
+import NIOFoundationCompat
 import Subprocess
-
-#if canImport(FoundationNetworking)
-    import FoundationNetworking
-#endif
 
 struct Release: Decodable {
     struct Asset: Decodable {
@@ -46,18 +45,27 @@ func downloadLatestRelease() async throws -> URL {
 }
 
 func fetchReleases() async throws -> [Release] {
-    let githubReleasesURL = URL(
-        string: "https://api.github.com/repos/wendylabsinc/wendy-agent/releases"
-    )!
+    let githubReleasesURL = "https://api.github.com/repos/wendylabsinc/wendy-agent/releases"
 
     // Fetch releases JSON
     let logger = Logger(label: "sh.wendy.utils.fetchReleases")
     logger.info("Fetching all releases...")
-    let (data, response) = try await URLSession.shared.data(from: githubReleasesURL)
-    guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
-        logger.error("Failed to fetch releases: HTTP error")
+
+    let request = HTTPClientRequest(url: githubReleasesURL)
+    let response = try await HTTPClient.shared.execute(
+        request,
+        deadline: NIODeadline.now() + .seconds(60)
+    )
+
+    // Check for successful response
+    guard response.status == .ok else {
+        logger.error("Failed to fetch releases: HTTP error - status \(response.status)")
         throw ReleasesError.invalidResponse
     }
+
+    // Collect response body
+    let body = try await response.body.collect(upTo: 10 * 1024 * 1024)  // 10MB limit
+    let data = Data(buffer: body)
 
     return try JSONDecoder().decode([Release].self, from: data)
 }

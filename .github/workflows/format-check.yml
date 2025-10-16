@@ -3,7 +3,8 @@ name: Swift Format Check and Fix
 on:
   pull_request:
     branches: [main]
-
+permissions:
+  pull-requests: write 
 jobs:
   format-check:
     name: Swift Format Check
