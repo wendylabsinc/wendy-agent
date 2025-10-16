@@ -9,8 +9,8 @@ import NIO
 #endif
 
 /// Factory for creating appropriate network manager instances based on availability
-public actor NetworkManagerFactory {
-    private let logger = Logger(label: "NetworkManagerFactory")
+public actor NetworkConnectionManagerFactory {
+    private let logger = Logger(label: "NetworkConnectionManagerFactory")
     private let uid: String
     private let socketPath: String
 
@@ -140,9 +140,7 @@ public actor NetworkManagerFactory {
             // Check if NetworkManager is available first
             if await isServiceAvailable("org.freedesktop.NetworkManager") {
                 logger.info("Creating NetworkManager instance (forced)")
-                return NetworkManagerAdapter(
-                    networkManager: NetworkManager(uid: uid, socketPath: socketPath)
-                )
+                return NetworkManager(uid: uid, socketPath: socketPath)
             }
             logger.error("NetworkManager is not available, cannot use forced setting")
             throw NetworkConnectionError.managerNotAvailable
@@ -157,9 +155,7 @@ public actor NetworkManagerFactory {
             // Fall back to NetworkManager if available
             if await isServiceAvailable("org.freedesktop.NetworkManager") {
                 logger.info("ConnMan not available, falling back to NetworkManager")
-                return NetworkManagerAdapter(
-                    networkManager: NetworkManager(uid: uid, socketPath: socketPath)
-                )
+                return NetworkManager(uid: uid, socketPath: socketPath)
             }
             logger.error("No network manager available")
             throw NetworkConnectionError.managerNotAvailable
@@ -169,9 +165,7 @@ public actor NetworkManagerFactory {
             // Check if NetworkManager is available first
             if await isServiceAvailable("org.freedesktop.NetworkManager") {
                 logger.info("Creating NetworkManager instance (preferred and available)")
-                return NetworkManagerAdapter(
-                    networkManager: NetworkManager(uid: uid, socketPath: socketPath)
-                )
+                return NetworkManager(uid: uid, socketPath: socketPath)
             }
             // Fall back to ConnMan if available
             if await isServiceAvailable("net.connman") {
@@ -192,9 +186,7 @@ public actor NetworkManagerFactory {
 
             case .networkManager:
                 logger.info("Creating NetworkManager instance (auto-detected)")
-                return NetworkManagerAdapter(
-                    networkManager: NetworkManager(uid: uid, socketPath: socketPath)
-                )
+                return NetworkManager(uid: uid, socketPath: socketPath)
 
             case .none:
                 logger.error("No network manager available")

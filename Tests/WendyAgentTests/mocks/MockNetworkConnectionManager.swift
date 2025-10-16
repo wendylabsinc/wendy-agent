@@ -1,4 +1,5 @@
 import Foundation
+
 @testable import wendy_agent
 
 /// Mock implementation of NetworkConnectionManager for testing
@@ -113,15 +114,18 @@ public actor MockNetworkConnectionManager: NetworkConnectionManager {
     }
 
     public func addMockNetwork(ssid: String, signalStrength: Int8? = -50, isSecured: Bool = true) {
-        networksToReturn.append(WiFiNetwork(
-            ssid: ssid,
-            path: "/mock/network/\(ssid)",
-            signalStrength: signalStrength,
-            isSecured: isSecured
-        ))
+        networksToReturn.append(
+            WiFiNetwork(
+                ssid: ssid,
+                path: "/mock/network/\(ssid)",
+                signalStrength: signalStrength,
+                isSecured: isSecured
+            )
+        )
     }
 
-    public func setMockConnection(ssid: String, state: WiFiConnection.ConnectionState = .connected) {
+    public func setMockConnection(ssid: String, state: WiFiConnection.ConnectionState = .connected)
+    {
         connectionToReturn = WiFiConnection(
             ssid: ssid,
             connectionPath: "/mock/connection/\(ssid)",

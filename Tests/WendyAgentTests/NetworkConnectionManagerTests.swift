@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+
 @testable import wendy_agent
 
 @Suite("NetworkConnectionManager Types")
@@ -55,7 +56,7 @@ struct NetworkConnectionManagerTests {
             .connected,
             .connecting,
             .disconnected,
-            .failed
+            .failed,
         ]
 
         for state in states {

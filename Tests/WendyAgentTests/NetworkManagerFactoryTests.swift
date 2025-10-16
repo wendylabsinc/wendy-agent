@@ -1,12 +1,16 @@
 import Foundation
 import Testing
+
 @testable import wendy_agent
 
 @Suite("NetworkManagerFactory")
 struct NetworkManagerFactoryTests {
     @Test("Factory clear cache")
     func testFactoryClearCache() async {
-        let factory = NetworkManagerFactory(uid: "1000", socketPath: "/var/run/dbus/system_bus_socket")
+        let factory = NetworkManagerFactory(
+            uid: "1000",
+            socketPath: "/var/run/dbus/system_bus_socket"
+        )
 
         // Clear cache should not throw
         await factory.clearCache()
