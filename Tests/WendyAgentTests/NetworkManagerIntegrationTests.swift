@@ -118,7 +118,7 @@ struct NetworkManagerIntegrationTests {
         #expect(config.networkManagerPreference == .preferConnMan)
 
         // Test all preference mappings
-        let preferences: [NetworkManagerFactory.Preference] = [
+        let preferences: [NetworkConnectionManagerFactory.Preference] = [
             .auto,
             .preferConnMan,
             .preferNetworkManager,

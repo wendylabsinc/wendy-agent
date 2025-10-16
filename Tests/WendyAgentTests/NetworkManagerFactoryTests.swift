@@ -7,7 +7,7 @@ import Testing
 struct NetworkManagerFactoryTests {
     @Test("Factory clear cache")
     func testFactoryClearCache() async {
-        let factory = NetworkManagerFactory(
+        let factory = NetworkConnectionManagerFactory(
             uid: "1000",
             socketPath: "/var/run/dbus/system_bus_socket"
         )
@@ -21,7 +21,7 @@ struct NetworkManagerFactoryTests {
 
     @Test("Factory with invalid socket path")
     func testFactoryWithInvalidSocketPath() async {
-        let factory = NetworkManagerFactory(uid: "1000", socketPath: "/invalid/socket/path")
+        let factory = NetworkConnectionManagerFactory(uid: "1000", socketPath: "/invalid/socket/path")
 
         // Should handle invalid socket gracefully
         let detectedType = await factory.getDetectedType()
@@ -30,7 +30,7 @@ struct NetworkManagerFactoryTests {
 
     @Test("Factory preference logic - auto")
     func testFactoryPreferenceAuto() async throws {
-        let factory = NetworkManagerFactory(uid: "1000", socketPath: "/invalid/socket/path")
+        let factory = NetworkConnectionManagerFactory(uid: "1000", socketPath: "/invalid/socket/path")
 
         // With auto preference and no managers available, should throw
         await #expect(throws: NetworkConnectionError.managerNotAvailable) {
@@ -40,7 +40,7 @@ struct NetworkManagerFactoryTests {
 
     @Test("Factory preference logic - force ConnMan unavailable")
     func testFactoryForceConnManUnavailable() async throws {
-        let factory = NetworkManagerFactory(uid: "1000", socketPath: "/invalid/socket/path")
+        let factory = NetworkConnectionManagerFactory(uid: "1000", socketPath: "/invalid/socket/path")
 
         // With force ConnMan preference and ConnMan not available, should throw
         await #expect(throws: NetworkConnectionError.managerNotAvailable) {
@@ -50,7 +50,7 @@ struct NetworkManagerFactoryTests {
 
     @Test("Factory preference logic - force NetworkManager unavailable")
     func testFactoryForceNetworkManagerUnavailable() async throws {
-        let factory = NetworkManagerFactory(uid: "1000", socketPath: "/invalid/socket/path")
+        let factory = NetworkConnectionManagerFactory(uid: "1000", socketPath: "/invalid/socket/path")
 
         // With force NetworkManager preference and NetworkManager not available, should throw
         await #expect(throws: NetworkConnectionError.managerNotAvailable) {
