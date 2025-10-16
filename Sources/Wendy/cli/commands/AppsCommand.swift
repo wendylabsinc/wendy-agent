@@ -27,7 +27,7 @@ struct AppsCommand: AsyncParsableCommand {
         @OptionGroup var agentConnectionOptions: AgentConnectionOptions
 
         func run() async throws {
-            try await withGRPCClient(
+            try await withAgentGRPCClient(
                 agentConnectionOptions,
                 title: "Stopping application"
             ) { client in
@@ -51,7 +51,7 @@ struct AppsCommand: AsyncParsableCommand {
         @OptionGroup var agentConnectionOptions: AgentConnectionOptions
 
         func run() async throws {
-            try await withGRPCClient(
+            try await withAgentGRPCClient(
                 agentConnectionOptions,
                 title: "Listing applications"
             ) { client in

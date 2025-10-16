@@ -27,28 +27,6 @@ func withGRPCClient<R: Sendable>(
     }
 }
 
-struct CloudGRPCClient {
-    let grpc: GRPCClient<GRPCTransport>
-    let cloudHost: String
-    let metadata: Metadata
-
-    func listOrganizations() async throws -> [Wendycloud_V1_Organization] {
-        let orgsAPI = Wendycloud_V1_OrganizationService.Client(wrapping: grpc)
-        return try await orgsAPI.listOrganizations(
-            .with {
-                $0.limit = 25
-            },
-            metadata: metadata
-        ) { response in
-            var orgs = [Wendycloud_V1_Organization]()
-            for try await org in response.messages {
-                orgs.append(org.organization)
-            }
-            return orgs
-        }
-    }
-}
-
 func withCloudGRPCClient<R: Sendable>(
     auth: Config.Auth,
     _ body: @escaping @Sendable (CloudGRPCClient) async throws -> R
@@ -99,14 +77,23 @@ fileprivate enum ProvisioningResult<R: Sendable>: Sendable {
     case retryWithProvisioned(assetId: Int32, organizationId: Int32)
 }
 
-func withGRPCClient<R: Sendable>(
+func withAgentGRPCClient<R: Sendable>(
     _ connectionOptions: AgentConnectionOptions,
     title: TerminalText,
     _ body: @escaping @Sendable (GRPCClient<GRPCTransport>) async throws -> R
 ) async throws -> R {
-    let logger = Logger(label: "sh.wendy.grpc-client")
     let endpoint = try await connectionOptions.read(title: title)
+    return try await withAgentGRPCClient(endpoint, title: title) { client in
+        return try await body(client)
+    }
+}
 
+func withAgentGRPCClient<R: Sendable>(
+    _ endpoint: AgentConnectionOptions.Endpoint,
+    title: TerminalText,
+    _ body: @escaping @Sendable (GRPCClient<GRPCTransport>) async throws -> R
+) async throws -> R {
+    let logger = Logger(label: "sh.wendy.agent-grpc-client")
     do {
         let result = try await withGRPCClient(endpoint, security: .plaintext) { client -> ProvisioningResult<R> in
             let provisioningAPI = Wendy_Agent_Services_V1_WendyProvisioningService.Client(wrapping: client)
@@ -143,7 +130,6 @@ func withGRPCClient<R: Sendable>(
                             format: .pem
                         )
                     ) { tls in
-                        tls.serverCertificateVerification = .noHostnameVerification
                         // TODO: Re-enable once PR is merged
                         // tls.customVerificationCallback = { certs, promise in
                         //     guard
@@ -156,6 +142,7 @@ func withGRPCClient<R: Sendable>(
                         //         promise.succeed(.failed)
                         //         return
                         //     }
+                        tls.serverCertificateVerification = .noVerification
 
                         //     promise.succeed(.certificateVerified(.init(
                         //         NIOSSL.ValidatedCertificateChain(certs)

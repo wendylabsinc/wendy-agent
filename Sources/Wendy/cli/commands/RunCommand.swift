@@ -352,7 +352,7 @@ extension RunCommand {
 
         print("Getting container layers")
 
-        try await withGRPCClient(
+        try await withAgentGRPCClient(
             agentConnectionOptions,
             title: "Which device do you want to run this app on?"
         ) { [appConfigData] client in
@@ -830,7 +830,7 @@ extension RunCommand {
     ) async throws {
         let logger = Logger(label: "sh.wendy.cli.run.docker-upload")
 
-        try await withGRPCClient(
+        try await withAgentGRPCClient(
             agentConnectionOptions,
             title: "Which device do you want to run this app on?"
         ) { [appConfigData] client in

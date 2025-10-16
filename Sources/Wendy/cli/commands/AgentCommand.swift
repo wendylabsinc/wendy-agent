@@ -48,7 +48,7 @@ struct AgentCommand: AsyncParsableCommand {
         @OptionGroup var agentConnectionOptions: AgentConnectionOptions
 
         func run() async throws {
-            let version = try await withGRPCClient(
+            let version = try await withAgentGRPCClient(
                 agentConnectionOptions,
                 title: "For which device do you want to get the agent version?"
             ) { client in
@@ -94,7 +94,6 @@ struct AgentCommand: AsyncParsableCommand {
         @OptionGroup var agentConnectionOptions: AgentConnectionOptions
 
         func run() async throws {
-            let logger = Logger(label: "sh.wendyengineer.agent.update")
             let binary: String
 
             if let location = self.binary {
@@ -103,54 +102,20 @@ struct AgentCommand: AsyncParsableCommand {
                 binary = try await downloadLatestRelease().path
             }
 
-            try await withGRPCClient(
+            let success = try await withAgentGRPCClient(
                 agentConnectionOptions,
                 title: "Which device do you want to update?"
             ) { client in
-                let agent = Wendy_Agent_Services_V1_WendyAgentService.Client(wrapping: client)
-                print("Pushing update...")
-                try await agent.updateAgent { writer in
-                    logger.debug("Opening file...")
-                    do {
-                        try await FileSystem.shared.withFileHandle(forReadingAt: FilePath(binary)) {
-                            handle in
-                            logger.debug("Uploading binary...")
-                            for try await chunk in handle.readChunks() {
-                                try await writer.write(
-                                    .with {
-                                        $0.chunk = .with {
-                                            $0.data = Data(buffer: chunk)
-                                        }
-                                    }
-                                )
-                            }
-
-                            logger.debug("Finalizing update")
-                            try await writer.write(
-                                .with {
-                                    $0.control = .with {
-                                        $0.command = .update(.init())
-                                    }
-                                }
-                            )
-                        }
-                    } catch {
-                        logger.error("Failed to upload binary: \(error)")
-                        throw error
-                    }
-                } onResponse: { response in
-                    for try await event in response.messages {
-                        switch event.responseType {
-                        case .updated:
-                            print("Agent is updated! Restarting the service.")
-                            return
-                        case .none:
-                            ()
-                        }
-                    }
-                    print("Agent is not updated")
-                }
+                let agent = Agent(client: client)
+                return try await agent.update(fromBinary: binary)
             }
+
+            guard success else {
+                Noora().error("Failed to update agent")
+                Self.exit(withError: nil)
+            }
+
+            Noora().success("Agent updated successfully")
         }
     }
 
@@ -163,12 +128,12 @@ struct AgentCommand: AsyncParsableCommand {
         @OptionGroup var agentConnectionOptions: AgentConnectionOptions
 
         func run() async throws {
-            return try await withCloudGRPCClient(title: "Setup agent") { cloudClient -> Void in
+            let endpoint = try await withCloudGRPCClient(title: "Setup agent") { cloudClient in
                 let orgs = try await cloudClient.listOrganizations()
 
                 if orgs.isEmpty {
                     Noora().error("No organizations found")
-                    return
+                    Self.exit(withError: nil)
                 }
 
                 let org = Noora().singleChoicePrompt(
@@ -192,28 +157,101 @@ struct AgentCommand: AsyncParsableCommand {
                     metadata: cloudClient.metadata
                 )
 
-                try await withGRPCClient(
-                    agentConnectionOptions,
-                    title: "Provisioning device"
-                ) { agentClient in
-                    let agent = Wendy_Agent_Services_V1_WendyProvisioningService.Client(
-                        wrapping: agentClient
-                    )
-                    let response = try await agent.startProvisioning(
-                        .with {
-                            $0.organizationID = org.id
-                            $0.cloudHost = cloudClient.cloudHost
-                            $0.enrollmentToken = tokenResponse.enrollmentToken
-                            $0.assetID = tokenResponse.assetID
-                        }
+                let endpoint = try await agentConnectionOptions.read(title: "Provisioning device")
+                try await withAgentGRPCClient(endpoint, title: "Provisioning device") { client in
+                    let agent = Agent(client: client)
+                    try await agent.provision(
+                        enrollmentToken: tokenResponse.enrollmentToken,
+                        assetID: tokenResponse.assetID,
+                        organizationID: org.id,
+                        cloudHost: endpoint.host
                     )
                 }
+                return endpoint
+            }
+
+            func getWifiStatus() async throws -> Wendy_Agent_Services_V1_GetWiFiStatusResponse {
+                while !Task.isCancelled {
+                    do {
+                        return try await withAgentGRPCClient(
+                            endpoint,
+                            title: "Checking agent status"
+                        ) { client in
+                            let agent = Wendy_Agent_Services_V1_WendyAgentService.Client(wrapping: client)
+                            let response = try await agent.getAgentVersion(.init())
+                            Noora().info("Agent is provisioned (version: \(response.version))")
+                            return try await agent.getWiFiStatus(.init())
+                        }
+                    } catch {
+                        continue // Failed to check agent status, try again
+                    }
+                }
+
+                throw CancellationError()
+            }
+
+            let status = try await getWifiStatus()
+
+            try await withAgentGRPCClient(
+                endpoint,
+                title: "Listing available WiFi networks"
+            ) { client in
+                let agent = Agent(client: client)
+
+                if !status.connected {
+                    let setupWifi = Noora().yesOrNoChoicePrompt(
+                        question: "Do you want to setup WiFi?",
+                        collapseOnSelection: false
+                    )
+                    
+                    if setupWifi {
+                        while !Task.isCancelled {
+                            let ssid = try await agent.discoverSSID()
+                            
+                            let password = Noora().textPrompt(
+                                title: "Enter the password for the WiFi network",
+                                prompt: "Password"
+                            )
+
+                            let result = try await agent.connectToWiFi(ssid: ssid, password: password)
+
+                            if result.success {
+                                Noora().success("Connected to WiFi network \(ssid)")
+                                break
+                            } else {
+                                Noora().error("Failed to connect to WiFi network: \(result.errorMessage)")
+                            }
+                        }
+                    }
+                }
+
+                let shouldUpdate = Noora().yesOrNoChoicePrompt(
+                    question: "Do you want to update the agent?",
+                    collapseOnSelection: false
+                )
+
+                guard shouldUpdate else {
+                    return
+                }
+
+                let binary = try await downloadLatestRelease().path
+
+                let success = try await withAgentGRPCClient(
+                    endpoint,
+                    title: "Which device do you want to update?"
+                ) { client in
+                    let agent = Agent(client: client)
+                    return try await agent.update(fromBinary: binary)
+                }
+
+                guard success else {
+                    Noora().error("Failed to update agent")
+                    Self.exit(withError: nil)
+                }
+
+                Noora().success("Agent updated successfully")
             }
         }
-
-        // TODO: Wait for agent to restart
-        // TODO: Prompt setup wifi
-        // TODO: Update agent?
     }
 }
 
