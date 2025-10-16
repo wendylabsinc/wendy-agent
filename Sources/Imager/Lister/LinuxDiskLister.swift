@@ -1,9 +1,10 @@
 import Foundation
+import Logging
 import Subprocess
 
 /// Linux implementation of the DiskLister protocol.
 public struct LinuxDiskLister: DiskLister {
-
+    let logger = Logger(label: "LinuxDiskLister")
     // MARK: - Codable Structs for lsblk JSON Output
 
     /// Represents the root JSON structure returned by lsblk -J
@@ -105,11 +106,7 @@ public struct LinuxDiskLister: DiskLister {
                 return parseLsblkOutput(output, all: all)
             } else {
                 let errorOutput = result.standardError ?? "Unknown error"
-                throw NSError(
-                    domain: "LinuxDiskLister",
-                    code: 1,
-                    userInfo: [NSLocalizedDescriptionKey: "Failed to list drives: \(errorOutput)"]
-                )
+                throw DiskListerError.listFailed(error: errorOutput)
             }
         } catch {
             throw error
@@ -123,11 +120,7 @@ public struct LinuxDiskLister: DiskLister {
     public func findDrive(byId id: String) async throws -> Drive {
         // Validate input to prevent injection or invalid paths
         guard !id.isEmpty else {
-            throw NSError(
-                domain: "LinuxDiskLister",
-                code: 3,
-                userInfo: [NSLocalizedDescriptionKey: "Drive ID cannot be empty"]
-            )
+            throw DiskListerError.driveNotFound(id: id, error: "Disk ID must not be empty")
         }
 
         // Normalize the id to remove /dev/ prefix if present
@@ -136,21 +129,16 @@ public struct LinuxDiskLister: DiskLister {
         // Further validate the device ID - it should be alphanumeric with possible numbers
         let validPattern = "^[a-zA-Z]+[a-zA-Z0-9]*$"
         guard deviceId.range(of: validPattern, options: .regularExpression) != nil else {
-            throw NSError(
-                domain: "LinuxDiskLister",
-                code: 4,
-                userInfo: [NSLocalizedDescriptionKey: "Invalid drive ID format: \(id)"]
-            )
+            throw DiskListerError.driveNotFound(id: id, error: "Invalid drive ID format")
         }
 
         let devicePath = "/dev/\(deviceId)"
 
         // First, check if the device exists
         if !FileManager.default.fileExists(atPath: devicePath) {
-            throw NSError(
-                domain: "LinuxDiskLister",
-                code: 5,
-                userInfo: [NSLocalizedDescriptionKey: "Device does not exist: \(devicePath)"]
+            throw DiskListerError.driveNotFound(
+                id: id,
+                error: "Device does not exist at \(devicePath)"
             )
         }
 
@@ -178,21 +166,14 @@ public struct LinuxDiskLister: DiskLister {
                     }
                     return drive
                 } else {
-                    throw NSError(
-                        domain: "LinuxDiskLister",
-                        code: 2,
-                        userInfo: [
-                            NSLocalizedDescriptionKey: "Drive not found or not a valid disk: \(id)"
-                        ]
+                    throw DiskListerError.driveNotFound(
+                        id: id,
+                        error: "Drive not found or is not a valid disk"
                     )
                 }
             } else {
                 let errorOutput = result.standardError ?? "Unknown error"
-                throw NSError(
-                    domain: "LinuxDiskLister",
-                    code: 1,
-                    userInfo: [NSLocalizedDescriptionKey: "Failed to find drive: \(errorOutput)"]
-                )
+                throw DiskListerError.listFailed(error: errorOutput)
             }
         } catch {
             throw error
@@ -305,7 +286,7 @@ public struct LinuxDiskLister: DiskLister {
                 }
             }
         } catch {
-            // Ignore error, will return nil
+            logger.error("Unable to find lsblk path: ", metadata: ["error": "\(error)"])
         }
 
         return nil
