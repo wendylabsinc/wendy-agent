@@ -15,18 +15,18 @@ public struct LinuxDiskLister: DiskLister {
     private struct BlockDevice: Codable {
         let name: String
         let model: String?
-        let size: String?  // Size comes as a string like "123456789"
-        let hotplug: String?  // "0" or "1" as a string
+        let size: Int64?  // Size in bytes as a number
+        let hotplug: Bool?  // Boolean indicating if device is hot-pluggable
         let type: String?  // "disk", "part", "loop", "rom", etc.
-        let fsavail: String?  // Available filesystem space in bytes
-        let fsused: String?  // Used filesystem space in bytes
-        let fssize: String?  // Total filesystem size in bytes
+        let fsavail: String?  // Available filesystem space in bytes (as string or null)
+        let fsused: String?  // Used filesystem space in bytes (as string or null)
+        let fssize: String?  // Total filesystem size in bytes (as string or null)
         let mountpoint: String?  // Mount point of the filesystem
         let children: [BlockDevice]?
 
         // Computed properties for convenience
         var isExternal: Bool {
-            return hotplug == "1"
+            return hotplug ?? false
         }
 
         var isDisk: Bool {
@@ -50,7 +50,7 @@ public struct LinuxDiskLister: DiskLister {
         }
 
         var sizeInBytes: Int64 {
-            return Int64(size ?? "0") ?? 0
+            return size ?? 0
         }
 
        var availableBytes: Int64 {
