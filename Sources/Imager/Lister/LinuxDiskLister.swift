@@ -53,7 +53,7 @@ public struct LinuxDiskLister: DiskLister {
             return size ?? 0
         }
 
-       var availableBytes: Int64 {
+        var availableBytes: Int64 {
             // Try to get available space from filesystem info
             if let fsavail = fsavail, let availBytes = Int64(fsavail) {
                 return availBytes
@@ -93,7 +93,10 @@ public struct LinuxDiskLister: DiskLister {
             // Include filesystem information for available space calculation
             let result = try await Subprocess.run(
                 Subprocess.Executable.name("lsblk"),
-                arguments: ["-J", "-b", "-o", "NAME,SIZE,MODEL,HOTPLUG,TYPE,FSAVAIL,FSUSED,FSSIZE,MOUNTPOINT"],
+                arguments: [
+                    "-J", "-b", "-o",
+                    "NAME,SIZE,MODEL,HOTPLUG,TYPE,FSAVAIL,FSUSED,FSSIZE,MOUNTPOINT",
+                ],
                 output: .string(limit: .max),
                 error: .string(limit: .max)
             )
@@ -154,7 +157,10 @@ public struct LinuxDiskLister: DiskLister {
         do {
             let result = try await Subprocess.run(
                 Subprocess.Executable.name("lsblk"),
-                arguments: ["-J", "-b", "-o", "NAME,SIZE,MODEL,HOTPLUG,TYPE,FSAVAIL,FSUSED,FSSIZE,MOUNTPOINT", devicePath],
+                arguments: [
+                    "-J", "-b", "-o",
+                    "NAME,SIZE,MODEL,HOTPLUG,TYPE,FSAVAIL,FSUSED,FSSIZE,MOUNTPOINT", devicePath,
+                ],
                 output: .string(limit: .max),
                 error: .string(limit: .max)
             )
@@ -175,7 +181,9 @@ public struct LinuxDiskLister: DiskLister {
                     throw NSError(
                         domain: "LinuxDiskLister",
                         code: 2,
-                        userInfo: [NSLocalizedDescriptionKey: "Drive not found or not a valid disk: \(id)"]
+                        userInfo: [
+                            NSLocalizedDescriptionKey: "Drive not found or not a valid disk: \(id)"
+                        ]
                     )
                 }
             } else {
@@ -264,7 +272,7 @@ public struct LinuxDiskLister: DiskLister {
             "/usr/bin/lsblk",
             "/bin/lsblk",
             "/sbin/lsblk",
-            "/usr/sbin/lsblk"
+            "/usr/sbin/lsblk",
         ]
 
         for path in possiblePaths {
@@ -288,8 +296,11 @@ public struct LinuxDiskLister: DiskLister {
 
             if process.terminationStatus == 0 {
                 let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                if let path = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
-                   !path.isEmpty {
+                if let path = String(data: data, encoding: .utf8)?.trimmingCharacters(
+                    in: .whitespacesAndNewlines
+                ),
+                    !path.isEmpty
+                {
                     return path
                 }
             }

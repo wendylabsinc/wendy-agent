@@ -44,7 +44,6 @@ import Subprocess
                     )
                 }
 
-
                 // On Linux, dd with status=progress automatically outputs progress information
                 print("Writing image: \(imagePath) -> \(drive.id)")
                 let script = """
@@ -71,9 +70,10 @@ import Subprocess
                         }
 
                         // Check for error messages in the output
-                        if outputString.lowercased().contains("error") ||
-                           outputString.lowercased().contains("permission denied") ||
-                           outputString.lowercased().contains("no space") {
+                        if outputString.lowercased().contains("error")
+                            || outputString.lowercased().contains("permission denied")
+                            || outputString.lowercased().contains("no space")
+                        {
                             errorOutput += outputString
                         }
 
@@ -105,9 +105,10 @@ import Subprocess
 
                 // Check if the command was successful
                 if !result.terminationStatus.isSuccess {
-                    let reason = errorOutput.isEmpty ?
-                        "dd command failed with status: \(result.terminationStatus)" :
-                        "dd command failed: \(errorOutput.trimmingCharacters(in: .whitespacesAndNewlines))"
+                    let reason =
+                        errorOutput.isEmpty
+                        ? "dd command failed with status: \(result.terminationStatus)"
+                        : "dd command failed: \(errorOutput.trimmingCharacters(in: .whitespacesAndNewlines))"
                     throw DiskWriterError.writeFailed(reason: reason)
                 }
 
