@@ -210,6 +210,8 @@ struct AgentCommand: AsyncParsableCommand {
                 }
             }
         }
+
+        // TODO: Wait for agent to restart
         // TODO: Prompt setup wifi
         // TODO: Update agent?
     }

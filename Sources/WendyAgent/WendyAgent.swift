@@ -43,6 +43,9 @@ struct WendyAgent: AsyncParsableCommand {
             try await FileSystemAgentConfigService(directory: FilePath(configDir))
         }()
 
+        var backgroundServices: [any ServiceLifecycle.Service] = []
+        var servers = [GRPCServer<HTTP2ServerTransport.Posix>]()
+
         if let enrolled = await config.enrolled {
             provisioning = await WendyProvisioningService(
                 privateKey: config.privateKey,
@@ -71,52 +74,18 @@ struct WendyAgent: AsyncParsableCommand {
                     )))
                 }
             }
-
-            do {
-                logger.info("Getting certificate metadata", metadata: [
-                    "cloudHost": "\(enrolled.cloudHost)"
-                ])
-                try await withGRPCClient(
-                    transport: HTTP2ClientTransport.Posix(
-                        target: ResolvableTargets.DNS(
-                            host: enrolled.cloudHost,
-                            port: 50052
-                        ),
-                        transportSecurity: .mTLS(
-                            certificateChain: enrolled.certificateChainPEM.map { cert in
-                                return TLSConfig.CertificateSource.bytes(Array(cert.utf8), format: .pem)
-                            },
-                            privateKey: .bytes(
-                                Array(config.privateKey.serializeAsPEM().pemString.utf8),
-                                format: .pem
-                            )
-                        ) { tls in
-                            #if DEBUG
-                            tls.serverCertificateVerification = .noVerification
-                            #endif
-                        },
-                        resolverRegistry: .defaults
-                    )
-                ) { client in
-                    let certs = Wendycloud_V1_CertificateService.Client(wrapping: client)
-                    let response = try await certs.getCertificateMetadata(.init())
-                    print(response)
-                }
-            } catch let error as RPCError {
-                logger.error(
-                    "Failed to get asset id and organization id",
-                    metadata: [
-                        "error": "\(error.code) \(error.message) \(error)"
-                    ]
-                )
-            } catch {
-                logger.error(
-                    "Failed to get asset id and organization id",
-                    metadata: [
-                        "error": .stringConvertible(error.localizedDescription)
-                    ]
-                )
-            }
+            let cloudClient = try await CloudClient(enrolled: enrolled, privateKey: config.privateKey)
+            backgroundServices.append(cloudClient)
+            // TODO: Also set up OTel on 4318
+            servers.append(GRPCServer(
+                transport: HTTP2ServerTransport.Posix(
+                    address: .ipv4(host: "127.0.0.1", port: 4317),
+                    transportSecurity: .plaintext
+                ),
+                services: [
+                    OpenTelemetryProxy(cloud: cloudClient)
+                ]
+            ))
         } else {
             logger.notice("Agent requires provisioning")
             mTLS = nil
@@ -140,14 +109,11 @@ struct WendyAgent: AsyncParsableCommand {
             }),
             provisioning,
         ]
-
         let unauthenticatedServices: [any GRPCCore.RegistrableRPCService] = [
             provisioning,
         ]
 
         let plaintextServices = mTLS == nil ? authenticatedServices : unauthenticatedServices
-        
-        var servers = [GRPCServer<HTTP2ServerTransport.Posix>]()
 
         if let mTLS {
             servers.append(GRPCServer(
@@ -195,6 +161,12 @@ struct WendyAgent: AsyncParsableCommand {
                     server.beginGracefulShutdown()
                 }
                 taskGroup.cancelAll()
+            }
+
+            for service in backgroundServices {
+                taskGroup.addTask {
+                    try await service.run()
+                }
             }
 
             for try await () in signal {

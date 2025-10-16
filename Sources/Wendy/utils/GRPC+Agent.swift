@@ -144,22 +144,23 @@ func withGRPCClient<R: Sendable>(
                         )
                     ) { tls in
                         tls.serverCertificateVerification = .noHostnameVerification
-                        tls.customVerificationCallback = { certs, promise in
-                            guard
-                                let cert = certs.first,
-                                cert._subjectAlternativeNames().contains(where: { name in
-                                    name.contents.contains("urn:wendy:org:\(organizationId)".utf8) &&
-                                    name.contents.contains("urn:wendy:org:\(organizationId):asset:\(assetId)".utf8)
-                                })
-                            else {
-                                promise.succeed(.failed)
-                                return
-                            }
+                        // TODO: Re-enable once PR is merged
+                        // tls.customVerificationCallback = { certs, promise in
+                        //     guard
+                        //         let cert = certs.first,
+                        //         cert._subjectAlternativeNames().contains(where: { name in
+                        //             name.contents.contains("urn:wendy:org:\(organizationId)".utf8) &&
+                        //             name.contents.contains("urn:wendy:org:\(organizationId):asset:\(assetId)".utf8)
+                        //         })
+                        //     else {
+                        //         promise.succeed(.failed)
+                        //         return
+                        //     }
 
-                            promise.succeed(.certificateVerified(.init(
-                                NIOSSL.ValidatedCertificateChain(certs)
-                            )))
-                        }
+                        //     promise.succeed(.certificateVerified(.init(
+                        //         NIOSSL.ValidatedCertificateChain(certs)
+                        //     )))
+                        // }
                     },
                     body
                 )

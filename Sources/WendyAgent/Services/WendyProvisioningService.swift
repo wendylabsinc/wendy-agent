@@ -177,21 +177,6 @@ actor WendyProvisioningService: Wendy_Agent_Services_V1_WendyProvisioningService
                 throw RPCError(code: .aborted, message: response.error.message)
             }
 
-            let cert: Certificate
-            do {
-                cert = try Certificate(
-                    pemEncoded: response.certificate.pemCertificate
-                )
-            } catch {
-                logger.error(
-                    "Failed to load certificate",
-                    metadata: [
-                        "error": .stringConvertible(error.localizedDescription)
-                    ]
-                )
-                throw error
-            }
-
             guard self.enrolled == nil else {
                 self.logger.warning("Agent is already provisioned")
                 throw ProvisioningError.alreadyProvisioned

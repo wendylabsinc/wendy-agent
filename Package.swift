@@ -147,6 +147,7 @@ let package = Package(
                 .target(name: "WendyShared"),
                 .target(name: "AppConfig"),
                 .target(name: "WendySDK"),
+                .target(name: "OpenTelemetryGRPC"),
             ],
             path: "Sources/WendyAgent"
         ),
@@ -178,6 +179,13 @@ let package = Package(
         ),
         .target(
             name: "WendyCloudGRPC",
+            dependencies: [
+                .product(name: "GRPCCore", package: "grpc-swift-2"),
+                .product(name: "GRPCProtobuf", package: "grpc-swift-protobuf"),
+            ]
+        ),
+        .target(
+            name: "OpenTelemetryGRPC",
             dependencies: [
                 .product(name: "GRPCCore", package: "grpc-swift-2"),
                 .product(name: "GRPCProtobuf", package: "grpc-swift-protobuf"),

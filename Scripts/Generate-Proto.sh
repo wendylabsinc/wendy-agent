@@ -16,6 +16,8 @@ rm -rf Sources/ContainerdGRPC/Proto
 mkdir -p Sources/ContainerdGRPC/Proto
 rm -rf Sources/ContainerdGRPCTypes/Proto
 mkdir -p Sources/ContainerdGRPCTypes/Proto
+rm -rf Sources/OpenTelemetryGRPCTypes/Proto
+mkdir -p Sources/OpenTelemetryGRPCTypes/Proto
 
 # Use Swift Package Manager plugin for gRPC code generation
 # Note: This uses the new grpc-swift-2 plugin system instead of protoc directly
@@ -52,6 +54,13 @@ swift package --allow-writing-to-package-directory generate-grpc-code-from-proto
     --import-path Proto \
     --import-path /opt/homebrew/include \
     -- $(find Proto/github.com/containerd/containerd/api/types -name "*.proto") $(find Proto/google -name "*.proto")
+
+echo "Generating OpenTelemetry gRPC code..."
+swift package --allow-writing-to-package-directory generate-grpc-code-from-protos \
+    --access-level public \
+    --output-path Sources/OpenTelemetryGRPC/Proto \
+    --import-path Proto \
+    -- $(find Proto/opentelemetry/proto/collector/logs/v1 -name "*.proto") $(find Proto/opentelemetry/proto/collector/metrics/v1 -name "*.proto") $(find Proto/opentelemetry/proto/collector/trace/v1 -name "*.proto") $(find Proto/google -name "*.proto") $(find Proto/opentelemetry/proto/common -name "*.proto") $(find Proto/opentelemetry/proto/logs/v1 -name "*.proto") $(find Proto/opentelemetry/proto/metrics/v1 -name "*.proto") $(find Proto/opentelemetry/proto/trace/v1 -name "*.proto") $(find Proto/opentelemetry/proto/resource/v1 -name "*.proto")
 
 echo "gRPC code generation complete!"
 
