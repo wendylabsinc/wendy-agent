@@ -170,20 +170,20 @@ struct WendyAgent: AsyncParsableCommand {
                 }
             }
 
-            taskGroup.addTask {
-                do {
-                    let imageName = "hello-python"
-                    try await PullImage().pullAndRun(
-                        image: "cloud-c7e56/agent-test/\(imageName):latest",
-                        appName: imageName,
-                        labels: [:],
-                        bearerToken: "...",
-                        registry: "us-central1-docker.pkg.dev"
-                    )
-                } catch {
-                    logger.error("Failed to pull and run image: \(error)")
-                }
-            }
+            // taskGroup.addTask {
+            //     do {
+            //         let imageName = "hello-python"
+            //         try await PullImage().pullAndRun(
+            //             image: "cloud-c7e56/agent-test/\(imageName):latest",
+            //             appName: imageName,
+            //             labels: [:],
+            //             bearerToken: "...",
+            //             registry: "us-central1-docker.pkg.dev"
+            //         )
+            //     } catch {
+            //         logger.error("Failed to pull and run image: \(error)")
+            //     }
+            // }
 
             for try await () in signal {
                 logger.info("Received signal, restarting")

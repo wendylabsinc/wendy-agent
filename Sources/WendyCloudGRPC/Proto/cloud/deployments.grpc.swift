@@ -20,6 +20,54 @@ public enum Wendycloud_V1_DeploymentService {
     public static let descriptor = GRPCCore.ServiceDescriptor(fullyQualifiedService: "wendycloud.v1.DeploymentService")
     /// Namespace for method metadata.
     public enum Method {
+        /// Namespace for "CreateAppRelease" metadata.
+        public enum CreateAppRelease {
+            /// Request type for "CreateAppRelease".
+            public typealias Input = Wendycloud_V1_CreateAppReleaseRequest
+            /// Response type for "CreateAppRelease".
+            public typealias Output = Wendycloud_V1_AppRelease
+            /// Descriptor for "CreateAppRelease".
+            public static let descriptor = GRPCCore.MethodDescriptor(
+                service: GRPCCore.ServiceDescriptor(fullyQualifiedService: "wendycloud.v1.DeploymentService"),
+                method: "CreateAppRelease"
+            )
+        }
+        /// Namespace for "UpdateAppRelease" metadata.
+        public enum UpdateAppRelease {
+            /// Request type for "UpdateAppRelease".
+            public typealias Input = Wendycloud_V1_UpdateAppReleaseRequest
+            /// Response type for "UpdateAppRelease".
+            public typealias Output = Wendycloud_V1_AppRelease
+            /// Descriptor for "UpdateAppRelease".
+            public static let descriptor = GRPCCore.MethodDescriptor(
+                service: GRPCCore.ServiceDescriptor(fullyQualifiedService: "wendycloud.v1.DeploymentService"),
+                method: "UpdateAppRelease"
+            )
+        }
+        /// Namespace for "ListAppReleases" metadata.
+        public enum ListAppReleases {
+            /// Request type for "ListAppReleases".
+            public typealias Input = Wendycloud_V1_ListAppReleasesRequest
+            /// Response type for "ListAppReleases".
+            public typealias Output = Wendycloud_V1_ListAppReleasesResponse
+            /// Descriptor for "ListAppReleases".
+            public static let descriptor = GRPCCore.MethodDescriptor(
+                service: GRPCCore.ServiceDescriptor(fullyQualifiedService: "wendycloud.v1.DeploymentService"),
+                method: "ListAppReleases"
+            )
+        }
+        /// Namespace for "GetPushImageCredentials" metadata.
+        public enum GetPushImageCredentials {
+            /// Request type for "GetPushImageCredentials".
+            public typealias Input = Wendycloud_V1_GetPushImageCredentialsRequest
+            /// Response type for "GetPushImageCredentials".
+            public typealias Output = Wendycloud_V1_GetPushImageCredentialsResponse
+            /// Descriptor for "GetPushImageCredentials".
+            public static let descriptor = GRPCCore.MethodDescriptor(
+                service: GRPCCore.ServiceDescriptor(fullyQualifiedService: "wendycloud.v1.DeploymentService"),
+                method: "GetPushImageCredentials"
+            )
+        }
         /// Namespace for "CreateDeployment" metadata.
         public enum CreateDeployment {
             /// Request type for "CreateDeployment".
@@ -56,76 +104,28 @@ public enum Wendycloud_V1_DeploymentService {
                 method: "ListDeployments"
             )
         }
-        /// Namespace for "CancelDeployment" metadata.
-        public enum CancelDeployment {
-            /// Request type for "CancelDeployment".
-            public typealias Input = Wendycloud_V1_CancelDeploymentRequest
-            /// Response type for "CancelDeployment".
-            public typealias Output = Wendycloud_V1_Deployment
-            /// Descriptor for "CancelDeployment".
+        /// Namespace for "HandleReportedState" metadata.
+        public enum HandleReportedState {
+            /// Request type for "HandleReportedState".
+            public typealias Input = Wendycloud_V1_UpdateReportedStateRequest
+            /// Response type for "HandleReportedState".
+            public typealias Output = Wendycloud_V1_DesiredStateResponse
+            /// Descriptor for "HandleReportedState".
             public static let descriptor = GRPCCore.MethodDescriptor(
                 service: GRPCCore.ServiceDescriptor(fullyQualifiedService: "wendycloud.v1.DeploymentService"),
-                method: "CancelDeployment"
-            )
-        }
-        /// Namespace for "GetDeploymentTarget" metadata.
-        public enum GetDeploymentTarget {
-            /// Request type for "GetDeploymentTarget".
-            public typealias Input = Wendycloud_V1_GetDeploymentTargetRequest
-            /// Response type for "GetDeploymentTarget".
-            public typealias Output = Wendycloud_V1_DeploymentTarget
-            /// Descriptor for "GetDeploymentTarget".
-            public static let descriptor = GRPCCore.MethodDescriptor(
-                service: GRPCCore.ServiceDescriptor(fullyQualifiedService: "wendycloud.v1.DeploymentService"),
-                method: "GetDeploymentTarget"
-            )
-        }
-        /// Namespace for "ListDeploymentTargets" metadata.
-        public enum ListDeploymentTargets {
-            /// Request type for "ListDeploymentTargets".
-            public typealias Input = Wendycloud_V1_ListDeploymentTargetsRequest
-            /// Response type for "ListDeploymentTargets".
-            public typealias Output = Wendycloud_V1_ListDeploymentTargetsResponse
-            /// Descriptor for "ListDeploymentTargets".
-            public static let descriptor = GRPCCore.MethodDescriptor(
-                service: GRPCCore.ServiceDescriptor(fullyQualifiedService: "wendycloud.v1.DeploymentService"),
-                method: "ListDeploymentTargets"
-            )
-        }
-        /// Namespace for "UpdateDeploymentTarget" metadata.
-        public enum UpdateDeploymentTarget {
-            /// Request type for "UpdateDeploymentTarget".
-            public typealias Input = Wendycloud_V1_UpdateDeploymentTargetRequest
-            /// Response type for "UpdateDeploymentTarget".
-            public typealias Output = Wendycloud_V1_DeploymentTarget
-            /// Descriptor for "UpdateDeploymentTarget".
-            public static let descriptor = GRPCCore.MethodDescriptor(
-                service: GRPCCore.ServiceDescriptor(fullyQualifiedService: "wendycloud.v1.DeploymentService"),
-                method: "UpdateDeploymentTarget"
-            )
-        }
-        /// Namespace for "RetryFailedDeployment" metadata.
-        public enum RetryFailedDeployment {
-            /// Request type for "RetryFailedDeployment".
-            public typealias Input = Wendycloud_V1_RetryFailedDeploymentRequest
-            /// Response type for "RetryFailedDeployment".
-            public typealias Output = Wendycloud_V1_Deployment
-            /// Descriptor for "RetryFailedDeployment".
-            public static let descriptor = GRPCCore.MethodDescriptor(
-                service: GRPCCore.ServiceDescriptor(fullyQualifiedService: "wendycloud.v1.DeploymentService"),
-                method: "RetryFailedDeployment"
+                method: "HandleReportedState"
             )
         }
         /// Descriptors for all methods in the "wendycloud.v1.DeploymentService" service.
         public static let descriptors: [GRPCCore.MethodDescriptor] = [
+            CreateAppRelease.descriptor,
+            UpdateAppRelease.descriptor,
+            ListAppReleases.descriptor,
+            GetPushImageCredentials.descriptor,
             CreateDeployment.descriptor,
             GetDeployment.descriptor,
             ListDeployments.descriptor,
-            CancelDeployment.descriptor,
-            GetDeploymentTarget.descriptor,
-            ListDeploymentTargets.descriptor,
-            UpdateDeploymentTarget.descriptor,
-            RetryFailedDeployment.descriptor
+            HandleReportedState.descriptor
         ]
     }
 }
@@ -151,7 +151,71 @@ extension Wendycloud_V1_DeploymentService {
     /// Where possible, prefer using the stricter, less-verbose ``ServiceProtocol``
     /// or ``SimpleServiceProtocol`` instead.
     public protocol StreamingServiceProtocol: GRPCCore.RegistrableRPCService {
+        /// Handle the "CreateAppRelease" method.
+        ///
+        /// > Source IDL Documentation:
+        /// >
+        /// > ==================== App Releases ====================
+        ///
+        /// - Parameters:
+        ///   - request: A streaming request of `Wendycloud_V1_CreateAppReleaseRequest` messages.
+        ///   - context: Context providing information about the RPC.
+        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
+        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
+        ///     to an internal error.
+        /// - Returns: A streaming response of `Wendycloud_V1_AppRelease` messages.
+        func createAppRelease(
+            request: GRPCCore.StreamingServerRequest<Wendycloud_V1_CreateAppReleaseRequest>,
+            context: GRPCCore.ServerContext
+        ) async throws -> GRPCCore.StreamingServerResponse<Wendycloud_V1_AppRelease>
+
+        /// Handle the "UpdateAppRelease" method.
+        ///
+        /// - Parameters:
+        ///   - request: A streaming request of `Wendycloud_V1_UpdateAppReleaseRequest` messages.
+        ///   - context: Context providing information about the RPC.
+        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
+        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
+        ///     to an internal error.
+        /// - Returns: A streaming response of `Wendycloud_V1_AppRelease` messages.
+        func updateAppRelease(
+            request: GRPCCore.StreamingServerRequest<Wendycloud_V1_UpdateAppReleaseRequest>,
+            context: GRPCCore.ServerContext
+        ) async throws -> GRPCCore.StreamingServerResponse<Wendycloud_V1_AppRelease>
+
+        /// Handle the "ListAppReleases" method.
+        ///
+        /// - Parameters:
+        ///   - request: A streaming request of `Wendycloud_V1_ListAppReleasesRequest` messages.
+        ///   - context: Context providing information about the RPC.
+        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
+        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
+        ///     to an internal error.
+        /// - Returns: A streaming response of `Wendycloud_V1_ListAppReleasesResponse` messages.
+        func listAppReleases(
+            request: GRPCCore.StreamingServerRequest<Wendycloud_V1_ListAppReleasesRequest>,
+            context: GRPCCore.ServerContext
+        ) async throws -> GRPCCore.StreamingServerResponse<Wendycloud_V1_ListAppReleasesResponse>
+
+        /// Handle the "GetPushImageCredentials" method.
+        ///
+        /// - Parameters:
+        ///   - request: A streaming request of `Wendycloud_V1_GetPushImageCredentialsRequest` messages.
+        ///   - context: Context providing information about the RPC.
+        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
+        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
+        ///     to an internal error.
+        /// - Returns: A streaming response of `Wendycloud_V1_GetPushImageCredentialsResponse` messages.
+        func getPushImageCredentials(
+            request: GRPCCore.StreamingServerRequest<Wendycloud_V1_GetPushImageCredentialsRequest>,
+            context: GRPCCore.ServerContext
+        ) async throws -> GRPCCore.StreamingServerResponse<Wendycloud_V1_GetPushImageCredentialsResponse>
+
         /// Handle the "CreateDeployment" method.
+        ///
+        /// > Source IDL Documentation:
+        /// >
+        /// > ==================== Deployments ====================
         ///
         /// - Parameters:
         ///   - request: A streaming request of `Wendycloud_V1_CreateDeploymentRequest` messages.
@@ -193,75 +257,23 @@ extension Wendycloud_V1_DeploymentService {
             context: GRPCCore.ServerContext
         ) async throws -> GRPCCore.StreamingServerResponse<Wendycloud_V1_ListDeploymentsResponse>
 
-        /// Handle the "CancelDeployment" method.
+        /// Handle the "HandleReportedState" method.
+        ///
+        /// > Source IDL Documentation:
+        /// >
+        /// > ==================== Asset App Desired Instructions (wendy-agent) ====================
         ///
         /// - Parameters:
-        ///   - request: A streaming request of `Wendycloud_V1_CancelDeploymentRequest` messages.
+        ///   - request: A streaming request of `Wendycloud_V1_UpdateReportedStateRequest` messages.
         ///   - context: Context providing information about the RPC.
         /// - Throws: Any error which occurred during the processing of the request. Thrown errors
         ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
         ///     to an internal error.
-        /// - Returns: A streaming response of `Wendycloud_V1_Deployment` messages.
-        func cancelDeployment(
-            request: GRPCCore.StreamingServerRequest<Wendycloud_V1_CancelDeploymentRequest>,
+        /// - Returns: A streaming response of `Wendycloud_V1_DesiredStateResponse` messages.
+        func handleReportedState(
+            request: GRPCCore.StreamingServerRequest<Wendycloud_V1_UpdateReportedStateRequest>,
             context: GRPCCore.ServerContext
-        ) async throws -> GRPCCore.StreamingServerResponse<Wendycloud_V1_Deployment>
-
-        /// Handle the "GetDeploymentTarget" method.
-        ///
-        /// - Parameters:
-        ///   - request: A streaming request of `Wendycloud_V1_GetDeploymentTargetRequest` messages.
-        ///   - context: Context providing information about the RPC.
-        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
-        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
-        ///     to an internal error.
-        /// - Returns: A streaming response of `Wendycloud_V1_DeploymentTarget` messages.
-        func getDeploymentTarget(
-            request: GRPCCore.StreamingServerRequest<Wendycloud_V1_GetDeploymentTargetRequest>,
-            context: GRPCCore.ServerContext
-        ) async throws -> GRPCCore.StreamingServerResponse<Wendycloud_V1_DeploymentTarget>
-
-        /// Handle the "ListDeploymentTargets" method.
-        ///
-        /// - Parameters:
-        ///   - request: A streaming request of `Wendycloud_V1_ListDeploymentTargetsRequest` messages.
-        ///   - context: Context providing information about the RPC.
-        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
-        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
-        ///     to an internal error.
-        /// - Returns: A streaming response of `Wendycloud_V1_ListDeploymentTargetsResponse` messages.
-        func listDeploymentTargets(
-            request: GRPCCore.StreamingServerRequest<Wendycloud_V1_ListDeploymentTargetsRequest>,
-            context: GRPCCore.ServerContext
-        ) async throws -> GRPCCore.StreamingServerResponse<Wendycloud_V1_ListDeploymentTargetsResponse>
-
-        /// Handle the "UpdateDeploymentTarget" method.
-        ///
-        /// - Parameters:
-        ///   - request: A streaming request of `Wendycloud_V1_UpdateDeploymentTargetRequest` messages.
-        ///   - context: Context providing information about the RPC.
-        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
-        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
-        ///     to an internal error.
-        /// - Returns: A streaming response of `Wendycloud_V1_DeploymentTarget` messages.
-        func updateDeploymentTarget(
-            request: GRPCCore.StreamingServerRequest<Wendycloud_V1_UpdateDeploymentTargetRequest>,
-            context: GRPCCore.ServerContext
-        ) async throws -> GRPCCore.StreamingServerResponse<Wendycloud_V1_DeploymentTarget>
-
-        /// Handle the "RetryFailedDeployment" method.
-        ///
-        /// - Parameters:
-        ///   - request: A streaming request of `Wendycloud_V1_RetryFailedDeploymentRequest` messages.
-        ///   - context: Context providing information about the RPC.
-        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
-        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
-        ///     to an internal error.
-        /// - Returns: A streaming response of `Wendycloud_V1_Deployment` messages.
-        func retryFailedDeployment(
-            request: GRPCCore.StreamingServerRequest<Wendycloud_V1_RetryFailedDeploymentRequest>,
-            context: GRPCCore.ServerContext
-        ) async throws -> GRPCCore.StreamingServerResponse<Wendycloud_V1_Deployment>
+        ) async throws -> GRPCCore.StreamingServerResponse<Wendycloud_V1_DesiredStateResponse>
     }
 
     /// Service protocol for the "wendycloud.v1.DeploymentService" service.
@@ -272,7 +284,71 @@ extension Wendycloud_V1_DeploymentService {
     /// the ``SimpleServiceProtocol``. If you need fine grained control over your RPCs then
     /// use ``StreamingServiceProtocol``.
     public protocol ServiceProtocol: Wendycloud_V1_DeploymentService.StreamingServiceProtocol {
+        /// Handle the "CreateAppRelease" method.
+        ///
+        /// > Source IDL Documentation:
+        /// >
+        /// > ==================== App Releases ====================
+        ///
+        /// - Parameters:
+        ///   - request: A request containing a single `Wendycloud_V1_CreateAppReleaseRequest` message.
+        ///   - context: Context providing information about the RPC.
+        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
+        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
+        ///     to an internal error.
+        /// - Returns: A response containing a single `Wendycloud_V1_AppRelease` message.
+        func createAppRelease(
+            request: GRPCCore.ServerRequest<Wendycloud_V1_CreateAppReleaseRequest>,
+            context: GRPCCore.ServerContext
+        ) async throws -> GRPCCore.ServerResponse<Wendycloud_V1_AppRelease>
+
+        /// Handle the "UpdateAppRelease" method.
+        ///
+        /// - Parameters:
+        ///   - request: A request containing a single `Wendycloud_V1_UpdateAppReleaseRequest` message.
+        ///   - context: Context providing information about the RPC.
+        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
+        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
+        ///     to an internal error.
+        /// - Returns: A response containing a single `Wendycloud_V1_AppRelease` message.
+        func updateAppRelease(
+            request: GRPCCore.ServerRequest<Wendycloud_V1_UpdateAppReleaseRequest>,
+            context: GRPCCore.ServerContext
+        ) async throws -> GRPCCore.ServerResponse<Wendycloud_V1_AppRelease>
+
+        /// Handle the "ListAppReleases" method.
+        ///
+        /// - Parameters:
+        ///   - request: A request containing a single `Wendycloud_V1_ListAppReleasesRequest` message.
+        ///   - context: Context providing information about the RPC.
+        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
+        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
+        ///     to an internal error.
+        /// - Returns: A streaming response of `Wendycloud_V1_ListAppReleasesResponse` messages.
+        func listAppReleases(
+            request: GRPCCore.ServerRequest<Wendycloud_V1_ListAppReleasesRequest>,
+            context: GRPCCore.ServerContext
+        ) async throws -> GRPCCore.StreamingServerResponse<Wendycloud_V1_ListAppReleasesResponse>
+
+        /// Handle the "GetPushImageCredentials" method.
+        ///
+        /// - Parameters:
+        ///   - request: A request containing a single `Wendycloud_V1_GetPushImageCredentialsRequest` message.
+        ///   - context: Context providing information about the RPC.
+        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
+        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
+        ///     to an internal error.
+        /// - Returns: A response containing a single `Wendycloud_V1_GetPushImageCredentialsResponse` message.
+        func getPushImageCredentials(
+            request: GRPCCore.ServerRequest<Wendycloud_V1_GetPushImageCredentialsRequest>,
+            context: GRPCCore.ServerContext
+        ) async throws -> GRPCCore.ServerResponse<Wendycloud_V1_GetPushImageCredentialsResponse>
+
         /// Handle the "CreateDeployment" method.
+        ///
+        /// > Source IDL Documentation:
+        /// >
+        /// > ==================== Deployments ====================
         ///
         /// - Parameters:
         ///   - request: A request containing a single `Wendycloud_V1_CreateDeploymentRequest` message.
@@ -308,81 +384,29 @@ extension Wendycloud_V1_DeploymentService {
         /// - Throws: Any error which occurred during the processing of the request. Thrown errors
         ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
         ///     to an internal error.
-        /// - Returns: A response containing a single `Wendycloud_V1_ListDeploymentsResponse` message.
+        /// - Returns: A streaming response of `Wendycloud_V1_ListDeploymentsResponse` messages.
         func listDeployments(
             request: GRPCCore.ServerRequest<Wendycloud_V1_ListDeploymentsRequest>,
             context: GRPCCore.ServerContext
-        ) async throws -> GRPCCore.ServerResponse<Wendycloud_V1_ListDeploymentsResponse>
+        ) async throws -> GRPCCore.StreamingServerResponse<Wendycloud_V1_ListDeploymentsResponse>
 
-        /// Handle the "CancelDeployment" method.
+        /// Handle the "HandleReportedState" method.
+        ///
+        /// > Source IDL Documentation:
+        /// >
+        /// > ==================== Asset App Desired Instructions (wendy-agent) ====================
         ///
         /// - Parameters:
-        ///   - request: A request containing a single `Wendycloud_V1_CancelDeploymentRequest` message.
+        ///   - request: A streaming request of `Wendycloud_V1_UpdateReportedStateRequest` messages.
         ///   - context: Context providing information about the RPC.
         /// - Throws: Any error which occurred during the processing of the request. Thrown errors
         ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
         ///     to an internal error.
-        /// - Returns: A response containing a single `Wendycloud_V1_Deployment` message.
-        func cancelDeployment(
-            request: GRPCCore.ServerRequest<Wendycloud_V1_CancelDeploymentRequest>,
+        /// - Returns: A streaming response of `Wendycloud_V1_DesiredStateResponse` messages.
+        func handleReportedState(
+            request: GRPCCore.StreamingServerRequest<Wendycloud_V1_UpdateReportedStateRequest>,
             context: GRPCCore.ServerContext
-        ) async throws -> GRPCCore.ServerResponse<Wendycloud_V1_Deployment>
-
-        /// Handle the "GetDeploymentTarget" method.
-        ///
-        /// - Parameters:
-        ///   - request: A request containing a single `Wendycloud_V1_GetDeploymentTargetRequest` message.
-        ///   - context: Context providing information about the RPC.
-        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
-        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
-        ///     to an internal error.
-        /// - Returns: A response containing a single `Wendycloud_V1_DeploymentTarget` message.
-        func getDeploymentTarget(
-            request: GRPCCore.ServerRequest<Wendycloud_V1_GetDeploymentTargetRequest>,
-            context: GRPCCore.ServerContext
-        ) async throws -> GRPCCore.ServerResponse<Wendycloud_V1_DeploymentTarget>
-
-        /// Handle the "ListDeploymentTargets" method.
-        ///
-        /// - Parameters:
-        ///   - request: A request containing a single `Wendycloud_V1_ListDeploymentTargetsRequest` message.
-        ///   - context: Context providing information about the RPC.
-        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
-        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
-        ///     to an internal error.
-        /// - Returns: A response containing a single `Wendycloud_V1_ListDeploymentTargetsResponse` message.
-        func listDeploymentTargets(
-            request: GRPCCore.ServerRequest<Wendycloud_V1_ListDeploymentTargetsRequest>,
-            context: GRPCCore.ServerContext
-        ) async throws -> GRPCCore.ServerResponse<Wendycloud_V1_ListDeploymentTargetsResponse>
-
-        /// Handle the "UpdateDeploymentTarget" method.
-        ///
-        /// - Parameters:
-        ///   - request: A request containing a single `Wendycloud_V1_UpdateDeploymentTargetRequest` message.
-        ///   - context: Context providing information about the RPC.
-        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
-        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
-        ///     to an internal error.
-        /// - Returns: A response containing a single `Wendycloud_V1_DeploymentTarget` message.
-        func updateDeploymentTarget(
-            request: GRPCCore.ServerRequest<Wendycloud_V1_UpdateDeploymentTargetRequest>,
-            context: GRPCCore.ServerContext
-        ) async throws -> GRPCCore.ServerResponse<Wendycloud_V1_DeploymentTarget>
-
-        /// Handle the "RetryFailedDeployment" method.
-        ///
-        /// - Parameters:
-        ///   - request: A request containing a single `Wendycloud_V1_RetryFailedDeploymentRequest` message.
-        ///   - context: Context providing information about the RPC.
-        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
-        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
-        ///     to an internal error.
-        /// - Returns: A response containing a single `Wendycloud_V1_Deployment` message.
-        func retryFailedDeployment(
-            request: GRPCCore.ServerRequest<Wendycloud_V1_RetryFailedDeploymentRequest>,
-            context: GRPCCore.ServerContext
-        ) async throws -> GRPCCore.ServerResponse<Wendycloud_V1_Deployment>
+        ) async throws -> GRPCCore.StreamingServerResponse<Wendycloud_V1_DesiredStateResponse>
     }
 
     /// Simple service protocol for the "wendycloud.v1.DeploymentService" service.
@@ -391,7 +415,72 @@ extension Wendycloud_V1_DeploymentService {
     /// doesn't provide access to request or response metadata. If you need access to these
     /// then use ``ServiceProtocol`` instead.
     public protocol SimpleServiceProtocol: Wendycloud_V1_DeploymentService.ServiceProtocol {
+        /// Handle the "CreateAppRelease" method.
+        ///
+        /// > Source IDL Documentation:
+        /// >
+        /// > ==================== App Releases ====================
+        ///
+        /// - Parameters:
+        ///   - request: A `Wendycloud_V1_CreateAppReleaseRequest` message.
+        ///   - context: Context providing information about the RPC.
+        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
+        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
+        ///     to an internal error.
+        /// - Returns: A `Wendycloud_V1_AppRelease` to respond with.
+        func createAppRelease(
+            request: Wendycloud_V1_CreateAppReleaseRequest,
+            context: GRPCCore.ServerContext
+        ) async throws -> Wendycloud_V1_AppRelease
+
+        /// Handle the "UpdateAppRelease" method.
+        ///
+        /// - Parameters:
+        ///   - request: A `Wendycloud_V1_UpdateAppReleaseRequest` message.
+        ///   - context: Context providing information about the RPC.
+        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
+        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
+        ///     to an internal error.
+        /// - Returns: A `Wendycloud_V1_AppRelease` to respond with.
+        func updateAppRelease(
+            request: Wendycloud_V1_UpdateAppReleaseRequest,
+            context: GRPCCore.ServerContext
+        ) async throws -> Wendycloud_V1_AppRelease
+
+        /// Handle the "ListAppReleases" method.
+        ///
+        /// - Parameters:
+        ///   - request: A `Wendycloud_V1_ListAppReleasesRequest` message.
+        ///   - response: A response stream of `Wendycloud_V1_ListAppReleasesResponse` messages.
+        ///   - context: Context providing information about the RPC.
+        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
+        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
+        ///     to an internal error.
+        func listAppReleases(
+            request: Wendycloud_V1_ListAppReleasesRequest,
+            response: GRPCCore.RPCWriter<Wendycloud_V1_ListAppReleasesResponse>,
+            context: GRPCCore.ServerContext
+        ) async throws
+
+        /// Handle the "GetPushImageCredentials" method.
+        ///
+        /// - Parameters:
+        ///   - request: A `Wendycloud_V1_GetPushImageCredentialsRequest` message.
+        ///   - context: Context providing information about the RPC.
+        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
+        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
+        ///     to an internal error.
+        /// - Returns: A `Wendycloud_V1_GetPushImageCredentialsResponse` to respond with.
+        func getPushImageCredentials(
+            request: Wendycloud_V1_GetPushImageCredentialsRequest,
+            context: GRPCCore.ServerContext
+        ) async throws -> Wendycloud_V1_GetPushImageCredentialsResponse
+
         /// Handle the "CreateDeployment" method.
+        ///
+        /// > Source IDL Documentation:
+        /// >
+        /// > ==================== Deployments ====================
         ///
         /// - Parameters:
         ///   - request: A `Wendycloud_V1_CreateDeploymentRequest` message.
@@ -423,85 +512,35 @@ extension Wendycloud_V1_DeploymentService {
         ///
         /// - Parameters:
         ///   - request: A `Wendycloud_V1_ListDeploymentsRequest` message.
+        ///   - response: A response stream of `Wendycloud_V1_ListDeploymentsResponse` messages.
         ///   - context: Context providing information about the RPC.
         /// - Throws: Any error which occurred during the processing of the request. Thrown errors
         ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
         ///     to an internal error.
-        /// - Returns: A `Wendycloud_V1_ListDeploymentsResponse` to respond with.
         func listDeployments(
             request: Wendycloud_V1_ListDeploymentsRequest,
+            response: GRPCCore.RPCWriter<Wendycloud_V1_ListDeploymentsResponse>,
             context: GRPCCore.ServerContext
-        ) async throws -> Wendycloud_V1_ListDeploymentsResponse
+        ) async throws
 
-        /// Handle the "CancelDeployment" method.
+        /// Handle the "HandleReportedState" method.
+        ///
+        /// > Source IDL Documentation:
+        /// >
+        /// > ==================== Asset App Desired Instructions (wendy-agent) ====================
         ///
         /// - Parameters:
-        ///   - request: A `Wendycloud_V1_CancelDeploymentRequest` message.
+        ///   - request: A stream of `Wendycloud_V1_UpdateReportedStateRequest` messages.
+        ///   - response: A response stream of `Wendycloud_V1_DesiredStateResponse` messages.
         ///   - context: Context providing information about the RPC.
         /// - Throws: Any error which occurred during the processing of the request. Thrown errors
         ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
         ///     to an internal error.
-        /// - Returns: A `Wendycloud_V1_Deployment` to respond with.
-        func cancelDeployment(
-            request: Wendycloud_V1_CancelDeploymentRequest,
+        func handleReportedState(
+            request: GRPCCore.RPCAsyncSequence<Wendycloud_V1_UpdateReportedStateRequest, any Swift.Error>,
+            response: GRPCCore.RPCWriter<Wendycloud_V1_DesiredStateResponse>,
             context: GRPCCore.ServerContext
-        ) async throws -> Wendycloud_V1_Deployment
-
-        /// Handle the "GetDeploymentTarget" method.
-        ///
-        /// - Parameters:
-        ///   - request: A `Wendycloud_V1_GetDeploymentTargetRequest` message.
-        ///   - context: Context providing information about the RPC.
-        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
-        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
-        ///     to an internal error.
-        /// - Returns: A `Wendycloud_V1_DeploymentTarget` to respond with.
-        func getDeploymentTarget(
-            request: Wendycloud_V1_GetDeploymentTargetRequest,
-            context: GRPCCore.ServerContext
-        ) async throws -> Wendycloud_V1_DeploymentTarget
-
-        /// Handle the "ListDeploymentTargets" method.
-        ///
-        /// - Parameters:
-        ///   - request: A `Wendycloud_V1_ListDeploymentTargetsRequest` message.
-        ///   - context: Context providing information about the RPC.
-        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
-        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
-        ///     to an internal error.
-        /// - Returns: A `Wendycloud_V1_ListDeploymentTargetsResponse` to respond with.
-        func listDeploymentTargets(
-            request: Wendycloud_V1_ListDeploymentTargetsRequest,
-            context: GRPCCore.ServerContext
-        ) async throws -> Wendycloud_V1_ListDeploymentTargetsResponse
-
-        /// Handle the "UpdateDeploymentTarget" method.
-        ///
-        /// - Parameters:
-        ///   - request: A `Wendycloud_V1_UpdateDeploymentTargetRequest` message.
-        ///   - context: Context providing information about the RPC.
-        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
-        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
-        ///     to an internal error.
-        /// - Returns: A `Wendycloud_V1_DeploymentTarget` to respond with.
-        func updateDeploymentTarget(
-            request: Wendycloud_V1_UpdateDeploymentTargetRequest,
-            context: GRPCCore.ServerContext
-        ) async throws -> Wendycloud_V1_DeploymentTarget
-
-        /// Handle the "RetryFailedDeployment" method.
-        ///
-        /// - Parameters:
-        ///   - request: A `Wendycloud_V1_RetryFailedDeploymentRequest` message.
-        ///   - context: Context providing information about the RPC.
-        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
-        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
-        ///     to an internal error.
-        /// - Returns: A `Wendycloud_V1_Deployment` to respond with.
-        func retryFailedDeployment(
-            request: Wendycloud_V1_RetryFailedDeploymentRequest,
-            context: GRPCCore.ServerContext
-        ) async throws -> Wendycloud_V1_Deployment
+        ) async throws
     }
 }
 
@@ -509,6 +548,50 @@ extension Wendycloud_V1_DeploymentService {
 @available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Wendycloud_V1_DeploymentService.StreamingServiceProtocol {
     public func registerMethods<Transport>(with router: inout GRPCCore.RPCRouter<Transport>) where Transport: GRPCCore.ServerTransport {
+        router.registerHandler(
+            forMethod: Wendycloud_V1_DeploymentService.Method.CreateAppRelease.descriptor,
+            deserializer: GRPCProtobuf.ProtobufDeserializer<Wendycloud_V1_CreateAppReleaseRequest>(),
+            serializer: GRPCProtobuf.ProtobufSerializer<Wendycloud_V1_AppRelease>(),
+            handler: { request, context in
+                try await self.createAppRelease(
+                    request: request,
+                    context: context
+                )
+            }
+        )
+        router.registerHandler(
+            forMethod: Wendycloud_V1_DeploymentService.Method.UpdateAppRelease.descriptor,
+            deserializer: GRPCProtobuf.ProtobufDeserializer<Wendycloud_V1_UpdateAppReleaseRequest>(),
+            serializer: GRPCProtobuf.ProtobufSerializer<Wendycloud_V1_AppRelease>(),
+            handler: { request, context in
+                try await self.updateAppRelease(
+                    request: request,
+                    context: context
+                )
+            }
+        )
+        router.registerHandler(
+            forMethod: Wendycloud_V1_DeploymentService.Method.ListAppReleases.descriptor,
+            deserializer: GRPCProtobuf.ProtobufDeserializer<Wendycloud_V1_ListAppReleasesRequest>(),
+            serializer: GRPCProtobuf.ProtobufSerializer<Wendycloud_V1_ListAppReleasesResponse>(),
+            handler: { request, context in
+                try await self.listAppReleases(
+                    request: request,
+                    context: context
+                )
+            }
+        )
+        router.registerHandler(
+            forMethod: Wendycloud_V1_DeploymentService.Method.GetPushImageCredentials.descriptor,
+            deserializer: GRPCProtobuf.ProtobufDeserializer<Wendycloud_V1_GetPushImageCredentialsRequest>(),
+            serializer: GRPCProtobuf.ProtobufSerializer<Wendycloud_V1_GetPushImageCredentialsResponse>(),
+            handler: { request, context in
+                try await self.getPushImageCredentials(
+                    request: request,
+                    context: context
+                )
+            }
+        )
         router.registerHandler(
             forMethod: Wendycloud_V1_DeploymentService.Method.CreateDeployment.descriptor,
             deserializer: GRPCProtobuf.ProtobufDeserializer<Wendycloud_V1_CreateDeploymentRequest>(),
@@ -543,55 +626,11 @@ extension Wendycloud_V1_DeploymentService.StreamingServiceProtocol {
             }
         )
         router.registerHandler(
-            forMethod: Wendycloud_V1_DeploymentService.Method.CancelDeployment.descriptor,
-            deserializer: GRPCProtobuf.ProtobufDeserializer<Wendycloud_V1_CancelDeploymentRequest>(),
-            serializer: GRPCProtobuf.ProtobufSerializer<Wendycloud_V1_Deployment>(),
+            forMethod: Wendycloud_V1_DeploymentService.Method.HandleReportedState.descriptor,
+            deserializer: GRPCProtobuf.ProtobufDeserializer<Wendycloud_V1_UpdateReportedStateRequest>(),
+            serializer: GRPCProtobuf.ProtobufSerializer<Wendycloud_V1_DesiredStateResponse>(),
             handler: { request, context in
-                try await self.cancelDeployment(
-                    request: request,
-                    context: context
-                )
-            }
-        )
-        router.registerHandler(
-            forMethod: Wendycloud_V1_DeploymentService.Method.GetDeploymentTarget.descriptor,
-            deserializer: GRPCProtobuf.ProtobufDeserializer<Wendycloud_V1_GetDeploymentTargetRequest>(),
-            serializer: GRPCProtobuf.ProtobufSerializer<Wendycloud_V1_DeploymentTarget>(),
-            handler: { request, context in
-                try await self.getDeploymentTarget(
-                    request: request,
-                    context: context
-                )
-            }
-        )
-        router.registerHandler(
-            forMethod: Wendycloud_V1_DeploymentService.Method.ListDeploymentTargets.descriptor,
-            deserializer: GRPCProtobuf.ProtobufDeserializer<Wendycloud_V1_ListDeploymentTargetsRequest>(),
-            serializer: GRPCProtobuf.ProtobufSerializer<Wendycloud_V1_ListDeploymentTargetsResponse>(),
-            handler: { request, context in
-                try await self.listDeploymentTargets(
-                    request: request,
-                    context: context
-                )
-            }
-        )
-        router.registerHandler(
-            forMethod: Wendycloud_V1_DeploymentService.Method.UpdateDeploymentTarget.descriptor,
-            deserializer: GRPCProtobuf.ProtobufDeserializer<Wendycloud_V1_UpdateDeploymentTargetRequest>(),
-            serializer: GRPCProtobuf.ProtobufSerializer<Wendycloud_V1_DeploymentTarget>(),
-            handler: { request, context in
-                try await self.updateDeploymentTarget(
-                    request: request,
-                    context: context
-                )
-            }
-        )
-        router.registerHandler(
-            forMethod: Wendycloud_V1_DeploymentService.Method.RetryFailedDeployment.descriptor,
-            deserializer: GRPCProtobuf.ProtobufDeserializer<Wendycloud_V1_RetryFailedDeploymentRequest>(),
-            serializer: GRPCProtobuf.ProtobufSerializer<Wendycloud_V1_Deployment>(),
-            handler: { request, context in
-                try await self.retryFailedDeployment(
+                try await self.handleReportedState(
                     request: request,
                     context: context
                 )
@@ -603,6 +642,50 @@ extension Wendycloud_V1_DeploymentService.StreamingServiceProtocol {
 // Default implementation of streaming methods from 'StreamingServiceProtocol'.
 @available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Wendycloud_V1_DeploymentService.ServiceProtocol {
+    public func createAppRelease(
+        request: GRPCCore.StreamingServerRequest<Wendycloud_V1_CreateAppReleaseRequest>,
+        context: GRPCCore.ServerContext
+    ) async throws -> GRPCCore.StreamingServerResponse<Wendycloud_V1_AppRelease> {
+        let response = try await self.createAppRelease(
+            request: GRPCCore.ServerRequest(stream: request),
+            context: context
+        )
+        return GRPCCore.StreamingServerResponse(single: response)
+    }
+
+    public func updateAppRelease(
+        request: GRPCCore.StreamingServerRequest<Wendycloud_V1_UpdateAppReleaseRequest>,
+        context: GRPCCore.ServerContext
+    ) async throws -> GRPCCore.StreamingServerResponse<Wendycloud_V1_AppRelease> {
+        let response = try await self.updateAppRelease(
+            request: GRPCCore.ServerRequest(stream: request),
+            context: context
+        )
+        return GRPCCore.StreamingServerResponse(single: response)
+    }
+
+    public func listAppReleases(
+        request: GRPCCore.StreamingServerRequest<Wendycloud_V1_ListAppReleasesRequest>,
+        context: GRPCCore.ServerContext
+    ) async throws -> GRPCCore.StreamingServerResponse<Wendycloud_V1_ListAppReleasesResponse> {
+        let response = try await self.listAppReleases(
+            request: GRPCCore.ServerRequest(stream: request),
+            context: context
+        )
+        return response
+    }
+
+    public func getPushImageCredentials(
+        request: GRPCCore.StreamingServerRequest<Wendycloud_V1_GetPushImageCredentialsRequest>,
+        context: GRPCCore.ServerContext
+    ) async throws -> GRPCCore.StreamingServerResponse<Wendycloud_V1_GetPushImageCredentialsResponse> {
+        let response = try await self.getPushImageCredentials(
+            request: GRPCCore.ServerRequest(stream: request),
+            context: context
+        )
+        return GRPCCore.StreamingServerResponse(single: response)
+    }
+
     public func createDeployment(
         request: GRPCCore.StreamingServerRequest<Wendycloud_V1_CreateDeploymentRequest>,
         context: GRPCCore.ServerContext
@@ -633,68 +716,69 @@ extension Wendycloud_V1_DeploymentService.ServiceProtocol {
             request: GRPCCore.ServerRequest(stream: request),
             context: context
         )
-        return GRPCCore.StreamingServerResponse(single: response)
-    }
-
-    public func cancelDeployment(
-        request: GRPCCore.StreamingServerRequest<Wendycloud_V1_CancelDeploymentRequest>,
-        context: GRPCCore.ServerContext
-    ) async throws -> GRPCCore.StreamingServerResponse<Wendycloud_V1_Deployment> {
-        let response = try await self.cancelDeployment(
-            request: GRPCCore.ServerRequest(stream: request),
-            context: context
-        )
-        return GRPCCore.StreamingServerResponse(single: response)
-    }
-
-    public func getDeploymentTarget(
-        request: GRPCCore.StreamingServerRequest<Wendycloud_V1_GetDeploymentTargetRequest>,
-        context: GRPCCore.ServerContext
-    ) async throws -> GRPCCore.StreamingServerResponse<Wendycloud_V1_DeploymentTarget> {
-        let response = try await self.getDeploymentTarget(
-            request: GRPCCore.ServerRequest(stream: request),
-            context: context
-        )
-        return GRPCCore.StreamingServerResponse(single: response)
-    }
-
-    public func listDeploymentTargets(
-        request: GRPCCore.StreamingServerRequest<Wendycloud_V1_ListDeploymentTargetsRequest>,
-        context: GRPCCore.ServerContext
-    ) async throws -> GRPCCore.StreamingServerResponse<Wendycloud_V1_ListDeploymentTargetsResponse> {
-        let response = try await self.listDeploymentTargets(
-            request: GRPCCore.ServerRequest(stream: request),
-            context: context
-        )
-        return GRPCCore.StreamingServerResponse(single: response)
-    }
-
-    public func updateDeploymentTarget(
-        request: GRPCCore.StreamingServerRequest<Wendycloud_V1_UpdateDeploymentTargetRequest>,
-        context: GRPCCore.ServerContext
-    ) async throws -> GRPCCore.StreamingServerResponse<Wendycloud_V1_DeploymentTarget> {
-        let response = try await self.updateDeploymentTarget(
-            request: GRPCCore.ServerRequest(stream: request),
-            context: context
-        )
-        return GRPCCore.StreamingServerResponse(single: response)
-    }
-
-    public func retryFailedDeployment(
-        request: GRPCCore.StreamingServerRequest<Wendycloud_V1_RetryFailedDeploymentRequest>,
-        context: GRPCCore.ServerContext
-    ) async throws -> GRPCCore.StreamingServerResponse<Wendycloud_V1_Deployment> {
-        let response = try await self.retryFailedDeployment(
-            request: GRPCCore.ServerRequest(stream: request),
-            context: context
-        )
-        return GRPCCore.StreamingServerResponse(single: response)
+        return response
     }
 }
 
 // Default implementation of methods from 'ServiceProtocol'.
 @available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Wendycloud_V1_DeploymentService.SimpleServiceProtocol {
+    public func createAppRelease(
+        request: GRPCCore.ServerRequest<Wendycloud_V1_CreateAppReleaseRequest>,
+        context: GRPCCore.ServerContext
+    ) async throws -> GRPCCore.ServerResponse<Wendycloud_V1_AppRelease> {
+        return GRPCCore.ServerResponse<Wendycloud_V1_AppRelease>(
+            message: try await self.createAppRelease(
+                request: request.message,
+                context: context
+            ),
+            metadata: [:]
+        )
+    }
+
+    public func updateAppRelease(
+        request: GRPCCore.ServerRequest<Wendycloud_V1_UpdateAppReleaseRequest>,
+        context: GRPCCore.ServerContext
+    ) async throws -> GRPCCore.ServerResponse<Wendycloud_V1_AppRelease> {
+        return GRPCCore.ServerResponse<Wendycloud_V1_AppRelease>(
+            message: try await self.updateAppRelease(
+                request: request.message,
+                context: context
+            ),
+            metadata: [:]
+        )
+    }
+
+    public func listAppReleases(
+        request: GRPCCore.ServerRequest<Wendycloud_V1_ListAppReleasesRequest>,
+        context: GRPCCore.ServerContext
+    ) async throws -> GRPCCore.StreamingServerResponse<Wendycloud_V1_ListAppReleasesResponse> {
+        return GRPCCore.StreamingServerResponse<Wendycloud_V1_ListAppReleasesResponse>(
+            metadata: [:],
+            producer: { writer in
+                try await self.listAppReleases(
+                    request: request.message,
+                    response: writer,
+                    context: context
+                )
+                return [:]
+            }
+        )
+    }
+
+    public func getPushImageCredentials(
+        request: GRPCCore.ServerRequest<Wendycloud_V1_GetPushImageCredentialsRequest>,
+        context: GRPCCore.ServerContext
+    ) async throws -> GRPCCore.ServerResponse<Wendycloud_V1_GetPushImageCredentialsResponse> {
+        return GRPCCore.ServerResponse<Wendycloud_V1_GetPushImageCredentialsResponse>(
+            message: try await self.getPushImageCredentials(
+                request: request.message,
+                context: context
+            ),
+            metadata: [:]
+        )
+    }
+
     public func createDeployment(
         request: GRPCCore.ServerRequest<Wendycloud_V1_CreateDeploymentRequest>,
         context: GRPCCore.ServerContext
@@ -724,78 +808,34 @@ extension Wendycloud_V1_DeploymentService.SimpleServiceProtocol {
     public func listDeployments(
         request: GRPCCore.ServerRequest<Wendycloud_V1_ListDeploymentsRequest>,
         context: GRPCCore.ServerContext
-    ) async throws -> GRPCCore.ServerResponse<Wendycloud_V1_ListDeploymentsResponse> {
-        return GRPCCore.ServerResponse<Wendycloud_V1_ListDeploymentsResponse>(
-            message: try await self.listDeployments(
-                request: request.message,
-                context: context
-            ),
-            metadata: [:]
+    ) async throws -> GRPCCore.StreamingServerResponse<Wendycloud_V1_ListDeploymentsResponse> {
+        return GRPCCore.StreamingServerResponse<Wendycloud_V1_ListDeploymentsResponse>(
+            metadata: [:],
+            producer: { writer in
+                try await self.listDeployments(
+                    request: request.message,
+                    response: writer,
+                    context: context
+                )
+                return [:]
+            }
         )
     }
 
-    public func cancelDeployment(
-        request: GRPCCore.ServerRequest<Wendycloud_V1_CancelDeploymentRequest>,
+    public func handleReportedState(
+        request: GRPCCore.StreamingServerRequest<Wendycloud_V1_UpdateReportedStateRequest>,
         context: GRPCCore.ServerContext
-    ) async throws -> GRPCCore.ServerResponse<Wendycloud_V1_Deployment> {
-        return GRPCCore.ServerResponse<Wendycloud_V1_Deployment>(
-            message: try await self.cancelDeployment(
-                request: request.message,
-                context: context
-            ),
-            metadata: [:]
-        )
-    }
-
-    public func getDeploymentTarget(
-        request: GRPCCore.ServerRequest<Wendycloud_V1_GetDeploymentTargetRequest>,
-        context: GRPCCore.ServerContext
-    ) async throws -> GRPCCore.ServerResponse<Wendycloud_V1_DeploymentTarget> {
-        return GRPCCore.ServerResponse<Wendycloud_V1_DeploymentTarget>(
-            message: try await self.getDeploymentTarget(
-                request: request.message,
-                context: context
-            ),
-            metadata: [:]
-        )
-    }
-
-    public func listDeploymentTargets(
-        request: GRPCCore.ServerRequest<Wendycloud_V1_ListDeploymentTargetsRequest>,
-        context: GRPCCore.ServerContext
-    ) async throws -> GRPCCore.ServerResponse<Wendycloud_V1_ListDeploymentTargetsResponse> {
-        return GRPCCore.ServerResponse<Wendycloud_V1_ListDeploymentTargetsResponse>(
-            message: try await self.listDeploymentTargets(
-                request: request.message,
-                context: context
-            ),
-            metadata: [:]
-        )
-    }
-
-    public func updateDeploymentTarget(
-        request: GRPCCore.ServerRequest<Wendycloud_V1_UpdateDeploymentTargetRequest>,
-        context: GRPCCore.ServerContext
-    ) async throws -> GRPCCore.ServerResponse<Wendycloud_V1_DeploymentTarget> {
-        return GRPCCore.ServerResponse<Wendycloud_V1_DeploymentTarget>(
-            message: try await self.updateDeploymentTarget(
-                request: request.message,
-                context: context
-            ),
-            metadata: [:]
-        )
-    }
-
-    public func retryFailedDeployment(
-        request: GRPCCore.ServerRequest<Wendycloud_V1_RetryFailedDeploymentRequest>,
-        context: GRPCCore.ServerContext
-    ) async throws -> GRPCCore.ServerResponse<Wendycloud_V1_Deployment> {
-        return GRPCCore.ServerResponse<Wendycloud_V1_Deployment>(
-            message: try await self.retryFailedDeployment(
-                request: request.message,
-                context: context
-            ),
-            metadata: [:]
+    ) async throws -> GRPCCore.StreamingServerResponse<Wendycloud_V1_DesiredStateResponse> {
+        return GRPCCore.StreamingServerResponse<Wendycloud_V1_DesiredStateResponse>(
+            metadata: [:],
+            producer: { writer in
+                try await self.handleReportedState(
+                    request: request.messages,
+                    response: writer,
+                    context: context
+                )
+                return [:]
+            }
         )
     }
 }
@@ -809,7 +849,91 @@ extension Wendycloud_V1_DeploymentService {
     /// You don't need to implement this protocol directly, use the generated
     /// implementation, ``Client``.
     public protocol ClientProtocol: Sendable {
+        /// Call the "CreateAppRelease" method.
+        ///
+        /// > Source IDL Documentation:
+        /// >
+        /// > ==================== App Releases ====================
+        ///
+        /// - Parameters:
+        ///   - request: A request containing a single `Wendycloud_V1_CreateAppReleaseRequest` message.
+        ///   - serializer: A serializer for `Wendycloud_V1_CreateAppReleaseRequest` messages.
+        ///   - deserializer: A deserializer for `Wendycloud_V1_AppRelease` messages.
+        ///   - options: Options to apply to this RPC.
+        ///   - handleResponse: A closure which handles the response, the result of which is
+        ///       returned to the caller. Returning from the closure will cancel the RPC if it
+        ///       hasn't already finished.
+        /// - Returns: The result of `handleResponse`.
+        func createAppRelease<Result>(
+            request: GRPCCore.ClientRequest<Wendycloud_V1_CreateAppReleaseRequest>,
+            serializer: some GRPCCore.MessageSerializer<Wendycloud_V1_CreateAppReleaseRequest>,
+            deserializer: some GRPCCore.MessageDeserializer<Wendycloud_V1_AppRelease>,
+            options: GRPCCore.CallOptions,
+            onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendycloud_V1_AppRelease>) async throws -> Result
+        ) async throws -> Result where Result: Sendable
+
+        /// Call the "UpdateAppRelease" method.
+        ///
+        /// - Parameters:
+        ///   - request: A request containing a single `Wendycloud_V1_UpdateAppReleaseRequest` message.
+        ///   - serializer: A serializer for `Wendycloud_V1_UpdateAppReleaseRequest` messages.
+        ///   - deserializer: A deserializer for `Wendycloud_V1_AppRelease` messages.
+        ///   - options: Options to apply to this RPC.
+        ///   - handleResponse: A closure which handles the response, the result of which is
+        ///       returned to the caller. Returning from the closure will cancel the RPC if it
+        ///       hasn't already finished.
+        /// - Returns: The result of `handleResponse`.
+        func updateAppRelease<Result>(
+            request: GRPCCore.ClientRequest<Wendycloud_V1_UpdateAppReleaseRequest>,
+            serializer: some GRPCCore.MessageSerializer<Wendycloud_V1_UpdateAppReleaseRequest>,
+            deserializer: some GRPCCore.MessageDeserializer<Wendycloud_V1_AppRelease>,
+            options: GRPCCore.CallOptions,
+            onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendycloud_V1_AppRelease>) async throws -> Result
+        ) async throws -> Result where Result: Sendable
+
+        /// Call the "ListAppReleases" method.
+        ///
+        /// - Parameters:
+        ///   - request: A request containing a single `Wendycloud_V1_ListAppReleasesRequest` message.
+        ///   - serializer: A serializer for `Wendycloud_V1_ListAppReleasesRequest` messages.
+        ///   - deserializer: A deserializer for `Wendycloud_V1_ListAppReleasesResponse` messages.
+        ///   - options: Options to apply to this RPC.
+        ///   - handleResponse: A closure which handles the response, the result of which is
+        ///       returned to the caller. Returning from the closure will cancel the RPC if it
+        ///       hasn't already finished.
+        /// - Returns: The result of `handleResponse`.
+        func listAppReleases<Result>(
+            request: GRPCCore.ClientRequest<Wendycloud_V1_ListAppReleasesRequest>,
+            serializer: some GRPCCore.MessageSerializer<Wendycloud_V1_ListAppReleasesRequest>,
+            deserializer: some GRPCCore.MessageDeserializer<Wendycloud_V1_ListAppReleasesResponse>,
+            options: GRPCCore.CallOptions,
+            onResponse handleResponse: @Sendable @escaping (GRPCCore.StreamingClientResponse<Wendycloud_V1_ListAppReleasesResponse>) async throws -> Result
+        ) async throws -> Result where Result: Sendable
+
+        /// Call the "GetPushImageCredentials" method.
+        ///
+        /// - Parameters:
+        ///   - request: A request containing a single `Wendycloud_V1_GetPushImageCredentialsRequest` message.
+        ///   - serializer: A serializer for `Wendycloud_V1_GetPushImageCredentialsRequest` messages.
+        ///   - deserializer: A deserializer for `Wendycloud_V1_GetPushImageCredentialsResponse` messages.
+        ///   - options: Options to apply to this RPC.
+        ///   - handleResponse: A closure which handles the response, the result of which is
+        ///       returned to the caller. Returning from the closure will cancel the RPC if it
+        ///       hasn't already finished.
+        /// - Returns: The result of `handleResponse`.
+        func getPushImageCredentials<Result>(
+            request: GRPCCore.ClientRequest<Wendycloud_V1_GetPushImageCredentialsRequest>,
+            serializer: some GRPCCore.MessageSerializer<Wendycloud_V1_GetPushImageCredentialsRequest>,
+            deserializer: some GRPCCore.MessageDeserializer<Wendycloud_V1_GetPushImageCredentialsResponse>,
+            options: GRPCCore.CallOptions,
+            onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendycloud_V1_GetPushImageCredentialsResponse>) async throws -> Result
+        ) async throws -> Result where Result: Sendable
+
         /// Call the "CreateDeployment" method.
+        ///
+        /// > Source IDL Documentation:
+        /// >
+        /// > ==================== Deployments ====================
         ///
         /// - Parameters:
         ///   - request: A request containing a single `Wendycloud_V1_CreateDeploymentRequest` message.
@@ -863,102 +987,30 @@ extension Wendycloud_V1_DeploymentService {
             serializer: some GRPCCore.MessageSerializer<Wendycloud_V1_ListDeploymentsRequest>,
             deserializer: some GRPCCore.MessageDeserializer<Wendycloud_V1_ListDeploymentsResponse>,
             options: GRPCCore.CallOptions,
-            onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendycloud_V1_ListDeploymentsResponse>) async throws -> Result
+            onResponse handleResponse: @Sendable @escaping (GRPCCore.StreamingClientResponse<Wendycloud_V1_ListDeploymentsResponse>) async throws -> Result
         ) async throws -> Result where Result: Sendable
 
-        /// Call the "CancelDeployment" method.
+        /// Call the "HandleReportedState" method.
+        ///
+        /// > Source IDL Documentation:
+        /// >
+        /// > ==================== Asset App Desired Instructions (wendy-agent) ====================
         ///
         /// - Parameters:
-        ///   - request: A request containing a single `Wendycloud_V1_CancelDeploymentRequest` message.
-        ///   - serializer: A serializer for `Wendycloud_V1_CancelDeploymentRequest` messages.
-        ///   - deserializer: A deserializer for `Wendycloud_V1_Deployment` messages.
+        ///   - request: A streaming request producing `Wendycloud_V1_UpdateReportedStateRequest` messages.
+        ///   - serializer: A serializer for `Wendycloud_V1_UpdateReportedStateRequest` messages.
+        ///   - deserializer: A deserializer for `Wendycloud_V1_DesiredStateResponse` messages.
         ///   - options: Options to apply to this RPC.
         ///   - handleResponse: A closure which handles the response, the result of which is
         ///       returned to the caller. Returning from the closure will cancel the RPC if it
         ///       hasn't already finished.
         /// - Returns: The result of `handleResponse`.
-        func cancelDeployment<Result>(
-            request: GRPCCore.ClientRequest<Wendycloud_V1_CancelDeploymentRequest>,
-            serializer: some GRPCCore.MessageSerializer<Wendycloud_V1_CancelDeploymentRequest>,
-            deserializer: some GRPCCore.MessageDeserializer<Wendycloud_V1_Deployment>,
+        func handleReportedState<Result>(
+            request: GRPCCore.StreamingClientRequest<Wendycloud_V1_UpdateReportedStateRequest>,
+            serializer: some GRPCCore.MessageSerializer<Wendycloud_V1_UpdateReportedStateRequest>,
+            deserializer: some GRPCCore.MessageDeserializer<Wendycloud_V1_DesiredStateResponse>,
             options: GRPCCore.CallOptions,
-            onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendycloud_V1_Deployment>) async throws -> Result
-        ) async throws -> Result where Result: Sendable
-
-        /// Call the "GetDeploymentTarget" method.
-        ///
-        /// - Parameters:
-        ///   - request: A request containing a single `Wendycloud_V1_GetDeploymentTargetRequest` message.
-        ///   - serializer: A serializer for `Wendycloud_V1_GetDeploymentTargetRequest` messages.
-        ///   - deserializer: A deserializer for `Wendycloud_V1_DeploymentTarget` messages.
-        ///   - options: Options to apply to this RPC.
-        ///   - handleResponse: A closure which handles the response, the result of which is
-        ///       returned to the caller. Returning from the closure will cancel the RPC if it
-        ///       hasn't already finished.
-        /// - Returns: The result of `handleResponse`.
-        func getDeploymentTarget<Result>(
-            request: GRPCCore.ClientRequest<Wendycloud_V1_GetDeploymentTargetRequest>,
-            serializer: some GRPCCore.MessageSerializer<Wendycloud_V1_GetDeploymentTargetRequest>,
-            deserializer: some GRPCCore.MessageDeserializer<Wendycloud_V1_DeploymentTarget>,
-            options: GRPCCore.CallOptions,
-            onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendycloud_V1_DeploymentTarget>) async throws -> Result
-        ) async throws -> Result where Result: Sendable
-
-        /// Call the "ListDeploymentTargets" method.
-        ///
-        /// - Parameters:
-        ///   - request: A request containing a single `Wendycloud_V1_ListDeploymentTargetsRequest` message.
-        ///   - serializer: A serializer for `Wendycloud_V1_ListDeploymentTargetsRequest` messages.
-        ///   - deserializer: A deserializer for `Wendycloud_V1_ListDeploymentTargetsResponse` messages.
-        ///   - options: Options to apply to this RPC.
-        ///   - handleResponse: A closure which handles the response, the result of which is
-        ///       returned to the caller. Returning from the closure will cancel the RPC if it
-        ///       hasn't already finished.
-        /// - Returns: The result of `handleResponse`.
-        func listDeploymentTargets<Result>(
-            request: GRPCCore.ClientRequest<Wendycloud_V1_ListDeploymentTargetsRequest>,
-            serializer: some GRPCCore.MessageSerializer<Wendycloud_V1_ListDeploymentTargetsRequest>,
-            deserializer: some GRPCCore.MessageDeserializer<Wendycloud_V1_ListDeploymentTargetsResponse>,
-            options: GRPCCore.CallOptions,
-            onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendycloud_V1_ListDeploymentTargetsResponse>) async throws -> Result
-        ) async throws -> Result where Result: Sendable
-
-        /// Call the "UpdateDeploymentTarget" method.
-        ///
-        /// - Parameters:
-        ///   - request: A request containing a single `Wendycloud_V1_UpdateDeploymentTargetRequest` message.
-        ///   - serializer: A serializer for `Wendycloud_V1_UpdateDeploymentTargetRequest` messages.
-        ///   - deserializer: A deserializer for `Wendycloud_V1_DeploymentTarget` messages.
-        ///   - options: Options to apply to this RPC.
-        ///   - handleResponse: A closure which handles the response, the result of which is
-        ///       returned to the caller. Returning from the closure will cancel the RPC if it
-        ///       hasn't already finished.
-        /// - Returns: The result of `handleResponse`.
-        func updateDeploymentTarget<Result>(
-            request: GRPCCore.ClientRequest<Wendycloud_V1_UpdateDeploymentTargetRequest>,
-            serializer: some GRPCCore.MessageSerializer<Wendycloud_V1_UpdateDeploymentTargetRequest>,
-            deserializer: some GRPCCore.MessageDeserializer<Wendycloud_V1_DeploymentTarget>,
-            options: GRPCCore.CallOptions,
-            onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendycloud_V1_DeploymentTarget>) async throws -> Result
-        ) async throws -> Result where Result: Sendable
-
-        /// Call the "RetryFailedDeployment" method.
-        ///
-        /// - Parameters:
-        ///   - request: A request containing a single `Wendycloud_V1_RetryFailedDeploymentRequest` message.
-        ///   - serializer: A serializer for `Wendycloud_V1_RetryFailedDeploymentRequest` messages.
-        ///   - deserializer: A deserializer for `Wendycloud_V1_Deployment` messages.
-        ///   - options: Options to apply to this RPC.
-        ///   - handleResponse: A closure which handles the response, the result of which is
-        ///       returned to the caller. Returning from the closure will cancel the RPC if it
-        ///       hasn't already finished.
-        /// - Returns: The result of `handleResponse`.
-        func retryFailedDeployment<Result>(
-            request: GRPCCore.ClientRequest<Wendycloud_V1_RetryFailedDeploymentRequest>,
-            serializer: some GRPCCore.MessageSerializer<Wendycloud_V1_RetryFailedDeploymentRequest>,
-            deserializer: some GRPCCore.MessageDeserializer<Wendycloud_V1_Deployment>,
-            options: GRPCCore.CallOptions,
-            onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendycloud_V1_Deployment>) async throws -> Result
+            onResponse handleResponse: @Sendable @escaping (GRPCCore.StreamingClientResponse<Wendycloud_V1_DesiredStateResponse>) async throws -> Result
         ) async throws -> Result where Result: Sendable
     }
 
@@ -978,7 +1030,133 @@ extension Wendycloud_V1_DeploymentService {
             self.client = client
         }
 
+        /// Call the "CreateAppRelease" method.
+        ///
+        /// > Source IDL Documentation:
+        /// >
+        /// > ==================== App Releases ====================
+        ///
+        /// - Parameters:
+        ///   - request: A request containing a single `Wendycloud_V1_CreateAppReleaseRequest` message.
+        ///   - serializer: A serializer for `Wendycloud_V1_CreateAppReleaseRequest` messages.
+        ///   - deserializer: A deserializer for `Wendycloud_V1_AppRelease` messages.
+        ///   - options: Options to apply to this RPC.
+        ///   - handleResponse: A closure which handles the response, the result of which is
+        ///       returned to the caller. Returning from the closure will cancel the RPC if it
+        ///       hasn't already finished.
+        /// - Returns: The result of `handleResponse`.
+        public func createAppRelease<Result>(
+            request: GRPCCore.ClientRequest<Wendycloud_V1_CreateAppReleaseRequest>,
+            serializer: some GRPCCore.MessageSerializer<Wendycloud_V1_CreateAppReleaseRequest>,
+            deserializer: some GRPCCore.MessageDeserializer<Wendycloud_V1_AppRelease>,
+            options: GRPCCore.CallOptions = .defaults,
+            onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendycloud_V1_AppRelease>) async throws -> Result = { response in
+                try response.message
+            }
+        ) async throws -> Result where Result: Sendable {
+            try await self.client.unary(
+                request: request,
+                descriptor: Wendycloud_V1_DeploymentService.Method.CreateAppRelease.descriptor,
+                serializer: serializer,
+                deserializer: deserializer,
+                options: options,
+                onResponse: handleResponse
+            )
+        }
+
+        /// Call the "UpdateAppRelease" method.
+        ///
+        /// - Parameters:
+        ///   - request: A request containing a single `Wendycloud_V1_UpdateAppReleaseRequest` message.
+        ///   - serializer: A serializer for `Wendycloud_V1_UpdateAppReleaseRequest` messages.
+        ///   - deserializer: A deserializer for `Wendycloud_V1_AppRelease` messages.
+        ///   - options: Options to apply to this RPC.
+        ///   - handleResponse: A closure which handles the response, the result of which is
+        ///       returned to the caller. Returning from the closure will cancel the RPC if it
+        ///       hasn't already finished.
+        /// - Returns: The result of `handleResponse`.
+        public func updateAppRelease<Result>(
+            request: GRPCCore.ClientRequest<Wendycloud_V1_UpdateAppReleaseRequest>,
+            serializer: some GRPCCore.MessageSerializer<Wendycloud_V1_UpdateAppReleaseRequest>,
+            deserializer: some GRPCCore.MessageDeserializer<Wendycloud_V1_AppRelease>,
+            options: GRPCCore.CallOptions = .defaults,
+            onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendycloud_V1_AppRelease>) async throws -> Result = { response in
+                try response.message
+            }
+        ) async throws -> Result where Result: Sendable {
+            try await self.client.unary(
+                request: request,
+                descriptor: Wendycloud_V1_DeploymentService.Method.UpdateAppRelease.descriptor,
+                serializer: serializer,
+                deserializer: deserializer,
+                options: options,
+                onResponse: handleResponse
+            )
+        }
+
+        /// Call the "ListAppReleases" method.
+        ///
+        /// - Parameters:
+        ///   - request: A request containing a single `Wendycloud_V1_ListAppReleasesRequest` message.
+        ///   - serializer: A serializer for `Wendycloud_V1_ListAppReleasesRequest` messages.
+        ///   - deserializer: A deserializer for `Wendycloud_V1_ListAppReleasesResponse` messages.
+        ///   - options: Options to apply to this RPC.
+        ///   - handleResponse: A closure which handles the response, the result of which is
+        ///       returned to the caller. Returning from the closure will cancel the RPC if it
+        ///       hasn't already finished.
+        /// - Returns: The result of `handleResponse`.
+        public func listAppReleases<Result>(
+            request: GRPCCore.ClientRequest<Wendycloud_V1_ListAppReleasesRequest>,
+            serializer: some GRPCCore.MessageSerializer<Wendycloud_V1_ListAppReleasesRequest>,
+            deserializer: some GRPCCore.MessageDeserializer<Wendycloud_V1_ListAppReleasesResponse>,
+            options: GRPCCore.CallOptions = .defaults,
+            onResponse handleResponse: @Sendable @escaping (GRPCCore.StreamingClientResponse<Wendycloud_V1_ListAppReleasesResponse>) async throws -> Result
+        ) async throws -> Result where Result: Sendable {
+            try await self.client.serverStreaming(
+                request: request,
+                descriptor: Wendycloud_V1_DeploymentService.Method.ListAppReleases.descriptor,
+                serializer: serializer,
+                deserializer: deserializer,
+                options: options,
+                onResponse: handleResponse
+            )
+        }
+
+        /// Call the "GetPushImageCredentials" method.
+        ///
+        /// - Parameters:
+        ///   - request: A request containing a single `Wendycloud_V1_GetPushImageCredentialsRequest` message.
+        ///   - serializer: A serializer for `Wendycloud_V1_GetPushImageCredentialsRequest` messages.
+        ///   - deserializer: A deserializer for `Wendycloud_V1_GetPushImageCredentialsResponse` messages.
+        ///   - options: Options to apply to this RPC.
+        ///   - handleResponse: A closure which handles the response, the result of which is
+        ///       returned to the caller. Returning from the closure will cancel the RPC if it
+        ///       hasn't already finished.
+        /// - Returns: The result of `handleResponse`.
+        public func getPushImageCredentials<Result>(
+            request: GRPCCore.ClientRequest<Wendycloud_V1_GetPushImageCredentialsRequest>,
+            serializer: some GRPCCore.MessageSerializer<Wendycloud_V1_GetPushImageCredentialsRequest>,
+            deserializer: some GRPCCore.MessageDeserializer<Wendycloud_V1_GetPushImageCredentialsResponse>,
+            options: GRPCCore.CallOptions = .defaults,
+            onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendycloud_V1_GetPushImageCredentialsResponse>) async throws -> Result = { response in
+                try response.message
+            }
+        ) async throws -> Result where Result: Sendable {
+            try await self.client.unary(
+                request: request,
+                descriptor: Wendycloud_V1_DeploymentService.Method.GetPushImageCredentials.descriptor,
+                serializer: serializer,
+                deserializer: deserializer,
+                options: options,
+                onResponse: handleResponse
+            )
+        }
+
         /// Call the "CreateDeployment" method.
+        ///
+        /// > Source IDL Documentation:
+        /// >
+        /// > ==================== Deployments ====================
         ///
         /// - Parameters:
         ///   - request: A request containing a single `Wendycloud_V1_CreateDeploymentRequest` message.
@@ -1054,11 +1232,9 @@ extension Wendycloud_V1_DeploymentService {
             serializer: some GRPCCore.MessageSerializer<Wendycloud_V1_ListDeploymentsRequest>,
             deserializer: some GRPCCore.MessageDeserializer<Wendycloud_V1_ListDeploymentsResponse>,
             options: GRPCCore.CallOptions = .defaults,
-            onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendycloud_V1_ListDeploymentsResponse>) async throws -> Result = { response in
-                try response.message
-            }
+            onResponse handleResponse: @Sendable @escaping (GRPCCore.StreamingClientResponse<Wendycloud_V1_ListDeploymentsResponse>) async throws -> Result
         ) async throws -> Result where Result: Sendable {
-            try await self.client.unary(
+            try await self.client.serverStreaming(
                 request: request,
                 descriptor: Wendycloud_V1_DeploymentService.Method.ListDeployments.descriptor,
                 serializer: serializer,
@@ -1068,149 +1244,31 @@ extension Wendycloud_V1_DeploymentService {
             )
         }
 
-        /// Call the "CancelDeployment" method.
+        /// Call the "HandleReportedState" method.
+        ///
+        /// > Source IDL Documentation:
+        /// >
+        /// > ==================== Asset App Desired Instructions (wendy-agent) ====================
         ///
         /// - Parameters:
-        ///   - request: A request containing a single `Wendycloud_V1_CancelDeploymentRequest` message.
-        ///   - serializer: A serializer for `Wendycloud_V1_CancelDeploymentRequest` messages.
-        ///   - deserializer: A deserializer for `Wendycloud_V1_Deployment` messages.
+        ///   - request: A streaming request producing `Wendycloud_V1_UpdateReportedStateRequest` messages.
+        ///   - serializer: A serializer for `Wendycloud_V1_UpdateReportedStateRequest` messages.
+        ///   - deserializer: A deserializer for `Wendycloud_V1_DesiredStateResponse` messages.
         ///   - options: Options to apply to this RPC.
         ///   - handleResponse: A closure which handles the response, the result of which is
         ///       returned to the caller. Returning from the closure will cancel the RPC if it
         ///       hasn't already finished.
         /// - Returns: The result of `handleResponse`.
-        public func cancelDeployment<Result>(
-            request: GRPCCore.ClientRequest<Wendycloud_V1_CancelDeploymentRequest>,
-            serializer: some GRPCCore.MessageSerializer<Wendycloud_V1_CancelDeploymentRequest>,
-            deserializer: some GRPCCore.MessageDeserializer<Wendycloud_V1_Deployment>,
+        public func handleReportedState<Result>(
+            request: GRPCCore.StreamingClientRequest<Wendycloud_V1_UpdateReportedStateRequest>,
+            serializer: some GRPCCore.MessageSerializer<Wendycloud_V1_UpdateReportedStateRequest>,
+            deserializer: some GRPCCore.MessageDeserializer<Wendycloud_V1_DesiredStateResponse>,
             options: GRPCCore.CallOptions = .defaults,
-            onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendycloud_V1_Deployment>) async throws -> Result = { response in
-                try response.message
-            }
+            onResponse handleResponse: @Sendable @escaping (GRPCCore.StreamingClientResponse<Wendycloud_V1_DesiredStateResponse>) async throws -> Result
         ) async throws -> Result where Result: Sendable {
-            try await self.client.unary(
+            try await self.client.bidirectionalStreaming(
                 request: request,
-                descriptor: Wendycloud_V1_DeploymentService.Method.CancelDeployment.descriptor,
-                serializer: serializer,
-                deserializer: deserializer,
-                options: options,
-                onResponse: handleResponse
-            )
-        }
-
-        /// Call the "GetDeploymentTarget" method.
-        ///
-        /// - Parameters:
-        ///   - request: A request containing a single `Wendycloud_V1_GetDeploymentTargetRequest` message.
-        ///   - serializer: A serializer for `Wendycloud_V1_GetDeploymentTargetRequest` messages.
-        ///   - deserializer: A deserializer for `Wendycloud_V1_DeploymentTarget` messages.
-        ///   - options: Options to apply to this RPC.
-        ///   - handleResponse: A closure which handles the response, the result of which is
-        ///       returned to the caller. Returning from the closure will cancel the RPC if it
-        ///       hasn't already finished.
-        /// - Returns: The result of `handleResponse`.
-        public func getDeploymentTarget<Result>(
-            request: GRPCCore.ClientRequest<Wendycloud_V1_GetDeploymentTargetRequest>,
-            serializer: some GRPCCore.MessageSerializer<Wendycloud_V1_GetDeploymentTargetRequest>,
-            deserializer: some GRPCCore.MessageDeserializer<Wendycloud_V1_DeploymentTarget>,
-            options: GRPCCore.CallOptions = .defaults,
-            onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendycloud_V1_DeploymentTarget>) async throws -> Result = { response in
-                try response.message
-            }
-        ) async throws -> Result where Result: Sendable {
-            try await self.client.unary(
-                request: request,
-                descriptor: Wendycloud_V1_DeploymentService.Method.GetDeploymentTarget.descriptor,
-                serializer: serializer,
-                deserializer: deserializer,
-                options: options,
-                onResponse: handleResponse
-            )
-        }
-
-        /// Call the "ListDeploymentTargets" method.
-        ///
-        /// - Parameters:
-        ///   - request: A request containing a single `Wendycloud_V1_ListDeploymentTargetsRequest` message.
-        ///   - serializer: A serializer for `Wendycloud_V1_ListDeploymentTargetsRequest` messages.
-        ///   - deserializer: A deserializer for `Wendycloud_V1_ListDeploymentTargetsResponse` messages.
-        ///   - options: Options to apply to this RPC.
-        ///   - handleResponse: A closure which handles the response, the result of which is
-        ///       returned to the caller. Returning from the closure will cancel the RPC if it
-        ///       hasn't already finished.
-        /// - Returns: The result of `handleResponse`.
-        public func listDeploymentTargets<Result>(
-            request: GRPCCore.ClientRequest<Wendycloud_V1_ListDeploymentTargetsRequest>,
-            serializer: some GRPCCore.MessageSerializer<Wendycloud_V1_ListDeploymentTargetsRequest>,
-            deserializer: some GRPCCore.MessageDeserializer<Wendycloud_V1_ListDeploymentTargetsResponse>,
-            options: GRPCCore.CallOptions = .defaults,
-            onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendycloud_V1_ListDeploymentTargetsResponse>) async throws -> Result = { response in
-                try response.message
-            }
-        ) async throws -> Result where Result: Sendable {
-            try await self.client.unary(
-                request: request,
-                descriptor: Wendycloud_V1_DeploymentService.Method.ListDeploymentTargets.descriptor,
-                serializer: serializer,
-                deserializer: deserializer,
-                options: options,
-                onResponse: handleResponse
-            )
-        }
-
-        /// Call the "UpdateDeploymentTarget" method.
-        ///
-        /// - Parameters:
-        ///   - request: A request containing a single `Wendycloud_V1_UpdateDeploymentTargetRequest` message.
-        ///   - serializer: A serializer for `Wendycloud_V1_UpdateDeploymentTargetRequest` messages.
-        ///   - deserializer: A deserializer for `Wendycloud_V1_DeploymentTarget` messages.
-        ///   - options: Options to apply to this RPC.
-        ///   - handleResponse: A closure which handles the response, the result of which is
-        ///       returned to the caller. Returning from the closure will cancel the RPC if it
-        ///       hasn't already finished.
-        /// - Returns: The result of `handleResponse`.
-        public func updateDeploymentTarget<Result>(
-            request: GRPCCore.ClientRequest<Wendycloud_V1_UpdateDeploymentTargetRequest>,
-            serializer: some GRPCCore.MessageSerializer<Wendycloud_V1_UpdateDeploymentTargetRequest>,
-            deserializer: some GRPCCore.MessageDeserializer<Wendycloud_V1_DeploymentTarget>,
-            options: GRPCCore.CallOptions = .defaults,
-            onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendycloud_V1_DeploymentTarget>) async throws -> Result = { response in
-                try response.message
-            }
-        ) async throws -> Result where Result: Sendable {
-            try await self.client.unary(
-                request: request,
-                descriptor: Wendycloud_V1_DeploymentService.Method.UpdateDeploymentTarget.descriptor,
-                serializer: serializer,
-                deserializer: deserializer,
-                options: options,
-                onResponse: handleResponse
-            )
-        }
-
-        /// Call the "RetryFailedDeployment" method.
-        ///
-        /// - Parameters:
-        ///   - request: A request containing a single `Wendycloud_V1_RetryFailedDeploymentRequest` message.
-        ///   - serializer: A serializer for `Wendycloud_V1_RetryFailedDeploymentRequest` messages.
-        ///   - deserializer: A deserializer for `Wendycloud_V1_Deployment` messages.
-        ///   - options: Options to apply to this RPC.
-        ///   - handleResponse: A closure which handles the response, the result of which is
-        ///       returned to the caller. Returning from the closure will cancel the RPC if it
-        ///       hasn't already finished.
-        /// - Returns: The result of `handleResponse`.
-        public func retryFailedDeployment<Result>(
-            request: GRPCCore.ClientRequest<Wendycloud_V1_RetryFailedDeploymentRequest>,
-            serializer: some GRPCCore.MessageSerializer<Wendycloud_V1_RetryFailedDeploymentRequest>,
-            deserializer: some GRPCCore.MessageDeserializer<Wendycloud_V1_Deployment>,
-            options: GRPCCore.CallOptions = .defaults,
-            onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendycloud_V1_Deployment>) async throws -> Result = { response in
-                try response.message
-            }
-        ) async throws -> Result where Result: Sendable {
-            try await self.client.unary(
-                request: request,
-                descriptor: Wendycloud_V1_DeploymentService.Method.RetryFailedDeployment.descriptor,
+                descriptor: Wendycloud_V1_DeploymentService.Method.HandleReportedState.descriptor,
                 serializer: serializer,
                 deserializer: deserializer,
                 options: options,
@@ -1223,7 +1281,113 @@ extension Wendycloud_V1_DeploymentService {
 // Helpers providing default arguments to 'ClientProtocol' methods.
 @available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Wendycloud_V1_DeploymentService.ClientProtocol {
+    /// Call the "CreateAppRelease" method.
+    ///
+    /// > Source IDL Documentation:
+    /// >
+    /// > ==================== App Releases ====================
+    ///
+    /// - Parameters:
+    ///   - request: A request containing a single `Wendycloud_V1_CreateAppReleaseRequest` message.
+    ///   - options: Options to apply to this RPC.
+    ///   - handleResponse: A closure which handles the response, the result of which is
+    ///       returned to the caller. Returning from the closure will cancel the RPC if it
+    ///       hasn't already finished.
+    /// - Returns: The result of `handleResponse`.
+    public func createAppRelease<Result>(
+        request: GRPCCore.ClientRequest<Wendycloud_V1_CreateAppReleaseRequest>,
+        options: GRPCCore.CallOptions = .defaults,
+        onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendycloud_V1_AppRelease>) async throws -> Result = { response in
+            try response.message
+        }
+    ) async throws -> Result where Result: Sendable {
+        try await self.createAppRelease(
+            request: request,
+            serializer: GRPCProtobuf.ProtobufSerializer<Wendycloud_V1_CreateAppReleaseRequest>(),
+            deserializer: GRPCProtobuf.ProtobufDeserializer<Wendycloud_V1_AppRelease>(),
+            options: options,
+            onResponse: handleResponse
+        )
+    }
+
+    /// Call the "UpdateAppRelease" method.
+    ///
+    /// - Parameters:
+    ///   - request: A request containing a single `Wendycloud_V1_UpdateAppReleaseRequest` message.
+    ///   - options: Options to apply to this RPC.
+    ///   - handleResponse: A closure which handles the response, the result of which is
+    ///       returned to the caller. Returning from the closure will cancel the RPC if it
+    ///       hasn't already finished.
+    /// - Returns: The result of `handleResponse`.
+    public func updateAppRelease<Result>(
+        request: GRPCCore.ClientRequest<Wendycloud_V1_UpdateAppReleaseRequest>,
+        options: GRPCCore.CallOptions = .defaults,
+        onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendycloud_V1_AppRelease>) async throws -> Result = { response in
+            try response.message
+        }
+    ) async throws -> Result where Result: Sendable {
+        try await self.updateAppRelease(
+            request: request,
+            serializer: GRPCProtobuf.ProtobufSerializer<Wendycloud_V1_UpdateAppReleaseRequest>(),
+            deserializer: GRPCProtobuf.ProtobufDeserializer<Wendycloud_V1_AppRelease>(),
+            options: options,
+            onResponse: handleResponse
+        )
+    }
+
+    /// Call the "ListAppReleases" method.
+    ///
+    /// - Parameters:
+    ///   - request: A request containing a single `Wendycloud_V1_ListAppReleasesRequest` message.
+    ///   - options: Options to apply to this RPC.
+    ///   - handleResponse: A closure which handles the response, the result of which is
+    ///       returned to the caller. Returning from the closure will cancel the RPC if it
+    ///       hasn't already finished.
+    /// - Returns: The result of `handleResponse`.
+    public func listAppReleases<Result>(
+        request: GRPCCore.ClientRequest<Wendycloud_V1_ListAppReleasesRequest>,
+        options: GRPCCore.CallOptions = .defaults,
+        onResponse handleResponse: @Sendable @escaping (GRPCCore.StreamingClientResponse<Wendycloud_V1_ListAppReleasesResponse>) async throws -> Result
+    ) async throws -> Result where Result: Sendable {
+        try await self.listAppReleases(
+            request: request,
+            serializer: GRPCProtobuf.ProtobufSerializer<Wendycloud_V1_ListAppReleasesRequest>(),
+            deserializer: GRPCProtobuf.ProtobufDeserializer<Wendycloud_V1_ListAppReleasesResponse>(),
+            options: options,
+            onResponse: handleResponse
+        )
+    }
+
+    /// Call the "GetPushImageCredentials" method.
+    ///
+    /// - Parameters:
+    ///   - request: A request containing a single `Wendycloud_V1_GetPushImageCredentialsRequest` message.
+    ///   - options: Options to apply to this RPC.
+    ///   - handleResponse: A closure which handles the response, the result of which is
+    ///       returned to the caller. Returning from the closure will cancel the RPC if it
+    ///       hasn't already finished.
+    /// - Returns: The result of `handleResponse`.
+    public func getPushImageCredentials<Result>(
+        request: GRPCCore.ClientRequest<Wendycloud_V1_GetPushImageCredentialsRequest>,
+        options: GRPCCore.CallOptions = .defaults,
+        onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendycloud_V1_GetPushImageCredentialsResponse>) async throws -> Result = { response in
+            try response.message
+        }
+    ) async throws -> Result where Result: Sendable {
+        try await self.getPushImageCredentials(
+            request: request,
+            serializer: GRPCProtobuf.ProtobufSerializer<Wendycloud_V1_GetPushImageCredentialsRequest>(),
+            deserializer: GRPCProtobuf.ProtobufDeserializer<Wendycloud_V1_GetPushImageCredentialsResponse>(),
+            options: options,
+            onResponse: handleResponse
+        )
+    }
+
     /// Call the "CreateDeployment" method.
+    ///
+    /// > Source IDL Documentation:
+    /// >
+    /// > ==================== Deployments ====================
     ///
     /// - Parameters:
     ///   - request: A request containing a single `Wendycloud_V1_CreateDeploymentRequest` message.
@@ -1285,9 +1449,7 @@ extension Wendycloud_V1_DeploymentService.ClientProtocol {
     public func listDeployments<Result>(
         request: GRPCCore.ClientRequest<Wendycloud_V1_ListDeploymentsRequest>,
         options: GRPCCore.CallOptions = .defaults,
-        onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendycloud_V1_ListDeploymentsResponse>) async throws -> Result = { response in
-            try response.message
-        }
+        onResponse handleResponse: @Sendable @escaping (GRPCCore.StreamingClientResponse<Wendycloud_V1_ListDeploymentsResponse>) async throws -> Result
     ) async throws -> Result where Result: Sendable {
         try await self.listDeployments(
             request: request,
@@ -1298,126 +1460,28 @@ extension Wendycloud_V1_DeploymentService.ClientProtocol {
         )
     }
 
-    /// Call the "CancelDeployment" method.
+    /// Call the "HandleReportedState" method.
+    ///
+    /// > Source IDL Documentation:
+    /// >
+    /// > ==================== Asset App Desired Instructions (wendy-agent) ====================
     ///
     /// - Parameters:
-    ///   - request: A request containing a single `Wendycloud_V1_CancelDeploymentRequest` message.
+    ///   - request: A streaming request producing `Wendycloud_V1_UpdateReportedStateRequest` messages.
     ///   - options: Options to apply to this RPC.
     ///   - handleResponse: A closure which handles the response, the result of which is
     ///       returned to the caller. Returning from the closure will cancel the RPC if it
     ///       hasn't already finished.
     /// - Returns: The result of `handleResponse`.
-    public func cancelDeployment<Result>(
-        request: GRPCCore.ClientRequest<Wendycloud_V1_CancelDeploymentRequest>,
+    public func handleReportedState<Result>(
+        request: GRPCCore.StreamingClientRequest<Wendycloud_V1_UpdateReportedStateRequest>,
         options: GRPCCore.CallOptions = .defaults,
-        onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendycloud_V1_Deployment>) async throws -> Result = { response in
-            try response.message
-        }
+        onResponse handleResponse: @Sendable @escaping (GRPCCore.StreamingClientResponse<Wendycloud_V1_DesiredStateResponse>) async throws -> Result
     ) async throws -> Result where Result: Sendable {
-        try await self.cancelDeployment(
+        try await self.handleReportedState(
             request: request,
-            serializer: GRPCProtobuf.ProtobufSerializer<Wendycloud_V1_CancelDeploymentRequest>(),
-            deserializer: GRPCProtobuf.ProtobufDeserializer<Wendycloud_V1_Deployment>(),
-            options: options,
-            onResponse: handleResponse
-        )
-    }
-
-    /// Call the "GetDeploymentTarget" method.
-    ///
-    /// - Parameters:
-    ///   - request: A request containing a single `Wendycloud_V1_GetDeploymentTargetRequest` message.
-    ///   - options: Options to apply to this RPC.
-    ///   - handleResponse: A closure which handles the response, the result of which is
-    ///       returned to the caller. Returning from the closure will cancel the RPC if it
-    ///       hasn't already finished.
-    /// - Returns: The result of `handleResponse`.
-    public func getDeploymentTarget<Result>(
-        request: GRPCCore.ClientRequest<Wendycloud_V1_GetDeploymentTargetRequest>,
-        options: GRPCCore.CallOptions = .defaults,
-        onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendycloud_V1_DeploymentTarget>) async throws -> Result = { response in
-            try response.message
-        }
-    ) async throws -> Result where Result: Sendable {
-        try await self.getDeploymentTarget(
-            request: request,
-            serializer: GRPCProtobuf.ProtobufSerializer<Wendycloud_V1_GetDeploymentTargetRequest>(),
-            deserializer: GRPCProtobuf.ProtobufDeserializer<Wendycloud_V1_DeploymentTarget>(),
-            options: options,
-            onResponse: handleResponse
-        )
-    }
-
-    /// Call the "ListDeploymentTargets" method.
-    ///
-    /// - Parameters:
-    ///   - request: A request containing a single `Wendycloud_V1_ListDeploymentTargetsRequest` message.
-    ///   - options: Options to apply to this RPC.
-    ///   - handleResponse: A closure which handles the response, the result of which is
-    ///       returned to the caller. Returning from the closure will cancel the RPC if it
-    ///       hasn't already finished.
-    /// - Returns: The result of `handleResponse`.
-    public func listDeploymentTargets<Result>(
-        request: GRPCCore.ClientRequest<Wendycloud_V1_ListDeploymentTargetsRequest>,
-        options: GRPCCore.CallOptions = .defaults,
-        onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendycloud_V1_ListDeploymentTargetsResponse>) async throws -> Result = { response in
-            try response.message
-        }
-    ) async throws -> Result where Result: Sendable {
-        try await self.listDeploymentTargets(
-            request: request,
-            serializer: GRPCProtobuf.ProtobufSerializer<Wendycloud_V1_ListDeploymentTargetsRequest>(),
-            deserializer: GRPCProtobuf.ProtobufDeserializer<Wendycloud_V1_ListDeploymentTargetsResponse>(),
-            options: options,
-            onResponse: handleResponse
-        )
-    }
-
-    /// Call the "UpdateDeploymentTarget" method.
-    ///
-    /// - Parameters:
-    ///   - request: A request containing a single `Wendycloud_V1_UpdateDeploymentTargetRequest` message.
-    ///   - options: Options to apply to this RPC.
-    ///   - handleResponse: A closure which handles the response, the result of which is
-    ///       returned to the caller. Returning from the closure will cancel the RPC if it
-    ///       hasn't already finished.
-    /// - Returns: The result of `handleResponse`.
-    public func updateDeploymentTarget<Result>(
-        request: GRPCCore.ClientRequest<Wendycloud_V1_UpdateDeploymentTargetRequest>,
-        options: GRPCCore.CallOptions = .defaults,
-        onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendycloud_V1_DeploymentTarget>) async throws -> Result = { response in
-            try response.message
-        }
-    ) async throws -> Result where Result: Sendable {
-        try await self.updateDeploymentTarget(
-            request: request,
-            serializer: GRPCProtobuf.ProtobufSerializer<Wendycloud_V1_UpdateDeploymentTargetRequest>(),
-            deserializer: GRPCProtobuf.ProtobufDeserializer<Wendycloud_V1_DeploymentTarget>(),
-            options: options,
-            onResponse: handleResponse
-        )
-    }
-
-    /// Call the "RetryFailedDeployment" method.
-    ///
-    /// - Parameters:
-    ///   - request: A request containing a single `Wendycloud_V1_RetryFailedDeploymentRequest` message.
-    ///   - options: Options to apply to this RPC.
-    ///   - handleResponse: A closure which handles the response, the result of which is
-    ///       returned to the caller. Returning from the closure will cancel the RPC if it
-    ///       hasn't already finished.
-    /// - Returns: The result of `handleResponse`.
-    public func retryFailedDeployment<Result>(
-        request: GRPCCore.ClientRequest<Wendycloud_V1_RetryFailedDeploymentRequest>,
-        options: GRPCCore.CallOptions = .defaults,
-        onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendycloud_V1_Deployment>) async throws -> Result = { response in
-            try response.message
-        }
-    ) async throws -> Result where Result: Sendable {
-        try await self.retryFailedDeployment(
-            request: request,
-            serializer: GRPCProtobuf.ProtobufSerializer<Wendycloud_V1_RetryFailedDeploymentRequest>(),
-            deserializer: GRPCProtobuf.ProtobufDeserializer<Wendycloud_V1_Deployment>(),
+            serializer: GRPCProtobuf.ProtobufSerializer<Wendycloud_V1_UpdateReportedStateRequest>(),
+            deserializer: GRPCProtobuf.ProtobufDeserializer<Wendycloud_V1_DesiredStateResponse>(),
             options: options,
             onResponse: handleResponse
         )
@@ -1427,7 +1491,129 @@ extension Wendycloud_V1_DeploymentService.ClientProtocol {
 // Helpers providing sugared APIs for 'ClientProtocol' methods.
 @available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 extension Wendycloud_V1_DeploymentService.ClientProtocol {
+    /// Call the "CreateAppRelease" method.
+    ///
+    /// > Source IDL Documentation:
+    /// >
+    /// > ==================== App Releases ====================
+    ///
+    /// - Parameters:
+    ///   - message: request message to send.
+    ///   - metadata: Additional metadata to send, defaults to empty.
+    ///   - options: Options to apply to this RPC, defaults to `.defaults`.
+    ///   - handleResponse: A closure which handles the response, the result of which is
+    ///       returned to the caller. Returning from the closure will cancel the RPC if it
+    ///       hasn't already finished.
+    /// - Returns: The result of `handleResponse`.
+    public func createAppRelease<Result>(
+        _ message: Wendycloud_V1_CreateAppReleaseRequest,
+        metadata: GRPCCore.Metadata = [:],
+        options: GRPCCore.CallOptions = .defaults,
+        onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendycloud_V1_AppRelease>) async throws -> Result = { response in
+            try response.message
+        }
+    ) async throws -> Result where Result: Sendable {
+        let request = GRPCCore.ClientRequest<Wendycloud_V1_CreateAppReleaseRequest>(
+            message: message,
+            metadata: metadata
+        )
+        return try await self.createAppRelease(
+            request: request,
+            options: options,
+            onResponse: handleResponse
+        )
+    }
+
+    /// Call the "UpdateAppRelease" method.
+    ///
+    /// - Parameters:
+    ///   - message: request message to send.
+    ///   - metadata: Additional metadata to send, defaults to empty.
+    ///   - options: Options to apply to this RPC, defaults to `.defaults`.
+    ///   - handleResponse: A closure which handles the response, the result of which is
+    ///       returned to the caller. Returning from the closure will cancel the RPC if it
+    ///       hasn't already finished.
+    /// - Returns: The result of `handleResponse`.
+    public func updateAppRelease<Result>(
+        _ message: Wendycloud_V1_UpdateAppReleaseRequest,
+        metadata: GRPCCore.Metadata = [:],
+        options: GRPCCore.CallOptions = .defaults,
+        onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendycloud_V1_AppRelease>) async throws -> Result = { response in
+            try response.message
+        }
+    ) async throws -> Result where Result: Sendable {
+        let request = GRPCCore.ClientRequest<Wendycloud_V1_UpdateAppReleaseRequest>(
+            message: message,
+            metadata: metadata
+        )
+        return try await self.updateAppRelease(
+            request: request,
+            options: options,
+            onResponse: handleResponse
+        )
+    }
+
+    /// Call the "ListAppReleases" method.
+    ///
+    /// - Parameters:
+    ///   - message: request message to send.
+    ///   - metadata: Additional metadata to send, defaults to empty.
+    ///   - options: Options to apply to this RPC, defaults to `.defaults`.
+    ///   - handleResponse: A closure which handles the response, the result of which is
+    ///       returned to the caller. Returning from the closure will cancel the RPC if it
+    ///       hasn't already finished.
+    /// - Returns: The result of `handleResponse`.
+    public func listAppReleases<Result>(
+        _ message: Wendycloud_V1_ListAppReleasesRequest,
+        metadata: GRPCCore.Metadata = [:],
+        options: GRPCCore.CallOptions = .defaults,
+        onResponse handleResponse: @Sendable @escaping (GRPCCore.StreamingClientResponse<Wendycloud_V1_ListAppReleasesResponse>) async throws -> Result
+    ) async throws -> Result where Result: Sendable {
+        let request = GRPCCore.ClientRequest<Wendycloud_V1_ListAppReleasesRequest>(
+            message: message,
+            metadata: metadata
+        )
+        return try await self.listAppReleases(
+            request: request,
+            options: options,
+            onResponse: handleResponse
+        )
+    }
+
+    /// Call the "GetPushImageCredentials" method.
+    ///
+    /// - Parameters:
+    ///   - message: request message to send.
+    ///   - metadata: Additional metadata to send, defaults to empty.
+    ///   - options: Options to apply to this RPC, defaults to `.defaults`.
+    ///   - handleResponse: A closure which handles the response, the result of which is
+    ///       returned to the caller. Returning from the closure will cancel the RPC if it
+    ///       hasn't already finished.
+    /// - Returns: The result of `handleResponse`.
+    public func getPushImageCredentials<Result>(
+        _ message: Wendycloud_V1_GetPushImageCredentialsRequest,
+        metadata: GRPCCore.Metadata = [:],
+        options: GRPCCore.CallOptions = .defaults,
+        onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendycloud_V1_GetPushImageCredentialsResponse>) async throws -> Result = { response in
+            try response.message
+        }
+    ) async throws -> Result where Result: Sendable {
+        let request = GRPCCore.ClientRequest<Wendycloud_V1_GetPushImageCredentialsRequest>(
+            message: message,
+            metadata: metadata
+        )
+        return try await self.getPushImageCredentials(
+            request: request,
+            options: options,
+            onResponse: handleResponse
+        )
+    }
+
     /// Call the "CreateDeployment" method.
+    ///
+    /// > Source IDL Documentation:
+    /// >
+    /// > ==================== Deployments ====================
     ///
     /// - Parameters:
     ///   - message: request message to send.
@@ -1499,9 +1685,7 @@ extension Wendycloud_V1_DeploymentService.ClientProtocol {
         _ message: Wendycloud_V1_ListDeploymentsRequest,
         metadata: GRPCCore.Metadata = [:],
         options: GRPCCore.CallOptions = .defaults,
-        onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendycloud_V1_ListDeploymentsResponse>) async throws -> Result = { response in
-            try response.message
-        }
+        onResponse handleResponse: @Sendable @escaping (GRPCCore.StreamingClientResponse<Wendycloud_V1_ListDeploymentsResponse>) async throws -> Result
     ) async throws -> Result where Result: Sendable {
         let request = GRPCCore.ClientRequest<Wendycloud_V1_ListDeploymentsRequest>(
             message: message,
@@ -1514,145 +1698,32 @@ extension Wendycloud_V1_DeploymentService.ClientProtocol {
         )
     }
 
-    /// Call the "CancelDeployment" method.
+    /// Call the "HandleReportedState" method.
+    ///
+    /// > Source IDL Documentation:
+    /// >
+    /// > ==================== Asset App Desired Instructions (wendy-agent) ====================
     ///
     /// - Parameters:
-    ///   - message: request message to send.
     ///   - metadata: Additional metadata to send, defaults to empty.
     ///   - options: Options to apply to this RPC, defaults to `.defaults`.
+    ///   - producer: A closure producing request messages to send to the server. The request
+    ///       stream is closed when the closure returns.
     ///   - handleResponse: A closure which handles the response, the result of which is
     ///       returned to the caller. Returning from the closure will cancel the RPC if it
     ///       hasn't already finished.
     /// - Returns: The result of `handleResponse`.
-    public func cancelDeployment<Result>(
-        _ message: Wendycloud_V1_CancelDeploymentRequest,
+    public func handleReportedState<Result>(
         metadata: GRPCCore.Metadata = [:],
         options: GRPCCore.CallOptions = .defaults,
-        onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendycloud_V1_Deployment>) async throws -> Result = { response in
-            try response.message
-        }
+        requestProducer producer: @Sendable @escaping (GRPCCore.RPCWriter<Wendycloud_V1_UpdateReportedStateRequest>) async throws -> Void,
+        onResponse handleResponse: @Sendable @escaping (GRPCCore.StreamingClientResponse<Wendycloud_V1_DesiredStateResponse>) async throws -> Result
     ) async throws -> Result where Result: Sendable {
-        let request = GRPCCore.ClientRequest<Wendycloud_V1_CancelDeploymentRequest>(
-            message: message,
-            metadata: metadata
+        let request = GRPCCore.StreamingClientRequest<Wendycloud_V1_UpdateReportedStateRequest>(
+            metadata: metadata,
+            producer: producer
         )
-        return try await self.cancelDeployment(
-            request: request,
-            options: options,
-            onResponse: handleResponse
-        )
-    }
-
-    /// Call the "GetDeploymentTarget" method.
-    ///
-    /// - Parameters:
-    ///   - message: request message to send.
-    ///   - metadata: Additional metadata to send, defaults to empty.
-    ///   - options: Options to apply to this RPC, defaults to `.defaults`.
-    ///   - handleResponse: A closure which handles the response, the result of which is
-    ///       returned to the caller. Returning from the closure will cancel the RPC if it
-    ///       hasn't already finished.
-    /// - Returns: The result of `handleResponse`.
-    public func getDeploymentTarget<Result>(
-        _ message: Wendycloud_V1_GetDeploymentTargetRequest,
-        metadata: GRPCCore.Metadata = [:],
-        options: GRPCCore.CallOptions = .defaults,
-        onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendycloud_V1_DeploymentTarget>) async throws -> Result = { response in
-            try response.message
-        }
-    ) async throws -> Result where Result: Sendable {
-        let request = GRPCCore.ClientRequest<Wendycloud_V1_GetDeploymentTargetRequest>(
-            message: message,
-            metadata: metadata
-        )
-        return try await self.getDeploymentTarget(
-            request: request,
-            options: options,
-            onResponse: handleResponse
-        )
-    }
-
-    /// Call the "ListDeploymentTargets" method.
-    ///
-    /// - Parameters:
-    ///   - message: request message to send.
-    ///   - metadata: Additional metadata to send, defaults to empty.
-    ///   - options: Options to apply to this RPC, defaults to `.defaults`.
-    ///   - handleResponse: A closure which handles the response, the result of which is
-    ///       returned to the caller. Returning from the closure will cancel the RPC if it
-    ///       hasn't already finished.
-    /// - Returns: The result of `handleResponse`.
-    public func listDeploymentTargets<Result>(
-        _ message: Wendycloud_V1_ListDeploymentTargetsRequest,
-        metadata: GRPCCore.Metadata = [:],
-        options: GRPCCore.CallOptions = .defaults,
-        onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendycloud_V1_ListDeploymentTargetsResponse>) async throws -> Result = { response in
-            try response.message
-        }
-    ) async throws -> Result where Result: Sendable {
-        let request = GRPCCore.ClientRequest<Wendycloud_V1_ListDeploymentTargetsRequest>(
-            message: message,
-            metadata: metadata
-        )
-        return try await self.listDeploymentTargets(
-            request: request,
-            options: options,
-            onResponse: handleResponse
-        )
-    }
-
-    /// Call the "UpdateDeploymentTarget" method.
-    ///
-    /// - Parameters:
-    ///   - message: request message to send.
-    ///   - metadata: Additional metadata to send, defaults to empty.
-    ///   - options: Options to apply to this RPC, defaults to `.defaults`.
-    ///   - handleResponse: A closure which handles the response, the result of which is
-    ///       returned to the caller. Returning from the closure will cancel the RPC if it
-    ///       hasn't already finished.
-    /// - Returns: The result of `handleResponse`.
-    public func updateDeploymentTarget<Result>(
-        _ message: Wendycloud_V1_UpdateDeploymentTargetRequest,
-        metadata: GRPCCore.Metadata = [:],
-        options: GRPCCore.CallOptions = .defaults,
-        onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendycloud_V1_DeploymentTarget>) async throws -> Result = { response in
-            try response.message
-        }
-    ) async throws -> Result where Result: Sendable {
-        let request = GRPCCore.ClientRequest<Wendycloud_V1_UpdateDeploymentTargetRequest>(
-            message: message,
-            metadata: metadata
-        )
-        return try await self.updateDeploymentTarget(
-            request: request,
-            options: options,
-            onResponse: handleResponse
-        )
-    }
-
-    /// Call the "RetryFailedDeployment" method.
-    ///
-    /// - Parameters:
-    ///   - message: request message to send.
-    ///   - metadata: Additional metadata to send, defaults to empty.
-    ///   - options: Options to apply to this RPC, defaults to `.defaults`.
-    ///   - handleResponse: A closure which handles the response, the result of which is
-    ///       returned to the caller. Returning from the closure will cancel the RPC if it
-    ///       hasn't already finished.
-    /// - Returns: The result of `handleResponse`.
-    public func retryFailedDeployment<Result>(
-        _ message: Wendycloud_V1_RetryFailedDeploymentRequest,
-        metadata: GRPCCore.Metadata = [:],
-        options: GRPCCore.CallOptions = .defaults,
-        onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendycloud_V1_Deployment>) async throws -> Result = { response in
-            try response.message
-        }
-    ) async throws -> Result where Result: Sendable {
-        let request = GRPCCore.ClientRequest<Wendycloud_V1_RetryFailedDeploymentRequest>(
-            message: message,
-            metadata: metadata
-        )
-        return try await self.retryFailedDeployment(
+        return try await self.handleReportedState(
             request: request,
             options: options,
             onResponse: handleResponse
