@@ -130,8 +130,12 @@ func withCertificates<R: Sendable>(
     }
 
     return try await authenticate(title: title, forOrganizationId: orgId) { auth in
-        guard let certificate = auth.certificates.first(where: { $0.organizationID == orgId }) else {
-            throw RPCError(code: .aborted, message: "No certificate found for organization \(orgId)")
+        guard let certificate = auth.certificates.first(where: { $0.organizationID == orgId })
+        else {
+            throw RPCError(
+                code: .aborted,
+                message: "No certificate found for organization \(orgId)"
+            )
         }
         return try await perform(certificate)
     }
@@ -164,30 +168,34 @@ func withCSR<R: Sendable>(
     perform: @Sendable @escaping (CertificateSigningRequest) async throws -> R
 ) async throws -> R {
     let cliId = UUID().uuidString
-    return try await perform(try CertificateSigningRequest(
-        version: .v1,
-        subject: DistinguishedName {
-            CommonName("sh")
-            CommonName("wendy")
-            CommonName(userId)
-            CommonName(cliId)
-        },
-        privateKey: privateKey,
-        attributes: CertificateSigningRequest.Attributes([
-            CertificateSigningRequest.Attribute(
-                ExtensionRequest(   
-                    extensions: .init {
-                        Critical(SubjectAlternativeNames([
-                            .uniformResourceIdentifier("urn:wendy:org:\(orgId)"),
-                            .uniformResourceIdentifier(
-                                "urn:wendy:org:\(orgId):user:\(userId)"
+    return try await perform(
+        try CertificateSigningRequest(
+            version: .v1,
+            subject: DistinguishedName {
+                CommonName("sh")
+                CommonName("wendy")
+                CommonName(userId)
+                CommonName(cliId)
+            },
+            privateKey: privateKey,
+            attributes: CertificateSigningRequest.Attributes([
+                CertificateSigningRequest.Attribute(
+                    ExtensionRequest(
+                        extensions: .init {
+                            Critical(
+                                SubjectAlternativeNames([
+                                    .uniformResourceIdentifier("urn:wendy:org:\(orgId)"),
+                                    .uniformResourceIdentifier(
+                                        "urn:wendy:org:\(orgId):user:\(userId)"
+                                    ),
+                                ])
                             )
-                        ]))
-                    }
+                        }
+                    )
                 )
-            )
-        ])
-    ))
+            ])
+        )
+    )
 }
 
 func setupConfig(
@@ -213,7 +221,7 @@ func setupConfig(
             metadata: [:]
         )
         let certs = Wendycloud_V1_CertificateService.Client(wrapping: client.grpc)
-        
+
         let privateKey = Certificate.PrivateKey(P256.Signing.PrivateKey())
         let issued = try await withCSR(
             userId: userId,
@@ -237,9 +245,11 @@ func setupConfig(
         let certificateChainPEM = try PEMDocument.parseMultiple(
             pemString: issued.certificate.pemCertificateChain
         )
-        let certificateChain = try [cert] + certificateChainPEM.map { pem in
-            return try Certificate(pemDocument: pem)
-        }
+        let certificateChain =
+            try [cert]
+            + certificateChainPEM.map { pem in
+                return try Certificate(pemDocument: pem)
+            }
 
         return Config.Auth(
             cloudDashboard: cloudDashboard,

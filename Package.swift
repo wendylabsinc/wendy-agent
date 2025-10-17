@@ -27,7 +27,10 @@ let package = Package(
         .package(url: "https://github.com/grpc/grpc-swift-2.git", from: "2.1.0"),
         .package(url: "https://github.com/grpc/grpc-swift-protobuf.git", from: "2.0.0"),
         // .package(url: "https://github.com/grpc/grpc-swift-nio-transport.git", from: "2.0.0"),
-        .package(url: "https://github.com/Joannis/grpc-swift-nio-transport.git", branch: "jo/custom-verification-of-server"),
+        .package(
+            url: "https://github.com/Joannis/grpc-swift-nio-transport.git",
+            branch: "jo/custom-verification-of-server"
+        ),
         .package(url: "https://github.com/apple/swift-certificates.git", from: "1.12.0"),
         .package(url: "https://github.com/swift-server/swift-service-lifecycle.git", from: "2.7.0"),
         .package(url: "https://github.com/apple/swift-nio.git", from: "2.81.0"),

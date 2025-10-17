@@ -418,7 +418,10 @@ extension RunCommand {
                         await layersUploaded.incrementUploading()
                         taskGroup.addTask {
                             // Upload layers that have changed or are new
-                            logger.debug("Uploading layer to agent", metadata: ["digest": .string(layer.digest)])
+                            logger.debug(
+                                "Uploading layer to agent",
+                                metadata: ["digest": .string(layer.digest)]
+                            )
                             try await agentContainers.writeLayer(
                                 request: .init { writer in
                                     try await layer.withStream { chunk in

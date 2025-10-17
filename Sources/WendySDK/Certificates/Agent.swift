@@ -33,12 +33,16 @@ public struct Agent {
                     CertificateSigningRequest.Attribute(
                         ExtensionRequest(
                             extensions: .init {
-                                Critical(SubjectAlternativeNames([
-                                    .uniformResourceIdentifier("urn:wendy:org:\(organizationId)"),
-                                    .uniformResourceIdentifier(
-                                        "urn:wendy:org:\(organizationId):asset:\(assetId)"
-                                    )
-                                ]))
+                                Critical(
+                                    SubjectAlternativeNames([
+                                        .uniformResourceIdentifier(
+                                            "urn:wendy:org:\(organizationId)"
+                                        ),
+                                        .uniformResourceIdentifier(
+                                            "urn:wendy:org:\(organizationId):asset:\(assetId)"
+                                        ),
+                                    ])
+                                )
                             }
                         )
                     )

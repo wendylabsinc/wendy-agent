@@ -177,13 +177,15 @@ struct AgentCommand: AsyncParsableCommand {
                             endpoint,
                             title: "Checking agent status"
                         ) { client in
-                            let agent = Wendy_Agent_Services_V1_WendyAgentService.Client(wrapping: client)
+                            let agent = Wendy_Agent_Services_V1_WendyAgentService.Client(
+                                wrapping: client
+                            )
                             let response = try await agent.getAgentVersion(.init())
                             Noora().info("Agent is provisioned (version: \(response.version))")
                             return try await agent.getWiFiStatus(.init())
                         }
                     } catch {
-                        continue // Failed to check agent status, try again
+                        continue  // Failed to check agent status, try again
                     }
                 }
 
@@ -203,23 +205,28 @@ struct AgentCommand: AsyncParsableCommand {
                         question: "Do you want to setup WiFi?",
                         collapseOnSelection: false
                     )
-                    
+
                     if setupWifi {
                         while !Task.isCancelled {
                             let ssid = try await agent.discoverSSID()
-                            
+
                             let password = Noora().textPrompt(
                                 title: "Enter the password for the WiFi network",
                                 prompt: "Password"
                             )
 
-                            let result = try await agent.connectToWiFi(ssid: ssid, password: password)
+                            let result = try await agent.connectToWiFi(
+                                ssid: ssid,
+                                password: password
+                            )
 
                             if result.success {
                                 Noora().success("Connected to WiFi network \(ssid)")
                                 break
                             } else {
-                                Noora().error("Failed to connect to WiFi network: \(result.errorMessage)")
+                                Noora().error(
+                                    "Failed to connect to WiFi network: \(result.errorMessage)"
+                                )
                             }
                         }
                     }

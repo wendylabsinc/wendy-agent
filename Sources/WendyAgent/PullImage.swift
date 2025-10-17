@@ -1,7 +1,7 @@
 import ContainerRegistry
 import Foundation
-import Logging
 import GRPCCore
+import Logging
 
 public struct PullImage {
     public init() {
@@ -16,7 +16,7 @@ public struct PullImage {
     ) async throws {
         let logger = Logger(label: "sh.wendy.pull-image")
         let imageRef = try ImageReference(fromString: image, defaultRegistry: registry)
-        
+
         // Create registry client without auth (will use default gcloud credentials if needed)
         let registry = try await RegistryClient(
             registry: imageRef.registry,
@@ -24,7 +24,7 @@ public struct PullImage {
         )
 
         logger.info("Fetching manifest for \(imageRef.repository):\(imageRef.reference)")
-        
+
         // Try to fetch as an index first (multi-platform images)
         var manifestReference = imageRef.reference
         do {
@@ -32,11 +32,12 @@ public struct PullImage {
                 repository: imageRef.repository,
                 reference: imageRef.reference
             )
-            
+
             // Find the linux/arm64 or linux manifest
             if let linuxManifest = index.manifests.first(where: { desc in
-                desc.platform?.os == "linux" && 
-                (desc.platform?.architecture == "arm64" || desc.mediaType.contains("image.manifest"))
+                desc.platform?.os == "linux"
+                    && (desc.platform?.architecture == "arm64"
+                        || desc.mediaType.contains("image.manifest"))
             }) {
                 logger.info("Found platform-specific manifest: \(linuxManifest.digest)")
                 manifestReference = linuxManifest.digest
@@ -44,13 +45,13 @@ public struct PullImage {
         } catch {
             logger.debug("Not a multi-platform index, using direct reference")
         }
-        
+
         // Get the manifest for the image
         let manifest = try await registry.getManifest(
             repository: imageRef.repository,
             reference: manifestReference
         )
-        
+
         logger.info("✓ Downloaded manifest for \(image)")
         logger.info("  Digest: \(manifest.digest)")
         logger.info("  Layers: \(manifest.layers.count)")
@@ -110,13 +111,16 @@ public struct PullImage {
 
             // Decode the image config to extract entrypoint, cmd, env, etc.
             let decoder = JSONDecoder()
-            let imageConfig = try decoder.decode(ImageConfiguration.self, from: try await configData)
-            
+            let imageConfig = try decoder.decode(
+                ImageConfiguration.self,
+                from: try await configData
+            )
+
             // Build OCI RuntimeSpec with process information from image config
             let args = imageConfig.config?.Entrypoint ?? imageConfig.config?.Cmd ?? ["/bin/sh"]
             let workingDir = imageConfig.config?.WorkingDir ?? "/"
             let env = imageConfig.config?.Env ?? []
-            
+
             let spec = OCI(
                 args: args,
                 env: env,
@@ -128,7 +132,7 @@ public struct PullImage {
             //     entitlements: appConfig.entitlements,
             //     appName: request.appName
             // )
-            
+
             let runtimeSpecData = try JSONEncoder().encode(spec)
 
             do {

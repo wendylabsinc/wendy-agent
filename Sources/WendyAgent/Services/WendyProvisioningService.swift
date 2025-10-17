@@ -46,7 +46,10 @@ actor WendyProvisioningService: Wendy_Agent_Services_V1_WendyProvisioningService
         }
     }
 
-    func isProvisioned(request: Wendy_Agent_Services_V1_IsProvisionedRequest, context: ServerContext) async throws -> Wendy_Agent_Services_V1_IsProvisionedResponse {
+    func isProvisioned(
+        request: Wendy_Agent_Services_V1_IsProvisionedRequest,
+        context: ServerContext
+    ) async throws -> Wendy_Agent_Services_V1_IsProvisionedResponse {
         if let enrolled {
             return .with {
                 $0.provisioned = .with {
@@ -148,7 +151,7 @@ actor WendyProvisioningService: Wendy_Agent_Services_V1_WendyProvisioningService
             )
             let certs = Wendycloud_V1_CertificateService.Client(wrapping: cloudClient)
             let response: Wendycloud_V1_IssueCertificateResponse
-            
+
             do {
                 logger.info("Requesting certificate")
                 response = try await certs.issueCertificate(
@@ -187,9 +190,11 @@ actor WendyProvisioningService: Wendy_Agent_Services_V1_WendyProvisioningService
                 let certificateChainPEM = try PEMDocument.parseMultiple(
                     pemString: response.certificate.pemCertificateChain
                 )
-                let certificateChain = try [cert] + certificateChainPEM.map { pem in
-                    return try Certificate(pemDocument: pem)
-                }
+                let certificateChain =
+                    try [cert]
+                    + certificateChainPEM.map { pem in
+                        return try Certificate(pemDocument: pem)
+                    }
                 let pems = try certificateChain.map { try $0.serializeAsPEM().pemString }
                 let enrolled = Enrolled(
                     cloudHost: request.cloudHost,

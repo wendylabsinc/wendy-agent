@@ -1,11 +1,11 @@
 import ArgumentParser
 import AsyncHTTPClient
-import NIOSSL
 import Crypto
 import Foundation
 import GRPCCore
 import GRPCNIOTransportHTTP2
 import Logging
+import NIOSSL
 import ServiceLifecycle
 import WendyAgentGRPC
 import WendyCloudGRPC
@@ -56,7 +56,10 @@ struct WendyAgent: AsyncParsableCommand {
                 certificateChain: enrolled.certificateChainPEM.map { cert in
                     return TLSConfig.CertificateSource.bytes(Array(cert.utf8), format: .pem)
                 },
-                privateKey: .bytes(Array(config.privateKey.serializeAsPEM().pemString.utf8), format: .pem)
+                privateKey: .bytes(
+                    Array(config.privateKey.serializeAsPEM().pemString.utf8),
+                    format: .pem
+                )
             ) { tls in
                 tls.clientCertificateVerification = .noHostnameVerification
                 tls.customVerificationCallback = { certs, promise in
@@ -70,23 +73,32 @@ struct WendyAgent: AsyncParsableCommand {
                         return
                     }
 
-                    promise.succeed(.certificateVerified(.init(
-                        NIOSSL.ValidatedCertificateChain(certs)
-                    )))
+                    promise.succeed(
+                        .certificateVerified(
+                            .init(
+                                NIOSSL.ValidatedCertificateChain(certs)
+                            )
+                        )
+                    )
                 }
             }
-            let cloudClient = try await CloudClient(enrolled: enrolled, privateKey: config.privateKey)
+            let cloudClient = try await CloudClient(
+                enrolled: enrolled,
+                privateKey: config.privateKey
+            )
             backgroundServices.append(cloudClient)
             // TODO: Also set up OTel on 4318
-            servers.append(GRPCServer(
-                transport: HTTP2ServerTransport.Posix(
-                    address: .ipv4(host: "127.0.0.1", port: 4317),
-                    transportSecurity: .plaintext
-                ),
-                services: [
-                    OpenTelemetryProxy(cloud: cloudClient)
-                ]
-            ))
+            servers.append(
+                GRPCServer(
+                    transport: HTTP2ServerTransport.Posix(
+                        address: .ipv4(host: "127.0.0.1", port: 4317),
+                        transportSecurity: .plaintext
+                    ),
+                    services: [
+                        OpenTelemetryProxy(cloud: cloudClient)
+                    ]
+                )
+            )
         } else {
             logger.notice("Agent requires provisioning")
             mTLS = nil
@@ -111,43 +123,51 @@ struct WendyAgent: AsyncParsableCommand {
             provisioning,
         ]
         let unauthenticatedServices: [any GRPCCore.RegistrableRPCService] = [
-            provisioning,
+            provisioning
         ]
 
         let plaintextServices = mTLS == nil ? authenticatedServices : unauthenticatedServices
 
         if let mTLS {
-            servers.append(GRPCServer(
-                transport: HTTP2ServerTransport.Posix(
-                    address: .ipv4(host: "0.0.0.0", port: port + 1),
-                    transportSecurity: mTLS
-                ),
-                services: authenticatedServices
-            ))
-            servers.append(GRPCServer(
-                transport: HTTP2ServerTransport.Posix(
-                    address: .ipv6(host: "::", port: port + 1),
-                    transportSecurity: mTLS
-                ),
-                services: authenticatedServices
-            ))
+            servers.append(
+                GRPCServer(
+                    transport: HTTP2ServerTransport.Posix(
+                        address: .ipv4(host: "0.0.0.0", port: port + 1),
+                        transportSecurity: mTLS
+                    ),
+                    services: authenticatedServices
+                )
+            )
+            servers.append(
+                GRPCServer(
+                    transport: HTTP2ServerTransport.Posix(
+                        address: .ipv6(host: "::", port: port + 1),
+                        transportSecurity: mTLS
+                    ),
+                    services: authenticatedServices
+                )
+            )
         }
 
-        servers.append(GRPCServer(
-            transport: HTTP2ServerTransport.Posix(
-                address: .ipv4(host: "0.0.0.0", port: port),
-                transportSecurity: .plaintext
-            ),
-            services: plaintextServices
-        ))
+        servers.append(
+            GRPCServer(
+                transport: HTTP2ServerTransport.Posix(
+                    address: .ipv4(host: "0.0.0.0", port: port),
+                    transportSecurity: .plaintext
+                ),
+                services: plaintextServices
+            )
+        )
 
-        servers.append(GRPCServer(
-            transport: HTTP2ServerTransport.Posix(
-                address: .ipv6(host: "::", port: port),
-                transportSecurity: .plaintext
-            ),
-            services: plaintextServices
-        ))
+        servers.append(
+            GRPCServer(
+                transport: HTTP2ServerTransport.Posix(
+                    address: .ipv6(host: "::", port: port),
+                    transportSecurity: .plaintext
+                ),
+                services: plaintextServices
+            )
+        )
 
         try await withThrowingTaskGroup(of: Void.self) { taskGroup in
             for server in servers {

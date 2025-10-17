@@ -167,7 +167,7 @@ public enum AuthHandler: Sendable {
         case .basic(let username, let password):
             switch scheme {
             case .none: return nil
-            case .basic: 
+            case .basic:
                 let authorization = Data("\(username):\(password)".utf8).base64EncodedString()
                 return "Basic \(authorization)"
 
@@ -177,9 +177,13 @@ public enum AuthHandler: Sendable {
                 // These tokens allow pull access to public repositories, but attempts to push will fail with 'unauthorized'.
                 // There is no obvious prompt for the client to retry with authentication.
                 var parsedChallenge = try parseChallenge(
-                    challenge.dropFirst("bearer".count).trimmingCharacters(in: .whitespacesAndNewlines)
+                    challenge.dropFirst("bearer".count).trimmingCharacters(
+                        in: .whitespacesAndNewlines
+                    )
                 )
-                parsedChallenge.scope = ["repository:\(repository):\(actions.joined(separator: ","))"]
+                parsedChallenge.scope = [
+                    "repository:\(repository):\(actions.joined(separator: ","))"
+                ]
                 guard let challengeURL = parsedChallenge.url else { return nil }
                 var tokenRequest = HTTPRequest(url: challengeURL)
                 let authorization = Data("\(username):\(password)".utf8).base64EncodedString()

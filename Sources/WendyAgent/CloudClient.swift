@@ -1,9 +1,9 @@
+import GRPCCore
+import GRPCNIOTransportHTTP2
+import Logging
 import ServiceLifecycle
 import WendyCloudGRPC
-import GRPCCore
-import GRPCNIOTransportHTTP2    
 import X509
-import Logging
 
 actor CloudClient: Service {
     let transport: HTTP2ClientTransport.Posix
@@ -26,7 +26,7 @@ actor CloudClient: Service {
                 )
             ) { tls in
                 #if DEBUG
-                tls.serverCertificateVerification = .noVerification
+                    tls.serverCertificateVerification = .noVerification
                 #endif
             }
         )
@@ -35,10 +35,11 @@ actor CloudClient: Service {
 
     func updateReleasesFromCloud() async throws {
         let releases = Wendycloud_V1_DeploymentService.Client(wrapping: grpcClient)
-        
+
         while !Task.isCancelled {
             try await releases.handleReportedState(
-                request: StreamingClientRequest<Wendycloud_V1_UpdateReportedStateRequest> { writer in
+                request: StreamingClientRequest<Wendycloud_V1_UpdateReportedStateRequest> {
+                    writer in
                     try await Containerd.withClient { client in
                         let tasks = try await client.listTasks()
                         let containers = try await client.listContainers()
@@ -48,12 +49,21 @@ actor CloudClient: Service {
                                 $0.currentStates = containers.map { container in
                                     return .with {
                                         $0.appID = container.id
-                                        if let appReleaseID = container.labels["sh.wendy/app.release.id"].flatMap(Int32.init) {
+                                        if let appReleaseID = container.labels[
+                                            "sh.wendy/app.release.id"
+                                        ].flatMap(Int32.init) {
                                             $0.appReleaseID = appReleaseID
                                         }
-                                        $0.reportedState = tasks.first(where: { $0.id == container.id })?.status == .running ? .running : .stopped
-                                        $0.reportedRestartCount = container.labels["containerd.io/restart.count"].flatMap(Int32.init) ?? Int32(0)
-                                        $0.reportedLastExitSignal = tasks.first(where: { $0.id == container.id })?.exitStatus ?? 0
+                                        $0.reportedState =
+                                            tasks.first(where: { $0.id == container.id })?.status
+                                                == .running ? .running : .stopped
+                                        $0.reportedRestartCount =
+                                            container.labels["containerd.io/restart.count"].flatMap(
+                                                Int32.init
+                                            ) ?? Int32(0)
+                                        $0.reportedLastExitSignal =
+                                            tasks.first(where: { $0.id == container.id })?
+                                            .exitStatus ?? 0
                                     }
                                 }
                             }
@@ -68,11 +78,11 @@ actor CloudClient: Service {
             }
 
             try await Task.sleep(for: .seconds(5))
-         }
+        }
     }
 
     func run() async throws {
-        try await withGracefulShutdownHandler { 
+        try await withGracefulShutdownHandler {
             try await withThrowingTaskGroup(of: Void.self) { taskGroup in
                 taskGroup.addTask {
                     try await self.grpcClient.runConnections()

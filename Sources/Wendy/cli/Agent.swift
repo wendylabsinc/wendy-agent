@@ -1,10 +1,10 @@
+import Foundation
 import GRPCCore
+import Logging
+import Noora
 import WendyAgentGRPC
 import WendySDK
-import Logging
-import Foundation
 import _NIOFileSystem
-import Noora
 
 struct Agent {
     let client: GRPCClient<GRPCTransport>
@@ -20,14 +20,16 @@ struct Agent {
         cloudHost: String
     ) async throws {
         let service = Wendy_Agent_Services_V1_WendyProvisioningService.Client(wrapping: client)
-        _ = try await service.startProvisioning(.with {
-            $0.enrollmentToken = enrollmentToken
-            $0.cloudHost = cloudHost
-            $0.assetID = assetID
-            $0.organizationID = organizationID
-        })
+        _ = try await service.startProvisioning(
+            .with {
+                $0.enrollmentToken = enrollmentToken
+                $0.cloudHost = cloudHost
+                $0.assetID = assetID
+                $0.organizationID = organizationID
+            }
+        )
     }
-    
+
     func discoverSSID() async throws -> String {
         let agent = Wendy_Agent_Services_V1_WendyAgentService.Client(wrapping: client)
 
@@ -55,12 +57,17 @@ struct Agent {
         return networks[index].ssid
     }
 
-    func connectToWiFi(ssid: String, password: String) async throws -> Wendy_Agent_Services_V1_ConnectToWiFiResponse {
+    func connectToWiFi(
+        ssid: String,
+        password: String
+    ) async throws -> Wendy_Agent_Services_V1_ConnectToWiFiResponse {
         let agent = Wendy_Agent_Services_V1_WendyAgentService.Client(wrapping: client)
-        return try await agent.connectToWiFi(.with {
-            $0.ssid = ssid
-            $0.password = password
-        })
+        return try await agent.connectToWiFi(
+            .with {
+                $0.ssid = ssid
+                $0.password = password
+            }
+        )
     }
 
     func update(fromBinary path: String) async throws -> Bool {

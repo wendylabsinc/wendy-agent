@@ -66,23 +66,29 @@ struct RefreshCertsCommand: AsyncParsableCommand {
                         forOrganizationId: cert.organizationID,
                         privateKey: privateKey
                     ) { csr in
-                        try await certs.refreshCertificate(.with {
-                            $0.pemCsr = try csr.serializeAsPEM().pemString
-                        })
+                        try await certs.refreshCertificate(
+                            .with {
+                                $0.pemCsr = try csr.serializeAsPEM().pemString
+                            }
+                        )
                     }
                     let newCert = try Certificate(pemEncoded: issued.certificate.pemCertificate)
                     let newCertificateChainPEM = try PEMDocument.parseMultiple(
                         pemString: issued.certificate.pemCertificateChain
                     )
-                    let newCertificateChain = try [newCert] + newCertificateChainPEM.map { pem in
-                        return try Certificate(pemDocument: pem)
-                    }
-                    
+                    let newCertificateChain =
+                        try [newCert]
+                        + newCertificateChainPEM.map { pem in
+                            return try Certificate(pemDocument: pem)
+                        }
+
                     auth.certificates[index] = try Config.Auth.Certificates(
                         organizationID: cert.organizationID,
                         userID: cert.userID,
                         privateKeyPEM: privateKey.serializeAsPEM().pemString,
-                        certificateChainPEM: newCertificateChain.map { try $0.serializeAsPEM().pemString }
+                        certificateChainPEM: newCertificateChain.map {
+                            try $0.serializeAsPEM().pemString
+                        }
                     )
                 }
                 var config = try getConfig()

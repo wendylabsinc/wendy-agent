@@ -2,10 +2,10 @@ import GRPCCore
 import GRPCNIOTransportHTTP2
 import Logging
 import NIOCore
-import Noora
 import NIOSSL
-import WendyCloudGRPC
+import Noora
 import WendyAgentGRPC
+import WendyCloudGRPC
 
 typealias GRPCTransport = HTTP2ClientTransport.Posix
 
@@ -48,7 +48,7 @@ func withCloudGRPCClient<R: Sendable>(
             privateKey: .bytes(Array(cert.privateKeyPEM.utf8), format: .pem)
         ) { tls in
             #if DEBUG
-            tls.serverCertificateVerification = .noVerification
+                tls.serverCertificateVerification = .noVerification
             #endif
         }
     ) { client in
@@ -72,7 +72,7 @@ func withCloudGRPCClient<R: Sendable>(
     }
 }
 
-fileprivate enum ProvisioningResult<R: Sendable>: Sendable {
+private enum ProvisioningResult<R: Sendable>: Sendable {
     case notProvisioned(R)
     case retryWithProvisioned(assetId: Int32, organizationId: Int32)
 }
@@ -95,8 +95,11 @@ func withAgentGRPCClient<R: Sendable>(
 ) async throws -> R {
     let logger = Logger(label: "sh.wendy.agent-grpc-client")
     do {
-        let result = try await withGRPCClient(endpoint, security: .plaintext) { client -> ProvisioningResult<R> in
-            let provisioningAPI = Wendy_Agent_Services_V1_WendyProvisioningService.Client(wrapping: client)
+        let result = try await withGRPCClient(endpoint, security: .plaintext) {
+            client -> ProvisioningResult<R> in
+            let provisioningAPI = Wendy_Agent_Services_V1_WendyProvisioningService.Client(
+                wrapping: client
+            )
             let response = try await provisioningAPI.isProvisioned(.init())
             switch response.response {
             case .notProvisioned:
@@ -135,17 +138,23 @@ func withAgentGRPCClient<R: Sendable>(
                             guard
                                 let cert = certs.first,
                                 cert._subjectAlternativeNames().contains(where: { name in
-                                    name.contents.contains("urn:wendy:org:\(organizationId)".utf8) &&
-                                    name.contents.contains("urn:wendy:org:\(organizationId):asset:\(assetId)".utf8)
+                                    name.contents.contains("urn:wendy:org:\(organizationId)".utf8)
+                                        && name.contents.contains(
+                                            "urn:wendy:org:\(organizationId):asset:\(assetId)".utf8
+                                        )
                                 })
                             else {
                                 promise.succeed(.failed)
                                 return
                             }
 
-                            promise.succeed(.certificateVerified(.init(
-                                NIOSSL.ValidatedCertificateChain(certs)
-                            )))
+                            promise.succeed(
+                                .certificateVerified(
+                                    .init(
+                                        NIOSSL.ValidatedCertificateChain(certs)
+                                    )
+                                )
+                            )
                         }
                     },
                     body
