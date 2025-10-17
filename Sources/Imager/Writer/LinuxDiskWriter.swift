@@ -23,76 +23,80 @@ import Subprocess
 
             // Get image file size to track total progress
             let totalBytes =
-                try? FileManager.default.attributesOfItem(atPath: imagePath)[.size] as? Int64
+                try FileManager.default.attributesOfItem(atPath: imagePath)[.size] as? Int64
 
             // Send initial progress update
             progressHandler(DiskWriteProgress(bytesWritten: 0, totalBytes: totalBytes))
 
             do {
-                // First, unmount the disk to ensure it's not busy
-                // On Linux, we use umount command
-                let unmountResult = try await Subprocess.run(
-                    Subprocess.Executable.name("sudo"),
-                    arguments: ["umount", drive.id],
-                    output: .string(limit: .max),
-                    error: .string(limit: .max)
-                )
+                // First, unmount any partitions on the disk to ensure it's not busy
+                // Try to unmount all partitions (e.g., /dev/sdb1, /dev/sdb2, etc.)
+                // We'll try to unmount the base device and any numbered partitions
+                for partition in 0...15 {
+                    let partitionPath = partition == 0 ? drive.id : "\(drive.id)\(partition)"
 
-                // On Linux, umount may fail if the drive is not mounted, which is fine for our purposes
-                // We only care if there's an actual error that would prevent writing
-                // Note: We ignore the specific exit code and just check if it's successful or not
-                if !unmountResult.terminationStatus.isSuccess {
-                    // Check if there's an error message that indicates a real problem
-                    if let errorOutput = unmountResult.standardError,
-                        !errorOutput.isEmpty && !errorOutput.contains("not mounted")
-                    {
-                        throw DiskWriterError.writeFailed(
-                            reason: "Failed to unmount disk: \(errorOutput)"
-                        )
-                    }
-                    // Otherwise, we assume it's just not mounted, which is fine
+                    // Try to unmount, but don't fail if it's not mounted
+                    _ = try await Subprocess.run(
+                        Subprocess.Executable.name("sudo"),
+                        arguments: ["umount", partitionPath],
+                        output: .string(limit: .max),
+                        error: .string(limit: .max)
+                    )
                 }
 
-                // Create a bash script that runs dd and sends SIGUSR1 to it periodically (Linux equivalent of SIGINFO)
+                // On Linux, dd with status=progress automatically outputs progress information
+                print("Writing image: \(imagePath) -> \(drive.id)")
                 let script = """
-                    dd if="\(imagePath)" of="\(drive.id)" bs=1M status=progress 2>&1 & DD_PID=$!
-                    while kill -0 $DD_PID 2>/dev/null; do
-                        kill -USR1 $DD_PID 2>/dev/null
-                        sleep 1
-                    done
-                    wait $DD_PID
-                    exit $?
+                    dd if="\(imagePath)" of="\(drive.id)" bs=1M status=progress conv=fsync 2>&1
                     """
 
                 // Store the progress handler in a local variable to avoid capturing it in the closure
                 let localProgressHandler = progressHandler
                 let localTotalBytes = totalBytes
 
+                // Collect any error output for debugging
+                var errorOutput = ""
+
                 // Use the Subprocess API with a closure to capture output in real-time
                 let result = try await Subprocess.run(
                     Subprocess.Executable.name("sudo"),
                     arguments: ["bash", "-c", script]
-                ) { execution, stdin, stdout, strerr in
-                    // Process standard output for progress updates
+                ) { execution, stdin, stdout, stderr in
+                    // The script redirects stderr to stdout with 2>&1, so all output comes via stdout
                     for try await chunk in stdout {
                         // Convert the chunk to a string
                         let outputString = chunk.withUnsafeBytes {
                             String(decoding: $0, as: UTF8.self)
                         }
 
-                        // Parse the progress information
-                        // dd on Linux outputs progress like: "1234567890 bytes (1.2 GB, 1.1 GiB) copied, 10 s, 123 MB/s"
-                        let pattern = #"(\d+)\s+bytes"#
-                        if let range = outputString.range(of: pattern, options: .regularExpression),
-                            let bytes = Int64(outputString[range].split(separator: " ")[0])
+                        // Check for error messages in the output
+                        if outputString.lowercased().contains("error")
+                            || outputString.lowercased().contains("permission denied")
+                            || outputString.lowercased().contains("no space")
                         {
+                            errorOutput += outputString
+                        }
 
-                            let progress = DiskWriteProgress(
-                                bytesWritten: bytes,
-                                totalBytes: localTotalBytes
-                            )
+                        // Parse the progress information
+                        // dd on Linux with status=progress outputs lines like:
+                        // "1234567890 bytes (1.2 GB, 1.1 GiB) copied, 10 s, 123 MB/s"
+                        // We look for all occurrences of byte counts in the output
+                        let lines = outputString.split(separator: "\r").map { String($0) }
 
-                            localProgressHandler(progress)
+                        for line in lines {
+                            // Extract the byte count from the beginning of the line
+                            let pattern = #"^(\d+)\s+bytes"#
+                            if let match = line.range(of: pattern, options: .regularExpression) {
+                                let bytesString = line[match].split(separator: " ")[0]
+                                if let bytes = Int64(bytesString) {
+                                    let progress = DiskWriteProgress(
+                                        bytesWritten: bytes,
+                                        totalBytes: localTotalBytes
+                                    )
+
+                                    localProgressHandler(progress)
+                                }
+                            }
                         }
                     }
 
@@ -101,9 +105,11 @@ import Subprocess
 
                 // Check if the command was successful
                 if !result.terminationStatus.isSuccess {
-                    throw DiskWriterError.writeFailed(
-                        reason: "dd command failed with status: \(result.terminationStatus)"
-                    )
+                    let reason =
+                        errorOutput.isEmpty
+                        ? "dd command failed with status: \(result.terminationStatus)"
+                        : "dd command failed: \(errorOutput.trimmingCharacters(in: .whitespacesAndNewlines))"
+                    throw DiskWriterError.writeFailed(reason: reason)
                 }
 
                 // If we get here, the command completed successfully
