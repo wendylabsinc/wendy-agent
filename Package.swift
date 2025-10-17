@@ -243,6 +243,14 @@ let package = Package(
         ),
 
         .testTarget(
+            name: "WendyAgentTests",
+            dependencies: [
+                .target(name: "wendy-agent"),
+                .target(name: "WendyAgentGRPC"),
+            ]
+        ),
+
+        .testTarget(
             name: "IntegrationTests",
             dependencies: [
                 .target(name: "wendy"),

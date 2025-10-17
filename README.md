@@ -52,6 +52,37 @@ brew upgrade wendy
 
 The device needs to run the `wendy-agent` utility. We provide pre-build [Wendy](https://wendyos.io) images for the Raspberry Pi and the NVIDIA Jetson Orin Nano. These are preconfigured for remote debugging and have the wendy-agent preinstalled.
 
+### Network Manager Support
+
+WendyAgent supports both NetworkManager and ConnMan for WiFi configuration. The agent will automatically detect which network manager is available on the system:
+
+- **ConnMan** is preferred for embedded/IoT devices due to its lighter resource usage
+- **NetworkManager** is supported for desktop and server environments
+- The agent will automatically detect and use the available network manager
+
+#### Configuration
+
+You can configure the network manager preference using the `WENDY_NETWORK_MANAGER` environment variable on the agent:
+
+```sh
+# Auto-detect (default)
+export WENDY_NETWORK_MANAGER=auto
+
+# Prefer ConnMan if available, fall back to NetworkManager
+export WENDY_NETWORK_MANAGER=connman
+
+# Prefer NetworkManager if available
+export WENDY_NETWORK_MANAGER=networkmanager
+
+# Force ConnMan (will fail if not available)
+export WENDY_NETWORK_MANAGER=force-connman
+
+# Force NetworkManager (will fail if not available)
+export WENDY_NETWORK_MANAGER=force-networkmanager
+```
+
+If no environment variable is set, the agent will auto-detect the available network manager.
+
 #### Manual Setup
 
 The `wendy` CLI communicates with a `wendy-agent`. The agent needs uses Docker for running your apps, so Docker needs to be running.
