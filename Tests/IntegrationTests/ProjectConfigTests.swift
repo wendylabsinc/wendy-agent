@@ -37,12 +37,14 @@ struct ProjectConfigTests {
         command.project = projectDir.path()
 
         switch entitlement {
-        case .network(let networkEntitlements):
+        case .network:
             command.entitlementType = .network
-        case .bluetooth(let bluetoothEntitlements):
+        case .bluetooth:
             command.entitlementType = .bluetooth
         case .video:
             command.entitlementType = .video
+        case .audio:
+            command.entitlementType = .audio
         }
 
         try await command.run()
@@ -70,6 +72,8 @@ struct ProjectConfigTests {
         case .video:
             command.entitlementType = .video
             command.mode = nil
+        case .audio:
+            command.entitlementType = .audio
         }
 
         try await command.run()

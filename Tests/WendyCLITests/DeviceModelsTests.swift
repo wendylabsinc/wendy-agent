@@ -489,7 +489,7 @@ struct DevicesCollectionTests {
         )
 
         // Test initialization with generic device array
-        var devices: [Device] = []
+        var devices: [any Device] = []
         devices.append(usbDevice)
         devices.append(ethernetInterface)
         devices.append(lanDevice)

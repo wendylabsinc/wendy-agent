@@ -1,4 +1,5 @@
 import Foundation
+import Noora
 import Subprocess
 import SystemPackage
 
@@ -149,12 +150,19 @@ public struct SwiftPM: Sendable {
         let allArgs =
             [executablePath] + runArgs + ["build"] + version + options.flatMap(\.arguments)
 
-        let result = try await Subprocess.run(
-            Subprocess.Executable.path("/usr/bin/env"),
-            arguments: Subprocess.Arguments(allArgs),
-            output: .fileDescriptor(.standardOutput, closeAfterSpawningProcess: false),
-            error: .fileDescriptor(.standardError, closeAfterSpawningProcess: false),
-        )
+        let result = try await Noora().progressStep(
+            message: "Building Swift package",
+            successMessage: "Swift package built successfully",
+            errorMessage: "Failed to build Swift package",
+            showSpinner: true
+        ) { _ in
+            try await Subprocess.run(
+                Subprocess.Executable.path("/usr/bin/env"),
+                arguments: Subprocess.Arguments(allArgs),
+                output: .fileDescriptor(.standardOutput, closeAfterSpawningProcess: false),
+                error: .fileDescriptor(.standardError, closeAfterSpawningProcess: false),
+            )
+        }
 
         if result.terminationStatus.isSuccess {
             return result.standardOutput
@@ -173,7 +181,6 @@ public struct SwiftPM: Sendable {
         let executablePath = try await findExecutablePath(
             for: path.split(separator: " ").first.map(String.init) ?? path
         )
-        print("Using swiftly at path: \(executablePath)")
 
         // Use the executable path instead of just the command name
         let runArgs = path.split(separator: " ").dropFirst().map(String.init)

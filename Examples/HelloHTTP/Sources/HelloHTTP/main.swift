@@ -3,6 +3,12 @@ import OTel
 
 var config = OTel.Configuration.default
 config.serviceName = "HelloHTTP"
+config.logs.otlpExporter.endpoint = "http://127.0.0.1:4317"
+config.logs.otlpExporter.protocol = .grpc
+config.metrics.otlpExporter.endpoint = "http://127.0.0.1:4317"
+config.metrics.otlpExporter.protocol = .grpc
+config.traces.otlpExporter.endpoint = "http://127.0.0.1:4317"
+config.traces.otlpExporter.protocol = .grpc
 
 let observability = try OTel.bootstrap(configuration: config)
 

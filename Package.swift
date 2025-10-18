@@ -20,15 +20,26 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/swift-server/async-http-client.git", from: "1.25.2"),
+        .package(url: "https://github.com/hummingbird-project/hummingbird.git", from: "2.0.2"),
+        .package(url: "https://github.com/vapor/jwt-kit.git", from: "5.0.0"),
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.5.0"),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.6.3"),
-        .package(url: "https://github.com/grpc/grpc-swift-2.git", from: "2.0.0"),
+        .package(url: "https://github.com/grpc/grpc-swift-2.git", from: "2.1.0"),
         .package(url: "https://github.com/grpc/grpc-swift-protobuf.git", from: "2.0.0"),
-        .package(url: "https://github.com/grpc/grpc-swift-nio-transport.git", from: "2.0.0"),
-        .package(url: "https://github.com/apple/swift-protobuf.git", from: "1.30.0"),
+        // .package(url: "https://github.com/grpc/grpc-swift-nio-transport.git", from: "2.0.0"),
+        .package(
+            url: "https://github.com/Joannis/grpc-swift-nio-transport.git",
+            branch: "jo/custom-verification-of-server"
+        ),
+        .package(url: "https://github.com/apple/swift-certificates.git", from: "1.12.0"),
         .package(url: "https://github.com/swift-server/swift-service-lifecycle.git", from: "2.7.0"),
         .package(url: "https://github.com/apple/swift-nio.git", from: "2.81.0"),
         .package(url: "https://github.com/apple/swift-crypto.git", from: "3.12.2"),
+        //        .package(url: "https://github.com/tuist/Noora.git", from: "0.32.0"),
+        .package(
+            url: "https://github.com/tuist/Noora.git",
+            revision: "259b4ad29366ba327148aaaea0e59b1c78953831"
+        ),
         .package(
             url: "https://github.com/swiftlang/swift-subprocess.git",
             from: "0.1.0",
@@ -55,11 +66,22 @@ let package = Package(
                 .product(name: "GRPCNIOTransportHTTP2", package: "grpc-swift-nio-transport"),
                 .product(name: "AsyncDNSResolver", package: "swift-async-dns-resolver"),
                 .product(name: "SystemPackage", package: "swift-system"),
+                .product(name: "NIOFoundationCompat", package: "swift-nio"),
                 .product(
                     name: "OpenAPIAsyncHTTPClient",
                     package: "swift-openapi-async-http-client"
                 ),
+                .product(
+                    name: "Hummingbird",
+                    package: "hummingbird"
+                ),
+                .product(
+                    name: "JWTKit",
+                    package: "jwt-kit"
+                ),
+                .product(name: "Noora", package: "Noora"),
                 .target(name: "WendyAgentGRPC"),
+                .target(name: "WendyCloudGRPC"),
                 .target(name: "WendyCLI"),
                 .target(name: "WendyShared"),
                 .target(name: "Imager"),
@@ -67,11 +89,20 @@ let package = Package(
                 .target(name: "DownloadSupport"),
                 .target(name: "AppConfig"),
                 .target(name: "CliXPCProtocol"),
+                .target(name: "WendySDK"),
                 .target(name: "DockerOpenAPI"),
             ],
             path: "Sources/Wendy",
             resources: [
                 .copy("Resources")
+            ]
+        ),
+
+        .target(
+            name: "WendySDK",
+            dependencies: [
+                .product(name: "X509", package: "swift-certificates"),
+                .product(name: "Crypto", package: "swift-crypto"),
             ]
         ),
 
@@ -100,6 +131,7 @@ let package = Package(
                 .product(name: "Subprocess", package: "swift-subprocess"),
                 .product(name: "_NIOFileSystem", package: "swift-nio"),
                 .product(name: "Crypto", package: "swift-crypto"),
+                .product(name: "NIOFoundationCompat", package: "swift-nio"),
                 .target(name: "ContainerRegistry"),
             ]
         ),
@@ -113,13 +145,17 @@ let package = Package(
                 .product(name: "GRPCNIOTransportHTTP2", package: "grpc-swift-nio-transport"),
                 .product(name: "ServiceLifecycle", package: "swift-service-lifecycle"),
                 .product(name: "_NIOFileSystem", package: "swift-nio"),
+                .product(name: "GRPCCore", package: "grpc-swift-2"),
                 .product(name: "DBUS", package: "dbus"),
+                .product(name: "Subprocess", package: "swift-subprocess"),
+                .target(name: "WendyCloudGRPC"),
                 .target(name: "WendyAgentGRPC"),
                 .target(name: "ContainerdGRPC"),
-                .target(name: "ContainerRegistry"),
-                .product(name: "Subprocess", package: "swift-subprocess"),
                 .target(name: "WendyShared"),
                 .target(name: "AppConfig"),
+                .target(name: "ContainerRegistry"),
+                .target(name: "WendySDK"),
+                .target(name: "OpenTelemetryGRPC"),
             ],
             path: "Sources/WendyAgent"
         ),
@@ -144,6 +180,20 @@ let package = Package(
         ),
         .target(
             name: "WendyAgentGRPC",
+            dependencies: [
+                .product(name: "GRPCCore", package: "grpc-swift-2"),
+                .product(name: "GRPCProtobuf", package: "grpc-swift-protobuf"),
+            ]
+        ),
+        .target(
+            name: "WendyCloudGRPC",
+            dependencies: [
+                .product(name: "GRPCCore", package: "grpc-swift-2"),
+                .product(name: "GRPCProtobuf", package: "grpc-swift-protobuf"),
+            ]
+        ),
+        .target(
+            name: "OpenTelemetryGRPC",
             dependencies: [
                 .product(name: "GRPCCore", package: "grpc-swift-2"),
                 .product(name: "GRPCProtobuf", package: "grpc-swift-protobuf"),
@@ -179,6 +229,7 @@ let package = Package(
                 .product(name: "AsyncHTTPClient", package: "async-http-client"),
                 .product(name: "_NIOFileSystem", package: "swift-nio"),
                 .product(name: "Subprocess", package: "swift-subprocess"),
+                .product(name: "NIOFoundationCompat", package: "swift-nio"),
             ]
         ),
         .target(
@@ -195,6 +246,7 @@ let package = Package(
                 .target(name: "wendy"),
                 .target(name: "wendy-agent"),
                 .target(name: "WendyAgentGRPC"),
+                .target(name: "WendySDK"),
                 .target(name: "wendy-helper", condition: .when(platforms: [.macOS])),
             ]
         ),

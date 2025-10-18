@@ -70,7 +70,7 @@
             }
 
             if devices.isEmpty {
-                logger.info("No Wendy devices found.")
+                logger.debug("No Wendy devices found.")
             }
 
             return devices
@@ -127,11 +127,11 @@
                 )
 
                 interfaces.append(ethernetInterface)
-                logger.info("Wendy interface found", metadata: ["interface": .string(displayName)])
+                logger.debug("Wendy interface found", metadata: ["interface": .string(displayName)])
             }
 
             if interfaces.isEmpty {
-                logger.info("No Wendy Ethernet interfaces found.")
+                logger.debug("No Wendy Ethernet interfaces found.")
             }
 
             return interfaces
@@ -141,8 +141,9 @@
             var interfaces: [LANDevice] = []
 
             let resolver = try AsyncDNSResolver()
-            let ptr = try await resolver.queryPTR(name: "_wendy._udp.local")
-            for name in ptr.names {
+            let ptrWendy = try await resolver.queryPTR(name: "_wendyos._udp.local")
+            let ptrEdge = try await resolver.queryPTR(name: "_edgeos._udp.local")
+            for name in (ptrWendy.names + ptrEdge.names) {
                 guard
                     let srv = try await resolver.querySRV(name: name).first,
                     let txt = try await resolver.queryTXT(name: name).first,
@@ -153,7 +154,7 @@
 
                 let lanDevice = LANDevice(
                     id: id,
-                    displayName: "Wendy Device",
+                    displayName: "WendyOS Device",
                     hostname: srv.host,
                     port: Int(srv.port),
                     interfaceType: "LAN",
