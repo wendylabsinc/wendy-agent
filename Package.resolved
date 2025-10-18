@@ -1,5 +1,5 @@
 {
-  "originHash" : "ca74b8d05afa6b40ef268bb1307f61554fa23f89af4eff3bcdb1009477f6666b",
+  "originHash" : "15c0a212fbd28a2f7bc7d2ad7d0794980777b6e2d707994a3c2d18c4f4b02709",
   "pins" : [
     {
       "identity" : "async-http-client",
@@ -69,8 +69,7 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/tuist/Noora.git",
       "state" : {
-        "revision" : "b493303b36fb52611958f735e80f464e73699ba0",
-        "version" : "0.49.1"
+        "revision" : "259b4ad29366ba327148aaaea0e59b1c78953831"
       }
     },
     {
@@ -114,8 +113,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/apple/swift-argument-parser.git",
       "state" : {
-        "revision" : "309a47b2b1d9b5e991f36961c983ecec72275be3",
-        "version" : "1.6.1"
+        "revision" : "cdd0ef3755280949551dc26dee5de9ddeda89f54",
+        "version" : "1.6.2"
       }
     },
     {

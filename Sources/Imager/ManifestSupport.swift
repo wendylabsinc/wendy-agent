@@ -2,8 +2,9 @@ import AsyncHTTPClient
 import Foundation
 import NIOCore
 import NIOFoundationCompat
+
 #if canImport(FoundationNetworking)
-import FoundationNetworking
+    import FoundationNetworking
 #endif
 
 // MARK: - Data Models

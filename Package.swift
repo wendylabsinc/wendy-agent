@@ -35,8 +35,11 @@ let package = Package(
         .package(url: "https://github.com/swift-server/swift-service-lifecycle.git", from: "2.7.0"),
         .package(url: "https://github.com/apple/swift-nio.git", from: "2.81.0"),
         .package(url: "https://github.com/apple/swift-crypto.git", from: "3.12.2"),
-//        .package(url: "https://github.com/tuist/Noora.git", from: "0.32.0"),
-        .package(url: "https://github.com/tuist/Noora.git", revision: "259b4ad29366ba327148aaaea0e59b1c78953831"),
+        //        .package(url: "https://github.com/tuist/Noora.git", from: "0.32.0"),
+        .package(
+            url: "https://github.com/tuist/Noora.git",
+            revision: "259b4ad29366ba327148aaaea0e59b1c78953831"
+        ),
         .package(
             url: "https://github.com/swiftlang/swift-subprocess.git",
             from: "0.1.0",
