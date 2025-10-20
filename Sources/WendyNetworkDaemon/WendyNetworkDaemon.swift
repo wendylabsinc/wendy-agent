@@ -101,7 +101,7 @@
 
     /// XPC Service implementation using XPCListener
     @available(macOS 14.0, *)
-    class WendyNetworkDaemonService {
+    final class WendyNetworkDaemonService: Sendable {
         private let logger: Logger
 
         init(logger: Logger) {

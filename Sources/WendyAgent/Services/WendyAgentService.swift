@@ -10,13 +10,13 @@ struct WendyAgentService: Wendy_Agent_Services_V1_WendyAgentService.ServiceProto
     let logger = Logger(label: "WendyAgentService")
     let shouldRestart: @Sendable () async throws -> Void
     let currentUID: String
-    let networkManagerFactory: NetworkManagerFactory
+    let networkManagerFactory: NetworkConnectionManagerFactory
     let configuration: WendyAgentConfiguration
 
     init(shouldRestart: @escaping @Sendable () async throws -> Void) {
         self.shouldRestart = shouldRestart
         self.currentUID = String(getuid())
-        self.networkManagerFactory = NetworkManagerFactory(uid: currentUID)
+        self.networkManagerFactory = NetworkConnectionManagerFactory(uid: currentUID)
         self.configuration = WendyAgentConfiguration.fromEnvironment()
     }
 

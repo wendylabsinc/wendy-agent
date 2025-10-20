@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+
 @testable import wendy_agent
 
 @Suite("Network Manager Integration")
@@ -11,8 +12,16 @@ struct NetworkManagerIntegrationTests {
 
         // Setup mock networks
         await mockManager.addMockNetwork(ssid: "HomeNetwork", signalStrength: -45, isSecured: true)
-        await mockManager.addMockNetwork(ssid: "GuestNetwork", signalStrength: -70, isSecured: false)
-        await mockManager.addMockNetwork(ssid: "OfficeNetwork", signalStrength: -60, isSecured: true)
+        await mockManager.addMockNetwork(
+            ssid: "GuestNetwork",
+            signalStrength: -70,
+            isSecured: false
+        )
+        await mockManager.addMockNetwork(
+            ssid: "OfficeNetwork",
+            signalStrength: -60,
+            isSecured: true
+        )
 
         // List networks
         let networks = try await mockManager.listWiFiNetworks()
@@ -109,12 +118,12 @@ struct NetworkManagerIntegrationTests {
         #expect(config.networkManagerPreference == .preferConnMan)
 
         // Test all preference mappings
-        let preferences: [NetworkManagerFactory.Preference] = [
+        let preferences: [NetworkConnectionManagerFactory.Preference] = [
             .auto,
             .preferConnMan,
             .preferNetworkManager,
             .forceConnMan,
-            .forceNetworkManager
+            .forceNetworkManager,
         ]
 
         for pref in preferences {

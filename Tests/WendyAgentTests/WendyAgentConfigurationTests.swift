@@ -1,8 +1,9 @@
 import Foundation
 import Testing
+
 @testable import wendy_agent
 
-@Suite("WendyAgentConfiguration")
+@Suite("WendyAgentConfiguration", .serialized)
 struct WendyAgentConfigurationTests {
     @Test("Default configuration uses auto preference")
     func testDefaultConfiguration() {

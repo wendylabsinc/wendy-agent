@@ -15,3 +15,4 @@ Examples/HelloHTTP/HelloHTTP-container.tar
 # Generated app bundle
 WendyCLI.app/
 *.profraw
+.agent

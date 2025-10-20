@@ -1,6 +1,7 @@
 import AppConfig
 import ArgumentParser
 import Logging
+import Noora
 import Subprocess
 import SystemPackage
 
@@ -27,7 +28,8 @@ struct InitCommand: AsyncParsableCommand {
     }
 
     func run() async throws {
-        logger.info("Initializing new Wendy project", metadata: ["path": .string(projectPath)])
+        logger.debug("Initializing new Wendy project", metadata: ["path": .string(projectPath)])
+        Noora().info("Creating new WendyOS project")
 
         // Create the directory if it doesn't exist
         let fileManager = FileManager.default
@@ -37,7 +39,7 @@ struct InitCommand: AsyncParsableCommand {
                     atPath: projectPath,
                     withIntermediateDirectories: true
                 )
-                print("Created directory: \(projectPath)")
+                Noora().info("Created project directory: \(projectPath)")
             } catch {
                 throw InitError.directoryCreationFailed(
                     path: projectPath,
@@ -69,7 +71,7 @@ struct InitCommand: AsyncParsableCommand {
 
         do {
             try fileManager.createDirectory(atPath: wendyDirPath, withIntermediateDirectories: true)
-            print("Created wendy directory in \(projectPath)")
+            Noora().info("Created wendy directory in \(projectPath)")
         } catch {
             print("Warning: Failed to create wendy directory: \(error.localizedDescription)")
         }
@@ -85,7 +87,7 @@ struct InitCommand: AsyncParsableCommand {
 
         // Don't overwrite existing wendy.json
         if fileManager.fileExists(atPath: wendyJsonPath) {
-            print("wendy.json already exists, skipping creation")
+            logger.debug("wendy.json already exists, skipping creation")
             return
         }
 
@@ -107,7 +109,7 @@ struct InitCommand: AsyncParsableCommand {
             let jsonData = try encoder.encode(defaultConfig)
 
             try jsonData.write(to: URL(fileURLWithPath: wendyJsonPath))
-            logger.info(
+            logger.debug(
                 "Created wendy.json configuration file",
                 metadata: ["appId": .string(appId), "version": .string("0.0.1")]
             )

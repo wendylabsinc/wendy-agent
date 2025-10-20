@@ -42,7 +42,10 @@ struct HardwareCommand: AsyncParsableCommand {
     private func discoverHardware() async throws
         -> [Wendy_Agent_Services_V1_ListHardwareCapabilitiesResponse.HardwareCapability]
     {
-        return try await withGRPCClient(agentConnectionOptions) { client in
+        return try await withAgentGRPCClient(
+            agentConnectionOptions,
+            title: "For which device do you want to discover hardware?"
+        ) { client in
             let agent = Wendy_Agent_Services_V1_WendyAgentService.Client(wrapping: client)
 
             var request = Wendy_Agent_Services_V1_ListHardwareCapabilitiesRequest()

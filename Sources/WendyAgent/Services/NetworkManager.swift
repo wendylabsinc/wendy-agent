@@ -126,7 +126,7 @@ extension Bool: DBusDecodable {
 }
 
 /// NetworkManager provides an interface to interact with NetworkManager over DBus
-public actor NetworkManager {
+public actor NetworkManager: NetworkConnectionManager {
     private let logger = Logger(label: "NetworkManager")
 
     // Connection configuration
@@ -406,9 +406,7 @@ public actor NetworkManager {
     }
 
     /// List all available WiFi networks
-    public func listWiFiNetworks() async throws -> [(
-        ssid: String, path: String, signalStrength: Int8?
-    )] {
+    public func listWiFiNetworks() async throws -> [WiFiNetwork] {
         // Find the WiFi device
         let wifiDevicePath = try await findWiFiDevice()
 
@@ -422,7 +420,7 @@ public actor NetworkManager {
         }
 
         // Get SSIDs and signal strength for each access point
-        var networks: [(ssid: String, path: String, signalStrength: Int8?)] = []
+        var networks: [WiFiNetwork] = []
         for apPath in accessPointPaths {
             do {
                 let ssid = try await getSSID(apPath: apPath)
@@ -438,7 +436,14 @@ public actor NetworkManager {
                     )
                 }
 
-                networks.append((ssid: ssid, path: apPath, signalStrength: signalStrength))
+                networks.append(
+                    WiFiNetwork(
+                        ssid: ssid,
+                        path: apPath,
+                        signalStrength: signalStrength,
+                        isSecured: true
+                    )
+                )
                 self.logger.debug(
                     "Added network: \(ssid) (signal: \(signalStrength?.description ?? "unknown"))"
                 )
@@ -687,7 +692,7 @@ public actor NetworkManager {
     }
 
     /// Get the current active WiFi connection information
-    public func getCurrentConnection() async throws -> (ssid: String, connectionPath: String)? {
+    public func getCurrentConnection() async throws -> WiFiConnection? {
         // Find the WiFi device
         let wifiDevicePath = try await findWiFiDevice()
 
@@ -800,7 +805,12 @@ public actor NetworkManager {
                 throw NetworkConnectionError.invalidSSID
             }
 
-            return (ssid: ssid, connectionPath: activeConnectionPath)
+            return WiFiConnection(
+                ssid: ssid,
+                connectionPath: activeConnectionPath,
+                ipAddress: nil,
+                state: .connected
+            )
         } catch {
             // Handle specific errors for better debugging
             if let nmError = error as? NetworkConnectionError {

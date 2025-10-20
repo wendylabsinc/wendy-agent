@@ -53,7 +53,9 @@ public actor ConnMan: NetworkConnectionManager {
                     self.logger.error(
                         "DBus connection error",
                         metadata: [
-                            "error": "\(errorDetails)"
+                            "address": "\(address)",
+                            "uid": "\(uid)",
+                            "error": "\(errorDetails)",
                         ]
                     )
                     throw NetworkConnectionError.connectionFailed
@@ -172,7 +174,7 @@ public actor ConnMan: NetworkConnectionManager {
             throw NetworkConnectionError.noWiFiDevice
         }
 
-        let message: DBusMessage = try await executeDBusRequest(
+        let _: DBusMessage = try await executeDBusRequest(
             .createMethodCall(
                 destination: connManDestination,
                 path: wifiInfo.path,
@@ -181,9 +183,7 @@ public actor ConnMan: NetworkConnectionManager {
             )
         )
 
-        logger.info("Scan result \(message)")
-
-        try await Task.sleep(for: .seconds(5))
+        try await Task.sleep(for: .seconds(3))
     }
 
     /// Get all services (networks)
@@ -204,7 +204,7 @@ public actor ConnMan: NetworkConnectionManager {
             throw NetworkConnectionError.invalidType
         }
 
-        logger.info("Found \(array.count) services")
+        logger.info("Found service count: ", metadata: ["count": "\(array.count)"])
 
         var services: [(path: String, properties: [DBusValue: DBusValue])] = []
 
@@ -299,13 +299,17 @@ public actor ConnMan: NetworkConnectionManager {
         return state
     }
 
-    /// Extract IP address from service properties
+    /// Extract IPv4 address from service properties
     private func extractIPAddress(from properties: [DBusValue: DBusValue]) -> String? {
         guard let ipv4Value = properties[DBusValue.string("IPv4")],
+            // Find the IPv4 root in the data
             case .variant(let ipv4Variant) = ipv4Value,
+            // Get the root as a dictionary
             case .dictionary(let ipv4Dict) = ipv4Variant.value,
+            // Find the Address value in the dictionary
             let addressValue = ipv4Dict[DBusValue.string("Address")],
             case .variant(let addressVariant) = addressValue,
+            // Get the Address as a string
             case .string(let address) = addressVariant.value
         else {
             return nil

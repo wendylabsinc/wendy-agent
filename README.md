@@ -54,7 +54,7 @@ The device needs to run the `wendy-agent` utility. We provide pre-build [Wendy](
 
 ### Network Manager Support
 
-EdgeAgent supports both NetworkManager and ConnMan for WiFi configuration. The agent will automatically detect which network manager is available on the system:
+WendyAgent supports both NetworkManager and ConnMan for WiFi configuration. The agent will automatically detect which network manager is available on the system:
 
 - **ConnMan** is preferred for embedded/IoT devices due to its lighter resource usage
 - **NetworkManager** is supported for desktop and server environments
@@ -62,7 +62,7 @@ EdgeAgent supports both NetworkManager and ConnMan for WiFi configuration. The a
 
 #### Configuration
 
-You can configure the network manager preference using the `WENDY_NETWORK_MANAGER` environment variable:
+You can configure the network manager preference using the `WENDY_NETWORK_MANAGER` environment variable on the agent:
 
 ```sh
 # Auto-detect (default)

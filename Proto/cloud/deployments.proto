@@ -1,0 +1,148 @@
+syntax = "proto3";
+
+package wendycloud.v1;
+
+import "google/protobuf/timestamp.proto";
+
+service DeploymentService {
+  // ==================== App Releases ====================
+  rpc CreateAppRelease(CreateAppReleaseRequest) returns (AppRelease);
+  rpc UpdateAppRelease(UpdateAppReleaseRequest) returns (AppRelease);
+  rpc ListAppReleases(ListAppReleasesRequest) returns (stream ListAppReleasesResponse);
+  rpc GetPushImageCredentials(GetPushImageCredentialsRequest) returns (GetPushImageCredentialsResponse);
+
+
+  // ==================== Deployments ====================
+  rpc CreateDeployment(CreateDeploymentRequest) returns (Deployment);
+  rpc GetDeployment(GetDeploymentRequest) returns (Deployment);
+  rpc ListDeployments(ListDeploymentsRequest) returns (stream ListDeploymentsResponse);
+
+  // ==================== Asset App Desired Instructions (wendy-agent) ====================
+  rpc HandleReportedState(stream UpdateReportedStateRequest) returns (stream DesiredStateResponse);
+}
+
+// ==================== App Releases ====================
+message AppRelease {
+  int32 id = 1;
+  int32 organization_id = 2;
+  string app_id = 3;
+  string name = 4;
+  string details = 5;
+  optional string image_digest = 6;
+  google.protobuf.Timestamp created_at = 7; 
+  google.protobuf.Timestamp updated_at = 8;
+}
+
+message CreateAppReleaseRequest {
+  string app_id = 1;
+  int32 organization_id = 2;
+  string name = 3;
+  string details = 4;
+}
+
+// Use this to assign a image_digest to an app_release after it has been pushed to the registry
+// Note, verify that the image_digest exists in the registry before updating the app_release
+message UpdateAppReleaseRequest {
+  int32 id = 1;
+  string name = 2;
+  string details = 3;
+  string image_digest = 4;
+}
+
+message ListAppReleasesRequest {
+  int32 organization_id = 1;
+  string app_id = 2;
+  int32 offset = 3;
+  int32 limit = 4;
+}
+
+message ListAppReleasesResponse {
+  repeated AppRelease app_releases = 1;
+  int32 total = 2;
+  int32 offset = 3;
+}
+
+message GetPushImageCredentialsRequest {
+  int32 organization_id = 1;
+  string app_id = 2;
+}
+
+message GetPushImageCredentialsResponse {
+  string registry_url = 1;
+  string full_image_path = 2;
+  string access_token = 3;
+  google.protobuf.Timestamp expires_at = 4;
+  string username = 5;
+}
+
+// ==================== Deployments ====================
+
+message Deployment {
+  int32 id = 1;
+  int32 organization_id = 2;
+  string jq_filter = 3;
+  int32 app_release_id = 4;
+  string details = 5;
+  string created_by_user_id = 6;
+  google.protobuf.Timestamp created_at = 7;
+}
+
+// infer the created_by_user_id from the authService
+message CreateDeploymentRequest {
+  int32 organization_id = 1;
+  optional string jq_filter = 2;
+  int32 app_release_id = 3;
+  string details = 4;
+  Running running = 5;
+} 
+
+message GetDeploymentRequest {
+  int32 id = 1;
+}
+
+message ListDeploymentsRequest {
+  int32 organization_id = 1;
+  string app_id = 2;
+  int32 offset = 3;
+  int32 limit = 4;
+}
+
+message ListDeploymentsResponse {
+  repeated Deployment deployments = 1;
+  int32 total = 2;
+}
+
+// ==================== Asset App Desired Instructions (wendy-agent) ====================
+
+// this is to be called by the wendy-agent to update the reported state of an apps on an asset
+// asset_id and organization_id are derived from the client certificate
+message UpdateReportedStateRequest {
+  repeated CurrentState current_states = 1;
+}
+
+message CurrentState {
+  string app_id = 1;
+  optional int32 app_release_id = 2;
+  Running reported_state = 3;
+  int32 reported_restart_count = 4;
+  uint32 reported_last_exit_signal = 5;
+}
+
+// this is to be called by the wendy-agent to get the desired state of an app on an asset
+// if the app_id does not exist, wendy-agent should remove the container from the asset
+message DesiredStateResponse {
+  repeated DesiredAppState desired_app_states = 1;
+}
+
+message DesiredAppState {
+  string app_id = 1;
+  optional int32 app_release_id = 2;
+  Running desired_state = 3;
+}
+
+enum Running {
+  ABSENT = 0;
+  RUNNING = 1;
+  STOPPED = 2;
+}
+

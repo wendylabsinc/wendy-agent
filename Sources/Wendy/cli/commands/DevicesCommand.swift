@@ -1,6 +1,7 @@
 import ArgumentParser
 import Foundation
 import Logging
+import Noora
 import WendyAgentGRPC
 import WendyShared
 
@@ -77,23 +78,21 @@ struct DevicesCommand: AsyncParsableCommand {
 
     // Helper method for logging device counts
     private func logDevicesFound<T: Device>(_ devices: [T], deviceType: String, logger: Logger) {
+        if json {
+            return
+        }
+
         if devices.isEmpty {
-            logger.info("No Wendy \(deviceType) found.")
+            logger.debug("No Wendy \(deviceType) found.")
         } else {
-            logger.info("Found \(devices.count) Wendy \(deviceType)")
+            Noora().info("Found \(devices.count) Wendy \(deviceType)")
         }
     }
 
     func run() async throws {
         // Configure logger
         LoggingSystem.bootstrap { label in
-            var handler = StreamLogHandler.standardError(label: label)
-            #if DEBUG
-                handler.logLevel = .trace
-            #else
-                handler.logLevel = .error
-            #endif
-            return handler
+            StreamLogHandler.standardError(label: label)
         }
 
         let logger = Logger(label: "sh.wendy.cli.devices")
@@ -174,7 +173,8 @@ extension DevicesCollection {
                 group.addTask {
                     do {
                         return try await withGRPCClient(
-                            AgentConnectionOptions.Endpoint(host: device.hostname, port: 50051)
+                            AgentConnectionOptions.Endpoint(host: device.hostname, port: 50051),
+                            security: .plaintext
                         ) { client in
                             let agent = Wendy_Agent_Services_V1_WendyAgentService.Client(
                                 wrapping: client
