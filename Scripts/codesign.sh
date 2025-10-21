@@ -5,7 +5,7 @@
 set -e
 
 # Get the executable path
-EXECUTABLE_PATH=".build/debug/wendy"
+EXECUTABLE_PATH=".build/release/wendy"
 CODESIGN_IDENTITY="Developer ID Application: Wendy Labs Inc. (3YVC792H3S)"
 
 # Codesign the executable
