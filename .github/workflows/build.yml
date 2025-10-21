@@ -123,13 +123,16 @@ jobs:
       - name: Import P12 Certificate
         if: ${{ matrix.artifact-name == 'wendy-cli-macos-arm64' }}
         run: |
-          # Decode the base64-encoded P12 certificate and import it
-          echo "${{ secrets.WENDY_P12_CERTIFICATE }}" | base64 --decode > /tmp/certificate.p12
           # Unlock keychain to avoid interactive prompts
           security unlock-keychain -p "" ~/Library/Keychains/login.keychain-db
-          # Import the certificate with password to avoid hanging
-          security import /tmp/certificate.p12 -k ~/Library/Keychains/login.keychain-db -P "" -T /usr/bin/codesign
-          rm /tmp/certificate.p12
+          # Decode and import the certificate
+          echo "${{ secrets.DEVELOPER_ID_CERTIFICATE }}" | base64 --decode > /tmp/certificate.cer
+          security import /tmp/certificate.cer -k ~/Library/Keychains/login.keychain-db -T /usr/bin/codesign
+          # Decode and import the private key
+          echo "${{ secrets.DEVELOPER_ID_KEY }}" | base64 --decode > /tmp/key.key
+          security import /tmp/key.key -k ~/Library/Keychains/login.keychain-db -T /usr/bin/codesign
+          # Clean up
+          rm /tmp/certificate.cer /tmp/key.key
       - name: Codesign
         if: ${{ matrix.artifact-name == 'wendy-cli-macos-arm64' }}
         run: |
