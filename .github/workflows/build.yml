@@ -125,6 +125,8 @@ jobs:
         run: |
           # Unlock keychain to avoid interactive prompts
           security unlock-keychain -p "" ~/Library/Keychains/login.keychain-db
+          # Keep keychain unlocked for the duration of the build
+          security set-keychain-settings -t 3600 ~/Library/Keychains/login.keychain-db
           # Decode and import the certificate
           echo "${{ secrets.DEVELOPER_ID_CERTIFICATE }}" | base64 --decode > /tmp/certificate.cer
           security import /tmp/certificate.cer -k ~/Library/Keychains/login.keychain-db -T /usr/bin/codesign
@@ -142,6 +144,7 @@ jobs:
             --password "${{ secrets.NOTARY_PASSWORD }}"
       - name: Codesign
         if: ${{ matrix.artifact-name == 'wendy-cli-macos-arm64' }}
+        timeout-minutes: 10
         run: |
           ./Scripts/codesign.sh
       - name: Create tarball
