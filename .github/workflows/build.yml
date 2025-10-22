@@ -120,6 +120,25 @@ jobs:
           if [ -d "$BIN_PATH/wendy-agent_${{ matrix.product }}.bundle" ]; then
             cp -r $BIN_PATH/wendy-agent_${{ matrix.product }}.bundle $OUTPUT_DIR/
           fi
+      - name: Import P12 Certificate
+        if: ${{ matrix.artifact-name == 'wendy-cli-macos-arm64' }}
+        uses: apple-actions/import-codesign-certs@v3
+        with: 
+          p12-file-base64: ${{ secrets.APPSTORE_CERTIFICATES_FILE_BASE64 }}
+          p12-password: ${{ secrets.APPSTORE_CERTIFICATES_PASSWORD }}
+          keychain: notary-keychain
+      - name: Setup Notary Profile
+        if: ${{ matrix.artifact-name == 'wendy-cli-macos-arm64' }}
+        run: |
+          xcrun notarytool store-credentials "notary-profile" \
+            --apple-id "${{ secrets.NOTARY_APPLE_ID }}" \
+            --team-id "${{ secrets.NOTARY_TEAM_ID }}" \
+            --password "${{ secrets.NOTARY_PASSWORD }}"
+      - name: Codesign
+        if: ${{ matrix.artifact-name == 'wendy-cli-macos-arm64' }}
+        timeout-minutes: 10
+        run: |
+          ./Scripts/codesign.sh
       - name: Create tarball
         run: |
           tar -czvf ${{ matrix.artifact-name }}.tar.gz ${{ matrix.artifact-name }}/
