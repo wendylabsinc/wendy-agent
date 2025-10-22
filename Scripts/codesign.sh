@@ -10,7 +10,7 @@ CODESIGN_IDENTITY="Developer ID Application: Wendy Labs Inc. (3YVC792H3S)"
 
 # Codesign the executable
 echo "Codesigning executable at $EXECUTABLE_PATH..."
-codesign --force --options runtime --sign "$CODESIGN_IDENTITY" "$EXECUTABLE_PATH"
+codesign --force --options runtime --keychain notary-keychain --sign "$CODESIGN_IDENTITY" "$EXECUTABLE_PATH"
 
 # Zip the executable
 echo "Zipping executable..."
