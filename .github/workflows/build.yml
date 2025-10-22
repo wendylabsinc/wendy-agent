@@ -133,10 +133,6 @@ jobs:
           security import /tmp/key.key -k ~/Library/Keychains/login.keychain-db -T /usr/bin/codesign
           # Clean up
           rm /tmp/certificate.cer /tmp/key.key
-      - name: Codesign
-        if: ${{ matrix.artifact-name == 'wendy-cli-macos-arm64' }}
-        run: |
-          ./Scripts/codesign.sh
       - name: Setup Notary Profile
         if: ${{ matrix.artifact-name == 'wendy-cli-macos-arm64' }}
         run: |
@@ -144,6 +140,10 @@ jobs:
             --apple-id "${{ secrets.NOTARY_APPLE_ID }}" \
             --team-id "${{ secrets.NOTARY_TEAM_ID }}" \
             --password "${{ secrets.NOTARY_PASSWORD }}"
+      - name: Codesign
+        if: ${{ matrix.artifact-name == 'wendy-cli-macos-arm64' }}
+        run: |
+          ./Scripts/codesign.sh
       - name: Create tarball
         run: |
           tar -czvf ${{ matrix.artifact-name }}.tar.gz ${{ matrix.artifact-name }}/
