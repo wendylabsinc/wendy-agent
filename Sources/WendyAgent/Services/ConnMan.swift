@@ -1,6 +1,7 @@
 import DBUS
 import Logging
 import NIO
+import _NIOFileSystem
 
 #if canImport(FoundationEssentials)
     import FoundationEssentials
@@ -209,7 +210,6 @@ public actor ConnMan: NetworkConnectionManager {
         var services: [(path: String, properties: [DBusValue: DBusValue])] = []
 
         for item in array {
-            logger.info("\(item)")
             guard case .structure(let structValues) = item,
                 structValues.count >= 2,
                 let path = structValues[0].objectPath,
@@ -373,6 +373,114 @@ public actor ConnMan: NetworkConnectionManager {
         return networks
     }
 
+    /// Generate a safe filename from SSID
+    private func sanitizeSSIDForFilename(_ ssid: String) -> String {
+        // Replace problematic characters with underscores
+        let sanitized = ssid.replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "\\", with: "_")
+            .replacingOccurrences(of: " ", with: "_")
+            .replacingOccurrences(of: ":", with: "_")
+            .replacingOccurrences(of: "*", with: "_")
+            .replacingOccurrences(of: "?", with: "_")
+            .replacingOccurrences(of: "\"", with: "_")
+            .replacingOccurrences(of: "<", with: "_")
+            .replacingOccurrences(of: ">", with: "_")
+            .replacingOccurrences(of: "|", with: "_")
+
+        // Limit length to avoid filesystem issues
+        let maxLength = 50
+        if sanitized.count > maxLength {
+            return String(sanitized.prefix(maxLength))
+        }
+        return sanitized
+    }
+
+    /// Create ConnMan configuration file content
+    private func createConnManConfigContent(ssid: String, password: String, isSecured: Bool = true) -> String {
+        // ConnMan configuration file format
+        let configContent = """
+        [service_wifi_\(sanitizeSSIDForFilename(ssid))]
+        Type=wifi
+        Name=\(ssid)
+        Security=\(isSecured && !password.isEmpty ? "psk" : "none")
+        Passphrase=\(isSecured && !password.isEmpty ? password : "")
+        IPv4=dhcp
+        """
+
+        return configContent
+    }
+
+    /// Write ConnMan configuration file
+    private func writeConnManConfigFile(ssid: String, password: String, isSecured: Bool = true) async throws -> FilePath {
+        let configDir = FilePath("/var/lib/connman")
+        let fileName = "wifi_\(sanitizeSSIDForFilename(ssid)).config"
+        let configPath = configDir.appending(fileName)
+
+        logger.info("Writing ConnMan config file", metadata: [
+            "path": "\(configPath)"
+        ])
+
+        let configContent = createConnManConfigContent(ssid: ssid, password: password, isSecured: isSecured)
+
+        // Write the configuration file
+        let fileSystem = FileSystem.shared
+        do {
+            // Ensure the directory exists
+            do {
+                let dirInfo = try await fileSystem.info(forFileAt: configDir)
+                if dirInfo == nil {
+                    logger.warning("ConnMan config directory doesn't exist, attempting to create it")
+                    try await fileSystem.createDirectory(at: configDir, withIntermediateDirectories: true)
+                }
+            } catch {
+                // Directory might not exist, try to create it
+                logger.info("Creating ConnMan config directory")
+                try await fileSystem.createDirectory(at: configDir, withIntermediateDirectories: true)
+            }
+
+            // Write the configuration file
+            try await fileSystem.withFileHandle(
+                forWritingAt: configPath,
+                options: .newFile(replaceExisting: true)
+            ) { handle in
+                let buffer = ByteBuffer(string: configContent)
+                _ = try await handle.write(contentsOf: buffer.readableBytesView, toAbsoluteOffset: 0)
+            }
+
+            logger.info("Successfully wrote ConnMan config file", metadata: [
+                "path": "\(configPath)"
+            ])
+
+            return configPath
+        } catch {
+            logger.error("Failed to write ConnMan config file", metadata: [
+                "path": "\(configPath)",
+                "error": "\(error)"
+            ])
+            throw error
+        }
+    }
+
+    /// Remove ConnMan configuration file
+    private func removeConnManConfigFile(ssid: String) async {
+        let configDir = FilePath("/var/lib/connman")
+        let fileName = "wifi_\(sanitizeSSIDForFilename(ssid)).config"
+        let configPath = configDir.appending(fileName)
+
+        let fileSystem = FileSystem.shared
+        do {
+            try await fileSystem.removeItem(at: configPath)
+            logger.debug("Removed ConnMan config file", metadata: [
+                "path": "\(configPath)"
+            ])
+        } catch {
+            logger.debug("Could not remove ConnMan config file", metadata: [
+                "path": "\(configPath)",
+                "error": "\(error)"
+            ])
+        }
+    }
+
     /// Connect to a WiFi network
     public func connectToNetwork(ssid: String, password: String) async throws {
         logger.debug("Connecting to WiFi network", metadata: ["ssid": "\(ssid)"])
@@ -387,34 +495,40 @@ public actor ConnMan: NetworkConnectionManager {
             throw NetworkConnectionError.networkNotFound
         }
 
+        // Create a configuration file for both secured and open networks
+        do {
+            // Write the configuration file
+            let configPath = try await writeConnManConfigFile(ssid: ssid, password: password, isSecured: network.isSecured)
+            logger.info("Created ConnMan configuration file", metadata: [
+                "path": "\(configPath)",
+                "secured": "\(network.isSecured)"
+            ])
+
+            // Give ConnMan a moment to process the new configuration
+            try await Task.sleep(for: .milliseconds(500))
+
+            // Trigger a rescan to pick up the new configuration
+            do {
+                try await scanWiFiNetworks()
+            } catch {
+                logger.warning("Failed to trigger rescan after config creation", metadata: [
+                    "error": "\(error)"
+                ])
+            }
+
+        } catch {
+            logger.error("Failed to create ConnMan configuration file", metadata: [
+                "error": "\(error)"
+            ])
+        }
+
+        // Now attempt to connect
         let address = try SocketAddress(unixDomainSocketPath: socketPath)
 
         try await DBusClient.withConnection(
             to: address,
             auth: .external(userID: uid)
         ) { [self] connection in
-            if network.isSecured && !password.isEmpty {
-                let setPropertyMessage = DBusRequest.createMethodCall(
-                    destination: connManDestination,
-                    path: network.path,
-                    interface: connManServiceInterface,
-                    method: "SetProperty",
-                    body: [
-                        .string("Passphrase"),
-                        .variant(DBusVariant(.string(password))),
-                    ]
-                )
-
-                guard let setReply = try await connection.send(setPropertyMessage) else {
-                    throw NetworkConnectionError.noReply
-                }
-
-                guard case .methodReturn = setReply.messageType else {
-                    self.logger.error("Failed to set passphrase")
-                    throw NetworkConnectionError.authenticationFailed
-                }
-            }
-
             let connectMessage = DBusRequest.createMethodCall(
                 destination: connManDestination,
                 path: network.path,
@@ -432,11 +546,24 @@ public actor ConnMan: NetworkConnectionManager {
                     case .string(let message) = bodyValue
                 {
                     errorDetails = message
+                } else if case .error = connectReply.messageType {
+                    // Extract error information from the reply
+                    errorDetails = "DBus error occurred"
                 }
 
-                if errorDetails.contains("Invalid key") || errorDetails.contains("invalid-key") {
+                if errorDetails.contains("Invalid key") ||
+                   errorDetails.contains("invalid-key") ||
+                   errorDetails.contains("InvalidKey") ||
+                   errorDetails.contains("InvalidPassphrase") {
                     self.logger.error("Invalid WiFi password")
+                    // Clean up the configuration file if authentication failed
+                    await removeConnManConfigFile(ssid: ssid)
                     throw NetworkConnectionError.authenticationFailed
+                }
+
+                if errorDetails.contains("InProgress") || errorDetails.contains("AlreadyConnected") {
+                    self.logger.info("Connection already in progress or connected")
+                    return
                 }
 
                 self.logger.error(
@@ -449,11 +576,29 @@ public actor ConnMan: NetworkConnectionManager {
             }
 
             self.logger.info(
-                "Successfully connected to WiFi network",
+                "Successfully initiated connection to WiFi network",
                 metadata: [
                     "ssid": "\(ssid)"
                 ]
             )
+
+            // Wait a bit for the connection to establish
+            try await Task.sleep(for: .seconds(1))
+
+            // Verify connection was successful
+            if let currentConnection = try await self.getCurrentConnection(),
+               currentConnection.ssid == ssid,
+               currentConnection.state == .connected {
+                self.logger.info(
+                    "Successfully connected to WiFi network",
+                    metadata: [
+                        "ssid": "\(ssid)",
+                        "ip": "\(currentConnection.ipAddress ?? "pending")"
+                    ]
+                )
+            } else {
+                self.logger.warning("Connection initiated but not yet established, may take a few more seconds")
+            }
         }
     }
 
@@ -510,6 +655,9 @@ public actor ConnMan: NetworkConnectionManager {
                 method: "Disconnect"
             )
         )
+
+        // Clean up the configuration file for this network
+        await removeConnManConfigFile(ssid: connection.ssid)
 
         logger.info(
             "Disconnected from WiFi network",
