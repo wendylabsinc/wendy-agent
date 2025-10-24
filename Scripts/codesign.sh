@@ -4,8 +4,13 @@
 
 set -e
 
+if [[ $# -ne 1 ]]; then
+  echo "Usage: $0 /path/to/binary" >&2
+  exit 2
+fi
+
 # Get the executable path
-EXECUTABLE_PATH=".build/release/wendy"
+EXECUTABLE_PATH="$1"
 CODESIGN_IDENTITY="Developer ID Application: Wendy Labs Inc. (3YVC792H3S)"
 
 # Codesign the executable

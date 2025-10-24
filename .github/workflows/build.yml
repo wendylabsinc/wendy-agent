@@ -138,7 +138,7 @@ jobs:
         if: ${{ matrix.artifact-name == 'wendy-cli-macos-arm64' }}
         timeout-minutes: 10
         run: |
-          ./Scripts/codesign.sh
+          ./Scripts/codesign.sh "${{ matrix.artifact-name }}/${{ matrix.product }}"
       - name: Create tarball
         run: |
           tar -czvf ${{ matrix.artifact-name }}.tar.gz ${{ matrix.artifact-name }}/
