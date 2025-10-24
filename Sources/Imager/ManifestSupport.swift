@@ -65,7 +65,7 @@ public final class ManifestManager: ManifestManaging {
     private let baseUrl: String
 
     public init(
-        baseUrl: String = "https://storage.googleapis.com/edgeos-images-public",
+        baseUrl: String = "https://storage.googleapis.com/wendyos-images-public ",
         urlSession: URLSession = .shared
     ) {
         self.baseUrl = baseUrl
