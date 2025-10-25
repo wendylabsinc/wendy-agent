@@ -65,7 +65,7 @@ public final class ManifestManager: ManifestManaging {
     private let baseUrl: String
 
     public init(
-        baseUrl: String = "https://storage.googleapis.com/wendyos-images-public",
+        baseUrl: String,
         urlSession: URLSession = .shared
     ) {
         self.baseUrl = baseUrl
@@ -141,8 +141,8 @@ public final class ManifestManager: ManifestManaging {
 /// Factory for creating ManifestManager instances
 public enum ManifestManagerFactory {
     /// Creates and returns a default ManifestManager instance
-    public static func createManifestManager() -> ManifestManaging {
-        return ManifestManager()
+    public static func createManifestManager(baseUrl: String = "https://storage.googleapis.com/wendyos-images-public") -> ManifestManaging {
+        return ManifestManager(baseUrl: baseUrl)
     }
 }
 
