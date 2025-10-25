@@ -5,9 +5,9 @@ import Noora
 import WendyAgentGRPC
 import WendyShared
 
-struct DevicesCommand: AsyncParsableCommand {
+struct DiscoverCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
-        commandName: "devices",
+        commandName: "discover",
         abstract: "List USB and Ethernet devices connected to the system"
     )
 

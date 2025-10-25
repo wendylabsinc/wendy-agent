@@ -23,11 +23,9 @@ struct WendyCLI: AsyncParsableCommand {
             CommandGroup(
                 name: "Manage your devices",
                 subcommands: [
-                    AppsCommand.self,
-                    AgentCommand.self,
+                    DeviceCommand.self,
+                    DiscoverCommand.self,
                     ImagerCommand.self,
-                    HardwareCommand.self,
-                    DevicesCommand.self,
                 ]
             ),
             CommandGroup(
