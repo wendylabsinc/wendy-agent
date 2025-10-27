@@ -90,11 +90,6 @@ struct DevicesCommand: AsyncParsableCommand {
     }
 
     func run() async throws {
-        // Configure logger
-        LoggingSystem.bootstrap { label in
-            StreamLogHandler.standardError(label: label)
-        }
-
         let logger = Logger(label: "sh.wendy.cli.devices")
         let discovery = PlatformDeviceDiscovery(logger: logger)
         let format = json ? OutputFormat.json : OutputFormat.text
