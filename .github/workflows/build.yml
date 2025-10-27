@@ -158,7 +158,7 @@ jobs:
     name: Release
     runs-on: ubuntu-22.04-arm
     needs: [determine-version, build]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     steps:
       - name: Download artifact
         uses: actions/download-artifact@v4
@@ -208,7 +208,9 @@ jobs:
     name: Update Homebrew Formula
     runs-on: macos-15
     needs: [determine-version, release]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: write  # Needed to commit formula updates
     steps:
       - name: Checkout wendy-agent
         uses: actions/checkout@v4
