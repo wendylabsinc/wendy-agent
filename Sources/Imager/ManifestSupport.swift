@@ -141,7 +141,9 @@ public final class ManifestManager: ManifestManaging {
 /// Factory for creating ManifestManager instances
 public enum ManifestManagerFactory {
     /// Creates and returns a default ManifestManager instance
-    public static func createManifestManager(baseUrl: String = "https://storage.googleapis.com/wendyos-images-public") -> ManifestManaging {
+    public static func createManifestManager(
+        baseUrl: String = "https://storage.googleapis.com/wendyos-images-public"
+    ) -> ManifestManaging {
         return ManifestManager(baseUrl: baseUrl)
     }
 }
