@@ -1,5 +1,5 @@
 #if os(Linux)
-    import AsyncDNSResolver
+    import DNSClient
     import Foundation
     import Logging
     import Subprocess
@@ -93,31 +93,37 @@
         }
 
         public func findLANDevices() async throws -> [LANDevice] {
+            let dns = try await DNSClient.connectMulticast(on: .singletonMultiThreadedEventLoopGroup).get()
+            let ptr = try await dns.sendQuery(forHost: "_wendy._udp.local", type: .ptr).get()
+            
             var interfaces: [LANDevice] = []
+            for answer in ptr.answers {
+                switch answer {
+                case .ptr(let ptr):
+                    let name = ptr.domainName.string
+                    guard case .srv(let srv) = try await dns.sendQuery(forHost: name, type: .srv).get().answers.first else {
+                        continue
+                    }
+                    guard case .txt(let txt) = try await dns.sendQuery(forHost: name, type: .txt).get().answers.first else {
+                        continue
+                    }
+                    let id = txt.resource.values.values.first ?? ""
 
-            let resolver = try AsyncDNSResolver()
-            let ptr = try await resolver.queryPTR(name: "_wendy._udp.local")
-            for name in ptr.names {
-                guard
-                    let srv = try await resolver.querySRV(name: name).first,
-                    let txt = try await resolver.queryTXT(name: name).first,
-                    let id = txt.txt.split(separator: "=").last.map(String.init)
-                else {
+                    let lanDevice = LANDevice(
+                        id: id,
+                        displayName: "WendyOS Device",
+                        hostname: srv.resource.domainName.string,
+                        port: Int(srv.resource.port),
+                        interfaceType: "LAN",
+                        isWendyDevice: true
+                    )
+
+                    // Prevent duplicates
+                    if !interfaces.contains(where: { $0.id == id || $0.hostname == lanDevice.hostname }) {
+                        interfaces.append(lanDevice)
+                    }
+                default:
                     continue
-                }
-
-                let lanDevice = LANDevice(
-                    id: id,
-                    displayName: "WendyOS Device",
-                    hostname: srv.host,
-                    port: Int(srv.port),
-                    interfaceType: "LAN",
-                    isWendyDevice: true
-                )
-
-                // Prevent duplicates
-                if !interfaces.contains(where: { $0.id == id || $0.hostname == srv.host }) {
-                    interfaces.append(lanDevice)
                 }
             }
 
