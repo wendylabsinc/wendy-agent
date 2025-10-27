@@ -204,7 +204,17 @@ jobs:
           git tag -fa latest "$TARGET_SHA" -m "Latest prerelease: $TAG"
           git push -f origin refs/tags/latest
 
-      # Bump the formula in homebrew-tap
+  update-homebrew:
+    name: Update Homebrew Formula
+    runs-on: macos-15
+    needs: [determine-version, release]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - name: Checkout wendy-agent
+        uses: actions/checkout@v4
+        with:
+          path: wendy-agent
+
       - name: Create GitHub App Token
         id: app-token
         uses: actions/create-github-app-token@v2
@@ -212,15 +222,46 @@ jobs:
           app-id: ${{ vars.CLI_PUBLISHER_APP_ID }}
           private-key: ${{ secrets.CLI_PUBLISHER_APP_PRIVATE_KEY }}
           owner: wendylabsinc
-          repositories: homebrew-tap
 
-      - name: Bump formula in homebrew-tap
-        uses: dawidd6/action-homebrew-bump-formula@v5
+      - name: Checkout homebrew-tap
+        uses: actions/checkout@v4
         with:
+          repository: wendylabsinc/homebrew-tap
           token: ${{ steps.app-token.outputs.token }}
-          tap: wendylabsinc/homebrew-tap
-          formula: wendy
-          tag: ${{ needs.determine-version.outputs.version }}
-          revision: ${{ github.sha }}
-          no_fork: true
-          force: true
+          path: homebrew-tap
+
+      - name: Setup Homebrew
+        run: |
+          brew update
+
+      - name: Tap homebrew-tap
+        run: |
+          brew tap wendylabsinc/tap $GITHUB_WORKSPACE/homebrew-tap
+
+      - name: Install build dependencies
+        run: |
+          brew install gh jq
+
+      - name: Build bottle and update formula
+        run: |
+          $GITHUB_WORKSPACE/wendy-agent/Scripts/update-homebrew-bottle.sh \
+            "${{ needs.determine-version.outputs.version }}" \
+            "$GITHUB_WORKSPACE/homebrew-tap" \
+            "$GITHUB_WORKSPACE/homebrew-tap/Formula/wendy.rb" \
+            "${{ steps.app-token.outputs.token }}"
+
+      - name: Commit and push formula to homebrew-tap
+        working-directory: homebrew-tap
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          
+          git add Formula/wendy.rb
+          
+          # Only commit if there are changes
+          if git diff --staged --quiet; then
+            echo "No changes to formula"
+          else
+            git commit -m "Update wendy formula to ${{ needs.determine-version.outputs.version }}"
+            git push origin main
+          fi
