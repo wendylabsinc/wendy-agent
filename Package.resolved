@@ -1,5 +1,5 @@
 {
-  "originHash" : "15c0a212fbd28a2f7bc7d2ad7d0794980777b6e2d707994a3c2d18c4f4b02709",
+  "originHash" : "2aa64c9afd1f7f65d729288d0cbe3f4f0189675050a4b7b44b441de27b1b2ad1",
   "pins" : [
     {
       "identity" : "async-http-client",
@@ -15,8 +15,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/edgeengineer/dbus.git",
       "state" : {
-        "revision" : "a5caca44538663af7d8a30586a69fc3590f63a82",
-        "version" : "0.2.2"
+        "revision" : "b166ef42d254a6191127a1c97b68b342bd6b2dc9",
+        "version" : "0.2.3"
       }
     },
     {

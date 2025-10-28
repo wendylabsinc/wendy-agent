@@ -39,7 +39,11 @@ actor FileSystemAgentConfigService: AgentConfigService {
         var privateKey: Certificate.PrivateKey
 
         do {
-            try? await FileSystem.shared.createDirectory(at: directory, withIntermediateDirectories: true, permissions: [.ownerReadWrite])
+            try? await FileSystem.shared.createDirectory(
+                at: directory,
+                withIntermediateDirectories: true,
+                permissions: [.ownerReadWrite]
+            )
             let configData = try await FileSystem.shared.withFileHandle(
                 forReadingAt: configPath
             ) { reader in

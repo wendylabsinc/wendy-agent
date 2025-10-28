@@ -586,8 +586,13 @@ public struct Containerd: Sendable {
         onStderr: @Sendable @escaping (ByteBuffer) async throws -> Void
     ) async throws -> T {
         let id = UUID().uuidString
-        let stdoutSocketPath = "/tmp/wendy-attach-\(id)-stdout.sock"
-        let stderrSocketPath = "/tmp/wendy-attach-\(id)-stderr.sock"
+        // Use /run instead of /tmp because systemd PrivateTmp=true isolates /tmp
+        // /run is shared between wendy-agent and containerd
+        let fifoDir = "/run/wendy-agent"
+        // Ensure the directory exists
+        try? FileManager.default.createDirectory(atPath: fifoDir, withIntermediateDirectories: true)
+        let stdoutSocketPath = "\(fifoDir)/attach-\(id)-stdout.sock"
+        let stderrSocketPath = "\(fifoDir)/attach-\(id)-stderr.sock"
 
         guard
             mkfifo(stdoutSocketPath, 0o644) == 0,
@@ -596,11 +601,21 @@ public struct Containerd: Sendable {
             throw RPCError(code: .internalError, message: "Failed to create stderr FIFO")
         }
 
+        defer {
+            // Clean up FIFOs when done
+            unlink(stdoutSocketPath)
+            unlink(stderrSocketPath)
+        }
+
         logger.info("Creating task group")
+
+        // Use continuations to wait for both FIFOs to be ready
+        let (stdoutReady, stdoutContinuation) = AsyncStream.makeStream(of: Void.self)
+        let (stderrReady, stderrContinuation) = AsyncStream.makeStream(of: Void.self)
+
         return try await withThrowingTaskGroup(of: Void.self) { group in
             group.addTask {
                 let stdoutFd = open(stdoutSocketPath, O_RDONLY | O_NONBLOCK)
-                defer { close(stdoutFd) }
                 guard stdoutFd >= 0 else {
                     throw RPCError(code: .internalError, message: "Failed to open stdout FIFO")
                 }
@@ -613,6 +628,8 @@ public struct Containerd: Sendable {
                     try NIOAsyncChannel<ByteBuffer, Never>(wrappingChannelSynchronously: channel)
                 }
                 .get()
+                logger.info("Stdout pipe ready")
+                stdoutContinuation.yield(())
                 logger.info("Executing stdout pipe")
                 try await stdoutPipe.executeThenClose { stdout in
                     for try await bytes in stdout {
@@ -622,7 +639,6 @@ public struct Containerd: Sendable {
             }
             group.addTask {
                 let stderrFd = open(stderrSocketPath, O_RDONLY | O_NONBLOCK)
-                defer { close(stderrFd) }
                 guard stderrFd >= 0 else {
                     throw RPCError(code: .internalError, message: "Failed to open stderr FIFO")
                 }
@@ -635,6 +651,8 @@ public struct Containerd: Sendable {
                     try NIOAsyncChannel<ByteBuffer, Never>(wrappingChannelSynchronously: channel)
                 }
                 .get()
+                logger.info("Stderr pipe ready")
+                stderrContinuation.yield(())
                 logger.info("Executing stderr pipe")
                 try await stderrPipe.executeThenClose { stderr in
                     for try await bytes in stderr {
@@ -643,21 +661,18 @@ public struct Containerd: Sendable {
                 }
             }
 
-            do {
-                logger.info("Performing task with stdout and stderr")
-                let result = try await perform(stdoutSocketPath, stderrSocketPath)
-                try await group.waitForAll()
-                return result
-            } catch {
-                logger.error(
-                    "Failed to run task with stdout and stderr",
-                    metadata: [
-                        "error": .stringConvertible(error.localizedDescription)
-                    ]
-                )
-                group.cancelAll()
-                throw error
-            }
+            // Wait for both FIFOs to be opened before calling perform
+            async let stdoutReadySignal = stdoutReady.first { _ in true }
+            async let stderrReadySignal = stderrReady.first { _ in true }
+            _ = await (stdoutReadySignal, stderrReadySignal)
+
+            logger.info("Both FIFOs ready, performing task")
+            stdoutContinuation.finish()
+            stderrContinuation.finish()
+            let result = try await perform(stdoutSocketPath, stderrSocketPath)
+
+            try await group.waitForAll()
+            return result
         }
     }
 

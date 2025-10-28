@@ -53,12 +53,10 @@ struct WiFiCommand: AsyncParsableCommand {
 
             if networks.count == 0 {
                 Noora().info("No WiFi networks found.")
-            }
-            else if json {
+            } else if json {
                 let networksJSON = try formatNetworksAsJSON(networks)
                 print(networksJSON)
-            }
-            else {
+            } else {
                 Noora().info("Available WiFi networks:")
                 formatNetworksAsText(networks)
             }
