@@ -1,5 +1,6 @@
 #if os(macOS)
     import AsyncDNSResolver
+    import DNSClient
     import Foundation
     import Logging
     import IOKit
@@ -138,31 +139,63 @@
         }
 
         public func findLANDevices() async throws -> [LANDevice] {
+            let dns = try await DNSClient.connectMulticast(on: .singletonMultiThreadedEventLoopGroup).get()
+            async let wendyPTR = try? await dns.sendQuery(forHost: "_wendy._udp.local", type: .ptr, timeout: .seconds(5)).get()
+            async let edgePTR = try? await dns.sendQuery(forHost: "_edgeos._udp.local", type: .ptr, timeout: .seconds(5)).get()
+            let messages = await [wendyPTR, edgePTR]
+            logger.debug("Going to process answers to PTR query", metadata: ["answers": .stringConvertible(messages.count)])
+            
             var interfaces: [LANDevice] = []
+            for case .some(let message) in messages {
+                let ptr = message.answers.compactMap { answer in
+                    switch answer {
+                    case .ptr(let ptr):
+                        return ptr
+                    default:
+                        return nil
+                    }
+                }.first
 
-            let resolver = try AsyncDNSResolver()
-            let ptrWendy = try await resolver.queryPTR(name: "_wendyos._udp.local")
-            let ptrEdge = try await resolver.queryPTR(name: "_edgeos._udp.local")
-            for name in (ptrWendy.names + ptrEdge.names) {
-                guard
-                    let srv = try await resolver.querySRV(name: name).first,
-                    let txt = try await resolver.queryTXT(name: name).first,
-                    let id = txt.txt.split(separator: "=").last.map(String.init)
+                let srv = message.answers.compactMap { answer in
+                    switch answer {
+                    case .srv(let srv):
+                        return srv
+                    default:
+                        return nil
+                    }
+                }.first
+
+                let txt = message.answers.compactMap { answer in
+                    switch answer {
+                    case .txt(let txt):
+                        return txt
+                    default:
+                        return nil
+                    }
+                }.first
+
+                guard 
+                    let ptr,
+                    let srv,
+                    let txt
                 else {
+                    logger.debug("Got no answers to PTR, SRV, or TXT query")
                     continue
                 }
+
+                let id = txt.resource.values.values.first ?? ""
 
                 let lanDevice = LANDevice(
                     id: id,
                     displayName: "WendyOS Device",
-                    hostname: srv.host,
-                    port: Int(srv.port),
+                    hostname: srv.resource.domainName.string,
+                    port: Int(srv.resource.port),
                     interfaceType: "LAN",
                     isWendyDevice: true
                 )
 
                 // Prevent duplicates
-                if !interfaces.contains(where: { $0.id == id || $0.hostname == srv.host }) {
+                if !interfaces.contains(where: { $0.id == id || $0.hostname == lanDevice.hostname }) {
                     interfaces.append(lanDevice)
                 }
             }
