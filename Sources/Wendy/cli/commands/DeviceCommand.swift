@@ -12,13 +12,14 @@ import WendySDK
 import X509
 import _NIOFileSystem
 
-struct AgentCommand: AsyncParsableCommand {
+struct DeviceCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
-        commandName: "agent",
+        commandName: "device",
         abstract: "Manage the Wendy device.",
         subcommands: [
             SetupCommand.self,
             AppsCommand.self,
+            HardwareCommand.self,
             WiFiCommand.self,
             VersionCommand.self,
             UpdateCommand.self,
