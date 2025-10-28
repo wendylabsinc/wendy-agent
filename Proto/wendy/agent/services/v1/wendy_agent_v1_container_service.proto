@@ -1,0 +1,89 @@
+syntax = "proto3";
+
+package wendy.agent.services.v1;
+
+import "wendy/agent/services/v1/shared.proto";
+
+service WendyContainerService {
+    rpc ListLayers(ListLayersRequest) returns (stream LayerHeader);
+    rpc WriteLayer(stream WriteLayerRequest) returns (stream WriteLayerResponse);
+    rpc RunContainer(RunContainerLayersRequest) returns (stream RunContainerLayersResponse);
+    rpc StopContainer(StopContainerRequest) returns (StopContainerResponse);
+    rpc ListContainers(ListContainersRequest) returns (stream ListContainersResponse);
+}
+
+message ListContainersRequest {}
+
+message ListContainersResponse {
+    AppContainer container = 1;
+}
+
+message ListLayersRequest {}
+
+message WriteLayerRequest {
+    string digest = 1;
+
+    bytes data = 2;
+}
+
+message WriteLayerResponse {}
+
+message LayerHeader {
+    // The hash identity of the layer.
+    string digest = 1;
+
+    int64 size = 2;
+}
+
+message RunContainerLayersRequest {
+    // Unique name for the container image
+    string image_name = 1;
+
+    string app_name = 2;
+
+    // The commavar d to run when the container starts.
+    string cmd = 3;
+    
+    // The layers that will be uploaded to the agent.
+    repeated RunContainerLayerHeader layers = 4;
+
+    /// The `wendy.json` file as found in the project
+    bytes app_config = 5;
+    
+    // Optional restart policy override for Docker runtime.
+    optional RestartPolicy restart_policy = 6;
+
+    string working_dir = 7;
+}
+
+message RunContainerLayerHeader {
+    // The hash identity of the layer.
+    string digest = 1;
+
+    int64 size = 2;
+
+    string diff_id = 3;
+
+    // Whether the layer is compressed with gzip.
+    bool gzip = 4;
+}
+
+message RunContainerLayersResponse {
+    oneof response_type {
+        Started started = 1;
+        ConsoleOutput stdout_output = 2;
+        ConsoleOutput stderr_output = 3;
+    }
+
+    message Started {}
+
+    message ConsoleOutput {
+        bytes data = 1;
+    }
+}
+
+message StopContainerRequest {
+    string app_name = 1;
+}
+
+message StopContainerResponse {}

@@ -11,7 +11,7 @@ else
   PLATFORM := unknown
 endif
 
-.PHONY: all clean edge edge-agent help format setup-hooks build proto deps build-network-daemon build-app-bundle
+.PHONY: all clean wendy wendy-agent help format setup-hooks build proto deps build-network-daemon build-app-bundle
 
 help: ## Show this help message
 	@echo 'Usage:'
@@ -28,67 +28,67 @@ install-deps: ## Install dependencies needed for building
 _protos:
 	./scripts/generate-proto.sh
 
-build-cli: _protos ## Build the edge CLI executable
-	swift build --product edge
-	echo "y" | cp -f .build/$(PLATFORM)/debug/edge ~/bin/edge-dev
-	chmod +x ~/bin/edge-dev
+build-cli: _protos ## Build the wendy CLI executable
+	swiftly run swift build --product wendy
+	echo "y" | cp -f .build/$(PLATFORM)/debug/wendy ~/bin/wendy-dev
+	chmod +x ~/bin/wendy-dev
 
-build-helper: _protos ## Build the edge helper daemon executable
-	swift build --product edge-helper
-	echo "y" | cp -f .build/$(PLATFORM)/debug/edge-helper ~/bin/edge-helper
-	chmod +x ~/bin/edge-helper
+build-helper: _protos ## Build the wendy helper daemon executable
+	swift build --product wendy-helper
+	echo "y" | cp -f .build/$(PLATFORM)/debug/wendy-helper ~/bin/wendy-helper
+	chmod +x ~/bin/wendy-helper
 
-build-network-daemon: _protos ## Build the edge network daemon executable
-	swift build --product edge-network-daemon
-	echo "y" | cp -f .build/$(PLATFORM)/debug/edge-network-daemon ~/bin/edge-network-daemon
-	chmod +x ~/bin/edge-network-daemon
+build-network-daemon: _protos ## Build the wendy network daemon executable
+	swiftly run swift build --product wendy-network-daemon
+	echo "y" | cp -f .build/$(PLATFORM)/debug/wendy-network-daemon ~/bin/wendy-network-daemon
+	chmod +x ~/bin/wendy-network-daemon
 
-build-app-bundle: build-cli build-helper build-network-daemon ## Build and codesign the EdgeCLI.app bundle
-	@echo "Building EdgeCLI.app bundle..."
-	mkdir -p EdgeCLI.app/Contents/MacOS
-	mkdir -p EdgeCLI.app/Contents/Resources
-	mkdir -p EdgeCLI.app/Contents/Library/LaunchDaemons
+build-app-bundle: build-cli build-helper build-network-daemon ## Build and codesign the WendyCLI.app bundle
+	@echo "Building WendyCLI.app bundle..."
+	mkdir -p WendyCLI.app/Contents/MacOS
+	mkdir -p WendyCLI.app/Contents/Resources
+	mkdir -p WendyCLI.app/Contents/Library/LaunchDaemons
 	
 	# Copy binaries
-	cp .build/$(PLATFORM)/debug/edge EdgeCLI.app/Contents/MacOS/
-	cp .build/$(PLATFORM)/debug/edge-helper EdgeCLI.app/Contents/Resources/
-	cp .build/$(PLATFORM)/debug/edge-network-daemon EdgeCLI.app/Contents/MacOS/
+	cp .build/$(PLATFORM)/debug/wendy WendyCLI.app/Contents/MacOS/
+	cp .build/$(PLATFORM)/debug/wendy-helper WendyCLI.app/Contents/Resources/
+	cp .build/$(PLATFORM)/debug/wendy-network-daemon WendyCLI.app/Contents/MacOS/
 	
 	# Copy resources
-	cp Sources/edge/Resources/Info.plist EdgeCLI.app/Contents/
-	cp Sources/edge/Resources/com.edgeos.helper.plist EdgeCLI.app/Contents/Resources/
-	cp Sources/edge/Resources/com.edgeos.edge-network-daemon.plist EdgeCLI.app/Contents/Library/LaunchDaemons/
+	cp Sources/wendy/Resources/Info.plist WendyCLI.app/Contents/
+	cp Sources/wendy/Resources/com.wendy.helper.plist WendyCLI.app/Contents/Resources/
+	cp Sources/wendy/Resources/com.wendy.wendy-network-daemon.plist WendyCLI.app/Contents/Library/LaunchDaemons/
 	
 	# Codesign the bundle
-	codesign --force --options runtime --entitlements Sources/edge-network-daemon/edge-network-daemon.entitlements --sign "$(CODESIGN_IDENTITY)" EdgeCLI.app/Contents/MacOS/edge-network-daemon
-	codesign --force --options runtime --sign "$(CODESIGN_IDENTITY)" EdgeCLI.app/Contents/Resources/edge-helper
-	codesign --force --options runtime --sign "$(CODESIGN_IDENTITY)" EdgeCLI.app/Contents/MacOS/edge
-	codesign --force --options runtime --sign "$(CODESIGN_IDENTITY)" EdgeCLI.app
+	codesign --force --options runtime --entitlements Sources/wendy-network-daemon/wendy-network-daemon.entitlements --sign "$(CODESIGN_IDENTITY)" WendyCLI.app/Contents/MacOS/wendy-network-daemon
+	codesign --force --options runtime --sign "$(CODESIGN_IDENTITY)" WendyCLI.app/Contents/Resources/wendy-helper
+	codesign --force --options runtime --sign "$(CODESIGN_IDENTITY)" WendyCLI.app/Contents/MacOS/wendy
+	codesign --force --options runtime --sign "$(CODESIGN_IDENTITY)" WendyCLI.app
 	
-	@echo "✅ EdgeCLI.app bundle built and codesigned"
+	@echo "✅ WendyCLI.app bundle built and codesigned"
 
-build-cli-linux: _protos ## build the edge CLI for linux with musl
-	swiftly run swift build +6.2 --swift-sdk aarch64-swift-linux-musl --product edge -c release
+build-cli-linux: _protos ## build the wendy CLI for linux with musl
+	swiftly run swift build +6.2 --swift-sdk aarch64-swift-linux-musl --product wendy -c release
 
-build-agent: _protos ## Build the edge agent executable
-	swiftly run swift build +6.2 --swift-sdk aarch64-swift-linux-musl --product edge-agent -c debug 
-	cp .build/aarch64-swift-linux-musl/debug/edge-agent .
-	chmod +x edge-agent
-	@echo "Binary size: $$(du -h edge-agent | cut -f1)"
+build-agent: _protos ## Build the wendy agent executable
+	swiftly run swift build +6.2 --swift-sdk aarch64-swift-linux-musl --product wendy-agent -c debug 
+	cp .build/aarch64-swift-linux-musl/debug/wendy-agent .
+	chmod +x wendy-agent
+	@echo "Binary size: $$(du -h wendy-agent | cut -f1)"
 
-build-agent-release: _protos ## Build the edge agent executable in release mode
+build-agent-release: _protos ## Build the wendy agent executable in release mode
 	swiftly run swift build +6.2 --swift-sdk aarch64-swift-linux-musl \
-	--product edge-agent \
+	--product wendy-agent \
 	-c release \
 	-Xswiftc -whole-module-optimization \
 	-Xlinker --gc-sections \
 	-Xlinker --strip-all
 
-	cp .build/aarch64-swift-linux-musl/release/edge-agent .
-	strip edge-agent 2>/dev/null || true
+	cp .build/aarch64-swift-linux-musl/release/wendy-agent .
+	strip wendy-agent 2>/dev/null || true
 
-	chmod +x edge-agent
-	@echo "Binary size: $$(du -h edge-agent | cut -f1)"
+	chmod +x wendy-agent
+	@echo "Binary size: $$(du -h wendy-agent | cut -f1)"
 
 test: ## Run the tests
 	swift test
@@ -96,7 +96,7 @@ test: ## Run the tests
 cov-html: ## Run the tests and generate coverage report
 	swift test --enable-code-coverage
 	xcrun llvm-cov show \
-		.build/debug/edge-agentPackageTests.xctest/Contents/MacOS/edge-agentPackageTests \
+		.build/debug/wendy-agentPackageTests.xctest/Contents/MacOS/wendy-agentPackageTests \
 		-instr-profile=.build/debug/codecov/default.profdata \
 		Sources/ \
 		--format=html \
@@ -106,42 +106,42 @@ cov-html: ## Run the tests and generate coverage report
 cov-report: ## Run the tests and generate coverage report
 	swift test --enable-code-coverage
 	xcrun llvm-cov export \
-		.build/debug/edge-agentPackageTests.xctest/Contents/MacOS/edge-agentPackageTests \
+		.build/debug/wendy-agentPackageTests.xctest/Contents/MacOS/wendy-agentPackageTests \
 		-instr-profile=.build/debug/codecov/default.profdata \
 		--include-directory=Sources/ \
 		-format=json > coverage.json
 	xcrun llvm-cov export \
-		.build/debug/edge-agentPackageTests.xctest/Contents/MacOS/edge-agentPackageTests \
+		.build/debug/wendy-agentPackageTests.xctest/Contents/MacOS/wendy-agentPackageTests \
 		-instr-profile=.build/debug/codecov/default.profdata \
 		--include-directory=Sources/ \
 		-format=lcov > coverage.lcov
 format: ## Format Swift code using swift-format
-	swift format --recursive --in-place Sources/ Tests/
+	swiftly run wift format --recursive --in-place Sources/ Tests/
 
 setup-hooks: ## Install git hooks
 	./Scripts/install-hooks.sh
 
 clean: ## Clean build artifacts and remove executables
-	swift package clean
-	rm -f edge EdgeAgent
+	swiftly run swift package clean
+	rm -f wendy WendyAgent
 
 # Default build target
 build:
-	@echo "Building edge-agent..."
+	@echo "Building wendy-agent..."
 	@mkdir -p bin
-	@cd cmd/edge-agent && go build -o ../../bin/edge-agent
+	@cd cmd/wendy-agent && go build -o ../../bin/wendy-agent
 
 # Generate protocol buffer code
 proto:
 	@echo "Generating protobuf code..."
 	@mkdir -p internal/proto
 	@protoc \
-		--go_out=. --go_opt=module=github.com/edgeengineer/edge-agent-go \
-		--go-grpc_out=. --go-grpc_opt=module=github.com/edgeengineer/edge-agent-go \
-		api/proto/edge/agent/services/v1/*.proto
+		--go_out=. --go_opt=module=github.com/wendylabsinc/wendy-agent-go \
+		--go-grpc_out=. --go-grpc_opt=module=github.com/wendylabsinc/wendy-agent-go \
+		api/proto/wendy/agent/services/v1/*.proto
 	@# Move generated files to internal/proto
-	@mkdir -p internal/proto/edge/agent/services/v1
-	@mv api/proto/edge/agent/services/v1/*.pb.go internal/proto/edge/agent/services/v1/
+	@mkdir -p internal/proto/wendy/agent/services/v1
+	@mv api/proto/wendy/agent/services/v1/*.pb.go internal/proto/wendy/agent/services/v1/
 
 # Install dependencies
 deps:

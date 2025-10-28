@@ -2,6 +2,7 @@ import Crypto
 import Foundation
 import Logging
 import NIOFoundationCompat
+import Noora
 import Subprocess
 import _NIOFileSystem
 
@@ -22,7 +23,7 @@ public struct Container: Sendable {
     public let config: DockerConfig
 }
 
-private let logger = Logger(label: "edgeengineer.container-builder")
+private let logger = Logger(label: "sh.wendy.container-builder")
 
 public func buildDockerContainerLayers(
     image: ContainerImageSpec,
@@ -87,7 +88,7 @@ public func buildDockerContainerLayers(
         }
 
         // If the layer has a predefined diffID, use it
-        logger.info("Calculating diffID for layer \(layerTarPath.path)")
+        logger.debug("Calculating diffID for layer \(layerTarPath.path)")
         let layer = try await FileSystem.shared.withFileHandle(
             forReadingAt: FilePath(layerTarPath.path)
         ) { fileHandle in
@@ -122,12 +123,18 @@ public func buildDockerContainer(
     imageName: String,
     tempDir: URL
 ) async throws -> Container {
-    logger.info("Building container layers")
-    let layers = try await buildDockerContainerLayers(
-        image: image,
-        imageName: imageName,
-        outputDirectoryPath: tempDir
-    )
+    let layers = try await Noora().progressStep(
+        message: "Building container layers",
+        successMessage: "Container built",
+        errorMessage: "Failed to build container",
+        showSpinner: true
+    ) { progress in
+        try await buildDockerContainerLayers(
+            image: image,
+            imageName: imageName,
+            outputDirectoryPath: tempDir
+        )
+    }
 
     // Create config.json
     let dateFormatter = ISO8601DateFormatter()
@@ -171,14 +178,14 @@ public func buildDockerContainerImage(
     )
 
     // Serialize and save config
-    logger.info("Creating config.json")
+    Noora().info("Creating config.json")
     let configData = try JSONEncoder().encode(container.config)
     let configPath = tempDir.appendingPathComponent("config.json")
     try configData.write(to: configPath)
     let configSHA = sha256(data: configData)
 
     // Create image manifest
-    logger.info("Creating image manifest")
+    logger.debug("Creating image manifest")
     let imageTag = "latest"
     let repositories = [
         imageName: [
@@ -190,7 +197,7 @@ public func buildDockerContainerImage(
     try repositoriesData.write(to: repositoriesPath)
 
     // Create final container image tarball
-    logger.info("Creating final container image tarball")
+    Noora().info("Creating container image")
     let imageDir = tempDir.appendingPathComponent("image")
     try FileManager.default.createDirectory(at: imageDir, withIntermediateDirectories: true)
 

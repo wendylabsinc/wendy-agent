@@ -1,19 +1,20 @@
 import ContainerRegistry
 import Foundation
 import Logging
+import Noora
 import Subprocess
 
 extension ContainerImageSpec {
-    private static let logger = Logger(label: "edgeengineer.container-builder")
+    private static let logger = Logger(label: "sh.wendy.container-builder")
 
     private static func fetchManifest(
         client: RegistryClient,
         imageRef: ImageReference,
         architecture: String
     ) async throws -> ImageManifest {
-        // Try to fetch from `.edge-cache` first
+        // Try to fetch from `.wendy/cache` first
         let cacheDir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(
-            ".edge-cache/manifests"
+            ".wendy/cache/manifests"
         )
         try FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
         let repoName = imageRef.repository.addingPercentEncoding(
@@ -54,7 +55,7 @@ extension ContainerImageSpec {
                 throw error  // Re-throw the original error if no suitable manifest found
             }
 
-            logger.info(
+            logger.debug(
                 "Using manifest for \(manifestDesc.platform?.architecture ?? "unknown") architecture"
             )
 
@@ -65,7 +66,7 @@ extension ContainerImageSpec {
             )
         }
 
-        logger.info(
+        logger.debug(
             "Saving manifest to cache",
             metadata: [
                 "path": .string(manifestPath.path),
@@ -86,7 +87,7 @@ extension ContainerImageSpec {
         configDigest: String
     ) async throws -> ImageConfiguration {
         let cacheDir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(
-            ".edge-cache/configs"
+            ".wendy/cache/configs"
         )
         try FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
         let repoName = imageRef.repository.addingPercentEncoding(
@@ -103,7 +104,7 @@ extension ContainerImageSpec {
             logger.debug("Image configuration not found in cache, fetching from registry...")
         }
 
-        logger.info(
+        logger.debug(
             "Fetching image configuration",
             metadata: [
                 "digest": .string(configDigest),
@@ -141,16 +142,14 @@ extension ContainerImageSpec {
         env: [String] = ["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"],
         created: Date = Date(),
         architecture: String = "arm64",
-        username: String? = nil,
-        password: String? = nil
+        auth: AuthHandler = AuthHandler()
     ) async throws -> ContainerImageSpec {
         let imageRef = try ImageReference(fromString: baseImage, defaultRegistry: "docker.io")
-        logger.info("Pulling base image: \(imageRef)")
+        logger.debug("Downloading base image: \(imageRef)")
 
         // Create registry client - for Docker Hub we need to use index.docker.io
         // This automatically handles the redirect for docker.io to index.docker.io
         // Always provide an AuthHandler - use provided credentials if available, or empty auth for anonymous access
-        let auth = AuthHandler(username: username, password: password)
         let client = try await RegistryClient(
             registry: imageRef.registry,
             insecure: false,
@@ -179,7 +178,7 @@ extension ContainerImageSpec {
 
         // Create a cache directory for layers
         let cacheDir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(
-            ".edge-cache/layers"
+            ".wendy/cache/layers"
         )
         try FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
 
@@ -195,16 +194,16 @@ extension ContainerImageSpec {
         }
 
         for (index, layer) in manifest.layers.enumerated() {
-            logger.info("Fetching layer \(index+1)/\(manifest.layers.count): \(layer.digest)")
+            logger.debug("Fetching layer \(index+1)/\(manifest.layers.count): \(layer.digest)")
 
             // Prepare cache path for this layer
             let layerCacheFilename = layer.digest.replacingOccurrences(of: ":", with: "-")
             let layerPath = cacheDir.appendingPathComponent(layerCacheFilename)
 
             if FileManager.default.fileExists(atPath: layerPath.path) {
-                logger.info("Layer found in cache: \(layerPath.lastPathComponent)")
+                logger.debug("Layer found in cache: \(layerPath.lastPathComponent)")
             } else {
-                logger.info("Layer not found in cache, downloading: \(layer.digest)")
+                logger.debug("Layer not found in cache, downloading: \(layer.digest)")
                 let layerData = try await client.getBlob(
                     repository: imageRef.repository,
                     digest: layer.digest

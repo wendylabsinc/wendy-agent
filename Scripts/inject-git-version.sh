@@ -5,7 +5,7 @@
 
 set -e
 
-SOURCE_FILE="Sources/EdgeShared/Version.swift"
+SOURCE_FILE="Sources/WendyShared/Version.swift"
 
 # Check if we're in development mode
 if [ "$1" = "--dev" ]; then

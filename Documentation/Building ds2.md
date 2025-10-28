@@ -1,6 +1,6 @@
 # Building the ds2 Debug Server
 
-The Edge CLI uses the [`ds2` debug server](https://github.com/compnerd/ds2) to debug EdgeOS applications.
+The Wendy CLI uses the [`ds2` debug server](https://github.com/compnerd/ds2) to debug Wendy applications.
 
 The included `ds2` binary was built using the following command (on Linux arm64):
 

@@ -1,3 +1,5 @@
+import ArgumentParser
+
 public struct AppConfig: Codable {
     public let appId: String
     public let version: String
@@ -10,10 +12,11 @@ public struct AppConfig: Codable {
     }
 }
 
-public enum Entitlement: Codable {
+public enum Entitlement: Codable, Sendable, Hashable {
     case network(NetworkEntitlements)
     case bluetooth(BluetoothEntitlements)
     case video(VideoEntitlements)
+    case audio
 
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
@@ -25,6 +28,8 @@ public enum Entitlement: Codable {
         case .video(let entitlement):
             try container.encode(EntitlementType.video, forKey: .type)
             try entitlement.encode(to: encoder)
+        case .audio:
+            try container.encode(EntitlementType.audio, forKey: .type)
         case .bluetooth(let entitlement):
             try container.encode(EntitlementType.bluetooth, forKey: .type)
             try entitlement.encode(to: encoder)
@@ -42,6 +47,8 @@ public enum Entitlement: Codable {
             self = .video(try VideoEntitlements(from: decoder))
         case .bluetooth:
             self = .bluetooth(try BluetoothEntitlements(from: decoder))
+        case .audio:
+            self = .audio
         }
     }
 
@@ -50,14 +57,15 @@ public enum Entitlement: Codable {
     }
 }
 
-public enum EntitlementType: String, Codable {
+public enum EntitlementType: String, Codable, CaseIterable, ExpressibleByArgument, Sendable {
     case network
     case video
+    case audio
     case bluetooth
 }
 
-public struct BluetoothEntitlements: Codable {
-    public enum BluetoothMode: String, Codable {
+public struct BluetoothEntitlements: Codable, Sendable, Hashable {
+    public enum BluetoothMode: String, Codable, Sendable, Hashable {
         case bluez, kernel
     }
 
@@ -68,11 +76,15 @@ public struct BluetoothEntitlements: Codable {
     }
 }
 
-public struct VideoEntitlements: Codable {
+public struct VideoEntitlements: Codable, Sendable, Hashable {
     public init() {}
 }
 
-public struct NetworkEntitlements: Codable {
+public struct AudioEntitlements: Codable, Sendable, Hashable {
+    public init() {}
+}
+
+public struct NetworkEntitlements: Codable, Sendable, Hashable {
     public let mode: NetworkMode
 
     public init(mode: NetworkMode) {
@@ -80,7 +92,7 @@ public struct NetworkEntitlements: Codable {
     }
 }
 
-public enum NetworkMode: String, Codable {
+public enum NetworkMode: String, Codable, Sendable, Hashable {
     case host
     case none
 }

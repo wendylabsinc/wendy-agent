@@ -1,0 +1,30 @@
+version: '3.8'
+
+services:
+  speech-transcriber:
+    build: .
+    container_name: speech-transcriber-app
+    # Enable privileged mode for audio device access
+    privileged: true
+    # Mount audio devices and sound system
+    devices:
+      # USB audio devices
+      - /dev/snd:/dev/snd
+      # For USB devices specifically
+      - /dev/bus/usb:/dev/bus/usb
+    volumes:
+      # ALSA configuration
+      - /etc/asound.conf:/etc/asound.conf:ro
+      - /etc/asound.state:/etc/asound.state:ro
+    # Environment variables for ALSA audio
+    environment:
+      - ALSA_CARD=0
+      - ALSA_DEVICE=0
+      - ALSA_PCM_CARD=0
+      - ALSA_PCM_DEVICE=0
+    # Network mode for better device access
+    network_mode: host
+    # Restart policy
+    restart: unless-stopped
+    # Override command to run with specific audio device if needed
+    # command: ["python", "speech_transcriber.py", "--device", "2"]

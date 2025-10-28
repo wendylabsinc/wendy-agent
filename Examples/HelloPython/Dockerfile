@@ -12,21 +12,27 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
 COPY app.py .
+COPY entrypoint.sh .
 
 # Create a non-root user for security
 RUN useradd --create-home --shell /bin/bash app && \
+    chmod +x entrypoint.sh && \
     chown -R app:app /app
 USER app
 
-# Expose port 8080
-EXPOSE 8080
+# Expose port 8000
+EXPOSE 8000
+
+# Expose debugpy port 5678 for remote debugging
+EXPOSE 5678
 
 # Set environment variable for port
-ENV PORT=8080
+ENV PORT=8000
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"
 
 # Run the application
-CMD ["python", "app.py"]
+# Set DEBUG=true to enable debugpy, DEBUG_WAIT=true to wait for debugger
+CMD ["./entrypoint.sh"]
