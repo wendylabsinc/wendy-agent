@@ -134,17 +134,15 @@ public enum AuthChallenge: Equatable, Sendable {
 
 /// AuthHandler manages provides credentials for HTTP requests
 public enum AuthHandler: Sendable {
-    case none
-    case basic(String, String)
+    case login(username: String?, password: String?)
     case bearer(String)
 
     /// Create an AuthHandler
     /// - Parameters:
     ///   - username: Default username, used if no other suitable credentials are available.
     ///   - password: Default password, used if no other suitable credentials are available.
-    ///   - bearer: Default bearer token, used if no other suitable credentials are available.
-    public init(username: String, password: String) {
-        self = .basic(username, password)
+    public init(username: String? = nil, password: String? = nil) {
+        self = .login(username: username, password: password)
     }
 
     public init(bearer: String) {
@@ -152,7 +150,18 @@ public enum AuthHandler: Sendable {
     }
 
     public init() {
-        self = .none
+        self = .login(username: nil, password: nil)
+    }
+
+    /// Get locally-configured credentials, such as username/password, for a host
+    func localCredentials(forURL url: URL) -> String? {
+        if case .login(.some(let username), .some(let password)) = self {
+            let authorization = Data("\(username):\(password)".utf8).base64EncodedString()
+            return "Basic \(authorization)"
+        }
+
+        // No suitable authentication methods available
+        return nil
     }
 
     public func auth(
@@ -162,42 +171,33 @@ public enum AuthHandler: Sendable {
         withScheme scheme: AuthChallenge,
         usingClient client: HTTPClient
     ) async throws -> String? {
-        switch self {
-        case .none: return nil
-        case .basic(let username, let password):
-            switch scheme {
-            case .none: return nil
-            case .basic:
-                let authorization = Data("\(username):\(password)".utf8).base64EncodedString()
-                return "Basic \(authorization)"
-
-            case .bearer(let challenge):
-                // Preemptively offer suitable basic auth credentials to the token server.
-                // Instead of challenging, public token servers often return anonymous tokens when no credentials are offered.
-                // These tokens allow pull access to public repositories, but attempts to push will fail with 'unauthorized'.
-                // There is no obvious prompt for the client to retry with authentication.
-                var parsedChallenge = try parseChallenge(
-                    challenge.dropFirst("bearer".count).trimmingCharacters(
-                        in: .whitespacesAndNewlines
-                    )
-                )
-                parsedChallenge.scope = [
-                    "repository:\(repository):\(actions.joined(separator: ","))"
-                ]
-                guard let challengeURL = parsedChallenge.url else { return nil }
-                var tokenRequest = HTTPRequest(url: challengeURL)
-                let authorization = Data("\(username):\(password)".utf8).base64EncodedString()
-                tokenRequest.headerFields[.authorization] = "Basic \(authorization)"
-
-                let (data, _) = try await client.executeRequestThrowing(
-                    tokenRequest,
-                    expectingStatus: .ok
-                )
-                let tokenResponse = try JSONDecoder().decode(BearerTokenResponse.self, from: data)
-                return "Bearer \(tokenResponse.token)"
+        switch (self, scheme) {
+        case (_, .none): return nil
+        case (.login, .basic):
+            return localCredentials(forURL: registry)
+        case (.login, .bearer(let challenge)):
+            // Preemptively offer suitable basic auth credentials to the token server.
+            // Instead of challenging, public token servers often return anonymous tokens when no credentials are offered.
+            // These tokens allow pull access to public repositories, but attempts to push will fail with 'unauthorized'.
+            // There is no obvious prompt for the client to retry with authentication.
+            var parsedChallenge = try parseChallenge(
+                challenge.dropFirst("bearer".count).trimmingCharacters(in: .whitespacesAndNewlines)
+            )
+            parsedChallenge.scope = ["repository:\(repository):\(actions.joined(separator: ","))"]
+            guard let challengeURL = parsedChallenge.url else { return nil }
+            var tokenRequest = HTTPRequest(url: challengeURL)
+            if let credentials = localCredentials(forURL: challengeURL) {
+                tokenRequest.headerFields[.authorization] = credentials
             }
-        case .bearer(let bearer):
-            return "Bearer \(bearer)"
+
+            let (data, _) = try await client.executeRequestThrowing(
+                tokenRequest,
+                expectingStatus: .ok
+            )
+            let tokenResponse = try JSONDecoder().decode(BearerTokenResponse.self, from: data)
+            return "Bearer \(tokenResponse.token)"
+        case (.bearer(let token), _):
+            return "Bearer \(token)"
         }
     }
 }
