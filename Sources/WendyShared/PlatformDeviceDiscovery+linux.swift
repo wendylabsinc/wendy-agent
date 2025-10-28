@@ -98,12 +98,12 @@
             ).get()
             async let wendyPTR = try? await dns.sendQuery(
                 forHost: "_wendy._udp.local",
-                type: .ptr,
+                type: .any,
                 timeout: .seconds(5)
             ).get()
             async let edgePTR = try? await dns.sendQuery(
                 forHost: "_edgeos._udp.local",
-                type: .ptr,
+                type: .any,
                 timeout: .seconds(5)
             ).get()
             let messages = await [wendyPTR, edgePTR]
