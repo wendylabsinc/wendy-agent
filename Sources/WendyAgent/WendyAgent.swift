@@ -28,10 +28,6 @@ struct WendyAgent: AsyncParsableCommand {
     var configDir: String = "/etc/wendy-agent"
 
     func run() async throws {
-        LoggingSystem.bootstrap { label in
-            StreamLogHandler.standardError(label: label)
-        }
-
         let logger = Logger(label: "sh.wendy.agent")
 
         logger.info("Starting Wendy Agent version \(Version.current) on port \(port)")

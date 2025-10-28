@@ -85,10 +85,6 @@ struct RunCommand: AsyncParsableCommand, Sendable {
     @OptionGroup var agentConnectionOptions: AgentConnectionOptions
 
     func run() async throws {
-        LoggingSystem.bootstrap { label in
-            StreamLogHandler.standardError(label: label)
-        }
-
         let logger = Logger(label: "sh.wendy.cli.run")
         let isSwiftPackage = FileManager.default.fileExists(atPath: "Package.swift")
 

@@ -1,9 +1,25 @@
 import ArgumentParser
 import Foundation
 import WendyShared
+import Logging
 
 @main
-struct WendyCLI: AsyncParsableCommand {
+struct WendyCLI {
+    static func main() async throws {
+        LoggingSystem.bootstrap { label in
+            let level = ProcessInfo.processInfo.environment["LOG_LEVEL"]
+                .flatMap(Logger.Level.init) ?? .info
+        
+            var logger = StreamLogHandler.standardError(label: label)
+            logger.logLevel = level
+            return logger
+        }
+
+        await WendyCommand.main()
+    }
+}
+
+struct WendyCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "wendy",
         abstract: "Wendy CLI",
