@@ -62,6 +62,8 @@ extension OCI {
 
         for entitlement in entitlements {
             switch entitlement {
+            case .gpu:
+                ()
             case .network(let entitlement):
                 switch entitlement.mode {
                 case .host:

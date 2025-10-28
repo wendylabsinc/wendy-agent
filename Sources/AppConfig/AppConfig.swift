@@ -16,6 +16,7 @@ public enum Entitlement: Codable, Sendable, Hashable {
     case network(NetworkEntitlements)
     case bluetooth(BluetoothEntitlements)
     case video(VideoEntitlements)
+    case gpu(GPUEntitlements)
     case audio
 
     public func encode(to encoder: Encoder) throws {
@@ -33,6 +34,9 @@ public enum Entitlement: Codable, Sendable, Hashable {
         case .bluetooth(let entitlement):
             try container.encode(EntitlementType.bluetooth, forKey: .type)
             try entitlement.encode(to: encoder)
+        case .gpu(let entitlement):
+            try container.encode(EntitlementType.gpu, forKey: .type)
+            try entitlement.encode(to: encoder)
         }
     }
 
@@ -47,6 +51,8 @@ public enum Entitlement: Codable, Sendable, Hashable {
             self = .video(try VideoEntitlements(from: decoder))
         case .bluetooth:
             self = .bluetooth(try BluetoothEntitlements(from: decoder))
+        case .gpu:
+            self = .gpu(try GPUEntitlements(from: decoder))
         case .audio:
             self = .audio
         }
@@ -62,6 +68,7 @@ public enum EntitlementType: String, Codable, CaseIterable, ExpressibleByArgumen
     case video
     case audio
     case bluetooth
+    case gpu
 }
 
 public struct BluetoothEntitlements: Codable, Sendable, Hashable {
@@ -74,6 +81,10 @@ public struct BluetoothEntitlements: Codable, Sendable, Hashable {
     public init(mode: BluetoothMode) {
         self.mode = mode
     }
+}
+
+public struct GPUEntitlements: Codable, Sendable, Hashable {
+    public init() {}
 }
 
 public struct VideoEntitlements: Codable, Sendable, Hashable {
