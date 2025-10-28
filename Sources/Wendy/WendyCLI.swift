@@ -1,15 +1,16 @@
 import ArgumentParser
 import Foundation
-import WendyShared
 import Logging
+import WendyShared
 
 @main
 struct WendyCLI {
     static func main() async throws {
         LoggingSystem.bootstrap { label in
-            let level = ProcessInfo.processInfo.environment["LOG_LEVEL"]
+            let level =
+                ProcessInfo.processInfo.environment["LOG_LEVEL"]
                 .flatMap(Logger.Level.init) ?? .info
-        
+
             var logger = StreamLogHandler.standardError(label: label)
             logger.logLevel = level
             return logger

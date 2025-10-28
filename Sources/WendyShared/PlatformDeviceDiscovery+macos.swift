@@ -139,12 +139,25 @@
         }
 
         public func findLANDevices() async throws -> [LANDevice] {
-            let dns = try await DNSClient.connectMulticast(on: .singletonMultiThreadedEventLoopGroup).get()
-            async let wendyPTR = try? await dns.sendQuery(forHost: "_wendy._udp.local", type: .ptr, timeout: .seconds(5)).get()
-            async let edgePTR = try? await dns.sendQuery(forHost: "_edgeos._udp.local", type: .ptr, timeout: .seconds(5)).get()
+            let dns = try await DNSClient.connectMulticast(
+                on: .singletonMultiThreadedEventLoopGroup
+            ).get()
+            async let wendyPTR = try? await dns.sendQuery(
+                forHost: "_wendy._udp.local",
+                type: .ptr,
+                timeout: .seconds(5)
+            ).get()
+            async let edgePTR = try? await dns.sendQuery(
+                forHost: "_edgeos._udp.local",
+                type: .ptr,
+                timeout: .seconds(5)
+            ).get()
             let messages = await [wendyPTR, edgePTR]
-            logger.debug("Going to process answers to PTR query", metadata: ["answers": .stringConvertible(messages.count)])
-            
+            logger.debug(
+                "Going to process answers to PTR query",
+                metadata: ["answers": .stringConvertible(messages.count)]
+            )
+
             var interfaces: [LANDevice] = []
             for case .some(let message) in messages {
                 let ptr = message.answers.compactMap { answer in
@@ -194,7 +207,8 @@
                 )
 
                 // Prevent duplicates
-                if !interfaces.contains(where: { $0.id == id || $0.hostname == lanDevice.hostname }) {
+                if !interfaces.contains(where: { $0.id == id || $0.hostname == lanDevice.hostname })
+                {
                     interfaces.append(lanDevice)
                 }
             }
