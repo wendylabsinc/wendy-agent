@@ -29,9 +29,9 @@ public struct SwiftPM: Sendable {
 
         let result = try await Subprocess.run(
             Subprocess.Executable.path("/usr/bin/which"),
-            arguments: Subprocess.Arguments([commandName]),
-            output: .string(limit: .max),
-            error: .discarded
+            arguments: [commandName],
+            output: .string(limit: 10_000),
+            error: .standardError
         )
 
         if let path = result.standardOutput?.trimmingCharacters(in: .whitespacesAndNewlines),
