@@ -21,34 +21,6 @@ public struct SwiftPM: Sendable {
         self.swiftVersion = swiftVersion
     }
 
-    /// Find the absolute path for an executable using the 'which' command
-    private func findExecutablePath(for command: String) async throws -> String {
-        // If command already includes spaces, it's likely a command with args
-        // In this case, we'll just extract the first part to look up
-        let commandName = command.split(separator: " ").first.map(String.init) ?? command
-
-        let result = try await Subprocess.run(
-            Subprocess.Executable.path("/usr/bin/which"),
-            arguments: Subprocess.Arguments([commandName]),
-            output: .string(limit: .max),
-            error: .discarded
-        )
-
-        if let path = result.standardOutput?.trimmingCharacters(in: .whitespacesAndNewlines),
-            !path.isEmpty
-        {
-            return path
-        }
-
-        if commandName == "swiftly",
-            let path = ProcessInfo.processInfo.environment["SWIFTLY_PATH"]
-        {
-            return path
-        }
-
-        return commandName  // Fallback to original command name
-    }
-
     public enum BuildOption: Sendable {
         /// Filter for selecting a specific Swift SDK to build with.
         case swiftSDK(String)
@@ -106,21 +78,19 @@ public struct SwiftPM: Sendable {
         let version = swiftVersion.map { [$0] } ?? []
 
         // Find the executable path
-        let executablePath = try await findExecutablePath(
-            for: path.split(separator: " ").first.map(String.init) ?? path
-        )
+        let executableName = path.split(separator: " ").first.map(String.init) ?? path
         // print("Using swiftly at path: \(executablePath)")
 
         // Use the executable path instead of just the command name
         let runArgs = path.split(separator: " ").dropFirst().map(String.init)
         let allArgs =
-            [executablePath] + runArgs + ["build"] + version + options.flatMap(\.arguments)
+            runArgs + ["build"] + version + options.flatMap(\.arguments)
 
         let result = try await Subprocess.run(
-            Subprocess.Executable.path("/usr/bin/env"),
+            .name(executableName),
             arguments: Subprocess.Arguments(allArgs),
             output: .string(limit: .max),
-            error: .fileDescriptor(.standardError, closeAfterSpawningProcess: false),
+            error: .standardError
         )
 
         if result.terminationStatus.isSuccess {
@@ -140,15 +110,13 @@ public struct SwiftPM: Sendable {
         let version = swiftVersion.map { [$0] } ?? []
 
         // Find the executable path
-        let executablePath = try await findExecutablePath(
-            for: path.split(separator: " ").first.map(String.init) ?? path
-        )
+        let executableName = path.split(separator: " ").first.map(String.init) ?? path
         // print("Using swiftly at path: \(executablePath)")
 
         // Use the executable path instead of just the command name
         let runArgs = path.split(separator: " ").dropFirst().map(String.init)
         let allArgs =
-            [executablePath] + runArgs + ["build"] + version + options.flatMap(\.arguments)
+            runArgs + ["build"] + version + options.flatMap(\.arguments)
 
         let result = try await Noora().progressStep(
             message: "Building Swift package",
@@ -157,7 +125,7 @@ public struct SwiftPM: Sendable {
             showSpinner: true
         ) { _ in
             try await Subprocess.run(
-                Subprocess.Executable.path("/usr/bin/env"),
+                Subprocess.Executable.name(executableName),
                 arguments: Subprocess.Arguments(allArgs),
                 output: .fileDescriptor(.standardOutput, closeAfterSpawningProcess: false),
                 error: .fileDescriptor(.standardError, closeAfterSpawningProcess: false),
@@ -178,20 +146,18 @@ public struct SwiftPM: Sendable {
 
     public func dumpPackage(_ options: BuildOption...) async throws -> Package {
         // Find the executable path
-        let executablePath = try await findExecutablePath(
-            for: path.split(separator: " ").first.map(String.init) ?? path
-        )
+        let executableName = path.split(separator: " ").first.map(String.init) ?? path
 
         // Use the executable path instead of just the command name
         let runArgs = path.split(separator: " ").dropFirst().map(String.init)
         let allArgs =
-            [executablePath] + runArgs + ["package", "dump-package"] + options.flatMap(\.arguments)
+            runArgs + ["package", "dump-package"] + options.flatMap(\.arguments)
 
         let result = try await Subprocess.run(
-            Subprocess.Executable.path("/usr/bin/env"),
+            Subprocess.Executable.name(executableName),
             arguments: Subprocess.Arguments(allArgs),
-            output: .string(limit: .max),
-            error: .string(limit: .max)
+            output: .string(limit: 100_000),
+            error: .string(limit: 100_000)
         )
 
         if result.terminationStatus.isSuccess, let output = result.standardOutput {
