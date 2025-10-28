@@ -174,8 +174,7 @@
                     }
                 }.first
 
-                guard 
-                    let ptr,
+                guard
                     let srv,
                     let txt
                 else {
