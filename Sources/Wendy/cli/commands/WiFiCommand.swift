@@ -30,14 +30,6 @@ struct WiFiCommand: AsyncParsableCommand {
         @OptionGroup var agentConnectionOptions: AgentConnectionOptions
 
         func run() async throws {
-            // Configure logger
-            LoggingSystem.bootstrap { label in
-                StreamLogHandler.standardError(label: "sh.wendy.cli.wifi.list")
-            }
-
-            let logger = Logger(label: "sh.wendy.cli.wifi.list")
-            logger.info("Listing available WiFi networks")
-
             let networks = try await withAgentGRPCClient(
                 agentConnectionOptions,
                 title: "For which device do you want to list wifi networks?"
@@ -59,16 +51,17 @@ struct WiFiCommand: AsyncParsableCommand {
                 }
             }
 
-            if json {
+            if networks.count == 0 {
+                Noora().info("No WiFi networks found.")
+            }
+            else if json {
                 let networksJSON = try formatNetworksAsJSON(networks)
                 print(networksJSON)
-                return
             }
-
-            Noora().info("No WiFi networks found.")
-
-            // Display networks
-            formatNetworksAsText(networks)
+            else {
+                Noora().info("Available WiFi networks:")
+                formatNetworksAsText(networks)
+            }
         }
 
         private func formatNetworksAsJSON(
@@ -93,9 +86,6 @@ struct WiFiCommand: AsyncParsableCommand {
         private func formatNetworksAsText(
             _ networks: [Wendy_Agent_Services_V1_ListWiFiNetworksResponse.WiFiNetwork]
         ) {
-            print("Available WiFi Networks:")
-            print("------------------------")
-
             for (index, network) in networks.enumerated() {
                 let signalInfo =
                     network.hasSignalStrength ? " (Signal: \(network.signalStrength))" : ""

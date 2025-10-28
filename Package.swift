@@ -52,7 +52,7 @@ let package = Package(
             url: "https://github.com/swift-server/swift-openapi-async-http-client.git",
             from: "1.1.0"
         ),
-        .package(url: "https://github.com/edgeengineer/dbus.git", from: "0.2.2"),
+        .package(url: "https://github.com/edgeengineer/dbus.git", from: "0.2.3"),
         .package(url: "https://github.com/apple/swift-system.git", from: "1.4.2"),
     ],
     targets: [
