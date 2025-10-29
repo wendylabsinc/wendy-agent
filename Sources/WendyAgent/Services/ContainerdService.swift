@@ -79,7 +79,10 @@ public struct Containerd: Sendable {
     /// - Parameters:
     ///   - client: The gRPC client for containerd
     ///   - fifoManager: The FIFO manager (defaults to SystemFIFOManager for production)
-    public init(client: GRPCClient<HTTP2ClientTransport.Posix>, fifoManager: FIFOManager = SystemFIFOManager()) {
+    public init(
+        client: GRPCClient<HTTP2ClientTransport.Posix>,
+        fifoManager: FIFOManager = SystemFIFOManager()
+    ) {
         self.client = client
         self.fifoManager = fifoManager
     }
@@ -708,8 +711,8 @@ public struct Containerd: Sendable {
             }
 
             // Wait for both FIFOs to be opened before calling perform
-            async let stdoutReadySignal = stdoutReady.first { _ in true }
-            async let stderrReadySignal = stderrReady.first { _ in true }
+            async let stdoutReadySignal: Void? = stdoutReady.first { _ in true }
+            async let stderrReadySignal: Void? = stderrReady.first { _ in true }
             _ = await (stdoutReadySignal, stderrReadySignal)
 
             logger.info("Both FIFOs ready, performing task")
