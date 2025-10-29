@@ -12,6 +12,51 @@ import WendyAgentGRPC
     import Musl
 #endif
 
+// MARK: - FIFO Management Protocol
+
+/// Protocol for managing FIFO operations, allowing for testing and mocking
+public protocol FIFOManager: Sendable {
+    /// Creates a FIFO (named pipe) at the specified path
+    func createFIFO(path: String, permissions: mode_t) throws
+
+    /// Opens a FIFO for reading and returns the file descriptor
+    func openForReading(path: String) throws -> Int32
+
+    /// Removes a FIFO from the filesystem
+    func removeFIFO(path: String)
+}
+
+/// Production implementation using real system calls
+public struct SystemFIFOManager: FIFOManager {
+    public init() {}
+
+    public func createFIFO(path: String, permissions: mode_t) throws {
+        guard mkfifo(path, permissions) == 0 else {
+            throw RPCError(
+                code: .internalError,
+                message: "Failed to create FIFO at \(path): errno \(errno)"
+            )
+        }
+    }
+
+    public func openForReading(path: String) throws -> Int32 {
+        let fd = open(path, O_RDONLY | O_NONBLOCK)
+        guard fd >= 0 else {
+            throw RPCError(
+                code: .internalError,
+                message: "Failed to open FIFO at \(path) for reading: errno \(errno)"
+            )
+        }
+        return fd
+    }
+
+    public func removeFIFO(path: String) {
+        unlink(path)
+    }
+}
+
+// MARK: - Containerd Client
+
 struct NamespaceInterceptor: ClientInterceptor {
     func intercept<Input, Output>(
         request: StreamingClientRequest<Input>,
@@ -28,6 +73,19 @@ struct NamespaceInterceptor: ClientInterceptor {
 public struct Containerd: Sendable {
     let client: GRPCClient<HTTP2ClientTransport.Posix>
     let logger = Logger(label: "Containerd")
+    let fifoManager: FIFOManager
+
+    /// Initialize a Containerd client
+    /// - Parameters:
+    ///   - client: The gRPC client for containerd
+    ///   - fifoManager: The FIFO manager (defaults to SystemFIFOManager for production)
+    public init(
+        client: GRPCClient<HTTP2ClientTransport.Posix>,
+        fifoManager: FIFOManager = SystemFIFOManager()
+    ) {
+        self.client = client
+        self.fifoManager = fifoManager
+    }
 
     public static func withClient<R: Sendable>(
         _ run: @escaping (Containerd) async throws -> R
@@ -586,24 +644,33 @@ public struct Containerd: Sendable {
         onStderr: @Sendable @escaping (ByteBuffer) async throws -> Void
     ) async throws -> T {
         let id = UUID().uuidString
-        let stdoutSocketPath = "/tmp/wendy-attach-\(id)-stdout.sock"
-        let stderrSocketPath = "/tmp/wendy-attach-\(id)-stderr.sock"
+        // Use /run instead of /tmp because systemd PrivateTmp=true isolates /tmp
+        // /run is shared between wendy-agent and containerd
+        let fifoDir = "/run/wendy-agent"
+        // Ensure the directory exists
+        try? FileManager.default.createDirectory(atPath: fifoDir, withIntermediateDirectories: true)
+        let stdoutSocketPath = "\(fifoDir)/attach-\(id)-stdout.sock"
+        let stderrSocketPath = "\(fifoDir)/attach-\(id)-stderr.sock"
 
-        guard
-            mkfifo(stdoutSocketPath, 0o644) == 0,
-            mkfifo(stderrSocketPath, 0o644) == 0
-        else {
-            throw RPCError(code: .internalError, message: "Failed to create stderr FIFO")
+        // Create FIFOs using the injected manager
+        try fifoManager.createFIFO(path: stdoutSocketPath, permissions: 0o644)
+        try fifoManager.createFIFO(path: stderrSocketPath, permissions: 0o644)
+
+        defer {
+            // Clean up FIFOs when done
+            fifoManager.removeFIFO(path: stdoutSocketPath)
+            fifoManager.removeFIFO(path: stderrSocketPath)
         }
 
         logger.info("Creating task group")
+
+        // Use continuations to wait for both FIFOs to be ready
+        let (stdoutReady, stdoutContinuation) = AsyncStream.makeStream(of: Void.self)
+        let (stderrReady, stderrContinuation) = AsyncStream.makeStream(of: Void.self)
+
         return try await withThrowingTaskGroup(of: Void.self) { group in
-            group.addTask {
-                let stdoutFd = open(stdoutSocketPath, O_RDONLY | O_NONBLOCK)
-                defer { close(stdoutFd) }
-                guard stdoutFd >= 0 else {
-                    throw RPCError(code: .internalError, message: "Failed to open stdout FIFO")
-                }
+            group.addTask { [fifoManager] in
+                let stdoutFd = try fifoManager.openForReading(path: stdoutSocketPath)
                 logger.info("Creating stdout pipe")
                 let stdoutPipe = try await NIOPipeBootstrap(
                     group: .singletonMultiThreadedEventLoopGroup
@@ -613,6 +680,8 @@ public struct Containerd: Sendable {
                     try NIOAsyncChannel<ByteBuffer, Never>(wrappingChannelSynchronously: channel)
                 }
                 .get()
+                logger.info("Stdout pipe ready")
+                stdoutContinuation.yield(())
                 logger.info("Executing stdout pipe")
                 try await stdoutPipe.executeThenClose { stdout in
                     for try await bytes in stdout {
@@ -620,12 +689,8 @@ public struct Containerd: Sendable {
                     }
                 }
             }
-            group.addTask {
-                let stderrFd = open(stderrSocketPath, O_RDONLY | O_NONBLOCK)
-                defer { close(stderrFd) }
-                guard stderrFd >= 0 else {
-                    throw RPCError(code: .internalError, message: "Failed to open stderr FIFO")
-                }
+            group.addTask { [fifoManager] in
+                let stderrFd = try fifoManager.openForReading(path: stderrSocketPath)
                 logger.info("Creating stderr pipe")
                 let stderrPipe = try await NIOPipeBootstrap(
                     group: .singletonMultiThreadedEventLoopGroup
@@ -635,6 +700,8 @@ public struct Containerd: Sendable {
                     try NIOAsyncChannel<ByteBuffer, Never>(wrappingChannelSynchronously: channel)
                 }
                 .get()
+                logger.info("Stderr pipe ready")
+                stderrContinuation.yield(())
                 logger.info("Executing stderr pipe")
                 try await stderrPipe.executeThenClose { stderr in
                     for try await bytes in stderr {
@@ -643,21 +710,18 @@ public struct Containerd: Sendable {
                 }
             }
 
-            do {
-                logger.info("Performing task with stdout and stderr")
-                let result = try await perform(stdoutSocketPath, stderrSocketPath)
-                try await group.waitForAll()
-                return result
-            } catch {
-                logger.error(
-                    "Failed to run task with stdout and stderr",
-                    metadata: [
-                        "error": .stringConvertible(error.localizedDescription)
-                    ]
-                )
-                group.cancelAll()
-                throw error
-            }
+            // Wait for both FIFOs to be opened before calling perform
+            async let stdoutReadySignal: Void? = stdoutReady.first { _ in true }
+            async let stderrReadySignal: Void? = stderrReady.first { _ in true }
+            _ = await (stdoutReadySignal, stderrReadySignal)
+
+            logger.info("Both FIFOs ready, performing task")
+            stdoutContinuation.finish()
+            stderrContinuation.finish()
+            let result = try await perform(stdoutSocketPath, stderrSocketPath)
+
+            try await group.waitForAll()
+            return result
         }
     }
 

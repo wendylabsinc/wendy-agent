@@ -116,7 +116,7 @@ cov-report: ## Run the tests and generate coverage report
 		--include-directory=Sources/ \
 		-format=lcov > coverage.lcov
 format: ## Format Swift code using swift-format
-	swiftly run wift format --recursive --in-place Sources/ Tests/
+	swiftly run swift format --recursive --in-place Sources/ Tests/
 
 setup-hooks: ## Install git hooks
 	./Scripts/install-hooks.sh
