@@ -110,11 +110,6 @@ struct WiFiCommand: AsyncParsableCommand {
         @OptionGroup var agentConnectionOptions: AgentConnectionOptions
 
         func run() async throws {
-            // Configure logger
-            LoggingSystem.bootstrap { label in
-                StreamLogHandler.standardError(label: label)
-            }
-
             try await withAgentGRPCClient(
                 agentConnectionOptions,
                 title: "Which device do you want to connect to the wifi network on?"
@@ -196,11 +191,6 @@ struct WiFiCommand: AsyncParsableCommand {
         @OptionGroup var agentConnectionOptions: AgentConnectionOptions
 
         func run() async throws {
-            // Configure logger
-            LoggingSystem.bootstrap { label in
-                StreamLogHandler.standardError(label: label)
-            }
-
             let logger = Logger(label: "sh.wendy.cli.wifi.status")
             logger.info("Checking WiFi connection status")
 
@@ -268,11 +258,6 @@ struct WiFiCommand: AsyncParsableCommand {
         @OptionGroup var agentConnectionOptions: AgentConnectionOptions
 
         func run() async throws {
-            // Configure logger
-            LoggingSystem.bootstrap { label in
-                StreamLogHandler.standardError(label: label)
-            }
-
             let logger = Logger(label: "sh.wendy.cli.wifi.disconnect")
             logger.info("Disconnecting from WiFi network")
 
