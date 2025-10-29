@@ -141,13 +141,16 @@ jobs:
           ./Scripts/codesign.sh "${{ matrix.artifact-name }}/${{ matrix.product }}"
       - name: Create tarball
         run: |
-          tar -czvf ${{ matrix.artifact-name }}.tar.gz ${{ matrix.artifact-name }}/
+          TARBALL_NAME="${{ matrix.artifact-name }}-${{ needs.determine-version.outputs.version }}.tar.gz"
+          tar -czvf "$TARBALL_NAME" ${{ matrix.artifact-name }}/
+          echo "tarball_name=$TARBALL_NAME" >> $GITHUB_OUTPUT
+        id: create-tarball
       - name: Upload binary artifact
         id: upload-artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact-name }}.tar.gz
-          path: ${{ matrix.artifact-name }}.tar.gz
+          name: ${{ steps.create-tarball.outputs.tarball_name }}
+          path: ${{ steps.create-tarball.outputs.tarball_name }}
           retention-days: 14
           if-no-files-found: error
 
@@ -200,3 +203,24 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git tag -fa latest "$TARGET_SHA" -m "Latest prerelease: $TAG"
           git push -f origin refs/tags/latest
+
+      # Bump the formula in homebrew-tap
+      - name: Create GitHub App Token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.CLI_PUBLISHER_APP_ID }}
+          private-key: ${{ secrets.CLI_PUBLISHER_APP_PRIVATE_KEY }}
+          owner: wendylabsinc
+          repositories: homebrew-tap
+
+      - name: Bump formula in homebrew-tap
+        uses: dawidd6/action-homebrew-bump-formula@v5
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          tap: wendylabsinc/homebrew-tap
+          formula: wendy
+          tag: ${{ needs.determine-version.outputs.version }}
+          revision: ${{ github.sha }}
+          no_fork: true
+          force: true
