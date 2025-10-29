@@ -26,6 +26,7 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-log.git", from: "1.6.3"),
         .package(url: "https://github.com/grpc/grpc-swift-2.git", from: "2.1.0"),
         .package(url: "https://github.com/grpc/grpc-swift-protobuf.git", from: "2.0.0"),
+        .package(url: "https://github.com/orlandos-nl/DNSClient.git", from: "2.5.0"),
         // .package(url: "https://github.com/grpc/grpc-swift-nio-transport.git", from: "2.0.0"),
         .package(
             url: "https://github.com/Joannis/grpc-swift-nio-transport.git",
@@ -65,6 +66,7 @@ let package = Package(
                 .product(name: "_NIOFileSystem", package: "swift-nio"),
                 .product(name: "GRPCNIOTransportHTTP2", package: "grpc-swift-nio-transport"),
                 .product(name: "AsyncDNSResolver", package: "swift-async-dns-resolver"),
+                .product(name: "DNSClient", package: "DNSClient"),
                 .product(name: "SystemPackage", package: "swift-system"),
                 .product(name: "NIOFoundationCompat", package: "swift-nio"),
                 .product(
@@ -175,6 +177,7 @@ let package = Package(
             dependencies: [
                 .product(name: "Logging", package: "swift-log"),
                 .product(name: "AsyncDNSResolver", package: "swift-async-dns-resolver"),
+                .product(name: "DNSClient", package: "DNSClient"),
                 .product(name: "Subprocess", package: "swift-subprocess"),
             ]
         ),
