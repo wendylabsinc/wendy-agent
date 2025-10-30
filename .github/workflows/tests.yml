@@ -10,7 +10,7 @@ jobs:
     strategy:
       matrix:
         include:
-          - os: [self-hosted, Linux, ARM64]
+          - os: [self-hosted, Linux, X64]
             container: swift:6.2.0
           - os: macos-15
             xcode-select: /Applications/Xcode_26.0.app
