@@ -3,19 +3,94 @@ import Foundation
 import Imager
 import Logging
 import Noora
+import Subprocess
 
 #if os(macOS)
     import Darwin
 #elseif os(Linux)
-    // No explicit libc import needed when using musl
+    import Glibc
 #endif
 
-// Helper function to safely flush output without referring to stdout directly
-// This avoids concurrency issues with global variables
-@inline(__always) private func flushOutput() {
-    // Simply print an empty string with a newline to force flush
-    // This is a simple workaround that doesn't require accessing global C variables
-    print("", terminator: "")
+@inline(__always) private func formatDiskContents(available: Int64, capacity: Int64) -> String {
+    let availableText = ByteCountFormatter.string(fromByteCount: available, countStyle: .file)
+    let capacityText = ByteCountFormatter.string(fromByteCount: capacity, countStyle: .file)
+    return "\(availableText) free / \(capacityText) total"
+}
+
+@inline(__always) private func clampProgress(_ value: Double) -> Double {
+    guard value.isFinite else { return 0.0 }
+    return min(max(value, 0.0), 1.0)
+}
+
+private struct SendableProgressUpdater: @unchecked Sendable {
+    let call: (Double) -> Void
+
+    init(_ call: @escaping (Double) -> Void) {
+        self.call = call
+    }
+
+    func update(_ value: Double) {
+        // Ensure UI/tui updates happen on the main actor to avoid missed refreshes
+        Task { @MainActor in
+            self.call(value)
+        }
+    }
+}
+
+// Removed unused text/progress formatting helpers; Noora handles rendering.
+
+private enum DeviceFamily: String, CaseIterable {
+    // Prefer showing NVIDIA Jetson first in interactive lists
+    case nvidiaJetson = "NVIDIA Jetson"
+    case raspberryPi = "Raspberry Pi"
+    case other = "Other Devices"
+}
+
+@inline(__always) private func inferFamily(for deviceName: String) -> DeviceFamily {
+    let lowercased = deviceName.lowercased()
+    if lowercased.contains("raspberry") || lowercased.contains("pi") {
+        return .raspberryPi
+    }
+    if lowercased.contains("jetson") || lowercased.contains("nvidia") {
+        return .nvidiaJetson
+    }
+    return .other
+}
+
+@inline(__always) private func orderedFamilies(
+    from devices: [DeviceInfo]
+) -> [(DeviceFamily, [DeviceInfo])] {
+    let grouped = Dictionary(grouping: devices) { inferFamily(for: $0.name) }
+    return DeviceFamily.allCases.compactMap { family in
+        guard let items = grouped[family] else { return nil }
+        return (family, sortDevices(items, for: family))
+    }
+}
+
+@inline(__always) private func sortDevices(
+    _ items: [DeviceInfo],
+    for family: DeviceFamily
+) -> [DeviceInfo] {
+    switch family {
+    case .nvidiaJetson:
+        // Prefer Orin Nano and other Nano boards first, and place AGX variants last.
+        return items.sorted { a, b in
+            func rank(_ name: String) -> Int {
+                let s = name.lowercased()
+                if s.contains("orin-nano") { return 0 }
+                if s.contains("nano") { return 1 }
+                if s.contains("orin") { return 2 }
+                if s.contains("agx") { return 3 }
+                return 4
+            }
+            let ra = rank(a.name)
+            let rb = rank(b.name)
+            if ra != rb { return ra < rb }
+            return a.name < b.name
+        }
+    default:
+        return items.sorted { $0.name < $1.name }
+    }
 }
 
 struct ImagerCommand: AsyncParsableCommand {
@@ -24,7 +99,6 @@ struct ImagerCommand: AsyncParsableCommand {
         commandName: "disk",
         abstract: "Setup and manage device disks.",
         subcommands: [
-            SetupDiskCommand.self,
             ListDrivesCommand.self,
             ListDevicesCommand.self,
             WriteCommand.self,
@@ -32,88 +106,7 @@ struct ImagerCommand: AsyncParsableCommand {
         ]
     )
 
-    struct SetupDiskCommand: AsyncParsableCommand {
-        static let configuration = CommandConfiguration(
-            commandName: "setup",
-            abstract: "Setup a disk."
-        )
-
-        func run() async throws {
-            let diskLister = DiskListerFactory.createDiskLister()
-            let manifestManager = ManifestManagerFactory.createManifestManager()
-
-            var disks = try await diskLister.list(all: true)
-            disks.removeAll { $0.id.hasSuffix("disk0") }
-
-            async let deviceList = try await manifestManager.getAvailableDevices()
-
-            let diskIndex = try await Noora().selectableTable(
-                headers: [
-                    "Disk",
-                    "Volume",
-                    "Size",
-                ],
-                rows: disks.map {
-                    [
-                        $0.name,
-                        $0.id,
-                        $0.capacityHumanReadableText,
-                    ]
-                },
-                pageSize: disks.count
-            )
-            let selectedDisk = disks[diskIndex]
-
-            let devices = try await deviceList
-
-            let deviceIndex = try await Noora().selectableTable(
-                headers: [
-                    "Device"
-                ],
-                rows: devices.map {
-                    [
-                        $0.name
-                    ]
-                },
-                pageSize: devices.count
-            )
-            let selectedDevice = devices[deviceIndex]
-
-            let setup = Noora().yesOrNoChoicePrompt(
-                question: "Do you want to setup \(selectedDevice.name) on \(selectedDisk.name)?",
-                defaultAnswer: false
-            )
-
-            if !setup {
-                return
-            }
-
-            let (imageUrl, imageSize) = try await manifestManager.getLatestImageInfo(
-                for: selectedDevice.name
-            )
-
-            let imageDownloader = ImageDownloaderFactory.createImageDownloader()
-            let (localImagePath, _) = try await Noora().progressStep(
-                message: "Retrieving image",
-                successMessage: "Image ready",
-                errorMessage: "Failed to retrieve image",
-                showSpinner: true
-            ) { progress in
-                try await imageDownloader.downloadImage(
-                    from: imageUrl,
-                    deviceName: selectedDevice.name,
-                    expectedSize: imageSize,
-                    redownload: false,
-                    progressHandler: { _ in }
-                )
-            }
-
-            let diskWriter = DiskWriterFactory.createDiskWriter()
-            try await diskWriter.write(imagePath: localImagePath, drive: selectedDisk) { _ in }
-
-            Noora().success("Setup complete")
-        }
-    }
+    // Removed legacy SetupDiskCommand. Interactive write is now the default in WriteDeviceCommand.
 
     struct ListDrivesCommand: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
@@ -137,16 +130,26 @@ struct ImagerCommand: AsyncParsableCommand {
             } else if drives.isEmpty {
                 print("No external drives found.")
             } else {
-                print("\nAvailable external drives:")
-                print("---------------------------")
-
-                for (index, drive) in drives.enumerated() {
-                    print("[\(index + 1)] \(drive.name) (\(drive.id))")
-                    print("    Capacity: \(drive.capacityHumanReadableText)")
-                    print("    Available: \(drive.availableHumanReadableText)")
-                    print("    Type: \(drive.isExternal ? "External" : "Internal")")
-                    print("")
-                }
+                print("\nAvailable drives:")
+                Noora().table(
+                    headers: [
+                        "Disk",
+                        "Identifier",
+                        "Contents",
+                        "Type",
+                    ],
+                    rows: drives.map { drive in
+                        [
+                            drive.name,
+                            drive.id,
+                            formatDiskContents(
+                                available: drive.available,
+                                capacity: drive.capacity
+                            ),
+                            drive.isExternal ? "External" : "Internal",
+                        ]
+                    }
+                )
             }
         }
     }
@@ -175,21 +178,23 @@ struct ImagerCommand: AsyncParsableCommand {
             } else if deviceList.isEmpty {
                 print("No devices found in the manifest.")
             } else {
+                let noora = Noora()
                 print("\nAvailable devices:")
-                print("------------------")
-
-                for (index, deviceInfo) in deviceList.enumerated() {
-                    print("[\(index + 1)] \(deviceInfo.name)")
-                    if !deviceInfo.latestVersion.isEmpty {
-                        print("    Latest version: \(deviceInfo.latestVersion)")
-                    } else {
-                        print("    No version available")
+                noora.table(
+                    headers: [
+                        "Device",
+                        "Latest Version",
+                    ],
+                    rows: deviceList.map { device in
+                        [
+                            device.name,
+                            device.latestVersion.isEmpty ? "Not Available" : device.latestVersion,
+                        ]
                     }
-                    print("")
-                }
-
-                print("To write a device image: wendy imager write-device <device-name> <drive-id>")
-                print("Example: wendy imager write-device raspberry-pi-5 disk2")
+                )
+                print(
+                    "\nUse `wendy disk write-device <device-name> <drive-id>` for scripted usage or add `--interactive` for guided selection."
+                )
             }
         }
     }
@@ -207,52 +212,37 @@ struct ImagerCommand: AsyncParsableCommand {
         var driveId: String
 
         func run() async throws {
+            // Ensure we have admin privileges cached up-front so downstream sudo calls don't fail silently
+            try await ensureAdminPrivileges()
             // Use DiskLister to find the drive
             let diskLister = DiskListerFactory.createDiskLister()
             let drive = try await diskLister.findDrive(byId: driveId)
 
-            // Use DiskWriter to write the image
+            // Use DiskWriter to write the image with Noora progress bar
             let diskWriter = DiskWriterFactory.createDiskWriter()
+            let noora = Noora()
 
-            // Create a progress bar
-            print("Starting to write image to \(drive.name) (\(drive.id))")
-            print("Press Ctrl+C to cancel")
+            print("Press Ctrl+C to cancel\n")
 
-            // Track the last update time to avoid too frequent updates
-            var lastUpdateTime = Date()
-
-            try await diskWriter.write(imagePath: imagePath, drive: drive) { progress in
-                // Update progress at most once per second to avoid flooding the terminal
-                let now = Date()
-                if now.timeIntervalSince(lastUpdateTime) >= 1.0 {
-                    lastUpdateTime = now
-
-                    if let percent = progress.percentComplete {
-                        let line: String
-                        if let totalText = progress.totalBytesText {
-                            line =
-                                "\u{1B}[1G\u{1B}[2K   \(String(format: "%.1f%%", percent)) - \(progress.bytesWrittenText)/\(totalText)"
-                        } else {
-                            line =
-                                "\u{1B}[1G\u{1B}[2K   \(String(format: "%.1f%%", percent)) - \(progress.bytesWrittenText)"
+            try await noora.progressBarStep(
+                message: "Writing image to \(drive.name) (\(drive.id))",
+                successMessage: "Image successfully written to \(drive.name)",
+                errorMessage: "Failed to write the image"
+            ) { updateProgress in
+                let progressUpdater = SendableProgressUpdater(updateProgress)
+                let monotonic = Monotonic()
+                try await diskWriter.write(imagePath: imagePath, drive: drive) { p in
+                    if let percent = p.percentComplete {
+                        let fraction = clampProgress(percent / 100.0)
+                        Task {
+                            let m = await monotonic.next(fraction)
+                            progressUpdater.update(m)
                         }
-
-                        print(line, terminator: "")
-                        flushOutput()
-                    } else {
-                        // Fallback when percentage isn’t available
-                        print(
-                            "\u{1B}[1G\u{1B}[2KWritten: \(progress.bytesWrittenText)",
-                            terminator: ""
-                        )
-                        flushOutput()
                     }
+                    // Avoid printing extra lines to keep Noora progress single-line.
                 }
+                progressUpdater.update(1.0)
             }
-
-            // Clear the line and print completion message
-            print("\r\u{1B}[K", terminator: "")
-            print("✅ Image successfully written to \(drive.name)")
         }
     }
 
@@ -264,10 +254,10 @@ struct ImagerCommand: AsyncParsableCommand {
         )
 
         @Argument(help: "Device name (e.g., raspberry-pi-5)")
-        var deviceName: String
+        var deviceName: String?
 
         @Argument(help: "Target drive to write to")
-        var driveId: String
+        var driveId: String?
 
         @Flag(name: .long, help: "Skip confirmation before writing")
         var force: Bool = false
@@ -277,26 +267,127 @@ struct ImagerCommand: AsyncParsableCommand {
 
         func run() async throws {
             let logger = Logger(label: "wendy.imager")
-            // Use DiskLister to find the drive
-            let diskLister = DiskListerFactory.createDiskLister()
-            let drive = try await diskLister.findDrive(byId: driveId)
-
-            print("🔍 Finding latest image for \(deviceName)...")
-
-            // Get the latest image information for the device
             let manifestManager = ManifestManagerFactory.createManifestManager()
-            let (imageUrl, imageSize) = try await manifestManager.getLatestImageInfo(
-                for: deviceName
-            )
+            let diskLister = DiskListerFactory.createDiskLister()
+            let noora = Noora()
 
-            print("📥 Found image: \(imageUrl.lastPathComponent)")
-            print(
-                "   Size: \(ByteCountFormatter.string(fromByteCount: Int64(imageSize), countStyle: .file))"
-            )
+            let selectedDeviceName: String
+            // Interactive device selection is the default when deviceName is omitted
+            if deviceName == nil {
+                let allDevices = try await manifestManager.getAvailableDevices()
+                guard !allDevices.isEmpty else {
+                    print("No devices found in the manifest.")
+                    return
+                }
 
-            // Confirm with the user before proceeding
-            if !force {
-                print("\n⚠️  WARNING: All data on \(drive.name) (\(drive.id)) will be erased.")
+                let familyOptions = orderedFamilies(from: allDevices)
+                let familyRows = familyOptions.map { option -> [String] in
+                    [
+                        option.0.rawValue,
+                        "\(option.1.count) option\(option.1.count == 1 ? "" : "s")",
+                    ]
+                }
+
+                let familyIndex = try await noora.selectableTable(
+                    headers: [
+                        "Device Family",
+                        "Available Images",
+                    ],
+                    rows: familyRows,
+                    pageSize: familyRows.count
+                )
+
+                let devices = familyOptions[familyIndex].1
+
+                let deviceRows = devices.map { device -> [String] in
+                    let version = device.latestVersion.isEmpty ? "—" : device.latestVersion
+                    return [
+                        device.name,
+                        version,
+                    ]
+                }
+
+                let deviceIndex = try await noora.selectableTable(
+                    headers: [
+                        "Device",
+                        "Latest Version",
+                    ],
+                    rows: deviceRows,
+                    pageSize: deviceRows.count
+                )
+
+                selectedDeviceName = devices[deviceIndex].name
+            } else if let deviceName {
+                selectedDeviceName = deviceName
+            } else {
+                // Should be unreachable; covered by interactive default above
+                throw ValidationError("Missing device name.")
+            }
+
+            let selectedDrive: Drive
+            // Interactive drive selection is the default when driveId is omitted
+            if driveId == nil {
+                var drives = try await diskLister.list(all: true)
+                drives.removeAll { $0.id.hasSuffix("disk0") }
+
+                guard !drives.isEmpty else {
+                    print("No removable drives detected.")
+                    return
+                }
+
+                let driveRows = drives.map { drive in
+                    [
+                        drive.name,
+                        drive.id,
+                        formatDiskContents(available: drive.available, capacity: drive.capacity),
+                        drive.isExternal ? "External" : "Internal",
+                    ]
+                }
+
+                let driveIndex = try await noora.selectableTable(
+                    headers: [
+                        "Disk",
+                        "Identifier",
+                        "Contents",
+                        "Type",
+                    ],
+                    rows: driveRows,
+                    pageSize: driveRows.count
+                )
+
+                let driveChoice = drives[driveIndex]
+
+                print(
+                    "\n⚠️  WARNING: Writing \(selectedDeviceName) will erase all data on \(driveChoice.name) (\(driveChoice.id))."
+                )
+
+                if force {
+                    print("Proceeding due to --force flag.")
+                    selectedDrive = driveChoice
+                } else {
+                    let confirmed = noora.yesOrNoChoicePrompt(
+                        question: "Do you want to continue?",
+                        defaultAnswer: false
+                    )
+
+                    guard confirmed else {
+                        print("Operation aborted.")
+                        return
+                    }
+
+                    selectedDrive = driveChoice
+                }
+            } else if let driveId {
+                selectedDrive = try await diskLister.findDrive(byId: driveId)
+            } else {
+                // Should be unreachable; covered by interactive default above
+                throw ValidationError("Missing drive identifier.")
+            }
+
+            if driveId != nil && !force {
+                print(
+                    "\n⚠️  WARNING: All data on \(selectedDrive.name) (\(selectedDrive.id)) will be erased."
+                )
                 print("   Type 'yes' to continue or any other key to abort:")
 
                 let response = readLine()?.lowercased()
@@ -306,87 +397,150 @@ struct ImagerCommand: AsyncParsableCommand {
                 }
             }
 
-            // Download the image
-            print("\n📥 Downloading image...")
+            print("🔍 Finding latest image for \(selectedDeviceName)...")
+
+            // Get the latest image information for the device
+            let (imageUrl, imageSize) = try await manifestManager.getLatestImageInfo(
+                for: selectedDeviceName
+            )
+
+            print("📥 Found image: \(imageUrl.lastPathComponent)")
+            print(
+                "   Size: \(ByteCountFormatter.string(fromByteCount: Int64(imageSize), countStyle: .file))"
+            )
+
+            // Download and extract as separate progress bars when not using cache
             let imageDownloader = ImageDownloaderFactory.createImageDownloader()
-            nonisolated(unsafe) var lastUpdateTime = Date()
+            let realDownloader = imageDownloader as! ImageDownloader
 
-            let (localImagePath, _) = try await imageDownloader.downloadImage(
-                from: imageUrl,
-                deviceName: deviceName,
-                expectedSize: imageSize,
-                redownload: redownload
-            ) { progress in
-                let now = Date()
-                if now.timeIntervalSince(lastUpdateTime) >= 1.0 {
-                    lastUpdateTime = now
-
-                    if let percent = progress.percentComplete {
-                        let line: String
-                        if let totalText = progress.totalBytesText {
-                            line =
-                                "\u{1B}[1G\u{1B}[2K   \(String(format: "%.1f%%", percent)) - \(progress.bytesWrittenText)/\(totalText)"
-                        } else {
-                            line =
-                                "\u{1B}[1G\u{1B}[2K   \(String(format: "%.1f%%", percent)) - \(progress.bytesWrittenText)"
-                        }
-
-                        print(line, terminator: "")
-                        flushOutput()
-                    } else {
-                        // Fallback when percentage isn’t available
-                        print(
-                            "\u{1B}[1G\u{1B}[2KWritten: \(progress.bytesWrittenText)",
-                            terminator: ""
+            var localImagePath: String
+            if let cachedPath = await realDownloader.cachedImageIfValid(
+                deviceName: selectedDeviceName
+            ), !redownload {
+                localImagePath = cachedPath
+                print("ℹ️  Using cached image for \(selectedDeviceName)")
+            } else {
+                // 1) Download archive
+                print("\n📥 Downloading image...")
+                let (zipPath, _): (String, String) = try await noora.progressBarStep(
+                    message: "Downloading image for \(selectedDeviceName)",
+                    successMessage: "Download complete",
+                    errorMessage: "Failed to download image"
+                ) { updateProgress in
+                    let progressUpdater = SendableProgressUpdater(updateProgress)
+                    let monotonic = Monotonic()
+                    let result = try await realDownloader.downloadArchiveOnly(
+                        from: imageUrl,
+                        deviceName: selectedDeviceName,
+                        expectedSize: imageSize,
+                        redownload: redownload
+                    ) { progress in
+                        let totalUnits = max(1, progress.totalUnitCount)
+                        let fraction = clampProgress(
+                            Double(progress.completedUnitCount) / Double(totalUnits)
                         )
-                        flushOutput()
+                        Task {
+                            let m = await monotonic.next(fraction)
+                            progressUpdater.update(m)
+                        }
                     }
+                    progressUpdater.update(1.0)
+                    return result
+                }
+
+                // 2) Extract archive
+                print("\n📦 Extracting image...")
+                localImagePath = try await noora.progressBarStep(
+                    message: "Extracting image",
+                    successMessage: "Image ready",
+                    errorMessage: "Failed to extract image"
+                ) { updateProgress in
+                    let progressUpdater = SendableProgressUpdater(updateProgress)
+                    let monotonic = Monotonic()
+                    let result = try await realDownloader.extractArchiveOnly(
+                        deviceName: selectedDeviceName,
+                        zipPath: zipPath
+                    ) { p in
+                        let total = max(1, p.totalUnitCount)
+                        let fraction = clampProgress(Double(p.completedUnitCount) / Double(total))
+                        Task {
+                            let m = await monotonic.next(fraction)
+                            progressUpdater.update(m)
+                        }
+                    }
+                    progressUpdater.update(1.0)
+                    return result
                 }
             }
 
-            // Clear the line and print completion message
-            print("\r\u{1B}[K", terminator: "")
-            logger.debug("✅ Image downloaded to: \(localImagePath)")
-            print("\n💾 Writing image to \(drive.name) (\(drive.id))...")
-            print("   Press Ctrl+C to cancel")
+            logger.debug("✅ Image ready at: \(localImagePath)")
+            print("\n💾 Writing image to \(selectedDrive.name) (\(selectedDrive.id))...")
+            print("   Press Ctrl+C to cancel\n")
 
-            // Use DiskWriter to write the image
+            // Ensure we have admin privileges cached up-front so downstream sudo calls don't fail silently
+            try await ensureAdminPrivileges()
+
+            // Use DiskWriter to write the image with Noora progress bar
             let diskWriter = DiskWriterFactory.createDiskWriter()
-            lastUpdateTime = Date()
 
-            try await diskWriter.write(imagePath: localImagePath, drive: drive) { progress in
-                // Update progress at most once per second
-                let now = Date()
-                if now.timeIntervalSince(lastUpdateTime) >= 1.0 {
-                    lastUpdateTime = now
-
-                    if let percent = progress.percentComplete {
-                        let line: String
-                        if let totalText = progress.totalBytesText {
-                            line =
-                                "\u{1B}[1G\u{1B}[2K   \(String(format: "%.1f%%", percent)) - \(progress.bytesWrittenText)/\(totalText)"
-                        } else {
-                            line =
-                                "\u{1B}[1G\u{1B}[2K   \(String(format: "%.1f%%", percent)) - \(progress.bytesWrittenText)"
+            try await noora.progressBarStep(
+                message: "Writing image to \(selectedDrive.name) (\(selectedDrive.id))",
+                successMessage: "Image successfully written to \(selectedDrive.name)",
+                errorMessage: "Failed to write the image"
+            ) { updateProgress in
+                let progressUpdater = SendableProgressUpdater(updateProgress)
+                let monotonic = Monotonic()
+                try await diskWriter.write(imagePath: localImagePath, drive: selectedDrive) { p in
+                    if let percent = p.percentComplete {
+                        let fraction = clampProgress(percent / 100.0)
+                        Task {
+                            let m = await monotonic.next(fraction)
+                            progressUpdater.update(m)
                         }
-
-                        print(line, terminator: "")
-                        flushOutput()
-                    } else {
-                        // Fallback when percentage isn't available
-                        print(
-                            "\u{1B}[1G\u{1B}[2KWritten: \(progress.bytesWrittenText)",
-                            terminator: ""
-                        )
-                        flushOutput()
                     }
+                    // Avoid extra prints to keep the progress bar on a single line.
                 }
+                progressUpdater.update(1.0)
             }
 
-            // Clear the line and print completion message
-            print("\r\u{1B}[K", terminator: "")
-            print("✅ Image successfully written to \(drive.name)")
-            print("\n🎉 Device \(deviceName) successfully imaged!")
+            print("\n🎉 Device \(selectedDeviceName) successfully imaged!")
         }
     }
+}
+
+// MARK: - Helpers
+
+/// Ensure the user has active sudo credentials before attempting privileged disk operations.
+/// This warms up sudo so subsequent calls (diskutil/dd) won't fail due to missing TTY prompts.
+private func ensureAdminPrivileges() async throws {
+    #if os(macOS) || os(Linux)
+        // If already root, nothing to do
+        #if os(macOS)
+            if getuid() == 0 { return }
+        #else
+            if Glibc.getuid() == 0 { return }
+        #endif
+
+        // Inform the user and validate sudo timestamp (may prompt for password in the terminal)
+        Noora().info(
+            "Administrator privileges are required to write raw disks. You may be prompted for your password."
+        )
+        do {
+            let result = try await Subprocess.run(
+                Subprocess.Executable.name("sudo"),
+                arguments: ["-v"],
+                output: .discarded,
+                error: .discarded
+            )
+            guard result.terminationStatus.isSuccess else {
+                throw ValidationError(
+                    "Failed to acquire sudo privileges. Try: sudo wendy … or ensure your user can use sudo."
+                )
+            }
+        } catch {
+            throw ValidationError(
+                "Unable to prompt for admin privileges. Try re-running the command with sudo."
+            )
+        }
+    #endif
 }

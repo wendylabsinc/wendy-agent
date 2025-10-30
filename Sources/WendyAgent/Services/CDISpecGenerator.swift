@@ -308,26 +308,11 @@ public struct CDISpecGenerator: Sendable {
     }
 
     private func extractBusNumber(from devicePath: String) -> String? {
-        // Extract bus number from paths like /dev/i2c-1, /dev/spidev0.0
-        let patterns = [
-            "i2c-(\\d+)",
-            "spidev(\\d+)",
-            "ttyUSB(\\d+)",
-            "ttyACM(\\d+)",
-        ]
-
-        for pattern in patterns {
-            if let regex = try? NSRegularExpression(pattern: pattern),
-                let match = regex.firstMatch(
-                    in: devicePath,
-                    range: NSRange(devicePath.startIndex..., in: devicePath)
-                ),
-                let range = Range(match.range(at: 1), in: devicePath)
-            {
-                return String(devicePath[range])
-            }
-        }
-
+        // Extract bus number from paths like /dev/i2c-1, /dev/spidev0.0 using Swift Regex
+        if let m = devicePath.firstMatch(of: /i2c-(\d+)/) { return String(m.1) }
+        if let m = devicePath.firstMatch(of: /spidev(\d+)/) { return String(m.1) }
+        if let m = devicePath.firstMatch(of: /ttyUSB(\d+)/) { return String(m.1) }
+        if let m = devicePath.firstMatch(of: /ttyACM(\d+)/) { return String(m.1) }
         return nil
     }
 }

@@ -22,8 +22,20 @@ import Subprocess
             }
 
             // Get image file size to track total progress
-            let totalBytes =
-                try FileManager.default.attributesOfItem(atPath: imagePath)[.size] as? Int64
+            // Correctly determine the image file size as Int64. `FileManager` returns `NSNumber`.
+            let totalBytes: Int64?
+            do {
+                let attributes = try FileManager.default.attributesOfItem(atPath: imagePath)
+                if let fileSizeNumber = attributes[.size] as? NSNumber {
+                    totalBytes = fileSizeNumber.int64Value
+                } else if let fileSize = attributes[.size] as? Int {
+                    totalBytes = Int64(fileSize)
+                } else {
+                    totalBytes = nil
+                }
+            } catch {
+                totalBytes = nil
+            }
 
             // Send initial progress update
             progressHandler(DiskWriteProgress(bytesWritten: 0, totalBytes: totalBytes))
@@ -84,18 +96,12 @@ import Subprocess
                         let lines = outputString.split(separator: "\r").map { String($0) }
 
                         for line in lines {
-                            // Extract the byte count from the beginning of the line
-                            let pattern = #"^(\d+)\s+bytes"#
-                            if let match = line.range(of: pattern, options: .regularExpression) {
-                                let bytesString = line[match].split(separator: " ")[0]
-                                if let bytes = Int64(bytesString) {
-                                    let progress = DiskWriteProgress(
-                                        bytesWritten: bytes,
-                                        totalBytes: localTotalBytes
-                                    )
-
-                                    localProgressHandler(progress)
-                                }
+                            if let bytes = parseBytesTransferred(from: line) {
+                                let progress = DiskWriteProgress(
+                                    bytesWritten: bytes,
+                                    totalBytes: localTotalBytes
+                                )
+                                localProgressHandler(progress)
                             }
                         }
                     }
