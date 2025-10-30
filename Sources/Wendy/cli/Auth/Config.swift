@@ -124,7 +124,21 @@ func withCertificates<R: Sendable>(
     for auth in config.auth {
         for certificate in auth.certificates {
             if certificate.organizationID == orgId {
-                return try await perform(certificate)
+                // Check if certificate needs refresh before using it
+                let certificateManager = CertificateManager()
+                if let updatedAuth = try await certificateManager.refreshCertificatesIfNeeded(
+                    auth: auth
+                ) {
+                    // Certificate was refreshed, use the updated one
+                    if let updatedCert = updatedAuth.certificates.first(where: {
+                        $0.organizationID == orgId
+                    }) {
+                        return try await perform(updatedCert)
+                    }
+                } else {
+                    // Certificate is still valid, use it as-is
+                    return try await perform(certificate)
+                }
             }
         }
     }
@@ -150,14 +164,26 @@ func withAuth<R: Sendable>(
     if config.auth.isEmpty {
         return try await authenticate(title: title, perform: perform)
     } else if config.auth.count == 1 {
-        return try await perform(config.auth[0])
+        var auth = config.auth[0]
+        // Check and refresh certificates if needed
+        let certificateManager = CertificateManager()
+        if let updatedAuth = try await certificateManager.refreshCertificatesIfNeeded(auth: auth) {
+            auth = updatedAuth
+        }
+        return try await perform(auth)
     } else {
         let account = Noora().singleChoicePrompt(
             title: title,
             question: "Which account do you want to use?",
             options: config.auth
         )
-        return try await perform(account)
+        var auth = account
+        // Check and refresh certificates if needed
+        let certificateManager = CertificateManager()
+        if let updatedAuth = try await certificateManager.refreshCertificatesIfNeeded(auth: auth) {
+            auth = updatedAuth
+        }
+        return try await perform(auth)
     }
 }
 

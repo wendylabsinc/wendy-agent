@@ -99,6 +99,17 @@ struct AgentConnectionOptions: ParsableArguments {
         let discovery = PlatformDeviceDiscovery(
             logger: Logger(label: "sh.wendy.cli.find-agent")
         )
+
+        try await Noora().progressStep(
+            message: "Refreshing expired certificates",
+            successMessage: nil,
+            errorMessage: nil,
+            showSpinner: true
+        ) { _ in
+            let certificateManager = CertificateManager()
+            try await certificateManager.refreshAllCertificatesIfNeeded()
+        }
+
         let lanDevices = try await Noora().progressStep(
             message: "Searching for WendyOS devices",
             successMessage: nil,
