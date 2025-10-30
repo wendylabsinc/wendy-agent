@@ -37,23 +37,40 @@ jobs:
     strategy:
       matrix:
         include:
-          - platform: linux-static-musl-aarch64
+          - artifact-name: wendy-agent-linux-static-musl-aarch64
             os: [self-hosted, Linux, X64]
             container: swift:6.2.0
             swift-sdk: aarch64-swift-linux-musl
             swift-sdk-url: https://download.swift.org/swift-6.2-release/static-sdk/swift-6.2-RELEASE/swift-6.2-RELEASE_static-linux-0.0.1.artifactbundle.tar.gz
             swift-sdk-checksum: d2225840e592389ca517bbf71652f7003dbf45ac35d1e57d98b9250368769378
-          - platform: linux-static-musl-x86_64
+            product: wendy-agent
+          - artifact-name: wendy-agent-linux-static-musl-x86_64
             os: [self-hosted, Linux, X64]
             container: swift:6.2.0
             swift-sdk: x86_64-swift-linux-musl
             swift-sdk-url: https://download.swift.org/swift-6.2-release/static-sdk/swift-6.2-RELEASE/swift-6.2-RELEASE_static-linux-0.0.1.artifactbundle.tar.gz
             swift-sdk-checksum: d2225840e592389ca517bbf71652f7003dbf45ac35d1e57d98b9250368769378
-          - platform: macos-arm64
+            product: wendy-agent
+          - artifact-name: wendy-cli-linux-static-musl-aarch64
+            os: [self-hosted, Linux, X64]
+            container: swift:6.2.0
+            swift-sdk: aarch64-swift-linux-musl
+            swift-sdk-url: https://download.swift.org/swift-6.2-release/static-sdk/swift-6.2-RELEASE/swift-6.2-RELEASE_static-linux-0.0.1.artifactbundle.tar.gz
+            swift-sdk-checksum: d2225840e592389ca517bbf71652f7003dbf45ac35d1e57d98b9250368769378
+            product: wendy
+          - artifact-name: wendy-cli-linux-static-musl-x86_64
+            os: [self-hosted, Linux, X64]
+            container: swift:6.2.0
+            swift-sdk: x86_64-swift-linux-musl
+            swift-sdk-url: https://download.swift.org/swift-6.2-release/static-sdk/swift-6.2-RELEASE/swift-6.2-RELEASE_static-linux-0.0.1.artifactbundle.tar.gz
+            swift-sdk-checksum: d2225840e592389ca517bbf71652f7003dbf45ac35d1e57d98b9250368769378
+            product: wendy
+          - artifact-name: wendy-cli-macos-arm64
             os: macos-15
             xcode-select: /Applications/Xcode_26.0.app
+            product: wendy
 
-    name: ${{ matrix.platform }}
+    name: ${{ matrix.artifact-name }}
     runs-on: ${{ matrix.os }}
     container: ${{ matrix.container }}
 
@@ -77,6 +94,7 @@ jobs:
         run: |
           args=(
             --configuration release
+            --product "${{ matrix.product }}"
           )
 
           if [ -n "${{ matrix.swift-sdk }}" ]; then
@@ -93,43 +111,38 @@ jobs:
           swift build "${args[@]}"
 
           # Copy built binary to the output directory
-          AGENT_OUTPUT_DIR=wendy-agent-${{ matrix.platform }}
-          CLI_OUTPUT_DIR=wendy-cli-${{ matrix.platform }}
+          OUTPUT_DIR=${{ matrix.artifact-name }}
           BIN_PATH=$(swift build --show-bin-path "${args[@]}")
-          mkdir $AGENT_OUTPUT_DIR
-          mkdir $CLI_OUTPUT_DIR
-          cp $BIN_PATH/wendy-agent $AGENT_OUTPUT_DIR/
-          cp $BIN_PATH/wendy $CLI_OUTPUT_DIR/
-          cp $BIN_PATH/wendy-helper $CLI_OUTPUT_DIR/
-          cp $BIN_PATH/wendy-network-daemon $CLI_OUTPUT_DIR/
+          mkdir $OUTPUT_DIR
+          cp $BIN_PATH/${{ matrix.product }} $OUTPUT_DIR/
 
-          # If a folder exists at $BIN_PATH/wendy-agent_wendy.bundle, copy it to output/
-          if [ -d "$BIN_PATH/wendy-agent_wendy.bundle" ]; then
-            cp -r $BIN_PATH/wendy-agent_wendy.bundle $CLI_OUTPUT_DIR/
+          # If a folder exists at $BIN_PATH/wendy-agent_${{ matrix.product }}.bundle, copy it to output/
+          if [ -d "$BIN_PATH/wendy-agent_${{ matrix.product }}.bundle" ]; then
+            cp -r $BIN_PATH/wendy-agent_${{ matrix.product }}.bundle $OUTPUT_DIR/
           fi
       - name: Import P12 Certificate
-        if: ${{ matrix.platform == 'macos-arm64' }}
+        if: ${{ matrix.artifact-name == 'wendy-cli-macos-arm64' }}
         uses: apple-actions/import-codesign-certs@v3
         with: 
           p12-file-base64: ${{ secrets.APPSTORE_CERTIFICATES_FILE_BASE64 }}
           p12-password: ${{ secrets.APPSTORE_CERTIFICATES_PASSWORD }}
           keychain: notary-keychain
       - name: Setup Notary Profile
-        if: ${{ matrix.platform == 'macos-arm64' }}
+        if: ${{ matrix.artifact-name == 'wendy-cli-macos-arm64' }}
         run: |
           xcrun notarytool store-credentials "notary-profile" \
             --apple-id "${{ secrets.NOTARY_APPLE_ID }}" \
             --team-id "${{ secrets.NOTARY_TEAM_ID }}" \
             --password "${{ secrets.NOTARY_PASSWORD }}"
       - name: Codesign
-        if: ${{ matrix.platform == 'macos-arm64' }}
+        if: ${{ matrix.artifact-name == 'wendy-cli-macos-arm64' }}
         timeout-minutes: 10
         run: |
-          ./Scripts/codesign.sh "wendy-cli-${{ matrix.platform }}/wendy"
+          ./Scripts/codesign.sh "${{ matrix.artifact-name }}/${{ matrix.product }}"
       - name: Create tarball
         run: |
-          TARBALL_NAME="wendy-cli-${{ matrix.platform }}-${{ needs.determine-version.outputs.version }}.tar.gz"
-          tar -czvf "$TARBALL_NAME" wendy-cli-${{ matrix.platform }}/
+          TARBALL_NAME="${{ matrix.artifact-name }}-${{ needs.determine-version.outputs.version }}.tar.gz"
+          tar -czvf "$TARBALL_NAME" ${{ matrix.artifact-name }}/
           echo "tarball_name=$TARBALL_NAME" >> $GITHUB_OUTPUT
         id: create-tarball
       - name: Upload binary artifact
