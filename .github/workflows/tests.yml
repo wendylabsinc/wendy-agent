@@ -12,7 +12,7 @@ jobs:
         include:
           - os: ubuntu-22.04-arm
             container: swift:6.2.0
-            runs-on: [self-hosted, wendy, Linux]
+            runs-on: [self-hosted, wendy, Linux, X64]
           - os: macos-15
             xcode-select: /Applications/Xcode_26.0.app
             runs-on: macos-15
