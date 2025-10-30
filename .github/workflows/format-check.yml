@@ -8,8 +8,8 @@ permissions:
 jobs:
   format-check:
     name: Swift Format Check
-    runs-on: ubuntu-latest
-    container: swift:6.1.0
+    runs-on: [self-hosted, Linux, X64]
+    container: swift:6.2.0
 
     steps:
       - name: Checkout Code
