@@ -243,14 +243,7 @@ struct DeviceCommand: AsyncParsableCommand {
                 }
 
                 let binary = try await downloadLatestRelease().path
-
-                let success = try await withAgentGRPCClient(
-                    endpoint,
-                    title: "Which device do you want to update?"
-                ) { client in
-                    let agent = Agent(client: client)
-                    return try await agent.update(fromBinary: binary)
-                }
+                let success = try await agent.update(fromBinary: binary)
 
                 guard success else {
                     Noora().error("Failed to update agent")
