@@ -251,10 +251,10 @@ jobs:
           sed -i "s|https://github.com/wendylabsinc/wendy-agent/releases/download/[^/]*/wendy-cli-linux-static-musl-aarch64[^\"]*|${LINUX_ARM_URL}|" Formula/wendy.rb
           sed -i "s|https://github.com/wendylabsinc/wendy-agent/releases/download/[^/]*/wendy-cli-linux-static-musl-x86_64[^\"]*|${LINUX_X86_URL}|" Formula/wendy.rb
 
-          # Update SHA256s in order: macOS first, then Linux ARM64, then Linux x86_64
-          sed -i "0,/sha256 \"[^\"]*\"/s//sha256 \"${MACOS_SHA}\"/" Formula/wendy.rb
-          sed -i "0,/sha256 \"[^\"]*\"/s//sha256 \"${LINUX_ARM_SHA}\"/" Formula/wendy.rb
-          sed -i "0,/sha256 \"[^\"]*\"/s//sha256 \"${LINUX_X86_SHA}\"/" Formula/wendy.rb
+          # Update SHA256s based on URL context (not sequential position)
+          sed -i "/wendy-cli-macos-arm64.*tar\.gz/,/sha256/ s|sha256 \"[^\"]*\"|sha256 \"${MACOS_SHA}\"|" Formula/wendy.rb
+          sed -i "/wendy-cli-linux-static-musl-aarch64.*tar\.gz/,/sha256/ s|sha256 \"[^\"]*\"|sha256 \"${LINUX_ARM_SHA}\"|" Formula/wendy.rb
+          sed -i "/wendy-cli-linux-static-musl-x86_64.*tar\.gz/,/sha256/ s|sha256 \"[^\"]*\"|sha256 \"${LINUX_X86_SHA}\"|" Formula/wendy.rb
 
           echo "Updated formula:"
           grep -A 1 "url\|sha256" Formula/wendy.rb | head -20
