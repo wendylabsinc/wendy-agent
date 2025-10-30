@@ -42,7 +42,7 @@ let package = Package(
         ),
         .package(
             url: "https://github.com/swiftlang/swift-subprocess.git",
-            from: "0.1.0",
+            exact: "0.2.1",
             traits: hasSpan ? [.trait(name: "SubprocessSpan")] : []
         ),
         .package(url: "https://github.com/apple/swift-http-types.git", from: "1.4.0"),
