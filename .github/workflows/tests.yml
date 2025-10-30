@@ -12,10 +12,12 @@ jobs:
         include:
           - os: ubuntu-22.04-arm
             container: swift:6.2.0
+            runs-on: [self-hosted, wendy, Linux]
           - os: macos-15
             xcode-select: /Applications/Xcode_26.0.app
+            runs-on: macos-15
 
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.runs-on }}
     container: ${{ matrix.container }}
 
     steps:
