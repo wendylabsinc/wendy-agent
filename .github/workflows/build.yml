@@ -14,7 +14,7 @@ permissions:
 jobs:
   determine-version:
     name: Determine Version
-    runs-on: ubuntu-22.04-arm
+    runs-on: [self-hosted, wendy, Linux]
     outputs:
       version: ${{ steps.set-version.outputs.version }}
     steps:
@@ -44,6 +44,7 @@ jobs:
             swift-sdk-url: https://download.swift.org/swift-6.2-release/static-sdk/swift-6.2-RELEASE/swift-6.2-RELEASE_static-linux-0.0.1.artifactbundle.tar.gz
             swift-sdk-checksum: d2225840e592389ca517bbf71652f7003dbf45ac35d1e57d98b9250368769378
             product: wendy-agent
+            runs-on: [self-hosted, wendy, Linux]
           - artifact-name: wendy-agent-linux-static-musl-x86_64
             os: ubuntu-22.04-arm
             container: swift:6.2.0
@@ -51,6 +52,7 @@ jobs:
             swift-sdk-url: https://download.swift.org/swift-6.2-release/static-sdk/swift-6.2-RELEASE/swift-6.2-RELEASE_static-linux-0.0.1.artifactbundle.tar.gz
             swift-sdk-checksum: d2225840e592389ca517bbf71652f7003dbf45ac35d1e57d98b9250368769378
             product: wendy-agent
+            runs-on: [self-hosted, wendy, Linux]
           - artifact-name: wendy-cli-linux-static-musl-aarch64
             os: ubuntu-22.04-arm
             container: swift:6.2.0
@@ -58,6 +60,7 @@ jobs:
             swift-sdk-url: https://download.swift.org/swift-6.2-release/static-sdk/swift-6.2-RELEASE/swift-6.2-RELEASE_static-linux-0.0.1.artifactbundle.tar.gz
             swift-sdk-checksum: d2225840e592389ca517bbf71652f7003dbf45ac35d1e57d98b9250368769378
             product: wendy
+            runs-on: [self-hosted, wendy, Linux]
           - artifact-name: wendy-cli-linux-static-musl-x86_64
             os: ubuntu-22.04-arm
             container: swift:6.2.0
@@ -65,13 +68,15 @@ jobs:
             swift-sdk-url: https://download.swift.org/swift-6.2-release/static-sdk/swift-6.2-RELEASE/swift-6.2-RELEASE_static-linux-0.0.1.artifactbundle.tar.gz
             swift-sdk-checksum: d2225840e592389ca517bbf71652f7003dbf45ac35d1e57d98b9250368769378
             product: wendy
+            runs-on: [self-hosted, wendy, Linux]
           - artifact-name: wendy-cli-macos-arm64
             os: macos-15
             xcode-select: /Applications/Xcode_26.0.app
             product: wendy
+            runs-on: macos-15
 
     name: ${{ matrix.artifact-name }}
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.runs-on }}
     container: ${{ matrix.container }}
 
     steps:
@@ -156,7 +161,7 @@ jobs:
 
   release:
     name: Release
-    runs-on: ubuntu-22.04-arm
+    runs-on: [self-hosted, wendy, Linux]
     needs: [determine-version, build]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     steps:
