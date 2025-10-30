@@ -191,10 +191,6 @@ jobs:
           git tag -fa latest "$TARGET_SHA" -m "Latest prerelease: $TAG"
           git push -f origin refs/tags/latest
 
-      - name: Set up Homebrew
-        run: |
-          sudo apt-get install build-essential procps curl file git
-          /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
       # Bump the formula in homebrew-tap
       - name: Create GitHub App Token
         id: app-token
