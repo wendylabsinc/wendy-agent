@@ -231,8 +231,8 @@ jobs:
 
           git checkout -b "$BRANCH"
 
-          # Calculate URLs and SHA256s
-          MACOS_URL="https://github.com/wendylabsinc/wendy-agent/archive/refs/tags/${VERSION}.tar.gz"
+          # Calculate URLs and SHA256s for pre-built binaries
+          MACOS_URL="https://github.com/wendylabsinc/wendy-agent/releases/download/${VERSION}/wendy-cli-macos-arm64-${VERSION}.tar.gz"
           MACOS_SHA=$(curl -fsSL "$MACOS_URL" | sha256sum | awk '{print $1}')
 
           LINUX_ARM_URL="https://github.com/wendylabsinc/wendy-agent/releases/download/${VERSION}/wendy-cli-linux-static-musl-aarch64-${VERSION}.tar.gz"
@@ -242,12 +242,12 @@ jobs:
           LINUX_X86_SHA=$(curl -fsSL "$LINUX_X86_URL" | sha256sum | awk '{print $1}')
 
           echo "URLs and SHA256s:"
-          echo "  macOS: ${MACOS_URL} -> ${MACOS_SHA}"
+          echo "  macOS ARM64: ${MACOS_URL} -> ${MACOS_SHA}"
           echo "  Linux ARM64: ${LINUX_ARM_URL} -> ${LINUX_ARM_SHA}"
           echo "  Linux x86_64: ${LINUX_X86_URL} -> ${LINUX_X86_SHA}"
 
           # Update formula URLs and SHA256s (Linux sed syntax)
-          sed -i "s|https://github.com/wendylabsinc/wendy-agent/archive/refs/tags/[^\"]*|${MACOS_URL}|" Formula/wendy.rb
+          sed -i "s|https://github.com/wendylabsinc/wendy-agent/releases/download/[^/]*/wendy-cli-macos-arm64[^\"]*|${MACOS_URL}|" Formula/wendy.rb
           sed -i "s|https://github.com/wendylabsinc/wendy-agent/releases/download/[^/]*/wendy-cli-linux-static-musl-aarch64[^\"]*|${LINUX_ARM_URL}|" Formula/wendy.rb
           sed -i "s|https://github.com/wendylabsinc/wendy-agent/releases/download/[^/]*/wendy-cli-linux-static-musl-x86_64[^\"]*|${LINUX_X86_URL}|" Formula/wendy.rb
 
@@ -279,7 +279,4 @@ jobs:
 
           This PR updates the wendy formula to version ${VERSION}.
 
-          - macOS: build from source
-          - Linux: use pre-built binaries
-
-          Once merged, the bottle workflow will build macOS bottles."
+          All platforms use pre-built binaries (signed and notarized for macOS ARM64)."
