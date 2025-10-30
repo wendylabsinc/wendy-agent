@@ -93,16 +93,23 @@ private enum DeviceFamily: String, CaseIterable {
     }
 }
 
-struct ImagerCommand: AsyncParsableCommand {
+struct OSCommand: AsyncParsableCommand {
 
     static let configuration = CommandConfiguration(
-        commandName: "disk",
-        abstract: "Setup and manage device disks.",
+        commandName: "os",
+        abstract: "Setup and manage your WendyOS images.",
         subcommands: [
-            ListDrivesCommand.self,
-            ListDevicesCommand.self,
-            WriteCommand.self,
-            WriteDeviceCommand.self,
+            OSInstallCommand.self,
+        ],
+        groupedSubcommands: [
+            CommandGroup(
+                name: "Advanced OS utilities",
+                subcommands: [
+                    ListDrivesCommand.self,
+                    ListDevicesCommand.self,
+                    WriteCommand.self,
+                ]
+            ),
         ]
     )
 
@@ -110,7 +117,7 @@ struct ImagerCommand: AsyncParsableCommand {
 
     struct ListDrivesCommand: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
-            commandName: "list",
+            commandName: "list-drives",
             abstract: "List available external drives."
         )
 
@@ -246,11 +253,11 @@ struct ImagerCommand: AsyncParsableCommand {
         }
     }
 
-    struct WriteDeviceCommand: AsyncParsableCommand {
+    struct OSInstallCommand: AsyncParsableCommand {
 
         static let configuration = CommandConfiguration(
-            commandName: "write-device",
-            abstract: "Download and write the latest image for a specific device."
+            commandName: "install",
+            abstract: "Install WendyOS on a device."
         )
 
         @Argument(help: "Device name (e.g., raspberry-pi-5)")
