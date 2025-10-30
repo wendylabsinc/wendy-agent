@@ -213,7 +213,9 @@ jobs:
           private-key: ${{ secrets.CLI_PUBLISHER_APP_PRIVATE_KEY }}
           owner: wendylabsinc
           repositories: homebrew-tap
-
+      - name: Set up Homebrew
+        id: set-up-homebrew
+        uses: Homebrew/actions/setup-homebrew@main
       - name: Bump formula in homebrew-tap
         uses: dawidd6/action-homebrew-bump-formula@v5
         with:
