@@ -589,7 +589,8 @@ extension RunCommand {
             .swiftSDK(swiftSDK),
             .configuration(debug ? "debug" : "release"),
             .scratchPath(".wendy-build"),
-            .staticSwiftStdlib
+            .staticSwiftStdlib,
+            .xLinker("-s")
         )
 
         let binPath = try await swiftPM.buildWithOutput(
@@ -745,7 +746,8 @@ extension RunCommand {
             .swiftSDK(swiftSDK),
             .configuration(debug ? "debug" : "release"),
             .scratchPath(".wendy-build"),
-            .staticSwiftStdlib
+            .staticSwiftStdlib,
+            .xLinker("-s")
         )
 
         let binPath = try await swiftPM.buildWithOutput(
