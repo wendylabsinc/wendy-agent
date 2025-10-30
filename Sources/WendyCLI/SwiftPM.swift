@@ -48,6 +48,8 @@ public struct SwiftPM: Sendable {
 
         case disableResolution
 
+        case xLinker(String)
+
         /// The arguments to pass to the Swift build command.
         var arguments: [String] {
             switch self {
@@ -69,6 +71,8 @@ public struct SwiftPM: Sendable {
                 return ["--static-swift-stdlib"]
             case .disableResolution:
                 return ["--disable-automatic-resolution"]
+            case .xLinker(let linker):
+                return ["-Xlinker", linker]
             }
         }
     }
