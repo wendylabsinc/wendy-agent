@@ -1,7 +1,13 @@
 import DBUS
-import Foundation
 import Logging
 import NIO
+import Subprocess
+
+#if canImport(FoundationEssentials)
+    import FoundationEssentials
+#else
+    import Foundation
+#endif
 
 /// Protocol for decoding DBus messages into Swift types
 public protocol DBusDecodable {
@@ -473,56 +479,58 @@ public actor NetworkManager: NetworkConnectionManager {
             // Reminder for later
             self.logger.info("Using nmcli to connect to network '\(ssid)' (workaround)")
 
-            // Build the nmcli command
-            let nmcliCommand = "nmcli device wifi connect '\(ssid)' password '\(password)' 2>&1"
-
             self.logger.debug("Executing nmcli command to connect to '\(ssid)'")
 
-            // Use Foundation's Process
-            let task = Foundation.Process()
-            task.launchPath = "/bin/sh"
-            task.arguments = ["-c", nmcliCommand]
-
-            let outputPipe = Foundation.Pipe()
-            task.standardOutput = outputPipe
-            task.standardError = outputPipe
-
             do {
-                task.launch()
-                task.waitUntilExit()
+                let result = try await Subprocess.run(
+                    .path("/usr/bin/nmcli"),
+                    arguments: [
+                        "device", "wifi", "connect", ssid, "password", password
+                    ],
+                    output: .string(limit: 1024 * 1024),
+                    error: .string(limit: 1024 * 1024)
+                )
 
-                let outputData = outputPipe.fileHandleForReading.readDataToEndOfFile()
-                let output = String(data: outputData, encoding: .utf8) ?? ""
+                let output = result.standardOutput ?? ""
+                let errorOutput = result.standardError ?? ""
 
                 self.logger.debug("nmcli output: \(output)")
+                if !errorOutput.isEmpty {
+                    self.logger.debug("nmcli stderr: \(errorOutput)")
+                }
 
                 // Check exit status
-                if task.terminationStatus != 0 {
-                    if output.contains("password") || output.contains("Secrets were required") {
-                        self.logger.error(
-                            "WiFi authentication error: Invalid password or authentication failure"
-                        )
+                if !result.terminationStatus.isSuccess {
+                    // Parse the error to provide appropriate error types
+                    let combinedOutput = output + " " + errorOutput
+
+                    if combinedOutput.contains("password") || combinedOutput.contains("Secrets were required") {
+                        self.logger.error("WiFi authentication error: Invalid password or authentication failure")
                         throw NetworkConnectionError.authenticationFailed
-                    } else if output.contains("not found")
-                        || output.contains("No network with SSID")
-                    {
+                    } else if combinedOutput.contains("not found") || combinedOutput.contains("No network with SSID") {
                         self.logger.error("Network '\(ssid)' not found")
                         throw NetworkConnectionError.networkNotFound
-                    } else if output.contains("permission") || output.contains("authorized") {
+                    } else if combinedOutput.contains("permission") || combinedOutput.contains("authorized") {
                         self.logger.error("Permission denied")
                         throw NetworkConnectionError.authenticationFailed
-                    } else if output.contains("timeout") {
+                    } else if combinedOutput.contains("timeout") {
                         self.logger.error("Connection attempt timed out")
                         throw NetworkConnectionError.timeout
                     } else {
-                        self.logger.error("nmcli failed with status \(task.terminationStatus)")
+                        self.logger.error("nmcli failed with termination status: \(result.terminationStatus)")
                         self.logger.error("Output: \(output)")
+                        if !errorOutput.isEmpty {
+                            self.logger.error("Error output: \(errorOutput)")
+                        }
                         throw NetworkConnectionError.connectionFailed
                     }
                 }
 
                 self.logger.info("Successfully connected to WiFi network: \(ssid)")
 
+            } catch let error as NetworkConnectionError {
+                // Just re-throw NetworkConnectionErrors
+                throw error
             } catch {
                 self.logger.error("Failed to execute nmcli: \(error)")
                 throw NetworkConnectionError.connectionFailed
