@@ -524,11 +524,7 @@ struct OSCommand: AsyncParsableCommand {
 private func ensureAdminPrivileges() async throws {
     #if os(macOS) || os(Linux)
         // If already root, nothing to do
-        #if os(macOS)
-            if getuid() == 0 { return }
-        #else
-            if Glibc.getuid() == 0 { return }
-        #endif
+        if getuid() == 0 { return }
 
         // Inform the user and validate sudo timestamp (may prompt for password in the terminal)
         Noora().info(
