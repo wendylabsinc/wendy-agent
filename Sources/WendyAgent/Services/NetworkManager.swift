@@ -1,6 +1,7 @@
 import DBUS
 import Logging
 import NIO
+import Subprocess
 
 #if canImport(FoundationEssentials)
     import FoundationEssentials
@@ -469,219 +470,78 @@ public actor NetworkManager: NetworkConnectionManager {
                 "Searching for network with SSID: '\(ssid)' among \(networks.count) networks"
             )
 
-            guard let network = networks.first(where: { $0.ssid == ssid }) else {
+            guard networks.first(where: { $0.ssid == ssid }) != nil else {
                 self.logger.error("Network not found: '\(ssid)'")
                 self.logger.debug("Available networks: \(networks.map { $0.ssid })")
                 throw NetworkConnectionError.networkNotFound
             }
 
-            // Find the WiFi device
-            let wifiDevicePath = try await findWiFiDevice()
+            // Reminder for later
+            self.logger.info("Using nmcli to connect to network '\(ssid)' (workaround)")
 
-            // Connect to the WiFi network
-            self.logger.debug(
-                "Connecting to network '\(ssid)' using device \(wifiDevicePath) and AP \(network.path)"
-            )
+            self.logger.debug("Executing nmcli command to connect to '\(ssid)'")
 
-            let address = try SocketAddress(unixDomainSocketPath: socketPath)
-
-            return try await DBusClient.withConnection(
-                to: address,
-                auth: .external(userID: uid)
-            ) { connection in
-                // Helper function to log signal details
-                func logSignalDetails(_ signal: DBusMessage) {
-                    self.logger.debug(
-                        "DETAILED SIGNAL: MessageType=\(signal.messageType), Serial=\(signal.serial)"
-                    )
-
-                    if !signal.body.isEmpty {
-                        // Detailed body logging based on message body content type
-                        self.logger.debug("Signal body contents:")
-                        for (index, value) in signal.body.enumerated() {
-                            self.logger.debug("  Body[\(index)]: \(value)")
-
-                            // Try to extract more detailed information from body elements
-                            switch value {
-                            case .string(let message):
-                                if message.contains("error") || message.contains("permission")
-                                    || message.contains("denied") || message.contains("failed")
-                                {
-                                    self.logger.error("⚠️ IMPORTANT ERROR MESSAGE: \(message)")
-                                }
-                                self.logger.debug("  - String value: \(message)")
-                            case .uint32(let code):
-                                self.logger.debug("  - Code value: \(code)")
-                            case .variant(let variant):
-                                self.logger.debug("  - Variant value: \(variant.value)")
-                            case .dictionary(let dict):
-                                self.logger.debug("  - Dictionary entries: \(dict.count)")
-                                for (key, dictValue) in dict {
-                                    self.logger.debug("    * \(key): \(dictValue)")
-                                }
-                            case .array(let array):
-                                self.logger.debug("  - Array elements: \(array.count)")
-                                for (i, element) in array.enumerated() {
-                                    self.logger.debug("    * [\(i)]: \(element)")
-                                }
-                            default:
-                                self.logger.debug("  - Other value type: \(value)")
-                            }
-                        }
-                    } else {
-                        self.logger.debug("Signal body is empty")
-                    }
-                }
-
-                // Create the connection request
-                let connectMessage = DBusRequest.createMethodCall(
-                    destination: "org.freedesktop.NetworkManager",
-                    path: "/org/freedesktop/NetworkManager",
-                    interface: "org.freedesktop.NetworkManager",
-                    method: "AddAndActivateConnection",
-                    body: [
-                        // First parameter - a{sa{sv}} - A dictionary of settings
-                        .dictionary([
-                            // "connection" setting group
-                            .string("connection"): .dictionary([
-                                .string("id"): .variant(DBusVariant(.string(ssid))),
-                                .string("type"): .variant(DBusVariant(.string("802-11-wireless"))),
-                                .string("uuid"): .variant(DBusVariant(.string(UUID().uuidString))),
-                                .string("autoconnect"): .variant(DBusVariant(.boolean(true))),
-                            ]),
-
-                            // "802-11-wireless" setting group
-                            .string("802-11-wireless"): .dictionary([
-                                .string("ssid"): .variant(
-                                    DBusVariant(
-                                        .array(ssid.utf8.map { DBusValue.byte($0) })
-                                    )
-                                ),
-                                .string("mode"): .variant(DBusVariant(.string("infrastructure"))),
-                            ]),
-
-                            // "802-11-wireless-security" setting group
-                            .string("802-11-wireless-security"): .dictionary([
-                                .string("key-mgmt"): .variant(DBusVariant(.string("wpa-psk"))),
-                                .string("psk"): .variant(DBusVariant(.string(password))),
-                            ]),
-
-                            // "ipv4" setting group
-                            .string("ipv4"): .dictionary([
-                                .string("method"): .variant(DBusVariant(.string("auto")))
-                            ]),
-
-                            // "ipv6" setting group
-                            .string("ipv6"): .dictionary([
-                                .string("method"): .variant(DBusVariant(.string("auto")))
-                            ]),
-                        ]),
-
-                        // Second parameter - o - Device path
-                        .objectPath(wifiDevicePath),
-
-                        // Third parameter - o - Access point path
-                        .objectPath(network.path),
-                    ]
+            do {
+                let result = try await Subprocess.run(
+                    .path("/usr/bin/nmcli"),
+                    arguments: [
+                        "device", "wifi", "connect", ssid, "password", password
+                    ],
+                    output: .string(limit: 1024 * 1024),
+                    error: .string(limit: 1024 * 1024)
                 )
 
-                // Log the full message details for debugging
-                self.logger.debug("==================== DBus MESSAGE DETAILS ====================")
-                self.logger.debug("DBUS CONNECTION REQUEST SIGNATURE:")
-                self.logger.debug("Full message: \(connectMessage)")
-                self.logger.debug("Message Type: \(connectMessage.messageType)")
-                self.logger.debug("Body types count: \(connectMessage.body.count)")
+                let output = result.standardOutput ?? ""
+                let errorOutput = result.standardError ?? ""
 
-                // Print body details
-                for (index, value) in connectMessage.body.enumerated() {
-                    self.logger.debug("Body[\(index)] type: \(type(of: value))")
-                    self.logger.debug("Body[\(index)] value: \(value)")
-
-                    // For the first body parameter (connection settings)
-                    if index == 0, case .array(let connectionSettings) = value {
-                        self.logger.debug(
-                            "Connection settings array count: \(connectionSettings.count)"
-                        )
-                        for (i, setting) in connectionSettings.enumerated() {
-                            if case .dictionary(let dict) = setting {
-                                self.logger.debug(
-                                    "  Setting[\(i)] keys: \(dict.keys.map { String(describing: $0) })"
-                                )
-                            }
-                        }
-                    }
-
-                    // For object paths
-                    if case .objectPath(let path) = value {
-                        self.logger.debug("Body[\(index)] objectPath: \(path)")
-                    }
+                self.logger.debug("nmcli output: \(output)")
+                if !errorOutput.isEmpty {
+                    self.logger.debug("nmcli stderr: \(errorOutput)")
                 }
-                self.logger.debug("==================== END MESSAGE DETAILS ====================")
 
-                do {
-                    guard let reply = try await connection.send(connectMessage) else {
-                        throw NetworkConnectionError.noReply
-                    }
-                    guard case .methodReturn = reply.messageType else {
-                        // Extract error details from the body if possible
-                        var errorDetails = "No details available"
-                        if let bodyValue = reply.body.first,
-                            case .string(let message) = bodyValue
-                        {
-                            errorDetails = message
+                // Check exit status
+                if !result.terminationStatus.isSuccess {
+                    // Parse the error to provide appropriate error types
+                    let combinedOutput = output + " " + errorOutput
+
+                    if combinedOutput.contains("password") || combinedOutput.contains("Secrets were required") {
+                        self.logger.error("WiFi authentication error: Invalid password or authentication failure")
+                        throw NetworkConnectionError.authenticationFailed
+                    } else if combinedOutput.contains("not found") || combinedOutput.contains("No network with SSID") {
+                        self.logger.error("Network '\(ssid)' not found")
+                        throw NetworkConnectionError.networkNotFound
+                    } else if combinedOutput.contains("permission") || combinedOutput.contains("authorized") {
+                        self.logger.error("Permission denied")
+                        throw NetworkConnectionError.authenticationFailed
+                    } else if combinedOutput.contains("timeout") {
+                        self.logger.error("Connection attempt timed out")
+                        throw NetworkConnectionError.timeout
+                    } else {
+                        self.logger.error("nmcli failed with termination status: \(result.terminationStatus)")
+                        self.logger.error("Output: \(output)")
+                        if !errorOutput.isEmpty {
+                            self.logger.error("Error output: \(errorOutput)")
                         }
-
-                        // Check for common permission errors
-                        if errorDetails.contains("Permission denied")
-                            || errorDetails.contains("Not authorized")
-                        {
-                            self.logger.error(
-                                "DBus permission error: \(errorDetails) - Check that the user has permissions to manage NetworkManager"
-                            )
-                            throw NetworkConnectionError.authenticationFailed
-                        }
-
-                        // Check for authentication/wrong password errors
-                        if errorDetails.contains("Failed to activate")
-                            && errorDetails.contains("Secrets were required")
-                        {
-                            self.logger.error(
-                                "WiFi authentication error: Invalid password or authentication failure"
-                            )
-                            throw NetworkConnectionError.authenticationFailed
-                        }
-
-                        self.logger.error("DBus connection error: \(errorDetails)")
-                        self.logger.debug("Full error reply: \(reply)")
                         throw NetworkConnectionError.connectionFailed
                     }
-                    self.logger.debug("Successfully connected to WiFi network: \(ssid)")
-                } catch {
-                    self.logger.error("Failed to send connection request: \(error)")
-                    throw NetworkConnectionError.connectionFailed
                 }
 
-                throw NetworkConnectionError.timeout
+                self.logger.info("Successfully connected to WiFi network: \(ssid)")
+
+            } catch let error as NetworkConnectionError {
+                // Just re-throw NetworkConnectionErrors
+                throw error
+            } catch {
+                self.logger.error("Failed to execute nmcli: \(error)")
+                throw NetworkConnectionError.connectionFailed
             }
+
         } catch let error as NetworkConnectionError {
             // Just re-throw NetworkConnectionErrors
             throw error
         } catch {
             // Wrap other errors
             self.logger.error("Unexpected error connecting to WiFi: \(error)")
-
-            // Check the error message string for common error patterns
-            let errorString = String(describing: error)
-            if errorString.contains("Permission denied") {
-                self.logger.error(
-                    "Permission denied accessing DBus socket. Check if the user has correct permissions."
-                )
-                throw NetworkConnectionError.authenticationFailed
-            } else if errorString.contains("Connection refused") {
-                self.logger.error("Connection refused to DBus. Check if NetworkManager is running.")
-                throw NetworkConnectionError.notConnected
-            }
-
             throw NetworkConnectionError.connectionFailed
         }
     }
