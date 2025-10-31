@@ -7,8 +7,10 @@ import Subprocess
 
 #if os(macOS)
     import Darwin
-#elseif os(Linux)
+#elseif canImport(Glibc)
     import Glibc
+#elseif canImport(Musl)
+    import Musl
 #endif
 
 @inline(__always) private func formatDiskContents(available: Int64, capacity: Int64) -> String {
