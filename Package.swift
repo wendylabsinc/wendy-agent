@@ -26,6 +26,7 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-log.git", from: "1.6.3"),
         .package(url: "https://github.com/grpc/grpc-swift-2.git", from: "2.1.0"),
         .package(url: "https://github.com/grpc/grpc-swift-protobuf.git", from: "2.0.0"),
+        .package(url: "https://github.com/orlandos-nl/DNSClient.git", from: "2.5.0"),
         // .package(url: "https://github.com/grpc/grpc-swift-nio-transport.git", from: "2.0.0"),
         .package(
             url: "https://github.com/Joannis/grpc-swift-nio-transport.git",
@@ -80,6 +81,7 @@ let package = Package(
                     package: "jwt-kit"
                 ),
                 .product(name: "Noora", package: "Noora"),
+                .product(name: "DNSClient", package: "DNSClient"),
                 .target(name: "WendyAgentGRPC"),
                 .target(name: "WendyCloudGRPC"),
                 .target(name: "WendyCLI"),
