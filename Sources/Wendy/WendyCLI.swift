@@ -42,7 +42,7 @@ struct WendyCommand: AsyncParsableCommand {
                 subcommands: [
                     DeviceCommand.self,
                     DiscoverCommand.self,
-                    ImagerCommand.self,
+                    OSCommand.self,
                 ]
             ),
             CommandGroup(

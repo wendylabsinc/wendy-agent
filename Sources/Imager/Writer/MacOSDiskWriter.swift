@@ -1,15 +1,10 @@
 #if os(macOS)
     import Foundation
-    import Logging
     import Subprocess
 
     /// A disk writer implementation for macOS that uses the `dd` command.
     public class MacOSDiskWriter: DiskWriter {
-        private let logger: Logger
-
-        public init(logger: Logger = Logger(label: "sh.wendy.imager.macos")) {
-            self.logger = logger
-        }
+        public init() {}
 
         public func write(
             imagePath: String,
@@ -43,7 +38,13 @@
             }
 
             // Send initial progress update
-            progressHandler(DiskWriteProgress(bytesWritten: 0, totalBytes: totalBytes))
+            let initialTotalBytes: Int64 = totalBytes ?? 100
+            progressHandler(
+                DiskWriteProgress(
+                    bytesWritten: 0,
+                    totalBytes: initialTotalBytes
+                )
+            )
 
             // Ensure drive ID is properly formatted with /dev/ prefix
             let devicePath: String
@@ -66,132 +67,92 @@
                 )
 
                 if !unmountResult.terminationStatus.isSuccess {
-                    if let errorOutput = unmountResult.standardError, !errorOutput.isEmpty {
-                        throw DiskWriterError.writeFailed(
-                            reason: "Failed to unmount disk: \(errorOutput)"
-                        )
-                    } else {
-                        throw DiskWriterError.writeFailed(
-                            reason:
-                                "Failed to unmount disk with status: \(unmountResult.terminationStatus)"
-                        )
-                    }
-                }
-
-                // Create a bash script that uses pv for real progress
-                let script: String
-
-                // Check if pv is available
-                let pvCheckResult = try await Subprocess.run(
-                    Subprocess.Executable.name("which"),
-                    arguments: ["pv"],
-                    output: .string(limit: .max),
-                    error: .discarded
-                )
-
-                if pvCheckResult.terminationStatus.isSuccess {
-                    // Use pv for progress - it outputs progress info to stderr
-                    script = """
-                        #!/bin/bash
-
-                        # Use pv to show progress while piping to dd
-                        # -p: show progress bar
-                        # -t: show elapsed time
-                        # -e: show ETA
-                        # -r: show rate
-                        # -b: show total bytes transferred
-                        # -s: set expected size for percentage calculation
-                        # -f: force output even if not to terminal
-                        pv -fperb -s \(totalBytes ?? 0) "\(imagePath)" | dd of="\(rawDevicePath)" bs=1m
-                        """
-                } else {
-                    // Fallback to plain dd
-                    script = """
-                        #!/bin/bash
-
-                        # Run dd without progress
-                        dd if="\(imagePath)" of="\(rawDevicePath)" bs=1m 2>&1
-                        """
-                }
-
-                if pvCheckResult.terminationStatus.isSuccess {
-                    // Use pv and let it handle all progress display
-
-                    // Run pv + dd command with stderr passthrough
-                    let pvResult = try await Subprocess.run(
+                    // Attempt a force unmount if the normal unmount fails (common when Finder or Spotlight holds a handle)
+                    let forceResult = try await Subprocess.run(
                         Subprocess.Executable.name("sudo"),
-                        arguments: ["bash", "-c", script],
-                        output: .discarded,
-                        error: .fileDescriptor(.standardError, closeAfterSpawningProcess: false)
+                        arguments: ["diskutil", "unmountDisk", "force", devicePath],
+                        output: .string(limit: .max),
+                        error: .string(limit: .max)
                     )
 
-                    // Check result
-                    if !pvResult.terminationStatus.isSuccess {
-                        throw DiskWriterError.writeFailed(
-                            reason: "dd command failed with status: \(pvResult.terminationStatus)"
-                        )
-                    }
-                } else {
-                    // Fallback for when pv is not available - use timer for estimation
-                    let startTime = Date()
-                    var lastProgress: Int64 = 0
+                    if !forceResult.terminationStatus.isSuccess {
+                        let stderr = [unmountResult.standardError, forceResult.standardError]
+                            .compactMap { $0 }
+                            .joined(separator: "\n")
+                            .trimmingCharacters(in: .whitespacesAndNewlines)
 
-                    // Create a timer using DispatchQueue for progress updates
-                    let progressQueue = DispatchQueue(label: "diskwriter.progress")
-                    let timer = DispatchSource.makeTimerSource(queue: progressQueue)
-                    timer.schedule(deadline: .now(), repeating: 1.0)
+                        let hint =
+                            "Hint: Close Finder windows, Disk Utility, or any apps using the disk, then retry."
 
-                    timer.setEventHandler { [weak timer] in
-                        guard timer != nil else { return }
-
-                        let elapsed = Date().timeIntervalSince(startTime)
-                        if elapsed > 0, let totalBytes = totalBytes, totalBytes > 0 {
-                            // Estimate progress based on typical write speeds
-                            let speed: Int64
-                            if elapsed < 5 {
-                                speed = 20 * 1024 * 1024  // 20 MB/s initially
-                            } else if elapsed < 10 {
-                                speed = 30 * 1024 * 1024  // 30 MB/s
-                            } else {
-                                speed = 35 * 1024 * 1024  // 35 MB/s steady
-                            }
-
-                            var estimatedBytes = Int64(elapsed) * speed
-                            let maxBytes = (totalBytes * 95) / 100
-                            if estimatedBytes > maxBytes {
-                                estimatedBytes = maxBytes
-                            }
-
-                            if estimatedBytes > lastProgress {
-                                lastProgress = estimatedBytes
-                                progressHandler(
-                                    DiskWriteProgress(
-                                        bytesWritten: estimatedBytes,
-                                        totalBytes: totalBytes
-                                    )
-                                )
-                            }
+                        if !stderr.isEmpty {
+                            throw DiskWriterError.writeFailed(
+                                reason: "Failed to unmount disk. \(stderr)\n\(hint)"
+                            )
+                        } else {
+                            throw DiskWriterError.writeFailed(
+                                reason:
+                                    "Failed to unmount disk (normal and force). Status: \(forceResult.terminationStatus).\n\(hint)"
+                            )
                         }
                     }
+                }
 
-                    timer.resume()
-
-                    // Run plain dd command
-                    let ddResult = try await Subprocess.run(
-                        Subprocess.Executable.name("sudo"),
-                        arguments: ["bash", "-c", script],
-                        output: .discarded,
-                        error: .discarded
-                    )
-
-                    timer.cancel()
-
-                    // Check result
-                    if !ddResult.terminationStatus.isSuccess {
-                        throw DiskWriterError.writeFailed(
-                            reason: "dd command failed with status: \(ddResult.terminationStatus)"
-                        )
+                // Stream the image to dd via stdin. We count bytes written ourselves for progress.
+                // Use a larger block size on the dd side to improve throughput, and avoid conv=sync
+                // which can slow writes and pad short reads when stdin is a pipe.
+                let chunkSize = 4 * 1024 * 1024  // 4 MiB
+                let result = try await Subprocess.run(
+                    Subprocess.Executable.name("sudo"),
+                    arguments: [
+                        "dd",
+                        "of=\(rawDevicePath)",
+                        "bs=4m",
+                    ],
+                    error: .discarded,
+                    preferredBufferSize: nil
+                ) { execution, stdinWriter, _ in
+                    // Feed file chunks to dd's stdin and report progress
+                    let fileURL = URL(fileURLWithPath: imagePath)
+                    guard let handle = try? FileHandle(forReadingFrom: fileURL) else {
+                        throw DiskWriterError.imageNotFoundInPath(path: imagePath)
                     }
+                    defer { try? handle.close() }
+
+                    var totalWritten: Int64 = 0
+                    let totalBytes = totalBytes  // capture
+
+                    while true {
+                        // Read next chunk synchronously
+                        let data = try? handle.read(upToCount: chunkSize)
+                        guard let data, !data.isEmpty else { break }
+
+                        // Write to dd's stdin (async) and propagate any write error
+                        do {
+                            _ = try await stdinWriter.write(Array(data))
+                        } catch {
+                            throw DiskWriterError.writeFailed(
+                                reason: "Failed piping data to dd: \(error.localizedDescription)"
+                            )
+                        }
+                        totalWritten += Int64(data.count)
+                        if let totalBytes, totalBytes > 0 {
+                            progressHandler(
+                                DiskWriteProgress(
+                                    bytesWritten: min(totalWritten, totalBytes),
+                                    totalBytes: totalBytes
+                                )
+                            )
+                        }
+                    }
+                    // Signal EOF to dd
+                    try? await stdinWriter.finish()
+                    return execution
+                }
+
+                if !result.terminationStatus.isSuccess {
+                    throw DiskWriterError.writeFailed(
+                        reason: "dd command failed with status: \(result.terminationStatus)"
+                    )
                 }
 
                 // If we get here, the command completed successfully
@@ -203,6 +164,13 @@
                         totalBytes: totalBytes
                     )
                     progressHandler(finalProgress)
+                } else {
+                    progressHandler(
+                        DiskWriteProgress(
+                            bytesWritten: Int64(100),
+                            totalBytes: Int64(100)
+                        )
+                    )
                 }
             } catch let error as DiskWriterError {
                 // Re-throw DiskWriterError

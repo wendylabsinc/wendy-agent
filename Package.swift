@@ -66,7 +66,6 @@ let package = Package(
                 .product(name: "_NIOFileSystem", package: "swift-nio"),
                 .product(name: "GRPCNIOTransportHTTP2", package: "grpc-swift-nio-transport"),
                 .product(name: "AsyncDNSResolver", package: "swift-async-dns-resolver"),
-                .product(name: "DNSClient", package: "DNSClient"),
                 .product(name: "SystemPackage", package: "swift-system"),
                 .product(name: "NIOFoundationCompat", package: "swift-nio"),
                 .product(
@@ -82,6 +81,7 @@ let package = Package(
                     package: "jwt-kit"
                 ),
                 .product(name: "Noora", package: "Noora"),
+                .product(name: "DNSClient", package: "DNSClient"),
                 .target(name: "WendyAgentGRPC"),
                 .target(name: "WendyCloudGRPC"),
                 .target(name: "WendyCLI"),
@@ -177,8 +177,8 @@ let package = Package(
             dependencies: [
                 .product(name: "Logging", package: "swift-log"),
                 .product(name: "AsyncDNSResolver", package: "swift-async-dns-resolver"),
-                .product(name: "DNSClient", package: "DNSClient"),
                 .product(name: "Subprocess", package: "swift-subprocess"),
+                .product(name: "DNSClient", package: "DNSClient"),
             ]
         ),
         .target(
@@ -231,7 +231,6 @@ let package = Package(
             dependencies: [
                 .product(name: "AsyncHTTPClient", package: "async-http-client"),
                 .product(name: "_NIOFileSystem", package: "swift-nio"),
-                .product(name: "Subprocess", package: "swift-subprocess"),
                 .product(name: "NIOFoundationCompat", package: "swift-nio"),
             ]
         ),
@@ -251,6 +250,13 @@ let package = Package(
                 .target(name: "WendyAgentGRPC"),
                 .target(name: "WendySDK"),
                 .target(name: "wendy-helper", condition: .when(platforms: [.macOS])),
+            ]
+        ),
+
+        .testTarget(
+            name: "ImagerTests",
+            dependencies: [
+                .target(name: "Imager")
             ]
         ),
 
