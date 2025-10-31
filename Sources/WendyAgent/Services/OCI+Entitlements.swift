@@ -1,6 +1,35 @@
 import AppConfig
 import Foundation
 
+extension Array where Element == Entitlement {
+    /// Check if GPU entitlement is present
+    var hasGPUEntitlement: Bool {
+        contains { entitlement in
+            if case .gpu = entitlement {
+                return true
+            }
+            return false
+        }
+    }
+
+    /// Build environment variables from entitlements
+    func environmentVariables() -> [String] {
+        var env: [String] = []
+
+        for entitlement in self {
+            switch entitlement {
+            case .gpu:
+                env.append("NVIDIA_VISIBLE_DEVICES=all")
+                env.append("NVIDIA_DRIVER_CAPABILITIES=all")
+            default:
+                break
+            }
+        }
+
+        return env
+    }
+}
+
 extension OCI {
     mutating func setDeviceCapabilities(appName: String) {
         let deviceCapabilities = [
@@ -63,7 +92,106 @@ extension OCI {
         for entitlement in entitlements {
             switch entitlement {
             case .gpu:
-                ()
+                // Jetson GPU devices - manually inject since nvidia-container-runtime
+                // doesn't work well with Tegra/Jetson devices (no NVML support)
+                // Core NVIDIA devices
+                self.linux.devices.append(
+                    .init(
+                        path: "/dev/nvidia0",
+                        type: "c",
+                        major: 195,
+                        minor: 0,
+                        fileMode: 0o666,
+                        uid: 0,
+                        gid: 0
+                    )
+                )
+                self.linux.devices.append(
+                    .init(
+                        path: "/dev/nvidiactl",
+                        type: "c",
+                        major: 195,
+                        minor: 255,
+                        fileMode: 0o666,
+                        uid: 0,
+                        gid: 0
+                    )
+                )
+                self.linux.devices.append(
+                    .init(
+                        path: "/dev/nvmap",
+                        type: "c",
+                        major: 10,
+                        minor: 124,
+                        fileMode: 0o660,
+                        uid: 0,
+                        gid: 44
+                    )  // video group
+                )
+                self.linux.devices.append(
+                    .init(
+                        path: "/dev/nvhost-gpu",
+                        type: "c",
+                        major: 490,
+                        minor: 1,
+                        fileMode: 0o660,
+                        uid: 0,
+                        gid: 44
+                    )  // video group
+                )
+
+                // Bind mount devices
+                self.mounts.append(
+                    .init(
+                        destination: "/dev/nvidia0",
+                        type: "bind",
+                        source: "/dev/nvidia0",
+                        options: ["rbind", "nosuid", "noexec"]
+                    )
+                )
+                self.mounts.append(
+                    .init(
+                        destination: "/dev/nvidiactl",
+                        type: "bind",
+                        source: "/dev/nvidiactl",
+                        options: ["rbind", "nosuid", "noexec"]
+                    )
+                )
+                self.mounts.append(
+                    .init(
+                        destination: "/dev/nvmap",
+                        type: "bind",
+                        source: "/dev/nvmap",
+                        options: ["rbind", "nosuid", "noexec"]
+                    )
+                )
+                self.mounts.append(
+                    .init(
+                        destination: "/dev/nvhost-gpu",
+                        type: "bind",
+                        source: "/dev/nvhost-gpu",
+                        options: ["rbind", "nosuid", "noexec"]
+                    )
+                )
+
+                // Device cgroup allowances
+                if !didSetDeviceCapabilities {
+                    didSetDeviceCapabilities = true
+                    self.setDeviceCapabilities(appName: appName)
+                }
+
+                // Allow access to NVIDIA devices (major 195)
+                self.linux.resources?.devices?.append(
+                    DeviceAllowance(allow: true, type: "c", major: 195, access: "rwm")
+                )
+                // Allow access to nvmap (major 10, minor 124)
+                self.linux.resources?.devices?.append(
+                    DeviceAllowance(allow: true, type: "c", major: 10, minor: 124, access: "rw")
+                )
+                // Allow access to nvhost-gpu (major 490, minor 1)
+                self.linux.resources?.devices?.append(
+                    DeviceAllowance(allow: true, type: "c", major: 490, minor: 1, access: "rw")
+                )
             case .network(let entitlement):
                 switch entitlement.mode {
                 case .host:

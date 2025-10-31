@@ -503,7 +503,8 @@ public struct Containerd: Sendable {
         appName: String,
         snapshotKey: String,
         ociSpec spec: Data,
-        labels: [String: String]
+        labels: [String: String],
+        runtime: String = "io.containerd.runc.v2"
     ) async throws {
         let containers = Containerd_Services_Containers_V1_Containers.Client(wrapping: client)
         try await containers.create(
@@ -511,7 +512,7 @@ public struct Containerd: Sendable {
                 $0.container = .with {
                     $0.id = appName
                     $0.runtime = .with {
-                        $0.name = "io.containerd.runc.v2"
+                        $0.name = runtime
                     }
                     $0.spec = .with {
                         $0.typeURL = "types.containerd.io/opencontainers/runtime-spec/1/Spec"
@@ -542,7 +543,8 @@ public struct Containerd: Sendable {
         imageName: String,
         appName: String,
         snapshotKey: String,
-        ociSpec: Data
+        ociSpec: Data,
+        runtime: String = "io.containerd.runc.v2"
     ) async throws {
         do {
             let containers = Containerd_Services_Containers_V1_Containers.Client(wrapping: client)
@@ -551,7 +553,7 @@ public struct Containerd: Sendable {
                     $0.container = .with {
                         $0.id = appName
                         $0.runtime = .with {
-                            $0.name = "io.containerd.runc.v2"
+                            $0.name = runtime
                         }
                         $0.spec = .with {
                             $0.typeURL = "types.containerd.io/opencontainers/runtime-spec/1/Spec"
@@ -607,14 +609,15 @@ public struct Containerd: Sendable {
         snapshotName: String,
         mounts: [Containerd_Types_Mount],
         stdout: String?,
-        stderr: String?
+        stderr: String?,
+        runtime: String = "io.containerd.runc.v2"
     ) async throws {
         let tasks = Containerd_Services_Tasks_V1_Tasks.Client(wrapping: client)
         do {
             _ = try await tasks.create(
                 .with {
                     $0.containerID = containerID
-                    $0.runtimePath = "io.containerd.runc.v2"
+                    $0.runtimePath = runtime
                     $0.rootfs = mounts
                     $0.terminal = false
                     if let stdout {

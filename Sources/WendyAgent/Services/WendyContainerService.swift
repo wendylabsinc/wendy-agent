@@ -189,11 +189,13 @@ struct WendyContainerService: Wendy_Agent_Services_V1_WendyContainerService.Serv
 
                     labels["sh.wendy/app.version"] = appConfig.version
 
+                    // Build environment variables from entitlements
+                    var env = ["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"]
+                    env.append(contentsOf: appConfig.entitlements.environmentVariables())
+
                     var spec = OCI(
                         args: request.cmd.split(separator: " ").map(String.init),
-                        env: [
-                            "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-                        ],
+                        env: env,
                         workingDir: request.workingDir.isEmpty ? "/" : request.workingDir,
                         appName: request.appName
                     )
@@ -202,6 +204,9 @@ struct WendyContainerService: Wendy_Agent_Services_V1_WendyContainerService.Serv
                         entitlements: appConfig.entitlements,
                         appName: request.appName
                     )
+
+                    // Use default runc runtime - GPU devices are manually injected in OCI spec
+                    let runtime = "io.containerd.runc.v2"
 
                     let snapshotKey: String?
                     let mounts: [Containerd_Types_Mount]
@@ -231,16 +236,34 @@ struct WendyContainerService: Wendy_Agent_Services_V1_WendyContainerService.Serv
                             appName: request.appName,
                             snapshotKey: snapshotKey ?? "",
                             ociSpec: try JSONEncoder().encode(spec),
-                            labels: labels
+                            labels: labels,
+                            runtime: runtime
                         )
                     } catch let error as RPCError where error.code == .alreadyExists {
-                        logger.debug("Container already exists, updating container")
-                        try await client.updateContainer(
-                            imageName: request.imageName,
-                            appName: request.appName,
-                            snapshotKey: snapshotKey ?? "",
-                            ociSpec: try JSONEncoder().encode(spec)
-                        )
+                        logger.debug("Container already exists, attempting to update")
+                        do {
+                            try await client.updateContainer(
+                                imageName: request.imageName,
+                                appName: request.appName,
+                                snapshotKey: snapshotKey ?? "",
+                                ociSpec: try JSONEncoder().encode(spec),
+                                runtime: runtime
+                            )
+                        } catch let updateError as RPCError
+                            where updateError.code == .invalidArgument
+                            && updateError.message.contains("Runtime.Name field is immutable")
+                        {
+                            logger.info("Runtime changed, deleting and recreating container")
+                            try await client.deleteContainer(named: request.appName)
+                            try await client.createContainer(
+                                imageName: request.imageName,
+                                appName: request.appName,
+                                snapshotKey: snapshotKey ?? "",
+                                ociSpec: try JSONEncoder().encode(spec),
+                                labels: labels,
+                                runtime: runtime
+                            )
+                        }
                     }
 
                     do {
@@ -286,7 +309,8 @@ struct WendyContainerService: Wendy_Agent_Services_V1_WendyContainerService.Serv
                                 snapshotName: snapshotKey ?? "",
                                 mounts: mounts,
                                 stdout: stdout,
-                                stderr: stderr
+                                stderr: stderr,
+                                runtime: runtime
                             )
                         } catch let error as RPCError where error.code == .alreadyExists {
                             logger.info(
@@ -308,7 +332,8 @@ struct WendyContainerService: Wendy_Agent_Services_V1_WendyContainerService.Serv
                                 snapshotName: snapshotKey ?? "",
                                 mounts: mounts,
                                 stdout: stdout,
-                                stderr: stderr
+                                stderr: stderr,
+                                runtime: runtime
                             )
                             logger.debug(
                                 "Task created",
