@@ -3,11 +3,13 @@ import ArgumentParser
 public struct AppConfig: Codable {
     public let appId: String
     public let version: String
+    public var language: String?
     public let entitlements: [Entitlement]
 
-    public init(appId: String, version: String, entitlements: [Entitlement]) {
+    public init(appId: String, version: String, language: String? = nil, entitlements: [Entitlement]) {
         self.appId = appId
         self.version = version
+        self.language = language
         self.entitlements = entitlements
     }
 }

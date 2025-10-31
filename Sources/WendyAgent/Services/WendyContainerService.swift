@@ -85,7 +85,12 @@ struct WendyContainerService: Wendy_Agent_Services_V1_WendyContainerService.Serv
             }
 
             try await Containerd.withClient { client in
-                try await client.writeLayer(ref: firstChunk.digest) { writer in
+                // Add labels to prevent garbage collection of uploaded layers
+                let labels = [
+                    "containerd.io/gc.root": "true",
+                    "sh.wendy.layer": "true"
+                ]
+                try await client.writeLayer(ref: firstChunk.digest, labels: labels) { writer in
                     try await writer.write(data: firstChunk.data)
 
                     while let nextChunk = try await iterator.next() {
@@ -187,10 +192,20 @@ struct WendyContainerService: Wendy_Agent_Services_V1_WendyContainerService.Serv
                         )
                     }
 
+                    let wantsGPU = appConfig.entitlements.contains(where: {
+                        if case .gpu = $0 {
+                            return true
+                        } else {
+                            return false
+                        }
+                    })
+
                     labels["sh.wendy/app.version"] = appConfig.version
 
                     // Build environment variables from entitlements
-                    var env = ["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"]
+                    var env = [
+                        "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+                    ]
                     env.append(contentsOf: appConfig.entitlements.environmentVariables())
 
                     var spec = OCI(
@@ -207,6 +222,25 @@ struct WendyContainerService: Wendy_Agent_Services_V1_WendyContainerService.Serv
 
                     // Use default runc runtime - GPU devices are manually injected in OCI spec
                     let runtime = "io.containerd.runc.v2"
+
+                    // Options will point us to the nvidia runtime if GPU entitlements are present
+                    let options: Containerd_Runc_V1_Options?
+                    
+                    if wantsGPU {
+                        options = Containerd_Runc_V1_Options.with {
+                            $0.binaryName = "/usr/bin/nvidia-container-runtime"
+                            $0.systemdCgroup = true
+                        }
+                        logger.debug(
+                            "Creating container with GPU options",
+                            metadata: [
+                                "app-name": .stringConvertible(request.appName),
+                                "image-name": .stringConvertible(request.imageName)
+                            ]
+                        )
+                    } else {
+                        options = nil
+                    }
 
                     let snapshotKey: String?
                     let mounts: [Containerd_Types_Mount]
@@ -229,7 +263,11 @@ struct WendyContainerService: Wendy_Agent_Services_V1_WendyContainerService.Serv
 
                     do {
                         logger.info(
-                            "Creating container \(request.appName) from \(request.imageName)"
+                            "Creating container",
+                            metadata: [
+                                "app-name": .stringConvertible(request.appName),
+                                "image-name": .stringConvertible(request.imageName)
+                            ]
                         )
                         try await client.createContainer(
                             imageName: request.imageName,
@@ -237,7 +275,8 @@ struct WendyContainerService: Wendy_Agent_Services_V1_WendyContainerService.Serv
                             snapshotKey: snapshotKey ?? "",
                             ociSpec: try JSONEncoder().encode(spec),
                             labels: labels,
-                            runtime: runtime
+                            runtime: runtime,
+                            options: options
                         )
                     } catch let error as RPCError where error.code == .alreadyExists {
                         logger.debug("Container already exists, attempting to update")
@@ -247,7 +286,8 @@ struct WendyContainerService: Wendy_Agent_Services_V1_WendyContainerService.Serv
                                 appName: request.appName,
                                 snapshotKey: snapshotKey ?? "",
                                 ociSpec: try JSONEncoder().encode(spec),
-                                runtime: runtime
+                                runtime: runtime,
+                                options: options
                             )
                         } catch let updateError as RPCError
                             where updateError.code == .invalidArgument

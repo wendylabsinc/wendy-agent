@@ -146,11 +146,11 @@ public struct Containerd: Sendable {
 
     public func writeLayer(
         ref: String,
+        labels: [String: String] = [:],
         withWriter: @Sendable @escaping (inout LayerWriter) async throws -> Void
     ) async throws {
         let content = Containerd_Services_Content_V1_Content.Client(wrapping: client)
         try await content.write { writer in
-            // TODO: Associate labels with the layer (attach to app)
             var layerWriter = LayerWriter(ref: ref, writer: writer)
             try await withWriter(&layerWriter)
 
@@ -159,6 +159,9 @@ public struct Containerd: Sendable {
                     $0.ref = ref
                     $0.offset = layerWriter.offset
                     $0.action = .commit
+                    if !labels.isEmpty {
+                        $0.labels = labels
+                    }
                 }
             )
         } onResponse: { response in
@@ -504,15 +507,19 @@ public struct Containerd: Sendable {
         snapshotKey: String,
         ociSpec spec: Data,
         labels: [String: String],
-        runtime: String = "io.containerd.runc.v2"
+        runtime: String = "io.containerd.runc.v2",
+        options: Containerd_Runc_V1_Options? = nil
     ) async throws {
         let containers = Containerd_Services_Containers_V1_Containers.Client(wrapping: client)
         try await containers.create(
             .with {
-                $0.container = .with {
+                $0.container = try .with {
                     $0.id = appName
-                    $0.runtime = .with {
+                    $0.runtime = try .with {
                         $0.name = runtime
+                        if let options {
+                            $0.options = try .init(message: options)
+                        }
                     }
                     $0.spec = .with {
                         $0.typeURL = "types.containerd.io/opencontainers/runtime-spec/1/Spec"
@@ -544,16 +551,20 @@ public struct Containerd: Sendable {
         appName: String,
         snapshotKey: String,
         ociSpec: Data,
-        runtime: String = "io.containerd.runc.v2"
+        runtime: String = "io.containerd.runc.v2",
+        options: Containerd_Runc_V1_Options? = nil
     ) async throws {
         do {
             let containers = Containerd_Services_Containers_V1_Containers.Client(wrapping: client)
             _ = try await containers.update(
                 .with {
-                    $0.container = .with {
+                    $0.container = try .with {
                         $0.id = appName
-                        $0.runtime = .with {
+                        $0.runtime = try .with {
                             $0.name = runtime
+                            if let options {
+                                $0.options = try .init(message: options)
+                            }
                         }
                         $0.spec = .with {
                             $0.typeURL = "types.containerd.io/opencontainers/runtime-spec/1/Spec"
