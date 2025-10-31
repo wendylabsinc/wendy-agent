@@ -178,6 +178,7 @@ let package = Package(
                 .product(name: "Logging", package: "swift-log"),
                 .product(name: "AsyncDNSResolver", package: "swift-async-dns-resolver"),
                 .product(name: "Subprocess", package: "swift-subprocess"),
+                .product(name: "DNSClient", package: "DNSClient"),
             ]
         ),
         .target(
