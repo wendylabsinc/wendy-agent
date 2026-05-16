@@ -237,7 +237,8 @@ func (s *ContainerService) RunContainer(req *agentpb.RunContainerLayersRequest, 
 		return status.Errorf(codes.Internal, "failed to create container: %v", err)
 	}
 
-	return s.streamContainerOutput(ctx, req.GetAppName(), postStartAgentHookFromContext(ctx), nil, stream)
+	_, err = s.streamContainerOutput(ctx, req.GetAppName(), postStartAgentHookFromContext(ctx), nil, stream)
+	return err
 }
 
 func (s *ContainerService) StartContainer(req *agentpb.StartContainerRequest, stream grpc.ServerStreamingServer[agentpb.RunContainerLayersResponse]) error {
@@ -394,16 +395,17 @@ func (s *ContainerService) registerContainerWithMonitor(ctx context.Context, app
 
 // When a ContainerLogManager is configured, reads from the log manager subscription
 // instead of directly from containerd, enabling multi-subscriber fan-out and telemetry bridging.
+// Returns the container exit code and any stream error.
 func (s *ContainerService) streamContainerOutput(
 	ctx context.Context,
 	appName string,
 	postStartAgentCommand string,
 	restartPolicy *agentpb.RestartPolicy,
 	stream grpc.ServerStreamingServer[agentpb.RunContainerLayersResponse],
-) error {
+) (int32, error) {
 	outputCh, err := s.containerd.StartContainer(ctx, appName, postStartAgentCommand, restartPolicy)
 	if err != nil {
-		return status.Errorf(codes.Internal, "failed to start container: %v", err)
+		return 0, status.Errorf(codes.Internal, "failed to start container: %v", err)
 	}
 
 	// The container started successfully. If it was previously explicitly
@@ -422,7 +424,7 @@ func (s *ContainerService) streamContainerOutput(
 			Started: &agentpb.RunContainerLayersResponse_Started{},
 		},
 	}); err != nil {
-		return err
+		return 0, err
 	}
 
 	var readCh <-chan ContainerOutput
@@ -445,10 +447,10 @@ func (s *ContainerService) streamContainerOutput(
 	for {
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return 0, ctx.Err()
 		case output, ok := <-readCh:
 			if !ok || output.Done {
-				return nil
+				return output.ExitCode, nil
 			}
 			if len(output.Stdout) > 0 {
 				if err := stream.Send(&agentpb.RunContainerLayersResponse{
@@ -458,7 +460,7 @@ func (s *ContainerService) streamContainerOutput(
 						},
 					},
 				}); err != nil {
-					return err
+					return 0, err
 				}
 			}
 			if len(output.Stderr) > 0 {
@@ -469,7 +471,7 @@ func (s *ContainerService) streamContainerOutput(
 						},
 					},
 				}); err != nil {
-					return err
+					return 0, err
 				}
 			}
 		}

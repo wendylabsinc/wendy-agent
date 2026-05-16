@@ -98,9 +98,10 @@ type ContainerMonitorRegistrar interface {
 }
 
 type ContainerOutput struct {
-	Stdout []byte
-	Stderr []byte
-	Done   bool
+	Stdout   []byte
+	Stderr   []byte
+	Done     bool
+	ExitCode int32
 }
 
 type ContainerMetrics struct {

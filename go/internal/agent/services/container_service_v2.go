@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"io"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -31,14 +32,110 @@ func (s *ContainerServiceV2) StartContainer(req *agentpbv2.StartContainerRequest
 			OnFailureMaxRetries: rp.GetOnFailureMaxRetries(),
 		}
 	}
-	return s.v1.streamContainerOutput(stream.Context(), req.GetAppName(), postStartAgentHookFromContext(stream.Context()), restartPolicy, &containerStreamV1Adapter{v2stream: stream})
+	exitCode, err := s.v1.streamContainerOutput(stream.Context(), req.GetAppName(), postStartAgentHookFromContext(stream.Context()), restartPolicy, &containerStreamV1Adapter{v2stream: stream})
+	if err != nil {
+		return err
+	}
+	return stream.Send(&agentpbv2.ContainerStreamResponse{
+		ResponseType: &agentpbv2.ContainerStreamResponse_Exited_{
+			Exited: &agentpbv2.ContainerStreamResponse_Exited{ExitCode: exitCode},
+		},
+	})
 }
 
 func (s *ContainerServiceV2) AttachContainer(stream grpc.BidiStreamingServer[agentpbv2.AttachContainerRequest, agentpbv2.ContainerStreamResponse]) error {
-	return s.v1.AttachContainer(&attachStreamV1Adapter{
-		containerStreamV1Adapter: &containerStreamV1Adapter{v2stream: stream},
-		v2stream:                 stream,
-	})
+	first, err := stream.Recv()
+	if err == io.EOF {
+		return status.Error(codes.InvalidArgument, "missing first attach message")
+	}
+	if err != nil {
+		return err
+	}
+	appName := first.GetAppName()
+	if appName == "" {
+		return status.Error(codes.InvalidArgument, "app_name required as first message")
+	}
+
+	ctx := stream.Context()
+	stdinR, stdinW := io.Pipe()
+	defer stdinR.Close()
+
+	go func() {
+		defer stdinW.Close()
+		for {
+			msg, recvErr := stream.Recv()
+			if recvErr != nil {
+				return
+			}
+			if data := msg.GetStdinData(); len(data) > 0 {
+				if _, writeErr := stdinW.Write(data); writeErr != nil {
+					return
+				}
+			}
+		}
+	}()
+
+	outputCh, err := s.v1.containerd.StartContainerWithStdin(ctx, appName, stdinR, postStartAgentHookFromContext(ctx), nil)
+	if err != nil {
+		stdinR.Close()
+		return status.Errorf(codes.Internal, "failed to start container: %v", err)
+	}
+
+	if err := stream.Send(&agentpbv2.ContainerStreamResponse{
+		ResponseType: &agentpbv2.ContainerStreamResponse_Started_{
+			Started: &agentpbv2.ContainerStreamResponse_Started{},
+		},
+	}); err != nil {
+		return err
+	}
+
+	var readCh <-chan ContainerOutput
+	if s.v1.logManager != nil {
+		subID, subCh := s.v1.logManager.Subscribe(appName)
+		defer s.v1.logManager.Unsubscribe(appName, subID)
+		readCh = subCh
+		go func() {
+			for output := range outputCh {
+				s.v1.logManager.Publish(appName, output)
+			}
+			s.v1.logManager.Publish(appName, ContainerOutput{Done: true})
+		}()
+	} else {
+		readCh = outputCh
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case output, ok := <-readCh:
+			if !ok || output.Done {
+				return stream.Send(&agentpbv2.ContainerStreamResponse{
+					ResponseType: &agentpbv2.ContainerStreamResponse_Exited_{
+						Exited: &agentpbv2.ContainerStreamResponse_Exited{ExitCode: output.ExitCode},
+					},
+				})
+			}
+			if len(output.Stdout) > 0 {
+				if err := stream.Send(&agentpbv2.ContainerStreamResponse{
+					ResponseType: &agentpbv2.ContainerStreamResponse_StdoutOutput{
+						StdoutOutput: &agentpbv2.ContainerStreamResponse_ConsoleOutput{Data: output.Stdout},
+					},
+				}); err != nil {
+					return err
+				}
+			}
+			if len(output.Stderr) > 0 {
+				if err := stream.Send(&agentpbv2.ContainerStreamResponse{
+					ResponseType: &agentpbv2.ContainerStreamResponse_StderrOutput{
+						StderrOutput: &agentpbv2.ContainerStreamResponse_ConsoleOutput{Data: output.Stderr},
+					},
+				}); err != nil {
+					return err
+				}
+			}
+		}
+	}
 }
 
 func (s *ContainerServiceV2) StopContainer(ctx context.Context, req *agentpbv2.StopContainerRequest) (*agentpbv2.StopContainerResponse, error) {
