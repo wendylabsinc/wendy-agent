@@ -433,12 +433,14 @@ func (s *ContainerService) streamContainerOutput(
 		defer s.logManager.Unsubscribe(appName, subID)
 		readCh = subCh
 
+		// Pump containerd output into the log manager.
+		// The containerd client sends ContainerOutput{Done:true, ExitCode:code}
+		// as the final message before closing the channel, so the range loop
+		// already publishes the Done with the correct exit code.
 		go func() {
 			for output := range outputCh {
 				s.logManager.Publish(appName, output)
 			}
-			// When containerd channel closes, publish a Done marker.
-			s.logManager.Publish(appName, ContainerOutput{Done: true})
 		}()
 	} else {
 		readCh = outputCh
