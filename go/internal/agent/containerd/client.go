@@ -1217,11 +1217,11 @@ func (c *Client) streamOutput(
 
 	// Wait for the task to exit.
 	exitStatus := <-exitStatusCh
-	code, _, err := exitStatus.Result()
-	if err != nil {
+	code, _, resultErr := exitStatus.Result()
+	if resultErr != nil {
 		c.logger.Error("Task exited with error",
 			zap.String("app_name", appName),
-			zap.Error(err),
+			zap.Error(resultErr),
 		)
 	} else {
 		c.logger.Info("Task exited",
@@ -1237,7 +1237,7 @@ func (c *Client) streamOutput(
 	// Wait for readers to finish.
 	wg.Wait()
 
-	outputCh <- services.ContainerOutput{Done: true, ExitCode: int32(code)}
+	outputCh <- services.ContainerOutput{Done: true, ExitCode: int32(code), Err: resultErr}
 }
 
 // containersForApp returns all Wendy-managed containers whose labelKeyAppID
