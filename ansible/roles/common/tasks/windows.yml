@@ -1,0 +1,91 @@
+---
+- name: Ensure user SSH directory exists
+  ansible.windows.win_file:
+    path: "{{ ansible_env.USERPROFILE }}\\.ssh"
+    state: directory
+  when: ssh_generate_key or authorized_login_keys | length > 0 or configure_loopback_ssh
+  tags: [ssh]
+
+- name: Check for user SSH key
+  ansible.windows.win_stat:
+    path: "{{ ansible_env.USERPROFILE }}\\.ssh\\id_{{ ssh_key_type }}"
+  register: common_windows_ssh_key
+  when: ssh_generate_key
+  tags: [ssh]
+
+- name: Generate user SSH key when missing
+  ansible.windows.win_command: >-
+    ssh-keygen.exe -t {{ ssh_key_type }} -N "" -f "{{ ansible_env.USERPROFILE }}\\.ssh\\id_{{ ssh_key_type }}"
+  when: ssh_generate_key and not common_windows_ssh_key.stat.exists
+  tags: [ssh]
+
+- name: Add configured authorized login keys
+  ansible.windows.win_lineinfile:
+    path: "{{ ansible_env.USERPROFILE }}\\.ssh\\authorized_keys"
+    line: "{{ item }}"
+    create: true
+  loop: "{{ authorized_login_keys }}"
+  no_log: true
+  when: authorized_login_keys | length > 0
+  tags: [ssh]
+
+- name: Read generated public key for loopback SSH
+  ansible.windows.win_slurp:
+    src: "{{ ansible_env.USERPROFILE }}\\.ssh\\id_{{ ssh_key_type }}.pub"
+  register: common_windows_public_key
+  when: configure_loopback_ssh
+  tags: [ssh]
+
+- name: Authorize generated key for loopback SSH
+  ansible.windows.win_lineinfile:
+    path: "{{ ansible_env.USERPROFILE }}\\.ssh\\authorized_keys"
+    line: "{{ common_windows_public_key.content | b64decode | trim }}"
+    create: true
+  when: configure_loopback_ssh
+  tags: [ssh]
+
+- name: Check requested Windows SSH default shell path
+  ansible.windows.win_stat:
+    path: "{{ windows_ssh_default_shell_path }}"
+  register: common_windows_default_shell
+  when: configure_windows_ssh_default_shell
+  tags: [ssh]
+
+- name: Refuse WindowsApps SSH DefaultShell alias
+  ansible.builtin.fail:
+    msg: "Refusing to set OpenSSH DefaultShell to a WindowsApps app execution alias. Use a real pwsh.exe path."
+  when:
+    - configure_windows_ssh_default_shell
+    - "'WindowsApps' in windows_ssh_default_shell_path"
+  tags: [ssh]
+
+- name: Configure Windows OpenSSH DefaultShell when explicitly requested
+  ansible.windows.win_regedit:
+    path: HKLM:\SOFTWARE\OpenSSH
+    name: DefaultShell
+    data: "{{ windows_ssh_default_shell_path }}"
+    type: string
+  when:
+    - configure_windows_ssh_default_shell
+    - common_windows_default_shell.stat.exists
+  tags: [ssh]
+
+- name: Configure global git user name
+  ansible.windows.win_command: git config --global user.name "{{ git_user_name }}"
+  register: common_windows_git_name
+  changed_when: common_windows_git_name.rc == 0
+  when: configure_git and git_user_name is not none
+  tags: [git]
+
+- name: Configure global git user email
+  ansible.windows.win_command: git config --global user.email "{{ git_user_email }}"
+  register: common_windows_git_email
+  changed_when: common_windows_git_email.rc == 0
+  when: configure_git and git_user_email is not none
+  tags: [git]
+
+- name: Configure default CLI editor
+  ansible.windows.win_command: git config --global core.editor nvim
+  register: common_windows_git_editor
+  changed_when: common_windows_git_editor.rc == 0
+  tags: [git]

@@ -1,0 +1,40 @@
+---
+- name: Add OpenSSH server when requested
+  ansible.builtin.set_fact:
+    developer_tools_ubuntu_packages: "{{ ubuntu_apt_packages + (['openssh-server'] if ubuntu_install_openssh_server else []) }}"
+
+- name: Install Ubuntu packages
+  ansible.builtin.apt:
+    name: "{{ developer_tools_ubuntu_packages }}"
+    state: present
+    update_cache: true
+  become: true
+
+- name: Ensure Avahi is enabled for mDNS discovery
+  ansible.builtin.service:
+    name: avahi-daemon
+    state: started
+    enabled: true
+  become: true
+
+- name: Ensure OpenSSH server is enabled when requested
+  ansible.builtin.service:
+    name: ssh
+    state: started
+    enabled: true
+  become: true
+  when: ubuntu_install_openssh_server
+
+- name: Install Claude Code with npm
+  community.general.npm:
+    name: "@anthropic-ai/claude-code"
+    global: true
+    state: present
+  become: true
+
+- name: Install Codex with npm
+  community.general.npm:
+    name: "@openai/codex"
+    global: true
+    state: present
+  become: true

@@ -1,0 +1,64 @@
+---
+- name: Ensure SSH directory exists
+  ansible.builtin.file:
+    path: "{{ ansible_env.HOME }}/.ssh"
+    state: directory
+    mode: '0700'
+  when: ssh_generate_key or authorized_login_keys | length > 0 or configure_loopback_ssh
+  tags: [ssh]
+
+- name: Generate user SSH key when missing
+  community.crypto.openssh_keypair:
+    path: "{{ ssh_key_file }}"
+    type: "{{ ssh_key_type }}"
+    mode: '0600'
+  when: ssh_generate_key
+  tags: [ssh]
+
+- name: Add configured authorized login keys
+  ansible.posix.authorized_key:
+    user: "{{ ansible_user_id }}"
+    key: "{{ item }}"
+    state: present
+  loop: "{{ authorized_login_keys }}"
+  no_log: true
+  when: authorized_login_keys | length > 0
+  tags: [ssh]
+
+- name: Read generated public key for loopback SSH
+  ansible.builtin.slurp:
+    src: "{{ ssh_key_file }}.pub"
+  register: common_macos_public_key
+  when: configure_loopback_ssh
+  tags: [ssh]
+
+- name: Authorize generated key for loopback SSH
+  ansible.posix.authorized_key:
+    user: "{{ ansible_user_id }}"
+    key: "{{ common_macos_public_key.content | b64decode }}"
+    state: present
+  when: configure_loopback_ssh
+  tags: [ssh]
+
+- name: Configure global git user name
+  community.general.git_config:
+    name: user.name
+    scope: global
+    value: "{{ git_user_name }}"
+  when: configure_git and git_user_name is not none
+  tags: [git]
+
+- name: Configure global git user email
+  community.general.git_config:
+    name: user.email
+    scope: global
+    value: "{{ git_user_email }}"
+  when: configure_git and git_user_email is not none
+  tags: [git]
+
+- name: Configure default CLI editor
+  community.general.git_config:
+    name: core.editor
+    scope: global
+    value: nvim
+  tags: [git]

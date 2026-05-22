@@ -1,0 +1,22 @@
+---
+- name: Run GitHub runner preflight
+  ansible.builtin.include_tasks:
+    file: preflight.yml
+    apply:
+      tags: preflight
+  tags: [always]
+
+- name: Include macOS GitHub runner tasks
+  ansible.builtin.include_tasks: macos.yml
+  when: ansible_facts.system == 'Darwin'
+  tags: [runner, github_runner]
+
+- name: Include Ubuntu GitHub runner tasks
+  ansible.builtin.include_tasks: ubuntu.yml
+  when: ansible_facts.distribution == 'Ubuntu'
+  tags: [runner, github_runner]
+
+- name: Include Windows GitHub runner tasks
+  ansible.builtin.include_tasks: windows.yml
+  when: ansible_facts.os_family == 'Windows'
+  tags: [runner, github_runner]

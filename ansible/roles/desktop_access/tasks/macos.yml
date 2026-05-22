@@ -1,0 +1,12 @@
+---
+- name: Show macOS remote access manual guidance
+  ansible.builtin.debug:
+    msg:
+      - "macOS Screen Sharing, TCC, and GUI automation permissions are privacy-gated."
+      - "Enable them manually in System Settings and approve prompts in the logged-in user session."
+  when: configure_remote_access
+
+- name: Show macOS auto-login guidance
+  ansible.builtin.debug:
+    msg: "Automatic login is intentionally manual/privacy-sensitive on macOS; configure it in System Settings if required."
+  when: configure_auto_login

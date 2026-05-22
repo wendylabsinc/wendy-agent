@@ -1,0 +1,12 @@
+---
+collections:
+  - name: ansible.posix
+    version: ">=2.1.0"
+  - name: community.crypto
+    version: ">=3.0.0"
+  - name: ansible.windows
+    version: ">=3.5.0"
+  - name: community.general
+    version: ">=12.6.0"
+  - name: community.windows
+    version: ">=3.1.0"

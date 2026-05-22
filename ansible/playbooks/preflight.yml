@@ -1,0 +1,14 @@
+---
+- name: Report current machine setup without changing it
+  hosts: all
+  gather_facts: true
+  vars_files:
+    - ../group_vars/all.yml
+  roles:
+    - common
+    - developer_tools
+    - swift_toolchain
+    - wendy_tools
+    - github_runner
+    - desktop_access
+    - power_policy

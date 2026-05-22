@@ -1,0 +1,107 @@
+---
+# Optional prompts from the old setup scripts become explicit variables here.
+# A false/null value means leave existing configuration unchanged.
+
+machine_profile: null
+
+configure_git: false
+git_user_name: null
+git_user_email: null
+
+ssh_generate_key: true
+ssh_key_type: ed25519
+ssh_key_file: "{{ ansible_env.HOME | default('~') }}/.ssh/id_{{ ssh_key_type }}"
+authorized_login_keys: []
+configure_loopback_ssh: false
+setup_passwordless_sudo: false
+
+install_direnv: false
+install_swift: true
+install_wendy_cli: false
+install_wendy_agent: false
+install_github_runner: false
+install_visual_studio_build_tools: true
+install_gnu_make: true
+
+configure_remote_access: false
+configure_power_policy: false
+configure_auto_login: false
+configure_developer_mode: false
+configure_windows_terminal_powershell: false
+configure_windows_ssh_default_shell: false
+windows_ssh_default_shell_path: C:\\Program Files\\PowerShell\\7\\pwsh.exe
+configure_screen_lock_policy: false
+
+clone_repository: false
+wendy_repo_url: https://github.com/wendylabsinc/wendy-agent.git
+clone_destination: "{{ (ansible_env.USERPROFILE if (ansible_facts.os_family | default('')) == 'Windows' else (ansible_env.HOME | default('~'))) }}/Projects/WendyLabs/wendy-agent"
+
+swift_version_file: "{{ playbook_dir }}/../../.swift-version"
+swift_version: null
+swiftly_install_url: https://download.swift.org/swiftly/linux/swiftly-$(uname -m).tar.gz
+
+homebrew_prefix: "{{ '/opt/homebrew' if ansible_facts.architecture | default('') == 'arm64' else '/usr/local' }}"
+homebrew_bin: "{{ homebrew_prefix }}/bin/brew"
+
+macos_homebrew_packages:
+  - git
+  - curl
+  - go
+  - neovim
+  - node
+  - swiftly
+macos_homebrew_casks: []
+
+ubuntu_apt_packages:
+  - git
+  - curl
+  - ca-certificates
+  - gnupg
+  - build-essential
+  - golang-go
+  - neovim
+  - nodejs
+  - npm
+  - avahi-daemon
+  - libnss-mdns
+  - openssh-client
+ubuntu_install_openssh_server: false
+
+windows_winget_packages:
+  - id: Git.Git
+    name: Git
+  - id: GoLang.Go
+    name: Go
+  - id: Neovim.Neovim
+    name: Neovim
+  - id: Microsoft.PowerShell
+    name: PowerShell
+  - id: OpenJS.NodeJS.LTS
+    name: Node.js LTS
+  - id: Anthropic.ClaudeCode
+    name: Claude Code
+  - id: OpenAI.Codex
+    name: Codex
+windows_make_package:
+  id: MSYS2.MSYS2
+  name: MSYS2
+windows_swift_package:
+  id: Swift.Toolchain
+  name: Swift toolchain
+windows_visual_studio_build_tools_package:
+  id: Microsoft.VisualStudio.2022.BuildTools
+  name: Visual Studio Build Tools
+  override: --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended --passive --norestart
+
+github_runner_dir: "{{ (ansible_env.USERPROFILE if (ansible_facts.os_family | default('')) == 'Windows' else (ansible_env.HOME | default('~'))) }}/.github/actions-runner"
+github_runner_url: https://github.com/OWNER/REPO
+github_runner_token: null
+github_runner_mode: manual # manual | login | service
+github_runner_labels: []
+github_runner_name: "{{ inventory_hostname_short | default(inventory_hostname) }}"
+github_runner_work_dir: _work
+github_runner_service_name: github-actions-runner
+
+wendy_cli_install_url: https://raw.githubusercontent.com/wendylabsinc/wendy-agent/main/docs/cli.sh
+wendy_agent_install_url: https://raw.githubusercontent.com/wendylabsinc/wendy-agent/main/docs/agent.sh
+wendy_install_dir: /usr/local/bin

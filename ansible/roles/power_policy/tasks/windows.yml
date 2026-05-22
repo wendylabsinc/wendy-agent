@@ -1,0 +1,18 @@
+---
+- name: Disable Windows AC sleep when selected
+  ansible.windows.win_command: powercfg /change standby-timeout-ac 0
+  changed_when: true
+  when: configure_power_policy
+
+- name: Set Windows AC monitor timeout when selected
+  ansible.windows.win_command: powercfg /change monitor-timeout-ac 10
+  changed_when: true
+  when: configure_power_policy
+
+- name: Disable Windows screen locking when selected
+  ansible.windows.win_regedit:
+    path: HKCU:\Software\Policies\Microsoft\Windows\Control Panel\Desktop
+    name: ScreenSaveActive
+    data: '0'
+    type: string
+  when: configure_screen_lock_policy

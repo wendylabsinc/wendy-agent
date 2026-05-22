@@ -1,0 +1,20 @@
+---
+- name: Install GNOME Remote Desktop when remote access is selected
+  ansible.builtin.apt:
+    name: gnome-remote-desktop
+    state: present
+    update_cache: true
+  become: true
+  when: configure_remote_access
+
+- name: Show Ubuntu remote desktop guidance
+  ansible.builtin.debug:
+    msg:
+      - "GNOME Remote Desktop configuration requires an active user session bus."
+      - "During the interactive run, validate credentials and screen sharing from the desktop session."
+  when: configure_remote_access
+
+- name: Show Ubuntu auto-login guidance
+  ansible.builtin.debug:
+    msg: "Automatic desktop login depends on the display manager; configure during the interactive session if required."
+  when: configure_auto_login

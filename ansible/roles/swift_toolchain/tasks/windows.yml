@@ -1,0 +1,20 @@
+---
+- name: Install Swift toolchain with winget when selected
+  ansible.windows.win_shell: |
+    $id = '{{ windows_swift_package.id }}'
+    winget list --id $id --exact --source winget --disable-interactivity | Out-Null
+    if ($LASTEXITCODE -eq 0) { 'already installed'; exit 0 }
+    winget install --id $id --exact --source winget --accept-source-agreements --accept-package-agreements --disable-interactivity --silent
+  register: swift_windows_install
+  changed_when: "'already installed' not in swift_windows_install.stdout"
+  when: install_swift
+
+- name: Install Visual Studio Build Tools for Swift builds when selected
+  ansible.windows.win_shell: |
+    $id = '{{ windows_visual_studio_build_tools_package.id }}'
+    winget list --id $id --exact --source winget --disable-interactivity | Out-Null
+    if ($LASTEXITCODE -eq 0) { 'already installed'; exit 0 }
+    winget install --id $id --exact --source winget --accept-source-agreements --accept-package-agreements --disable-interactivity --silent --override '{{ windows_visual_studio_build_tools_package.override }}'
+  register: swift_windows_vs
+  changed_when: "'already installed' not in swift_windows_vs.stdout"
+  when: install_swift and install_visual_studio_build_tools

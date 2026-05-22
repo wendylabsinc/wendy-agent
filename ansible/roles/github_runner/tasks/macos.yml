@@ -1,0 +1,98 @@
+---
+- name: Ensure GitHub runner directory exists
+  ansible.builtin.file:
+    path: "{{ github_runner_dir }}"
+    state: directory
+    mode: '0755'
+  when: install_github_runner
+
+- name: Check GitHub runner registration
+  ansible.builtin.stat:
+    path: "{{ github_runner_dir }}/.runner"
+  register: github_runner_macos_registered
+  when: install_github_runner
+
+- name: Check GitHub runner files
+  ansible.builtin.stat:
+    path: "{{ github_runner_dir }}/config.sh"
+  register: github_runner_macos_config
+  when: install_github_runner
+
+- name: Resolve latest GitHub Actions runner release
+  ansible.builtin.uri:
+    url: https://api.github.com/repos/actions/runner/releases/latest
+    return_content: true
+  register: github_runner_macos_latest
+  when: install_github_runner and not github_runner_macos_config.stat.exists
+
+- name: Set macOS GitHub runner artifact facts
+  ansible.builtin.set_fact:
+    github_runner_version: "{{ github_runner_macos_latest.json.tag_name | regex_replace('^v', '') }}"
+    github_runner_arch: "{{ 'arm64' if ansible_facts.architecture == 'arm64' else 'x64' }}"
+  when: install_github_runner and not github_runner_macos_config.stat.exists
+
+- name: Download GitHub Actions runner archive
+  ansible.builtin.get_url:
+    url: "https://github.com/actions/runner/releases/download/v{{ github_runner_version }}/actions-runner-osx-{{ github_runner_arch }}-{{ github_runner_version }}.tar.gz"
+    dest: "{{ github_runner_dir }}/actions-runner.tar.gz"
+    mode: '0644'
+  when: install_github_runner and not github_runner_macos_config.stat.exists
+
+- name: Extract GitHub Actions runner archive
+  ansible.builtin.unarchive:
+    src: "{{ github_runner_dir }}/actions-runner.tar.gz"
+    dest: "{{ github_runner_dir }}"
+    remote_src: true
+    creates: "{{ github_runner_dir }}/config.sh"
+  when: install_github_runner and not github_runner_macos_config.stat.exists
+
+- name: Register GitHub Actions runner when token is provided
+  ansible.builtin.command: >-
+    ./config.sh --unattended --url {{ github_runner_url }} --token {{ github_runner_token }}
+    --name {{ github_runner_name }} --work {{ github_runner_work_dir }}
+    {{ ('--labels ' + (github_runner_labels | join(','))) if github_runner_labels | length > 0 else '' }}
+  args:
+    chdir: "{{ github_runner_dir }}"
+    creates: "{{ github_runner_dir }}/.runner"
+  no_log: true
+  when: install_github_runner and not github_runner_macos_registered.stat.exists and github_runner_token is not none
+
+- name: Print manual GitHub runner registration instructions
+  ansible.builtin.debug:
+    msg:
+      - "Runner is installed but not registered. Generate a registration token outside git."
+      - "Then run: cd {{ github_runner_dir }} && ./config.sh --url {{ github_runner_url }} --token <token> --name {{ github_runner_name }}"
+  when: install_github_runner and not github_runner_macos_registered.stat.exists and github_runner_token is none
+
+- name: Refresh macOS runner registration state
+  ansible.builtin.stat:
+    path: "{{ github_runner_dir }}/.runner"
+  register: github_runner_macos_registered_after
+  when: install_github_runner
+
+- name: Ensure LaunchAgents directory exists
+  ansible.builtin.file:
+    path: "{{ ansible_env.HOME }}/Library/LaunchAgents"
+    state: directory
+    mode: '0755'
+  when: install_github_runner and github_runner_mode == 'login' and github_runner_macos_registered_after.stat.exists
+
+- name: Install GitHub runner LaunchAgent
+  ansible.builtin.template:
+    src: macos-launchagent.plist.j2
+    dest: "{{ ansible_env.HOME }}/Library/LaunchAgents/com.github.actions.runner.{{ github_runner_name }}.plist"
+    mode: '0644'
+  when: install_github_runner and github_runner_mode == 'login' and github_runner_macos_registered_after.stat.exists
+
+- name: Bootstrap GitHub runner LaunchAgent
+  ansible.builtin.command: >-
+    launchctl bootstrap gui/{{ ansible_facts.user_uid }} {{ ansible_env.HOME }}/Library/LaunchAgents/com.github.actions.runner.{{ github_runner_name }}.plist
+  register: github_runner_macos_bootstrap
+  changed_when: github_runner_macos_bootstrap.rc == 0
+  failed_when: github_runner_macos_bootstrap.rc not in [0, 5]
+  when: install_github_runner and github_runner_mode == 'login' and github_runner_macos_registered_after.stat.exists
+
+- name: Start GitHub runner LaunchAgent
+  ansible.builtin.command: "launchctl kickstart -k gui/{{ ansible_facts.user_uid }}/com.github.actions.runner.{{ github_runner_name }}"
+  changed_when: true
+  when: install_github_runner and github_runner_mode == 'login' and github_runner_macos_registered_after.stat.exists

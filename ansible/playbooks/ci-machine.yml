@@ -1,0 +1,15 @@
+---
+- name: Provision CI machine
+  hosts: ci
+  gather_facts: true
+  vars_files:
+    - ../group_vars/all.yml
+    - ../group_vars/ci.yml
+  roles:
+    - common
+    - developer_tools
+    - swift_toolchain
+    - wendy_tools
+    - github_runner
+    - desktop_access
+    - power_policy

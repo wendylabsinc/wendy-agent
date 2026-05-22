@@ -1,0 +1,28 @@
+---
+- name: Enable Remote Desktop when selected
+  ansible.windows.win_regedit:
+    path: HKLM:\System\CurrentControlSet\Control\Terminal Server
+    name: fDenyTSConnections
+    data: 0
+    type: dword
+  when: configure_remote_access
+
+- name: Enable Remote Desktop firewall rules when selected
+  ansible.windows.win_shell: |
+    Enable-NetFirewallRule -DisplayGroup 'Remote Desktop'
+  register: desktop_access_windows_firewall
+  changed_when: true
+  when: configure_remote_access
+
+- name: Show Windows auto-login guidance
+  ansible.builtin.debug:
+    msg: "Windows automatic sign-in stores credentials in the registry and is intentionally left for the interactive session."
+  when: configure_auto_login
+
+- name: Enable Windows Developer Mode when selected
+  ansible.windows.win_regedit:
+    path: HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock
+    name: AllowDevelopmentWithoutDevLicense
+    data: 1
+    type: dword
+  when: configure_developer_mode

@@ -1,0 +1,35 @@
+---
+- name: Check POSIX Swift toolchain
+  ansible.builtin.shell: |
+    set -o pipefail
+    set +e
+    echo "swift=$({ command -v swift >/dev/null && swift --version | head -n 2; } || echo missing)"
+    echo "swiftly=$(command -v swiftly || true)"
+    echo "swiftly_env=$([ -f "$HOME/.local/share/swiftly/env.sh" ] && echo present || echo absent)"
+  args:
+    executable: /bin/bash
+  register: swift_posix_preflight
+  changed_when: false
+  failed_when: false
+  when: ansible_facts.os_family != 'Windows'
+
+- name: Report POSIX Swift toolchain
+  ansible.builtin.debug:
+    var: swift_posix_preflight.stdout_lines
+  changed_when: false
+  when: ansible_facts.os_family != 'Windows'
+
+- name: Check Windows Swift toolchain
+  ansible.windows.win_shell: |
+    try { "swift=$((swift --version | Select-Object -First 2) -join ' ')" } catch { "swift=missing" }
+    Get-Command swift -ErrorAction SilentlyContinue | ForEach-Object { "swift_path=$($_.Source)" }
+  register: swift_windows_preflight
+  changed_when: false
+  failed_when: false
+  when: ansible_facts.os_family == 'Windows'
+
+- name: Report Windows Swift toolchain
+  ansible.builtin.debug:
+    var: swift_windows_preflight.stdout_lines
+  changed_when: false
+  when: ansible_facts.os_family == 'Windows'

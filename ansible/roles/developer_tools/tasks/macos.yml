@@ -1,0 +1,42 @@
+---
+- name: Check Homebrew installation
+  ansible.builtin.stat:
+    path: "{{ homebrew_bin }}"
+  register: developer_tools_macos_brew
+
+- name: Install Homebrew when missing
+  ansible.builtin.shell: |
+    set -euo pipefail
+    NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+  args:
+    executable: /bin/bash
+    creates: "{{ homebrew_bin }}"
+  when: not developer_tools_macos_brew.stat.exists
+
+- name: Install Homebrew packages
+  community.general.homebrew:
+    name: "{{ macos_homebrew_packages }}"
+    state: present
+    path: "{{ homebrew_bin }}"
+  when: macos_homebrew_packages | length > 0
+
+- name: Install Homebrew casks
+  community.general.homebrew_cask:
+    name: "{{ macos_homebrew_casks }}"
+    state: present
+    path: "{{ homebrew_bin }}"
+  when: macos_homebrew_casks | length > 0
+
+- name: Install Claude Code with npm when npm is available
+  community.general.npm:
+    name: "@anthropic-ai/claude-code"
+    global: true
+    state: present
+  when: install_direnv or machine_profile in ['ci', 'developer']
+
+- name: Install Codex with npm when npm is available
+  community.general.npm:
+    name: "@openai/codex"
+    global: true
+    state: present
+  when: install_direnv or machine_profile in ['ci', 'developer']

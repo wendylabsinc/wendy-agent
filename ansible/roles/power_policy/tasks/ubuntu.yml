@@ -1,0 +1,15 @@
+---
+- name: Configure logind lid policy for AC power
+  ansible.builtin.lineinfile:
+    path: /etc/systemd/logind.conf
+    regexp: '^#?HandleLidSwitchExternalPower='
+    line: HandleLidSwitchExternalPower=ignore
+  become: true
+  when: configure_power_policy
+
+- name: Show Ubuntu GNOME power policy guidance
+  ansible.builtin.debug:
+    msg:
+      - "GNOME idle, lock, and remote desktop settings require the active user session bus."
+      - "Apply and verify gsettings during the interactive session."
+  when: configure_power_policy or configure_screen_lock_policy

@@ -1,0 +1,50 @@
+---
+- name: Check POSIX GitHub runner state
+  ansible.builtin.shell: |
+    set -o pipefail
+    set +e
+    runner_dir="{{ github_runner_dir }}"
+    echo "runner_dir=$([ -d "$runner_dir" ] && echo present || echo absent)"
+    echo "runner_registered=$([ -f "$runner_dir/.runner" ] && echo yes || echo no)"
+    if [ -f "$runner_dir/.runner" ]; then
+      python3 -c 'import json, os; data=json.load(open(os.path.expanduser("{{ github_runner_dir }}/.runner"), encoding="utf-8-sig")); print("runner_name=" + str(data.get("agentName") or data.get("runnerName") or "unknown")); print("runner_pool=" + str(data.get("poolName") or "unknown"))'
+    fi
+    if command -v systemctl >/dev/null 2>&1; then systemctl --user --no-pager --plain list-units 2>/dev/null | grep -i 'github.*runner' || true; fi
+    if command -v launchctl >/dev/null 2>&1; then launchctl print gui/$(id -u) 2>/dev/null | grep -i 'github.actions.runner' || true; fi
+  args:
+    executable: /bin/bash
+  register: github_runner_posix_preflight
+  changed_when: false
+  failed_when: false
+  when: ansible_facts.os_family != 'Windows'
+
+- name: Report POSIX GitHub runner state
+  ansible.builtin.debug:
+    var: github_runner_posix_preflight.stdout_lines
+  changed_when: false
+  when: ansible_facts.os_family != 'Windows'
+
+- name: Check Windows GitHub runner state
+  ansible.windows.win_shell: |
+    $runnerDir = '{{ github_runner_dir }}'
+    "runner_dir=$(if (Test-Path $runnerDir) { 'present' } else { 'absent' })"
+    $runnerFile = Join-Path $runnerDir '.runner'
+    "runner_registered=$(if (Test-Path $runnerFile) { 'yes' } else { 'no' })"
+    if (Test-Path $runnerFile) {
+      $runner = Get-Content $runnerFile -Raw | ConvertFrom-Json
+      "runner_name=$($runner.agentName)"
+      "runner_pool=$($runner.poolName)"
+    }
+    Get-ScheduledTask -ErrorAction SilentlyContinue |
+      Where-Object { $_.TaskName -match 'runner|actions' -or $_.TaskPath -match 'runner|actions' } |
+      Select-Object TaskPath,TaskName,State | Format-Table -AutoSize
+  register: github_runner_windows_preflight
+  changed_when: false
+  failed_when: false
+  when: ansible_facts.os_family == 'Windows'
+
+- name: Report Windows GitHub runner state
+  ansible.builtin.debug:
+    var: github_runner_windows_preflight.stdout_lines
+  changed_when: false
+  when: ansible_facts.os_family == 'Windows'

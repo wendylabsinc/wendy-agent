@@ -1,0 +1,54 @@
+---
+- name: Read requested Swift version
+  ansible.builtin.slurp:
+    src: "{{ swift_version_file }}"
+  delegate_to: localhost
+  register: swift_ubuntu_version_file
+  become: false
+  when: install_swift and swift_version is none
+
+- name: Set requested Swift version from repository file
+  ansible.builtin.set_fact:
+    swift_requested_version: "{{ swift_version | default((swift_ubuntu_version_file.content | b64decode | trim), true) }}"
+  when: install_swift
+
+- name: Check Swiftly installation
+  ansible.builtin.stat:
+    path: "{{ ansible_env.HOME }}/.local/share/swiftly/bin/swiftly"
+  register: swift_ubuntu_swiftly
+  when: install_swift
+
+- name: Install Swiftly non-interactively
+  ansible.builtin.shell: |
+    set -euo pipefail
+    tmpdir=$(mktemp -d)
+    trap 'rm -rf "$tmpdir"' EXIT
+    curl -fsSL "https://download.swift.org/swiftly/linux/swiftly-$(uname -m).tar.gz" -o "$tmpdir/swiftly.tar.gz"
+    tar -xzf "$tmpdir/swiftly.tar.gz" -C "$tmpdir"
+    "$tmpdir/swiftly" init --quiet-shell-followup --assume-yes
+  args:
+    executable: /bin/bash
+    creates: "{{ ansible_env.HOME }}/.local/share/swiftly/bin/swiftly"
+  when: install_swift and not swift_ubuntu_swiftly.stat.exists
+
+- name: Install requested Swift with swiftly
+  ansible.builtin.shell: |
+    set -euo pipefail
+    . "$HOME/.local/share/swiftly/env.sh"
+    swiftly install "{{ swift_requested_version }}"
+  args:
+    executable: /bin/bash
+  register: swift_ubuntu_install
+  changed_when: "'already installed' not in (swift_ubuntu_install.stdout | lower)"
+  when: install_swift and swift_requested_version | length > 0
+
+- name: Select requested Swift with swiftly
+  ansible.builtin.shell: |
+    set -euo pipefail
+    . "$HOME/.local/share/swiftly/env.sh"
+    swiftly use "{{ swift_requested_version }}"
+  args:
+    executable: /bin/bash
+  register: swift_ubuntu_use
+  changed_when: "'already in use' not in (swift_ubuntu_use.stdout | lower)"
+  when: install_swift and swift_requested_version | length > 0

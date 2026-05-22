@@ -1,0 +1,21 @@
+---
+# Copy to local.yml and keep local.yml out of git.
+all:
+  children:
+    ci:
+      hosts:
+        macos-runner.local:
+          ansible_user: your-user
+          ansible_connection: ssh
+        ubuntu-runner.local:
+          ansible_user: your-user
+          ansible_connection: ssh
+        windows-runner.local:
+          ansible_user: your-user
+          ansible_connection: ssh
+          ansible_shell_type: powershell
+    developers:
+      hosts:
+        developer-mac.local:
+          ansible_user: your-user
+          ansible_connection: ssh

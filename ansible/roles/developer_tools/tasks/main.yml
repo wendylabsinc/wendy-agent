@@ -1,0 +1,22 @@
+---
+- name: Run developer tools preflight
+  ansible.builtin.include_tasks:
+    file: preflight.yml
+    apply:
+      tags: preflight
+  tags: [always]
+
+- name: Include macOS developer tools tasks
+  ansible.builtin.include_tasks: macos.yml
+  when: ansible_facts.system == 'Darwin'
+  tags: [packages, developer_tools]
+
+- name: Include Ubuntu developer tools tasks
+  ansible.builtin.include_tasks: ubuntu.yml
+  when: ansible_facts.distribution == 'Ubuntu'
+  tags: [packages, developer_tools]
+
+- name: Include Windows developer tools tasks
+  ansible.builtin.include_tasks: windows.yml
+  when: ansible_facts.os_family == 'Windows'
+  tags: [packages, developer_tools]

@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ -f "$HOME/.local/share/swiftly/env.sh" ]]; then
+  # GitHub runner user services do not inherit interactive shell setup.
+  # shellcheck disable=SC1090
+  source "$HOME/.local/share/swiftly/env.sh"
+fi
+exec "{{ github_runner_dir }}/run.sh"

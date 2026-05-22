@@ -1,0 +1,120 @@
+---
+- name: Ensure GitHub runner directory exists
+  ansible.builtin.file:
+    path: "{{ github_runner_dir }}"
+    state: directory
+    mode: '0755'
+  when: install_github_runner
+
+- name: Check GitHub runner registration
+  ansible.builtin.stat:
+    path: "{{ github_runner_dir }}/.runner"
+  register: github_runner_ubuntu_registered
+  when: install_github_runner
+
+- name: Check GitHub runner files
+  ansible.builtin.stat:
+    path: "{{ github_runner_dir }}/config.sh"
+  register: github_runner_ubuntu_config
+  when: install_github_runner
+
+- name: Resolve latest GitHub Actions runner release
+  ansible.builtin.uri:
+    url: https://api.github.com/repos/actions/runner/releases/latest
+    return_content: true
+  register: github_runner_ubuntu_latest
+  when: install_github_runner and not github_runner_ubuntu_config.stat.exists
+
+- name: Set Ubuntu GitHub runner artifact facts
+  ansible.builtin.set_fact:
+    github_runner_version: "{{ github_runner_ubuntu_latest.json.tag_name | regex_replace('^v', '') }}"
+    github_runner_arch: "{{ 'arm64' if ansible_facts.architecture in ['aarch64', 'arm64'] else 'x64' }}"
+  when: install_github_runner and not github_runner_ubuntu_config.stat.exists
+
+- name: Download GitHub Actions runner archive
+  ansible.builtin.get_url:
+    url: "https://github.com/actions/runner/releases/download/v{{ github_runner_version }}/actions-runner-linux-{{ github_runner_arch }}-{{ github_runner_version }}.tar.gz"
+    dest: "{{ github_runner_dir }}/actions-runner.tar.gz"
+    mode: '0644'
+  when: install_github_runner and not github_runner_ubuntu_config.stat.exists
+
+- name: Extract GitHub Actions runner archive
+  ansible.builtin.unarchive:
+    src: "{{ github_runner_dir }}/actions-runner.tar.gz"
+    dest: "{{ github_runner_dir }}"
+    remote_src: true
+    creates: "{{ github_runner_dir }}/config.sh"
+  when: install_github_runner and not github_runner_ubuntu_config.stat.exists
+
+- name: Register GitHub Actions runner when token is provided
+  ansible.builtin.command: >-
+    ./config.sh --unattended --url {{ github_runner_url }} --token {{ github_runner_token }}
+    --name {{ github_runner_name }} --work {{ github_runner_work_dir }}
+    {{ ('--labels ' + (github_runner_labels | join(','))) if github_runner_labels | length > 0 else '' }}
+  args:
+    chdir: "{{ github_runner_dir }}"
+    creates: "{{ github_runner_dir }}/.runner"
+  no_log: true
+  when: install_github_runner and not github_runner_ubuntu_registered.stat.exists and github_runner_token is not none
+
+- name: Print manual GitHub runner registration instructions
+  ansible.builtin.debug:
+    msg:
+      - "Runner is installed but not registered. Generate a registration token outside git."
+      - "Then run: cd {{ github_runner_dir }} && ./config.sh --url {{ github_runner_url }} --token <token> --name {{ github_runner_name }}"
+  when: install_github_runner and not github_runner_ubuntu_registered.stat.exists and github_runner_token is none
+
+- name: Refresh Ubuntu runner registration state
+  ansible.builtin.stat:
+    path: "{{ github_runner_dir }}/.runner"
+  register: github_runner_ubuntu_registered_after
+  when: install_github_runner
+
+- name: Install GitHub runner wrapper that sources Swiftly
+  ansible.builtin.template:
+    src: ubuntu-runner-wrapper.sh.j2
+    dest: "{{ github_runner_dir }}/run-with-swiftly-env.sh"
+    mode: '0755'
+  when: install_github_runner and github_runner_mode in ['login', 'service'] and github_runner_ubuntu_registered_after.stat.exists
+
+- name: Ensure user systemd directory exists
+  ansible.builtin.file:
+    path: "{{ ansible_env.HOME }}/.config/systemd/user"
+    state: directory
+    mode: '0755'
+  when: install_github_runner and github_runner_mode in ['login', 'service'] and github_runner_ubuntu_registered_after.stat.exists
+
+- name: Install GitHub runner user systemd service
+  ansible.builtin.copy:
+    dest: "{{ ansible_env.HOME }}/.config/systemd/user/{{ github_runner_service_name }}.service"
+    mode: '0644'
+    content: |
+      [Unit]
+      Description=GitHub Actions self-hosted runner
+      After=network-online.target
+
+      [Service]
+      Type=simple
+      WorkingDirectory={{ github_runner_dir }}
+      ExecStart={{ github_runner_dir }}/run-with-swiftly-env.sh
+      Restart=always
+      RestartSec=5
+
+      [Install]
+      WantedBy=default.target
+  when: install_github_runner and github_runner_mode in ['login', 'service'] and github_runner_ubuntu_registered_after.stat.exists
+
+- name: Enable lingering for runner user when service mode is requested
+  ansible.builtin.command: "loginctl enable-linger {{ ansible_user_id }}"
+  become: true
+  changed_when: true
+  when: install_github_runner and github_runner_mode == 'service' and github_runner_ubuntu_registered_after.stat.exists
+
+- name: Enable and start GitHub runner user service
+  ansible.builtin.systemd_service:
+    name: "{{ github_runner_service_name }}.service"
+    scope: user
+    daemon_reload: true
+    enabled: true
+    state: started
+  when: install_github_runner and github_runner_mode in ['login', 'service'] and github_runner_ubuntu_registered_after.stat.exists

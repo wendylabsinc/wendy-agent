@@ -1,0 +1,6 @@
+---
+- name: Disable macOS sleep on AC and set display sleep
+  ansible.builtin.command: pmset -c sleep 0 displaysleep 10 disksleep 0 womp 1
+  become: true
+  changed_when: true
+  when: configure_power_policy

@@ -1,0 +1,94 @@
+---
+- name: Normalize Windows runner directory
+  ansible.builtin.set_fact:
+    github_runner_windows_dir: "{{ github_runner_dir | replace('/', '\\') }}"
+  when: install_github_runner
+
+- name: Ensure GitHub runner directory exists
+  ansible.windows.win_file:
+    path: "{{ github_runner_windows_dir }}"
+    state: directory
+  when: install_github_runner
+
+- name: Check GitHub runner registration
+  ansible.windows.win_stat:
+    path: "{{ github_runner_windows_dir }}\\.runner"
+  register: github_runner_windows_registered
+  when: install_github_runner
+
+- name: Check GitHub runner files
+  ansible.windows.win_stat:
+    path: "{{ github_runner_windows_dir }}\\config.cmd"
+  register: github_runner_windows_config
+  when: install_github_runner
+
+- name: Resolve latest GitHub Actions runner release
+  ansible.windows.win_uri:
+    url: https://api.github.com/repos/actions/runner/releases/latest
+    return_content: true
+  register: github_runner_windows_latest
+  when: install_github_runner and not github_runner_windows_config.stat.exists
+
+- name: Set Windows GitHub runner artifact facts
+  ansible.builtin.set_fact:
+    github_runner_version: "{{ (github_runner_windows_latest.content | from_json).tag_name | regex_replace('^v', '') }}"
+    github_runner_arch: "{{ 'arm64' if ansible_facts.architecture | lower is search('arm') else 'x64' }}"
+  when: install_github_runner and not github_runner_windows_config.stat.exists
+
+- name: Download and extract GitHub Actions runner archive
+  ansible.windows.win_shell: |
+    $version = '{{ github_runner_version }}'
+    $arch = '{{ github_runner_arch }}'
+    $runnerDir = '{{ github_runner_windows_dir }}'
+    $zip = Join-Path $runnerDir 'actions-runner.zip'
+    $url = "https://github.com/actions/runner/releases/download/v$version/actions-runner-win-$arch-$version.zip"
+    Invoke-WebRequest -Uri $url -OutFile $zip
+    Expand-Archive -Path $zip -DestinationPath $runnerDir -Force
+  args:
+    creates: "{{ github_runner_windows_dir }}\\config.cmd"
+  when: install_github_runner and not github_runner_windows_config.stat.exists
+
+- name: Register GitHub Actions runner when token is provided
+  ansible.windows.win_command: >-
+    {{ github_runner_windows_dir }}\config.cmd --unattended --url {{ github_runner_url }} --token {{ github_runner_token }}
+    --name {{ github_runner_name }} --work {{ github_runner_work_dir }}
+    {{ ('--labels ' + (github_runner_labels | join(','))) if github_runner_labels | length > 0 else '' }}
+  args:
+    chdir: "{{ github_runner_windows_dir }}"
+    creates: "{{ github_runner_windows_dir }}\\.runner"
+  no_log: true
+  when: install_github_runner and not github_runner_windows_registered.stat.exists and github_runner_token is not none
+
+- name: Print manual GitHub runner registration instructions
+  ansible.builtin.debug:
+    msg:
+      - "Runner is installed but not registered. Generate a registration token outside git."
+      - "Then run: cd {{ github_runner_windows_dir }} && .\\config.cmd --url {{ github_runner_url }} --token <token> --name {{ github_runner_name }}"
+  when: install_github_runner and not github_runner_windows_registered.stat.exists and github_runner_token is none
+
+- name: Refresh Windows runner registration state
+  ansible.windows.win_stat:
+    path: "{{ github_runner_windows_dir }}\\.runner"
+  register: github_runner_windows_registered_after
+  when: install_github_runner
+
+- name: Create GitHub runner scheduled task for logon mode
+  ansible.windows.win_scheduled_task:
+    name: GitHub Actions Runner
+    description: Run GitHub Actions self-hosted runner at user logon
+    actions:
+      - path: "{{ github_runner_windows_dir }}\\run.cmd"
+        working_directory: "{{ github_runner_windows_dir }}"
+    triggers:
+      - type: logon
+        user_id: "{{ ansible_user }}"
+    username: "{{ ansible_user }}"
+    run_level: highest
+    state: present
+    enabled: true
+  when: install_github_runner and github_runner_mode == 'login' and github_runner_windows_registered_after.stat.exists
+
+- name: Start GitHub runner scheduled task
+  ansible.windows.win_shell: Start-ScheduledTask -TaskName 'GitHub Actions Runner'
+  changed_when: true
+  when: install_github_runner and github_runner_mode == 'login' and github_runner_windows_registered_after.stat.exists

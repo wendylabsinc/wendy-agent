@@ -1,0 +1,17 @@
+---
+- name: Install Wendy CLI when selected
+  ansible.windows.win_shell: |
+    $installed = Get-Command wendy -ErrorAction SilentlyContinue
+    if ($installed) { 'already installed'; exit 0 }
+    $script = Invoke-WebRequest -Uri '{{ wendy_cli_install_url }}' -UseBasicParsing
+    $tmp = Join-Path $env:TEMP 'install-wendy-cli.sh'
+    Set-Content -Path $tmp -Value $script.Content -NoNewline
+    bash $tmp -y
+  register: wendy_tools_windows_cli
+  changed_when: "'already installed' not in wendy_tools_windows_cli.stdout"
+  when: install_wendy_cli
+
+- name: Explain Wendy agent support on Windows
+  ansible.builtin.debug:
+    msg: "wendy-agent runs on Linux devices; Windows automation only installs the CLI."
+  when: install_wendy_agent

@@ -1,0 +1,32 @@
+---
+- name: Install Swiftly with Homebrew when Swift installation is selected
+  community.general.homebrew:
+    name: swiftly
+    state: present
+    path: "{{ homebrew_bin }}"
+  when: install_swift
+
+- name: Read requested Swift version
+  ansible.builtin.slurp:
+    src: "{{ swift_version_file }}"
+  delegate_to: localhost
+  register: swift_macos_version_file
+  become: false
+  when: install_swift and swift_version is none
+
+- name: Set requested Swift version from repository file
+  ansible.builtin.set_fact:
+    swift_requested_version: "{{ swift_version | default((swift_macos_version_file.content | b64decode | trim), true) }}"
+  when: install_swift
+
+- name: Install requested Swift with swiftly
+  ansible.builtin.command: "{{ homebrew_prefix }}/bin/swiftly install {{ swift_requested_version }}"
+  register: swift_macos_install
+  changed_when: "'already installed' not in (swift_macos_install.stdout | lower)"
+  when: install_swift and swift_requested_version | length > 0
+
+- name: Select requested Swift with swiftly
+  ansible.builtin.command: "{{ homebrew_prefix }}/bin/swiftly use {{ swift_requested_version }}"
+  register: swift_macos_use
+  changed_when: "'already in use' not in (swift_macos_use.stdout | lower)"
+  when: install_swift and swift_requested_version | length > 0
