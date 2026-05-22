@@ -731,9 +731,16 @@ jobs:
           VERSION="${{ needs.determine-version.outputs.tag_name }}"
           REPO="${{ github.repository }}"
           URL="https://github.com/${REPO}/releases/tag/${VERSION}"
+          DOCS_URL="https://docs.wendy.dev/release-nightly-${VERSION}/"
+          LATEST_DOCS_URL="https://docs.wendy.dev/latest-nightly/"
 
           if [ -n "$DISCORD_WEBHOOK_URL" ]; then
             DESC=$'## Update the agent on your device\n```\nwendy device update --nightly\n```'
+            DESC="${DESC}
+
+          ## Docs
+          - Release-nightly docs: ${DOCS_URL}
+          - Latest nightly docs: ${LATEST_DOCS_URL}"
             PAYLOAD=$(jq -n \
               --arg content "🌙 **New nightly build**: **${VERSION}**" \
               --arg title "Nightly ${VERSION}" \
@@ -1301,11 +1308,21 @@ jobs:
           REPO: ${{ github.repository }}
         run: |
           URL="https://github.com/${REPO}/releases/tag/${VERSION}"
+          DOCS_URL="https://docs.wendy.dev/release-${VERSION}/"
+          LATEST_DOCS_URL="https://docs.wendy.dev/latest/"
 
           # Fetch release body via gh CLI (safe from shell injection)
           BODY=$(gh release view "$VERSION" --repo "$REPO" --json body -q .body 2>/dev/null || echo "")
           BODY=$(echo "$BODY" | tr -d '\r')
           SHORT_BODY=$(echo "$BODY" | head -c 800)
+
+          DOCS_LINKS=$(cat <<DOCS_EOF
+          ## Docs
+
+          - Release docs: ${DOCS_URL}
+          - Latest docs: ${LATEST_DOCS_URL}
+          DOCS_EOF
+          )
 
           # Installation instructions
           read -r -d '' INSTALL_INSTRUCTIONS << 'INSTALL_EOF' || true
@@ -1334,6 +1351,8 @@ jobs:
           INSTALL_EOF
 
           FULL_DESCRIPTION="${SHORT_BODY}
+
+          ${DOCS_LINKS}
 
           ${INSTALL_INSTRUCTIONS}"
 

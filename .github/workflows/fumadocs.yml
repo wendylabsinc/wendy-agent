@@ -32,6 +32,7 @@ jobs:
         working-directory: docs
     outputs:
       deploy_path: ${{ steps.path.outputs.deploy_path }}
+      deploy_paths: ${{ steps.path.outputs.deploy_paths }}
       url: ${{ steps.path.outputs.url }}
     steps:
       - name: Check out repository
@@ -59,32 +60,54 @@ jobs:
               | sed -E 's/[^a-z0-9._-]+/-/g; s/^-+//; s/-+$//'
           }
 
+          DEPLOY_PATHS=()
+
           if [[ "${GITHUB_EVENT_NAME}" == "release" ]]; then
-            VERSION="$(sanitize "${GITHUB_REF_NAME}")"
-            DEPLOY_PATH="release-${VERSION}"
+            VERSION="$(sanitize "$(jq -r '.release.tag_name // env.GITHUB_REF_NAME' "$GITHUB_EVENT_PATH")")"
+            IS_PRERELEASE="$(jq -r '.release.prerelease // false' "$GITHUB_EVENT_PATH")"
+
+            if [[ "${IS_PRERELEASE}" == "true" ]]; then
+              DEPLOY_PATH="release-nightly-${VERSION}"
+              DEPLOY_PATHS=("${DEPLOY_PATH}" "latest-nightly")
+            else
+              DEPLOY_PATH="release-${VERSION}"
+              DEPLOY_PATHS=("${DEPLOY_PATH}" "latest")
+            fi
           else
             BRANCH="$(sanitize "${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}")"
             DEPLOY_PATH="branch-${BRANCH}-${GITHUB_SHA}"
+            DEPLOY_PATHS=("${DEPLOY_PATH}")
           fi
 
           echo "deploy_path=${DEPLOY_PATH}" >> "$GITHUB_OUTPUT"
+          {
+            echo "deploy_paths<<EOF"
+            printf '%s\n' "${DEPLOY_PATHS[@]}"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
           echo "url=https://docs.wendy.dev/${DEPLOY_PATH}/" >> "$GITHUB_OUTPUT"
 
-      - name: Build
+      - name: Build static site exports
         env:
-          NEXT_PUBLIC_BASE_PATH: /${{ steps.path.outputs.deploy_path }}
+          DEPLOY_PATHS: ${{ steps.path.outputs.deploy_paths }}
           NEXT_PUBLIC_GITHUB_REF_NAME: ${{ github.head_ref || github.ref_name }}
           NEXT_PUBLIC_SITE_URL: https://docs.wendy.dev
-        run: npm run build
-
-      - name: Stage prefixed export
-        env:
-          DEPLOY_PATH: ${{ steps.path.outputs.deploy_path }}
         run: |
           set -euo pipefail
+
           rm -rf export
-          mkdir -p "export/${DEPLOY_PATH}"
-          cp -R out/. "export/${DEPLOY_PATH}/"
+          mkdir -p export
+
+          while IFS= read -r DEPLOY_PATH; do
+            [[ -n "${DEPLOY_PATH}" ]] || continue
+
+            echo "::group::Build ${DEPLOY_PATH}"
+            rm -rf out
+            NEXT_PUBLIC_BASE_PATH="/${DEPLOY_PATH}" npm run build
+            mkdir -p "export/${DEPLOY_PATH}"
+            cp -R out/. "export/${DEPLOY_PATH}/"
+            echo "::endgroup::"
+          done <<< "${DEPLOY_PATHS}"
 
       - name: Upload static site artifact
         uses: actions/upload-artifact@v7
@@ -121,15 +144,20 @@ jobs:
         env:
           GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
           DOCS_BUCKET: wendy-docs-public
-          DEPLOY_PATH: ${{ needs.build.outputs.deploy_path }}
+          DEPLOY_PATHS: ${{ needs.build.outputs.deploy_paths }}
         run: |
           set -euo pipefail
-          gcloud storage rsync "out/${DEPLOY_PATH}" "gs://${DOCS_BUCKET}/${DEPLOY_PATH}" \
-            --recursive \
-            --delete-unmatched-destination-objects \
-            --quiet \
-            --project="${GCP_PROJECT_ID}"
-          gcloud storage objects update "gs://${DOCS_BUCKET}/${DEPLOY_PATH}/**" \
-            --cache-control="public, max-age=300" \
-            --quiet \
-            --project="${GCP_PROJECT_ID}"
+
+          while IFS= read -r DEPLOY_PATH; do
+            [[ -n "${DEPLOY_PATH}" ]] || continue
+
+            gcloud storage rsync "out/${DEPLOY_PATH}" "gs://${DOCS_BUCKET}/${DEPLOY_PATH}" \
+              --recursive \
+              --delete-unmatched-destination-objects \
+              --quiet \
+              --project="${GCP_PROJECT_ID}"
+            gcloud storage objects update "gs://${DOCS_BUCKET}/${DEPLOY_PATH}/**" \
+              --cache-control="public, max-age=300" \
+              --quiet \
+              --project="${GCP_PROJECT_ID}"
+          done <<< "${DEPLOY_PATHS}"
