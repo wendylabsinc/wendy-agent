@@ -1,16 +1,16 @@
 ---
 - name: Disable Windows AC sleep when selected
   ansible.windows.win_shell: |
-    $current = powercfg /GETACVALUEINDEX SCHEME_CURRENT SUB_SLEEP STANDBYIDLE
-    if ($current -match '0x00000000') { 'present' } else { powercfg /change standby-timeout-ac 0; 'changed' }
+    $current = powercfg /QUERY SCHEME_CURRENT SUB_SLEEP STANDBYIDLE
+    if (($current -join "`n") -match 'Current AC Power Setting Index:\s+0x00000000') { 'present' } else { powercfg /change standby-timeout-ac 0; 'changed' }
   register: power_policy_windows_sleep
   changed_when: "'changed' in power_policy_windows_sleep.stdout"
   when: configure_power_policy
 
 - name: Set Windows AC monitor timeout when selected
   ansible.windows.win_shell: |
-    $current = powercfg /GETACVALUEINDEX SCHEME_CURRENT SUB_VIDEO VIDEOIDLE
-    if ($current -match '0x00000258') { 'present' } else { powercfg /change monitor-timeout-ac 10; 'changed' }
+    $current = powercfg /QUERY SCHEME_CURRENT SUB_VIDEO VIDEOIDLE
+    if (($current -join "`n") -match 'Current AC Power Setting Index:\s+0x00000258') { 'present' } else { powercfg /change monitor-timeout-ac 10; 'changed' }
   register: power_policy_windows_monitor
   changed_when: "'changed' in power_policy_windows_monitor.stdout"
   when: configure_power_policy
