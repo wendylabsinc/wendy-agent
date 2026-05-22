@@ -84,21 +84,27 @@
   tags: [ssh]
 
 - name: Configure global git user name
-  ansible.windows.win_command: git config --global user.name "{{ git_user_name }}"
+  ansible.windows.win_shell: |
+    $current = git config --global --get user.name
+    if ($current -eq '{{ git_user_name }}') { 'present' } else { git config --global user.name '{{ git_user_name }}'; 'changed' }
   register: common_windows_git_name
-  changed_when: common_windows_git_name.rc == 0
+  changed_when: "'changed' in common_windows_git_name.stdout"
   when: configure_git and git_user_name is not none
   tags: [git]
 
 - name: Configure global git user email
-  ansible.windows.win_command: git config --global user.email "{{ git_user_email }}"
+  ansible.windows.win_shell: |
+    $current = git config --global --get user.email
+    if ($current -eq '{{ git_user_email }}') { 'present' } else { git config --global user.email '{{ git_user_email }}'; 'changed' }
   register: common_windows_git_email
-  changed_when: common_windows_git_email.rc == 0
+  changed_when: "'changed' in common_windows_git_email.stdout"
   when: configure_git and git_user_email is not none
   tags: [git]
 
 - name: Configure default CLI editor
-  ansible.windows.win_command: git config --global core.editor nvim
+  ansible.windows.win_shell: |
+    $current = git config --global --get core.editor
+    if ($current -eq 'nvim') { 'present' } else { git config --global core.editor nvim; 'changed' }
   register: common_windows_git_editor
-  changed_when: common_windows_git_editor.rc == 0
+  changed_when: "'changed' in common_windows_git_editor.stdout"
   tags: [git]
