@@ -957,6 +957,10 @@ configure_github_runner_startup() {
       run_as_user tee "$wrapper" >/dev/null <<EOF
 #!/usr/bin/env bash
 set -Eeuo pipefail
+if [[ -f "\${SWIFTLY_HOME_DIR:-\$HOME/.local/share/swiftly}/env.sh" ]]; then
+  # shellcheck disable=SC1090
+  source "\${SWIFTLY_HOME_DIR:-\$HOME/.local/share/swiftly}/env.sh"
+fi
 cd $(printf '%q' "$GITHUB_RUNNER_DIR")
 exec ./run.sh
 EOF
