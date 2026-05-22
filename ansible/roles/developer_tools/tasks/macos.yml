@@ -33,6 +33,8 @@
     global: true
     state: present
     executable: "{{ homebrew_prefix }}/bin/npm"
+  environment:
+    PATH: "{{ homebrew_prefix }}/bin:{{ ansible_env.PATH }}"
   when: install_direnv or machine_profile in ['ci', 'developer']
 
 - name: Install Codex with npm when npm is available
@@ -41,4 +43,6 @@
     global: true
     state: present
     executable: "{{ homebrew_prefix }}/bin/npm"
+  environment:
+    PATH: "{{ homebrew_prefix }}/bin:{{ ansible_env.PATH }}"
   when: install_direnv or machine_profile in ['ci', 'developer']
