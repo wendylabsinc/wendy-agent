@@ -58,29 +58,29 @@ converge: ci-converge
 ci-lint:
 	$(ANSIBLE_INVENTORY) -i $(CI_INVENTORY) --list >/dev/null
 	$(ANSIBLE_PLAYBOOK) -i $(CI_INVENTORY) playbooks/info.yml --syntax-check
-	$(ANSIBLE_PLAYBOOK) -i $(CI_INVENTORY) playbooks/ci_machine.yml --syntax-check
+	$(ANSIBLE_PLAYBOOK) -i $(CI_INVENTORY) playbooks/ci.yml --syntax-check
 
 ci-info:
 	$(ANSIBLE_PLAYBOOK) -i $(CI_INVENTORY) playbooks/info.yml --tags info $(LIMIT_ARG) $(EXTRA_ARGS)
 
 ci-deploy:
-	$(ANSIBLE_PLAYBOOK) -i $(CI_INVENTORY) playbooks/ci_machine.yml $(LIMIT_ARG) $(EXTRA_ARGS)
+	$(ANSIBLE_PLAYBOOK) -i $(CI_INVENTORY) playbooks/ci.yml $(LIMIT_ARG) $(EXTRA_ARGS)
 
 ci-converge:
 	$(MAKE) ci-deploy CI_INVENTORY=$(CI_INVENTORY) LIMIT="$(LIMIT)" EXTRA_ARGS="$(EXTRA_ARGS)"
 	$(MAKE) ci-deploy CI_INVENTORY=$(CI_INVENTORY) LIMIT="$(LIMIT)" EXTRA_ARGS="$(EXTRA_ARGS)"
 
 ci-deploy-packages:
-	$(ANSIBLE_PLAYBOOK) -i $(CI_INVENTORY) playbooks/ci_machine.yml --tags packages $(LIMIT_ARG) $(EXTRA_ARGS)
+	$(ANSIBLE_PLAYBOOK) -i $(CI_INVENTORY) playbooks/ci.yml --tags packages $(LIMIT_ARG) $(EXTRA_ARGS)
 
 ci-deploy-swift:
-	$(ANSIBLE_PLAYBOOK) -i $(CI_INVENTORY) playbooks/ci_machine.yml --tags swift $(LIMIT_ARG) $(EXTRA_ARGS)
+	$(ANSIBLE_PLAYBOOK) -i $(CI_INVENTORY) playbooks/ci.yml --tags swift $(LIMIT_ARG) $(EXTRA_ARGS)
 
 ci-deploy-runner:
-	$(ANSIBLE_PLAYBOOK) -i $(CI_INVENTORY) playbooks/ci_machine.yml --tags runner $(LIMIT_ARG) $(EXTRA_ARGS)
+	$(ANSIBLE_PLAYBOOK) -i $(CI_INVENTORY) playbooks/ci.yml --tags runner $(LIMIT_ARG) $(EXTRA_ARGS)
 
 ci-deploy-desktop:
-	$(ANSIBLE_PLAYBOOK) -i $(CI_INVENTORY) playbooks/ci_machine.yml --tags desktop_access $(LIMIT_ARG) $(EXTRA_ARGS)
+	$(ANSIBLE_PLAYBOOK) -i $(CI_INVENTORY) playbooks/ci.yml --tags desktop_access $(LIMIT_ARG) $(EXTRA_ARGS)
 
 ci-deploy-power:
-	$(ANSIBLE_PLAYBOOK) -i $(CI_INVENTORY) playbooks/ci_machine.yml --tags power_policy $(LIMIT_ARG) $(EXTRA_ARGS)
+	$(ANSIBLE_PLAYBOOK) -i $(CI_INVENTORY) playbooks/ci.yml --tags power_policy $(LIMIT_ARG) $(EXTRA_ARGS)
