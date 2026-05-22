@@ -1,6 +1,6 @@
 # Wendy machine setup with Ansible
 
-This directory contains local Ansible automation for provisioning Wendy CI and
+This directory contains Ansible automation for provisioning Wendy CI and
 developer machines on macOS, Ubuntu, and Windows.
 
 The playbooks are intentionally plain: local roles, YAML variables, and explicit
@@ -8,30 +8,27 @@ platform task files. Privacy-gated steps stay visible as manual instructions.
 
 ## Control machine setup
 
-Install Ansible and the required collections:
+Install Ansible itself, then install this project's Ansible collections:
 
 ```sh
 brew install ansible
-ansible-galaxy collection install -r ansible/requirements.yml
+cd ansible
+make install
 ```
 
 ## Inventory
 
-Committed inventories are examples only. Copy the local example and edit it for
-your machines:
+The committed production CI inventory is:
 
-```sh
-cp ansible/inventories/local.example.yml ansible/inventories/local.yml
+```text
+inventories/ci.yml
 ```
 
-`ansible/inventories/local.yml` is ignored by git. Keep real hostnames, private
-labels, and runner tokens out of committed inventory.
+It currently describes one runner per supported platform:
 
-The current validation shape is one runner per supported platform:
-
-- macOS runner
-- Ubuntu runner
-- Windows runner
+- `kb-macos-26.local`
+- `kb-ubuntu-24.local`
+- `kb-windows-11.local`
 
 All platforms are expected to be reachable over SSH. Windows hosts should set:
 
@@ -39,44 +36,64 @@ All platforms are expected to be reachable over SSH. Windows hosts should set:
 ansible_shell_type: powershell
 ```
 
-## Non-mutating preflight
-
-Use preflight while shared CI machines are in active use:
+For local overrides, copy the example inventory and keep it uncommitted:
 
 ```sh
-ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook -i ansible/inventories/local.yml ansible/playbooks/preflight.yml --tags preflight
+cp inventories/local.example.yml inventories/local.yml
+make ci-info CI_INVENTORY=inventories/local.yml
 ```
 
-Preflight tasks only gather facts and report state. They must not install
-packages, register runners, change services, configure desktop access, or change
-power policy.
+`inventories/local.yml` is ignored by git. Keep runner tokens and other secrets
+out of committed inventory.
 
-## Syntax checks
+## Common commands
+
+Run commands from this directory:
 
 ```sh
-ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook -i ansible/inventories/example.yml ansible/playbooks/ci-machine.yml --syntax-check
-ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook -i ansible/inventories/example.yml ansible/playbooks/developer-machine.yml --syntax-check
-ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook -i ansible/inventories/example.yml ansible/playbooks/preflight.yml --syntax-check
+cd ansible
 ```
 
-## Real provisioning
-
-Run real provisioning only during a coordinated check/fix session:
+Setup and validation:
 
 ```sh
-ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook -i ansible/inventories/local.yml ansible/playbooks/ci-machine.yml
+make install       # install required Ansible collections
+make lint          # validate committed inventories/playbook syntax
+make info          # read-only state report for all committed inventories
 ```
 
-For a staged run, use tags:
+Production deployment:
 
 ```sh
-ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook -i ansible/inventories/local.yml ansible/playbooks/ci-machine.yml --tags packages,swift
-ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook -i ansible/inventories/local.yml ansible/playbooks/ci-machine.yml --tags runner
-ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook -i ansible/inventories/local.yml ansible/playbooks/ci-machine.yml --tags desktop_access,power_policy
+make deploy        # deploy all committed inventories
+make converge      # run deploy twice to verify idempotency
 ```
 
-Run each playbook twice during validation. The second run should converge toward
-`changed=0`, except for tasks that intentionally report current external state.
+CI-specific deployment:
+
+```sh
+make ci-info
+make ci-deploy
+make ci-converge
+```
+
+Focused CI deployment:
+
+```sh
+make ci-deploy-packages
+make ci-deploy-swift
+make ci-deploy-runner
+make ci-deploy-desktop
+make ci-deploy-power
+```
+
+Useful overrides:
+
+```sh
+make ci-deploy CI_INVENTORY=inventories/local.yml
+make ci-deploy LIMIT=kb-ubuntu-24.local
+make ci-deploy EXTRA_ARGS="--extra-vars 'github_runner_url=https://github.com/OWNER/REPO github_runner_token=TOKEN'"
+```
 
 ## GitHub runner registration
 
@@ -84,8 +101,7 @@ Do not commit registration tokens. Pass a token at runtime if unattended
 registration is desired:
 
 ```sh
-ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook -i ansible/inventories/local.yml ansible/playbooks/ci-machine.yml \
-  --extra-vars 'github_runner_token=... github_runner_url=https://github.com/OWNER/REPO'
+make ci-deploy EXTRA_ARGS="--extra-vars 'github_runner_url=https://github.com/OWNER/REPO github_runner_token=TOKEN'"
 ```
 
 If `github_runner_token` is null and the runner is not registered, the role

@@ -5,33 +5,32 @@ autonomous validation started with read-only preflight and static checks. On
 2026-05-22, the CI playbook was also live-run against all three runners and
 fixed until it converged.
 
-## Test inventory used locally
+## CI inventory
 
-The local, uncommitted inventory contains one CI runner per platform:
+The committed CI inventory contains one runner per platform:
 
 - `kb-macos-26.local`
 - `kb-ubuntu-24.local`
 - `kb-windows-11.local`
 
-All connect over SSH as `konstantinbe`. The local inventory is ignored at
-`ansible/inventories/local.yml`.
+All connect over SSH as `konstantinbe`. Local inventory overrides can still be
+kept ignored at `ansible/inventories/local.yml`.
 
 ## Static checks
 
-Run from the repository root with the committed config:
+Run from `ansible/`:
 
 ```sh
-ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook -i ansible/inventories/example.yml ansible/playbooks/ci-machine.yml --syntax-check
-ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook -i ansible/inventories/example.yml ansible/playbooks/developer-machine.yml --syntax-check
-ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook -i ansible/inventories/example.yml ansible/playbooks/preflight.yml --syntax-check
+make lint
 ```
 
-All three syntax checks passed on 2026-05-22.
+CI inventory and syntax checks passed on 2026-05-22.
 
 ## Read-only preflight command
 
 ```sh
-ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook -i ansible/inventories/local.yml ansible/playbooks/preflight.yml --tags preflight
+cd ansible
+make ci-info
 ```
 
 Result on 2026-05-22 after live fixes:
@@ -47,7 +46,8 @@ kb-windows-11.local        ok=23 changed=0 failed=0
 The full CI playbook now converges cleanly:
 
 ```sh
-ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook -i ansible/inventories/local.yml ansible/playbooks/ci-machine.yml
+cd ansible
+make ci-deploy
 ```
 
 Final idempotency result on 2026-05-22:

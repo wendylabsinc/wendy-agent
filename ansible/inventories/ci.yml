@@ -1,0 +1,15 @@
+---
+all:
+  children:
+    ci:
+      hosts:
+        kb-macos-26.local:
+          ansible_user: konstantinbe
+          ansible_connection: ssh
+        kb-ubuntu-24.local:
+          ansible_user: konstantinbe
+          ansible_connection: ssh
+        kb-windows-11.local:
+          ansible_user: konstantinbe
+          ansible_connection: ssh
+          ansible_shell_type: powershell
