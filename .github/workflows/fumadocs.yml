@@ -26,6 +26,7 @@ jobs:
   build:
     name: Build docs
     runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     defaults:
       run:
         working-directory: docs
@@ -61,6 +62,12 @@ jobs:
               | tr '[:upper:]' '[:lower:]' \
               | sed -E 's/[^a-z0-9._-]+/-/g; s/^-+//; s/-+$//'
           }
+          validate_deploy_path() {
+            if [[ -z "$1" || ! "$1" =~ ^[a-z0-9][a-z0-9._-]{0,200}$ ]]; then
+              echo "::error::Unsupported docs deploy path: $1"
+              exit 1
+            fi
+          }
 
           DEPLOY_PATHS=()
 
@@ -91,6 +98,10 @@ jobs:
             DEPLOY_PATHS=("${DEPLOY_PATH}")
           fi
 
+          for PATH_TO_VALIDATE in "${DEPLOY_PATHS[@]}"; do
+            validate_deploy_path "${PATH_TO_VALIDATE}"
+          done
+
           echo "deploy_path=${DEPLOY_PATH}" >> "$GITHUB_OUTPUT"
           {
             echo "deploy_paths<<EOF"
@@ -110,8 +121,16 @@ jobs:
           rm -rf export
           mkdir -p export
 
+          validate_deploy_path() {
+            if [[ -z "$1" || ! "$1" =~ ^[a-z0-9][a-z0-9._-]{0,200}$ ]]; then
+              echo "::error::Unsupported docs deploy path: $1"
+              exit 1
+            fi
+          }
+
           while IFS= read -r DEPLOY_PATH; do
             [[ -n "${DEPLOY_PATH}" ]] || continue
+            validate_deploy_path "${DEPLOY_PATH}"
 
             echo "::group::Build ${DEPLOY_PATH}"
             rm -rf out
@@ -163,8 +182,16 @@ jobs:
         run: |
           set -euo pipefail
 
+          validate_deploy_path() {
+            if [[ -z "$1" || ! "$1" =~ ^[a-z0-9][a-z0-9._-]{0,200}$ ]]; then
+              echo "::error::Unsupported docs deploy path: $1"
+              exit 1
+            fi
+          }
+
           while IFS= read -r DEPLOY_PATH; do
             [[ -n "${DEPLOY_PATH}" ]] || continue
+            validate_deploy_path "${DEPLOY_PATH}"
 
             gcloud storage rsync "out/${DEPLOY_PATH}" "gs://${DOCS_BUCKET}/${DEPLOY_PATH}" \
               --recursive \
