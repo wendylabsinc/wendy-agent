@@ -114,6 +114,7 @@ runs:
         WENDY_E2E_CLI_OS: ${{ inputs.cli_os }}
         WENDY_E2E_AGENT_OS: ${{ inputs.agent_os }}
         WENDY_E2E_TRANSPORT: ${{ inputs.transport }}
+        WENDY_GITHUB_TOKEN: ${{ github.token }}
       run: |
         set -euo pipefail
         bash ./Scripts/E2ETest.sh \
@@ -130,6 +131,7 @@ runs:
         WENDY_E2E_CLI_OS: ${{ inputs.cli_os }}
         WENDY_E2E_AGENT_OS: ${{ inputs.agent_os }}
         WENDY_E2E_TRANSPORT: ${{ inputs.transport }}
+        WENDY_GITHUB_TOKEN: ${{ github.token }}
       run: |
         $ErrorActionPreference = 'Stop'
         $outputDir = Join-Path $env:RUNNER_TEMP 'wendy'

@@ -10,8 +10,6 @@ import (
 	"github.com/wendylabsinc/wendy/internal/shared/version"
 )
 
-const githubReleasesURL = "https://api.github.com/repos/wendylabsinc/wendy-agent/releases/latest"
-
 const cliUpdateCheckInterval = 24 * time.Hour
 
 // cliUpdateNoticeCh receives the latest version string when a background update
@@ -73,7 +71,7 @@ type githubRelease struct {
 func checkLatestRelease() (string, error) {
 	client := &http.Client{Timeout: 10 * time.Second}
 
-	resp, err := client.Get(githubReleasesURL)
+	resp, err := doGitHubAPIGet(client, githubLatestReleaseURL)
 	if err != nil {
 		return "", fmt.Errorf("fetching releases: %w", err)
 	}

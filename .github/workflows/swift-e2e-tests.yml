@@ -26,6 +26,9 @@ concurrency:
   group: swift-e2e-tests-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
   # Run jobs are explicit per-device chains rather than one matrix. The first
   # batch spreads work across the one macOS, one Linux, and one Windows runner,
