@@ -36,9 +36,10 @@
   tags: [ssh]
 
 - name: Read generated public key for loopback SSH
-  ansible.windows.win_slurp:
-    src: "{{ ansible_env.USERPROFILE }}\\.ssh\\id_{{ ssh_key_type }}.pub"
+  ansible.windows.win_shell: |
+    Get-Content -Path "{{ ansible_env.USERPROFILE }}\\.ssh\\id_{{ ssh_key_type }}.pub" -Raw
   register: common_windows_public_key
+  changed_when: false
   when: configure_loopback_ssh
   tags: [ssh]
 
@@ -46,7 +47,7 @@
   ansible.windows.win_shell: |
     $authorizedKeys = Join-Path $env:USERPROFILE '.ssh\authorized_keys'
     $key = @'
-    {{ common_windows_public_key.content | b64decode | trim }}
+    {{ common_windows_public_key.stdout | trim }}
     '@.Trim()
     if (-not (Test-Path $authorizedKeys)) { New-Item -ItemType File -Path $authorizedKeys -Force | Out-Null }
     $existing = Get-Content -Path $authorizedKeys -ErrorAction SilentlyContinue
