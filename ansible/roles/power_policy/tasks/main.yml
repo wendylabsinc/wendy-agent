@@ -4,19 +4,28 @@
     file: preflight.yml
     apply:
       tags: preflight
-  tags: [always]
+  tags: [preflight]
 
 - name: Include macOS power policy tasks
-  ansible.builtin.include_tasks: macos.yml
+  ansible.builtin.include_tasks:
+    file: macos.yml
+    apply:
+      tags: [power_policy]
   when: ansible_facts.system == 'Darwin'
   tags: [power_policy]
 
 - name: Include Ubuntu power policy tasks
-  ansible.builtin.include_tasks: ubuntu.yml
+  ansible.builtin.include_tasks:
+    file: ubuntu.yml
+    apply:
+      tags: [power_policy]
   when: ansible_facts.distribution == 'Ubuntu'
   tags: [power_policy]
 
 - name: Include Windows power policy tasks
-  ansible.builtin.include_tasks: windows.yml
+  ansible.builtin.include_tasks:
+    file: windows.yml
+    apply:
+      tags: [power_policy]
   when: ansible_facts.os_family == 'Windows'
   tags: [power_policy]

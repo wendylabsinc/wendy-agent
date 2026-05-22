@@ -4,19 +4,28 @@
     file: preflight.yml
     apply:
       tags: preflight
-  tags: [always]
+  tags: [preflight]
 
 - name: Include macOS Wendy tools tasks
-  ansible.builtin.include_tasks: macos.yml
+  ansible.builtin.include_tasks:
+    file: macos.yml
+    apply:
+      tags: [wendy_tools]
   when: ansible_facts.system == 'Darwin'
   tags: [wendy_tools]
 
 - name: Include Ubuntu Wendy tools tasks
-  ansible.builtin.include_tasks: ubuntu.yml
+  ansible.builtin.include_tasks:
+    file: ubuntu.yml
+    apply:
+      tags: [wendy_tools]
   when: ansible_facts.distribution == 'Ubuntu'
   tags: [wendy_tools]
 
 - name: Include Windows Wendy tools tasks
-  ansible.builtin.include_tasks: windows.yml
+  ansible.builtin.include_tasks:
+    file: windows.yml
+    apply:
+      tags: [wendy_tools]
   when: ansible_facts.os_family == 'Windows'
   tags: [wendy_tools]

@@ -4,19 +4,28 @@
     file: preflight.yml
     apply:
       tags: preflight
-  tags: [always]
+  tags: [preflight]
 
 - name: Include macOS desktop access tasks
-  ansible.builtin.include_tasks: macos.yml
+  ansible.builtin.include_tasks:
+    file: macos.yml
+    apply:
+      tags: [desktop_access]
   when: ansible_facts.system == 'Darwin'
   tags: [desktop_access]
 
 - name: Include Ubuntu desktop access tasks
-  ansible.builtin.include_tasks: ubuntu.yml
+  ansible.builtin.include_tasks:
+    file: ubuntu.yml
+    apply:
+      tags: [desktop_access]
   when: ansible_facts.distribution == 'Ubuntu'
   tags: [desktop_access]
 
 - name: Include Windows desktop access tasks
-  ansible.builtin.include_tasks: windows.yml
+  ansible.builtin.include_tasks:
+    file: windows.yml
+    apply:
+      tags: [desktop_access]
   when: ansible_facts.os_family == 'Windows'
   tags: [desktop_access]

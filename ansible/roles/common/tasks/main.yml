@@ -4,19 +4,28 @@
     file: preflight.yml
     apply:
       tags: preflight
-  tags: [always]
+  tags: [preflight]
 
 - name: Include macOS common tasks
-  ansible.builtin.include_tasks: macos.yml
+  ansible.builtin.include_tasks:
+    file: macos.yml
+    apply:
+      tags: [common, ssh, git]
   when: ansible_facts.system == 'Darwin'
   tags: [common, ssh, git]
 
 - name: Include Ubuntu common tasks
-  ansible.builtin.include_tasks: ubuntu.yml
+  ansible.builtin.include_tasks:
+    file: ubuntu.yml
+    apply:
+      tags: [common, ssh, git]
   when: ansible_facts.distribution == 'Ubuntu'
   tags: [common, ssh, git]
 
 - name: Include Windows common tasks
-  ansible.builtin.include_tasks: windows.yml
+  ansible.builtin.include_tasks:
+    file: windows.yml
+    apply:
+      tags: [common, ssh, git]
   when: ansible_facts.os_family == 'Windows'
   tags: [common, ssh, git]
