@@ -9,9 +9,11 @@
 
 - name: Enable Remote Desktop firewall rules when selected
   ansible.windows.win_shell: |
-    Enable-NetFirewallRule -DisplayGroup 'Remote Desktop'
+    $rules = Get-NetFirewallRule -DisplayGroup 'Remote Desktop' -ErrorAction SilentlyContinue |
+      Where-Object { $_.Enabled -ne 'True' }
+    if ($rules) { $rules | Enable-NetFirewallRule; 'changed' } else { 'present' }
   register: desktop_access_windows_firewall
-  changed_when: true
+  changed_when: "'changed' in desktop_access_windows_firewall.stdout"
   when: configure_remote_access
 
 - name: Show Windows auto-login guidance
