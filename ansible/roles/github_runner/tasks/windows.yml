@@ -1,7 +1,7 @@
 ---
 - name: Normalize Windows runner directory
   ansible.builtin.set_fact:
-    github_runner_windows_dir: "{{ github_runner_dir | replace('/', '\\') }}"
+    github_runner_windows_dir: "{{ github_runner_dir }}"
   when: install_github_runner
 
 - name: Ensure GitHub runner directory exists
