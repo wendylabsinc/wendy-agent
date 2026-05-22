@@ -20,11 +20,17 @@
   tags: [ssh]
 
 - name: Add configured authorized login keys
-  ansible.windows.win_lineinfile:
-    path: "{{ ansible_env.USERPROFILE }}\\.ssh\\authorized_keys"
-    line: "{{ item }}"
-    create: true
+  ansible.windows.win_shell: |
+    $authorizedKeys = Join-Path $env:USERPROFILE '.ssh\authorized_keys'
+    $key = @'
+    {{ item }}
+    '@.Trim()
+    if (-not (Test-Path $authorizedKeys)) { New-Item -ItemType File -Path $authorizedKeys -Force | Out-Null }
+    $existing = Get-Content -Path $authorizedKeys -ErrorAction SilentlyContinue
+    if ($existing -contains $key) { 'present' } else { Add-Content -Path $authorizedKeys -Value $key; 'added' }
   loop: "{{ authorized_login_keys }}"
+  register: common_windows_authorized_keys
+  changed_when: "'added' in common_windows_authorized_keys.stdout"
   no_log: true
   when: authorized_login_keys | length > 0
   tags: [ssh]
@@ -37,10 +43,16 @@
   tags: [ssh]
 
 - name: Authorize generated key for loopback SSH
-  ansible.windows.win_lineinfile:
-    path: "{{ ansible_env.USERPROFILE }}\\.ssh\\authorized_keys"
-    line: "{{ common_windows_public_key.content | b64decode | trim }}"
-    create: true
+  ansible.windows.win_shell: |
+    $authorizedKeys = Join-Path $env:USERPROFILE '.ssh\authorized_keys'
+    $key = @'
+    {{ common_windows_public_key.content | b64decode | trim }}
+    '@.Trim()
+    if (-not (Test-Path $authorizedKeys)) { New-Item -ItemType File -Path $authorizedKeys -Force | Out-Null }
+    $existing = Get-Content -Path $authorizedKeys -ErrorAction SilentlyContinue
+    if ($existing -contains $key) { 'present' } else { Add-Content -Path $authorizedKeys -Value $key; 'added' }
+  register: common_windows_loopback_key
+  changed_when: "'added' in common_windows_loopback_key.stdout"
   when: configure_loopback_ssh
   tags: [ssh]
 
