@@ -111,8 +111,10 @@ go build -o wendy-agent ./cmd/wendy-agent
 ### Repository-local Wendy CLI via direnv
 
 The repository includes a `.envrc` that creates a tiny local `wendy` shim in
-`.direnv/bin`. After allowing it once, `wendy` commands run from this checkout
-rebuild and execute the Go CLI without overwriting an installed `wendy`:
+`.direnv/bin`. Review `.envrc` changes before running `direnv allow`, because
+`direnv` executes allowed files in your shell context. After allowing it once,
+`wendy` commands run from this checkout rebuild and execute the Go CLI without
+overwriting an installed `wendy`:
 
 ```sh
 direnv allow
@@ -120,7 +122,9 @@ wendy run
 wendy discover --json
 ```
 
-Outside of this checkout, your normal installed `wendy` remains unchanged.
+The generated `.direnv/bin` directory is recreated on each `direnv` load and is
+ignored by git. Outside of this checkout, your normal installed `wendy` remains
+unchanged.
 
 You can still run the agent directly while developing it:
 
