@@ -1,9 +1,9 @@
 # Validation notes
 
 Current agreement for this branch: CI machines may be in active use, so
-autonomous validation is limited to read-only preflight, static checks, and
-idempotency review. Mutating operations on CI machines wait for the coordinated
-interactive check/fix session.
+autonomous validation started with read-only preflight and static checks. On
+2026-05-22, the CI playbook was also live-run against all three runners and
+fixed until it converged.
 
 ## Test inventory used locally
 
@@ -34,12 +34,28 @@ All three syntax checks passed on 2026-05-22.
 ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook -i ansible/inventories/local.yml ansible/playbooks/preflight.yml --tags preflight
 ```
 
-Result on 2026-05-22:
+Result on 2026-05-22 after live fixes:
 
 ```text
 kb-macos-26.local          ok=23 changed=0 failed=0
 kb-ubuntu-24.local         ok=23 changed=0 failed=0
 kb-windows-11.local        ok=23 changed=0 failed=0
+```
+
+## Live CI convergence
+
+The full CI playbook now converges cleanly:
+
+```sh
+ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook -i ansible/inventories/local.yml ansible/playbooks/ci-machine.yml
+```
+
+Final idempotency result on 2026-05-22:
+
+```text
+kb-macos-26.local          ok=51 changed=0 failed=0
+kb-ubuntu-24.local         ok=55 changed=0 failed=0
+kb-windows-11.local        ok=49 changed=0 failed=0
 ```
 
 ## Current findings
@@ -48,12 +64,13 @@ kb-windows-11.local        ok=23 changed=0 failed=0
 
 - macOS 26.3.1, arm64.
 - Passwordless sudo works.
-- Swift/Xcode are present.
-- Homebrew is missing.
-- Go, Node, npm, Neovim, direnv, Claude Code, Codex, Wendy CLI, and
-  Wendy agent are missing from the default shell path.
-- GitHub runner is registered and running via LaunchAgent.
-- AC power policy already has sleep disabled and display sleep set to 10.
+- Homebrew is present at `/opt/homebrew/bin/brew`.
+- Git, Go, Node, npm, Neovim, Claude Code, Codex, and Wendy CLI are present
+  through Homebrew-managed paths.
+- Xcode Swift is present in the default `swift` path.
+- Swiftly is installed and has selected the repository `.swift-version`.
+- GitHub runner is registered and running via the existing LaunchAgent.
+- AC power policy has sleep disabled and display sleep set to 10 minutes.
 
 ### Ubuntu runner
 
@@ -61,9 +78,11 @@ kb-windows-11.local        ok=23 changed=0 failed=0
 - Passwordless sudo works.
 - Git, Go, Node, npm, Neovim, direnv, Claude Code, Codex, Wendy CLI, and
   Wendy agent are present.
-- `swift` is missing from the default shell path, but Swiftly env is present.
+- Swift 6.3.1 is available after sourcing Swiftly's environment.
 - GitHub runner is registered and running via user systemd service.
+- The user systemd runner wrapper sources Swiftly's `env.sh` before `run.sh`.
 - User lingering is enabled.
+- GNOME idle delay is 600 seconds and screen lock is disabled.
 
 ### Windows runner
 
@@ -73,19 +92,28 @@ kb-windows-11.local        ok=23 changed=0 failed=0
 - Git, Go, Node, npm, Neovim, winget, Claude Code, Codex, Swift, and Wendy CLI
   are present.
 - GitHub runner is registered and running via Scheduled Task.
-- Remote Desktop is enabled.
-- AC sleep is disabled; display timeout is 300 seconds.
+- Remote Desktop is enabled and firewall rules are enabled.
+- AC sleep is disabled; AC display timeout is 600 seconds.
 - OpenSSH `DefaultShell` currently points at the WindowsApps `pwsh.exe` app
-  execution alias. The Ansible role must not set that path itself.
+  execution alias. The Ansible role does not change that unless explicitly
+  requested and refuses to set a WindowsApps alias path.
 
-## Interactive check/fix session order
+## Smoke tests
 
-1. Re-run preflight.
-2. Run syntax checks.
-3. Run package/tool tags on one platform at a time.
-4. Run Swift installation/configuration, with special attention to Ubuntu
-   runner environments sourcing Swiftly.
-5. Run runner startup tasks only after confirming runner registration state.
-6. Run desktop access and power policy tags only with explicit approval.
-7. Re-run each real playbook for idempotency.
-8. Smoke-test tools, SSH, Swift inside a GitHub Actions job, and runner status.
+Smoke tests passed on 2026-05-22:
+
+- macOS: git, Go, Node, npm, Neovim, Claude Code, Codex, Swift, Wendy CLI,
+  and LaunchAgent runner state.
+- Ubuntu: git, Go, Node, npm, Neovim, Claude Code, Codex, Swift via Swiftly,
+  Wendy CLI, Wendy agent, and user systemd runner state.
+- Windows: git, Go, Node, npm, Neovim, Claude Code, Codex, Swift, Wendy CLI,
+  and Scheduled Task runner state.
+
+## Remaining validation
+
+- Confirm in GitHub UI that each self-hosted runner is online after the live
+  run.
+- Run a GitHub Actions job that executes `swift --version` on the Ubuntu runner
+  to verify the user systemd wrapper environment from inside CI.
+- Validate any privacy-gated macOS settings manually from the logged-in user
+  session.
