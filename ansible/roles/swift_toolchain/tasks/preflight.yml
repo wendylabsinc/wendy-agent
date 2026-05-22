@@ -3,12 +3,17 @@
   ansible.builtin.shell: |
     set -o pipefail
     set +e
+    if [ -f "$HOME/.local/share/swiftly/env.sh" ]; then
+      . "$HOME/.local/share/swiftly/env.sh"
+    fi
     echo "swift=$({ command -v swift >/dev/null && swift --version | head -n 2; } || echo missing)"
     echo "swiftly=$(command -v swiftly || true)"
     echo "swiftly_env=$([ -f "$HOME/.local/share/swiftly/env.sh" ] && echo present || echo absent)"
   args:
     executable: /bin/bash
   register: swift_posix_preflight
+  environment:
+    PATH: "{{ homebrew_prefix }}/bin:{{ ansible_env.PATH }}"
   changed_when: false
   failed_when: false
   when: ansible_facts.os_family != 'Windows'

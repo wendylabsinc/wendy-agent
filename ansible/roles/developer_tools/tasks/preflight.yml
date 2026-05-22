@@ -16,6 +16,8 @@
   args:
     executable: /bin/bash
   register: developer_tools_posix_preflight
+  environment:
+    PATH: "{{ homebrew_prefix }}/bin:{{ ansible_env.PATH }}"
   changed_when: false
   failed_when: false
   when: ansible_facts.os_family != 'Windows'
