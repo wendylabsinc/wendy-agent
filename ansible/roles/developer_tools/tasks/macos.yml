@@ -32,6 +32,7 @@
     name: "@anthropic-ai/claude-code"
     global: true
     state: present
+    executable: "{{ homebrew_prefix }}/bin/npm"
   when: install_direnv or machine_profile in ['ci', 'developer']
 
 - name: Install Codex with npm when npm is available
@@ -39,4 +40,5 @@
     name: "@openai/codex"
     global: true
     state: present
+    executable: "{{ homebrew_prefix }}/bin/npm"
   when: install_direnv or machine_profile in ['ci', 'developer']
