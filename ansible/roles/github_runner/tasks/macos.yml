@@ -96,7 +96,7 @@
 
 - name: Install GitHub runner LaunchAgent
   ansible.builtin.template:
-    src: macos-launchagent.plist.j2
+    src: macos_launchagent.plist.j2
     dest: "{{ ansible_env.HOME }}/Library/LaunchAgents/com.github.actions.runner.{{ github_runner_name }}.plist"
     mode: '0644'
   register: github_runner_macos_launchagent

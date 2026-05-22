@@ -1,7 +1,7 @@
 # Validation notes
 
 Current agreement for this branch: CI machines may be in active use, so
-autonomous validation started with read-only preflight and static checks. On
+autonomous validation started with read-only info and static checks. On
 2026-05-22, the CI playbook was also live-run against all three runners and
 fixed until it converged.
 
@@ -26,7 +26,7 @@ make lint
 
 CI inventory and syntax checks passed on 2026-05-22.
 
-## Read-only preflight command
+## Read-only info command
 
 ```sh
 cd ansible

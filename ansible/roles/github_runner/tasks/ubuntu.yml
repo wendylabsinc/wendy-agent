@@ -72,7 +72,7 @@
 
 - name: Install GitHub runner wrapper that sources Swiftly
   ansible.builtin.template:
-    src: ubuntu-runner-wrapper.sh.j2
+    src: ubuntu_runner_wrapper.sh.j2
     dest: "{{ github_runner_dir }}/run-with-swiftly-env.sh"
     mode: '0755'
   when: install_github_runner and github_runner_mode in ['login', 'service'] and github_runner_ubuntu_registered_after.stat.exists

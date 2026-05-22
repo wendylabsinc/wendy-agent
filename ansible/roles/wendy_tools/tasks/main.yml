@@ -1,10 +1,10 @@
 ---
-- name: Run Wendy tools preflight
+- name: Run Wendy tools info
   ansible.builtin.include_tasks:
-    file: preflight.yml
+    file: info.yml
     apply:
-      tags: preflight
-  tags: [preflight]
+      tags: info
+  tags: [info]
 
 - name: Include macOS Wendy tools tasks
   ansible.builtin.include_tasks:

@@ -13,14 +13,14 @@
     if command -v launchctl >/dev/null 2>&1; then launchctl print gui/$(id -u) 2>/dev/null | grep -i 'github.actions.runner' || true; fi
   args:
     executable: /bin/bash
-  register: github_runner_posix_preflight
+  register: github_runner_posix_info
   changed_when: false
   failed_when: false
   when: ansible_facts.os_family != 'Windows'
 
 - name: Report POSIX GitHub runner state
   ansible.builtin.debug:
-    var: github_runner_posix_preflight.stdout_lines
+    var: github_runner_posix_info.stdout_lines
   changed_when: false
   when: ansible_facts.os_family != 'Windows'
 
@@ -38,13 +38,13 @@
     Get-ScheduledTask -ErrorAction SilentlyContinue |
       Where-Object { $_.TaskName -match 'runner|actions' -or $_.TaskPath -match 'runner|actions' } |
       Select-Object TaskPath,TaskName,State | Format-Table -AutoSize
-  register: github_runner_windows_preflight
+  register: github_runner_windows_info
   changed_when: false
   failed_when: false
   when: ansible_facts.os_family == 'Windows'
 
 - name: Report Windows GitHub runner state
   ansible.builtin.debug:
-    var: github_runner_windows_preflight.stdout_lines
+    var: github_runner_windows_info.stdout_lines
   changed_when: false
   when: ansible_facts.os_family == 'Windows'

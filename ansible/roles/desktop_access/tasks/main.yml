@@ -1,10 +1,10 @@
 ---
-- name: Run desktop access preflight
+- name: Run desktop access info
   ansible.builtin.include_tasks:
-    file: preflight.yml
+    file: info.yml
     apply:
-      tags: preflight
-  tags: [preflight]
+      tags: info
+  tags: [info]
 
 - name: Include macOS desktop access tasks
   ansible.builtin.include_tasks:

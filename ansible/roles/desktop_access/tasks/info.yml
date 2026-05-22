@@ -7,14 +7,14 @@
     if command -v gsettings >/dev/null 2>&1; then gsettings get org.gnome.desktop.remote-desktop.rdp enable 2>/dev/null || true; fi
   args:
     executable: /bin/bash
-  register: desktop_access_posix_preflight
+  register: desktop_access_posix_info
   changed_when: false
   failed_when: false
   when: ansible_facts.os_family != 'Windows'
 
 - name: Report POSIX desktop access state
   ansible.builtin.debug:
-    var: desktop_access_posix_preflight.stdout_lines
+    var: desktop_access_posix_info.stdout_lines
   changed_when: false
   when: ansible_facts.os_family != 'Windows'
 
@@ -23,13 +23,13 @@
     $rdp = Get-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name fDenyTSConnections -ErrorAction SilentlyContinue
     "remote_desktop_enabled=$($rdp.fDenyTSConnections -eq 0)"
     Get-NetFirewallRule -DisplayGroup 'Remote Desktop' -ErrorAction SilentlyContinue | Select-Object -First 3 DisplayName,Enabled | Format-Table -AutoSize
-  register: desktop_access_windows_preflight
+  register: desktop_access_windows_info
   changed_when: false
   failed_when: false
   when: ansible_facts.os_family == 'Windows'
 
 - name: Report Windows desktop access state
   ansible.builtin.debug:
-    var: desktop_access_windows_preflight.stdout_lines
+    var: desktop_access_windows_info.stdout_lines
   changed_when: false
   when: ansible_facts.os_family == 'Windows'

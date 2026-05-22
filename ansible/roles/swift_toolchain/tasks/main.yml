@@ -1,10 +1,10 @@
 ---
-- name: Run Swift preflight
+- name: Run Swift info
   ansible.builtin.include_tasks:
-    file: preflight.yml
+    file: info.yml
     apply:
-      tags: preflight
-  tags: [preflight]
+      tags: info
+  tags: [info]
 
 - name: Include macOS Swift tasks
   ansible.builtin.include_tasks:

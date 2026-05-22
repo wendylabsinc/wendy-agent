@@ -1,10 +1,10 @@
 ---
-- name: Run GitHub runner preflight
+- name: Run GitHub runner info
   ansible.builtin.include_tasks:
-    file: preflight.yml
+    file: info.yml
     apply:
-      tags: preflight
-  tags: [preflight]
+      tags: info
+  tags: [info]
 
 - name: Include macOS GitHub runner tasks
   ansible.builtin.include_tasks:

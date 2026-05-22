@@ -15,7 +15,7 @@
     echo "brew=$(command -v brew || true)"
   args:
     executable: /bin/bash
-  register: developer_tools_posix_preflight
+  register: developer_tools_posix_info
   environment:
     PATH: "{{ homebrew_prefix }}/bin:{{ ansible_env.PATH }}"
   changed_when: false
@@ -24,7 +24,7 @@
 
 - name: Report POSIX developer tools
   ansible.builtin.debug:
-    var: developer_tools_posix_preflight.stdout_lines
+    var: developer_tools_posix_info.stdout_lines
   changed_when: false
   when: ansible_facts.os_family != 'Windows'
 
@@ -38,13 +38,13 @@
     try { "winget=$(winget --version)" } catch { "winget=missing" }
     try { "claude=$(claude --version)" } catch { "claude=missing" }
     try { "codex=$(codex --version)" } catch { "codex=missing" }
-  register: developer_tools_windows_preflight
+  register: developer_tools_windows_info
   changed_when: false
   failed_when: false
   when: ansible_facts.os_family == 'Windows'
 
 - name: Report Windows developer tools
   ansible.builtin.debug:
-    var: developer_tools_windows_preflight.stdout_lines
+    var: developer_tools_windows_info.stdout_lines
   changed_when: false
   when: ansible_facts.os_family == 'Windows'

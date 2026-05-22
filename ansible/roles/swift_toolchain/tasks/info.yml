@@ -11,7 +11,7 @@
     echo "swiftly_env=$([ -f "$HOME/.local/share/swiftly/env.sh" ] && echo present || echo absent)"
   args:
     executable: /bin/bash
-  register: swift_posix_preflight
+  register: swift_posix_info
   environment:
     PATH: "{{ homebrew_prefix }}/bin:{{ ansible_env.PATH }}"
   changed_when: false
@@ -20,7 +20,7 @@
 
 - name: Report POSIX Swift toolchain
   ansible.builtin.debug:
-    var: swift_posix_preflight.stdout_lines
+    var: swift_posix_info.stdout_lines
   changed_when: false
   when: ansible_facts.os_family != 'Windows'
 
@@ -28,13 +28,13 @@
   ansible.windows.win_shell: |
     try { "swift=$((swift --version | Select-Object -First 2) -join ' ')" } catch { "swift=missing" }
     Get-Command swift -ErrorAction SilentlyContinue | ForEach-Object { "swift_path=$($_.Source)" }
-  register: swift_windows_preflight
+  register: swift_windows_info
   changed_when: false
   failed_when: false
   when: ansible_facts.os_family == 'Windows'
 
 - name: Report Windows Swift toolchain
   ansible.builtin.debug:
-    var: swift_windows_preflight.stdout_lines
+    var: swift_windows_info.stdout_lines
   changed_when: false
   when: ansible_facts.os_family == 'Windows'

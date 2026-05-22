@@ -11,14 +11,14 @@
     fi
   args:
     executable: /bin/bash
-  register: power_policy_posix_preflight
+  register: power_policy_posix_info
   changed_when: false
   failed_when: false
   when: ansible_facts.os_family != 'Windows'
 
 - name: Report POSIX power policy state
   ansible.builtin.debug:
-    var: power_policy_posix_preflight.stdout_lines
+    var: power_policy_posix_info.stdout_lines
   changed_when: false
   when: ansible_facts.os_family != 'Windows'
 
@@ -27,13 +27,13 @@
     powercfg /GETACTIVESCHEME
     powercfg /QUERY SCHEME_CURRENT SUB_SLEEP STANDBYIDLE
     powercfg /QUERY SCHEME_CURRENT SUB_VIDEO VIDEOIDLE
-  register: power_policy_windows_preflight
+  register: power_policy_windows_info
   changed_when: false
   failed_when: false
   when: ansible_facts.os_family == 'Windows'
 
 - name: Report Windows power policy state
   ansible.builtin.debug:
-    var: power_policy_windows_preflight.stdout_lines
+    var: power_policy_windows_info.stdout_lines
   changed_when: false
   when: ansible_facts.os_family == 'Windows'

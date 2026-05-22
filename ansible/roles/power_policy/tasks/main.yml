@@ -1,10 +1,10 @@
 ---
-- name: Run power policy preflight
+- name: Run power policy info
   ansible.builtin.include_tasks:
-    file: preflight.yml
+    file: info.yml
     apply:
-      tags: preflight
-  tags: [preflight]
+      tags: info
+  tags: [info]
 
 - name: Include macOS power policy tasks
   ansible.builtin.include_tasks:

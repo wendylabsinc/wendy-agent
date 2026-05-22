@@ -39,7 +39,7 @@ ansible_shell_type: powershell
 For local overrides, copy the example inventory and keep it uncommitted:
 
 ```sh
-cp inventories/local.example.yml inventories/local.yml
+cp inventories/local_example.yml inventories/local.yml
 make ci-info CI_INVENTORY=inventories/local.yml
 ```
 

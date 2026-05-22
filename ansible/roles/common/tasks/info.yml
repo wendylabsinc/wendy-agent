@@ -14,14 +14,14 @@
 
 - name: Check POSIX sudo state
   ansible.builtin.command: sudo -n true
-  register: common_sudo_preflight
+  register: common_sudo_info
   changed_when: false
   failed_when: false
   when: ansible_facts.os_family != 'Windows'
 
 - name: Report POSIX sudo state
   ansible.builtin.debug:
-    msg: "sudo={{ 'passwordless' if common_sudo_preflight.rc == 0 else 'needs-password-or-unavailable' }}"
+    msg: "sudo={{ 'passwordless' if common_sudo_info.rc == 0 else 'needs-password-or-unavailable' }}"
   changed_when: false
   when: ansible_facts.os_family != 'Windows'
 

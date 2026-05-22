@@ -7,7 +7,7 @@
     echo "wendy_agent=$({ command -v wendy-agent >/dev/null && wendy-agent --version; } || echo missing)"
   args:
     executable: /bin/bash
-  register: wendy_tools_posix_preflight
+  register: wendy_tools_posix_info
   environment:
     PATH: "{{ homebrew_prefix }}/bin:{{ ansible_env.PATH }}"
   changed_when: false
@@ -16,20 +16,20 @@
 
 - name: Report POSIX Wendy tools
   ansible.builtin.debug:
-    var: wendy_tools_posix_preflight.stdout_lines
+    var: wendy_tools_posix_info.stdout_lines
   changed_when: false
   when: ansible_facts.os_family != 'Windows'
 
 - name: Check Windows Wendy tools
   ansible.windows.win_shell: |
     try { "wendy=$(wendy --version)" } catch { "wendy=missing" }
-  register: wendy_tools_windows_preflight
+  register: wendy_tools_windows_info
   changed_when: false
   failed_when: false
   when: ansible_facts.os_family == 'Windows'
 
 - name: Report Windows Wendy tools
   ansible.builtin.debug:
-    var: wendy_tools_windows_preflight.stdout_lines
+    var: wendy_tools_windows_info.stdout_lines
   changed_when: false
   when: ansible_facts.os_family == 'Windows'
