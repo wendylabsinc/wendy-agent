@@ -28,5 +28,5 @@
 - name: Select requested Swift with swiftly
   ansible.builtin.command: "{{ homebrew_prefix }}/bin/swiftly use {{ swift_requested_version }}"
   register: swift_macos_use
-  changed_when: "'already in use' not in (swift_macos_use.stdout | lower)"
+  changed_when: "('already in use' not in (swift_macos_use.stdout | lower)) and ('(was ' ~ swift_requested_version ~ ')' not in swift_macos_use.stdout)"
   when: install_swift and swift_requested_version | length > 0
