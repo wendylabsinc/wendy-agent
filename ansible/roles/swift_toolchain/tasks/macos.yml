@@ -3,7 +3,7 @@
   community.general.homebrew:
     name: swiftly
     state: present
-    path: "{{ homebrew_bin }}"
+    path: "{{ homebrew_prefix }}/bin"
   when: install_swift
 
 - name: Read requested Swift version

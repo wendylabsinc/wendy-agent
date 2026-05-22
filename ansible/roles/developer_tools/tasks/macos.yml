@@ -17,14 +17,14 @@
   community.general.homebrew:
     name: "{{ macos_homebrew_packages }}"
     state: present
-    path: "{{ homebrew_bin }}"
+    path: "{{ homebrew_prefix }}/bin"
   when: macos_homebrew_packages | length > 0
 
 - name: Install Homebrew casks
   community.general.homebrew_cask:
     name: "{{ macos_homebrew_casks }}"
     state: present
-    path: "{{ homebrew_bin }}"
+    path: "{{ homebrew_prefix }}/bin"
   when: macos_homebrew_casks | length > 0
 
 - name: Install Claude Code with npm when npm is available
