@@ -77,12 +77,34 @@
     mode: '0755'
   when: install_github_runner and github_runner_mode == 'login' and github_runner_macos_registered_after.stat.exists
 
+- name: Find existing GitHub runner LaunchAgents
+  ansible.builtin.find:
+    paths: "{{ ansible_env.HOME }}/Library/LaunchAgents"
+    patterns: "com.github.actions.runner*.plist"
+    file_type: file
+  register: github_runner_macos_existing_launchagents
+  when: install_github_runner and github_runner_mode == 'login' and github_runner_macos_registered_after.stat.exists
+
+- name: Keep existing macOS runner LaunchAgent
+  ansible.builtin.debug:
+    msg: "Existing GitHub runner LaunchAgent found; leaving startup unchanged: {{ github_runner_macos_existing_launchagents.files | map(attribute='path') | list }}"
+  when:
+    - install_github_runner
+    - github_runner_mode == 'login'
+    - github_runner_macos_registered_after.stat.exists
+    - github_runner_macos_existing_launchagents.matched | default(0) > 0
+
 - name: Install GitHub runner LaunchAgent
   ansible.builtin.template:
     src: macos-launchagent.plist.j2
     dest: "{{ ansible_env.HOME }}/Library/LaunchAgents/com.github.actions.runner.{{ github_runner_name }}.plist"
     mode: '0644'
-  when: install_github_runner and github_runner_mode == 'login' and github_runner_macos_registered_after.stat.exists
+  register: github_runner_macos_launchagent
+  when:
+    - install_github_runner
+    - github_runner_mode == 'login'
+    - github_runner_macos_registered_after.stat.exists
+    - github_runner_macos_existing_launchagents.matched | default(0) == 0
 
 - name: Bootstrap GitHub runner LaunchAgent
   ansible.builtin.command: >-
@@ -90,9 +112,13 @@
   register: github_runner_macos_bootstrap
   changed_when: github_runner_macos_bootstrap.rc == 0
   failed_when: github_runner_macos_bootstrap.rc not in [0, 5]
-  when: install_github_runner and github_runner_mode == 'login' and github_runner_macos_registered_after.stat.exists
+  when:
+    - github_runner_macos_launchagent is defined
+    - not github_runner_macos_launchagent.skipped | default(false)
 
 - name: Start GitHub runner LaunchAgent
   ansible.builtin.command: "launchctl kickstart -k gui/{{ ansible_facts.user_uid }}/com.github.actions.runner.{{ github_runner_name }}"
   changed_when: true
-  when: install_github_runner and github_runner_mode == 'login' and github_runner_macos_registered_after.stat.exists
+  when:
+    - github_runner_macos_launchagent is defined
+    - not github_runner_macos_launchagent.skipped | default(false)
