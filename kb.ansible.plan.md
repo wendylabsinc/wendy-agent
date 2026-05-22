@@ -296,6 +296,31 @@ For each platform, validate both profiles:
 - Swift availability: run `swift --version` inside a GitHub Actions job on Ubuntu.
 - SSH remains usable after Windows shell configuration.
 
+### Validation operating model
+
+The CI machines may be in active use while this migration is being built. During that time, autonomous work must be limited to non-mutating validation and implementation:
+
+- Build and refine the Ansible structure, roles, variables, documentation, and safety guards.
+- Run static checks such as syntax checks and linting where available.
+- Use preflight/reporting tasks that gather facts and print current state without installing packages, changing services, registering runners, changing desktop access, or changing power policy.
+- Design tasks for idempotency with explicit guards, `creates`, `stat`, `when`, and careful `changed_when` handling.
+- Do not perform mutating operations on CI machines until the coordinated check/fix session.
+
+Assumptions and constraints for validation:
+
+- Ansible should connect to all platforms over SSH.
+- The expected CI validation inventory shape is one macOS runner, one Ubuntu runner, and one Windows runner.
+- Real runner registration tokens and token-bearing inventories must remain local/uncommitted.
+
+During the coordinated check/fix session, run validation progressively:
+
+1. Preflight/report-only tasks.
+2. Syntax and dry-run checks where useful.
+3. Safe package/tool installation tags.
+4. More invasive tags such as runner startup, desktop access, and power policy only when explicitly approved.
+5. A second real run for idempotency.
+6. Smoke tests for tools, Swift, SSH, and GitHub runner status.
+
 ## Open questions
 
 - Should Ansible connect to Windows through SSH or WinRM? KISS says SSH first because we are already using it, but WinRM may be better later.
