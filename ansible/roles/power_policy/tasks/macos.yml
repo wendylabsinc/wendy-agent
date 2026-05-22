@@ -1,6 +1,24 @@
 ---
-- name: Disable macOS sleep on AC and set display sleep
-  ansible.builtin.command: pmset -c sleep 0 displaysleep 10 disksleep 0 womp 1
+- name: Configure macOS sleep on AC and display sleep
+  ansible.builtin.shell: |
+    set -euo pipefail
+    ac_settings=$(pmset -g custom | awk '
+      /AC Power:/ { ac=1; next }
+      /Battery Power:/ { ac=0 }
+      ac { print $1 "=" $2 }
+    ')
+    if printf '%s\n' "$ac_settings" | grep -qx 'sleep=0' && \
+       printf '%s\n' "$ac_settings" | grep -qx 'displaysleep=10' && \
+       printf '%s\n' "$ac_settings" | grep -qx 'disksleep=0' && \
+       printf '%s\n' "$ac_settings" | grep -qx 'womp=1'; then
+      echo present
+    else
+      pmset -c sleep 0 displaysleep 10 disksleep 0 womp 1
+      echo changed
+    fi
+  args:
+    executable: /bin/bash
   become: true
-  changed_when: true
+  register: power_policy_macos_pmset
+  changed_when: "'changed' in power_policy_macos_pmset.stdout"
   when: configure_power_policy
