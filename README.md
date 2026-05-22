@@ -108,26 +108,21 @@ cd go
 go build -o wendy-agent ./cmd/wendy-agent
 ```
 
-### Local Developer Tip
+### Repository-local Wendy CLI via direnv
 
-Add a `wendy-dev` shell function to your shell profile (`~/.zshrc` or
-`~/.bashrc`) so you can quickly iterate on CLI changes without overwriting your
-installed `wendy`:
-
-```sh
-wendy-dev() {
-  (cd /path/to/WendyOS/go && go run ./cmd/wendy "$@")
-}
-```
-
-Then use `wendy-dev` anywhere you would normally use `wendy`:
+The repository includes a `.envrc` that creates a tiny local `wendy` shim in
+`.direnv/bin`. After allowing it once, `wendy` commands run from this checkout
+rebuild and execute the Go CLI without overwriting an installed `wendy`:
 
 ```sh
-wendy-dev run
-wendy-dev discover --json
+direnv allow
+wendy run
+wendy discover --json
 ```
 
-You can do the same for the agent:
+Outside of this checkout, your normal installed `wendy` remains unchanged.
+
+You can still run the agent directly while developing it:
 
 ```sh
 wendy-agent-dev() {

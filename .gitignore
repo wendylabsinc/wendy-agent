@@ -1,4 +1,5 @@
 .DS_Store
+.direnv
 build
 .worktrees
 .build
@@ -28,6 +29,7 @@ WendyCLI.app/
 *.resolved
 go/wendy-agent
 go/wendy
+go/bin/
 
 # Local settings
 *.local.*
