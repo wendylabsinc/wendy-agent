@@ -47,6 +47,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Audit dependencies
+        run: npm audit --audit-level=high
+
       - name: Compute docs path
         id: path
         shell: bash
@@ -68,6 +71,10 @@ jobs:
 
             if [[ -z "${VERSION}" || ! "${VERSION}" =~ ^[a-z0-9][a-z0-9._-]{0,127}$ ]]; then
               echo "::error::Unsupported release tag for docs deploy path: ${RAW_VERSION}"
+              exit 1
+            fi
+            if [[ "${IS_PRERELEASE}" != "true" && "${IS_PRERELEASE}" != "false" ]]; then
+              echo "::error::Unexpected prerelease value in release payload: ${IS_PRERELEASE}"
               exit 1
             fi
 
