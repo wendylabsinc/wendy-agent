@@ -27,6 +27,16 @@
     path: "{{ homebrew_prefix }}/bin"
   when: macos_homebrew_casks | length > 0
 
+- name: Check Claude Code executable
+  ansible.builtin.stat:
+    path: "{{ homebrew_prefix }}/bin/claude"
+  register: developer_tools_macos_claude
+
+- name: Check Codex executable
+  ansible.builtin.stat:
+    path: "{{ homebrew_prefix }}/bin/codex"
+  register: developer_tools_macos_codex
+
 - name: Install Claude Code with npm when npm is available
   community.general.npm:
     name: "@anthropic-ai/claude-code"
@@ -35,7 +45,9 @@
     executable: "{{ homebrew_prefix }}/bin/npm"
   environment:
     PATH: "{{ homebrew_prefix }}/bin:{{ ansible_env.PATH }}"
-  when: install_direnv or machine_profile in ['ci', 'developer']
+  when:
+    - install_direnv or machine_profile in ['ci', 'developer']
+    - not developer_tools_macos_claude.stat.exists
 
 - name: Install Codex with npm when npm is available
   community.general.npm:
@@ -45,4 +57,6 @@
     executable: "{{ homebrew_prefix }}/bin/npm"
   environment:
     PATH: "{{ homebrew_prefix }}/bin:{{ ansible_env.PATH }}"
-  when: install_direnv or machine_profile in ['ci', 'developer']
+  when:
+    - install_direnv or machine_profile in ['ci', 'developer']
+    - not developer_tools_macos_codex.stat.exists
