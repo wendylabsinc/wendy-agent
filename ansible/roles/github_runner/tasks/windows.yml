@@ -73,7 +73,7 @@
   when: install_github_runner
 
 - name: Create GitHub runner scheduled task for logon mode
-  ansible.windows.win_scheduled_task:
+  community.windows.win_scheduled_task:
     name: GitHub Actions Runner
     description: Run GitHub Actions self-hosted runner at user logon
     actions:
