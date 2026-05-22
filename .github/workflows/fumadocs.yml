@@ -113,7 +113,6 @@ jobs:
       - name: Build static site exports
         env:
           DEPLOY_PATHS: ${{ steps.path.outputs.deploy_paths }}
-          NEXT_PUBLIC_GITHUB_REF_NAME: ${{ github.head_ref || github.ref_name }}
           NEXT_PUBLIC_SITE_URL: https://docs.wendy.dev
         run: |
           set -euo pipefail
