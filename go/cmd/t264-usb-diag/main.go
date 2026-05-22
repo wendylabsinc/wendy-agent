@@ -54,40 +54,40 @@ func main() {
 	tryInFirst := false
 	noReopen := false
 	debugUSB := false
-	concurrent := false  // submit IN read and OUT write simultaneously
-	claimAfterUID := false // open device, GET_DESCRIPTOR, THEN claim interface
-	resetDevice := false // after GET_DESCRIPTOR: release iface, reset device, reopen
-	useNv3p := false     // use nv3p v3 protocol (IsAppletT264 + DownloadT264File) instead of raw bulk
-	nv3pProbe := false   // send nv3p CMD with pre-submitted IN read; log exactly what comes back
-	nv3pNoAck := false   // send nv3p CMD + DATA immediately, no waitACK between them
-	dlProbe := false     // send DownloadT264File CMD for bct_br, wait 30s for any IN response
-	zeroSend := 0        // send N zero bytes as very first write (tests content vs prior-writes hypothesis)
-	sizeProbe := false   // probe which transfer sizes the device accepts (short vs full USB packets)
-	p2NoUID := false        // skip GET_DESCRIPTOR in openMB1 (test if UID arm is needed for MB1)
-	p2Probe := false        // Phase 2 verbose probe: pre-submit 60s IN, send one CMD, wait; skip normal poll
-	p2SameSession := false  // keep Phase 2a USB session open for Phase 2b (no close/reopen between them)
-	p2DelayMs := 200        // delay between Phase 2a close and Phase 2b open (ms)
-	p2ClearHalt := false    // send CLEAR_FEATURE(ENDPOINT_HALT) to OUT EP before first write
-	p2GetStatus := false    // read GET_STATUS on OUT/IN endpoints before first write; print halt bit
-	p2SetInterface := false // send SET_INTERFACE(0,0) before first write (resets endpoint DATA toggle)
-	p2DrainIn := false      // do an extra IN read (max 512B, 500ms timeout) before OUT writes
-	p2SleepAfterInMs := 0        // sleep N ms after Phase 2a IN read, before Phase 2b OUT write
-	p2LibusbClearHalt := false   // call libusb_clear_halt() (IOKit ClearPipeStall) on OUT endpoint
-	p2LibusbSetAlt := false      // call libusb_set_interface_alt_setting() (IOKit SetAlternateInterface)
-	p2SkipVersionRead := false   // skip Phase 2a 68-byte IN read; test if IN read triggers re-enum
-	p2RetryCount := 0            // retry each Phase 2b chunk up to N times on transfer error (100ms between)
-	p2ReconnectCount := 0        // on "no device" in Phase 2b: close, wait for re-enum, reopen, retry
-	p2CgoWrite := false          // use libusb_bulk_transfer directly (bypass gousb) with 5000ms timeout
-	p2Prewrite := false          // pre-submit bct_mem OUT write before IN read (requires -p2-same-session)
-	p2AbortIn := false           // call libusb_clear_halt on IN ep before Phase 2b OUT writes
-	p2RereadVersion := false     // re-read version string in Phase 2b session (drain SET_INTERFACE re-queue)
-	p2Nv3p := false             // Phase 2b: use nv3p v3 (IsAppletT264 + DownloadT264File) instead of raw bulk
-	p2Nv3pNoIsApplet := false   // skip IsAppletT264; go straight to DownloadT264File (for devices that don't respond to GetPlatformInfo)
-	p2AsyncIn := false          // start async IN goroutine alongside raw bulk (keeps IN URBs pending; logs everything received)
-	p2ChunkOverride := 0        // if non-zero, override default 16384-byte chunk size for Phase 2 writes
-	p2ReadTimeoutSec := 15       // per-read timeout for Phase 2 IN reads
-	p2ReadAfterChunk := false   // after each successful chunk write, do a blocking IN read before next write
-	p2AfterChunkMs := 2000      // timeout (ms) for the per-chunk IN read (-p2-read-after-chunk)
+	concurrent := false        // submit IN read and OUT write simultaneously
+	claimAfterUID := false     // open device, GET_DESCRIPTOR, THEN claim interface
+	resetDevice := false       // after GET_DESCRIPTOR: release iface, reset device, reopen
+	useNv3p := false           // use nv3p v3 protocol (IsAppletT264 + DownloadT264File) instead of raw bulk
+	nv3pProbe := false         // send nv3p CMD with pre-submitted IN read; log exactly what comes back
+	nv3pNoAck := false         // send nv3p CMD + DATA immediately, no waitACK between them
+	dlProbe := false           // send DownloadT264File CMD for bct_br, wait 30s for any IN response
+	zeroSend := 0              // send N zero bytes as very first write (tests content vs prior-writes hypothesis)
+	sizeProbe := false         // probe which transfer sizes the device accepts (short vs full USB packets)
+	p2NoUID := false           // skip GET_DESCRIPTOR in openMB1 (test if UID arm is needed for MB1)
+	p2Probe := false           // Phase 2 verbose probe: pre-submit 60s IN, send one CMD, wait; skip normal poll
+	p2SameSession := false     // keep Phase 2a USB session open for Phase 2b (no close/reopen between them)
+	p2DelayMs := 200           // delay between Phase 2a close and Phase 2b open (ms)
+	p2ClearHalt := false       // send CLEAR_FEATURE(ENDPOINT_HALT) to OUT EP before first write
+	p2GetStatus := false       // read GET_STATUS on OUT/IN endpoints before first write; print halt bit
+	p2SetInterface := false    // send SET_INTERFACE(0,0) before first write (resets endpoint DATA toggle)
+	p2DrainIn := false         // do an extra IN read (max 512B, 500ms timeout) before OUT writes
+	p2SleepAfterInMs := 0      // sleep N ms after Phase 2a IN read, before Phase 2b OUT write
+	p2LibusbClearHalt := false // call libusb_clear_halt() (IOKit ClearPipeStall) on OUT endpoint
+	p2LibusbSetAlt := false    // call libusb_set_interface_alt_setting() (IOKit SetAlternateInterface)
+	p2SkipVersionRead := false // skip Phase 2a 68-byte IN read; test if IN read triggers re-enum
+	p2RetryCount := 0          // retry each Phase 2b chunk up to N times on transfer error (100ms between)
+	p2ReconnectCount := 0      // on "no device" in Phase 2b: close, wait for re-enum, reopen, retry
+	p2CgoWrite := false        // use libusb_bulk_transfer directly (bypass gousb) with 5000ms timeout
+	p2Prewrite := false        // pre-submit bct_mem OUT write before IN read (requires -p2-same-session)
+	p2AbortIn := false         // call libusb_clear_halt on IN ep before Phase 2b OUT writes
+	p2RereadVersion := false   // re-read version string in Phase 2b session (drain SET_INTERFACE re-queue)
+	p2Nv3p := false            // Phase 2b: use nv3p v3 (IsAppletT264 + DownloadT264File) instead of raw bulk
+	p2Nv3pNoIsApplet := false  // skip IsAppletT264; go straight to DownloadT264File (for devices that don't respond to GetPlatformInfo)
+	p2AsyncIn := false         // start async IN goroutine alongside raw bulk (keeps IN URBs pending; logs everything received)
+	p2ChunkOverride := 0       // if non-zero, override default 16384-byte chunk size for Phase 2 writes
+	p2ReadTimeoutSec := 15     // per-read timeout for Phase 2 IN reads
+	p2ReadAfterChunk := false  // after each successful chunk write, do a blocking IN read before next write
+	p2AfterChunkMs := 2000     // timeout (ms) for the per-chunk IN read (-p2-read-after-chunk)
 	outTimeoutSec := 30
 
 	args := os.Args[1:]
@@ -253,7 +253,11 @@ func main() {
 		case "-p2-nv3p":
 			// Use nv3p v3 protocol for Phase 2b: IsAppletT264 handshake followed by
 			// DownloadT264File for each file. MB1 applet speaks nv3p v3, not raw bulk.
+			// Force same-session: avoids a SET_INTERFACE reset (from DefaultInterface on
+			// a fresh claim) that would cause MB1 to re-send the spontaneous RESPONSE_CMD
+			// into the nv3p session before we can process it.
 			p2Nv3p = true
+			p2SameSession = true
 		case "-p2-nv3p-no-is-applet":
 			// Skip IsAppletT264 (GetPlatformInfo); go straight to DownloadT264File.
 			// Use when MB1 doesn't respond to GetPlatformInfo but does accept downloads.
@@ -608,7 +612,8 @@ func main() {
 		elapsed := time.Since(t0)
 		if err != nil {
 			fmt.Printf("  FAILED (%d written) in %.3fs: %v\n", n, elapsed.Seconds(), err)
-			h.done(); h.dev.Close()
+			h.done()
+			h.dev.Close()
 			return
 		}
 		fmt.Printf("  OK (%d bytes) in %.3fs\n", n, elapsed.Seconds())
@@ -617,7 +622,9 @@ func main() {
 		fmt.Printf("  Now trying first 2048B of bct_br after the zero write...\n")
 		data := payloads[0]
 		chunkEnd := 2048
-		if chunkEnd > len(data) { chunkEnd = len(data) }
+		if chunkEnd > len(data) {
+			chunkEnd = len(data)
+		}
 		t0 = time.Now()
 		ctx2, cancel2 := context.WithTimeout(context.Background(), 10*time.Second)
 		n2, err2 := h.outEP.WriteContext(ctx2, data[:chunkEnd])
@@ -628,7 +635,8 @@ func main() {
 		} else {
 			fmt.Printf("  bct_br[0:2048] OK (%d bytes) in %.3fs\n", n2, elapsed2.Seconds())
 		}
-		h.done(); h.dev.Close()
+		h.done()
+		h.dev.Close()
 		return
 	}
 
@@ -638,7 +646,9 @@ func main() {
 		// GetPlatformInfo which we already confirmed gets no response).
 		if h.inEP == nil {
 			fmt.Println("dl-probe requires bulk IN endpoint")
-			h.done(); h.dev.Close(); os.Exit(1)
+			h.done()
+			h.dev.Close()
+			os.Exit(1)
 		}
 
 		type inResult struct {
@@ -680,12 +690,19 @@ func main() {
 
 		// v3 checksum: sum(header) + sum(cmd+args), no sizeField
 		var ck uint32
-		for _, b := range hdr     { ck += uint32(b) }
-		for _, b := range cmdArgs { ck += uint32(b) }
+		for _, b := range hdr {
+			ck += uint32(b)
+		}
+		for _, b := range cmdArgs {
+			ck += uint32(b)
+		}
 		cs := make([]byte, 4)
 		binary.LittleEndian.PutUint32(cs, ^ck+1)
 
-		writes := []struct{ label string; buf []byte }{
+		writes := []struct {
+			label string
+			buf   []byte
+		}{
 			{"CMD header (16B)", hdr},
 			{"CMD size   (4B)", sizeField},
 			{"CMD cmd+args (60B)", cmdArgs},
@@ -717,7 +734,8 @@ func main() {
 			go func() { <-presub }()
 		}
 
-		h.done(); h.dev.Close()
+		h.done()
+		h.dev.Close()
 		return
 	}
 
@@ -767,7 +785,9 @@ func main() {
 		// Tests the hypothesis that the T264 bootROM uses nv3p framing but never sends ACKs.
 		if h.inEP == nil {
 			fmt.Println("nv3p-noack requires bulk endpoints")
-			h.done(); h.dev.Close(); os.Exit(1)
+			h.done()
+			h.dev.Close()
+			os.Exit(1)
 		}
 
 		// Helper: send buf as one bulk OUT write.
@@ -796,7 +816,9 @@ func main() {
 		mkChecksum := func(parts ...[]byte) []byte {
 			var s uint32
 			for _, p := range parts {
-				for _, b := range p { s += uint32(b) }
+				for _, b := range p {
+					s += uint32(b)
+				}
 			}
 			cs := make([]byte, 4)
 			binary.LittleEndian.PutUint32(cs, ^s+1)
@@ -823,10 +845,18 @@ func main() {
 			cs := mkChecksum(hdr, cmdArgs) // v3: no size field in checksum
 
 			// Send CMD as 4 separate writes (matching tegrarcm_v2 NvTegra3pSend)
-			if !outWrite("CMD header", hdr) { break noackLoop }
-			if !outWrite("CMD size", sizeField) { break noackLoop }
-			if !outWrite("CMD cmd+args", cmdArgs) { break noackLoop }
-			if !outWrite("CMD checksum", cs) { break noackLoop }
+			if !outWrite("CMD header", hdr) {
+				break noackLoop
+			}
+			if !outWrite("CMD size", sizeField) {
+				break noackLoop
+			}
+			if !outWrite("CMD cmd+args", cmdArgs) {
+				break noackLoop
+			}
+			if !outWrite("CMD checksum", cs) {
+				break noackLoop
+			}
 
 			// Poll IN briefly — expecting RESPONSE_CMD (type=9)
 			{
@@ -847,16 +877,26 @@ func main() {
 			binary.LittleEndian.PutUint32(dataSz, uint32(len(data)))
 			dataCS := mkChecksum(dataHdr, data) // v3: no size field
 
-			if !outWrite("DATA header", dataHdr) { break noackLoop }
-			if !outWrite("DATA size", dataSz) { break noackLoop }
+			if !outWrite("DATA header", dataHdr) {
+				break noackLoop
+			}
+			if !outWrite("DATA size", dataSz) {
+				break noackLoop
+			}
 			// Send data in 2048-byte chunks (T264 bootROM limit).
 			for off := 0; off < len(data); {
 				n := 2048
-				if n > len(data)-off { n = len(data)-off }
-				if !outWrite(fmt.Sprintf("DATA[%d:%d]", off, off+n), data[off:off+n]) { break noackLoop }
+				if n > len(data)-off {
+					n = len(data) - off
+				}
+				if !outWrite(fmt.Sprintf("DATA[%d:%d]", off, off+n), data[off:off+n]) {
+					break noackLoop
+				}
 				off += n
 			}
-			if !outWrite("DATA checksum", dataCS) { break noackLoop }
+			if !outWrite("DATA checksum", dataCS) {
+				break noackLoop
+			}
 
 			// Poll IN after DATA — expecting STATUS_CMD (type=8)
 			{
@@ -869,7 +909,8 @@ func main() {
 			}
 		}
 
-		h.done(); h.dev.Close()
+		h.done()
+		h.dev.Close()
 		fmt.Println("\n=== nv3p-noack done — waiting for re-enumeration (15s) ===")
 		deadline := time.Now().Add(15 * time.Second)
 		for time.Now().Before(deadline) {
@@ -919,17 +960,21 @@ func main() {
 		// Build nv3p v3 GetPlatformInfo CMD packet manually.
 		// 28 bytes total: header(16) + size(4) + cmd(4) + checksum(4)
 		hdrBytes := make([]byte, 16)
-		binary.LittleEndian.PutUint32(hdrBytes[0:], 3) // version=3
-		binary.LittleEndian.PutUint32(hdrBytes[4:], 1) // type=CMD
-		binary.LittleEndian.PutUint32(hdrBytes[8:], 0) // seq=0
+		binary.LittleEndian.PutUint32(hdrBytes[0:], 3)  // version=3
+		binary.LittleEndian.PutUint32(hdrBytes[4:], 1)  // type=CMD
+		binary.LittleEndian.PutUint32(hdrBytes[8:], 0)  // seq=0
 		binary.LittleEndian.PutUint32(hdrBytes[12:], 0) // reserved=0
-		sizeBytes := make([]byte, 4)  // args_len=0
+		sizeBytes := make([]byte, 4)                    // args_len=0
 		cmdBytes := make([]byte, 4)
 		binary.LittleEndian.PutUint32(cmdBytes, 1) // CmdGetPlatformInfo=1
 		// v3 checksum covers header + cmd (not size field)
 		var ck uint32
-		for _, b := range hdrBytes { ck += uint32(b) }
-		for _, b := range cmdBytes  { ck += uint32(b) }
+		for _, b := range hdrBytes {
+			ck += uint32(b)
+		}
+		for _, b := range cmdBytes {
+			ck += uint32(b)
+		}
 		csumBytes := make([]byte, 4)
 		binary.LittleEndian.PutUint32(csumBytes, ^ck+1)
 		fmt.Printf("CMD bytes: hdr=%s size=%s cmd=%s csum=%s\n",
@@ -1105,7 +1150,9 @@ func main() {
 			failed := false
 			for off := 0; off < len(data); {
 				end := off + maxWrite
-				if end > len(data) { end = len(data) }
+				if end > len(data) {
+					end = len(data)
+				}
 				wCtx, wCancel := context.WithTimeout(context.Background(), time.Duration(outTimeoutSec)*time.Second)
 				n, err := h.outEP.WriteContext(wCtx, data[off:end])
 				wCancel()
@@ -1200,7 +1247,10 @@ func main() {
 	// version string. The OUT pipe is in Open state now (just after SetAlternateInterface).
 	// After the IN read completes, IOKit may put the OUT pipe in Paused state — but a
 	// transfer already submitted to XHCI hardware will complete regardless of IOKit state.
-	type prewriteResult struct{ n int; err error }
+	type prewriteResult struct {
+		n   int
+		err error
+	}
 	var p2PrewriteCh chan prewriteResult
 	p2BctMemOffset := 0
 	if p2Prewrite && p2aOut != nil {
@@ -1234,6 +1284,25 @@ func main() {
 			fmt.Printf("  BL version: %v (continuing)\n", verr)
 		} else {
 			fmt.Printf("  BL version (%d bytes): %q\n", vn, vBuf[:vn])
+		}
+
+		// When using nv3p, the 68-byte version string is MB1's spontaneous nv3p v3
+		// RESPONSE_CMD (type=9). MB1 waits for a host ACK before processing any commands.
+		// Without this ACK, IsAppletT264 and DownloadT264File never get a response.
+		if p2Nv3p && p2aOut != nil && vn >= 20 {
+			ackBytes, seq, err := nv3p.ParseAndBuildACK(vBuf[:vn])
+			if err != nil {
+				fmt.Printf("  nv3p spontaneous ACK: parse error: %v (continuing anyway)\n", err)
+			} else {
+				wCtx, wCancel := context.WithTimeout(context.Background(), 2*time.Second)
+				_, werr := p2aOut.WriteContext(wCtx, ackBytes)
+				wCancel()
+				if werr != nil {
+					fmt.Printf("  nv3p spontaneous ACK (seq=%d): FAILED: %v\n", seq, werr)
+				} else {
+					fmt.Printf("  nv3p spontaneous ACK (seq=%d): OK\n", seq)
+				}
+			}
 		}
 	}
 

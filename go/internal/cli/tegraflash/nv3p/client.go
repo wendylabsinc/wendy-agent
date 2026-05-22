@@ -159,10 +159,12 @@ func (c *Client) Reset() error {
 
 // IsAppletT264 performs the GetPlatformInfo handshake with the T264 MB1 applet.
 // The exchange (from NvTegraRcmIsApplet disassembly) is:
-//   host→device: CMD(cmd=1, size=4)
-//   device→host: RESPONSE_CMD(type=9, data_size=16)   ← consumed by sendCmd's waitACK
-//   device→host: DATA(16 bytes of platform info)
-//   device→host: STATUS_CMD(type=8)
+//
+//	host→device: CMD(cmd=1, size=4)
+//	device→host: RESPONSE_CMD(type=9, data_size=16)   ← consumed by sendCmd's waitACK
+//	device→host: DATA(16 bytes of platform info)
+//	device→host: STATUS_CMD(type=8)
+//
 // Returns true when the device is in applet mode (status byte == 4).
 func (c *Client) IsAppletT264() (bool, error) {
 	if err := c.sendCmd(CmdGetPlatformInfo, nil); err != nil {
@@ -184,10 +186,11 @@ func (c *Client) IsAppletT264() (bool, error) {
 // typeName is the download type identifier used by tegrarcm_v2 ("bct_mem", "blob", etc.).
 //
 // For T264 (v3 protocol), the exchange (from NvTegraRcmAppletDownload disassembly) is:
-//   host→device: CMD(2, args, size=60)
-//   device→host: RESPONSE_CMD(type=9, data_size=0)   ← consumed by sendCmd's waitACK
-//   host→device: DATA(file bytes)
-//   device→host: STATUS_CMD(type=8)
+//
+//	host→device: CMD(2, args, size=60)
+//	device→host: RESPONSE_CMD(type=9, data_size=0)   ← consumed by sendCmd's waitACK
+//	host→device: DATA(file bytes)
+//	device→host: STATUS_CMD(type=8)
 func (c *Client) DownloadT264File(typeName string, data []byte) error {
 	// Struct layout (56 bytes, matching tegrarcm_v2 NvTegraRcmAppletDownload):
 	//   [0x00..0x07] file_size uint64
@@ -545,6 +548,35 @@ func (c *Client) writeHeader(pktType, sequence uint32, pkt []byte) {
 	if c.basicHdrSz >= sizeBasicV3 {
 		binary.LittleEndian.PutUint32(pkt[12:], 0)
 	}
+}
+
+// ParseAndBuildACK parses a raw nv3p v3 packet (as read from USB) and returns
+// the 20-byte ACK that the host must send back to MB1 before it will process
+// any commands. Call this when MB1 sends its spontaneous RESPONSE_CMD on
+// connection — the returned bytes should be written to the OUT endpoint.
+//
+// Returns the ACK bytes, the packet's sequence number, and any parse error.
+// A parse error means the bytes don't look like a valid v3 nv3p packet, but
+// callers may choose to send a best-effort ACK (seq=0) regardless.
+func ParseAndBuildACK(raw []byte) (ack []byte, seq uint32, err error) {
+	if len(raw) < sizeBasicV3+sizeFooter {
+		return nil, 0, fmt.Errorf("nv3p: spontaneous packet too short (%d bytes)", len(raw))
+	}
+	ver := binary.LittleEndian.Uint32(raw[0:4])
+	seq = binary.LittleEndian.Uint32(raw[8:12])
+	if ver != VersionT264 {
+		err = fmt.Errorf("nv3p: spontaneous packet has version %d, want %d", ver, VersionT264)
+		// Build ACK with seq=0 as a best-effort fallback; caller can decide whether to send it.
+		seq = 0
+	}
+	// ACK packet: [ver=3][type=ACKv3=3][seq][rsvd=0][checksum]
+	ack = make([]byte, sizeBasicV3+sizeFooter)
+	binary.LittleEndian.PutUint32(ack[0:], VersionT264)
+	binary.LittleEndian.PutUint32(ack[4:], PacketTypeACKv3)
+	binary.LittleEndian.PutUint32(ack[8:], seq)
+	binary.LittleEndian.PutUint32(ack[12:], 0) // rsvd
+	binary.LittleEndian.PutUint32(ack[16:], twosComplement(cksum(ack[:sizeBasicV3])))
+	return ack, seq, err
 }
 
 // cksum is the nv3p checksum: sum of all bytes (uint32 wrapping).
