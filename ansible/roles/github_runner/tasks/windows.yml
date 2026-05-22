@@ -72,6 +72,14 @@
   register: github_runner_windows_registered_after
   when: install_github_runner
 
+- name: Check existing GitHub runner scheduled task
+  ansible.windows.win_shell: |
+    $task = Get-ScheduledTask -TaskName 'GitHub Actions Runner' -ErrorAction SilentlyContinue
+    if ($task) { "exists=$($task.State)" } else { 'missing' }
+  register: github_runner_windows_task
+  changed_when: false
+  when: install_github_runner and github_runner_mode == 'login' and github_runner_windows_registered_after.stat.exists
+
 - name: Create GitHub runner scheduled task for logon mode
   community.windows.win_scheduled_task:
     name: GitHub Actions Runner
@@ -86,9 +94,16 @@
     run_level: highest
     state: present
     enabled: true
-  when: install_github_runner and github_runner_mode == 'login' and github_runner_windows_registered_after.stat.exists
+  when:
+    - install_github_runner
+    - github_runner_mode == 'login'
+    - github_runner_windows_registered_after.stat.exists
+    - "'missing' in github_runner_windows_task.stdout"
 
 - name: Start GitHub runner scheduled task
-  ansible.windows.win_shell: Start-ScheduledTask -TaskName 'GitHub Actions Runner'
-  changed_when: true
+  ansible.windows.win_shell: |
+    $task = Get-ScheduledTask -TaskName 'GitHub Actions Runner' -ErrorAction SilentlyContinue
+    if ($task -and $task.State -ne 'Running') { Start-ScheduledTask -TaskName 'GitHub Actions Runner'; 'started' } else { 'running' }
+  register: github_runner_windows_task_start
+  changed_when: "'started' in github_runner_windows_task_start.stdout"
   when: install_github_runner and github_runner_mode == 'login' and github_runner_windows_registered_after.stat.exists
