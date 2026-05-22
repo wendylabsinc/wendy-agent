@@ -1,0 +1,135 @@
+name: Fumadocs
+
+on:
+  push:
+    branches: ["**"]
+    paths:
+      - "docs/**"
+      - ".github/workflows/fumadocs.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - ".github/workflows/fumadocs.yml"
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: fumadocs-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build docs
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: docs
+    outputs:
+      deploy_path: ${{ steps.path.outputs.deploy_path }}
+      url: ${{ steps.path.outputs.url }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: docs/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Compute docs path
+        id: path
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sanitize() {
+            printf '%s' "$1" \
+              | tr '[:upper:]' '[:lower:]' \
+              | sed -E 's/[^a-z0-9._-]+/-/g; s/^-+//; s/-+$//'
+          }
+
+          if [[ "${GITHUB_EVENT_NAME}" == "release" ]]; then
+            VERSION="$(sanitize "${GITHUB_REF_NAME}")"
+            DEPLOY_PATH="release-${VERSION}"
+          else
+            BRANCH="$(sanitize "${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}")"
+            DEPLOY_PATH="branch-${BRANCH}-${GITHUB_SHA}"
+          fi
+
+          echo "deploy_path=${DEPLOY_PATH}" >> "$GITHUB_OUTPUT"
+          echo "url=https://docs.wendy.dev/${DEPLOY_PATH}/" >> "$GITHUB_OUTPUT"
+
+      - name: Build
+        env:
+          NEXT_PUBLIC_BASE_PATH: /${{ steps.path.outputs.deploy_path }}
+          NEXT_PUBLIC_GITHUB_REF_NAME: ${{ github.head_ref || github.ref_name }}
+          NEXT_PUBLIC_SITE_URL: https://docs.wendy.dev
+        run: npm run build
+
+      - name: Stage prefixed export
+        env:
+          DEPLOY_PATH: ${{ steps.path.outputs.deploy_path }}
+        run: |
+          set -euo pipefail
+          rm -rf export
+          mkdir -p "export/${DEPLOY_PATH}"
+          cp -R out/. "export/${DEPLOY_PATH}/"
+
+      - name: Upload static site artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: fumadocs-static-site
+          path: docs/export
+          if-no-files-found: error
+
+  deploy:
+    name: Deploy docs
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.event_name != 'pull_request'
+    environment:
+      name: docs
+      url: ${{ needs.build.outputs.url }}
+    steps:
+      - name: Download static site artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: fumadocs-static-site
+          path: out
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v3
+
+      - name: Upload to Cloud Storage
+        env:
+          GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+          DOCS_BUCKET: wendy-docs-public
+          DEPLOY_PATH: ${{ needs.build.outputs.deploy_path }}
+        run: |
+          set -euo pipefail
+          gcloud storage rsync "out/${DEPLOY_PATH}" "gs://${DOCS_BUCKET}/${DEPLOY_PATH}" \
+            --recursive \
+            --delete-unmatched-destination-objects \
+            --quiet \
+            --project="${GCP_PROJECT_ID}"
+          gcloud storage objects update "gs://${DOCS_BUCKET}/${DEPLOY_PATH}/**" \
+            --cache-control="public, max-age=300" \
+            --quiet \
+            --project="${GCP_PROJECT_ID}"
