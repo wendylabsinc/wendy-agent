@@ -28,7 +28,6 @@ const publicAssetExtensions = new Set([
   '.json',
   '.pdf',
   '.png',
-  '.sh',
   '.svg',
   '.txt',
   '.webp',
