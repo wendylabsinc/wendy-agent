@@ -81,6 +81,8 @@ The `.github/workflows/fumadocs.yml` workflow runs when `docs`,
 The deploy job authenticates to GCP with Workload Identity Federation and syncs
 static files to `gs://wendy-docs-public/<deploy-path>`. Static exports include
 SHA-256 manifests that are verified before each deploy path is synced.
+Release deploys also ensure bucket object versioning is enabled before updating
+`latest/` or `latest-nightly/`, so alias overwrites remain recoverable.
 
 Required GitHub environment variables:
 

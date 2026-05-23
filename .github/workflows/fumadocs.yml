@@ -2,7 +2,7 @@ name: Fumadocs
 
 on:
   push:
-    branches: ["**"]
+    branches: [main]
     paths:
       - "docs"
       - "docs/**"
@@ -229,6 +229,19 @@ jobs:
 
       - name: Set up Cloud SDK
         uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
+
+      - name: Ensure release alias rollback support
+        if: github.event_name == 'release'
+        env:
+          GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+          DOCS_BUCKET: wendy-docs-public
+        run: |
+          set -euo pipefail
+
+          gcloud storage buckets update "gs://${DOCS_BUCKET}" \
+            --versioning \
+            --quiet \
+            --project="${GCP_PROJECT_ID}"
 
       - name: Upload to Cloud Storage
         env:
