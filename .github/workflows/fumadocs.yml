@@ -170,7 +170,6 @@ jobs:
     needs: build
     if: >-
       github.event_name == 'release' ||
-      github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) ||
       (github.event_name == 'push' && github.ref_protected)
     permissions:
@@ -225,7 +224,36 @@ jobs:
               --project="${GCP_PROJECT_ID}"
 
             DOCS_URL="https://docs.wendy.dev/${DEPLOY_PATH}/"
-            if ! curl -fsSI --max-time 30 "${DOCS_URL}" >/dev/null; then
-              echo "::warning::Post-deploy smoke test failed for ${DOCS_URL}"
-            fi
+            response_file="$(mktemp)"
+            curl -fsS --max-time 30 -o "${response_file}" "${DOCS_URL}"
+            grep -q "WendyOS Docs" "${response_file}"
           done <<< "${DEPLOY_PATHS}"
+
+      - name: Delete expired branch previews
+        env:
+          GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+          DOCS_BUCKET: wendy-docs-public
+          RETENTION_DAYS: "30"
+        run: |
+          set -euo pipefail
+
+          cutoff_epoch="$(date -u -d "${RETENTION_DAYS} days ago" +%s)"
+          listing_file="$(mktemp)"
+          delete_file="$(mktemp)"
+
+          gcloud storage ls -l --recursive "gs://${DOCS_BUCKET}/branch-*/**" \
+            --project="${GCP_PROJECT_ID}" > "${listing_file}" 2>/dev/null || true
+
+          while read -r size updated_at object_url _; do
+            [[ "${size}" =~ ^[0-9]+$ ]] || continue
+            [[ "${object_url}" == gs://* ]] || continue
+
+            object_epoch="$(date -u -d "${updated_at}" +%s 2>/dev/null || echo 0)"
+            if (( object_epoch > 0 && object_epoch < cutoff_epoch )); then
+              printf '%s\n' "${object_url}" >> "${delete_file}"
+            fi
+          done < "${listing_file}"
+
+          if [[ -s "${delete_file}" ]]; then
+            xargs -r -n 100 gcloud storage rm --quiet --project="${GCP_PROJECT_ID}" < "${delete_file}"
+          fi

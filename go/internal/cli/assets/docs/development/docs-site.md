@@ -76,7 +76,7 @@ The `.github/workflows/fumadocs.yml` workflow runs when `docs`,
 | Pull request to `main` from this repository | Builds and deploys a branch preview |
 | Published stable release | Deploys `release-<version>/` and updates `latest/` |
 | Published prerelease/nightly | Deploys `release-nightly-<version>/` and updates `latest-nightly/` |
-| Manual dispatch | Builds and deploys a branch-style preview |
+| Manual dispatch | Builds a branch-style preview artifact without deploying |
 
 The deploy job authenticates to GCP with Workload Identity Federation and syncs
 static files to `gs://wendy-docs-public/<deploy-path>`.
@@ -92,9 +92,11 @@ Required GitHub environment variables:
 ## Hosting
 
 Static files are served from the public `wendy-docs-public` Cloud Storage bucket
-through the global external HTTP(S) load balancer at `8.232.49.165`. The load
+through the global external HTTP(S) load balancer for `docs.wendy.dev`. The load
 balancer terminates HTTPS, redirects `docs.wendy.sh` to `docs.wendy.dev`, and
 adds security response headers for the public docs host.
+
+Branch-preview objects under `branch-*` are cleaned up by CI after 30 days.
 
 ## Release Notifications
 
