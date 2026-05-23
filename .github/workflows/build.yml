@@ -736,11 +736,11 @@ jobs:
 
           if [ -n "$DISCORD_WEBHOOK_URL" ]; then
             DESC=$'## Update the agent on your device\n```\nwendy device update --nightly\n```'
-            DESC="${DESC}
-
-          ## Docs
-          - Release-nightly docs: ${DOCS_URL}
-          - Latest nightly docs: ${LATEST_DOCS_URL}"
+            DOCS_LINKS=$(printf '%s\n' \
+              '## Docs' \
+              "- Release-nightly docs: ${DOCS_URL}" \
+              "- Latest nightly docs: ${LATEST_DOCS_URL}")
+            DESC=$(printf '%s\n\n%s' "$DESC" "$DOCS_LINKS")
             PAYLOAD=$(jq -n \
               --arg content "🌙 **New nightly build**: **${VERSION}**" \
               --arg title "Nightly ${VERSION}" \
@@ -1316,13 +1316,11 @@ jobs:
           BODY=$(echo "$BODY" | tr -d '\r')
           SHORT_BODY=$(echo "$BODY" | head -c 800)
 
-          DOCS_LINKS=$(cat <<DOCS_EOF
-          ## Docs
-
-          - Release docs: ${DOCS_URL}
-          - Latest docs: ${LATEST_DOCS_URL}
-          DOCS_EOF
-          )
+          DOCS_LINKS=$(printf '%s\n' \
+            '## Docs' \
+            '' \
+            "- Release docs: ${DOCS_URL}" \
+            "- Latest docs: ${LATEST_DOCS_URL}")
 
           # Installation instructions
           read -r -d '' INSTALL_INSTRUCTIONS << 'INSTALL_EOF' || true

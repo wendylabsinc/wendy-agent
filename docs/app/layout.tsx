@@ -1,5 +1,6 @@
 import { Inter } from 'next/font/google';
 import { Provider } from '@/components/provider';
+import type { ReactNode } from 'react';
 import './global.css';
 
 const inter = Inter({
@@ -15,7 +16,7 @@ export const metadata = {
   description: 'Developer documentation for WendyOS, wendy-agent, and the Wendy CLI.',
 };
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="en" className={inter.className} suppressHydrationWarning>
       <body className="flex min-h-screen flex-col">

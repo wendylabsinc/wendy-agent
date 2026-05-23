@@ -10,6 +10,7 @@ This guide covers everything you need to contribute to the `wendy-agent` reposit
 | [testing.md](testing.md) | Unit tests, integration tests against real hardware, test coverage |
 | [contributing.md](contributing.md) | Branching model, commit style, PR workflow, code owners |
 | [debugging.md](debugging.md) | Debugging the agent itself: logs, env vars, gRPC tracing, common failures |
+| [docs-site.md](docs-site.md) | Fumadocs local development, CI, hosting, and release docs URLs |
 
 ## Repository Layout
 

@@ -1,7 +1,8 @@
 import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const docsRoot = path.resolve(new URL('..', import.meta.url).pathname);
+const docsRoot = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
 const contentRoot = path.join(docsRoot, 'content', 'docs');
 const publicRoot = path.join(docsRoot, 'public');
 const publicDocsRoot = path.join(publicRoot, 'docs');
@@ -36,7 +37,7 @@ const publicAssetExtensions = new Set([
 const appFiles = new Set(['package-lock.json', 'package.json', 'tsconfig.json']);
 
 await rm(contentRoot, { recursive: true, force: true });
-await rm(publicDocsRoot, { recursive: true, force: true });
+await rm(publicRoot, { recursive: true, force: true });
 await mkdir(contentRoot, { recursive: true });
 await mkdir(publicDocsRoot, { recursive: true });
 
