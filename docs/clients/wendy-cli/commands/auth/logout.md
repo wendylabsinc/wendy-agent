@@ -1,1 +1,0 @@
-Removes all stored authentication credentials from `~/.wendy/config.json`. After logging out, commands that require mTLS (connecting to provisioned devices) will fall back to plaintext gRPC and show a provisioning hint.

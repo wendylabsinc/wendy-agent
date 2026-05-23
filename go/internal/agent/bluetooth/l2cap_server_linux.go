@@ -11,7 +11,7 @@ import (
 	"net"
 	"time"
 
-	agentpb "github.com/wendylabsinc/wendy/proto/gen/agentpb"
+	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	"go.uber.org/zap"
 	"golang.org/x/sys/unix"
 	"google.golang.org/protobuf/proto"

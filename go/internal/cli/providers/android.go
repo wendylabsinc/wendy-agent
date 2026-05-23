@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/wendylabsinc/wendy/internal/shared/models"
+	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 )
 
 // androidBuildContext is stored in BuiltApp.Context for ADB builds.

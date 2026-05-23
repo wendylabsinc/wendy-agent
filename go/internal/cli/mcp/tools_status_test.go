@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/wendylabsinc/wendy/internal/shared/config"
+	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 )
 
 func TestWendyStatus_NotConnected(t *testing.T) {

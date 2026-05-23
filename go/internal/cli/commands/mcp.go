@@ -6,8 +6,8 @@ import (
 	"os"
 
 	"github.com/spf13/cobra"
-	wendymcp "github.com/wendylabsinc/wendy/internal/cli/mcp"
-	"github.com/wendylabsinc/wendy/internal/shared/config"
+	wendymcp "github.com/wendylabsinc/wendy/go/internal/cli/mcp"
+	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 )
 
 func newMCPCmd() *cobra.Command {

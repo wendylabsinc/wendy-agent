@@ -1,1 +1,0 @@
-Lists all active entitlements, as `--json` or in human a readable way.

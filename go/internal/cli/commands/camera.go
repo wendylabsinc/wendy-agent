@@ -9,8 +9,8 @@ import (
 	"os/exec"
 
 	"github.com/spf13/cobra"
-	"github.com/wendylabsinc/wendy/internal/cli/tui"
-	agentpb "github.com/wendylabsinc/wendy/proto/gen/agentpb"
+	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
 func newCameraCmd() *cobra.Command {

@@ -6,8 +6,8 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
 
-	agentpb "github.com/wendylabsinc/wendy/proto/gen/agentpb"
-	agentpbv2 "github.com/wendylabsinc/wendy/proto/gen/agentpb/v2"
+	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
+	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 )
 
 // AudioServiceV2 implements agentpbv2.WendyAudioServiceServer by

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	agentpb "github.com/wendylabsinc/wendy/proto/gen/agentpb"
+	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"

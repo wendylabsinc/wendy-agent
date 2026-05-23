@@ -6,7 +6,7 @@ import (
 	"runtime"
 
 	"github.com/spf13/cobra"
-	"github.com/wendylabsinc/wendy/internal/shared/version"
+	"github.com/wendylabsinc/wendy/go/internal/shared/version"
 )
 
 func newInfoCmd() *cobra.Command {

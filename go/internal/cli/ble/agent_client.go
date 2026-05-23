@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/wendylabsinc/wendy/internal/shared/models"
-	"github.com/wendylabsinc/wendy/proto/gen/agentpb"
+	"github.com/wendylabsinc/wendy/go/internal/shared/models"
+	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	"google.golang.org/protobuf/proto"
 )
 

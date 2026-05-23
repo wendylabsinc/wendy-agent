@@ -61,22 +61,21 @@ jobs:
     name: Generate & Validate
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    defaults:
-      run:
-        working-directory: go
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v5
         with:
-          go-version-file: go/go.mod
-          cache-dependency-path: go/go.sum
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
 
       - name: Build CLI
+        working-directory: go
         run: make build-cli
 
       - name: Run template generation tests
+        working-directory: go
         env:
           INPUT_TEMPLATES_BRANCH: ${{ inputs.templates_branch }}
           INPUT_TEMPLATE: ${{ inputs.template }}
@@ -105,6 +104,7 @@ jobs:
 
       - name: Cleanup
         if: always()
+        working-directory: go
         run: make clean
 
   deploy-to-device:
@@ -124,9 +124,6 @@ jobs:
         runner:
           - { name: macOS, labels: [self-hosted, macOS, ARM64] }
           - { name: Linux, labels: [self-hosted, Linux, X64] }
-    defaults:
-      run:
-        working-directory: go
     env:
       INPUT_HOSTNAME: ${{ inputs.hostname }}
       INPUT_TEMPLATES_BRANCH: ${{ inputs.templates_branch }}
@@ -134,18 +131,20 @@ jobs:
       INPUT_EXCLUDE_TEMPLATE: ${{ inputs.exclude_template }}
       INPUT_LANGUAGE: ${{ inputs.language }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v5
         with:
-          go-version-file: go/go.mod
-          cache-dependency-path: go/go.sum
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
 
       - name: Build CLI
+        working-directory: go
         run: make build-cli
 
       - name: Run template tests with deploy
+        working-directory: go
         run: |
           ARGS=(-w ./bin/wendy)
 
@@ -173,6 +172,7 @@ jobs:
 
       - name: Cleanup
         if: always()
+        working-directory: go
         run: make clean
 
   summary:

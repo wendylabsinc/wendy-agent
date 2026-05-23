@@ -6,7 +6,8 @@
 ._*
 
 # Custom folder icons
-Icon
+Icon
+Icon?
 
 # Volume root files
 .DocumentRevisions-V100
@@ -16,3 +17,14 @@ Icon
 .Trashes
 .VolumeIcon.icns
 .com.apple.timemachine.donotpresent
+
+### Fumadocs / Next.js
+.next/
+.source/
+content/
+export/
+next-env.d.ts
+node_modules/
+out/
+public/
+tsconfig.tsbuildinfo

@@ -10,10 +10,10 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-	"github.com/wendylabsinc/wendy/internal/cli/analytics"
-	"github.com/wendylabsinc/wendy/internal/cli/commands"
-	"github.com/wendylabsinc/wendy/internal/cli/tui"
-	"github.com/wendylabsinc/wendy/internal/shared/version"
+	"github.com/wendylabsinc/wendy/go/internal/cli/analytics"
+	"github.com/wendylabsinc/wendy/go/internal/cli/commands"
+	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/shared/version"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )

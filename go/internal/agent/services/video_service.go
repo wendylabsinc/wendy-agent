@@ -19,7 +19,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	agentpb "github.com/wendylabsinc/wendy/proto/gen/agentpb"
+	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
 // V4L2 ioctl constants for Linux kernel video capture interface.

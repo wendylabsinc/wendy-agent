@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/wendylabsinc/wendy/internal/shared/models"
+	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 )
 
 // ResolveESP32SerialPort finds the serial port for an ESP32-C6 device on
@@ -30,7 +30,7 @@ func ResolveESP32SerialPort() (string, error) {
 		vid, pid,
 	)
 
-	cmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-NonInteractive", "-Command", script)
+	cmd := exec.CommandContext(ctx, powershellExe, "-NoProfile", "-NonInteractive", "-Command", script)
 	out, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("querying Win32_PnPEntity for ESP32 serial port: %w", err)

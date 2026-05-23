@@ -12,7 +12,7 @@ import (
 	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"
 
-	otelpb "github.com/wendylabsinc/wendy/proto/gen/otelpb"
+	otelpb "github.com/wendylabsinc/wendy/go/proto/gen/otelpb"
 )
 
 func TestOTELHTTPReceiver_HandleLogs(t *testing.T) {

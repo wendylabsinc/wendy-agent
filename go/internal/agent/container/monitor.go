@@ -9,8 +9,8 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/wendylabsinc/wendy/internal/agent/services"
-	"github.com/wendylabsinc/wendy/proto/gen/agentpb"
+	"github.com/wendylabsinc/wendy/go/internal/agent/services"
+	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
 // RestartPolicy determines the container restart behavior.

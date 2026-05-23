@@ -8,7 +8,7 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/wendylabsinc/wendy/internal/shared/models"
+	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 )
 
 // discoverUSB uses PowerShell and WMI to find USB-connected Wendy devices on Windows.

@@ -4,7 +4,7 @@
 
 ### Go
 
-The module requires **Go 1.26.2** or later. The exact version is pinned in `go/go.mod`. The CI workflows use `actions/setup-go` with `go-version-file: go/go.mod`, so the version is always read from that file — follow the same practice locally.
+The module requires **Go 1.26.2** or later. The exact version is pinned in `go.mod` at the repo root. The CI workflows use `actions/setup-go` with `go-version-file: go.mod`, so the version is always read from that file — follow the same practice locally.
 
 ```sh
 go version   # should report go1.26 or later
@@ -97,7 +97,7 @@ The build embeds the version string via ldflags:
 ```sh
 VERSION=1.2.3 make build-cli
 # equivalent to:
-go build -ldflags "-s -w -X github.com/wendylabsinc/wendy/internal/shared/version.Version=1.2.3" ./cmd/wendy
+go build -ldflags "-s -w -X github.com/wendylabsinc/wendy/go/internal/shared/version.Version=1.2.3" ./cmd/wendy
 ```
 
 A `dev` version is embedded when `VERSION` is not set.
@@ -157,7 +157,7 @@ make proto
 # runs scripts/generate-proto.sh
 ```
 
-The script reads `.proto` sources from `Proto/` (the shared protobuf repo alongside `wendy-agent`) and writes generated Go files to `go/proto/gen/` under three packages: `agentpb`, `otelpb`, and `cloudpb`.
+The script reads `.proto` sources from `proto-defs/` at the repo root and writes generated Go files to `go/proto/gen/` under three packages: `agentpb`, `otelpb`, and `cloudpb`.
 
 ## Device Setup (for running the agent locally)
 

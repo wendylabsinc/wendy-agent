@@ -6,11 +6,11 @@ import (
 	"runtime"
 
 	"github.com/spf13/cobra"
-	"github.com/wendylabsinc/wendy/internal/cli/analytics"
-	"github.com/wendylabsinc/wendy/internal/cli/providers"
-	"github.com/wendylabsinc/wendy/internal/shared/config"
-	"github.com/wendylabsinc/wendy/internal/shared/discovery"
-	"github.com/wendylabsinc/wendy/internal/shared/version"
+	"github.com/wendylabsinc/wendy/go/internal/cli/analytics"
+	"github.com/wendylabsinc/wendy/go/internal/cli/providers"
+	"github.com/wendylabsinc/wendy/go/internal/shared/config"
+	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
+	"github.com/wendylabsinc/wendy/go/internal/shared/version"
 )
 
 var (

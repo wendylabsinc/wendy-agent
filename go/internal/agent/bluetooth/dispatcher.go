@@ -7,8 +7,8 @@ import (
 	"reflect"
 	"runtime"
 
-	"github.com/wendylabsinc/wendy/internal/shared/version"
-	agentpb "github.com/wendylabsinc/wendy/proto/gen/agentpb"
+	"github.com/wendylabsinc/wendy/go/internal/shared/version"
+	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
 // Narrow interfaces so this file doesn't import the services package directly.

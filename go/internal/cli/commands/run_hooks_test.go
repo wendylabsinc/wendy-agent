@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wendylabsinc/wendy/internal/shared/appconfig"
+	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 	"google.golang.org/grpc/metadata"
 )
 

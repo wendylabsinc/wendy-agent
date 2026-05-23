@@ -7,8 +7,8 @@ import (
 	"testing"
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
-	"github.com/wendylabsinc/wendy/internal/shared/config"
-	cloudpb "github.com/wendylabsinc/wendy/proto/gen/cloudpb"
+	"github.com/wendylabsinc/wendy/go/internal/shared/config"
+	cloudpb "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
 	"google.golang.org/grpc"
 )
 

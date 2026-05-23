@@ -17,10 +17,10 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/wendylabsinc/wendy/internal/cli/grpcclient"
-	"github.com/wendylabsinc/wendy/internal/cli/tui"
-	"github.com/wendylabsinc/wendy/internal/shared/appconfig"
-	"github.com/wendylabsinc/wendy/proto/gen/agentpb"
+	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
+	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
+	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
 const maxConcurrentBuilds = 4
@@ -272,7 +272,7 @@ func buildServicesParallel(
 			if prog != nil {
 				buildOut = io.Discard
 			}
-			err := buildAndPushImage(ctx, contextDir, registryAddr, imageName, platform, buildArgs, buildOut, useMTLS)
+			err := buildAndPushImage(ctx, contextDir, registryAddr, imageName, platform, "", buildArgs, buildOut, useMTLS)
 			dur := time.Since(start)
 
 			if prog != nil {

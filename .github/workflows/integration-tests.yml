@@ -54,25 +54,23 @@ jobs:
       matrix:
         runner:
           - { name: macOS, os: macOS, arch: ARM64 }
-    defaults:
-      run:
-        working-directory: go
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v5
         with:
-          go-version-file: go/go.mod
-          cache-dependency-path: go/go.sum
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
 
       - name: Build CLI
+        working-directory: go
         run: make build-cli
 
       - name: Run wendy discover
         run: |
           DISCOVER_STDERR=$(mktemp)
-          RESULT=$(./bin/wendy discover --json --timeout 10s 2>"$DISCOVER_STDERR" || true)
+          RESULT=$(./go/bin/wendy discover --json --timeout 10s 2>"$DISCOVER_STDERR" || true)
           cat "$DISCOVER_STDERR" >&2 || true
           rm -f "$DISCOVER_STDERR"
           if [[ -n "$RESULT" ]]; then
@@ -111,22 +109,20 @@ jobs:
       group: integration-hw-macos
       cancel-in-progress: false
     timeout-minutes: 60
-    defaults:
-      run:
-        working-directory: go
     env:
       INPUT_HOSTNAME: ${{ inputs.hostname }}
       INPUT_TESTS: ${{ inputs.tests }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v5
         with:
-          go-version-file: go/go.mod
-          cache-dependency-path: go/go.sum
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
 
       - name: Build CLI
+        working-directory: go
         run: make build-cli
 
       - name: Prepare Docker
@@ -171,7 +167,7 @@ jobs:
           SSH_ENV="export PATH='$PATH' DOCKER_HOST='${DOCKER_HOST:-}'"
           SSH="ssh -o StrictHostKeyChecking=no localhost"
 
-          TEST_ARGS="-w $WORKDIR/bin/wendy"
+          TEST_ARGS="-w $WORKDIR/go/bin/wendy"
 
           if [[ -n "$INPUT_TESTS" ]]; then
             HAS_TESTS=false
@@ -196,7 +192,7 @@ jobs:
           else
             echo "==> Discovering LAN devices..."
             DISCOVER_STDERR=$(mktemp)
-            DISCOVER_JSON=$($SSH "$SSH_ENV && cd '$WORKDIR' && ./bin/wendy discover --json --timeout 10s" 2>"$DISCOVER_STDERR")
+            DISCOVER_JSON=$($SSH "$SSH_ENV && cd '$WORKDIR' && ./go/bin/wendy discover --json --timeout 10s" 2>"$DISCOVER_STDERR")
             cat "$DISCOVER_STDERR" >&2 || true
             rm -f "$DISCOVER_STDERR"
             DEVICES=()
@@ -217,7 +213,7 @@ jobs:
             BUILDER="wendy-$i"
             echo "==> Starting tests on $device (builder: $BUILDER)"
             (
-              $SSH "export PATH='$PATH' DOCKER_HOST='${DOCKER_HOST:-}' WENDY_BUILDX_BUILDER='$BUILDER' && cd '$WORKDIR' && scripts/test-ci.sh $TEST_ARGS -h '$device'"
+              $SSH "export PATH='$PATH' DOCKER_HOST='${DOCKER_HOST:-}' WENDY_BUILDX_BUILDER='$BUILDER' && cd '$WORKDIR' && go/scripts/test-ci.sh $TEST_ARGS -h '$device'"
               rc=$?
               docker buildx rm "$BUILDER" --force 2>/dev/null || true
               exit $rc
@@ -246,22 +242,20 @@ jobs:
       group: integration-hw-linux
       cancel-in-progress: false
     timeout-minutes: 60
-    defaults:
-      run:
-        working-directory: go
     env:
       INPUT_HOSTNAME: ${{ inputs.hostname }}
       INPUT_TESTS: ${{ inputs.tests }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v5
         with:
-          go-version-file: go/go.mod
-          cache-dependency-path: go/go.sum
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
 
       - name: Build CLI
+        working-directory: go
         run: make build-cli
 
       - name: Prepare Docker
@@ -285,7 +279,7 @@ jobs:
         run: |
           WORKDIR="$(pwd)"
 
-          TEST_ARGS="-w $WORKDIR/bin/wendy"
+          TEST_ARGS="-w $WORKDIR/go/bin/wendy"
 
           if [[ -n "$INPUT_TESTS" ]]; then
             HAS_TESTS=false
@@ -315,7 +309,7 @@ jobs:
           else
             echo "==> Discovering LAN devices..."
             DISCOVER_STDERR=$(mktemp)
-            DISCOVER_JSON=$(./bin/wendy discover --json --timeout 10s 2>"$DISCOVER_STDERR")
+            DISCOVER_JSON=$(./go/bin/wendy discover --json --timeout 10s 2>"$DISCOVER_STDERR")
             cat "$DISCOVER_STDERR" >&2 || true
             rm -f "$DISCOVER_STDERR"
             DEVICES=()
@@ -336,7 +330,7 @@ jobs:
             BUILDER="wendy-$i"
             echo "==> Starting tests on $device (builder: $BUILDER)"
             (
-              WENDY_BUILDX_BUILDER="$BUILDER" scripts/test-ci.sh $TEST_ARGS -h "$device"
+              WENDY_BUILDX_BUILDER="$BUILDER" go/scripts/test-ci.sh $TEST_ARGS -h "$device"
               rc=$?
               docker buildx rm "$BUILDER" --force 2>/dev/null || true
               exit $rc

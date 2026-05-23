@@ -1,1 +1,0 @@
-Stops an app by name. If the app-name argument is not provided, and the terminal is interactive - a list of all uploaded apps is shown. You can then interactively stop an app.

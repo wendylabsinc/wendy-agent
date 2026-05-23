@@ -24,7 +24,7 @@ jobs:
             --repo ${{ github.repository }} > pr.diff
 
       - name: Check out wendy-vscode
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
         with:
           repository: wendylabsinc/wendy-vscode
           token: ${{ secrets.WENDY_TEMPLATE_SYNC_TOKEN }}

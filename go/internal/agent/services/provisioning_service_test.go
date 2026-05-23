@@ -10,8 +10,8 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
-	agentpb "github.com/wendylabsinc/wendy/proto/gen/agentpb"
-	cloudpb "github.com/wendylabsinc/wendy/proto/gen/cloudpb"
+	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
+	cloudpb "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
 )
 
 // fakeCertService implements the CertificateService with a canned IssueCertificate response.

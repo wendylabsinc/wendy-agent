@@ -10,7 +10,7 @@
 
 VERSION ?= dev
 MSI_VERSION ?= 0.0.1
-LDFLAGS := -s -w -X github.com/wendylabsinc/wendy/internal/shared/version.Version=$(VERSION)
+LDFLAGS := -s -w -X github.com/wendylabsinc/wendy/go/internal/shared/version.Version=$(VERSION)
 ifeq ($(shell uname -s),Darwin)
 # Go/cgo adds -lobjc for each Objective-C package. The native CLI links
 # multiple CoreBluetooth-backed packages, and recent Apple linkers warn about
@@ -112,9 +112,10 @@ licenses:
 licenses-update:
 	bash scripts/check-licenses.sh --update
 
-# Sync embedded docs and skills from sibling repos (requires them checked out at ../docs and ../claude-skills)
+# Sync embedded docs and skills from sibling repos (requires them checked out at ../../docs and ../claude-skills)
+# Note: go/ is a subdirectory; DOCS_SRC is two levels up, ASSETS is relative to go/
 sync-assets:
-	@DOCS_SRC=../../docs SKILLS_SRC=../../claude-skills ASSETS=internal/cli/assets; \
+	@DOCS_SRC=../../docs SKILLS_SRC=../claude-skills ASSETS=internal/cli/assets; \
 	if [ ! -d "$$DOCS_SRC" ]; then echo "Docs repo not found at $$DOCS_SRC — skipping"; else \
 	  rm -rf "$$ASSETS/docs" && mkdir -p "$$ASSETS/docs" && \
 	  rsync -a --exclude='.git' --exclude='superpowers/' --exclude='operations/' \

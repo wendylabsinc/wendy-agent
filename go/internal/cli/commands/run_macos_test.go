@@ -14,9 +14,9 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/wendylabsinc/wendy/internal/cli/grpcclient"
-	"github.com/wendylabsinc/wendy/internal/shared/appconfig"
-	"github.com/wendylabsinc/wendy/proto/gen/agentpb"
+	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
+	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
+	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
 type fakeMacRunState struct {

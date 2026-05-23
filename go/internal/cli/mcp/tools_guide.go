@@ -9,7 +9,7 @@ import (
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
-	"github.com/wendylabsinc/wendy/internal/cli/assets"
+	"github.com/wendylabsinc/wendy/go/internal/cli/assets"
 )
 
 const guideText = `Wendy MCP Guide

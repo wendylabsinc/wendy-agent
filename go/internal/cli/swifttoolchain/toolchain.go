@@ -15,7 +15,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"golang.org/x/term"
 
-	"github.com/wendylabsinc/wendy/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 )
 
 const (

@@ -3,8 +3,8 @@ package services
 import (
 	"context"
 
-	agentpb "github.com/wendylabsinc/wendy/proto/gen/agentpb"
-	agentpbv2 "github.com/wendylabsinc/wendy/proto/gen/agentpb/v2"
+	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
+	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 )
 
 // ProvisioningServiceV2 implements agentpbv2.WendyProvisioningServiceServer by

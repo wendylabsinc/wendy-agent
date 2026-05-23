@@ -16,8 +16,8 @@ import (
 	"github.com/dustin/go-humanize"
 	"golang.org/x/term"
 
-	"github.com/wendylabsinc/wendy/internal/cli/grpcclient"
-	"github.com/wendylabsinc/wendy/proto/gen/agentpb"
+	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
+	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
 // fileSyncEntry pairs an absolute local path with its effective remote destination.

@@ -8,7 +8,7 @@ import (
 
 	"go.uber.org/zap"
 
-	agentpb "github.com/wendylabsinc/wendy/proto/gen/agentpb"
+	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
 // Manager defines the interface for Bluetooth operations.

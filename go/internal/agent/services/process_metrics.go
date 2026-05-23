@@ -4,8 +4,8 @@ import (
 	"context"
 	"time"
 
-	agentpb "github.com/wendylabsinc/wendy/proto/gen/agentpb"
-	otelpb "github.com/wendylabsinc/wendy/proto/gen/otelpb"
+	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
+	otelpb "github.com/wendylabsinc/wendy/go/proto/gen/otelpb"
 )
 
 const metricsCollectionInterval = 15 * time.Second

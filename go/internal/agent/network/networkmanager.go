@@ -13,8 +13,8 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/wendylabsinc/wendy/internal/shared/nmcli"
-	agentpb "github.com/wendylabsinc/wendy/proto/gen/agentpb"
+	"github.com/wendylabsinc/wendy/go/internal/shared/nmcli"
+	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
 // NMCLINetworkManager implements services.NetworkManager using nmcli commands.

@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/wendylabsinc/wendy/internal/shared/appconfig"
-	agentpb "github.com/wendylabsinc/wendy/proto/gen/agentpb"
+	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
+	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zaptest/observer"
 )

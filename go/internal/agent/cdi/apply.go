@@ -5,7 +5,7 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/wendylabsinc/wendy/internal/agent/oci"
+	"github.com/wendylabsinc/wendy/go/internal/agent/oci"
 )
 
 // ApplyCDIDevice applies a named CDI device from a CDI specification to an OCI spec.

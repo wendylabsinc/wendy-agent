@@ -10,8 +10,8 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	"github.com/wendylabsinc/wendy/internal/shared/version"
-	agentpbv2 "github.com/wendylabsinc/wendy/proto/gen/agentpb/v2"
+	"github.com/wendylabsinc/wendy/go/internal/shared/version"
+	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 )
 
 type DeviceInfoService struct {

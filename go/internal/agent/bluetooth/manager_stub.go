@@ -8,7 +8,7 @@ import (
 
 	"go.uber.org/zap"
 
-	agentpb "github.com/wendylabsinc/wendy/proto/gen/agentpb"
+	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
 // StubManager is a no-op Bluetooth manager for platforms that do not support BlueZ.

@@ -7,7 +7,7 @@ import (
 
 	"go.uber.org/zap"
 
-	otelpb "github.com/wendylabsinc/wendy/proto/gen/otelpb"
+	otelpb "github.com/wendylabsinc/wendy/go/proto/gen/otelpb"
 )
 
 // logSubscriber wraps a delivery channel with a mutex that guards the closed

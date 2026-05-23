@@ -11,7 +11,7 @@ import (
 
 	"go.uber.org/zap"
 
-	agentpb "github.com/wendylabsinc/wendy/proto/gen/agentpb"
+	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
 // SystemHardwareDiscoverer discovers hardware by probing the Linux sysfs/devfs/procfs.

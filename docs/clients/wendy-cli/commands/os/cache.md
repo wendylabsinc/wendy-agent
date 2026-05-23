@@ -1,1 +1,0 @@
-Alias to [`wendy cache`](../cache/).

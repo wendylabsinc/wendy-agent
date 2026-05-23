@@ -25,6 +25,7 @@ jobs:
       github.event.workflow_run.head_repository.full_name == github.repository &&
       github.event.workflow_run.name != 'Agentic CI Loop'
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: write
       pull-requests: write
@@ -80,9 +81,19 @@ jobs:
             echo "needs_work=false" >> "$GITHUB_OUTPUT"
             echo "All checks pass and no bot comments — nothing to do"
           else
-            echo "needs_work=true" >> "$GITHUB_OUTPUT"
-            echo "Failing checks: ${FAILING:-none}"
-            echo "Open bot comments: $BOT_COMMENTS"
+            # Circuit-breaker: count consecutive agentic commits (no human commit in between).
+            AGENTIC_STREAK=$(gh api "repos/$REPO/pulls/$PR_NUMBER/commits" \
+              --jq '[.[] | select(.commit.author.name == "github-actions[bot]")] | length' \
+              2>/dev/null || echo "0")
+            if [ "$AGENTIC_STREAK" -ge 5 ]; then
+              echo "needs_work=false" >> "$GITHUB_OUTPUT"
+              echo "Circuit-breaker: $AGENTIC_STREAK consecutive agentic commits — halting to avoid runaway loop"
+            else
+              echo "needs_work=true" >> "$GITHUB_OUTPUT"
+              echo "Failing checks: ${FAILING:-none}"
+              echo "Open bot comments: $BOT_COMMENTS"
+              echo "Agentic commits so far: $AGENTIC_STREAK / 5"
+            fi
           fi
 
       - name: Check out repository

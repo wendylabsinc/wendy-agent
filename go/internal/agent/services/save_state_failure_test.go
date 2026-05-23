@@ -7,7 +7,7 @@ import (
 
 	"go.uber.org/zap"
 
-	agentpb "github.com/wendylabsinc/wendy/proto/gen/agentpb"
+	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
 // TestStartProvisioning_SaveStateFailure verifies that when saveState fails,

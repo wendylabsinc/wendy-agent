@@ -4,12 +4,16 @@ on:
   push:
     branches: ["**"]
     paths:
+      - "docs"
       - "docs/**"
+      - "go/internal/cli/assets/docs/**"
       - ".github/workflows/fumadocs.yml"
   pull_request:
     branches: [main]
     paths:
+      - "docs"
       - "docs/**"
+      - "go/internal/cli/assets/docs/**"
       - ".github/workflows/fumadocs.yml"
   release:
     types: [published]

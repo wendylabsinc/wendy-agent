@@ -1,1 +1,0 @@
-Selects a device as the [default device](../../device-selection.md), so that other commands default to this device if available.

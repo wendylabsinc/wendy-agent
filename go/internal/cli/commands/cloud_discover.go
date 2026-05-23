@@ -14,10 +14,10 @@ import (
 	bubbleTable "github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
-	"github.com/wendylabsinc/wendy/internal/shared/config"
-	"github.com/wendylabsinc/wendy/internal/shared/version"
-	"github.com/wendylabsinc/wendy/proto/gen/agentpb"
-	cloudpb "github.com/wendylabsinc/wendy/proto/gen/cloudpb"
+	"github.com/wendylabsinc/wendy/go/internal/shared/config"
+	"github.com/wendylabsinc/wendy/go/internal/shared/version"
+	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
+	cloudpb "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
 )
 
 const cloudDiscoverRefreshInterval = 10 * time.Second

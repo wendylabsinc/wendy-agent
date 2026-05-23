@@ -6,8 +6,8 @@ import (
 	"io"
 
 	"github.com/spf13/cobra"
-	"github.com/wendylabsinc/wendy/internal/cli/tui"
-	"github.com/wendylabsinc/wendy/proto/gen/agentpb"
+	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
 func newBluetoothCmd() *cobra.Command {

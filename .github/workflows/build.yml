@@ -5,6 +5,9 @@ on:
     branches: [main]
     paths:
       - 'go/**'
+      - 'Proto/**'
+      - 'go.mod'
+      - 'go.sum'
       - 'swift/**'
       - '.github/workflows/build.yml'
   workflow_dispatch:
@@ -35,7 +38,7 @@ jobs:
       is_prerelease: ${{ steps.set-version.outputs.is_prerelease }}
       tag_name: ${{ steps.set-version.outputs.tag_name }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
@@ -104,26 +107,24 @@ jobs:
             goarch: arm64
             product: wendy.exe
             cmd: wendy
-    defaults:
-      run:
-        working-directory: go
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v5
         with:
-          go-version-file: go/go.mod
-          cache-dependency-path: go/go.sum
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
 
       - name: Build
+        working-directory: go
         env:
           CGO_ENABLED: "0"
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
         run: |
           VERSION="${{ needs.determine-version.outputs.version }}"
-          LDFLAGS="-s -w -X github.com/wendylabsinc/wendy/internal/shared/version.Version=${VERSION}"
+          LDFLAGS="-s -w -X github.com/wendylabsinc/wendy/go/internal/shared/version.Version=${VERSION}"
           mkdir -p ../${{ matrix.artifact-name }}
           go build -ldflags "${LDFLAGS}" -o ../${{ matrix.artifact-name }}/${{ matrix.product }} ./cmd/${{ matrix.cmd }}
 
@@ -160,26 +161,24 @@ jobs:
             goarch: arm64
           - artifact-name: wendy-cli-darwin-amd64
             goarch: amd64
-    defaults:
-      run:
-        working-directory: go
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v5
         with:
-          go-version-file: go/go.mod
-          cache-dependency-path: go/go.sum
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
 
       - name: Build
+        working-directory: go
         env:
           CGO_ENABLED: "1"
           GOOS: darwin
           GOARCH: ${{ matrix.goarch }}
         run: |
           VERSION="${{ needs.determine-version.outputs.version }}"
-          LDFLAGS="-s -w -X github.com/wendylabsinc/wendy/internal/shared/version.Version=${VERSION}"
+          LDFLAGS="-s -w -X github.com/wendylabsinc/wendy/go/internal/shared/version.Version=${VERSION}"
           mkdir -p ../${{ matrix.artifact-name }}
           go build -ldflags "${LDFLAGS}" -o ../${{ matrix.artifact-name }}/wendy ./cmd/wendy
 
@@ -205,7 +204,7 @@ jobs:
     timeout-minutes: 45
     needs: [determine-version]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
 
       - name: Select Xcode ${{ env.XCODE_VERSION }}
         uses: maxim-lobanov/setup-xcode@v1
@@ -280,7 +279,7 @@ jobs:
             goarch: arm64
             rpm-arch: aarch64
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
 
       - name: Install FPM dependencies
         run: |
@@ -502,7 +501,7 @@ jobs:
       SIGNING_ACCOUNT: wendy-signing
       SIGNING_PROFILE: wendy-cli
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
 
       - name: Install WiX
         run: dotnet tool install --global wix
@@ -705,7 +704,7 @@ jobs:
       # Update floating 'latest' tag for nightly prereleases
       - name: Checkout repo
         if: needs.determine-version.outputs.is_release != 'true'
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
       - name: Update 'latest' tag
@@ -766,7 +765,7 @@ jobs:
           repositories: homebrew-tap
 
       - name: Checkout tap
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
         with:
           repository: wendylabsinc/homebrew-tap
           token: ${{ steps.app-token.outputs.token }}
@@ -981,7 +980,7 @@ jobs:
             x86_64_artifact: wendy-agent-linux-amd64
             aarch64_artifact: wendy-agent-linux-arm64
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
 
       - name: Calculate checksums from release
         id: checksums

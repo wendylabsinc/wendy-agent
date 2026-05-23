@@ -4,7 +4,7 @@ package wifitable
 import (
 	"sort"
 
-	agentpb "github.com/wendylabsinc/wendy/proto/gen/agentpb"
+	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
 // Network is a CLI-side view of a WiFi network merged across scan results and

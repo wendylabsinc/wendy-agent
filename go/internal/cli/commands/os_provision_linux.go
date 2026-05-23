@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/wendylabsinc/wendy/internal/shared/wendyconf"
+	"github.com/wendylabsinc/wendy/go/internal/shared/wendyconf"
 )
 
 // configPartitionSupported reports whether writeConfigPartition has a working

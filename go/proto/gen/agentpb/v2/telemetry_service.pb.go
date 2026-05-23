@@ -7,7 +7,7 @@
 package agentpbv2
 
 import (
-	otelpb "github.com/wendylabsinc/wendy/proto/gen/otelpb"
+	otelpb "github.com/wendylabsinc/wendy/go/proto/gen/otelpb"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	reflect "reflect"

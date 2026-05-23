@@ -21,9 +21,9 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 
-	"github.com/wendylabsinc/wendy/internal/shared/certs"
-	agentpb "github.com/wendylabsinc/wendy/proto/gen/agentpb"
-	cloudpb "github.com/wendylabsinc/wendy/proto/gen/cloudpb"
+	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
+	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
+	cloudpb "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
 )
 
 func main() {

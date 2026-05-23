@@ -9,8 +9,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/wendylabsinc/wendy/internal/shared/appconfig"
-	"github.com/wendylabsinc/wendy/internal/shared/env"
+	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
+	"github.com/wendylabsinc/wendy/go/internal/shared/env"
 )
 
 const (

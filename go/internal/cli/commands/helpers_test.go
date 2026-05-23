@@ -8,10 +8,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wendylabsinc/wendy/internal/cli/grpcclient"
-	"github.com/wendylabsinc/wendy/internal/shared/config"
-	"github.com/wendylabsinc/wendy/internal/shared/models"
-	"github.com/wendylabsinc/wendy/proto/gen/agentpb"
+	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
+	"github.com/wendylabsinc/wendy/go/internal/shared/config"
+	"github.com/wendylabsinc/wendy/go/internal/shared/models"
+	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
 // ── hostPort ────────────────────────────────────────────────────────

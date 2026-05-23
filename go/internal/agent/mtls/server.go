@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/wendylabsinc/wendy/internal/shared/certs"
+	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/keepalive"

@@ -3,7 +3,7 @@ package commands
 import (
 	"testing"
 
-	"github.com/wendylabsinc/wendy/proto/gen/agentpb"
+	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
 func TestValidateOSUpdateIdentityAllowsWendyOSBeforeMenderCheck(t *testing.T) {

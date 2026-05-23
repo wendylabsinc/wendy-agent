@@ -14,8 +14,8 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/test/bufconn"
 
-	agentpb "github.com/wendylabsinc/wendy/proto/gen/agentpb"
-	otelpb "github.com/wendylabsinc/wendy/proto/gen/otelpb"
+	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
+	otelpb "github.com/wendylabsinc/wendy/go/proto/gen/otelpb"
 )
 
 func TestBroadcaster_SubscribeUnsubscribe(t *testing.T) {

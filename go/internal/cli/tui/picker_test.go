@@ -78,6 +78,20 @@ func TestPickerModel_ShowsDescriptionColumnWhenPresent(t *testing.T) {
 	}
 }
 
+func TestPickerModel_ShowsUSBInTypeColumn(t *testing.T) {
+	m := NewPickerWithTitle("Select a device")
+
+	updated, _ := m.Update(PickerAddMsg{Items: []PickerItem{
+		{Name: "Sunny Daisy", Type: "LAN", USB: "WendyOS Device sunny-daisy (en40)", Address: "wendyos-sunny-daisy.local:50052", Value: "sunny"},
+	}})
+	pm := updated.(PickerModel)
+
+	view := pm.View()
+	if !strings.Contains(view, "USB, LAN") {
+		t.Fatalf("expected picker view to contain %q, got %q", "USB, LAN", view)
+	}
+}
+
 func TestPickerModel_DefaultKeyShowsStar(t *testing.T) {
 	m := NewPickerWithTitle("Select a device")
 	m.DefaultKey = "alpha"

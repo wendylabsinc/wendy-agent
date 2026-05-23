@@ -19,16 +19,16 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/wendylabsinc/wendy/internal/cli/ble"
-	"github.com/wendylabsinc/wendy/internal/cli/grpcclient"
-	"github.com/wendylabsinc/wendy/internal/cli/providers"
-	"github.com/wendylabsinc/wendy/internal/cli/tui"
-	"github.com/wendylabsinc/wendy/internal/shared/appconfig"
-	"github.com/wendylabsinc/wendy/internal/shared/config"
-	"github.com/wendylabsinc/wendy/internal/shared/discovery"
-	"github.com/wendylabsinc/wendy/internal/shared/models"
-	"github.com/wendylabsinc/wendy/internal/shared/version"
-	"github.com/wendylabsinc/wendy/proto/gen/agentpb"
+	"github.com/wendylabsinc/wendy/go/internal/cli/ble"
+	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
+	"github.com/wendylabsinc/wendy/go/internal/cli/providers"
+	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
+	"github.com/wendylabsinc/wendy/go/internal/shared/config"
+	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
+	"github.com/wendylabsinc/wendy/go/internal/shared/models"
+	"github.com/wendylabsinc/wendy/go/internal/shared/version"
+	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	"golang.org/x/term"
 )
 
@@ -1056,6 +1056,18 @@ func mergePickerItem(existing *tui.PickerItem, incoming tui.PickerItem) {
 		md.LAN = nd.LAN
 		existing.Address = incoming.Address
 	}
+	if nd.LAN != nil && md.LAN != nil && nd.LAN.USB != "" && md.LAN.USB == "" {
+		md.LAN.USB = nd.LAN.USB
+		md.LAN.NetworkInterface = nd.LAN.NetworkInterface
+	}
+	if nd.LAN != nil && nd.LAN.USB != "" && existing.USB == "" {
+		existing.USB = nd.LAN.USB
+		key := existing.DedupKey
+		if key == "" {
+			key = existing.Name
+		}
+		existing.SortKey = usbFirstSortKey(key, nd.LAN.USB)
+	}
 	if nd.Bluetooth != nil && md.Bluetooth == nil {
 		md.Bluetooth = nd.Bluetooth
 	}
@@ -1092,6 +1104,13 @@ func mergePickerItem(existing *tui.PickerItem, incoming tui.PickerItem) {
 	if nd.LAN != nil {
 		existing.Insecure = incoming.Insecure
 	}
+}
+
+func usbFirstSortKey(name, usb string) string {
+	if usb == "" {
+		return ""
+	}
+	return "0_" + strings.ToLower(name)
 }
 
 // pickDevice runs an interactive TUI that discovers devices across all
@@ -1143,8 +1162,10 @@ func pickDevice(ctx context.Context, excludeProviders map[string]bool, excludeBl
 		p.Send(tui.PickerAddMsg{Items: []tui.PickerItem{{
 			Name:     name,
 			Type:     "LAN",
+			USB:      dev.USB,
 			Address:  preferredLANAddress(dev),
 			DedupKey: dev.DisplayName,
+			SortKey:  usbFirstSortKey(dev.DisplayName, dev.USB),
 			Insecure: insecure,
 			Value: &pickerEntry{mergedDevice: &models.DiscoveredDevice{
 				DisplayName:     dev.DisplayName,
@@ -1207,10 +1228,12 @@ func pickDevice(ctx context.Context, excludeProviders map[string]bool, excludeBl
 							})
 						} else {
 							items = append(items, tui.PickerItem{
-								Name:    devices[i].DisplayName,
-								Type:    prov.DisplayName(),
-								Address: fmt.Sprintf("%s: %s", devices[i].ProviderKey, devices[i].ID),
-								Value:   &pickerEntry{externalDevice: &devices[i], provider: prov},
+								Name:     devices[i].DisplayName,
+								Type:     prov.DisplayName(),
+								Address:  fmt.Sprintf("%s: %s", devices[i].ProviderKey, devices[i].ID),
+								DedupKey: devices[i].DisplayName,
+								SortKey:  externalProviderSortKey(prov.Key(), devices[i].DisplayName),
+								Value:    &pickerEntry{externalDevice: &devices[i], provider: prov},
 							})
 						}
 					}

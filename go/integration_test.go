@@ -17,12 +17,12 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/test/bufconn"
 
-	"github.com/wendylabsinc/wendy/internal/agent/services"
-	"github.com/wendylabsinc/wendy/internal/shared/appconfig"
-	"github.com/wendylabsinc/wendy/internal/shared/version"
-	agentpb "github.com/wendylabsinc/wendy/proto/gen/agentpb"
-	cloudpb "github.com/wendylabsinc/wendy/proto/gen/cloudpb"
-	otelpb "github.com/wendylabsinc/wendy/proto/gen/otelpb"
+	"github.com/wendylabsinc/wendy/go/internal/agent/services"
+	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
+	"github.com/wendylabsinc/wendy/go/internal/shared/version"
+	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
+	cloudpb "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
+	otelpb "github.com/wendylabsinc/wendy/go/proto/gen/otelpb"
 )
 
 // ---------- mocks for integration test ----------

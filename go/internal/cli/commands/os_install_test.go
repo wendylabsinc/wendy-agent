@@ -15,7 +15,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/wendylabsinc/wendy/internal/shared/version"
+	"github.com/wendylabsinc/wendy/go/internal/shared/version"
 )
 
 func TestNewOSInstallCmd_Flags(t *testing.T) {

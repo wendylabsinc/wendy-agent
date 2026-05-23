@@ -12,8 +12,8 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/test/bufconn"
 
-	"github.com/wendylabsinc/wendy/internal/cli/grpcclient"
-	agentpb "github.com/wendylabsinc/wendy/proto/gen/agentpb"
+	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
+	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
 // fakeStreamMCPServer is a minimal gRPC server that echoes MCPChunk bytes back.

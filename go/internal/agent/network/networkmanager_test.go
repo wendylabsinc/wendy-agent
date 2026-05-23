@@ -3,7 +3,7 @@ package network
 import (
 	"testing"
 
-	agentpb "github.com/wendylabsinc/wendy/proto/gen/agentpb"
+	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
 func TestSplitNMCLI(t *testing.T) {

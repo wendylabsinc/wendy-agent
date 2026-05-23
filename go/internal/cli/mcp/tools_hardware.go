@@ -6,7 +6,7 @@ import (
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
-	"github.com/wendylabsinc/wendy/proto/gen/agentpb"
+	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
 func (s *mcpServer) registerHardwareTools(srv *server.MCPServer) {

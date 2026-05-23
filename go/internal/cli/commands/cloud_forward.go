@@ -12,7 +12,7 @@ import (
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
 
-	"github.com/wendylabsinc/wendy/internal/shared/config"
+	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 )
 
 func newCloudTunnelCmd() *cobra.Command {

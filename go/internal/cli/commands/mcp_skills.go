@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/wendylabsinc/wendy/internal/cli/assets"
-	"github.com/wendylabsinc/wendy/internal/shared/version"
+	"github.com/wendylabsinc/wendy/go/internal/cli/assets"
+	"github.com/wendylabsinc/wendy/go/internal/shared/version"
 )
 
 // installSkillsForAllTools extracts embedded skill files into each detected AI tool.

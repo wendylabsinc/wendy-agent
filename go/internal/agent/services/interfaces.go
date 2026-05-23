@@ -5,8 +5,8 @@ import (
 	"context"
 	"io"
 
-	"github.com/wendylabsinc/wendy/internal/shared/appconfig"
-	agentpb "github.com/wendylabsinc/wendy/proto/gen/agentpb"
+	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
+	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
 // NetworkManager abstracts WiFi management operations (typically backed by nmcli).

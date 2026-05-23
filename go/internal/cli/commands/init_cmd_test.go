@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/wendylabsinc/wendy/internal/shared/appconfig"
+	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 )
 
 func TestNewInitCmd_Flags(t *testing.T) {

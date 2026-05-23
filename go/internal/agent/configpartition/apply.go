@@ -14,9 +14,9 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/wendylabsinc/wendy/internal/agent/network"
-	"github.com/wendylabsinc/wendy/internal/agent/services"
-	"github.com/wendylabsinc/wendy/internal/shared/wendyconf"
+	"github.com/wendylabsinc/wendy/go/internal/agent/network"
+	"github.com/wendylabsinc/wendy/go/internal/agent/services"
+	"github.com/wendylabsinc/wendy/go/internal/shared/wendyconf"
 )
 
 // elfMachineByArch maps GOARCH values to ELF e_machine field values (little-endian uint16).
