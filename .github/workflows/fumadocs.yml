@@ -40,10 +40,10 @@ jobs:
       url: ${{ steps.path.outputs.url }}
     steps:
       - name: Check out repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        uses: actions/checkout@v6
 
       - name: Set up Node.js
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        uses: actions/setup-node@v6
         with:
           node-version: "24"
           cache: npm
@@ -194,7 +194,7 @@ jobs:
           done <<< "${DEPLOY_PATHS}"
 
       - name: Upload static site artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@v7
         with:
           name: fumadocs-static-site
           path: docs/export
@@ -216,19 +216,19 @@ jobs:
       url: ${{ needs.build.outputs.url }}
     steps:
       - name: Download static site artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@v8
         with:
           name: fumadocs-static-site
           path: out
 
       - name: Authenticate to GCP
-        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        uses: google-github-actions/auth@v3
         with:
           workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
 
       - name: Set up Cloud SDK
-        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
+        uses: google-github-actions/setup-gcloud@v3
 
       - name: Ensure release alias rollback support
         if: github.event_name == 'release'

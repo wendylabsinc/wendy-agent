@@ -5,7 +5,6 @@ import { fileURLToPath } from 'node:url';
 const docsRoot = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
 const contentRoot = path.join(docsRoot, 'content', 'docs');
 const publicRoot = path.join(docsRoot, 'public');
-const publicDocsRoot = path.join(publicRoot, 'docs');
 const skipDirs = new Set([
   '.git',
   '.next',
@@ -38,7 +37,7 @@ const appFiles = new Set(['package-lock.json', 'package.json', 'tsconfig.json'])
 await rm(contentRoot, { recursive: true, force: true });
 await rm(publicRoot, { recursive: true, force: true });
 await mkdir(contentRoot, { recursive: true });
-await mkdir(publicDocsRoot, { recursive: true });
+await mkdir(publicRoot, { recursive: true });
 
 const markdownFiles = [];
 const assetFiles = [];
@@ -82,7 +81,6 @@ for (const file of assetFiles) {
   const raw = await readFile(file.absolutePath);
 
   await writePublicAsset(path.join(publicRoot, file.relativePath), raw);
-  await writePublicAsset(path.join(publicDocsRoot, file.relativePath), raw);
 
   for (const routeDir of routeDirsBySourceDir.get(path.dirname(file.relativePath)) ?? []) {
     await writePublicAsset(path.join(publicRoot, routeDir, path.basename(file.relativePath)), raw);

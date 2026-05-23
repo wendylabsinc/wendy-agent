@@ -1,11 +1,6 @@
-import { Inter } from 'next/font/google';
 import { Provider } from '@/components/provider';
 import type { ReactNode } from 'react';
 import './global.css';
-
-const inter = Inter({
-  subsets: ['latin'],
-});
 
 const siteUrl = process.env.NEXT_PUBLIC_SITE_URL;
 
@@ -24,7 +19,7 @@ export const metadata = {
 
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
-    <html lang="en" className={inter.className} suppressHydrationWarning>
+    <html lang="en" suppressHydrationWarning>
       <body className="flex min-h-screen flex-col">
         <Provider>{children}</Provider>
       </body>
