@@ -18,6 +18,16 @@ on:
   release:
     types: [published]
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Optional release tag to deploy docs for"
+        required: false
+        type: string
+      release_prerelease:
+        description: "Deploy as nightly prerelease docs"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -37,6 +47,7 @@ jobs:
     outputs:
       deploy_path: ${{ steps.path.outputs.deploy_path }}
       deploy_paths: ${{ steps.path.outputs.deploy_paths }}
+      is_release_deploy: ${{ steps.path.outputs.is_release_deploy }}
       url: ${{ steps.path.outputs.url }}
     steps:
       - name: Check out repository
@@ -91,6 +102,8 @@ jobs:
         id: path
         env:
           DOCS_COMMIT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          DISPATCH_RELEASE_PRERELEASE: ${{ inputs.release_prerelease || 'false' }}
+          DISPATCH_RELEASE_TAG: ${{ inputs.release_tag || '' }}
           RELEASE_PRERELEASE: ${{ github.event.release.prerelease || 'false' }}
           RELEASE_TAG_NAME: ${{ github.event.release.tag_name || '' }}
         shell: bash
@@ -110,9 +123,15 @@ jobs:
           }
 
           DEPLOY_PATHS=()
+          IS_RELEASE_DEPLOY="false"
 
-          if [[ "${GITHUB_EVENT_NAME}" == "release" ]]; then
+          if [[ "${GITHUB_EVENT_NAME}" == "release" || ( "${GITHUB_EVENT_NAME}" == "workflow_dispatch" && -n "${DISPATCH_RELEASE_TAG}" ) ]]; then
+            IS_RELEASE_DEPLOY="true"
             RAW_VERSION="${RELEASE_TAG_NAME}"
+            if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+              RAW_VERSION="${DISPATCH_RELEASE_TAG}"
+              RELEASE_PRERELEASE="${DISPATCH_RELEASE_PRERELEASE}"
+            fi
             if [[ -z "${RAW_VERSION}" ]]; then
               echo "::error::Missing release tag in GitHub event context"
               exit 1
@@ -158,6 +177,7 @@ jobs:
             printf '%s\n' "${DEPLOY_PATHS[@]}"
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
+          echo "is_release_deploy=${IS_RELEASE_DEPLOY}" >> "$GITHUB_OUTPUT"
           echo "url=https://docs.wendy.dev/${DEPLOY_PATH}/" >> "$GITHUB_OUTPUT"
 
       - name: Build static site exports
@@ -206,6 +226,7 @@ jobs:
     needs: build
     if: >-
       github.event_name == 'release' ||
+      github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) ||
       (github.event_name == 'push' && github.ref == 'refs/heads/main')
     permissions:
@@ -231,17 +252,19 @@ jobs:
         uses: google-github-actions/setup-gcloud@v3
 
       - name: Ensure release alias rollback support
-        if: github.event_name == 'release'
+        if: needs.build.outputs.is_release_deploy == 'true'
         env:
           GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
           DOCS_BUCKET: wendy-docs-public
         run: |
           set -euo pipefail
 
-          gcloud storage buckets update "gs://${DOCS_BUCKET}" \
+          if ! gcloud storage buckets update "gs://${DOCS_BUCKET}" \
             --versioning \
             --quiet \
-            --project="${GCP_PROJECT_ID}"
+            --project="${GCP_PROJECT_ID}"; then
+            echo "::warning::Unable to enable bucket versioning; continuing with docs deployment"
+          fi
 
       - name: Upload to Cloud Storage
         env:

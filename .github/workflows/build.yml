@@ -23,6 +23,7 @@ concurrency:
 
 # Add permissions needed for creating releases
 permissions:
+  actions: write
   contents: write
 
 env:
@@ -700,6 +701,19 @@ jobs:
           fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Dispatch docs deployment
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IS_PRERELEASE: ${{ needs.determine-version.outputs.is_prerelease }}
+          REPO: ${{ github.repository }}
+          VERSION: ${{ needs.determine-version.outputs.tag_name }}
+        run: |
+          gh workflow run fumadocs.yml \
+            --repo "${REPO}" \
+            --ref main \
+            -f "release_tag=${VERSION}" \
+            -f "release_prerelease=${IS_PRERELEASE}"
 
       # Update floating 'latest' tag for nightly prereleases
       - name: Checkout repo
