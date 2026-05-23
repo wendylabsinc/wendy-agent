@@ -18,8 +18,9 @@ URL.
 
 ## Source Layout
 
-The Fumadocs app lives under `docs/`. It reads the existing Markdown files under
-`docs/**/*.md` at build time, so source Markdown stays in place.
+The Fumadocs app is reached through `docs/`, which is a repository-root symlink
+to `go/internal/cli/assets/docs`. It reads the existing Markdown files under
+that docs tree at build time, so source Markdown stays in place.
 
 ```
 docs/
@@ -66,13 +67,13 @@ The static export is written to `docs/out/`.
 
 ## CI And Deploy
 
-The `.github/workflows/fumadocs.yml` workflow runs when `docs/**` or the workflow
-file changes.
+The `.github/workflows/fumadocs.yml` workflow runs when `docs`,
+`docs/**`, `go/internal/cli/assets/docs/**`, or the workflow file changes.
 
 | Trigger | Behavior |
 |---|---|
-| Branch push | Builds and deploys a branch preview |
-| Pull request to `main` | Builds only, no deploy |
+| Protected branch push | Builds and deploys a branch preview |
+| Pull request to `main` from this repository | Builds and deploys a branch preview |
 | Published stable release | Deploys `release-<version>/` and updates `latest/` |
 | Published prerelease/nightly | Deploys `release-nightly-<version>/` and updates `latest-nightly/` |
 | Manual dispatch | Builds and deploys a branch-style preview |
@@ -86,7 +87,7 @@ Required GitHub environment variables:
 |---|---|
 | `GCP_WORKLOAD_IDENTITY_PROVIDER` | Workload Identity provider resource name |
 | `GCP_SERVICE_ACCOUNT` | Deploy service account email |
-| `GCP_PROJECT_ID` | GCP project ID, currently `cloud-c7e56` |
+| `GCP_PROJECT_ID` | GCP project ID |
 
 ## Hosting
 
