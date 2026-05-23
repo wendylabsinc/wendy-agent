@@ -52,6 +52,38 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Verify public npm package versions
+        run: |
+          set -euo pipefail
+
+          REGISTRY="$(npm config get registry)"
+          if [[ "${REGISTRY}" != "https://registry.npmjs.org/" ]]; then
+            echo "::error::Unexpected npm registry: ${REGISTRY}"
+            exit 1
+          fi
+
+          node --input-type=module <<'NODE'
+          import { execFileSync } from 'node:child_process';
+          import { readFileSync } from 'node:fs';
+
+          const manifest = JSON.parse(readFileSync('package.json', 'utf8'));
+          const packageVersions = {
+            ...manifest.dependencies,
+            ...manifest.devDependencies,
+          };
+
+          for (const [name, version] of Object.entries(packageVersions)) {
+            const resolved = execFileSync('npm', ['view', `${name}@${version}`, 'version'], {
+              encoding: 'utf8',
+              stdio: ['ignore', 'pipe', 'pipe'],
+            }).trim();
+
+            if (resolved !== version) {
+              throw new Error(`${name}@${version} resolved to ${resolved}`);
+            }
+          }
+          NODE
+
       - name: Audit dependencies
         run: npm audit --audit-level=high
 
@@ -154,6 +186,10 @@ jobs:
             NEXT_PUBLIC_BASE_PATH="/${DEPLOY_PATH}" npm run build
             mkdir -p "export/${DEPLOY_PATH}"
             cp -R out/. "export/${DEPLOY_PATH}/"
+            (
+              cd "export/${DEPLOY_PATH}"
+              find . -type f -print0 | sort -z | xargs -0 sha256sum > "../${DEPLOY_PATH}.sha256"
+            )
             echo "::endgroup::"
           done <<< "${DEPLOY_PATHS}"
 
@@ -171,7 +207,7 @@ jobs:
     if: >-
       github.event_name == 'release' ||
       (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) ||
-      (github.event_name == 'push' && github.ref_protected)
+      (github.event_name == 'push' && github.ref == 'refs/heads/main')
     permissions:
       contents: read
       id-token: write
@@ -212,6 +248,12 @@ jobs:
           while IFS= read -r DEPLOY_PATH; do
             [[ -n "${DEPLOY_PATH}" ]] || continue
             validate_deploy_path "${DEPLOY_PATH}"
+
+            test -f "out/${DEPLOY_PATH}/index.html"
+            (
+              cd "out/${DEPLOY_PATH}"
+              sha256sum --check "../${DEPLOY_PATH}.sha256"
+            )
 
             gcloud storage rsync "out/${DEPLOY_PATH}" "gs://${DOCS_BUCKET}/${DEPLOY_PATH}" \
               --recursive \
