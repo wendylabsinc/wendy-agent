@@ -711,7 +711,7 @@ jobs:
         run: |
           gh workflow run fumadocs.yml \
             --repo "${REPO}" \
-            --ref main \
+            --ref "${VERSION}" \
             -f "release_tag=${VERSION}" \
             -f "release_prerelease=${IS_PRERELEASE}"
 
