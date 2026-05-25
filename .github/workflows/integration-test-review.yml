@@ -25,7 +25,7 @@ jobs:
         run: gh pr diff "$PR_NUMBER" --repo "$REPO" > pr.diff 2>/dev/null || touch pr.diff
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
