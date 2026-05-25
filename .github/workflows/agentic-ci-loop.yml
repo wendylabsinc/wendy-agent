@@ -98,7 +98,7 @@ jobs:
 
       - name: Check out repository
         if: steps.check-status.outputs.needs_work == 'true'
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
           token: ${{ secrets.WENDY_TEMPLATE_SYNC_TOKEN }}
