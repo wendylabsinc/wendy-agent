@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -16,12 +18,16 @@ import (
 const (
 	openCommandTimeout      = 10 * time.Second
 	maxDiagnosticOutputSize = 512
+	xdgOpenPath             = "/usr/bin/xdg-open"
 )
 
+var ansiEscapePattern = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]`)
+
 type commandSpec struct {
-	name string
-	args []string
-	env  []string
+	name       string
+	args       []string
+	env        []string
+	minimalEnv bool
 }
 
 type opener struct {
@@ -31,6 +37,7 @@ type opener struct {
 	getenv         func(string) string
 	geteuid        func() int
 	glob           func(string) ([]string, error)
+	runuserPaths   []string
 	runCommand     func(commandSpec) error
 }
 
@@ -41,6 +48,7 @@ func newDefaultOpener() opener {
 		getenv:         os.Getenv,
 		geteuid:        os.Geteuid,
 		glob:           filepath.Glob,
+		runuserPaths:   []string{"/usr/sbin/runuser", "/sbin/runuser"},
 	}
 }
 
@@ -52,9 +60,13 @@ func Open(url string) error {
 }
 
 func (o opener) open(url string) error {
+	if err := validateOpenURL(url); err != nil {
+		return err
+	}
+
 	switch o.runtimeGOOS {
 	case "darwin":
-		return o.run(commandSpec{name: "open", args: []string{url}})
+		return o.run(commandSpec{name: "/usr/bin/open", args: []string{url}})
 	case "linux":
 		return o.openLinux(url)
 	case "windows":
@@ -66,7 +78,7 @@ func (o opener) open(url string) error {
 
 func (o opener) openLinux(url string) error {
 	if o.hasCurrentGraphicalSessionEnv() {
-		return o.run(commandSpec{name: "xdg-open", args: []string{url}})
+		return o.run(commandSpec{name: xdgOpenPath, args: []string{url}, minimalEnv: true})
 	}
 
 	session, sessionErr := o.activeGraphicalLoginSession()
@@ -78,7 +90,7 @@ func (o opener) openLinux(url string) error {
 		}
 	}
 
-	if err := o.run(commandSpec{name: "xdg-open", args: []string{url}}); err != nil {
+	if err := o.run(commandSpec{name: xdgOpenPath, args: []string{url}, minimalEnv: true}); err != nil {
 		return fmt.Errorf("xdg-open failed without a graphical session: %w; loginctl: %v", err, sessionErr)
 	}
 	return nil
@@ -109,6 +121,7 @@ func (o opener) activeGraphicalLoginSession() (loginSession, error) {
 		return loginSession{}, fmt.Errorf("list login sessions: %w", err)
 	}
 
+	var failures []string
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
 		fields := strings.Fields(line)
 		if len(fields) == 0 {
@@ -135,6 +148,7 @@ func (o opener) activeGraphicalLoginSession() (loginSession, error) {
 			"--no-pager",
 		)
 		if err != nil {
+			failures = append(failures, fmt.Sprintf("%s: %s", session.id, sanitizeDiagnosticOutput(err.Error())))
 			continue
 		}
 		propsMap := parseLoginctlProperties(string(props))
@@ -154,6 +168,9 @@ func (o opener) activeGraphicalLoginSession() (loginSession, error) {
 		}
 	}
 
+	if len(failures) > 0 {
+		return loginSession{}, fmt.Errorf("no active graphical login session found; loginctl show-session failures: %s", strings.Join(failures, "; "))
+	}
 	return loginSession{}, fmt.Errorf("no active graphical login session found")
 }
 
@@ -190,13 +207,19 @@ func (o opener) openLinuxInLoginSession(session loginSession, url string) error 
 		return fmt.Errorf("active graphical login session %q has invalid uid", session.id)
 	}
 
-	env := o.sessionEnv(session)
+	session.uid = strconv.Itoa(uid)
+	env, err := o.sessionEnv(session)
+	if err != nil {
+		return err
+	}
 	var candidates []commandSpec
 	if uid == o.euid() {
-		candidates = append(candidates, commandSpec{name: "xdg-open", args: []string{url}, env: env})
+		candidates = append(candidates, commandSpec{name: xdgOpenPath, args: []string{url}, env: env, minimalEnv: true})
 	} else if validUsername(session.user) {
-		envArgs := append(append([]string{}, env...), "xdg-open", url)
-		candidates = append(candidates, commandSpec{name: "runuser", args: append([]string{"-u", session.user, "--", "env"}, envArgs...)})
+		envArgs := append(append([]string{}, env...), xdgOpenPath, url)
+		for _, runuser := range o.runuserCandidates() {
+			candidates = append(candidates, commandSpec{name: runuser, args: append([]string{"-u", session.user, "--", "env", "-i"}, envArgs...), minimalEnv: true})
+		}
 	} else {
 		return fmt.Errorf("active graphical login session %q has invalid username", session.id)
 	}
@@ -218,8 +241,11 @@ func (o opener) openLinuxInLoginSession(session loginSession, url string) error 
 	)
 }
 
-func (o opener) sessionEnv(session loginSession) []string {
-	runtimeDir := linuxRuntimeDir(session.uid)
+func (o opener) sessionEnv(session loginSession) ([]string, error) {
+	runtimeDir, err := linuxRuntimeDir(session.uid)
+	if err != nil {
+		return nil, err
+	}
 	env := []string{
 		"XDG_RUNTIME_DIR=" + runtimeDir,
 		"DBUS_SESSION_BUS_ADDRESS=unix:path=" + runtimeDir + "/bus",
@@ -238,11 +264,14 @@ func (o opener) sessionEnv(session loginSession) []string {
 		}
 	}
 
-	return env
+	return env, nil
 }
 
-func linuxRuntimeDir(uid string) string {
-	return "/run/user/" + uid
+func linuxRuntimeDir(uid string) (string, error) {
+	if !allDigits(uid) {
+		return "", fmt.Errorf("invalid uid for graphical runtime directory")
+	}
+	return "/run/user/" + uid, nil
 }
 
 func hasEnv(env []string, key string) bool {
@@ -316,6 +345,25 @@ func validWaylandDisplay(value string) bool {
 	return allDigits(strings.TrimPrefix(value, "wayland-"))
 }
 
+func validateOpenURL(raw string) error {
+	if strings.HasPrefix(raw, "-") {
+		return fmt.Errorf("invalid URL %q: must not begin with '-'", raw)
+	}
+	parsed, err := url.ParseRequestURI(raw)
+	if err != nil {
+		return fmt.Errorf("invalid URL %q: %w", raw, err)
+	}
+	switch parsed.Scheme {
+	case "http", "https":
+		if parsed.Host == "" {
+			return fmt.Errorf("invalid URL %q: must include a host", raw)
+		}
+		return nil
+	default:
+		return fmt.Errorf("unsupported URL scheme %q", parsed.Scheme)
+	}
+}
+
 func allDigits(value string) bool {
 	if value == "" {
 		return false
@@ -337,8 +385,8 @@ func (o opener) run(spec commandSpec) error {
 	defer cancel()
 
 	cmd := o.command(ctx, spec.name, spec.args...)
-	if len(spec.env) > 0 {
-		cmd.Env = append(os.Environ(), spec.env...)
+	if spec.minimalEnv || len(spec.env) > 0 {
+		cmd.Env = append(o.minimalCommandEnv(), spec.env...)
 	}
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
@@ -398,7 +446,25 @@ func (o opener) globFiles(pattern string) ([]string, error) {
 	return filepath.Glob(pattern)
 }
 
+func (o opener) runuserCandidates() []string {
+	if len(o.runuserPaths) > 0 {
+		return o.runuserPaths
+	}
+	return []string{"/usr/sbin/runuser", "/sbin/runuser"}
+}
+
+func (o opener) minimalCommandEnv() []string {
+	env := []string{"PATH=/usr/bin:/bin:/usr/sbin:/sbin"}
+	for _, key := range []string{"HOME", "USER", "LOGNAME"} {
+		if value := o.env(key); value != "" && !strings.ContainsAny(value, "\x00\r\n") {
+			env = append(env, key+"="+value)
+		}
+	}
+	return env
+}
+
 func sanitizeDiagnosticOutput(value string) string {
+	value = ansiEscapePattern.ReplaceAllString(value, "")
 	value = strings.TrimSpace(value)
 	if value == "" {
 		return ""

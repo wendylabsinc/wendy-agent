@@ -846,11 +846,10 @@ var startPostStartHookCommand = func(shell, flag, command string) (func() error,
 		if err == nil {
 			return nil
 		}
-		output := sanitizeHookDiagnosticOutput(stderr.String())
-		if output == "" {
+		if strings.TrimSpace(stderr.String()) == "" {
 			return err
 		}
-		return fmt.Errorf("%w: %s", err, output)
+		return fmt.Errorf("%w: hook wrote stderr", err)
 	}, nil
 }
 
@@ -884,28 +883,6 @@ func (b *limitedBuffer) String() string {
 		output += "[stderr truncated]"
 	}
 	return output
-}
-
-func sanitizeHookDiagnosticOutput(value string) string {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return ""
-	}
-
-	const maxOutput = 512
-	var b strings.Builder
-	for _, r := range value {
-		switch {
-		case r == '\n' || r == '\r' || r == '\t':
-			b.WriteByte(' ')
-		case r >= 32 && r <= 126:
-			b.WriteRune(r)
-		}
-		if b.Len() >= maxOutput {
-			break
-		}
-	}
-	return strings.TrimSpace(b.String())
 }
 
 func (c *Client) startPostStartAgentHook(command, appName string) bool {

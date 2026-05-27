@@ -36,8 +36,11 @@ func TestOpenLinuxUsesCurrentGraphicalSessionEnv(t *testing.T) {
 		t.Fatalf("Open returned error: %v", err)
 	}
 
-	if got.name != "xdg-open" || !reflect.DeepEqual(got.args, []string{"https://example.com"}) {
-		t.Fatalf("command = %#v; want xdg-open URL", got)
+	if got.name != xdgOpenPath || !reflect.DeepEqual(got.args, []string{"https://example.com"}) {
+		t.Fatalf("command = %#v; want absolute xdg-open URL", got)
+	}
+	if !got.minimalEnv {
+		t.Fatalf("command = %#v; want minimal environment", got)
 	}
 	if len(got.env) != 0 {
 		t.Fatalf("direct xdg-open env = %v; want no overrides", got.env)
@@ -46,6 +49,7 @@ func TestOpenLinuxUsesCurrentGraphicalSessionEnv(t *testing.T) {
 
 func TestOpenLinuxBridgesIntoActiveWaylandSession(t *testing.T) {
 	op := testOpener()
+	op.runuserPaths = []string{"/usr/sbin/runuser"}
 
 	op.commandOutput = func(name string, args ...string) ([]byte, error) {
 		if name != "loginctl" {
@@ -87,14 +91,17 @@ func TestOpenLinuxBridgesIntoActiveWaylandSession(t *testing.T) {
 	}
 
 	wantArgs := []string{
-		"-u", "alice", "--", "env",
+		"-u", "alice", "--", "env", "-i",
 		"XDG_RUNTIME_DIR=/run/user/1000",
 		"DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
 		"WAYLAND_DISPLAY=wayland-1",
-		"xdg-open", "http://wendy-ser9.local:3001",
+		xdgOpenPath, "http://wendy-ser9.local:3001",
 	}
-	if got.name != "runuser" || !reflect.DeepEqual(got.args, wantArgs) {
+	if got.name != "/usr/sbin/runuser" || !reflect.DeepEqual(got.args, wantArgs) {
 		t.Fatalf("command = %#v; want runuser session bridge", got)
+	}
+	if !got.minimalEnv {
+		t.Fatalf("command = %#v; want minimal environment", got)
 	}
 }
 
@@ -147,7 +154,7 @@ func TestOpenLinuxReportsMissingGraphicalSession(t *testing.T) {
 		return []byte("\n"), nil
 	}
 	op.runCommand = func(spec commandSpec) error {
-		if spec.name != "xdg-open" {
+		if spec.name != xdgOpenPath {
 			t.Fatalf("command = %#v; want xdg-open fallback", spec)
 		}
 		return errors.New("exit status 3")
@@ -182,9 +189,41 @@ func TestValidateSessionValues(t *testing.T) {
 	}
 }
 
+func TestValidateOpenURL(t *testing.T) {
+	for _, raw := range []string{"file:///etc/shadow", "javascript:alert(1)", "-https://example.com", "http://"} {
+		if err := validateOpenURL(raw); err == nil {
+			t.Fatalf("validateOpenURL(%q) unexpectedly succeeded", raw)
+		}
+	}
+	if err := validateOpenURL("https://example.com/path"); err != nil {
+		t.Fatalf("validateOpenURL returned error for https URL: %v", err)
+	}
+}
+
+func TestMinimalCommandEnvOmitsUnrelatedVariables(t *testing.T) {
+	op := testOpener()
+	env := map[string]string{
+		"HOME":      "/home/alice",
+		"USER":      "alice",
+		"LOGNAME":   "alice",
+		"API_TOKEN": "secret",
+	}
+	op.getenv = func(key string) string { return env[key] }
+
+	got := op.minimalCommandEnv()
+	if reflect.DeepEqual(got, []string{}) {
+		t.Fatal("minimalCommandEnv returned no environment")
+	}
+	for _, kv := range got {
+		if strings.HasPrefix(kv, "API_TOKEN=") {
+			t.Fatalf("minimalCommandEnv leaked unrelated variable: %v", got)
+		}
+	}
+}
+
 func TestSanitizeDiagnosticOutput(t *testing.T) {
 	got := sanitizeDiagnosticOutput("bad\x1b[31m\nnext\tline")
-	if got != "bad[31m next line" {
+	if got != "bad next line" {
 		t.Fatalf("sanitizeDiagnosticOutput = %q; want printable single-line output", got)
 	}
 }

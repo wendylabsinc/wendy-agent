@@ -323,15 +323,11 @@ func TestStartPostStartHookCommandReportsStderrOnExitError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected wait error")
 	}
-	if !strings.Contains(err.Error(), "Could not open browser: no display") {
-		t.Fatalf("wait error = %q; want stderr output included", err)
+	if !strings.Contains(err.Error(), "hook wrote stderr") {
+		t.Fatalf("wait error = %q; want stderr presence included", err)
 	}
-}
-
-func TestSanitizeHookDiagnosticOutput(t *testing.T) {
-	got := sanitizeHookDiagnosticOutput("bad\x1b[31m\nnext\tline")
-	if got != "bad[31m next line" {
-		t.Fatalf("sanitizeHookDiagnosticOutput = %q; want printable single-line output", got)
+	if strings.Contains(err.Error(), "no display") {
+		t.Fatalf("wait error = %q; stderr content should not be logged", err)
 	}
 }
 
