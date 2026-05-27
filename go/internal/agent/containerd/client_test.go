@@ -2,6 +2,7 @@ package containerd
 
 import (
 	"errors"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -305,6 +306,25 @@ func TestStartPostStartAgentHookStartErrorDoesNotLogCommand(t *testing.T) {
 		if field.Key == "command" {
 			t.Fatal("hook command leaked into warning fields")
 		}
+	}
+}
+
+func TestStartPostStartHookCommandReportsStderrOnExitError(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell command shape is platform-specific")
+	}
+
+	wait, err := startPostStartHookCommand("/bin/sh", "-c", "printf 'Could not open browser: no display' >&2; exit 7")
+	if err != nil {
+		t.Fatalf("startPostStartHookCommand start error: %v", err)
+	}
+
+	err = wait()
+	if err == nil {
+		t.Fatal("expected wait error")
+	}
+	if !strings.Contains(err.Error(), "Could not open browser: no display") {
+		t.Fatalf("wait error = %q; want stderr output included", err)
 	}
 }
 

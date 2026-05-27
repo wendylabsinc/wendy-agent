@@ -610,7 +610,7 @@ func handleUtilityCommand(args []string) (bool, int) {
 	if err := browseropen.Open(rawURL); err != nil {
 		fmt.Fprintf(os.Stderr, "Could not open browser: %v\n", err)
 		fmt.Println(rawURL)
-		return true, 0
+		return true, 1
 	}
 
 	fmt.Printf("Opening %s in default browser...\n", rawURL)

@@ -836,10 +836,54 @@ func expandAgentHook(command, appName string) string {
 
 var startPostStartHookCommand = func(shell, flag, command string) (func() error, error) {
 	cmd := exec.Command(shell, flag, command)
+	stderr := &limitedBuffer{limit: 4096}
+	cmd.Stderr = stderr
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
-	return cmd.Wait, nil
+	return func() error {
+		err := cmd.Wait()
+		if err == nil {
+			return nil
+		}
+		output := strings.TrimSpace(stderr.String())
+		if output == "" {
+			return err
+		}
+		return fmt.Errorf("%w: %s", err, output)
+	}, nil
+}
+
+type limitedBuffer struct {
+	buf       bytes.Buffer
+	limit     int
+	truncated bool
+}
+
+func (b *limitedBuffer) Write(p []byte) (int, error) {
+	if b.limit > b.buf.Len() {
+		remaining := b.limit - b.buf.Len()
+		if len(p) > remaining {
+			_, _ = b.buf.Write(p[:remaining])
+			b.truncated = true
+		} else {
+			_, _ = b.buf.Write(p)
+		}
+	} else if len(p) > 0 {
+		b.truncated = true
+	}
+	return len(p), nil
+}
+
+func (b *limitedBuffer) String() string {
+	output := b.buf.String()
+	if b.truncated {
+		if output != "" {
+			output += "\n"
+		}
+		output += "[stderr truncated]"
+	}
+	return output
 }
 
 func (c *Client) startPostStartAgentHook(command, appName string) bool {
