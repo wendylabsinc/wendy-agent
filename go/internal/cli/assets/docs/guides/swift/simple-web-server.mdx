@@ -1,0 +1,232 @@
+---
+title: Simple Web Server
+description: Build a long-running HTTP server on WendyOS using Hummingbird
+language: swift
+---
+
+## Building a Web Server with Hummingbird
+
+<Callout type="info">
+  **Source Code**: The complete source code for this example is available at [github.com/wendylabsinc/samples/swift/simple-server](https://github.com/wendylabsinc/samples/tree/main/swift/simple-server)
+</Callout>
+
+Often times you'll want a long-running server where you can make HTTP or WebSocket calls to your WendyOS device. This allows your device to accept incoming requests and respond to them, making it easy to build interactive applications or APIs that can be accessed from other devices on your network.
+
+To prove this out, we'll use Hummingbird, a lightweight and flexible HTTP server framework for Swift.
+
+### Prerequisites
+
+- Wendy CLI installed on your development machine
+- Swift 6.2 or later installed **via [swiftly](/docs/installation/developer-machine-setup#install-swift)** (Xcode's Swift is not supported)
+- A WendyOS device plugged in over USB or connectable over Wi-Fi
+
+## Setting Up Your Project
+
+<Steps>
+  <Step>
+    ### Initialize the Project
+
+    Start from the Wendy Hummingbird template:
+
+    ```bash
+    wendy init simple-web-server --target wendyos --language swift --template simple-api --var APP_ID=simple-web-server --var PORT=8000 --var SWIFT_VERSION=6.3 --assistant skip --git-init no
+    cd simple-web-server
+    ```
+
+    This creates a Swift project with `Package.swift`, a `Sources/` directory, `Dockerfile`, and `wendy.json`.
+  </Step>
+
+  <Step>
+    ### Run on WendyOS
+
+    ```bash
+    wendy run
+    ```
+
+    Wendy will build the app, ask you to select a device if one is not already configured, deploy the app, and print the URL or run output.
+  </Step>
+</Steps>
+
+## Code Breakdown
+
+<Steps>
+  <Step>
+    ### Generated Package Dependencies
+
+    The generated `Package.swift` at the project root looks like this:
+
+    ```swift
+    // swift-tools-version: 6.2
+    import PackageDescription
+
+    let package = Package(
+        name: "SimpleServer",
+        platforms: [
+            .macOS(.v14)
+        ],
+        dependencies: [
+            .package(url: "https://github.com/hummingbird-project/hummingbird.git", from: "2.0.0", traits: []),
+            .package(url: "https://github.com/apple/swift-container-plugin", from: "1.0.0"),
+        ],
+        targets: [
+            .executableTarget(
+                name: "SimpleServer",
+                dependencies: [
+                    .product(name: "Hummingbird", package: "hummingbird")
+                ]
+            )
+        ]
+    )
+    ```
+  </Step>
+</Steps>
+
+Your project layout should look like this:
+
+```
+simple-web-server/
+├── Package.swift
+├── Sources/
+│   └── SimpleServer/
+│       └── main.swift
+└── wendy.json
+```
+
+## Generated Web Server
+
+The generated `Sources/SimpleServer/main.swift` contains the server logic:
+
+```swift
+import Foundation
+import Hummingbird
+
+struct Car: ResponseEncodable {
+    let make: String
+    let year: Int
+}
+
+@main
+struct SimpleServer {
+    static func main() async throws {
+        let hostname = ProcessInfo.processInfo.environment["WENDY_HOSTNAME"] ?? "0.0.0.0"
+
+        let router = Router()
+
+        // GET / - Returns "hello-world"
+        router.get("/") { _, _ in
+            print("Received request: GET /")
+            return "hello-world"
+        }
+
+        // GET /json - Returns a Car JSON object
+        router.get("/json") { _, _ in
+            print("Received request: GET /json")
+            return Car(make: "Tesla", year: 2024)
+        }
+
+        let app = Application(
+            router: router,
+            configuration: .init(address: .hostname("0.0.0.0", port: 6001))
+        )
+
+        print("Server running on http://\(hostname):6001")
+        try await app.runService()
+    }
+}
+```
+
+<Callout type="warning">
+  **Important**: It's important that your Hummingbird server is running on `0.0.0.0` and not `localhost` or `127.0.0.1`. `0.0.0.0` binds to all network interfaces on the device, making your server reachable from the host machine and the local network. Using `localhost` or `127.0.0.1` binds only to the loopback interface, so the server would not be accessible from outside the device.
+</Callout>
+
+## Running Locally
+
+You can test your server on your development machine before deploying to a WendyOS device:
+
+```bash
+swift run
+```
+
+Once the build completes, the server will start and you'll see:
+
+```
+Server running on http://0.0.0.0:6001
+```
+
+You can then test it from another terminal:
+
+```bash
+curl http://localhost:6001
+# hello-world
+
+curl http://localhost:6001/json
+# {"make":"Tesla","year":2024}
+```
+
+## Run Again on WendyOS
+
+When you're ready to deploy, run:
+
+```bash
+wendy run
+```
+
+You can configure `wendy.json` with a readiness probe and postStart hook to automatically open your browser when the server is ready:
+
+```json
+{
+  "readiness": {
+    "tcpSocket": { "port": 6001 },
+    "timeoutSeconds": 30
+  },
+  "hooks": {
+    "postStart": {
+      "cli": "wendy utils open-browser http://${WENDY_HOSTNAME}:6001"
+    }
+  }
+}
+```
+Or access it manually by opening a web browser or using curl:
+
+```bash
+curl http://wendyos-device.local:6001
+```
+
+Take note of the hostname of your WendyOS device. It will be something like `wendyos-device.local`, `wendy run` will output the hostname of your device.
+
+You should see the response:
+
+```
+hello-world
+```
+
+
+## Verifying Deployment
+
+You can also verify the server is running by listing the applications on your device:
+
+```bash
+wendy device apps list
+✔︎ Searching for WendyOS devices [5.3s]
+✔︎ Listing applications: True Probe [USB, Ethernet, LAN]
+╭───────────────┬─────────┬─────────┬──────────╮
+│ App           │ Version │ State   │ Failures │
+├───────────────┼─────────┼─────────┼──────────┤
+│ simple-server │ 0.0.0   │ Stopped │ 0        │
+╰───────────────┴─────────┴─────────┴──────────╯
+```
+
+## Learn More
+
+Hummingbird is a fantastic lightweight web framework for Swift. Learn more by visiting [https://hummingbird.codes/](https://hummingbird.codes/) and exploring the examples to make your server much more advanced.
+
+## Next Steps
+
+Now that you have a basic web server running:
+
+- Add more routes to handle different endpoints
+- Implement POST, PUT, and DELETE routes for a full REST API
+- Connect to WendyOS device features to control hardware via HTTP
+- Add WebSocket support for real-time communication
+- Explore Hummingbird's middleware and authentication features
+- Check out [Hummingbird Examples](https://github.com/hummingbird-project/hummingbird-examples) for a plethora of comprehensive examples

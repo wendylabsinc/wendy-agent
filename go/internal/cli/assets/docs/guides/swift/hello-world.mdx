@@ -1,0 +1,153 @@
+---
+title: Hello World in Swift
+description: Create your first WendyOS application using Swift
+language: swift
+---
+
+## Creating Your First Swift Application
+
+This guide will walk you through creating a simple "Hello, World!" application for WendyOS using Swift. This is a great way to prove that you can send your first app to your device and verify your development environment is set up correctly.
+
+### Prerequisites
+
+- Wendy CLI installed on your development machine
+- Swift 6.2 or later installed **via [swiftly](/docs/installation/developer-machine-setup#install-swift)** (Xcode's Swift is not supported)
+- A WendyOS device plugged in over USB or connectable over Wi-Fi
+
+### Creating the Project
+
+<Steps>
+  <Step>
+    ### Initialize the Project
+
+    Start from the Wendy Swift template:
+
+    ```bash
+    wendy init hello-world --target wendyos --language swift --template simple-api --var APP_ID=hello-world --var PORT=6001 --var SWIFT_VERSION=6.3 --assistant skip --git-init no
+    cd hello-world
+    ```
+
+    This creates a ready-to-run Swift project with `Package.swift`, `Dockerfile`, and `wendy.json`. The next steps explain the generated files.
+  </Step>
+
+  <Step>
+    ### Run on WendyOS
+
+    ```bash
+    wendy run
+    ```
+
+    Wendy will build the app, ask you to select a device if one is not already configured, deploy the app, and show the run output.
+  </Step>
+</Steps>
+
+## Code Breakdown
+
+<Steps>
+  <Step>
+    ### Explore the Project Structure
+
+    After initialization, you'll have the following structure:
+
+    ```
+    hello-world/
+    ├── Package.swift
+    └── Sources/
+        └── hello-world/
+            └── hello_world.swift
+    ```
+
+    The main application code is in `Sources/hello-world/hello_world.swift`.
+  </Step>
+</Steps>
+
+## Running Your Application
+
+You have two options to run your Swift application:
+
+### Option 1: Run Locally with Swift
+
+Run your application locally on your development machine using the Swift Package Manager:
+
+```bash
+swift run
+```
+
+You should see output similar to:
+
+```
+Building for debugging...
+[8/8] Applying hello-world
+Build of product 'hello-world' complete! (1.93s)
+Hello, world!
+```
+
+### Option 2: Deploy to a WendyOS Device
+
+Use the Wendy CLI to cross-compile, push, and start your app on a connected device:
+
+```bash
+wendy run
+```
+
+You should see output similar to:
+
+```
+swift run
+Building for debugging...
+[8/8] Applying hello-world
+Build of product 'hello-world' complete! (1.93s)
+Hello, world!
+```
+
+## More Code Notes
+
+The generated `hello_world.swift` file contains a simple Swift program:
+
+```swift
+@main
+struct HelloWorld {
+    static func main() {
+        print("Hello, world!")
+    }
+}
+```
+
+This is the entry point for your WendyOS application. The `@main` attribute marks this as the main entry point, and the `main()` function is called when the application starts.
+
+## Verifying Deployment on Your Device
+
+After deploying your application to a WendyOS device, you can verify it was successfully deployed and ran by listing the applications on your device:
+
+```bash
+wendy device apps list
+```
+
+You should see output similar to:
+
+```
+wendy device apps list
+✔︎ Searching for WendyOS devices [5.3s]
+✔︎ Listing applications: True Probe [USB, Ethernet, LAN]
+╭───────────────┬─────────┬─────────┬──────────╮
+│ App           │ Version │ State   │ Failures │
+├───────────────┼─────────┼─────────┼──────────┤
+│ hello-world   │ 0.0.1   │ Stopped │ 0        │
+╰───────────────┴─────────┴─────────┴──────────╯
+```
+
+<Callout type="info">
+  **Expected State**: The app shows as "Stopped" because a hello-world application exits immediately after printing its message. This is expected behavior. The key indicator of success is the "Failures" column showing `0`, which confirms your application ran and exited successfully without any errors.
+</Callout>
+
+## Next Steps
+
+Now that you have a basic Swift application running:
+
+- Learn how to deploy your app to a WendyOS device
+- Explore WendyOS frameworks for hardware access
+- Build more complex applications with user input and data processing
+
+<Callout type="info">
+  **Local vs Device**: `swift run` compiles and runs your application locally on your development machine. `wendy run` cross-compiles with Swift 6.2.3 for the target device and deploys it automatically.
+</Callout>

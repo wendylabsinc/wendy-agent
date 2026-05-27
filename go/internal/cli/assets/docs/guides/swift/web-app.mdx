@@ -1,0 +1,339 @@
+---
+title: Full-Stack Web App
+description: Build a full-stack web application with a Vite/React frontend and Hummingbird backend on WendyOS
+language: swift
+---
+
+## Building a Full-Stack Web App
+
+<Callout type="info">
+  **Source Code**: The complete source code for this example is available at [github.com/wendylabsinc/samples/swift/web-app](https://github.com/wendylabsinc/samples/tree/main/swift/web-app)
+</Callout>
+
+<img src="/images/web-app-example.gif" alt="Web App Demo" style={{ width: '100%', borderRadius: '8px' }} />
+
+In this guide, we'll build a complete web application with a modern React frontend (using Vite, TypeScript, and shadcn/ui) and a Hummingbird backend. The app displays an animated shader background with "WendyOS" text and includes an interactive feature to fetch and display random car data from an API.
+
+This demonstrates how to:
+- Serve a production-built React frontend from a Swift backend
+- Create API endpoints that the frontend can consume
+- Deploy the entire stack as a single container to your WendyOS device
+
+### Prerequisites
+
+- Wendy CLI installed on your development machine
+- Node.js 22+ and npm installed (for building the frontend)
+- Swift 6.2 installed **via [swiftly](/docs/installation/developer-machine-setup#install-swift)** (Xcode's Swift is not supported)
+- A WendyOS device plugged in over USB or connectable over Wi-Fi
+
+## Project Structure
+
+```
+web-app/
+├── Dockerfile
+├── wendy.json
+├── frontend/           # Vite + React + TypeScript + shadcn/ui
+│   ├── package.json
+│   ├── src/
+│   │   ├── App.tsx
+│   │   └── components/
+│   └── ...
+└── server/             # Hummingbird backend
+    ├── Package.swift
+    └── Sources/
+        └── web-app-server/
+            └── main.swift
+```
+
+## Setting Up Your Project
+
+<Steps>
+  <Step>
+    ### Initialize the Project
+
+    Start from the Wendy full-stack Swift template:
+
+    ```bash
+    wendy init web-app --target wendyos --language swift --template fullstack --var APP_ID=web-app --var PORT=8000 --var SWIFT_VERSION=6.3 --assistant skip --git-init no
+    cd web-app
+    ```
+
+    The template creates `wendy.json`, the Dockerfile, frontend files, and Swift backend files. The sections below explain how the generated full-stack app fits together.
+  </Step>
+
+  <Step>
+    ### Run on WendyOS
+
+    ```bash
+    wendy run
+    ```
+
+    Wendy will build the app, ask you to select a device if one is not already configured, deploy the app, and print the URL or run output.
+  </Step>
+</Steps>
+
+## Code Breakdown
+
+<Steps>
+  <Step>
+    ### Generated Frontend
+
+    The template includes a Vite React TypeScript frontend:
+
+    ```bash
+    cd frontend
+    npm create vite@latest . -- --template react-ts
+    npm install
+    npm install -D tailwindcss @tailwindcss/vite
+    ```
+
+    Initialize shadcn/ui:
+
+    ```bash
+    npx shadcn@latest init --defaults
+    npx shadcn@latest add button table
+    ```
+
+    Build the frontend:
+
+    ```bash
+    npm run build
+    cd ..
+    ```
+  </Step>
+
+  <Step>
+    ### Generated Hummingbird Backend
+
+    The generated `server/Package.swift` describes the backend:
+
+    ```swift
+    // swift-tools-version: 6.2
+
+    import PackageDescription
+
+    let package = Package(
+        name: "web-app-server",
+        platforms: [
+            .macOS(.v14)
+        ],
+        dependencies: [
+            .package(url: "https://github.com/hummingbird-project/hummingbird.git", from: "2.0.0"),
+        ],
+        targets: [
+            .executableTarget(
+                name: "web-app-server",
+                dependencies: [
+                    .product(name: "Hummingbird", package: "hummingbird")
+                ]
+            )
+        ]
+    )
+    ```
+
+    The generated `server/Sources/web-app-server/main.swift` handles the API:
+
+    ```swift
+    import Foundation
+    import Hummingbird
+
+    struct Car: ResponseEncodable {
+        let name: String
+        let make: String
+        let year: Int
+        let color: String
+        let createdAt: String
+    }
+
+    let carNames = ["Honda", "Toyota", "Ford", "Chevrolet", "BMW", "Mercedes", "Audi", "Tesla", "Nissan", "Mazda"]
+    let carMakes = ["Civic", "Camry", "Mustang", "Corvette", "M3", "C-Class", "A4", "Model 3", "Altima", "MX-5"]
+
+    func randomCar() -> Car {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return Car(
+            name: carNames.randomElement()!,
+            make: carMakes.randomElement()!,
+            year: Int.random(in: 1990...2024),
+            color: String(format: "#%06X", Int.random(in: 0...0xFFFFFF)),
+            createdAt: formatter.string(from: Date())
+        )
+    }
+
+    @main
+    struct WebAppServer {
+        static func main() async throws {
+            let hostname = ProcessInfo.processInfo.environment["WENDY_HOSTNAME"] ?? "0.0.0.0"
+
+            // Determine frontend dist path
+            let containerPath = "/app/frontend/dist"
+            let frontendDist = ProcessInfo.processInfo.environment["FRONTEND_DIST"]
+                ?? (FileManager.default.fileExists(atPath: containerPath + "/index.html") ? containerPath : "../frontend/dist")
+
+            print("Serving frontend from: \(frontendDist)")
+
+            let router = Router()
+
+            // API route for random car
+            router.get("/api/random-car") { _, _ in
+                return randomCar()
+            }
+
+            // Serve static files using FileMiddleware
+            router.add(middleware: FileMiddleware(frontendDist, searchForIndexHtml: true))
+
+            // Bind to 0.0.0.0 to accept connections from all interfaces (required for container networking)
+            let app = Application(
+                router: router,
+                configuration: .init(address: .hostname("0.0.0.0", port: 6002))
+            )
+
+            print("Server running on http://\(hostname):6002")
+            try await app.runService()
+        }
+    }
+    ```
+
+    <Callout type="info">
+      **FileMiddleware**: Hummingbird's `FileMiddleware` automatically serves static files from the specified directory. The `searchForIndexHtml: true` option serves `index.html` for directory requests, enabling SPA routing.
+    </Callout>
+  </Step>
+
+  <Step>
+    ### Generated Dockerfile
+
+    The generated project includes a Dockerfile:
+
+    ```dockerfile
+    # Build frontend
+    FROM node:22-slim AS frontend-builder
+
+    WORKDIR /app/frontend
+    COPY frontend/package*.json ./
+    RUN npm ci
+    COPY frontend/ ./
+    RUN npm run build
+
+    # Build Swift server
+    FROM swift:6.2.3-noble AS swift-builder
+
+    WORKDIR /app
+    COPY server/Package.swift server/Package.resolved* ./
+    COPY server/Sources ./Sources
+
+    RUN swift build -c release
+
+    # Runtime stage
+    FROM swift:6.2.3-noble-slim
+
+    WORKDIR /app
+
+    COPY --from=swift-builder /app/.build/release/web-app-server /usr/local/bin/web-app-server
+    COPY --from=frontend-builder /app/frontend/dist ./frontend/dist
+
+    ENV FRONTEND_DIST=/app/frontend/dist
+
+    EXPOSE 6002
+
+    CMD ["web-app-server"]
+    ```
+  </Step>
+
+  <Step>
+    ### Generated wendy.json
+
+    Review the generated `wendy.json` file:
+
+    ```json
+    {
+      "appId": "com.example.swift-web-app",
+      "version": "0.0.1",
+      "entitlements": [
+        { "type": "network" }
+      ],
+      "readiness": {
+        "tcpSocket": { "port": 6002 },
+        "timeoutSeconds": 30
+      },
+      "hooks": {
+        "postStart": {
+          "cli": "wendy utils open-browser http://${WENDY_HOSTNAME}:6002"
+        }
+      }
+    }
+    ```
+
+    The `readiness` probe tells the CLI to wait until port `6002` is accepting connections before proceeding. The `postStart` hook automatically opens your browser once the app is ready.
+    </Step>
+</Steps>
+
+## Run Again on WendyOS
+
+Deploy your full-stack web application to your WendyOS device:
+
+```bash
+wendy run
+```
+
+## Test Your Web App
+
+Your browser will open automatically once the app is ready, thanks to the `postStart` hook. If it doesn't, navigate to:
+
+```
+http://wendyos-true-probe.local:6002
+```
+
+<Callout type="warning">
+  **Replace the hostname**: Each WendyOS device has a unique hostname. Replace `wendyos-true-probe` with your device's actual hostname shown in the CLI output.
+</Callout>
+
+## Test the API Directly
+
+```bash
+curl http://wendyos-true-probe.local:6002/api/random-car
+```
+
+Response:
+```json
+{"name":"Toyota","make":"Camry","year":2015,"color":"#A4F2C1","createdAt":"2024-01-15T10:30:00.000Z"}
+```
+
+## Learn More
+
+- [Hummingbird Documentation](https://docs.hummingbird.codes/)
+- [Vite Documentation](https://vitejs.dev/)
+- [shadcn/ui Components](https://ui.shadcn.com/)
+
+## Next Steps
+
+Now that you have a full-stack web app running:
+
+- Add more API endpoints for CRUD operations
+- Implement real-time updates with WebSockets
+- Connect to WendyOS device sensors and display data in the UI
+- Add authentication middleware
+- Use a database for persistent storage
+
+<Accordions>
+  <Accordion title="Testing locally without a WendyOS device">
+    ### Build and Run with Docker
+
+    ```bash
+    docker build -t swift-web-app .
+    docker run -p 6002:6002 swift-web-app
+    ```
+
+    Then open `http://localhost:6002` in your browser.
+
+    ### Run Locally with Swift
+
+    ```bash
+    # Build the frontend first
+    cd frontend && npm run build && cd ..
+
+    # Run the backend
+    cd server
+    swift run
+    ```
+  </Accordion>
+</Accordions>

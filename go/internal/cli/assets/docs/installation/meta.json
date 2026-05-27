@@ -1,0 +1,10 @@
+{
+  "title": "Installation",
+  "pages": [
+    "developer-machine-setup",
+    "wendyos-nvidia-jetson",
+    "wendyos-raspberry-pi-5",
+    "esp32",
+    "linux-wendy-agent"
+  ]
+}

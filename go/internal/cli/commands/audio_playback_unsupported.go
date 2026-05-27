@@ -6,7 +6,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/wendylabsinc/wendy/proto/gen/agentpb"
+	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
 func playRealtimeAudio(_ context.Context, _ interface {

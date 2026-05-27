@@ -1,0 +1,1 @@
+Renders a TUI dashboard for your device. This shows all apps, including their active status (running/stopped), OTel metrics and logs in real-time.

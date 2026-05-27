@@ -1,5 +1,6 @@
 .DS_Store
 build
+.worktrees
 .build
 .wendy-build
 .edge-build
@@ -27,9 +28,22 @@ WendyCLI.app/
 *.resolved
 go/wendy-agent
 go/wendy
+go/bin/
+go/local-pki-test
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+vendor/
 
 # Local settings
 *.local.*
 
 # Git worktrees
 .worktrees/
+
+# Superpowers planning docs (local dev tooling)
+docs/superpowers/
+.claude

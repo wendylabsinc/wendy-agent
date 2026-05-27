@@ -1,0 +1,303 @@
+---
+title: Simple Web Server
+description: Build a long-running HTTP server on WendyOS using FastAPI
+language: python
+---
+
+## Building a Web Server with FastAPI
+
+<Callout type="info">
+  **Source Code**: The complete source code for this example is available at [github.com/wendylabsinc/samples/python/simple-server](https://github.com/wendylabsinc/samples/tree/main/python/simple-server)
+</Callout>
+
+Often times you'll want a long-running server where you can make HTTP or WebSocket calls to your WendyOS device. This allows your device to accept incoming requests and respond to them, making it easy to build interactive applications or APIs that can be accessed from other devices on your network.
+
+To prove this out, we'll use FastAPI, a modern, fast (high-performance) web framework for building APIs with Python based on standard Python type hints.
+
+### Prerequisites
+
+- Wendy CLI installed on your development machine
+- Python 3.14 installed
+- A WendyOS device plugged in over USB or connectable over Wi-Fi
+
+## Setting Up Your Project
+
+<Steps>
+  <Step>
+    ### Initialize the Project
+
+    Start from the Wendy FastAPI template:
+
+    ```bash
+    wendy init simple-server --target wendyos --language python --template simple-api --var APP_ID=simple-server --var PORT=8000 --assistant skip --git-init no
+    cd simple-server
+    ```
+
+    The template creates the Wendy config, Dockerfile, and Python server files. The sections below explain the generated app and the pieces you can customize.
+  </Step>
+
+  <Step>
+    ### Run on WendyOS
+
+    ```bash
+    wendy run
+    ```
+
+    Wendy will build the app, ask you to select a device if one is not already configured, deploy the app, and print the URL or run output.
+  </Step>
+</Steps>
+
+## Code Breakdown
+
+<Steps>
+  <Step>
+    ### Generated requirements.txt
+
+    Review the generated `requirements.txt` file with FastAPI and Uvicorn:
+
+    ```txt
+    fastapi
+    uvicorn[standard]
+    ```
+  </Step>
+
+  <Step>
+    ### Generated Web Server
+
+    The generated `app.py` contains the server logic:
+
+    ```python
+    #!/usr/bin/env python3
+    from fastapi import FastAPI
+    from pydantic import BaseModel
+
+    app = FastAPI()
+
+    class Car(BaseModel):
+        make: str
+        year: int
+
+    @app.get("/")
+    async def root():
+        return "hello-world"
+
+    @app.get("/json")
+    async def get_car():
+        return Car(make="Tesla", year=2024)
+    ```
+
+    <Callout type="info">
+      **Multiple Routes**: This example includes two routes:
+      - `GET /` - Returns a simple string "hello-world"
+      - `GET /json` - Returns a JSON object with a Pydantic model
+    </Callout>
+  </Step>
+
+  <Step>
+    ### Generated Dockerfile
+
+    The generated project includes a Dockerfile:
+
+    ```dockerfile
+    # Use uv with Python 3.14 (slim variant for better compatibility)
+    FROM ghcr.io/astral-sh/uv:python3.14-bookworm-slim
+
+    # Set working directory
+    WORKDIR /app
+
+    # Copy application files
+    COPY requirements.txt .
+    COPY app.py .
+
+    # Create a non-root user for security
+    RUN useradd --create-home --shell /bin/bash app && \
+        chown -R app:app /app
+    USER app
+
+    # Expose port 8000
+    EXPOSE 8000
+
+    # Run the application with uvicorn, ensuring dependencies are available
+    CMD ["uv", "run", "--with", "fastapi", "--with", "uvicorn[standard]", "uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]
+    ```
+
+    <Callout type="warning">
+      **Important**: The server runs on `0.0.0.0` and not `localhost` or `127.0.0.1`. This is because your WendyOS device needs to accept connections from other devices on the network. Binding to `0.0.0.0` makes the server accessible externally.
+    </Callout>
+  </Step>
+</Steps>
+
+## Run Again on WendyOS
+
+Deploy your containerized web server to your WendyOS device:
+
+```bash
+wendy run
+```
+
+You'll see output similar to the following as the CLI discovers your device, builds the container, and starts the server:
+
+```
+wendy run
+✔︎ Searching for WendyOS devices [5.0s]
+✔︎ Which device do you want to run this app on?: True Probe (wendyos-true-probe.local) [USB, Ethernet, LAN]
+i Info
+  True Probe
+╭───────────┬──────────────────────────────────────────────╮
+│ Interface │ Details                                      │
+├───────────┼──────────────────────────────────────────────┤
+│ USB 3.2   │ VID: 0x1D6B, PID: 0x0104, S/N: 1421325024451 │
+│ Ethernet  │ en30, 2.5 Gbps                               │
+│ LAN       │ wendyos-true-probe.local                     │
+╰───────────┴──────────────────────────────────────────────╯
+✔︎ Builder ready [0.1s]
+✔︎ Container built and uploaded successfully! [0.4s]
+ℹ︎ Preparing app
+✔︎ App ready to start [0.1s]
+✔ Success
+  Started app
+Downloading pydantic-core (1.8MiB)
+Downloading uvloop
+ Downloaded pydantic-core
+ Downloaded uvloop
+Installed 19 packages in 16ms
+INFO:     Started server process [41]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+```
+
+## Test Your Server on WendyOS
+
+After deploying your server to your WendyOS device, you can test it from your development machine. As long as your WendyOS device is accessible over USB or the Local Area Network, you can reach it from your browser.
+
+You can configure `wendy.json` with a readiness probe and postStart hook to automatically open your browser when the server is ready:
+
+```json
+{
+  "readiness": {
+    "tcpSocket": { "port": 8000 },
+    "timeoutSeconds": 30
+  },
+  "hooks": {
+    "postStart": {
+      "cli": "wendy utils open-browser http://${WENDY_HOSTNAME}:8000"
+    }
+  }
+}
+```
+Or open your browser manually and navigate to:
+
+```
+http://wendyos-true-probe.local:8000
+```
+
+<Callout type="warning">
+  **Replace the hostname**: Each WendyOS device has a unique hostname. Replace `wendyos-true-probe` with your device's actual hostname shown in the CLI output. In addition, don't forget to add the port to the hostname.
+</Callout>
+
+You should see the following output:
+
+```
+"hello-world"
+```
+
+This confirms your web server is successfully running on your WendyOS device and accepting requests from your network.
+
+## Verifying Deployment
+
+You can also verify the server is running by listing the applications on your device:
+
+```bash
+wendy device apps list
+✔︎ Searching for WendyOS devices [5.3s]
+✔︎ Listing applications: True Probe [USB, Ethernet, LAN]
+╭───────────────┬─────────┬─────────┬──────────╮
+│ App           │ Version │ State   │ Failures │
+├───────────────┼─────────┼─────────┼──────────┤
+│ simple-server │ 0.0.0   │ Stopped │ 0        │
+╰───────────────┴─────────┴─────────┴──────────╯
+```
+
+## Explore the API Documentation
+
+FastAPI automatically generates interactive API documentation. After starting your server, visit:
+
+- **Swagger UI**: `http://wendyos-true-probe.local:8000/docs`
+- **ReDoc**: `http://wendyos-true-probe.local:8000/redoc`
+
+These interfaces let you explore and test your API endpoints interactively. Remember to replace `wendyos-true-probe` with your device's actual hostname.
+
+## Learn More
+
+FastAPI is a fantastic modern web framework for Python with automatic API documentation, type validation, and excellent performance. Learn more by visiting [https://fastapi.tiangolo.com/](https://fastapi.tiangolo.com/).
+
+## Next Steps
+
+Now that you have a basic web server running:
+
+- Add more routes to handle different endpoints
+- Implement POST, PUT, and DELETE routes for a full REST API
+- Use Pydantic models for request body validation
+- Connect to WendyOS device features to control hardware via HTTP
+- Add WebSocket support for real-time communication
+- Check out [FastAPI Examples](https://github.com/tiangolo/fastapi/tree/master/docs_src) for comprehensive examples
+
+<Accordions>
+  <Accordion title="Testing the app on your own machine">
+    There are times when you might not have a WendyOS device around. You can still test your application locally using Python or Docker.
+
+    ### Using Python Directly
+
+    Install dependencies and run your server locally:
+
+    ```bash
+    pip install -r requirements.txt
+    uvicorn app:app --host 0.0.0.0 --port 8000
+    ```
+
+    You should see output indicating the server has started:
+
+    ```
+    INFO:     Started server process [12345]
+    INFO:     Waiting for application startup.
+    INFO:     Application startup complete.
+    INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+    ```
+
+    ### Using Docker Locally
+
+    Build and run the container:
+
+    ```bash
+    docker build -t simple-server .
+    docker run -p 8000:8000 simple-server
+    ```
+
+    ### Test Your Server
+
+    Open another terminal and test with curl:
+
+    ```bash
+    curl http://localhost:8000
+    ```
+
+    You should see:
+
+    ```
+    "hello-world"
+    ```
+
+    Test the JSON endpoint:
+
+    ```bash
+    curl http://localhost:8000/json
+    ```
+
+    You should see:
+
+    ```json
+    {"make":"Tesla","year":2024}
+    ```
+  </Accordion>
+</Accordions>

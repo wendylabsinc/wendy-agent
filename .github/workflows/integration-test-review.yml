@@ -1,0 +1,158 @@
+name: Integration Test Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+
+jobs:
+  integration-test-review:
+    name: Review integration test coverage
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Get PR diff
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: gh pr diff "$PR_NUMBER" --repo "$REPO" > pr.diff 2>/dev/null || touch pr.diff
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Anthropic SDK
+        run: pip install --quiet anthropic==0.97.0
+
+      - name: Review integration test coverage with Claude
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REVIEW_FILE: ${{ runner.temp }}/review.md
+        run: |
+          python3 << 'PYEOF'
+          import anthropic
+          import os
+          import pathlib
+
+          client = anthropic.Anthropic()
+
+          with open('pr.diff') as f:
+              diff = f.read()
+
+          if not diff.strip():
+              print('Empty diff — skipping')
+              raise SystemExit(0)
+
+          tests_root = pathlib.Path('.github/ci-tests').resolve()
+          existing_tests = []
+          TESTS_BUDGET = 20000
+          total_bytes = 0
+          for test_dir in sorted(tests_root.iterdir()):
+              if not test_dir.is_dir() or total_bytes >= TESTS_BUDGET:
+                  continue
+              test_info = {'name': test_dir.name, 'files': {}}
+              for f in sorted(test_dir.iterdir()):
+                  if f.is_file():
+                      try:
+                          content = f.read_text()
+                          if total_bytes + len(content) <= TESTS_BUDGET:
+                              test_info['files'][f.name] = content
+                              total_bytes += len(content)
+                      except Exception:
+                          pass
+              if test_info['files']:
+                  existing_tests.append(test_info)
+
+          test_script = pathlib.Path('go/scripts/test-ci.sh').read_text()
+          integration_yml = pathlib.Path('.github/workflows/integration-tests.yml').read_text()
+
+          tests_context = ''
+          for t in existing_tests:
+              tests_context += f'\n### {t["name"]}/\n'
+              for fname, content in t['files'].items():
+                  tests_context += f'#### {fname}\n```\n{content}\n```\n'
+
+          message = client.messages.create(
+              model='claude-sonnet-4-6',
+              max_tokens=8000,
+              system=[
+                  {
+                      'type': 'text',
+                      'text': (
+                          'You are a QA engineer for WendyOS, an embedded/edge OS that deploys containerized apps to IoT devices via the Wendy CLI.\n\n'
+                          'Given a PR diff, determine whether any new CLI features, device capabilities, entitlements, or deployment modes '
+                          'lack integration test coverage. If they do, suggest the necessary test files.\n\n'
+                          'Integration test structure:\n'
+                          '  .github/ci-tests/<name>/\n'
+                          '    wendy.json         # {"appId":"sh.wendy.ci.<name>","version":"1.0.0","language":"python"|"swift"[,"entitlements":[...]]}\n'
+                          '    main.py + Dockerfile   # for Python tests (FROM python:3.11-slim)\n'
+                          '    Package.swift + Sources/<Target>/main.swift  # for Swift tests\n'
+                          '    docker-compose.yml  # for compose tests (omit wendy.json)\n\n'
+                          'Also note required updates to:\n'
+                          '  go/scripts/test-ci.sh: add the test name to the ALL_TESTS array\n'
+                          '  .github/workflows/integration-tests.yml: add the test name to the "for t in ..." list\n'
+                          '    (Linux must omit swift-* tests)\n\n'
+                          'Test naming convention: <language>-<feature>  e.g. python-camera, swift-filesystem\n\n'
+                          'Rules:\n'
+                          '- Only suggest tests for features clearly introduced or changed in the diff.\n'
+                          '- Do not duplicate existing tests.\n'
+                          '- If no new tests are needed, output exactly: NO_CHANGES_NEEDED\n\n'
+                          'Output a GitHub PR review comment in markdown. For each suggested test, include the '
+                          'full file content in a fenced code block under a `### .github/ci-tests/<name>/<file>` heading. '
+                          'Start with a one-line summary.'
+                      ),
+                      'cache_control': {'type': 'ephemeral'},
+                  }
+              ],
+              messages=[{
+                  'role': 'user',
+                  'content': (
+                      '<untrusted_pr_content>\n'
+                      f'PR #{os.environ["PR_NUMBER"]}: {os.environ["PR_TITLE"]}\n\n'
+                      f'{os.environ["PR_BODY"]}\n\n'
+                      f'## Diff\n```diff\n{diff[:30000]}\n```\n'
+                      '</untrusted_pr_content>\n\n'
+                      f'## Existing integration tests\n{tests_context}\n\n'
+                      f'## go/scripts/test-ci.sh\n```bash\n{test_script[:8000]}\n```\n\n'
+                      f'## .github/workflows/integration-tests.yml\n```yaml\n{integration_yml[:8000]}\n```'
+                  ),
+              }],
+          )
+
+          response_text = message.content[0].text.strip()
+          if not response_text or response_text == 'NO_CHANGES_NEEDED':
+              print('No new integration tests needed')
+              raise SystemExit(0)
+
+          review_file = os.environ['REVIEW_FILE']
+          with open(review_file, 'w') as f:
+              f.write('> [!NOTE]\n')
+              f.write('> **Integration test review** — automated suggestions from Claude. Apply, adapt, or dismiss as needed.\n\n')
+              f.write(response_text + '\n')
+          print(f'Review written to {review_file}')
+          PYEOF
+
+      - name: Post review comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          REVIEW_FILE: ${{ runner.temp }}/review.md
+        run: |
+          if [ -s "$REVIEW_FILE" ]; then
+            gh api "repos/$REPO/pulls/$PR_NUMBER/reviews" \
+              --method POST \
+              --field event=COMMENT \
+              --field body=@"$REVIEW_FILE"
+          fi

@@ -1,0 +1,79 @@
+---
+title: Bluetooth Access
+description: Scan, pair, connect, and use Bluetooth devices with WendyOS apps
+---
+
+## Bluetooth Access
+
+Bluetooth access is used for BLE sensors, controllers, audio accessories, serial devices, and paired peripherals. WendyOS keeps Bluetooth interfaces unavailable to apps unless the app declares a Bluetooth entitlement.
+
+Add the entitlement from your project directory:
+
+```bash
+wendy project entitlements add bluetooth
+```
+
+If your app needs a specific Bluetooth mode, use the detailed entitlement options:
+
+```bash
+wendy project entitlements add bluetooth --mode kernel
+wendy project entitlements add bluetooth --mode bluez
+```
+
+Use `kernel` for low-level HCI socket access. Use `bluez` for standard Linux Bluetooth workflows through BlueZ.
+
+## Scan for Devices
+
+List nearby Bluetooth peripherals:
+
+```bash
+wendy device bluetooth list
+```
+
+The command shows device name, address, RSSI, type, pairing state, and connection state.
+
+## Connect and Pair
+
+Connect to a Bluetooth peripheral by address:
+
+```bash
+wendy device bluetooth connect AA:BB:CC:DD:EE:FF
+```
+
+By default, the CLI pairs and trusts the device. You can disable either behavior:
+
+```bash
+wendy device bluetooth connect AA:BB:CC:DD:EE:FF --pair=false --trust=false
+```
+
+Disconnect without forgetting the pairing:
+
+```bash
+wendy device bluetooth disconnect AA:BB:CC:DD:EE:FF
+```
+
+Forget a paired device:
+
+```bash
+wendy device bluetooth forget AA:BB:CC:DD:EE:FF
+```
+
+## App Configuration
+
+A minimal Bluetooth app uses:
+
+```json
+{
+  "appId": "com.example.bluetooth",
+  "version": "1.0.0",
+  "entitlements": [
+    { "type": "bluetooth", "mode": "bluez" }
+  ]
+}
+```
+
+Then deploy:
+
+```bash
+wendy run
+```

@@ -1,0 +1,44 @@
+---
+title: Camera Feed in TypeScript
+description: Start a live camera feed app on WendyOS using the TypeScript camera template
+language: typescript
+---
+
+## Live Camera Feed with TypeScript
+
+Use the Wendy camera template when you want a browser-viewable camera stream without wiring the project from scratch. The template includes `wendy.json`, camera entitlements, a Dockerfile, TypeScript backend code, and the browser UI.
+
+### Prerequisites
+
+- Wendy CLI installed on your development machine
+- Node.js 22 or later installed
+- A WendyOS device with a USB camera connected
+
+## Setting Up Your Project
+
+<Steps>
+  <Step>
+    ### Initialize the Project
+
+    ```bash
+    wendy init typescript-camera --target wendyos --language node --template camera-feed --var APP_ID=typescript-camera --var PORT=5003 --assistant skip --git-init no
+    cd typescript-camera
+    ```
+
+    The generated project is ready to run. After the first run, use the sections below as a code breakdown when you want to understand or customize camera handling, routes, or UI behavior.
+  </Step>
+
+  <Step>
+    ### Run on WendyOS
+
+    ```bash
+    wendy run
+    ```
+
+    Wendy will build the app, ask you to select a device if one is not already configured, deploy the container, and print the app URL.
+  </Step>
+</Steps>
+
+## Code Breakdown
+
+Open the app URL from the Wendy run output to view the stream.

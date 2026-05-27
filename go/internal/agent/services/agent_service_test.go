@@ -16,8 +16,8 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 
-	"github.com/wendylabsinc/wendy/internal/shared/version"
-	agentpb "github.com/wendylabsinc/wendy/proto/gen/agentpb"
+	"github.com/wendylabsinc/wendy/go/internal/shared/version"
+	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
 // ---------- mock implementations ----------
@@ -81,12 +81,15 @@ func (m *mockBluetoothManager) Forget(_ context.Context, _ string) error        
 
 const bufSize = 1024 * 1024
 
-func startAgentServer(t *testing.T, nm NetworkManager, hd HardwareDiscoverer, bm BluetoothManager) (agentpb.WendyAgentServiceClient, func()) {
+func startAgentServer(t *testing.T, nm NetworkManager, hd HardwareDiscoverer, bm BluetoothManager, opts ...func(*AgentService)) (agentpb.WendyAgentServiceClient, func()) {
 	t.Helper()
 	lis := bufconn.Listen(bufSize)
 	srv := grpc.NewServer()
 	logger := zap.NewNop()
-	svc := NewAgentService(logger, nm, hd, bm)
+	svc := NewAgentService(logger, nm, hd, bm, &AgentInstaller{})
+	for _, opt := range opts {
+		opt(svc)
+	}
 	agentpb.RegisterWendyAgentServiceServer(srv, svc)
 
 	go func() { _ = srv.Serve(lis) }()
@@ -163,7 +166,7 @@ func TestGetSystemInfo(t *testing.T) {
 }
 
 func TestGetSystemInfoPreservesContextStatus(t *testing.T) {
-	svc := NewAgentService(zap.NewNop(), &mockNetworkManager{}, &mockHardwareDiscoverer{}, &mockBluetoothManager{})
+	svc := NewAgentService(zap.NewNop(), &mockNetworkManager{}, &mockHardwareDiscoverer{}, &mockBluetoothManager{}, &AgentInstaller{})
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
@@ -318,59 +321,80 @@ func TestListHardwareCapabilities(t *testing.T) {
 }
 
 func TestUpdateAgent_LockExclusion(t *testing.T) {
-	logger := zap.NewNop()
-	svc := NewAgentService(logger, &mockNetworkManager{}, &mockHardwareDiscoverer{}, &mockBluetoothManager{})
+	installer := &AgentInstaller{}
 
-	// Simulate the lock being held.
-	svc.updateMu.Lock()
-	svc.isUpdating = true
-	svc.updateMu.Unlock()
-
-	// Verify the state is set.
-	svc.updateMu.Lock()
-	if !svc.isUpdating {
-		t.Error("expected isUpdating = true after manual set")
+	// TryLock should succeed the first time.
+	if !installer.TryLock() {
+		t.Fatal("expected TryLock to succeed when not updating")
 	}
-	svc.isUpdating = false
-	svc.updateMu.Unlock()
 
-	// Verify we can acquire the lock again when not updating.
-	svc.updateMu.Lock()
-	if svc.isUpdating {
-		t.Error("expected isUpdating = false after reset")
+	// TryLock should fail while the lock is held.
+	if installer.TryLock() {
+		t.Error("expected TryLock to fail while update is in progress")
+		installer.Unlock()
 	}
-	svc.updateMu.Unlock()
+
+	// After Unlock, TryLock should succeed again.
+	installer.Unlock()
+	if !installer.TryLock() {
+		t.Error("expected TryLock to succeed after unlock")
+	}
+	installer.Unlock()
+}
+
+func TestUpdateOS_NonWendyOSFailsBeforeMender(t *testing.T) {
+	client, cleanup := startAgentServer(t,
+		&mockNetworkManager{},
+		&mockHardwareDiscoverer{},
+		&mockBluetoothManager{},
+		func(svc *AgentService) { svc.isWendyOSHost = func() bool { return false } },
+	)
+	defer cleanup()
+
+	stream, err := client.UpdateOS(context.Background(), &agentpb.UpdateOSRequest{
+		ArtifactUrl: "http://example.invalid/update.mender",
+	})
+	if err != nil {
+		t.Fatalf("UpdateOS: %v", err)
+	}
+
+	resp, err := stream.Recv()
+	if err != nil {
+		t.Fatalf("UpdateOS Recv: %v", err)
+	}
+	failed := resp.GetFailed()
+	if failed == nil {
+		t.Fatalf("UpdateOS response = %T, want failed", resp.GetResponseType())
+	}
+	if failed.GetErrorMessage() != osUpdateUnsupportedForHostMessage {
+		t.Fatalf("error message = %q, want %q", failed.GetErrorMessage(), osUpdateUnsupportedForHostMessage)
+	}
 }
 
 func TestUpdateAgent_ConcurrentLock(t *testing.T) {
-	logger := zap.NewNop()
-	svc := NewAgentService(logger, &mockNetworkManager{}, &mockHardwareDiscoverer{}, &mockBluetoothManager{})
+	installer := &AgentInstaller{}
 
-	// First "update" acquires the lock.
-	svc.updateMu.Lock()
-	svc.isUpdating = true
-	svc.updateMu.Unlock()
+	// First caller acquires the lock.
+	if !installer.TryLock() {
+		t.Fatal("first TryLock should succeed")
+	}
 
-	// Second attempt must see that isUpdating is true.
+	// Concurrent attempt must be rejected.
 	var wg sync.WaitGroup
 	wg.Add(1)
 	var blocked bool
 	go func() {
 		defer wg.Done()
-		svc.updateMu.Lock()
-		blocked = svc.isUpdating
-		svc.updateMu.Unlock()
+		blocked = !installer.TryLock()
 	}()
 	wg.Wait()
 
 	if !blocked {
-		t.Error("expected second caller to see isUpdating = true")
+		t.Error("expected concurrent TryLock to be rejected while update is in progress")
+		installer.Unlock() // clean up if somehow succeeded
 	}
 
-	// Cleanup
-	svc.updateMu.Lock()
-	svc.isUpdating = false
-	svc.updateMu.Unlock()
+	installer.Unlock()
 }
 
 func TestRunContainer_Deprecated(t *testing.T) {

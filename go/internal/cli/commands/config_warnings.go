@@ -5,7 +5,7 @@ import (
 	"io"
 	"os"
 
-	"github.com/wendylabsinc/wendy/internal/shared/appconfig"
+	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 )
 
 func appConfigWarningsFromFile(cfgPath string) ([]string, error) {

@@ -14,7 +14,7 @@ rm -rf "$GEN_DIR"
 MODULE="github.com/wendylabsinc/wendy"
 
 # ---- Wendy Agent protos ----
-AGENT_PKG="$MODULE/proto/gen/agentpb"
+AGENT_PKG="$MODULE/go/proto/gen/agentpb"
 
 AGENT_PROTOS=(
     "wendy/agent/services/v1/shared.proto"
@@ -35,8 +35,31 @@ for p in "${AGENT_PROTOS[@]}"; do
     AGENT_M_OPTS="$AGENT_M_OPTS --go-grpc_opt=M${p}=${AGENT_PKG}"
 done
 
+# ---- Wendy Agent v2 protos ----
+V2_AGENT_PKG="$MODULE/go/proto/gen/agentpb/v2"
+
+V2_AGENT_PROTOS=(
+    "wendy/agent/services/v2/shared.proto"
+    "wendy/agent/services/v2/device_info_service.proto"
+    "wendy/agent/services/v2/agent_update_service.proto"
+    "wendy/agent/services/v2/os_update_service.proto"
+    "wendy/agent/services/v2/wifi_service.proto"
+    "wendy/agent/services/v2/bluetooth_service.proto"
+    "wendy/agent/services/v2/container_service.proto"
+    "wendy/agent/services/v2/provisioning_service.proto"
+    "wendy/agent/services/v2/audio_service.proto"
+    "wendy/agent/services/v2/telemetry_service.proto"
+    "wendy/agent/services/v2/file_sync_service.proto"
+)
+
+V2_AGENT_M_OPTS=""
+for p in "${V2_AGENT_PROTOS[@]}"; do
+    V2_AGENT_M_OPTS="$V2_AGENT_M_OPTS --go_opt=M${p}=${V2_AGENT_PKG}"
+    V2_AGENT_M_OPTS="$V2_AGENT_M_OPTS --go-grpc_opt=M${p}=${V2_AGENT_PKG}"
+done
+
 # OTEL protos
-OTEL_PKG="$MODULE/proto/gen/otelpb"
+OTEL_PKG="$MODULE/go/proto/gen/otelpb"
 OTEL_PROTOS=(
     "opentelemetry/proto/common/v1/common.proto"
     "opentelemetry/proto/resource/v1/resource.proto"
@@ -55,7 +78,7 @@ for p in "${OTEL_PROTOS[@]}"; do
 done
 
 # ---- Cloud protos ----
-CLOUD_PKG="$MODULE/proto/gen/cloudpb"
+CLOUD_PKG="$MODULE/go/proto/gen/cloudpb"
 CLOUD_PROTOS=(
     "cloud/apps.proto"
     "cloud/assets.proto"
@@ -64,6 +87,7 @@ CLOUD_PROTOS=(
     "cloud/notifications.proto"
     "cloud/organizations.proto"
     "cloud/remote_logging.proto"
+    "cloud/tunnel.proto"
     "cloud/users.proto"
 )
 
@@ -74,7 +98,7 @@ for p in "${CLOUD_PROTOS[@]}"; do
 done
 
 # All M opts combined for cross-package imports
-ALL_M_OPTS="$AGENT_M_OPTS $OTEL_M_OPTS $CLOUD_M_OPTS"
+ALL_M_OPTS="$AGENT_M_OPTS $V2_AGENT_M_OPTS $OTEL_M_OPTS $CLOUD_M_OPTS"
 
 echo "Generating OpenTelemetry protos..."
 mkdir -p "$GEN_DIR/otelpb"
@@ -97,6 +121,17 @@ protoc \
     --go-grpc_out="$GEN_DIR/agentpb" \
     --go-grpc_opt=module="$AGENT_PKG" \
     ${AGENT_PROTOS[@]}
+
+echo "Generating Wendy Agent v2 protos..."
+mkdir -p "$GEN_DIR/agentpb/v2"
+protoc \
+    --proto_path="$PROTO_DIR" \
+    --go_out="$GEN_DIR/agentpb/v2" \
+    --go_opt=module="$V2_AGENT_PKG" \
+    $ALL_M_OPTS \
+    --go-grpc_out="$GEN_DIR/agentpb/v2" \
+    --go-grpc_opt=module="$V2_AGENT_PKG" \
+    "${V2_AGENT_PROTOS[@]}"
 
 echo "Generating Wendy Cloud protos..."
 mkdir -p "$GEN_DIR/cloudpb"

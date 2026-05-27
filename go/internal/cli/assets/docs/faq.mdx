@@ -1,0 +1,399 @@
+---
+title: Frequently Asked Questions
+description: Common questions about WendyOS
+---
+
+## Frequently Asked Questions
+
+Find answers to common questions about WendyOS.
+
+### General
+
+<Accordions type="single">
+  <Accordion title="What is Wendy all about?">
+    Wendy represents a critical step in the vision of creating a unified framework and platform for edge development. Our mission is to become the **"iOS for all edge projects"**—defining the standard for edge computing just as iOS revolutionized mobile development.
+
+    **The Problem We're Solving:**
+    Companies today are largely indifferent about which Linux distribution to use, with choices ranging from Ubuntu to NixOS to PopOS. This lack of a dominant opinion creates fragmentation and complexity. WendyOS simplifies this decision-making by providing a tightly integrated, optimized system purpose-built for edge development.
+
+    **Why a Dedicated OS Matters:**
+    - **Out-of-the-box readiness**: WendyOS includes essential libraries and tools for edge use cases, such as `lldb-server` for remote debugging, DNS-SD for service discovery, SQLite3 for local database management, and Swiftly for managing Swift toolchains
+    - **Opinionated environment**: Reduces compatibility issues and ensures superior support for our software stack
+    - **Unparalleled performance**: By controlling the OS, we deliver performance, security, and reliability optimizations impossible with generic Linux distributions
+    - **Perfect timing**: With the majority of robotics, IoT, and edge projects in 2025 being greenfield, the market is positioned for a purpose-built OS
+
+    **Flexible but Opinionated:**
+    While WendyOS is the ideal foundation for our stack, the Wendy framework—including the debugger, deployer, developer tools, and frameworks—works seamlessly on other major Linux distributions. This respects existing investments while strongly encouraging adoption of WendyOS for optimal performance and integration.
+
+    **Inspiration from Success Stories:**
+    The success of SteamOS for Valve's Steam Deck, built by a small team, demonstrates the viability of creating a Linux variant tailored to a specific audience and use case. Similarly, we're building WendyOS to define the standard for edge computing.
+
+    **More Than Just an OS:**
+    Wendy is an entire ecosystem. By providing a unified platform, we enable an explosion of innovation in robotics, IoT, and edge AI. We're consolidating and simplifying the edge development experience, offering developers—both at companies and hobbyists—a clear path to easy development and production deployment while greatly reducing fragmentation.
+
+    WendyOS positions Wendy as the standard for edge computing in the years to come, paving the way to be an "iOS" for all edge projects.
+  </Accordion>
+
+  <Accordion title="Wasn't this called Edge or EdgeOS?">
+    Yes, the project was originally called Edge and EdgeOS. However, we ran into a fundamental problem: it was too hard to get the trademark for a generic word like "Edge."
+
+    **Why we changed to Wendy:**
+    We tend to name our products after video game characters, and Wendy is named after the boss in Aerie from Nier Replicant. It was such a strange name that people never forgot it—and that uniqueness became a strength.
+
+    **The bigger realization:**
+    We loved "Edge," but after 15 years, nobody understood what "edge computing" was or why they needed it. But a **robot or physical AI operating system**? That everyone understood.
+
+    Every kid grows up wishing we'd have robots—from the Jetsons to C3PO and R2D2. You'll remember that more than some corporate jargon of "edge computing."
+
+    **Making matters worse**: Cloud services started using terminology like "At the edge," "Edge Functions," and "Edge Caches," further muddying what "edge" even meant. The term became so overloaded that it lost all meaning.
+
+    The name change wasn't just about trademarks—it was about clarity. Wendy immediately communicates what we're building in a way that "Edge" never could. The memorable name helps, but the clear positioning as an OS for robots and physical AI is what really resonates with developers and companies.
+  </Accordion>
+
+  <Accordion title="What is WendyOS?">
+    WendyOS is a lightweight operating system designed for edge computing devices like NVIDIA Jetson and Raspberry Pi. It provides a simple, containerized platform for deploying applications written in Swift, Python, Rust, C++, and other languages.
+
+    **Technical Details:**
+    - **Base**: Debian-based Linux distribution
+    - **Architecture**: Targets ARM64 architecture
+    - **Purpose-built**: Optimized for robotics, IoT, and physical AI applications
+  </Accordion>
+
+  <Accordion title="Which devices does WendyOS support?">
+    WendyOS officially supports:
+    - NVIDIA Jetson Orin Nano
+    - Raspberry Pi 5
+    - Raspberry Pi 4
+    - Raspberry Pi 3
+
+    NVIDIA Jetson AGX Orin support is imminent, and NVIDIA Jetson AGX Thor support is in progress. For DGX Spark, we recommend installing `wendy-agent` on the existing Linux system instead of flashing WendyOS.
+
+    Wendy for Mac is also in progress for headless Mac mini and Mac Studio targets. This uses `wendy-agent` on macOS rather than flashing WendyOS.
+  </Accordion>
+
+  <Accordion title="Can you support the NVIDIA Jetson Thor or AGX?">
+    **Yes.** WendyOS supports Jetson Orin Nano today. AGX Orin support is imminent, and AGX Thor support is in progress. For DGX Spark, use the `wendy-agent` Linux install path on the existing OS.
+
+    **NVIDIA Jetson Thor** is the ultimate platform for heavy AI workloads and physical AI:
+    - **Performance**: 2,070 TOPS (FP4) - delivering 7.5x more AI compute than AGX Orin
+    - **GPU**: Blackwell-powered with 96 Tensor Cores
+    - **CPU**: 14-core ARM Neoverse V3AE
+    - **Memory**: 128 GB LPDDR5X with 273 GB/s bandwidth (unified memory architecture)
+    - **Power**: Configurable 40W-130W with 3.5x better energy efficiency than Orin
+
+    **NVIDIA Jetson AGX Orin** is excellent for production workloads:
+    - **Performance**: 275 TOPS (INT8)
+    - **GPU**: Ampere architecture with 2048 CUDA cores
+    - **CPU**: 12-core ARM Cortex-A78AE
+    - **Memory**: Up to 64 GB unified memory
+
+    **Why they're great for heavy workloads:**
+    - **Unified memory architecture**: Similar to Apple M-series, no CPU/GPU memory transfers needed
+    - **Real-time AI inference**: Can run large language models and vision language models
+    - **High-speed sensor processing**: 4x 25 GbE networking for robotics applications
+    - **Parallel processing**: Ideal for running multiple AI models simultaneously
+    - **Edge AI deployment**: Full compute power without cloud dependency
+
+    These platforms are perfect for humanoid robotics, autonomous vehicles, and edge AI applications requiring maximum performance.
+  </Accordion>
+
+  <Accordion title="Is WendyOS open source?">
+    **Yes, absolutely.** WendyOS is fully open source from the ground up.
+
+    We believe that the future of physical AI should be built on open standards, not closed gardens. You can find our source code, contribute to the project, and see exactly how it works on our [GitHub organization](https://github.com/wendylabsinc).
+
+    - **Transparent**: No black boxes. See the code running on your robots.
+    - **Community-driven**: Built with and for the developer community.
+    - **Apache 2 Licensed**: Permissive licensing for your projects.
+  </Accordion>
+
+  <Accordion title="Where are all the repos?">
+    All of our open source code is available on GitHub!
+
+    **Main Repository Hub:**
+    - **All repositories**: [https://github.com/orgs/wendylabsinc/repositories](https://github.com/orgs/wendylabsinc/repositories)
+
+    **Key Repositories:**
+    - **WendyOS for NVIDIA Jetson**: [https://github.com/wendylabsinc/meta-wendyos-jetson](https://github.com/wendylabsinc/meta-wendyos-jetson)
+    - **Wendy Agent** (Developer tools, CLI, and agent communication): [https://github.com/wendylabsinc/wendy-agent](https://github.com/wendylabsinc/wendy-agent)
+    - **Samples** (Example projects in Swift, Python, Rust, TypeScript, and C++): [https://github.com/wendylabsinc/samples](https://github.com/wendylabsinc/samples)
+
+    **Contributions Welcome!**
+    We absolutely welcome contributions from the community. Please note that we will likely rename libraries and repos as the project evolves, so things can move around. Check the main organization page for the most up-to-date repository list.
+  </Accordion>
+
+  <Accordion title="What programming languages can I use with WendyOS?">
+    WendyOS supports multiple programming languages:
+    - **Swift** (native support, no Docker required) - Our recommended language
+    - **TypeScript/JavaScript** (via Docker containers)
+    - **Python** (via Docker containers)
+    - **Rust** (via Docker containers)
+    - **C++** (via Docker containers)
+    - And other languages via Docker containers
+
+    While we support multiple languages through containerization, we highly recommend Swift for the most reliable experience with our frameworks.
+  </Accordion>
+
+  <Accordion title="Which language should I use for physical AI projects?">
+    For physical AI projects, especially those involving moving parts or actuators, we **highly recommend** languages like Swift, Rust, and C++. Here's why:
+
+    **RAM is precious on edge devices.** Physical AI applications run on devices with limited memory (typically 4GB to 64GB), and every megabyte counts when you're running AI models, sensor processing, and control systems simultaneously.
+
+    **Memory management matters for safety.** Languages like Node.js (TypeScript/JavaScript) and Python use garbage collection, which can cause unpredictable memory spikes and latency. When you're controlling motors, servos, or robotic arms, these unpredictable pauses can be dangerous. You need deterministic performance.
+
+    **Why Swift, Rust, and C++ are better for physical AI:**
+
+    - **Predictable memory usage**: Swift uses Automatic Reference Counting (ARC), Rust uses ownership, and C++ gives you manual control. All three provide deterministic memory management without garbage collection pauses.
+    - **Low memory overhead**: These languages have minimal runtime overhead compared to interpreted or JIT-compiled languages.
+    - **Real-time capable**: No garbage collection pauses means consistent, predictable timing for control loops.
+    - **Better for safety-critical systems**: When parts are moving, you cannot afford unpredictable behavior caused by GC pauses.
+
+    **When TypeScript/JavaScript and Python are acceptable:**
+
+    These languages are perfectly fine for:
+    - Web servers and APIs on your device
+    - Data logging and monitoring dashboards
+    - High-level orchestration that doesn't control hardware directly
+    - Prototyping and experimentation (but consider rewriting in Swift/Rust/C++ for production)
+
+    **The bottom line:** If your code directly controls motors, actuators, or any moving parts, use Swift, Rust, or C++. If you're building web interfaces, APIs, or data processing pipelines that don't interact with physical hardware, TypeScript/JavaScript and Python are fine choices.
+
+    Think of it this way: you wouldn't want a garbage collector deciding to pause your robot's control loop while its arm is mid-motion. Use the right tool for the job, and for physical AI, that means languages with predictable, deterministic memory management.
+  </Accordion>
+
+  <Accordion title="Why did you choose Swift as the core language for WendyOS?">
+    We chose Swift as WendyOS's flagship language to solve a fundamental problem in edge development: **fragmentation**.
+
+    Modern edge development is incredibly fragmented. Each company reinvents the wheel with overly complicated stacks, using multiple programming languages for tasks that should be straightforward. This creates unnecessary complexity and increases the barrier to entry for developers who must learn multiple languages and tools just to get started.
+
+    **Swift unifies this fragmented ecosystem:**
+    - **Single language for everything**: Eliminates the common but inefficient dual-language workflow (prototype in Python, rewrite in C++ for production)
+    - **Memory safe and performant**: Uses Automatic Reference Counting (ARC), not garbage collection, making it deterministic and suitable for real-time systems
+    - **Modern and readable**: Production-ready from the start, no need to rewrite code
+    - **Excellent C/C++ interoperability**: Swift's "escape hatch" allows seamless integration with existing system libraries
+    - **Community building**: One language means unified documentation, blog posts, libraries, and packages instead of fragmented solutions
+
+    **Why not other languages?**
+    - **Rust**: Excellent language but slow compile times, cumbersome syntax, and painful FFI work with C/C++ headers
+    - **C++**: While extremely powerful, it can be complex to get something simple going. The common workflow of prototyping in Python and rewriting in C++ for production reveals that if C++ was truly productive for rapid development, companies would start with it, not end with it
+    - **Python**: Great for prototyping but too slow for production, non-deterministic garbage collection, and no explicit type system. Industry consensus: "garbage collected languages are dead on arrival" for controlling actuators or dangerous equipment
+    - **Zig**: Too early and unstable; not yet production-ready for mission-critical systems
+    - **Java/Kotlin**: Require garbage collection and poor C interoperability story
+
+    We looked to mobile development's success: Apple's decision to unify development under Swift is one of their greatest contributions to software development. WendyOS brings this same unification to edge computing, creating a common ecosystem where Swift becomes the lingua franca—just as JavaScript is for web developers and Kotlin is for Android developers.
+
+    **Note**: We do support Python, Rust, C++, and other languages through Docker containers and containerd. However, for the most reliable experience with our frameworks, we highly recommend Swift.
+  </Accordion>
+</Accordions>
+
+### Installation & Setup
+
+<Accordions type="single">
+  <Accordion title="Does Wendy use Docker to build apps?">
+    Yes. Wendy uses containers for app builds and deployment, and the Wendy CLI handles the local Docker setup when it is needed.
+  </Accordion>
+
+  <Accordion title="What operating systems can I use for development?">
+    The Wendy developer tools currently support:
+    - macOS (fully supported)
+    - Linux (fully supported)
+    - Windows (fully supported)
+  </Accordion>
+
+  <Accordion title="What platforms and hardware does Wendy support?">
+    Wendy is quickly rolling out support for all major platforms, but the current compatibility matrix is:
+
+    | Type | Platform/Hardware | Status |
+    |------|-------------------|--------|
+    | **Platform** | macOS | <span className="text-emerald-600 dark:text-emerald-400">✓ Supported</span> |
+    | | Linux | <span className="text-emerald-600 dark:text-emerald-400">✓ Supported</span> |
+    | | Windows | <span className="text-emerald-600 dark:text-emerald-400">✓ Supported</span> |
+    | **Hardware** | NVIDIA Jetson Orin Nano | <span className="text-emerald-600 dark:text-emerald-400">✓ Supported</span> |
+    | | NVIDIA Jetson AGX Orin | <span className="text-yellow-600 dark:text-yellow-400">Imminent</span> |
+    | | NVIDIA Jetson AGX Thor | <span className="text-yellow-600 dark:text-yellow-400">In Progress</span> |
+    | | DGX Spark | <span className="text-emerald-600 dark:text-emerald-400">Use wendy-agent on Linux</span> |
+    | | Raspberry Pi 5 | <span className="text-emerald-600 dark:text-emerald-400">✓ Supported</span> |
+    | | Raspberry Pi 4 | <span className="text-emerald-600 dark:text-emerald-400">✓ Supported</span> |
+    | | Raspberry Pi 3 | <span className="text-emerald-600 dark:text-emerald-400">✓ Supported</span> |
+    | | Headless Mac mini / Mac Studio | <span className="text-yellow-600 dark:text-yellow-400">In Progress</span> |
+    | | Ubuntu (any ARM64/x86_64) | <span className="text-emerald-600 dark:text-emerald-400">✓ Supported</span> |
+    | | ESP32-C6 / ESP32-C5 (Wendy Lite) | <span className="text-emerald-600 dark:text-emerald-400">✓ Supported</span> |
+  </Accordion>
+
+  <Accordion title="How long does it take to install WendyOS on a device?">
+    Installation time varies by device and internet speed:
+    - **Download WendyOS image**: 5-15 minutes (depends on internet speed)
+    - **Flash to storage**: 5-10 minutes
+    - **First boot**: 2-3 minutes
+
+    Total time: approximately 15-30 minutes.
+  </Accordion>
+
+  <Accordion title="Can I use an NVMe SSD with Raspberry Pi 5?">
+    Yes, if you have a case that supports NVMe SSDs, you can use one with your Raspberry Pi 5 instead of a microSD card for better performance.
+
+    **Recommended Case: Argon Raspberry Pi 5 Case**
+
+    The Argon case supports NVMe SSDs and provides excellent cooling and protection:
+    - <a href="https://www.amazon.com/s?k=Argon+Raspberry+Pi+5+Case+NVMe" target="_blank" rel="noopener noreferrer">Amazon</a>
+    - <a href="https://www.seeedstudio.com/catalogsearch/result/?q=argon+raspberry+pi+5+case" target="_blank" rel="noopener noreferrer">Seeed Studio</a>
+    - <a href="https://www.alibaba.com/trade/search?SearchText=Argon+Raspberry+Pi+5+Case" target="_blank" rel="noopener noreferrer">Alibaba</a>
+    - <a href="https://www.sparkfun.com/search/results?term=argon+raspberry+pi+5+case" target="_blank" rel="noopener noreferrer">SparkFun</a>
+  </Accordion>
+</Accordions>
+
+### Development
+
+<Accordions type="single">
+  <Accordion title="How do I deploy my first app to WendyOS?">
+    After installing WendyOS on your device:
+    1. Ensure your device is connected to your development machine
+    2. Use the Wendy Developer Tools to build and deploy your app
+    3. Check the Quick Start Guide for detailed instructions
+  </Accordion>
+
+  <Accordion title="Can I run Vision AI models on WendyOS?">
+    Yes, Vision AI models are supported on:
+    - **NVIDIA Jetson devices**: Excellent support with GPU acceleration
+    - **Raspberry Pi 5**: Supported, but performance may be limited
+    - **Raspberry Pi Zero 2 W**: Not recommended due to performance constraints
+  </Accordion>
+
+  <Accordion title="How do I update WendyOS on my device?">
+    You can update WendyOS using the Wendy Developer Tools:
+    ```bash
+    wendy os update
+    ```
+    Select your device and follow the prompts to download and install the latest version.
+  </Accordion>
+
+  <Accordion title="Can I run multiple apps on one device?">
+    Yes, WendyOS uses containerization (containerd) to run multiple applications simultaneously on a single device. Each app runs in its own isolated container.
+  </Accordion>
+
+  <Accordion title="Can I deploy Wendy apps to macOS or other Linux environments?">
+    **Yes.** Wendy for Mac is in progress for headless Mac mini and Mac Studio targets, and `wendy-agent` already works on Linux environments.
+
+    We architected Wendy Agent (the program that manages apps) to be platform agnostic. This means you'll be able to deploy Wendy applications to:
+    - **macOS** (headless Mac mini and Mac Studio support is in progress)
+    - **Linux machines** of all kinds (x86_64, ARM64, etc.)
+    - **Various Linux distributions** (Ubuntu, Fedora, Arch, etc.)
+    - **Cloud servers** and development machines
+
+    The Wendy Agent's platform-agnostic design allows it to manage applications across different operating systems and architectures, not just WendyOS devices. This flexibility means you can develop locally and deploy to WendyOS-powered edge devices, Linux boxes, and soon headless Macs with the same CLI workflow.
+  </Accordion>
+
+  <Accordion title="Why do you recommend MLX over PyTorch or other AI frameworks?">
+    We recommend **MLX** because NVIDIA Jetson devices (Orin Nano, AGX, Thor) use **unified memory architecture**—just like Apple M-series Silicon. This eliminates the complexity of managing separate CPU and GPU memory.
+
+    **MLX is much simpler** because it takes advantage of unified memory without dealing with CPU/GPU memory transfers. This makes code cleaner, more maintainable, and easier to debug.
+
+    **Compare the verbosity:**
+
+    **MLX (Simple & Clean):**
+    ```python
+    import mlx.core as mx
+    import mlx.nn as nn
+
+    # Create model - automatically uses unified memory
+    model = nn.Linear(784, 10)
+    x = mx.random.normal((32, 784))
+
+    # Forward pass - no device management needed
+    output = model(x)
+    loss = mx.mean((output - target) ** 2)
+    ```
+
+    **PyTorch (More Verbose):**
+    ```python
+    import torch
+    import torch.nn as nn
+
+    # Check device availability
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+    # Create model and move to device
+    model = nn.Linear(784, 10).to(device)
+    x = torch.randn(32, 784).to(device)  # Move data to device
+    target = torch.randn(32, 10).to(device)  # Move target to device
+
+    # Forward pass
+    output = model(x)
+    loss = torch.mean((output - target) ** 2)
+    ```
+
+    With MLX, you don't need:
+    - Device checking (`cuda.is_available()`)
+    - Manual tensor transfers (`.to(device)`)
+    - Memory management between CPU and GPU
+    - Worrying about data on wrong devices
+
+    This simplicity is perfect for edge AI development where you want to focus on your models, not memory management.
+  </Accordion>
+
+  <Accordion title="Wait, MLX can run on NVIDIA?">
+    **Yes!** As of [v0.29.0](https://github.com/ml-explore/mlx/releases/tag/v0.29.0), MLX supports CUDA, which is used on NVIDIA Jetson cards.
+
+    See the [official MLX CUDA installation guide](https://ml-explore.github.io/mlx/build/html/install.html#cuda) for setup instructions.
+
+    This is a game-changer for edge AI development:
+    - **Test on your MacBook**: Develop and test MLX code on Apple Silicon
+    - **Deploy to Jetson**: Run the exact same code on NVIDIA Jetson devices **without changing anything**
+    - **No rewrites needed**: Your MLX code is truly portable across unified memory architectures
+
+    The unified memory approach works seamlessly on both platforms, making MLX the ideal choice for developers working across Apple Silicon development machines and NVIDIA Jetson edge devices.
+
+    You get the best of both worlds: Apple's MLX simplicity with NVIDIA's edge AI performance.
+  </Accordion>
+</Accordions>
+
+### Troubleshooting
+
+<Accordions type="single">
+  <Accordion title="My device isn't showing up in wendy devices list">
+    Try these troubleshooting steps:
+    1. Ensure your device is powered on
+    2. Check that the USB cable is properly connected
+    3. Verify the USB cable supports data transfer (not just charging)
+    4. On macOS, grant permission when prompted to use the USB device
+    5. Try a different USB port on your computer
+  </Accordion>
+
+  <Accordion title="The installation failed. What should I do?">
+    If installation fails:
+    1. Check that you have sufficient disk space on your storage device
+    2. Verify your internet connection is stable
+    3. Try a different storage device (SD card or NVMe SSD)
+    4. Check the error message for specific details
+    5. Ensure your storage device is properly formatted
+  </Accordion>
+
+  <Accordion title="How do I get help or report a bug?">
+    You can get help in several ways:
+    - Check the documentation for troubleshooting guides
+    - Report issues on the GitHub repository
+    - Join the community forum for support
+  </Accordion>
+</Accordions>
+
+### Performance & Hardware
+
+<Accordions type="single">
+  <Accordion title="What's the difference between NVIDIA Jetson and Raspberry Pi?">
+    - **NVIDIA Jetson Orin Nano**: More powerful GPU, better for AI/ML workloads, Vision AI, and compute-intensive tasks. Higher cost.
+    - **Raspberry Pi 5**: More affordable, good general-purpose computing, suitable for lighter workloads. Lower power consumption.
+  </Accordion>
+
+  <Accordion title="How much storage do I need?">
+    Minimum storage requirements:
+    - **WendyOS base system**: ~8GB
+    - **Recommended for development**: 128GB or more
+    - **For production deployments**: Depends on your applications
+
+    We recommend at least 128GB for a comfortable development experience.
+  </Accordion>
+
+  <Accordion title="Can I use WendyOS in production?">
+    Yes, WendyOS is designed for both development and production use. It provides a stable, containerized platform for edge deployments.
+  </Accordion>
+</Accordions>

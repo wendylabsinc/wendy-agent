@@ -3,25 +3,31 @@ package commands
 import (
 	"bufio"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"io"
 	"net"
+	"net/http"
+	"net/http/httputil"
 	"net/netip"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
-	"strconv"
-
-	"github.com/wendylabsinc/wendy/internal/cli/grpcclient"
-	"github.com/wendylabsinc/wendy/internal/cli/swifttoolchain"
-	"github.com/wendylabsinc/wendy/proto/gen/agentpb"
+	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
+	"github.com/wendylabsinc/wendy/go/internal/cli/swifttoolchain"
+	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
+	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
 // neighborExecCommandContext is an overridable wrapper around exec.CommandContext
@@ -55,8 +61,20 @@ func detectProjectType(dir string) (string, error) {
 			return "compose", nil
 		}
 	}
+	// Check base Dockerfile first (fast path), then any Dockerfile.* / Dockerfile-* variant.
 	if _, err := os.Stat(filepath.Join(dir, "Dockerfile")); err == nil {
 		return "docker", nil
+	}
+	if entries, readErr := os.ReadDir(dir); readErr == nil {
+		for _, e := range entries {
+			if e.IsDir() {
+				continue
+			}
+			name := e.Name()
+			if (strings.HasPrefix(name, "Dockerfile.") || strings.HasPrefix(name, "Dockerfile-")) && !strings.HasSuffix(name, ".dockerignore") {
+				return "docker", nil
+			}
+		}
 	}
 	if _, err := os.Stat(filepath.Join(dir, "Package.swift")); err == nil {
 		return "swift", nil
@@ -78,6 +96,173 @@ func detectProjectType(dir string) (string, error) {
 		return "python", nil
 	}
 	return "unknown", nil
+}
+
+// validDockerfileNameRe matches valid Dockerfile names: "Dockerfile" or
+// "Dockerfile" followed by a dot or hyphen and one or more safe characters.
+var validDockerfileNameRe = regexp.MustCompile(`^Dockerfile([.\-][a-zA-Z0-9][a-zA-Z0-9._-]*)?$`)
+
+// validateDockerfileName returns an error when name does not follow the
+// Dockerfile naming convention. This prevents filenames that start with "-"
+// from being misinterpreted as Docker CLI flags, rejects names with control
+// characters or other unsafe content, and rejects values containing path
+// separators. The path-separator check keeps --dockerfile a plain filename so
+// it lines up with the root-level Dockerfile entries produced by
+// detectBuildOptions; a leading "./" is allowed since filepath.Clean strips it.
+func validateDockerfileName(name string) error {
+	cleaned := filepath.Clean(name)
+	if cleaned != filepath.Base(cleaned) {
+		return fmt.Errorf("invalid Dockerfile name %q: path separators are not allowed", name)
+	}
+	if strings.HasSuffix(cleaned, ".dockerignore") {
+		return fmt.Errorf("invalid Dockerfile name %q: .dockerignore files are not Dockerfiles", cleaned)
+	}
+	if !validDockerfileNameRe.MatchString(cleaned) {
+		return fmt.Errorf("invalid Dockerfile name %q: must be Dockerfile, Dockerfile.<variant>, or Dockerfile-<variant>", cleaned)
+	}
+	return nil
+}
+
+// validComposeDockerfileNameRe matches the broader naming convention allowed by
+// Docker Compose for the final path segment (e.g. "web.Dockerfile",
+// "Containerfile", "Dockerfile.prod"). The allowlist rejects whitespace, shell
+// metacharacters, and names starting with "-" that could be misread as CLI
+// flags.
+var validComposeDockerfileNameRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]*$`)
+
+// validateComposeDockerfileName validates a dockerfile name sourced from a
+// Compose service config. It applies a broader allowlist than validateDockerfileName
+// to accommodate names like "web.Dockerfile" and "Containerfile". Subpaths
+// (e.g. "build/web.Dockerfile") are accepted because Compose configs may point
+// at a Dockerfile in a subdirectory; only the final path segment is regex-checked
+// here, and confinement plus regular-file checks are enforced separately by
+// confinedDockerfilePath.
+func validateComposeDockerfileName(name string) error {
+	base := filepath.Base(name)
+	if !validComposeDockerfileNameRe.MatchString(base) {
+		return fmt.Errorf("invalid compose dockerfile name %q: must start with a letter or digit and contain only letters, digits, dots, underscores, or hyphens", base)
+	}
+	return nil
+}
+
+// escapesBase reports whether a path returned by filepath.Rel walks outside
+// the base directory. A plain prefix check on ".." is unsafe because directory
+// names like "..cache" share that prefix without being a parent reference;
+// only an exact ".." or a ".." segment followed by a separator counts as an
+// escape.
+func escapesBase(rel string) bool {
+	return rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// confinedDockerfilePath resolves dockerfile relative to base, uses
+// filepath.EvalSymlinks on both the base and the joined path to neutralise
+// symlink-based escapes, then verifies (via filepath.Rel) that the resolved
+// target lies within base. Returns the resolved absolute path on success.
+func confinedDockerfilePath(base, dockerfile string) (string, error) {
+	absBase, err := filepath.EvalSymlinks(base)
+	if err != nil {
+		return "", fmt.Errorf("resolving project directory: %w", err)
+	}
+
+	joined, err := filepath.Abs(filepath.Join(absBase, dockerfile))
+	if err != nil {
+		return "", fmt.Errorf("resolving dockerfile path: %w", err)
+	}
+
+	// Check containment before EvalSymlinks so that a non-existent path still
+	// gets a clear "outside project" error rather than a confusing stat error.
+	rel, err := filepath.Rel(absBase, joined)
+	if err != nil || escapesBase(rel) {
+		return "", fmt.Errorf("dockerfile %q must be within the project directory", dockerfile)
+	}
+
+	// Resolve symlinks and re-check to block symlink-based escapes.
+	resolved, err := filepath.EvalSymlinks(joined)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", fmt.Errorf("dockerfile %q does not exist", dockerfile)
+		}
+		return "", fmt.Errorf("resolving dockerfile: %w", err)
+	}
+	rel, err = filepath.Rel(absBase, resolved)
+	if err != nil || escapesBase(rel) {
+		return "", fmt.Errorf("dockerfile %q must be within the project directory", dockerfile)
+	}
+
+	info, err := os.Lstat(resolved)
+	if err != nil {
+		return "", fmt.Errorf("stating dockerfile: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return "", fmt.Errorf("dockerfile %q is not a regular file", dockerfile)
+	}
+
+	return resolved, nil
+}
+
+// resolveDockerfile returns the Dockerfile filename to pass to docker build for
+// a docker-type project. If requested is non-empty it is validated (name format,
+// directory confinement, symlink resolution, existence) and returned unchanged.
+// Otherwise all Dockerfiles in cwd are detected: a single match is returned
+// immediately; multiple matches trigger an interactive picker or, in
+// non-interactive mode, prefer the base "Dockerfile" and fall back to the first
+// variant found.
+func resolveDockerfile(cwd, requested string, interactive bool) (string, error) {
+	if requested != "" {
+		if err := validateDockerfileName(requested); err != nil {
+			return "", err
+		}
+		if _, err := confinedDockerfilePath(cwd, requested); err != nil {
+			return "", err
+		}
+		return requested, nil
+	}
+
+	var dockerfiles []BuildOption
+	for _, opt := range detectBuildOptions(cwd) {
+		if opt.Type == "docker" {
+			dockerfiles = append(dockerfiles, opt)
+		}
+	}
+
+	confine := func(file string) (string, error) {
+		if _, err := confinedDockerfilePath(cwd, file); err != nil {
+			return "", err
+		}
+		return file, nil
+	}
+
+	if len(dockerfiles) <= 1 {
+		if len(dockerfiles) == 1 {
+			return confine(dockerfiles[0].File)
+		}
+		return "", nil
+	}
+
+	if !interactive {
+		for _, opt := range dockerfiles {
+			if opt.File == "Dockerfile" {
+				file, err := confine(opt.File)
+				if err != nil {
+					return "", err
+				}
+				cliNotice("multiple Dockerfiles detected; using %q. Use --dockerfile to select explicitly.", file)
+				return file, nil
+			}
+		}
+		file, err := confine(dockerfiles[0].File)
+		if err != nil {
+			return "", err
+		}
+		cliNotice("multiple Dockerfiles detected; using %q. Use --dockerfile to select explicitly.", file)
+		return file, nil
+	}
+
+	picked, err := pickBuildOptionWithTitle(dockerfiles, "Select a Dockerfile")
+	if err != nil {
+		return "", err
+	}
+	return confine(picked.File)
 }
 
 // BuildOption represents a detected build type in a project directory.
@@ -113,7 +298,7 @@ func detectBuildOptions(dir string) []BuildOption {
 				continue
 			}
 			name := e.Name()
-			if name == "Dockerfile" || strings.HasPrefix(name, "Dockerfile.") || strings.HasPrefix(name, "Dockerfile-") {
+			if (name == "Dockerfile" || strings.HasPrefix(name, "Dockerfile.") || strings.HasPrefix(name, "Dockerfile-")) && !strings.HasSuffix(name, ".dockerignore") {
 				options = append(options, BuildOption{
 					Label: name,
 					Type:  "docker",
@@ -160,7 +345,7 @@ func detectBuildOptions(dir string) []BuildOption {
 }
 
 // injectDebugpy builds a wrapper image on top of the given image that installs debugpy.
-func injectDebugpy(ctx context.Context, registryAddr, registryImage, platform string, buildArgs map[string]string, streamOutput *os.File, useMTLS bool) error {
+func injectDebugpy(ctx context.Context, registryAddr, registryImage, platform string, buildArgs map[string]string, streamOutput io.Writer, useMTLS bool) error {
 	tmpDir, err := os.MkdirTemp("", "wendy-debugpy-*")
 	if err != nil {
 		return fmt.Errorf("creating temp dir: %w", err)
@@ -172,12 +357,13 @@ func injectDebugpy(ctx context.Context, registryAddr, registryImage, platform st
 		return fmt.Errorf("writing debugpy Dockerfile: %w", err)
 	}
 
-	return buildAndPushImage(ctx, tmpDir, registryAddr, registryImage, platform, buildArgs, streamOutput, useMTLS)
+	return buildAndPushImage(ctx, tmpDir, registryAddr, registryImage, platform, "", buildArgs, streamOutput, useMTLS)
 }
 
 // generatePythonDockerfile creates a Dockerfile for Python projects that do not already have one.
-// It returns the path to the generated Dockerfile.
-func generatePythonDockerfile(dir string) (string, error) {
+// It returns the path to the generated Dockerfile. When debug is true, debugpy is installed so
+// the agent can wrap the entrypoint with "-m debugpy" for remote debugging.
+func generatePythonDockerfile(dir string, debug bool) (string, error) {
 	dockerfilePath := filepath.Join(dir, "Dockerfile")
 
 	// Determine if requirements.txt exists.
@@ -202,6 +388,9 @@ func generatePythonDockerfile(dir string) (string, error) {
 		sb.WriteString("COPY requirements.txt .\n")
 		sb.WriteString("RUN pip install --no-cache-dir -r requirements.txt\n")
 	}
+	if debug {
+		sb.WriteString("RUN pip install --no-cache-dir debugpy\n")
+	}
 	sb.WriteString("COPY . .\n")
 	sb.WriteString(fmt.Sprintf("CMD [\"python\", \"%s\"]\n", entryPoint))
 
@@ -216,7 +405,7 @@ func generatePythonDockerfile(dir string) (string, error) {
 // directly to the device's registry using swift-container-plugin.
 // registryAddr is a pre-resolved host:port (e.g. "192.168.1.5:5000" or
 // "host.docker.internal:12345" when proxying).
-func buildSwiftContainerImage(ctx context.Context, dir, product, registryAddr, architecture string, useMTLS bool, toolchainStdout, toolchainStderr io.Writer) error {
+func buildSwiftContainerImage(ctx context.Context, dir, product, registryAddr, architecture string, swiftUseMTLS bool, toolchainStdout, toolchainStderr io.Writer) error {
 	if err := ensureContainerPlugin(dir); err != nil {
 		return err
 	}
@@ -226,6 +415,8 @@ func buildSwiftContainerImage(ctx context.Context, dir, product, registryAddr, a
 		return err
 	}
 
+	// registryAddr is always a plain-HTTP address: either the device's own
+	// unprovisioned registry or a local proxy that handles TLS on our behalf.
 	swiftArgs := []string{
 		"package",
 		"--swift-sdk=" + sdk,
@@ -236,10 +427,7 @@ func buildSwiftContainerImage(ctx context.Context, dir, product, registryAddr, a
 		"--repository=" + registryAddr + "/" + strings.ToLower(product),
 		"--architecture=" + architecture,
 	}
-
-	// Use insecure HTTP when the connection is not mTLS; the registry only
-	// speaks TLS when the device is provisioned and the CLI connected via mTLS.
-	if !useMTLS {
+	if !swiftUseMTLS {
 		swiftArgs = append(swiftArgs, "--allow-insecure-http=destination")
 	}
 
@@ -284,66 +472,152 @@ func ensureContainerPlugin(dir string) error {
 	return nil
 }
 
-// dockerRuntimes lists macOS Docker-compatible runtimes in detection order.
-// Each entry maps a human-readable name to its .app bundle path.
-var dockerRuntimes = []struct{ name, app string }{
-	{"OrbStack", "/Applications/OrbStack.app"},
-	{"Docker Desktop", "/Applications/Docker.app"},
-	{"Rancher Desktop", "/Applications/Rancher Desktop.app"},
+type dockerRuntime struct {
+	name        string
+	app         string
+	cliPaths    []string
+	cliLinkHint string
 }
+
+type dockerHostOS string
+
+const (
+	dockerHostOSDarwin  dockerHostOS = "darwin"
+	dockerHostOSWindows dockerHostOS = "windows"
+)
+
+// darwinDockerRuntimes lists macOS Docker-compatible runtimes in detection order.
+// Each entry maps a human-readable name to its .app bundle path and known
+// bundled Docker-compatible CLI locations.
+var darwinDockerRuntimes = []dockerRuntime{
+	{
+		name: "OrbStack",
+		app:  "/Applications/OrbStack.app",
+		cliPaths: []string{
+			"/Applications/OrbStack.app/Contents/MacOS/xbin/docker",
+			"/Applications/OrbStack.app/Contents/Resources/bin/docker",
+		},
+		cliLinkHint: "install OrbStack's command-line tools or add its bundled docker CLI directory to PATH",
+	},
+	{
+		name: "Docker Desktop",
+		app:  "/Applications/Docker.app",
+		cliPaths: []string{
+			"/Applications/Docker.app/Contents/Resources/bin/docker",
+		},
+		cliLinkHint: "open Docker Desktop → Settings → Advanced → Command Line Tools and enable the Docker CLI symlink, or add /Applications/Docker.app/Contents/Resources/bin to PATH",
+	},
+	{
+		name: "Rancher Desktop",
+		app:  "/Applications/Rancher Desktop.app",
+		cliPaths: []string{
+			"/Applications/Rancher Desktop.app/Contents/Resources/resources/darwin/bin/docker",
+		},
+		cliLinkHint: "enable Rancher Desktop's Docker-compatible CLI integration or add its bundled docker CLI directory to PATH",
+	},
+}
+
+// windowsDockerRuntimes lists Windows Docker-compatible runtimes whose
+// installers normally add docker.exe to PATH, plus their bundled CLI locations
+// for repairing PATH when the installer entry is missing from the environment.
+var windowsDockerRuntimes = []dockerRuntime{
+	{
+		name: "Docker Desktop",
+		app:  `C:\Program Files\Docker\Docker\Docker Desktop.exe`,
+		cliPaths: []string{
+			`C:\Program Files\Docker\Docker\resources\bin\docker.exe`,
+		},
+		cliLinkHint: `repair or reinstall Docker Desktop, or add C:\Program Files\Docker\Docker\resources\bin to PATH`,
+	},
+}
+
+var (
+	dockerLookPathFn    = exec.LookPath
+	dockerStatFn        = os.Stat
+	dockerVersionOKFn   = func(ctx context.Context) bool { return exec.CommandContext(ctx, "docker", "version").Run() == nil }
+	dockerOpenRuntimeFn = func(ctx context.Context, appPath string) error {
+		return exec.CommandContext(ctx, "open", "-a", appPath).Run()
+	}
+	dockerInstallRuntimeFn = func(ctx context.Context) error {
+		installCmd := exec.CommandContext(ctx, "brew", "install", "--cask", "docker")
+		installCmd.Stdout = os.Stdout
+		installCmd.Stderr = os.Stderr
+		return installCmd.Run()
+	}
+)
 
 // ensureDockerDaemon verifies the Docker daemon is running. On macOS, when
 // running interactively it prompts the user before launching the installed
 // Docker runtime; in non-interactive mode it launches it automatically.
 // Waits up to 60 s for the daemon to become ready before returning an error.
 func ensureDockerDaemon(ctx context.Context) error {
-	if exec.CommandContext(ctx, "docker", "version").Run() == nil {
+	return ensureDockerDaemonForHostOS(ctx, dockerHostOS(runtime.GOOS))
+}
+
+func ensureDockerDaemonForHostOS(ctx context.Context, hostOS dockerHostOS) error {
+	if dockerVersionOKFn(ctx) {
 		return nil
 	}
 
-	if _, err := exec.LookPath("docker"); err != nil {
-		if runtime.GOOS == "darwin" && isInteractiveTerminalFn() {
-			fmt.Print("Docker is not installed. Install it now with 'brew install --cask docker'? [Y/n] ")
-			reader := bufio.NewReader(os.Stdin)
-			answer, _ := reader.ReadString('\n')
-			answer = strings.TrimSpace(strings.ToLower(answer))
-			if answer != "" && answer != "y" && answer != "yes" {
-				return fmt.Errorf("docker is not installed — run: brew install --cask docker")
-			}
-			fmt.Fprintf(os.Stderr, "[docker] Installing Docker Desktop via Homebrew...\n")
-			installCmd := exec.CommandContext(ctx, "brew", "install", "--cask", "docker")
-			installCmd.Stdout = os.Stdout
-			installCmd.Stderr = os.Stderr
-			if err := installCmd.Run(); err != nil {
-				return fmt.Errorf("failed to install Docker: %w", err)
-			}
-			// Fall through to detect and launch the newly installed runtime.
-		} else if runtime.GOOS == "darwin" {
-			return fmt.Errorf("docker is not installed — run: brew install --cask docker")
-		} else {
-			return fmt.Errorf("docker is not installed — please install Docker Desktop or OrbStack")
-		}
-	}
+	_, cliErr := dockerLookPathFn("docker")
+	cliOnPath := cliErr == nil
 
-	if runtime.GOOS == "darwin" {
-		runtimeName, appPath := detectDockerRuntime()
-		if appPath == "" {
-			return fmt.Errorf("no supported Docker runtime found — install Docker Desktop or OrbStack and try again")
+	if hostOS == dockerHostOSDarwin {
+		rt, hasRuntime := detectDockerRuntimeInfoForHostOS(hostOS)
+		if !cliOnPath {
+			if !hasRuntime {
+				if isInteractiveTerminalFn() {
+					fmt.Print("Docker runtime app and docker CLI were not found. Install Docker Desktop now with 'brew install --cask docker'? [Y/n] ")
+					reader := bufio.NewReader(os.Stdin)
+					answer, _ := reader.ReadString('\n')
+					answer = strings.TrimSpace(strings.ToLower(answer))
+					if answer != "" && answer != "y" && answer != "yes" {
+						return fmt.Errorf("Docker runtime app is not installed — install Docker Desktop, OrbStack, or Rancher Desktop")
+					}
+					fmt.Fprintf(os.Stderr, "[docker] Installing Docker Desktop via Homebrew...\n")
+					if err := dockerInstallRuntimeFn(ctx); err != nil {
+						return fmt.Errorf("failed to install Docker Desktop: %w", err)
+					}
+					rt, hasRuntime = detectDockerRuntimeInfoForHostOS(hostOS)
+				} else {
+					return fmt.Errorf("Docker runtime app is not installed and docker CLI is not on PATH — install Docker Desktop, OrbStack, or Rancher Desktop")
+				}
+			}
+
+			if hasRuntime {
+				if cliRuntime, cliPath, ok := addBundledDockerCLIForInstalledRuntime(hostOS); ok {
+					rt = cliRuntime
+					fmt.Fprintf(os.Stderr, "[docker] docker CLI is not on PATH; using %s's bundled CLI at %s. To avoid this message: %s.\n", rt.name, cliPath, rt.cliLinkHint)
+					cliOnPath = true
+					if dockerVersionOKFn(ctx) {
+						return nil
+					}
+				} else {
+					return dockerCLIMissingError(rt)
+				}
+			}
+		}
+
+		if !hasRuntime {
+			return fmt.Errorf("no supported Docker runtime app found — install Docker Desktop, OrbStack, or Rancher Desktop and try again")
+		}
+		if !cliOnPath {
+			return dockerCLIMissingError(rt)
 		}
 
 		if isInteractiveTerminalFn() {
-			fmt.Printf("%s is not running. Launch it now? [Y/n] ", runtimeName)
+			fmt.Printf("Docker daemon is not running or is still starting for %s. Open it now? [Y/n] ", rt.name)
 			reader := bufio.NewReader(os.Stdin)
 			answer, _ := reader.ReadString('\n')
 			answer = strings.TrimSpace(strings.ToLower(answer))
 			if answer != "" && answer != "y" && answer != "yes" {
-				return fmt.Errorf("docker daemon is not running — please start %s and try again", runtimeName)
+				return fmt.Errorf("docker daemon is not running — please start %s and try again", rt.name)
 			}
 		}
 
-		fmt.Fprintf(os.Stderr, "[docker] Launching %s...\n", runtimeName)
-		if err := exec.CommandContext(ctx, "open", "-a", appPath).Run(); err != nil {
-			return fmt.Errorf("docker daemon is not running: could not launch %s: %w", runtimeName, err)
+		fmt.Fprintf(os.Stderr, "[docker] Opening %s...\n", rt.name)
+		if err := dockerOpenRuntimeFn(ctx, rt.app); err != nil {
+			return fmt.Errorf("docker daemon is not running: could not open %s: %w", rt.name, err)
 		}
 		deadline := time.Now().Add(60 * time.Second)
 		for time.Now().Before(deadline) {
@@ -352,26 +626,123 @@ func ensureDockerDaemon(ctx context.Context) error {
 				return ctx.Err()
 			case <-time.After(2 * time.Second):
 			}
-			if exec.CommandContext(ctx, "docker", "version").Run() == nil {
-				fmt.Fprintf(os.Stderr, "[docker] %s is ready\n", runtimeName)
+			if dockerVersionOKFn(ctx) {
+				fmt.Fprintf(os.Stderr, "[docker] %s is ready\n", rt.name)
 				return nil
 			}
 		}
-		return fmt.Errorf("docker daemon did not become ready within 60 seconds — please start %s manually", runtimeName)
+		return fmt.Errorf("docker daemon did not become ready within 60 seconds — %s may still be starting; please wait or start it manually", rt.name)
 	}
 
+	if hostOS == dockerHostOSWindows {
+		rt, hasRuntime := detectDockerRuntimeInfoForHostOS(hostOS)
+		if !cliOnPath {
+			if hasRuntime {
+				if cliRuntime, cliPath, ok := addBundledDockerCLIForInstalledRuntime(hostOS); ok {
+					rt = cliRuntime
+					fmt.Fprintf(os.Stderr, "[docker] docker CLI is not on PATH; using %s's bundled CLI at %s. To avoid this message: %s.\n", rt.name, cliPath, rt.cliLinkHint)
+					cliOnPath = true
+					if dockerVersionOKFn(ctx) {
+						return nil
+					}
+				} else {
+					return dockerCLIMissingError(rt)
+				}
+			} else {
+				return fmt.Errorf("docker CLI is not on PATH — install Docker Desktop or add docker to PATH")
+			}
+		}
+		if hasRuntime {
+			return fmt.Errorf("docker daemon is not running — please start %s before using wendy", rt.name)
+		}
+	}
+
+	if !cliOnPath {
+		return fmt.Errorf("docker CLI is not on PATH — install Docker or add docker to PATH")
+	}
 	return fmt.Errorf("docker daemon is not running — please start Docker before using wendy")
+}
+
+func dockerCLIMissingError(rt dockerRuntime) error {
+	return fmt.Errorf("%s is installed at %s, but docker CLI is not on PATH and Wendy could not find a bundled docker CLI. To fix: %s", rt.name, rt.app, rt.cliLinkHint)
+}
+
+func addBundledDockerCLIForInstalledRuntime(hostOS dockerHostOS) (dockerRuntime, string, bool) {
+	for _, rt := range dockerRuntimesForHostOS(hostOS) {
+		if !dockerRuntimeInstalled(rt) {
+			continue
+		}
+		if cliPath, ok := addBundledDockerCLIToPath(rt); ok {
+			return rt, cliPath, true
+		}
+	}
+	return dockerRuntime{}, "", false
+}
+
+func addBundledDockerCLIToPath(rt dockerRuntime) (string, bool) {
+	for _, cliPath := range rt.cliPaths {
+		info, err := dockerStatFn(cliPath)
+		if err != nil || info.IsDir() {
+			continue
+		}
+		dir := filepath.Dir(cliPath)
+		if !pathHasDir(os.Getenv("PATH"), dir) {
+			path := dir
+			if existing := os.Getenv("PATH"); existing != "" {
+				path += string(filepath.ListSeparator) + existing
+			}
+			_ = os.Setenv("PATH", path)
+		}
+		return cliPath, true
+	}
+	return "", false
+}
+
+func pathHasDir(pathEnv, dir string) bool {
+	for _, entry := range filepath.SplitList(pathEnv) {
+		if entry == dir {
+			return true
+		}
+	}
+	return false
 }
 
 // detectDockerRuntime returns the name and .app path of the first installed
 // Docker-compatible runtime found on macOS, or empty strings if none is found.
 func detectDockerRuntime() (name, appPath string) {
-	for _, rt := range dockerRuntimes {
-		if _, err := os.Stat(rt.app); err == nil {
-			return rt.name, rt.app
-		}
+	if rt, ok := detectDockerRuntimeInfoForHostOS(dockerHostOSDarwin); ok {
+		return rt.name, rt.app
 	}
 	return "", ""
+}
+
+func detectDockerRuntimeInfo() (dockerRuntime, bool) {
+	return detectDockerRuntimeInfoForHostOS(dockerHostOS(runtime.GOOS))
+}
+
+func detectDockerRuntimeInfoForHostOS(hostOS dockerHostOS) (dockerRuntime, bool) {
+	for _, rt := range dockerRuntimesForHostOS(hostOS) {
+		if dockerRuntimeInstalled(rt) {
+			return rt, true
+		}
+	}
+	return dockerRuntime{}, false
+}
+
+func dockerRuntimesForHostOS(hostOS dockerHostOS) []dockerRuntime {
+	switch hostOS {
+	case dockerHostOSDarwin:
+		return darwinDockerRuntimes
+	case dockerHostOSWindows:
+		return windowsDockerRuntimes
+	default:
+		return nil
+	}
+}
+
+func dockerRuntimeInstalled(rt dockerRuntime) bool {
+	_, err := dockerStatFn(rt.app)
+	return err == nil
 }
 
 // ensureBuildxBuilder ensures a buildx builder with the docker-container driver
@@ -550,11 +921,15 @@ func ensureMTLSBuilder(ctx context.Context, configDir, registryAddr, containerCe
 	keyPath := filepath.Join(hostCertDir, "client-key.pem")
 	caPath := filepath.Join(hostCertDir, "ca.pem")
 
-	fullCert := certInfo.PemCertificate
-	if certInfo.PemCertificateChain != "" {
-		fullCert += "\n" + certInfo.PemCertificateChain
+	// BuildKit and the agent registry both use Go's TLS stack, which parses
+	// every certificate exchanged during the handshake even when verification
+	// is disabled or custom. Wendy cloud chains can contain ML-DSA certificates
+	// that Go cannot parse, so only present the parseable leaf certificate.
+	leafCertPEM, err := certs.LeafCertificatePEM(certInfo.PemCertificate)
+	if err != nil {
+		return "", fmt.Errorf("extracting client leaf certificate: %w", err)
 	}
-	if err := os.WriteFile(certPath, []byte(fullCert), 0o644); err != nil {
+	if err := os.WriteFile(certPath, []byte(leafCertPEM), 0o644); err != nil {
 		return "", fmt.Errorf("writing client cert: %w", err)
 	}
 	if err := os.WriteFile(keyPath, []byte(certInfo.PemPrivateKey), 0o600); err != nil {
@@ -684,9 +1059,6 @@ func updateBuilderConfig(ctx context.Context, builderName, config string) error 
 	if out, err := bootstrapAfterRestart.CombinedOutput(); err != nil {
 		return fmt.Errorf("waiting for builder after restart: %s: %w", string(out), err)
 	}
-	fmt.Fprintf(os.Stderr, "[buildx] buildkitd ready, sleeping 3s to stabilize proxy\n")
-
-	time.Sleep(3 * time.Second)
 	fmt.Fprintf(os.Stderr, "[buildx] builder ready\n")
 
 	return nil
@@ -696,7 +1068,8 @@ func updateBuilderConfig(ctx context.Context, builderName, config string) error 
 // it directly to the given registry using docker buildx. The registry transport
 // is conditional: plain HTTP for plaintext devices, and TLS/mTLS for provisioned
 // devices when useMTLS is enabled. buildArgs is passed as --build-arg KEY=VALUE flags.
-func buildAndPushImage(ctx context.Context, dir, registryAddr, registryImage, platform string, buildArgs map[string]string, streamOutput *os.File, useMTLS bool) error {
+// dockerfile is passed as -f to docker buildx; an empty string uses the default Dockerfile.
+func buildAndPushImage(ctx context.Context, dir, registryAddr, registryImage, platform, dockerfile string, buildArgs map[string]string, streamOutput io.Writer, useMTLS bool) error {
 	builder, effectiveAddr, err := ensureBuildxBuilder(ctx, registryAddr, useMTLS)
 	if err != nil {
 		return err
@@ -707,13 +1080,21 @@ func buildAndPushImage(ctx context.Context, dir, registryAddr, registryImage, pl
 		registryImage = strings.Replace(registryImage, registryAddr, effectiveAddr, 1)
 	}
 
+	// Use UserCacheDir so the cache lives in the platform's idiomatic location:
+	// %LOCALAPPDATA% on Windows, ~/Library/Caches on macOS, $XDG_CACHE_HOME (or
+	// ~/.cache) on Linux.
+	userCache, err := os.UserCacheDir()
+	if err != nil {
+		return fmt.Errorf("finding user cache directory: %w", err)
+	}
+	cacheDir := filepath.Join(userCache, "wendy", "buildx")
+	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+		return fmt.Errorf("creating cache directory: %w", err)
+	}
+
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return fmt.Errorf("finding home directory: %w", err)
-	}
-	cacheDir := filepath.Join(home, ".cache", "wendy", "buildx")
-	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
-		return fmt.Errorf("creating cache directory: %w", err)
 	}
 
 	// Use a clean Docker config without a credsStore credential helper.
@@ -724,37 +1105,58 @@ func buildAndPushImage(ctx context.Context, dir, registryAddr, registryImage, pl
 	// Public images (e.g. python:3.11-slim) need no credentials; anonymous
 	// pull works fine with an empty auths map.
 	//
-	// We only replace config.json; everything else (cli-plugins, buildx builder
-	// instances, contexts) is symlinked from the original Docker config so that
-	// buildx and the "wendy" builder remain discoverable.
-	origDockerConfig := os.Getenv("DOCKER_CONFIG")
-	if origDockerConfig == "" {
-		origDockerConfig = filepath.Join(home, ".docker")
-	}
-	cleanDockerConfigDir := filepath.Join(home, ".cache", "wendy", "docker-config")
-	if err := os.MkdirAll(cleanDockerConfigDir, 0o755); err != nil {
-		return fmt.Errorf("creating clean docker config directory: %w", err)
-	}
-	cleanDockerConfigFile := filepath.Join(cleanDockerConfigDir, "config.json")
-	if err := os.WriteFile(cleanDockerConfigFile, []byte(`{"auths":{}}`), 0o644); err != nil {
-		return fmt.Errorf("writing clean docker config: %w", err)
-	}
-	// Symlink subdirs that docker/buildx need to find plugins and builder state.
-	for _, subdir := range []string{"buildx", "cli-plugins", "contexts"} {
-		dst := filepath.Join(cleanDockerConfigDir, subdir)
-		if _, err := os.Lstat(dst); err != nil {
-			// best-effort: ignore if source doesn't exist or symlink fails
-			_ = os.Symlink(filepath.Join(origDockerConfig, subdir), dst)
+	// On Windows, Docker Desktop's credential helper is always available and
+	// symlinks for builder-state lookup are unreliable in elevated processes,
+	// so we skip this override entirely and let docker use its normal config.
+	var cleanDockerConfigDir string
+	if runtime.GOOS != "windows" {
+		origDockerConfig := os.Getenv("DOCKER_CONFIG")
+		if origDockerConfig == "" {
+			origDockerConfig = filepath.Join(home, ".docker")
+		}
+		cleanDockerConfigDir = filepath.Join(home, ".cache", "wendy", "docker-config")
+		if err := os.MkdirAll(cleanDockerConfigDir, 0o755); err != nil {
+			return fmt.Errorf("creating clean docker config directory: %w", err)
+		}
+		cleanDockerConfigFile := filepath.Join(cleanDockerConfigDir, "config.json")
+		if err := os.WriteFile(cleanDockerConfigFile, []byte(`{"auths":{}}`), 0o644); err != nil {
+			return fmt.Errorf("writing clean docker config: %w", err)
+		}
+		// Symlink subdirs that docker/buildx need to find plugins and builder state.
+		for _, subdir := range []string{"buildx", "cli-plugins", "contexts"} {
+			dst := filepath.Join(cleanDockerConfigDir, subdir)
+			if _, err := os.Lstat(dst); err != nil {
+				// best-effort: ignore if source doesn't exist or symlink fails
+				_ = os.Symlink(filepath.Join(origDockerConfig, subdir), dst)
+			}
 		}
 	}
 
+	// buildkitd inside the Linux VM appends "/index.json" to the cache src/dest,
+	// so pass forward-slash paths to avoid mixed-separator warnings on Windows.
+	cacheDirSlash := filepath.ToSlash(cacheDir)
 	args := []string{
 		"buildx", "build",
 		"--builder", builder,
 		"--platform", platform,
-		"--cache-from", "type=local,src=" + cacheDir,
-		"--cache-to", "type=local,dest=" + cacheDir,
 	}
+	if dockerfile != "" {
+		// Callers validate the filename at their own boundary: the CLI flag path
+		// uses the strict validateDockerfileName, and Compose uses the broader
+		// validateComposeDockerfileName so names like "Containerfile" and
+		// "web.Dockerfile" pass through. confinedDockerfilePath enforces
+		// containment and regular-file checks and yields an absolute path, which
+		// docker buildx -f cannot misinterpret as a flag.
+		resolvedDockerfile, err := confinedDockerfilePath(dir, dockerfile)
+		if err != nil {
+			return err
+		}
+		args = append(args, "-f", resolvedDockerfile)
+	}
+	if _, err := os.Stat(filepath.Join(cacheDir, "index.json")); err == nil {
+		args = append(args, "--cache-from", "type=local,src="+cacheDirSlash)
+	}
+	args = append(args, "--cache-to", "type=local,dest="+cacheDirSlash)
 	// Sort keys so the argument order is stable across runs, which keeps
 	// build logs reproducible and avoids flakiness in tests that assert args.
 	keys := make([]string, 0, len(buildArgs))
@@ -775,16 +1177,18 @@ func buildAndPushImage(ctx context.Context, dir, registryAddr, registryImage, pl
 	cmd.Dir = dir
 	cmd.Stdout = streamOutput
 	cmd.Stderr = streamOutput
-	// Override DOCKER_CONFIG so the buildx client does not call the host
-	// credential helper (osxkeychain) when setting up the build session.
-	// Filter any existing DOCKER_CONFIG first so our value takes effect.
-	baseEnv := make([]string, 0, len(os.Environ()))
-	for _, e := range os.Environ() {
-		if !strings.HasPrefix(e, "DOCKER_CONFIG=") {
-			baseEnv = append(baseEnv, e)
+	// On macOS/Linux, override DOCKER_CONFIG so the buildx client does not
+	// call the host credential helper when setting up the build session.
+	// On Windows we leave DOCKER_CONFIG untouched (cleanDockerConfigDir == "").
+	if cleanDockerConfigDir != "" {
+		baseEnv := make([]string, 0, len(os.Environ()))
+		for _, e := range os.Environ() {
+			if !strings.HasPrefix(e, "DOCKER_CONFIG=") {
+				baseEnv = append(baseEnv, e)
+			}
 		}
+		cmd.Env = append(baseEnv, "DOCKER_CONFIG="+cleanDockerConfigDir)
 	}
-	cmd.Env = append(baseEnv, "DOCKER_CONFIG="+cleanDockerConfigDir)
 
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("docker buildx build failed: %w", err)
@@ -847,13 +1251,79 @@ func resolveRegistry(ctx context.Context, host string, port int) (registryAddr s
 		target = net.JoinHostPort(resolved, strconv.Itoa(port))
 	}
 
-	proxy, err := startRegistryProxy(ctx, target)
+	proxy, err := startRegistryProxy(ctx, "0.0.0.0:0", target)
 	if err != nil {
 		return "", nil, fmt.Errorf("starting registry proxy: %w", err)
 	}
 
 	registryAddr = fmt.Sprintf("host.docker.internal:%d", proxy.Port())
 	return registryAddr, proxy.Close, nil
+}
+
+// dockerRegistryProxyAddrs caches one proxy address per AgentConnection. The
+// proxy is allocated once (port 0 → OS-assigned) and reused for all pushes on
+// that connection, so the buildx builder config never changes between concurrent
+// builds and no builder teardown races can kill an in-flight push.
+var (
+	dockerRegistryProxyCacheMu sync.Mutex
+	dockerRegistryProxyAddrs   = map[*grpcclient.AgentConnection]string{}
+)
+
+// resolveRegistryForAgent determines how Docker buildx should reach the
+// agent's registry. The proxy is started once per connection and cached so
+// concurrent pushes to the same device share a stable host:port address.
+func resolveRegistryForAgent(ctx context.Context, conn *grpcclient.AgentConnection, port int) (registryAddr string, cleanup func(), err error) {
+	// Hold the lock for the entire operation so concurrent callers block rather
+	// than each starting their own proxy. Proxy creation is just a local
+	// net.Listen call, so the lock is held only briefly.
+	dockerRegistryProxyCacheMu.Lock()
+	defer dockerRegistryProxyCacheMu.Unlock()
+
+	if addr, ok := dockerRegistryProxyAddrs[conn]; ok {
+		return addr, func() {}, nil
+	}
+
+	// Start a proxy tied to context.Background so it outlives this push and is
+	// reused by subsequent pushes on the same connection.
+	var addr string
+	var stopProxy func()
+
+	if conn.RegistryDialer == nil {
+		addr, stopProxy, err = resolveRegistry(context.Background(), conn.Host, port)
+		if err != nil {
+			return "", nil, err
+		}
+	} else {
+		// On Linux buildkitd uses host networking so 127.0.0.1 is reachable.
+		// On macOS it runs inside the Docker Desktop VM and must connect via
+		// host.docker.internal, which requires the proxy to bind on all interfaces.
+		listenAddr := "0.0.0.0:0"
+		if runtime.GOOS == "linux" {
+			listenAddr = "127.0.0.1:0"
+		}
+		proxy, proxyErr := startRegistryProxyWithDialer(context.Background(), listenAddr, func(ctx context.Context) (net.Conn, error) {
+			return conn.RegistryDialer(ctx, port)
+		})
+		if proxyErr != nil {
+			return "", nil, fmt.Errorf("starting cloud registry proxy: %w", proxyErr)
+		}
+		stopProxy = proxy.Close
+		if runtime.GOOS == "linux" {
+			addr = fmt.Sprintf("127.0.0.1:%d", proxy.Port())
+		} else {
+			addr = fmt.Sprintf("host.docker.internal:%d", proxy.Port())
+		}
+	}
+
+	dockerRegistryProxyAddrs[conn] = addr
+	conn.ExtraClosers = append(conn.ExtraClosers, closeFunc(func() {
+		dockerRegistryProxyCacheMu.Lock()
+		delete(dockerRegistryProxyAddrs, conn)
+		dockerRegistryProxyCacheMu.Unlock()
+		stopProxy()
+	}))
+
+	return addr, func() {}, nil
 }
 
 // resolveRegistryForSwift is like resolveRegistry but for the Swift container
@@ -872,13 +1342,150 @@ func resolveRegistryForSwift(ctx context.Context, host string, port int) (regist
 		return fmt.Sprintf("%s:%d", addr, port), func() {}, nil
 	}
 
-	// Link-local: same proxy approach as resolveRegistry.
+	// Link-local: proxy via 127.0.0.1 — Swift runs on the host, not in a VM.
 	target := net.JoinHostPort(host, strconv.Itoa(port))
-	proxy, err := startRegistryProxy(ctx, target)
+	proxy, err := startRegistryProxy(ctx, "127.0.0.1:0", target)
 	if err != nil {
 		return "", nil, fmt.Errorf("starting registry proxy for link-local device: %w", err)
 	}
 	return fmt.Sprintf("127.0.0.1:%d", proxy.Port()), proxy.Close, nil
+}
+
+func resolveRegistryForSwiftAgent(ctx context.Context, conn *grpcclient.AgentConnection, port int) (registryAddr string, swiftUseMTLS bool, cleanup func(), err error) {
+	if conn.RegistryDialer == nil {
+		if conn.IsMTLS {
+			// Provisioned LAN device: the registry speaks HTTPS with a cert signed
+			// by the Wendy Cloud Root CA, which is not in the macOS system keychain.
+			// Stand up a local HTTP reverse proxy that terminates TLS with mTLS so
+			// the Swift container plugin can push via plain HTTP on 127.0.0.1.
+			certInfo := loadCLICert()
+			if certInfo == nil {
+				return "", false, nil, fmt.Errorf("mTLS connection but no CLI certificates available")
+			}
+			target := net.JoinHostPort(conn.Host, strconv.Itoa(port))
+			proxy, proxyErr := startMTLSRegistryHTTPProxy(target, certInfo.PemCertificate, certInfo.PemPrivateKey, certInfo.PemCertificateChain)
+			if proxyErr != nil {
+				return "", false, nil, fmt.Errorf("starting mTLS registry proxy for Swift: %w", proxyErr)
+			}
+			return fmt.Sprintf("127.0.0.1:%d", proxy.Port()), false, proxy.Close, nil
+		}
+		addr, addrCleanup, addrErr := resolveRegistryForSwift(ctx, conn.Host, port)
+		return addr, false, addrCleanup, addrErr
+	}
+
+	proxy, proxyErr := startRegistryProxyWithDialer(ctx, "127.0.0.1:0", func(ctx context.Context) (net.Conn, error) {
+		return conn.RegistryDialer(ctx, port)
+	})
+	if proxyErr != nil {
+		return "", false, nil, fmt.Errorf("starting cloud registry proxy for Swift: %w", proxyErr)
+	}
+	return fmt.Sprintf("127.0.0.1:%d", proxy.Port()), conn.IsMTLS, proxy.Close, nil
+}
+
+// mtlsRegistryHTTPProxy is a plain-HTTP reverse proxy that forwards requests
+// to a provisioned device's HTTPS registry using mTLS. The Swift container
+// plugin connects to 127.0.0.1:PORT via plain HTTP (with --allow-insecure-http)
+// and this proxy handles TLS + client-cert authentication transparently.
+type mtlsRegistryHTTPProxy struct {
+	listener net.Listener
+	server   *http.Server
+}
+
+func (p *mtlsRegistryHTTPProxy) Port() int {
+	return p.listener.Addr().(*net.TCPAddr).Port
+}
+
+func (p *mtlsRegistryHTTPProxy) Close() {
+	_ = p.server.Close()
+}
+
+// startMTLSRegistryHTTPProxy creates a local HTTP reverse proxy on 127.0.0.1
+// that forwards OCI registry requests to target via HTTPS with mTLS. certPEM
+// and keyPEM are the client certificate and key; caPEM is the CA chain used to
+// verify the server certificate (the Wendy Cloud Root CA chain).
+func startMTLSRegistryHTTPProxy(target, certPEM, keyPEM, caPEM string) (*mtlsRegistryHTTPProxy, error) {
+	leafPEM, err := certs.LeafCertificatePEM(certPEM)
+	if err != nil {
+		return nil, fmt.Errorf("extracting leaf cert: %w", err)
+	}
+	cert, err := tls.X509KeyPair([]byte(leafPEM), []byte(keyPEM))
+	if err != nil {
+		return nil, fmt.Errorf("parsing mTLS certificate: %w", err)
+	}
+	caPool := x509.NewCertPool()
+	if !caPool.AppendCertsFromPEM([]byte(caPEM)) {
+		return nil, fmt.Errorf("no valid CA certificates found in caPEM")
+	}
+
+	rp := &httputil.ReverseProxy{
+		Director: func(req *http.Request) {
+			req.URL.Scheme = "https"
+			req.URL.Host = target
+			req.Host = target
+		},
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{
+				Certificates: []tls.Certificate{cert},
+				// Skip hostname verification: device registry certs are signed by
+				// the Wendy CA but may not include the mDNS hostname as a SAN.
+				// VerifyConnection performs full chain + EKU validation instead.
+				InsecureSkipVerify: true, //nolint:gosec
+				MinVersion:         tls.VersionTLS12,
+				VerifyConnection: func(cs tls.ConnectionState) error {
+					if len(cs.PeerCertificates) == 0 {
+						return fmt.Errorf("server presented no certificates")
+					}
+					intermediates := x509.NewCertPool()
+					for _, c := range cs.PeerCertificates[1:] {
+						intermediates.AddCert(c)
+					}
+					opts := x509.VerifyOptions{
+						Roots:         caPool,
+						Intermediates: intermediates,
+						KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+					}
+					_, err := cs.PeerCertificates[0].Verify(opts)
+					return err
+				},
+			},
+		},
+	}
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return nil, err
+	}
+	srv := &http.Server{Handler: rp}
+	go func() { _ = srv.Serve(ln) }()
+	return &mtlsRegistryHTTPProxy{listener: ln, server: srv}, nil
+}
+
+// startMTLSRegistryProxy starts a local plain-TCP listener that tunnels each
+// accepted connection to target over mTLS using the CLI's client certificate.
+// This lets tools that cannot perform mTLS (e.g. swift-container-plugin) push
+// to provisioned devices through a localhost address with plain HTTP.
+func startMTLSRegistryProxy(ctx context.Context, target string) (*registryProxy, error) {
+	certInfo := loadCLICert()
+	if certInfo == nil {
+		return nil, fmt.Errorf("no CLI certificates available")
+	}
+	leafPEM, err := certs.LeafCertificatePEM(certInfo.PemCertificate)
+	if err != nil {
+		return nil, fmt.Errorf("extracting leaf certificate: %w", err)
+	}
+	tlsCert, err := tls.X509KeyPair([]byte(leafPEM), []byte(certInfo.PemPrivateKey))
+	if err != nil {
+		return nil, fmt.Errorf("loading client certificate: %w", err)
+	}
+	tlsCfg := &tls.Config{
+		InsecureSkipVerify: true, //nolint:gosec // device registries use self-signed certs; pinning is tracked separately
+		MinVersion:         tls.VersionTLS12,
+		Certificates:       []tls.Certificate{tlsCert},
+	}
+	dialer := &tls.Dialer{Config: tlsCfg}
+	return startRegistryProxyWithDialer(ctx, "127.0.0.1:0", func(ctx context.Context) (net.Conn, error) {
+		return dialer.DialContext(ctx, "tcp", target)
+	}, target)
 }
 
 // isLinkLocalIP reports whether the given IP string (possibly bracketed) is a
@@ -901,16 +1508,25 @@ func isLinkLocalIP(ip string) bool {
 type registryProxy struct {
 	listener net.Listener
 	target   string
+	dial     func(context.Context) (net.Conn, error)
 	cancel   context.CancelFunc
 	done     chan struct{}
 }
 
-// startRegistryProxy creates a TCP proxy that listens on all interfaces
-// (required for Docker Desktop VM connectivity) and forwards connections to
-// the target address. The target should use the device's mDNS hostname (not a
-// bare link-local IP) so the host's resolver provides the zone ID.
-func startRegistryProxy(ctx context.Context, target string) (*registryProxy, error) {
-	ln, err := net.Listen("tcp", "0.0.0.0:0")
+// startRegistryProxy creates a TCP proxy that listens on listenAddr and
+// forwards connections to the target address. Pass "0.0.0.0:0" when Docker
+// Desktop's VM must reach the proxy via host.docker.internal; pass
+// "127.0.0.1:0" everywhere else so the listener is not exposed on all
+// interfaces. The target should use the device's mDNS hostname (not a bare
+// link-local IP) so the host's resolver provides the zone ID.
+func startRegistryProxy(ctx context.Context, listenAddr string, target string) (*registryProxy, error) {
+	return startRegistryProxyWithDialer(ctx, listenAddr, func(ctx context.Context) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, "tcp", target)
+	}, target)
+}
+
+func startRegistryProxyWithDialer(ctx context.Context, listenAddr string, dial func(context.Context) (net.Conn, error), target ...string) (*registryProxy, error) {
+	ln, err := net.Listen("tcp", listenAddr)
 	if err != nil {
 		return nil, err
 	}
@@ -918,9 +1534,12 @@ func startRegistryProxy(ctx context.Context, target string) (*registryProxy, err
 	proxyCtx, cancel := context.WithCancel(ctx)
 	p := &registryProxy{
 		listener: ln,
-		target:   target,
+		dial:     dial,
 		cancel:   cancel,
 		done:     make(chan struct{}),
+	}
+	if len(target) > 0 {
+		p.target = target[0]
 	}
 
 	go p.serve(proxyCtx)
@@ -953,7 +1572,7 @@ func (p *registryProxy) serve(ctx context.Context) {
 func (p *registryProxy) forward(ctx context.Context, client net.Conn) {
 	defer client.Close()
 
-	remote, err := (&net.Dialer{}).DialContext(ctx, "tcp", p.target)
+	remote, err := p.dial(ctx)
 	if err != nil {
 		return
 	}
@@ -1268,11 +1887,9 @@ func findIPv4NeighborLinux(ctx context.Context, ipv6LinkLocal string) string {
 
 // buildSwiftDockerImage cross-compiles a Swift package for Linux and builds a
 // Docker image containing the resulting binary. Returns the Docker image name.
-// This is used by the Docker Desktop provider for Swift projects that do not
-// have a Dockerfile, as an alternative to swift-container-plugin (which only
-// supports pushing to registries).
-func buildSwiftDockerImage(ctx context.Context, dir, product string, toolchainStdout, toolchainStderr io.Writer) (string, error) {
-	arch := runtime.GOARCH
+// Used for Swift projects that do not have a Dockerfile (Docker Desktop provider,
+// local build path, and provider-build path).
+func buildSwiftDockerImage(ctx context.Context, dir, product, arch string, toolchainStdout, toolchainStderr io.Writer) (string, error) {
 	sdk, err := swifttoolchain.FindSwiftSDK(ctx, arch, toolchainStdout, toolchainStderr)
 	if err != nil {
 		return "", fmt.Errorf("finding Swift SDK: %w", err)

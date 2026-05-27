@@ -4,10 +4,36 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"strings"
 	"testing"
+	"time"
 )
+
+// testFileInfo is a minimal os.FileInfo implementation for statFile mocks.
+type testFileInfo struct{ mode os.FileMode }
+
+func (f testFileInfo) Name() string       { return "brew" }
+func (f testFileInfo) Size() int64        { return 0 }
+func (f testFileInfo) Mode() os.FileMode  { return f.mode }
+func (f testFileInfo) ModTime() time.Time { return time.Time{} }
+func (f testFileInfo) IsDir() bool        { return false }
+func (f testFileInfo) Sys() any           { return nil }
+
+// brewExists returns a statFile that reports the given paths as non-world-writable (mode 0755).
+func brewExists(paths ...string) func(string) (os.FileInfo, error) {
+	set := make(map[string]bool, len(paths))
+	for _, p := range paths {
+		set[p] = true
+	}
+	return func(name string) (os.FileInfo, error) {
+		if set[name] {
+			return testFileInfo{mode: 0755}, nil
+		}
+		return nil, fmt.Errorf("not found")
+	}
+}
 
 func TestEnsureSwiftVersion_AlreadyInstalled(t *testing.T) {
 	original := execCommandContext
@@ -61,11 +87,18 @@ func TestEnsureSwiftVersion_InstallsWhenMissing(t *testing.T) {
 }
 
 func TestEnsureSwiftVersion_SwiftlyNotFound(t *testing.T) {
-	original := execCommandContext
-	t.Cleanup(func() { execCommandContext = original })
+	origExec := execCommandContext
+	origStat := statFile
+	t.Cleanup(func() {
+		execCommandContext = origExec
+		statFile = origStat
+	})
 
 	execCommandContext = func(ctx context.Context, name string, args ...string) *exec.Cmd {
 		return exec.CommandContext(ctx, "nonexistent-binary-that-does-not-exist")
+	}
+	statFile = func(name string) (os.FileInfo, error) {
+		return nil, fmt.Errorf("not found")
 	}
 
 	err := EnsureSwiftVersion(context.Background(), io.Discard, io.Discard)
@@ -74,6 +107,166 @@ func TestEnsureSwiftVersion_SwiftlyNotFound(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "swiftly is required but not installed") {
 		t.Errorf("expected actionable error message, got: %v", err)
+	}
+}
+
+func TestEnsureSwiftVersion_SwiftlyNotFound_BrewConfirmed(t *testing.T) {
+	origExec := execCommandContext
+	origStat := statFile
+	origConfirm := confirmFunc
+	origOS := currentOS
+	origTTY := isTerminal
+	t.Cleanup(func() {
+		execCommandContext = origExec
+		statFile = origStat
+		confirmFunc = origConfirm
+		currentOS = origOS
+		isTerminal = origTTY
+	})
+
+	currentOS = "darwin"
+	isTerminal = func() bool { return true }
+	statFile = brewExists("/opt/homebrew/bin/brew")
+	confirmFunc = func(question string) (bool, error) { return true, nil }
+
+	const fakeBrew = "/opt/homebrew/bin/brew"
+	var calls [][]string
+	whichCallCount := 0
+	execCommandContext = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		call := append([]string{name}, args...)
+		calls = append(calls, call)
+		switch {
+		case name == "swiftly" && len(args) > 0 && args[0] == "which":
+			whichCallCount++
+			if whichCallCount == 1 {
+				// first call: swiftly binary not in PATH at all
+				return exec.CommandContext(ctx, "nonexistent-binary-that-does-not-exist")
+			}
+			// second call (post-brew): binary exists but version not installed yet
+			return exec.CommandContext(ctx, "false")
+		case name == fakeBrew:
+			return exec.CommandContext(ctx, "true") // brew install succeeds
+		default:
+			return exec.CommandContext(ctx, "true")
+		}
+	}
+
+	if err := EnsureSwiftVersion(context.Background(), io.Discard, io.Discard); err != nil {
+		t.Fatalf("EnsureSwiftVersion() unexpected error: %v", err)
+	}
+
+	// Expect: swiftly which, /opt/homebrew/bin/brew install swiftly, swiftly which (retry), swiftly install
+	brewCall := false
+	installCall := false
+	for _, c := range calls {
+		if c[0] == fakeBrew && len(c) >= 3 && c[1] == "install" && c[2] == brewFormula {
+			brewCall = true
+		}
+		if c[0] == "swiftly" && len(c) >= 2 && c[1] == "install" {
+			installCall = true
+		}
+	}
+	if !brewCall {
+		t.Errorf("expected %s install swiftly call, calls: %v", fakeBrew, calls)
+	}
+	if !installCall {
+		t.Errorf("expected swiftly install call after brew, calls: %v", calls)
+	}
+}
+
+func TestEnsureSwiftVersion_SwiftlyNotFound_BrewDeclined(t *testing.T) {
+	origExec := execCommandContext
+	origStat := statFile
+	origConfirm := confirmFunc
+	origOS := currentOS
+	origTTY := isTerminal
+	t.Cleanup(func() {
+		execCommandContext = origExec
+		statFile = origStat
+		confirmFunc = origConfirm
+		currentOS = origOS
+		isTerminal = origTTY
+	})
+
+	currentOS = "darwin"
+	isTerminal = func() bool { return true }
+	statFile = brewExists("/opt/homebrew/bin/brew")
+	confirmFunc = func(question string) (bool, error) { return false, nil }
+
+	execCommandContext = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		return exec.CommandContext(ctx, "nonexistent-binary-that-does-not-exist")
+	}
+
+	err := EnsureSwiftVersion(context.Background(), io.Discard, io.Discard)
+	if err == nil {
+		t.Fatal("EnsureSwiftVersion() expected error when brew declined, got nil")
+	}
+	if !strings.Contains(err.Error(), "brew install") {
+		t.Errorf("expected brew install hint in error message, got: %v", err)
+	}
+}
+
+func TestEnsureSwiftVersion_SwiftlyNotFound_NonInteractive(t *testing.T) {
+	origExec := execCommandContext
+	origStat := statFile
+	origOS := currentOS
+	origTTY := isTerminal
+	t.Cleanup(func() {
+		execCommandContext = origExec
+		statFile = origStat
+		currentOS = origOS
+		isTerminal = origTTY
+	})
+
+	currentOS = "darwin"
+	isTerminal = func() bool { return false }
+	statFile = brewExists("/opt/homebrew/bin/brew")
+
+	execCommandContext = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		return exec.CommandContext(ctx, "nonexistent-binary-that-does-not-exist")
+	}
+
+	err := EnsureSwiftVersion(context.Background(), io.Discard, io.Discard)
+	if err == nil {
+		t.Fatal("EnsureSwiftVersion() expected error in non-interactive mode, got nil")
+	}
+	if !strings.Contains(err.Error(), "brew install") {
+		t.Errorf("expected brew install hint in non-interactive error message, got: %v", err)
+	}
+}
+
+func TestEnsureSwiftVersion_SwiftlyNotFound_BrewFails(t *testing.T) {
+	origExec := execCommandContext
+	origStat := statFile
+	origConfirm := confirmFunc
+	origOS := currentOS
+	origTTY := isTerminal
+	t.Cleanup(func() {
+		execCommandContext = origExec
+		statFile = origStat
+		confirmFunc = origConfirm
+		currentOS = origOS
+		isTerminal = origTTY
+	})
+
+	currentOS = "darwin"
+	isTerminal = func() bool { return true }
+	statFile = brewExists("/opt/homebrew/bin/brew")
+	confirmFunc = func(question string) (bool, error) { return true, nil }
+
+	execCommandContext = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		if name == "/opt/homebrew/bin/brew" {
+			return exec.CommandContext(ctx, "false") // brew install fails
+		}
+		return exec.CommandContext(ctx, "nonexistent-binary-that-does-not-exist")
+	}
+
+	err := EnsureSwiftVersion(context.Background(), io.Discard, io.Discard)
+	if err == nil {
+		t.Fatal("EnsureSwiftVersion() expected error when brew install fails, got nil")
+	}
+	if !strings.Contains(err.Error(), "brew install") {
+		t.Errorf("expected brew error message, got: %v", err)
 	}
 }
 

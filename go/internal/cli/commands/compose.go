@@ -11,12 +11,14 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/charmbracelet/lipgloss"
 	"github.com/distribution/reference"
 	"gopkg.in/yaml.v3"
 
-	"github.com/wendylabsinc/wendy/internal/cli/grpcclient"
-	"github.com/wendylabsinc/wendy/internal/shared/appconfig"
-	"github.com/wendylabsinc/wendy/proto/gen/agentpb"
+	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
+	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
+	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
 // normalizeImageRef canonicalises a Docker short reference (e.g.
@@ -98,6 +100,12 @@ func composeBuildContext(svc composeService, projectDir string) (ctxDir, dockerf
 		}
 		df := "Dockerfile"
 		if bc.Dockerfile != "" {
+			if err := validateComposeDockerfileName(bc.Dockerfile); err != nil {
+				return "", "", nil, fmt.Errorf("compose dockerfile: %w", err)
+			}
+			if _, err := confinedDockerfilePath(ctxDir, bc.Dockerfile); err != nil {
+				return "", "", nil, fmt.Errorf("compose dockerfile: %w", err)
+			}
 			df = bc.Dockerfile
 		}
 		return ctxDir, df, bc.Args, nil
@@ -378,6 +386,70 @@ func serviceOrder(cfg *composeConfig) ([]string, error) {
 	return ordered, nil
 }
 
+// serviceLogPalette is the fixed color rotation for service name prefixes.
+var serviceLogPalette = []lipgloss.Color{
+	tui.Sky500,                // cyan-ish
+	tui.Amber500,              // yellow
+	tui.Emerald400,            // green
+	lipgloss.Color("#c084fc"), // magenta
+	lipgloss.Color("#60a5fa"), // blue
+	tui.Red500,                // red
+}
+
+// serviceLogWriter buffers output for a single service and writes complete
+// lines prefixed with a color-coded, column-aligned service name.
+// It is safe to call Write from a single goroutine; Flush drains any partial line.
+type serviceLogWriter struct {
+	mu     *sync.Mutex // shared with all writers so lines don't interleave
+	dest   *os.File
+	buf    strings.Builder
+	prefix string // pre-rendered "[name]  " with padding and color
+}
+
+func newServiceLogWriters(names []string) (stdout, stderr map[string]*serviceLogWriter) {
+	mu := &sync.Mutex{}
+	maxLen := 0
+	for _, n := range names {
+		if len(n) > maxLen {
+			maxLen = len(n)
+		}
+	}
+	stdout = make(map[string]*serviceLogWriter, len(names))
+	stderr = make(map[string]*serviceLogWriter, len(names))
+	for i, name := range names {
+		color := serviceLogPalette[i%len(serviceLogPalette)]
+		style := lipgloss.NewStyle().Foreground(color).Bold(true)
+		errStyle := lipgloss.NewStyle().Foreground(color).Bold(true)
+		padding := strings.Repeat(" ", maxLen-len(name)+1)
+		prefix := style.Render("["+name+"]") + padding
+		stdout[name] = &serviceLogWriter{mu: mu, dest: os.Stdout, prefix: prefix}
+		stderr[name] = &serviceLogWriter{mu: mu, dest: os.Stderr, prefix: errStyle.Render("["+name+"]") + padding}
+	}
+	return stdout, stderr
+}
+
+func (w *serviceLogWriter) Write(p []byte) {
+	for _, b := range p {
+		if b == '\n' {
+			w.mu.Lock()
+			fmt.Fprintln(w.dest, w.prefix+w.buf.String())
+			w.buf.Reset()
+			w.mu.Unlock()
+		} else {
+			w.buf.WriteByte(b)
+		}
+	}
+}
+
+func (w *serviceLogWriter) Flush() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.buf.Len() > 0 {
+		fmt.Fprintln(w.dest, w.prefix+w.buf.String())
+		w.buf.Reset()
+	}
+}
+
 // runComposeWithAgent orchestrates a docker-compose project on a WendyOS device:
 // builds service images, pushes them to the device registry, creates containers,
 // and streams their combined output.
@@ -406,7 +478,7 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 	platform := resolveAgentPlatform("", agentOS, architecture)
 
 	regPort := registryPort(agentOS)
-	registryAddr, proxyCleanup, err := resolveRegistry(ctx, conn.Host, regPort)
+	registryAddr, proxyCleanup, err := resolveRegistryForAgent(ctx, conn, regPort)
 	if err != nil {
 		return err
 	}
@@ -453,21 +525,11 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 
 		cliLogln("Building image for service %s...", name)
 
-		// If a non-default Dockerfile is specified, we need to pass it via -f.
-		// buildAndPushImage always uses "." as the path; for compose we pass the
-		// build context dir and rely on a Dockerfile inside it (or via ARG).
-		// We temporarily write a wrapper that delegates to the real Dockerfile when
-		// the dockerfile field differs. For the common case (Dockerfile in context),
-		// it just works.
-		if dockerfile != "Dockerfile" {
-			// Rewrite -f by creating a temp Dockerfile that uses the named file.
-			// Actually, buildAndPushImage doesn't support -f. We need a small workaround:
-			// copy the Dockerfile to the context dir as "Dockerfile" temporarily.
-			// For now, just error with a helpful message.
-			return fmt.Errorf("service %s: custom Dockerfile path %q is not yet supported; rename it to 'Dockerfile'", name, dockerfile)
+		buildDockerfile := dockerfile
+		if buildDockerfile == "Dockerfile" {
+			buildDockerfile = ""
 		}
-
-		if err := buildAndPushImage(ctx, ctxDir, registryAddr, imageName, platform, allBuildArgs, os.Stdout, conn.IsMTLS); err != nil {
+		if err := buildAndPushImage(ctx, ctxDir, registryAddr, imageName, platform, buildDockerfile, allBuildArgs, os.Stdout, conn.IsMTLS); err != nil {
 			return fmt.Errorf("building service %s: %w", name, err)
 		}
 		cliLogln("Service %s image built and pushed.", name)
@@ -555,15 +617,21 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 		case <-runCtx.Done():
 			return
 		}
-		cliLogln("\nStopping all services...")
+		// Stop in reverse dependency order.
 		stopCtx := context.Background()
-		for _, name := range ordered {
+		stopped := 0
+		fmt.Println()
+		for i := len(ordered) - 1; i >= 0; i-- {
+			name := ordered[i]
 			svc := cfg.Services[name]
 			appCfg := composeAppConfig(projectName, name, svc)
+			cliLogln("Stopping %s...", name)
 			_, _ = conn.ContainerService.StopContainer(stopCtx, &agentpb.StopContainerRequest{
 				AppName: appCfg.AppID,
 			})
+			stopped++
 		}
+		cliLogln("Stopped %d service(s).", stopped)
 		runCancel()
 	}()
 
@@ -583,10 +651,17 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 			cliLogln("Service %s started.", name)
 		}
 		cliLogln("All services running in detached mode.")
+		projectID := strings.ToLower(filepath.Base(projectDir))
+		cliLogln("Run 'wendy logs %s' to stream logs.", projectID)
 		return nil
 	}
 
-	// Attached mode: stream output from all containers concurrently, prefixed by service name.
+	// Attached mode: stream output from all containers concurrently with
+	// color-coded, column-aligned service name prefixes.
+	serviceNames := make([]string, len(ordered))
+	copy(serviceNames, ordered)
+	stdoutWriters, stderrWriters := newServiceLogWriters(serviceNames)
+
 	var wg sync.WaitGroup
 	errCh := make(chan error, len(ordered))
 
@@ -597,16 +672,49 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 		wg.Add(1)
 		go func(serviceName, appID string) {
 			defer wg.Done()
+			outW := stdoutWriters[serviceName]
+			errW := stderrWriters[serviceName]
+			defer outW.Flush()
+			defer errW.Flush()
 
-			stream, err := conn.ContainerService.StartContainer(runCtx, &agentpb.StartContainerRequest{
-				AppName: appID,
-			})
-			if err != nil {
-				errCh <- fmt.Errorf("starting service %s: %w", serviceName, err)
-				return
+			stream, streamErr := conn.ContainerService.AttachContainer(runCtx)
+			if streamErr == nil {
+				streamErr = stream.Send(&agentpb.AttachContainerRequest{
+					RequestType: &agentpb.AttachContainerRequest_AppName{AppName: appID},
+				})
+				// Compose never forwards stdin; half-close so the server sees EOF.
+				_ = stream.CloseSend()
+			}
+			if streamErr != nil {
+				// Fall back to the server-streaming StartContainer when AttachContainer is unavailable.
+				startStream, startErr := conn.ContainerService.StartContainer(runCtx, &agentpb.StartContainerRequest{
+					AppName: appID,
+				})
+				if startErr != nil {
+					errCh <- fmt.Errorf("starting service %s: %w", serviceName, startErr)
+					return
+				}
+				for {
+					resp, recvErr := startStream.Recv()
+					if recvErr == io.EOF {
+						return
+					}
+					if recvErr != nil {
+						if runCtx.Err() != nil {
+							return
+						}
+						errCh <- fmt.Errorf("service %s: %w", serviceName, recvErr)
+						return
+					}
+					if out := resp.GetStdoutOutput(); out != nil {
+						outW.Write(out.GetData())
+					}
+					if out := resp.GetStderrOutput(); out != nil {
+						errW.Write(out.GetData())
+					}
+				}
 			}
 
-			prefix := "[" + serviceName + "] "
 			for {
 				resp, recvErr := stream.Recv()
 				if recvErr == io.EOF {
@@ -620,10 +728,10 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 					return
 				}
 				if out := resp.GetStdoutOutput(); out != nil {
-					_, _ = fmt.Fprint(os.Stdout, prefix+string(out.GetData()))
+					outW.Write(out.GetData())
 				}
 				if out := resp.GetStderrOutput(); out != nil {
-					_, _ = fmt.Fprint(os.Stderr, prefix+string(out.GetData()))
+					errW.Write(out.GetData())
 				}
 			}
 		}(name, appCfg.AppID)

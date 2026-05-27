@@ -1,0 +1,168 @@
+---
+title: Hello World in Python
+description: Create your first WendyOS application using Python
+language: python
+---
+
+## Creating Your First Python Application
+
+This guide will walk you through creating a simple "Hello, World!" application for WendyOS using Python. This is a great way to prove that you can send your first app to your device and verify your development environment is set up correctly.
+
+### Prerequisites
+
+- Wendy CLI installed on your development machine
+- Python 3.14 installed
+- A WendyOS device plugged in over USB or connectable over Wi-Fi
+
+### Creating the Project
+
+<Steps>
+  <Step>
+    ### Initialize the Project
+
+    Start from the Wendy Python template:
+
+    ```bash
+    wendy init hello-world --target wendyos --language python --template simple-api --var APP_ID=hello-world --var PORT=3001 --assistant skip --git-init no
+    cd hello-world
+    ```
+
+    This creates `wendy.json`, a Dockerfile, and a ready-to-run Python app from the template. The next steps explain the generated files.
+  </Step>
+
+  <Step>
+    ### Run on WendyOS
+
+    ```bash
+    wendy run
+    ```
+
+    Wendy will build the app, ask you to select a device if one is not already configured, deploy the app, and show the run output.
+  </Step>
+</Steps>
+
+## Code Breakdown
+
+<Steps>
+  <Step>
+    ### Generated Application
+
+    The template includes an `app.py` entry point. For a minimal hello-world app, it can be as small as:
+
+    ```python
+    #!/usr/bin/env python3
+
+    if __name__ == '__main__':
+        print("Hello World")
+    ```
+
+    This is the entry point for your WendyOS application. The `if __name__ == '__main__'` guard ensures it only runs when executed directly.
+  </Step>
+
+  <Step>
+    ### Generated requirements.txt
+
+    The generated project includes a dependency file. A minimal hello-world app does not need extra packages:
+
+    ```txt
+    # No dependencies required
+    ```
+  </Step>
+
+  <Step>
+    ### Generated Dockerfile
+
+    The template includes a Dockerfile similar to this:
+
+    ```dockerfile
+    # Use uv with Python 3.14 (slim variant for better compatibility with Debian-based systems like NVIDIA Jetson Orin Nano)
+    FROM ghcr.io/astral-sh/uv:python3.14-bookworm-slim
+
+    # Set working directory
+    WORKDIR /app
+
+    # Copy application code
+    COPY app.py .
+
+    # Create a non-root user for security
+    RUN useradd --create-home --shell /bin/bash app && \
+        chown -R app:app /app
+    USER app
+
+    # Run the application
+    CMD ["python", "app.py"]
+    ```
+  </Step>
+</Steps>
+
+## Run Again on WendyOS
+
+Deploy your application to a connected WendyOS device:
+
+```bash
+wendy run
+```
+
+This will build your application into a container and deploy it to your device.
+
+## Verifying Deployment on Your Device
+
+After deploying your application to a WendyOS device, you can verify it was successfully deployed and ran by listing the applications on your device:
+
+```bash
+wendy device apps list
+✔︎ Searching for WendyOS devices [5.3s]
+✔︎ Listing applications: True Probe [USB, Ethernet, LAN]
+╭───────────────┬─────────┬─────────┬──────────╮
+│ App           │ Version │ State   │ Failures │
+├───────────────┼─────────┼─────────┼──────────┤
+│ hello-world   │ 0.0.1   │ Stopped │ 0        │
+╰───────────────┴─────────┴─────────┴──────────╯
+```
+
+<Callout type="info">
+  **Expected State**: The app shows as "Stopped" because a hello-world application exits immediately after printing its message. This is expected behavior. The key indicator of success is the "Failures" column showing `0`, which confirms your application ran and exited successfully without any errors.
+</Callout>
+
+## Next Steps
+
+Now that you have a basic Python application running:
+
+- Learn how to build a [Simple Web Server](/docs/guides/python/simple-web-server) with FastAPI
+- Explore WendyOS libraries for hardware access
+- Build more complex applications with user input and data processing
+
+<Accordions>
+  <Accordion title="Testing the app on your own machine">
+    There are times when you might not have a WendyOS device around. You can still test your application locally using Python or Docker.
+
+    ### Using Python Directly
+
+    Run your application locally:
+
+    ```bash
+    python app.py
+    ```
+
+    You should see output:
+
+    ```
+    Hello World
+    ```
+
+    ### Using Docker Locally
+
+    Build and run your application in a Docker container:
+
+    ```bash
+    docker build -t hello-world .
+    docker run hello-world
+    ```
+
+    You should see:
+
+    ```
+    Hello World
+    ```
+  </Accordion>
+</Accordions>

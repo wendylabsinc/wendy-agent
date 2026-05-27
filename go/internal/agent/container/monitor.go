@@ -9,8 +9,8 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/wendylabsinc/wendy/internal/agent/services"
-	"github.com/wendylabsinc/wendy/proto/gen/agentpb"
+	"github.com/wendylabsinc/wendy/go/internal/agent/services"
+	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
 // RestartPolicy determines the container restart behavior.
@@ -123,6 +123,16 @@ func (m *ContainerMonitor) MarkExplicitStop(appName string) {
 	}
 }
 
+// ClearExplicitStop reverts a prior MarkExplicitStop, re-enabling automatic
+// restarts for the container. It is a no-op if appName is not registered.
+func (m *ContainerMonitor) ClearExplicitStop(appName string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if state, ok := m.states[appName]; ok {
+		state.ExplicitStop = false
+	}
+}
+
 // Start begins the monitoring loop in a goroutine.
 func (m *ContainerMonitor) Start(ctx context.Context) {
 	go m.Run(ctx)
@@ -159,7 +169,6 @@ func (m *ContainerMonitor) checkContainers(ctx context.Context) {
 		return
 	}
 
-	// Build a set of running container names.
 	running := make(map[string]bool)
 	for _, c := range containers {
 		if c.GetRunningState() == agentpb.AppRunningState_RUNNING {
@@ -168,39 +177,36 @@ func (m *ContainerMonitor) checkContainers(ctx context.Context) {
 	}
 
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
+	var toRestart []string
 	for appName, state := range m.states {
 		if running[appName] {
 			continue
 		}
-
-		// Container is not running - evaluate restart policy.
 		if !m.shouldRestart(state) {
 			continue
 		}
-
-		// Enforce backoff: don't restart more often than once per 10 seconds.
 		if time.Since(state.LastRestart) < 10*time.Second {
 			continue
 		}
-
 		m.logger.Info("Restarting container",
 			zap.String("app_name", appName),
 			zap.Int("failure_count", state.FailureCount),
 		)
-
 		state.FailureCount++
 		state.LastRestart = time.Now()
+		toRestart = append(toRestart, appName)
+	}
+	m.mu.Unlock()
 
-		go func(name string) {
-			if _, err := m.containerd.StartContainer(ctx, name, ""); err != nil {
+	for _, name := range toRestart {
+		go func(n string) {
+			if _, err := m.containerd.StartContainer(ctx, n, "", nil); err != nil {
 				m.logger.Error("Failed to restart container",
-					zap.String("app_name", name),
+					zap.String("app_name", n),
 					zap.Error(err),
 				)
 			}
-		}(appName)
+		}(name)
 	}
 }
 
@@ -212,6 +218,10 @@ func (m *ContainerMonitor) shouldRestart(state *containerState) bool {
 	case RestartUnlessStopped:
 		return !state.ExplicitStop
 	case RestartOnFailure:
+		// The monitor detects only whether a container has stopped; it has no
+		// exit-code signal from containerd. Until exit-code detection is added,
+		// ON_FAILURE behaves like UNLESS_STOPPED: it restarts on any exit, not
+		// only non-zero ones. MaxRetries is still enforced.
 		if state.ExplicitStop {
 			return false
 		}

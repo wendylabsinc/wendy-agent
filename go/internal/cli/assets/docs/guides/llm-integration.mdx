@@ -1,0 +1,169 @@
+---
+title: AI Coding Agent Setup
+description: Install the Wendy plugin for Codex or Claude Code, then start a Wendy project with an AI coding agent
+---
+
+This guide assumes you want Codex or Claude Code to do the coding work for you. You install the Wendy plugin, ask the agent to install or verify the Wendy CLI, then ask it to create and run a Wendy app.
+
+## Install the Wendy plugin
+
+Choose the coding agent you will use.
+
+<Tabs items={['Codex', 'Claude Code']} groupId="ai-coding-agent" persist>
+  <Tab value="Codex">
+    Add the Wendy plugin marketplace:
+
+    ```bash
+    codex plugin marketplace add wendylabsinc/wendy-agentic-coding
+    ```
+
+    Open Codex and install the plugin from the plugin browser:
+
+    ```bash
+    codex
+    /plugins
+    ```
+
+    Start a new Codex thread and mention the plugin as `@Wendy`:
+
+    ```text
+    Use @Wendy to install Wendy CLI, verify my Wendy CLI version, discover my Wendy device, and create a Wendy app for this project.
+    ```
+  </Tab>
+
+  <Tab value="Claude Code">
+    Add the Wendy plugin marketplace and install the plugin:
+
+    ```bash
+    claude plugin marketplace add wendylabsinc/wendy-agentic-coding
+    claude plugin install wendy-agentic-coding@wendy-agentic-coding
+    ```
+
+    Restart Claude Code or reload plugins:
+
+    ```text
+    /reload-plugins
+    ```
+
+    Start with the Wendy install command:
+
+    ```text
+    /wendy-agentic-coding:wendy-install
+    ```
+  </Tab>
+</Tabs>
+
+## Let the agent install Wendy CLI
+
+The plugin does not silently install system tools. Ask Codex or Claude Code to install or verify Wendy CLI, and let it show you the command before it runs it.
+
+The agent should use these commands:
+
+<Tabs items={['macOS', 'Linux', 'Windows']} groupId="developer-machine-os" persist>
+  <Tab value="macOS">
+    ```bash
+    curl -fsSL https://install.wendy.sh/cli.sh | bash
+    ```
+
+    Verify the installation:
+
+    ```bash
+    wendy --version
+    wendy discover --json
+    ```
+  </Tab>
+
+  <Tab value="Linux">
+    ```bash
+    curl -fsSL https://install.wendy.sh/cli.sh | bash
+    ```
+
+    Verify the installation:
+
+    ```bash
+    wendy --version
+    wendy discover --json
+    ```
+  </Tab>
+
+  <Tab value="Windows">
+    ```powershell
+    winget install WendyLabs.Wendy --source winget
+    ```
+
+    Verify the installation:
+
+    ```powershell
+    wendy --version
+    wendy discover --json
+    ```
+  </Tab>
+</Tabs>
+
+For the full agent workflow, including Wendy MCP and hardware inspection, use Wendy CLI `2026.04.30-211221` or newer. If your package manager installs an older version, ask the agent to update Wendy from the latest release at [github.com/wendylabsinc/wendy-agent/releases](https://github.com/wendylabsinc/wendy-agent/releases).
+
+## Start a project from a template
+
+For a new app, ask the agent to search Wendy templates before it writes code from scratch. The Wendy plugin teaches Codex and Claude Code to prefer the local `templates` repo or [github.com/wendylabsinc/templates](https://github.com/wendylabsinc/templates) when it is unsure.
+
+Example prompt:
+
+```text
+Use @Wendy to create a Wendy app in ./foo-bar from the realsense-camera template.
+Search local templates first; if source behavior is unclear, check wendylabsinc/templates before writing code.
+Validate wendy.json, discover my device, and tell me the exact command to run the app detached.
+```
+
+The agent should inspect the matching template's `template.json`, `wendy.json`, `Dockerfile`, and source files, then create or adapt the app in your requested directory.
+
+## Common agent prompts
+
+Use these prompts as starting points.
+
+<Tabs items={['Codex', 'Claude Code']} groupId="ai-coding-agent" persist>
+  <Tab value="Codex">
+    ```text
+    Use @Wendy to create a Wendy Python app in ./robot-camera from the closest camera template. Validate wendy.json and explain the entitlements.
+    ```
+
+    ```text
+    Use @Wendy to run this app on my Wendy device in detached mode, then stream the logs and summarize any startup errors.
+    ```
+
+    ```text
+    Use @Wendy to inspect my device hardware and update wendy.json so the app has only the entitlements it needs.
+    ```
+  </Tab>
+
+  <Tab value="Claude Code">
+    ```text
+    /wendy-agentic-coding:wendy-template create a Wendy Python app in ./robot-camera from the closest camera template
+    ```
+
+    ```text
+    /wendy-agentic-coding:wendy-run run this app detached, then stream logs and summarize startup errors
+    ```
+
+    ```text
+    /wendy-agentic-coding:wendy-device-ops inspect my device hardware and recommend the smallest wendy.json entitlement set
+    ```
+  </Tab>
+</Tabs>
+
+## What the agent should do
+
+For a new Wendy app, expect Codex or Claude Code to:
+
+1. Check `wendy --version` and `wendy discover --json`.
+2. Search local templates or `wendylabsinc/templates` for the closest app archetype.
+3. Create or adapt the app in your requested directory.
+4. Choose the smallest practical `wendy.json` entitlements.
+5. Run `wendy json validate`.
+6. Use `wendy run --yes --detach --device <hostname>` for long-running apps.
+7. Stream logs with Wendy device log commands and summarize actionable failures.
+
+## Next steps
+
+- [Discover your devices](/docs/guides/device/discovering-devices)
+- [Manage apps](/docs/guides/device/managing-apps)
+- [Understand entitlements](/docs/guides/device/entitlements)

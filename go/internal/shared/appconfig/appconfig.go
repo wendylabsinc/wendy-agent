@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path"
+	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
@@ -24,6 +26,7 @@ const (
 	EntitlementGPIO      = "gpio"
 	EntitlementSPI       = "spi"
 	EntitlementInput     = "input"
+	EntitlementMCP       = "mcp"
 )
 
 // ValidEntitlementTypes is the set of all recognized entitlement type strings.
@@ -40,6 +43,7 @@ var ValidEntitlementTypes = []string{
 	EntitlementGPIO,
 	EntitlementSPI,
 	EntitlementInput,
+	EntitlementMCP,
 }
 
 var deprecatedEntitlementReplacements = map[string]string{
@@ -60,6 +64,7 @@ var allowedKeys = map[string][]string{
 	EntitlementGPIO:      {"type", "pins"},
 	EntitlementSPI:       {"type"},
 	EntitlementInput:     {"type"},
+	EntitlementMCP:       {"type", "port"},
 }
 
 // Platform constants identify the target hardware family.
@@ -82,20 +87,30 @@ type RunConfig struct {
 	Args []string `json:"args,omitempty"`
 }
 
+// ServiceConfig holds the per-service build and runtime configuration for a
+// multi-service wendy.json (the services map).
+type ServiceConfig struct {
+	// Context is the build context directory, relative to wendy.json.
+	Context      string        `json:"context"`
+	Entitlements []Entitlement `json:"entitlements,omitempty"`
+	DependsOn    []string      `json:"dependsOn,omitempty"`
+}
+
 // AppConfig represents the wendy.json application configuration.
 type AppConfig struct {
-	AppID        string           `json:"appId"`
-	Version      string           `json:"version,omitempty"`
-	Platform     string           `json:"platform,omitempty"`
-	Language     string           `json:"language,omitempty"`
-	Xcode        *XcodeConfig     `json:"xcode,omitempty"`
-	Run          *RunConfig       `json:"run,omitempty"`
-	Entitlements []Entitlement    `json:"entitlements,omitempty"`
-	Readiness    *ReadinessConfig `json:"readiness,omitempty"`
-	Hooks        *HooksConfig     `json:"hooks,omitempty"`
-	Python       *PythonConfig    `json:"python,omitempty"`
-	Debug        bool             `json:"debug,omitempty"`
-	Files        []FileSyncEntry  `json:"files,omitempty"`
+	AppID        string                    `json:"appId"`
+	Version      string                    `json:"version,omitempty"`
+	Platform     string                    `json:"platform,omitempty"`
+	Language     string                    `json:"language,omitempty"`
+	Xcode        *XcodeConfig              `json:"xcode,omitempty"`
+	Run          *RunConfig                `json:"run,omitempty"`
+	Entitlements []Entitlement             `json:"entitlements,omitempty"`
+	Readiness    *ReadinessConfig          `json:"readiness,omitempty"`
+	Hooks        *HooksConfig              `json:"hooks,omitempty"`
+	Python       *PythonConfig             `json:"python,omitempty"`
+	Debug        bool                      `json:"debug,omitempty"`
+	Files        []FileSyncEntry           `json:"files,omitempty"`
+	Services     map[string]*ServiceConfig `json:"services,omitempty"`
 }
 
 // XcodeConfig holds Xcode-specific build settings.
@@ -124,9 +139,15 @@ type HooksConfig struct {
 const PostStartAgentHookMetadataKey = "wendy-post-start-agent-command"
 
 // HookCommand holds CLI and agent-side commands for a lifecycle hook.
+//
+// OpenURL is the portable way to open a URL in the developer's default browser
+// at hook time — the CLI dispatches it directly without a shell, so it works
+// uniformly on macOS, Linux, and Windows. Prefer it over `cli: "open …"` /
+// `cli: "xdg-open …"` / `cli: "start …"`, which are platform-specific.
 type HookCommand struct {
-	CLI   string `json:"cli,omitempty"`   // Command to run on the developer's machine
-	Agent string `json:"agent,omitempty"` // Command to run on the device
+	OpenURL string `json:"openURL,omitempty"` // URL to open in the developer's default browser
+	CLI     string `json:"cli,omitempty"`     // Command to run on the developer's machine
+	Agent   string `json:"agent,omitempty"`   // Command to run on the device
 }
 
 // PythonConfig holds Python-specific configuration.
@@ -142,13 +163,15 @@ type PortMapping struct {
 
 // Entitlement represents a single entitlement entry in wendy.json.
 type Entitlement struct {
-	Type   string        `json:"type"`
-	Mode   string        `json:"mode,omitempty"`   // Network, Bluetooth, Video
-	Name   string        `json:"name,omitempty"`   // Persist
-	Path   string        `json:"path,omitempty"`   // Persist
-	Device string        `json:"device,omitempty"` // I2C
-	Pins   []int         `json:"pins,omitempty"`   // GPIO
-	Ports  []PortMapping `json:"ports,omitempty"`  // Network
+	Type      string        `json:"type"`
+	Mode      string        `json:"mode,omitempty"`      // Network, Bluetooth, Video
+	Allowlist []string      `json:"allowlist,omitempty"` // Camera, Video
+	Name      string        `json:"name,omitempty"`      // Persist
+	Path      string        `json:"path,omitempty"`      // Persist
+	Device    string        `json:"device,omitempty"`    // I2C
+	Pins      []int         `json:"pins,omitempty"`      // GPIO
+	Ports     []PortMapping `json:"ports,omitempty"`     // Network
+	Port      int           `json:"port,omitempty"`      // MCP
 }
 
 // DeprecatedEntitlementReplacement reports the preferred replacement for a deprecated entitlement type.
@@ -185,39 +208,76 @@ func LoadFromBytes(data []byte) (*AppConfig, error) {
 	return &cfg, nil
 }
 
+// validateEntitlements checks a slice of entitlements for required fields and
+// valid types. The prefix string is used in error messages (e.g.
+// "entitlement" for top-level or "services[\"foo\"].entitlement" for service-
+// level entitlements).
+func validateEntitlements(entitlements []Entitlement, prefix string) error {
+	for i, e := range entitlements {
+		if e.Type == "" {
+			return fmt.Errorf("%s[%d]: type is required", prefix, i)
+		}
+		if !slices.Contains(ValidEntitlementTypes, e.Type) {
+			return fmt.Errorf("%s[%d]: unknown type %q", prefix, i, e.Type)
+		}
+
+		switch e.Type {
+		case EntitlementNetwork:
+			if e.Mode != "" && e.Mode != "host" && e.Mode != "none" {
+				return fmt.Errorf("%s[%d]: network mode must be \"host\" or \"none\", got %q", prefix, i, e.Mode)
+			}
+		case EntitlementPersist:
+			if e.Name == "" {
+				return fmt.Errorf("%s[%d]: persist entitlement requires a name", prefix, i)
+			}
+			if e.Path == "" {
+				return fmt.Errorf("%s[%d]: persist entitlement requires a path", prefix, i)
+			}
+			// Persist paths are container destinations, so validate them as
+			// POSIX paths regardless of the host OS running the CLI.
+			if !path.IsAbs(e.Path) {
+				return fmt.Errorf("%s[%d]: persist path must be absolute, got %q", prefix, i, e.Path)
+			}
+			if containsDotDot(e.Path) {
+				return fmt.Errorf("%s[%d]: persist path must not contain '..' components", prefix, i)
+			}
+		case EntitlementI2C:
+			if e.Device == "" {
+				return fmt.Errorf("%s[%d]: i2c entitlement requires a device", prefix, i)
+			}
+			if !isValidI2CDevice(e.Device) {
+				return fmt.Errorf("%s[%d]: i2c device must be in i2c-N format, got %q", prefix, i, e.Device)
+			}
+		case EntitlementGPIO:
+			// Pins are optional; omitting them grants access to all GPIO chips.
+		case EntitlementMCP:
+			if e.Port < 1 || e.Port > 65535 {
+				return fmt.Errorf("%s[%d]: mcp port must be between 1 and 65535, got %d", prefix, i, e.Port)
+			}
+		}
+	}
+
+	mcpCount := 0
+	for _, e := range entitlements {
+		if e.Type == EntitlementMCP {
+			mcpCount++
+		}
+	}
+	if mcpCount > 1 {
+		return fmt.Errorf("at most one mcp entitlement is allowed in %s, found %d", prefix, mcpCount)
+	}
+
+	return nil
+}
+
 // Validate checks the AppConfig for required fields and valid entitlement types.
 func (c *AppConfig) Validate() error {
 	if c.AppID == "" {
 		return fmt.Errorf("appId is required")
 	}
 
-	for i, e := range c.Entitlements {
-		if e.Type == "" {
-			return fmt.Errorf("entitlement[%d]: type is required", i)
-		}
-		if !slices.Contains(ValidEntitlementTypes, e.Type) {
-			return fmt.Errorf("entitlement[%d]: unknown type %q", i, e.Type)
-		}
-
-		switch e.Type {
-		case EntitlementNetwork:
-			if e.Mode != "" && e.Mode != "host" && e.Mode != "none" {
-				return fmt.Errorf("entitlement[%d]: network mode must be \"host\" or \"none\", got %q", i, e.Mode)
-			}
-		case EntitlementPersist:
-			if e.Name == "" {
-				return fmt.Errorf("entitlement[%d]: persist entitlement requires a name", i)
-			}
-			if e.Path == "" {
-				return fmt.Errorf("entitlement[%d]: persist entitlement requires a path", i)
-			}
-		case EntitlementI2C:
-			if e.Device == "" {
-				return fmt.Errorf("entitlement[%d]: i2c entitlement requires a device", i)
-			}
-		case EntitlementGPIO:
-			// Pins are optional; omitting them grants access to all GPIO chips.
-		}
+	if err := validateEntitlements(c.Entitlements, "entitlement"); err != nil {
+		return err
 	}
 
 	for i, f := range c.Files {
@@ -252,6 +312,29 @@ func (c *AppConfig) Validate() error {
 		}
 	}
 
+	for name, svc := range c.Services {
+		if svc == nil {
+			return fmt.Errorf("services[%q]: must not be null", name)
+		}
+		if svc.Context == "" {
+			return fmt.Errorf("services[%q]: context is required", name)
+		}
+		if filepath.IsAbs(svc.Context) {
+			return fmt.Errorf("services[%q]: context must be a relative path", name)
+		}
+		if cleaned := filepath.Clean(svc.Context); strings.HasPrefix(cleaned, "..") {
+			return fmt.Errorf("services[%q]: context must not contain '..' components", name)
+		}
+		for _, dep := range svc.DependsOn {
+			if _, ok := c.Services[dep]; !ok {
+				return fmt.Errorf("services[%q]: dependsOn references unknown service %q", name, dep)
+			}
+		}
+		if err := validateEntitlements(svc.Entitlements, fmt.Sprintf("services[%q].entitlement", name)); err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 
@@ -265,16 +348,62 @@ func containsDotDot(p string) bool {
 	return false
 }
 
-// ValidateJSON checks raw JSON data for unknown keys in entitlements and returns warnings.
-// Call this after decoding to detect potential typos or invalid configuration.
+// isValidI2CDevice reports whether device is a safe I2C device name (i2c-N).
+func isValidI2CDevice(device string) bool {
+	if !strings.HasPrefix(device, "i2c-") {
+		return false
+	}
+	suffix := device[len("i2c-"):]
+	if suffix == "" {
+		return false
+	}
+	for _, c := range suffix {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// ValidateJSON checks raw JSON data for non-fatal issues that should surface
+// as user-visible warnings (unknown entitlement keys, deprecated entitlement
+// types, non-portable hook commands) and returns them. Call this after
+// decoding to detect potential typos or platform-specific configuration.
 func ValidateJSON(data []byte) []string {
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return nil
 	}
 
-	entRaw, ok := raw["entitlements"]
-	if !ok {
+	var warnings []string
+	warnings = append(warnings, validateEntitlementsJSON(raw["entitlements"], "entitlement")...)
+	warnings = append(warnings, validateHooksJSON(raw["hooks"])...)
+
+	// Validate service-level entitlements when a services map is present.
+	// Unmarshal into map[string]json.RawMessage first so a null/invalid entry
+	// for one service doesn't silently drop warnings for all other services.
+	if servicesRaw, ok := raw["services"]; ok && len(servicesRaw) > 0 {
+		var serviceEntries map[string]json.RawMessage
+		if err := json.Unmarshal(servicesRaw, &serviceEntries); err == nil {
+			for name, svcRaw := range serviceEntries {
+				var svc map[string]json.RawMessage
+				if err := json.Unmarshal(svcRaw, &svc); err != nil {
+					continue
+				}
+				prefix := fmt.Sprintf("services[%q].entitlement", name)
+				warnings = append(warnings, validateEntitlementsJSON(svc["entitlements"], prefix)...)
+			}
+		}
+	}
+
+	return warnings
+}
+
+// validateEntitlementsJSON checks raw JSON entitlements for deprecated types
+// and unknown keys. prefix is used in warning messages (e.g. "entitlement" for
+// top-level, or "services[\"foo\"].entitlement" for service-level).
+func validateEntitlementsJSON(entRaw json.RawMessage, prefix string) []string {
+	if len(entRaw) == 0 {
 		return nil
 	}
 
@@ -296,8 +425,8 @@ func ValidateJSON(data []byte) []string {
 
 		if replacement, ok := DeprecatedEntitlementReplacement(entType); ok {
 			warnings = append(warnings, fmt.Sprintf(
-				"entitlement[%d]: %q is deprecated; use %q instead",
-				i, entType, replacement,
+				"%s[%d]: %q is deprecated; use %q instead",
+				prefix, i, entType, replacement,
 			))
 		}
 
@@ -324,8 +453,8 @@ func ValidateJSON(data []byte) []string {
 			copy(sortedAllowed, allowed)
 			sort.Strings(sortedAllowed)
 			warnings = append(warnings, fmt.Sprintf(
-				"Unknown key(s) in entitlement[%d] (%s): %s. Allowed keys are: %s",
-				i, entType,
+				"Unknown key(s) in %s[%d] (%s): %s. Allowed keys are: %s",
+				prefix, i, entType,
 				strings.Join(unknown, ", "),
 				strings.Join(sortedAllowed, ", "),
 			))
@@ -333,4 +462,42 @@ func ValidateJSON(data []byte) []string {
 	}
 
 	return warnings
+}
+
+// nonPortableOpenerCommands maps the bare-binary prefix of a non-portable
+// URL-opening shell command to the platform on which it works. Detected at
+// the start of hooks.postStart.cli to suggest the portable openURL field.
+var nonPortableOpenerCommands = map[string]string{
+	"open":     "macOS",
+	"xdg-open": "Linux",
+	"start":    "Windows",
+}
+
+func validateHooksJSON(hooksRaw json.RawMessage) []string {
+	if len(hooksRaw) == 0 {
+		return nil
+	}
+
+	var hooks struct {
+		PostStart *struct {
+			CLI string `json:"cli"`
+		} `json:"postStart"`
+	}
+	if err := json.Unmarshal(hooksRaw, &hooks); err != nil {
+		return nil
+	}
+	if hooks.PostStart == nil || hooks.PostStart.CLI == "" {
+		return nil
+	}
+
+	cli := strings.TrimLeft(hooks.PostStart.CLI, " \t")
+	for opener, platform := range nonPortableOpenerCommands {
+		if cli == opener || strings.HasPrefix(cli, opener+" ") || strings.HasPrefix(cli, opener+"\t") {
+			return []string{fmt.Sprintf(
+				"hooks.postStart.cli starts with %q, which only works on %s; use \"openURL\" to open a URL portably across macOS, Linux, and Windows",
+				opener, platform,
+			)}
+		}
+	}
+	return nil
 }

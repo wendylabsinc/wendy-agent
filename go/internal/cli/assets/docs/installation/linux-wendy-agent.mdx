@@ -1,0 +1,77 @@
+---
+title: Linux - Install wendy-agent
+description: Install wendy-agent on any Linux machine to turn it into a managed Wendy device
+---
+
+## Overview
+
+`wendy-agent` comes pre-installed on WendyOS, which currently supports [NVIDIA Jetson Orin Nano and AGX Orin](/docs/installation/wendyos-nvidia-jetson) plus [Raspberry Pi 5](/docs/installation/wendyos-raspberry-pi-5). If you flashed WendyOS onto your device, you do not need to follow this guide.
+
+If you already have an existing OS running (Raspberry Pi OS, Ubuntu, Debian, DGX Spark's Linux image, or any other Linux distribution), you can install `wendy-agent` directly. Once installed, your `wendy` CLI and device can discover each other over the local area network.
+
+For headless Mac mini and Mac Studio targets, Wendy for Mac is in progress. It follows the same `wendy-agent` model, but uses a macOS-specific agent path instead of this Linux install script.
+
+This works on:
+
+- Raspberry Pi 5 running Raspberry Pi OS
+- DGX Spark
+- Ubuntu / Debian servers or desktops
+- Intel/AMD NUCs
+- Cloud VMs or remote servers
+- Any ARM64 or x86_64 Linux machine
+
+## Requirements
+
+- A Linux machine (Ubuntu 20.04+, Debian 11+, Raspberry Pi OS, or similar)
+- `curl` installed
+- `sudo` access
+
+## Installation
+
+SSH or log into the target machine and run:
+
+```bash
+curl -fsSL https://install.wendy.sh/agent.sh | bash
+```
+
+This installs the `wendy-agent` service, which registers the device on your local network via mDNS so that the Wendy CLI on your developer machine can discover it.
+
+### Verify the Installation
+
+Check that the agent is running:
+
+```bash
+sudo systemctl status wendy-agent
+```
+
+You should see the service active and running.
+
+## Discovering Your Device
+
+Once `wendy-agent` is installed and running, go back to your developer machine (where you installed the Wendy CLI) and run:
+
+```bash
+wendy discover
+# Set this device as your default
+wendy device set-default
+```
+
+This uses mDNS to scan your local area network and list all devices running `wendy-agent`. You should see your newly configured machine appear in the list.
+
+## Deploying to Remote Devices
+
+If your device is not on the same local network (e.g., a remote server, cloud instance, or a machine connected via a VPN like Tailscale or Headscale), mDNS discovery will not find it automatically. Instead, you can target the device directly by hostname:
+
+```bash
+wendy run --device {hostname}
+```
+
+Replace `{hostname}` with the hostname or IP address of your remote machine. This works with any network topology, including Tailscale, Headscale, WireGuard, or plain SSH tunnels.
+
+## Next Steps
+
+Once your device is discoverable, you can deploy applications to it just like any other WendyOS device:
+
+- [Hello World in Python](/docs/guides/python/hello-world)
+- [Hello World in Swift](/docs/guides/swift/hello-world)
+- [Hello World in TypeScript](/docs/guides/typescript/hello-world)

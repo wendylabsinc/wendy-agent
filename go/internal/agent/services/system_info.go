@@ -5,7 +5,7 @@ import (
 	"runtime"
 	"time"
 
-	agentpb "github.com/wendylabsinc/wendy/proto/gen/agentpb"
+	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
 // SystemInfoCollector gathers point-in-time resource information from the

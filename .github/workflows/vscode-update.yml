@@ -1,0 +1,252 @@
+name: VSCode Extension Update
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+    paths:
+      - 'go/internal/cli/commands/**'
+
+jobs:
+  vscode-update:
+    name: Propose update to wendylabsinc/wendy-vscode
+    if: github.event.pull_request.merged == true && github.event.pull_request.head.repo.full_name == github.repository && !contains(github.event.pull_request.labels.*.name, 'ai-suggestion')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Get PR diff
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh pr diff ${{ github.event.pull_request.number }} \
+            --repo ${{ github.repository }} > pr.diff
+
+      - name: Check out wendy-vscode
+        uses: actions/checkout@v4
+        with:
+          repository: wendylabsinc/wendy-vscode
+          token: ${{ secrets.WENDY_TEMPLATE_SYNC_TOKEN }}
+          path: vscode
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install Anthropic SDK
+        run: pip install --quiet anthropic==0.97.0
+
+      - name: Analyse diff and generate VSCode proposal
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO_NAME: ${{ github.event.repository.name }}
+        run: |
+          python3 << 'PYEOF'
+          import anthropic
+          import os
+          import re
+          import pathlib
+          import sys
+
+          client = anthropic.Anthropic()
+
+          with open('pr.diff') as f:
+              diff = f.read()
+
+          if not diff.strip():
+              print('Empty diff — skipping')
+              sys.exit(0)
+
+          vscode_root = pathlib.Path('vscode').resolve()
+          repo_name = os.environ['REPO_NAME']
+          pr_title = os.environ['PR_TITLE']
+          pr_body = os.environ.get('PR_BODY', '')
+          pr_number = os.environ['PR_NUMBER']
+
+          PROTECTED_FILES = {'package-lock.json'}
+          PROTECTED_DIRS = {'dist', 'node_modules', '.git'}
+          ALLOWED_EXTENSIONS = {'.ts', '.json', '.md'}
+
+          def _keywords(text):
+              return set(re.findall(r'[a-zA-Z][a-zA-Z0-9_]{3,}', text.lower()))
+
+          pr_keywords = _keywords(pr_title) | _keywords(diff[:8000])
+
+          def _relevance(doc):
+              path_hits = len(_keywords(doc['path']) & pr_keywords) * 3
+              body_hits = len(_keywords(doc['content'][:1500]) & pr_keywords)
+              return path_hits + body_hits
+
+          FILE_BUDGET = 50000
+          candidates = []
+          for f in sorted(vscode_root.rglob('*')):
+              if not f.is_file():
+                  continue
+              rel = f.relative_to(vscode_root)
+              if any(part in PROTECTED_DIRS or part.startswith('.') for part in rel.parts):
+                  continue
+              if f.suffix.lower() not in ALLOWED_EXTENSIONS:
+                  continue
+              if f.name in PROTECTED_FILES:
+                  continue
+              try:
+                  content = f.read_text(errors='replace')
+              except OSError:
+                  continue
+              if not content.strip():
+                  continue
+              candidates.append({'path': str(rel), 'content': content})
+
+          candidates.sort(key=_relevance, reverse=True)
+
+          selected = []
+          total = 0
+          for doc in candidates:
+              if total + len(doc['content']) > FILE_BUDGET:
+                  print(f'File budget reached at {total} chars')
+                  break
+              selected.append(doc)
+              total += len(doc['content'])
+
+          MAX_TREE_DEPTH = 3
+          tree_lines = []
+          for item in sorted(vscode_root.rglob('*')):
+              rel = item.relative_to(vscode_root)
+              if any(part.startswith('.') or part in PROTECTED_DIRS for part in rel.parts):
+                  continue
+              if len(rel.parts) > MAX_TREE_DEPTH:
+                  continue
+              indent = '  ' * (len(rel.parts) - 1)
+              tree_lines.append(f'{indent}{rel.name}{"/" if item.is_dir() else ""}')
+          file_tree = '\n'.join(tree_lines)
+
+          files_context = '\n\n'.join(
+              f'### {d["path"]}\n```\n{d["content"]}\n```' for d in selected
+          )
+
+          message = client.messages.create(
+              model='claude-sonnet-4-6',
+              max_tokens=16000,
+              system=[
+                  {
+                      'type': 'text',
+                      'text': (
+                          'You are a VSCode extension maintainer for WendyOS.\n'
+                          'Given a CLI change (PR diff) and the current VSCode extension '
+                          'source, determine whether the extension needs to be updated to '
+                          'expose, support, or reflect the CLI change.\n\n'
+                          'Rules:\n'
+                          '- Only propose changes directly caused by the CLI diff: new '
+                          'commands, removed commands, changed flags, new output formats, '
+                          'or changed behaviour that the extension wraps or surfaces.\n'
+                          '- If the extension does not need updating, output nothing at all.\n'
+                          '- If it does need updating, output a <description> block '
+                          'explaining what changed in the CLI and what the extension should '
+                          'do differently, followed by <file> blocks with full replacement '
+                          'content for any files that need changing.\n'
+                          '- Write TypeScript consistent with the existing extension style '
+                          '(ESM imports, class-based providers, vscode API patterns).\n'
+                          '- Never output: package-lock.json, dist/, node_modules/, or any '
+                          'path outside the repo root.\n'
+                          '- Only output .ts, .json, or .md files.\n'
+                          '- Do not invent features absent from the diff.\n\n'
+                          'Output format (use both if changes are needed, neither if not):\n'
+                          '<description>\n'
+                          'Human-readable explanation of what CLI change occurred and what '
+                          'the extension should change and why.\n'
+                          '</description>\n\n'
+                          '<file path="src/example.ts">full file content here</file>'
+                      ),
+                      'cache_control': {'type': 'ephemeral'},
+                  }
+              ],
+              messages=[{
+                  'role': 'user',
+                  'content': (
+                      f'Source repo: {repo_name}\n'
+                      f'PR #{pr_number}: {pr_title}\n\n'
+                      f'{pr_body}\n\n'
+                      f'## CLI Diff\n```diff\n{diff[:30000]}\n```\n\n'
+                      f'## VSCode Extension File Tree\n```\n{file_tree}\n```\n\n'
+                      f'## Extension Source (most relevant first)\n{files_context[:50000]}'
+                  ),
+              }],
+          )
+
+          response_text = message.content[0].text
+
+          desc_match = re.search(r'<description>(.*?)</description>', response_text, re.DOTALL)
+          description = desc_match.group(1).strip() if desc_match else ''
+
+          if not description and '<file' not in response_text:
+              print('No VSCode extension changes needed')
+              sys.exit(0)
+
+          updated = 0
+          for match in re.finditer(
+              r'<file path="([^"]+)">(.*?)</file>',
+              response_text,
+              re.DOTALL,
+          ):
+              rel_path = match.group(1)
+              content = match.group(2).strip()
+
+              fpath = (vscode_root / rel_path).resolve()
+              try:
+                  fpath.relative_to(vscode_root)
+              except ValueError:
+                  print(f'Skipping unsafe path: {rel_path}')
+                  continue
+              if fpath.suffix.lower() not in ALLOWED_EXTENSIONS:
+                  print(f'Skipping disallowed extension: {rel_path}')
+                  continue
+              if fpath.name in PROTECTED_FILES:
+                  print(f'Skipping protected file: {rel_path}')
+                  continue
+              rel = fpath.relative_to(vscode_root)
+              if any(part in PROTECTED_DIRS for part in rel.parts):
+                  print(f'Skipping protected directory: {rel_path}')
+                  continue
+
+              is_new = not fpath.exists()
+              fpath.parent.mkdir(parents=True, exist_ok=True)
+              fpath.write_text(content + '\n')
+              print(f'{"Created" if is_new else "Updated"}: {rel_path}')
+              updated += 1
+
+          if not description and updated == 0:
+              print('No valid file changes written')
+              sys.exit(0)
+
+          body_text = description or (
+              f'Claude generated VSCode extension changes based on '
+              f'CLI changes in PR #{pr_number}: {pr_title}.\n\n'
+              f'Please review the file changes.'
+          )
+          pathlib.Path('pr_description.md').write_text(body_text + '\n')
+
+          github_env = os.environ.get('GITHUB_ENV', '')
+          if github_env:
+              with open(github_env, 'a') as genv:
+                  genv.write('HAS_CHANGES=true\n')
+
+          print(f'Done: {updated} file(s) updated')
+          PYEOF
+
+      - name: Open PR to wendy-vscode
+        if: env.HAS_CHANGES == 'true'
+        uses: peter-evans/create-pull-request@v8
+        with:
+          token: ${{ secrets.WENDY_TEMPLATE_SYNC_TOKEN }}
+          path: vscode
+          branch: vscode-update/${{ github.event.repository.name }}-${{ github.event.pull_request.number }}
+          title: "feat(vscode): proposal for ${{ github.event.repository.name }}#${{ github.event.pull_request.number }}"
+          body-path: pr_description.md
+          commit-message: "feat(vscode): proposal from ${{ github.repository }}#${{ github.event.pull_request.number }}"
+          base: main
+          labels: ai-suggestion

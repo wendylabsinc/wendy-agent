@@ -1,0 +1,506 @@
+---
+title: Webcam Streaming
+description: Stream a live webcam feed from your WendyOS device to the browser using GStreamer, WebSockets, and hardware-accelerated JPEG encoding
+language: python
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+import { Steps, Step } from 'fumadocs-ui/components/steps';
+import { Accordions, Accordion } from 'fumadocs-ui/components/accordion';
+
+![Webcam Setup](/images/webcam-setup.png)
+
+## Low-Latency Webcam Streaming with GStreamer
+
+This guide walks you through building a real-time webcam streaming application that runs on a WendyOS device. The app uses GStreamer for hardware-accelerated video capture and JPEG encoding, WebSockets for low-latency frame delivery, and a simple HTML5 frontend that renders frames on a canvas.
+
+The complete sample is available in the [samples repository](https://github.com/wendylabsinc/samples/tree/main/python/webcam).
+
+### What You'll Build
+
+- A FastAPI backend using GStreamer for hardware-accelerated webcam capture
+- WebSocket-based binary JPEG streaming with automatic client management
+- An HTML5 frontend with canvas rendering, FPS counter, and connection status
+- A Docker container built on the NVIDIA L4T JetPack base image
+
+### Prerequisites
+
+- Wendy CLI installed on your development machine
+- A WendyOS device (NVIDIA Jetson Orin Nano, Jetson AGX, etc.)
+- A USB webcam connected to your WendyOS device
+
+<Callout type="info">
+**Recommended Webcams**: See our [Buyers Guide](/docs/buyers-guide#usb-webcams) for webcam recommendations including the Logitech C920 and C270.
+</Callout>
+
+<Steps>
+  <Step>
+    ### Initialize the Project
+
+    Start from the Wendy camera-feed template:
+
+    ```bash
+    wendy init webcam --target wendyos --language python --template camera-feed --var APP_ID=webcam --var PORT=3003 --assistant skip --git-init no
+    cd webcam
+    ```
+
+    The template creates the Wendy config, Dockerfile, backend, frontend, and camera entitlements. The sections below explain the generated project.
+  </Step>
+
+  <Step>
+    ### Run on WendyOS
+
+    ```bash
+    wendy run
+    ```
+
+    Wendy will build the app, ask you to select a device if one is not already configured, deploy the app, and print the app URL.
+  </Step>
+</Steps>
+
+## Code Breakdown
+
+### Understanding the Architecture
+
+This sample uses the **NVIDIA L4T JetPack base image** (`nvcr.io/nvidia/l4t-jetpack:r36.4.0`) which provides:
+
+- GStreamer with NVIDIA hardware encoder plugins (`nvjpegenc`, `nvvidconv`)
+- V4L2 (Video4Linux) support for USB webcams
+- CUDA libraries for GPU-accelerated processing
+
+The streaming pipeline works as follows:
+
+1. **GStreamer** captures frames from the webcam via V4L2
+2. Frames are encoded to JPEG using hardware acceleration (with a software fallback)
+3. **FastAPI** serves a WebSocket endpoint that broadcasts JPEG frames to all connected browsers
+4. The **HTML5 frontend** renders frames on a canvas using `createImageBitmap` for efficient decoding
+
+The camera pipeline starts lazily when the first client connects and stops when the last client disconnects, saving resources when nobody is watching.
+
+
+<Steps>
+  <Step>
+    ### Understanding the Backend
+
+    The FastAPI backend (`app.py`) manages the GStreamer pipeline, WebSocket connections, and frame broadcasting:
+
+    ```python
+    import asyncio
+    import logging
+    import threading
+    from pathlib import Path
+
+    import gi
+    gi.require_version("Gst", "1.0")
+    gi.require_version("GstApp", "1.0")
+
+    from gi.repository import Gst, GstApp, GLib
+    from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+    from fastapi.responses import FileResponse
+
+    logging.basicConfig(level=logging.INFO)
+    logger = logging.getLogger(__name__)
+
+    Gst.init(None)
+
+    app = FastAPI()
+
+    # Video settings
+    FRAME_WIDTH = 1280
+    FRAME_HEIGHT = 720
+    FRAMERATE = 30
+    JPEG_QUALITY = 85
+    ```
+
+    **GStreamer Pipeline**
+
+    The `GStreamerCamera` class creates a capture pipeline that tries the hardware NVJPEG encoder first and falls back to software encoding:
+
+    ```python
+    class GStreamerCamera:
+        """GStreamer-based camera capture with hardware encoding support."""
+
+        def __init__(self):
+            self.pipeline: Gst.Pipeline | None = None
+            self.appsink: GstApp.AppSink | None = None
+            self.clients: set[WebSocket] = set()
+            self.running = False
+            self._lock = threading.Lock()
+            self._loop: asyncio.AbstractEventLoop | None = None
+
+        def _create_pipeline(self) -> Gst.Pipeline:
+            """Create GStreamer pipeline - tries hardware encoder first."""
+
+            # Hardware pipeline for Jetson (NVJPEG encoder)
+            hw_pipeline = f"""
+                v4l2src device=/dev/video0 !
+                video/x-raw,width={FRAME_WIDTH},height={FRAME_HEIGHT},
+                    framerate={FRAMERATE}/1 !
+                nvvidconv !
+                video/x-raw(memory:NVMM) !
+                nvjpegenc quality={JPEG_QUALITY} !
+                appsink name=sink emit-signals=true max-buffers=2 drop=true
+            """
+
+            # Software fallback (works everywhere)
+            sw_pipeline = f"""
+                v4l2src device=/dev/video0 !
+                videoconvert ! videoscale ! videorate !
+                video/x-raw,width={FRAME_WIDTH},height={FRAME_HEIGHT},
+                    framerate={FRAMERATE}/1,format=I420 !
+                jpegenc quality={JPEG_QUALITY} !
+                appsink name=sink emit-signals=true max-buffers=2 drop=true
+            """
+
+            for name, pipeline_str in [
+                ("hardware", hw_pipeline),
+                ("software", sw_pipeline),
+            ]:
+                try:
+                    pipeline = Gst.parse_launch(pipeline_str)
+                    ret = pipeline.set_state(Gst.State.PAUSED)
+                    if ret != Gst.StateChangeReturn.FAILURE:
+                        logger.info(f"Using {name} JPEG encoder")
+                        pipeline.set_state(Gst.State.NULL)
+                        return Gst.parse_launch(pipeline_str)
+                    pipeline.set_state(Gst.State.NULL)
+                except Exception as e:
+                    logger.debug(f"{name} pipeline failed: {e}")
+
+            raise RuntimeError("No working GStreamer pipeline found")
+    ```
+
+    **How it works:**
+    - `v4l2src` captures raw frames from the USB webcam at `/dev/video0`
+    - On Jetson, `nvvidconv` and `nvjpegenc` use the GPU for JPEG encoding
+    - `appsink` with `max-buffers=2 drop=true` prevents frame buildup if clients are slow
+    - The pipeline probes `PAUSED` state to detect whether hardware encoding is available
+
+    **WebSocket Frame Broadcasting**
+
+    When GStreamer produces a new JPEG frame, it is broadcast to all connected WebSocket clients:
+
+    ```python
+    def _on_new_sample(self, sink) -> Gst.FlowReturn:
+        """Called by GStreamer when a new frame is ready."""
+        sample = sink.emit("pull-sample")
+        if sample is None:
+            return Gst.FlowReturn.OK
+
+        buffer = sample.get_buffer()
+        success, map_info = buffer.map(Gst.MapFlags.READ)
+        if not success:
+            return Gst.FlowReturn.OK
+
+        frame_data = bytes(map_info.data)
+        buffer.unmap(map_info)
+
+        # Schedule broadcast on asyncio loop
+        if self._loop and self.clients:
+            asyncio.run_coroutine_threadsafe(
+                self._broadcast_frame(frame_data),
+                self._loop
+            )
+
+        return Gst.FlowReturn.OK
+
+    async def _broadcast_frame(self, frame_data: bytes):
+        """Send frame to all connected clients."""
+        disconnected = set()
+        for ws in self.clients.copy():
+            try:
+                await ws.send_bytes(frame_data)
+            except Exception:
+                disconnected.add(ws)
+        self.clients -= disconnected
+    ```
+
+    **Lazy Start/Stop**
+
+    The camera starts when the first client connects and stops when the last disconnects:
+
+    ```python
+    async def add_client(self, websocket: WebSocket) -> bool:
+        """Add a client and start pipeline if needed."""
+        self.clients.add(websocket)
+        if self.pipeline is None:
+            try:
+                self.start(asyncio.get_event_loop())
+            except Exception as e:
+                logger.error(f"Failed to start camera: {e}")
+                self.clients.discard(websocket)
+                return False
+        return True
+
+    async def remove_client(self, websocket: WebSocket):
+        """Remove a client and stop pipeline if no clients remain."""
+        self.clients.discard(websocket)
+        if not self.clients:
+            self.stop()
+    ```
+
+    **WebSocket Endpoint**
+
+    ```python
+    @app.websocket("/stream")
+    async def websocket_stream(websocket: WebSocket):
+        """WebSocket endpoint for video streaming."""
+        await websocket.accept()
+
+        if not await camera.add_client(websocket):
+            await websocket.close(code=1011, reason="Failed to open camera")
+            return
+
+        try:
+            while True:
+                try:
+                    await asyncio.wait_for(websocket.receive(), timeout=30.0)
+                except asyncio.TimeoutError:
+                    await websocket.send_json({"type": "ping"})
+        except WebSocketDisconnect:
+            pass
+        finally:
+            await camera.remove_client(websocket)
+    ```
+  </Step>
+
+  <Step>
+    ### Understanding the Frontend
+
+    The frontend (`index.html`) is a single HTML file that connects to the WebSocket stream and renders JPEG frames on a canvas:
+
+    ```html
+    <div class="bg-black rounded-lg shadow overflow-hidden relative">
+      <canvas
+        id="video-frame"
+        class="w-full aspect-video bg-gray-900"
+        aria-label="Video stream"
+      ></canvas>
+    </div>
+    ```
+
+    **WebSocket Connection**
+
+    ```javascript
+    function connect() {
+      const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+      ws = new WebSocket(`${protocol}//${window.location.host}/stream`);
+      ws.binaryType = "arraybuffer";
+
+      ws.onopen = () => setStatus("Connected", "green");
+
+      ws.onmessage = (event) => {
+        if (event.data instanceof ArrayBuffer) {
+          latestFrame = event.data;
+          scheduleRender();
+        }
+      };
+
+      ws.onclose = () => {
+        setStatus("Disconnected", "red");
+        // Auto-reconnect after 2 seconds
+        reconnectTimeout = setTimeout(connect, 2000);
+      };
+    }
+    ```
+
+    **Frame Rendering**
+
+    Frames are decoded asynchronously using `createImageBitmap` for performance. A smart queueing system drops frames if decoding can't keep up:
+
+    ```javascript
+    function renderFrame(buffer) {
+      const blob = new Blob([buffer], { type: "image/jpeg" });
+      return createImageBitmap(blob).then((bitmap) => {
+        if (videoFrame.width !== bitmap.width ||
+            videoFrame.height !== bitmap.height) {
+          videoFrame.width = bitmap.width;
+          videoFrame.height = bitmap.height;
+        }
+        ctx.drawImage(bitmap, 0, 0, videoFrame.width, videoFrame.height);
+        bitmap.close();
+      });
+    }
+
+    function scheduleRender() {
+      if (decoding || !latestFrame) return;
+      const buffer = latestFrame;
+      latestFrame = null;
+      decoding = true;
+
+      renderFrame(buffer)
+        .catch(() => null)
+        .finally(() => {
+          decoding = false;
+          frameCount++;
+          updateFps();
+          scheduleRender();
+        });
+    }
+    ```
+
+    **UI Features:**
+    - Connection status indicator (yellow/green/red) with text
+    - Live FPS counter updated every second
+    - Resolution display showing the actual frame dimensions
+    - Loading spinner overlay while connecting
+    - Automatic reconnection on disconnect
+  </Step>
+
+  <Step>
+    ### Understanding the Dockerfile
+
+    The Dockerfile uses the NVIDIA L4T JetPack base image with GStreamer support:
+
+    ```dockerfile
+    # Use NVIDIA L4T base for Jetson with GStreamer support
+    FROM nvcr.io/nvidia/l4t-jetpack:r36.4.0
+
+    # Install GStreamer and Python dependencies
+    RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3 \
+        python3-pip \
+        python3-gi \
+        gir1.2-gst-plugins-base-1.0 \
+        gir1.2-gstreamer-1.0 \
+        gstreamer1.0-tools \
+        gstreamer1.0-plugins-base \
+        gstreamer1.0-plugins-good \
+        gstreamer1.0-plugins-bad \
+        v4l-utils \
+        && rm -rf /var/lib/apt/lists/*
+
+    WORKDIR /app
+
+    COPY requirements.txt .
+    RUN pip3 install --no-cache-dir -r requirements.txt
+
+    COPY app.py .
+    COPY index.html .
+    COPY logo.svg .
+
+    # Create a non-root user for security
+    RUN useradd --create-home --shell /bin/bash app && \
+        chown -R app:app /app && \
+        chmod -R u+r /app && \
+        usermod -aG video app
+    USER app
+
+    EXPOSE 3003
+
+    CMD ["python3", "-m", "uvicorn", "app:app", "--host", "0.0.0.0", "--port", "3003"]
+    ```
+
+    **Key points:**
+    - The L4T JetPack base image provides CUDA and NVIDIA GStreamer plugins
+    - GStreamer Python bindings (`python3-gi`, `gir1.2-*`) enable pipeline control from Python
+    - `v4l-utils` provides Video4Linux tools for webcam access
+    - A non-root `app` user is created and added to the `video` group for `/dev/video0` access
+    - No frontend build step needed since the UI is a single HTML file using Tailwind via CDN
+  </Step>
+
+  <Step>
+    ### Configure Entitlements
+
+    The `wendy.json` file specifies the required device permissions:
+
+    ```json
+    {
+      "appId": "sh.wendy.examples.webcam",
+      "version": "1.0.0",
+      "language": "python",
+      "entitlements": [
+        { "type": "network", "mode": "host" },
+        { "type": "video" },
+        { "type": "gpu" }
+      ],
+      "readiness": {
+        "tcpSocket": { "port": 3003 },
+        "timeoutSeconds": 30
+      },
+      "hooks": {
+        "postStart": {
+          "cli": "wendy utils open-browser http://${WENDY_HOSTNAME}:3003"
+        }
+      }
+    }
+    ```
+
+    - **network (host mode)**: Allows binding to ports directly on the device and enables WebSocket connections
+    - **video**: Grants access to `/dev/video*` webcam devices
+    - **gpu**: Enables NVIDIA hardware-accelerated JPEG encoding via `nvjpegenc`
+    - **readiness**: Waits for port `3003` to accept connections before proceeding
+    - **postStart**: Automatically opens the stream in your browser once ready
+  </Step>
+</Steps>
+
+## Run Again on WendyOS
+
+Connect your USB webcam to the Jetson, then run:
+
+```bash
+wendy run
+```
+
+The CLI will:
+1. Build the Docker image (cross-compiling for ARM64)
+2. Push the image to your device's local registry
+3. Start the container with the configured entitlements
+
+```
+wendy run
+✔︎ Searching for WendyOS devices [5.0s]
+✔︎ Which device?: wendyos-zestful-stork.local [USB, LAN]
+✔︎ Builder ready [0.2s]
+✔︎ Container built and uploaded successfully! [22.1s]
+✔ Success
+  Started app
+INFO:     Uvicorn running on http://0.0.0.0:3003
+INFO:     Using hardware JPEG encoder
+```
+
+Your browser will open automatically once the stream is ready, thanks to the `postStart` hook. If it doesn't, navigate to:
+
+```
+http://wendyos-zestful-stork.local:3003
+```
+
+Replace the hostname with your device's actual hostname.
+
+## Troubleshooting
+
+<Accordions>
+  <Accordion title="Webcam not detected">
+    Ensure your webcam is connected before running the app. Check that the `video` entitlement is in your `wendy.json`. You can verify the webcam is visible on the device:
+
+    ```bash
+    ssh edge@wendyos-zestful-stork.local "ls /dev/video*"
+    ```
+
+    Common webcam devices are `/dev/video0` or `/dev/video1`. If your webcam is on a different device node, update the `v4l2src device=` path in `app.py`.
+  </Accordion>
+
+  <Accordion title="Falling back to software encoding">
+    If you see `Using software JPEG encoder` in the logs, the hardware encoder wasn't available. Ensure the `gpu` entitlement is configured in `wendy.json`. Software encoding still works but uses more CPU.
+  </Accordion>
+
+  <Accordion title="High latency or choppy video">
+    The WebSocket stream delivers raw JPEG frames. If you experience latency:
+
+    - Use a **USB 3.0 cable** for the webcam (not USB 2.0)
+    - Lower the resolution by changing `FRAME_WIDTH` and `FRAME_HEIGHT` in `app.py`
+    - Lower `JPEG_QUALITY` (e.g., 70) to reduce frame size
+    - Ensure you're on a fast network (USB-C direct connection or wired LAN)
+  </Accordion>
+
+  <Accordion title="WebSocket disconnects frequently">
+    The frontend automatically reconnects after 2 seconds. If disconnects are frequent, check your network stability. The server sends a ping every 30 seconds to keep the connection alive.
+  </Accordion>
+</Accordions>
+
+## Next Steps
+
+- Add the [YOLOv8 Webcam Detection](/docs/guides/python/yolov8-webcam-detection) guide to layer object detection on top of this stream
+- Add recording to save video clips to disk
+- Implement snapshot endpoints to capture still images on demand
+- Add multiple camera support by parameterizing the device path

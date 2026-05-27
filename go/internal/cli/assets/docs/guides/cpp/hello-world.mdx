@@ -1,0 +1,194 @@
+---
+title: Hello World in C++
+description: Create your first WendyOS application using C++
+language: cpp
+---
+
+## Creating Your First C++ Application
+
+This guide will walk you through creating a simple "Hello, World!" application for WendyOS using C++. This is a great way to prove that you can send your first app to your device and verify your development environment is set up correctly.
+
+### Prerequisites
+
+- Wendy CLI installed on your development machine
+- CMake 3.16 or later installed
+- A C++ compiler (g++ or clang++)
+- A WendyOS device plugged in over USB or connectable over Wi-Fi
+
+<Callout type="info">
+  **Containerized Deployment**: C++ applications run inside Docker containers on your WendyOS device. The Dockerfiles in this guide are configured for the NVIDIA Jetson Orin Nano's ARM64 architecture using `arm64v8/debian:bookworm-slim` as the base image.
+</Callout>
+
+### Creating the Project
+
+<Steps>
+  <Step>
+    ### Initialize the Project
+
+    Start from the Wendy C++ template:
+
+    ```bash
+    wendy init hello-world --target wendyos --language cpp --template simple-api --var APP_ID=hello-world --var PORT=7001 --assistant skip --git-init no
+    cd hello-world
+    ```
+
+    The template creates `CMakeLists.txt`, `main.cpp`, `Dockerfile`, and `wendy.json`. Continue below to understand the generated project.
+  </Step>
+
+  <Step>
+    ### Run on WendyOS
+
+    ```bash
+    wendy run
+    ```
+
+    Wendy will build the app, ask you to select a device if one is not already configured, deploy the app, and show the run output.
+  </Step>
+</Steps>
+
+## Code Breakdown
+
+<Steps>
+  <Step>
+    ### Generated Application
+
+    The template includes a `main.cpp` entry point. A minimal hello-world binary looks like:
+
+    ```cpp
+    #include <iostream>
+
+    int main() {
+        std::cout << "Hello, world!" << std::endl;
+        return 0;
+    }
+    ```
+
+    This is the entry point for your WendyOS application.
+  </Step>
+
+  <Step>
+    ### Generated CMakeLists.txt
+
+    The generated `CMakeLists.txt` describes how the project builds:
+
+    ```cmake
+    cmake_minimum_required(VERSION 3.16)
+    project(hello-world VERSION 0.1.0 LANGUAGES CXX)
+
+    set(CMAKE_CXX_STANDARD 17)
+    set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+    add_executable(hello-world main.cpp)
+    ```
+  </Step>
+
+  <Step>
+    ### Generated Dockerfile
+
+    The generated project includes a Dockerfile configured for the NVIDIA Jetson Orin Nano (ARM64):
+
+    ```dockerfile
+    # Build stage - using ARM64-compatible image for NVIDIA Jetson Orin Nano
+    FROM arm64v8/debian:bookworm-slim AS builder
+
+    # Install build dependencies
+    RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        cmake \
+        && rm -rf /var/lib/apt/lists/*
+
+    WORKDIR /app
+    COPY CMakeLists.txt main.cpp ./
+
+    # Build the application
+    RUN cmake -B build -DCMAKE_BUILD_TYPE=Release && \
+        cmake --build build --config Release
+
+    # Runtime stage
+    FROM arm64v8/debian:bookworm-slim
+
+    COPY --from=builder /app/build/hello-world /usr/local/bin/hello-world
+
+    CMD ["hello-world"]
+    ```
+  </Step>
+</Steps>
+
+## Run Again on WendyOS
+
+Deploy your application to a connected WendyOS device:
+
+```bash
+wendy run
+```
+
+This will build your application into a container and deploy it to your device.
+
+## Verifying Deployment on Your Device
+
+After deploying your application to a WendyOS device, you can verify it was successfully deployed and ran by listing the applications on your device:
+
+```bash
+wendy device apps list
+✔︎ Searching for WendyOS devices [5.3s]
+✔︎ Listing applications: True Probe [USB, Ethernet, LAN]
+╭───────────────┬─────────┬─────────┬──────────╮
+│ App           │ Version │ State   │ Failures │
+├───────────────┼─────────┼─────────┼──────────┤
+│ hello-world   │ 0.0.1   │ Stopped │ 0        │
+╰───────────────┴─────────┴─────────┴──────────╯
+```
+
+<Callout type="info">
+  **Expected State**: The app shows as "Stopped" because a hello-world application exits immediately after printing its message. This is expected behavior. The key indicator of success is the "Failures" column showing `0`, which confirms your application ran and exited successfully without any errors.
+</Callout>
+
+## Next Steps
+
+Now that you have a basic C++ application running:
+
+- Learn how to build a [Simple Web Server](/docs/guides/cpp/simple-web-server) with cpp-httplib
+- Explore environment variables and configuration
+- Build more complex applications with networking and data processing
+- Integrate with WendyOS device features via HTTP APIs
+
+<Callout type="info">
+  **Containerized Deployment**: C++ applications on WendyOS run in containers. This provides isolation and portability, and the Wendy CLI handles the local build setup when deploying to your device.
+</Callout>
+
+<Accordions>
+  <Accordion title="Testing the app on your own machine">
+    There are times when you might not have a WendyOS device around. You can still test your application locally using CMake or Docker.
+
+    ### Using CMake Directly
+
+    Build and run your application locally:
+
+    ```bash
+    cmake -B build -DCMAKE_BUILD_TYPE=Release
+    cmake --build build
+    ./build/hello-world
+    ```
+
+    You should see:
+
+    ```
+    Hello, world!
+    ```
+
+    ### Using Docker Locally
+
+    Build and run your application in a Docker container:
+
+    ```bash
+    docker build --platform linux/arm64 -t hello-world .
+    docker run --platform linux/arm64 hello-world
+    ```
+
+    You should see:
+
+    ```
+    Hello, world!
+    ```
+  </Accordion>
+</Accordions>

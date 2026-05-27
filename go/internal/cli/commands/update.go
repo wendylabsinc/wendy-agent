@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/wendylabsinc/wendy/internal/shared/config"
-	"github.com/wendylabsinc/wendy/internal/shared/version"
+	"github.com/wendylabsinc/wendy/go/internal/shared/config"
+	"github.com/wendylabsinc/wendy/go/internal/shared/version"
 )
 
 const githubReleasesURL = "https://api.github.com/repos/wendylabsinc/wendy-agent/releases/latest"

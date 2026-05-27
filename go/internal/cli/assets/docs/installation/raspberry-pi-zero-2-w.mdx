@@ -1,0 +1,85 @@
+---
+title: Raspberry Pi Zero 2 W Installation
+description: Install WendyOS on your Raspberry Pi Zero 2 W
+---
+
+## What You'll Need
+
+<PiZero2WBuyersTable />
+
+## Installing WendyOS on Raspberry Pi Zero 2 W
+
+This guide will walk you through installing WendyOS on your Raspberry Pi Zero 2 W.
+
+<Callout type="warn">
+  **Performance Considerations**: While the Pi Zero 2 W is a powerful machine, we highly recommend using it for lightweight workloads only. We do not recommend running Vision AI models on this device. Use at your discretion.
+</Callout>
+
+### Prerequisites
+
+Before you begin, make sure you have:
+
+- **Raspberry Pi Zero 2 W** - The device itself
+- **Micro USB cable** - Either a micro USB to USB-C or micro USB to USB-A cable, depending on your computer's ports
+- **Micro SD card** - At least 16GB of storage for WendyOS
+- **Wendy CLI** - Installed on your development machine (see [Developer Machine Setup](/docs/installation/developer-machine-setup))
+
+### Installation Steps
+
+<Steps>
+  <Step>
+    ### Connect Your Device
+
+    Connect your Raspberry Pi Zero 2 W to your computer using a USB cable.
+
+    ```bash
+    wendy discover
+    ```
+
+    Verify that your Pi Zero 2 W appears in the list of discovered devices.
+  </Step>
+
+  <Step>
+    ### Flash WendyOS
+
+    Use the Wendy CLI to flash WendyOS to your Pi Zero 2 W:
+
+    ```bash
+    wendy os install
+    ```
+
+    Select **Raspberry Pi Zero 2 W** and then select your drive. This process may take several minutes. The CLI will show progress updates.
+  </Step>
+
+  <Step>
+    ### Verify Installation
+
+    Once flashing is complete, verify the installation:
+
+    ```bash
+    wendy device info
+    ```
+
+    You should see your Raspberry Pi Zero 2 W running WendyOS.
+  </Step>
+
+  <Step>
+    ### Discover Your Device
+
+    Wait about 1 minute after connecting your Pi Zero 2 W to allow WendyOS to fully boot. Then run:
+
+    ```bash
+    wendy discover
+    ```
+
+    You should see your Raspberry Pi Zero 2 W appear in the list of discovered devices.
+
+    ![Wendy Discover](/images/docs/wendy-discover.png)
+
+    Your device is now ready for development!
+  </Step>
+</Steps>
+
+### Next Steps
+
+Now that WendyOS is installed, you can start deploying apps to your device. Check out the [Hello World Guide](/docs/guides/python/hello-world) to build your first app.

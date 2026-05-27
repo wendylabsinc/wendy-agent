@@ -5,8 +5,8 @@ import (
 	"context"
 	"io"
 
-	"github.com/wendylabsinc/wendy/internal/shared/appconfig"
-	agentpb "github.com/wendylabsinc/wendy/proto/gen/agentpb"
+	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
+	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
 // NetworkManager abstracts WiFi management operations (typically backed by nmcli).
@@ -45,13 +45,46 @@ type ContainerdClient interface {
 	AssembleImage(ctx context.Context, imageName string, layers []*agentpb.RunContainerLayerHeader) error
 	CreateContainer(ctx context.Context, req *agentpb.CreateContainerRequest, appCfg *appconfig.AppConfig) error
 	CreateContainerWithProgress(ctx context.Context, req *agentpb.CreateContainerRequest, appCfg *appconfig.AppConfig, onProgress ProgressFunc) error
-	StartContainer(ctx context.Context, appName, postStartAgentCommand string) (<-chan ContainerOutput, error)
-	StartContainerWithStdin(ctx context.Context, appName string, stdin io.Reader, postStartAgentCommand string) (<-chan ContainerOutput, error)
+	StartContainer(ctx context.Context, appName, postStartAgentCommand string, restartPolicy *agentpb.RestartPolicy) (<-chan ContainerOutput, error)
+	StartContainerWithStdin(ctx context.Context, appName string, stdin io.Reader, postStartAgentCommand string, restartPolicy *agentpb.RestartPolicy) (<-chan ContainerOutput, error)
 	StopContainer(ctx context.Context, appName string) error
 	DeleteContainer(ctx context.Context, appName string, deleteImage bool) error
 	ListContainers(ctx context.Context) ([]*agentpb.AppContainer, error)
 	GetContainerStats(ctx context.Context) ([]*agentpb.ContainerStats, error)
 	GetContainerMetrics(ctx context.Context, appName string) (ContainerMetrics, error)
+	GetContainerMCPPort(ctx context.Context, appName string) (uint32, error)
+	// GetContainerRestartPolicyLabel returns the raw restart policy label stored on
+	// the container (e.g. "unless-stopped", "on-failure:5", "no"). An empty string
+	// is returned when the container exists but has no restart policy label.
+	GetContainerRestartPolicyLabel(ctx context.Context, appName string) (string, error)
+}
+
+// Restart policy constants mirror container.RestartPolicy values and are used
+// as the policy argument to ContainerMonitorRegistrar.Register.
+const (
+	RestartPolicyNo            = 0 // never restart
+	RestartPolicyUnlessStopped = 1 // restart unless explicitly stopped
+	RestartPolicyOnFailure     = 2 // restart only on non-zero exit
+	RestartPolicyAlways        = 3 // always restart
+)
+
+// ContainerMonitorRegistrar is the subset of container.ContainerMonitor used by
+// ContainerService. It is declared here (rather than importing the container
+// package) to avoid a circular dependency: container imports services.
+type ContainerMonitorRegistrar interface {
+	// Register adds appName to the monitor with the given restart policy.
+	// policy values mirror container.RestartPolicy: use the RestartPolicy*
+	// constants defined in this package.
+	Register(appName string, policy int, maxRetries int)
+	// Unregister removes appName from the monitor.
+	Unregister(appName string)
+	// MarkExplicitStop marks appName as intentionally stopped so it won't be
+	// automatically restarted by an unless-stopped or on-failure policy.
+	MarkExplicitStop(appName string)
+	// ClearExplicitStop reverts a prior MarkExplicitStop call, re-enabling
+	// automatic restarts for appName. Used to undo a pre-emptive mark when the
+	// stop operation itself fails.
+	ClearExplicitStop(appName string)
 }
 
 // ContainerOutput represents a chunk of output from a running container.

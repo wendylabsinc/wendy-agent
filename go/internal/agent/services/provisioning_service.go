@@ -2,22 +2,25 @@ package services
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
-	"time"
 
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 
-	"github.com/wendylabsinc/wendy/internal/shared/certs"
-	agentpb "github.com/wendylabsinc/wendy/proto/gen/agentpb"
-	cloudpb "github.com/wendylabsinc/wendy/proto/gen/cloudpb"
+	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
+	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
+	cloudpb "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
 )
 
 // provisioningState is persisted to disk at configPath/provisioning.json.
@@ -37,7 +40,17 @@ type CloudDialer func(ctx context.Context, addr string) (*grpc.ClientConn, error
 
 // DefaultCloudDialer connects to the cloud gRPC server with plaintext transport.
 func DefaultCloudDialer(ctx context.Context, addr string) (*grpc.ClientConn, error) {
+	if strings.HasSuffix(addr, ":443") {
+		return grpc.NewClient(addr, grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{MinVersion: tls.VersionTLS12})))
+	}
 	return grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+}
+
+func certificateServiceAddr(cloudHost string) string {
+	if _, _, err := net.SplitHostPort(cloudHost); err == nil {
+		return cloudHost
+	}
+	return net.JoinHostPort(cloudHost, "50051")
 }
 
 // OnProvisionedFunc is called when provisioning completes successfully.
@@ -79,6 +92,13 @@ func (s *ProvisioningService) ProvisioningCerts() (certPEM, chainPEM, keyPEM str
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.certPEM, s.chainPEM, s.keyPEM
+}
+
+// ProvisioningInfo returns the cloud host, org ID, and asset ID if the agent is provisioned.
+func (s *ProvisioningService) ProvisioningInfo() (cloudHost string, orgID, assetID int32, enrolled bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.cloudHost, s.orgID, s.assetID, s.enrolled
 }
 
 // IsProvisioned checks whether the agent is enrolled with a cloud organization.
@@ -134,7 +154,7 @@ func (s *ProvisioningService) StartProvisioning(ctx context.Context, req *agentp
 	}
 
 	// Connect to the cloud gRPC server.
-	cloudAddr := fmt.Sprintf("%s:50051", req.GetCloudHost())
+	cloudAddr := certificateServiceAddr(req.GetCloudHost())
 	cloudConn, err := s.CloudDialer(ctx, cloudAddr)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "connecting to cloud: %v", err)
@@ -166,19 +186,15 @@ func (s *ProvisioningService) StartProvisioning(ctx context.Context, req *agentp
 	certPEM := cert.GetPemCertificate()
 	chainPEM := cert.GetPemCertificateChain()
 
-	s.enrolled = true
-	s.cloudHost = req.GetCloudHost()
-	s.orgID = req.GetOrganizationId()
-	s.assetID = req.GetAssetId()
-	s.keyPEM = keyPEM
-	s.certPEM = certPEM
-	s.chainPEM = chainPEM
-
+	// Build the state struct from the request/cert values WITHOUT first mutating
+	// s.* fields. Only apply the state to s.* after saveState succeeds so that a
+	// disk-write failure does not leave the agent permanently stuck as "already
+	// provisioned".
 	state := &provisioningState{
 		Enrolled:  true,
-		CloudHost: s.cloudHost,
-		OrgID:     s.orgID,
-		AssetID:   s.assetID,
+		CloudHost: req.GetCloudHost(),
+		OrgID:     req.GetOrganizationId(),
+		AssetID:   req.GetAssetId(),
 		KeyPEM:    keyPEM,
 		CertPEM:   certPEM,
 		ChainPEM:  chainPEM,
@@ -187,6 +203,15 @@ func (s *ProvisioningService) StartProvisioning(ctx context.Context, req *agentp
 		s.logger.Error("Failed to persist provisioning state", zap.Error(err))
 		return nil, status.Errorf(codes.Internal, "failed to save provisioning state: %v", err)
 	}
+
+	// Persist succeeded — now it is safe to update in-memory state.
+	s.enrolled = true
+	s.cloudHost = state.CloudHost
+	s.orgID = state.OrgID
+	s.assetID = state.AssetID
+	s.keyPEM = keyPEM
+	s.certPEM = certPEM
+	s.chainPEM = chainPEM
 
 	// Write individual PEM files so the container registry can mount and use them.
 	if err := s.writePEMFiles(keyPEM, certPEM, chainPEM); err != nil {
@@ -269,34 +294,7 @@ func (s *ProvisioningService) loadOrGenerateKey() (string, error) {
 // writePEMFiles writes individual PEM files for the container registry and
 // other services that read certs from the filesystem.
 func (s *ProvisioningService) writePEMFiles(keyPEM, certPEM, chainPEM string) error {
-	if err := os.MkdirAll(s.configPath, 0o700); err != nil {
-		return fmt.Errorf("creating config directory: %w", err)
-	}
-
-	files := map[string]struct {
-		data string
-		mode os.FileMode
-	}{
-		"device-key.pem": {data: keyPEM, mode: 0o600},
-		"device.pem":     {data: certPEM, mode: 0o644},
-		"ca.pem":         {data: chainPEM, mode: 0o644},
-	}
-
-	for name, f := range files {
-		if f.data == "" {
-			continue
-		}
-		path := filepath.Join(s.configPath, name)
-		if err := os.WriteFile(path, []byte(f.data), f.mode); err != nil {
-			return fmt.Errorf("writing %s: %w", name, err)
-		}
-	}
-
-	// Write provisioned marker.
-	markerPath := filepath.Join(s.configPath, ".provisioned")
-	_ = os.WriteFile(markerPath, []byte(time.Now().UTC().Format(time.RFC3339)+"\n"), 0o644)
-
-	return nil
+	return WritePEMFiles(s.configPath, keyPEM, certPEM, chainPEM)
 }
 
 // saveState writes provisioning state to disk.

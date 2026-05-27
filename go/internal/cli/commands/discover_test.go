@@ -11,9 +11,10 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/wendylabsinc/wendy/internal/shared/discovery"
-	"github.com/wendylabsinc/wendy/internal/shared/env"
-	"github.com/wendylabsinc/wendy/internal/shared/models"
+	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
+	"github.com/wendylabsinc/wendy/go/internal/shared/env"
+	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 )
 
 func TestEnvDiscoverIntervals(t *testing.T) {
@@ -78,7 +79,7 @@ func TestDelayThen_ActuallyDelays(t *testing.T) {
 }
 
 func TestDiscoverModel_UpdateReturnsDelayedCmd(t *testing.T) {
-	// Use tiny intervals so the test doesn't actually sleep.
+	// Use tiny intervals so the test doesn't actually sleep if a returned command runs.
 	t.Setenv("WENDY_DISCOVER_USB_INTERVAL", "1ms")
 	t.Setenv("WENDY_DISCOVER_ETHERNET_INTERVAL", "1ms")
 	t.Setenv("WENDY_DISCOVER_EXTERNAL_INTERVAL", "1ms")
@@ -106,6 +107,23 @@ func TestDiscoverModel_UpdateReturnsDelayedCmd(t *testing.T) {
 				t.Error("expected non-nil cmd (delayed rescan)")
 			}
 		})
+	}
+}
+
+func TestDiscoverModel_UpdateRampsRescanIntervals(t *testing.T) {
+	t.Setenv("WENDY_DISCOVER_USB_INTERVAL", "3s")
+
+	m := newDiscoverModel(context.Background(), defaultOpts())
+	updated, _ := m.Update(usbScanMsg{devices: []models.USBDevice{{DisplayName: "test"}}})
+	m = updated.(discoverModel)
+	if m.usbInterval.next != time.Second {
+		t.Fatalf("next USB interval = %v, want 1s", m.usbInterval.next)
+	}
+
+	updated, _ = m.Update(usbScanMsg{devices: []models.USBDevice{{DisplayName: "test"}}})
+	m = updated.(discoverModel)
+	if m.usbInterval.next != 2*time.Second {
+		t.Fatalf("next USB interval = %v, want 2s", m.usbInterval.next)
 	}
 }
 
@@ -162,10 +180,77 @@ func TestRenderDeviceTable(t *testing.T) {
 	}
 
 	output := renderDeviceTable(collection)
-	for _, want := range []string{"Name", "Type", "Address", "Version", "wendy-alpha", "LAN", "192.168.1.10", "1.2.3"} {
+	for _, want := range []string{"Name", "Type", "Address", "wendy-alpha v1.2.3", "LAN", "192.168.1.10:8443"} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("expected output to contain %q, got %q", want, output)
 		}
+	}
+}
+
+func TestDiscoverTableItemsPrioritizesUSBDevices(t *testing.T) {
+	collection := &models.DevicesCollection{
+		LANDevices: []models.LANDevice{
+			{
+				DisplayName: "wendy-wifi",
+				IPAddress:   "192.168.1.20",
+			},
+			{
+				DisplayName: "wendy-usb",
+				IPAddress:   "169.254.20.30",
+				USB:         "enp0s20f0u9 480 Mbps",
+			},
+		},
+	}
+
+	items := discoverTableItems(collection)
+	if len(items) != 2 {
+		t.Fatalf("got %d items, want 2", len(items))
+	}
+	if items[0].info.Name != "wendy-usb" {
+		t.Fatalf("first item name = %q, want USB device first", items[0].info.Name)
+	}
+	if items[0].picker.USB != "enp0s20f0u9 480 Mbps" {
+		t.Fatalf("USB detail = %q, want interface summary", items[0].picker.USB)
+	}
+	if items[1].picker.USB != "" {
+		t.Fatalf("non-USB item USB detail = %q, want empty", items[1].picker.USB)
+	}
+
+	_, rows := tui.PickerTableData(discoverPickerItems(items), "", true)
+	if rows[0][2] != "USB, LAN" {
+		t.Fatalf("Type display cell = %q, want \"USB, LAN\"", rows[0][2])
+	}
+}
+
+func TestDiscoverTableItemsAnnotatesLANUSBFromEthernetInterface(t *testing.T) {
+	collection := &models.DevicesCollection{
+		LANDevices: []models.LANDevice{{
+			DisplayName:      "wendy-usb",
+			IPAddress:        "169.254.20.30",
+			NetworkInterface: "Ethernet 3",
+		}},
+		EthernetInterfaces: []models.EthernetInterface{{
+			Name:        "Ethernet 3",
+			DisplayName: "Wendy Gadget Mode",
+			LinkSpeed:   "1 Gbps",
+		}},
+	}
+
+	items := discoverTableItems(collection)
+	if len(items) != 1 {
+		t.Fatalf("got %d items, want 1 (ethernet hidden)", len(items))
+	}
+	if items[0].info.Name != "wendy-usb" {
+		t.Fatalf("first item name = %q, want annotated LAN device first", items[0].info.Name)
+	}
+	wantUSB := "Wendy Gadget Mode (Ethernet 3) 1 Gbps"
+	if items[0].picker.USB != wantUSB {
+		t.Fatalf("USB detail = %q, want %q", items[0].picker.USB, wantUSB)
+	}
+
+	_, rows := tui.PickerTableData(discoverPickerItems(items), "", true)
+	if rows[0][2] != "USB, LAN" {
+		t.Fatalf("Type display cell = %q, want \"USB, LAN\"", rows[0][2])
 	}
 }
 
@@ -173,6 +258,7 @@ func TestDiscoverDeviceInfo_JSONSingleDevice(t *testing.T) {
 	info := discoverDeviceInfo{
 		Name:    "wendyos-brave-phoenix",
 		Type:    "LAN",
+		USB:     "en6 1 Gbps",
 		Address: "192.168.1.42",
 		Version: "2026.03.16-163942",
 	}
@@ -192,6 +278,9 @@ func TestDiscoverDeviceInfo_JSONSingleDevice(t *testing.T) {
 	}
 	if parsed["address"] != "192.168.1.42" {
 		t.Errorf("address = %v", parsed["address"])
+	}
+	if parsed["usb"] != "en6 1 Gbps" {
+		t.Errorf("usb = %v", parsed["usb"])
 	}
 }
 
@@ -412,6 +501,35 @@ func TestCopyToClipboard_AllToolsFailReportsErrors(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "all clipboard tools failed") {
 		t.Errorf("error should mention all tools failed, got: %v", err)
+	}
+}
+
+func TestShouldCaptureClipboardStderr_DisablesLinuxPipes(t *testing.T) {
+	if shouldCaptureClipboardStderr("linux") {
+		t.Fatal("linux clipboard helpers should not capture stderr through pipes")
+	}
+	if !shouldCaptureClipboardStderr("darwin") {
+		t.Fatal("darwin clipboard helper should capture stderr")
+	}
+}
+
+func TestRunClipboardCommand_TimesOut(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses POSIX shell")
+	}
+
+	start := time.Now()
+	err := runClipboardCommand(exec.Command("sleep", "5"), 25*time.Millisecond)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+	if !strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("expected timeout error, got %v", err)
+	}
+	if elapsed > time.Second {
+		t.Fatalf("timeout took too long: %v", elapsed)
 	}
 }
 

@@ -78,6 +78,20 @@ func TestPickerModel_ShowsDescriptionColumnWhenPresent(t *testing.T) {
 	}
 }
 
+func TestPickerModel_ShowsUSBInTypeColumn(t *testing.T) {
+	m := NewPickerWithTitle("Select a device")
+
+	updated, _ := m.Update(PickerAddMsg{Items: []PickerItem{
+		{Name: "Sunny Daisy", Type: "LAN", USB: "WendyOS Device sunny-daisy (en40)", Address: "wendyos-sunny-daisy.local:50052", Value: "sunny"},
+	}})
+	pm := updated.(PickerModel)
+
+	view := pm.View()
+	if !strings.Contains(view, "USB, LAN") {
+		t.Fatalf("expected picker view to contain %q, got %q", "USB, LAN", view)
+	}
+}
+
 func TestPickerModel_DefaultKeyShowsStar(t *testing.T) {
 	m := NewPickerWithTitle("Select a device")
 	m.DefaultKey = "alpha"
@@ -147,6 +161,77 @@ func TestPickerModel_XKeyClearsDefault(t *testing.T) {
 	}
 	if pm.DefaultKey != "" {
 		t.Errorf("DefaultKey = %q, want empty", pm.DefaultKey)
+	}
+}
+
+func TestPickerModel_SetMsgReplacesItems(t *testing.T) {
+	m := NewPicker()
+
+	updated, _ := m.Update(PickerSetMsg{Items: []PickerItem{
+		{Name: "alpha", Value: "alpha"},
+		{Name: "beta", Value: "beta"},
+	}})
+	pm := updated.(PickerModel)
+
+	updated, _ = pm.Update(PickerSetMsg{Items: []PickerItem{
+		{Name: "gamma", Value: "gamma"},
+	}})
+	pm = updated.(PickerModel)
+
+	if got := len(pm.items); got != 1 {
+		t.Fatalf("expected replacement to leave 1 item, got %d", got)
+	}
+	if got := pm.items[0].Name; got != "gamma" {
+		t.Fatalf("remaining item = %q, want gamma", got)
+	}
+	if _, ok := pm.seenIdx["alpha"]; ok {
+		t.Fatal("stale alpha key remained in seenIdx")
+	}
+}
+
+func TestPickerModel_SetMsgPreservesCursorByItem(t *testing.T) {
+	m := NewPicker()
+
+	updated, _ := m.Update(PickerSetMsg{Items: []PickerItem{
+		{Name: "alpha", Value: "alpha"},
+		{Name: "beta", Value: "beta"},
+	}})
+	pm := updated.(PickerModel)
+	pm.table.SetCursor(1)
+
+	updated, _ = pm.Update(PickerSetMsg{Items: []PickerItem{
+		{Name: "beta", Value: "beta"},
+		{Name: "alpha", Value: "alpha"},
+		{Name: "gamma", Value: "gamma"},
+	}})
+	pm = updated.(PickerModel)
+
+	cursor := pm.table.Cursor()
+	if cursor < 0 || cursor >= len(pm.items) {
+		t.Fatalf("cursor out of range: %d", cursor)
+	}
+	if got := pm.items[cursor].Name; got != "beta" {
+		t.Fatalf("cursor item = %q, want beta", got)
+	}
+}
+
+func TestPickerModel_SetMsgClampsCursorWhenItemRemoved(t *testing.T) {
+	m := NewPicker()
+
+	updated, _ := m.Update(PickerSetMsg{Items: []PickerItem{
+		{Name: "alpha", Value: "alpha"},
+		{Name: "beta", Value: "beta"},
+	}})
+	pm := updated.(PickerModel)
+	pm.table.SetCursor(1)
+
+	updated, _ = pm.Update(PickerSetMsg{Items: []PickerItem{
+		{Name: "alpha", Value: "alpha"},
+	}})
+	pm = updated.(PickerModel)
+
+	if got := pm.table.Cursor(); got != 0 {
+		t.Fatalf("cursor = %d, want 0", got)
 	}
 }
 

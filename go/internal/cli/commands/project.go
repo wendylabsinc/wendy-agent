@@ -12,8 +12,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
-	"github.com/wendylabsinc/wendy/internal/cli/tui"
-	"github.com/wendylabsinc/wendy/internal/shared/appconfig"
+	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 )
 
 var entitlementDescriptions = map[string]string{
@@ -147,7 +147,7 @@ func newEntitlementsAddCmd() *cobra.Command {
 					}
 				}
 				if len(items) == 0 {
-					fmt.Println("All entitlement types are already added.")
+					cliLogln("All entitlement types are already added.")
 					return nil
 				}
 
@@ -182,7 +182,7 @@ func newEntitlementsAddCmd() *cobra.Command {
 				return err
 			}
 
-			fmt.Printf("Added %q entitlement\n", entType)
+			cliSuccess("Added %q entitlement", entType)
 			return nil
 		},
 	}
@@ -204,7 +204,7 @@ func newEntitlementsRemoveCmd() *cobra.Command {
 				entType = args[0]
 			} else {
 				if len(cfg.Entitlements) == 0 {
-					fmt.Println("No entitlements configured.")
+					cliLogln("No entitlements configured.")
 					return nil
 				}
 
@@ -238,7 +238,7 @@ func newEntitlementsRemoveCmd() *cobra.Command {
 				return err
 			}
 
-			fmt.Printf("Removed %q entitlement\n", entType)
+			cliSuccess("Removed %q entitlement", entType)
 			return nil
 		},
 	}

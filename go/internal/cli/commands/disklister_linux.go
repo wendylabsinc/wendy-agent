@@ -6,8 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"os"
 	"os/exec"
+	"sort"
+	"strings"
 
 	"github.com/dustin/go-humanize"
 )
@@ -42,6 +43,7 @@ type drive struct {
 	Size        string // human-readable size
 	SizeBytes   int64  // size in bytes
 	IsRemovable bool
+	StorageType StorageType // underlying storage protocol
 }
 
 // lsblkOutput is the JSON output from lsblk.
@@ -50,13 +52,14 @@ type lsblkOutput struct {
 }
 
 type lsblkDevice struct {
-	Name       string      `json:"name"`
-	Size       json.Number `json:"size"`
-	Type       string      `json:"type"`
-	Removable  flexBool    `json:"rm"`
-	Hotplug    flexBool    `json:"hotplug"`
-	Transport  string      `json:"tran"`
-	Mountpoint string      `json:"mountpoint"`
+	Name       string        `json:"name"`
+	Size       json.Number   `json:"size"`
+	Type       string        `json:"type"`
+	Removable  flexBool      `json:"rm"`
+	Hotplug    flexBool      `json:"hotplug"`
+	Transport  string        `json:"tran"`
+	Mountpoint string        `json:"mountpoint"`
+	Children   []lsblkDevice `json:"children"`
 }
 
 // listAllDrives lists external physical drives (USB, SD, hotplug) on Linux.
@@ -101,6 +104,10 @@ func listDrivesLinux() ([]drive, error) {
 			sizeBytes = n
 		}
 
+		storageType := StorageUnknown
+		if dev.Transport == "nvme" {
+			storageType = StorageNVMe
+		}
 		drives = append(drives, drive{
 			DevicePath: devPath,
 			RawPath:    devPath,
@@ -110,90 +117,160 @@ func listDrivesLinux() ([]drive, error) {
 			// IsRemovable reflects our external-ness predicate so downstream code
 			// sees the same classification used to include this device.
 			IsRemovable: isExternal,
+			StorageType: storageType,
 		})
 	}
 
 	return drives, nil
 }
 
+// buildLsblkArgs returns the full argument list (including the command name)
+// used by lsblkCmd.  Extracting it into its own variable gives tests a seam
+// to assert that the -l flag is present without running a real process.
+var buildLsblkArgs = func(devPath string) []string {
+	return []string{"lsblk", "--json", "-l", "-o", "NAME,MOUNTPOINT", devPath}
+}
+
+// lsblkCmd is the function used to run lsblk for partition enumeration.
+// It is a package-level variable so tests can inject a fake implementation
+// without spawning a real process.
+var lsblkCmd = func(devPath string) ([]byte, error) {
+	args := buildLsblkArgs(devPath)
+	return exec.Command(args[0], args[1:]...).Output()
+}
+
+// umountCmd is the function used to unmount a single mountpoint path.
+// It is a package-level variable so tests can inject a mock that records
+// calls without invoking privileged host commands.
+var umountCmd = func(mountpoint string) ([]byte, error) {
+	return exec.Command("sudo", "umount", mountpoint).CombinedOutput()
+}
+
+// maxMountpointDepth returns the maximum mountpoint depth (number of '/'
+// characters) across a device node and all of its descendants.  This is used
+// to sort devices so that the deepest subtree is always unmounted first, even
+// when a node has no mountpoint of its own but has deeply-mounted children.
+func maxMountpointDepth(dev lsblkDevice) int {
+	d := strings.Count(dev.Mountpoint, "/")
+	for _, child := range dev.Children {
+		if cd := maxMountpointDepth(child); cd > d {
+			d = cd
+		}
+	}
+	return d
+}
+
 // unmountDisk unmounts all partitions on a disk before writing.
 func unmountDisk(devPath string) error {
 	// Enumerate partitions via lsblk and unmount each one.
-	out, err := exec.Command("lsblk", "--json", "-o", "NAME,MOUNTPOINT", devPath).Output()
+	// The -l flag requests flat (list) output so every partition appears as a
+	// top-level entry in blockdevices rather than being nested under a parent
+	// disk's "children" array.  Without -l, partitions are silently dropped
+	// because older code did not recurse into children.  We also keep the
+	// Children field on lsblkDevice and recurse in unmountLsblkDevice as a
+	// defence-in-depth measure for lsblk versions that ignore -l.
+	out, err := lsblkCmd(devPath)
 	if err != nil {
-		// If lsblk fails, the disk may not be mounted at all.
-		return nil
+		return fmt.Errorf("lsblk %s: %w", devPath, err)
 	}
 
 	var result lsblkOutput
 	if err := json.Unmarshal(out, &result); err != nil {
-		return nil
+		return fmt.Errorf("parsing lsblk output for %s: %w", devPath, err)
 	}
 
+	// Sort devices so that deeper mountpoints are unmounted first.
+	// This prevents a parent mount from being busy when we try to unmount it
+	// because a child mountpoint beneath it is still active.
+	// maxMountpointDepth is used so that a device with no mountpoint itself but
+	// with deeply-nested children is still sorted correctly.
+	sort.Slice(result.Blockdevices, func(i, j int) bool {
+		di := maxMountpointDepth(result.Blockdevices[i])
+		dj := maxMountpointDepth(result.Blockdevices[j])
+		return di > dj // deeper first; empty mountpoints (di==0) sort last
+	})
+
+	var firstErr error
 	for _, dev := range result.Blockdevices {
-		unmountLsblkDevice(dev)
+		if err := unmountLsblkDevice(dev); err != nil && firstErr == nil {
+			firstErr = err
+		}
 	}
-	return nil
+	return firstErr
 }
 
-func unmountLsblkDevice(dev lsblkDevice) {
+func unmountLsblkDevice(dev lsblkDevice) error {
+	// Children first: a parent mount cannot be unmounted until all child
+	// mounts beneath it are gone.  Recurse into children before attempting to
+	// unmount this node.  Collect the first error but continue visiting ALL
+	// siblings so that a single failure does not leave subsequent partitions
+	// mounted.
+	// Sort children so that deeper mountpoints are unmounted first.
+	// This mirrors the top-level sort in unmountDisk and prevents EBUSY when
+	// two sibling children have nested mountpoints (e.g. /mnt/disk and
+	// /mnt/disk/sub): the deeper one must be unmounted before the shallower.
+	sort.Slice(dev.Children, func(i, j int) bool {
+		di := maxMountpointDepth(dev.Children[i])
+		dj := maxMountpointDepth(dev.Children[j])
+		return di > dj // deeper first; empty mountpoints (di==0) sort last
+	})
+
+	var firstErr error
+	for _, child := range dev.Children {
+		if err := unmountLsblkDevice(child); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	// Then unmount self.  Unmount by mountpoint rather than device path so
+	// that device-mapper entries (e.g. mapper/data → /dev/mapper/data) and
+	// dm-* nodes are handled correctly.  The mountpoint is always the right
+	// argument to pass to umount when it is known.
 	if dev.Mountpoint != "" {
-		partPath := "/dev/" + dev.Name
-		exec.Command("sudo", "umount", partPath).Run() //nolint:errcheck
+		if out, err := umountCmd(dev.Mountpoint); err != nil && firstErr == nil {
+			firstErr = fmt.Errorf("unmounting %s: %w\n%s", dev.Mountpoint, err, out)
+		}
 	}
+	return firstErr
 }
 
-// writeImageToDisk writes an image file to a block device using dd,
-// streaming data via stdin in 4 MiB chunks for progress tracking.
-func writeImageToDisk(imagePath string, d drive, progressFn func(written int64)) error {
+func writeImageToDisk(r io.Reader, totalSize int64, d drive, progressFn func(written int64)) error {
 	if err := unmountDisk(d.DevicePath); err != nil {
 		return err
 	}
 
-	imgFile, err := os.Open(imagePath)
-	if err != nil {
-		return fmt.Errorf("opening image: %w", err)
+	bs := "bs=4M"
+	if d.StorageType == StorageNVMe {
+		bs = "bs=64M"
 	}
-	defer imgFile.Close()
+	ddArgs := []string{"dd", fmt.Sprintf("of=%s", d.DevicePath), bs, "status=progress", "conv=fdatasync"}
+	if d.StorageType == StorageNVMe {
+		ddArgs = append(ddArgs, "oflag=direct")
+	}
 
-	cmd := exec.Command("sudo", "dd", fmt.Sprintf("of=%s", d.DevicePath), "bs=4M")
-	stdin, err := cmd.StdinPipe()
+	cmd := exec.Command("sudo", ddArgs...)
+	cmd.Stdin = r
+
+	stderr, err := cmd.StderrPipe()
 	if err != nil {
-		return fmt.Errorf("creating stdin pipe: %w", err)
+		return fmt.Errorf("creating stderr pipe: %w", err)
 	}
 
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("starting dd: %w", err)
 	}
 
-	buf := make([]byte, 4*1024*1024) // 4 MiB
-	var totalWritten int64
-	for {
-		n, readErr := imgFile.Read(buf)
-		if n > 0 {
-			if _, writeErr := stdin.Write(buf[:n]); writeErr != nil {
-				return fmt.Errorf("writing to dd: %w", writeErr)
-			}
-			totalWritten += int64(n)
-			if progressFn != nil {
-				progressFn(totalWritten)
-			}
-		}
-		if readErr == io.EOF {
-			break
-		}
-		if readErr != nil {
-			return fmt.Errorf("reading image: %w", readErr)
-		}
-	}
+	scannerDone := make(chan struct{})
+	go func() {
+		defer close(scannerDone)
+		scanDDProgress(stderr, progressFn)
+	}()
 
-	stdin.Close()
-	if err := cmd.Wait(); err != nil {
-		return fmt.Errorf("writing image: %w", err)
-	}
+	waitErr := cmd.Wait()
+	<-scannerDone
 
-	// Sync to flush writes.
-	exec.Command("sync").Run() //nolint:errcheck
+	if waitErr != nil {
+		return fmt.Errorf("writing image: %w", waitErr)
+	}
 
 	return nil
 }

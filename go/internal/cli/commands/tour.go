@@ -17,9 +17,9 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
-	"github.com/wendylabsinc/wendy/internal/cli/tui"
-	"github.com/wendylabsinc/wendy/internal/shared/discovery"
-	"github.com/wendylabsinc/wendy/internal/shared/models"
+	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
+	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 )
 
 // ─── phases ──────────────────────────────────────────────────────────────────
@@ -56,6 +56,7 @@ const (
 	phaseCreateProject                  // write project files
 	phaseRunProject                     // tea.ExecProcess running wendy run
 	phaseAICheck                        // check claude/codex installation
+	phaseAIMCPSetup                     // offer to configure wendy MCP server
 	phaseCloud                          // cloud ready message
 	phaseDone                           // quit
 	phaseError                          // error with restart hint
@@ -83,6 +84,7 @@ type (
 	tourOSInstallDoneMsg     struct{ err error }
 	tourRunDoneMsg           struct{ err error }
 	tourAICheckDoneMsg       struct{ claudePath, codexPath string }
+	tourMCPSetupDoneMsg      struct{ results []mcpSetupResult }
 	tourTemplateFetchDoneMsg struct {
 		meta *repoMeta
 		err  error
@@ -225,8 +227,9 @@ type tourWizardModel struct {
 	templateManifest *templateManifest
 
 	// AI tools
-	claudePath string
-	codexPath  string
+	claudePath     string
+	codexPath      string
+	mcpSetupResult []mcpSetupResult
 }
 
 func newTourWizardModel() tourWizardModel {
@@ -356,6 +359,11 @@ func (m tourWizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint:cyc
 		m.claudePath = msg.claudePath
 		m.codexPath = msg.codexPath
 		m.phase = phaseAICheck
+		return m, nil
+
+	case tourMCPSetupDoneMsg:
+		m.mcpSetupResult = msg.results
+		m.phase = phaseAIMCPSetup
 		return m, nil
 
 	case tourTemplateFetchDoneMsg:
@@ -769,6 +777,25 @@ func (m tourWizardModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case phaseAICheck:
 		switch key {
+		case "up", "k":
+			if m.wifiCursor > 0 {
+				m.wifiCursor--
+			}
+		case "down", "j":
+			if m.wifiCursor < 1 {
+				m.wifiCursor++
+			}
+		case "enter", " ":
+			if m.claudePath != "" && m.wifiCursor == 0 {
+				return m, runMCPSetupCmd()
+			}
+			m.phase = phaseCloud
+		case "q", "ctrl+c":
+			return m, tea.Quit
+		}
+
+	case phaseAIMCPSetup:
+		switch key {
 		case "enter", " ":
 			m.phase = phaseCloud
 		case "q", "ctrl+c":
@@ -914,6 +941,8 @@ func (m tourWizardModel) View() string {
 		body = wizSubStyle.Render("Running your project on the device…")
 	case phaseAICheck:
 		body = m.viewAICheck(inner)
+	case phaseAIMCPSetup:
+		body = m.viewAIMCPSetup(inner)
 	case phaseCloud:
 		body = m.viewCloud(inner)
 	case phaseError:
@@ -1403,22 +1432,54 @@ func (m tourWizardModel) viewAICheck(w int) string {
 			"You can continue developing with Claude Code. Open your project in it:") + "\n\n")
 		sb.WriteString("  " + wizCodeStyle.Render(fmt.Sprintf("cd %s && claude", m.projectPath)) + "\n\n")
 		sb.WriteString(wizBodyStyle.Width(w).Render(
-			"Wendy ships with Claude Code skill files to help Claude understand\n"+
-				"the platform. Install the Wendy plugin in Claude Code settings.") + "\n")
+			"Set up the Wendy MCP server so Claude can access your device directly?") + "\n\n")
+		opts := []string{"Yes, set up MCP now", "No, skip"}
+		for i, opt := range opts {
+			if i == m.wifiCursor {
+				sb.WriteString(wizSelectedStyle.Render("▶ "+opt) + "\n")
+			} else {
+				sb.WriteString(wizNormalStyle.Render("  "+opt) + "\n")
+			}
+		}
+		sb.WriteString("\n" + wizHintStyle.Render("↑/↓ navigate  ·  Enter select"))
 	} else if m.codexPath != "" {
 		sb.WriteString(wizSuccessStyle.Render("Codex detected") + "\n")
 		sb.WriteString(wizBodyStyle.Width(w).Render(
 			"Continue development with Codex from your project directory:") + "\n\n")
-		sb.WriteString("  " + wizCodeStyle.Render(fmt.Sprintf("cd %s && codex", m.projectPath)) + "\n")
+		sb.WriteString("  " + wizCodeStyle.Render(fmt.Sprintf("cd %s && codex", m.projectPath)) + "\n\n")
+		sb.WriteString(wizHintStyle.Render("Enter to continue"))
 	} else {
 		sb.WriteString(wizBodyStyle.Width(w).Render(
 			"To get AI-assisted development for Wendy apps, install Claude Code:") + "\n\n")
 		sb.WriteString("  " + wizCodeStyle.Render("npm install -g @anthropic-ai/claude-code") + "\n\n")
 		sb.WriteString(wizBodyStyle.Width(w).Render(
 			"Then open your project and run:") + "\n\n")
-		sb.WriteString("  " + wizCodeStyle.Render(fmt.Sprintf("cd %s && claude", m.projectPath)) + "\n")
+		sb.WriteString("  " + wizCodeStyle.Render(fmt.Sprintf("cd %s && claude", m.projectPath)) + "\n\n")
+		sb.WriteString(wizHintStyle.Render("Enter to continue"))
 	}
-	sb.WriteString("\n" + wizHintStyle.Render("Enter to continue"))
+	return sb.String()
+}
+
+func (m tourWizardModel) viewAIMCPSetup(w int) string {
+	var sb strings.Builder
+	sb.WriteString(wizTitleStyle.Render("MCP Setup") + "\n\n")
+	if len(m.mcpSetupResult) == 0 {
+		sb.WriteString(wizSubStyle.Render("Configuring…") + "\n")
+	} else {
+		for _, r := range m.mcpSetupResult {
+			if r.err != nil {
+				sb.WriteString(wizErrorStyle.Render(fmt.Sprintf("✗ %s: %v", r.tool, r.err)) + "\n")
+			} else {
+				sb.WriteString(wizSuccessStyle.Render(fmt.Sprintf("✓ %s configured", r.tool)) + "\n")
+			}
+		}
+		sb.WriteString("\n")
+		sb.WriteString(wizBodyStyle.Width(w).Render(
+			"Restart Claude Code to activate the Wendy MCP server.\n"+
+				"Claude will now have tools to list devices, manage containers,\n"+
+				"read telemetry, and more.") + "\n\n")
+		sb.WriteString(wizHintStyle.Render("Enter to continue"))
+	}
 	return sb.String()
 }
 
@@ -1585,6 +1646,12 @@ func (m tourWizardModel) cmdCheckAITools() tea.Cmd {
 	}
 }
 
+func runMCPSetupCmd() tea.Cmd {
+	return func() tea.Msg {
+		return tourMCPSetupDoneMsg{results: setupMCPForAllTools()}
+	}
+}
+
 func fetchTourTemplatesCmd() tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -1728,6 +1795,33 @@ func detectCurrentWiFiSSID() string {
 			if ssid := strings.TrimSpace(string(out)); ssid != "" {
 				return ssid
 			}
+		}
+	case "windows":
+		out, err := exec.Command("netsh", "wlan", "show", "interfaces").Output()
+		if err != nil {
+			return ""
+		}
+		return parseNetshSSID(string(out))
+	}
+	return ""
+}
+
+// parseNetshSSID extracts the SSID value from the output of
+// `netsh wlan show interfaces`. The output contains many "<label> : <value>"
+// lines; we want the first one whose label is exactly "SSID" (the "BSSID" line
+// must not match). Returns "" if no SSID line is present or the value is empty.
+func parseNetshSSID(out string) string {
+	for _, raw := range strings.Split(out, "\n") {
+		line := strings.TrimSpace(raw)
+		if !strings.HasPrefix(line, "SSID") {
+			continue
+		}
+		rest := strings.TrimLeft(line[len("SSID"):], " \t")
+		if !strings.HasPrefix(rest, ":") {
+			continue
+		}
+		if ssid := strings.TrimSpace(rest[1:]); ssid != "" {
+			return ssid
 		}
 	}
 	return ""

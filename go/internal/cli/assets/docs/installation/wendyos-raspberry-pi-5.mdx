@@ -1,0 +1,82 @@
+---
+title: WendyOS - Raspberry Pi 5
+description: Install WendyOS on your Raspberry Pi 5
+---
+
+<div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '1.5rem' }}>
+  <img src="/icons/icons8-raspberry-pi.svg" alt="Raspberry Pi" style={{ width: '48px', height: '48px' }} />
+  <h1 style={{ fontSize: '2.25rem', fontWeight: 'bold', margin: 0, lineHeight: '1' }}>Raspberry Pi 5 Installation</h1>
+</div>
+
+## What You'll Need
+
+<Pi5BuyersTable />
+
+## Installing WendyOS on Raspberry Pi 5
+
+This guide will walk you through installing WendyOS on your Raspberry Pi 5. The Wendy agent comes prepackaged with WendyOS, so no separate agent installation is required.
+
+Prefer to follow along with video? Watch the [WendyOS Raspberry Pi 5 installation video](https://youtu.be/87GlYkx86jY).
+
+### Installation Steps
+
+<Steps>
+  <Step>
+    ### Connect the Micro SD Card to Your Computer
+
+    Insert your micro SD card into a micro SD to SD card adapter.
+
+Then insert the adapter into your MacBook's SD card slot.
+
+</Step>
+
+  <Step>
+    ### Install WendyOS
+
+    Use the `wendy` CLI to install the operating system:
+
+    ```bash
+    wendy os install
+    ```
+
+    Select **Raspberry Pi 5** and then select your drive. You'll begin a process of downloading a copy of WendyOS to your SD card. This could take a while but soon you'll be prompted to put WendyOS on the micro SD card.
+
+    You'll need to enter your user's administrator password for this to continue.
+  </Step>
+
+  <Step>
+    ### Insert the Micro SD Card into Your Pi
+
+    Remove the SD card from your computer and insert the micro SD card into your Raspberry Pi 5.
+
+</Step>
+
+  <Step>
+    ### Connect the Pi to Your Computer
+
+    Connect your Raspberry Pi 5 to your computer using a USB-C cable. This will allow you to deploy and manage apps on your device.
+
+</Step>
+
+  <Step>
+    ### Discover Your Device
+
+    Wait 1-2 minutes after powering on your Pi to allow WendyOS to fully boot. Then run:
+
+    ```bash
+    wendy discover
+    # Set this device as your default
+    wendy device set-default
+    ```
+
+    You should see your Raspberry Pi 5 appear in the list of discovered devices.
+
+    ![Wendy Discover](/images/docs/wendy-discover.png)
+
+    Your device is now ready for development! For more information on device discovery and configuration, see [Discovering Devices](/docs/guides/device/discovering-devices).
+  </Step>
+</Steps>
+
+### Next Steps
+
+Now that WendyOS is installed, you can start deploying apps to your device. Check out the [Hello World Guide](/docs/guides/python/hello-world) to build your first app.

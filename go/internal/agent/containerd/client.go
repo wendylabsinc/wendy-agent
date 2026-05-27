@@ -1,6 +1,7 @@
 package containerd
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -18,6 +20,7 @@ import (
 	tasks "github.com/containerd/containerd/api/services/tasks/v1"
 	"github.com/containerd/containerd/api/types"
 	containerd "github.com/containerd/containerd/v2/client"
+	"github.com/containerd/containerd/v2/core/containers"
 	"github.com/containerd/containerd/v2/core/content"
 	"github.com/containerd/containerd/v2/core/images"
 	"github.com/containerd/containerd/v2/core/remotes/docker"
@@ -30,12 +33,12 @@ import (
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"go.uber.org/zap"
 
-	"github.com/wendylabsinc/wendy/internal/agent/cdi"
-	"github.com/wendylabsinc/wendy/internal/agent/dbusproxy"
-	localoci "github.com/wendylabsinc/wendy/internal/agent/oci"
-	"github.com/wendylabsinc/wendy/internal/agent/services"
-	"github.com/wendylabsinc/wendy/internal/shared/appconfig"
-	agentpb "github.com/wendylabsinc/wendy/proto/gen/agentpb"
+	"github.com/wendylabsinc/wendy/go/internal/agent/cdi"
+	"github.com/wendylabsinc/wendy/go/internal/agent/dbusproxy"
+	localoci "github.com/wendylabsinc/wendy/go/internal/agent/oci"
+	"github.com/wendylabsinc/wendy/go/internal/agent/services"
+	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
+	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
 // Compile-time check that *Client satisfies services.ContainerdClient.
@@ -168,6 +171,23 @@ func (c *Client) WriteLayer(ctx context.Context, dgst string, reader io.Reader, 
 	return nil
 }
 
+// layerMediaType returns the OCI media type for a layer given its compression.
+// The compression field takes precedence; when it is COMPRESSION_GZIP (the zero
+// default), the legacy gzip bool determines the type for backward compatibility.
+func layerMediaType(compression agentpb.RunContainerLayerHeader_CompressionType, gzip bool) string {
+	switch compression {
+	case agentpb.RunContainerLayerHeader_COMPRESSION_ZSTD:
+		return ocispec.MediaTypeImageLayerZstd
+	case agentpb.RunContainerLayerHeader_COMPRESSION_NONE:
+		return ocispec.MediaTypeImageLayer
+	default: // COMPRESSION_GZIP (0) or unrecognised
+		if gzip {
+			return ocispec.MediaTypeImageLayerGzip
+		}
+		return ocispec.MediaTypeImageLayer
+	}
+}
+
 // AssembleImage creates a containerd image from layers already present in the
 // content store. It builds an OCI manifest and config, writes them to the content
 // store, and registers the image. If the image already exists it is updated.
@@ -180,10 +200,7 @@ func (c *Client) AssembleImage(ctx context.Context, imageName string, layers []*
 	var layerDescs []ocispec.Descriptor
 	var diffIDs []digest.Digest
 	for _, l := range layers {
-		mediaType := ocispec.MediaTypeImageLayerGzip
-		if !l.GetGzip() {
-			mediaType = ocispec.MediaTypeImageLayer
-		}
+		mediaType := layerMediaType(l.GetCompression(), l.GetGzip())
 
 		dgst, err := digest.Parse(l.GetDigest())
 		if err != nil {
@@ -230,7 +247,7 @@ func (c *Client) AssembleImage(ctx context.Context, imageName string, layers []*
 		Digest:    configDigest,
 		Size:      int64(len(configData)),
 	}
-	if err := content.WriteBlob(ctx, cs, configDigest.String(), strings.NewReader(string(configData)), configDesc); err != nil {
+	if err := content.WriteBlob(ctx, cs, configDigest.String(), bytes.NewReader(configData), configDesc); err != nil {
 		if !errdefs.IsAlreadyExists(err) {
 			return fmt.Errorf("writing config blob: %w", err)
 		}
@@ -255,7 +272,7 @@ func (c *Client) AssembleImage(ctx context.Context, imageName string, layers []*
 		Digest:    manifestDigest,
 		Size:      int64(len(manifestData)),
 	}
-	if err := content.WriteBlob(ctx, cs, manifestDigest.String(), strings.NewReader(string(manifestData)), manifestDesc); err != nil {
+	if err := content.WriteBlob(ctx, cs, manifestDigest.String(), bytes.NewReader(manifestData), manifestDesc); err != nil {
 		if !errdefs.IsAlreadyExists(err) {
 			return fmt.Errorf("writing manifest blob: %w", err)
 		}
@@ -390,20 +407,6 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 		}
 	}
 
-	// Start D-Bus proxy if bluetooth entitlement is present.
-	var dbusProxyStarted bool
-	if c.proxyManager != nil && hasBluetooth(appCfg) {
-		if _, err := c.proxyManager.Start(ctx, appName); err != nil {
-			return fmt.Errorf("starting D-Bus proxy for %q: %w", appName, err)
-		}
-		dbusProxyStarted = true
-		defer func() {
-			if dbusProxyStarted {
-				_ = c.proxyManager.Stop(appName)
-			}
-		}()
-	}
-
 	// Try the local image store first. The device-local registry shares
 	// containerd's content store, so anything just pushed to it is already
 	// available via GetImage — pulling would just round-trip bytes over
@@ -429,6 +432,20 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 		}
 	}
 
+	// Start D-Bus proxy if bluetooth entitlement is present.
+	var dbusProxyStarted bool
+	if c.proxyManager != nil && hasBluetooth(appCfg) {
+		if _, err := c.proxyManager.Start(ctx, appName); err != nil {
+			return fmt.Errorf("starting D-Bus proxy for %q: %w", appName, err)
+		}
+		dbusProxyStarted = true
+		defer func() {
+			if dbusProxyStarted {
+				_ = c.proxyManager.Stop(appName)
+			}
+		}()
+	}
+
 	// Unpack the image into the snapshotter if not already done.
 	unpacked, err := image.IsUnpacked(ctx, "")
 	if err != nil {
@@ -436,7 +453,7 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 	}
 	if !unpacked {
 		c.logger.Info("Unpacking image", zap.String("image", imageName))
-		if err := c.UnpackImage(ctx, imageName, func(progress UnpackProgress) {
+		if err := c.UnpackImage(ctx, image, func(progress UnpackProgress) {
 			if mapped := toCreateContainerProgress(progress); mapped != nil {
 				report(mapped)
 			}
@@ -482,14 +499,11 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 	}
 
 	// Build environment variables: image env first, then our overrides.
-	env := []string{
-		"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-		"TERM=xterm",
-		fmt.Sprintf("WENDY_HOSTNAME=%s.local", appName),
-	}
+	env := buildContainerBaseEnv()
 	if specErr == nil {
 		env = append(imageSpec.Config.Env, env...)
 	}
+	env = injectOTELEnvIfNeeded(env, appCfg)
 
 	// Build OCI spec using local oci package, then apply entitlements.
 	spec := localoci.DefaultSpec("rootfs", args)
@@ -515,8 +529,7 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 
 	report(&agentpb.CreateContainerProgress{Phase: agentpb.CreateContainerProgress_CREATING_CONTAINER})
 
-	// Build labels for the container.
-	labels := wendyLabels(appName, version, req.GetRestartPolicy())
+	labels := wendyLabels(appName, version, req.GetRestartPolicy(), appCfg.Entitlements)
 
 	// Serialize our custom OCI spec to JSON for WithSpecFromBytes.
 	specJSON, err := json.Marshal(spec)
@@ -581,12 +594,18 @@ func (c *Client) applyCDIGPU(spec *localoci.Spec) {
 // StartContainer starts the task for a named container and returns a channel
 // that streams stdout/stderr output. When the container exits, a final
 // ContainerOutput with Done=true is sent and the channel is closed.
-func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentCommand string) (<-chan services.ContainerOutput, error) {
+func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentCommand string, restartPolicy *agentpb.RestartPolicy) (<-chan services.ContainerOutput, error) {
 	ctx = c.withNamespace(ctx)
 
 	container, err := c.client.LoadContainer(ctx, appName)
 	if err != nil {
 		return nil, fmt.Errorf("loading container %q: %w", appName, err)
+	}
+
+	if restartPolicy != nil {
+		if err := c.applyRestartPolicyLabel(ctx, container, restartPolicy); err != nil {
+			return nil, fmt.Errorf("updating restart policy for %q: %w", appName, err)
+		}
 	}
 
 	// Clean up any stale task from a previous run.
@@ -656,12 +675,18 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 
 // StartContainerWithStdin is like StartContainer but attaches the provided
 // stdin reader to the container's standard input.
-func (c *Client) StartContainerWithStdin(ctx context.Context, appName string, stdin io.Reader, postStartAgentCommand string) (<-chan services.ContainerOutput, error) {
+func (c *Client) StartContainerWithStdin(ctx context.Context, appName string, stdin io.Reader, postStartAgentCommand string, restartPolicy *agentpb.RestartPolicy) (<-chan services.ContainerOutput, error) {
 	ctx = c.withNamespace(ctx)
 
 	container, err := c.client.LoadContainer(ctx, appName)
 	if err != nil {
 		return nil, fmt.Errorf("loading container %q: %w", appName, err)
+	}
+
+	if restartPolicy != nil {
+		if err := c.applyRestartPolicyLabel(ctx, container, restartPolicy); err != nil {
+			return nil, fmt.Errorf("updating restart policy for %q: %w", appName, err)
+		}
 	}
 
 	c.deleteStaleTask(ctx, container, appName)
@@ -725,6 +750,75 @@ func shellCommand() (string, string) {
 		return "cmd.exe", "/C"
 	}
 	return "sh", "-c"
+}
+
+// deviceHostnameWithSuffix returns the device's mDNS hostname with the ".local"
+// suffix (e.g. "wendyos-mighty-kayak.local"), or "" if the OS hostname is
+// unavailable. Indirected through a var so tests can override it.
+var deviceHostnameWithSuffix = func() string {
+	h, err := os.Hostname()
+	if err != nil || h == "" {
+		return ""
+	}
+	return h + ".local"
+}
+
+// buildContainerBaseEnv builds the wendy-injected env vars layered on top of
+// the image's own env. WENDY_HOSTNAME is the device's mDNS hostname
+// (omitted when unresolvable). OTEL_EXPORTER_OTLP_ENDPOINT points at the
+// agent's OTLP gRPC receiver so containers auto-configure their exporters.
+func buildContainerBaseEnv() []string {
+	env := []string{
+		"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+		"TERM=xterm",
+	}
+	if h := deviceHostnameWithSuffix(); h != "" {
+		env = append(env, "WENDY_HOSTNAME="+h)
+	}
+	return env
+}
+
+// injectOTELEnvIfNeeded appends OTEL exporter env vars to env when host
+// networking is in effect and the endpoint is not already configured.
+// It must be called after the image env has been merged so that image-set
+// values take precedence.
+func injectOTELEnvIfNeeded(env []string, appCfg *appconfig.AppConfig) []string {
+	if !hasHostNetworkEntitlement(appCfg) {
+		return env
+	}
+	hasEndpoint, hasProtocol := false, false
+	for _, e := range env {
+		if strings.HasPrefix(e, "OTEL_EXPORTER_OTLP_ENDPOINT=") {
+			hasEndpoint = true
+		}
+		if strings.HasPrefix(e, "OTEL_EXPORTER_OTLP_PROTOCOL=") {
+			hasProtocol = true
+		}
+	}
+	if hasEndpoint {
+		return env // image already configured the exporter; do not override
+	}
+	otelPort := os.Getenv("WENDY_OTEL_PORT")
+	if otelPort == "" {
+		otelPort = "4317"
+	}
+	if p, err := strconv.Atoi(otelPort); err != nil || p < 1 || p > 65535 {
+		otelPort = "4317"
+	}
+	env = append(env, "OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:"+otelPort)
+	if !hasProtocol {
+		env = append(env, "OTEL_EXPORTER_OTLP_PROTOCOL=grpc")
+	}
+	return env
+}
+
+func hasHostNetworkEntitlement(appCfg *appconfig.AppConfig) bool {
+	for _, e := range appCfg.Entitlements {
+		if e.Type == appconfig.EntitlementNetwork && (e.Mode == "host" || e.Mode == "") {
+			return true
+		}
+	}
+	return false
 }
 
 func expandAgentHook(command, appName string) string {
@@ -860,6 +954,22 @@ func (c *Client) recreateContainer(ctx context.Context, ctr containerd.Container
 
 	c.logger.Info("Recreated container to clear orphaned task", zap.String("app_name", appName))
 	return nil
+}
+
+// applyRestartPolicyLabel updates the restart policy label on an existing container.
+func (c *Client) applyRestartPolicyLabel(ctx context.Context, container containerd.Container, restartPolicy *agentpb.RestartPolicy) error {
+	return container.Update(ctx, func(ctx context.Context, client *containerd.Client, ctr *containers.Container) error {
+		if ctr.Labels == nil {
+			ctr.Labels = make(map[string]string)
+		}
+		policyStr := restartPolicyToLabel(restartPolicy)
+		if policyStr != "" {
+			ctr.Labels[labelKeyRestartPolicy] = policyStr
+		} else {
+			delete(ctr.Labels, labelKeyRestartPolicy)
+		}
+		return nil
+	})
 }
 
 // streamOutput reads stdout/stderr from pipes and sends it to the output
@@ -1086,15 +1196,62 @@ func (c *Client) ListContainers(ctx context.Context) ([]*agentpb.AppContainer, e
 			_ = maxRetries
 		}
 
+		var mcpPort uint32
+		if portStr, ok := info.Labels[labelKeyMCPPort]; ok && portStr != "" {
+			if p, err := strconv.ParseUint(portStr, 10, 32); err == nil {
+				mcpPort = uint32(p)
+			}
+		}
+
 		result = append(result, &agentpb.AppContainer{
 			AppName:      ctr.ID(),
 			AppVersion:   appVersion,
 			RunningState: runningState,
 			FailureCount: failureCount,
+			McpPort:      mcpPort,
 		})
 	}
 
 	return result, nil
+}
+
+// GetContainerMCPPort returns the MCP server port for the named container,
+// or 0 if the container has no mcp entitlement.
+func (c *Client) GetContainerMCPPort(ctx context.Context, appName string) (uint32, error) {
+	ctx = c.withNamespace(ctx)
+	ctr, err := c.client.LoadContainer(ctx, appName)
+	if err != nil {
+		return 0, fmt.Errorf("loading container %q: %w", appName, err)
+	}
+	info, err := ctr.Info(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("getting container info for %q: %w", appName, err)
+	}
+	portStr, ok := info.Labels[labelKeyMCPPort]
+	if !ok || portStr == "" {
+		return 0, nil
+	}
+	p, err := strconv.ParseUint(portStr, 10, 32)
+	if err != nil {
+		return 0, fmt.Errorf("parsing mcp port label for %q: %w", appName, err)
+	}
+	return uint32(p), nil
+}
+
+// GetContainerRestartPolicyLabel returns the raw restart policy label stored on
+// the container (e.g. "unless-stopped", "on-failure:5", "no"). An empty string
+// is returned when the container exists but has no restart policy label.
+func (c *Client) GetContainerRestartPolicyLabel(ctx context.Context, appName string) (string, error) {
+	ctx = c.withNamespace(ctx)
+	ctr, err := c.client.LoadContainer(ctx, appName)
+	if err != nil {
+		return "", fmt.Errorf("loading container %q: %w", appName, err)
+	}
+	info, err := ctr.Info(ctx)
+	if err != nil {
+		return "", fmt.Errorf("getting container info for %q: %w", appName, err)
+	}
+	return info.Labels[labelKeyRestartPolicy], nil
 }
 
 // GetContainerStats collects memory and image-size stats for all Wendy-managed containers.
@@ -1188,31 +1345,13 @@ func extractContainerMetrics(metric *types.Metric) services.ContainerMetrics {
 
 // extractMemoryBytes decodes cgroup v1 or v2 task metrics and returns memory usage in bytes.
 func extractMemoryBytes(metric *types.Metric) int64 {
-	switch {
-	case typeurl.Is(metric.Data, (*cgroupv1.Metrics)(nil)):
-		m := &cgroupv1.Metrics{}
-		if err := typeurl.UnmarshalTo(metric.Data, m); err != nil {
-			return 0
-		}
-		if m.Memory != nil && m.Memory.Usage != nil {
-			return int64(m.Memory.Usage.Usage)
-		}
-	case typeurl.Is(metric.Data, (*cgroupv2.Metrics)(nil)):
-		m := &cgroupv2.Metrics{}
-		if err := typeurl.UnmarshalTo(metric.Data, m); err != nil {
-			return 0
-		}
-		if m.Memory != nil {
-			return int64(m.Memory.Usage)
-		}
-	}
-	return 0
+	return extractContainerMetrics(metric).MemBytes
 }
 
 // streamReader is a helper that continuously reads from a reader and sends
 // chunks to the output channel with the specified builder function.
 func streamReader(r io.Reader, ch chan<- services.ContainerOutput, buildOutput func([]byte) services.ContainerOutput) {
-	buf := make([]byte, 4096)
+	buf := make([]byte, 32*1024)
 	for {
 		n, err := r.Read(buf)
 		if n > 0 {

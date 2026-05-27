@@ -3,7 +3,7 @@ package ble
 import (
 	"fmt"
 
-	"github.com/wendylabsinc/wendy/internal/shared/models"
+	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 )
 
 // Wendy Lite (ESP32/uwasm) BLE provisioning UUIDs.

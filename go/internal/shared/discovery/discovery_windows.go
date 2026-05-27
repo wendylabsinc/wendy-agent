@@ -5,21 +5,69 @@ package discovery
 import (
 	"context"
 	"fmt"
+	"net"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/hashicorp/mdns"
-	"github.com/wendylabsinc/wendy/internal/shared/models"
+	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 )
-
-func discoverEthernet(_ context.Context) ([]models.EthernetInterface, error) {
-	return nil, nil
-}
 
 // discoverLAN uses hashicorp/mdns to find WendyOS devices on Windows.
 func discoverLAN(ctx context.Context, timeout time.Duration) ([]models.LANDevice, error) {
 	if timeout == 0 {
 		timeout = defaultTimeout
+	}
+
+	queries := []*net.Interface{nil} // Keep the existing default/all-interface query.
+	ifaces, err := net.Interfaces()
+	if err == nil {
+		for _, iface := range ifaces {
+			if !isMDNSInterfaceEligible(iface) {
+				continue
+			}
+			iface := iface
+			queries = append(queries, &iface)
+		}
+	}
+	// Always build the adapter lookup so USB detection works whether devices are
+	// found via the nil (all-interface) query or an interface-scoped query.
+	adapterLookup := newWindowsNetworkAdapterLookup(ctx)
+
+	resultsCh := make(chan []models.LANDevice, len(queries))
+	var wg sync.WaitGroup
+	for _, iface := range queries {
+		wg.Add(1)
+		go func(iface *net.Interface) {
+			defer wg.Done()
+			resultsCh <- queryLANMDNS(ctx, iface, timeout, adapterLookup)
+		}(iface)
+	}
+
+	wg.Wait()
+	close(resultsCh)
+
+	var candidates []models.LANDevice
+	for devices := range resultsCh {
+		candidates = append(candidates, devices...)
+	}
+
+	return deduplicateLANDevices(candidates), nil
+}
+
+func isMDNSInterfaceEligible(iface net.Interface) bool {
+	if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagMulticast == 0 {
+		return false
+	}
+	return iface.Flags&net.FlagLoopback == 0
+}
+
+// queryLANMDNS runs a single mDNS query. If iface is nil, hashicorp/mdns uses
+// its default all-interface behavior. Otherwise, the query is scoped to iface.
+func queryLANMDNS(ctx context.Context, iface *net.Interface, timeout time.Duration, adapterLookup windowsNetworkAdapterLookup) []models.LANDevice {
+	if ctx.Err() != nil {
+		return nil
 	}
 
 	entriesCh := make(chan *mdns.ServiceEntry, 16)
@@ -30,69 +78,248 @@ func discoverLAN(ctx context.Context, timeout time.Duration) ([]models.LANDevice
 		defer close(done)
 		seen := make(map[string]bool)
 		for entry := range entriesCh {
-			// Filter out entries that don't match the queried service type.
-			// hashicorp/mdns can return unrelated mDNS responders (e.g. iPhones
-			// advertising _remotepairing._tcp).
-			if !mdnsEntryMatchesServiceType(entry.Name, wendyServiceType) {
+			dev, ok := lanDeviceFromMDNSEntry(entry, iface, adapterLookup)
+			if !ok {
 				continue
 			}
 
-			hostname := strings.TrimSuffix(entry.Host, ".")
-
-			key := fmt.Sprintf("%s-%s-%d", entry.Name, hostname, entry.Port)
+			key := fmt.Sprintf("%s-%s-%d", entry.Name, dev.Hostname, dev.Port)
 			if seen[key] {
 				continue
 			}
 			seen[key] = true
 
-			displayName := strings.TrimSuffix(hostname, ".local")
-
-			ipAddr := ""
-			if entry.AddrV4 != nil {
-				ipAddr = entry.AddrV4.String()
-			} else if entry.AddrV6 != nil {
-				ipAddr = entry.AddrV6.String()
-			}
-
-			id := ""
-			for _, txt := range entry.InfoFields {
-				if k, v, ok := strings.Cut(txt, "="); ok && k == "id" {
-					id = v
-				}
-			}
-			if id == "" {
-				id = displayName
-			}
-
-			devices = append(devices, models.LANDevice{
-				ID:            id,
-				DisplayName:   displayName,
-				Hostname:      hostname,
-				IPAddress:     ipAddr,
-				Port:          entry.Port,
-				InterfaceType: string(models.InterfaceLAN),
-				IsWendyDevice: true,
-			})
+			devices = append(devices, dev)
 		}
 	}()
 
-	lookupCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
 	params := mdns.DefaultParams(wendyServiceType)
+	params.Interface = iface
 	params.Entries = entriesCh
 	params.Timeout = timeout
 	params.Logger = silentLogger
 
-	err := mdns.Query(params)
+	_ = mdns.Query(params)
 	close(entriesCh)
 	<-done
 
-	if lookupCtx.Err() != nil || err != nil {
-		return devices, nil
+	return devices
+}
+
+func lanDeviceFromMDNSEntry(entry *mdns.ServiceEntry, iface *net.Interface, adapterLookup windowsNetworkAdapterLookup) (models.LANDevice, bool) {
+	if entry == nil || !mdnsEntryMatchesServiceType(entry.Name, wendyServiceType) {
+		return models.LANDevice{}, false
 	}
 
-	return devices, nil
+	hostname := strings.TrimSuffix(entry.Host, ".")
+	txtRecords := parseMDNSTXTRecords(entry.InfoFields)
+
+	displayName := strings.TrimSuffix(hostname, ".local")
+	if dn, ok := txtRecords["displayname"]; ok {
+		displayName = dn
+	}
+
+	id := ""
+	if v, ok := txtRecords["wendyosdevice"]; ok {
+		id = v
+	} else if v, ok := txtRecords["id"]; ok {
+		id = v
+	}
+	if id == "" {
+		id = displayName
+	}
+
+	dev := models.LANDevice{
+		ID:            id,
+		DisplayName:   displayName,
+		Hostname:      hostname,
+		IPAddress:     mdnsEntryIPAddress(entry, iface),
+		Port:          entry.Port,
+		IsMTLS:        txtRecords["tls"] == "true",
+		InterfaceType: string(models.InterfaceLAN),
+		IsWendyDevice: true,
+	}
+	if iface != nil {
+		displayName, linkSpeed := adapterLookup.details(iface)
+		setLANNetworkInterface(&dev, iface.Name, displayName, linkSpeed)
+	}
+	return dev, true
+}
+
+type windowsNetworkAdapterLookup struct {
+	byIndex map[int]netAdapterEntry
+	byName  map[string]netAdapterEntry
+}
+
+func newWindowsNetworkAdapterLookup(ctx context.Context) windowsNetworkAdapterLookup {
+	entries, err := readNetAdapterEntries(ctx)
+	if err != nil {
+		return windowsNetworkAdapterLookup{}
+	}
+	return windowsNetworkAdapterLookupFromEntries(entries)
+}
+
+func windowsNetworkAdapterLookupFromEntries(entries []netAdapterEntry) windowsNetworkAdapterLookup {
+	lookup := windowsNetworkAdapterLookup{
+		byIndex: make(map[int]netAdapterEntry),
+		byName:  make(map[string]netAdapterEntry),
+	}
+	for _, entry := range entries {
+		if entry.InterfaceIndex > 0 {
+			lookup.byIndex[entry.InterfaceIndex] = entry
+		}
+		if entry.Name != "" {
+			lookup.byName[strings.ToLower(entry.Name)] = entry
+		}
+	}
+	return lookup
+}
+
+func (l windowsNetworkAdapterLookup) details(iface *net.Interface) (string, string) {
+	if iface == nil {
+		return "", ""
+	}
+	if entry, ok := l.byIndex[iface.Index]; ok {
+		return entry.InterfaceDescription, entry.LinkSpeed
+	}
+	if entry, ok := l.byName[strings.ToLower(iface.Name)]; ok {
+		return entry.InterfaceDescription, entry.LinkSpeed
+	}
+	return "", ""
+}
+
+func parseMDNSTXTRecords(fields []string) map[string]string {
+	records := make(map[string]string)
+	for _, txt := range fields {
+		if k, v, ok := strings.Cut(txt, "="); ok {
+			records[k] = v
+		}
+	}
+	return records
+}
+
+func mdnsEntryIPAddress(entry *mdns.ServiceEntry, iface *net.Interface) string {
+	if entry.AddrV4 != nil {
+		return entry.AddrV4.String()
+	}
+	if entry.AddrV6 == nil {
+		return ""
+	}
+
+	ipAddr := entry.AddrV6.String()
+	if iface != nil && entry.AddrV6.IsLinkLocalUnicast() && !strings.Contains(ipAddr, "%") {
+		ipAddr += "%" + iface.Name
+	}
+	return ipAddr
+}
+
+func deduplicateLANDevices(devices []models.LANDevice) []models.LANDevice {
+	if len(devices) < 2 {
+		return devices
+	}
+
+	deduped := make([]models.LANDevice, 0, len(devices))
+	indexes := make(map[string]int)
+
+	for _, dev := range devices {
+		key := lanDeviceDedupKey(dev)
+		if idx, ok := indexes[key]; ok {
+			if preferLANDevice(dev, deduped[idx]) {
+				deduped[idx] = dev
+			}
+			continue
+		}
+
+		indexes[key] = len(deduped)
+		deduped = append(deduped, dev)
+	}
+
+	return deduped
+}
+
+func lanDeviceDedupKey(dev models.LANDevice) string {
+	if dev.ID != "" {
+		return "id:" + dev.ID
+	}
+	if dev.Hostname != "" {
+		return fmt.Sprintf("host:%s:%d", dev.Hostname, dev.Port)
+	}
+	return fmt.Sprintf("fallback:%s:%s:%d", dev.DisplayName, dev.Hostname, dev.Port)
+}
+
+func preferLANDevice(candidate, existing models.LANDevice) bool {
+	if (candidate.USB != "") != (existing.USB != "") {
+		return candidate.USB != ""
+	}
+	if existing.IPAddress == "" && candidate.IPAddress != "" {
+		return true
+	}
+	if existing.IPAddress != "" && candidate.IPAddress == "" {
+		return false
+	}
+
+	candidateIsIPv4 := isIPv4Address(candidate.IPAddress)
+	existingIsIPv4 := isIPv4Address(existing.IPAddress)
+	if candidateIsIPv4 != existingIsIPv4 {
+		return candidateIsIPv4
+	}
+
+	if hasScopedLinkLocalIPv6(candidate.IPAddress) && hasUnscopedLinkLocalIPv6(existing.IPAddress) {
+		return true
+	}
+
+	return lanDeviceMetadataScore(candidate) > lanDeviceMetadataScore(existing)
+}
+
+func lanDeviceMetadataScore(dev models.LANDevice) int {
+	score := 0
+	if dev.ID != "" {
+		score++
+	}
+	if dev.DisplayName != "" {
+		score++
+	}
+	if dev.Hostname != "" {
+		score++
+	}
+	if dev.Port != 0 {
+		score++
+	}
+	if dev.IsMTLS {
+		score++
+	}
+	if dev.NetworkInterface != "" {
+		score++
+	}
+	if dev.USB != "" {
+		score += 2
+	}
+	return score
+}
+
+func isIPv4Address(ipAddr string) bool {
+	ip := net.ParseIP(stripIPv6Zone(ipAddr))
+	return ip != nil && ip.To4() != nil
+}
+
+func hasScopedLinkLocalIPv6(ipAddr string) bool {
+	base, zone, _ := strings.Cut(ipAddr, "%")
+	return zone != "" && isLinkLocalIPv6(base)
+}
+
+func hasUnscopedLinkLocalIPv6(ipAddr string) bool {
+	base, zone, _ := strings.Cut(ipAddr, "%")
+	return zone == "" && isLinkLocalIPv6(base)
+}
+
+func isLinkLocalIPv6(ipAddr string) bool {
+	ip := net.ParseIP(ipAddr)
+	return ip != nil && ip.To4() == nil && ip.IsLinkLocalUnicast()
+}
+
+func stripIPv6Zone(ipAddr string) string {
+	base, _, _ := strings.Cut(ipAddr, "%")
+	return base
 }
 
 // discoverLANContinuous periodically queries mDNS and sends newly discovered

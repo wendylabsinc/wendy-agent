@@ -1,12 +1,13 @@
 package commands
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/wendylabsinc/wendy/proto/gen/agentpb"
+	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
 func TestResolveRestartPolicy_Default(t *testing.T) {
@@ -189,10 +190,106 @@ func TestNewDeviceCmd(t *testing.T) {
 		subNames[c.Name()] = true
 	}
 
-	expectedSubs := []string{"version", "set-default", "unset-default", "setup", "update"}
+	expectedSubs := []string{"info", "version", "set-default", "unset-default", "setup", "update"}
 	for _, name := range expectedSubs {
 		if !subNames[name] {
 			t.Errorf("device command missing subcommand %q", name)
+		}
+	}
+	if !subNames["info"] || !subNames["version"] {
+		t.Fatalf("prerequisite device info/version subcommands missing; cannot continue assertions")
+	}
+	if infoCmd, _, err := cmd.Find([]string{"info"}); err != nil || infoCmd.Hidden {
+		t.Errorf("device info should be visible; cmd=%v err=%v", infoCmd, err)
+	}
+	if versionCmd, _, err := cmd.Find([]string{"version"}); err != nil || !versionCmd.Hidden {
+		t.Errorf("device version should be hidden; cmd=%v err=%v", versionCmd, err)
+	}
+
+	buf := new(bytes.Buffer)
+	cmd.SetOut(buf)
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"--help"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("device help: %v", err)
+	}
+	help := buf.String()
+	if !strings.Contains(help, "info") {
+		t.Fatalf("device help missing info command: %s", help)
+	}
+	if strings.Contains(help, "\n  version") {
+		t.Fatalf("device help should not list deprecated version command: %s", help)
+	}
+}
+
+func TestDeprecatedDeviceVersionWarnsInHumanOutput(t *testing.T) {
+	stderr, err := executeDeprecatedDeviceVersion(t, []string{"--json=false", "--device", "local", "device", "version"})
+	if err == nil {
+		t.Fatal("expected device version against local provider to fail")
+	}
+	if !strings.Contains(stderr, "Warning: 'wendy device version' is deprecated; use 'wendy device info' instead.") {
+		t.Fatalf("expected deprecation warning on stderr, got %q", stderr)
+	}
+}
+
+func TestDeprecatedDeviceVersionDoesNotWarnInJSONOutput(t *testing.T) {
+	stderr, err := executeDeprecatedDeviceVersion(t, []string{"--json", "--device", "local", "device", "version"})
+	if err == nil {
+		t.Fatal("expected device version against local provider to fail")
+	}
+	if strings.Contains(stderr, "deprecated") {
+		t.Fatalf("--json output should not include deprecation warning on stderr, got %q", stderr)
+	}
+}
+
+func executeDeprecatedDeviceVersion(t *testing.T, args []string) (string, error) {
+	t.Helper()
+
+	origJSON := jsonOutput
+	origDevice := deviceFlag
+	t.Cleanup(func() {
+		jsonOutput = origJSON
+		deviceFlag = origDevice
+	})
+
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("WENDY_ANALYTICS", "false")
+
+	root := NewRootCmd()
+	root.SetArgs(args)
+	root.SetOut(new(bytes.Buffer))
+	stderr := new(bytes.Buffer)
+	root.SetErr(stderr)
+
+	err := root.Execute()
+	return stderr.String(), err
+}
+
+func TestNewCloudDeviceCmd(t *testing.T) {
+	cmd := newCloudDeviceCmd()
+	if cmd.Use != "device" {
+		t.Errorf("Use = %q; want %q", cmd.Use, "device")
+	}
+	if cmd.Short == "" {
+		t.Error("Short should not be empty")
+	}
+	if cmd.PersistentFlags().Lookup("cloud-grpc") == nil {
+		t.Error("missing persistent flag \"cloud-grpc\"")
+	}
+	if cmd.PersistentFlags().Lookup("broker-url") == nil {
+		t.Error("missing persistent flag \"broker-url\"")
+	}
+
+	subCmds := cmd.Commands()
+	subNames := make(map[string]bool)
+	for _, c := range subCmds {
+		subNames[c.Name()] = true
+	}
+
+	expectedSubs := []string{"info", "version", "set-default", "unset-default", "setup", "update", "wifi", "apps"}
+	for _, name := range expectedSubs {
+		if !subNames[name] {
+			t.Errorf("cloud device command missing mirrored subcommand %q", name)
 		}
 	}
 }

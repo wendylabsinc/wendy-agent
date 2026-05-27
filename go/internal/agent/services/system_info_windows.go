@@ -5,7 +5,7 @@ package services
 import (
 	"context"
 
-	agentpb "github.com/wendylabsinc/wendy/proto/gen/agentpb"
+	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
 func collectCPUInfo(_ context.Context) *agentpb.GetSystemInfoResponse_CPUInfo {

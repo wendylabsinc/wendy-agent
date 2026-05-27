@@ -1,0 +1,136 @@
+---
+title: ESP32 Installation (Wendy Lite)
+description: Install Wendy Lite on ESP32 RISC-V microcontrollers
+---
+
+## ESP32 Installation (Wendy Lite)
+
+Wendy Lite is a WebAssembly runtime for ESP32 RISC-V microcontrollers. It lets you write firmware in Swift and deploy it as a `.wasm` binary to ESP32-C6 and ESP32-C5 devices.
+
+<Callout type="warn">
+  **Supported chips**: Wendy Lite targets ESP32-C6 and ESP32-C5 (RISC-V). Classic ESP32 (Xtensa) is not supported.
+</Callout>
+
+### What You'll Need
+
+- An ESP32-C6 or ESP32-C5 development board
+- USB cable for connecting the board to your computer
+- Wendy CLI installed on your development machine ([Developer Machine Setup](/docs/installation/developer-machine-setup))
+- Swift 6.0+ with Embedded Swift WASM support ([Developer Machine Setup](/docs/installation/developer-machine-setup#install-swift))
+
+### Installing Wendy Lite Firmware
+
+<Steps>
+  <Step>
+    ### Connect Your Board
+
+    Plug your ESP32-C6 or ESP32-C5 board into your computer via USB.
+  </Step>
+
+  <Step>
+    ### Install the Firmware
+
+    Use the `wendy` CLI to flash the Wendy Lite firmware to your board:
+
+    ```bash
+    wendy os install
+    ```
+
+    Select **ESP32-C6** (or **ESP32-C5**) when prompted, then select the USB serial port for your board. The CLI will download and flash the Wendy Lite firmware automatically.
+  </Step>
+
+  <Step>
+    ### Discover Your Device
+
+    Once the firmware is flashed, the board will restart and advertise itself over BLE. Run:
+
+    ```bash
+    wendy discover
+    wendy device set-default
+    ```
+
+    You should see your ESP32 device appear in the list of discovered devices.
+  </Step>
+</Steps>
+
+### Writing Your First App
+
+<Steps>
+  <Step>
+    ### Create a New Project
+
+    Use the Wendy CLI to scaffold a new Wendy Lite project:
+
+    ```bash
+    mkdir blink && cd blink
+    wendy init
+    ```
+
+    Select **ESP32** as the target platform when prompted. This creates a Swift project preconfigured with the WendyLite SDK and the correct build settings for WebAssembly.
+  </Step>
+
+  <Step>
+    ### Explore the Project Structure
+
+    After initialization, you'll have the following structure:
+
+    ```
+    blink/
+    ├── Package.swift
+    ├── wendy.json
+    └── Sources/
+        └── blink/
+            └── main.swift
+    ```
+  </Step>
+
+  <Step>
+    ### Edit Your App
+
+    Open `Sources/blink/main.swift` and replace the contents with a simple blink example:
+
+    ```swift
+    import WendyLite
+
+    let led = GPIO(pin: 8, mode: .output)
+
+    while true {
+        led.high()
+        Timer.delay(milliseconds: 500)
+        led.low()
+        Timer.delay(milliseconds: 500)
+    }
+    ```
+  </Step>
+</Steps>
+
+### Deploying to the Device
+
+Once your project is set up, deploy it to your ESP32 with a single command:
+
+```bash
+wendy run
+```
+
+The Wendy CLI compiles your Swift code to WebAssembly and uploads the `.wasm` binary to the device. You should see the onboard LED start blinking.
+
+### BLE Provisioning
+
+Wendy Lite devices advertise themselves as `Wendy-XXXX` over BLE for WiFi provisioning. You can send WiFi credentials and cloud certificates via the BLE GATT interface, enabling headless setup of devices in the field.
+
+### Observability
+
+Wendy Lite supports OpenTelemetry natively. Your application can emit structured logs, metrics, and traces that integrate with the Wendy dashboard alongside your Jetson and Raspberry Pi devices.
+
+```swift
+import WendyLite
+
+Log.info("Sensor reading", attributes: ["temperature": 23.5, "humidity": 61.2])
+Metrics.gauge("temperature", value: 23.5)
+```
+
+### Next Steps
+
+- Explore the [Wendy Lite examples](https://github.com/wendylabsinc/wendy-lite/tree/main/wasm_apps) for GPIO, I2C, SPI, BLE, and WiFi demos
+- Check the [Developer Machine Setup](/docs/installation/developer-machine-setup) for CLI installation
+- Read the [Raspberry Pi 5 Installation](/docs/installation/wendyos-raspberry-pi-5) or [NVIDIA Jetson Installation](/docs/installation/wendyos-nvidia-jetson) guides if you also work with larger devices

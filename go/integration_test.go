@@ -17,12 +17,12 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/test/bufconn"
 
-	"github.com/wendylabsinc/wendy/internal/agent/services"
-	"github.com/wendylabsinc/wendy/internal/shared/appconfig"
-	"github.com/wendylabsinc/wendy/internal/shared/version"
-	agentpb "github.com/wendylabsinc/wendy/proto/gen/agentpb"
-	cloudpb "github.com/wendylabsinc/wendy/proto/gen/cloudpb"
-	otelpb "github.com/wendylabsinc/wendy/proto/gen/otelpb"
+	"github.com/wendylabsinc/wendy/go/internal/agent/services"
+	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
+	"github.com/wendylabsinc/wendy/go/internal/shared/version"
+	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
+	cloudpb "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
+	otelpb "github.com/wendylabsinc/wendy/go/proto/gen/otelpb"
 )
 
 // ---------- mocks for integration test ----------
@@ -173,7 +173,7 @@ func (m *statefulContainerdClient) CreateContainerWithProgress(ctx context.Conte
 	return m.CreateContainer(ctx, req, appCfg)
 }
 
-func (m *statefulContainerdClient) StartContainer(_ context.Context, appName, _ string) (<-chan services.ContainerOutput, error) {
+func (m *statefulContainerdClient) StartContainer(_ context.Context, appName, _ string, _ *agentpb.RestartPolicy) (<-chan services.ContainerOutput, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if _, ok := m.containers[appName]; !ok {
@@ -192,8 +192,8 @@ func (m *statefulContainerdClient) StartContainer(_ context.Context, appName, _ 
 	return ch, nil
 }
 
-func (m *statefulContainerdClient) StartContainerWithStdin(_ context.Context, appName string, _ io.Reader, postStartAgentCommand string) (<-chan services.ContainerOutput, error) {
-	return m.StartContainer(context.Background(), appName, postStartAgentCommand)
+func (m *statefulContainerdClient) StartContainerWithStdin(_ context.Context, appName string, _ io.Reader, postStartAgentCommand string, _ *agentpb.RestartPolicy) (<-chan services.ContainerOutput, error) {
+	return m.StartContainer(context.Background(), appName, postStartAgentCommand, nil)
 }
 
 func (m *statefulContainerdClient) GetContainerStats(_ context.Context) ([]*agentpb.ContainerStats, error) {
@@ -202,6 +202,14 @@ func (m *statefulContainerdClient) GetContainerStats(_ context.Context) ([]*agen
 
 func (m *statefulContainerdClient) GetContainerMetrics(_ context.Context, _ string) (services.ContainerMetrics, error) {
 	return services.ContainerMetrics{}, nil
+}
+
+func (s *statefulContainerdClient) GetContainerMCPPort(_ context.Context, _ string) (uint32, error) {
+	return 0, nil
+}
+
+func (m *statefulContainerdClient) GetContainerRestartPolicyLabel(_ context.Context, _ string) (string, error) {
+	return "", nil
 }
 
 // getLayerData returns the data stored for a given digest, for test assertions.
@@ -249,6 +257,7 @@ func (f *integrationFakeCertService) IssueCertificate(_ context.Context, _ *clou
 const integrationBufSize = 1024 * 1024
 
 func TestFullAgentLifecycle(t *testing.T) {
+	t.Parallel()
 	logger := zap.NewNop()
 	lis := bufconn.Listen(integrationBufSize)
 
@@ -258,7 +267,7 @@ func TestFullAgentLifecycle(t *testing.T) {
 	bm := &integrationBluetoothManager{}
 	cc := newStatefulContainerdClient()
 
-	agentSvc := services.NewAgentService(logger, nm, hd, bm)
+	agentSvc := services.NewAgentService(logger, nm, hd, bm, &services.AgentInstaller{})
 	containerSvc := services.NewContainerService(logger, cc)
 	broadcaster := services.NewTelemetryBroadcaster()
 	telemetrySvc := services.NewTelemetryService(logger, broadcaster)
@@ -429,6 +438,7 @@ func TestFullAgentLifecycle(t *testing.T) {
 // TestContainerDeployStartStopDelete tests the full container lifecycle via gRPC:
 // WriteLayer -> CreateContainer -> StartContainer -> ListContainers -> StopContainer -> DeleteContainer
 func TestContainerDeployStartStopDelete(t *testing.T) {
+	t.Parallel()
 	logger := zap.NewNop()
 	lis := bufconn.Listen(integrationBufSize)
 	cc := newStatefulContainerdClient()
@@ -719,6 +729,7 @@ func TestContainerDeployStartStopDelete(t *testing.T) {
 // TestStreamMetrics verifies that metrics published via the OTEL receiver
 // are received by a StreamMetrics subscriber.
 func TestStreamMetrics(t *testing.T) {
+	t.Parallel()
 	logger := zap.NewNop()
 	lis := bufconn.Listen(integrationBufSize)
 
@@ -786,6 +797,7 @@ func TestStreamMetrics(t *testing.T) {
 // TestStreamTraces verifies that traces published via the OTEL receiver
 // are received by a StreamTraces subscriber.
 func TestStreamTraces(t *testing.T) {
+	t.Parallel()
 	logger := zap.NewNop()
 	lis := bufconn.Listen(integrationBufSize)
 
@@ -853,6 +865,7 @@ func TestStreamTraces(t *testing.T) {
 // TestProvisioningFlow tests the full provisioning lifecycle via gRPC:
 // IsProvisioned (not provisioned) -> StartProvisioning (with fake cloud) -> IsProvisioned (provisioned).
 func TestProvisioningFlow(t *testing.T) {
+	t.Parallel()
 	logger := zap.NewNop()
 	lis := bufconn.Listen(integrationBufSize)
 
@@ -977,6 +990,7 @@ func TestProvisioningFlow(t *testing.T) {
 // TestRunContainer tests the RunContainer RPC which combines container creation + starting
 // in a single call, and streams output back.
 func TestRunContainer(t *testing.T) {
+	t.Parallel()
 	logger := zap.NewNop()
 	lis := bufconn.Listen(integrationBufSize)
 	cc := newStatefulContainerdClient()
@@ -1090,4 +1104,93 @@ func TestRunContainer(t *testing.T) {
 			t.Errorf("running_state = %v; want RUNNING", containers[0].RunningState)
 		}
 	})
+}
+
+// TestOTELLocalhostBindProperty verifies that a 127.0.0.1-bound TCP listener
+// is not reachable from a non-loopback interface, confirming the security
+// property of the fix for WDY-1097/WDY-1100.
+func TestOTELLocalhostBindProperty(t *testing.T) {
+	t.Parallel()
+	// Find a non-loopback IPv4 address on this machine. If none exists (e.g.
+	// a stripped-down CI container with only lo), skip rather than fail.
+	var externalIP string
+	ifaces, _ := net.InterfaceAddrs()
+	for _, a := range ifaces {
+		ipNet, ok := a.(*net.IPNet)
+		if !ok || ipNet.IP.IsLoopback() || ipNet.IP.To4() == nil {
+			continue
+		}
+		externalIP = ipNet.IP.String()
+		break
+	}
+	if externalIP == "" {
+		t.Skip("no non-loopback IPv4 interface — cannot verify localhost-only property")
+	}
+
+	// Bind to 127.0.0.1 only, as the OTEL receivers do after the fix.
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("net.Listen: %v", err)
+	}
+	defer lis.Close()
+	port := lis.Addr().(*net.TCPAddr).Port
+
+	// Localhost must be able to connect.
+	c, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), time.Second)
+	if err != nil {
+		t.Fatalf("localhost connection refused: %v", err)
+	}
+	c.Close()
+
+	// External interface must NOT be able to connect to the same port.
+	c2, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", externalIP, port), 500*time.Millisecond)
+	if err == nil {
+		c2.Close()
+		t.Errorf("connection via external IP %s:%d succeeded — listener should be localhost-only", externalIP, port)
+	}
+}
+
+// TestOTELEndpointEnvVarReachable verifies that a gRPC client using the
+// OTEL_EXPORTER_OTLP_ENDPOINT value that buildContainerBaseEnv injects can
+// actually reach the OTLP gRPC receiver. This simulates a Swift container
+// auto-configuring its exporter from the environment.
+func TestOTELEndpointEnvVarReachable(t *testing.T) {
+	// Cannot use t.Parallel with t.Setenv.
+
+	// Start a real OTLP gRPC server on a random IPv4 loopback port.
+	lis, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("net.Listen: %v", err)
+	}
+	port := lis.Addr().(*net.TCPAddr).Port
+
+	broadcaster := services.NewTelemetryBroadcaster()
+	srv := grpc.NewServer()
+	otelpb.RegisterLogsServiceServer(srv, services.NewOTELLogsReceiver(broadcaster))
+	go srv.Serve(lis)
+	t.Cleanup(srv.Stop)
+
+	// This is the endpoint buildContainerBaseEnv injects when WENDY_OTEL_PORT
+	// is set to the server's port (the format is http://127.0.0.1:<port>).
+	endpoint := fmt.Sprintf("http://127.0.0.1:%d", port)
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", endpoint)
+
+	// A container reads OTEL_EXPORTER_OTLP_ENDPOINT and dials the gRPC target.
+	// The http:// scheme prefix is stripped because grpc.NewClient expects host:port.
+	rawEndpoint := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
+	grpcTarget := rawEndpoint[len("http://"):]
+
+	conn, err := grpc.NewClient(grpcTarget, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("grpc.NewClient(%q): %v", grpcTarget, err)
+	}
+	t.Cleanup(func() { conn.Close() })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err = otelpb.NewLogsServiceClient(conn).Export(ctx, &otelpb.ExportLogsServiceRequest{})
+	if err != nil {
+		t.Fatalf("OTLP endpoint %q unreachable: %v", endpoint, err)
+	}
 }

@@ -9,9 +9,9 @@ import (
 
 	bubbleTable "github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/wendylabsinc/wendy/internal/cli/grpcclient"
-	"github.com/wendylabsinc/wendy/internal/cli/tui"
-	"github.com/wendylabsinc/wendy/proto/gen/agentpb"
+	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
+	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -472,7 +472,10 @@ func (m appsDashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			appName := m.rows[cursor].name
 			m.flash = fmt.Sprintf("Starting %s…", appName)
 			return m, func() tea.Msg {
-				stream, err := m.conn.ContainerService.StartContainer(m.ctx, &agentpb.StartContainerRequest{AppName: appName})
+				stream, err := m.conn.ContainerService.StartContainer(m.ctx, &agentpb.StartContainerRequest{
+					AppName:       appName,
+					RestartPolicy: &agentpb.RestartPolicy{Mode: agentpb.RestartPolicyMode_UNLESS_STOPPED},
+				})
 				if err != nil {
 					return appsDashActionResultMsg{err: fmt.Errorf("starting %s: %w", appName, err)}
 				}

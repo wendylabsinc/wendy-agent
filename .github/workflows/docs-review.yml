@@ -1,0 +1,179 @@
+name: Docs Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+
+jobs:
+  docs-review:
+    name: Review docs coverage
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Get PR diff
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: gh pr diff "$PR_NUMBER" --repo "$REPO" > pr.diff 2>/dev/null || touch pr.diff
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Anthropic SDK
+        run: pip install --quiet anthropic==0.97.0
+
+      - name: Review docs with Claude
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO_NAME: ${{ github.event.repository.name }}
+          REVIEW_FILE: ${{ runner.temp }}/review.md
+        run: |
+          python3 << 'PYEOF'
+          import anthropic
+          import os
+          import re
+          import pathlib
+
+          client = anthropic.Anthropic()
+
+          with open('pr.diff') as f:
+              diff = f.read()
+
+          if not diff.strip():
+              print('Empty diff — skipping')
+              raise SystemExit(0)
+
+          docs_root = pathlib.Path('docs').resolve()
+          pr_title = os.environ['PR_TITLE']
+          pr_body = os.environ['PR_BODY']
+
+          PROTECTED = {'THREAT_MODEL.md', 'threat-model.md'}
+
+          def _keywords(text):
+              return set(re.findall(r'[a-zA-Z][a-zA-Z0-9_]{3,}', text.lower()))
+
+          pr_keywords = _keywords(pr_title) | _keywords(diff[:8000])
+
+          def _relevance(doc):
+              path_hits = len(_keywords(doc['path']) & pr_keywords) * 3
+              body_hits = len(_keywords(doc['content'][:1500]) & pr_keywords)
+              return path_hits + body_hits
+
+          DOCS_BUDGET = 50000
+          candidate_docs = []
+          for md in sorted(docs_root.rglob('*.md')):
+              rel = md.relative_to(docs_root)
+              if any(part.startswith('.') for part in rel.parts):
+                  continue
+              if rel.name in PROTECTED:
+                  continue
+              content = md.read_text()
+              if not content.strip():
+                  continue
+              candidate_docs.append({'path': str(rel), 'content': content})
+
+          candidate_docs.sort(key=_relevance, reverse=True)
+
+          all_docs = []
+          total_bytes = 0
+          for doc in candidate_docs:
+              if total_bytes + len(doc['content']) > DOCS_BUDGET:
+                  break
+              all_docs.append(doc)
+              total_bytes += len(doc['content'])
+
+          MAX_TREE_DEPTH = 3
+          tree_lines = []
+          for item in sorted(docs_root.rglob('*')):
+              rel = item.relative_to(docs_root)
+              if any(part.startswith('.') for part in rel.parts):
+                  continue
+              if len(rel.parts) > MAX_TREE_DEPTH:
+                  continue
+              indent = '  ' * (len(rel.parts) - 1)
+              tree_lines.append(f'{indent}{rel.name}{"/" if item.is_dir() else ""}')
+          file_tree = '\n'.join(tree_lines)
+
+          docs_context = '\n\n'.join(
+              f'### {d["path"]}\n{d["content"]}' for d in all_docs
+          )
+
+          message = client.messages.create(
+              model='claude-sonnet-4-6',
+              max_tokens=8000,
+              system=[
+                  {
+                      'type': 'text',
+                      'text': (
+                          'You are a technical writer for WendyOS.\n'
+                          'Given a PR diff and the current documentation, identify the minimal doc changes '
+                          'needed to keep docs accurate — added behaviour, removed behaviour, or changed behaviour.\n\n'
+                          'Output a concise GitHub PR review comment in markdown. For each file that needs '
+                          'updating, show the suggested changes as a diff or the full proposed new content in '
+                          'a fenced code block. Be specific about what to change and why.\n\n'
+                          'Rules:\n'
+                          '- Only flag content that is directly wrong or missing as a result of the diff.\n'
+                          '- Write in timeless present tense ("X does Y").\n'
+                          '- Suggest new files only for features that are completely undocumented.\n'
+                          '- Do not invent features absent from the diff.\n'
+                          '- Never touch THREAT_MODEL.md.\n'
+                          '- If no doc changes are needed, output exactly: NO_CHANGES_NEEDED\n\n'
+                          'Start the comment with a one-line summary, then list each file suggestion under '
+                          'a `### docs/<path>` heading.'
+                      ),
+                      'cache_control': {'type': 'ephemeral'},
+                  }
+              ],
+              messages=[{
+                  'role': 'user',
+                  'content': (
+                      '<untrusted_pr_content>\n'
+                      f'PR #{os.environ["PR_NUMBER"]}: {pr_title}\n\n'
+                      f'{pr_body}\n\n'
+                      f'## Diff\n```diff\n{diff[:30000]}\n```\n'
+                      '</untrusted_pr_content>\n\n'
+                      f'## Docs file tree\n```\n{file_tree}\n```\n\n'
+                      f'## Current docs (most relevant first)\n{docs_context[:50000]}'
+                  ),
+              }],
+          )
+
+          response_text = message.content[0].text.strip()
+          if not response_text or response_text == 'NO_CHANGES_NEEDED':
+              print('No doc changes needed')
+              raise SystemExit(0)
+
+          review_file = os.environ['REVIEW_FILE']
+          with open(review_file, 'w') as f:
+              f.write('> [!NOTE]\n')
+              f.write('> **Docs review** — automated suggestions from Claude. Apply, adapt, or dismiss as needed.\n\n')
+              f.write(response_text + '\n')
+          print(f'Review written to {review_file}')
+          PYEOF
+
+      - name: Post review comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          REVIEW_FILE: ${{ runner.temp }}/review.md
+        run: |
+          if [ -s "$REVIEW_FILE" ]; then
+            gh api "repos/$REPO/pulls/$PR_NUMBER/reviews" \
+              --method POST \
+              --field event=COMMENT \
+              --field body=@"$REVIEW_FILE"
+          fi

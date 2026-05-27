@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -155,6 +156,23 @@ func TestValidate_PersistMissingFields(t *testing.T) {
 	}
 }
 
+func TestValidate_PersistPathUsesContainerPathSemantics(t *testing.T) {
+	cfg := &AppConfig{
+		AppID: "com.example.app",
+		Entitlements: []Entitlement{
+			{Type: EntitlementPersist, Name: "vol1", Path: "/data"},
+		},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() unexpected error for POSIX container path: %v", err)
+	}
+
+	cfg.Entitlements[0].Path = `C:\data`
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("Validate() expected error for host-style absolute path, got nil")
+	}
+}
+
 func TestValidate_GPIOWithoutPins(t *testing.T) {
 	cfg := &AppConfig{
 		AppID: "com.example.app",
@@ -183,6 +201,7 @@ func TestValidate_AllEntitlementTypes(t *testing.T) {
 			{Type: EntitlementI2C, Device: "i2c-1"},
 			{Type: EntitlementGPIO, Pins: []int{7}},
 			{Type: EntitlementInput},
+			{Type: EntitlementMCP, Port: 3000},
 		},
 	}
 
@@ -229,6 +248,34 @@ func TestValidateJSON_InputUnknownKeys(t *testing.T) {
 	warnings := ValidateJSON(data)
 	if len(warnings) == 0 {
 		t.Fatal("ValidateJSON() expected warning for unknown key on input entitlement, got none")
+	}
+}
+
+func TestValidateJSON_MCPNoWarnings(t *testing.T) {
+	data := []byte(`{
+		"appId": "com.example.app",
+		"entitlements": [
+			{"type": "mcp", "port": 3000}
+		]
+	}`)
+
+	warnings := ValidateJSON(data)
+	if len(warnings) != 0 {
+		t.Errorf("ValidateJSON() got %d warnings for valid mcp entitlement, want 0", len(warnings))
+	}
+}
+
+func TestValidateJSON_MCPUnknownKeys(t *testing.T) {
+	data := []byte(`{
+		"appId": "com.example.app",
+		"entitlements": [
+			{"type": "mcp", "port": 3000, "typo": 1}
+		]
+	}`)
+
+	warnings := ValidateJSON(data)
+	if len(warnings) == 0 {
+		t.Fatal("ValidateJSON() expected warning for unknown key on mcp entitlement, got none")
 	}
 }
 
@@ -326,6 +373,156 @@ func TestLoadFromFile_WithoutHooks(t *testing.T) {
 	if cfg.Hooks != nil {
 		t.Errorf("Hooks = %+v, want nil", cfg.Hooks)
 	}
+}
+
+func TestLoadFromFile_HooksPostStartOpenURL(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "wendy.json")
+
+	content := `{
+		"appId": "com.example.webapp",
+		"hooks": {
+			"postStart": {
+				"openURL": "http://${WENDY_HOSTNAME}:3000"
+			}
+		}
+	}`
+
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("writing test file: %v", err)
+	}
+
+	cfg, err := LoadFromFile(path)
+	if err != nil {
+		t.Fatalf("LoadFromFile() error = %v", err)
+	}
+	if cfg.Hooks == nil || cfg.Hooks.PostStart == nil {
+		t.Fatal("Hooks.PostStart is nil")
+	}
+	if got, want := cfg.Hooks.PostStart.OpenURL, "http://${WENDY_HOSTNAME}:3000"; got != want {
+		t.Errorf("Hooks.PostStart.OpenURL = %q, want %q", got, want)
+	}
+	if cfg.Hooks.PostStart.CLI != "" {
+		t.Errorf("Hooks.PostStart.CLI = %q, want empty", cfg.Hooks.PostStart.CLI)
+	}
+}
+
+func TestValidateJSON_PostStartCLILegacyOpener(t *testing.T) {
+	tests := []struct {
+		name       string
+		cli        string
+		wantOpener string
+		wantPlatfm string
+	}{
+		{"open", "open http://localhost:3000", "open", "macOS"},
+		{"xdg-open", "xdg-open http://localhost:3000", "xdg-open", "Linux"},
+		{"start", "start http://localhost:3000", "start", "Windows"},
+		{"open with leading whitespace", "  open http://localhost:3000", "open", "macOS"},
+		{"open with tab separator", "open\thttp://localhost:3000", "open", "macOS"},
+		{"bare open", "open", "open", "macOS"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data := []byte(`{
+				"appId": "com.example.app",
+				"hooks": {
+					"postStart": {
+						"cli": ` + jsonString(tt.cli) + `
+					}
+				}
+			}`)
+
+			warnings := ValidateJSON(data)
+			if len(warnings) != 1 {
+				t.Fatalf("ValidateJSON() got %d warnings, want 1: %v", len(warnings), warnings)
+			}
+			if !strings.Contains(warnings[0], `"`+tt.wantOpener+`"`) {
+				t.Errorf("warning %q does not mention opener %q", warnings[0], tt.wantOpener)
+			}
+			if !strings.Contains(warnings[0], tt.wantPlatfm) {
+				t.Errorf("warning %q does not mention platform %q", warnings[0], tt.wantPlatfm)
+			}
+			if !strings.Contains(warnings[0], "openURL") {
+				t.Errorf("warning %q does not recommend openURL", warnings[0])
+			}
+		})
+	}
+}
+
+func TestValidateJSON_PostStartCLIPortableNoWarning(t *testing.T) {
+	tests := []struct {
+		name string
+		cli  string
+	}{
+		{"echo", "echo hello"},
+		{"openssl is not open", "openssl version"},
+		{"started is not start", "started --foo"},
+		{"empty", ""},
+		{"openURL only", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data := []byte(`{
+				"appId": "com.example.app",
+				"hooks": {
+					"postStart": {
+						"cli": ` + jsonString(tt.cli) + `
+					}
+				}
+			}`)
+
+			warnings := ValidateJSON(data)
+			for _, w := range warnings {
+				if strings.Contains(w, "hooks.postStart.cli") {
+					t.Errorf("unexpected warning: %q", w)
+				}
+			}
+		})
+	}
+}
+
+func TestValidateJSON_PostStartOpenURLNoWarning(t *testing.T) {
+	data := []byte(`{
+		"appId": "com.example.app",
+		"hooks": {
+			"postStart": {
+				"openURL": "http://localhost:3000"
+			}
+		}
+	}`)
+
+	warnings := ValidateJSON(data)
+	for _, w := range warnings {
+		if strings.Contains(w, "hooks.postStart") {
+			t.Errorf("unexpected warning: %q", w)
+		}
+	}
+}
+
+func TestValidateJSON_NoEntitlementsStillValidatesHooks(t *testing.T) {
+	// Regression: ValidateJSON used to early-return when entitlements were
+	// missing, silently skipping hook validation.
+	data := []byte(`{
+		"appId": "com.example.app",
+		"hooks": {
+			"postStart": {
+				"cli": "open http://localhost:3000"
+			}
+		}
+	}`)
+
+	warnings := ValidateJSON(data)
+	if len(warnings) != 1 {
+		t.Fatalf("ValidateJSON() got %d warnings, want 1", len(warnings))
+	}
+}
+
+func jsonString(s string) string {
+	b, err := json.Marshal(s)
+	if err != nil {
+		panic(err)
+	}
+	return string(b)
 }
 
 func TestLoadFromFile_HooksPostStartCLIOnly(t *testing.T) {
@@ -720,4 +917,377 @@ func TestValidateJSON_UnknownKeys(t *testing.T) {
 	if len(warnings) != 2 {
 		t.Errorf("ValidateJSON() got %d warnings, want 2", len(warnings))
 	}
+}
+
+func TestMCPEntitlementValid(t *testing.T) {
+	cfg := &AppConfig{
+		AppID: "test",
+		Entitlements: []Entitlement{
+			{Type: EntitlementMCP, Port: 3000},
+		},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+}
+
+func TestMCPEntitlementPortRequired(t *testing.T) {
+	cfg := &AppConfig{
+		AppID: "test",
+		Entitlements: []Entitlement{
+			{Type: EntitlementMCP, Port: 0},
+		},
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for missing port")
+	}
+	if !strings.Contains(err.Error(), "port") {
+		t.Fatalf("expected error to mention port, got: %v", err)
+	}
+}
+
+func TestMCPEntitlementDuplicateRejected(t *testing.T) {
+	cfg := &AppConfig{
+		AppID: "test",
+		Entitlements: []Entitlement{
+			{Type: EntitlementMCP, Port: 3000},
+			{Type: EntitlementMCP, Port: 4000},
+		},
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for duplicate mcp entitlement")
+	}
+}
+
+func TestMCPEntitlementPortOutOfRange(t *testing.T) {
+	cfg := &AppConfig{
+		AppID: "test",
+		Entitlements: []Entitlement{
+			{Type: EntitlementMCP, Port: 99999},
+		},
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for out-of-range port")
+	}
+}
+
+func TestServiceConfigValidation(t *testing.T) {
+	t.Run("valid services", func(t *testing.T) {
+		cfg := &AppConfig{
+			AppID: "com.example.app",
+			Services: map[string]*ServiceConfig{
+				"api":      {Context: "api", DependsOn: []string{"db"}},
+				"db":       {Context: "db"},
+				"frontend": {Context: "frontend", DependsOn: []string{"api"}},
+			},
+		}
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("missing context", func(t *testing.T) {
+		cfg := &AppConfig{
+			AppID: "com.example.app",
+			Services: map[string]*ServiceConfig{
+				"api": {Context: ""},
+			},
+		}
+		err := cfg.Validate()
+		if err == nil {
+			t.Fatal("expected error for missing context")
+		}
+		if !strings.Contains(err.Error(), "context is required") {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("unknown dependsOn", func(t *testing.T) {
+		cfg := &AppConfig{
+			AppID: "com.example.app",
+			Services: map[string]*ServiceConfig{
+				"api": {Context: "api", DependsOn: []string{"ghost"}},
+			},
+		}
+		err := cfg.Validate()
+		if err == nil {
+			t.Fatal("expected error for unknown dependsOn")
+		}
+		if !strings.Contains(err.Error(), "ghost") {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("dotdot in context rejected", func(t *testing.T) {
+		cfg := &AppConfig{
+			AppID: "com.example.app",
+			Services: map[string]*ServiceConfig{
+				"svc": {Context: "../escape"},
+			},
+		}
+		err := cfg.Validate()
+		if err == nil {
+			t.Fatal("expected error for dotdot context")
+		}
+	})
+
+	t.Run("services parsed from JSON", func(t *testing.T) {
+		data := `{
+			"appId": "com.example.app",
+			"services": {
+				"api":  {"context": "api",  "dependsOn": ["db"]},
+				"db":   {"context": "db"}
+			}
+		}`
+		cfg, err := LoadFromBytes([]byte(data))
+		if err != nil {
+			t.Fatalf("parse error: %v", err)
+		}
+		if len(cfg.Services) != 2 {
+			t.Fatalf("want 2 services, got %d", len(cfg.Services))
+		}
+		if cfg.Services["api"].Context != "api" {
+			t.Errorf("api context = %q, want %q", cfg.Services["api"].Context, "api")
+		}
+		if len(cfg.Services["api"].DependsOn) != 1 || cfg.Services["api"].DependsOn[0] != "db" {
+			t.Errorf("api dependsOn = %v, want [db]", cfg.Services["api"].DependsOn)
+		}
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("validate error: %v", err)
+		}
+	})
+
+	t.Run("valid service entitlements", func(t *testing.T) {
+		cfg := &AppConfig{
+			AppID: "com.example.app",
+			Services: map[string]*ServiceConfig{
+				"api": {
+					Context: "api",
+					Entitlements: []Entitlement{
+						{Type: EntitlementNetwork, Mode: "host"},
+						{Type: EntitlementPersist, Name: "data", Path: "/app/data"},
+					},
+				},
+			},
+		}
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("unexpected error for valid service entitlements: %v", err)
+		}
+	})
+
+	t.Run("unknown entitlement type in service", func(t *testing.T) {
+		cfg := &AppConfig{
+			AppID: "com.example.app",
+			Services: map[string]*ServiceConfig{
+				"api": {
+					Context:      "api",
+					Entitlements: []Entitlement{{Type: "banana"}},
+				},
+			},
+		}
+		err := cfg.Validate()
+		if err == nil {
+			t.Fatal("expected error for unknown entitlement type in service")
+		}
+		if !strings.Contains(err.Error(), "banana") {
+			t.Fatalf("expected error to mention unknown type, got: %v", err)
+		}
+	})
+
+	t.Run("persist entitlement missing name in service", func(t *testing.T) {
+		cfg := &AppConfig{
+			AppID: "com.example.app",
+			Services: map[string]*ServiceConfig{
+				"api": {
+					Context: "api",
+					Entitlements: []Entitlement{
+						{Type: EntitlementPersist, Path: "/data"},
+					},
+				},
+			},
+		}
+		err := cfg.Validate()
+		if err == nil {
+			t.Fatal("expected error for persist missing name in service")
+		}
+		if !strings.Contains(err.Error(), "name") {
+			t.Fatalf("expected error to mention name, got: %v", err)
+		}
+	})
+
+	t.Run("persist entitlement missing path in service", func(t *testing.T) {
+		cfg := &AppConfig{
+			AppID: "com.example.app",
+			Services: map[string]*ServiceConfig{
+				"svc": {
+					Context: "svc",
+					Entitlements: []Entitlement{
+						{Type: EntitlementPersist, Name: "vol"},
+					},
+				},
+			},
+		}
+		err := cfg.Validate()
+		if err == nil {
+			t.Fatal("expected error for persist missing path in service")
+		}
+		if !strings.Contains(err.Error(), "path") {
+			t.Fatalf("expected error to mention path, got: %v", err)
+		}
+	})
+
+	t.Run("mcp entitlement invalid port in service", func(t *testing.T) {
+		cfg := &AppConfig{
+			AppID: "com.example.app",
+			Services: map[string]*ServiceConfig{
+				"svc": {
+					Context: "svc",
+					Entitlements: []Entitlement{
+						{Type: EntitlementMCP, Port: 0},
+					},
+				},
+			},
+		}
+		err := cfg.Validate()
+		if err == nil {
+			t.Fatal("expected error for invalid mcp port in service")
+		}
+		if !strings.Contains(err.Error(), "port") {
+			t.Fatalf("expected error to mention port, got: %v", err)
+		}
+	})
+
+	t.Run("i2c entitlement invalid device in service", func(t *testing.T) {
+		cfg := &AppConfig{
+			AppID: "com.example.app",
+			Services: map[string]*ServiceConfig{
+				"svc": {
+					Context: "svc",
+					Entitlements: []Entitlement{
+						{Type: EntitlementI2C, Device: "baddevice"},
+					},
+				},
+			},
+		}
+		err := cfg.Validate()
+		if err == nil {
+			t.Fatal("expected error for invalid i2c device in service")
+		}
+		if !strings.Contains(err.Error(), "i2c") {
+			t.Fatalf("expected error to mention i2c, got: %v", err)
+		}
+	})
+
+	t.Run("network entitlement invalid mode in service", func(t *testing.T) {
+		cfg := &AppConfig{
+			AppID: "com.example.app",
+			Services: map[string]*ServiceConfig{
+				"svc": {
+					Context: "svc",
+					Entitlements: []Entitlement{
+						{Type: EntitlementNetwork, Mode: "bridge"},
+					},
+				},
+			},
+		}
+		err := cfg.Validate()
+		if err == nil {
+			t.Fatal("expected error for invalid network mode in service")
+		}
+		if !strings.Contains(err.Error(), "mode") {
+			t.Fatalf("expected error to mention mode, got: %v", err)
+		}
+	})
+
+	t.Run("duplicate mcp entitlement in service", func(t *testing.T) {
+		cfg := &AppConfig{
+			AppID: "com.example.app",
+			Services: map[string]*ServiceConfig{
+				"svc": {
+					Context: "svc",
+					Entitlements: []Entitlement{
+						{Type: EntitlementMCP, Port: 3000},
+						{Type: EntitlementMCP, Port: 4000},
+					},
+				},
+			},
+		}
+		err := cfg.Validate()
+		if err == nil {
+			t.Fatal("expected error for duplicate mcp entitlement in service")
+		}
+	})
+}
+
+func TestValidateJSON_ServiceEntitlements(t *testing.T) {
+	t.Run("unknown key in service entitlement warns", func(t *testing.T) {
+		data := []byte(`{
+			"appId": "com.example.app",
+			"services": {
+				"api": {
+					"context": "api",
+					"entitlements": [{"type": "gpu", "unknownKey": true}]
+				}
+			}
+		}`)
+		warnings := ValidateJSON(data)
+		if len(warnings) == 0 {
+			t.Fatal("ValidateJSON() expected warning for unknown key in service entitlement, got none")
+		}
+		found := false
+		for _, w := range warnings {
+			if strings.Contains(w, "unknownKey") {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("expected warning mentioning 'unknownKey', got: %v", warnings)
+		}
+	})
+
+	t.Run("deprecated entitlement type in service warns", func(t *testing.T) {
+		data := []byte(`{
+			"appId": "com.example.app",
+			"services": {
+				"svc": {
+					"context": "svc",
+					"entitlements": [{"type": "video"}]
+				}
+			}
+		}`)
+		warnings := ValidateJSON(data)
+		if len(warnings) == 0 {
+			t.Fatal("ValidateJSON() expected deprecation warning for service entitlement, got none")
+		}
+		found := false
+		for _, w := range warnings {
+			if strings.Contains(w, "video") && strings.Contains(w, "deprecated") {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("expected deprecation warning mentioning 'video', got: %v", warnings)
+		}
+	})
+
+	t.Run("valid service entitlements produce no warnings", func(t *testing.T) {
+		data := []byte(`{
+			"appId": "com.example.app",
+			"services": {
+				"api": {
+					"context": "api",
+					"entitlements": [{"type": "network", "mode": "host"}]
+				}
+			}
+		}`)
+		warnings := ValidateJSON(data)
+		if len(warnings) != 0 {
+			t.Fatalf("ValidateJSON() expected no warnings for valid service entitlement, got: %v", warnings)
+		}
+	})
 }

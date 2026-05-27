@@ -1,0 +1,52 @@
+---
+title: Overview
+description: Complete guide to Wendy - the modern Physical AI operating system
+full: true
+---
+
+import { Database, Monitor, Box, Terminal } from 'lucide-react';
+
+## Introduction
+
+**Wendy** is the open source (Apache 2.0) operating system and toolchain for robots, drones, and edge AI. Inspired by the mobile development experience, Wendy lets you plug in an NVIDIA Jetson or Raspberry Pi over USB and start coding instantly. Wendy for Mac is in progress for teams that want the same deploy, manage, and debug workflow on headless Mac mini and Mac Studio targets.
+
+Key features include:
+
+- **USB-C deployment and debugging** — No internet or SSH needed. Just plug in and deploy.
+- **Remote Logging** — Real-time logs from devices anywhere in the world.
+- **Atomic OTA Updates** — Push updates to one or ten thousand devices without fear.
+- **VSCode Extension** — Modern development experience with full debugger support.
+- **Apache 2.0 Open Source** — No black boxes. Everything is open and hackable.
+
+<Callout type="warn">
+  **Platform Support**: Wendy Developer Tools support macOS, Linux, and Windows.
+</Callout>
+
+## Core Components
+
+Wendy consists of three main pillars:
+
+<Cards>
+  <Card icon={<Database />} title="WendyOS">
+    The Apache 2.0 open source Linux distribution optimized for Physical AI. Includes a mobile-like USB-C development experience, remote debugging, and atomic updates.
+  </Card>
+
+  <Card icon={<Terminal />} title="Wendy for Mac">
+    Headless Mac support for running `wendy-agent` on Mac mini and Mac Studio targets is in progress, bringing Wendy deployment and debugging to Apple Silicon machines.
+  </Card>
+
+  <div className="relative">
+    <span className="absolute -top-px right-0 z-10 bg-orange-500 text-white text-xs px-2 py-1 font-medium">Coming Soon</span>
+    <Card icon={<Monitor />} title="Wendy Cloud">
+      A fleet management solution for OTA updates, crash reporting, and remote telemetry. Built for teams scaling from prototypes to thousands of devices.
+    </Card>
+  </div>
+
+  <Card icon={<Box />} title="Developer Tools">
+    CLI and VSCode extension for interactive breakpoints, hot reloading, and one-click deployment. Works with VSCode, Cursor, and Windsurf.
+  </Card>
+
+  <Card icon={<Terminal />} title="Wendy Frameworks">
+    Performance-first Swift, Python, and Rust frameworks for running AI models, controlling I/O, and handling high-speed telemetry.
+  </Card>
+</Cards>

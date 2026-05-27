@@ -1,0 +1,270 @@
+---
+title: Audio Playback & Streaming
+description: Learn how to play sounds and stream microphone audio using Swift and GStreamer on WendyOS
+language: swift
+---
+
+## Audio Playback & Streaming
+
+<Callout type="info">
+  **Source Code**: The complete source code for this example is available at [github.com/wendylabsinc/samples/swift/audio](https://github.com/wendylabsinc/samples/tree/main/swift/audio)
+</Callout>
+
+In this guide, we'll build an audio application that demonstrates two key capabilities:
+1.  **Audio Playback**: Triggering sound effects on the device from a web interface.
+2.  **Microphone Streaming**: capturing live audio from the device's microphone and streaming it to a web client for visualization and playback.
+
+This demonstrates how to use **GStreamer** with Swift to handle complex multimedia pipelines on embedded Linux.
+
+### Prerequisites
+
+- Wendy CLI installed
+- Swift 6.2 or later installed **via [swiftly](/docs/installation/developer-machine-setup#install-swift)** (Xcode's Swift is not supported)
+- A WendyOS device with a speaker and microphone (or a USB audio interface)
+
+<Callout type="idea">
+  **Recommended Hardware**: For the best experience, we recommend using a USB speakerphone like the [Anker PowerConf](/docs/buyers-guide/) plugged into your NVIDIA Jetson via USB. It provides high-quality audio capture and playback in a single device.
+</Callout>
+
+## Setting Up Your Project
+
+<Steps>
+  <Step>
+    ### Initialize the Project
+
+    ```bash
+    wendy init audio --target wendyos --language swift --template audio --var APP_ID=audio --var PORT=6004 --var SWIFT_VERSION=6.3 --assistant skip --git-init no
+    cd audio
+    ```
+
+    The template creates the Wendy config, Dockerfile, frontend, and Swift backend files with the `audio` entitlement already wired. The sections below explain the generated project.
+  </Step>
+
+  <Step>
+    ### Run on WendyOS
+
+    ```bash
+    wendy run
+    ```
+
+    Wendy will build the app, ask you to select a device if one is not already configured, deploy the app, and print the app URL.
+  </Step>
+</Steps>
+
+## Code Breakdown
+
+## Project Structure
+
+```
+audio/
+├── Dockerfile
+├── wendy.json
+├── frontend/           # React + Vite frontend
+│   └── src/
+│       └── App.tsx     # Audio visualizer & controls
+└── server/             # Swift backend
+    ├── Package.swift
+    └── Sources/
+        └── audio-server/
+            ├── main.swift
+            └── sounds/ # WAV files
+```
+
+## Setting Up the Backend
+
+The backend uses [Hummingbird](https://hummingbird.codes) for the HTTP/WebSocket server and a Swift wrapper around GStreamer for audio processing.
+
+### 1. Package Dependencies
+
+In `server/Package.swift`, we include the GStreamer Swift wrapper:
+
+```swift
+dependencies: [
+    .package(url: "https://github.com/hummingbird-project/hummingbird.git", from: "2.0.0"),
+    .package(url: "https://github.com/hummingbird-project/hummingbird-websocket.git", from: "2.0.0"),
+    .package(url: "https://github.com/wendylabsinc/gstreamer.git", from: "0.0.3"),
+],
+```
+
+### 2. Audio Playback Pipeline
+
+To play a sound, we construct a GStreamer pipeline that reads a file, parses the WAV format, converts it to the correct audio format, and sends it to the default audio sink (speaker).
+
+```swift
+func playSound(_ soundName: String, soundsPath: String) async -> PlayResponse {
+    let soundFile = "\(soundsPath)/\(soundName).wav"
+
+    // GStreamer pipeline description
+    let pipelineDesc = """
+        filesrc location=\(soundFile) ! \
+        wavparse ! \
+        audioconvert ! \
+        audioresample ! \
+        autoaudiosink
+        """
+
+    do {
+        let pipeline = try Pipeline(pipelineDesc)
+        try pipeline.play()
+
+        // Wait for End of Stream (EOS)
+        for await message in pipeline.bus.messages() {
+            if case .eos = message {
+                pipeline.stop()
+                return PlayResponse(success: true, sound: soundName, error: nil)
+            }
+        }
+    } catch {
+        return PlayResponse(success: false, sound: nil, error: "\(error)")
+    }
+    return PlayResponse(success: false, sound: nil, error: "Unknown error")
+}
+```
+
+### 3. Microphone Streaming Pipeline
+
+To stream audio, we capture from the microphone (using ALSA, PulseAudio, or PipeWire), convert it to raw PCM data, and send it to an `appsink` where our Swift code can read the buffers.
+
+```swift
+func handleMicrophoneWebSocket(inbound: WebSocketInboundStream, outbound: WebSocketOutboundWriter) async {
+    // Pipeline: Capture -> Convert -> Resample -> Raw PCM (16kHz, Mono) -> AppSink
+    let pipelineDesc = """
+        autoaudiosrc ! \
+        audioconvert ! \
+        audioresample ! \
+        audio/x-raw,format=S16LE,rate=16000,channels=1 ! \
+        appsink name=sink
+        """
+
+    guard let pipeline = try? Pipeline(pipelineDesc),
+          let sink = try? pipeline.audioSink(named: "sink") else {
+        return
+    }
+
+    try? pipeline.play()
+    defer { pipeline.stop() }
+
+    // Stream buffers to the client
+    for await buffer in sink.buffers() {
+        let data = extractAudioBytes(from: buffer)
+        let base64Data = data.base64EncodedString()
+
+        // Send JSON message to client
+        let json = """
+            {\"type\":\"audio\",\"data\":\"\(base64Data)\",\"sampleRate\":16000,\"channels\":1}
+            """
+        try? await outbound.write(.text(json))
+    }
+}
+```
+
+## Frontend Implementation
+
+The frontend is a React application that connects to the WebSocket to receive audio data. It uses the Web Audio API to play the streamed audio and draws a visualization on a canvas.
+
+```tsx
+// Connect to WebSocket
+const ws = new WebSocket(`ws://${window.location.host}/ws/microphone`);
+
+ws.onmessage = async (event) => {
+  const message = JSON.parse(event.data);
+
+  if (message.type === "audio") {
+    // Decode base64
+    const binaryString = atob(message.data);
+    // Convert to Int16 samples
+    // ...
+
+    // Play using Web Audio API
+    const source = audioContext.createBufferSource();
+    source.buffer = audioBuffer;
+    source.connect(audioContext.destination);
+    source.start(nextPlayTime);
+  }
+};
+```
+
+## Docker Configuration
+
+Working with audio requires system-level dependencies. The `Dockerfile` installs GStreamer development files for building and runtime libraries for the final image.
+
+```dockerfile
+# Build Stage
+FROM swift:6.2.3-noble AS swift-builder
+RUN apt-get update && apt-get install -y \
+    libgstreamer1.0-dev \
+    libgstreamer-plugins-base1.0-dev \
+    # ... other plugins
+
+# Runtime Stage
+FROM swift:6.2.3-noble-slim
+RUN apt-get update && apt-get install -y \
+    libgstreamer1.0-0 \
+    gstreamer1.0-plugins-base \
+    gstreamer1.0-plugins-good \
+    gstreamer1.0-alsa \
+    gstreamer1.0-pulseaudio \
+    alsa-utils
+
+# Copy sounds
+COPY server/Sources/audio-server/sounds ./sounds
+```
+
+## Entitlements
+
+To access the microphone and speaker, the application needs the `audio` entitlement in `wendy.json`:
+
+```json
+{
+  "appId": "com.example.swift-audio",
+  "version": "0.0.1",
+  "entitlements": [
+    {
+      "type": "network",
+      "mode": "host"
+    },
+    {
+      "type": "audio"
+    }
+  ],
+  "readiness": {
+    "tcpSocket": { "port": 3005 },
+    "timeoutSeconds": 30
+  },
+  "hooks": {
+    "postStart": {
+      "cli": "wendy utils open-browser http://${WENDY_HOSTNAME}:3005"
+    }
+  }
+}
+```
+
+The `readiness` probe waits for port `3005` to accept connections. The `postStart` hook automatically opens the web interface in your browser.
+## Run Again on WendyOS
+
+1.  Connect your WendyOS device.
+2.  Run the application:
+
+```bash
+wendy run
+```
+
+3.  Your browser will open automatically once the app is ready. If it doesn't, navigate to `http://<device-hostname>.local:3005`.
+
+You should be able to click buttons to play sounds on the device and toggle the microphone to see the waveform of the audio captured by the device.
+
+## Troubleshooting Audio
+
+If audio isn't working:
+
+1.  **Check Hardware**: Ensure your microphone/speaker is selected in the system settings or properly connected via USB.
+2.  **Check Logs**: Docker logs will show GStreamer errors.
+    ```bash
+    wendy logs
+    ```
+3.  **ALSA Devices**: The app attempts to auto-detect ALSA devices. You can override this by setting the `AUDIO_DEVICE` environment variable (e.g., `hw:1,0`).
+
+## Learn More
+
+- [GStreamer Documentation](https://gstreamer.freedesktop.org/documentation/)
+- [Hummingbird WebSocket](https://docs.hummingbird.codes/2.0/documentation/hummingbirdwebsocket/)

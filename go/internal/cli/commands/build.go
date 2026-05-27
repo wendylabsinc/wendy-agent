@@ -6,15 +6,16 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
-	"github.com/wendylabsinc/wendy/internal/cli/providers"
-	"github.com/wendylabsinc/wendy/internal/cli/swifttoolchain"
-	"github.com/wendylabsinc/wendy/internal/cli/tui"
-	"github.com/wendylabsinc/wendy/internal/shared/appconfig"
-	"github.com/wendylabsinc/wendy/proto/gen/agentpb"
+	"github.com/wendylabsinc/wendy/go/internal/cli/providers"
+	"github.com/wendylabsinc/wendy/go/internal/cli/swifttoolchain"
+	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
+	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	"golang.org/x/term"
 )
 
@@ -25,7 +26,8 @@ type BuildResult struct {
 }
 
 type buildOptions struct {
-	buildType string
+	buildType  string
+	dockerfile string
 }
 
 func newBuildCmd() *cobra.Command {
@@ -36,9 +38,27 @@ func newBuildCmd() *cobra.Command {
 		Short: "Build the application in the current directory",
 		Long:  "Detects the project type and builds a Docker image for the target device architecture.",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if opts.dockerfile != "" && opts.buildType != "" && normalizeBuildType(opts.buildType) != "docker" {
+				return fmt.Errorf("--dockerfile cannot be used with --build-type=%s", opts.buildType)
+			}
+			// --dockerfile implies a Docker build; prevent the provider from
+			// auto-selecting a Compose file when both markers are present.
+			if opts.dockerfile != "" && opts.buildType == "" {
+				opts.buildType = "docker"
+			}
+
 			cwd, err := os.Getwd()
 			if err != nil {
 				return fmt.Errorf("getting working directory: %w", err)
+			}
+
+			if opts.dockerfile != "" {
+				if err := validateDockerfileName(opts.dockerfile); err != nil {
+					return fmt.Errorf("--dockerfile: %w", err)
+				}
+				if _, err := confinedDockerfilePath(cwd, opts.dockerfile); err != nil {
+					return fmt.Errorf("--dockerfile: %w", err)
+				}
 			}
 
 			cfgPath := filepath.Join(cwd, "wendy.json")
@@ -68,12 +88,61 @@ func newBuildCmd() *cobra.Command {
 					}
 				}
 
-				fmt.Printf("Building with %s provider...\n", target.Provider.DisplayName())
-				app, err := target.Provider.Build(cmd.Context(), *target.External, cwd, product, false)
-				if err != nil {
-					return fmt.Errorf("provider build: %w", err)
+				// Swift projects without a Dockerfile: cross-compile on the host and
+				// build a Docker image, bypassing the provider's normal Build method.
+				projectType, ptErr := detectProjectType(cwd)
+				if ptErr != nil {
+					cliLogln("Warning: could not detect project type: %v", ptErr)
 				}
-				fmt.Printf("Build completed successfully (%s).\n", app.ProviderKey)
+				if projectType == "swift" {
+					if _, ok := target.Provider.(providers.ImageBuilder); ok {
+						if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+							return fmt.Errorf("`wendy build` for Swift packages is not supported on %s; provide a Dockerfile", runtime.GOOS)
+						}
+						if err := swifttoolchain.EnsureSwiftVersion(cmd.Context(), &dimWriter{}, os.Stderr); err != nil {
+							return err
+						}
+						cliLogln("Building Swift project for %s...", target.Provider.DisplayName())
+						// runtime.GOARCH is correct here: Docker Desktop loads images into the
+						// host daemon, so the image must match the host architecture.
+						if _, err := buildSwiftDockerImage(cmd.Context(), cwd, product, runtime.GOARCH, &dimWriter{}, os.Stderr); err != nil {
+							return fmt.Errorf("building Swift Docker image: %w", err)
+						}
+						cliSuccess("Build completed successfully.")
+						return nil
+					}
+				}
+
+				// For docker-type projects, resolve which Dockerfile to use before
+				// calling the provider — shows an interactive picker when multiple
+				// Dockerfiles exist and no --dockerfile flag was given.
+				if projectType == "docker" && opts.dockerfile == "" {
+					resolved, resolveErr := resolveDockerfile(cwd, "", isInteractiveTerminal())
+					if resolveErr != nil {
+						return resolveErr
+					}
+					opts.dockerfile = resolved
+					if resolved != "" && opts.buildType == "" {
+						opts.buildType = "docker"
+					}
+				}
+
+				cliLogln("Building with %s provider...", target.Provider.DisplayName())
+				var (
+					app      *providers.BuiltApp
+					buildErr error
+				)
+				if db, ok := target.Provider.(providers.DockerfileBuilder); ok && opts.dockerfile != "" {
+					app, buildErr = db.BuildWithDockerfile(cmd.Context(), *target.External, cwd, product, opts.buildType, opts.dockerfile, false)
+				} else if tb, ok := target.Provider.(providers.TypedBuilder); ok {
+					app, buildErr = tb.BuildWithType(cmd.Context(), *target.External, cwd, product, opts.buildType, false)
+				} else {
+					app, buildErr = target.Provider.Build(cmd.Context(), *target.External, cwd, product, false)
+				}
+				if buildErr != nil {
+					return fmt.Errorf("provider build: %w", buildErr)
+				}
+				cliSuccess("Build completed successfully (%s).", app.ProviderKey)
 				return nil
 			}
 
@@ -91,7 +160,7 @@ func newBuildCmd() *cobra.Command {
 				return fmt.Errorf("no supported build type found for this target; check that the project contains the right files")
 			}
 
-			selected, err := resolveDetectedBuildOption(options, opts.buildType)
+			selected, err := resolveDetectedBuildOption(options, opts.buildType, opts.dockerfile)
 			if err != nil {
 				return err
 			}
@@ -128,12 +197,26 @@ func newBuildCmd() *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&opts.buildType, "build-type", "", "Build type to use when multiple project markers are present: docker, swift, or python")
+	cmd.Flags().StringVar(&opts.dockerfile, "dockerfile", "", "Dockerfile to build from (e.g. Dockerfile.prod); shows a selection menu when multiple Dockerfiles exist")
 
 	return cmd
 }
 
-func resolveDetectedBuildOption(options []BuildOption, requestedType string) (*BuildOption, error) {
+func resolveDetectedBuildOption(options []BuildOption, requestedType, requestedDockerfile string) (*BuildOption, error) {
 	interactive := term.IsTerminal(int(os.Stdin.Fd()))
+
+	// --dockerfile selects a specific Dockerfile directly, bypassing type detection.
+	if strings.TrimSpace(requestedDockerfile) != "" {
+		// Normalise "./Dockerfile.prod" → "Dockerfile.prod" so the flag value
+		// matches the plain filenames stored in BuildOption.File.
+		normalizedDockerfile := filepath.Clean(requestedDockerfile)
+		for i := range options {
+			if options[i].Type == "docker" && options[i].File == normalizedDockerfile {
+				return &options[i], nil
+			}
+		}
+		return nil, fmt.Errorf("dockerfile %q not found; detected %s", requestedDockerfile, strings.Join(buildOptionLabels(options), ", "))
+	}
 
 	if strings.TrimSpace(requestedType) != "" {
 		return buildOptionForType(options, requestedType, interactive)
@@ -141,6 +224,30 @@ func resolveDetectedBuildOption(options []BuildOption, requestedType string) (*B
 
 	if preferred := preferredBuildOption(options, interactive); preferred != nil {
 		return preferred, nil
+	}
+
+	// Non-interactive (CI) fallback: when all detected options are Dockerfiles,
+	// prefer the base "Dockerfile" and fall back to the first variant rather than
+	// failing with "multiple build types detected". This mirrors the run-command
+	// behaviour and lets CI pipelines that omit --dockerfile build predictably.
+	if !interactive {
+		allDocker := len(options) > 0
+		for _, opt := range options {
+			if opt.Type != "docker" {
+				allDocker = false
+				break
+			}
+		}
+		if allDocker {
+			for i := range options {
+				if options[i].File == "Dockerfile" {
+					cliNotice("multiple Dockerfiles detected; using %q. Use --dockerfile to select explicitly.", options[i].File)
+					return &options[i], nil
+				}
+			}
+			cliNotice("multiple Dockerfiles detected; using %q. Use --dockerfile to select explicitly.", options[0].File)
+			return &options[0], nil
+		}
 	}
 
 	return pickBuildOption(options)
@@ -322,7 +429,11 @@ func buildProject(ctx context.Context, dir string, option *BuildOption, appID, p
 	case "python":
 		return buildPythonProject(dir, imageName, platform)
 	case "swift":
-		return buildSwiftProject(dir, appID, platform)
+		// Cross-compiling Swift requires a host toolchain; only darwin and linux ship one.
+		if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+			return fmt.Errorf("`wendy build` for Swift packages is not supported on %s; provide a Dockerfile", runtime.GOOS)
+		}
+		return buildSwiftContainerProject(ctx, dir, appID, platform)
 	case "xcode":
 		return buildXcodeProject(ctx, dir, option.File)
 	default:
@@ -331,7 +442,7 @@ func buildProject(ctx context.Context, dir string, option *BuildOption, appID, p
 }
 
 func buildComposeProject(dir string) error {
-	fmt.Println("Building Compose services...")
+	cliLogln("Building Compose services...")
 	cmd := exec.Command("docker", "compose", "build")
 	cmd.Dir = dir
 	cmd.Stdout = os.Stdout
@@ -339,12 +450,12 @@ func buildComposeProject(dir string) error {
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("docker compose build: %w", err)
 	}
-	fmt.Println("Build completed successfully.")
+	cliSuccess("Build completed successfully.")
 	return nil
 }
 
 func buildDockerProject(dir, imageName, platform, dockerfile string) error {
-	fmt.Printf("Building Docker image %s for %s...\n", imageName, platform)
+	cliLogln("Building Docker image %s for %s...", imageName, platform)
 
 	cmd := exec.Command("docker", "buildx", "build",
 		"--platform", platform,
@@ -360,7 +471,7 @@ func buildDockerProject(dir, imageName, platform, dockerfile string) error {
 		if err := cmd.Run(); err != nil {
 			return err
 		}
-		fmt.Println("Build completed successfully.")
+		cliSuccess("Build completed successfully.")
 		return nil
 	}
 
@@ -385,7 +496,7 @@ func buildDockerProject(dir, imageName, platform, dockerfile string) error {
 		return buildErr
 	}
 
-	fmt.Println("Build completed successfully.")
+	cliSuccess("Build completed successfully.")
 	return nil
 }
 
@@ -393,12 +504,12 @@ func buildPythonProject(dir, imageName, platform string) error {
 	dockerfilePath := filepath.Join(dir, "Dockerfile")
 	generatedDockerfile := false
 	if _, err := os.Stat(dockerfilePath); os.IsNotExist(err) {
-		fmt.Println("No Dockerfile found. Generating one for Python project...")
-		if _, genErr := generatePythonDockerfile(dir); genErr != nil {
+		cliLogln("No Dockerfile found. Generating one for Python project...")
+		if _, genErr := generatePythonDockerfile(dir, false); genErr != nil {
 			return fmt.Errorf("generating Dockerfile: %w", genErr)
 		}
 		generatedDockerfile = true
-		fmt.Println("Generated Dockerfile.")
+		cliSuccess("Generated Dockerfile.")
 	}
 
 	err := buildDockerProject(dir, imageName, platform, "Dockerfile")
@@ -424,7 +535,7 @@ func buildXcodeProject(ctx context.Context, dir, xcodeproj string) error {
 		}
 	}
 
-	fmt.Printf("Building Xcode project %s (scheme: %s)...\n", xcodeproj, scheme)
+	cliLogln("Building Xcode project %s (scheme: %s)...", xcodeproj, scheme)
 	if err := runXcodebuild(ctx, dir,
 		"-project", xcodeproj,
 		"-scheme", scheme,
@@ -433,47 +544,29 @@ func buildXcodeProject(ctx context.Context, dir, xcodeproj string) error {
 	); err != nil {
 		return err
 	}
-	fmt.Println("Build completed successfully.")
+	cliSuccess("Build completed successfully.")
 	return nil
 }
 
-func buildSwiftProject(dir, appID, platform string) error {
-	fmt.Println("Building Swift project locally...")
-
-	cmd := exec.Command("swift", "build")
-	cmd.Dir = dir
-
-	if !term.IsTerminal(int(os.Stdout.Fd())) {
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		if err := cmd.Run(); err != nil {
-			return err
-		}
-		fmt.Println("Build completed successfully.")
-		return nil
+func buildSwiftContainerProject(ctx context.Context, dir, appID, platform string) error {
+	if err := swifttoolchain.EnsureSwiftVersion(ctx, &dimWriter{}, os.Stderr); err != nil {
+		return err
 	}
 
-	s := tui.NewSpinner("Building Swift project...")
-	p := tea.NewProgram(s)
-
-	go func() {
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		err := cmd.Run()
-		p.Send(tui.SpinnerDoneMsg{Err: err})
-	}()
-
-	finalModel, err := p.Run()
+	product, err := swifttoolchain.FindSwiftProduct(dir)
 	if err != nil {
-		return fmt.Errorf("TUI error: %w", err)
+		cliLogln("Warning: could not detect Swift product name (%v); using %q", err, appID)
+		product = appID
 	}
 
-	model := finalModel.(tui.SpinnerModel)
-	_, buildErr := model.Result()
-	if buildErr != nil {
-		return buildErr
+	arch := runtime.GOARCH
+	if parts := strings.SplitN(platform, "/", 2); len(parts) == 2 {
+		arch = parts[1]
 	}
 
-	fmt.Println("Build completed successfully.")
+	if _, err := buildSwiftDockerImage(ctx, dir, product, arch, &dimWriter{}, os.Stderr); err != nil {
+		return err
+	}
+	cliSuccess("Build completed successfully.")
 	return nil
 }

@@ -1,0 +1,53 @@
+{
+  "name": "wendy-agentic-coding",
+  "version": "0.5.3",
+  "description": "Reusable Wendy CLI, wendy-agent, WendyOS, project setup, wendy.json, entitlement, device ops, MCP, app lifecycle, and device debugging workflows for Codex.",
+  "author": {
+    "name": "Wendy Labs",
+    "url": "https://github.com/wendylabsinc"
+  },
+  "homepage": "https://github.com/wendylabsinc/wendy-agentic-coding",
+  "repository": "https://github.com/wendylabsinc/wendy-agentic-coding",
+  "license": "Apache-2.0",
+  "keywords": [
+    "wendy",
+    "wendyos",
+    "wendy-json",
+    "entitlements",
+    "build-run",
+    "device-ops",
+    "mcp",
+    "agentic-coding",
+    "codex",
+    "claude-code",
+    "templates"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Wendy",
+    "shortDescription": "Workflows for Wendy CLI, agent, wendy.json, and device repos.",
+    "longDescription": "Guides Codex through Wendy CLI installation, template-first app creation from wendylabsinc/templates, project setup, wendy.json validation and entitlements, device discovery/inspection/update operations, Wendy MCP setup, Wendy build/run/detach/log/app lifecycle workflows, Wendy's Go CLI, gRPC agent, WendyOS, container runtime, GitHub PR, and live-device debugging workflows.",
+    "developerName": "Wendy Labs",
+    "category": "Productivity",
+    "capabilities": [
+      "Read",
+      "Write"
+    ],
+    "websiteURL": "https://github.com/wendylabsinc/wendy-agentic-coding",
+    "defaultPrompt": [
+      "Use Wendy to orient on the Wendy CLI and agent code path for this task.",
+      "Use Wendy to install Wendy CLI and verify device discovery.",
+      "Use Wendy to create a Wendy app from the closest template in wendylabsinc/templates.",
+      "Use Wendy to initialize or validate this Wendy project.",
+      "Use Wendy to choose wendy.json entitlements for this app.",
+      "Use Wendy to inspect this WendyOS device with CLI-native device ops.",
+      "Use Wendy to configure Wendy MCP for this assistant.",
+      "Use Wendy to run this app detached and stream logs.",
+      "Use Wendy to debug this WendyOS device runtime issue from logs to root cause.",
+      "Use Wendy to prepare a Wendy PR with the right tests and review cleanup."
+    ],
+    "brandColor": "#10A37F",
+    "composerIcon": "./assets/wendy_social_logo.png",
+    "logo": "./assets/wendy_social_logo.png"
+  }
+}

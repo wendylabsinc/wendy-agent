@@ -1,0 +1,425 @@
+---
+title: VSCode Extension
+description: Install and use the Wendy for VS Code extension for a seamless development experience
+---
+
+## Wendy for VS Code Extension
+
+The Wendy for VS Code extension provides a complete development environment for building, deploying, and debugging applications on WendyOS devices directly from your editor. Whether you're developing in Swift, Python, or any containerized application, this extension streamlines your workflow with device management, one-click deployment, and integrated debugging.
+
+### Features Overview
+
+- **Device Discovery & Management**: Automatically discover WendyOS devices on your network or connected via USB
+- **One-Click Deployment**: Build and run applications on your device with a single command
+- **Integrated Debugging**: Full debugging support for Swift (LLDB) and Python (debugpy)
+- **Agent Updates**: Keep your WendyOS device's agent up to date from within VS Code
+- **OS Installation**: Flash WendyOS onto supported devices directly from the editor
+- **WiFi Configuration**: Connect your device to wireless networks without leaving your IDE
+
+## Installing the Extension
+
+<Tabs items={['VS Code Marketplace', 'Open VSX Registry (Cursor, Windsurf, etc.)']}>
+  <Tab value="VS Code Marketplace">
+    The official Wendy extension is available on the [Visual Studio Code Marketplace](https://marketplace.visualstudio.com/items?itemName=wendylabsinc.wendy-vscode).
+
+    1. Open VS Code
+    2. Click the Extensions icon in the Activity Bar (or press `Cmd+Shift+X` on macOS / `Ctrl+Shift+X` on Windows/Linux)
+    3. Search for **"Wendy"** or **"wendylabsinc"**
+    4. Click **Install** on the "Wendy for VS Code" extension
+
+    {/* SCREENSHOT PLACEHOLDER: VS Code Marketplace showing the Wendy extension search results and install button */}
+
+    Or install directly from the marketplace: [Install Wendy for VS Code](https://marketplace.visualstudio.com/items?itemName=wendylabsinc.wendy-vscode)
+
+    **Command Line Installation:**
+
+    ```bash
+    code --install-extension wendylabsinc.wendy-vscode
+    ```
+  </Tab>
+
+  <Tab value="Open VSX Registry (Cursor, Windsurf, etc.)">
+    If you're using VS Code forks like **Cursor**, **Windsurf**, **Antigravity**, or other editors that use the Open VSX Registry, the extension is available at [open-vsx.org/extension/wendylabsinc/wendy-vscode](https://open-vsx.org/extension/wendylabsinc/wendy-vscode).
+
+    1. Open your editor's Extensions panel
+    2. Search for **"Wendy"** in the extension marketplace
+    3. Click **Install** on the "Wendy for VS Code" extension
+
+    {/* SCREENSHOT PLACEHOLDER: Open VSX Registry or Cursor showing the Wendy extension */}
+
+    **Manual Installation:**
+
+    If the extension doesn't appear in your editor's marketplace, you can install it manually:
+
+    1. Download the `.vsix` file from the [Open VSX Registry](https://open-vsx.org/extension/wendylabsinc/wendy-vscode)
+    2. In your editor, open the Command Palette (`Cmd+Shift+P` / `Ctrl+Shift+P`)
+    3. Run **"Extensions: Install from VSIX..."**
+    4. Select the downloaded `.vsix` file
+  </Tab>
+</Tabs>
+
+<Callout type="info">
+  **Cross-Platform Compatibility**: The extension is published to both the VS Code Marketplace and Open VSX Registry to ensure compatibility with all VS Code-based editors.
+</Callout>
+
+## Getting Started
+
+After installing the extension, you'll see a new **Wendy** icon in the Activity Bar on the left side of VS Code.
+
+{/* SCREENSHOT PLACEHOLDER: VS Code Activity Bar with the Wendy icon highlighted */}
+
+Clicking this icon reveals the Wendy sidebar with four main panels:
+
+| Panel | Description |
+|-------|-------------|
+| **Devices** | Manage and select your WendyOS devices |
+| **Disks** | View available disks and flash WendyOS images |
+| **Operating System Cache** | Browse downloaded OS images and cached files |
+| **Documentation** | Quick links to WendyOS documentation and resources |
+
+{/* SCREENSHOT PLACEHOLDER: Full Wendy sidebar showing all four panels */}
+
+### Prerequisites
+
+Before using the extension, ensure you have:
+
+- **Wendy CLI** installed on your development machine
+- A **WendyOS device** (NVIDIA Jetson Orin Nano, NVIDIA Jetson Thor, or Raspberry Pi 5)
+- For Swift development: The WendyOS Swift SDK and the [Swift extension for VS Code](https://marketplace.visualstudio.com/items?itemName=swiftlang.swift-vscode)
+- For Python development: The [Python extension for VS Code](https://marketplace.visualstudio.com/items?itemName=ms-python.python)
+
+Verify your Wendy CLI installation:
+
+```bash
+wendy --version
+```
+
+## Selecting a Device
+
+The Devices panel shows all discovered and manually added WendyOS devices. To select a device for deployment:
+
+1. Click the **Wendy** icon in the Activity Bar to open the sidebar
+2. In the **Devices** panel, you'll see your discovered devices
+3. Click on a device to select it as your current target device
+4. A checkmark icon indicates the currently selected device
+
+{/* SCREENSHOT PLACEHOLDER: Devices panel showing multiple devices with one selected (checkmark visible) */}
+
+### Adding a Device Manually
+
+If your device isn't automatically discovered (e.g., on a different network subnet), you can add it manually:
+
+1. Click the **+** button in the Devices panel header
+2. Enter the device hostname or IP address (e.g., `wendyos-humble-pepper.local` or `192.168.1.100`)
+3. Optionally specify a port if not using the default (e.g., `192.168.1.100:50051`)
+4. Press Enter to add the device
+
+{/* SCREENSHOT PLACEHOLDER: Add device input dialog in VS Code */}
+
+### Viewing Device Information
+
+Right-click on any device to access additional options, or click the info icon to view detailed device information:
+
+{/* SCREENSHOT PLACEHOLDER: Device context menu showing available options */}
+
+The device info panel displays:
+
+- **Hostname**: The device's network address
+- **Agent Version**: The currently installed WendyOS Agent version
+- **Device ID**: Unique device identifier
+- **Interface Type**: How the device is connected (USB, Ethernet, or LAN)
+- **Running Applications**: List of apps currently deployed on the device
+
+{/* SCREENSHOT PLACEHOLDER: Device information panel showing all device details */}
+
+### Refreshing Devices
+
+To refresh the device list and discover new devices:
+
+- Click the **refresh** icon in the Devices panel header, or
+- Use the Command Palette: `Wendy: Refresh Devices`
+
+## Updating the WendyOS Agent
+
+Keeping your device's agent up to date ensures you have the latest features and bug fixes. To update the agent:
+
+1. In the **Devices** panel, right-click on the device you want to update
+2. Select **Update Agent** from the context menu
+3. The extension will download and install the latest agent version
+4. Wait for the update to complete - the device will briefly restart
+
+{/* SCREENSHOT PLACEHOLDER: Context menu showing "Update Agent" option */}
+
+{/* SCREENSHOT PLACEHOLDER: Agent update progress indicator */}
+
+<Callout type="info">
+  **Automatic Version Check**: The extension displays the current agent version next to each device. If an update is available, you'll see a notification prompting you to update.
+</Callout>
+
+You can also update the agent via the Command Palette:
+
+1. Open the Command Palette (`Cmd+Shift+P` / `Ctrl+Shift+P`)
+2. Run **"Wendy: Update Agent"**
+3. Select the device to update if multiple devices are available
+
+## Installing WendyOS
+
+The extension can flash WendyOS onto supported devices directly from VS Code. This is useful for:
+
+- Setting up a new device for the first time
+- Reinstalling WendyOS to resolve issues
+- Updating to a newer WendyOS version
+
+### Prerequisites for OS Installation
+
+- An SD card or NVMe drive connected to your development machine
+- Sufficient disk space for the WendyOS image (typically 8GB+)
+- Administrator/sudo access for disk operations
+
+### Flashing WendyOS
+
+1. Connect your target storage device (SD card or NVMe) to your development machine
+2. Open the **Disks** panel in the Wendy sidebar
+3. Locate your target disk in the list
+
+{/* SCREENSHOT PLACEHOLDER: Disks panel showing available disks */}
+
+<Callout type="warning">
+  **Data Loss Warning**: Flashing WendyOS will erase all data on the selected disk. Double-check that you've selected the correct disk before proceeding.
+</Callout>
+
+4. Right-click on the disk and select **Flash WendyOS**
+5. Select your device type from the dropdown (e.g., NVIDIA Jetson Orin Nano, Raspberry Pi 5)
+6. Confirm the operation when prompted
+
+{/* SCREENSHOT PLACEHOLDER: Device type selection dialog */}
+
+{/* SCREENSHOT PLACEHOLDER: Confirmation dialog warning about data loss */}
+
+7. Wait for the flashing process to complete - this may take several minutes
+
+{/* SCREENSHOT PLACEHOLDER: Flashing progress indicator */}
+
+### Managing OS Cache
+
+The **Operating System Cache** panel lets you manage downloaded WendyOS images:
+
+- **View cached images**: Browse previously downloaded OS images
+- **Delete cached entries**: Free up disk space by removing old images
+- **Reveal in Finder/Explorer**: Open the cache directory in your file manager
+
+{/* SCREENSHOT PLACEHOLDER: Operating System Cache panel showing cached images */}
+
+The cache is stored at:
+- **macOS/Linux**: `~/.wendy/cache`
+- **Windows**: `%LOCALAPPDATA%\Wendy\cache`
+
+## Configuring WiFi
+
+Connect your WendyOS device to a wireless network directly from VS Code:
+
+1. Right-click on a device in the Devices panel
+2. Select **Connect WiFi**
+3. The extension will scan for available networks
+4. Select a network and enter the password when prompted
+
+{/* SCREENSHOT PLACEHOLDER: WiFi network selection dialog */}
+
+<Callout type="info">
+  **USB Connection Required**: WiFi configuration works best when your device is connected via USB, as network connectivity may be interrupted during the configuration process.
+</Callout>
+
+## Building and Running Applications
+
+Once you have a device selected, you can build and run your applications:
+
+### Using the Run Menu
+
+1. Open a Swift package or Python project in VS Code
+2. Press `F5` or go to **Run > Start Debugging**
+3. Select a Wendy debug configuration from the dropdown
+4. Your application will be built, deployed to the device, and started with debugging enabled
+
+{/* SCREENSHOT PLACEHOLDER: Debug configuration dropdown showing Wendy options */}
+
+### Using Tasks
+
+The extension provides custom Wendy tasks that integrate with VS Code's task system:
+
+1. Open the Command Palette (`Cmd+Shift+P` / `Ctrl+Shift+P`)
+2. Run **"Tasks: Run Task"**
+3. Select a Wendy task (e.g., "Wendy: Run")
+
+{/* SCREENSHOT PLACEHOLDER: Task picker showing Wendy tasks */}
+
+## Debugging with Breakpoints
+
+The Wendy extension provides full remote debugging support, allowing you to debug applications running on your WendyOS device as if they were running locally. This includes setting breakpoints, stepping through code, and inspecting variables.
+
+### Setting Breakpoints
+
+To set a breakpoint in your code:
+
+1. Open the source file you want to debug
+2. Click in the gutter (left margin) next to the line number where you want to pause execution
+3. A red dot appears indicating an active breakpoint
+
+{/* SCREENSHOT PLACEHOLDER: Editor showing a breakpoint set in the gutter with the red dot visible */}
+
+You can also:
+- **Conditional breakpoints**: Right-click on a breakpoint and select "Edit Breakpoint" to add a condition
+- **Logpoints**: Right-click in the gutter and select "Add Logpoint" to log messages without pausing
+- **Function breakpoints**: In the Debug panel, click the "+" in the Breakpoints section to break on function entry
+
+### Starting a Debug Session
+
+1. Set your breakpoints in the source code
+2. Select your target WendyOS device in the Devices panel
+3. Press `F5` or click **Run > Start Debugging**
+4. Select the appropriate debug configuration:
+   - **Swift**: `Debug [YourAppName] on WendyOS`
+   - **Python**: `Debug Python App on WendyOS`
+
+The extension will:
+1. Build your application
+2. Deploy it to the selected device
+3. Start the application with debugging enabled
+4. Attach the debugger to the remote process
+
+{/* SCREENSHOT PLACEHOLDER: VS Code showing the build and deploy progress in the terminal */}
+
+### Debugging Controls
+
+Once your application hits a breakpoint, you can use the debug toolbar:
+
+| Control | Shortcut | Description |
+|---------|----------|-------------|
+| **Continue** | `F5` | Resume execution until the next breakpoint |
+| **Step Over** | `F10` | Execute the current line and move to the next |
+| **Step Into** | `F11` | Step into a function call |
+| **Step Out** | `Shift+F11` | Step out of the current function |
+| **Restart** | `Ctrl+Shift+F5` | Restart the debug session |
+| **Stop** | `Shift+F5` | Stop debugging |
+
+{/* SCREENSHOT PLACEHOLDER: Debug toolbar with controls highlighted */}
+
+### Inspecting Variables
+
+When paused at a breakpoint, you can inspect your application's state:
+
+- **Variables Panel**: View local variables, function arguments, and global state
+- **Watch Panel**: Add expressions to monitor specific values
+- **Hover**: Hover over variables in the editor to see their current values
+- **Debug Console**: Evaluate expressions and interact with your application
+
+{/* SCREENSHOT PLACEHOLDER: Debug sidebar showing Variables panel with expanded objects and their values */}
+
+### Call Stack
+
+The Call Stack panel shows the execution path that led to the current breakpoint:
+
+- Click on any frame to view its source code and local variables
+- Navigate through the stack to understand the flow of execution
+
+{/* SCREENSHOT PLACEHOLDER: Call Stack panel showing multiple stack frames */}
+
+### Debugging Swift Applications
+
+For Swift applications, the extension uses LLDB (via `lldb-dap`) for remote debugging over port 4242.
+
+The extension automatically generates debug configurations for each executable target in your Swift package:
+
+```
+Debug [YourAppName] on WendyOS
+```
+
+**Requirements:**
+- WendyOS Swift SDK installed at `~/.swiftpm/swift-sdks/`
+- [Swift extension for VS Code](https://marketplace.visualstudio.com/items?itemName=swiftlang.swift-vscode)
+
+**Swift-specific debugging features:**
+- Full LLDB expression evaluation in the Debug Console
+- View Swift types, optionals, and collections
+- Set breakpoints in async/await code
+
+{/* SCREENSHOT PLACEHOLDER: Swift debugging session showing breakpoint hit with variable inspection */}
+
+### Debugging Python Applications
+
+For Python applications, the extension uses debugpy for remote debugging over port 5678.
+
+```
+Debug Python App on WendyOS
+```
+
+**Requirements:**
+- [Python extension for VS Code](https://marketplace.visualstudio.com/items?itemName=ms-python.python)
+- `debugpy` library installed in your application's container
+
+Add debugpy to your project's requirements:
+
+```txt
+debugpy>=1.8.0
+```
+
+**Python-specific debugging features:**
+- Evaluate Python expressions in the Debug Console
+- View dictionaries, lists, and complex objects
+- Debug multi-threaded applications
+- Exception breakpoints for catching errors
+
+{/* SCREENSHOT PLACEHOLDER: Python debugging session with breakpoint and variable inspection */}
+
+<Callout type="info">
+  **Hot Reload**: When you make changes to your code during a debug session, you'll need to restart the debug session (`Ctrl+Shift+F5`) to deploy the updated code to your device.
+</Callout>
+
+## Extension Settings
+
+Configure the extension through VS Code settings (`Cmd+,` / `Ctrl+,`):
+
+| Setting | Description | Default |
+|---------|-------------|---------|
+| `wendyos.runtime` | Container runtime to use | `containerd` |
+| `wendyos.cliPath` | Path to Wendy CLI executable | Auto-detected |
+| `wendyos.swiftSdkPath` | Path to WendyOS Swift SDK | `~/.swiftpm/swift-sdks/...` |
+
+{/* SCREENSHOT PLACEHOLDER: VS Code settings page showing Wendy extension settings */}
+
+## Troubleshooting
+
+### Device Not Discovered
+
+If your device doesn't appear in the Devices panel:
+
+1. Ensure the device is powered on and running WendyOS
+2. Check your USB connection if using USB
+3. Verify both devices are on the same network for LAN discovery
+4. Try adding the device manually using its hostname or IP address
+5. Check that mDNS/Bonjour is not blocked on your network
+
+See [Discovering Devices](/docs/guides/device/discovering-devices) for more detailed troubleshooting.
+
+### Update Agent Fails
+
+If agent updates fail:
+
+1. Ensure you have a stable connection to the device
+2. Try connecting via USB instead of WiFi
+3. Check that the device has sufficient storage space
+4. Restart the device and try again
+
+### Debugging Connection Issues
+
+If debugging doesn't connect:
+
+1. Verify port 4242 (Swift) or 5678 (Python) is accessible on the device
+2. Check that no firewall is blocking the debug ports
+3. Ensure the application was started with the `--debug` flag
+4. Try restarting both VS Code and the device
+
+## Next Steps
+
+- [Connect your device to WiFi](/docs/guides/device/connecting-to-wifi) for wireless development
+- [Discover devices](/docs/guides/device/discovering-devices) using the CLI
+- [Manage applications](/docs/guides/device/managing-apps) on your device

@@ -1,0 +1,314 @@
+name: Fumadocs
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs"
+      - "docs/**"
+      - "go/internal/cli/assets/docs/**"
+      - ".github/workflows/fumadocs.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "docs"
+      - "docs/**"
+      - "go/internal/cli/assets/docs/**"
+      - ".github/workflows/fumadocs.yml"
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fumadocs-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build docs
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    defaults:
+      run:
+        working-directory: docs
+    outputs:
+      deploy_path: ${{ steps.path.outputs.deploy_path }}
+      deploy_paths: ${{ steps.path.outputs.deploy_paths }}
+      url: ${{ steps.path.outputs.url }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: docs/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify public npm package versions
+        run: |
+          set -euo pipefail
+
+          REGISTRY="$(npm config get registry)"
+          if [[ "${REGISTRY}" != "https://registry.npmjs.org/" ]]; then
+            echo "::error::Unexpected npm registry: ${REGISTRY}"
+            exit 1
+          fi
+
+          node --input-type=module <<'NODE'
+          import { execFileSync } from 'node:child_process';
+          import { readFileSync } from 'node:fs';
+
+          const manifest = JSON.parse(readFileSync('package.json', 'utf8'));
+          const packageVersions = {
+            ...manifest.dependencies,
+            ...manifest.devDependencies,
+          };
+
+          for (const [name, version] of Object.entries(packageVersions)) {
+            const resolved = execFileSync('npm', ['view', `${name}@${version}`, 'version'], {
+              encoding: 'utf8',
+              stdio: ['ignore', 'pipe', 'pipe'],
+            }).trim();
+
+            if (resolved !== version) {
+              throw new Error(`${name}@${version} resolved to ${resolved}`);
+            }
+          }
+          NODE
+
+      - name: Audit dependencies
+        run: npm audit --audit-level=high
+
+      - name: Compute docs path
+        id: path
+        env:
+          DOCS_COMMIT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          RELEASE_PRERELEASE: ${{ github.event.release.prerelease || 'false' }}
+          RELEASE_TAG_NAME: ${{ github.event.release.tag_name || '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sanitize() {
+            printf '%s' "$1" \
+              | tr '[:upper:]' '[:lower:]' \
+              | sed -E 's/[^a-z0-9._-]+/-/g; s/^-+//; s/-+$//'
+          }
+          validate_deploy_path() {
+            if [[ -z "$1" || ! "$1" =~ ^[a-z0-9][a-z0-9._-]{0,200}$ ]]; then
+              echo "::error::Unsupported docs deploy path: $1"
+              exit 1
+            fi
+          }
+
+          DEPLOY_PATHS=()
+
+          if [[ "${GITHUB_EVENT_NAME}" == "release" ]]; then
+            RAW_VERSION="${RELEASE_TAG_NAME}"
+            if [[ -z "${RAW_VERSION}" ]]; then
+              echo "::error::Missing release tag in GitHub event context"
+              exit 1
+            fi
+
+            VERSION="$(sanitize "${RAW_VERSION}")"
+            IS_PRERELEASE="${RELEASE_PRERELEASE}"
+
+            if [[ -z "${VERSION}" || ! "${VERSION}" =~ ^[a-z0-9][a-z0-9._-]{0,127}$ ]]; then
+              echo "::error::Unsupported release tag for docs deploy path: ${RAW_VERSION}"
+              exit 1
+            fi
+            if [[ "${IS_PRERELEASE}" != "true" && "${IS_PRERELEASE}" != "false" ]]; then
+              echo "::error::Unexpected prerelease value in release payload: ${IS_PRERELEASE}"
+              exit 1
+            fi
+
+            if [[ "${IS_PRERELEASE}" == "true" ]]; then
+              DEPLOY_PATH="release-nightly-${VERSION}"
+              DEPLOY_PATHS=("${DEPLOY_PATH}" "latest-nightly")
+            else
+              DEPLOY_PATH="release-${VERSION}"
+              DEPLOY_PATHS=("${DEPLOY_PATH}" "latest")
+            fi
+          else
+            BRANCH="$(sanitize "${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}")"
+            if [[ ! "${DOCS_COMMIT_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "::error::Unsupported commit SHA for docs deploy path: ${DOCS_COMMIT_SHA}"
+              exit 1
+            fi
+
+            DEPLOY_PATH="branch-${BRANCH}-${DOCS_COMMIT_SHA}"
+            DEPLOY_PATHS=("${DEPLOY_PATH}")
+          fi
+
+          for PATH_TO_VALIDATE in "${DEPLOY_PATHS[@]}"; do
+            validate_deploy_path "${PATH_TO_VALIDATE}"
+          done
+
+          echo "deploy_path=${DEPLOY_PATH}" >> "$GITHUB_OUTPUT"
+          {
+            echo "deploy_paths<<EOF"
+            printf '%s\n' "${DEPLOY_PATHS[@]}"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+          echo "url=https://docs.wendy.dev/${DEPLOY_PATH}/" >> "$GITHUB_OUTPUT"
+
+      - name: Build static site exports
+        env:
+          DEPLOY_PATHS: ${{ steps.path.outputs.deploy_paths }}
+          NEXT_PUBLIC_SITE_URL: https://docs.wendy.dev
+        run: |
+          set -euo pipefail
+
+          rm -rf export
+          mkdir -p export
+
+          validate_deploy_path() {
+            if [[ -z "$1" || ! "$1" =~ ^[a-z0-9][a-z0-9._-]{0,200}$ ]]; then
+              echo "::error::Unsupported docs deploy path: $1"
+              exit 1
+            fi
+          }
+
+          while IFS= read -r DEPLOY_PATH; do
+            [[ -n "${DEPLOY_PATH}" ]] || continue
+            validate_deploy_path "${DEPLOY_PATH}"
+
+            echo "::group::Build ${DEPLOY_PATH}"
+            rm -rf out
+            NEXT_PUBLIC_BASE_PATH="/${DEPLOY_PATH}" npm run build
+            mkdir -p "export/${DEPLOY_PATH}"
+            cp -R out/. "export/${DEPLOY_PATH}/"
+            (
+              cd "export/${DEPLOY_PATH}"
+              find . -type f -print0 | sort -z | xargs -0 sha256sum > "../${DEPLOY_PATH}.sha256"
+            )
+            echo "::endgroup::"
+          done <<< "${DEPLOY_PATHS}"
+
+      - name: Upload static site artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: fumadocs-static-site
+          path: docs/export
+          if-no-files-found: error
+
+  deploy:
+    name: Deploy docs
+    runs-on: ubuntu-latest
+    needs: build
+    if: >-
+      github.event_name == 'release' ||
+      (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) ||
+      (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    permissions:
+      contents: read
+      id-token: write
+    environment:
+      name: docs
+      url: ${{ needs.build.outputs.url }}
+    steps:
+      - name: Download static site artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: fumadocs-static-site
+          path: out
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v3
+
+      - name: Ensure release alias rollback support
+        if: github.event_name == 'release'
+        env:
+          GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+          DOCS_BUCKET: wendy-docs-public
+        run: |
+          set -euo pipefail
+
+          gcloud storage buckets update "gs://${DOCS_BUCKET}" \
+            --versioning \
+            --quiet \
+            --project="${GCP_PROJECT_ID}"
+
+      - name: Upload to Cloud Storage
+        env:
+          GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+          DOCS_BUCKET: wendy-docs-public
+          DEPLOY_PATHS: ${{ needs.build.outputs.deploy_paths }}
+        run: |
+          set -euo pipefail
+
+          validate_deploy_path() {
+            if [[ -z "$1" || ! "$1" =~ ^[a-z0-9][a-z0-9._-]{0,200}$ ]]; then
+              echo "::error::Unsupported docs deploy path: $1"
+              exit 1
+            fi
+          }
+
+          while IFS= read -r DEPLOY_PATH; do
+            [[ -n "${DEPLOY_PATH}" ]] || continue
+            validate_deploy_path "${DEPLOY_PATH}"
+
+            test -f "out/${DEPLOY_PATH}/index.html"
+            (
+              cd "out/${DEPLOY_PATH}"
+              sha256sum --check "../${DEPLOY_PATH}.sha256"
+            )
+
+            gcloud storage rsync "out/${DEPLOY_PATH}" "gs://${DOCS_BUCKET}/${DEPLOY_PATH}" \
+              --recursive \
+              --delete-unmatched-destination-objects \
+              --quiet \
+              --project="${GCP_PROJECT_ID}"
+            gcloud storage objects update "gs://${DOCS_BUCKET}/${DEPLOY_PATH}/**" \
+              --cache-control="public, max-age=300" \
+              --quiet \
+              --project="${GCP_PROJECT_ID}"
+
+            DOCS_URL="https://docs.wendy.dev/${DEPLOY_PATH}/"
+            response_file="$(mktemp)"
+            curl -fsS --max-time 30 -o "${response_file}" "${DOCS_URL}"
+            grep -q "WendyOS Docs" "${response_file}"
+          done <<< "${DEPLOY_PATHS}"
+
+      - name: Delete expired branch previews
+        env:
+          GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+          DOCS_BUCKET: wendy-docs-public
+          RETENTION_DAYS: "30"
+        run: |
+          set -euo pipefail
+
+          cutoff_epoch="$(date -u -d "${RETENTION_DAYS} days ago" +%s)"
+          listing_file="$(mktemp)"
+          delete_file="$(mktemp)"
+
+          gcloud storage ls -l --recursive "gs://${DOCS_BUCKET}/branch-*/**" \
+            --project="${GCP_PROJECT_ID}" > "${listing_file}" 2>/dev/null || true
+
+          while read -r size updated_at object_url _; do
+            [[ "${size}" =~ ^[0-9]+$ ]] || continue
+            [[ "${object_url}" == gs://* ]] || continue
+
+            object_epoch="$(date -u -d "${updated_at}" +%s 2>/dev/null || echo 0)"
+            if (( object_epoch > 0 && object_epoch < cutoff_epoch )); then
+              printf '%s\n' "${object_url}" >> "${delete_file}"
+            fi
+          done < "${listing_file}"
+
+          if [[ -s "${delete_file}" ]]; then
+            xargs -r -n 100 gcloud storage rm --quiet --project="${GCP_PROJECT_ID}" < "${delete_file}"
+          fi

@@ -9,8 +9,8 @@ import (
 
 	"go.uber.org/zap/zapcore"
 
-	"github.com/wendylabsinc/wendy/internal/shared/version"
-	otelpb "github.com/wendylabsinc/wendy/proto/gen/otelpb"
+	"github.com/wendylabsinc/wendy/go/internal/shared/version"
+	otelpb "github.com/wendylabsinc/wendy/go/proto/gen/otelpb"
 )
 
 // resolveHostname returns the machine hostname, resolved once at startup.

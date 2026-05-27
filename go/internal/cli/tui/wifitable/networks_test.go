@@ -4,7 +4,7 @@ import (
 	"reflect"
 	"testing"
 
-	agentpb "github.com/wendylabsinc/wendy/proto/gen/agentpb"
+	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
 func TestSortKnownThenUnknown(t *testing.T) {

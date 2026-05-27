@@ -1,0 +1,198 @@
+---
+title: Hello World in Rust
+description: Create your first WendyOS application using Rust
+language: rust
+---
+
+## Creating Your First Rust Application
+
+This guide will walk you through creating a simple "Hello, World!" application for WendyOS using Rust. This is a great way to prove that you can send your first app to your device and verify your development environment is set up correctly.
+
+### Prerequisites
+
+- Wendy CLI installed on your development machine
+- Rust 1.83 or later installed (via `rustup`)
+- A WendyOS device plugged in over USB or connectable over Wi-Fi
+
+<Callout type="info">
+  **Containerized Deployment**: Unlike Swift, which compiles natively for WendyOS, Rust applications run inside containers on your WendyOS device. The Wendy CLI handles the local build setup when deploying Rust applications.
+</Callout>
+
+### Creating the Project
+
+<Steps>
+  <Step>
+    ### Initialize the Project
+
+    Start from the Wendy Rust template:
+
+    ```bash
+    wendy init hello-world --target wendyos --language rust --template simple-api --var APP_ID=hello-world --var PORT=4001 --assistant skip --git-init no
+    cd hello-world
+    ```
+
+    The template creates `Cargo.toml`, `src/main.rs`, `Dockerfile`, and `wendy.json`. Continue below to understand the generated project.
+  </Step>
+
+  <Step>
+    ### Run on WendyOS
+
+    ```bash
+    wendy run
+    ```
+
+    Wendy will build the app, ask you to select a device if one is not already configured, deploy the app, and show the run output.
+  </Step>
+</Steps>
+
+## Code Breakdown
+
+<Steps>
+  <Step>
+    ### Explore the Project Structure
+
+    The initialized project has this structure:
+
+    ```
+    hello-world/
+    ├── Cargo.toml
+    └── src/
+        └── main.rs
+    ```
+
+    The main application code is in `src/main.rs`.
+  </Step>
+
+  <Step>
+    ### Verify the Code
+
+    The generated `src/main.rs` file should contain:
+
+    ```rust
+    fn main() {
+        println!("Hello, world!");
+    }
+    ```
+
+    This is the entry point for your WendyOS application.
+  </Step>
+
+  <Step>
+    ### Verify Cargo.toml
+
+    Your `Cargo.toml` should look like:
+
+    ```toml
+    [package]
+    name = "hello-world"
+    version = "0.1.0"
+    edition = "2021"
+
+    [dependencies]
+    ```
+  </Step>
+
+  <Step>
+    ### Generated Dockerfile
+
+    The generated project includes a Dockerfile for containerized deployment:
+
+    ```dockerfile
+    # Build stage
+    FROM rust:1.83-slim AS builder
+
+    WORKDIR /app
+    COPY Cargo.toml Cargo.lock ./
+    COPY src ./src
+
+    RUN cargo build --release
+
+    # Runtime stage
+    FROM debian:bookworm-slim
+
+    COPY --from=builder /app/target/release/hello-world /usr/local/bin/hello-world
+
+    CMD ["hello-world"]
+    ```
+  </Step>
+</Steps>
+
+## Run Again on WendyOS
+
+Deploy your containerized application to your WendyOS device:
+
+```bash
+wendy run
+```
+
+The Wendy CLI will build your Docker image, transfer it to your device, and run it.
+
+## Verifying Deployment on Your Device
+
+After deploying your application to a WendyOS device, you can verify it was successfully deployed and ran by listing the applications on your device:
+
+```bash
+wendy device apps list
+✔︎ Searching for WendyOS devices [5.3s]
+✔︎ Listing applications: True Probe [USB, Ethernet, LAN]
+╭───────────────┬─────────┬─────────┬──────────╮
+│ App           │ Version │ State   │ Failures │
+├───────────────┼─────────┼─────────┼──────────┤
+│ hello-world   │ 0.0.1   │ Stopped │ 0        │
+╰───────────────┴─────────┴─────────┴──────────╯
+```
+
+<Callout type="info">
+  **Expected State**: The app shows as "Stopped" because a hello-world application exits immediately after printing its message. This is expected behavior. The key indicator of success is the "Failures" column showing `0`, which confirms your application ran and exited successfully without any errors.
+</Callout>
+
+## Next Steps
+
+Now that you have a basic Rust application running:
+
+- Learn how to build a [Simple Web Server](/docs/guides/rust/simple-web-server) with Axum
+- Explore environment variables and configuration
+- Build more complex applications with networking and data processing
+- Integrate with WendyOS device features via HTTP APIs
+
+<Callout type="info">
+  **Containerized Deployment**: Rust applications on WendyOS run in containers. This provides isolation and portability while the Wendy CLI manages the deployment workflow.
+</Callout>
+
+<Accordions>
+  <Accordion title="Testing the app on your own machine">
+    There are times when you might not have a WendyOS device around. You can still test your application locally using Cargo or Docker.
+
+    ### Using Cargo Directly
+
+    Run your application locally using Cargo:
+
+    ```bash
+    cargo run
+    ```
+
+    You should see output similar to:
+
+    ```
+       Compiling hello-world v0.1.0 (/path/to/hello-world)
+        Finished dev [unoptimized + debuginfo] target(s) in 0.75s
+         Running `target/debug/hello-world`
+    Hello, world!
+    ```
+
+    ### Using Docker Locally
+
+    Build and run your application in a Docker container:
+
+    ```bash
+    docker build -t hello-world .
+    docker run hello-world
+    ```
+
+    You should see:
+
+    ```
+    Hello, world!
+    ```
+  </Accordion>
+</Accordions>

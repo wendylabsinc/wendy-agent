@@ -10,8 +10,8 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
-	agentpb "github.com/wendylabsinc/wendy/proto/gen/agentpb"
-	cloudpb "github.com/wendylabsinc/wendy/proto/gen/cloudpb"
+	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
+	cloudpb "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
 )
 
 // fakeCertService implements the CertificateService with a canned IssueCertificate response.
@@ -154,6 +154,38 @@ func TestStartProvisioning(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected error when already provisioned")
+	}
+}
+
+func TestCertificateServiceAddr(t *testing.T) {
+	tests := []struct {
+		name      string
+		cloudHost string
+		want      string
+	}{
+		{
+			name:      "host without port uses legacy provisioning port",
+			cloudHost: "test.wendy.io",
+			want:      "test.wendy.io:50051",
+		},
+		{
+			name:      "cloud run endpoint keeps explicit tls port",
+			cloudHost: "wendy-cloud-services-114319063177.us-central1.run.app:443",
+			want:      "wendy-cloud-services-114319063177.us-central1.run.app:443",
+		},
+		{
+			name:      "local endpoint keeps explicit port",
+			cloudHost: "localhost:50051",
+			want:      "localhost:50051",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := certificateServiceAddr(tt.cloudHost); got != tt.want {
+				t.Fatalf("certificateServiceAddr(%q) = %q, want %q", tt.cloudHost, got, tt.want)
+			}
+		})
 	}
 }
 

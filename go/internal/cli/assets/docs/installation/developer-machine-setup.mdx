@@ -1,0 +1,85 @@
+---
+title: Developer Machine Setup
+description: Set up your development machine with the Wendy CLI
+---
+
+## CLI Installation
+
+Install the Wendy CLI for your development machine.
+
+<Tabs items={['macOS', 'Linux', 'Windows']} groupId="developer-machine-os" persist>
+  <Tab value="macOS">
+    ```bash
+    curl -fsSL https://install.wendy.sh/cli.sh | bash
+    ```
+
+    Verify the installation:
+
+    ```bash
+    wendy --version
+    ```
+  </Tab>
+
+  <Tab value="Linux">
+    ```bash
+    curl -fsSL https://install.wendy.sh/cli.sh | bash
+    ```
+
+    Verify the installation:
+
+    ```bash
+    wendy --version
+    ```
+  </Tab>
+
+  <Tab value="Windows">
+    Install via [winget](https://learn.microsoft.com/en-us/windows/package-manager/winget/):
+
+    ```powershell
+    winget install WendyLabs.Wendy --source winget
+    ```
+
+    To upgrade to the latest version:
+
+    ```powershell
+    winget upgrade WendyLabs.Wendy --source winget
+    ```
+
+    Verify the installation:
+
+    ```powershell
+    wendy --version
+    ```
+  </Tab>
+</Tabs>
+
+The `wendy` CLI is your developer tool for building, discovering, and deploying apps to Wendy devices. It helps set up WendyOS on NVIDIA Jetson and Raspberry Pi, and Wendy for Mac is in progress for headless Mac targets.
+
+## AI Coding Agent Setup
+
+Install the Wendy plugin if you want Codex or Claude Code to create and run Wendy apps for you. The Git source is `wendylabsinc/wendy-agentic-coding`; in Codex, the plugin appears as `@Wendy`.
+
+<Tabs items={['Codex', 'Claude Code']} groupId="ai-coding-agent" persist>
+  <Tab value="Codex">
+    ```bash
+    codex plugin marketplace add wendylabsinc/wendy-agentic-coding
+    ```
+
+    Then open Codex and install it from `/plugins`.
+  </Tab>
+
+  <Tab value="Claude Code">
+    ```bash
+    claude plugin marketplace add wendylabsinc/wendy-agentic-coding && claude plugin install wendy-agentic-coding@wendy-agentic-coding
+    ```
+  </Tab>
+</Tabs>
+
+## Next Steps
+
+Once your developer machine is ready, choose the branch that matches where you want to deploy first:
+
+- **[Setup your NVIDIA Jetson with WendyOS](/docs/installation/wendyos-nvidia-jetson)** if you are building for GPU-accelerated edge AI on Orin Nano or AGX Orin.
+- **[Setup your Raspberry Pi 5 with WendyOS](/docs/installation/wendyos-raspberry-pi-5)** if you want a compact ARM64 development or robotics target.
+- **[Setup an Ubuntu machine](/docs/installation/linux-wendy-agent)** if you want to run `wendy-agent` on an existing Linux box, VM, or remote machine.
+- **Track Wendy for Mac on the roadmap** if you want to deploy, manage, and debug headless Mac mini or Mac Studio targets.

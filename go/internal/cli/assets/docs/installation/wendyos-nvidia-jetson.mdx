@@ -1,0 +1,90 @@
+---
+title: WendyOS - NVIDIA Jetson
+description: Install WendyOS on your NVIDIA Jetson device
+---
+
+<div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '1.5rem' }}>
+  <img src="/icons/icons8-nvidia.svg" alt="NVIDIA" style={{ width: '48px', height: '48px' }} />
+  <h1 style={{ fontSize: '2.25rem', fontWeight: 'bold', margin: 0, lineHeight: '1' }}>NVIDIA Jetson Installation</h1>
+</div>
+
+## What You'll Need
+
+<JetsonBuyersTable />
+
+## Installing WendyOS on NVIDIA Jetson
+
+This guide will walk you through installing WendyOS on supported NVIDIA Jetson devices. WendyOS supports Jetson Orin Nano today, AGX Orin support is imminent, and AGX Thor support is in progress.
+
+For DGX Spark, use the [Linux wendy-agent install](/docs/installation/linux-wendy-agent) on the existing OS instead of flashing WendyOS.
+
+Prefer to follow along with video? Watch the [WendyOS NVIDIA Jetson Orin Nano installation video](https://youtu.be/TtDJAtBUEZI).
+
+### Installation Steps
+
+<Steps>
+  <Step>
+    ### Connect the NVMe SSD to Your Computer
+
+    Using an NVMe SSD to USB-C adapter, connect your NVMe SSD into the adapter and then the USB-C end to your MacBook.
+
+On macOS you'll be presented with a permission dialog to use the adapter. Press **Allow**.
+  </Step>
+
+  <Step>
+    ### Install WendyOS
+
+    Use the `wendy` CLI to install the operating system:
+
+    ```bash
+    wendy os install
+    ```
+
+    Select **NVIDIA Jetson Orin Nano** and then select your drive. You'll begin a process of downloading a copy of WendyOS to your hard drive. This could take a while but soon you'll be prompted to put WendyOS on the NVMe SSD.
+
+    You'll need to enter your user's administrator password for this to continue.
+  </Step>
+
+  <Step>
+    ### Install the NVMe SSD into Your Jetson
+
+    Remove the NVMe SSD from your computer and insert it into your NVIDIA Jetson Orin Nano on the M.2 slot on the bottom of the board.
+
+</Step>
+
+  <Step>
+    ### Connect the Jetson to Your Computer
+
+    Connect your NVIDIA Jetson Orin Nano to your computer using a USB-C cable. This will allow you to deploy and manage apps on your device.
+
+</Step>
+
+  <Step>
+    ### Power On the Device
+
+    With the supplied power supply, insert the power into the power slot on the NVIDIA Jetson Orin Nano and then plug into a power source like your wall outlet.
+
+</Step>
+
+  <Step>
+    ### Discover Your Device
+
+    Wait 1-2 minutes after powering on your Jetson to allow WendyOS to fully boot. Then run:
+
+    ```bash
+    wendy discover
+    # Set this device as your default
+    wendy device set-default
+    ```
+
+    You should see your NVIDIA Jetson Orin Nano appear in the list of discovered devices.
+
+    ![Wendy Discover](/images/docs/wendy-discover.png)
+
+    Your device is now ready for development! For more information on device discovery and configuration, see [Discovering Devices](/docs/guides/device/discovering-devices).
+  </Step>
+</Steps>
+
+### Next Steps
+
+Now that WendyOS is installed, you can start deploying apps to your device. Check out the [Hello World Guide](/docs/guides/python/hello-world) to build your first app.

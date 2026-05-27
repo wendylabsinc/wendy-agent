@@ -1,0 +1,273 @@
+---
+title: Audio Playback & Streaming
+description: Learn how to play sounds and stream microphone audio using Python and ALSA on WendyOS
+language: python
+---
+
+## Audio Playback & Streaming
+
+<Callout type="info">
+  **Source Code**: The complete source code for this example is available at [github.com/wendylabsinc/samples/python/audio](https://github.com/wendylabsinc/samples/tree/main/python/audio)
+</Callout>
+
+In this guide, we'll build an audio application that demonstrates two key capabilities:
+1.  **Audio Playback**: Triggering sound effects on the device from a web interface using `aplay`.
+2.  **Microphone Streaming**: Capturing live audio from the device's microphone using `arecord` and streaming it to a web client via WebSockets.
+
+This demonstrates how to use standard Linux audio utilities (`alsa-utils`) within a Python container.
+
+### Prerequisites
+
+- Wendy CLI installed
+- A WendyOS device with a speaker and microphone (or a USB audio interface)
+
+<Callout type="idea">
+  **Recommended Hardware**: For the best experience, we recommend using a USB speakerphone like the [Anker PowerConf](/docs/buyers-guide/) plugged into your NVIDIA Jetson via USB. It provides high-quality audio capture and playback in a single device.
+</Callout>
+
+## Setting Up Your Project
+
+<Steps>
+  <Step>
+    ### Initialize the Project
+
+    ```bash
+    wendy init audio --target wendyos --language python --template audio --var APP_ID=audio --var PORT=3004 --assistant skip --git-init no
+    cd audio
+    ```
+
+    The template creates the Wendy config, Dockerfile, frontend, and backend files with the `audio` entitlement already wired. The sections below explain the generated project.
+  </Step>
+
+  <Step>
+    ### Run on WendyOS
+
+    ```bash
+    wendy run
+    ```
+
+    Wendy will build the app, ask you to select a device if one is not already configured, deploy the app, and print the app URL.
+  </Step>
+</Steps>
+
+## Code Breakdown
+
+## Project Structure
+
+```
+audio/
+├── Dockerfile
+├── wendy.json
+├── frontend/           # React + Vite frontend
+│   └── src/
+│       └── App.tsx     # Audio visualizer & controls
+└── server/             # Python backend
+    ├── app.py          # FastAPI application
+    ├── requirements.txt
+    └── sounds/         # WAV files
+```
+
+## Setting Up the Backend
+
+The backend uses [FastAPI](https://fastapi.tiangolo.com/) for the HTTP API and WebSockets. Instead of complex audio libraries, we use Python's `subprocess` module to call native Linux audio tools.
+
+### 1. Dependencies
+
+In `server/requirements.txt`, we include FastAPI and Uvicorn:
+
+```text
+fastapi
+uvicorn[standard]
+websockets
+```
+
+### 2. Audio Playback
+
+To play a sound, we invoke the `aplay` command. This is robust and doesn't require compiling complex Python audio bindings.
+
+```python
+import subprocess
+from pathlib import Path
+
+def play_sound_file(sound_name: str) -> dict:
+    sound_file = Path(f"/app/sounds/{sound_name}.wav")
+
+    try:
+        # Use aplay to play the sound on the default device
+        result = subprocess.run(
+            ["aplay", str(sound_file)],
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+        return {"success": True}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@app.post("/api/play/{sound_name}")
+async def play_sound(sound_name: str):
+    # Run in thread pool to avoid blocking the async event loop
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(None, play_sound_file, sound_name)
+    return result
+```
+
+### 3. Microphone Streaming
+
+To stream audio, we spawn an `arecord` process that outputs raw PCM audio data to `stdout`. We read this stream in Python and send chunks over a WebSocket.
+
+```python
+@app.websocket("/ws/microphone")
+async def microphone_stream(websocket: WebSocket):
+    await websocket.accept()
+
+    # 16kHz, Mono, Signed 16-bit Little Endian
+    process = subprocess.Popen(
+        [
+            "arecord",
+            "-f", "S16_LE",
+            "-r", "16000",
+            "-c", "1",
+            "-t", "raw",
+            "-" # Output to stdout
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL
+    )
+
+    try:
+        while True:
+            # Read 2048 bytes (1024 samples * 2 bytes/sample)
+            data = process.stdout.read(2048)
+            if not data:
+                break
+
+            # Encode to Base64 and send
+            audio_data = base64.b64encode(data).decode("utf-8")
+            await websocket.send_json({
+                "type": "audio",
+                "data": audio_data,
+                "sampleRate": 16000
+            })
+
+            # Small yield to let other tasks run
+            await asyncio.sleep(0.01)
+
+    finally:
+        process.terminate()
+```
+
+## Frontend Implementation
+
+The frontend is a React application that connects to the WebSocket to receive audio data. It uses the Web Audio API to play the streamed audio and draws a visualization on a canvas.
+
+```tsx
+// Connect to WebSocket
+const ws = new WebSocket(`ws://${window.location.host}/ws/microphone`);
+
+ws.onmessage = async (event) => {
+  const message = JSON.parse(event.data);
+
+  if (message.type === "audio") {
+    // Decode base64
+    const binaryString = atob(message.data);
+    // Convert to Int16 samples
+    // ...
+
+    // Play using Web Audio API
+  }
+};
+```
+
+## Docker Configuration
+
+We use a multi-stage build. We install `alsa-utils` in the final image to provide `aplay` and `arecord`.
+
+```dockerfile
+# Build Frontend
+FROM node:22-slim AS frontend-builder
+WORKDIR /app/frontend
+COPY frontend/package*.json ./
+RUN npm ci
+COPY frontend/ ./
+RUN npm run build
+
+# Runtime Stage
+FROM ghcr.io/astral-sh/uv:python3.14-bookworm-slim
+
+WORKDIR /app
+
+# Install ALSA utilities for audio
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    alsa-utils \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python dependencies
+RUN uv pip install --system fastapi "uvicorn[standard]" websockets
+
+# Copy application code
+COPY server/requirements.txt ./
+COPY server/app.py ./
+COPY server/sounds ./sounds
+COPY --from=frontend-builder /app/frontend/dist ./frontend/dist
+
+ENV FRONTEND_DIST=/app/frontend/dist
+
+EXPOSE 3005
+
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "3005"]
+```
+
+## Entitlements
+
+To access the microphone and speaker, the application needs the `audio` entitlement in `wendy.json`. This grants the container access to `/dev/snd`.
+
+```json
+{
+  "appId": "com.example.python-audio",
+  "version": "0.0.1",
+  "entitlements": [
+    {
+      "type": "network",
+      "mode": "host"
+    },
+    {
+      "type": "audio"
+    }
+  ],
+  "readiness": {
+    "tcpSocket": { "port": 3005 },
+    "timeoutSeconds": 30
+  },
+  "hooks": {
+    "postStart": {
+      "cli": "wendy utils open-browser http://${WENDY_HOSTNAME}:3005"
+    }
+  }
+}
+```
+
+The `readiness` probe waits for port `3005` to accept connections. The `postStart` hook automatically opens the web interface in your browser.
+## Run Again on WendyOS
+
+1.  Connect your WendyOS device.
+2.  Run the application:
+
+```bash
+wendy run
+```
+
+3.  Your browser will open automatically once the app is ready. If it doesn't, navigate to `http://<device-hostname>.local:3005`.
+
+## Troubleshooting
+
+1.  **"aplay: command not found"**: Ensure `alsa-utils` is installed in your Dockerfile.
+2.  **No Audio**:
+    - Check volume levels on the device (`alsamixer` via SSH).
+    - Ensure the correct audio device is selected. The sample code attempts to auto-detect USB devices, but falls back to `default`. You can modify the `aplay` command to specify a device (e.g., `-D plughw:1,0`).
+3.  **Permissions**: If you see "Permission denied" errors accessing `/dev/snd`, ensure the `audio` entitlement is present in `wendy.json`.
+
+## Learn More
+
+- [FastAPI Documentation](https://fastapi.tiangolo.com/)
+- [ALSA Project](https://www.alsa-project.org/wiki/Main_Page)

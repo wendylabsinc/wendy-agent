@@ -11,6 +11,10 @@ on:
         description: 'Filter to a specific template name (empty = all)'
         required: false
         default: ''
+      exclude_template:
+        description: 'Space-separated template names to skip (e.g. voice-ai-pipecat)'
+        required: false
+        default: 'voice-ai-pipecat'
       language:
         description: 'Filter to a specific language (empty = all)'
         required: false
@@ -32,6 +36,9 @@ on:
       template:
         type: string
         default: ''
+      exclude_template:
+        type: string
+        default: 'voice-ai-pipecat'
       language:
         type: string
         default: ''
@@ -54,25 +61,25 @@ jobs:
     name: Generate & Validate
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    defaults:
-      run:
-        working-directory: go
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v5
         with:
-          go-version-file: go/go.mod
-          cache-dependency-path: go/go.sum
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
 
       - name: Build CLI
+        working-directory: go
         run: make build-cli
 
       - name: Run template generation tests
+        working-directory: go
         env:
           INPUT_TEMPLATES_BRANCH: ${{ inputs.templates_branch }}
           INPUT_TEMPLATE: ${{ inputs.template }}
+          INPUT_EXCLUDE_TEMPLATE: ${{ inputs.exclude_template }}
           INPUT_LANGUAGE: ${{ inputs.language }}
         run: |
           args=(-w ./bin/wendy --skip-run)
@@ -85,6 +92,10 @@ jobs:
             args+=(--template "$INPUT_TEMPLATE")
           fi
 
+          for excl in $INPUT_EXCLUDE_TEMPLATE; do
+            args+=(--exclude-template "$excl")
+          done
+
           if [[ -n "$INPUT_LANGUAGE" ]]; then
             args+=(--language "$INPUT_LANGUAGE")
           fi
@@ -93,6 +104,7 @@ jobs:
 
       - name: Cleanup
         if: always()
+        working-directory: go
         run: make clean
 
   deploy-to-device:
@@ -112,27 +124,27 @@ jobs:
         runner:
           - { name: macOS, labels: [self-hosted, macOS, ARM64] }
           - { name: Linux, labels: [self-hosted, Linux, X64] }
-    defaults:
-      run:
-        working-directory: go
     env:
       INPUT_HOSTNAME: ${{ inputs.hostname }}
       INPUT_TEMPLATES_BRANCH: ${{ inputs.templates_branch }}
       INPUT_TEMPLATE: ${{ inputs.template }}
+      INPUT_EXCLUDE_TEMPLATE: ${{ inputs.exclude_template }}
       INPUT_LANGUAGE: ${{ inputs.language }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v5
         with:
-          go-version-file: go/go.mod
-          cache-dependency-path: go/go.sum
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
 
       - name: Build CLI
+        working-directory: go
         run: make build-cli
 
       - name: Run template tests with deploy
+        working-directory: go
         run: |
           ARGS=(-w ./bin/wendy)
 
@@ -148,6 +160,10 @@ jobs:
             ARGS+=(--template "$INPUT_TEMPLATE")
           fi
 
+          for excl in $INPUT_EXCLUDE_TEMPLATE; do
+            ARGS+=(--exclude-template "$excl")
+          done
+
           if [[ -n "$INPUT_LANGUAGE" ]]; then
             ARGS+=(--language "$INPUT_LANGUAGE")
           fi
@@ -156,6 +172,7 @@ jobs:
 
       - name: Cleanup
         if: always()
+        working-directory: go
         run: make clean
 
   summary:

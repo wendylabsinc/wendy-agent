@@ -1,6 +1,20 @@
-# Wendy Agent & Wendy CLI
+<p align="center">
+  <img src="docs/media/demo.gif" alt="Wendy on NVIDIA Jetson" width="360">
+</p>
 
-## Installing the CLI
+Visit our developer docs at https://wendy.sh/docs
+
+# Install
+
+WendyOS is like iOS for developing, deploying, and debugging
+apps on edge devices such as NVIDIA Jetson, AGX, Thor, Raspberry Pi, and Linux machines.
+This repository contains the `wendy` CLI and the `wendy-agent` runtime service.
+
+WendyOS images _already_ include `wendy-agent`. If you are looking for the
+Yocto image build system, it lives in
+[wendylabsinc/WendyOS-Builder](https://github.com/wendylabsinc/WendyOS-Builder).
+
+## Install the Wendy CLI
 
 Install or update the `wendy` CLI on macOS or Linux (x86_64 and ARM64):
 
@@ -14,40 +28,80 @@ On Windows:
 winget install WendyLabs.Wendy
 ```
 
-Also available via [Homebrew, .deb, .rpm, and AUR](INSTALL.md).
+Package-specific options are available via
+[Homebrew, .deb, .rpm, and AUR](INSTALL.md).
 
-## Installing the Agent
+## Install WendyOS on a Device
 
-Install or update the `wendy-agent` on a Linux device (x86_64 and ARM64):
+Use the CLI to install WendyOS on supported hardware:
+
+```sh
+wendy os install
+```
+
+The installer can download WendyOS images, write them to the selected target
+drive, and pre-seed device configuration such as WiFi credentials. WendyOS
+images come preconfigured for remote development and include `wendy-agent`.
+
+To discover a WendyOS device after it boots:
+
+```sh
+wendy discover
+```
+
+To build and run an app on a discovered WendyOS device:
+
+```sh
+wendy run
+```
+
+## (Optional) Install wendy-agent
+
+You do not need to install `wendy-agent` separately on WendyOS. WendyOS
+_already_ has `wendy-agent` installed and configured.
+
+Install `wendy-agent` only when you want to turn a standard Linux machine into a
+Wendy target, such as Ubuntu x86_64, Arch Linux, Fedora, Debian, RHEL-compatible
+Linux, or other distributions.
 
 ```sh
 curl -fsSL https://install.wendy.sh/agent.sh | bash
 ```
 
-Supports Debian/Ubuntu, Fedora/RHEL, and Arch Linux. Also available via [system packages](INSTALL.md).
+The installer supports Linux x86_64 and ARM64. It uses native packages on
+Debian/Ubuntu, Fedora/RHEL, and Arch Linux when available, with a binary
+fallback for other Linux distributions. See [INSTALL.md](INSTALL.md) for manual
+package installation.
+
+`wendy-agent` uses containerd to run apps. On a manual Linux setup, make sure
+containerd is installed and running:
+
+```sh
+sudo systemctl enable --now containerd
+```
 
 ## Building from Source
 
-### CLI (Go)
+### CLI
 
-The CLI is written in Go. To build from source:
+The CLI is written in Go:
 
 ```sh
 cd go
 go build -o wendy ./cmd/wendy
 ```
 
-On macOS, CGO is required (for CoreBluetooth). It is enabled by default when
-using the standard Go toolchain, but if you have explicitly disabled it:
+On macOS, CGO is required for CoreBluetooth. It is enabled by default when using
+the standard Go toolchain, but if you have explicitly disabled it:
 
 ```sh
 cd go
 CGO_ENABLED=1 go build -o wendy ./cmd/wendy
 ```
 
-### Agent (Go)
+### Agent
 
-To build and run the agent locally:
+Build the agent from source:
 
 ```sh
 cd go
@@ -56,15 +110,17 @@ go build -o wendy-agent ./cmd/wendy-agent
 
 ### Local Developer Tip
 
-Add a `wendy-dev` alias to your shell profile (`~/.zshrc` or `~/.bashrc`) so you can quickly iterate on CLI changes without overwriting your installed `wendy`:
+Add a `wendy-dev` shell function to your shell profile (`~/.zshrc` or
+`~/.bashrc`) so you can quickly iterate on CLI changes without overwriting your
+installed `wendy`:
 
 ```sh
 wendy-dev() {
-  (cd /path/to/wendy-agent/go && go run ./cmd/wendy "$@")
+  (cd /path/to/WendyOS/go && go run ./cmd/wendy "$@")
 }
 ```
 
-Then use `wendy-dev` anywhere you'd normally use `wendy`:
+Then use `wendy-dev` anywhere you would normally use `wendy`:
 
 ```sh
 wendy-dev run
@@ -75,25 +131,21 @@ You can do the same for the agent:
 
 ```sh
 wendy-agent-dev() {
-  (cd /path/to/wendy-agent/go && go run ./cmd/wendy-agent "$@")
+  (cd /path/to/WendyOS/go && go run ./cmd/wendy-agent "$@")
 }
 ```
 
-## Setting Up the Device
+## Network Manager Support
 
-The device needs to run the `wendy-agent`. We provide pre-built [WendyOS](https://wendy.sh) images for the Raspberry Pi and the NVIDIA Jetson Orin Nano. These are preconfigured for remote debugging and have the wendy-agent preinstalled.
+`wendy-agent` supports both NetworkManager and ConnMan for WiFi configuration.
+The agent automatically detects which network manager is available:
 
-### Network Manager Support
+- ConnMan is preferred for embedded and IoT devices due to its lighter resource usage.
+- NetworkManager is supported for desktop and server environments.
+- The agent automatically detects and uses the available network manager.
 
-WendyAgent supports both NetworkManager and ConnMan for WiFi configuration. The agent will automatically detect which network manager is available on the system:
-
-- **ConnMan** is preferred for embedded/IoT devices due to its lighter resource usage
-- **NetworkManager** is supported for desktop and server environments
-- The agent will automatically detect and use the available network manager
-
-#### Configuration
-
-You can configure the network manager preference using the `WENDY_NETWORK_MANAGER` environment variable on the agent:
+You can configure the network manager preference using the
+`WENDY_NETWORK_MANAGER` environment variable on the agent:
 
 ```sh
 # Auto-detect (default)
@@ -112,26 +164,9 @@ export WENDY_NETWORK_MANAGER=force-connman
 export WENDY_NETWORK_MANAGER=force-networkmanager
 ```
 
-If no environment variable is set, the agent will auto-detect the available network manager.
-
-#### Manual Setup
-
-The `wendy` CLI communicates with a `wendy-agent`. The agent uses containerd for running your apps.
-On a Debian (or Ubuntu) based OS, you can do the following:
-
-```sh
-# Install containerd
-sudo apt install containerd
-# Start containerd and keep running across reboots
-sudo systemctl start containerd
-sudo systemctl enable containerd
-```
-
-Then install the agent using the install script above, or download a build from the [releases page](https://github.com/wendylabsinc/wendy-agent/releases).
-
 ## Examples
 
-### Hello, world!
+### Hello, World
 
 ```sh
 cd Examples/HelloWorld
@@ -139,8 +174,6 @@ wendy run
 ```
 
 ### Hello HTTP
-
-A more advanced example demonstrating HTTP server capabilities:
 
 ```sh
 cd Examples/HelloHTTP
@@ -155,37 +188,43 @@ To debug an app, use the `--debug` flag:
 wendy run --debug
 ```
 
-This enables host networking for remote debugger access. For Python apps, `debugpy` is automatically injected and listens on port `5678`.
+This enables host networking for remote debugger access. For Python apps,
+`debugpy` is automatically injected and listens on port `5678`.
 
 ## Analytics
 
-The Wendy CLI includes privacy-first anonymous usage analytics to help improve the developer experience. Analytics helps us understand which commands are used most, identify common errors, and prioritize improvements.
+The Wendy CLI includes privacy-first anonymous usage analytics to help improve
+the developer experience. Analytics helps us understand which commands are used
+most, identify common errors, and prioritize improvements.
 
 ### What's Collected
 
 - Command names and success/failure status
-- Sanitized error types (no sensitive data)
+- Sanitized error types, with no sensitive data
 - CLI version and operating system
 - Anonymous identifier (UUID)
 
-We **never** collect file paths, hostnames, project names, code, or any personally identifiable information.
+We never collect file paths, hostnames, project names, code, or personally
+identifiable information.
 
 ### Managing Analytics
 
 Check current analytics status:
-```bash
+
+```sh
 wendy analytics status
 ```
 
 Disable analytics:
-```bash
+
+```sh
 wendy analytics disable
-# Or set environment variable
 export WENDY_ANALYTICS=false
 ```
 
 Re-enable analytics:
-```bash
+
+```sh
 wendy analytics enable
 ```
 
