@@ -92,6 +92,8 @@ Lifecycle commands to run at specific points during the app lifecycle.
 | `hooks.postStart.cli` | Command run on the developer's machine after the app starts |
 | `hooks.postStart.agent` | Command run on the device after the app starts |
 
+If an agent-side hook exits with an error, bounded stderr from the hook may be included in agent logs to make failures diagnosable. Do not print secrets or credentials from lifecycle hooks.
+
 ### `python`
 
 Python-specific settings.

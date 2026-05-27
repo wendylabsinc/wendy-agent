@@ -328,6 +328,13 @@ func TestStartPostStartHookCommandReportsStderrOnExitError(t *testing.T) {
 	}
 }
 
+func TestSanitizeHookDiagnosticOutput(t *testing.T) {
+	got := sanitizeHookDiagnosticOutput("bad\x1b[31m\nnext\tline")
+	if got != "bad[31m next line" {
+		t.Fatalf("sanitizeHookDiagnosticOutput = %q; want printable single-line output", got)
+	}
+}
+
 func TestLayerMediaType_Zstd(t *testing.T) {
 	got := layerMediaType(agentpb.RunContainerLayerHeader_COMPRESSION_ZSTD, false)
 	want := "application/vnd.oci.image.layer.v1.tar+zstd"

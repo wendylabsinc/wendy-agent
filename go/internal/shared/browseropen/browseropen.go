@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -14,17 +13,9 @@ import (
 	"time"
 )
 
-const openCommandTimeout = 10 * time.Second
-
-var (
-	goos           = runtime.GOOS
-	commandContext = exec.CommandContext
-	commandOutput  = commandOutputDefault
-	getEnv         = os.Getenv
-	getEUID        = os.Geteuid
-	glob           = filepath.Glob
-	runCommand     = runOpenCommandDefault
-	stat           = os.Stat
+const (
+	openCommandTimeout      = 10 * time.Second
+	maxDiagnosticOutputSize = 512
 )
 
 type commandSpec struct {
@@ -33,44 +24,69 @@ type commandSpec struct {
 	env  []string
 }
 
-// Open opens url in the platform default browser without waiting for the
-// browser process to exit.
-func Open(url string) error {
-	switch goos {
-	case "darwin":
-		return runCommand(commandSpec{name: "open", args: []string{url}})
-	case "linux":
-		return openLinux(url)
-	case "windows":
-		return runCommand(commandSpec{name: "rundll32", args: []string{"url.dll,FileProtocolHandler", url}})
-	default:
-		return fmt.Errorf("unsupported platform %q", goos)
+type opener struct {
+	runtimeGOOS    string
+	commandContext func(context.Context, string, ...string) *exec.Cmd
+	commandOutput  func(string, ...string) ([]byte, error)
+	getenv         func(string) string
+	geteuid        func() int
+	glob           func(string) ([]string, error)
+	runCommand     func(commandSpec) error
+}
+
+func newDefaultOpener() opener {
+	return opener{
+		runtimeGOOS:    runtime.GOOS,
+		commandContext: exec.CommandContext,
+		getenv:         os.Getenv,
+		geteuid:        os.Geteuid,
+		glob:           filepath.Glob,
 	}
 }
 
-func openLinux(url string) error {
-	if hasCurrentGraphicalSessionEnv() {
-		return runCommand(commandSpec{name: "xdg-open", args: []string{url}})
+// Open opens url in the platform default browser. It waits for the opener
+// command to report success or failure, bounded by a short timeout; browser
+// processes spawned by the opener are not tracked after that.
+func Open(url string) error {
+	return newDefaultOpener().open(url)
+}
+
+func (o opener) open(url string) error {
+	switch o.runtimeGOOS {
+	case "darwin":
+		return o.run(commandSpec{name: "open", args: []string{url}})
+	case "linux":
+		return o.openLinux(url)
+	case "windows":
+		return o.run(commandSpec{name: "rundll32", args: []string{"url.dll,FileProtocolHandler", url}})
+	default:
+		return fmt.Errorf("unsupported platform %q", o.runtimeGOOS)
+	}
+}
+
+func (o opener) openLinux(url string) error {
+	if o.hasCurrentGraphicalSessionEnv() {
+		return o.run(commandSpec{name: "xdg-open", args: []string{url}})
 	}
 
-	session, sessionErr := activeGraphicalLoginSession()
+	session, sessionErr := o.activeGraphicalLoginSession()
 	if sessionErr == nil {
-		if err := openLinuxInLoginSession(session, url); err == nil {
+		if err := o.openLinuxInLoginSession(session, url); err == nil {
 			return nil
 		} else {
 			return err
 		}
 	}
 
-	if err := runCommand(commandSpec{name: "xdg-open", args: []string{url}}); err != nil {
+	if err := o.run(commandSpec{name: "xdg-open", args: []string{url}}); err != nil {
 		return fmt.Errorf("xdg-open failed without a graphical session: %w; loginctl: %v", err, sessionErr)
 	}
 	return nil
 }
 
-func hasCurrentGraphicalSessionEnv() bool {
+func (o opener) hasCurrentGraphicalSessionEnv() bool {
 	for _, key := range []string{"DISPLAY", "WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS"} {
-		if getEnv(key) != "" {
+		if o.env(key) != "" {
 			return true
 		}
 	}
@@ -87,8 +103,8 @@ type loginSession struct {
 	active  bool
 }
 
-func activeGraphicalLoginSession() (loginSession, error) {
-	out, err := commandOutput("loginctl", "list-sessions", "--no-legend", "--no-pager")
+func (o opener) activeGraphicalLoginSession() (loginSession, error) {
+	out, err := o.output("loginctl", "list-sessions", "--no-legend", "--no-pager")
 	if err != nil {
 		return loginSession{}, fmt.Errorf("list login sessions: %w", err)
 	}
@@ -106,7 +122,7 @@ func activeGraphicalLoginSession() (loginSession, error) {
 			session.user = fields[2]
 		}
 
-		props, err := commandOutput(
+		props, err := o.output(
 			"loginctl",
 			"show-session",
 			session.id,
@@ -164,32 +180,30 @@ func (s loginSession) isGraphicalUserSession() bool {
 	case "x11", "wayland", "mir":
 		return true
 	default:
-		return s.display != ""
+		return validX11Display(s.display) || validWaylandDisplay(s.display)
 	}
 }
 
-func openLinuxInLoginSession(session loginSession, url string) error {
-	if session.uid == "" {
-		return fmt.Errorf("active graphical login session %q has no uid", session.id)
+func (o opener) openLinuxInLoginSession(session loginSession, url string) error {
+	uid, err := strconv.Atoi(session.uid)
+	if err != nil || uid < 0 {
+		return fmt.Errorf("active graphical login session %q has invalid uid", session.id)
 	}
 
-	env := sessionEnv(session)
+	env := o.sessionEnv(session)
 	var candidates []commandSpec
-	if uid, err := strconv.Atoi(session.uid); err == nil && uid == getEUID() {
+	if uid == o.euid() {
 		candidates = append(candidates, commandSpec{name: "xdg-open", args: []string{url}, env: env})
-	} else if session.user != "" {
+	} else if validUsername(session.user) {
 		envArgs := append(append([]string{}, env...), "xdg-open", url)
-		candidates = append(candidates,
-			commandSpec{name: "runuser", args: append([]string{"-u", session.user, "--", "env"}, envArgs...)},
-			commandSpec{name: "sudo", args: append([]string{"-n", "-u", session.user, "env"}, envArgs...)},
-		)
+		candidates = append(candidates, commandSpec{name: "runuser", args: append([]string{"-u", session.user, "--", "env"}, envArgs...)})
 	} else {
-		return fmt.Errorf("active graphical login session %q has no username", session.id)
+		return fmt.Errorf("active graphical login session %q has invalid username", session.id)
 	}
 
 	var failures []string
 	for _, candidate := range candidates {
-		if err := runCommand(candidate); err != nil {
+		if err := o.run(candidate); err != nil {
 			failures = append(failures, err.Error())
 			continue
 		}
@@ -204,29 +218,31 @@ func openLinuxInLoginSession(session loginSession, url string) error {
 	)
 }
 
-func sessionEnv(session loginSession) []string {
-	runtimeDir := path.Join("/run/user", session.uid)
+func (o opener) sessionEnv(session loginSession) []string {
+	runtimeDir := linuxRuntimeDir(session.uid)
 	env := []string{
 		"XDG_RUNTIME_DIR=" + runtimeDir,
-		"DBUS_SESSION_BUS_ADDRESS=unix:path=" + path.Join(runtimeDir, "bus"),
+		"DBUS_SESSION_BUS_ADDRESS=unix:path=" + runtimeDir + "/bus",
 	}
 
-	if strings.HasPrefix(session.display, ":") {
+	switch {
+	case validX11Display(session.display):
 		env = append(env, "DISPLAY="+session.display)
-	} else if session.display != "" {
+	case validWaylandDisplay(session.display):
 		env = append(env, "WAYLAND_DISPLAY="+session.display)
 	}
 
 	if session.typ == "wayland" && !hasEnv(env, "WAYLAND_DISPLAY") {
-		if display := firstWaylandDisplay(runtimeDir); display != "" {
+		if display := o.firstWaylandDisplay(runtimeDir); display != "" {
 			env = append(env, "WAYLAND_DISPLAY="+display)
 		}
 	}
-	if session.typ == "x11" && !hasEnv(env, "DISPLAY") && fileExists("/tmp/.X11-unix/X0") {
-		env = append(env, "DISPLAY=:0")
-	}
 
 	return env
+}
+
+func linuxRuntimeDir(uid string) string {
+	return "/run/user/" + uid
 }
 
 func hasEnv(env []string, key string) bool {
@@ -239,31 +255,95 @@ func hasEnv(env []string, key string) bool {
 	return false
 }
 
-func firstWaylandDisplay(runtimeDir string) string {
-	matches, err := glob(path.Join(runtimeDir, "wayland-*"))
+func (o opener) firstWaylandDisplay(runtimeDir string) string {
+	matches, err := o.globFiles(runtimeDir + "/wayland-*")
 	if err != nil || len(matches) == 0 {
 		return ""
 	}
-	return path.Base(matches[0])
+	display := matches[0]
+	if slash := strings.LastIndex(display, "/"); slash >= 0 {
+		display = display[slash+1:]
+	}
+	if !validWaylandDisplay(display) {
+		return ""
+	}
+	return display
 }
 
-func fileExists(path string) bool {
-	_, err := stat(path)
-	return err == nil
+func validUsername(value string) bool {
+	if value == "" || len(value) > 32 {
+		return false
+	}
+	for i, r := range value {
+		if i == 0 {
+			if (r >= 'a' && r <= 'z') || r == '_' {
+				continue
+			}
+			return false
+		}
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_' || r == '-' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
-func runOpenCommandDefault(spec commandSpec) error {
+func validX11Display(value string) bool {
+	if !strings.HasPrefix(value, ":") {
+		return false
+	}
+	rest := strings.TrimPrefix(value, ":")
+	if rest == "" {
+		return false
+	}
+	parts := strings.Split(rest, ".")
+	if len(parts) > 2 {
+		return false
+	}
+	for _, part := range parts {
+		if part == "" || !allDigits(part) {
+			return false
+		}
+	}
+	return true
+}
+
+func validWaylandDisplay(value string) bool {
+	if !strings.HasPrefix(value, "wayland-") {
+		return false
+	}
+	return allDigits(strings.TrimPrefix(value, "wayland-"))
+}
+
+func allDigits(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, r := range value {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func (o opener) run(spec commandSpec) error {
+	if o.runCommand != nil {
+		return o.runCommand(spec)
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), openCommandTimeout)
 	defer cancel()
 
-	cmd := commandContext(ctx, spec.name, spec.args...)
+	cmd := o.command(ctx, spec.name, spec.args...)
 	if len(spec.env) > 0 {
 		cmd.Env = append(os.Environ(), spec.env...)
 	}
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		message := strings.TrimSpace(stderr.String())
+		message := sanitizeDiagnosticOutput(stderr.String())
 		if ctx.Err() == context.DeadlineExceeded {
 			return fmt.Errorf("%s timed out", spec.name)
 		}
@@ -275,13 +355,66 @@ func runOpenCommandDefault(spec commandSpec) error {
 	return nil
 }
 
-func commandOutputDefault(name string, args ...string) ([]byte, error) {
+func (o opener) output(name string, args ...string) ([]byte, error) {
+	if o.commandOutput != nil {
+		return o.commandOutput(name, args...)
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), openCommandTimeout)
 	defer cancel()
 
-	out, err := commandContext(ctx, name, args...).Output()
+	out, err := o.command(ctx, name, args...).Output()
 	if ctx.Err() == context.DeadlineExceeded {
 		return nil, fmt.Errorf("%s timed out", name)
 	}
 	return out, err
+}
+
+func (o opener) command(ctx context.Context, name string, args ...string) *exec.Cmd {
+	if o.commandContext != nil {
+		return o.commandContext(ctx, name, args...)
+	}
+	return exec.CommandContext(ctx, name, args...)
+}
+
+func (o opener) env(key string) string {
+	if o.getenv != nil {
+		return o.getenv(key)
+	}
+	return os.Getenv(key)
+}
+
+func (o opener) euid() int {
+	if o.geteuid != nil {
+		return o.geteuid()
+	}
+	return os.Geteuid()
+}
+
+func (o opener) globFiles(pattern string) ([]string, error) {
+	if o.glob != nil {
+		return o.glob(pattern)
+	}
+	return filepath.Glob(pattern)
+}
+
+func sanitizeDiagnosticOutput(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+
+	var b strings.Builder
+	for _, r := range value {
+		switch {
+		case r == '\n' || r == '\r' || r == '\t':
+			b.WriteByte(' ')
+		case r >= 32 && r <= 126:
+			b.WriteRune(r)
+		}
+		if b.Len() >= maxDiagnosticOutputSize {
+			break
+		}
+	}
+	return strings.TrimSpace(b.String())
 }
