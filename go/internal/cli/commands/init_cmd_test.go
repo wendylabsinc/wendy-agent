@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -272,7 +273,11 @@ func TestProjectShellEnv_FiltersSensitiveValues(t *testing.T) {
 	t.Setenv("PATH", "/tmp/evil")
 	t.Setenv("SHELL", "/tmp/evil")
 
-	env := projectShellEnv("test-shell")
+	shell := testInteractiveShell(t)
+	env, err := projectShellEnv(shell)
+	if err != nil {
+		t.Fatalf("projectShellEnv: %v", err)
+	}
 	joined := "\n" + strings.Join(env, "\n") + "\n"
 
 	for _, key := range []string{"WENDY_TOKEN", "OPENAI_API_KEY", "NORMAL_ENV"} {
@@ -289,8 +294,14 @@ func TestProjectShellEnv_FiltersSensitiveValues(t *testing.T) {
 	if !strings.Contains(joined, "\nPATH="+projectShellPath()+"\n") {
 		t.Fatalf("projectShellEnv missing safe PATH: %q", joined)
 	}
-	if !strings.Contains(joined, "\nSHELL=test-shell\n") {
-		t.Fatalf("projectShellEnv did not override SHELL: %q", joined)
+	if runtime.GOOS != "windows" && !strings.Contains(joined, "\nSHELL="+shell+"\n") {
+		t.Fatalf("projectShellEnv did not override SHELL with validated shell: %q", joined)
+	}
+}
+
+func TestProjectShellEnv_RejectsInvalidShell(t *testing.T) {
+	if _, err := projectShellEnv("test-shell"); err == nil {
+		t.Fatal("expected invalid shell to fail")
 	}
 }
 
@@ -314,6 +325,22 @@ func TestValidateInteractiveShell_RejectsUnknownShellName(t *testing.T) {
 	if shell, ok := validateInteractiveShell(path); ok {
 		t.Fatalf("validateInteractiveShell(%q) = %q, true; want false", path, shell)
 	}
+}
+
+func TestValidateInteractiveShell_AcceptsDefaultShell(t *testing.T) {
+	shell := testInteractiveShell(t)
+	if got, ok := validateInteractiveShell(shell); !ok || got != shell {
+		t.Fatalf("validateInteractiveShell(%q) = %q, %t; want %q, true", shell, got, ok, shell)
+	}
+}
+
+func testInteractiveShell(t *testing.T) string {
+	t.Helper()
+	shell, err := defaultInteractiveShell()
+	if err != nil {
+		t.Skipf("no supported interactive shell: %v", err)
+	}
+	return shell
 }
 
 func TestResolveTemplateLanguage_RejectsUnavailableTemplateLanguage(t *testing.T) {

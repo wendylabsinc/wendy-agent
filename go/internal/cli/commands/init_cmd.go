@@ -739,6 +739,12 @@ func pathHasPrefix(path, prefix string) bool {
 	sep := string(filepath.Separator)
 	cleanPath := strings.TrimRight(filepath.Clean(path), sep) + sep
 	cleanPrefix := strings.TrimRight(filepath.Clean(prefix), sep) + sep
+	if runtime.GOOS == "darwin" || runtime.GOOS == "windows" {
+		if len(cleanPath) < len(cleanPrefix) {
+			return false
+		}
+		return strings.EqualFold(cleanPath[:len(cleanPrefix)], cleanPrefix)
+	}
 	return strings.HasPrefix(cleanPath, cleanPrefix)
 }
 
@@ -755,7 +761,8 @@ func canonicalProjectPath(path string) (string, error) {
 }
 
 func startProjectShell(dir, shell string) error {
-	if validated, ok := validateInteractiveShell(shell); !ok || validated != shell {
+	validated, ok := validateInteractiveShell(shell)
+	if !ok {
 		return fmt.Errorf("interactive shell %q is no longer valid", shell)
 	}
 
@@ -767,9 +774,17 @@ func startProjectShell(dir, shell string) error {
 		return fmt.Errorf("project directory %q is not a directory", dir)
 	}
 
-	cmd := exec.Command(shell)
+	env, err := projectShellEnv(validated)
+	if err != nil {
+		return err
+	}
+
+	// Use a normal interactive shell so this handoff behaves like a user-run
+	// `cd`; user-owned startup files are intentionally honored.
+	cmd := exec.Command(validated)
+	cmd.Path = validated
 	cmd.Dir = dir
-	cmd.Env = projectShellEnv(shell)
+	cmd.Env = env
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -837,15 +852,14 @@ func validateInteractiveShell(candidate string) (string, bool) {
 
 func isTrustedShellDir(dir string) bool {
 	dir = filepath.Clean(dir)
-	if runtime.GOOS == "windows" {
-		systemRoot := strings.TrimSpace(os.Getenv("SystemRoot"))
-		if systemRoot == "" {
-			systemRoot = `C:\Windows`
+	for _, trusted := range trustedShellDirs() {
+		trusted = filepath.Clean(trusted)
+		if runtime.GOOS == "windows" {
+			if strings.EqualFold(dir, trusted) {
+				return true
+			}
+			continue
 		}
-		return strings.EqualFold(dir, filepath.Join(systemRoot, "System32"))
-	}
-
-	for _, trusted := range []string{"/bin", "/usr/bin", "/usr/local/bin", "/opt/homebrew/bin", "/opt/local/bin", "/run/current-system/sw/bin"} {
 		if dir == trusted {
 			return true
 		}
@@ -853,9 +867,16 @@ func isTrustedShellDir(dir string) bool {
 	return false
 }
 
+func trustedShellDirs() []string {
+	if runtime.GOOS == "windows" {
+		return []string{`C:\Windows\System32`}
+	}
+	return []string{"/bin", "/usr/bin", "/usr/local/bin", "/opt/homebrew/bin", "/opt/local/bin", "/run/current-system/sw/bin"}
+}
+
 func isKnownShellName(name string) bool {
 	switch strings.ToLower(name) {
-	case "sh", "bash", "zsh", "fish", "dash", "ksh", "cmd.exe", "powershell.exe", "pwsh.exe":
+	case "sh", "bash", "zsh", "dash", "cmd.exe":
 		return true
 	default:
 		return false
@@ -872,7 +893,12 @@ func isWorldWritableDir(dir string) (bool, error) {
 	return info.Mode().Perm()&0o002 != 0 && info.Mode()&os.ModeSticky == 0, nil
 }
 
-func projectShellEnv(shell string) []string {
+func projectShellEnv(shell string) ([]string, error) {
+	validated, ok := validateInteractiveShell(shell)
+	if !ok {
+		return nil, fmt.Errorf("interactive shell %q is no longer valid", shell)
+	}
+
 	env := make([]string, 0, len(os.Environ())+1)
 	for _, kv := range os.Environ() {
 		key, _, ok := strings.Cut(kv, "=")
@@ -882,10 +908,10 @@ func projectShellEnv(shell string) []string {
 		env = append(env, kv)
 	}
 	if runtime.GOOS != "windows" {
-		env = append(env, "SHELL="+shell)
+		env = append(env, "SHELL="+validated)
 	}
 	env = appendWithoutExistingEnv(env, "PATH", projectShellPath())
-	return env
+	return env, nil
 }
 
 func isProjectShellEnvKey(key string) bool {
@@ -912,7 +938,7 @@ func projectShellPath() string {
 	if runtime.GOOS == "windows" {
 		return strings.Join([]string{`C:\Windows\System32`, `C:\Windows`}, string(os.PathListSeparator))
 	}
-	return strings.Join([]string{"/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"}, string(os.PathListSeparator))
+	return strings.Join([]string{"/opt/homebrew/bin", "/usr/local/bin", "/run/current-system/sw/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"}, string(os.PathListSeparator))
 }
 
 func shellQuote(s string) string {
