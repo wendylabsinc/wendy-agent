@@ -187,7 +187,7 @@ func TestParseLoginctlProperties(t *testing.T) {
 }
 
 func TestValidateSessionValues(t *testing.T) {
-	if !validUsername("alice_1") || validUsername("Alice") || validUsername("alice;bad") {
+	if !validUsername("alice_1") || !validUsername("Alice.Name") || validUsername("alice;bad") {
 		t.Fatal("validUsername did not enforce expected Linux username shape")
 	}
 	if !validSessionID("session-2") || validSessionID("../../bad") {
@@ -202,7 +202,7 @@ func TestValidateSessionValues(t *testing.T) {
 	if _, err := validGraphicalSessionUID("1000"); err != nil {
 		t.Fatalf("validGraphicalSessionUID returned error for normal uid: %v", err)
 	}
-	for _, uid := range []string{"0", "-1", "999999"} {
+	for _, uid := range []string{"0", "1", "999", "-1", "999999"} {
 		if _, err := validGraphicalSessionUID(uid); err == nil {
 			t.Fatalf("validGraphicalSessionUID(%q) unexpectedly succeeded", uid)
 		}
@@ -213,10 +213,13 @@ func TestValidateSessionValues(t *testing.T) {
 	if err := validateEnvAssignment("DISPLAY=:0\nBAD=1"); err == nil {
 		t.Fatal("validateEnvAssignment unexpectedly accepted newline")
 	}
+	if !validRunuserPath("/usr/sbin/runuser") || validRunuserPath("/tmp/runuser") {
+		t.Fatal("validRunuserPath did not enforce expected allow-list")
+	}
 }
 
 func TestValidateOpenURL(t *testing.T) {
-	for _, raw := range []string{"file:///etc/shadow", "javascript:alert(1)", "-https://example.com", "http://"} {
+	for _, raw := range []string{"file:///etc/shadow", "javascript:alert(1)", "-https://example.com", "http://", "https://user:pass@example.com"} {
 		if err := validateOpenURL(raw); err == nil {
 			t.Fatalf("validateOpenURL(%q) unexpectedly succeeded", raw)
 		}

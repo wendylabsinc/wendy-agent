@@ -18,10 +18,13 @@ import (
 const (
 	openCommandTimeout      = 10 * time.Second
 	maxDiagnosticOutputSize = 512
-	maxGraphicalSessionUID  = 65535
-	envPath                 = "/usr/bin/env"
-	loginctlPath            = "/usr/bin/loginctl"
-	xdgOpenPath             = "/usr/bin/xdg-open"
+	// Browser session bridging targets normal interactive Linux users, not
+	// root or system accounts.
+	minGraphicalSessionUID = 1000
+	maxGraphicalSessionUID = 65535
+	envPath                = "/usr/bin/env"
+	loginctlPath           = "/usr/bin/loginctl"
+	xdgOpenPath            = "/usr/bin/xdg-open"
 )
 
 var ansiEscapePattern = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]`)
@@ -131,7 +134,7 @@ func (o opener) activeGraphicalLoginSession() (loginSession, error) {
 			continue
 		}
 		if !validSessionID(fields[0]) {
-			failures = append(failures, fmt.Sprintf("%q: invalid login session id", sanitizeIdentifier(fields[0])))
+			failures = append(failures, "invalid login session id")
 			continue
 		}
 		session := loginSession{id: fields[0]}
@@ -155,7 +158,7 @@ func (o opener) activeGraphicalLoginSession() (loginSession, error) {
 			"--no-pager",
 		)
 		if err != nil {
-			failures = append(failures, fmt.Sprintf("%q: %s", sanitizeIdentifier(session.id), sanitizeDiagnosticOutput(err.Error())))
+			failures = append(failures, fmt.Sprintf("session query failed: %s", sanitizeDiagnosticOutput(err.Error())))
 			continue
 		}
 		propsMap := parseLoginctlProperties(string(props))
@@ -215,7 +218,7 @@ func (o opener) openLinuxInLoginSession(session loginSession, url string) error 
 
 	uid, err := validGraphicalSessionUID(session.uid)
 	if err != nil {
-		return fmt.Errorf("active graphical login session %q has invalid uid", sanitizeIdentifier(session.id))
+		return fmt.Errorf("active graphical login session has invalid uid")
 	}
 
 	session.uid = strconv.Itoa(uid)
@@ -228,14 +231,18 @@ func (o opener) openLinuxInLoginSession(session loginSession, url string) error 
 		candidates = append(candidates, commandSpec{name: xdgOpenPath, args: []string{url}, env: env, minimalEnv: true})
 	} else if validUsername(session.user) {
 		if o.euid() != 0 {
-			return fmt.Errorf("agent is not root; cannot open browser as session user %q", sanitizeIdentifier(session.user))
+			return fmt.Errorf("agent is not root; cannot open browser as graphical session user")
 		}
 		envArgs := append(append([]string{}, env...), xdgOpenPath, url)
-		for _, runuser := range o.runuserCandidates() {
+		runuserCandidates := o.runuserCandidates()
+		if len(runuserCandidates) == 0 {
+			return fmt.Errorf("no supported runuser path configured")
+		}
+		for _, runuser := range runuserCandidates {
 			candidates = append(candidates, commandSpec{name: runuser, args: append([]string{"-u", session.user, "--", envPath, "-i"}, envArgs...), minimalEnv: true})
 		}
 	} else {
-		return fmt.Errorf("active graphical login session %q has invalid username", sanitizeIdentifier(session.id))
+		return fmt.Errorf("active graphical login session has invalid username")
 	}
 
 	var failures []string
@@ -248,9 +255,7 @@ func (o opener) openLinuxInLoginSession(session loginSession, url string) error 
 	}
 
 	return fmt.Errorf(
-		"open browser in graphical login session %q for user %q failed: %s",
-		sanitizeIdentifier(session.id),
-		sanitizeIdentifier(session.user),
+		"open browser in graphical login session failed: %s",
 		strings.Join(failures, "; "),
 	)
 }
@@ -326,12 +331,12 @@ func validUsername(value string) bool {
 	}
 	for i, r := range value {
 		if i == 0 {
-			if (r >= 'a' && r <= 'z') || r == '_' {
+			if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || r == '_' {
 				continue
 			}
 			return false
 		}
-		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_' || r == '-' {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' || r == '.' {
 			continue
 		}
 		return false
@@ -381,7 +386,7 @@ func validSessionID(value string) bool {
 
 func validGraphicalSessionUID(value string) (int, error) {
 	uid, err := strconv.Atoi(value)
-	if err != nil || uid <= 0 || uid > maxGraphicalSessionUID {
+	if err != nil || uid < minGraphicalSessionUID || uid > maxGraphicalSessionUID {
 		return 0, fmt.Errorf("invalid graphical session uid")
 	}
 	return uid, nil
@@ -410,6 +415,9 @@ func validateOpenURL(raw string) error {
 	case "http", "https":
 		if parsed.Host == "" {
 			return fmt.Errorf("invalid URL %q: must include a host", raw)
+		}
+		if parsed.User != nil {
+			return fmt.Errorf("invalid URL %q: must not include credentials", raw)
 		}
 		return nil
 	default:
@@ -516,10 +524,29 @@ func (o opener) globFiles(pattern string) ([]string, error) {
 }
 
 func (o opener) runuserCandidates() []string {
+	var candidates []string
 	if len(o.runuserPaths) > 0 {
-		return o.runuserPaths
+		candidates = o.runuserPaths
+	} else {
+		candidates = []string{"/usr/sbin/runuser", "/sbin/runuser"}
 	}
-	return []string{"/usr/sbin/runuser", "/sbin/runuser"}
+
+	valid := candidates[:0]
+	for _, candidate := range candidates {
+		if validRunuserPath(candidate) {
+			valid = append(valid, candidate)
+		}
+	}
+	return valid
+}
+
+func validRunuserPath(value string) bool {
+	switch value {
+	case "/usr/sbin/runuser", "/sbin/runuser":
+		return true
+	default:
+		return false
+	}
 }
 
 func (o opener) minimalCommandEnv() []string {

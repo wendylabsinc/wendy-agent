@@ -4,7 +4,7 @@ This is useful for `wendy.json` postRun scripts that want to open your (web) app
 
 ## Accepted URLs
 
-Only `http` and `https` URLs are accepted. The URL must include a host and must not begin with `-`. Any other scheme, a missing host, or a URL starting with `-` is rejected immediately with a non-zero exit code.
+Only `http` and `https` URLs are accepted. The URL must include a host, must not include credentials, and must not begin with `-`. Any other scheme, embedded credentials, a missing host, or a URL starting with `-` is rejected immediately with a non-zero exit code.
 
 ## Exit codes
 
