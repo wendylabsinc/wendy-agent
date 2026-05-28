@@ -269,6 +269,7 @@ func TestProjectShellEnv_FiltersSensitiveValues(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "secret")
 	t.Setenv("NORMAL_ENV", "value")
 	t.Setenv("TERM", "xterm-256color")
+	t.Setenv("PATH", "/tmp/evil")
 	t.Setenv("SHELL", "/tmp/evil")
 
 	env := projectShellEnv("test-shell")
@@ -282,8 +283,24 @@ func TestProjectShellEnv_FiltersSensitiveValues(t *testing.T) {
 	if !strings.Contains(joined, "\nTERM=xterm-256color\n") {
 		t.Fatalf("projectShellEnv missing allowed environment value: %q", joined)
 	}
+	if strings.Contains(joined, "\nPATH=/tmp/evil\n") {
+		t.Fatalf("projectShellEnv forwarded parent PATH: %q", joined)
+	}
+	if !strings.Contains(joined, "\nPATH="+projectShellPath()+"\n") {
+		t.Fatalf("projectShellEnv missing safe PATH: %q", joined)
+	}
 	if !strings.Contains(joined, "\nSHELL=test-shell\n") {
 		t.Fatalf("projectShellEnv did not override SHELL: %q", joined)
+	}
+}
+
+func TestStartProjectShell_RejectsInvalidShell(t *testing.T) {
+	err := startProjectShell(t.TempDir(), "test-shell")
+	if err == nil {
+		t.Fatal("expected invalid shell to fail")
+	}
+	if !strings.Contains(err.Error(), "is no longer valid") {
+		t.Fatalf("error = %q, want shell validation failure", err)
 	}
 }
 

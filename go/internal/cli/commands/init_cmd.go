@@ -781,24 +781,20 @@ func startProjectShell(dir, shell string) error {
 
 func defaultInteractiveShell() (string, error) {
 	if runtime.GOOS == "windows" {
-		systemRoot := strings.TrimSpace(os.Getenv("SystemRoot"))
-		if systemRoot == "" {
-			systemRoot = `C:\Windows`
-		}
-		shell := filepath.Join(systemRoot, "System32", "cmd.exe")
+		shell := filepath.Join(`C:\Windows`, "System32", "cmd.exe")
 		if valid, ok := validateInteractiveShell(shell); ok {
 			return valid, nil
 		}
 		return "", fmt.Errorf("finding interactive shell: %s not available", shell)
 	}
 
-	if shell, ok := validateInteractiveShell(os.Getenv("SHELL")); ok {
-		return shell, nil
-	}
 	for _, shell := range defaultUnixShellCandidates() {
 		if shell, ok := validateInteractiveShell(shell); ok {
 			return shell, nil
 		}
+	}
+	if shell, ok := validateInteractiveShell(os.Getenv("SHELL")); ok {
+		return shell, nil
 	}
 	return "", fmt.Errorf("finding interactive shell: no supported shell found")
 }
@@ -816,10 +812,19 @@ func validateInteractiveShell(candidate string) (string, bool) {
 		return "", false
 	}
 	candidate = filepath.Clean(candidate)
-	if !isKnownShellName(filepath.Base(candidate)) || !isTrustedShellDir(filepath.Dir(candidate)) || isWorldWritableDir(filepath.Dir(candidate)) {
+	resolved, err := filepath.EvalSymlinks(candidate)
+	if err != nil {
 		return "", false
 	}
-	info, err := os.Stat(candidate)
+	resolved = filepath.Clean(resolved)
+	if !isKnownShellName(filepath.Base(resolved)) || !isTrustedShellDir(filepath.Dir(resolved)) {
+		return "", false
+	}
+	writable, err := isWorldWritableDir(filepath.Dir(resolved))
+	if err != nil || writable {
+		return "", false
+	}
+	info, err := os.Lstat(resolved)
 	if err != nil || !info.Mode().IsRegular() {
 		return "", false
 	}
@@ -827,7 +832,7 @@ func validateInteractiveShell(candidate string) (string, bool) {
 	if mode&0o111 == 0 || mode&0o002 != 0 {
 		return "", false
 	}
-	return candidate, true
+	return resolved, true
 }
 
 func isTrustedShellDir(dir string) bool {
@@ -857,12 +862,14 @@ func isKnownShellName(name string) bool {
 	}
 }
 
-func isWorldWritableDir(dir string) bool {
+func isWorldWritableDir(dir string) (bool, error) {
 	info, err := os.Stat(dir)
 	if err != nil || !info.IsDir() {
-		return true
+		return false, fmt.Errorf("checking shell directory %q: %w", dir, err)
 	}
-	return info.Mode().Perm()&0o002 != 0 && info.Mode()&os.ModeSticky == 0
+	// Sticky world-writable directories such as /tmp are not trusted shell
+	// directories, but this keeps the permission helper precise.
+	return info.Mode().Perm()&0o002 != 0 && info.Mode()&os.ModeSticky == 0, nil
 }
 
 func projectShellEnv(shell string) []string {
@@ -877,17 +884,35 @@ func projectShellEnv(shell string) []string {
 	if runtime.GOOS != "windows" {
 		env = append(env, "SHELL="+shell)
 	}
+	env = appendWithoutExistingEnv(env, "PATH", projectShellPath())
 	return env
 }
 
 func isProjectShellEnvKey(key string) bool {
 	key = strings.ToUpper(strings.TrimSpace(key))
 	switch key {
-	case "HOME", "PATH", "TERM", "LANG", "LOGNAME", "USER", "USERNAME", "TMPDIR", "TMP", "TEMP", "COLORTERM", "CLICOLOR", "NO_COLOR":
+	case "HOME", "TERM", "LANG", "LOGNAME", "USER", "USERNAME", "TMPDIR", "TMP", "TEMP", "COLORTERM", "CLICOLOR", "NO_COLOR":
 		return true
 	default:
 		return strings.HasPrefix(key, "LC_")
 	}
+}
+
+func appendWithoutExistingEnv(env []string, key, value string) []string {
+	prefix := key + "="
+	for i := len(env) - 1; i >= 0; i-- {
+		if strings.HasPrefix(env[i], prefix) {
+			env = append(env[:i], env[i+1:]...)
+		}
+	}
+	return append(env, prefix+value)
+}
+
+func projectShellPath() string {
+	if runtime.GOOS == "windows" {
+		return strings.Join([]string{`C:\Windows\System32`, `C:\Windows`}, string(os.PathListSeparator))
+	}
+	return strings.Join([]string{"/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"}, string(os.PathListSeparator))
 }
 
 func shellQuote(s string) string {
