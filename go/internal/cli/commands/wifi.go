@@ -3,11 +3,14 @@ package commands
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
@@ -18,6 +21,8 @@ import (
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	"golang.org/x/term"
 )
+
+const wifiNetworkPickerRefreshInterval = 3 * time.Second
 
 func newWifiCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -622,108 +627,145 @@ func newWifiForgetCmd() *cobra.Command {
 	return cmd
 }
 
-// ── WiFi network picker (legacy, still used by `connect`) ──────────
+// ── WiFi network picker ────────────────────────────────────────────
 
 func pickWifiNetwork(ctx context.Context, target *SelectedDevice) (string, error) {
-	type wifiEntry struct {
-		ssid           string
-		signalStrength int32
-	}
-
-	var networks []wifiEntry
+	var load func(context.Context) ([]tui.PickerItem, error)
 
 	switch {
 	case target.Bluetooth != nil && target.Bluetooth.IsWendyAgent():
-		cliLogln("Scanning for WiFi networks on %s...", target.Bluetooth.DisplayName)
-		tlsCfg, err := bleTLSConfig()
-		if err != nil {
-			return "", err
-		}
-		client, err := ble.ConnectAgent(target.Bluetooth, tlsCfg)
-		if err != nil {
-			return "", fmt.Errorf("connecting to device: %w", err)
-		}
-		defer client.Close()
+		device := *target.Bluetooth
+		load = func(context.Context) ([]tui.PickerItem, error) {
+			tlsCfg, err := bleTLSConfig()
+			if err != nil {
+				return nil, err
+			}
+			client, err := ble.ConnectAgent(&device, tlsCfg)
+			if err != nil {
+				return nil, fmt.Errorf("connecting to device: %w", err)
+			}
+			defer client.Close()
 
-		nets, err := client.WifiList()
-		if err != nil {
-			return "", fmt.Errorf("listing WiFi networks: %w", err)
-		}
-		for _, n := range nets {
-			networks = append(networks, wifiEntry{ssid: n.GetSsid(), signalStrength: n.GetSignalStrength()})
+			nets, err := client.WifiList()
+			if err != nil {
+				return nil, fmt.Errorf("listing WiFi networks: %w", err)
+			}
+			return wifiPickerItemsFromBluetooth(nets), nil
 		}
 
 	case target.Bluetooth != nil:
-		cliLogln("Scanning for WiFi networks on this computer...")
-		nets, err := scanLocalWifiNetworks()
-		if err != nil {
-			return "", fmt.Errorf("scanning local WiFi networks: %w", err)
-		}
-		for _, n := range nets {
-			networks = append(networks, wifiEntry{ssid: n.SSID, signalStrength: n.SignalStrength})
+		load = func(context.Context) ([]tui.PickerItem, error) {
+			return localWifiPickerItems()
 		}
 
 	case target.Agent != nil:
-		cliLogln("Scanning for WiFi networks...")
-		resp, err := target.Agent.AgentService.ListWiFiNetworks(ctx, &agentpb.ListWiFiNetworksRequest{})
-		if err != nil {
-			return "", fmt.Errorf("listing WiFi networks: %w", err)
-		}
-		for _, n := range resp.GetNetworks() {
-			networks = append(networks, wifiEntry{ssid: n.GetSsid(), signalStrength: n.GetSignalStrength()})
+		agentSvc := target.Agent.AgentService
+		load = func(loadCtx context.Context) ([]tui.PickerItem, error) {
+			resp, err := agentSvc.ListWiFiNetworks(loadCtx, &agentpb.ListWiFiNetworksRequest{})
+			if err != nil {
+				return nil, fmt.Errorf("listing WiFi networks: %w", err)
+			}
+			return wifiPickerItemsFromProto(resp.GetNetworks()), nil
 		}
 
 	default:
 		return "", fmt.Errorf("selected device does not support WiFi network scanning")
 	}
 
+	return pickRefreshingFromItems(ctx, "Select a WiFi network", wifiNetworkPickerRefreshInterval, load)
+}
+
+func localWifiPickerItems() ([]tui.PickerItem, error) {
+	networks, err := scanLocalWifiNetworks()
+	if err != nil {
+		return nil, fmt.Errorf("scanning local WiFi networks: %w", err)
+	}
 	if len(networks) == 0 {
 		if wifiScanCacheHint != "" {
-			return "", fmt.Errorf("no WiFi networks found (%s)", wifiScanCacheHint)
+			return nil, fmt.Errorf("no WiFi networks found (%s)", wifiScanCacheHint)
 		}
-		return "", fmt.Errorf("no WiFi networks found")
+		return nil, fmt.Errorf("no WiFi networks found")
 	}
+	return wifiPickerItemsFromLocal(networks), nil
+}
 
-	var items []tui.PickerItem
+func pickLocalWifiNetwork(ctx context.Context, title string) (string, error) {
+	return pickRefreshingFromItems(ctx, title, wifiNetworkPickerRefreshInterval, func(context.Context) ([]tui.PickerItem, error) {
+		return localWifiPickerItems()
+	})
+}
+
+func wifiPickerItemsFromLocal(networks []localWifiNetwork) []tui.PickerItem {
+	items := make([]tui.PickerItem, 0, len(networks))
 	for _, n := range networks {
-		signal := ""
-		if n.signalStrength > 0 {
-			signal = fmt.Sprintf("%d%%", n.signalStrength)
-		}
-		items = append(items, tui.PickerItem{
-			Name:  n.ssid,
-			Type:  signal,
-			Value: n.ssid,
-		})
+		items = append(items, wifiPickerItem(n.SSID, n.SignalStrength, ""))
 	}
+	return items
+}
 
-	picker := tui.NewPickerWithTitle("Select a WiFi network")
-	p := tea.NewProgram(picker)
-
-	go func() {
-		p.Send(tui.PickerAddMsg{Items: items})
-		p.Send(tui.PickerDoneMsg{})
-	}()
-
-	finalModel, err := p.Run()
-	if err != nil {
-		return "", fmt.Errorf("network picker: %w", err)
+func wifiPickerItemsFromProto(networks []*agentpb.ListWiFiNetworksResponse_WiFiNetwork) []tui.PickerItem {
+	items := make([]tui.PickerItem, 0, len(networks))
+	for _, n := range networks {
+		description := wifiPickerDescription(n.GetIsConnected(), n.GetIsKnown(), n.GetSecurity())
+		items = append(items, wifiPickerItem(n.GetSsid(), n.GetSignalStrength(), description))
 	}
+	return items
+}
 
-	pm := finalModel.(tui.PickerModel)
-	if pm.Cancelled() {
-		return "", ErrUserCancelled
+func wifiPickerItemsFromBluetooth(networks []*agentpb.WifiNetworkInfo) []tui.PickerItem {
+	items := make([]tui.PickerItem, 0, len(networks))
+	for _, n := range networks {
+		description := wifiPickerDescription(n.GetIsConnected(), n.GetIsKnown(), n.GetSecurity())
+		items = append(items, wifiPickerItem(n.GetSsid(), n.GetSignalStrength(), description))
 	}
-	sel := pm.Selected()
-	if sel == nil {
-		return "", fmt.Errorf("no network selected")
-	}
+	return items
+}
 
-	ssid, ok := sel.Value.(string)
-	if !ok {
-		return "", fmt.Errorf("invalid picker selection")
+func wifiPickerDescription(connected, known bool, security agentpb.WiFiSecurityType) string {
+	var parts []string
+	if connected {
+		parts = append(parts, "Connected")
 	}
-	return ssid, nil
+	if known {
+		parts = append(parts, "Known")
+	}
+	if sec := wifitable.SecurityLabel(security); sec != "" {
+		parts = append(parts, sec)
+	}
+	return strings.Join(parts, ", ")
+}
+
+func wifiPickerItem(ssid string, signalStrength int32, description string) tui.PickerItem {
+	signalStrength = clampSignalStrength(signalStrength)
+	signal := ""
+	if signalStrength > 0 {
+		signal = fmt.Sprintf("%d%%", signalStrength)
+	}
+	return tui.PickerItem{
+		Name:        ssid,
+		Type:        signal,
+		Description: description,
+		DedupKey:    ssid,
+		SortKey:     wifiPickerSortKey(ssid, signalStrength),
+		Value:       ssid,
+	}
+}
+
+func wifiPickerSortKey(ssid string, signalStrength int32) string {
+	signalStrength = clampSignalStrength(signalStrength)
+	sum := sha256.Sum256([]byte(strings.ToLower(ssid)))
+	hashedSSID := hex.EncodeToString(sum[:8])
+	return fmt.Sprintf("%03d:%s", 100-signalStrength, hashedSSID)
+}
+
+func clampSignalStrength(signalStrength int32) int32 {
+	if signalStrength < 0 {
+		return 0
+	}
+	if signalStrength > 100 {
+		return 100
+	}
+	return signalStrength
 }
 
 // ── BLE WendyOS Agent / Lite helpers retained for status/disconnect ──

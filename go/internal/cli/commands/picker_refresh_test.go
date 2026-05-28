@@ -122,3 +122,36 @@ func TestRefreshingPickerModel_SelectsItem(t *testing.T) {
 		t.Fatalf("selected value = %q, want alpha", got)
 	}
 }
+
+func TestRefreshingWifiPickerPreservesSSIDCursorWhenOrderChanges(t *testing.T) {
+	m := newRefreshingPickerModel(context.Background(), "Select WiFi network", time.Millisecond, func(context.Context) ([]tui.PickerItem, error) {
+		return nil, nil
+	})
+
+	updated, _ := m.Update(refreshingPickerLoadMsg{items: []tui.PickerItem{
+		wifiPickerItem("alpha", 90, ""),
+		wifiPickerItem("beta", 80, ""),
+	}})
+	rm := updated.(refreshingPickerModel)
+
+	updated, _ = rm.Update(tea.KeyMsg{Type: tea.KeyDown})
+	rm = updated.(refreshingPickerModel)
+
+	updated, _ = rm.Update(refreshingPickerLoadMsg{items: []tui.PickerItem{
+		wifiPickerItem("beta", 99, ""),
+		wifiPickerItem("alpha", 90, ""),
+	}})
+	rm = updated.(refreshingPickerModel)
+
+	updated, cmd := rm.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("expected enter to quit")
+	}
+	rm = updated.(refreshingPickerModel)
+	if rm.picker.Selected() == nil {
+		t.Fatal("expected selected item")
+	}
+	if got := rm.picker.Selected().Value.(string); got != "beta" {
+		t.Fatalf("selected value = %q, want beta", got)
+	}
+}
