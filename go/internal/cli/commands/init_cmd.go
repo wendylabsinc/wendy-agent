@@ -779,19 +779,7 @@ func startProjectShell(dir, shell string) error {
 		return err
 	}
 
-	// Use a normal interactive shell so this handoff behaves like a user-run
-	// `cd`; user-owned startup files are intentionally honored.
-	cmd := exec.Command(validated)
-	cmd.Path = validated
-	cmd.Dir = dir
-	cmd.Env = env
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("starting shell in project directory: %w", err)
-	}
-	return nil
+	return runProjectShell(validated, dir, env)
 }
 
 func defaultInteractiveShell() (string, error) {
@@ -871,7 +859,7 @@ func trustedShellDirs() []string {
 	if runtime.GOOS == "windows" {
 		return []string{`C:\Windows\System32`}
 	}
-	return []string{"/bin", "/usr/bin", "/usr/local/bin", "/opt/homebrew/bin", "/opt/local/bin", "/run/current-system/sw/bin"}
+	return []string{"/bin", "/usr/bin"}
 }
 
 func isKnownShellName(name string) bool {
@@ -888,9 +876,7 @@ func isWorldWritableDir(dir string) (bool, error) {
 	if err != nil || !info.IsDir() {
 		return false, fmt.Errorf("checking shell directory %q: %w", dir, err)
 	}
-	// Sticky world-writable directories such as /tmp are not trusted shell
-	// directories, but this keeps the permission helper precise.
-	return info.Mode().Perm()&0o002 != 0 && info.Mode()&os.ModeSticky == 0, nil
+	return info.Mode().Perm()&0o002 != 0, nil
 }
 
 func projectShellEnv(shell string) ([]string, error) {
@@ -926,19 +912,20 @@ func isProjectShellEnvKey(key string) bool {
 
 func appendWithoutExistingEnv(env []string, key, value string) []string {
 	prefix := key + "="
-	for i := len(env) - 1; i >= 0; i-- {
-		if strings.HasPrefix(env[i], prefix) {
-			env = append(env[:i], env[i+1:]...)
+	out := make([]string, 0, len(env)+1)
+	for _, kv := range env {
+		if !strings.HasPrefix(kv, prefix) {
+			out = append(out, kv)
 		}
 	}
-	return append(env, prefix+value)
+	return append(out, prefix+value)
 }
 
 func projectShellPath() string {
 	if runtime.GOOS == "windows" {
 		return strings.Join([]string{`C:\Windows\System32`, `C:\Windows`}, string(os.PathListSeparator))
 	}
-	return strings.Join([]string{"/opt/homebrew/bin", "/usr/local/bin", "/run/current-system/sw/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"}, string(os.PathListSeparator))
+	return strings.Join([]string{"/usr/bin", "/bin"}, string(os.PathListSeparator))
 }
 
 func shellQuote(s string) string {
