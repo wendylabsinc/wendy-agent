@@ -264,6 +264,40 @@ func TestProjectShellDir_RejectsDirectoryOutsideWorkingDirectory(t *testing.T) {
 	}
 }
 
+func TestProjectShellEnv_FiltersSensitiveValues(t *testing.T) {
+	t.Setenv("WENDY_TOKEN", "secret")
+	t.Setenv("OPENAI_API_KEY", "secret")
+	t.Setenv("NORMAL_ENV", "value")
+	t.Setenv("SHELL", "/tmp/evil")
+
+	env := projectShellEnv("/bin/sh")
+	joined := "\n" + strings.Join(env, "\n") + "\n"
+
+	for _, key := range []string{"WENDY_TOKEN", "OPENAI_API_KEY"} {
+		if strings.Contains(joined, "\n"+key+"=") {
+			t.Fatalf("projectShellEnv included sensitive key %q in %q", key, joined)
+		}
+	}
+	if !strings.Contains(joined, "\nNORMAL_ENV=value\n") {
+		t.Fatalf("projectShellEnv missing normal environment value: %q", joined)
+	}
+	if !strings.Contains(joined, "\nSHELL=/bin/sh\n") {
+		t.Fatalf("projectShellEnv did not override SHELL: %q", joined)
+	}
+}
+
+func TestValidateInteractiveShell_RejectsUnknownShellName(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "not-a-shell")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if shell, ok := validateInteractiveShell(path); ok {
+		t.Fatalf("validateInteractiveShell(%q) = %q, true; want false", path, shell)
+	}
+}
+
 func TestResolveTemplateLanguage_RejectsUnavailableTemplateLanguage(t *testing.T) {
 	meta := &repoMeta{
 		Templates: []repoMetaTemplate{

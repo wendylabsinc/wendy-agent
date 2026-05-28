@@ -700,7 +700,6 @@ func finishTemplateInitWithLauncher(cwd, destDir, appID string, enterProjectDir 
 			return err
 		}
 		cliLogln("Opening a shell in: %s", projectDir)
-		cliLogln("Shell: %s", shell)
 		cliLogln("Run `wendy run` to build and deploy.")
 		return launch(projectDir, shell)
 	}
@@ -730,11 +729,18 @@ func projectShellDir(cwd, destDir string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("checking project directory: %w", err)
 	}
-	if rel == "." || rel == ".." || filepath.IsAbs(rel) || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+	if rel == "." || rel == ".." || filepath.IsAbs(rel) || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || !pathHasPrefix(cleanDest, cleanCwd) {
 		return "", fmt.Errorf("project directory %q is outside working directory %q", destDir, cwd)
 	}
 
 	return cleanDest, nil
+}
+
+func pathHasPrefix(path, prefix string) bool {
+	sep := string(filepath.Separator)
+	cleanPath := strings.TrimRight(filepath.Clean(path), sep) + sep
+	cleanPrefix := strings.TrimRight(filepath.Clean(prefix), sep) + sep
+	return strings.HasPrefix(cleanPath, cleanPrefix)
 }
 
 func canonicalProjectPath(path string) (string, error) {
@@ -746,8 +752,17 @@ func canonicalProjectPath(path string) (string, error) {
 }
 
 func startProjectShell(dir, shell string) error {
+	info, err := os.Stat(dir)
+	if err != nil {
+		return fmt.Errorf("checking project directory: %w", err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("project directory %q is not a directory", dir)
+	}
+
 	cmd := exec.Command(shell)
-	cmd.Dir = filepath.Clean(dir)
+	cmd.Dir = dir
+	cmd.Env = projectShellEnv(shell)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -759,15 +774,22 @@ func startProjectShell(dir, shell string) error {
 
 func defaultInteractiveShell() (string, error) {
 	if runtime.GOOS == "windows" {
-		shell, err := exec.LookPath("cmd.exe")
-		if err == nil {
-			return shell, nil
+		systemRoot := strings.TrimSpace(os.Getenv("SystemRoot"))
+		if systemRoot == "" {
+			systemRoot = `C:\Windows`
 		}
-		return "", fmt.Errorf("finding interactive shell: %w", err)
+		shell := filepath.Join(systemRoot, "System32", "cmd.exe")
+		if valid, ok := validateInteractiveShell(shell); ok {
+			return valid, nil
+		}
+		return "", fmt.Errorf("finding interactive shell: %s not available", shell)
 	}
 
+	if shell, ok := validateInteractiveShell(os.Getenv("SHELL")); ok {
+		return shell, nil
+	}
 	for _, shell := range defaultUnixShellCandidates() {
-		if _, err := os.Stat(shell); err == nil {
+		if shell, ok := validateInteractiveShell(shell); ok {
 			return shell, nil
 		}
 	}
@@ -779,6 +801,71 @@ func defaultUnixShellCandidates() []string {
 		return []string{"/bin/zsh", "/bin/bash", "/bin/sh"}
 	}
 	return []string{"/bin/bash", "/usr/bin/bash", "/bin/sh", "/usr/bin/sh"}
+}
+
+func validateInteractiveShell(candidate string) (string, bool) {
+	candidate = strings.TrimSpace(candidate)
+	if candidate == "" || !filepath.IsAbs(candidate) {
+		return "", false
+	}
+	candidate = filepath.Clean(candidate)
+	if !isKnownShellName(filepath.Base(candidate)) || isWorldWritableDir(filepath.Dir(candidate)) {
+		return "", false
+	}
+	info, err := os.Stat(candidate)
+	if err != nil || !info.Mode().IsRegular() {
+		return "", false
+	}
+	mode := info.Mode().Perm()
+	if mode&0o111 == 0 || mode&0o002 != 0 {
+		return "", false
+	}
+	return candidate, true
+}
+
+func isKnownShellName(name string) bool {
+	switch strings.ToLower(name) {
+	case "sh", "bash", "zsh", "fish", "dash", "ksh", "cmd.exe", "powershell.exe", "pwsh.exe":
+		return true
+	default:
+		return false
+	}
+}
+
+func isWorldWritableDir(dir string) bool {
+	info, err := os.Stat(dir)
+	if err != nil || !info.IsDir() {
+		return true
+	}
+	return info.Mode().Perm()&0o002 != 0
+}
+
+func projectShellEnv(shell string) []string {
+	env := make([]string, 0, len(os.Environ())+1)
+	for _, kv := range os.Environ() {
+		key, _, ok := strings.Cut(kv, "=")
+		if !ok || isSensitiveEnvKey(key) || key == "SHELL" {
+			continue
+		}
+		env = append(env, kv)
+	}
+	if runtime.GOOS != "windows" {
+		env = append(env, "SHELL="+shell)
+	}
+	return env
+}
+
+func isSensitiveEnvKey(key string) bool {
+	key = strings.ToUpper(strings.TrimSpace(key))
+	if key == "" {
+		return false
+	}
+	for _, marker := range []string{"TOKEN", "SECRET", "PASSWORD", "PASSWD", "CREDENTIAL", "PRIVATE_KEY", "ACCESS_KEY", "API_KEY", "AUTH"} {
+		if strings.Contains(key, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func shellQuote(s string) string {
