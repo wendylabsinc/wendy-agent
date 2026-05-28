@@ -29,8 +29,23 @@ func newRefreshingPickerModel(
 	interval time.Duration,
 	load func(context.Context) ([]tui.PickerItem, error),
 ) refreshingPickerModel {
+	return newRefreshingPickerModelWithEmptyMessage(ctx, title, "", interval, load)
+}
+
+func newRefreshingPickerModelWithEmptyMessage(
+	ctx context.Context,
+	title string,
+	emptyMessage string,
+	interval time.Duration,
+	load func(context.Context) ([]tui.PickerItem, error),
+) refreshingPickerModel {
+	picker := tui.NewPickerWithTitle(title)
+	if emptyMessage != "" {
+		picker.EmptyMessage = emptyMessage
+	}
+
 	return refreshingPickerModel{
-		picker:   tui.NewPickerWithTitle(title),
+		picker:   picker,
 		ctx:      ctx,
 		maxDelay: interval,
 		load:     load,
@@ -76,10 +91,20 @@ func pickRefreshingItem(
 	interval time.Duration,
 	load func(context.Context) ([]tui.PickerItem, error),
 ) (tui.PickerItem, error) {
+	return pickRefreshingItemWithEmptyMessage(ctx, title, "", interval, load)
+}
+
+func pickRefreshingItemWithEmptyMessage(
+	ctx context.Context,
+	title string,
+	emptyMessage string,
+	interval time.Duration,
+	load func(context.Context) ([]tui.PickerItem, error),
+) (tui.PickerItem, error) {
 	pollCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	model := newRefreshingPickerModel(pollCtx, title, interval, load)
+	model := newRefreshingPickerModelWithEmptyMessage(pollCtx, title, emptyMessage, interval, load)
 	p := tea.NewProgram(model)
 	finalModel, err := p.Run()
 	if err != nil {

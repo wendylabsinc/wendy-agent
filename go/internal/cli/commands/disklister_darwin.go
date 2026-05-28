@@ -4,11 +4,13 @@ package commands
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 // drive represents an external disk suitable for image writing.
@@ -21,6 +23,11 @@ type drive struct {
 	IsRemovable bool
 	StorageType StorageType // underlying storage protocol
 }
+
+const (
+	diskutilListTimeout = 10 * time.Second
+	diskutilInfoTimeout = 5 * time.Second
+)
 
 // listAllDrives lists external physical drives (NVMe, USB, SD cards) on macOS.
 func listAllDrives() ([]drive, error) {
@@ -37,7 +44,7 @@ func listExternalDrives() ([]drive, error) {
 // drives. It checks both external and internal physical disks because built-in
 // SD card readers present media as internal on macOS.
 func listDrivesText() ([]drive, error) {
-	out, err := exec.Command("diskutil", "list", "external", "physical").Output()
+	out, err := diskutilOutput(diskutilListTimeout, "list", "external", "physical")
 	if err != nil {
 		return nil, fmt.Errorf("running diskutil: %w", err)
 	}
@@ -47,7 +54,7 @@ func listDrivesText() ([]drive, error) {
 
 	// Also check internal physical disks for removable media
 	// (e.g., built-in SD card readers show as "internal" on macOS).
-	internalOut, err := exec.Command("diskutil", "list", "internal", "physical").CombinedOutput()
+	internalOut, err := diskutilCombinedOutput(diskutilListTimeout, "list", "internal", "physical")
 	if err != nil {
 		// Surface a warning instead of silently ignoring the failure so that
 		// users can diagnose missing drives (e.g., SD cards in built-in readers).
@@ -128,7 +135,7 @@ type diskInfo struct {
 }
 
 func getDiskInfo(devPath string) (*diskInfo, error) {
-	out, err := exec.Command("diskutil", "info", devPath).Output()
+	out, err := diskutilOutput(diskutilInfoTimeout, "info", devPath)
 	if err != nil {
 		return nil, err
 	}
@@ -165,6 +172,28 @@ func getDiskInfo(devPath string) (*diskInfo, error) {
 		}
 	}
 	return info, nil
+}
+
+func diskutilOutput(timeout time.Duration, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	out, err := exec.CommandContext(ctx, "diskutil", args...).Output()
+	if ctx.Err() == context.DeadlineExceeded {
+		return nil, fmt.Errorf("diskutil %q timed out after %s", args, timeout)
+	}
+	return out, err
+}
+
+func diskutilCombinedOutput(timeout time.Duration, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	out, err := exec.CommandContext(ctx, "diskutil", args...).CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		return nil, fmt.Errorf("diskutil %q timed out after %s", args, timeout)
+	}
+	return out, err
 }
 
 // unmountDisk unmounts all volumes on a disk before writing.

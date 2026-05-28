@@ -73,7 +73,7 @@ type (
 		devices []models.LANDevice
 		err     error
 	}
-	tourWifiDetectedMsg struct{ ssid, password string }
+	tourWifiDetectedMsg struct{ ssid string }
 	tourWifiScanDoneMsg struct {
 		networks []localWifiNetwork
 		err      error
@@ -196,7 +196,6 @@ type tourWizardModel struct {
 
 	// WiFi
 	detectedSSID string
-	detectedPass string
 	wifiSSID     string
 	wifiPass     string
 	wifiCursor   int                // options menu cursor
@@ -296,7 +295,6 @@ func (m tourWizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint:cyc
 
 	case tourWifiDetectedMsg:
 		m.detectedSSID = msg.ssid
-		m.detectedPass = msg.password
 		m.phase = phaseWifiQuestion
 		m.wifiCursor = 0
 		return m, nil
@@ -593,16 +591,11 @@ func (m tourWizardModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				if m.detectedSSID != "" {
 					// "Yes, use [detectedSSID]"
 					m.wifiSSID = m.detectedSSID
-					if m.detectedPass != "" {
-						m.wifiPass = m.detectedPass
-						m.phase = phaseReadyToInstall
-					} else {
-						m.phase = phaseWifiPassword
-						m.input.Placeholder = "WiFi password (leave empty for open network)"
-						m.input.EchoMode = textinput.EchoPassword
-						m.input.SetValue("")
-						m.input.Focus()
-					}
+					m.phase = phaseWifiPassword
+					m.input.Placeholder = "WiFi password (leave empty for open network)"
+					m.input.EchoMode = textinput.EchoPassword
+					m.input.SetValue("")
+					m.input.Focus()
 				} else {
 					// "Scan for nearby networks"
 					m.phase = phaseWifiScanLoading
@@ -664,13 +657,6 @@ func (m tourWizardModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if len(m.scanNetworks) > 0 && m.scanCursor < len(m.scanNetworks) {
 				net := m.scanNetworks[m.scanCursor]
 				m.wifiSSID = net.SSID
-				if supportsKeychainLookup {
-					if pwd, err := lookupKeychainPassword(net.SSID); err == nil && pwd != "" {
-						m.wifiPass = pwd
-						m.phase = phaseReadyToInstall
-						return m, nil
-					}
-				}
 				m.phase = phaseWifiPassword
 				m.input.Placeholder = "WiFi password (leave empty for open network)"
 				m.input.EchoMode = textinput.EchoPassword
@@ -1241,7 +1227,7 @@ func (m tourWizardModel) viewTextInput(w int) string {
 	switch m.phase {
 	case phaseWifiPassword:
 		title = "WiFi Password"
-		hint = fmt.Sprintf("Password for \"%s\" (leave blank for open network)", m.wifiSSID)
+		hint = fmt.Sprintf("Password for %s (leave blank for open network)", quoteSSIDForPrompt(m.wifiSSID))
 	case phaseWifiManualSSID:
 		title = "WiFi Network"
 		hint = "Enter the name (SSID) of the network"
@@ -1541,11 +1527,7 @@ func scanWifiCmd() tea.Cmd {
 func detectWifiCmd() tea.Cmd {
 	return func() tea.Msg {
 		ssid := detectCurrentWiFiSSID()
-		password := ""
-		if ssid != "" && supportsKeychainLookup {
-			password, _ = lookupKeychainPassword(ssid)
-		}
-		return tourWifiDetectedMsg{ssid: ssid, password: password}
+		return tourWifiDetectedMsg{ssid: ssid}
 	}
 }
 

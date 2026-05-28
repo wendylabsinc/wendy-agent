@@ -205,6 +205,21 @@ func TestPickerModel_SetMsgReplacesItems(t *testing.T) {
 	}
 }
 
+func TestPickerModel_SetMsgEmptyStopsScanning(t *testing.T) {
+	m := NewPicker()
+	m.EmptyMessage = "Nothing here yet."
+
+	updated, _ := m.Update(PickerSetMsg{})
+	pm := updated.(PickerModel)
+	view := pm.View()
+	if strings.Contains(view, "Scanning") {
+		t.Fatalf("expected authoritative empty set to stop scanning: %q", view)
+	}
+	if !strings.Contains(view, "Nothing here yet.") {
+		t.Fatalf("expected custom empty message: %q", view)
+	}
+}
+
 func TestPickerModel_SetMsgPreservesCursorByItem(t *testing.T) {
 	m := NewPicker()
 

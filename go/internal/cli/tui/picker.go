@@ -60,6 +60,10 @@ type PickerSetMsg struct {
 type PickerModel struct {
 	Title string // header line, e.g. "Select a device"
 
+	// EmptyMessage is shown after discovery or an authoritative refresh
+	// completes without any selectable items.
+	EmptyMessage string
+
 	// MergeItem is called when a new item shares a DedupKey with an existing
 	// item. The caller can update existing in place (type, address, value, ...).
 	// If nil, duplicate items are silently dropped.
@@ -90,10 +94,11 @@ type PickerModel struct {
 // NewPicker creates a new picker model with the default "Select a device" title.
 func NewPicker() PickerModel {
 	m := PickerModel{
-		Title:    "Select a device",
-		seenIdx:  make(map[string]int),
-		table:    newPickerTable(),
-		scanning: true,
+		Title:        "Select a device",
+		EmptyMessage: "No options found.",
+		seenIdx:      make(map[string]int),
+		table:        newPickerTable(),
+		scanning:     true,
 	}
 	m.refreshTable()
 	return m
@@ -102,10 +107,11 @@ func NewPicker() PickerModel {
 // NewPickerWithTitle creates a new picker model with a custom title.
 func NewPickerWithTitle(title string) PickerModel {
 	m := PickerModel{
-		Title:    title,
-		seenIdx:  make(map[string]int),
-		table:    newPickerTable(),
-		scanning: true,
+		Title:        title,
+		EmptyMessage: "No options found.",
+		seenIdx:      make(map[string]int),
+		table:        newPickerTable(),
+		scanning:     true,
 	}
 	m.refreshTable()
 	return m
@@ -185,6 +191,7 @@ func (m PickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cursorKey := m.currentCursorKey()
 		m.items = nil
 		m.seenIdx = make(map[string]int, len(msg.Items))
+		m.scanning = false
 		for _, item := range msg.Items {
 			key := strings.ToLower(pickerItemKey(item))
 			if idx, ok := m.seenIdx[key]; ok {
@@ -233,7 +240,11 @@ func (m PickerModel) View() string {
 		if m.scanning {
 			sb.WriteString(pickerScanning.Render("  Scanning...") + "\n")
 		} else {
-			sb.WriteString(pickerHint.Render("  No options found.") + "\n")
+			message := m.EmptyMessage
+			if message == "" {
+				message = "No options found."
+			}
+			sb.WriteString(pickerHint.Render("  "+message) + "\n")
 		}
 		return sb.String()
 	}

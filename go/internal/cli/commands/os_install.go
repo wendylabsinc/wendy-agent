@@ -567,9 +567,10 @@ func pickManifestVersion(title string, manifest *deviceManifest) (string, error)
 }
 
 const externalDrivePickerRefreshInterval = 2 * time.Second
+const externalDrivePickerEmptyMessage = "No removable target drives found. Insert an SD card or USB drive, then wait for it to appear. Press q to cancel."
 
 func pickExternalDrive(ctx context.Context) (drive, error) {
-	item, err := pickRefreshingItem(ctx, "Select target drive", externalDrivePickerRefreshInterval, func(context.Context) ([]tui.PickerItem, error) {
+	item, err := pickRefreshingItemWithEmptyMessage(ctx, "Select target drive", externalDrivePickerEmptyMessage, externalDrivePickerRefreshInterval, func(context.Context) ([]tui.PickerItem, error) {
 		drives, err := listExternalDrives()
 		if err != nil {
 			return nil, fmt.Errorf("listing drives: %w", err)
@@ -1066,11 +1067,14 @@ func resolveWiFiCredentialsList(opts wifiCLIOptions) ([]wendyconf.WifiCredential
 	// --wifi-ssid shortcut folds into a single trailing entry.
 	if opts.SSID != "" {
 		c := wendyconf.WifiCredential{SSID: opts.SSID, Password: opts.Password}
-		if c.Password == "" {
-			if pw, kerr := lookupKeychainPassword(c.SSID); kerr == nil && pw != "" {
+		if c.Password == "" && isInteractiveTerminal() {
+			if pw, kerr := promptForSavedWiFiPassword(c.SSID); kerr != nil {
+				return nil, fmt.Errorf("reading WiFi password: %w", kerr)
+			} else if pw != "" {
 				c.Password = pw
-			} else if isInteractiveTerminal() {
-				pw, perr := tui.PromptText(fmt.Sprintf("WiFi password for %s", c.SSID), "(leave empty for open network)", nil)
+			}
+			if c.Password == "" {
+				pw, perr := tui.PromptText(fmt.Sprintf("WiFi password for %s", quoteSSIDForPrompt(c.SSID)), "(leave empty for open network)", nil)
 				if perr != nil {
 					return nil, fmt.Errorf("reading WiFi password: %w", perr)
 				}
@@ -1212,23 +1216,14 @@ func promptAddOneCredential(index int) (wendyconf.WifiCredential, bool, error) {
 		c.SSID = ssid
 	}
 
-	if supportsKeychainLookup {
-		useKeychain, err := tui.ConfirmDefaultYes(fmt.Sprintf("Look up password for '%s' from keychain? (macOS will ask for permission)", c.SSID))
-		if err != nil {
-			return c, false, err
-		}
-		if useKeychain {
-			if pw, kerr := lookupKeychainPassword(c.SSID); kerr == nil && pw != "" {
-				fmt.Println("Using saved password from keychain.")
-				c.Password = pw
-			} else {
-				fmt.Println("Password not available from keychain.")
-			}
-		}
+	if pw, err := promptForSavedWiFiPassword(c.SSID); err != nil {
+		return c, false, err
+	} else if pw != "" {
+		c.Password = pw
 	}
 
 	if c.Password == "" {
-		pw, err := tui.PromptText(fmt.Sprintf("Password for %s", c.SSID), "(leave empty for open network)", nil)
+		pw, err := tui.PromptText(fmt.Sprintf("Password for %s", quoteSSIDForPrompt(c.SSID)), "(leave empty for open network)", nil)
 		if err != nil {
 			return c, false, err
 		}

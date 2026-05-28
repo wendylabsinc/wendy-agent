@@ -80,8 +80,23 @@ func TestRefreshingPickerModel_EmptyLoadKeepsPickerOpen(t *testing.T) {
 	if rm.err != nil {
 		t.Fatalf("unexpected error: %v", rm.err)
 	}
-	if !strings.Contains(rm.View(), "Scanning") {
-		t.Fatalf("expected empty refreshing picker to keep scanning, got %q", rm.View())
+	if !strings.Contains(rm.View(), "No options found.") {
+		t.Fatalf("expected empty refreshing picker to show empty state, got %q", rm.View())
+	}
+}
+
+func TestRefreshingPickerModel_CustomEmptyMessage(t *testing.T) {
+	m := newRefreshingPickerModelWithEmptyMessage(context.Background(), "Select", "Insert a drive.", time.Millisecond, func(context.Context) ([]tui.PickerItem, error) {
+		return nil, nil
+	})
+
+	updated, cmd := m.Update(refreshingPickerLoadMsg{})
+	if cmd == nil {
+		t.Fatal("expected empty load to schedule refresh")
+	}
+	rm := updated.(refreshingPickerModel)
+	if !strings.Contains(rm.View(), "Insert a drive.") {
+		t.Fatalf("expected custom empty state, got %q", rm.View())
 	}
 }
 
