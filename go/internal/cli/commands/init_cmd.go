@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -849,7 +850,12 @@ func isTrustedShellPath(candidate, resolved string) bool {
 }
 
 func shellListedInSystemShells(shell string) bool {
-	data, err := os.ReadFile("/etc/shells")
+	f, err := os.Open("/etc/shells")
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, 64*1024))
 	if err != nil {
 		return false
 	}
@@ -900,7 +906,7 @@ func isKnownShellName(name string) bool {
 }
 
 func isWorldWritableDir(dir string) (bool, error) {
-	info, err := os.Stat(dir)
+	info, err := os.Lstat(dir)
 	if err != nil || !info.IsDir() {
 		return false, fmt.Errorf("checking shell directory %q: %w", dir, err)
 	}

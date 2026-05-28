@@ -5,7 +5,6 @@ package commands
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"syscall"
 )
 
@@ -25,13 +24,6 @@ func runProjectShell(shell, dir string, env []string) error {
 		return fmt.Errorf("checking project directory path: %w", err)
 	}
 	if !os.SameFile(fdInfo, pathInfo) {
-		return fmt.Errorf("project directory changed before shell handoff")
-	}
-	resolved, err := filepath.EvalSymlinks(dir)
-	if err != nil {
-		return fmt.Errorf("resolving project directory before shell handoff: %w", err)
-	}
-	if filepath.Clean(resolved) != filepath.Clean(dir) {
 		return fmt.Errorf("project directory changed before shell handoff")
 	}
 
