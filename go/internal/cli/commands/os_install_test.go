@@ -334,6 +334,73 @@ func TestResolveWiFiCredentialsListFlags(t *testing.T) {
 	}
 }
 
+func TestResolveDeviceNameFlag(t *testing.T) {
+	got, err := resolveDeviceName("wendy-pi-5")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "wendy-pi-5" {
+		t.Fatalf("got %q; want %q", got, "wendy-pi-5")
+	}
+}
+
+func TestResolveDeviceNameNoFlagNonInteractive(t *testing.T) {
+	origInteractive := isInteractiveTerminalFn
+	isInteractiveTerminalFn = func() bool { return false }
+	t.Cleanup(func() { isInteractiveTerminalFn = origInteractive })
+
+	got, err := resolveDeviceName("")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "" {
+		t.Fatalf("got %q; want empty device name", got)
+	}
+}
+
+func TestResolveDeviceNameFlagValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		in      string
+		wantErr string
+	}{
+		{"too short", "ab", "3–64 characters"},
+		{"too long", strings.Repeat("a", 65), "3–64 characters"},
+		{"starts with number", "1device", "start with a lowercase letter"},
+		{"uppercase", "Wendy", "lowercase letters, digits, and hyphens"},
+		{"underscore", "wendy_pi", "lowercase letters, digits, and hyphens"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := resolveDeviceName(tc.in)
+			if err == nil {
+				t.Fatal("expected validation error")
+			}
+			if !strings.Contains(err.Error(), "--device-name") {
+				t.Fatalf("error should mention --device-name, got %q", err.Error())
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("error %q should contain %q", err.Error(), tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestOptionalDeviceNameValidatorAllowsAutoGenerate(t *testing.T) {
+	if err := optionalDeviceNameValidator(""); err != nil {
+		t.Fatalf("empty device name should allow auto-generation: %v", err)
+	}
+	if err := optionalDeviceNameValidator("   "); err != nil {
+		t.Fatalf("blank device name should allow auto-generation: %v", err)
+	}
+	if err := optionalDeviceNameValidator("wendy-pi"); err != nil {
+		t.Fatalf("valid device name should pass: %v", err)
+	}
+	if err := optionalDeviceNameValidator("pi"); err == nil {
+		t.Fatal("invalid non-empty device name should fail")
+	}
+}
+
 func TestResolveOSImage_ZipCacheHit(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())

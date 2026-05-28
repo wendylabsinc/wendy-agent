@@ -1248,30 +1248,37 @@ func nonEmptyValidator(v string) error {
 	return nil
 }
 
+func validateDeviceName(name string) error {
+	if len(name) < 3 || len(name) > 64 {
+		return fmt.Errorf("device name must be 3–64 characters")
+	}
+	for i, c := range name {
+		switch {
+		case c >= 'a' && c <= 'z':
+		case (c >= '0' && c <= '9') || c == '-':
+			if i == 0 {
+				return fmt.Errorf("device name must start with a lowercase letter")
+			}
+		default:
+			return fmt.Errorf("device name may only contain lowercase letters, digits, and hyphens")
+		}
+	}
+	return nil
+}
+
+func optionalDeviceNameValidator(name string) error {
+	if strings.TrimSpace(name) == "" {
+		return nil
+	}
+	return validateDeviceName(name)
+}
+
 // resolveDeviceName returns the device name to pre-configure on first boot.
 // If flagName is set it is validated and returned directly. In interactive mode
 // the user is prompted; an empty response skips naming (auto-generated on device).
 func resolveDeviceName(flagName string) (string, error) {
-	validate := func(name string) error {
-		if len(name) < 3 || len(name) > 64 {
-			return fmt.Errorf("device name must be 3–64 characters")
-		}
-		for i, c := range name {
-			switch {
-			case c >= 'a' && c <= 'z':
-			case (c >= '0' && c <= '9') || c == '-':
-				if i == 0 {
-					return fmt.Errorf("device name must start with a lowercase letter")
-				}
-			default:
-				return fmt.Errorf("device name may only contain lowercase letters, digits, and hyphens")
-			}
-		}
-		return nil
-	}
-
 	if flagName != "" {
-		if err := validate(flagName); err != nil {
+		if err := validateDeviceName(flagName); err != nil {
 			return "", fmt.Errorf("--device-name: %w", err)
 		}
 		return flagName, nil
@@ -1281,15 +1288,10 @@ func resolveDeviceName(flagName string) (string, error) {
 		return "", nil
 	}
 
-	fmt.Print("\nDevice name (leave empty to auto-generate): ")
-	reader := bufio.NewReader(os.Stdin)
-	line, _ := reader.ReadString('\n')
-	name := strings.TrimSpace(line)
-	if name == "" {
-		return "", nil
-	}
-	if err := validate(name); err != nil {
-		return "", fmt.Errorf("invalid device name: %w", err)
+	fmt.Println()
+	name, err := tui.PromptText("Device name", "(leave empty to auto-generate)", optionalDeviceNameValidator)
+	if err != nil {
+		return "", err
 	}
 	return name, nil
 }
