@@ -178,34 +178,51 @@ func TestTemplateNextSteps(t *testing.T) {
 }
 
 func TestFinishTemplateInit_EntersProjectShellForInteractiveNewDirectory(t *testing.T) {
-	origStartProjectShell := startProjectShell
-	t.Cleanup(func() { startProjectShell = origStartProjectShell })
+	cwd := t.TempDir()
+	destDir := filepath.Join(cwd, "demo-app")
+	if err := os.Mkdir(destDir, 0o755); err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
 
 	var shellDir string
-	startProjectShell = func(dir string) error {
+	var shellPath string
+	launch := func(dir, shell string) error {
 		shellDir = dir
+		shellPath = shell
 		return nil
 	}
+	resolveShell := func() (string, error) {
+		return "/bin/sh", nil
+	}
 
-	if err := finishTemplateInit("/tmp/workspace", "/tmp/workspace/demo-app", "demo-app", true); err != nil {
+	if err := finishTemplateInitWithLauncher(cwd, destDir, "demo-app", true, resolveShell, launch); err != nil {
 		t.Fatalf("finishTemplateInit: %v", err)
 	}
-	if shellDir != "/tmp/workspace/demo-app" {
-		t.Fatalf("project shell dir = %q, want %q", shellDir, "/tmp/workspace/demo-app")
+	wantDir, err := projectShellDir(cwd, destDir)
+	if err != nil {
+		t.Fatalf("projectShellDir: %v", err)
+	}
+	if shellDir != wantDir {
+		t.Fatalf("project shell dir = %q, want %q", shellDir, wantDir)
+	}
+	if shellPath != "/bin/sh" {
+		t.Fatalf("project shell = %q, want %q", shellPath, "/bin/sh")
 	}
 }
 
 func TestFinishTemplateInit_DoesNotEnterProjectShellForCurrentDirectory(t *testing.T) {
-	origStartProjectShell := startProjectShell
-	t.Cleanup(func() { startProjectShell = origStartProjectShell })
+	cwd := t.TempDir()
 
 	called := false
-	startProjectShell = func(dir string) error {
+	launch := func(dir, shell string) error {
 		called = true
 		return nil
 	}
+	resolveShell := func() (string, error) {
+		return "/bin/sh", nil
+	}
 
-	if err := finishTemplateInit("/tmp/demo-app", "/tmp/demo-app", "demo-app", true); err != nil {
+	if err := finishTemplateInitWithLauncher(cwd, cwd, "demo-app", true, resolveShell, launch); err != nil {
 		t.Fatalf("finishTemplateInit: %v", err)
 	}
 	if called {
@@ -214,17 +231,36 @@ func TestFinishTemplateInit_DoesNotEnterProjectShellForCurrentDirectory(t *testi
 }
 
 func TestFinishTemplateInit_ReturnsProjectShellError(t *testing.T) {
-	origStartProjectShell := startProjectShell
-	t.Cleanup(func() { startProjectShell = origStartProjectShell })
-
-	shellErr := errors.New("shell failed")
-	startProjectShell = func(dir string) error {
-		return shellErr
+	cwd := t.TempDir()
+	destDir := filepath.Join(cwd, "demo-app")
+	if err := os.Mkdir(destDir, 0o755); err != nil {
+		t.Fatalf("Mkdir: %v", err)
 	}
 
-	err := finishTemplateInit("/tmp/workspace", "/tmp/workspace/demo-app", "demo-app", true)
+	shellErr := errors.New("shell failed")
+	launch := func(dir, shell string) error {
+		return shellErr
+	}
+	resolveShell := func() (string, error) {
+		return "/bin/sh", nil
+	}
+
+	err := finishTemplateInitWithLauncher(cwd, destDir, "demo-app", true, resolveShell, launch)
 	if !errors.Is(err, shellErr) {
 		t.Fatalf("finishTemplateInit error = %v, want %v", err, shellErr)
+	}
+}
+
+func TestProjectShellDir_RejectsDirectoryOutsideWorkingDirectory(t *testing.T) {
+	cwd := t.TempDir()
+	outside := t.TempDir()
+
+	_, err := projectShellDir(cwd, outside)
+	if err == nil {
+		t.Fatal("expected outside project directory to fail")
+	}
+	if !strings.Contains(err.Error(), "outside working directory") {
+		t.Fatalf("error = %q, want outside working directory", err)
 	}
 }
 

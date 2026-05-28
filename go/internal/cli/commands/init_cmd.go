@@ -684,12 +684,25 @@ func runTemplateFlow(cwd, destDir, appID, tmpl, target string, meta *repoMeta, o
 }
 
 func finishTemplateInit(cwd, destDir, appID string, enterProjectDir bool) error {
+	return finishTemplateInitWithLauncher(cwd, destDir, appID, enterProjectDir, defaultInteractiveShell, startProjectShell)
+}
+
+func finishTemplateInitWithLauncher(cwd, destDir, appID string, enterProjectDir bool, resolveShell func() (string, error), launch func(dir, shell string) error) error {
 	cliSuccess("\nYour project is ready!")
 
 	if enterProjectDir && filepath.Clean(destDir) != filepath.Clean(cwd) {
-		cliLogln("Opening a shell in: %s", destDir)
+		projectDir, err := projectShellDir(cwd, destDir)
+		if err != nil {
+			return err
+		}
+		shell, err := resolveShell()
+		if err != nil {
+			return err
+		}
+		cliLogln("Opening a shell in: %s", projectDir)
+		cliLogln("Shell: %s", shell)
 		cliLogln("Run `wendy run` to build and deploy.")
-		return startProjectShell(destDir)
+		return launch(projectDir, shell)
 	}
 
 	cliLogln("Next steps:")
@@ -703,10 +716,38 @@ func finishTemplateInit(cwd, destDir, appID string, enterProjectDir bool) error 
 	return nil
 }
 
-var startProjectShell = func(dir string) error {
-	shell := defaultInteractiveShell()
+func projectShellDir(cwd, destDir string) (string, error) {
+	cleanCwd, err := canonicalProjectPath(cwd)
+	if err != nil {
+		return "", fmt.Errorf("resolving working directory: %w", err)
+	}
+	cleanDest, err := canonicalProjectPath(destDir)
+	if err != nil {
+		return "", fmt.Errorf("resolving project directory: %w", err)
+	}
+
+	rel, err := filepath.Rel(cleanCwd, cleanDest)
+	if err != nil {
+		return "", fmt.Errorf("checking project directory: %w", err)
+	}
+	if rel == "." || rel == ".." || filepath.IsAbs(rel) || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("project directory %q is outside working directory %q", destDir, cwd)
+	}
+
+	return cleanDest, nil
+}
+
+func canonicalProjectPath(path string) (string, error) {
+	abs, err := filepath.Abs(filepath.Clean(path))
+	if err != nil {
+		return "", err
+	}
+	return filepath.EvalSymlinks(abs)
+}
+
+func startProjectShell(dir, shell string) error {
 	cmd := exec.Command(shell)
-	cmd.Dir = dir
+	cmd.Dir = filepath.Clean(dir)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -716,18 +757,28 @@ var startProjectShell = func(dir string) error {
 	return nil
 }
 
-func defaultInteractiveShell() string {
+func defaultInteractiveShell() (string, error) {
 	if runtime.GOOS == "windows" {
-		if shell := os.Getenv("COMSPEC"); shell != "" {
-			return shell
+		shell, err := exec.LookPath("cmd.exe")
+		if err == nil {
+			return shell, nil
 		}
-		return "cmd.exe"
+		return "", fmt.Errorf("finding interactive shell: %w", err)
 	}
 
-	if shell := os.Getenv("SHELL"); shell != "" {
-		return shell
+	for _, shell := range defaultUnixShellCandidates() {
+		if _, err := os.Stat(shell); err == nil {
+			return shell, nil
+		}
 	}
-	return "/bin/sh"
+	return "", fmt.Errorf("finding interactive shell: no supported shell found")
+}
+
+func defaultUnixShellCandidates() []string {
+	if runtime.GOOS == "darwin" {
+		return []string{"/bin/zsh", "/bin/bash", "/bin/sh"}
+	}
+	return []string{"/bin/bash", "/usr/bin/bash", "/bin/sh", "/usr/bin/sh"}
 }
 
 func shellQuote(s string) string {
