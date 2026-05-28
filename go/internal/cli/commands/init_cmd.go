@@ -785,11 +785,12 @@ func startProjectShell(dir, shell string) error {
 
 func defaultInteractiveShell() (string, error) {
 	if runtime.GOOS == "windows" {
-		shell := filepath.Join(`C:\Windows`, "System32", "cmd.exe")
-		if valid, ok := validateInteractiveShell(shell); ok {
-			return valid, nil
+		for _, shell := range defaultWindowsShellCandidates() {
+			if valid, ok := validateInteractiveShell(shell); ok {
+				return valid, nil
+			}
 		}
-		return "", fmt.Errorf("finding interactive shell: %s not available", shell)
+		return "", fmt.Errorf("finding interactive shell: cmd.exe not available")
 	}
 
 	for _, shell := range defaultUnixShellCandidates() {
@@ -801,6 +802,20 @@ func defaultInteractiveShell() (string, error) {
 		return shell, nil
 	}
 	return "", fmt.Errorf("finding interactive shell: no supported shell found")
+}
+
+func defaultWindowsShellCandidates() []string {
+	systemRoot := strings.TrimSpace(os.Getenv("SystemRoot"))
+	if systemRoot == "" || !filepath.IsAbs(systemRoot) {
+		systemRoot = `C:\Windows`
+	}
+	systemRoot = filepath.Clean(systemRoot)
+	candidates := []string{filepath.Join(systemRoot, "System32", "cmd.exe")}
+	fallback := filepath.Join(`C:\Windows`, "System32", "cmd.exe")
+	if !strings.EqualFold(candidates[0], fallback) {
+		candidates = append(candidates, fallback)
+	}
+	return candidates
 }
 
 func defaultUnixShellCandidates() []string {
@@ -824,17 +839,21 @@ func validateInteractiveShell(candidate string) (string, bool) {
 	if !isKnownShellName(filepath.Base(resolved)) || !isTrustedShellPath(candidate, resolved) {
 		return "", false
 	}
-	writable, err := isWorldWritableDir(filepath.Dir(resolved))
-	if err != nil || writable {
-		return "", false
+	if runtime.GOOS != "windows" {
+		writable, err := isWorldWritableDir(filepath.Dir(resolved))
+		if err != nil || writable {
+			return "", false
+		}
 	}
 	info, err := os.Lstat(resolved)
 	if err != nil || !info.Mode().IsRegular() {
 		return "", false
 	}
-	mode := info.Mode().Perm()
-	if mode&0o111 == 0 || mode&0o002 != 0 {
-		return "", false
+	if runtime.GOOS != "windows" {
+		mode := info.Mode().Perm()
+		if mode&0o111 == 0 || mode&0o002 != 0 {
+			return "", false
+		}
 	}
 	return resolved, true
 }
@@ -891,7 +910,16 @@ func isTrustedShellDir(dir string) bool {
 
 func fallbackTrustedShellDirs() []string {
 	if runtime.GOOS == "windows" {
-		return []string{`C:\Windows\System32`}
+		dirs := make([]string, 0, len(defaultWindowsShellCandidates()))
+		for _, shell := range defaultWindowsShellCandidates() {
+			dir := filepath.Dir(shell)
+			if !slices.ContainsFunc(dirs, func(existing string) bool {
+				return strings.EqualFold(existing, dir)
+			}) {
+				dirs = append(dirs, dir)
+			}
+		}
+		return dirs
 	}
 	return []string{"/bin", "/usr/bin"}
 }
@@ -976,10 +1004,28 @@ func projectShellTerm(term string) string {
 }
 
 func projectShellPath() string {
+	parts := []string{}
 	if runtime.GOOS == "windows" {
-		return strings.Join([]string{`C:\Windows\System32`, `C:\Windows`}, string(os.PathListSeparator))
+		parts = append(parts, fallbackTrustedShellDirs()...)
+		parts = append(parts, `C:\Windows`)
+	} else {
+		parts = append(parts, "/usr/bin", "/bin")
 	}
-	return strings.Join([]string{"/usr/bin", "/bin"}, string(os.PathListSeparator))
+	if exe, err := os.Executable(); err == nil {
+		exeDir := filepath.Clean(filepath.Dir(exe))
+		if filepath.IsAbs(exeDir) {
+			if runtime.GOOS == "windows" {
+				if !slices.ContainsFunc(parts, func(existing string) bool {
+					return strings.EqualFold(filepath.Clean(existing), exeDir)
+				}) {
+					parts = append(parts, exeDir)
+				}
+			} else if !slices.Contains(parts, exeDir) {
+				parts = append(parts, exeDir)
+			}
+		}
+	}
+	return strings.Join(parts, string(os.PathListSeparator))
 }
 
 func shellQuote(s string) string {
