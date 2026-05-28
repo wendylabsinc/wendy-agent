@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 
@@ -258,11 +259,11 @@ func runInitWizard(args []string, opts initOptions) error {
 	}
 
 	if tmpl != "" {
-		destDir, appID, err := resolveInitDestAndID(cwd, args, opts)
+		destDir, appID, enterProjectDir, err := resolveInitDestAndID(cwd, args, opts)
 		if err != nil {
 			return err
 		}
-		return runTemplateFlow(cwd, destDir, appID, tmpl, target, meta, opts)
+		return runTemplateFlow(cwd, destDir, appID, tmpl, target, meta, opts, enterProjectDir)
 	}
 
 	// Standard wizard flow (no template) — check wendy.json doesn't already exist.
@@ -619,7 +620,7 @@ func downloadTemplateArchiveWithUI(language, tmpl, branch string) (map[string][]
 
 // runTemplateFlow handles init when a template is selected.
 // destDir is the resolved project directory (either cwd or a new subdir).
-func runTemplateFlow(cwd, destDir, appID, tmpl, target string, meta *repoMeta, opts initOptions) error {
+func runTemplateFlow(cwd, destDir, appID, tmpl, target string, meta *repoMeta, opts initOptions, enterProjectDir bool) error {
 	language, err := resolveTemplateLanguage(target, tmpl, meta, opts)
 	if err != nil {
 		return err
@@ -679,7 +680,18 @@ func runTemplateFlow(cwd, destDir, appID, tmpl, target string, meta *repoMeta, o
 		return err
 	}
 
+	return finishTemplateInit(cwd, destDir, appID, enterProjectDir)
+}
+
+func finishTemplateInit(cwd, destDir, appID string, enterProjectDir bool) error {
 	cliSuccess("\nYour project is ready!")
+
+	if enterProjectDir && filepath.Clean(destDir) != filepath.Clean(cwd) {
+		cliLogln("Opening a shell in: %s", destDir)
+		cliLogln("Run `wendy run` to build and deploy.")
+		return startProjectShell(destDir)
+	}
+
 	cliLogln("Next steps:")
 	for _, step := range templateNextSteps(cwd, destDir, appID) {
 		cliLogln("  %s", step)
@@ -689,6 +701,33 @@ func runTemplateFlow(cwd, destDir, appID, tmpl, target string, meta *repoMeta, o
 	}
 
 	return nil
+}
+
+var startProjectShell = func(dir string) error {
+	shell := defaultInteractiveShell()
+	cmd := exec.Command(shell)
+	cmd.Dir = dir
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("starting shell in project directory: %w", err)
+	}
+	return nil
+}
+
+func defaultInteractiveShell() string {
+	if runtime.GOOS == "windows" {
+		if shell := os.Getenv("COMSPEC"); shell != "" {
+			return shell
+		}
+		return "cmd.exe"
+	}
+
+	if shell := os.Getenv("SHELL"); shell != "" {
+		return shell
+	}
+	return "/bin/sh"
 }
 
 func shellQuote(s string) string {
@@ -710,14 +749,14 @@ func templateNextSteps(cwd, destDir, appID string) []string {
 // resolveInitDestAndID determines the destination directory and app ID for template flow.
 // In fully interactive mode it asks whether to initialize in the current directory
 // or create a new project subdirectory.
-func resolveInitDestAndID(cwd string, args []string, opts initOptions) (string, string, error) {
+func resolveInitDestAndID(cwd string, args []string, opts initOptions) (string, string, bool, error) {
 	// Explicit app ID provided: always create a new subdirectory.
 	if len(args) > 0 || opts.appIDSet {
 		appID, err := resolveInitAppID(cwd, args, opts)
 		if err != nil {
-			return "", "", err
+			return "", "", false, err
 		}
-		return filepath.Join(cwd, appID), appID, nil
+		return filepath.Join(cwd, appID), appID, false, nil
 	}
 
 	// Fully interactive (no directive flags): ask where to set up the project.
@@ -725,10 +764,10 @@ func resolveInitDestAndID(cwd string, args []string, opts initOptions) (string, 
 		fmt.Println()
 		useCurrentDir, err := tui.ConfirmDefaultYes("Initialize in the current directory?")
 		if err != nil {
-			return "", "", err
+			return "", "", false, err
 		}
 		if useCurrentDir {
-			return cwd, strings.TrimSpace(filepath.Base(cwd)), nil
+			return cwd, strings.TrimSpace(filepath.Base(cwd)), false, nil
 		}
 
 		fmt.Println()
@@ -739,14 +778,14 @@ func resolveInitDestAndID(cwd string, args []string, opts initOptions) (string, 
 			return nil
 		})
 		if err != nil {
-			return "", "", err
+			return "", "", false, err
 		}
 		appID = strings.TrimSpace(appID)
-		return filepath.Join(cwd, appID), appID, nil
+		return filepath.Join(cwd, appID), appID, true, nil
 	}
 
 	// Semi-interactive or non-interactive without explicit app ID: infer from cwd.
-	return cwd, strings.TrimSpace(filepath.Base(cwd)), nil
+	return cwd, strings.TrimSpace(filepath.Base(cwd)), false, nil
 }
 
 // maybeGitInit optionally runs git init in the project directory.

@@ -2,6 +2,7 @@ package commands
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -173,6 +174,57 @@ func TestTemplateNextSteps(t *testing.T) {
 				t.Fatalf("templateNextSteps(%q, %q, %q) = %#v, want %#v", tt.cwd, tt.destDir, tt.appID, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestFinishTemplateInit_EntersProjectShellForInteractiveNewDirectory(t *testing.T) {
+	origStartProjectShell := startProjectShell
+	t.Cleanup(func() { startProjectShell = origStartProjectShell })
+
+	var shellDir string
+	startProjectShell = func(dir string) error {
+		shellDir = dir
+		return nil
+	}
+
+	if err := finishTemplateInit("/tmp/workspace", "/tmp/workspace/demo-app", "demo-app", true); err != nil {
+		t.Fatalf("finishTemplateInit: %v", err)
+	}
+	if shellDir != "/tmp/workspace/demo-app" {
+		t.Fatalf("project shell dir = %q, want %q", shellDir, "/tmp/workspace/demo-app")
+	}
+}
+
+func TestFinishTemplateInit_DoesNotEnterProjectShellForCurrentDirectory(t *testing.T) {
+	origStartProjectShell := startProjectShell
+	t.Cleanup(func() { startProjectShell = origStartProjectShell })
+
+	called := false
+	startProjectShell = func(dir string) error {
+		called = true
+		return nil
+	}
+
+	if err := finishTemplateInit("/tmp/demo-app", "/tmp/demo-app", "demo-app", true); err != nil {
+		t.Fatalf("finishTemplateInit: %v", err)
+	}
+	if called {
+		t.Fatal("startProjectShell called for current-directory init")
+	}
+}
+
+func TestFinishTemplateInit_ReturnsProjectShellError(t *testing.T) {
+	origStartProjectShell := startProjectShell
+	t.Cleanup(func() { startProjectShell = origStartProjectShell })
+
+	shellErr := errors.New("shell failed")
+	startProjectShell = func(dir string) error {
+		return shellErr
+	}
+
+	err := finishTemplateInit("/tmp/workspace", "/tmp/workspace/demo-app", "demo-app", true)
+	if !errors.Is(err, shellErr) {
+		t.Fatalf("finishTemplateInit error = %v, want %v", err, shellErr)
 	}
 }
 
