@@ -725,11 +725,10 @@ func projectShellDir(cwd, destDir string) (string, error) {
 		return "", fmt.Errorf("resolving project directory: %w", err)
 	}
 
-	rel, err := filepath.Rel(cleanCwd, cleanDest)
-	if err != nil {
-		return "", fmt.Errorf("checking project directory: %w", err)
+	if cleanDest == cleanCwd {
+		return "", fmt.Errorf("project directory %q is the working directory %q", destDir, cwd)
 	}
-	if rel == "." || rel == ".." || filepath.IsAbs(rel) || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || !pathHasPrefix(cleanDest, cleanCwd) {
+	if !pathHasPrefix(cleanDest, cleanCwd) {
 		return "", fmt.Errorf("project directory %q is outside working directory %q", destDir, cwd)
 	}
 
@@ -748,10 +747,18 @@ func canonicalProjectPath(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.EvalSymlinks(abs)
+	resolved, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return "", fmt.Errorf("%q does not resolve to an existing path: %w", path, err)
+	}
+	return resolved, nil
 }
 
 func startProjectShell(dir, shell string) error {
+	if validated, ok := validateInteractiveShell(shell); !ok || validated != shell {
+		return fmt.Errorf("interactive shell %q is no longer valid", shell)
+	}
+
 	info, err := os.Stat(dir)
 	if err != nil {
 		return fmt.Errorf("checking project directory: %w", err)
@@ -809,7 +816,7 @@ func validateInteractiveShell(candidate string) (string, bool) {
 		return "", false
 	}
 	candidate = filepath.Clean(candidate)
-	if !isKnownShellName(filepath.Base(candidate)) || isWorldWritableDir(filepath.Dir(candidate)) {
+	if !isKnownShellName(filepath.Base(candidate)) || !isTrustedShellDir(filepath.Dir(candidate)) || isWorldWritableDir(filepath.Dir(candidate)) {
 		return "", false
 	}
 	info, err := os.Stat(candidate)
@@ -821,6 +828,24 @@ func validateInteractiveShell(candidate string) (string, bool) {
 		return "", false
 	}
 	return candidate, true
+}
+
+func isTrustedShellDir(dir string) bool {
+	dir = filepath.Clean(dir)
+	if runtime.GOOS == "windows" {
+		systemRoot := strings.TrimSpace(os.Getenv("SystemRoot"))
+		if systemRoot == "" {
+			systemRoot = `C:\Windows`
+		}
+		return strings.EqualFold(dir, filepath.Join(systemRoot, "System32"))
+	}
+
+	for _, trusted := range []string{"/bin", "/usr/bin", "/usr/local/bin", "/opt/homebrew/bin", "/opt/local/bin", "/run/current-system/sw/bin"} {
+		if dir == trusted {
+			return true
+		}
+	}
+	return false
 }
 
 func isKnownShellName(name string) bool {
@@ -837,14 +862,14 @@ func isWorldWritableDir(dir string) bool {
 	if err != nil || !info.IsDir() {
 		return true
 	}
-	return info.Mode().Perm()&0o002 != 0
+	return info.Mode().Perm()&0o002 != 0 && info.Mode()&os.ModeSticky == 0
 }
 
 func projectShellEnv(shell string) []string {
 	env := make([]string, 0, len(os.Environ())+1)
 	for _, kv := range os.Environ() {
 		key, _, ok := strings.Cut(kv, "=")
-		if !ok || isSensitiveEnvKey(key) || key == "SHELL" {
+		if !ok || !isProjectShellEnvKey(key) || key == "SHELL" {
 			continue
 		}
 		env = append(env, kv)
@@ -855,17 +880,14 @@ func projectShellEnv(shell string) []string {
 	return env
 }
 
-func isSensitiveEnvKey(key string) bool {
+func isProjectShellEnvKey(key string) bool {
 	key = strings.ToUpper(strings.TrimSpace(key))
-	if key == "" {
-		return false
+	switch key {
+	case "HOME", "PATH", "TERM", "LANG", "LOGNAME", "USER", "USERNAME", "TMPDIR", "TMP", "TEMP", "COLORTERM", "CLICOLOR", "NO_COLOR":
+		return true
+	default:
+		return strings.HasPrefix(key, "LC_")
 	}
-	for _, marker := range []string{"TOKEN", "SECRET", "PASSWORD", "PASSWD", "CREDENTIAL", "PRIVATE_KEY", "ACCESS_KEY", "API_KEY", "AUTH"} {
-		if strings.Contains(key, marker) {
-			return true
-		}
-	}
-	return false
 }
 
 func shellQuote(s string) string {

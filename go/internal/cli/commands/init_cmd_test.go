@@ -192,7 +192,7 @@ func TestFinishTemplateInit_EntersProjectShellForInteractiveNewDirectory(t *test
 		return nil
 	}
 	resolveShell := func() (string, error) {
-		return "/bin/sh", nil
+		return "test-shell", nil
 	}
 
 	if err := finishTemplateInitWithLauncher(cwd, destDir, "demo-app", true, resolveShell, launch); err != nil {
@@ -205,8 +205,8 @@ func TestFinishTemplateInit_EntersProjectShellForInteractiveNewDirectory(t *test
 	if shellDir != wantDir {
 		t.Fatalf("project shell dir = %q, want %q", shellDir, wantDir)
 	}
-	if shellPath != "/bin/sh" {
-		t.Fatalf("project shell = %q, want %q", shellPath, "/bin/sh")
+	if shellPath != "test-shell" {
+		t.Fatalf("project shell = %q, want %q", shellPath, "test-shell")
 	}
 }
 
@@ -219,7 +219,7 @@ func TestFinishTemplateInit_DoesNotEnterProjectShellForCurrentDirectory(t *testi
 		return nil
 	}
 	resolveShell := func() (string, error) {
-		return "/bin/sh", nil
+		return "test-shell", nil
 	}
 
 	if err := finishTemplateInitWithLauncher(cwd, cwd, "demo-app", true, resolveShell, launch); err != nil {
@@ -242,7 +242,7 @@ func TestFinishTemplateInit_ReturnsProjectShellError(t *testing.T) {
 		return shellErr
 	}
 	resolveShell := func() (string, error) {
-		return "/bin/sh", nil
+		return "test-shell", nil
 	}
 
 	err := finishTemplateInitWithLauncher(cwd, destDir, "demo-app", true, resolveShell, launch)
@@ -268,20 +268,21 @@ func TestProjectShellEnv_FiltersSensitiveValues(t *testing.T) {
 	t.Setenv("WENDY_TOKEN", "secret")
 	t.Setenv("OPENAI_API_KEY", "secret")
 	t.Setenv("NORMAL_ENV", "value")
+	t.Setenv("TERM", "xterm-256color")
 	t.Setenv("SHELL", "/tmp/evil")
 
-	env := projectShellEnv("/bin/sh")
+	env := projectShellEnv("test-shell")
 	joined := "\n" + strings.Join(env, "\n") + "\n"
 
-	for _, key := range []string{"WENDY_TOKEN", "OPENAI_API_KEY"} {
+	for _, key := range []string{"WENDY_TOKEN", "OPENAI_API_KEY", "NORMAL_ENV"} {
 		if strings.Contains(joined, "\n"+key+"=") {
-			t.Fatalf("projectShellEnv included sensitive key %q in %q", key, joined)
+			t.Fatalf("projectShellEnv included disallowed key %q in %q", key, joined)
 		}
 	}
-	if !strings.Contains(joined, "\nNORMAL_ENV=value\n") {
-		t.Fatalf("projectShellEnv missing normal environment value: %q", joined)
+	if !strings.Contains(joined, "\nTERM=xterm-256color\n") {
+		t.Fatalf("projectShellEnv missing allowed environment value: %q", joined)
 	}
-	if !strings.Contains(joined, "\nSHELL=/bin/sh\n") {
+	if !strings.Contains(joined, "\nSHELL=test-shell\n") {
 		t.Fatalf("projectShellEnv did not override SHELL: %q", joined)
 	}
 }
