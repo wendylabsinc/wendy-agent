@@ -16,8 +16,9 @@ import (
 )
 
 const (
-	openCommandTimeout      = 10 * time.Second
-	maxDiagnosticOutputSize = 512
+	openCommandTimeout           = 10 * time.Second
+	maxDiagnosticOutputSize      = 512
+	maxLoginctlPropertyValueSize = 256
 	// Browser session bridging targets normal interactive Linux users, not
 	// root or system accounts.
 	minGraphicalSessionUID = 1000
@@ -204,9 +205,26 @@ func parseLoginctlProperties(raw string) map[string]string {
 		if !ok {
 			continue
 		}
+		key = strings.TrimSpace(key)
+		value = strings.TrimSpace(value)
+		if key == "" || !validLoginctlPropertyValue(value) {
+			continue
+		}
 		props[key] = value
 	}
 	return props
+}
+
+func validLoginctlPropertyValue(value string) bool {
+	if len(value) > maxLoginctlPropertyValueSize {
+		return false
+	}
+	for _, r := range value {
+		if r <= 32 || r > 126 {
+			return false
+		}
+	}
+	return true
 }
 
 func (s loginSession) isGraphicalUserSession() bool {
@@ -242,17 +260,23 @@ func (o opener) openLinuxInLoginSession(session loginSession, url string) error 
 	var candidates []commandSpec
 	if uid == o.euid() {
 		candidates = append(candidates, commandSpec{name: xdgOpenPath, args: []string{url}, env: env, minimalEnv: true})
-	} else if validUsername(session.user) {
+	} else if session.user = strings.TrimSpace(session.user); validUsername(session.user) {
 		if o.euid() != 0 {
 			return fmt.Errorf("agent is not root; cannot open browser as graphical session user")
 		}
-		envArgs := append(append([]string{}, env...), xdgOpenPath, url)
+		envArgs := make([]string, 0, len(env)+2)
+		envArgs = append(envArgs, env...)
+		envArgs = append(envArgs, xdgOpenPath, url)
 		runuserCandidates := o.runuserCandidates()
 		if len(runuserCandidates) == 0 {
 			return fmt.Errorf("no supported runuser path configured")
 		}
 		for _, runuser := range runuserCandidates {
-			candidates = append(candidates, commandSpec{name: runuser, args: append([]string{"-u", session.user, "--", envPath, "-i"}, envArgs...), minimalEnv: true})
+			prefix := []string{"-u", session.user, "--", envPath, "-i"}
+			args := make([]string, len(prefix)+len(envArgs))
+			copy(args, prefix)
+			copy(args[len(prefix):], envArgs)
+			candidates = append(candidates, commandSpec{name: runuser, args: args, minimalEnv: true})
 		}
 	} else {
 		return fmt.Errorf("active graphical login session has invalid username")
@@ -310,7 +334,11 @@ func linuxRuntimeDir(uid string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("invalid uid for graphical runtime directory")
 	}
-	return "/run/user/" + strconv.Itoa(parsedUID), nil
+	runtimeDir := "/run/user/" + strconv.Itoa(parsedUID)
+	if clean := filepath.Clean(runtimeDir); clean != runtimeDir {
+		return "", fmt.Errorf("invalid graphical runtime directory")
+	}
+	return runtimeDir, nil
 }
 
 func hasEnv(env []string, key string) bool {
@@ -410,7 +438,7 @@ func validateEnvAssignment(value string) error {
 	if !ok || name == "" || envValue == "" {
 		return fmt.Errorf("invalid environment assignment")
 	}
-	if strings.ContainsAny(name, "\x00\r\n=") || strings.ContainsAny(envValue, "\x00\r\n") {
+	if strings.ContainsAny(name, "\x00\r\n=") || strings.ContainsAny(envValue, "\x00\r\n\t ") {
 		return fmt.Errorf("invalid environment assignment")
 	}
 	return nil

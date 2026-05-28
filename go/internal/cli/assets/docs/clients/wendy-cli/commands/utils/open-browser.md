@@ -10,5 +10,5 @@ The underlying browser opener automatically opens only `http` and `https` URLs. 
 
 | Code | Meaning |
 |------|---------|
-| `0` | The browser was opened successfully, or the browser could not be opened and the URL was printed to stdout with a diagnostic on stderr. |
-| Non-zero | The command arguments were invalid, such as a missing URL, malformed URL, missing scheme, or missing host for an `http`/`https` URL. |
+| `0` | The browser was opened successfully. |
+| Non-zero | The browser could not be opened, or the command arguments were invalid. When opening fails after URL validation, the URL is printed to stdout and a diagnostic is written to stderr. |

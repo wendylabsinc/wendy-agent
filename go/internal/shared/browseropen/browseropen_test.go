@@ -193,10 +193,27 @@ func TestOpenLinuxReportsMissingGraphicalSession(t *testing.T) {
 }
 
 func TestParseLoginctlProperties(t *testing.T) {
-	props := parseLoginctlProperties("Active=yes\nType=x11\nIgnoredLine\nDisplay=:0\n")
+	props := parseLoginctlProperties("Active=yes\nType=x11\nIgnoredLine\nDisplay= :0 \n")
 
 	if props["Active"] != "yes" || props["Type"] != "x11" || props["Display"] != ":0" {
 		t.Fatalf("props = %#v; want parsed loginctl properties", props)
+	}
+}
+
+func TestParseLoginctlPropertiesRejectsUnsafeValues(t *testing.T) {
+	props := parseLoginctlProperties("Name=alice bad\nUser=1000\tbad\nType=" + strings.Repeat("x", maxLoginctlPropertyValueSize+1) + "\nActive=yes\n")
+
+	if _, ok := props["Name"]; ok {
+		t.Fatalf("props = %#v; want whitespace-bearing Name rejected", props)
+	}
+	if _, ok := props["User"]; ok {
+		t.Fatalf("props = %#v; want control-bearing User rejected", props)
+	}
+	if _, ok := props["Type"]; ok {
+		t.Fatalf("props = %#v; want overlong Type rejected", props)
+	}
+	if props["Active"] != "yes" {
+		t.Fatalf("props = %#v; want safe value retained", props)
 	}
 }
 
@@ -226,6 +243,9 @@ func TestValidateSessionValues(t *testing.T) {
 	}
 	if err := validateEnvAssignment("DISPLAY=:0\nBAD=1"); err == nil {
 		t.Fatal("validateEnvAssignment unexpectedly accepted newline")
+	}
+	if err := validateEnvAssignment("DISPLAY=:0 bad"); err == nil {
+		t.Fatal("validateEnvAssignment unexpectedly accepted space")
 	}
 	if !validRunuserPath("/usr/sbin/runuser") || validRunuserPath("/tmp/runuser") {
 		t.Fatal("validRunuserPath did not enforce expected allow-list")
