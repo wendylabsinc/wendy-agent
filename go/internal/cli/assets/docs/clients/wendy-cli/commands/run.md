@@ -81,7 +81,7 @@ When a `postStart` hook is configured in `wendy.json`, `wendy run` fires it afte
 }
 ```
 
-If the browser cannot be opened, a warning is printed and `wendy run` continues normally. `openURL` waits for the opener command to report success or failure, bounded by a short timeout; browser processes the opener may itself spawn are not tracked after that point.
+If the browser cannot be opened, a warning is printed and `wendy run` continues normally. `openURL` waits for the opener command to report success or failure, bounded by a short timeout; browser processes that the opener itself spawns are not tracked after that point.
 
 ### `cli`
 

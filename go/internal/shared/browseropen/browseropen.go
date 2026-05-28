@@ -18,6 +18,9 @@ import (
 const (
 	openCommandTimeout      = 10 * time.Second
 	maxDiagnosticOutputSize = 512
+	maxGraphicalSessionUID  = 65535
+	envPath                 = "/usr/bin/env"
+	loginctlPath            = "/usr/bin/loginctl"
 	xdgOpenPath             = "/usr/bin/xdg-open"
 )
 
@@ -116,7 +119,7 @@ type loginSession struct {
 }
 
 func (o opener) activeGraphicalLoginSession() (loginSession, error) {
-	out, err := o.output("loginctl", "list-sessions", "--no-legend", "--no-pager")
+	out, err := o.output(loginctlPath, "list-sessions", "--no-legend", "--no-pager")
 	if err != nil {
 		return loginSession{}, fmt.Errorf("list login sessions: %w", err)
 	}
@@ -125,6 +128,10 @@ func (o opener) activeGraphicalLoginSession() (loginSession, error) {
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
 		fields := strings.Fields(line)
 		if len(fields) == 0 {
+			continue
+		}
+		if !validSessionID(fields[0]) {
+			failures = append(failures, fmt.Sprintf("%q: invalid login session id", sanitizeIdentifier(fields[0])))
 			continue
 		}
 		session := loginSession{id: fields[0]}
@@ -136,7 +143,7 @@ func (o opener) activeGraphicalLoginSession() (loginSession, error) {
 		}
 
 		props, err := o.output(
-			"loginctl",
+			loginctlPath,
 			"show-session",
 			session.id,
 			"--property=Active",
@@ -148,7 +155,7 @@ func (o opener) activeGraphicalLoginSession() (loginSession, error) {
 			"--no-pager",
 		)
 		if err != nil {
-			failures = append(failures, fmt.Sprintf("%s: %s", session.id, sanitizeDiagnosticOutput(err.Error())))
+			failures = append(failures, fmt.Sprintf("%q: %s", sanitizeIdentifier(session.id), sanitizeDiagnosticOutput(err.Error())))
 			continue
 		}
 		propsMap := parseLoginctlProperties(string(props))
@@ -202,9 +209,13 @@ func (s loginSession) isGraphicalUserSession() bool {
 }
 
 func (o opener) openLinuxInLoginSession(session loginSession, url string) error {
-	uid, err := strconv.Atoi(session.uid)
-	if err != nil || uid < 0 {
-		return fmt.Errorf("active graphical login session %q has invalid uid", session.id)
+	if err := validateOpenURL(url); err != nil {
+		return err
+	}
+
+	uid, err := validGraphicalSessionUID(session.uid)
+	if err != nil {
+		return fmt.Errorf("active graphical login session %q has invalid uid", sanitizeIdentifier(session.id))
 	}
 
 	session.uid = strconv.Itoa(uid)
@@ -216,12 +227,15 @@ func (o opener) openLinuxInLoginSession(session loginSession, url string) error 
 	if uid == o.euid() {
 		candidates = append(candidates, commandSpec{name: xdgOpenPath, args: []string{url}, env: env, minimalEnv: true})
 	} else if validUsername(session.user) {
+		if o.euid() != 0 {
+			return fmt.Errorf("agent is not root; cannot open browser as session user %q", sanitizeIdentifier(session.user))
+		}
 		envArgs := append(append([]string{}, env...), xdgOpenPath, url)
 		for _, runuser := range o.runuserCandidates() {
-			candidates = append(candidates, commandSpec{name: runuser, args: append([]string{"-u", session.user, "--", "env", "-i"}, envArgs...), minimalEnv: true})
+			candidates = append(candidates, commandSpec{name: runuser, args: append([]string{"-u", session.user, "--", envPath, "-i"}, envArgs...), minimalEnv: true})
 		}
 	} else {
-		return fmt.Errorf("active graphical login session %q has invalid username", session.id)
+		return fmt.Errorf("active graphical login session %q has invalid username", sanitizeIdentifier(session.id))
 	}
 
 	var failures []string
@@ -234,9 +248,9 @@ func (o opener) openLinuxInLoginSession(session loginSession, url string) error 
 	}
 
 	return fmt.Errorf(
-		"open browser in graphical login session %s for user %s failed: %s",
-		session.id,
-		session.user,
+		"open browser in graphical login session %q for user %q failed: %s",
+		sanitizeIdentifier(session.id),
+		sanitizeIdentifier(session.user),
 		strings.Join(failures, "; "),
 	)
 }
@@ -264,14 +278,21 @@ func (o opener) sessionEnv(session loginSession) ([]string, error) {
 		}
 	}
 
+	for _, kv := range env {
+		if err := validateEnvAssignment(kv); err != nil {
+			return nil, err
+		}
+	}
+
 	return env, nil
 }
 
 func linuxRuntimeDir(uid string) (string, error) {
-	if !allDigits(uid) {
+	parsedUID, err := validGraphicalSessionUID(uid)
+	if err != nil {
 		return "", fmt.Errorf("invalid uid for graphical runtime directory")
 	}
-	return "/run/user/" + uid, nil
+	return "/run/user/" + strconv.Itoa(parsedUID), nil
 }
 
 func hasEnv(env []string, key string) bool {
@@ -345,6 +366,38 @@ func validWaylandDisplay(value string) bool {
 	return allDigits(strings.TrimPrefix(value, "wayland-"))
 }
 
+func validSessionID(value string) bool {
+	if value == "" || len(value) > 64 {
+		return false
+	}
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func validGraphicalSessionUID(value string) (int, error) {
+	uid, err := strconv.Atoi(value)
+	if err != nil || uid <= 0 || uid > maxGraphicalSessionUID {
+		return 0, fmt.Errorf("invalid graphical session uid")
+	}
+	return uid, nil
+}
+
+func validateEnvAssignment(value string) error {
+	name, envValue, ok := strings.Cut(value, "=")
+	if !ok || name == "" || envValue == "" {
+		return fmt.Errorf("invalid environment assignment")
+	}
+	if strings.ContainsAny(name, "\x00\r\n=") || strings.ContainsAny(envValue, "\x00\r\n") {
+		return fmt.Errorf("invalid environment assignment")
+	}
+	return nil
+}
+
 func validateOpenURL(raw string) error {
 	if strings.HasPrefix(raw, "-") {
 		return fmt.Errorf("invalid URL %q: must not begin with '-'", raw)
@@ -362,6 +415,22 @@ func validateOpenURL(raw string) error {
 	default:
 		return fmt.Errorf("unsupported URL scheme %q", parsed.Scheme)
 	}
+}
+
+func sanitizeIdentifier(value string) string {
+	var b strings.Builder
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' {
+			b.WriteRune(r)
+			if b.Len() >= 64 {
+				break
+			}
+		}
+	}
+	if b.Len() == 0 {
+		return "unknown"
+	}
+	return b.String()
 }
 
 func allDigits(value string) bool {
@@ -477,6 +546,8 @@ func sanitizeDiagnosticOutput(value string) string {
 			b.WriteByte(' ')
 		case r >= 32 && r <= 126:
 			b.WriteRune(r)
+		default:
+			b.WriteByte('?')
 		}
 		if b.Len() >= maxDiagnosticOutputSize {
 			break

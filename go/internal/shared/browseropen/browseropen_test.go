@@ -52,13 +52,23 @@ func TestOpenLinuxBridgesIntoActiveWaylandSession(t *testing.T) {
 	op.runuserPaths = []string{"/usr/sbin/runuser"}
 
 	op.commandOutput = func(name string, args ...string) ([]byte, error) {
-		if name != "loginctl" {
+		if name != loginctlPath {
 			t.Fatalf("unexpected command output request: %s %v", name, args)
 		}
-		switch args[0] {
-		case "list-sessions":
+		if reflect.DeepEqual(args, []string{"list-sessions", "--no-legend", "--no-pager"}) {
 			return []byte("2 1000 alice seat0 tty2\n"), nil
-		case "show-session":
+		}
+		if reflect.DeepEqual(args, []string{
+			"show-session",
+			"2",
+			"--property=Active",
+			"--property=Class",
+			"--property=Display",
+			"--property=Name",
+			"--property=Type",
+			"--property=User",
+			"--no-pager",
+		}) {
 			return []byte(strings.Join([]string{
 				"Active=yes",
 				"Class=user",
@@ -68,10 +78,9 @@ func TestOpenLinuxBridgesIntoActiveWaylandSession(t *testing.T) {
 				"User=1000",
 				"",
 			}, "\n")), nil
-		default:
-			t.Fatalf("unexpected loginctl args: %v", args)
-			return nil, nil
 		}
+		t.Fatalf("unexpected loginctl args: %v", args)
+		return nil, nil
 	}
 	op.glob = func(pattern string) ([]string, error) {
 		if pattern != "/run/user/1000/wayland-*" {
@@ -91,7 +100,7 @@ func TestOpenLinuxBridgesIntoActiveWaylandSession(t *testing.T) {
 	}
 
 	wantArgs := []string{
-		"-u", "alice", "--", "env", "-i",
+		"-u", "alice", "--", envPath, "-i",
 		"XDG_RUNTIME_DIR=/run/user/1000",
 		"DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
 		"WAYLAND_DISPLAY=wayland-1",
@@ -109,7 +118,7 @@ func TestOpenLinuxRejectsInvalidSessionIdentity(t *testing.T) {
 	op := testOpener()
 
 	op.commandOutput = func(name string, args ...string) ([]byte, error) {
-		if name != "loginctl" {
+		if name != loginctlPath {
 			t.Fatalf("unexpected command output request: %s %v", name, args)
 		}
 		switch args[0] {
@@ -148,7 +157,7 @@ func TestOpenLinuxReportsMissingGraphicalSession(t *testing.T) {
 	op := testOpener()
 
 	op.commandOutput = func(name string, args ...string) ([]byte, error) {
-		if name != "loginctl" || args[0] != "list-sessions" {
+		if name != loginctlPath || args[0] != "list-sessions" {
 			t.Fatalf("unexpected command output request: %s %v", name, args)
 		}
 		return []byte("\n"), nil
@@ -181,11 +190,28 @@ func TestValidateSessionValues(t *testing.T) {
 	if !validUsername("alice_1") || validUsername("Alice") || validUsername("alice;bad") {
 		t.Fatal("validUsername did not enforce expected Linux username shape")
 	}
+	if !validSessionID("session-2") || validSessionID("../../bad") {
+		t.Fatal("validSessionID did not enforce expected session id shape")
+	}
 	if !validX11Display(":0") || !validX11Display(":0.0") || validX11Display(":bad") {
 		t.Fatal("validX11Display did not enforce expected display shape")
 	}
 	if !validWaylandDisplay("wayland-0") || validWaylandDisplay("wayland-main") {
 		t.Fatal("validWaylandDisplay did not enforce expected display shape")
+	}
+	if _, err := validGraphicalSessionUID("1000"); err != nil {
+		t.Fatalf("validGraphicalSessionUID returned error for normal uid: %v", err)
+	}
+	for _, uid := range []string{"0", "-1", "999999"} {
+		if _, err := validGraphicalSessionUID(uid); err == nil {
+			t.Fatalf("validGraphicalSessionUID(%q) unexpectedly succeeded", uid)
+		}
+	}
+	if err := validateEnvAssignment("DISPLAY=:0"); err != nil {
+		t.Fatalf("validateEnvAssignment returned error for DISPLAY: %v", err)
+	}
+	if err := validateEnvAssignment("DISPLAY=:0\nBAD=1"); err == nil {
+		t.Fatal("validateEnvAssignment unexpectedly accepted newline")
 	}
 }
 
@@ -222,8 +248,8 @@ func TestMinimalCommandEnvOmitsUnrelatedVariables(t *testing.T) {
 }
 
 func TestSanitizeDiagnosticOutput(t *testing.T) {
-	got := sanitizeDiagnosticOutput("bad\x1b[31m\nnext\tline")
-	if got != "bad next line" {
+	got := sanitizeDiagnosticOutput("bad\x1b[31m\nnext\tline\u202e")
+	if got != "bad next line?" {
 		t.Fatalf("sanitizeDiagnosticOutput = %q; want printable single-line output", got)
 	}
 }
