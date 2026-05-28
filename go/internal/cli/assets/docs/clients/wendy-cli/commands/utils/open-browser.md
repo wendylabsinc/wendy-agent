@@ -2,13 +2,13 @@ Opens a URL using the preferred mechanism on the current OS.
 
 This is useful for `wendy.json` postRun scripts that want to open your (web) app in a web-browser.
 
-## Accepted URLs
+## Automatic opening
 
-Only `http` and `https` URLs are accepted. The URL must include a host, must not include credentials, and must not begin with `-`. Any other scheme, embedded credentials, a missing host, or a URL starting with `-` is rejected immediately with a non-zero exit code.
+The underlying browser opener automatically opens only `http` and `https` URLs. The URL must include a host, must not include credentials, and must not begin with `-`. If the browser opener cannot open the URL, the command prints the URL to stdout and a diagnostic to stderr so it can be opened manually.
 
 ## Exit codes
 
 | Code | Meaning |
 |------|---------|
-| `0` | The browser was opened successfully. |
-| `1` | The browser could not be opened, or the URL was rejected as invalid. The URL is printed to stdout and a diagnostic is written to stderr. |
+| `0` | The browser was opened successfully, or the browser could not be opened and the URL was printed to stdout with a diagnostic on stderr. |
+| Non-zero | The command arguments were invalid, such as a missing URL, malformed URL, missing scheme, or missing host for an `http`/`https` URL. |

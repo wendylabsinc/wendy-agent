@@ -1,8 +1,11 @@
 package browseropen
 
 import (
+	"context"
 	"errors"
+	"os/exec"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -19,7 +22,12 @@ func testOpener() opener {
 func TestOpenLinuxUsesCurrentGraphicalSessionEnv(t *testing.T) {
 	op := testOpener()
 
-	env := map[string]string{"DISPLAY": ":1"}
+	env := map[string]string{
+		"DISPLAY":                  ":1",
+		"WAYLAND_DISPLAY":          "wayland-0",
+		"XDG_RUNTIME_DIR":          "/run/user/1000",
+		"DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/1000/bus",
+	}
 	op.getenv = func(key string) string { return env[key] }
 	op.commandOutput = func(string, ...string) ([]byte, error) {
 		t.Fatal("loginctl should not be queried when current process has a display")
@@ -42,8 +50,14 @@ func TestOpenLinuxUsesCurrentGraphicalSessionEnv(t *testing.T) {
 	if !got.minimalEnv {
 		t.Fatalf("command = %#v; want minimal environment", got)
 	}
-	if len(got.env) != 0 {
-		t.Fatalf("direct xdg-open env = %v; want no overrides", got.env)
+	wantEnv := []string{
+		"DISPLAY=:1",
+		"WAYLAND_DISPLAY=wayland-0",
+		"XDG_RUNTIME_DIR=/run/user/1000",
+		"DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
+	}
+	if !reflect.DeepEqual(got.env, wantEnv) {
+		t.Fatalf("direct xdg-open env = %v; want current graphical session env", got.env)
 	}
 }
 
@@ -247,6 +261,28 @@ func TestMinimalCommandEnvOmitsUnrelatedVariables(t *testing.T) {
 		if strings.HasPrefix(kv, "API_TOKEN=") {
 			t.Fatalf("minimalCommandEnv leaked unrelated variable: %v", got)
 		}
+	}
+}
+
+func TestOutputIncludesSanitizedStderr(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell command shape is platform-specific")
+	}
+
+	op := testOpener()
+	op.commandContext = func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
+		return exec.CommandContext(ctx, "/bin/sh", "-c", "printf '\\033[31mpermission denied\\n' >&2; exit 12")
+	}
+
+	_, err := op.output(loginctlPath, "show-session", "2")
+	if err == nil {
+		t.Fatal("expected command failure")
+	}
+	if !strings.Contains(err.Error(), "permission denied") {
+		t.Fatalf("error = %q; want sanitized stderr", err)
+	}
+	if strings.Contains(err.Error(), "\x1b") {
+		t.Fatalf("error = %q; want ANSI escapes stripped", err)
 	}
 }
 

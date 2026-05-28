@@ -84,7 +84,7 @@ func (o opener) open(url string) error {
 
 func (o opener) openLinux(url string) error {
 	if o.hasCurrentGraphicalSessionEnv() {
-		return o.run(commandSpec{name: xdgOpenPath, args: []string{url}, minimalEnv: true})
+		return o.run(commandSpec{name: xdgOpenPath, args: []string{url}, env: o.currentGraphicalSessionEnv(), minimalEnv: true})
 	}
 
 	session, sessionErr := o.activeGraphicalLoginSession()
@@ -109,6 +109,19 @@ func (o opener) hasCurrentGraphicalSessionEnv() bool {
 		}
 	}
 	return false
+}
+
+func (o opener) currentGraphicalSessionEnv() []string {
+	var env []string
+	for _, key := range []string{"DISPLAY", "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS"} {
+		if value := o.env(key); value != "" {
+			kv := key + "=" + value
+			if validateEnvAssignment(kv) == nil {
+				env = append(env, kv)
+			}
+		}
+	}
+	return env
 }
 
 type loginSession struct {
@@ -488,11 +501,21 @@ func (o opener) output(name string, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), openCommandTimeout)
 	defer cancel()
 
-	out, err := o.command(ctx, name, args...).Output()
+	cmd := o.command(ctx, name, args...)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
 	if ctx.Err() == context.DeadlineExceeded {
 		return nil, fmt.Errorf("%s timed out", name)
 	}
-	return out, err
+	if err != nil {
+		message := sanitizeDiagnosticOutput(stderr.String())
+		if message != "" {
+			return out, fmt.Errorf("%s failed: %w: %s", name, err, message)
+		}
+		return out, fmt.Errorf("%s failed: %w", name, err)
+	}
+	return out, nil
 }
 
 func (o opener) command(ctx context.Context, name string, args ...string) *exec.Cmd {
