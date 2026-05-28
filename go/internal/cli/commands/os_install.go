@@ -6,6 +6,7 @@ import (
 	"archive/zip"
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -1273,6 +1274,10 @@ func optionalDeviceNameValidator(name string) error {
 	return validateDeviceName(name)
 }
 
+var promptDeviceName = func(prompt, hint string, validate tui.ValidateFunc) (string, error) {
+	return tui.PromptText(prompt, hint, validate)
+}
+
 // resolveDeviceName returns the device name to pre-configure on first boot.
 // If flagName is set it is validated and returned directly. In interactive mode
 // the user is prompted; an empty response skips naming (auto-generated on device).
@@ -1289,11 +1294,14 @@ func resolveDeviceName(flagName string) (string, error) {
 	}
 
 	fmt.Println()
-	name, err := tui.PromptText("Device name", "(leave empty to auto-generate)", optionalDeviceNameValidator)
+	name, err := promptDeviceName("Device name", "(leave empty to auto-generate)", optionalDeviceNameValidator)
 	if err != nil {
-		return "", err
+		if errors.Is(err, tui.ErrCancelled) {
+			return "", ErrUserCancelled
+		}
+		return "", fmt.Errorf("device-name prompt: %w", err)
 	}
-	return name, nil
+	return strings.TrimSpace(name), nil
 }
 
 // confirmOverwriteInternalDrive guards against accidentally wiping internal

@@ -5,6 +5,7 @@ package commands
 import (
 	"archive/zip"
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/shared/version"
 )
 
@@ -348,6 +350,45 @@ func TestResolveDeviceNameNoFlagNonInteractive(t *testing.T) {
 	origInteractive := isInteractiveTerminalFn
 	isInteractiveTerminalFn = func() bool { return false }
 	t.Cleanup(func() { isInteractiveTerminalFn = origInteractive })
+
+	got, err := resolveDeviceName("")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "" {
+		t.Fatalf("got %q; want empty device name", got)
+	}
+}
+
+func TestResolveDeviceNameInteractiveCancelled(t *testing.T) {
+	origInteractive := isInteractiveTerminalFn
+	origPrompt := promptDeviceName
+	isInteractiveTerminalFn = func() bool { return true }
+	promptDeviceName = func(_, _ string, _ tui.ValidateFunc) (string, error) {
+		return "", tui.ErrCancelled
+	}
+	t.Cleanup(func() {
+		isInteractiveTerminalFn = origInteractive
+		promptDeviceName = origPrompt
+	})
+
+	_, err := resolveDeviceName("")
+	if !errors.Is(err, ErrUserCancelled) {
+		t.Fatalf("expected ErrUserCancelled, got %v", err)
+	}
+}
+
+func TestResolveDeviceNameInteractiveBlankReturnsEmpty(t *testing.T) {
+	origInteractive := isInteractiveTerminalFn
+	origPrompt := promptDeviceName
+	isInteractiveTerminalFn = func() bool { return true }
+	promptDeviceName = func(_, _ string, _ tui.ValidateFunc) (string, error) {
+		return "   ", nil
+	}
+	t.Cleanup(func() {
+		isInteractiveTerminalFn = origInteractive
+		promptDeviceName = origPrompt
+	})
 
 	got, err := resolveDeviceName("")
 	if err != nil {
