@@ -820,7 +820,7 @@ func validateInteractiveShell(candidate string) (string, bool) {
 		return "", false
 	}
 	resolved = filepath.Clean(resolved)
-	if !isKnownShellName(filepath.Base(resolved)) || !isTrustedShellDir(filepath.Dir(resolved)) {
+	if !isKnownShellName(filepath.Base(resolved)) || !isTrustedShellPath(candidate, resolved) {
 		return "", false
 	}
 	writable, err := isWorldWritableDir(filepath.Dir(resolved))
@@ -838,9 +838,37 @@ func validateInteractiveShell(candidate string) (string, bool) {
 	return resolved, true
 }
 
+func isTrustedShellPath(candidate, resolved string) bool {
+	if runtime.GOOS == "windows" {
+		return isTrustedShellDir(filepath.Dir(resolved))
+	}
+	if shellListedInSystemShells(candidate) {
+		return true
+	}
+	return isTrustedShellDir(filepath.Dir(candidate)) && isTrustedShellDir(filepath.Dir(resolved))
+}
+
+func shellListedInSystemShells(shell string) bool {
+	data, err := os.ReadFile("/etc/shells")
+	if err != nil {
+		return false
+	}
+	shell = filepath.Clean(shell)
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") || !filepath.IsAbs(line) {
+			continue
+		}
+		if filepath.Clean(line) == shell {
+			return true
+		}
+	}
+	return false
+}
+
 func isTrustedShellDir(dir string) bool {
 	dir = filepath.Clean(dir)
-	for _, trusted := range trustedShellDirs() {
+	for _, trusted := range fallbackTrustedShellDirs() {
 		trusted = filepath.Clean(trusted)
 		if runtime.GOOS == "windows" {
 			if strings.EqualFold(dir, trusted) {
@@ -855,7 +883,7 @@ func isTrustedShellDir(dir string) bool {
 	return false
 }
 
-func trustedShellDirs() []string {
+func fallbackTrustedShellDirs() []string {
 	if runtime.GOOS == "windows" {
 		return []string{`C:\Windows\System32`}
 	}
@@ -896,6 +924,7 @@ func projectShellEnv(shell string) ([]string, error) {
 	if runtime.GOOS != "windows" {
 		env = append(env, "SHELL="+validated)
 	}
+	env = appendWithoutExistingEnv(env, "TERM", projectShellTerm(os.Getenv("TERM")))
 	env = appendWithoutExistingEnv(env, "PATH", projectShellPath())
 	return env, nil
 }
@@ -903,10 +932,10 @@ func projectShellEnv(shell string) ([]string, error) {
 func isProjectShellEnvKey(key string) bool {
 	key = strings.ToUpper(strings.TrimSpace(key))
 	switch key {
-	case "HOME", "TERM", "LANG", "LOGNAME", "USER", "USERNAME", "TMPDIR", "TMP", "TEMP", "COLORTERM", "CLICOLOR", "NO_COLOR":
+	case "HOME", "LOGNAME", "USER", "USERNAME", "TMPDIR", "TMP", "TEMP":
 		return true
 	default:
-		return strings.HasPrefix(key, "LC_")
+		return false
 	}
 }
 
@@ -914,11 +943,30 @@ func appendWithoutExistingEnv(env []string, key, value string) []string {
 	prefix := key + "="
 	out := make([]string, 0, len(env)+1)
 	for _, kv := range env {
-		if !strings.HasPrefix(kv, prefix) {
+		if !envKeyHasPrefix(kv, prefix) {
 			out = append(out, kv)
 		}
 	}
 	return append(out, prefix+value)
+}
+
+func envKeyHasPrefix(kv, prefix string) bool {
+	if len(kv) < len(prefix) {
+		return false
+	}
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(kv[:len(prefix)], prefix)
+	}
+	return strings.HasPrefix(kv, prefix)
+}
+
+func projectShellTerm(term string) string {
+	switch strings.TrimSpace(term) {
+	case "xterm", "xterm-256color", "screen", "screen-256color", "tmux", "tmux-256color", "vt100", "dumb":
+		return strings.TrimSpace(term)
+	default:
+		return "dumb"
+	}
 }
 
 func projectShellPath() string {
