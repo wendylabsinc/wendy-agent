@@ -14,7 +14,9 @@
     "appId": {
       "type": "string",
       "minLength": 1,
-      "description": "Unique application identifier."
+      "maxLength": 253,
+      "pattern": "^[a-zA-Z0-9._-]+$",
+      "description": "Unique application identifier. Only letters, digits, '.', '_', and '-' are allowed."
     },
     "version": {
       "type": "string",

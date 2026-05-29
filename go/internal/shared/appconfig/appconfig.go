@@ -7,10 +7,17 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
 )
+
+// appIDPattern restricts appId to characters that are safe to embed in
+// container env vars, OTEL_RESOURCE_ATTRIBUTES (key=value,… format), container
+// labels, and the OTel service.name resource attribute. A stray comma, '=',
+// space, or newline in appId would otherwise corrupt those downstream uses.
+var appIDPattern = regexp.MustCompile(`^[a-zA-Z0-9._-]{1,253}$`)
 
 // EntitlementType enumerates the supported entitlement types.
 const (
@@ -274,6 +281,9 @@ func validateEntitlements(entitlements []Entitlement, prefix string) error {
 func (c *AppConfig) Validate() error {
 	if c.AppID == "" {
 		return fmt.Errorf("appId is required")
+	}
+	if !appIDPattern.MatchString(c.AppID) {
+		return fmt.Errorf("appId %q is invalid: only letters, digits, '.', '_', and '-' are allowed (max 253 chars)", c.AppID)
 	}
 
 	if err := validateEntitlements(c.Entitlements, "entitlement"); err != nil {

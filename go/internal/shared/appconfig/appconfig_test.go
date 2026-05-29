@@ -114,6 +114,35 @@ func TestValidate_MissingAppID(t *testing.T) {
 	}
 }
 
+func TestValidate_AppIDCharset(t *testing.T) {
+	valid := []string{
+		"my-app",
+		"com.example.app",
+		"sh.wendy.App",
+		"app_123",
+	}
+	for _, id := range valid {
+		cfg := &AppConfig{AppID: id}
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("Validate() unexpected error for valid appId %q: %v", id, err)
+		}
+	}
+
+	invalid := []string{
+		"app,with,commas",  // would corrupt OTEL_RESOURCE_ATTRIBUTES
+		"app=value",        // would corrupt env-var parsing
+		"app with spaces",  // disallowed
+		"app\nnewline",     // would inject an env entry
+		"emoji-\U0001F600", // non-ASCII
+	}
+	for _, id := range invalid {
+		cfg := &AppConfig{AppID: id}
+		if err := cfg.Validate(); err == nil {
+			t.Errorf("Validate() expected error for invalid appId %q, got nil", id)
+		}
+	}
+}
+
 func TestValidate_UnknownEntitlementType(t *testing.T) {
 	cfg := &AppConfig{
 		AppID: "com.example.app",
