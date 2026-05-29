@@ -66,10 +66,11 @@ func openProjectShellForExec(shell string) (*os.File, string, error) {
 		shellFile.Close()
 		return nil, "", err
 	}
-	// Linux can exec the validated descriptor through procfs. Other Unix
-	// targets do not expose execveat/fexecve through Go; for those targets,
-	// validateInteractiveShell restricts shells to root-owned, non-writable
-	// system locations and runProjectShell re-checks immediately before exec.
+	// Linux can exec the validated descriptor through procfs. Darwin does not
+	// expose execveat/fexecve through Go, so the residual path-exec race is
+	// accepted there only after validateInteractiveShell restricts shells to
+	// root-owned, non-writable system locations and runProjectShell re-checks
+	// immediately before syscall.Exec.
 	if runtime.GOOS != "linux" {
 		return shellFile, shell, nil
 	}

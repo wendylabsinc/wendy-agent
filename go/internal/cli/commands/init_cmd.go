@@ -887,8 +887,11 @@ func isKnownShellName(name string) bool {
 
 func isRootOwnedNonWritableDir(dir string) (bool, error) {
 	info, err := os.Stat(dir)
-	if err != nil || !info.IsDir() {
+	if err != nil {
 		return false, fmt.Errorf("checking shell directory %q: %w", dir, err)
+	}
+	if !info.IsDir() {
+		return false, fmt.Errorf("checking shell directory %q: not a directory", dir)
 	}
 	return info.Mode().Perm()&0o022 == 0 && isRootOwned(info), nil
 }

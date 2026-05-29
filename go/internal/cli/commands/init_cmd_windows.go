@@ -68,5 +68,5 @@ func windowsRootDir() string {
 }
 
 func isRootOwned(_ os.FileInfo) bool {
-	return true
+	return false
 }
