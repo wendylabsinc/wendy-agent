@@ -277,13 +277,24 @@ func validateEntitlements(entitlements []Entitlement, prefix string) error {
 	return nil
 }
 
-// Validate checks the AppConfig for required fields and valid entitlement types.
-func (c *AppConfig) Validate() error {
-	if c.AppID == "" {
+// ValidateAppID reports whether id is a well-formed appId. It is the appId
+// portion of Validate, exported so the agent can reject unsafe ids on the RPC
+// path before they are used to build container env vars (WENDY_APP_ID,
+// OTEL_SERVICE_NAME, OTEL_RESOURCE_ATTRIBUTES) and labels.
+func ValidateAppID(id string) error {
+	if id == "" {
 		return fmt.Errorf("appId is required")
 	}
-	if !appIDPattern.MatchString(c.AppID) {
-		return fmt.Errorf("appId %q is invalid: only letters, digits, '.', '_', and '-' are allowed (max 253 chars)", c.AppID)
+	if !appIDPattern.MatchString(id) {
+		return fmt.Errorf("appId %q is invalid: only letters, digits, '.', '_', and '-' are allowed (max 253 chars)", id)
+	}
+	return nil
+}
+
+// Validate checks the AppConfig for required fields and valid entitlement types.
+func (c *AppConfig) Validate() error {
+	if err := ValidateAppID(c.AppID); err != nil {
+		return err
 	}
 
 	if err := validateEntitlements(c.Entitlements, "entitlement"); err != nil {

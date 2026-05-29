@@ -862,5 +862,13 @@ func parseAppConfig(data []byte) (*appconfig.AppConfig, error) {
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return nil, err
 	}
+	// Reject unsafe app IDs at the RPC boundary so direct callers and generated
+	// compose configs can't push comma/'='/newline characters into the env vars
+	// and labels derived from appId. Empty appId is left to existing behaviour.
+	if cfg.AppID != "" {
+		if err := appconfig.ValidateAppID(cfg.AppID); err != nil {
+			return nil, err
+		}
+	}
 	return &cfg, nil
 }

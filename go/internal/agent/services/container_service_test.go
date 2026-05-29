@@ -1049,3 +1049,32 @@ func TestStreamMCP_ContainerNotRunning(t *testing.T) {
 		t.Fatalf("expected FailedPrecondition, got %v", err)
 	}
 }
+
+func TestParseAppConfigRejectsUnsafeAppID(t *testing.T) {
+	// A comma in appId would corrupt OTEL_RESOURCE_ATTRIBUTES once injected.
+	_, err := parseAppConfig([]byte(`{"appId":"bad,id"}`))
+	if err == nil {
+		t.Fatal("expected error for unsafe appId, got nil")
+	}
+}
+
+func TestParseAppConfigAcceptsValidAppID(t *testing.T) {
+	cfg, err := parseAppConfig([]byte(`{"appId":"com.example.app"}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.AppID != "com.example.app" {
+		t.Fatalf("appId = %q, want %q", cfg.AppID, "com.example.app")
+	}
+}
+
+func TestParseAppConfigEmptyDataStillAllowed(t *testing.T) {
+	// Empty config is a pre-existing path (no appId); must not start erroring.
+	cfg, err := parseAppConfig(nil)
+	if err != nil {
+		t.Fatalf("unexpected error for empty config: %v", err)
+	}
+	if cfg.AppID != "" {
+		t.Fatalf("appId = %q, want empty", cfg.AppID)
+	}
+}
