@@ -9,9 +9,9 @@ import (
 )
 
 func runProjectShell(shell, dir string, env []string) error {
-	shell, ok := validateDarwinSystemShell(shell)
-	if !ok {
-		return fmt.Errorf("interactive shell %q is no longer valid", shell)
+	shell, shellInfo, err := statDarwinSystemShell(shell)
+	if err != nil {
+		return err
 	}
 
 	dirFile, err := os.Open(dir)
@@ -41,16 +41,16 @@ func runProjectShell(shell, dir string, env []string) error {
 	if err := syscall.Fchdir(int(dirFile.Fd())); err != nil {
 		return fmt.Errorf("changing to project directory: %w", err)
 	}
-	revalidated, ok := validateDarwinSystemShell(shell)
-	if !ok {
+	revalidated, err := verifyDarwinSystemShell(shell, shellInfo)
+	if err != nil {
 		_ = syscall.Fchdir(int(originalDir.Fd()))
-		return fmt.Errorf("interactive shell %q is no longer valid", shell)
+		return err
 	}
 	shell = revalidated
 	// Darwin does not provide fd-based exec through Go. This path is limited to
-	// exact /bin shells on the SIP-protected system volume and is re-validated
-	// immediately before exec.
-	if err := syscall.Exec(shell, []string{shell}, env); err != nil {
+	// exact /bin shells on the SIP-protected system volume and is checked for
+	// the same inode immediately before exec.
+	if err := execDarwinSystemShell(shell, env); err != nil {
 		return restoreProjectShellDir(originalDir, err)
 	}
 	return nil
@@ -62,6 +62,42 @@ func validateDarwinSystemShell(shell string) (string, bool) {
 		return "", false
 	}
 	return validated, true
+}
+
+func statDarwinSystemShell(shell string) (string, os.FileInfo, error) {
+	validated, ok := validateDarwinSystemShell(shell)
+	if !ok {
+		return "", nil, fmt.Errorf("interactive shell %q is no longer valid", shell)
+	}
+	info, err := os.Lstat(validated)
+	if err != nil {
+		return "", nil, fmt.Errorf("checking interactive shell path: %w", err)
+	}
+	return validated, info, nil
+}
+
+func verifyDarwinSystemShell(shell string, before os.FileInfo) (string, error) {
+	validated, after, err := statDarwinSystemShell(shell)
+	if err != nil {
+		return "", err
+	}
+	if !os.SameFile(before, after) {
+		return "", fmt.Errorf("interactive shell changed before handoff")
+	}
+	return validated, nil
+}
+
+func execDarwinSystemShell(shell string, env []string) error {
+	switch shell {
+	case "/bin/zsh":
+		return syscall.Exec("/bin/zsh", []string{"/bin/zsh"}, env)
+	case "/bin/bash":
+		return syscall.Exec("/bin/bash", []string{"/bin/bash"}, env)
+	case "/bin/sh":
+		return syscall.Exec("/bin/sh", []string{"/bin/sh"}, env)
+	default:
+		return fmt.Errorf("interactive shell %q is no longer valid", shell)
+	}
 }
 
 func restoreProjectShellDir(originalDir *os.File, execErr error) error {

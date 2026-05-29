@@ -19,7 +19,7 @@ func launchAssistantWithPrompt(choice, prompt string) error {
 }
 
 func windowsRootDir() string {
-	return `C:\Windows`
+	panic("windowsRootDir called on non-Windows")
 }
 
 func isRootOwned(info os.FileInfo) bool {

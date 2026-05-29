@@ -100,7 +100,7 @@ func TestPathHasPrefix_IsCaseSensitiveOnUnix(t *testing.T) {
 }
 
 func TestValidateNewProjectName_RejectsNonSubdirectoryNames(t *testing.T) {
-	for _, value := range []string{"", "   ", ".", "..", "../outside", "nested/app", `nested\app`, "/tmp/app", "C:app", "demo app", "demo'app"} {
+	for _, value := range []string{"", "   ", ".", "..", "../outside", "nested/app", `nested\app`, "/tmp/app", "C:app", "demo app", "demo'app", "-demo", ".demo"} {
 		t.Run(value, func(t *testing.T) {
 			if err := validateNewProjectName(value); err == nil {
 				t.Fatalf("validateNewProjectName(%q) = nil, want error", value)
@@ -357,6 +357,13 @@ func TestProjectShellPath_PreservesUsableParentPath(t *testing.T) {
 	}
 
 	safeDir := t.TempDir()
+	groupWritableDir := filepath.Join(t.TempDir(), "group-writable")
+	if err := os.Mkdir(groupWritableDir, 0o775); err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
+	if err := os.Chmod(groupWritableDir, 0o775); err != nil {
+		t.Fatalf("Chmod: %v", err)
+	}
 	worldWritableDir := filepath.Join(t.TempDir(), "world-writable")
 	if err := os.Mkdir(worldWritableDir, 0o777); err != nil {
 		t.Fatalf("Mkdir: %v", err)
@@ -365,13 +372,13 @@ func TestProjectShellPath_PreservesUsableParentPath(t *testing.T) {
 		t.Fatalf("Chmod: %v", err)
 	}
 
-	t.Setenv("PATH", strings.Join([]string{safeDir, "/tmp/does-not-exist", worldWritableDir, "relative-bin"}, string(os.PathListSeparator)))
+	t.Setenv("PATH", strings.Join([]string{safeDir, "/tmp/does-not-exist", groupWritableDir, worldWritableDir, "relative-bin"}, string(os.PathListSeparator)))
 
 	got := filepath.SplitList(projectShellPath())
 	if !slices.Contains(got, filepath.Clean(safeDir)) {
 		t.Fatalf("projectShellPath() = %q, want safe parent PATH directory %q", got, safeDir)
 	}
-	for _, disallowed := range []string{"/tmp/does-not-exist", worldWritableDir, "relative-bin"} {
+	for _, disallowed := range []string{"/tmp/does-not-exist", groupWritableDir, worldWritableDir, "relative-bin"} {
 		if slices.Contains(got, filepath.Clean(disallowed)) {
 			t.Fatalf("projectShellPath() = %q, did not expect %q", got, disallowed)
 		}
@@ -389,21 +396,26 @@ func TestProjectShellEnv_RejectsInvalidShell(t *testing.T) {
 	}
 }
 
-func TestScrubProjectShellEnv_DropsLinkerAndInterpreterVariables(t *testing.T) {
-	got := scrubProjectShellEnv([]string{
-		"PATH=/bin",
-		"LD_PRELOAD=/tmp/lib.so",
-		"DYLD_INSERT_LIBRARIES=/tmp/lib.dylib",
-		"BASH_ENV=/tmp/env",
-		"GCONV_PATH=/tmp/gconv",
-		"PYTHONPATH=/tmp/python",
-		"RUBYOPT=-r/tmp/ruby.rb",
-		"NODE_PATH=/tmp/node",
-		"NODE_OPTIONS=--require /tmp/node.js",
-	})
+func TestAppendAllowedProjectShellEnv_DropsLinkerAndInterpreterVariables(t *testing.T) {
+	env := []string{"PATH=/bin"}
+	for _, kv := range []struct {
+		key   string
+		value string
+	}{
+		{"LD_PRELOAD", "/tmp/lib.so"},
+		{"DYLD_INSERT_LIBRARIES", "/tmp/lib.dylib"},
+		{"BASH_ENV", "/tmp/env"},
+		{"GCONV_PATH", "/tmp/gconv"},
+		{"PYTHONPATH", "/tmp/python"},
+		{"RUBYOPT", "-r/tmp/ruby.rb"},
+		{"NODE_PATH", "/tmp/node"},
+		{"NODE_OPTIONS", "--require /tmp/node.js"},
+	} {
+		env = appendAllowedProjectShellEnv(env, kv.key, kv.value)
+	}
 
-	if strings.Join(got, "\n") != "PATH=/bin" {
-		t.Fatalf("scrubProjectShellEnv() = %#v, want only PATH", got)
+	if strings.Join(env, "\n") != "PATH=/bin" {
+		t.Fatalf("appendAllowedProjectShellEnv() = %#v, want only PATH", env)
 	}
 }
 

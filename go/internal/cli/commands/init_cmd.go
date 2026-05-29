@@ -926,32 +926,32 @@ func projectShellEnv(shell string) ([]string, error) {
 		return nil, fmt.Errorf("interactive shell %q is no longer valid", shell)
 	}
 
-	env := projectShellUserEnv()
+	home, username := projectShellUserIdentity()
+	env := make([]string, 0, 6)
+	env = appendAllowedProjectShellEnv(env, "HOME", home)
 	if runtime.GOOS != "windows" {
-		env = append(env, "SHELL="+validated)
+		env = appendAllowedProjectShellEnv(env, "SHELL", validated)
+		env = appendAllowedProjectShellEnv(env, "LOGNAME", username)
+		env = appendAllowedProjectShellEnv(env, "USER", username)
+	} else {
+		env = appendAllowedProjectShellEnv(env, "USERNAME", username)
 	}
-	env = appendWithoutExistingEnv(env, "TERM", projectShellTerm(os.Getenv("TERM")))
-	env = appendWithoutExistingEnv(env, "PATH", projectShellPath())
-	return scrubProjectShellEnv(env), nil
+	env = appendAllowedProjectShellEnv(env, "TERM", projectShellTerm(os.Getenv("TERM")))
+	env = appendAllowedProjectShellEnv(env, "PATH", projectShellPath())
+	return env, nil
 }
 
-func projectShellUserEnv() []string {
+func projectShellUserIdentity() (string, string) {
 	current, err := user.Current()
 	if err != nil {
-		return nil
+		return "", ""
 	}
-	env := make([]string, 0, 3)
+	var home string
 	if isSafeEnvPathValue(current.HomeDir) {
-		env = append(env, "HOME="+filepath.Clean(current.HomeDir))
+		home = filepath.Clean(current.HomeDir)
 	}
 	username := safeCurrentUsername(current.Username)
-	if username == "" {
-		return env
-	}
-	if runtime.GOOS == "windows" {
-		return append(env, "USERNAME="+username)
-	}
-	return append(env, "LOGNAME="+username, "USER="+username)
+	return home, username
 }
 
 func safeCurrentUsername(username string) string {
@@ -1019,16 +1019,11 @@ func appendWithoutExistingEnv(env []string, key, value string) []string {
 	return append(out, prefix+value)
 }
 
-func scrubProjectShellEnv(env []string) []string {
-	out := env[:0]
-	for _, kv := range env {
-		key, _, ok := strings.Cut(kv, "=")
-		if !ok || isForbiddenProjectShellEnvKey(key) {
-			continue
-		}
-		out = append(out, kv)
+func appendAllowedProjectShellEnv(env []string, key, value string) []string {
+	if isForbiddenProjectShellEnvKey(key) {
+		return appendWithoutExistingEnv(env, key, "")
 	}
-	return out
+	return appendWithoutExistingEnv(env, key, value)
 }
 
 func isForbiddenProjectShellEnvKey(key string) bool {
@@ -1116,7 +1111,7 @@ func projectShellPathDir(dir string) (string, bool) {
 		return "", false
 	}
 	if runtime.GOOS != "windows" {
-		writable, err := isWorldWritablePathDir(dir)
+		writable, err := isGroupOrWorldWritablePathDir(dir)
 		if err != nil || writable {
 			return "", false
 		}
@@ -1124,12 +1119,12 @@ func projectShellPathDir(dir string) (string, bool) {
 	return dir, true
 }
 
-func isWorldWritablePathDir(dir string) (bool, error) {
+func isGroupOrWorldWritablePathDir(dir string) (bool, error) {
 	info, err := os.Stat(dir)
 	if err != nil || !info.IsDir() {
 		return false, fmt.Errorf("checking PATH directory %q: %w", dir, err)
 	}
-	return info.Mode().Perm()&0o002 != 0, nil
+	return info.Mode().Perm()&0o022 != 0, nil
 }
 
 func shellQuote(s string) string {
@@ -1192,6 +1187,9 @@ func validateNewProjectName(value string) error {
 	}
 	if filepath.IsAbs(name) || filepath.Clean(name) != name || name == "." || name == ".." || strings.ContainsAny(name, `/\:`) {
 		return fmt.Errorf("project name must be a single subdirectory name")
+	}
+	if strings.HasPrefix(name, "-") || strings.HasPrefix(name, ".") {
+		return fmt.Errorf("project name must not start with '-' or '.'")
 	}
 	for _, r := range name {
 		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '.' || r == '_' || r == '-' {

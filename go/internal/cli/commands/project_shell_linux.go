@@ -50,6 +50,7 @@ func runProjectShell(shell, dir string, env []string) error {
 		_ = syscall.Fchdir(int(originalDir.Fd()))
 		return err
 	}
+	runtime.KeepAlive(shellFile)
 	if err := prepareOpenProjectShellForExec(shellFile); err != nil {
 		_ = syscall.Fchdir(int(originalDir.Fd()))
 		return err
@@ -75,6 +76,8 @@ func openProjectShellForExec(shell string) (*os.File, error) {
 }
 
 func prepareOpenProjectShellForExec(shellFile *os.File) error {
+	// Intentionally clear close-on-exec only for the validated shell fd so
+	// /proc/self/fd can execute it. Other Go-opened fds retain CLOEXEC.
 	if _, err := unix.FcntlInt(shellFile.Fd(), unix.F_SETFD, 0); err != nil {
 		return fmt.Errorf("preparing interactive shell handle: %w", err)
 	}
