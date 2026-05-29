@@ -90,6 +90,35 @@ func TestResolveInitAppID_TrimsExplicitFlag(t *testing.T) {
 	}
 }
 
+func TestPathHasPrefix_IsCaseSensitiveOnUnix(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows paths are intentionally compared case-insensitively")
+	}
+	if pathHasPrefix("/tmp/Foo/app", "/tmp/foo") {
+		t.Fatal("pathHasPrefix should not case-fold Unix paths")
+	}
+}
+
+func TestValidateNewProjectName_RejectsNonSubdirectoryNames(t *testing.T) {
+	for _, value := range []string{"", "   ", ".", "..", "../outside", "nested/app", `nested\app`, "/tmp/app", "C:app"} {
+		t.Run(value, func(t *testing.T) {
+			if err := validateNewProjectName(value); err == nil {
+				t.Fatalf("validateNewProjectName(%q) = nil, want error", value)
+			}
+		})
+	}
+}
+
+func TestValidateNewProjectName_AcceptsPlainDirectoryNames(t *testing.T) {
+	for _, value := range []string{"demo-app", "demo app", "demo'app", "demo_app"} {
+		t.Run(value, func(t *testing.T) {
+			if err := validateNewProjectName(value); err != nil {
+				t.Fatalf("validateNewProjectName(%q): %v", value, err)
+			}
+		})
+	}
+}
+
 func TestTemplateRunCommand(t *testing.T) {
 	tests := []struct {
 		name    string

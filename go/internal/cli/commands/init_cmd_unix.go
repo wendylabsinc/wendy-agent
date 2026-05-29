@@ -16,3 +16,7 @@ func launchAssistantWithPrompt(choice, prompt string) error {
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
 }
+
+func windowsRootDir() string {
+	return `C:\Windows`
+}

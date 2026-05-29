@@ -741,7 +741,7 @@ func pathHasPrefix(path, prefix string) bool {
 	sep := string(filepath.Separator)
 	cleanPath := strings.TrimRight(filepath.Clean(path), sep) + sep
 	cleanPrefix := strings.TrimRight(filepath.Clean(prefix), sep) + sep
-	if runtime.GOOS == "darwin" || runtime.GOOS == "windows" {
+	if runtime.GOOS == "windows" {
 		if len(cleanPath) < len(cleanPrefix) {
 			return false
 		}
@@ -806,7 +806,7 @@ func defaultInteractiveShell() (string, error) {
 }
 
 func defaultWindowsShellCandidates() []string {
-	return []string{filepath.Join(`C:\Windows`, "System32", "cmd.exe")}
+	return []string{filepath.Join(windowsRootDir(), "System32", "cmd.exe")}
 }
 
 func defaultUnixShellCandidates() []string {
@@ -901,7 +901,7 @@ func isTrustedShellDir(dir string) bool {
 
 func fallbackTrustedShellDirs() []string {
 	if runtime.GOOS == "windows" {
-		return []string{filepath.Join(`C:\Windows`, "System32")}
+		return []string{filepath.Join(windowsRootDir(), "System32")}
 	}
 	return []string{"/bin", "/usr/bin"}
 }
@@ -1047,7 +1047,7 @@ func projectShellPath() string {
 		for _, dir := range fallbackTrustedShellDirs() {
 			parts = appendProjectShellPathDir(parts, dir)
 		}
-		parts = appendProjectShellPathDir(parts, `C:\Windows`)
+		parts = appendProjectShellPathDir(parts, windowsRootDir())
 	} else {
 		parts = appendProjectShellPathDir(parts, "/usr/bin")
 		parts = appendProjectShellPathDir(parts, "/bin")
@@ -1146,12 +1146,7 @@ func resolveInitDestAndID(cwd string, args []string, opts initOptions) (string, 
 		}
 
 		fmt.Println()
-		appID, err := tui.PromptText("Project name", "directory name and app identifier", func(v string) error {
-			if strings.TrimSpace(v) == "" {
-				return fmt.Errorf("project name cannot be empty")
-			}
-			return nil
-		})
+		appID, err := tui.PromptText("Project name", "directory name and app identifier", validateNewProjectName)
 		if err != nil {
 			return "", "", false, err
 		}
@@ -1161,6 +1156,17 @@ func resolveInitDestAndID(cwd string, args []string, opts initOptions) (string, 
 
 	// Semi-interactive or non-interactive without explicit app ID: infer from cwd.
 	return cwd, strings.TrimSpace(filepath.Base(cwd)), false, nil
+}
+
+func validateNewProjectName(value string) error {
+	name := strings.TrimSpace(value)
+	if name == "" {
+		return fmt.Errorf("project name cannot be empty")
+	}
+	if filepath.IsAbs(name) || filepath.Clean(name) != name || name == "." || name == ".." || strings.ContainsAny(name, `/\:`) {
+		return fmt.Errorf("project name must be a single subdirectory name")
+	}
+	return nil
 }
 
 // maybeGitInit optionally runs git init in the project directory.
