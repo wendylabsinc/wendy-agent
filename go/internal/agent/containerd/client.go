@@ -776,6 +776,10 @@ func buildContainerBaseEnv(appID string) []string {
 	if h := deviceHostnameWithSuffix(); h != "" {
 		env = append(env, "WENDY_HOSTNAME="+h)
 	}
+	// WENDY_APP_ID is injected unconditionally (all network modes) so app code
+	// can always read its own identity. The OTel identity vars are injected only
+	// under host networking (in injectOTELEnvIfNeeded) because the OTLP receiver
+	// is only reachable in that mode.
 	if appID != "" {
 		env = append(env, "WENDY_APP_ID="+appID)
 	}
@@ -807,20 +811,24 @@ func injectOTELEnvIfNeeded(env []string, appCfg *appconfig.AppConfig) []string {
 			hasResourceAttrs = true
 		}
 	}
-	if hasEndpoint {
-		return env // image already configured the exporter; do not override
+	// Endpoint/protocol: only point the exporter at our receiver when the image
+	// hasn't already configured one.
+	if !hasEndpoint {
+		otelPort := os.Getenv("WENDY_OTEL_PORT")
+		if otelPort == "" {
+			otelPort = "4317"
+		}
+		if p, err := strconv.Atoi(otelPort); err != nil || p < 1 || p > 65535 {
+			otelPort = "4317"
+		}
+		env = append(env, "OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:"+otelPort)
+		if !hasProtocol {
+			env = append(env, "OTEL_EXPORTER_OTLP_PROTOCOL=grpc")
+		}
 	}
-	otelPort := os.Getenv("WENDY_OTEL_PORT")
-	if otelPort == "" {
-		otelPort = "4317"
-	}
-	if p, err := strconv.Atoi(otelPort); err != nil || p < 1 || p > 65535 {
-		otelPort = "4317"
-	}
-	env = append(env, "OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:"+otelPort)
-	if !hasProtocol {
-		env = append(env, "OTEL_EXPORTER_OTLP_PROTOCOL=grpc")
-	}
+	// Identity: set regardless of where the exporter points, so `wendy device
+	// logs --app <id>` can match even when the image preset its own endpoint.
+	// Image-set values still take precedence.
 	if appCfg.AppID != "" {
 		if !hasServiceName {
 			env = append(env, "OTEL_SERVICE_NAME="+appCfg.AppID)

@@ -259,6 +259,32 @@ func TestInjectOTELEnvSetsServiceNameAndResourceAttrs(t *testing.T) {
 	}
 }
 
+func TestInjectOTELEnvSetsIdentityWhenEndpointPreset(t *testing.T) {
+	// An image that presets only the endpoint should still get identity vars so
+	// its direct OTLP logs remain filterable by `wendy device logs --app <id>`.
+	existing := []string{"OTEL_EXPORTER_OTLP_ENDPOINT=http://custom-collector:4317"}
+
+	env := injectOTELEnvIfNeeded(existing, hostNetworkCfgWithID("my-app"))
+
+	endpointCount, wantService, wantAttrs := 0, false, false
+	for _, kv := range env {
+		switch {
+		case strings.HasPrefix(kv, "OTEL_EXPORTER_OTLP_ENDPOINT="):
+			endpointCount++
+		case kv == "OTEL_SERVICE_NAME=my-app":
+			wantService = true
+		case kv == "OTEL_RESOURCE_ATTRIBUTES=wendy.app.name=my-app":
+			wantAttrs = true
+		}
+	}
+	if endpointCount != 1 {
+		t.Errorf("expected image endpoint preserved (1 entry), got %d: %v", endpointCount, env)
+	}
+	if !wantService || !wantAttrs {
+		t.Errorf("expected identity vars injected alongside preset endpoint; got %v", env)
+	}
+}
+
 func TestInjectOTELEnvOmitsServiceNameWhenAppIDEmpty(t *testing.T) {
 	env := injectOTELEnvIfNeeded(nil, hostNetworkCfgWithID(""))
 
