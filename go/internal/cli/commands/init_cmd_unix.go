@@ -22,7 +22,7 @@ func windowsRootDir() string {
 	panic("windowsRootDir called on non-Windows")
 }
 
-func isRootOwned(info os.FileInfo) bool {
+func isRootOwned(_ string, info os.FileInfo) bool {
 	stat, ok := info.Sys().(*syscall.Stat_t)
 	return ok && stat.Uid == 0
 }

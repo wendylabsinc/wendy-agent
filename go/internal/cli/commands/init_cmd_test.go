@@ -309,7 +309,7 @@ func TestProjectShellEnv_FiltersSensitiveValues(t *testing.T) {
 		"LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT", "LD_TRACE_LOADED_OBJECTS",
 		"DYLD_INSERT_LIBRARIES", "DYLD_LIBRARY_PATH", "DYLD_FRAMEWORK_PATH", "DYLD_FALLBACK_LIBRARY_PATH",
 		"BASH_ENV", "ENV", "CDPATH", "IFS", "SHELLOPTS", "BASHOPTS", "PS4",
-		"GCONV_PATH", "PYTHONPATH", "RUBYLIB", "RUBYOPT", "NODE_PATH", "NODE_OPTIONS", "PERL5LIB", "PERL5OPT",
+		"ZDOTDIR", "GCONV_PATH", "PYTHONPATH", "RUBYLIB", "RUBYOPT", "NODE_PATH", "NODE_OPTIONS", "PERL5LIB", "PERL5OPT",
 	} {
 		t.Setenv(key, "injected")
 	}
@@ -326,7 +326,7 @@ func TestProjectShellEnv_FiltersSensitiveValues(t *testing.T) {
 		"LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT", "LD_TRACE_LOADED_OBJECTS",
 		"DYLD_INSERT_LIBRARIES", "DYLD_LIBRARY_PATH", "DYLD_FRAMEWORK_PATH", "DYLD_FALLBACK_LIBRARY_PATH",
 		"BASH_ENV", "ENV", "CDPATH", "IFS", "SHELLOPTS", "BASHOPTS", "PS4",
-		"GCONV_PATH", "PYTHONPATH", "RUBYLIB", "RUBYOPT", "NODE_PATH", "NODE_OPTIONS", "PERL5LIB", "PERL5OPT",
+		"ZDOTDIR", "GCONV_PATH", "PYTHONPATH", "RUBYLIB", "RUBYOPT", "NODE_PATH", "NODE_OPTIONS", "PERL5LIB", "PERL5OPT",
 	} {
 		if strings.Contains(joined, "\n"+key+"=") {
 			t.Fatalf("projectShellEnv included disallowed key %q in %q", key, joined)
@@ -405,6 +405,7 @@ func TestAppendAllowedProjectShellEnv_DropsLinkerAndInterpreterVariables(t *test
 		{"LD_PRELOAD", "/tmp/lib.so"},
 		{"DYLD_INSERT_LIBRARIES", "/tmp/lib.dylib"},
 		{"BASH_ENV", "/tmp/env"},
+		{"ZDOTDIR", "/tmp/zsh"},
 		{"GCONV_PATH", "/tmp/gconv"},
 		{"PYTHONPATH", "/tmp/python"},
 		{"RUBYOPT", "-r/tmp/ruby.rb"},

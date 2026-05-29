@@ -702,7 +702,11 @@ func finishTemplateInitWithLauncher(cwd, destDir, appID string, enterProjectDir 
 		}
 		cliLogln("Opening a shell in: %s", projectDir)
 		cliLogln("Run `wendy run` to build and deploy.")
-		return launch(projectDir, shell)
+		if err := launch(projectDir, shell); err != nil {
+			cliLogln("Warning: failed to open project shell: %v", err)
+			return err
+		}
+		return nil
 	}
 
 	cliLogln("Next steps:")
@@ -840,7 +844,7 @@ func validateInteractiveShell(candidate string) (string, bool) {
 	}
 	if runtime.GOOS != "windows" {
 		mode := info.Mode().Perm()
-		if mode&0o111 == 0 || mode&0o022 != 0 || !isRootOwned(info) {
+		if mode&0o111 == 0 || mode&0o022 != 0 || !isRootOwned(resolved, info) {
 			return "", false
 		}
 	}
@@ -917,7 +921,7 @@ func isRootOwnedNonWritableDir(dir string) (bool, error) {
 	if !info.IsDir() {
 		return false, fmt.Errorf("checking shell directory %q: not a directory", dir)
 	}
-	return info.Mode().Perm()&0o022 == 0 && isRootOwned(info), nil
+	return info.Mode().Perm()&0o022 == 0 && isRootOwned(dir, info), nil
 }
 
 func projectShellEnv(shell string) ([]string, error) {
@@ -1034,7 +1038,7 @@ func isForbiddenProjectShellEnvKey(key string) bool {
 	switch upper {
 	case "GCONV_PATH",
 		"BASH_ENV", "ENV", "CDPATH", "IFS", "SHELLOPTS", "BASHOPTS", "PS4",
-		"PYTHONPATH", "RUBYLIB", "RUBYOPT", "NODE_PATH", "NODE_OPTIONS", "PERL5LIB", "PERL5OPT":
+		"ZDOTDIR", "PYTHONPATH", "RUBYLIB", "RUBYOPT", "NODE_PATH", "NODE_OPTIONS", "PERL5LIB", "PERL5OPT":
 		return true
 	default:
 		return false

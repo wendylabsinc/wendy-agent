@@ -41,6 +41,10 @@ func runProjectShell(shell, dir string, env []string) error {
 	if err := syscall.Fchdir(int(dirFile.Fd())); err != nil {
 		return fmt.Errorf("changing to project directory: %w", err)
 	}
+	if err := verifyProjectShellCWD(fdInfo); err != nil {
+		_ = syscall.Fchdir(int(originalDir.Fd()))
+		return err
+	}
 	revalidated, err := verifyDarwinSystemShell(shell, shellInfo)
 	if err != nil {
 		_ = syscall.Fchdir(int(originalDir.Fd()))
@@ -98,6 +102,17 @@ func execDarwinSystemShell(shell string, env []string) error {
 	default:
 		return fmt.Errorf("interactive shell %q is no longer valid", shell)
 	}
+}
+
+func verifyProjectShellCWD(want os.FileInfo) error {
+	got, err := os.Stat(".")
+	if err != nil {
+		return fmt.Errorf("checking project directory after handoff: %w", err)
+	}
+	if !os.SameFile(want, got) {
+		return fmt.Errorf("project directory changed before shell handoff")
+	}
+	return nil
 }
 
 func restoreProjectShellDir(originalDir *os.File, execErr error) error {

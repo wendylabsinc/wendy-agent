@@ -67,6 +67,14 @@ func windowsRootDir() string {
 	return filepath.Clean(root)
 }
 
-func isRootOwned(_ os.FileInfo) bool {
-	return false
+func isRootOwned(path string, _ os.FileInfo) bool {
+	descriptor, err := windows.GetNamedSecurityInfo(filepath.Clean(path), windows.SE_FILE_OBJECT, windows.OWNER_SECURITY_INFORMATION)
+	if err != nil || descriptor == nil || !descriptor.IsValid() {
+		return false
+	}
+	owner, _, err := descriptor.Owner()
+	if err != nil || owner == nil || !owner.IsValid() {
+		return false
+	}
+	return owner.IsWellKnown(windows.WinLocalSystemSid) || owner.IsWellKnown(windows.WinBuiltinAdministratorsSid)
 }
