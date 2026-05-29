@@ -320,6 +320,11 @@ jobs:
           fi
           npm install -g --ignore-scripts "$TARBALL"
           rm -f "$TARBALL"
+          # setup-node@v4 uses a custom npm prefix; add its bin/ to PATH for this step
+          # and for all subsequent steps so the claude binary is findable.
+          NPM_BIN="$(npm prefix -g)/bin"
+          export PATH="$NPM_BIN:$PATH"
+          echo "$NPM_BIN" >> "$GITHUB_PATH"
           # Secondary verification: confirm installed binary reports expected version.
           # Provides an independent check beyond the sha512 tarball integrity test.
           INSTALLED_VERSION=$(claude --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo '')
