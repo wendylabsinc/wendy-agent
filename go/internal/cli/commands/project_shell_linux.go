@@ -1,4 +1,4 @@
-//go:build !windows
+//go:build linux
 
 package commands
 
@@ -12,11 +12,12 @@ import (
 )
 
 func runProjectShell(shell, dir string, env []string) error {
-	shellFile, shellExecPath, err := openProjectShellForExec(shell)
+	shellFile, err := openProjectShellForExec(shell)
 	if err != nil {
 		return err
 	}
 	defer shellFile.Close()
+	shellExecPath := shellFileExecPath(shellFile)
 
 	dirFile, err := os.Open(dir)
 	if err != nil {
@@ -49,37 +50,35 @@ func runProjectShell(shell, dir string, env []string) error {
 		_ = syscall.Fchdir(int(originalDir.Fd()))
 		return err
 	}
+	if err := prepareOpenProjectShellForExec(shellFile); err != nil {
+		_ = syscall.Fchdir(int(originalDir.Fd()))
+		return err
+	}
 	runtime.KeepAlive(shellFile)
 	if err := syscall.Exec(shellExecPath, []string{shell}, env); err != nil {
-		_ = syscall.Fchdir(int(originalDir.Fd()))
-		return fmt.Errorf("starting shell in project directory: %w", err)
+		return restoreProjectShellDir(originalDir, err)
 	}
 	return nil
 }
 
-func openProjectShellForExec(shell string) (*os.File, string, error) {
+func openProjectShellForExec(shell string) (*os.File, error) {
 	shellFile, err := os.Open(shell)
 	if err != nil {
-		return nil, "", fmt.Errorf("opening interactive shell: %w", err)
+		return nil, fmt.Errorf("opening interactive shell: %w", err)
 	}
 	if err := verifyOpenProjectShell(shellFile, shell); err != nil {
 		shellFile.Close()
-		return nil, "", err
-	}
-	// Linux can exec the validated descriptor through procfs. Darwin does not
-	// expose execveat/fexecve through Go, so the residual path-exec race is
-	// accepted there only after validateInteractiveShell restricts shells to
-	// root-owned, non-writable system locations and runProjectShell re-checks
-	// immediately before syscall.Exec.
-	if runtime.GOOS != "linux" {
-		return shellFile, shell, nil
-	}
-	if _, err := unix.FcntlInt(shellFile.Fd(), unix.F_SETFD, 0); err != nil {
-		shellFile.Close()
-		return nil, "", fmt.Errorf("preparing interactive shell handle: %w", err)
+		return nil, err
 	}
 
-	return shellFile, shellFileExecPath(shellFile), nil
+	return shellFile, nil
+}
+
+func prepareOpenProjectShellForExec(shellFile *os.File) error {
+	if _, err := unix.FcntlInt(shellFile.Fd(), unix.F_SETFD, 0); err != nil {
+		return fmt.Errorf("preparing interactive shell handle: %w", err)
+	}
+	return nil
 }
 
 func verifyOpenProjectShell(shellFile *os.File, shell string) error {
@@ -103,4 +102,11 @@ func verifyOpenProjectShell(shellFile *os.File, shell string) error {
 
 func shellFileExecPath(file *os.File) string {
 	return fmt.Sprintf("/proc/self/fd/%d", file.Fd())
+}
+
+func restoreProjectShellDir(originalDir *os.File, execErr error) error {
+	if err := syscall.Fchdir(int(originalDir.Fd())); err != nil {
+		return fmt.Errorf("starting shell failed (%w) and restoring working directory failed: %v", execErr, err)
+	}
+	return fmt.Errorf("starting shell in project directory: %w", execErr)
 }

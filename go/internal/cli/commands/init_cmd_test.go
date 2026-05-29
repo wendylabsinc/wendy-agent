@@ -100,7 +100,7 @@ func TestPathHasPrefix_IsCaseSensitiveOnUnix(t *testing.T) {
 }
 
 func TestValidateNewProjectName_RejectsNonSubdirectoryNames(t *testing.T) {
-	for _, value := range []string{"", "   ", ".", "..", "../outside", "nested/app", `nested\app`, "/tmp/app", "C:app"} {
+	for _, value := range []string{"", "   ", ".", "..", "../outside", "nested/app", `nested\app`, "/tmp/app", "C:app", "demo app", "demo'app"} {
 		t.Run(value, func(t *testing.T) {
 			if err := validateNewProjectName(value); err == nil {
 				t.Fatalf("validateNewProjectName(%q) = nil, want error", value)
@@ -110,7 +110,7 @@ func TestValidateNewProjectName_RejectsNonSubdirectoryNames(t *testing.T) {
 }
 
 func TestValidateNewProjectName_AcceptsPlainDirectoryNames(t *testing.T) {
-	for _, value := range []string{"demo-app", "demo app", "demo'app", "demo_app"} {
+	for _, value := range []string{"demo-app", "demo.app", "demo_app"} {
 		t.Run(value, func(t *testing.T) {
 			if err := validateNewProjectName(value); err != nil {
 				t.Fatalf("validateNewProjectName(%q): %v", value, err)
@@ -305,6 +305,14 @@ func TestProjectShellEnv_FiltersSensitiveValues(t *testing.T) {
 	t.Setenv("HOME", "relative-home")
 	t.Setenv("USER", "bad user")
 	t.Setenv("LOGNAME", "safe-user")
+	for _, key := range []string{
+		"LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT", "LD_TRACE_LOADED_OBJECTS",
+		"DYLD_INSERT_LIBRARIES", "DYLD_LIBRARY_PATH", "DYLD_FRAMEWORK_PATH", "DYLD_FALLBACK_LIBRARY_PATH",
+		"BASH_ENV", "ENV", "CDPATH", "IFS", "SHELLOPTS", "BASHOPTS", "PS4",
+		"GCONV_PATH", "PYTHONPATH", "RUBYLIB", "RUBYOPT", "NODE_PATH", "NODE_OPTIONS", "PERL5LIB", "PERL5OPT",
+	} {
+		t.Setenv(key, "injected")
+	}
 
 	shell := testInteractiveShell(t)
 	env, err := projectShellEnv(shell)
@@ -313,7 +321,13 @@ func TestProjectShellEnv_FiltersSensitiveValues(t *testing.T) {
 	}
 	joined := "\n" + strings.Join(env, "\n") + "\n"
 
-	for _, key := range []string{"WENDY_TOKEN", "OPENAI_API_KEY", "NORMAL_ENV"} {
+	for _, key := range []string{
+		"WENDY_TOKEN", "OPENAI_API_KEY", "NORMAL_ENV",
+		"LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT", "LD_TRACE_LOADED_OBJECTS",
+		"DYLD_INSERT_LIBRARIES", "DYLD_LIBRARY_PATH", "DYLD_FRAMEWORK_PATH", "DYLD_FALLBACK_LIBRARY_PATH",
+		"BASH_ENV", "ENV", "CDPATH", "IFS", "SHELLOPTS", "BASHOPTS", "PS4",
+		"GCONV_PATH", "PYTHONPATH", "RUBYLIB", "RUBYOPT", "NODE_PATH", "NODE_OPTIONS", "PERL5LIB", "PERL5OPT",
+	} {
 		if strings.Contains(joined, "\n"+key+"=") {
 			t.Fatalf("projectShellEnv included disallowed key %q in %q", key, joined)
 		}
@@ -372,6 +386,31 @@ func TestProjectShellPath_PreservesUsableParentPath(t *testing.T) {
 func TestProjectShellEnv_RejectsInvalidShell(t *testing.T) {
 	if _, err := projectShellEnv("test-shell"); err == nil {
 		t.Fatal("expected invalid shell to fail")
+	}
+}
+
+func TestScrubProjectShellEnv_DropsLinkerAndInterpreterVariables(t *testing.T) {
+	got := scrubProjectShellEnv([]string{
+		"PATH=/bin",
+		"LD_PRELOAD=/tmp/lib.so",
+		"DYLD_INSERT_LIBRARIES=/tmp/lib.dylib",
+		"BASH_ENV=/tmp/env",
+		"GCONV_PATH=/tmp/gconv",
+		"PYTHONPATH=/tmp/python",
+		"RUBYOPT=-r/tmp/ruby.rb",
+		"NODE_PATH=/tmp/node",
+		"NODE_OPTIONS=--require /tmp/node.js",
+	})
+
+	if strings.Join(got, "\n") != "PATH=/bin" {
+		t.Fatalf("scrubProjectShellEnv() = %#v, want only PATH", got)
+	}
+}
+
+func TestAppendWithoutExistingEnv_DropsEmptyValue(t *testing.T) {
+	got := appendWithoutExistingEnv([]string{"PATH=/bin", "TERM=xterm"}, "PATH", "")
+	if strings.Join(got, "\n") != "TERM=xterm" {
+		t.Fatalf("appendWithoutExistingEnv() = %#v, want existing PATH removed without adding empty PATH", got)
 	}
 }
 

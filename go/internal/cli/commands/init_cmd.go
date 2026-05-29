@@ -827,9 +827,11 @@ func validateInteractiveShell(candidate string) (string, bool) {
 		return "", false
 	}
 	if runtime.GOOS != "windows" {
-		trusted, err := isRootOwnedNonWritableDir(filepath.Dir(resolved))
-		if err != nil || !trusted {
-			return "", false
+		for _, dir := range shellValidationDirs(candidate, resolved) {
+			trusted, err := isRootOwnedNonWritableDir(dir)
+			if err != nil || !trusted {
+				return "", false
+			}
 		}
 	}
 	info, err := os.Lstat(resolved)
@@ -849,7 +851,29 @@ func isTrustedShellPath(candidate, resolved string) bool {
 	if runtime.GOOS == "windows" {
 		return isTrustedShellDir(filepath.Dir(resolved))
 	}
+	if runtime.GOOS == "darwin" {
+		return isDarwinSystemShellPath(candidate) && isDarwinSystemShellPath(resolved)
+	}
 	return isTrustedShellDir(filepath.Dir(candidate)) && isTrustedShellDir(filepath.Dir(resolved))
+}
+
+func shellValidationDirs(candidate, resolved string) []string {
+	dirs := []string{filepath.Dir(candidate)}
+	resolvedDir := filepath.Dir(resolved)
+	if resolvedDir != dirs[0] {
+		dirs = append(dirs, resolvedDir)
+	}
+	return dirs
+}
+
+func isDarwinSystemShellPath(path string) bool {
+	// Keep Darwin shell handoff limited to immutable SIP-protected system shells.
+	switch filepath.Clean(path) {
+	case "/bin/zsh", "/bin/bash", "/bin/sh":
+		return true
+	default:
+		return false
+	}
 }
 
 func isTrustedShellDir(dir string) bool {
@@ -908,7 +932,7 @@ func projectShellEnv(shell string) ([]string, error) {
 	}
 	env = appendWithoutExistingEnv(env, "TERM", projectShellTerm(os.Getenv("TERM")))
 	env = appendWithoutExistingEnv(env, "PATH", projectShellPath())
-	return env, nil
+	return scrubProjectShellEnv(env), nil
 }
 
 func projectShellUserEnv() []string {
@@ -989,7 +1013,37 @@ func appendWithoutExistingEnv(env []string, key, value string) []string {
 			out = append(out, kv)
 		}
 	}
+	if value == "" {
+		return out
+	}
 	return append(out, prefix+value)
+}
+
+func scrubProjectShellEnv(env []string) []string {
+	out := env[:0]
+	for _, kv := range env {
+		key, _, ok := strings.Cut(kv, "=")
+		if !ok || isForbiddenProjectShellEnvKey(key) {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
+}
+
+func isForbiddenProjectShellEnvKey(key string) bool {
+	upper := strings.ToUpper(strings.TrimSpace(key))
+	if strings.HasPrefix(upper, "LD_") || strings.HasPrefix(upper, "DYLD_") {
+		return true
+	}
+	switch upper {
+	case "GCONV_PATH",
+		"BASH_ENV", "ENV", "CDPATH", "IFS", "SHELLOPTS", "BASHOPTS", "PS4",
+		"PYTHONPATH", "RUBYLIB", "RUBYOPT", "NODE_PATH", "NODE_OPTIONS", "PERL5LIB", "PERL5OPT":
+		return true
+	default:
+		return false
+	}
 }
 
 func envKeyHasPrefix(kv, prefix string) bool {
@@ -1138,6 +1192,12 @@ func validateNewProjectName(value string) error {
 	}
 	if filepath.IsAbs(name) || filepath.Clean(name) != name || name == "." || name == ".." || strings.ContainsAny(name, `/\:`) {
 		return fmt.Errorf("project name must be a single subdirectory name")
+	}
+	for _, r := range name {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '.' || r == '_' || r == '-' {
+			continue
+		}
+		return fmt.Errorf("project name may only contain letters, numbers, '.', '_' or '-'")
 	}
 	return nil
 }
