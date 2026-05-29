@@ -289,13 +289,10 @@ func TestProjectShellEnv_FiltersSensitiveValues(t *testing.T) {
 			t.Fatalf("projectShellEnv included disallowed key %q in %q", key, joined)
 		}
 	}
-	for _, key := range []string{"HOME", "USER"} {
-		if strings.Contains(joined, "\n"+key+"=") {
-			t.Fatalf("projectShellEnv included invalid value for %q in %q", key, joined)
+	for _, kv := range []string{"HOME=relative-home", "USER=bad user", "LOGNAME=safe-user"} {
+		if strings.Contains(joined, "\n"+kv+"\n") {
+			t.Fatalf("projectShellEnv forwarded parent environment value %q in %q", kv, joined)
 		}
-	}
-	if !strings.Contains(joined, "\nLOGNAME=safe-user\n") {
-		t.Fatalf("projectShellEnv missing valid environment value: %q", joined)
 	}
 	if !strings.Contains(joined, "\nTERM=xterm-256color\n") {
 		t.Fatalf("projectShellEnv missing allowed environment value: %q", joined)

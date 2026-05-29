@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -928,14 +929,7 @@ func projectShellEnv(shell string) ([]string, error) {
 		return nil, fmt.Errorf("interactive shell %q is no longer valid", shell)
 	}
 
-	env := make([]string, 0, len(os.Environ())+1)
-	for _, kv := range os.Environ() {
-		key, value, ok := strings.Cut(kv, "=")
-		if !ok || !isProjectShellEnvKey(key) || key == "SHELL" || !isProjectShellEnvValueAllowed(key, value) {
-			continue
-		}
-		env = append(env, kv)
-	}
+	env := projectShellUserEnv()
 	if runtime.GOOS != "windows" {
 		env = append(env, "SHELL="+validated)
 	}
@@ -944,28 +938,34 @@ func projectShellEnv(shell string) ([]string, error) {
 	return env, nil
 }
 
-func isProjectShellEnvKey(key string) bool {
-	key = strings.ToUpper(strings.TrimSpace(key))
-	switch key {
-	case "HOME", "LOGNAME", "USER", "USERNAME", "TMPDIR", "TMP", "TEMP":
-		return true
-	default:
-		return false
+func projectShellUserEnv() []string {
+	current, err := user.Current()
+	if err != nil {
+		return nil
 	}
+	env := make([]string, 0, 3)
+	if isSafeEnvPathValue(current.HomeDir) {
+		env = append(env, "HOME="+filepath.Clean(current.HomeDir))
+	}
+	username := safeCurrentUsername(current.Username)
+	if username == "" {
+		return env
+	}
+	if runtime.GOOS == "windows" {
+		return append(env, "USERNAME="+username)
+	}
+	return append(env, "LOGNAME="+username, "USER="+username)
 }
 
-func isProjectShellEnvValueAllowed(key, value string) bool {
-	if value == "" || stringHasControlChars(value) {
-		return false
+func safeCurrentUsername(username string) string {
+	username = strings.TrimSpace(username)
+	if i := strings.LastIndex(username, `\`); i >= 0 {
+		username = username[i+1:]
 	}
-	switch strings.ToUpper(strings.TrimSpace(key)) {
-	case "HOME", "TMPDIR", "TMP", "TEMP":
-		return isSafeEnvPathValue(value)
-	case "LOGNAME", "USER", "USERNAME":
-		return isSafeEnvIdentityValue(value)
-	default:
-		return false
+	if !isSafeEnvIdentityValue(username) {
+		return ""
 	}
+	return username
 }
 
 func stringHasControlChars(value string) bool {
@@ -978,7 +978,7 @@ func stringHasControlChars(value string) bool {
 }
 
 func isSafeEnvPathValue(value string) bool {
-	if !filepath.IsAbs(value) || pathContainsParentReference(value) {
+	if value == "" || stringHasControlChars(value) || !filepath.IsAbs(value) || pathContainsParentReference(value) {
 		return false
 	}
 	return filepath.IsAbs(filepath.Clean(value))
@@ -996,7 +996,7 @@ func pathContainsParentReference(path string) bool {
 }
 
 func isSafeEnvIdentityValue(value string) bool {
-	if len(value) > 64 {
+	if value == "" || len(value) > 64 || stringHasControlChars(value) {
 		return false
 	}
 	for _, r := range value {
@@ -1089,12 +1089,20 @@ func projectShellPathDir(dir string) (string, bool) {
 		return "", false
 	}
 	if runtime.GOOS != "windows" {
-		writable, err := isWorldWritableDir(dir)
+		writable, err := isWorldWritablePathDir(dir)
 		if err != nil || writable {
 			return "", false
 		}
 	}
 	return dir, true
+}
+
+func isWorldWritablePathDir(dir string) (bool, error) {
+	info, err := os.Stat(dir)
+	if err != nil || !info.IsDir() {
+		return false, fmt.Errorf("checking PATH directory %q: %w", dir, err)
+	}
+	return info.Mode().Perm()&0o002 != 0, nil
 }
 
 func shellQuote(s string) string {

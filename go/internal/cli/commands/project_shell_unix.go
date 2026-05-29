@@ -45,12 +45,11 @@ func runProjectShell(shell, dir string, env []string) error {
 	if err := syscall.Fchdir(int(dirFile.Fd())); err != nil {
 		return fmt.Errorf("changing to project directory: %w", err)
 	}
-	if shellExecPath == shell {
-		if err := verifyOpenProjectShell(shellFile, shell); err != nil {
-			_ = syscall.Fchdir(int(originalDir.Fd()))
-			return err
-		}
+	if err := verifyOpenProjectShell(shellFile, shell); err != nil {
+		_ = syscall.Fchdir(int(originalDir.Fd()))
+		return err
 	}
+	runtime.KeepAlive(shellFile)
 	if err := syscall.Exec(shellExecPath, []string{shell}, env); err != nil {
 		_ = syscall.Fchdir(int(originalDir.Fd()))
 		return fmt.Errorf("starting shell in project directory: %w", err)
