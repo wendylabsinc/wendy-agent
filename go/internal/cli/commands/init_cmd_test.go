@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 
@@ -272,6 +273,9 @@ func TestProjectShellEnv_FiltersSensitiveValues(t *testing.T) {
 	t.Setenv("TERM", "xterm-256color")
 	t.Setenv("PATH", "/tmp/evil")
 	t.Setenv("SHELL", "/tmp/evil")
+	t.Setenv("HOME", "relative-home")
+	t.Setenv("USER", "bad user")
+	t.Setenv("LOGNAME", "safe-user")
 
 	shell := testInteractiveShell(t)
 	env, err := projectShellEnv(shell)
@@ -285,6 +289,14 @@ func TestProjectShellEnv_FiltersSensitiveValues(t *testing.T) {
 			t.Fatalf("projectShellEnv included disallowed key %q in %q", key, joined)
 		}
 	}
+	for _, key := range []string{"HOME", "USER"} {
+		if strings.Contains(joined, "\n"+key+"=") {
+			t.Fatalf("projectShellEnv included invalid value for %q in %q", key, joined)
+		}
+	}
+	if !strings.Contains(joined, "\nLOGNAME=safe-user\n") {
+		t.Fatalf("projectShellEnv missing valid environment value: %q", joined)
+	}
 	if !strings.Contains(joined, "\nTERM=xterm-256color\n") {
 		t.Fatalf("projectShellEnv missing allowed environment value: %q", joined)
 	}
@@ -296,6 +308,38 @@ func TestProjectShellEnv_FiltersSensitiveValues(t *testing.T) {
 	}
 	if runtime.GOOS != "windows" && !strings.Contains(joined, "\nSHELL="+shell+"\n") {
 		t.Fatalf("projectShellEnv did not override SHELL with validated shell: %q", joined)
+	}
+}
+
+func TestProjectShellPath_PreservesUsableParentPath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix path filtering semantics are covered on Unix")
+	}
+
+	safeDir := t.TempDir()
+	worldWritableDir := filepath.Join(t.TempDir(), "world-writable")
+	if err := os.Mkdir(worldWritableDir, 0o777); err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
+	if err := os.Chmod(worldWritableDir, 0o777); err != nil {
+		t.Fatalf("Chmod: %v", err)
+	}
+
+	t.Setenv("PATH", strings.Join([]string{safeDir, "/tmp/does-not-exist", worldWritableDir, "relative-bin"}, string(os.PathListSeparator)))
+
+	got := filepath.SplitList(projectShellPath())
+	if !slices.Contains(got, filepath.Clean(safeDir)) {
+		t.Fatalf("projectShellPath() = %q, want safe parent PATH directory %q", got, safeDir)
+	}
+	for _, disallowed := range []string{"/tmp/does-not-exist", worldWritableDir, "relative-bin"} {
+		if slices.Contains(got, filepath.Clean(disallowed)) {
+			t.Fatalf("projectShellPath() = %q, did not expect %q", got, disallowed)
+		}
+	}
+	for _, fallback := range []string{"/usr/bin", "/bin"} {
+		if !slices.Contains(got, fallback) {
+			t.Fatalf("projectShellPath() = %q, want fallback directory %q", got, fallback)
+		}
 	}
 }
 

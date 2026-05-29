@@ -805,17 +805,7 @@ func defaultInteractiveShell() (string, error) {
 }
 
 func defaultWindowsShellCandidates() []string {
-	systemRoot := strings.TrimSpace(os.Getenv("SystemRoot"))
-	if systemRoot == "" || !filepath.IsAbs(systemRoot) {
-		systemRoot = `C:\Windows`
-	}
-	systemRoot = filepath.Clean(systemRoot)
-	candidates := []string{filepath.Join(systemRoot, "System32", "cmd.exe")}
-	fallback := filepath.Join(`C:\Windows`, "System32", "cmd.exe")
-	if !strings.EqualFold(candidates[0], fallback) {
-		candidates = append(candidates, fallback)
-	}
-	return candidates
+	return []string{filepath.Join(`C:\Windows`, "System32", "cmd.exe")}
 }
 
 func defaultUnixShellCandidates() []string {
@@ -910,16 +900,7 @@ func isTrustedShellDir(dir string) bool {
 
 func fallbackTrustedShellDirs() []string {
 	if runtime.GOOS == "windows" {
-		dirs := make([]string, 0, len(defaultWindowsShellCandidates()))
-		for _, shell := range defaultWindowsShellCandidates() {
-			dir := filepath.Dir(shell)
-			if !slices.ContainsFunc(dirs, func(existing string) bool {
-				return strings.EqualFold(existing, dir)
-			}) {
-				dirs = append(dirs, dir)
-			}
-		}
-		return dirs
+		return []string{filepath.Join(`C:\Windows`, "System32")}
 	}
 	return []string{"/bin", "/usr/bin"}
 }
@@ -949,8 +930,8 @@ func projectShellEnv(shell string) ([]string, error) {
 
 	env := make([]string, 0, len(os.Environ())+1)
 	for _, kv := range os.Environ() {
-		key, _, ok := strings.Cut(kv, "=")
-		if !ok || !isProjectShellEnvKey(key) || key == "SHELL" {
+		key, value, ok := strings.Cut(kv, "=")
+		if !ok || !isProjectShellEnvKey(key) || key == "SHELL" || !isProjectShellEnvValueAllowed(key, value) {
 			continue
 		}
 		env = append(env, kv)
@@ -971,6 +952,60 @@ func isProjectShellEnvKey(key string) bool {
 	default:
 		return false
 	}
+}
+
+func isProjectShellEnvValueAllowed(key, value string) bool {
+	if value == "" || stringHasControlChars(value) {
+		return false
+	}
+	switch strings.ToUpper(strings.TrimSpace(key)) {
+	case "HOME", "TMPDIR", "TMP", "TEMP":
+		return isSafeEnvPathValue(value)
+	case "LOGNAME", "USER", "USERNAME":
+		return isSafeEnvIdentityValue(value)
+	default:
+		return false
+	}
+}
+
+func stringHasControlChars(value string) bool {
+	for _, r := range value {
+		if r < 0x20 || r == 0x7f {
+			return true
+		}
+	}
+	return false
+}
+
+func isSafeEnvPathValue(value string) bool {
+	if !filepath.IsAbs(value) || pathContainsParentReference(value) {
+		return false
+	}
+	return filepath.IsAbs(filepath.Clean(value))
+}
+
+func pathContainsParentReference(path string) bool {
+	for _, part := range strings.FieldsFunc(path, func(r rune) bool {
+		return r == '/' || r == '\\'
+	}) {
+		if part == ".." {
+			return true
+		}
+	}
+	return false
+}
+
+func isSafeEnvIdentityValue(value string) bool {
+	if len(value) > 64 {
+		return false
+	}
+	for _, r := range value {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '.' || r == '_' || r == '-' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func appendWithoutExistingEnv(env []string, key, value string) []string {
@@ -1004,28 +1039,62 @@ func projectShellTerm(term string) string {
 }
 
 func projectShellPath() string {
-	parts := []string{}
+	parts := make([]string, 0)
+	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
+		parts = appendProjectShellPathDir(parts, dir)
+	}
 	if runtime.GOOS == "windows" {
-		parts = append(parts, fallbackTrustedShellDirs()...)
-		parts = append(parts, `C:\Windows`)
+		for _, dir := range fallbackTrustedShellDirs() {
+			parts = appendProjectShellPathDir(parts, dir)
+		}
+		parts = appendProjectShellPathDir(parts, `C:\Windows`)
 	} else {
-		parts = append(parts, "/usr/bin", "/bin")
+		parts = appendProjectShellPathDir(parts, "/usr/bin")
+		parts = appendProjectShellPathDir(parts, "/bin")
 	}
 	if exe, err := os.Executable(); err == nil {
-		exeDir := filepath.Clean(filepath.Dir(exe))
-		if filepath.IsAbs(exeDir) {
-			if runtime.GOOS == "windows" {
-				if !slices.ContainsFunc(parts, func(existing string) bool {
-					return strings.EqualFold(filepath.Clean(existing), exeDir)
-				}) {
-					parts = append(parts, exeDir)
-				}
-			} else if !slices.Contains(parts, exeDir) {
-				parts = append(parts, exeDir)
-			}
-		}
+		parts = appendProjectShellPathDir(parts, filepath.Dir(exe))
 	}
 	return strings.Join(parts, string(os.PathListSeparator))
+}
+
+func appendProjectShellPathDir(parts []string, dir string) []string {
+	dir, ok := projectShellPathDir(dir)
+	if !ok {
+		return parts
+	}
+	if runtime.GOOS == "windows" {
+		if slices.ContainsFunc(parts, func(existing string) bool {
+			return strings.EqualFold(filepath.Clean(existing), dir)
+		}) {
+			return parts
+		}
+	} else if slices.Contains(parts, dir) {
+		return parts
+	}
+	return append(parts, dir)
+}
+
+func projectShellPathDir(dir string) (string, bool) {
+	dir = strings.TrimSpace(dir)
+	if dir == "" || stringHasControlChars(dir) {
+		return "", false
+	}
+	dir = filepath.Clean(dir)
+	if !filepath.IsAbs(dir) {
+		return "", false
+	}
+	info, err := os.Stat(dir)
+	if err != nil || !info.IsDir() {
+		return "", false
+	}
+	if runtime.GOOS != "windows" {
+		writable, err := isWorldWritableDir(dir)
+		if err != nil || writable {
+			return "", false
+		}
+	}
+	return dir, true
 }
 
 func shellQuote(s string) string {
