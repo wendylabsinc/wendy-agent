@@ -66,3 +66,7 @@ func windowsRootDir() string {
 	}
 	return filepath.Clean(root)
 }
+
+func isRootOwned(_ os.FileInfo) bool {
+	return true
+}

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"os/user"
@@ -799,9 +798,6 @@ func defaultInteractiveShell() (string, error) {
 			return shell, nil
 		}
 	}
-	if shell, ok := validateInteractiveShell(os.Getenv("SHELL")); ok {
-		return shell, nil
-	}
 	return "", fmt.Errorf("finding interactive shell: no supported shell found")
 }
 
@@ -831,8 +827,8 @@ func validateInteractiveShell(candidate string) (string, bool) {
 		return "", false
 	}
 	if runtime.GOOS != "windows" {
-		writable, err := isWorldWritableDir(filepath.Dir(resolved))
-		if err != nil || writable {
+		trusted, err := isRootOwnedNonWritableDir(filepath.Dir(resolved))
+		if err != nil || !trusted {
 			return "", false
 		}
 	}
@@ -842,7 +838,7 @@ func validateInteractiveShell(candidate string) (string, bool) {
 	}
 	if runtime.GOOS != "windows" {
 		mode := info.Mode().Perm()
-		if mode&0o111 == 0 || mode&0o002 != 0 {
+		if mode&0o111 == 0 || mode&0o022 != 0 || !isRootOwned(info) {
 			return "", false
 		}
 	}
@@ -853,33 +849,7 @@ func isTrustedShellPath(candidate, resolved string) bool {
 	if runtime.GOOS == "windows" {
 		return isTrustedShellDir(filepath.Dir(resolved))
 	}
-	if shellListedInSystemShells(candidate) {
-		return true
-	}
 	return isTrustedShellDir(filepath.Dir(candidate)) && isTrustedShellDir(filepath.Dir(resolved))
-}
-
-func shellListedInSystemShells(shell string) bool {
-	f, err := os.Open("/etc/shells")
-	if err != nil {
-		return false
-	}
-	defer f.Close()
-	data, err := io.ReadAll(io.LimitReader(f, 64*1024))
-	if err != nil {
-		return false
-	}
-	shell = filepath.Clean(shell)
-	for _, line := range strings.Split(string(data), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") || !filepath.IsAbs(line) {
-			continue
-		}
-		if filepath.Clean(line) == shell {
-			return true
-		}
-	}
-	return false
 }
 
 func isTrustedShellDir(dir string) bool {
@@ -915,12 +885,12 @@ func isKnownShellName(name string) bool {
 	}
 }
 
-func isWorldWritableDir(dir string) (bool, error) {
-	info, err := os.Lstat(dir)
+func isRootOwnedNonWritableDir(dir string) (bool, error) {
+	info, err := os.Stat(dir)
 	if err != nil || !info.IsDir() {
 		return false, fmt.Errorf("checking shell directory %q: %w", dir, err)
 	}
-	return info.Mode().Perm()&0o002 != 0, nil
+	return info.Mode().Perm()&0o022 == 0 && isRootOwned(info), nil
 }
 
 func projectShellEnv(shell string) ([]string, error) {

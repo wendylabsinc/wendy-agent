@@ -67,7 +67,9 @@ func openProjectShellForExec(shell string) (*os.File, string, error) {
 		return nil, "", err
 	}
 	// Linux can exec the validated descriptor through procfs. Other Unix
-	// targets keep the descriptor open and re-check it immediately before exec.
+	// targets do not expose execveat/fexecve through Go; for those targets,
+	// validateInteractiveShell restricts shells to root-owned, non-writable
+	// system locations and runProjectShell re-checks immediately before exec.
 	if runtime.GOOS != "linux" {
 		return shellFile, shell, nil
 	}
