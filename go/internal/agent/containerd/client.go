@@ -499,7 +499,7 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 	}
 
 	// Build environment variables: image env first, then our overrides.
-	env := buildContainerBaseEnv()
+	env := buildContainerBaseEnv(appCfg.AppID)
 	if specErr == nil {
 		env = append(imageSpec.Config.Env, env...)
 	}
@@ -765,9 +765,10 @@ var deviceHostnameWithSuffix = func() string {
 
 // buildContainerBaseEnv builds the wendy-injected env vars layered on top of
 // the image's own env. WENDY_HOSTNAME is the device's mDNS hostname
-// (omitted when unresolvable). OTEL_EXPORTER_OTLP_ENDPOINT points at the
+// (omitted when unresolvable) and WENDY_APP_ID is the app's wendy.json appId
+// (omitted when empty). OTEL_EXPORTER_OTLP_ENDPOINT points at the
 // agent's OTLP gRPC receiver so containers auto-configure their exporters.
-func buildContainerBaseEnv() []string {
+func buildContainerBaseEnv(appID string) []string {
 	env := []string{
 		"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
 		"TERM=xterm",
@@ -775,24 +776,35 @@ func buildContainerBaseEnv() []string {
 	if h := deviceHostnameWithSuffix(); h != "" {
 		env = append(env, "WENDY_HOSTNAME="+h)
 	}
+	if appID != "" {
+		env = append(env, "WENDY_APP_ID="+appID)
+	}
 	return env
 }
 
 // injectOTELEnvIfNeeded appends OTEL exporter env vars to env when host
-// networking is in effect and the endpoint is not already configured.
-// It must be called after the image env has been merged so that image-set
-// values take precedence.
+// networking is in effect and the endpoint is not already configured. Besides
+// the endpoint and protocol, it sets OTEL_SERVICE_NAME and
+// OTEL_RESOURCE_ATTRIBUTES (wendy.app.name) to the appId so that telemetry
+// exported by the app matches `wendy device logs --app <id>`, which filters on
+// those resource attributes. It must be called after the image env has been
+// merged so that image-set values take precedence.
 func injectOTELEnvIfNeeded(env []string, appCfg *appconfig.AppConfig) []string {
 	if !hasHostNetworkEntitlement(appCfg) {
 		return env
 	}
 	hasEndpoint, hasProtocol := false, false
+	hasServiceName, hasResourceAttrs := false, false
 	for _, e := range env {
-		if strings.HasPrefix(e, "OTEL_EXPORTER_OTLP_ENDPOINT=") {
+		switch {
+		case strings.HasPrefix(e, "OTEL_EXPORTER_OTLP_ENDPOINT="):
 			hasEndpoint = true
-		}
-		if strings.HasPrefix(e, "OTEL_EXPORTER_OTLP_PROTOCOL=") {
+		case strings.HasPrefix(e, "OTEL_EXPORTER_OTLP_PROTOCOL="):
 			hasProtocol = true
+		case strings.HasPrefix(e, "OTEL_SERVICE_NAME="):
+			hasServiceName = true
+		case strings.HasPrefix(e, "OTEL_RESOURCE_ATTRIBUTES="):
+			hasResourceAttrs = true
 		}
 	}
 	if hasEndpoint {
@@ -808,6 +820,14 @@ func injectOTELEnvIfNeeded(env []string, appCfg *appconfig.AppConfig) []string {
 	env = append(env, "OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:"+otelPort)
 	if !hasProtocol {
 		env = append(env, "OTEL_EXPORTER_OTLP_PROTOCOL=grpc")
+	}
+	if appCfg.AppID != "" {
+		if !hasServiceName {
+			env = append(env, "OTEL_SERVICE_NAME="+appCfg.AppID)
+		}
+		if !hasResourceAttrs {
+			env = append(env, "OTEL_RESOURCE_ATTRIBUTES=wendy.app.name="+appCfg.AppID)
+		}
 	}
 	return env
 }
