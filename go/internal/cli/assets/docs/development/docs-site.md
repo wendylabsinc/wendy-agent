@@ -83,9 +83,11 @@ The deploy job authenticates to GCP with Workload Identity Federation and syncs
 static files to `gs://wendy-docs-public/<deploy-path>`. Static exports include
 SHA-256 manifests that are verified before each deploy path is synced.
 Release deploys attempt to enable bucket object versioning before updating
-`latest/` or `latest-nightly/` so alias overwrites remain recoverable; if the
-bucket-level update fails the deploy continues with a warning rather than
-aborting.
+`latest/` or `latest-nightly/` so alias overwrites remain recoverable. If the
+deploy identity lacks bucket-update permission, the deploy verifies the current
+state instead: it aborts only when versioning is confirmed disabled (an
+overwrite would be unrecoverable), and continues with a warning when versioning
+is already enabled out-of-band or cannot be read.
 
 Required GitHub environment variables:
 

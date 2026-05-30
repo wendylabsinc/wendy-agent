@@ -268,11 +268,31 @@ jobs:
         run: |
           set -euo pipefail
 
-          if ! gcloud storage buckets update "gs://${DOCS_BUCKET}" \
+          # Prefer to enable object versioning so latest/ alias overwrites stay
+          # recoverable. If the deploy identity lacks bucket-update IAM, fall
+          # back to verifying the current state: abort only when we can
+          # positively confirm versioning is OFF (the one case where an
+          # overwrite would be unrecoverable). If we can neither set nor read
+          # the bucket config, continue best-effort with a warning rather than
+          # blocking the deploy on a missing bucket-level permission.
+          if gcloud storage buckets update "gs://${DOCS_BUCKET}" \
             --versioning \
             --quiet \
             --project="${GCP_PROJECT_ID}"; then
-            echo "::warning::Unable to enable bucket versioning; continuing with docs deployment"
+            echo "Bucket object versioning is enabled."
+          else
+            echo "::warning::Unable to enable bucket versioning; verifying current state"
+            if VERSIONING="$(gcloud storage buckets describe "gs://${DOCS_BUCKET}" \
+              --format='value(versioning.enabled)' \
+              --project="${GCP_PROJECT_ID}" 2>/dev/null)"; then
+              if [[ "${VERSIONING}" != "True" ]]; then
+                echo "::error::Bucket object versioning is disabled and could not be enabled; aborting release alias update to keep latest/ overwrites recoverable"
+                exit 1
+              fi
+              echo "Bucket object versioning already enabled (managed out-of-band)."
+            else
+              echo "::warning::Unable to verify bucket versioning state; continuing with docs deployment"
+            fi
           fi
 
       - name: Upload to Cloud Storage
