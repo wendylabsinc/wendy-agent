@@ -23,7 +23,6 @@ concurrency:
 
 # Add permissions needed for creating releases
 permissions:
-  actions: write
   contents: write
 
 env:
@@ -661,6 +660,10 @@ jobs:
   release:
     name: Release
     runs-on: ubuntu-latest
+    # contents: write to create the release; actions: write to dispatch the docs workflow
+    permissions:
+      contents: write
+      actions: write
     needs: [determine-version, build, build-go-macos, build-agent-macos-app, package-linux, package-windows, test-templates, integration-tests]
     if: |
       always() &&

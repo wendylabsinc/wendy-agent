@@ -76,13 +76,16 @@ The `.github/workflows/fumadocs.yml` workflow runs when `docs`,
 | Pull request to `main` from this repository | Builds and deploys a branch preview |
 | Published stable release | Deploys `release-<version>/` and updates `latest/` |
 | Published prerelease/nightly | Deploys `release-nightly-<version>/` and updates `latest-nightly/` |
-| Manual dispatch | Builds a branch-style preview artifact without deploying |
+| Manual dispatch (no inputs) | Builds a branch-style preview artifact without deploying |
+| Manual dispatch with `release_tag` input | Deploys `release-<version>/` (or `release-nightly-<version>/`) and updates the appropriate `latest` alias, identical to a published-release trigger |
 
 The deploy job authenticates to GCP with Workload Identity Federation and syncs
 static files to `gs://wendy-docs-public/<deploy-path>`. Static exports include
 SHA-256 manifests that are verified before each deploy path is synced.
-Release deploys also ensure bucket object versioning is enabled before updating
-`latest/` or `latest-nightly/`, so alias overwrites remain recoverable.
+Release deploys attempt to enable bucket object versioning before updating
+`latest/` or `latest-nightly/` so alias overwrites remain recoverable; if the
+bucket-level update fails the deploy continues with a warning rather than
+aborting.
 
 Required GitHub environment variables:
 
