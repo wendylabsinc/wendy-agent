@@ -102,6 +102,7 @@ jobs:
         id: path
         env:
           DOCS_COMMIT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          DISPATCH_REF_NAME: ${{ github.ref_name }}
           DISPATCH_RELEASE_PRERELEASE: ${{ inputs.release_prerelease || 'false' }}
           DISPATCH_RELEASE_TAG: ${{ inputs.release_tag || '' }}
           RELEASE_PRERELEASE: ${{ github.event.release.prerelease || 'false' }}
@@ -129,6 +130,14 @@ jobs:
             IS_RELEASE_DEPLOY="true"
             RAW_VERSION="${RELEASE_TAG_NAME}"
             if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+              # The docs are built from the checked-out ref, but deployed under
+              # release-<release_tag>/. Require the dispatch ref to match the
+              # release_tag so we never publish docs built from a different ref
+              # (e.g. main) under a release path.
+              if [[ "${DISPATCH_REF_NAME}" != "${DISPATCH_RELEASE_TAG}" ]]; then
+                echo "::error::workflow_dispatch ref '${DISPATCH_REF_NAME}' does not match release_tag '${DISPATCH_RELEASE_TAG}'; dispatch with --ref \"${DISPATCH_RELEASE_TAG}\" so the built docs match the release"
+                exit 1
+              fi
               RAW_VERSION="${DISPATCH_RELEASE_TAG}"
               RELEASE_PRERELEASE="${DISPATCH_RELEASE_PRERELEASE}"
             fi

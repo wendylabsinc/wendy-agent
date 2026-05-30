@@ -77,7 +77,7 @@ The `.github/workflows/fumadocs.yml` workflow runs when `docs`,
 | Published stable release | Deploys `release-<version>/` and updates `latest/` |
 | Published prerelease/nightly | Deploys `release-nightly-<version>/` and updates `latest-nightly/` |
 | Manual dispatch (no inputs) | Builds a branch-style preview artifact without deploying |
-| Manual dispatch with `release_tag` input | Deploys `release-<version>/` (or `release-nightly-<version>/`) and updates the appropriate `latest` alias, identical to a published-release trigger |
+| Manual dispatch with `release_tag` input | Deploys `release-<version>/` (or `release-nightly-<version>/`) and updates the appropriate `latest` alias, identical to a published-release trigger. The dispatch ref must match `release_tag` (dispatch with `--ref "<release_tag>"`), otherwise the deploy fails fast so docs built from one ref are never published under a different release path. |
 
 The deploy job authenticates to GCP with Workload Identity Federation and syncs
 static files to `gs://wendy-docs-public/<deploy-path>`. Static exports include
