@@ -97,7 +97,7 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:    use,
-		Short:  "Show live agent, OS, CPU, memory, disk, GPU, and hardware info for the target device",
+		Short:  "Show agent info, OS, CPU, memory, disk, GPU, and hardware info for the target device",
 		Hidden: deprecated,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if deprecated && !jsonOutput {
