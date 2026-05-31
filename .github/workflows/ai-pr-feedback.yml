@@ -126,7 +126,6 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
-      administration: read  # required for rulesets API (gh api .../rulesets) in guard step
     outputs:
       pr_number:   ${{ steps.resolve.outputs.pr_number }}
       head_sha:    ${{ steps.guard.outputs.head_sha }}
@@ -329,7 +328,8 @@ jobs:
 
           # Verify a server-side ruleset covers ai/** before provisioning write tokens.
           # Checked here (gate, no AI, no write tokens) rather than in respond to limit
-          # the blast radius of the administration:read permission to this minimal job.
+          # the blast radius to the minimal gate job (contents:read is sufficient for
+          # the rulesets API; administration:read is not a valid GITHUB_TOKEN scope).
           MATCHING_RULESETS=$(gh api --paginate "repos/$REPO/rulesets" \
             2>/dev/null \
             | jq --slurp '(add // []) | [.[] | select(.enforcement == "active") | select(any((.conditions.ref_name.include // [])[]?; . == "~ALL" or startswith("refs/heads/ai/") or . == "refs/heads/**" or . == "refs/heads/*"))] | length' \
@@ -1282,8 +1282,7 @@ jobs:
             exit 1
           fi
           echo "Branch protection confirmed: main is protected"
-          # Ruleset check was moved to the gate job's guard step (runs under administration:read
-          # in a job with no AI and no write tokens) to minimise the scope of that permission.
+          # Ruleset check was moved to the gate job's guard step (no AI, no write tokens).
           # Move token out of named env var immediately so it is absent from the
           # shell's /proc/self/environ for the rest of this step's child processes.
           PUSH_TOKEN="$TOKEN"
