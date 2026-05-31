@@ -83,7 +83,7 @@ export function InstallScripts() {
             role="dialog"
             aria-modal="true"
             aria-label="Install Wendy"
-            className="relative w-full max-w-lg border bg-fd-popover text-fd-popover-foreground shadow-lg"
+            className="relative w-full max-w-lg border bg-fd-popover text-fd-popover-foreground shadow-lg sm:max-w-xl"
             onClick={(e) => e.stopPropagation()}
           >
             <button
@@ -118,8 +118,8 @@ export function InstallScripts() {
                   Install <code className="font-mono text-[0.95em]">wendy-agent</code>
                 </h3>
                 <p className="mt-1 text-sm text-fd-muted-foreground">
-                  Install this on your Linux machine. You do <strong>not</strong> need to do this
-                  for WendyOS — it&apos;s already there!
+                  Install this on your Linux machine. You do <strong>not</strong>{' '}
+                  need to do this for WendyOS — it&apos;s already there!
                 </p>
                 <Command
                   label="Linux"

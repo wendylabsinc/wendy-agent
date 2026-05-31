@@ -1,8 +1,15 @@
 import type { BaseLayoutProps } from 'fumadocs-ui/layouts/shared';
-import { Youtube } from 'lucide-react';
 import { githubRepo } from './shared';
 import { Logo } from '@/components/docs/logo';
 import { InstallScripts } from '@/components/docs/install-scripts';
+
+function YoutubeIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" className="size-4" aria-hidden="true">
+      <path d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814ZM9.545 15.568V8.432L15.818 12l-6.273 3.568Z" />
+    </svg>
+  );
+}
 
 function DiscordIcon() {
   return (
@@ -28,8 +35,8 @@ export function baseOptions(): BaseLayoutProps {
         type: 'icon',
         label: 'YouTube',
         text: 'YouTube',
-        icon: <Youtube />,
-        url: 'https://www.youtube.com/@WendyLabsInc',
+        icon: <YoutubeIcon />,
+        url: 'https://www.youtube.com/@wendylabsinc',
         external: true,
       },
       {
@@ -37,7 +44,7 @@ export function baseOptions(): BaseLayoutProps {
         label: 'Discord',
         text: 'Discord',
         icon: <DiscordIcon />,
-        url: 'https://discord.gg/Ku4eAQft',
+        url: 'https://discord.gg/xYeUxq9TXv',
         external: true,
       },
     ],
