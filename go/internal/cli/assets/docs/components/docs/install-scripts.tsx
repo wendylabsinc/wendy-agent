@@ -2,6 +2,7 @@
 
 import { Check, Copy, Terminal, X } from 'lucide-react';
 import { useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
 
 function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
@@ -44,6 +45,9 @@ function Command({ label, command }: { label?: string; command: string }) {
 
 export function InstallScripts() {
   const [open, setOpen] = useState(false);
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => setMounted(true), []);
 
   useEffect(() => {
     if (!open) return;
@@ -69,9 +73,10 @@ export function InstallScripts() {
         Install Scripts
       </button>
 
-      {open ? (
+      {open && mounted
+        ? createPortal(
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 p-4"
           onClick={() => setOpen(false)}
         >
           <div
@@ -123,8 +128,10 @@ export function InstallScripts() {
               </section>
             </div>
           </div>
-        </div>
-      ) : null}
+        </div>,
+          document.body,
+        )
+        : null}
     </>
   );
 }
