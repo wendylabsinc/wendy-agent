@@ -26,10 +26,12 @@ const publicAssetExtensions = new Set([
   '.jpeg',
   '.jpg',
   '.json',
+  '.mp4',
   '.pdf',
   '.png',
   '.svg',
   '.txt',
+  '.webm',
   '.webp',
   '.zip',
 ]);
@@ -167,10 +169,10 @@ function normalizeMarkdown(raw, targetRelativePath) {
     .replace(/href="\/docs\/([^"#]+)(#[^"]+)?"/g, (_match, targetPath, hash = '') => {
       return `href="${relativeFromPage(targetRelativePath, targetPath, hash)}"`;
     })
-    .replace(/\]\(\/((?:icons|images)\/[^)#\s]+)(#[^)]+)?\)/g, (_match, assetPath, hash = '') => {
+    .replace(/\]\(\/((?:icons|images|videos)\/[^)#\s]+)(#[^)]+)?\)/g, (_match, assetPath, hash = '') => {
       return `](${relativeAssetImport(targetRelativePath, assetPath, hash)})`;
     })
-    .replace(/src="\/((?:icons|images)\/[^"]+)"/g, (_match, assetPath) => {
+    .replace(/src="\/((?:icons|images|videos)\/[^"]+)"/g, (_match, assetPath) => {
       return `src="${absoluteAssetPath(assetPath)}"`;
     });
 }

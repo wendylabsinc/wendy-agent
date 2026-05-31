@@ -20,3 +20,15 @@ html > body[data-scroll-locked] {
   margin-right: 0 !important;
   --removed-body-scroll-bar-size: 0 !important;
 }
+
+/* Sharp corners everywhere — no rounded corners across the entire theme. */
+:root {
+  --radius: 0px;
+  --fd-radius: 0px;
+}
+
+*,
+*::before,
+*::after {
+  border-radius: 0 !important;
+}
