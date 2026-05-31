@@ -44,7 +44,7 @@ export function HardwareShowcase() {
           <img
             src={board.animation}
             alt={`${board.name} board animation`}
-            className="aspect-[4/3] w-full bg-fd-muted object-cover object-center"
+            className="aspect-video w-full bg-fd-muted object-cover object-center"
             loading="lazy"
           />
           <div className="flex flex-1 flex-col gap-4 p-5">
