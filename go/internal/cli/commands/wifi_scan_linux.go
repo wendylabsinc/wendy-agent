@@ -18,17 +18,48 @@ import (
 const wifiScanCacheHint = ""
 
 // scanLocalWifiNetworks uses nmcli on Linux to list WiFi networks visible to
-// the host machine.
+// the host machine. It waits for the fresh rescan to complete before returning.
 func scanLocalWifiNetworks() ([]localWifiNetwork, error) {
+	var final []localWifiNetwork
+	if err := scanLocalWifiNetworksLive(context.Background(), func(batch []localWifiNetwork) {
+		final = batch
+	}); err != nil {
+		return nil, err
+	}
+	return final, nil
+}
+
+// scanLocalWifiNetworksLive emits cached `nmcli list` results immediately, then
+// triggers `nmcli rescan` and emits the refreshed list once it completes.
+// send receives the cumulative, deduplicated set each time so the caller can
+// replace the displayed list wholesale.
+func scanLocalWifiNetworksLive(ctx context.Context, send func([]localWifiNetwork)) error {
 	nmcliPath, err := exec.LookPath("nmcli")
 	if err != nil {
-		return nil, fmt.Errorf("nmcli not found on PATH: %w", err)
+		return fmt.Errorf("nmcli not found on PATH: %w", err)
 	}
 
-	// Trigger a rescan first (may fail if already scanning).
-	_ = nmcli.Command(context.Background(), nmcliPath, "device", "wifi", "rescan").Run()
+	// First batch: whatever nmcli has cached (instant on a recent boot).
+	cached, err := nmcliListWifi(ctx, nmcliPath)
+	if err != nil {
+		return err
+	}
+	send(cached)
 
-	cmd := nmcli.Command(context.Background(), nmcliPath, "-t", "-f", "SSID,SIGNAL", "device", "wifi", "list")
+	// Trigger a rescan; if it fails (e.g. already scanning) we still emit the
+	// best result we can, since the cached list might be all we'll get.
+	_ = nmcli.Command(ctx, nmcliPath, "device", "wifi", "rescan").Run()
+
+	fresh, err := nmcliListWifi(ctx, nmcliPath)
+	if err != nil {
+		return err
+	}
+	send(fresh)
+	return nil
+}
+
+func nmcliListWifi(ctx context.Context, nmcliPath string) ([]localWifiNetwork, error) {
+	cmd := nmcli.Command(ctx, nmcliPath, "-t", "-f", "SSID,SIGNAL", "device", "wifi", "list")
 	output, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("scanning WiFi networks: %w", err)

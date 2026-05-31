@@ -3,6 +3,7 @@
 package commands
 
 import (
+	"context"
 	"fmt"
 	"os/exec"
 )
@@ -28,6 +29,19 @@ func scanLocalWifiNetworks() ([]localWifiNetwork, error) {
 		return nil, fmt.Errorf("scanning WiFi networks: %w", err)
 	}
 	return parseNetshNetworks(string(output)), nil
+}
+
+// scanLocalWifiNetworksLive emits a single batch on Windows because netsh only
+// surfaces the WLAN service's cached list — there is no streaming or
+// on-demand rescan available without calling Native Wifi directly.
+func scanLocalWifiNetworksLive(ctx context.Context, send func([]localWifiNetwork)) error {
+	cmd := exec.CommandContext(ctx, "netsh", "wlan", "show", "networks", "mode=bssid")
+	output, err := cmd.Output()
+	if err != nil {
+		return fmt.Errorf("scanning WiFi networks: %w", err)
+	}
+	send(parseNetshNetworks(string(output)))
+	return nil
 }
 
 // wifiScanCacheHint is appended to empty-scan messages on Windows because

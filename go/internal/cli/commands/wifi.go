@@ -622,108 +622,79 @@ func newWifiForgetCmd() *cobra.Command {
 	return cmd
 }
 
-// ── WiFi network picker (legacy, still used by `connect`) ──────────
+// ── WiFi network picker (still used by `connect`) ─────────────────
 
+// pickWifiNetwork shows an interactive picker for the user to choose a WiFi
+// network. The picker is rendered immediately and scan results stream in so
+// the user can pick as soon as their network appears — important on platforms
+// (notably macOS CoreWLAN) where a fresh scan takes several seconds.
 func pickWifiNetwork(ctx context.Context, target *SelectedDevice) (string, error) {
-	type wifiEntry struct {
-		ssid           string
-		signalStrength int32
-	}
-
-	var networks []wifiEntry
+	var stream func(ctx context.Context, send func([]wifiPickerNetwork)) error
+	var title string
 
 	switch {
 	case target.Bluetooth != nil && target.Bluetooth.IsWendyAgent():
 		cliLogln("Scanning for WiFi networks on %s...", target.Bluetooth.DisplayName)
-		tlsCfg, err := bleTLSConfig()
-		if err != nil {
-			return "", err
-		}
-		client, err := ble.ConnectAgent(target.Bluetooth, tlsCfg)
-		if err != nil {
-			return "", fmt.Errorf("connecting to device: %w", err)
-		}
-		defer client.Close()
+		device := target.Bluetooth
+		stream = func(ctx context.Context, send func([]wifiPickerNetwork)) error {
+			tlsCfg, err := bleTLSConfig()
+			if err != nil {
+				return err
+			}
+			client, err := ble.ConnectAgent(device, tlsCfg)
+			if err != nil {
+				return fmt.Errorf("connecting to device: %w", err)
+			}
+			defer client.Close()
 
-		nets, err := client.WifiList()
-		if err != nil {
-			return "", fmt.Errorf("listing WiFi networks: %w", err)
+			nets, err := client.WifiList()
+			if err != nil {
+				return fmt.Errorf("listing WiFi networks: %w", err)
+			}
+			send(bleWifiToPicker(nets))
+			return nil
 		}
-		for _, n := range nets {
-			networks = append(networks, wifiEntry{ssid: n.GetSsid(), signalStrength: n.GetSignalStrength()})
-		}
+		title = "Select a WiFi network"
 
 	case target.Bluetooth != nil:
 		cliLogln("Scanning for WiFi networks on this computer...")
-		nets, err := scanLocalWifiNetworks()
-		if err != nil {
-			return "", fmt.Errorf("scanning local WiFi networks: %w", err)
-		}
-		for _, n := range nets {
-			networks = append(networks, wifiEntry{ssid: n.SSID, signalStrength: n.SignalStrength})
-		}
+		stream = localWifiStream
+		title = "Select a WiFi network"
 
 	case target.Agent != nil:
 		cliLogln("Scanning for WiFi networks...")
-		resp, err := target.Agent.AgentService.ListWiFiNetworks(ctx, &agentpb.ListWiFiNetworksRequest{})
-		if err != nil {
-			return "", fmt.Errorf("listing WiFi networks: %w", err)
+		agent := target.Agent.AgentService
+		stream = func(ctx context.Context, send func([]wifiPickerNetwork)) error {
+			resp, err := agent.ListWiFiNetworks(ctx, &agentpb.ListWiFiNetworksRequest{})
+			if err != nil {
+				return fmt.Errorf("listing WiFi networks: %w", err)
+			}
+			send(agentWifiToPicker(resp.GetNetworks()))
+			return nil
 		}
-		for _, n := range resp.GetNetworks() {
-			networks = append(networks, wifiEntry{ssid: n.GetSsid(), signalStrength: n.GetSignalStrength()})
-		}
+		title = "Select a WiFi network"
 
 	default:
 		return "", fmt.Errorf("selected device does not support WiFi network scanning")
 	}
 
-	if len(networks) == 0 {
-		if wifiScanCacheHint != "" {
-			return "", fmt.Errorf("no WiFi networks found (%s)", wifiScanCacheHint)
-		}
-		return "", fmt.Errorf("no WiFi networks found")
-	}
+	return pickWifiNetworkLive(ctx, title, stream)
+}
 
-	var items []tui.PickerItem
-	for _, n := range networks {
-		signal := ""
-		if n.signalStrength > 0 {
-			signal = fmt.Sprintf("%d%%", n.signalStrength)
-		}
-		items = append(items, tui.PickerItem{
-			Name:  n.ssid,
-			Type:  signal,
-			Value: n.ssid,
-		})
+func bleWifiToPicker(nets []*agentpb.WifiNetworkInfo) []wifiPickerNetwork {
+	out := make([]wifiPickerNetwork, 0, len(nets))
+	for _, n := range nets {
+		out = append(out, wifiPickerNetwork{SSID: n.GetSsid(), SignalStrength: n.GetSignalStrength()})
 	}
+	return out
+}
 
-	picker := tui.NewPickerWithTitle("Select a WiFi network")
-	p := tea.NewProgram(picker)
-
-	go func() {
-		p.Send(tui.PickerAddMsg{Items: items})
-		p.Send(tui.PickerDoneMsg{})
-	}()
-
-	finalModel, err := p.Run()
-	if err != nil {
-		return "", fmt.Errorf("network picker: %w", err)
+func agentWifiToPicker(nets []*agentpb.ListWiFiNetworksResponse_WiFiNetwork) []wifiPickerNetwork {
+	out := make([]wifiPickerNetwork, 0, len(nets))
+	for _, n := range nets {
+		out = append(out, wifiPickerNetwork{SSID: n.GetSsid(), SignalStrength: n.GetSignalStrength()})
 	}
-
-	pm := finalModel.(tui.PickerModel)
-	if pm.Cancelled() {
-		return "", ErrUserCancelled
-	}
-	sel := pm.Selected()
-	if sel == nil {
-		return "", fmt.Errorf("no network selected")
-	}
-
-	ssid, ok := sel.Value.(string)
-	if !ok {
-		return "", fmt.Errorf("invalid picker selection")
-	}
-	return ssid, nil
+	return out
 }
 
 // ── BLE WendyOS Agent / Lite helpers retained for status/disconnect ──

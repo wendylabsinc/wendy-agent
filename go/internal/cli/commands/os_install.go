@@ -1170,21 +1170,10 @@ func splitEscaped(s string, sep byte) []string {
 func promptAddOneCredential(index int) (wendyconf.WifiCredential, bool, error) {
 	var c wendyconf.WifiCredential
 
-	networks, scanErr := scanLocalWifiNetworks()
-	if scanErr == nil && len(networks) > 0 {
-		var items []tui.PickerItem
-		for _, n := range networks {
-			signal := ""
-			if n.SignalStrength > 0 {
-				signal = fmt.Sprintf("%d%%", n.SignalStrength)
-			}
-			items = append(items, tui.PickerItem{Name: n.SSID, Type: signal, Value: n.SSID})
-		}
-		fmt.Println()
-		picked, pickErr := pickFromItems("Select WiFi network (or Ctrl+C to type manually)", items)
-		if pickErr == nil {
-			c.SSID = picked
-		}
+	fmt.Println()
+	picked, pickErr := pickWifiNetworkLive(context.Background(), "Select WiFi network (or Ctrl+C to type manually)", localWifiStream)
+	if pickErr == nil {
+		c.SSID = picked
 	}
 
 	if c.SSID == "" {
