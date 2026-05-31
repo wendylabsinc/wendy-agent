@@ -65,9 +65,7 @@ func (s *AgentService) GetAgentVersion(_ context.Context, _ *agentpb.GetAgentVer
 		Featureset:      detectFeatureset(),
 	}
 
-	// Read WendyOS version if available.
-	if data, err := os.ReadFile("/etc/wendy/version.txt"); err == nil {
-		v := strings.TrimSpace(string(data))
+	if v, ok := wendyOSVersion(); ok {
 		resp.OsVersion = &v
 	}
 
@@ -557,10 +555,10 @@ const osUpdateUnsupportedForHostMessage = "This setup cannot be updated with wen
 var menderProgressRe = regexp.MustCompile(`(\d{1,3})%`)
 
 func defaultIsWendyOSHost() bool {
-	// Older WendyOS builds did not write /etc/wendyos/device-type, so keep
-	// /etc/wendy/version.txt as the primary compatibility marker.
-	if data, err := os.ReadFile("/etc/wendy/version.txt"); err == nil {
-		return strings.HasPrefix(strings.TrimSpace(string(data)), "WendyOS-")
+	// Older WendyOS builds did not write /etc/wendyos/device-type, so keep the
+	// version file as a compatibility marker alongside the newer device type.
+	if v, ok := wendyOSVersion(); ok {
+		return strings.HasPrefix(v, "WendyOS-")
 	}
 	// Newer WendyOS images report a board/device type used for OTA artifact
 	// selection. This file is absent on generic Linux agent installs.
@@ -568,6 +566,23 @@ func defaultIsWendyOSHost() bool {
 		return true
 	}
 	return false
+}
+
+func wendyOSVersion() (string, bool) {
+	return readWendyOSVersionFrom("/etc/wendyos/version.txt", "/etc/wendy/version.txt")
+}
+
+func readWendyOSVersionFrom(paths ...string) (string, bool) {
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		if v := strings.TrimSpace(string(data)); v != "" {
+			return v, true
+		}
+	}
+	return "", false
 }
 
 // enableJetsonRootfsAB ensures rootfs A/B redundancy is configured on NVIDIA

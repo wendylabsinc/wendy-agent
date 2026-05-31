@@ -32,8 +32,7 @@ func (s *DeviceInfoService) GetDeviceInfo(_ context.Context, _ *agentpbv2.GetDev
 		Featureset:      detectFeatureset(),
 	}
 
-	if data, err := os.ReadFile("/etc/wendy/version.txt"); err == nil {
-		v := strings.TrimSpace(string(data))
+	if v, ok := wendyOSVersion(); ok {
 		resp.OsVersion = &v
 	}
 

@@ -12,11 +12,13 @@ import (
 // PickerItem represents a selectable row in the device picker.
 type PickerItem struct {
 	// Display columns rendered in the table.
-	Name        string
-	Description string // optional secondary text rendered dimmed
-	Type        string // "LAN", "Bluetooth", "External", etc.
-	USB         string // non-empty when the device is connected over USB
-	Address     string
+	Name         string
+	Description  string // optional secondary text rendered dimmed
+	Type         string // "LAN", "Bluetooth", "External", etc.
+	USB          string // non-empty when the device is connected over USB
+	Address      string
+	AgentVersion string
+	OSVersion    string
 
 	// DedupKey is used for deduplication. If empty, Name is used.
 	// Items with the same DedupKey (case-insensitive) are merged via MergeItem.
@@ -78,22 +80,27 @@ type PickerModel struct {
 	// Shown with a ★ indicator in the table.
 	DefaultKey string
 
-	items    []PickerItem
-	seenIdx  map[string]int // dedup key -> index in items
-	table    bubbleTable.Model
-	selected *PickerItem
-	scanning bool
-	quitting bool
-	height   int
+	items        []PickerItem
+	seenIdx      map[string]int // dedup key -> index in items
+	table        BubbleTable
+	columns      []pickerColumnDef
+	fixedColumns bool
+	selected     *PickerItem
+	scanning     bool
+	quitting     bool
+	width        int
+	height       int
 }
 
 // NewPicker creates a new picker model with the default "Select a device" title.
 func NewPicker() PickerModel {
 	m := PickerModel{
-		Title:    "Select a device",
-		seenIdx:  make(map[string]int),
-		table:    newPickerTable(),
-		scanning: true,
+		Title:        "Select a device",
+		seenIdx:      make(map[string]int),
+		table:        newPickerTable(),
+		columns:      pickerDeviceColumnDefs,
+		fixedColumns: true,
+		scanning:     true,
 	}
 	m.refreshTable()
 	return m
@@ -116,9 +123,12 @@ func (m PickerModel) Init() tea.Cmd { return nil }
 func (m PickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
+		m.width = msg.Width
 		m.height = msg.Height
+		var cmd tea.Cmd
+		m.table, cmd = m.table.Update(msg)
 		m.refreshTable()
-		return m, nil
+		return m, cmd
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "enter":
@@ -216,7 +226,11 @@ func (m PickerModel) View() string {
 
 	var sb strings.Builder
 
-	hint := " (↑/↓ navigate, enter select, q quit)"
+	scrollHint := ""
+	if m.canScrollTable() {
+		scrollHint = ", ←/→ scroll"
+	}
+	hint := " (↑/↓ navigate" + scrollHint + ", enter select, q quit)"
 	if m.OnSetDefault != nil || m.OnUnsetDefault != nil {
 		extras := ""
 		if m.OnSetDefault != nil {
@@ -225,31 +239,42 @@ func (m PickerModel) View() string {
 		if m.OnUnsetDefault != nil {
 			extras += ", x unset default"
 		}
-		hint = " (↑/↓ navigate, enter select" + extras + ", q quit)"
+		hint = " (↑/↓ navigate" + scrollHint + ", enter select" + extras + ", q quit)"
 	}
-	sb.WriteString(pickerTitle.Render(m.Title) + pickerHint.Render(hint) + "\n\n")
+	sb.WriteString(m.viewLine(pickerTitle.Render(m.Title)+pickerHint.Render(hint)) + "\n\n")
 
 	if len(m.items) == 0 {
 		if m.scanning {
-			sb.WriteString(pickerScanning.Render("  Scanning...") + "\n")
+			sb.WriteString(m.viewLine(pickerScanning.Render("  Scanning...")) + "\n")
 		} else {
-			sb.WriteString(pickerHint.Render("  No options found.") + "\n")
+			sb.WriteString(m.viewLine(pickerHint.Render("  No options found.")) + "\n")
 		}
 		return sb.String()
 	}
 
-	sb.WriteString(m.table.View() + "\n")
+	sb.WriteString(m.tableView() + "\n")
 
 	cursor := m.table.Cursor()
 	if cursor >= 0 && cursor < len(m.items) && m.items[cursor].Insecure {
-		sb.WriteString(pickerInsecure.Render("  ⚠  Connection is not secured with mTLS. PKI support is coming soon.") + "\n")
+		sb.WriteString(m.viewLine(pickerInsecure.Render("  ⚠  Connection is not secured with mTLS. PKI support is coming soon.")) + "\n")
 	}
 
 	if m.scanning {
-		sb.WriteString("\n" + pickerScanning.Render("  Scanning for more results...") + "\n")
+		sb.WriteString("\n" + m.viewLine(pickerScanning.Render("  Scanning for more results...")) + "\n")
 	}
 
 	return sb.String()
+}
+
+func (m PickerModel) viewLine(line string) string {
+	if m.width <= 0 {
+		return line
+	}
+	return CropANSIView(line, 0, m.width)
+}
+
+func (m PickerModel) tableView() string {
+	return m.table.View()
 }
 
 // Cancelled returns true if the user quit the picker without selecting (e.g. Ctrl+C).
@@ -265,7 +290,6 @@ func (m PickerModel) Selected() *PickerItem {
 type pickerColumnDef struct {
 	title    string
 	minWidth int
-	maxWidth int
 	value    func(PickerItem) string
 	required bool
 }
@@ -274,7 +298,6 @@ var pickerColumnDefs = []pickerColumnDef{
 	{
 		title:    "Name",
 		minWidth: 18,
-		maxWidth: 48,
 		value: func(item PickerItem) string {
 			return item.Name
 		},
@@ -283,7 +306,6 @@ var pickerColumnDefs = []pickerColumnDef{
 	{
 		title:    "Type",
 		minWidth: 12,
-		maxWidth: 28,
 		value: func(item PickerItem) string {
 			if item.USB != "" && !strings.Contains(item.Type, "USB") {
 				return "USB, " + item.Type
@@ -294,7 +316,6 @@ var pickerColumnDefs = []pickerColumnDef{
 	{
 		title:    "Address",
 		minWidth: 14,
-		maxWidth: 28,
 		value: func(item PickerItem) string {
 			return item.Address
 		},
@@ -302,14 +323,34 @@ var pickerColumnDefs = []pickerColumnDef{
 	{
 		title:    "Description",
 		minWidth: 20,
-		maxWidth: 48,
 		value: func(item PickerItem) string {
 			return item.Description
 		},
 	},
 }
 
-func newPickerTable() bubbleTable.Model {
+var pickerDeviceColumnDefs = []pickerColumnDef{
+	pickerColumnDefs[0],
+	pickerColumnDefs[1],
+	pickerColumnDefs[2],
+	{
+		title:    "wendy-agent version",
+		minWidth: 20,
+		value: func(item PickerItem) string {
+			return item.AgentVersion
+		},
+	},
+	{
+		title:    "WendyOS Version",
+		minWidth: 16,
+		value: func(item PickerItem) string {
+			return item.OSVersion
+		},
+	},
+	pickerColumnDefs[3],
+}
+
+func newPickerTable() BubbleTable {
 	return NewBubbleTable(true, nil)
 }
 
@@ -349,7 +390,7 @@ func (m *PickerModel) refreshTableWithCursorKey(cursorKey string) {
 	}
 
 	hasDefaultCol := m.OnSetDefault != nil
-	cols, rows := PickerTableData(m.items, m.DefaultKey, hasDefaultCol)
+	cols, rows := pickerTableDataForColumns(m.items, m.DefaultKey, hasDefaultCol, m.columns, m.fixedColumns)
 	m.table.SetRows(nil)
 	m.table.SetColumns(cols)
 	m.table.SetRows(rows)
@@ -382,9 +423,15 @@ func pickerItemKey(item PickerItem) string {
 	return item.Name
 }
 
-func pickerActiveColumns(items []PickerItem) []pickerColumnDef {
+func pickerActiveColumnsForDefs(items []PickerItem, defs []pickerColumnDef, fixed bool) []pickerColumnDef {
+	if len(defs) == 0 {
+		defs = pickerColumnDefs
+	}
+	if fixed {
+		return defs
+	}
 	var active []pickerColumnDef
-	for _, def := range pickerColumnDefs {
+	for _, def := range defs {
 		if def.required {
 			active = append(active, def)
 			continue
@@ -401,7 +448,17 @@ func pickerActiveColumns(items []PickerItem) []pickerColumnDef {
 
 // PickerTableData builds the shared picker table columns and rows for items.
 func PickerTableData(items []PickerItem, defaultKey string, hasDefaultCol bool) ([]bubbleTable.Column, []bubbleTable.Row) {
-	activeCols := pickerActiveColumns(items)
+	return pickerTableDataForColumns(items, defaultKey, hasDefaultCol, nil, false)
+}
+
+// PickerDeviceTableData builds the stable device table used by device pickers
+// and discover output.
+func PickerDeviceTableData(items []PickerItem, defaultKey string, hasDefaultCol bool) ([]bubbleTable.Column, []bubbleTable.Row) {
+	return pickerTableDataForColumns(items, defaultKey, hasDefaultCol, pickerDeviceColumnDefs, true)
+}
+
+func pickerTableDataForColumns(items []PickerItem, defaultKey string, hasDefaultCol bool, defs []pickerColumnDef, fixed bool) ([]bubbleTable.Column, []bubbleTable.Row) {
+	activeCols := pickerActiveColumnsForDefs(items, defs, fixed)
 	rows := pickerRows(items, activeCols, defaultKey, hasDefaultCol)
 	return pickerColumns(rows, activeCols, hasDefaultCol), rows
 }
@@ -465,7 +522,6 @@ func pickerColumns(rows []bubbleTable.Row, defs []pickerColumnDef, hasDefaultCol
 		}
 		width += 2
 		width = max(width, def.minWidth)
-		width = min(width, def.maxWidth)
 		cols = append(cols, bubbleTable.Column{Title: def.title, Width: width})
 	}
 	return cols
@@ -487,4 +543,15 @@ func PickerTableHeight(rowCount, windowHeight int) int {
 		return min(height, max(windowHeight-5, 4))
 	}
 	return min(height, 12)
+}
+
+func (m PickerModel) canScrollTable() bool {
+	return m.table.CanScroll()
+}
+
+func (m PickerModel) tableViewportWidth() int {
+	if width := m.table.ViewportWidth(); width > 0 {
+		return width
+	}
+	return PickerTableWidth(m.table.Columns())
 }

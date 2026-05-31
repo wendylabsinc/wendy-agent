@@ -235,11 +235,12 @@ type discoverModel struct {
 	usbInterval        increasingRefreshInterval
 	ethernetInterval   increasingRefreshInterval
 	externalInterval   increasingRefreshInterval
-	table              bubbleTable.Model
+	table              tui.BubbleTable
 	quitting           bool
 	hasResults         bool
 	err                error
 	includeExternal    bool
+	windowWidth        int
 	windowHeight       int
 	bleWarning         string
 	flashMessage       string
@@ -332,9 +333,12 @@ func (m discoverModel) Init() tea.Cmd {
 func (m discoverModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
+		m.windowWidth = msg.Width
 		m.windowHeight = msg.Height
+		var cmd tea.Cmd
+		m.table, cmd = m.table.Update(msg)
 		m.refreshTable()
-		return m, nil
+		return m, cmd
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "q", "ctrl+c":
@@ -428,9 +432,9 @@ func (m discoverModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		delay := m.ethernetInterval.delay(env.DiscoverEthernetInterval())
 		return m, delayThen(delay, m.scanEthernet())
 	case lanScanMsg:
-		// Preserve last known AgentVersion and DeviceType when the gRPC probe
-		// failed. The probe uses a 1500 ms timeout, so transient latency can
-		// cause a blank for one scan cycle even though the device is still up.
+		// Preserve last known agent metadata when the gRPC probe failed. The
+		// probe uses a 1500 ms timeout, so transient latency can cause a blank
+		// for one scan cycle even though the device is still up.
 		for i := range msg.devices {
 			if msg.devices[i].AgentVersion != "" {
 				continue
@@ -439,6 +443,9 @@ func (m discoverModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if strings.EqualFold(prev.DisplayName, msg.devices[i].DisplayName) && prev.AgentVersion != "" {
 					msg.devices[i].AgentVersion = prev.AgentVersion
 					msg.devices[i].DeviceType = prev.DeviceType
+					msg.devices[i].OS = prev.OS
+					msg.devices[i].OSVersion = prev.OSVersion
+					msg.devices[i].CPUArchitecture = prev.CPUArchitecture
 					break
 				}
 			}
@@ -537,27 +544,31 @@ func (m discoverModel) View() string {
 
 	var sb strings.Builder
 
-	sb.WriteString(scanStyle.Render("⟳ Scanning for WendyOS devices...") + "\n")
+	sb.WriteString(m.viewLine(scanStyle.Render("⟳ Scanning for WendyOS devices...")) + "\n")
 	if m.updatingDeviceName != "" {
-		sb.WriteString(dimStyle.Render("  updating "+m.updatingDeviceName+"... (q quit)") + "\n")
+		sb.WriteString(m.viewLine(dimStyle.Render("  updating "+m.updatingDeviceName+"... (q quit)")) + "\n")
 	} else {
-		sb.WriteString(dimStyle.Render("  ↑/↓ navigate, enter copy, a copy all, u update, d set default, x unset default, q quit") + "\n")
+		scrollHint := ""
+		if m.canScrollTable() {
+			scrollHint = ", ←/→ scroll"
+		}
+		sb.WriteString(m.viewLine(dimStyle.Render("  ↑/↓ navigate"+scrollHint+", enter copy, a copy all, u update, d set default, x unset default, q quit")) + "\n")
 	}
 
 	if m.bleWarning != "" {
-		sb.WriteString(dimStyle.Render("  Bluetooth: "+m.bleWarning) + "\n")
+		sb.WriteString(m.viewLine(dimStyle.Render("  Bluetooth: "+m.bleWarning)) + "\n")
 	}
 
 	sb.WriteString("\n")
 
 	if m.err != nil {
-		sb.WriteString(fmt.Sprintf("Error: %v\n", m.err))
+		sb.WriteString(m.viewLine(fmt.Sprintf("Error: %v", m.err)) + "\n")
 	}
 
 	if !m.collection.IsEmpty() {
-		sb.WriteString(m.table.View() + "\n")
+		sb.WriteString(m.tableView() + "\n")
 	} else if m.hasResults {
-		sb.WriteString(dimStyle.Render("No devices found yet...") + "\n")
+		sb.WriteString(m.viewLine(dimStyle.Render("No devices found yet...")) + "\n")
 	}
 
 	if m.flashMessage != "" {
@@ -567,7 +578,7 @@ func (m discoverModel) View() string {
 		} else if m.updatingDeviceName != "" {
 			style = scanStyle
 		}
-		sb.WriteString("\n" + style.Render("  "+m.flashMessage) + "\n")
+		sb.WriteString("\n" + m.viewLine(style.Render("  "+m.flashMessage)) + "\n")
 	}
 
 	return sb.String()
@@ -576,7 +587,7 @@ func (m discoverModel) View() string {
 func (m *discoverModel) refreshTable() {
 	items := discoverTableItems(m.collection)
 	pickerItems := discoverPickerItems(items)
-	cols, rows := tui.PickerTableData(pickerItems, discoverDefaultKey(), true)
+	cols, rows := tui.PickerDeviceTableData(pickerItems, discoverDefaultKey(), true)
 	m.table.SetColumns(cols)
 	m.table.SetRows(rows)
 	if len(rows) > 0 && m.table.Cursor() < 0 {
@@ -584,6 +595,28 @@ func (m *discoverModel) refreshTable() {
 	}
 	m.table.SetWidth(tui.PickerTableWidth(m.table.Columns()))
 	m.table.SetHeight(tui.PickerTableHeight(len(rows), m.windowHeight))
+}
+
+func (m discoverModel) viewLine(line string) string {
+	if m.windowWidth <= 0 {
+		return line
+	}
+	return tui.CropANSIView(line, 0, m.windowWidth)
+}
+
+func (m discoverModel) tableView() string {
+	return m.table.View()
+}
+
+func (m discoverModel) canScrollTable() bool {
+	return m.table.CanScroll()
+}
+
+func (m discoverModel) tableViewportWidth() int {
+	if width := m.table.ViewportWidth(); width > 0 {
+		return width
+	}
+	return tui.PickerTableWidth(m.table.Columns())
 }
 
 // lanDeviceAddr returns the gRPC address for the first LAN device whose
@@ -667,7 +700,7 @@ func (m discoverModel) startDeviceUpdateCmd(addr, name string) tea.Cmd {
 func renderDeviceTable(collection *models.DevicesCollection) string {
 	items := discoverTableItems(collection)
 	pickerItems := discoverPickerItems(items)
-	cols, rows := tui.PickerTableData(pickerItems, discoverDefaultKey(), true)
+	cols, rows := tui.PickerDeviceTableData(pickerItems, discoverDefaultKey(), true)
 	if len(rows) == 0 {
 		return ""
 	}
@@ -681,7 +714,7 @@ func renderDeviceTable(collection *models.DevicesCollection) string {
 	return t.View() + "\n"
 }
 
-func newDiscoverTable(interactive bool) bubbleTable.Model {
+func newDiscoverTable(interactive bool) tui.BubbleTable {
 	return tui.NewBubbleTable(interactive, nil)
 }
 
@@ -837,12 +870,13 @@ func discoverTableItems(collection *models.DevicesCollection) []discoverTableIte
 		}
 		items = append(items, discoverTableItem{
 			picker: tui.PickerItem{
-				Name:     discoverDisplayName(d.DisplayName, d.AgentVersion),
-				Type:     deviceType,
-				USB:      d.USBVersion,
-				Address:  d.Hostname,
-				DedupKey: d.DisplayName,
-				SortKey:  usbFirstSortKey(d.DisplayName, d.USBVersion),
+				Name:         discovery.SanitiseDisplayName(d.DisplayName),
+				Type:         deviceType,
+				USB:          d.USBVersion,
+				Address:      d.Hostname,
+				AgentVersion: discoverAgentVersionDisplay(d.AgentVersion),
+				DedupKey:     d.DisplayName,
+				SortKey:      usbFirstSortKey(d.DisplayName, d.USBVersion),
 			},
 			info: discoverDeviceInfo{
 				Name:    d.DisplayName,
@@ -870,12 +904,14 @@ func discoverTableItems(collection *models.DevicesCollection) []discoverTableIte
 		}
 		items = append(items, discoverTableItem{
 			picker: tui.PickerItem{
-				Name:     discoverDisplayName(d.DisplayName, d.AgentVersion),
-				Type:     deviceType,
-				USB:      usb,
-				Address:  address,
-				DedupKey: d.DisplayName,
-				SortKey:  usbFirstSortKey(d.DisplayName, usb),
+				Name:         discovery.SanitiseDisplayName(d.DisplayName),
+				Type:         deviceType,
+				USB:          usb,
+				Address:      address,
+				AgentVersion: discoverAgentVersionDisplay(d.AgentVersion),
+				OSVersion:    d.OSVersion,
+				DedupKey:     d.DisplayName,
+				SortKey:      usbFirstSortKey(d.DisplayName, usb),
 			},
 			info: discoverDeviceInfo{
 				Name:    d.DisplayName,
@@ -897,11 +933,13 @@ func discoverTableItems(collection *models.DevicesCollection) []discoverTableIte
 		deviceType := externalProviderDisplayName(d.ProviderKey)
 		items = append(items, discoverTableItem{
 			picker: tui.PickerItem{
-				Name:     discoverDisplayName(d.DisplayName, d.AgentVersion),
-				Type:     deviceType,
-				Address:  addr,
-				DedupKey: d.DisplayName,
-				SortKey:  externalProviderSortKey(d.ProviderKey, d.DisplayName),
+				Name:         discovery.SanitiseDisplayName(d.DisplayName),
+				Type:         deviceType,
+				Address:      addr,
+				AgentVersion: discoverAgentVersionDisplay(d.AgentVersion),
+				OSVersion:    d.OSVersion,
+				DedupKey:     d.DisplayName,
+				SortKey:      externalProviderSortKey(d.ProviderKey, d.DisplayName),
 			},
 			info: discoverDeviceInfo{
 				Name:    d.DisplayName,
@@ -932,16 +970,15 @@ func discoverPickerItems(items []discoverTableItem) []tui.PickerItem {
 	return pickerItems
 }
 
-func discoverDisplayName(name, agentVer string) string {
-	name = discovery.SanitiseDisplayName(name)
-	if agentVer == "" {
-		return name
-	}
+func discoverAgentVersionDisplay(agentVer string) string {
 	displayVersion := discovery.SanitiseDisplayName(agentVer)
+	if displayVersion == "" {
+		return ""
+	}
 	if version.CompareVersions(version.Version, agentVer) > 0 {
 		displayVersion += " ⚠"
 	}
-	return name + " v" + displayVersion
+	return displayVersion
 }
 
 func discoverSortKey(item tui.PickerItem) string {

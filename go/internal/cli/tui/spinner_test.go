@@ -4,6 +4,10 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	bubbleTable "github.com/charmbracelet/bubbles/table"
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 )
 
 func TestSpinnerModel_Init(t *testing.T) {
@@ -117,6 +121,49 @@ func TestRenderTable_NoRows(t *testing.T) {
 	}
 	if !strings.Contains(output, "Name") {
 		t.Error("expected headers in output")
+	}
+}
+
+func TestBubbleTable_CropsWideViewAndScrolls(t *testing.T) {
+	table := NewBubbleTable(true, []bubbleTable.Column{
+		{Title: "Name", Width: 20},
+		{Title: "Address", Width: 32},
+	})
+	table.SetRows([]bubbleTable.Row{
+		{"alpha", "wendyos-alpha.local:50051"},
+		{"beta", "wendyos-beta.local:50051"},
+	})
+	table.SetWidth(58)
+	table.SetHeight(3)
+	updated, cmd := table.Update(tea.WindowSizeMsg{Width: 24, Height: 10})
+	table = updated
+	if cmd == nil {
+		t.Fatal("expected resize to request a screen clear")
+	}
+
+	before := table.View()
+	for _, line := range strings.Split(before, "\n") {
+		if got := ansi.StringWidth(line); got > 24 {
+			t.Fatalf("view line width = %d, want <= 24: %q", got, line)
+		}
+	}
+
+	updated, _ = table.Update(tea.KeyMsg{Type: tea.KeyRight})
+	table = updated
+	if table.ScrollOffset() == 0 {
+		t.Fatal("expected right arrow to advance horizontal offset")
+	}
+	if after := table.View(); after == before {
+		t.Fatal("expected scrolled table view to change")
+	}
+
+	updated, _ = table.Update(tea.KeyMsg{Type: tea.KeyDown})
+	table = updated
+	if table.Cursor() != 1 {
+		t.Fatalf("expected down arrow to move cursor, got %d", table.Cursor())
+	}
+	if table.ScrollOffset() == 0 {
+		t.Fatal("expected row navigation to preserve horizontal offset")
 	}
 }
 

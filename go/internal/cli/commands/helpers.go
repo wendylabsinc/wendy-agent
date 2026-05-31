@@ -1167,19 +1167,27 @@ func mergePickerItem(existing *tui.PickerItem, incoming tui.PickerItem) {
 
 	if md.AgentVersion == "" {
 		md.AgentVersion = nd.AgentVersion
+		existing.AgentVersion = incoming.AgentVersion
 	}
 	if md.OS == "" {
 		md.OS = nd.OS
 	}
 	if md.OSVersion == "" {
 		md.OSVersion = nd.OSVersion
+		existing.OSVersion = incoming.OSVersion
 	}
 	if md.CPUArchitecture == "" {
 		md.CPUArchitecture = nd.CPUArchitecture
 	}
 
-	// Prefer the name that includes the version suffix.
-	if len(incoming.Name) > len(existing.Name) {
+	if existing.AgentVersion == "" {
+		existing.AgentVersion = incoming.AgentVersion
+	}
+	if existing.OSVersion == "" {
+		existing.OSVersion = incoming.OSVersion
+	}
+
+	if existing.Name == "" {
 		existing.Name = incoming.Name
 	}
 
@@ -1241,19 +1249,17 @@ func pickDevice(ctx context.Context, excludeProviders map[string]bool, excludeBl
 	lanCh := make(chan models.LANDevice, 16)
 	go discovery.DiscoverLANContinuous(discoverCtx, lanCh)
 	sendLANItem := func(dev models.LANDevice, insecure bool) {
-		name := dev.DisplayName
-		if dev.AgentVersion != "" {
-			name += " v" + dev.AgentVersion
-		}
 		devCopy := dev
 		p.Send(tui.PickerAddMsg{Items: []tui.PickerItem{{
-			Name:     name,
-			Type:     "LAN",
-			USB:      dev.USB,
-			Address:  preferredLANAddress(dev),
-			DedupKey: dev.DisplayName,
-			SortKey:  usbFirstSortKey(dev.DisplayName, dev.USB),
-			Insecure: insecure,
+			Name:         dev.DisplayName,
+			Type:         "LAN",
+			USB:          dev.USB,
+			Address:      preferredLANAddress(dev),
+			AgentVersion: dev.AgentVersion,
+			OSVersion:    dev.OSVersion,
+			DedupKey:     dev.DisplayName,
+			SortKey:      usbFirstSortKey(dev.DisplayName, dev.USB),
+			Insecure:     insecure,
 			Value: &pickerEntry{mergedDevice: &models.DiscoveredDevice{
 				DisplayName:     dev.DisplayName,
 				AgentVersion:    dev.AgentVersion,
@@ -1303,24 +1309,30 @@ func pickDevice(ctx context.Context, excludeProviders map[string]bool, excludeBl
 					for i := range devices {
 						if prov.Key() == "wendy-lite" {
 							items = append(items, tui.PickerItem{
-								Name:     devices[i].DisplayName,
-								DedupKey: devices[i].DisplayName,
-								Type:     "LAN (Lite)",
-								Address:  devices[i].ConnectionInfo["ip"],
+								Name:         devices[i].DisplayName,
+								DedupKey:     devices[i].DisplayName,
+								Type:         "LAN (Lite)",
+								Address:      devices[i].ConnectionInfo["ip"],
+								AgentVersion: devices[i].AgentVersion,
+								OSVersion:    devices[i].OSVersion,
 								Value: &pickerEntry{mergedDevice: &models.DiscoveredDevice{
 									DisplayName:     devices[i].DisplayName,
+									AgentVersion:    devices[i].AgentVersion,
+									OSVersion:       devices[i].OSVersion,
 									CPUArchitecture: devices[i].CPUArchitecture,
 									External:        &devices[i],
 								}},
 							})
 						} else {
 							items = append(items, tui.PickerItem{
-								Name:     devices[i].DisplayName,
-								Type:     prov.DisplayName(),
-								Address:  fmt.Sprintf("%s: %s", devices[i].ProviderKey, devices[i].ID),
-								DedupKey: devices[i].DisplayName,
-								SortKey:  externalProviderSortKey(prov.Key(), devices[i].DisplayName),
-								Value:    &pickerEntry{externalDevice: &devices[i], provider: prov},
+								Name:         devices[i].DisplayName,
+								Type:         prov.DisplayName(),
+								Address:      fmt.Sprintf("%s: %s", devices[i].ProviderKey, devices[i].ID),
+								AgentVersion: devices[i].AgentVersion,
+								OSVersion:    devices[i].OSVersion,
+								DedupKey:     devices[i].DisplayName,
+								SortKey:      externalProviderSortKey(prov.Key(), devices[i].DisplayName),
+								Value:        &pickerEntry{externalDevice: &devices[i], provider: prov},
 							})
 						}
 					}
@@ -1351,10 +1363,12 @@ func pickDevice(ctx context.Context, excludeProviders map[string]bool, excludeBl
 							connType = "BLE (Lite)"
 						}
 						items = append(items, tui.PickerItem{
-							Name:     bleDevices[i].DisplayName,
-							DedupKey: bleDevices[i].DisplayName,
-							Type:     connType,
-							Address:  bleDevices[i].Address,
+							Name:         bleDevices[i].DisplayName,
+							DedupKey:     bleDevices[i].DisplayName,
+							Type:         connType,
+							Address:      bleDevices[i].Address,
+							AgentVersion: bleDevices[i].AgentVersion,
+							OSVersion:    bleDevices[i].OSVersion,
 							Value: &pickerEntry{mergedDevice: &models.DiscoveredDevice{
 								DisplayName:     bleDevices[i].DisplayName,
 								AgentVersion:    bleDevices[i].AgentVersion,

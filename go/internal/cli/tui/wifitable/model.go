@@ -84,7 +84,7 @@ const flashDuration = 4 * time.Second
 // Model is the Bubble Tea model for the interactive WiFi table.
 type Model struct {
 	networks []Network
-	table    bubbleTable.Model
+	table    tui.BubbleTable
 	mode     mode
 
 	handler Handler
@@ -208,8 +208,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		var cmd tea.Cmd
+		m.table, cmd = m.table.Update(msg)
 		m.refreshRows()
-		return m, nil
+		return m, cmd
 
 	case RefreshMsg:
 		if m.mode == modeBrowsing {
@@ -716,7 +718,7 @@ func (m Model) View() string {
 		return ""
 	}
 	var sb strings.Builder
-	sb.WriteString(titleStyle.Render("WiFi networks") + "\n\n")
+	sb.WriteString(m.viewLine(titleStyle.Render("WiFi networks")) + "\n\n")
 	sb.WriteString(m.table.View())
 	sb.WriteString("\n")
 
@@ -725,22 +727,33 @@ func (m Model) View() string {
 		if m.flashIsError {
 			style = flashErrorStyle
 		}
-		sb.WriteString(style.Render(m.flashMessage) + "\n")
+		sb.WriteString(m.viewLine(style.Render(m.flashMessage)) + "\n")
 	}
 
 	switch m.mode {
 	case modeBrowsing:
-		sb.WriteString(footerStyle.Render("↑/↓ move · enter connect · r rank · n new · f forget · q quit") + "\n")
+		hint := "↑/↓ move · enter connect · r rank · n new · f forget · q quit"
+		if m.table.CanScroll() {
+			hint = "↑/↓ move · ←/→ scroll · enter connect · r rank · n new · f forget · q quit"
+		}
+		sb.WriteString(m.viewLine(footerStyle.Render(hint)) + "\n")
 	case modeRanking:
-		sb.WriteString(footerStyle.Render("rank mode: ↑/↓ reorder · enter commit · esc cancel") + "\n")
+		sb.WriteString(m.viewLine(footerStyle.Render("rank mode: ↑/↓ reorder · enter commit · esc cancel")) + "\n")
 	case modePassword:
-		sb.WriteString(titleStyle.Render("Password for "+m.pwFor) + "\n")
-		sb.WriteString(m.passwordInput.View() + "\n")
-		sb.WriteString(footerStyle.Render("enter connect · esc cancel") + "\n")
+		sb.WriteString(m.viewLine(titleStyle.Render("Password for "+m.pwFor)) + "\n")
+		sb.WriteString(m.viewLine(m.passwordInput.View()) + "\n")
+		sb.WriteString(m.viewLine(footerStyle.Render("enter connect · esc cancel")) + "\n")
 	case modeUnlisted:
 		sb.WriteString(m.renderUnlistedModal() + "\n")
 	}
 	return sb.String()
+}
+
+func (m Model) viewLine(line string) string {
+	if m.width <= 0 {
+		return line
+	}
+	return tui.CropANSIView(line, 0, m.width)
 }
 
 func (m Model) renderUnlistedModal() string {
