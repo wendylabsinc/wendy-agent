@@ -74,7 +74,7 @@ Wendy honours the following compose fields. Fields not listed here are ignored.
 | `ports` | Port mappings (`host:container`). Adds a `network` entitlement when present. |
 | `network_mode: host` | Adds a `host` network entitlement. |
 | `volumes` | Named volumes are created as `persist` entitlements. Host bind mounts (paths starting with `.` or `/`) are silently skipped. |
-| `depends_on` | Dependency order: list or condition-map form. Services are created in dependency order; detached starts follow the same order. |
+| `depends_on` | Dependency order: list or condition-map form. Services are created in dependency order; detached starts follow the same order, but health checks and readiness conditions are not evaluated. |
 | `restart` | Restart policy: `no`, `on-failure`, `always`, `unless-stopped`. Overridden by CLI flags if specified. |
 
 ## Networking
@@ -123,5 +123,7 @@ All `wendy run` flags work with compose projects:
 ## Limitations
 
 - The `environment:` values are not forwarded to the container at runtime yet — set environment variables in the Dockerfile or via entrypoint scripts as a workaround.
+- Wendy-specific hardware access entitlements such as `gpu`, `camera`, `audio`, `bluetooth`, `usb`, `i2c`, `gpio`, `spi`, and `input` are not inferred from compose fields.
+- Host networking does not imply shared IPC or shared `/dev/shm`; ROS 2 shared-memory transport requires an app shape that can explicitly share namespaces.
 - Linux containers on macOS require a target WendyOS device; local Docker Desktop compose is used as a fallback when no device is targeted.
 - Compose `extends`, `profiles`, and `secrets` are not supported.

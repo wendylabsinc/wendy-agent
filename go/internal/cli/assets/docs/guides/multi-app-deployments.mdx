@@ -38,6 +38,10 @@ For a WendyOS device target, Wendy:
 For ROS 2, set `network_mode: host` on every service that needs DDS discovery, multicast, or direct host-network communication. Wendy converts that field into a host-network entitlement for the generated service app.
 </Callout>
 
+<Callout type="warning">
+Host networking helps ROS 2 discovery, but it does not join IPC namespaces or share `/dev/shm` between containers. If your stack depends on ROS 2 shared-memory transport, zero-copy camera frames, or other pod-style namespace sharing, use a single container today or the multi-service `wendy.json` path once shared-IPC support is available.
+</Callout>
+
 Wendy maps a focused subset of Compose into device runtime configuration:
 
 | Compose field | Wendy behavior |
@@ -48,7 +52,7 @@ Wendy maps a focused subset of Compose into device runtime configuration:
 | `ports` | Adds a network entitlement with explicit port mappings. |
 | `network_mode: host` | Adds a host-network entitlement. Recommended for ROS 2 service discovery. |
 | `volumes` | Converts named volumes into persistent storage entitlements. Host bind mounts are skipped on device. |
-| `depends_on` | Creates dependencies before dependents. Detached starts follow the same order. Both list and map forms are accepted. |
+| `depends_on` | Creates dependencies before dependents. Detached starts follow the same order, but Wendy does not wait for health checks or readiness conditions. Both list and map forms are accepted. |
 | `restart` | Applies `no`, `on-failure`, `always`, or `unless-stopped` unless a CLI restart flag overrides it. |
 
 <Callout type="warning">
@@ -186,6 +190,6 @@ wendy device apps stop ros2-stack-talker
 
 Compose is best for networked multi-container stacks that need host networking, port mappings, restart policy, dependency order, and persistent named volumes.
 
-Use [multi-service `wendy.json`](/docs/advanced/apps/wendy-services) when individual services need Wendy-specific configuration that Compose does not express yet, such as direct camera, GPU, audio, Bluetooth, USB, I2C, GPIO, SPI, readiness probes, hooks, or service-specific files.
+Use [multi-service `wendy.json`](/docs/advanced/apps/wendy-services) when individual services need Wendy-specific configuration that Compose does not express yet, such as direct camera, GPU, audio, Bluetooth, USB, I2C, GPIO, SPI, readiness probes, hooks, shared IPC, runtime presets, or service-specific files.
 
 For the full Compose field reference, see [Multi-Service Apps with Docker Compose](/docs/advanced/apps/compose).
