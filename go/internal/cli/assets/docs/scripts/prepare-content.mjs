@@ -180,8 +180,13 @@ function normalizeMarkdown(raw, targetRelativePath) {
 function relativeFromPage(fromRelativePath, targetPath, hash = '') {
   const rootPrefix = routeSegments(fromRelativePath).length === 0 ? './' : '../'.repeat(routeSegments(fromRelativePath).length);
   const normalizedTarget = targetPath.replace(/^\/+/, '').replace(/\/$/, '');
+  // The site is exported with `trailingSlash: true`, so doc routes are canonical
+  // as `.../slug/`. Emit the trailing slash here too — without it a raw `<a href>`
+  // to a slugless path makes GCS 301 to `.../index.html`, which the fumadocs router
+  // can't match (sidebar stays collapsed / unhighlighted).
+  const targetWithSlash = normalizedTarget ? `${normalizedTarget}/` : '';
 
-  return `${rootPrefix}${normalizedTarget}${hash}`;
+  return `${rootPrefix}${targetWithSlash}${hash}`;
 }
 
 function relativeAssetImport(fromRelativePath, targetPath, hash = '') {
