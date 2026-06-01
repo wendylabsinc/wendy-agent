@@ -190,6 +190,8 @@ wendy device apps stop ros2-stack-talker
 
 Compose is best for networked multi-container stacks that need host networking, port mappings, restart policy, dependency order, and persistent named volumes.
 
-Use [multi-service `wendy.json`](/docs/advanced/apps/wendy-services) when individual services need Wendy-specific configuration that Compose does not express yet, such as direct camera, GPU, audio, Bluetooth, USB, I2C, GPIO, SPI, readiness probes, hooks, shared IPC, runtime presets, or service-specific files.
+Use [multi-service `wendy.json`](/docs/advanced/apps/wendy-services) when individual services need Wendy-specific configuration that Compose does not express yet, such as direct camera, GPU, audio, Bluetooth, USB, I2C, GPIO, SPI, shared IPC, runtime presets, or service-specific files.
+
+Service-specific readiness probes and `postStart` hooks are not available for Compose services yet. Today, `hooks.postStart` applies to single-container `wendy.json` apps, so a Compose stack cannot trigger a browser opener only after one `frontend` service becomes ready.
 
 For the full Compose field reference, see [Multi-Service Apps with Docker Compose](/docs/advanced/apps/compose).

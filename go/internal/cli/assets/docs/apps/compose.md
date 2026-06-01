@@ -124,6 +124,7 @@ All `wendy run` flags work with compose projects:
 
 - The `environment:` values are not forwarded to the container at runtime yet — set environment variables in the Dockerfile or via entrypoint scripts as a workaround.
 - Wendy-specific hardware access entitlements such as `gpu`, `camera`, `audio`, `bluetooth`, `usb`, `i2c`, `gpio`, `spi`, and `input` are not inferred from compose fields.
+- Service-specific lifecycle behavior is not supported yet: Compose services cannot declare Wendy readiness probes or `postStart` hooks, and top-level `wendy.json` hooks do not apply to generated Compose service apps.
 - Host networking does not imply shared IPC or shared `/dev/shm`; ROS 2 shared-memory transport requires an app shape that can explicitly share namespaces.
 - Linux containers on macOS require a target WendyOS device; local Docker Desktop compose is used as a fallback when no device is targeted.
 - Compose `extends`, `profiles`, and `secrets` are not supported.
