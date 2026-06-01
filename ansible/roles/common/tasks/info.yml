@@ -38,3 +38,19 @@
       is_admin: "{{ 'S-1-5-32-544' in (common_windows_whoami.groups | map(attribute='sid') | list) }}"
   changed_when: false
   when: ansible_facts.os_family == 'Windows'
+
+- name: Check Windows long path state
+  ansible.windows.win_shell: |
+    $registry = Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' -Name LongPathsEnabled -ErrorAction SilentlyContinue
+    "win32_long_paths=$($registry.LongPathsEnabled)"
+    try { "git_long_paths=$(git config --system --get core.longpaths)" } catch { "git_long_paths=missing" }
+  register: common_windows_long_paths_info
+  changed_when: false
+  failed_when: false
+  when: ansible_facts.os_family == 'Windows'
+
+- name: Report Windows long path state
+  ansible.builtin.debug:
+    var: common_windows_long_paths_info.stdout_lines
+  changed_when: false
+  when: ansible_facts.os_family == 'Windows'

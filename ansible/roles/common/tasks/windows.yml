@@ -83,6 +83,24 @@
     - common_windows_default_shell.stat.exists
   tags: [ssh]
 
+- name: Enable Win32 long paths when requested
+  ansible.windows.win_regedit:
+    path: HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem
+    name: LongPathsEnabled
+    data: 1
+    type: dword
+  when: configure_windows_long_paths
+  tags: [common, git, long_paths]
+
+- name: Enable Git long paths when requested
+  ansible.windows.win_shell: |
+    $current = git config --system --get core.longpaths
+    if ($current -eq 'true') { 'present' } else { git config --system core.longpaths true; 'changed' }
+  register: common_windows_git_longpaths
+  changed_when: "'changed' in common_windows_git_longpaths.stdout"
+  when: configure_windows_long_paths
+  tags: [common, git, long_paths]
+
 - name: Configure global git user name
   ansible.windows.win_shell: |
     $current = git config --global --get user.name

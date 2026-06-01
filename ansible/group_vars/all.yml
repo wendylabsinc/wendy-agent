@@ -33,6 +33,7 @@ configure_developer_mode: false
 configure_windows_terminal_powershell: false
 configure_windows_ssh_default_shell: false
 windows_ssh_default_shell_path: C:\\Program Files\\PowerShell\\7\\pwsh.exe
+configure_windows_long_paths: false
 configure_screen_lock_policy: false
 
 clone_repository: false

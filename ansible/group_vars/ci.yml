@@ -9,3 +9,4 @@ github_runner_mode: login
 configure_remote_access: true
 configure_power_policy: true
 configure_auto_login: false
+configure_windows_long_paths: true
