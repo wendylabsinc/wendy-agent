@@ -967,7 +967,10 @@ jobs:
     name: Dispatch docs deployment
     runs-on: ubuntu-latest
     needs: [determine-version, release]
-    if: needs.release.result == 'success'
+    # `always()` is required: without it the job is skipped whenever any `needs`
+    # entry (e.g. determine-version) is itself skipped or non-success, even
+    # though we only care that `release` succeeded. Matches the publish-aur job.
+    if: always() && needs.release.result == 'success'
     permissions:
       actions: write
     steps:
