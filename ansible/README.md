@@ -82,7 +82,6 @@ Focused CI deployment:
 ```sh
 make ci-deploy-packages
 make ci-deploy-swift
-make ci-deploy-pi
 make ci-deploy-runner
 make ci-deploy-desktop
 make ci-deploy-power
@@ -117,26 +116,8 @@ Platform startup mapping:
 
 ## AI coding assistants
 
-CI machines install Pi, Claude Code, and OpenAI Codex. Developer machine
-profiles install Claude Code and OpenAI Codex. Pi authentication stays manual.
-Log in as the same OS user that runs the GitHub Actions runner, start Pi, and
-use the interactive `/login` command:
-
-```sh
-ssh kb-ubuntu-24.local
-pi
-# inside Pi: /login
-```
-
-After login, run a smoke test as that same user:
-
-```sh
-pi -p "Reply with ok"
-```
-
-The info playbook reports whether `~/.pi/agent/auth.json` is present for the
-Ansible/runner user and whether `claude` and `codex` are on PATH. On Windows,
-perform the same login from an interactive terminal or RDP session as the runner
+CI and developer machine profiles install Claude Code and OpenAI Codex. The info
+playbook reports whether `claude` and `codex` are on PATH for the Ansible/runner
 user.
 
 ## Safety rules

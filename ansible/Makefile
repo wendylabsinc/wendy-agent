@@ -13,7 +13,7 @@ export ANSIBLE_CONFIG
 
 .PHONY: help install lint info deploy converge \
 	ci-lint ci-info ci-deploy ci-converge \
-	ci-deploy-packages ci-deploy-swift ci-deploy-pi ci-deploy-runner \
+	ci-deploy-packages ci-deploy-swift ci-deploy-runner \
 	ci-deploy-desktop ci-deploy-power
 
 help:
@@ -35,7 +35,6 @@ help:
 	@echo "  make ci-converge          Run CI deploy twice"
 	@echo "  make ci-deploy-packages   Deploy CI packages/tools"
 	@echo "  make ci-deploy-swift      Deploy CI Swift toolchains"
-	@echo "  make ci-deploy-pi         Deploy CI Pi coding agent"
 	@echo "  make ci-deploy-runner     Deploy CI runner integration"
 	@echo "  make ci-deploy-desktop    Deploy CI desktop access settings"
 	@echo "  make ci-deploy-power      Deploy CI power policy"
@@ -76,9 +75,6 @@ ci-deploy-packages:
 
 ci-deploy-swift:
 	$(ANSIBLE_PLAYBOOK) -i $(CI_INVENTORY) playbooks/ci.yml --tags swift $(LIMIT_ARG) $(EXTRA_ARGS)
-
-ci-deploy-pi:
-	$(ANSIBLE_PLAYBOOK) -i $(CI_INVENTORY) playbooks/ci.yml --tags pi $(LIMIT_ARG) $(EXTRA_ARGS)
 
 ci-deploy-runner:
 	$(ANSIBLE_PLAYBOOK) -i $(CI_INVENTORY) playbooks/ci.yml --tags runner $(LIMIT_ARG) $(EXTRA_ARGS)

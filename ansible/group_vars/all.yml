@@ -19,12 +19,9 @@ install_direnv: false
 install_swift: true
 install_wendy_cli: false
 install_wendy_agent: false
-install_pi_coding_agent: false
 install_claude_code: false
 install_openai_codex: false
 install_github_runner: false
-pi_coding_agent_minimum_node_major: 20
-pi_coding_agent_node_version: lts
 install_visual_studio_build_tools: true
 install_gnu_make: true
 
