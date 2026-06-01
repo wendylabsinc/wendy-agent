@@ -646,8 +646,7 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 			cliLogln("Service %s started.", name)
 		}
 		cliLogln("All services running in detached mode.")
-		projectID := strings.ToLower(filepath.Base(projectDir))
-		cliLogln("Run 'wendy logs %s' to stream logs.", projectID)
+		cliLogln("Run 'wendy device logs' to stream logs.")
 		return nil
 	}
 

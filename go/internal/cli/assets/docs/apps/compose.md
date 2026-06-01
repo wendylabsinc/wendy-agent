@@ -67,14 +67,14 @@ Wendy honours the following compose fields. Fields not listed here are ignored.
 
 | Field | Description |
 |-------|-------------|
-| `build` | Build context: a path string or a `{ context, dockerfile, args }` mapping. Services without `build` use a pre-built image via `image`. |
+| `build` | Build context: a path string or a `{ context, dockerfile, args }` mapping. Custom Dockerfile paths must resolve inside the build context. Services without `build` use a pre-built image via `image`. |
 | `image` | Pre-built image to pull and run on the device (e.g. `redis:7-alpine`). Public image names are normalised to their fully-qualified form automatically. |
 | `command` | Override the container's default command. Accepts a string (shell-split) or a YAML sequence. |
-| `environment` | Environment variables: key-value map or list of `KEY=VALUE` strings. Bare `KEY` entries inherit from the CLI environment. |
+| `environment` | Parsed from key-value maps or `KEY=VALUE` lists, but not forwarded to device containers yet. |
 | `ports` | Port mappings (`host:container`). Adds a `network` entitlement when present. |
 | `network_mode: host` | Adds a `host` network entitlement. |
 | `volumes` | Named volumes are created as `persist` entitlements. Host bind mounts (paths starting with `.` or `/`) are silently skipped. |
-| `depends_on` | Start order: list or condition-map form. Services start in dependency order. |
+| `depends_on` | Dependency order: list or condition-map form. Services are created in dependency order; detached starts follow the same order. |
 | `restart` | Restart policy: `no`, `on-failure`, `always`, `unless-stopped`. Overridden by CLI flags if specified. |
 
 ## Networking
@@ -122,7 +122,6 @@ All `wendy run` flags work with compose projects:
 
 ## Limitations
 
-- Custom Dockerfile paths (`dockerfile: path/to/Dockerfile`) are not yet supported. Rename the file to `Dockerfile` in its context directory.
 - The `environment:` values are not forwarded to the container at runtime yet — set environment variables in the Dockerfile or via entrypoint scripts as a workaround.
 - Linux containers on macOS require a target WendyOS device; local Docker Desktop compose is used as a fallback when no device is targeted.
 - Compose `extends`, `profiles`, and `secrets` are not supported.

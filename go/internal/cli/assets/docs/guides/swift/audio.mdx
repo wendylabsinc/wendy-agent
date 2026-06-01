@@ -260,7 +260,7 @@ If audio isn't working:
 1.  **Check Hardware**: Ensure your microphone/speaker is selected in the system settings or properly connected via USB.
 2.  **Check Logs**: Docker logs will show GStreamer errors.
     ```bash
-    wendy logs
+    wendy device logs
     ```
 3.  **ALSA Devices**: The app attempts to auto-detect ALSA devices. You can override this by setting the `AUDIO_DEVICE` environment variable (e.g., `hw:1,0`).
 
