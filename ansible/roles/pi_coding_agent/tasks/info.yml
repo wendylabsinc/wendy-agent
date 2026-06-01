@@ -1,0 +1,48 @@
+---
+- name: Check POSIX Pi coding agent
+  ansible.builtin.shell: |
+    set -o pipefail
+    set +e
+    echo "pi=$({ command -v pi >/dev/null && pi --version; } || echo missing)"
+    if [[ -f "$HOME/.pi/agent/auth.json" ]]; then
+      echo "pi_auth=present"
+    else
+      echo "pi_auth=missing"
+    fi
+  args:
+    executable: /bin/bash
+  register: pi_coding_agent_posix_info
+  environment:
+    PATH: "{{ homebrew_prefix }}/bin:{{ ansible_env.PATH }}"
+  changed_when: false
+  failed_when: false
+  when: ansible_facts.os_family != 'Windows'
+
+- name: Report POSIX Pi coding agent
+  ansible.builtin.debug:
+    var: pi_coding_agent_posix_info.stdout_lines
+  changed_when: false
+  when: ansible_facts.os_family != 'Windows'
+
+- name: Check Windows Pi coding agent
+  ansible.windows.win_shell: |
+    $pi = (Get-Command pi.cmd -ErrorAction SilentlyContinue)
+    if (-not $pi) { $pi = Get-Command pi -ErrorAction SilentlyContinue }
+    if ($pi) {
+      try { "pi=$(& $pi.Source --version)" } catch { "pi=present version_check_failed" }
+    } else {
+      "pi=missing"
+    }
+
+    $auth = Join-Path $env:USERPROFILE '.pi\agent\auth.json'
+    if (Test-Path $auth) { 'pi_auth=present' } else { 'pi_auth=missing' }
+  register: pi_coding_agent_windows_info
+  changed_when: false
+  failed_when: false
+  when: ansible_facts.os_family == 'Windows'
+
+- name: Report Windows Pi coding agent
+  ansible.builtin.debug:
+    var: pi_coding_agent_windows_info.stdout_lines
+  changed_when: false
+  when: ansible_facts.os_family == 'Windows'

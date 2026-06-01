@@ -1,0 +1,24 @@
+---
+- name: Install Pi coding agent with npm on Ubuntu
+  ansible.builtin.shell: |
+    set -euo pipefail
+    if npm list -g --depth=0 @earendil-works/pi-coding-agent >/dev/null 2>&1; then
+      echo "already installed"
+    else
+      npm install -g --ignore-scripts @earendil-works/pi-coding-agent
+    fi
+  args:
+    executable: /bin/bash
+  register: pi_coding_agent_ubuntu_install
+  changed_when: "'already installed' not in pi_coding_agent_ubuntu_install.stdout"
+  become: true
+  when: install_pi_coding_agent
+
+- name: Print Pi manual login instructions on Ubuntu
+  ansible.builtin.debug:
+    msg:
+      - "Pi is installed for this machine. Authenticate it manually as the GitHub runner user."
+      - "Run over SSH or a local terminal as {{ ansible_user_id }}: pi"
+      - "Then use the interactive command: /login"
+      - "Smoke test after login: pi -p 'Reply with ok'"
+  when: install_pi_coding_agent

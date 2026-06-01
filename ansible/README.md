@@ -82,6 +82,7 @@ Focused CI deployment:
 ```sh
 make ci-deploy-packages
 make ci-deploy-swift
+make ci-deploy-pi
 make ci-deploy-runner
 make ci-deploy-desktop
 make ci-deploy-power
@@ -113,6 +114,28 @@ Platform startup mapping:
   logged-in user session.
 - Ubuntu: user systemd service with a wrapper that sources Swiftly's `env.sh`.
 - Windows: Scheduled Task at user logon.
+
+## Pi coding agent authentication
+
+CI machines install the Pi coding agent with npm, but authentication stays
+manual. Log in as the same OS user that runs the GitHub Actions runner, start
+Pi, and use the interactive `/login` command:
+
+```sh
+ssh kb-ubuntu-24.local
+pi
+# inside Pi: /login
+```
+
+After login, run a smoke test as that same user:
+
+```sh
+pi -p "Reply with ok"
+```
+
+The info playbook reports whether `~/.pi/agent/auth.json` is present for the
+Ansible/runner user. On Windows, perform the same login from an interactive
+terminal or RDP session as the runner user.
 
 ## Safety rules
 

@@ -1,0 +1,32 @@
+---
+- name: Install Pi coding agent with npm on Windows
+  ansible.windows.win_shell: |
+    $npm = (Get-Command npm.cmd -ErrorAction SilentlyContinue).Source
+    if (-not $npm) {
+      $candidates = @()
+      if ($env:ProgramFiles) { $candidates += (Join-Path $env:ProgramFiles 'nodejs\npm.cmd') }
+      if (${env:ProgramFiles(x86)}) { $candidates += (Join-Path ${env:ProgramFiles(x86)} 'nodejs\npm.cmd') }
+      $npm = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+    }
+    if (-not $npm) { throw 'npm.cmd not found. Install Node.js before installing Pi.' }
+
+    & $npm list -g --depth=0 '@earendil-works/pi-coding-agent' | Out-Null
+    if ($LASTEXITCODE -eq 0) {
+      'already installed'
+      exit 0
+    }
+
+    & $npm install -g --ignore-scripts '@earendil-works/pi-coding-agent'
+    exit $LASTEXITCODE
+  register: pi_coding_agent_windows_install
+  changed_when: "'already installed' not in pi_coding_agent_windows_install.stdout"
+  when: install_pi_coding_agent
+
+- name: Print Pi manual login instructions on Windows
+  ansible.builtin.debug:
+    msg:
+      - "Pi is installed for this machine. Authenticate it manually as the GitHub runner user."
+      - "Run in an interactive terminal/RDP session as {{ ansible_user }}: pi"
+      - "Then use the interactive command: /login"
+      - "Smoke test after login: pi -p 'Reply with ok'"
+  when: install_pi_coding_agent

@@ -19,6 +19,7 @@ install_direnv: false
 install_swift: true
 install_wendy_cli: false
 install_wendy_agent: false
+install_pi_coding_agent: false
 install_github_runner: false
 install_visual_studio_build_tools: true
 install_gnu_make: true

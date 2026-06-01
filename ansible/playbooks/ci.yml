@@ -10,6 +10,7 @@
     - developer_tools
     - swift_toolchain
     - wendy_tools
+    - pi_coding_agent
     - github_runner
     - desktop_access
     - power_policy

@@ -70,6 +70,7 @@ kb-windows-11.local        ok=49 changed=0 failed=0
 - Xcode Swift is present in the default `swift` path.
 - Swiftly is installed and has selected the repository `.swift-version`.
 - GitHub runner is registered and running via the existing LaunchAgent.
+- Pi coding agent is expected to be installed and manually authenticated as the runner user.
 - AC power policy has sleep disabled and display sleep set to 10 minutes.
 
 ### Ubuntu runner
@@ -81,6 +82,7 @@ kb-windows-11.local        ok=49 changed=0 failed=0
 - Swift 6.3.1 is available after sourcing Swiftly's environment.
 - GitHub runner is registered and running via user systemd service.
 - The user systemd runner wrapper sources Swiftly's `env.sh` before `run.sh`.
+- Pi coding agent is expected to be installed and manually authenticated as the runner user.
 - User lingering is enabled.
 - GNOME idle delay is 600 seconds and screen lock is disabled.
 
@@ -92,6 +94,7 @@ kb-windows-11.local        ok=49 changed=0 failed=0
 - Git, Go, Node, npm, Neovim, winget, Claude Code, Codex, Swift, and Wendy CLI
   are present.
 - GitHub runner is registered and running via Scheduled Task.
+- Pi coding agent is expected to be installed and manually authenticated as the runner user.
 - Remote Desktop is enabled and firewall rules are enabled.
 - AC sleep is disabled; AC display timeout is 600 seconds.
 - OpenSSH `DefaultShell` currently points at the WindowsApps `pwsh.exe` app
@@ -115,5 +118,7 @@ Smoke tests passed on 2026-05-22:
   run.
 - Run a GitHub Actions job that executes `swift --version` on the Ubuntu runner
   to verify the user systemd wrapper environment from inside CI.
+- Manually run Pi `/login` as the GitHub runner user on each CI machine and
+  confirm `pi -p "Reply with ok"` works.
 - Validate any privacy-gated macOS settings manually from the logged-in user
   session.

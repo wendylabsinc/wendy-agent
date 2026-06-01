@@ -1,0 +1,25 @@
+---
+- name: Install Pi coding agent with npm on macOS
+  ansible.builtin.shell: |
+    set -euo pipefail
+    if "{{ homebrew_prefix }}/bin/npm" list -g --depth=0 @earendil-works/pi-coding-agent >/dev/null 2>&1; then
+      echo "already installed"
+    else
+      "{{ homebrew_prefix }}/bin/npm" install -g --ignore-scripts @earendil-works/pi-coding-agent
+    fi
+  args:
+    executable: /bin/bash
+  environment:
+    PATH: "{{ homebrew_prefix }}/bin:{{ ansible_env.PATH }}"
+  register: pi_coding_agent_macos_install
+  changed_when: "'already installed' not in pi_coding_agent_macos_install.stdout"
+  when: install_pi_coding_agent
+
+- name: Print Pi manual login instructions on macOS
+  ansible.builtin.debug:
+    msg:
+      - "Pi is installed for this machine. Authenticate it manually as the GitHub runner user."
+      - "Run in the logged-in user session: pi"
+      - "Then use the interactive command: /login"
+      - "Smoke test after login: pi -p 'Reply with ok'"
+  when: install_pi_coding_agent

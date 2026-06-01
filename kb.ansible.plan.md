@@ -56,6 +56,12 @@ ansible/
         macos.yml
         ubuntu.yml
         windows.yml
+    pi_coding_agent/
+      tasks/
+        main.yml
+        macos.yml
+        ubuntu.yml
+        windows.yml
     github_runner/
       tasks/
         main.yml
@@ -99,6 +105,7 @@ roles:
   - developer_tools
   - swift_toolchain
   - wendy_tools
+  - pi_coding_agent
   - github_runner
   - desktop_access
   - power_policy
@@ -111,6 +118,7 @@ machine_profile: ci
 install_swift: true
 install_wendy_cli: false
 install_wendy_agent: false
+install_pi_coding_agent: true
 install_github_runner: true
 github_runner_mode: login
 configure_remote_access: true
