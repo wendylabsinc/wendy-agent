@@ -3,6 +3,10 @@
   ansible.windows.win_command: winget --version
   changed_when: false
 
+- name: Build configured Windows package list
+  ansible.builtin.set_fact:
+    developer_tools_windows_packages: "{{ windows_winget_packages + ([windows_claude_code_package] if install_claude_code else []) + ([windows_openai_codex_package] if install_openai_codex else []) }}"
+
 - name: Install configured winget packages
   ansible.windows.win_shell: |
     $id = '{{ item.id }}'
@@ -19,7 +23,7 @@
     if ($override) { $args += @('--override', $override) }
     & winget @args
     exit $LASTEXITCODE
-  loop: "{{ windows_winget_packages }}"
+  loop: "{{ developer_tools_windows_packages }}"
   register: developer_tools_windows_winget
   changed_when: "'already installed:' not in developer_tools_windows_winget.stdout"
 

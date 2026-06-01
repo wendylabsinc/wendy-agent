@@ -46,7 +46,7 @@
   environment:
     PATH: "{{ homebrew_prefix }}/bin:{{ ansible_env.PATH }}"
   when:
-    - install_direnv or machine_profile in ['ci', 'developer']
+    - install_claude_code
     - not developer_tools_macos_claude.stat.exists
 
 - name: Install Codex with npm when npm is available
@@ -58,5 +58,5 @@
   environment:
     PATH: "{{ homebrew_prefix }}/bin:{{ ansible_env.PATH }}"
   when:
-    - install_direnv or machine_profile in ['ci', 'developer']
+    - install_openai_codex
     - not developer_tools_macos_codex.stat.exists

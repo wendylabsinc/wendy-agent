@@ -115,11 +115,12 @@ Platform startup mapping:
 - Ubuntu: user systemd service with a wrapper that sources Swiftly's `env.sh`.
 - Windows: Scheduled Task at user logon.
 
-## Pi coding agent authentication
+## AI coding assistants
 
-CI machines install the Pi coding agent with npm, but authentication stays
-manual. Log in as the same OS user that runs the GitHub Actions runner, start
-Pi, and use the interactive `/login` command:
+CI machines install Pi, Claude Code, and OpenAI Codex. Developer machine
+profiles install Claude Code and OpenAI Codex. Pi authentication stays manual.
+Log in as the same OS user that runs the GitHub Actions runner, start Pi, and
+use the interactive `/login` command:
 
 ```sh
 ssh kb-ubuntu-24.local
@@ -134,8 +135,9 @@ pi -p "Reply with ok"
 ```
 
 The info playbook reports whether `~/.pi/agent/auth.json` is present for the
-Ansible/runner user. On Windows, perform the same login from an interactive
-terminal or RDP session as the runner user.
+Ansible/runner user and whether `claude` and `codex` are on PATH. On Windows,
+perform the same login from an interactive terminal or RDP session as the runner
+user.
 
 ## Safety rules
 

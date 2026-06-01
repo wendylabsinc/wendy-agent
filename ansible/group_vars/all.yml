@@ -20,6 +20,8 @@ install_swift: true
 install_wendy_cli: false
 install_wendy_agent: false
 install_pi_coding_agent: false
+install_claude_code: false
+install_openai_codex: false
 install_github_runner: false
 pi_coding_agent_minimum_node_major: 20
 pi_coding_agent_node_version: lts
@@ -82,10 +84,12 @@ windows_winget_packages:
     name: PowerShell
   - id: OpenJS.NodeJS.LTS
     name: Node.js LTS
-  - id: Anthropic.ClaudeCode
-    name: Claude Code
-  - id: OpenAI.Codex
-    name: Codex
+windows_claude_code_package:
+  id: Anthropic.ClaudeCode
+  name: Claude Code
+windows_openai_codex_package:
+  id: OpenAI.Codex
+  name: Codex
 windows_make_package:
   id: MSYS2.MSYS2
   name: MSYS2

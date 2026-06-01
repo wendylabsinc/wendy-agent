@@ -119,6 +119,8 @@ install_swift: true
 install_wendy_cli: false
 install_wendy_agent: false
 install_pi_coding_agent: true
+install_claude_code: true
+install_openai_codex: true
 install_github_runner: true
 github_runner_mode: login
 configure_remote_access: true
@@ -148,6 +150,8 @@ machine_profile: developer
 install_swift: true
 install_wendy_cli: false
 install_wendy_agent: false
+install_claude_code: true
+install_openai_codex: true
 install_github_runner: false
 configure_remote_access: false
 configure_power_policy: false
@@ -204,7 +208,7 @@ Automate:
 - winget packages.
 - OpenSSH client/server only when missing.
 - SSH key generation and authorized keys.
-- Git, Go, Neovim, PowerShell, Node.js, Claude Code, Codex.
+- Git, Go, Neovim, PowerShell, Node.js, Claude Code, OpenAI Codex.
 - Swift toolchain when selected.
 - GNU Make through MSYS2 when needed.
 - Wendy CLI when selected.

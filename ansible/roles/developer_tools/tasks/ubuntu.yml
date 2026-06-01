@@ -31,6 +31,7 @@
     global: true
     state: present
   become: true
+  when: install_claude_code
 
 - name: Install Codex with npm
   community.general.npm:
@@ -38,3 +39,4 @@
     global: true
     state: present
   become: true
+  when: install_openai_codex
