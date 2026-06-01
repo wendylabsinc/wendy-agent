@@ -346,6 +346,12 @@ func (m deviceInfoModel) agentSection() string {
 			gpu = "unknown"
 		}
 		rows = append(rows, []string{"GPU", gpu})
+		if jv := m.versionResp.GetJetpackVersion(); jv != "" {
+			rows = append(rows, []string{"JetPack", jv})
+		}
+		if cv := m.versionResp.GetCudaVersion(); cv != "" {
+			rows = append(rows, []string{"CUDA", cv})
+		}
 	}
 	if m.checkUpdates {
 		if version.CompareVersions(m.latestVersion, m.versionResp.GetVersion()) > 0 {
