@@ -334,6 +334,11 @@ func (m deviceInfoModel) agentSection() string {
 		{"OS", strings.TrimSpace(m.versionResp.GetOs() + " " + m.versionResp.GetOsVersion())},
 		{"Architecture", m.versionResp.GetCpuArchitecture()},
 	}
+	if cmp := version.CompareVersions(version.Version, m.versionResp.GetVersion()); cmp > 0 {
+		rows = append(rows, []string{"Version Warning", "agent is behind CLI; run 'wendy device update'"})
+	} else if cmp < 0 {
+		rows = append(rows, []string{"Version Warning", "CLI is behind agent; update the CLI"})
+	}
 	if dt := m.versionResp.GetDeviceType(); dt != "" {
 		rows = append(rows, []string{"Device Type", dt})
 	}
