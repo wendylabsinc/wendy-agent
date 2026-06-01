@@ -1,4 +1,24 @@
 ---
+- name: Ensure Ubuntu Node.js is new enough for Pi
+  ansible.builtin.shell: |
+    set -euo pipefail
+    current_major="$(node --version 2>/dev/null | sed -E 's/^v([0-9]+).*/\1/' || echo 0)"
+    if [[ "${current_major:-0}" -ge {{ pi_coding_agent_minimum_node_major }} ]]; then
+      echo "node already compatible"
+      exit 0
+    fi
+
+    npm install -g n
+    n {{ pi_coding_agent_node_version }}
+    hash -r
+    node --version
+  args:
+    executable: /bin/bash
+  register: pi_coding_agent_ubuntu_node
+  changed_when: "'node already compatible' not in pi_coding_agent_ubuntu_node.stdout"
+  become: true
+  when: install_pi_coding_agent
+
 - name: Install Pi coding agent with npm on Ubuntu
   ansible.builtin.shell: |
     set -euo pipefail
@@ -9,6 +29,8 @@
     fi
   args:
     executable: /bin/bash
+  environment:
+    PATH: "/usr/local/bin:{{ ansible_env.PATH }}"
   register: pi_coding_agent_ubuntu_install
   changed_when: "'already installed' not in pi_coding_agent_ubuntu_install.stdout"
   become: true

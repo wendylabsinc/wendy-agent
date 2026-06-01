@@ -3,7 +3,19 @@
   ansible.builtin.shell: |
     set -o pipefail
     set +e
-    echo "pi=$({ command -v pi >/dev/null && pi --version; } || echo missing)"
+    pi_path="$(command -v pi || true)"
+    if [[ -n "$pi_path" ]]; then
+      pi_version="$(pi --version 2>&1)"
+      pi_rc=$?
+      if [[ $pi_rc -eq 0 ]]; then
+        echo "pi=$pi_version"
+      else
+        echo "pi=present version_check_failed rc=$pi_rc"
+        echo "$pi_version"
+      fi
+    else
+      echo "pi=missing"
+    fi
     if [[ -f "$HOME/.pi/agent/auth.json" ]]; then
       echo "pi_auth=present"
     else
@@ -13,7 +25,7 @@
     executable: /bin/bash
   register: pi_coding_agent_posix_info
   environment:
-    PATH: "{{ homebrew_prefix }}/bin:{{ ansible_env.PATH }}"
+    PATH: "{{ homebrew_prefix }}/bin:/usr/local/bin:{{ ansible_env.PATH }}"
   changed_when: false
   failed_when: false
   when: ansible_facts.os_family != 'Windows'
@@ -29,7 +41,13 @@
     $pi = (Get-Command pi.cmd -ErrorAction SilentlyContinue)
     if (-not $pi) { $pi = Get-Command pi -ErrorAction SilentlyContinue }
     if ($pi) {
-      try { "pi=$(& $pi.Source --version)" } catch { "pi=present version_check_failed" }
+      $piVersion = cmd.exe /c pi --version 2`>`&1
+      if ($LASTEXITCODE -eq 0) {
+        "pi=$piVersion"
+      } else {
+        "pi=present version_check_failed rc=$LASTEXITCODE"
+        $piVersion
+      }
     } else {
       "pi=missing"
     }
