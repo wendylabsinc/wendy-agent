@@ -4,7 +4,7 @@
     set -o pipefail
     set +e
     echo "wendy=$({ command -v wendy >/dev/null && wendy --version; } || echo missing)"
-    echo "wendy_agent=$({ command -v wendy-agent >/dev/null && wendy-agent --version; } || echo missing)"
+    echo "wendy_daemon=$({ command -v wendy-agent >/dev/null && wendy-agent --version; } || echo missing)"
   args:
     executable: /bin/bash
   register: wendy_tools_posix_info

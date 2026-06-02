@@ -76,8 +76,8 @@ kb-windows-11.local        ok=49 changed=0 failed=0
 
 - Ubuntu 24.04, x86_64.
 - Passwordless sudo works.
-- Git, Go, Node, npm, Neovim, direnv, Claude Code, Codex, Wendy CLI, and
-  Wendy agent are present.
+- Git, Go, Node, npm, Neovim, direnv, Claude Code, Codex, Wendy CLI, and the
+  Wendy daemon are present.
 - Swift 6.3.1 is available after sourcing Swiftly's environment.
 - GitHub runner is registered and running via user systemd service.
 - The user systemd runner wrapper sources Swiftly's `env.sh` before `run.sh`.
@@ -105,7 +105,7 @@ Smoke tests passed on 2026-05-22:
 - macOS: git, Go, Node, npm, Neovim, Claude Code, Codex, Swift, Wendy CLI,
   and LaunchAgent runner state.
 - Ubuntu: git, Go, Node, npm, Neovim, Claude Code, Codex, Swift via Swiftly,
-  Wendy CLI, Wendy agent, and user systemd runner state.
+  Wendy CLI, the Wendy daemon, and user systemd runner state.
 - Windows: git, Go, Node, npm, Neovim, Claude Code, Codex, Swift, Wendy CLI,
   and Scheduled Task runner state.
 

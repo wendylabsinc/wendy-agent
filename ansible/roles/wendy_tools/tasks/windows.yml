@@ -11,7 +11,7 @@
   changed_when: "'already installed' not in wendy_tools_windows_cli.stdout"
   when: install_wendy_cli
 
-- name: Explain Wendy agent support on Windows
+- name: Explain Wendy daemon support on Windows
   ansible.builtin.debug:
-    msg: "wendy-agent runs on Linux devices; Windows automation only installs the CLI."
-  when: install_wendy_agent
+    msg: "The Wendy daemon runs on Linux and macOS; Windows automation only installs the CLI."
+  when: install_wendy_daemon

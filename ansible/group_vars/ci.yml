@@ -2,7 +2,7 @@
 machine_profile: ci
 install_swift: true
 install_wendy_cli: false
-install_wendy_agent: false
+install_wendy_daemon: false
 install_claude_code: true
 install_openai_codex: true
 install_github_runner: true

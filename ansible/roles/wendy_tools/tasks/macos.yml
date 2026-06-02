@@ -6,9 +6,9 @@
     path: "{{ homebrew_prefix }}/bin"
   when: install_wendy_cli
 
-- name: Install Wendy macOS agent app with Homebrew Cask when selected
+- name: Install Wendy macOS daemon app with Homebrew Cask when selected
   community.general.homebrew_cask:
     name: wendylabsinc/tap/wendy-agent
     state: present
     path: "{{ homebrew_prefix }}/bin"
-  when: install_wendy_agent
+  when: install_wendy_daemon

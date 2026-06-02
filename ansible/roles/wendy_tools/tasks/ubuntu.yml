@@ -10,13 +10,13 @@
   changed_when: "'already' not in (wendy_tools_ubuntu_cli.stdout | lower)"
   when: install_wendy_cli
 
-- name: Install Wendy agent when selected
+- name: Install Wendy daemon when selected
   ansible.builtin.shell: |
     set -euo pipefail
-    curl -fsSL "{{ wendy_agent_install_url }}" | bash -s -- -y -d "{{ wendy_install_dir }}"
+    curl -fsSL "{{ wendy_daemon_install_url }}" | bash -s -- -y -d "{{ wendy_install_dir }}"
   args:
     executable: /bin/bash
   become: true
-  register: wendy_tools_ubuntu_agent
-  changed_when: "'already' not in (wendy_tools_ubuntu_agent.stdout | lower)"
-  when: install_wendy_agent
+  register: wendy_tools_ubuntu_daemon
+  changed_when: "'already' not in (wendy_tools_ubuntu_daemon.stdout | lower)"
+  when: install_wendy_daemon
