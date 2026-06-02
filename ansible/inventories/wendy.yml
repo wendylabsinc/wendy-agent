@@ -16,6 +16,8 @@ all:
       hosts:
         wendy-agent-ubuntu-01: {}
     wendy:
+      vars:
+        ansible_user: wendy
       hosts:
         wendy-cli-ubuntu-24-01:
         wendy-cli-windows-11-01:

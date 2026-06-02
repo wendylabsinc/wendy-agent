@@ -36,13 +36,13 @@
     url: "https://github.com/actions/runner/releases/download/v{{ github_runner_version }}/actions-runner-osx-{{ github_runner_arch }}-{{ github_runner_version }}.tar.gz"
     dest: "{{ github_runner_dir }}/actions-runner.tar.gz"
     mode: '0644'
+    force: true
   when: install_github_runner and not github_runner_macos_config.stat.exists
 
 - name: Extract GitHub Actions runner archive
-  ansible.builtin.unarchive:
-    src: "{{ github_runner_dir }}/actions-runner.tar.gz"
-    dest: "{{ github_runner_dir }}"
-    remote_src: true
+  ansible.builtin.command: >-
+    /usr/bin/tar -xzf {{ github_runner_dir }}/actions-runner.tar.gz -C {{ github_runner_dir }}
+  args:
     creates: "{{ github_runner_dir }}/config.sh"
   when: install_github_runner and not github_runner_macos_config.stat.exists
 

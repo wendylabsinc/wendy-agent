@@ -3,3 +3,5 @@ ci_site: wendy
 ansible_user: wendy
 github_runner_site_labels:
   - wendy
+setup_passwordless_sudo: false
+configure_screen_lock_policy: false

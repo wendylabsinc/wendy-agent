@@ -35,7 +35,7 @@
   ansible.builtin.shell: |
     set -euo pipefail
     . "$HOME/.local/share/swiftly/env.sh"
-    swiftly install "{{ swift_requested_version }}"
+    swiftly install --assume-yes "{{ swift_requested_version }}"
   args:
     executable: /bin/bash
   register: swift_ubuntu_install
@@ -46,7 +46,7 @@
   ansible.builtin.shell: |
     set -euo pipefail
     . "$HOME/.local/share/swiftly/env.sh"
-    swiftly use "{{ swift_requested_version }}"
+    swiftly use --assume-yes "{{ swift_requested_version }}"
   args:
     executable: /bin/bash
   register: swift_ubuntu_use

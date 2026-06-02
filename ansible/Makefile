@@ -6,11 +6,17 @@ ANSIBLE_PLAYBOOK ?= ansible-playbook
 CI_INVENTORIES ?= inventories/wendy.yml inventories/kb.yml
 LIMIT ?=
 EXTRA_ARGS ?=
+ASK_PASS ?= auto
+ASK_BECOME_PASS ?= auto
+ANSIBLE_SSH_ARGS ?= -o ControlMaster=no -o ControlPath=none -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10
 
 INVENTORY_ARGS := $(foreach inventory,$(CI_INVENTORIES),-i $(inventory))
 LIMIT_ARG := $(if $(LIMIT),--limit $(LIMIT),)
+ASK_PASS_ARGS = $(shell scripts/ssh-password-fallback.py $(INVENTORY_ARGS) $(LIMIT_ARG) --mode $(ASK_PASS))
+ASK_BECOME_PASS_ARGS = $(shell scripts/sudo-become-fallback.py $(INVENTORY_ARGS) $(LIMIT_ARG) --mode $(ASK_BECOME_PASS))
 
 export ANSIBLE_CONFIG
+export ANSIBLE_SSH_ARGS
 
 .PHONY: help install lint info deploy converge \
 	ci-lint ci-info ci-deploy ci-converge \
@@ -44,6 +50,8 @@ help:
 	@echo "  make ci-deploy CI_INVENTORIES=inventories/wendy.yml"
 	@echo "  make ci-deploy CI_INVENTORIES=inventories/kb.yml"
 	@echo "  make ci-deploy LIMIT=kb-cli-ubuntu-24-01"
+	@echo "  make ci-deploy ASK_PASS=false"
+	@echo "  make ci-deploy ASK_BECOME_PASS=false"
 	@echo "  make ci-deploy EXTRA_ARGS=\"--extra-vars 'github_runner_token=...'\""
 
 install:
@@ -63,26 +71,26 @@ ci-lint:
 	$(ANSIBLE_PLAYBOOK) $(INVENTORY_ARGS) playbooks/ci.yml --syntax-check
 
 ci-info:
-	$(ANSIBLE_PLAYBOOK) $(INVENTORY_ARGS) playbooks/info.yml --tags info $(LIMIT_ARG) $(EXTRA_ARGS)
+	$(ANSIBLE_PLAYBOOK) $(INVENTORY_ARGS) playbooks/info.yml --tags info $(LIMIT_ARG) $(ASK_PASS_ARGS) $(EXTRA_ARGS)
 
 ci-deploy:
-	$(ANSIBLE_PLAYBOOK) $(INVENTORY_ARGS) playbooks/ci.yml $(LIMIT_ARG) $(EXTRA_ARGS)
+	$(ANSIBLE_PLAYBOOK) $(INVENTORY_ARGS) playbooks/ci.yml $(LIMIT_ARG) $(ASK_PASS_ARGS) $(ASK_BECOME_PASS_ARGS) $(EXTRA_ARGS)
 
 ci-converge:
 	$(MAKE) ci-deploy CI_INVENTORIES="$(CI_INVENTORIES)" LIMIT="$(LIMIT)" EXTRA_ARGS="$(EXTRA_ARGS)"
 	$(MAKE) ci-deploy CI_INVENTORIES="$(CI_INVENTORIES)" LIMIT="$(LIMIT)" EXTRA_ARGS="$(EXTRA_ARGS)"
 
 ci-deploy-packages:
-	$(ANSIBLE_PLAYBOOK) $(INVENTORY_ARGS) playbooks/ci.yml --tags packages $(LIMIT_ARG) $(EXTRA_ARGS)
+	$(ANSIBLE_PLAYBOOK) $(INVENTORY_ARGS) playbooks/ci.yml --tags packages $(LIMIT_ARG) $(ASK_PASS_ARGS) $(ASK_BECOME_PASS_ARGS) $(EXTRA_ARGS)
 
 ci-deploy-swift:
-	$(ANSIBLE_PLAYBOOK) $(INVENTORY_ARGS) playbooks/ci.yml --tags swift $(LIMIT_ARG) $(EXTRA_ARGS)
+	$(ANSIBLE_PLAYBOOK) $(INVENTORY_ARGS) playbooks/ci.yml --tags swift $(LIMIT_ARG) $(ASK_PASS_ARGS) $(ASK_BECOME_PASS_ARGS) $(EXTRA_ARGS)
 
 ci-deploy-runner:
-	$(ANSIBLE_PLAYBOOK) $(INVENTORY_ARGS) playbooks/ci.yml --tags runner $(LIMIT_ARG) $(EXTRA_ARGS)
+	$(ANSIBLE_PLAYBOOK) $(INVENTORY_ARGS) playbooks/ci.yml --tags runner $(LIMIT_ARG) $(ASK_PASS_ARGS) $(ASK_BECOME_PASS_ARGS) $(EXTRA_ARGS)
 
 ci-deploy-desktop:
-	$(ANSIBLE_PLAYBOOK) $(INVENTORY_ARGS) playbooks/ci.yml --tags desktop_access $(LIMIT_ARG) $(EXTRA_ARGS)
+	$(ANSIBLE_PLAYBOOK) $(INVENTORY_ARGS) playbooks/ci.yml --tags desktop_access $(LIMIT_ARG) $(ASK_PASS_ARGS) $(ASK_BECOME_PASS_ARGS) $(EXTRA_ARGS)
 
 ci-deploy-power:
-	$(ANSIBLE_PLAYBOOK) $(INVENTORY_ARGS) playbooks/ci.yml --tags power_policy $(LIMIT_ARG) $(EXTRA_ARGS)
+	$(ANSIBLE_PLAYBOOK) $(INVENTORY_ARGS) playbooks/ci.yml --tags power_policy $(LIMIT_ARG) $(ASK_PASS_ARGS) $(ASK_BECOME_PASS_ARGS) $(EXTRA_ARGS)

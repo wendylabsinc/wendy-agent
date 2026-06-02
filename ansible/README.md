@@ -119,8 +119,17 @@ make ci-deploy CI_INVENTORIES=inventories/wendy.yml
 make ci-deploy CI_INVENTORIES=inventories/kb.yml
 make ci-deploy CI_INVENTORIES="inventories/wendy.yml inventories/kb.yml"
 make ci-deploy LIMIT=kb-cli-ubuntu-24-01
+make ci-deploy ASK_PASS=false
+make ci-deploy ASK_BECOME_PASS=false
 make ci-deploy EXTRA_ARGS="--extra-vars 'github_runner_url=https://github.com/OWNER/REPO github_runner_token=TOKEN'"
 ```
+
+Focused runs (`LIMIT=...`) default to `ASK_PASS=auto`: if passwordless SSH
+fails for the selected host, the Makefile adds `--ask-pass`. Deploy runs also
+default to `ASK_BECOME_PASS=auto`: if passwordless sudo fails for the selected
+POSIX host, the Makefile adds `--ask-become-pass`. Broad multi-host runs do not
+auto-prompt; pass `ASK_PASS=true` or `ASK_BECOME_PASS=true` if password auth is
+desired.
 
 ## GitHub runner registration
 
@@ -149,6 +158,7 @@ whether `claude` and `codex` are on PATH for the Ansible/runner user.
 ## Safety rules
 
 - `false` means leave an existing optional setting unchanged.
+- Wendy-site machines leave passwordless sudo and screen lock policy unchanged by default.
 - Token-bearing inventories stay local/uncommitted.
 - Windows OpenSSH `DefaultShell` is not changed unless explicitly requested, and
   automation must not set it to the WindowsApps app execution alias.
