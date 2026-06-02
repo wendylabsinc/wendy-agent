@@ -2,8 +2,6 @@
 - name: Report current machine setup without changing it
   hosts: ci
   gather_facts: true
-  vars_files:
-    - ../group_vars/all.yml
   roles:
     - common
     - developer_tools
