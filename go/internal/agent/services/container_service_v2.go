@@ -220,7 +220,7 @@ func (s *ContainerServiceV2) ListContainerStats(_ *agentpbv2.ListContainerStatsR
 	}
 	for _, st := range stats {
 		if err := stream.Send(&agentpbv2.ListContainerStatsResponse{
-			ContainerStats: &agentpbv2.ContainerStats{
+			Stats: &agentpbv2.ContainerStats{
 				AppName:      st.AppName,
 				MemoryBytes:  st.MemoryBytes,
 				StorageBytes: st.StorageBytes,
