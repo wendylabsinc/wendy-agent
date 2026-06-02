@@ -22,10 +22,10 @@ help:
 	@echo "Setup:"
 	@echo "  make install              Install required Ansible collections"
 	@echo ""
-	@echo "All committed inventories:"
-	@echo "  make lint                 Validate inventories and playbook syntax"
-	@echo "  make info                 Report current state without changes"
-	@echo "  make deploy               Deploy desired state"
+	@echo "Committed CI inventory:"
+	@echo "  make lint                 Validate inventory and playbook syntax"
+	@echo "  make info                 Report CI state without changes"
+	@echo "  make deploy               Deploy CI desired state"
 	@echo "  make converge             Run deploy twice to verify idempotency"
 	@echo ""
 	@echo "CI inventory ($(CI_INVENTORY)):"
@@ -41,7 +41,7 @@ help:
 	@echo ""
 	@echo "Overrides:"
 	@echo "  make ci-deploy CI_INVENTORY=inventories/local.yml"
-	@echo "  make ci-deploy LIMIT=kb-ubuntu-24.local"
+	@echo "  make ci-deploy LIMIT=kb-developer-ubuntu-24-01"
 	@echo "  make ci-deploy EXTRA_ARGS=\"--extra-vars 'github_runner_token=...'\""
 
 install:

@@ -1,0 +1,7 @@
+---
+# Inventory group name uses an underscore; GitHub label/profile use hyphens.
+machine_profile: wendy-developer
+install_wendy_cli: true
+install_wendy_daemon: false
+github_runner_machine_labels:
+  - wendy-developer

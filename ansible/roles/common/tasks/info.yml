@@ -3,6 +3,8 @@
   ansible.builtin.debug:
     msg:
       host: "{{ inventory_hostname }}"
+      ci_site: "{{ ci_site | default('unknown') }}"
+      machine_profile: "{{ machine_profile | default('unknown') }}"
       system: "{{ ansible_facts.system | default('unknown') }}"
       os_family: "{{ ansible_facts.os_family | default('unknown') }}"
       distribution: "{{ ansible_facts.distribution | default('unknown') }}"

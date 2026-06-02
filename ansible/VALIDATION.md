@@ -7,14 +7,17 @@ fixed until it converged.
 
 ## CI inventory
 
-The committed CI inventory contains one runner per platform:
+The committed CI inventory contains two site groups and two machine type groups:
 
-- `kb-macos-26.local`
-- `kb-ubuntu-24.local`
-- `kb-windows-11.local`
+- `wendy` / `wendy`: Wendy-site hosts connect as user `wendy`.
+- `kb` / `kb`: KB-site hosts connect as user `konstantinbe`.
+- `wendy_developer` / `wendy-developer`: hosts used for Wendy CLI work.
+- `wendy_daemon` / `wendy-daemon`: hosts used for Wendy daemon work.
 
-All connect over SSH as `konstantinbe`. Local inventory overrides can still be
-kept ignored at `ansible/inventories/local.yml`.
+Inventory host names are stable runner ids. DNS names live in `ansible_host`.
+`wendy-daemon-ubuntu-01` is recorded in `pending` until its hostname is known.
+Local inventory overrides can still be kept ignored at
+`ansible/inventories/local.yml`.
 
 ## Static checks
 
@@ -24,7 +27,8 @@ Run from `ansible/`:
 make lint
 ```
 
-CI inventory and syntax checks passed on 2026-05-22.
+CI inventory and syntax checks passed on 2026-05-22. The live validation below
+predates the expanded Wendy/KB inventory and applies to the original KB hosts.
 
 ## Read-only info command
 

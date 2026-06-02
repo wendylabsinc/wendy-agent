@@ -24,13 +24,24 @@ The committed production CI inventory is:
 inventories/ci.yml
 ```
 
-It currently describes one runner per supported platform:
+It uses stable runner ids as Ansible host names and `ansible_host` for DNS
+hostnames. The committed inventory covers two CI sites:
 
-- `kb-macos-26.local`
-- `kb-ubuntu-24.local`
-- `kb-windows-11.local`
+- `wendy`: connects as user `wendy` and adds the `wendy` runner label.
+  - `wendy-developer-ubuntu-24-01` → `wendy-developer-ubuntu`
+  - `wendy-developer-windows-11-01` → `wendy-windows`
+  - `wendy-developer-macos-26-01` → `wendys-mac-mini`
+  - `wendy-daemon-macos-26-01` → `wendys-mac-mini-2`
+  - `wendy-daemon-ubuntu-01` is recorded in `pending` until its hostname is
+    known.
+- `kb`: connects as user `konstantinbe` and adds the `kb` runner label.
+  - `kb-developer-ubuntu-24-01` → `kb-ubuntu-24.local`
+  - `kb-developer-windows-11-01` → `kb-windows-11.local`
+  - `kb-developer-macos-26-01` → `kb-macos-26.local`
+  - `kb-daemon-macos-26-01` → `mac-mini.local`
 
-All platforms are expected to be reachable over SSH. Windows hosts should set:
+All CI platforms are expected to be reachable over SSH. Windows hosts should
+set:
 
 ```yaml
 ansible_shell_type: powershell
@@ -46,6 +57,28 @@ make ci-info CI_INVENTORY=inventories/local.yml
 `inventories/local.yml` is ignored by git. Keep runner tokens and other secrets
 out of committed inventory.
 
+## CI site and machine type groups
+
+CI hosts should be placed in one site group and one machine type group.
+
+Site groups:
+
+- `kb`: sets `ci_site: kb`, connects as `konstantinbe`, and adds the `kb`
+  runner label.
+- `wendy`: sets `ci_site: wendy`, connects as `wendy`, and adds the `wendy`
+  runner label.
+
+Machine type groups:
+
+- `wendy_developer`: sets `machine_profile: wendy-developer`, installs the
+  Wendy CLI, and adds the `wendy-developer` runner label.
+- `wendy_daemon`: sets `machine_profile: wendy-daemon`, installs the Wendy
+  daemon, and adds the `wendy-daemon` runner label.
+
+The group names use underscores because they are Ansible inventory groups; the
+profile names and GitHub labels use hyphens. Runner labels are composed from the
+site and machine type labels.
+
 ## Common commands
 
 Run commands from this directory:
@@ -59,13 +92,13 @@ Setup and validation:
 ```sh
 make install       # install required Ansible collections
 make lint          # validate committed inventories/playbook syntax
-make info          # read-only state report for all committed inventories
+make info          # read-only state report for committed CI hosts
 ```
 
 Production deployment:
 
 ```sh
-make deploy        # deploy all committed inventories
+make deploy        # deploy committed CI hosts
 make converge      # run deploy twice to verify idempotency
 ```
 
@@ -91,7 +124,7 @@ Useful overrides:
 
 ```sh
 make ci-deploy CI_INVENTORY=inventories/local.yml
-make ci-deploy LIMIT=kb-ubuntu-24.local
+make ci-deploy LIMIT=kb-developer-ubuntu-24-01
 make ci-deploy EXTRA_ARGS="--extra-vars 'github_runner_url=https://github.com/OWNER/REPO github_runner_token=TOKEN'"
 ```
 

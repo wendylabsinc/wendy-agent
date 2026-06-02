@@ -1,6 +1,6 @@
 ---
 - name: Report current machine setup without changing it
-  hosts: all
+  hosts: ci
   gather_facts: true
   vars_files:
     - ../group_vars/all.yml

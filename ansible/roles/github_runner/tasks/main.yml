@@ -6,6 +6,12 @@
       tags: info
   tags: [info]
 
+- name: Compose GitHub runner labels
+  ansible.builtin.set_fact:
+    github_runner_effective_labels: "{{ (github_runner_labels | default([])) + (github_runner_site_labels | default([])) + (github_runner_machine_labels | default([])) }}"
+  changed_when: false
+  tags: [info, runner, github_runner]
+
 - name: Include macOS GitHub runner tasks
   ansible.builtin.include_tasks:
     file: macos.yml

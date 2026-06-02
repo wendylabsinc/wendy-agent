@@ -103,6 +103,8 @@ github_runner_url: https://github.com/OWNER/REPO
 github_runner_token: null
 github_runner_mode: manual # manual | login | service
 github_runner_labels: []
+github_runner_site_labels: []
+github_runner_machine_labels: []
 github_runner_name: "{{ inventory_hostname_short | default(inventory_hostname) }}"
 github_runner_work_dir: _work
 github_runner_service_name: github-actions-runner

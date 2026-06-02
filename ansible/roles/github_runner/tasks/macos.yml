@@ -50,7 +50,7 @@
   ansible.builtin.command: >-
     ./config.sh --unattended --url {{ github_runner_url }} --token {{ github_runner_token }}
     --name {{ github_runner_name }} --work {{ github_runner_work_dir }}
-    {{ ('--labels ' + (github_runner_labels | join(','))) if github_runner_labels | length > 0 else '' }}
+    {{ ('--labels ' + (github_runner_effective_labels | join(','))) if github_runner_effective_labels | length > 0 else '' }}
   args:
     chdir: "{{ github_runner_dir }}"
     creates: "{{ github_runner_dir }}/.runner"
@@ -61,7 +61,7 @@
   ansible.builtin.debug:
     msg:
       - "Runner is installed but not registered. Generate a registration token outside git."
-      - "Then run: cd {{ github_runner_dir }} && ./config.sh --url {{ github_runner_url }} --token <token> --name {{ github_runner_name }}"
+      - "Then run: cd {{ github_runner_dir }} && ./config.sh --url {{ github_runner_url }} --token <token> --name {{ github_runner_name }} --work {{ github_runner_work_dir }} {{ ('--labels ' + (github_runner_effective_labels | join(','))) if github_runner_effective_labels | length > 0 else '' }}"
   when: install_github_runner and not github_runner_macos_registered.stat.exists and github_runner_token is none
 
 - name: Refresh macOS runner registration state

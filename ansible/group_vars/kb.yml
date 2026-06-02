@@ -1,0 +1,5 @@
+---
+ci_site: kb
+ansible_user: konstantinbe
+github_runner_site_labels:
+  - kb
