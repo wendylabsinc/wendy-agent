@@ -3,8 +3,7 @@ ANSIBLE_GALAXY ?= ansible-galaxy
 ANSIBLE_INVENTORY ?= ansible-inventory
 ANSIBLE_PLAYBOOK ?= ansible-playbook
 
-CI_INVENTORY ?=
-CI_INVENTORIES ?= $(if $(CI_INVENTORY),$(CI_INVENTORY),inventories/wendy.yml inventories/kb.yml)
+CI_INVENTORIES ?= inventories/wendy.yml inventories/kb.yml
 LIMIT ?=
 EXTRA_ARGS ?=
 
@@ -43,7 +42,7 @@ help:
 	@echo ""
 	@echo "Overrides:"
 	@echo "  make ci-deploy CI_INVENTORIES=inventories/wendy.yml"
-	@echo "  make ci-deploy CI_INVENTORY=inventories/local.yml"
+	@echo "  make ci-deploy CI_INVENTORIES=inventories/kb.yml"
 	@echo "  make ci-deploy LIMIT=kb-developer-ubuntu-24-01"
 	@echo "  make ci-deploy EXTRA_ARGS=\"--extra-vars 'github_runner_token=...'\""
 

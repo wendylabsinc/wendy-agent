@@ -39,6 +39,3 @@ go/local-pki-test
 # Superpowers planning docs (local dev tooling)
 docs/superpowers/
 
-# Local Ansible inventory with real hostnames/secrets
-ansible/inventories/local.yml
-ansible/inventories/local.yaml

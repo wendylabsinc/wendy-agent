@@ -48,15 +48,6 @@ set:
 ansible_shell_type: powershell
 ```
 
-For local overrides, copy the example inventory and keep it uncommitted:
-
-```sh
-cp inventories/local_example.yml inventories/local.yml
-make ci-info CI_INVENTORY=inventories/local.yml
-```
-
-`inventories/local.yml` is ignored by git. Keep runner tokens and other secrets
-out of committed inventory.
 
 ## CI site and machine type groups
 
@@ -125,8 +116,8 @@ Useful overrides:
 
 ```sh
 make ci-deploy CI_INVENTORIES=inventories/wendy.yml
+make ci-deploy CI_INVENTORIES=inventories/kb.yml
 make ci-deploy CI_INVENTORIES="inventories/wendy.yml inventories/kb.yml"
-make ci-deploy CI_INVENTORY=inventories/local.yml
 make ci-deploy LIMIT=kb-developer-ubuntu-24-01
 make ci-deploy EXTRA_ARGS="--extra-vars 'github_runner_url=https://github.com/OWNER/REPO github_runner_token=TOKEN'"
 ```

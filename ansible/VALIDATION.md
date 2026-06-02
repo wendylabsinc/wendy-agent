@@ -17,8 +17,6 @@ The committed CI inventories are split by site (`inventories/wendy.yml` and
 
 Inventory host names are stable runner ids. DNS names live in `ansible_host`.
 `wendy-daemon-ubuntu-01` is recorded in `pending` until its hostname is known.
-Local inventory overrides can still be kept ignored at
-`ansible/inventories/local.yml`.
 
 ## Static checks
 
