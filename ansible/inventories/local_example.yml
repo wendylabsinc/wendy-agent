@@ -14,8 +14,3 @@ all:
           ansible_user: your-user
           ansible_connection: ssh
           ansible_shell_type: powershell
-    developers:
-      hosts:
-        developer-mac.local:
-          ansible_user: your-user
-          ansible_connection: ssh

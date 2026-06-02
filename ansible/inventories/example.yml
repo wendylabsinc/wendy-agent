@@ -13,8 +13,3 @@ all:
         kb-macos-26.local:
           ansible_user: konstantinbe
           ansible_connection: ssh
-    developers:
-      hosts:
-        developer-mac.local:
-          ansible_user: your-user
-          ansible_connection: ssh

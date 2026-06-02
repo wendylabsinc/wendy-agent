@@ -1,7 +1,7 @@
 # Wendy machine setup with Ansible
 
-This directory contains Ansible automation for provisioning Wendy CI and
-developer machines on macOS, Ubuntu, and Windows.
+This directory contains Ansible automation for provisioning Wendy CI machines
+on macOS, Ubuntu, and Windows.
 
 The playbooks are intentionally plain: local roles, YAML variables, and explicit
 platform task files. Privacy-gated steps stay visible as manual instructions.
@@ -116,9 +116,8 @@ Platform startup mapping:
 
 ## AI coding assistants
 
-CI and developer machine profiles install Claude Code and OpenAI Codex. The info
-playbook reports whether `claude` and `codex` are on PATH for the Ansible/runner
-user.
+The CI profile installs Claude Code and OpenAI Codex. The info playbook reports
+whether `claude` and `codex` are on PATH for the Ansible/runner user.
 
 ## Safety rules
 
