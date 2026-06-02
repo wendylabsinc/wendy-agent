@@ -95,5 +95,5 @@ message ContainerStats {
 message ListContainerStatsRequest {}
 
 message ListContainerStatsResponse {
-    ContainerStats stats = 1;
+    ContainerStats container_stats = 1;
 }
