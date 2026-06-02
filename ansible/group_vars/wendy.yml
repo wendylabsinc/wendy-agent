@@ -1,6 +1,7 @@
 ---
 ci_site: wendy
 ansible_user: wendy
+github_runner_url: https://github.com/wendylabsinc
 github_runner_site_labels:
   - wendy
 setup_passwordless_sudo: false

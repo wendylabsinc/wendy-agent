@@ -141,7 +141,9 @@ make ci-deploy EXTRA_ARGS="--extra-vars 'github_runner_url=https://github.com/OW
 ```
 
 If `github_runner_token` is null and the runner is not registered, the role
-prints manual registration instructions instead of failing.
+prompts for a registration token by default. Set
+`github_runner_prompt_for_token=false` to skip prompting and print manual
+registration instructions instead.
 
 Platform startup mapping:
 

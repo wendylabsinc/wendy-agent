@@ -5,3 +5,4 @@ install_wendy_cli: true
 install_wendy_agent: false
 github_runner_machine_labels:
   - wendy-cli
+github_runner_group: wendy-developer

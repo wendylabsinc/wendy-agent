@@ -22,6 +22,33 @@
   register: github_runner_windows_config
   when: install_github_runner
 
+- name: Prompt for GitHub runner registration token
+  ansible.builtin.pause:
+    prompt: "Enter GitHub runner registration token for {{ inventory_hostname }} ({{ github_runner_url }})"
+    echo: false
+  register: github_runner_windows_token_prompt
+  no_log: true
+  when:
+    - install_github_runner
+    - github_runner_prompt_for_token
+    - not github_runner_windows_registered.stat.exists
+    - github_runner_token is none
+
+- name: Set effective GitHub runner registration token
+  ansible.builtin.set_fact:
+    github_runner_effective_token: "{{ github_runner_token | default(github_runner_windows_token_prompt.user_input | default(''), true) }}"
+  no_log: true
+  when: install_github_runner
+
+- name: Require GitHub runner registration token
+  ansible.builtin.fail:
+    msg: "GitHub runner registration token is required for unregistered runner {{ inventory_hostname }}."
+  when:
+    - install_github_runner
+    - github_runner_prompt_for_token
+    - not github_runner_windows_registered.stat.exists
+    - github_runner_effective_token | default('') | length == 0
+
 - name: Resolve latest GitHub Actions runner release
   ansible.windows.win_uri:
     url: https://api.github.com/repos/actions/runner/releases/latest
@@ -50,21 +77,26 @@
 
 - name: Register GitHub Actions runner when token is provided
   ansible.windows.win_command: >-
-    {{ github_runner_windows_dir }}\config.cmd --unattended --url {{ github_runner_url }} --token {{ github_runner_token }}
+    {{ github_runner_windows_dir }}\config.cmd --unattended --url {{ github_runner_url }} --token {{ github_runner_effective_token }}
     --name {{ github_runner_name }} --work {{ github_runner_work_dir }}
+    {{ ('--runnergroup ' + github_runner_group) if github_runner_group is not none else '' }}
     {{ ('--labels ' + (github_runner_effective_labels | join(','))) if github_runner_effective_labels | length > 0 else '' }}
   args:
     chdir: "{{ github_runner_windows_dir }}"
     creates: "{{ github_runner_windows_dir }}\\.runner"
   no_log: true
-  when: install_github_runner and not github_runner_windows_registered.stat.exists and github_runner_token is not none
+  when: install_github_runner and not github_runner_windows_registered.stat.exists and github_runner_effective_token | default('') | length > 0
 
 - name: Print manual GitHub runner registration instructions
   ansible.builtin.debug:
     msg:
       - "Runner is installed but not registered. Generate a registration token outside git."
-      - "Then run: cd {{ github_runner_windows_dir }} && .\\config.cmd --url {{ github_runner_url }} --token <token> --name {{ github_runner_name }} --work {{ github_runner_work_dir }} {{ ('--labels ' + (github_runner_effective_labels | join(','))) if github_runner_effective_labels | length > 0 else '' }}"
-  when: install_github_runner and not github_runner_windows_registered.stat.exists and github_runner_token is none
+      - "Then run: cd {{ github_runner_windows_dir }} && .\\config.cmd --url {{ github_runner_url }} --token <token> --name {{ github_runner_name }} --work {{ github_runner_work_dir }} {{ ('--runnergroup ' + github_runner_group) if github_runner_group is not none else '' }} {{ ('--labels ' + (github_runner_effective_labels | join(','))) if github_runner_effective_labels | length > 0 else '' }}"
+  when:
+    - install_github_runner
+    - not github_runner_windows_registered.stat.exists
+    - not github_runner_prompt_for_token
+    - github_runner_token is none
 
 - name: Refresh Windows runner registration state
   ansible.windows.win_stat:
