@@ -451,7 +451,10 @@ func (s *ContainerService) streamContainerOutput(
 		case <-ctx.Done():
 			return 0, ctx.Err()
 		case output, ok := <-readCh:
-			if !ok || output.Done {
+			if !ok {
+				return 0, status.Error(codes.Internal, "log subscriber closed before Done was delivered")
+			}
+			if output.Done {
 				if output.Err != nil {
 					return output.ExitCode, status.Errorf(codes.Internal, "container exited without a valid result: %v", output.Err)
 				}

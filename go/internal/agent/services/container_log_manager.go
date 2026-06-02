@@ -16,20 +16,36 @@ type logSubscriber struct {
 	closed bool
 }
 
-// send attempts a non-blocking send to the subscriber.
-// It is a no-op if the subscriber is already closed; the mutex ensures this
-// check and the channel send cannot race with close.
+// send delivers output to the subscriber. Done messages block until delivered
+// (or until the subscriber is concurrently closed); other messages are dropped
+// if the buffer is full so that a slow subscriber cannot stall the pump.
 func (s *logSubscriber) send(output ContainerOutput) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.closed {
+		s.mu.Unlock()
+		return
+	}
+	ch := s.ch
+	s.mu.Unlock()
+
+	if output.Done {
+		// Must be delivered; release lock before blocking to avoid deadlock
+		// with close(). Recover from send-on-closed-channel if close() races.
+		sendDoneToSubscriber(ch, output)
 		return
 	}
 	select {
-	case s.ch <- output:
+	case ch <- output:
 	default:
 		// Drop if subscriber is slow.
 	}
+}
+
+// sendDoneToSubscriber performs a blocking send, recovering from the
+// send-on-closed-channel panic that can occur if close() runs concurrently.
+func sendDoneToSubscriber(ch chan ContainerOutput, output ContainerOutput) {
+	defer func() { recover() }() //nolint:all
+	ch <- output
 }
 
 // close marks the subscriber as closed and closes the underlying channel.

@@ -108,7 +108,10 @@ func (s *ContainerServiceV2) AttachContainer(stream grpc.BidiStreamingServer[age
 		case <-ctx.Done():
 			return ctx.Err()
 		case output, ok := <-readCh:
-			if !ok || output.Done {
+			if !ok {
+				return status.Error(codes.Internal, "log subscriber closed before Done was delivered")
+			}
+			if output.Done {
 				if output.Err != nil {
 					return status.Errorf(codes.Internal, "container exited without a valid result: %v", output.Err)
 				}
