@@ -29,9 +29,9 @@ They use stable runner ids as Ansible host names and `ansible_host` for DNS
 hostnames. The committed inventories cover two CI sites:
 
 - `wendy`: connects as user `wendy` and adds the `wendy` runner label.
-  - `wendy-cli-ubuntu-24-01` → `wendy-cli-ubuntu`
-  - `wendy-cli-windows-11-01` → `wendy-windows`
-  - `wendy-cli-macos-26-01` → `wendys-mac-mini`
+  - `wendy-developer-ubuntu-24-01` → `wendy-cli-ubuntu`
+  - `wendy-developer-windows-11-01` → `wendy-windows`
+  - `wendy-developer-macos-26-01` → `wendys-mac-mini`
   - `wendy-agent-macos-26-01` → `wendys-mac-mini-2`
   - `wendy-agent-ubuntu-01` is recorded in `pending` until its hostname is
     known.

@@ -3,12 +3,12 @@ all:
   children:
     ci:
       hosts:
-        wendy-cli-ubuntu-24-01:
+        wendy-developer-ubuntu-24-01:
           ansible_host: wendy-cli-ubuntu
-        wendy-cli-windows-11-01:
+        wendy-developer-windows-11-01:
           ansible_host: wendy-windows
           ansible_shell_type: powershell
-        wendy-cli-macos-26-01:
+        wendy-developer-macos-26-01:
           ansible_host: wendys-mac-mini
         wendy-agent-macos-26-01:
           ansible_host: wendys-mac-mini-2
@@ -19,16 +19,16 @@ all:
       vars:
         ansible_user: wendy
       hosts:
-        wendy-cli-ubuntu-24-01:
-        wendy-cli-windows-11-01:
-        wendy-cli-macos-26-01:
+        wendy-developer-ubuntu-24-01:
+        wendy-developer-windows-11-01:
+        wendy-developer-macos-26-01:
         wendy-agent-macos-26-01:
         wendy-agent-ubuntu-01:
     wendy_cli:
       hosts:
-        wendy-cli-ubuntu-24-01:
-        wendy-cli-windows-11-01:
-        wendy-cli-macos-26-01:
+        wendy-developer-ubuntu-24-01:
+        wendy-developer-windows-11-01:
+        wendy-developer-macos-26-01:
     wendy_agent:
       hosts:
         wendy-agent-macos-26-01:
