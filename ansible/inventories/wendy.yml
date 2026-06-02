@@ -5,13 +5,27 @@ all:
       hosts:
         wendy-developer-ubuntu-24-01:
           ansible_host: wendy-cli-ubuntu
+          github_runner_machine_labels:
+            - wendy-developer
+          github_runner_platform_labels:
+            - ubuntu-24
         wendy-developer-windows-11-01:
           ansible_host: wendy-windows
           ansible_shell_type: powershell
+          github_runner_machine_labels:
+            - wendy-developer
+          github_runner_platform_labels:
+            - windows-11
         wendy-developer-macos-26-01:
           ansible_host: wendys-mac-mini
+          github_runner_machine_labels:
+            - wendy-developer
+          github_runner_platform_labels:
+            - macos-26
         wendy-agent-macos-26-01:
           ansible_host: wendys-mac-mini-2
+          github_runner_platform_labels:
+            - macos-26
     pending:
       hosts:
         wendy-agent-ubuntu-01: {}

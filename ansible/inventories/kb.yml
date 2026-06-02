@@ -5,13 +5,21 @@ all:
       hosts:
         kb-cli-ubuntu-24-01:
           ansible_host: kb-ubuntu-24.local
+          github_runner_platform_labels:
+            - ubuntu-24
         kb-cli-windows-11-01:
           ansible_host: kb-windows-11.local
           ansible_shell_type: powershell
+          github_runner_platform_labels:
+            - windows-11
         kb-cli-macos-26-01:
           ansible_host: kb-macos-26.local
+          github_runner_platform_labels:
+            - macos-26
         kb-agent-macos-26-01:
           ansible_host: mac-mini.local
+          github_runner_platform_labels:
+            - macos-26
     kb:
       hosts:
         kb-cli-ubuntu-24-01:

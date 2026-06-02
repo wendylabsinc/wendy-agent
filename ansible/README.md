@@ -63,13 +63,15 @@ Site groups:
 Machine type groups:
 
 - `wendy_cli`: sets `machine_profile: wendy-cli`, installs the
-  Wendy CLI, and adds the `wendy-cli` runner label.
+  Wendy CLI, and adds the `wendy-cli` runner label by default. Wendy-site
+  developer hosts override this runner label to `wendy-developer`.
 - `wendy_agent`: sets `machine_profile: wendy-agent`, installs the Wendy
   agent, and adds the `wendy-agent` runner label.
 
 The group names use underscores because they are Ansible inventory groups; the
 profile names and GitHub labels use hyphens. Runner labels are composed from the
-site and machine type labels.
+site, machine type, and platform labels (for example `ubuntu-24`, `macos-26`,
+`windows-11`).
 
 ## Common commands
 
