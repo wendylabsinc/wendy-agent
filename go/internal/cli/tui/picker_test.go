@@ -129,6 +129,22 @@ func TestPickerModel_CustomColumns(t *testing.T) {
 	}
 }
 
+func TestPickerModel_CustomColumnsNilFallsBackToDefaultPicker(t *testing.T) {
+	m := NewPickerWithTitleAndColumns("Select", nil)
+
+	updated, _ := m.Update(PickerAddMsg{Items: []PickerItem{
+		{Name: "alpha", Description: "only show populated optional columns", Value: "alpha"},
+	}})
+	pm := updated.(PickerModel)
+
+	if hasColumn(pm.table.Columns(), "Type") {
+		t.Fatal("nil custom columns should not force the fixed default column layout")
+	}
+	if !hasColumn(pm.table.Columns(), "Description") {
+		t.Fatal("nil custom columns should preserve the default picker dynamic column behavior")
+	}
+}
+
 func TestPickerTableData_KeepsFullColumnContentForScrolling(t *testing.T) {
 	items := []PickerItem{{
 		Name:        "wendyos-sunny-daisy",

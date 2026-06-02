@@ -131,6 +131,9 @@ func NewPickerWithTitle(title string) PickerModel {
 // NewPickerWithTitleAndColumns creates a picker with a custom title and stable
 // caller-provided table columns.
 func NewPickerWithTitleAndColumns(title string, columns []PickerColumn) PickerModel {
+	if len(columns) == 0 {
+		return NewPickerWithTitle(title)
+	}
 	m := NewPickerWithTitle(title)
 	m.columns = pickerColumnDefsFromColumns(columns)
 	m.fixedColumns = true
