@@ -12,11 +12,11 @@ The committed CI inventories are split by site (`inventories/wendy.yml` and
 
 - `wendy` / `wendy`: Wendy-site hosts connect as user `wendy`.
 - `kb` / `kb`: KB-site hosts connect as user `konstantinbe`.
-- `wendy_developer` / `wendy-developer`: hosts used for Wendy CLI work.
-- `wendy_daemon` / `wendy-daemon`: hosts used for Wendy daemon work.
+- `wendy_cli` / `wendy-cli`: hosts used for Wendy CLI work.
+- `wendy_agent` / `wendy-agent`: hosts used for Wendy agent work.
 
 Inventory host names are stable runner ids. DNS names live in `ansible_host`.
-`wendy-daemon-ubuntu-01` is recorded in `pending` until its hostname is known.
+`wendy-agent-ubuntu-01` is recorded in `pending` until its hostname is known.
 
 ## Static checks
 
@@ -81,7 +81,7 @@ kb-windows-11.local        ok=49 changed=0 failed=0
 - Ubuntu 24.04, x86_64.
 - Passwordless sudo works.
 - Git, Go, Node, npm, Neovim, direnv, Claude Code, Codex, Wendy CLI, and the
-  Wendy daemon are present.
+  Wendy agent are present.
 - Swift 6.3.1 is available after sourcing Swiftly's environment.
 - GitHub runner is registered and running via user systemd service.
 - The user systemd runner wrapper sources Swiftly's `env.sh` before `run.sh`.
@@ -109,7 +109,7 @@ Smoke tests passed on 2026-05-22:
 - macOS: git, Go, Node, npm, Neovim, Claude Code, Codex, Swift, Wendy CLI,
   and LaunchAgent runner state.
 - Ubuntu: git, Go, Node, npm, Neovim, Claude Code, Codex, Swift via Swiftly,
-  Wendy CLI, the Wendy daemon, and user systemd runner state.
+  Wendy CLI, the Wendy agent, and user systemd runner state.
 - Windows: git, Go, Node, npm, Neovim, Claude Code, Codex, Swift, Wendy CLI,
   and Scheduled Task runner state.
 

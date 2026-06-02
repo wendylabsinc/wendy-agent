@@ -18,7 +18,7 @@ setup_passwordless_sudo: false
 install_direnv: false
 install_swift: true
 install_wendy_cli: false
-install_wendy_daemon: false
+install_wendy_agent: false
 install_claude_code: false
 install_openai_codex: false
 install_github_runner: false
@@ -110,5 +110,5 @@ github_runner_work_dir: _work
 github_runner_service_name: github-actions-runner
 
 wendy_cli_install_url: https://raw.githubusercontent.com/wendylabsinc/wendy-agent/main/docs/cli.sh
-wendy_daemon_install_url: https://raw.githubusercontent.com/wendylabsinc/wendy-agent/main/docs/agent.sh
+wendy_agent_install_url: https://raw.githubusercontent.com/wendylabsinc/wendy-agent/main/docs/agent.sh
 wendy_install_dir: /usr/local/bin

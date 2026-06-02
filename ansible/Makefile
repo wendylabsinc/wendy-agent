@@ -43,7 +43,7 @@ help:
 	@echo "Overrides:"
 	@echo "  make ci-deploy CI_INVENTORIES=inventories/wendy.yml"
 	@echo "  make ci-deploy CI_INVENTORIES=inventories/kb.yml"
-	@echo "  make ci-deploy LIMIT=kb-developer-ubuntu-24-01"
+	@echo "  make ci-deploy LIMIT=kb-cli-ubuntu-24-01"
 	@echo "  make ci-deploy EXTRA_ARGS=\"--extra-vars 'github_runner_token=...'\""
 
 install:

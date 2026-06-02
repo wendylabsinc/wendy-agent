@@ -29,17 +29,17 @@ They use stable runner ids as Ansible host names and `ansible_host` for DNS
 hostnames. The committed inventories cover two CI sites:
 
 - `wendy`: connects as user `wendy` and adds the `wendy` runner label.
-  - `wendy-developer-ubuntu-24-01` → `wendy-developer-ubuntu`
-  - `wendy-developer-windows-11-01` → `wendy-windows`
-  - `wendy-developer-macos-26-01` → `wendys-mac-mini`
-  - `wendy-daemon-macos-26-01` → `wendys-mac-mini-2`
-  - `wendy-daemon-ubuntu-01` is recorded in `pending` until its hostname is
+  - `wendy-cli-ubuntu-24-01` → `wendy-cli-ubuntu`
+  - `wendy-cli-windows-11-01` → `wendy-windows`
+  - `wendy-cli-macos-26-01` → `wendys-mac-mini`
+  - `wendy-agent-macos-26-01` → `wendys-mac-mini-2`
+  - `wendy-agent-ubuntu-01` is recorded in `pending` until its hostname is
     known.
 - `kb`: connects as user `konstantinbe` and adds the `kb` runner label.
-  - `kb-developer-ubuntu-24-01` → `kb-ubuntu-24.local`
-  - `kb-developer-windows-11-01` → `kb-windows-11.local`
-  - `kb-developer-macos-26-01` → `kb-macos-26.local`
-  - `kb-daemon-macos-26-01` → `mac-mini.local`
+  - `kb-cli-ubuntu-24-01` → `kb-ubuntu-24.local`
+  - `kb-cli-windows-11-01` → `kb-windows-11.local`
+  - `kb-cli-macos-26-01` → `kb-macos-26.local`
+  - `kb-agent-macos-26-01` → `mac-mini.local`
 
 All CI platforms are expected to be reachable over SSH. Windows hosts should
 set:
@@ -62,10 +62,10 @@ Site groups:
 
 Machine type groups:
 
-- `wendy_developer`: sets `machine_profile: wendy-developer`, installs the
-  Wendy CLI, and adds the `wendy-developer` runner label.
-- `wendy_daemon`: sets `machine_profile: wendy-daemon`, installs the Wendy
-  daemon, and adds the `wendy-daemon` runner label.
+- `wendy_cli`: sets `machine_profile: wendy-cli`, installs the
+  Wendy CLI, and adds the `wendy-cli` runner label.
+- `wendy_agent`: sets `machine_profile: wendy-agent`, installs the Wendy
+  agent, and adds the `wendy-agent` runner label.
 
 The group names use underscores because they are Ansible inventory groups; the
 profile names and GitHub labels use hyphens. Runner labels are composed from the
@@ -118,7 +118,7 @@ Useful overrides:
 make ci-deploy CI_INVENTORIES=inventories/wendy.yml
 make ci-deploy CI_INVENTORIES=inventories/kb.yml
 make ci-deploy CI_INVENTORIES="inventories/wendy.yml inventories/kb.yml"
-make ci-deploy LIMIT=kb-developer-ubuntu-24-01
+make ci-deploy LIMIT=kb-cli-ubuntu-24-01
 make ci-deploy EXTRA_ARGS="--extra-vars 'github_runner_url=https://github.com/OWNER/REPO github_runner_token=TOKEN'"
 ```
 
