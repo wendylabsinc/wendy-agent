@@ -342,7 +342,14 @@ func parsePins(input string) ([]int, error) {
 // pickFromItems shows an interactive picker with the given title and items,
 // returning the selected item's Value as a string.
 func pickFromItems(title string, items []tui.PickerItem) (string, error) {
+	return pickFromItemsWithColumns(title, items, nil)
+}
+
+func pickFromItemsWithColumns(title string, items []tui.PickerItem, columns []tui.PickerColumn) (string, error) {
 	picker := tui.NewPickerWithTitle(title)
+	if len(columns) > 0 {
+		picker = tui.NewPickerWithTitleAndColumns(title, columns)
+	}
 	p := tea.NewProgram(picker)
 
 	go func() {
@@ -358,6 +365,9 @@ func pickFromItems(title string, items []tui.PickerItem) (string, error) {
 	pm := finalModel.(tui.PickerModel)
 	if pm.Cancelled() {
 		return "", ErrUserCancelled
+	}
+	if pm.Selected() == nil {
+		return "", fmt.Errorf("no selection")
 	}
 
 	return pm.Selected().Value.(string), nil

@@ -15,6 +15,9 @@ type PickerItem struct {
 	Name         string
 	Description  string // optional secondary text rendered dimmed
 	Type         string // "LAN", "Bluetooth", "External", etc.
+	Size         string // optional picker-specific metadata column
+	Parameters   string // optional picker-specific metadata column
+	Comments     string // optional picker-specific metadata column
 	USB          string // non-empty when the device is connected over USB
 	Address      string
 	AgentVersion string
@@ -93,6 +96,14 @@ type PickerModel struct {
 	height       int
 }
 
+// PickerColumn defines a caller-provided picker table column.
+type PickerColumn struct {
+	Title    string
+	MinWidth int
+	Required bool
+	Value    func(PickerItem) string
+}
+
 func NewPicker() PickerModel {
 	m := PickerModel{
 		Title:        "Select a device",
@@ -113,6 +124,16 @@ func NewPickerWithTitle(title string) PickerModel {
 		table:    newPickerTable(),
 		scanning: true,
 	}
+	m.refreshTable()
+	return m
+}
+
+// NewPickerWithTitleAndColumns creates a picker with a custom title and stable
+// caller-provided table columns.
+func NewPickerWithTitleAndColumns(title string, columns []PickerColumn) PickerModel {
+	m := NewPickerWithTitle(title)
+	m.columns = pickerColumnDefsFromColumns(columns)
+	m.fixedColumns = true
 	m.refreshTable()
 	return m
 }
@@ -305,6 +326,26 @@ type pickerColumnDef struct {
 	minWidth int
 	value    func(PickerItem) string
 	required bool
+}
+
+func pickerColumnDefsFromColumns(columns []PickerColumn) []pickerColumnDef {
+	if len(columns) == 0 {
+		return nil
+	}
+	defs := make([]pickerColumnDef, 0, len(columns))
+	for _, col := range columns {
+		value := col.Value
+		if value == nil {
+			value = func(PickerItem) string { return "" }
+		}
+		defs = append(defs, pickerColumnDef{
+			title:    col.Title,
+			minWidth: col.MinWidth,
+			value:    value,
+			required: col.Required,
+		})
+	}
+	return defs
 }
 
 var pickerColumnDefs = []pickerColumnDef{

@@ -80,6 +80,55 @@ func TestPickerModel_ShowsDescriptionColumnWhenPresent(t *testing.T) {
 	}
 }
 
+func TestPickerModel_CustomColumns(t *testing.T) {
+	m := NewPickerWithTitleAndColumns("Select a model", []PickerColumn{
+		{
+			Title:    "model",
+			MinWidth: 16,
+			Required: true,
+			Value: func(item PickerItem) string {
+				return item.Name
+			},
+		},
+		{
+			Title: "size",
+			Value: func(item PickerItem) string {
+				return item.Size
+			},
+		},
+		{
+			Title: "parameters",
+			Value: func(item PickerItem) string {
+				return item.Parameters
+			},
+		},
+		{
+			Title: "comments",
+			Value: func(item PickerItem) string {
+				return item.Comments
+			},
+		},
+	})
+
+	updated, _ := m.Update(PickerAddMsg{Items: []PickerItem{
+		{
+			Name:       "gemma4:e2b",
+			Size:       "edge",
+			Parameters: "E2B",
+			Comments:   "default for small devices",
+			Value:      "gemma4:e2b",
+		},
+	}})
+	pm := updated.(PickerModel)
+
+	view := pm.View()
+	for _, want := range []string{"model", "size", "parameters", "comments", "gemma4:e2b", "default for small devices"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("expected picker view to contain %q, got %q", want, view)
+		}
+	}
+}
+
 func TestPickerTableData_KeepsFullColumnContentForScrolling(t *testing.T) {
 	items := []PickerItem{{
 		Name:        "wendyos-sunny-daisy",
