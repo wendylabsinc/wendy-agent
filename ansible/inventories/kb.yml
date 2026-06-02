@@ -1,0 +1,28 @@
+---
+all:
+  children:
+    ci:
+      hosts:
+        kb-developer-ubuntu-24-01:
+          ansible_host: kb-ubuntu-24.local
+        kb-developer-windows-11-01:
+          ansible_host: kb-windows-11.local
+          ansible_shell_type: powershell
+        kb-developer-macos-26-01:
+          ansible_host: kb-macos-26.local
+        kb-daemon-macos-26-01:
+          ansible_host: mac-mini.local
+    kb:
+      hosts:
+        kb-developer-ubuntu-24-01:
+        kb-developer-windows-11-01:
+        kb-developer-macos-26-01:
+        kb-daemon-macos-26-01:
+    wendy_developer:
+      hosts:
+        kb-developer-ubuntu-24-01:
+        kb-developer-windows-11-01:
+        kb-developer-macos-26-01:
+    wendy_daemon:
+      hosts:
+        kb-daemon-macos-26-01:

@@ -3,10 +3,12 @@ ANSIBLE_GALAXY ?= ansible-galaxy
 ANSIBLE_INVENTORY ?= ansible-inventory
 ANSIBLE_PLAYBOOK ?= ansible-playbook
 
-CI_INVENTORY ?= inventories/ci.yml
+CI_INVENTORY ?=
+CI_INVENTORIES ?= $(if $(CI_INVENTORY),$(CI_INVENTORY),inventories/wendy.yml inventories/kb.yml)
 LIMIT ?=
 EXTRA_ARGS ?=
 
+INVENTORY_ARGS := $(foreach inventory,$(CI_INVENTORIES),-i $(inventory))
 LIMIT_ARG := $(if $(LIMIT),--limit $(LIMIT),)
 
 export ANSIBLE_CONFIG
@@ -22,13 +24,13 @@ help:
 	@echo "Setup:"
 	@echo "  make install              Install required Ansible collections"
 	@echo ""
-	@echo "Committed CI inventory:"
+	@echo "Committed CI inventories:"
 	@echo "  make lint                 Validate inventory and playbook syntax"
 	@echo "  make info                 Report CI state without changes"
 	@echo "  make deploy               Deploy CI desired state"
 	@echo "  make converge             Run deploy twice to verify idempotency"
 	@echo ""
-	@echo "CI inventory ($(CI_INVENTORY)):"
+	@echo "CI inventories ($(CI_INVENTORIES)):"
 	@echo "  make ci-lint              Validate CI inventory and playbook syntax"
 	@echo "  make ci-info              Report CI state without changes"
 	@echo "  make ci-deploy            Deploy CI desired state"
@@ -40,6 +42,7 @@ help:
 	@echo "  make ci-deploy-power      Deploy CI power policy"
 	@echo ""
 	@echo "Overrides:"
+	@echo "  make ci-deploy CI_INVENTORIES=inventories/wendy.yml"
 	@echo "  make ci-deploy CI_INVENTORY=inventories/local.yml"
 	@echo "  make ci-deploy LIMIT=kb-developer-ubuntu-24-01"
 	@echo "  make ci-deploy EXTRA_ARGS=\"--extra-vars 'github_runner_token=...'\""
@@ -56,31 +59,31 @@ deploy: ci-deploy
 converge: ci-converge
 
 ci-lint:
-	$(ANSIBLE_INVENTORY) -i $(CI_INVENTORY) --list >/dev/null
-	$(ANSIBLE_PLAYBOOK) -i $(CI_INVENTORY) playbooks/info.yml --syntax-check
-	$(ANSIBLE_PLAYBOOK) -i $(CI_INVENTORY) playbooks/ci.yml --syntax-check
+	$(ANSIBLE_INVENTORY) $(INVENTORY_ARGS) --list >/dev/null
+	$(ANSIBLE_PLAYBOOK) $(INVENTORY_ARGS) playbooks/info.yml --syntax-check
+	$(ANSIBLE_PLAYBOOK) $(INVENTORY_ARGS) playbooks/ci.yml --syntax-check
 
 ci-info:
-	$(ANSIBLE_PLAYBOOK) -i $(CI_INVENTORY) playbooks/info.yml --tags info $(LIMIT_ARG) $(EXTRA_ARGS)
+	$(ANSIBLE_PLAYBOOK) $(INVENTORY_ARGS) playbooks/info.yml --tags info $(LIMIT_ARG) $(EXTRA_ARGS)
 
 ci-deploy:
-	$(ANSIBLE_PLAYBOOK) -i $(CI_INVENTORY) playbooks/ci.yml $(LIMIT_ARG) $(EXTRA_ARGS)
+	$(ANSIBLE_PLAYBOOK) $(INVENTORY_ARGS) playbooks/ci.yml $(LIMIT_ARG) $(EXTRA_ARGS)
 
 ci-converge:
-	$(MAKE) ci-deploy CI_INVENTORY=$(CI_INVENTORY) LIMIT="$(LIMIT)" EXTRA_ARGS="$(EXTRA_ARGS)"
-	$(MAKE) ci-deploy CI_INVENTORY=$(CI_INVENTORY) LIMIT="$(LIMIT)" EXTRA_ARGS="$(EXTRA_ARGS)"
+	$(MAKE) ci-deploy CI_INVENTORIES="$(CI_INVENTORIES)" LIMIT="$(LIMIT)" EXTRA_ARGS="$(EXTRA_ARGS)"
+	$(MAKE) ci-deploy CI_INVENTORIES="$(CI_INVENTORIES)" LIMIT="$(LIMIT)" EXTRA_ARGS="$(EXTRA_ARGS)"
 
 ci-deploy-packages:
-	$(ANSIBLE_PLAYBOOK) -i $(CI_INVENTORY) playbooks/ci.yml --tags packages $(LIMIT_ARG) $(EXTRA_ARGS)
+	$(ANSIBLE_PLAYBOOK) $(INVENTORY_ARGS) playbooks/ci.yml --tags packages $(LIMIT_ARG) $(EXTRA_ARGS)
 
 ci-deploy-swift:
-	$(ANSIBLE_PLAYBOOK) -i $(CI_INVENTORY) playbooks/ci.yml --tags swift $(LIMIT_ARG) $(EXTRA_ARGS)
+	$(ANSIBLE_PLAYBOOK) $(INVENTORY_ARGS) playbooks/ci.yml --tags swift $(LIMIT_ARG) $(EXTRA_ARGS)
 
 ci-deploy-runner:
-	$(ANSIBLE_PLAYBOOK) -i $(CI_INVENTORY) playbooks/ci.yml --tags runner $(LIMIT_ARG) $(EXTRA_ARGS)
+	$(ANSIBLE_PLAYBOOK) $(INVENTORY_ARGS) playbooks/ci.yml --tags runner $(LIMIT_ARG) $(EXTRA_ARGS)
 
 ci-deploy-desktop:
-	$(ANSIBLE_PLAYBOOK) -i $(CI_INVENTORY) playbooks/ci.yml --tags desktop_access $(LIMIT_ARG) $(EXTRA_ARGS)
+	$(ANSIBLE_PLAYBOOK) $(INVENTORY_ARGS) playbooks/ci.yml --tags desktop_access $(LIMIT_ARG) $(EXTRA_ARGS)
 
 ci-deploy-power:
-	$(ANSIBLE_PLAYBOOK) -i $(CI_INVENTORY) playbooks/ci.yml --tags power_policy $(LIMIT_ARG) $(EXTRA_ARGS)
+	$(ANSIBLE_PLAYBOOK) $(INVENTORY_ARGS) playbooks/ci.yml --tags power_policy $(LIMIT_ARG) $(EXTRA_ARGS)

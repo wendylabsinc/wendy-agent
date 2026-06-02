@@ -18,14 +18,15 @@ make install
 
 ## Inventory
 
-The committed production CI inventory is:
+The committed production CI inventories are:
 
 ```text
-inventories/ci.yml
+inventories/wendy.yml
+inventories/kb.yml
 ```
 
-It uses stable runner ids as Ansible host names and `ansible_host` for DNS
-hostnames. The committed inventory covers two CI sites:
+They use stable runner ids as Ansible host names and `ansible_host` for DNS
+hostnames. The committed inventories cover two CI sites:
 
 - `wendy`: connects as user `wendy` and adds the `wendy` runner label.
   - `wendy-developer-ubuntu-24-01` → `wendy-developer-ubuntu`
@@ -123,6 +124,8 @@ make ci-deploy-power
 Useful overrides:
 
 ```sh
+make ci-deploy CI_INVENTORIES=inventories/wendy.yml
+make ci-deploy CI_INVENTORIES="inventories/wendy.yml inventories/kb.yml"
 make ci-deploy CI_INVENTORY=inventories/local.yml
 make ci-deploy LIMIT=kb-developer-ubuntu-24-01
 make ci-deploy EXTRA_ARGS="--extra-vars 'github_runner_url=https://github.com/OWNER/REPO github_runner_token=TOKEN'"

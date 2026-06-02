@@ -7,7 +7,8 @@ fixed until it converged.
 
 ## CI inventory
 
-The committed CI inventory contains two site groups and two machine type groups:
+The committed CI inventories are split by site (`inventories/wendy.yml` and
+`inventories/kb.yml`) and contain two site groups and two machine type groups:
 
 - `wendy` / `wendy`: Wendy-site hosts connect as user `wendy`.
 - `kb` / `kb`: KB-site hosts connect as user `konstantinbe`.
@@ -27,8 +28,9 @@ Run from `ansible/`:
 make lint
 ```
 
-CI inventory and syntax checks passed on 2026-05-22. The live validation below
-predates the expanded Wendy/KB inventory and applies to the original KB hosts.
+CI inventories and syntax checks passed on 2026-05-22. The live validation below
+predates the expanded split Wendy/KB inventories and applies to the original KB
+hosts.
 
 ## Read-only info command
 
