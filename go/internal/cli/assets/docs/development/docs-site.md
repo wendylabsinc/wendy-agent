@@ -26,7 +26,7 @@ are still read from the same tree, but the prep script publishes them under the
 
 ```
 docs/
-  app/          Next.js app router routes, layout, search, and OG images
+  app/          Next.js app router routes, layout, and search
   components/   MDX components, search dialog, and providers
   guides/       Top-level guides and tutorials
   installation/ Top-level setup guides
