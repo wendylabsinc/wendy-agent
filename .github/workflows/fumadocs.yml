@@ -193,6 +193,10 @@ jobs:
         env:
           DEPLOY_PATHS: ${{ steps.path.outputs.deploy_paths }}
           NEXT_PUBLIC_SITE_URL: https://docs.wendy.dev
+          # GA4 / Firebase Analytics — same measurement ID as the marketing site
+          # (wendy.dev). Public by design (it ships in client JS). Baked in at
+          # build time because the docs are a static export.
+          NEXT_PUBLIC_GA_MEASUREMENT_ID: G-7SMVRRYVW6
         run: |
           set -euo pipefail
 

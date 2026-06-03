@@ -1,3 +1,4 @@
+import { Analytics } from '@/components/analytics';
 import { Provider } from '@/components/provider';
 import type { ReactNode } from 'react';
 import { ogImage } from '@/lib/shared';
@@ -32,6 +33,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
     <html lang="en" suppressHydrationWarning>
       <body className="flex min-h-screen flex-col">
         <Provider>{children}</Provider>
+        <Analytics />
       </body>
     </html>
   );
