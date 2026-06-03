@@ -81,6 +81,13 @@ func (s *ContainerServiceV2) AttachContainer(stream grpc.BidiStreamingServer[age
 		return status.Errorf(codes.Internal, "failed to start container: %v", err)
 	}
 
+	// Mirror v1 AttachContainer bookkeeping: clear any explicit-stop mark and
+	// register with the monitor using the persisted restart policy.
+	if s.v1.monitor != nil {
+		s.v1.monitor.ClearExplicitStop(appName)
+	}
+	s.v1.registerContainerWithMonitor(ctx, appName, nil)
+
 	if err := stream.Send(&agentpbv2.ContainerStreamResponse{
 		ResponseType: &agentpbv2.ContainerStreamResponse_Started_{
 			Started: &agentpbv2.ContainerStreamResponse_Started{},
