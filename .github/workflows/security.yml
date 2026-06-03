@@ -3,7 +3,14 @@ name: Security
 on:
   pull_request:
     branches: [main]
-    paths: ['go/**', 'Proto/**', 'go.mod', 'go.sum']
+    # The docs site lives under go/internal/cli/assets/docs but is a Next.js app,
+    # not Go. Exclude it so docs-only PRs don't run the Go vuln/security scans.
+    paths:
+      - 'go/**'
+      - '!go/internal/cli/assets/docs/**'
+      - 'Proto/**'
+      - 'go.mod'
+      - 'go.sum'
   schedule:
     - cron: '0 6 * * *'
   workflow_dispatch:
