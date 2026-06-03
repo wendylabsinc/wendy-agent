@@ -11,7 +11,14 @@ git_user_email: null
 ssh_generate_key: true
 ssh_key_type: ed25519
 ssh_key_file: "{{ ansible_env.HOME | default('~') }}/.ssh/id_{{ ssh_key_type }}"
-authorized_login_keys: []
+ssh_public_key_file: "{{ lookup('ansible.builtin.env', 'WENDY_ANSIBLE_SSH_PUBLIC_KEY_FILE') | default('', true) }}"
+ssh_public_key_value: >-
+  {{
+    lookup('ansible.builtin.file', ssh_public_key_file, errors='ignore') | trim
+    if ssh_public_key_file | length > 0
+    else ''
+  }}
+authorized_login_keys: "{{ [ssh_public_key_value] if ssh_public_key_value | length > 0 else [] }}"
 configure_loopback_ssh: false
 setup_passwordless_sudo: false
 

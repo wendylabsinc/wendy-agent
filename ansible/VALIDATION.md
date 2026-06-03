@@ -34,7 +34,7 @@ hosts.
 
 ```sh
 cd ansible
-make ci-info
+make info
 ```
 
 Result on 2026-05-22 after live fixes:
@@ -51,7 +51,7 @@ The full CI playbook now converges cleanly:
 
 ```sh
 cd ansible
-make ci-deploy
+make deploy
 ```
 
 Final idempotency result on 2026-05-22:

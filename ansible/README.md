@@ -89,41 +89,47 @@ make lint          # validate committed inventories/playbook syntax
 make info          # read-only state report for committed CI hosts
 ```
 
-Production deployment:
+Deployment:
 
 ```sh
 make deploy        # deploy committed CI hosts
 make converge      # run deploy twice to verify idempotency
 ```
 
-CI-specific deployment:
+Focused deployment:
 
 ```sh
-make ci-info
-make ci-deploy
-make ci-converge
+make deploy-packages
+make deploy-swift
+make deploy-runner
+make deploy-desktop
+make deploy-power
 ```
 
-Focused CI deployment:
+SSH key deployment:
 
 ```sh
-make ci-deploy-packages
-make ci-deploy-swift
-make ci-deploy-runner
-make ci-deploy-desktop
-make ci-deploy-power
+make deploy-ssh-key
+make deploy-ssh-key LIMIT=kb-cli-ubuntu-24-01
+make deploy-ssh-key SSH_PUBLIC_KEY_FILE=$HOME/.ssh/wendy-ci.pub
 ```
+
+`deploy-ssh-key` authorizes `SSH_PUBLIC_KEY_FILE` for the Ansible login user
+unless it is already present. The default key is `$HOME/.ssh/id_ed25519.pub`.
+Regular `make deploy` also authorizes that key automatically when the file
+exists. Set `DEPLOY_SSH_KEY=false` to skip this during a deploy.
 
 Useful overrides:
 
 ```sh
-make ci-deploy CI_INVENTORIES=inventories/wendy.yml
-make ci-deploy CI_INVENTORIES=inventories/kb.yml
-make ci-deploy CI_INVENTORIES="inventories/wendy.yml inventories/kb.yml"
-make ci-deploy LIMIT=kb-cli-ubuntu-24-01
-make ci-deploy ASK_PASS=false
-make ci-deploy ASK_BECOME_PASS=false
-make ci-deploy EXTRA_ARGS="--extra-vars 'github_runner_url=https://github.com/OWNER/REPO github_runner_token=TOKEN'"
+make deploy INVENTORIES=inventories/wendy.yml
+make deploy INVENTORIES=inventories/kb.yml
+make deploy INVENTORIES="inventories/wendy.yml inventories/kb.yml"
+make deploy LIMIT=kb-cli-ubuntu-24-01
+make deploy ASK_PASS=false
+make deploy ASK_BECOME_PASS=false
+make deploy DEPLOY_SSH_KEY=false
+make deploy EXTRA_ARGS="--extra-vars 'github_runner_url=https://github.com/OWNER/REPO github_runner_token=TOKEN'"
 ```
 
 Focused runs (`LIMIT=...`) default to `ASK_PASS=auto`: if passwordless SSH
@@ -139,7 +145,7 @@ Do not commit registration tokens. Pass a token at runtime if unattended
 registration is desired:
 
 ```sh
-make ci-deploy EXTRA_ARGS="--extra-vars 'github_runner_url=https://github.com/OWNER/REPO github_runner_token=TOKEN'"
+make deploy EXTRA_ARGS="--extra-vars 'github_runner_url=https://github.com/OWNER/REPO github_runner_token=TOKEN'"
 ```
 
 If `github_runner_token` is null and the runner is not registered, the role
