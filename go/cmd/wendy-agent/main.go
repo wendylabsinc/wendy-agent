@@ -108,10 +108,14 @@ func main() {
 
 	logger.Info("Starting wendy-agent", zap.String("version", version.Version))
 
-	configPath := "/etc/wendy-agent"
+	configPath := "/etc/wendyos"
 	if envPath := os.Getenv("WENDY_CONFIG_PATH"); envPath != "" {
 		configPath = envPath
 	}
+
+	// Migrate provisioning state from the legacy dir before anything reads it,
+	// covering paths with no package hook (notably the in-place self-updater).
+	services.MigrateLegacyConfigDir(logger, "/etc/wendy-agent", configPath)
 
 	configpartition.Apply(logger, configPath)
 	services.CommitMenderUpdate(logger)

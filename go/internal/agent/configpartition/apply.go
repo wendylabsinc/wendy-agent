@@ -522,7 +522,7 @@ func applyPreProvisioning(logger *zap.Logger, cfgDir, configPath string) {
 // Apply checks the config partition for a pending agent binary, WiFi config, and
 // pre-provisioning state, applying them in order. If a binary update is installed,
 // the process exits so systemd can restart it with the new binary.
-// configPath is the agent's configuration directory (e.g. /etc/wendy-agent).
+// configPath is the agent's configuration directory (e.g. /etc/wendyos).
 func Apply(logger *zap.Logger, configPath string) {
 	installPath := defaultInstallPath
 	if exe, err := os.Executable(); err == nil {
