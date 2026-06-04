@@ -1,0 +1,54 @@
+# pacman install scriptlet for wendy-agent.
+#
+# Migrates agent provisioning state from the legacy /etc/wendy-agent directory
+# into the unified /etc/wendyos directory. Keep this logic in sync
+# with packaging/linux/fpm/wendy-agent-postinstall.sh (deb/rpm) and the
+# migration block in go/internal/cli/assets/docs/agent.sh.
+#
+# Idempotent, no-clobber, best-effort (a failed move warns but never fails the
+# package transaction — the in-agent migration is the backstop). The dirs are
+# overridable via env for testing.
+
+_migrate_config_dir() {
+  old_dir="${WENDY_OLD_CONFIG_DIR:-/etc/wendy-agent}"
+  new_dir="${WENDY_NEW_CONFIG_DIR:-/etc/wendyos}"
+  [ -d "$old_dir" ] || return 0
+  [ "$old_dir" = "$new_dir" ] && return 0
+
+  mkdir -p "$new_dir" || return 0
+  chmod 0755 "$new_dir" 2>/dev/null || true
+
+  # Everything except provisioning.json (moved last) and config.json
+  # (placeholder-aware, below). No-clobber: never overwrite live state.
+  for src in "$old_dir"/* "$old_dir"/.[!.]*; do
+    [ -e "$src" ] || continue
+    name="$(basename "$src")"
+    case "$name" in provisioning.json | config.json) continue ;; esac
+    dest="$new_dir/$name"
+    [ -e "$dest" ] || mv "$src" "$dest" || echo "warning: failed to migrate ${src}" >&2
+  done
+
+  # Prefer a customized legacy config.json over the shipped "{}" placeholder.
+  if [ -e "$old_dir/config.json" ]; then
+    content="$(tr -d '[:space:]' <"$new_dir/config.json" 2>/dev/null || true)"
+    if [ -z "$content" ] || [ "$content" = "{}" ]; then
+      mv -f "$old_dir/config.json" "$new_dir/config.json" || echo "warning: failed to migrate config.json" >&2
+    fi
+  fi
+
+  # provisioning.json LAST (enrollment "commit": a partial failure can only
+  # leave the device un-provisioned, never enrolled-without-a-key).
+  if [ -e "$old_dir/provisioning.json" ] && [ ! -e "$new_dir/provisioning.json" ]; then
+    mv "$old_dir/provisioning.json" "$new_dir/provisioning.json" || echo "warning: failed to migrate provisioning.json" >&2
+  fi
+
+  rmdir "$old_dir" 2>/dev/null || true
+}
+
+post_install() {
+  _migrate_config_dir
+}
+
+post_upgrade() {
+  _migrate_config_dir
+}

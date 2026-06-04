@@ -251,9 +251,35 @@ else
     echo "Setting up systemd services..."
 
     $SUDO mkdir -p /var/lib/wendy-agent/storage
-    $SUDO mkdir -p /etc/wendy-agent
+    $SUDO mkdir -p /etc/wendyos
     $SUDO mkdir -p /usr/lib/systemd/system
     $SUDO mkdir -p /usr/share/wendyos/offline-images
+
+    # Migrate legacy agent config (/etc/wendy-agent -> /etc/wendyos) so
+    # an already-provisioned host keeps its identity instead of re-enrolling.
+    # No-clobber, best-effort, provisioning.json moved last. Keep in sync with
+    # packaging/linux/fpm/wendy-agent-postinstall.sh.
+    if [[ -d /etc/wendy-agent ]]; then
+      for f in /etc/wendy-agent/* /etc/wendy-agent/.[!.]*; do
+        [[ -e "$f" ]] || continue
+        name="$(basename "$f")"
+        case "$name" in provisioning.json | config.json) continue ;; esac
+        dest="/etc/wendyos/${name}"
+        [[ -e "$dest" ]] || $SUDO mv "$f" "$dest" || echo "warning: failed to migrate ${f}" >&2
+      done
+      # Prefer a customized legacy config.json over the "{}" placeholder.
+      if [[ -e /etc/wendy-agent/config.json ]]; then
+        content="$($SUDO cat /etc/wendyos/config.json 2>/dev/null | tr -d '[:space:]' || true)"
+        if [[ -z "$content" || "$content" == "{}" ]]; then
+          $SUDO mv -f /etc/wendy-agent/config.json /etc/wendyos/config.json || echo "warning: failed to migrate config.json" >&2
+        fi
+      fi
+      # provisioning.json last (enrollment commit).
+      if [[ -e /etc/wendy-agent/provisioning.json && ! -e /etc/wendyos/provisioning.json ]]; then
+        $SUDO mv /etc/wendy-agent/provisioning.json /etc/wendyos/provisioning.json || echo "warning: failed to migrate provisioning.json" >&2
+      fi
+      $SUDO rmdir /etc/wendy-agent 2>/dev/null || true
+    fi
 
     # wendy-agent systemd unit (unquoted heredoc so INSTALL_DIR is expanded)
     $SUDO tee /usr/lib/systemd/system/wendy-agent.service >/dev/null <<EOF
@@ -289,9 +315,9 @@ EOF
     fi
 
     # Placeholder config
-    if [[ ! -f /etc/wendy-agent/config.json ]]; then
-      printf "{}\n" | $SUDO tee /etc/wendy-agent/config.json >/dev/null
-      $SUDO chmod 600 /etc/wendy-agent/config.json
+    if [[ ! -f /etc/wendyos/config.json ]]; then
+      printf "{}\n" | $SUDO tee /etc/wendyos/config.json >/dev/null
+      $SUDO chmod 600 /etc/wendyos/config.json
     fi
 
     # --- Dev container registry ---

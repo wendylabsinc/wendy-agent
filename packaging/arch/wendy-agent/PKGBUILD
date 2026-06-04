@@ -17,7 +17,8 @@ optdepends=(
     'connman: Wi-Fi support via ConnMan'
     'bluez: Bluetooth support'
 )
-backup=('etc/wendy-agent/config.json' 'etc/default/wendy-agent')
+backup=('etc/wendyos/config.json' 'etc/default/wendy-agent')
+install='wendy-agent.install'
 
 source_x86_64=("${pkgname}-${_pkgver}-x86_64.tar.gz::https://github.com/wendylabsinc/wendy-agent/releases/download/${_pkgtag}/wendy-agent-linux-amd64-${_pkgver}.tar.gz")
 source_aarch64=("${pkgname}-${_pkgver}-aarch64.tar.gz::https://github.com/wendylabsinc/wendy-agent/releases/download/${_pkgtag}/wendy-agent-linux-arm64-${_pkgver}.tar.gz")
@@ -37,14 +38,14 @@ package() {
     fi
 
     # Create config and storage directories
-    install -dm755 "${pkgdir}/etc/wendy-agent"
+    install -dm755 "${pkgdir}/etc/wendyos"
     install -dm755 "${pkgdir}/var/lib/wendy-agent/storage"
     install -dm755 "${pkgdir}/usr/lib/systemd/system"
     install -dm755 "${pkgdir}/etc/default"
 
     # Create placeholder config file so pacman backup semantics work on upgrades.
-    printf "{}\n" > "${pkgdir}/etc/wendy-agent/config.json"
-    chmod 600 "${pkgdir}/etc/wendy-agent/config.json"
+    printf "{}\n" > "${pkgdir}/etc/wendyos/config.json"
+    chmod 600 "${pkgdir}/etc/wendyos/config.json"
 
     # Service environment defaults (override per-host as needed).
     # NOTE: keep this in sync with packaging/linux/default/wendy-agent.

@@ -313,7 +313,7 @@ jobs:
           mkdir -p pkgroot/wendy-agent/usr/lib/systemd/system
           mkdir -p pkgroot/wendy-agent/usr/lib/wendy-agent
           mkdir -p pkgroot/wendy-agent/etc/default
-          mkdir -p pkgroot/wendy-agent/etc/wendy-agent
+          mkdir -p pkgroot/wendy-agent/etc/wendyos
           mkdir -p pkgroot/wendy-agent/etc/avahi/services
           mkdir -p pkgroot/wendy-agent/var/lib/wendy-agent/storage
 
@@ -332,8 +332,8 @@ jobs:
             pkgroot/wendy-agent/usr/lib/wendy-agent/setup-mdns.sh
 
           # Placeholder config created at install time by package manager.
-          printf "{}\n" > pkgroot/wendy-agent/etc/wendy-agent/config.json
-          chmod 600 pkgroot/wendy-agent/etc/wendy-agent/config.json
+          printf "{}\n" > pkgroot/wendy-agent/etc/wendyos/config.json
+          chmod 600 pkgroot/wendy-agent/etc/wendyos/config.json
 
       - name: Build .deb packages
         run: |
@@ -377,7 +377,7 @@ jobs:
             --deb-recommends "network-manager | connman" \
             --deb-recommends "bluez" \
             --config-files /etc/default/wendy-agent \
-            --config-files /etc/wendy-agent/config.json \
+            --config-files /etc/wendyos/config.json \
             --config-files /etc/avahi/services/wendy-agent.service \
             --after-install packaging/linux/fpm/wendy-agent-postinstall.sh \
             --before-remove packaging/linux/fpm/wendy-agent-preremove.sh \
@@ -427,7 +427,7 @@ jobs:
             --depends "ca-certificates" \
             --depends "avahi" \
             --config-files /etc/default/wendy-agent \
-            --config-files /etc/wendy-agent/config.json \
+            --config-files /etc/wendyos/config.json \
             --config-files /etc/avahi/services/wendy-agent.service \
             --after-install packaging/linux/fpm/wendy-agent-postinstall.sh \
             --before-remove packaging/linux/fpm/wendy-agent-preremove.sh \
