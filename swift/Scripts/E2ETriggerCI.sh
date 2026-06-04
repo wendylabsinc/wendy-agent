@@ -22,8 +22,8 @@ Options:
   --ref REF            Workflow ref to run, matching the Actions UI "Run
                        workflow from" selector. Defaults to the current git
                        branch, or main when not in a branch.
-  --tests FILTERS      Comma-separated SwiftPM test filters; empty runs the
-                       default WendyE2ETests suite.
+  --tests FILTERS      Comma-separated test filters; empty runs the default
+                       WendyE2ETests suite.
   --diff-base-ref REF  Optional ref to diff against; empty runs a full review.
   --repo OWNER/REPO    GitHub repository; defaults to $DEFAULT_REPO.
   --workflow FILE      Workflow file or ID; defaults to $DEFAULT_WORKFLOW.

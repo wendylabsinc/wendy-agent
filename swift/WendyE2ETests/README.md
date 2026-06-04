@@ -59,6 +59,41 @@ make e2e-test-linux DEVICE=my-linux-box.local
 make e2e-test-macos DEVICE=mac-mini.local
 ```
 
+### Run on CI
+
+GitHub Actions runs `.github/workflows/swift-e2e-tests.yml` for Swift and proto
+changes on pull requests, on pushes to `main`, and when triggered manually. The
+workflow runs E2E attempts across the configured self-hosted device matrix, then
+aggregates attempts, runs AI review, renders the report, uploads the aggregate
+run directory as an artifact, and posts the AI review summary back to pull
+requests.
+
+To trigger it from GitHub:
+
+1. Open **Actions**.
+2. Select **Swift E2E Tests**.
+3. Choose **Run workflow**.
+4. Pick the branch/ref, optionally set `tests` to comma-separated test filters,
+   and optionally set `diff_base_ref` for diff-scoped AI review.
+
+From `swift/`, the helper script triggers the same `workflow_dispatch` event:
+
+```bash
+bash Scripts/E2ETriggerCI.sh --ref <branch> --diff-base-ref main --watch
+```
+
+Use `--tests` to run a subset:
+
+```bash
+bash Scripts/E2ETriggerCI.sh \
+  --ref <branch> \
+  --tests "wendy device info,wendy cache list" \
+  --diff-base-ref main \
+  --watch
+```
+
+The helper requires the GitHub CLI (`gh`) to be installed and authenticated.
+
 ## Test environment
 
 `Scripts/E2ETest.sh` is the preferred runner. It:
