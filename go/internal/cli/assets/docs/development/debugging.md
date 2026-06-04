@@ -51,7 +51,7 @@ All environment variables are read at startup. Restart the agent after changing 
 |---|---|---|
 | `WENDY_DEBUG` | _(unset)_ | Set to any value to enable development-mode logging (verbose, human-readable) |
 | `WENDY_TLS_DEBUG` | _(unset)_ | Set to any value to log TLS handshake details for debugging mTLS connection issues |
-| `WENDY_CONFIG_PATH` | `/etc/wendy-agent` | Directory for provisioning certificates and config |
+| `WENDY_CONFIG_PATH` | `/etc/wendyos` | Directory for provisioning certificates and config |
 | `WENDY_AGENT_PORT` | `50051` | Port for the plaintext gRPC server (pre-provisioning only) |
 | `WENDY_CONTAINERD_ADDR` | _(containerd default)_ | Unix socket path for the containerd client |
 | `WENDY_REGISTRY_ADDR` | _(internal default)_ | Address for the embedded OCI registry |

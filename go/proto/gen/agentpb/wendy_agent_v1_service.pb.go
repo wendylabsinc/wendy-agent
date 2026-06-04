@@ -567,7 +567,7 @@ func (*GetAgentVersionRequest) Descriptor() ([]byte, []int) {
 type GetAgentVersionResponse struct {
 	state   protoimpl.MessageState `protogen:"open.v1"`
 	Version string                 `protobuf:"bytes,1,opt,name=version,proto3" json:"version,omitempty"`
-	// OS version read from /etc/wendy/version.txt (only present on WendyOS)
+	// OS version read from /etc/wendyos/version.txt (only present on WendyOS)
 	OsVersion       *string  `protobuf:"bytes,2,opt,name=os_version,json=osVersion,proto3,oneof" json:"os_version,omitempty"`
 	Os              string   `protobuf:"bytes,3,opt,name=os,proto3" json:"os,omitempty"`
 	CpuArchitecture string   `protobuf:"bytes,4,opt,name=cpu_architecture,json=cpuArchitecture,proto3" json:"cpu_architecture,omitempty"`

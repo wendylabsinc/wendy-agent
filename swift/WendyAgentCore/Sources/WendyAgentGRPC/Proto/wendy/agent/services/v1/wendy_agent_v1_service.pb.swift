@@ -458,7 +458,7 @@ public struct Wendy_Agent_Services_V1_GetAgentVersionResponse: Sendable {
 
   public var version: String = String()
 
-  /// OS version read from /etc/wendy/version.txt (only present on WendyOS)
+  /// OS version read from /etc/wendyos/version.txt (only present on WendyOS)
   public var osVersion: String {
     get {_osVersion ?? String()}
     set {_osVersion = newValue}

@@ -160,7 +160,7 @@ message GetAgentVersionRequest {
 
 message GetAgentVersionResponse {
     string version = 1;
-    // OS version read from /etc/wendy/version.txt (only present on WendyOS)
+    // OS version read from /etc/wendyos/version.txt (only present on WendyOS)
     optional string os_version = 2;
     string os = 3;
     string cpu_architecture = 4;

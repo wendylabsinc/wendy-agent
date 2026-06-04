@@ -200,10 +200,10 @@ Severity scale: **CRITICAL > HIGH > MEDIUM > LOW > INFO**
 - **Recommended controls:**
   - Require mTLS or a bearer token for OTEL submissions from local sources.
 
-#### TM-I-02 — Private key at rest in `/etc/wendy-agent/`
+#### TM-I-02 — Private key at rest in `/etc/wendyos/`
 - **Severity:** HIGH
 - **Component:** Provisioning state, key material
-- **Description:** The device private key (`device-key.pem`) and full provisioning state (including cert PEM) are stored in `/etc/wendy-agent/` at mode 0o600. Root access to the device (e.g., via physical UART, compromised container escape, or OS vulnerability) directly exposes the key.
+- **Description:** The device private key (`device-key.pem`) and full provisioning state (including cert PEM) are stored in `/etc/wendyos/` at mode 0o600. Root access to the device (e.g., via physical UART, compromised container escape, or OS vulnerability) directly exposes the key.
 - **Existing mitigations:** Files are mode 0o600, root-owned. The config partition copy is deleted after first boot.
 - **Recommended controls:**
   - Use a hardware security module (HSM) or Trusted Platform Module (TPM) to protect the private key; only the agent process can exercise the key.

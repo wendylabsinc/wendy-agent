@@ -15,10 +15,30 @@ All files under `/etc/wendyos/` are bind-mounted from `/data/etc/wendyos/` by `w
 
 ## Agent configuration
 
-| Path | Description |
-|------|-------------|
-| `/etc/default/wendy-agent` | Shell-format environment file sourced by both `wendyos-agent.service` and `wendyos-agent-updater.sh`. Supports `WENDYOS_AGENT_GITHUB_REPO`, `WENDYOS_AGENT_VERSION`. Not created by default; create it to override release channel. |
-| `/var/lib/wendy-agent/` | Runtime state directory for the agent (current-version file, working data). |
+The agent reads and writes its own config and provisioning state under
+`/etc/wendyos/` (the unified config directory — `WENDY_CONFIG_PATH` overrides it).
+Because `/etc/wendyos/` is bind-mounted from `/data/etc/wendyos/`, device
+enrollment survives OTA updates.
+
+> **Breaking change:** earlier builds stored these files in
+> `/etc/wendy-agent/`. They are migrated to `/etc/wendyos/` automatically and
+> idempotently, so a provisioned device keeps its identity. The migration runs
+> in three places for full coverage: the package post-install hooks
+> (deb/rpm/arch), the `agent.sh` installer, and — covering the in-place
+> self-updater, which runs no post-install hook — the agent itself at startup,
+> before it reads any provisioning state. The one unavoidable case: WendyOS OTA
+> images that previously provisioned into the non-persistent `/etc/wendy-agent/`
+> rootfs path re-provision once on the update that introduces this change,
+> because that rootfs path is wiped by the image update before the agent runs.
+
+| Path | Persistence | Description |
+|------|-------------|-------------|
+| `/etc/wendyos/config.json` | Persistent (`/data/etc/wendyos/`) | Agent config (conffile/backup-managed by the package manager). Ships as a `{}` placeholder. |
+| `/etc/wendyos/provisioning.json` | Persistent (`/data/etc/wendyos/`) | mTLS provisioning state (device cert + `chainPem`). Written during provisioning; mode 0600. |
+| `/etc/wendyos/device-key.pem` | Persistent (`/data/etc/wendyos/`) | Device private key. Mode 0600, root-owned. See the security threat model (TM-I-02). |
+| `/etc/wendyos/.provisioned` | Persistent (`/data/etc/wendyos/`) | Marker written once provisioning completes. |
+| `/etc/default/wendy-agent` | rootfs | Shell-format environment file sourced by both `wendyos-agent.service` and `wendyos-agent-updater.sh`. Supports `WENDYOS_AGENT_GITHUB_REPO`, `WENDYOS_AGENT_VERSION`. Not created by default; create it to override release channel. |
+| `/var/lib/wendy-agent/` | rootfs | Runtime state directory for the agent (current-version file, working data). |
 | `/usr/local/bin/wendy-agent` | Agent binary. Installed at build time; overwritten in-place by `wendyos-agent-updater.service`. |
 | `/opt/wendyos/bin/wendyos-agent-updater.sh` | Updater logic: checks GitHub releases API, downloads, replaces binary, restarts service. |
 | `/opt/wendyos/bin/download-wendyos-agent.sh` | Low-level downloader used by the updater. Fetches `wendy-agent-linux-arm64-*.tar.gz` from the latest stable GitHub release. |
