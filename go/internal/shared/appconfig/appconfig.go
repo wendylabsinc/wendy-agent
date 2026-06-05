@@ -94,13 +94,26 @@ type RunConfig struct {
 	Args []string `json:"args,omitempty"`
 }
 
+// ROS2Config holds ROS 2 middleware settings that can be applied at the app or
+// service level.
+type ROS2Config struct {
+	// DomainID overrides the ROS_DOMAIN_ID for this app/service. When nil the
+	// runtime assigns a domain ID automatically. Valid range is 0–101.
+	DomainID *int `json:"domainId,omitempty"`
+	// RMW selects the ROS 2 middleware implementation. Defaults to "cyclonedds".
+	RMW string `json:"rmw,omitempty"`
+}
+
 // ServiceConfig holds the per-service build and runtime configuration for a
 // multi-service wendy.json (the services map).
 type ServiceConfig struct {
 	// Context is the build context directory, relative to wendy.json.
-	Context      string        `json:"context"`
-	Entitlements []Entitlement `json:"entitlements,omitempty"`
-	DependsOn    []string      `json:"dependsOn,omitempty"`
+	Context      string            `json:"context"`
+	Entitlements []Entitlement     `json:"entitlements,omitempty"`
+	DependsOn    []string          `json:"dependsOn,omitempty"`
+	Env          map[string]string `json:"env,omitempty"`
+	Readiness    *ReadinessConfig  `json:"readiness,omitempty"`
+	ROS2         *ROS2Config       `json:"ros2,omitempty"`
 }
 
 // AppConfig represents the wendy.json application configuration.
@@ -118,6 +131,10 @@ type AppConfig struct {
 	Debug        bool                      `json:"debug,omitempty"`
 	Files        []FileSyncEntry           `json:"files,omitempty"`
 	Services     map[string]*ServiceConfig `json:"services,omitempty"`
+	// Isolation controls the network/IPC namespace sharing for multi-service
+	// apps. Allowed values: "isolated", "shared-network", "shared-ipc", "host".
+	Isolation string      `json:"isolation,omitempty"`
+	ROS2      *ROS2Config `json:"ros2,omitempty"`
 }
 
 // XcodeConfig holds Xcode-specific build settings.
@@ -333,6 +350,15 @@ func (c *AppConfig) Validate() error {
 		}
 	}
 
+	validIsolationValues := []string{"isolated", "shared-network", "shared-ipc", "host"}
+	if c.Isolation != "" && !slices.Contains(validIsolationValues, c.Isolation) {
+		return fmt.Errorf("isolation must be one of %q, got %q", validIsolationValues, c.Isolation)
+	}
+
+	if err := validateROS2Config(c.ROS2, "ros2"); err != nil {
+		return err
+	}
+
 	for name, svc := range c.Services {
 		if svc == nil {
 			return fmt.Errorf("services[%q]: must not be null", name)
@@ -354,8 +380,36 @@ func (c *AppConfig) Validate() error {
 		if err := validateEntitlements(svc.Entitlements, fmt.Sprintf("services[%q].entitlement", name)); err != nil {
 			return err
 		}
+		if svc.Readiness != nil {
+			if svc.Readiness.TCPSocket != nil {
+				port := svc.Readiness.TCPSocket.Port
+				if port < 1 || port > 65535 {
+					return fmt.Errorf("services[%q].readiness.tcpSocket.port must be between 1 and 65535, got %d", name, port)
+				}
+			}
+			if svc.Readiness.TimeoutSeconds < 0 {
+				return fmt.Errorf("services[%q].readiness.timeoutSeconds must not be negative, got %d", name, svc.Readiness.TimeoutSeconds)
+			}
+		}
+		if err := validateROS2Config(svc.ROS2, fmt.Sprintf("services[%q].ros2", name)); err != nil {
+			return err
+		}
 	}
 
+	return nil
+}
+
+// validateROS2Config validates a ROS2Config at the given path prefix.
+func validateROS2Config(cfg *ROS2Config, prefix string) error {
+	if cfg == nil {
+		return nil
+	}
+	if cfg.DomainID != nil {
+		id := *cfg.DomainID
+		if id < 0 || id > 101 {
+			return fmt.Errorf("%s.domainId must be between 0 and 101, got %d", prefix, id)
+		}
+	}
 	return nil
 }
 
