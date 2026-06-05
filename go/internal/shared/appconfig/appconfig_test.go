@@ -1320,3 +1320,89 @@ func TestValidateJSON_ServiceEntitlements(t *testing.T) {
 		}
 	})
 }
+
+func TestValidate_Isolation(t *testing.T) {
+	valid := []string{"isolated", "shared-network", "shared-ipc", "host"}
+	for _, v := range valid {
+		cfg := &AppConfig{AppID: "com.example.app", Isolation: v}
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("Validate() with isolation=%q returned unexpected error: %v", v, err)
+		}
+	}
+
+	invalid := []string{"bridge", "none", "ISOLATED", "shared_network", "shared ipc"}
+	for _, v := range invalid {
+		cfg := &AppConfig{AppID: "com.example.app", Isolation: v}
+		if err := cfg.Validate(); err == nil {
+			t.Errorf("Validate() with isolation=%q expected error, got nil", v)
+		}
+	}
+
+	// Empty isolation is valid (defaults to no isolation config).
+	cfg := &AppConfig{AppID: "com.example.app", Isolation: ""}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("Validate() with empty isolation returned unexpected error: %v", err)
+	}
+}
+
+func TestValidate_ROS2Config(t *testing.T) {
+	// Valid domain IDs: 0, 50, 101.
+	for _, id := range []int{0, 50, 101} {
+		id := id
+		cfg := &AppConfig{AppID: "com.example.app", ROS2: &ROS2Config{DomainID: &id}}
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("Validate() with domainId=%d returned unexpected error: %v", id, err)
+		}
+	}
+
+	// Invalid domain IDs: -1, 102.
+	for _, id := range []int{-1, 102} {
+		id := id
+		cfg := &AppConfig{AppID: "com.example.app", ROS2: &ROS2Config{DomainID: &id}}
+		if err := cfg.Validate(); err == nil {
+			t.Errorf("Validate() with domainId=%d expected error, got nil", id)
+		}
+	}
+
+	// Nil ROS2 config is valid.
+	cfg := &AppConfig{AppID: "com.example.app", ROS2: nil}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("Validate() with nil ROS2 returned unexpected error: %v", err)
+	}
+
+	// ROS2 on a service: same domain ID rules apply.
+	badID := 200
+	cfg2 := &AppConfig{
+		AppID: "com.example.app",
+		Services: map[string]*ServiceConfig{
+			"camera": {Context: "camera", ROS2: &ROS2Config{DomainID: &badID}},
+		},
+	}
+	if err := cfg2.Validate(); err == nil {
+		t.Error("Validate() with invalid service-level domainId expected error, got nil")
+	}
+}
+
+func TestValidate_ServiceNames(t *testing.T) {
+	valid := []string{"api", "my-service", "db", "worker2", "frontend"}
+	for _, name := range valid {
+		cfg := &AppConfig{
+			AppID:    "com.example.app",
+			Services: map[string]*ServiceConfig{name: {Context: "svc"}},
+		}
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("Validate() with service name %q returned unexpected error: %v", name, err)
+		}
+	}
+
+	invalid := []string{"API", "my_service", "123abc", "api/v2", "api v2", "", "-api", "my.service"}
+	for _, name := range invalid {
+		cfg := &AppConfig{
+			AppID:    "com.example.app",
+			Services: map[string]*ServiceConfig{name: {Context: "svc"}},
+		}
+		if err := cfg.Validate(); err == nil {
+			t.Errorf("Validate() with service name %q expected error, got nil", name)
+		}
+	}
+}

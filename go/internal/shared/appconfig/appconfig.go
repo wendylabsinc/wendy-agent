@@ -19,6 +19,12 @@ import (
 // space, or newline in appId would otherwise corrupt those downstream uses.
 var appIDPattern = regexp.MustCompile(`^[a-zA-Z0-9._-]{1,253}$`)
 
+// serviceNamePattern restricts service names within the `services` map to
+// lowercase letters, digits, and hyphens, starting with a letter. This ensures
+// names are safe to use as container name components and containerd labels, and
+// prevents snapshot-key collisions when combined with the appId separator.
+var serviceNamePattern = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
+
 // EntitlementType enumerates the supported entitlement types.
 const (
 	EntitlementNetwork   = "network"
@@ -360,6 +366,9 @@ func (c *AppConfig) Validate() error {
 	}
 
 	for name, svc := range c.Services {
+		if !serviceNamePattern.MatchString(name) {
+			return fmt.Errorf("services[%q]: service name must start with a lowercase letter and contain only lowercase letters, digits, and hyphens", name)
+		}
 		if svc == nil {
 			return fmt.Errorf("services[%q]: must not be null", name)
 		}
