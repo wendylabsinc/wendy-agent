@@ -555,17 +555,6 @@ func runCommand(ctx context.Context, opts runOptions) error {
 		return runComposeCommand(ctx, cwd, opts)
 	}
 
-	// For docker-type projects, resolve which Dockerfile to use before
-	// connecting to the target — so the picker shows regardless of whether
-	// we end up on the agent path or a provider path (Docker Desktop, etc.).
-	if projectType == "docker" && opts.dockerfile == "" {
-		resolved, err := resolveDockerfile(cwd, opts.dockerfile, !opts.yes && isInteractiveTerminal())
-		if err != nil {
-			return err
-		}
-		opts.dockerfile = resolved
-	}
-
 	cfgPath := filepath.Join(cwd, "wendy.json")
 	appCfg, err := ensureAppConfig(cfgPath, opts.yes)
 	if err != nil {
@@ -1081,6 +1070,16 @@ func runWithProvider(ctx context.Context, p providers.DeviceProvider, device mod
 		}
 	}
 
+	// For docker projects without an explicit --dockerfile, resolve which file
+	// to use via the interactive picker (no hardware info on the provider path).
+	if projectType == "docker" && opts.dockerfile == "" {
+		resolved, err := resolveDockerfile(projectPath, "", !opts.yes && isInteractiveTerminal())
+		if err != nil {
+			return err
+		}
+		opts.dockerfile = resolved
+	}
+
 	if app == nil {
 		cliLogln("Building with %s provider...", p.DisplayName())
 		var err error
@@ -1240,6 +1239,19 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 		// Dockerfile exists; use the Docker build path.
 	default:
 		return fmt.Errorf("unable to detect project type; ensure a Dockerfile, requirements.txt, or Package.swift is present")
+	}
+
+	// Resolve which Dockerfile to build from. When multiple Dockerfiles exist
+	// and no explicit --dockerfile was given, use hardware properties reported
+	// by the agent to auto-select the best match before falling back to the
+	// interactive picker.
+	if opts.dockerfile == "" {
+		hasGpu := versionResp.HasGpu != nil && versionResp.GetHasGpu()
+		resolved, err := resolveDockerfileForDevice(cwd, versionResp.GetDeviceType(), versionResp.GetGpuVendor(), hasGpu, !opts.yes && isInteractiveTerminal())
+		if err != nil {
+			return err
+		}
+		opts.dockerfile = resolved
 	}
 
 	deviceType := versionResp.GetDeviceType()

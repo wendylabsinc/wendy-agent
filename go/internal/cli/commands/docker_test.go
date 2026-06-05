@@ -1474,3 +1474,142 @@ func TestResolveDockerfile_AutoSelectionRejectsSymlinkEscape(t *testing.T) {
 		t.Fatal("expected error for auto-selected symlink escape, got nil")
 	}
 }
+
+func TestAutoSelectDockerfile_ExactDeviceType(t *testing.T) {
+	files := []BuildOption{
+		{File: "Dockerfile", Type: "docker"},
+		{File: "Dockerfile.jetson-agx-orin", Type: "docker"},
+		{File: "Dockerfile.nvidia", Type: "docker"},
+	}
+	got := autoSelectDockerfile(files, "jetson-agx-orin", "nvidia", true)
+	if got != "Dockerfile.jetson-agx-orin" {
+		t.Fatalf("got %q, want Dockerfile.jetson-agx-orin", got)
+	}
+}
+
+func TestAutoSelectDockerfile_JetsonFamily(t *testing.T) {
+	files := []BuildOption{
+		{File: "Dockerfile", Type: "docker"},
+		{File: "Dockerfile.jetson", Type: "docker"},
+		{File: "Dockerfile.nvidia", Type: "docker"},
+	}
+	got := autoSelectDockerfile(files, "jetson-orin-nano", "nvidia", true)
+	if got != "Dockerfile.jetson" {
+		t.Fatalf("got %q, want Dockerfile.jetson", got)
+	}
+}
+
+func TestAutoSelectDockerfile_NvidiaVendor(t *testing.T) {
+	files := []BuildOption{
+		{File: "Dockerfile", Type: "docker"},
+		{File: "Dockerfile.nvidia", Type: "docker"},
+	}
+	got := autoSelectDockerfile(files, "", "nvidia", true)
+	if got != "Dockerfile.nvidia" {
+		t.Fatalf("got %q, want Dockerfile.nvidia", got)
+	}
+}
+
+func TestAutoSelectDockerfile_AMDVendor(t *testing.T) {
+	files := []BuildOption{
+		{File: "Dockerfile", Type: "docker"},
+		{File: "Dockerfile.amd", Type: "docker"},
+		{File: "Dockerfile.nvidia", Type: "docker"},
+	}
+	got := autoSelectDockerfile(files, "", "amd", false)
+	if got != "Dockerfile.amd" {
+		t.Fatalf("got %q, want Dockerfile.amd", got)
+	}
+}
+
+func TestAutoSelectDockerfile_GenericGPU(t *testing.T) {
+	files := []BuildOption{
+		{File: "Dockerfile", Type: "docker"},
+		{File: "Dockerfile.gpu", Type: "docker"},
+	}
+	got := autoSelectDockerfile(files, "", "", true)
+	if got != "Dockerfile.gpu" {
+		t.Fatalf("got %q, want Dockerfile.gpu", got)
+	}
+}
+
+func TestAutoSelectDockerfile_NoMatch(t *testing.T) {
+	files := []BuildOption{
+		{File: "Dockerfile", Type: "docker"},
+		{File: "Dockerfile.prod", Type: "docker"},
+	}
+	got := autoSelectDockerfile(files, "jetson-agx-orin", "nvidia", true)
+	if got != "" {
+		t.Fatalf("got %q, want empty (no hardware-named Dockerfile present)", got)
+	}
+}
+
+func TestAutoSelectDockerfile_NoHardwareInfo(t *testing.T) {
+	files := []BuildOption{
+		{File: "Dockerfile", Type: "docker"},
+		{File: "Dockerfile.gpu", Type: "docker"},
+	}
+	// hasGpu=false and empty vendor/deviceType → no match
+	got := autoSelectDockerfile(files, "", "", false)
+	if got != "" {
+		t.Fatalf("got %q, want empty when no hardware info", got)
+	}
+}
+
+func TestResolveDockerfileForDevice_AutoSelectsJetson(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"Dockerfile", "Dockerfile.jetson", "Dockerfile.nvidia"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("FROM scratch"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := resolveDockerfileForDevice(dir, "jetson-agx-orin", "nvidia", true, false)
+	if err != nil {
+		t.Fatalf("resolveDockerfileForDevice: %v", err)
+	}
+	if got != "Dockerfile.jetson" {
+		t.Fatalf("got %q, want Dockerfile.jetson", got)
+	}
+}
+
+func TestResolveDockerfileForDevice_FallsBackToDefaultWhenNoMatch(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"Dockerfile", "Dockerfile.prod"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("FROM scratch"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// No hardware-named Dockerfiles present; non-interactive → falls back to "Dockerfile".
+	got, err := resolveDockerfileForDevice(dir, "jetson-agx-orin", "nvidia", true, false)
+	if err != nil {
+		t.Fatalf("resolveDockerfileForDevice: %v", err)
+	}
+	if got != "Dockerfile" {
+		t.Fatalf("got %q, want Dockerfile (fallback)", got)
+	}
+}
+
+func TestResolveDockerfileForDevice_SingleDockerfile(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "Dockerfile.nvidia"), []byte("FROM scratch"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := resolveDockerfileForDevice(dir, "", "", false, false)
+	if err != nil {
+		t.Fatalf("resolveDockerfileForDevice: %v", err)
+	}
+	if got != "Dockerfile.nvidia" {
+		t.Fatalf("got %q, want Dockerfile.nvidia", got)
+	}
+}
+
+func TestResolveDockerfileForDevice_NoDockerfiles(t *testing.T) {
+	dir := t.TempDir()
+	got, err := resolveDockerfileForDevice(dir, "", "", false, false)
+	if err != nil {
+		t.Fatalf("resolveDockerfileForDevice: %v", err)
+	}
+	if got != "" {
+		t.Fatalf("got %q, want empty", got)
+	}
+}

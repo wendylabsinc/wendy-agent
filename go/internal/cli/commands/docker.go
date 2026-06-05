@@ -251,6 +251,81 @@ func resolveDockerfile(cwd, requested string, interactive bool) (string, error) 
 	return confine(picked.File)
 }
 
+// autoSelectDockerfile picks the best Dockerfile from the available list
+// based on target device hardware. Returns "" when no hardware-based match
+// is found and the caller should fall back to the interactive picker.
+//
+// Priority (most specific first):
+//  1. Exact device-type match (e.g. "Dockerfile.jetson-agx-orin")
+//  2. Jetson family ("Dockerfile.jetson") for any deviceType starting with "jetson"
+//  3. GPU vendor ("Dockerfile.nvidia", "Dockerfile.amd", etc.)
+//  4. Any GPU ("Dockerfile.gpu")
+func autoSelectDockerfile(dockerfiles []BuildOption, deviceType, gpuVendor string, hasGpu bool) string {
+	names := make(map[string]bool, len(dockerfiles))
+	for _, d := range dockerfiles {
+		names[d.File] = true
+	}
+
+	if deviceType != "" && names["Dockerfile."+deviceType] {
+		return "Dockerfile." + deviceType
+	}
+
+	if strings.HasPrefix(deviceType, "jetson") && names["Dockerfile.jetson"] {
+		return "Dockerfile.jetson"
+	}
+
+	if gpuVendor != "" && names["Dockerfile."+gpuVendor] {
+		return "Dockerfile." + gpuVendor
+	}
+
+	if hasGpu && names["Dockerfile.gpu"] {
+		return "Dockerfile.gpu"
+	}
+
+	return ""
+}
+
+// resolveDockerfileForDevice resolves which Dockerfile to build from, using
+// target device hardware properties to auto-select when multiple Dockerfiles
+// are present. Falls back to the interactive picker (or non-interactive
+// default) when hardware does not uniquely identify a Dockerfile.
+func resolveDockerfileForDevice(cwd, deviceType, gpuVendor string, hasGpu, interactive bool) (string, error) {
+	var dockerfiles []BuildOption
+	for _, opt := range detectBuildOptions(cwd) {
+		if opt.Type == "docker" {
+			dockerfiles = append(dockerfiles, opt)
+		}
+	}
+
+	if len(dockerfiles) == 0 {
+		return "", nil
+	}
+
+	confine := func(file string) (string, error) {
+		if _, err := confinedDockerfilePath(cwd, file); err != nil {
+			return "", err
+		}
+		return file, nil
+	}
+
+	if len(dockerfiles) == 1 {
+		return confine(dockerfiles[0].File)
+	}
+
+	// Multiple Dockerfiles: try hardware-based auto-selection first.
+	if auto := autoSelectDockerfile(dockerfiles, deviceType, gpuVendor, hasGpu); auto != "" {
+		result, err := confine(auto)
+		if err != nil {
+			return "", err
+		}
+		cliNotice("Auto-selected %q based on target device hardware.", result)
+		return result, nil
+	}
+
+	// No hardware match: fall back to the interactive picker / default logic.
+	return resolveDockerfile(cwd, "", interactive)
+}
+
 // BuildOption represents a detected build type in a project directory.
 type BuildOption struct {
 	Label string // display name shown in the picker
