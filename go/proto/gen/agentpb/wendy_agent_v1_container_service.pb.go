@@ -126,9 +126,11 @@ func (RunContainerLayerHeader_CompressionType) EnumDescriptor() ([]byte, []int) 
 }
 
 type ListContainersRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// When set, only containers belonging to this app group are returned.
+	AppGroupFilter *string `protobuf:"bytes,1,opt,name=app_group_filter,json=appGroupFilter,proto3,oneof" json:"app_group_filter,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *ListContainersRequest) Reset() {
@@ -159,6 +161,13 @@ func (x *ListContainersRequest) ProtoReflect() protoreflect.Message {
 // Deprecated: Use ListContainersRequest.ProtoReflect.Descriptor instead.
 func (*ListContainersRequest) Descriptor() ([]byte, []int) {
 	return file_wendy_agent_services_v1_wendy_agent_v1_container_service_proto_rawDescGZIP(), []int{0}
+}
+
+func (x *ListContainersRequest) GetAppGroupFilter() string {
+	if x != nil && x.AppGroupFilter != nil {
+		return *x.AppGroupFilter
+	}
+	return ""
 }
 
 type ListContainersResponse struct {
@@ -1690,6 +1699,338 @@ func (x *MCPChunk) GetData() []byte {
 	return nil
 }
 
+type ServiceConfig struct {
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	Name      string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	ImageName string                 `protobuf:"bytes,2,opt,name=image_name,json=imageName,proto3" json:"image_name,omitempty"`
+	// JSON-encoded per-service AppConfig.
+	AppConfig     []byte            `protobuf:"bytes,3,opt,name=app_config,json=appConfig,proto3" json:"app_config,omitempty"`
+	DependsOn     []string          `protobuf:"bytes,4,rep,name=depends_on,json=dependsOn,proto3" json:"depends_on,omitempty"`
+	Env           map[string]string `protobuf:"bytes,5,rep,name=env,proto3" json:"env,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	RestartPolicy *RestartPolicy    `protobuf:"bytes,6,opt,name=restart_policy,json=restartPolicy,proto3,oneof" json:"restart_policy,omitempty"`
+	Cmd           string            `protobuf:"bytes,7,opt,name=cmd,proto3" json:"cmd,omitempty"`
+	UserArgs      []string          `protobuf:"bytes,8,rep,name=user_args,json=userArgs,proto3" json:"user_args,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ServiceConfig) Reset() {
+	*x = ServiceConfig{}
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_container_service_proto_msgTypes[28]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ServiceConfig) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ServiceConfig) ProtoMessage() {}
+
+func (x *ServiceConfig) ProtoReflect() protoreflect.Message {
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_container_service_proto_msgTypes[28]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ServiceConfig.ProtoReflect.Descriptor instead.
+func (*ServiceConfig) Descriptor() ([]byte, []int) {
+	return file_wendy_agent_services_v1_wendy_agent_v1_container_service_proto_rawDescGZIP(), []int{28}
+}
+
+func (x *ServiceConfig) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *ServiceConfig) GetImageName() string {
+	if x != nil {
+		return x.ImageName
+	}
+	return ""
+}
+
+func (x *ServiceConfig) GetAppConfig() []byte {
+	if x != nil {
+		return x.AppConfig
+	}
+	return nil
+}
+
+func (x *ServiceConfig) GetDependsOn() []string {
+	if x != nil {
+		return x.DependsOn
+	}
+	return nil
+}
+
+func (x *ServiceConfig) GetEnv() map[string]string {
+	if x != nil {
+		return x.Env
+	}
+	return nil
+}
+
+func (x *ServiceConfig) GetRestartPolicy() *RestartPolicy {
+	if x != nil {
+		return x.RestartPolicy
+	}
+	return nil
+}
+
+func (x *ServiceConfig) GetCmd() string {
+	if x != nil {
+		return x.Cmd
+	}
+	return ""
+}
+
+func (x *ServiceConfig) GetUserArgs() []string {
+	if x != nil {
+		return x.UserArgs
+	}
+	return nil
+}
+
+type CreateAppGroupRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	AppId string                 `protobuf:"bytes,1,opt,name=app_id,json=appId,proto3" json:"app_id,omitempty"`
+	// Isolation mode: "isolated", "shared-network", "shared-ipc", "host".
+	Isolation     string           `protobuf:"bytes,2,opt,name=isolation,proto3" json:"isolation,omitempty"`
+	Services      []*ServiceConfig `protobuf:"bytes,3,rep,name=services,proto3" json:"services,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CreateAppGroupRequest) Reset() {
+	*x = CreateAppGroupRequest{}
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_container_service_proto_msgTypes[29]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CreateAppGroupRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CreateAppGroupRequest) ProtoMessage() {}
+
+func (x *CreateAppGroupRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_container_service_proto_msgTypes[29]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CreateAppGroupRequest.ProtoReflect.Descriptor instead.
+func (*CreateAppGroupRequest) Descriptor() ([]byte, []int) {
+	return file_wendy_agent_services_v1_wendy_agent_v1_container_service_proto_rawDescGZIP(), []int{29}
+}
+
+func (x *CreateAppGroupRequest) GetAppId() string {
+	if x != nil {
+		return x.AppId
+	}
+	return ""
+}
+
+func (x *CreateAppGroupRequest) GetIsolation() string {
+	if x != nil {
+		return x.Isolation
+	}
+	return ""
+}
+
+func (x *CreateAppGroupRequest) GetServices() []*ServiceConfig {
+	if x != nil {
+		return x.Services
+	}
+	return nil
+}
+
+type CreateAppGroupProgressResponse struct {
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	ServiceName string                 `protobuf:"bytes,1,opt,name=service_name,json=serviceName,proto3" json:"service_name,omitempty"`
+	// Types that are valid to be assigned to Progress:
+	//
+	//	*CreateAppGroupProgressResponse_StatusMessage
+	//	*CreateAppGroupProgressResponse_Percent
+	Progress      isCreateAppGroupProgressResponse_Progress `protobuf_oneof:"progress"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CreateAppGroupProgressResponse) Reset() {
+	*x = CreateAppGroupProgressResponse{}
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_container_service_proto_msgTypes[30]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CreateAppGroupProgressResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CreateAppGroupProgressResponse) ProtoMessage() {}
+
+func (x *CreateAppGroupProgressResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_container_service_proto_msgTypes[30]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CreateAppGroupProgressResponse.ProtoReflect.Descriptor instead.
+func (*CreateAppGroupProgressResponse) Descriptor() ([]byte, []int) {
+	return file_wendy_agent_services_v1_wendy_agent_v1_container_service_proto_rawDescGZIP(), []int{30}
+}
+
+func (x *CreateAppGroupProgressResponse) GetServiceName() string {
+	if x != nil {
+		return x.ServiceName
+	}
+	return ""
+}
+
+func (x *CreateAppGroupProgressResponse) GetProgress() isCreateAppGroupProgressResponse_Progress {
+	if x != nil {
+		return x.Progress
+	}
+	return nil
+}
+
+func (x *CreateAppGroupProgressResponse) GetStatusMessage() string {
+	if x != nil {
+		if x, ok := x.Progress.(*CreateAppGroupProgressResponse_StatusMessage); ok {
+			return x.StatusMessage
+		}
+	}
+	return ""
+}
+
+func (x *CreateAppGroupProgressResponse) GetPercent() float32 {
+	if x != nil {
+		if x, ok := x.Progress.(*CreateAppGroupProgressResponse_Percent); ok {
+			return x.Percent
+		}
+	}
+	return 0
+}
+
+type isCreateAppGroupProgressResponse_Progress interface {
+	isCreateAppGroupProgressResponse_Progress()
+}
+
+type CreateAppGroupProgressResponse_StatusMessage struct {
+	StatusMessage string `protobuf:"bytes,2,opt,name=status_message,json=statusMessage,proto3,oneof"`
+}
+
+type CreateAppGroupProgressResponse_Percent struct {
+	Percent float32 `protobuf:"fixed32,3,opt,name=percent,proto3,oneof"`
+}
+
+func (*CreateAppGroupProgressResponse_StatusMessage) isCreateAppGroupProgressResponse_Progress() {}
+
+func (*CreateAppGroupProgressResponse_Percent) isCreateAppGroupProgressResponse_Progress() {}
+
+type StopAppGroupRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	AppId         string                 `protobuf:"bytes,1,opt,name=app_id,json=appId,proto3" json:"app_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *StopAppGroupRequest) Reset() {
+	*x = StopAppGroupRequest{}
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_container_service_proto_msgTypes[31]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *StopAppGroupRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*StopAppGroupRequest) ProtoMessage() {}
+
+func (x *StopAppGroupRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_container_service_proto_msgTypes[31]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use StopAppGroupRequest.ProtoReflect.Descriptor instead.
+func (*StopAppGroupRequest) Descriptor() ([]byte, []int) {
+	return file_wendy_agent_services_v1_wendy_agent_v1_container_service_proto_rawDescGZIP(), []int{31}
+}
+
+func (x *StopAppGroupRequest) GetAppId() string {
+	if x != nil {
+		return x.AppId
+	}
+	return ""
+}
+
+type StopAppGroupResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *StopAppGroupResponse) Reset() {
+	*x = StopAppGroupResponse{}
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_container_service_proto_msgTypes[32]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *StopAppGroupResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*StopAppGroupResponse) ProtoMessage() {}
+
+func (x *StopAppGroupResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_container_service_proto_msgTypes[32]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use StopAppGroupResponse.ProtoReflect.Descriptor instead.
+func (*StopAppGroupResponse) Descriptor() ([]byte, []int) {
+	return file_wendy_agent_services_v1_wendy_agent_v1_container_service_proto_rawDescGZIP(), []int{32}
+}
+
 type RunContainerLayersResponse_Started struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -1698,7 +2039,7 @@ type RunContainerLayersResponse_Started struct {
 
 func (x *RunContainerLayersResponse_Started) Reset() {
 	*x = RunContainerLayersResponse_Started{}
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_container_service_proto_msgTypes[28]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_container_service_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1710,7 +2051,7 @@ func (x *RunContainerLayersResponse_Started) String() string {
 func (*RunContainerLayersResponse_Started) ProtoMessage() {}
 
 func (x *RunContainerLayersResponse_Started) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_container_service_proto_msgTypes[28]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_container_service_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1735,7 +2076,7 @@ type RunContainerLayersResponse_ConsoleOutput struct {
 
 func (x *RunContainerLayersResponse_ConsoleOutput) Reset() {
 	*x = RunContainerLayersResponse_ConsoleOutput{}
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_container_service_proto_msgTypes[29]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_container_service_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1747,7 +2088,7 @@ func (x *RunContainerLayersResponse_ConsoleOutput) String() string {
 func (*RunContainerLayersResponse_ConsoleOutput) ProtoMessage() {}
 
 func (x *RunContainerLayersResponse_ConsoleOutput) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_container_service_proto_msgTypes[29]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_container_service_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1774,8 +2115,10 @@ var File_wendy_agent_services_v1_wendy_agent_v1_container_service_proto protoref
 
 const file_wendy_agent_services_v1_wendy_agent_v1_container_service_proto_rawDesc = "" +
 	"\n" +
-	">wendy/agent/services/v1/wendy_agent_v1_container_service.proto\x12\x17wendy.agent.services.v1\x1a$wendy/agent/services/v1/shared.proto\"\x17\n" +
-	"\x15ListContainersRequest\"E\n" +
+	">wendy/agent/services/v1/wendy_agent_v1_container_service.proto\x12\x17wendy.agent.services.v1\x1a$wendy/agent/services/v1/shared.proto\"[\n" +
+	"\x15ListContainersRequest\x12-\n" +
+	"\x10app_group_filter\x18\x01 \x01(\tH\x00R\x0eappGroupFilter\x88\x01\x01B\x13\n" +
+	"\x11_app_group_filter\"E\n" +
 	"\x16ListContainersResponse\x12+\n" +
 	"\tcontainer\x18\x01 \x01(\v2\r.AppContainerR\tcontainer\"\x13\n" +
 	"\x11ListLayersRequest\"?\n" +
@@ -1888,7 +2231,36 @@ const file_wendy_agent_services_v1_wendy_agent_v1_container_service_proto_rawDes
 	"\x1aListContainerStatsResponse\x12=\n" +
 	"\x05stats\x18\x01 \x03(\v2'.wendy.agent.services.v1.ContainerStatsR\x05stats\"\x1e\n" +
 	"\bMCPChunk\x12\x12\n" +
-	"\x04data\x18\x01 \x01(\fR\x04data2\xe0\f\n" +
+	"\x04data\x18\x01 \x01(\fR\x04data\"\xf9\x02\n" +
+	"\rServiceConfig\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1d\n" +
+	"\n" +
+	"image_name\x18\x02 \x01(\tR\timageName\x12\x1d\n" +
+	"\n" +
+	"app_config\x18\x03 \x01(\fR\tappConfig\x12\x1d\n" +
+	"\n" +
+	"depends_on\x18\x04 \x03(\tR\tdependsOn\x12A\n" +
+	"\x03env\x18\x05 \x03(\v2/.wendy.agent.services.v1.ServiceConfig.EnvEntryR\x03env\x12:\n" +
+	"\x0erestart_policy\x18\x06 \x01(\v2\x0e.RestartPolicyH\x00R\rrestartPolicy\x88\x01\x01\x12\x10\n" +
+	"\x03cmd\x18\a \x01(\tR\x03cmd\x12\x1b\n" +
+	"\tuser_args\x18\b \x03(\tR\buserArgs\x1a6\n" +
+	"\bEnvEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01B\x11\n" +
+	"\x0f_restart_policy\"\x90\x01\n" +
+	"\x15CreateAppGroupRequest\x12\x15\n" +
+	"\x06app_id\x18\x01 \x01(\tR\x05appId\x12\x1c\n" +
+	"\tisolation\x18\x02 \x01(\tR\tisolation\x12B\n" +
+	"\bservices\x18\x03 \x03(\v2&.wendy.agent.services.v1.ServiceConfigR\bservices\"\x94\x01\n" +
+	"\x1eCreateAppGroupProgressResponse\x12!\n" +
+	"\fservice_name\x18\x01 \x01(\tR\vserviceName\x12'\n" +
+	"\x0estatus_message\x18\x02 \x01(\tH\x00R\rstatusMessage\x12\x1a\n" +
+	"\apercent\x18\x03 \x01(\x02H\x00R\apercentB\n" +
+	"\n" +
+	"\bprogress\",\n" +
+	"\x13StopAppGroupRequest\x12\x15\n" +
+	"\x06app_id\x18\x01 \x01(\tR\x05appId\"\x16\n" +
+	"\x14StopAppGroupResponse2\xca\x0e\n" +
 	"\x15WendyContainerService\x12`\n" +
 	"\n" +
 	"ListLayers\x12*.wendy.agent.services.v1.ListLayersRequest\x1a$.wendy.agent.services.v1.LayerHeader0\x01\x12i\n" +
@@ -1901,7 +2273,9 @@ const file_wendy_agent_services_v1_wendy_agent_v1_container_service_proto_rawDes
 	"\x0fAttachContainer\x12/.wendy.agent.services.v1.AttachContainerRequest\x1a3.wendy.agent.services.v1.RunContainerLayersResponse(\x010\x01\x12n\n" +
 	"\rStopContainer\x12-.wendy.agent.services.v1.StopContainerRequest\x1a..wendy.agent.services.v1.StopContainerResponse\x12t\n" +
 	"\x0fDeleteContainer\x12/.wendy.agent.services.v1.DeleteContainerRequest\x1a0.wendy.agent.services.v1.DeleteContainerResponse\x12s\n" +
-	"\x0eListContainers\x12..wendy.agent.services.v1.ListContainersRequest\x1a/.wendy.agent.services.v1.ListContainersResponse0\x01\x12h\n" +
+	"\x0eListContainers\x12..wendy.agent.services.v1.ListContainersRequest\x1a/.wendy.agent.services.v1.ListContainersResponse0\x01\x12{\n" +
+	"\x0eCreateAppGroup\x12..wendy.agent.services.v1.CreateAppGroupRequest\x1a7.wendy.agent.services.v1.CreateAppGroupProgressResponse0\x01\x12k\n" +
+	"\fStopAppGroup\x12,.wendy.agent.services.v1.StopAppGroupRequest\x1a-.wendy.agent.services.v1.StopAppGroupResponse\x12h\n" +
 	"\vListVolumes\x12+.wendy.agent.services.v1.ListVolumesRequest\x1a,.wendy.agent.services.v1.ListVolumesResponse\x12k\n" +
 	"\fRemoveVolume\x12,.wendy.agent.services.v1.RemoveVolumeRequest\x1a-.wendy.agent.services.v1.RemoveVolumeResponse\x12}\n" +
 	"\x12ListContainerStats\x122.wendy.agent.services.v1.ListContainerStatsRequest\x1a3.wendy.agent.services.v1.ListContainerStatsResponse\x12U\n" +
@@ -1920,7 +2294,7 @@ func file_wendy_agent_services_v1_wendy_agent_v1_container_service_proto_rawDesc
 }
 
 var file_wendy_agent_services_v1_wendy_agent_v1_container_service_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_wendy_agent_services_v1_wendy_agent_v1_container_service_proto_msgTypes = make([]protoimpl.MessageInfo, 30)
+var file_wendy_agent_services_v1_wendy_agent_v1_container_service_proto_msgTypes = make([]protoimpl.MessageInfo, 36)
 var file_wendy_agent_services_v1_wendy_agent_v1_container_service_proto_goTypes = []any{
 	(CreateContainerProgress_Phase)(0),               // 0: wendy.agent.services.v1.CreateContainerProgress.Phase
 	(RunContainerLayerHeader_CompressionType)(0),     // 1: wendy.agent.services.v1.RunContainerLayerHeader.CompressionType
@@ -1952,59 +2326,72 @@ var file_wendy_agent_services_v1_wendy_agent_v1_container_service_proto_goTypes 
 	(*ListContainerStatsRequest)(nil),                // 27: wendy.agent.services.v1.ListContainerStatsRequest
 	(*ListContainerStatsResponse)(nil),               // 28: wendy.agent.services.v1.ListContainerStatsResponse
 	(*MCPChunk)(nil),                                 // 29: wendy.agent.services.v1.MCPChunk
-	(*RunContainerLayersResponse_Started)(nil),       // 30: wendy.agent.services.v1.RunContainerLayersResponse.Started
-	(*RunContainerLayersResponse_ConsoleOutput)(nil), // 31: wendy.agent.services.v1.RunContainerLayersResponse.ConsoleOutput
-	(*AppContainer)(nil),                             // 32: AppContainer
-	(*RestartPolicy)(nil),                            // 33: RestartPolicy
+	(*ServiceConfig)(nil),                            // 30: wendy.agent.services.v1.ServiceConfig
+	(*CreateAppGroupRequest)(nil),                    // 31: wendy.agent.services.v1.CreateAppGroupRequest
+	(*CreateAppGroupProgressResponse)(nil),           // 32: wendy.agent.services.v1.CreateAppGroupProgressResponse
+	(*StopAppGroupRequest)(nil),                      // 33: wendy.agent.services.v1.StopAppGroupRequest
+	(*StopAppGroupResponse)(nil),                     // 34: wendy.agent.services.v1.StopAppGroupResponse
+	(*RunContainerLayersResponse_Started)(nil),       // 35: wendy.agent.services.v1.RunContainerLayersResponse.Started
+	(*RunContainerLayersResponse_ConsoleOutput)(nil), // 36: wendy.agent.services.v1.RunContainerLayersResponse.ConsoleOutput
+	nil,                   // 37: wendy.agent.services.v1.ServiceConfig.EnvEntry
+	(*AppContainer)(nil),  // 38: AppContainer
+	(*RestartPolicy)(nil), // 39: RestartPolicy
 }
 var file_wendy_agent_services_v1_wendy_agent_v1_container_service_proto_depIdxs = []int32{
-	32, // 0: wendy.agent.services.v1.ListContainersResponse.container:type_name -> AppContainer
+	38, // 0: wendy.agent.services.v1.ListContainersResponse.container:type_name -> AppContainer
 	15, // 1: wendy.agent.services.v1.RunContainerLayersRequest.layers:type_name -> wendy.agent.services.v1.RunContainerLayerHeader
-	33, // 2: wendy.agent.services.v1.RunContainerLayersRequest.restart_policy:type_name -> RestartPolicy
-	33, // 3: wendy.agent.services.v1.CreateContainerRequest.restart_policy:type_name -> RestartPolicy
+	39, // 2: wendy.agent.services.v1.RunContainerLayersRequest.restart_policy:type_name -> RestartPolicy
+	39, // 3: wendy.agent.services.v1.CreateContainerRequest.restart_policy:type_name -> RestartPolicy
 	0,  // 4: wendy.agent.services.v1.CreateContainerProgress.phase:type_name -> wendy.agent.services.v1.CreateContainerProgress.Phase
 	11, // 5: wendy.agent.services.v1.CreateContainerProgressResponse.progress:type_name -> wendy.agent.services.v1.CreateContainerProgress
 	10, // 6: wendy.agent.services.v1.CreateContainerProgressResponse.completed:type_name -> wendy.agent.services.v1.CreateContainerResponse
-	33, // 7: wendy.agent.services.v1.StartContainerRequest.restart_policy:type_name -> RestartPolicy
+	39, // 7: wendy.agent.services.v1.StartContainerRequest.restart_policy:type_name -> RestartPolicy
 	1,  // 8: wendy.agent.services.v1.RunContainerLayerHeader.compression:type_name -> wendy.agent.services.v1.RunContainerLayerHeader.CompressionType
-	30, // 9: wendy.agent.services.v1.RunContainerLayersResponse.started:type_name -> wendy.agent.services.v1.RunContainerLayersResponse.Started
-	31, // 10: wendy.agent.services.v1.RunContainerLayersResponse.stdout_output:type_name -> wendy.agent.services.v1.RunContainerLayersResponse.ConsoleOutput
-	31, // 11: wendy.agent.services.v1.RunContainerLayersResponse.stderr_output:type_name -> wendy.agent.services.v1.RunContainerLayersResponse.ConsoleOutput
+	35, // 9: wendy.agent.services.v1.RunContainerLayersResponse.started:type_name -> wendy.agent.services.v1.RunContainerLayersResponse.Started
+	36, // 10: wendy.agent.services.v1.RunContainerLayersResponse.stdout_output:type_name -> wendy.agent.services.v1.RunContainerLayersResponse.ConsoleOutput
+	36, // 11: wendy.agent.services.v1.RunContainerLayersResponse.stderr_output:type_name -> wendy.agent.services.v1.RunContainerLayersResponse.ConsoleOutput
 	22, // 12: wendy.agent.services.v1.ListVolumesResponse.volumes:type_name -> wendy.agent.services.v1.VolumeInfo
 	26, // 13: wendy.agent.services.v1.ListContainerStatsResponse.stats:type_name -> wendy.agent.services.v1.ContainerStats
-	4,  // 14: wendy.agent.services.v1.WendyContainerService.ListLayers:input_type -> wendy.agent.services.v1.ListLayersRequest
-	5,  // 15: wendy.agent.services.v1.WendyContainerService.WriteLayer:input_type -> wendy.agent.services.v1.WriteLayerRequest
-	9,  // 16: wendy.agent.services.v1.WendyContainerService.CreateContainer:input_type -> wendy.agent.services.v1.CreateContainerRequest
-	9,  // 17: wendy.agent.services.v1.WendyContainerService.CreateContainerWithProgress:input_type -> wendy.agent.services.v1.CreateContainerRequest
-	8,  // 18: wendy.agent.services.v1.WendyContainerService.RunContainer:input_type -> wendy.agent.services.v1.RunContainerLayersRequest
-	13, // 19: wendy.agent.services.v1.WendyContainerService.StartContainer:input_type -> wendy.agent.services.v1.StartContainerRequest
-	14, // 20: wendy.agent.services.v1.WendyContainerService.AttachContainer:input_type -> wendy.agent.services.v1.AttachContainerRequest
-	17, // 21: wendy.agent.services.v1.WendyContainerService.StopContainer:input_type -> wendy.agent.services.v1.StopContainerRequest
-	19, // 22: wendy.agent.services.v1.WendyContainerService.DeleteContainer:input_type -> wendy.agent.services.v1.DeleteContainerRequest
-	2,  // 23: wendy.agent.services.v1.WendyContainerService.ListContainers:input_type -> wendy.agent.services.v1.ListContainersRequest
-	21, // 24: wendy.agent.services.v1.WendyContainerService.ListVolumes:input_type -> wendy.agent.services.v1.ListVolumesRequest
-	24, // 25: wendy.agent.services.v1.WendyContainerService.RemoveVolume:input_type -> wendy.agent.services.v1.RemoveVolumeRequest
-	27, // 26: wendy.agent.services.v1.WendyContainerService.ListContainerStats:input_type -> wendy.agent.services.v1.ListContainerStatsRequest
-	29, // 27: wendy.agent.services.v1.WendyContainerService.StreamMCP:input_type -> wendy.agent.services.v1.MCPChunk
-	7,  // 28: wendy.agent.services.v1.WendyContainerService.ListLayers:output_type -> wendy.agent.services.v1.LayerHeader
-	6,  // 29: wendy.agent.services.v1.WendyContainerService.WriteLayer:output_type -> wendy.agent.services.v1.WriteLayerResponse
-	10, // 30: wendy.agent.services.v1.WendyContainerService.CreateContainer:output_type -> wendy.agent.services.v1.CreateContainerResponse
-	12, // 31: wendy.agent.services.v1.WendyContainerService.CreateContainerWithProgress:output_type -> wendy.agent.services.v1.CreateContainerProgressResponse
-	16, // 32: wendy.agent.services.v1.WendyContainerService.RunContainer:output_type -> wendy.agent.services.v1.RunContainerLayersResponse
-	16, // 33: wendy.agent.services.v1.WendyContainerService.StartContainer:output_type -> wendy.agent.services.v1.RunContainerLayersResponse
-	16, // 34: wendy.agent.services.v1.WendyContainerService.AttachContainer:output_type -> wendy.agent.services.v1.RunContainerLayersResponse
-	18, // 35: wendy.agent.services.v1.WendyContainerService.StopContainer:output_type -> wendy.agent.services.v1.StopContainerResponse
-	20, // 36: wendy.agent.services.v1.WendyContainerService.DeleteContainer:output_type -> wendy.agent.services.v1.DeleteContainerResponse
-	3,  // 37: wendy.agent.services.v1.WendyContainerService.ListContainers:output_type -> wendy.agent.services.v1.ListContainersResponse
-	23, // 38: wendy.agent.services.v1.WendyContainerService.ListVolumes:output_type -> wendy.agent.services.v1.ListVolumesResponse
-	25, // 39: wendy.agent.services.v1.WendyContainerService.RemoveVolume:output_type -> wendy.agent.services.v1.RemoveVolumeResponse
-	28, // 40: wendy.agent.services.v1.WendyContainerService.ListContainerStats:output_type -> wendy.agent.services.v1.ListContainerStatsResponse
-	29, // 41: wendy.agent.services.v1.WendyContainerService.StreamMCP:output_type -> wendy.agent.services.v1.MCPChunk
-	28, // [28:42] is the sub-list for method output_type
-	14, // [14:28] is the sub-list for method input_type
-	14, // [14:14] is the sub-list for extension type_name
-	14, // [14:14] is the sub-list for extension extendee
-	0,  // [0:14] is the sub-list for field type_name
+	37, // 14: wendy.agent.services.v1.ServiceConfig.env:type_name -> wendy.agent.services.v1.ServiceConfig.EnvEntry
+	39, // 15: wendy.agent.services.v1.ServiceConfig.restart_policy:type_name -> RestartPolicy
+	30, // 16: wendy.agent.services.v1.CreateAppGroupRequest.services:type_name -> wendy.agent.services.v1.ServiceConfig
+	4,  // 17: wendy.agent.services.v1.WendyContainerService.ListLayers:input_type -> wendy.agent.services.v1.ListLayersRequest
+	5,  // 18: wendy.agent.services.v1.WendyContainerService.WriteLayer:input_type -> wendy.agent.services.v1.WriteLayerRequest
+	9,  // 19: wendy.agent.services.v1.WendyContainerService.CreateContainer:input_type -> wendy.agent.services.v1.CreateContainerRequest
+	9,  // 20: wendy.agent.services.v1.WendyContainerService.CreateContainerWithProgress:input_type -> wendy.agent.services.v1.CreateContainerRequest
+	8,  // 21: wendy.agent.services.v1.WendyContainerService.RunContainer:input_type -> wendy.agent.services.v1.RunContainerLayersRequest
+	13, // 22: wendy.agent.services.v1.WendyContainerService.StartContainer:input_type -> wendy.agent.services.v1.StartContainerRequest
+	14, // 23: wendy.agent.services.v1.WendyContainerService.AttachContainer:input_type -> wendy.agent.services.v1.AttachContainerRequest
+	17, // 24: wendy.agent.services.v1.WendyContainerService.StopContainer:input_type -> wendy.agent.services.v1.StopContainerRequest
+	19, // 25: wendy.agent.services.v1.WendyContainerService.DeleteContainer:input_type -> wendy.agent.services.v1.DeleteContainerRequest
+	2,  // 26: wendy.agent.services.v1.WendyContainerService.ListContainers:input_type -> wendy.agent.services.v1.ListContainersRequest
+	31, // 27: wendy.agent.services.v1.WendyContainerService.CreateAppGroup:input_type -> wendy.agent.services.v1.CreateAppGroupRequest
+	33, // 28: wendy.agent.services.v1.WendyContainerService.StopAppGroup:input_type -> wendy.agent.services.v1.StopAppGroupRequest
+	21, // 29: wendy.agent.services.v1.WendyContainerService.ListVolumes:input_type -> wendy.agent.services.v1.ListVolumesRequest
+	24, // 30: wendy.agent.services.v1.WendyContainerService.RemoveVolume:input_type -> wendy.agent.services.v1.RemoveVolumeRequest
+	27, // 31: wendy.agent.services.v1.WendyContainerService.ListContainerStats:input_type -> wendy.agent.services.v1.ListContainerStatsRequest
+	29, // 32: wendy.agent.services.v1.WendyContainerService.StreamMCP:input_type -> wendy.agent.services.v1.MCPChunk
+	7,  // 33: wendy.agent.services.v1.WendyContainerService.ListLayers:output_type -> wendy.agent.services.v1.LayerHeader
+	6,  // 34: wendy.agent.services.v1.WendyContainerService.WriteLayer:output_type -> wendy.agent.services.v1.WriteLayerResponse
+	10, // 35: wendy.agent.services.v1.WendyContainerService.CreateContainer:output_type -> wendy.agent.services.v1.CreateContainerResponse
+	12, // 36: wendy.agent.services.v1.WendyContainerService.CreateContainerWithProgress:output_type -> wendy.agent.services.v1.CreateContainerProgressResponse
+	16, // 37: wendy.agent.services.v1.WendyContainerService.RunContainer:output_type -> wendy.agent.services.v1.RunContainerLayersResponse
+	16, // 38: wendy.agent.services.v1.WendyContainerService.StartContainer:output_type -> wendy.agent.services.v1.RunContainerLayersResponse
+	16, // 39: wendy.agent.services.v1.WendyContainerService.AttachContainer:output_type -> wendy.agent.services.v1.RunContainerLayersResponse
+	18, // 40: wendy.agent.services.v1.WendyContainerService.StopContainer:output_type -> wendy.agent.services.v1.StopContainerResponse
+	20, // 41: wendy.agent.services.v1.WendyContainerService.DeleteContainer:output_type -> wendy.agent.services.v1.DeleteContainerResponse
+	3,  // 42: wendy.agent.services.v1.WendyContainerService.ListContainers:output_type -> wendy.agent.services.v1.ListContainersResponse
+	32, // 43: wendy.agent.services.v1.WendyContainerService.CreateAppGroup:output_type -> wendy.agent.services.v1.CreateAppGroupProgressResponse
+	34, // 44: wendy.agent.services.v1.WendyContainerService.StopAppGroup:output_type -> wendy.agent.services.v1.StopAppGroupResponse
+	23, // 45: wendy.agent.services.v1.WendyContainerService.ListVolumes:output_type -> wendy.agent.services.v1.ListVolumesResponse
+	25, // 46: wendy.agent.services.v1.WendyContainerService.RemoveVolume:output_type -> wendy.agent.services.v1.RemoveVolumeResponse
+	28, // 47: wendy.agent.services.v1.WendyContainerService.ListContainerStats:output_type -> wendy.agent.services.v1.ListContainerStatsResponse
+	29, // 48: wendy.agent.services.v1.WendyContainerService.StreamMCP:output_type -> wendy.agent.services.v1.MCPChunk
+	33, // [33:49] is the sub-list for method output_type
+	17, // [17:33] is the sub-list for method input_type
+	17, // [17:17] is the sub-list for extension type_name
+	17, // [17:17] is the sub-list for extension extendee
+	0,  // [0:17] is the sub-list for field type_name
 }
 
 func init() { file_wendy_agent_services_v1_wendy_agent_v1_container_service_proto_init() }
@@ -2013,6 +2400,7 @@ func file_wendy_agent_services_v1_wendy_agent_v1_container_service_proto_init() 
 		return
 	}
 	file_wendy_agent_services_v1_shared_proto_init()
+	file_wendy_agent_services_v1_wendy_agent_v1_container_service_proto_msgTypes[0].OneofWrappers = []any{}
 	file_wendy_agent_services_v1_wendy_agent_v1_container_service_proto_msgTypes[6].OneofWrappers = []any{}
 	file_wendy_agent_services_v1_wendy_agent_v1_container_service_proto_msgTypes[7].OneofWrappers = []any{}
 	file_wendy_agent_services_v1_wendy_agent_v1_container_service_proto_msgTypes[10].OneofWrappers = []any{
@@ -2029,13 +2417,18 @@ func file_wendy_agent_services_v1_wendy_agent_v1_container_service_proto_init() 
 		(*RunContainerLayersResponse_StdoutOutput)(nil),
 		(*RunContainerLayersResponse_StderrOutput)(nil),
 	}
+	file_wendy_agent_services_v1_wendy_agent_v1_container_service_proto_msgTypes[28].OneofWrappers = []any{}
+	file_wendy_agent_services_v1_wendy_agent_v1_container_service_proto_msgTypes[30].OneofWrappers = []any{
+		(*CreateAppGroupProgressResponse_StatusMessage)(nil),
+		(*CreateAppGroupProgressResponse_Percent)(nil),
+	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_wendy_agent_services_v1_wendy_agent_v1_container_service_proto_rawDesc), len(file_wendy_agent_services_v1_wendy_agent_v1_container_service_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   30,
+			NumMessages:   36,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

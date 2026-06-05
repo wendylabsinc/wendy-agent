@@ -25,4 +25,8 @@ message AppContainer {
     AppRunningState running_state = 3;
     uint32 failure_count = 4;
     uint32 mcp_port = 5;
+    // Empty for legacy single-container apps.
+    string service_name = 6;
+    // appId of the group; empty for legacy single-container apps.
+    string app_group = 7;
 }

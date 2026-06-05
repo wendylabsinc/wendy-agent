@@ -173,12 +173,16 @@ func (x *RestartPolicy) GetOnFailureMaxRetries() int32 {
 }
 
 type AppContainer struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	AppName       string                 `protobuf:"bytes,1,opt,name=app_name,json=appName,proto3" json:"app_name,omitempty"`
-	AppVersion    string                 `protobuf:"bytes,2,opt,name=app_version,json=appVersion,proto3" json:"app_version,omitempty"`
-	RunningState  AppRunningState        `protobuf:"varint,3,opt,name=running_state,json=runningState,proto3,enum=AppRunningState" json:"running_state,omitempty"`
-	FailureCount  uint32                 `protobuf:"varint,4,opt,name=failure_count,json=failureCount,proto3" json:"failure_count,omitempty"`
-	McpPort       uint32                 `protobuf:"varint,5,opt,name=mcp_port,json=mcpPort,proto3" json:"mcp_port,omitempty"`
+	state        protoimpl.MessageState `protogen:"open.v1"`
+	AppName      string                 `protobuf:"bytes,1,opt,name=app_name,json=appName,proto3" json:"app_name,omitempty"`
+	AppVersion   string                 `protobuf:"bytes,2,opt,name=app_version,json=appVersion,proto3" json:"app_version,omitempty"`
+	RunningState AppRunningState        `protobuf:"varint,3,opt,name=running_state,json=runningState,proto3,enum=AppRunningState" json:"running_state,omitempty"`
+	FailureCount uint32                 `protobuf:"varint,4,opt,name=failure_count,json=failureCount,proto3" json:"failure_count,omitempty"`
+	McpPort      uint32                 `protobuf:"varint,5,opt,name=mcp_port,json=mcpPort,proto3" json:"mcp_port,omitempty"`
+	// Empty for legacy single-container apps.
+	ServiceName string `protobuf:"bytes,6,opt,name=service_name,json=serviceName,proto3" json:"service_name,omitempty"`
+	// appId of the group; empty for legacy single-container apps.
+	AppGroup      string `protobuf:"bytes,7,opt,name=app_group,json=appGroup,proto3" json:"app_group,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -248,6 +252,20 @@ func (x *AppContainer) GetMcpPort() uint32 {
 	return 0
 }
 
+func (x *AppContainer) GetServiceName() string {
+	if x != nil {
+		return x.ServiceName
+	}
+	return ""
+}
+
+func (x *AppContainer) GetAppGroup() string {
+	if x != nil {
+		return x.AppGroup
+	}
+	return ""
+}
+
 var File_wendy_agent_services_v1_shared_proto protoreflect.FileDescriptor
 
 const file_wendy_agent_services_v1_shared_proto_rawDesc = "" +
@@ -255,14 +273,16 @@ const file_wendy_agent_services_v1_shared_proto_rawDesc = "" +
 	"$wendy/agent/services/v1/shared.proto\"l\n" +
 	"\rRestartPolicy\x12&\n" +
 	"\x04mode\x18\x01 \x01(\x0e2\x12.RestartPolicyModeR\x04mode\x123\n" +
-	"\x16on_failure_max_retries\x18\x02 \x01(\x05R\x13onFailureMaxRetries\"\xc1\x01\n" +
+	"\x16on_failure_max_retries\x18\x02 \x01(\x05R\x13onFailureMaxRetries\"\x81\x02\n" +
 	"\fAppContainer\x12\x19\n" +
 	"\bapp_name\x18\x01 \x01(\tR\aappName\x12\x1f\n" +
 	"\vapp_version\x18\x02 \x01(\tR\n" +
 	"appVersion\x125\n" +
 	"\rrunning_state\x18\x03 \x01(\x0e2\x10.AppRunningStateR\frunningState\x12#\n" +
 	"\rfailure_count\x18\x04 \x01(\rR\ffailureCount\x12\x19\n" +
-	"\bmcp_port\x18\x05 \x01(\rR\amcpPort*L\n" +
+	"\bmcp_port\x18\x05 \x01(\rR\amcpPort\x12!\n" +
+	"\fservice_name\x18\x06 \x01(\tR\vserviceName\x12\x1b\n" +
+	"\tapp_group\x18\a \x01(\tR\bappGroup*L\n" +
 	"\x11RestartPolicyMode\x12\v\n" +
 	"\aDEFAULT\x10\x00\x12\x12\n" +
 	"\x0eUNLESS_STOPPED\x10\x01\x12\x06\n" +

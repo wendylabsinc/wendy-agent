@@ -15,13 +15,18 @@ service WendyContainerService {
     rpc StopContainer(StopContainerRequest) returns (StopContainerResponse);
     rpc DeleteContainer(DeleteContainerRequest) returns (DeleteContainerResponse);
     rpc ListContainers(ListContainersRequest) returns (stream ListContainersResponse);
+    rpc CreateAppGroup(CreateAppGroupRequest) returns (stream CreateAppGroupProgressResponse);
+    rpc StopAppGroup(StopAppGroupRequest) returns (StopAppGroupResponse);
     rpc ListVolumes(ListVolumesRequest) returns (ListVolumesResponse);
     rpc RemoveVolume(RemoveVolumeRequest) returns (RemoveVolumeResponse);
     rpc ListContainerStats(ListContainerStatsRequest) returns (ListContainerStatsResponse);
     rpc StreamMCP(stream MCPChunk) returns (stream MCPChunk);
 }
 
-message ListContainersRequest {}
+message ListContainersRequest {
+    // When set, only containers belonging to this app group are returned.
+    optional string app_group_filter = 1;
+}
 
 message ListContainersResponse {
     AppContainer container = 1;
@@ -215,3 +220,38 @@ message ListContainerStatsResponse {
 message MCPChunk {
     bytes data = 1;
 }
+
+// --- App group RPCs ---
+
+message ServiceConfig {
+    string name = 1;
+    string image_name = 2;
+    // JSON-encoded per-service AppConfig.
+    bytes app_config = 3;
+    repeated string depends_on = 4;
+    map<string, string> env = 5;
+    optional RestartPolicy restart_policy = 6;
+    string cmd = 7;
+    repeated string user_args = 8;
+}
+
+message CreateAppGroupRequest {
+    string app_id = 1;
+    // Isolation mode: "isolated", "shared-network", "shared-ipc", "host".
+    string isolation = 2;
+    repeated ServiceConfig services = 3;
+}
+
+message CreateAppGroupProgressResponse {
+    string service_name = 1;
+    oneof progress {
+        string status_message = 2;
+        float percent = 3;
+    }
+}
+
+message StopAppGroupRequest {
+    string app_id = 1;
+}
+
+message StopAppGroupResponse {}
