@@ -1613,3 +1613,64 @@ func TestResolveDockerfileForDevice_NoDockerfiles(t *testing.T) {
 		t.Fatalf("got %q, want empty", got)
 	}
 }
+
+func TestResolveDockerfileForDevice_ExactDeviceTypeMatch(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"Dockerfile", "Dockerfile.jetson", "Dockerfile.jetson-agx-orin"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("FROM scratch"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Exact device type should win over Jetson family.
+	got, err := resolveDockerfileForDevice(dir, "jetson-agx-orin", "nvidia", true, false)
+	if err != nil {
+		t.Fatalf("resolveDockerfileForDevice: %v", err)
+	}
+	if got != "Dockerfile.jetson-agx-orin" {
+		t.Fatalf("got %q, want Dockerfile.jetson-agx-orin", got)
+	}
+}
+
+// TestAutoSelectDockerfile_MaliciousDeviceType verifies that a deviceType
+// containing path separators or other special characters cannot be used to
+// select a Dockerfile outside the project. The map lookup against real
+// filesystem entries means no such name can ever match.
+func TestAutoSelectDockerfile_MaliciousDeviceType(t *testing.T) {
+	files := []BuildOption{
+		{File: "Dockerfile", Type: "docker"},
+		{File: "Dockerfile.nvidia", Type: "docker"},
+	}
+	malicious := []string{
+		"../evil",
+		"../../etc/passwd",
+		"nvidia/../../etc",
+		"nvidia\x00null",
+		"nvidia\nevil",
+	}
+	for _, dt := range malicious {
+		got := autoSelectDockerfile(files, dt, "", false)
+		if got != "" {
+			t.Errorf("autoSelectDockerfile with malicious deviceType %q returned %q, want empty", dt, got)
+		}
+	}
+}
+
+// TestAutoSelectDockerfile_MaliciousGPUVendor mirrors the deviceType test for
+// the gpuVendor field.
+func TestAutoSelectDockerfile_MaliciousGPUVendor(t *testing.T) {
+	files := []BuildOption{
+		{File: "Dockerfile", Type: "docker"},
+		{File: "Dockerfile.nvidia", Type: "docker"},
+	}
+	malicious := []string{
+		"../evil",
+		"nvidia/../../etc",
+		"nvidia\x00null",
+	}
+	for _, v := range malicious {
+		got := autoSelectDockerfile(files, "", v, false)
+		if got != "" {
+			t.Errorf("autoSelectDockerfile with malicious gpuVendor %q returned %q, want empty", v, got)
+		}
+	}
+}
