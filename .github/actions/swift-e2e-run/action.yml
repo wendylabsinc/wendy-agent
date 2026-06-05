@@ -29,6 +29,10 @@ inputs:
     description: Transport label for run metadata.
     required: false
     default: lan
+  soft_fail_until:
+    description: Last UTC date when Swift E2E test execution failures may be soft-failed.
+    required: false
+    default: '2026-07-05'
 
 runs:
   using: composite
@@ -37,9 +41,11 @@ runs:
       if: runner.os != 'Windows'
       id: swift-toolchain-unix
       shell: bash
+      env:
+        RUNNER_ID: ${{ inputs.runner_id }}
       run: |
         set -euo pipefail
-        if [[ "${{ inputs.runner_id }}" == "macos-26" ]]; then
+        if [[ "$RUNNER_ID" == "macos-26" ]]; then
           version="$(xcodebuild -version | awk '/Xcode/ { print $2 }')"
         else
           version="$(swift --version | head -n 1 | tr -cs '[:alnum:]._-' '-')"
@@ -73,6 +79,9 @@ runs:
       if: runner.os != 'Windows'
       id: e2e-run-unix
       shell: bash
+      env:
+        WORKFLOW_ID: ${{ inputs.workflow_id }}
+        TARGET_ID: ${{ inputs.target_id }}
       run: |
         set -euo pipefail
         slug() {
@@ -81,8 +90,8 @@ runs:
             | sed -E 's/[^[:alnum:]._-]+/-/g; s/-+/-/g; s/^-//; s/-$//'
         }
 
-        workflow_id="$(slug "${{ inputs.workflow_id }}")"
-        target_id="$(slug "${{ inputs.target_id }}")"
+        workflow_id="$(slug "$WORKFLOW_ID")"
+        target_id="$(slug "$TARGET_ID")"
         printf -v attempt_suffix '%04d' "${GITHUB_RUN_ATTEMPT:-1}"
         echo "run_id=${workflow_id}.gh${GITHUB_RUN_ID}.${target_id}.${attempt_suffix}" >> "$GITHUB_OUTPUT"
 
@@ -90,6 +99,9 @@ runs:
       if: runner.os == 'Windows'
       id: e2e-run-windows
       shell: pwsh
+      env:
+        WORKFLOW_ID: ${{ inputs.workflow_id }}
+        TARGET_ID: ${{ inputs.target_id }}
       run: |
         $ErrorActionPreference = 'Stop'
         function Convert-ToSlug([string]$Value) {
@@ -98,8 +110,8 @@ runs:
           return $slug.Trim('-')
         }
 
-        $workflowID = Convert-ToSlug '${{ inputs.workflow_id }}'
-        $targetID = Convert-ToSlug '${{ inputs.target_id }}'
+        $workflowID = Convert-ToSlug $env:WORKFLOW_ID
+        $targetID = Convert-ToSlug $env:TARGET_ID
         $attempt = if ($env:GITHUB_RUN_ATTEMPT) { [int]$env:GITHUB_RUN_ATTEMPT } else { 1 }
         $runID = '{0}.gh{1}.{2}.{3:D4}' -f $workflowID, $env:GITHUB_RUN_ID, $targetID, $attempt
         "run_id=$runID" >> $env:GITHUB_OUTPUT
@@ -110,6 +122,9 @@ runs:
       shell: bash
       env:
         GITHUB_TOKEN: ${{ github.token }}
+        RUN_ID: ${{ steps.e2e-run-unix.outputs.run_id }}
+        DEVICE_ADDRESS: ${{ inputs.device_address }}
+        SWIFT_E2E_SOFT_FAIL_UNTIL: ${{ inputs.soft_fail_until }}
         WENDY_E2E_TEST_FILTERS: ${{ inputs.tests }}
         WENDY_E2E_RUN_ID: ${{ steps.e2e-run-unix.outputs.run_id }}
         WENDY_E2E_CLI_OS: ${{ inputs.cli_os }}
@@ -117,13 +132,26 @@ runs:
         WENDY_E2E_TRANSPORT: ${{ inputs.transport }}
       run: |
         set -euo pipefail
+        if [[ ! "$RUN_ID" =~ ^[A-Za-z0-9._-]+$ ]]; then
+          echo "::error title=Invalid Swift E2E run ID::Run ID contains unsupported characters."
+          exit 1
+        fi
+        if [[ ! "$DEVICE_ADDRESS" =~ ^[A-Za-z0-9._:-]+$ ]]; then
+          echo "::error title=Invalid Swift E2E device address::Device address contains unsupported characters."
+          exit 1
+        fi
+        if [[ ! "$SWIFT_E2E_SOFT_FAIL_UNTIL" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
+          echo "::error title=Invalid Swift E2E soft-fail expiry::Expected YYYY-MM-DD."
+          exit 1
+        fi
+
         output_dir="${RUNNER_TEMP}/wendy"
-        attempt_dir="${output_dir}/${{ steps.e2e-run-unix.outputs.run_id }}"
+        attempt_dir="${output_dir}/${RUN_ID}"
 
         set +e
         bash ./Scripts/E2ETest.sh \
           --output-dir "$output_dir" \
-          --agent-address "${{ inputs.device_address }}"
+          --agent-address "$DEVICE_ADDRESS"
         status=$?
         set -e
 
@@ -132,9 +160,35 @@ runs:
           exit 0
         fi
 
-        if [[ -f "${attempt_dir}/attempt.json" ]]; then
-          echo "::warning title=Swift E2E temporarily soft-failed::Swift E2E route failed with exit code ${status}; preserving artifacts and allowing this CI check to pass temporarily."
-          exit 0
+        today="$(date -u +%Y-%m-%d)"
+        if [[ "$today" > "$SWIFT_E2E_SOFT_FAIL_UNTIL" ]]; then
+          echo "::error title=Swift E2E soft-fail expired::Temporary Swift E2E soft-fail expired on ${SWIFT_E2E_SOFT_FAIL_UNTIL}; failing this route."
+          exit "$status"
+        fi
+
+        attempt_json="${attempt_dir}/attempt.json"
+        if [[ -f "$attempt_json" ]]; then
+          attempt_status="$(python3 - "$attempt_json" <<'PY'
+        import json
+        import sys
+
+        with open(sys.argv[1], encoding="utf-8") as attempt_file:
+            attempt = json.load(attempt_file)
+        exit_status = attempt.get("exitStatus")
+        if type(exit_status) is not int or exit_status < 0 or exit_status > 255:
+            raise SystemExit(1)
+        print(exit_status)
+        PY
+          )" || {
+            echo "::error title=Invalid Swift E2E attempt metadata::attempt.json does not contain a parseable integer exitStatus."
+            exit "$status"
+          }
+          if [[ "$attempt_status" -ne 0 ]]; then
+            echo "::warning title=Swift E2E temporarily soft-failed::Swift E2E route failed with exit code ${status}; preserving artifacts and allowing this CI check to pass until ${SWIFT_E2E_SOFT_FAIL_UNTIL}."
+            exit 0
+          fi
+          echo "::error title=Swift E2E metadata mismatch::E2E command failed with ${status}, but attempt metadata reported success."
+          exit "$status"
         fi
 
         echo "::error title=Swift E2E infrastructure failure::Swift E2E exited with ${status} before writing attempt metadata; failing the job."
@@ -146,6 +200,9 @@ runs:
       shell: pwsh
       env:
         GITHUB_TOKEN: ${{ github.token }}
+        RUN_ID: ${{ steps.e2e-run-windows.outputs.run_id }}
+        DEVICE_ADDRESS: ${{ inputs.device_address }}
+        SWIFT_E2E_SOFT_FAIL_UNTIL: ${{ inputs.soft_fail_until }}
         WENDY_E2E_TEST_FILTERS: ${{ inputs.tests }}
         WENDY_E2E_RUN_ID: ${{ steps.e2e-run-windows.outputs.run_id }}
         WENDY_E2E_CLI_OS: ${{ inputs.cli_os }}
@@ -153,15 +210,27 @@ runs:
         WENDY_E2E_TRANSPORT: ${{ inputs.transport }}
       run: |
         $ErrorActionPreference = 'Stop'
+        if ($env:RUN_ID -notmatch '^[A-Za-z0-9._-]+$') {
+          Write-Output '::error title=Invalid Swift E2E run ID::Run ID contains unsupported characters.'
+          exit 1
+        }
+        if ($env:DEVICE_ADDRESS -notmatch '^[A-Za-z0-9._:-]+$') {
+          Write-Output '::error title=Invalid Swift E2E device address::Device address contains unsupported characters.'
+          exit 1
+        }
+        if ($env:SWIFT_E2E_SOFT_FAIL_UNTIL -notmatch '^[0-9]{4}-[0-9]{2}-[0-9]{2}$') {
+          Write-Output '::error title=Invalid Swift E2E soft-fail expiry::Expected YYYY-MM-DD.'
+          exit 1
+        }
+
         $outputDir = Join-Path $env:RUNNER_TEMP 'wendy'
-        $attemptDir = Join-Path $outputDir '${{ steps.e2e-run-windows.outputs.run_id }}'
+        $attemptDir = Join-Path $outputDir $env:RUN_ID
 
         $global:LASTEXITCODE = $null
         $ErrorActionPreference = 'Continue'
-        & ./Scripts/E2ETest.ps1 --output-dir $outputDir --agent-address "${{ inputs.device_address }}"
+        & ./Scripts/E2ETest.ps1 --output-dir $outputDir --agent-address $env:DEVICE_ADDRESS
         $commandSucceeded = $?
-        $nativeStatus = $LASTEXITCODE
-        $status = if ($null -ne $nativeStatus -and ($nativeStatus -ne 0 -or $commandSucceeded)) { [int]$nativeStatus } elseif ($commandSucceeded) { 0 } else { 1 }
+        $status = if ($null -ne $LASTEXITCODE) { [int]$LASTEXITCODE } elseif ($commandSucceeded) { 0 } else { 1 }
         $ErrorActionPreference = 'Stop'
 
         if ($status -eq 0) {
@@ -169,9 +238,29 @@ runs:
           exit 0
         }
 
-        if (Test-Path -LiteralPath (Join-Path $attemptDir 'attempt.json') -PathType Leaf) {
-          Write-Output "::warning title=Swift E2E temporarily soft-failed::Swift E2E route failed with exit code $status; preserving artifacts and allowing this CI check to pass temporarily."
-          exit 0
+        $softFailUntil = [datetime]::ParseExact($env:SWIFT_E2E_SOFT_FAIL_UNTIL, 'yyyy-MM-dd', $null)
+        if ([datetime]::UtcNow.Date -gt $softFailUntil.Date) {
+          Write-Output "::error title=Swift E2E soft-fail expired::Temporary Swift E2E soft-fail expired on $env:SWIFT_E2E_SOFT_FAIL_UNTIL; failing this route."
+          exit $status
+        }
+
+        $attemptJson = Join-Path $attemptDir 'attempt.json'
+        if (Test-Path -LiteralPath $attemptJson -PathType Leaf) {
+          try {
+            $attempt = Get-Content -LiteralPath $attemptJson -Raw | ConvertFrom-Json
+            if ($attempt.exitStatus -isnot [int] -and $attempt.exitStatus -isnot [long]) { throw 'invalid exitStatus' }
+            $attemptStatus = [int]$attempt.exitStatus
+            if ($attemptStatus -lt 0 -or $attemptStatus -gt 255) { throw 'invalid exitStatus' }
+          } catch {
+            Write-Output '::error title=Invalid Swift E2E attempt metadata::attempt.json does not contain a parseable integer exitStatus.'
+            exit $status
+          }
+          if ($attemptStatus -ne 0) {
+            Write-Output "::warning title=Swift E2E temporarily soft-failed::Swift E2E route failed with exit code $status; preserving artifacts and allowing this CI check to pass until $env:SWIFT_E2E_SOFT_FAIL_UNTIL."
+            exit 0
+          }
+          Write-Output "::error title=Swift E2E metadata mismatch::E2E command failed with $status, but attempt metadata reported success."
+          exit $status
         }
 
         Write-Output "::error title=Swift E2E infrastructure failure::Swift E2E exited with $status before writing attempt metadata; failing the job."

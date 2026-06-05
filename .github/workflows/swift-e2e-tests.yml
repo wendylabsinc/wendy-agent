@@ -283,6 +283,7 @@ jobs:
         env:
           RAW_DIR: ${{ runner.temp }}/wendy-raw/${{ github.run_id }}
           RUN_DIR: ${{ steps.e2e-run.outputs.run_dir }}
+          SWIFT_E2E_SOFT_FAIL_UNTIL: '2026-07-05'
         run: |
           set -euo pipefail
           mkdir -p "${RUN_DIR}"
@@ -290,6 +291,7 @@ jobs:
           import json
           import os
           import pathlib
+          import re
           import sys
 
           raw_dir = pathlib.Path(os.environ["RAW_DIR"])
@@ -302,10 +304,26 @@ jobs:
                   output.write(f"{name}={value}\n")
 
           def parse_attempt_id(value):
-              parts = str(value or "").split(".")
-              if len(parts) >= 4:
-                  return ".".join(parts[2:-1]), parts[-1]
-              return str(value or "unknown"), "unknown"
+              text = str(value or "")
+              parts = text.split(".")
+              if (
+                  len(text) > 200
+                  or len(parts) < 4
+                  or any(not part for part in parts)
+                  or not re.fullmatch(r"[A-Za-z0-9._-]+", text)
+                  or not re.fullmatch(r"gh[0-9]+", parts[1])
+                  or not re.fullmatch(r"[0-9]{4}", parts[-1])
+              ):
+                  raise ValueError("invalid Swift E2E attemptID")
+              route = ".".join(parts[2:-1])
+              if len(route) > 120:
+                  raise ValueError("Swift E2E route name is too long")
+              return route, parts[-1]
+
+          def parse_exit_status(value):
+              if isinstance(value, bool) or not isinstance(value, int) or value < 0 or value > 255:
+                  raise ValueError("invalid Swift E2E exitStatus")
+              return value
 
           attempt_paths = sorted(raw_dir.glob("*/attempt.json"))
           if not attempt_paths and (raw_dir / "attempt.json").is_file():
@@ -333,21 +351,33 @@ jobs:
               sys.exit(1)
 
           attempts = []
-          for attempt_path in attempt_paths:
-              with attempt_path.open(encoding="utf-8") as attempt_file:
-                  attempt = json.load(attempt_file)
-              route, attempt_number = parse_attempt_id(attempt.get("attemptID"))
-              try:
-                  exit_status = int(attempt.get("exitStatus"))
-              except (TypeError, ValueError):
-                  exit_status = None
-              attempts.append({
-                  "route": route,
-                  "attempt": attempt_number,
-                  "exit_status": exit_status,
-              })
+          try:
+              for attempt_path in attempt_paths:
+                  with attempt_path.open(encoding="utf-8") as attempt_file:
+                      attempt = json.load(attempt_file)
+                  route, attempt_number = parse_attempt_id(attempt.get("attemptID"))
+                  attempts.append({
+                      "route": route,
+                      "attempt": attempt_number,
+                      "exit_status": parse_exit_status(attempt.get("exitStatus")),
+                  })
+          except (json.JSONDecodeError, OSError, ValueError):
+              status_path.write_text(
+                  "## Swift E2E execution status\n\n"
+                  "⚠️ Swift E2E execution status could not be trusted because "
+                  "one or more `attempt.json` artifacts were malformed. "
+                  "Treating this as a workflow infrastructure failure.\n\n"
+                  f"GitHub Actions run: [{os.environ.get('GITHUB_RUN_ID', 'run')}]({run_url})\n",
+                  encoding="utf-8",
+              )
+              set_output("actual_result", "unknown")
+              set_output("attempt_count", "0")
+              set_output("failed_count", "0")
+              set_output("status_path", str(status_path))
+              sys.exit(1)
 
           failed = [attempt for attempt in attempts if attempt["exit_status"] != 0]
+          soft_fail_until = os.environ["SWIFT_E2E_SOFT_FAIL_UNTIL"]
           lines = ["## Swift E2E execution status", ""]
           if failed:
               lines.extend([
@@ -355,7 +385,8 @@ jobs:
                   "",
                   "**Temporary CI policy:** these E2E test execution failures are "
                   "currently soft-failed so PR checks can stay green while the "
-                  "suite is stabilized. Reviewers should still treat the failures "
+                  "suite is stabilized. This bypass expires after "
+                  f"{soft_fail_until}. Reviewers should still treat the failures "
                   "below as real signal.",
                   "",
                   "Failed routes:",
@@ -618,7 +649,7 @@ jobs:
           REPORT_ARTIFACT_URL: ${{ steps.upload_e2e_report.outputs['artifact-url'] }}
           DIFF_BASE_REF: ${{ inputs.diff_base_ref || '' }}
           TESTS: ${{ inputs.tests || '' }}
-          E2E_RESULT: ${{ steps.e2e-status.outputs.actual_result || needs.swift-e2e-tests.result }}
+          E2E_RESULT: ${{ steps.e2e-status.outputs.actual_result != '' && steps.e2e-status.outputs.actual_result || needs.swift-e2e-tests.result }}
         run: |
           set -euo pipefail
           if [[ -z "${SLACK_WEBHOOK_URL}" ]]; then
