@@ -169,7 +169,7 @@ jobs:
                               '- concern: likely docs gap or unclear existing docs caused by the diff.\n'
                               '- info: nice-to-have clarification, cleanup, or low-risk suggestion.\n\n'
                               'Rules:\n'
-                              '- Return at most 8 findings.\n'
+                              '- Return at most 7 findings.\n'
                               '- Only flag content that is directly wrong or missing as a result of the diff.\n'
                               '- Write in timeless present tense ("X does Y").\n'
                               '- Suggest new files only for features that are completely undocumented.\n'
@@ -303,7 +303,7 @@ jobs:
           findings = []
           allowed_finding_keys = {'severity', 'title', 'path', 'overview', 'details'}
           string_finding_keys = {'severity', 'title', 'path', 'overview', 'details'}
-          for raw_finding in raw_findings[:8]:
+          for raw_finding in raw_findings[:7]:
               if not isinstance(raw_finding, dict):
                   continue
               if not set(raw_finding).issubset(allowed_finding_keys):
