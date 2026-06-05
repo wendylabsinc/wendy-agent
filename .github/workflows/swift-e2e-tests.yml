@@ -1,6 +1,11 @@
 name: Swift E2E Tests
 
+# SECURITY: issue_comment workflows run from the default branch. Keep the
+# comment-trigger authorization path minimal and keep write tokens out of jobs
+# that execute PR-branch code.
 on:
+  issue_comment:
+    types: [created]
   push:
     branches:
       - main
@@ -31,22 +36,248 @@ on:
         required: false
 
 concurrency:
-  group: swift-e2e-tests-${{ github.ref }}
+  group: swift-e2e-tests-${{ github.event_name == 'issue_comment' && github.event.issue.number || github.ref }}
   cancel-in-progress: false
 
-permissions:
-  contents: read
-  actions: read
-  issues: write
-  pull-requests: write
+permissions: {}
 
 jobs:
+  authorize-e2e-run:
+    name: Authorize Swift E2E Run
+    if: ${{ github.event_name != 'issue_comment' || github.event.issue.pull_request != null }}
+    runs-on: ubuntu-latest
+    permissions:
+      issues: read
+      pull-requests: read
+    timeout-minutes: 5
+    outputs:
+      should_run: ${{ steps.resolve.outputs.should_run }}
+      trigger_kind: ${{ steps.resolve.outputs.trigger_kind }}
+      pr_number: ${{ steps.resolve.outputs.pr_number }}
+      head_sha: ${{ steps.resolve.outputs.head_sha }}
+      requester: ${{ steps.resolve.outputs.requester }}
+    steps:
+      - name: Authorize trigger
+        id: resolve
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          REPO: ${{ github.repository }}
+          COMMENT_ID: ${{ github.event.comment.id || '' }}
+          ISSUE_NUMBER: ${{ github.event.issue.number || '' }}
+        run: |
+          set -euo pipefail
+
+          should_run=false
+          trigger_kind="${EVENT_NAME}"
+          pr_number=""
+          head_sha=""
+          requester=""
+
+          output() {
+            local key="$1"
+            local value="${2:-}"
+            local delimiter
+            delimiter="wendy_e2e_${key}_$(openssl rand -hex 16)"
+            while [[ "${value}" == *"${delimiter}"* ]]; do
+              delimiter="wendy_e2e_${key}_$(openssl rand -hex 16)"
+            done
+            {
+              printf '%s<<%s\n' "${key}" "${delimiter}"
+              printf '%s\n' "${value}"
+              printf '%s\n' "${delimiter}"
+            } >> "${GITHUB_OUTPUT}"
+          }
+
+          sanitize_summary() {
+            local value="${1:-none}"
+            value="$(printf '%s' "${value}" | LC_ALL=C tr -cd '[:alnum:].:_@/-')"
+            printf '%s' "${value:-none}"
+          }
+
+          finish() {
+            local status="${1:-0}"
+            output should_run "${should_run}"
+            output trigger_kind "${trigger_kind}"
+            output pr_number "${pr_number}"
+            output head_sha "${head_sha}"
+            output requester "${requester}"
+            if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+              {
+                echo "## Swift E2E authorization"
+                echo
+                echo "| Field | Value |"
+                echo "|---|---|"
+                echo "| Trigger | \`$(sanitize_summary "${trigger_kind}")\` |"
+                echo "| Authorized | \`$(sanitize_summary "${should_run}")\` |"
+                echo "| PR | \`$(sanitize_summary "${pr_number:-none}")\` |"
+                echo "| Head SHA | \`$(sanitize_summary "${head_sha:-none}")\` |"
+                echo "| Requester | \`$(sanitize_summary "${requester:-none}")\` |"
+                checked_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+                echo "| Checked at | \`$(sanitize_summary "${checked_at}")\` |"
+              } >> "${GITHUB_STEP_SUMMARY}"
+            fi
+            exit "${status}"
+          }
+
+          if [[ "${EVENT_NAME}" != "issue_comment" ]]; then
+            should_run=true
+            head_sha="${GITHUB_SHA:-}"
+            finish
+          fi
+
+          if [[ -z "${COMMENT_ID}" || -z "${ISSUE_NUMBER}" ]]; then
+            echo "Missing issue comment context; skipping Swift E2E."
+            finish
+          fi
+
+          issue_json="$(gh api "repos/${REPO}/issues/${ISSUE_NUMBER}")"
+          if [[ "$(jq -r 'has("pull_request")' <<<"${issue_json}")" != "true" ]]; then
+            echo "Comment is on an issue, not a PR; skipping Swift E2E."
+            finish
+          fi
+          issue_state="$(jq -r '.state // "closed"' <<<"${issue_json}")"
+          if [[ "${issue_state}" != "open" ]]; then
+            echo "PR #${ISSUE_NUMBER} is not open (state: ${issue_state}); skipping Swift E2E."
+            finish
+          fi
+
+          comment_json="$(gh api "repos/${REPO}/issues/comments/${COMMENT_ID}")"
+          comment_body="$(jq -r '.body // ""' <<<"${comment_json}")"
+          normalized_body="$(printf '%s' "${comment_body}" | LC_ALL=C tr -cd '\11\12\15\40-\176' | tr -d '\r' | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
+          if [[ "${normalized_body}" != "/e2e" ]]; then
+            echo "Comment does not exactly request /e2e; skipping Swift E2E."
+            finish
+          fi
+
+          requester="$(jq -r '.user.login // ""' <<<"${comment_json}")"
+          if [[ ! "${requester}" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,37}[A-Za-z0-9])?$ ]]; then
+            echo "ERROR: invalid GitHub login returned by API: ${requester}" >&2
+            finish 1
+          fi
+
+          permission_json="$(gh api "repos/${REPO}/collaborators/${requester}/permission")"
+          repo_permission="$(jq -r '.permission // "none"' <<<"${permission_json}")"
+          case "${repo_permission}" in
+            admin|maintain)
+              ;;
+            *)
+              echo "Commenter is not authorized for /e2e; maintain or admin permission is required (permission: ${repo_permission})."
+              finish
+              ;;
+          esac
+
+          pr_json="$(gh api "repos/${REPO}/pulls/${ISSUE_NUMBER}")"
+          head_repo="$(jq -r '.head.repo.full_name // ""' <<<"${pr_json}")"
+          base_repo="$(jq -r '.base.repo.full_name // ""' <<<"${pr_json}")"
+          if [[ -z "${head_repo}" || "${head_repo}" != "${base_repo}" || "${base_repo}" != "${REPO}" ]]; then
+            echo "PR head is from a fork (${head_repo}); skipping Swift E2E."
+            finish
+          fi
+
+          head_sha="$(jq -r '.head.sha // ""' <<<"${pr_json}")"
+          if [[ ! "${head_sha}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "ERROR: invalid PR head SHA: ${head_sha}" >&2
+            finish 1
+          fi
+
+          should_run=true
+          trigger_kind=pull_request_comment
+          pr_number="${ISSUE_NUMBER}"
+          finish
+
+  verify-e2e-checkout:
+    name: Verify Swift E2E Checkout
+    needs: authorize-e2e-run
+    if: ${{ needs.authorize-e2e-run.outputs.should_run == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    timeout-minutes: 5
+    outputs:
+      head_sha: ${{ steps.verify.outputs.head_sha }}
+    steps:
+      - name: Verify checkout target
+        id: verify
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUM: ${{ needs.authorize-e2e-run.outputs.pr_number }}
+          HEAD_SHA: ${{ needs.authorize-e2e-run.outputs.head_sha }}
+          REQUESTER: ${{ needs.authorize-e2e-run.outputs.requester }}
+          E2E_TRIGGER_KIND: ${{ needs.authorize-e2e-run.outputs.trigger_kind }}
+        run: |
+          set -euo pipefail
+          case "${E2E_TRIGGER_KIND}" in
+            push|workflow_dispatch|workflow_call|pull_request_comment)
+              ;;
+            *)
+              echo "ERROR: unexpected Swift E2E trigger kind: ${E2E_TRIGGER_KIND}" >&2
+              exit 1
+              ;;
+          esac
+          if [[ ! "${HEAD_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "ERROR: invalid Swift E2E checkout SHA: ${HEAD_SHA}" >&2
+            exit 1
+          fi
+
+          if [[ "${E2E_TRIGGER_KIND}" == "pull_request_comment" ]]; then
+            if [[ ! "${PR_NUM}" =~ ^[0-9]+$ ]]; then
+              echo "ERROR: invalid PR number for Swift E2E checkout: ${PR_NUM}" >&2
+              exit 1
+            fi
+            if [[ ! "${REQUESTER}" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,37}[A-Za-z0-9])?$ ]]; then
+              echo "ERROR: invalid Swift E2E requester: ${REQUESTER}" >&2
+              exit 1
+            fi
+
+            permission_json="$(gh api "repos/${REPO}/collaborators/${REQUESTER}/permission")"
+            repo_permission="$(jq -r '.permission // "none"' <<<"${permission_json}")"
+            case "${repo_permission}" in
+              admin|maintain)
+                ;;
+              *)
+                echo "ERROR: requester no longer has permission to run Swift E2E (permission: ${repo_permission})." >&2
+                exit 1
+                ;;
+            esac
+
+            pr_json="$(gh api "repos/${REPO}/pulls/${PR_NUM}")"
+            pr_state="$(jq -r '.state // "closed"' <<<"${pr_json}")"
+            if [[ "${pr_state}" != "open" ]]; then
+              echo "ERROR: PR #${PR_NUM} is no longer open; refusing checkout." >&2
+              exit 1
+            fi
+            head_repo="$(jq -r '.head.repo.full_name // ""' <<<"${pr_json}")"
+            base_repo="$(jq -r '.base.repo.full_name // ""' <<<"${pr_json}")"
+            current_sha="$(jq -r '.head.sha // ""' <<<"${pr_json}")"
+            if [[ "${head_repo}" != "${base_repo}" || "${base_repo}" != "${REPO}" ]]; then
+              echo "ERROR: PR head is no longer a same-repository branch; refusing checkout." >&2
+              exit 1
+            fi
+            if [[ "${current_sha}" != "${HEAD_SHA}" ]]; then
+              echo "ERROR: PR head moved after /e2e was requested; refusing stale checkout." >&2
+              exit 1
+            fi
+          fi
+
+          printf 'head_sha=%s\n' "${HEAD_SHA}" >> "${GITHUB_OUTPUT}"
+
   # Run routes as a matrix while serializing access to each physical target.
   # queue: max keeps pending matrix jobs in the same device concurrency group
   # instead of canceling older pending routes.
   swift-e2e-tests:
     name: ${{ matrix.target.name }}
+    needs:
+      - authorize-e2e-run
+      - verify-e2e-checkout
+    if: ${{ needs.verify-e2e-checkout.outputs.head_sha != '' }}
     runs-on: ["self-hosted", "${{ matrix.target.runner_label }}"]
+    permissions:
+      contents: read
+      pull-requests: read
     concurrency:
       group: device-${{ matrix.target.device_id }}
       cancel-in-progress: false
@@ -186,7 +417,37 @@ jobs:
           #   agent_os: macOS
           #   transport: lan
     steps:
-      - uses: actions/checkout@v6
+      - name: Validate verified Swift E2E checkout SHA
+        id: verify-checkout
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUM: ${{ needs.authorize-e2e-run.outputs.pr_number }}
+          HEAD_SHA: ${{ needs.verify-e2e-checkout.outputs.head_sha }}
+          E2E_TRIGGER_KIND: ${{ needs.authorize-e2e-run.outputs.trigger_kind }}
+        run: |
+          set -euo pipefail
+          if [[ ! "${HEAD_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "ERROR: invalid verified Swift E2E checkout SHA: ${HEAD_SHA}" >&2
+            exit 1
+          fi
+          if [[ "${E2E_TRIGGER_KIND}" == "pull_request_comment" ]]; then
+            pr_json="$(gh api "repos/${REPO}/pulls/${PR_NUM}")"
+            pr_state="$(jq -r '.state // "closed"' <<<"${pr_json}")"
+            current_sha="$(jq -r '.head.sha // ""' <<<"${pr_json}")"
+            if [[ "${pr_state}" != "open" || "${current_sha}" != "${HEAD_SHA}" ]]; then
+              echo "ERROR: PR state changed after Swift E2E verification; refusing checkout." >&2
+              exit 1
+            fi
+          fi
+          printf 'head_sha=%s\n' "${HEAD_SHA}" >> "${GITHUB_OUTPUT}"
+
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ steps.verify-checkout.outputs.head_sha }}
+          persist-credentials: false
       - uses: ./.github/actions/swift-e2e-run
         with:
           tests: ${{ inputs.tests || '' }}
@@ -199,13 +460,52 @@ jobs:
 
   swift-e2e-analyze:
     name: Analyze E2E Results
-    if: ${{ always() && !cancelled() }}
-    needs: swift-e2e-tests
+    if: ${{ always() && !cancelled() && needs.verify-e2e-checkout.outputs.head_sha != '' }}
+    needs:
+      - authorize-e2e-run
+      - verify-e2e-checkout
+      - swift-e2e-tests
     runs-on: [self-hosted, AI]
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: read
     timeout-minutes: 60
+    outputs:
+      report_artifact_name: ${{ steps.e2e-run.outputs.run_artifact_id }}
+      report_artifact_url: ${{ steps.upload_e2e_report.outputs['artifact-url'] }}
     steps:
-      - uses: actions/checkout@v6
+      - name: Validate verified Swift E2E checkout SHA
+        id: verify-checkout
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUM: ${{ needs.authorize-e2e-run.outputs.pr_number }}
+          HEAD_SHA: ${{ needs.verify-e2e-checkout.outputs.head_sha }}
+          E2E_TRIGGER_KIND: ${{ needs.authorize-e2e-run.outputs.trigger_kind }}
+        run: |
+          set -euo pipefail
+          if [[ ! "${HEAD_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "ERROR: invalid verified Swift E2E checkout SHA: ${HEAD_SHA}" >&2
+            exit 1
+          fi
+          if [[ "${E2E_TRIGGER_KIND}" == "pull_request_comment" ]]; then
+            pr_json="$(gh api "repos/${REPO}/pulls/${PR_NUM}")"
+            pr_state="$(jq -r '.state // "closed"' <<<"${pr_json}")"
+            current_sha="$(jq -r '.head.sha // ""' <<<"${pr_json}")"
+            if [[ "${pr_state}" != "open" || "${current_sha}" != "${HEAD_SHA}" ]]; then
+              echo "ERROR: PR state changed after Swift E2E verification; refusing checkout." >&2
+              exit 1
+            fi
+          fi
+          printf 'head_sha=%s\n' "${HEAD_SHA}" >> "${GITHUB_OUTPUT}"
+
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
+          repository: ${{ github.repository }}
+          ref: ${{ steps.verify-checkout.outputs.head_sha }}
+          persist-credentials: false
           fetch-depth: 0
 
       - name: Compute Swift E2E run ID
@@ -233,7 +533,7 @@ jobs:
             "${{ steps.e2e-run.outputs.run_dir }}"
 
       - name: Download Swift E2E attempts
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
         with:
           path: ${{ runner.temp }}/wendy-raw/${{ github.run_id }}
           pattern: swift-e2e-tests.gh${{ github.run_id }}.*
@@ -325,6 +625,7 @@ jobs:
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY || '' }}
           DIFF_BASE_REF: ${{ inputs.diff_base_ref || '' }}
+          E2E_TRIGGER_KIND: ${{ needs.authorize-e2e-run.outputs.trigger_kind }}
         run: |
           set -euo pipefail
           review_args=(--run-dir "${{ steps.e2e-run.outputs.run_dir }}")
@@ -349,7 +650,7 @@ jobs:
             return 1
           }
 
-          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+          if [[ "${E2E_TRIGGER_KIND}" == "pull_request_comment" ]]; then
             review_args+=(--diff "origin/main...HEAD")
           elif [[ -n "${DIFF_BASE_REF}" ]]; then
             resolved_base="$(resolve_diff_base_ref "${DIFF_BASE_REF}" || true)"
@@ -387,90 +688,6 @@ jobs:
           path: ${{ steps.e2e-run.outputs.run_dir }}/**
           if-no-files-found: warn
           retention-days: 14
-
-      - name: Post Swift E2E PR Review
-        if: always() && github.event_name == 'pull_request'
-        uses: actions/github-script@v9
-        env:
-          REPO: ${{ github.event.pull_request.base.repo.full_name || github.repository }}
-          PR_NUM: ${{ github.event.pull_request.number }}
-          HEAD_REF: ${{ github.head_ref || github.ref_name }}
-          HEAD_LABEL: ${{ github.event.pull_request.head.label || github.head_ref || github.ref_name }}
-          COMMENT_PATH: ${{ steps.e2e-run.outputs.run_dir }}/review.md
-          REPORT_ARTIFACT_NAME: ${{ steps.e2e-run.outputs.run_artifact_id }}
-          REPORT_ARTIFACT_URL: ${{ steps.upload_e2e_report.outputs['artifact-url'] }}
-        with:
-          github-token: ${{ github.token }}
-          script: |
-            const fs = require('fs');
-
-            const commentPath = process.env.COMMENT_PATH;
-            if (!fs.existsSync(commentPath)) {
-              core.info(`No Swift E2E review aggregate found at ${commentPath}; skipping.`);
-              return;
-            }
-
-            const [owner, repo] = process.env.REPO.split('/');
-            const headRef = process.env.HEAD_REF;
-            const headLabel = process.env.HEAD_LABEL;
-            let prNumber = process.env.PR_NUM;
-
-            if (!prNumber) {
-              const qualifiedHead = headLabel?.includes(':') ? headLabel : `${context.repo.owner}:${headRef}`;
-              const heads = [qualifiedHead, headLabel, headRef].filter((value, index, values) =>
-                value && values.indexOf(value) === index
-              );
-              for (const head of heads) {
-                const { data: pulls } = await github.rest.pulls.list({
-                  owner,
-                  repo,
-                  state: 'open',
-                  head,
-                  per_page: 1,
-                });
-                if (pulls.length > 0) {
-                  prNumber = String(pulls[0].number);
-                  break;
-                }
-              }
-            }
-
-            if (!prNumber) {
-              core.info(`No open PR found for ${headRef}; skipping Swift E2E review comment.`);
-              return;
-            }
-
-            let body = fs.readFileSync(commentPath, 'utf8');
-            const artifactURL = process.env.REPORT_ARTIFACT_URL;
-            if (artifactURL) {
-              const artifactName = process.env.REPORT_ARTIFACT_NAME || 'Swift E2E report';
-              body = `${body.trimEnd()}\n\n---\n\nReport artifact: [${artifactName}](${artifactURL})\n`;
-            }
-
-            const comments = await github.paginate(github.rest.issues.listComments, {
-              owner,
-              repo,
-              issue_number: Number(prNumber),
-              per_page: 100,
-            });
-            const existing = comments.filter((comment) =>
-              comment.body?.startsWith('# Swift E2E Review')
-            );
-
-            for (const comment of existing) {
-              await github.rest.issues.deleteComment({
-                owner,
-                repo,
-                comment_id: comment.id,
-              });
-            }
-
-            await github.rest.issues.createComment({
-              owner,
-              repo,
-              issue_number: Number(prNumber),
-              body,
-            });
 
       - name: Post Swift E2E Slack Review
         if: ${{ always() && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch') }}
@@ -626,3 +843,134 @@ jobs:
             -H 'Content-type: application/json' \
             --data @slack-payload.json \
             "${SLACK_WEBHOOK_URL}"
+
+  swift-e2e-comment:
+    name: Post Swift E2E PR Review
+    if: ${{ always() && needs.authorize-e2e-run.outputs.pr_number != '' && needs.verify-e2e-checkout.outputs.head_sha != '' }}
+    needs:
+      - authorize-e2e-run
+      - verify-e2e-checkout
+      - swift-e2e-tests
+      - swift-e2e-analyze
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      issues: write
+      pull-requests: write
+    timeout-minutes: 10
+    steps:
+      - name: Download Swift E2E Report
+        if: needs.swift-e2e-analyze.outputs.report_artifact_name != ''
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
+        with:
+          name: ${{ needs.swift-e2e-analyze.outputs.report_artifact_name }}
+          path: ${{ runner.temp }}/swift-e2e-report
+
+      - name: Post Swift E2E PR Review
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
+        env:
+          REPO: ${{ github.repository }}
+          PR_NUM: ${{ needs.authorize-e2e-run.outputs.pr_number }}
+          HEAD_SHA: ${{ needs.verify-e2e-checkout.outputs.head_sha }}
+          REQUEST_TRIGGER: ${{ needs.authorize-e2e-run.outputs.trigger_kind }}
+          E2E_RESULT: ${{ needs.swift-e2e-tests.result }}
+          COMMENT_DIR: ${{ runner.temp }}/swift-e2e-report
+          REPORT_ARTIFACT_NAME: ${{ needs.swift-e2e-analyze.outputs.report_artifact_name }}
+          REPORT_ARTIFACT_URL: ${{ needs.swift-e2e-analyze.outputs.report_artifact_url }}
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+
+            const MAX_COMMENT_CHARS = 60000;
+            function sanitizeReviewMarkdown(value) {
+              return String(value)
+                .replace(/\0/g, '')
+                .replace(/<!--[\s\S]*?--\s*>/g, '')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/\[([^\]\n]{0,200})\]\(\s*((?!https?:\/\/)[^)\n]*)\)/gi, '$1')
+                .replace(/!\[([^\]\n]{0,200})\]\(([^)\n]{0,500})\)/g, '[$1]')
+                .slice(0, MAX_COMMENT_CHARS);
+            }
+
+            function findReviewMarkdown(root) {
+              if (!root || !fs.existsSync(root)) return '';
+              const candidate = path.join(root, 'review.md');
+              return fs.existsSync(candidate) && fs.statSync(candidate).isFile() ? candidate : '';
+            }
+
+            const [owner, repo] = process.env.REPO.split('/');
+            const prNumber = process.env.PR_NUM;
+            if (!/^\d+$/.test(prNumber || '')) {
+              core.info('No validated PR number available; skipping Swift E2E review comment.');
+              return;
+            }
+
+            const reviewPath = findReviewMarkdown(process.env.COMMENT_DIR);
+            let body = '# Swift E2E Review\n\n_No analysis report was generated._\n';
+            if (reviewPath) {
+              body = sanitizeReviewMarkdown(fs.readFileSync(reviewPath, 'utf8'));
+            }
+            const allowedTriggers = new Set(['push', 'workflow_dispatch', 'workflow_call', 'pull_request_comment']);
+            const requestTrigger = allowedTriggers.has(process.env.REQUEST_TRIGGER)
+              ? process.env.REQUEST_TRIGGER
+              : 'unknown';
+            if (requestTrigger === 'pull_request_comment') {
+              const headSHA = /^[0-9a-f]{40}$/.test(process.env.HEAD_SHA || '')
+                ? process.env.HEAD_SHA
+                : 'unknown';
+              const allowedResults = new Set(['success', 'failure', 'cancelled', 'skipped']);
+              const result = allowedResults.has(process.env.E2E_RESULT)
+                ? process.env.E2E_RESULT
+                : 'unknown';
+              body = `${body.trimEnd()}\n\n---\n\nManual \`/e2e\` run.\n\nTested PR head SHA: \`${headSHA}\`\n\nResult: \`${result}\`\n`;
+            }
+
+            function escapeMarkdownText(value) {
+              return String(value).replace(/[\\[\]()`*_{}#+.!|-]/g, '\\$&').replace(/[\r\n]/g, ' ');
+            }
+            function safeArtifactURL(value) {
+              try {
+                const url = new URL(value);
+                return url.protocol === 'https:' && url.hostname === 'github.com' ? url.toString() : '';
+              } catch {
+                return '';
+              }
+            }
+
+            const artifactURL = safeArtifactURL(process.env.REPORT_ARTIFACT_URL || '');
+            if (artifactURL) {
+              const rawArtifactName = process.env.REPORT_ARTIFACT_NAME || '';
+              const artifactName = /^[A-Za-z0-9._ -]{1,100}$/.test(rawArtifactName)
+                ? escapeMarkdownText(rawArtifactName)
+                : 'Swift E2E report';
+              body = `${body.trimEnd()}\n\nReport artifact: [${artifactName}](${artifactURL})\n`;
+            }
+
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner,
+              repo,
+              issue_number: Number(prNumber),
+              per_page: 100,
+            });
+            const existing = comments.filter((comment) =>
+              comment.body?.startsWith('# Swift E2E Review')
+            );
+
+            for (const comment of existing) {
+              await github.rest.issues.deleteComment({
+                owner,
+                repo,
+                comment_id: comment.id,
+              });
+            }
+
+            await github.rest.issues.createComment({
+              owner,
+              repo,
+              issue_number: Number(prNumber),
+              body,
+            });
+
