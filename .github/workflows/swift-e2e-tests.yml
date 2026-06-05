@@ -3,7 +3,11 @@ name: Swift E2E Tests
 on:
   pull_request:
     paths:
+      # The Swift E2E suite builds and exercises the Go CLI against real agents.
+      - 'go/**'
+      # The suite, runner scripts, Swift agent app/core, and generated Swift APIs live here.
       - 'swift/**'
+      # Protocol changes can affect both the generated CLI clients and Swift agent APIs.
       - 'Proto/**'
       - '.github/actions/swift-e2e-run/**'
       - '.github/workflows/swift-e2e-tests.yml'
