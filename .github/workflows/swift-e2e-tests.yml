@@ -277,6 +277,119 @@ jobs:
             mv "${normalized_dir}" "${raw_dir}"
           fi
 
+      - name: Summarize Swift E2E execution
+        id: e2e-status
+        shell: bash
+        env:
+          RAW_DIR: ${{ runner.temp }}/wendy-raw/${{ github.run_id }}
+          RUN_DIR: ${{ steps.e2e-run.outputs.run_dir }}
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUN_DIR}"
+          python3 - <<'PY'
+          import json
+          import os
+          import pathlib
+          import sys
+
+          raw_dir = pathlib.Path(os.environ["RAW_DIR"])
+          run_dir = pathlib.Path(os.environ["RUN_DIR"])
+          status_path = run_dir / "e2e-status.md"
+          output_path = pathlib.Path(os.environ["GITHUB_OUTPUT"])
+
+          def set_output(name, value):
+              with output_path.open("a", encoding="utf-8") as output:
+                  output.write(f"{name}={value}\n")
+
+          def parse_attempt_id(value):
+              parts = str(value or "").split(".")
+              if len(parts) >= 4:
+                  return ".".join(parts[2:-1]), parts[-1]
+              return str(value or "unknown"), "unknown"
+
+          attempt_paths = sorted(raw_dir.glob("*/attempt.json"))
+          if not attempt_paths and (raw_dir / "attempt.json").is_file():
+              attempt_paths = [raw_dir / "attempt.json"]
+
+          run_url = (
+              f"{os.environ.get('GITHUB_SERVER_URL', 'https://github.com')}/"
+              f"{os.environ.get('GITHUB_REPOSITORY', '')}/actions/runs/"
+              f"{os.environ.get('GITHUB_RUN_ID', '')}"
+          )
+
+          if not attempt_paths:
+              status_path.write_text(
+                  "## Swift E2E execution status\n\n"
+                  "⚠️ Swift E2E execution status could not be determined because "
+                  "no `attempt.json` artifacts were downloaded. Treating this as "
+                  "a workflow infrastructure failure.\n\n"
+                  f"GitHub Actions run: [{os.environ.get('GITHUB_RUN_ID', 'run')}]({run_url})\n",
+                  encoding="utf-8",
+              )
+              set_output("actual_result", "unknown")
+              set_output("attempt_count", "0")
+              set_output("failed_count", "0")
+              set_output("status_path", str(status_path))
+              sys.exit(1)
+
+          attempts = []
+          for attempt_path in attempt_paths:
+              with attempt_path.open(encoding="utf-8") as attempt_file:
+                  attempt = json.load(attempt_file)
+              route, attempt_number = parse_attempt_id(attempt.get("attemptID"))
+              try:
+                  exit_status = int(attempt.get("exitStatus"))
+              except (TypeError, ValueError):
+                  exit_status = None
+              attempts.append({
+                  "route": route,
+                  "attempt": attempt_number,
+                  "exit_status": exit_status,
+              })
+
+          failed = [attempt for attempt in attempts if attempt["exit_status"] != 0]
+          lines = ["## Swift E2E execution status", ""]
+          if failed:
+              lines.extend([
+                  "❌ Swift E2E test execution failed on one or more routes.",
+                  "",
+                  "**Temporary CI policy:** these E2E test execution failures are "
+                  "currently soft-failed so PR checks can stay green while the "
+                  "suite is stabilized. Reviewers should still treat the failures "
+                  "below as real signal.",
+                  "",
+                  "Failed routes:",
+              ])
+              for attempt in failed:
+                  status = "unknown" if attempt["exit_status"] is None else str(attempt["exit_status"])
+                  lines.append(
+                      f"- `{attempt['route']}` attempt `{attempt['attempt']}`: exit status `{status}`"
+                  )
+          else:
+              lines.append("✅ Swift E2E test execution passed on all reported routes.")
+
+          lines.extend([
+              "",
+              "Reported routes:",
+          ])
+          for attempt in attempts:
+              status = "unknown" if attempt["exit_status"] is None else str(attempt["exit_status"])
+              emoji = "✅" if attempt["exit_status"] == 0 else "❌"
+              lines.append(
+                  f"- {emoji} `{attempt['route']}` attempt `{attempt['attempt']}`: exit status `{status}`"
+              )
+          lines.extend([
+              "",
+              f"GitHub Actions run: [{os.environ.get('GITHUB_RUN_ID', 'run')}]({run_url})",
+          ])
+          status_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+          set_output("actual_result", "failure" if failed else "success")
+          set_output("attempt_count", str(len(attempts)))
+          set_output("failed_count", str(len(failed)))
+          set_output("status_path", str(status_path))
+          PY
+
       - name: Aggregate Swift E2E attempts
         working-directory: swift
         shell: bash
@@ -403,6 +516,7 @@ jobs:
           HEAD_REF: ${{ github.head_ref || github.ref_name }}
           HEAD_LABEL: ${{ github.event.pull_request.head.label || github.head_ref || github.ref_name }}
           COMMENT_PATH: ${{ steps.e2e-run.outputs.run_dir }}/review.md
+          STATUS_PATH: ${{ steps.e2e-run.outputs.run_dir }}/e2e-status.md
           REPORT_ARTIFACT_NAME: ${{ steps.e2e-run.outputs.run_artifact_id }}
           REPORT_ARTIFACT_URL: ${{ steps.upload_e2e_report.outputs['artifact-url'] }}
         with:
@@ -411,8 +525,11 @@ jobs:
             const fs = require('fs');
 
             const commentPath = process.env.COMMENT_PATH;
-            if (!fs.existsSync(commentPath)) {
-              core.info(`No Swift E2E review aggregate found at ${commentPath}; skipping.`);
+            const statusPath = process.env.STATUS_PATH;
+            const hasReview = commentPath && fs.existsSync(commentPath);
+            const hasStatus = statusPath && fs.existsSync(statusPath);
+            if (!hasReview && !hasStatus) {
+              core.info(`No Swift E2E review aggregate or status note found; skipping.`);
               return;
             }
 
@@ -446,7 +563,21 @@ jobs:
               return;
             }
 
-            let body = fs.readFileSync(commentPath, 'utf8');
+            let body = hasReview
+              ? fs.readFileSync(commentPath, 'utf8')
+              : '# Swift E2E Review\n\n_Swift E2E AI review was not generated._\n';
+            if (hasStatus) {
+              const status = fs.readFileSync(statusPath, 'utf8').trim();
+              if (body.startsWith('# Swift E2E Review')) {
+                const lines = body.split(/\r?\n/);
+                const heading = lines.shift();
+                const remainder = lines.join('\n').trimStart();
+                body = `${heading}\n\n${status}\n\n---\n\n${remainder}`;
+              } else {
+                body = `# Swift E2E Review\n\n${status}\n\n---\n\n${body.trimStart()}`;
+              }
+            }
+
             const artifactURL = process.env.REPORT_ARTIFACT_URL;
             if (artifactURL) {
               const artifactName = process.env.REPORT_ARTIFACT_NAME || 'Swift E2E report';
@@ -487,7 +618,7 @@ jobs:
           REPORT_ARTIFACT_URL: ${{ steps.upload_e2e_report.outputs['artifact-url'] }}
           DIFF_BASE_REF: ${{ inputs.diff_base_ref || '' }}
           TESTS: ${{ inputs.tests || '' }}
-          E2E_RESULT: ${{ needs.swift-e2e-tests.result }}
+          E2E_RESULT: ${{ steps.e2e-status.outputs.actual_result || needs.swift-e2e-tests.result }}
         run: |
           set -euo pipefail
           if [[ -z "${SLACK_WEBHOOK_URL}" ]]; then

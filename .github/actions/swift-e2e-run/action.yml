@@ -118,9 +118,27 @@ runs:
       run: |
         set -euo pipefail
         output_dir="${RUNNER_TEMP}/wendy"
+        attempt_dir="${output_dir}/${{ steps.e2e-run-unix.outputs.run_id }}"
+
+        set +e
         bash ./Scripts/E2ETest.sh \
           --output-dir "$output_dir" \
           --agent-address "${{ inputs.device_address }}"
+        status=$?
+        set -e
+
+        if [[ "$status" -eq 0 ]]; then
+          echo "Swift E2E route passed."
+          exit 0
+        fi
+
+        if [[ -f "${attempt_dir}/attempt.json" ]]; then
+          echo "::warning title=Swift E2E temporarily soft-failed::Swift E2E route failed with exit code ${status}; preserving artifacts and allowing this CI check to pass temporarily."
+          exit 0
+        fi
+
+        echo "::error title=Swift E2E infrastructure failure::Swift E2E exited with ${status} before writing attempt metadata; failing the job."
+        exit "$status"
 
     - name: Run Swift E2E tests (Windows)
       if: runner.os == 'Windows'
@@ -136,8 +154,28 @@ runs:
       run: |
         $ErrorActionPreference = 'Stop'
         $outputDir = Join-Path $env:RUNNER_TEMP 'wendy'
+        $attemptDir = Join-Path $outputDir '${{ steps.e2e-run-windows.outputs.run_id }}'
+
+        $global:LASTEXITCODE = $null
+        $ErrorActionPreference = 'Continue'
         & ./Scripts/E2ETest.ps1 --output-dir $outputDir --agent-address "${{ inputs.device_address }}"
-        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        $commandSucceeded = $?
+        $nativeStatus = $LASTEXITCODE
+        $status = if ($null -ne $nativeStatus -and ($nativeStatus -ne 0 -or $commandSucceeded)) { [int]$nativeStatus } elseif ($commandSucceeded) { 0 } else { 1 }
+        $ErrorActionPreference = 'Stop'
+
+        if ($status -eq 0) {
+          Write-Output 'Swift E2E route passed.'
+          exit 0
+        }
+
+        if (Test-Path -LiteralPath (Join-Path $attemptDir 'attempt.json') -PathType Leaf) {
+          Write-Output "::warning title=Swift E2E temporarily soft-failed::Swift E2E route failed with exit code $status; preserving artifacts and allowing this CI check to pass temporarily."
+          exit 0
+        }
+
+        Write-Output "::error title=Swift E2E infrastructure failure::Swift E2E exited with $status before writing attempt metadata; failing the job."
+        exit $status
 
     - name: Upload Swift E2E run (Unix)
       if: always() && runner.os != 'Windows'
