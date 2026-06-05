@@ -292,7 +292,7 @@ jobs:
           severity_rank = {'blocker': 0, 'concern': 1, 'info': 2}
           severity_display = {
               'blocker': '❤️',
-              'concern': '💛',
+              'concern': '🟡',
               'info': '💙',
           }
 
@@ -366,7 +366,7 @@ jobs:
               '# AI Docs Review',
               '',
               '> [!NOTE]',
-              '> Automated docs coverage suggestions from Claude. Apply, adapt, or dismiss as needed.',
+              '> Automated docs coverage suggestions from Claude. Review before applying.',
               '',
               'Claude found docs coverage suggestions for this PR.',
               '',
