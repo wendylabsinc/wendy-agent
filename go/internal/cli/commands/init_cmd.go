@@ -1057,6 +1057,14 @@ func projectShellTerm(term string) string {
 }
 
 func projectShellPath() string {
+	executable := ""
+	if exe, err := os.Executable(); err == nil {
+		executable = exe
+	}
+	return projectShellPathForExecutable(executable)
+}
+
+func projectShellPathForExecutable(executable string) string {
 	parts := make([]string, 0)
 	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
 		parts = appendProjectShellPathDir(parts, dir)
@@ -1070,10 +1078,22 @@ func projectShellPath() string {
 		parts = appendProjectShellPathDir(parts, "/usr/bin")
 		parts = appendProjectShellPathDir(parts, "/bin")
 	}
-	if exe, err := os.Executable(); err == nil {
-		parts = appendProjectShellPathDir(parts, filepath.Dir(exe))
+	for _, dir := range projectShellExecutableDirs(executable) {
+		parts = appendProjectShellPathDir(parts, dir)
 	}
 	return strings.Join(parts, string(os.PathListSeparator))
+}
+
+func projectShellExecutableDirs(executable string) []string {
+	if strings.TrimSpace(executable) == "" {
+		return nil
+	}
+
+	dirs := []string{filepath.Dir(executable)}
+	if resolved, err := filepath.EvalSymlinks(executable); err == nil {
+		dirs = append(dirs, filepath.Dir(resolved))
+	}
+	return dirs
 }
 
 func appendProjectShellPathDir(parts []string, dir string) []string {

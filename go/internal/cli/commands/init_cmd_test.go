@@ -390,6 +390,48 @@ func TestProjectShellPath_PreservesUsableParentPath(t *testing.T) {
 	}
 }
 
+func TestProjectShellPath_PreservesResolvedExecutableDir(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix symlink behavior is covered on Unix")
+	}
+
+	root := t.TempDir()
+	homebrewBin := filepath.Join(root, "homebrew", "bin")
+	cellarBin := filepath.Join(root, "homebrew", "Cellar", "wendy", "2026.06.04-163109", "bin")
+	if err := os.MkdirAll(homebrewBin, 0o755); err != nil {
+		t.Fatalf("MkdirAll homebrew bin: %v", err)
+	}
+	if err := os.MkdirAll(cellarBin, 0o755); err != nil {
+		t.Fatalf("MkdirAll cellar bin: %v", err)
+	}
+	if err := os.Chmod(homebrewBin, 0o775); err != nil {
+		t.Fatalf("Chmod homebrew bin: %v", err)
+	}
+
+	realExe := filepath.Join(cellarBin, "wendy")
+	if err := os.WriteFile(realExe, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("WriteFile real exe: %v", err)
+	}
+	linkedExe := filepath.Join(homebrewBin, "wendy")
+	if err := os.Symlink(filepath.Join("..", "Cellar", "wendy", "2026.06.04-163109", "bin", "wendy"), linkedExe); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+
+	t.Setenv("PATH", homebrewBin)
+
+	got := filepath.SplitList(projectShellPathForExecutable(linkedExe))
+	if slices.Contains(got, filepath.Clean(homebrewBin)) {
+		t.Fatalf("projectShellPathForExecutable() = %q, did not expect group-writable Homebrew bin", got)
+	}
+	resolvedCellarBin, err := filepath.EvalSymlinks(cellarBin)
+	if err != nil {
+		t.Fatalf("EvalSymlinks cellar bin: %v", err)
+	}
+	if !slices.Contains(got, filepath.Clean(resolvedCellarBin)) {
+		t.Fatalf("projectShellPathForExecutable() = %q, want resolved executable directory %q", got, resolvedCellarBin)
+	}
+}
+
 func TestProjectShellEnv_RejectsInvalidShell(t *testing.T) {
 	if _, err := projectShellEnv("test-shell"); err == nil {
 		t.Fatal("expected invalid shell to fail")
