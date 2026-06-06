@@ -228,11 +228,11 @@ enum IsolationMode {
     ISOLATION_MODE_ISOLATED = 1;
     ISOLATION_MODE_SHARED_NETWORK = 2;
     ISOLATION_MODE_SHARED_IPC = 3;
-    // ISOLATION_MODE_HOST shares the host network, IPC, and PID namespaces.
-    // Server implementations MUST enforce privileged authorization (e.g. a
-    // dedicated admin certificate claim) before honoring this mode; it MUST
-    // NOT be accessible to unprivileged callers.
-    ISOLATION_MODE_HOST = 4;
+    // Field number 4 (ISOLATION_MODE_HOST) is reserved for a future privileged
+    // host-namespace mode; it will be introduced in a separate PR together with
+    // the server-side authorization enforcement it requires.
+    reserved 4;
+    reserved "ISOLATION_MODE_HOST";
 }
 
 message ServiceConfig {
@@ -249,6 +249,10 @@ message ServiceConfig {
     repeated string user_args = 8;
 }
 
+// Authorization: the server MUST validate that app_id matches the calling
+// device's mTLS certificate org_id claim, following the same model as
+// existing single-container RPCs (e.g. StopContainerRequest). Cross-tenant
+// access MUST be rejected with codes.PermissionDenied.
 message CreateAppGroupRequest {
     // app_id is the cloud-assigned application identifier, distinct from
     // app_name (the human-readable container name); matches AppContainer.app_group.
@@ -265,6 +269,9 @@ message CreateAppGroupProgressResponse {
     }
 }
 
+// Authorization: the server MUST validate that app_id matches the calling
+// device's mTLS certificate org_id claim. Cross-tenant access MUST be
+// rejected with codes.PermissionDenied.
 message StopAppGroupRequest {
     // app_id is the cloud app ID / app-group identifier matching CreateAppGroupRequest.app_id and AppContainer.app_group.
     string app_id = 1;

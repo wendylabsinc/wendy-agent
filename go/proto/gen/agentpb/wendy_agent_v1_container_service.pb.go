@@ -28,7 +28,6 @@ const (
 	IsolationMode_ISOLATION_MODE_ISOLATED       IsolationMode = 1
 	IsolationMode_ISOLATION_MODE_SHARED_NETWORK IsolationMode = 2
 	IsolationMode_ISOLATION_MODE_SHARED_IPC     IsolationMode = 3
-	IsolationMode_ISOLATION_MODE_HOST           IsolationMode = 4
 )
 
 // Enum value maps for IsolationMode.
@@ -38,14 +37,12 @@ var (
 		1: "ISOLATION_MODE_ISOLATED",
 		2: "ISOLATION_MODE_SHARED_NETWORK",
 		3: "ISOLATION_MODE_SHARED_IPC",
-		4: "ISOLATION_MODE_HOST",
 	}
 	IsolationMode_value = map[string]int32{
 		"ISOLATION_MODE_UNSPECIFIED":    0,
 		"ISOLATION_MODE_ISOLATED":       1,
 		"ISOLATION_MODE_SHARED_NETWORK": 2,
 		"ISOLATION_MODE_SHARED_IPC":     3,
-		"ISOLATION_MODE_HOST":           4,
 	}
 )
 
@@ -1758,7 +1755,9 @@ type ServiceConfig struct {
 	state       protoimpl.MessageState `protogen:"open.v1"`
 	ServiceName string                 `protobuf:"bytes,1,opt,name=service_name,json=serviceName,proto3" json:"service_name,omitempty"`
 	ImageName   string                 `protobuf:"bytes,2,opt,name=image_name,json=imageName,proto3" json:"image_name,omitempty"`
-	// JSON-encoded per-service AppConfig.
+	// JSON-encoded per-service AppConfig (the wendy.json contents).
+	// Server implementations MUST validate this against the expected schema
+	// and enforce a maximum size (e.g. 64 KB) before processing.
 	AppConfig     []byte            `protobuf:"bytes,3,opt,name=app_config,json=appConfig,proto3" json:"app_config,omitempty"`
 	DependsOn     []string          `protobuf:"bytes,4,rep,name=depends_on,json=dependsOn,proto3" json:"depends_on,omitempty"`
 	Env           map[string]string `protobuf:"bytes,5,rep,name=env,proto3" json:"env,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
@@ -1855,11 +1854,17 @@ func (x *ServiceConfig) GetUserArgs() []string {
 	return nil
 }
 
+// Authorization: the server MUST validate that app_id matches the calling
+// device's mTLS certificate org_id claim, following the same model as
+// existing single-container RPCs (e.g. StopContainerRequest). Cross-tenant
+// access MUST be rejected with codes.PermissionDenied.
 type CreateAppGroupRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	AppId         string                 `protobuf:"bytes,1,opt,name=app_id,json=appId,proto3" json:"app_id,omitempty"`
-	Isolation     IsolationMode          `protobuf:"varint,2,opt,name=isolation,proto3,enum=wendy.agent.services.v1.IsolationMode" json:"isolation,omitempty"`
-	Services      []*ServiceConfig       `protobuf:"bytes,3,rep,name=services,proto3" json:"services,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// app_id is the cloud-assigned application identifier, distinct from
+	// app_name (the human-readable container name); matches AppContainer.app_group.
+	AppId         string           `protobuf:"bytes,1,opt,name=app_id,json=appId,proto3" json:"app_id,omitempty"`
+	Isolation     IsolationMode    `protobuf:"varint,2,opt,name=isolation,proto3,enum=wendy.agent.services.v1.IsolationMode" json:"isolation,omitempty"`
+	Services      []*ServiceConfig `protobuf:"bytes,3,rep,name=services,proto3" json:"services,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2005,6 +2010,9 @@ func (*CreateAppGroupProgressResponse_StatusMessage) isCreateAppGroupProgressRes
 
 func (*CreateAppGroupProgressResponse_Percent) isCreateAppGroupProgressResponse_Progress() {}
 
+// Authorization: the server MUST validate that app_id matches the calling
+// device's mTLS certificate org_id claim. Cross-tenant access MUST be
+// rejected with codes.PermissionDenied.
 type StopAppGroupRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// app_id is the cloud app ID / app-group identifier matching CreateAppGroupRequest.app_id and AppContainer.app_group.
@@ -2315,13 +2323,12 @@ const file_wendy_agent_services_v1_wendy_agent_v1_container_service_proto_rawDes
 	"\bprogress\",\n" +
 	"\x13StopAppGroupRequest\x12\x15\n" +
 	"\x06app_id\x18\x01 \x01(\tR\x05appId\"\x16\n" +
-	"\x14StopAppGroupResponse*\xa7\x01\n" +
+	"\x14StopAppGroupResponse*\xa9\x01\n" +
 	"\rIsolationMode\x12\x1e\n" +
 	"\x1aISOLATION_MODE_UNSPECIFIED\x10\x00\x12\x1b\n" +
 	"\x17ISOLATION_MODE_ISOLATED\x10\x01\x12!\n" +
 	"\x1dISOLATION_MODE_SHARED_NETWORK\x10\x02\x12\x1d\n" +
-	"\x19ISOLATION_MODE_SHARED_IPC\x10\x03\x12\x17\n" +
-	"\x13ISOLATION_MODE_HOST\x10\x042\xca\x0e\n" +
+	"\x19ISOLATION_MODE_SHARED_IPC\x10\x03\"\x04\b\x04\x10\x04*\x13ISOLATION_MODE_HOST2\xca\x0e\n" +
 	"\x15WendyContainerService\x12`\n" +
 	"\n" +
 	"ListLayers\x12*.wendy.agent.services.v1.ListLayersRequest\x1a$.wendy.agent.services.v1.LayerHeader0\x01\x12i\n" +
