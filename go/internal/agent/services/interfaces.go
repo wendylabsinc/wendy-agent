@@ -50,6 +50,10 @@ type ContainerdClient interface {
 	StopContainer(ctx context.Context, appName string) error
 	DeleteContainer(ctx context.Context, appName string, deleteImage bool) error
 	ListContainers(ctx context.Context) ([]*agentpb.AppContainer, error)
+	// ListContainersForGroup returns only containers belonging to the given
+	// app group (owning tenant's org_id). The filter is applied at the storage
+	// layer so no cross-tenant container data is loaded into memory.
+	ListContainersForGroup(ctx context.Context, appGroup string) ([]*agentpb.AppContainer, error)
 	GetContainerStats(ctx context.Context) ([]*agentpb.ContainerStats, error)
 	GetContainerMetrics(ctx context.Context, appName string) (ContainerMetrics, error)
 	GetContainerMCPPort(ctx context.Context, appName string) (uint32, error)

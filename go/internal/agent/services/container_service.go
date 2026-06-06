@@ -708,17 +708,25 @@ func (s *ContainerService) ListContainers(req *agentpb.ListContainersRequest, st
 		if filter != orgID {
 			return status.Error(codes.PermissionDenied, "app_group_filter must match caller's org identity")
 		}
+		// Use ListContainersForGroup so the filter is enforced at the storage
+		// layer — no cross-tenant container data is loaded into memory.
+		containers, err := s.containerd.ListContainersForGroup(stream.Context(), filter)
+		if err != nil {
+			return status.Errorf(codes.Internal, "failed to list containers: %v", err)
+		}
+		for _, c := range containers {
+			if err := stream.Send(&agentpb.ListContainersResponse{Container: c}); err != nil {
+				return err
+			}
+		}
+		return nil
 	}
 
 	containers, err := s.containerd.ListContainers(stream.Context())
 	if err != nil {
 		return status.Errorf(codes.Internal, "failed to list containers: %v", err)
 	}
-
 	for _, c := range containers {
-		if filter != "" && c.AppGroup != filter {
-			continue
-		}
 		if err := stream.Send(&agentpb.ListContainersResponse{Container: c}); err != nil {
 			return err
 		}

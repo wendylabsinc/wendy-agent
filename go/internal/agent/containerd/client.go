@@ -1215,6 +1215,63 @@ func (c *Client) ListContainers(ctx context.Context) ([]*agentpb.AppContainer, e
 			RunningState: runningState,
 			FailureCount: failureCount,
 			McpPort:      mcpPort,
+			AppGroup:     info.Labels[labelKeyAppGroup],
+		})
+	}
+
+	return result, nil
+}
+
+// ListContainersForGroup returns only containers belonging to the given app group
+// (the owning tenant's org_id). The filter is applied at the containerd storage
+// layer via label selector so no cross-tenant container data is loaded into memory.
+func (c *Client) ListContainersForGroup(ctx context.Context, appGroup string) ([]*agentpb.AppContainer, error) {
+	ctx = c.withNamespace(ctx)
+
+	// Filter by both the Wendy marker label and the app.group label at the storage
+	// layer. Containerd label filters use the form `labels."key"=="value"`.
+	appGroupFilter := fmt.Sprintf("labels.%q==%q", labelKeyAppGroup, appGroup)
+	containers, err := c.client.Containers(ctx,
+		fmt.Sprintf("labels.%q", labelKeyAppVersion),
+		appGroupFilter,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("listing containers for group %q: %w", appGroup, err)
+	}
+
+	var result []*agentpb.AppContainer
+	for _, ctr := range containers {
+		info, err := ctr.Info(ctx)
+		if err != nil {
+			c.logger.Warn("Failed to get container info",
+				zap.String("id", ctr.ID()),
+				zap.Error(err),
+			)
+			continue
+		}
+
+		runningState := agentpb.AppRunningState_STOPPED
+		task, err := ctr.Task(ctx, nil)
+		if err == nil {
+			status, statusErr := task.Status(ctx)
+			if statusErr == nil && status.Status == containerd.Running {
+				runningState = agentpb.AppRunningState_RUNNING
+			}
+		}
+
+		var mcpPort uint32
+		if portStr, ok := info.Labels[labelKeyMCPPort]; ok && portStr != "" {
+			if p, err := strconv.ParseUint(portStr, 10, 32); err == nil {
+				mcpPort = uint32(p)
+			}
+		}
+
+		result = append(result, &agentpb.AppContainer{
+			AppName:      ctr.ID(),
+			AppVersion:   info.Labels[labelKeyAppVersion],
+			RunningState: runningState,
+			McpPort:      mcpPort,
+			AppGroup:     appGroup,
 		})
 	}
 

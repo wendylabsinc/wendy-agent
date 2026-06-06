@@ -49,6 +49,15 @@ type mockContainerdClient struct {
 func (m *mockContainerdClient) ListContainers(_ context.Context) ([]*agentpb.AppContainer, error) {
 	return m.containers, m.listErr
 }
+func (m *mockContainerdClient) ListContainersForGroup(_ context.Context, appGroup string) ([]*agentpb.AppContainer, error) {
+	var result []*agentpb.AppContainer
+	for _, c := range m.containers {
+		if c.AppGroup == appGroup {
+			result = append(result, c)
+		}
+	}
+	return result, m.listErr
+}
 func (m *mockContainerdClient) StopContainer(_ context.Context, _ string) error {
 	return m.stopErr
 }

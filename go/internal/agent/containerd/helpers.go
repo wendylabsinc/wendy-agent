@@ -45,6 +45,11 @@ const labelKeyRestartPolicy = "sh.wendy/restart.policy"
 // labelKeyMCPPort stores the MCP server port for containers with an mcp entitlement.
 const labelKeyMCPPort = "sh.wendy/mcp.port"
 
+// labelKeyAppGroup stores the owning tenant's org_id (as a decimal string) on
+// containers created via CreateAppGroup. Used for storage-layer tenant filtering
+// in ListContainersForGroup.
+const labelKeyAppGroup = "sh.wendy/app.group"
+
 // labelKeyGCRoot prevents garbage collection of content blobs.
 const labelKeyGCRoot = "containerd.io/gc.root"
 
