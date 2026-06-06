@@ -109,6 +109,19 @@ func (m *statefulContainerdClient) ListContainers(_ context.Context) ([]*agentpb
 	}
 	return result, nil
 }
+func (m *statefulContainerdClient) ListContainersForGroup(ctx context.Context, appGroup string) ([]*agentpb.AppContainer, error) {
+	all, err := m.ListContainers(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var result []*agentpb.AppContainer
+	for _, c := range all {
+		if c.AppGroup == appGroup {
+			result = append(result, c)
+		}
+	}
+	return result, nil
+}
 
 func (m *statefulContainerdClient) StopContainer(_ context.Context, appName string) error {
 	m.mu.Lock()
