@@ -12,7 +12,7 @@ func TopologicalSort(services map[string]*ServiceConfig) ([][]string, error) {
 		return nil, nil
 	}
 
-	// Build in-degree count and adjacency list (dependent → dependencies).
+	// Build in-degree count and adjacency list (dependency → dependents).
 	inDegree := make(map[string]int, len(services))
 	// dependents maps a service name to the list of services that depend on it.
 	dependents := make(map[string][]string, len(services))
