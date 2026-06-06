@@ -23,6 +23,26 @@ When building a Dockerfile project, `wendy run` passes the target device's hardw
 
 `WENDY_PLATFORM` and `WENDY_DEBUG` are always set. The remaining args are only injected when the agent reports them, so Dockerfiles can define their own `ARG` defaults for devices that predate the field.
 
+## Dockerfile auto-selection (agent path)
+
+When a project directory contains multiple Dockerfiles and no `--dockerfile` flag is given, `wendy run` uses hardware properties reported by the target device's agent to pick the best match automatically. Selection follows a most-specific-first priority order:
+
+| Priority | Condition | File selected |
+|---|---|---|
+| 1 | `deviceType` matches exactly | `Dockerfile.<deviceType>` (e.g. `Dockerfile.jetson-agx-orin`) |
+| 2 | `deviceType` starts with `jetson` | `Dockerfile.jetson` |
+| 3 | GPU vendor is known | `Dockerfile.<gpuVendor>` (e.g. `Dockerfile.nvidia`, `Dockerfile.amd`) |
+| 4 | Device has any GPU | `Dockerfile.gpu` |
+| 5 | No hardware match | Interactive picker, or `Dockerfile` as the non-interactive default |
+
+When a file is auto-selected, `wendy run` prints a notice:
+
+```
+Auto-selected "Dockerfile.jetson" based on target device hardware.
+```
+
+Auto-selection only applies on the **agent path** (WendyOS hardware targets). When running against a local provider (Docker Desktop, Local Machine), the interactive picker is used regardless of hardware.
+
 ## Multi-service projects (`wendy.json` with `services`)
 
 When `wendy.json` contains a `services` map, `wendy run` automatically switches to the multi-service path:

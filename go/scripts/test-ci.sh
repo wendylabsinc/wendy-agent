@@ -19,6 +19,7 @@ Tests:
   swift-bluetooth           Swift with bluetooth entitlement
   swift-resources           Swift app with bundled resources (verifies resource loading)
   python-hello              Basic Python deployment (no entitlements)
+  python-multi-dockerfile   Verify hardware-based Dockerfile auto-selection (multi-Dockerfile project)
   python-network            Python with network entitlement (WiFi connectivity)
   python-gpu                Python with GPU entitlement (CUDA verification)
   python-onnx-gpu           Python with GPU entitlement (ONNX Runtime CUDA inference)
@@ -186,6 +187,7 @@ ALL_TESTS=(
     swift-bluetooth
     swift-resources
     python-hello
+    python-multi-dockerfile
     python-network
     python-gpu
     python-onnx-gpu
