@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"google.golang.org/grpc"
@@ -31,11 +32,19 @@ const (
 // individual dangerous ones.
 var cmdAllowRe = regexp.MustCompile(`^[A-Za-z0-9./_-]+$`)
 
+// imageNameRe restricts image_name to valid OCI image reference characters,
+// preventing path traversal sequences, null bytes, and other injection vectors
+// that could be exploited when the image reference is passed to a container runtime.
+var imageNameRe = regexp.MustCompile(`^[a-z0-9]([a-z0-9._\-/]*[a-z0-9])?(:[a-zA-Z0-9._\-]+)?(@sha256:[a-f0-9]{64})?$`)
+
 // certOrgID extracts the org_id from the caller's mTLS client certificate
-// Wendy URI SAN (urn:wendy:org:<org_id>:...) and verifies that a valid,
-// verified certificate chain was presented. Returns Unauthenticated when
-// no valid cert is present and PermissionDenied when the cert carries no
-// Wendy org identifier.
+// Wendy URI SAN (urn:wendy:org:<org_id>:...). The agent's mTLS transport uses
+// tls.RequireAnyClientCert with a custom VerifyPeerCertificate callback
+// (see internal/agent/mtls) rather than the standard CA pool path, so
+// VerifiedChains is not populated; PeerCertificates[0] holds the verified
+// leaf certificate after a successful TLS handshake. Returns Unauthenticated
+// when no client cert is present or the connection is not TLS, and
+// PermissionDenied when the cert carries no Wendy org identifier.
 func certOrgID(ctx context.Context) (string, error) {
 	p, ok := peer.FromContext(ctx)
 	if !ok {
@@ -45,10 +54,10 @@ func certOrgID(ctx context.Context) (string, error) {
 	if !ok {
 		return "", status.Error(codes.Unauthenticated, "connection is not TLS-authenticated")
 	}
-	if len(tlsInfo.State.VerifiedChains) == 0 || len(tlsInfo.State.VerifiedChains[0]) == 0 {
-		return "", status.Error(codes.Unauthenticated, "no verified client certificate chain")
+	if len(tlsInfo.State.PeerCertificates) == 0 {
+		return "", status.Error(codes.Unauthenticated, "no client certificate presented")
 	}
-	cert := tlsInfo.State.VerifiedChains[0][0]
+	cert := tlsInfo.State.PeerCertificates[0]
 	for _, u := range cert.URIs {
 		if u.Scheme != "urn" {
 			continue
@@ -69,8 +78,16 @@ func (s *ContainerService) CreateAppGroup(req *agentpb.CreateAppGroupRequest, st
 	if err != nil {
 		return err
 	}
+	// app_id is the org_id of the owning tenant expressed as a decimal string —
+	// the same namespace as the org_id in the caller's mTLS URI SAN
+	// (urn:wendy:org:<org_id>:...). Validating the format enforces this invariant
+	// so the equality check below is a verified tenant-identity comparison, not
+	// an opaque string comparison between different identifier spaces.
 	if req.GetAppId() == "" {
 		return status.Error(codes.InvalidArgument, "app_id is required")
+	}
+	if _, err := strconv.ParseInt(req.GetAppId(), 10, 64); err != nil {
+		return status.Error(codes.InvalidArgument, "app_id must be a numeric org identifier")
 	}
 	if orgID != req.GetAppId() {
 		return status.Error(codes.PermissionDenied, "app_id does not match caller's org identity")
@@ -99,6 +116,9 @@ func (s *ContainerService) StopAppGroup(ctx context.Context, req *agentpb.StopAp
 	if req.GetAppId() == "" {
 		return nil, status.Error(codes.InvalidArgument, "app_id is required")
 	}
+	if _, err := strconv.ParseInt(req.GetAppId(), 10, 64); err != nil {
+		return nil, status.Error(codes.InvalidArgument, "app_id must be a numeric org identifier")
+	}
 	if orgID != req.GetAppId() {
 		return nil, status.Error(codes.PermissionDenied, "app_id does not match caller's org identity")
 	}
@@ -122,6 +142,12 @@ func validateIsolationMode(mode agentpb.IsolationMode) error {
 // DoS and injection attacks.
 func validateServiceConfig(svc *agentpb.ServiceConfig) error {
 	name := svc.GetServiceName()
+
+	// Validate image_name: must be a well-formed OCI image reference to prevent
+	// path traversal, registry override, and other injection vectors.
+	if img := svc.GetImageName(); img != "" && !imageNameRe.MatchString(img) {
+		return status.Errorf(codes.InvalidArgument, "service %q: image_name is invalid", name)
+	}
 
 	// Validate app_config: size cap and JSON schema.
 	if len(svc.GetAppConfig()) > maxAppConfigBytes {
