@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/distribution/reference"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -41,14 +42,6 @@ var cmdAllowRe = regexp.MustCompile(`^[A-Za-z0-9./_-]+$`)
 // orchestration lookup keys; allowing shell metacharacters or path-traversal
 // sequences in those fields would create injection vectors at every call site.
 var serviceNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$`)
-
-// imageNameRe restricts image_name to valid OCI image reference characters,
-// preventing path traversal sequences, null bytes, and other injection vectors
-// that could be exploited when the image reference is passed to a container runtime.
-// The optional leading group matches a registry hostname with an optional port
-// (e.g. registry.example.com:5000/ or localhost:5000/) so that private registries
-// with explicit port numbers are accepted alongside simple name references.
-var imageNameRe = regexp.MustCompile(`^([a-z0-9][a-z0-9._\-]*(:[0-9]{1,5})?/)?[a-z0-9]([a-z0-9._\-/]*[a-z0-9])?(:[a-zA-Z0-9._\-]+)?(@sha256:[a-f0-9]{64})?$`)
 
 // certOrgID extracts the org_id from the caller's mTLS client certificate
 // Wendy URI SAN (urn:wendy:org:<org_id>:...).
@@ -238,9 +231,11 @@ func validateServiceConfig(svc *agentpb.ServiceConfig) error {
 		return status.Errorf(codes.InvalidArgument, "service %q: image_name exceeds maximum of %d bytes", name, maxImageNameBytes)
 	}
 
-	// Validate image_name: must be a well-formed OCI image reference to prevent
-	// path traversal, registry override, and other injection vectors.
-	if !imageNameRe.MatchString(svc.GetImageName()) {
+	// Validate image_name using the distribution/reference parser — the same
+	// library containerd uses — so acceptance/rejection is consistent with what
+	// the runtime will accept. Hand-rolled regexes over-accept or over-reject
+	// relative to the spec; delegating to the canonical parser eliminates that gap.
+	if _, err := reference.ParseNormalizedNamed(svc.GetImageName()); err != nil {
 		return status.Errorf(codes.InvalidArgument, "service %q: image_name is invalid", name)
 	}
 
