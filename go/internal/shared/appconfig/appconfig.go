@@ -358,7 +358,7 @@ func (c *AppConfig) Validate() error {
 
 	validIsolationValues := []string{"isolated", "shared-network", "shared-ipc", "host"}
 	if c.Isolation != "" && !slices.Contains(validIsolationValues, c.Isolation) {
-		return fmt.Errorf("isolation must be one of %q, got %q", validIsolationValues, c.Isolation)
+		return fmt.Errorf("isolation must be one of %s, got %q", strings.Join(validIsolationValues, ", "), c.Isolation)
 	}
 
 	if err := validateROS2Config(c.ROS2, "ros2"); err != nil {
