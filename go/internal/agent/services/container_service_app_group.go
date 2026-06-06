@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
@@ -79,6 +80,7 @@ func certOrgID(ctx context.Context) (string, error) {
 func (s *ContainerService) CreateAppGroup(req *agentpb.CreateAppGroupRequest, stream grpc.ServerStreamingServer[agentpb.CreateAppGroupProgressResponse]) error {
 	orgID, err := certOrgID(stream.Context())
 	if err != nil {
+		s.logger.Info("CreateAppGroup.authz", zap.String("result", "denied"), zap.String("reason", err.Error()))
 		return err
 	}
 	// app_id is the org_id of the owning tenant expressed as a decimal string —
@@ -93,8 +95,21 @@ func (s *ContainerService) CreateAppGroup(req *agentpb.CreateAppGroupRequest, st
 		return status.Error(codes.InvalidArgument, "app_id must be a numeric org identifier")
 	}
 	if orgID != req.GetAppId() {
+		s.logger.Info("CreateAppGroup.authz",
+			zap.String("org_id", orgID),
+			zap.String("app_id", req.GetAppId()),
+			zap.String("result", "denied"),
+			zap.String("reason", "app_id does not match caller's org identity"),
+		)
 		return status.Error(codes.PermissionDenied, "app_id does not match caller's org identity")
 	}
+	s.logger.Info("CreateAppGroup.authz",
+		zap.String("org_id", orgID),
+		zap.String("app_id", req.GetAppId()),
+		zap.Stringer("isolation", req.GetIsolation()),
+		zap.Int("service_count", len(req.GetServices())),
+		zap.String("result", "ok"),
+	)
 	if err := validateIsolationMode(req.GetIsolation()); err != nil {
 		return err
 	}
@@ -114,6 +129,7 @@ func (s *ContainerService) CreateAppGroup(req *agentpb.CreateAppGroupRequest, st
 func (s *ContainerService) StopAppGroup(ctx context.Context, req *agentpb.StopAppGroupRequest) (*agentpb.StopAppGroupResponse, error) {
 	orgID, err := certOrgID(ctx)
 	if err != nil {
+		s.logger.Info("StopAppGroup.authz", zap.String("result", "denied"), zap.String("reason", err.Error()))
 		return nil, err
 	}
 	if req.GetAppId() == "" {
@@ -123,19 +139,33 @@ func (s *ContainerService) StopAppGroup(ctx context.Context, req *agentpb.StopAp
 		return nil, status.Error(codes.InvalidArgument, "app_id must be a numeric org identifier")
 	}
 	if orgID != req.GetAppId() {
+		s.logger.Info("StopAppGroup.authz",
+			zap.String("org_id", orgID),
+			zap.String("app_id", req.GetAppId()),
+			zap.String("result", "denied"),
+			zap.String("reason", "app_id does not match caller's org identity"),
+		)
 		return nil, status.Error(codes.PermissionDenied, "app_id does not match caller's org identity")
 	}
+	s.logger.Info("StopAppGroup.authz",
+		zap.String("org_id", orgID),
+		zap.String("app_id", req.GetAppId()),
+		zap.String("result", "ok"),
+	)
 	return nil, status.Error(codes.Unimplemented, "StopAppGroup not yet implemented")
 }
 
-// validateIsolationMode rejects unknown enum values to prevent unsafe fallback behaviour.
+// validateIsolationMode rejects unspecified and unknown enum values. Callers must
+// explicitly choose an isolation level; silently defaulting to the zero value
+// would mask misconfigured requests.
 func validateIsolationMode(mode agentpb.IsolationMode) error {
 	switch mode {
-	case agentpb.IsolationMode_ISOLATION_MODE_UNSPECIFIED,
-		agentpb.IsolationMode_ISOLATION_MODE_ISOLATED,
+	case agentpb.IsolationMode_ISOLATION_MODE_ISOLATED,
 		agentpb.IsolationMode_ISOLATION_MODE_SHARED_NETWORK,
 		agentpb.IsolationMode_ISOLATION_MODE_SHARED_IPC:
 		return nil
+	case agentpb.IsolationMode_ISOLATION_MODE_UNSPECIFIED:
+		return status.Error(codes.InvalidArgument, "isolation mode must be specified explicitly")
 	default:
 		return status.Errorf(codes.InvalidArgument, "unsupported isolation mode: %v", mode)
 	}
