@@ -36,6 +36,12 @@ const (
 // individual dangerous ones.
 var cmdAllowRe = regexp.MustCompile(`^[A-Za-z0-9./_-]+$`)
 
+// serviceNameRe restricts service_name and depends_on entries to safe identifier
+// characters. Service names are used as container labels, cgroup identifiers, and
+// orchestration lookup keys; allowing shell metacharacters or path-traversal
+// sequences in those fields would create injection vectors at every call site.
+var serviceNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$`)
+
 // imageNameRe restricts image_name to valid OCI image reference characters,
 // preventing path traversal sequences, null bytes, and other injection vectors
 // that could be exploited when the image reference is passed to a container runtime.
@@ -121,6 +127,20 @@ func (s *ContainerService) CreateAppGroup(req *agentpb.CreateAppGroupRequest, st
 			return err
 		}
 	}
+	// Verify that every depends_on entry names a service declared in this request.
+	// Dangling references would stall the orchestration layer at runtime; catching
+	// them here surfaces the misconfiguration early with a clear error.
+	serviceNames := make(map[string]struct{}, len(req.GetServices()))
+	for _, svc := range req.GetServices() {
+		serviceNames[svc.GetServiceName()] = struct{}{}
+	}
+	for _, svc := range req.GetServices() {
+		for _, dep := range svc.GetDependsOn() {
+			if _, ok := serviceNames[dep]; !ok {
+				return status.Errorf(codes.InvalidArgument, "service %q: depends_on references unknown service %q", svc.GetServiceName(), dep)
+			}
+		}
+	}
 	return status.Error(codes.Unimplemented, "CreateAppGroup not yet implemented")
 }
 
@@ -183,6 +203,9 @@ func validateServiceConfig(svc *agentpb.ServiceConfig) error {
 	if len(name) > maxServiceNameBytes {
 		return status.Errorf(codes.InvalidArgument, "service_name exceeds maximum of %d bytes", maxServiceNameBytes)
 	}
+	if !serviceNameRe.MatchString(name) {
+		return status.Error(codes.InvalidArgument, "service_name contains disallowed characters")
+	}
 
 	// Require image_name so the orchestration layer can pull the container image.
 	if svc.GetImageName() == "" {
@@ -198,17 +221,27 @@ func validateServiceConfig(svc *agentpb.ServiceConfig) error {
 		return status.Errorf(codes.InvalidArgument, "service %q: image_name is invalid", name)
 	}
 
-	// Validate depends_on: cap cardinality to prevent reference explosion.
+	// Validate depends_on: cap cardinality and apply the same content allowlist as
+	// service_name — entries are used as orchestration lookup keys, so they must
+	// identify a valid service_name and cannot contain injection characters.
 	if len(svc.GetDependsOn()) > maxDependsOn {
 		return status.Errorf(codes.InvalidArgument, "service %q: depends_on exceeds maximum of %d entries", name, maxDependsOn)
 	}
+	for i, dep := range svc.GetDependsOn() {
+		if !serviceNameRe.MatchString(dep) {
+			return status.Errorf(codes.InvalidArgument, "service %q: depends_on[%d] contains disallowed characters", name, i)
+		}
+	}
 
-	// Validate app_config: size cap and JSON schema.
+	// Validate app_config: size cap and structural JSON parsing via parseAppConfig
+	// (defined in container_service.go). parseAppConfig unmarshals into appconfig.AppConfig
+	// and validates AppID format; it returns a non-nil error for malformed JSON or
+	// invalid field values.
 	if len(svc.GetAppConfig()) > maxAppConfigBytes {
 		return status.Errorf(codes.InvalidArgument, "service %q: app_config exceeds maximum of %d bytes", name, maxAppConfigBytes)
 	}
 	if _, err := parseAppConfig(svc.GetAppConfig()); err != nil {
-		return status.Errorf(codes.InvalidArgument, "service %q: invalid app_config: %v", name, err)
+		return status.Errorf(codes.InvalidArgument, "service %q: invalid app_config", name)
 	}
 
 	// Validate env map: cardinality, key content, key length, and value length.
@@ -238,13 +271,19 @@ func validateServiceConfig(svc *agentpb.ServiceConfig) error {
 		return status.Errorf(codes.InvalidArgument, "service %q: cmd contains disallowed characters", name)
 	}
 
-	// Validate user_args: cardinality and per-entry length.
+	// Validate user_args: cardinality, per-entry length, and null/control-byte check.
+	// Null bytes, carriage returns, and newlines are rejected because they can corrupt
+	// argument lists if any layer between here and exec(2) treats the args as a
+	// line-oriented or null-terminated string rather than a []string slice.
 	if len(svc.GetUserArgs()) > maxUserArgs {
 		return status.Errorf(codes.InvalidArgument, "service %q: user_args exceeds maximum of %d entries", name, maxUserArgs)
 	}
 	for i, arg := range svc.GetUserArgs() {
 		if len(arg) > maxArgBytes {
 			return status.Errorf(codes.InvalidArgument, "service %q: user_args[%d] exceeds maximum of %d bytes", name, i, maxArgBytes)
+		}
+		if strings.ContainsAny(arg, "\x00\r\n") {
+			return status.Errorf(codes.InvalidArgument, "service %q: user_args[%d] contains disallowed characters", name, i)
 		}
 	}
 
