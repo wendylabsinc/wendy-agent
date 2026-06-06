@@ -228,13 +228,19 @@ enum IsolationMode {
     ISOLATION_MODE_ISOLATED = 1;
     ISOLATION_MODE_SHARED_NETWORK = 2;
     ISOLATION_MODE_SHARED_IPC = 3;
+    // ISOLATION_MODE_HOST shares the host network, IPC, and PID namespaces.
+    // Server implementations MUST enforce privileged authorization (e.g. a
+    // dedicated admin certificate claim) before honoring this mode; it MUST
+    // NOT be accessible to unprivileged callers.
     ISOLATION_MODE_HOST = 4;
 }
 
 message ServiceConfig {
     string service_name = 1;
     string image_name = 2;
-    // JSON-encoded per-service AppConfig.
+    // JSON-encoded per-service AppConfig (the wendy.json contents).
+    // Server implementations MUST validate this against the expected schema
+    // and enforce a maximum size (e.g. 64 KB) before processing.
     bytes app_config = 3;
     repeated string depends_on = 4;
     map<string, string> env = 5;
@@ -244,6 +250,8 @@ message ServiceConfig {
 }
 
 message CreateAppGroupRequest {
+    // app_id is the cloud-assigned application identifier, distinct from
+    // app_name (the human-readable container name); matches AppContainer.app_group.
     string app_id = 1;
     IsolationMode isolation = 2;
     repeated ServiceConfig services = 3;
