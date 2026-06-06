@@ -45,7 +45,10 @@ var serviceNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$`)
 // imageNameRe restricts image_name to valid OCI image reference characters,
 // preventing path traversal sequences, null bytes, and other injection vectors
 // that could be exploited when the image reference is passed to a container runtime.
-var imageNameRe = regexp.MustCompile(`^[a-z0-9]([a-z0-9._\-/]*[a-z0-9])?(:[a-zA-Z0-9._\-]+)?(@sha256:[a-f0-9]{64})?$`)
+// The optional leading group matches a registry hostname with an optional port
+// (e.g. registry.example.com:5000/ or localhost:5000/) so that private registries
+// with explicit port numbers are accepted alongside simple name references.
+var imageNameRe = regexp.MustCompile(`^([a-z0-9][a-z0-9._\-]*(:[0-9]{1,5})?/)?[a-z0-9]([a-z0-9._\-/]*[a-z0-9])?(:[a-zA-Z0-9._\-]+)?(@sha256:[a-f0-9]{64})?$`)
 
 // certOrgID extracts the org_id from the caller's mTLS client certificate
 // Wendy URI SAN (urn:wendy:org:<org_id>:...).
@@ -59,6 +62,11 @@ var imageNameRe = regexp.MustCompile(`^[a-z0-9]([a-z0-9._\-/]*[a-z0-9])?(:[a-zA-
 // VerifiedChains is not populated; PeerCertificates[0] is the authenticated
 // leaf after a successful handshake.
 //
+// certOrgID guards on HandshakeComplete before reading PeerCertificates[0].
+// HandshakeComplete is set to true only after VerifyPeerCertificate returns
+// nil, so this assertion ensures the cert was accepted by the verifier and is
+// not merely a presented-but-unverified value.
+//
 // Returns Unauthenticated when no client cert is present or the connection is
 // not TLS, and PermissionDenied when the cert carries no Wendy org identifier.
 func certOrgID(ctx context.Context) (string, error) {
@@ -69,6 +77,13 @@ func certOrgID(ctx context.Context) (string, error) {
 	tlsInfo, ok := p.AuthInfo.(credentials.TLSInfo)
 	if !ok {
 		return "", status.Error(codes.Unauthenticated, "connection is not TLS-authenticated")
+	}
+	// HandshakeComplete is set only after VerifyPeerCertificate returns nil,
+	// confirming the custom callback accepted the chain. This guard prevents
+	// PeerCertificates[0] from being trusted if the handshake is somehow
+	// incomplete (e.g., a misconfigured test server or future refactor).
+	if !tlsInfo.State.HandshakeComplete {
+		return "", status.Error(codes.Unauthenticated, "TLS handshake not complete")
 	}
 	if len(tlsInfo.State.PeerCertificates) == 0 {
 		return "", status.Error(codes.Unauthenticated, "no client certificate presented")

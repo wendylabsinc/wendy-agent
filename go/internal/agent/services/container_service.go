@@ -695,15 +695,12 @@ func (s *ContainerService) ListContainerStats(ctx context.Context, _ *agentpb.Li
 }
 
 func (s *ContainerService) ListContainers(req *agentpb.ListContainersRequest, stream grpc.ServerStreamingServer[agentpb.ListContainersResponse]) error {
-	containers, err := s.containerd.ListContainers(stream.Context())
-	if err != nil {
-		return status.Errorf(codes.Internal, "failed to list containers: %v", err)
-	}
-
 	filter := req.GetAppGroupFilter()
 	if filter != "" {
 		// app_group equals the owning tenant's org_id. Enforce that the caller
 		// can only filter by their own org_id to prevent cross-tenant enumeration.
+		// Authorization is checked before data retrieval so no container list is
+		// held in memory for callers that will ultimately be denied.
 		orgID, authErr := certOrgID(stream.Context())
 		if authErr != nil {
 			return authErr
@@ -712,6 +709,12 @@ func (s *ContainerService) ListContainers(req *agentpb.ListContainersRequest, st
 			return status.Error(codes.PermissionDenied, "app_group_filter must match caller's org identity")
 		}
 	}
+
+	containers, err := s.containerd.ListContainers(stream.Context())
+	if err != nil {
+		return status.Errorf(codes.Internal, "failed to list containers: %v", err)
+	}
+
 	for _, c := range containers {
 		if filter != "" && c.AppGroup != filter {
 			continue
