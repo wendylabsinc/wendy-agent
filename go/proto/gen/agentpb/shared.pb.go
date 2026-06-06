@@ -181,7 +181,7 @@ type AppContainer struct {
 	McpPort      uint32                 `protobuf:"varint,5,opt,name=mcp_port,json=mcpPort,proto3" json:"mcp_port,omitempty"`
 	// Empty for legacy single-container apps.
 	ServiceName string `protobuf:"bytes,6,opt,name=service_name,json=serviceName,proto3" json:"service_name,omitempty"`
-	// appId of the group; empty for legacy single-container apps.
+	// app_id of the group; empty for legacy single-container apps.
 	AppGroup      string `protobuf:"bytes,7,opt,name=app_group,json=appGroup,proto3" json:"app_group,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

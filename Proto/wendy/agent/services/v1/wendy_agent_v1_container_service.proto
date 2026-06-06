@@ -24,7 +24,7 @@ service WendyContainerService {
 }
 
 message ListContainersRequest {
-    // When set, only containers belonging to this app group are returned.
+    // app_group_filter, when set, filters results to containers whose AppContainer.app_group equals this value (the app_id, not app_name).
     optional string app_group_filter = 1;
 }
 
@@ -223,8 +223,16 @@ message MCPChunk {
 
 // --- App group RPCs ---
 
+enum IsolationMode {
+    ISOLATION_MODE_UNSPECIFIED = 0;
+    ISOLATION_MODE_ISOLATED = 1;
+    ISOLATION_MODE_SHARED_NETWORK = 2;
+    ISOLATION_MODE_SHARED_IPC = 3;
+    ISOLATION_MODE_HOST = 4;
+}
+
 message ServiceConfig {
-    string name = 1;
+    string service_name = 1;
     string image_name = 2;
     // JSON-encoded per-service AppConfig.
     bytes app_config = 3;
@@ -237,8 +245,7 @@ message ServiceConfig {
 
 message CreateAppGroupRequest {
     string app_id = 1;
-    // Isolation mode: "isolated", "shared-network", "shared-ipc", "host".
-    string isolation = 2;
+    IsolationMode isolation = 2;
     repeated ServiceConfig services = 3;
 }
 
@@ -251,6 +258,7 @@ message CreateAppGroupProgressResponse {
 }
 
 message StopAppGroupRequest {
+    // app_id is the cloud app ID / app-group identifier matching CreateAppGroupRequest.app_id and AppContainer.app_group.
     string app_id = 1;
 }
 
