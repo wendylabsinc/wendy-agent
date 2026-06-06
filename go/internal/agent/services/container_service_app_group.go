@@ -130,13 +130,6 @@ func (s *ContainerService) CreateAppGroup(req *agentpb.CreateAppGroupRequest, st
 		)
 		return status.Error(codes.PermissionDenied, "app_id does not match caller's org identity")
 	}
-	s.logger.Info("CreateAppGroup.authz",
-		zap.String("org_id", orgID),
-		zap.String("app_id", req.GetAppId()),
-		zap.Stringer("isolation", req.GetIsolation()),
-		zap.Int("service_count", len(req.GetServices())),
-		zap.String("result", "ok"),
-	)
 	if err := validateIsolationMode(req.GetIsolation()); err != nil {
 		return err
 	}
@@ -162,6 +155,15 @@ func (s *ContainerService) CreateAppGroup(req *agentpb.CreateAppGroupRequest, st
 			}
 		}
 	}
+	// Log auth success only after all validation passes so the log entry
+	// accurately reflects a fully-validated, accepted request.
+	s.logger.Info("CreateAppGroup.authz",
+		zap.String("org_id", orgID),
+		zap.String("app_id", req.GetAppId()),
+		zap.Stringer("isolation", req.GetIsolation()),
+		zap.Int("service_count", len(req.GetServices())),
+		zap.String("result", "ok"),
+	)
 	return status.Error(codes.Unimplemented, "CreateAppGroup not yet implemented")
 }
 

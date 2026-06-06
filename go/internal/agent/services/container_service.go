@@ -1,6 +1,7 @@
 package services
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -821,7 +822,9 @@ func parseAppConfig(data []byte) (*appconfig.AppConfig, error) {
 		return &appconfig.AppConfig{}, nil
 	}
 	var cfg appconfig.AppConfig
-	if err := json.Unmarshal(data, &cfg); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&cfg); err != nil {
 		return nil, err
 	}
 	// Reject unsafe app IDs at the RPC boundary so direct callers and generated
