@@ -45,15 +45,24 @@ type wrappedStream struct {
 
 func (w *wrappedStream) Context() context.Context { return w.ctx }
 
-// testStreamInterceptor injects a fake mTLS peer carrying integrationTestOrgID so
-// that streaming handlers requiring certOrgID authentication succeed in tests that
-// connect without TLS (insecure.NewCredentials()).
-func testStreamInterceptor(srv interface{}, ss grpc.ServerStream, _ *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+// testFakePeerCtx returns a context carrying a fake mTLS peer with integrationTestOrgID
+// so that certOrgID-gated handlers succeed in tests using insecure.NewCredentials().
+func testFakePeerCtx(ctx context.Context) context.Context {
 	u := &url.URL{Scheme: "urn", Opaque: "wendy:org:" + integrationTestOrgID}
 	cert := &x509.Certificate{URIs: []*url.URL{u}}
 	state := tls.ConnectionState{HandshakeComplete: true, PeerCertificates: []*x509.Certificate{cert}}
 	p := &peer.Peer{AuthInfo: credentials.TLSInfo{State: state}}
-	return handler(srv, &wrappedStream{ss, peer.NewContext(ss.Context(), p)})
+	return peer.NewContext(ctx, p)
+}
+
+// testStreamInterceptor injects the fake peer into streaming RPCs.
+func testStreamInterceptor(srv interface{}, ss grpc.ServerStream, _ *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+	return handler(srv, &wrappedStream{ss, testFakePeerCtx(ss.Context())})
+}
+
+// testUnaryInterceptor injects the fake peer into unary RPCs (e.g. StopAppGroup).
+func testUnaryInterceptor(ctx context.Context, req interface{}, _ *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
+	return handler(testFakePeerCtx(ctx), req)
 }
 
 // ---------- mocks for integration test ----------
@@ -319,7 +328,10 @@ func TestFullAgentLifecycle(t *testing.T) {
 	otelLogs := services.NewOTELLogsReceiver(broadcaster)
 
 	// Register all services on a single gRPC server.
-	srv := grpc.NewServer(grpc.StreamInterceptor(testStreamInterceptor))
+	srv := grpc.NewServer(
+		grpc.StreamInterceptor(testStreamInterceptor),
+		grpc.UnaryInterceptor(testUnaryInterceptor),
+	)
 	agentpb.RegisterWendyAgentServiceServer(srv, agentSvc)
 	agentpb.RegisterWendyContainerServiceServer(srv, containerSvc)
 	agentpb.RegisterWendyTelemetryServiceServer(srv, telemetrySvc)
@@ -490,7 +502,10 @@ func TestContainerDeployStartStopDelete(t *testing.T) {
 
 	containerSvc := services.NewContainerService(logger, cc)
 
-	srv := grpc.NewServer(grpc.StreamInterceptor(testStreamInterceptor))
+	srv := grpc.NewServer(
+		grpc.StreamInterceptor(testStreamInterceptor),
+		grpc.UnaryInterceptor(testUnaryInterceptor),
+	)
 	agentpb.RegisterWendyContainerServiceServer(srv, containerSvc)
 
 	go func() { _ = srv.Serve(lis) }()
@@ -1042,7 +1057,10 @@ func TestRunContainer(t *testing.T) {
 
 	containerSvc := services.NewContainerService(logger, cc)
 
-	srv := grpc.NewServer(grpc.StreamInterceptor(testStreamInterceptor))
+	srv := grpc.NewServer(
+		grpc.StreamInterceptor(testStreamInterceptor),
+		grpc.UnaryInterceptor(testUnaryInterceptor),
+	)
 	agentpb.RegisterWendyContainerServiceServer(srv, containerSvc)
 
 	go func() { _ = srv.Serve(lis) }()
