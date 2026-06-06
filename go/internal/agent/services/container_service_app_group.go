@@ -48,13 +48,19 @@ var serviceNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$`)
 var imageNameRe = regexp.MustCompile(`^[a-z0-9]([a-z0-9._\-/]*[a-z0-9])?(:[a-zA-Z0-9._\-]+)?(@sha256:[a-f0-9]{64})?$`)
 
 // certOrgID extracts the org_id from the caller's mTLS client certificate
-// Wendy URI SAN (urn:wendy:org:<org_id>:...). The agent's mTLS transport uses
-// tls.RequireAnyClientCert with a custom VerifyPeerCertificate callback
-// (see internal/agent/mtls) rather than the standard CA pool path, so
-// VerifiedChains is not populated; PeerCertificates[0] holds the verified
-// leaf certificate after a successful TLS handshake. Returns Unauthenticated
-// when no client cert is present or the connection is not TLS, and
-// PermissionDenied when the cert carries no Wendy org identifier.
+// Wendy URI SAN (urn:wendy:org:<org_id>:...).
+//
+// The agent's TLS stack uses tls.RequireAnyClientCert with the custom
+// buildVerifyPeerCertificate callback (internal/agent/mtls/mldsa_verify.go).
+// That callback performs full chain verification for both standard (RSA/ECDSA
+// via x509.Verify with ExtKeyUsageClientAuth) and post-quantum (ML-DSA)
+// certificates, rejecting any cert whose chain cannot be verified against the
+// provisioned CA. Because the callback replaces Go's built-in chain verifier,
+// VerifiedChains is not populated; PeerCertificates[0] is the authenticated
+// leaf after a successful handshake.
+//
+// Returns Unauthenticated when no client cert is present or the connection is
+// not TLS, and PermissionDenied when the cert carries no Wendy org identifier.
 func certOrgID(ctx context.Context) (string, error) {
 	p, ok := peer.FromContext(ctx)
 	if !ok {
