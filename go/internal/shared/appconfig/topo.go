@@ -24,7 +24,13 @@ func TopologicalSort(services map[string]*ServiceConfig) ([][]string, error) {
 	}
 
 	for name, svc := range services {
+		if svc == nil {
+			return nil, fmt.Errorf("services[%q]: must not be null", name)
+		}
 		for _, dep := range svc.DependsOn {
+			if _, ok := services[dep]; !ok {
+				return nil, fmt.Errorf("services[%q]: dependsOn references unknown service %q", name, dep)
+			}
 			inDegree[name]++
 			dependents[dep] = append(dependents[dep], name)
 		}
