@@ -1854,14 +1854,16 @@ func (x *ServiceConfig) GetUserArgs() []string {
 	return nil
 }
 
-// Authorization: the server MUST validate that app_id matches the calling
-// device's mTLS certificate org_id claim, following the same model as
-// existing single-container RPCs (e.g. StopContainerRequest). Cross-tenant
-// access MUST be rejected with codes.PermissionDenied.
+// Authorization: the server MUST verify that app_id belongs to the calling
+// device's tenant by comparing it to the org_id extracted from the device's
+// mTLS certificate URI SAN (urn:wendy:org:<org_id>:...). app_id is the
+// tenant's numeric org_id expressed as a decimal string — not a separate
+// identifier space. Cross-tenant access MUST be rejected with codes.PermissionDenied.
 type CreateAppGroupRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// app_id is the cloud-assigned application identifier, distinct from
-	// app_name (the human-readable container name); matches AppContainer.app_group.
+	// app_id is the owning tenant's numeric org_id as a decimal string.
+	// It matches the org_id in the caller's mTLS certificate SAN and
+	// AppContainer.app_group for containers in this group.
 	AppId         string           `protobuf:"bytes,1,opt,name=app_id,json=appId,proto3" json:"app_id,omitempty"`
 	Isolation     IsolationMode    `protobuf:"varint,2,opt,name=isolation,proto3,enum=wendy.agent.services.v1.IsolationMode" json:"isolation,omitempty"`
 	Services      []*ServiceConfig `protobuf:"bytes,3,rep,name=services,proto3" json:"services,omitempty"`
@@ -2010,12 +2012,13 @@ func (*CreateAppGroupProgressResponse_StatusMessage) isCreateAppGroupProgressRes
 
 func (*CreateAppGroupProgressResponse_Percent) isCreateAppGroupProgressResponse_Progress() {}
 
-// Authorization: the server MUST validate that app_id matches the calling
-// device's mTLS certificate org_id claim. Cross-tenant access MUST be
-// rejected with codes.PermissionDenied.
+// Authorization: the server MUST verify that app_id belongs to the calling
+// device's tenant by comparing it to the org_id from the device's mTLS
+// certificate SAN. Cross-tenant access MUST be rejected with codes.PermissionDenied.
 type StopAppGroupRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// app_id is the cloud app ID / app-group identifier matching CreateAppGroupRequest.app_id and AppContainer.app_group.
+	// app_id is the owning tenant's numeric org_id as a decimal string,
+	// matching CreateAppGroupRequest.app_id and AppContainer.app_group.
 	AppId         string `protobuf:"bytes,1,opt,name=app_id,json=appId,proto3" json:"app_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

@@ -694,13 +694,17 @@ func (s *ContainerService) ListContainerStats(ctx context.Context, _ *agentpb.Li
 	return &agentpb.ListContainerStatsResponse{Stats: stats}, nil
 }
 
-func (s *ContainerService) ListContainers(_ *agentpb.ListContainersRequest, stream grpc.ServerStreamingServer[agentpb.ListContainersResponse]) error {
+func (s *ContainerService) ListContainers(req *agentpb.ListContainersRequest, stream grpc.ServerStreamingServer[agentpb.ListContainersResponse]) error {
 	containers, err := s.containerd.ListContainers(stream.Context())
 	if err != nil {
 		return status.Errorf(codes.Internal, "failed to list containers: %v", err)
 	}
 
+	filter := req.GetAppGroupFilter()
 	for _, c := range containers {
+		if filter != "" && c.AppGroup != filter {
+			continue
+		}
 		if err := stream.Send(&agentpb.ListContainersResponse{Container: c}); err != nil {
 			return err
 		}

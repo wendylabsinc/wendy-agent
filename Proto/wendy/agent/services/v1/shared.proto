@@ -27,6 +27,7 @@ message AppContainer {
     uint32 mcp_port = 5;
     // Empty for legacy single-container apps.
     string service_name = 6;
-    // app_id of the group; empty for legacy single-container apps.
+    // app_id (the owning tenant's numeric org_id as a decimal string) of the
+    // group this container belongs to; empty for legacy single-container apps.
     string app_group = 7;
 }
