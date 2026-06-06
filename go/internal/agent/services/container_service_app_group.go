@@ -282,6 +282,9 @@ func validateServiceConfig(svc *agentpb.ServiceConfig) error {
 				return status.Errorf(codes.InvalidArgument, "service %q: env key %q contains disallowed character", name, k)
 			}
 		}
+		if strings.ContainsAny(v, "\x00\r\n") {
+			return status.Errorf(codes.InvalidArgument, "service %q: env value for key %q contains disallowed character", name, k)
+		}
 	}
 
 	// Validate cmd: length and only allow safe path-like characters.

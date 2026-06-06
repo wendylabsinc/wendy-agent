@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -49,6 +50,11 @@ const labelKeyMCPPort = "sh.wendy/mcp.port"
 // containers created via CreateAppGroup. Used for storage-layer tenant filtering
 // in ListContainersForGroup.
 const labelKeyAppGroup = "sh.wendy/app.group"
+
+// appGroupIDRe validates that an app-group identifier is a non-empty decimal
+// integer string. Enforced at the containerd client boundary to prevent filter
+// injection even if a future caller skips the service-layer validation.
+var appGroupIDRe = regexp.MustCompile(`^[0-9]+$`)
 
 // labelKeyGCRoot prevents garbage collection of content blobs.
 const labelKeyGCRoot = "containerd.io/gc.root"

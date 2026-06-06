@@ -3,9 +3,12 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"io"
 	"net"
+	"net/url"
 	"os"
 	"runtime"
 	"sync"
@@ -14,7 +17,9 @@ import (
 
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/test/bufconn"
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/services"
@@ -24,6 +29,32 @@ import (
 	cloudpb "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
 	otelpb "github.com/wendylabsinc/wendy/go/proto/gen/otelpb"
 )
+
+// integrationTestOrgID is the org ID injected by testStreamInterceptor into the
+// fake TLS peer context of every streaming RPC in integration tests, which use
+// insecure.NewCredentials(). Containers created by statefulContainerdClient carry
+// this as their AppGroup so ListContainersForGroup returns them.
+const integrationTestOrgID = "1"
+
+// wrappedStream overrides Context() on a grpc.ServerStream so an interceptor can
+// inject a modified context without replacing the stream itself.
+type wrappedStream struct {
+	grpc.ServerStream
+	ctx context.Context
+}
+
+func (w *wrappedStream) Context() context.Context { return w.ctx }
+
+// testStreamInterceptor injects a fake mTLS peer carrying integrationTestOrgID so
+// that streaming handlers requiring certOrgID authentication succeed in tests that
+// connect without TLS (insecure.NewCredentials()).
+func testStreamInterceptor(srv interface{}, ss grpc.ServerStream, _ *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+	u := &url.URL{Scheme: "urn", Opaque: "wendy:org:" + integrationTestOrgID}
+	cert := &x509.Certificate{URIs: []*url.URL{u}}
+	state := tls.ConnectionState{HandshakeComplete: true, PeerCertificates: []*x509.Certificate{cert}}
+	p := &peer.Peer{AuthInfo: credentials.TLSInfo{State: state}}
+	return handler(srv, &wrappedStream{ss, peer.NewContext(ss.Context(), p)})
+}
 
 // ---------- mocks for integration test ----------
 
@@ -104,6 +135,7 @@ func (m *statefulContainerdClient) ListContainers(_ context.Context) ([]*agentpb
 		}
 		result = append(result, &agentpb.AppContainer{
 			AppName:      name,
+			AppGroup:     integrationTestOrgID,
 			RunningState: state,
 		})
 	}
@@ -287,7 +319,7 @@ func TestFullAgentLifecycle(t *testing.T) {
 	otelLogs := services.NewOTELLogsReceiver(broadcaster)
 
 	// Register all services on a single gRPC server.
-	srv := grpc.NewServer()
+	srv := grpc.NewServer(grpc.StreamInterceptor(testStreamInterceptor))
 	agentpb.RegisterWendyAgentServiceServer(srv, agentSvc)
 	agentpb.RegisterWendyContainerServiceServer(srv, containerSvc)
 	agentpb.RegisterWendyTelemetryServiceServer(srv, telemetrySvc)
@@ -458,7 +490,7 @@ func TestContainerDeployStartStopDelete(t *testing.T) {
 
 	containerSvc := services.NewContainerService(logger, cc)
 
-	srv := grpc.NewServer()
+	srv := grpc.NewServer(grpc.StreamInterceptor(testStreamInterceptor))
 	agentpb.RegisterWendyContainerServiceServer(srv, containerSvc)
 
 	go func() { _ = srv.Serve(lis) }()
@@ -1010,7 +1042,7 @@ func TestRunContainer(t *testing.T) {
 
 	containerSvc := services.NewContainerService(logger, cc)
 
-	srv := grpc.NewServer()
+	srv := grpc.NewServer(grpc.StreamInterceptor(testStreamInterceptor))
 	agentpb.RegisterWendyContainerServiceServer(srv, containerSvc)
 
 	go func() { _ = srv.Serve(lis) }()

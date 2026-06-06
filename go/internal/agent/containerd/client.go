@@ -1226,13 +1226,14 @@ func (c *Client) ListContainers(ctx context.Context) ([]*agentpb.AppContainer, e
 // (the owning tenant's org_id). The filter is applied at the containerd storage
 // layer via label selector so no cross-tenant container data is loaded into memory.
 func (c *Client) ListContainersForGroup(ctx context.Context, appGroup string) ([]*agentpb.AppContainer, error) {
+	if !appGroupIDRe.MatchString(appGroup) {
+		return nil, fmt.Errorf("invalid app group identifier %q", appGroup)
+	}
 	ctx = c.withNamespace(ctx)
 
-	// Filter by both the Wendy marker label and the app.group label at the storage
-	// layer. Containerd label filters use the form `labels."key"=="value"`.
-	// appGroup is a validated decimal numeric string — no quoting needed for the
-	// containerd filter value; %q would add Go-style double-quotes that break the syntax.
-	appGroupFilter := fmt.Sprintf("labels.%q==%s", labelKeyAppGroup, appGroup)
+	// Filter at the storage layer. Containerd label filters use the form
+	// `labels."key"=="value"` — both key and value are double-quoted (%q).
+	appGroupFilter := fmt.Sprintf("labels.%q==%q", labelKeyAppGroup, appGroup)
 	containers, err := c.client.Containers(ctx,
 		fmt.Sprintf("labels.%q", labelKeyAppVersion),
 		appGroupFilter,
