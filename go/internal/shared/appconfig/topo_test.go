@@ -2,6 +2,7 @@ package appconfig
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -117,5 +118,37 @@ func TestTopologicalSort_EmptyMap(t *testing.T) {
 	}
 	if levels != nil {
 		t.Errorf("expected nil for empty map, got %v", levels)
+	}
+}
+
+func TestTopologicalSort_NilServiceConfig(t *testing.T) {
+	services := map[string]*ServiceConfig{
+		"app": {Context: "app"},
+		"bad": nil,
+	}
+
+	_, err := TopologicalSort(services)
+	if err == nil {
+		t.Fatal("expected an error for nil service config, got nil")
+	}
+	if !strings.Contains(err.Error(), "nil service config") {
+		t.Errorf("expected error to contain \"nil service config\", got: %v", err)
+	}
+}
+
+func TestTopologicalSort_UnknownDependency(t *testing.T) {
+	services := map[string]*ServiceConfig{
+		"app": {Context: "app", DependsOn: []string{"nonexistent"}},
+	}
+
+	_, err := TopologicalSort(services)
+	if err == nil {
+		t.Fatal("expected an error for unknown dependency, got nil")
+	}
+	if !strings.Contains(err.Error(), "unknown service") {
+		t.Errorf("expected error to contain \"unknown service\", got: %v", err)
+	}
+	if strings.Contains(err.Error(), "cycle") {
+		t.Errorf("expected no mention of \"cycle\" for unknown dependency, got: %v", err)
 	}
 }

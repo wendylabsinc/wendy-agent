@@ -23,6 +23,8 @@ var appIDPattern = regexp.MustCompile(`^[a-zA-Z0-9._-]{1,253}$`)
 // lowercase letters, digits, and hyphens, starting with a letter. This ensures
 // names are safe to use as container name components and containerd labels, and
 // prevents snapshot-key collisions when combined with the appId separator.
+// This validation only applies to the new `services` map field; existing
+// single-service wendy.json files are not affected.
 var serviceNamePattern = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
 
 // EntitlementType enumerates the supported entitlement types.
@@ -344,16 +346,8 @@ func (c *AppConfig) Validate() error {
 		}
 	}
 
-	if c.Readiness != nil {
-		if c.Readiness.TCPSocket != nil {
-			port := c.Readiness.TCPSocket.Port
-			if port < 1 || port > 65535 {
-				return fmt.Errorf("readiness.tcpSocket.port must be between 1 and 65535, got %d", port)
-			}
-		}
-		if c.Readiness.TimeoutSeconds < 0 {
-			return fmt.Errorf("readiness.timeoutSeconds must not be negative, got %d", c.Readiness.TimeoutSeconds)
-		}
+	if err := validateReadinessConfig("readiness", c.Readiness); err != nil {
+		return err
 	}
 
 	validIsolationValues := []string{"isolated", "shared-network", "shared-ipc", "host"}
@@ -389,22 +383,33 @@ func (c *AppConfig) Validate() error {
 		if err := validateEntitlements(svc.Entitlements, fmt.Sprintf("services[%q].entitlement", name)); err != nil {
 			return err
 		}
-		if svc.Readiness != nil {
-			if svc.Readiness.TCPSocket != nil {
-				port := svc.Readiness.TCPSocket.Port
-				if port < 1 || port > 65535 {
-					return fmt.Errorf("services[%q].readiness.tcpSocket.port must be between 1 and 65535, got %d", name, port)
-				}
-			}
-			if svc.Readiness.TimeoutSeconds < 0 {
-				return fmt.Errorf("services[%q].readiness.timeoutSeconds must not be negative, got %d", name, svc.Readiness.TimeoutSeconds)
-			}
+		if err := validateReadinessConfig(fmt.Sprintf("services[%q].readiness", name), svc.Readiness); err != nil {
+			return err
 		}
 		if err := validateROS2Config(svc.ROS2, fmt.Sprintf("services[%q].ros2", name)); err != nil {
 			return err
 		}
 	}
 
+	return nil
+}
+
+// validateReadinessConfig validates a ReadinessConfig at the given path prefix.
+// prefix should be the dot-notation path to the readiness field (e.g. "readiness"
+// or "services[\"foo\"].readiness").
+func validateReadinessConfig(prefix string, cfg *ReadinessConfig) error {
+	if cfg == nil {
+		return nil
+	}
+	if cfg.TCPSocket != nil {
+		port := cfg.TCPSocket.Port
+		if port < 1 || port > 65535 {
+			return fmt.Errorf("%s.tcpSocket.port must be between 1 and 65535, got %d", prefix, port)
+		}
+	}
+	if cfg.TimeoutSeconds < 0 {
+		return fmt.Errorf("%s.timeoutSeconds must not be negative, got %d", prefix, cfg.TimeoutSeconds)
+	}
 	return nil
 }
 

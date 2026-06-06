@@ -12,6 +12,18 @@ func TopologicalSort(services map[string]*ServiceConfig) ([][]string, error) {
 		return nil, nil
 	}
 
+	// Validate all entries before building the graph.
+	for name, svc := range services {
+		if svc == nil {
+			return nil, fmt.Errorf("services[%q]: nil service config", name)
+		}
+		for _, dep := range svc.DependsOn {
+			if _, ok := services[dep]; !ok {
+				return nil, fmt.Errorf("services[%q]: dependsOn references unknown service %q", name, dep)
+			}
+		}
+	}
+
 	// Build in-degree count and adjacency list (dependency → dependents).
 	inDegree := make(map[string]int, len(services))
 	// dependents maps a service name to the list of services that depend on it.
@@ -24,13 +36,7 @@ func TopologicalSort(services map[string]*ServiceConfig) ([][]string, error) {
 	}
 
 	for name, svc := range services {
-		if svc == nil {
-			return nil, fmt.Errorf("services[%q]: must not be null", name)
-		}
 		for _, dep := range svc.DependsOn {
-			if _, ok := services[dep]; !ok {
-				return nil, fmt.Errorf("services[%q]: dependsOn references unknown service %q", name, dep)
-			}
 			inDegree[name]++
 			dependents[dep] = append(dependents[dep], name)
 		}
