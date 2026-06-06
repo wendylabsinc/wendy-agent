@@ -1230,7 +1230,9 @@ func (c *Client) ListContainersForGroup(ctx context.Context, appGroup string) ([
 
 	// Filter by both the Wendy marker label and the app.group label at the storage
 	// layer. Containerd label filters use the form `labels."key"=="value"`.
-	appGroupFilter := fmt.Sprintf("labels.%q==%q", labelKeyAppGroup, appGroup)
+	// appGroup is a validated decimal numeric string — no quoting needed for the
+	// containerd filter value; %q would add Go-style double-quotes that break the syntax.
+	appGroupFilter := fmt.Sprintf("labels.%q==%s", labelKeyAppGroup, appGroup)
 	containers, err := c.client.Containers(ctx,
 		fmt.Sprintf("labels.%q", labelKeyAppVersion),
 		appGroupFilter,

@@ -695,34 +695,25 @@ func (s *ContainerService) ListContainerStats(ctx context.Context, _ *agentpb.Li
 }
 
 func (s *ContainerService) ListContainers(req *agentpb.ListContainersRequest, stream grpc.ServerStreamingServer[agentpb.ListContainersResponse]) error {
-	filter := req.GetAppGroupFilter()
-	if filter != "" {
-		// app_group equals the owning tenant's org_id. Enforce that the caller
-		// can only filter by their own org_id to prevent cross-tenant enumeration.
-		// Authorization is checked before data retrieval so no container list is
-		// held in memory for callers that will ultimately be denied.
-		orgID, authErr := certOrgID(stream.Context())
-		if authErr != nil {
-			return authErr
-		}
-		if filter != orgID {
-			return status.Error(codes.PermissionDenied, "app_group_filter must match caller's org identity")
-		}
-		// Use ListContainersForGroup so the filter is enforced at the storage
-		// layer — no cross-tenant container data is loaded into memory.
-		containers, err := s.containerd.ListContainersForGroup(stream.Context(), filter)
-		if err != nil {
-			return status.Errorf(codes.Internal, "failed to list containers: %v", err)
-		}
-		for _, c := range containers {
-			if err := stream.Send(&agentpb.ListContainersResponse{Container: c}); err != nil {
-				return err
-			}
-		}
-		return nil
+	// Always require a valid mTLS certificate. Listing containers without auth
+	// would expose every tenant's container metadata to any authenticated device.
+	orgID, authErr := certOrgID(stream.Context())
+	if authErr != nil {
+		return authErr
 	}
 
-	containers, err := s.containerd.ListContainers(stream.Context())
+	// Callers may only list their own containers. If no filter is supplied we
+	// default to the caller's own org so the behaviour is safe by default.
+	filter := req.GetAppGroupFilter()
+	if filter == "" {
+		filter = orgID
+	} else if filter != orgID {
+		return status.Error(codes.PermissionDenied, "app_group_filter must match caller's org identity")
+	}
+
+	// Apply the filter at the storage layer so no cross-tenant container data
+	// is loaded into memory.
+	containers, err := s.containerd.ListContainersForGroup(stream.Context(), filter)
 	if err != nil {
 		return status.Errorf(codes.Internal, "failed to list containers: %v", err)
 	}

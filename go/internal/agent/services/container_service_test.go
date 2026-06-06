@@ -2,9 +2,12 @@ package services
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"io"
 	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"testing"
@@ -13,8 +16,10 @@ import (
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 
@@ -184,38 +189,112 @@ func TestPostStartAgentHookFromContextEmpty(t *testing.T) {
 	}
 }
 
+// makeTLSContext returns a context that passes certOrgID checks, by injecting a
+// fake peer with a TLS handshake carrying a single cert whose URI SAN encodes
+// the given orgID in the urn:wendy:org:<id> scheme.
+func makeTLSContext(orgID string) context.Context {
+	u := &url.URL{Scheme: "urn", Opaque: "wendy:org:" + orgID}
+	cert := &x509.Certificate{URIs: []*url.URL{u}}
+	tlsState := tls.ConnectionState{
+		HandshakeComplete: true,
+		PeerCertificates:  []*x509.Certificate{cert},
+	}
+	p := &peer.Peer{AuthInfo: credentials.TLSInfo{State: tlsState}}
+	return peer.NewContext(context.Background(), p)
+}
+
+// fakeListContainersStream is a minimal grpc.ServerStreamingServer used to
+// call ContainerService.ListContainers directly without a gRPC transport.
+type fakeListContainersStream struct {
+	ctx      context.Context
+	received []*agentpb.AppContainer
+}
+
+func (f *fakeListContainersStream) Send(resp *agentpb.ListContainersResponse) error {
+	f.received = append(f.received, resp.Container)
+	return nil
+}
+func (f *fakeListContainersStream) Context() context.Context     { return f.ctx }
+func (f *fakeListContainersStream) SetHeader(metadata.MD) error  { return nil }
+func (f *fakeListContainersStream) SendHeader(metadata.MD) error { return nil }
+func (f *fakeListContainersStream) SetTrailer(metadata.MD)       {}
+func (f *fakeListContainersStream) SendMsg(interface{}) error    { return nil }
+func (f *fakeListContainersStream) RecvMsg(interface{}) error    { return nil }
+
 // ---------- tests ----------
 
-func TestListContainers(t *testing.T) {
-	containers := []*agentpb.AppContainer{
-		{AppName: "app-one", AppVersion: "1.0"},
-		{AppName: "app-two", AppVersion: "2.0"},
-	}
-	client, cleanup := startContainerServer(t, &mockContainerdClient{containers: containers})
+// TestListContainersRejectsUnauthenticated verifies that calls without a valid
+// mTLS certificate are refused, now that the unfiltered path also requires auth.
+func TestListContainersRejectsUnauthenticated(t *testing.T) {
+	client, cleanup := startContainerServer(t, &mockContainerdClient{})
 	defer cleanup()
 
 	stream, err := client.ListContainers(context.Background(), &agentpb.ListContainersRequest{})
 	if err != nil {
+		t.Fatalf("ListContainers (stream setup): %v", err)
+	}
+	_, err = stream.Recv()
+	if status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("expected Unauthenticated, got %v", err)
+	}
+}
+
+// TestListContainersFiltersToOwnOrg verifies that an authenticated caller only
+// receives containers whose AppGroup matches their org_id.
+func TestListContainersFiltersToOwnOrg(t *testing.T) {
+	const orgID = "42"
+	containers := []*agentpb.AppContainer{
+		{AppName: "own-one", AppVersion: "1.0", AppGroup: orgID},
+		{AppName: "own-two", AppVersion: "2.0", AppGroup: orgID},
+		{AppName: "other", AppVersion: "3.0", AppGroup: "99"},
+	}
+	svc := NewContainerService(zap.NewNop(), &mockContainerdClient{containers: containers})
+	fakeStream := &fakeListContainersStream{ctx: makeTLSContext(orgID)}
+
+	if err := svc.ListContainers(&agentpb.ListContainersRequest{}, fakeStream); err != nil {
 		t.Fatalf("ListContainers: %v", err)
 	}
-
-	var received []*agentpb.AppContainer
-	for {
-		resp, err := stream.Recv()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			t.Fatalf("recv: %v", err)
-		}
-		received = append(received, resp.Container)
+	if len(fakeStream.received) != 2 {
+		t.Fatalf("len(received) = %d; want 2", len(fakeStream.received))
 	}
-
-	if len(received) != 2 {
-		t.Fatalf("len(containers) = %d; want 2", len(received))
+	for _, c := range fakeStream.received {
+		if c.AppGroup != orgID {
+			t.Errorf("received container with AppGroup %q; want %q", c.AppGroup, orgID)
+		}
 	}
-	if received[0].AppName != "app-one" {
-		t.Errorf("containers[0].AppName = %q; want app-one", received[0].AppName)
+}
+
+// TestListContainersExplicitFilterMatchesOrg verifies that an explicit
+// app_group_filter equal to the caller's org_id is accepted.
+func TestListContainersExplicitFilterMatchesOrg(t *testing.T) {
+	const orgID = "42"
+	containers := []*agentpb.AppContainer{
+		{AppName: "mine", AppVersion: "1.0", AppGroup: orgID},
+	}
+	svc := NewContainerService(zap.NewNop(), &mockContainerdClient{containers: containers})
+	fakeStream := &fakeListContainersStream{ctx: makeTLSContext(orgID)}
+
+	filterVal := orgID
+	req := &agentpb.ListContainersRequest{AppGroupFilter: &filterVal}
+	if err := svc.ListContainers(req, fakeStream); err != nil {
+		t.Fatalf("ListContainers: %v", err)
+	}
+	if len(fakeStream.received) != 1 {
+		t.Fatalf("len(received) = %d; want 1", len(fakeStream.received))
+	}
+}
+
+// TestListContainersExplicitFilterMismatch verifies that a filter for a
+// different org is rejected with PermissionDenied.
+func TestListContainersExplicitFilterMismatch(t *testing.T) {
+	svc := NewContainerService(zap.NewNop(), &mockContainerdClient{})
+	fakeStream := &fakeListContainersStream{ctx: makeTLSContext("42")}
+
+	other := "99"
+	req := &agentpb.ListContainersRequest{AppGroupFilter: &other}
+	err := svc.ListContainers(req, fakeStream)
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("expected PermissionDenied, got %v", err)
 	}
 }
 
