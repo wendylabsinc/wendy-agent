@@ -267,6 +267,7 @@ message CreateAppGroupProgressResponse {
     string service_name = 1;
     oneof progress {
         string status_message = 2;
+        // Completion percentage in the range [0.0, 100.0].
         float percent = 3;
     }
 }

@@ -2005,6 +2005,7 @@ type CreateAppGroupProgressResponse_StatusMessage struct {
 }
 
 type CreateAppGroupProgressResponse_Percent struct {
+	// Completion percentage in the range [0.0, 100.0].
 	Percent float32 `protobuf:"fixed32,3,opt,name=percent,proto3,oneof"`
 }
 

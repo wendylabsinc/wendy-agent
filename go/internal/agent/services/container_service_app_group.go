@@ -17,6 +17,9 @@ import (
 
 const (
 	maxAppGroupServices = 32
+	maxDependsOn        = 32
+	maxServiceNameBytes = 64
+	maxImageNameBytes   = 512
 	maxEnvEntries       = 256
 	maxEnvKeyBytes      = 256
 	maxEnvValueBytes    = 4096
@@ -143,10 +146,31 @@ func validateIsolationMode(mode agentpb.IsolationMode) error {
 func validateServiceConfig(svc *agentpb.ServiceConfig) error {
 	name := svc.GetServiceName()
 
+	// Require service_name so all error messages and orchestration references are actionable.
+	if name == "" {
+		return status.Error(codes.InvalidArgument, "service_name is required")
+	}
+	if len(name) > maxServiceNameBytes {
+		return status.Errorf(codes.InvalidArgument, "service_name exceeds maximum of %d bytes", maxServiceNameBytes)
+	}
+
+	// Require image_name so the orchestration layer can pull the container image.
+	if svc.GetImageName() == "" {
+		return status.Errorf(codes.InvalidArgument, "service %q: image_name is required", name)
+	}
+	if len(svc.GetImageName()) > maxImageNameBytes {
+		return status.Errorf(codes.InvalidArgument, "service %q: image_name exceeds maximum of %d bytes", name, maxImageNameBytes)
+	}
+
 	// Validate image_name: must be a well-formed OCI image reference to prevent
 	// path traversal, registry override, and other injection vectors.
-	if img := svc.GetImageName(); img != "" && !imageNameRe.MatchString(img) {
+	if !imageNameRe.MatchString(svc.GetImageName()) {
 		return status.Errorf(codes.InvalidArgument, "service %q: image_name is invalid", name)
+	}
+
+	// Validate depends_on: cap cardinality to prevent reference explosion.
+	if len(svc.GetDependsOn()) > maxDependsOn {
+		return status.Errorf(codes.InvalidArgument, "service %q: depends_on exceeds maximum of %d entries", name, maxDependsOn)
 	}
 
 	// Validate app_config: size cap and JSON schema.
