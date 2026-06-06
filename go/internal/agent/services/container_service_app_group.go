@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"regexp"
+	"strings"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -24,37 +25,55 @@ const (
 	maxAppConfigBytes   = 64 * 1024 // 64 KB
 )
 
-// shellMetaRe matches characters that must not appear in cmd to prevent injection.
-var shellMetaRe = regexp.MustCompile(`[;&|` + "`" + `$<>\\ \x00]`)
+// cmdAllowRe restricts cmd to safe, path-like characters only — an allowlist is
+// safer than a blocklist for command names because it eliminates entire character
+// classes (shell metacharacters, whitespace, control bytes) rather than enumerating
+// individual dangerous ones.
+var cmdAllowRe = regexp.MustCompile(`^[A-Za-z0-9./_-]+$`)
 
-// requireVerifiedClientCert returns an error if the RPC was not made over a
-// mutually-authenticated TLS connection with a verified client certificate chain.
-// The mTLS TLS config (see internal/agent/mtls) already enforces
-// tls.RequireAndVerifyClientCert; this check provides an explicit in-handler
-// guard so that authorization failures are visible in code, not just in config.
-func requireVerifiedClientCert(ctx context.Context) error {
+// certOrgID extracts the org_id from the caller's mTLS client certificate
+// Wendy URI SAN (urn:wendy:org:<org_id>:...) and verifies that a valid,
+// verified certificate chain was presented. Returns Unauthenticated when
+// no valid cert is present and PermissionDenied when the cert carries no
+// Wendy org identifier.
+func certOrgID(ctx context.Context) (string, error) {
 	p, ok := peer.FromContext(ctx)
 	if !ok {
-		return status.Error(codes.Unauthenticated, "no peer information in context")
+		return "", status.Error(codes.Unauthenticated, "no peer information in context")
 	}
 	tlsInfo, ok := p.AuthInfo.(credentials.TLSInfo)
 	if !ok {
-		return status.Error(codes.Unauthenticated, "connection is not TLS-authenticated")
+		return "", status.Error(codes.Unauthenticated, "connection is not TLS-authenticated")
 	}
 	if len(tlsInfo.State.VerifiedChains) == 0 || len(tlsInfo.State.VerifiedChains[0]) == 0 {
-		return status.Error(codes.Unauthenticated, "no verified client certificate chain")
+		return "", status.Error(codes.Unauthenticated, "no verified client certificate chain")
 	}
-	return nil
+	cert := tlsInfo.State.VerifiedChains[0][0]
+	for _, u := range cert.URIs {
+		if u.Scheme != "urn" {
+			continue
+		}
+		// Opaque for urn:wendy:org:<org_id>:... is "wendy:org:<org_id>:..."
+		parts := strings.SplitN(u.Opaque, ":", 4)
+		if len(parts) >= 3 && parts[0] == "wendy" && parts[1] == "org" && parts[2] != "" {
+			return parts[2], nil
+		}
+	}
+	return "", status.Error(codes.PermissionDenied, "certificate does not contain a Wendy org identifier")
 }
 
 // CreateAppGroup validates the request and returns codes.Unimplemented.
 // The full container-orchestration implementation will be added in a follow-up PR.
 func (s *ContainerService) CreateAppGroup(req *agentpb.CreateAppGroupRequest, stream grpc.ServerStreamingServer[agentpb.CreateAppGroupProgressResponse]) error {
-	if err := requireVerifiedClientCert(stream.Context()); err != nil {
+	orgID, err := certOrgID(stream.Context())
+	if err != nil {
 		return err
 	}
 	if req.GetAppId() == "" {
 		return status.Error(codes.InvalidArgument, "app_id is required")
+	}
+	if orgID != req.GetAppId() {
+		return status.Error(codes.PermissionDenied, "app_id does not match caller's org identity")
 	}
 	if err := validateIsolationMode(req.GetIsolation()); err != nil {
 		return err
@@ -73,11 +92,15 @@ func (s *ContainerService) CreateAppGroup(req *agentpb.CreateAppGroupRequest, st
 // StopAppGroup validates the request and returns codes.Unimplemented.
 // The full implementation will be added in a follow-up PR.
 func (s *ContainerService) StopAppGroup(ctx context.Context, req *agentpb.StopAppGroupRequest) (*agentpb.StopAppGroupResponse, error) {
-	if err := requireVerifiedClientCert(ctx); err != nil {
+	orgID, err := certOrgID(ctx)
+	if err != nil {
 		return nil, err
 	}
 	if req.GetAppId() == "" {
 		return nil, status.Error(codes.InvalidArgument, "app_id is required")
+	}
+	if orgID != req.GetAppId() {
+		return nil, status.Error(codes.PermissionDenied, "app_id does not match caller's org identity")
 	}
 	return nil, status.Error(codes.Unimplemented, "StopAppGroup not yet implemented")
 }
@@ -127,11 +150,11 @@ func validateServiceConfig(svc *agentpb.ServiceConfig) error {
 		}
 	}
 
-	// Validate cmd: length and absence of shell metacharacters to prevent injection.
+	// Validate cmd: length and only allow safe path-like characters.
 	if len(svc.GetCmd()) > maxCmdBytes {
 		return status.Errorf(codes.InvalidArgument, "service %q: cmd exceeds maximum of %d bytes", name, maxCmdBytes)
 	}
-	if svc.GetCmd() != "" && shellMetaRe.MatchString(svc.GetCmd()) {
+	if svc.GetCmd() != "" && !cmdAllowRe.MatchString(svc.GetCmd()) {
 		return status.Errorf(codes.InvalidArgument, "service %q: cmd contains disallowed characters", name)
 	}
 
