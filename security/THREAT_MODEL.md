@@ -127,11 +127,11 @@ Severity scale: **CRITICAL > HIGH > MEDIUM > LOW > INFO**
 #### TM-S-03 — Impersonation via stolen mTLS client certificate
 - **Severity:** HIGH
 - **Component:** CLI / gRPC mTLS (port 50052)
-- **Description:** Client certificates have no short TTL or revocation check implemented. A stolen or leaked certificate grants indefinite authenticated access.
-- **Existing mitigations:** Certificates are stored in `~/.wendy/` with user-level permissions.
+- **Description:** The agent enforces a maximum certificate lifetime of 25 hours (24 h + 1 h clock-skew tolerance). A stolen certificate is valid for at most its remaining lifetime. CRL/OCSP revocation is not implemented, so a compromised certificate cannot be immediately revoked before expiry.
+- **Existing mitigations:** Certificates are stored in `~/.wendy/` with user-level permissions. Maximum certificate lifetime is enforced at TLS handshake time, rejecting certs with validity windows longer than 25 hours.
 - **Recommended controls:**
-  - Implement certificate revocation (OCSP or CRL served by Wendy Cloud).
-  - Enforce short-lived client certificates with automatic renewal.
+  - Implement certificate revocation (OCSP or CRL served by Wendy Cloud) for immediate revocation capability.
+  - Issue certificates with shorter lifetimes (e.g., 1–4 hours) to reduce the exposure window.
 
 ---
 
