@@ -25,20 +25,24 @@ func (s *logSubscriber) send(output ContainerOutput) {
 		s.mu.Unlock()
 		return
 	}
-	ch := s.ch
-	s.mu.Unlock()
 
-	if output.Done {
-		// Must be delivered; release lock before blocking to avoid deadlock
-		// with close(). Recover from send-on-closed-channel if close() races.
-		sendDoneToSubscriber(ch, output)
+	if !output.Done {
+		// Non-Done: non-blocking send while holding the lock prevents a
+		// concurrent close() from racing and causing a send-on-closed-channel panic.
+		select {
+		case s.ch <- output:
+		default:
+			// Drop if subscriber is slow.
+		}
+		s.mu.Unlock()
 		return
 	}
-	select {
-	case ch <- output:
-	default:
-		// Drop if subscriber is slow.
-	}
+
+	ch := s.ch
+	s.mu.Unlock()
+	// Done must be delivered; release lock before blocking to avoid deadlock
+	// with close(). Recover from send-on-closed-channel if close() races.
+	sendDoneToSubscriber(ch, output)
 }
 
 // sendDoneToSubscriber performs a blocking send, recovering from the
