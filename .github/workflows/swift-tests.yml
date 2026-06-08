@@ -23,7 +23,7 @@ jobs:
     name: Run WendyAgentCore Tests
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: Select Xcode ${{ env.XCODE_VERSION }}
         uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1
@@ -59,7 +59,7 @@ jobs:
     name: Build WendyAgentMac app
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: Select Xcode ${{ env.XCODE_VERSION }}
         uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1
@@ -131,7 +131,7 @@ jobs:
     container: swift:6.2.3
     steps:
       - name: Checkout Code
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           ref: ${{ github.event.pull_request.head.sha }}
 
