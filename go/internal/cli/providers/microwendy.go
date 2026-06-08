@@ -174,7 +174,7 @@ func (p *MicroWendyProvider) Run(ctx context.Context, app *BuiltApp, detach bool
 	output <- RunOutput{Type: RunOutputStarted}
 
 	if err := client.StopApp(); err != nil {
-		output <- RunOutput{Type: RunOutputStdout, Data: []byte(fmt.Sprintf("warning: app stop: %v\n", err))}
+		fmt.Fprintf(os.Stderr, "warning: app stop: %v\n", err)
 	}
 
 	if detach {
@@ -182,6 +182,7 @@ func (p *MicroWendyProvider) Run(ctx context.Context, app *BuiltApp, detach bool
 			return fmt.Errorf("push app: %w", err)
 		}
 	} else {
+		fmt.Println()
 		pushProg := tui.NewProgress("Pushing app...")
 		pp := tea.NewProgram(pushProg)
 		go func() {
@@ -207,12 +208,13 @@ func (p *MicroWendyProvider) Run(ctx context.Context, app *BuiltApp, detach bool
 		}
 	}
 
-	output <- RunOutput{Type: RunOutputStdout, Data: []byte("Starting app...\n")}
+	fmt.Println()
+	fmt.Println("Starting app...")
 	if err := client.StartApp(); err != nil {
 		return fmt.Errorf("app start: %w", err)
 	}
 
-	output <- RunOutput{Type: RunOutputStdout, Data: []byte("App started.\n")}
+	fmt.Println("App started.")
 	return nil
 }
 
