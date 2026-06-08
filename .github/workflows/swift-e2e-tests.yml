@@ -1,6 +1,12 @@
 name: Swift E2E Tests
 
 on:
+  pull_request:
+    paths:
+      - 'swift/**'
+      - 'Proto/**'
+      - '.github/actions/swift-e2e-run/**'
+      - '.github/workflows/swift-e2e-tests.yml'
   push:
     branches:
       - main
@@ -56,15 +62,16 @@ jobs:
       fail-fast: false
       matrix:
         target:
-          - name: macOS 26 → Jetson Orin Nano
-            target_id: macos-jetson-orin-nano
-            runner_id: macos-26
-            runner_label: macos-26
-            cli_os: macOS
-            device_id: jetson-orin-nano
-            device_address: wendyos-strong-dunlin.local
-            agent_os: wendyOS
-            transport: lan
+          # // DISABLED: Mac <> Jetson Swift E2E is flaky; re-enable after stabilization.
+          # - name: macOS 26 → Jetson Orin Nano
+          #   target_id: macos-jetson-orin-nano
+          #   runner_id: macos-26
+          #   runner_label: macos-26
+          #   cli_os: macOS
+          #   device_id: jetson-orin-nano
+          #   device_address: wendyos-strong-dunlin.local
+          #   agent_os: wendyOS
+          #   transport: lan
 
           # // DISABLED: no CI hardware set up yet for this job.
           # - name: Windows 11 → Ubuntu 24

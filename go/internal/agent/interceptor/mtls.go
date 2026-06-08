@@ -47,12 +47,18 @@ func CheckMTLS(ctx context.Context, logger *zap.Logger) error {
 			zap.String("remote", peerAddr(ctx)))
 		return status.Errorf(codes.Unauthenticated, "mTLS authentication required")
 	}
-	if len(tlsInfo.State.VerifiedChains) == 0 {
-		logger.Warn("rejected caller with unverified certificate chain",
+	// With RequireAnyClientCert + custom VerifyPeerCertificate, Go's TLS stack
+	// never populates VerifiedChains (that requires VerifyClientCertIfGiven or
+	// higher — see crypto/tls/handshake_server.go). PeerCertificates is always
+	// populated when a client cert is presented, and the handshake's
+	// VerifyPeerCertificate hook has already authenticated the ML-DSA chain
+	// before this interceptor runs.
+	if len(tlsInfo.State.PeerCertificates) == 0 {
+		logger.Warn("rejected caller with no client certificate",
 			zap.String("remote", peerAddr(ctx)))
 		return status.Errorf(codes.Unauthenticated, "client certificate not verified")
 	}
-	leaf := tlsInfo.State.VerifiedChains[0][0]
+	leaf := tlsInfo.State.PeerCertificates[0]
 	// Defence-in-depth EKU check: the leaf must explicitly assert clientAuth.
 	// Certs with no EKU extension (empty ExtKeyUsage) are also rejected: absence
 	// of the extension means the cert is technically unrestricted under RFC 5280,

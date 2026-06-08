@@ -11,20 +11,27 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/wendylabsinc/wendy/go/internal/agent/camera"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
 // SystemHardwareDiscoverer discovers hardware by probing the Linux sysfs/devfs/procfs.
 type SystemHardwareDiscoverer struct {
-	logger *zap.Logger
+	logger             *zap.Logger
+	classifyTransport  func(base string) (camera.Transport, string)
+	enumerateLibcamera func(ctx context.Context) (map[string]string, error)
 }
 
 func NewSystemHardwareDiscoverer(logger *zap.Logger) *SystemHardwareDiscoverer {
-	return &SystemHardwareDiscoverer{logger: logger}
+	return &SystemHardwareDiscoverer{
+		logger:             logger,
+		classifyTransport:  camera.Classify,
+		enumerateLibcamera: camera.EnumerateLibcamera,
+	}
 }
 
 // Discover probes the system for hardware capabilities, optionally filtered by category.
-func (d *SystemHardwareDiscoverer) Discover(_ context.Context, categoryFilter string) ([]*agentpb.ListHardwareCapabilitiesResponse_HardwareCapability, error) {
+func (d *SystemHardwareDiscoverer) Discover(ctx context.Context, categoryFilter string) ([]*agentpb.ListHardwareCapabilitiesResponse_HardwareCapability, error) {
 	type discoverer struct {
 		category string
 		fn       func() []*agentpb.ListHardwareCapabilitiesResponse_HardwareCapability
@@ -36,7 +43,7 @@ func (d *SystemHardwareDiscoverer) Discover(_ context.Context, categoryFilter st
 		{"i2c", d.discoverI2C},
 		{"spi", d.discoverSPI},
 		{"gpio", d.discoverGPIO},
-		{"camera", d.discoverCamera},
+		{"camera", func() []*agentpb.ListHardwareCapabilitiesResponse_HardwareCapability { return d.discoverCamera(ctx) }},
 		{"audio", d.discoverAudio},
 		{"network", d.discoverNetwork},
 		{"storage", d.discoverStorage},
@@ -206,8 +213,12 @@ func (d *SystemHardwareDiscoverer) discoverGPIO() []*agentpb.ListHardwareCapabil
 	return caps
 }
 
-// discoverCamera enumerates V4L2 video devices.
-func (d *SystemHardwareDiscoverer) discoverCamera() []*agentpb.ListHardwareCapabilitiesResponse_HardwareCapability {
+// discoverCamera enumerates V4L2 video devices and classifies each one as
+// USB, CSI, or unknown. Transport and kernel driver are surfaced via the
+// HardwareCapability.properties map (which is additive, so no proto change is
+// required). When exactly one CSI device and one libcamera entry are found,
+// the libcamera id is also attached.
+func (d *SystemHardwareDiscoverer) discoverCamera(ctx context.Context) []*agentpb.ListHardwareCapabilitiesResponse_HardwareCapability {
 	var caps []*agentpb.ListHardwareCapabilitiesResponse_HardwareCapability
 
 	entries, err := filepath.Glob("/dev/video*")
@@ -215,21 +226,56 @@ func (d *SystemHardwareDiscoverer) discoverCamera() []*agentpb.ListHardwareCapab
 		return nil
 	}
 
-	for _, path := range entries {
-		name := filepath.Base(path)
+	libcameraIDs, libErr := d.enumerateLibcamera(ctx)
+	if libErr != nil {
+		d.logger.Debug("libcamera enumeration failed", zap.Error(libErr))
+	}
 
-		// Try to read the device name from sysfs.
-		devNum := strings.TrimPrefix(name, "video")
-		sysName := filepath.Join("/sys/class/video4linux", name, "name")
+	type pending struct {
+		cap *agentpb.ListHardwareCapabilitiesResponse_HardwareCapability
+		csi bool
+	}
+	var pendings []pending
+
+	for _, path := range entries {
+		base := filepath.Base(path)
+		devNum := strings.TrimPrefix(base, "video")
+
+		description := base
+		sysName := filepath.Join("/sys/class/video4linux", base, "name")
 		if data, err := os.ReadFile(sysName); err == nil {
-			name = fmt.Sprintf("%s (%s)", strings.TrimSpace(string(data)), "video"+devNum)
+			description = fmt.Sprintf("%s (%s)", strings.TrimSpace(string(data)), "video"+devNum)
 		}
 
-		caps = append(caps, &agentpb.ListHardwareCapabilitiesResponse_HardwareCapability{
+		transport, driver := d.classifyTransport(base)
+		props := map[string]string{"transport": transport.String()}
+		if driver != "" {
+			props["driver"] = driver
+		}
+
+		c := &agentpb.ListHardwareCapabilitiesResponse_HardwareCapability{
 			Category:    "camera",
 			DevicePath:  path,
-			Description: name,
-		})
+			Description: description,
+			Properties:  props,
+		}
+		pendings = append(pendings, pending{cap: c, csi: transport == camera.TransportCSI})
+		caps = append(caps, c)
+	}
+
+	// Only attach a libcamera id in the unambiguous single-CSI / single-libcamera case.
+	csiCount := 0
+	var solo *pending
+	for i := range pendings {
+		if pendings[i].csi {
+			csiCount++
+			solo = &pendings[i]
+		}
+	}
+	if csiCount == 1 && len(libcameraIDs) == 1 {
+		for id := range libcameraIDs {
+			solo.cap.Properties["libcamera_id"] = id
+		}
 	}
 
 	return caps

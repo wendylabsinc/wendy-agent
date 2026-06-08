@@ -689,7 +689,13 @@ func isCertRejectionError(err error) bool {
 		return false
 	}
 	msg := err.Error()
-	if strings.Contains(msg, "tls: first record does not look like a TLS handshake") {
+	// A plaintext (unprovisioned) agent probed with TLS reports "first record
+	// does not look like a TLS handshake", which gRPC wraps inside its
+	// "authentication handshake failed" envelope. That is NOT a cert rejection —
+	// the server simply isn't a TLS endpoint — so it must not suppress the
+	// plaintext fallback. Exclude it explicitly before the broad substring match
+	// below would otherwise catch the "authentication handshake failed" wrapper.
+	if strings.Contains(msg, "first record does not look like a TLS handshake") {
 		return false
 	}
 	return strings.Contains(msg, "remote error: tls:") ||

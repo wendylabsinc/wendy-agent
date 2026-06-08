@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	"go.uber.org/zap"
+
+	"github.com/wendylabsinc/wendy/go/internal/agent/camera"
 )
 
 func TestSystemHardwareDiscoverer_Discover(t *testing.T) {
@@ -70,5 +72,59 @@ func TestSystemHardwareDiscoverer_AllCategories(t *testing.T) {
 			}
 		}
 		t.Logf("  %s: %d capabilities", cat, len(caps))
+	}
+}
+
+func TestDiscoverCamera_TransportPropertyUSB(t *testing.T) {
+	logger := zap.NewNop()
+	d := NewSystemHardwareDiscoverer(logger)
+	// Force classifier to return USB for any base name.
+	d.classifyTransport = func(base string) (camera.Transport, string) {
+		return camera.TransportUSB, "uvcvideo"
+	}
+	d.enumerateLibcamera = func(context.Context) (map[string]string, error) { return nil, nil }
+
+	// We can't fabricate /dev/video* nodes in tests, so call discoverCamera
+	// directly on whatever the host happens to have. If the host has none,
+	// the assertions only run when caps != nil.
+	caps := d.discoverCamera(context.Background())
+	for _, c := range caps {
+		if got := c.GetProperties()["transport"]; got != "usb" {
+			t.Errorf("expected transport=usb, got %q", got)
+		}
+		if got := c.GetProperties()["driver"]; got != "uvcvideo" {
+			t.Errorf("expected driver=uvcvideo, got %q", got)
+		}
+	}
+}
+
+func TestDiscoverCamera_TransportPropertyCSI_WithLibcameraID(t *testing.T) {
+	logger := zap.NewNop()
+	d := NewSystemHardwareDiscoverer(logger)
+	d.classifyTransport = func(base string) (camera.Transport, string) {
+		return camera.TransportCSI, "tegra-capture-vi"
+	}
+	d.enumerateLibcamera = func(context.Context) (map[string]string, error) {
+		return map[string]string{"/base/cam@1a": "Sensor"}, nil
+	}
+
+	caps := d.discoverCamera(context.Background())
+	if len(caps) == 0 {
+		t.Skip("no /dev/video* on this host; CSI assertions skipped")
+	}
+	if len(caps) > 1 {
+		// Ambiguous case — id must remain unset on every cap.
+		for _, c := range caps {
+			if _, ok := c.GetProperties()["libcamera_id"]; ok {
+				t.Errorf("ambiguous mapping must not populate libcamera_id: %v", c.GetProperties())
+			}
+		}
+		return
+	}
+	if got := caps[0].GetProperties()["transport"]; got != "csi" {
+		t.Errorf("expected transport=csi, got %q", got)
+	}
+	if got := caps[0].GetProperties()["libcamera_id"]; got != "/base/cam@1a" {
+		t.Errorf("expected libcamera_id=/base/cam@1a, got %q", got)
 	}
 }

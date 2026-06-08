@@ -659,3 +659,45 @@ func stubDiscoverLANDevices(t *testing.T, devices []models.LANDevice, err error)
 		discoverLANDevices = orig
 	})
 }
+
+func TestIsCertRejectionError(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{
+			// A plaintext (unprovisioned) agent probed with TLS: gRPC wraps the
+			// "first record does not look like a TLS handshake" detail inside an
+			// "authentication handshake failed" envelope. This is NOT a cert
+			// rejection — the server simply isn't a TLS endpoint, so the CLI must
+			// fall back to plaintext rather than report a bogus clock/cert error.
+			"plaintext server probed with TLS",
+			errors.New(`rpc error: code = Unavailable desc = connection error: desc = "transport: authentication handshake failed: tls: first record does not look like a TLS handshake"`),
+			false,
+		},
+		{
+			"server sent TLS alert (bad cert)",
+			errors.New("rpc error: code = Unavailable desc = connection error: desc = \"remote error: tls: bad certificate\""),
+			true,
+		},
+		{
+			"client certificate required",
+			errors.New("rpc error: code = Unavailable desc = connection error: desc = \"remote error: tls: certificate required\""),
+			true,
+		},
+		{
+			"plain transport error (connection refused)",
+			errors.New(`rpc error: code = Unavailable desc = connection error: desc = "transport: Error while dialing: dial tcp 127.0.0.1:50052: connect: connection refused"`),
+			false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isCertRejectionError(tc.err); got != tc.want {
+				t.Errorf("isCertRejectionError(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
+	}
+}

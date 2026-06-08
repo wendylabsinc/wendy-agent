@@ -7,8 +7,10 @@ import (
 	"path/filepath"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 
+	"github.com/wendylabsinc/wendy/go/internal/agent/board"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 )
 
@@ -481,6 +483,9 @@ func assertCameraEntitlement(t *testing.T, spec *Spec, entType string) {
 	for _, d := range spec.Linux.Resources.Devices {
 		if d.Major != nil && *d.Major == 81 && d.Allow {
 			foundV4L2Rule = true
+			if strings.Contains(d.Access, "m") {
+				t.Errorf("%s entitlement V4L2 rule must not grant mknod, got Access=%q", entType, d.Access)
+			}
 			break
 		}
 	}
@@ -545,6 +550,72 @@ func TestApplyEntitlements_Camera(t *testing.T) {
 	}
 
 	assertCameraEntitlement(t, spec, "camera")
+}
+
+// TestApplyEntitlements_Camera_UdevMount verifies the camera entitlement
+// bind-mounts the host udev runtime read-only. libcamera enumerates CSI
+// cameras through libudev, which reads /run/udev/data; without this mount the
+// in-container enumerator finds no cameras even though the device nodes and
+// cgroup rules are present (WDY-1342). udevRuntimeDir is redirected to a real
+// temp dir so the os.Stat guard is deterministic across CI hosts.
+func TestApplyEntitlements_Camera_UdevMount(t *testing.T) {
+	orig := udevRuntimeDir
+	t.Cleanup(func() { udevRuntimeDir = orig })
+	udevRuntimeDir = t.TempDir()
+
+	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
+	cfg := &appconfig.AppConfig{
+		AppID: "test-app",
+		Entitlements: []appconfig.Entitlement{
+			{Type: appconfig.EntitlementCamera},
+		},
+	}
+
+	if err := ApplyEntitlements(spec, cfg, ApplyOptions{}); err != nil {
+		t.Fatalf("ApplyEntitlements() error = %v", err)
+	}
+
+	m, ok := mountForDest(spec, "/run/udev")
+	if !ok {
+		t.Fatal("camera entitlement did not bind-mount /run/udev (libcamera CSI enumeration needs it)")
+	}
+	if m.Source != udevRuntimeDir {
+		t.Errorf("/run/udev mount source = %q, want %q", m.Source, udevRuntimeDir)
+	}
+	if m.Type != "bind" {
+		t.Errorf("/run/udev mount type = %q, want \"bind\"", m.Type)
+	}
+	if !slices.Contains(m.Options, "rbind") {
+		t.Error("/run/udev mount missing rbind option")
+	}
+	if !slices.Contains(m.Options, "ro") {
+		t.Error("/run/udev mount must be read-only (ro)")
+	}
+}
+
+// TestApplyEntitlements_Camera_UdevMountSkippedWhenAbsent verifies that a host
+// without a udev runtime directory does not get a /run/udev mount, so the
+// container can still start (runc fails a bind mount whose source is missing).
+func TestApplyEntitlements_Camera_UdevMountSkippedWhenAbsent(t *testing.T) {
+	orig := udevRuntimeDir
+	t.Cleanup(func() { udevRuntimeDir = orig })
+	udevRuntimeDir = filepath.Join(t.TempDir(), "does-not-exist")
+
+	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
+	cfg := &appconfig.AppConfig{
+		AppID: "test-app",
+		Entitlements: []appconfig.Entitlement{
+			{Type: appconfig.EntitlementCamera},
+		},
+	}
+
+	if err := ApplyEntitlements(spec, cfg, ApplyOptions{}); err != nil {
+		t.Fatalf("ApplyEntitlements() error = %v", err)
+	}
+
+	if hasMountDest(spec, "/run/udev") {
+		t.Error("camera entitlement mounted /run/udev despite host udev runtime being absent")
+	}
 }
 
 func TestApplyEntitlements_Multiple(t *testing.T) {
@@ -865,5 +936,233 @@ func TestApplyPersist_DotDotInDestination(t *testing.T) {
 	}
 	if hasMountDest(spec, "/data/../etc") {
 		t.Error("raw dot-dot persist destination was mounted unchanged")
+	}
+}
+
+// --- Camera CSI/libcamera extra majors ---
+
+// installFakeCameraGlobs redirects cameraExtraGlobs into a tempdir populated
+// with fake device files. statMajor is overridden to return canned majors
+// keyed off the file basename. boardDetect is overridden to return Generic.
+// Returns the chosen majors so tests can assert on them.
+func installFakeCameraGlobs(t *testing.T, files map[string]int64) {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "dma_heap"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	majorsByPath := map[string]int64{}
+	for name, major := range files {
+		var rel string
+		switch {
+		case strings.HasPrefix(name, "media"):
+			rel = name
+		case strings.HasPrefix(name, "v4l-subdev"):
+			rel = name
+		case strings.HasPrefix(name, "dma_heap/"):
+			rel = name
+		case strings.HasPrefix(name, "nvhost-") || name == "nvmap":
+			rel = name
+		default:
+			t.Fatalf("unknown fake device fixture %q", name)
+		}
+		p := filepath.Join(dir, rel)
+		if err := os.WriteFile(p, nil, 0o644); err != nil {
+			t.Fatalf("write %s: %v", p, err)
+		}
+		majorsByPath[p] = major
+	}
+
+	origCamera := cameraExtraGlobs
+	origJetson := jetsonExtraGlobs
+	origStat := statMajor
+	origBoard := boardDetect
+	t.Cleanup(func() {
+		cameraExtraGlobs = origCamera
+		jetsonExtraGlobs = origJetson
+		statMajor = origStat
+		boardDetect = origBoard
+	})
+
+	cameraExtraGlobs = []string{
+		filepath.Join(dir, "media*"),
+		filepath.Join(dir, "v4l-subdev*"),
+		filepath.Join(dir, "dma_heap", "*"),
+	}
+	jetsonExtraGlobs = []string{
+		filepath.Join(dir, "nvhost-*"),
+		filepath.Join(dir, "nvmap"),
+	}
+	statMajor = func(p string) (int64, error) {
+		if m, ok := majorsByPath[p]; ok {
+			return m, nil
+		}
+		return 0, os.ErrNotExist
+	}
+}
+
+func hasMajorRule(spec *Spec, want int64) bool {
+	for _, d := range spec.Linux.Resources.Devices {
+		if d.Allow && d.Major != nil && *d.Major == want {
+			return true
+		}
+	}
+	return false
+}
+
+func countMajorRule(spec *Spec, want int64) int {
+	n := 0
+	for _, d := range spec.Linux.Resources.Devices {
+		if d.Allow && d.Major != nil && *d.Major == want {
+			n++
+		}
+	}
+	return n
+}
+
+// majorRuleAccess returns the Access mask of the first allow rule for the given
+// major, and whether such a rule exists.
+func majorRuleAccess(spec *Spec, want int64) (string, bool) {
+	for _, d := range spec.Linux.Resources.Devices {
+		if d.Allow && d.Major != nil && *d.Major == want {
+			return d.Access, true
+		}
+	}
+	return "", false
+}
+
+func TestApplyCamera_AddsMediaMajor(t *testing.T) {
+	installFakeCameraGlobs(t, map[string]int64{
+		"media0": 234,
+	})
+	boardDetect = func() board.Info { return board.Info{Kind: board.Generic} }
+
+	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
+	cfg := &appconfig.AppConfig{AppID: "test", Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementCamera}}}
+	if err := ApplyEntitlements(spec, cfg, ApplyOptions{}); err != nil {
+		t.Fatalf("ApplyEntitlements: %v", err)
+	}
+	if !hasMajorRule(spec, 234) {
+		t.Errorf("expected cgroup allow for media major 234")
+	}
+	if countMajorRule(spec, 234) != 1 {
+		t.Errorf("media major rule should be deduplicated, got %d entries", countMajorRule(spec, 234))
+	}
+}
+
+func TestApplyCamera_AddsDmaHeapMajor(t *testing.T) {
+	installFakeCameraGlobs(t, map[string]int64{
+		"dma_heap/system":   510,
+		"dma_heap/cma":      510,
+		"dma_heap/reserved": 511,
+	})
+	boardDetect = func() board.Info { return board.Info{Kind: board.Generic} }
+
+	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
+	cfg := &appconfig.AppConfig{AppID: "test", Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementCamera}}}
+	if err := ApplyEntitlements(spec, cfg, ApplyOptions{}); err != nil {
+		t.Fatalf("ApplyEntitlements: %v", err)
+	}
+	if !hasMajorRule(spec, 510) {
+		t.Errorf("expected cgroup allow for dma_heap major 510")
+	}
+	if !hasMajorRule(spec, 511) {
+		t.Errorf("expected cgroup allow for dma_heap major 511")
+	}
+	if countMajorRule(spec, 510) != 1 {
+		t.Errorf("major 510 must be deduplicated across multiple files")
+	}
+}
+
+func TestApplyCamera_AddsV4l2SubdevMajor(t *testing.T) {
+	installFakeCameraGlobs(t, map[string]int64{
+		"v4l-subdev0": 81,
+		"v4l-subdev1": 81,
+	})
+	boardDetect = func() board.Info { return board.Info{Kind: board.Generic} }
+
+	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
+	cfg := &appconfig.AppConfig{AppID: "test", Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementCamera}}}
+	if err := ApplyEntitlements(spec, cfg, ApplyOptions{}); err != nil {
+		t.Fatalf("ApplyEntitlements: %v", err)
+	}
+	// 81 is already added by the legacy v4l2Major rule; the v4l-subdev scan
+	// must not duplicate it.
+	if countMajorRule(spec, 81) != 1 {
+		t.Errorf("major 81 should appear exactly once, got %d", countMajorRule(spec, 81))
+	}
+}
+
+func TestApplyCamera_JetsonAddsNvhostMajor(t *testing.T) {
+	installFakeCameraGlobs(t, map[string]int64{
+		"nvhost-ctrl": 230,
+		"nvhost-vi":   230,
+		"nvmap":       242,
+	})
+	boardDetect = func() board.Info { return board.Info{Kind: board.Jetson} }
+
+	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
+	cfg := &appconfig.AppConfig{AppID: "test", Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementCamera}}}
+	if err := ApplyEntitlements(spec, cfg, ApplyOptions{}); err != nil {
+		t.Fatalf("ApplyEntitlements: %v", err)
+	}
+	if !hasMajorRule(spec, 230) {
+		t.Errorf("expected nvhost major 230 to be allowed on Jetson")
+	}
+	if !hasMajorRule(spec, 242) {
+		t.Errorf("expected nvmap major 242 to be allowed on Jetson")
+	}
+}
+
+func TestApplyCamera_NonJetsonOmitsNvhost(t *testing.T) {
+	installFakeCameraGlobs(t, map[string]int64{
+		"nvhost-ctrl": 230,
+	})
+	boardDetect = func() board.Info { return board.Info{Kind: board.Generic} }
+
+	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
+	cfg := &appconfig.AppConfig{AppID: "test", Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementCamera}}}
+	if err := ApplyEntitlements(spec, cfg, ApplyOptions{}); err != nil {
+		t.Fatalf("ApplyEntitlements: %v", err)
+	}
+	if hasMajorRule(spec, 230) {
+		t.Errorf("nvhost major 230 must not be allowed on non-Jetson hosts")
+	}
+}
+
+// TestApplyCamera_DeviceRulesOmitMknod locks in least privilege: every cgroup
+// device rule the camera entitlement adds — the static v4l2 major and every
+// dynamically-discovered media/dma-heap/v4l-subdev/nvhost/nvmap major — must
+// grant "rw" only. The mknod ('m') bit is withheld because the container opens
+// host-created, bind-mounted device nodes and never needs to create its own.
+func TestApplyCamera_DeviceRulesOmitMknod(t *testing.T) {
+	installFakeCameraGlobs(t, map[string]int64{
+		"media0":          234,
+		"v4l-subdev0":     235,
+		"dma_heap/system": 236,
+		"nvhost-ctrl":     230,
+		"nvmap":           242,
+	})
+	boardDetect = func() board.Info { return board.Info{Kind: board.Jetson} }
+
+	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
+	cfg := &appconfig.AppConfig{AppID: "test", Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementCamera}}}
+	if err := ApplyEntitlements(spec, cfg, ApplyOptions{}); err != nil {
+		t.Fatalf("ApplyEntitlements: %v", err)
+	}
+
+	for _, major := range []int64{81, 234, 235, 236, 230, 242} {
+		acc, ok := majorRuleAccess(spec, major)
+		if !ok {
+			t.Errorf("expected an allow rule for camera major %d", major)
+			continue
+		}
+		if strings.Contains(acc, "m") {
+			t.Errorf("camera major %d must not grant mknod, got Access=%q", major, acc)
+		}
+		if acc != "rw" {
+			t.Errorf("camera major %d Access = %q, want %q", major, acc, "rw")
+		}
 	}
 }

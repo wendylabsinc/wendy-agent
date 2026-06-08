@@ -10,16 +10,20 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wendylabsinc/wendy/go/internal/agent/camera"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
-// mustBuildGStreamerArgs calls buildGStreamerArgs and fails the test if it returns an error.
+// mustBuildGStreamerArgs calls buildGStreamerArgs for the USB/v4l2src path and
+// fails the test if it returns an error. CSI-specific behaviour is covered by
+// the dedicated TestBuildGStreamerArgs_CSI_* tests, which call buildGStreamerArgs
+// directly with a CSI transport.
 func mustBuildGStreamerArgs(t *testing.T, gstPath, devicePath string, req *agentpb.StreamVideoRequest, encoder string, hasH264Parse bool) []string {
 	t.Helper()
-	args, err := buildGStreamerArgs(gstPath, devicePath, req, encoder, hasH264Parse)
+	args, err := buildGStreamerArgs(gstPath, devicePath, req, encoder, hasH264Parse, camera.TransportUSB, "", nil)
 	if err != nil {
 		t.Fatalf("unexpected error from buildGStreamerArgs: %v", err)
 	}
@@ -28,6 +32,8 @@ func mustBuildGStreamerArgs(t *testing.T, gstPath, devicePath string, req *agent
 
 // newTestVideoService creates a VideoService with injectable filesystem functions.
 // hasVideoCapture defaults to always returning true so tests are not gated on real V4L2 devices.
+// The CSI seams default to "Unknown transport / no libcamera / not Jetson" so existing
+// V4L2 tests behave exactly as before unless they override them.
 func newTestVideoService(glob func() ([]string, error), readName func(string) (string, error)) *VideoService {
 	svc := NewVideoService(context.Background(), zap.NewNop())
 	if glob != nil {
@@ -37,6 +43,9 @@ func newTestVideoService(glob func() ([]string, error), readName func(string) (s
 		svc.readDeviceName = readName
 	}
 	svc.hasVideoCapture = func(string) bool { return true }
+	svc.classifyTransport = func(string) (camera.Transport, string) { return camera.TransportUnknown, "" }
+	svc.enumerateLibcamera = func(context.Context) (map[string]string, error) { return nil, nil }
+	svc.isJetson = func() bool { return false }
 	return svc
 }
 
@@ -52,7 +61,7 @@ func TestListV4L2Devices_TwoDevices(t *testing.T) {
 		},
 	)
 
-	devices, err := svc.listV4L2Devices()
+	devices, err := svc.listV4L2Devices(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -73,7 +82,7 @@ func TestListV4L2Devices_NoDevices(t *testing.T) {
 		nil,
 	)
 
-	devices, err := svc.listV4L2Devices()
+	devices, err := svc.listV4L2Devices(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -88,7 +97,7 @@ func TestListV4L2Devices_SysfsReadFailFallsBackToPath(t *testing.T) {
 		func(base string) (string, error) { return "", fmt.Errorf("no sysfs") },
 	)
 
-	devices, err := svc.listV4L2Devices()
+	devices, err := svc.listV4L2Devices(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -106,7 +115,7 @@ func TestListV4L2Devices_GlobError(t *testing.T) {
 		nil,
 	)
 
-	_, err := svc.listV4L2Devices()
+	_, err := svc.listV4L2Devices(context.Background())
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -539,7 +548,7 @@ func TestStreamGStreamer_MissingGStreamer(t *testing.T) {
 	gstFallbackDirs = nil
 	t.Cleanup(func() { gstFallbackDirs = prev })
 	svc := NewVideoService(context.Background(), zap.NewNop())
-	err := svc.streamGStreamer(context.Background(), nil, "/dev/video0", &agentpb.StreamVideoRequest{})
+	err := svc.streamGStreamer(context.Background(), nil, "/dev/video0", &agentpb.StreamVideoRequest{}, camera.TransportUSB, "")
 	if err == nil {
 		t.Fatal("expected error when gst-launch-1.0 not found")
 	}
@@ -685,5 +694,372 @@ func TestDeviceHub_GetOrCreateHub_RejectsParamMismatch(t *testing.T) {
 	st, ok := status.FromError(err)
 	if !ok || st.Code() != codes.InvalidArgument {
 		t.Errorf("expected InvalidArgument, got %v", err)
+	}
+}
+
+// --- CSI / ribbon-camera tests ---
+
+// defaultElements is the element availability map used by the CSI pipeline tests:
+// x264enc + h264parse + vp8enc/webmmux + libcamerasrc all present. Individual
+// tests delete entries to exercise fallbacks.
+func defaultElements() map[string]bool {
+	return map[string]bool{
+		"x264enc":      true,
+		"h264parse":    true,
+		"webmmux":      true,
+		"vp8enc":       true,
+		"libcamerasrc": true,
+	}
+}
+
+// mustCSIArgs builds a pipeline with an explicit transport/libcameraID/available
+// set and fails the test on a build error (buildGStreamerArgs returns an error
+// for injection-token / invalid-parameter inputs).
+func mustCSIArgs(t *testing.T, devicePath string, req *agentpb.StreamVideoRequest, encoder string, hasH264Parse bool, transport camera.Transport, libcameraID string, available map[string]bool) []string {
+	t.Helper()
+	args, err := buildGStreamerArgs("gst", devicePath, req, encoder, hasH264Parse, transport, libcameraID, available)
+	if err != nil {
+		t.Fatalf("unexpected error from buildGStreamerArgs: %v", err)
+	}
+	return args
+}
+
+func TestListV4L2Devices_UsbAndCsiMix(t *testing.T) {
+	svc := newTestVideoService(
+		func() ([]string, error) { return []string{"/dev/video0", "/dev/video1"}, nil },
+		func(base string) (string, error) {
+			return map[string]string{"video0": "USB Cam", "video1": "CSI Cam"}[base], nil
+		},
+	)
+	svc.classifyTransport = func(base string) (camera.Transport, string) {
+		switch base {
+		case "video0":
+			return camera.TransportUSB, "uvcvideo"
+		case "video1":
+			return camera.TransportCSI, "tegra-capture-vi"
+		}
+		return camera.TransportUnknown, ""
+	}
+
+	devices, err := svc.listV4L2Devices(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(devices) != 2 {
+		t.Fatalf("expected 2 devices, got %d", len(devices))
+	}
+	if devices[0].GetTransport() != agentpb.VideoTransport_VIDEO_TRANSPORT_USB || devices[0].GetDriver() != "uvcvideo" {
+		t.Errorf("device 0 transport/driver wrong: %+v", devices[0])
+	}
+	if devices[1].GetTransport() != agentpb.VideoTransport_VIDEO_TRANSPORT_CSI || devices[1].GetDriver() != "tegra-capture-vi" {
+		t.Errorf("device 1 transport/driver wrong: %+v", devices[1])
+	}
+}
+
+func TestListV4L2Devices_CsiPopulatesLibcameraID(t *testing.T) {
+	svc := newTestVideoService(
+		func() ([]string, error) { return []string{"/dev/video0"}, nil },
+		func(string) (string, error) { return "Ribbon", nil },
+	)
+	svc.classifyTransport = func(string) (camera.Transport, string) { return camera.TransportCSI, "tegra-capture-vi" }
+	svc.enumerateLibcamera = func(context.Context) (map[string]string, error) {
+		return map[string]string{"/base/soc/i2c/cam@1a": "Sensor"}, nil
+	}
+
+	devices, err := svc.listV4L2Devices(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if devices[0].GetLibcameraId() != "/base/soc/i2c/cam@1a" {
+		t.Errorf("expected libcamera id to be set, got %q", devices[0].GetLibcameraId())
+	}
+}
+
+func TestListV4L2Devices_AmbiguousLibcameraLeavesIDEmpty(t *testing.T) {
+	svc := newTestVideoService(
+		func() ([]string, error) { return []string{"/dev/video0", "/dev/video1"}, nil },
+		func(string) (string, error) { return "Ribbon", nil },
+	)
+	svc.classifyTransport = func(string) (camera.Transport, string) { return camera.TransportCSI, "tegra-capture-vi" }
+	svc.enumerateLibcamera = func(context.Context) (map[string]string, error) {
+		return map[string]string{"/cam1": "A", "/cam2": "B"}, nil
+	}
+
+	devices, err := svc.listV4L2Devices(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, d := range devices {
+		if d.GetLibcameraId() != "" {
+			t.Errorf("expected empty libcamera id for ambiguous case, got %q on %s", d.GetLibcameraId(), d.GetPath())
+		}
+	}
+}
+
+func TestListV4L2Devices_LibcameraUnavailable_NoError(t *testing.T) {
+	svc := newTestVideoService(
+		func() ([]string, error) { return []string{"/dev/video0"}, nil },
+		func(string) (string, error) { return "Cam", nil },
+	)
+	svc.classifyTransport = func(string) (camera.Transport, string) { return camera.TransportCSI, "tegra-capture-vi" }
+	svc.enumerateLibcamera = func(context.Context) (map[string]string, error) { return nil, fmt.Errorf("no cam binary") }
+
+	devices, err := svc.listV4L2Devices(context.Background())
+	if err != nil {
+		t.Fatalf("listV4L2Devices must not fail when libcamera enumeration errors: %v", err)
+	}
+	if devices[0].GetTransport() != agentpb.VideoTransport_VIDEO_TRANSPORT_CSI {
+		t.Errorf("transport still must be classified: %+v", devices[0])
+	}
+	if devices[0].GetLibcameraId() != "" {
+		t.Errorf("libcamera id must be empty when enumeration failed, got %q", devices[0].GetLibcameraId())
+	}
+}
+
+func TestBuildGStreamerArgs_USB_UsesV4l2Src(t *testing.T) {
+	args := mustCSIArgs(t, "/dev/video0", &agentpb.StreamVideoRequest{}, "x264enc", true, camera.TransportUSB, "", defaultElements())
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "v4l2src device=/dev/video0") {
+		t.Errorf("USB pipeline must use v4l2src: %v", args)
+	}
+	if strings.Contains(joined, "libcamerasrc") {
+		t.Errorf("USB pipeline must not use libcamerasrc: %v", args)
+	}
+}
+
+func TestBuildGStreamerArgs_CSI_UsesLibcamerasrc(t *testing.T) {
+	args := mustCSIArgs(t, "/dev/video0", &agentpb.StreamVideoRequest{}, "x264enc", true, camera.TransportCSI, "", defaultElements())
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "libcamerasrc") {
+		t.Errorf("CSI pipeline must use libcamerasrc: %v", args)
+	}
+	if strings.Contains(joined, "v4l2src") {
+		t.Errorf("CSI pipeline must not fall back to v4l2src when libcamerasrc is available: %v", args)
+	}
+}
+
+func TestBuildGStreamerArgs_CSI_WithLibcameraID_AppendsCameraName(t *testing.T) {
+	args := mustCSIArgs(t, "/dev/video0", &agentpb.StreamVideoRequest{}, "x264enc", true, camera.TransportCSI, "/base/cam@1a", defaultElements())
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "libcamerasrc camera-name=/base/cam@1a") {
+		t.Errorf("CSI pipeline with id must pass camera-name=...: %v", args)
+	}
+}
+
+func TestBuildGStreamerArgs_CSI_LibcamerasrcMissing_FallsBackToV4l2(t *testing.T) {
+	elems := defaultElements()
+	delete(elems, "libcamerasrc")
+	args := mustCSIArgs(t, "/dev/video0", &agentpb.StreamVideoRequest{}, "x264enc", true, camera.TransportCSI, "/base/cam@1a", elems)
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "v4l2src device=/dev/video0") {
+		t.Errorf("CSI pipeline must fall back to v4l2src when libcamerasrc plugin is absent: %v", args)
+	}
+	if strings.Contains(joined, "libcamerasrc") {
+		t.Errorf("CSI pipeline must not use libcamerasrc when plugin absent: %v", args)
+	}
+}
+
+func TestBuildGStreamerArgs_CSI_PinsNV12SourceFormat(t *testing.T) {
+	// libcamerasrc must be pinned to a processed format immediately after the
+	// source. On a PiSP/CFE camera (Raspberry Pi 5) an unconstrained libcamerasrc
+	// negotiates raw Bayer, which no videoconvert/encoder can consume
+	// (Camera::configure() -22, not-negotiated). The NV12 caps must sit between
+	// the source and the leaky queue.
+	args := mustCSIArgs(t, "/dev/video0", &agentpb.StreamVideoRequest{}, "x264enc", true, camera.TransportCSI, "", defaultElements())
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "video/x-raw,format=NV12") {
+		t.Fatalf("CSI/libcamerasrc pipeline must pin format=NV12 on the source caps: %v", args)
+	}
+	srcIdx := strings.Index(joined, "libcamerasrc")
+	nv12Idx := strings.Index(joined, "video/x-raw,format=NV12")
+	queueIdx := strings.Index(joined, "queue ")
+	if !(srcIdx < nv12Idx && nv12Idx < queueIdx) {
+		t.Errorf("NV12 source caps must sit between libcamerasrc and the leaky queue: %v", args)
+	}
+}
+
+func TestBuildGStreamerArgs_CSI_NV12SourceFormatWithDimensions(t *testing.T) {
+	// Requested dimensions must be folded into the SAME format-pinned source
+	// capsfilter, not a separate formatless one — a formatless width/height
+	// capsfilter still lets libcamerasrc select raw Bayer.
+	req := &agentpb.StreamVideoRequest{Width: 1280, Height: 720, Framerate: 30}
+	args := mustCSIArgs(t, "/dev/video0", req, "x264enc", true, camera.TransportCSI, "", defaultElements())
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "video/x-raw,format=NV12,width=1280,height=720,framerate=30/1") {
+		t.Errorf("CSI source caps must combine NV12 with the requested dimensions: %v", args)
+	}
+}
+
+func TestBuildGStreamerArgs_USB_DoesNotForceNV12SourceFormat(t *testing.T) {
+	// The NV12 source pin is specific to libcamerasrc. A USB v4l2src must keep
+	// negotiating its native format (YUYV/MJPEG/...); forcing NV12 on the source
+	// would break cameras that don't emit it. With x264enc the only possible NV12
+	// mention would be such a source pin, so none must appear.
+	args := mustCSIArgs(t, "/dev/video0", &agentpb.StreamVideoRequest{}, "x264enc", true, camera.TransportUSB, "", defaultElements())
+	joined := strings.Join(args, " ")
+	if strings.Contains(joined, "video/x-raw,format=NV12") {
+		t.Errorf("USB/v4l2src pipeline must not pin NV12 on the source: %v", args)
+	}
+}
+
+func TestBuildSourceElement_NilAvailableMapTreatedAsLibcamerasrcAbsent(t *testing.T) {
+	src := buildSourceElement("/dev/video0", camera.TransportCSI, "/cam", nil)
+	if src != "v4l2src device=/dev/video0" {
+		t.Errorf("nil availability must degrade CSI to v4l2src, got %q", src)
+	}
+}
+
+// A libcamera id that could inject extra pipeline elements (spaces, '!', '=')
+// must not reach the pipeline: buildSourceElement falls back to plain
+// libcamerasrc auto-select instead of interpolating camera-name=<hostile>.
+func TestBuildSourceElement_RejectsInjectableLibcameraID(t *testing.T) {
+	hostile := "/cam ! filesink location=/etc/passwd"
+	src := buildSourceElement("/dev/video0", camera.TransportCSI, hostile, defaultElements())
+	if src != "libcamerasrc" {
+		t.Errorf("hostile libcamera id must degrade to plain libcamerasrc, got %q", src)
+	}
+}
+
+func TestBuildArgusGStreamerArgs_NVV4L2DirectNVMM(t *testing.T) {
+	args := buildArgusGStreamerArgs("gst", &agentpb.StreamVideoRequest{}, 0, "nvv4l2h264enc", true,
+		map[string]bool{"nvarguscamerasrc": true, "nvv4l2h264enc": true})
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "nvarguscamerasrc sensor-id=0") {
+		t.Errorf("expected nvarguscamerasrc with sensor-id=0: %v", args)
+	}
+	if !strings.Contains(joined, "video/x-raw(memory:NVMM)") {
+		t.Errorf("expected NVMM caps for the Argus path: %v", args)
+	}
+	if !strings.Contains(joined, "nvv4l2h264enc") {
+		t.Errorf("expected nvv4l2h264enc encoder: %v", args)
+	}
+	if strings.Contains(joined, "nvvidconv") || strings.Contains(joined, "videoconvert") {
+		t.Errorf("nvv4l2h264enc consumes NVMM directly; must not convert: %v", args)
+	}
+	if !strings.Contains(joined, "h264parse config-interval=-1") {
+		t.Errorf("expected Annex B normalization when h264parse available: %v", args)
+	}
+	if !strings.Contains(joined, "fdsink fd=1") {
+		t.Errorf("expected fdsink fd=1 output: %v", args)
+	}
+	if len(args) < 2 || args[0] != "gst" || args[1] != "-q" {
+		t.Errorf("expected [gst -q ...]: %v", args)
+	}
+}
+
+func TestBuildArgusGStreamerArgs_DefaultDimensions(t *testing.T) {
+	args := buildArgusGStreamerArgs("gst", &agentpb.StreamVideoRequest{}, 0, "nvv4l2h264enc", true, nil)
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "width=1920") || !strings.Contains(joined, "height=1080") || !strings.Contains(joined, "framerate=30/1") {
+		t.Errorf("expected default 1920x1080@30 caps: %v", args)
+	}
+}
+
+func TestBuildArgusGStreamerArgs_RequestDimensionsOverrideDefaults(t *testing.T) {
+	req := &agentpb.StreamVideoRequest{Width: 1280, Height: 720, Framerate: 60}
+	args := buildArgusGStreamerArgs("gst", req, 0, "nvv4l2h264enc", true, nil)
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "width=1280") || !strings.Contains(joined, "height=720") || !strings.Contains(joined, "framerate=60/1") {
+		t.Errorf("expected requested caps to override defaults: %v", args)
+	}
+}
+
+func TestBuildArgusGStreamerArgs_SensorID(t *testing.T) {
+	args := buildArgusGStreamerArgs("gst", &agentpb.StreamVideoRequest{}, 1, "nvv4l2h264enc", false, nil)
+	if !strings.Contains(strings.Join(args, " "), "sensor-id=1") {
+		t.Errorf("expected sensor-id=1: %v", args)
+	}
+}
+
+func TestBuildArgusGStreamerArgs_NoH264ParseOmitsByteStream(t *testing.T) {
+	args := buildArgusGStreamerArgs("gst", &agentpb.StreamVideoRequest{}, 0, "nvv4l2h264enc", false, nil)
+	if strings.Contains(strings.Join(args, " "), "h264parse") {
+		t.Errorf("must not add h264parse when unavailable: %v", args)
+	}
+}
+
+func TestBuildArgusGStreamerArgs_NonNVEncoderUsesNvvidconv(t *testing.T) {
+	args := buildArgusGStreamerArgs("gst", &agentpb.StreamVideoRequest{}, 0, "x264enc", true, nil)
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "video/x-raw(memory:NVMM)") {
+		t.Errorf("expected NVMM source caps: %v", args)
+	}
+	if !strings.Contains(joined, "nvvidconv ! video/x-raw,format=NV12") {
+		t.Errorf("non-NV encoder must convert NVMM->system via nvvidconv: %v", args)
+	}
+	if !strings.Contains(joined, "x264enc") {
+		t.Errorf("expected x264enc segment: %v", args)
+	}
+}
+
+func TestUseArgusSource(t *testing.T) {
+	withArgus := map[string]bool{"nvarguscamerasrc": true}
+	cases := []struct {
+		name      string
+		transport camera.Transport
+		isJetson  bool
+		available map[string]bool
+		want      bool
+	}{
+		{"csi jetson with plugin", camera.TransportCSI, true, withArgus, true},
+		{"usb jetson with plugin", camera.TransportUSB, true, withArgus, false},
+		{"csi non-jetson with plugin", camera.TransportCSI, false, withArgus, false},
+		{"csi jetson no plugin", camera.TransportCSI, true, map[string]bool{}, false},
+		{"csi jetson nil map", camera.TransportCSI, true, nil, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := useArgusSource(tc.transport, tc.isJetson, tc.available); got != tc.want {
+				t.Errorf("useArgusSource(%v, %v, %v) = %v, want %v", tc.transport, tc.isJetson, tc.available, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestHasVideoCapture(t *testing.T) {
+	cases := []struct {
+		name         string
+		capabilities uint32
+		deviceCaps   uint32
+		want         bool
+	}{
+		{
+			// Raspberry Pi 5 CSI capture node (rp1-cfe-csi2_ch0) advertises
+			// VIDEO_CAPTURE *and* METADATA_CAPTURE on the same node (observed
+			// device caps 0x24a00001). It must be treated as a capture device, or
+			// `device camera list` hides the actual ribbon camera.
+			name:         "csi node with video+metadata caps",
+			capabilities: 0xaca00001, // DEVICE_CAPS bit set -> deviceCaps is authoritative
+			deviceCaps:   0x24a00001,
+			want:         true,
+		},
+		{
+			// A UVC metadata companion (e.g. /dev/video1) is METADATA_CAPTURE only
+			// and must be excluded.
+			name:         "metadata-only companion excluded",
+			capabilities: v4l2CapDeviceCaps | v4l2CapMetaCapture,
+			deviceCaps:   v4l2CapMetaCapture,
+			want:         false,
+		},
+		{
+			name:         "plain video capture included",
+			capabilities: v4l2CapDeviceCaps | v4l2CapVideoCapture,
+			deviceCaps:   v4l2CapVideoCapture,
+			want:         true,
+		},
+		{
+			name:         "no capture caps excluded",
+			capabilities: v4l2CapDeviceCaps,
+			deviceCaps:   0,
+			want:         false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := v4l2Capability{Capabilities: tc.capabilities, DeviceCaps: tc.deviceCaps}
+			if got := c.hasVideoCapture(); got != tc.want {
+				t.Errorf("hasVideoCapture() = %v, want %v (caps=%#x devcaps=%#x)", got, tc.want, tc.capabilities, tc.deviceCaps)
+			}
+		})
 	}
 }

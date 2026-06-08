@@ -8,9 +8,18 @@ service WendyVideoService {
 }
 
 message VideoDevice {
-    uint32 id          = 1; // numeric suffix of /dev/videoN
-    string name        = 2; // human-readable name from sysfs
-    string path        = 3; // e.g. "/dev/video0"
+    uint32 id              = 1; // numeric suffix of /dev/videoN
+    string name            = 2; // human-readable name from sysfs
+    string path            = 3; // e.g. "/dev/video0"
+    VideoTransport transport = 4; // physical interface (csi, usb, unknown)
+    string driver          = 5; // kernel driver name from sysfs (e.g. "uvcvideo", "tegra-capture-vi"); empty if unknown
+    string libcamera_id    = 6; // libcamera camera-name; empty when libcamera enumeration unavailable or ambiguous
+}
+
+enum VideoTransport {
+    VIDEO_TRANSPORT_UNKNOWN = 0;
+    VIDEO_TRANSPORT_USB     = 1;
+    VIDEO_TRANSPORT_CSI     = 2;
 }
 
 message ListVideoDevicesRequest {}

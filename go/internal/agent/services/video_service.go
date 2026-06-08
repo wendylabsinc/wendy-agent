@@ -22,6 +22,8 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/wendylabsinc/wendy/go/internal/agent/board"
+	"github.com/wendylabsinc/wendy/go/internal/agent/camera"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
@@ -107,9 +109,15 @@ func (c *v4l2Capability) hasVideoCapture() bool {
 	if caps&v4l2CapDeviceCaps != 0 {
 		caps = c.DeviceCaps
 	}
-	// Require VIDEO_CAPTURE and exclude metadata-only nodes (e.g. the UVC
-	// metadata companion device that some drivers expose on /dev/video1).
-	return caps&v4l2CapVideoCapture != 0 && caps&v4l2CapMetaCapture == 0
+	// A usable capture node must advertise VIDEO_CAPTURE. Metadata-only companion
+	// nodes (e.g. the UVC metadata device some drivers expose on /dev/video1)
+	// advertise METADATA_CAPTURE *without* VIDEO_CAPTURE, so the VIDEO_CAPTURE
+	// check alone already excludes them. We must NOT additionally exclude on
+	// METADATA_CAPTURE: the Raspberry Pi CSI capture node (rp1-cfe) sets both
+	// VIDEO_CAPTURE and METADATA_CAPTURE on the same node (device caps
+	// 0x24a00001), and excluding it would hide the ribbon camera from
+	// `device camera list`.
+	return caps&v4l2CapVideoCapture != 0
 }
 
 // v4l2ExtControl is a fixed-size array matching the __packed struct
@@ -254,6 +262,13 @@ type VideoService struct {
 	readDeviceName  func(base string) (string, error)
 	hasVideoCapture func(path string) bool
 
+	// CSI/ribbon-camera seams (injectable for tests). classifyTransport maps a
+	// /dev/videoN base to its transport (USB/CSI/Unknown); enumerateLibcamera
+	// lists libcamera-visible cameras; isJetson selects the Argus capture path.
+	classifyTransport  func(base string) (camera.Transport, string)
+	enumerateLibcamera func(ctx context.Context) (map[string]string, error)
+	isJetson           func() bool
+
 	ctx    context.Context    // cancelled on Shutdown; hub contexts are derived from this
 	cancel context.CancelFunc // cancels ctx
 	wg     sync.WaitGroup     // tracks active runProducer goroutines
@@ -291,6 +306,9 @@ func NewVideoService(ctx context.Context, logger *zap.Logger) *VideoService {
 			_, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(fd), vidiocQueryCap, uintptr(unsafe.Pointer(&cap)))
 			return errno == 0 && cap.hasVideoCapture()
 		},
+		classifyTransport:  camera.Classify,
+		enumerateLibcamera: camera.EnumerateLibcamera,
+		isJetson:           func() bool { return board.Detect().IsJetson() },
 	}
 }
 
@@ -300,12 +318,20 @@ func (s *VideoService) Shutdown() {
 	s.wg.Wait()
 }
 
-func (s *VideoService) listV4L2Devices() ([]*agentpb.VideoDevice, error) {
+func (s *VideoService) listV4L2Devices(ctx context.Context) ([]*agentpb.VideoDevice, error) {
 	paths, err := s.globDevices()
 	if err != nil {
 		return nil, err
 	}
-	var devices []*agentpb.VideoDevice
+	libcameraIDs, libErr := s.enumerateLibcamera(ctx)
+	if libErr != nil {
+		// Enumeration errors are non-fatal — we just lose the libcamera id enrichment.
+		s.logger.Debug("libcamera enumeration failed", zap.Error(libErr))
+	}
+	var (
+		devices       []*agentpb.VideoDevice
+		csiDeviceIdxs []int
+	)
 	for _, path := range paths {
 		base := filepath.Base(path)
 		numStr := strings.TrimPrefix(base, "video")
@@ -320,17 +346,33 @@ func (s *VideoService) listV4L2Devices() ([]*agentpb.VideoDevice, error) {
 		if err != nil {
 			name = base
 		}
-		devices = append(devices, &agentpb.VideoDevice{
-			Id:   uint32(id),
-			Name: name,
-			Path: path,
-		})
+		transport, driver := s.classifyTransport(base)
+		dev := &agentpb.VideoDevice{
+			Id:        uint32(id),
+			Name:      name,
+			Path:      path,
+			Transport: transportToProto(transport),
+			Driver:    driver,
+		}
+		if transport == camera.TransportCSI {
+			csiDeviceIdxs = append(csiDeviceIdxs, len(devices))
+		}
+		devices = append(devices, dev)
+	}
+	// Only assign a libcamera_id in the unambiguous single-CSI / single-libcamera
+	// case. With multiple cameras the /dev/videoN ↔ libcamera-name mapping is
+	// fragile across libcamera versions, so we leave the field empty and let
+	// libcamerasrc auto-select at capture time.
+	if len(csiDeviceIdxs) == 1 && len(libcameraIDs) == 1 {
+		for id := range libcameraIDs {
+			devices[csiDeviceIdxs[0]].LibcameraId = id
+		}
 	}
 	return devices, nil
 }
 
 func (s *VideoService) ListVideoDevices(ctx context.Context, _ *agentpb.ListVideoDevicesRequest) (*agentpb.ListVideoDevicesResponse, error) {
-	devices, err := s.listV4L2Devices()
+	devices, err := s.listV4L2Devices(ctx)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to enumerate video devices: %v", err)
 	}
@@ -453,10 +495,22 @@ func (s *VideoService) runProducer(ctx context.Context, h *deviceHub, path strin
 		return h.broadcast(&videoFrame{data: data, tsNs: tsNs, codec: codec})
 	}
 
-	err := s.streamV4L2Native(ctx, broadcast, path, req)
-	if _, ok := err.(nativeH264NotSupported); ok {
-		s.logger.Info("native H.264 not supported, falling back to GStreamer", zap.String("device", path))
-		err = s.streamGStreamer(ctx, broadcast, path, req)
+	transport, _ := s.classifyTransport(filepath.Base(path))
+	libcameraID := s.lookupLibcameraID(ctx, transport)
+
+	// CSI/ribbon sensors emit raw Bayer/RGB, not encoded H.264 — skip the native
+	// V4L2 H.264 path entirely and capture via GStreamer (libcamerasrc, or
+	// nvarguscamerasrc on Jetson). USB/unknown cameras keep native-H.264-first.
+	var err error
+	if transport == camera.TransportCSI {
+		s.logger.Info("CSI camera detected, using GStreamer", zap.String("device", path))
+		err = s.streamGStreamer(ctx, broadcast, path, req, transport, libcameraID)
+	} else {
+		err = s.streamV4L2Native(ctx, broadcast, path, req)
+		if _, ok := err.(nativeH264NotSupported); ok {
+			s.logger.Info("native H.264 not supported, falling back to GStreamer", zap.String("device", path))
+			err = s.streamGStreamer(ctx, broadcast, path, req, transport, libcameraID)
+		}
 	}
 	if err != nil && ctx.Err() == nil {
 		s.logger.Error("video producer exited with error", zap.String("device", path), zap.Error(err))
@@ -853,7 +907,7 @@ func resolveGSTBinary(name string) (string, error) {
 
 // streamGStreamer spawns gst-launch-1.0 on the device to encode via the best available
 // encoder and pipes the resulting stream back as videoFrame chunks via the broadcast callback.
-func (s *VideoService) streamGStreamer(ctx context.Context, broadcast func([]byte, uint64, agentpb.VideoCodec) bool, path string, req *agentpb.StreamVideoRequest) (runErr error) {
+func (s *VideoService) streamGStreamer(ctx context.Context, broadcast func([]byte, uint64, agentpb.VideoCodec) bool, path string, req *agentpb.StreamVideoRequest, transport camera.Transport, libcameraID string) (runErr error) {
 	gstPath, err := resolveGSTBinary("gst-launch-1.0")
 	if err != nil {
 		return status.Errorf(codes.FailedPrecondition, "%v", err)
@@ -863,7 +917,16 @@ func (s *VideoService) streamGStreamer(ctx context.Context, broadcast func([]byt
 		return status.Errorf(codes.FailedPrecondition, "%v", err)
 	}
 
-	enc, err := findGStreamerEncoder(inspectPath)
+	// The element set decides both the encoder and the CSI capture source
+	// (libcamerasrc / nvarguscamerasrc), so list once and reuse it.
+	available, listErr := listGSTElements(inspectPath)
+	if listErr != nil {
+		// findGStreamerEncoderFromSet handles a nil set by attempting x264enc.
+		s.logger.Debug("gst-inspect listing failed", zap.Error(listErr))
+		available = nil
+	}
+
+	enc, err := findGStreamerEncoderFromSet(available)
 	if err != nil {
 		return status.Errorf(codes.FailedPrecondition, "%v", err)
 	}
@@ -879,9 +942,22 @@ func (s *VideoService) streamGStreamer(ctx context.Context, broadcast func([]byt
 	}
 	s.logger.Info("GStreamer encoder selected", zap.String("encoder", enc.element), zap.String("codec", enc.codec.String()))
 
-	args, err := buildGStreamerArgs(gstPath, path, req, enc.element, enc.hasH264Parse)
-	if err != nil {
-		return status.Errorf(codes.Internal, "failed to build GStreamer pipeline: %v", err)
+	var args []string
+	if useArgusSource(transport, s.hostIsJetson(), available) {
+		// Argus indexes sensors by sensor-id; /dev/videoN maps to sensor-id N for
+		// the common single-CSI-camera case. The device id was already range-checked
+		// (<= maxVideoDeviceID) and Lstat-gated in StreamVideo, and camera access is
+		// authorized at the entitlement level, so there is no per-camera authorization
+		// here for a crafted id to bypass.
+		sensorID := int(req.GetDeviceId())
+		s.logger.Info("CSI camera on Jetson — capturing via nvarguscamerasrc (Argus)",
+			zap.Int("sensor_id", sensorID), zap.String("encoder", enc.element))
+		args = buildArgusGStreamerArgs(gstPath, req, sensorID, enc.element, enc.hasH264Parse, available)
+	} else {
+		args, err = buildGStreamerArgs(gstPath, path, req, enc.element, enc.hasH264Parse, transport, libcameraID, available)
+		if err != nil {
+			return status.Errorf(codes.Internal, "failed to build GStreamer pipeline: %v", err)
+		}
 	}
 	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
 	const maxStderrBytes = 64 * 1024
@@ -976,6 +1052,16 @@ func findGStreamerEncoder(inspectPath string) (gstEncoderResult, error) {
 	available, err := listGSTElements(inspectPath)
 	if err != nil {
 		// If listing fails, attempt x264enc and let gst-launch fail with a clear message.
+		return gstEncoderResult{element: "x264enc", codec: agentpb.VideoCodec_VIDEO_CODEC_H264}, nil
+	}
+	return findGStreamerEncoderFromSet(available)
+}
+
+// findGStreamerEncoderFromSet performs encoder selection against a precomputed
+// element availability map. When available is nil (e.g. gst-inspect listing
+// failed), it falls back to attempting x264enc.
+func findGStreamerEncoderFromSet(available map[string]bool) (gstEncoderResult, error) {
+	if available == nil {
 		return gstEncoderResult{element: "x264enc", codec: agentpb.VideoCodec_VIDEO_CODEC_H264}, nil
 	}
 
@@ -1086,7 +1172,7 @@ const leakyRawQueue = "queue max-size-buffers=2 max-size-bytes=0 max-size-time=0
 // Returns an error if any interpolated string contains GStreamer pipeline injection
 // tokens — making the security property a hard failure at construction time rather
 // than relying solely on caller-side allowlist validation.
-func buildGStreamerArgs(gstPath, devicePath string, req *agentpb.StreamVideoRequest, encoder string, hasH264Parse bool) ([]string, error) {
+func buildGStreamerArgs(gstPath, devicePath string, req *agentpb.StreamVideoRequest, encoder string, hasH264Parse bool, transport camera.Transport, libcameraID string, available map[string]bool) ([]string, error) {
 	// Validate numeric request parameters here (not only at StreamVideo entry) so
 	// buildGStreamerArgs is safe regardless of call site — prevents injection via
 	// unbounded width/height/framerate values if called from a different path.
@@ -1101,10 +1187,24 @@ func buildGStreamerArgs(gstPath, devicePath string, req *agentpb.StreamVideoRequ
 			return nil, fmt.Errorf("GStreamer argument contains pipeline injection token: %q", s)
 		}
 	}
-	src := fmt.Sprintf("v4l2src device=%s", devicePath)
+	// For CSI cameras the source is libcamerasrc (with a validated camera-name);
+	// otherwise v4l2src on the device path. libcameraID is validated inside
+	// buildSourceElement, so it is not subject to the devicePath/encoder check above.
+	src := buildSourceElement(devicePath, transport, libcameraID, available)
 	gop := keyframeIntervalFrames(req.GetFramerate())
 
+	// libcamerasrc (CSI/PiSP) must be pinned to a processed format or it
+	// negotiates raw Bayer (e.g. the Raspberry Pi 5 rp1-cfe/PiSP pipeline), which
+	// no downstream videoconvert/encoder can consume — the camera reports
+	// Camera::configure() -22 and the pipeline dies with not-negotiated. NV12 is
+	// the PiSP ISP's native output. A USB v4l2src keeps negotiating its own native
+	// format (YUYV/MJPEG/...). Any requested dimensions are folded into this same
+	// source capsfilter; a formatless width/height filter still lets libcamerasrc
+	// fall back to Bayer.
 	var capsParts []string
+	if strings.HasPrefix(src, "libcamerasrc") {
+		capsParts = append(capsParts, "format=NV12")
+	}
 	if req.GetWidth() > 0 {
 		capsParts = append(capsParts, fmt.Sprintf("width=%d", req.GetWidth()))
 	}
@@ -1125,6 +1225,129 @@ func buildGStreamerArgs(gstPath, devicePath string, req *agentpb.StreamVideoRequ
 	// -q suppresses gst-launch's status messages (e.g. "Setting pipeline to PLAYING")
 	// from being written to stdout and corrupting the binary H264 stream.
 	return append([]string{gstPath, "-q"}, strings.Fields(pipeline)...), nil
+}
+
+// transportToProto maps the internal camera.Transport to the proto enum.
+func transportToProto(t camera.Transport) agentpb.VideoTransport {
+	switch t {
+	case camera.TransportUSB:
+		return agentpb.VideoTransport_VIDEO_TRANSPORT_USB
+	case camera.TransportCSI:
+		return agentpb.VideoTransport_VIDEO_TRANSPORT_CSI
+	default:
+		return agentpb.VideoTransport_VIDEO_TRANSPORT_UNKNOWN
+	}
+}
+
+// hostIsJetson reports whether the agent host is an NVIDIA Jetson (selecting the
+// Argus capture path for CSI cameras). nil-safe for tests that omit the seam.
+func (s *VideoService) hostIsJetson() bool {
+	if s.isJetson == nil {
+		return false
+	}
+	return s.isJetson()
+}
+
+// lookupLibcameraID returns the libcamera camera-name to pass to libcamerasrc,
+// but only for a CSI device and only when exactly one libcamera camera is
+// enumerated (an unambiguous mapping). Returns "" otherwise; callers let
+// libcamerasrc auto-select in that case.
+func (s *VideoService) lookupLibcameraID(ctx context.Context, transport camera.Transport) string {
+	if transport != camera.TransportCSI {
+		return ""
+	}
+	ids, err := s.enumerateLibcamera(ctx)
+	if err != nil || len(ids) != 1 {
+		return ""
+	}
+	for id := range ids {
+		return id
+	}
+	return ""
+}
+
+// buildSourceElement chooses the capture source element for the GStreamer
+// pipeline:
+//
+//   - CSI with libcamerasrc available → "libcamerasrc [camera-name=<id>]"
+//   - CSI without libcamerasrc        → "v4l2src device=<path>" (degraded)
+//   - USB / Unknown                   → "v4l2src device=<path>"
+//
+// libcameraID originates from `cam --list` output and is the one externally
+// sourced string interpolated into the pipeline, which is later split with
+// strings.Fields — so it is validated here as a defense-in-depth check at the
+// injection sink. An ID that fails validation is dropped and libcamerasrc
+// auto-selects instead. (devicePath is always "/dev/video%d" formatted from a
+// uint32 device id, so it cannot contain whitespace or pipeline separators.)
+func buildSourceElement(devicePath string, transport camera.Transport, libcameraID string, available map[string]bool) string {
+	if transport == camera.TransportCSI && available != nil && available["libcamerasrc"] {
+		if camera.IsValidLibcameraID(libcameraID) {
+			return fmt.Sprintf("libcamerasrc camera-name=%s", libcameraID)
+		}
+		return "libcamerasrc"
+	}
+	return fmt.Sprintf("v4l2src device=%s", devicePath)
+}
+
+// useArgusSource reports whether the NVIDIA Argus capture path should be used:
+// a CSI sensor, on a Jetson host, with the nvarguscamerasrc element installed.
+// On Jetson L4T, libcamera has no Tegra pipeline handler (cam --list is empty)
+// and plain v4l2src cannot drive the raw-Bayer VI pipeline, so nvarguscamerasrc
+// (sensor -> ISP -> NVMM NV12) is the only working GStreamer source.
+func useArgusSource(transport camera.Transport, isJetson bool, available map[string]bool) bool {
+	return transport == camera.TransportCSI && isJetson && available != nil && available["nvarguscamerasrc"]
+}
+
+// argusDefault* are the capture dimensions used when the request leaves width,
+// height, or framerate at 0 (otherwise Argus selects the sensor's largest mode).
+const (
+	argusDefaultWidth     = 1920
+	argusDefaultHeight    = 1080
+	argusDefaultFramerate = 30
+)
+
+// buildArgusGStreamerArgs builds a gst-launch-1.0 pipeline that captures from a
+// Jetson CSI sensor via nvarguscamerasrc (ISP-processed NV12 in NVMM memory) and
+// encodes to H.264. The nvv4l2h264enc hardware encoder consumes NVMM NV12
+// directly (zero-copy); any other encoder needs frames copied to system memory
+// first via nvvidconv. sensorID is the Argus sensor index (derived from the
+// /dev/videoN suffix by the caller; correct for the common single-CSI-camera
+// case).
+func buildArgusGStreamerArgs(gstPath string, req *agentpb.StreamVideoRequest, sensorID int, encoder string, hasH264Parse bool, available map[string]bool) []string {
+	width := req.GetWidth()
+	if width == 0 {
+		width = argusDefaultWidth
+	}
+	height := req.GetHeight()
+	if height == 0 {
+		height = argusDefaultHeight
+	}
+	framerate := req.GetFramerate()
+	if framerate == 0 {
+		framerate = argusDefaultFramerate
+	}
+	nvmmCaps := fmt.Sprintf("video/x-raw(memory:NVMM),width=%d,height=%d,framerate=%d/1,format=NV12", width, height, framerate)
+	gop := keyframeIntervalFrames(req.GetFramerate())
+
+	var tail string
+	if encoder == "nvv4l2h264enc" {
+		// HW encoder accepts NVMM NV12 directly — no copy to system memory.
+		// keyframeArg caps the keyframe interval (iframeinterval) so a dropped
+		// frame self-heals quickly, matching the buildGStreamerArgs path.
+		tail = "nvv4l2h264enc" + keyframeArg("nvv4l2h264enc", gop)
+		if hasH264Parse {
+			tail += h264ByteStream
+		}
+	} else {
+		// Any other encoder needs frames in system memory; nvvidconv does the
+		// NVMM->CPU copy, then the shared encoderSegment handles the rest.
+		tail = "nvvidconv ! video/x-raw,format=NV12 ! " + encoderSegment(encoder, hasH264Parse, gop)
+	}
+
+	pipeline := fmt.Sprintf("nvarguscamerasrc sensor-id=%d ! %s ! %s ! fdsink fd=1", sensorID, nvmmCaps, tail)
+	// -q matches buildGStreamerArgs: suppress gst-launch status text so it does
+	// not corrupt the binary H.264 stream on stdout.
+	return append([]string{gstPath, "-q"}, strings.Fields(pipeline)...)
 }
 
 // h264ByteStream normalizes any encoder's H.264 output to Annex B byte-stream
