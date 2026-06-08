@@ -4,14 +4,16 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/wendylabsinc/wendy/go/internal/cli/liteclient"
 	"github.com/wendylabsinc/wendy/go/internal/cli/swifttoolchain"
+	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 )
@@ -21,7 +23,7 @@ const (
 	microWendyUDPPort = 4210
 
 	// microWendyServiceType is the mDNS service type advertised by ESP32 Wendy devices.
-	microWendyServiceType = "_wendy._tcp"
+	microWendyServiceType = "_wendy-lite._tcp"
 
 	// Currently supported SDK for WASI on Wendy Lite.
 	// This also works for older projects that expected to build for wasm32-unknown-none-wasm
@@ -31,9 +33,7 @@ const (
 
 // microWendyBuildContext is stored in BuiltApp.Context for WASM builds.
 type microWendyBuildContext struct {
-	WASMPath  string
-	TargetIPs []string // IPs of discovered ESP32 devices for unicast
-	cancel    context.CancelFunc
+	WASMPath string
 }
 
 // MicroWendyProvider builds Swift packages to WASM and serves them to ESP32 devices.
@@ -156,7 +156,7 @@ func (p *MicroWendyProvider) Build(ctx context.Context, device models.ExternalDe
 		ProviderKey: p.Key(),
 		Device:      device,
 		AppName:     product,
-		Context:     &microWendyBuildContext{WASMPath: wasmPath, TargetIPs: targetIPs},
+		Context:     &microWendyBuildContext{WASMPath: wasmPath},
 	}, nil
 }
 
@@ -168,114 +168,53 @@ func (p *MicroWendyProvider) Run(ctx context.Context, app *BuiltApp, detach bool
 		return fmt.Errorf("wendy-lite provider: invalid build context")
 	}
 
-	serveCtx, cancel := context.WithCancel(ctx)
-	bc.cancel = cancel
-
-	// Serve the .wasm file as /app.wasm over HTTP on a dynamic port.
-	wasmData, err := os.ReadFile(bc.WASMPath)
-	if err != nil {
-		cancel()
-		return fmt.Errorf("reading wasm file: %w", err)
+	ip := app.Device.ConnectionInfo["ip"]
+	port := app.Device.ConnectionInfo["port"]
+	if ip == "" || port == "" {
+		return fmt.Errorf("wendy-lite provider: missing device address in connection info")
 	}
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/app.wasm", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/wasm")
-		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(wasmData)))
-		w.Write(wasmData)
-	})
-
-	listener, err := net.Listen("tcp", ":0")
-	if err != nil {
-		cancel()
-		return fmt.Errorf("listening: %w", err)
+	client := liteclient.NewWendyLiteClient(net.JoinHostPort(ip, port))
+	if err := client.Connect(); err != nil {
+		return fmt.Errorf("connect to device: %w", err)
 	}
-	httpPort := listener.Addr().(*net.TCPAddr).Port
-
-	server := &http.Server{Handler: mux}
-	go func() {
-		<-serveCtx.Done()
-		server.Close()
-	}()
-
-	go server.Serve(listener)
-
-	// Determine our local IP address for the WENDY_RELOAD message.
-	localIP := getOutboundIP()
+	defer client.Close()
 
 	output <- RunOutput{Type: RunOutputStarted}
-	output <- RunOutput{
-		Type: RunOutputStdout,
-		Data: []byte(fmt.Sprintf("Serving WASM at http://%s:%d/app.wasm\n", localIP, httpPort)),
+
+	if err := client.StopApp(); err != nil {
+		output <- RunOutput{Type: RunOutputStdout, Data: []byte(fmt.Sprintf("warning: app stop: %v\n", err))}
 	}
 
-	// Send WENDY_RELOAD messages: unicast to each known device, then broadcast.
-	reloadMsg := fmt.Sprintf("WENDY_RELOAD %s:%d", localIP, httpPort)
+	pushProg := tui.NewProgress("Pushing app...")
+	pp := tea.NewProgram(pushProg)
 	go func() {
-		// Brief delay to ensure the HTTP server is fully ready.
-		time.Sleep(500 * time.Millisecond)
-
-		// Unicast to discovered device IPs.
-		for _, ip := range bc.TargetIPs {
-			sendUDP(ip, microWendyUDPPort, reloadMsg)
-		}
-
-		// Subnet broadcast as fallback.
-		sendUDPBroadcast(microWendyUDPPort, reloadMsg)
-
-		output <- RunOutput{
-			Type: RunOutputStdout,
-			Data: []byte(fmt.Sprintf("Sent WENDY_RELOAD to %d device(s) + broadcast\n", len(bc.TargetIPs))),
-		}
+		pushErr := client.PushApp(bc.WASMPath, func(written, total uint32) {
+			pp.Send(tui.ProgressUpdateMsg{
+				Percent: float64(written) / float64(total),
+				Written: int64(written),
+				Total:   int64(total),
+			})
+		})
+		pp.Send(tui.ProgressDoneMsg{Err: pushErr})
 	}()
-
-	if detach {
-		return nil
+	finalModel, err := pp.Run()
+	if err != nil {
+		return fmt.Errorf("progress TUI: %w", err)
+	}
+	if finalModel.(tui.ProgressModel).Err() != nil {
+		return fmt.Errorf("push app: %w", finalModel.(tui.ProgressModel).Err())
 	}
 
-	// Block until context is cancelled (Ctrl+C).
-	<-serveCtx.Done()
+	output <- RunOutput{Type: RunOutputStdout, Data: []byte("Starting app...\n")}
+	if err := client.StartApp(); err != nil {
+		return fmt.Errorf("app start: %w", err)
+	}
+
+	output <- RunOutput{Type: RunOutputStdout, Data: []byte("App started.\n")}
 	return nil
 }
 
 func (p *MicroWendyProvider) Stop(_ context.Context, app *BuiltApp) error {
-	bc, ok := app.Context.(*microWendyBuildContext)
-	if !ok {
-		return fmt.Errorf("wendy-lite provider: invalid build context")
-	}
-	if bc.cancel != nil {
-		bc.cancel()
-	}
 	return nil
-}
-
-func getOutboundIP() string {
-	conn, err := net.Dial("udp4", "8.8.8.8:80")
-	if err != nil {
-		return "127.0.0.1"
-	}
-	defer conn.Close()
-	return conn.LocalAddr().(*net.UDPAddr).IP.String()
-}
-
-// sendUDP sends a UDP packet to a specific host:port.
-func sendUDP(host string, port int, msg string) {
-	addr := &net.UDPAddr{IP: net.ParseIP(host), Port: port}
-	conn, err := net.DialUDP("udp4", nil, addr)
-	if err != nil {
-		return
-	}
-	defer conn.Close()
-	conn.Write([]byte(msg))
-}
-
-// sendUDPBroadcast sends a UDP broadcast packet on the given port.
-func sendUDPBroadcast(port int, msg string) {
-	addr := &net.UDPAddr{IP: net.IPv4bcast, Port: port}
-	conn, err := net.DialUDP("udp4", nil, addr)
-	if err != nil {
-		return
-	}
-	defer conn.Close()
-	conn.Write([]byte(msg))
 }
