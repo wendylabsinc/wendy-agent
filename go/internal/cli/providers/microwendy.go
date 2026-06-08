@@ -19,9 +19,6 @@ import (
 )
 
 const (
-	// microWendyUDPPort is the port ESP32 devices listen on for WENDY_RELOAD messages.
-	microWendyUDPPort = 4210
-
 	// microWendyServiceType is the mDNS service type advertised by ESP32 Wendy devices.
 	microWendyServiceType = "_wendy-lite._tcp"
 
@@ -144,12 +141,6 @@ func (p *MicroWendyProvider) Build(ctx context.Context, device models.ExternalDe
 	wasmPath := filepath.Join(binDir, product+".wasm")
 	if _, err := os.Stat(wasmPath); err != nil {
 		return nil, fmt.Errorf("expected WASM output at %s: %w", wasmPath, err)
-	}
-
-	// Collect IPs of all known devices for unicast delivery.
-	var targetIPs []string
-	if ip := device.ConnectionInfo["ip"]; ip != "" {
-		targetIPs = append(targetIPs, ip)
 	}
 
 	return &BuiltApp{
