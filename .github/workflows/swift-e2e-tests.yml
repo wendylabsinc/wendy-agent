@@ -233,7 +233,7 @@ jobs:
             "${{ steps.e2e-run.outputs.run_dir }}"
 
       - name: Download Swift E2E attempts
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v8
         with:
           path: ${{ runner.temp }}/wendy-raw/${{ github.run_id }}
           pattern: swift-e2e-tests.gh${{ github.run_id }}.*
