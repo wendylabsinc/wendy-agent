@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"math"
 	"os"
 
 	wendypb "github.com/wendylabsinc/wendy/go/proto/gen/litepb"
@@ -101,6 +102,9 @@ func (c *WendyLiteClient) PushApp(path string, onProgress func(written, total ui
 	info, err := f.Stat()
 	if err != nil {
 		return fmt.Errorf("stat: %w", err)
+	}
+	if info.Size() > math.MaxUint32 {
+		return fmt.Errorf("WASM file too large: %d bytes exceeds 4 GiB limit", info.Size())
 	}
 	size := uint32(info.Size())
 
