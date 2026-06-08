@@ -191,7 +191,7 @@ func filterLogsV2(req *otelpb.ExportLogsServiceRequest, filter *agentpbv2.Stream
 	appName := filter.AppName
 	var minSeverity int32
 	if filter.MinSeverity != nil {
-		minSeverity = *filter.MinSeverity
+		minSeverity = int32(*filter.MinSeverity)
 	}
 
 	if serviceName == nil && appName == nil && minSeverity == 0 {

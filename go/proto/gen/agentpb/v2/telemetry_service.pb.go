@@ -445,11 +445,12 @@ var File_wendy_agent_services_v2_telemetry_service_proto protoreflect.FileDescri
 
 const file_wendy_agent_services_v2_telemetry_service_proto_rawDesc = "" +
 	"\n" +
-	"/wendy/agent/services/v2/telemetry_service.proto\x12\x17wendy.agent.services.v2\x1a8opentelemetry/proto/collector/logs/v1/logs_service.proto\x1a>opentelemetry/proto/collector/metrics/v1/metrics_service.proto\x1a:opentelemetry/proto/collector/trace/v1/trace_service.proto\"\xd8\x01\n" +
+	"/wendy/agent/services/v2/telemetry_service.proto\x12\x17wendy.agent.services.v2\x1a8opentelemetry/proto/collector/logs/v1/logs_service.proto\x1a>opentelemetry/proto/collector/metrics/v1/metrics_service.proto\x1a:opentelemetry/proto/collector/trace/v1/trace_service.proto\"\xff\x01\n" +
 	"\x11StreamLogsRequest\x12&\n" +
 	"\fservice_name\x18\x01 \x01(\tH\x00R\vserviceName\x88\x01\x01\x12L\n" +
 	"\fmin_severity\x18\x02 \x01(\x0e2$.wendy.agent.services.v2.LogSeverityH\x01R\vminSeverity\x88\x01\x01\x12\x1e\n" +
-	"\bapp_name\x18\x03 \x01(\tH\x02R\aappName\x88\x01\x01B\x0f\n" +
+	"\bapp_name\x18\x03 \x01(\tH\x02R\aappName\x88\x01\x01\x12\x1a\n" +
+	"\x06last_n\x18\x04 \x01(\x05H\x03R\x05lastN\x88\x01\x01B\x0f\n" +
 	"\r_service_nameB\x0f\n" +
 	"\r_min_severityB\v\n" +
 	"\t_app_nameB\t\n" +
@@ -481,7 +482,9 @@ const file_wendy_agent_services_v2_telemetry_service_proto_rawDesc = "" +
 	"\x11_span_name_prefixB\t\n" +
 	"\a_last_n\"\x90\x01\n" +
 	"\x14StreamTracesResponse\x12Y\n" +
-	"\x06traces\x18\x01 \x01(\v2A.opentelemetry.proto.collector.trace.v1.ExportTraceServiceRequestR\x06traces*\xa1\x01\n" +
+	"\x06traces\x18\x01 \x01(\v2A.opentelemetry.proto.collector.trace.v1.ExportTraceServiceRequestR\x06traces\x12\x1d\n" +
+	"\n" +
+	"is_history\x18\x02 \x01(\bR\tisHistory*\xa1\x01\n" +
 	"\vLogSeverity\x12\x1c\n" +
 	"\x18LOG_SEVERITY_UNSPECIFIED\x10\x00\x12\x16\n" +
 	"\x12LOG_SEVERITY_DEBUG\x10\x05\x12\x15\n" +

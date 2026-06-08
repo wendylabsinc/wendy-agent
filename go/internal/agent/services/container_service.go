@@ -253,7 +253,8 @@ func (s *ContainerService) StartContainer(req *agentpb.StartContainerRequest, st
 		return s.startGroup(ctx, appName, ids, req.GetRestartPolicy(), stream)
 	}
 
-	return s.streamContainerOutput(ctx, appName, postStartAgentHookFromContext(ctx), req.GetRestartPolicy(), stream)
+	_, err = s.streamContainerOutput(ctx, appName, postStartAgentHookFromContext(ctx), req.GetRestartPolicy(), stream)
+	return err
 }
 
 // startGroup starts each service container in a multi-service app in detach
