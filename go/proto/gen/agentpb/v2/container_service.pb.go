@@ -858,10 +858,10 @@ func (*ListContainerStatsRequest) Descriptor() ([]byte, []int) {
 }
 
 type ListContainerStatsResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Stats         *ContainerStats        `protobuf:"bytes,1,opt,name=stats,proto3" json:"stats,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	ContainerStats *ContainerStats        `protobuf:"bytes,1,opt,name=container_stats,json=containerStats,proto3" json:"container_stats,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *ListContainerStatsResponse) Reset() {
@@ -894,9 +894,9 @@ func (*ListContainerStatsResponse) Descriptor() ([]byte, []int) {
 	return file_wendy_agent_services_v2_container_service_proto_rawDescGZIP(), []int{16}
 }
 
-func (x *ListContainerStatsResponse) GetStats() *ContainerStats {
+func (x *ListContainerStatsResponse) GetContainerStats() *ContainerStats {
 	if x != nil {
-		return x.Stats
+		return x.ContainerStats
 	}
 	return nil
 }
@@ -1080,9 +1080,9 @@ const file_wendy_agent_services_v2_container_service_proto_rawDesc = "" +
 	"\bapp_name\x18\x01 \x01(\tR\aappName\x12!\n" +
 	"\fmemory_bytes\x18\x02 \x01(\x03R\vmemoryBytes\x12#\n" +
 	"\rstorage_bytes\x18\x03 \x01(\x03R\fstorageBytes\"\x1b\n" +
-	"\x19ListContainerStatsRequest\"[\n" +
-	"\x1aListContainerStatsResponse\x12=\n" +
-	"\x05stats\x18\x01 \x01(\v2'.wendy.agent.services.v2.ContainerStatsR\x05stats2\xba\a\n" +
+	"\x19ListContainerStatsRequest\"n\n" +
+	"\x1aListContainerStatsResponse\x12P\n" +
+	"\x0fcontainer_stats\x18\x01 \x01(\v2'.wendy.agent.services.v2.ContainerStatsR\x0econtainerStats2\xba\a\n" +
 	"\x15WendyContainerService\x12t\n" +
 	"\x0eStartContainer\x12..wendy.agent.services.v2.StartContainerRequest\x1a0.wendy.agent.services.v2.ContainerStreamResponse0\x01\x12x\n" +
 	"\x0fAttachContainer\x12/.wendy.agent.services.v2.AttachContainerRequest\x1a0.wendy.agent.services.v2.ContainerStreamResponse(\x010\x01\x12n\n" +
@@ -1138,7 +1138,7 @@ var file_wendy_agent_services_v2_container_service_proto_depIdxs = []int32{
 	19, // 4: wendy.agent.services.v2.ContainerStreamResponse.exited:type_name -> wendy.agent.services.v2.ContainerStreamResponse.Exited
 	21, // 5: wendy.agent.services.v2.ListContainersResponse.container:type_name -> wendy.agent.services.v2.AppContainer
 	10, // 6: wendy.agent.services.v2.ListVolumesResponse.volumes:type_name -> wendy.agent.services.v2.VolumeInfo
-	14, // 7: wendy.agent.services.v2.ListContainerStatsResponse.stats:type_name -> wendy.agent.services.v2.ContainerStats
+	14, // 7: wendy.agent.services.v2.ListContainerStatsResponse.container_stats:type_name -> wendy.agent.services.v2.ContainerStats
 	0,  // 8: wendy.agent.services.v2.WendyContainerService.StartContainer:input_type -> wendy.agent.services.v2.StartContainerRequest
 	1,  // 9: wendy.agent.services.v2.WendyContainerService.AttachContainer:input_type -> wendy.agent.services.v2.AttachContainerRequest
 	3,  // 10: wendy.agent.services.v2.WendyContainerService.StopContainer:input_type -> wendy.agent.services.v2.StopContainerRequest
