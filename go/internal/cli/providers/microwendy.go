@@ -186,24 +186,34 @@ func (p *MicroWendyProvider) Run(ctx context.Context, app *BuiltApp, detach bool
 		output <- RunOutput{Type: RunOutputStdout, Data: []byte(fmt.Sprintf("warning: app stop: %v\n", err))}
 	}
 
-	pushProg := tui.NewProgress("Pushing app...")
-	pp := tea.NewProgram(pushProg)
-	go func() {
-		pushErr := client.PushApp(bc.WASMPath, func(written, total uint32) {
-			pp.Send(tui.ProgressUpdateMsg{
-				Percent: float64(written) / float64(total),
-				Written: int64(written),
-				Total:   int64(total),
+	if detach {
+		if err := client.PushApp(bc.WASMPath, nil); err != nil {
+			return fmt.Errorf("push app: %w", err)
+		}
+	} else {
+		pushProg := tui.NewProgress("Pushing app...")
+		pp := tea.NewProgram(pushProg)
+		go func() {
+			pushErr := client.PushApp(bc.WASMPath, func(written, total uint32) {
+				var pct float64
+				if total > 0 {
+					pct = float64(written) / float64(total)
+				}
+				pp.Send(tui.ProgressUpdateMsg{
+					Percent: pct,
+					Written: int64(written),
+					Total:   int64(total),
+				})
 			})
-		})
-		pp.Send(tui.ProgressDoneMsg{Err: pushErr})
-	}()
-	finalModel, err := pp.Run()
-	if err != nil {
-		return fmt.Errorf("progress TUI: %w", err)
-	}
-	if finalModel.(tui.ProgressModel).Err() != nil {
-		return fmt.Errorf("push app: %w", finalModel.(tui.ProgressModel).Err())
+			pp.Send(tui.ProgressDoneMsg{Err: pushErr})
+		}()
+		finalModel, err := pp.Run()
+		if err != nil {
+			return fmt.Errorf("progress TUI: %w", err)
+		}
+		if finalModel.(tui.ProgressModel).Err() != nil {
+			return fmt.Errorf("push app: %w", finalModel.(tui.ProgressModel).Err())
+		}
 	}
 
 	output <- RunOutput{Type: RunOutputStdout, Data: []byte("Starting app...\n")}
