@@ -99,6 +99,22 @@ in per-issue worktree sessions, not in this master planning session.
 - `HANDOVER.md`: written in the worktree with KISS scope and commit/push guidance
 - Resume command: `cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1346-native-macos-run-flow && ai --prompt "Read HANDOVER.md and continue work on WDY-1346. Keep it KISS, aligned with current Linux/WendyOS docs, commit often, and push to the draft PR as you go."`
 
+### WDY-1396 — Document headless Mac setup for Wendy Agent beta
+
+- Status: `planned`
+- Linear: https://linear.app/wendylabsinc/issue/WDY-1396/document-headless-mac-setup-for-wendy-agent-beta
+- Linear assignee: `konstantin@wendy.sh`
+- Linear state: Todo
+- Branch/worktree name: not prepared yet
+- Worktree path: not prepared yet
+- PR: not created yet
+- KISS scope: add a short headless Mac note, recommend a virtual display
+  dongle / HDMI dummy plug, mention keeping the Mac awake on AC power, and
+  reference manual macOS Screen Sharing / automatic-login choices only if needed.
+- Source reference: `kb.ansible:ansible/roles/power_policy/tasks/macos.yml`
+  uses `sudo pmset -c sleep 0 displaysleep 10 disksleep 0 womp 1`.
+- Resume command: not available until prepared
+
 ### WDY-1377 — Show macOS-specific unsupported messages for hardware APIs
 
 - Status: `done`
@@ -186,8 +202,9 @@ Only start these if they are still needed after reviewing merged docs and PR
 1. **Review/merge WDY-1352** — minimal device targeting/docs alignment.
 2. **Completed: WDY-1345** — minimal Mac beta smoke test merged in PR #934.
 3. **WDY-1346** — prepared; verify one native macOS SwiftPM `wendy run` flow.
-4. **WDY-1350** — verify minimal app lifecycle commands for that same app.
-5. **WDY-1360** — clean Apple Silicon validation of the shipped docs path.
+4. **WDY-1396** — document headless Mac setup: no sleep on AC and virtual display dongle.
+5. **WDY-1350** — verify minimal app lifecycle commands for the WDY-1346 app.
+6. **WDY-1360** — clean Apple Silicon validation of the shipped docs path.
 
 ## Backlog / post-beta or only-if-blocking
 
