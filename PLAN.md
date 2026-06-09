@@ -111,6 +111,8 @@ in per-issue worktree sessions, not in this master planning session.
 - KISS scope: add a short headless Mac note, recommend a virtual display
   dongle / HDMI dummy plug, mention keeping the Mac awake on AC power, and
   reference manual macOS Screen Sharing / automatic-login choices only if needed.
+- Related validation: WDY-1360 should validate this guidance if the clean Apple
+  Silicon environment is headless or can reasonably exercise a headless setup.
 - Source reference: `kb.ansible:ansible/roles/power_policy/tasks/macos.yml`
   uses `sudo pmset -c sleep 0 displaysleep 10 disksleep 0 womp 1`.
 - Resume command: not available until prepared
@@ -204,7 +206,7 @@ Only start these if they are still needed after reviewing merged docs and PR
 3. **WDY-1346** — prepared; verify one native macOS SwiftPM `wendy run` flow.
 4. **WDY-1396** — document headless Mac setup: no sleep on AC and virtual display dongle.
 5. **WDY-1350** — verify minimal app lifecycle commands for the WDY-1346 app.
-6. **WDY-1360** — clean Apple Silicon validation of the shipped docs path.
+6. **WDY-1360** — clean Apple Silicon validation of the shipped docs path, including the WDY-1346 native run flow after it lands and WDY-1396 headless setup if the environment supports it.
 
 ## Backlog / post-beta or only-if-blocking
 
