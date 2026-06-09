@@ -64,6 +64,24 @@ in per-issue worktree sessions, not in this master planning session.
 - `HANDOVER.md`: refreshed in the worktree with KISS scope and current branch state
 - Resume command: `cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1352-mac-agent-discovery-selection && ai --prompt "Read HANDOVER.md and continue work on WDY-1352. Keep it KISS, aligned with current Linux/WendyOS docs, commit often, and push to PR #930 as you go."`
 
+### WDY-1345 — Run and record Mac beta smoke test
+
+- Status: `prepared`
+- Linear: https://linear.app/wendylabsinc/issue/WDY-1345/run-and-record-mac-beta-smoke-test
+- Linear assignee: `konstantin@wendy.sh`
+- Linear state: In Progress
+- Branch/worktree name: `kb.wdy-1345-mac-beta-smoke-test`
+- Worktree path: `.worktrees/kb.wdy-1345-mac-beta-smoke-test`
+- PR: https://github.com/wendylabsinc/WendyOS/pull/934 — draft
+- PR closing reference: `Closes WDY-1345`
+- Base: `main`
+- Current commit: `3b85fff1 chore: start WDY-1345 Mac beta smoke test`
+- KISS scope: minimal release smoke only; launch agent, verify `device info`,
+  confirm one unsupported command is clear, and record versions/commands.
+- Validation: not run; setup commit only
+- `HANDOVER.md`: written in the worktree with KISS scope and commit/push guidance
+- Resume command: `cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1345-mac-beta-smoke-test && ai --prompt "Read HANDOVER.md and continue work on WDY-1345. Keep it KISS, aligned with current Linux/WendyOS docs, commit often, and push to the draft PR as you go."`
+
 ### WDY-1377 — Show macOS-specific unsupported messages for hardware APIs
 
 - Status: `done`
@@ -149,7 +167,7 @@ Only start these if they are still needed after reviewing merged docs and PR
 #930. Keep each one short and validation-focused.
 
 1. **Review/merge WDY-1352** — minimal device targeting/docs alignment.
-2. **WDY-1345** — run and record a minimal Mac beta smoke test.
+2. **WDY-1345** — prepared; run and record a minimal Mac beta smoke test.
 3. **WDY-1346** — verify one native macOS SwiftPM `wendy run` flow.
 4. **WDY-1350** — verify minimal app lifecycle commands for that same app.
 5. **WDY-1360** — clean Apple Silicon validation of the shipped docs path.
