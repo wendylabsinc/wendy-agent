@@ -89,9 +89,9 @@ For each issue, record:
 - PR: https://github.com/wendylabsinc/WendyOS/pull/930 — draft
 - PR closing reference: `Closes WDY-1352`
 - Base: `main`
-- Current commit: `16b33c0c chore: merge origin main into WDY-1352`
+- Current commit: `5fc99581 docs: simplify Mac agent targeting guidance`
 - Validation:
-  - `go test ./go/internal/cli/commands -run 'TestResolveDeviceAddress_(Flag|DefaultDevice|ExplicitLocalhostPortFlag|ExplicitLocalhostPortDefault|NoDevice)$'`
+  - `go test ./go/internal/cli/commands -run 'TestResolveDeviceAddress_(Flag|DefaultDevice|ExplicitHostPortFlag|ExplicitHostPortDefault|NoDevice)$'`
   - Manual WendyAgentMac targeting checks recorded in PR #930
   - GitHub checks in progress on latest PR #930 push
 - `HANDOVER.md`: written in the worktree with issue context and commit/push guidance
@@ -117,18 +117,19 @@ For each issue, record:
 
 ### WDY-1359 — Add diagnostics and log collection instructions
 
-- Status: `wip`
+- Status: `ready`
 - Linear: https://linear.app/wendylabsinc/issue/WDY-1359/add-diagnostics-and-log-collection-instructions
 - Linear assignee: `konstantin@wendy.sh`
-- Linear state: In Progress
+- Linear state: In Review
 - Branch/worktree name: `kb.wdy-1359-macos-diagnostics-docs`
 - Worktree path: `.worktrees/kb.wdy-1359-macos-diagnostics-docs`
-- PR: https://github.com/wendylabsinc/WendyOS/pull/929 — draft
+- PR: https://github.com/wendylabsinc/WendyOS/pull/929 — open, ready for review
 - PR closing reference: `Closes WDY-1359`
 - Base: `main`
 - Current commit: `0af79cd7 docs: add Mac agent beta diagnostics`
 - Validation:
-  - GitHub checks currently passing on PR #929, but PR body still says tests not run
+  - `cd go/internal/cli/assets/docs && npm run types:check`
+  - GitHub checks passing on PR #929
 - `HANDOVER.md`: written in the worktree with issue context and commit/push guidance
 - Resume command: `cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1359-macos-diagnostics-docs && ai --prompt "Read HANDOVER.md and continue work on WDY-1359. Commit often and push to the draft PR as you go."`
 
