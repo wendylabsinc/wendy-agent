@@ -45,13 +45,13 @@ in per-issue worktree sessions, not in this master planning session.
 
 ### WDY-1352 — Verify discovery and device selection for WendyAgentMac
 
-- Status: `wip`
+- Status: `ready`
 - Linear: https://linear.app/wendylabsinc/issue/WDY-1352/verify-discovery-and-device-selection-for-wendyagentmac
 - Linear assignee: `konstantin@wendy.sh`
-- Linear state: In Progress
+- Linear state: In Review
 - Branch/worktree name: `kb.wdy-1352-mac-agent-discovery-selection`
 - Worktree path: `.worktrees/kb.wdy-1352-mac-agent-discovery-selection`
-- PR: https://github.com/wendylabsinc/WendyOS/pull/930 — draft
+- PR: https://github.com/wendylabsinc/WendyOS/pull/930 — open, ready for review
 - PR closing reference: `Closes WDY-1352`
 - Base: `main`
 - Current commit: `5fc99581 docs: simplify Mac agent targeting guidance`
@@ -60,9 +60,9 @@ in per-issue worktree sessions, not in this master planning session.
 - Validation:
   - `go test ./go/internal/cli/commands -run 'TestResolveDeviceAddress_(Flag|DefaultDevice|ExplicitHostPortFlag|ExplicitHostPortDefault|NoDevice)$'`
   - Manual WendyAgentMac targeting checks recorded in PR #930
-  - GitHub checks mostly passing; docs deploy was still in progress at last check
+  - GitHub checks mostly passing; docs deploy was still in progress at last check after PR was marked ready
 - `HANDOVER.md`: refreshed in the worktree with KISS scope and current branch state
-- Resume command: `cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1352-mac-agent-discovery-selection && ai --prompt "Read HANDOVER.md and continue work on WDY-1352. Keep it KISS, aligned with current Linux/WendyOS docs, commit often, and push to the draft PR as you go."`
+- Resume command: `cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1352-mac-agent-discovery-selection && ai --prompt "Read HANDOVER.md and continue work on WDY-1352. Keep it KISS, aligned with current Linux/WendyOS docs, commit often, and push to PR #930 as you go."`
 
 ### WDY-1377 — Show macOS-specific unsupported messages for hardware APIs
 
@@ -148,7 +148,7 @@ in per-issue worktree sessions, not in this master planning session.
 Only start these if they are still needed after reviewing merged docs and PR
 #930. Keep each one short and validation-focused.
 
-1. **Finish WDY-1352** — minimal device targeting/docs alignment.
+1. **Review/merge WDY-1352** — minimal device targeting/docs alignment.
 2. **WDY-1345** — run and record a minimal Mac beta smoke test.
 3. **WDY-1346** — verify one native macOS SwiftPM `wendy run` flow.
 4. **WDY-1350** — verify minimal app lifecycle commands for that same app.
