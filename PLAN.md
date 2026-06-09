@@ -80,46 +80,55 @@ For each issue, record:
 
 ### WDY-1352 — Verify discovery and device selection for WendyAgentMac
 
-- Status: `prepared`
+- Status: `wip`
 - Linear: https://linear.app/wendylabsinc/issue/WDY-1352/verify-discovery-and-device-selection-for-wendyagentmac
 - Linear assignee: `konstantin@wendy.sh`
+- Linear state: In Progress
 - Branch/worktree name: `kb.wdy-1352-mac-agent-discovery-selection`
 - Worktree path: `.worktrees/kb.wdy-1352-mac-agent-discovery-selection`
 - PR: https://github.com/wendylabsinc/WendyOS/pull/930 — draft
 - PR closing reference: `Closes WDY-1352`
 - Base: `main`
-- Current commit: `03c8bf97 chore: start WDY-1352 discovery selection verification`
-- Validation: not run; setup commit only
+- Current commit: `16b33c0c chore: merge origin main into WDY-1352`
+- Validation:
+  - `go test ./go/internal/cli/commands -run 'TestResolveDeviceAddress_(Flag|DefaultDevice|ExplicitLocalhostPortFlag|ExplicitLocalhostPortDefault|NoDevice)$'`
+  - Manual WendyAgentMac targeting checks recorded in PR #930
+  - GitHub checks in progress on latest PR #930 push
 - `HANDOVER.md`: written in the worktree with issue context and commit/push guidance
 - Resume command: `cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1352-mac-agent-discovery-selection && ai --prompt "Read HANDOVER.md and continue work on WDY-1352. Commit often and push to the draft PR as you go."`
 
 ### WDY-1377 — Show macOS-specific unsupported messages for hardware APIs
 
-- Status: `prepared`
+- Status: `ready`
 - Linear: https://linear.app/wendylabsinc/issue/WDY-1377/show-macos-specific-unsupported-messages-for-hardware-apis
 - Linear assignee: `konstantin@wendy.sh`
+- Linear state: In Review
 - Branch/worktree name: `kb.wdy-1377-macos-unsupported-hardware-errors`
 - Worktree path: `.worktrees/kb.wdy-1377-macos-unsupported-hardware-errors`
-- PR: https://github.com/wendylabsinc/WendyOS/pull/928 — draft
+- PR: https://github.com/wendylabsinc/WendyOS/pull/928 — open, ready for review
 - PR closing reference: `Closes WDY-1377`
 - Base: `main`
-- Current commit: `5e70ba99 chore: start WDY-1377 macOS unsupported errors`
-- Validation: not run; setup commit only
+- Current commit: `7df2bd05 Merge remote-tracking branch 'origin/main' into kb.wdy-1377-macos-unsupported-hardware-errors`
+- Validation:
+  - `cd go && go test ./internal/cli/commands`
+  - GitHub checks passing on PR #928
 - `HANDOVER.md`: written in the worktree with issue context and commit/push guidance
 - Resume command: `cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1377-macos-unsupported-hardware-errors && ai --prompt "Read HANDOVER.md and continue work on WDY-1377. Commit often and push to the draft PR as you go."`
 
 ### WDY-1359 — Add diagnostics and log collection instructions
 
-- Status: `prepared`
+- Status: `wip`
 - Linear: https://linear.app/wendylabsinc/issue/WDY-1359/add-diagnostics-and-log-collection-instructions
 - Linear assignee: `konstantin@wendy.sh`
+- Linear state: In Progress
 - Branch/worktree name: `kb.wdy-1359-macos-diagnostics-docs`
 - Worktree path: `.worktrees/kb.wdy-1359-macos-diagnostics-docs`
 - PR: https://github.com/wendylabsinc/WendyOS/pull/929 — draft
 - PR closing reference: `Closes WDY-1359`
 - Base: `main`
-- Current commit: `519137c8 chore: start WDY-1359 macOS diagnostics docs`
-- Validation: not run; setup commit only
+- Current commit: `0af79cd7 docs: add Mac agent beta diagnostics`
+- Validation:
+  - GitHub checks currently passing on PR #929, but PR body still says tests not run
 - `HANDOVER.md`: written in the worktree with issue context and commit/push guidance
 - Resume command: `cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1359-macos-diagnostics-docs && ai --prompt "Read HANDOVER.md and continue work on WDY-1359. Commit often and push to the draft PR as you go."`
 
@@ -136,33 +145,33 @@ For each issue, record:
 
 ### WDY-1344 — Create Mac beta support matrix
 
-- Status: `wip`
+- Status: `done`
 - Linear assignee: `konstantin@wendy.sh`
 - Branch/worktree name: `kb.wdy-1344-mac-beta-support-matrix`
-- Worktree path: `.worktrees/kb.wdy-1344-mac-beta-support-matrix`
-- PR: https://github.com/wendylabsinc/WendyOS/pull/925 — draft
+- Worktree path: removed after completion (`.worktrees/kb.wdy-1344-mac-beta-support-matrix`)
+- PR: https://github.com/wendylabsinc/WendyOS/pull/925 — merged
 - PR closing reference: `Closes WDY-1344`
 - Base: `main` after PR #906 merge
-- Current commit: `1f144158 docs: add Mac beta support matrix`
+- Merge commit on `main`: `49517f19`
 - Validation:
   - `cd go/internal/cli/assets/docs && npm run types:check` passed
 - `HANDOVER.md`: not written; this issue predates the clarified handover-file protocol
-- Resume command: `cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1344-mac-beta-support-matrix && ai --prompt "Read HANDOVER.md and continue work on WDY-1344. Commit often and push to the draft PR as you go."`
-- Note: this issue was started before the clarified master-session protocol, so it already contains implementation work rather than only an empty setup commit.
+- Resume command: not needed; issue is complete
+- Note: this issue was started before the clarified master-session protocol, so it already contained implementation work rather than only an empty setup commit.
 
 ### WDY-1378 — Document `platform: "darwin"` in `wendy.json`
 
-- Status: `prepared`
+- Status: `done`
 - Linear assignee: `konstantin@wendy.sh`
 - Branch/worktree name: `kb.wdy-1378-darwin-platform-docs`
-- Worktree path: `.worktrees/kb.wdy-1378-darwin-platform-docs`
-- PR: https://github.com/wendylabsinc/WendyOS/pull/926 — draft
+- Worktree path: removed after completion (`.worktrees/kb.wdy-1378-darwin-platform-docs`)
+- PR: https://github.com/wendylabsinc/WendyOS/pull/926 — merged
 - PR closing reference: `Closes WDY-1378`
 - Base: `main`
-- Current commit: `0dd69c23 chore: start WDY-1378 Darwin platform docs`
-- Validation: not run; setup commit only
-- `HANDOVER.md`: written in the worktree with issue context and commit/push guidance
-- Resume command: `cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1378-darwin-platform-docs && ai --prompt "Read HANDOVER.md and continue work on WDY-1378. Commit often and push to the draft PR as you go."`
+- Merge commit on `main`: `bbb09a4d`
+- Validation: completed in PR #926
+- `HANDOVER.md`: written in the worktree; now obsolete because PR #926 merged
+- Resume command: not needed; issue is complete
 
 ## Recommended order
 
@@ -171,11 +180,10 @@ For each issue, record:
 Merged in PR #927. Docs PRs now get a sticky preview comment after the Fumadocs
 workflow deploys same-repo pull request previews.
 
-### 2. WDY-1344 — Create Mac beta support matrix
+### Completed: WDY-1344 — Create Mac beta support matrix
 
-Define the beta contract: what works, what is unsupported, what is planned, and
-what must not be promised. This should drive subsequent docs, onboarding,
-unsupported errors, and validation.
+Merged in PR #925. The beta contract now defines what works, what is
+unsupported, what is planned, and what must not be promised.
 
 ### 3. WDY-1348 — Document Mac beta known limitations
 
@@ -240,6 +248,6 @@ than define it prematurely.
 - WDY-1366 — Simplify Wendy Agent Linux and macOS installation docs
 - WDY-1376 — Add macOS Wendy Agent security guidance for exposed port 50051
 - WDY-1377 — Show macOS-specific unsupported messages for hardware APIs
-- WDY-1378 — Document `platform: "darwin"` in `wendy.json`
+- WDY-1378 — Document `platform: "darwin"` in `wendy.json` — done in PR #926
 - WDY-1379 — Add minimal native macOS SwiftPM deployment example
 - WDY-1380 — Document Wendy Agent for macOS first-launch prompts
