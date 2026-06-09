@@ -65,18 +65,18 @@ For each issue, record:
 
 ### WDY-1386 — Add sticky docs preview comments to documentation PRs
 
-- Status: `prepared`
+- Status: `done`
 - Linear: https://linear.app/wendylabsinc/issue/WDY-1386/add-sticky-docs-preview-comments-to-documentation-prs
 - Linear assignee: `konstantin@wendy.sh`
 - Branch/worktree name: `kb.wdy-1386-docs-preview-comment`
 - Worktree path: `.worktrees/kb.wdy-1386-docs-preview-comment`
-- PR: https://github.com/wendylabsinc/WendyOS/pull/927 — draft
+- PR: https://github.com/wendylabsinc/WendyOS/pull/927 — merged
 - PR closing reference: `Closes WDY-1386`
 - Base: `main`
-- Current commit: `21fe0bbd chore: start WDY-1386 docs preview comment`
-- Validation: not run; setup commit only
-- `HANDOVER.md`: written in the worktree with issue context and commit/push guidance
-- Resume command: `cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1386-docs-preview-comment && ai --prompt "Read HANDOVER.md and continue work on WDY-1386. Commit often and push to the draft PR as you go."`
+- Merge commit on `main`: `6decf523 ci: add docs preview PR comments`
+- Validation: completed in PR #927
+- `HANDOVER.md`: written in the worktree; now obsolete because PR #927 merged
+- Resume command: not needed; issue is complete
 
 ### WDY-1377 — Show macOS-specific unsupported messages for hardware APIs
 
@@ -151,11 +151,10 @@ For each issue, record:
 
 ## Recommended order
 
-### 1. WDY-1386 — Add sticky docs preview comments to documentation PRs
+### Completed: WDY-1386 — Add sticky docs preview comments to documentation PRs
 
-Add a sticky PR comment with the docs preview URL after the Fumadocs workflow
-deploys a same-repo pull request preview. This improves reviewability for the
-active docs PRs and is independent of the Mac beta content work.
+Merged in PR #927. Docs PRs now get a sticky preview comment after the Fumadocs
+workflow deploys same-repo pull request previews.
 
 ### 2. WDY-1344 — Create Mac beta support matrix
 
