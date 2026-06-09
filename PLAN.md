@@ -109,12 +109,15 @@ in per-issue worktree sessions, not in this master planning session.
 - Worktree path: not prepared yet
 - PR: not created yet
 - KISS scope: add a short headless Mac note, recommend a virtual display
-  dongle / HDMI dummy plug, mention keeping the Mac awake on AC power, and
-  reference manual macOS Screen Sharing / automatic-login choices only if needed.
+  dongle / HDMI dummy plug, lead with manual System Settings setup for new
+  Macs, mention keeping the Mac awake on AC power, and reference manual macOS
+  Screen Sharing / automatic-login choices only if needed. Terminal commands
+  such as `pmset` are optional/secondary, not the primary setup path.
 - Related validation: WDY-1360 should validate this guidance if the clean Apple
   Silicon environment is headless or can reasonably exercise a headless setup.
 - Source reference: `kb.ansible:ansible/roles/power_policy/tasks/macos.yml`
-  uses `sudo pmset -c sleep 0 displaysleep 10 disksleep 0 womp 1`.
+  uses `sudo pmset -c sleep 0 displaysleep 10 disksleep 0 womp 1` as an
+  implementation reference, not necessarily the public-docs-first path.
 - Resume command: not available until prepared
 
 ### WDY-1377 — Show macOS-specific unsupported messages for hardware APIs
