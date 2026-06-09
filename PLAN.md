@@ -9,10 +9,11 @@ support boundaries, and actionable failure modes before deeper automation.
 For each issue we start, this master session only prepares the workspace. It
 must not do the actual issue implementation.
 
-1. Create a dedicated git worktree and branch for the issue.
-2. Add an empty setup commit for the issue.
-3. Push the branch.
-4. Create a draft PR from the setup commit using a real markdown body file,
+1. Assign the Linear issue to `konstantin@wendy.sh`.
+2. Create a dedicated git worktree and branch for the issue.
+3. Add an empty setup commit for the issue.
+4. Push the branch.
+5. Create a draft PR from the setup commit using a real markdown body file,
    not an inline string with escaped newlines. Prefer:
 
    ```sh
@@ -28,12 +29,12 @@ must not do the actual issue implementation.
    gh pr create --draft --base main --head <branch-name> --title "..." --body-file /tmp/pr-body.md
    ```
 
-5. Include the Linear issue link/closing reference in the PR body, for example
+6. Include the Linear issue link/closing reference in the PR body, for example
    `Closes WDY-1234`, so merging the PR closes the issue.
-6. Write a `HANDOVER.md` file into the issue worktree with the handover context
+7. Write a `HANDOVER.md` file into the issue worktree with the handover context
    for a new session. The handover must explicitly tell the per-issue agent to
    commit small coherent changes often and push to the draft PR as it goes.
-7. Leave the user with the worktree path, PR link, and a one-line command to
+8. Leave the user with the worktree path, PR link, and a one-line command to
    resume from that worktree using `--prompt`, for example:
 
    ```sh
@@ -51,6 +52,7 @@ merged, or abandoned. Branch names and worktree directory names must be 1:1.
 For each issue, record:
 
 - Status: `planned`, `prepared`, `wip`, `ready`, `merged`, `done`, or `abandoned`
+- Linear assignee
 - Branch/worktree name
 - Worktree path
 - PR link and draft/ready/merged state
@@ -65,6 +67,7 @@ For each issue, record:
 
 - Status: `prepared`
 - Linear: https://linear.app/wendylabsinc/issue/WDY-1386/add-sticky-docs-preview-comments-to-documentation-prs
+- Linear assignee: `konstantin@wendy.sh`
 - Branch/worktree name: `kb.wdy-1386-docs-preview-comment`
 - Worktree path: `.worktrees/kb.wdy-1386-docs-preview-comment`
 - PR: https://github.com/wendylabsinc/WendyOS/pull/927 — draft
@@ -79,6 +82,7 @@ For each issue, record:
 
 - Status: `prepared`
 - Linear: https://linear.app/wendylabsinc/issue/WDY-1377/show-macos-specific-unsupported-messages-for-hardware-apis
+- Linear assignee: `konstantin@wendy.sh`
 - Branch/worktree name: `kb.wdy-1377-macos-unsupported-hardware-errors`
 - Worktree path: `.worktrees/kb.wdy-1377-macos-unsupported-hardware-errors`
 - PR: https://github.com/wendylabsinc/WendyOS/pull/928 — draft
@@ -103,6 +107,7 @@ For each issue, record:
 ### WDY-1344 — Create Mac beta support matrix
 
 - Status: `wip`
+- Linear assignee: `konstantin@wendy.sh`
 - Branch/worktree name: `kb.wdy-1344-mac-beta-support-matrix`
 - Worktree path: `.worktrees/kb.wdy-1344-mac-beta-support-matrix`
 - PR: https://github.com/wendylabsinc/WendyOS/pull/925 — draft
@@ -118,6 +123,7 @@ For each issue, record:
 ### WDY-1378 — Document `platform: "darwin"` in `wendy.json`
 
 - Status: `prepared`
+- Linear assignee: `konstantin@wendy.sh`
 - Branch/worktree name: `kb.wdy-1378-darwin-platform-docs`
 - Worktree path: `.worktrees/kb.wdy-1378-darwin-platform-docs`
 - PR: https://github.com/wendylabsinc/WendyOS/pull/926 — draft
