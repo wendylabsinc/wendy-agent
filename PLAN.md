@@ -61,6 +61,20 @@ For each issue, record:
 - `HANDOVER.md` status and summary
 - One-line resume command using `ai --prompt` to read `HANDOVER.md`
 
+### WDY-1386 — Add sticky docs preview comments to documentation PRs
+
+- Status: `prepared`
+- Linear: https://linear.app/wendylabsinc/issue/WDY-1386/add-sticky-docs-preview-comments-to-documentation-prs
+- Branch/worktree name: `kb.wdy-1386-docs-preview-comment`
+- Worktree path: `.worktrees/kb.wdy-1386-docs-preview-comment`
+- PR: https://github.com/wendylabsinc/WendyOS/pull/927 — draft
+- PR closing reference: `Closes WDY-1386`
+- Base: `main`
+- Current commit: `21fe0bbd chore: start WDY-1386 docs preview comment`
+- Validation: not run; setup commit only
+- `HANDOVER.md`: written in the worktree with issue context and commit/push guidance
+- Resume command: `cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1386-docs-preview-comment && ai --prompt "Read HANDOVER.md and continue work on WDY-1386. Commit often and push to the draft PR as you go."`
+
 ### WDY-1343 — Create minimal unlisted Wendy for Mac beta docs page
 
 - Status: `done`
@@ -102,34 +116,40 @@ For each issue, record:
 
 ## Recommended order
 
-### 1. WDY-1344 — Create Mac beta support matrix
+### 1. WDY-1386 — Add sticky docs preview comments to documentation PRs
+
+Add a sticky PR comment with the docs preview URL after the Fumadocs workflow
+deploys a same-repo pull request preview. This improves reviewability for the
+active docs PRs and is independent of the Mac beta content work.
+
+### 2. WDY-1344 — Create Mac beta support matrix
 
 Define the beta contract: what works, what is unsupported, what is planned, and
 what must not be promised. This should drive subsequent docs, onboarding,
 unsupported errors, and validation.
 
-### 2. WDY-1348 — Document Mac beta known limitations
+### 3. WDY-1348 — Document Mac beta known limitations
 
 Turn the support matrix into clear user-facing limitations. If we released after
 this, users should understand the beta boundaries.
 
-### 3. WDY-1347 — Update onboarding copy to avoid over-promising hardware support
+### 4. WDY-1347 — Update onboarding copy to avoid over-promising hardware support
 
 Make sure product/onboarding copy matches the support matrix and does not imply
 Linux/WendyOS-level hardware access on macOS.
 
-### 4. WDY-1351 / WDY-1358 — Make unsupported flows actionable
+### 5. WDY-1351 / WDY-1358 — Make unsupported flows actionable
 
 Improve unsupported Wi-Fi, Bluetooth, hardware, audio, GPU, camera, and related
 macOS agent errors. Prefer messages that explain macOS beta limitations instead
 of suggesting ineffective updates.
 
-### 5. WDY-1357 — Document install, reset, uninstall, and troubleshooting
+### 6. WDY-1357 — Document install, reset, uninstall, and troubleshooting
 
 Add practical beta support docs for cleaning up, resetting state, uninstalling,
 collecting useful context, and resolving common setup failures.
 
-### 6. WDY-1345 / WDY-1346 / WDY-1350 — Verify smoke, native run, and app lifecycle flows
+### 7. WDY-1345 / WDY-1346 / WDY-1350 — Verify smoke, native run, and app lifecycle flows
 
 Record and close the core validation work:
 
@@ -140,16 +160,16 @@ Record and close the core validation work:
 Some of this was manually validated during WDY-1343 and can be summarized or
 expanded depending on the issue scope.
 
-### 7. WDY-1349 — Audit CLI commands against Mac beta support matrix
+### 8. WDY-1349 — Audit CLI commands against Mac beta support matrix
 
 Systematically compare CLI behavior against the matrix and identify command
 families that should be hidden, documented as unsupported, or improved.
 
-### 8. WDY-1360 — Validate Mac beta on a clean Apple Silicon macOS device
+### 9. WDY-1360 — Validate Mac beta on a clean Apple Silicon macOS device
 
 Run a clean-machine validation pass before broader release confidence claims.
 
-### 9. Automation and E2E follow-ups
+### 10. Automation and E2E follow-ups
 
 Defer deeper automation until the release-facing contract is stable:
 
