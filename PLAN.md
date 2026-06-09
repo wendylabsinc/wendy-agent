@@ -252,3 +252,6 @@ super time-constrained beta unless the user explicitly re-prioritizes them:
 - WDY-1383 — post-beta native Darwin SwiftPM E2E spec.
 - WDY-1384 — post-beta unsupported hardware API E2E specs.
 - WDY-1385 — post-beta macOS release artifact smoke workflow.
+- WDY-1460 — post-beta replace Wendy Agent for Mac login/startup item with a
+  proper user LaunchAgent so launchd starts it on login and restarts it if it
+  exits unexpectedly.
