@@ -75,6 +75,20 @@ For each issue, record:
 - `HANDOVER.md`: written in the worktree with issue context and commit/push guidance
 - Resume command: `cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1386-docs-preview-comment && ai --prompt "Read HANDOVER.md and continue work on WDY-1386. Commit often and push to the draft PR as you go."`
 
+### WDY-1377 — Show macOS-specific unsupported messages for hardware APIs
+
+- Status: `prepared`
+- Linear: https://linear.app/wendylabsinc/issue/WDY-1377/show-macos-specific-unsupported-messages-for-hardware-apis
+- Branch/worktree name: `kb.wdy-1377-macos-unsupported-hardware-errors`
+- Worktree path: `.worktrees/kb.wdy-1377-macos-unsupported-hardware-errors`
+- PR: https://github.com/wendylabsinc/WendyOS/pull/928 — draft
+- PR closing reference: `Closes WDY-1377`
+- Base: `main`
+- Current commit: `5e70ba99 chore: start WDY-1377 macOS unsupported errors`
+- Validation: not run; setup commit only
+- `HANDOVER.md`: written in the worktree with issue context and commit/push guidance
+- Resume command: `cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1377-macos-unsupported-hardware-errors && ai --prompt "Read HANDOVER.md and continue work on WDY-1377. Commit often and push to the draft PR as you go."`
+
 ### WDY-1343 — Create minimal unlisted Wendy for Mac beta docs page
 
 - Status: `done`
