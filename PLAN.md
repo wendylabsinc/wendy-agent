@@ -78,6 +78,21 @@ For each issue, record:
 - `HANDOVER.md`: written in the worktree; now obsolete because PR #927 merged
 - Resume command: not needed; issue is complete
 
+### WDY-1352 — Verify discovery and device selection for WendyAgentMac
+
+- Status: `prepared`
+- Linear: https://linear.app/wendylabsinc/issue/WDY-1352/verify-discovery-and-device-selection-for-wendyagentmac
+- Linear assignee: `konstantin@wendy.sh`
+- Branch/worktree name: `kb.wdy-1352-mac-agent-discovery-selection`
+- Worktree path: `.worktrees/kb.wdy-1352-mac-agent-discovery-selection`
+- PR: https://github.com/wendylabsinc/WendyOS/pull/930 — draft
+- PR closing reference: `Closes WDY-1352`
+- Base: `main`
+- Current commit: `03c8bf97 chore: start WDY-1352 discovery selection verification`
+- Validation: not run; setup commit only
+- `HANDOVER.md`: written in the worktree with issue context and commit/push guidance
+- Resume command: `cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1352-mac-agent-discovery-selection && ai --prompt "Read HANDOVER.md and continue work on WDY-1352. Commit often and push to the draft PR as you go."`
+
 ### WDY-1377 — Show macOS-specific unsupported messages for hardware APIs
 
 - Status: `prepared`
@@ -194,10 +209,12 @@ Record and close the core validation work:
 Some of this was manually validated during WDY-1343 and can be summarized or
 expanded depending on the issue scope.
 
-### 8. WDY-1349 — Audit CLI commands against Mac beta support matrix
+### 8. WDY-1349 / WDY-1352 — Audit discovery and command behavior
 
 Systematically compare CLI behavior against the matrix and identify command
 families that should be hidden, documented as unsupported, or improved.
+WDY-1352 is prepared separately to verify Mac agent discovery, explicit device
+selection, default-device behavior, and non-interactive targeting guidance.
 
 ### 9. WDY-1360 — Validate Mac beta on a clean Apple Silicon macOS device
 
