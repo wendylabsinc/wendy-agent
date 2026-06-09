@@ -1,8 +1,23 @@
 # Wendy for Mac — Beta Work Plan
 
-Prioritize issues as if Wendy for Mac may need to release after the next issue,
-and again after every issue after that. Prefer user-facing correctness, clear
-support boundaries, and actionable failure modes before deeper automation.
+## KISS beta policy
+
+The beta is time-constrained. Keep macOS work aligned with what we currently
+ship for Linux/WendyOS instead of adding a better support surface only for Mac.
+
+Current Linux standalone-agent docs are intentionally short:
+
+1. install `wendy-agent`,
+2. verify the service is running,
+3. discover the device / optionally set it as default,
+4. run with an explicit `--device` hostname when discovery is not available,
+5. link to existing app guides.
+
+For the macOS beta, do the same: install, verify with `device info`, optionally
+set a default device, and run one native macOS app path. Do **not** add broad
+diagnostics, reset/uninstall docs, firewall/VPN recipes, first-launch prompt
+guides, command-by-command matrices, or new E2E infrastructure unless the user
+explicitly asks for a post-beta pass.
 
 ## Working protocol
 
@@ -14,69 +29,19 @@ must not do the actual issue implementation.
 3. Add an empty setup commit for the issue.
 4. Push the branch.
 5. Create a draft PR from the setup commit using a real markdown body file,
-   not an inline string with escaped newlines. Prefer:
-
-   ```sh
-   cat > /tmp/pr-body.md <<'MD'
-   ## Summary
-   - Set up WDY-1234.
-
-   Closes WDY-1234.
-
-   ## Tests
-   - Not run yet.
-   MD
-   gh pr create --draft --base main --head <branch-name> --title "..." --body-file /tmp/pr-body.md
-   ```
-
+   not an inline string with escaped newlines.
 6. Include the Linear issue link/closing reference in the PR body, for example
    `Closes WDY-1234`, so merging the PR closes the issue.
-7. Write a `HANDOVER.md` file into the issue worktree with the handover context
-   for a new session. The handover must explicitly tell the per-issue agent to
-   commit small coherent changes often and push to the draft PR as it goes.
+7. Write a `HANDOVER.md` file into the issue worktree. The handover must tell
+   the per-issue agent to KISS, stay aligned with the Linux/WendyOS status quo,
+   commit small coherent changes often, and push to the draft PR as it goes.
 8. Leave the user with the worktree path, PR link, and a one-line command to
-   resume from that worktree using `--prompt`, for example:
-
-   ```sh
-   cd /path/to/.worktrees/<branch-name> && ai --prompt "Read HANDOVER.md and continue work on WDY-1234. Commit often and push to the draft PR as you go."
-   ```
+   resume from that worktree using `--prompt`.
 
 Implementation, validation, review-thread handling, and non-empty commits happen
-in the per-issue worktree session, not in this master planning session.
+in per-issue worktree sessions, not in this master planning session.
 
 ## Issue ledger
-
-Keep this ledger current whenever an issue is prepared, in progress, ready,
-merged, or abandoned. Branch names and worktree directory names must be 1:1.
-
-For each issue, record:
-
-- Status: `planned`, `prepared`, `wip`, `ready`, `merged`, `done`, or `abandoned`
-- Linear assignee
-- Branch/worktree name
-- Worktree path
-- PR link and draft/ready/merged state
-- PR closing reference status, e.g. `Closes WDY-1234`
-- Base branch or stack parent
-- Current commit, if useful
-- Validation status
-- `HANDOVER.md` status and summary
-- One-line resume command using `ai --prompt` to read `HANDOVER.md`
-
-### WDY-1386 — Add sticky docs preview comments to documentation PRs
-
-- Status: `done`
-- Linear: https://linear.app/wendylabsinc/issue/WDY-1386/add-sticky-docs-preview-comments-to-documentation-prs
-- Linear assignee: `konstantin@wendy.sh`
-- Branch/worktree name: `kb.wdy-1386-docs-preview-comment`
-- Worktree path: removed after completion (`.worktrees/kb.wdy-1386-docs-preview-comment`)
-- PR: https://github.com/wendylabsinc/WendyOS/pull/927 — merged
-- PR closing reference: `Closes WDY-1386`
-- Base: `main`
-- Merge commit on `main`: `6decf523 ci: add docs preview PR comments`
-- Validation: completed in PR #927
-- `HANDOVER.md`: written in the worktree; now obsolete because PR #927 merged
-- Resume command: not needed; issue is complete
 
 ### WDY-1352 — Verify discovery and device selection for WendyAgentMac
 
@@ -90,48 +55,44 @@ For each issue, record:
 - PR closing reference: `Closes WDY-1352`
 - Base: `main`
 - Current commit: `5fc99581 docs: simplify Mac agent targeting guidance`
+- KISS scope: match Linux's simple discover/default/explicit-hostname flow;
+  avoid Mac-specific selection models and diagnostics/troubleshooting content.
 - Validation:
   - `go test ./go/internal/cli/commands -run 'TestResolveDeviceAddress_(Flag|DefaultDevice|ExplicitHostPortFlag|ExplicitHostPortDefault|NoDevice)$'`
   - Manual WendyAgentMac targeting checks recorded in PR #930
-  - GitHub checks in progress on latest PR #930 push
-- `HANDOVER.md`: written in the worktree with issue context and commit/push guidance
-- Resume command: `cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1352-mac-agent-discovery-selection && ai --prompt "Read HANDOVER.md and continue work on WDY-1352. Commit often and push to the draft PR as you go."`
+  - GitHub checks mostly passing; docs deploy was still in progress at last check
+- `HANDOVER.md`: refreshed in the worktree with KISS scope and current branch state
+- Resume command: `cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1352-mac-agent-discovery-selection && ai --prompt "Read HANDOVER.md and continue work on WDY-1352. Keep it KISS, aligned with current Linux/WendyOS docs, commit often, and push to the draft PR as you go."`
 
 ### WDY-1377 — Show macOS-specific unsupported messages for hardware APIs
 
-- Status: `ready`
+- Status: `done`
 - Linear: https://linear.app/wendylabsinc/issue/WDY-1377/show-macos-specific-unsupported-messages-for-hardware-apis
 - Linear assignee: `konstantin@wendy.sh`
-- Linear state: In Review
+- Linear state: Done
 - Branch/worktree name: `kb.wdy-1377-macos-unsupported-hardware-errors`
-- Worktree path: `.worktrees/kb.wdy-1377-macos-unsupported-hardware-errors`
-- PR: https://github.com/wendylabsinc/WendyOS/pull/928 — open, ready for review
+- Worktree path: removed after merge (`.worktrees/kb.wdy-1377-macos-unsupported-hardware-errors`)
+- PR: https://github.com/wendylabsinc/WendyOS/pull/928 — merged
 - PR closing reference: `Closes WDY-1377`
-- Base: `main`
-- Current commit: `7df2bd05 Merge remote-tracking branch 'origin/main' into kb.wdy-1377-macos-unsupported-hardware-errors`
+- Merge commit on `main`: `243fbf32`
 - Validation:
   - `cd go && go test ./internal/cli/commands`
-  - GitHub checks passing on PR #928
-- `HANDOVER.md`: written in the worktree with issue context and commit/push guidance
-- Resume command: `cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1377-macos-unsupported-hardware-errors && ai --prompt "Read HANDOVER.md and continue work on WDY-1377. Commit often and push to the draft PR as you go."`
+  - GitHub checks passed on PR #928
+- Resume command: not needed; issue is complete
 
 ### WDY-1359 — Add diagnostics and log collection instructions
 
-- Status: `ready`
+- Status: `abandoned`
 - Linear: https://linear.app/wendylabsinc/issue/WDY-1359/add-diagnostics-and-log-collection-instructions
 - Linear assignee: `konstantin@wendy.sh`
-- Linear state: In Review
+- Linear state: Canceled
 - Branch/worktree name: `kb.wdy-1359-macos-diagnostics-docs`
-- Worktree path: `.worktrees/kb.wdy-1359-macos-diagnostics-docs`
-- PR: https://github.com/wendylabsinc/WendyOS/pull/929 — open, ready for review
-- PR closing reference: `Closes WDY-1359`
-- Base: `main`
-- Current commit: `0af79cd7 docs: add Mac agent beta diagnostics`
-- Validation:
-  - `cd go/internal/cli/assets/docs && npm run types:check`
-  - GitHub checks passing on PR #929
-- `HANDOVER.md`: written in the worktree with issue context and commit/push guidance
-- Resume command: `cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1359-macos-diagnostics-docs && ai --prompt "Read HANDOVER.md and continue work on WDY-1359. Commit often and push to the draft PR as you go."`
+- Worktree path: removed after cancellation (`.worktrees/kb.wdy-1359-macos-diagnostics-docs`)
+- PR: https://github.com/wendylabsinc/WendyOS/pull/929 — closed unmerged
+- PR closing reference: `Closes WDY-1359` was present, but PR was canceled
+- Reason: diagnostics/log collection docs are extra compared with current
+  Linux/WendyOS docs and are not part of the minimal beta release.
+- Resume command: not needed; issue is canceled for beta
 
 ### WDY-1343 — Create minimal unlisted Wendy for Mac beta docs page
 
@@ -152,13 +113,10 @@ For each issue, record:
 - Worktree path: removed after completion (`.worktrees/kb.wdy-1344-mac-beta-support-matrix`)
 - PR: https://github.com/wendylabsinc/WendyOS/pull/925 — merged
 - PR closing reference: `Closes WDY-1344`
-- Base: `main` after PR #906 merge
 - Merge commit on `main`: `49517f19`
 - Validation:
   - `cd go/internal/cli/assets/docs && npm run types:check` passed
-- `HANDOVER.md`: not written; this issue predates the clarified handover-file protocol
 - Resume command: not needed; issue is complete
-- Note: this issue was started before the clarified master-session protocol, so it already contained implementation work rather than only an empty setup commit.
 
 ### WDY-1378 — Document `platform: "darwin"` in `wendy.json`
 
@@ -168,87 +126,54 @@ For each issue, record:
 - Worktree path: removed after completion (`.worktrees/kb.wdy-1378-darwin-platform-docs`)
 - PR: https://github.com/wendylabsinc/WendyOS/pull/926 — merged
 - PR closing reference: `Closes WDY-1378`
-- Base: `main`
 - Merge commit on `main`: `bbb09a4d`
 - Validation: completed in PR #926
-- `HANDOVER.md`: written in the worktree; now obsolete because PR #926 merged
 - Resume command: not needed; issue is complete
 
-## Recommended order
+### WDY-1386 — Add sticky docs preview comments to documentation PRs
 
-### Completed: WDY-1386 — Add sticky docs preview comments to documentation PRs
+- Status: `done`
+- Linear: https://linear.app/wendylabsinc/issue/WDY-1386/add-sticky-docs-preview-comments-to-documentation-prs
+- Linear assignee: `konstantin@wendy.sh`
+- Branch/worktree name: `kb.wdy-1386-docs-preview-comment`
+- Worktree path: removed after completion (`.worktrees/kb.wdy-1386-docs-preview-comment`)
+- PR: https://github.com/wendylabsinc/WendyOS/pull/927 — merged
+- PR closing reference: `Closes WDY-1386`
+- Merge commit on `main`: `6decf523`
+- Validation: completed in PR #927
+- Resume command: not needed; issue is complete
 
-Merged in PR #927. Docs PRs now get a sticky preview comment after the Fumadocs
-workflow deploys same-repo pull request previews.
+## Minimal beta issue order
 
-### Completed: WDY-1344 — Create Mac beta support matrix
+Only start these if they are still needed after reviewing merged docs and PR
+#930. Keep each one short and validation-focused.
 
-Merged in PR #925. The beta contract now defines what works, what is
-unsupported, what is planned, and what must not be promised.
+1. **Finish WDY-1352** — minimal device targeting/docs alignment.
+2. **WDY-1345** — run and record a minimal Mac beta smoke test.
+3. **WDY-1346** — verify one native macOS SwiftPM `wendy run` flow.
+4. **WDY-1350** — verify minimal app lifecycle commands for that same app.
+5. **WDY-1360** — clean Apple Silicon validation of the shipped docs path.
 
-### 3. WDY-1348 — Document Mac beta known limitations
+## Backlog / post-beta or only-if-blocking
 
-Turn the support matrix into clear user-facing limitations. If we released after
-this, users should understand the beta boundaries.
+These Linear issues were updated so agents know they are not part of the
+super time-constrained beta unless the user explicitly re-prioritizes them:
 
-### 4. WDY-1347 — Update onboarding copy to avoid over-promising hardware support
-
-Make sure product/onboarding copy matches the support matrix and does not imply
-Linux/WendyOS-level hardware access on macOS.
-
-### 5. WDY-1351 / WDY-1358 — Make unsupported flows actionable
-
-Improve unsupported Wi-Fi, Bluetooth, hardware, audio, GPU, camera, and related
-macOS agent errors. Prefer messages that explain macOS beta limitations instead
-of suggesting ineffective updates.
-
-### 6. WDY-1357 — Document install, reset, uninstall, and troubleshooting
-
-Add practical beta support docs for cleaning up, resetting state, uninstalling,
-collecting useful context, and resolving common setup failures.
-
-### 7. WDY-1345 / WDY-1346 / WDY-1350 — Verify smoke, native run, and app lifecycle flows
-
-Record and close the core validation work:
-
-- Mac beta smoke test
-- Native macOS app run flow
-- App lifecycle commands on Mac agent
-
-Some of this was manually validated during WDY-1343 and can be summarized or
-expanded depending on the issue scope.
-
-### 8. WDY-1349 / WDY-1352 — Audit discovery and command behavior
-
-Systematically compare CLI behavior against the matrix and identify command
-families that should be hidden, documented as unsupported, or improved.
-WDY-1352 is prepared separately to verify Mac agent discovery, explicit device
-selection, default-device behavior, and non-interactive targeting guidance.
-
-### 9. WDY-1360 — Validate Mac beta on a clean Apple Silicon macOS device
-
-Run a clean-machine validation pass before broader release confidence claims.
-
-### 10. Automation and E2E follow-ups
-
-Defer deeper automation until the release-facing contract is stable:
-
-- WDY-1355 — Define Mac beta E2E/smoke subset
-- WDY-1364 — Review Swift E2E suite against Mac beta contract
-- WDY-1381 — Add platform-aware Swift E2E spec gates and reference rendering
-- WDY-1382 — Add macOS agent device info E2E spec
-- WDY-1383 — Add native Darwin SwiftPM wendy run E2E spec
-- WDY-1384 — Add macOS unsupported hardware API E2E specs
-- WDY-1385 — Add macOS CLI and agent release artifact smoke flow
-
-Automation remains important, but it should encode a stable beta contract rather
-than define it prematurely.
-
-### Additional follow-ups already created
-
-- WDY-1366 — Simplify Wendy Agent Linux and macOS installation docs
-- WDY-1376 — Add macOS Wendy Agent security guidance for exposed port 50051
-- WDY-1377 — Show macOS-specific unsupported messages for hardware APIs
-- WDY-1378 — Document `platform: "darwin"` in `wendy.json` — done in PR #926
-- WDY-1379 — Add minimal native macOS SwiftPM deployment example
-- WDY-1380 — Document Wendy Agent for macOS first-launch prompts
+- WDY-1347 — onboarding copy; only if a concrete shipped UI over-promises.
+- WDY-1348 — canceled; covered by WDY-1344 unless a specific missing limitation appears.
+- WDY-1349 — post-beta CLI audit.
+- WDY-1351 — post-beta broader unsupported-flow improvements; WDY-1377 covered beta minimum.
+- WDY-1355 — post-beta E2E/smoke subset.
+- WDY-1357 — post-beta install/reset/uninstall/troubleshooting docs.
+- WDY-1358 — post-beta broader CLI unsupported-error rendering; WDY-1377 covered beta minimum.
+- WDY-1359 — canceled; diagnostics/log docs are not in beta scope.
+- WDY-1364 — post-beta Swift E2E review.
+- WDY-1366 — post-beta Linux/macOS install-doc restructuring.
+- WDY-1376 — post-beta security guidance unless security explicitly blocks beta; at most one short callout if revived.
+- WDY-1379 — post-beta native macOS SwiftPM example.
+- WDY-1380 — post-beta first-launch prompt docs unless clean validation proves a blocker.
+- WDY-1381 — post-beta platform-aware E2E reference rendering.
+- WDY-1382 — post-beta macOS agent device-info E2E spec.
+- WDY-1383 — post-beta native Darwin SwiftPM E2E spec.
+- WDY-1384 — post-beta unsupported hardware API E2E specs.
+- WDY-1385 — post-beta macOS release artifact smoke workflow.
