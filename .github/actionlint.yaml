@@ -1,0 +1,26 @@
+self-hosted-runner:
+  labels:
+    - AI
+    - ARM64
+    - Linux
+    - X64
+    - macOS
+    - macos-26
+
+config-variables: null
+
+paths:
+  .github/workflows/swift-e2e-tests.yml:
+    ignore:
+      # GitHub Actions supports this queue mode, but actionlint v1.7.12 only
+      # recognizes the older concurrency.group/cancel-in-progress schema.
+      - 'unexpected key "queue" for "concurrency" section'
+  .github/workflows/integration-tests.yml:
+    ignore:
+      - 'unexpected key "queue" for "concurrency" section'
+  .github/workflows/test-templates.yml:
+    ignore:
+      - 'unexpected key "queue" for "concurrency" section'
+  .github/workflows/nightly-os-update.yml:
+    ignore:
+      - 'unexpected key "queue" for "concurrency" section'

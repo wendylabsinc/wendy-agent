@@ -1,0 +1,14 @@
+services:
+  server:
+    build: ./server
+    environment:
+      APP_MODE: "production"
+      GREETING: "Hello from Wendy!"
+      MAX_WORKERS: "4"
+    ports:
+      - "8080:8080"
+
+  client:
+    build: ./client
+    depends_on:
+      - server

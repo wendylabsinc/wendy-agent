@@ -28,6 +28,7 @@ Tests:
   python-no-ptrace          Verify ptrace is blocked by default seccomp profile (WDY-1099)
   python-no-unshare         Verify unshare is blocked by default seccomp profile (WDY-1099)
   python-multiservice       Multi-service wendy.json: parallel build + dep-order creation
+  python-servicename        Single service with serviceName: verifies WENDY_HOSTNAME/WENDY_APP_GROUP env injection (WDY-878)
   compose-hello             docker-compose multi-service deployment with build: Dockerfiles
   compose-images            docker-compose multi-service deployment using public images
   otel-localhost-only       Verify OTEL receivers (4317/4318) are not reachable from the network
@@ -195,8 +196,10 @@ ALL_TESTS=(
     python-no-ptrace
     python-no-unshare
     python-multiservice
+    python-servicename
     compose-hello
     compose-images
+    compose-companion
     otel-localhost-only
 )
 

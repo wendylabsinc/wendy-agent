@@ -8,13 +8,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
-	"github.com/wendylabsinc/wendy/internal/cli/tui"
-	"github.com/wendylabsinc/wendy/internal/shared/appconfig"
+	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 )
 
 const (
@@ -513,10 +514,6 @@ func metaTemplateNames(meta *repoMeta) string {
 	return strings.Join(names, ", ")
 }
 
-// fetchRepoMetaWithUI wraps fetchRepoMeta with a bubbletea spinner when
-// stdout is a TTY. In non-interactive contexts it falls back to a plain
-// printf so logs stay readable. If the user cancels (q / ctrl+c) the
-// in-flight HTTP request is aborted and ErrUserCancelled is returned.
 func fetchRepoMetaWithUI(branch string) (*repoMeta, error) {
 	if !isInteractiveTerminal() {
 		cliLogln("Fetching template registry...")
@@ -558,10 +555,6 @@ func fetchRepoMetaWithUI(branch string) (*repoMeta, error) {
 	return meta, fetchErr
 }
 
-// downloadTemplateArchiveWithUI wraps downloadTemplateArchive with a
-// bubbletea progress bar when stdout is a TTY. In non-interactive contexts
-// it falls back to plain text. If the user cancels (q / ctrl+c) the
-// in-flight HTTP request is aborted and ErrUserCancelled is returned.
 func downloadTemplateArchiveWithUI(language, tmpl, branch string) (map[string][]byte, *templateManifest, error) {
 	title := fmt.Sprintf("Downloading template %q for %s (branch: %s)", tmpl, language, resolveTemplateBranch(branch))
 
@@ -679,6 +672,10 @@ func runTemplateFlow(cwd, destDir, appID, tmpl, target string, meta *repoMeta, o
 		return err
 	}
 
+	return finishTemplateInit(cwd, destDir, appID)
+}
+
+func finishTemplateInit(cwd, destDir, appID string) error {
 	cliSuccess("\nYour project is ready!")
 	cliLogln("Next steps:")
 	for _, step := range templateNextSteps(cwd, destDir, appID) {
@@ -687,8 +684,32 @@ func runTemplateFlow(cwd, destDir, appID, tmpl, target string, meta *repoMeta, o
 	if filepath.Clean(destDir) != filepath.Clean(cwd) {
 		cliLogln("Note: run the cd command in your shell; a CLI process cannot change its parent shell directory.")
 	}
-
 	return nil
+}
+
+func pathHasPrefix(path, prefix string) bool {
+	sep := string(filepath.Separator)
+	cleanPath := strings.TrimRight(filepath.Clean(path), sep) + sep
+	cleanPrefix := strings.TrimRight(filepath.Clean(prefix), sep) + sep
+	if runtime.GOOS == "windows" {
+		if len(cleanPath) < len(cleanPrefix) {
+			return false
+		}
+		return strings.EqualFold(cleanPath[:len(cleanPrefix)], cleanPrefix)
+	}
+	return strings.HasPrefix(cleanPath, cleanPrefix)
+}
+
+func canonicalProjectPath(path string) (string, error) {
+	abs, err := filepath.Abs(filepath.Clean(path))
+	if err != nil {
+		return "", err
+	}
+	resolved, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return "", fmt.Errorf("%q does not resolve to an existing path: %w", path, err)
+	}
+	return resolved, nil
 }
 
 func shellQuote(s string) string {
@@ -732,12 +753,7 @@ func resolveInitDestAndID(cwd string, args []string, opts initOptions) (string, 
 		}
 
 		fmt.Println()
-		appID, err := tui.PromptText("Project name", "directory name and app identifier", func(v string) error {
-			if strings.TrimSpace(v) == "" {
-				return fmt.Errorf("project name cannot be empty")
-			}
-			return nil
-		})
+		appID, err := tui.PromptText("Project name", "directory name and app identifier", validateNewProjectName)
 		if err != nil {
 			return "", "", err
 		}
@@ -747,6 +763,26 @@ func resolveInitDestAndID(cwd string, args []string, opts initOptions) (string, 
 
 	// Semi-interactive or non-interactive without explicit app ID: infer from cwd.
 	return cwd, strings.TrimSpace(filepath.Base(cwd)), nil
+}
+
+func validateNewProjectName(value string) error {
+	name := strings.TrimSpace(value)
+	if name == "" {
+		return fmt.Errorf("project name cannot be empty")
+	}
+	if filepath.IsAbs(name) || filepath.Clean(name) != name || name == "." || name == ".." || strings.ContainsAny(name, `/\:`) {
+		return fmt.Errorf("project name must be a single subdirectory name")
+	}
+	if strings.HasPrefix(name, "-") || strings.HasPrefix(name, ".") {
+		return fmt.Errorf("project name must not start with '-' or '.'")
+	}
+	for _, r := range name {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '.' || r == '_' || r == '-' {
+			continue
+		}
+		return fmt.Errorf("project name may only contain letters, numbers, '.', '_' or '-'")
+	}
+	return nil
 }
 
 // maybeGitInit optionally runs git init in the project directory.
@@ -889,7 +925,6 @@ func pickInitLanguage(target string) (string, error) {
 	}
 }
 
-// askEntitlementQuestions is a variable so tests can replace it.
 var askEntitlementQuestions = func(target, language string) ([]appconfig.Entitlement, error) {
 	// Always include network.
 	entitlements := []appconfig.Entitlement{
@@ -1092,7 +1127,6 @@ func pythonPackageName(appID string) string {
 	return r.Replace(appID)
 }
 
-// initPythonUVProject creates a uv-based Python project.
 func initPythonUVProject(dir, appID string) error {
 	pkgName := pythonPackageName(appID)
 

@@ -1,0 +1,6 @@
+{
+    "appId": "sh.wendy.ci.python-servicename",
+    "version": "1.0.0",
+    "language": "python",
+    "serviceName": "api"
+}

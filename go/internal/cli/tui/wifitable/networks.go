@@ -4,7 +4,7 @@ package wifitable
 import (
 	"sort"
 
-	agentpb "github.com/wendylabsinc/wendy/proto/gen/agentpb"
+	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
 // Network is a CLI-side view of a WiFi network merged across scan results and
@@ -65,7 +65,6 @@ func Sort(networks []Network) {
 	})
 }
 
-// SecurityLabel returns a short, human-readable label for a WiFiSecurityType.
 func SecurityLabel(t agentpb.WiFiSecurityType) string {
 	switch t {
 	case agentpb.WiFiSecurityType_WIFI_SECURITY_TYPE_OPEN:
@@ -95,9 +94,6 @@ func IsSecured(t agentpb.WiFiSecurityType) bool {
 	return true
 }
 
-// KnownSSIDsInOrder returns the SSIDs of known networks in the slice's current
-// order. Useful for building a ReorderKnownWiFiNetworksRequest after a rank
-// commit.
 func KnownSSIDsInOrder(networks []Network) []string {
 	var out []string
 	for _, n := range networks {

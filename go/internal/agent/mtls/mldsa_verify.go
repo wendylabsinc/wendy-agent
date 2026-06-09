@@ -11,7 +11,29 @@ import (
 	circlSign "github.com/cloudflare/circl/sign"
 	"github.com/cloudflare/circl/sign/mldsa/mldsa65"
 	"github.com/cloudflare/circl/sign/mldsa/mldsa87"
+	"go.uber.org/zap"
 )
+
+// maxCertLifetime is the maximum accepted certificate validity window.
+// Certificates valid for longer than this are rejected because they cannot be
+// promptly revoked: Go's crypto/tls does not fetch CRL distribution points
+// during the TLS handshake, and doing so from server code introduces SSRF
+// vectors, cache-poisoning risk, and availability dependencies.
+//
+// The value is 732 days (2 × 365 + 2) to cover any real-world "2-year"
+// certificate whose validity window includes a leap-year Feb 29 (max 731 days).
+const maxCertLifetime = (2*365 + 2) * 24 * time.Hour
+
+// checkRevocation enforces that leaf was issued with a validity window short
+// enough that a compromised credential expires within maxCertLifetime even
+// without an explicit CRL/OCSP revocation check.
+func checkRevocation(leaf *x509.Certificate) error {
+	lifetime := leaf.NotAfter.Sub(leaf.NotBefore)
+	if lifetime > maxCertLifetime {
+		return fmt.Errorf("certificate lifetime %v exceeds maximum %v; reissue with a shorter validity window", lifetime, maxCertLifetime)
+	}
+	return nil
+}
 
 var (
 	oidMLDSA65 = asn1.ObjectIdentifier{2, 16, 840, 1, 101, 3, 4, 3, 18}
@@ -120,9 +142,24 @@ func verifyMLDSASignature(issuer, cert *x509.Certificate) error {
 	return nil
 }
 
+// maxTime returns the later of two times. Used to apply a NotBefore floor when
+// the device clock has not yet been synchronised via NTP.
+func maxTime(a, b time.Time) time.Time {
+	if a.After(b) {
+		return a
+	}
+	return b
+}
+
 // buildVerifyPeerCertificate returns a VerifyPeerCertificate callback that
 // handles both standard (RSA/ECDSA) and ML-DSA-signed certificate chains.
-func buildVerifyPeerCertificate(caPool *x509.CertPool, caCerts []*x509.Certificate) func([][]byte, [][]*x509.Certificate) error {
+// logger may be nil, in which case no logging is performed.
+// notBeforeFloor is used as a lower bound on the current time for NotBefore
+// checks: if the device clock is behind the floor (e.g. RTC reset to epoch
+// before NTP sync), effectiveNow = max(time.Now(), notBeforeFloor) is used
+// so that certs issued at provisioning time are still accepted. Pass a zero
+// time.Time to disable the floor.
+func buildVerifyPeerCertificate(caPool *x509.CertPool, caCerts []*x509.Certificate, logger *zap.Logger, notBeforeFloor time.Time) func([][]byte, [][]*x509.Certificate) error {
 	return func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
 		if len(rawCerts) == 0 {
 			return fmt.Errorf("no client certificate presented")
@@ -131,6 +168,23 @@ func buildVerifyPeerCertificate(caPool *x509.CertPool, caCerts []*x509.Certifica
 		leaf, err := x509.ParseCertificate(rawCerts[0])
 		if err != nil {
 			return fmt.Errorf("parsing client certificate: %w", err)
+		}
+
+		// Capture the real clock once to avoid TOCTOU between the expiry pre-check
+		// and the verification call. effectiveNow applies the NotBefore floor only.
+		realNow := time.Now()
+		effectiveNow := maxTime(realNow, notBeforeFloor)
+
+		// Pre-reject expired certs before any further processing. The floor must
+		// not mask real-time expiry: checking here with realNow eliminates any
+		// TOCTOU window between the clock snapshot and the verification call.
+		if realNow.After(leaf.NotAfter) {
+			expiredErr := fmt.Errorf("certificate expired (notAfter=%v)", leaf.NotAfter)
+			// The floor is irrelevant once the cert is expired against the real
+			// clock: pass realNow so the rejection log reflects the actual clock
+			// and never mistakes an expired cert for a clock-skew case.
+			logCertRejection(logger, leaf, expiredErr, realNow)
+			return expiredErr
 		}
 
 		// Build an intermediates pool from the rest of the chain presented by the client.
@@ -142,36 +196,77 @@ func buildVerifyPeerCertificate(caPool *x509.CertPool, caCerts []*x509.Certifica
 		}
 
 		// Try standard Go verification first (handles RSA/ECDSA chains).
+		// CurrentTime uses effectiveNow so that certs issued at provisioning are
+		// accepted when the device clock has not yet synced via NTP.
 		opts := x509.VerifyOptions{
 			Roots:         caPool,
 			Intermediates: intermediates,
 			KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+			CurrentTime:   effectiveNow,
 		}
+		// Try standard Go verification first (handles RSA/ECDSA chains).
 		stdErr := func() error { _, e := leaf.Verify(opts); return e }()
-		if stdErr == nil {
-			return nil
+		if stdErr != nil {
+			// Only fall back to ML-DSA verification when the leaf cert uses an ML-DSA
+			// signature algorithm; for all other failures return the standard error.
+			sigOID, oidErr := certSigAlgOID(leaf)
+			if oidErr != nil {
+				logCertRejection(logger, leaf, stdErr, effectiveNow)
+				return stdErr
+			}
+			if _, schemeErr := mldsaScheme(sigOID); schemeErr != nil {
+				logCertRejection(logger, leaf, stdErr, effectiveNow)
+				return stdErr
+			}
+			mldsaErr := verifyMLDSAClientCert(leaf, caCerts, realNow, effectiveNow)
+			if mldsaErr != nil {
+				logCertRejection(logger, leaf, mldsaErr, effectiveNow)
+				return mldsaErr
+			}
 		}
 
-		// Only fall back to ML-DSA verification when the leaf cert uses an ML-DSA
-		// signature algorithm; for all other failures return the standard error.
-		sigOID, oidErr := certSigAlgOID(leaf)
-		if oidErr != nil {
-			return stdErr
+		// Single revocation check after successful verification by either path.
+		// checkRevocation only inspects the leaf's validity window, so it needs no
+		// CA list and cannot be bypassed by either the standard or ML-DSA branch.
+		if revErr := checkRevocation(leaf); revErr != nil {
+			logCertRejection(logger, leaf, revErr, effectiveNow)
+			return revErr
 		}
-		if _, schemeErr := mldsaScheme(sigOID); schemeErr != nil {
-			return stdErr
-		}
-
-		return verifyMLDSAClientCert(leaf, caCerts)
+		return nil
 	}
+}
+
+// logCertRejection logs a WARN when a client cert is rejected, with a clock
+// skew hint when the error indicates the cert is not yet valid.
+func logCertRejection(logger *zap.Logger, leaf *x509.Certificate, err error, effectiveNow time.Time) {
+	if logger == nil {
+		return
+	}
+	fields := []zap.Field{
+		zap.String("subject", leaf.Subject.CommonName),
+		zap.Time("notBefore", leaf.NotBefore),
+		zap.Time("notAfter", leaf.NotAfter),
+		zap.Error(err),
+	}
+	msg := "mTLS client certificate rejected"
+	// Only hint at clock skew when the device clock is behind the cert's NotBefore.
+	// String-matching on the error text would also fire for expired certs, pointing
+	// operators at the wrong remediation (NTP sync won't help an expired cert).
+	if effectiveNow.Before(leaf.NotBefore) {
+		msg += ": certificate not yet valid — device clock may be skewed; check NTP sync with: timedatectl status"
+	}
+	logger.Warn(msg, fields...)
 }
 
 // verifyMLDSAClientCert verifies a client leaf cert against the trusted CA certs
 // using ML-DSA signature verification. It checks validity and that the leaf was
-// signed by a trusted CA.
-func verifyMLDSAClientCert(leaf *x509.Certificate, trustedCAs []*x509.Certificate) error {
-	now := time.Now()
-	if now.Before(leaf.NotBefore) || now.After(leaf.NotAfter) {
+// signed by a trusted CA. effectiveNow is max(realNow, notBeforeFloor) and is
+// used only for the leaf NotBefore check so that certs issued at provisioning are
+// accepted when the device clock has not yet synced via NTP. realNow is the
+// unmodified clock snapshot; all NotAfter and CA NotBefore checks use it so the
+// floor cannot mask expiry or make an immature CA appear valid.
+func verifyMLDSAClientCert(leaf *x509.Certificate, trustedCAs []*x509.Certificate, realNow, effectiveNow time.Time) error {
+	if effectiveNow.Before(leaf.NotBefore) || realNow.After(leaf.NotAfter) {
 		return fmt.Errorf("certificate not valid at current time (NotBefore=%v NotAfter=%v)", leaf.NotBefore, leaf.NotAfter)
 	}
 
@@ -197,7 +292,7 @@ func verifyMLDSAClientCert(leaf *x509.Certificate, trustedCAs []*x509.Certificat
 			continue
 		}
 		foundSubject = true
-		if now.Before(ca.NotBefore) || now.After(ca.NotAfter) {
+		if realNow.Before(ca.NotBefore) || realNow.After(ca.NotAfter) {
 			lastErr = fmt.Errorf("CA certificate %q not valid at current time", ca.Subject.CommonName)
 			continue
 		}

@@ -172,20 +172,77 @@ func (x *RestartPolicy) GetOnFailureMaxRetries() int32 {
 	return 0
 }
 
-type AppContainer struct {
+// ServiceEntry describes a single container within a multi-service app group.
+// Only present in AppContainer.services for multi-service apps.
+type ServiceEntry struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	AppName       string                 `protobuf:"bytes,1,opt,name=app_name,json=appName,proto3" json:"app_name,omitempty"`
-	AppVersion    string                 `protobuf:"bytes,2,opt,name=app_version,json=appVersion,proto3" json:"app_version,omitempty"`
-	RunningState  AppRunningState        `protobuf:"varint,3,opt,name=running_state,json=runningState,proto3,enum=AppRunningState" json:"running_state,omitempty"`
-	FailureCount  uint32                 `protobuf:"varint,4,opt,name=failure_count,json=failureCount,proto3" json:"failure_count,omitempty"`
-	McpPort       uint32                 `protobuf:"varint,5,opt,name=mcp_port,json=mcpPort,proto3" json:"mcp_port,omitempty"`
+	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	RunningState  AppRunningState        `protobuf:"varint,2,opt,name=running_state,json=runningState,proto3,enum=AppRunningState" json:"running_state,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ServiceEntry) Reset() {
+	*x = ServiceEntry{}
+	mi := &file_wendy_agent_services_v1_shared_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ServiceEntry) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ServiceEntry) ProtoMessage() {}
+
+func (x *ServiceEntry) ProtoReflect() protoreflect.Message {
+	mi := &file_wendy_agent_services_v1_shared_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ServiceEntry.ProtoReflect.Descriptor instead.
+func (*ServiceEntry) Descriptor() ([]byte, []int) {
+	return file_wendy_agent_services_v1_shared_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *ServiceEntry) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *ServiceEntry) GetRunningState() AppRunningState {
+	if x != nil {
+		return x.RunningState
+	}
+	return AppRunningState_STOPPED
+}
+
+type AppContainer struct {
+	state        protoimpl.MessageState `protogen:"open.v1"`
+	AppName      string                 `protobuf:"bytes,1,opt,name=app_name,json=appName,proto3" json:"app_name,omitempty"` // app ID (bare, without service suffix)
+	AppVersion   string                 `protobuf:"bytes,2,opt,name=app_version,json=appVersion,proto3" json:"app_version,omitempty"`
+	RunningState AppRunningState        `protobuf:"varint,3,opt,name=running_state,json=runningState,proto3,enum=AppRunningState" json:"running_state,omitempty"` // aggregate: RUNNING if any service is running
+	FailureCount uint32                 `protobuf:"varint,4,opt,name=failure_count,json=failureCount,proto3" json:"failure_count,omitempty"`
+	McpPort      uint32                 `protobuf:"varint,5,opt,name=mcp_port,json=mcpPort,proto3" json:"mcp_port,omitempty"`
+	// Non-empty for multi-service (compose) apps; one entry per service container.
+	// Empty for single-service apps.
+	Services      []*ServiceEntry `protobuf:"bytes,6,rep,name=services,proto3" json:"services,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *AppContainer) Reset() {
 	*x = AppContainer{}
-	mi := &file_wendy_agent_services_v1_shared_proto_msgTypes[1]
+	mi := &file_wendy_agent_services_v1_shared_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -197,7 +254,7 @@ func (x *AppContainer) String() string {
 func (*AppContainer) ProtoMessage() {}
 
 func (x *AppContainer) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_agent_services_v1_shared_proto_msgTypes[1]
+	mi := &file_wendy_agent_services_v1_shared_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -210,7 +267,7 @@ func (x *AppContainer) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AppContainer.ProtoReflect.Descriptor instead.
 func (*AppContainer) Descriptor() ([]byte, []int) {
-	return file_wendy_agent_services_v1_shared_proto_rawDescGZIP(), []int{1}
+	return file_wendy_agent_services_v1_shared_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *AppContainer) GetAppName() string {
@@ -248,6 +305,13 @@ func (x *AppContainer) GetMcpPort() uint32 {
 	return 0
 }
 
+func (x *AppContainer) GetServices() []*ServiceEntry {
+	if x != nil {
+		return x.Services
+	}
+	return nil
+}
+
 var File_wendy_agent_services_v1_shared_proto protoreflect.FileDescriptor
 
 const file_wendy_agent_services_v1_shared_proto_rawDesc = "" +
@@ -255,14 +319,18 @@ const file_wendy_agent_services_v1_shared_proto_rawDesc = "" +
 	"$wendy/agent/services/v1/shared.proto\"l\n" +
 	"\rRestartPolicy\x12&\n" +
 	"\x04mode\x18\x01 \x01(\x0e2\x12.RestartPolicyModeR\x04mode\x123\n" +
-	"\x16on_failure_max_retries\x18\x02 \x01(\x05R\x13onFailureMaxRetries\"\xc1\x01\n" +
+	"\x16on_failure_max_retries\x18\x02 \x01(\x05R\x13onFailureMaxRetries\"Y\n" +
+	"\fServiceEntry\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x125\n" +
+	"\rrunning_state\x18\x02 \x01(\x0e2\x10.AppRunningStateR\frunningState\"\xec\x01\n" +
 	"\fAppContainer\x12\x19\n" +
 	"\bapp_name\x18\x01 \x01(\tR\aappName\x12\x1f\n" +
 	"\vapp_version\x18\x02 \x01(\tR\n" +
 	"appVersion\x125\n" +
 	"\rrunning_state\x18\x03 \x01(\x0e2\x10.AppRunningStateR\frunningState\x12#\n" +
 	"\rfailure_count\x18\x04 \x01(\rR\ffailureCount\x12\x19\n" +
-	"\bmcp_port\x18\x05 \x01(\rR\amcpPort*L\n" +
+	"\bmcp_port\x18\x05 \x01(\rR\amcpPort\x12)\n" +
+	"\bservices\x18\x06 \x03(\v2\r.ServiceEntryR\bservices*L\n" +
 	"\x11RestartPolicyMode\x12\v\n" +
 	"\aDEFAULT\x10\x00\x12\x12\n" +
 	"\x0eUNLESS_STOPPED\x10\x01\x12\x06\n" +
@@ -286,21 +354,24 @@ func file_wendy_agent_services_v1_shared_proto_rawDescGZIP() []byte {
 }
 
 var file_wendy_agent_services_v1_shared_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_wendy_agent_services_v1_shared_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
+var file_wendy_agent_services_v1_shared_proto_msgTypes = make([]protoimpl.MessageInfo, 3)
 var file_wendy_agent_services_v1_shared_proto_goTypes = []any{
 	(RestartPolicyMode)(0), // 0: RestartPolicyMode
 	(AppRunningState)(0),   // 1: AppRunningState
 	(*RestartPolicy)(nil),  // 2: RestartPolicy
-	(*AppContainer)(nil),   // 3: AppContainer
+	(*ServiceEntry)(nil),   // 3: ServiceEntry
+	(*AppContainer)(nil),   // 4: AppContainer
 }
 var file_wendy_agent_services_v1_shared_proto_depIdxs = []int32{
 	0, // 0: RestartPolicy.mode:type_name -> RestartPolicyMode
-	1, // 1: AppContainer.running_state:type_name -> AppRunningState
-	2, // [2:2] is the sub-list for method output_type
-	2, // [2:2] is the sub-list for method input_type
-	2, // [2:2] is the sub-list for extension type_name
-	2, // [2:2] is the sub-list for extension extendee
-	0, // [0:2] is the sub-list for field type_name
+	1, // 1: ServiceEntry.running_state:type_name -> AppRunningState
+	1, // 2: AppContainer.running_state:type_name -> AppRunningState
+	3, // 3: AppContainer.services:type_name -> ServiceEntry
+	4, // [4:4] is the sub-list for method output_type
+	4, // [4:4] is the sub-list for method input_type
+	4, // [4:4] is the sub-list for extension type_name
+	4, // [4:4] is the sub-list for extension extendee
+	0, // [0:4] is the sub-list for field type_name
 }
 
 func init() { file_wendy_agent_services_v1_shared_proto_init() }
@@ -314,7 +385,7 @@ func file_wendy_agent_services_v1_shared_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_wendy_agent_services_v1_shared_proto_rawDesc), len(file_wendy_agent_services_v1_shared_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   2,
+			NumMessages:   3,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

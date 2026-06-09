@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/wendylabsinc/wendy/internal/shared/models"
+	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 )
 
 // TestRunWithProvider_SwiftRejectedOnWindows verifies that `wendy run` for a
@@ -21,7 +21,7 @@ func TestRunWithProvider_SwiftRejectedOnWindows(t *testing.T) {
 		t.Fatalf("creating Package.swift: %v", err)
 	}
 
-	err := runWithProvider(context.Background(), nil, models.ExternalDevice{}, dir, "", runOptions{})
+	err := runWithProvider(context.Background(), nil, models.ExternalDevice{}, dir, "", nil, runOptions{})
 	if err == nil {
 		t.Fatal("runWithProvider(swift) on Windows: error = nil, want non-nil")
 	}

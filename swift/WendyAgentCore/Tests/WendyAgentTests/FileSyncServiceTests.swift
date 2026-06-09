@@ -563,7 +563,7 @@ struct RunSessionTests {
                 sha256: digest
             )
         )
-        try await waitForFile(at: tempURL)
+        try await waitForFile(at: tempURL, size: content.count)
         try FileManager.default.setAttributes(
             [.posixPermissions: 0o000],
             ofItemAtPath: tempURL.path
@@ -1059,11 +1059,22 @@ private func temporaryURL(appsBase: URL, appID: String, path: String, digest: Da
     return destinationURL.deletingLastPathComponent().appendingPathComponent(temporaryName)
 }
 
-private func waitForFile(at url: URL, timeoutNanoseconds: UInt64 = 1_000_000_000) async throws {
+private func waitForFile(
+    at url: URL,
+    size expectedSize: Int? = nil,
+    timeoutNanoseconds: UInt64 = 1_000_000_000
+) async throws {
     let deadline = DispatchTime.now().uptimeNanoseconds + timeoutNanoseconds
     while DispatchTime.now().uptimeNanoseconds < deadline {
         if FileManager.default.fileExists(atPath: url.path) {
-            return
+            if let expectedSize {
+                let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+                if attributes[.size] as? Int == expectedSize {
+                    return
+                }
+            } else {
+                return
+            }
         }
         try await Task.sleep(nanoseconds: 10_000_000)
     }

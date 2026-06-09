@@ -24,7 +24,7 @@ const unpackLeaseExpiration = 30 * time.Minute
 
 // UnpackProgress reports progress during the image unpack operation.
 type UnpackProgress struct {
-	// Phase is one of "start", "layer", "complete".
+	// Phase is one of "start", "layer-start", "layer", "complete".
 	Phase string
 	// LayerIndex is the zero-based index of the current layer being unpacked.
 	LayerIndex int
@@ -169,6 +169,15 @@ func (c *Client) UnpackImage(ctx context.Context, img containerd.Image, progress
 			)
 			parentChainID = chainID
 			continue
+		}
+
+		if progress != nil {
+			progress(UnpackProgress{
+				Phase:       "layer-start",
+				LayerIndex:  i,
+				TotalLayers: totalLayers,
+				LayerSize:   layerDesc.Size,
+			})
 		}
 
 		// Unique per-attempt active key so concurrent unpacks of the same

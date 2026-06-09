@@ -7,7 +7,7 @@ import (
 
 	"go.uber.org/zap"
 
-	otelpb "github.com/wendylabsinc/wendy/proto/gen/otelpb"
+	otelpb "github.com/wendylabsinc/wendy/go/proto/gen/otelpb"
 )
 
 func TestContainerLogManager_SubscribeUnsubscribe(t *testing.T) {

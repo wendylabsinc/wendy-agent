@@ -14,7 +14,7 @@ rm -rf "$GEN_DIR"
 MODULE="github.com/wendylabsinc/wendy"
 
 # ---- Wendy Agent protos ----
-AGENT_PKG="$MODULE/proto/gen/agentpb"
+AGENT_PKG="$MODULE/go/proto/gen/agentpb"
 
 AGENT_PROTOS=(
     "wendy/agent/services/v1/shared.proto"
@@ -36,7 +36,7 @@ for p in "${AGENT_PROTOS[@]}"; do
 done
 
 # ---- Wendy Agent v2 protos ----
-V2_AGENT_PKG="$MODULE/proto/gen/agentpb/v2"
+V2_AGENT_PKG="$MODULE/go/proto/gen/agentpb/v2"
 
 V2_AGENT_PROTOS=(
     "wendy/agent/services/v2/shared.proto"
@@ -59,7 +59,7 @@ for p in "${V2_AGENT_PROTOS[@]}"; do
 done
 
 # OTEL protos
-OTEL_PKG="$MODULE/proto/gen/otelpb"
+OTEL_PKG="$MODULE/go/proto/gen/otelpb"
 OTEL_PROTOS=(
     "opentelemetry/proto/common/v1/common.proto"
     "opentelemetry/proto/resource/v1/resource.proto"
@@ -78,7 +78,7 @@ for p in "${OTEL_PROTOS[@]}"; do
 done
 
 # ---- Cloud protos ----
-CLOUD_PKG="$MODULE/proto/gen/cloudpb"
+CLOUD_PKG="$MODULE/go/proto/gen/cloudpb"
 CLOUD_PROTOS=(
     "cloud/apps.proto"
     "cloud/assets.proto"

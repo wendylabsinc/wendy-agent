@@ -8,8 +8,8 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
-	agentpb "github.com/wendylabsinc/wendy/proto/gen/agentpb"
-	agentpbv2 "github.com/wendylabsinc/wendy/proto/gen/agentpb/v2"
+	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
+	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 )
 
 // ContainerServiceV2 implements agentpbv2.WendyContainerServiceServer by
@@ -19,20 +19,14 @@ type ContainerServiceV2 struct {
 	v1 *ContainerService
 }
 
-// NewContainerServiceV2 creates a new ContainerServiceV2 wrapping the given v1 service.
 func NewContainerServiceV2(v1 *ContainerService) *ContainerServiceV2 {
 	return &ContainerServiceV2{v1: v1}
 }
 
-// StartContainer starts an existing container and streams its output to the client.
 func (s *ContainerServiceV2) StartContainer(req *agentpbv2.StartContainerRequest, stream grpc.ServerStreamingServer[agentpbv2.ContainerStreamResponse]) error {
 	return s.v1.streamContainerOutput(stream.Context(), req.GetAppName(), postStartAgentHookFromContext(stream.Context()), nil, &containerStreamV1Adapter{v2stream: stream})
 }
 
-// AttachContainer starts a container with stdin support, forwarding I/O
-// bidirectionally. It delegates to the v1 service via an adapter so that the
-// monitor bookkeeping (ClearExplicitStop / restart-policy registration) and
-// log-manager fan-out in the v1 path apply equally to v2 attach clients.
 func (s *ContainerServiceV2) AttachContainer(stream grpc.BidiStreamingServer[agentpbv2.AttachContainerRequest, agentpbv2.ContainerStreamResponse]) error {
 	return s.v1.AttachContainer(&attachStreamV1Adapter{
 		containerStreamV1Adapter: &containerStreamV1Adapter{v2stream: stream},
@@ -40,9 +34,6 @@ func (s *ContainerServiceV2) AttachContainer(stream grpc.BidiStreamingServer[age
 	})
 }
 
-// StopContainer stops a running container by name. It delegates to the v1
-// service so the monitor's explicit-stop bookkeeping is applied and an
-// unless-stopped container is not restarted out from under the caller.
 func (s *ContainerServiceV2) StopContainer(ctx context.Context, req *agentpbv2.StopContainerRequest) (*agentpbv2.StopContainerResponse, error) {
 	if s.v1.containerd == nil {
 		return nil, status.Error(codes.Internal, "containerd is not available")
@@ -55,9 +46,6 @@ func (s *ContainerServiceV2) StopContainer(ctx context.Context, req *agentpbv2.S
 	return &agentpbv2.StopContainerResponse{}, nil
 }
 
-// DeleteContainer deletes a container and optionally its image and volumes. It
-// delegates to the v1 service so the container is unregistered from the monitor
-// before removal, closing the delete/restart race.
 func (s *ContainerServiceV2) DeleteContainer(ctx context.Context, req *agentpbv2.DeleteContainerRequest) (*agentpbv2.DeleteContainerResponse, error) {
 	if s.v1.containerd == nil {
 		return nil, status.Error(codes.Internal, "containerd is not available")
@@ -72,7 +60,6 @@ func (s *ContainerServiceV2) DeleteContainer(ctx context.Context, req *agentpbv2
 	return &agentpbv2.DeleteContainerResponse{}, nil
 }
 
-// ListContainers streams all known containers to the client.
 func (s *ContainerServiceV2) ListContainers(_ *agentpbv2.ListContainersRequest, stream grpc.ServerStreamingServer[agentpbv2.ListContainersResponse]) error {
 	if s.v1.containerd == nil {
 		return nil
@@ -91,7 +78,6 @@ func (s *ContainerServiceV2) ListContainers(_ *agentpbv2.ListContainersRequest, 
 	return nil
 }
 
-// ListVolumes delegates to v1 ListVolumes and maps the response to v2 types.
 func (s *ContainerServiceV2) ListVolumes(ctx context.Context, _ *agentpbv2.ListVolumesRequest) (*agentpbv2.ListVolumesResponse, error) {
 	v1resp, err := s.v1.ListVolumes(ctx, &agentpb.ListVolumesRequest{})
 	if err != nil {
@@ -110,7 +96,6 @@ func (s *ContainerServiceV2) ListVolumes(ctx context.Context, _ *agentpbv2.ListV
 	return &agentpbv2.ListVolumesResponse{Volumes: v2vols}, nil
 }
 
-// RemoveVolume delegates to v1 RemoveVolume.
 func (s *ContainerServiceV2) RemoveVolume(ctx context.Context, req *agentpbv2.RemoveVolumeRequest) (*agentpbv2.RemoveVolumeResponse, error) {
 	if _, err := s.v1.RemoveVolume(ctx, &agentpb.RemoveVolumeRequest{Name: req.GetName()}); err != nil {
 		return nil, err
@@ -118,7 +103,6 @@ func (s *ContainerServiceV2) RemoveVolume(ctx context.Context, req *agentpbv2.Re
 	return &agentpbv2.RemoveVolumeResponse{}, nil
 }
 
-// ListContainerStats returns memory and storage stats for all managed containers.
 func (s *ContainerServiceV2) ListContainerStats(ctx context.Context, _ *agentpbv2.ListContainerStatsRequest) (*agentpbv2.ListContainerStatsResponse, error) {
 	if s.v1.containerd == nil {
 		return &agentpbv2.ListContainerStatsResponse{}, nil

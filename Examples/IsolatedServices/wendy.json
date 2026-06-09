@@ -1,0 +1,14 @@
+{
+  "appId": "sh.wendy.examples.isolatedservices",
+  "version": "1.0.0",
+  "isolation": "isolated",
+  "services": {
+    "api": {
+      "context": "./api"
+    },
+    "worker": {
+      "context": "./worker",
+      "dependsOn": ["api"]
+    }
+  }
+}

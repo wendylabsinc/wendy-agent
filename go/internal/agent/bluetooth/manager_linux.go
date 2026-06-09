@@ -11,12 +11,9 @@ import (
 
 	"go.uber.org/zap"
 
-	agentpb "github.com/wendylabsinc/wendy/proto/gen/agentpb"
+	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
-// BlueZManager manages Bluetooth peripherals via bluetoothctl on Linux.
-// This avoids a direct D-Bus dependency while providing the same functionality.
-// For a full D-Bus implementation, use github.com/godbus/dbus/v5.
 type BlueZManager struct {
 	logger *zap.Logger
 }

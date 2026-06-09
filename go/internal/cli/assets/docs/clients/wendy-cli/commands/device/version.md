@@ -1,0 +1,2 @@
+Lists the OS (+version), CPU architecture and Agent version of a Wendy-enabled device.
+Can be used to check for updates, but also used by [`wendy run`](../run.md) to understand how to cross-compile correctly.

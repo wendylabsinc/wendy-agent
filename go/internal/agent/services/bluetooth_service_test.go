@@ -10,7 +10,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/test/bufconn"
 
-	agentpbv2 "github.com/wendylabsinc/wendy/proto/gen/agentpb/v2"
+	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 )
 
 func startBluetoothServer(t *testing.T, bm BluetoothManager) (agentpbv2.WendyBluetoothServiceClient, func()) {

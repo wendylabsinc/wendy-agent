@@ -14,7 +14,7 @@ import (
 	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"
 
-	otelpb "github.com/wendylabsinc/wendy/proto/gen/otelpb"
+	otelpb "github.com/wendylabsinc/wendy/go/proto/gen/otelpb"
 )
 
 const (
@@ -34,12 +34,12 @@ var (
 // rather than gRPC on port 4317.
 type OTELHTTPReceiver struct {
 	logger      *zap.Logger
-	broadcaster *TelemetryBroadcaster
+	broadcaster TelemetryPublisher
 	server      *http.Server
 }
 
 // NewOTELHTTPReceiver creates a new OTELHTTPReceiver.
-func NewOTELHTTPReceiver(logger *zap.Logger, broadcaster *TelemetryBroadcaster) *OTELHTTPReceiver {
+func NewOTELHTTPReceiver(logger *zap.Logger, broadcaster TelemetryPublisher) *OTELHTTPReceiver {
 	r := &OTELHTTPReceiver{
 		logger:      logger,
 		broadcaster: broadcaster,
@@ -57,12 +57,10 @@ func NewOTELHTTPReceiver(logger *zap.Logger, broadcaster *TelemetryBroadcaster) 
 	return r
 }
 
-// Serve starts serving HTTP requests on the given listener.
 func (r *OTELHTTPReceiver) Serve(listener net.Listener) error {
 	return r.server.Serve(listener)
 }
 
-// Shutdown gracefully shuts down the HTTP server.
 func (r *OTELHTTPReceiver) Shutdown(ctx context.Context) error {
 	return r.server.Shutdown(ctx)
 }

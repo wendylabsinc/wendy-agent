@@ -27,8 +27,6 @@ type TextPromptModel struct {
 	quitting bool
 }
 
-// NewTextPrompt creates a new text prompt with an optional validation function.
-// If defaultValue is non-empty, the input is pre-filled with it.
 func NewTextPrompt(prompt, hint, defaultValue string, validate ValidateFunc) TextPromptModel {
 	ti := textinput.New()
 	ti.Focus()
@@ -110,7 +108,6 @@ func (m TextPromptModel) View() string {
 	return sb.String()
 }
 
-// Value returns the trimmed text the user entered.
 func (m TextPromptModel) Value() string {
 	return strings.TrimSpace(m.input.Value())
 }

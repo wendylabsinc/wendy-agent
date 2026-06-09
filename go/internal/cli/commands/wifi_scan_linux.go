@@ -10,7 +10,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/wendylabsinc/wendy/internal/shared/nmcli"
+	"github.com/wendylabsinc/wendy/go/internal/shared/nmcli"
 )
 
 // wifiScanCacheHint is empty on Linux: nmcli's `device wifi rescan` triggers

@@ -153,3 +153,32 @@ func TestSpecNamespaces(t *testing.T) {
 		}
 	}
 }
+
+func TestInjectHostsMount(t *testing.T) {
+	spec := DefaultSpec("rootfs", []string{"/bin/sh"})
+	InjectHostsMount(spec, "/run/wendy/hosts/com.example.app")
+	var found bool
+	for _, m := range spec.Mounts {
+		if m.Destination == "/etc/hosts" {
+			found = true
+			if m.Source != "/run/wendy/hosts/com.example.app" {
+				t.Errorf("Source = %q, want /run/wendy/hosts/com.example.app", m.Source)
+			}
+			if m.Type != "bind" {
+				t.Errorf("Type = %q, want bind", m.Type)
+			}
+			hasRO := false
+			for _, opt := range m.Options {
+				if opt == "ro" {
+					hasRO = true
+				}
+			}
+			if !hasRO {
+				t.Errorf("Options %v should contain 'ro'", m.Options)
+			}
+		}
+	}
+	if !found {
+		t.Error("expected /etc/hosts bind-mount in spec")
+	}
+}

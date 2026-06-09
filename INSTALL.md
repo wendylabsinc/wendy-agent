@@ -6,12 +6,30 @@ For most users, the recommended installation method is the install script docume
 
 ### macOS (Homebrew)
 
+On Homebrew versions that support formula trust:
+
+```sh
+brew trust --formula wendylabsinc/tap/wendy
+brew install wendylabsinc/tap/wendy
+```
+
+On older Homebrew versions where `brew trust` is unavailable:
+
 ```sh
 brew tap wendylabsinc/tap
 brew install wendy
 ```
 
 For the nightly (prerelease) version:
+
+On Homebrew versions that support formula trust:
+
+```sh
+brew trust --formula wendylabsinc/tap/wendy-nightly
+brew install wendylabsinc/tap/wendy-nightly
+```
+
+On older Homebrew versions where `brew trust` is unavailable:
 
 ```sh
 brew tap wendylabsinc/tap

@@ -533,7 +533,7 @@ func TestExtractTemplateArchive_ParsesSchema(t *testing.T) {
 			"id":"p1","title":"Phase 1",
 			"questions":[
 				{"id":"MODE","label":"Mode?","type":"radio","required":true,
-				 "options":[{"value":"local","label":"Local"},{"value":"cloud","label":"Cloud"}]}
+				 "options":[{"value":"local","label":"Local","size":"edge","parameters":"4B","comments":"small device"},{"value":"cloud","label":"Cloud"}]}
 			]
 		}]
 	}`
@@ -560,6 +560,10 @@ func TestExtractTemplateArchive_ParsesSchema(t *testing.T) {
 	}
 	if len(phase.Questions) != 1 || phase.Questions[0].ID != "MODE" {
 		t.Errorf("phase.Questions = %+v, want one MODE question", phase.Questions)
+	}
+	opt := phase.Questions[0].Options[0]
+	if opt.Size != "edge" || opt.Parameters != "4B" || opt.Comments != "small device" {
+		t.Errorf("schema option metadata = %+v, want size/parameters/comments", opt)
 	}
 }
 

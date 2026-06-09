@@ -14,10 +14,11 @@ import (
 	bubbleTable "github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
-	"github.com/wendylabsinc/wendy/internal/shared/config"
-	"github.com/wendylabsinc/wendy/internal/shared/version"
-	"github.com/wendylabsinc/wendy/proto/gen/agentpb"
-	cloudpb "github.com/wendylabsinc/wendy/proto/gen/cloudpb"
+	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/shared/config"
+	"github.com/wendylabsinc/wendy/go/internal/shared/version"
+	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
+	cloudpb "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
 )
 
 const cloudDiscoverRefreshInterval = 10 * time.Second
@@ -82,19 +83,18 @@ type cloudDiscoverModel struct {
 	versions       map[int32]*agentpb.GetAgentVersionResponse
 	versionPending map[int32]bool
 	versionSem     chan struct{}
-	table          bubbleTable.Model
+	table          tui.BubbleTable
 	quitting       bool
 	flashMessage   string
 	flashIsError   bool
 	updatingName   string
 	selected       *cloudpb.Asset
+	windowWidth    int
 	windowHeight   int
 	err            error
 	hasResults     bool
 }
 
-// newCloudDiscoverModel creates a cloud discover model.
-// initialAssets pre-populates the list; when nil the model fetches on init.
 func newCloudDiscoverModel(ctx context.Context, auth *config.AuthConfig, brokerURL string, all, pickerMode bool, initialAssets []*cloudpb.Asset) cloudDiscoverModel {
 	m := cloudDiscoverModel{
 		ctx:            ctx,
@@ -145,9 +145,12 @@ func (m cloudDiscoverModel) scanCmd() tea.Cmd {
 func (m cloudDiscoverModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
+		m.windowWidth = msg.Width
 		m.windowHeight = msg.Height
+		var cmd tea.Cmd
+		m.table, cmd = m.table.Update(msg)
 		m.refreshTable()
-		return m, nil
+		return m, cmd
 
 	case cloudScanMsg:
 		if msg.err != nil {
@@ -256,33 +259,41 @@ func (m cloudDiscoverModel) View() string {
 	var sb strings.Builder
 
 	if m.pickerMode {
-		sb.WriteString(scanStyle.Render("⟳ Fetching cloud devices...") + "\n")
-		sb.WriteString(dimStyle.Render("  ↑/↓ navigate, enter select, u update, q quit") + "\n")
+		sb.WriteString(m.viewLine(scanStyle.Render("⟳ Fetching cloud devices...")) + "\n")
+		hint := "  ↑/↓ navigate, enter select, u update, q quit"
+		if m.table.CanScroll() {
+			hint = "  ↑/↓ navigate, ←/→ scroll, enter select, u update, q quit"
+		}
+		sb.WriteString(m.viewLine(dimStyle.Render(hint)) + "\n")
 	} else {
-		sb.WriteString(scanStyle.Render("⟳ Scanning for cloud devices...") + "\n")
+		sb.WriteString(m.viewLine(scanStyle.Render("⟳ Scanning for cloud devices...")) + "\n")
 		if m.updatingName != "" {
-			sb.WriteString(dimStyle.Render("  updating "+m.updatingName+"... (q quit)") + "\n")
+			sb.WriteString(m.viewLine(dimStyle.Render("  updating "+m.updatingName+"... (q quit)")) + "\n")
 		} else {
-			sb.WriteString(dimStyle.Render("  ↑/↓ navigate, enter copy, a copy all, u update, q quit") + "\n")
+			hint := "  ↑/↓ navigate, enter copy, a copy all, u update, q quit"
+			if m.table.CanScroll() {
+				hint = "  ↑/↓ navigate, ←/→ scroll, enter copy, a copy all, u update, q quit"
+			}
+			sb.WriteString(m.viewLine(dimStyle.Render(hint)) + "\n")
 		}
 	}
 
 	sb.WriteString("\n")
 
 	if m.err != nil {
-		sb.WriteString(fmt.Sprintf("Error: %v\n", m.err))
+		sb.WriteString(m.viewLine(fmt.Sprintf("Error: %v", m.err)) + "\n")
 	}
 	if len(m.assets) > 0 {
 		sb.WriteString(m.table.View() + "\n")
 	} else if m.err == nil {
 		if m.hasResults {
 			if m.all {
-				sb.WriteString(dimStyle.Render("No enrolled devices found.") + "\n")
+				sb.WriteString(m.viewLine(dimStyle.Render("No enrolled devices found.")) + "\n")
 			} else {
-				sb.WriteString(dimStyle.Render("No online devices found. Use --all to include offline devices.") + "\n")
+				sb.WriteString(m.viewLine(dimStyle.Render("No online devices found. Use --all to include offline devices.")) + "\n")
 			}
 		} else {
-			sb.WriteString(dimStyle.Render("Fetching devices from cloud...") + "\n")
+			sb.WriteString(m.viewLine(dimStyle.Render("Fetching devices from cloud...")) + "\n")
 		}
 	}
 
@@ -293,7 +304,7 @@ func (m cloudDiscoverModel) View() string {
 		} else if m.updatingName != "" {
 			style = scanStyle
 		}
-		sb.WriteString("\n" + style.Render("  "+m.flashMessage) + "\n")
+		sb.WriteString("\n" + m.viewLine(style.Render("  "+m.flashMessage)) + "\n")
 	}
 
 	return sb.String()
@@ -308,6 +319,13 @@ func (m *cloudDiscoverModel) refreshTable() {
 	}
 	m.table.SetWidth(discoverTableWidth(m.table.Columns()))
 	m.table.SetHeight(discoverTableHeight(len(rows), m.windowHeight, true))
+}
+
+func (m cloudDiscoverModel) viewLine(line string) string {
+	if m.windowWidth <= 0 {
+		return line
+	}
+	return tui.CropANSIView(line, 0, m.windowWidth)
 }
 
 func cloudDiscoverTableRows(assets []*cloudpb.Asset, versions map[int32]*agentpb.GetAgentVersionResponse) []bubbleTable.Row {

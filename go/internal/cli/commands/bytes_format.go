@@ -1,6 +1,9 @@
 package commands
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // formatBytes converts a byte count to a human-readable string using SI units
 // (powers of 1000: kB, MB, GB). This is the package-level helper used by
@@ -16,4 +19,14 @@ func formatBytes(n int64) string {
 	default:
 		return fmt.Sprintf("%d B", n)
 	}
+}
+
+func formatDiskUsage(usedBytes, totalBytes int64) string {
+	return fmt.Sprintf("%s / %s", formatGigabytes(usedBytes), formatGigabytes(totalBytes))
+}
+
+func formatGigabytes(n int64) string {
+	s := fmt.Sprintf("%.2f", float64(n)/1_000_000_000)
+	s = strings.TrimRight(strings.TrimRight(s, "0"), ".")
+	return s + " GB"
 }

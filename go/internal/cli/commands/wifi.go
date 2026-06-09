@@ -11,11 +11,11 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
-	"github.com/wendylabsinc/wendy/internal/cli/ble"
-	"github.com/wendylabsinc/wendy/internal/cli/tui"
-	"github.com/wendylabsinc/wendy/internal/cli/tui/wifitable"
-	"github.com/wendylabsinc/wendy/internal/shared/models"
-	"github.com/wendylabsinc/wendy/proto/gen/agentpb"
+	"github.com/wendylabsinc/wendy/go/internal/cli/ble"
+	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/cli/tui/wifitable"
+	"github.com/wendylabsinc/wendy/go/internal/shared/models"
+	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	"golang.org/x/term"
 )
 
@@ -172,6 +172,9 @@ func (c *wifiClient) List(ctx context.Context) ([]*agentpb.ListWiFiNetworksRespo
 	if c.agent != nil {
 		resp, err := c.agent.ListWiFiNetworks(ctx, &agentpb.ListWiFiNetworksRequest{})
 		if err != nil {
+			if macErr := macOSBetaUnsupportedFeatureError(ctx, c.agent, err, "Wi-Fi network scanning"); macErr != nil {
+				return nil, fmt.Errorf("listing WiFi networks: %w", macErr)
+			}
 			return nil, fmt.Errorf("listing WiFi networks: %w", err)
 		}
 		return resp.GetNetworks(), nil
@@ -459,6 +462,9 @@ func newWifiStatusCmd() *cobra.Command {
 
 			resp, err := target.Agent.AgentService.GetWiFiStatus(ctx, &agentpb.GetWiFiStatusRequest{})
 			if err != nil {
+				if macErr := macOSBetaUnsupportedFeatureError(ctx, target.Agent.AgentService, err, "Wi-Fi status reporting"); macErr != nil {
+					return fmt.Errorf("getting WiFi status: %w", macErr)
+				}
 				return fmt.Errorf("getting WiFi status: %w", err)
 			}
 

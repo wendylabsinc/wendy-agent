@@ -16,8 +16,8 @@ import (
 	"github.com/dustin/go-humanize"
 	"golang.org/x/term"
 
-	"github.com/wendylabsinc/wendy/internal/cli/grpcclient"
-	"github.com/wendylabsinc/wendy/proto/gen/agentpb"
+	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
+	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
 // fileSyncEntry pairs an absolute local path with its effective remote destination.
@@ -499,9 +499,6 @@ func formatTransferRate(bytesSent int64, elapsed time.Duration) string {
 	return humanize.Bytes(uint64(rate)) + "/s"
 }
 
-// effectiveRemotePath returns the effective destination path on the device for
-// a FileSyncEntry from AppConfig. When To is empty it defaults to Path with any
-// leading "./" stripped.
 func effectiveRemotePath(path, to string) string {
 	if to != "" {
 		return to

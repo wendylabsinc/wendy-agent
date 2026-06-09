@@ -5,6 +5,8 @@ on:
     paths:
       - 'go/**'
       - 'Proto/**'
+      - 'go.mod'
+      - 'go.sum'
       - '.github/workflows/**'
 
 concurrency:
@@ -17,24 +19,25 @@ permissions:
 jobs:
   test:
     name: Test
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: go
+    runs-on: runs-on,runner=2cpu-linux-x64
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version-file: go/go.mod
-          cache-dependency-path: go/go.sum
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
 
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev
 
       - name: Run tests
-        run: go test ./... -race -count=1 -timeout 120s
+        working-directory: go
+        # Go 1.26.4 can ICE on the Linux runner while compiling some
+        # dependencies with the race detector and parallel compilation.
+        # Keep race coverage but compile serially.
+        run: go test -p=1 -gcflags=all=-c=1 ./... -race -count=1 -timeout 120s
 
       # Compile the Windows-shipping CLI packages so //go:build windows files
       # (e.g. wifi_scan_windows.go) are at least type-checked in PR CI. The
@@ -43,6 +46,7 @@ jobs:
       # release workflow. The agent intentionally is not cross-compiled —
       # it uses Linux-only syscalls and only the CLI ships to Windows.
       - name: Cross-compile Windows CLI packages
+        working-directory: go
         env:
           GOOS: windows
           GOARCH: amd64
@@ -52,41 +56,37 @@ jobs:
 
   vet:
     name: Vet
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: go
+    runs-on: runs-on,runner=2cpu-linux-x64
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version-file: go/go.mod
-          cache-dependency-path: go/go.sum
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
 
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev
 
       - name: Run go vet
+        working-directory: go
         run: go vet ./...
 
   format:
     name: Format Check
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: go
+    runs-on: runs-on,runner=2cpu-linux-x64
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version-file: go/go.mod
-          cache-dependency-path: go/go.sum
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
 
       - name: Check formatting
+        working-directory: go
         run: |
           UNFORMATTED=$(gofmt -l -s .)
           if [ -n "$UNFORMATTED" ]; then

@@ -6,8 +6,8 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
 
-	agentpb "github.com/wendylabsinc/wendy/proto/gen/agentpb"
-	agentpbv2 "github.com/wendylabsinc/wendy/proto/gen/agentpb/v2"
+	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
+	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 )
 
 // AudioServiceV2 implements agentpbv2.WendyAudioServiceServer by
@@ -17,7 +17,6 @@ type AudioServiceV2 struct {
 	v1 *AudioService
 }
 
-// NewAudioServiceV2 creates a new AudioServiceV2 wrapping the given v1 service.
 func NewAudioServiceV2(v1 *AudioService) *AudioServiceV2 {
 	return &AudioServiceV2{v1: v1}
 }

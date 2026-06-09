@@ -106,7 +106,6 @@ func (l *dualStackListener) Close() error {
 	return nil
 }
 
-// Addr returns the address of the IPv4 listener.
 func (l *dualStackListener) Addr() net.Addr {
 	return l.listeners[0].Addr()
 }

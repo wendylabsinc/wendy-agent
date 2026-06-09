@@ -76,6 +76,10 @@ message CreateContainerRequest {
     string working_dir = 5;
     optional RestartPolicy restart_policy = 6;
     repeated string user_args = 7;
+    // Additional environment variables to inject. Format: "KEY=VALUE".
+    // Applied after the image's built-in env and before Wendy system env vars,
+    // so Wendy vars always win.
+    repeated string env = 8;
 }
 
 message CreateContainerResponse {}

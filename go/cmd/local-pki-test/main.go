@@ -21,9 +21,9 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 
-	"github.com/wendylabsinc/wendy/internal/shared/certs"
-	agentpb "github.com/wendylabsinc/wendy/proto/gen/agentpb"
-	cloudpb "github.com/wendylabsinc/wendy/proto/gen/cloudpb"
+	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
+	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
+	cloudpb "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
 )
 
 func main() {
@@ -131,7 +131,7 @@ func main() {
 		log.Fatalf("GenerateKeyPair: %v", err)
 	}
 
-	clientCSRPEM, err := certs.GenerateCSR(clientKeyPEM, "sh/wendy/test-client")
+	clientCSRPEM, err := certs.GenerateCSR([]byte(clientKeyPEM), "sh/wendy/test-client")
 	if err != nil {
 		log.Fatalf("GenerateCSR: %v", err)
 	}

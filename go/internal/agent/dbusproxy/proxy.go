@@ -29,14 +29,12 @@ type proxyProcess struct {
 	socketDir string
 }
 
-// Manager manages xdg-dbus-proxy processes, one per container.
 type Manager struct {
 	logger    *zap.Logger
 	mu        sync.Mutex
 	processes map[string]*proxyProcess // keyed by appID
 }
 
-// NewManager creates a new proxy manager.
 func NewManager(logger *zap.Logger) *Manager {
 	return &Manager{
 		logger:    logger,
@@ -50,8 +48,6 @@ func IsAvailable() bool {
 	return err == nil
 }
 
-// SocketDir returns the proxy socket directory path for a given appID.
-// This can be used by callers to determine mount paths without starting a proxy.
 func SocketDir(appID string) string {
 	return filepath.Join(baseDir, appID)
 }

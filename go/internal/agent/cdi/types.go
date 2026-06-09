@@ -15,7 +15,6 @@ type CDIDevice struct {
 	ContainerEdits CDIContainerEdits `json:"containerEdits" yaml:"containerEdits"`
 }
 
-// CDIContainerEdits holds the edits to apply to a container for a device.
 type CDIContainerEdits struct {
 	DeviceNodes []CDIDeviceNode `json:"deviceNodes,omitempty" yaml:"deviceNodes,omitempty"`
 	Mounts      []CDIMount      `json:"mounts,omitempty" yaml:"mounts,omitempty"`
@@ -34,7 +33,6 @@ type CDIDeviceNode struct {
 	Permissions string `json:"permissions,omitempty" yaml:"permissions,omitempty"`
 }
 
-// EffectiveHostPath returns the host path, defaulting to Path if HostPath is empty.
 func (n *CDIDeviceNode) EffectiveHostPath() string {
 	if n.HostPath != "" {
 		return n.HostPath
@@ -59,7 +57,6 @@ type CDIHook struct {
 	Timeout  *int     `json:"timeout,omitempty" yaml:"timeout,omitempty"`
 }
 
-// CDIDeviceInfo provides information about an available CDI device.
 type CDIDeviceInfo struct {
 	Identifier  string
 	Category    string

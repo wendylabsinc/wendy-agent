@@ -1,0 +1,143 @@
+---
+title: Discovering Devices
+description: Find WendyOS devices on your network using the Wendy CLI
+---
+
+## Discovering WendyOS Devices
+
+The Wendy CLI can automatically discover WendyOS devices connected to your development machine. This works over USB connections and over your Local Area Network (LAN).
+
+### Prerequisites
+
+- Wendy CLI installed on your development machine
+- A WendyOS device (NVIDIA Jetson or Raspberry Pi 5) either:
+  - Connected via USB cable, or
+  - Connected to the same network as your development machine
+
+## Running Device Discovery
+
+To discover all available WendyOS devices, run:
+
+```bash
+wendy discover
+```
+
+After a few seconds, you'll see a list of all discovered devices:
+
+```
+wendy discover
+✔︎ Discovering all Wendy devices [5.0s]
+✔ Success
+  Found 1 Wendy device
+
+True Probe (version: 2025.12.17-110210)
+   USB 3.2: VID: 0x1D6B, PID: 0x0104, S/N: 1421325024451
+   Ethernet: en30, 2.5 Gbps
+   LAN: wendyos-true-probe.local
+```
+
+### Understanding the Output
+
+The discovery output shows all available connection methods for each device:
+
+| Connection | Description |
+|------------|-------------|
+| **USB** | Direct USB connection (USB 2.0, 3.0, or 3.2) with vendor/product IDs |
+| **Ethernet** | Direct Ethernet connection via USB-C adapter or dock |
+| **LAN** | Network discovery via mDNS (device hostname on your local network) |
+
+<Callout type="info">
+  **Multiple Connection Methods**: A single device may show multiple connection options. The CLI will automatically choose the fastest available connection when running commands.
+</Callout>
+
+## Connection Methods
+
+### USB Connection
+
+USB is the most reliable connection method and works regardless of network configuration. Simply connect your WendyOS device to your development machine using a USB-C cable.
+
+USB connections are ideal for:
+- Initial device setup
+- Environments where network discovery is blocked
+- Maximum reliability during development
+
+#### Accessing Services Over USB
+
+Even if your WendyOS device has no Wi-Fi or network connection, you can still access services running on it using the `.local` hostname when connected over USB.
+
+For example, if you deploy a web server that listens on `http://0.0.0.0:3000`, you can open it in your browser at:
+
+```
+http://wendyos-true-probe.local:3000
+```
+
+<Callout type="warning">
+  **Replace the hostname**: Each WendyOS device has a unique hostname generated during initial setup. Replace `wendyos-true-probe` with your device's actual hostname shown in the discovery output (e.g., `wendyos-your-device.local`).
+</Callout>
+
+This works because USB connections create a virtual network interface between your development machine and the WendyOS device, allowing direct communication without requiring Wi-Fi or LAN connectivity.
+
+### LAN Discovery
+
+LAN discovery uses mDNS (also known as Bonjour on macOS or Avahi on Linux) to find devices on your local network. This enables wireless development without a USB cable.
+
+<Callout type="warning">
+  **Network Requirements**: LAN discovery requires that your network allows mDNS traffic. Many workplace and public networks block this by default.
+</Callout>
+
+## Troubleshooting LAN Discovery
+
+If your WendyOS device doesn't appear when connected to the same network:
+
+### Client Isolation Mode
+
+Many routers and access points have **client isolation** (also called AP isolation or station isolation) enabled. This security feature prevents devices on the same network from communicating with each other.
+
+**To fix this:**
+1. Access your router's admin panel
+2. Look for "Client Isolation", "AP Isolation", or "Station Isolation" settings
+3. Disable this feature for your development network
+
+### mDNS/Bonjour/Avahi Blocked
+
+Some networks block multicast DNS traffic, which prevents device discovery:
+
+- **Corporate networks**: IT policies often block mDNS for security reasons
+- **Public Wi-Fi**: Coffee shops, hotels, and airports typically block device-to-device communication
+- **Guest networks**: Most guest networks isolate clients by design
+
+**Solutions:**
+- Use a USB connection instead
+- Connect both devices to a home or personal network
+- Ask your IT department to allow mDNS on a development VLAN
+- Create a dedicated development network with mDNS enabled
+
+### Firewall Settings
+
+Ensure your development machine's firewall allows mDNS traffic:
+
+- **macOS**: mDNS (Bonjour) is typically allowed by default
+- **Linux**: Ensure Avahi daemon is running and port 5353/UDP is open
+- **Windows**: Allow mDNS responder through Windows Firewall
+
+## Using Discovery with Other Commands
+
+Many Wendy CLI commands automatically run device discovery. For example, when you run `wendy run`, you'll see the discovery process followed by a device selection prompt:
+
+```
+wendy run
+✔︎ Searching for WendyOS devices [5.2s]
+✔︎ Which device do you want to run this app on?: True Probe (wendyos-true-probe.local) [USB, Ethernet, LAN]
+```
+
+If only one device is found, some commands will automatically select it. If multiple devices are found, you'll be prompted to choose.
+
+<SetDefaultDeviceSection />
+
+## Next Steps
+
+Once you've discovered your device:
+
+- [Connect your device to Wi-Fi](/docs/guides/device/connecting-to-wifi) for wireless development
+- Deploy your first application with `wendy run`
+- Check device status with `wendy device status`

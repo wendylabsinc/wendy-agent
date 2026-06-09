@@ -13,8 +13,8 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/wendylabsinc/wendy/internal/shared/nmcli"
-	agentpb "github.com/wendylabsinc/wendy/proto/gen/agentpb"
+	"github.com/wendylabsinc/wendy/go/internal/shared/nmcli"
+	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
 // NMCLINetworkManager implements services.NetworkManager using nmcli commands.
@@ -23,10 +23,6 @@ type NMCLINetworkManager struct {
 	nmcliPath string
 }
 
-// NewNMCLINetworkManager creates a new NMCLINetworkManager.
-// Returns nil if nmcli is not available on the system.
-// The resolved path is stored so that later exec calls succeed even if
-// PATH changes (e.g. when running under a systemd service).
 func NewNMCLINetworkManager(logger *zap.Logger) *NMCLINetworkManager {
 	path := resolveNMCLIPath()
 	if path == "" {
@@ -301,10 +297,6 @@ func addOrUpdateProfile(ctx context.Context, nmcliPath string, c SavedCredential
 	return addProfile(ctx, nmcliPath, c)
 }
 
-// existingProfileUUID returns the UUID of the saved 802-11-wireless profile
-// whose ssid field equals ssid. Returns ("", nil) when no such profile
-// exists. Uses a single batched `nmcli connection show UUID1 UUID2 …` call
-// so the cost is O(1) exec calls in the number of saved profiles.
 func existingProfileUUID(ctx context.Context, nmcliPath, ssid string) (string, error) {
 	out, err := nmcli.Command(ctx, nmcliPath, "-t",
 		"-f", "NAME,UUID,TYPE", "connection", "show").Output()
@@ -551,7 +543,6 @@ func runNMCLIConnect(ctx context.Context, nmcliPath, ssid, password string, hidd
 	return nil
 }
 
-// GetWiFiStatus returns the current WiFi connection status.
 func (n *NMCLINetworkManager) GetWiFiStatus(ctx context.Context) (connected bool, ssid string, err error) {
 	cmd := nmcli.Command(ctx, n.nmcliPath, "-t", "-f", "TYPE,STATE,CONNECTION", "device", "status")
 	output, err := cmd.Output()

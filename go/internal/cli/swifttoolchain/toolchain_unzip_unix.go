@@ -7,10 +7,6 @@ import (
 	"path/filepath"
 )
 
-// unzipOverwriteEnv returns a modified env with an unzip wrapper prepended to
-// PATH. The wrapper passes -o (overwrite without prompting) to the real unzip
-// binary, which prevents interactive prompts when the zip has duplicate
-// entries. Call the returned cleanup func when done.
 func unzipOverwriteEnv() (env []string, cleanup func(), err error) {
 	dir, err := os.MkdirTemp("", "wendy-unzip-*")
 	if err != nil {

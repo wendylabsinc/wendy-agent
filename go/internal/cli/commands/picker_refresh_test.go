@@ -8,7 +8,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/wendylabsinc/wendy/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 )
 
 func TestRefreshingPickerModel_InitLoadsItems(t *testing.T) {

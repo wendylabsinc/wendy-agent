@@ -17,9 +17,9 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
-	"github.com/wendylabsinc/wendy/internal/cli/tui"
-	"github.com/wendylabsinc/wendy/internal/shared/discovery"
-	"github.com/wendylabsinc/wendy/internal/shared/models"
+	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
+	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 )
 
 // ─── phases ──────────────────────────────────────────────────────────────────
@@ -1768,8 +1768,6 @@ func (m *tourWizardModel) createProjectFromTemplate() error {
 
 // ─── platform helpers ─────────────────────────────────────────────────────────
 
-// detectCurrentWiFiSSID returns the SSID the host machine is currently
-// connected to, or "" if unavailable or not connected.
 func detectCurrentWiFiSSID() string {
 	switch runtime.GOOS {
 	case "darwin":

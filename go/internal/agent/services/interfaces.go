@@ -5,8 +5,8 @@ import (
 	"context"
 	"io"
 
-	"github.com/wendylabsinc/wendy/internal/shared/appconfig"
-	agentpb "github.com/wendylabsinc/wendy/proto/gen/agentpb"
+	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
+	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
 // NetworkManager abstracts WiFi management operations (typically backed by nmcli).
@@ -49,6 +49,11 @@ type ContainerdClient interface {
 	StartContainerWithStdin(ctx context.Context, appName string, stdin io.Reader, postStartAgentCommand string, restartPolicy *agentpb.RestartPolicy) (<-chan ContainerOutput, error)
 	StopContainer(ctx context.Context, appName string) error
 	DeleteContainer(ctx context.Context, appName string, deleteImage bool) error
+	// ContainerIDsForApp returns the containerd container IDs for all services
+	// belonging to appID (one for single-container, one per service for
+	// multi-service apps). Used by the service layer to mark every container in
+	// the monitor before issuing a stop or delete.
+	ContainerIDsForApp(ctx context.Context, appID string) ([]string, error)
 	ListContainers(ctx context.Context) ([]*agentpb.AppContainer, error)
 	GetContainerStats(ctx context.Context) ([]*agentpb.ContainerStats, error)
 	GetContainerMetrics(ctx context.Context, appName string) (ContainerMetrics, error)
@@ -87,14 +92,12 @@ type ContainerMonitorRegistrar interface {
 	ClearExplicitStop(appName string)
 }
 
-// ContainerOutput represents a chunk of output from a running container.
 type ContainerOutput struct {
 	Stdout []byte
 	Stderr []byte
 	Done   bool
 }
 
-// ContainerMetrics holds a point-in-time CPU and memory snapshot for a container.
 type ContainerMetrics struct {
 	UserCPUNanos int64 // cumulative user-mode CPU time in nanoseconds
 	SysCPUNanos  int64 // cumulative kernel-mode CPU time in nanoseconds

@@ -34,8 +34,9 @@ func GenerateKeyPair() (privateKeyPEM string, err error) {
 }
 
 // GenerateCSR creates a PKCS#10 certificate signing request using the provided
-// PEM-encoded private key and common name. The CSR is returned as a PEM string.
-func GenerateCSR(privateKeyPEM string, commonName string) (csrPEM string, err error) {
+// PEM-encoded private key (as bytes, so callers can zero the slice after use)
+// and common name. The CSR is returned as a PEM string.
+func GenerateCSR(privateKeyPEM []byte, commonName string) (csrPEM string, err error) {
 	key, err := parseECPrivateKey(privateKeyPEM)
 	if err != nil {
 		return "", err
@@ -63,7 +64,7 @@ func GenerateCSR(privateKeyPEM string, commonName string) (csrPEM string, err er
 // ExtractPublicKey extracts the public key from a PEM-encoded EC private key
 // and returns it as a PEM-encoded PKIX public key string.
 func ExtractPublicKey(privateKeyPEM string) (publicKeyPEM string, err error) {
-	key, err := parseECPrivateKey(privateKeyPEM)
+	key, err := parseECPrivateKey([]byte(privateKeyPEM))
 	if err != nil {
 		return "", err
 	}
@@ -143,9 +144,9 @@ func LeafCertificatePEM(certPEM string) (string, error) {
 	return "", fmt.Errorf("no CERTIFICATE block found")
 }
 
-// parseECPrivateKey decodes a PEM-encoded EC private key.
-func parseECPrivateKey(pemData string) (*ecdsa.PrivateKey, error) {
-	block, _ := pem.Decode([]byte(pemData))
+// parseECPrivateKey decodes a PEM-encoded EC private key from a byte slice.
+func parseECPrivateKey(pemData []byte) (*ecdsa.PrivateKey, error) {
+	block, _ := pem.Decode(pemData)
 	if block == nil {
 		return nil, fmt.Errorf("failed to decode PEM block")
 	}

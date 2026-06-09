@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/wendylabsinc/wendy/proto/gen/agentpb"
+	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
 func TestResolveRestartPolicy_Default(t *testing.T) {

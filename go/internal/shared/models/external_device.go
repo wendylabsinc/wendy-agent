@@ -15,7 +15,6 @@ type ExternalDevice struct {
 	CPUArchitecture string            `json:"cpuArchitecture,omitempty"`
 }
 
-// HumanReadable returns a human-friendly string describing this external device.
 func (d ExternalDevice) HumanReadable() string {
 	s := d.DisplayName
 	if s == "" {

@@ -7,7 +7,7 @@ import (
 
 // CollectAgentMetrics periodically samples the wendy-agent process's CPU and
 // memory and publishes them as OTel metrics using process.* semconv names.
-func CollectAgentMetrics(ctx context.Context, broadcaster *TelemetryBroadcaster) {
+func CollectAgentMetrics(ctx context.Context, broadcaster TelemetryPublisher) {
 	resource := newAgentResource()
 	startTime := time.Now()
 	ticker := time.NewTicker(metricsCollectionInterval)

@@ -179,8 +179,6 @@ func looksLikeCardReader(d psDisk) bool {
 		strings.Contains(strings.ToLower(d.FriendlyName), "card reader")
 }
 
-// getVolumesForDisk returns the drive letters (e.g. ["E", "F"]) for volumes
-// on a given physical disk number.
 func getVolumesForDisk(diskNumber int) ([]string, error) {
 	script := fmt.Sprintf(
 		"Get-Partition -DiskNumber %d -ErrorAction SilentlyContinue | "+
@@ -286,10 +284,6 @@ func clearDiskPartitions(diskNum int) error {
 	return nil
 }
 
-// writeImageToDisk writes an image file to a physical drive on Windows.
-// It clears existing partitions, locks and dismounts remaining volumes,
-// opens the raw physical device, and writes in 4 MiB chunks with
-// sector-aligned I/O.
 func writeImageToDisk(r io.Reader, totalSize int64, d drive, progressFn func(written int64)) error {
 	diskNum, err := parseDiskNumber(d.DevicePath)
 	if err != nil {

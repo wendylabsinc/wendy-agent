@@ -1,0 +1,11 @@
+{
+  "appId": "sh.wendy.examples.composeenv",
+  "services": {
+    "server": {
+      "entitlements": [
+        { "type": "network", "ports": [{ "host": 8080, "container": 8080 }] }
+      ]
+    },
+    "client": {}
+  }
+}

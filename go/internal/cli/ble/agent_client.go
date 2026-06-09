@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/wendylabsinc/wendy/internal/shared/models"
-	"github.com/wendylabsinc/wendy/proto/gen/agentpb"
+	"github.com/wendylabsinc/wendy/go/internal/shared/models"
+	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -162,7 +162,6 @@ func (c *AgentClient) WifiList() ([]*agentpb.WifiNetworkInfo, error) {
 	return wifiResp.GetNetworks(), nil
 }
 
-// WifiStatus gets the current WiFi connection status over BLE.
 func (c *AgentClient) WifiStatus() (*agentpb.WifiStatusResponse, error) {
 	cmd := &agentpb.BluetoothCommand{
 		Command: &agentpb.BluetoothCommand_WifiStatus{
@@ -280,7 +279,6 @@ func (c *AgentClient) WifiReorder(order []string) error {
 	return nil
 }
 
-// AgentVersion returns the agent version and device info over BLE.
 func (c *AgentClient) AgentVersion() (*agentpb.AgentVersionResponse, error) {
 	cmd := &agentpb.BluetoothCommand{
 		Command: &agentpb.BluetoothCommand_AgentVersion{
@@ -298,7 +296,6 @@ func (c *AgentClient) AgentVersion() (*agentpb.AgentVersionResponse, error) {
 	return inner, nil
 }
 
-// AppsList returns the list of deployed apps over BLE.
 func (c *AgentClient) AppsList() ([]*agentpb.AppInfo, error) {
 	cmd := &agentpb.BluetoothCommand{
 		Command: &agentpb.BluetoothCommand_AppsList{

@@ -14,9 +14,9 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/wendylabsinc/wendy/internal/agent/network"
-	"github.com/wendylabsinc/wendy/internal/agent/services"
-	"github.com/wendylabsinc/wendy/internal/shared/wendyconf"
+	"github.com/wendylabsinc/wendy/go/internal/agent/network"
+	"github.com/wendylabsinc/wendy/go/internal/agent/services"
+	"github.com/wendylabsinc/wendy/go/internal/shared/wendyconf"
 )
 
 // elfMachineByArch maps GOARCH values to ELF e_machine field values (little-endian uint16).
@@ -130,9 +130,6 @@ func copyFile(src, dst string, perm os.FileMode) error {
 	return out.Close()
 }
 
-// applyBinaryUpdate installs a new agent binary from cfgDir if present and valid.
-// Returns true when the binary was installed and the caller should exit.
-// installPath is the destination (e.g. /usr/local/bin/wendy-agent).
 func applyBinaryUpdate(logger *zap.Logger, cfgDir, installPath string) bool {
 	src := cfgDir + "/" + agentBinaryName
 	if _, err := os.Stat(src); os.IsNotExist(err) {
@@ -262,9 +259,6 @@ func validDeviceName(name string) bool {
 	return true
 }
 
-// applyDeviceName writes the device name to /etc/wendyos/device-name, then
-// regenerates the hostname and reloads avahi so the mDNS advertisement reflects
-// the new name immediately.
 func applyDeviceName(logger *zap.Logger, name string) error {
 	if !validDeviceName(name) {
 		return fmt.Errorf("invalid device name %q: must match ^[a-z][a-z0-9-]{2,63}$", name)

@@ -7,7 +7,7 @@
 package agentpb
 
 import (
-	otelpb "github.com/wendylabsinc/wendy/proto/gen/otelpb"
+	otelpb "github.com/wendylabsinc/wendy/go/proto/gen/otelpb"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	reflect "reflect"
@@ -29,7 +29,9 @@ type StreamLogsRequest struct {
 	// Optional filter by minimum severity level (TRACE=1, DEBUG=5, INFO=9, WARN=13, ERROR=17, FATAL=21)
 	MinSeverity *int32 `protobuf:"varint,2,opt,name=min_severity,json=minSeverity,proto3,oneof" json:"min_severity,omitempty"`
 	// Optional filter by app/container name
-	AppName       *string `protobuf:"bytes,3,opt,name=app_name,json=appName,proto3,oneof" json:"app_name,omitempty"`
+	AppName *string `protobuf:"bytes,3,opt,name=app_name,json=appName,proto3,oneof" json:"app_name,omitempty"`
+	// Replay last N log batches before going live
+	LastN         *int32 `protobuf:"varint,4,opt,name=last_n,json=lastN,proto3,oneof" json:"last_n,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -85,11 +87,20 @@ func (x *StreamLogsRequest) GetAppName() string {
 	return ""
 }
 
+func (x *StreamLogsRequest) GetLastN() int32 {
+	if x != nil && x.LastN != nil {
+		return *x.LastN
+	}
+	return 0
+}
+
 type StreamLogsResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// OTLP logs data using the standard OpenTelemetry format.
 	// Can be forwarded directly to a local OTLP collector.
-	Logs          *otelpb.ExportLogsServiceRequest `protobuf:"bytes,1,opt,name=logs,proto3" json:"logs,omitempty"`
+	Logs *otelpb.ExportLogsServiceRequest `protobuf:"bytes,1,opt,name=logs,proto3" json:"logs,omitempty"`
+	// true for replayed records; false for live
+	IsHistory     bool `protobuf:"varint,2,opt,name=is_history,json=isHistory,proto3" json:"is_history,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -131,6 +142,13 @@ func (x *StreamLogsResponse) GetLogs() *otelpb.ExportLogsServiceRequest {
 	return nil
 }
 
+func (x *StreamLogsResponse) GetIsHistory() bool {
+	if x != nil {
+		return x.IsHistory
+	}
+	return false
+}
+
 type StreamMetricsRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Optional filter by service name
@@ -138,7 +156,9 @@ type StreamMetricsRequest struct {
 	// Optional filter by metric name prefix
 	MetricNamePrefix *string `protobuf:"bytes,2,opt,name=metric_name_prefix,json=metricNamePrefix,proto3,oneof" json:"metric_name_prefix,omitempty"`
 	// Optional filter by app/container name
-	AppName       *string `protobuf:"bytes,3,opt,name=app_name,json=appName,proto3,oneof" json:"app_name,omitempty"`
+	AppName *string `protobuf:"bytes,3,opt,name=app_name,json=appName,proto3,oneof" json:"app_name,omitempty"`
+	// Replay last N metric batches before going live
+	LastN         *int32 `protobuf:"varint,4,opt,name=last_n,json=lastN,proto3,oneof" json:"last_n,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -194,11 +214,20 @@ func (x *StreamMetricsRequest) GetAppName() string {
 	return ""
 }
 
+func (x *StreamMetricsRequest) GetLastN() int32 {
+	if x != nil && x.LastN != nil {
+		return *x.LastN
+	}
+	return 0
+}
+
 type StreamMetricsResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// OTLP metrics data using the standard OpenTelemetry format.
 	// Can be forwarded directly to a local OTLP collector.
-	Metrics       *otelpb.ExportMetricsServiceRequest `protobuf:"bytes,1,opt,name=metrics,proto3" json:"metrics,omitempty"`
+	Metrics *otelpb.ExportMetricsServiceRequest `protobuf:"bytes,1,opt,name=metrics,proto3" json:"metrics,omitempty"`
+	// true for replayed records; false for live
+	IsHistory     bool `protobuf:"varint,2,opt,name=is_history,json=isHistory,proto3" json:"is_history,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -240,6 +269,13 @@ func (x *StreamMetricsResponse) GetMetrics() *otelpb.ExportMetricsServiceRequest
 	return nil
 }
 
+func (x *StreamMetricsResponse) GetIsHistory() bool {
+	if x != nil {
+		return x.IsHistory
+	}
+	return false
+}
+
 type StreamTracesRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Optional filter by service name
@@ -248,8 +284,10 @@ type StreamTracesRequest struct {
 	AppName *string `protobuf:"bytes,2,opt,name=app_name,json=appName,proto3,oneof" json:"app_name,omitempty"`
 	// Optional filter by span name prefix
 	SpanNamePrefix *string `protobuf:"bytes,3,opt,name=span_name_prefix,json=spanNamePrefix,proto3,oneof" json:"span_name_prefix,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// Replay last N trace batches before going live
+	LastN         *int32 `protobuf:"varint,4,opt,name=last_n,json=lastN,proto3,oneof" json:"last_n,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *StreamTracesRequest) Reset() {
@@ -303,11 +341,20 @@ func (x *StreamTracesRequest) GetSpanNamePrefix() string {
 	return ""
 }
 
+func (x *StreamTracesRequest) GetLastN() int32 {
+	if x != nil && x.LastN != nil {
+		return *x.LastN
+	}
+	return 0
+}
+
 type StreamTracesResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// OTLP trace data using the standard OpenTelemetry format.
 	// Can be forwarded directly to a local OTLP collector.
-	Traces        *otelpb.ExportTraceServiceRequest `protobuf:"bytes,1,opt,name=traces,proto3" json:"traces,omitempty"`
+	Traces *otelpb.ExportTraceServiceRequest `protobuf:"bytes,1,opt,name=traces,proto3" json:"traces,omitempty"`
+	// true for replayed records; false for live
+	IsHistory     bool `protobuf:"varint,2,opt,name=is_history,json=isHistory,proto3" json:"is_history,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -349,38 +396,57 @@ func (x *StreamTracesResponse) GetTraces() *otelpb.ExportTraceServiceRequest {
 	return nil
 }
 
+func (x *StreamTracesResponse) GetIsHistory() bool {
+	if x != nil {
+		return x.IsHistory
+	}
+	return false
+}
+
 var File_wendy_agent_services_v1_wendy_agent_v1_telemetry_service_proto protoreflect.FileDescriptor
 
 const file_wendy_agent_services_v1_wendy_agent_v1_telemetry_service_proto_rawDesc = "" +
 	"\n" +
-	">wendy/agent/services/v1/wendy_agent_v1_telemetry_service.proto\x12\x17wendy.agent.services.v1\x1a8opentelemetry/proto/collector/logs/v1/logs_service.proto\x1a>opentelemetry/proto/collector/metrics/v1/metrics_service.proto\x1a:opentelemetry/proto/collector/trace/v1/trace_service.proto\"\xb2\x01\n" +
+	">wendy/agent/services/v1/wendy_agent_v1_telemetry_service.proto\x12\x17wendy.agent.services.v1\x1a8opentelemetry/proto/collector/logs/v1/logs_service.proto\x1a>opentelemetry/proto/collector/metrics/v1/metrics_service.proto\x1a:opentelemetry/proto/collector/trace/v1/trace_service.proto\"\xd9\x01\n" +
 	"\x11StreamLogsRequest\x12&\n" +
 	"\fservice_name\x18\x01 \x01(\tH\x00R\vserviceName\x88\x01\x01\x12&\n" +
 	"\fmin_severity\x18\x02 \x01(\x05H\x01R\vminSeverity\x88\x01\x01\x12\x1e\n" +
-	"\bapp_name\x18\x03 \x01(\tH\x02R\aappName\x88\x01\x01B\x0f\n" +
+	"\bapp_name\x18\x03 \x01(\tH\x02R\aappName\x88\x01\x01\x12\x1a\n" +
+	"\x06last_n\x18\x04 \x01(\x05H\x03R\x05lastN\x88\x01\x01B\x0f\n" +
 	"\r_service_nameB\x0f\n" +
 	"\r_min_severityB\v\n" +
-	"\t_app_name\"i\n" +
+	"\t_app_nameB\t\n" +
+	"\a_last_n\"\x88\x01\n" +
 	"\x12StreamLogsResponse\x12S\n" +
-	"\x04logs\x18\x01 \x01(\v2?.opentelemetry.proto.collector.logs.v1.ExportLogsServiceRequestR\x04logs\"\xc6\x01\n" +
+	"\x04logs\x18\x01 \x01(\v2?.opentelemetry.proto.collector.logs.v1.ExportLogsServiceRequestR\x04logs\x12\x1d\n" +
+	"\n" +
+	"is_history\x18\x02 \x01(\bR\tisHistory\"\xed\x01\n" +
 	"\x14StreamMetricsRequest\x12&\n" +
 	"\fservice_name\x18\x01 \x01(\tH\x00R\vserviceName\x88\x01\x01\x121\n" +
 	"\x12metric_name_prefix\x18\x02 \x01(\tH\x01R\x10metricNamePrefix\x88\x01\x01\x12\x1e\n" +
-	"\bapp_name\x18\x03 \x01(\tH\x02R\aappName\x88\x01\x01B\x0f\n" +
+	"\bapp_name\x18\x03 \x01(\tH\x02R\aappName\x88\x01\x01\x12\x1a\n" +
+	"\x06last_n\x18\x04 \x01(\x05H\x03R\x05lastN\x88\x01\x01B\x0f\n" +
 	"\r_service_nameB\x15\n" +
 	"\x13_metric_name_prefixB\v\n" +
-	"\t_app_name\"x\n" +
+	"\t_app_nameB\t\n" +
+	"\a_last_n\"\x97\x01\n" +
 	"\x15StreamMetricsResponse\x12_\n" +
-	"\ametrics\x18\x01 \x01(\v2E.opentelemetry.proto.collector.metrics.v1.ExportMetricsServiceRequestR\ametrics\"\xbf\x01\n" +
+	"\ametrics\x18\x01 \x01(\v2E.opentelemetry.proto.collector.metrics.v1.ExportMetricsServiceRequestR\ametrics\x12\x1d\n" +
+	"\n" +
+	"is_history\x18\x02 \x01(\bR\tisHistory\"\xe6\x01\n" +
 	"\x13StreamTracesRequest\x12&\n" +
 	"\fservice_name\x18\x01 \x01(\tH\x00R\vserviceName\x88\x01\x01\x12\x1e\n" +
 	"\bapp_name\x18\x02 \x01(\tH\x01R\aappName\x88\x01\x01\x12-\n" +
-	"\x10span_name_prefix\x18\x03 \x01(\tH\x02R\x0espanNamePrefix\x88\x01\x01B\x0f\n" +
+	"\x10span_name_prefix\x18\x03 \x01(\tH\x02R\x0espanNamePrefix\x88\x01\x01\x12\x1a\n" +
+	"\x06last_n\x18\x04 \x01(\x05H\x03R\x05lastN\x88\x01\x01B\x0f\n" +
 	"\r_service_nameB\v\n" +
 	"\t_app_nameB\x13\n" +
-	"\x11_span_name_prefix\"q\n" +
+	"\x11_span_name_prefixB\t\n" +
+	"\a_last_n\"\x90\x01\n" +
 	"\x14StreamTracesResponse\x12Y\n" +
-	"\x06traces\x18\x01 \x01(\v2A.opentelemetry.proto.collector.trace.v1.ExportTraceServiceRequestR\x06traces2\xe1\x02\n" +
+	"\x06traces\x18\x01 \x01(\v2A.opentelemetry.proto.collector.trace.v1.ExportTraceServiceRequestR\x06traces\x12\x1d\n" +
+	"\n" +
+	"is_history\x18\x02 \x01(\bR\tisHistory2\xe1\x02\n" +
 	"\x15WendyTelemetryService\x12g\n" +
 	"\n" +
 	"StreamLogs\x12*.wendy.agent.services.v1.StreamLogsRequest\x1a+.wendy.agent.services.v1.StreamLogsResponse0\x01\x12p\n" +

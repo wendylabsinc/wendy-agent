@@ -1,0 +1,113 @@
+---
+title: Wendy Agent — macOS
+description: Install Wendy Agent on an Apple Silicon Mac target
+---
+
+## Overview
+
+`wendy-agent` comes pre-installed on WendyOS. If you want to use an existing Apple Silicon Mac as a Wendy target instead, install Wendy Agent for Mac on that machine.
+
+Wendy Agent for Mac runs as a menu bar app. Once it is running, the Wendy CLI can connect to the Mac target, sync native macOS apps, and launch them as native macOS processes.
+
+<Callout type="warn">
+  Wendy Agent for macOS is beta software. It works on Apple Silicon Macs. Intel Macs are not supported. Deploying native macOS apps requires a Mac development machine because the CLI builds the app locally before syncing it to the agent.
+</Callout>
+
+## Requirements
+
+- An Apple Silicon Mac target running macOS 15 or later
+- Wendy CLI installed on a Mac development machine ([Developer Machine Setup](/docs/installation/developer-machine-setup))
+- A native macOS app project to deploy
+
+Native macOS app deployment requires a Mac development machine because the Wendy CLI builds the macOS app locally before syncing it to the Mac agent. If the same Mac is both your development machine and target, install both the CLI and Wendy Agent on that Mac.
+
+## Installation
+
+The recommended installation path uses Homebrew:
+
+```bash
+brew tap wendylabsinc/tap
+brew install --cask wendy-agent
+```
+
+For the nightly beta build, use:
+
+```bash
+brew install --cask wendy-agent-nightly
+```
+
+If you do not use Homebrew, download the `wendy-agent-macos-arm64` zip from the [Wendy releases page](https://github.com/wendylabsinc/wendy-agent/releases), unzip it, and move `WendyAgentMac.app` to `/Applications`.
+
+Then launch the app:
+
+```bash
+open /Applications/WendyAgentMac.app
+```
+
+Wendy Agent appears in the macOS menu bar. Open the menu to confirm that the agent is running.
+
+## Verify the Installation
+
+From the Mac development machine, check that the CLI can reach the Mac agent:
+
+```bash
+wendy --device {hostname}:50051 device info --json
+```
+
+Replace `{hostname}` with the Mac target's hostname or IP address. Use `localhost` if the CLI and agent are on the same Mac.
+
+## Set the Mac as Your Default Device
+
+Once the CLI can connect, set the Mac target as your default Wendy device:
+
+```bash
+wendy device set-default {hostname}:50051
+```
+
+## Deploying Native macOS Apps
+
+From a native macOS app project configured for a Darwin target, run:
+
+```bash
+wendy run --device {hostname}:50051
+```
+
+The CLI builds the app on the Mac development machine, syncs the build output to Wendy Agent for Mac, and starts it as a native macOS process. These apps currently run natively on macOS, not inside a Linux-style container.
+
+## What Works in the Mac Beta
+
+Wendy for Mac is focused on native macOS app deployment first. Apps run as regular macOS processes, not Linux containers.
+
+### Should work
+
+- Apple Silicon Mac targets running macOS 15 or later.
+- Installing WendyAgentMac with Homebrew or the release zip.
+- Running WendyAgentMac as a menu bar app.
+- Connecting from the Wendy CLI with an explicit `{hostname}:50051` address.
+- Setting the Mac as your default Wendy device.
+- Deploying native SwiftPM macOS apps with `wendy run` and `platform: "darwin"`.
+
+### Not supported in this beta
+
+- Intel Macs.
+- Linux-container deployment to Mac targets, including Dockerfile and Compose projects.
+- Wendy hardware APIs on the Mac agent, including Wi-Fi management, Bluetooth, audio, camera/video, GPU, USB, GPIO, and I2C.
+- WendyOS OTA updates with `wendy os update`. Update macOS and WendyAgentMac through their normal macOS installation/update path.
+
+## Troubleshooting
+
+If the CLI cannot connect:
+
+1. Confirm Wendy Agent is open in the menu bar.
+2. Run the command with an explicit device address:
+
+   ```bash
+   wendy --device {hostname}:50051 device info --json
+   ```
+
+3. Quit and reopen Wendy Agent from the menu bar.
+4. If you installed both stable and nightly builds, quit both apps and open only the one you want to test.
+
+## Next Steps
+
+Once the Mac target is reachable, deploy a native macOS app with `wendy run`.

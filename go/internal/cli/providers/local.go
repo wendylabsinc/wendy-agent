@@ -8,9 +8,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strings"
 
-	"github.com/wendylabsinc/wendy/internal/shared/models"
+	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 )
 
 // localBuildContext is stored in BuiltApp.Context for local builds.
@@ -22,8 +21,8 @@ type localBuildContext struct {
 // LocalProvider builds and runs applications on the local machine.
 type LocalProvider struct{}
 
-func (p *LocalProvider) Key() string         { return "local" }
-func (p *LocalProvider) DisplayName() string { return "Local (This Device)" }
+func (p *LocalProvider) Key() string         { return ProviderKeyLocal }
+func (p *LocalProvider) DisplayName() string { return "This Device" }
 
 func (p *LocalProvider) IsAvailable(_ context.Context) bool { return true }
 
@@ -43,11 +42,11 @@ func (p *LocalProvider) DiscoverDevices(_ context.Context) ([]models.ExternalDev
 }
 
 func (p *LocalProvider) SupportedBuildTypes() []string {
-	return []string{"docker", "swift", "go", "python"}
+	return []string{"swift", "go", "python"}
 }
 
 func (p *LocalProvider) CanBuild(projectPath string) bool {
-	for _, marker := range []string{"Dockerfile", "Package.swift", "go.mod", "requirements.txt", "pyproject.toml", "setup.py"} {
+	for _, marker := range []string{"Package.swift", "go.mod", "requirements.txt", "pyproject.toml", "setup.py"} {
 		if _, err := os.Stat(filepath.Join(projectPath, marker)); err == nil {
 			return true
 		}
@@ -57,9 +56,6 @@ func (p *LocalProvider) CanBuild(projectPath string) bool {
 
 func (p *LocalProvider) Build(ctx context.Context, device models.ExternalDevice, projectPath, product string, debug bool) (*BuiltApp, error) {
 	// Determine build strategy based on project markers.
-	if _, err := os.Stat(filepath.Join(projectPath, "Dockerfile")); err == nil {
-		return p.buildDocker(ctx, projectPath, product, debug)
-	}
 	if _, err := os.Stat(filepath.Join(projectPath, "Package.swift")); err == nil {
 		return p.buildSwift(ctx, device, projectPath, product, debug)
 	}
@@ -73,24 +69,6 @@ func (p *LocalProvider) Build(ctx context.Context, device models.ExternalDevice,
 		}
 	}
 	return nil, fmt.Errorf("local provider: cannot determine build method for %s", projectPath)
-}
-
-func (p *LocalProvider) buildDocker(ctx context.Context, projectPath, product string, debug bool) (*BuiltApp, error) {
-	imageName := strings.ToLower(product) + ":latest"
-	args := []string{"build", "-t", imageName, "."}
-	cmd := exec.CommandContext(ctx, "docker", args...)
-	cmd.Dir = projectPath
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("docker build: %w", err)
-	}
-	return &BuiltApp{
-		ProviderKey: p.Key(),
-		Device:      models.ExternalDevice{ID: "local", ProviderKey: p.Key()},
-		AppName:     product,
-		Context:     &localBuildContext{BinaryPath: imageName},
-	}, nil
 }
 
 func (p *LocalProvider) buildSwift(ctx context.Context, device models.ExternalDevice, projectPath, product string, debug bool) (*BuiltApp, error) {
@@ -165,7 +143,6 @@ func (p *LocalProvider) Run(ctx context.Context, app *BuiltApp, detach bool, out
 		return fmt.Errorf("local provider: invalid build context")
 	}
 
-	// If built via docker, delegate to docker run.
 	if _, err := os.Stat(bc.BinaryPath); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("local provider: cannot stat binary: %w", err)
 	}

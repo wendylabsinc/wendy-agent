@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/wendylabsinc/wendy/internal/shared/models"
+	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 )
 
 const (

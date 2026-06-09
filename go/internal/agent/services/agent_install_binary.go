@@ -24,7 +24,6 @@ var ErrDirFsync = errors.New("dir fsync after rename failed")
 // far smaller than this; the cap only needs headroom for legitimate growth.
 const maxAgentBinarySize = 256 * 1024 * 1024 // 256 MiB
 
-// resolveExecPath returns the canonicalised path of the running binary.
 func resolveExecPath() (string, os.FileMode, error) {
 	execPath, err := os.Executable()
 	if err != nil {
@@ -51,10 +50,7 @@ func cleanStaleTempFiles(dir string) {
 	}
 }
 
-// createUpdateTempFile creates a uniquely-named temp file (mode 0600) in the
-// same directory as execPath. Returns the open file (ready for writing), its
-// path, and a cleanup func that closes and removes it. The final binary
-// permissions are applied by commitBinaryUpdate after hash verification so that
+// Permissions are applied only by commitBinaryUpdate after hash verification so that
 // a partial or unverified binary is never executable.
 func createUpdateTempFile(execPath string) (*os.File, string, func(), error) {
 	dir := filepath.Dir(execPath)
@@ -80,15 +76,13 @@ func createUpdateTempFile(execPath string) (*os.File, string, func(), error) {
 	return tmpFile, tmpPath, cleanup, nil
 }
 
-// commitBinaryUpdate sets the file permissions, fsyncs, and closes tmpFile,
-// then atomically installs it over execPath via a single rename(2). Hash is
-// only passed for logging. Returns the installed size, or ErrDirFsync if the
-// post-rename directory fsync fails (binary IS installed in that case).
+// commitBinaryUpdate atomically installs tmpFile over execPath via rename(2).
+// Returns the installed size, or ErrDirFsync if the post-rename directory fsync
+// fails (binary IS installed in that case).
 func commitBinaryUpdate(tmpFile *os.File, tmpPath, execPath, sha256Hash string, perm os.FileMode, logger *zap.Logger) (int64, error) {
-	// Apply final permissions before the fsync so that both data and the
-	// executable permission bits are durable before the rename. If chmod
-	// happened after Sync a power loss between chmod and rename could
-	// leave an installed binary that is non-executable (still at 0600).
+	// Apply permissions before fsync so both data and executable bits are durable
+	// before the rename — a power loss between chmod and rename would leave a
+	// non-executable 0600 binary at execPath.
 	if err := os.Chmod(tmpPath, perm); err != nil {
 		return 0, status.Errorf(codes.Internal, "failed to set update file permissions: %v", err)
 	}
@@ -99,8 +93,6 @@ func commitBinaryUpdate(tmpFile *os.File, tmpPath, execPath, sha256Hash string, 
 		return 0, status.Errorf(codes.Internal, "failed to close update file: %v", err)
 	}
 
-	// Single atomic rename over the live binary — no intermediate backup so
-	// execPath is never absent between two renames.
 	if err := os.Rename(tmpPath, execPath); err != nil {
 		return 0, status.Errorf(codes.Internal, "failed to install update: %v", err)
 	}

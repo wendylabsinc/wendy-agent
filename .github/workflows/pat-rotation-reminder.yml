@@ -1,0 +1,99 @@
+name: PAT Rotation Reminder
+
+on:
+  schedule:
+    - cron: '0 9 * * 1'  # Every Monday at 09:00 UTC
+  workflow_dispatch:
+
+jobs:
+  check-rotation:
+    name: Check WENDY_TEMPLATE_SYNC_TOKEN rotation
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Check PAT rotation deadline
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          # PAT_LAST_ROTATED is a repository variable (Settings > Variables > Actions).
+          # Set it to the ISO date (YYYY-MM-DD) when WENDY_TEMPLATE_SYNC_TOKEN was last rotated.
+          # Using a repository variable (not hardcoded) decouples rotation tracking from code,
+          # so the date can be updated without a PR/CODEOWNERS review when the PAT is rotated.
+          # If the variable is unset, this workflow treats the PAT as overdue and fires a reminder.
+          PAT_LAST_ROTATED: ${{ vars.PAT_LAST_ROTATED }}
+          PAT_ROTATION_DAYS: "90"
+        run: |
+          python3 << 'PYEOF'
+          import datetime, os, subprocess, sys
+
+          rotation_days = int(os.environ['PAT_ROTATION_DAYS'])
+          today = datetime.date.today()
+          last_str = os.environ.get('PAT_LAST_ROTATED', '').strip()
+
+          if not last_str:
+              # Variable not set: treat PAT as overdue to ensure reminder fires.
+              print('WARNING: PAT_LAST_ROTATED repository variable is not set. Treating PAT as overdue.')
+              last = today - datetime.timedelta(days=rotation_days)
+          else:
+              try:
+                  last = datetime.date.fromisoformat(last_str)
+              except ValueError:
+                  print(f'ERROR: PAT_LAST_ROTATED value "{last_str}" is not a valid ISO date.', file=sys.stderr)
+                  last = today - datetime.timedelta(days=rotation_days)
+
+          # Guard against a future-dated PAT_LAST_ROTATED (manipulation detection).
+          # A future date would suppress rotation reminders without rotating the actual secret.
+          if last > today:
+              print(f'WARNING: PAT_LAST_ROTATED ({last}) is in the future — this may indicate manipulation.', file=sys.stderr)
+              print('Treating PAT_LAST_ROTATED as today to ensure reminder fires if needed.')
+              last = today
+
+          days_since = (today - last).days
+          days_until_due = rotation_days - days_since
+
+          print(f'PAT last rotated: {last} ({days_since} days ago)')
+          print(f'Rotation due in: {days_until_due} days (policy: {rotation_days}-day rotation)')
+
+          if days_until_due <= 14:
+              title = f'SECURITY: Rotate WENDY_TEMPLATE_SYNC_TOKEN PAT (due in {days_until_due} days)'
+
+              # Deduplication: check for an existing open issue with the same title prefix
+              # to avoid creating a new reminder issue on every weekly run.
+              existing = subprocess.run(
+                  ['gh', 'issue', 'list',
+                   '--repo', os.environ['REPO'],
+                   '--state', 'open',
+                   '--search', 'SECURITY: Rotate WENDY_TEMPLATE_SYNC_TOKEN PAT in:title',
+                   '--json', 'number,title'],
+                  capture_output=True, text=True
+              )
+              if existing.returncode == 0:
+                  import json
+                  open_issues = json.loads(existing.stdout or '[]')
+                  if any('Rotate WENDY_TEMPLATE_SYNC_TOKEN PAT' in i.get('title', '') for i in open_issues):
+                      print(f'Reminder issue already open — skipping duplicate creation')
+                      raise SystemExit(0)
+
+              body = (
+                  f'The WENDY_TEMPLATE_SYNC_TOKEN PAT was last rotated on {last}.\n\n'
+                  f'It is due for rotation in {days_until_due} days per the {rotation_days}-day rotation policy.\n\n'
+                  '## Rotation steps\n'
+                  '1. Generate a new fine-grained PAT scoped to contents:write on this repo only, expiring in 90 days.\n'
+                  '2. Update the WENDY_TEMPLATE_SYNC_TOKEN secret in repository Settings > Secrets.\n'
+                  '3. Set the PAT_LAST_ROTATED repository variable (Settings > Variables > Actions) to today\'s date.\n\n'
+                  'This issue was opened automatically by the PAT rotation reminder workflow.'
+              )
+              result = subprocess.run(
+                  ['gh', 'issue', 'create',
+                   '--repo', os.environ['REPO'],
+                   '--title', title,
+                   '--body', body,
+                   '--label', 'security'],
+                  capture_output=True, text=True
+              )
+              if result.returncode == 0:
+                  print(f'Created reminder issue: {result.stdout.strip()}')
+              else:
+                  print(f'Warning: could not create issue: {result.stderr.strip()}', file=sys.stderr)
+          PYEOF

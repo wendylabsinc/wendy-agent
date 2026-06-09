@@ -1,0 +1,78 @@
+---
+title: Microphone Access
+description: Capture and monitor microphone input from WendyOS apps
+---
+
+## Microphone Access
+
+Microphones use the `audio` entitlement. This grants the app access to ALSA audio devices for recording, voice commands, wake-word detection, speech-to-text, and audio analysis.
+
+Add the entitlement from your project directory:
+
+```bash
+wendy project entitlements add audio
+```
+
+## Inspect Audio Devices
+
+List audio input and output devices on the target:
+
+```bash
+wendy device audio list
+```
+
+The output includes device IDs, device names, type, and which device is currently default.
+
+To set a specific audio device as the default:
+
+```bash
+wendy device audio set-default --id 1
+```
+
+## Monitor Microphone Levels
+
+Use the built-in VU meter to confirm the microphone is producing input:
+
+```bash
+wendy device audio monitor --id 1
+```
+
+You can adjust the update rate:
+
+```bash
+wendy device audio monitor --id 1 --rate 20
+```
+
+## Stream Microphone Audio
+
+To listen to microphone input locally:
+
+```bash
+wendy device audio listen --id 1
+```
+
+To write raw PCM to stdout for another tool:
+
+```bash
+wendy device audio listen --id 1 --sample-rate 16000 --channels 1 --stdout
+```
+
+## App Configuration
+
+A minimal microphone app uses:
+
+```json
+{
+  "appId": "com.example.microphone",
+  "version": "1.0.0",
+  "entitlements": [
+    { "type": "audio" }
+  ]
+}
+```
+
+Then deploy:
+
+```bash
+wendy run
+```

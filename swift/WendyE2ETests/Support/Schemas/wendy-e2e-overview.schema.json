@@ -1,0 +1,144 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://wendy.build/schemas/wendy-e2e-overview.schema.json",
+  "title": "Wendy E2E Run Overview",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "generatedAt", "summary", "targets", "noteworthy"],
+  "properties": {
+    "schema": { "const": "wendy.e2e.overview.v1" },
+    "generatedAt": { "type": "string", "format": "date-time" },
+    "summary": { "$ref": "#/$defs/summary" },
+    "targets": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/target" }
+    },
+    "noteworthy": { "$ref": "#/$defs/noteworthy" }
+  },
+  "$defs": {
+    "outcome": {
+      "type": "string",
+      "enum": ["PASSED", "FLAKED", "FAILED", "SKIPPED", "UNKNOWN"]
+    },
+    "status": {
+      "type": "string",
+      "enum": ["PASSED", "FAILED", "SKIPPED", "UNKNOWN"]
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tests",
+        "testTargets",
+        "attemptResults",
+        "commands",
+        "passed",
+        "flaked",
+        "failed",
+        "skipped",
+        "unknown"
+      ],
+      "properties": {
+        "tests": { "type": "integer", "minimum": 0 },
+        "testTargets": { "type": "integer", "minimum": 0 },
+        "attemptResults": { "type": "integer", "minimum": 0 },
+        "commands": { "type": "integer", "minimum": 0 },
+        "passed": { "type": "integer", "minimum": 0 },
+        "flaked": { "type": "integer", "minimum": 0 },
+        "failed": { "type": "integer", "minimum": 0 },
+        "skipped": { "type": "integer", "minimum": 0 },
+        "unknown": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "outcome",
+        "attempts",
+        "tests",
+        "passed",
+        "flaked",
+        "failed",
+        "skipped",
+        "unknown"
+      ],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "outcome": { "$ref": "#/$defs/outcome" },
+        "attempts": { "type": "integer", "minimum": 0 },
+        "tests": { "type": "integer", "minimum": 0 },
+        "passed": { "type": "integer", "minimum": 0 },
+        "flaked": { "type": "integer", "minimum": 0 },
+        "failed": { "type": "integer", "minimum": 0 },
+        "skipped": { "type": "integer", "minimum": 0 },
+        "unknown": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "artifacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "recording": { "type": "string", "minLength": 1 },
+        "shell": { "type": "string", "minLength": 1 },
+        "testResults": { "type": "string", "minLength": 1 }
+      }
+    },
+    "noteworthy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["deterministicFailures", "flakes", "unknowns"],
+      "properties": {
+        "deterministicFailures": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/issue" }
+        },
+        "flakes": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/issue" }
+        },
+        "unknowns": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/issue" }
+        }
+      }
+    },
+    "issue": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["suite", "test", "target", "outcome", "attempts"],
+      "properties": {
+        "suite": { "$ref": "#/$defs/pathKey" },
+        "test": { "$ref": "#/$defs/pathKey" },
+        "target": { "type": "string", "minLength": 1 },
+        "outcome": { "$ref": "#/$defs/outcome" },
+        "attempts": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/issueAttempt" }
+        }
+      }
+    },
+    "issueAttempt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["attempt", "status", "artifacts"],
+      "properties": {
+        "attempt": { "$ref": "#/$defs/attemptKey" },
+        "status": { "$ref": "#/$defs/status" },
+        "durationSeconds": { "type": "number", "minimum": 0 },
+        "detail": { "type": "string" },
+        "artifacts": { "$ref": "#/$defs/artifacts" }
+      }
+    },
+    "pathKey": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+    },
+    "attemptKey": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_.-]+$",
+      "minLength": 1
+    }
+  }
+}

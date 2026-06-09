@@ -9,8 +9,8 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/wendylabsinc/wendy/internal/shared/appconfig"
-	"github.com/wendylabsinc/wendy/proto/gen/agentpb"
+	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
+	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
 func writeComposeFile(t *testing.T, dir, name, body string) {
@@ -54,39 +54,64 @@ func TestComposeBuildContext(t *testing.T) {
 	}
 
 	t.Run("scalar build path", func(t *testing.T) {
+		proj := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(proj, "api"), 0o755); err != nil {
+			t.Fatal(err)
+		}
 		svc := parse(t, "services:\n  svc:\n    build: ./api\n")
-		ctxDir, df, args, err := composeBuildContext(svc, "/proj")
+		ctxDir, df, args, err := composeBuildContext(svc, proj)
 		if err != nil {
 			t.Fatalf("err: %v", err)
 		}
-		if ctxDir != "/proj/api" || df != "Dockerfile" || args != nil {
+		if ctxDir != filepath.Join(proj, "api") || df != "Dockerfile" || args != nil {
 			t.Fatalf("got (%q,%q,%v)", ctxDir, df, args)
 		}
 	})
 
 	t.Run("mapping with custom dockerfile and args", func(t *testing.T) {
+		proj := t.TempDir()
+		svcDir := filepath.Join(proj, "svc")
+		if err := os.MkdirAll(svcDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(svcDir, "Dockerfile.dev"), []byte("FROM alpine\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
 		svc := parse(t, "services:\n  svc:\n    build:\n      context: ./svc\n      dockerfile: Dockerfile.dev\n      args:\n        FOO: bar\n")
-		ctxDir, df, args, err := composeBuildContext(svc, "/proj")
+		ctxDir, df, args, err := composeBuildContext(svc, proj)
 		if err != nil {
 			t.Fatalf("err: %v", err)
 		}
-		if ctxDir != "/proj/svc" || df != "Dockerfile.dev" || args["FOO"] != "bar" {
+		if ctxDir != svcDir || df != "Dockerfile.dev" || args["FOO"] != "bar" {
 			t.Fatalf("got (%q,%q,%v)", ctxDir, df, args)
 		}
 	})
 
 	t.Run("missing build returns empty", func(t *testing.T) {
+		proj := t.TempDir()
 		svc := parse(t, "services:\n  svc:\n    image: alpine\n")
-		ctxDir, df, _, err := composeBuildContext(svc, "/proj")
+		ctxDir, df, _, err := composeBuildContext(svc, proj)
 		if err != nil || ctxDir != "" || df != "" {
 			t.Fatalf("got (%q,%q,err=%v)", ctxDir, df, err)
 		}
 	})
 
 	t.Run("unsupported build kind errors", func(t *testing.T) {
+		proj := t.TempDir()
 		svc := parse(t, "services:\n  svc:\n    build: [./a, ./b]\n")
-		if _, _, _, err := composeBuildContext(svc, "/proj"); err == nil {
+		if _, _, _, err := composeBuildContext(svc, proj); err == nil {
 			t.Fatal("expected error for sequence build kind")
+		}
+	})
+
+	t.Run("dockerfile path traversal rejected", func(t *testing.T) {
+		proj := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(proj, "svc"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		svc := parse(t, "services:\n  svc:\n    build:\n      context: ./svc\n      dockerfile: ../../Dockerfile\n")
+		if _, _, _, err := composeBuildContext(svc, proj); err == nil {
+			t.Fatal("expected error for traversal dockerfile path")
 		}
 	})
 }
@@ -227,7 +252,7 @@ func TestComposeAppConfig(t *testing.T) {
 
 	t.Run("ports synthesise network entitlement", func(t *testing.T) {
 		svc := parse(t, "services:\n  svc:\n    ports:\n      - \"8080:80\"\n      - \"9000\"\n")
-		cfg := composeAppConfig("proj", "svc", svc)
+		cfg := composeAppConfig("proj", "svc", svc, 1)
 		if cfg.AppID != "proj-svc" {
 			t.Fatalf("appID: %s", cfg.AppID)
 		}
@@ -244,7 +269,7 @@ func TestComposeAppConfig(t *testing.T) {
 
 	t.Run("network_mode host overrides ports", func(t *testing.T) {
 		svc := parse(t, "services:\n  svc:\n    network_mode: host\n    ports:\n      - \"80:80\"\n")
-		cfg := composeAppConfig("proj", "svc", svc)
+		cfg := composeAppConfig("proj", "svc", svc, 1)
 		var found bool
 		for _, e := range cfg.Entitlements {
 			if e.Type == appconfig.EntitlementNetwork && e.Mode == "host" {
@@ -258,7 +283,7 @@ func TestComposeAppConfig(t *testing.T) {
 
 	t.Run("named volumes become persist entitlements; bind mounts skipped", func(t *testing.T) {
 		svc := parse(t, "services:\n  svc:\n    volumes:\n      - data:/var/lib\n      - ./host:/in/container\n      - /abs/host:/in/container\n      - cache:/cache:ro\n")
-		cfg := composeAppConfig("proj", "svc", svc)
+		cfg := composeAppConfig("proj", "svc", svc, 1)
 		var persists []appconfig.Entitlement
 		for _, e := range cfg.Entitlements {
 			if e.Type == appconfig.EntitlementPersist {
@@ -271,6 +296,31 @@ func TestComposeAppConfig(t *testing.T) {
 		names := map[string]string{persists[0].Name: persists[0].Path, persists[1].Name: persists[1].Path}
 		if names["data"] != "/var/lib" || names["cache"] != "/cache" {
 			t.Fatalf("unexpected persist mapping: %+v", names)
+		}
+	})
+
+	t.Run("multi-service groups under projectName without companion", func(t *testing.T) {
+		emptySvc := parse(t, "services:\n  api:\n    image: nginx\n")
+		api := composeAppConfig("myapp", "api", emptySvc, 2)
+		if api.AppID != "myapp" {
+			t.Fatalf("multi-service appID: want %q, got %q", "myapp", api.AppID)
+		}
+		if api.ServiceName != "api" {
+			t.Fatalf("multi-service ServiceName: want %q, got %q", "api", api.ServiceName)
+		}
+		if api.ContainerName() != "myapp_api" {
+			t.Fatalf("multi-service ContainerName: want %q, got %q", "myapp_api", api.ContainerName())
+		}
+	})
+
+	t.Run("single-service keeps legacy appID without companion", func(t *testing.T) {
+		emptySvc := parse(t, "services:\n  web:\n    image: nginx\n")
+		cfg := composeAppConfig("myapp", "web", emptySvc, 1)
+		if cfg.AppID != "myapp-web" {
+			t.Fatalf("single-service appID: want %q, got %q", "myapp-web", cfg.AppID)
+		}
+		if cfg.ServiceName != "" {
+			t.Fatalf("single-service ServiceName: want empty, got %q", cfg.ServiceName)
 		}
 	})
 }
@@ -369,6 +419,212 @@ func TestShellSplit(t *testing.T) {
 	}
 }
 
+func TestComposeCompanionWarnings(t *testing.T) {
+	cfg := &composeConfig{
+		Services: map[string]composeService{
+			"camera":   {},
+			"detector": {},
+		},
+	}
+
+	t.Run("nil companion produces no warnings", func(t *testing.T) {
+		if w := composeCompanionWarnings(nil, cfg); len(w) != 0 {
+			t.Fatalf("want no warnings, got %v", w)
+		}
+	})
+
+	t.Run("all services matched", func(t *testing.T) {
+		companion := &appconfig.AppConfig{
+			AppID: "com.example.robot",
+			Services: map[string]*appconfig.ServiceConfig{
+				"camera":   {Entitlements: []appconfig.Entitlement{{Type: "camera"}}},
+				"detector": {Entitlements: []appconfig.Entitlement{{Type: "gpu"}}},
+			},
+		}
+		if w := composeCompanionWarnings(companion, cfg); len(w) != 0 {
+			t.Fatalf("want no warnings for matched services, got %v", w)
+		}
+	})
+
+	t.Run("unmatched service name warns", func(t *testing.T) {
+		companion := &appconfig.AppConfig{
+			AppID: "com.example.robot",
+			Services: map[string]*appconfig.ServiceConfig{
+				"camera":  {Entitlements: []appconfig.Entitlement{{Type: "camera"}}},
+				"missing": {Entitlements: []appconfig.Entitlement{{Type: "gpu"}}},
+			},
+		}
+		w := composeCompanionWarnings(companion, cfg)
+		if len(w) != 1 {
+			t.Fatalf("want 1 warning, got %v", w)
+		}
+		if !strings.Contains(w[0], "missing") {
+			t.Errorf("warning should mention the unknown service name, got %q", w[0])
+		}
+	})
+
+	t.Run("empty services map produces no warnings", func(t *testing.T) {
+		companion := &appconfig.AppConfig{AppID: "com.example.robot"}
+		if w := composeCompanionWarnings(companion, cfg); len(w) != 0 {
+			t.Fatalf("want no warnings for empty services, got %v", w)
+		}
+	})
+}
+
+func TestApplyComposeCompanion(t *testing.T) {
+	baseAppCfg := func() *appconfig.AppConfig {
+		return &appconfig.AppConfig{
+			AppID: "proj-camera",
+			Entitlements: []appconfig.Entitlement{
+				{Type: appconfig.EntitlementNetwork},
+			},
+		}
+	}
+
+	t.Run("nil companion is a no-op", func(t *testing.T) {
+		got := baseAppCfg()
+		applyComposeCompanion(got, nil, "camera")
+		if len(got.Entitlements) != 1 || got.Isolation != "" || got.Frameworks != nil {
+			t.Errorf("nil companion should not change AppConfig: %+v", got)
+		}
+	})
+
+	t.Run("sets appId, serviceName, isolation and group frameworks", func(t *testing.T) {
+		companion := &appconfig.AppConfig{
+			AppID:      "com.example.robot",
+			Isolation:  "shared-ipc",
+			Frameworks: &appconfig.FrameworksConfig{ROS2: &appconfig.ROS2Config{DomainID: 0}},
+		}
+		got := baseAppCfg()
+		applyComposeCompanion(got, companion, "camera")
+		if got.AppID != "com.example.robot" {
+			t.Errorf("AppID = %q, want %q", got.AppID, "com.example.robot")
+		}
+		if got.ServiceName != "camera" {
+			t.Errorf("ServiceName = %q, want %q", got.ServiceName, "camera")
+		}
+		if got.Isolation != "shared-ipc" {
+			t.Errorf("Isolation = %q, want %q", got.Isolation, "shared-ipc")
+		}
+		if got.Frameworks == nil || got.Frameworks.ROS2 == nil {
+			t.Error("Frameworks.ROS2 should be set")
+		}
+	})
+
+	t.Run("appends shared then per-service entitlements", func(t *testing.T) {
+		companion := &appconfig.AppConfig{
+			AppID:        "com.example.robot",
+			Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementBluetooth}},
+			Services: map[string]*appconfig.ServiceConfig{
+				"camera": {
+					Entitlements: []appconfig.Entitlement{
+						{Type: appconfig.EntitlementCamera},
+						{Type: appconfig.EntitlementGPU},
+					},
+				},
+			},
+		}
+		got := baseAppCfg()
+		applyComposeCompanion(got, companion, "camera")
+		// 1 compose + 1 shared + 2 per-service = 4
+		if len(got.Entitlements) != 4 {
+			t.Fatalf("want 4 entitlements (1 compose + 1 shared + 2 per-service), got %d: %+v", len(got.Entitlements), got.Entitlements)
+		}
+	})
+
+	t.Run("per-service frameworks override group frameworks", func(t *testing.T) {
+		groupROS2 := &appconfig.ROS2Config{DomainID: 0}
+		svcROS2 := &appconfig.ROS2Config{DomainID: 42}
+		companion := &appconfig.AppConfig{
+			AppID:      "com.example.robot",
+			Frameworks: &appconfig.FrameworksConfig{ROS2: groupROS2},
+			Services: map[string]*appconfig.ServiceConfig{
+				"camera": {
+					Frameworks: &appconfig.FrameworksConfig{ROS2: svcROS2},
+				},
+			},
+		}
+		got := baseAppCfg()
+		applyComposeCompanion(got, companion, "camera")
+		if got.Frameworks == nil || got.Frameworks.ROS2 == nil {
+			t.Fatal("Frameworks.ROS2 should be set")
+		}
+		if got.Frameworks.ROS2.DomainID != 42 {
+			t.Errorf("DomainID = %d, want 42 (per-service override)", got.Frameworks.ROS2.DomainID)
+		}
+	})
+
+	t.Run("group frameworks apply when service has no frameworks", func(t *testing.T) {
+		groupROS2 := &appconfig.ROS2Config{DomainID: 5}
+		companion := &appconfig.AppConfig{
+			AppID:      "com.example.robot",
+			Frameworks: &appconfig.FrameworksConfig{ROS2: groupROS2},
+			Services: map[string]*appconfig.ServiceConfig{
+				"camera": {Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementCamera}}},
+			},
+		}
+		got := baseAppCfg()
+		applyComposeCompanion(got, companion, "camera")
+		if got.Frameworks == nil || got.Frameworks.ROS2 == nil || got.Frameworks.ROS2.DomainID != 5 {
+			t.Errorf("expected group-level ROS2 DomainID=5, got %+v", got.Frameworks)
+		}
+	})
+
+	t.Run("unknown service uses only group config", func(t *testing.T) {
+		companion := &appconfig.AppConfig{
+			AppID:     "com.example.robot",
+			Isolation: "shared-ipc",
+			Services: map[string]*appconfig.ServiceConfig{
+				"camera": {Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementCamera}}},
+			},
+		}
+		got := baseAppCfg()
+		applyComposeCompanion(got, companion, "detector") // not in services map
+		if got.Isolation != "shared-ipc" {
+			t.Errorf("Isolation = %q, want %q", got.Isolation, "shared-ipc")
+		}
+		// No per-service entitlements should be added.
+		if len(got.Entitlements) != 1 {
+			t.Errorf("want 1 entitlement (no per-service addition), got %d", len(got.Entitlements))
+		}
+	})
+}
+
+func TestDeduplicateEntitlements(t *testing.T) {
+	gpu := appconfig.Entitlement{Type: appconfig.EntitlementGPU}
+	cam := appconfig.Entitlement{Type: appconfig.EntitlementCamera}
+	net := appconfig.Entitlement{Type: appconfig.EntitlementNetwork, Mode: "host"}
+	persist1 := appconfig.Entitlement{Type: appconfig.EntitlementPersist, Name: "data"}
+	persist2 := appconfig.Entitlement{Type: appconfig.EntitlementPersist, Name: "logs"}
+
+	t.Run("removes exact duplicates", func(t *testing.T) {
+		got := deduplicateEntitlements([]appconfig.Entitlement{gpu, cam, gpu})
+		if len(got) != 2 {
+			t.Fatalf("want 2, got %d: %+v", len(got), got)
+		}
+	})
+
+	t.Run("preserves order, first occurrence wins", func(t *testing.T) {
+		got := deduplicateEntitlements([]appconfig.Entitlement{gpu, cam, gpu, net})
+		if len(got) != 3 || got[0].Type != appconfig.EntitlementGPU || got[1].Type != appconfig.EntitlementCamera {
+			t.Fatalf("unexpected order: %+v", got)
+		}
+	})
+
+	t.Run("distinct persist names are kept", func(t *testing.T) {
+		got := deduplicateEntitlements([]appconfig.Entitlement{persist1, persist2, persist1})
+		if len(got) != 2 {
+			t.Fatalf("want 2, got %d: %+v", len(got), got)
+		}
+	})
+
+	t.Run("empty input", func(t *testing.T) {
+		if got := deduplicateEntitlements(nil); len(got) != 0 {
+			t.Fatalf("want empty, got %+v", got)
+		}
+	})
+}
+
 func TestComposeRestartPolicy(t *testing.T) {
 	cases := []struct {
 		in   string
@@ -386,5 +642,61 @@ func TestComposeRestartPolicy(t *testing.T) {
 		if got != c.want {
 			t.Errorf("composeRestartPolicy(%q) = %v; want %v", c.in, got, c.want)
 		}
+	}
+}
+
+func TestComposeWarnUnsupportedFields(t *testing.T) {
+	raw := `
+services:
+  api:
+    image: python:3.11
+    devices:
+      - /dev/video0
+    privileged: true
+    ipc: host
+`
+	var cfg composeConfig
+	if err := yaml.Unmarshal([]byte(raw), &cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	warnings := unsupportedComposeWarnings(cfg.Services["api"])
+
+	contains := func(field string) bool {
+		for _, w := range warnings {
+			if w == field {
+				return true
+			}
+		}
+		return false
+	}
+	if !contains("devices") {
+		t.Errorf("expected 'devices' in warnings, got %v", warnings)
+	}
+	if !contains("privileged") {
+		t.Errorf("expected 'privileged' in warnings, got %v", warnings)
+	}
+	if !contains("ipc") {
+		t.Errorf("expected 'ipc' in warnings, got %v", warnings)
+	}
+}
+
+func TestComposeWarnUnsupportedFields_NoneWhenClean(t *testing.T) {
+	raw := `
+services:
+  api:
+    image: python:3.11
+    environment:
+      - FOO=bar
+    restart: unless-stopped
+`
+	var cfg composeConfig
+	if err := yaml.Unmarshal([]byte(raw), &cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	warnings := unsupportedComposeWarnings(cfg.Services["api"])
+	if len(warnings) != 0 {
+		t.Errorf("expected no warnings for clean service, got %v", warnings)
 	}
 }

@@ -16,11 +16,11 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	"github.com/wendylabsinc/wendy/internal/cli/grpcclient"
-	"github.com/wendylabsinc/wendy/internal/cli/providers"
-	"github.com/wendylabsinc/wendy/internal/cli/tui"
-	"github.com/wendylabsinc/wendy/internal/shared/config"
-	"github.com/wendylabsinc/wendy/proto/gen/agentpb"
+	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
+	"github.com/wendylabsinc/wendy/go/internal/cli/providers"
+	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/shared/config"
+	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
 var (
@@ -134,19 +134,32 @@ func appsListAgent(ctx context.Context, conn *grpcclient.AgentConnection) error 
 	}
 
 	if jsonOutput {
-		type jsonApp struct {
+		type jsonService struct {
 			Name         string `json:"name"`
-			Version      string `json:"version,omitempty"`
-			RunningState string `json:"runningState,omitempty"`
-			FailureCount uint32 `json:"failureCount,omitempty"`
+			RunningState string `json:"runningState"`
+		}
+		type jsonApp struct {
+			Name         string        `json:"name"`
+			Version      string        `json:"version,omitempty"`
+			RunningState string        `json:"runningState,omitempty"`
+			FailureCount uint32        `json:"failureCount,omitempty"`
+			Services     []jsonService `json:"services,omitempty"`
 		}
 		apps := make([]jsonApp, len(containers))
 		for i, c := range containers {
+			var svcs []jsonService
+			for _, s := range c.GetServices() {
+				svcs = append(svcs, jsonService{
+					Name:         s.GetName(),
+					RunningState: s.GetRunningState().String(),
+				})
+			}
 			apps[i] = jsonApp{
 				Name:         c.GetAppName(),
 				Version:      c.GetAppVersion(),
 				RunningState: c.GetRunningState().String(),
 				FailureCount: c.GetFailureCount(),
+				Services:     svcs,
 			}
 		}
 		data, err := json.MarshalIndent(apps, "", "  ")
@@ -164,12 +177,32 @@ func appsListAgent(ctx context.Context, conn *grpcclient.AgentConnection) error 
 	headers := []string{"", "Name", "Version", "Failures"}
 	var rows [][]string
 	for _, c := range containers {
-		rows = append(rows, []string{
-			stateIcon(c.GetRunningState().String()),
-			c.GetAppName(),
-			c.GetAppVersion(),
-			fmt.Sprintf("%d", c.GetFailureCount()),
-		})
+		services := c.GetServices()
+		if len(services) > 1 {
+			// Group header row: aggregate state + app name marked as group.
+			rows = append(rows, []string{
+				stateIcon(c.GetRunningState().String()),
+				c.GetAppName() + " " + lipgloss.NewStyle().Foreground(tui.ColorDim).Render("[group]"),
+				c.GetAppVersion(),
+				fmt.Sprintf("%d", c.GetFailureCount()),
+			})
+			// Per-service sub-rows indented under the group header.
+			for _, s := range services {
+				rows = append(rows, []string{
+					"",
+					"  ↳ " + s.GetName() + "  " + stateIcon(s.GetRunningState().String()),
+					"",
+					"",
+				})
+			}
+		} else {
+			rows = append(rows, []string{
+				stateIcon(c.GetRunningState().String()),
+				c.GetAppName(),
+				c.GetAppVersion(),
+				fmt.Sprintf("%d", c.GetFailureCount()),
+			})
+		}
 	}
 	fmt.Print(tui.RenderTable(headers, rows))
 	return nil
@@ -308,6 +341,7 @@ func newAppsStartCmd() *cobra.Command {
 					return err
 				}
 				gotFirstResponse := false
+				gotOutput := false
 				for {
 					resp, err := outStream.Recv()
 					if err == io.EOF {
@@ -331,12 +365,20 @@ func newAppsStartCmd() *cobra.Command {
 					gotFirstResponse = true
 					if out := resp.GetStdoutOutput(); out != nil {
 						os.Stdout.Write(out.GetData())
+						gotOutput = true
 					}
 					if out := resp.GetStderrOutput(); out != nil {
 						os.Stderr.Write(out.GetData())
+						gotOutput = true
 					}
 				}
-				cliSuccess("Application %s stopped.", appName)
+				// Group starts return immediately without streaming output; distinguish
+				// from single containers that ran and exited.
+				if gotOutput {
+					cliSuccess("Application %s stopped.", appName)
+				} else {
+					cliSuccess("Application %s started.", appName)
+				}
 				return nil
 			}
 
@@ -551,7 +593,14 @@ func newAppsRemoveCmd() *cobra.Command {
 	return cmd
 }
 
-// stateIcon returns a colored dot for the given state string (for static tables).
+func newPsCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "ps",
+		Short: "List running containers (alias for 'apps list')",
+		RunE:  newAppsListCmd().RunE,
+	}
+}
+
 func stateIcon(state string) string {
 	switch strings.ToLower(state) {
 	case "running":
@@ -561,8 +610,6 @@ func stateIcon(state string) string {
 	}
 }
 
-// stateIconPlain returns a plain unicode dot for use in interactive (bubbles) tables
-// where ANSI styling in cell content breaks width calculation and selection.
 func stateIconPlain(state string) string {
 	switch strings.ToLower(state) {
 	case "running":
@@ -572,14 +619,13 @@ func stateIconPlain(state string) string {
 	}
 }
 
-// appInfo holds the display information for an app returned by the agent or provider.
 type appInfo struct {
 	Name    string
 	Version string
 	State   string
+	IsGroup bool // true when this app has multiple service containers
 }
 
-// listApps fetches the list of apps from the target device.
 func listApps(ctx context.Context, target *SelectedDevice) ([]appInfo, error) {
 	if target.Bluetooth != nil && target.Bluetooth.IsWendyAgent() {
 		bleClient, err := connectBLEAgent(target.Bluetooth)
@@ -621,6 +667,7 @@ func listApps(ctx context.Context, target *SelectedDevice) ([]appInfo, error) {
 					Name:    c.GetAppName(),
 					Version: c.GetAppVersion(),
 					State:   c.GetRunningState().String(),
+					IsGroup: len(c.GetServices()) > 1,
 				})
 			}
 		}
@@ -667,8 +714,12 @@ func pickApp(ctx context.Context, target *SelectedDevice, title string) (string,
 	go func() {
 		var items []tui.PickerItem
 		for _, app := range apps {
+			name := stateIconPlain(app.State) + " " + app.Name
+			if app.IsGroup {
+				name += " [group]"
+			}
 			items = append(items, tui.PickerItem{
-				Name:        stateIconPlain(app.State) + " " + app.Name,
+				Name:        name,
 				Description: app.Version,
 				Value:       app.Name,
 			})

@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/wendylabsinc/wendy/proto/gen/agentpb"
+	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
 func TestBuildDashboardRows(t *testing.T) {
@@ -157,5 +157,12 @@ func TestFormatBytes(t *testing.T) {
 				t.Fatalf("formatBytes(%d) = %q, want %q", tt.n, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestFormatDiskUsage(t *testing.T) {
+	got := formatDiskUsage(2_340_000_000, 120_000_000_000)
+	if got != "2.34 GB / 120 GB" {
+		t.Fatalf("formatDiskUsage() = %q, want %q", got, "2.34 GB / 120 GB")
 	}
 }

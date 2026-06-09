@@ -20,14 +20,14 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
-	"github.com/wendylabsinc/wendy/internal/cli/grpcclient"
-	"github.com/wendylabsinc/wendy/internal/cli/tui"
-	"github.com/wendylabsinc/wendy/internal/shared/certs"
-	"github.com/wendylabsinc/wendy/internal/shared/config"
-	"github.com/wendylabsinc/wendy/internal/shared/version"
-	"github.com/wendylabsinc/wendy/proto/gen/agentpb"
-	"github.com/wendylabsinc/wendy/proto/gen/cloudpb"
-	otelpb "github.com/wendylabsinc/wendy/proto/gen/otelpb"
+	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
+	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
+	"github.com/wendylabsinc/wendy/go/internal/shared/config"
+	"github.com/wendylabsinc/wendy/go/internal/shared/version"
+	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
+	"github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
+	otelpb "github.com/wendylabsinc/wendy/go/proto/gen/otelpb"
 	"golang.org/x/term"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -78,6 +78,7 @@ func newDeviceCmd() *cobra.Command {
 	addToGroup("data",
 		newAppsCmd(),
 		newVolumesCmd(),
+		newPsCmd(),
 	)
 
 	return cmd
@@ -112,6 +113,7 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 			defer target.Close()
 
 			var agentVersion, osName, osVersion, cpuArch, deviceType, storageMedium, gpuVendor, jetpackVersion, cudaVersion string
+			var diskUsedBytes, diskTotalBytes *int64
 			var hasGPU bool
 
 			if target.Bluetooth != nil && target.Bluetooth.IsWendyAgent() {
@@ -144,6 +146,8 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 				gpuVendor = resp.GetGpuVendor()
 				jetpackVersion = resp.GetJetpackVersion()
 				cudaVersion = resp.GetCudaVersion()
+				diskUsedBytes = resp.DiskUsedBytes
+				diskTotalBytes = resp.DiskTotalBytes
 			} else {
 				return fmt.Errorf("selected device does not support this command")
 			}
@@ -169,6 +173,10 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 				}
 				if storageMedium != "" {
 					out["storageMedium"] = storageMedium
+				}
+				if diskUsedBytes != nil && diskTotalBytes != nil {
+					out["diskUsedBytes"] = *diskUsedBytes
+					out["diskTotalBytes"] = *diskTotalBytes
 				}
 				if gpuVendor != "" {
 					out["gpuVendor"] = gpuVendor
@@ -199,6 +207,9 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 			}
 			if storageMedium != "" {
 				fmt.Printf("Storage: %s\n", storageMedium)
+			}
+			if diskUsedBytes != nil && diskTotalBytes != nil {
+				fmt.Printf("Disk Usage: %s\n", formatDiskUsage(*diskUsedBytes, *diskTotalBytes))
 			}
 			if hasGPU {
 				vendor := gpuVendor
@@ -504,9 +515,6 @@ func promptWifiIfNeeded(ctx context.Context, conn *grpcclient.AgentConnection) {
 	}
 }
 
-// runEnrollDevice creates an enrollment token via the stored auth session and
-// calls StartProvisioning on the connected device agent. name is optional; the
-// user is prompted interactively when it is empty.
 func runEnrollDevice(ctx context.Context, conn *grpcclient.AgentConnection, auth *config.AuthConfig, name string) error {
 	if len(auth.Certificates) == 0 {
 		return fmt.Errorf("selected auth entry has no certificates; re-run 'wendy auth login'")
@@ -579,10 +587,6 @@ func runEnrollDevice(ctx context.Context, conn *grpcclient.AgentConnection, auth
 	return nil
 }
 
-// pickAuthEntry returns the auth config entry to use for enrollment.
-// If cloudGRPC is specified it must match an existing entry. When no cloudGRPC
-// is given and multiple sessions exist, an error is returned requiring the user
-// to specify --cloud-grpc explicitly.
 func pickAuthEntry(cloudGRPC string) (*config.AuthConfig, error) {
 	cfg, err := config.Load()
 	if err != nil {
@@ -643,6 +647,7 @@ func newDeviceLogsCmd() *cobra.Command {
 	var serviceName string
 	var minSeverity int32
 	var level string
+	var tail int32
 
 	cmd := &cobra.Command{
 		Use:   "logs",
@@ -671,13 +676,24 @@ func newDeviceLogsCmd() *cobra.Command {
 			if serviceName != "" {
 				req.ServiceName = &serviceName
 			}
-			if minSeverity > 0 {
+			// Default to INFO so dmesg debug/trace output is hidden unless the
+			// user explicitly requests a lower level.
+			if !cmd.Flags().Changed("level") && !cmd.Flags().Changed("min-severity") {
+				infoSev := parseSeverityLevel("info")
+				req.MinSeverity = &infoSev
+			} else if minSeverity > 0 {
 				req.MinSeverity = &minSeverity
+			}
+			if tail > 0 {
+				req.LastN = &tail
 			}
 			stream, err := conn.TelemetryService.StreamLogs(ctx, req)
 			if err != nil {
 				return fmt.Errorf("starting log stream: %w", err)
 			}
+
+			liveSeparatorPrinted := tail == 0
+			seenHistory := false
 
 			for {
 				resp, err := stream.Recv()
@@ -691,6 +707,19 @@ func newDeviceLogsCmd() *cobra.Command {
 				logs := resp.GetLogs()
 				if logs == nil {
 					continue
+				}
+
+				// Track whether any history was received.
+				if resp.IsHistory {
+					seenHistory = true
+				}
+
+				// Print separator only when transitioning from actual history to live.
+				if !liveSeparatorPrinted && seenHistory && !resp.IsHistory {
+					liveSeparatorPrinted = true
+					if !jsonOutput {
+						fmt.Println(logMetaStyle.Render("── live ──────────────────────"))
+					}
 				}
 
 				for _, rl := range logs.GetResourceLogs() {
@@ -715,6 +744,7 @@ func newDeviceLogsCmd() *cobra.Command {
 	cmd.Flags().StringVar(&serviceName, "service", "", "Filter by service name")
 	cmd.Flags().Int32Var(&minSeverity, "min-severity", 0, "Minimum log severity number")
 	cmd.Flags().StringVar(&level, "level", "", "Minimum log level (trace, debug, info, warn, error, fatal)")
+	cmd.Flags().Int32Var(&tail, "tail", 0, "Replay the last N log batches before streaming live (0 = live only)")
 
 	return cmd
 }
@@ -1235,10 +1265,15 @@ type githubReleaseFull struct {
 }
 
 func fetchAgentRelease(nightly bool) (*githubReleaseFull, error) {
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := newGitHubAPIClient(30 * time.Second)
 
 	if !nightly {
-		resp, err := client.Get(githubReleasesURL)
+		req, err := newGitHubAPIGetRequest(githubReleasesURL)
+		if err != nil {
+			return nil, fmt.Errorf("creating GitHub API request: %w", err)
+		}
+
+		resp, err := client.Do(req)
 		if err != nil {
 			return nil, fmt.Errorf("fetching latest release: %w", err)
 		}
@@ -1256,7 +1291,12 @@ func fetchAgentRelease(nightly bool) (*githubReleaseFull, error) {
 	}
 
 	// For nightly, list releases and find the latest prerelease.
-	resp, err := client.Get("https://api.github.com/repos/wendylabsinc/wendy-agent/releases")
+	req, err := newGitHubAPIGetRequest("https://api.github.com/repos/wendylabsinc/wendy-agent/releases")
+	if err != nil {
+		return nil, fmt.Errorf("creating GitHub API request: %w", err)
+	}
+
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("fetching releases: %w", err)
 	}
@@ -1472,9 +1512,6 @@ func newDeviceUpdateCmd() *cobra.Command {
 	return cmd
 }
 
-// checkELFArchitecture reads the ELF e_machine field from data and returns an
-// error if it does not match the device's reported GOARCH (e.g. "amd64", "arm64").
-// Non-ELF binaries (e.g. scripts) are accepted without complaint.
 func checkELFArchitecture(data []byte, deviceArch string) error {
 	// Only amd64 and arm64 are supported targets.
 	switch deviceArch {

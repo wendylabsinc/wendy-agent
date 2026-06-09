@@ -15,11 +15,11 @@ import (
 
 	qrcode "github.com/skip2/go-qrcode"
 	"github.com/spf13/cobra"
-	"github.com/wendylabsinc/wendy/internal/cli/tui"
-	"github.com/wendylabsinc/wendy/internal/shared/browseropen"
-	"github.com/wendylabsinc/wendy/internal/shared/certs"
-	"github.com/wendylabsinc/wendy/internal/shared/config"
-	"github.com/wendylabsinc/wendy/proto/gen/cloudpb"
+	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/shared/browseropen"
+	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
+	"github.com/wendylabsinc/wendy/go/internal/shared/config"
+	"github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
@@ -205,7 +205,7 @@ func performLogin(ctx context.Context, cloudDashboard, cloudGRPC string) error {
 	if err != nil {
 		return fmt.Errorf("reading enrollment token identity: %w", err)
 	}
-	csrPEM, err := certs.GenerateCSR(privateKeyPEM, commonName)
+	csrPEM, err := certs.GenerateCSR([]byte(privateKeyPEM), commonName)
 	if err != nil {
 		return fmt.Errorf("generating CSR: %w", err)
 	}
@@ -345,7 +345,7 @@ func performLocalLogin(ctx context.Context, cloudGRPC, apiKey string, orgID int3
 	if err != nil {
 		return fmt.Errorf("generating key pair: %w", err)
 	}
-	csrPEM, err := certs.GenerateCSR(privateKeyPEM, deviceID)
+	csrPEM, err := certs.GenerateCSR([]byte(privateKeyPEM), deviceID)
 	if err != nil {
 		return fmt.Errorf("generating CSR: %w", err)
 	}
@@ -469,6 +469,26 @@ func newAuthRefreshCertsCmd() *cobra.Command {
 	}
 }
 
+// certCommonName extracts the Subject CN from a PEM-encoded certificate.
+// It normalizes the input with certs.LeafCertificatePEM first because
+// pki-core certificates can contain trailing ASN.1 bytes that cause
+// x509.ParseCertificate to fail on the raw stored PEM.
+func certCommonName(pemCertificate string) (string, error) {
+	leafPEM, err := certs.LeafCertificatePEM(pemCertificate)
+	if err != nil {
+		return "", fmt.Errorf("normalizing certificate PEM: %w", err)
+	}
+	block, _ := pem.Decode([]byte(leafPEM))
+	if block == nil {
+		return "", fmt.Errorf("decoding certificate PEM")
+	}
+	parsed, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return "", fmt.Errorf("parsing certificate: %w", err)
+	}
+	return parsed.Subject.CommonName, nil
+}
+
 // refreshCertsForAuth generates a new CSR and refreshes certificates for a single auth entry.
 func refreshCertsForAuth(ctx context.Context, auth *config.AuthConfig) error {
 	if len(auth.Certificates) == 0 {
@@ -477,13 +497,18 @@ func refreshCertsForAuth(ctx context.Context, auth *config.AuthConfig) error {
 
 	existingCert := auth.Certificates[0]
 
+	cn, err := certCommonName(existingCert.PemCertificate)
+	if err != nil {
+		return fmt.Errorf("reading existing cert CN: %w", err)
+	}
+
 	// Generate new key pair.
 	newKeyPEM, err := certs.GenerateKeyPair()
 	if err != nil {
 		return fmt.Errorf("generating key pair: %w", err)
 	}
 
-	csrPEM, err := certs.GenerateCSR(newKeyPEM, "wendy-cli-user")
+	csrPEM, err := certs.GenerateCSR([]byte(newKeyPEM), cn)
 	if err != nil {
 		return fmt.Errorf("generating CSR: %w", err)
 	}

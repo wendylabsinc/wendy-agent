@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/ebitengine/oto/v3"
-	"github.com/wendylabsinc/wendy/proto/gen/agentpb"
+	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
 // playRealtimeAudio plays the gRPC audio stream through the local speakers.

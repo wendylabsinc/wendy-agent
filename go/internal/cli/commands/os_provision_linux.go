@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/wendylabsinc/wendy/internal/shared/wendyconf"
+	"github.com/wendylabsinc/wendy/go/internal/shared/wendyconf"
 )
 
 // configPartitionSupported reports whether writeConfigPartition has a working
@@ -51,8 +51,6 @@ func writeConfigPartition(d drive, agentBinary []byte, creds []wendyconf.WifiCre
 	return writeConfigFiles(tmpDir, agentBinary, creds, deviceName, provisioningJSON)
 }
 
-// findConfigPartition returns the device path of the partition labelled "config"
-// on the given disk (e.g. /dev/sdb → /dev/sdb3).
 func findConfigPartition(diskDev string) (string, error) {
 	out, err := exec.Command("lsblk", "-o", "NAME,LABEL", "-n", "-r", diskDev).Output()
 	if err != nil {

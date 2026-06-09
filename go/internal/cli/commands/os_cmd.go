@@ -13,16 +13,15 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
-	"github.com/wendylabsinc/wendy/internal/cli/grpcclient"
-	"github.com/wendylabsinc/wendy/internal/cli/tui"
-	"github.com/wendylabsinc/wendy/internal/shared/version"
-	"github.com/wendylabsinc/wendy/proto/gen/agentpb"
+	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
+	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/shared/version"
+	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
 func newOSCmd() *cobra.Command {
@@ -43,7 +42,6 @@ const (
 	osUpdateUnsupportedMessage      = "This setup cannot be updated with wendy os update. Use this machine’s normal OS update tools instead. To use WendyOS OTA updates, install WendyOS on supported hardware with wendy os install."
 	linuxOSUpdateUnsupportedMessage = "This Linux host has wendy-agent installed, but it cannot be updated with WendyOS OTA artifacts. Use the Linux distribution’s package manager, such as apt, dnf, or pacman, to update this machine."
 	wendyOSMissingMenderMessage     = "This WendyOS image does not support OTA updates because mender-update was not found. Reinstall or upgrade to a WendyOS image with OTA support."
-	cannotChooseOTAArtifactMessage  = "Cannot choose an OTA artifact for this device. Provide a specific .mender artifact, or update/reinstall WendyOS so the device reports a supported device type."
 )
 
 func validateOSUpdateIdentity(versionResp *agentpb.GetAgentVersionResponse) error {
@@ -142,26 +140,46 @@ so the device can download it directly.`,
 			// No artifact provided — auto-detect from the reported device type.
 			if len(args) == 0 && artifactURL == "" {
 				deviceType := versionResp.GetDeviceType()
-				if deviceType == "" {
-					return errors.New(cannotChooseOTAArtifactMessage)
-				}
-				otaURL, latestVer, autoErr := getLatestOTAInfoForDeviceType(deviceType, nightly)
-				if autoErr != nil {
-					return errors.New(cannotChooseOTAArtifactMessage)
-				}
-				if osVer := versionResp.GetOsVersion(); osVer != "" && latestVer != "" {
-					// Strip the "WendyOS-" display prefix before comparing so that
-					// "WendyOS-0.10.4" and "0.12.0-nightly" compare correctly.
-					normalizedOsVer := strings.TrimPrefix(osVer, "WendyOS-")
-					alreadyCurrent := nightly && latestVer == normalizedOsVer ||
-						!nightly && version.CompareVersions(latestVer, normalizedOsVer) <= 0
-					if alreadyCurrent {
-						fmt.Printf("OS is already at the latest version (%s).\n", osVer)
-						return nil
+				storageMedium := versionResp.GetStorageMedium()
+				otaURL, latestVer, autoErr := func() (string, string, error) {
+					if deviceType == "" {
+						return "", "", fmt.Errorf("device type not reported")
 					}
-					fmt.Printf("Latest OS version: %s\n", latestVer)
+					return getLatestOTAInfoForDeviceType(deviceType, storageMedium, nightly)
+				}()
+
+				if autoErr != nil {
+					// Device type is missing or not in the update catalog — fall back to
+					// a device picker so the user can force the correct device type.
+					// The latest version (or latest nightly with --nightly) is then chosen
+					// automatically, consistent with the normal auto-detect path.
+					if deviceType == "" {
+						fmt.Println("Warning: this device did not report a device type, so the update target cannot be selected automatically.")
+					} else {
+						fmt.Printf("Warning: device type %q is not recognized in the update catalog.\n", deviceType)
+					}
+					fmt.Println("Please select the correct device type to continue.")
+					fmt.Println()
+					picked, pickErr := pickDeviceTypeAndGetLatestOTA(nightly)
+					if pickErr != nil {
+						return pickErr
+					}
+					artifactURL = picked
+				} else {
+					if osVer := versionResp.GetOsVersion(); osVer != "" && latestVer != "" {
+						// Strip the "WendyOS-" display prefix before comparing so that
+						// "WendyOS-0.10.4" and "0.12.0-nightly" compare correctly.
+						normalizedOsVer := strings.TrimPrefix(osVer, "WendyOS-")
+						alreadyCurrent := nightly && latestVer == normalizedOsVer ||
+							!nightly && version.CompareVersions(latestVer, normalizedOsVer) <= 0
+						if alreadyCurrent {
+							fmt.Printf("OS is already at the latest version (%s).\n", osVer)
+							return nil
+						}
+						fmt.Printf("Latest OS version: %s\n", latestVer)
+					}
+					artifactURL = otaURL
 				}
-				artifactURL = otaURL
 			}
 
 			// If a local path is provided, resolve and serve it.
@@ -324,9 +342,10 @@ func artifactURLPath(filePath string) string {
 	return fmt.Sprintf("%x", h.Sum(nil))[:16]
 }
 
-// pickOTAArtifactURL interactively picks a device and version from the GCS
-// manifest and returns the Mender artifact URL for the selected version.
-func pickOTAArtifactURL() (string, error) {
+// pickDeviceTypeAndGetLatestOTA shows a device-type picker and returns the OTA
+// artifact URL for the latest stable release (or latest nightly when nightly is
+// true). No version picker is shown — the version is chosen automatically.
+func pickDeviceTypeAndGetLatestOTA(nightly bool) (string, error) {
 	fmt.Println("Fetching available devices...")
 
 	devices, err := getAvailableDevices()
@@ -334,68 +353,47 @@ func pickOTAArtifactURL() (string, error) {
 		return "", fmt.Errorf("fetching device manifest: %w", err)
 	}
 
-	// Filter to devices that have at least one version with an OTA artifact.
 	var items []tui.PickerItem
-	deviceMap := make(map[string]deviceInfo)
 	for _, dev := range devices {
 		if dev.Manifest == nil {
 			continue
 		}
+		hasOTA := false
 		for _, v := range dev.Manifest.Versions {
 			if v.OTAUpdatePath != "" {
-				deviceMap[dev.Key] = dev
-				items = append(items, tui.PickerItem{
-					Name:        dev.Name,
-					Description: fmt.Sprintf("(latest: %s)", dev.LatestVersion),
-					Value:       dev.Key,
-				})
+				hasOTA = true
 				break
 			}
 		}
+		if !hasOTA {
+			continue
+		}
+		latestLabel := dev.LatestVersion
+		if nightly && dev.NightlyVersion != "" {
+			latestLabel = dev.NightlyVersion
+		}
+		items = append(items, tui.PickerItem{
+			Name:        dev.Name,
+			Description: fmt.Sprintf("(latest: %s)", latestLabel),
+			Value:       dev.Key,
+		})
 	}
 	if len(items) == 0 {
 		return "", fmt.Errorf("no devices with OTA update support found in manifest")
 	}
 
 	fmt.Println()
-	key, err := pickFromItems("Select a device", items)
-	if err != nil {
-		return "", err
-	}
-	dev := deviceMap[key]
-
-	// Filter versions to those that have an OTA artifact.
-	var versionItems []tui.PickerItem
-	for ver, v := range dev.Manifest.Versions {
-		if v.OTAUpdatePath == "" {
-			continue
-		}
-		desc := ""
-		if v.IsLatest {
-			desc = "latest"
-		} else if v.IsNightly {
-			desc = "nightly"
-		}
-		versionItems = append(versionItems, tui.PickerItem{
-			Name:        ver,
-			Description: desc,
-			Value:       ver,
-		})
-	}
-	// Sort newest-first for a stable, predictable picker.
-	sort.Slice(versionItems, func(i, j int) bool {
-		vi, _ := versionItems[i].Value.(string)
-		vj, _ := versionItems[j].Value.(string)
-		return version.CompareVersions(vi, vj) > 0
-	})
-
-	fmt.Println()
-	ver, err := pickFromItems("Select a version", versionItems)
+	key, err := pickFromItems("Select a device type", items)
 	if err != nil {
 		return "", err
 	}
 
-	return getOTAUpdateURL(dev.Manifest, ver)
+	otaURL, latestVer, err := getLatestOTAInfoForDeviceType(key, "", nightly)
+	if err != nil {
+		return "", fmt.Errorf("resolving OTA artifact for %q: %w", key, err)
+	}
+	fmt.Printf("Latest OS version: %s\n", latestVer)
+	return otaURL, nil
 }
 
 // pollDeviceOnline blocks until the device at addr responds to
@@ -457,10 +455,6 @@ func waitForDeviceOnline(ctx context.Context, host string) error {
 	return spinErr
 }
 
-// localIPForHost returns the local IP address used to reach the given host.
-// The returned string is suitable for net.Listen: for IPv6 link-local addresses
-// it includes the zone identifier (e.g. "fe80::1%en0"). Use ipForURL to convert
-// it to a safe form for embedding in HTTP URLs.
 func localIPForHost(host string) (string, error) {
 	// Strip port if present.
 	if h, _, err := net.SplitHostPort(host); err == nil {

@@ -8,7 +8,7 @@ import (
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 
-	agentpbv2 "github.com/wendylabsinc/wendy/proto/gen/agentpb/v2"
+	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 )
 
 type OSUpdateService struct {

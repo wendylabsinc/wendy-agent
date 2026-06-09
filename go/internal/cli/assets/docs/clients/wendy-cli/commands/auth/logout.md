@@ -1,0 +1,1 @@
+Removes all stored authentication credentials from `~/.wendy/config.json`. After logging out, commands that connect to a provisioned device on the local network will return an authorization error and prompt you to run `wendy auth login`.

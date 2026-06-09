@@ -46,7 +46,7 @@ func TestGenerateCSR(t *testing.T) {
 		t.Fatalf("GenerateKeyPair() error = %v", err)
 	}
 
-	csrPEM, err := GenerateCSR(keyPEM, "test-device.example.com")
+	csrPEM, err := GenerateCSR([]byte(keyPEM), "test-device.example.com")
 	if err != nil {
 		t.Fatalf("GenerateCSR() error = %v", err)
 	}
@@ -235,7 +235,7 @@ func TestGenerateAndCSR_RoundTrip(t *testing.T) {
 	}
 
 	// Generate a CSR with the key.
-	csrPEM, err := GenerateCSR(keyPEM, "roundtrip.example.com")
+	csrPEM, err := GenerateCSR([]byte(keyPEM), "roundtrip.example.com")
 	if err != nil {
 		t.Fatalf("GenerateCSR() error = %v", err)
 	}

@@ -62,8 +62,6 @@ type MultiSpinnerModel struct {
 	err     error
 }
 
-// NewMultiSpinner creates a MultiSpinnerModel with the given title and service
-// names listed in display order.
 func NewMultiSpinner(title string, names []string) MultiSpinnerModel {
 	rows := make([]multiSpinnerRow, len(names))
 	byName := make(map[string]int, len(names))
@@ -198,7 +196,6 @@ func (m MultiSpinnerModel) View() string {
 	return sb.String()
 }
 
-// Err returns the first error recorded, if any.
 func (m MultiSpinnerModel) Err() error {
 	return m.err
 }

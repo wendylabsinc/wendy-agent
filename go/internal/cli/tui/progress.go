@@ -3,10 +3,13 @@ package tui
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/charmbracelet/bubbles/progress"
 	tea "github.com/charmbracelet/bubbletea"
 )
+
+const maxProgressDetailLines = 4
 
 // ProgressUpdateMsg updates the progress bar percentage.
 // Written and Total are optional; when both are non-zero the view renders
@@ -16,6 +19,7 @@ type ProgressUpdateMsg struct {
 	Written int64
 	Total   int64
 	Title   string
+	Detail  string
 }
 
 // ProgressDoneMsg signals that the progress operation is complete.
@@ -27,6 +31,7 @@ type ProgressDoneMsg struct {
 type ProgressModel struct {
 	progress progress.Model
 	title    string
+	details  []string
 	percent  float64
 	written  int64
 	total    int64
@@ -35,7 +40,6 @@ type ProgressModel struct {
 	showErr  bool
 }
 
-// NewProgress creates a new ProgressModel with the given title.
 func NewProgress(title string) ProgressModel {
 	p := progress.New(progress.WithGradient(string(Emerald400), string(Emerald700)))
 	p.PercentFormat = " %5.2f%%"
@@ -77,6 +81,9 @@ func (m ProgressModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Title != "" {
 			m.title = msg.Title
 		}
+		if msg.Detail != "" {
+			m.details = appendProgressDetail(m.details, msg.Detail)
+		}
 		cmd := m.progress.SetPercent(msg.Percent)
 		return m, cmd
 
@@ -99,8 +106,9 @@ func (m ProgressModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m ProgressModel) View() string {
 	byteInfo := ""
 	if m.written > 0 && m.total > 0 {
-		byteInfo = fmt.Sprintf("  (%s / %s)", formatBytes(m.written), formatBytes(m.total))
+		byteInfo = fmt.Sprintf("  (%s / %s)", FormatBytes(m.written), FormatBytes(m.total))
 	}
+	details := m.detailView()
 
 	if m.done && m.err != nil {
 		if !m.showErr {
@@ -108,7 +116,7 @@ func (m ProgressModel) View() string {
 			if percent >= 1.0 {
 				percent = 0.99
 			}
-			return fmt.Sprintf("%s (failed)\n%s%s\n", m.title, m.progress.ViewAs(percent), byteInfo)
+			return fmt.Sprintf("%s (failed)\n%s%s%s\n", m.title, details, m.progress.ViewAs(percent), byteInfo)
 		}
 		return fmt.Sprintf("Error: %v\n", m.err)
 	}
@@ -117,15 +125,33 @@ func (m ProgressModel) View() string {
 		// Render at 100% directly — the animation may not have caught up
 		// before tea.Quit was processed.
 		if m.total > 0 {
-			byteInfo = fmt.Sprintf("  (%s / %s)", formatBytes(m.total), formatBytes(m.total))
+			byteInfo = fmt.Sprintf("  (%s / %s)", FormatBytes(m.total), FormatBytes(m.total))
 		}
-		return fmt.Sprintf("%s\n%s%s\n", m.title, m.progress.ViewAs(1.0), byteInfo)
+		return fmt.Sprintf("%s\n%s%s%s\n", m.title, details, m.progress.ViewAs(1.0), byteInfo)
 	}
-	return fmt.Sprintf("%s\n%s%s\n", m.title, m.progress.ViewAs(m.percent), byteInfo)
+	return fmt.Sprintf("%s\n%s%s%s\n", m.title, details, m.progress.ViewAs(m.percent), byteInfo)
 }
 
-// formatBytes returns a human-readable byte string using binary (1024-based) units.
-func formatBytes(b int64) string {
+func appendProgressDetail(details []string, detail string) []string {
+	if len(details) > 0 && details[len(details)-1] == detail {
+		return details
+	}
+	details = append(details, detail)
+	if len(details) > maxProgressDetailLines {
+		details = details[len(details)-maxProgressDetailLines:]
+	}
+	return details
+}
+
+func (m ProgressModel) detailView() string {
+	if len(m.details) == 0 {
+		return ""
+	}
+	return strings.Join(m.details, "\n") + "\n"
+}
+
+// FormatBytes formats a byte count using binary units for progress displays.
+func FormatBytes(b int64) string {
 	const (
 		kib = 1024
 		mib = 1024 * kib

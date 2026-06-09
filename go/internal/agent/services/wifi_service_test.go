@@ -12,8 +12,8 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 
-	agentpb "github.com/wendylabsinc/wendy/proto/gen/agentpb"
-	agentpbv2 "github.com/wendylabsinc/wendy/proto/gen/agentpb/v2"
+	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
+	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 )
 
 func startWiFiServer(t *testing.T, nm NetworkManager) (agentpbv2.WendyWiFiServiceClient, func()) {

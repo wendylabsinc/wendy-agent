@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/wendylabsinc/wendy/internal/shared/config"
-	"github.com/wendylabsinc/wendy/internal/shared/version"
+	"github.com/wendylabsinc/wendy/go/internal/shared/config"
+	"github.com/wendylabsinc/wendy/go/internal/shared/version"
 )
 
 const githubReleasesURL = "https://api.github.com/repos/wendylabsinc/wendy-agent/releases/latest"
@@ -71,9 +71,14 @@ type githubRelease struct {
 }
 
 func checkLatestRelease() (string, error) {
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := newGitHubAPIClient(10 * time.Second)
 
-	resp, err := client.Get(githubReleasesURL)
+	req, err := newGitHubAPIGetRequest(githubReleasesURL)
+	if err != nil {
+		return "", fmt.Errorf("creating GitHub API request: %w", err)
+	}
+
+	resp, err := client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("fetching releases: %w", err)
 	}

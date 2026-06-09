@@ -4,8 +4,8 @@ import (
 	"context"
 	"time"
 
-	agentpb "github.com/wendylabsinc/wendy/proto/gen/agentpb"
-	otelpb "github.com/wendylabsinc/wendy/proto/gen/otelpb"
+	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
+	otelpb "github.com/wendylabsinc/wendy/go/proto/gen/otelpb"
 )
 
 const metricsCollectionInterval = 15 * time.Second
@@ -16,7 +16,7 @@ const metricsCollectionInterval = 15 * time.Second
 func CollectContainerMetrics(
 	ctx context.Context,
 	client ContainerdClient,
-	broadcaster *TelemetryBroadcaster,
+	broadcaster TelemetryPublisher,
 	logManager *ContainerLogManager,
 ) {
 	// cache per app so we don't rebuild on every tick
@@ -95,7 +95,7 @@ func containerResource(appName, version string) *otelpb.Resource {
 // cpuMetric must be a Sum/monotonic metric name; memMetric a Gauge.
 // startTime is the start of the cumulative measurement window (required by OTel for Sum metrics).
 func publishProcessMetrics(
-	broadcaster *TelemetryBroadcaster,
+	broadcaster TelemetryPublisher,
 	resource *otelpb.Resource,
 	scope, cpuMetric, memMetric string,
 	userCPUNanos, sysCPUNanos, memBytes int64,

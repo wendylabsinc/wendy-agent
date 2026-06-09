@@ -114,6 +114,79 @@ func TestValidate_MissingAppID(t *testing.T) {
 	}
 }
 
+func TestValidate_AppIDCharset(t *testing.T) {
+	valid := []string{
+		"my-app",
+		"com.example.app",
+		"sh.wendy.App",
+		"app_123",
+	}
+	for _, id := range valid {
+		cfg := &AppConfig{AppID: id}
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("Validate() unexpected error for valid appId %q: %v", id, err)
+		}
+	}
+
+	invalid := []string{
+		"app,with,commas",  // would corrupt OTEL_RESOURCE_ATTRIBUTES
+		"app=value",        // would corrupt env-var parsing
+		"app with spaces",  // disallowed
+		"app\nnewline",     // would inject an env entry
+		"emoji-\U0001F600", // non-ASCII
+		// containerd filter-grammar special characters (SOC2-CC6, NIST-SI-10):
+		// ValidateAppID must reject all of these so containersForApp can safely
+		// interpolate appID into a label filter string via fmt.Sprintf/%q.
+		`app"quoted`, // double-quote — closes the %q-quoted value early
+		`app\slash`,  // backslash — escape in filter grammar
+		"app~tilde",  // tilde — used as regex operator in containerd filters
+		"app/slash",  // forward-slash — path separator in container names
+		"app@at",     // @ — snapshot key separator used by SnapshotKey
+		// Path-traversal guards (SOC2-CC6, NIST-SI-10):
+		".",  // single dot — resolves to CWD in filesystem paths
+		"..", // double dot — directory traversal
+		"...",
+	}
+	for _, id := range invalid {
+		cfg := &AppConfig{AppID: id}
+		if err := cfg.Validate(); err == nil {
+			t.Errorf("Validate() expected error for invalid appId %q, got nil", id)
+		}
+	}
+}
+
+func TestValidateServiceName(t *testing.T) {
+	valid := []string{
+		"api",    // typical multi-service name
+		"db",     // two chars — boundary minimum
+		"a",      // single char — intentionally allowed (not a DNS-minimum violation)
+		"my-svc", // hyphen in middle
+		"svc1",   // trailing digit
+		"ab",     // two chars
+	}
+	for _, name := range valid {
+		if err := ValidateServiceName(name); err != nil {
+			t.Errorf("ValidateServiceName(%q) unexpected error: %v", name, err)
+		}
+	}
+
+	invalid := []string{
+		"",                      // empty
+		"Api",                   // uppercase rejected
+		"api-",                  // trailing hyphen (RFC 1123)
+		"-api",                  // leading hyphen
+		"api\nnewline",          // would break env-var injection
+		"api\x00null",           // null byte
+		"api=value",             // equals sign
+		strings.Repeat("a", 58), // too long (> 57 chars)
+	}
+	for _, name := range invalid {
+		if err := ValidateServiceName(name); err == nil {
+			t.Errorf("ValidateServiceName(%q) expected error, got nil", name)
+		}
+	}
+}
+
 func TestValidate_UnknownEntitlementType(t *testing.T) {
 	cfg := &AppConfig{
 		AppID: "com.example.app",
@@ -1220,6 +1293,197 @@ func TestServiceConfigValidation(t *testing.T) {
 			t.Fatal("expected error for duplicate mcp entitlement in service")
 		}
 	})
+}
+
+func TestLoadComposeCompanion_NotFound(t *testing.T) {
+	cfg, warnings, err := LoadComposeCompanion(t.TempDir())
+	if err != nil {
+		t.Fatalf("expected nil error for missing wendy.json, got %v", err)
+	}
+	if cfg != nil {
+		t.Fatalf("expected nil config for missing wendy.json, got %+v", cfg)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings, got %v", warnings)
+	}
+}
+
+func TestLoadComposeCompanion_Valid(t *testing.T) {
+	dir := t.TempDir()
+	data := `{
+		"appId": "com.example.robot",
+		"isolation": "shared-ipc",
+		"frameworks": { "ros2": { "domainId": 5, "rmw": "cyclonedds" } },
+		"entitlements": [{ "type": "gpu" }]
+	}`
+	if err := os.WriteFile(filepath.Join(dir, "wendy.json"), []byte(data), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, warnings, err := LoadComposeCompanion(dir)
+	if err != nil {
+		t.Fatalf("LoadComposeCompanion: %v", err)
+	}
+	if cfg == nil {
+		t.Fatal("expected non-nil config")
+	}
+	if cfg.AppID != "com.example.robot" {
+		t.Errorf("AppID = %q, want %q", cfg.AppID, "com.example.robot")
+	}
+	if cfg.Isolation != "shared-ipc" {
+		t.Errorf("Isolation = %q, want %q", cfg.Isolation, "shared-ipc")
+	}
+	if cfg.Frameworks == nil || cfg.Frameworks.ROS2 == nil {
+		t.Fatal("Frameworks.ROS2 is nil")
+	}
+	if cfg.Frameworks.ROS2.DomainID != 5 {
+		t.Errorf("ROS2.DomainID = %d, want 5", cfg.Frameworks.ROS2.DomainID)
+	}
+	if cfg.Frameworks.ROS2.RMW != "cyclonedds" {
+		t.Errorf("ROS2.RMW = %q, want %q", cfg.Frameworks.ROS2.RMW, "cyclonedds")
+	}
+	if len(cfg.Entitlements) != 1 || cfg.Entitlements[0].Type != "gpu" {
+		t.Errorf("Entitlements = %+v", cfg.Entitlements)
+	}
+	if len(warnings) != 0 {
+		t.Errorf("unexpected warnings: %v", warnings)
+	}
+}
+
+func TestLoadComposeCompanion_WithServices(t *testing.T) {
+	dir := t.TempDir()
+	data := `{
+		"appId": "com.example.robot",
+		"services": {
+			"camera": {
+				"entitlements": [{ "type": "camera" }, { "type": "gpu" }],
+				"frameworks": { "ros2": { "domainId": 42 } }
+			},
+			"detector": {
+				"entitlements": [{ "type": "gpu" }]
+			}
+		}
+	}`
+	if err := os.WriteFile(filepath.Join(dir, "wendy.json"), []byte(data), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, _, err := LoadComposeCompanion(dir)
+	if err != nil {
+		t.Fatalf("LoadComposeCompanion: %v", err)
+	}
+	if len(cfg.Services) != 2 {
+		t.Fatalf("want 2 services, got %d", len(cfg.Services))
+	}
+	camera := cfg.Services["camera"]
+	if camera == nil {
+		t.Fatal("camera service is nil")
+	}
+	if len(camera.Entitlements) != 2 {
+		t.Errorf("camera entitlements = %d, want 2", len(camera.Entitlements))
+	}
+	if camera.Frameworks == nil || camera.Frameworks.ROS2 == nil || camera.Frameworks.ROS2.DomainID != 42 {
+		t.Errorf("camera.Frameworks.ROS2.DomainID mismatch")
+	}
+	if cfg.Services["detector"] == nil {
+		t.Fatal("detector service is nil")
+	}
+}
+
+func TestLoadComposeCompanion_InvalidEntitlement(t *testing.T) {
+	dir := t.TempDir()
+	data := `{
+		"appId": "com.example.robot",
+		"entitlements": [{ "type": "banana" }]
+	}`
+	if err := os.WriteFile(filepath.Join(dir, "wendy.json"), []byte(data), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := LoadComposeCompanion(dir); err == nil {
+		t.Fatal("expected error for unknown entitlement type")
+	}
+}
+
+func TestLoadComposeCompanion_NullServiceRejected(t *testing.T) {
+	dir := t.TempDir()
+	data := `{
+		"appId": "com.example.robot",
+		"services": { "camera": null }
+	}`
+	if err := os.WriteFile(filepath.Join(dir, "wendy.json"), []byte(data), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := LoadComposeCompanion(dir); err == nil {
+		t.Fatal("expected error for null service")
+	}
+}
+
+func TestLoadComposeCompanion_MissingAppID(t *testing.T) {
+	dir := t.TempDir()
+	data := `{ "isolation": "shared-ipc" }`
+	if err := os.WriteFile(filepath.Join(dir, "wendy.json"), []byte(data), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := LoadComposeCompanion(dir); err == nil {
+		t.Fatal("expected error for missing appId")
+	}
+}
+
+func TestLoadComposeCompanion_ContextNotRequired(t *testing.T) {
+	// Unlike Validate(), LoadComposeCompanion does not require context in services.
+	dir := t.TempDir()
+	data := `{
+		"appId": "com.example.robot",
+		"services": {
+			"camera": { "entitlements": [{ "type": "camera" }] }
+		}
+	}`
+	if err := os.WriteFile(filepath.Join(dir, "wendy.json"), []byte(data), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, _, err := LoadComposeCompanion(dir)
+	if err != nil {
+		t.Fatalf("LoadComposeCompanion must not require context: %v", err)
+	}
+	if cfg.Services["camera"] == nil {
+		t.Fatal("camera service missing")
+	}
+}
+
+func TestFrameworksConfig_ParseJSON(t *testing.T) {
+	data := `{
+		"appId": "com.example.app",
+		"frameworks": {
+			"ros2": { "domainId": 10, "rmw": "fastrtps" }
+		}
+	}`
+	cfg, err := LoadFromBytes([]byte(data))
+	if err != nil {
+		t.Fatalf("LoadFromBytes: %v", err)
+	}
+	if cfg.Frameworks == nil {
+		t.Fatal("Frameworks is nil")
+	}
+	if cfg.Frameworks.ROS2 == nil {
+		t.Fatal("Frameworks.ROS2 is nil")
+	}
+	if cfg.Frameworks.ROS2.DomainID != 10 {
+		t.Errorf("DomainID = %d, want 10", cfg.Frameworks.ROS2.DomainID)
+	}
+	if cfg.Frameworks.ROS2.RMW != "fastrtps" {
+		t.Errorf("RMW = %q, want %q", cfg.Frameworks.ROS2.RMW, "fastrtps")
+	}
+}
+
+func TestAppConfig_Isolation_RoundTrip(t *testing.T) {
+	data := `{"appId": "com.example.app", "isolation": "shared-ipc"}`
+	cfg, err := LoadFromBytes([]byte(data))
+	if err != nil {
+		t.Fatalf("LoadFromBytes: %v", err)
+	}
+	if cfg.Isolation != "shared-ipc" {
+		t.Errorf("Isolation = %q, want %q", cfg.Isolation, "shared-ipc")
+	}
 }
 
 func TestValidateJSON_ServiceEntitlements(t *testing.T) {

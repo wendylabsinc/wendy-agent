@@ -304,6 +304,28 @@ func TestEnsureSwiftVersion_Cancellation(t *testing.T) {
 	}
 }
 
+func TestActiveSwiftCommandUsesSwiftFromPath(t *testing.T) {
+	original := execCommand
+	t.Cleanup(func() { execCommand = original })
+
+	var gotName string
+	var gotArgs []string
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		gotName = name
+		gotArgs = append([]string(nil), args...)
+		return exec.Command("true")
+	}
+
+	_ = ActiveSwiftCommand("package", "dump-package")
+
+	if gotName != "swift" {
+		t.Fatalf("expected swift command, got %q", gotName)
+	}
+	if fmt.Sprint(gotArgs) != "[package dump-package]" {
+		t.Fatalf("unexpected args: %v", gotArgs)
+	}
+}
+
 func TestFindSwiftSDK_AlreadyInstalled(t *testing.T) {
 	original := execCommandContext
 	t.Cleanup(func() { execCommandContext = original })

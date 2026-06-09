@@ -9,11 +9,10 @@ import (
 
 	"go.uber.org/zap/zapcore"
 
-	"github.com/wendylabsinc/wendy/internal/shared/version"
-	otelpb "github.com/wendylabsinc/wendy/proto/gen/otelpb"
+	"github.com/wendylabsinc/wendy/go/internal/shared/version"
+	otelpb "github.com/wendylabsinc/wendy/go/proto/gen/otelpb"
 )
 
-// resolveHostname returns the machine hostname, resolved once at startup.
 var resolveHostname = sync.OnceValue(func() string {
 	h, _ := os.Hostname()
 	return h
@@ -33,18 +32,18 @@ func newAgentResource() *otelpb.Resource {
 }
 
 // TelemetryCore is a zapcore.Core that publishes log entries to a
-// TelemetryBroadcaster as OTEL log records. This bridges the agent's
+// TelemetryPublisher as OTEL log records. This bridges the agent's
 // internal zap logger to the telemetry stream so that agent logs are
 // visible via `wendy device logs --service wendy-agent`.
 type TelemetryCore struct {
-	broadcaster *TelemetryBroadcaster
+	broadcaster TelemetryPublisher
 	level       zapcore.Level
 	fields      []zapcore.Field
 	resource    *otelpb.Resource
 }
 
 // NewTelemetryCore creates a new TelemetryCore that publishes to the given broadcaster.
-func NewTelemetryCore(broadcaster *TelemetryBroadcaster, level zapcore.Level) *TelemetryCore {
+func NewTelemetryCore(broadcaster TelemetryPublisher, level zapcore.Level) *TelemetryCore {
 	return &TelemetryCore{
 		broadcaster: broadcaster,
 		level:       level,

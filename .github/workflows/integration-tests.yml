@@ -38,46 +38,87 @@ on:
         required: false
         default: 'all'
 
+permissions:
+  contents: read
+
 jobs:
   discover:
     name: Discover (${{ matrix.runner.name }})
-    if: inputs.jobs == 'all' || inputs.jobs == 'discover'
+    if: inputs.jobs == 'all' || inputs.jobs == 'discover' || inputs.jobs == 'integration'
     runs-on:
       group: wendy-developer
       labels: [self-hosted, '${{ matrix.runner.os }}', '${{ matrix.runner.arch }}']
-    concurrency:
-      group: discover-${{ matrix.runner.name }}
-      cancel-in-progress: false
     timeout-minutes: 10
+    outputs:
+      matrix: ${{ steps.explicit.outputs.matrix || steps.scan.outputs.matrix || '[]' }}
     strategy:
       fail-fast: false
       matrix:
         runner:
           - { name: macOS, os: macOS, arch: ARM64 }
-    defaults:
-      run:
-        working-directory: go
     steps:
-      - uses: actions/checkout@v6
+      - name: Resolve explicit device
+        id: explicit
+        if: inputs.hostname != ''
+        env:
+          INPUT_HOSTNAME: ${{ inputs.hostname }}
+        run: |
+          set -euo pipefail
+          hostname="$INPUT_HOSTNAME"
+          validate_device_hostname() {
+            local value="$1"
+            if [[ -z "$value" || ${#value} -gt 253 ]]; then
+              return 1
+            fi
+            if [[ "$value" == *:* ]]; then
+              [[ "$value" =~ ^[0-9A-Fa-f:.]+$ ]]
+            else
+              [[ "$value" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*\.?$ ]]
+            fi
+          }
+          if ! validate_device_hostname "$hostname"; then
+            echo "ERROR: invalid device hostname: $hostname" >&2
+            exit 1
+          fi
+          # Match test-ci.sh normalization for bare mDNS hostnames.
+          if [[ "$hostname" != *.local && "$hostname" != *.* && "$hostname" != *:* ]]; then
+            hostname="${hostname}.local"
+          fi
+          matrix=$(jq -cn --arg h "$hostname" '[$h]')
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo "Using explicit device: $hostname"
+
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        if: inputs.hostname == '' || inputs.jobs == 'all' || inputs.jobs == 'discover'
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        if: inputs.hostname == '' || inputs.jobs == 'all' || inputs.jobs == 'discover'
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version-file: go/go.mod
-          cache-dependency-path: go/go.sum
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
 
       - name: Build CLI
+        if: inputs.hostname == '' || inputs.jobs == 'all' || inputs.jobs == 'discover'
+        working-directory: go
         run: make build-cli
 
       - name: Run wendy discover
+        id: scan
+        if: inputs.hostname == '' || inputs.jobs == 'all' || inputs.jobs == 'discover'
+        env:
+          INPUT_HOSTNAME: ${{ inputs.hostname }}
+          INPUT_JOBS: ${{ inputs.jobs }}
         run: |
+          set -euo pipefail
           DISCOVER_STDERR=$(mktemp)
-          RESULT=$(./bin/wendy discover --json --timeout 10s 2>"$DISCOVER_STDERR" || true)
+          RESULT=$(./go/bin/wendy discover --json --timeout 10s 2>"$DISCOVER_STDERR" || true)
           cat "$DISCOVER_STDERR" >&2 || true
           rm -f "$DISCOVER_STDERR"
-          if [[ -n "$RESULT" ]]; then
-            echo "$RESULT" | jq .
+          if [[ -z "$RESULT" ]]; then
+            RESULT='{"lanDevices":[]}'
           fi
+          echo "$RESULT" | jq .
 
           EXPECTED=(
             "wendyos-keen-channel.local"
@@ -89,7 +130,7 @@ jobs:
           FAIL=0
           for host in "${EXPECTED[@]}"; do
             if echo "$RESULT" | jq -e --arg h "$host" \
-              '.lanDevices[] | select(.hostname == $h)' > /dev/null 2>&1; then
+              '(.lanDevices // [])[] | select(.hostname == $h)' > /dev/null 2>&1; then
               echo "FOUND: $host"
             else
               echo "MISSING: $host"
@@ -101,32 +142,77 @@ jobs:
             echo "WARNING: Some expected devices were not found. They may be offline."
           fi
 
+          validate_device_hostname() {
+            local value="$1"
+            if [[ -z "$value" || ${#value} -gt 253 ]]; then
+              return 1
+            fi
+            if [[ "$value" == *:* ]]; then
+              [[ "$value" =~ ^[0-9A-Fa-f:.]+$ ]]
+            else
+              [[ "$value" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*\.?$ ]]
+            fi
+          }
+
+          HOSTS=()
+          while IFS= read -r host; do
+            [[ -z "$host" ]] && continue
+            if ! validate_device_hostname "$host"; then
+              echo "ERROR: invalid discovered device hostname: $host" >&2
+              exit 1
+            fi
+            HOSTS+=("$host")
+          done < <(echo "$RESULT" | jq -r '(.lanDevices // [])[].hostname // empty')
+
+          COUNT=${#HOSTS[@]}
+          if [[ "$COUNT" -gt 10 ]]; then
+            echo "ERROR: refusing to create integration matrix for $COUNT discovered devices (max 10)" >&2
+            exit 1
+          fi
+
+          MATRIX=$(jq -cn --args '$ARGS.positional' "${HOSTS[@]}")
+          [[ -n "$MATRIX" && "$MATRIX" != "null" ]] || { echo "ERROR: failed to build device matrix" >&2; exit 1; }
+          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+
+          echo "Discovered $COUNT LAN device(s)."
+          if [[ "$INPUT_HOSTNAME" == '' && "$INPUT_JOBS" != 'discover' && "$COUNT" -eq 0 ]]; then
+            echo "ERROR: No LAN devices found via wendy discover"
+            exit 1
+          fi
+
   integration-test-macos:
-    name: Integration (macOS)
-    if: (inputs.jobs == 'all' || inputs.jobs == 'integration') && (inputs.platform == 'all' || inputs.platform == 'macos')
+    name: Integration (macOS → ${{ matrix.hostname }})
+    needs: discover
+    if: >-
+      needs.discover.outputs.matrix != '[]' &&
+      (inputs.jobs == 'all' || inputs.jobs == 'integration') &&
+      (inputs.platform == 'all' || inputs.platform == 'macos')
     runs-on:
       group: wendy-developer
       labels: [self-hosted, macOS, ARM64]
     concurrency:
-      group: integration-hw-macos
+      group: device-${{ matrix.hostname }}
       cancel-in-progress: false
+      queue: max
     timeout-minutes: 60
-    defaults:
-      run:
-        working-directory: go
+    strategy:
+      fail-fast: false
+      matrix:
+        hostname: ${{ fromJson(needs.discover.outputs.matrix) }}
     env:
-      INPUT_HOSTNAME: ${{ inputs.hostname }}
+      INPUT_HOSTNAME: ${{ matrix.hostname }}
       INPUT_TESTS: ${{ inputs.tests }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version-file: go/go.mod
-          cache-dependency-path: go/go.sum
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
 
       - name: Build CLI
+        working-directory: go
         run: make build-cli
 
       - name: Prepare Docker
@@ -140,7 +226,8 @@ jobs:
           elif [ -d "/Applications/Docker.app" ]; then
             echo "Starting Docker Desktop..."
             open -a Docker
-            for i in $(seq 1 30); do
+            for attempt in $(seq 1 30); do
+              echo "Waiting for Docker Desktop ($attempt/30)..."
               if docker info >/dev/null 2>&1; then DOCKER_READY=true; break; fi
               sleep 5
             done
@@ -151,10 +238,6 @@ jobs:
             DOCKER_READY=true
           else
             echo "WARNING: Neither Docker Desktop nor Colima found; integration tests will be skipped"
-          fi
-          if [[ "$DOCKER_READY" == "true" ]]; then
-            docker buildx ls 2>/dev/null | awk '/^wendy/{print $1}' | xargs -r docker buildx rm --force 2>/dev/null || true
-            docker system prune -f 2>/dev/null || true
           fi
           echo "docker_ready=$DOCKER_READY" >> "$GITHUB_OUTPUT"
 
@@ -168,17 +251,20 @@ jobs:
           # session to localhost runs under the logged-in user, which has that
           # permission. See nightly-os-update.yml for the same pattern.
           WORKDIR="$(pwd)"
-          SSH_ENV="export PATH='$PATH' DOCKER_HOST='${DOCKER_HOST:-}'"
-          SSH="ssh -o StrictHostKeyChecking=no localhost"
+          SSH=(ssh -o StrictHostKeyChecking=no localhost)
 
-          TEST_ARGS="-w $WORKDIR/bin/wendy"
+          TEST_ARGS=(-w "$WORKDIR/go/bin/wendy")
 
           if [[ -n "$INPUT_TESTS" ]]; then
             HAS_TESTS=false
             IFS=',' read -ra TEST_ARRAY <<< "$INPUT_TESTS"
             for t in "${TEST_ARRAY[@]}"; do
               t="$(echo "$t" | xargs)"
-              TEST_ARGS="$TEST_ARGS -t $t"
+              if [[ ! "$t" =~ ^[A-Za-z0-9_.-]+$ ]]; then
+                echo "ERROR: invalid test name: $t" >&2
+                exit 1
+              fi
+              TEST_ARGS+=(-t "$t")
               HAS_TESTS=true
             done
             if [[ "$HAS_TESTS" == false ]]; then
@@ -186,82 +272,69 @@ jobs:
               exit 0
             fi
           else
-            for t in swift-hello swift-network swift-bluetooth swift-resources python-hello python-network python-gpu python-onnx-gpu python-bluetooth python-no-network python-no-bluetooth python-no-ptrace python-no-unshare python-multiservice otel-localhost-only; do
-              TEST_ARGS="$TEST_ARGS -t $t"
+            for t in swift-hello swift-network swift-bluetooth swift-resources python-hello python-network python-gpu python-onnx-gpu python-bluetooth python-no-network python-no-bluetooth python-no-ptrace python-no-unshare python-multiservice python-servicename otel-localhost-only; do
+              TEST_ARGS+=(-t "$t")
             done
           fi
 
-          if [[ -n "$INPUT_HOSTNAME" ]]; then
-            DEVICES=("$INPUT_HOSTNAME")
+          builder_slug="$(printf '%s' "$INPUT_HOSTNAME" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9_.-]+/-/g; s/^-+//; s/-+$//')"
+          BUILDER="wendy-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${GITHUB_JOB}-${builder_slug}"
+          BUILDER="${BUILDER:0:128}"
+          docker buildx rm "$BUILDER" --force 2>/dev/null || true
+          trap 'docker buildx rm "$BUILDER" --force 2>/dev/null || true' EXIT
+
+          echo "==> Starting tests on $INPUT_HOSTNAME (builder: $BUILDER)"
+          if "${SSH[@]}" bash -s -- "$WORKDIR" "$BUILDER" "${DOCKER_HOST:-}" "$INPUT_HOSTNAME" "${TEST_ARGS[@]}" <<'REMOTE'
+          set -euo pipefail
+          WORKDIR="$1"; shift
+          BUILDER="$1"; shift
+          DOCKER_HOST_VALUE="$1"; shift
+          HOSTNAME="$1"; shift
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$HOME/bin:$PATH"
+          export DOCKER_HOST="$DOCKER_HOST_VALUE"
+          export WENDY_BUILDX_BUILDER="$BUILDER"
+          cd "$WORKDIR"
+          exec go/scripts/test-ci.sh "$@" -h "$HOSTNAME"
+          REMOTE
+          then
+            exit 0
           else
-            echo "==> Discovering LAN devices..."
-            DISCOVER_STDERR=$(mktemp)
-            DISCOVER_JSON=$($SSH "$SSH_ENV && cd '$WORKDIR' && ./bin/wendy discover --json --timeout 10s" 2>"$DISCOVER_STDERR")
-            cat "$DISCOVER_STDERR" >&2 || true
-            rm -f "$DISCOVER_STDERR"
-            DEVICES=()
-            while IFS= read -r line; do
-              [[ -n "$line" ]] && DEVICES+=("$line")
-            done < <(echo "$DISCOVER_JSON" | jq -r '.lanDevices[].hostname // empty' 2>/dev/null)
-            if [[ ${#DEVICES[@]} -eq 0 ]]; then
-              echo "ERROR: No LAN devices found via wendy discover"
-              exit 1
-            fi
-            echo "==> Found ${#DEVICES[@]} device(s): ${DEVICES[*]}"
+            exit $?
           fi
 
-          declare -a PIDS
-          OVERALL_FAIL=0
-          for i in "${!DEVICES[@]}"; do
-            device="${DEVICES[$i]}"
-            BUILDER="wendy-$i"
-            echo "==> Starting tests on $device (builder: $BUILDER)"
-            (
-              $SSH "export PATH='$PATH' DOCKER_HOST='${DOCKER_HOST:-}' WENDY_BUILDX_BUILDER='$BUILDER' && cd '$WORKDIR' && scripts/test-ci.sh $TEST_ARGS -h '$device'"
-              rc=$?
-              docker buildx rm "$BUILDER" --force 2>/dev/null || true
-              exit $rc
-            ) &
-            PIDS[$i]=$!
-          done
-
-          for i in "${!PIDS[@]}"; do
-            device="${DEVICES[$i]}"
-            if wait "${PIDS[$i]}"; then
-              echo "==> $device: PASS"
-            else
-              echo "==> $device: FAIL"
-              OVERALL_FAIL=1
-            fi
-          done
-          exit $OVERALL_FAIL
-
   integration-test-linux:
-    name: Integration (Linux)
-    if: (inputs.jobs == 'all' || inputs.jobs == 'integration') && (inputs.platform == 'all' || inputs.platform == 'linux')
+    name: Integration (Linux → ${{ matrix.hostname }})
+    needs: discover
+    if: >-
+      needs.discover.outputs.matrix != '[]' &&
+      (inputs.jobs == 'all' || inputs.jobs == 'integration') &&
+      (inputs.platform == 'all' || inputs.platform == 'linux')
     runs-on:
       group: wendy-developer
       labels: [self-hosted, Linux]
     concurrency:
-      group: integration-hw-linux
+      group: device-${{ matrix.hostname }}
       cancel-in-progress: false
+      queue: max
     timeout-minutes: 60
-    defaults:
-      run:
-        working-directory: go
+    strategy:
+      fail-fast: false
+      matrix:
+        hostname: ${{ fromJson(needs.discover.outputs.matrix) }}
     env:
-      INPUT_HOSTNAME: ${{ inputs.hostname }}
+      INPUT_HOSTNAME: ${{ matrix.hostname }}
       INPUT_TESTS: ${{ inputs.tests }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version-file: go/go.mod
-          cache-dependency-path: go/go.sum
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
 
       - name: Build CLI
+        working-directory: go
         run: make build-cli
 
       - name: Prepare Docker
@@ -274,30 +347,34 @@ jobs:
           else
             echo "WARNING: Docker not available; integration tests will be skipped"
           fi
-          if [[ "$DOCKER_READY" == "true" ]]; then
-            docker buildx ls 2>/dev/null | awk '/^wendy/{print $1}' | xargs -r docker buildx rm --force 2>/dev/null || true
-            docker system prune -f 2>/dev/null || true
-          fi
           echo "docker_ready=$DOCKER_READY" >> "$GITHUB_OUTPUT"
 
       - name: Run integration tests
         if: steps.prepare-docker.outputs.docker_ready == 'true'
+        env:
+          # The harness launches the CLI as subprocesses; keep the token scoped to
+          # this integration step so release checks inherit it without SSH forwarding.
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           WORKDIR="$(pwd)"
 
-          TEST_ARGS="-w $WORKDIR/bin/wendy"
+          TEST_ARGS=(-w "$WORKDIR/go/bin/wendy")
 
           if [[ -n "$INPUT_TESTS" ]]; then
             HAS_TESTS=false
             IFS=',' read -ra TEST_ARRAY <<< "$INPUT_TESTS"
             for t in "${TEST_ARRAY[@]}"; do
               t="$(echo "$t" | xargs)"
+              if [[ ! "$t" =~ ^[A-Za-z0-9_.-]+$ ]]; then
+                echo "ERROR: invalid test name: $t" >&2
+                exit 1
+              fi
               # Skip swift-* tests on Linux.
               if [[ "$t" == swift-* ]]; then
                 echo "Skipping Swift test $t on Linux"
                 continue
               fi
-              TEST_ARGS="$TEST_ARGS -t $t"
+              TEST_ARGS+=(-t "$t")
               HAS_TESTS=true
             done
             if [[ "$HAS_TESTS" == false ]]; then
@@ -305,52 +382,16 @@ jobs:
               exit 0
             fi
           else
-            for t in python-hello python-network python-gpu python-onnx-gpu python-bluetooth python-no-network python-no-bluetooth python-no-ptrace python-no-unshare python-multiservice otel-localhost-only; do
-              TEST_ARGS="$TEST_ARGS -t $t"
+            for t in python-hello python-network python-gpu python-onnx-gpu python-bluetooth python-no-network python-no-bluetooth python-no-ptrace python-no-unshare python-multiservice python-servicename otel-localhost-only; do
+              TEST_ARGS+=(-t "$t")
             done
           fi
 
-          if [[ -n "$INPUT_HOSTNAME" ]]; then
-            DEVICES=("$INPUT_HOSTNAME")
-          else
-            echo "==> Discovering LAN devices..."
-            DISCOVER_STDERR=$(mktemp)
-            DISCOVER_JSON=$(./bin/wendy discover --json --timeout 10s 2>"$DISCOVER_STDERR")
-            cat "$DISCOVER_STDERR" >&2 || true
-            rm -f "$DISCOVER_STDERR"
-            DEVICES=()
-            while IFS= read -r line; do
-              [[ -n "$line" ]] && DEVICES+=("$line")
-            done < <(echo "$DISCOVER_JSON" | jq -r '.lanDevices[].hostname // empty' 2>/dev/null)
-            if [[ ${#DEVICES[@]} -eq 0 ]]; then
-              echo "ERROR: No LAN devices found via wendy discover"
-              exit 1
-            fi
-            echo "==> Found ${#DEVICES[@]} device(s): ${DEVICES[*]}"
-          fi
+          builder_slug="$(printf '%s' "$INPUT_HOSTNAME" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9_.-]+/-/g; s/^-+//; s/-+$//')"
+          BUILDER="wendy-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${GITHUB_JOB}-${builder_slug}"
+          BUILDER="${BUILDER:0:128}"
+          docker buildx rm "$BUILDER" --force 2>/dev/null || true
+          trap 'docker buildx rm "$BUILDER" --force 2>/dev/null || true' EXIT
 
-          declare -a PIDS
-          OVERALL_FAIL=0
-          for i in "${!DEVICES[@]}"; do
-            device="${DEVICES[$i]}"
-            BUILDER="wendy-$i"
-            echo "==> Starting tests on $device (builder: $BUILDER)"
-            (
-              WENDY_BUILDX_BUILDER="$BUILDER" scripts/test-ci.sh $TEST_ARGS -h "$device"
-              rc=$?
-              docker buildx rm "$BUILDER" --force 2>/dev/null || true
-              exit $rc
-            ) &
-            PIDS[$i]=$!
-          done
-
-          for i in "${!PIDS[@]}"; do
-            device="${DEVICES[$i]}"
-            if wait "${PIDS[$i]}"; then
-              echo "==> $device: PASS"
-            else
-              echo "==> $device: FAIL"
-              OVERALL_FAIL=1
-            fi
-          done
-          exit $OVERALL_FAIL
+          echo "==> Starting tests on $INPUT_HOSTNAME (builder: $BUILDER)"
+          WENDY_BUILDX_BUILDER="$BUILDER" go/scripts/test-ci.sh "${TEST_ARGS[@]}" -h "$INPUT_HOSTNAME"

@@ -3,12 +3,85 @@ package containerd
 import (
 	"crypto/sha256"
 	"fmt"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
 
-	agentpb "github.com/wendylabsinc/wendy/proto/gen/agentpb"
+	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
+	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
+
+func TestContainerName_SingleContainer(t *testing.T) {
+	// Single-container apps: name must equal the appID unchanged.
+	if got := ContainerName("com.example.app", ""); got != "com.example.app" {
+		t.Errorf("ContainerName(%q, %q) = %q; want %q", "com.example.app", "", got, "com.example.app")
+	}
+}
+
+func TestContainerName_MultiService(t *testing.T) {
+	got := ContainerName("com.example.app", "api")
+	want := "com.example.app_api"
+	if got != want {
+		t.Errorf("ContainerName(%q, %q) = %q; want %q", "com.example.app", "api", got, want)
+	}
+}
+
+func TestContainerName_ValidContainerdID(t *testing.T) {
+	// Containerd identifiers must match ^[A-Za-z0-9]+(?:[._-](?:[A-Za-z0-9]+))*$
+	// (max 76 chars). Verify multi-service names pass this constraint.
+	containerdRe := regexp.MustCompile(`^[A-Za-z0-9]+(?:[._-](?:[A-Za-z0-9]+))*$`)
+	cases := []struct{ appID, svc string }{
+		{"sh.wendy.examples.hellocompose", "api"},
+		{"com.example.myapp", "camera"},
+		{"sh.wendy.robot", "slam"},
+	}
+	for _, tc := range cases {
+		name := ContainerName(tc.appID, tc.svc)
+		if !containerdRe.MatchString(name) {
+			t.Errorf("ContainerName(%q, %q) = %q does not match containerd identifier regex", tc.appID, tc.svc, name)
+		}
+		if len(name) > 76 {
+			t.Errorf("ContainerName(%q, %q) = %q exceeds containerd max length 76", tc.appID, tc.svc, name)
+		}
+	}
+}
+
+func TestSnapshotKey_SingleContainer(t *testing.T) {
+	// Single-container apps: snapshot key must equal "wendy-{appID}" unchanged.
+	got := SnapshotKey("com.example.app", "")
+	want := "wendy-com.example.app"
+	if got != want {
+		t.Errorf("SnapshotKey(%q, %q) = %q; want %q", "com.example.app", "", got, want)
+	}
+}
+
+func TestSnapshotKey_MultiService(t *testing.T) {
+	got := SnapshotKey("com.example.app", "api")
+	want := "wendy-com.example.app@api"
+	if got != want {
+		t.Errorf("SnapshotKey(%q, %q) = %q; want %q", "com.example.app", "api", got, want)
+	}
+}
+
+func TestSnapshotKey_NoSlash(t *testing.T) {
+	// Snapshot keys must never contain a slash (filesystem safety).
+	key := SnapshotKey("com.example.app", "worker")
+	if strings.Contains(key, "/") {
+		t.Errorf("SnapshotKey must not contain '/'; got %q", key)
+	}
+}
+
+func TestSnapshotKey_NoCollision(t *testing.T) {
+	// "wendy-foo-bar@baz" must differ from "wendy-foo@bar-baz": without "@
+	// separation a "-" separator would make both produce "wendy-foo-bar-baz".
+	a := SnapshotKey("foo-bar", "baz")
+	b := SnapshotKey("foo", "bar-baz")
+	if a == b {
+		t.Errorf("SnapshotKey collision: SnapshotKey(%q,%q) == SnapshotKey(%q,%q) == %q",
+			"foo-bar", "baz", "foo", "bar-baz", a)
+	}
+}
 
 func TestComputeChainID_FirstLayer(t *testing.T) {
 	diffID := "sha256:abc123"
@@ -191,7 +264,7 @@ func TestGCTimestamp_IsUTC(t *testing.T) {
 }
 
 func TestWendyLabels_Basic(t *testing.T) {
-	labels := wendyLabels("myapp", "1.0.0", nil, 0)
+	labels := wendyLabels("myapp", "", "1.0.0", nil, nil)
 
 	if v, ok := labels[labelKeyAppVersion]; !ok {
 		t.Error("missing app version label")
@@ -203,11 +276,27 @@ func TestWendyLabels_Basic(t *testing.T) {
 	if _, ok := labels[labelKeyRestartPolicy]; ok {
 		t.Error("should not have restart policy label when policy is nil")
 	}
+
+	// Single-container apps must not get a service label.
+	if _, ok := labels[labelKeyServiceName]; ok {
+		t.Error("single-container app must not have service label")
+	}
+}
+
+func TestWendyLabels_MultiService(t *testing.T) {
+	labels := wendyLabels("com.example.app", "api", "2.0", nil, nil)
+
+	if v := labels[labelKeyServiceName]; v != "api" {
+		t.Errorf("service label = %q; want %q", v, "api")
+	}
+	if v := labels[labelKeyAppVersion]; v != "2.0" {
+		t.Errorf("version label = %q; want %q", v, "2.0")
+	}
 }
 
 func TestWendyLabels_WithRestartPolicyUnlessStopped(t *testing.T) {
 	rp := &agentpb.RestartPolicy{Mode: agentpb.RestartPolicyMode_UNLESS_STOPPED}
-	labels := wendyLabels("app", "2.0", rp, 0)
+	labels := wendyLabels("app", "", "2.0", rp, nil)
 
 	if v, ok := labels[labelKeyRestartPolicy]; !ok {
 		t.Error("missing restart policy label")
@@ -221,7 +310,7 @@ func TestWendyLabels_WithRestartPolicyOnFailure(t *testing.T) {
 		Mode:                agentpb.RestartPolicyMode_ON_FAILURE,
 		OnFailureMaxRetries: 3,
 	}
-	labels := wendyLabels("app", "1.0", rp, 0)
+	labels := wendyLabels("app", "", "1.0", rp, nil)
 
 	if v := labels[labelKeyRestartPolicy]; v != "on-failure:3" {
 		t.Errorf("restart policy = %q; want %q", v, "on-failure:3")
@@ -230,7 +319,7 @@ func TestWendyLabels_WithRestartPolicyOnFailure(t *testing.T) {
 
 func TestWendyLabels_WithRestartPolicyNo(t *testing.T) {
 	rp := &agentpb.RestartPolicy{Mode: agentpb.RestartPolicyMode_NO}
-	labels := wendyLabels("app", "1.0", rp, 0)
+	labels := wendyLabels("app", "", "1.0", rp, nil)
 
 	if v := labels[labelKeyRestartPolicy]; v != "no" {
 		t.Errorf("restart policy = %q; want %q", v, "no")
@@ -239,15 +328,16 @@ func TestWendyLabels_WithRestartPolicyNo(t *testing.T) {
 
 func TestWendyLabels_WithRestartPolicyDefault(t *testing.T) {
 	rp := &agentpb.RestartPolicy{Mode: agentpb.RestartPolicyMode_DEFAULT}
-	labels := wendyLabels("app", "1.0", rp, 0)
+	labels := wendyLabels("app", "", "1.0", rp, nil)
 
 	if v := labels[labelKeyRestartPolicy]; v != "unless-stopped" {
 		t.Errorf("restart policy = %q; want %q (DEFAULT maps to unless-stopped)", v, "unless-stopped")
 	}
 }
 
-func TestWendyLabels_WithMCPPort(t *testing.T) {
-	labels := wendyLabels("app", "1.0", nil, 3000)
+func TestWendyLabels_WithMCPEntitlement(t *testing.T) {
+	entitlements := []appconfig.Entitlement{{Type: appconfig.EntitlementMCP, Port: 3000}}
+	labels := wendyLabels("app", "", "1.0", nil, entitlements)
 	if v, ok := labels[labelKeyMCPPort]; !ok {
 		t.Error("missing mcp port label")
 	} else if v != "3000" {
@@ -256,9 +346,64 @@ func TestWendyLabels_WithMCPPort(t *testing.T) {
 }
 
 func TestWendyLabels_WithMCPPortZero(t *testing.T) {
-	labels := wendyLabels("app", "1.0", nil, 0)
+	entitlements := []appconfig.Entitlement{{Type: appconfig.EntitlementMCP, Port: 0}}
+	labels := wendyLabels("app", "", "1.0", nil, entitlements)
 	if _, ok := labels[labelKeyMCPPort]; ok {
 		t.Error("should not have mcp port label when port is 0")
+	}
+}
+
+func TestWendyLabels_EntitlementsStoredAsKeyValue(t *testing.T) {
+	entitlements := []appconfig.Entitlement{
+		{Type: appconfig.EntitlementNetwork, Mode: "host"},
+		{Type: appconfig.EntitlementGPU},
+	}
+	labels := wendyLabels("app", "", "1.0", nil, entitlements)
+
+	cases := []struct {
+		key     string
+		wantVal string
+	}{
+		{appconfig.EntitlementAnnotationKeyPrefix + appconfig.EntitlementNetwork, "mode=host"},
+		{appconfig.EntitlementAnnotationKeyPrefix + appconfig.EntitlementGPU, ""},
+	}
+	for _, tc := range cases {
+		raw, ok := labels[tc.key]
+		if !ok {
+			t.Fatalf("missing entitlement label %q", tc.key)
+		}
+		if raw != tc.wantVal {
+			t.Errorf("%q value = %q; want %q", tc.key, raw, tc.wantVal)
+		}
+	}
+}
+
+func TestWendyLabels_DuplicateEntitlementType(t *testing.T) {
+	entitlements := []appconfig.Entitlement{
+		{Type: appconfig.EntitlementPersist, Name: "data", Path: "/data"},
+		{Type: appconfig.EntitlementPersist, Name: "logs", Path: "/logs"},
+	}
+	labels := wendyLabels("app", "", "1.0", nil, entitlements)
+
+	for i, want := range entitlements {
+		key := fmt.Sprintf("%s%s.%d", appconfig.EntitlementAnnotationKeyPrefix, appconfig.EntitlementPersist, i)
+		raw, ok := labels[key]
+		if !ok {
+			t.Fatalf("missing entitlement label %q", key)
+		}
+		got := appconfig.ParseEntitlementAnnotation(appconfig.EntitlementPersist, raw)
+		if got.Name != want.Name || got.Path != want.Path {
+			t.Errorf("%q: got name=%q path=%q; want name=%q path=%q", key, got.Name, got.Path, want.Name, want.Path)
+		}
+	}
+}
+
+func TestWendyLabels_NoEntitlementsLabel(t *testing.T) {
+	labels := wendyLabels("app", "", "1.0", nil, nil)
+	for k := range labels {
+		if strings.HasPrefix(k, appconfig.EntitlementAnnotationKeyPrefix) {
+			t.Errorf("should not have entitlement label when entitlements are empty, got %q", k)
+		}
 	}
 }
 
@@ -274,5 +419,117 @@ func TestRestartPolicyToLabel_OnFailureNoRetries(t *testing.T) {
 	got := restartPolicyToLabel(rp)
 	if got != "on-failure" {
 		t.Errorf("restartPolicyToLabel = %q; want %q", got, "on-failure")
+	}
+}
+
+func TestParseEntitlementsFromAnnotations_Single(t *testing.T) {
+	annotations := map[string]string{
+		"sh.wendy/entitlement.network": "mode=host",
+		"sh.wendy/entitlement.gpu":     "",
+	}
+	got := parseEntitlementsFromAnnotations(annotations)
+
+	if len(got) != 2 {
+		t.Fatalf("want 2 entitlements, got %d", len(got))
+	}
+	// Sorted alphabetically: gpu, network.
+	if got[0].Type != appconfig.EntitlementGPU {
+		t.Errorf("got[0].Type = %q; want %q", got[0].Type, appconfig.EntitlementGPU)
+	}
+	if got[1].Type != appconfig.EntitlementNetwork || got[1].Mode != "host" {
+		t.Errorf("got[1] = %+v; want type=network mode=host", got[1])
+	}
+}
+
+func TestParseEntitlementsFromAnnotations_MultipleOfSameType(t *testing.T) {
+	annotations := map[string]string{
+		"sh.wendy/entitlement.persist.0": "name=data,path=/data",
+		"sh.wendy/entitlement.persist.1": "name=logs,path=/logs",
+	}
+	got := parseEntitlementsFromAnnotations(annotations)
+
+	if len(got) != 2 {
+		t.Fatalf("want 2 entitlements, got %d", len(got))
+	}
+	if got[0].Name != "data" || got[0].Path != "/data" {
+		t.Errorf("got[0] = %+v; want name=data path=/data", got[0])
+	}
+	if got[1].Name != "logs" || got[1].Path != "/logs" {
+		t.Errorf("got[1] = %+v; want name=logs path=/logs", got[1])
+	}
+}
+
+func TestParseEntitlementsFromAnnotations_RoundTrip(t *testing.T) {
+	original := []appconfig.Entitlement{
+		{Type: appconfig.EntitlementNetwork, Mode: "host"},
+		{Type: appconfig.EntitlementPersist, Name: "data", Path: "/data"},
+		{Type: appconfig.EntitlementPersist, Name: "logs", Path: "/logs"},
+		{Type: appconfig.EntitlementGPU},
+	}
+
+	labels := wendyLabels("app", "", "1.0", nil, original)
+	annotations := make(map[string]string)
+	for k, v := range labels {
+		if strings.HasPrefix(k, appconfig.EntitlementAnnotationKeyPrefix) {
+			annotations[k] = v
+		}
+	}
+
+	parsed := parseEntitlementsFromAnnotations(annotations)
+	if len(parsed) != len(original) {
+		t.Fatalf("round-trip: got %d entitlements, want %d", len(parsed), len(original))
+	}
+
+	byType := make(map[string][]appconfig.Entitlement)
+	for _, e := range parsed {
+		byType[e.Type] = append(byType[e.Type], e)
+	}
+	if len(byType[appconfig.EntitlementNetwork]) != 1 || byType[appconfig.EntitlementNetwork][0].Mode != "host" {
+		t.Errorf("network entitlement round-trip failed: %+v", byType[appconfig.EntitlementNetwork])
+	}
+	if len(byType[appconfig.EntitlementPersist]) != 2 {
+		t.Errorf("persist entitlement round-trip failed: %+v", byType[appconfig.EntitlementPersist])
+	}
+	if len(byType[appconfig.EntitlementGPU]) != 1 {
+		t.Errorf("gpu entitlement round-trip failed: %+v", byType[appconfig.EntitlementGPU])
+	}
+}
+
+func TestParseEntitlementsFromAnnotations_Empty(t *testing.T) {
+	if got := parseEntitlementsFromAnnotations(nil); len(got) != 0 {
+		t.Errorf("nil annotations: want empty, got %v", got)
+	}
+	if got := parseEntitlementsFromAnnotations(map[string]string{"unrelated": "value"}); len(got) != 0 {
+		t.Errorf("unrelated annotations: want empty, got %v", got)
+	}
+}
+
+func TestSafeJoin(t *testing.T) {
+	base := "/run/wendy/hosts"
+
+	// Valid component.
+	got, err := safeJoin(base, "com.example.app")
+	if err != nil {
+		t.Errorf("safeJoin valid: unexpected error: %v", err)
+	}
+	if got != base+"/com.example.app" {
+		t.Errorf("safeJoin valid: got %q, want %q", got, base+"/com.example.app")
+	}
+
+	// Reject path separator in component.
+	if _, err := safeJoin(base, "a/b"); err == nil {
+		t.Error("safeJoin: separator in component should be rejected")
+	}
+	// Reject dot component.
+	if _, err := safeJoin(base, "."); err == nil {
+		t.Error("safeJoin: dot component should be rejected")
+	}
+	// Reject dotdot component.
+	if _, err := safeJoin(base, ".."); err == nil {
+		t.Error("safeJoin: dotdot component should be rejected")
+	}
+	// Reject traversal via filepath.Join normalisation.
+	if _, err := safeJoin(base, "sub/../../../etc/passwd"); err == nil {
+		t.Error("safeJoin: traversal via .. should be rejected")
 	}
 }

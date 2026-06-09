@@ -6,8 +6,8 @@ import (
 	"io"
 
 	"github.com/spf13/cobra"
-	"github.com/wendylabsinc/wendy/internal/cli/tui"
-	"github.com/wendylabsinc/wendy/proto/gen/agentpb"
+	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
 func newBluetoothCmd() *cobra.Command {
@@ -41,14 +41,25 @@ func newBluetoothListCmd() *cobra.Command {
 
 			stream, err := conn.AgentService.ScanBluetoothPeripherals(ctx)
 			if err != nil {
+				if macErr := macOSBetaUnsupportedFeatureError(ctx, conn.AgentService, err, "Bluetooth scanning"); macErr != nil {
+					return fmt.Errorf("starting Bluetooth scan: %w", macErr)
+				}
 				return fmt.Errorf("starting Bluetooth scan: %w", err)
 			}
 
-			// Send a scan request to start scanning.
-			if err := stream.Send(&agentpb.ScanBluetoothPeripheralsRequest{}); err != nil {
+			// Send a scan request to start scanning. A server that rejects the
+			// stream immediately may surface io.EOF here; continue to Recv so
+			// grpc-go can expose the terminal status.
+			if err := stream.Send(&agentpb.ScanBluetoothPeripheralsRequest{}); err != nil && err != io.EOF {
+				if macErr := macOSBetaUnsupportedFeatureError(ctx, conn.AgentService, err, "Bluetooth scanning"); macErr != nil {
+					return fmt.Errorf("sending scan request: %w", macErr)
+				}
 				return fmt.Errorf("sending scan request: %w", err)
 			}
-			if err := stream.CloseSend(); err != nil {
+			if err := stream.CloseSend(); err != nil && err != io.EOF {
+				if macErr := macOSBetaUnsupportedFeatureError(ctx, conn.AgentService, err, "Bluetooth scanning"); macErr != nil {
+					return fmt.Errorf("closing send: %w", macErr)
+				}
 				return fmt.Errorf("closing send: %w", err)
 			}
 
@@ -59,6 +70,9 @@ func newBluetoothListCmd() *cobra.Command {
 					break
 				}
 				if err != nil {
+					if macErr := macOSBetaUnsupportedFeatureError(ctx, conn.AgentService, err, "Bluetooth scanning"); macErr != nil {
+						return fmt.Errorf("receiving Bluetooth scan result: %w", macErr)
+					}
 					return fmt.Errorf("receiving Bluetooth scan result: %w", err)
 				}
 				allDevices = append(allDevices, resp.GetDiscoveredDevices()...)

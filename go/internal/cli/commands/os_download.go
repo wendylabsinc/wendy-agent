@@ -7,7 +7,7 @@ import (
 	"os"
 
 	"github.com/spf13/cobra"
-	"github.com/wendylabsinc/wendy/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 )
 
 func newOSDownloadCmd() *cobra.Command {

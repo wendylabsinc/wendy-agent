@@ -17,12 +17,10 @@ type Manager struct {
 	specPath string
 }
 
-// NewManager creates a new CDI Manager with the default spec path (/etc/cdi).
 func NewManager() *Manager {
 	return &Manager{specPath: defaultCDISpecPath}
 }
 
-// NewManagerWithPath creates a new CDI Manager with a custom spec path.
 func NewManagerWithPath(specPath string) *Manager {
 	return &Manager{specPath: specPath}
 }

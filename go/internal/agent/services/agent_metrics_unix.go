@@ -21,9 +21,6 @@ func agentCPUNanos() (userNanos, sysNanos int64) {
 	return
 }
 
-// agentMemBytes returns the resident set size of the process in bytes.
-// On Linux it reads VmRSS from /proc/self/status; on other Unix systems
-// it falls back to an approximation derived from the Go runtime.
 func agentMemBytes() int64 {
 	if f, err := os.Open("/proc/self/status"); err == nil {
 		defer f.Close()

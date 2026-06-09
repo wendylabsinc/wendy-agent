@@ -1,0 +1,1 @@
+Enables analytics, unless `WENDY_ANALYTICS=false` is set in the environment.

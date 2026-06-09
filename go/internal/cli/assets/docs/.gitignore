@@ -1,0 +1,37 @@
+### macOS
+# Finder metadata
+.DS_Store
+
+# Thumbnails
+._*
+
+# Custom folder icons (macOS). Anchor to the repo root and match the literal
+# "Icon\r" file only — an unanchored "Icon?" also matches our docs `icons/`
+# asset directory (case-insensitive on macOS), which silently dropped the
+# NVIDIA/Raspberry Pi logo SVGs from commits.
+/Icon
+/Icon?
+
+# Re-include the docs icon assets in case a broad macOS ignore catches them.
+!icons/
+!icons/**
+
+# Volume root files
+.DocumentRevisions-V100
+.fseventsd
+.Spotlight-V100
+.TemporaryItems
+.Trashes
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+
+### Fumadocs / Next.js
+.next/
+.source/
+content/
+export/
+next-env.d.ts
+node_modules/
+out/
+public/
+tsconfig.tsbuildinfo

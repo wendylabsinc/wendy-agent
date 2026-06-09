@@ -1,0 +1,60 @@
+---
+title: Speaker Access
+description: Play audio through speakers and other output devices from WendyOS apps
+---
+
+## Speaker Access
+
+Speakers, USB audio interfaces, and other playback devices use the same `audio` entitlement as microphones. Add it when your app needs to play sounds, speak responses, emit alerts, or run full-duplex voice interactions.
+
+Add the entitlement from your project directory:
+
+```bash
+wendy project entitlements add audio
+```
+
+## Inspect Output Devices
+
+List audio devices on the target:
+
+```bash
+wendy device audio list
+```
+
+Choose the speaker or output device ID, then set it as default:
+
+```bash
+wendy device audio set-default --id 2
+```
+
+The selected output becomes the default device used by apps that play through ALSA defaults.
+
+## Test Audio Routing
+
+The Wendy CLI can stream microphone input back to your local machine with:
+
+```bash
+wendy device audio listen --id 1
+```
+
+For speaker playback inside your deployed app, make sure the app uses ALSA or a media framework that targets the default audio output. USB speakerphones usually expose both an input and output device, so `wendy device audio list` is the fastest way to confirm WendyOS sees both sides.
+
+## App Configuration
+
+A minimal speaker app uses:
+
+```json
+{
+  "appId": "com.example.speaker",
+  "version": "1.0.0",
+  "entitlements": [
+    { "type": "audio" }
+  ]
+}
+```
+
+Then deploy:
+
+```bash
+wendy run
+```

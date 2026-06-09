@@ -9,7 +9,6 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// Connection holds a single L2CAP file descriptor.
 type Connection struct {
 	fd   int
 	addr [6]byte
@@ -134,12 +133,10 @@ func (c *Connection) DiscoverServices(_ int) error {
 	return fmt.Errorf("GATT not implemented on Linux")
 }
 
-// WriteCharacteristic writes data to a GATT characteristic with response.
 func (c *Connection) WriteCharacteristic(_, _ string, _ []byte) error {
 	return fmt.Errorf("GATT not implemented on Linux")
 }
 
-// WriteCharacteristicNoResponse writes data to a GATT characteristic without response.
 func (c *Connection) WriteCharacteristicNoResponse(_, _ string, _ []byte) error {
 	return fmt.Errorf("GATT not implemented on Linux")
 }
@@ -162,7 +159,6 @@ func (c *Connection) WaitNotification(_, _ string, _ int) ([]byte, error) {
 // HasService checks whether a specific service UUID was discovered.
 func (c *Connection) HasService(_ string) bool { return false }
 
-// ListServices returns a comma-separated string of discovered service UUIDs.
 func (c *Connection) ListServices() string { return "" }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

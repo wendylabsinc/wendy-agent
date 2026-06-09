@@ -1,0 +1,12 @@
+{
+    "appId": "sh.wendy.examples.multiservice",
+    "version": "1.0.0",
+    "language": "python",
+    "serviceName": "worker",
+    "entitlements": [
+        {
+            "type": "network",
+            "mode": "host"
+        }
+    ]
+}

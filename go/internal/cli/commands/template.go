@@ -19,7 +19,7 @@ import (
 	"text/template"
 	"time"
 
-	"github.com/wendylabsinc/wendy/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 )
 
 const (
@@ -99,8 +99,12 @@ type templateSchemaQuestion struct {
 
 // templateSchemaOption is a single selectable choice in a radio or checkbox question.
 type templateSchemaOption struct {
-	Value string `json:"value"`
-	Label string `json:"label"`
+	Value       string `json:"value"`
+	Label       string `json:"label"`
+	Description string `json:"description,omitempty"`
+	Size        string `json:"size,omitempty"`
+	Parameters  string `json:"parameters,omitempty"`
+	Comments    string `json:"comments,omitempty"`
 }
 
 // templateSchemaCondition controls whether a phase or question is shown,
@@ -266,7 +270,6 @@ func templateLanguageManifestURL(branch, language, templateName string) string {
 // read from the response body so far.
 type progressCallback func(written, total int64)
 
-// progressReader wraps an io.Reader and invokes onProgress after each Read.
 type progressReader struct {
 	r          io.Reader
 	total      int64
@@ -394,10 +397,6 @@ func waitForTemplateArchiveRetry(ctx context.Context, delay time.Duration) error
 	}
 }
 
-// extractTemplateArchive reads a gzipped tarball from r and extracts files
-// matching {language}/{templateName}/ into a map of relative path -> content.
-// It also returns the parsed template.json manifest (with optional schema
-// from template.schema.json attached).
 func extractTemplateArchive(r io.Reader, language, templateName string) (map[string][]byte, *templateManifest, error) {
 	gz, err := gzip.NewReader(r)
 	if err != nil {
@@ -901,17 +900,19 @@ func evaluateSchemaCondition(cond *templateSchemaCondition, vals map[string]inte
 }
 
 // promptSchemaQuestion shows the appropriate TUI prompt for a single question
-// and writes the result into vals.
 func promptSchemaQuestion(q templateSchemaQuestion, vals map[string]interface{}) error {
 	fmt.Println()
 
 	switch q.Type {
 	case "radio":
-		items := make([]tui.PickerItem, len(q.Options))
-		for i, opt := range q.Options {
-			items[i] = tui.PickerItem{Name: opt.Label, Value: opt.Value}
+		items := schemaOptionPickerItems(q.Options)
+		var val string
+		var err error
+		if schemaOptionsHaveModelMetadata(q.Options) {
+			val, err = pickFromItemsWithColumns(q.Label, items, schemaModelPickerColumns())
+		} else {
+			val, err = pickFromItems(q.Label, items)
 		}
-		val, err := pickFromItems(q.Label, items)
 		if err != nil {
 			return err
 		}
@@ -959,6 +960,71 @@ func promptSchemaQuestion(q templateSchemaQuestion, vals map[string]interface{})
 	}
 
 	return nil
+}
+
+func schemaOptionPickerItems(options []templateSchemaOption) []tui.PickerItem {
+	items := make([]tui.PickerItem, len(options))
+	for i, opt := range options {
+		name := opt.Label
+		if name == "" {
+			name = opt.Value
+		}
+		items[i] = tui.PickerItem{
+			Name:        name,
+			Description: opt.Description,
+			Size:        opt.Size,
+			Parameters:  opt.Parameters,
+			Comments:    opt.Comments,
+			Value:       opt.Value,
+		}
+	}
+	return items
+}
+
+func schemaOptionsHaveModelMetadata(options []templateSchemaOption) bool {
+	for _, opt := range options {
+		if opt.Size != "" || opt.Parameters != "" || opt.Comments != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func schemaModelPickerColumns() []tui.PickerColumn {
+	return []tui.PickerColumn{
+		{
+			Title:    "model",
+			MinWidth: 32,
+			Required: true,
+			Value: func(item tui.PickerItem) string {
+				return item.Name
+			},
+		},
+		{
+			Title:    "size",
+			MinWidth: 10,
+			Value: func(item tui.PickerItem) string {
+				return item.Size
+			},
+		},
+		{
+			Title:    "parameters",
+			MinWidth: 14,
+			Value: func(item tui.PickerItem) string {
+				return item.Parameters
+			},
+		},
+		{
+			Title:    "comments",
+			MinWidth: 44,
+			Value: func(item tui.PickerItem) string {
+				if item.Comments != "" {
+					return item.Comments
+				}
+				return item.Description
+			},
+		},
+	}
 }
 
 // parseVarFlags parses --var KEY=VALUE flags into a map.

@@ -10,10 +10,10 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-	"github.com/wendylabsinc/wendy/internal/cli/analytics"
-	"github.com/wendylabsinc/wendy/internal/cli/commands"
-	"github.com/wendylabsinc/wendy/internal/cli/tui"
-	"github.com/wendylabsinc/wendy/internal/shared/version"
+	"github.com/wendylabsinc/wendy/go/internal/cli/analytics"
+	"github.com/wendylabsinc/wendy/go/internal/cli/commands"
+	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/shared/version"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -63,9 +63,6 @@ func trackCommand(executed *cobra.Command, err error, dur time.Duration) {
 	analytics.Track("command_executed", props)
 }
 
-// commandRoot returns the top-level subcommand token under the root, e.g.
-// "device" for `wendy device wifi connect`. Returns the root's own name
-// (typically "wendy") when invoked without a subcommand.
 func commandRoot(c *cobra.Command) string {
 	if c == nil {
 		return ""
@@ -124,7 +121,6 @@ func errorClass(err error) string {
 	return "other"
 }
 
-// formatError converts raw gRPC errors into human-readable messages.
 func formatError(err error) error {
 	msg := err.Error()
 	if !strings.Contains(msg, "rpc error: code = ") {
@@ -143,7 +139,14 @@ func formatError(err error) error {
 		strings.Contains(prefix, "creating enrollment token") ||
 		strings.Contains(prefix, "connecting to cloud")
 
+	isTLSError := strings.Contains(msg, "tls:") ||
+		strings.Contains(msg, "bad certificate") ||
+		strings.Contains(msg, "authentication handshake failed") ||
+		strings.Contains(msg, "certificate required")
+
 	switch {
+	case strings.Contains(msg, "code = Unavailable") && isTLSError && !isPKICoreCall && !isCloudCall:
+		return fmt.Errorf("%sTLS handshake rejected by device (possible clock skew or cert mismatch).\n  Check the device clock: ssh wendy@<host> 'timedatectl status'\n  For full TLS details rerun with WENDY_TLS_DEBUG=1", prefix)
 	case strings.Contains(msg, "code = Unavailable") && strings.Contains(msg, "connection refused"):
 		if isPKICoreCall {
 			return fmt.Errorf("%sCould not connect to local pki-core. Check that the gRPC endpoint is reachable from this machine.", prefix)

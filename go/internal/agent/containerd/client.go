@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -33,12 +35,13 @@ import (
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"go.uber.org/zap"
 
-	"github.com/wendylabsinc/wendy/internal/agent/cdi"
-	"github.com/wendylabsinc/wendy/internal/agent/dbusproxy"
-	localoci "github.com/wendylabsinc/wendy/internal/agent/oci"
-	"github.com/wendylabsinc/wendy/internal/agent/services"
-	"github.com/wendylabsinc/wendy/internal/shared/appconfig"
-	agentpb "github.com/wendylabsinc/wendy/proto/gen/agentpb"
+	"github.com/wendylabsinc/wendy/go/internal/agent/cdi"
+	"github.com/wendylabsinc/wendy/go/internal/agent/dbusproxy"
+	localoci "github.com/wendylabsinc/wendy/go/internal/agent/oci"
+	"github.com/wendylabsinc/wendy/go/internal/agent/services"
+	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
+	sharedenv "github.com/wendylabsinc/wendy/go/internal/shared/env"
+	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
 // Compile-time check that *Client satisfies services.ContainerdClient.
@@ -47,18 +50,36 @@ var _ services.ContainerdClient = (*Client)(nil)
 // DefaultAddress is the default containerd socket path on Linux.
 const DefaultAddress = "/run/containerd/containerd.sock"
 
-// Client wraps the containerd SDK client and implements services.ContainerdClient.
 type Client struct {
 	client       *containerd.Client
 	logger       *zap.Logger
 	namespace    string
 	mu           sync.Mutex
 	proxyManager *dbusproxy.Manager // nil if xdg-dbus-proxy is not available
+
+	// appServices caches the services map for multi-service apps, keyed by appID.
+	// Populated on CreateContainerWithProgress; used by resolveStopOrder.
+	appServices map[string]map[string]*appconfig.ServiceConfig
+
+	// primaryPIDs tracks the PID of the primary (namespace-owner) container
+	// for each shared-namespace app group. Protected by mu.
+	primaryPIDs map[string]uint32
+
+	// appIsolation caches the isolation mode for each appID.
+	// Populated on CreateContainerWithProgress; read by StartContainer.
+	appIsolation map[string]string
+
+	// serviceIPs maps appID → serviceName → IP for isolated-mode apps.
+	// Updated after each successful CNI ADD. Protected by mu.
+	serviceIPs map[string]map[string]string
+
+	// appStopping tracks appIDs that are currently being stopped.
+	// Set before releasing c.mu in StopContainer; cleared in the cleanup phase.
+	// Checked by CreateContainerWithProgress to reject concurrent create/stop races
+	// (SOC2-CC6, NIST-AC-3, ISO27001-A.8).
+	appStopping map[string]bool
 }
 
-// NewClient creates a new containerd SDK client connected to the given Unix
-// socket address. If address is empty, DefaultAddress is used.
-// proxyMgr may be nil if xdg-dbus-proxy is not available.
 func NewClient(logger *zap.Logger, address string, proxyMgr *dbusproxy.Manager) (*Client, error) {
 	if address == "" {
 		address = DefaultAddress
@@ -74,6 +95,11 @@ func NewClient(logger *zap.Logger, address string, proxyMgr *dbusproxy.Manager) 
 		logger:       logger,
 		namespace:    "default",
 		proxyManager: proxyMgr,
+		appServices:  make(map[string]map[string]*appconfig.ServiceConfig),
+		primaryPIDs:  make(map[string]uint32),
+		appIsolation: make(map[string]string),
+		serviceIPs:   make(map[string]map[string]string),
+		appStopping:  make(map[string]bool),
 	}, nil
 }
 
@@ -86,9 +112,46 @@ func (c *Client) Close() error {
 	return c.client.Close()
 }
 
-// withNamespace returns a context annotated with the client's containerd namespace.
 func (c *Client) withNamespace(ctx context.Context) context.Context {
 	return namespaces.WithNamespace(ctx, c.namespace)
+}
+
+// setPrimaryPID records the PID of the primary container for appID.
+// Caller must hold c.mu.
+func (c *Client) setPrimaryPID(appID string, pid uint32) {
+	if c.primaryPIDs == nil {
+		c.primaryPIDs = make(map[string]uint32)
+	}
+	c.primaryPIDs[appID] = pid
+}
+
+// getPrimaryPID returns the PID of the primary container, if known.
+// Caller must hold c.mu.
+func (c *Client) getPrimaryPID(appID string) (uint32, bool) {
+	pid, ok := c.primaryPIDs[appID]
+	return pid, ok
+}
+
+// clearPrimaryPID removes the primary PID entry when the app group stops.
+// Caller must hold c.mu.
+func (c *Client) clearPrimaryPID(appID string) {
+	delete(c.primaryPIDs, appID)
+}
+
+// getIsolation returns the cached isolation mode for appID. Caller must hold c.mu.
+func (c *Client) getIsolation(appID string) string {
+	return c.appIsolation[appID]
+}
+
+// recordServiceIP stores the CNI-assigned IP for a service. Caller must hold c.mu.
+func (c *Client) recordServiceIP(appID, serviceName, ip string) {
+	if c.serviceIPs == nil {
+		c.serviceIPs = make(map[string]map[string]string)
+	}
+	if c.serviceIPs[appID] == nil {
+		c.serviceIPs[appID] = make(map[string]string)
+	}
+	c.serviceIPs[appID][serviceName] = ip
 }
 
 // ListLayers walks the content store and returns metadata for all layer blobs.
@@ -130,11 +193,6 @@ func isLayerDigest(info content.Info) bool {
 	return false
 }
 
-// WriteLayer writes a layer blob to the containerd content store. The digest
-// parameter should be the expected content digest (e.g. "sha256:abc123...").
-// Data is read from the provided io.Reader, which allows streaming without
-// buffering the entire layer in memory. If size is 0, the descriptor size is
-// left unset and determined by the content store from the reader.
 func (c *Client) WriteLayer(ctx context.Context, dgst string, reader io.Reader, size int64) error {
 	ctx = c.withNamespace(ctx)
 	cs := c.client.ContentStore()
@@ -171,9 +229,6 @@ func (c *Client) WriteLayer(ctx context.Context, dgst string, reader io.Reader, 
 	return nil
 }
 
-// layerMediaType returns the OCI media type for a layer given its compression.
-// The compression field takes precedence; when it is COMPRESSION_GZIP (the zero
-// default), the legacy gzip bool determines the type for backward compatibility.
 func layerMediaType(compression agentpb.RunContainerLayerHeader_CompressionType, gzip bool) string {
 	switch compression {
 	case agentpb.RunContainerLayerHeader_COMPRESSION_ZSTD:
@@ -188,9 +243,6 @@ func layerMediaType(compression agentpb.RunContainerLayerHeader_CompressionType,
 	}
 }
 
-// AssembleImage creates a containerd image from layers already present in the
-// content store. It builds an OCI manifest and config, writes them to the content
-// store, and registers the image. If the image already exists it is updated.
 func (c *Client) AssembleImage(ctx context.Context, imageName string, layers []*agentpb.RunContainerLayerHeader) error {
 	ctx = c.withNamespace(ctx)
 	cs := c.client.ContentStore()
@@ -347,6 +399,13 @@ func toCreateContainerProgress(progress UnpackProgress) *agentpb.CreateContainer
 			Phase:       agentpb.CreateContainerProgress_UNPACKING,
 			TotalLayers: int32(progress.TotalLayers),
 		}
+	case "layer-start":
+		return &agentpb.CreateContainerProgress{
+			Phase:       agentpb.CreateContainerProgress_UNPACKING,
+			LayerIndex:  int32(progress.LayerIndex),
+			TotalLayers: int32(progress.TotalLayers),
+			LayerSize:   progress.LayerSize,
+		}
 	case "layer":
 		return &agentpb.CreateContainerProgress{
 			Phase:          agentpb.CreateContainerProgress_APPLYING_LAYER,
@@ -365,7 +424,49 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 	defer c.mu.Unlock()
 
 	ctx = c.withNamespace(ctx)
-	appName := req.GetAppName()
+
+	// Derive the app identity. appCfg.AppID is the authoritative source; fall
+	// back to req.GetAppName() for raw RPC calls that arrive without a parsed
+	// AppConfig. We use a local variable (not a struct mutation) so the caller's
+	// AppConfig is unchanged and concurrent/retry uses see a stable value.
+	//
+	// Validate before assigning to the named variables so that no unvalidated
+	// RPC-controlled value ever reaches downstream helpers, even if future
+	// refactors reorder code below this block (SOC2-CC6, ISO27001-A.8, NIST-SI-10).
+	rawAppID := appCfg.AppID
+	if rawAppID == "" {
+		rawAppID = req.GetAppName()
+	}
+	rawServiceName := appCfg.ServiceName
+
+	if err := appconfig.ValidateAppID(rawAppID); err != nil {
+		c.logger.Warn("CreateContainer rejected: invalid app ID",
+			zap.String("app_id", sanitizeForLog(rawAppID, 253)), zap.Error(err))
+		return fmt.Errorf("invalid app ID: %w", err)
+	}
+	if rawServiceName != "" {
+		if err := appconfig.ValidateServiceName(rawServiceName); err != nil {
+			c.logger.Warn("CreateContainer rejected: invalid service name",
+				zap.String("app_id", sanitizeForLog(rawAppID, 253)),
+				zap.String("service_name", sanitizeForLog(rawServiceName, 57)),
+				zap.Error(err))
+			return fmt.Errorf("invalid service name: %w", err)
+		}
+	}
+
+	// Both values are now validated; promote to short names for readability.
+	appID, serviceName := rawAppID, rawServiceName
+
+	// Reject creation while a concurrent StopContainer is tearing down this app.
+	// Without this check a new container could be created after resolveStopOrder
+	// snapshots the container list, leaving it running after StopContainer returns
+	// (TOCTOU; SOC2-CC6, NIST-AC-3, ISO27001-A.8).
+	if c.appStopping[appID] {
+		return fmt.Errorf("app %q is currently being stopped; retry after stop completes", appID)
+	}
+
+	containerName := ContainerName(appID, serviceName)
+
 	// Canonicalise the image reference so older CLIs sending Docker short
 	// names like "python:3.11-slim" still resolve correctly under containerd's
 	// strict parser, which would otherwise read "3.11-slim" as a port.
@@ -377,10 +478,15 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 		}
 	}
 
-	c.logger.Info("Creating container",
-		zap.String("app_name", appName),
+	logFields := []zap.Field{
+		zap.String("container_name", containerName),
+		zap.String("app_id", appID),
 		zap.String("image", imageName),
-	)
+	}
+	if serviceName != "" {
+		logFields = append(logFields, zap.String("service_name", serviceName))
+	}
+	c.logger.Info("Creating container", logFields...)
 
 	// Determine version from the app config or default.
 	version := appCfg.Version
@@ -389,8 +495,8 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 	}
 
 	// Delete any pre-existing container with the same name.
-	if existing, err := c.client.LoadContainer(ctx, appName); err == nil {
-		c.logger.Info("Removing existing container", zap.String("app_name", appName))
+	if existing, err := c.client.LoadContainer(ctx, containerName); err == nil {
+		c.logger.Info("Removing existing container", zap.String("container_name", containerName))
 		// Try to stop/kill the task first.
 		if task, taskErr := existing.Task(ctx, nil); taskErr == nil {
 			_ = task.Kill(ctx, syscall.SIGKILL)
@@ -398,27 +504,13 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 		} else {
 			// Task may be orphaned (shim crashed). Force-delete via the task
 			// service directly so the runtime clears the old task ID.
-			c.forceDeleteTask(ctx, appName)
+			c.forceDeleteTask(ctx, containerName)
 		}
 		_ = existing.Delete(ctx, containerd.WithSnapshotCleanup)
 		// Stop old D-Bus proxy if any.
 		if c.proxyManager != nil {
-			_ = c.proxyManager.Stop(appName)
+			_ = c.proxyManager.Stop(containerName)
 		}
-	}
-
-	// Start D-Bus proxy if bluetooth entitlement is present.
-	var dbusProxyStarted bool
-	if c.proxyManager != nil && hasBluetooth(appCfg) {
-		if _, err := c.proxyManager.Start(ctx, appName); err != nil {
-			return fmt.Errorf("starting D-Bus proxy for %q: %w", appName, err)
-		}
-		dbusProxyStarted = true
-		defer func() {
-			if dbusProxyStarted {
-				_ = c.proxyManager.Stop(appName)
-			}
-		}()
 	}
 
 	// Try the local image store first. The device-local registry shares
@@ -444,6 +536,20 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 		if err != nil {
 			return fmt.Errorf("getting/pulling image %q: %w", imageName, err)
 		}
+	}
+
+	// Start D-Bus proxy if bluetooth entitlement is present.
+	var dbusProxyStarted bool
+	if c.proxyManager != nil && hasBluetooth(appCfg) {
+		if _, err := c.proxyManager.Start(ctx, containerName); err != nil {
+			return fmt.Errorf("starting D-Bus proxy for %q: %w", containerName, err)
+		}
+		dbusProxyStarted = true
+		defer func() {
+			if dbusProxyStarted {
+				_ = c.proxyManager.Stop(containerName)
+			}
+		}()
 	}
 
 	// Unpack the image into the snapshotter if not already done.
@@ -498,12 +604,24 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 		workingDir = "/"
 	}
 
-	// Build environment variables: image env first, then our overrides.
-	env := buildContainerBaseEnv()
-	if specErr == nil {
-		env = append(imageSpec.Config.Env, env...)
+	// Build environment variables.
+	// Order: image built-in env → user-provided env (from request) → Wendy system env → OTEL injection.
+	// Wendy vars appear last so they always win in OCI semantics (last KEY wins).
+	wendyEnv, err := buildContainerBaseEnv(appID, serviceName)
+	if err != nil {
+		return fmt.Errorf("building container env: %w", err)
 	}
-	env = injectOTELEnvIfNeeded(env, appCfg)
+	if err := validateUserEnv(req.GetEnv()); err != nil {
+		return fmt.Errorf("invalid env var in request (SOC2-CC6, NIST-SI-10): %w", err)
+	}
+	var env []string
+	if specErr == nil {
+		env = append(env, imageSpec.Config.Env...)
+	}
+	env = append(env, req.GetEnv()...)
+	env = append(env, wendyEnv...)
+	env = append(env, buildROS2Env(appCfg)...)
+	env = injectOTELEnvIfNeeded(env, appCfg, appID)
 
 	// Build OCI spec using local oci package, then apply entitlements.
 	spec := localoci.DefaultSpec("rootfs", args)
@@ -512,7 +630,6 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 	if spec.Linux == nil {
 		spec.Linux = &localoci.Linux{}
 	}
-	spec.Linux.CgroupsPath = fmt.Sprintf("system.slice:wendy-agent:%s", appName)
 
 	// Apply the NVIDIA CDI spec before entitlements so that entitlements can
 	// override CDI-injected env vars (e.g. NVIDIA_VISIBLE_DEVICES=void → =all).
@@ -523,21 +640,98 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 	opts := localoci.ApplyOptions{
 		DBusProxyAvailable: c.proxyManager != nil,
 	}
-	if err := localoci.ApplyEntitlements(spec, appCfg, opts); err != nil {
+	// Pass a shallow copy of appCfg with AppID and ServiceName set to the
+	// derived (validated) values. This ensures ApplyEntitlements always receives
+	// a non-empty AppID even when the caller used the raw-RPC fallback path
+	// where appCfg.AppID was empty and appID was derived from req.GetAppName().
+	entCfg := *appCfg
+	entCfg.AppID = appID
+	entCfg.ServiceName = serviceName
+	if err := localoci.ApplyEntitlements(spec, &entCfg, opts); err != nil {
 		return fmt.Errorf("applying entitlements: %w", err)
 	}
 
+	// Set the cgroup path here — client.go is the sole authority so there is
+	// no risk of divergence with entitlements.go. SetDeviceCapabilities only
+	// adds the cgroup namespace and mount; it no longer sets CgroupsPath.
+	// "@" is used as separator because it cannot appear in a valid appID
+	// ([a-zA-Z0-9._-]) or serviceName ([a-z][a-z0-9-]*), eliminating the
+	// collision risk that a hyphen separator would have introduced.
+	//   - Single-container: "system.slice:{systemdSvc}:{appID}"
+	//   - Multi-service:    "system.slice:{systemdSvc}:{appID}@{serviceName}"
+	//
+	// INVARIANT: ApplyEntitlements and CDI helpers must not set CgroupsPath.
+	// The assertion below detects any future violation at runtime (SOC2-CC6).
+	if spec.Linux.CgroupsPath != "" {
+		return fmt.Errorf("security: CgroupsPath was unexpectedly set before assignment (%q); ApplyEntitlements or CDI must not set it", spec.Linux.CgroupsPath)
+	}
+	cgroupSuffix := appID
+	if serviceName != "" {
+		cgroupSuffix = appID + "@" + serviceName
+	}
+	spec.Linux.CgroupsPath = fmt.Sprintf("system.slice:%s:%s", sharedenv.SystemdServiceName(), cgroupSuffix)
+
 	report(&agentpb.CreateContainerProgress{Phase: agentpb.CreateContainerProgress_CREATING_CONTAINER})
 
-	// Build labels for the container.
-	var mcpPort uint32
-	for _, e := range appCfg.Entitlements {
-		if e.Type == appconfig.EntitlementMCP {
-			mcpPort = uint32(e.Port)
-			break
+	labels := wendyLabels(appID, serviceName, version, req.GetRestartPolicy(), appCfg.Entitlements)
+
+	// Inject /etc/hosts bind-mount for isolated multi-service apps so service
+	// names resolve via CNI-assigned IPs.
+	if appCfg.Isolation == "isolated" && len(appCfg.Services) > 1 {
+		// safeJoin rejects separators and dot-only segments, then verifies the
+		// result is directly under the base dir (SOC2-CC6, ISO27001-A.8, NIST-SI-10).
+		hostsPath, err := safeJoin("/run/wendy/hosts", appID)
+		if err != nil {
+			return fmt.Errorf("security: appID %q produces unsafe hosts path: %w", appID, err)
+		}
+		// Always create the directory (os.MkdirAll is idempotent) and seed the
+		// hosts file with IPs already known from previously-started sibling services.
+		// c.mu is held here (defer Unlock above), so reading c.serviceIPs is safe.
+		// Seeding with existing IPs means containers that start late see a useful
+		// /etc/hosts from the first moment rather than an empty file (SOC2-CC6).
+		// The atomic rename in writeHostsFile prevents truncated reads (NIST-SI-10).
+		if err := os.MkdirAll("/run/wendy/hosts", 0o700); err != nil {
+			return fmt.Errorf("creating hosts dir: %w", err)
+		}
+		if err := writeHostsFile(hostsPath, c.serviceIPs[appID]); err != nil {
+			return fmt.Errorf("initialising hosts file for %s: %w", appID, err)
+		}
+		localoci.InjectHostsMount(spec, hostsPath)
+	}
+
+	// Apply isolation-specific namespace and shm settings for shared-namespace groups.
+	if appconfig.IsSharedNamespaceIsolation(appCfg.Isolation) {
+		primaryPID, hasPrimary := c.getPrimaryPID(appID)
+		if hasPrimary {
+			// Secondary service: join the primary's namespaces.
+			// nsAnchors holds open fds for each namespace so the paths embedded
+			// in the spec (/proc/self/fd/{n}) remain valid until runc opens them.
+			nsAnchors, err := localoci.JoinGroupNamespaces(spec, primaryPID, appCfg.Isolation)
+			if err != nil {
+				return fmt.Errorf("joining group namespaces: %w", err)
+			}
+			defer func() {
+				for _, f := range nsAnchors {
+					f.Close()
+				}
+			}()
+			if appCfg.Isolation == "shared-ipc" {
+				shmPath, shmErr := ensureSharedSHM(appID)
+				if shmErr != nil {
+					return shmErr
+				}
+				localoci.RemoveDefaultSHM(spec)
+				spec.Mounts = append(spec.Mounts, localoci.SharedSHMMount(shmPath))
+			}
+		} else {
+			// Primary service: create shared shm dir so secondaries can find it.
+			if appCfg.Isolation == "shared-ipc" {
+				if _, shmErr := ensureSharedSHM(appID); shmErr != nil {
+					return shmErr
+				}
+			}
 		}
 	}
-	labels := wendyLabels(appName, version, req.GetRestartPolicy(), mcpPort)
 
 	// Serialize our custom OCI spec to JSON for WithSpecFromBytes.
 	specJSON, err := json.Marshal(spec)
@@ -546,8 +740,8 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 	}
 
 	// Create the container with a new snapshot from the image.
-	snapshotKey := fmt.Sprintf("wendy-%s", appName)
-	_, err = c.client.NewContainer(ctx, appName,
+	snapshotKey := SnapshotKey(appID, serviceName)
+	_, err = c.client.NewContainer(ctx, containerName,
 		containerd.WithImage(image),
 		containerd.WithNewSnapshot(snapshotKey, image),
 		containerd.WithContainerLabels(labels),
@@ -556,7 +750,7 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 		),
 	)
 	if err != nil {
-		return fmt.Errorf("creating container %q: %w", appName, err)
+		return fmt.Errorf("creating container %q: %w", containerName, err)
 	}
 
 	// Container created successfully; keep the D-Bus proxy running.
@@ -564,11 +758,32 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 
 	report(&agentpb.CreateContainerProgress{Phase: agentpb.CreateContainerProgress_COMPLETE})
 
-	c.logger.Info("Container created",
-		zap.String("app_name", appName),
+	createdFields := []zap.Field{
+		zap.String("container_name", containerName),
+		zap.String("app_id", appID),
 		zap.String("image", imageName),
 		zap.String("version", version),
-	)
+	}
+	if serviceName != "" {
+		createdFields = append(createdFields, zap.String("service_name", serviceName))
+	}
+	c.logger.Info("Container created", createdFields...)
+
+	// Cache services map for stop-order resolution and isolation mode for
+	// StartContainer PID tracking. c.mu is already held for the full function
+	// via defer c.mu.Unlock() above — no inner lock needed.
+	if len(appCfg.Services) > 0 {
+		if c.appServices == nil {
+			c.appServices = make(map[string]map[string]*appconfig.ServiceConfig)
+		}
+		c.appServices[appID] = appCfg.Services
+	}
+	if appCfg.Isolation != "" {
+		if c.appIsolation == nil {
+			c.appIsolation = make(map[string]string)
+		}
+		c.appIsolation[appID] = appCfg.Isolation
+	}
 
 	return nil
 }
@@ -599,15 +814,42 @@ func (c *Client) applyCDIGPU(spec *localoci.Spec) {
 	c.logger.Warn("CDI spec found but no devices could be applied")
 }
 
-// StartContainer starts the task for a named container and returns a channel
-// that streams stdout/stderr output. When the container exits, a final
-// ContainerOutput with Done=true is sent and the channel is closed.
 func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentCommand string, restartPolicy *agentpb.RestartPolicy) (<-chan services.ContainerOutput, error) {
+	// Accept both "appID" and "appID_serviceName" forms. ParseContainerName
+	// validates both components so a crafted value cannot reach the label filter
+	// in the containersForApp fallback path (SOC2-CC6, ISO27001-A.8).
+	appID, serviceName, err := ParseContainerName(appName)
+	if err != nil {
+		return nil, fmt.Errorf("StartContainer: invalid app name: %w", err)
+	}
+	// Hold c.mu for container lookup and task creation to prevent a concurrent
+	// DeleteContainer from removing the container between the label-based lookup
+	// and NewTask (TOCTOU, SOC2-CC6). Released before the streaming goroutine
+	// launch via the muHeld flag pattern.
+	c.mu.Lock()
+	muHeld := true
+	defer func() {
+		if muHeld {
+			c.mu.Unlock()
+		}
+	}()
 	ctx = c.withNamespace(ctx)
 
 	container, err := c.client.LoadContainer(ctx, appName)
 	if err != nil {
-		return nil, fmt.Errorf("loading container %q: %w", appName, err)
+		// Fall back to a label-based lookup so that callers can pass the bare
+		// appID (e.g. "myapp") even when the container was created under a
+		// multi-service name (e.g. "myapp/api" for serviceName="api").
+		// If the label query returns exactly one container we use it; if it
+		// returns multiple the caller must be more specific.
+		ctrs, labelErr := c.containersForApp(ctx, appName)
+		if labelErr != nil || len(ctrs) == 0 {
+			return nil, fmt.Errorf("loading container %q: %w", appName, err)
+		}
+		if len(ctrs) > 1 {
+			return nil, fmt.Errorf("app %q has multiple service containers; use the full container name (appID_serviceName) to start a specific service", appName)
+		}
+		container = ctrs[0]
 	}
 
 	if restartPolicy != nil {
@@ -674,6 +916,80 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 	c.logger.Info("Container started", zap.String("app_name", appName))
 	c.startPostStartAgentHook(postStartAgentCommand, appName)
 
+	// Track the primary PID for shared-namespace app groups.
+	// getIsolation requires c.mu (held here via muHeld).
+	isolation := c.getIsolation(appID)
+	if appconfig.IsSharedNamespaceIsolation(isolation) {
+		if _, alreadyHasPrimary := c.getPrimaryPID(appID); !alreadyHasPrimary {
+			c.setPrimaryPID(appID, task.Pid())
+		}
+	}
+
+	// Anchor the network namespace with an open fd BEFORE releasing the mutex.
+	// This eliminates the TOCTOU race where a concurrent StopContainer could
+	// recycle the PID between mutex release and CNI ADD, causing the plugin to
+	// operate on the wrong process's netns (SOC2-CC6, NIST-SC-7, ISO27001-A.8).
+	var netnsRef *os.File
+	if isolation == "isolated" && serviceName != "" {
+		nsPath := fmt.Sprintf("/proc/%d/ns/net", task.Pid())
+		var nsErr error
+		netnsRef, nsErr = os.Open(nsPath)
+		if nsErr != nil {
+			c.logger.Warn("could not anchor netns fd before mutex release; CNI ADD skipped",
+				zap.String("app_id", appID), zap.Error(nsErr))
+		}
+	}
+
+	// Release the mutex before launching the streaming goroutine, which does
+	// not need it (it only reads from pipes).
+	muHeld = false
+	c.mu.Unlock()
+
+	// CNI ADD for isolated multi-service apps: assign IP and update /etc/hosts.
+	// bindNetnsForCNI creates a stable bind-mount under /run/wendy/netns/ so
+	// CNI_NETNS is a real filesystem path as required by the CNI spec — not a
+	// /proc/self/fd/<n> reference that third-party CNI plugins may not honour.
+	// It also closes the fd (the bind-mount anchors the namespace independently).
+	// On Linux the bind-mount is used; on other platforms the fd path is the fallback.
+	if isolation == "isolated" && serviceName != "" && netnsRef != nil {
+		netnsPath, cleanupNetns := bindNetnsForCNI(appName, netnsRef)
+		ip, cniErr := c.CNIAdd(ctx, appID, appName, netnsPath)
+		cleanupNetns()
+		if cniErr != nil {
+			c.logger.Error("CNI ADD failed", zap.String("app_id", appID), zap.Error(cniErr))
+		} else {
+			c.mu.Lock()
+			// Guard against a concurrent StopContainer that may have deleted
+			// c.appIsolation[appID] during the window between CNI ADD and this
+			// re-lock. If the app is already gone, discard the IP silently rather
+			// than writing stale state (SOC2-CC6, NIST-SI-16, ISO27001-A.8).
+			if c.appIsolation[appID] == "" {
+				c.mu.Unlock()
+				c.logger.Warn("CNI ADD: app already stopped before IP could be recorded, discarding IP",
+					zap.String("app_id", appID), zap.String("ip", ip))
+				_, _ = task.Delete(ctx, containerd.WithProcessKill)
+				return nil, fmt.Errorf("app %q stopped during CNI ADD; container not started", appID)
+			}
+			c.recordServiceIP(appID, serviceName, ip)
+			hostsPath, pathErr := safeJoin("/run/wendy/hosts", appID)
+			if pathErr != nil {
+				// Hard error: a validated appID must never produce an unsafe path.
+				// Remove the just-recorded IP so it cannot pollute future writeHostsFile
+				// calls for the same appID (SOC2-CC6, ISO27001-A.8, NIST-SI-10).
+				if c.serviceIPs != nil {
+					delete(c.serviceIPs[appID], serviceName)
+				}
+				c.logger.Error("security: appID produces unsafe hosts path",
+					zap.String("app_id", appID), zap.Error(pathErr))
+				c.mu.Unlock()
+				_, _ = task.Delete(ctx, containerd.WithProcessKill)
+				return nil, fmt.Errorf("security: appID %q produces unsafe hosts path: %w", appID, pathErr)
+			}
+			_ = writeHostsFile(hostsPath, c.serviceIPs[appID])
+			c.mu.Unlock()
+		}
+	}
+
 	// Stream output from the pipes.
 	outputCh := make(chan services.ContainerOutput, 64)
 	go c.streamOutput(ctx, task, exitStatusCh, outputCh, appName, stdoutR, stderrR, stdoutW, stderrW)
@@ -684,11 +1000,28 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 // StartContainerWithStdin is like StartContainer but attaches the provided
 // stdin reader to the container's standard input.
 func (c *Client) StartContainerWithStdin(ctx context.Context, appName string, stdin io.Reader, postStartAgentCommand string, restartPolicy *agentpb.RestartPolicy) (<-chan services.ContainerOutput, error) {
+	if _, _, err := ParseContainerName(appName); err != nil {
+		return nil, fmt.Errorf("StartContainerWithStdin: invalid app name: %w", err)
+	}
+	c.mu.Lock()
+	muHeld := true
+	defer func() {
+		if muHeld {
+			c.mu.Unlock()
+		}
+	}()
 	ctx = c.withNamespace(ctx)
 
 	container, err := c.client.LoadContainer(ctx, appName)
 	if err != nil {
-		return nil, fmt.Errorf("loading container %q: %w", appName, err)
+		ctrs, labelErr := c.containersForApp(ctx, appName)
+		if labelErr != nil || len(ctrs) == 0 {
+			return nil, fmt.Errorf("loading container %q: %w", appName, err)
+		}
+		if len(ctrs) > 1 {
+			return nil, fmt.Errorf("app %q has multiple service containers; use the full container name (appID_serviceName) to start a specific service", appName)
+		}
+		container = ctrs[0]
 	}
 
 	if restartPolicy != nil {
@@ -747,6 +1080,9 @@ func (c *Client) StartContainerWithStdin(ctx context.Context, appName string, st
 	c.logger.Info("Container started with stdin", zap.String("app_name", appName))
 	c.startPostStartAgentHook(postStartAgentCommand, appName)
 
+	muHeld = false
+	c.mu.Unlock()
+
 	outputCh := make(chan services.ContainerOutput, 64)
 	go c.streamOutput(ctx, task, exitStatusCh, outputCh, appName, stdoutR, stderrR, stdoutW, stderrW)
 
@@ -760,9 +1096,6 @@ func shellCommand() (string, string) {
 	return "sh", "-c"
 }
 
-// deviceHostnameWithSuffix returns the device's mDNS hostname with the ".local"
-// suffix (e.g. "wendyos-mighty-kayak.local"), or "" if the OS hostname is
-// unavailable. Indirected through a var so tests can override it.
 var deviceHostnameWithSuffix = func() string {
 	h, err := os.Hostname()
 	if err != nil || h == "" {
@@ -771,51 +1104,230 @@ var deviceHostnameWithSuffix = func() string {
 	return h + ".local"
 }
 
-// buildContainerBaseEnv builds the wendy-injected env vars layered on top of
-// the image's own env. WENDY_HOSTNAME is the device's mDNS hostname
-// (omitted when unresolvable). OTEL_EXPORTER_OTLP_ENDPOINT points at the
-// agent's OTLP gRPC receiver so containers auto-configure their exporters.
-func buildContainerBaseEnv() []string {
+// buildContainerBaseEnv builds the base environment variables for a container.
+//
+// Precondition: appID must pass ValidateAppID and serviceName (when non-empty)
+// must pass ValidateServiceName. CreateContainerWithProgress enforces this at
+// its entry point; callers that bypass it are responsible for their own check.
+//
+// For single-container apps (serviceName == ""):
+//   - WENDY_HOSTNAME is set to the device hostname (e.g. "device.local").
+//
+// For multi-service apps (serviceName != ""):
+//   - WENDY_HOSTNAME is set to "{serviceName}.local" so each service has a
+//     distinct hostname identity.
+//   - WENDY_APP_GROUP is set to appID so the service can discover its siblings.
+func buildContainerBaseEnv(appID, serviceName string) ([]string, error) {
+	// Defence-in-depth: reject non-empty inputs that fail validation at the
+	// injection site so callers can't accidentally inject control characters
+	// into OCI env vars (SOC2-CC6, ISO27001-A.8, NIST-SI-10). Empty values are
+	// allowed; they simply skip the corresponding env var (see guards below).
+	if appID != "" {
+		if err := appconfig.ValidateAppID(appID); err != nil {
+			return nil, fmt.Errorf("buildContainerBaseEnv: invalid appID: %w", err)
+		}
+		// Explicit fast-fail: ValidateAppID's regex rejects these, but guard
+		// explicitly at the concatenation site as well.
+		if strings.ContainsAny(appID, "\x00\n\r=\t") {
+			return nil, fmt.Errorf("buildContainerBaseEnv: appID contains forbidden characters")
+		}
+	}
+	if serviceName != "" {
+		if err := appconfig.ValidateServiceName(serviceName); err != nil {
+			return nil, fmt.Errorf("buildContainerBaseEnv: invalid serviceName: %w", err)
+		}
+		if strings.ContainsAny(serviceName, "\x00\n\r=\t") {
+			return nil, fmt.Errorf("buildContainerBaseEnv: serviceName contains forbidden characters")
+		}
+	}
+
 	env := []string{
 		"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
 		"TERM=xterm",
 	}
-	if h := deviceHostnameWithSuffix(); h != "" {
-		env = append(env, "WENDY_HOSTNAME="+h)
+	deviceHost := deviceHostnameWithSuffix()
+	if serviceName != "" {
+		// Multi-service: hostname is the service name, not the device hostname.
+		env = append(env, "WENDY_HOSTNAME="+serviceName+".local")
+		env = append(env, "WENDY_APP_GROUP="+appID)
+	} else {
+		if deviceHost != "" {
+			env = append(env, "WENDY_HOSTNAME="+deviceHost)
+		}
+	}
+	// WENDY_DEVICE_HOSTNAME is the mDNS hostname of the host device, available
+	// in both single- and multi-service containers so workloads can always reach
+	// the device regardless of what WENDY_HOSTNAME is set to.
+	if deviceHost != "" {
+		env = append(env, "WENDY_DEVICE_HOSTNAME="+deviceHost)
+	}
+	// WENDY_APP_ID is injected unconditionally (all network modes) so app code
+	// can always read its own identity. The OTel identity vars are injected only
+	// under host networking (in injectOTELEnvIfNeeded) because the OTLP receiver
+	// is only reachable in that mode.
+	if appID != "" {
+		env = append(env, "WENDY_APP_ID="+appID)
+	}
+	return env, nil
+}
+
+// validateUserEnv rejects caller-supplied env entries that contain characters
+// which could break the OCI env format or enable injection attacks.
+// Mirrors the defence-in-depth checks in buildContainerBaseEnv (SOC2-CC6, NIST-SI-10).
+
+// posixEnvKeyPattern is an allowlist for POSIX-compliant environment variable
+// names. It accepts only ASCII letters, digits, and underscores, with an
+// underscore or letter as the first character. This allowlist prevents leading-
+// whitespace bypass (e.g. " LD_PRELOAD") and eliminates Unicode case-folding
+// ambiguity before the denylist check below (SOC2-CC6, NIST-SI-10).
+var posixEnvKeyPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// blockedEnvPrefixes is the set of key prefixes that user-supplied env vars
+// must not use. These keys affect dynamic linker behavior (LD_*) or are
+// reserved by Wendy (WENDY_*); a compromised or malicious caller could use
+// them to preload arbitrary code or override Wendy internals
+// (SOC2-CC6, ISO27001-A.8, NIST-SI-10).
+var blockedEnvPrefixes = []string{
+	"LD_",    // LD_PRELOAD, LD_LIBRARY_PATH, LD_AUDIT, LD_DEBUG, etc.
+	"DYLD_",  // macOS dynamic linker (defense-in-depth for cross-platform images)
+	"WENDY_", // Wendy-internal variables must not be overrideable by callers
+}
+
+// maxUserEnvEntries is the maximum number of caller-supplied env entries accepted.
+// Prevents OCI spec bloat / DoS via unbounded env injection (SOC2-CC6, NIST-SI-10).
+const maxUserEnvEntries = 512
+
+// maxUserEnvEntryLen is the maximum byte length of a single KEY=VALUE entry.
+// 32 KB covers all practical use cases while bounding spec-JSON size (SOC2-CC6, NIST-SI-10).
+const maxUserEnvEntryLen = 32 * 1024
+
+func validateUserEnv(entries []string) error {
+	if len(entries) > maxUserEnvEntries {
+		return fmt.Errorf("too many env entries: %d exceeds limit of %d (SOC2-CC6, NIST-SI-10)", len(entries), maxUserEnvEntries)
+	}
+	for _, kv := range entries {
+		if len(kv) > maxUserEnvEntryLen {
+			return fmt.Errorf("env entry exceeds maximum length of %d bytes (SOC2-CC6, NIST-SI-10)", maxUserEnvEntryLen)
+		}
+		if strings.ContainsAny(kv, "\x00\n\r") {
+			return fmt.Errorf("env entry contains forbidden control character: %q", sanitizeForLog(kv, 80))
+		}
+		key, _, ok := strings.Cut(kv, "=")
+		if !ok {
+			return fmt.Errorf("env entry missing '=' separator: %q", sanitizeForLog(kv, 80))
+		}
+		// Reject keys that do not conform to the POSIX env key format. This also
+		// closes the leading-whitespace bypass (" LD_PRELOAD") and the Unicode
+		// case-folding bypass that strings.ToUpper alone cannot prevent.
+		if !posixEnvKeyPattern.MatchString(key) {
+			return fmt.Errorf("env key %q is not a valid POSIX environment variable name (SOC2-CC6, NIST-SI-10)", sanitizeForLog(key, 80))
+		}
+		upper := strings.ToUpper(key) // safe: key is ASCII-only after pattern check
+		for _, prefix := range blockedEnvPrefixes {
+			if strings.HasPrefix(upper, prefix) {
+				return fmt.Errorf("env key %q is reserved and cannot be set by callers (SOC2-CC6, NIST-SI-10)", key)
+			}
+		}
+	}
+	return nil
+}
+
+// ros2DomainIDMax is the conservative upper bound for ROS 2 domain IDs.
+// The ROS 2 spec defines valid IDs as 0–101 (conservative); some platforms
+// allow up to 232 but 101 covers all standard deployments (SOC2-CC6, NIST-SI-10).
+const (
+	ros2DomainIDMin = 0
+	ros2DomainIDMax = 101
+)
+
+// validRMWImplementations is the allowlist of known RMW (ROS Middleware)
+// implementation identifiers. Validating against a fixed set prevents
+// injection of arbitrary strings into the container environment via the
+// RMW field in wendy.json (SOC2-CC6, ISO27001-A.8, NIST-SI-10).
+var validRMWImplementations = map[string]bool{
+	"rmw_cyclonedds_cpp": true,
+	"rmw_fastrtps_cpp":   true,
+	"rmw_connextdds":     true,
+	"rmw_gurumdds_cpp":   true,
+}
+
+// buildROS2Env returns ROS2 environment variables from the app's frameworks.ros2 config.
+func buildROS2Env(appCfg *appconfig.AppConfig) []string {
+	ros2 := appCfg.GetROS2Config()
+	if ros2 == nil {
+		return nil
+	}
+	if ros2.DomainID < ros2DomainIDMin || ros2.DomainID > ros2DomainIDMax {
+		return nil // invalid domain ID; caller should have validated at config parse time
+	}
+	env := []string{fmt.Sprintf("ROS_DOMAIN_ID=%d", ros2.DomainID)}
+	if ros2.RMW != "" {
+		// Allowlist validation: only known RMW identifiers are injected.
+		// A control-char check alone is insufficient — an unknown value with
+		// only printable chars could still corrupt the env or trigger
+		// plugin-specific parsing bugs (SOC2-CC6, NIST-SI-10).
+		if !validRMWImplementations[ros2.RMW] {
+			return env // unknown RMW: drop rather than inject
+		}
+		env = append(env, "RMW_IMPLEMENTATION="+ros2.RMW)
 	}
 	return env
 }
 
 // injectOTELEnvIfNeeded appends OTEL exporter env vars to env when host
-// networking is in effect and the endpoint is not already configured.
-// It must be called after the image env has been merged so that image-set
-// values take precedence.
-func injectOTELEnvIfNeeded(env []string, appCfg *appconfig.AppConfig) []string {
+// networking is in effect and the endpoint is not already configured. Besides
+// the endpoint and protocol, it sets OTEL_SERVICE_NAME and
+// OTEL_RESOURCE_ATTRIBUTES (wendy.app.name) to the appId so that telemetry
+// exported by the app matches `wendy device logs --app <id>`, which filters on
+// those resource attributes. It must be called after the image env has been
+// merged so that image-set values take precedence.
+//
+// appID is passed explicitly (rather than read from appCfg.AppID) so the
+// caller's AppConfig struct is never mutated, which would affect concurrent or
+// retry uses of the same pointer.
+func injectOTELEnvIfNeeded(env []string, appCfg *appconfig.AppConfig, appID string) []string {
 	if !hasHostNetworkEntitlement(appCfg) {
 		return env
 	}
 	hasEndpoint, hasProtocol := false, false
+	hasServiceName, hasResourceAttrs := false, false
 	for _, e := range env {
-		if strings.HasPrefix(e, "OTEL_EXPORTER_OTLP_ENDPOINT=") {
+		switch {
+		case strings.HasPrefix(e, "OTEL_EXPORTER_OTLP_ENDPOINT="):
 			hasEndpoint = true
-		}
-		if strings.HasPrefix(e, "OTEL_EXPORTER_OTLP_PROTOCOL=") {
+		case strings.HasPrefix(e, "OTEL_EXPORTER_OTLP_PROTOCOL="):
 			hasProtocol = true
+		case strings.HasPrefix(e, "OTEL_SERVICE_NAME="):
+			hasServiceName = true
+		case strings.HasPrefix(e, "OTEL_RESOURCE_ATTRIBUTES="):
+			hasResourceAttrs = true
 		}
 	}
-	if hasEndpoint {
-		return env // image already configured the exporter; do not override
+	// Endpoint/protocol: only point the exporter at our receiver when the image
+	// hasn't already configured one.
+	if !hasEndpoint {
+		otelPort := os.Getenv("WENDY_OTEL_PORT")
+		if otelPort == "" {
+			otelPort = "4317"
+		}
+		if p, err := strconv.Atoi(otelPort); err != nil || p < 1 || p > 65535 {
+			otelPort = "4317"
+		}
+		env = append(env, "OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:"+otelPort)
+		if !hasProtocol {
+			env = append(env, "OTEL_EXPORTER_OTLP_PROTOCOL=grpc")
+		}
 	}
-	otelPort := os.Getenv("WENDY_OTEL_PORT")
-	if otelPort == "" {
-		otelPort = "4317"
-	}
-	if p, err := strconv.Atoi(otelPort); err != nil || p < 1 || p > 65535 {
-		otelPort = "4317"
-	}
-	env = append(env, "OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:"+otelPort)
-	if !hasProtocol {
-		env = append(env, "OTEL_EXPORTER_OTLP_PROTOCOL=grpc")
+	// Identity: set regardless of where the exporter points, so `wendy device
+	// logs --app <id>` can match even when the image preset its own endpoint.
+	// Image-set values still take precedence.
+	if appID != "" {
+		if !hasServiceName {
+			env = append(env, "OTEL_SERVICE_NAME="+appID)
+		}
+		if !hasResourceAttrs {
+			env = append(env, "OTEL_RESOURCE_ATTRIBUTES=wendy.app.name="+appID)
+		}
 	}
 	return env
 }
@@ -941,14 +1453,36 @@ func (c *Client) recreateContainer(ctx context.Context, ctr containerd.Container
 		return fmt.Errorf("marshaling spec: %w", err)
 	}
 
+	// Derive appID and serviceName from labels — they are the authoritative
+	// source (set at creation time by wendyLabels). Parsing the container name
+	// is intentionally avoided: the name format is an encoded composite of
+	// appID+serviceName and labels are unambiguous (SOC2-CC8).
+	labelAppID := info.Labels[labelKeyAppID]
+	labelSvcName := info.Labels[labelKeyServiceName]
+	if labelAppID == "" {
+		// Fallback for containers created before label-based identity was
+		// introduced; parse the name as a best-effort recovery.
+		var parseErr error
+		labelAppID, labelSvcName, parseErr = ParseContainerName(appName)
+		if parseErr != nil {
+			return fmt.Errorf("refusing to recreate container with malformed name: %w", parseErr)
+		}
+	}
+	if err := appconfig.ValidateAppID(labelAppID); err != nil {
+		return fmt.Errorf("refusing to recreate container with invalid appID in labels: %w", err)
+	}
+	if labelSvcName != "" {
+		if err := appconfig.ValidateServiceName(labelSvcName); err != nil {
+			return fmt.Errorf("refusing to recreate container with invalid serviceName in labels: %w", err)
+		}
+	}
+
 	// Delete the container (cascades to orphaned task).
 	if err := ctr.Delete(ctx, containerd.WithSnapshotCleanup); err != nil {
 		return fmt.Errorf("deleting container: %w", err)
 	}
-
-	// Recreate with the same configuration.
-	snapshotKey := fmt.Sprintf("wendy-%s", appName)
-	_, err = c.client.NewContainer(ctx, appName,
+	snapshotKey := SnapshotKey(labelAppID, labelSvcName)
+	_, err = c.client.NewContainer(ctx, ContainerName(labelAppID, labelSvcName),
 		containerd.WithImage(image),
 		containerd.WithNewSnapshot(snapshotKey, image),
 		containerd.WithContainerLabels(info.Labels),
@@ -1036,14 +1570,62 @@ func (c *Client) streamOutput(
 	outputCh <- services.ContainerOutput{Done: true}
 }
 
-// StopContainer sends SIGTERM to the container's task, waits briefly, then
-// sends SIGKILL if the task is still running, and finally deletes the task.
-func (c *Client) StopContainer(ctx context.Context, appName string) error {
-	ctx = c.withNamespace(ctx)
-
-	container, err := c.client.LoadContainer(ctx, appName)
+// containersForApp returns all Wendy-managed containers whose labelKeyAppID
+// label equals appID. Both single-container apps (one container) and
+// multi-service apps (one container per service) are found this way, with no
+// dependency on container-name conventions.
+// ctx must already have the containerd namespace set.
+func (c *Client) containersForApp(ctx context.Context, appID string) ([]containerd.Container, error) {
+	// Defence-in-depth: re-validate appID at the injection site so that a future
+	// caller that bypasses the RPC entry-point validation cannot inject into the
+	// containerd filter expression (SOC2-CC6, ISO27001-A.8, NIST-SI-10).
+	// ValidateAppID allows only [a-zA-Z0-9._-], none of which are special in
+	// the containerd filter grammar, so %q quoting is safe for this character set.
+	if err := appconfig.ValidateAppID(appID); err != nil {
+		return nil, fmt.Errorf("containersForApp: invalid appID: %w", err)
+	}
+	all, err := c.client.Containers(ctx, fmt.Sprintf("labels.%q==%q", labelKeyAppID, appID))
 	if err != nil {
-		return fmt.Errorf("loading container %q: %w", appName, err)
+		return nil, fmt.Errorf("listing containers for app %q: %w", appID, err)
+	}
+	// Post-filter in Go to confirm the label value matches exactly, providing
+	// defence-in-depth against any future filter grammar edge case.
+	// Use a fresh slice — reusing all[:0] would alias the backing array and
+	// risk reading overwritten elements during the range loop (SOC2-CC6).
+	var ctrs []containerd.Container
+	for _, ctr := range all {
+		labels, lerr := ctr.Labels(ctx)
+		if lerr != nil || labels[labelKeyAppID] != appID {
+			continue
+		}
+		ctrs = append(ctrs, ctr)
+	}
+	return ctrs, nil
+}
+
+// ContainerIDsForApp returns the containerd container IDs for all services
+// belonging to appID. Single-container apps return one ID; multi-service apps
+// return one ID per service. The service layer uses this to mark each
+// container in the monitor before issuing a stop or delete.
+func (c *Client) ContainerIDsForApp(ctx context.Context, appID string) ([]string, error) {
+	ctx = c.withNamespace(ctx)
+	ctrs, err := c.containersForApp(ctx, appID)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]string, len(ctrs))
+	for i, ctr := range ctrs {
+		ids[i] = ctr.ID()
+	}
+	return ids, nil
+}
+
+// stopOne stops the task for a single container.
+// ctx must already have the containerd namespace set.
+func (c *Client) stopOne(ctx context.Context, containerID string) error {
+	container, err := c.client.LoadContainer(ctx, containerID)
+	if err != nil {
+		return fmt.Errorf("loading container %q: %w", containerID, err)
 	}
 
 	task, err := container.Task(ctx, nil)
@@ -1051,14 +1633,26 @@ func (c *Client) StopContainer(ctx context.Context, appName string) error {
 		if errdefs.IsNotFound(err) {
 			return nil // No task running.
 		}
-		return fmt.Errorf("getting task for %q: %w", appName, err)
+		return fmt.Errorf("getting task for %q: %w", containerID, err)
+	}
+
+	// For isolated multi-service containers, call CNI DEL while the task's
+	// network namespace still exists (the PID is live, so /proc/PID/ns/net is
+	// valid). After SIGTERM/SIGKILL the netns reference disappears. CNI DEL is
+	// best-effort — failure is logged but does not block the stop path.
+	if appID, svcName, parseErr := ParseContainerName(containerID); parseErr == nil && svcName != "" {
+		netnsPath := fmt.Sprintf("/proc/%d/ns/net", task.Pid())
+		if cniErr := c.CNIDel(ctx, appID, containerID, netnsPath); cniErr != nil {
+			c.logger.Warn("CNI DEL failed during stop (non-fatal)",
+				zap.String("container_id", containerID), zap.Error(cniErr))
+		}
 	}
 
 	// Send SIGTERM first for graceful shutdown.
 	if err := task.Kill(ctx, syscall.SIGTERM); err != nil {
 		if !errdefs.IsNotFound(err) {
 			c.logger.Warn("Failed to send SIGTERM",
-				zap.String("app_name", appName),
+				zap.String("container_id", containerID),
 				zap.Error(err),
 			)
 		}
@@ -1068,22 +1662,20 @@ func (c *Client) StopContainer(ctx context.Context, appName string) error {
 	waitCh, err := task.Wait(ctx)
 	if err != nil {
 		c.logger.Warn("Failed to wait on task, sending SIGKILL",
-			zap.String("app_name", appName),
+			zap.String("container_id", containerID),
 			zap.Error(err),
 		)
 	} else {
 		select {
 		case <-waitCh:
-			// Task exited gracefully.
-			c.logger.Info("Container stopped gracefully", zap.String("app_name", appName))
+			c.logger.Info("Container stopped gracefully", zap.String("container_id", containerID))
 		case <-time.After(10 * time.Second):
-			// Force kill.
 			c.logger.Warn("Container did not stop within 10s, sending SIGKILL",
-				zap.String("app_name", appName),
+				zap.String("container_id", containerID),
 			)
 			if err := task.Kill(ctx, syscall.SIGKILL); err != nil && !errdefs.IsNotFound(err) {
 				c.logger.Error("Failed to send SIGKILL",
-					zap.String("app_name", appName),
+					zap.String("container_id", containerID),
 					zap.Error(err),
 				)
 			}
@@ -1094,114 +1686,298 @@ func (c *Client) StopContainer(ctx context.Context, appName string) error {
 	// Delete the task.
 	_, err = task.Delete(ctx, containerd.WithProcessKill)
 	if err != nil && !errdefs.IsNotFound(err) {
-		return fmt.Errorf("deleting task for %q: %w", appName, err)
+		return fmt.Errorf("deleting task for %q: %w", containerID, err)
 	}
 
-	// Stop D-Bus proxy if running.
 	if c.proxyManager != nil {
-		_ = c.proxyManager.Stop(appName)
+		_ = c.proxyManager.Stop(containerID)
 	}
 
-	c.logger.Info("Container stopped", zap.String("app_name", appName))
+	c.logger.Info("Container stopped", zap.String("container_id", containerID))
 	return nil
 }
 
-// DeleteContainer stops the container task if running, deletes the container,
-// cleans up the snapshot, and optionally deletes the image.
-func (c *Client) DeleteContainer(ctx context.Context, appName string, deleteImage bool) error {
+// StopContainer stops all containers belonging to appID. For single-container
+// apps this is one container; for multi-service apps it stops every service.
+// c.mu is held for the full duration to prevent a concurrent
+// CreateContainerWithProgress from inserting a new service container between
+// the list query and the stop loop (TOCTOU, SOC2-CC6, NIST-AC-4).
+func (c *Client) StopContainer(ctx context.Context, appID string) error {
+	ctx = c.withNamespace(ctx)
+
+	// Hold mutex only long enough to enumerate containers and resolve stop order.
+	// Releasing before stopOne prevents holding c.mu across potentially long
+	// blocking I/O (SIGTERM wait, 10 s timeout), which would starve concurrent
+	// StartContainer / CreateContainerWithProgress calls (SOC2-CC6, NIST-AC-3).
+	c.mu.Lock()
+	ctrs, err := c.containersForApp(ctx, appID)
+	if err != nil {
+		c.mu.Unlock()
+		return err
+	}
+	if len(ctrs) == 0 {
+		// Idempotent: already stopped / never created.
+		c.logger.Info("StopContainer: no containers found, already stopped",
+			zap.String("app_id", sanitizeForLog(appID, 253)))
+		c.mu.Unlock()
+		return nil
+	}
+	stopOrder := c.resolveStopOrder(ctx, appID, ctrs)
+	// Mark app as stopping before releasing the mutex so any concurrent
+	// CreateContainerWithProgress call will see it and abort (SOC2-CC6, NIST-AC-3).
+	if c.appStopping == nil {
+		c.appStopping = make(map[string]bool)
+	}
+	c.appStopping[appID] = true
+	c.mu.Unlock()
+
+	var errs []error
+	for _, ctrID := range stopOrder {
+		if err := c.stopOne(ctx, ctrID); err != nil {
+			c.logger.Error("Failed to stop service container",
+				zap.String("container_id", ctrID),
+				zap.Error(err))
+			errs = append(errs, err)
+		}
+	}
+
+	// Re-acquire mutex for map cleanup. Both reads and writes of these maps
+	// are protected by c.mu to prevent data races with concurrent callers
+	// (SOC2-CC6, NIST-AC-3, ISO27001-A.8).
+	// clearPrimaryPID under the lock; other per-app metadata is kept alive until
+	// after the late sweep so that appIsolation is still readable by any
+	// concurrent code that observes appStopping (SOC2-CC6, NIST-AC-3).
+	c.mu.Lock()
+	c.clearPrimaryPID(appID)
+	c.mu.Unlock()
+
+	// Re-enumerate unconditionally to catch any containers that appeared after
+	// resolveStopOrder snapshotted the list (e.g. a concurrent StartContainer
+	// mid-CNI-ADD). stopOne is idempotent for already-stopped containers.
+	// appStopping is still set during this sweep to block new concurrent creates.
+	if lateCtrs, lateErr := c.containersForApp(ctx, appID); lateErr == nil && len(lateCtrs) > 0 {
+		for _, ctr := range lateCtrs {
+			if stopErr := c.stopOne(ctx, ctr.ID()); stopErr != nil {
+				c.logger.Error("StopContainer: failed to stop late-appearing container",
+					zap.String("container_id", ctr.ID()), zap.Error(stopErr))
+				errs = append(errs, stopErr)
+			}
+		}
+	}
+
+	// Release per-app metadata in one atomic section AFTER the late sweep, so
+	// no partial-state window exists between metadata deletion and appStopping
+	// clearance. Concurrent CreateContainerWithProgress remains blocked (via
+	// appStopping) until this section completes (SOC2-CC6, NIST-AC-3, NIST-SI-16,
+	// ISO27001-A.8, SOC2-CC8/ISO27001-A.12 unbounded-growth prevention).
+	c.mu.Lock()
+	delete(c.appServices, appID)
+	delete(c.appIsolation, appID)
+	delete(c.serviceIPs, appID)
+	delete(c.appStopping, appID)
+	c.mu.Unlock()
+
+	return errors.Join(errs...)
+}
+
+// resolveStopOrder returns container IDs in reverse dependency order (dependents first).
+// Falls back to arbitrary order for single-container apps or unknown graphs.
+// Caller must hold c.mu.
+func (c *Client) resolveStopOrder(ctx context.Context, appID string, ctrs []containerd.Container) []string {
+	if len(ctrs) <= 1 {
+		ids := make([]string, len(ctrs))
+		for i, ctr := range ctrs {
+			ids[i] = ctr.ID()
+		}
+		return ids
+	}
+
+	services := c.appServices[appID]
+	if len(services) == 0 {
+		ids := make([]string, len(ctrs))
+		for i, ctr := range ctrs {
+			ids[i] = ctr.ID()
+		}
+		return ids
+	}
+
+	// Build serviceName→containerID map from containerd labels.
+	svcToID := make(map[string]string, len(ctrs))
+	for _, ctr := range ctrs {
+		labels, err := ctr.Labels(ctx)
+		if err != nil {
+			continue
+		}
+		if svcName := labels[labelKeyServiceName]; svcName != "" {
+			svcToID[svcName] = ctr.ID()
+		}
+	}
+
+	ordered, err := appconfig.ServiceTopoOrder(services)
+	if err != nil {
+		c.logger.Warn("resolveStopOrder: topo sort failed, using arbitrary order",
+			zap.String("app_id", appID), zap.Error(err))
+		ids := make([]string, len(ctrs))
+		for i, ctr := range ctrs {
+			ids[i] = ctr.ID()
+		}
+		return ids
+	}
+
+	// Reverse for stop order: dependents first, then dependencies.
+	result := make([]string, 0, len(ctrs))
+	for i := len(ordered) - 1; i >= 0; i-- {
+		if id, ok := svcToID[ordered[i]]; ok {
+			result = append(result, id)
+		}
+	}
+	return result
+}
+
+// ensureSharedSHM creates the host-side shared memory directory for a
+// shared-ipc app group. Returns the path so it can be bind-mounted.
+func ensureSharedSHM(appID string) (string, error) {
+	if err := appconfig.ValidateAppID(appID); err != nil {
+		return "", fmt.Errorf("ensureSharedSHM: %w", err)
+	}
+	path := "/run/wendy/shm/" + appID
+	// Lock the OS thread so that the umask change below is thread-local and
+	// does not race with other goroutines on the same process (SOC2-CC6,
+	// NIST-SC-7, ISO27001-A.8). Without this, a permissive umask could widen
+	// 0o1770 → 0o1750 or looser during the MkdirAll call, creating a window
+	// before the subsequent Chmod during which the directory is accessible to
+	// unintended users.
+	// 0o1700: owner-only sticky directory. The agent runs as root (uid 0) and
+	// is the sole writer; group/other bits are cleared so no GID-0 sibling
+	// daemon can traverse or modify the shm tree (SOC2-CC6, NIST-AC-3,
+	// ISO27001-A.9). The sticky bit prevents any in-container process from
+	// unlinking entries owned by a different container even if it somehow
+	// gains access to the host mount.
+	runtime.LockOSThread()
+	oldUmask := syscall.Umask(0)
+	mkdirErr := os.MkdirAll(path, 0o1700)
+	syscall.Umask(oldUmask)
+	runtime.UnlockOSThread()
+	if mkdirErr != nil {
+		return "", fmt.Errorf("creating shared shm dir %q: %w", path, mkdirErr)
+	}
+	// Explicit Chmod to handle the case where the directory already existed
+	// with looser permissions (MkdirAll is a no-op for existing dirs).
+	if err := os.Chmod(path, 0o1700); err != nil {
+		return "", fmt.Errorf("setting permissions on shared shm dir %q: %w", path, err)
+	}
+	return path, nil
+}
+
+// deleteOne kills any running task, deletes a single container and its
+// snapshot, and stops the D-Bus proxy. It returns the image name so the caller
+// can batch image deletions across services. ctx must have the namespace set
+// and the caller must hold c.mu.
+func (c *Client) deleteOne(ctx context.Context, ctr containerd.Container, wantImg bool) (imgName string, err error) {
+	if task, taskErr := ctr.Task(ctx, nil); taskErr == nil {
+		_ = task.Kill(ctx, syscall.SIGKILL)
+		_, _ = task.Delete(ctx, containerd.WithProcessKill)
+	}
+	if wantImg {
+		if img, imgErr := ctr.Image(ctx); imgErr == nil {
+			imgName = img.Name()
+		}
+	}
+	if err := ctr.Delete(ctx, containerd.WithSnapshotCleanup); err != nil {
+		return "", fmt.Errorf("deleting container %q: %w", ctr.ID(), err)
+	}
+	if c.proxyManager != nil {
+		if proxyErr := c.proxyManager.Stop(ctr.ID()); proxyErr != nil {
+			c.logger.Warn("Failed to stop D-Bus proxy",
+				zap.String("container_id", ctr.ID()),
+				zap.Error(proxyErr))
+		}
+	}
+	c.logger.Info("Container deleted", zap.String("container_id", ctr.ID()))
+	return imgName, nil
+}
+
+// DeleteContainer deletes all containers belonging to appID. For multi-service
+// apps all service containers are removed. When deleteImage is true, each
+// distinct image is deleted once (services sharing an image are handled safely).
+func (c *Client) DeleteContainer(ctx context.Context, appID string, deleteImage bool) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	ctx = c.withNamespace(ctx)
-
-	container, err := c.client.LoadContainer(ctx, appName)
+	ctrs, err := c.containersForApp(ctx, appID)
 	if err != nil {
-		if errdefs.IsNotFound(err) {
-			return nil // Already gone.
+		return err
+	}
+	if len(ctrs) == 0 {
+		return nil // Already gone.
+	}
+
+	seen := make(map[string]bool)
+	var errs []error
+	for _, ctr := range ctrs {
+		imgName, delErr := c.deleteOne(ctx, ctr, deleteImage)
+		if delErr != nil {
+			c.logger.Error("Failed to delete service container",
+				zap.String("container_id", ctr.ID()),
+				zap.Error(delErr))
+			errs = append(errs, delErr)
+			continue
 		}
-		return fmt.Errorf("loading container %q: %w", appName, err)
-	}
-
-	// Stop the task if running.
-	if task, taskErr := container.Task(ctx, nil); taskErr == nil {
-		_ = task.Kill(ctx, syscall.SIGKILL)
-		_, _ = task.Delete(ctx, containerd.WithProcessKill)
-	}
-
-	// Get the image name before deleting the container.
-	var imgName string
-	if deleteImage {
-		if img, imgErr := container.Image(ctx); imgErr == nil {
-			imgName = img.Name()
-		}
-	}
-
-	// Delete the container and its snapshot.
-	if err := container.Delete(ctx, containerd.WithSnapshotCleanup); err != nil {
-		return fmt.Errorf("deleting container %q: %w", appName, err)
-	}
-
-	// Stop D-Bus proxy if running.
-	if c.proxyManager != nil {
-		_ = c.proxyManager.Stop(appName)
-	}
-
-	c.logger.Info("Container deleted", zap.String("app_name", appName))
-
-	// Optionally delete the image.
-	if deleteImage && imgName != "" {
-		imgService := c.client.ImageService()
-		if err := imgService.Delete(ctx, imgName); err != nil && !errdefs.IsNotFound(err) {
-			c.logger.Warn("Failed to delete image",
-				zap.String("image", imgName),
-				zap.Error(err),
-			)
-		} else {
-			c.logger.Info("Image deleted", zap.String("image", imgName))
+		if imgName != "" && !seen[imgName] {
+			seen[imgName] = true
+			imgSvc := c.client.ImageService()
+			if err := imgSvc.Delete(ctx, imgName); err != nil && !errdefs.IsNotFound(err) {
+				c.logger.Warn("Failed to delete image", zap.String("image", imgName), zap.Error(err))
+			} else {
+				c.logger.Info("Image deleted", zap.String("image", imgName))
+			}
 		}
 	}
-
-	return nil
+	return errors.Join(errs...)
 }
 
-// ListContainers lists all containers managed by Wendy (those with the
-// sh.wendy/app.version label) and returns their status.
+// ListContainers lists all Wendy-managed apps. Multi-service apps (whose
+// container IDs follow the {appID}_{serviceName} convention) are grouped under
+// their bare appID: the aggregate entry is RUNNING if any service is running,
+// and AppContainer.Services is populated with one ServiceEntry per service so
+// callers can display individual service state. This ensures that
+// stop/start/remove — which address by appID — operate on the same granularity
+// shown in the list and picker.
 func (c *Client) ListContainers(ctx context.Context) ([]*agentpb.AppContainer, error) {
 	ctx = c.withNamespace(ctx)
 
-	containers, err := c.client.Containers(ctx, fmt.Sprintf("labels.%q", labelKeyAppVersion))
+	ctrs, err := c.client.Containers(ctx, fmt.Sprintf("labels.%q", labelKeyAppVersion))
 	if err != nil {
 		return nil, fmt.Errorf("listing containers: %w", err)
 	}
 
-	var result []*agentpb.AppContainer
-	for _, ctr := range containers {
+	type serviceEntry struct {
+		name         string
+		runningState agentpb.AppRunningState
+	}
+	type entry struct {
+		version      string
+		runningState agentpb.AppRunningState
+		mcpPort      uint32
+		services     []serviceEntry
+	}
+	grouped := make(map[string]*entry)
+	var order []string
+
+	for _, ctr := range ctrs {
 		info, err := ctr.Info(ctx)
 		if err != nil {
-			c.logger.Warn("Failed to get container info",
-				zap.String("id", ctr.ID()),
-				zap.Error(err),
-			)
+			c.logger.Warn("Failed to get container info", zap.String("id", ctr.ID()), zap.Error(err))
 			continue
 		}
 
 		appVersion := info.Labels[labelKeyAppVersion]
 		runningState := agentpb.AppRunningState_STOPPED
-		var failureCount uint32
-
-		// Check if a task is running.
-		task, err := ctr.Task(ctx, nil)
-		if err == nil {
-			status, statusErr := task.Status(ctx)
-			if statusErr == nil && status.Status == containerd.Running {
+		if task, err := ctr.Task(ctx, nil); err == nil {
+			if st, err := task.Status(ctx); err == nil && st.Status == containerd.Running {
 				runningState = agentpb.AppRunningState_RUNNING
 			}
-		}
-
-		// Parse failure count from restart policy label if present.
-		if policyLabel, ok := info.Labels[labelKeyRestartPolicy]; ok {
-			_, maxRetries := parseRestartPolicyLabel(policyLabel)
-			_ = maxRetries
 		}
 
 		var mcpPort uint32
@@ -1211,20 +1987,63 @@ func (c *Client) ListContainers(ctx context.Context) ([]*agentpb.AppContainer, e
 			}
 		}
 
-		result = append(result, &agentpb.AppContainer{
-			AppName:      ctr.ID(),
-			AppVersion:   appVersion,
-			RunningState: runningState,
-			FailureCount: failureCount,
-			McpPort:      mcpPort,
-		})
+		// labelKeyAppID is always set by wendyLabels; fall back to container ID
+		// for containers created before this label was introduced.
+		appID := info.Labels[labelKeyAppID]
+		if appID == "" {
+			appID = ctr.ID()
+		}
+		serviceName := info.Labels[labelKeyServiceName]
+
+		svc := serviceEntry{name: serviceName, runningState: runningState}
+
+		if e, ok := grouped[appID]; !ok {
+			order = append(order, appID)
+			grouped[appID] = &entry{
+				version:      appVersion,
+				runningState: runningState,
+				mcpPort:      mcpPort,
+				services:     []serviceEntry{svc},
+			}
+		} else {
+			if runningState == agentpb.AppRunningState_RUNNING {
+				e.runningState = agentpb.AppRunningState_RUNNING
+			}
+			if mcpPort != 0 && e.mcpPort == 0 {
+				e.mcpPort = mcpPort
+			}
+			e.services = append(e.services, svc)
+		}
 	}
 
+	result := make([]*agentpb.AppContainer, 0, len(grouped))
+	for _, appID := range order {
+		e := grouped[appID]
+
+		// Populate per-service entries only for multi-service apps; single-service
+		// apps leave Services empty so callers can distinguish them cheaply.
+		var services []*agentpb.ServiceEntry
+		if len(e.services) > 1 {
+			services = make([]*agentpb.ServiceEntry, len(e.services))
+			for i, s := range e.services {
+				services[i] = &agentpb.ServiceEntry{
+					Name:         s.name,
+					RunningState: s.runningState,
+				}
+			}
+		}
+
+		result = append(result, &agentpb.AppContainer{
+			AppName:      appID,
+			AppVersion:   e.version,
+			RunningState: e.runningState,
+			McpPort:      e.mcpPort,
+			Services:     services,
+		})
+	}
 	return result, nil
 }
 
-// GetContainerMCPPort returns the MCP server port for the named container,
-// or 0 if the container has no mcp entitlement.
 func (c *Client) GetContainerMCPPort(ctx context.Context, appName string) (uint32, error) {
 	ctx = c.withNamespace(ctx)
 	ctr, err := c.client.LoadContainer(ctx, appName)
@@ -1246,9 +2065,6 @@ func (c *Client) GetContainerMCPPort(ctx context.Context, appName string) (uint3
 	return uint32(p), nil
 }
 
-// GetContainerRestartPolicyLabel returns the raw restart policy label stored on
-// the container (e.g. "unless-stopped", "on-failure:5", "no"). An empty string
-// is returned when the container exists but has no restart policy label.
 func (c *Client) GetContainerRestartPolicyLabel(ctx context.Context, appName string) (string, error) {
 	ctx = c.withNamespace(ctx)
 	ctr, err := c.client.LoadContainer(ctx, appName)
@@ -1297,8 +2113,6 @@ func (c *Client) GetContainerStats(ctx context.Context) ([]*agentpb.ContainerSta
 	return result, nil
 }
 
-// GetContainerMetrics returns a point-in-time CPU and memory snapshot for a named container.
-// Returns an error if the container or its task cannot be found.
 func (c *Client) GetContainerMetrics(ctx context.Context, appName string) (services.ContainerMetrics, error) {
 	ctx = c.withNamespace(ctx)
 	container, err := c.client.LoadContainer(ctx, appName)
@@ -1356,8 +2170,6 @@ func extractMemoryBytes(metric *types.Metric) int64 {
 	return extractContainerMetrics(metric).MemBytes
 }
 
-// streamReader is a helper that continuously reads from a reader and sends
-// chunks to the output channel with the specified builder function.
 func streamReader(r io.Reader, ch chan<- services.ContainerOutput, buildOutput func([]byte) services.ContainerOutput) {
 	buf := make([]byte, 32*1024)
 	for {

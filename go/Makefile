@@ -1,3 +1,11 @@
+ifeq ($(OS),Windows_NT)
+HOST_ENV ?= windows
+UNAME_S :=
+else
+HOST_ENV ?= unix
+UNAME_S := $(shell uname -s 2>/dev/null)
+endif
+
 .PHONY: build build-cli build-agent test vet proto clean fmt lint install \
        build-all \
        build-agent-linux-amd64 build-agent-linux-arm64 \
@@ -5,12 +13,13 @@
        build-cli-darwin-amd64 build-cli-darwin-arm64 \
        build-cli-windows-amd64 build-cli-windows-arm64 \
        msi-windows-amd64 msi-windows-arm64 \
-       licenses licenses-update
+       licenses licenses-update \
+       sync-assets
 
 VERSION ?= dev
 MSI_VERSION ?= 0.0.1
-LDFLAGS := -s -w -X github.com/wendylabsinc/wendy/internal/shared/version.Version=$(VERSION)
-ifeq ($(shell uname -s),Darwin)
+LDFLAGS := -s -w -X github.com/wendylabsinc/wendy/go/internal/shared/version.Version=$(VERSION)
+ifeq ($(UNAME_S),Darwin)
 # Go/cgo adds -lobjc for each Objective-C package. The native CLI links
 # multiple CoreBluetooth-backed packages, and recent Apple linkers warn about
 # the duplicate even though it is harmless.
@@ -23,10 +32,16 @@ build: build-cli build-agent
 
 # Build the wendy CLI
 build-cli:
+ifeq ($(HOST_ENV),windows)
+	powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "New-Item -ItemType Directory -Force -Path bin | Out-Null; go build -o bin/wendy.exe ./cmd/wendy; if ($$LASTEXITCODE -ne 0) { exit $$LASTEXITCODE }"
+else
+	mkdir -p bin
 	go build -o bin/wendy ./cmd/wendy
+endif
 
 # Build the wendy-agent
 build-agent:
+	mkdir -p bin
 	go build -o bin/wendy-agent ./cmd/wendy-agent
 
 # Cross-compile all targets
@@ -110,3 +125,23 @@ licenses:
 # Regenerate licenses.csv from current dependencies
 licenses-update:
 	bash scripts/check-licenses.sh --update
+
+# Sync embedded docs and skills from sibling repos (requires them checked out at ../../docs and ../claude-skills)
+# Note: go/ is a subdirectory; DOCS_SRC is two levels up, ASSETS is relative to go/
+sync-assets:
+	@DOCS_SRC=../../docs SKILLS_SRC=../claude-skills ASSETS=internal/cli/assets; \
+	if [ ! -d "$$DOCS_SRC" ]; then echo "Docs repo not found at $$DOCS_SRC — skipping"; else \
+	  rm -rf "$$ASSETS/docs" && mkdir -p "$$ASSETS/docs" && \
+	  rsync -a --exclude='.git' --exclude='superpowers/' --exclude='operations/' \
+	    --exclude='security/' --exclude='.github/' --exclude='.claude/' --exclude='*.json' \
+	    "$$DOCS_SRC/" "$$ASSETS/docs/" && \
+	  echo "Synced $$(find $$ASSETS/docs -name '*.md' | wc -l) doc files"; fi; \
+	if [ ! -d "$$SKILLS_SRC" ]; then echo "Skills repo not found at $$SKILLS_SRC — skipping"; else \
+	  rm -rf "$$ASSETS/skills" && mkdir -p "$$ASSETS/skills" && \
+	  cp "$$SKILLS_SRC/.claude-plugin/marketplace.json" "$$ASSETS/skills/marketplace.json" && \
+	  for skill in wendy wendy-lite wendy-contributing wendy-swift swift swift-concurrency \
+	               swift-nio swift-library-design swift-valkey postgres-nio hummingbird \
+	               deckset linear database-driver-design; do \
+	    [ -d "$$SKILLS_SRC/$$skill" ] && rsync -a --exclude='.DS_Store' "$$SKILLS_SRC/$$skill/" "$$ASSETS/skills/$$skill/"; \
+	  done && \
+	  echo "Synced $$(find $$ASSETS/skills -type f | wc -l) skill files"; fi

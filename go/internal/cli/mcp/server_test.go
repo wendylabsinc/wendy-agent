@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
-	"github.com/wendylabsinc/wendy/internal/shared/config"
+	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 )
 
 func TestNew_NotNil(t *testing.T) {

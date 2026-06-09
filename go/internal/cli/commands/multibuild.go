@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -17,17 +18,14 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/wendylabsinc/wendy/internal/cli/grpcclient"
-	"github.com/wendylabsinc/wendy/internal/cli/tui"
-	"github.com/wendylabsinc/wendy/internal/shared/appconfig"
-	"github.com/wendylabsinc/wendy/proto/gen/agentpb"
+	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
+	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
+	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
 const maxConcurrentBuilds = 4
 
-// resolveServiceSubset returns the services to build when --service is
-// specified. The named service and all transitive dependsOn entries are
-// included; if the name is empty all services are returned unchanged.
 func resolveServiceSubset(services map[string]*appconfig.ServiceConfig, only string) (map[string]*appconfig.ServiceConfig, error) {
 	if only == "" {
 		return services, nil
@@ -65,52 +63,9 @@ func resolveServiceSubset(services map[string]*appconfig.ServiceConfig, only str
 	return subset, nil
 }
 
-// serviceTopoOrder returns service names in topological order so that every
-// service appears after its dependsOn entries. Returns an error for cyclic
-// graphs. All deps must already be present in services (resolveServiceSubset
-// guarantees transitive closure); a missing dep returns an error.
+// serviceTopoOrder delegates to the shared appconfig package.
 func serviceTopoOrder(services map[string]*appconfig.ServiceConfig) ([]string, error) {
-	visited := make(map[string]bool, len(services))
-	inStack := make(map[string]bool, len(services))
-	ordered := make([]string, 0, len(services))
-
-	var visit func(name string) error
-	visit = func(name string) error {
-		if visited[name] {
-			return nil
-		}
-		if inStack[name] {
-			return fmt.Errorf("cycle detected in dependsOn graph involving service %q", name)
-		}
-		inStack[name] = true
-		if svc, ok := services[name]; ok {
-			for _, dep := range svc.DependsOn {
-				if _, present := services[dep]; !present {
-					return fmt.Errorf("service %q depends on %q which is not in the build subset", name, dep)
-				}
-				if err := visit(dep); err != nil {
-					return err
-				}
-			}
-		}
-		delete(inStack, name)
-		visited[name] = true
-		ordered = append(ordered, name)
-		return nil
-	}
-
-	// Iterate in a stable order: collect names, sort, then visit.
-	names := make([]string, 0, len(services))
-	for n := range services {
-		names = append(names, n)
-	}
-	sort.Strings(names)
-	for _, n := range names {
-		if err := visit(n); err != nil {
-			return nil, err
-		}
-	}
-	return ordered, nil
+	return appconfig.ServiceTopoOrder(services)
 }
 
 // runMultiServiceWithAgent orchestrates the full build → push → create →
@@ -201,7 +156,7 @@ func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 		}
 
 		cliLogln("Creating container for service %s...", name)
-		if err := createContainerWithoutProgress(ctx, conn.ContainerService, createReq); err != nil {
+		if err := createContainerWithProgress(ctx, conn.ContainerService, createReq); err != nil {
 			return fmt.Errorf("creating container for service %s: %w", name, err)
 		}
 		cliLogln("Service %s container created.", name)
@@ -237,6 +192,7 @@ func buildServicesParallel(
 		name string
 		err  error
 		dur  time.Duration
+		log  string
 	}
 
 	results := make(chan result, len(names))
@@ -268,11 +224,20 @@ func buildServicesParallel(
 			imageName := fmt.Sprintf("%s/%s-%s:latest",
 				registryAddr, strings.ToLower(appID), strings.ToLower(name))
 
-			buildOut := io.Writer(os.Stdout)
+			var buildOut io.Writer
+			var logBuf bytes.Buffer
 			if prog != nil {
-				buildOut = io.Discard
+				// In interactive mode, buffer all output (setup logs + build output).
+				// On error the buffer is printed after the spinner exits.
+				buildOut = &logBuf
+			} else {
+				buildOut = os.Stdout
 			}
-			err := buildAndPushImage(ctx, contextDir, registryAddr, imageName, platform, buildArgs, buildOut, useMTLS)
+			logOut := buildOut
+			if prog == nil {
+				logOut = os.Stderr
+			}
+			err := buildAndPushImage(ctx, contextDir, registryAddr, imageName, platform, "", buildArgs, buildOut, logOut, useMTLS)
 			dur := time.Since(start)
 
 			if prog != nil {
@@ -283,7 +248,7 @@ func buildServicesParallel(
 				cliLogln("Service %s built (%s).", name, dur.Round(time.Millisecond))
 			}
 
-			results <- result{name: name, err: err, dur: dur}
+			results <- result{name: name, err: err, dur: dur, log: logBuf.String()}
 		}(name, services[name])
 	}
 
@@ -302,11 +267,15 @@ func buildServicesParallel(
 		}
 	}
 
-	// Collect errors from all builds.
+	// Collect errors. For failed services, print their buffered output now that
+	// the spinner has exited and the terminal is clean.
 	var errs []error
 	for r := range results {
 		if r.err != nil {
 			errs = append(errs, fmt.Errorf("service %s: %w", r.name, r.err))
+			if r.log != "" {
+				fmt.Fprintf(os.Stderr, "\n[%s] build log:\n%s", r.name, r.log)
+			}
 		}
 	}
 	if len(errs) > 0 {

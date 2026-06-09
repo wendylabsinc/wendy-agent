@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://wendy.build/schemas/wendy-e2e-review.schema.json",
+  "title": "Wendy E2E Review Issue Front Matter",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "title", "scope", "reviewer", "severity"],
+  "properties": {
+    "schema": { "const": "wendy.e2e.review.v1" },
+    "title": { "type": "string", "minLength": 1 },
+    "scope": {
+      "type": "string",
+      "enum": ["report", "suite", "test"]
+    },
+    "reviewer": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+    },
+    "severity": {
+      "type": "string",
+      "enum": ["info", "concern", "fail"]
+    },
+    "confidence": {
+      "type": "string",
+      "enum": ["low", "medium", "high"]
+    },
+    "locations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "startLine"],
+        "properties": {
+          "path": { "type": "string", "minLength": 1 },
+          "startLine": { "type": "integer", "minimum": 1 },
+          "endLine": { "type": "integer", "minimum": 1 }
+        }
+      }
+    },
+    "evidence": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path"],
+        "properties": {
+          "path": { "type": "string", "minLength": 1 },
+          "title": { "type": "string" }
+        }
+      }
+    }
+  }
+}

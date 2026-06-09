@@ -3,11 +3,12 @@ package commands
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/hex"
 	"fmt"
 	"io"
-	"io/fs"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -16,6 +17,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
 	"strconv"
@@ -24,10 +26,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/wendylabsinc/wendy/internal/cli/grpcclient"
-	"github.com/wendylabsinc/wendy/internal/cli/swifttoolchain"
-	"github.com/wendylabsinc/wendy/internal/shared/certs"
-	"github.com/wendylabsinc/wendy/proto/gen/agentpb"
+	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
+	"github.com/wendylabsinc/wendy/go/internal/cli/swifttoolchain"
+	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
+	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
 // neighborExecCommandContext is an overridable wrapper around exec.CommandContext
@@ -61,8 +63,20 @@ func detectProjectType(dir string) (string, error) {
 			return "compose", nil
 		}
 	}
+	// Check base Dockerfile first (fast path), then any Dockerfile.* / Dockerfile-* variant.
 	if _, err := os.Stat(filepath.Join(dir, "Dockerfile")); err == nil {
 		return "docker", nil
+	}
+	if entries, readErr := os.ReadDir(dir); readErr == nil {
+		for _, e := range entries {
+			if e.IsDir() {
+				continue
+			}
+			name := e.Name()
+			if (strings.HasPrefix(name, "Dockerfile.") || strings.HasPrefix(name, "Dockerfile-")) && !strings.HasSuffix(name, ".dockerignore") {
+				return "docker", nil
+			}
+		}
 	}
 	if _, err := os.Stat(filepath.Join(dir, "Package.swift")); err == nil {
 		return "swift", nil
@@ -84,6 +98,159 @@ func detectProjectType(dir string) (string, error) {
 		return "python", nil
 	}
 	return "unknown", nil
+}
+
+// validDockerfileNameRe matches valid Dockerfile names: "Dockerfile" or
+// "Dockerfile" followed by a dot or hyphen and one or more safe characters.
+var validDockerfileNameRe = regexp.MustCompile(`^Dockerfile([.\-][a-zA-Z0-9][a-zA-Z0-9._-]*)?$`)
+
+func validateDockerfileName(name string) error {
+	cleaned := filepath.Clean(name)
+	if cleaned != filepath.Base(cleaned) {
+		return fmt.Errorf("invalid Dockerfile name %q: path separators are not allowed", name)
+	}
+	if strings.HasSuffix(cleaned, ".dockerignore") {
+		return fmt.Errorf("invalid Dockerfile name %q: .dockerignore files are not Dockerfiles", cleaned)
+	}
+	if !validDockerfileNameRe.MatchString(cleaned) {
+		return fmt.Errorf("invalid Dockerfile name %q: must be Dockerfile, Dockerfile.<variant>, or Dockerfile-<variant>", cleaned)
+	}
+	return nil
+}
+
+// validComposeDockerfileNameRe matches the broader naming convention allowed by
+// Docker Compose for the final path segment (e.g. "web.Dockerfile",
+// "Containerfile", "Dockerfile.prod"). The allowlist rejects whitespace, shell
+// metacharacters, and names starting with "-" that could be misread as CLI
+// flags.
+var validComposeDockerfileNameRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]*$`)
+
+// validateComposeDockerfileName validates a dockerfile name sourced from a
+// Compose service config. It applies a broader allowlist than validateDockerfileName
+// to accommodate names like "web.Dockerfile" and "Containerfile". Subpaths
+// (e.g. "build/web.Dockerfile") are accepted because Compose configs may point
+// at a Dockerfile in a subdirectory; only the final path segment is regex-checked
+// here, and confinement plus regular-file checks are enforced separately by
+// confinedDockerfilePath.
+func validateComposeDockerfileName(name string) error {
+	base := filepath.Base(name)
+	if !validComposeDockerfileNameRe.MatchString(base) {
+		return fmt.Errorf("invalid compose dockerfile name %q: must start with a letter or digit and contain only letters, digits, dots, underscores, or hyphens", base)
+	}
+	return nil
+}
+
+// escapesBase reports whether a path returned by filepath.Rel walks outside
+// the base directory. A plain prefix check on ".." is unsafe because directory
+// names like "..cache" share that prefix without being a parent reference;
+// only an exact ".." or a ".." segment followed by a separator counts as an
+// escape.
+func escapesBase(rel string) bool {
+	return rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// confinedDockerfilePath resolves dockerfile relative to base, uses
+// filepath.EvalSymlinks on both the base and the joined path to neutralise
+// symlink-based escapes, then verifies (via filepath.Rel) that the resolved
+// target lies within base. Returns the resolved absolute path on success.
+func confinedDockerfilePath(base, dockerfile string) (string, error) {
+	absBase, err := filepath.EvalSymlinks(base)
+	if err != nil {
+		return "", fmt.Errorf("resolving project directory: %w", err)
+	}
+
+	joined, err := filepath.Abs(filepath.Join(absBase, dockerfile))
+	if err != nil {
+		return "", fmt.Errorf("resolving dockerfile path: %w", err)
+	}
+
+	// Check containment before EvalSymlinks so that a non-existent path still
+	// gets a clear "outside project" error rather than a confusing stat error.
+	rel, err := filepath.Rel(absBase, joined)
+	if err != nil || escapesBase(rel) {
+		return "", fmt.Errorf("dockerfile %q must be within the project directory", dockerfile)
+	}
+
+	// Resolve symlinks and re-check to block symlink-based escapes.
+	resolved, err := filepath.EvalSymlinks(joined)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", fmt.Errorf("dockerfile %q does not exist", dockerfile)
+		}
+		return "", fmt.Errorf("resolving dockerfile: %w", err)
+	}
+	rel, err = filepath.Rel(absBase, resolved)
+	if err != nil || escapesBase(rel) {
+		return "", fmt.Errorf("dockerfile %q must be within the project directory", dockerfile)
+	}
+
+	info, err := os.Lstat(resolved)
+	if err != nil {
+		return "", fmt.Errorf("stating dockerfile: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return "", fmt.Errorf("dockerfile %q is not a regular file", dockerfile)
+	}
+
+	return resolved, nil
+}
+
+func resolveDockerfile(cwd, requested string, interactive bool) (string, error) {
+	if requested != "" {
+		if err := validateDockerfileName(requested); err != nil {
+			return "", err
+		}
+		if _, err := confinedDockerfilePath(cwd, requested); err != nil {
+			return "", err
+		}
+		return requested, nil
+	}
+
+	var dockerfiles []BuildOption
+	for _, opt := range detectBuildOptions(cwd) {
+		if opt.Type == "docker" {
+			dockerfiles = append(dockerfiles, opt)
+		}
+	}
+
+	confine := func(file string) (string, error) {
+		if _, err := confinedDockerfilePath(cwd, file); err != nil {
+			return "", err
+		}
+		return file, nil
+	}
+
+	if len(dockerfiles) <= 1 {
+		if len(dockerfiles) == 1 {
+			return confine(dockerfiles[0].File)
+		}
+		return "", nil
+	}
+
+	if !interactive {
+		for _, opt := range dockerfiles {
+			if opt.File == "Dockerfile" {
+				file, err := confine(opt.File)
+				if err != nil {
+					return "", err
+				}
+				cliNotice("multiple Dockerfiles detected; using %q. Use --dockerfile to select explicitly.", file)
+				return file, nil
+			}
+		}
+		file, err := confine(dockerfiles[0].File)
+		if err != nil {
+			return "", err
+		}
+		cliNotice("multiple Dockerfiles detected; using %q. Use --dockerfile to select explicitly.", file)
+		return file, nil
+	}
+
+	picked, err := pickBuildOptionWithTitle(dockerfiles, "Select a Dockerfile")
+	if err != nil {
+		return "", err
+	}
+	return confine(picked.File)
 }
 
 // BuildOption represents a detected build type in a project directory.
@@ -119,7 +286,7 @@ func detectBuildOptions(dir string) []BuildOption {
 				continue
 			}
 			name := e.Name()
-			if name == "Dockerfile" || strings.HasPrefix(name, "Dockerfile.") || strings.HasPrefix(name, "Dockerfile-") {
+			if (name == "Dockerfile" || strings.HasPrefix(name, "Dockerfile.") || strings.HasPrefix(name, "Dockerfile-")) && !strings.HasSuffix(name, ".dockerignore") {
 				options = append(options, BuildOption{
 					Label: name,
 					Type:  "docker",
@@ -178,12 +345,10 @@ func injectDebugpy(ctx context.Context, registryAddr, registryImage, platform st
 		return fmt.Errorf("writing debugpy Dockerfile: %w", err)
 	}
 
-	return buildAndPushImage(ctx, tmpDir, registryAddr, registryImage, platform, buildArgs, streamOutput, useMTLS)
+	return buildAndPushImage(ctx, tmpDir, registryAddr, registryImage, platform, "", buildArgs, streamOutput, streamOutput, useMTLS)
 }
 
-// generatePythonDockerfile creates a Dockerfile for Python projects that do not already have one.
-// It returns the path to the generated Dockerfile.
-func generatePythonDockerfile(dir string) (string, error) {
+func generatePythonDockerfile(dir string, debug bool) (string, error) {
 	dockerfilePath := filepath.Join(dir, "Dockerfile")
 
 	// Determine if requirements.txt exists.
@@ -208,6 +373,9 @@ func generatePythonDockerfile(dir string) (string, error) {
 		sb.WriteString("COPY requirements.txt .\n")
 		sb.WriteString("RUN pip install --no-cache-dir -r requirements.txt\n")
 	}
+	if debug {
+		sb.WriteString("RUN pip install --no-cache-dir debugpy\n")
+	}
 	sb.WriteString("COPY . .\n")
 	sb.WriteString(fmt.Sprintf("CMD [\"python\", \"%s\"]\n", entryPoint))
 
@@ -218,11 +386,7 @@ func generatePythonDockerfile(dir string) (string, error) {
 	return dockerfilePath, nil
 }
 
-// buildSwiftContainerImage builds a Swift package and pushes the container image
-// directly to the device's registry using swift-container-plugin.
-// registryAddr is a pre-resolved host:port (e.g. "192.168.1.5:5000" or
-// "host.docker.internal:12345" when proxying).
-func buildSwiftContainerImage(ctx context.Context, dir, product, registryAddr, architecture string, useMTLS bool, toolchainStdout, toolchainStderr io.Writer) error {
+func buildSwiftContainerImage(ctx context.Context, dir, product, registryAddr, architecture string, swiftUseMTLS bool, toolchainStdout, toolchainStderr io.Writer) error {
 	if err := ensureContainerPlugin(dir); err != nil {
 		return err
 	}
@@ -232,6 +396,8 @@ func buildSwiftContainerImage(ctx context.Context, dir, product, registryAddr, a
 		return err
 	}
 
+	// registryAddr is always a plain-HTTP address: either the device's own
+	// unprovisioned registry or a local proxy that handles TLS on our behalf.
 	swiftArgs := []string{
 		"package",
 		"--swift-sdk=" + sdk,
@@ -242,10 +408,7 @@ func buildSwiftContainerImage(ctx context.Context, dir, product, registryAddr, a
 		"--repository=" + registryAddr + "/" + strings.ToLower(product),
 		"--architecture=" + architecture,
 	}
-
-	// Use insecure HTTP when the connection is not mTLS; the registry only
-	// speaks TLS when the device is provisioned and the CLI connected via mTLS.
-	if !useMTLS {
+	if !swiftUseMTLS {
 		swiftArgs = append(swiftArgs, "--allow-insecure-http=destination")
 	}
 
@@ -525,8 +688,6 @@ func pathHasDir(pathEnv, dir string) bool {
 	return false
 }
 
-// detectDockerRuntime returns the name and .app path of the first installed
-// Docker-compatible runtime found on macOS, or empty strings if none is found.
 func detectDockerRuntime() (name, appPath string) {
 	if rt, ok := detectDockerRuntimeInfoForHostOS(dockerHostOSDarwin); ok {
 		return rt.name, rt.app
@@ -567,7 +728,10 @@ func dockerRuntimeInstalled(rt dockerRuntime) bool {
 // exists and returns its name plus the effective registry address to use in
 // image references. For IPv6 addresses, a hostname alias is configured inside
 // the builder container to avoid brackets that break the TOML parser.
-func ensureBuildxBuilder(ctx context.Context, registryAddr string, useMTLS bool) (builderName, effectiveAddr string, err error) {
+func ensureBuildxBuilder(ctx context.Context, registryAddr string, useMTLS bool, w io.Writer) (builderName, effectiveAddr string, err error) {
+	ensureBuildxBuilderMu.Lock()
+	defer ensureBuildxBuilderMu.Unlock()
+
 	if err := ensureDockerDaemon(ctx); err != nil {
 		return "", "", err
 	}
@@ -590,9 +754,9 @@ func ensureBuildxBuilder(ctx context.Context, registryAddr string, useMTLS bool)
 	effectiveAddr, ipv6IP := splitIPv6RegistryAddr(registryAddr)
 
 	if !useMTLS {
-		builderName, err = ensurePlaintextBuilder(ctx, configDir, effectiveAddr)
+		builderName, err = ensurePlaintextBuilder(ctx, configDir, effectiveAddr, w)
 	} else {
-		builderName, err = ensureMTLSBuilder(ctx, configDir, effectiveAddr, containerCertDir)
+		builderName, err = ensureMTLSBuilder(ctx, configDir, effectiveAddr, containerCertDir, w)
 	}
 	if err != nil {
 		return "", "", err
@@ -652,7 +816,7 @@ func removeBuilder(ctx context.Context, name string) {
 // HTTP registry config. The config is injected into the builder container via
 // docker cp (not --buildkitd-config) to avoid the host-side TOML parser which
 // cannot handle IPv6 brackets in registry addresses.
-func ensurePlaintextBuilder(ctx context.Context, configDir, registryAddr string) (string, error) {
+func ensurePlaintextBuilder(ctx context.Context, configDir, registryAddr string, w io.Writer) (string, error) {
 	builderName := os.Getenv("WENDY_BUILDX_BUILDER")
 	if builderName == "" {
 		builderName = "wendy"
@@ -698,7 +862,7 @@ func ensurePlaintextBuilder(ctx context.Context, configDir, registryAddr string)
 	}
 
 	if configChanged || liveContainerConfig != fullConfig {
-		if err := updateBuilderConfig(ctx, builderName, fullConfig); err != nil {
+		if err := updateBuilderConfig(ctx, builderName, fullConfig, w); err != nil {
 			return "", fmt.Errorf("updating builder config: %w", err)
 		}
 		_ = os.WriteFile(appliedPath, []byte(fullConfig), 0o644)
@@ -715,7 +879,7 @@ func ensurePlaintextBuilder(ctx context.Context, configDir, registryAddr string)
 
 // ensureMTLSBuilder ensures the "wendy-mtls" buildx builder exists with mTLS
 // client certs for the device registry.
-func ensureMTLSBuilder(ctx context.Context, configDir, registryAddr, containerCertDir string) (string, error) {
+func ensureMTLSBuilder(ctx context.Context, configDir, registryAddr, containerCertDir string, w io.Writer) (string, error) {
 	base := os.Getenv("WENDY_BUILDX_BUILDER")
 	if base == "" {
 		base = "wendy"
@@ -762,8 +926,17 @@ func ensureMTLSBuilder(ctx context.Context, configDir, registryAddr, containerCe
 	keypair := &[2]string{containerCertDir + "/client-key.pem", containerCertDir + "/client-cert.pem"}
 	fullConfig := buildkitRegistryConfig(registryAddr, false, keypair)
 
+	// appliedState uses the buildkitd config plus a SHA-256 digest of the
+	// public leaf certificate. The certificate is public material; no private
+	// key material or derivative is persisted (SOC2-C1, NIST-SC-28, ISO27001-A.8).
+	// When the cert changes (rotation, new device), the digest changes and the
+	// builder is torn down and rebuilt.
+	certDigest := sha256.Sum256([]byte(leafCertPEM))
+	appliedState := fullConfig +
+		"\n---CERTHASH---\n" + hex.EncodeToString(certDigest[:])
+
 	appliedConfig, _ := os.ReadFile(appliedPath)
-	configChanged := string(appliedConfig) != fullConfig
+	configChanged := string(appliedConfig) != appliedState
 
 	cmd := exec.CommandContext(ctx, "docker", "buildx", "inspect", builderName)
 	builderExists := cmd.Run() == nil
@@ -782,17 +955,27 @@ func ensureMTLSBuilder(ctx context.Context, configDir, registryAddr, containerCe
 		if out, err := cmd.CombinedOutput(); err != nil {
 			return "", fmt.Errorf("creating buildx builder %q: %s: %w", builderName, string(out), err)
 		}
+		configChanged = true // always inject certs and config into a newly created builder
 	}
 
-	// Copy mTLS certs into the builder container and update buildkitd config.
-	if err := copyCertsToBuilder(ctx, builderName, hostCertDir, containerCertDir); err != nil {
-		return "", fmt.Errorf("copying certs to builder: %w", err)
-	}
-	if err := updateBuilderConfig(ctx, builderName, fullConfig); err != nil {
-		return "", fmt.Errorf("updating builder config: %w", err)
+	// Only copy certs and restart the builder when something actually changed.
+	// Restarting while another parallel build uses the same builder kills that build.
+	if configChanged {
+		if err := copyCertsToBuilder(ctx, builderName, hostCertDir, containerCertDir); err != nil {
+			return "", fmt.Errorf("copying certs to builder: %w", err)
+		}
+		if err := updateBuilderConfig(ctx, builderName, fullConfig, w); err != nil {
+			return "", fmt.Errorf("updating builder config: %w", err)
+		}
+		_ = os.WriteFile(appliedPath, []byte(appliedState), 0o600)
+	} else {
+		// Builder exists with correct config — just ensure it's running.
+		bootstrapCmd := exec.CommandContext(ctx, "docker", "buildx", "inspect", "--bootstrap", "--builder", builderName)
+		if out, err := bootstrapCmd.CombinedOutput(); err != nil {
+			return "", fmt.Errorf("bootstrapping builder: %s: %w", string(out), err)
+		}
 	}
 
-	_ = os.WriteFile(appliedPath, []byte(fullConfig), 0o644)
 	return builderName, nil
 }
 
@@ -821,13 +1004,13 @@ func copyCertsToBuilder(ctx context.Context, builderName, hostCertDir, container
 // updateBuilderConfig bootstraps the buildx builder container (if not already
 // running), writes a new buildkitd.toml into it, and restarts so the updated
 // configuration takes effect.
-func updateBuilderConfig(ctx context.Context, builderName, config string) error {
-	fmt.Fprintf(os.Stderr, "[buildx] bootstrapping builder %q\n", builderName)
+func updateBuilderConfig(ctx context.Context, builderName, config string, w io.Writer) error {
+	fmt.Fprintf(w, "[buildx] bootstrapping builder %q\n", builderName)
 	bootstrapCmd := exec.CommandContext(ctx, "docker", "buildx", "inspect", "--bootstrap", "--builder", builderName)
 	if out, err := bootstrapCmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("bootstrapping builder: %s: %w", string(out), err)
 	}
-	fmt.Fprintf(os.Stderr, "[buildx] bootstrap done\n")
+	fmt.Fprintf(w, "[buildx] bootstrap done\n")
 
 	containerName := "buildx_buildkit_" + builderName + "0"
 	const containerConfigPath = "/etc/buildkit/buildkitd.toml"
@@ -845,7 +1028,7 @@ func updateBuilderConfig(ctx context.Context, builderName, config string) error 
 	}
 	tmp.Close()
 
-	fmt.Fprintf(os.Stderr, "[buildx] copying config into container %q\n", containerName)
+	fmt.Fprintf(w, "[buildx] copying config into container %q\n", containerName)
 	cmd := exec.CommandContext(ctx, "docker", "cp", tmp.Name(), containerName+":"+containerConfigPath)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("docker cp config: %s: %w", string(out), err)
@@ -855,39 +1038,35 @@ func updateBuilderConfig(ctx context.Context, builderName, config string) error 
 	// Linux inside Colima) does not call docker-credential-osxkeychain, which
 	// is a macOS binary that does not exist on Linux and causes "signal: killed"
 	// errors when pulling public base images (e.g. python:3.11-slim).
-	fmt.Fprintf(os.Stderr, "[buildx] injecting clean docker config into container %q\n", containerName)
+	fmt.Fprintf(w, "[buildx] injecting clean docker config into container %q\n", containerName)
 	injectCmd := exec.CommandContext(ctx, "docker", "exec", containerName,
 		"sh", "-c", `mkdir -p /root/.docker && printf '{"auths":{}}' > /root/.docker/config.json`)
 	if out, err := injectCmd.CombinedOutput(); err != nil {
 		// Non-fatal: log the error but proceed. The credential helper may still
 		// fail for private images, but public images will work without credentials.
-		fmt.Fprintf(os.Stderr, "[buildx] warning: could not inject docker config: %s\n", string(out))
+		fmt.Fprintf(w, "[buildx] warning: could not inject docker config: %s\n", string(out))
 	} else {
-		fmt.Fprintf(os.Stderr, "[buildx] docker config injected\n")
+		fmt.Fprintf(w, "[buildx] docker config injected\n")
 	}
 
-	fmt.Fprintf(os.Stderr, "[buildx] restarting container %q\n", containerName)
+	fmt.Fprintf(w, "[buildx] restarting container %q\n", containerName)
 	cmd = exec.CommandContext(ctx, "docker", "restart", containerName)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("restarting builder: %s: %w", string(out), err)
 	}
-	fmt.Fprintf(os.Stderr, "[buildx] container restarted, waiting for buildkitd\n")
+	fmt.Fprintf(w, "[buildx] container restarted, waiting for buildkitd\n")
 
 	bootstrapAfterRestart := exec.CommandContext(ctx, "docker", "buildx", "inspect", "--bootstrap", "--builder", builderName)
 	if out, err := bootstrapAfterRestart.CombinedOutput(); err != nil {
 		return fmt.Errorf("waiting for builder after restart: %s: %w", string(out), err)
 	}
-	fmt.Fprintf(os.Stderr, "[buildx] builder ready\n")
+	fmt.Fprintf(w, "[buildx] builder ready\n")
 
 	return nil
 }
 
-// buildAndPushImage builds a Docker image for the specified platform and pushes
-// it directly to the given registry using docker buildx. The registry transport
-// is conditional: plain HTTP for plaintext devices, and TLS/mTLS for provisioned
-// devices when useMTLS is enabled. buildArgs is passed as --build-arg KEY=VALUE flags.
-func buildAndPushImage(ctx context.Context, dir, registryAddr, registryImage, platform string, buildArgs map[string]string, streamOutput io.Writer, useMTLS bool) error {
-	builder, effectiveAddr, err := ensureBuildxBuilder(ctx, registryAddr, useMTLS)
+func buildAndPushImage(ctx context.Context, dir, registryAddr, registryImage, platform, dockerfile string, buildArgs map[string]string, streamOutput, logOutput io.Writer, useMTLS bool) error {
+	builder, effectiveAddr, err := ensureBuildxBuilder(ctx, registryAddr, useMTLS, logOutput)
 	if err != nil {
 		return err
 	}
@@ -922,47 +1101,30 @@ func buildAndPushImage(ctx context.Context, dir, registryAddr, registryImage, pl
 	// Public images (e.g. python:3.11-slim) need no credentials; anonymous
 	// pull works fine with an empty auths map.
 	//
-	// We only replace config.json; everything else (cli-plugins, buildx builder
-	// instances, contexts) is linked from the original Docker config so that
-	// buildx and the "wendy" builder remain discoverable.
-	origDockerConfig := os.Getenv("DOCKER_CONFIG")
-	if origDockerConfig == "" {
-		origDockerConfig = filepath.Join(home, ".docker")
-	}
-	cleanDockerConfigDir := filepath.Join(userCache, "wendy", "docker-config")
-	if err := os.MkdirAll(cleanDockerConfigDir, 0o755); err != nil {
-		return fmt.Errorf("creating clean docker config directory: %w", err)
-	}
-	cleanDockerConfigFile := filepath.Join(cleanDockerConfigDir, "config.json")
-	if err := os.WriteFile(cleanDockerConfigFile, []byte(`{"auths":{}}`), 0o644); err != nil {
-		return fmt.Errorf("writing clean docker config: %w", err)
-	}
-	// Link subdirs that docker/buildx need to find plugins and builder state.
-	// On Windows os.Symlink requires Developer Mode or admin, so linkOrCopyDir
-	// falls back to a native directory junction and finally to copying.
-	//
-	// Symlinks and junctions transparently follow source updates, so we keep
-	// them across builds. A real (copied) directory is a snapshot that would
-	// go stale if the source changes (new builder, updated cli-plugin); refresh
-	// it on every build by removing it before relinking. Go reports junctions
-	// with ModeSymlink on Windows, so the same check works on both platforms.
-	for _, subdir := range []string{"buildx", "cli-plugins", "contexts"} {
-		src := filepath.Join(origDockerConfig, subdir)
-		dst := filepath.Join(cleanDockerConfigDir, subdir)
-		if _, err := os.Stat(src); err != nil {
-			continue
+	// On Windows, Docker Desktop's credential helper is always available and
+	// symlinks for builder-state lookup are unreliable in elevated processes,
+	// so we skip this override entirely and let docker use its normal config.
+	var cleanDockerConfigDir string
+	if runtime.GOOS != "windows" {
+		origDockerConfig := os.Getenv("DOCKER_CONFIG")
+		if origDockerConfig == "" {
+			origDockerConfig = filepath.Join(home, ".docker")
 		}
-		if info, err := os.Lstat(dst); err == nil {
-			if info.Mode()&fs.ModeSymlink != 0 {
-				continue
-			}
-			if err := os.RemoveAll(dst); err != nil {
-				fmt.Fprintf(os.Stderr, "[buildx] warning: refreshing %s in clean docker config failed: %v\n", subdir, err)
-				continue
-			}
+		cleanDockerConfigDir = filepath.Join(home, ".cache", "wendy", "docker-config")
+		if err := os.MkdirAll(cleanDockerConfigDir, 0o755); err != nil {
+			return fmt.Errorf("creating clean docker config directory: %w", err)
 		}
-		if err := linkOrCopyDir(src, dst); err != nil {
-			fmt.Fprintf(os.Stderr, "[buildx] warning: linking %s into clean docker config failed: %v\n", subdir, err)
+		cleanDockerConfigFile := filepath.Join(cleanDockerConfigDir, "config.json")
+		if err := os.WriteFile(cleanDockerConfigFile, []byte(`{"auths":{}}`), 0o644); err != nil {
+			return fmt.Errorf("writing clean docker config: %w", err)
+		}
+		// Symlink subdirs that docker/buildx need to find plugins and builder state.
+		for _, subdir := range []string{"buildx", "cli-plugins", "contexts"} {
+			dst := filepath.Join(cleanDockerConfigDir, subdir)
+			if _, err := os.Lstat(dst); err != nil {
+				// best-effort: ignore if source doesn't exist or symlink fails
+				_ = os.Symlink(filepath.Join(origDockerConfig, subdir), dst)
+			}
 		}
 	}
 
@@ -973,6 +1135,19 @@ func buildAndPushImage(ctx context.Context, dir, registryAddr, registryImage, pl
 		"buildx", "build",
 		"--builder", builder,
 		"--platform", platform,
+	}
+	if dockerfile != "" {
+		// Callers validate the filename at their own boundary: the CLI flag path
+		// uses the strict validateDockerfileName, and Compose uses the broader
+		// validateComposeDockerfileName so names like "Containerfile" and
+		// "web.Dockerfile" pass through. confinedDockerfilePath enforces
+		// containment and regular-file checks and yields an absolute path, which
+		// docker buildx -f cannot misinterpret as a flag.
+		resolvedDockerfile, err := confinedDockerfilePath(dir, dockerfile)
+		if err != nil {
+			return err
+		}
+		args = append(args, "-f", resolvedDockerfile)
 	}
 	if _, err := os.Stat(filepath.Join(cacheDir, "index.json")); err == nil {
 		args = append(args, "--cache-from", "type=local,src="+cacheDirSlash)
@@ -993,7 +1168,7 @@ func buildAndPushImage(ctx context.Context, dir, registryAddr, registryImage, pl
 		".",
 	)
 
-	fmt.Fprintf(os.Stderr, "[buildx] starting build: docker %s\n", strings.Join(args, " "))
+	fmt.Fprintf(logOutput, "[buildx] starting build: docker %s\n", strings.Join(args, " "))
 	cmd := exec.CommandContext(ctx, "docker", args...)
 	cmd.Dir = dir
 	cmd.Stdout = streamOutput
@@ -1080,6 +1255,11 @@ func resolveRegistry(ctx context.Context, host string, port int) (registryAddr s
 	registryAddr = fmt.Sprintf("host.docker.internal:%d", proxy.Port())
 	return registryAddr, proxy.Close, nil
 }
+
+// ensureBuildxBuilderMu serializes builder creation so that concurrent service
+// builds don't race on "docker buildx create --name <builder>": the second
+// caller would fail with "existing instance for … but no append mode".
+var ensureBuildxBuilderMu sync.Mutex
 
 // dockerRegistryProxyAddrs caches one proxy address per AgentConnection. The
 // proxy is allocated once (port 0 → OS-assigned) and reused for all pushes on
@@ -1220,10 +1400,6 @@ func (p *mtlsRegistryHTTPProxy) Close() {
 	_ = p.server.Close()
 }
 
-// startMTLSRegistryHTTPProxy creates a local HTTP reverse proxy on 127.0.0.1
-// that forwards OCI registry requests to target via HTTPS with mTLS. certPEM
-// and keyPEM are the client certificate and key; caPEM is the CA chain used to
-// verify the server certificate (the Wendy Cloud Root CA chain).
 func startMTLSRegistryHTTPProxy(target, certPEM, keyPEM, caPEM string) (*mtlsRegistryHTTPProxy, error) {
 	leafPEM, err := certs.LeafCertificatePEM(certPEM)
 	if err != nil {
@@ -1281,6 +1457,34 @@ func startMTLSRegistryHTTPProxy(target, certPEM, keyPEM, caPEM string) (*mtlsReg
 	return &mtlsRegistryHTTPProxy{listener: ln, server: srv}, nil
 }
 
+// startMTLSRegistryProxy starts a local plain-TCP listener that tunnels each
+// accepted connection to target over mTLS using the CLI's client certificate.
+// This lets tools that cannot perform mTLS (e.g. swift-container-plugin) push
+// to provisioned devices through a localhost address with plain HTTP.
+func startMTLSRegistryProxy(ctx context.Context, target string) (*registryProxy, error) {
+	certInfo := loadCLICert()
+	if certInfo == nil {
+		return nil, fmt.Errorf("no CLI certificates available")
+	}
+	leafPEM, err := certs.LeafCertificatePEM(certInfo.PemCertificate)
+	if err != nil {
+		return nil, fmt.Errorf("extracting leaf certificate: %w", err)
+	}
+	tlsCert, err := tls.X509KeyPair([]byte(leafPEM), []byte(certInfo.PemPrivateKey))
+	if err != nil {
+		return nil, fmt.Errorf("loading client certificate: %w", err)
+	}
+	tlsCfg := &tls.Config{
+		InsecureSkipVerify: true, //nolint:gosec // device registries use self-signed certs; pinning is tracked separately
+		MinVersion:         tls.VersionTLS12,
+		Certificates:       []tls.Certificate{tlsCert},
+	}
+	dialer := &tls.Dialer{Config: tlsCfg}
+	return startRegistryProxyWithDialer(ctx, "127.0.0.1:0", func(ctx context.Context) (net.Conn, error) {
+		return dialer.DialContext(ctx, "tcp", target)
+	}, target)
+}
+
 // isLinkLocalIP reports whether the given IP string (possibly bracketed) is a
 // link-local unicast address (fe80::/10 for IPv6, 169.254.0.0/16 for IPv4).
 func isLinkLocalIP(ip string) bool {
@@ -1306,12 +1510,6 @@ type registryProxy struct {
 	done     chan struct{}
 }
 
-// startRegistryProxy creates a TCP proxy that listens on listenAddr and
-// forwards connections to the target address. Pass "0.0.0.0:0" when Docker
-// Desktop's VM must reach the proxy via host.docker.internal; pass
-// "127.0.0.1:0" everywhere else so the listener is not exposed on all
-// interfaces. The target should use the device's mDNS hostname (not a bare
-// link-local IP) so the host's resolver provides the zone ID.
 func startRegistryProxy(ctx context.Context, listenAddr string, target string) (*registryProxy, error) {
 	return startRegistryProxyWithDialer(ctx, listenAddr, func(ctx context.Context) (net.Conn, error) {
 		return (&net.Dialer{}).DialContext(ctx, "tcp", target)
@@ -1339,7 +1537,6 @@ func startRegistryProxyWithDialer(ctx context.Context, listenAddr string, dial f
 	return p, nil
 }
 
-// Port returns the ephemeral port the proxy is listening on.
 func (p *registryProxy) Port() int {
 	return p.listener.Addr().(*net.TCPAddr).Port
 }

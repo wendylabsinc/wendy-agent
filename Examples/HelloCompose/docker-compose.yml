@@ -1,10 +1,10 @@
 services:
   api:
     build: ./api
-    network_mode: host
+    ports:
+      - "8080:8080"
 
   client:
     build: ./client
-    network_mode: host
     depends_on:
       - api

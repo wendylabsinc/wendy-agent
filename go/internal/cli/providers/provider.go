@@ -5,7 +5,8 @@ package providers
 import (
 	"context"
 
-	"github.com/wendylabsinc/wendy/internal/shared/models"
+	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
+	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 )
 
 // DeviceProvider is implemented by each target backend (local, Docker, ADB, etc.).
@@ -36,14 +37,21 @@ type DeviceProvider interface {
 // BuiltApp is the result of a successful Build. The opaque Context field
 // carries provider-specific artifacts (binary path, container ID, etc.).
 type BuiltApp struct {
-	ProviderKey string
-	Device      models.ExternalDevice
-	AppName     string
-	Context     interface{} // provider-specific build artifact
+	ProviderKey  string
+	Device       models.ExternalDevice
+	AppName      string
+	Entitlements []appconfig.Entitlement // from wendy.json; may be nil for Compose projects
+	Context      interface{}             // provider-specific build artifact
 }
 
 // RunOutputType classifies a line of output from a running app.
 type RunOutputType int
+
+// Provider key constants for the built-in providers.
+const (
+	ProviderKeyDocker = "docker"
+	ProviderKeyLocal  = "local"
+)
 
 const (
 	RunOutputStarted RunOutputType = iota
@@ -69,6 +77,13 @@ type ImageBuilder interface {
 // empty, the provider should apply its default heuristic.
 type TypedBuilder interface {
 	BuildWithType(ctx context.Context, device models.ExternalDevice, projectPath, product, buildType string, debug bool) (*BuiltApp, error)
+}
+
+// DockerfileBuilder is optionally implemented by providers that support
+// building from a specific Dockerfile (e.g. Dockerfile.prod). When dockerfile
+// is empty, the provider uses its default Dockerfile resolution.
+type DockerfileBuilder interface {
+	BuildWithDockerfile(ctx context.Context, device models.ExternalDevice, projectPath, product, buildType, dockerfile string, debug bool) (*BuiltApp, error)
 }
 
 // ContainerManager is optionally implemented by providers that support

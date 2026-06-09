@@ -41,13 +41,6 @@ func linkOrCopyDir(src, dst string) error {
 	return nil
 }
 
-// makeJunction creates an NTFS directory junction at link that points to
-// target. The implementation calls FSCTL_SET_REPARSE_POINT directly so the
-// target path is never interpreted by a shell.
-//
-// Junctions only support absolute, local NTFS paths; the function resolves
-// target to absolute and bails out (without touching the filesystem on
-// failure paths past the mkdir) if any step rejects it.
 func makeJunction(target, link string) (retErr error) {
 	abs, err := filepath.Abs(target)
 	if err != nil {

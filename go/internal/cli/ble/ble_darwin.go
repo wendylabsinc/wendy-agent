@@ -15,7 +15,6 @@ import (
 	"unsafe"
 )
 
-// Connection wraps a CoreBluetooth connection to a BLE peripheral.
 type Connection struct {
 	handle C.WendyBLEConn
 }
@@ -42,7 +41,6 @@ func (c *Connection) DiscoverServices(timeoutSeconds int) error {
 	return nil
 }
 
-// WriteCharacteristic writes data to a GATT characteristic with response.
 func (c *Connection) WriteCharacteristic(serviceUUID, charUUID string, data []byte) error {
 	cSvc := C.CString(serviceUUID)
 	defer C.free(unsafe.Pointer(cSvc))
@@ -60,7 +58,6 @@ func (c *Connection) WriteCharacteristic(serviceUUID, charUUID string, data []by
 	return nil
 }
 
-// WriteCharacteristicNoResponse writes data to a GATT characteristic without response.
 func (c *Connection) WriteCharacteristicNoResponse(serviceUUID, charUUID string, data []byte) error {
 	cSvc := C.CString(serviceUUID)
 	defer C.free(unsafe.Pointer(cSvc))
@@ -173,7 +170,6 @@ func (c *Connection) HasService(serviceUUID string) bool {
 	return C.wendy_ble_has_service(c.handle, cSvc) == 1
 }
 
-// ListServices returns a comma-separated string of discovered service UUIDs.
 func (c *Connection) ListServices() string {
 	cStr := C.wendy_ble_list_services(c.handle)
 	if cStr == nil {

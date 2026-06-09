@@ -3,8 +3,8 @@ package analytics
 import (
 	"testing"
 
-	"github.com/wendylabsinc/wendy/internal/shared/config"
-	"github.com/wendylabsinc/wendy/internal/shared/env"
+	"github.com/wendylabsinc/wendy/go/internal/shared/config"
+	"github.com/wendylabsinc/wendy/go/internal/shared/env"
 )
 
 func clearCIEnv(t *testing.T) {

@@ -178,6 +178,10 @@ message GetAgentVersionResponse {
     optional string cuda_version = 11;
     // STORAGE value from /etc/wendyos/device-type (e.g. "sd", "nvme"). Only present on WendyOS.
     optional string storage_medium = 12;
+    // Root filesystem bytes currently used by the device. Only present when the agent can inspect disk usage.
+    optional int64 disk_used_bytes = 13;
+    // Root filesystem total bytes on the device. Only present when the agent can inspect disk usage.
+    optional int64 disk_total_bytes = 14;
 }
 
 // Request message for listing WiFi networks

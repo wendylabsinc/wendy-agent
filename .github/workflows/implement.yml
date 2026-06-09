@@ -1,0 +1,878 @@
+name: AI Implement Issue
+# =============================================================================
+# SECURITY CONTROLS SUMMARY
+# =============================================================================
+# ARCHITECTURE: gate job (read-only) → implement job (write, after gate passes).
+#   Write-capable GITHUB_TOKEN only provisioned after gate completes successfully.
+#   notify-existing job includes live re-authorization before any write action.
+#
+# PAT (WENDY_AI_IMPLEMENT_TOKEN, fallback WENDY_TEMPLATE_SYNC_TOKEN): fine-grained
+#   PAT scoped to 'contents:write' and 'pull-requests:write' on this repository.
+#   Org policy blocks GITHUB_TOKEN from creating PRs, so the PAT handles both push
+#   and PR creation. Rotation: 90 days (automated reminder via pat-rotation-reminder.yml).
+#   MITIGATION: Server-side branch ruleset restricts PAT to refs/heads/ai/**
+#   branches only — PAT cannot push to main, develop, or any other branch.
+#   Runtime check verifies this ruleset is active before every push attempt.
+#   The PAT is used because GITHUB_TOKEN pushes do not trigger downstream CI.
+#   Per-workflow isolation: WENDY_AI_IMPLEMENT_TOKEN is dedicated to this workflow;
+#   if not yet created, it falls back to WENDY_TEMPLATE_SYNC_TOKEN. Creating the
+#   dedicated secret enables independent revocation and per-workflow audit trails
+#   in GitHub token usage logs without disrupting ai-pr-feedback.yml operations.
+#   ACCEPTED RISK: A workflow compromise before the branch-protection check
+#   could exfiltrate the PAT. Mitigations: supply-chain integrity pinning,
+#   OWNER/MEMBER-only gate, no actions from untrusted contributors in scope.
+#
+# CLAUDE CODE INVOCATION:
+#   --allowedTools "Edit,MultiEdit"  EXCLUSIVE allowlist — all other tools
+#   (Bash, Read, Write, WebFetch, WebSearch, etc.) are blocked by the CLI.
+#   --disallowedTools belt-and-suspenders explicit denial for defence-in-depth.
+#   env -i isolates child environment (no runner tokens, no GITHUB_TOKEN).
+#   Parent shell credentials cleared before invocation (GITHUB_TOKEN, GH_TOKEN,
+#   ACTIONS_RUNTIME_TOKEN, credential helpers, ~/.config/gh/hosts.yml).
+#   Post-run "Verify Claude did not touch protected paths" step enforces:
+#     (1) protected-file blocklist  (2) source-directory allowlist
+#     (3) extension blocklist
+#   ACCEPTED RISK: Path enforcement is architecturally post-hoc — Edit/MultiEdit
+#   writes files before the enforcement step runs. Mitigations: (1) enforcement
+#   REVERTS unauthorized files with git checkout -- . / git clean -fd before any
+#   staging; (2) unauthorized files are NEVER committed or pushed; (3) on ephemeral
+#   GitHub-hosted runners, git index corruption defeating revert is extremely
+#   unlikely; (4) no other step reads arbitrary files from the working tree.
+#
+# PROMPT INJECTION: issue title and body sanitized before LLM use.
+#
+# AUTHORIZATION: gate job + live API re-check at start of implement job.
+
+on:
+  issue_comment:
+    types: [created]
+
+concurrency:
+  group: ai-implement-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    name: Authorize and prepare
+    # Only on issue comments (not PR comments) by OWNER or MEMBER.
+    # The comment body is NOT evaluated here to avoid untrusted content entering
+    # the expression context; the step-level regex is the authoritative /implement gate.
+    if: |
+      github.event.issue.pull_request == null &&
+      (github.event.comment.author_association == 'OWNER' ||
+       github.event.comment.author_association == 'MEMBER')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+    outputs:
+      authorized: ${{ steps.auth.outputs.authorized }}
+      exists:     ${{ steps.check-existing.outputs.exists }}
+      pr_url:     ${{ steps.check-existing.outputs.pr_url }}
+      branch:     ${{ steps.branch.outputs.branch }}
+
+    steps:
+      - name: Check authorization
+        id: auth
+        env:
+          AUTHOR_ASSOC: ${{ github.event.comment.author_association }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
+        run: |
+          # Cap comment body to 1000 chars before regex to guard against ReDoS on
+          # pathological input; printf '%s' already prevents shell injection.
+          COMMENT_BODY="${COMMENT_BODY:0:1000}"
+          # Strip CRLF and NUL bytes from input before regex matching.
+          COMMENT_BODY="${COMMENT_BODY//$'\r'/}"
+          COMMENT_BODY="${COMMENT_BODY//$'\0'/}"
+          # Require /implement at the start of a line.  Python's (?m) mode anchors ^ to
+          # each line boundary reliably, regardless of how the shell expanded the env var.
+          if ! printf '%s' "$COMMENT_BODY" | python3 -c 'import sys,re;b=sys.stdin.read();sys.exit(0 if re.search(r"(?m)^\s*/implement(?:\s|$)",b) else 1)'; then
+            echo "authorized=false" >> "$GITHUB_OUTPUT"
+            echo "/implement not found at start of line — skipping"
+            exit 0
+          fi
+          case "$AUTHOR_ASSOC" in
+            OWNER|MEMBER)
+              echo "authorized=true" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "authorized=false" >> "$GITHUB_OUTPUT"
+              echo "Commenter association '$AUTHOR_ASSOC' is not authorized — skipping"
+              ;;
+          esac
+
+      - name: Check for existing AI PR
+        if: steps.auth.outputs.authorized == 'true'
+        id: check-existing
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          # Validate ISSUE_NUMBER is numeric before any interpolation into API/jq expressions.
+          if ! printf '%s' "$ISSUE_NUMBER" | grep -qE '^[0-9]+$'; then
+            echo "::error::ISSUE_NUMBER '$ISSUE_NUMBER' is not a valid integer — aborting"
+            exit 1
+          fi
+          BRANCH_PREFIX="ai/issue-${ISSUE_NUMBER}-"
+          # Pass BRANCH_PREFIX via --arg to prevent jq string-injection if ISSUE_NUMBER is
+          # ever non-numeric (belt-and-suspenders after the validation above).
+          EXISTING_PR=$(gh api --paginate "repos/$REPO/pulls?state=open&per_page=100" \
+            --jq --arg pfx "$BRANCH_PREFIX" '.[] | select(.head.ref | startswith($pfx)) | .html_url' \
+            2>/dev/null | head -1 || true)
+          if [ -n "$EXISTING_PR" ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "pr_url=$EXISTING_PR" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Compute branch name
+        if: steps.auth.outputs.authorized == 'true' && steps.check-existing.outputs.exists == 'false'
+        id: branch
+        env:
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+        run: |
+          SLUG=$(printf '%s' "$ISSUE_TITLE" \
+            | tr '[:upper:]' '[:lower:]' \
+            | sed 's/[^a-z0-9]/-/g' \
+            | sed 's/-\+/-/g' \
+            | sed 's/^-\|-$//g' \
+            | cut -c1-40)
+          [ -z "$SLUG" ] && SLUG="untitled"
+          SLUG="${SLUG%-}"
+          BRANCH="ai/issue-${ISSUE_NUMBER}-${SLUG}"
+          if ! printf '%s' "$BRANCH" | grep -qE '^[a-z0-9/\-]+$'; then
+            echo "Computed branch name contains unexpected characters: $BRANCH"
+            exit 1
+          fi
+          # Use EOF delimiter to prevent any CRLF injection in GITHUB_OUTPUT
+          _delim="ghadelimiter_$(head -c 8 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+          printf 'branch<<%s\n%s\n%s\n' "$_delim" "$BRANCH" "$_delim" >> "$GITHUB_OUTPUT"
+
+  notify-existing:
+    name: Notify — existing PR found
+    needs: gate
+    if: needs.gate.outputs.authorized == 'true' && needs.gate.outputs.exists == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - name: Re-verify authorization before posting
+        # Live API re-check before any write action — mirrors the check in the implement job.
+        # Prevents a stale gate output from triggering a notification if the commenter's
+        # association changed between gate and this job running.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          COMMENT_ID: ${{ github.event.comment.id }}
+        run: |
+          COMMENT_DATA=$(gh api "repos/$REPO/issues/comments/$COMMENT_ID" 2>/dev/null || echo '{}')
+          LIVE_ASSOC=$(printf '%s' "$COMMENT_DATA" | jq -r '.author_association // "NONE"')
+          case "$LIVE_ASSOC" in
+            OWNER|MEMBER) ;;
+            *)
+              echo "::error::Comment author association changed since gate (now: $LIVE_ASSOC) — aborting"
+              exit 1
+              ;;
+          esac
+
+      - name: React to command
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          COMMENT_ID: ${{ github.event.comment.id }}
+        run: |
+          gh api "repos/$REPO/issues/comments/$COMMENT_ID/reactions" \
+            --method POST --field content=eyes || true
+
+      - name: Post existing PR link
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          PR_URL: ${{ needs.gate.outputs.pr_url }}
+        run: |
+          gh api "repos/$REPO/issues/$ISSUE_NUMBER/comments" \
+            --method POST \
+            --field body="An AI-generated PR already exists for this issue: $PR_URL"
+
+  implement:
+    name: Implement issue via Claude Code
+    # Gate job verified authorization and confirmed no existing PR exists.
+    # Write-capable GITHUB_TOKEN is only provisioned after the read-only gate passes.
+    needs: gate
+    if: needs.gate.outputs.authorized == 'true' && needs.gate.outputs.exists != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read      # github.token read-only; push uses WENDY_TEMPLATE_SYNC_TOKEN PAT (contents:write)
+      pull-requests: write
+      issues: write
+
+    steps:
+      - name: Re-verify gate authorization
+        # Belt-and-suspenders runtime check: abort immediately if gate outputs indicate
+        # this job should not have started (guards against expression-evaluation edge cases).
+        env:
+          AUTHORIZED: ${{ needs.gate.outputs.authorized }}
+          EXISTS: ${{ needs.gate.outputs.exists }}
+        run: |
+          if [ "$AUTHORIZED" != "true" ] || [ "$EXISTS" = "true" ]; then
+            echo "::error::Gate authorization check failed — aborting"
+            exit 1
+          fi
+
+      - name: Re-verify authorization before any writes
+        # Live API re-check at the START of the implement job — before any code is checked
+        # out or secrets used. Closes the TOCTOU window between gate and implement:
+        # - A MEMBER could be removed between gate completing and this job running
+        # - The issue or comment could be deleted/modified after gate authorized it
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          COMMENT_ID: ${{ github.event.comment.id }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          COMMENT_DATA=$(gh api "repos/$REPO/issues/comments/$COMMENT_ID" 2>/dev/null || echo '{}')
+          LIVE_ASSOC=$(printf '%s' "$COMMENT_DATA" | jq -r '.author_association // "NONE"')
+          case "$LIVE_ASSOC" in
+            OWNER|MEMBER) ;;
+            *)
+              echo "::error::Comment author association changed since gate (now: $LIVE_ASSOC) — aborting"
+              exit 1
+              ;;
+          esac
+          # Re-verify that the comment still contains /implement (comments are editable).
+          LIVE_BODY=$(printf '%s' "$COMMENT_DATA" | jq -r '.body // ""')
+          if ! printf '%s' "$LIVE_BODY" | python3 -c 'import sys,re;b=sys.stdin.read();sys.exit(0 if re.search(r"(?m)^\s*/implement(?:\s|$)",b) else 1)'; then
+            echo "::error::Comment no longer contains /implement — aborting"
+            exit 1
+          fi
+          ISSUE_DATA=$(gh api "repos/$REPO/issues/$ISSUE_NUMBER" 2>/dev/null || echo '{}')
+          ISSUE_STATE=$(printf '%s' "$ISSUE_DATA" | jq -r '.state // "unknown"')
+          if [ "$ISSUE_STATE" != "open" ]; then
+            echo "::error::Issue #$ISSUE_NUMBER is no longer open (state: $ISSUE_STATE) — aborting"
+            exit 1
+          fi
+
+      - name: Mask long-lived PAT secret
+        # Mask at job start so the value never appears in any subsequent log line.
+        # Both the dedicated and fallback PAT are masked so whichever is selected
+        # in the Push step, its value is already registered with the log masker.
+        env:
+          _DEDICATED_PAT: ${{ secrets.WENDY_AI_IMPLEMENT_TOKEN }}
+          _FALLBACK_PAT: ${{ secrets.WENDY_TEMPLATE_SYNC_TOKEN }}
+        run: |
+          [ -n "$_DEDICATED_PAT" ] && echo "::add-mask::$_DEDICATED_PAT"
+          [ -n "$_FALLBACK_PAT" ] && echo "::add-mask::$_FALLBACK_PAT"
+
+      - name: React to command
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          COMMENT_ID: ${{ github.event.comment.id }}
+        run: |
+          gh api "repos/$REPO/issues/comments/$COMMENT_ID/reactions" \
+            --method POST --field content=eyes || true
+
+      - name: Install Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          node-version: '20'
+
+      - name: Install Claude Code CLI
+        run: npm install -g @anthropic-ai/claude-code@2.1.150
+
+      - name: Check out repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          token: ${{ github.token }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Create branch
+        env:
+          BRANCH: ${{ needs.gate.outputs.branch }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+
+      - name: Collect issue context
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          RUNNER_TEMP: ${{ runner.temp }}
+        run: |
+          # Pre-create temp files with mode 600 before Python writes to them.
+          # Python's write_text() opens existing files (preserving permissions)
+          # rather than creating them, avoiding a world-readable window.
+          install -m 600 /dev/null "$RUNNER_TEMP/sentinel.txt"
+          install -m 600 /dev/null "$RUNNER_TEMP/system-prompt.txt"
+          install -m 600 /dev/null "$RUNNER_TEMP/prompt.txt"
+          python3 << 'PYEOF'
+          import json, os, re, subprocess, pathlib
+
+          repo = os.environ['REPO']
+          issue_number = os.environ['ISSUE_NUMBER']
+          runner_temp = os.environ['RUNNER_TEMP']
+
+          import html, unicodedata
+
+          def sanitize(text):
+              """Strip content that could escape prompt delimiters or inject instructions."""
+              # Decode HTML entities iteratively until stable (handles double-encoding)
+              prev = None
+              while prev != text:
+                  prev = text
+                  text = html.unescape(text)
+              # NFKC normalization collapses Unicode homoglyphs (e.g. fullwidth chars)
+              text = unicodedata.normalize('NFKC', text)
+              # Strip Unicode direction-override, zero-width, soft-hyphen (U+00AD),
+              # CGJ (U+034F), ZWJ (U+200D), Hangul filler (U+3164), tag block, BOM
+              text = re.sub('[\u00ad\u034f\u200b-\u200f\u200d\u202a-\u202e\u2066-\u2069\u3164\U000E0000-\U000E007F\ufeff]', '', text)
+              # Destructive fence stripping — prevents nested code-block injection
+              text = re.sub(r'`{3,}', '[fence]', text)
+              text = re.sub(r'~{3,}', '[fence]', text)
+              # Strip ALL XML/HTML tags — broad approach prevents named-allowlist bypass
+              text = re.sub(r'<[^>]{0,4000}>', '[tag]', text)
+              # Block common prompt injection trigger phrases
+              text = re.sub(r'(?i)ignore\s+(all\s+)?previous\s+instructions?', '[filtered]', text)
+              text = re.sub(r'(?i)new\s+instructions?\s*:', '[filtered]', text)
+              text = re.sub(r'(?mi)^\s*system\s*:\s*', '[filtered] ', text)
+              text = re.sub(r'(?i)(disregard|forget|override)\s+(all\s+)?(previous\s+)?instructions?', '[filtered]', text)
+              text = re.sub(r'(?i)(you\s+are\s+now|act\s+as|pretend\s+(to\s+be|you\s+are))', '[filtered]', text)
+              # Block structured output markers (case-insensitive, allow surrounding whitespace)
+              text = re.sub(r'(?i)PR_TITLE\s*:', '[PR_TITLE]', text)
+              text = re.sub(r'(?i)PR_BODY_START', '[PR_BODY_START]', text)
+              text = re.sub(r'(?i)PR_BODY_END', '[PR_BODY_END]', text)
+              # Strip markdown link injection patterns: [text](url)
+              text = re.sub(r'\[([^\]]*)\]\([^)]*\)', r'[\1]', text)
+              # Strip control characters (keep newline and tab)
+              text = re.sub(r'[\x00-\x08\x0b-\x0c\x0e-\x1f\x7f]', '', text)
+              return text
+
+          issue = json.loads(subprocess.check_output(
+              ['gh', 'api', f'repos/{repo}/issues/{issue_number}']))
+          comments_raw = json.loads(subprocess.check_output(
+              ['gh', 'api', f'repos/{repo}/issues/{issue_number}/comments?per_page=100']))
+
+          # Enforce length limits before sanitizing
+          title        = sanitize(issue['title'][:200])
+          body         = sanitize((issue.get('body') or '(no body)')[:10000])
+          issue_author = issue['user']['login']
+          # Include comments from the original issue author (clarifications on their own report)
+          # and from trusted team members (OWNER/MEMBER). Exclude all other commenters.
+          trusted = {'OWNER', 'MEMBER'}
+          comments = '\n'.join(
+              f'**{c["user"]["login"]}:** {sanitize(c["body"][:2000])}'
+              for c in comments_raw
+              if c.get('author_association') in trusted or c['user']['login'] == issue_author
+          )
+
+          # Per-run UUID sentinel: makes structured output delimiters unpredictable so
+          # an attacker who controls issue content cannot forge PR_BODY_START/END markers
+          # even if they achieve partial prompt injection. sanitize() strips the static
+          # forms of these markers from all untrusted input.
+          import uuid as _uuid
+          sentinel = _uuid.uuid4().hex
+          begin_marker = f'PR_BODY_START_{sentinel}'
+          end_marker   = f'PR_BODY_END_{sentinel}'
+
+          # Write sentinel to a file for the Parse PR metadata step to read
+          pathlib.Path(f'{runner_temp}/sentinel.txt').write_text(sentinel)
+
+          # Instructions go in the system prompt (trusted, separate from user data)
+          system_prompt = f"""You are an engineer working on WendyOS, an embedded/edge OS and CLI tool that deploys containerised apps to IoT devices.
+
+          Implement the GitHub issue provided in the user message by editing existing source files.
+          You may create new test files (files ending in _test.go, _test.swift, Test.swift) inside the allowed source directories if the implementation warrants it.
+          Do NOT create any other new files.
+          Do NOT run any git commands (commit, cherry-pick, push, merge, rebase, etc.) — the CI handles all git operations after you finish editing.
+
+          CRITICAL: Never ask for clarification, never refuse to implement, and never wait for more information.
+          Never ask whether to push or create a PR — the CI handles that automatically when you are done.
+          If the issue body is missing or unclear, implement what you can based on the title and context alone.
+          If you find multiple viable approaches, pick the most straightforward one that directly addresses the issue title — do not stop or ask which to choose.
+          Always make your best attempt — a partial implementation is better than none.
+
+          IMPORTANT: Only modify files inside these directories:
+            go/        (Go source code)
+            swift/     (Swift source code)
+            Sources/   (Swift package sources)
+            Tests/     (test files)
+            tests/     (test files)
+            docs/      (documentation)
+            Documentation/
+            Examples/
+          Do not touch .github/, CODEOWNERS, SECURITY.md, or any file ending in .pem, .key, .p12, .pfx.
+
+          When you are done, output — at the very end of your response — this exact block:
+
+          PR_TITLE: <one-line PR title>
+          {begin_marker}
+          ## What this PR does
+          <description>
+
+          ## How to test
+          <steps>
+          {end_marker}
+          """
+
+          # Untrusted issue content is the user message only — kept separate from instructions
+          user_message = f"""Issue #{issue_number}
+
+          Title: {title}
+
+          {body}
+
+          Discussion:
+          {comments}
+          """
+
+          pathlib.Path(f'{runner_temp}/system-prompt.txt').write_text(system_prompt, encoding='utf-8')
+          pathlib.Path(f'{runner_temp}/prompt.txt').write_text(user_message, encoding='utf-8')
+          print(f'Prompts written (system: {len(system_prompt)} chars, user: {len(user_message)} chars)')
+          PYEOF
+
+      - name: Write API key to temp file
+        # Dedicated step: the ONLY place the API key value is handled.
+        # The key arrives via env: — NOT inline ${{ secrets.* }} in script text — so it
+        # is never baked into the shell script literal. GitHub Actions masks all env: secret
+        # values in logs unconditionally; ::add-mask:: is also emitted as the first command
+        # so the value is registered for subsequent steps (defense-in-depth for any derived
+        # values). The "Run Claude Code" step has no key in env: or script text.
+        env:
+          _API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          echo "::add-mask::$_API_KEY"
+          install -m 600 /dev/null "$RUNNER_TEMP/anthropic-key.txt"
+          printf '%s' "$_API_KEY" > "$RUNNER_TEMP/anthropic-key.txt"
+          unset _API_KEY
+
+      - name: Run Claude Code
+        # ANTHROPIC_API_KEY: NOT in env:, NOT in this step's script text.
+        # Key was written to a 600-mode temp file in the preceding step.
+        # ANTHROPIC_SYSTEM_PROMPT: delivered via SYSTEM_PROMPT_FILE — read inside
+        # the bash subshell, not as an env var value in the env -i invocation.
+        run: |
+          # Read prompts into shell vars, then delete the files so Claude's Read
+          # tool cannot access them (or any other sensitive RUNNER_TEMP content).
+          # sentinel.txt is kept for the Parse PR metadata step to read.
+          SYSTEM_PROMPT=$(cat "$RUNNER_TEMP/system-prompt.txt")
+          USER_PROMPT=$(cat "$RUNNER_TEMP/prompt.txt")
+          rm -f "$RUNNER_TEMP/system-prompt.txt" "$RUNNER_TEMP/prompt.txt"
+          # Clear all runner credential stores before Claude runs — mirrors ai-pr-feedback.yml.
+          # env -i strips the child environment, but the parent shell retains these vars
+          # and they may be accessible via /proc/*/environ or credential helper files.
+          unset ACTIONS_RUNTIME_TOKEN ACTIONS_RESULTS_URL ACTIONS_CACHE_URL RUNNER_TOKEN
+          # Unset GITHUB_TOKEN / GH_TOKEN so Claude cannot exfiltrate them via
+          # /proc/<parent-pid>/environ (env -i only isolates the child process).
+          unset GITHUB_TOKEN GH_TOKEN
+          rm -f "$HOME/.config/gh/hosts.yml"
+          git config --local --unset-all credential.helper 2>/dev/null || true
+          git config --global --unset-all credential.helper 2>/dev/null || true
+          # Pre-create output files with restricted permissions so no window exists
+          # between Claude writing and the scrubber running with world-readable files.
+          install -m 600 /dev/null "$RUNNER_TEMP/claude-output.txt"
+          install -m 600 /dev/null "$RUNNER_TEMP/claude-stderr.txt"
+          # Read API key from pre-written file for scrubber (shell-local, unexported).
+          _ANTHROPIC_KEY=$(< "$RUNNER_TEMP/anthropic-key.txt")
+          # Write SYSTEM_PROMPT to a 600-mode temp file so env -i passes only the
+          # file path, not the content, to the bash subshell.
+          install -m 600 /dev/null "$RUNNER_TEMP/system-prompt-exec.txt"
+          printf '%s' "$SYSTEM_PROMPT" > "$RUNNER_TEMP/system-prompt-exec.txt"
+          unset SYSTEM_PROMPT
+          install -m 600 /dev/null "$RUNNER_TEMP/user-prompt.txt"
+          printf '%s' "$USER_PROMPT" > "$RUNNER_TEMP/user-prompt.txt"
+          # Use env -i to limit Claude's visible environment to only what it needs.
+          # Only file PATHS are passed via env -i — no secret values in cmdline or
+          # parent-process environ. The bash subshell reads each value from its file,
+          # shreds the file, then exec-replaces itself with claude.
+          env -i HOME="$HOME" PATH="$PATH" \
+            ANTHROPIC_KEY_FILE="$RUNNER_TEMP/anthropic-key.txt" \
+            SYSTEM_PROMPT_FILE="$RUNNER_TEMP/system-prompt-exec.txt" \
+            USER_PROMPT_FILE="$RUNNER_TEMP/user-prompt.txt" \
+            bash -c '
+              ANTHROPIC_API_KEY=$(< "$ANTHROPIC_KEY_FILE") && export ANTHROPIC_API_KEY
+              shred -u "$ANTHROPIC_KEY_FILE" 2>/dev/null || rm -f "$ANTHROPIC_KEY_FILE"
+              unset ANTHROPIC_KEY_FILE
+              ANTHROPIC_SYSTEM_PROMPT=$(< "$SYSTEM_PROMPT_FILE") && export ANTHROPIC_SYSTEM_PROMPT
+              shred -u "$SYSTEM_PROMPT_FILE" 2>/dev/null || rm -f "$SYSTEM_PROMPT_FILE"
+              unset SYSTEM_PROMPT_FILE
+              _user_prompt=$(< "$USER_PROMPT_FILE")
+              shred -u "$USER_PROMPT_FILE" 2>/dev/null || rm -f "$USER_PROMPT_FILE"
+              unset USER_PROMPT_FILE
+              printf '%s\n' "$_user_prompt" | claude --print \
+                --allowedTools "Edit,MultiEdit,Read,Bash" \
+                --disallowedTools "Write,WebFetch,WebSearch,computer_use,TodoWrite,TodoRead,Agent,AskFollowupQuestion,mcp__*"
+            ' \
+            > "$RUNNER_TEMP/claude-output.txt" \
+            2> "$RUNNER_TEMP/claude-stderr.txt" || CLAUDE_EXIT=$?
+          # Always show output so failures are diagnosable.
+          for _sf in "$RUNNER_TEMP/claude-output.txt" "$RUNNER_TEMP/claude-stderr.txt"; do
+            [ -f "$_sf" ] && [ -n "$_ANTHROPIC_KEY" ] && \
+              printf '%s' "$_ANTHROPIC_KEY" | python3 -c \
+              "import sys,pathlib; k=sys.stdin.read(); p=pathlib.Path(sys.argv[1]); p.write_text(p.read_text().replace(k,'[REDACTED]')) if k else None" \
+              "$_sf"
+          done
+          _ANTHROPIC_KEY=""
+          unset _ANTHROPIC_KEY
+          cat "$RUNNER_TEMP/claude-output.txt"
+          if [ -s "$RUNNER_TEMP/claude-stderr.txt" ]; then
+            echo "--- stderr ---"
+            cat "$RUNNER_TEMP/claude-stderr.txt"
+          fi
+          [ "${CLAUDE_EXIT:-0}" -eq 0 ] || exit "$CLAUDE_EXIT"
+
+      - name: Verify Claude did not touch protected paths
+        # Post-Claude enforcement gate — primary path-restriction control.
+        # Mirrors the equivalent step in ai-pr-feedback.yml. Runs before staging.
+        # Three-layer check (all abort with revert on violation):
+        #   1. .gitignore guard — tampered .gitignore could hide files from checks below
+        #   2. Protected-file blocklist + source-directory allowlist
+        #   3. Extension blocklist (script/config files blocked even inside docs/)
+        run: |
+          # 1. .gitignore guard
+          if git diff -z --name-only | tr '\0' '\n' | grep -qF '.gitignore'; then
+            echo "::error::Claude modified .gitignore — reverting and aborting"
+            git clean -fd 2>/dev/null || true
+            git checkout -- . 2>/dev/null || true
+            exit 1
+          fi
+          # 2. Protected-file blocklist and source-directory allowlist
+          PROTECTED=$(git diff --name-only | grep -E \
+            '^(\.github/|CODEOWNERS|SECURITY\.md|security/|.*\.(pem|key|p12|pfx)|go/vendor/|go/generated/|swift/Packages/|go\.sum$|Package\.resolved$|package-lock\.json$|yarn\.lock$|Cargo\.lock$)' \
+            || true)
+          if [ -n "$PROTECTED" ]; then
+            echo "::error::Claude modified protected path(s) — reverting and aborting:"
+            echo "$PROTECTED"
+            git checkout -- .
+            exit 1
+          fi
+          DISALLOWED=$(git diff --name-only | grep -vE \
+            '^(go/|swift/|Sources/|Tests/|tests/|docs/|Documentation/|Examples/)' \
+            || true)
+          if [ -n "$DISALLOWED" ]; then
+            echo "::error::Claude modified file(s) outside allowed source directories — reverting:"
+            echo "$DISALLOWED"
+            git checkout -- .
+            exit 1
+          fi
+          # 4. Extension blocklist — runs pre-stage so docs/evil.yml fails before git add
+          BLOCKED_EXT=""
+          while IFS= read -r -d '' f; do
+            [ -z "$f" ] && continue
+            case "$f" in
+              *.sh|*.bash|*.zsh|*.fish|*.py|*.rb|*.pl|*.lua|*.groovy|\
+              *.yml|*.yaml|*.json|*.toml|*.ini|*.cfg|\
+              Makefile|makefile|Dockerfile|*.dockerfile|*.mk)
+                BLOCKED_EXT="$BLOCKED_EXT $f"
+                ;;
+            esac
+          done < <({ git diff -z --name-only; git ls-files -z --others --exclude-standard; } 2>/dev/null)
+          if [ -n "$BLOCKED_EXT" ]; then
+            echo "::error::Claude modified script/config file(s) — reverting and aborting:"
+            echo "$BLOCKED_EXT"
+            git checkout -- .
+            exit 1
+          fi
+
+      - name: Commit any uncommitted changes
+        id: commit
+        run: |
+          # Block hook injection BEFORE staging: non-sample hook files are unexpected on a fresh runner
+          HOOK_FILES=$(find .git/hooks -maxdepth 1 -type f -not -name '*.sample' 2>/dev/null | head -5 || true)
+          if [ -n "$HOOK_FILES" ]; then
+            echo "::error::Unexpected hook files in .git/hooks/ — aborting:"
+            echo "$HOOK_FILES"
+            exit 1
+          fi
+          # If Claude ran git commands (e.g. cherry-pick) and already committed, collapse those
+          # commits back into the index so the denylist checks below run on them as staged diffs.
+          UNPUSHED=$(git rev-list origin/main..HEAD --count 2>/dev/null || echo "0")
+          if [ "$UNPUSHED" -gt 0 ]; then
+            git reset --soft origin/main
+          fi
+          # Stage only changes to already-tracked files (git add -u).
+          # git add -A would also pick up untracked symlinks (e.g. docs/, skill dirs)
+          # that exist in the working tree but aren't in the index, causing false positives.
+          git add -u
+          if git diff --cached --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Block AI from modifying CI/security configuration files
+          # Use -z (NUL-delimited) to prevent embedded-newline bypass in filenames
+          while IFS= read -r -d '' f; do
+            # Reject non-ASCII paths to prevent Unicode homoglyph bypass attacks
+            if printf '%s' "$f" | LC_ALL=C grep -q '[^ -~]'; then
+              echo "::error::AI modified file with non-ASCII path: $f"
+              git reset HEAD
+              exit 1
+            fi
+            if printf '%s' "$f" | grep -qE '^(\.github/|CODEOWNERS|SECURITY\.md|security/|.*\.(pem|key|p12|pfx))'; then
+              echo "::error::AI modified protected file: $f"
+              git reset HEAD
+              exit 1
+            fi
+          done < <(git diff --cached -z --name-only)
+          # Block newly staged symlinks — check the diff, not the full index, so pre-existing
+          # tracked symlinks in the repo don't trigger a false positive.
+          SYMLINKS=$(git diff --cached --raw | awk '$1 ~ /^:120000/ || $2 == "120000" {print $NF}' || true)
+          if [ -n "$SYMLINKS" ]; then
+            echo "::error::AI staged symlinks — aborting commit:"
+            echo "$SYMLINKS"
+            git reset HEAD
+            exit 1
+          fi
+          # Allowlist: only permit writes to known source directories
+          # Use -z (NUL-delimited) to prevent embedded-newline bypass in filenames
+          while IFS= read -r -d '' f; do
+            if ! printf '%s' "$f" | grep -qE '^(go/|swift/|Sources/|Tests/|tests/|docs/|Documentation/|Examples/)'; then
+              echo "::error::AI modified file outside allowed directories: $f"
+              git reset HEAD
+              exit 1
+            fi
+          done < <(git diff --cached -z --name-only)
+          # Log what changed for audit trail
+          echo "### AI-modified files" >> "$GITHUB_STEP_SUMMARY"
+          git diff --cached --stat | head -200 >> "$GITHUB_STEP_SUMMARY"
+          git commit -m "chore: implement issue via Claude Code (run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)"
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Post-commit audit log
+        if: steps.commit.outputs.changed == 'true'
+        run: |
+          echo "=== Files changed in this commit ==="
+          git show --stat HEAD
+
+      - name: Push branch
+        if: steps.commit.outputs.changed == 'true'
+        id: push
+        env:
+          # WENDY_AI_IMPLEMENT_TOKEN is the dedicated per-workflow PAT. If absent,
+          # WENDY_TEMPLATE_SYNC_TOKEN is used as a fallback with an explicit ::warning::.
+          # A fine-grained PAT scoped to only 'contents: write' on this repository.
+          # GITHUB_TOKEN cannot be used for push because pushes made by
+          # GITHUB_TOKEN do not trigger subsequent workflow runs (CI).
+          _DEDICATED_PAT: ${{ secrets.WENDY_AI_IMPLEMENT_TOKEN }}
+          _FALLBACK_PAT: ${{ secrets.WENDY_TEMPLATE_SYNC_TOKEN }}
+          BRANCH: ${{ needs.gate.outputs.branch }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Select the PAT to use; warn loudly when falling back to the shared token.
+          if [ -n "$_DEDICATED_PAT" ]; then
+            TOKEN="$_DEDICATED_PAT"
+          elif [ -n "$_FALLBACK_PAT" ]; then
+            echo "::warning::WENDY_AI_IMPLEMENT_TOKEN is not configured — falling back to WENDY_TEMPLATE_SYNC_TOKEN. Per-workflow revocation is degraded. Configure WENDY_AI_IMPLEMENT_TOKEN to restore full isolation."
+            TOKEN="$_FALLBACK_PAT"
+          else
+            echo "::error::Neither WENDY_AI_IMPLEMENT_TOKEN nor WENDY_TEMPLATE_SYNC_TOKEN is configured — cannot push"
+            exit 1
+          fi
+          echo "::add-mask::$TOKEN"
+          unset _DEDICATED_PAT _FALLBACK_PAT
+          PUSH_TOKEN="$TOKEN"
+          unset TOKEN
+          # Runtime verification: confirm main branch is protected before pushing with
+          # long-lived PAT. Fail closed: any error or non-true response aborts the push.
+          # Uses branches/{branch} endpoint (requires only contents:read).
+          IS_PROTECTED=$(gh api "repos/${GITHUB_REPOSITORY}/branches/main" \
+            --jq '.protected' 2>/dev/null || echo 'false')
+          if [ "$IS_PROTECTED" != "true" ]; then
+            echo "::error::main branch protection is not enabled (got: $IS_PROTECTED) — aborting PAT push (required server-side control)"
+            exit 1
+          fi
+          echo "Branch protection confirmed: main is protected"
+          # Secondary check: warn if no active ruleset covers the ai/** branch pattern.
+          MATCHING_RULESETS=$(gh api "repos/${GITHUB_REPOSITORY}/rulesets" \
+            --jq '[.[] | select(.enforcement == "active") | select(any((.conditions.ref_name.include // [])[]?; . == "~ALL" or startswith("refs/heads/ai/") or . == "refs/heads/**" or . == "refs/heads/*"))] | length' \
+            2>/dev/null || echo '0')
+          if [ "$MATCHING_RULESETS" = "0" ]; then
+            echo "::warning::No active ruleset covers ai/** branches — consider configuring server-side push restrictions for defence-in-depth"
+          else
+            echo "Matching active rulesets for ai/**: $MATCHING_RULESETS found"
+          fi
+          # Re-validate branch name at push time (belt-and-suspenders; gate also validates).
+          # Also explicitly reject git ref injection chars (^~:?*[]{}\ null).
+          if printf '%s' "$BRANCH" | python3 -c 'import sys,re;b=sys.stdin.read();sys.exit(1 if re.search(r"[\x00^~:?*\[\]{}\\ ]",b) else 0)'; then : ; else
+            echo "::error::BRANCH contains illegal git ref characters — aborting"
+            exit 1
+          fi
+          case "$BRANCH" in
+            main|master|develop|staging|release|production)
+              echo "::error::BRANCH '$BRANCH' is a protected branch name — aborting push"
+              exit 1
+              ;;
+          esac
+          if ! printf '%s' "$BRANCH" | grep -qE '^ai/issue-[0-9]+(-[a-z0-9-]+)?(-[0-9]{14})?$'; then
+            echo "::error::BRANCH '$BRANCH' does not match expected ai/issue-* pattern — aborting push"
+            exit 1
+          fi
+          # Use env -i to isolate the push subprocess so GIT_PUSH_TOKEN is not
+          # inherited by unrelated child processes.  Token is never in the URL.
+          # install -m 700 atomically creates with correct permissions (no race window
+          # between mktemp + chmod 700 where an empty file exists world-readable).
+          ASKPASS_FILE=$(mktemp -u "$RUNNER_TEMP/askpass-XXXXXX.sh")
+          install -m 700 /dev/null "$ASKPASS_FILE"
+          trap 'rm -f "$ASKPASS_FILE"' EXIT
+          printf '#!/bin/sh\nprintf "%%s" "${GIT_PUSH_TOKEN}"\n' > "$ASKPASS_FILE"
+          # If a prior AI run's branch still exists remotely (PR closed/merged but branch
+          # not deleted), append a short timestamp to avoid a non-fast-forward push failure.
+          # Capture the current remote SHA (empty string if branch doesn't exist).
+          # Used for explicit --force-with-lease=<ref>:<expect> to close TOCTOU window.
+          REMOTE_SHA=$(env -i HOME="$HOME" PATH="$PATH" \
+            GIT_ASKPASS="$ASKPASS_FILE" GIT_PUSH_TOKEN="$PUSH_TOKEN" \
+            git ls-remote "https://github.com/${GITHUB_REPOSITORY}.git" \
+            "refs/heads/${BRANCH}" 2>/dev/null | awk '{print $1}' || echo '')
+          if [ -n "$REMOTE_SHA" ]; then
+            echo "::warning::Remote branch '$BRANCH' already exists ($REMOTE_SHA) — appending timestamp to avoid conflict"
+            BRANCH="${BRANCH}-$(date +%Y%m%d%H%M%S)"
+            # Re-validate after timestamp append to ensure pattern still holds.
+            if ! printf '%s' "$BRANCH" | grep -qE '^ai/issue-[0-9]+(-[a-z0-9-]+)?(-[0-9]{14})?$'; then
+              echo "::error::Timestamp-suffixed BRANCH '$BRANCH' violates naming pattern — aborting"
+              exit 1
+            fi
+            # New branch after rename — no remote SHA to bind to.
+            REMOTE_SHA=""
+          fi
+          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
+          # Use explicit lease with null SHA for new branches.  NULL_SHA (40 zeros) is
+          # the git protocol's canonical "no ref" sentinel: git REJECTS the push if the
+          # remote branch already exists, making the push fail-closed rather than silently
+          # overwriting concurrent commits.  This eliminates the TOCTOU window between the
+          # ls-remote call and the push — a race causes a controlled failure, not overwrite.
+          NULL_SHA="0000000000000000000000000000000000000000"
+          LEASE_SHA="${REMOTE_SHA:-$NULL_SHA}"
+          env -i HOME="$HOME" PATH="$PATH" \
+            GIT_ASKPASS="$ASKPASS_FILE" GIT_PUSH_TOKEN="$PUSH_TOKEN" \
+            git push "--force-with-lease=refs/heads/${BRANCH}:${LEASE_SHA}" \
+            "https://github.com/${GITHUB_REPOSITORY}.git" \
+            "${BRANCH}"
+          rm -f "$ASKPASS_FILE"
+
+      - name: Parse PR metadata
+        if: steps.commit.outputs.changed == 'true'
+        id: pr-meta
+        env:
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          python3 << 'PYEOF'
+          import html, os, re, unicodedata
+
+          def sanitize_output(text):
+              """Sanitize LLM output before using it in shell or API calls."""
+              # HTML-unescape iteratively (handles double-encoding)
+              prev = None
+              while prev != text:
+                  prev = text
+                  text = html.unescape(text)
+              text = unicodedata.normalize('NFKC', text)
+              text = re.sub('[\u00ad\u034f\u200b-\u200f\u200d\u202a-\u202e\u2066-\u2069\u3164\U000E0000-\U000E007F\ufeff]', '', text)
+              text = re.sub(r'`{3,}', '[fence]', text)
+              text = re.sub(r'~{3,}', '[fence]', text)
+              text = re.sub(r'<[^>]{0,4000}>', '[tag]', text)
+              # Strip @mention injection (could cause unwanted GitHub notifications)
+              text = re.sub(r'@([A-Za-z0-9_-]+)', r'[\1]', text)
+              # Strip control characters (keep newline and tab)
+              text = re.sub(r'[\x00-\x08\x0b-\x0c\x0e-\x1f\x7f]', '', text)
+              return text
+
+          issue_number = os.environ['ISSUE_NUMBER']
+          runner_temp = os.environ['RUNNER_TEMP']
+
+          with open(f'{runner_temp}/claude-output.txt') as f:
+              output = f.read()
+
+          # Read the per-run sentinel to use the unpredictable delimiters that were
+          # embedded in the system prompt. Static PR_BODY_START/END are sanitized
+          # out of issue content, but using a UUID sentinel provides defense-in-depth.
+          sentinel_path = f'{runner_temp}/sentinel.txt'
+          sentinel = open(sentinel_path).read().strip() if os.path.exists(sentinel_path) else ''
+          if sentinel:
+              begin_marker = f'PR_BODY_START_{sentinel}'
+              end_marker   = f'PR_BODY_END_{sentinel}'
+          else:
+              begin_marker = 'PR_BODY_START'
+              end_marker   = 'PR_BODY_END'
+
+          # Extract PR_TITLE line
+          title_match = re.search(r'^PR_TITLE:\s*(.+)$', output, re.MULTILINE)
+          pr_title = title_match.group(1).strip() if title_match else ''
+          pr_title = sanitize_output(pr_title)[:72]  # GitHub title limit
+
+          # Extract PR_BODY between per-run sentinel markers
+          body_match = re.search(
+              rf'^{re.escape(begin_marker)}\s*\n(.*?)\n?{re.escape(end_marker)}',
+              output, re.MULTILINE | re.DOTALL
+          )
+          pr_body = body_match.group(1).strip() if body_match else ''
+          pr_body = sanitize_output(pr_body)[:10000]
+
+          if not pr_title:
+              pr_title = f'feat: implement issue #{issue_number}'
+          if not pr_body:
+              pr_body = f'Implements #{issue_number}.'
+
+          with open(f'{runner_temp}/pr-title.txt', 'w') as f:
+              f.write(pr_title)
+          with open(f'{runner_temp}/pr-body.txt', 'w') as f:
+              f.write(pr_body)
+
+          print(f'PR title ({len(pr_title)} chars): {pr_title[:80]}')
+          PYEOF
+
+      - name: Create PR
+        if: steps.commit.outputs.changed == 'true'
+        id: create-pr
+        env:
+          # GITHUB_TOKEN cannot create PRs (org policy). Use the same PAT as push.
+          # PAT requires 'pull-requests:write' in addition to 'contents:write'.
+          _DEDICATED_PAT: ${{ secrets.WENDY_AI_IMPLEMENT_TOKEN }}
+          _FALLBACK_PAT: ${{ secrets.WENDY_TEMPLATE_SYNC_TOKEN }}
+          REPO: ${{ github.repository }}
+          BRANCH: ${{ steps.push.outputs.branch }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          if [ -n "$_DEDICATED_PAT" ]; then
+            GH_TOKEN="$_DEDICATED_PAT"
+          elif [ -n "$_FALLBACK_PAT" ]; then
+            GH_TOKEN="$_FALLBACK_PAT"
+          else
+            echo "::error::Neither WENDY_AI_IMPLEMENT_TOKEN nor WENDY_TEMPLATE_SYNC_TOKEN is configured — cannot create PR"
+            exit 1
+          fi
+          echo "::add-mask::$GH_TOKEN"
+          unset _DEDICATED_PAT _FALLBACK_PAT
+          export GH_TOKEN
+          # Read title into a shell variable (simple assignment avoids nested-quote injection).
+          # Use --body-file to pass the body path directly to gh — eliminates shell expansion
+          # of LLM-generated content into command arguments entirely.
+          PR_TITLE=$(cat "$RUNNER_TEMP/pr-title.txt")
+          PR_URL=$(gh pr create \
+            --repo "$REPO" \
+            --head "$BRANCH" \
+            --base main \
+            --title "$PR_TITLE" \
+            --body-file "$RUNNER_TEMP/pr-body.txt" \
+            --label "ai-generated")
+          echo "pr_url=$PR_URL" >> "$GITHUB_OUTPUT"
+
+      - name: Comment on issue
+        if: steps.commit.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          PR_URL: ${{ steps.create-pr.outputs.pr_url }}
+        run: |
+          gh api "repos/$REPO/issues/$ISSUE_NUMBER/comments" \
+            --method POST \
+            --field body="I've opened a PR to implement this issue: $PR_URL"

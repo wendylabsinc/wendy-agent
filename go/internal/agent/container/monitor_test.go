@@ -59,7 +59,7 @@ func TestParseRestartPolicy(t *testing.T) {
 
 func newTestMonitor() *ContainerMonitor {
 	logger := zap.NewNop()
-	return NewContainerMonitor(logger, nil, 1*time.Second)
+	return NewContainerMonitor(logger, nil, nil, 1*time.Second)
 }
 
 func TestContainerMonitor_ShouldRestart_No(t *testing.T) {

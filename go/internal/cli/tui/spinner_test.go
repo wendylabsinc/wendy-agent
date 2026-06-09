@@ -4,6 +4,10 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	bubbleTable "github.com/charmbracelet/bubbles/table"
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 )
 
 func TestSpinnerModel_Init(t *testing.T) {
@@ -120,6 +124,49 @@ func TestRenderTable_NoRows(t *testing.T) {
 	}
 }
 
+func TestBubbleTable_CropsWideViewAndScrolls(t *testing.T) {
+	table := NewBubbleTable(true, []bubbleTable.Column{
+		{Title: "Name", Width: 20},
+		{Title: "Address", Width: 32},
+	})
+	table.SetRows([]bubbleTable.Row{
+		{"alpha", "wendyos-alpha.local:50051"},
+		{"beta", "wendyos-beta.local:50051"},
+	})
+	table.SetWidth(58)
+	table.SetHeight(3)
+	updated, cmd := table.Update(tea.WindowSizeMsg{Width: 24, Height: 10})
+	table = updated
+	if cmd == nil {
+		t.Fatal("expected resize to request a screen clear")
+	}
+
+	before := table.View()
+	for _, line := range strings.Split(before, "\n") {
+		if got := ansi.StringWidth(line); got > 24 {
+			t.Fatalf("view line width = %d, want <= 24: %q", got, line)
+		}
+	}
+
+	updated, _ = table.Update(tea.KeyMsg{Type: tea.KeyRight})
+	table = updated
+	if table.ScrollOffset() == 0 {
+		t.Fatal("expected right arrow to advance horizontal offset")
+	}
+	if after := table.View(); after == before {
+		t.Fatal("expected scrolled table view to change")
+	}
+
+	updated, _ = table.Update(tea.KeyMsg{Type: tea.KeyDown})
+	table = updated
+	if table.Cursor() != 1 {
+		t.Fatalf("expected down arrow to move cursor, got %d", table.Cursor())
+	}
+	if table.ScrollOffset() == 0 {
+		t.Fatal("expected row navigation to preserve horizontal offset")
+	}
+}
+
 func TestProgressModel_Init(t *testing.T) {
 	p := NewProgress("Downloading...")
 	cmd := p.Init()
@@ -210,6 +257,54 @@ func TestProgressModel_ViewByteCounter(t *testing.T) {
 	}
 }
 
+func TestProgressModel_ViewDetailsAboveProgressBar(t *testing.T) {
+	p := NewProgress("Unpacking...")
+
+	model, _ := p.Update(ProgressUpdateMsg{
+		Percent: 0.5,
+		Detail:  "Layer 1/2 unpacked (1.0 MiB)",
+	})
+	p = model.(ProgressModel)
+	model, _ = p.Update(ProgressUpdateMsg{
+		Percent: 0.5,
+		Detail:  "Layer 2/2 applying (2.0 MiB)",
+	})
+	updated := model.(ProgressModel)
+
+	view := updated.View()
+	firstDetail := strings.Index(view, "Layer 1/2 unpacked")
+	secondDetail := strings.Index(view, "Layer 2/2 applying")
+	percent := strings.Index(view, "50.00%")
+	if firstDetail == -1 || secondDetail == -1 {
+		t.Fatalf("view missing progress detail lines: %q", view)
+	}
+	if !(firstDetail < secondDetail && secondDetail < percent) {
+		t.Fatalf("details should render above progress bar; got view: %q", view)
+	}
+}
+
+func TestProgressModel_ViewDetailsAreRolling(t *testing.T) {
+	p := NewProgress("Unpacking...")
+
+	for i := 1; i <= maxProgressDetailLines+2; i++ {
+		model, _ := p.Update(ProgressUpdateMsg{
+			Percent: 0.5,
+			Detail:  fmt.Sprintf("detail %d", i),
+		})
+		p = model.(ProgressModel)
+	}
+
+	view := p.View()
+	if strings.Contains(view, "detail 1") || strings.Contains(view, "detail 2") {
+		t.Fatalf("view should omit old details after rolling limit, got: %q", view)
+	}
+	for i := 3; i <= maxProgressDetailLines+2; i++ {
+		if !strings.Contains(view, fmt.Sprintf("detail %d", i)) {
+			t.Fatalf("view should keep recent detail %d, got: %q", i, view)
+		}
+	}
+}
+
 func TestProgressModel_ViewNoByteCounterWhenZero(t *testing.T) {
 	p := NewProgress("Flashing...")
 
@@ -267,7 +362,7 @@ func TestFormatBytes(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		got := formatBytes(tt.input)
+		got := FormatBytes(tt.input)
 		if got != tt.want {
 			t.Errorf("formatBytes(%d) = %q; want %q", tt.input, got, tt.want)
 		}

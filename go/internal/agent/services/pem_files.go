@@ -65,9 +65,6 @@ func syncWriteFile(path string, data []byte, perm os.FileMode) error {
 	return nil
 }
 
-// WritePEMFiles writes device certificate PEM files and a provisioned marker to
-// configPath. Files with empty content are skipped. Called both by
-// ProvisioningService at runtime and by configpartition.Apply on first boot.
 func WritePEMFiles(configPath, keyPEM, certPEM, chainPEM string) error {
 	if err := os.MkdirAll(configPath, 0o700); err != nil {
 		return fmt.Errorf("creating config directory: %w", err)

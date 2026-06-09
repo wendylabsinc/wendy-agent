@@ -1,0 +1,14 @@
+{
+  "appId": "sh.wendy.examples.sharedipc",
+  "version": "1.0.0",
+  "isolation": "shared-ipc",
+  "services": {
+    "primary": {
+      "context": "./primary"
+    },
+    "secondary": {
+      "context": "./secondary",
+      "dependsOn": ["primary"]
+    }
+  }
+}

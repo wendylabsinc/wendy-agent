@@ -11,7 +11,7 @@ import (
 	"net"
 	"time"
 
-	agentpb "github.com/wendylabsinc/wendy/proto/gen/agentpb"
+	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	"go.uber.org/zap"
 	"golang.org/x/sys/unix"
 	"google.golang.org/protobuf/proto"
@@ -22,14 +22,6 @@ const (
 	maxFrameSize  = 65536
 )
 
-// l2capStreamConn wraps a raw LE CoC L2CAP file descriptor as a net.Conn with
-// stream semantics. LE CoC sockets are SOCK_SEQPACKET (message-based), so each
-// unix.Read returns exactly one complete L2CAP SDU. TLS expects stream semantics
-// and reads arbitrary byte counts, so we buffer received SDUs to allow partial
-// reads without discarding data.
-//
-// net.FileConn cannot be used: it calls getsockname internally, which fails for
-// AF_BLUETOOTH with "address family not supported by protocol".
 type l2capStreamConn struct {
 	fd   int
 	rbuf []byte // bytes remaining from the last received SDU
@@ -266,7 +258,6 @@ func readMessageFromConn(r io.Reader) ([]byte, error) {
 	return body, nil
 }
 
-// writeFrameToConn writes a 2-byte big-endian length prefix followed by data.
 func writeFrameToConn(w io.Writer, data []byte) error {
 	if len(data) > maxFrameSize-2 {
 		return fmt.Errorf("frame too large: %d bytes", len(data))

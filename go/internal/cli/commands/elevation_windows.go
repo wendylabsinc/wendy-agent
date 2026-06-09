@@ -158,7 +158,6 @@ func preAuthElevation() error {
 	return requireElevation("to write to a raw disk")
 }
 
-// elevationHint returns a user-facing message about privilege requirements.
 func elevationHint() string {
 	return "Administrator privileges are required for disk writing."
 }

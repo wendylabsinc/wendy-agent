@@ -11,19 +11,18 @@ import (
 	mcpclient "github.com/mark3labs/mcp-go/client"
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
-	"github.com/wendylabsinc/wendy/internal/cli/grpcclient"
-	"github.com/wendylabsinc/wendy/internal/shared/config"
-	"github.com/wendylabsinc/wendy/internal/shared/discovery"
-	"github.com/wendylabsinc/wendy/internal/shared/models"
-	"github.com/wendylabsinc/wendy/internal/shared/version"
-	agentpb "github.com/wendylabsinc/wendy/proto/gen/agentpb"
+	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
+	"github.com/wendylabsinc/wendy/go/internal/shared/config"
+	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
+	"github.com/wendylabsinc/wendy/go/internal/shared/models"
+	"github.com/wendylabsinc/wendy/go/internal/shared/version"
+	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	"google.golang.org/grpc/status"
 )
 
 // ConnectFunc connects to a wendy agent at the given address (host:port).
 type ConnectFunc func(ctx context.Context, address string) (*grpcclient.AgentConnection, error)
 
-// mcpServer holds active connection state and implements all MCP tool handlers.
 type mcpServer struct {
 	cfg           *config.Config
 	connectFn     ConnectFunc
@@ -34,8 +33,6 @@ type mcpServer struct {
 	mu            sync.RWMutex
 }
 
-// New creates a new mcpServer. connectFn is called by device_connect; pass nil
-// to disable dynamic connection (useful in tests that set conn directly).
 func New(cfg *config.Config, connectFn ConnectFunc) *mcpServer {
 	return &mcpServer{
 		cfg:           cfg,
@@ -45,7 +42,6 @@ func New(cfg *config.Config, connectFn ConnectFunc) *mcpServer {
 	}
 }
 
-// GetConn returns the current active connection (nil if not connected).
 func (s *mcpServer) GetConn() *grpcclient.AgentConnection {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -72,7 +68,6 @@ func (s *mcpServer) SetConnType(t string) {
 	s.connType = t
 }
 
-// GetConnType returns the transport type of the active connection.
 func (s *mcpServer) GetConnType() string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -97,7 +92,7 @@ func (s *mcpServer) ConnectTo(ctx context.Context, address string) error {
 func (s *mcpServer) Start(ctx context.Context) error {
 	srv := server.NewMCPServer("wendy", version.Version,
 		server.WithToolCapabilities(true),
-		server.WithResourceCapabilities(false, false),
+		server.WithResourceCapabilities(true, false),
 	)
 	s.registerStatusTools(srv)
 	s.registerGuideResource(srv)
@@ -120,7 +115,6 @@ func (s *mcpServer) Start(ctx context.Context) error {
 	return server.ServeStdio(srv)
 }
 
-// errNotConnected returns a tool error result when no device is connected.
 func errNotConnected() *mcpgo.CallToolResult {
 	return mcpgo.NewToolResultError("no device connected — use device_connect first")
 }
@@ -146,7 +140,6 @@ func intParam(req mcpgo.CallToolRequest, name string, defaultVal int) int {
 // registerContainerMCPTools scans running containers for mcp_port > 0 and
 // registers each container's tools on srv, prefixed with the app name.
 // Errors per-container are warnings; they do not prevent the session from starting.
-// It returns a slice of cleanup functions that must be called when the server stops.
 func (s *mcpServer) registerContainerMCPTools(ctx context.Context, srv *server.MCPServer) []func() {
 	conn := s.GetConn()
 	if conn == nil {

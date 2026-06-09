@@ -1,0 +1,26 @@
+{
+  "appId": "sh.wendy.examples.ros2",
+  "version": "1.0.0",
+  "isolation": "shared-network",
+  "frameworks": {
+    "ros2": {
+      "domainId": 42,
+      "rmw": "rmw_cyclonedds_cpp"
+    }
+  },
+  "services": {
+    "talker": {
+      "context": "./talker"
+    },
+    "listener": {
+      "context": "./listener",
+      "dependsOn": ["talker"],
+      "frameworks": {
+        "ros2": {
+          "domainId": 42,
+          "rmw": "rmw_cyclonedds_cpp"
+        }
+      }
+    }
+  }
+}

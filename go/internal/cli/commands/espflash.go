@@ -43,7 +43,6 @@ type espFlasher struct {
 	port serial.Port
 }
 
-// slipEncode wraps data in SLIP framing.
 func slipEncode(data []byte) []byte {
 	buf := make([]byte, 0, len(data)*2+2)
 	buf = append(buf, slipEnd)
@@ -80,7 +79,6 @@ func (f *espFlasher) readByte() (byte, error) {
 	return 0, fmt.Errorf("serial read timed out")
 }
 
-// slipDecode reads the next non-empty SLIP frame from the port.
 func (f *espFlasher) slipDecode() ([]byte, error) {
 	for {
 		// Scan for the start-of-frame marker (0xC0).

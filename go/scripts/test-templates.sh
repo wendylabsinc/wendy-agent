@@ -66,8 +66,9 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Add .local suffix if hostname was explicitly provided and missing it.
-if [[ "$HOSTNAME_PROVIDED" == true ]] && [[ "$HOSTNAME" != *.local ]]; then
+# Add .local suffix only for bare mDNS hostnames (no dots or colons).
+# Leave IPs, FQDNs, and IPv6 addresses unchanged.
+if [[ "$HOSTNAME_PROVIDED" == true ]] && [[ "$HOSTNAME" != *.local ]] && [[ "$HOSTNAME" != *.* ]] && [[ "$HOSTNAME" != *:* ]]; then
     HOSTNAME="${HOSTNAME}.local"
 fi
 

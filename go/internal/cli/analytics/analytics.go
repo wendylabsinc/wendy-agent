@@ -16,9 +16,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/wendylabsinc/wendy/internal/shared/config"
-	"github.com/wendylabsinc/wendy/internal/shared/env"
-	"github.com/wendylabsinc/wendy/internal/shared/version"
+	"github.com/wendylabsinc/wendy/go/internal/shared/config"
+	"github.com/wendylabsinc/wendy/go/internal/shared/env"
+	"github.com/wendylabsinc/wendy/go/internal/shared/version"
 )
 
 const telemetryEndpoint = "https://wendy-cloud-services-nkohwk7hda-uc.a.run.app/v1/telemetry/events"
@@ -48,8 +48,6 @@ var (
 	trackHook func(event string, properties map[string]string)
 )
 
-// SetTrackHookForTesting installs a hook that receives every Track call.
-// Pass nil to clear. Intended for tests only.
 func SetTrackHookForTesting(fn func(event string, properties map[string]string)) {
 	trackHook = fn
 }

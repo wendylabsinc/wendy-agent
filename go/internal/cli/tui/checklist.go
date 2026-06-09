@@ -29,8 +29,6 @@ type ChecklistModel struct {
 	quitting       bool
 }
 
-// NewChecklist creates a new checklist model. The cursor starts on the
-// "Select all" row at position 0.
 func NewChecklist(title string, items []ChecklistItem) ChecklistModel {
 	cp := make([]ChecklistItem, len(items))
 	copy(cp, items)
@@ -58,7 +56,6 @@ func (m *ChecklistModel) setAll(v bool) {
 	}
 }
 
-// totalRows returns the number of visible rows (select-all + items).
 func (m ChecklistModel) totalRows() int {
 	return 1 + len(m.items)
 }
@@ -204,7 +201,6 @@ func (m ChecklistModel) Cancelled() bool {
 	return m.quitting
 }
 
-// SelectedItems returns the items the user toggled on.
 func (m ChecklistModel) SelectedItems() []ChecklistItem {
 	var selected []ChecklistItem
 	for _, item := range m.items {

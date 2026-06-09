@@ -3,15 +3,19 @@ package commands
 import (
 	"context"
 	"errors"
+	"net"
 	"reflect"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/wendylabsinc/wendy/internal/cli/grpcclient"
-	"github.com/wendylabsinc/wendy/internal/shared/config"
-	"github.com/wendylabsinc/wendy/internal/shared/models"
-	"github.com/wendylabsinc/wendy/proto/gen/agentpb"
+	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
+	"github.com/wendylabsinc/wendy/go/internal/cli/providers"
+	"github.com/wendylabsinc/wendy/go/internal/shared/config"
+	"github.com/wendylabsinc/wendy/go/internal/shared/models"
+	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
 // ── hostPort ────────────────────────────────────────────────────────
@@ -71,6 +75,87 @@ func TestLANAgentAddressesPrefersIPAddress(t *testing.T) {
 
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("lanAgentAddresses() = %v, want %v", got, want)
+	}
+}
+
+func TestExternalProviderPickerHint(t *testing.T) {
+	tests := []struct {
+		name        string
+		providerKey string
+		want        string
+	}{
+		{
+			name:        "docker",
+			providerKey: providers.ProviderKeyDocker,
+			want:        "Docker Desktop",
+		},
+		{
+			name:        "local",
+			providerKey: providers.ProviderKeyLocal,
+			want:        "Local Machine",
+		},
+		{
+			name:        "other",
+			providerKey: "wendy-lite",
+			want:        "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := externalProviderPickerHint(tt.providerKey)
+			if tt.want == "" {
+				if got != "" {
+					t.Fatalf("hint = %q, want empty", got)
+				}
+				return
+			}
+			if !strings.Contains(got, tt.want) {
+				t.Fatalf("hint = %q, want it to mention %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestProvisionedAgentAdvertisedMTLSMatchesDiscoveredMTLSDevice(t *testing.T) {
+	stubDiscoverLANDevices(t, []models.LANDevice{
+		{
+			IPAddress: "127.0.0.1",
+			Port:      defaultAgentPort + agentMTLSPortOffset,
+			IsMTLS:    true,
+		},
+	}, nil)
+
+	if !provisionedAgentAdvertisedMTLS(context.Background(), "127.0.0.1:50051") {
+		t.Fatal("provisionedAgentAdvertisedMTLS() = false, want true")
+	}
+}
+
+func TestProvisionedAgentAdvertisedMTLSIgnoresPlaintextDevices(t *testing.T) {
+	stubDiscoverLANDevices(t, []models.LANDevice{
+		{
+			IPAddress: "127.0.0.1",
+			Port:      defaultAgentPort,
+			IsMTLS:    false,
+		},
+	}, nil)
+
+	if provisionedAgentAdvertisedMTLS(context.Background(), "127.0.0.1:50051") {
+		t.Fatal("provisionedAgentAdvertisedMTLS() = true, want false")
+	}
+}
+
+func TestProvisionedAgentAdvertisedMTLSMatchesHostnameCaseInsensitively(t *testing.T) {
+	stubDiscoverLANDevices(t, []models.LANDevice{
+		{
+			Hostname: "WENDYOS-OTTER.LOCAL.",
+			Port:     defaultAgentPort + agentMTLSPortOffset,
+			IsMTLS:   true,
+		},
+	}, nil)
+
+	if !provisionedAgentAdvertisedMTLS(context.Background(), "wendyos-otter.local:50051") {
+		t.Fatal("provisionedAgentAdvertisedMTLS() = false, want true")
 	}
 }
 
@@ -135,6 +220,22 @@ func TestLANAgentAddressesFallsBackToDefaultPort(t *testing.T) {
 
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("lanAgentAddresses() = %v, want %v", got, want)
+	}
+}
+
+func TestIsCertRejectionErrorIgnoresPlaintextTLSProbe(t *testing.T) {
+	err := errors.New(`rpc error: code = Unavailable desc = connection error: desc = "transport: authentication handshake failed: tls: first record does not look like a TLS handshake"`)
+
+	if isCertRejectionError(err) {
+		t.Fatal("isCertRejectionError() = true, want false for plaintext TLS probe")
+	}
+}
+
+func TestIsCertRejectionErrorDetectsTLSAlert(t *testing.T) {
+	err := errors.New("rpc error: code = Unavailable desc = remote error: tls: bad certificate")
+
+	if !isCertRejectionError(err) {
+		t.Fatal("isCertRejectionError() = false, want true for TLS alert")
 	}
 }
 
@@ -424,5 +525,179 @@ func TestConnectResolvedAgent_UsesSpinnerForInteractiveDefaultDevice(t *testing.
 	}
 	if gotConn != wantConn {
 		t.Fatal("connectResolvedAgent() did not return spinner result")
+	}
+}
+
+func TestConnectResolvedAgent_NoAuthProvisionedAgentRequiresLogin(t *testing.T) {
+	origInteractive := isInteractiveTerminalFn
+	origJSON := jsonOutput
+	defer func() {
+		isInteractiveTerminalFn = origInteractive
+		jsonOutput = origJSON
+	}()
+
+	isInteractiveTerminalFn = func() bool { return false }
+	jsonOutput = false
+	setTempConfig(t, &config.Config{})
+
+	plaintextAddr := startFailingPlaintextAgent(t)
+	knownProvisionedMTLS := stubProvisionedMTLSDiscovery(t, plaintextAddr)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	conn, err := connectResolvedAgentWithProvisionedHint(ctx, "127.0.0.1", plaintextAddr, false, knownProvisionedMTLS)
+	if conn != nil {
+		conn.Close()
+		t.Fatal("connectResolvedAgent() returned a connection for an auth-only agent")
+	}
+	if !errors.Is(err, errProvisionedAgentUnauthorized) {
+		t.Fatalf("connectResolvedAgent() error = %v, want %v", err, errProvisionedAgentUnauthorized)
+	}
+	if err.Error() != provisionedAgentUnauthorizedMessage {
+		t.Fatalf("connectResolvedAgent() message = %q, want %q", err.Error(), provisionedAgentUnauthorizedMessage)
+	}
+}
+
+func TestConnectResolvedAgent_ProvisionedAgentPreservesMTLSError(t *testing.T) {
+	origInteractive := isInteractiveTerminalFn
+	origJSON := jsonOutput
+	defer func() {
+		isInteractiveTerminalFn = origInteractive
+		jsonOutput = origJSON
+	}()
+
+	isInteractiveTerminalFn = func() bool { return false }
+	jsonOutput = false
+	setTempConfig(t, &config.Config{
+		Auth: []config.AuthConfig{
+			{
+				Certificates: []config.CertificateInfo{
+					{
+						PemCertificate: "not a certificate",
+						PemPrivateKey:  "not a private key",
+					},
+				},
+			},
+		},
+	})
+
+	plaintextAddr := startFailingPlaintextAgent(t)
+	knownProvisionedMTLS := stubProvisionedMTLSDiscovery(t, plaintextAddr)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	conn, err := connectResolvedAgentWithProvisionedHint(ctx, "127.0.0.1", plaintextAddr, false, knownProvisionedMTLS)
+	if conn != nil {
+		conn.Close()
+		t.Fatal("connectResolvedAgent() returned a connection for an auth-only agent")
+	}
+	if !errors.Is(err, errProvisionedAgentUnauthorized) {
+		t.Fatalf("connectResolvedAgent() error = %v, want %v", err, errProvisionedAgentUnauthorized)
+	}
+	if errors.Unwrap(err) == nil {
+		t.Fatalf("connectResolvedAgent() error = %v, want wrapped mTLS cause", err)
+	}
+	if !strings.Contains(err.Error(), "Last mTLS error:") || !strings.Contains(err.Error(), "loading TLS cert") {
+		t.Fatalf("connectResolvedAgent() message = %q, want mTLS diagnostic", err.Error())
+	}
+}
+
+func stubProvisionedMTLSDiscovery(t *testing.T, plaintextAddr string) bool {
+	t.Helper()
+	host, portStr, err := net.SplitHostPort(plaintextAddr)
+	if err != nil {
+		t.Fatalf("split plaintext address: %v", err)
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		t.Fatalf("parse plaintext port: %v", err)
+	}
+	stubDiscoverLANDevices(t, []models.LANDevice{
+		{
+			IPAddress: host,
+			Port:      port + agentMTLSPortOffset,
+			IsMTLS:    true,
+		},
+	}, nil)
+	return provisionedAgentAdvertisedMTLS(context.Background(), plaintextAddr)
+}
+
+func startFailingPlaintextAgent(t *testing.T) string {
+	t.Helper()
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen plaintext candidate: %v", err)
+	}
+	go closeAcceptedConnections(listener)
+	t.Cleanup(func() {
+		listener.Close()
+	})
+	return listener.Addr().String()
+}
+
+func closeAcceptedConnections(listener net.Listener) {
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		conn.Close()
+	}
+}
+
+func stubDiscoverLANDevices(t *testing.T, devices []models.LANDevice, err error) {
+	t.Helper()
+
+	orig := discoverLANDevices
+	discoverLANDevices = func(context.Context, time.Duration) ([]models.LANDevice, error) {
+		return devices, err
+	}
+	t.Cleanup(func() {
+		discoverLANDevices = orig
+	})
+}
+
+func TestIsCertRejectionError(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{
+			// A plaintext (unprovisioned) agent probed with TLS: gRPC wraps the
+			// "first record does not look like a TLS handshake" detail inside an
+			// "authentication handshake failed" envelope. This is NOT a cert
+			// rejection — the server simply isn't a TLS endpoint, so the CLI must
+			// fall back to plaintext rather than report a bogus clock/cert error.
+			"plaintext server probed with TLS",
+			errors.New(`rpc error: code = Unavailable desc = connection error: desc = "transport: authentication handshake failed: tls: first record does not look like a TLS handshake"`),
+			false,
+		},
+		{
+			"server sent TLS alert (bad cert)",
+			errors.New("rpc error: code = Unavailable desc = connection error: desc = \"remote error: tls: bad certificate\""),
+			true,
+		},
+		{
+			"client certificate required",
+			errors.New("rpc error: code = Unavailable desc = connection error: desc = \"remote error: tls: certificate required\""),
+			true,
+		},
+		{
+			"plain transport error (connection refused)",
+			errors.New(`rpc error: code = Unavailable desc = connection error: desc = "transport: Error while dialing: dial tcp 127.0.0.1:50052: connect: connection refused"`),
+			false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isCertRejectionError(tc.err); got != tc.want {
+				t.Errorf("isCertRejectionError(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
 	}
 }

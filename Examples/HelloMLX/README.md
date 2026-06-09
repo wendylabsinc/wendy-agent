@@ -9,6 +9,12 @@ The development Mac holds the VLM model locally and `wendy run` deploys that mod
 On the Mac you are using to deploy the demo:
 
 ```sh
+curl -fsSL https://install.wendy.sh/cli.sh | bash
+```
+
+Or via Homebrew (see INSTALL.md for trust requirements):
+
+```sh
 brew install wendylabsinc/tap/wendy
 ```
 

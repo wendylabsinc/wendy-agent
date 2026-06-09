@@ -5,8 +5,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/wendylabsinc/wendy/internal/agent/bluetooth"
-	agentpb "github.com/wendylabsinc/wendy/proto/gen/agentpb"
+	"github.com/wendylabsinc/wendy/go/internal/agent/bluetooth"
+	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
 // ── Mocks ────────────────────────────────────────────────────────────────────

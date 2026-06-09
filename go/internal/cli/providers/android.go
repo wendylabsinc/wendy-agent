@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/wendylabsinc/wendy/internal/shared/models"
+	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 )
 
 // androidBuildContext is stored in BuiltApp.Context for ADB builds.
@@ -125,7 +125,6 @@ func (p *AndroidProvider) Build(ctx context.Context, device models.ExternalDevic
 }
 
 // parseAndroidManifest reads AndroidManifest.xml from the project directory
-// and returns the package ID and the name of the launcher activity.
 func parseAndroidManifest(projectPath string) (packageID, activityName string, err error) {
 	data, err := os.ReadFile(filepath.Join(projectPath, "AndroidManifest.xml"))
 	if err != nil {

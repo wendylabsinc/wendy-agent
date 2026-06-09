@@ -39,7 +39,6 @@ type USBDevice struct {
 	IsESP32           bool   `json:"isESP32,omitempty"`
 }
 
-// HumanReadable returns a human-friendly string describing this USB device.
 func (d USBDevice) HumanReadable() string {
 	s := d.Name
 	if d.AgentVersion != "" {
@@ -50,22 +49,23 @@ func (d USBDevice) HumanReadable() string {
 
 // LANDevice represents a device discovered via mDNS on the local network.
 type LANDevice struct {
-	ID              string `json:"id"`
-	DisplayName     string `json:"displayName"`
-	Hostname        string `json:"hostname"`
-	IPAddress       string `json:"ipAddress,omitempty"`
-	Port            int    `json:"port"`
-	IsMTLS          bool   `json:"isMTLS,omitempty"`
-	InterfaceType   string `json:"interfaceType"`
-	IsWendyDevice   bool   `json:"isWendyDevice"`
-	AgentVersion    string `json:"agentVersion,omitempty"`
-	DeviceType      string `json:"deviceType,omitempty"`
-	OS              string `json:"os,omitempty"`
-	OSVersion       string `json:"osVersion,omitempty"`
-	CPUArchitecture string `json:"cpuArchitecture,omitempty"`
+	ID               string `json:"id"`
+	DisplayName      string `json:"displayName"`
+	Hostname         string `json:"hostname"`
+	IPAddress        string `json:"ipAddress,omitempty"`
+	Port             int    `json:"port"`
+	IsMTLS           bool   `json:"isMTLS,omitempty"`
+	InterfaceType    string `json:"interfaceType"`
+	NetworkInterface string `json:"-"`
+	USB              string `json:"usb,omitempty"`
+	IsWendyDevice    bool   `json:"isWendyDevice"`
+	AgentVersion     string `json:"agentVersion,omitempty"`
+	DeviceType       string `json:"deviceType,omitempty"`
+	OS               string `json:"os,omitempty"`
+	OSVersion        string `json:"osVersion,omitempty"`
+	CPUArchitecture  string `json:"cpuArchitecture,omitempty"`
 }
 
-// HumanReadable returns a human-friendly string describing this LAN device.
 func (d LANDevice) HumanReadable() string {
 	s := fmt.Sprintf("%s @ %s:%d", d.DisplayName, d.Hostname, d.Port)
 	if d.AgentVersion != "" {
@@ -95,7 +95,6 @@ func (d BluetoothDevice) IsWendyAgent() bool {
 	return d.L2CAPPSM > 0
 }
 
-// HumanReadable returns a human-friendly string describing this Bluetooth device.
 func (d BluetoothDevice) HumanReadable() string {
 	s := d.DisplayName
 	if d.AgentVersion != "" {
@@ -119,7 +118,6 @@ type EthernetInterface struct {
 	AgentVersion  string `json:"agentVersion,omitempty"`
 }
 
-// HumanReadable returns a human-friendly string describing this Ethernet interface.
 func (d EthernetInterface) HumanReadable() string {
 	parts := []string{fmt.Sprintf("%s @ %s", d.DisplayName, d.Name)}
 	if d.AgentVersion != "" {

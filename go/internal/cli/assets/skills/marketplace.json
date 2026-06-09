@@ -1,0 +1,114 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "swift-server-skills",
+  "owner": {
+    "name": "Joannis Orlandos"
+  },
+  "plugins": [
+    {
+      "name": "swift",
+      "source": "./swift",
+      "description": "Expert guidance on Swift best practices, patterns, testing, logging, and OpenTelemetry",
+      "category": "development",
+      "keywords": ["swift", "swift-testing", "swift-log", "swift-otel", "opentelemetry"]
+    },
+    {
+      "name": "swift-concurrency",
+      "source": "./swift-concurrency",
+      "description": "Expert guidance on Swift Concurrency: async/await, actors, tasks, Sendable, and Swift 6 migration",
+      "category": "development",
+      "keywords": ["swift", "concurrency", "async-await", "actors", "sendable", "swift-6"]
+    },
+    {
+      "name": "swift-nio",
+      "source": "./swift-nio",
+      "description": "Expert guidance on SwiftNIO: event loops, channels, byte buffers, and network protocol implementation",
+      "category": "development",
+      "keywords": ["swift", "swiftnio", "networking", "tcp", "udp", "event-loop"]
+    },
+    {
+      "name": "swift-library-design",
+      "source": "./swift-library-design",
+      "description": "Expert guidance on Swift library and framework design: API patterns, protocols, result builders, and performance",
+      "category": "development",
+      "keywords": ["swift", "library-design", "api-design", "protocols", "result-builders"]
+    },
+    {
+      "name": "hummingbird",
+      "source": "./hummingbird",
+      "description": "Expert guidance on Hummingbird 2 web framework: routing, middleware, request context, and REST APIs",
+      "category": "development",
+      "keywords": ["swift", "hummingbird", "web-framework", "http", "rest-api"]
+    },
+    {
+      "name": "postgres-nio",
+      "source": "./postgres-nio",
+      "description": "Expert guidance on using PostgreSQL with Swift via postgres-nio",
+      "category": "development",
+      "keywords": ["swift", "postgresql", "postgres-nio", "database", "sql"]
+    },
+    {
+      "name": "swift-valkey",
+      "source": "./swift-valkey",
+      "description": "Expert guidance on using Valkey and Redis with Swift via valkey-swift",
+      "category": "development",
+      "keywords": ["swift", "valkey", "redis", "caching", "pub-sub"]
+    },
+    {
+      "name": "database-driver-design",
+      "source": "./database-driver-design",
+      "description": "Expert guidance on building Swift database client libraries: wire protocols, connection pooling, and state machines",
+      "category": "development",
+      "keywords": ["swift", "database", "driver", "wire-protocol", "connection-pooling"]
+    },
+    {
+      "name": "wendy",
+      "source": "./wendy",
+      "description": "Expert guidance on building and deploying apps to WendyOS edge devices",
+      "category": "development",
+      "keywords": ["wendyos", "edge-computing", "arm64", "jetson", "raspberry-pi"]
+    },
+    {
+      "name": "wendy-contributing",
+      "source": "./wendy-contributing",
+      "description": "Expert guidance on contributing to WendyOS: Yocto builds, agent internals, and system architecture",
+      "category": "development",
+      "keywords": ["wendyos", "yocto", "bitbake", "wendy-agent", "embedded-linux"]
+    },
+    {
+      "name": "wendy-swift",
+      "source": "./wendy-swift",
+      "description": "Curated Swift package ecosystem for WendyOS and Linux ARM64",
+      "category": "development",
+      "keywords": ["swift", "wendyos", "linux", "arm64", "packages"]
+    },
+    {
+      "name": "wendy-lite",
+      "source": "./wendy-lite",
+      "description": "Expert guidance on building WASM apps for Wendy Lite MCU firmware on ESP32-C6",
+      "category": "development",
+      "keywords": ["wendyos", "wasm", "esp32", "microcontroller", "embedded"]
+    },
+    {
+      "name": "linear",
+      "source": "./linear",
+      "description": "Linear CLI for issue tracking and project management",
+      "category": "productivity",
+      "keywords": ["linear", "issue-tracking", "project-management"]
+    },
+    {
+      "name": "deckset",
+      "source": "./deckset",
+      "description": "Deckset Markdown presentation authoring",
+      "category": "productivity",
+      "keywords": ["deckset", "presentations", "markdown"]
+    },
+    {
+      "name": "swift-server-lint",
+      "source": "./swift-server-lint",
+      "description": "Linting tool that enforces Swift server best practices from the skills",
+      "category": "development",
+      "keywords": ["swift", "linter", "best-practices", "code-quality"]
+    }
+  ]
+}

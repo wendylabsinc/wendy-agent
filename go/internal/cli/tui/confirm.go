@@ -16,12 +16,10 @@ type ConfirmModel struct {
 	quitting bool
 }
 
-// NewConfirm creates a new confirm model defaulting to No.
 func NewConfirm(question string) ConfirmModel {
 	return ConfirmModel{Question: question}
 }
 
-// NewConfirmDefaultYes creates a new confirm model defaulting to Yes.
 func NewConfirmDefaultYes(question string) ConfirmModel {
 	return ConfirmModel{Question: question, choice: true}
 }

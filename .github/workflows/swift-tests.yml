@@ -23,10 +23,10 @@ jobs:
     name: Run WendyAgentCore Tests
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Select Xcode ${{ env.XCODE_VERSION }}
-        uses: maxim-lobanov/setup-xcode@v1
+        uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1
         with:
           xcode-version: ${{ env.XCODE_VERSION }}
 
@@ -38,7 +38,7 @@ jobs:
           echo "version=$(xcodebuild -version | awk '/Xcode/ { print $2 }')" >> "$GITHUB_OUTPUT"
 
       - name: Cache SwiftPM package resolution
-        uses: actions/cache@v5
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
         with:
           path: |
             swift/Build/SwiftPM/checkouts
@@ -59,10 +59,10 @@ jobs:
     name: Build WendyAgentMac app
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Select Xcode ${{ env.XCODE_VERSION }}
-        uses: maxim-lobanov/setup-xcode@v1
+        uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1
         with:
           xcode-version: ${{ env.XCODE_VERSION }}
 
@@ -74,7 +74,7 @@ jobs:
           echo "version=$(xcodebuild -version | awk '/Xcode/ { print $2 }')" >> "$GITHUB_OUTPUT"
 
       - name: Cache Xcode package resolution
-        uses: actions/cache@v5
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
         with:
           path: |
             swift/Build/CI/PackageCache
@@ -116,7 +116,7 @@ jobs:
           xcodebuild build \
             -workspace WendyAgent.xcworkspace \
             -scheme WendyAgentMac \
-            -configuration Release \
+            -configuration Debug \
             -destination 'platform=macOS' \
             -derivedDataPath "$DERIVED_DATA_PATH" \
             -clonedSourcePackagesDirPath "$SOURCE_PACKAGES_DIR" \
@@ -131,7 +131,7 @@ jobs:
     container: swift:6.2.3
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v6
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           ref: ${{ github.event.pull_request.head.sha }}
 
@@ -153,7 +153,7 @@ jobs:
           exit 0
 
       - name: Remove Previous Lint Comment
-        uses: actions/github-script@v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
@@ -176,7 +176,7 @@ jobs:
 
       - name: Comment on PR
         if: steps.lint.outputs.exit_code != '0'
-        uses: actions/github-script@v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         env:
           LINT_OUTPUT: ${{ steps.lint.outputs.lint_output }}
         with:

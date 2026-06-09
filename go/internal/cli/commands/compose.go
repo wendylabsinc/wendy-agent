@@ -8,17 +8,20 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/distribution/reference"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"gopkg.in/yaml.v3"
 
-	"github.com/wendylabsinc/wendy/internal/cli/grpcclient"
-	"github.com/wendylabsinc/wendy/internal/cli/tui"
-	"github.com/wendylabsinc/wendy/internal/shared/appconfig"
-	"github.com/wendylabsinc/wendy/proto/gen/agentpb"
+	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
+	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
+	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
 // normalizeImageRef canonicalises a Docker short reference (e.g.
@@ -51,6 +54,48 @@ type composeService struct {
 	DependsOn   yaml.Node `yaml:"depends_on"` // list or map
 	Restart     string    `yaml:"restart"`
 	NetworkMode string    `yaml:"network_mode"`
+
+	// Captured only for warning purposes — not used in deployment.
+	Devices     yaml.Node `yaml:"devices"`
+	Privileged  yaml.Node `yaml:"privileged"`
+	CapAdd      yaml.Node `yaml:"cap_add"`
+	SecurityOpt yaml.Node `yaml:"security_opt"`
+	IPC         string    `yaml:"ipc"`
+	PID         string    `yaml:"pid"`
+	ShmSize     string    `yaml:"shm_size"`
+	HealthCheck yaml.Node `yaml:"healthcheck"`
+	Profiles    yaml.Node `yaml:"profiles"`
+	Secrets     yaml.Node `yaml:"secrets"`
+	ExtraHosts  yaml.Node `yaml:"extra_hosts"`
+}
+
+// unsupportedComposeWarnings returns field names from svc that Wendy does not
+// honour during deployment. The caller should print these to the user.
+func unsupportedComposeWarnings(svc composeService) []string {
+	type check struct {
+		name  string
+		empty bool
+	}
+	checks := []check{
+		{"devices", svc.Devices.IsZero()},
+		{"privileged", svc.Privileged.IsZero()},
+		{"cap_add", svc.CapAdd.IsZero()},
+		{"security_opt", svc.SecurityOpt.IsZero()},
+		{"ipc", svc.IPC == ""},
+		{"pid", svc.PID == ""},
+		{"shm_size", svc.ShmSize == ""},
+		{"healthcheck", svc.HealthCheck.IsZero()},
+		{"profiles", svc.Profiles.IsZero()},
+		{"secrets", svc.Secrets.IsZero()},
+		{"extra_hosts", svc.ExtraHosts.IsZero()},
+	}
+	var warned []string
+	for _, c := range checks {
+		if !c.empty {
+			warned = append(warned, c.name)
+		}
+	}
+	return warned
 }
 
 type composeBuildConfig struct {
@@ -100,6 +145,12 @@ func composeBuildContext(svc composeService, projectDir string) (ctxDir, dockerf
 		}
 		df := "Dockerfile"
 		if bc.Dockerfile != "" {
+			if err := validateComposeDockerfileName(bc.Dockerfile); err != nil {
+				return "", "", nil, fmt.Errorf("compose dockerfile: %w", err)
+			}
+			if _, err := confinedDockerfilePath(ctxDir, bc.Dockerfile); err != nil {
+				return "", "", nil, fmt.Errorf("compose dockerfile: %w", err)
+			}
 			df = bc.Dockerfile
 		}
 		return ctxDir, df, bc.Args, nil
@@ -267,8 +318,21 @@ func parseComposeVolume(v string) (source, target, mode string) {
 // composeAppConfig builds an AppConfig for a compose service.
 // It synthesises network entitlements from ports/network_mode and persist
 // entitlements from named volumes.
-func composeAppConfig(projectName, serviceName string, svc composeService) *appconfig.AppConfig {
-	appID := projectName + "-" + serviceName
+//
+// numServices is the total number of services in the compose file. When
+// numServices > 1 and no companion wendy.json overrides the appID, all
+// services are grouped under the project name (appID = projectName,
+// ServiceName = serviceName). Single-service apps keep the legacy
+// "projectName-serviceName" appID so existing deployments are unaffected.
+func composeAppConfig(projectName, serviceName string, svc composeService, numServices int) *appconfig.AppConfig {
+	var appID string
+	var svcName string
+	if numServices > 1 {
+		appID = projectName
+		svcName = serviceName
+	} else {
+		appID = projectName + "-" + serviceName
+	}
 
 	var entitlements []appconfig.Entitlement
 
@@ -327,8 +391,78 @@ func composeAppConfig(projectName, serviceName string, svc composeService) *appc
 
 	return &appconfig.AppConfig{
 		AppID:        appID,
+		ServiceName:  svcName,
 		Entitlements: entitlements,
 	}
+}
+
+// composeCompanionWarnings returns warnings for service names declared in the
+// companion wendy.json that have no matching service in the compose file.
+// A nil companion produces no warnings.
+func composeCompanionWarnings(companion *appconfig.AppConfig, composeCfg *composeConfig) []string {
+	if companion == nil || len(companion.Services) == 0 {
+		return nil
+	}
+	var warnings []string
+	for name := range companion.Services {
+		if _, ok := composeCfg.Services[name]; !ok {
+			warnings = append(warnings, fmt.Sprintf("wendy.json: service %q is not defined in the compose file", name))
+		}
+	}
+	sort.Strings(warnings)
+	return warnings
+}
+
+// applyComposeCompanion merges Wendy-specific config from a companion wendy.json
+// into an AppConfig synthesised from compose fields. companion may be nil (no
+// wendy.json present).
+//
+// Merge rules:
+//   - AppID and ServiceName are set from the companion so the agent creates the
+//     container as "{appId}/{serviceName}" (WDY-878) and injects WENDY_APP_ID /
+//     WENDY_HOSTNAME correctly.
+//   - Top-level isolation and frameworks from the companion are applied to every service.
+//   - Top-level entitlements from the companion are appended to every service's
+//     entitlements (compose-derived network/persist entitlements are preserved).
+//   - Per-service entitlements are appended on top of the shared ones.
+//   - Per-service frameworks override the group-level frameworks for that service.
+//   - Duplicate entitlements (same type+name+mode) are removed; the first
+//     occurrence wins so compose-synthesised entitlements take precedence.
+func applyComposeCompanion(appCfg *appconfig.AppConfig, companion *appconfig.AppConfig, serviceName string) {
+	if companion == nil {
+		return
+	}
+	appCfg.AppID = companion.AppID
+	appCfg.ServiceName = serviceName
+	appCfg.Isolation = companion.Isolation
+	appCfg.Frameworks = companion.Frameworks
+	appCfg.Entitlements = append(appCfg.Entitlements, companion.Entitlements...)
+	if svc, ok := companion.Services[serviceName]; ok && svc != nil {
+		appCfg.Entitlements = append(appCfg.Entitlements, svc.Entitlements...)
+		if svc.Frameworks != nil {
+			appCfg.Frameworks = svc.Frameworks
+		}
+	}
+	appCfg.Entitlements = deduplicateEntitlements(appCfg.Entitlements)
+}
+
+// deduplicateEntitlements returns a copy of ents with duplicates removed.
+// Two entitlements are considered duplicates when their type, name, and mode
+// are equal; the first occurrence is kept. This covers the common cases:
+//   - GPU declared in both shared and per-service sections
+//   - Network mode declared in both compose (network_mode:host) and companion
+//   - Persist volumes declared multiple times with the same name
+func deduplicateEntitlements(ents []appconfig.Entitlement) []appconfig.Entitlement {
+	seen := make(map[string]bool, len(ents))
+	out := make([]appconfig.Entitlement, 0, len(ents))
+	for _, e := range ents {
+		key := string(e.Type) + "\x00" + e.Name + "\x00" + e.Mode
+		if !seen[key] {
+			seen[key] = true
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 // serviceOrder returns service names sorted by depends_on so dependencies
@@ -446,7 +580,9 @@ func (w *serviceLogWriter) Flush() {
 
 // runComposeWithAgent orchestrates a docker-compose project on a WendyOS device:
 // builds service images, pushes them to the device registry, creates containers,
-// and streams their combined output.
+// and streams their combined output. When a companion wendy.json exists in the
+// same directory it is merged to supply Wendy-specific config (entitlements,
+// isolation, frameworks) without modifying the compose file.
 func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, projectDir string, opts runOptions) error {
 	cfg, composeFilename, err := parseComposeFile(projectDir)
 	if err != nil {
@@ -454,6 +590,18 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 	}
 	if len(cfg.Services) == 0 {
 		return fmt.Errorf("%s defines no services", composeFilename)
+	}
+
+	// Load an optional companion wendy.json from the same directory.
+	companion, companionWarnings, err := appconfig.LoadComposeCompanion(projectDir)
+	if err != nil {
+		return fmt.Errorf("companion wendy.json: %w", err)
+	}
+	for _, w := range companionWarnings {
+		cliLogln("warning: %s", w)
+	}
+	for _, w := range composeCompanionWarnings(companion, cfg) {
+		cliLogln("warning: %s", w)
 	}
 
 	if err := requireRegistryAuth(ctx, conn); err != nil {
@@ -533,7 +681,7 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 			return fmt.Errorf("service %s: custom Dockerfile path %q is not yet supported; rename it to 'Dockerfile'", name, dockerfile)
 		}
 
-		if err := buildAndPushImage(ctx, ctxDir, registryAddr, imageName, platform, allBuildArgs, os.Stdout, conn.IsMTLS); err != nil {
+		if err := buildAndPushImage(ctx, ctxDir, registryAddr, imageName, platform, "", allBuildArgs, os.Stdout, os.Stderr, conn.IsMTLS); err != nil {
 			return fmt.Errorf("building service %s: %w", name, err)
 		}
 		cliLogln("Service %s image built and pushed.", name)
@@ -548,7 +696,8 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 	}
 	for _, name := range ordered {
 		svc := cfg.Services[name]
-		appCfg := composeAppConfig(projectName, name, svc)
+		appCfg := composeAppConfig(projectName, name, svc, len(cfg.Services))
+		applyComposeCompanion(appCfg, companion, name)
 
 		// Determine image: built image or declared image. Public image refs
 		// like "python:3.11-slim" must be canonicalised to "docker.io/library/…"
@@ -582,25 +731,26 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 			restartPolicy = composeRestartPolicy(svc.Restart)
 		}
 
-		// TODO: compose `environment:` values aren't sent to the device yet.
-		// CreateContainerRequest has no env field, and stuffing env strings
-		// into UserArgs (the previous behaviour) appended them to argv. Add a
-		// proto env field and plumb composeEnv(svc) through it.
+		if warns := unsupportedComposeWarnings(svc); len(warns) > 0 {
+			cliLogln("warning: service %q uses unsupported Compose fields (ignored by Wendy): %s",
+				name, strings.Join(warns, ", "))
+		}
 
 		createReq := &agentpb.CreateContainerRequest{
 			ImageName:     imageName,
-			AppName:       appCfg.AppID,
+			AppName:       appCfg.ContainerName(),
 			AppConfig:     appConfigData,
 			Cmd:           cmd,
 			RestartPolicy: restartPolicy,
 			UserArgs:      extraArgs,
+			Env:           composeEnv(svc),
 		}
 
-		cliLogln("Creating container for service %s (%s)...", name, appCfg.AppID)
+		cliLogln("Creating container for service %s (%s)...", name, appCfg.ContainerName())
 		if err := createContainerWithProgress(ctx, conn.ContainerService, createReq); err != nil {
 			return fmt.Errorf("creating container for service %s: %w", name, err)
 		}
-		cliLogln("Container %s created.", appCfg.AppID)
+		cliLogln("Container %s created.", appCfg.ContainerName())
 	}
 
 	if opts.deploy {
@@ -628,8 +778,11 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 		for i := len(ordered) - 1; i >= 0; i-- {
 			name := ordered[i]
 			svc := cfg.Services[name]
-			appCfg := composeAppConfig(projectName, name, svc)
+			appCfg := composeAppConfig(projectName, name, svc, len(cfg.Services))
+			applyComposeCompanion(appCfg, companion, name)
 			cliLogln("Stopping %s...", name)
+			// Use AppID (not ContainerName) so StopContainer's label-based lookup
+			// finds the container regardless of whether a companion sets ServiceName.
 			_, _ = conn.ContainerService.StopContainer(stopCtx, &agentpb.StopContainerRequest{
 				AppName: appCfg.AppID,
 			})
@@ -642,9 +795,10 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 	if opts.detach {
 		for _, name := range ordered {
 			svc := cfg.Services[name]
-			appCfg := composeAppConfig(projectName, name, svc)
+			appCfg := composeAppConfig(projectName, name, svc, len(cfg.Services))
+			applyComposeCompanion(appCfg, companion, name)
 			stream, err := conn.ContainerService.StartContainer(ctx, &agentpb.StartContainerRequest{
-				AppName: appCfg.AppID,
+				AppName: appCfg.ContainerName(),
 			})
 			if err != nil {
 				return fmt.Errorf("starting service %s: %w", name, err)
@@ -655,8 +809,7 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 			cliLogln("Service %s started.", name)
 		}
 		cliLogln("All services running in detached mode.")
-		projectID := strings.ToLower(filepath.Base(projectDir))
-		cliLogln("Run 'wendy logs %s' to stream logs.", projectID)
+		cliLogln("Run 'wendy device logs' to stream logs (filter a service with --app %s-<service>).", projectName)
 		return nil
 	}
 
@@ -671,56 +824,55 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 
 	for _, name := range ordered {
 		svc := cfg.Services[name]
-		appCfg := composeAppConfig(projectName, name, svc)
+		appCfg := composeAppConfig(projectName, name, svc, len(cfg.Services))
+		applyComposeCompanion(appCfg, companion, name)
 
 		wg.Add(1)
-		go func(serviceName, appID string) {
+		go func(serviceName, containerID string) {
 			defer wg.Done()
 			outW := stdoutWriters[serviceName]
 			errW := stderrWriters[serviceName]
 			defer outW.Flush()
 			defer errW.Flush()
 
-			stream, streamErr := conn.ContainerService.AttachContainer(runCtx)
-			if streamErr == nil {
-				streamErr = stream.Send(&agentpb.AttachContainerRequest{
-					RequestType: &agentpb.AttachContainerRequest_AppName{AppName: appID},
-				})
-				// Compose never forwards stdin; half-close so the server sees EOF.
-				_ = stream.CloseSend()
-			}
-			if streamErr != nil {
-				// Fall back to the server-streaming StartContainer when AttachContainer is unavailable.
+			// openStart falls back to the server-streaming StartContainer RPC,
+			// used when the agent is too old to support AttachContainer.
+			openStart := func() (containerOutputStream, error) {
 				startStream, startErr := conn.ContainerService.StartContainer(runCtx, &agentpb.StartContainerRequest{
-					AppName: appID,
+					AppName: containerID,
 				})
 				if startErr != nil {
-					errCh <- fmt.Errorf("starting service %s: %w", serviceName, startErr)
-					return
+					return nil, fmt.Errorf("starting service %s: %w", serviceName, startErr)
 				}
-				for {
-					resp, recvErr := startStream.Recv()
-					if recvErr == io.EOF {
-						return
-					}
-					if recvErr != nil {
-						if runCtx.Err() != nil {
-							return
-						}
-						errCh <- fmt.Errorf("service %s: %w", serviceName, recvErr)
-						return
-					}
-					if out := resp.GetStdoutOutput(); out != nil {
-						outW.Write(out.GetData())
-					}
-					if out := resp.GetStderrOutput(); out != nil {
-						errW.Write(out.GetData())
-					}
-				}
+				return startStream, nil
 			}
 
+			var outStream containerOutputStream
+			attached := false
+			attachStream, streamErr := conn.ContainerService.AttachContainer(runCtx)
+			if streamErr == nil {
+				streamErr = attachStream.Send(&agentpb.AttachContainerRequest{
+					RequestType: &agentpb.AttachContainerRequest_AppName{AppName: containerID},
+				})
+				// Compose never forwards stdin; half-close the send side so the
+				// container sees stdin EOF instead of hanging on a read.
+				_ = attachStream.CloseSend()
+			}
+			if streamErr != nil {
+				s, err := openStart()
+				if err != nil {
+					errCh <- err
+					return
+				}
+				outStream = s
+			} else {
+				outStream = attachStream
+				attached = true
+			}
+
+			gotFirstResponse := false
 			for {
-				resp, recvErr := stream.Recv()
+				resp, recvErr := outStream.Recv()
 				if recvErr == io.EOF {
 					return
 				}
@@ -728,9 +880,23 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 					if runCtx.Err() != nil {
 						return
 					}
+					// Older agents reject AttachContainer with Unimplemented on
+					// the first Recv rather than at open/send time; fall back
+					// silently to StartContainer.
+					if attached && !gotFirstResponse && status.Code(recvErr) == codes.Unimplemented {
+						s, err := openStart()
+						if err != nil {
+							errCh <- err
+							return
+						}
+						outStream = s
+						attached = false
+						continue
+					}
 					errCh <- fmt.Errorf("service %s: %w", serviceName, recvErr)
 					return
 				}
+				gotFirstResponse = true
 				if out := resp.GetStdoutOutput(); out != nil {
 					outW.Write(out.GetData())
 				}
@@ -738,7 +904,7 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 					errW.Write(out.GetData())
 				}
 			}
-		}(name, appCfg.AppID)
+		}(name, appCfg.ContainerName())
 	}
 
 	cliLogln("All services started.")

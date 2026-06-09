@@ -1,9 +1,13 @@
 package tui
 
 import (
+	"strings"
+
 	bubbleTable "github.com/charmbracelet/bubbles/table"
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/lipgloss/table"
+	"github.com/charmbracelet/x/ansi"
 )
 
 var (
@@ -50,7 +54,6 @@ func RenderTable(headers []string, rows [][]string) string {
 	return t.Render() + "\n"
 }
 
-// BubbleTableStyles returns the shared emerald styling for Bubble Tea tables.
 func BubbleTableStyles(interactive bool) bubbleTable.Styles {
 	styles := bubbleTable.DefaultStyles()
 	styles.Header = lipgloss.NewStyle().
@@ -70,13 +73,159 @@ func BubbleTableStyles(interactive bool) bubbleTable.Styles {
 	return styles
 }
 
-// NewBubbleTable creates a Bubble Tea table using the shared emerald styling.
-func NewBubbleTable(interactive bool, columns []bubbleTable.Column) bubbleTable.Model {
+type BubbleTable struct {
+	model         bubbleTable.Model
+	viewportWidth int
+	x             int
+}
+
+func NewBubbleTable(interactive bool, columns []bubbleTable.Column) BubbleTable {
 	opts := []bubbleTable.Option{bubbleTable.WithFocused(interactive)}
 	if len(columns) > 0 {
 		opts = append(opts, bubbleTable.WithColumns(columns))
 	}
 	t := bubbleTable.New(opts...)
 	t.SetStyles(BubbleTableStyles(interactive))
-	return t
+	return BubbleTable{model: t}
+}
+
+func (t BubbleTable) Update(msg tea.Msg) (BubbleTable, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		t.SetViewportWidth(msg.Width)
+		return t, tea.ClearScreen
+	case tea.KeyMsg:
+		switch msg.String() {
+		case "left", "h":
+			t.ScrollLeft()
+			return t, nil
+		case "right", "l":
+			t.ScrollRight()
+			return t, nil
+		}
+	}
+
+	var cmd tea.Cmd
+	t.model, cmd = t.model.Update(msg)
+	return t, cmd
+}
+
+func (t BubbleTable) View() string {
+	view := t.model.View()
+	if t.viewportWidth <= 0 {
+		return view
+	}
+	return CropANSIView(view, t.x, t.viewportWidth)
+}
+
+func (t BubbleTable) FullView() string {
+	return t.model.View()
+}
+
+func (t *BubbleTable) SetViewportWidth(width int) {
+	t.viewportWidth = max(width, 0)
+	t.clampX()
+}
+
+func (t BubbleTable) ViewportWidth() int {
+	return t.viewportWidth
+}
+
+func (t *BubbleTable) ScrollLeft() {
+	if t.x <= 0 {
+		t.x = 0
+		return
+	}
+	t.x = max(0, t.x-BubbleTableHorizontalStep())
+}
+
+func (t *BubbleTable) ScrollRight() {
+	t.x = min(t.maxX(), t.x+BubbleTableHorizontalStep())
+}
+
+func (t *BubbleTable) ClampScroll() {
+	t.clampX()
+}
+
+func (t *BubbleTable) clampX() {
+	t.x = min(max(t.x, 0), t.maxX())
+}
+
+func (t BubbleTable) ScrollOffset() int {
+	return t.x
+}
+
+func (t BubbleTable) CanScroll() bool {
+	return t.maxX() > 0
+}
+
+func (t BubbleTable) maxX() int {
+	if t.viewportWidth <= 0 {
+		return 0
+	}
+	return max(0, t.model.Width()-t.viewportWidth)
+}
+
+func BubbleTableHorizontalStep() int {
+	return 8
+}
+
+func (t BubbleTable) Columns() []bubbleTable.Column {
+	return t.model.Columns()
+}
+
+func (t *BubbleTable) SetColumns(cols []bubbleTable.Column) {
+	t.model.SetColumns(cols)
+	t.clampX()
+}
+
+func (t BubbleTable) Rows() []bubbleTable.Row {
+	return t.model.Rows()
+}
+
+func (t *BubbleTable) SetRows(rows []bubbleTable.Row) {
+	t.model.SetRows(rows)
+}
+
+func (t BubbleTable) Cursor() int {
+	return t.model.Cursor()
+}
+
+func (t *BubbleTable) SetCursor(n int) {
+	t.model.SetCursor(n)
+}
+
+func (t BubbleTable) Width() int {
+	return t.model.Width()
+}
+
+func (t *BubbleTable) SetWidth(width int) {
+	t.model.SetWidth(width)
+	t.clampX()
+}
+
+func (t BubbleTable) Height() int {
+	return t.model.Height()
+}
+
+func (t *BubbleTable) SetHeight(height int) {
+	t.model.SetHeight(height)
+}
+
+func (t BubbleTable) SelectedRow() bubbleTable.Row {
+	return t.model.SelectedRow()
+}
+
+// CropANSIView cuts every rendered line to width columns from offset. This
+// prevents terminal wrapping while preserving ANSI escape sequences.
+func CropANSIView(view string, offset, width int) string {
+	if width <= 0 {
+		return view
+	}
+
+	lines := strings.Split(view, "\n")
+	for i, line := range lines {
+		lines[i] = ansi.Cut(line, offset, offset+width)
+	}
+	return strings.Join(lines, "\n")
 }

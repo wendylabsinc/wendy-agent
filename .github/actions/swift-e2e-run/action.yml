@@ -1,0 +1,158 @@
+name: Swift E2E Run
+description: Run one WendyAgent Swift E2E route and upload its raw artifact.
+
+inputs:
+  tests:
+    description: Comma-separated SwiftPM test filters.
+    required: false
+    default: ''
+  workflow_id:
+    description: Stable workflow slug used in artifact run IDs.
+    required: false
+    default: swift-e2e-tests
+  target_id:
+    description: Stable route identifier used in artifact run IDs.
+    required: true
+  runner_id:
+    description: Stable runner identifier.
+    required: true
+  cli_os:
+    description: CLI OS label for run metadata.
+    required: true
+  device_address:
+    description: Target agent address.
+    required: true
+  agent_os:
+    description: Agent OS label for run metadata.
+    required: true
+  transport:
+    description: Transport label for run metadata.
+    required: false
+    default: lan
+
+runs:
+  using: composite
+  steps:
+    - name: Capture Swift toolchain version (Unix)
+      if: runner.os != 'Windows'
+      id: swift-toolchain-unix
+      shell: bash
+      run: |
+        set -euo pipefail
+        if [[ "${{ inputs.runner_id }}" == "macos-26" ]]; then
+          version="$(xcodebuild -version | awk '/Xcode/ { print $2 }')"
+        else
+          version="$(swift --version | head -n 1 | tr -cs '[:alnum:]._-' '-')"
+        fi
+        echo "version=$version" >> "$GITHUB_OUTPUT"
+
+    - name: Capture Swift toolchain version (Windows)
+      if: runner.os == 'Windows'
+      id: swift-toolchain-windows
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $version = (& swift --version | Select-Object -First 1) -replace '[^A-Za-z0-9._-]+', '-'
+        "version=$version" >> $env:GITHUB_OUTPUT
+
+    - name: Cache SwiftPM package resolution
+      uses: actions/cache@v5
+      with:
+        path: |
+          swift/WendyE2ETests/.build/checkouts
+          swift/WendyE2ETests/.build/repositories
+          ~/Library/Caches/org.swift.swiftpm
+          ~/.cache/org.swift.swiftpm
+          ~/AppData/Local/org.swift.swiftpm
+        key: swift-e2e-swiftpm-${{ runner.os }}-${{ steps.swift-toolchain-unix.outputs.version || steps.swift-toolchain-windows.outputs.version }}-${{ hashFiles('swift/WendyE2ETests/Package.resolved') }}
+        restore-keys: |
+          swift-e2e-swiftpm-${{ runner.os }}-${{ steps.swift-toolchain-unix.outputs.version || steps.swift-toolchain-windows.outputs.version }}-
+          swift-e2e-swiftpm-${{ runner.os }}-
+
+    - name: Compute Swift E2E run ID (Unix)
+      if: runner.os != 'Windows'
+      id: e2e-run-unix
+      shell: bash
+      run: |
+        set -euo pipefail
+        slug() {
+          printf '%s' "$1" \
+            | tr '[:upper:]' '[:lower:]' \
+            | sed -E 's/[^[:alnum:]._-]+/-/g; s/-+/-/g; s/^-//; s/-$//'
+        }
+
+        workflow_id="$(slug "${{ inputs.workflow_id }}")"
+        target_id="$(slug "${{ inputs.target_id }}")"
+        printf -v attempt_suffix '%04d' "${GITHUB_RUN_ATTEMPT:-1}"
+        echo "run_id=${workflow_id}.gh${GITHUB_RUN_ID}.${target_id}.${attempt_suffix}" >> "$GITHUB_OUTPUT"
+
+    - name: Compute Swift E2E run ID (Windows)
+      if: runner.os == 'Windows'
+      id: e2e-run-windows
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        function Convert-ToSlug([string]$Value) {
+          $slug = $Value.ToLowerInvariant() -replace '[^a-z0-9._-]+', '-'
+          $slug = $slug -replace '-+', '-'
+          return $slug.Trim('-')
+        }
+
+        $workflowID = Convert-ToSlug '${{ inputs.workflow_id }}'
+        $targetID = Convert-ToSlug '${{ inputs.target_id }}'
+        $attempt = if ($env:GITHUB_RUN_ATTEMPT) { [int]$env:GITHUB_RUN_ATTEMPT } else { 1 }
+        $runID = '{0}.gh{1}.{2}.{3:D4}' -f $workflowID, $env:GITHUB_RUN_ID, $targetID, $attempt
+        "run_id=$runID" >> $env:GITHUB_OUTPUT
+
+    - name: Run Swift E2E tests (Unix)
+      if: runner.os != 'Windows'
+      working-directory: swift
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ github.token }}
+        WENDY_E2E_TEST_FILTERS: ${{ inputs.tests }}
+        WENDY_E2E_RUN_ID: ${{ steps.e2e-run-unix.outputs.run_id }}
+        WENDY_E2E_CLI_OS: ${{ inputs.cli_os }}
+        WENDY_E2E_AGENT_OS: ${{ inputs.agent_os }}
+        WENDY_E2E_TRANSPORT: ${{ inputs.transport }}
+      run: |
+        set -euo pipefail
+        output_dir="${RUNNER_TEMP}/wendy"
+        bash ./Scripts/E2ETest.sh \
+          --output-dir "$output_dir" \
+          --agent-address "${{ inputs.device_address }}"
+
+    - name: Run Swift E2E tests (Windows)
+      if: runner.os == 'Windows'
+      working-directory: swift
+      shell: pwsh
+      env:
+        GITHUB_TOKEN: ${{ github.token }}
+        WENDY_E2E_TEST_FILTERS: ${{ inputs.tests }}
+        WENDY_E2E_RUN_ID: ${{ steps.e2e-run-windows.outputs.run_id }}
+        WENDY_E2E_CLI_OS: ${{ inputs.cli_os }}
+        WENDY_E2E_AGENT_OS: ${{ inputs.agent_os }}
+        WENDY_E2E_TRANSPORT: ${{ inputs.transport }}
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $outputDir = Join-Path $env:RUNNER_TEMP 'wendy'
+        & ./Scripts/E2ETest.ps1 --output-dir $outputDir --agent-address "${{ inputs.device_address }}"
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+    - name: Upload Swift E2E run (Unix)
+      if: always() && runner.os != 'Windows'
+      uses: actions/upload-artifact@v5
+      with:
+        name: ${{ steps.e2e-run-unix.outputs.run_id }}
+        path: ${{ runner.temp }}/wendy/${{ steps.e2e-run-unix.outputs.run_id }}/**
+        if-no-files-found: warn
+        retention-days: 14
+
+    - name: Upload Swift E2E run (Windows)
+      if: always() && runner.os == 'Windows'
+      uses: actions/upload-artifact@v5
+      with:
+        name: ${{ steps.e2e-run-windows.outputs.run_id }}
+        path: ${{ runner.temp }}/wendy/${{ steps.e2e-run-windows.outputs.run_id }}/**
+        if-no-files-found: warn
+        retention-days: 14

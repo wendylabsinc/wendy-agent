@@ -1,0 +1,12 @@
+{
+  "title": "Swift Guides",
+  "language": "swift",
+  "pages": [
+    "hello-world",
+    "simple-web-server",
+    "web-app",
+    "camera",
+    "audio",
+    "wrapping-c-library"
+  ]
+}

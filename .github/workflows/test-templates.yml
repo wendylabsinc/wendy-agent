@@ -24,7 +24,7 @@ on:
         type: boolean
         default: true
       hostname:
-        description: 'Device hostname for deploy phase (empty = auto-discover)'
+        description: 'Device hostname for deploy phase (empty = first auto-discovered LAN device)'
         required: false
         default: ''
 
@@ -54,29 +54,28 @@ permissions:
 
 concurrency:
   group: template-tests-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   generate-validate:
     name: Generate & Validate
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    defaults:
-      run:
-        working-directory: go
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version-file: go/go.mod
-          cache-dependency-path: go/go.sum
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
 
       - name: Build CLI
+        working-directory: go
         run: make build-cli
 
       - name: Run template generation tests
+        working-directory: go
         env:
           INPUT_TEMPLATES_BRANCH: ${{ inputs.templates_branch }}
           INPUT_TEMPLATE: ${{ inputs.template }}
@@ -105,18 +104,127 @@ jobs:
 
       - name: Cleanup
         if: always()
+        working-directory: go
         run: make clean
 
-  deploy-to-device:
-    name: Deploy (${{ matrix.runner.name }})
+  resolve-deploy-devices:
+    name: Resolve deploy devices
     if: inputs.deploy == true
-    needs: [generate-validate]
+    runs-on:
+      group: wendy-developer
+      labels: [self-hosted, macOS, ARM64]
+    timeout-minutes: 10
+    outputs:
+      matrix: ${{ steps.explicit.outputs.matrix || steps.scan.outputs.matrix || '[]' }}
+    steps:
+      - name: Resolve explicit device
+        id: explicit
+        if: inputs.hostname != ''
+        env:
+          INPUT_HOSTNAME: ${{ inputs.hostname }}
+        run: |
+          set -euo pipefail
+          hostname="$INPUT_HOSTNAME"
+          validate_device_hostname() {
+            local value="$1"
+            if [[ -z "$value" || ${#value} -gt 253 ]]; then
+              return 1
+            fi
+            if [[ "$value" == *:* ]]; then
+              [[ "$value" =~ ^[0-9A-Fa-f:.]+$ ]]
+            else
+              [[ "$value" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*\.?$ ]]
+            fi
+          }
+          if ! validate_device_hostname "$hostname"; then
+            echo "ERROR: invalid device hostname: $hostname" >&2
+            exit 1
+          fi
+          # Match the deploy scripts for bare mDNS hostnames while leaving IPs
+          # and fully-qualified hostnames unchanged.
+          if [[ "$hostname" != *.local && "$hostname" != *.* && "$hostname" != *:* ]]; then
+            hostname="${hostname}.local"
+          fi
+          matrix=$(jq -cn --arg h "$hostname" '[$h]')
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo "Using explicit deploy device: $hostname"
+
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        if: inputs.hostname == ''
+
+      - name: Set up Go
+        if: inputs.hostname == ''
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Build CLI
+        if: inputs.hostname == ''
+        working-directory: go
+        run: make build-cli
+
+      - name: Discover deploy device
+        id: scan
+        if: inputs.hostname == ''
+        run: |
+          set -euo pipefail
+          SSH=(ssh -o StrictHostKeyChecking=no localhost)
+          WORKDIR="$(pwd)"
+
+          DISCOVER_STDERR=$(mktemp)
+          RESULT=$("${SSH[@]}" bash -s -- "$WORKDIR" <<'REMOTE' 2>"$DISCOVER_STDERR" || true
+          set -euo pipefail
+          WORKDIR="$1"
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$HOME/bin:$PATH"
+          cd "$WORKDIR"
+          ./go/bin/wendy discover --json --type lan --timeout 10s
+          REMOTE
+          )
+          cat "$DISCOVER_STDERR" >&2 || true
+          rm -f "$DISCOVER_STDERR"
+          if [[ -z "$RESULT" ]]; then
+            RESULT='{"lanDevices":[]}'
+          fi
+          echo "$RESULT" | jq .
+
+          validate_device_hostname() {
+            local value="$1"
+            if [[ -z "$value" || ${#value} -gt 253 ]]; then
+              return 1
+            fi
+            if [[ "$value" == *:* ]]; then
+              [[ "$value" =~ ^[0-9A-Fa-f:.]+$ ]]
+            else
+              [[ "$value" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*\.?$ ]]
+            fi
+          }
+
+          HOSTNAME=$(echo "$RESULT" | jq -r '(.lanDevices // [])[0].hostname // empty')
+          if [[ -z "$HOSTNAME" ]]; then
+            echo "ERROR: No LAN devices found via wendy discover"
+            exit 1
+          fi
+          if ! validate_device_hostname "$HOSTNAME"; then
+            echo "ERROR: invalid discovered device hostname: $HOSTNAME" >&2
+            exit 1
+          fi
+
+          MATRIX=$(jq -cn --arg h "$HOSTNAME" '[$h]')
+          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+          echo "Discovered deploy device: $HOSTNAME"
+
+  deploy-to-device:
+    name: Deploy (${{ matrix.runner.name }} → ${{ matrix.hostname }})
+    if: inputs.deploy == true && needs.resolve-deploy-devices.outputs.matrix != '[]'
+    needs: [generate-validate, resolve-deploy-devices]
     runs-on:
       group: wendy-developer
       labels: ${{ matrix.runner.labels }}
     concurrency:
-      group: template-deploy-${{ matrix.runner.name }}
+      group: device-${{ matrix.hostname }}
       cancel-in-progress: false
+      queue: max
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -124,34 +232,30 @@ jobs:
         runner:
           - { name: macOS, labels: [self-hosted, macOS, ARM64] }
           - { name: Linux, labels: [self-hosted, Linux, X64] }
-    defaults:
-      run:
-        working-directory: go
+        hostname: ${{ fromJson(needs.resolve-deploy-devices.outputs.matrix) }}
     env:
-      INPUT_HOSTNAME: ${{ inputs.hostname }}
+      INPUT_HOSTNAME: ${{ matrix.hostname }}
       INPUT_TEMPLATES_BRANCH: ${{ inputs.templates_branch }}
       INPUT_TEMPLATE: ${{ inputs.template }}
       INPUT_EXCLUDE_TEMPLATE: ${{ inputs.exclude_template }}
       INPUT_LANGUAGE: ${{ inputs.language }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version-file: go/go.mod
-          cache-dependency-path: go/go.sum
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
 
       - name: Build CLI
+        working-directory: go
         run: make build-cli
 
       - name: Run template tests with deploy
+        working-directory: go
         run: |
-          ARGS=(-w ./bin/wendy)
-
-          if [[ -n "$INPUT_HOSTNAME" ]]; then
-            ARGS+=(-h "$INPUT_HOSTNAME")
-          fi
+          ARGS=(-w ./bin/wendy -h "$INPUT_HOSTNAME")
 
           if [[ -n "$INPUT_TEMPLATES_BRANCH" && "$INPUT_TEMPLATES_BRANCH" != "main" ]]; then
             ARGS+=(--templates-branch "$INPUT_TEMPLATES_BRANCH")
@@ -169,10 +273,18 @@ jobs:
             ARGS+=(--language "$INPUT_LANGUAGE")
           fi
 
-          scripts/test-templates.sh "${ARGS[@]}"
+          builder_slug="$(printf '%s' "$INPUT_HOSTNAME" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9_.-]+/-/g; s/^-+//; s/-+$//')"
+          BUILDER="wendy-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${GITHUB_JOB}-${builder_slug}"
+          BUILDER="${BUILDER:0:128}"
+          docker buildx rm "$BUILDER" --force 2>/dev/null || true
+          cleanup() { docker buildx rm "$BUILDER" --force 2>/dev/null || true; }
+          trap cleanup EXIT
+
+          WENDY_BUILDX_BUILDER="$BUILDER" scripts/test-templates.sh "${ARGS[@]}"
 
       - name: Cleanup
         if: always()
+        working-directory: go
         run: make clean
 
   summary:

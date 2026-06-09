@@ -1,0 +1,10 @@
+{
+  "title": "Rust Guides",
+  "language": "rust",
+  "pages": [
+    "hello-world",
+    "simple-web-server",
+    "web-app",
+    "camera"
+  ]
+}

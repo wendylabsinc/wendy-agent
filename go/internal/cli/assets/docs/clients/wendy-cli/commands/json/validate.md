@@ -1,0 +1,1 @@
+Validates `wendy.json` files as found in the current working directory.

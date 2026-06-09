@@ -7,8 +7,8 @@ import (
 	"reflect"
 	"runtime"
 
-	"github.com/wendylabsinc/wendy/internal/shared/version"
-	agentpb "github.com/wendylabsinc/wendy/proto/gen/agentpb"
+	"github.com/wendylabsinc/wendy/go/internal/shared/version"
+	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
 // Narrow interfaces so this file doesn't import the services package directly.
@@ -46,9 +46,6 @@ type Dispatcher struct {
 	bluetooth bluetoothOps
 }
 
-// NewDispatcher creates a Dispatcher wired to the provided service
-// implementations. Any argument may be nil; commands that require a nil
-// service will return an error response.
 func NewDispatcher(net networkOps, ctr containerOps, hw hardwareOps, bt bluetoothOps) *Dispatcher {
 	return &Dispatcher{
 		network:   net,

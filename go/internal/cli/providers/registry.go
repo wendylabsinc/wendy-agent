@@ -33,7 +33,6 @@ func Initialize(ctx context.Context) {
 	}
 }
 
-// AvailableProviders returns the providers whose toolchains are present.
 func AvailableProviders() []DeviceProvider {
 	mu.RLock()
 	defer mu.RUnlock()
@@ -49,7 +48,6 @@ func AllProviders() []DeviceProvider {
 	return allProviders
 }
 
-// ProviderForKey returns the available provider with the given key, or nil.
 func ProviderForKey(key string) DeviceProvider {
 	mu.RLock()
 	defer mu.RUnlock()

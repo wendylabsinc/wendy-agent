@@ -11,9 +11,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/wendylabsinc/wendy/internal/cli/swifttoolchain"
-	"github.com/wendylabsinc/wendy/internal/shared/discovery"
-	"github.com/wendylabsinc/wendy/internal/shared/models"
+	"github.com/wendylabsinc/wendy/go/internal/cli/swifttoolchain"
+	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
+	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 )
 
 const (
@@ -249,8 +249,6 @@ func (p *MicroWendyProvider) Stop(_ context.Context, app *BuiltApp) error {
 	return nil
 }
 
-// getOutboundIP returns the preferred outbound IP of this machine by
-// dialing a UDP connection (no actual traffic is sent).
 func getOutboundIP() string {
 	conn, err := net.Dial("udp4", "8.8.8.8:80")
 	if err != nil {

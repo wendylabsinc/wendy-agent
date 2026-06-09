@@ -14,8 +14,8 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/test/bufconn"
 
-	agentpb "github.com/wendylabsinc/wendy/proto/gen/agentpb"
-	otelpb "github.com/wendylabsinc/wendy/proto/gen/otelpb"
+	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
+	otelpb "github.com/wendylabsinc/wendy/go/proto/gen/otelpb"
 )
 
 func TestBroadcaster_SubscribeUnsubscribe(t *testing.T) {
@@ -159,7 +159,7 @@ drained:
 func TestStreamLogs_Integration(t *testing.T) {
 	broadcaster := NewTelemetryBroadcaster()
 	logger := zap.NewNop()
-	svc := NewTelemetryService(logger, broadcaster)
+	svc := NewTelemetryService(logger, broadcaster, nil)
 
 	lis := bufconn.Listen(bufSize)
 	srv := grpc.NewServer()
@@ -497,5 +497,197 @@ func TestBroadcaster_ConcurrentPublish(t *testing.T) {
 	// We might have received fewer than n if the buffer filled up.
 	if received == 0 {
 		t.Error("expected at least some messages to be received")
+	}
+}
+
+func TestStreamLogs_LastN(t *testing.T) {
+	dir := t.TempDir()
+	broadcaster := NewTelemetryBroadcaster()
+	buf := NewTelemetryBuffer(TelemetryBufferConfig{
+		Dir:           dir,
+		MaxTotalBytes: 10 * 1024 * 1024,
+		SegmentBytes:  1 * 1024 * 1024,
+	}, broadcaster, zap.NewNop())
+
+	// Write 5 log entries to disk before any client connects.
+	for i := 0; i < 5; i++ {
+		buf.PublishLogs(makeLogReq(fmt.Sprintf("msg-%d", i)))
+	}
+
+	svc := NewTelemetryService(zap.NewNop(), broadcaster, buf)
+
+	lis := bufconn.Listen(1024 * 1024)
+	srv := grpc.NewServer()
+	agentpb.RegisterWendyTelemetryServiceServer(srv, svc)
+	go srv.Serve(lis) //nolint:errcheck
+	defer srv.Stop()
+
+	conn, err := grpc.NewClient("passthrough://bufnet",
+		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) {
+			return lis.DialContext(ctx)
+		}),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	if err != nil {
+		t.Fatalf("grpc.NewClient: %v", err)
+	}
+	defer conn.Close()
+
+	client := agentpb.NewWendyTelemetryServiceClient(conn)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	lastN := int32(3)
+	stream, err := client.StreamLogs(ctx, &agentpb.StreamLogsRequest{LastN: &lastN})
+	if err != nil {
+		t.Fatalf("StreamLogs: %v", err)
+	}
+
+	var historyCount int
+	for i := 0; i < 3; i++ {
+		resp, err := stream.Recv()
+		if err != nil {
+			t.Fatalf("Recv[%d]: %v", i, err)
+		}
+		if resp.IsHistory {
+			historyCount++
+		}
+	}
+	if historyCount != 3 {
+		t.Errorf("want 3 history records, got %d", historyCount)
+	}
+}
+
+func makeMetricReq(name string) *otelpb.ExportMetricsServiceRequest {
+	return &otelpb.ExportMetricsServiceRequest{
+		ResourceMetrics: []*otelpb.ResourceMetrics{{
+			ScopeMetrics: []*otelpb.ScopeMetrics{{
+				Metrics: []*otelpb.Metric{{Name: name}},
+			}},
+		}},
+	}
+}
+
+func makeTraceReq(name string) *otelpb.ExportTraceServiceRequest {
+	return &otelpb.ExportTraceServiceRequest{
+		ResourceSpans: []*otelpb.ResourceSpans{{
+			ScopeSpans: []*otelpb.ScopeSpans{{
+				Spans: []*otelpb.Span{{Name: name}},
+			}},
+		}},
+	}
+}
+
+func TestStreamMetrics_LastN(t *testing.T) {
+	dir := t.TempDir()
+	broadcaster := NewTelemetryBroadcaster()
+	buf := NewTelemetryBuffer(TelemetryBufferConfig{
+		Dir:           dir,
+		MaxTotalBytes: 10 * 1024 * 1024,
+		SegmentBytes:  1 * 1024 * 1024,
+	}, broadcaster, zap.NewNop())
+
+	for i := 0; i < 5; i++ {
+		buf.PublishMetrics(makeMetricReq(fmt.Sprintf("metric-%d", i)))
+	}
+
+	svc := NewTelemetryService(zap.NewNop(), broadcaster, buf)
+
+	lis := bufconn.Listen(1024 * 1024)
+	srv := grpc.NewServer()
+	agentpb.RegisterWendyTelemetryServiceServer(srv, svc)
+	go srv.Serve(lis) //nolint:errcheck
+	defer srv.Stop()
+
+	conn, err := grpc.NewClient("passthrough://bufnet",
+		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) {
+			return lis.DialContext(ctx)
+		}),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	if err != nil {
+		t.Fatalf("grpc.NewClient: %v", err)
+	}
+	defer conn.Close()
+
+	client := agentpb.NewWendyTelemetryServiceClient(conn)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	lastN := int32(3)
+	stream, err := client.StreamMetrics(ctx, &agentpb.StreamMetricsRequest{LastN: &lastN})
+	if err != nil {
+		t.Fatalf("StreamMetrics: %v", err)
+	}
+
+	var historyCount int
+	for i := 0; i < 3; i++ {
+		resp, err := stream.Recv()
+		if err != nil {
+			t.Fatalf("Recv[%d]: %v", i, err)
+		}
+		if resp.IsHistory {
+			historyCount++
+		}
+	}
+	if historyCount != 3 {
+		t.Errorf("want 3 history records, got %d", historyCount)
+	}
+}
+
+func TestStreamTraces_LastN(t *testing.T) {
+	dir := t.TempDir()
+	broadcaster := NewTelemetryBroadcaster()
+	buf := NewTelemetryBuffer(TelemetryBufferConfig{
+		Dir:           dir,
+		MaxTotalBytes: 10 * 1024 * 1024,
+		SegmentBytes:  1 * 1024 * 1024,
+	}, broadcaster, zap.NewNop())
+
+	for i := 0; i < 5; i++ {
+		buf.PublishTraces(makeTraceReq(fmt.Sprintf("span-%d", i)))
+	}
+
+	svc := NewTelemetryService(zap.NewNop(), broadcaster, buf)
+
+	lis := bufconn.Listen(1024 * 1024)
+	srv := grpc.NewServer()
+	agentpb.RegisterWendyTelemetryServiceServer(srv, svc)
+	go srv.Serve(lis) //nolint:errcheck
+	defer srv.Stop()
+
+	conn, err := grpc.NewClient("passthrough://bufnet",
+		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) {
+			return lis.DialContext(ctx)
+		}),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	if err != nil {
+		t.Fatalf("grpc.NewClient: %v", err)
+	}
+	defer conn.Close()
+
+	client := agentpb.NewWendyTelemetryServiceClient(conn)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	lastN := int32(3)
+	stream, err := client.StreamTraces(ctx, &agentpb.StreamTracesRequest{LastN: &lastN})
+	if err != nil {
+		t.Fatalf("StreamTraces: %v", err)
+	}
+
+	var historyCount int
+	for i := 0; i < 3; i++ {
+		resp, err := stream.Recv()
+		if err != nil {
+			t.Fatalf("Recv[%d]: %v", i, err)
+		}
+		if resp.IsHistory {
+			historyCount++
+		}
+	}
+	if historyCount != 3 {
+		t.Errorf("want 3 history records, got %d", historyCount)
 	}
 }

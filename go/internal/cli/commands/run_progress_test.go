@@ -6,8 +6,8 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/wendylabsinc/wendy/internal/cli/tui"
-	agentpb "github.com/wendylabsinc/wendy/proto/gen/agentpb"
+	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
 func TestUnpackProgressTitleForPullingPhase(t *testing.T) {
@@ -34,6 +34,48 @@ func TestUnpackProgressTitleAndPercentForLayerUpdates(t *testing.T) {
 
 	if got := unpackProgressPercent(progress); got != 0.5 {
 		t.Fatalf("percent = %v; want 0.5", got)
+	}
+}
+
+func TestUnpackProgressDetailForPlan(t *testing.T) {
+	progress := &agentpb.CreateContainerProgress{
+		Phase:       agentpb.CreateContainerProgress_UNPACKING,
+		TotalLayers: 4,
+	}
+
+	if got := unpackProgressDetail(progress); got != "Unpack plan: 4 layers" {
+		t.Fatalf("detail = %q; want unpack plan", got)
+	}
+}
+
+func TestUnpackProgressDetailForApplyingLayer(t *testing.T) {
+	progress := &agentpb.CreateContainerProgress{
+		Phase:       agentpb.CreateContainerProgress_UNPACKING,
+		LayerIndex:  1,
+		TotalLayers: 4,
+		LayerSize:   2 * 1024 * 1024,
+	}
+
+	if got := unpackProgressDetail(progress); got != "Layer 2/4 applying (2.0 MiB)" {
+		t.Fatalf("detail = %q; want applying layer detail", got)
+	}
+
+	if got := unpackProgressPercent(progress); got != 0.25 {
+		t.Fatalf("percent = %v; want 0.25", got)
+	}
+}
+
+func TestUnpackProgressDetailForReusedLayer(t *testing.T) {
+	progress := &agentpb.CreateContainerProgress{
+		Phase:          agentpb.CreateContainerProgress_APPLYING_LAYER,
+		LayerIndex:     1,
+		TotalLayers:    4,
+		LayerSize:      512,
+		ReusedSnapshot: true,
+	}
+
+	if got := unpackProgressDetail(progress); got != "Layer 2/4 reused snapshot (512 B)" {
+		t.Fatalf("detail = %q; want reused layer detail", got)
 	}
 }
 

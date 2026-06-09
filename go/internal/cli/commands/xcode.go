@@ -13,10 +13,10 @@ import (
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
-	"github.com/wendylabsinc/wendy/internal/cli/grpcclient"
-	"github.com/wendylabsinc/wendy/internal/cli/tui"
-	"github.com/wendylabsinc/wendy/internal/shared/appconfig"
-	"github.com/wendylabsinc/wendy/proto/gen/agentpb"
+	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
+	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
+	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
 // runXcodebuild invokes xcodebuild with the given arguments, routing all
@@ -60,10 +60,6 @@ func runXcodebuild(ctx context.Context, dir string, args ...string) error {
 	return nil
 }
 
-// findXcodeProj returns the name of the single .xcodeproj directory found in
-// dir (current directory only, not recursive). It returns ("", nil) when none
-// are found, and an error when multiple are found so the user gets a clear
-// actionable message.
 func findXcodeProj(dir string) (string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {

@@ -1,0 +1,5 @@
+{
+  "title": "Guides & Tutorials",
+  "description": "Learn how to build with Wendy through practical examples",
+  "pages": ["python", "swift", "cpp", "rust", "typescript", "device", "multi-app-deployments", "llm-integration"]
+}

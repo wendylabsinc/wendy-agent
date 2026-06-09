@@ -10,8 +10,8 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	"github.com/wendylabsinc/wendy/internal/shared/version"
-	agentpbv2 "github.com/wendylabsinc/wendy/proto/gen/agentpb/v2"
+	"github.com/wendylabsinc/wendy/go/internal/shared/version"
+	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 )
 
 type DeviceInfoService struct {
@@ -32,8 +32,7 @@ func (s *DeviceInfoService) GetDeviceInfo(_ context.Context, _ *agentpbv2.GetDev
 		Featureset:      detectFeatureset(),
 	}
 
-	if data, err := os.ReadFile("/etc/wendy/version.txt"); err == nil {
-		v := strings.TrimSpace(string(data))
+	if v, ok := wendyOSVersion(); ok {
 		resp.OsVersion = &v
 	}
 
@@ -52,6 +51,11 @@ func (s *DeviceInfoService) GetDeviceInfo(_ context.Context, _ *agentpbv2.GetDev
 	}
 	if gpuInfo.cudaVersion != "" {
 		resp.CudaVersion = &gpuInfo.cudaVersion
+	}
+
+	if usage, ok := rootDiskUsage(); ok {
+		resp.DiskUsedBytes = &usage.usedBytes
+		resp.DiskTotalBytes = &usage.totalBytes
 	}
 
 	return resp, nil

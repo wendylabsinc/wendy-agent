@@ -4,8 +4,6 @@ package ble
 
 import "fmt"
 
-// Connection wraps a BLE connection to a peripheral.
-// On Windows, BLE client operations are not yet implemented.
 type Connection struct{}
 
 // Connect establishes a BLE connection to the peripheral identified by its address.
@@ -18,12 +16,10 @@ func (c *Connection) DiscoverServices(timeoutSeconds int) error {
 	return fmt.Errorf("not implemented")
 }
 
-// WriteCharacteristic writes data to a GATT characteristic with response.
 func (c *Connection) WriteCharacteristic(serviceUUID, charUUID string, data []byte) error {
 	return fmt.Errorf("not implemented")
 }
 
-// WriteCharacteristicNoResponse writes data to a GATT characteristic without response.
 func (c *Connection) WriteCharacteristicNoResponse(serviceUUID, charUUID string, data []byte) error {
 	return fmt.Errorf("not implemented")
 }
@@ -61,7 +57,6 @@ func (c *Connection) L2CAPRecv(timeoutSeconds int) ([]byte, error) {
 // HasService checks whether a specific service UUID was discovered.
 func (c *Connection) HasService(serviceUUID string) bool { return false }
 
-// ListServices returns a comma-separated string of discovered service UUIDs.
 func (c *Connection) ListServices() string { return "" }
 
 // Close disconnects and frees all BLE resources.

@@ -14,7 +14,9 @@
     "appId": {
       "type": "string",
       "minLength": 1,
-      "description": "Unique application identifier."
+      "maxLength": 253,
+      "pattern": "^[a-zA-Z0-9._-]+$",
+      "description": "Unique application identifier. Only letters, digits, '.', '_', and '-' are allowed."
     },
     "version": {
       "type": "string",
@@ -22,8 +24,8 @@
     },
     "platform": {
       "type": "string",
-      "enum": ["wendyos", "wendy-lite"],
-      "description": "Target platform: wendyos (Linux edge devices) or wendy-lite (ESP32 WASM)."
+      "enum": ["wendyos", "wendy-lite", "darwin"],
+      "description": "Target platform: wendyos (Linux edge devices), wendy-lite (ESP32 WASM), or darwin (native macOS via Wendy Agent for Mac)."
     },
     "language": {
       "type": "string",

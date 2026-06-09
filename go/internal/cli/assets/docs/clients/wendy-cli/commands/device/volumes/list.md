@@ -1,0 +1,1 @@
+Lists all volumes on the remote wendy device, including the combined volume size. Also lists which apps use this volume.

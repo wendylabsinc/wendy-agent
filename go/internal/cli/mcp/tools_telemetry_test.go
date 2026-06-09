@@ -6,10 +6,10 @@ import (
 	"testing"
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
-	"github.com/wendylabsinc/wendy/internal/cli/grpcclient"
-	"github.com/wendylabsinc/wendy/internal/shared/config"
-	"github.com/wendylabsinc/wendy/proto/gen/agentpb"
-	otelpb "github.com/wendylabsinc/wendy/proto/gen/otelpb"
+	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
+	"github.com/wendylabsinc/wendy/go/internal/shared/config"
+	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
+	otelpb "github.com/wendylabsinc/wendy/go/proto/gen/otelpb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )

@@ -53,10 +53,6 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	return err
 }
 
-// Start creates a new OCI registry HTTP server backed by the given containerd
-// client and starts listening on listenAddr. When tlsConfig is non-nil the
-// server is served over HTTPS. The server shuts down gracefully when ctx is
-// cancelled.
 func Start(ctx context.Context, containerdAddr, listenAddr string, logger *zap.Logger, tlsConfig *tls.Config) (*Server, error) {
 	client, err := containerd.New(containerdAddr, containerd.WithDefaultNamespace("default"))
 	if err != nil {
@@ -233,8 +229,6 @@ type containerdRegistry struct {
 	maxBlobSize         int64
 }
 
-// imageName returns the full containerd image name for a repo and tag,
-// including the registry prefix (e.g. "localhost:5000/myapp:latest").
 func (r containerdRegistry) imageName(repo, tag string) string {
 	return r.imagePrefix + repo + ":" + tag
 }

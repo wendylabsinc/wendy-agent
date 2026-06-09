@@ -10,7 +10,6 @@ import (
 	"time"
 )
 
-// firmwareAsset holds the resolved .bin asset info from the GCS manifest.
 type firmwareAsset struct {
 	Name        string
 	DownloadURL string

@@ -1,0 +1,635 @@
+name: Swift E2E Tests
+
+on:
+  pull_request:
+    paths:
+      - 'swift/**'
+      - 'Proto/**'
+      - '.github/actions/swift-e2e-run/**'
+      - '.github/workflows/swift-e2e-tests.yml'
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      tests:
+        description: 'Comma-separated SwiftPM test filters (empty = WendyE2ETests)'
+        required: false
+        default: ''
+      diff_base_ref:
+        description: 'Optional ref to diff against (empty = full review)'
+        required: false
+        default: ''
+  workflow_call:
+    inputs:
+      tests:
+        type: string
+        required: false
+        default: ''
+      diff_base_ref:
+        type: string
+        required: false
+        default: ''
+    secrets:
+      OPENAI_API_KEY:
+        required: false
+      WENDY_E2E_SLACK_WEBHOOK_URL:
+        required: false
+
+concurrency:
+  group: swift-e2e-tests-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  # Run routes as a matrix while serializing access to each physical target.
+  # queue: max keeps pending matrix jobs in the same device concurrency group
+  # instead of canceling older pending routes.
+  swift-e2e-tests:
+    name: ${{ matrix.target.name }}
+    runs-on: ["self-hosted", "${{ matrix.target.runner_label }}"]
+    concurrency:
+      group: device-${{ matrix.target.device_id }}
+      cancel-in-progress: false
+      queue: max
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          # // DISABLED: Mac <> Jetson Swift E2E is flaky; re-enable after stabilization.
+          # - name: macOS 26 → Jetson Orin Nano
+          #   target_id: macos-jetson-orin-nano
+          #   runner_id: macos-26
+          #   runner_label: macos-26
+          #   cli_os: macOS
+          #   device_id: jetson-orin-nano
+          #   device_address: wendyos-strong-dunlin.local
+          #   agent_os: wendyOS
+          #   transport: lan
+
+          # // DISABLED: no CI hardware set up yet for this job.
+          # - name: Windows 11 → Ubuntu 24
+          #   target_id: windows-ubuntu-24
+          #   runner_id: windows-11
+          #   runner_label: windows-11
+          #   cli_os: windows
+          #   device_id: ubuntu-24
+          #   device_address: wendy-SER9.local
+          #   agent_os: linux
+          #   transport: lan
+
+          - name: macOS 26 → Ubuntu 24
+            target_id: macos-ubuntu-24
+            runner_id: macos-26
+            runner_label: macos-26
+            cli_os: macOS
+            device_id: ubuntu-24
+            device_address: wendy-SER9.local
+            agent_os: linux
+            transport: lan
+
+          # // DISABLED: no CI hardware set up yet for this job.
+          # - name: Ubuntu 24 → Ubuntu 24
+          #   target_id: ubuntu-ubuntu-24
+          #   runner_id: ubuntu-24-04
+          #   runner_label: ubuntu-24
+          #   cli_os: linux
+          #   device_id: ubuntu-24
+          #   device_address: wendy-SER9.local
+          #   agent_os: linux
+          #   transport: lan
+
+          # // DISABLED: no CI hardware set up yet for this job.
+          # - name: Ubuntu 24 → Raspberry Pi 5
+          #   target_id: ubuntu-raspberry-pi-5
+          #   runner_id: ubuntu-24-04
+          #   runner_label: ubuntu-24
+          #   cli_os: linux
+          #   device_id: raspberry-pi-5
+          #   device_address: wendyos-raspberry-pi-5.local
+          #   agent_os: wendyOS
+          #   transport: lan
+
+          # // DISABLED: no CI hardware set up yet for this job.
+          # - name: Windows 11 → Mac mini
+          #   target_id: windows-mac-mini
+          #   runner_id: windows-11
+          #   runner_label: windows-11
+          #   cli_os: windows
+          #   device_id: mac-mini
+          #   device_address: mac-mini.local
+          #   agent_os: macOS
+          #   transport: lan
+
+          # // DISABLED: no CI hardware set up yet for this job.
+          # - name: Ubuntu 24 → Jetson Orin Nano
+          #   target_id: ubuntu-jetson-orin-nano
+          #   runner_id: ubuntu-24-04
+          #   runner_label: ubuntu-24
+          #   cli_os: linux
+          #   device_id: jetson-orin-nano
+          #   device_address: wendyos-jetson-orin-nano.local
+          #   agent_os: wendyOS
+          #   transport: lan
+
+          # // DISABLED: no CI hardware set up yet for this job.
+          # - name: Windows 11 → Raspberry Pi 5
+          #   target_id: windows-raspberry-pi-5
+          #   runner_id: windows-11
+          #   runner_label: windows-11
+          #   cli_os: windows
+          #   device_id: raspberry-pi-5
+          #   device_address: wendyos-raspberry-pi-5.local
+          #   agent_os: wendyOS
+          #   transport: lan
+
+          # // DISABLED: no CI hardware set up yet for this job.
+          # - name: macOS 26 → Mac mini
+          #   target_id: macos-mac-mini
+          #   runner_id: macos-26
+          #   runner_label: macos-26
+          #   cli_os: macOS
+          #   device_id: mac-mini
+          #   device_address: mac-mini.local
+          #   agent_os: macOS
+          #   transport: lan
+
+          # // DISABLED: no CI hardware set up yet for this job.
+          # - name: Windows 11 → Jetson Orin Nano
+          #   target_id: windows-jetson-orin-nano
+          #   runner_id: windows-11
+          #   runner_label: windows-11
+          #   cli_os: windows
+          #   device_id: jetson-orin-nano
+          #   device_address: wendyos-jetson-orin-nano.local
+          #   agent_os: wendyOS
+          #   transport: lan
+
+          # // DISABLED: no CI hardware set up yet for this job.
+          # - name: macOS 26 → Raspberry Pi 5
+          #   target_id: macos-raspberry-pi-5
+          #   runner_id: macos-26
+          #   runner_label: macos-26
+          #   cli_os: macOS
+          #   device_id: raspberry-pi-5
+          #   device_address: wendyos-raspberry-pi-5.local
+          #   agent_os: wendyOS
+          #   transport: lan
+
+          # // DISABLED: no CI hardware set up yet for this job.
+          # - name: Ubuntu 24 → Mac mini
+          #   target_id: ubuntu-mac-mini
+          #   runner_id: ubuntu-24-04
+          #   runner_label: ubuntu-24
+          #   cli_os: linux
+          #   device_id: mac-mini
+          #   device_address: mac-mini.local
+          #   agent_os: macOS
+          #   transport: lan
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/swift-e2e-run
+        with:
+          tests: ${{ inputs.tests || '' }}
+          target_id: ${{ matrix.target.target_id }}
+          runner_id: ${{ matrix.target.runner_id }}
+          cli_os: ${{ matrix.target.cli_os }}
+          device_address: ${{ matrix.target.device_address }}
+          agent_os: ${{ matrix.target.agent_os }}
+          transport: ${{ matrix.target.transport }}
+
+  swift-e2e-analyze:
+    name: Analyze E2E Results
+    if: ${{ always() && !cancelled() }}
+    needs: swift-e2e-tests
+    runs-on: [self-hosted, AI]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Compute Swift E2E run ID
+        id: e2e-run
+        shell: bash
+        run: |
+          set -euo pipefail
+          slug() {
+            printf '%s' "$1" \
+              | tr '[:upper:]' '[:lower:]' \
+              | sed -E 's/[^[:alnum:]._-]+/-/g; s/-+/-/g; s/^-//; s/-$//'
+          }
+
+          workflow_id="$(slug "${GITHUB_WORKFLOW:-swift-e2e-tests}")"
+          printf -v attempt_suffix '%04d' "${GITHUB_RUN_ATTEMPT:-1}"
+          echo "run_artifact_id=${workflow_id}.gh${GITHUB_RUN_ID}.run.${attempt_suffix}" >> "$GITHUB_OUTPUT"
+          echo "run_dir=${RUNNER_TEMP}/wendy/${workflow_id}.gh${GITHUB_RUN_ID}" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare Swift E2E analysis workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf \
+            "${RUNNER_TEMP}/wendy-raw/${{ github.run_id }}" \
+            "${{ steps.e2e-run.outputs.run_dir }}"
+
+      - name: Download Swift E2E attempts
+        uses: actions/download-artifact@v5
+        with:
+          path: ${{ runner.temp }}/wendy-raw/${{ github.run_id }}
+          pattern: swift-e2e-tests.gh${{ github.run_id }}.*
+
+      - name: Normalize Swift E2E attempt artifact layout
+        shell: bash
+        run: |
+          set -euo pipefail
+          raw_dir="${RUNNER_TEMP}/wendy-raw/${{ github.run_id }}"
+
+          # WORKAROUND: actions/download-artifact has no setting that makes matched
+          # artifacts always extract the same way. A single matched artifact extracts
+          # directly into `path`, while multiple matched artifacts extract into child
+          # directories. Normalize the single-artifact case so aggregation always sees:
+          #   <raw_dir>/<attempt-id>/attempt.json
+          if [[ -f "${raw_dir}/attempt.json" ]]; then
+            attempt_id="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["attemptID"])' "${raw_dir}/attempt.json")"
+            if [[ -z "${attempt_id}" || "${attempt_id}" == *"/"* ]]; then
+              echo "ERROR: invalid Swift E2E attempt ID: ${attempt_id}" >&2
+              exit 1
+            fi
+
+            normalized_dir="${RUNNER_TEMP}/wendy-normalized/${{ github.run_id }}"
+            rm -rf "${normalized_dir}"
+            mkdir -p "${normalized_dir}/${attempt_id}"
+
+            shopt -s dotglob nullglob
+            entries=("${raw_dir}"/*)
+            if [[ ${#entries[@]} -eq 0 ]]; then
+              echo "ERROR: downloaded Swift E2E attempt artifact is empty: ${raw_dir}" >&2
+              exit 1
+            fi
+            mv "${entries[@]}" "${normalized_dir}/${attempt_id}/"
+            rm -rf "${raw_dir}"
+            mv "${normalized_dir}" "${raw_dir}"
+          fi
+
+      - name: Aggregate Swift E2E attempts
+        working-directory: swift
+        shell: bash
+        run: |
+          set -euo pipefail
+          attempt_dirs=()
+          while IFS= read -r attempt_dir; do
+            attempt_dirs+=("$attempt_dir")
+          done < <(find "${RUNNER_TEMP}/wendy-raw/${{ github.run_id }}" -mindepth 1 -maxdepth 1 -type d | sort)
+          if [[ ${#attempt_dirs[@]} -eq 0 ]]; then
+            echo "ERROR: no Swift E2E attempt artifacts downloaded." >&2
+            exit 1
+          fi
+          bash ./Scripts/E2EAggregate.sh \
+            --output-dir "${RUNNER_TEMP}/wendy" \
+            "${attempt_dirs[@]}"
+
+      - name: Configure self-hosted tool PATH
+        shell: bash
+        run: |
+          set -euo pipefail
+          for dir in \
+            /opt/homebrew/bin \
+            /usr/local/bin \
+            "$HOME/.local/bin" \
+            "$HOME/bin" \
+            "$HOME/.npm-global/bin"
+          do
+            if [[ -d "$dir" ]]; then
+              echo "$dir" >> "$GITHUB_PATH"
+            fi
+          done
+
+      - name: Verify AI review harness
+        shell: bash
+        run: |
+          set -euo pipefail
+          if command -v codex >/dev/null 2>&1; then
+            codex --version
+          fi
+          if command -v claude >/dev/null 2>&1; then
+            claude --version
+          fi
+          if ! command -v codex >/dev/null 2>&1 && ! command -v claude >/dev/null 2>&1; then
+            echo "::error::Codex or Claude Code must be preinstalled on the AI runner"
+            exit 1
+          fi
+
+      - name: Perform Swift E2E AI Review
+        working-directory: swift
+        shell: bash
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY || '' }}
+          DIFF_BASE_REF: ${{ inputs.diff_base_ref || '' }}
+        run: |
+          set -euo pipefail
+          review_args=(--run-dir "${{ steps.e2e-run.outputs.run_dir }}")
+
+          resolve_diff_base_ref() {
+            local ref="$1"
+            local candidate
+            local candidates=("$ref")
+
+            if [[ "$ref" != refs/* ]]; then
+              candidates+=("origin/$ref" "refs/remotes/origin/$ref" "refs/tags/$ref")
+            elif [[ "$ref" == refs/heads/* ]]; then
+              candidates+=("refs/remotes/origin/${ref#refs/heads/}")
+            fi
+
+            for candidate in "${candidates[@]}"; do
+              if git rev-parse --verify --quiet "${candidate}^{commit}" >/dev/null; then
+                printf '%s' "$candidate"
+                return 0
+              fi
+            done
+            return 1
+          }
+
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            review_args+=(--diff "origin/main...HEAD")
+          elif [[ -n "${DIFF_BASE_REF}" ]]; then
+            resolved_base="$(resolve_diff_base_ref "${DIFF_BASE_REF}" || true)"
+            if [[ -z "${resolved_base}" ]]; then
+              if git fetch --force --tags origin "${DIFF_BASE_REF}"; then
+                resolved_base="$(resolve_diff_base_ref "${DIFF_BASE_REF}" || true)"
+                if [[ -z "${resolved_base}" ]] && git rev-parse --verify --quiet "FETCH_HEAD^{commit}" >/dev/null; then
+                  resolved_base="FETCH_HEAD"
+                fi
+              fi
+            fi
+            if [[ -z "${resolved_base}" ]]; then
+              echo "ERROR: unable to resolve diff base ref: ${DIFF_BASE_REF}" >&2
+              exit 1
+            fi
+            review_args+=(--diff "${resolved_base}...HEAD")
+          fi
+          bash ./Scripts/E2EReview.sh "${review_args[@]}"
+
+      - name: Render Swift E2E Report
+        if: always()
+        working-directory: swift
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash ./Scripts/E2EReport.sh \
+            --run-dir "${{ steps.e2e-run.outputs.run_dir }}"
+
+      - name: Upload Swift E2E Report
+        id: upload_e2e_report
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: ${{ steps.e2e-run.outputs.run_artifact_id }}
+          path: ${{ steps.e2e-run.outputs.run_dir }}/**
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Post Swift E2E PR Review
+        if: always() && github.event_name == 'pull_request'
+        uses: actions/github-script@v9
+        env:
+          REPO: ${{ github.event.pull_request.base.repo.full_name || github.repository }}
+          PR_NUM: ${{ github.event.pull_request.number }}
+          HEAD_REF: ${{ github.head_ref || github.ref_name }}
+          HEAD_LABEL: ${{ github.event.pull_request.head.label || github.head_ref || github.ref_name }}
+          COMMENT_PATH: ${{ steps.e2e-run.outputs.run_dir }}/review.md
+          REPORT_ARTIFACT_NAME: ${{ steps.e2e-run.outputs.run_artifact_id }}
+          REPORT_ARTIFACT_URL: ${{ steps.upload_e2e_report.outputs['artifact-url'] }}
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const fs = require('fs');
+
+            const commentPath = process.env.COMMENT_PATH;
+            if (!fs.existsSync(commentPath)) {
+              core.info(`No Swift E2E review aggregate found at ${commentPath}; skipping.`);
+              return;
+            }
+
+            const [owner, repo] = process.env.REPO.split('/');
+            const headRef = process.env.HEAD_REF;
+            const headLabel = process.env.HEAD_LABEL;
+            let prNumber = process.env.PR_NUM;
+
+            if (!prNumber) {
+              const qualifiedHead = headLabel?.includes(':') ? headLabel : `${context.repo.owner}:${headRef}`;
+              const heads = [qualifiedHead, headLabel, headRef].filter((value, index, values) =>
+                value && values.indexOf(value) === index
+              );
+              for (const head of heads) {
+                const { data: pulls } = await github.rest.pulls.list({
+                  owner,
+                  repo,
+                  state: 'open',
+                  head,
+                  per_page: 1,
+                });
+                if (pulls.length > 0) {
+                  prNumber = String(pulls[0].number);
+                  break;
+                }
+              }
+            }
+
+            if (!prNumber) {
+              core.info(`No open PR found for ${headRef}; skipping Swift E2E review comment.`);
+              return;
+            }
+
+            let body = fs.readFileSync(commentPath, 'utf8');
+            const artifactURL = process.env.REPORT_ARTIFACT_URL;
+            if (artifactURL) {
+              const artifactName = process.env.REPORT_ARTIFACT_NAME || 'Swift E2E report';
+              body = `${body.trimEnd()}\n\n---\n\nReport artifact: [${artifactName}](${artifactURL})\n`;
+            }
+
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner,
+              repo,
+              issue_number: Number(prNumber),
+              per_page: 100,
+            });
+            const existing = comments.filter((comment) =>
+              comment.body?.startsWith('# Swift E2E Review')
+            );
+
+            for (const comment of existing) {
+              await github.rest.issues.deleteComment({
+                owner,
+                repo,
+                comment_id: comment.id,
+              });
+            }
+
+            await github.rest.issues.createComment({
+              owner,
+              repo,
+              issue_number: Number(prNumber),
+              body,
+            });
+
+      - name: Post Swift E2E Slack Review
+        if: ${{ always() && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch') }}
+        shell: bash
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.WENDY_E2E_SLACK_WEBHOOK_URL || '' }}
+          REPORT_ARTIFACT_NAME: ${{ steps.e2e-run.outputs.run_artifact_id }}
+          REPORT_ARTIFACT_URL: ${{ steps.upload_e2e_report.outputs['artifact-url'] }}
+          DIFF_BASE_REF: ${{ inputs.diff_base_ref || '' }}
+          TESTS: ${{ inputs.tests || '' }}
+          E2E_RESULT: ${{ needs.swift-e2e-tests.result }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${SLACK_WEBHOOK_URL}" ]]; then
+            echo "WENDY_E2E_SLACK_WEBHOOK_URL is not configured; skipping Slack notification."
+            exit 0
+          fi
+
+          run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          artifact_url="${REPORT_ARTIFACT_URL:-}"
+          artifact_name="${REPORT_ARTIFACT_NAME:-Swift E2E report}"
+          review_mode="full"
+          if [[ -n "${DIFF_BASE_REF}" ]]; then
+            review_mode="diff"
+          fi
+          tested_ref="${GITHUB_REF_NAME:-${GITHUB_SHA}}"
+          short_sha="${GITHUB_SHA:0:12}"
+          tests_label="${TESTS:-WendyE2ETests}"
+
+          case "${E2E_RESULT:-unknown}" in
+            success)
+              status_title="Passed"
+              status_emoji="✅"
+              status_color="#22c55e"
+              ;;
+            failure)
+              status_title="Failed"
+              status_emoji="❌"
+              status_color="#ef4444"
+              ;;
+            cancelled)
+              status_title="Cancelled"
+              status_emoji="⏹️"
+              status_color="#f59e0b"
+              ;;
+            skipped)
+              status_title="Skipped"
+              status_emoji="⏭️"
+              status_color="#94a3b8"
+              ;;
+            *)
+              status_title="Unknown"
+              status_emoji="❔"
+              status_color="#64748b"
+              ;;
+          esac
+
+          jq -n \
+            --arg color "${status_color}" \
+            --arg title "${status_emoji} ${status_title}" \
+            --arg mode "${review_mode}" \
+            --arg ref "${tested_ref}" \
+            --arg sha "${short_sha}" \
+            --arg trigger "${GITHUB_EVENT_NAME}" \
+            --arg actor "${GITHUB_ACTOR}" \
+            --arg tests "${tests_label}" \
+            --arg diff_base "${DIFF_BASE_REF}" \
+            --arg run_url "${run_url}" \
+            --arg artifact_url "${artifact_url}" \
+            --arg artifact_name "${artifact_name}" \
+            '{
+              attachments: [
+                {
+                  color: $color,
+                  blocks: (
+                    [
+                      {
+                        type: "header",
+                        text: {
+                          type: "plain_text",
+                          text: $title,
+                          emoji: true
+                        }
+                      },
+                      {
+                        type: "section",
+                        fields: [
+                          { type: "mrkdwn", text: "*Mode:*\n\($mode)" },
+                          { type: "mrkdwn", text: "*Tests:*\n\($tests)" },
+                          { type: "mrkdwn", text: "*Ref:*\n\($ref)" },
+                          { type: "mrkdwn", text: "*Commit:*\n`\($sha)`" },
+                          { type: "mrkdwn", text: "*Trigger:*\n\($trigger)" },
+                          { type: "mrkdwn", text: "*Actor:*\n\($actor)" }
+                        ]
+                      }
+                    ]
+                    + (
+                      if $diff_base != "" then
+                        [
+                          {
+                            type: "context",
+                            elements: [
+                              { type: "mrkdwn", text: "*Diff base:* `\($diff_base)`" }
+                            ]
+                          }
+                        ]
+                      else [] end
+                    )
+                    + [
+                      {
+                        type: "actions",
+                        elements: (
+                          [
+                            {
+                              type: "button",
+                              text: { type: "plain_text", text: "Open GitHub Actions" },
+                              url: $run_url
+                            }
+                          ]
+                          + (
+                            if $artifact_url != "" then
+                              [
+                                {
+                                  type: "button",
+                                  text: { type: "plain_text", text: "Open E2E Report" },
+                                  url: $artifact_url
+                                }
+                              ]
+                            else [] end
+                          )
+                        )
+                      }
+                    ]
+                    + (
+                      if $artifact_url != "" then
+                        [
+                          {
+                            type: "context",
+                            elements: [
+                              { type: "mrkdwn", text: "Report artifact: <\($artifact_url)|\($artifact_name)>" }
+                            ]
+                          }
+                        ]
+                      else [] end
+                    )
+                  )
+                }
+              ]
+            }' \
+            > slack-payload.json
+          curl --fail --silent --show-error \
+            -X POST \
+            -H 'Content-type: application/json' \
+            --data @slack-payload.json \
+            "${SLACK_WEBHOOK_URL}"

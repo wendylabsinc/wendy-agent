@@ -31,12 +31,18 @@ message StreamLogsRequest {
 
     // Optional filter by app/container name
     optional string app_name = 3;
+
+    // Replay last N log batches before going live
+    optional int32 last_n = 4;
 }
 
 message StreamLogsResponse {
     // OTLP logs data using the standard OpenTelemetry format.
     // Can be forwarded directly to a local OTLP collector.
     opentelemetry.proto.collector.logs.v1.ExportLogsServiceRequest logs = 1;
+
+    // true for replayed records; false for live
+    bool is_history = 2;
 }
 
 message StreamMetricsRequest {
@@ -48,12 +54,18 @@ message StreamMetricsRequest {
 
     // Optional filter by app/container name
     optional string app_name = 3;
+
+    // Replay last N metric batches before going live
+    optional int32 last_n = 4;
 }
 
 message StreamMetricsResponse {
     // OTLP metrics data using the standard OpenTelemetry format.
     // Can be forwarded directly to a local OTLP collector.
     opentelemetry.proto.collector.metrics.v1.ExportMetricsServiceRequest metrics = 1;
+
+    // true for replayed records; false for live
+    bool is_history = 2;
 }
 
 message StreamTracesRequest {
@@ -65,10 +77,16 @@ message StreamTracesRequest {
 
     // Optional filter by span name prefix
     optional string span_name_prefix = 3;
+
+    // Replay last N trace batches before going live
+    optional int32 last_n = 4;
 }
 
 message StreamTracesResponse {
     // OTLP trace data using the standard OpenTelemetry format.
     // Can be forwarded directly to a local OTLP collector.
     opentelemetry.proto.collector.trace.v1.ExportTraceServiceRequest traces = 1;
+
+    // true for replayed records; false for live
+    bool is_history = 2;
 }

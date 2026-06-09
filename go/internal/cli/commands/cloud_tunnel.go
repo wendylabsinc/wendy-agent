@@ -7,18 +7,19 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"strings"
 	"sync"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/wendylabsinc/wendy/internal/cli/clouddefaults"
-	"github.com/wendylabsinc/wendy/internal/cli/grpcclient"
-	"github.com/wendylabsinc/wendy/internal/cli/tui"
-	"github.com/wendylabsinc/wendy/internal/shared/certs"
-	"github.com/wendylabsinc/wendy/internal/shared/config"
-	"github.com/wendylabsinc/wendy/proto/gen/agentpb"
-	cloudpb "github.com/wendylabsinc/wendy/proto/gen/cloudpb"
+	"github.com/wendylabsinc/wendy/go/internal/cli/clouddefaults"
+	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
+	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
+	"github.com/wendylabsinc/wendy/go/internal/shared/config"
+	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
+	cloudpb "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
@@ -38,9 +39,6 @@ func (f closeFunc) Close() error {
 	return nil
 }
 
-// certXFCC builds the X-Forwarded-Client-Cert header value from stored cert
-// metadata. The server auth interceptor extracts the Wendy URI to identify
-// the caller when there is no TLS peer certificate (plaintext connections).
 func certXFCC(cert config.CertificateInfo) string {
 	if cert.UserID != "" {
 		return fmt.Sprintf("URI=urn:wendy:org:%d:user:%s", cert.OrganizationID, cert.UserID)
@@ -48,9 +46,6 @@ func certXFCC(cert config.CertificateInfo) string {
 	return fmt.Sprintf("URI=urn:wendy:org:%d:user:unknown", cert.OrganizationID)
 }
 
-// cloudContext returns ctx enriched with cloud auth metadata.
-// The server checks TLS peer cert first and falls back to x-forwarded-client-cert,
-// so we always include the XFCC header; it is harmless when TLS peer cert is present.
 func cloudContext(ctx context.Context, auth *config.AuthConfig) context.Context {
 	if len(auth.Certificates) == 0 {
 		return ctx
@@ -81,7 +76,6 @@ func connectToCloudAgent(ctx context.Context, cloudGRPC, deviceName, brokerURL s
 	return connectCloudAsset(ctx, auth, asset, brokerURL)
 }
 
-// connectCloudAsset opens a tunnelled mTLS gRPC connection to an already-selected cloud asset.
 func connectCloudAsset(ctx context.Context, auth *config.AuthConfig, asset *cloudpb.Asset, brokerURL string) (*grpcclient.AgentConnection, error) {
 	brokerConn, err := dialCloudBroker(auth, brokerURL)
 	if err != nil {
@@ -146,8 +140,6 @@ func connectCloudAsset(ctx context.Context, auth *config.AuthConfig, asset *clou
 	return agentConn, nil
 }
 
-// waitForCloudAgentRestart polls the cloud asset via broker tunnel until the agent answers
-// GetAgentVersion or 60 s elapse. Returns a fresh connection on success.
 func waitForCloudAgentRestart(ctx context.Context, auth *config.AuthConfig, asset *cloudpb.Asset, brokerURL string) (*grpcclient.AgentConnection, error) {
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
@@ -193,8 +185,6 @@ func waitForCloudAgentRestart(ctx context.Context, auth *config.AuthConfig, asse
 	}
 }
 
-// dialCloudBroker opens an mTLS gRPC connection to the tunnel broker.
-// brokerURL is host:port; if empty it is derived from auth.CloudGRPC.
 func dialCloudBroker(auth *config.AuthConfig, brokerURL string) (*grpc.ClientConn, error) {
 	brokerURL = clouddefaults.BrokerURL(auth.CloudGRPC, brokerURL, defaultBrokerPort)
 
@@ -256,9 +246,6 @@ func dialCloudBroker(auth *config.AuthConfig, brokerURL string) (*grpc.ClientCon
 	return conn, nil
 }
 
-// openBrokerTunnel asks the broker to connect to remotePort on the given asset
-// and returns a net.Conn whose reads/writes are relayed through the tunnel stream.
-// The caller is responsible for closing the returned conn.
 func openBrokerTunnel(ctx context.Context, brokerConn *grpc.ClientConn, auth *config.AuthConfig, assetID int32, remotePort uint32) (net.Conn, error) {
 	client := cloudpb.NewTunnelBrokerServiceClient(brokerConn)
 
@@ -279,7 +266,6 @@ func openBrokerTunnel(ctx context.Context, brokerConn *grpc.ClientConn, auth *co
 		return nil, fmt.Errorf("sending tunnel open: %w", err)
 	}
 
-	// Bridge the gRPC stream into a net.Conn via a synchronous pipe.
 	local, remote := net.Pipe()
 
 	go func() {
@@ -287,6 +273,9 @@ func openBrokerTunnel(ctx context.Context, brokerConn *grpc.ClientConn, auth *co
 		for {
 			msg, err := stream.Recv()
 			if err != nil {
+				if tlsDebug := os.Getenv("WENDY_TLS_DEBUG") != ""; tlsDebug {
+					fmt.Fprintf(os.Stderr, "[tunnel-debug] broker stream closed: %v\n", err)
+				}
 				break
 			}
 			if len(msg.Payload) > 0 {
@@ -332,13 +321,10 @@ func openBrokerTunnel(ctx context.Context, brokerConn *grpc.ClientConn, auth *co
 	return local, nil
 }
 
-// fetchCloudAssets retrieves all online compute-device assets for the org.
 func fetchCloudAssets(ctx context.Context, auth *config.AuthConfig) ([]*cloudpb.Asset, error) {
 	return fetchCloudAssetsFiltered(ctx, auth, true)
 }
 
-// resolveCloudAsset performs name matching and single-device auto-select.
-// Returns (nil, nil) when multiple devices are present and a picker is needed.
 func resolveCloudAsset(assets []*cloudpb.Asset, deviceName string) (*cloudpb.Asset, error) {
 	if len(assets) == 0 {
 		return nil, fmt.Errorf("no enrolled devices found for this org; enroll a device with 'wendy device enroll' first")
@@ -365,16 +351,11 @@ func resolveCloudAsset(assets []*cloudpb.Asset, deviceName string) (*cloudpb.Ass
 	return nil, nil // multiple devices — show picker
 }
 
-// pickCloudDevice shows a spinner while fetching online compute-device assets,
-// auto-selects when only one matches, and shows an interactive cloud discover
-// TUI when multiple devices are available. brokerURL is forwarded so the TUI
-// can offer in-place device updates via 'u'.
 func pickCloudDevice(ctx context.Context, auth *config.AuthConfig, deviceName, brokerURL string) (*cloudpb.Asset, error) {
 	if len(auth.Certificates) == 0 {
 		return nil, fmt.Errorf("auth entry has no certificates; re-run 'wendy auth login'")
 	}
 
-	// Fetch device list, showing a spinner in interactive terminals.
 	var assets []*cloudpb.Asset
 	if isInteractiveTerminal() {
 		prog := tea.NewProgram(tui.NewSpinner("Fetching devices from cloud..."))
@@ -410,7 +391,6 @@ func pickCloudDevice(ctx context.Context, auth *config.AuthConfig, deviceName, b
 		return nil, fmt.Errorf("multiple cloud devices found; rerun with --device in a non-interactive environment")
 	}
 
-	// Multiple devices — show interactive cloud discover TUI in picker mode.
 	m := newCloudDiscoverModel(ctx, auth, brokerURL, false, true, assets)
 	p := tea.NewProgram(m)
 	finalModel, err := p.Run()
@@ -429,9 +409,6 @@ func pickCloudDevice(ctx context.Context, auth *config.AuthConfig, deviceName, b
 
 func boolPtr(b bool) *bool { return &b }
 
-// dialCloudGRPC opens a gRPC connection to auth.CloudGRPC using the same
-// transport selection logic as dialCloudBroker: :443 gets mTLS, anything else
-// gets plaintext h2c.
 func dialCloudGRPC(auth *config.AuthConfig) (*grpc.ClientConn, error) {
 	if len(auth.Certificates) == 0 {
 		return nil, fmt.Errorf("auth entry has no certificates; re-run 'wendy auth login'")
@@ -470,8 +447,6 @@ func dialCloudGRPC(auth *config.AuthConfig) (*grpc.ClientConn, error) {
 	return conn, nil
 }
 
-// tunnelDialer returns a grpc.DialOption that routes all dials through the
-// given net.Conn (the broker tunnel). The returned closer shuts the conn.
 func tunnelDialer(tunnelConn net.Conn) (grpc.DialOption, func()) {
 	var once sync.Once
 	return grpc.WithContextDialer(func(_ context.Context, _ string) (net.Conn, error) {

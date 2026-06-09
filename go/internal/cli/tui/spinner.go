@@ -30,7 +30,6 @@ type SpinnerModel struct {
 	quitting bool
 }
 
-// NewSpinner creates a new SpinnerModel with the given title.
 func NewSpinner(title string) SpinnerModel {
 	s := spinner.New()
 	s.Spinner = spinner.Dot
@@ -89,7 +88,6 @@ func (m SpinnerModel) View() string {
 	return fmt.Sprintf("%s %s\n", m.spinner.View(), m.title)
 }
 
-// Result returns the result and error from the completed spinner.
 func (m SpinnerModel) Result() (interface{}, error) {
 	return m.result, m.err
 }

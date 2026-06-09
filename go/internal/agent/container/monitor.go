@@ -9,8 +9,8 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/wendylabsinc/wendy/internal/agent/services"
-	"github.com/wendylabsinc/wendy/proto/gen/agentpb"
+	"github.com/wendylabsinc/wendy/go/internal/agent/services"
+	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
 // RestartPolicy determines the container restart behavior.
@@ -27,7 +27,6 @@ const (
 	RestartAlways
 )
 
-// String returns the human-readable name of the restart policy.
 func (p RestartPolicy) String() string {
 	switch p {
 	case RestartNo:
@@ -72,20 +71,21 @@ type containerState struct {
 type ContainerMonitor struct {
 	logger     *zap.Logger
 	containerd services.ContainerdClient
+	logManager *services.ContainerLogManager
 	states     map[string]*containerState
 	mu         sync.Mutex
 	interval   time.Duration
 	stopCh     chan struct{}
 }
 
-// NewContainerMonitor creates a new ContainerMonitor.
-func NewContainerMonitor(logger *zap.Logger, client services.ContainerdClient, interval time.Duration) *ContainerMonitor {
+func NewContainerMonitor(logger *zap.Logger, client services.ContainerdClient, logManager *services.ContainerLogManager, interval time.Duration) *ContainerMonitor {
 	if interval == 0 {
 		interval = 5 * time.Second
 	}
 	return &ContainerMonitor{
 		logger:     logger,
 		containerd: client,
+		logManager: logManager,
 		states:     make(map[string]*containerState),
 		interval:   interval,
 		stopCh:     make(chan struct{}),
@@ -200,12 +200,27 @@ func (m *ContainerMonitor) checkContainers(ctx context.Context) {
 
 	for _, name := range toRestart {
 		go func(n string) {
-			if _, err := m.containerd.StartContainer(ctx, n, "", nil); err != nil {
+			outputCh, err := m.containerd.StartContainer(ctx, n, "", nil)
+			if err != nil {
 				m.logger.Error("Failed to restart container",
 					zap.String("app_name", n),
 					zap.Error(err),
 				)
+				return
 			}
+			// Drain outputCh so the containerd pipe never blocks.
+			// Publish through the log manager when available so stdout/stderr
+			// from restarted containers reaches OTel (and therefore `wendy device logs`).
+			go func() {
+				for output := range outputCh {
+					if m.logManager != nil {
+						m.logManager.Publish(n, output)
+					}
+				}
+				if m.logManager != nil {
+					m.logManager.Publish(n, services.ContainerOutput{Done: true})
+				}
+			}()
 		}(name)
 	}
 }

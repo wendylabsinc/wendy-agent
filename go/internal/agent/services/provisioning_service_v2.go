@@ -3,8 +3,8 @@ package services
 import (
 	"context"
 
-	agentpb "github.com/wendylabsinc/wendy/proto/gen/agentpb"
-	agentpbv2 "github.com/wendylabsinc/wendy/proto/gen/agentpb/v2"
+	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
+	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 )
 
 // ProvisioningServiceV2 implements agentpbv2.WendyProvisioningServiceServer by
@@ -14,7 +14,6 @@ type ProvisioningServiceV2 struct {
 	v1 *ProvisioningService
 }
 
-// NewProvisioningServiceV2 creates a new ProvisioningServiceV2 wrapping the given v1 service.
 func NewProvisioningServiceV2(v1 *ProvisioningService) *ProvisioningServiceV2 {
 	return &ProvisioningServiceV2{v1: v1}
 }

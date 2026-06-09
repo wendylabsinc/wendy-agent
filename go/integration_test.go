@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -17,12 +18,12 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/test/bufconn"
 
-	"github.com/wendylabsinc/wendy/internal/agent/services"
-	"github.com/wendylabsinc/wendy/internal/shared/appconfig"
-	"github.com/wendylabsinc/wendy/internal/shared/version"
-	agentpb "github.com/wendylabsinc/wendy/proto/gen/agentpb"
-	cloudpb "github.com/wendylabsinc/wendy/proto/gen/cloudpb"
-	otelpb "github.com/wendylabsinc/wendy/proto/gen/otelpb"
+	"github.com/wendylabsinc/wendy/go/internal/agent/services"
+	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
+	"github.com/wendylabsinc/wendy/go/internal/shared/version"
+	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
+	cloudpb "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
+	otelpb "github.com/wendylabsinc/wendy/go/proto/gen/otelpb"
 )
 
 // ---------- mocks for integration test ----------
@@ -212,6 +213,19 @@ func (m *statefulContainerdClient) GetContainerRestartPolicyLabel(_ context.Cont
 	return "", nil
 }
 
+func (m *statefulContainerdClient) ContainerIDsForApp(_ context.Context, appID string) ([]string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var ids []string
+	prefix := appID + "/"
+	for name := range m.containers {
+		if name == appID || strings.HasPrefix(name, prefix) {
+			ids = append(ids, name)
+		}
+	}
+	return ids, nil
+}
+
 // getLayerData returns the data stored for a given digest, for test assertions.
 func (m *statefulContainerdClient) getLayerData(digest string) ([]byte, bool) {
 	m.mu.Lock()
@@ -270,7 +284,7 @@ func TestFullAgentLifecycle(t *testing.T) {
 	agentSvc := services.NewAgentService(logger, nm, hd, bm, &services.AgentInstaller{})
 	containerSvc := services.NewContainerService(logger, cc)
 	broadcaster := services.NewTelemetryBroadcaster()
-	telemetrySvc := services.NewTelemetryService(logger, broadcaster)
+	telemetrySvc := services.NewTelemetryService(logger, broadcaster, nil)
 	otelLogs := services.NewOTELLogsReceiver(broadcaster)
 
 	// Register all services on a single gRPC server.
@@ -734,7 +748,7 @@ func TestStreamMetrics(t *testing.T) {
 	lis := bufconn.Listen(integrationBufSize)
 
 	broadcaster := services.NewTelemetryBroadcaster()
-	telemetrySvc := services.NewTelemetryService(logger, broadcaster)
+	telemetrySvc := services.NewTelemetryService(logger, broadcaster, nil)
 	otelMetrics := services.NewOTELMetricsReceiver(broadcaster)
 
 	srv := grpc.NewServer()
@@ -802,7 +816,7 @@ func TestStreamTraces(t *testing.T) {
 	lis := bufconn.Listen(integrationBufSize)
 
 	broadcaster := services.NewTelemetryBroadcaster()
-	telemetrySvc := services.NewTelemetryService(logger, broadcaster)
+	telemetrySvc := services.NewTelemetryService(logger, broadcaster, nil)
 	otelTraces := services.NewOTELTraceReceiver(broadcaster)
 
 	srv := grpc.NewServer()

@@ -1,0 +1,8 @@
+{
+  "appId": "com.example.compose-companion",
+  "services": {
+    "greeter": {
+      "entitlements": []
+    }
+  }
+}

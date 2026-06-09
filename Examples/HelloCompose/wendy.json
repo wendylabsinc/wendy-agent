@@ -1,0 +1,11 @@
+{
+  "appId": "sh.wendy.examples.hellocompose",
+  "services": {
+    "api": {
+      "entitlements": [
+        { "type": "gpu" }
+      ]
+    },
+    "client": {}
+  }
+}

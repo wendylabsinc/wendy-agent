@@ -7,8 +7,8 @@ import (
 
 	"google.golang.org/grpc/metadata"
 
-	"github.com/wendylabsinc/wendy/internal/cli/grpcclient"
-	agentpb "github.com/wendylabsinc/wendy/proto/gen/agentpb"
+	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
+	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
 // startMCPProxy starts a local TCP listener that proxies each incoming connection

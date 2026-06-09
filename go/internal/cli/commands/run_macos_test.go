@@ -14,9 +14,9 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/wendylabsinc/wendy/internal/cli/grpcclient"
-	"github.com/wendylabsinc/wendy/internal/shared/appconfig"
-	"github.com/wendylabsinc/wendy/proto/gen/agentpb"
+	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
+	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
+	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
 type fakeMacRunState struct {
@@ -154,12 +154,8 @@ func TestRunMacOSSwiftPMWithAgent_UsesRunArgsFromAppConfig(t *testing.T) {
 		t.Fatalf("MkdirAll bin: %v", err)
 	}
 
-	swiftlyPath := filepath.Join(binDir, "swiftly")
 	swiftPath := filepath.Join(binDir, "swift")
-	if err := os.WriteFile(swiftlyPath, []byte("#!/bin/sh\necho '{\"products\":[{\"name\":\"MySwiftApp\",\"type\":{\"executable\":null}}]}'\n"), 0o755); err != nil {
-		t.Fatalf("WriteFile swiftly: %v", err)
-	}
-	if err := os.WriteFile(swiftPath, []byte("#!/bin/sh\nif [ \"$1\" = \"build\" ] && [ \"$2\" = \"-c\" ] && [ \"$3\" = \"release\" ] && [ \"$4\" = \"--show-bin-path\" ]; then\n  echo \"$PWD/.build/release\"\n  exit 0\nfi\nif [ \"$1\" = \"build\" ] && [ \"$2\" = \"-c\" ] && [ \"$3\" = \"release\" ]; then\n  mkdir -p \"$PWD/.build/release/MySwiftApp.bundle\" \"$PWD/.build/release/MySwiftApp.resources\"\n  printf '#!/bin/sh\\n' > \"$PWD/.build/release/MySwiftApp\"\n  printf '<plist/>' > \"$PWD/.build/release/MySwiftApp.bundle/Info.plist\"\n  printf '{}' > \"$PWD/.build/release/MySwiftApp.resources/config.json\"\n  chmod +x \"$PWD/.build/release/MySwiftApp\"\n  exit 0\nfi\necho \"unexpected args: $@\" >&2\nexit 1\n"), 0o755); err != nil {
+	if err := os.WriteFile(swiftPath, []byte("#!/bin/sh\nif [ \"$1\" = \"package\" ] && [ \"$2\" = \"dump-package\" ]; then\n  echo '{\"products\":[{\"name\":\"MySwiftApp\",\"type\":{\"executable\":null}}]}'\n  exit 0\nfi\nif [ \"$1\" = \"build\" ] && [ \"$2\" = \"-c\" ] && [ \"$3\" = \"release\" ] && [ \"$4\" = \"--show-bin-path\" ]; then\n  echo \"$PWD/.build/release\"\n  exit 0\nfi\nif [ \"$1\" = \"build\" ] && [ \"$2\" = \"-c\" ] && [ \"$3\" = \"release\" ]; then\n  mkdir -p \"$PWD/.build/release/MySwiftApp.bundle\" \"$PWD/.build/release/MySwiftApp.resources\"\n  printf '#!/bin/sh\\n' > \"$PWD/.build/release/MySwiftApp\"\n  printf '<plist/>' > \"$PWD/.build/release/MySwiftApp.bundle/Info.plist\"\n  printf '{}' > \"$PWD/.build/release/MySwiftApp.resources/config.json\"\n  chmod +x \"$PWD/.build/release/MySwiftApp\"\n  exit 0\nfi\necho \"unexpected args: $@\" >&2\nexit 1\n"), 0o755); err != nil {
 		t.Fatalf("WriteFile swift: %v", err)
 	}
 

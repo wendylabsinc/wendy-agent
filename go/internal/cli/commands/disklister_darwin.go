@@ -191,14 +191,12 @@ func writeImageToDisk(r io.Reader, totalSize int64, d drive, progressFn func(wri
 		bs = "64m"
 	}
 
-	// Use rdisk for faster raw writes on macOS. Read from stdin so the
-	// caller can pipe an io.Reader (e.g. a streaming zip entry) without
-	// materialising the image to disk first.
-	cmd := exec.Command("sudo", "dd",
-		fmt.Sprintf("of=%s", d.RawPath),
-		"bs="+bs,
-		"status=progress",
-	)
+	ddArgs, err := darwinDDArgs(d.RawPath, bs)
+	if err != nil {
+		return err
+	}
+
+	cmd := exec.Command("sudo", ddArgs...)
 	cmd.Stdin = r
 
 	stderr, err := cmd.StderrPipe()
@@ -210,16 +208,20 @@ func writeImageToDisk(r io.Reader, totalSize int64, d drive, progressFn func(wri
 		return fmt.Errorf("starting dd: %w", err)
 	}
 
+	var ddDiag string
 	scannerDone := make(chan struct{})
 	go func() {
 		defer close(scannerDone)
-		scanDDProgress(stderr, progressFn)
+		ddDiag = scanDDProgress(stderr, progressFn)
 	}()
 
 	waitErr := cmd.Wait()
 	<-scannerDone
 
 	if waitErr != nil {
+		if ddDiag != "" {
+			return fmt.Errorf("writing image: %w\n%s", waitErr, ddDiag)
+		}
 		return fmt.Errorf("writing image: %w", waitErr)
 	}
 

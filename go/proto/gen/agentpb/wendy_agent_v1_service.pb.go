@@ -585,8 +585,12 @@ type GetAgentVersionResponse struct {
 	CudaVersion *string `protobuf:"bytes,11,opt,name=cuda_version,json=cudaVersion,proto3,oneof" json:"cuda_version,omitempty"`
 	// STORAGE value from /etc/wendyos/device-type (e.g. "sd", "nvme"). Only present on WendyOS.
 	StorageMedium *string `protobuf:"bytes,12,opt,name=storage_medium,json=storageMedium,proto3,oneof" json:"storage_medium,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	// Root filesystem bytes currently used by the device. Only present when the agent can inspect disk usage.
+	DiskUsedBytes *int64 `protobuf:"varint,13,opt,name=disk_used_bytes,json=diskUsedBytes,proto3,oneof" json:"disk_used_bytes,omitempty"`
+	// Root filesystem total bytes on the device. Only present when the agent can inspect disk usage.
+	DiskTotalBytes *int64 `protobuf:"varint,14,opt,name=disk_total_bytes,json=diskTotalBytes,proto3,oneof" json:"disk_total_bytes,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *GetAgentVersionResponse) Reset() {
@@ -701,6 +705,20 @@ func (x *GetAgentVersionResponse) GetStorageMedium() string {
 		return *x.StorageMedium
 	}
 	return ""
+}
+
+func (x *GetAgentVersionResponse) GetDiskUsedBytes() int64 {
+	if x != nil && x.DiskUsedBytes != nil {
+		return *x.DiskUsedBytes
+	}
+	return 0
+}
+
+func (x *GetAgentVersionResponse) GetDiskTotalBytes() int64 {
+	if x != nil && x.DiskTotalBytes != nil {
+		return *x.DiskTotalBytes
+	}
+	return 0
 }
 
 // Request message for listing WiFi networks
@@ -3119,7 +3137,7 @@ const file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDesc = "" +
 	"\aupdated\x18\x01 \x01(\v24.wendy.agent.services.v1.UpdateAgentResponse.UpdatedH\x00R\aupdated\x1a\t\n" +
 	"\aUpdatedB\x0f\n" +
 	"\rresponse_type\"\x18\n" +
-	"\x16GetAgentVersionRequest\"\xc1\x04\n" +
+	"\x16GetAgentVersionRequest\"\xc6\x05\n" +
 	"\x17GetAgentVersionResponse\x12\x18\n" +
 	"\aversion\x18\x01 \x01(\tR\aversion\x12\"\n" +
 	"\n" +
@@ -3139,7 +3157,9 @@ const file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDesc = "" +
 	"\x0fjetpack_version\x18\n" +
 	" \x01(\tH\x05R\x0ejetpackVersion\x88\x01\x01\x12&\n" +
 	"\fcuda_version\x18\v \x01(\tH\x06R\vcudaVersion\x88\x01\x01\x12*\n" +
-	"\x0estorage_medium\x18\f \x01(\tH\aR\rstorageMedium\x88\x01\x01B\r\n" +
+	"\x0estorage_medium\x18\f \x01(\tH\aR\rstorageMedium\x88\x01\x01\x12+\n" +
+	"\x0fdisk_used_bytes\x18\r \x01(\x03H\bR\rdiskUsedBytes\x88\x01\x01\x12-\n" +
+	"\x10disk_total_bytes\x18\x0e \x01(\x03H\tR\x0ediskTotalBytes\x88\x01\x01B\r\n" +
 	"\v_os_versionB\r\n" +
 	"\v_public_keyB\x0e\n" +
 	"\f_device_typeB\n" +
@@ -3148,7 +3168,9 @@ const file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDesc = "" +
 	"\v_gpu_vendorB\x12\n" +
 	"\x10_jetpack_versionB\x0f\n" +
 	"\r_cuda_versionB\x11\n" +
-	"\x0f_storage_medium\"\x19\n" +
+	"\x0f_storage_mediumB\x12\n" +
+	"\x10_disk_used_bytesB\x13\n" +
+	"\x11_disk_total_bytes\"\x19\n" +
 	"\x17ListWiFiNetworksRequest\"\xbb\x03\n" +
 	"\x18ListWiFiNetworksResponse\x12Y\n" +
 	"\bnetworks\x18\x01 \x03(\v2=.wendy.agent.services.v1.ListWiFiNetworksResponse.WiFiNetworkR\bnetworks\x1a\xc3\x02\n" +

@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -14,8 +16,8 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/test/bufconn"
 
-	"github.com/wendylabsinc/wendy/internal/shared/version"
-	agentpb "github.com/wendylabsinc/wendy/proto/gen/agentpb"
+	"github.com/wendylabsinc/wendy/go/internal/shared/version"
+	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
 // ---------- mock implementations ----------
@@ -134,6 +136,54 @@ func TestGetAgentVersion(t *testing.T) {
 	}
 	if resp.CpuArchitecture != runtime.GOARCH {
 		t.Errorf("arch = %q; want %q", resp.CpuArchitecture, runtime.GOARCH)
+	}
+}
+
+func TestReadWendyOSVersionFromPrefersCurrentPath(t *testing.T) {
+	dir := t.TempDir()
+	current := filepath.Join(dir, "etc", "wendyos", "version.txt")
+	legacy := filepath.Join(dir, "etc", "wendy", "version.txt")
+
+	if err := os.MkdirAll(filepath.Dir(current), 0o755); err != nil {
+		t.Fatalf("mkdir current: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(legacy), 0o755); err != nil {
+		t.Fatalf("mkdir legacy: %v", err)
+	}
+	if err := os.WriteFile(current, []byte("WendyOS-0.13.2\n"), 0o644); err != nil {
+		t.Fatalf("write current: %v", err)
+	}
+	if err := os.WriteFile(legacy, []byte("WendyOS-0.10.4\n"), 0o644); err != nil {
+		t.Fatalf("write legacy: %v", err)
+	}
+
+	got, ok := readWendyOSVersionFrom(current, legacy)
+	if !ok {
+		t.Fatal("expected WendyOS version")
+	}
+	if got != "WendyOS-0.13.2" {
+		t.Fatalf("version = %q, want current version", got)
+	}
+}
+
+func TestReadWendyOSVersionFromFallsBackToLegacyPath(t *testing.T) {
+	dir := t.TempDir()
+	current := filepath.Join(dir, "etc", "wendyos", "version.txt")
+	legacy := filepath.Join(dir, "etc", "wendy", "version.txt")
+
+	if err := os.MkdirAll(filepath.Dir(legacy), 0o755); err != nil {
+		t.Fatalf("mkdir legacy: %v", err)
+	}
+	if err := os.WriteFile(legacy, []byte("WendyOS-0.10.4\n"), 0o644); err != nil {
+		t.Fatalf("write legacy: %v", err)
+	}
+
+	got, ok := readWendyOSVersionFrom(current, legacy)
+	if !ok {
+		t.Fatal("expected WendyOS version")
+	}
+	if got != "WendyOS-0.10.4" {
+		t.Fatalf("version = %q, want legacy version", got)
 	}
 }
 

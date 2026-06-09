@@ -1,0 +1,114 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://wendy.build/schemas/wendy-e2e-attempt.schema.json",
+  "title": "Wendy E2E Attempt Manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "kind",
+    "version",
+    "attemptID",
+    "createdAt",
+    "exitStatus",
+    "git",
+    "github",
+    "target",
+    "paths",
+    "test",
+    "tools"
+  ],
+  "properties": {
+    "kind": { "const": "wendy-e2e-attempt" },
+    "version": { "const": 1 },
+    "attemptID": { "type": "string", "minLength": 1 },
+    "createdAt": { "type": "string", "format": "date-time" },
+    "exitStatus": { "type": "integer" },
+    "git": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["commit", "branch", "ref", "remote", "dirty"],
+      "properties": {
+        "commit": { "type": ["string", "null"] },
+        "branch": { "type": ["string", "null"] },
+        "ref": { "type": ["string", "null"] },
+        "remote": { "type": ["string", "null"] },
+        "dirty": { "type": "boolean" }
+      }
+    },
+    "github": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "workflow", "runID", "runAttempt", "job", "actor", "sha"],
+      "properties": {
+        "repository": { "type": ["string", "null"] },
+        "workflow": { "type": ["string", "null"] },
+        "runID": { "type": ["string", "null"] },
+        "runAttempt": { "type": ["string", "null"] },
+        "job": { "type": ["string", "null"] },
+        "actor": { "type": ["string", "null"] },
+        "sha": { "type": ["string", "null"] }
+      }
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cliOS", "cliAddress", "cliUser", "agentOS", "agentAddress", "agentUser", "transport"],
+      "properties": {
+        "cliOS": { "type": ["string", "null"] },
+        "cliAddress": { "type": ["string", "null"] },
+        "cliUser": { "type": ["string", "null"] },
+        "agentOS": { "type": ["string", "null"] },
+        "agentAddress": { "type": ["string", "null"] },
+        "agentUser": { "type": ["string", "null"] },
+        "transport": { "type": ["string", "null"] }
+      }
+    },
+    "paths": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "attemptDirectory",
+        "outputDirectory",
+        "cliRunDirectory",
+        "cliBinDirectory",
+        "agentRunDirectory",
+        "agentBinDirectory"
+      ],
+      "properties": {
+        "attemptDirectory": { "type": "string" },
+        "outputDirectory": { "type": "string" },
+        "cliRunDirectory": { "type": "string" },
+        "cliBinDirectory": { "type": "string" },
+        "agentRunDirectory": { "type": "string" },
+        "agentBinDirectory": { "type": ["string", "null"] }
+      }
+    },
+    "test": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["filters", "isolation", "parallel"],
+      "properties": {
+        "filters": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "isolation": {
+          "type": "string",
+          "enum": ["per-test", "per-run", "none"]
+        },
+        "parallel": { "type": "boolean" }
+      }
+    },
+    "tools": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["swift", "go", "wendy", "wendyPath"],
+      "properties": {
+        "swift": { "type": ["string", "null"] },
+        "go": { "type": ["string", "null"] },
+        "wendy": { "type": ["string", "null"] },
+        "wendyPath": { "type": ["string", "null"] }
+      }
+    }
+  }
+}

@@ -9,35 +9,38 @@ import (
 
 	bubbleTable "github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/wendylabsinc/wendy/internal/cli/grpcclient"
-	"github.com/wendylabsinc/wendy/internal/cli/tui"
-	"github.com/wendylabsinc/wendy/proto/gen/agentpb"
+	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
+	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
-// dashboardRow holds merged data for one app displayed in the dashboard table.
 type dashboardRow struct {
-	name         string
-	version      string
-	state        string
-	memoryBytes  int64
-	storageBytes int64
-	volumeCount  int
-	volumeBytes  int64
-	failures     uint32
-	hasStats     bool
-	hasVolumes   bool
+	name          string // app ID for actions; "" for sub-rows
+	displayName   string // shown in the Name column
+	version       string
+	state         string
+	memoryBytes   int64
+	storageBytes  int64
+	volumeCount   int
+	volumeBytes   int64
+	failures      uint32
+	hasStats      bool
+	hasVolumes    bool
+	isGroupHeader bool
+	isSubrow      bool
 }
 
 // buildDashboardRows merges containers, stats, and volume data into display rows.
-// Order follows the containers slice.
+// Order follows the containers slice. Multi-service apps produce a group-header
+// row followed by one sub-row per service; sub-rows are display-only (no actions).
 func buildDashboardRows(
 	containers []*agentpb.AppContainer,
 	stats []*agentpb.ContainerStats,
 	volumes []*agentpb.VolumeInfo,
 ) []dashboardRow {
-	// Index stats by app name.
+	// Index stats by container ID (set to ctr.ID() by GetContainerStats).
 	statsMap := make(map[string]*agentpb.ContainerStats, len(stats))
 	for _, s := range stats {
 		statsMap[s.GetAppName()] = s
@@ -53,26 +56,73 @@ func buildDashboardRows(
 		}
 	}
 
-	rows := make([]dashboardRow, len(containers))
-	for i, c := range containers {
-		name := c.GetAppName()
-		row := dashboardRow{
-			name:        name,
-			version:     c.GetAppVersion(),
-			state:       c.GetRunningState().String(),
-			failures:    c.GetFailureCount(),
-			volumeCount: volCount[name],
-			volumeBytes: volBytes[name],
+	var rows []dashboardRow
+	for _, c := range containers {
+		appName := c.GetAppName()
+		services := c.GetServices()
+
+		if len(services) > 1 {
+			// Sum stats from all service containers (keyed as appID_serviceName).
+			var totalMem, totalStorage int64
+			hasStats := false
+			for _, svc := range services {
+				if s, ok := statsMap[appName+"_"+svc.GetName()]; ok {
+					totalMem += s.GetMemoryBytes()
+					totalStorage += s.GetStorageBytes()
+					hasStats = true
+				}
+			}
+			rows = append(rows, dashboardRow{
+				name:          appName,
+				displayName:   appName + " [group]",
+				version:       c.GetAppVersion(),
+				state:         c.GetRunningState().String(),
+				failures:      c.GetFailureCount(),
+				volumeCount:   volCount[appName],
+				volumeBytes:   volBytes[appName],
+				hasStats:      hasStats,
+				memoryBytes:   totalMem,
+				storageBytes:  totalStorage,
+				hasVolumes:    volCount[appName] > 0,
+				isGroupHeader: true,
+			})
+			for _, svc := range services {
+				var svcMem, svcStorage int64
+				hasSvcStats := false
+				if s, ok := statsMap[appName+"_"+svc.GetName()]; ok {
+					svcMem = s.GetMemoryBytes()
+					svcStorage = s.GetStorageBytes()
+					hasSvcStats = true
+				}
+				rows = append(rows, dashboardRow{
+					displayName:  "  ↳ " + svc.GetName(),
+					state:        svc.GetRunningState().String(),
+					memoryBytes:  svcMem,
+					storageBytes: svcStorage,
+					hasStats:     hasSvcStats,
+					isSubrow:     true,
+				})
+			}
+		} else {
+			row := dashboardRow{
+				name:        appName,
+				displayName: appName,
+				version:     c.GetAppVersion(),
+				state:       c.GetRunningState().String(),
+				failures:    c.GetFailureCount(),
+				volumeCount: volCount[appName],
+				volumeBytes: volBytes[appName],
+			}
+			if s, ok := statsMap[appName]; ok {
+				row.hasStats = true
+				row.memoryBytes = s.GetMemoryBytes()
+				row.storageBytes = s.GetStorageBytes()
+			}
+			if volCount[appName] > 0 {
+				row.hasVolumes = true
+			}
+			rows = append(rows, row)
 		}
-		if s, ok := statsMap[name]; ok {
-			row.hasStats = true
-			row.memoryBytes = s.GetMemoryBytes()
-			row.storageBytes = s.GetStorageBytes()
-		}
-		if volCount[name] > 0 {
-			row.hasVolumes = true
-		}
-		rows[i] = row
 	}
 	return rows
 }
@@ -128,9 +178,10 @@ type appsDashboardModel struct {
 
 	// Current data.
 	rows  []dashboardRow
-	table bubbleTable.Model
+	table tui.BubbleTable
 
 	// UI state.
+	width  int
 	flash  string
 	height int
 
@@ -357,6 +408,10 @@ func (m *appsDashboardModel) refreshTable() {
 		if r.hasStats {
 			storage = formatBytes(r.storageBytes)
 		}
+		if r.isSubrow {
+			rows[i] = bubbleTable.Row{icon, r.displayName, "", ram, storage, "", "", ""}
+			continue
+		}
 		vols := "—"
 		volUsage := "—"
 		if r.volumeCount > 0 {
@@ -365,7 +420,7 @@ func (m *appsDashboardModel) refreshTable() {
 		}
 		rows[i] = bubbleTable.Row{
 			icon,
-			r.name,
+			r.displayName,
 			r.version,
 			ram,
 			storage,
@@ -388,9 +443,12 @@ func (m *appsDashboardModel) refreshTable() {
 func (m appsDashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
+		m.width = msg.Width
 		m.height = msg.Height
+		var cmd tea.Cmd
+		m.table, cmd = m.table.Update(msg)
 		m.refreshTable()
-		return m, nil
+		return m, cmd
 
 	case appsDashContainersMsg:
 		if msg.err != nil {
@@ -458,7 +516,7 @@ func (m appsDashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case "enter":
 			cursor := m.table.Cursor()
-			if cursor >= 0 && cursor < len(m.rows) {
+			if cursor >= 0 && cursor < len(m.rows) && !m.rows[cursor].isSubrow {
 				m.selectedApp = m.rows[cursor].name
 				m.action = appsDashActionLogs
 			}
@@ -466,7 +524,7 @@ func (m appsDashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case "s":
 			cursor := m.table.Cursor()
-			if cursor < 0 || cursor >= len(m.rows) {
+			if cursor < 0 || cursor >= len(m.rows) || m.rows[cursor].isSubrow {
 				return m, nil
 			}
 			appName := m.rows[cursor].name
@@ -493,7 +551,7 @@ func (m appsDashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case "x":
 			cursor := m.table.Cursor()
-			if cursor < 0 || cursor >= len(m.rows) {
+			if cursor < 0 || cursor >= len(m.rows) || m.rows[cursor].isSubrow {
 				return m, nil
 			}
 			appName := m.rows[cursor].name
@@ -508,7 +566,7 @@ func (m appsDashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case "r":
 			cursor := m.table.Cursor()
-			if cursor < 0 || cursor >= len(m.rows) {
+			if cursor < 0 || cursor >= len(m.rows) || m.rows[cursor].isSubrow {
 				return m, nil
 			}
 			appName := m.rows[cursor].name
@@ -529,7 +587,7 @@ func (m appsDashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case "R":
 			cursor := m.table.Cursor()
-			if cursor < 0 || cursor >= len(m.rows) {
+			if cursor < 0 || cursor >= len(m.rows) || m.rows[cursor].isSubrow {
 				return m, nil
 			}
 			appName := m.rows[cursor].name
@@ -572,18 +630,25 @@ func (m appsDashboardModel) View() string {
 
 	// Hint line
 	hint := "↑/↓ navigate  s start  x stop  r remove  R remove+vols  enter logs  d default  q quit"
-	sb.WriteString(dashDimStyle.Render(hint) + "\n\n")
+	if m.table.CanScroll() {
+		hint = "↑/↓ navigate  ←/→ scroll  s start  x stop  r remove  R remove+vols  enter logs  d default  q quit"
+	}
+	sb.WriteString(m.viewLine(dashDimStyle.Render(hint)) + "\n\n")
 
 	// Table or empty state
 	if len(m.rows) == 0 {
-		sb.WriteString(dashDimStyle.Render("  No applications found. Polling…") + "\n")
+		sb.WriteString(m.viewLine(dashDimStyle.Render("  No applications found. Polling…")) + "\n")
 	} else {
 		sb.WriteString(m.table.View() + "\n")
 	}
 
-	// Status line
-	running, stopped := 0, 0
+	// Status line (sub-rows don't count as separate apps).
+	running, stopped, total := 0, 0, 0
 	for _, r := range m.rows {
+		if r.isSubrow {
+			continue
+		}
+		total++
 		if r.state == "RUNNING" {
 			running++
 		} else {
@@ -591,15 +656,22 @@ func (m appsDashboardModel) View() string {
 		}
 	}
 	status := fmt.Sprintf("\n  %d apps  ● %d running  ○ %d stopped  (refreshes every 2s)",
-		len(m.rows), running, stopped)
-	sb.WriteString(dashDimStyle.Render(status) + "\n")
+		total, running, stopped)
+	sb.WriteString(m.viewLine(dashDimStyle.Render(status)) + "\n")
 
 	// Flash / confirm line
 	if m.confirming {
-		sb.WriteString(dashDimStyle.Render("  "+m.confirmText) + "\n")
+		sb.WriteString(m.viewLine(dashDimStyle.Render("  "+m.confirmText)) + "\n")
 	} else if m.flash != "" {
-		sb.WriteString(dashMetricVal.Render("  "+m.flash) + "\n")
+		sb.WriteString(m.viewLine(dashMetricVal.Render("  "+m.flash)) + "\n")
 	}
 
 	return sb.String()
+}
+
+func (m appsDashboardModel) viewLine(line string) string {
+	if m.width <= 0 {
+		return line
+	}
+	return tui.CropANSIView(line, 0, m.width)
 }

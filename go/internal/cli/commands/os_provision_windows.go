@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/wendylabsinc/wendy/internal/shared/wendyconf"
+	"github.com/wendylabsinc/wendy/go/internal/shared/wendyconf"
 )
 
 // configPartitionSupported reports whether writeConfigPartition has a working
@@ -145,12 +145,6 @@ func unmountAndOfflineDisk(diskNum int, removable bool) error {
 	return nil
 }
 
-// findConfigPartitionNumber returns the partition number on diskNum whose
-// FAT32 filesystem label matches "config" (case-insensitive, FAT32 padding
-// tolerated). The PowerShell script casts DriveLetter to [string] because
-// PowerShell hands back a [char] when assigned, whose JSON encoding is the
-// integer codepoint — that would silently corrupt the parser. -Depth 3
-// suppresses the depth-exceeded warning on nested CIM objects.
 func findConfigPartitionNumber(diskNum int) (int, error) {
 	script := fmt.Sprintf(
 		"Get-Partition -DiskNumber %d -ErrorAction Stop | "+
@@ -172,9 +166,6 @@ func findConfigPartitionNumber(diskNum int) (int, error) {
 	return parseConfigPartition(out)
 }
 
-// ensureConfigPartitionMounted returns the mount path (e.g. "X:\") for the
-// given partition, assigning a drive letter if Windows hasn't already
-// auto-assigned one.
 func ensureConfigPartitionMounted(diskNum, partNum int) (string, error) {
 	letter, err := readPartitionDriveLetter(diskNum, partNum)
 	if err != nil {
@@ -195,8 +186,6 @@ func ensureConfigPartitionMounted(diskNum, partNum int) (string, error) {
 	return letter + `:\`, nil
 }
 
-// readPartitionDriveLetter returns the assigned drive letter (e.g. "X") or
-// empty string when none is assigned.
 func readPartitionDriveLetter(diskNum, partNum int) (string, error) {
 	script := fmt.Sprintf(
 		"$p = Get-Partition -DiskNumber %d -PartitionNumber %d -ErrorAction Stop; "+

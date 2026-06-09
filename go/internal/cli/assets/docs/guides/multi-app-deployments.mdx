@@ -1,0 +1,197 @@
+---
+title: Multi-App Deployments with Docker Compose
+description: Run ROS 2-style multi-container stacks on WendyOS with docker-compose.yml and wendy run
+---
+
+## Run a ROS 2-style stack as one deployment
+
+Use `docker-compose.yml` when your project is naturally split into cooperating containers. This is common for ROS 2 systems: one service can publish sensor data, another can run planning or inference, and a third can expose a dashboard or bridge.
+
+Wendy treats the compose file as the deployment plan. You do not need a `wendy.json` for the project root.
+
+### Prerequisites
+
+- Wendy CLI installed on your development machine
+- A WendyOS device reachable over USB, LAN, or Wendy Cloud
+- Docker installed locally so Wendy can build service images
+- A project directory that contains `docker-compose.yml`, `docker-compose.yaml`, `compose.yml`, or `compose.yaml`
+
+## How Wendy runs compose projects
+
+When you run `wendy run` in a directory with a compose file, Wendy uses the compose path before the single-Dockerfile path. You can also make this explicit:
+
+```bash
+wendy run --build-type compose
+```
+
+For a WendyOS device target, Wendy:
+
+1. Reads the compose file from the project root.
+2. Builds each service that has a `build:` directive for the target device platform.
+3. Pushes built images to the device's embedded registry.
+4. Uses declared `image:` references directly for services without `build:`.
+5. Generates one device app per service, named `<project-folder>-<service>`.
+6. Creates service containers in `depends_on` order.
+7. Starts all services and streams logs with a `[service]` prefix.
+
+<Callout type="info">
+For ROS 2, set `network_mode: host` on every service that needs DDS discovery, multicast, or direct host-network communication. Wendy converts that field into a host-network entitlement for the generated service app.
+</Callout>
+
+<Callout type="warning">
+Host networking helps ROS 2 discovery, but it does not join IPC namespaces or share `/dev/shm` between containers. If your stack depends on ROS 2 shared-memory transport, zero-copy camera frames, or other pod-style namespace sharing, use a single container today or the multi-service `wendy.json` path once shared-IPC support is available.
+</Callout>
+
+Wendy maps a focused subset of Compose into device runtime configuration:
+
+| Compose field | Wendy behavior |
+| --- | --- |
+| `build` | Builds a service image. Supports `build: ./path` and `{ context, dockerfile, args }`. |
+| `image` | Uses a prebuilt image. Short public image names are normalized before the device pulls them. |
+| `command` | Overrides the container command. Use YAML sequence form for shell scripts or ROS launch commands. |
+| `ports` | Adds a network entitlement with explicit port mappings. |
+| `network_mode: host` | Adds a host-network entitlement. Recommended for ROS 2 service discovery. |
+| `volumes` | Converts named volumes into persistent storage entitlements. Host bind mounts are skipped on device. |
+| `depends_on` | Creates dependencies before dependents. Detached starts follow the same order, but Wendy does not wait for health checks or readiness conditions. Both list and map forms are accepted. |
+| `restart` | Applies `no`, `on-failure`, `always`, or `unless-stopped` unless a CLI restart flag overrides it. |
+
+<Callout type="warning">
+`environment:` entries are parsed from the compose file but are not forwarded to device containers yet. Put required ROS variables in the Dockerfile with `ENV`, bake them into an entrypoint script, or pass them through the service command.
+</Callout>
+
+## Example ROS 2 layout
+
+Start with one folder per service and keep the compose file at the project root:
+
+```text
+ros2-stack/
+  docker-compose.yml
+  talker/
+    Dockerfile
+  listener/
+    Dockerfile
+```
+
+Both example services can use the same Dockerfile shape:
+
+```dockerfile
+ARG ROS_DISTRO=jazzy
+FROM ros:${ROS_DISTRO}-ros-base
+
+ARG ROS_DISTRO=jazzy
+ENV ROS_DISTRO=${ROS_DISTRO}
+ENV ROS_DOMAIN_ID=42
+ENV RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+
+SHELL ["/bin/bash", "-c"]
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ros-${ROS_DISTRO}-demo-nodes-cpp \
+        ros-${ROS_DISTRO}-rmw-cyclonedds-cpp \
+    && rm -rf /var/lib/apt/lists/*
+```
+
+The compose file defines two ROS 2 nodes. The listener starts after the talker, and both services share the host network so DDS discovery works across containers:
+
+```yaml
+services:
+  talker:
+    build:
+      context: ./talker
+      args:
+        ROS_DISTRO: jazzy
+    network_mode: host
+    restart: unless-stopped
+    command:
+      - bash
+      - -lc
+      - |
+        source /opt/ros/${ROS_DISTRO}/setup.bash
+        ros2 run demo_nodes_cpp talker
+
+  listener:
+    build:
+      context: ./listener
+      args:
+        ROS_DISTRO: jazzy
+    network_mode: host
+    depends_on:
+      - talker
+    restart: unless-stopped
+    command:
+      - bash
+      - -lc
+      - |
+        source /opt/ros/${ROS_DISTRO}/setup.bash
+        ros2 run demo_nodes_cpp listener
+```
+
+Run the stack from the project root:
+
+```bash
+cd ros2-stack
+wendy run --build-type compose
+```
+
+Attached mode streams logs from all services:
+
+```text
+[talker]    Publishing: 'Hello World: 1'
+[listener]  I heard: [Hello World: 1]
+```
+
+Press **Ctrl-C** to stop the stack. Wendy stops services in reverse dependency order.
+
+## Add persistent data
+
+Use named volumes for data that should survive redeployments. This is useful for ROS bags, calibration files, and generated maps.
+
+```yaml
+services:
+  recorder:
+    build: ./recorder
+    network_mode: host
+    volumes:
+      - ros-bags:/bags
+    command:
+      - bash
+      - -lc
+      - |
+        source /opt/ros/${ROS_DISTRO}/setup.bash
+        ros2 bag record -o /bags/session /camera/image_raw
+
+volumes:
+  ros-bags:
+```
+
+Avoid host bind mounts such as `./bags:/bags` for device deployments. Wendy skips bind mounts because local development-machine paths do not exist on the device.
+
+## Run in the background
+
+For long-running robot stacks, start the services without attaching logs:
+
+```bash
+wendy run --build-type compose --detach
+```
+
+Generated app names use the project folder and service name. For the example above, the apps are `ros2-stack-talker` and `ros2-stack-listener`.
+
+Useful follow-up commands:
+
+```bash
+wendy device apps list
+wendy device logs --app ros2-stack-talker
+wendy device apps stop ros2-stack-listener
+wendy device apps stop ros2-stack-talker
+```
+
+## When to use `wendy.json` services instead
+
+Compose is best for networked multi-container stacks that need host networking, port mappings, restart policy, dependency order, and persistent named volumes.
+
+Use [multi-service `wendy.json`](/docs/advanced/apps/wendy-services) when individual services need Wendy-specific configuration that Compose does not express yet, such as direct camera, GPU, audio, Bluetooth, USB, I2C, GPIO, SPI, shared IPC, runtime presets, or service-specific files.
+
+Service-specific readiness probes and `postStart` hooks are not available for Compose services yet. Today, `hooks.postStart` applies to single-container `wendy.json` apps, so a Compose stack cannot trigger a browser opener only after one `frontend` service becomes ready.
+
+For the full Compose field reference, see [Multi-Service Apps with Docker Compose](/docs/advanced/apps/compose).

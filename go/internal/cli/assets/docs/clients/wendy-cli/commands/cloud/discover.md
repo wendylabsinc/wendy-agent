@@ -1,0 +1,91 @@
+# `wendy cloud discover`
+
+Lists enrolled compute devices visible to the authenticated Wendy Cloud organization.
+
+## Usage
+
+```sh
+wendy cloud discover [flags]
+```
+
+## Description
+
+`wendy cloud discover` queries the Wendy Cloud asset service for devices registered in your organization. By default **only online devices** (those with an active broker presence) are returned. Pass `--all` to include devices that are currently offline.
+
+In an interactive terminal the command launches a **live TUI** that refreshes the device list every 10 seconds and fetches the running agent version for each device concurrently. In non-interactive environments (pipes, CI, or when `--json` is passed) a JSON array is written to stdout instead.
+
+When no devices match the filter, a contextual message is shown:
+
+- **Default (online only):** `No online devices found. Use --all to include offline devices.`
+- **With `--all`:** `No enrolled devices found.`
+
+## Interactive TUI
+
+The TUI displays a table with the following columns for each device:
+
+| Column | Description |
+|--------|-------------|
+| Name | Device name |
+| Type | Hardware device type |
+| Address | IP address reported by the cloud |
+| Version | Running agent version (fetched live; `—` while loading) |
+
+### Keyboard shortcuts
+
+| Key | Action |
+|-----|--------|
+| `↑` / `↓` | Navigate the device list |
+| `enter` | Copy the selected device's info as JSON to the clipboard |
+| `a` | Copy all listed devices as JSON to the clipboard |
+| `u` | Update the selected device's agent binary to the latest release |
+| `q` / `Ctrl+C` | Quit |
+
+### In-place device update (`u`)
+
+Pressing `u` on a highlighted device downloads the latest agent release from GitHub, uploads it to the device via the broker tunnel, and waits for the agent to restart (up to 60 seconds). A status message is shown during the update and the version column refreshes automatically on completion.
+
+## Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--all` | `false` | Include offline devices in the results. When omitted only devices with an active broker presence are shown. |
+| `--broker-url` | `$WENDY_BROKER_URL` (or derived from cloud endpoint) | Tunnel broker `host:port`. When empty the CLI derives the address from the cloud gRPC endpoint. |
+| `--cloud-grpc` | `""` | Cloud gRPC endpoint. Required when multiple auth sessions exist and the correct endpoint is ambiguous. |
+
+## Examples
+
+Show only online devices (default):
+
+```sh
+wendy cloud discover
+```
+
+Show all enrolled devices, including offline ones:
+
+```sh
+wendy cloud discover --all
+```
+
+Point at a specific cloud gRPC endpoint:
+
+```sh
+wendy cloud discover --cloud-grpc grpc.cloud.wendy.sh:443
+```
+
+Output JSON (non-interactive / scripting):
+
+```sh
+wendy cloud discover --json
+# or pipe to force non-interactive mode:
+wendy cloud discover | cat
+```
+
+## How it works
+
+1. Reads the stored mTLS auth configuration (`~/.wendy/config.json`).
+2. Constructs a `ListAssetsRequest` scoped to the authenticated organization with `IsComputeDevice = true`.
+3. Unless `--all` is passed, sets `OnlineOnly = true` on the request so the server only streams back assets with an active broker presence.
+4. Receives assets over a **server-streaming gRPC** call (`AssetService.ListAssets`) and collects them until the stream closes.
+5. In TUI mode, concurrently fetches the agent version for each device through the broker tunnel (up to 5 parallel connections) and refreshes the full list every 10 seconds.
+
+See also [`wendy cloud tunnel`](./tunnel.md) for opening a tunnel to a discovered device.
