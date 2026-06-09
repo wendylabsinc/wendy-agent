@@ -11,6 +11,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -23,17 +24,21 @@ import (
 )
 
 const (
-	templateRepoOwner  = "wendylabsinc"
-	templateRepoName   = "templates"
-	templateRepoBranch = "main"
+	templateRepoOwner    = "wendylabsinc"
+	templateRepoName     = "templates"
+	templateRepoBranch   = "main"
+	templateHostedBucket = "wendy-templates-public"
 )
 
 var (
-	templateArchiveAttemptTimeout = 2 * time.Minute
-	templateArchiveMaxAttempts    = 3
-	templateArchiveRetryDelay     = 750 * time.Millisecond
-	templateRawBaseURL            = "https://raw.githubusercontent.com"
-	templateLanguageProbeClient   = &http.Client{Timeout: 10 * time.Second}
+	templateArchiveAttemptTimeout   = 2 * time.Minute
+	templateArchiveMaxAttempts      = 3
+	templateArchiveRetryDelay       = 750 * time.Millisecond
+	templateArchiveBaseURL          = "https://codeload.github.com"
+	templateRawBaseURL              = "https://raw.githubusercontent.com"
+	templateHostedBaseURL           = "https://templates.wendy.dev"
+	templateHostedObjectsAPIBaseURL = "https://storage.googleapis.com/storage/v1/b"
+	templateLanguageProbeClient     = &http.Client{Timeout: 10 * time.Second}
 )
 
 // resolveTemplateBranch returns branch if non-empty, otherwise the default branch.
@@ -42,6 +47,76 @@ func resolveTemplateBranch(branch string) string {
 		return templateRepoBranch
 	}
 	return branch
+}
+
+func templateGitHubRawFileURL(branch string, pathParts ...string) string {
+	parts := append([]string{templateRepoOwner, templateRepoName, resolveTemplateBranch(branch)}, pathParts...)
+	return strings.TrimRight(templateRawBaseURL, "/") + "/" + escapedURLPath(parts...)
+}
+
+func templateGitHubArchiveURL(branch string) string {
+	return strings.TrimRight(templateArchiveBaseURL, "/") + "/" + escapedURLPath(
+		templateRepoOwner,
+		templateRepoName,
+		"tar.gz",
+		"refs",
+		"heads",
+		resolveTemplateBranch(branch),
+	)
+}
+
+func templateHostedMetaURL(branch string) string {
+	return templateHostedURL(resolveTemplateBranch(branch), "meta.json")
+}
+
+func templateHostedTemplateURL(branch, language, templateName string) string {
+	return templateHostedURL(resolveTemplateBranch(branch), language, templateName) + "/"
+}
+
+func templateHostedTemplateFileURL(branch, language, templateName, relPath string) string {
+	return templateHostedURL(resolveTemplateBranch(branch), language, templateName, relPath)
+}
+
+func templateHostedURL(parts ...string) string {
+	return strings.TrimRight(templateHostedBaseURL, "/") + "/" + escapedURLPath(parts...)
+}
+
+func templateHostedObjectURL(objectName string) string {
+	return templateHostedURL(objectName)
+}
+
+func templateHostedObjectListURL(prefix, pageToken string) string {
+	values := url.Values{}
+	values.Set("prefix", prefix)
+	if pageToken != "" {
+		values.Set("pageToken", pageToken)
+	}
+	return strings.TrimRight(templateHostedObjectsAPIBaseURL, "/") + "/" + url.PathEscape(templateHostedBucket) + "/o?" + values.Encode()
+}
+
+func templateHostedObjectPrefix(branch, language, templateName string) string {
+	return strings.Trim(resolveTemplateBranch(branch), "/") + "/" + strings.Trim(language, "/") + "/" + strings.Trim(templateName, "/") + "/"
+}
+
+func escapedURLPath(parts ...string) string {
+	segments := make([]string, 0, len(parts))
+	for _, part := range parts {
+		for _, segment := range strings.Split(part, "/") {
+			if segment == "" {
+				continue
+			}
+			segments = append(segments, url.PathEscape(segment))
+		}
+	}
+	return strings.Join(segments, "/")
+}
+
+func shouldFallbackToHostedFiles(ctx context.Context, err error) bool {
+	return err != nil && ctx.Err() == nil && !errors.Is(err, context.Canceled)
+}
+
+func logGitHubTemplateFallback(err error, hostedURL string) {
+	cliLogln("%v fetching from github, falling back to hosted files in %s", err, hostedURL)
 }
 
 // repoMeta is the parsed meta.json from the templates repo root.
@@ -133,9 +208,25 @@ type templateVariable struct {
 // If ctx is cancelled, the in-flight request is aborted.
 func fetchRepoMeta(ctx context.Context, branch string) (*repoMeta, error) {
 	branch = resolveTemplateBranch(branch)
-	url := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/%s/meta.json",
-		templateRepoOwner, templateRepoName, branch)
+	githubURL := templateGitHubRawFileURL(branch, "meta.json")
+	meta, err := fetchRepoMetaFromURL(ctx, githubURL, branch)
+	if err == nil {
+		return meta, nil
+	}
+	if !shouldFallbackToHostedFiles(ctx, err) {
+		return nil, err
+	}
 
+	hostedURL := templateHostedMetaURL(branch)
+	logGitHubTemplateFallback(err, hostedURL)
+	meta, hostedErr := fetchRepoMetaFromURL(ctx, hostedURL, branch)
+	if hostedErr != nil {
+		return nil, fmt.Errorf("%w; hosted fallback failed: %v", err, hostedErr)
+	}
+	return meta, nil
+}
+
+func fetchRepoMetaFromURL(ctx context.Context, url, branch string) (*repoMeta, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("fetching template registry (branch %q): %w", branch, err)
@@ -233,7 +324,23 @@ func probeTemplateLanguages(ctx context.Context, languages []repoMetaLanguage, t
 }
 
 func probeTemplateLanguage(ctx context.Context, branch, language, templateName string) (bool, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodHead, templateLanguageManifestURL(branch, language, templateName), nil)
+	branch = resolveTemplateBranch(branch)
+	githubURL := templateLanguageManifestURL(branch, language, templateName)
+	ok, err := probeTemplateLanguageAtURL(ctx, branch, githubURL)
+	if err == nil {
+		return ok, nil
+	}
+	if !shouldFallbackToHostedFiles(ctx, err) {
+		return false, err
+	}
+
+	hostedURL := templateHostedTemplateFileURL(branch, language, templateName, "template.json")
+	logGitHubTemplateFallback(err, templateHostedTemplateURL(branch, language, templateName))
+	return probeTemplateLanguageAtURL(ctx, branch, hostedURL)
+}
+
+func probeTemplateLanguageAtURL(ctx context.Context, branch, manifestURL string) (bool, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, manifestURL, nil)
 	if err != nil {
 		return false, fmt.Errorf("checking template language availability: %w", err)
 	}
@@ -255,14 +362,7 @@ func probeTemplateLanguage(ctx context.Context, branch, language, templateName s
 }
 
 func templateLanguageManifestURL(branch, language, templateName string) string {
-	return fmt.Sprintf("%s/%s/%s/%s/%s/%s/template.json",
-		strings.TrimRight(templateRawBaseURL, "/"),
-		templateRepoOwner,
-		templateRepoName,
-		resolveTemplateBranch(branch),
-		language,
-		templateName,
-	)
+	return templateGitHubRawFileURL(branch, language, templateName, "template.json")
 }
 
 // progressCallback reports download progress. total is the expected content
@@ -298,9 +398,22 @@ func downloadTemplateArchive(ctx context.Context, language, templateName, branch
 	branch = resolveTemplateBranch(branch)
 	// Use codeload directly to avoid an extra redirect through github.com for the
 	// repository archive download.
-	url := fmt.Sprintf("https://codeload.github.com/%s/%s/tar.gz/refs/heads/%s",
-		templateRepoOwner, templateRepoName, branch)
-	return downloadTemplateArchiveFromURL(ctx, url, branch, language, templateName, onProgress)
+	githubURL := templateGitHubArchiveURL(branch)
+	files, manifest, err := downloadTemplateArchiveFromURL(ctx, githubURL, branch, language, templateName, onProgress)
+	if err == nil {
+		return files, manifest, nil
+	}
+	if !shouldFallbackToHostedFiles(ctx, err) {
+		return nil, nil, err
+	}
+
+	hostedURL := templateHostedTemplateURL(branch, language, templateName)
+	logGitHubTemplateFallback(err, hostedURL)
+	files, manifest, hostedErr := downloadTemplateHostedFiles(ctx, branch, language, templateName, onProgress)
+	if hostedErr != nil {
+		return nil, nil, fmt.Errorf("%w; hosted fallback failed: %v", err, hostedErr)
+	}
+	return files, manifest, nil
 }
 
 // downloadTemplateArchiveFromURL is the testable core of downloadTemplateArchive:
@@ -483,6 +596,181 @@ func extractTemplateArchive(r io.Reader, language, templateName string) (map[str
 
 	manifest.Schema = schema
 	return files, manifest, nil
+}
+
+type hostedTemplateObject struct {
+	Name string `json:"name"`
+	Size string `json:"size"`
+}
+
+type hostedTemplateObjectList struct {
+	Items         []hostedTemplateObject `json:"items"`
+	NextPageToken string                 `json:"nextPageToken"`
+}
+
+func downloadTemplateHostedFiles(ctx context.Context, branch, language, templateName string, onProgress progressCallback) (map[string][]byte, *templateManifest, error) {
+	prefix := templateHostedObjectPrefix(branch, language, templateName)
+	objects, err := listHostedTemplateObjects(ctx, prefix)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(objects) == 0 {
+		return nil, nil, fmt.Errorf("template %q not found for language %q (no hosted files at %s)",
+			templateName, language, templateHostedTemplateURL(branch, language, templateName))
+	}
+
+	total := hostedTemplateObjectsSize(objects)
+	var written int64
+	files := make(map[string][]byte)
+	var manifest *templateManifest
+	var schema *templateSchema
+
+	for _, object := range objects {
+		relPath, ok := hostedTemplateRelPath(prefix, object.Name)
+		if !ok {
+			continue
+		}
+
+		content, err := downloadHostedTemplateObject(ctx, object.Name, written, total, onProgress)
+		if err != nil {
+			return nil, nil, err
+		}
+		written += int64(len(content))
+
+		if relPath == "template.json" {
+			var m templateManifest
+			if err := json.Unmarshal(content, &m); err != nil {
+				return nil, nil, fmt.Errorf("parsing template.json: %w", err)
+			}
+			manifest = &m
+			continue
+		}
+
+		if relPath == "template.schema.json" {
+			var s templateSchema
+			if err := json.Unmarshal(content, &s); err != nil {
+				return nil, nil, fmt.Errorf("parsing template.schema.json: %w", err)
+			}
+			schema = &s
+			continue
+		}
+
+		files[relPath] = content
+	}
+
+	if manifest == nil {
+		return nil, nil, fmt.Errorf("template %q not found for language %q (no template.json)", templateName, language)
+	}
+
+	manifest.Schema = schema
+	return files, manifest, nil
+}
+
+func listHostedTemplateObjects(ctx context.Context, prefix string) ([]hostedTemplateObject, error) {
+	client := &http.Client{Timeout: 15 * time.Second}
+	var objects []hostedTemplateObject
+	pageToken := ""
+
+	for {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, templateHostedObjectListURL(prefix, pageToken), nil)
+		if err != nil {
+			return nil, fmt.Errorf("listing hosted template files: %w", err)
+		}
+
+		resp, err := client.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("listing hosted template files at %s: %w", templateHostedURL(prefix), err)
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			_ = resp.Body.Close()
+			return nil, fmt.Errorf("listing hosted template files at %s: HTTP %d", templateHostedURL(prefix), resp.StatusCode)
+		}
+
+		var listing hostedTemplateObjectList
+		decodeErr := json.NewDecoder(resp.Body).Decode(&listing)
+		closeErr := resp.Body.Close()
+		if decodeErr != nil {
+			return nil, fmt.Errorf("parsing hosted template file listing: %w", decodeErr)
+		}
+		if closeErr != nil {
+			return nil, fmt.Errorf("reading hosted template file listing: %w", closeErr)
+		}
+
+		objects = append(objects, listing.Items...)
+		if listing.NextPageToken == "" {
+			return objects, nil
+		}
+		pageToken = listing.NextPageToken
+	}
+}
+
+func hostedTemplateObjectsSize(objects []hostedTemplateObject) int64 {
+	var total int64
+	for _, object := range objects {
+		size, err := strconv.ParseInt(object.Size, 10, 64)
+		if err != nil {
+			return 0
+		}
+		total += size
+	}
+	return total
+}
+
+func hostedTemplateRelPath(prefix, objectName string) (string, bool) {
+	if !strings.HasPrefix(objectName, prefix) {
+		return "", false
+	}
+
+	relPath := strings.TrimPrefix(objectName, prefix)
+	if relPath == "" {
+		return "", false
+	}
+
+	cleaned := filepath.Clean(relPath)
+	if filepath.IsAbs(cleaned) || strings.HasPrefix(cleaned, "..") {
+		return "", false
+	}
+	return cleaned, true
+}
+
+func downloadHostedTemplateObject(ctx context.Context, objectName string, previousWritten, total int64, onProgress progressCallback) ([]byte, error) {
+	objectURL := templateHostedObjectURL(objectName)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, objectURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("downloading hosted template file %q: %w", objectName, err)
+	}
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("downloading hosted template file %q: %w", objectName, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, fmt.Errorf("hosted template file not found: %s", objectURL)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("downloading hosted template file %q: HTTP %d", objectName, resp.StatusCode)
+	}
+
+	var reader io.Reader = resp.Body
+	if onProgress != nil {
+		reader = &progressReader{
+			r:     resp.Body,
+			total: total,
+			onProgress: func(written, total int64) {
+				onProgress(previousWritten+written, total)
+			},
+		}
+	}
+
+	content, err := io.ReadAll(reader)
+	if err != nil {
+		return nil, fmt.Errorf("reading hosted template file %q: %w", objectName, err)
+	}
+	return content, nil
 }
 
 // collectTemplateValues gathers values for all template variables.

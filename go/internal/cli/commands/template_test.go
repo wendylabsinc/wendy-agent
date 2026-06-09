@@ -6,8 +6,10 @@ import (
 	"compress/gzip"
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -51,6 +53,26 @@ func buildTestTarball(t *testing.T, topDir, language, templateName string, files
 		t.Fatalf("gz.Close: %v", err)
 	}
 	return buf.Bytes()
+}
+
+func captureTemplateStdout(t *testing.T, fn func()) string {
+	t.Helper()
+
+	oldStdout := os.Stdout
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+
+	os.Stdout = writer
+	fn()
+	_ = writer.Close()
+	os.Stdout = oldStdout
+
+	var buf bytes.Buffer
+	_, _ = io.Copy(&buf, reader)
+	_ = reader.Close()
+	return buf.String()
 }
 
 func TestExtractTemplateArchive_ReturnsFilesAndManifest(t *testing.T) {
@@ -225,6 +247,217 @@ func TestTemplateLanguagesForTemplate_UsesMetadataLanguages(t *testing.T) {
 	}
 	if len(languages) != 1 || languages[0].Key != langPython {
 		t.Fatalf("languages = %+v, want only python", languages)
+	}
+}
+
+func TestFetchRepoMeta_FallsBackToHostedFiles(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/raw/wendylabsinc/templates/main/meta.json":
+			http.Error(w, "github unavailable", http.StatusBadGateway)
+		case "/hosted/main/meta.json":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"templates":[{"name":"simple-api"}],"languages":[{"key":"python","name":"Python"}]}`))
+		default:
+			http.Error(w, "unexpected path "+r.URL.Path, http.StatusInternalServerError)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	origRawBaseURL := templateRawBaseURL
+	origHostedBaseURL := templateHostedBaseURL
+	templateRawBaseURL = srv.URL + "/raw"
+	templateHostedBaseURL = srv.URL + "/hosted"
+	t.Cleanup(func() {
+		templateRawBaseURL = origRawBaseURL
+		templateHostedBaseURL = origHostedBaseURL
+	})
+
+	var (
+		meta *repoMeta
+		err  error
+	)
+	output := captureTemplateStdout(t, func() {
+		meta, err = fetchRepoMeta(context.Background(), "")
+	})
+	if err != nil {
+		t.Fatalf("fetchRepoMeta: %v", err)
+	}
+	if len(meta.Templates) != 1 || meta.Templates[0].Name != "simple-api" {
+		t.Fatalf("templates = %+v, want simple-api", meta.Templates)
+	}
+	wantMessage := "fetching from github, falling back to hosted files in " + srv.URL + "/hosted/main/meta.json"
+	if !strings.Contains(output, wantMessage) {
+		t.Fatalf("fallback message = %q, want it to contain %q", output, wantMessage)
+	}
+}
+
+func TestTemplateLanguagesForTemplate_ProbeFallsBackToHostedFiles(t *testing.T) {
+	handlerErrs := make(chan string, 2)
+	recordHandlerErr := func(msg string) {
+		select {
+		case handlerErrs <- msg:
+		default:
+		}
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodHead {
+			recordHandlerErr("method = " + r.Method + ", want HEAD")
+			http.Error(w, "unexpected method", http.StatusMethodNotAllowed)
+			return
+		}
+
+		if strings.HasPrefix(r.URL.Path, "/raw/") {
+			http.Error(w, "github unavailable", http.StatusBadGateway)
+			return
+		}
+
+		switch r.URL.Path {
+		case "/hosted/main/python/realsense-camera/template.json":
+			w.WriteHeader(http.StatusOK)
+		case "/hosted/main/swift/realsense-camera/template.json":
+			w.WriteHeader(http.StatusNotFound)
+		default:
+			recordHandlerErr("unexpected probe path " + strconv.Quote(r.URL.Path))
+			http.Error(w, "unexpected path", http.StatusInternalServerError)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	origRawBaseURL := templateRawBaseURL
+	origHostedBaseURL := templateHostedBaseURL
+	origClient := templateLanguageProbeClient
+	templateRawBaseURL = srv.URL + "/raw"
+	templateHostedBaseURL = srv.URL + "/hosted"
+	templateLanguageProbeClient = srv.Client()
+	t.Cleanup(func() {
+		templateRawBaseURL = origRawBaseURL
+		templateHostedBaseURL = origHostedBaseURL
+		templateLanguageProbeClient = origClient
+	})
+
+	meta := &repoMeta{
+		Templates: []repoMetaTemplate{{Name: "realsense-camera"}},
+		Languages: []repoMetaLanguage{
+			{Key: langPython, Name: "Python"},
+			{Key: langSwift, Name: "Swift"},
+		},
+	}
+
+	languages, err := templateLanguagesForTemplate(context.Background(), meta, "realsense-camera", "")
+	if err != nil {
+		t.Fatalf("templateLanguagesForTemplate: %v", err)
+	}
+	select {
+	case msg := <-handlerErrs:
+		t.Fatal(msg)
+	default:
+	}
+	if len(languages) != 1 || languages[0].Key != langPython {
+		t.Fatalf("languages = %+v, want only python", languages)
+	}
+}
+
+func TestDownloadTemplateArchive_FallsBackToHostedFiles(t *testing.T) {
+	hostedFiles := map[string]string{
+		"template.json":        `{"name":"simple-api","description":"hosted"}`,
+		"template.schema.json": `{"phases":[{"id":"p1","title":"Phase 1","questions":[{"id":"MODE","label":"Mode?","type":"radio","required":true}]}]}`,
+		"app.py":               "print('hosted')\n",
+		"wendy.json":           `{"app_id":"{{.APP_ID}}"}`,
+	}
+	expectedTotal := int64(0)
+	for _, content := range hostedFiles {
+		expectedTotal += int64(len(content))
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/github/") {
+			http.Error(w, "github unavailable", http.StatusBadGateway)
+			return
+		}
+
+		if r.URL.Path == "/storage/v1/b/wendy-templates-public/o" {
+			if got := r.URL.Query().Get("prefix"); got != "main/python/simple-api/" {
+				http.Error(w, "prefix = "+got, http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"items":[` +
+				`{"name":"main/python/simple-api/template.json","size":"` + strconv.Itoa(len(hostedFiles["template.json"])) + `"},` +
+				`{"name":"main/python/simple-api/template.schema.json","size":"` + strconv.Itoa(len(hostedFiles["template.schema.json"])) + `"},` +
+				`{"name":"main/python/simple-api/app.py","size":"` + strconv.Itoa(len(hostedFiles["app.py"])) + `"},` +
+				`{"name":"main/python/simple-api/wendy.json","size":"` + strconv.Itoa(len(hostedFiles["wendy.json"])) + `"}` +
+				`]}`))
+			return
+		}
+
+		if strings.HasPrefix(r.URL.Path, "/hosted/main/python/simple-api/") {
+			relPath := strings.TrimPrefix(r.URL.Path, "/hosted/main/python/simple-api/")
+			content, ok := hostedFiles[relPath]
+			if !ok {
+				http.NotFound(w, r)
+				return
+			}
+			_, _ = w.Write([]byte(content))
+			return
+		}
+
+		http.Error(w, "unexpected path "+r.URL.Path, http.StatusInternalServerError)
+	}))
+	t.Cleanup(srv.Close)
+
+	origArchiveBaseURL := templateArchiveBaseURL
+	origHostedBaseURL := templateHostedBaseURL
+	origHostedObjectsAPIBaseURL := templateHostedObjectsAPIBaseURL
+	templateArchiveBaseURL = srv.URL + "/github"
+	templateHostedBaseURL = srv.URL + "/hosted"
+	templateHostedObjectsAPIBaseURL = srv.URL + "/storage/v1/b"
+	t.Cleanup(func() {
+		templateArchiveBaseURL = origArchiveBaseURL
+		templateHostedBaseURL = origHostedBaseURL
+		templateHostedObjectsAPIBaseURL = origHostedObjectsAPIBaseURL
+	})
+
+	var (
+		mu        sync.Mutex
+		calls     int
+		lastTotal int64
+	)
+	cb := func(written, total int64) {
+		mu.Lock()
+		defer mu.Unlock()
+		calls++
+		lastTotal = total
+	}
+
+	files, manifest, err := downloadTemplateArchive(context.Background(), "python", "simple-api", "", cb)
+	if err != nil {
+		t.Fatalf("downloadTemplateArchive: %v", err)
+	}
+	if manifest == nil || manifest.Name != "simple-api" || manifest.Description != "hosted" {
+		t.Fatalf("manifest = %+v, want hosted simple-api", manifest)
+	}
+	if manifest.Schema == nil || len(manifest.Schema.Phases) != 1 {
+		t.Fatalf("manifest.Schema = %+v, want one phase", manifest.Schema)
+	}
+	if string(files["app.py"]) != hostedFiles["app.py"] {
+		t.Fatalf("app.py = %q, want %q", files["app.py"], hostedFiles["app.py"])
+	}
+	if _, ok := files["template.json"]; ok {
+		t.Fatal("template.json should be stripped from hosted files map")
+	}
+	if _, ok := files["template.schema.json"]; ok {
+		t.Fatal("template.schema.json should be stripped from hosted files map")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if calls == 0 {
+		t.Fatal("progress callback was never invoked")
+	}
+	if lastTotal != expectedTotal {
+		t.Fatalf("progress total = %d, want %d", lastTotal, expectedTotal)
 	}
 }
 
