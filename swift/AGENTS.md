@@ -22,15 +22,17 @@ When you need to run the local macOS app-backed agent for testing:
    ```sh
    cd ../go
    go build -o bin/wendy ./cmd/wendy
-   ./bin/wendy <command>
+   ./bin/wendy --device localhost:50051 <command>
    ```
 
    If you only need an ad hoc invocation, this is also acceptable:
 
    ```sh
    cd ../go
-   go run ./cmd/wendy <command>
+   go run ./cmd/wendy --device localhost:50051 <command>
    ```
+
+   Always pass `--device localhost:50051` because the CLI does not open the interactive picker in non-interactive shells. Without an explicit device or a saved default, device commands fail with an error.
 
 4. When finished, stop the macOS app with:
 
