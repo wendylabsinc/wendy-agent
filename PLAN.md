@@ -105,10 +105,10 @@ in per-issue worktree sessions, not in this master planning session.
 - Branch/worktree name: not prepared yet
 - Worktree path: not prepared yet
 - PR: not created yet
-- KISS scope: beta requirement to verify the Xcode project build/deploy path,
-  specifically with VLMLX / the existing `Examples/HelloMLX/HelloMLX.xcodeproj`
-  VLM+MLX app if that is the intended validation target. Keep docs minimal and
-  avoid a broad Xcode tutorial or sample-app guide.
+- KISS scope: beta requirement to verify the Xcode project build/deploy path
+  using the existing `Examples/HelloMLX/HelloMLX.xcodeproj` VLM+MLX app as the
+  VLMLX validation target. Keep docs minimal and avoid a broad Xcode tutorial
+  or sample-app guide.
 - Validation: not started
 - Resume command: not available until prepared
 
@@ -224,10 +224,10 @@ Keep each remaining issue short and validation-focused.
 1. **Completed: WDY-1352** — minimal device targeting/docs alignment merged in PR #930.
 2. **Completed: WDY-1345** — minimal Mac beta smoke test merged in PR #934.
 3. **WDY-1346** — ready; verify/review one native macOS SwiftPM `wendy run` flow.
-4. **WDY-1353** — beta requirement; verify Xcode project run flow with VLMLX / HelloMLX.
+4. **WDY-1353** — beta requirement; verify Xcode project run flow with `Examples/HelloMLX/HelloMLX.xcodeproj`.
 5. **WDY-1396** — prepared; document headless Mac setup: no sleep on AC and virtual display dongle.
 6. **WDY-1350** — verify minimal app lifecycle commands for the WDY-1346/WDY-1353 apps.
-7. **WDY-1360** — clean Apple Silicon validation of the shipped docs path, including the WDY-1346 native run flow, WDY-1353 Xcode/VLMLX flow, and WDY-1396 headless setup if the environment supports it.
+7. **WDY-1360** — clean Apple Silicon validation of the shipped docs path, including the WDY-1346 native run flow, WDY-1353 HelloMLX Xcode flow, and WDY-1396 headless setup if the environment supports it.
 
 ## Backlog / post-beta or only-if-blocking
 
