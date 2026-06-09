@@ -93,6 +93,21 @@ For each issue, record:
 - `HANDOVER.md`: written in the worktree with issue context and commit/push guidance
 - Resume command: `cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1377-macos-unsupported-hardware-errors && ai --prompt "Read HANDOVER.md and continue work on WDY-1377. Commit often and push to the draft PR as you go."`
 
+### WDY-1359 — Add diagnostics and log collection instructions
+
+- Status: `prepared`
+- Linear: https://linear.app/wendylabsinc/issue/WDY-1359/add-diagnostics-and-log-collection-instructions
+- Linear assignee: `konstantin@wendy.sh`
+- Branch/worktree name: `kb.wdy-1359-macos-diagnostics-docs`
+- Worktree path: `.worktrees/kb.wdy-1359-macos-diagnostics-docs`
+- PR: https://github.com/wendylabsinc/WendyOS/pull/929 — draft
+- PR closing reference: `Closes WDY-1359`
+- Base: `main`
+- Current commit: `519137c8 chore: start WDY-1359 macOS diagnostics docs`
+- Validation: not run; setup commit only
+- `HANDOVER.md`: written in the worktree with issue context and commit/push guidance
+- Resume command: `cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1359-macos-diagnostics-docs && ai --prompt "Read HANDOVER.md and continue work on WDY-1359. Commit often and push to the draft PR as you go."`
+
 ### WDY-1343 — Create minimal unlisted Wendy for Mac beta docs page
 
 - Status: `done`
