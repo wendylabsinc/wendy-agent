@@ -7,6 +7,8 @@ description: Configure hardware access and permissions for your WendyOS applicat
 
 Entitlements are permissions that grant your application access to hardware resources and system capabilities on your WendyOS device. By default, applications run in isolated containers with minimal privileges. Entitlements allow you to selectively enable access to features like networking, GPU, video capture, audio, and Bluetooth.
 
+**Note:** Entitlements apply to `wendyos` platform apps only. For `darwin` (native macOS) apps, entitlements are not used; the app runs with standard macOS permissions.
+
 ### Why Entitlements?
 
 WendyOS uses a security-first approach where applications are sandboxed by default. This means:

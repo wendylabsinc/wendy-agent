@@ -5,7 +5,7 @@ description: Enable cameras, audio, Bluetooth, GPUs, and other device hardware f
 
 ## Hardware Access
 
-WendyOS apps run in isolated containers by default. That means hardware such as cameras, microphones, speakers, Bluetooth adapters, and GPUs is not exposed to an app unless the app asks for it with an entitlement.
+WendyOS apps run in isolated containers by default. That means hardware such as cameras, microphones, speakers, Bluetooth adapters, and GPUs is not exposed to an app unless the app asks for it with an entitlement. (This applies to `wendyos` platform apps; `darwin` apps run natively on macOS without WendyOS container semantics.)
 
 Entitlements are stored in your project's `wendy.json` file. The easiest way to add one is with the Wendy CLI:
 

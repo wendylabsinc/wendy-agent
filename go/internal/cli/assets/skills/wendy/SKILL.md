@@ -1,6 +1,6 @@
 ---
 name: wendy
-description: 'Expert guidance on building and deploying apps to WendyOS edge devices. Use when developers mention: (1) Wendy or WendyOS, (2) wendy CLI commands, (3) wendy.json or entitlements, (4) deploying apps to edge devices, (5) remote debugging Swift on ARM64, (6) NVIDIA Jetson or Raspberry Pi apps, (7) cross-compiling Swift for ARM64.'
+description: 'Expert guidance on building and deploying apps to WendyOS edge devices or macOS via Wendy Agent for Mac. Use when developers mention: (1) Wendy or WendyOS, (2) wendy CLI commands, (3) wendy.json or entitlements, (4) deploying apps to edge devices or Mac, (5) remote debugging Swift on ARM64, (6) NVIDIA Jetson or Raspberry Pi apps, (7) cross-compiling Swift for ARM64.'
 references:
   - wendy.json.md
 ---
@@ -11,6 +11,8 @@ WendyOS is an Embedded Linux operating system for edge computing. It supports:
 - NVIDIA Jetson devices (production with OTA updates)
 - Raspberry Pi 4/5 (edge devices)
 - ARM64/AMD64 VMs (development)
+
+For native macOS targets, use the `darwin` platform with [Wendy Agent for Mac](/docs/installation/wendy-agent-macos). Darwin apps run natively and non-containerized.
 
 ## Learning About Wendy
 
@@ -73,7 +75,7 @@ If a device is not yet installed, use `wendy os install` to install the OS to an
 
 ## Development
 
-WendyOS is a Linux-based containerized operating system. It uses Linux containers to run your apps.
+WendyOS is a Linux-based containerized operating system. It uses Linux containers to run your apps. (This applies to the `wendyos` platform; `darwin` apps run natively without containers.)
 
 WendyOS uses Swift.org as its flagship language. This uses Swift Package Manager and the Swift Container Plugin to build and run your app. Wendy CLI will cross compile Swift for you.
 
@@ -81,7 +83,7 @@ Other programming languages are supported, but require the use of a Dockerfile t
 
 ### Entitlements
 
-WendyOS uses an entitlement system, managed through `wendy.json`, to manage permissions for your app. This reflects how your container will be set up on the device.
+WendyOS uses an entitlement system, managed through `wendy.json`, to manage permissions for your app. This reflects how your container will be set up on the device. (Entitlements apply to `wendyos` platform only; `darwin` apps run natively without WendyOS container semantics.)
 
 See `references/wendy.json.md` for detailed entitlement configuration.
 

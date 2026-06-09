@@ -58,7 +58,7 @@ wendy init \
 Useful `wendy init` flags:
 
 - `--app-id`: application ID written to `wendy.json`.
-- `--target`: `wendyos` or `wendy-lite`.
+- `--target`: `wendyos`, `wendy-lite`, or `darwin`.
 - `--language`: `python`, `swift`, `rust`, `node`, or `cpp`.
 - `--template`: template name; a bare `--template` opens a picker, so avoid bare usage in agent workflows.
 - `--branch`: templates repo branch.

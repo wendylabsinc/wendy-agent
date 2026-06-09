@@ -15,8 +15,7 @@ import (
 const guideText = `Wendy MCP Guide
 ===============
 
-Wendy manages remote Linux devices (edge servers, embedded boards, cloud VMs).
-Every MCP session has at most one active device connection at a time.
+Wendy manages remote Linux devices (edge servers, embedded boards, cloud VMs) and macOS targets. Every MCP session has at most one active device connection at a time.
 
 ## Getting started
 
