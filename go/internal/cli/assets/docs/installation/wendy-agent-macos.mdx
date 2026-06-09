@@ -131,6 +131,39 @@ If the CLI cannot connect:
 4. Quit and reopen Wendy Agent from the menu bar.
 5. If you installed both stable and nightly builds, quit both apps and open only the one you want to test.
 
+## Diagnostics for Beta Bug Reports
+
+When reporting a Wendy for Mac beta issue, include the smallest set of diagnostics needed to reproduce the problem. Review command output before sharing it, and remove any hostnames, local paths, device identifiers, certificates, tokens, or app-specific secrets that are not relevant.
+
+Collect version and Mac hardware details:
+
+```bash
+wendy --version
+wendy --device localhost:50051 device info --json
+sw_vers
+uname -m
+system_profiler SPHardwareDataType | grep -E 'Model Name|Chip|Total Number of Cores|Memory'
+```
+
+If the agent is running on another Mac, replace `localhost` with that Mac's hostname or IP address in the `wendy --device` command. The `device info --json` output includes the Wendy Agent version; review it before sharing.
+
+Collect recent WendyAgentMac logs after reproducing the issue:
+
+```bash
+log show --last 30m --info --style compact \
+  --predicate 'process == "WendyAgentMac" OR subsystem == "sh.wendy.WendyAgentMac"' \
+  > wendy-agent-mac.log
+```
+
+For a live reproduction, stream the same logs in a second terminal:
+
+```bash
+log stream --info --style compact \
+  --predicate 'process == "WendyAgentMac" OR subsystem == "sh.wendy.WendyAgentMac"'
+```
+
+If `log show` cannot read the local log store, open Terminal from System Settings → Privacy & Security → Full Disk Access, then run the command again.
+
 ## Next Steps
 
 Once the Mac target is reachable, deploy a native macOS app with `wendy run`. The Mac beta support matrix and smoke checklist will expand this page as more flows are verified.
