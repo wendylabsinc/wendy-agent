@@ -80,6 +80,25 @@ in per-issue worktree sessions, not in this master planning session.
 - Validation: recorded in PR #934
 - Resume command: not needed; issue is complete
 
+### WDY-1346 — Verify native macOS app run flow on Mac agent
+
+- Status: `prepared`
+- Linear: https://linear.app/wendylabsinc/issue/WDY-1346/verify-native-macos-app-run-flow-on-mac-agent
+- Linear assignee: `konstantin@wendy.sh`
+- Linear state: In Progress
+- Branch/worktree name: `kb.wdy-1346-native-macos-run-flow`
+- Worktree path: `.worktrees/kb.wdy-1346-native-macos-run-flow`
+- PR: https://github.com/wendylabsinc/WendyOS/pull/936 — draft
+- PR closing reference: `Closes WDY-1346`
+- Base: `main`
+- Current commit: `b44779dd chore: start WDY-1346 native macOS run flow`
+- KISS scope: verify one minimal native macOS SwiftPM `wendy run` path;
+  avoid tutorials, sample-app guides, lifecycle deep dives, Docker/container
+  work, and E2E automation.
+- Validation: not run; setup commit only
+- `HANDOVER.md`: written in the worktree with KISS scope and commit/push guidance
+- Resume command: `cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1346-native-macos-run-flow && ai --prompt "Read HANDOVER.md and continue work on WDY-1346. Keep it KISS, aligned with current Linux/WendyOS docs, commit often, and push to the draft PR as you go."`
+
 ### WDY-1377 — Show macOS-specific unsupported messages for hardware APIs
 
 - Status: `done`
@@ -166,7 +185,7 @@ Only start these if they are still needed after reviewing merged docs and PR
 
 1. **Review/merge WDY-1352** — minimal device targeting/docs alignment.
 2. **Completed: WDY-1345** — minimal Mac beta smoke test merged in PR #934.
-3. **WDY-1346** — verify one native macOS SwiftPM `wendy run` flow.
+3. **WDY-1346** — prepared; verify one native macOS SwiftPM `wendy run` flow.
 4. **WDY-1350** — verify minimal app lifecycle commands for that same app.
 5. **WDY-1360** — clean Apple Silicon validation of the shipped docs path.
 
