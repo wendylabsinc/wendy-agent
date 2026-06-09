@@ -69,7 +69,7 @@ For each issue, record:
 - Linear: https://linear.app/wendylabsinc/issue/WDY-1386/add-sticky-docs-preview-comments-to-documentation-prs
 - Linear assignee: `konstantin@wendy.sh`
 - Branch/worktree name: `kb.wdy-1386-docs-preview-comment`
-- Worktree path: `.worktrees/kb.wdy-1386-docs-preview-comment`
+- Worktree path: removed after completion (`.worktrees/kb.wdy-1386-docs-preview-comment`)
 - PR: https://github.com/wendylabsinc/WendyOS/pull/927 — merged
 - PR closing reference: `Closes WDY-1386`
 - Base: `main`
@@ -127,7 +127,7 @@ For each issue, record:
 
 - Status: `done`
 - Branch/worktree name: `kb.wdy-1343-mac-beta-docs`
-- Worktree path: `.worktrees/kb.wdy-1343-mac-beta-docs`
+- Worktree path: removed after completion (`.worktrees/kb.wdy-1343-mac-beta-docs`)
 - PR: https://github.com/wendylabsinc/WendyOS/pull/906 — merged
 - Closing behavior: PR body includes `Closes WDY-1343`
 - Validation:
