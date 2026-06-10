@@ -79,22 +79,20 @@ in per-issue worktree sessions, not in this master planning session.
 
 ### WDY-1346 — Verify native macOS app run flow on Mac agent
 
-- Status: `ready`
+- Status: `done`
 - Linear: https://linear.app/wendylabsinc/issue/WDY-1346/verify-native-macos-app-run-flow-on-mac-agent
 - Linear assignee: `konstantin@wendy.sh`
-- Linear state: In Review
+- Linear state: Done
 - Branch/worktree name: `kb.wdy-1346-native-macos-run-flow`
-- Worktree path: `.worktrees/kb.wdy-1346-native-macos-run-flow`
-- PR: https://github.com/wendylabsinc/WendyOS/pull/936 — open, ready for review
+- Worktree path: removed after merge (`.worktrees/kb.wdy-1346-native-macos-run-flow`)
+- PR: https://github.com/wendylabsinc/WendyOS/pull/936 — merged
 - PR closing reference: `Closes WDY-1346`
-- Base: `main`
-- Current commit: `32fe0eda docs: record Mac native run validation`
-- KISS scope: verify one minimal native macOS SwiftPM `wendy run` path;
-  avoid tutorials, sample-app guides, lifecycle deep dives, Docker/container
+- Merge commit on `main`: `8a295508`
+- KISS scope: verified one minimal native macOS SwiftPM `wendy run` path;
+  avoided tutorials, sample-app guides, lifecycle deep dives, Docker/container
   work, and E2E automation.
-- Validation: recorded in PR #936; GitHub checks passing
-- `HANDOVER.md`: written in the worktree with KISS scope and commit/push guidance
-- Resume command: `cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1346-native-macos-run-flow && ai --prompt "Read HANDOVER.md and continue work on WDY-1346. Keep it KISS, aligned with current Linux/WendyOS docs, commit often, and push to PR #936 as you go."`
+- Validation: recorded in PR #936; GitHub checks passed
+- Resume command: not needed; issue is complete
 
 ### WDY-1353 — Verify Xcode project run flow with VLMLX on Mac agent
 
@@ -114,16 +112,16 @@ in per-issue worktree sessions, not in this master planning session.
 
 ### WDY-1396 — Document headless Mac setup for Wendy Agent beta
 
-- Status: `prepared`
+- Status: `ready`
 - Linear: https://linear.app/wendylabsinc/issue/WDY-1396/document-headless-mac-setup-for-wendy-agent-beta
 - Linear assignee: `konstantin@wendy.sh`
-- Linear state: In Progress
+- Linear state: In Review
 - Branch/worktree name: `kb.wdy-1396-headless-mac-setup-docs`
 - Worktree path: `.worktrees/kb.wdy-1396-headless-mac-setup-docs`
-- PR: https://github.com/wendylabsinc/WendyOS/pull/939 — draft
+- PR: https://github.com/wendylabsinc/WendyOS/pull/939 — open, ready for review
 - PR closing reference: `Closes WDY-1396`
 - Base: `main`
-- Current commit: `20c7af7c chore: start WDY-1396 headless Mac setup docs`
+- Current commit: `c201a67e docs: add SSH setup to headless Mac checklist`
 - KISS scope: add a short headless Mac note, recommend a virtual display
   dongle / HDMI dummy plug, lead with manual System Settings setup for new
   Macs, mention keeping the Mac awake on AC power, and reference manual macOS
@@ -134,9 +132,9 @@ in per-issue worktree sessions, not in this master planning session.
 - Source reference: `kb.ansible:ansible/roles/power_policy/tasks/macos.yml`
   uses `sudo pmset -c sleep 0 displaysleep 10 disksleep 0 womp 1` as an
   implementation reference, not necessarily the public-docs-first path.
-- Validation: not run; setup commit only
+- Validation: recorded in PR #939; GitHub checks in progress at last check
 - `HANDOVER.md`: written in the worktree with KISS scope and commit/push guidance
-- Resume command: `cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1396-headless-mac-setup-docs && ai --prompt "Read HANDOVER.md and continue work on WDY-1396. Keep it KISS, lead with manual System Settings setup, commit often, and push to the draft PR as you go."`
+- Resume command: `cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1396-headless-mac-setup-docs && ai --prompt "Read HANDOVER.md and continue work on WDY-1396. Keep it KISS, lead with manual System Settings setup, commit often, and push to PR #939 as you go."`
 
 ### WDY-1377 — Show macOS-specific unsupported messages for hardware APIs
 
@@ -223,9 +221,9 @@ Keep each remaining issue short and validation-focused.
 
 1. **Completed: WDY-1352** — minimal device targeting/docs alignment merged in PR #930.
 2. **Completed: WDY-1345** — minimal Mac beta smoke test merged in PR #934.
-3. **WDY-1346** — ready; verify/review one native macOS SwiftPM `wendy run` flow.
+3. **Completed: WDY-1346** — native macOS SwiftPM `wendy run` flow merged in PR #936.
 4. **WDY-1353** — beta requirement; verify Xcode project run flow with `Examples/HelloMLX/HelloMLX.xcodeproj`.
-5. **WDY-1396** — prepared; document headless Mac setup: no sleep on AC and virtual display dongle.
+5. **WDY-1396** — ready; document headless Mac setup: no sleep on AC and virtual display dongle.
 6. **WDY-1350** — verify minimal app lifecycle commands for the WDY-1346/WDY-1353 apps.
 7. **WDY-1360** — clean Apple Silicon validation of the shipped docs path, including the WDY-1346 native run flow, WDY-1353 HelloMLX Xcode flow, and WDY-1396 headless setup if the environment supports it.
 
