@@ -146,19 +146,23 @@ in per-issue worktree sessions, not in this master planning session.
 
 ### WDY-1350 — Verify app lifecycle commands on Mac agent
 
-- Status: `planned`
+- Status: `prepared`
 - Linear: https://linear.app/wendylabsinc/issue/WDY-1350/verify-app-lifecycle-commands-on-mac-agent
-- Linear assignee: not assigned yet
-- Linear state: Todo
-- Branch/worktree name: not prepared yet
-- Worktree path: not prepared yet
-- PR: not created yet
+- Linear assignee: `konstantin@wendy.sh`
+- Linear state: In Progress
+- Branch/worktree name: `kb.wdy-1350-mac-app-lifecycle`
+- Worktree path: `.worktrees/kb.wdy-1350-mac-app-lifecycle`
+- PR: https://github.com/wendylabsinc/WendyOS/pull/958 — draft
+- PR closing reference: `Closes WDY-1350`
+- Base: `main`
+- Current commit: `4c3221b chore: start WDY-1350 Mac app lifecycle validation`
 - KISS scope: verify only minimal lifecycle sanity for Mac beta: list, stop,
   and remove against the app paths already validated by WDY-1346 and WDY-1353.
   Avoid a command matrix, broad diagnostics, or new E2E infrastructure.
-- Timing: start after WDY-1353; should happen before WDY-1360 clean-device
-  validation.
-- Resume command: not available until prepared
+- Timing: should happen before WDY-1360 clean-device validation.
+- Validation: not run; setup commit only
+- `HANDOVER.md`: written in the worktree with KISS scope and commit/push guidance
+- Resume command: `cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1350-mac-app-lifecycle && ai --prompt "Read HANDOVER.md and follow its instructions."`
 
 ### WDY-1473 — Publicize Wendy for Mac beta across website
 
@@ -264,7 +268,7 @@ Keep each remaining issue short and validation-focused.
 3. **Completed: WDY-1346** — native macOS SwiftPM `wendy run` flow merged in PR #936.
 4. **Completed: WDY-1353** — Xcode HelloMLX run flow merged in PR #957.
 5. **Completed: WDY-1396** — minimal headless Mac setup guidance merged in PR #939.
-6. **WDY-1350** — next to start; verify minimal app lifecycle commands for the WDY-1346/WDY-1353 apps.
+6. **WDY-1350** — prepared; verify minimal app lifecycle commands for the WDY-1346/WDY-1353 apps.
 7. **WDY-1360** — clean Apple Silicon validation of the shipped docs path, including the WDY-1346 native run flow, WDY-1353 HelloMLX Xcode flow, and WDY-1396 headless setup if the environment supports it.
 8. **WDY-1473** — final public website/docs status update using PR #945 once beta readiness is complete.
 
