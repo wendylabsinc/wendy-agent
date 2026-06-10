@@ -1268,6 +1268,12 @@ func fetchAgentRelease(nightly bool) (*githubReleaseFull, error) {
 	client := newGitHubAPIClient(30 * time.Second)
 
 	if !nightly {
+		// Prefer the github.com web redirect, which is not subject to the
+		// API rate limit; fall back to the API if it fails.
+		if release, err := fetchAgentReleaseViaWeb(&http.Client{Timeout: 30 * time.Second}); err == nil {
+			return release, nil
+		}
+
 		body, err := githubAPIGet(client, githubReleasesURL)
 		if err != nil {
 			return nil, fmt.Errorf("fetching latest release: %w", err)

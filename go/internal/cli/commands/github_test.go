@@ -153,7 +153,15 @@ func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 }
 
 func newFakeGitHubClient(rt roundTripperFunc) *http.Client {
-	return &http.Client{Transport: rt}
+	// Mirror http.Transport's contract: the returned Response carries the
+	// Request that produced it.
+	return &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		resp, err := rt(req)
+		if resp != nil && resp.Request == nil {
+			resp.Request = req
+		}
+		return resp, err
+	})}
 }
 
 func stubGitHubTokens(t *testing.T) {
@@ -352,6 +360,140 @@ func TestGitHubAPIGetConcurrentCachingPersistsAllEntries(t *testing.T) {
 		if _, ok := cache[u]; !ok {
 			t.Errorf("cache missing entry for %s", u)
 		}
+	}
+}
+
+func TestResolveLatestReleaseTagViaWeb(t *testing.T) {
+	client := newFakeGitHubClient(func(req *http.Request) (*http.Response, error) {
+		switch req.URL.String() {
+		case githubWebLatestReleaseURL:
+			return &http.Response{
+				StatusCode: http.StatusFound,
+				Header:     http.Header{"Location": []string{"https://github.com/wendylabsinc/WendyOS/releases/tag/2026.06.10-142200"}},
+				Body:       io.NopCloser(strings.NewReader("")),
+			}, nil
+		case "https://github.com/wendylabsinc/WendyOS/releases/tag/2026.06.10-142200":
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{},
+				Body:       io.NopCloser(strings.NewReader("")),
+			}, nil
+		}
+		t.Fatalf("unexpected request: %s", req.URL)
+		return nil, nil
+	})
+
+	tag, err := resolveLatestReleaseTagViaWeb(client)
+	if err != nil {
+		t.Fatalf("resolveLatestReleaseTagViaWeb: %v", err)
+	}
+	if got, want := tag, "2026.06.10-142200"; got != want {
+		t.Fatalf("tag = %q; want %q", got, want)
+	}
+}
+
+func TestResolveLatestReleaseTagViaWebRejectsNonTagPage(t *testing.T) {
+	client := newFakeGitHubClient(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusNotFound,
+			Header:     http.Header{},
+			Body:       io.NopCloser(strings.NewReader("")),
+		}, nil
+	})
+
+	if _, err := resolveLatestReleaseTagViaWeb(client); err == nil {
+		t.Fatal("expected error for non-tag final page")
+	}
+}
+
+func TestFetchAgentReleaseViaWebSynthesizesAssets(t *testing.T) {
+	const tagURL = "https://github.com/wendylabsinc/WendyOS/releases/tag/2026.06.10-142200"
+	var headedURLs []string
+	client := newFakeGitHubClient(func(req *http.Request) (*http.Response, error) {
+		switch {
+		case req.URL.String() == githubWebLatestReleaseURL:
+			return &http.Response{
+				StatusCode: http.StatusFound,
+				Header:     http.Header{"Location": []string{tagURL}},
+				Body:       io.NopCloser(strings.NewReader("")),
+			}, nil
+		case req.URL.String() == tagURL:
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{},
+				Body:       io.NopCloser(strings.NewReader("")),
+			}, nil
+		case req.Method == http.MethodHead && strings.Contains(req.URL.Path, "/releases/download/"):
+			headedURLs = append(headedURLs, req.URL.String())
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{},
+				Body:       io.NopCloser(strings.NewReader("")),
+			}, nil
+		}
+		t.Fatalf("unexpected request: %s %s", req.Method, req.URL)
+		return nil, nil
+	})
+
+	release, err := fetchAgentReleaseViaWeb(client)
+	if err != nil {
+		t.Fatalf("fetchAgentReleaseViaWeb: %v", err)
+	}
+	if got, want := release.TagName, "2026.06.10-142200"; got != want {
+		t.Fatalf("TagName = %q; want %q", got, want)
+	}
+	if release.Prerelease {
+		t.Fatal("synthesized stable release should not be marked prerelease")
+	}
+
+	wantAssets := map[string]string{
+		"wendy-agent-linux-amd64-2026.06.10-142200.tar.gz": "https://github.com/wendylabsinc/wendy-agent/releases/download/2026.06.10-142200/wendy-agent-linux-amd64-2026.06.10-142200.tar.gz",
+		"wendy-agent-linux-arm64-2026.06.10-142200.tar.gz": "https://github.com/wendylabsinc/wendy-agent/releases/download/2026.06.10-142200/wendy-agent-linux-arm64-2026.06.10-142200.tar.gz",
+	}
+	if len(release.Assets) != len(wantAssets) {
+		t.Fatalf("len(Assets) = %d; want %d", len(release.Assets), len(wantAssets))
+	}
+	for _, a := range release.Assets {
+		wantURL, ok := wantAssets[a.Name]
+		if !ok {
+			t.Fatalf("unexpected asset %q", a.Name)
+		}
+		if a.BrowserDownloadURL != wantURL {
+			t.Fatalf("asset %q URL = %q; want %q", a.Name, a.BrowserDownloadURL, wantURL)
+		}
+	}
+	if len(headedURLs) == 0 {
+		t.Fatal("expected at least one HEAD validation of a synthesized asset URL")
+	}
+}
+
+func TestFetchAgentReleaseViaWebFailsWhenAssetMissing(t *testing.T) {
+	const tagURL = "https://github.com/wendylabsinc/WendyOS/releases/tag/2026.06.10-142200"
+	client := newFakeGitHubClient(func(req *http.Request) (*http.Response, error) {
+		switch {
+		case req.URL.String() == githubWebLatestReleaseURL:
+			return &http.Response{
+				StatusCode: http.StatusFound,
+				Header:     http.Header{"Location": []string{tagURL}},
+				Body:       io.NopCloser(strings.NewReader("")),
+			}, nil
+		case req.URL.String() == tagURL:
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{},
+				Body:       io.NopCloser(strings.NewReader("")),
+			}, nil
+		default:
+			return &http.Response{
+				StatusCode: http.StatusNotFound,
+				Header:     http.Header{},
+				Body:       io.NopCloser(strings.NewReader("")),
+			}, nil
+		}
+	})
+
+	if _, err := fetchAgentReleaseViaWeb(client); err == nil {
+		t.Fatal("expected error when synthesized asset URL does not exist")
 	}
 }
 

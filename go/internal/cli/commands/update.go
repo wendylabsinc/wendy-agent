@@ -3,6 +3,7 @@ package commands
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"time"
 
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
@@ -70,6 +71,12 @@ type githubRelease struct {
 }
 
 func checkLatestRelease() (string, error) {
+	// Prefer the github.com web redirect, which is not subject to the API
+	// rate limit; fall back to the API if it fails.
+	if tag, err := resolveLatestReleaseTagViaWeb(&http.Client{Timeout: 10 * time.Second}); err == nil {
+		return tag, nil
+	}
+
 	client := newGitHubAPIClient(10 * time.Second)
 
 	body, err := githubAPIGet(client, githubReleasesURL)

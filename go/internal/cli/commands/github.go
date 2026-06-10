@@ -198,6 +198,86 @@ func saveGitHubAPICache(cache map[string]githubAPICacheEntry) {
 	_ = os.Rename(tmp.Name(), path)
 }
 
+// Web (non-API) endpoints for release discovery. Requests to github.com are
+// served by the website/CDN and are not subject to the API rate limit.
+const (
+	githubWebLatestReleaseURL = "https://github.com/wendylabsinc/wendy-agent/releases/latest"
+	githubWebDownloadBaseURL  = "https://github.com/wendylabsinc/wendy-agent/releases/download"
+)
+
+// agentReleaseArchitectures lists the linux architectures the release CI
+// publishes agent tarballs for (see .github/workflows/build.yml).
+var agentReleaseArchitectures = []string{"amd64", "arm64"}
+
+// resolveLatestReleaseTagViaWeb resolves the latest stable release tag by
+// following github.com's /releases/latest redirect to the tag page.
+func resolveLatestReleaseTagViaWeb(client *http.Client) (string, error) {
+	req, err := http.NewRequest(http.MethodHead, githubWebLatestReleaseURL, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("User-Agent", githubAPIUserAgent())
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("resolving latest release: github.com returned status %d", resp.StatusCode)
+	}
+
+	const tagMarker = "/releases/tag/"
+	finalPath := resp.Request.URL.Path
+	idx := strings.LastIndex(finalPath, tagMarker)
+	if idx < 0 {
+		return "", fmt.Errorf("latest release redirect did not land on a tag page")
+	}
+	tag, err := url.PathUnescape(finalPath[idx+len(tagMarker):])
+	if err != nil || tag == "" || strings.Contains(tag, "/") {
+		return "", fmt.Errorf("could not extract release tag from redirect")
+	}
+	return tag, nil
+}
+
+// fetchAgentReleaseViaWeb resolves the latest stable agent release without the
+// GitHub API: the tag comes from the github.com redirect and asset names follow
+// the release CI convention wendy-agent-linux-<arch>-<tag>.tar.gz. One
+// synthesized URL is validated with a HEAD request (the CI uploads all assets
+// atomically with fail_on_unmatched_files), so a convention change surfaces as
+// an error here and the caller can fall back to the API.
+func fetchAgentReleaseViaWeb(client *http.Client) (*githubReleaseFull, error) {
+	tag, err := resolveLatestReleaseTagViaWeb(client)
+	if err != nil {
+		return nil, err
+	}
+
+	release := &githubReleaseFull{TagName: tag}
+	for _, arch := range agentReleaseArchitectures {
+		name := fmt.Sprintf("wendy-agent-linux-%s-%s.tar.gz", arch, tag)
+		release.Assets = append(release.Assets, githubReleaseAsset{
+			Name:               name,
+			BrowserDownloadURL: fmt.Sprintf("%s/%s/%s", githubWebDownloadBaseURL, url.PathEscape(tag), url.PathEscape(name)),
+		})
+	}
+
+	req, err := http.NewRequest(http.MethodHead, release.Assets[0].BrowserDownloadURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", githubAPIUserAgent())
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("release asset %s returned status %d", release.Assets[0].Name, resp.StatusCode)
+	}
+
+	return release, nil
+}
+
 func isCanonicalGitHubAPIURL(u *url.URL) bool {
 	return u != nil && u.Scheme == "https" && strings.EqualFold(u.Host, githubAPIHost)
 }
