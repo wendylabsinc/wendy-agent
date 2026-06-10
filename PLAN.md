@@ -279,8 +279,8 @@ Keep each remaining issue short and validation-focused.
 These Linear issues were updated so agents know they are not part of the
 super time-constrained beta unless the user explicitly re-prioritizes them.
 
-Linear/project check: no mTLS/TLS/certificate issue is currently part of the
-`Wendy for Mac — Beta` project. Related non-beta issues include WDY-1212
+Linear/project check: WDY-1480 now tracks proper mTLS support in the
+`Wendy for Mac — Beta` project backlog. Related non-beta issues include WDY-1212
 (self-signed local CA support for mTLS without cloud), WDY-1376 (macOS exposed
 port 50051 security guidance), WDY-1019 (cloud-tunnel registry mTLS), and
 WDY-1479 (SER9 Swift E2E mTLS auth failure).
@@ -309,3 +309,5 @@ WDY-1479 (SER9 Swift E2E mTLS auth failure).
 - WDY-1472 — plan the agreed Wendy Agent → Wendy Daemon rename timing: macOS
   beta-only now, whole-codebase now, or whole-codebase after beta. Sync with
   Joannis before implementation.
+- WDY-1480 — add proper mTLS support for Wendy for Mac; beta-project backlog,
+  but outside the current KISS beta path unless explicitly reprioritized.
