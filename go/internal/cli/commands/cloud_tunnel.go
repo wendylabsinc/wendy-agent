@@ -43,7 +43,10 @@ func certXFCC(cert config.CertificateInfo) string {
 	if cert.UserID != "" {
 		return fmt.Sprintf("URI=urn:wendy:org:%d:user:%s", cert.OrganizationID, cert.UserID)
 	}
-	return fmt.Sprintf("URI=urn:wendy:org:%d:user:unknown", cert.OrganizationID)
+	if cert.AssetID != 0 {
+		return fmt.Sprintf("URI=urn:wendy:org:%d:asset:%d", cert.OrganizationID, cert.AssetID)
+	}
+	return ""
 }
 
 func cloudContext(ctx context.Context, auth *config.AuthConfig) context.Context {
@@ -56,8 +59,10 @@ func cloudContext(ctx context.Context, auth *config.AuthConfig) context.Context 
 		md.Set("authorization", "Bearer "+auth.APIKey)
 	}
 	certHeader := certXFCC(cert)
-	md.Set("x-wendy-client-cert", certHeader)
-	md.Set("x-forwarded-client-cert", certHeader)
+	if certHeader != "" {
+		md.Set("x-wendy-client-cert", certHeader)
+		md.Set("x-forwarded-client-cert", certHeader)
+	}
 	return metadata.NewOutgoingContext(ctx, md)
 }
 

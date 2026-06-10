@@ -31,6 +31,7 @@ type CertificateInfo struct {
 	PemPrivateKey       string `json:"pemPrivateKey,omitempty"`
 	OrganizationID      int    `json:"organizationId"`
 	UserID              string `json:"userId,omitempty"`
+	AssetID             int    `json:"assetId,omitempty"`
 }
 
 // AnalyticsConfig holds analytics preferences.
