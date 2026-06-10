@@ -32,11 +32,18 @@ must not do the actual issue implementation.
    not an inline string with escaped newlines.
 6. Include the Linear issue link/closing reference in the PR body, for example
    `Closes WDY-1234`, so merging the PR closes the issue.
-7. Write a `HANDOVER.md` file into the issue worktree. The handover must tell
-   the per-issue agent to KISS, stay aligned with the Linux/WendyOS status quo,
-   commit small coherent changes often, and push to the draft PR as it goes.
+7. Write a `HANDOVER.md` file into the issue worktree. Put the real prompt
+   content there: scope, KISS guidance, validation, commit/push expectations,
+   PR details, and known constraints.
 8. Leave the user with the worktree path, PR link, and a one-line command to
-   resume from that worktree using `--prompt`.
+   resume from that worktree using a generic `--prompt`, for example:
+
+   ```sh
+   cd /path/to/worktree && ai --prompt "Read HANDOVER.md and follow its instructions."
+   ```
+
+   Keep issue-specific detail out of the `--prompt` argument so future resume
+   commands stay short and all durable context lives in `HANDOVER.md`.
 
 Implementation, validation, review-thread handling, and non-empty commits happen
 in per-issue worktree sessions, not in this master planning session.
@@ -112,7 +119,7 @@ in per-issue worktree sessions, not in this master planning session.
   or sample-app guide.
 - Validation: not run; setup commit only
 - `HANDOVER.md`: written in the worktree with KISS scope and commit/push guidance
-- Resume command: `cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1353-xcode-hellomlx-run-flow && ai --prompt "Read HANDOVER.md and continue work on WDY-1353. Keep it KISS, validate Examples/HelloMLX/HelloMLX.xcodeproj, commit often, and push to the draft PR as you go."`
+- Resume command: `cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1353-xcode-hellomlx-run-flow && ai --prompt "Read HANDOVER.md and follow its instructions."`
 
 ### WDY-1396 — Document headless Mac setup for Wendy Agent beta
 
@@ -138,7 +145,7 @@ in per-issue worktree sessions, not in this master planning session.
   implementation reference, not necessarily the public-docs-first path.
 - Validation: recorded in PR #939; GitHub checks in progress at last check
 - `HANDOVER.md`: written in the worktree with KISS scope and commit/push guidance
-- Resume command: `cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1396-headless-mac-setup-docs && ai --prompt "Read HANDOVER.md and continue work on WDY-1396. Keep it KISS, lead with manual System Settings setup, commit often, and push to PR #939 as you go."`
+- Resume command: `cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1396-headless-mac-setup-docs && ai --prompt "Read HANDOVER.md and follow its instructions."`
 
 ### WDY-1377 — Show macOS-specific unsupported messages for hardware APIs
 
