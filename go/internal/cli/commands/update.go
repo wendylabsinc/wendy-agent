@@ -3,7 +3,6 @@ package commands
 import (
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"time"
 
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
@@ -73,23 +72,13 @@ type githubRelease struct {
 func checkLatestRelease() (string, error) {
 	client := newGitHubAPIClient(10 * time.Second)
 
-	req, err := newGitHubAPIGetRequest(githubReleasesURL)
-	if err != nil {
-		return "", fmt.Errorf("creating GitHub API request: %w", err)
-	}
-
-	resp, err := client.Do(req)
+	body, err := githubAPIGet(client, githubReleasesURL)
 	if err != nil {
 		return "", fmt.Errorf("fetching releases: %w", err)
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("GitHub API returned status %d", resp.StatusCode)
-	}
 
 	var release githubRelease
-	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
+	if err := json.Unmarshal(body, &release); err != nil {
 		return "", fmt.Errorf("decoding release: %w", err)
 	}
 

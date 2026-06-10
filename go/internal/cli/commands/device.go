@@ -1268,46 +1268,26 @@ func fetchAgentRelease(nightly bool) (*githubReleaseFull, error) {
 	client := newGitHubAPIClient(30 * time.Second)
 
 	if !nightly {
-		req, err := newGitHubAPIGetRequest(githubReleasesURL)
-		if err != nil {
-			return nil, fmt.Errorf("creating GitHub API request: %w", err)
-		}
-
-		resp, err := client.Do(req)
+		body, err := githubAPIGet(client, githubReleasesURL)
 		if err != nil {
 			return nil, fmt.Errorf("fetching latest release: %w", err)
 		}
-		defer resp.Body.Close()
-
-		if resp.StatusCode != http.StatusOK {
-			return nil, fmt.Errorf("GitHub API returned status %d", resp.StatusCode)
-		}
 
 		var release githubReleaseFull
-		if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
+		if err := json.Unmarshal(body, &release); err != nil {
 			return nil, fmt.Errorf("decoding release: %w", err)
 		}
 		return &release, nil
 	}
 
 	// For nightly, list releases and find the latest prerelease.
-	req, err := newGitHubAPIGetRequest("https://api.github.com/repos/wendylabsinc/wendy-agent/releases")
-	if err != nil {
-		return nil, fmt.Errorf("creating GitHub API request: %w", err)
-	}
-
-	resp, err := client.Do(req)
+	body, err := githubAPIGet(client, "https://api.github.com/repos/wendylabsinc/wendy-agent/releases")
 	if err != nil {
 		return nil, fmt.Errorf("fetching releases: %w", err)
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("GitHub API returned status %d", resp.StatusCode)
-	}
 
 	var releases []githubReleaseFull
-	if err := json.NewDecoder(resp.Body).Decode(&releases); err != nil {
+	if err := json.Unmarshal(body, &releases); err != nil {
 		return nil, fmt.Errorf("decoding releases: %w", err)
 	}
 
