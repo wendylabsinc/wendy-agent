@@ -36,15 +36,44 @@ func GenerateKeyPair() (privateKeyPEM string, err error) {
 // GenerateCSR creates a PKCS#10 certificate signing request using the provided
 // PEM-encoded private key (as bytes, so callers can zero the slice after use)
 // and common name. The CSR is returned as a PEM string.
+//
+// The CSR requests digitalSignature key usage and the clientAuth EKU so that
+// CAs honoring CSR extensions issue certs the wendy-agent mTLS interceptor
+// accepts (it requires an explicit clientAuth EKU). The Wendy cloud backends
+// set key usages server-side and ignore these, so this only matters for CAs
+// that derive extensions from the CSR.
 func GenerateCSR(privateKeyPEM []byte, commonName string) (csrPEM string, err error) {
 	key, err := parseECPrivateKey(privateKeyPEM)
 	if err != nil {
 		return "", err
 	}
 
+	// KeyUsage is a BIT STRING; digitalSignature is bit 0 (RFC 5280 4.2.1.3).
+	keyUsageValue, err := asn1.Marshal(asn1.BitString{Bytes: []byte{0x80}, BitLength: 1})
+	if err != nil {
+		return "", fmt.Errorf("marshaling key usage: %w", err)
+	}
+	ekuValue, err := asn1.Marshal([]asn1.ObjectIdentifier{
+		{1, 3, 6, 1, 5, 5, 7, 3, 2}, // id-kp-clientAuth
+	})
+	if err != nil {
+		return "", fmt.Errorf("marshaling extended key usage: %w", err)
+	}
+
 	template := &x509.CertificateRequest{
 		Subject: pkix.Name{
 			CommonName: commonName,
+		},
+		ExtraExtensions: []pkix.Extension{
+			{
+				Id:       asn1.ObjectIdentifier{2, 5, 29, 15}, // id-ce-keyUsage
+				Critical: true,
+				Value:    keyUsageValue,
+			},
+			{
+				Id:    asn1.ObjectIdentifier{2, 5, 29, 37}, // id-ce-extKeyUsage
+				Value: ekuValue,
+			},
 		},
 	}
 
