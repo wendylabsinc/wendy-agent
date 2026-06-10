@@ -102,8 +102,9 @@ func githubAPIGet(client *http.Client, rawURL string) ([]byte, error) {
 		return nil, fmt.Errorf("creating GitHub API request: %w", err)
 	}
 
-	cache := loadGitHubAPICache()
-	cached, hasCached := cache[rawURL]
+	githubAPICacheMu.Lock()
+	cached, hasCached := loadGitHubAPICache()[rawURL]
+	githubAPICacheMu.Unlock()
 	if hasCached && cached.ETag != "" {
 		req.Header.Set("If-None-Match", cached.ETag)
 	}
@@ -121,8 +122,13 @@ func githubAPIGet(client *http.Client, rawURL string) ([]byte, error) {
 			return nil, fmt.Errorf("reading GitHub API response: %w", err)
 		}
 		if etag := resp.Header.Get("Etag"); etag != "" && json.Valid(body) {
+			// Reload under the lock so concurrent fetches of different URLs
+			// (e.g. the background update check) don't overwrite each other.
+			githubAPICacheMu.Lock()
+			cache := loadGitHubAPICache()
 			cache[rawURL] = githubAPICacheEntry{ETag: etag, Body: body}
 			saveGitHubAPICache(cache)
+			githubAPICacheMu.Unlock()
 		}
 		return body, nil
 	case http.StatusNotModified:
@@ -138,6 +144,10 @@ func githubAPIGet(client *http.Client, rawURL string) ([]byte, error) {
 }
 
 const githubAPIMaxResponseBytes = 8 << 20 // 8 MiB; release listings are far smaller
+
+// githubAPICacheMu serializes read-modify-write cycles on the cache file
+// within this process (foreground command vs. background update check).
+var githubAPICacheMu sync.Mutex
 
 type githubAPICacheEntry struct {
 	ETag string          `json:"etag"`

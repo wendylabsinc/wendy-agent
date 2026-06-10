@@ -1,11 +1,13 @@
 package commands
 
 import (
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/wendylabsinc/wendy/go/internal/shared/version"
@@ -314,6 +316,42 @@ func TestGitHubAPIGetRefreshesCacheOnNewETag(t *testing.T) {
 	}
 	if got, want := string(third), `{"tag_name":"v2.0.0"}`; got != want {
 		t.Fatalf("cached body = %q; want %q", got, want)
+	}
+}
+
+func TestGitHubAPIGetConcurrentCachingPersistsAllEntries(t *testing.T) {
+	stubGitHubTokens(t)
+	stubGitHubAPICachePath(t)
+
+	urls := make([]string, 8)
+	for i := range urls {
+		urls[i] = fmt.Sprintf("https://api.github.com/repos/wendylabsinc/wendy-agent/releases?page=%d", i)
+	}
+	client := newFakeGitHubClient(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Etag": []string{`"etag-` + req.URL.Query().Get("page") + `"`}},
+			Body:       io.NopCloser(strings.NewReader(`{"ok":true}`)),
+		}, nil
+	})
+
+	var wg sync.WaitGroup
+	for _, u := range urls {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := githubAPIGet(client, u); err != nil {
+				t.Errorf("githubAPIGet(%s): %v", u, err)
+			}
+		}()
+	}
+	wg.Wait()
+
+	cache := loadGitHubAPICache()
+	for _, u := range urls {
+		if _, ok := cache[u]; !ok {
+			t.Errorf("cache missing entry for %s", u)
+		}
 	}
 }
 
