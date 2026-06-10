@@ -103,23 +103,23 @@ in per-issue worktree sessions, not in this master planning session.
 
 ### WDY-1353 — Verify Xcode project run flow with VLMLX on Mac agent
 
-- Status: `prepared`
+- Status: `done`
 - Linear: https://linear.app/wendylabsinc/issue/WDY-1353/verify-xcode-project-run-flow-with-vlmlx-on-mac-agent
 - Linear assignee: `konstantin@wendy.sh`
-- Linear state: In Progress
+- Linear state: Done
 - Branch/worktree name: `kb.wdy-1353-xcode-hellomlx-run-flow`
-- Worktree path: `.worktrees/kb.wdy-1353-xcode-hellomlx-run-flow`
-- PR: https://github.com/wendylabsinc/WendyOS/pull/957 — draft
+- Worktree path: removed after merge (`.worktrees/kb.wdy-1353-xcode-hellomlx-run-flow`)
+- PR: https://github.com/wendylabsinc/WendyOS/pull/957 — merged
 - PR closing reference: `Closes WDY-1353`
-- Base: `main`
-- Current commit: `644166ee chore: start WDY-1353 Xcode HelloMLX run flow`
-- KISS scope: beta requirement to verify the Xcode project build/deploy path
-  using the existing `Examples/HelloMLX/HelloMLX.xcodeproj` VLM+MLX app as the
-  VLMLX validation target. Keep docs minimal and avoid a broad Xcode tutorial
-  or sample-app guide.
-- Validation: not run; setup commit only
-- `HANDOVER.md`: written in the worktree with KISS scope and commit/push guidance
-- Resume command: `cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1353-xcode-hellomlx-run-flow && ai --prompt "Read HANDOVER.md and follow its instructions."`
+- Merge commit on `main`: `bb2c2870`
+- KISS scope: verified the Xcode project build/deploy path using the existing
+  `Examples/HelloMLX/HelloMLX.xcodeproj` VLM+MLX app as the VLMLX validation
+  target. Avoided broad Xcode tutorial or sample-app guide work.
+- Validation: recorded in PR #957; GitHub checks passed before merge
+- Notes: validation covered local `wendy run --device localhost:50051 --yes`,
+  model/resource sync, runtime logs, and a narrow direct-agent gRPC keepalive
+  fix exposed by a remote Mac run.
+- Resume command: not needed; issue is complete
 
 ### WDY-1396 — Document headless Mac setup for Wendy Agent beta
 
@@ -143,6 +143,22 @@ in per-issue worktree sessions, not in this master planning session.
   implementation reference, not necessarily the public-docs-first path.
 - Validation: recorded in PR #939; GitHub checks passed before merge
 - Resume command: not needed; issue is complete
+
+### WDY-1350 — Verify app lifecycle commands on Mac agent
+
+- Status: `planned`
+- Linear: https://linear.app/wendylabsinc/issue/WDY-1350/verify-app-lifecycle-commands-on-mac-agent
+- Linear assignee: not assigned yet
+- Linear state: Todo
+- Branch/worktree name: not prepared yet
+- Worktree path: not prepared yet
+- PR: not created yet
+- KISS scope: verify only minimal lifecycle sanity for Mac beta: list, stop,
+  and remove against the app paths already validated by WDY-1346 and WDY-1353.
+  Avoid a command matrix, broad diagnostics, or new E2E infrastructure.
+- Timing: start after WDY-1353; should happen before WDY-1360 clean-device
+  validation.
+- Resume command: not available until prepared
 
 ### WDY-1473 — Publicize Wendy for Mac beta across website
 
@@ -246,9 +262,9 @@ Keep each remaining issue short and validation-focused.
 1. **Completed: WDY-1352** — minimal device targeting/docs alignment merged in PR #930.
 2. **Completed: WDY-1345** — minimal Mac beta smoke test merged in PR #934.
 3. **Completed: WDY-1346** — native macOS SwiftPM `wendy run` flow merged in PR #936.
-4. **WDY-1353** — prepared; beta requirement to verify Xcode project run flow with `Examples/HelloMLX/HelloMLX.xcodeproj`.
+4. **Completed: WDY-1353** — Xcode HelloMLX run flow merged in PR #957.
 5. **Completed: WDY-1396** — minimal headless Mac setup guidance merged in PR #939.
-6. **WDY-1350** — verify minimal app lifecycle commands for the WDY-1346/WDY-1353 apps.
+6. **WDY-1350** — next to start; verify minimal app lifecycle commands for the WDY-1346/WDY-1353 apps.
 7. **WDY-1360** — clean Apple Silicon validation of the shipped docs path, including the WDY-1346 native run flow, WDY-1353 HelloMLX Xcode flow, and WDY-1396 headless setup if the environment supports it.
 8. **WDY-1473** — final public website/docs status update using PR #945 once beta readiness is complete.
 
