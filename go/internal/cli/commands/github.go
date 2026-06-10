@@ -227,8 +227,16 @@ func resolveLatestReleaseTagViaWeb(client *http.Client) (string, error) {
 		return "", fmt.Errorf("resolving latest release: github.com returned status %d", resp.StatusCode)
 	}
 
+	// Only trust the tag if the redirect chain stayed on github.com inside
+	// our org (the repo segment may differ after a repo rename).
+	finalURL := resp.Request.URL
+	if finalURL.Scheme != "https" || !strings.EqualFold(finalURL.Host, "github.com") ||
+		!strings.HasPrefix(finalURL.Path, "/wendylabsinc/") {
+		return "", fmt.Errorf("latest release redirect left the expected GitHub org")
+	}
+
 	const tagMarker = "/releases/tag/"
-	finalPath := resp.Request.URL.Path
+	finalPath := finalURL.Path
 	idx := strings.LastIndex(finalPath, tagMarker)
 	if idx < 0 {
 		return "", fmt.Errorf("latest release redirect did not land on a tag page")
@@ -246,6 +254,9 @@ func resolveLatestReleaseTagViaWeb(client *http.Client) (string, error) {
 // synthesized URL is validated with a HEAD request (the CI uploads all assets
 // atomically with fail_on_unmatched_files), so a convention change surfaces as
 // an error here and the caller can fall back to the API.
+//
+// The synthesized Assets list intentionally contains only the linux agent
+// tarballs; callers needing other release assets must use the API path.
 func fetchAgentReleaseViaWeb(client *http.Client) (*githubReleaseFull, error) {
 	tag, err := resolveLatestReleaseTagViaWeb(client)
 	if err != nil {

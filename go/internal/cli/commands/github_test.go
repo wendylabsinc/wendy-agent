@@ -392,6 +392,40 @@ func TestResolveLatestReleaseTagViaWeb(t *testing.T) {
 	}
 }
 
+func TestResolveLatestReleaseTagViaWebRejectsForeignFinalURL(t *testing.T) {
+	tests := []struct {
+		name     string
+		finalURL string
+	}{
+		{name: "foreign host", finalURL: "https://evil.example.com/wendylabsinc/WendyOS/releases/tag/2026.06.10-142200"},
+		{name: "http downgrade", finalURL: "http://github.com/wendylabsinc/WendyOS/releases/tag/2026.06.10-142200"},
+		{name: "foreign org", finalURL: "https://github.com/attacker/repo/releases/tag/2026.06.10-142200"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := newFakeGitHubClient(func(req *http.Request) (*http.Response, error) {
+				if req.URL.String() == githubWebLatestReleaseURL {
+					return &http.Response{
+						StatusCode: http.StatusFound,
+						Header:     http.Header{"Location": []string{tt.finalURL}},
+						Body:       io.NopCloser(strings.NewReader("")),
+					}, nil
+				}
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     http.Header{},
+					Body:       io.NopCloser(strings.NewReader("")),
+				}, nil
+			})
+
+			if _, err := resolveLatestReleaseTagViaWeb(client); err == nil {
+				t.Fatalf("expected error when redirect lands on %s", tt.finalURL)
+			}
+		})
+	}
+}
+
 func TestResolveLatestReleaseTagViaWebRejectsNonTagPage(t *testing.T) {
 	client := newFakeGitHubClient(func(req *http.Request) (*http.Response, error) {
 		return &http.Response{
