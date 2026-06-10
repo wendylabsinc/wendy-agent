@@ -185,6 +185,31 @@ in per-issue worktree sessions, not in this master planning session.
 - `HANDOVER.md`: written in the worktree with interactive step-by-step guidance
 - Resume command: `cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1360-clean-mac-beta-validation && ai --prompt "Read HANDOVER.md and follow its instructions."`
 
+### WDY-1486 — Fix Wendy Agent auto-start checkbox not registering in Login Items
+
+- Status: `prepared`
+- Linear: https://linear.app/wendylabsinc/issue/WDY-1486/fix-wendy-agent-auto-start-checkbox-not-registering-in-login-items
+- Linear assignee: `konstantin@wendy.sh`
+- Linear state: In Progress
+- Linear project: Wendy for Mac — Beta
+- Branch/worktree name: `kb.wdy-1486-login-items-autostart`
+- Worktree path: `.worktrees/kb.wdy-1486-login-items-autostart`
+- PR: https://github.com/wendylabsinc/WendyOS/pull/967 — draft
+- PR closing reference: `Closes WDY-1486`
+- Base: `main`
+- Current commit: `bc750656 chore: start WDY-1486 login items autostart fix`
+- KISS scope: fix only the welcome-screen auto-start checkbox/login item
+  registration behavior, or make the approval-required state clear. Avoid the
+  broader WDY-1460 LaunchAgent replacement, reset/uninstall docs, first-launch
+  guide expansion, diagnostics matrices, and unrelated menu bar changes.
+- Source: found during WDY-1360 clean Mac beta validation on a fresh M1 Mac mini
+  where the checkbox was enabled by default but Wendy Agent did not appear in
+  System Settings → Login Items → Open at Login.
+- Validation: not run; setup commit only
+- `HANDOVER.md`: written in the worktree with issue context, likely code paths,
+  validation guidance, and commit/push expectations
+- Resume command: `cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1486-login-items-autostart && ai --prompt "Read HANDOVER.md and follow its instructions."`
+
 ### WDY-1473 — Publicize Wendy for Mac beta across website
 
 - Status: `planned`
@@ -197,8 +222,8 @@ in per-issue worktree sessions, not in this master planning session.
 - KISS scope: one of the last beta steps; update website/docs status language
   from coming-soon/future tense to beta-available language without expanding
   the support promise.
-- Timing: do after WDY-1353, WDY-1396, WDY-1350, and WDY-1360 are complete or
-  explicitly waived.
+- Timing: do after WDY-1353, WDY-1396, WDY-1350, WDY-1360, and WDY-1486 are
+  complete or explicitly waived.
 - Resume command: not available until prepared
 
 ### WDY-1377 — Show macOS-specific unsupported messages for hardware APIs
@@ -293,7 +318,9 @@ Keep each remaining issue short and validation-focused.
 7. **WDY-1360** — prepared; clean Apple Silicon validation of the shipped docs
    path, including the WDY-1346 native run flow, WDY-1353 HelloMLX Xcode flow,
    and WDY-1396 headless setup if the environment supports it.
-8. **WDY-1473** — final public website/docs status update using PR #945 once beta readiness is complete.
+8. **WDY-1486** — prepared; fix the auto-start checkbox/login item registration
+   issue found during clean Mac beta validation.
+9. **WDY-1473** — final public website/docs status update using PR #945 once beta readiness is complete.
 
 ## Backlog / post-beta or only-if-blocking
 
