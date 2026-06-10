@@ -264,3 +264,6 @@ super time-constrained beta unless the user explicitly re-prioritizes them:
 - WDY-1460 — post-beta replace Wendy Agent for Mac login/startup item with a
   proper user LaunchAgent so launchd starts it on login and restarts it if it
   exits unexpectedly.
+- WDY-1472 — plan the agreed Wendy Agent → Wendy Daemon rename timing: macOS
+  beta-only now, whole-codebase now, or whole-codebase after beta. Sync with
+  Joannis before implementation.
