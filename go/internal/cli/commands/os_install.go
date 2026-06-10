@@ -8,7 +8,9 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
+
 	"fmt"
 	"io"
 	"log"
@@ -21,6 +23,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"google.golang.org/protobuf/proto"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
@@ -334,7 +338,7 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 	device := deviceMap[selected]
 
 	if device.IsESP32 {
-		return installESP32Firmware(ctx, nightly, device.ESP32Chip)
+		return installESP32Firmware(ctx, nightly, device.ESP32Chip, wifi, deviceName, mode)
 	}
 	return installLinuxImage(ctx, selected, device, nightly, flagVersion, flagDrive, force, yesOverwriteInternal, wifi, deviceName, mode)
 }
@@ -423,12 +427,14 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 			return fmt.Errorf("--pre-enroll: %w", authErr)
 		}
 		fmt.Printf("Pre-enrolling device with Wendy Cloud (org: %d)...\n", auth.Certificates[0].OrganizationID)
-		js, enrollErr := preEnrollDevice(ctx, auth, provDeviceName, nil)
+		state, enrollErr := preEnrollDevice(ctx, auth, provDeviceName, nil)
+		if enrollErr == nil {
+			provisioningJSON, enrollErr = json.Marshal(state)
+		}
 		if enrollErr != nil {
 			fmt.Printf("Warning: pre-enrollment failed: %v\n", enrollErr)
 			fmt.Println("The device will boot unenrolled. Run 'wendy device enroll' after first boot.")
 		} else {
-			provisioningJSON = js
 			fmt.Println("Device pre-enrolled. It will be secure from first boot.")
 		}
 	case preEnrollAuto:
@@ -442,12 +448,14 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 						fmt.Printf("Warning: could not resolve auth for pre-enrollment: %v\n", authErr)
 					} else {
 						fmt.Printf("Pre-enrolling device with Wendy Cloud (org: %d)...\n", auth.Certificates[0].OrganizationID)
-						js, enrollErr := preEnrollDevice(ctx, auth, provDeviceName, nil)
+						state, enrollErr := preEnrollDevice(ctx, auth, provDeviceName, nil)
+						if enrollErr == nil {
+							provisioningJSON, enrollErr = json.Marshal(state)
+						}
 						if enrollErr != nil {
 							fmt.Printf("Warning: pre-enrollment failed: %v\n", enrollErr)
 							fmt.Println("The device will boot unenrolled. Run 'wendy device enroll' after first boot.")
 						} else {
-							provisioningJSON = js
 							fmt.Println("Device pre-enrolled. It will be secure from first boot.")
 						}
 					}
@@ -1440,7 +1448,67 @@ func provisionConfigPartition(d drive, creds []wendyconf.WifiCredential, deviceN
 
 // installESP32Firmware handles the ESP32 path: detect device → download → flash.
 // chip is e.g. "esp32c6" or "esp32c5".
-func installESP32Firmware(ctx context.Context, nightly bool, chip string) error {
+func installESP32Firmware(ctx context.Context, nightly bool, chip string, wifi wifiCLIOptions, deviceName string, mode preEnrollMode) error {
+	provCreds, err := resolveWiFiCredentialsList(wifi)
+	if err != nil {
+		return err
+	}
+
+	provDeviceName, err := resolveDeviceName(deviceName)
+	if err != nil {
+		return err
+	}
+
+	var enrolledState *preProvisionedState
+	switch mode {
+	case preEnrollForced:
+		auth, authErr := pickAuthEntry("")
+		if authErr != nil {
+			return fmt.Errorf("--pre-enroll: %w", authErr)
+		}
+		fmt.Printf("Pre-enrolling device with Wendy Cloud (org: %d)...\n", auth.Certificates[0].OrganizationID)
+		state, enrollErr := preEnrollDevice(ctx, auth, provDeviceName, nil)
+		if enrollErr != nil {
+			fmt.Printf("Warning: pre-enrollment failed: %v\n", enrollErr)
+			fmt.Println("The device will boot unenrolled. Run 'wendy device enroll' after first boot.")
+		} else {
+			enrolledState = &state
+			fmt.Println("Device pre-enrolled. It will be secure from first boot.")
+		}
+	case preEnrollAuto:
+		if isInteractiveTerminal() {
+			cfg, loadErr := config.Load()
+			if loadErr == nil && len(cfg.Auth) > 0 {
+				ok, _ := tui.ConfirmDefaultYes("Pre-enroll this device with Wendy Cloud?")
+				if ok {
+					auth, authErr := pickAuthEntry("")
+					if authErr != nil {
+						fmt.Printf("Warning: could not resolve auth for pre-enrollment: %v\n", authErr)
+					} else {
+						fmt.Printf("Pre-enrolling device with Wendy Cloud (org: %d)...\n", auth.Certificates[0].OrganizationID)
+						state, enrollErr := preEnrollDevice(ctx, auth, provDeviceName, nil)
+						if enrollErr != nil {
+							fmt.Printf("Warning: pre-enrollment failed: %v\n", enrollErr)
+							fmt.Println("The device will boot unenrolled. Run 'wendy device enroll' after first boot.")
+						} else {
+							enrolledState = &state
+							fmt.Println("Device pre-enrolled. It will be secure from first boot.")
+						}
+					}
+				}
+			}
+		}
+	}
+
+	wendyConf, err := buildWendyConf(provCreds, provDeviceName, enrolledState)
+	if err != nil {
+		return fmt.Errorf("building Wendy config: %w", err)
+	}
+
+	if wendyConf.Wifi != nil && len(wendyConf.Wifi.Networks) > 1 {
+		return fmt.Errorf("this device only supports one Wi-Fi network")
+	}
+
 	fmt.Println("\nScanning for ESP32 devices...")
 
 	serialPort, err := discovery.ResolveESP32SerialPort()
@@ -1461,6 +1529,7 @@ func installESP32Firmware(ctx context.Context, nightly bool, chip string) error 
 	fmt.Printf("Found firmware: %s v%s\n", asset.Name, asset.Version)
 
 	// Download with progress bar.
+
 	prog := tui.NewProgress(fmt.Sprintf("Downloading %s %s...", asset.Name, asset.Version))
 	p := tea.NewProgram(prog)
 
@@ -1491,13 +1560,33 @@ func installESP32Firmware(ctx context.Context, nightly bool, chip string) error 
 	}
 	defer os.Remove(fwPath)
 
+	// Include configuration into the flash image.
+
+	img, err := LoadEspFlashImage(fwPath)
+	if err != nil {
+		return fmt.Errorf("loading firmware image: %w", err)
+	}
+
+	confBytes, err := proto.Marshal(wendyConf)
+	if err != nil {
+		return fmt.Errorf("serializing device config: %w", err)
+	}
+	payload := make([]byte, 8+len(confBytes))
+	copy(payload[0:4], "WYC0")
+	binary.LittleEndian.PutUint32(payload[4:8], uint32(len(confBytes)))
+	copy(payload[8:], confBytes)
+	if err := img.SetPartition("wendy_conf", payload); err != nil {
+		return fmt.Errorf("writing config to firmware image: %w", err)
+	}
+
 	// Flash with progress bar.
+
 	fmt.Println()
 	flashProg := tui.NewProgress(fmt.Sprintf("Flashing to %s...", serialPort))
 	fp := tea.NewProgram(flashProg)
 
 	go func() {
-		flashErr := flashFirmware(serialPort, fwPath, func(pct float64) {
+		flashErr := flashFirmwareImage(serialPort, img, func(pct float64) {
 			fp.Send(tui.ProgressUpdateMsg{Percent: pct})
 		})
 		fp.Send(tui.ProgressDoneMsg{Err: flashErr})

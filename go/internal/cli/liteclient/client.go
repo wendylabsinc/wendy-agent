@@ -8,6 +8,7 @@ import (
 	"math"
 	"os"
 
+	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	wendypb "github.com/wendylabsinc/wendy/go/proto/gen/litepb"
 	"google.golang.org/protobuf/proto"
 )
@@ -21,19 +22,39 @@ const (
 )
 
 type WendyLiteClient struct {
-	addr         string
 	conn         io.ReadWriteCloser
 	requestIdGen uint32
 }
 
-func NewWendyLiteClient(addr string) *WendyLiteClient {
-	return &WendyLiteClient{addr: addr}
+func NewWendyLiteClient() *WendyLiteClient {
+	return &WendyLiteClient{}
 }
 
-func (c *WendyLiteClient) Connect() error {
-	conn, err := tls.Dial("tcp", c.addr, &tls.Config{InsecureSkipVerify: true})
+func (c *WendyLiteClient) Connect(address string) error {
+	conn, err := tls.Dial("tcp", address, &tls.Config{InsecureSkipVerify: true}) //nolint:gosec — device uses self-signed certs
 	if err != nil {
 		return fmt.Errorf("connect: %w", err)
+	}
+	c.conn = conn
+	return nil
+}
+
+func (c *WendyLiteClient) ConnectWithMutualAuthentication(address string, certInfo *config.CertificateInfo) error {
+	cert, err := tls.X509KeyPair(
+		[]byte(certInfo.PemCertificate),
+		[]byte(certInfo.PemPrivateKey),
+	)
+	if err != nil {
+		return fmt.Errorf("loading TLS cert: %w", err)
+	}
+	tlsCfg := &tls.Config{
+		Certificates:       []tls.Certificate{cert},
+		InsecureSkipVerify: true, //nolint:gosec — device uses self-signed certs
+		MinVersion:         tls.VersionTLS12,
+	}
+	conn, err := tls.Dial("tcp", address, tlsCfg)
+	if err != nil {
+		return fmt.Errorf("connect (mTLS): %w", err)
 	}
 	c.conn = conn
 	return nil

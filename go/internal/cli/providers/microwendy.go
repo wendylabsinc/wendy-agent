@@ -14,6 +14,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/cli/liteclient"
 	"github.com/wendylabsinc/wendy/go/internal/cli/swifttoolchain"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 )
@@ -63,7 +64,6 @@ func (p *MicroWendyProvider) DiscoverDevices(ctx context.Context) ([]models.Exte
 		if displayName == "" {
 			displayName = svc.Hostname
 		}
-
 		devices = append(devices, models.ExternalDevice{
 			ID:          fmt.Sprintf("wendy-lite:%s", svc.Hostname),
 			DisplayName: displayName,
@@ -72,6 +72,7 @@ func (p *MicroWendyProvider) DiscoverDevices(ctx context.Context) ([]models.Exte
 				"hostname": svc.Hostname,
 				"ip":       svc.IPAddress,
 				"port":     fmt.Sprintf("%d", svc.Port),
+				"mtls":     fmt.Sprintf("%t", svc.TXTRecords["mtls"] == "true"),
 			},
 			IsWendyDevice:   true,
 			CPUArchitecture: "wasm32",
@@ -165,9 +166,20 @@ func (p *MicroWendyProvider) Run(ctx context.Context, app *BuiltApp, detach bool
 		return fmt.Errorf("wendy-lite provider: missing device address in connection info")
 	}
 
-	client := liteclient.NewWendyLiteClient(net.JoinHostPort(ip, port))
-	if err := client.Connect(); err != nil {
-		return fmt.Errorf("connect to device: %w", err)
+	addr := net.JoinHostPort(ip, port)
+	client := liteclient.NewWendyLiteClient()
+	if app.Device.ConnectionInfo["mtls"] == "true" {
+		certInfo, err := loadFirstCLICert()
+		if err != nil {
+			return fmt.Errorf("wendy-lite provider: loading mTLS cert: %w", err)
+		}
+		if err := client.ConnectWithMutualAuthentication(addr, certInfo); err != nil {
+			return fmt.Errorf("connect to device (mTLS): %w", err)
+		}
+	} else {
+		if err := client.Connect(addr); err != nil {
+			return fmt.Errorf("connect to device: %w", err)
+		}
 	}
 	defer client.Close()
 
@@ -220,4 +232,18 @@ func (p *MicroWendyProvider) Run(ctx context.Context, app *BuiltApp, detach bool
 
 func (p *MicroWendyProvider) Stop(_ context.Context, app *BuiltApp) error {
 	return nil
+}
+
+func loadFirstCLICert() (*config.CertificateInfo, error) {
+	cfg, err := config.Load()
+	if err != nil {
+		return nil, err
+	}
+	for _, auth := range cfg.Auth {
+		if len(auth.Certificates) > 0 {
+			c := auth.Certificates[0]
+			return &c, nil
+		}
+	}
+	return nil, fmt.Errorf("not logged in (no certificate found)")
 }

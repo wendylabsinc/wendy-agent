@@ -152,6 +152,8 @@ protoc \
     --go_out="$GEN_DIR/litepb" \
     --go_opt=module="$LITE_PKG" \
     --go_opt=Mwendy/lite/wendy_com_msg.proto="$LITE_PKG" \
-    wendy/lite/wendy_com_msg.proto
+    --go_opt=Mwendy/lite/wendy_conf.proto="$LITE_PKG" \
+    wendy/lite/wendy_com_msg.proto \
+    wendy/lite/wendy_conf.proto
 
 echo "Proto generation complete!"
