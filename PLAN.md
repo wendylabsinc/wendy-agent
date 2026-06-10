@@ -146,23 +146,23 @@ in per-issue worktree sessions, not in this master planning session.
 
 ### WDY-1350 — Verify app lifecycle commands on Mac agent
 
-- Status: `prepared`
+- Status: `done`
 - Linear: https://linear.app/wendylabsinc/issue/WDY-1350/verify-app-lifecycle-commands-on-mac-agent
 - Linear assignee: `konstantin@wendy.sh`
-- Linear state: In Progress
+- Linear state: Done
 - Branch/worktree name: `kb.wdy-1350-mac-app-lifecycle`
-- Worktree path: `.worktrees/kb.wdy-1350-mac-app-lifecycle`
-- PR: https://github.com/wendylabsinc/WendyOS/pull/958 — draft
+- Worktree path: removed after merge (`.worktrees/kb.wdy-1350-mac-app-lifecycle`)
+- PR: https://github.com/wendylabsinc/WendyOS/pull/958 — merged
 - PR closing reference: `Closes WDY-1350`
-- Base: `main`
-- Current commit: `4c3221b chore: start WDY-1350 Mac app lifecycle validation`
-- KISS scope: verify only minimal lifecycle sanity for Mac beta: list, stop,
+- Merge commit on `main`: `cc1ea2a2`
+- KISS scope: verified minimal lifecycle sanity for Mac beta: list, stop,
   and remove against the app paths already validated by WDY-1346 and WDY-1353.
-  Avoid a command matrix, broad diagnostics, or new E2E infrastructure.
-- Timing: should happen before WDY-1360 clean-device validation.
-- Validation: not run; setup commit only
-- `HANDOVER.md`: written in the worktree with KISS scope and commit/push guidance
-- Resume command: `cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1350-mac-app-lifecycle && ai --prompt "Read HANDOVER.md and follow its instructions."`
+  Avoided a command matrix, broad diagnostics, and new E2E infrastructure.
+- Validation: recorded in PR #958; found and fixed native Mac app deletion so
+  `device apps remove --force` also removes the synced app payload directory,
+  including orphaned payloads left by prior registry-only removals. Swift
+  `ContainerServiceTests` passed.
+- Resume command: not needed; issue is complete
 
 ### WDY-1473 — Publicize Wendy for Mac beta across website
 
@@ -268,14 +268,22 @@ Keep each remaining issue short and validation-focused.
 3. **Completed: WDY-1346** — native macOS SwiftPM `wendy run` flow merged in PR #936.
 4. **Completed: WDY-1353** — Xcode HelloMLX run flow merged in PR #957.
 5. **Completed: WDY-1396** — minimal headless Mac setup guidance merged in PR #939.
-6. **WDY-1350** — prepared; verify minimal app lifecycle commands for the WDY-1346/WDY-1353 apps.
-7. **WDY-1360** — clean Apple Silicon validation of the shipped docs path, including the WDY-1346 native run flow, WDY-1353 HelloMLX Xcode flow, and WDY-1396 headless setup if the environment supports it.
+6. **Completed: WDY-1350** — minimal Mac app lifecycle validation merged in PR #958.
+7. **WDY-1360** — next to start; clean Apple Silicon validation of the shipped
+   docs path, including the WDY-1346 native run flow, WDY-1353 HelloMLX Xcode
+   flow, and WDY-1396 headless setup if the environment supports it.
 8. **WDY-1473** — final public website/docs status update using PR #945 once beta readiness is complete.
 
 ## Backlog / post-beta or only-if-blocking
 
 These Linear issues were updated so agents know they are not part of the
-super time-constrained beta unless the user explicitly re-prioritizes them:
+super time-constrained beta unless the user explicitly re-prioritizes them.
+
+Linear/project check: no mTLS/TLS/certificate issue is currently part of the
+`Wendy for Mac — Beta` project. Related non-beta issues include WDY-1212
+(self-signed local CA support for mTLS without cloud), WDY-1376 (macOS exposed
+port 50051 security guidance), WDY-1019 (cloud-tunnel registry mTLS), and
+WDY-1479 (SER9 Swift E2E mTLS auth failure).
 
 - WDY-1347 — onboarding copy; only if a concrete shipped UI over-promises.
 - WDY-1348 — canceled; covered by WDY-1344 unless a specific missing limitation appears.
