@@ -25,13 +25,7 @@ struct WelcomeAndPermissionsView: View {
 
             self.permissionsSection
 
-            Toggle(
-                "Open Wendy Agent automatically when you log in",
-                isOn: Binding(
-                    get: { self.welcomeAndPermissions.launchAtLoginEnabled },
-                    set: { self.welcomeAndPermissions.setLaunchAtLoginEnabled($0) }
-                )
-            )
+            self.launchAtLoginSection
         }
         .padding(28)
         .frame(width: 620, alignment: .topLeading)
@@ -98,6 +92,87 @@ struct WelcomeAndPermissionsView: View {
             RoundedRectangle(cornerRadius: 14)
                 .fill(.quaternary.opacity(0.4))
         )
+    }
+
+    private var launchAtLoginSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Toggle(
+                "Open Wendy Agent automatically when you log in",
+                isOn: Binding(
+                    get: { self.welcomeAndPermissions.launchAtLoginEnabled },
+                    set: { self.welcomeAndPermissions.setLaunchAtLoginEnabled($0) }
+                )
+            )
+
+            if let message = self.launchAtLoginStatusMessage {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Image(systemName: self.launchAtLoginStatusSystemImage)
+                        .foregroundStyle(self.launchAtLoginStatusColor)
+                    Text(message)
+                        .foregroundStyle(.secondary)
+
+                    if self.shouldShowLoginItemsSettingsButton {
+                        Button("Open Login Items…") {
+                            self.welcomeAndPermissions.openLoginItemsSettings()
+                        }
+                        .buttonStyle(.link)
+                    }
+                }
+                .font(.subheadline)
+            }
+        }
+    }
+
+    private var launchAtLoginStatusMessage: String? {
+        switch self.welcomeAndPermissions.launchAtLoginStatus {
+        case .enabled:
+            return "Wendy Agent is registered in Login Items."
+        case .disabled:
+            return self.welcomeAndPermissions.launchAtLoginEnabled
+                ? "Wendy Agent is not registered in Login Items yet."
+                : nil
+        case .requiresApproval:
+            return "Approve Wendy Agent in System Settings → Login Items to finish enabling automatic launch."
+        case .unavailable:
+            return "Automatic launch is unavailable for this copy of Wendy Agent."
+        case .updateFailed:
+            return "Wendy Agent couldn't update Login Items. Check System Settings, then try toggling this setting again."
+        }
+    }
+
+    private var launchAtLoginStatusSystemImage: String {
+        switch self.welcomeAndPermissions.launchAtLoginStatus {
+        case .enabled:
+            return "checkmark.circle.fill"
+        case .disabled:
+            return "info.circle"
+        case .requiresApproval, .updateFailed:
+            return "exclamationmark.triangle.fill"
+        case .unavailable:
+            return "xmark.circle.fill"
+        }
+    }
+
+    private var launchAtLoginStatusColor: Color {
+        switch self.welcomeAndPermissions.launchAtLoginStatus {
+        case .enabled:
+            return .green
+        case .disabled:
+            return .secondary
+        case .requiresApproval, .updateFailed:
+            return .orange
+        case .unavailable:
+            return .red
+        }
+    }
+
+    private var shouldShowLoginItemsSettingsButton: Bool {
+        switch self.welcomeAndPermissions.launchAtLoginStatus {
+        case .requiresApproval, .updateFailed:
+            return true
+        case .enabled, .disabled, .unavailable:
+            return false
+        }
     }
 
     @ViewBuilder

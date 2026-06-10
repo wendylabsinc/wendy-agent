@@ -54,6 +54,14 @@ final class WelcomeAndPermissions: NSObject, CBCentralManagerDelegate {
         case restricted
     }
 
+    enum LaunchAtLoginStatus: Equatable {
+        case enabled
+        case disabled
+        case requiresApproval
+        case unavailable
+        case updateFailed
+    }
+
     private static let launchAtLoginEnabledKey = "launchAtLoginEnabled"
 
     private let logger = Logger(
@@ -62,6 +70,7 @@ final class WelcomeAndPermissions: NSObject, CBCentralManagerDelegate {
     )
 
     var launchAtLoginEnabled: Bool
+    var launchAtLoginStatus: LaunchAtLoginStatus
     var bluetoothStatus: PermissionStatus = .pending
     var cameraStatus: PermissionStatus = .pending
     var microphoneStatus: PermissionStatus = .pending
@@ -71,12 +80,8 @@ final class WelcomeAndPermissions: NSObject, CBCentralManagerDelegate {
     private var bluetoothContinuation: CheckedContinuation<PermissionStatus, Never>?
 
     override init() {
-        let defaults = UserDefaults.standard
-        if defaults.object(forKey: Self.launchAtLoginEnabledKey) == nil {
-            self.launchAtLoginEnabled = true
-        } else {
-            self.launchAtLoginEnabled = defaults.bool(forKey: Self.launchAtLoginEnabledKey)
-        }
+        self.launchAtLoginEnabled = Self.savedLaunchAtLoginPreference()
+        self.launchAtLoginStatus = Self.currentLaunchAtLoginStatus()
 
         super.init()
         self.refreshPermissionStatuses()
@@ -98,14 +103,21 @@ final class WelcomeAndPermissions: NSObject, CBCentralManagerDelegate {
         self.requestingPermission != nil
     }
 
+    func prepareForLaunch() {
+        self.launchAtLoginEnabled = Self.savedLaunchAtLoginPreference()
+        self.applyLaunchAtLoginPreference()
+    }
+
     func prepareForPresentation() {
-        self.launchAtLoginEnabled = Self.currentLaunchAtLoginPreference()
+        self.launchAtLoginEnabled = Self.savedLaunchAtLoginPreference()
+        self.applyLaunchAtLoginPreference()
         self.requestingPermission = nil
         self.refreshPermissionStatuses()
     }
 
     func refresh() {
         self.refreshPermissionStatuses()
+        self.refreshLaunchAtLoginStatus()
     }
 
     func setLaunchAtLoginEnabled(_ enabled: Bool) {
@@ -157,6 +169,19 @@ final class WelcomeAndPermissions: NSObject, CBCentralManagerDelegate {
         }
     }
 
+    func openLoginItemsSettings() {
+        guard let settingsURL = URL(
+            string: "x-apple.systempreferences:com.apple.LoginItems-Settings.extension"
+        ) else {
+            return
+        }
+
+        guard NSWorkspace.shared.open(settingsURL) else {
+            self.logger.error("Failed to open Login Items settings")
+            return
+        }
+    }
+
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
         guard let bluetoothContinuation = self.bluetoothContinuation else { return }
 
@@ -169,6 +194,10 @@ final class WelcomeAndPermissions: NSObject, CBCentralManagerDelegate {
         self.bluetoothStatus = self.currentBluetoothStatus()
         self.cameraStatus = self.currentCameraStatus()
         self.microphoneStatus = self.currentMicrophoneStatus()
+    }
+
+    private func refreshLaunchAtLoginStatus() {
+        self.launchAtLoginStatus = Self.currentLaunchAtLoginStatus()
     }
 
     private func systemSettingsURL(for permission: Permission) -> URL? {
@@ -193,28 +222,16 @@ final class WelcomeAndPermissions: NSObject, CBCentralManagerDelegate {
                 switch loginItemService.status {
                 case .enabled:
                     self.logger.info("Wendy Agent is already configured to launch at login")
-                case .notRegistered, .requiresApproval, .notFound:
+                case .requiresApproval:
+                    self.logger.notice(
+                        "Wendy Agent launch at login requires user approval in System Settings"
+                    )
+                case .notRegistered, .notFound:
                     try loginItemService.register()
-
-                    switch loginItemService.status {
-                    case .enabled:
-                        self.logger.info("Configured Wendy Agent to launch at login")
-                    case .requiresApproval:
-                        self.logger.notice(
-                            "Wendy Agent launch at login requires user approval in System Settings"
-                        )
-                    case .notRegistered, .notFound:
-                        self.logger.warning(
-                            "Wendy Agent launch at login registration did not complete; status: \(String(describing: loginItemService.status), privacy: .public)"
-                        )
-                    @unknown default:
-                        self.logger.warning(
-                            "Wendy Agent launch at login registration returned an unknown status"
-                        )
-                    }
+                    self.logLaunchAtLoginRegistrationStatus(loginItemService.status)
                 @unknown default:
                     try loginItemService.register()
-                    self.logger.info("Configured Wendy Agent to launch at login")
+                    self.logLaunchAtLoginRegistrationStatus(loginItemService.status)
                 }
             } else {
                 switch loginItemService.status {
@@ -228,20 +245,58 @@ final class WelcomeAndPermissions: NSObject, CBCentralManagerDelegate {
                     self.logger.info("Disabled Wendy Agent launch at login")
                 }
             }
+
+            self.refreshLaunchAtLoginStatus()
         } catch {
+            self.launchAtLoginStatus = .updateFailed
             self.logger.error(
                 "Failed to configure Wendy Agent launch at login: \(String(describing: error), privacy: .public)"
             )
         }
     }
 
-    private static func currentLaunchAtLoginPreference() -> Bool {
+    private func logLaunchAtLoginRegistrationStatus(_ status: SMAppService.Status) {
+        switch status {
+        case .enabled:
+            self.logger.info("Configured Wendy Agent to launch at login")
+        case .requiresApproval:
+            self.logger.notice(
+                "Wendy Agent launch at login requires user approval in System Settings"
+            )
+        case .notRegistered, .notFound:
+            self.logger.warning(
+                "Wendy Agent launch at login registration did not complete; status: \(String(describing: status), privacy: .public)"
+            )
+        @unknown default:
+            self.logger.warning(
+                "Wendy Agent launch at login registration returned an unknown status"
+            )
+        }
+    }
+
+    private static func savedLaunchAtLoginPreference() -> Bool {
         let defaults = UserDefaults.standard
         if defaults.object(forKey: Self.launchAtLoginEnabledKey) == nil {
+            defaults.set(true, forKey: Self.launchAtLoginEnabledKey)
             return true
         }
 
         return defaults.bool(forKey: Self.launchAtLoginEnabledKey)
+    }
+
+    private static func currentLaunchAtLoginStatus() -> LaunchAtLoginStatus {
+        switch SMAppService.mainApp.status {
+        case .enabled:
+            return .enabled
+        case .requiresApproval:
+            return .requiresApproval
+        case .notRegistered:
+            return .disabled
+        case .notFound:
+            return .unavailable
+        @unknown default:
+            return .unavailable
+        }
     }
 
     private func currentBluetoothStatus() -> PermissionStatus {
