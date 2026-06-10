@@ -123,29 +123,26 @@ in per-issue worktree sessions, not in this master planning session.
 
 ### WDY-1396 — Document headless Mac setup for Wendy Agent beta
 
-- Status: `ready`
+- Status: `done`
 - Linear: https://linear.app/wendylabsinc/issue/WDY-1396/document-headless-mac-setup-for-wendy-agent-beta
 - Linear assignee: `konstantin@wendy.sh`
-- Linear state: In Review
+- Linear state: Done
 - Branch/worktree name: `kb.wdy-1396-headless-mac-setup-docs`
-- Worktree path: `.worktrees/kb.wdy-1396-headless-mac-setup-docs`
-- PR: https://github.com/wendylabsinc/WendyOS/pull/939 — open, ready for review
+- Worktree path: removed after merge (`.worktrees/kb.wdy-1396-headless-mac-setup-docs`)
+- PR: https://github.com/wendylabsinc/WendyOS/pull/939 — merged
 - PR closing reference: `Closes WDY-1396`
-- Base: `main`
-- Current commit: `c201a67e docs: add SSH setup to headless Mac checklist`
-- KISS scope: add a short headless Mac note, recommend a virtual display
-  dongle / HDMI dummy plug, lead with manual System Settings setup for new
-  Macs, mention keeping the Mac awake on AC power, and reference manual macOS
-  Screen Sharing / automatic-login choices only if needed. Terminal commands
-  such as `pmset` are optional/secondary, not the primary setup path.
+- Merge commit on `main`: `7b12ae9a`
+- KISS scope: added a short headless Mac note: virtual display dongle / HDMI
+  dummy plug, manual System Settings setup for new Macs, keeping the Mac awake
+  on AC power, and manual macOS Screen Sharing / automatic-login choices only if
+  needed. Avoided broad diagnostics or reset/troubleshooting docs.
 - Related validation: WDY-1360 should validate this guidance if the clean Apple
   Silicon environment is headless or can reasonably exercise a headless setup.
 - Source reference: `kb.ansible:ansible/roles/power_policy/tasks/macos.yml`
   uses `sudo pmset -c sleep 0 displaysleep 10 disksleep 0 womp 1` as an
   implementation reference, not necessarily the public-docs-first path.
-- Validation: recorded in PR #939; GitHub checks in progress at last check
-- `HANDOVER.md`: written in the worktree with KISS scope and commit/push guidance
-- Resume command: `cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1396-headless-mac-setup-docs && ai --prompt "Read HANDOVER.md and follow its instructions."`
+- Validation: recorded in PR #939; GitHub checks passed before merge
+- Resume command: not needed; issue is complete
 
 ### WDY-1473 — Publicize Wendy for Mac beta across website
 
@@ -250,7 +247,7 @@ Keep each remaining issue short and validation-focused.
 2. **Completed: WDY-1345** — minimal Mac beta smoke test merged in PR #934.
 3. **Completed: WDY-1346** — native macOS SwiftPM `wendy run` flow merged in PR #936.
 4. **WDY-1353** — prepared; beta requirement to verify Xcode project run flow with `Examples/HelloMLX/HelloMLX.xcodeproj`.
-5. **WDY-1396** — ready; document headless Mac setup: no sleep on AC and virtual display dongle.
+5. **Completed: WDY-1396** — minimal headless Mac setup guidance merged in PR #939.
 6. **WDY-1350** — verify minimal app lifecycle commands for the WDY-1346/WDY-1353 apps.
 7. **WDY-1360** — clean Apple Silicon validation of the shipped docs path, including the WDY-1346 native run flow, WDY-1353 HelloMLX Xcode flow, and WDY-1396 headless setup if the environment supports it.
 8. **WDY-1473** — final public website/docs status update using PR #945 once beta readiness is complete.
