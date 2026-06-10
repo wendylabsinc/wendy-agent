@@ -311,3 +311,6 @@ WDY-1479 (SER9 Swift E2E mTLS auth failure).
   Joannis before implementation.
 - WDY-1480 — add proper mTLS support for Wendy for Mac; beta-project backlog,
   but outside the current KISS beta path unless explicitly reprioritized.
+  Joannis noted on Slack that this is optional for now: “It's not hard to add,
+  but leave it for now 🙂”
+  (https://wendylabs.slack.com/archives/C0AM24AKWF4/p1781091500750299).
