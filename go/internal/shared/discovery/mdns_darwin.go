@@ -82,9 +82,15 @@ func resolveMDNSService(ctx context.Context, inst browseResult, serviceType stri
 				}
 			}
 
-			for _, field := range parts {
-				if k, v, ok := strings.Cut(field, "="); ok {
-					txtRecords[k] = v
+			if scanner.Scan() {
+				txtLine := scanner.Text()
+				if strings.HasPrefix(txtLine, " ") {
+					txtParts := strings.Fields(txtLine)
+					for _, field := range txtParts {
+						if k, v, ok := strings.Cut(field, "="); ok {
+							txtRecords[k] = v
+						}
+					}
 				}
 			}
 
