@@ -164,6 +164,27 @@ in per-issue worktree sessions, not in this master planning session.
   `ContainerServiceTests` passed.
 - Resume command: not needed; issue is complete
 
+### WDY-1360 — Validate Mac beta on a clean Apple Silicon macOS device
+
+- Status: `prepared`
+- Linear: https://linear.app/wendylabsinc/issue/WDY-1360/validate-mac-beta-on-a-clean-apple-silicon-macos-device
+- Linear assignee: `konstantin@wendy.sh`
+- Linear state: In Progress
+- Branch/worktree name: `kb.wdy-1360-clean-mac-beta-validation`
+- Worktree path: `.worktrees/kb.wdy-1360-clean-mac-beta-validation`
+- PR: https://github.com/wendylabsinc/WendyOS/pull/963 — draft
+- PR closing reference: `Closes WDY-1360`
+- Base: `main`
+- Current commit: `bd5c25cb chore: start WDY-1360 clean Mac beta validation`
+- KISS scope: interactive clean Apple Silicon validation of the shipped Mac beta
+  docs path, WDY-1346 native macOS SwiftPM run flow, WDY-1353 HelloMLX Xcode
+  flow, and WDY-1396 headless setup guidance only if the environment supports
+  it. Avoid diagnostics, firewall/VPN/TCC matrices, reset/uninstall docs, E2E
+  infra, and mTLS work.
+- Validation: not run; setup commit only
+- `HANDOVER.md`: written in the worktree with interactive step-by-step guidance
+- Resume command: `cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1360-clean-mac-beta-validation && ai --prompt "Read HANDOVER.md and follow its instructions."`
+
 ### WDY-1473 — Publicize Wendy for Mac beta across website
 
 - Status: `planned`
@@ -269,9 +290,9 @@ Keep each remaining issue short and validation-focused.
 4. **Completed: WDY-1353** — Xcode HelloMLX run flow merged in PR #957.
 5. **Completed: WDY-1396** — minimal headless Mac setup guidance merged in PR #939.
 6. **Completed: WDY-1350** — minimal Mac app lifecycle validation merged in PR #958.
-7. **WDY-1360** — next to start; clean Apple Silicon validation of the shipped
-   docs path, including the WDY-1346 native run flow, WDY-1353 HelloMLX Xcode
-   flow, and WDY-1396 headless setup if the environment supports it.
+7. **WDY-1360** — prepared; clean Apple Silicon validation of the shipped docs
+   path, including the WDY-1346 native run flow, WDY-1353 HelloMLX Xcode flow,
+   and WDY-1396 headless setup if the environment supports it.
 8. **WDY-1473** — final public website/docs status update using PR #945 once beta readiness is complete.
 
 ## Backlog / post-beta or only-if-blocking
