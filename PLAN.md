@@ -147,6 +147,22 @@ in per-issue worktree sessions, not in this master planning session.
 - `HANDOVER.md`: written in the worktree with KISS scope and commit/push guidance
 - Resume command: `cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1396-headless-mac-setup-docs && ai --prompt "Read HANDOVER.md and follow its instructions."`
 
+### WDY-1473 — Publicize Wendy for Mac beta across website
+
+- Status: `planned`
+- Linear: https://linear.app/wendylabsinc/issue/WDY-1473/publicize-wendy-for-mac-beta-across-website
+- Linear assignee: `konstantin@wendy.sh`
+- Linear state: Todo
+- Branch/worktree name: not prepared yet
+- Worktree path: not prepared yet
+- Existing PR: https://github.com/wendylabsinc/WendyOS/pull/945 — open; use as starting point when beta is ready
+- KISS scope: one of the last beta steps; update website/docs status language
+  from coming-soon/future tense to beta-available language without expanding
+  the support promise.
+- Timing: do after WDY-1353, WDY-1396, WDY-1350, and WDY-1360 are complete or
+  explicitly waived.
+- Resume command: not available until prepared
+
 ### WDY-1377 — Show macOS-specific unsupported messages for hardware APIs
 
 - Status: `done`
@@ -237,6 +253,7 @@ Keep each remaining issue short and validation-focused.
 5. **WDY-1396** — ready; document headless Mac setup: no sleep on AC and virtual display dongle.
 6. **WDY-1350** — verify minimal app lifecycle commands for the WDY-1346/WDY-1353 apps.
 7. **WDY-1360** — clean Apple Silicon validation of the shipped docs path, including the WDY-1346 native run flow, WDY-1353 HelloMLX Xcode flow, and WDY-1396 headless setup if the environment supports it.
+8. **WDY-1473** — final public website/docs status update using PR #945 once beta readiness is complete.
 
 ## Backlog / post-beta or only-if-blocking
 
