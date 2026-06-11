@@ -199,6 +199,9 @@ if [[ "$OS" == "darwin" ]]; then
     echo "Downloading ${URL}..."
     download "$URL" "${TMPDIR_DL}/${ARTIFACT}"
     tar -xzf "${TMPDIR_DL}/${ARTIFACT}" -C "$TMPDIR_DL"
+    if [[ ! -d "$INSTALL_DIR" ]]; then
+      mkdir -p "$INSTALL_DIR" 2>/dev/null || sudo mkdir -p "$INSTALL_DIR"
+    fi
     sudo install -m 755 "${TMPDIR_DL}/wendy-cli-darwin-${ARCH}/${BINARY_NAME}" "${INSTALL_DIR}/${BINARY_NAME}"
   fi
 
