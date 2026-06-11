@@ -44,14 +44,14 @@ in per-issue worktree sessions, not in this master planning session.
 
 ### WDY-1481 — Add local E2E matrix coverage for macOS↔macOS and Ubuntu↔Ubuntu
 
-- Status: `draft PR open; security review failing after latest sync`
+- Status: `done`
 - Linear project: E2E Tests
 - Linear: https://linear.app/wendylabsinc/issue/WDY-1481/add-local-e2e-matrix-coverage-for-macosmacos-and-ubuntuubuntu
 - Linear assignee: konstantin@wendy.sh
-- Linear state: In Progress (`started`)
-- Branch/worktree name: `kb.wdy-1481-local-e2e-matrix`
-- Worktree path: `/Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1481-local-e2e-matrix`
-- PR: https://github.com/wendylabsinc/WendyOS/pull/964
+- Linear state: Done (`completed`)
+- Branch/worktree name: `kb.wdy-1481-local-e2e-matrix` (merged; local worktree removed)
+- Worktree path: removed after merge
+- PR: https://github.com/wendylabsinc/WendyOS/pull/964 (merged, merge commit `ef620742`)
 - PR closing reference: `Closes WDY-1481`
 - Scope: add two hosted-runner-only E2E matrix entries that exercise local
   E2E paths without requiring physical WendyOS devices on the network:
@@ -59,14 +59,9 @@ in per-issue worktree sessions, not in this master planning session.
   an equivalent local harness, and must not depend on SER9, Raspberry Pi,
   Jetson, mDNS discovery, cloud tunnels, or reachable physical devices.
 - Validation: PR #964 documents local shell/YAML/actionlint/Swift checks and a
-  successful manual local-only workflow dispatch. Latest observed PR checks
-  after syncing with `origin/main`: Claude Security Review failing; several
-  required checks still pending. Re-check before marking ready.
-- Resume command:
-
-  ```sh
-  cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1481-local-e2e-matrix && ai --prompt "Read HANDOVER.md and follow its instructions."
-  ```
+  successful manual local-only workflow dispatch. The PR merged on
+  2026-06-11.
+- Resume command: not applicable; issue complete and worktree removed.
 
 ### WDY-1482 — Gate device-to-device E2E jobs behind successful local E2E runs
 
@@ -92,15 +87,15 @@ in per-issue worktree sessions, not in this master planning session.
 
 ### WDY-1479 — Investigate SER9 Swift E2E mTLS auth failure
 
-- Status: `planned`
+- Status: `done`
 - Linear project: E2E Tests
 - Linear: https://linear.app/wendylabsinc/issue/WDY-1479/investigate-ser9-swift-e2e-mtls-auth-failure
-- Linear assignee: unassigned
-- Linear state: Todo (`unstarted`)
-- Branch/worktree name: not prepared yet
-- Worktree path: not prepared yet
-- PR: not created yet
-- PR closing reference: `Closes WDY-1479`
+- Linear assignee: joannis@wendy.sh
+- Linear state: Done (`completed`)
+- Branch/worktree name: not prepared in this coordinator
+- Worktree path: not applicable
+- PR: https://github.com/wendylabsinc/WendyOS/pull/975 (merged, merge commit `7bf0077d`)
+- PR closing reference: none; one-off revert of temporary PR-trigger disable
 - Scope: investigate why the CI CLI cannot authenticate to
   `wendy-SER9.local` over mTLS before Swift E2E tests execute. Current failure:
   `certificate is not valid for client authentication`; SER9 logs report
@@ -108,23 +103,19 @@ in per-issue worktree sessions, not in this master planning session.
   certificates should include the Client Authentication EKU, identify the
   issuing/refresh path that omits it, and fix or document the required
   certificate behavior so SER9 Swift E2E can authenticate again.
-- Validation: reproduce or inspect the failing mTLS path; verify a refreshed CLI
-  auth certificate contains the expected client authentication capability or
-  that the agent accepts the intended certificate; run the smallest available
-  SER9 Swift E2E/auth smoke check. Once fixed, restore Swift E2E PR triggers by
-  reverting the temporary disable PR noted in Linear (`wendylabsinc/WendyOS#960`)
-  if that is in scope for the issue branch.
-- Resume command: not available until prepared
+- Validation: WDY-1479 was resolved outside this coordinator. PR #975 reverted
+  the temporary PR-trigger disable from PR #960, restoring Swift E2E
+  `pull_request` triggers after WDY-1479 was closed.
+- Resume command: not applicable; issue complete.
 
 ## E2E Tests issue order
 
-Keep each issue short and validation-focused. Start with hosted-runner local
-coverage so CI has useful E2E signal that does not depend on physical devices,
-then consider workflow gating, then return to the SER9-specific blocker.
+Keep each issue short and validation-focused. Completed issues stay in the
+ledger for history; remaining active planning starts with WDY-1482.
 
-1. **WDY-1481** — Add local E2E matrix coverage for macOS↔macOS and Ubuntu↔Ubuntu.
-2. **WDY-1482** — Gate device-to-device E2E jobs behind successful local E2E runs.
-3. **WDY-1479** — Investigate SER9 Swift E2E mTLS auth failure.
+1. **WDY-1482** — Gate device-to-device E2E jobs behind successful local E2E runs.
+2. **WDY-1481** — Done: Add local E2E matrix coverage for macOS↔macOS and Ubuntu↔Ubuntu.
+3. **WDY-1479** — Done: Investigate SER9 Swift E2E mTLS auth failure.
 
 ## Backlog / only-if-blocking
 
@@ -132,4 +123,9 @@ Use this section for E2E Tests project issues that should not be started yet, or
 for related issues outside the project that matter only if they block active E2E
 work.
 
-- None currently.
+- **WDY-968** — `wendy discover` on mac does not send out discovery packets
+  reliably. This is outside the E2E Tests project and currently Done in Linear,
+  but it now carries the E2E follow-up note: once the Jetson mDNS issue is
+  fixed and validated, revert PR #974 to re-enable the commented macOS→Jetson
+  Swift E2E route. Do not revert WDY-1479/PR #960; PR #975 already restored PR
+  triggers.

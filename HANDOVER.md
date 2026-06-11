@@ -16,38 +16,34 @@ per-issue worktrees.
 
 ## Current plan state
 
-`PLAN.md` is populated with the active Linear **E2E Tests** issues:
+`PLAN.md` is populated with the Linear **E2E Tests** issues and current status:
 
-1. `WDY-1481` — Add local E2E matrix coverage for macOS↔macOS and Ubuntu↔Ubuntu
-2. `WDY-1482` — Gate device-to-device E2E jobs behind successful local E2E runs
-3. `WDY-1479` — Investigate SER9 Swift E2E mTLS auth failure
+1. `WDY-1482` — Todo: Gate device-to-device E2E jobs behind successful local E2E runs
+2. `WDY-1481` — Done: Add local E2E matrix coverage for macOS↔macOS and Ubuntu↔Ubuntu
+3. `WDY-1479` — Done: Investigate SER9 Swift E2E mTLS auth failure
 
-## WDY-1481 status
+## Completed housekeeping
 
-WDY-1481 has been started and prepared:
-
-- Linear state: In Progress
-- Assignee: `konstantin@wendy.sh`
-- Worktree: `/Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1481-local-e2e-matrix`
-- Branch: `kb.wdy-1481-local-e2e-matrix`
-- Draft PR: https://github.com/wendylabsinc/WendyOS/pull/964
-- Resume command:
-
-  ```sh
-  cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1481-local-e2e-matrix && ai --prompt "Read HANDOVER.md and follow its instructions."
-  ```
-
-Housekeeping note: PR #964 now has implementation commits and validation in the
-PR body. After the latest sync with `origin/main`, Claude Security Review was
-failing and some checks were pending. Re-check PR status before marking it ready.
+- PR #964 merged WDY-1481 local hosted-runner E2E coverage:
+  https://github.com/wendylabsinc/WendyOS/pull/964
+- PR #974 documented/commented the disabled macOS→Jetson Swift E2E route while
+  WDY-968 tracks the mDNS issue:
+  https://github.com/wendylabsinc/WendyOS/pull/974
+- PR #975 reverted the WDY-1479 temporary PR-trigger disable from PR #960:
+  https://github.com/wendylabsinc/WendyOS/pull/975
+- WDY-968 was updated with instructions to revert PR #974 once Jetson mDNS is
+  fixed and validated. Do not revert WDY-1479/PR #960 for that; PR #975 already
+  restored Swift E2E `pull_request` triggers.
+- The temporary one-off worktrees for PRs #974 and #975 were removed.
+- The WDY-1481 issue worktree has also been removed after merge.
 
 ## Remaining intended next steps
 
-- Address WDY-1481 in its issue worktree until PR #964 is ready/merged.
 - Start WDY-1482 only after the user asks, following the `PLAN.md` working
   protocol.
-- Start WDY-1479 only after the user asks, following the `PLAN.md` working
-  protocol.
+- Treat WDY-968 as related/background only: it is outside the E2E Tests project
+  and tracks when the commented Jetson route can be restored by reverting PR
+  #974.
 
 ## Coordinator resume command
 
