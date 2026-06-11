@@ -44,14 +44,14 @@ in per-issue worktree sessions, not in this master planning session.
 
 ### WDY-1494 — Clean up Swift E2E route matrix and restore commented route ledger
 
-- Status: `started`
+- Status: `done`
 - Linear project: E2E Tests
 - Linear: https://linear.app/wendylabsinc/issue/WDY-1494/clean-up-swift-e2e-route-matrix-and-restore-commented-route-ledger
 - Linear assignee: konstantin@wendy.sh
-- Linear state: In Progress (`started`)
-- Branch/worktree name: `kb.wdy-1494-e2e-route-ledger`
-- Worktree path: `/Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1494-e2e-route-ledger`
-- PR: https://github.com/wendylabsinc/WendyOS/pull/977
+- Linear state: Done (`completed`)
+- Branch/worktree name: `kb.wdy-1494-e2e-route-ledger` (merged; local worktree removed)
+- Worktree path: removed after merge
+- PR: https://github.com/wendylabsinc/WendyOS/pull/977 (merged, merge commit `7aa938d1`)
 - PR closing reference: `Closes WDY-1494`
 - Scope: clean up the Swift E2E workflow after WDY-1481 and the follow-up
   one-off route-disable PRs. Restore the commented-out route entries that
@@ -59,15 +59,11 @@ in per-issue worktree sessions, not in this master planning session.
   the hosted local macOS↔macOS and Ubuntu↔Ubuntu routes alongside that ledger,
   and make the active/disabled physical routes clear. Correct the WDY-968
   tracking note so it applies to the macOS→Ubuntu/SER9 mDNS route, not Jetson.
-- Validation: CI must pass before merge. At minimum validate workflow YAML and
-  actionlint locally, then wait for GitHub checks. If disabling the
-  macOS→Ubuntu/SER9 route, ensure E2E analysis dependencies still work with only
-  the hosted local routes.
-- Resume command:
-
-  ```sh
-  cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1494-e2e-route-ledger && ai --prompt "Read HANDOVER.md and follow its instructions."
-  ```
+- Validation: PR #977 passed CI before merge. PR body records local validation:
+  YAML parse, actionlint, and `bash -n swift/Scripts/E2EReview.sh`.
+  WDY-968 was updated after merge with corrected instructions for restoring the
+  macOS→Ubuntu/SER9 route.
+- Resume command: not applicable; issue complete and worktree removed.
 
 ### WDY-1481 — Add local E2E matrix coverage for macOS↔macOS and Ubuntu↔Ubuntu
 
@@ -138,10 +134,10 @@ in per-issue worktree sessions, not in this master planning session.
 ## E2E Tests issue order
 
 Keep each issue short and validation-focused. Completed issues stay in the
-ledger for history; remaining active planning starts with WDY-1494.
+ledger for history; remaining active planning starts with WDY-1482.
 
-1. **WDY-1494** — Clean up Swift E2E route matrix and restore commented route ledger.
-2. **WDY-1482** — Gate device-to-device E2E jobs behind successful local E2E runs.
+1. **WDY-1482** — Gate device-to-device E2E jobs behind successful local E2E runs.
+2. **WDY-1494** — Done: Clean up Swift E2E route matrix and restore commented route ledger.
 3. **WDY-1481** — Done: Add local E2E matrix coverage for macOS↔macOS and Ubuntu↔Ubuntu.
 4. **WDY-1479** — Done: Investigate SER9 Swift E2E mTLS auth failure.
 
@@ -154,8 +150,7 @@ work.
 - **WDY-968** — `wendy discover` on mac does not send out discovery packets
   reliably. This is outside the E2E Tests project and currently Done in Linear,
   but it is the related tracker for the macOS→Ubuntu/SER9 mDNS route issue.
-  Earlier PR #974 documented the wrong disabled route (Jetson), and corrective
-  PR #976 was closed without merge after CI exposed workflow cleanup issues.
-  WDY-1494 should supersede that one-off path by restoring the commented route
-  ledger and updating the WDY-968 follow-up instructions to point at the correct
-  cleanup PR.
+  PR #977 restored the commented route ledger and WDY-968 now has corrected
+  follow-up instructions: after the issue is fixed, uncomment
+  `swift-e2e-physical-macos-ubuntu` in `.github/workflows/swift-e2e-tests.yml`
+  and add it back to `swift-e2e-analyze.needs`.
