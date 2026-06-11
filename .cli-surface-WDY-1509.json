@@ -1,0 +1,1621 @@
+[
+  {
+    "command": "wendy",
+    "use": "wendy",
+    "short": "Wendy CLI - Edge Computing Development Tool",
+    "flags": [
+      {
+        "name": "device",
+        "usage": "Target device hostname"
+      },
+      {
+        "name": "json",
+        "usage": "Output in JSON format",
+        "default": "false"
+      }
+    ],
+    "persistentFlags": [
+      {
+        "name": "device",
+        "usage": "Target device hostname"
+      },
+      {
+        "name": "json",
+        "usage": "Output in JSON format",
+        "default": "false"
+      }
+    ]
+  },
+  {
+    "command": "wendy analytics",
+    "use": "wendy analytics",
+    "short": "Manage anonymous usage analytics"
+  },
+  {
+    "command": "wendy analytics disable",
+    "use": "wendy analytics disable",
+    "short": "Disable anonymous usage analytics"
+  },
+  {
+    "command": "wendy analytics enable",
+    "use": "wendy analytics enable",
+    "short": "Enable anonymous usage analytics"
+  },
+  {
+    "command": "wendy analytics status",
+    "use": "wendy analytics status",
+    "short": "Show current analytics status"
+  },
+  {
+    "command": "wendy auth",
+    "use": "wendy auth",
+    "short": "Manage authentication with Wendy Cloud"
+  },
+  {
+    "command": "wendy auth login",
+    "use": "wendy auth login [flags]",
+    "short": "Log in to Wendy Cloud or a local pki-core instance",
+    "flags": [
+      {
+        "name": "api-key",
+        "usage": "Bearer API key for local pki-core authentication"
+      },
+      {
+        "name": "cloud",
+        "usage": "Cloud dashboard URL"
+      },
+      {
+        "name": "cloud-grpc",
+        "usage": "Cloud gRPC endpoint, or local pki-core address (host:port) when using --api-key"
+      },
+      {
+        "name": "org",
+        "usage": "Organization ID (used with --api-key)",
+        "default": "1"
+      }
+    ]
+  },
+  {
+    "command": "wendy auth logout",
+    "use": "wendy auth logout",
+    "short": "Log out from Wendy Cloud"
+  },
+  {
+    "command": "wendy auth refresh-certs",
+    "use": "wendy auth refresh-certs",
+    "short": "Refresh mTLS certificates"
+  },
+  {
+    "command": "wendy auth status",
+    "use": "wendy auth status",
+    "short": "Show current authentication status"
+  },
+  {
+    "command": "wendy build",
+    "use": "wendy build [flags]",
+    "short": "Build the application in the current directory",
+    "flags": [
+      {
+        "name": "build-type",
+        "usage": "Build type to use when multiple project markers are present: docker, swift, or python"
+      },
+      {
+        "name": "dockerfile",
+        "usage": "Dockerfile to build from (e.g. Dockerfile.prod); shows a selection menu when multiple Dockerfiles exist"
+      }
+    ]
+  },
+  {
+    "command": "wendy cache",
+    "use": "wendy cache",
+    "short": "Manage local CLI cache"
+  },
+  {
+    "command": "wendy cache clear",
+    "use": "wendy cache clear",
+    "short": "Clear the local cache"
+  },
+  {
+    "command": "wendy cache list",
+    "use": "wendy cache list",
+    "short": "List cached items"
+  },
+  {
+    "command": "wendy cloud",
+    "use": "wendy cloud",
+    "short": "Manage Wendy Cloud resources"
+  },
+  {
+    "command": "wendy cloud device",
+    "use": "wendy cloud device",
+    "short": "Manage WendyOS devices through Wendy Cloud",
+    "flags": [
+      {
+        "name": "broker-url",
+        "usage": "Tunnel broker host:port (default: cloud :443 endpoint, otherwise \u003ccloud-host\u003e:50052)"
+      },
+      {
+        "name": "cloud-grpc",
+        "usage": "Cloud gRPC endpoint (required when multiple auth sessions exist)"
+      }
+    ],
+    "persistentFlags": [
+      {
+        "name": "broker-url",
+        "usage": "Tunnel broker host:port (default: cloud :443 endpoint, otherwise \u003ccloud-host\u003e:50052)"
+      },
+      {
+        "name": "cloud-grpc",
+        "usage": "Cloud gRPC endpoint (required when multiple auth sessions exist)"
+      }
+    ]
+  },
+  {
+    "command": "wendy cloud device apps",
+    "use": "wendy cloud device apps",
+    "short": "Manage applications on the target device"
+  },
+  {
+    "command": "wendy cloud device apps list",
+    "use": "wendy cloud device apps list",
+    "short": "List deployed applications"
+  },
+  {
+    "command": "wendy cloud device apps remove",
+    "use": "wendy cloud device apps remove [app-name] [flags]",
+    "short": "Remove an application",
+    "flags": [
+      {
+        "name": "cleanup",
+        "usage": "Also delete the container image (frees disk space; agent-connected devices only)",
+        "default": "false"
+      },
+      {
+        "name": "delete-volumes",
+        "usage": "Also delete persistent volumes (/var/lib/wendy/volumes; agent-connected devices only)",
+        "default": "false"
+      },
+      {
+        "name": "force",
+        "usage": "Skip confirmation prompt",
+        "default": "false"
+      }
+    ]
+  },
+  {
+    "command": "wendy cloud device apps start",
+    "use": "wendy cloud device apps start [app-name] [flags]",
+    "short": "Start an application",
+    "flags": [
+      {
+        "name": "detach",
+        "shorthand": "d",
+        "usage": "Start without streaming output",
+        "default": "false"
+      }
+    ]
+  },
+  {
+    "command": "wendy cloud device apps stop",
+    "use": "wendy cloud device apps stop [app-name]",
+    "short": "Stop an application"
+  },
+  {
+    "command": "wendy cloud device audio",
+    "use": "wendy cloud device audio",
+    "short": "Manage audio devices on the target device"
+  },
+  {
+    "command": "wendy cloud device audio list",
+    "use": "wendy cloud device audio list",
+    "short": "List audio devices"
+  },
+  {
+    "command": "wendy cloud device audio listen",
+    "use": "wendy cloud device audio listen [flags]",
+    "short": "Stream raw audio from a device microphone",
+    "flags": [
+      {
+        "name": "channels",
+        "usage": "Number of audio channels",
+        "default": "1"
+      },
+      {
+        "name": "id",
+        "usage": "Audio device ID",
+        "default": "0"
+      },
+      {
+        "name": "sample-rate",
+        "usage": "Sample rate in Hz",
+        "default": "16000"
+      },
+      {
+        "name": "stdout",
+        "usage": "Write raw PCM to stdout instead of playing",
+        "default": "false"
+      }
+    ]
+  },
+  {
+    "command": "wendy cloud device audio monitor",
+    "use": "wendy cloud device audio monitor [flags]",
+    "short": "Real-time VU meter for audio levels",
+    "flags": [
+      {
+        "name": "id",
+        "usage": "Audio device ID",
+        "default": "0"
+      },
+      {
+        "name": "rate",
+        "usage": "Update rate in Hz",
+        "default": "10"
+      }
+    ]
+  },
+  {
+    "command": "wendy cloud device audio set-default",
+    "use": "wendy cloud device audio set-default [flags]",
+    "short": "Set the default audio device",
+    "flags": [
+      {
+        "name": "id",
+        "usage": "Audio device ID",
+        "default": "0"
+      }
+    ]
+  },
+  {
+    "command": "wendy cloud device bluetooth",
+    "use": "wendy cloud device bluetooth",
+    "short": "Manage Bluetooth on the target device"
+  },
+  {
+    "command": "wendy cloud device bluetooth connect",
+    "use": "wendy cloud device bluetooth connect [address] [flags]",
+    "short": "Connect to a Bluetooth peripheral",
+    "flags": [
+      {
+        "name": "pair",
+        "usage": "Pair with the device",
+        "default": "true"
+      },
+      {
+        "name": "trust",
+        "usage": "Trust the device",
+        "default": "true"
+      }
+    ]
+  },
+  {
+    "command": "wendy cloud device bluetooth disconnect",
+    "use": "wendy cloud device bluetooth disconnect [address]",
+    "short": "Disconnect a Bluetooth peripheral"
+  },
+  {
+    "command": "wendy cloud device bluetooth forget",
+    "use": "wendy cloud device bluetooth forget [address]",
+    "short": "Forget a paired Bluetooth peripheral"
+  },
+  {
+    "command": "wendy cloud device bluetooth list",
+    "use": "wendy cloud device bluetooth list",
+    "short": "Scan for Bluetooth peripherals"
+  },
+  {
+    "command": "wendy cloud device camera",
+    "use": "wendy cloud device camera",
+    "short": "Manage cameras on the target device"
+  },
+  {
+    "command": "wendy cloud device camera list",
+    "use": "wendy cloud device camera list",
+    "short": "List cameras"
+  },
+  {
+    "command": "wendy cloud device camera view",
+    "use": "wendy cloud device camera view [flags]",
+    "short": "Stream H.264 video from a device camera",
+    "flags": [
+      {
+        "name": "fps",
+        "usage": "Framerate (0 = device default)",
+        "default": "0"
+      },
+      {
+        "name": "height",
+        "usage": "Frame height (0 = device default)",
+        "default": "0"
+      },
+      {
+        "name": "id",
+        "usage": "Camera device ID",
+        "default": "0"
+      },
+      {
+        "name": "stdout",
+        "usage": "Pipe encoded video to stdout instead of opening a window (codec: H.264 or VP8/WebM depending on device capabilities)",
+        "default": "false"
+      },
+      {
+        "name": "width",
+        "usage": "Frame width (0 = device default)",
+        "default": "0"
+      }
+    ]
+  },
+  {
+    "command": "wendy cloud device dashboard",
+    "use": "wendy cloud device dashboard [flags]",
+    "short": "Live dashboard showing metrics and logs from a device",
+    "flags": [
+      {
+        "name": "app",
+        "usage": "Filter by application name"
+      }
+    ]
+  },
+  {
+    "command": "wendy cloud device enroll",
+    "use": "wendy cloud device enroll [flags]",
+    "short": "Enroll this device with Wendy Cloud or a local pki-core",
+    "flags": [
+      {
+        "name": "cloud-grpc",
+        "usage": "Cloud/pki-core gRPC endpoint to use (required when multiple auth sessions exist)"
+      },
+      {
+        "name": "name",
+        "usage": "Device name"
+      }
+    ]
+  },
+  {
+    "command": "wendy cloud device hardware",
+    "use": "wendy cloud device hardware",
+    "short": "Query hardware capabilities on the target device"
+  },
+  {
+    "command": "wendy cloud device hardware list",
+    "use": "wendy cloud device hardware list [flags]",
+    "short": "List hardware capabilities",
+    "flags": [
+      {
+        "name": "category",
+        "usage": "Filter by category (e.g., gpu, audio, camera)"
+      }
+    ]
+  },
+  {
+    "command": "wendy cloud device info",
+    "use": "wendy cloud device info [flags]",
+    "short": "Show agent version, OS, architecture, GPU, and hardware info for the target device",
+    "flags": [
+      {
+        "name": "check-updates",
+        "usage": "Check for available agent updates on GitHub",
+        "default": "false"
+      },
+      {
+        "name": "prerelease",
+        "usage": "Include prerelease (nightly) builds when checking for updates",
+        "default": "false"
+      }
+    ]
+  },
+  {
+    "command": "wendy cloud device logs",
+    "use": "wendy cloud device logs [flags]",
+    "short": "Stream logs from containers on the device",
+    "flags": [
+      {
+        "name": "app",
+        "usage": "Filter by application name"
+      },
+      {
+        "name": "level",
+        "usage": "Minimum log level (trace, debug, info, warn, error, fatal)"
+      },
+      {
+        "name": "min-severity",
+        "usage": "Minimum log severity number",
+        "default": "0"
+      },
+      {
+        "name": "service",
+        "usage": "Filter by service name"
+      },
+      {
+        "name": "tail",
+        "usage": "Replay the last N log batches before streaming live (0 = live only)",
+        "default": "0"
+      }
+    ]
+  },
+  {
+    "command": "wendy cloud device ps",
+    "use": "wendy cloud device ps",
+    "short": "List running containers (alias for 'apps list')"
+  },
+  {
+    "command": "wendy cloud device set-default",
+    "use": "wendy cloud device set-default [hostname]",
+    "short": "Set the default device hostname"
+  },
+  {
+    "command": "wendy cloud device setup",
+    "use": "wendy cloud device setup",
+    "short": "Interactive device setup: enroll, name, and configure WiFi"
+  },
+  {
+    "command": "wendy cloud device telemetry-stream",
+    "use": "wendy cloud device telemetry-stream [flags]",
+    "short": "Stream telemetry data (logs, metrics, traces) as JSONL",
+    "flags": [
+      {
+        "name": "app",
+        "usage": "Filter by application name"
+      },
+      {
+        "name": "logs",
+        "usage": "Include logs",
+        "default": "false"
+      },
+      {
+        "name": "metrics",
+        "usage": "Include metrics",
+        "default": "false"
+      },
+      {
+        "name": "service",
+        "usage": "Filter by service name"
+      },
+      {
+        "name": "traces",
+        "usage": "Include traces",
+        "default": "false"
+      }
+    ]
+  },
+  {
+    "command": "wendy cloud device unset-default",
+    "use": "wendy cloud device unset-default",
+    "short": "Clear the default device"
+  },
+  {
+    "command": "wendy cloud device update",
+    "use": "wendy cloud device update [flags]",
+    "short": "Update the agent binary on the target device",
+    "flags": [
+      {
+        "name": "binary",
+        "usage": "Path to a local agent binary to upload (skips download)"
+      },
+      {
+        "name": "nightly",
+        "usage": "Use the latest nightly (prerelease) build",
+        "default": "false"
+      }
+    ]
+  },
+  {
+    "command": "wendy cloud device version",
+    "use": "wendy cloud device version [flags]",
+    "short": "Show agent version, OS, architecture, GPU, and hardware info for the target device",
+    "hidden": true,
+    "flags": [
+      {
+        "name": "check-updates",
+        "usage": "Check for available agent updates on GitHub",
+        "default": "false"
+      },
+      {
+        "name": "prerelease",
+        "usage": "Include prerelease (nightly) builds when checking for updates",
+        "default": "false"
+      }
+    ]
+  },
+  {
+    "command": "wendy cloud device volumes",
+    "use": "wendy cloud device volumes",
+    "short": "Manage persistent volumes on the device"
+  },
+  {
+    "command": "wendy cloud device volumes list",
+    "use": "wendy cloud device volumes list",
+    "short": "List persistent volumes"
+  },
+  {
+    "command": "wendy cloud device volumes remove",
+    "use": "wendy cloud device volumes remove [name] [flags]",
+    "short": "Remove a persistent volume",
+    "flags": [
+      {
+        "name": "force",
+        "usage": "Skip confirmation prompt",
+        "default": "false"
+      }
+    ]
+  },
+  {
+    "command": "wendy cloud device wifi",
+    "use": "wendy cloud device wifi",
+    "short": "Manage WiFi on the target device"
+  },
+  {
+    "command": "wendy cloud device wifi connect",
+    "use": "wendy cloud device wifi connect [flags]",
+    "short": "Connect to a WiFi network",
+    "flags": [
+      {
+        "name": "password",
+        "usage": "WiFi network password"
+      },
+      {
+        "name": "ssid",
+        "usage": "WiFi network SSID"
+      }
+    ]
+  },
+  {
+    "command": "wendy cloud device wifi disconnect",
+    "use": "wendy cloud device wifi disconnect",
+    "short": "Disconnect from the current WiFi network"
+  },
+  {
+    "command": "wendy cloud device wifi forget",
+    "use": "wendy cloud device wifi forget [flags]",
+    "short": "Remove a known WiFi network",
+    "flags": [
+      {
+        "name": "ssid",
+        "usage": "SSID of the known network to forget"
+      }
+    ]
+  },
+  {
+    "command": "wendy cloud device wifi list",
+    "use": "wendy cloud device wifi list",
+    "short": "List available WiFi networks"
+  },
+  {
+    "command": "wendy cloud device wifi rank",
+    "use": "wendy cloud device wifi rank [flags]",
+    "short": "Set the autoconnect ranking of known WiFi networks",
+    "flags": [
+      {
+        "name": "order",
+        "usage": "Comma-separated list of SSIDs in priority order (highest first)"
+      },
+      {
+        "name": "priority",
+        "usage": "Autoconnect priority (higher = tried first)",
+        "default": "0"
+      },
+      {
+        "name": "ssid",
+        "usage": "SSID of the known network to rank"
+      }
+    ]
+  },
+  {
+    "command": "wendy cloud device wifi status",
+    "use": "wendy cloud device wifi status",
+    "short": "Get current WiFi connection status"
+  },
+  {
+    "command": "wendy cloud discover",
+    "use": "wendy cloud discover [flags]",
+    "short": "List enrolled devices in Wendy Cloud",
+    "flags": [
+      {
+        "name": "all",
+        "usage": "Include offline devices",
+        "default": "false"
+      },
+      {
+        "name": "broker-url",
+        "usage": "Tunnel broker host:port (default: cloud :443 endpoint, otherwise \u003ccloud-host\u003e:50052)"
+      },
+      {
+        "name": "cloud-grpc",
+        "usage": "Cloud gRPC endpoint (required when multiple auth sessions exist)"
+      }
+    ]
+  },
+  {
+    "command": "wendy cloud enroll-device",
+    "use": "wendy cloud enroll-device [flags]",
+    "short": "Enroll the connected device with Wendy Cloud or a local pki-core",
+    "flags": [
+      {
+        "name": "cloud-grpc",
+        "usage": "Cloud/pki-core gRPC endpoint to use (required when multiple auth sessions exist)"
+      },
+      {
+        "name": "name",
+        "usage": "Device name"
+      }
+    ]
+  },
+  {
+    "command": "wendy cloud run",
+    "use": "wendy cloud run [flags]",
+    "short": "Deprecated: use 'wendy run' instead",
+    "hidden": true,
+    "flags": [
+      {
+        "name": "broker-url",
+        "usage": "Tunnel broker host:port"
+      },
+      {
+        "name": "build-type",
+        "usage": "Build type: docker, swift, or python"
+      },
+      {
+        "name": "cloud-grpc",
+        "usage": "Cloud gRPC endpoint (required when multiple auth sessions exist)"
+      },
+      {
+        "name": "debug",
+        "usage": "Enable debug logging",
+        "default": "false"
+      },
+      {
+        "name": "deploy",
+        "usage": "Create container but do not start it",
+        "default": "false"
+      },
+      {
+        "name": "detach",
+        "usage": "Start container but do not stream logs",
+        "default": "false"
+      },
+      {
+        "name": "device",
+        "usage": "Device name (skips interactive picker)"
+      },
+      {
+        "name": "no-restart",
+        "usage": "Do not restart on exit",
+        "default": "false"
+      },
+      {
+        "name": "prefix",
+        "usage": "Project directory instead of current working directory"
+      },
+      {
+        "name": "product",
+        "usage": "Swift Package Manager product to build and run"
+      },
+      {
+        "name": "restart-on-failure",
+        "usage": "Restart on failure",
+        "default": "false"
+      },
+      {
+        "name": "restart-unless-stopped",
+        "usage": "Restart unless manually stopped",
+        "default": "false"
+      },
+      {
+        "name": "user-args",
+        "usage": "Extra arguments to pass to the container",
+        "default": "[]"
+      },
+      {
+        "name": "yes",
+        "shorthand": "y",
+        "usage": "Automatically accept all interactive prompts",
+        "default": "false"
+      }
+    ]
+  },
+  {
+    "command": "wendy cloud tunnel",
+    "use": "wendy cloud tunnel \u003clocal-port\u003e:\u003cremote-port\u003e [flags]",
+    "short": "Forward a local TCP port to a port on a cloud-enrolled device",
+    "flags": [
+      {
+        "name": "broker-url",
+        "usage": "Tunnel broker host:port (default: cloud :443 endpoint, otherwise \u003ccloud-host\u003e:50052)"
+      },
+      {
+        "name": "cloud-grpc",
+        "usage": "Cloud gRPC endpoint (required when multiple auth sessions exist)"
+      },
+      {
+        "name": "device",
+        "usage": "Device name (skips interactive picker)"
+      }
+    ]
+  },
+  {
+    "command": "wendy completion",
+    "use": "wendy completion",
+    "short": "Generate or install shell completion scripts"
+  },
+  {
+    "command": "wendy completion bash",
+    "use": "wendy completion bash",
+    "short": "Print bash completion script"
+  },
+  {
+    "command": "wendy completion fish",
+    "use": "wendy completion fish",
+    "short": "Print fish completion script"
+  },
+  {
+    "command": "wendy completion install",
+    "use": "wendy completion install [flags]",
+    "short": "Install shell completions into the user's standard config locations",
+    "flags": [
+      {
+        "name": "output-dir",
+        "usage": "Use this directory as $HOME (for testing)",
+        "hidden": true
+      },
+      {
+        "name": "print-path",
+        "usage": "Print install paths without writing",
+        "default": "false"
+      },
+      {
+        "name": "shell",
+        "usage": "Override shell (bash|zsh|fish|powershell)"
+      },
+      {
+        "name": "stdout",
+        "usage": "Print the completion script to stdout instead of installing",
+        "default": "false"
+      }
+    ]
+  },
+  {
+    "command": "wendy completion powershell",
+    "use": "wendy completion powershell",
+    "short": "Print PowerShell completion script"
+  },
+  {
+    "command": "wendy completion zsh",
+    "use": "wendy completion zsh",
+    "short": "Print zsh completion script"
+  },
+  {
+    "command": "wendy device",
+    "use": "wendy device",
+    "short": "Manage WendyOS devices"
+  },
+  {
+    "command": "wendy device apps",
+    "use": "wendy device apps",
+    "short": "Manage applications on the target device"
+  },
+  {
+    "command": "wendy device apps list",
+    "use": "wendy device apps list",
+    "short": "List deployed applications"
+  },
+  {
+    "command": "wendy device apps remove",
+    "use": "wendy device apps remove [app-name] [flags]",
+    "short": "Remove an application",
+    "flags": [
+      {
+        "name": "cleanup",
+        "usage": "Also delete the container image (frees disk space; agent-connected devices only)",
+        "default": "false"
+      },
+      {
+        "name": "delete-volumes",
+        "usage": "Also delete persistent volumes (/var/lib/wendy/volumes; agent-connected devices only)",
+        "default": "false"
+      },
+      {
+        "name": "force",
+        "usage": "Skip confirmation prompt",
+        "default": "false"
+      }
+    ]
+  },
+  {
+    "command": "wendy device apps start",
+    "use": "wendy device apps start [app-name] [flags]",
+    "short": "Start an application",
+    "flags": [
+      {
+        "name": "detach",
+        "shorthand": "d",
+        "usage": "Start without streaming output",
+        "default": "false"
+      }
+    ]
+  },
+  {
+    "command": "wendy device apps stop",
+    "use": "wendy device apps stop [app-name]",
+    "short": "Stop an application"
+  },
+  {
+    "command": "wendy device audio",
+    "use": "wendy device audio",
+    "short": "Manage audio devices on the target device"
+  },
+  {
+    "command": "wendy device audio list",
+    "use": "wendy device audio list",
+    "short": "List audio devices"
+  },
+  {
+    "command": "wendy device audio listen",
+    "use": "wendy device audio listen [flags]",
+    "short": "Stream raw audio from a device microphone",
+    "flags": [
+      {
+        "name": "channels",
+        "usage": "Number of audio channels",
+        "default": "1"
+      },
+      {
+        "name": "id",
+        "usage": "Audio device ID",
+        "default": "0"
+      },
+      {
+        "name": "sample-rate",
+        "usage": "Sample rate in Hz",
+        "default": "16000"
+      },
+      {
+        "name": "stdout",
+        "usage": "Write raw PCM to stdout instead of playing",
+        "default": "false"
+      }
+    ]
+  },
+  {
+    "command": "wendy device audio monitor",
+    "use": "wendy device audio monitor [flags]",
+    "short": "Real-time VU meter for audio levels",
+    "flags": [
+      {
+        "name": "id",
+        "usage": "Audio device ID",
+        "default": "0"
+      },
+      {
+        "name": "rate",
+        "usage": "Update rate in Hz",
+        "default": "10"
+      }
+    ]
+  },
+  {
+    "command": "wendy device audio set-default",
+    "use": "wendy device audio set-default [flags]",
+    "short": "Set the default audio device",
+    "flags": [
+      {
+        "name": "id",
+        "usage": "Audio device ID",
+        "default": "0"
+      }
+    ]
+  },
+  {
+    "command": "wendy device bluetooth",
+    "use": "wendy device bluetooth",
+    "short": "Manage Bluetooth on the target device"
+  },
+  {
+    "command": "wendy device bluetooth connect",
+    "use": "wendy device bluetooth connect [address] [flags]",
+    "short": "Connect to a Bluetooth peripheral",
+    "flags": [
+      {
+        "name": "pair",
+        "usage": "Pair with the device",
+        "default": "true"
+      },
+      {
+        "name": "trust",
+        "usage": "Trust the device",
+        "default": "true"
+      }
+    ]
+  },
+  {
+    "command": "wendy device bluetooth disconnect",
+    "use": "wendy device bluetooth disconnect [address]",
+    "short": "Disconnect a Bluetooth peripheral"
+  },
+  {
+    "command": "wendy device bluetooth forget",
+    "use": "wendy device bluetooth forget [address]",
+    "short": "Forget a paired Bluetooth peripheral"
+  },
+  {
+    "command": "wendy device bluetooth list",
+    "use": "wendy device bluetooth list",
+    "short": "Scan for Bluetooth peripherals"
+  },
+  {
+    "command": "wendy device camera",
+    "use": "wendy device camera",
+    "short": "Manage cameras on the target device"
+  },
+  {
+    "command": "wendy device camera list",
+    "use": "wendy device camera list",
+    "short": "List cameras"
+  },
+  {
+    "command": "wendy device camera view",
+    "use": "wendy device camera view [flags]",
+    "short": "Stream H.264 video from a device camera",
+    "flags": [
+      {
+        "name": "fps",
+        "usage": "Framerate (0 = device default)",
+        "default": "0"
+      },
+      {
+        "name": "height",
+        "usage": "Frame height (0 = device default)",
+        "default": "0"
+      },
+      {
+        "name": "id",
+        "usage": "Camera device ID",
+        "default": "0"
+      },
+      {
+        "name": "stdout",
+        "usage": "Pipe encoded video to stdout instead of opening a window (codec: H.264 or VP8/WebM depending on device capabilities)",
+        "default": "false"
+      },
+      {
+        "name": "width",
+        "usage": "Frame width (0 = device default)",
+        "default": "0"
+      }
+    ]
+  },
+  {
+    "command": "wendy device dashboard",
+    "use": "wendy device dashboard [flags]",
+    "short": "Live dashboard showing metrics and logs from a device",
+    "flags": [
+      {
+        "name": "app",
+        "usage": "Filter by application name"
+      }
+    ]
+  },
+  {
+    "command": "wendy device enroll",
+    "use": "wendy device enroll [flags]",
+    "short": "Enroll this device with Wendy Cloud or a local pki-core",
+    "flags": [
+      {
+        "name": "cloud-grpc",
+        "usage": "Cloud/pki-core gRPC endpoint to use (required when multiple auth sessions exist)"
+      },
+      {
+        "name": "name",
+        "usage": "Device name"
+      }
+    ]
+  },
+  {
+    "command": "wendy device hardware",
+    "use": "wendy device hardware",
+    "short": "Query hardware capabilities on the target device"
+  },
+  {
+    "command": "wendy device hardware list",
+    "use": "wendy device hardware list [flags]",
+    "short": "List hardware capabilities",
+    "flags": [
+      {
+        "name": "category",
+        "usage": "Filter by category (e.g., gpu, audio, camera)"
+      }
+    ]
+  },
+  {
+    "command": "wendy device info",
+    "use": "wendy device info [flags]",
+    "short": "Show agent version, OS, architecture, GPU, and hardware info for the target device",
+    "flags": [
+      {
+        "name": "check-updates",
+        "usage": "Check for available agent updates on GitHub",
+        "default": "false"
+      },
+      {
+        "name": "prerelease",
+        "usage": "Include prerelease (nightly) builds when checking for updates",
+        "default": "false"
+      }
+    ]
+  },
+  {
+    "command": "wendy device logs",
+    "use": "wendy device logs [flags]",
+    "short": "Stream logs from containers on the device",
+    "flags": [
+      {
+        "name": "app",
+        "usage": "Filter by application name"
+      },
+      {
+        "name": "level",
+        "usage": "Minimum log level (trace, debug, info, warn, error, fatal)"
+      },
+      {
+        "name": "min-severity",
+        "usage": "Minimum log severity number",
+        "default": "0"
+      },
+      {
+        "name": "service",
+        "usage": "Filter by service name"
+      },
+      {
+        "name": "tail",
+        "usage": "Replay the last N log batches before streaming live (0 = live only)",
+        "default": "0"
+      }
+    ]
+  },
+  {
+    "command": "wendy device ps",
+    "use": "wendy device ps",
+    "short": "List running containers (alias for 'apps list')"
+  },
+  {
+    "command": "wendy device set-default",
+    "use": "wendy device set-default [hostname]",
+    "short": "Set the default device hostname"
+  },
+  {
+    "command": "wendy device setup",
+    "use": "wendy device setup",
+    "short": "Interactive device setup: enroll, name, and configure WiFi"
+  },
+  {
+    "command": "wendy device telemetry-stream",
+    "use": "wendy device telemetry-stream [flags]",
+    "short": "Stream telemetry data (logs, metrics, traces) as JSONL",
+    "flags": [
+      {
+        "name": "app",
+        "usage": "Filter by application name"
+      },
+      {
+        "name": "logs",
+        "usage": "Include logs",
+        "default": "false"
+      },
+      {
+        "name": "metrics",
+        "usage": "Include metrics",
+        "default": "false"
+      },
+      {
+        "name": "service",
+        "usage": "Filter by service name"
+      },
+      {
+        "name": "traces",
+        "usage": "Include traces",
+        "default": "false"
+      }
+    ]
+  },
+  {
+    "command": "wendy device unset-default",
+    "use": "wendy device unset-default",
+    "short": "Clear the default device"
+  },
+  {
+    "command": "wendy device update",
+    "use": "wendy device update [flags]",
+    "short": "Update the agent binary on the target device",
+    "flags": [
+      {
+        "name": "binary",
+        "usage": "Path to a local agent binary to upload (skips download)"
+      },
+      {
+        "name": "nightly",
+        "usage": "Use the latest nightly (prerelease) build",
+        "default": "false"
+      }
+    ]
+  },
+  {
+    "command": "wendy device version",
+    "use": "wendy device version [flags]",
+    "short": "Show agent version, OS, architecture, GPU, and hardware info for the target device",
+    "hidden": true,
+    "flags": [
+      {
+        "name": "check-updates",
+        "usage": "Check for available agent updates on GitHub",
+        "default": "false"
+      },
+      {
+        "name": "prerelease",
+        "usage": "Include prerelease (nightly) builds when checking for updates",
+        "default": "false"
+      }
+    ]
+  },
+  {
+    "command": "wendy device volumes",
+    "use": "wendy device volumes",
+    "short": "Manage persistent volumes on the device"
+  },
+  {
+    "command": "wendy device volumes list",
+    "use": "wendy device volumes list",
+    "short": "List persistent volumes"
+  },
+  {
+    "command": "wendy device volumes remove",
+    "use": "wendy device volumes remove [name] [flags]",
+    "short": "Remove a persistent volume",
+    "flags": [
+      {
+        "name": "force",
+        "usage": "Skip confirmation prompt",
+        "default": "false"
+      }
+    ]
+  },
+  {
+    "command": "wendy device wifi",
+    "use": "wendy device wifi",
+    "short": "Manage WiFi on the target device"
+  },
+  {
+    "command": "wendy device wifi connect",
+    "use": "wendy device wifi connect [flags]",
+    "short": "Connect to a WiFi network",
+    "flags": [
+      {
+        "name": "password",
+        "usage": "WiFi network password"
+      },
+      {
+        "name": "ssid",
+        "usage": "WiFi network SSID"
+      }
+    ]
+  },
+  {
+    "command": "wendy device wifi disconnect",
+    "use": "wendy device wifi disconnect",
+    "short": "Disconnect from the current WiFi network"
+  },
+  {
+    "command": "wendy device wifi forget",
+    "use": "wendy device wifi forget [flags]",
+    "short": "Remove a known WiFi network",
+    "flags": [
+      {
+        "name": "ssid",
+        "usage": "SSID of the known network to forget"
+      }
+    ]
+  },
+  {
+    "command": "wendy device wifi list",
+    "use": "wendy device wifi list",
+    "short": "List available WiFi networks"
+  },
+  {
+    "command": "wendy device wifi rank",
+    "use": "wendy device wifi rank [flags]",
+    "short": "Set the autoconnect ranking of known WiFi networks",
+    "flags": [
+      {
+        "name": "order",
+        "usage": "Comma-separated list of SSIDs in priority order (highest first)"
+      },
+      {
+        "name": "priority",
+        "usage": "Autoconnect priority (higher = tried first)",
+        "default": "0"
+      },
+      {
+        "name": "ssid",
+        "usage": "SSID of the known network to rank"
+      }
+    ]
+  },
+  {
+    "command": "wendy device wifi status",
+    "use": "wendy device wifi status",
+    "short": "Get current WiFi connection status"
+  },
+  {
+    "command": "wendy discover",
+    "use": "wendy discover [flags]",
+    "short": "Discover WendyOS devices on the network",
+    "flags": [
+      {
+        "name": "timeout",
+        "usage": "Scan once for this duration then exit",
+        "default": "5s"
+      },
+      {
+        "name": "type",
+        "usage": "Discovery type: usb, lan, bluetooth, external, all",
+        "default": "all"
+      }
+    ]
+  },
+  {
+    "command": "wendy info",
+    "use": "wendy info",
+    "short": "Display CLI version and system information"
+  },
+  {
+    "command": "wendy init",
+    "use": "wendy init [app-id] [flags]",
+    "short": "Initialize a new Wendy project",
+    "flags": [
+      {
+        "name": "all-entitlements",
+        "usage": "Enable all entitlements (requires field flags for gpio, i2c, persist)",
+        "default": "false"
+      },
+      {
+        "name": "app-id",
+        "usage": "Application ID to write into wendy.json"
+      },
+      {
+        "name": "assistant",
+        "usage": "AI assistant to launch after init: claude, codex, or skip"
+      },
+      {
+        "name": "branch",
+        "usage": "Branch of the templates repo to use (default: main)"
+      },
+      {
+        "name": "entitlement",
+        "usage": "App entitlement to enable (repeatable or comma-separated)",
+        "default": "[]"
+      },
+      {
+        "name": "git-init",
+        "usage": "Initialize a git repo in the project directory (yes or no)"
+      },
+      {
+        "name": "gpio-pins",
+        "usage": "GPIO pins for the gpio entitlement (comma-separated, e.g. 17,27,22)"
+      },
+      {
+        "name": "i2c-device",
+        "usage": "I2C device path for the i2c entitlement (e.g. /dev/i2c-1)"
+      },
+      {
+        "name": "install-claude-skills",
+        "usage": "Install Wendy Claude skills before launching Claude",
+        "default": "false"
+      },
+      {
+        "name": "language",
+        "usage": "Project language: python, swift, rust, node, or cpp"
+      },
+      {
+        "name": "no-extra-entitlements",
+        "usage": "Skip entitlement prompts and use only the default network entitlement",
+        "default": "false"
+      },
+      {
+        "name": "persist-name",
+        "usage": "Container ID for the persist entitlement"
+      },
+      {
+        "name": "persist-path",
+        "usage": "Mount path for the persist entitlement (e.g. /data)"
+      },
+      {
+        "name": "target",
+        "usage": "Target platform: wendyos or wendy-lite"
+      },
+      {
+        "name": "template",
+        "usage": "Project template (e.g. simple-api, fullstack)"
+      },
+      {
+        "name": "var",
+        "usage": "Template variable override (repeatable, KEY=VALUE)",
+        "default": "[]"
+      }
+    ]
+  },
+  {
+    "command": "wendy json",
+    "use": "wendy json",
+    "short": "Inspect and validate wendy.json"
+  },
+  {
+    "command": "wendy json schema",
+    "use": "wendy json schema",
+    "short": "Print the JSON Schema for wendy.json"
+  },
+  {
+    "command": "wendy json validate",
+    "use": "wendy json validate [path]",
+    "short": "Validate a wendy.json file"
+  },
+  {
+    "command": "wendy mcp",
+    "use": "wendy mcp",
+    "short": "MCP server for AI assistant access to wendy devices"
+  },
+  {
+    "command": "wendy mcp serve",
+    "use": "wendy mcp serve [flags]",
+    "short": "Start the MCP server on stdio",
+    "flags": [
+      {
+        "name": "device",
+        "shorthand": "d",
+        "usage": "Device name or IP:port to connect on startup"
+      }
+    ]
+  },
+  {
+    "command": "wendy mcp setup",
+    "use": "wendy mcp setup",
+    "short": "Configure the Wendy MCP server in supported AI tools"
+  },
+  {
+    "command": "wendy os",
+    "use": "wendy os",
+    "short": "Manage the WendyOS operating system"
+  },
+  {
+    "command": "wendy os cache",
+    "use": "wendy os cache",
+    "short": "Manage cached OS images"
+  },
+  {
+    "command": "wendy os cache clear",
+    "use": "wendy os cache clear",
+    "short": "Clear all cached OS images"
+  },
+  {
+    "command": "wendy os cache list",
+    "use": "wendy os cache list",
+    "short": "List cached OS images"
+  },
+  {
+    "command": "wendy os download",
+    "use": "wendy os download [flags]",
+    "short": "Download a WendyOS image to the local cache",
+    "flags": [
+      {
+        "name": "overwrite",
+        "usage": "Overwrite cached image without prompting",
+        "default": "false"
+      },
+      {
+        "name": "version",
+        "usage": "OS version to download (interactive if omitted)"
+      }
+    ]
+  },
+  {
+    "command": "wendy os install",
+    "use": "wendy os install [image] [drive] [flags]",
+    "short": "Install WendyOS or Wendy Lite firmware on a device",
+    "flags": [
+      {
+        "name": "device-name",
+        "usage": "Set device name on first boot (e.g. brave-dolphin)"
+      },
+      {
+        "name": "device-type",
+        "usage": "Device type from manifest (e.g. raspberry-pi-5)"
+      },
+      {
+        "name": "drive",
+        "usage": "Target drive path (e.g. /dev/disk4)"
+      },
+      {
+        "name": "force",
+        "usage": "Skip confirmation prompt",
+        "default": "false"
+      },
+      {
+        "name": "nightly",
+        "usage": "Use nightly/prerelease builds",
+        "default": "false"
+      },
+      {
+        "name": "no-wifi",
+        "usage": "Skip WiFi setup entirely (no interactive prompt, no pre-seeded networks)",
+        "default": "false"
+      },
+      {
+        "name": "pre-enroll",
+        "usage": "Pre-enroll this device with Wendy Cloud during imaging (requires 'wendy auth login')",
+        "default": "false"
+      },
+      {
+        "name": "version",
+        "usage": "WendyOS version to install (interactive if omitted)"
+      },
+      {
+        "name": "wifi",
+        "usage": "Pre-configure a WiFi network. Repeatable. Format: ssid=X[,password=Y][,priority=N][,hidden=true][,security=wpa2]",
+        "default": "[]"
+      },
+      {
+        "name": "wifi-password",
+        "usage": "Password for --wifi-ssid"
+      },
+      {
+        "name": "wifi-ssid",
+        "usage": "Pre-configure a single WiFi SSID on first boot (shortcut for --wifi)"
+      },
+      {
+        "name": "yes-overwrite-internal",
+        "usage": "Required to wipe an internal (non-removable) drive in non-interactive mode",
+        "default": "false"
+      }
+    ]
+  },
+  {
+    "command": "wendy os list-drives",
+    "use": "wendy os list-drives [flags]",
+    "short": "List available drives",
+    "flags": [
+      {
+        "name": "all",
+        "usage": "List all external drives, including non-removable ones",
+        "default": "false"
+      }
+    ]
+  },
+  {
+    "command": "wendy os update",
+    "use": "wendy os update [artifact-path] [flags]",
+    "short": "Update WendyOS on the target device",
+    "flags": [
+      {
+        "name": "artifact-url",
+        "usage": "Mender artifact URL (remote)"
+      },
+      {
+        "name": "nightly",
+        "usage": "Use the latest nightly (prerelease) build for both agent and OS",
+        "default": "false"
+      }
+    ]
+  },
+  {
+    "command": "wendy project",
+    "use": "wendy project",
+    "short": "Manage Wendy project configuration"
+  },
+  {
+    "command": "wendy project entitlements",
+    "use": "wendy project entitlements",
+    "short": "Manage project entitlements"
+  },
+  {
+    "command": "wendy project entitlements add",
+    "use": "wendy project entitlements add [type]",
+    "short": "Add an entitlement to the project"
+  },
+  {
+    "command": "wendy project entitlements list",
+    "use": "wendy project entitlements list [flags]",
+    "short": "List project entitlements",
+    "flags": [
+      {
+        "name": "show-all",
+        "usage": "Show all available entitlement types",
+        "default": "false"
+      }
+    ]
+  },
+  {
+    "command": "wendy project entitlements remove",
+    "use": "wendy project entitlements remove [type]",
+    "short": "Remove an entitlement from the project"
+  },
+  {
+    "command": "wendy run",
+    "use": "wendy run [flags]",
+    "short": "Build and run application on a WendyOS device",
+    "flags": [
+      {
+        "name": "build-type",
+        "usage": "Build type to use when Dockerfile is present alongside Package.swift or Python project markers: docker, swift, or python"
+      },
+      {
+        "name": "debug",
+        "usage": "Enable debug logging",
+        "default": "false"
+      },
+      {
+        "name": "deploy",
+        "usage": "Create container but do not start it",
+        "default": "false"
+      },
+      {
+        "name": "detach",
+        "usage": "Start container but do not stream logs",
+        "default": "false"
+      },
+      {
+        "name": "dockerfile",
+        "usage": "Dockerfile to build from (e.g. Dockerfile.prod); shows a selection menu when multiple Dockerfiles exist"
+      },
+      {
+        "name": "no-restart",
+        "usage": "Do not restart on exit",
+        "default": "false"
+      },
+      {
+        "name": "prefix",
+        "usage": "Project directory to run from instead of the current working directory"
+      },
+      {
+        "name": "product",
+        "usage": "Swift Package Manager product to build and run"
+      },
+      {
+        "name": "restart-on-failure",
+        "usage": "Restart on failure",
+        "default": "false"
+      },
+      {
+        "name": "restart-unless-stopped",
+        "usage": "Restart unless manually stopped",
+        "default": "false"
+      },
+      {
+        "name": "service",
+        "usage": "Build and run only the named service and its dependencies (multi-service projects)"
+      },
+      {
+        "name": "user-args",
+        "usage": "Extra arguments to pass to the container",
+        "default": "[]"
+      },
+      {
+        "name": "yes",
+        "shorthand": "y",
+        "usage": "Automatically accept all interactive prompts",
+        "default": "false"
+      }
+    ]
+  },
+  {
+    "command": "wendy tour",
+    "use": "wendy tour",
+    "short": "Interactive guided setup tour for new users"
+  },
+  {
+    "command": "wendy utils",
+    "use": "wendy utils",
+    "short": "Utility commands"
+  },
+  {
+    "command": "wendy utils open-browser",
+    "use": "wendy utils open-browser \u003curl\u003e",
+    "short": "Open a URL in the default browser"
+  }
+]
