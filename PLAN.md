@@ -187,28 +187,27 @@ in per-issue worktree sessions, not in this master planning session.
 
 ### WDY-1486 — Fix Wendy Agent auto-start checkbox not registering in Login Items
 
-- Status: `prepared`
+- Status: `done`
 - Linear: https://linear.app/wendylabsinc/issue/WDY-1486/fix-wendy-agent-auto-start-checkbox-not-registering-in-login-items
 - Linear assignee: `konstantin@wendy.sh`
-- Linear state: In Progress
+- Linear state: Done
 - Linear project: Wendy for Mac — Beta
-- Branch/worktree name: `kb.wdy-1486-login-items-autostart`
-- Worktree path: `.worktrees/kb.wdy-1486-login-items-autostart`
-- PR: https://github.com/wendylabsinc/WendyOS/pull/967 — draft
+- Branch/worktree name: `kb.wdy-1486-login-items-autostart` (setup PR closed),
+  completed via `kb.fix-login-item-startup`
+- Worktree path: removed after completion (`.worktrees/kb.wdy-1486-login-items-autostart`)
+- Setup PR: https://github.com/wendylabsinc/WendyOS/pull/967 — closed unmerged
+- Completion PR: https://github.com/wendylabsinc/WendyOS/pull/978 — merged
 - PR closing reference: `Closes WDY-1486`
-- Base: `main`
-- Current commit: `bc750656 chore: start WDY-1486 login items autostart fix`
-- KISS scope: fix only the welcome-screen auto-start checkbox/login item
-  registration behavior, or make the approval-required state clear. Avoid the
-  broader WDY-1460 LaunchAgent replacement, reset/uninstall docs, first-launch
-  guide expansion, diagnostics matrices, and unrelated menu bar changes.
+- Merge commit on `main`: `be639fd2`
+- KISS scope: fixed only the welcome-screen auto-start checkbox/login item
+  registration behavior. Avoided the broader WDY-1460 LaunchAgent replacement,
+  reset/uninstall docs, first-launch guide expansion, diagnostics matrices, and
+  unrelated menu bar changes.
 - Source: found during WDY-1360 clean Mac beta validation on a fresh M1 Mac mini
   where the checkbox was enabled by default but Wendy Agent did not appear in
   System Settings → Login Items → Open at Login.
-- Validation: not run; setup commit only
-- `HANDOVER.md`: written in the worktree with issue context, likely code paths,
-  validation guidance, and commit/push expectations
-- Resume command: `cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1486-login-items-autostart && ai --prompt "Read HANDOVER.md and follow its instructions."`
+- Validation: recorded in PR #978; `xcodebuild` WendyAgentMac Debug build passed
+- Resume command: not needed; issue is complete
 
 ### WDY-1495 — Let HelloMLX choose smaller models for constrained Macs
 
@@ -352,8 +351,7 @@ Keep each remaining issue short and validation-focused.
 7. **WDY-1360** — prepared; clean Apple Silicon validation of the shipped docs
    path, including the WDY-1346 native run flow, WDY-1353 HelloMLX Xcode flow,
    and WDY-1396 headless setup if the environment supports it.
-8. **WDY-1486** — prepared; fix the auto-start checkbox/login item registration
-   issue found during clean Mac beta validation.
+8. **Completed: WDY-1486** — login item registration fix merged in PR #978.
 9. **WDY-1495** — prepared; make HelloMLX practical on constrained Macs with a
    documented smaller model choice if HelloMLX remains part of the beta demo
    story.
