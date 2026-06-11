@@ -57,7 +57,7 @@ Choose one tier explicitly. Each tier uses a model supported by the current `MLX
 | `medium` | 32 GB unified memory | `mlx-community/Qwen2.5-VL-3B-Instruct-4bit` | `qwen2_5_vl` | ~2.9 GiB | Higher quality, larger transfer, more memory headroom. |
 | `large` | 64 GB unified memory or more | `mlx-community/gemma-3-27b-it-qat-4bit` | `gemma3` | ~15.7 GiB | Best large-model option; not practical on 16 GB Macs. |
 
-Quality note: `small` and `medium` are low-quality validation tiers for constrained Macs. Use `large` when you need the demo to actually do the job well.
+Quality note: `small` and `medium` are low-quality validation tiers for constrained Macs. Use a Mac with lots of RAM and the `large` model when you need the demo to actually do the job well.
 
 The current selected model is available at:
 

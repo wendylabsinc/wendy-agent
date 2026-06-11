@@ -27,7 +27,8 @@ current MLXVLM dependency in this example:
 
 Quality note:
   small and medium are low-quality validation tiers for constrained Macs.
-  Use large when you need the demo to actually do the job well.
+  Use a Mac with lots of RAM and the large model when you need the demo
+  to actually do the job well.
 
 The selected model is downloaded under Models/<model-dir>, then Models/Current
 is updated to point at it. wendy.json deploys Models/Current and the app runs
