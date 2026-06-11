@@ -25,6 +25,10 @@ current MLXVLM dependency in this example:
   medium  32 GB Macs    mlx-community/Qwen2.5-VL-3B-Instruct-4bit       (~2.9 GiB)
   large   64 GB Macs    mlx-community/gemma-3-27b-it-qat-4bit           (~15.7 GiB)
 
+Quality note:
+  small and medium are low-quality validation tiers for constrained Macs.
+  Use large when you need the demo to actually do the job well.
+
 The selected model is downloaded under Models/<model-dir>, then Models/Current
 is updated to point at it. wendy.json deploys Models/Current and the app runs
 with --model-path Current.
@@ -58,18 +62,21 @@ case "$TIER" in
         MODEL_DIR="Qwen2-VL-2B-Instruct-4bit"
         SIZE_HINT="~1.2 GiB"
         MEMORY_HINT="recommended starting point for 16 GB Macs"
+        QUALITY_WARNING="low-quality validation tier; use large for best results"
         ;;
     medium)
         HF_REPO="mlx-community/Qwen2.5-VL-3B-Instruct-4bit"
         MODEL_DIR="Qwen2.5-VL-3B-Instruct-4bit"
         SIZE_HINT="~2.9 GiB"
         MEMORY_HINT="recommended starting point for 32 GB Macs"
+        QUALITY_WARNING="low-quality validation tier; use large for best results"
         ;;
     large)
         HF_REPO="mlx-community/gemma-3-27b-it-qat-4bit"
         MODEL_DIR="gemma-3-27b-it-qat-4bit"
         SIZE_HINT="~15.7 GiB"
         MEMORY_HINT="for high-memory Macs; use 64 GB unified memory or more"
+        QUALITY_WARNING=""
         ;;
     *)
         echo "❌  Unknown model tier: $TIER" >&2
@@ -117,6 +124,11 @@ echo "  Dest  : $DEST"
 echo "  Link  : $CURRENT_LINK -> $MODEL_DIR"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
+
+if [[ -n "$QUALITY_WARNING" ]]; then
+    echo "⚠️   Quality warning: $TIER is a $QUALITY_WARNING."
+    echo ""
+fi
 
 mkdir -p "$DEST"
 
