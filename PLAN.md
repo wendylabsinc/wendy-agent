@@ -395,6 +395,9 @@ WDY-1479 (SER9 Swift E2E mTLS auth failure).
   Includes Max's Slack context:
   https://wendylabs.slack.com/archives/C07RK9XAFD1/p1781155454497069.
 - WDY-1498 — add a headless/device-code flow for `wendy auth login` so SSH or
-  browserless machines can authenticate via a browser on another device. This is
-  beta-project backlog and should be implemented as a general CLI/cloud auth
-  improvement, not a Mac-only path.
+  browserless machines can authenticate via a browser on another device. Moved
+  out of `Wendy for Mac — Beta`; this is general CLI/cloud auth backlog, not a
+  Mac-specific beta deliverable. Related issue check found no exact duplicate;
+  nearby work includes WDY-1325/WDY-874/WDY-865 for broader OIDC/auth, WDY-1478
+  for Firebase refresh-token persistence, and WDY-719 for an older fixed CLI
+  login issue.
