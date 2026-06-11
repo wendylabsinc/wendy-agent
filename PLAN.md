@@ -394,3 +394,7 @@ WDY-1479 (SER9 Swift E2E mTLS auth failure).
   Wendy's Docker-based Linux container path or requires a Wendy-owned VM path.
   Includes Max's Slack context:
   https://wendylabs.slack.com/archives/C07RK9XAFD1/p1781155454497069.
+- WDY-1498 — add a headless/device-code flow for `wendy auth login` so SSH or
+  browserless machines can authenticate via a browser on another device. This is
+  beta-project backlog and should be implemented as a general CLI/cloud auth
+  improvement, not a Mac-only path.
