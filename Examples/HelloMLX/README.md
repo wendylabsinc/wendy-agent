@@ -46,7 +46,7 @@ This example requires you to choose a model tier before running the demo. `wendy
 Choose one tier explicitly:
 
 ```sh
-./Scripts/DownloadVLM.sh small    # 8 GB Macs, fastest validation (~0.3 GiB)
+./Scripts/DownloadVLM.sh small    # 8 GB Macs, fastest validation (~1.0 GiB)
 ./Scripts/DownloadVLM.sh medium   # 16 GB Macs, recommended beta tier (~1.2 GiB)
 ./Scripts/DownloadVLM.sh large    # 32 GB Macs, better quality/larger transfer (~2.9 GiB)
 ./Scripts/DownloadVLM.sh xlarge   # 64 GB Macs, Gemma 27B (~15.7 GiB)
@@ -54,7 +54,7 @@ Choose one tier explicitly:
 
 | Tier | Recommended Mac | Model | Download size | Expectation |
 | ---- | --------------- | ----- | ------------- | ----------- |
-| `small` | 8 GB unified memory | `mlx-community/SmolVLM-500M-Instruct-4bit` | ~0.3 GiB | Smoothest validation path, lowest quality. |
+| `small` | 8 GB unified memory | `HuggingFaceTB/SmolVLM2-500M-Video-Instruct-mlx` | ~1.0 GiB | Smoothest validation path, lowest quality. |
 | `medium` | 16 GB unified memory | `mlx-community/Qwen2-VL-2B-Instruct-4bit` | ~1.2 GiB | Recommended beta demo tier for constrained Macs. |
 | `large` | 32 GB unified memory | `mlx-community/Qwen2.5-VL-3B-Instruct-4bit` | ~2.9 GiB | Higher quality, larger transfer, more memory headroom. |
 | `xlarge` | 64 GB unified memory or more | `mlx-community/gemma-3-27b-it-qat-4bit` | ~15.7 GiB | Best large-model option; not practical on 16 GB Macs. |

@@ -20,7 +20,7 @@ Usage:
   Scripts/DownloadVLM.sh <small|medium|large|xlarge>
 
 Choose a model tier explicitly:
-  small   8 GB Macs     mlx-community/SmolVLM-500M-Instruct-4bit        (~0.3 GiB)
+  small   8 GB Macs     HuggingFaceTB/SmolVLM2-500M-Video-Instruct-mlx  (~1.0 GiB)
   medium  16 GB Macs    mlx-community/Qwen2-VL-2B-Instruct-4bit         (~1.2 GiB)
   large   32 GB Macs    mlx-community/Qwen2.5-VL-3B-Instruct-4bit       (~2.9 GiB)
   xlarge  64 GB Macs    mlx-community/gemma-3-27b-it-qat-4bit           (~15.7 GiB)
@@ -54,9 +54,9 @@ fi
 TIER="$1"
 case "$TIER" in
     small)
-        HF_REPO="mlx-community/SmolVLM-500M-Instruct-4bit"
-        MODEL_DIR="SmolVLM-500M-Instruct-4bit"
-        SIZE_HINT="~0.3 GiB"
+        HF_REPO="HuggingFaceTB/SmolVLM2-500M-Video-Instruct-mlx"
+        MODEL_DIR="SmolVLM2-500M-Video-Instruct-mlx"
+        SIZE_HINT="~1.0 GiB"
         MEMORY_HINT="recommended starting point for 8 GB Macs"
         ;;
     medium)
