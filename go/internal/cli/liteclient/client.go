@@ -8,22 +8,28 @@ import (
 	"math"
 	"os"
 
-	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	wendypb "github.com/wendylabsinc/wendy/go/proto/gen/litepb"
 	"google.golang.org/protobuf/proto"
 )
-
-const chunkSize = 4096
 
 const (
 	headerMagic   = 0xA5
 	headerVersion = 0x01
 	headerSize    = 8
+	chunkSize     = 4096
+	versionMajor  = 1
+	versionMinor  = 0
 )
 
+type protocolVersion struct {
+	Major uint32
+	Minor uint32
+}
+
 type WendyLiteClient struct {
-	conn         io.ReadWriteCloser
-	requestIdGen uint32
+	conn                io.ReadWriteCloser
+	requestIdGen        uint32
+	peerProtocolVersion protocolVersion
 }
 
 func NewWendyLiteClient() *WendyLiteClient {
@@ -36,17 +42,16 @@ func (c *WendyLiteClient) Connect(address string) error {
 		return fmt.Errorf("connect: %w", err)
 	}
 	c.conn = conn
+	err = c.exchangeProtocolVersions()
+	if err != nil {
+		conn.Close()
+		c.conn = nil
+		return fmt.Errorf("get protocol version: %w", err)
+	}
 	return nil
 }
 
-func (c *WendyLiteClient) ConnectWithMutualAuthentication(address string, certInfo *config.CertificateInfo) error {
-	cert, err := tls.X509KeyPair(
-		[]byte(certInfo.PemCertificate),
-		[]byte(certInfo.PemPrivateKey),
-	)
-	if err != nil {
-		return fmt.Errorf("loading TLS cert: %w", err)
-	}
+func (c *WendyLiteClient) ConnectWithMutualAuthentication(address string, cert tls.Certificate) error {
 	tlsCfg := &tls.Config{
 		Certificates:       []tls.Certificate{cert},
 		InsecureSkipVerify: true, //nolint:gosec — device uses self-signed certs
@@ -57,6 +62,12 @@ func (c *WendyLiteClient) ConnectWithMutualAuthentication(address string, certIn
 		return fmt.Errorf("connect (mTLS): %w", err)
 	}
 	c.conn = conn
+	err = c.exchangeProtocolVersions()
+	if err != nil {
+		conn.Close()
+		c.conn = nil
+		return fmt.Errorf("get protocol version: %w", err)
+	}
 	return nil
 }
 
@@ -80,22 +91,6 @@ func (c *WendyLiteClient) Ping() error {
 		return fmt.Errorf("device returned error %d", resp.Result)
 	}
 	return nil
-}
-
-func (c *WendyLiteClient) GetProtocolVersion() (major, minor uint32, err error) {
-	resp, err := c.sendCommand(&wendypb.WendyComCommand{
-		Params: &wendypb.WendyComCommand_GetProtocolVersion{
-			GetProtocolVersion: &wendypb.WendyComGetProtocolVersionParams{},
-		},
-	})
-	if err != nil {
-		return 0, 0, err
-	}
-	if resp.Result != wendypb.WendyComResult_WENDY_COM_RESULT_OK {
-		return 0, 0, fmt.Errorf("device returned error")
-	}
-	v := resp.GetProtocolVersion()
-	return v.GetMajor(), v.GetMinor(), nil
 }
 
 func (c *WendyLiteClient) ResetTargetDevice() error {
@@ -265,4 +260,23 @@ func (c *WendyLiteClient) readResponse() ([]byte, error) {
 		return nil, fmt.Errorf("reading body: %w", err)
 	}
 	return body, nil
+}
+
+func (c *WendyLiteClient) exchangeProtocolVersions() error {
+	resp, err := c.sendCommand(&wendypb.WendyComCommand{
+		Params: &wendypb.WendyComCommand_ProtocolVersion{
+			ProtocolVersion: &wendypb.WendyComProtocolVersionParams{
+				Major: versionMajor,
+				Minor: versionMinor,
+			},
+		},
+	})
+	if err != nil {
+		return err
+	}
+	if resp.Result != wendypb.WendyComResult_WENDY_COM_RESULT_OK {
+		return fmt.Errorf("device returned error %d", resp.Result)
+	}
+	c.peerProtocolVersion = protocolVersion{Major: resp.GetProtocolVersion().GetMajor(), Minor: resp.GetProtocolVersion().GetMinor()}
+	return nil
 }

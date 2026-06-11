@@ -24,10 +24,11 @@ const (
 type WendyComResult int32
 
 const (
-	WendyComResult_WENDY_COM_RESULT_OK            WendyComResult = 0
-	WendyComResult_WENDY_COM_RESULT_UNKNOWN_ERROR WendyComResult = 1
-	WendyComResult_WENDY_COM_RESULT_BAD_STATE     WendyComResult = 2
-	WendyComResult_WENDY_COM_RESULT_BUSY          WendyComResult = 3
+	WendyComResult_WENDY_COM_RESULT_OK                   WendyComResult = 0
+	WendyComResult_WENDY_COM_RESULT_UNKNOWN_ERROR        WendyComResult = 1
+	WendyComResult_WENDY_COM_RESULT_BAD_PROTOCOL_VERSION WendyComResult = 2
+	WendyComResult_WENDY_COM_RESULT_BAD_STATE            WendyComResult = 3
+	WendyComResult_WENDY_COM_RESULT_BUSY                 WendyComResult = 4
 )
 
 // Enum value maps for WendyComResult.
@@ -35,14 +36,16 @@ var (
 	WendyComResult_name = map[int32]string{
 		0: "WENDY_COM_RESULT_OK",
 		1: "WENDY_COM_RESULT_UNKNOWN_ERROR",
-		2: "WENDY_COM_RESULT_BAD_STATE",
-		3: "WENDY_COM_RESULT_BUSY",
+		2: "WENDY_COM_RESULT_BAD_PROTOCOL_VERSION",
+		3: "WENDY_COM_RESULT_BAD_STATE",
+		4: "WENDY_COM_RESULT_BUSY",
 	}
 	WendyComResult_value = map[string]int32{
-		"WENDY_COM_RESULT_OK":            0,
-		"WENDY_COM_RESULT_UNKNOWN_ERROR": 1,
-		"WENDY_COM_RESULT_BAD_STATE":     2,
-		"WENDY_COM_RESULT_BUSY":          3,
+		"WENDY_COM_RESULT_OK":                   0,
+		"WENDY_COM_RESULT_UNKNOWN_ERROR":        1,
+		"WENDY_COM_RESULT_BAD_PROTOCOL_VERSION": 2,
+		"WENDY_COM_RESULT_BAD_STATE":            3,
+		"WENDY_COM_RESULT_BUSY":                 4,
 	}
 )
 
@@ -127,26 +130,28 @@ func (x *WendyComProtocolVersion) GetMinor() uint32 {
 }
 
 // Command parameter messages — empty ones serve as presence markers.
-type WendyComGetProtocolVersionParams struct {
+type WendyComProtocolVersionParams struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
+	Major         uint32                 `protobuf:"varint,1,opt,name=major,proto3" json:"major,omitempty"`
+	Minor         uint32                 `protobuf:"varint,2,opt,name=minor,proto3" json:"minor,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *WendyComGetProtocolVersionParams) Reset() {
-	*x = WendyComGetProtocolVersionParams{}
+func (x *WendyComProtocolVersionParams) Reset() {
+	*x = WendyComProtocolVersionParams{}
 	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *WendyComGetProtocolVersionParams) String() string {
+func (x *WendyComProtocolVersionParams) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*WendyComGetProtocolVersionParams) ProtoMessage() {}
+func (*WendyComProtocolVersionParams) ProtoMessage() {}
 
-func (x *WendyComGetProtocolVersionParams) ProtoReflect() protoreflect.Message {
+func (x *WendyComProtocolVersionParams) ProtoReflect() protoreflect.Message {
 	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -158,9 +163,23 @@ func (x *WendyComGetProtocolVersionParams) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use WendyComGetProtocolVersionParams.ProtoReflect.Descriptor instead.
-func (*WendyComGetProtocolVersionParams) Descriptor() ([]byte, []int) {
+// Deprecated: Use WendyComProtocolVersionParams.ProtoReflect.Descriptor instead.
+func (*WendyComProtocolVersionParams) Descriptor() ([]byte, []int) {
 	return file_wendy_lite_wendy_com_msg_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *WendyComProtocolVersionParams) GetMajor() uint32 {
+	if x != nil {
+		return x.Major
+	}
+	return 0
+}
+
+func (x *WendyComProtocolVersionParams) GetMinor() uint32 {
+	if x != nil {
+		return x.Minor
+	}
+	return 0
 }
 
 type WendyComPingParams struct {
@@ -447,7 +466,7 @@ type WendyComCommand struct {
 	RequestId uint32                 `protobuf:"varint,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
 	// Types that are valid to be assigned to Params:
 	//
-	//	*WendyComCommand_GetProtocolVersion
+	//	*WendyComCommand_ProtocolVersion
 	//	*WendyComCommand_Ping
 	//	*WendyComCommand_Reboot
 	//	*WendyComCommand_AppPushBegin
@@ -504,10 +523,10 @@ func (x *WendyComCommand) GetParams() isWendyComCommand_Params {
 	return nil
 }
 
-func (x *WendyComCommand) GetGetProtocolVersion() *WendyComGetProtocolVersionParams {
+func (x *WendyComCommand) GetProtocolVersion() *WendyComProtocolVersionParams {
 	if x != nil {
-		if x, ok := x.Params.(*WendyComCommand_GetProtocolVersion); ok {
-			return x.GetProtocolVersion
+		if x, ok := x.Params.(*WendyComCommand_ProtocolVersion); ok {
+			return x.ProtocolVersion
 		}
 	}
 	return nil
@@ -580,8 +599,8 @@ type isWendyComCommand_Params interface {
 	isWendyComCommand_Params()
 }
 
-type WendyComCommand_GetProtocolVersion struct {
-	GetProtocolVersion *WendyComGetProtocolVersionParams `protobuf:"bytes,2,opt,name=get_protocol_version,json=getProtocolVersion,proto3,oneof"`
+type WendyComCommand_ProtocolVersion struct {
+	ProtocolVersion *WendyComProtocolVersionParams `protobuf:"bytes,2,opt,name=protocol_version,json=protocolVersion,proto3,oneof"`
 }
 
 type WendyComCommand_Ping struct {
@@ -612,7 +631,7 @@ type WendyComCommand_AppStop struct {
 	AppStop *WendyComAppStopParams `protobuf:"bytes,9,opt,name=app_stop,json=appStop,proto3,oneof"`
 }
 
-func (*WendyComCommand_GetProtocolVersion) isWendyComCommand_Params() {}
+func (*WendyComCommand_ProtocolVersion) isWendyComCommand_Params() {}
 
 func (*WendyComCommand_Ping) isWendyComCommand_Params() {}
 
@@ -718,8 +737,10 @@ const file_wendy_lite_wendy_com_msg_proto_rawDesc = "" +
 	"\x1ewendy/lite/wendy_com_msg.proto\"E\n" +
 	"\x17WendyComProtocolVersion\x12\x14\n" +
 	"\x05major\x18\x01 \x01(\rR\x05major\x12\x14\n" +
-	"\x05minor\x18\x02 \x01(\rR\x05minor\"\"\n" +
-	" WendyComGetProtocolVersionParams\"\x14\n" +
+	"\x05minor\x18\x02 \x01(\rR\x05minor\"K\n" +
+	"\x1dWendyComProtocolVersionParams\x12\x14\n" +
+	"\x05major\x18\x01 \x01(\rR\x05major\x12\x14\n" +
+	"\x05minor\x18\x02 \x01(\rR\x05minor\"\x14\n" +
 	"\x12WendyComPingParams\"\x16\n" +
 	"\x14WendyComRebootParams\"0\n" +
 	"\x1aWendyComAppPushBeginParams\x12\x12\n" +
@@ -729,11 +750,11 @@ const file_wendy_lite_wendy_com_msg_proto_rawDesc = "" +
 	"\x04data\x18\x02 \x01(\fR\x04data\"\x1a\n" +
 	"\x18WendyComAppPushEndParams\"\x18\n" +
 	"\x16WendyComAppStartParams\"\x17\n" +
-	"\x15WendyComAppStopParams\"\xa0\x04\n" +
+	"\x15WendyComAppStopParams\"\x96\x04\n" +
 	"\x0fWendyComCommand\x12\x1d\n" +
 	"\n" +
-	"request_id\x18\x01 \x01(\rR\trequestId\x12U\n" +
-	"\x14get_protocol_version\x18\x02 \x01(\v2!.WendyComGetProtocolVersionParamsH\x00R\x12getProtocolVersion\x12)\n" +
+	"request_id\x18\x01 \x01(\rR\trequestId\x12K\n" +
+	"\x10protocol_version\x18\x02 \x01(\v2\x1e.WendyComProtocolVersionParamsH\x00R\x0fprotocolVersion\x12)\n" +
 	"\x04ping\x18\x03 \x01(\v2\x13.WendyComPingParamsH\x00R\x04ping\x12/\n" +
 	"\x06reboot\x18\x04 \x01(\v2\x15.WendyComRebootParamsH\x00R\x06reboot\x12C\n" +
 	"\x0eapp_push_begin\x18\x05 \x01(\v2\x1b.WendyComAppPushBeginParamsH\x00R\fappPushBegin\x12@\n" +
@@ -748,12 +769,13 @@ const file_wendy_lite_wendy_com_msg_proto_rawDesc = "" +
 	"request_id\x18\x01 \x01(\rR\trequestId\x12'\n" +
 	"\x06result\x18\x02 \x01(\x0e2\x0f.WendyComResultR\x06result\x12E\n" +
 	"\x10protocol_version\x18\x03 \x01(\v2\x18.WendyComProtocolVersionH\x00R\x0fprotocolVersionB\x06\n" +
-	"\x04data*\x88\x01\n" +
+	"\x04data*\xb3\x01\n" +
 	"\x0eWendyComResult\x12\x17\n" +
 	"\x13WENDY_COM_RESULT_OK\x10\x00\x12\"\n" +
-	"\x1eWENDY_COM_RESULT_UNKNOWN_ERROR\x10\x01\x12\x1e\n" +
-	"\x1aWENDY_COM_RESULT_BAD_STATE\x10\x02\x12\x19\n" +
-	"\x15WENDY_COM_RESULT_BUSY\x10\x03b\x06proto3"
+	"\x1eWENDY_COM_RESULT_UNKNOWN_ERROR\x10\x01\x12)\n" +
+	"%WENDY_COM_RESULT_BAD_PROTOCOL_VERSION\x10\x02\x12\x1e\n" +
+	"\x1aWENDY_COM_RESULT_BAD_STATE\x10\x03\x12\x19\n" +
+	"\x15WENDY_COM_RESULT_BUSY\x10\x04b\x06proto3"
 
 var (
 	file_wendy_lite_wendy_com_msg_proto_rawDescOnce sync.Once
@@ -770,21 +792,21 @@ func file_wendy_lite_wendy_com_msg_proto_rawDescGZIP() []byte {
 var file_wendy_lite_wendy_com_msg_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
 var file_wendy_lite_wendy_com_msg_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
 var file_wendy_lite_wendy_com_msg_proto_goTypes = []any{
-	(WendyComResult)(0),                      // 0: WendyComResult
-	(*WendyComProtocolVersion)(nil),          // 1: WendyComProtocolVersion
-	(*WendyComGetProtocolVersionParams)(nil), // 2: WendyComGetProtocolVersionParams
-	(*WendyComPingParams)(nil),               // 3: WendyComPingParams
-	(*WendyComRebootParams)(nil),             // 4: WendyComRebootParams
-	(*WendyComAppPushBeginParams)(nil),       // 5: WendyComAppPushBeginParams
-	(*WendyComAppPushDataParams)(nil),        // 6: WendyComAppPushDataParams
-	(*WendyComAppPushEndParams)(nil),         // 7: WendyComAppPushEndParams
-	(*WendyComAppStartParams)(nil),           // 8: WendyComAppStartParams
-	(*WendyComAppStopParams)(nil),            // 9: WendyComAppStopParams
-	(*WendyComCommand)(nil),                  // 10: WendyComCommand
-	(*WendyComResponse)(nil),                 // 11: WendyComResponse
+	(WendyComResult)(0),                   // 0: WendyComResult
+	(*WendyComProtocolVersion)(nil),       // 1: WendyComProtocolVersion
+	(*WendyComProtocolVersionParams)(nil), // 2: WendyComProtocolVersionParams
+	(*WendyComPingParams)(nil),            // 3: WendyComPingParams
+	(*WendyComRebootParams)(nil),          // 4: WendyComRebootParams
+	(*WendyComAppPushBeginParams)(nil),    // 5: WendyComAppPushBeginParams
+	(*WendyComAppPushDataParams)(nil),     // 6: WendyComAppPushDataParams
+	(*WendyComAppPushEndParams)(nil),      // 7: WendyComAppPushEndParams
+	(*WendyComAppStartParams)(nil),        // 8: WendyComAppStartParams
+	(*WendyComAppStopParams)(nil),         // 9: WendyComAppStopParams
+	(*WendyComCommand)(nil),               // 10: WendyComCommand
+	(*WendyComResponse)(nil),              // 11: WendyComResponse
 }
 var file_wendy_lite_wendy_com_msg_proto_depIdxs = []int32{
-	2,  // 0: WendyComCommand.get_protocol_version:type_name -> WendyComGetProtocolVersionParams
+	2,  // 0: WendyComCommand.protocol_version:type_name -> WendyComProtocolVersionParams
 	3,  // 1: WendyComCommand.ping:type_name -> WendyComPingParams
 	4,  // 2: WendyComCommand.reboot:type_name -> WendyComRebootParams
 	5,  // 3: WendyComCommand.app_push_begin:type_name -> WendyComAppPushBeginParams
@@ -807,7 +829,7 @@ func file_wendy_lite_wendy_com_msg_proto_init() {
 		return
 	}
 	file_wendy_lite_wendy_com_msg_proto_msgTypes[9].OneofWrappers = []any{
-		(*WendyComCommand_GetProtocolVersion)(nil),
+		(*WendyComCommand_ProtocolVersion)(nil),
 		(*WendyComCommand_Ping)(nil),
 		(*WendyComCommand_Reboot)(nil),
 		(*WendyComCommand_AppPushBegin)(nil),

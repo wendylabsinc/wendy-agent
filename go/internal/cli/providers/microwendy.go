@@ -2,6 +2,7 @@ package providers
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"net"
 	"os"
@@ -173,7 +174,11 @@ func (p *MicroWendyProvider) Run(ctx context.Context, app *BuiltApp, detach bool
 		if err != nil {
 			return fmt.Errorf("wendy-lite provider: loading mTLS cert: %w", err)
 		}
-		if err := client.ConnectWithMutualAuthentication(addr, certInfo); err != nil {
+		cert, err := tls.X509KeyPair([]byte(certInfo.PemCertificate), []byte(certInfo.PemPrivateKey))
+		if err != nil {
+			return fmt.Errorf("wendy-lite provider: parsing mTLS cert: %w", err)
+		}
+		if err := client.ConnectWithMutualAuthentication(addr, cert); err != nil {
 			return fmt.Errorf("connect to device (mTLS): %w", err)
 		}
 	} else {
