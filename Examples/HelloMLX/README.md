@@ -65,6 +65,8 @@ The current selected model is available at:
 Models/Current -> <selected-model-directory>
 ```
 
+The script also writes `Models/Current/info.json` with the selected tier, Hugging Face model ID, and local model size. The web UI displays this metadata in the Model status field.
+
 Make sure the development Mac has enough disk space for the selected tier before continuing.
 
 ## 4. Install Metal Toolchain on the development Mac

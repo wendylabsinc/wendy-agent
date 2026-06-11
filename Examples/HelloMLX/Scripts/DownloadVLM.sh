@@ -106,6 +106,13 @@ if ! command -v hf &>/dev/null; then
     exit 1
 fi
 
+if ! command -v python3 &>/dev/null; then
+    echo "❌  python3 not found."
+    echo ""
+    echo "python3 is required to write Models/Current/info.json metadata."
+    exit 1
+fi
+
 # ── download ──────────────────────────────────────────────────────────────────
 
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -132,6 +139,45 @@ hf download \
 # Remove the .cache/ metadata folder created by hf; it's not part of the
 # model and is not needed by MLX or the app.
 rm -rf "$DEST/.cache"
+
+MODEL_SIZE_BYTES="$(python3 - "$DEST" <<'PY'
+import os
+import sys
+
+root = sys.argv[1]
+total = 0
+for directory, _, filenames in os.walk(root):
+    for filename in filenames:
+        path = os.path.join(directory, filename)
+        try:
+            total += os.path.getsize(path)
+        except OSError:
+            pass
+print(total)
+PY
+)"
+
+python3 - "$DEST/info.json" "$TIER" "$HF_REPO" "$MODEL_DIR" "$SIZE_HINT" "$MODEL_SIZE_BYTES" "$MEMORY_HINT" <<'PY'
+import datetime
+import json
+import sys
+
+info_path, model_class, hf_repo, model_dir, size_hint, size_bytes, memory_hint = sys.argv[1:]
+metadata = {
+    "class": model_class,
+    "huggingFaceId": hf_repo,
+    "directory": model_dir,
+    "size": {
+        "hint": size_hint,
+        "bytes": int(size_bytes),
+    },
+    "memoryHint": memory_hint,
+    "generatedAt": datetime.datetime.now(datetime.UTC).isoformat().replace("+00:00", "Z"),
+}
+with open(info_path, "w", encoding="utf-8") as f:
+    json.dump(metadata, f, indent=2)
+    f.write("\n")
+PY
 
 if [[ -e "$CURRENT_LINK" && ! -L "$CURRENT_LINK" ]]; then
     echo "❌  $CURRENT_LINK exists and is not a symlink. Move it aside before selecting a model." >&2

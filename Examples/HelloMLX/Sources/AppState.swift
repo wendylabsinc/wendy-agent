@@ -25,9 +25,35 @@ struct CameraInfo: Codable {
     let frameURL: String?
 }
 
+struct ModelSizeInfo: Codable {
+    let hint: String
+    let bytes: Int64
+}
+
+struct ModelMetadata: Codable {
+    let modelClass: String
+    let huggingFaceId: String
+    let directory: String
+    let size: ModelSizeInfo
+    let memoryHint: String
+
+    var displayName: String {
+        "\(modelClass) · \(huggingFaceId)"
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case modelClass = "class"
+        case huggingFaceId
+        case directory
+        case size
+        case memoryHint
+    }
+}
+
 struct ModelInfo: Codable {
     let status: ModelStatus
     let name: String?
+    let metadata: ModelMetadata?
 }
 
 struct PromptInfo: Codable {
@@ -77,6 +103,7 @@ actor AppState {
 
     private var modelStatus: ModelStatus
     private var modelName: String?
+    private var modelMetadata: ModelMetadata?
 
     private var promptText: String
     private var promptUpdatedAt = Date()
@@ -94,6 +121,7 @@ actor AppState {
         self.resolution = config.resolution
         self.modelStatus = config.modelPath == nil ? .notConfigured : .loading
         self.modelName = config.modelPath.map { URL(fileURLWithPath: $0).lastPathComponent }
+        self.modelMetadata = nil
         self.promptText = config.prompt
         self.latestRunID = latestRun?.id
         self.latestRunDuration = latestRun?.duration
@@ -112,7 +140,7 @@ actor AppState {
                     return "/frame.jpg?t=\(encoded.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? encoded)"
                 }
             ),
-            model: ModelInfo(status: modelStatus, name: modelName),
+            model: ModelInfo(status: modelStatus, name: modelName, metadata: modelMetadata),
             prompt: PromptInfo(text: promptText, updatedAt: promptUpdatedAt),
             run: RunInfo(
                 interval: interval,
@@ -164,20 +192,23 @@ actor AppState {
         lastFrameAt = date
     }
 
-    func setModelLoading(name: String?) {
+    func setModelLoading(name: String?, metadata: ModelMetadata? = nil) {
         modelStatus = .loading
         modelName = name
+        modelMetadata = metadata
         lastError = nil
     }
 
-    func setModelReady(name: String?) {
+    func setModelReady(name: String?, metadata: ModelMetadata? = nil) {
         modelStatus = .ready
         modelName = name
+        modelMetadata = metadata
     }
 
-    func setModelFailed(message: String, name: String?) {
+    func setModelFailed(message: String, name: String?, metadata: ModelMetadata? = nil) {
         modelStatus = .failed
         modelName = name
+        modelMetadata = metadata
         lastError = message
     }
 
