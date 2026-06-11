@@ -211,37 +211,30 @@ in per-issue worktree sessions, not in this master planning session.
 
 ### WDY-1495 — Let HelloMLX choose smaller models for constrained Macs
 
-- Status: `prepared`
+- Status: `done`
 - Linear: https://linear.app/wendylabsinc/issue/WDY-1495/let-hellomlx-choose-smaller-models-for-constrained-macs
 - Linear priority: High
 - Linear assignee: `konstantin@wendy.sh`
-- Linear state: In Progress
+- Linear state: Done
 - Linear project: Wendy for Mac — Beta
 - Branch/worktree name: `kb.wdy-1495-hellomlx-smaller-models`
-- Worktree path: `.worktrees/kb.wdy-1495-hellomlx-smaller-models`
-- PR: https://github.com/wendylabsinc/WendyOS/pull/979 — draft
+- Worktree path: removed after merge (`.worktrees/kb.wdy-1495-hellomlx-smaller-models`)
+- PR: https://github.com/wendylabsinc/WendyOS/pull/979 — merged
 - PR closing reference: `Closes WDY-1495`
-- Base: `main`
-- Current commit: `0c7b53d0 chore: start WDY-1495 HelloMLX smaller models`
-- KISS scope: make HelloMLX practical on constrained Apple Silicon Macs by
-  allowing a documented smaller MLX VLM choice while keeping the current Gemma
-  27B 4-bit path available for higher-memory machines. Avoid a broad model zoo
-  or unrelated HelloMLX rewrite.
-- Source: WDY-1360 clean Mac validation showed the current
-  `mlx-community/gemma-3-27b-it-qat-4bit` default downloads/syncs about 16–17 GB
-  and is unbearably slow on an M1 Mac mini with 16 GB RAM, with swap nearly
-  exhausted.
-- Candidate smaller models: `mlx-community/Qwen2-VL-2B-Instruct-4bit`,
-  `mlx-community/Qwen2.5-VL-3B-Instruct-4bit`,
-  `mlx-community/SmolVLM-Instruct-4bit`,
-  `mlx-community/SmolVLM-500M-Instruct-4bit`, and
-  `mlx-community/SmolVLM-256M-Instruct-4bit`.
-- Timing: should be completed or explicitly waived before WDY-1473 public beta
-  messaging if HelloMLX remains part of the beta demo story.
-- Validation: not run; setup commit only
-- `HANDOVER.md`: written in the worktree with model-selection scope,
-  implementation pointers, validation guidance, and commit/push expectations
-- Resume command: `cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1495-hellomlx-smaller-models && ai --prompt "Read HANDOVER.md and follow its instructions."`
+- Merge commit on `main`: `11782254`
+- KISS scope: made HelloMLX practical on constrained Apple Silicon Macs by
+  adding explicit model tiers selected with `Scripts/DownloadVLM.sh
+  small|medium|large`, while keeping the Gemma 27B 4-bit large path available
+  for higher-memory machines. Avoided a broad model zoo and unrelated HelloMLX
+  rewrite.
+- Source: WDY-1360 clean Mac validation showed the previous
+  `mlx-community/gemma-3-27b-it-qat-4bit` default downloaded/synced about
+  16–17 GB and was unbearably slow on an M1 Mac mini with 16 GB RAM, with swap
+  nearly exhausted.
+- Validation: recorded in PR #979; covered script syntax/help, `wendy json
+  validate`, Xcode project listing, Release build for macOS arm64, and
+  `git diff --check`.
+- Resume command: not needed; issue is complete
 
 ### WDY-1473 — Publicize Wendy for Mac beta across website
 
@@ -352,9 +345,7 @@ Keep each remaining issue short and validation-focused.
    path, including the WDY-1346 native run flow, WDY-1353 HelloMLX Xcode flow,
    and WDY-1396 headless setup if the environment supports it.
 8. **Completed: WDY-1486** — login item registration fix merged in PR #978.
-9. **WDY-1495** — prepared; make HelloMLX practical on constrained Macs with a
-   documented smaller model choice if HelloMLX remains part of the beta demo
-   story.
+9. **Completed: WDY-1495** — smaller HelloMLX model choices merged in PR #979.
 10. **WDY-1473** — final public website/docs status update using PR #945 once beta readiness is complete.
 
 ## Backlog / post-beta or only-if-blocking
