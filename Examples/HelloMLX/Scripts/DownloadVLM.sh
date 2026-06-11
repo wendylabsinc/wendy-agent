@@ -7,7 +7,7 @@
 # without editing configuration files.
 #
 # Usage:
-#   Scripts/DownloadVLM.sh <small|medium|large|xlarge>
+#   Scripts/DownloadVLM.sh <small|medium|large>
 #
 # Requirements:
 #   pip install huggingface_hub   (provides the hf command)
@@ -17,14 +17,13 @@ set -euo pipefail
 usage() {
     cat <<'EOF'
 Usage:
-  Scripts/DownloadVLM.sh <small|medium|large|xlarge>
+  Scripts/DownloadVLM.sh <small|medium|large>
 
 Choose a model tier explicitly. Each tier uses a model supported by the
 current MLXVLM dependency in this example:
-  small   8 GB Macs     HuggingFaceTB/SmolVLM2-500M-Video-Instruct-mlx  (~1.0 GiB)
-  medium  16 GB Macs    mlx-community/Qwen2-VL-2B-Instruct-4bit         (~1.2 GiB)
-  large   32 GB Macs    mlx-community/Qwen2.5-VL-3B-Instruct-4bit       (~2.9 GiB)
-  xlarge  64 GB Macs    mlx-community/gemma-3-27b-it-qat-4bit           (~15.7 GiB)
+  small   16 GB Macs    mlx-community/Qwen2-VL-2B-Instruct-4bit         (~1.2 GiB)
+  medium  32 GB Macs    mlx-community/Qwen2.5-VL-3B-Instruct-4bit       (~2.9 GiB)
+  large   64 GB Macs    mlx-community/gemma-3-27b-it-qat-4bit           (~15.7 GiB)
 
 The selected model is downloaded under Models/<model-dir>, then Models/Current
 is updated to point at it. wendy.json deploys Models/Current and the app runs
@@ -55,24 +54,18 @@ fi
 TIER="$1"
 case "$TIER" in
     small)
-        HF_REPO="HuggingFaceTB/SmolVLM2-500M-Video-Instruct-mlx"
-        MODEL_DIR="SmolVLM2-500M-Video-Instruct-mlx"
-        SIZE_HINT="~1.0 GiB"
-        MEMORY_HINT="recommended starting point for 8 GB Macs"
-        ;;
-    medium)
         HF_REPO="mlx-community/Qwen2-VL-2B-Instruct-4bit"
         MODEL_DIR="Qwen2-VL-2B-Instruct-4bit"
         SIZE_HINT="~1.2 GiB"
         MEMORY_HINT="recommended starting point for 16 GB Macs"
         ;;
-    large)
+    medium)
         HF_REPO="mlx-community/Qwen2.5-VL-3B-Instruct-4bit"
         MODEL_DIR="Qwen2.5-VL-3B-Instruct-4bit"
         SIZE_HINT="~2.9 GiB"
         MEMORY_HINT="recommended starting point for 32 GB Macs"
         ;;
-    xlarge)
+    large)
         HF_REPO="mlx-community/gemma-3-27b-it-qat-4bit"
         MODEL_DIR="gemma-3-27b-it-qat-4bit"
         SIZE_HINT="~15.7 GiB"

@@ -7,7 +7,7 @@
       "--model-path",
       "Current",
       "--prompt",
-      "These frames were captured at a fixed interval from a webcam. You are a comedian using dark humor below the waist line. Ridicule what is shown by the frames."
+      "These frames were captured at a fixed interval from a webcam. Reply in English. You are a comedian using dark humor below the waist line. Ridicule what is shown by the frames."
     ]
   },
   "files": [
