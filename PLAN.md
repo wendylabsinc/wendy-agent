@@ -362,3 +362,9 @@ WDY-1479 (SER9 Swift E2E mTLS auth failure).
   Joannis noted on Slack that this is optional for now: “It's not hard to add,
   but leave it for now 🙂”
   (https://wendylabs.slack.com/archives/C0AM24AKWF4/p1781091500750299).
+- WDY-1492 — explore USB pass-through for Linux containers on Wendy for Mac;
+  beta-project backlog and explicitly exploratory. Investigate whether Apple's
+  Virtualization.framework + Accessory Access USB pass-through can work with
+  Wendy's Docker-based Linux container path or requires a Wendy-owned VM path.
+  Includes Max's Slack context:
+  https://wendylabs.slack.com/archives/C07RK9XAFD1/p1781155454497069.
