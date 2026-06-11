@@ -42,6 +42,29 @@ in per-issue worktree sessions, not in this master planning session.
 
 ## Issue ledger
 
+### WDY-1494 — Clean up Swift E2E route matrix and restore commented route ledger
+
+- Status: `planned`
+- Linear project: E2E Tests
+- Linear: https://linear.app/wendylabsinc/issue/WDY-1494/clean-up-swift-e2e-route-matrix-and-restore-commented-route-ledger
+- Linear assignee: unassigned
+- Linear state: Todo (`unstarted`)
+- Branch/worktree name: not prepared yet
+- Worktree path: not prepared yet
+- PR: not created yet
+- PR closing reference: `Closes WDY-1494`
+- Scope: clean up the Swift E2E workflow after WDY-1481 and the follow-up
+  one-off route-disable PRs. Restore the commented-out route entries that
+  existed before PR #964 flattened the route matrix into explicit jobs, keep
+  the hosted local macOS↔macOS and Ubuntu↔Ubuntu routes alongside that ledger,
+  and make the active/disabled physical routes clear. Correct the WDY-968
+  tracking note so it applies to the macOS→Ubuntu/SER9 mDNS route, not Jetson.
+- Validation: CI must pass before merge. At minimum validate workflow YAML and
+  actionlint locally, then wait for GitHub checks. If disabling the
+  macOS→Ubuntu/SER9 route, ensure E2E analysis dependencies still work with only
+  the hosted local routes.
+- Resume command: not available until prepared
+
 ### WDY-1481 — Add local E2E matrix coverage for macOS↔macOS and Ubuntu↔Ubuntu
 
 - Status: `done`
@@ -111,11 +134,12 @@ in per-issue worktree sessions, not in this master planning session.
 ## E2E Tests issue order
 
 Keep each issue short and validation-focused. Completed issues stay in the
-ledger for history; remaining active planning starts with WDY-1482.
+ledger for history; remaining active planning starts with WDY-1494.
 
-1. **WDY-1482** — Gate device-to-device E2E jobs behind successful local E2E runs.
-2. **WDY-1481** — Done: Add local E2E matrix coverage for macOS↔macOS and Ubuntu↔Ubuntu.
-3. **WDY-1479** — Done: Investigate SER9 Swift E2E mTLS auth failure.
+1. **WDY-1494** — Clean up Swift E2E route matrix and restore commented route ledger.
+2. **WDY-1482** — Gate device-to-device E2E jobs behind successful local E2E runs.
+3. **WDY-1481** — Done: Add local E2E matrix coverage for macOS↔macOS and Ubuntu↔Ubuntu.
+4. **WDY-1479** — Done: Investigate SER9 Swift E2E mTLS auth failure.
 
 ## Backlog / only-if-blocking
 
@@ -125,7 +149,9 @@ work.
 
 - **WDY-968** — `wendy discover` on mac does not send out discovery packets
   reliably. This is outside the E2E Tests project and currently Done in Linear,
-  but it now carries the E2E follow-up note: once the Jetson mDNS issue is
-  fixed and validated, revert PR #974 to re-enable the commented macOS→Jetson
-  Swift E2E route. Do not revert WDY-1479/PR #960; PR #975 already restored PR
-  triggers.
+  but it is the related tracker for the macOS→Ubuntu/SER9 mDNS route issue.
+  Earlier PR #974 documented the wrong disabled route (Jetson), and corrective
+  PR #976 was closed without merge after CI exposed workflow cleanup issues.
+  WDY-1494 should supersede that one-off path by restoring the commented route
+  ledger and updating the WDY-968 follow-up instructions to point at the correct
+  cleanup PR.
