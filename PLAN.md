@@ -210,6 +210,34 @@ in per-issue worktree sessions, not in this master planning session.
   validation guidance, and commit/push expectations
 - Resume command: `cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1486-login-items-autostart && ai --prompt "Read HANDOVER.md and follow its instructions."`
 
+### WDY-1495 — Let HelloMLX choose smaller models for constrained Macs
+
+- Status: `planned`
+- Linear: https://linear.app/wendylabsinc/issue/WDY-1495/let-hellomlx-choose-smaller-models-for-constrained-macs
+- Linear priority: High
+- Linear assignee: `konstantin@wendy.sh`
+- Linear state: Todo
+- Linear project: Wendy for Mac — Beta
+- Branch/worktree name: not prepared yet
+- Worktree path: not prepared yet
+- PR: not created yet
+- KISS scope: make HelloMLX practical on constrained Apple Silicon Macs by
+  allowing a documented smaller MLX VLM choice while keeping the current Gemma
+  27B 4-bit path available for higher-memory machines. Avoid a broad model zoo
+  or unrelated HelloMLX rewrite.
+- Source: WDY-1360 clean Mac validation showed the current
+  `mlx-community/gemma-3-27b-it-qat-4bit` default downloads/syncs about 16–17 GB
+  and is unbearably slow on an M1 Mac mini with 16 GB RAM, with swap nearly
+  exhausted.
+- Candidate smaller models: `mlx-community/Qwen2-VL-2B-Instruct-4bit`,
+  `mlx-community/Qwen2.5-VL-3B-Instruct-4bit`,
+  `mlx-community/SmolVLM-Instruct-4bit`,
+  `mlx-community/SmolVLM-500M-Instruct-4bit`, and
+  `mlx-community/SmolVLM-256M-Instruct-4bit`.
+- Timing: should be completed or explicitly waived before WDY-1473 public beta
+  messaging if HelloMLX remains part of the beta demo story.
+- Resume command: not available until prepared
+
 ### WDY-1473 — Publicize Wendy for Mac beta across website
 
 - Status: `planned`
@@ -222,8 +250,8 @@ in per-issue worktree sessions, not in this master planning session.
 - KISS scope: one of the last beta steps; update website/docs status language
   from coming-soon/future tense to beta-available language without expanding
   the support promise.
-- Timing: do after WDY-1353, WDY-1396, WDY-1350, WDY-1360, and WDY-1486 are
-  complete or explicitly waived.
+- Timing: do after WDY-1353, WDY-1396, WDY-1350, WDY-1360, WDY-1486, and
+  WDY-1495 are complete or explicitly waived.
 - Resume command: not available until prepared
 
 ### WDY-1377 — Show macOS-specific unsupported messages for hardware APIs
@@ -320,7 +348,10 @@ Keep each remaining issue short and validation-focused.
    and WDY-1396 headless setup if the environment supports it.
 8. **WDY-1486** — prepared; fix the auto-start checkbox/login item registration
    issue found during clean Mac beta validation.
-9. **WDY-1473** — final public website/docs status update using PR #945 once beta readiness is complete.
+9. **WDY-1495** — planned; make HelloMLX practical on constrained Macs with a
+   documented smaller model choice if HelloMLX remains part of the beta demo
+   story.
+10. **WDY-1473** — final public website/docs status update using PR #945 once beta readiness is complete.
 
 ## Backlog / post-beta or only-if-blocking
 
