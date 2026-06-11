@@ -18,7 +18,7 @@ per-issue worktrees.
 
 `PLAN.md` is populated with the Linear **E2E Tests** issues and current status:
 
-1. `WDY-1510` — Todo: Re-enable Raspberry Pi physical Swift E2E route
+1. `WDY-1510` — In progress: Re-enable Raspberry Pi physical Swift E2E route
 2. `WDY-1482` — Done: Gate device-to-device E2E jobs behind successful local E2E runs
 3. `WDY-1494` — Done: Clean up Swift E2E route matrix and restore commented route ledger
 4. `WDY-1481` — Done: Add local E2E matrix coverage for macOS↔macOS and Ubuntu↔Ubuntu
@@ -71,12 +71,33 @@ WDY-1482 is complete:
   actionlint validation.
 - The WDY-1482 issue worktree has been removed after merge.
 
+## WDY-1510 status
+
+WDY-1510 is in progress:
+
+- Dedicated worktree: `/Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1510-rpi-swift-e2e`
+- Branch: `kb.wdy-1510-rpi-swift-e2e`
+- Draft PR: https://github.com/wendylabsinc/WendyOS/pull/983
+- Setup commit: `7c96b42`
+- Implementation commit: `51add25` re-enables the macOS 26 → Raspberry Pi 5
+  physical Swift E2E route and adds it to the analysis job dependencies.
+- Repository variable configured: `SWIFT_E2E_RASPBERRY_PI_5_DEVICE_ADDRESS=wendyos-raspberry-pi-5.local`.
+- Local validation passed: YAML parse and actionlint.
+- PR checks were pending after push. Do not merge unless CI passes; if CI fails,
+  stop and report the failing checks.
+- Linear CLI was unavailable in this environment, so the Linear assignee/state
+  were not updated during setup.
+
+Resume WDY-1510 with:
+
+```sh
+cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1510-rpi-swift-e2e && ai --prompt "Read HANDOVER.md and follow its instructions."
+```
+
 ## Remaining intended next steps
 
-- Start WDY-1510 only after the user asks, following the `PLAN.md` working
-  protocol. WDY-1510 tracks investigating and possibly re-enabling a Raspberry
-  Pi physical Swift E2E route now that local gating and other physical routes
-  are active again.
+- Watch PR #983 checks. If they pass, decide whether to mark the draft PR ready;
+  do not merge unless CI passes. If they fail, report the failing checks.
 - Treat WDY-968 as related/background only: it is outside the E2E Tests project
   and now has a final comment noting PR #981 restored the physical Swift E2E
   routes after passing checks.
