@@ -405,3 +405,11 @@ WDY-1479 (SER9 Swift E2E mTLS auth failure).
   nearby work includes WDY-1325/WDY-874/WDY-865 for broader OIDC/auth, WDY-1478
   for Firebase refresh-token persistence, and WDY-719 for an older fixed CLI
   login issue.
+- WDY-1509 — manually audit the full CLI surface against Swift E2E stubs across
+  Linux/WendyOS and Mac/Darwin. Track this in the `E2E Tests` project as a
+  post-beta alignment pass: dump/review the command tree, manually sample real
+  behavior, update stubs/references, split or gate Linux vs. Mac expectations,
+  and file focused follow-ups for product bugs or broader automation gaps. This
+  overlaps conceptually with WDY-1349, WDY-1364, WDY-1381, WDY-1382, WDY-1383,
+  WDY-1384, WDY-1481, and WDY-1494, but is the broader manual reconciliation
+  pass requested after Mac beta completion.
