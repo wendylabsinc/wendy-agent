@@ -44,6 +44,13 @@ per-issue worktrees.
   instructions.
 - WDY-1494 PR: https://github.com/wendylabsinc/WendyOS/pull/977
 - WDY-1494 merge commit: `7aa938d1`
+- PR #981 re-enabled the physical macOS→Ubuntu/SER9 and macOS→Jetson Swift E2E
+  routes after CI passed, with both physical routes gated behind hosted local
+  E2E and included in E2E analysis:
+  https://github.com/wendylabsinc/WendyOS/pull/981
+- PR #981 merge commit: `28020381`
+- WDY-968 has a final comment noting the physical route restoration and passing
+  checks.
 - The WDY-1494 issue worktree has been removed after merge.
 - The temporary one-off worktrees for PRs #974, #975, and #976 were removed.
 - The WDY-1481 issue worktree has also been removed after merge.
@@ -67,7 +74,8 @@ WDY-1482 is complete:
 
 - All currently tracked E2E Tests project issues are complete.
 - Treat WDY-968 as related/background only: it is outside the E2E Tests project
-  and already has corrected follow-up instructions from WDY-1494.
+  and now has a final comment noting PR #981 restored the physical Swift E2E
+  routes after passing checks.
 
 ## Coordinator resume command
 

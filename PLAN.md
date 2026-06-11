@@ -148,9 +148,8 @@ for related issues outside the project that matter only if they block active E2E
 work.
 
 - **WDY-968** — `wendy discover` on mac does not send out discovery packets
-  reliably. This is outside the E2E Tests project and currently Done in Linear,
-  but it is the related tracker for the macOS→Ubuntu/SER9 mDNS route issue.
-  PR #977 restored the commented route ledger and WDY-968 now has corrected
-  follow-up instructions: after the issue is fixed, uncomment
-  `swift-e2e-physical-macos-ubuntu` in `.github/workflows/swift-e2e-tests.yml`
-  and add it back to `swift-e2e-analyze.needs`.
+  reliably. This is outside the E2E Tests project and currently Done in Linear.
+  Follow-up completed: PR #981 re-enabled the physical macOS→Ubuntu/SER9 route
+  (and macOS→Jetson) after CI passed, with physical routes gated behind hosted
+  local E2E runs and included in E2E analysis. WDY-968 has a final comment
+  noting the restored routes and passing checks.
