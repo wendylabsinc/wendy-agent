@@ -179,7 +179,7 @@ metadata = {
         "bytes": int(size_bytes),
     },
     "memoryHint": memory_hint,
-    "generatedAt": datetime.datetime.now(datetime.UTC).isoformat().replace("+00:00", "Z"),
+    "generatedAt": datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z"),
 }
 with open(info_path, "w", encoding="utf-8") as f:
     json.dump(metadata, f, indent=2)
