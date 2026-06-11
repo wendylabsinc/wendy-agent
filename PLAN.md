@@ -413,3 +413,10 @@ WDY-1479 (SER9 Swift E2E mTLS auth failure).
   overlaps conceptually with WDY-1349, WDY-1364, WDY-1381, WDY-1382, WDY-1383,
   WDY-1384, WDY-1481, and WDY-1494, but is the broader manual reconciliation
   pass requested after Mac beta completion.
+  - Status: `prepared`; Linear state: In Progress; assignee:
+    `konstantin@wendy.sh`.
+  - Worktree: `.worktrees/kb.wdy-1509-cli-e2e-surface-audit`; branch:
+    `kb.wdy-1509-cli-e2e-surface-audit`.
+  - Draft PR: https://github.com/wendylabsinc/WendyOS/pull/982 with
+    `Closes WDY-1509`.
+  - Resume: `cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1509-cli-e2e-surface-audit && ai --prompt "Read HANDOVER.md and follow its instructions."`
