@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # DownloadVLM.sh
 #
-# Downloads a selected MLX vision-language model for HelloMLX and points
-# Models/Current at that model. The app, wendy.json, and Xcode scheme all use
-# the stable "Current" path so the selected tier stays in sync without editing
-# configuration files.
+# Downloads a selected MLXVLM-compatible vision-language model for HelloMLX
+# and points Models/Current at that model. The app, wendy.json, and Xcode
+# scheme all use the stable "Current" path so the selected tier stays in sync
+# without editing configuration files.
 #
 # Usage:
 #   Scripts/DownloadVLM.sh <small|medium|large|xlarge>
@@ -19,7 +19,8 @@ usage() {
 Usage:
   Scripts/DownloadVLM.sh <small|medium|large|xlarge>
 
-Choose a model tier explicitly:
+Choose a model tier explicitly. Each tier uses a model supported by the
+current MLXVLM dependency in this example:
   small   8 GB Macs     HuggingFaceTB/SmolVLM2-500M-Video-Instruct-mlx  (~1.0 GiB)
   medium  16 GB Macs    mlx-community/Qwen2-VL-2B-Instruct-4bit         (~1.2 GiB)
   large   32 GB Macs    mlx-community/Qwen2.5-VL-3B-Instruct-4bit       (~2.9 GiB)

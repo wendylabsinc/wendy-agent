@@ -43,7 +43,7 @@ After launching the app, make sure camera access is allowed for `WendyAgentMac.a
 
 This example requires you to choose a model tier before running the demo. `wendy.json` deploys `Models/Current`, and the download script updates that symlink to point at the selected model.
 
-Choose one tier explicitly:
+Choose one tier explicitly. Each tier uses a model supported by the current `MLXVLM` dependency in this example:
 
 ```sh
 ./Scripts/DownloadVLM.sh small    # 8 GB Macs, fastest validation (~1.0 GiB)
@@ -52,12 +52,12 @@ Choose one tier explicitly:
 ./Scripts/DownloadVLM.sh xlarge   # 64 GB Macs, Gemma 27B (~15.7 GiB)
 ```
 
-| Tier | Recommended Mac | Model | Download size | Expectation |
-| ---- | --------------- | ----- | ------------- | ----------- |
-| `small` | 8 GB unified memory | `HuggingFaceTB/SmolVLM2-500M-Video-Instruct-mlx` | ~1.0 GiB | Smoothest validation path, lowest quality. |
-| `medium` | 16 GB unified memory | `mlx-community/Qwen2-VL-2B-Instruct-4bit` | ~1.2 GiB | Recommended beta demo tier for constrained Macs. |
-| `large` | 32 GB unified memory | `mlx-community/Qwen2.5-VL-3B-Instruct-4bit` | ~2.9 GiB | Higher quality, larger transfer, more memory headroom. |
-| `xlarge` | 64 GB unified memory or more | `mlx-community/gemma-3-27b-it-qat-4bit` | ~15.7 GiB | Best large-model option; not practical on 16 GB Macs. |
+| Tier | Recommended Mac | Model | MLXVLM type | Download size | Expectation |
+| ---- | --------------- | ----- | ----------- | ------------- | ----------- |
+| `small` | 8 GB unified memory | `HuggingFaceTB/SmolVLM2-500M-Video-Instruct-mlx` | `smolvlm` | ~1.0 GiB | Smoothest validation path, lowest quality. |
+| `medium` | 16 GB unified memory | `mlx-community/Qwen2-VL-2B-Instruct-4bit` | `qwen2_vl` | ~1.2 GiB | Recommended beta demo tier for constrained Macs. |
+| `large` | 32 GB unified memory | `mlx-community/Qwen2.5-VL-3B-Instruct-4bit` | `qwen2_5_vl` | ~2.9 GiB | Higher quality, larger transfer, more memory headroom. |
+| `xlarge` | 64 GB unified memory or more | `mlx-community/gemma-3-27b-it-qat-4bit` | `gemma3` | ~15.7 GiB | Best large-model option; not practical on 16 GB Macs. |
 
 The current selected model is available at:
 
