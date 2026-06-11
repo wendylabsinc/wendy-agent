@@ -48,6 +48,234 @@ must not do the actual issue implementation.
 Implementation, validation, review-thread handling, and non-empty commits happen
 in per-issue worktree sessions, not in this master planning session.
 
+## Post-beta CLI/E2E surface audit coordination
+
+WDY-1509 grew into an umbrella/manual audit. Keep the durable coordination plan
+here in this master worktree so there is only one coordinator session. Do not
+continue using the WDY-1509 issue worktree as a separate planning hub; use that
+worktree/PR only for whatever narrow WDY-1509 umbrella artifacts remain useful.
+Focused cleanup/reference work should happen in child issue worktrees prepared by
+this master session using the protocol above.
+
+### WDY-1509 umbrella goal
+
+Manually audit the current `wendy` CLI surface against the Swift E2E reference
+stubs across Linux/WendyOS and macOS/Darwin routes.
+
+This is a post-beta alignment pass. The goal is to encode the current contract,
+not expand Wendy for Mac support promises or build a new E2E framework.
+
+### Ground rules
+
+- Review manually first; edit stubs only after the behavior contract is clear.
+- Prefer lightweight notes/ledger updates over broad framework work.
+- Keep product fixes out of audit/reference PRs unless tiny and required to make
+  references truthful.
+- File focused follow-up Linear issues for product bugs, missing automation
+  seams, or larger contract questions.
+- Keep commits small and bucketed by concern.
+- The master session coordinates and prepares child worktrees; it does not do
+  the implementation/reference cleanup itself.
+
+### Current WDY-1509 observations to preserve
+
+- `go/bin/wendy --experimental-dump-help` is not supported by the current local
+  build.
+- A temporary Cobra walker was used in the WDY-1509 worktree to generate
+  `.cli-surface-WDY-1509.json` from `commands.NewRootCmd()`.
+- The dump found 135 non-internal commands including hidden deprecated
+  compatibility commands, with 106 leaf commands.
+- Hidden/internal command surface observed:
+  - `wendy __ble-check` is an internal subprocess helper for CoreBluetooth
+    probing and should stay excluded from user-facing E2E reference coverage.
+- Hidden deprecated compatibility commands observed:
+  - `wendy device version`
+  - `wendy cloud device version`
+  - `wendy cloud run`
+- Public alias commands observed:
+  - `wendy device ps` is surfaced in help as an alias for
+    `wendy device apps list`.
+  - `wendy cloud device ps` is surfaced in help as an alias for
+    `wendy cloud device apps list`.
+- Cobra aliases observed:
+  - `wendy device bluetooth` accepts `bt`.
+  - `wendy cloud device bluetooth` accepts `bt`.
+- Hidden test seam observed:
+  - `wendy completion install --output-dir` is misleading because it overrides
+    the home directory used to compute install paths rather than selecting an
+    output directory. Follow-up: WDY-1511.
+- Hidden/deprecated/public alias policy needs a focused cleanup pass for
+  `device version`, `cloud device version`, `cloud run`, public `ps` aliases,
+  and Bluetooth `bt`. Follow-up: WDY-1512.
+- `swift/WendyE2ETests/CLI_SURFACE_LEDGER.md` is a starting ledger, not yet the
+  reviewed source of truth.
+
+### Audit buckets
+
+Review by bucket, not alphabetically.
+
+1. **Host-only CLI/config commands** — `analytics`, `auth`, `cache`,
+   `completion`, `info`, `init`, `json`, `mcp`, `project`, `tour`,
+   `utils open-browser`.
+   - Check whether the command needs a device/agent.
+   - Check JSON/help/no-state-change expectations.
+   - Keep Mac vs Linux differences limited to filesystem, shell, browser, or
+     local tool detection unless behavior proves otherwise.
+2. **Host OS image-management commands** — `os cache`, `os download`,
+   `os install`, `os list-drives`.
+   - Classify host-only support by platform.
+   - Make destructive install gating and platform-specific drive metadata
+     truthful.
+3. **WendyOS OTA/device OS update commands** — `os update`.
+   - Confirm WendyOS OTA-capable Linux target requirement.
+   - State expected behavior for plain Linux agents and Darwin/macOS agents.
+   - Confirm failure happens before artifact serving or destructive side effects.
+4. **Direct local agent commands** — `device info`, `device apps`, `device logs`,
+   `device wifi`, `device bluetooth`, `device camera`, `device hardware`,
+   `device volumes`, `device dashboard`, `device telemetry-stream`.
+   - Distinguish full Linux/WendyOS support from Wendy Agent for Mac beta
+     support/unsupported diagnostics.
+   - Do not let E2E prose overpromise Mac support.
+   - Keep impractical automation as disabled reference stubs with clear reasons.
+5. **Cloud/tunnel agent commands** — `cloud device ...`, `cloud tunnel`, hidden
+   `cloud run`.
+   - Capture auth and tunnel semantics instead of duplicating direct-route prose.
+   - Distinguish broker/tunnel errors from agent errors.
+   - Represent hidden cloud aliases appropriately.
+6. **Build/run commands** — `build`, `run`, hidden `cloud run`.
+   - Separate host OS build paths from target OS deploy paths.
+   - Darwin target means native macOS app deployment, not Linux containers.
+   - Linux containers on Mac agents are unsupported unless a later issue changes
+     that.
+
+### Ledger and cross-reference process
+
+For every leaf command, track:
+
+```text
+command
+public/hidden/deprecated?
+host-only / direct-agent / cloud-agent / OS-imaging / build-deploy?
+Linux/WendyOS expectation
+macOS/Darwin expectation
+existing Swift E2E suite?
+gap/mismatch?
+manual sample needed?
+follow-up issue needed?
+```
+
+Use `.cli-surface-WDY-1509.json` from the WDY-1509 worktree and
+`swift/WendyE2ETests/CLI_SURFACE_LEDGER.md` as inputs, but treat the ledger as a
+draft until manually reviewed.
+
+For each bucket, compare against:
+
+- `swift/WendyE2ETests/Tests/WendyE2ETests/`
+- `swift/WendyE2ETests/Sources/WendyE2ETesting/`
+- `swift/WendyE2ETests/Tests/WendyE2ETestingTests/`
+- `swift/WendyE2ETests/README.md`
+
+Check suite existence/naming, hidden/deprecated coverage, direct vs cloud route
+language, host-only vs agent-target language, Linux/WendyOS expectations,
+macOS/Darwin supported or intentionally unsupported expectations, and disabled
+stub reasons.
+
+### Manual sampling strategy
+
+Do not run every command. Sample representative commands where classification or
+behavior is unclear.
+
+Help shape:
+
+```sh
+cd go
+make build-cli
+./bin/wendy --help
+./bin/wendy device --help
+./bin/wendy cloud device --help
+./bin/wendy os --help
+./bin/wendy run --help
+```
+
+Hidden aliases:
+
+```sh
+./bin/wendy device version --help
+./bin/wendy device ps --help
+./bin/wendy cloud device version --help
+./bin/wendy cloud device ps --help
+./bin/wendy cloud run --help
+```
+
+No-device and host-only JSON behavior:
+
+```sh
+./bin/wendy --json device info
+./bin/wendy --json device hardware list
+./bin/wendy --json device wifi list
+./bin/wendy --json os update
+./bin/wendy info --json
+./bin/wendy cache list --json
+./bin/wendy os cache list --json
+```
+
+If a Darwin/macOS agent route is available, sample only enough to confirm
+diagnostics and side-effect boundaries:
+
+```sh
+wendy --device <mac-agent> device hardware list
+wendy --device <mac-agent> device wifi list
+wendy --device <mac-agent> device wifi status
+wendy --device <mac-agent> device camera list
+wendy --device <mac-agent> device bluetooth list
+wendy --device <mac-agent> os update
+```
+
+### Child issue sequence
+
+WDY-1509 remains the umbrella/manual audit issue. Focused child issues are
+ordered as follows:
+
+1. WDY-1511 — Remove misleading hidden completion install `--output-dir` test
+   seam.
+2. WDY-1512 — Audit and align hidden/deprecated CLI aliases.
+3. WDY-1513 — Align host-only CLI E2E references.
+4. WDY-1514 — Align OS imaging and update E2E references.
+5. WDY-1515 — Align direct device command E2E references.
+6. WDY-1516 — Align cloud-routed device E2E references.
+7. WDY-1517 — Align build and run E2E references.
+
+Use WDY-1509 to keep the command surface ledger and PR summary coherent. Use the
+child issues for implementation/reference cleanup so no single PR becomes a full
+E2E rewrite.
+
+### Edit and validation expectations for child work
+
+Suggested implementation order inside each child issue:
+
+1. Ledger/doc-only update for reviewed command classification.
+2. Alias/platform/route prose alignment where the current reference overpromises
+   or is ambiguous.
+3. Tiny executable tests only where cheap and deterministic: help output, JSON
+   shape, or missing-device/non-interactive errors.
+4. Avoid long-running streams, destructive paths, OS flashing, Wi-Fi/Bluetooth
+   mutation, large harness work, or unrelated product fixes.
+
+At minimum, after changing Swift E2E code or references:
+
+```sh
+cd swift/WendyE2ETests
+swift test
+```
+
+If that is too broad or environment-dependent, run the smallest targeted subset
+and document why in the PR body. Also run formatting/checks appropriate to any
+touched Swift, Go, or docs files.
+
+Child PR bodies should include what surface was reviewed, how behavior was
+sampled, which references changed, which commands/routes remain manual or out of
+automation scope, follow-up issues filed, and the relevant `Closes WDY-xxxx`.
+
 ## Issue ledger
 
 ### WDY-1352 — Verify discovery and device selection for WendyAgentMac
@@ -406,17 +634,24 @@ WDY-1479 (SER9 Swift E2E mTLS auth failure).
   for Firebase refresh-token persistence, and WDY-719 for an older fixed CLI
   login issue.
 - WDY-1509 — manually audit the full CLI surface against Swift E2E stubs across
-  Linux/WendyOS and Mac/Darwin. Track this in the `E2E Tests` project as a
-  post-beta alignment pass: dump/review the command tree, manually sample real
-  behavior, update stubs/references, split or gate Linux vs. Mac expectations,
-  and file focused follow-ups for product bugs or broader automation gaps. This
-  overlaps conceptually with WDY-1349, WDY-1364, WDY-1381, WDY-1382, WDY-1383,
-  WDY-1384, WDY-1481, and WDY-1494, but is the broader manual reconciliation
-  pass requested after Mac beta completion.
-  - Status: `prepared`; Linear state: In Progress; assignee:
-    `konstantin@wendy.sh`.
+  Linux/WendyOS and Mac/Darwin. This grew into an umbrella/manual audit and the
+  detailed coordination plan has been folded into this master `PLAN.md` under
+  "Post-beta CLI/E2E surface audit coordination". Keep WDY-1509 focused on the
+  command surface ledger/summary and use child issues for implementation.
+  - Status: `umbrella`; Linear state: In Progress; assignee:
+    `konstantin@wendy.sh`; project: `E2E Tests`.
   - Worktree: `.worktrees/kb.wdy-1509-cli-e2e-surface-audit`; branch:
     `kb.wdy-1509-cli-e2e-surface-audit`.
   - Draft PR: https://github.com/wendylabsinc/WendyOS/pull/982 with
     `Closes WDY-1509`.
-  - Resume: `cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1509-cli-e2e-surface-audit && ai --prompt "Read HANDOVER.md and follow its instructions."`
+  - Child issue order:
+    1. WDY-1511 — Remove misleading hidden completion install `--output-dir`
+       test seam.
+    2. WDY-1512 — Audit and align hidden/deprecated CLI aliases.
+    3. WDY-1513 — Align host-only CLI E2E references.
+    4. WDY-1514 — Align OS imaging and update E2E references.
+    5. WDY-1515 — Align direct device command E2E references.
+    6. WDY-1516 — Align cloud-routed device E2E references.
+    7. WDY-1517 — Align build and run E2E references.
+  - Resume WDY-1509 only if needed for the umbrella ledger/summary:
+    `cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1509-cli-e2e-surface-audit && ai --prompt "Read HANDOVER.md and follow its instructions."`
