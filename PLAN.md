@@ -42,6 +42,28 @@ in per-issue worktree sessions, not in this master planning session.
 
 ## Issue ledger
 
+### WDY-1510 — Re-enable Raspberry Pi physical Swift E2E route
+
+- Status: `planned`
+- Linear project: E2E Tests
+- Linear: https://linear.app/wendylabsinc/issue/WDY-1510/re-enable-raspberry-pi-physical-swift-e2e-route
+- Linear assignee: unassigned
+- Linear state: Todo (`unstarted`)
+- Branch/worktree name: not prepared yet
+- Worktree path: not prepared yet
+- PR: not created yet
+- PR closing reference: `Closes WDY-1510`
+- Scope: investigate whether Raspberry Pi 5 physical Swift E2E can be enabled
+  now that hosted local routes, route gating, and restored SER9/Jetson physical
+  routes are in place. Start with the smallest useful Raspberry Pi route
+  (likely macOS 26 → Raspberry Pi 5 if the macOS runner can reach the device),
+  keep it gated behind hosted Ubuntu local E2E, and preserve the commented route
+  ledger for unavailable routes.
+- Validation: if a Raspberry Pi route is enabled, CI must pass before merge,
+  including the Raspberry Pi physical Swift E2E job and `Analyze E2E Results`.
+  Document any required repository Actions variable or lab-device prerequisite.
+- Resume command: not available until prepared
+
 ### WDY-1494 — Clean up Swift E2E route matrix and restore commented route ledger
 
 - Status: `done`
@@ -133,13 +155,14 @@ in per-issue worktree sessions, not in this master planning session.
 
 ## E2E Tests issue order
 
-All currently tracked E2E Tests project issues are complete. Completed issues
-stay in the ledger for history.
+Keep each issue short and validation-focused. Completed issues stay in the
+ledger for history; remaining active planning starts with WDY-1510.
 
-1. **WDY-1482** — Done: Gate device-to-device E2E jobs behind successful local E2E runs.
-2. **WDY-1494** — Done: Clean up Swift E2E route matrix and restore commented route ledger.
-3. **WDY-1481** — Done: Add local E2E matrix coverage for macOS↔macOS and Ubuntu↔Ubuntu.
-4. **WDY-1479** — Done: Investigate SER9 Swift E2E mTLS auth failure.
+1. **WDY-1510** — Re-enable Raspberry Pi physical Swift E2E route.
+2. **WDY-1482** — Done: Gate device-to-device E2E jobs behind successful local E2E runs.
+3. **WDY-1494** — Done: Clean up Swift E2E route matrix and restore commented route ledger.
+4. **WDY-1481** — Done: Add local E2E matrix coverage for macOS↔macOS and Ubuntu↔Ubuntu.
+5. **WDY-1479** — Done: Investigate SER9 Swift E2E mTLS auth failure.
 
 ## Backlog / only-if-blocking
 

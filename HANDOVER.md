@@ -18,10 +18,11 @@ per-issue worktrees.
 
 `PLAN.md` is populated with the Linear **E2E Tests** issues and current status:
 
-1. `WDY-1482` — Done: Gate device-to-device E2E jobs behind successful local E2E runs
-2. `WDY-1494` — Done: Clean up Swift E2E route matrix and restore commented route ledger
-3. `WDY-1481` — Done: Add local E2E matrix coverage for macOS↔macOS and Ubuntu↔Ubuntu
-4. `WDY-1479` — Done: Investigate SER9 Swift E2E mTLS auth failure
+1. `WDY-1510` — Todo: Re-enable Raspberry Pi physical Swift E2E route
+2. `WDY-1482` — Done: Gate device-to-device E2E jobs behind successful local E2E runs
+3. `WDY-1494` — Done: Clean up Swift E2E route matrix and restore commented route ledger
+4. `WDY-1481` — Done: Add local E2E matrix coverage for macOS↔macOS and Ubuntu↔Ubuntu
+5. `WDY-1479` — Done: Investigate SER9 Swift E2E mTLS auth failure
 
 ## Completed housekeeping
 
@@ -72,7 +73,10 @@ WDY-1482 is complete:
 
 ## Remaining intended next steps
 
-- All currently tracked E2E Tests project issues are complete.
+- Start WDY-1510 only after the user asks, following the `PLAN.md` working
+  protocol. WDY-1510 tracks investigating and possibly re-enabling a Raspberry
+  Pi physical Swift E2E route now that local gating and other physical routes
+  are active again.
 - Treat WDY-968 as related/background only: it is outside the E2E Tests project
   and now has a final comment noting PR #981 restored the physical Swift E2E
   routes after passing checks.
