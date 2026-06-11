@@ -239,25 +239,24 @@ in per-issue worktree sessions, not in this master planning session.
 
 ### WDY-1473 — Publicize Wendy for Mac beta across website
 
-- Status: `prepared`
+- Status: `done`
 - Linear: https://linear.app/wendylabsinc/issue/WDY-1473/publicize-wendy-for-mac-beta-across-website
 - Linear assignee: `konstantin@wendy.sh`
-- Linear state: In Review
+- Linear state: Done
 - Branch/worktree name: `detail/fix-docs/docs-update-wendy-for-mac-status-from-coming-soon-41b617`
-- Worktree path: `.worktrees/kb.wdy-1473-publicize-mac-beta`
-- Existing PR: https://github.com/wendylabsinc/WendyOS/pull/945 — open, changes requested from the earlier hold-until-ready review
+- Worktree path: removed after merge (`.worktrees/kb.wdy-1473-publicize-mac-beta`)
+- PR: https://github.com/wendylabsinc/WendyOS/pull/945 — merged
 - PR closing reference: `Closes WDY-1473`
-- Base: `main`
-- Current commit: `0f189070 docs: update Wendy for Mac status from Coming Soon to Beta`
-- KISS scope: one of the last beta steps; update website/docs status language
+- Merge commit on `main`: `45c4175b`
+- KISS scope: final beta publicity step; updated website/docs status language
   from coming-soon/future tense to beta-available language without expanding
   the support promise.
-- Timing: ready to finish; WDY-1353, WDY-1396, WDY-1350, WDY-1360, WDY-1486,
-  and WDY-1495 are complete. PR #945 body has been updated to include
-  `Closes WDY-1473`; validation/review response still needs issue-session work.
-- `HANDOVER.md`: written in the worktree with final-publicity scope,
-  validation guidance, and review-response expectations
-- Resume command: `cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1473-publicize-mac-beta && ai --prompt "Read HANDOVER.md and follow its instructions."`
+- Timing: completed after WDY-1353, WDY-1396, WDY-1350, WDY-1360, WDY-1486,
+  and WDY-1495 were complete.
+- Validation: recorded in PR #945; GitHub docs build/deploy, Go checks, CodeQL,
+  docs coverage review, integration coverage review, and security review passed
+  before merge.
+- Resume command: not needed; issue is complete
 
 ### WDY-1377 — Show macOS-specific unsupported messages for hardware APIs
 
@@ -351,7 +350,7 @@ Keep each remaining issue short and validation-focused.
 7. **Completed: WDY-1360** — clean Apple Silicon Mac beta validation merged in PR #963.
 8. **Completed: WDY-1486** — login item registration fix merged in PR #978.
 9. **Completed: WDY-1495** — smaller HelloMLX model choices merged in PR #979.
-10. **WDY-1473** — prepared; final public website/docs status update using existing PR #945.
+10. **Completed: WDY-1473** — final public website/docs beta status update merged in PR #945.
 
 ## Backlog / post-beta or only-if-blocking
 
