@@ -44,14 +44,14 @@ in per-issue worktree sessions, not in this master planning session.
 
 ### WDY-1494 — Clean up Swift E2E route matrix and restore commented route ledger
 
-- Status: `planned`
+- Status: `started`
 - Linear project: E2E Tests
 - Linear: https://linear.app/wendylabsinc/issue/WDY-1494/clean-up-swift-e2e-route-matrix-and-restore-commented-route-ledger
-- Linear assignee: unassigned
-- Linear state: Todo (`unstarted`)
-- Branch/worktree name: not prepared yet
-- Worktree path: not prepared yet
-- PR: not created yet
+- Linear assignee: konstantin@wendy.sh
+- Linear state: In Progress (`started`)
+- Branch/worktree name: `kb.wdy-1494-e2e-route-ledger`
+- Worktree path: `/Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1494-e2e-route-ledger`
+- PR: https://github.com/wendylabsinc/WendyOS/pull/977
 - PR closing reference: `Closes WDY-1494`
 - Scope: clean up the Swift E2E workflow after WDY-1481 and the follow-up
   one-off route-disable PRs. Restore the commented-out route entries that
@@ -63,7 +63,11 @@ in per-issue worktree sessions, not in this master planning session.
   actionlint locally, then wait for GitHub checks. If disabling the
   macOS→Ubuntu/SER9 route, ensure E2E analysis dependencies still work with only
   the hosted local routes.
-- Resume command: not available until prepared
+- Resume command:
+
+  ```sh
+  cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1494-e2e-route-ledger && ai --prompt "Read HANDOVER.md and follow its instructions."
+  ```
 
 ### WDY-1481 — Add local E2E matrix coverage for macOS↔macOS and Ubuntu↔Ubuntu
 
