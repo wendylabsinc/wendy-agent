@@ -5,15 +5,15 @@
   "run": {
     "args": [
       "--model-path",
-      "gemma-3-27b-it-qat-4bit",
+      "Current",
       "--prompt",
       "These frames were captured at a fixed interval from a webcam. You are a comedian using dark humor below the waist line. Ridicule what is shown by the frames."
     ]
   },
   "files": [
     {
-      "path": "Models/gemma-3-27b-it-qat-4bit",
-      "to": "gemma-3-27b-it-qat-4bit"
+      "path": "Models/Current",
+      "to": "Current"
     }
   ]
 }

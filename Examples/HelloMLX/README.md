@@ -2,7 +2,7 @@
 
 This demo is intended to be deployed from one Mac to another Mac running `wendy-agent`.
 
-The development Mac holds the VLM model locally and `wendy run` deploys that model to the target Mac along with the app. Because the model is large, the target Mac should be connected to the development Mac with a Thunderbolt cable for a practical transfer speed.
+The development Mac holds the selected VLM model locally and `wendy run` deploys that model to the target Mac along with the app. Larger model tiers should be transferred over Thunderbolt for practical transfer speed.
 
 ## 1. Install the `wendy` CLI
 
@@ -41,15 +41,31 @@ After launching the app, make sure camera access is allowed for `WendyAgentMac.a
 
 ## 3. Download the VLM model on the development Mac
 
-This example expects the model directory referenced by `wendy.json` to exist locally before you run the demo.
+This example requires you to choose a model tier before running the demo. `wendy.json` deploys `Models/Current`, and the download script updates that symlink to point at the selected model.
 
-Download it with:
+Choose one tier explicitly:
 
 ```sh
-./Scripts/DownloadVLM.sh
+./Scripts/DownloadVLM.sh small    # 8 GB Macs, fastest validation (~0.3 GiB)
+./Scripts/DownloadVLM.sh medium   # 16 GB Macs, recommended beta tier (~1.2 GiB)
+./Scripts/DownloadVLM.sh large    # 32 GB Macs, better quality/larger transfer (~2.9 GiB)
+./Scripts/DownloadVLM.sh xlarge   # 64 GB Macs, Gemma 27B (~15.7 GiB)
 ```
 
-The model is about 16 GB, so make sure you have enough disk space on the development Mac before continuing.
+| Tier | Recommended Mac | Model | Download size | Expectation |
+| ---- | --------------- | ----- | ------------- | ----------- |
+| `small` | 8 GB unified memory | `mlx-community/SmolVLM-500M-Instruct-4bit` | ~0.3 GiB | Smoothest validation path, lowest quality. |
+| `medium` | 16 GB unified memory | `mlx-community/Qwen2-VL-2B-Instruct-4bit` | ~1.2 GiB | Recommended beta demo tier for constrained Macs. |
+| `large` | 32 GB unified memory | `mlx-community/Qwen2.5-VL-3B-Instruct-4bit` | ~2.9 GiB | Higher quality, larger transfer, more memory headroom. |
+| `xlarge` | 64 GB unified memory or more | `mlx-community/gemma-3-27b-it-qat-4bit` | ~15.7 GiB | Best large-model option; not practical on 16 GB Macs. |
+
+The current selected model is available at:
+
+```text
+Models/Current -> <selected-model-directory>
+```
+
+Make sure the development Mac has enough disk space for the selected tier before continuing.
 
 ## 4. Install Metal Toolchain on the development Mac
 
@@ -63,7 +79,7 @@ xcodebuild -downloadComponent MetalToolchain
 
 Connect the development Mac and target Mac with a Thunderbolt 4 or Thunderbolt 5 cable.
 
-This is strongly recommended because the VLM model is about 16 GB and will take a long time to transfer over slower links.
+This is strongly recommended for the `large` and `xlarge` tiers, especially because `xlarge` transfers roughly 16 GB of model files.
 
 ## 6. Run the demo
 
@@ -83,7 +99,7 @@ This demo runs a vision-language model on the target Mac and evaluates a prompt 
 
 By default, the app configuration includes:
 
-- a local model path: `gemma-3-27b-it-qat-4bit`
+- a local model path: `Current`, which is the deployed copy of `Models/Current`
 - a square frame resolution of `256x256` (override with `--resolution Y`)
 - a web server on port `8080`
 - a prompt that asks the model to comment on the captured frames
@@ -97,7 +113,7 @@ Final app config:
 {
   "fps" : 2,
   "interval" : 5,
-  "modelPath" : "gemma-3-27b-it-qat-4bit",
+  "modelPath" : "Current",
   "port" : 8080,
   "prompt" : "These frames were captured at a fixed interval from a webcam. You are a comedian using dark humor below the waist line. Ridicule what is shown by the frames.",
   "resolution" : 256

@@ -53,7 +53,7 @@
       </BuildableProductRunnable>
       <CommandLineArguments>
          <CommandLineArgument
-            argument = "--model-path $PROJECT_DIR/Models/gemma-3-27b-it-qat-4bit"
+            argument = "--model-path $PROJECT_DIR/Models/Current"
             isEnabled = "YES">
          </CommandLineArgument>
          <CommandLineArgument
