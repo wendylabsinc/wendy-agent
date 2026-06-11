@@ -105,13 +105,13 @@ jobs:
           setup: true
           managed_agent: true
 
-  # // DISABLED: Jetson mDNS discovery is unreliable; WDY-968 tracks re-enabling.
-  # swift-e2e-physical-macos-jetson:
-  #   name: macOS 26 → Jetson Orin Nano
+  # // DISABLED: macOS → Ubuntu/SER9 mDNS discovery is unreliable; WDY-968 tracks re-enabling.
+  # swift-e2e-physical-macos-ubuntu:
+  #   name: macOS 26 → Ubuntu 24
   #   if: ${{ inputs.target_group == '' || inputs.target_group == 'all' }}
   #   runs-on: [self-hosted, macos-26]
   #   concurrency:
-  #     group: device-jetson-orin-nano
+  #     group: device-ubuntu-24
   #     cancel-in-progress: false
   #     queue: max
   #   timeout-minutes: 120
@@ -120,37 +120,14 @@ jobs:
   #     - uses: ./.github/actions/swift-e2e-run
   #       with:
   #         tests: ${{ inputs.tests || '' }}
-  #         target_id: macos-jetson-orin-nano
+  #         target_id: macos-ubuntu-24
   #         runner_id: macos-26
   #         cli_os: macOS
-  #         device_address: wendyos-jetson-orin-nano.local
-  #         agent_os: wendyOS
+  #         device_address: wendy-SER9.local
+  #         agent_os: linux
   #         transport: lan
   #         setup: false
   #         managed_agent: false
-
-  swift-e2e-physical-macos-ubuntu:
-    name: macOS 26 → Ubuntu 24
-    if: ${{ inputs.target_group == '' || inputs.target_group == 'all' }}
-    runs-on: [self-hosted, macos-26]
-    concurrency:
-      group: device-ubuntu-24
-      cancel-in-progress: false
-      queue: max
-    timeout-minutes: 120
-    steps:
-      - uses: actions/checkout@v6
-      - uses: ./.github/actions/swift-e2e-run
-        with:
-          tests: ${{ inputs.tests || '' }}
-          target_id: macos-ubuntu-24
-          runner_id: macos-26
-          cli_os: macOS
-          device_address: wendy-SER9.local
-          agent_os: linux
-          transport: lan
-          setup: false
-          managed_agent: false
 
   swift-e2e-analyze:
     name: Analyze E2E Results
@@ -158,7 +135,6 @@ jobs:
     needs:
       - swift-e2e-local-macos
       - swift-e2e-local-ubuntu
-      - swift-e2e-physical-macos-ubuntu
     runs-on: [self-hosted, AI]
     timeout-minutes: 60
     steps:
