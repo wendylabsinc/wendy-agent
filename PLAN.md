@@ -212,15 +212,18 @@ in per-issue worktree sessions, not in this master planning session.
 
 ### WDY-1495 — Let HelloMLX choose smaller models for constrained Macs
 
-- Status: `planned`
+- Status: `prepared`
 - Linear: https://linear.app/wendylabsinc/issue/WDY-1495/let-hellomlx-choose-smaller-models-for-constrained-macs
 - Linear priority: High
 - Linear assignee: `konstantin@wendy.sh`
-- Linear state: Todo
+- Linear state: In Progress
 - Linear project: Wendy for Mac — Beta
-- Branch/worktree name: not prepared yet
-- Worktree path: not prepared yet
-- PR: not created yet
+- Branch/worktree name: `kb.wdy-1495-hellomlx-smaller-models`
+- Worktree path: `.worktrees/kb.wdy-1495-hellomlx-smaller-models`
+- PR: https://github.com/wendylabsinc/WendyOS/pull/979 — draft
+- PR closing reference: `Closes WDY-1495`
+- Base: `main`
+- Current commit: `0c7b53d0 chore: start WDY-1495 HelloMLX smaller models`
 - KISS scope: make HelloMLX practical on constrained Apple Silicon Macs by
   allowing a documented smaller MLX VLM choice while keeping the current Gemma
   27B 4-bit path available for higher-memory machines. Avoid a broad model zoo
@@ -236,7 +239,10 @@ in per-issue worktree sessions, not in this master planning session.
   `mlx-community/SmolVLM-256M-Instruct-4bit`.
 - Timing: should be completed or explicitly waived before WDY-1473 public beta
   messaging if HelloMLX remains part of the beta demo story.
-- Resume command: not available until prepared
+- Validation: not run; setup commit only
+- `HANDOVER.md`: written in the worktree with model-selection scope,
+  implementation pointers, validation guidance, and commit/push expectations
+- Resume command: `cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1495-hellomlx-smaller-models && ai --prompt "Read HANDOVER.md and follow its instructions."`
 
 ### WDY-1473 — Publicize Wendy for Mac beta across website
 
@@ -348,7 +354,7 @@ Keep each remaining issue short and validation-focused.
    and WDY-1396 headless setup if the environment supports it.
 8. **WDY-1486** — prepared; fix the auto-start checkbox/login item registration
    issue found during clean Mac beta validation.
-9. **WDY-1495** — planned; make HelloMLX practical on constrained Macs with a
+9. **WDY-1495** — prepared; make HelloMLX practical on constrained Macs with a
    documented smaller model choice if HelloMLX remains part of the beta demo
    story.
 10. **WDY-1473** — final public website/docs status update using PR #945 once beta readiness is complete.
