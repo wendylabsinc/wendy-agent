@@ -88,29 +88,25 @@ in per-issue worktree sessions, not in this master planning session.
 
 ### WDY-1482 — Gate device-to-device E2E jobs behind successful local E2E runs
 
-- Status: `started`
+- Status: `done`
 - Linear project: E2E Tests
 - Linear: https://linear.app/wendylabsinc/issue/WDY-1482/gate-device-to-device-e2e-jobs-behind-successful-local-e2e-runs
 - Linear assignee: konstantin@wendy.sh
-- Linear state: In Progress (`started`)
-- Branch/worktree name: `kb.wdy-1482-gate-device-e2e`
-- Worktree path: `/Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1482-gate-device-e2e`
-- PR: https://github.com/wendylabsinc/WendyOS/pull/980
+- Linear state: Done (`completed`)
+- Branch/worktree name: `kb.wdy-1482-gate-device-e2e` (merged; local worktree removed)
+- Worktree path: removed after merge
+- PR: https://github.com/wendylabsinc/WendyOS/pull/980 (merged, merge commit `33e19a1b`)
 - PR closing reference: `Closes WDY-1482`
 - Scope: consider splitting the hosted-runner local E2E checks into a separate
   prerequisite job, then only run physical device-to-device E2E jobs after the
   local macOS↔macOS and Ubuntu↔Ubuntu runs succeed. Preserve a clear manual or
   workflow path for real-device jobs and keep the status understandable when
   local-only checks fail, skip, or are disabled.
-- Validation: document the decision; if implemented, verify real-device E2E
-  jobs declare the local E2E job via `needs` or equivalent gating, fail fast
-  when local hosted-runner E2E fails, and still make local-vs-physical failures
-  easy to distinguish in workflow results. CI must pass before merge.
-- Resume command:
-
-  ```sh
-  cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1482-gate-device-e2e && ai --prompt "Read HANDOVER.md and follow its instructions."
-  ```
+- Validation: PR #980 passed CI before merge. PR body records local validation:
+  YAML parse and actionlint. The merged workflow gates physical routes by target
+  agent platform: Linux/WendyOS targets depend on hosted Ubuntu local E2E, and
+  macOS targets depend on hosted macOS local E2E.
+- Resume command: not applicable; issue complete and worktree removed.
 
 ### WDY-1479 — Investigate SER9 Swift E2E mTLS auth failure
 
@@ -137,10 +133,10 @@ in per-issue worktree sessions, not in this master planning session.
 
 ## E2E Tests issue order
 
-Keep each issue short and validation-focused. Completed issues stay in the
-ledger for history; remaining active planning starts with WDY-1482.
+All currently tracked E2E Tests project issues are complete. Completed issues
+stay in the ledger for history.
 
-1. **WDY-1482** — Gate device-to-device E2E jobs behind successful local E2E runs.
+1. **WDY-1482** — Done: Gate device-to-device E2E jobs behind successful local E2E runs.
 2. **WDY-1494** — Done: Clean up Swift E2E route matrix and restore commented route ledger.
 3. **WDY-1481** — Done: Add local E2E matrix coverage for macOS↔macOS and Ubuntu↔Ubuntu.
 4. **WDY-1479** — Done: Investigate SER9 Swift E2E mTLS auth failure.
