@@ -18,7 +18,7 @@ per-issue worktrees.
 
 `PLAN.md` is populated with the Linear **E2E Tests** issues and current status:
 
-1. `WDY-1482` — Todo: Gate device-to-device E2E jobs behind successful local E2E runs
+1. `WDY-1482` — In Progress: Gate device-to-device E2E jobs behind successful local E2E runs
 2. `WDY-1494` — Done: Clean up Swift E2E route matrix and restore commented route ledger
 3. `WDY-1481` — Done: Add local E2E matrix coverage for macOS↔macOS and Ubuntu↔Ubuntu
 4. `WDY-1479` — Done: Investigate SER9 Swift E2E mTLS auth failure
@@ -48,12 +48,27 @@ per-issue worktrees.
 - The temporary one-off worktrees for PRs #974, #975, and #976 were removed.
 - The WDY-1481 issue worktree has also been removed after merge.
 
+## WDY-1482 status
+
+WDY-1482 has been started and prepared:
+
+- Linear state: In Progress
+- Assignee: `konstantin@wendy.sh`
+- Worktree: `/Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1482-gate-device-e2e`
+- Branch: `kb.wdy-1482-gate-device-e2e`
+- Draft PR: https://github.com/wendylabsinc/WendyOS/pull/980
+- Resume command:
+
+  ```sh
+  cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1482-gate-device-e2e && ai --prompt "Read HANDOVER.md and follow its instructions."
+  ```
+
 ## Remaining intended next steps
 
-- Start WDY-1482 only after the user asks, following the `PLAN.md` working
-  protocol.
+- Continue WDY-1482 in its issue worktree until PR #980 is ready/merged. Do not
+  merge unless CI passes; if CI fails, stop and report the failing check(s).
 - Treat WDY-968 as related/background only: it is outside the E2E Tests project
-  and should receive corrected follow-up instructions as part of WDY-1494.
+  and already has corrected follow-up instructions from WDY-1494.
 
 ## Coordinator resume command
 

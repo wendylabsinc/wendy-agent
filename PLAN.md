@@ -88,14 +88,14 @@ in per-issue worktree sessions, not in this master planning session.
 
 ### WDY-1482 — Gate device-to-device E2E jobs behind successful local E2E runs
 
-- Status: `planned`
+- Status: `started`
 - Linear project: E2E Tests
 - Linear: https://linear.app/wendylabsinc/issue/WDY-1482/gate-device-to-device-e2e-jobs-behind-successful-local-e2e-runs
-- Linear assignee: unassigned
-- Linear state: Todo (`unstarted`)
-- Branch/worktree name: not prepared yet
-- Worktree path: not prepared yet
-- PR: not created yet
+- Linear assignee: konstantin@wendy.sh
+- Linear state: In Progress (`started`)
+- Branch/worktree name: `kb.wdy-1482-gate-device-e2e`
+- Worktree path: `/Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1482-gate-device-e2e`
+- PR: https://github.com/wendylabsinc/WendyOS/pull/980
 - PR closing reference: `Closes WDY-1482`
 - Scope: consider splitting the hosted-runner local E2E checks into a separate
   prerequisite job, then only run physical device-to-device E2E jobs after the
@@ -105,8 +105,12 @@ in per-issue worktree sessions, not in this master planning session.
 - Validation: document the decision; if implemented, verify real-device E2E
   jobs declare the local E2E job via `needs` or equivalent gating, fail fast
   when local hosted-runner E2E fails, and still make local-vs-physical failures
-  easy to distinguish in workflow results.
-- Resume command: not available until prepared
+  easy to distinguish in workflow results. CI must pass before merge.
+- Resume command:
+
+  ```sh
+  cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1482-gate-device-e2e && ai --prompt "Read HANDOVER.md and follow its instructions."
+  ```
 
 ### WDY-1479 — Investigate SER9 Swift E2E mTLS auth failure
 
