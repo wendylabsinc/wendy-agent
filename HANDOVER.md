@@ -18,7 +18,7 @@ per-issue worktrees.
 
 `PLAN.md` is populated with the Linear **E2E Tests** issues and current status:
 
-1. `WDY-1510` — In progress: Re-enable Raspberry Pi physical Swift E2E route
+1. `WDY-1510` — Canceled: Re-enable Raspberry Pi physical Swift E2E route
 2. `WDY-1482` — Done: Gate device-to-device E2E jobs behind successful local E2E runs
 3. `WDY-1494` — Done: Clean up Swift E2E route matrix and restore commented route ledger
 4. `WDY-1481` — Done: Add local E2E matrix coverage for macOS↔macOS and Ubuntu↔Ubuntu
@@ -73,31 +73,28 @@ WDY-1482 is complete:
 
 ## WDY-1510 status
 
-WDY-1510 is in progress:
+WDY-1510 was canceled because no Raspberry Pi 5 is currently available on CI:
 
 - Dedicated worktree: `/Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1510-rpi-swift-e2e`
 - Branch: `kb.wdy-1510-rpi-swift-e2e`
-- Draft PR: https://github.com/wendylabsinc/WendyOS/pull/983
+- PR: https://github.com/wendylabsinc/WendyOS/pull/983 (closed without merge)
+- Linear state: Canceled
+- Linear comment: https://linear.app/wendylabsinc/issue/WDY-1510/re-enable-raspberry-pi-physical-swift-e2e-route#comment-6793dbb3
 - Setup commit: `7c96b42`
-- Implementation commit: `51add25` re-enables the macOS 26 → Raspberry Pi 5
-  physical Swift E2E route and adds it to the analysis job dependencies.
-- Repository variable configured: `SWIFT_E2E_RASPBERRY_PI_5_DEVICE_ADDRESS=wendyos-raspberry-pi-5.local`.
-- Local validation passed: YAML parse and actionlint.
-- PR checks were pending after push. Do not merge unless CI passes; if CI fails,
-  stop and report the failing checks.
-- Linear CLI was unavailable in this environment, so the Linear assignee/state
-  were not updated during setup.
-
-Resume WDY-1510 with:
-
-```sh
-cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1510-rpi-swift-e2e && ai --prompt "Read HANDOVER.md and follow its instructions."
-```
+- Implementation commit on the closed branch: `51add25` re-enabled the macOS 26
+  → Raspberry Pi 5 physical Swift E2E route and added it to the analysis job
+  dependencies.
+- Local validation passed before cancellation: YAML parse and actionlint.
+- Temporary repository variable `SWIFT_E2E_RASPBERRY_PI_5_DEVICE_ADDRESS` was
+  removed after the PR was closed.
+- Swift E2E workflow run `27362744824` was canceled after closing the PR; the
+  Raspberry Pi and analysis jobs ended canceled.
 
 ## Remaining intended next steps
 
-- Watch PR #983 checks. If they pass, decide whether to mark the draft PR ready;
-  do not merge unless CI passes. If they fail, report the failing checks.
+- No active E2E Tests issue remains in this coordinator.
+- If Raspberry Pi 5 CI hardware comes online later, open a new Linear issue or
+  reopen WDY-1510 and start from the closed PR branch/diff.
 - Treat WDY-968 as related/background only: it is outside the E2E Tests project
   and now has a final comment noting PR #981 restored the physical Swift E2E
   routes after passing checks.

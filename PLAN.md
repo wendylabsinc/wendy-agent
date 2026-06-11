@@ -44,14 +44,14 @@ in per-issue worktree sessions, not in this master planning session.
 
 ### WDY-1510 — Re-enable Raspberry Pi physical Swift E2E route
 
-- Status: `in progress`
+- Status: `canceled`
 - Linear project: E2E Tests
 - Linear: https://linear.app/wendylabsinc/issue/WDY-1510/re-enable-raspberry-pi-physical-swift-e2e-route
-- Linear assignee: unassigned (Linear CLI unavailable during setup)
-- Linear state: Todo (`unstarted`; Linear CLI unavailable during setup)
+- Linear assignee: unassigned
+- Linear state: Canceled (`canceled`)
 - Branch/worktree name: `kb.wdy-1510-rpi-swift-e2e`
 - Worktree path: `/Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1510-rpi-swift-e2e`
-- PR: https://github.com/wendylabsinc/WendyOS/pull/983 (draft, checks pending after push)
+- PR: https://github.com/wendylabsinc/WendyOS/pull/983 (closed without merge)
 - PR closing reference: `Closes WDY-1510`
 - Scope: investigate whether Raspberry Pi 5 physical Swift E2E can be enabled
   now that hosted local routes, route gating, and restored SER9/Jetson physical
@@ -59,11 +59,12 @@ in per-issue worktree sessions, not in this master planning session.
   (likely macOS 26 → Raspberry Pi 5 if the macOS runner can reach the device),
   keep it gated behind hosted Ubuntu local E2E, and preserve the commented route
   ledger for unavailable routes.
-- Validation: local YAML parse and actionlint passed in the issue worktree.
-  Repository variable configured:
-  `SWIFT_E2E_RASPBERRY_PI_5_DEVICE_ADDRESS=wendyos-raspberry-pi-5.local`. CI
-  must pass before merge, including the Raspberry Pi physical Swift E2E job and
-  `Analyze E2E Results`.
+- Outcome: closed without merge because no Raspberry Pi 5 is currently
+  available on CI. A Linear comment records this, the temporary repository
+  variable `SWIFT_E2E_RASPBERRY_PI_5_DEVICE_ADDRESS` was removed, and Swift E2E
+  workflow run `27362744824` was canceled.
+- Validation: local YAML parse and actionlint passed before cancellation; CI did
+  not need to finish because the route is not currently actionable.
 - Resume command:
 
   ```sh
@@ -164,7 +165,7 @@ in per-issue worktree sessions, not in this master planning session.
 Keep each issue short and validation-focused. Completed issues stay in the
 ledger for history; remaining active planning starts with WDY-1510.
 
-1. **WDY-1510** — In progress: Re-enable Raspberry Pi physical Swift E2E route.
+1. **WDY-1510** — Canceled: Re-enable Raspberry Pi physical Swift E2E route.
 2. **WDY-1482** — Done: Gate device-to-device E2E jobs behind successful local E2E runs.
 3. **WDY-1494** — Done: Clean up Swift E2E route matrix and restore commented route ledger.
 4. **WDY-1481** — Done: Add local E2E matrix coverage for macOS↔macOS and Ubuntu↔Ubuntu.
