@@ -107,6 +107,42 @@ func TestOrgFromClientCert(t *testing.T) {
 			cn:      "sh/wendy/abc/5",
 			wantErr: true,
 		},
+		// Two wendy URNs — ambiguous, must error.
+		{
+			name:    "two wendy URNs ambiguous",
+			uris:    []string{"urn:wendy:org:10:user:a", "urn:wendy:org:20:user:b"},
+			wantErr: true,
+		},
+		// URN with org ID 0 — non-positive, must error.
+		{
+			name:    "URN org zero",
+			uris:    []string{"urn:wendy:org:0:user:abc"},
+			wantErr: true,
+		},
+		// URN with negative org ID — non-positive, must error.
+		{
+			name:    "URN org negative",
+			uris:    []string{"urn:wendy:org:-1:user:abc"},
+			wantErr: true,
+		},
+		// URN with int32 overflow org ID — must error.
+		{
+			name:    "URN org int32 overflow",
+			uris:    []string{"urn:wendy:org:2147483648:user:abc"},
+			wantErr: true,
+		},
+		// URN with empty org segment — must error.
+		{
+			name:    "URN empty org segment",
+			uris:    []string{"urn:wendy:org::user:abc"},
+			wantErr: true,
+		},
+		// CN with org ID 0 — non-positive, must error.
+		{
+			name:    "CN sh/wendy org zero",
+			cn:      "sh/wendy/0/5",
+			wantErr: true,
+		},
 	}
 
 	for _, tc := range tests {
