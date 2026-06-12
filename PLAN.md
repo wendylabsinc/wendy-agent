@@ -55,7 +55,8 @@ WDY-1509 grew into an umbrella/manual audit. Keep the durable coordination plan
 here in this master worktree so there is only one coordinator session. Do not
 continue using the WDY-1509 issue worktree as a separate planning hub. Treat PR
 #982 as a draft, non-merge audit artifact only; it should not carry a closing
-reference or be used to close WDY-1509. Mergeable cleanup/reference work should
+reference or be used to close WDY-1509. WDY-1509 is closed in Linear as the
+umbrella decomposition/audit handoff; mergeable cleanup/reference work should
 happen in child issue worktrees prepared by this master session using the
 protocol above.
 
@@ -235,9 +236,9 @@ wendy --device <mac-agent> os update
 
 ### Child issue sequence
 
-WDY-1509 remains the umbrella/manual audit issue. PR #982 is only a draft audit
-artifact and is not expected to merge. Focused child issues are the mergeable
-implementation path, ordered as follows:
+WDY-1509 is complete as the umbrella/manual audit decomposition. PR #982 is only
+a draft audit artifact and is not expected to merge. Focused child issues are
+the mergeable implementation path, ordered as follows:
 
 1. WDY-1511 — Remove misleading hidden completion install `--output-dir` test
    seam.
@@ -657,10 +658,11 @@ WDY-1479 (SER9 Swift E2E mTLS auth failure).
 - WDY-1509 — manually audit the full CLI surface against Swift E2E stubs across
   Linux/WendyOS and Mac/Darwin. This grew into an umbrella/manual audit and the
   detailed coordination plan has been folded into this master `PLAN.md` under
-  "Post-beta CLI/E2E surface audit coordination". Keep WDY-1509 focused on the
-  command surface ledger/summary and use child issues for implementation.
-  - Status: `umbrella`; Linear state: In Progress; assignee:
-    `konstantin@wendy.sh`; project: `E2E Tests`.
+  "Post-beta CLI/E2E surface audit coordination". WDY-1509 is complete as the
+  decomposition/audit handoff; child issues carry the mergeable implementation
+  work.
+  - Status: `done`; Linear state: Done; assignee: `konstantin@wendy.sh`;
+    project: `E2E Tests`.
   - Worktree: `.worktrees/kb.wdy-1509-cli-e2e-surface-audit`; branch:
     `kb.wdy-1509-cli-e2e-surface-audit`.
   - Draft PR: https://github.com/wendylabsinc/WendyOS/pull/982 — non-merge
@@ -675,5 +677,5 @@ WDY-1479 (SER9 Swift E2E mTLS auth failure).
     5. WDY-1515 — Align direct device command E2E references.
     6. WDY-1516 — Align cloud-routed device E2E references.
     7. WDY-1517 — Align build and run E2E references.
-  - Resume WDY-1509 only if needed for the umbrella ledger/summary:
+  - Resume WDY-1509 only if the non-merge audit artifact needs correction:
     `cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1509-cli-e2e-surface-audit && ai --prompt "Read HANDOVER.md and follow its instructions."`
