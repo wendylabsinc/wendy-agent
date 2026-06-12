@@ -28,18 +28,18 @@ general/top-level coordination in a different coordinator worktree.
 
 Housekeeping snapshot, 2026-06-12:
 
-- Active Mac beta review: WDY-1529 — Surface contextual macOS unsupported errors
-  for remaining CLI commands. Linear: In Review. PR #996 is open and no longer a
-  draft. Issue worktree:
-  `/Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1529-macos-unsupported-errors`.
-- Active Mac beta setup: WDY-1531 — Make `wendy run` gracefully reject project
-  types unsupported on Mac. Linear: In Progress. Draft PR #999 and issue
-  worktree are prepared; implementation must happen in the issue worktree.
+- Completed: WDY-1529 — Surface contextual macOS unsupported errors for
+  remaining CLI commands. PR #996 merged with `Closes WDY-1529`.
+- Completed: WDY-1531 — Make `wendy run` gracefully reject project types
+  unsupported on Mac. PR #999 merged with `Closes WDY-1531`.
+- No active Mac beta implementation worktree is currently prepared by this
+  coordinator.
+- Open Mac beta issues after housekeeping: 23, all Todo/Backlog.
 - Stale/decision candidates inside the Mac beta project:
   - WDY-1365 canceled as stale umbrella work; the post-beta backlog already has
     focused follow-up issues.
-  - WDY-1351 and WDY-1358 are mostly superseded by WDY-1377 and active WDY-1529;
-    reassess after WDY-1529 merges.
+  - WDY-1351 and WDY-1358 are mostly superseded by WDY-1377 and completed
+    WDY-1529; reassess whether to close/cancel them.
   - WDY-1349 likely overlaps the WDY-1509/WDY-1512+ CLI/E2E audit family, but it
     remains a Mac beta backlog issue until explicitly closed or canceled.
 - Recently corrected: WDY-1361 is Done; PR #906 exposed the Mac install page in
@@ -83,9 +83,9 @@ in per-issue worktree sessions, not in this master planning session.
 Housekeeping note, 2026-06-12: this section is retained as historical context
 only. This coordinator now focuses on the `Wendy for Mac — Beta` project. Do not
 start or manage E2E-only issues from this worktree unless the user explicitly
-reassigns them to the Mac beta project. WDY-1512 is unblocked after WDY-1528 and
-is In Review, but it belongs to E2E/general coordination rather than active Mac
-beta coordination.
+reassigns them to the Mac beta project. WDY-1512 is complete after WDY-1528 and
+PR #992, but it belongs to E2E/general coordination rather than active Mac beta
+coordination.
 
 WDY-1509 grew into an umbrella/manual audit. Treat PR #982 as a draft, non-merge
 audit artifact only; it should not carry a closing reference or be used to close
@@ -275,9 +275,8 @@ the mergeable implementation path, ordered as follows:
 
 1. Completed: WDY-1511 — Remove misleading hidden completion install
    `--output-dir` test seam, PR #990 merged.
-2. WDY-1512 — Audit and align hidden/deprecated CLI aliases. Unblocked after
-   WDY-1528; Linear is In Review. This is now out of scope for active Mac beta
-   coordination.
+2. Completed: WDY-1512 — Audit and align hidden/deprecated CLI aliases, PR #992
+   merged. This is out of scope for active Mac beta coordination.
 3. WDY-1513 — Align host-only CLI E2E references.
 4. WDY-1514 — Align OS imaging and update E2E references.
 5. WDY-1515 — Align direct device command E2E references.
@@ -333,33 +332,31 @@ automation scope, follow-up issues filed, and the relevant `Closes WDY-xxxx`.
 
 #### WDY-1512 — Audit and align hidden deprecated CLI aliases
 
-- Status: `out-of-scope here`; Linear state: In Review; assignee:
+- Status: `done / out-of-scope here`; Linear state: Done; assignee:
   `konstantin@wendy.sh`; project: `E2E Tests`.
-- WDY-1528 is Done and PR #997 merged, so this issue is unblocked. Keep WDY-1512
-  coordination outside this Wendy for Mac beta coordinator unless explicitly
-  reprioritized.
-- Worktree: `.worktrees/kb.wdy-1512-hidden-deprecated-aliases`; branch:
-  `kb.wdy-1512-hidden-deprecated-aliases`.
-- Draft PR: https://github.com/wendylabsinc/WendyOS/pull/992 with
+- WDY-1528 is Done and PR #997 merged. WDY-1512 was completed via PR #992; keep
+  any future E2E-only coordination outside this Wendy for Mac beta coordinator
+  unless explicitly reprioritized.
+- Worktree: removed after merge (`.worktrees/kb.wdy-1512-hidden-deprecated-aliases`).
+- PR: https://github.com/wendylabsinc/WendyOS/pull/992 — merged with
   `Closes WDY-1512`.
 - Setup commit: `a774ae29 chore: start WDY-1512 CLI alias audit`.
 - Scope: align hidden deprecated commands, public aliases, Cobra aliases, help
   text, deprecation diagnostics, and E2E references for `device version`,
   `cloud device version`, `cloud run`, direct/cloud `device ps`, and Bluetooth
   `bt`. Do not broaden into WDY-1513+ route/reference cleanup.
-- Resume:
-  `cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1512-hidden-deprecated-aliases && ai --prompt "Read HANDOVER.md and follow its instructions."`
+- Resume command: not needed; issue is complete.
 
-### Active Mac unsupported-error follow-up
+### Completed Mac unsupported-error follow-up
 
 #### WDY-1529 — Surface contextual macOS unsupported errors for remaining CLI commands
 
-- Status: `in review`; Linear state: In Review; assignee:
+- Status: `done`; Linear state: Done; assignee:
   `konstantin@wendy.sh`; project: `Wendy for Mac — Beta`.
-- Worktree: `.worktrees/kb.wdy-1529-macos-unsupported-errors`; branch:
-  `kb.wdy-1529-macos-unsupported-errors`.
-- PR: https://github.com/wendylabsinc/WendyOS/pull/996 with `Closes WDY-1529`;
-  open and no longer draft.
+- Worktree: removed after merge (`.worktrees/kb.wdy-1529-macos-unsupported-errors`).
+- PR: https://github.com/wendylabsinc/WendyOS/pull/996 — merged with
+  `Closes WDY-1529`.
+- Merge commit: `2ab0ee8672ad801b2de85cfb08ee11cac39b04db`.
 - Setup commit: `e8fa4a9f chore: start WDY-1529 macOS unsupported errors`.
 - Scope: preserve contextual Wendy Agent for Mac unsupported messages instead
   of generic agent-update hints for audio, Wi-Fi mutations, Bluetooth
@@ -369,27 +366,25 @@ automation scope, follow-up issues filed, and the relevant `Closes WDY-xxxx`.
   `device apps list` TUI poll-error case where raw `rpc error: code =
   Unimplemented desc = ...` text leaks into the status line for unsupported
   volume polling.
-- Resume:
-  `cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1529-macos-unsupported-errors && ai --prompt "Read HANDOVER.md and follow its instructions."`
+- Resume command: not needed; issue is complete.
 
-### Active Mac run rejection follow-up
+### Completed Mac run rejection follow-up
 
 #### WDY-1531 — Make `wendy run` gracefully reject project types unsupported on Mac
 
-- Status: `prepared`; Linear state: In Progress; assignee:
+- Status: `done`; Linear state: Done; assignee:
   `konstantin@wendy.sh`; project: `Wendy for Mac — Beta`.
-- Worktree: `.worktrees/kb.wdy-1531-macos-run-unsupported-projects`; branch:
-  `kb.wdy-1531-macos-run-unsupported-projects`.
-- Draft PR: https://github.com/wendylabsinc/WendyOS/pull/999 with
+- Worktree: removed after merge (`.worktrees/kb.wdy-1531-macos-run-unsupported-projects`).
+- PR: https://github.com/wendylabsinc/WendyOS/pull/999 — merged with
   `Closes WDY-1531`.
+- Merge commit: `434ed98b47c695b0f2b337954fe88c62a4ff004e`.
 - Setup commit: `1bdc71d3 chore: start WDY-1531 Mac run rejection`.
 - Scope: make `wendy run` fail early with clear Wendy Agent for Mac diagnostics
   when a Darwin/macOS agent is targeted with unsupported Linux/container,
   Compose, WendyOS-template, or otherwise non-native-Mac project shapes. Keep
   supported native Darwin SwiftPM and Xcode flows working. Do not implement
   Linux containers on Mac in this issue.
-- Resume:
-  `cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1531-macos-run-unsupported-projects && ai --prompt "Read HANDOVER.md and follow its instructions."`
+- Resume command: not needed; issue is complete.
 
 ## Issue ledger
 
@@ -695,6 +690,8 @@ Keep each remaining issue short and validation-focused.
 9. **Completed: WDY-1495** — smaller HelloMLX model choices merged in PR #979.
 10. **Completed: WDY-1473** — final public website/docs beta status update merged in PR #945.
 11. **Completed: WDY-1361** — Mac docs navigation exposure was covered by PR #906 and PR #945; Linear closed as Done during housekeeping.
+12. **Completed: WDY-1529** — contextual unsupported Mac-agent errors merged in PR #996.
+13. **Completed: WDY-1531** — unsupported Mac-target `wendy run` project shapes now reject early via PR #999.
 
 ## Backlog / post-beta or only-if-blocking
 
@@ -710,10 +707,10 @@ WDY-1479 (SER9 Swift E2E mTLS auth failure).
 - WDY-1347 — onboarding copy; only if a concrete shipped UI over-promises.
 - WDY-1348 — canceled; covered by WDY-1344 unless a specific missing limitation appears.
 - WDY-1349 — post-beta CLI audit. Likely overlaps the WDY-1509/WDY-1512+ CLI/E2E audit family, but remains open in `Wendy for Mac — Beta` until explicitly closed or canceled.
-- WDY-1351 — post-beta broader unsupported-flow improvements; WDY-1377 covered beta minimum. Reassess after WDY-1529 merges.
+- WDY-1351 — post-beta broader unsupported-flow improvements; WDY-1377 and WDY-1529 covered the beta minimum. Reassess whether this broad follow-up should be closed/canceled.
 - WDY-1355 — post-beta E2E/smoke subset.
 - WDY-1357 — post-beta install/reset/uninstall/troubleshooting docs.
-- WDY-1358 — post-beta broader CLI unsupported-error rendering; WDY-1377 covered beta minimum. Reassess after WDY-1529 merges.
+- WDY-1358 — post-beta broader CLI unsupported-error rendering; WDY-1377 and WDY-1529 covered the beta minimum. Reassess whether this broad follow-up should be closed/canceled.
 - WDY-1359 — canceled; diagnostics/log docs are not in beta scope.
 - WDY-1364 — post-beta Swift E2E review.
 - WDY-1365 — canceled as stale umbrella work. The current backlog already covers Docker/container, hardware APIs, diagnostics, E2E, security, examples, and mTLS with focused issues.
@@ -750,25 +747,19 @@ WDY-1479 (SER9 Swift E2E mTLS auth failure).
   nearby work includes WDY-1325/WDY-874/WDY-865 for broader OIDC/auth, WDY-1478
   for Firebase refresh-token persistence, and WDY-719 for an older fixed CLI
   login issue.
-- WDY-1529 — surface contextual macOS unsupported errors for remaining CLI
-  commands. Filed after `wendy device audio list` against Wendy Agent for Mac
-  returned the generic `Not supported by this agent version. Try updating the
-  agent.` despite the Swift macOS agent having a contextual audio unsupported
-  message. The issue includes a review of similar gaps in audio, Wi-Fi mutation,
-  Bluetooth mutation, camera streaming, persistent volumes, dashboard/cloud
-  follow-up checks, and the WDY-1377 commands already covered.
+- WDY-1529 — completed in PR #996. The CLI now preserves contextual macOS
+  unsupported errors for remaining commands instead of generic agent-update
+  hints.
 - WDY-1530 — add Wendy for Mac templates to `wendy init`. Filed after
   `wendy init --template` offered only WendyOS and Wendy Lite targets despite
   Wendy Agent for Mac supporting native `platform: "darwin"` app deployment.
   This is Mac-related but belongs to the `New Templates` project, so it is not
   active in this Mac beta project coordinator unless explicitly reprioritized.
-- WDY-1531 — active/prepared in this coordinator. Draft PR #999 and worktree
-  `.worktrees/kb.wdy-1531-macos-run-unsupported-projects` are ready for
-  implementation; when targeting a Darwin/macOS agent, unsupported
-  Linux-container, Compose, WendyOS-template, or otherwise non-native-Mac
-  project shapes should fail early with a Mac-specific diagnostic instead of
-  generic build/deploy/tooling errors or agent-update hints. Keep native Darwin
-  SwiftPM and Xcode flows working.
+- WDY-1531 — completed in PR #999. When targeting a Darwin/macOS agent,
+  unsupported Linux-container, Compose, WendyOS-template, or otherwise
+  non-native-Mac project shapes fail early with a Mac-specific diagnostic
+  instead of generic build/deploy/tooling errors or agent-update hints. Native
+  Darwin SwiftPM and Xcode flows remain the supported path.
 - WDY-1509 — manually audit the full CLI surface against Swift E2E stubs across
   Linux/WendyOS and Mac/Darwin. This grew into an umbrella/manual audit and the
   detailed coordination plan has been folded into this master `PLAN.md` under
@@ -785,9 +776,7 @@ WDY-1479 (SER9 Swift E2E mTLS auth failure).
   - Child issue order:
     1. Completed: WDY-1511 — Remove misleading hidden completion install
        `--output-dir` test seam, PR #990 merged.
-    2. WDY-1512 — Audit and align hidden/deprecated CLI aliases. Unblocked after
-       WDY-1528 and now In Review, but out of scope for active Mac beta
-       coordination.
+    2. Completed: WDY-1512 — Audit and align hidden/deprecated CLI aliases, PR #992 merged.
     3. WDY-1513 — Align host-only CLI E2E references.
     4. WDY-1514 — Align OS imaging and update E2E references.
     5. WDY-1515 — Align direct device command E2E references.
