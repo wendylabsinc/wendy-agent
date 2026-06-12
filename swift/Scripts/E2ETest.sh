@@ -58,6 +58,7 @@ AGENT_REPO_DIR="${WENDY_E2E_AGENT_REPO_DIR:-}"
 AGENT_BIN_DIR="${WENDY_E2E_AGENT_BIN_DIR:-}"
 AGENT_USER="${WENDY_E2E_AGENT_USER:-}"
 AGENT_ADDRESS="${WENDY_E2E_AGENT_ADDRESS:-}"
+CONFIGURED_AGENT_ADDRESS=""
 DEVICE_ADDRESS="${WENDY_E2E_DEVICE_ADDRESS:-}"
 AGENT_OS="${WENDY_E2E_AGENT_OS:-}"
 TRANSPORT="${WENDY_E2E_TRANSPORT:-}"
@@ -119,6 +120,78 @@ valid_device_address() {
     return 1
   fi
   [[ -z "$port" ]] || validate_port "$port"
+}
+
+is_ipv4_literal() {
+  local value="$1" octet
+  local -a octets
+  [[ "$value" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || return 1
+  IFS='.' read -r -a octets <<< "$value"
+  [[ ${#octets[@]} -eq 4 ]] || return 1
+  for octet in "${octets[@]}"; do
+    [[ "$octet" =~ ^[0-9]{1,3}$ ]] || return 1
+    (( 10#$octet <= 255 )) || return 1
+  done
+}
+
+is_ipv6_literal() {
+  local value="$1"
+  [[ "$value" == *:* && "$value" =~ ^[0-9A-Fa-f:.]+(%[A-Za-z0-9_.-]+)?$ ]]
+}
+
+is_ip_literal() {
+  is_ipv4_literal "$1" || is_ipv6_literal "$1"
+}
+
+split_device_address() {
+  local value="$1"
+  ADDRESS_HOST=""
+  ADDRESS_PORT=""
+
+  if [[ "$value" =~ ^\[([^]]+)\](:([0-9]{1,5}))?$ ]]; then
+    ADDRESS_HOST="${BASH_REMATCH[1]}"
+    ADDRESS_PORT="${BASH_REMATCH[3]:-}"
+  elif [[ "$value" =~ ^(.+):([0-9]{1,5})$ ]]; then
+    if [[ "${BASH_REMATCH[1]}" != *:* ]]; then
+      ADDRESS_HOST="${BASH_REMATCH[1]}"
+      ADDRESS_PORT="${BASH_REMATCH[2]}"
+    else
+      ADDRESS_HOST="$value"
+    fi
+  else
+    ADDRESS_HOST="$value"
+  fi
+}
+
+device_address_ipv4_fallback_host() {
+  local value="$1"
+  split_device_address "$value"
+  [[ -n "$ADDRESS_HOST" ]] || return 1
+  [[ "$ADDRESS_HOST" == *[A-Za-z]* ]] || return 1
+  ! is_ip_literal "$ADDRESS_HOST"
+}
+
+device_address_with_host() {
+  local host="$1"
+  local port="$2"
+  if [[ -n "$port" ]]; then
+    printf "%s:%s" "$host" "$port"
+  else
+    printf "%s" "$host"
+  fi
+}
+
+preflight_failure_allows_ipv4_fallback() {
+  local output
+  output="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+
+  [[ "$output" == *"error while dialing"* \
+    || "$output" == *"dial tcp"* \
+    || ( "$output" == *"transport:"* && "$output" == *"connection error"* ) \
+    || "$output" == *"no route to host"* \
+    || "$output" == *"network is unreachable"* \
+    || "$output" == *"host is down"* \
+    || "$output" == *"i/o timeout"* ]]
 }
 
 validate_test_filter() {
@@ -318,6 +391,8 @@ if [[ ${#TEST_FILTERS[@]} -eq 0 ]]; then
   TEST_FILTERS+=("WendyE2ETests")
 fi
 
+CONFIGURED_AGENT_ADDRESS="$AGENT_ADDRESS"
+
 if [[ -z "$OUTPUT_DIR" ]]; then
   echo "ERROR: --output-dir or WENDY_E2E_OUTPUT_DIR is required." >&2
   exit 64
@@ -516,20 +591,71 @@ resolve_cli_auth_config_path() {
   fi
 }
 
-preflight_cli_auth_fixture() {
-  if [[ -z "$AGENT_ADDRESS" ]]; then
-    return
+resolve_cli_ipv4_addresses() {
+  local host="$1"
+  local command
+  IFS= read -r -d '' command <<EOF || true
+set -euo pipefail
+
+host=$(shell_quote "$host")
+
+is_ipv4_literal() {
+  local value="\$1" octet
+  local -a octets
+  [[ "\$value" =~ ^([0-9]{1,3}\\.){3}[0-9]{1,3}\$ ]] || return 1
+  IFS='.' read -r -a octets <<< "\$value"
+  [[ \${#octets[@]} -eq 4 ]] || return 1
+  for octet in "\${octets[@]}"; do
+    [[ "\$octet" =~ ^[0-9]{1,3}\$ ]] || return 1
+    (( 10#\$octet <= 255 )) || return 1
+  done
+}
+
+emit_candidates() {
+  if command -v dscacheutil >/dev/null 2>&1; then
+    dscacheutil -q host -a name "\$host" 2>/dev/null | awk '/^ip_address:[[:space:]]*/ { print \$2 }' || true
   fi
 
-  echo "==> Checking CLI auth fixture"
+  if command -v getent >/dev/null 2>&1; then
+    getent ahostsv4 "\$host" 2>/dev/null | awk '{ print \$1 }' || true
+  fi
 
+  if command -v python3 >/dev/null 2>&1; then
+    python3 - "\$host" <<'PY' || true
+import socket
+import sys
+
+host = sys.argv[1]
+try:
+    for result in socket.getaddrinfo(host, None, socket.AF_INET, socket.SOCK_STREAM):
+        print(result[4][0])
+except OSError:
+    pass
+PY
+  fi
+}
+
+seen=""
+while IFS= read -r candidate; do
+  if is_ipv4_literal "\$candidate" && [[ " \$seen " != *" \$candidate "* ]]; then
+    seen="\$seen \$candidate"
+    printf '%s\n' "\$candidate"
+  fi
+done < <(emit_candidates)
+EOF
+
+  run_cli_command "$command" 2>/dev/null || true
+}
+
+run_preflight_cli_auth_fixture() {
+  local target_agent_address="$1"
   local command
   IFS= read -r -d '' command <<EOF || true
 set -euo pipefail
 
 auth_config_path=$(shell_quote "$CLI_AUTH_CONFIG_PATH")
 wendy_path=$(shell_quote "$CLI_BIN_DIR/wendy")
-agent_address=$(shell_quote "$AGENT_ADDRESS")
+agent_address=$(shell_quote "$target_agent_address")
 preflight_home="\${TMPDIR:-/tmp}/wendy-e2e-auth-preflight.\$\$"
 trap 'rm -rf "\$preflight_home"' EXIT
 
@@ -544,13 +670,92 @@ cp "\$auth_config_path" "\$preflight_home/.wendy/config.json"
 HOME="\$preflight_home" "\$wendy_path" --json --device "\$agent_address" device info
 EOF
 
-  local agent_info_json
-  if ! agent_info_json="$(run_cli_command "$command")"; then
-    echo "ERROR: CLI auth fixture cannot access $AGENT_ADDRESS." >&2
-    echo "Run 'wendy auth login' with an account that can access the provisioned device, or set WENDY_E2E_CLI_AUTH_CONFIG_PATH." >&2
-    exit 1
+  run_cli_command "$command"
+}
+
+capture_preflight_cli_auth_fixture() {
+  local target_agent_address="$1"
+  local stdout_path stderr_path stderr_output
+
+  stdout_path="$(mktemp "${TMPDIR:-/tmp}/wendy-e2e-auth-preflight.stdout.XXXXXX")"
+  stderr_path="$(mktemp "${TMPDIR:-/tmp}/wendy-e2e-auth-preflight.stderr.XXXXXX")"
+
+  run_preflight_cli_auth_fixture "$target_agent_address" >"$stdout_path" 2>"$stderr_path"
+  PREFLIGHT_STATUS=$?
+
+  PREFLIGHT_STDOUT="$(cat "$stdout_path")"
+  stderr_output="$(cat "$stderr_path")"
+  PREFLIGHT_OUTPUT="$PREFLIGHT_STDOUT"
+  if [[ -n "$stderr_output" ]]; then
+    if [[ -n "$PREFLIGHT_OUTPUT" ]]; then
+      PREFLIGHT_OUTPUT+=$'\n'
+    fi
+    PREFLIGHT_OUTPUT+="$stderr_output"
   fi
-  AGENT_INFO_JSON="$agent_info_json"
+  rm -f "$stdout_path" "$stderr_path"
+  return "$PREFLIGHT_STATUS"
+}
+
+preflight_cli_auth_fixture() {
+  if [[ -z "$AGENT_ADDRESS" ]]; then
+    return
+  fi
+
+  echo "==> Checking CLI auth fixture"
+
+  local agent_info_json status initial_address initial_output fallback_host fallback_port
+  set +e
+  capture_preflight_cli_auth_fixture "$AGENT_ADDRESS"
+  status=$?
+  set -e
+  agent_info_json="$PREFLIGHT_STDOUT"
+  if [[ $status -eq 0 ]]; then
+    AGENT_INFO_JSON="$agent_info_json"
+    return
+  fi
+
+  initial_address="$AGENT_ADDRESS"
+  initial_output="$PREFLIGHT_OUTPUT"
+
+  if preflight_failure_allows_ipv4_fallback "$initial_output" && device_address_ipv4_fallback_host "$initial_address"; then
+    fallback_host="$ADDRESS_HOST"
+    fallback_port="$ADDRESS_PORT"
+
+    echo "WARN: CLI auth preflight to $initial_address failed with a network dialing error; trying IPv4 fallback for $fallback_host." >&2
+
+    local ipv4_address fallback_address fallback_output
+    while IFS= read -r ipv4_address; do
+      [[ -n "$ipv4_address" ]] || continue
+      fallback_address="$(device_address_with_host "$ipv4_address" "$fallback_port")"
+      echo "    Retrying CLI auth preflight with IPv4 address: $fallback_address" >&2
+
+      set +e
+      capture_preflight_cli_auth_fixture "$fallback_address"
+      status=$?
+      set -e
+      fallback_output="$PREFLIGHT_OUTPUT"
+      if [[ $status -eq 0 ]]; then
+        AGENT_ADDRESS="$fallback_address"
+        AGENT_INFO_JSON="$PREFLIGHT_STDOUT"
+        echo "==> Using IPv4 fallback for Swift E2E target" >&2
+        echo "    Configured agent address: $initial_address" >&2
+        echo "    Effective agent address:  $AGENT_ADDRESS" >&2
+        return
+      fi
+
+      echo "WARN: IPv4 fallback preflight failed for $fallback_address." >&2
+      if [[ -n "$fallback_output" ]]; then
+        printf '%s\n' "$fallback_output" >&2
+      fi
+    done < <(resolve_cli_ipv4_addresses "$fallback_host")
+  fi
+
+  if [[ -n "$initial_output" ]]; then
+    printf '%s\n' "$initial_output" >&2
+  fi
+  echo "ERROR: CLI auth fixture cannot access $initial_address." >&2
+  echo "Run 'wendy auth login' with an account that can access the provisioned device, or set WENDY_E2E_CLI_AUTH_CONFIG_PATH." >&2
+  exit 1
 }
 
 build_cli() {
@@ -788,7 +993,7 @@ write_attempt_info() {
 
   mkdir -p "$RUN_DIR"
 
-  local created_at git_commit git_branch git_ref git_remote git_dirty github_sha swift_version go_version safe_device_address
+  local created_at git_commit git_branch git_ref git_remote git_dirty github_sha swift_version go_version safe_device_address effective_agent_address
   created_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
   git_commit="$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null || true)"
   git_branch="$(git -C "$REPO_DIR" branch --show-current 2>/dev/null || true)"
@@ -803,6 +1008,7 @@ write_attempt_info() {
   swift_version="$(swift --version 2>/dev/null | head -n 1 || true)"
   go_version="$(go version 2>/dev/null || true)"
   safe_device_address="${DEVICE_ADDRESS##*@}"
+  effective_agent_address="$AGENT_ADDRESS"
 
   {
     echo "{"
@@ -832,7 +1038,8 @@ write_attempt_info() {
     printf '    "cliAddress": '; json_string_or_null "$CLI_ADDRESS"; echo ","
     printf '    "cliUser": '; json_string_or_null "$CLI_USER"; echo ","
     printf '    "agentOS": '; json_string_or_null "$AGENT_OS"; echo ","
-    printf '    "agentAddress": '; json_string_or_null "$AGENT_ADDRESS"; echo ","
+    printf '    "agentAddress": '; json_string_or_null "${CONFIGURED_AGENT_ADDRESS:-$AGENT_ADDRESS}"; echo ","
+    printf '    "effectiveAgentAddress": '; json_string_or_null "$effective_agent_address"; echo ","
     printf '    "deviceAddress": '; json_string_or_null "$safe_device_address"; echo ","
     printf '    "agentUser": '; json_string_or_null "$AGENT_USER"; echo ","
     printf '    "transport": '; json_string_or_null "$TRANSPORT"; echo ","
@@ -926,6 +1133,9 @@ echo "    HTML:     <deferred to Scripts/E2EReport.sh>"
 echo "    CLI target: ${CLI_USER:+$CLI_USER@}${CLI_ADDRESS:-<local>}:${CLI_REPO_DIR:-<no-repo>}"
 echo "    CLI OS:   ${CLI_OS:-<current>}"
 if [[ -n "$AGENT_ADDRESS" ]]; then
+  if [[ -n "$CONFIGURED_AGENT_ADDRESS" && "$CONFIGURED_AGENT_ADDRESS" != "$AGENT_ADDRESS" ]]; then
+    echo "    Configured agent: ${CONFIGURED_AGENT_ADDRESS}"
+  fi
   echo "    Agent:   $(ssh_target "$AGENT_USER" "$AGENT_ADDRESS"):${AGENT_REPO_DIR:-<no-repo>}"
 else
   echo "    Agent:   <local>:${AGENT_REPO_DIR:-<no-repo>}"

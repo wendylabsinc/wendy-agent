@@ -52,15 +52,29 @@
     "target": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["cliOS", "cliAddress", "cliUser", "agentOS", "agentAddress", "agentUser", "transport"],
+      "required": [
+        "cliOS",
+        "cliAddress",
+        "cliUser",
+        "agentOS",
+        "agentAddress",
+        "effectiveAgentAddress",
+        "deviceAddress",
+        "agentUser",
+        "transport",
+        "agentInfo"
+      ],
       "properties": {
         "cliOS": { "type": ["string", "null"] },
         "cliAddress": { "type": ["string", "null"] },
         "cliUser": { "type": ["string", "null"] },
         "agentOS": { "type": ["string", "null"] },
         "agentAddress": { "type": ["string", "null"] },
+        "effectiveAgentAddress": { "type": ["string", "null"] },
+        "deviceAddress": { "type": ["string", "null"] },
         "agentUser": { "type": ["string", "null"] },
-        "transport": { "type": ["string", "null"] }
+        "transport": { "type": ["string", "null"] },
+        "agentInfo": { "type": ["object", "null"] }
       }
     },
     "paths": {
@@ -86,7 +100,7 @@
     "test": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["filters", "isolation", "parallel"],
+      "required": ["filters", "isolation", "parallel", "managedAgent"],
       "properties": {
         "filters": {
           "type": "array",
@@ -96,7 +110,8 @@
           "type": "string",
           "enum": ["per-test", "per-run", "none"]
         },
-        "parallel": { "type": "boolean" }
+        "parallel": { "type": "boolean" },
+        "managedAgent": { "type": "boolean" }
       }
     },
     "tools": {
