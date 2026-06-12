@@ -35,8 +35,8 @@ Housekeeping snapshot, 2026-06-12:
 - Next Mac beta implementation candidate: WDY-1531 — Make `wendy run`
   gracefully reject project types unsupported on Mac. Linear: Backlog.
 - Stale/decision candidates inside the Mac beta project:
-  - WDY-1365 likely completed by the existing post-beta backlog decomposition;
-    close only after explicit confirmation.
+  - WDY-1365 canceled as stale umbrella work; the post-beta backlog already has
+    focused follow-up issues.
   - WDY-1351 and WDY-1358 are mostly superseded by WDY-1377 and active WDY-1529;
     reassess after WDY-1529 merges.
   - WDY-1349 likely overlaps the WDY-1509/WDY-1512+ CLI/E2E audit family, but it
@@ -696,7 +696,7 @@ WDY-1479 (SER9 Swift E2E mTLS auth failure).
 - WDY-1358 — post-beta broader CLI unsupported-error rendering; WDY-1377 covered beta minimum. Reassess after WDY-1529 merges.
 - WDY-1359 — canceled; diagnostics/log docs are not in beta scope.
 - WDY-1364 — post-beta Swift E2E review.
-- WDY-1365 — create post-beta backlog from support matrix gaps. Likely stale because the current backlog now covers Docker/container, hardware APIs, diagnostics, E2E, security, examples, and mTLS; close only after explicit confirmation.
+- WDY-1365 — canceled as stale umbrella work. The current backlog already covers Docker/container, hardware APIs, diagnostics, E2E, security, examples, and mTLS with focused issues.
 - WDY-1366 — post-beta Linux/macOS install-doc restructuring.
 - WDY-1376 — post-beta security guidance unless security explicitly blocks beta; at most one short callout if revived.
 - WDY-1379 — post-beta native macOS SwiftPM example.
