@@ -276,6 +276,24 @@ Child PR bodies should include what surface was reviewed, how behavior was
 sampled, which references changed, which commands/routes remain manual or out of
 automation scope, follow-up issues filed, and the relevant `Closes WDY-xxxx`.
 
+### Active child issue setup
+
+#### WDY-1511 — Remove misleading hidden completion install `--output-dir` test seam
+
+- Status: `prepared`; Linear state: In Progress; assignee:
+  `konstantin@wendy.sh`; project: `E2E Tests`.
+- Worktree: `.worktrees/kb.wdy-1511-completion-install-output-dir`; branch:
+  `kb.wdy-1511-completion-install-output-dir`.
+- Draft PR: https://github.com/wendylabsinc/WendyOS/pull/990 with
+  `Closes WDY-1511`.
+- Setup commit: `320e997d chore: start WDY-1511 completion install seam cleanup`.
+- Scope: remove or correct the misleading hidden `wendy completion install
+  --output-dir` test seam. Prefer isolated `HOME`/`USERPROFILE` in tests while
+  continuing to clear `ZDOTDIR`, `XDG_DATA_HOME`, and `XDG_CONFIG_HOME`. Do not
+  broaden into WDY-1512+ CLI surface cleanup.
+- Resume:
+  `cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1511-completion-install-output-dir && ai --prompt "Read HANDOVER.md and follow its instructions."`
+
 ## Issue ledger
 
 ### WDY-1352 — Verify discovery and device selection for WendyAgentMac
