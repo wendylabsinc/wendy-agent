@@ -19,12 +19,13 @@ per-issue worktrees.
 `PLAN.md` is populated with the Linear **E2E Tests** issues and current status:
 
 1. `WDY-1519` — In progress: Add IPv4 fallback preflight for physical Swift E2E targets
-2. `WDY-1521` — In progress: Teach E2E AI review to explain why a run failed
-3. `WDY-1510` — Canceled: Re-enable Raspberry Pi physical Swift E2E route
-4. `WDY-1482` — Done: Gate device-to-device E2E jobs behind successful local E2E runs
-5. `WDY-1494` — Done: Clean up Swift E2E route matrix and restore commented route ledger
-6. `WDY-1481` — Done: Add local E2E matrix coverage for macOS↔macOS and Ubuntu↔Ubuntu
-7. `WDY-1479` — Done: Investigate SER9 Swift E2E mTLS auth failure
+2. `WDY-1527` — In progress: Rework Swift E2E aggregate storage for attempt-level artifacts
+3. `WDY-1521` — Paused: Teach E2E AI review to explain why a run failed
+4. `WDY-1510` — Canceled: Re-enable Raspberry Pi physical Swift E2E route
+5. `WDY-1482` — Done: Gate device-to-device E2E jobs behind successful local E2E runs
+6. `WDY-1494` — Done: Clean up Swift E2E route matrix and restore commented route ledger
+7. `WDY-1481` — Done: Add local E2E matrix coverage for macOS↔macOS and Ubuntu↔Ubuntu
+8. `WDY-1479` — Done: Investigate SER9 Swift E2E mTLS auth failure
 
 ## Completed housekeeping
 
@@ -110,24 +111,36 @@ WDY-1510 was canceled because no Raspberry Pi 5 is currently available on CI:
 - WDY-1520 — Backlog: consider the long-term product CLI fix for dual-stack
   hostnames where IPv6 fails but IPv4 succeeds.
   https://linear.app/wendylabsinc/issue/WDY-1520/consider-cli-ipv6-to-ipv4-fallback-for-device-connections
-- WDY-1521 — In Progress, E2E Tests project: teach E2E AI review to explain why
-  a specific run failed and what to do next, including preflight/setup failures
-  with missing attempt artifacts.
+- WDY-1527 — In Progress, E2E Tests project: rework Swift E2E aggregate
+  storage for attempt-level artifacts. This is blocking WDY-1521 and should be
+  addressed first.
+  - Worktree: `/Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1527-e2e-attempt-artifacts`
+  - Branch: `kb.wdy-1527-e2e-attempt-artifacts`
+  - Draft PR: https://github.com/wendylabsinc/WendyOS/pull/994
+  - Linear: https://linear.app/wendylabsinc/issue/WDY-1527/rework-swift-e2e-aggregate-storage-for-attempt-level-artifacts
+  - Setup commit: `c34db74`
+  - Resume command:
+
+    ```sh
+    cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1527-e2e-attempt-artifacts && ai --prompt "Read HANDOVER.md and follow its instructions."
+    ```
+- WDY-1521 — Paused, E2E Tests project: teach E2E AI review to explain why a
+  specific run failed and what to do next, including preflight/setup failures
+  with missing attempt artifacts. Resume after WDY-1527 settles the aggregate
+  layout. Linear has a pause comment:
+  https://linear.app/wendylabsinc/issue/WDY-1521/teach-e2e-ai-review-to-explain-why-a-run-failed#comment-c3373c24
   - Worktree: `/Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1521-e2e-ai-failure-diagnosis`
   - Branch: `kb.wdy-1521-e2e-ai-failure-diagnosis`
   - Draft PR: https://github.com/wendylabsinc/WendyOS/pull/993
   - Linear: https://linear.app/wendylabsinc/issue/WDY-1521/teach-e2e-ai-review-to-explain-why-a-run-failed
   - Setup commit: `89dc863`
-  - Resume command:
-
-    ```sh
-    cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1521-e2e-ai-failure-diagnosis && ai --prompt "Read HANDOVER.md and follow its instructions."
-    ```
 
 ## Remaining intended next steps
 
-- Continue WDY-1519 in its dedicated worktree; implementation should not happen
-  in this coordinator worktree.
+- Continue WDY-1527 in its dedicated worktree first; implementation should not
+  happen in this coordinator worktree.
+- Keep WDY-1521 paused until WDY-1527 settles the aggregate layout.
+- Continue WDY-1519 separately in its dedicated worktree.
 - If Raspberry Pi 5 CI hardware comes online later, open a new Linear issue or
   reopen WDY-1510 and start from the closed PR branch/diff.
 - Treat WDY-968 as related/background only: it is outside the E2E Tests project
