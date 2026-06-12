@@ -53,15 +53,43 @@ in per-issue worktree sessions, not in this coordinator worktree.
 
 ## Current focus
 
-TBD.
+Started WDY-1532 from the general queue. Coordinator setup is complete; implementation must happen in the issue worktree.
 
 ## Active / paused issues
 
-- TBD.
+### WDY-1532 — Support `wendy.json` file sync for WendyOS/Linux deployments
+
+- Linear: https://linear.app/wendylabsinc/issue/WDY-1532/support-wendyjson-file-sync-for-wendyoslinux-deployments
+- State: In Progress
+- Project: none
+- Worktree: `/Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1532-file-sync`
+- Branch: `kb.wdy-1532-file-sync`
+- Draft PR: https://github.com/wendylabsinc/WendyOS/pull/998
+- Setup commit: `c3ace1815cef5bf69d1d9d72e312cffe52567131`
+- Status: Handoff written; ready for implementation in issue worktree.
+- Scope:
+  - Make top-level `wendy.json.files` work for WendyOS/Linux `wendy run` deployments.
+  - Document platform/build-path support, destination resolution, directory/file semantics, and stale/update behavior.
+  - Add CLI/agent tests for at least one Linux/WendyOS deployment path.
+- Constraints:
+  - Keep implementation out of this coordinator worktree.
+  - Preserve existing macOS/Darwin file-sync semantics unless sharing helpers requires tiny refactors.
+  - Be explicit about multi-service/Compose support if it is out of scope.
+- Validation expectations:
+  - Focused Go tests for appconfig, CLI command file sync/run behavior, and agent container/spec behavior as changed.
+- Resume:
+
+  ```sh
+  cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1532-file-sync && ai --prompt "Read HANDOVER.md and follow its instructions."
+  ```
 
 ## Candidate issue queue
 
-- TBD.
+- WDY-1520 — Consider CLI IPv6-to-IPv4 fallback for device connections — https://linear.app/wendylabsinc/issue/WDY-1520/consider-cli-ipv6-to-ipv4-fallback-for-device-connections
+- WDY-1498 — Add headless device-code flow for `wendy auth login` — https://linear.app/wendylabsinc/issue/WDY-1498/add-headless-device-code-flow-for-wendy-auth-login
+- WDY-1497 — Explore `wendy.json` profiles for selectable app configurations — https://linear.app/wendylabsinc/issue/WDY-1497/explore-wendyjson-profiles-for-selectable-app-configurations
+- WDY-1496 — CLI: support explicit `--config` path for `wendy.json` — https://linear.app/wendylabsinc/issue/WDY-1496/cli-support-explicit-config-path-for-wendyjson
+- WDY-1472 — Plan Wendy Agent to Wendy Daemon rename timing — https://linear.app/wendylabsinc/issue/WDY-1472/plan-wendy-agent-to-wendy-daemon-rename-timing
 
 ## Recently completed
 
@@ -69,7 +97,8 @@ TBD.
 
 ## Follow-ups / discoveries
 
-- TBD.
+- The `linear` CLI is not installed in this environment despite the Linear skill docs; coordinator used Linear GraphQL via `LINEAR_API_KEY` for WDY-1532 assignment/status.
+- Pushing WDY-1532 to `origin` over the default SSH URL hung; pushing via `ssh://git@ssh.github.com:443/wendylabsinc/WendyOS.git` worked. The WDY-1532 worktree has `remote.origin.pushurl` set to that SSH-over-443 URL.
 
 ## Cross-coordinator references
 
