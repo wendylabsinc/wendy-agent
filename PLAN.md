@@ -71,6 +71,27 @@ in per-issue worktree sessions, not in this master planning session.
   cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1510-rpi-swift-e2e && ai --prompt "Read HANDOVER.md and follow its instructions."
   ```
 
+### WDY-1519 — Add IPv4 fallback preflight for physical Swift E2E targets
+
+- Status: `planned`
+- Linear project: E2E Tests
+- Linear: https://linear.app/wendylabsinc/issue/WDY-1519/add-ipv4-fallback-preflight-for-physical-swift-e2e-targets
+- Linear assignee: unassigned
+- Linear state: Todo (`unstarted`)
+- Branch/worktree name: not prepared yet
+- Worktree path: not prepared yet
+- PR: not created yet
+- PR closing reference: `Closes WDY-1519`
+- Scope: add a temporary CI hardening fallback for physical Swift E2E preflight.
+  If a configured hostname such as `wendy-SER9.local` fails due to an
+  unreachable IPv6 route, resolve an IPv4 address, retry preflight with it, and
+  use the resolved IPv4 address for the remainder of the attempt. Preserve clear
+  logs/attempt metadata showing both configured and resolved addresses.
+- Validation: reproduce or unit-test hostname-to-IPv4 fallback behavior where
+  practical; at minimum run shell/YAML/actionlint validation and ensure Swift
+  E2E CI passes before merging any workflow/script changes.
+- Resume command: not available until prepared
+
 ### WDY-1494 — Clean up Swift E2E route matrix and restore commented route ledger
 
 - Status: `done`
@@ -165,11 +186,12 @@ in per-issue worktree sessions, not in this master planning session.
 Keep each issue short and validation-focused. Completed issues stay in the
 ledger for history; remaining active planning starts with WDY-1510.
 
-1. **WDY-1510** — Canceled: Re-enable Raspberry Pi physical Swift E2E route.
-2. **WDY-1482** — Done: Gate device-to-device E2E jobs behind successful local E2E runs.
-3. **WDY-1494** — Done: Clean up Swift E2E route matrix and restore commented route ledger.
-4. **WDY-1481** — Done: Add local E2E matrix coverage for macOS↔macOS and Ubuntu↔Ubuntu.
-5. **WDY-1479** — Done: Investigate SER9 Swift E2E mTLS auth failure.
+1. **WDY-1519** — Todo: Add IPv4 fallback preflight for physical Swift E2E targets.
+2. **WDY-1510** — Canceled: Re-enable Raspberry Pi physical Swift E2E route.
+3. **WDY-1482** — Done: Gate device-to-device E2E jobs behind successful local E2E runs.
+4. **WDY-1494** — Done: Clean up Swift E2E route matrix and restore commented route ledger.
+5. **WDY-1481** — Done: Add local E2E matrix coverage for macOS↔macOS and Ubuntu↔Ubuntu.
+6. **WDY-1479** — Done: Investigate SER9 Swift E2E mTLS auth failure.
 
 ## Backlog / only-if-blocking
 
@@ -177,6 +199,11 @@ Use this section for E2E Tests project issues that should not be started yet, or
 for related issues outside the project that matter only if they block active E2E
 work.
 
+- **WDY-1520** — Consider CLI IPv6-to-IPv4 fallback for device connections:
+  https://linear.app/wendylabsinc/issue/WDY-1520/consider-cli-ipv6-to-ipv4-fallback-for-device-connections
+  This is the potential long-term product fix for dual-stack hostnames where an
+  IPv6 route fails but IPv4 is reachable. Keep separate from WDY-1519, which is
+  a temporary CI preflight hardening issue.
 - **WDY-968** — `wendy discover` on mac does not send out discovery packets
   reliably. This is outside the E2E Tests project and currently Done in Linear.
   Follow-up completed: PR #981 re-enabled the physical macOS→Ubuntu/SER9 route

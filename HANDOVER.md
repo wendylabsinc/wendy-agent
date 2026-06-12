@@ -18,11 +18,12 @@ per-issue worktrees.
 
 `PLAN.md` is populated with the Linear **E2E Tests** issues and current status:
 
-1. `WDY-1510` — Canceled: Re-enable Raspberry Pi physical Swift E2E route
-2. `WDY-1482` — Done: Gate device-to-device E2E jobs behind successful local E2E runs
-3. `WDY-1494` — Done: Clean up Swift E2E route matrix and restore commented route ledger
-4. `WDY-1481` — Done: Add local E2E matrix coverage for macOS↔macOS and Ubuntu↔Ubuntu
-5. `WDY-1479` — Done: Investigate SER9 Swift E2E mTLS auth failure
+1. `WDY-1519` — Todo: Add IPv4 fallback preflight for physical Swift E2E targets
+2. `WDY-1510` — Canceled: Re-enable Raspberry Pi physical Swift E2E route
+3. `WDY-1482` — Done: Gate device-to-device E2E jobs behind successful local E2E runs
+4. `WDY-1494` — Done: Clean up Swift E2E route matrix and restore commented route ledger
+5. `WDY-1481` — Done: Add local E2E matrix coverage for macOS↔macOS and Ubuntu↔Ubuntu
+6. `WDY-1479` — Done: Investigate SER9 Swift E2E mTLS auth failure
 
 ## Completed housekeeping
 
@@ -90,9 +91,19 @@ WDY-1510 was canceled because no Raspberry Pi 5 is currently available on CI:
 - Swift E2E workflow run `27362744824` was canceled after closing the PR; the
   Raspberry Pi and analysis jobs ended canceled.
 
+## Newly created follow-up issues
+
+- WDY-1519 — Todo, E2E Tests project: add temporary IPv4 fallback preflight for
+  physical Swift E2E targets after run `27381316219` failed with an unreachable
+  IPv6 route to `wendy-SER9.local`.
+  https://linear.app/wendylabsinc/issue/WDY-1519/add-ipv4-fallback-preflight-for-physical-swift-e2e-targets
+- WDY-1520 — Backlog: consider the long-term product CLI fix for dual-stack
+  hostnames where IPv6 fails but IPv4 succeeds.
+  https://linear.app/wendylabsinc/issue/WDY-1520/consider-cli-ipv6-to-ipv4-fallback-for-device-connections
+
 ## Remaining intended next steps
 
-- No active E2E Tests issue remains in this coordinator.
+- Start WDY-1519 if the user asks, following the `PLAN.md` working protocol.
 - If Raspberry Pi 5 CI hardware comes online later, open a new Linear issue or
   reopen WDY-1510 and start from the closed PR branch/diff.
 - Treat WDY-968 as related/background only: it is outside the E2E Tests project
