@@ -704,6 +704,19 @@ WDY-1479 (SER9 Swift E2E mTLS auth failure).
   message. The issue includes a review of similar gaps in audio, Wi-Fi mutation,
   Bluetooth mutation, camera streaming, persistent volumes, dashboard/cloud
   follow-up checks, and the WDY-1377 commands already covered.
+- WDY-1530 — add Wendy for Mac templates to `wendy init`. Filed after
+  `wendy init --template` offered only WendyOS and Wendy Lite targets despite
+  Wendy Agent for Mac supporting native `platform: "darwin"` app deployment.
+  Track in the `New Templates` project as a small first Mac template pass:
+  add a Mac target/template filter path, provide at least one minimal native
+  macOS SwiftPM template, and avoid implying Linux containers on Mac agents are
+  supported.
+- WDY-1531 — make `wendy run` gracefully reject project types unsupported on
+  Mac. Track in `Wendy for Mac — Beta`: when targeting a Darwin/macOS agent,
+  unsupported Linux-container, Compose, WendyOS-template, or otherwise
+  non-native-Mac project shapes should fail early with a Mac-specific diagnostic
+  instead of generic build/deploy/tooling errors or agent-update hints. Keep
+  native Darwin SwiftPM and Xcode flows working.
 - WDY-1509 — manually audit the full CLI surface against Swift E2E stubs across
   Linux/WendyOS and Mac/Darwin. This grew into an umbrella/manual audit and the
   detailed coordination plan has been folded into this master `PLAN.md` under
