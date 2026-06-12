@@ -73,14 +73,14 @@ in per-issue worktree sessions, not in this master planning session.
 
 ### WDY-1519 — Add IPv4 fallback preflight for physical Swift E2E targets
 
-- Status: `planned`
+- Status: `in progress`
 - Linear project: E2E Tests
 - Linear: https://linear.app/wendylabsinc/issue/WDY-1519/add-ipv4-fallback-preflight-for-physical-swift-e2e-targets
-- Linear assignee: unassigned
-- Linear state: Todo (`unstarted`)
-- Branch/worktree name: not prepared yet
-- Worktree path: not prepared yet
-- PR: not created yet
+- Linear assignee: `konstantin@wendy.sh`
+- Linear state: In Progress (`started`)
+- Branch/worktree name: `kb.wdy-1519-ipv4-e2e-preflight`
+- Worktree path: `/Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1519-ipv4-e2e-preflight`
+- PR: https://github.com/wendylabsinc/WendyOS/pull/991 (draft setup PR)
 - PR closing reference: `Closes WDY-1519`
 - Scope: add a temporary CI hardening fallback for physical Swift E2E preflight.
   If a configured hostname such as `wendy-SER9.local` fails due to an
@@ -90,7 +90,11 @@ in per-issue worktree sessions, not in this master planning session.
 - Validation: reproduce or unit-test hostname-to-IPv4 fallback behavior where
   practical; at minimum run shell/YAML/actionlint validation and ensure Swift
   E2E CI passes before merging any workflow/script changes.
-- Resume command: not available until prepared
+- Resume command:
+
+  ```sh
+  cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1519-ipv4-e2e-preflight && ai --prompt "Read HANDOVER.md and follow its instructions."
+  ```
 
 ### WDY-1494 — Clean up Swift E2E route matrix and restore commented route ledger
 
@@ -186,7 +190,7 @@ in per-issue worktree sessions, not in this master planning session.
 Keep each issue short and validation-focused. Completed issues stay in the
 ledger for history; remaining active planning starts with WDY-1510.
 
-1. **WDY-1519** — Todo: Add IPv4 fallback preflight for physical Swift E2E targets.
+1. **WDY-1519** — In progress: Add IPv4 fallback preflight for physical Swift E2E targets.
 2. **WDY-1510** — Canceled: Re-enable Raspberry Pi physical Swift E2E route.
 3. **WDY-1482** — Done: Gate device-to-device E2E jobs behind successful local E2E runs.
 4. **WDY-1494** — Done: Clean up Swift E2E route matrix and restore commented route ledger.
