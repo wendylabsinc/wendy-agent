@@ -240,8 +240,8 @@ WDY-1509 is complete as the umbrella/manual audit decomposition. PR #982 is only
 a draft audit artifact and is not expected to merge. Focused child issues are
 the mergeable implementation path, ordered as follows:
 
-1. WDY-1511 — Remove misleading hidden completion install `--output-dir` test
-   seam.
+1. Completed: WDY-1511 — Remove misleading hidden completion install
+   `--output-dir` test seam, PR #990 merged.
 2. WDY-1512 — Audit and align hidden/deprecated CLI aliases. Paused until
    WDY-1528 (machine-readable Swift E2E recording metadata) is addressed.
 3. WDY-1513 — Align host-only CLI E2E references.
@@ -281,23 +281,21 @@ Child PR bodies should include what surface was reviewed, how behavior was
 sampled, which references changed, which commands/routes remain manual or out of
 automation scope, follow-up issues filed, and the relevant `Closes WDY-xxxx`.
 
-### Active child issue setup
+### Child issue status
 
 #### WDY-1511 — Remove misleading hidden completion install `--output-dir` test seam
 
-- Status: `prepared`; Linear state: In Progress; assignee:
-  `konstantin@wendy.sh`; project: `E2E Tests`.
-- Worktree: `.worktrees/kb.wdy-1511-completion-install-output-dir`; branch:
-  `kb.wdy-1511-completion-install-output-dir`.
-- Draft PR: https://github.com/wendylabsinc/WendyOS/pull/990 with
+- Status: `done`; Linear state: Done; assignee: `konstantin@wendy.sh`;
+  project: `E2E Tests`.
+- Worktree: removed after merge (`.worktrees/kb.wdy-1511-completion-install-output-dir`).
+- PR: https://github.com/wendylabsinc/WendyOS/pull/990 — merged with
   `Closes WDY-1511`.
 - Setup commit: `320e997d chore: start WDY-1511 completion install seam cleanup`.
-- Scope: remove or correct the misleading hidden `wendy completion install
-  --output-dir` test seam. Prefer isolated `HOME`/`USERPROFILE` in tests while
-  continuing to clear `ZDOTDIR`, `XDG_DATA_HOME`, and `XDG_CONFIG_HOME`. Do not
-  broaden into WDY-1512+ CLI surface cleanup.
-- Resume:
-  `cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1511-completion-install-output-dir && ai --prompt "Read HANDOVER.md and follow its instructions."`
+- Merge commit: `5994d583a74104f97a5d431a176a18073d537616`.
+- Scope: removed the misleading hidden `wendy completion install --output-dir`
+  test seam and kept completion install tests isolated without implying a public
+  output-directory contract.
+- Resume command: not needed; issue is complete.
 
 #### WDY-1512 — Audit and align hidden deprecated CLI aliases
 
@@ -731,8 +729,8 @@ WDY-1479 (SER9 Swift E2E mTLS auth failure).
     audit artifact / do not merge. It intentionally must not include any
     closing reference for WDY-1509.
   - Child issue order:
-    1. WDY-1511 — Remove misleading hidden completion install `--output-dir`
-       test seam.
+    1. Completed: WDY-1511 — Remove misleading hidden completion install
+       `--output-dir` test seam, PR #990 merged.
     2. WDY-1512 — Audit and align hidden/deprecated CLI aliases. Paused until
        WDY-1528 is addressed.
     3. WDY-1513 — Align host-only CLI E2E references.
