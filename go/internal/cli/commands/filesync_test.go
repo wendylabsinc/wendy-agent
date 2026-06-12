@@ -17,6 +17,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
+	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
@@ -296,6 +297,45 @@ func startFakeServer(t *testing.T, srv *fakeSyncServer) (*grpcclient.AgentConnec
 		s.Stop()
 	}
 	return ac, cleanup
+}
+
+func TestSyncWendyJSONFilesForLinux_SyncsConfiguredFilesAndDestinations(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "assets"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "assets", "logo.txt"), []byte("logo"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := &fakeSyncServer{}
+	conn, cleanup := startFakeServer(t, srv)
+	defer cleanup()
+
+	cfg := &appconfig.AppConfig{
+		AppID: "sh.wendy.LinuxApp",
+		Files: []appconfig.FileSyncEntry{
+			{Path: "config.json"},
+			{Path: "assets", To: "public/assets"},
+		},
+	}
+	if err := syncWendyJSONFilesForLinux(context.Background(), conn, dir, cfg); err != nil {
+		t.Fatalf("syncWendyJSONFilesForLinux: %v", err)
+	}
+
+	acked := make(map[string]bool)
+	for _, path := range srv.ackedPaths {
+		acked[path] = true
+	}
+	if !acked["config.json"] {
+		t.Fatalf("missing config.json sync, acked %v", srv.ackedPaths)
+	}
+	if !acked["public/assets/logo.txt"] {
+		t.Fatalf("missing remapped directory sync, acked %v", srv.ackedPaths)
+	}
 }
 
 func TestSyncFiles_ContentChunksCarryCumulativeState(t *testing.T) {

@@ -821,6 +821,10 @@ func runSwiftWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cw
 	// from localhost:<regPort> when creating the container.
 	deviceImage := fmt.Sprintf("localhost:%d/%s:latest", regPort, strings.ToLower(product))
 
+	if err := syncWendyJSONFilesForLinux(ctx, conn, cwd, appCfg); err != nil {
+		return err
+	}
+
 	appConfigData, err := json.Marshal(appCfg)
 	if err != nil {
 		return fmt.Errorf("marshaling app config: %w", err)
@@ -921,6 +925,28 @@ func swiftBuildBinPath(ctx context.Context, cwd, buildConfig string) (string, er
 		return "", fmt.Errorf("swift build --show-bin-path returned an empty path")
 	}
 	return binDir, nil
+}
+
+func syncWendyJSONFilesForLinux(ctx context.Context, conn *grpcclient.AgentConnection, cwd string, appCfg *appconfig.AppConfig) error {
+	entries := make([]fileSyncEntry, 0, len(appCfg.Files))
+	for _, f := range appCfg.Files {
+		entries = append(entries, fileSyncEntry{
+			localPath:  filepath.Join(cwd, f.Path),
+			remotePath: effectiveRemotePath(f.Path, f.To),
+		})
+	}
+
+	err := syncFiles(ctx, conn, appCfg.AppID, entries)
+	if err != nil {
+		// Empty manifests are used to clear stale files after users remove the
+		// files block. Do not make otherwise-normal runs fail against older agents
+		// that do not yet implement FileSync; configured files still require it.
+		if len(entries) == 0 && status.Code(err) == codes.Unimplemented {
+			return nil
+		}
+		return fmt.Errorf("syncing wendy.json files: %w", err)
+	}
+	return nil
 }
 
 func assembleSwiftPMSyncEntries(binaryPath, cwd string, appCfg *appconfig.AppConfig) ([]fileSyncEntry, error) {
@@ -1294,6 +1320,10 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 
 	// The agent pulls from localhost:<regPort>.
 	deviceImage := fmt.Sprintf("localhost:%d/%s:latest", regPort, repo)
+
+	if err := syncWendyJSONFilesForLinux(ctx, conn, cwd, appCfg); err != nil {
+		return err
+	}
 
 	appConfigData, err := json.Marshal(appCfg)
 	if err != nil {

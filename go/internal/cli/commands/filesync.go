@@ -10,13 +10,13 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/dustin/go-humanize"
 	"golang.org/x/term"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
+	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
@@ -202,7 +202,9 @@ func syncFiles(
 				return fmt.Errorf("expected FileSyncComplete, got %T", resp.ResponseType)
 			}
 		}
-		cliLogln("Files up to date.")
+		if len(localManifest.GetFiles()) > 0 || len(agentManifestMsg.Manifest.GetFiles()) > 0 {
+			cliLogln("Files up to date.")
+		}
 		return nil
 	}
 
@@ -499,9 +501,6 @@ func formatTransferRate(bytesSent int64, elapsed time.Duration) string {
 	return humanize.Bytes(uint64(rate)) + "/s"
 }
 
-func effectiveRemotePath(path, to string) string {
-	if to != "" {
-		return to
-	}
-	return strings.TrimPrefix(path, "./")
+func effectiveRemotePath(filePath, to string) string {
+	return appconfig.EffectiveFileSyncDestination(filePath, to)
 }

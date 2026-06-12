@@ -65,6 +65,28 @@ Project language, e.g. `"swift"` or `"python"`. Used by the CLI to select the ap
 
 Set to `true` to enable debug mode (default `false`). Injects debug tooling into the container via the `WENDY_DEBUG` build arg.
 
+### `files`
+
+Additional files or directories to sync before `wendy run` starts the app. Supported for native Darwin/macOS runs and WendyOS/Linux container runs.
+
+```json
+{
+  "files": [
+    { "path": "config.json" },
+    { "path": "assets", "to": "public/assets" }
+  ]
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `path` | File or directory relative to `wendy.json` |
+| `to` | Optional destination relative to the app working directory; defaults to `path` with a leading `./` removed |
+
+For WendyOS/Linux containers, files are copied to an agent-managed per-app area on the device and then bind-mounted read-only into the container at `<working directory>/<to-or-path>`. Stale files removed from `wendy.json` are deleted from that managed area on the next `wendy run`. Top-level `files` currently apply to single-container `wendy run` deployments; multi-service `services` and Docker Compose deployments do not consume them yet.
+
+`path` and `to` must be relative and must not contain `..` components.
+
 ### `entitlements`
 
 Array of capabilities the app requires. See [Entitlements](#entitlements-1) below.

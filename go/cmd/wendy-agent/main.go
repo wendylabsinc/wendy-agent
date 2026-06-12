@@ -172,6 +172,7 @@ func main() {
 	containerSvc := services.NewContainerService(logger, containerdClient,
 		containerSvcOpts...,
 	)
+	fileSyncSvc := services.NewFileSyncService()
 	audioSvc := services.NewAudioService(logger)
 
 	provisioningSvc := services.NewProvisioningService(logger, configPath)
@@ -353,6 +354,7 @@ func main() {
 	registerAllServices := func(srv *grpc.Server) {
 		agentpb.RegisterWendyAgentServiceServer(srv, agentSvc)
 		agentpb.RegisterWendyContainerServiceServer(srv, containerSvc)
+		agentpb.RegisterWendyFileSyncServiceServer(srv, fileSyncSvc)
 		agentpb.RegisterWendyAudioServiceServer(srv, audioSvc)
 		agentpb.RegisterWendyVideoServiceServer(srv, videoSvc)
 		agentpb.RegisterWendyProvisioningServiceServer(srv, provisioningSvc)

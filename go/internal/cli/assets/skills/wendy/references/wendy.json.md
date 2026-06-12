@@ -20,6 +20,7 @@ The `wendy.json` file configures your WendyOS application's identity and entitle
 | `appId` | Unique identifier (reverse domain notation recommended) |
 | `version` | Application version string |
 | `platform` | Target platform: `wendyos`, `wendy-lite`, or `darwin` |
+| `files` | Optional files/directories to sync before `wendy run` starts the app |
 | `entitlements` | Array of entitlement objects specifying required permissions |
 
 ## Platforms
@@ -31,6 +32,21 @@ The `wendy.json` file configures your WendyOS application's identity and entitle
 | `darwin` | Native macOS execution through [Wendy Agent for Mac](/docs/installation/wendy-agent-macos) |
 
 Use `"darwin"` for Apple Silicon Mac targets managed by Wendy Agent for Mac. The CLI builds SwiftPM or Xcode projects on a Mac development machine, syncs the build output to the Mac agent, and starts the app as a native macOS process. Darwin apps run natively and non-containerized, so WendyOS Linux container semantics and hardware entitlements do not apply.
+
+## File Sync
+
+Top-level `files` entries are supported for native Darwin/macOS runs and single-container WendyOS/Linux `wendy run` deployments:
+
+```json
+{
+  "files": [
+    { "path": "config.json" },
+    { "path": "assets", "to": "public/assets" }
+  ]
+}
+```
+
+`path` is relative to `wendy.json`. `to` is optional and resolves relative to the app working directory; when omitted, the destination is `path` with a leading `./` removed. Both fields must be relative and must not contain `..` components. On WendyOS/Linux, synced files are stored in an agent-managed app-scoped directory and mounted read-only into the container. Stale files removed from `wendy.json` are deleted from that managed area on the next run. Multi-service `services` and Docker Compose deployments do not consume top-level `files` yet.
 
 Minimal SwiftPM/macOS configuration:
 

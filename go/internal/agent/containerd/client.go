@@ -9,6 +9,8 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"strconv"
@@ -627,6 +629,9 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 	spec := localoci.DefaultSpec("rootfs", args)
 	spec.Process.Cwd = workingDir
 	spec.Process.Env = env
+	if err := applyFileSyncMounts(spec, appID, workingDir, appCfg.Files); err != nil {
+		return fmt.Errorf("applying file sync mounts: %w", err)
+	}
 	if spec.Linux == nil {
 		spec.Linux = &localoci.Linux{}
 	}
@@ -1087,6 +1092,78 @@ func (c *Client) StartContainerWithStdin(ctx context.Context, appName string, st
 	go c.streamOutput(ctx, task, exitStatusCh, outputCh, appName, stdoutR, stderrR, stdoutW, stderrW)
 
 	return outputCh, nil
+}
+
+var fileSyncAppDir = services.FileSyncAppDir
+
+func applyFileSyncMounts(spec *localoci.Spec, appID, workingDir string, files []appconfig.FileSyncEntry) error {
+	if len(files) == 0 {
+		return nil
+	}
+	appDir, err := fileSyncAppDir(appID)
+	if err != nil {
+		return err
+	}
+	for i, f := range files {
+		destRel := appconfig.EffectiveFileSyncDestination(f.Path, f.To)
+		cleanDestRel, err := cleanFileSyncRelativePath(destRel)
+		if err != nil {
+			return fmt.Errorf("files[%d] destination %q: %w", i, destRel, err)
+		}
+		source := filepath.Join(appDir, filepath.FromSlash(cleanDestRel))
+		info, err := os.Stat(source)
+		if err != nil {
+			return fmt.Errorf("files[%d] source %s: %w", i, source, err)
+		}
+		destination, err := containerFileSyncDestination(workingDir, cleanDestRel)
+		if err != nil {
+			return fmt.Errorf("files[%d] destination %q: %w", i, destRel, err)
+		}
+		options := []string{"ro", "nosuid", "nodev"}
+		if info.IsDir() {
+			options = append([]string{"rbind"}, options...)
+		} else {
+			options = append([]string{"bind"}, options...)
+		}
+		spec.Mounts = append(spec.Mounts, localoci.Mount{
+			Destination: destination,
+			Type:        "bind",
+			Source:      source,
+			Options:     options,
+		})
+	}
+	return nil
+}
+
+func cleanFileSyncRelativePath(p string) (string, error) {
+	if p == "" {
+		return "", fmt.Errorf("path is required")
+	}
+	if strings.ContainsRune(p, '\x00') {
+		return "", fmt.Errorf("path contains NUL")
+	}
+	if path.IsAbs(p) {
+		return "", fmt.Errorf("path must be relative")
+	}
+	cleaned := path.Clean(p)
+	for _, component := range strings.Split(cleaned, "/") {
+		if component == ".." {
+			return "", fmt.Errorf("path must not contain '..' components")
+		}
+	}
+	return cleaned, nil
+}
+
+func containerFileSyncDestination(workingDir, rel string) (string, error) {
+	cleanRel, err := cleanFileSyncRelativePath(rel)
+	if err != nil {
+		return "", err
+	}
+	cleanWorkingDir := path.Clean("/" + strings.TrimPrefix(workingDir, "/"))
+	if cleanRel == "." {
+		return cleanWorkingDir, nil
+	}
+	return path.Join(cleanWorkingDir, cleanRel), nil
 }
 
 func shellCommand() (string, string) {

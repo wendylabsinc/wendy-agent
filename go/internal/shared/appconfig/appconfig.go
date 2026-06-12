@@ -98,6 +98,16 @@ type FileSyncEntry struct {
 	To   string `json:"to,omitempty"`
 }
 
+// EffectiveFileSyncDestination returns the path where a files entry is exposed
+// relative to the app working directory. When "to" is omitted, "path" is used
+// with a leading "./" stripped to match the documented wendy.json behavior.
+func EffectiveFileSyncDestination(filePath, to string) string {
+	if to != "" {
+		return to
+	}
+	return strings.TrimPrefix(filePath, "./")
+}
+
 // RunConfig holds runtime configuration applied when the app is started.
 type RunConfig struct {
 	Args []string `json:"args,omitempty"`
