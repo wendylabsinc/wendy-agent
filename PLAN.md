@@ -318,6 +318,25 @@ automation scope, follow-up issues filed, and the relevant `Closes WDY-xxxx`.
 - Resume:
   `cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1512-hidden-deprecated-aliases && ai --prompt "Read HANDOVER.md and follow its instructions."`
 
+### Active Mac unsupported-error follow-up
+
+#### WDY-1529 — Surface contextual macOS unsupported errors for remaining CLI commands
+
+- Status: `prepared`; Linear state: In Progress; assignee:
+  `konstantin@wendy.sh`; project: `Wendy for Mac — Beta`.
+- Worktree: `.worktrees/kb.wdy-1529-macos-unsupported-errors`; branch:
+  `kb.wdy-1529-macos-unsupported-errors`.
+- Draft PR: https://github.com/wendylabsinc/WendyOS/pull/996 with
+  `Closes WDY-1529`.
+- Setup commit: `e8fa4a9f chore: start WDY-1529 macOS unsupported errors`.
+- Scope: preserve contextual Wendy Agent for Mac unsupported messages instead
+  of generic agent-update hints for audio, Wi-Fi mutations, Bluetooth
+  mutations, camera streaming, persistent volumes, and related dashboard/cloud
+  checks. Include the observed `camera view` masking case where local
+  `gst-launch-1.0` preflight hides the remote unsupported stream error.
+- Resume:
+  `cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1529-macos-unsupported-errors && ai --prompt "Read HANDOVER.md and follow its instructions."`
+
 ## Issue ledger
 
 ### WDY-1352 — Verify discovery and device selection for WendyAgentMac
