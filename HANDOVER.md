@@ -20,7 +20,7 @@ per-issue worktrees.
 
 1. `WDY-1528` — Done: Add machine-readable Swift E2E recording metadata
 2. `WDY-1521` — Ready to resume: Teach E2E AI review to explain why a run failed
-3. `WDY-1519` — In progress, cleanup later: Add IPv4 fallback preflight for physical Swift E2E targets
+3. `WDY-1519` — Backlog: Add IPv4 fallback preflight for physical Swift E2E targets
 4. `WDY-1527` — Done: Rework Swift E2E aggregate storage for attempt-level artifacts
 5. `WDY-1510` — Canceled: Re-enable Raspberry Pi physical Swift E2E route
 6. `WDY-1482` — Done: Gate device-to-device E2E jobs behind successful local E2E runs
@@ -96,12 +96,12 @@ WDY-1510 was canceled because no Raspberry Pi 5 is currently available on CI:
 
 ## Newly created follow-up issues
 
-- WDY-1519 — In Progress, E2E Tests project: add temporary IPv4 fallback
-  preflight for physical Swift E2E targets after run `27381316219` failed with
-  an unreachable IPv6 route to `wendy-SER9.local`.
+- WDY-1519 — Backlog, E2E Tests project: add temporary IPv4 fallback preflight
+  for physical Swift E2E targets after run `27381316219` failed with an
+  unreachable IPv6 route to `wendy-SER9.local`.
   - Worktree: `/Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1519-ipv4-e2e-preflight`
   - Branch: `kb.wdy-1519-ipv4-e2e-preflight`
-  - Draft PR: https://github.com/wendylabsinc/WendyOS/pull/991
+  - Draft PR: https://github.com/wendylabsinc/WendyOS/pull/991 (left open but not active)
   - Linear: https://linear.app/wendylabsinc/issue/WDY-1519/add-ipv4-fallback-preflight-for-physical-swift-e2e-targets
   - Setup commit: `58a8abf`
   - Resume command:
@@ -167,8 +167,9 @@ previously represented in this coordinator include:
 ## Remaining intended next steps
 
 - Resume WDY-1521 next; WDY-1528 and WDY-1527 are now complete.
-- Continue WDY-1519 separately later in its dedicated worktree; PR #991 is still
-  open and currently has failing checks from before the SER9 route was disabled.
+- WDY-1519 and WDY-1520 are in the backlog; do not resume them unless asked.
+  PR #991 remains open as a draft with stale failing checks from before the SER9
+  route was disabled.
 - PR #997, PR #995, and PR #994 are merged; no action needed there.
 - If Raspberry Pi 5 CI hardware comes online later, open a new Linear issue or
   reopen WDY-1510 and start from the closed PR branch/diff.

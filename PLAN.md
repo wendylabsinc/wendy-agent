@@ -75,14 +75,14 @@ in per-issue worktree sessions, not in this master planning session.
 
 ### WDY-1519 — Add IPv4 fallback preflight for physical Swift E2E targets
 
-- Status: `in progress`
+- Status: `backlog`
 - Linear project: E2E Tests
 - Linear: https://linear.app/wendylabsinc/issue/WDY-1519/add-ipv4-fallback-preflight-for-physical-swift-e2e-targets
 - Linear assignee: `konstantin@wendy.sh`
-- Linear state: In Progress (`started`)
+- Linear state: Backlog (`backlog`)
 - Branch/worktree name: `kb.wdy-1519-ipv4-e2e-preflight`
 - Worktree path: `/Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1519-ipv4-e2e-preflight`
-- PR: https://github.com/wendylabsinc/WendyOS/pull/991 (draft setup PR)
+- PR: https://github.com/wendylabsinc/WendyOS/pull/991 (draft, left open but not active)
 - PR closing reference: `Closes WDY-1519`
 - Scope: add a temporary CI hardening fallback for physical Swift E2E preflight.
   If a configured hostname such as `wendy-SER9.local` fails due to an
@@ -268,7 +268,7 @@ ledger for history; the next issue ready to resume is WDY-1521.
 
 1. **WDY-1528** — Done: Add machine-readable Swift E2E recording metadata.
 2. **WDY-1521** — Ready to resume: Teach E2E AI review to explain why a run failed.
-3. **WDY-1519** — In progress, cleanup later: Add IPv4 fallback preflight for physical Swift E2E targets.
+3. **WDY-1519** — Backlog: Add IPv4 fallback preflight for physical Swift E2E targets.
 4. **WDY-1527** — Done: Rework Swift E2E aggregate storage for attempt-level artifacts.
 5. **WDY-1510** — Canceled: Re-enable Raspberry Pi physical Swift E2E route.
 6. **WDY-1482** — Done: Gate device-to-device E2E jobs behind successful local E2E runs.
@@ -304,7 +304,7 @@ fully represented in this coordinator flow:
 - **WDY-1509** — Done: Manually audit CLI surface against E2E stubs across
   Linux and Mac.
 
-- **WDY-1520** — Consider CLI IPv6-to-IPv4 fallback for device connections:
+- **WDY-1520** — Backlog: Consider CLI IPv6-to-IPv4 fallback for device connections:
   https://linear.app/wendylabsinc/issue/WDY-1520/consider-cli-ipv6-to-ipv4-fallback-for-device-connections
   This is the potential long-term product fix for dual-stack hostnames where an
   IPv6 route fails but IPv4 is reachable. Keep separate from WDY-1519, which is
