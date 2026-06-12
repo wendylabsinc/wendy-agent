@@ -37,6 +37,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/agent/registry"
 	"github.com/wendylabsinc/wendy/go/internal/agent/services"
 	"github.com/wendylabsinc/wendy/go/internal/shared/browseropen"
+	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/version"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
@@ -309,6 +310,17 @@ func main() {
 		logger.Info("kernel dmesg collection disabled (set WENDY_COLLECT_DMESG=true to enable)")
 	}
 
+	// mTLS organization-equality enforcement mode. Read once here so the
+	// startMTLSServer closure can capture it. The default (empty value) is grace,
+	// which enforces org-equality for certs that carry an org identity but allows
+	// legacy certs without one — easing migration before cert rotation completes.
+	orgMode, ok := interceptor.ParseOrgMode(os.Getenv("WENDY_MTLS_ORG_ENFORCEMENT"))
+	if !ok {
+		logger.Warn("WENDY_MTLS_ORG_ENFORCEMENT has unrecognised value; defaulting to grace",
+			zap.String("value", os.Getenv("WENDY_MTLS_ORG_ENFORCEMENT")))
+	}
+	logger.Info("mTLS org enforcement mode", zap.String("mode", orgMode.String()))
+
 	// Main agent gRPC server port.
 	agentPort := defaultAgentPort
 	if p := os.Getenv("WENDY_AGENT_PORT"); p != "" {
@@ -388,7 +400,30 @@ func main() {
 			)
 		}
 
-		srv, err := mtls.NewServer(certPEM, chainPEM, keyPEM, logger, floor,
+		// Derive this device's own organization from its leaf certificate so the
+		// mTLS interceptor can enforce org-equality. We deliberately derive from
+		// certPEM (the device's own leaf) rather than provisioningSvc.ProvisioningInfo():
+		// startMTLSServer is also invoked from inside the OnProvisioned callback,
+		// where taking the provisioning mutex would risk re-entrancy (see the comment
+		// at the startTunnelBroker closure). Both call sites already pass certPEM.
+		expectedOrg, haveOrg := deviceOrgFromCertPEM(certPEM)
+		effectiveMode := orgMode
+		if orgMode != interceptor.OrgModeOff && !haveOrg {
+			// Fail safe: the device cannot determine its own org, so it cannot
+			// meaningfully compare a client's org against it. Rather than brick the
+			// device (rejecting all clients) or silently enforce against an unknown
+			// self-org, disable enforcement for this server and log loudly.
+			logger.Error("cannot determine device organization from own certificate; mTLS org enforcement DISABLED for this server",
+				zap.String("configuredMode", orgMode.String()))
+			effectiveMode = interceptor.OrgModeOff
+		}
+		if effectiveMode != interceptor.OrgModeOff {
+			logger.Info("mTLS server enforcing org",
+				zap.Int32("org", expectedOrg),
+				zap.String("mode", effectiveMode.String()))
+		}
+
+		srv, err := mtls.NewServer(certPEM, chainPEM, keyPEM, logger, floor, expectedOrg, effectiveMode,
 			// UnaryMTLSInterceptor and StreamMTLSInterceptor are embedded inside
 			// mtls.NewServer and run before these caller-provided interceptors.
 			grpc.ChainUnaryInterceptor(interceptor.UnaryErrorInterceptor(logger)),
@@ -645,6 +680,39 @@ func certNotBeforeFloor(certPEM string) time.Time {
 		return time.Time{}
 	}
 	return cert.NotBefore
+}
+
+// deviceOrgFromCertPEM parses the device's own leaf certificate (ML-DSA aware,
+// mirroring certNotBeforeFloor) and extracts its organization ID via
+// certs.OrgFromClientCert. It returns (org, true) when an org identity is present
+// and valid, and (0, false) on any parse/extract error or when the cert carries no
+// org identity. The caller treats (0, false) as "device org unknown".
+func deviceOrgFromCertPEM(certPEM string) (int32, bool) {
+	if certPEM == "" {
+		return 0, false
+	}
+	block, _ := pem.Decode([]byte(certPEM))
+	if block == nil {
+		return 0, false
+	}
+	// ML-DSA certs from pki-core have trailing ASN.1 bytes that cause
+	// x509.ParseCertificate to fail. Strip them with the same fallback used by
+	// certNotBeforeFloor and internal/agent/mtls/mldsa_verify.go.
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		var raw asn1.RawValue
+		if _, asn1Err := asn1.Unmarshal(block.Bytes, &raw); asn1Err == nil {
+			cert, err = x509.ParseCertificate(raw.FullBytes)
+		}
+	}
+	if err != nil {
+		return 0, false
+	}
+	org, hasOrg, err := certs.OrgFromClientCert(cert)
+	if err != nil || !hasOrg {
+		return 0, false
+	}
+	return org, true
 }
 
 func brokerURLForCloudHost(cloudHost string) string {
