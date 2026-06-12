@@ -671,6 +671,13 @@ WDY-1479 (SER9 Swift E2E mTLS auth failure).
   nearby work includes WDY-1325/WDY-874/WDY-865 for broader OIDC/auth, WDY-1478
   for Firebase refresh-token persistence, and WDY-719 for an older fixed CLI
   login issue.
+- WDY-1529 — surface contextual macOS unsupported errors for remaining CLI
+  commands. Filed after `wendy device audio list` against Wendy Agent for Mac
+  returned the generic `Not supported by this agent version. Try updating the
+  agent.` despite the Swift macOS agent having a contextual audio unsupported
+  message. The issue includes a review of similar gaps in audio, Wi-Fi mutation,
+  Bluetooth mutation, camera streaming, persistent volumes, dashboard/cloud
+  follow-up checks, and the WDY-1377 commands already covered.
 - WDY-1509 — manually audit the full CLI surface against Swift E2E stubs across
   Linux/WendyOS and Mac/Darwin. This grew into an umbrella/manual audit and the
   detailed coordination plan has been folded into this master `PLAN.md` under
