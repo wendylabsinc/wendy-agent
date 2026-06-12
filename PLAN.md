@@ -96,6 +96,26 @@ in per-issue worktree sessions, not in this master planning session.
   cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1519-ipv4-e2e-preflight && ai --prompt "Read HANDOVER.md and follow its instructions."
   ```
 
+### WDY-1521 — Teach E2E AI review to explain why a run failed
+
+- Status: `planned`
+- Linear project: E2E Tests
+- Linear: https://linear.app/wendylabsinc/issue/WDY-1521/teach-e2e-ai-review-to-explain-why-a-run-failed
+- Linear assignee: unassigned
+- Linear state: Todo (`unstarted`)
+- Branch/worktree name: not prepared yet
+- Worktree path: not prepared yet
+- PR: not created yet
+- PR closing reference: `Closes WDY-1521`
+- Scope: adapt Swift E2E AI review/reporting so failed runs include a concise
+  diagnosis: likely failure category, evidence from logs/artifacts, confidence
+  or inconclusive status, and recommended next action. It should handle
+  preflight/setup failures that produce no attempt artifact, and make the output
+  useful for Slack or PR comments.
+- Validation: use representative failed run artifacts/logs where practical;
+  ensure prompt/report changes keep existing aggregation/report rendering green.
+- Resume command: not available until prepared
+
 ### WDY-1494 — Clean up Swift E2E route matrix and restore commented route ledger
 
 - Status: `done`
@@ -191,11 +211,12 @@ Keep each issue short and validation-focused. Completed issues stay in the
 ledger for history; remaining active planning starts with WDY-1510.
 
 1. **WDY-1519** — In progress: Add IPv4 fallback preflight for physical Swift E2E targets.
-2. **WDY-1510** — Canceled: Re-enable Raspberry Pi physical Swift E2E route.
-3. **WDY-1482** — Done: Gate device-to-device E2E jobs behind successful local E2E runs.
-4. **WDY-1494** — Done: Clean up Swift E2E route matrix and restore commented route ledger.
-5. **WDY-1481** — Done: Add local E2E matrix coverage for macOS↔macOS and Ubuntu↔Ubuntu.
-6. **WDY-1479** — Done: Investigate SER9 Swift E2E mTLS auth failure.
+2. **WDY-1521** — Todo: Teach E2E AI review to explain why a run failed.
+3. **WDY-1510** — Canceled: Re-enable Raspberry Pi physical Swift E2E route.
+4. **WDY-1482** — Done: Gate device-to-device E2E jobs behind successful local E2E runs.
+5. **WDY-1494** — Done: Clean up Swift E2E route matrix and restore commented route ledger.
+6. **WDY-1481** — Done: Add local E2E matrix coverage for macOS↔macOS and Ubuntu↔Ubuntu.
+7. **WDY-1479** — Done: Investigate SER9 Swift E2E mTLS auth failure.
 
 ## Backlog / only-if-blocking
 
