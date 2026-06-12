@@ -242,7 +242,8 @@ the mergeable implementation path, ordered as follows:
 
 1. WDY-1511 — Remove misleading hidden completion install `--output-dir` test
    seam.
-2. WDY-1512 — Audit and align hidden/deprecated CLI aliases.
+2. WDY-1512 — Audit and align hidden/deprecated CLI aliases. Paused until
+   WDY-1528 (machine-readable Swift E2E recording metadata) is addressed.
 3. WDY-1513 — Align host-only CLI E2E references.
 4. WDY-1514 — Align OS imaging and update E2E references.
 5. WDY-1515 — Align direct device command E2E references.
@@ -300,8 +301,11 @@ automation scope, follow-up issues filed, and the relevant `Closes WDY-xxxx`.
 
 #### WDY-1512 — Audit and align hidden deprecated CLI aliases
 
-- Status: `prepared`; Linear state: In Progress; assignee:
+- Status: `paused`; Linear state: In Progress; assignee:
   `konstantin@wendy.sh`; project: `E2E Tests`.
+- Pause reason: wait until WDY-1528 (Add machine-readable Swift E2E recording
+  metadata) is addressed, so alias/reference cleanup can use the updated
+  recording metadata instead of baking in pre-WDY-1528 assumptions.
 - Worktree: `.worktrees/kb.wdy-1512-hidden-deprecated-aliases`; branch:
   `kb.wdy-1512-hidden-deprecated-aliases`.
 - Draft PR: https://github.com/wendylabsinc/WendyOS/pull/992 with
@@ -694,7 +698,8 @@ WDY-1479 (SER9 Swift E2E mTLS auth failure).
   - Child issue order:
     1. WDY-1511 — Remove misleading hidden completion install `--output-dir`
        test seam.
-    2. WDY-1512 — Audit and align hidden/deprecated CLI aliases.
+    2. WDY-1512 — Audit and align hidden/deprecated CLI aliases. Paused until
+       WDY-1528 is addressed.
     3. WDY-1513 — Align host-only CLI E2E references.
     4. WDY-1514 — Align OS imaging and update E2E references.
     5. WDY-1515 — Align direct device command E2E references.
