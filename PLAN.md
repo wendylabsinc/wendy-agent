@@ -298,6 +298,22 @@ automation scope, follow-up issues filed, and the relevant `Closes WDY-xxxx`.
 - Resume:
   `cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1511-completion-install-output-dir && ai --prompt "Read HANDOVER.md and follow its instructions."`
 
+#### WDY-1512 — Audit and align hidden deprecated CLI aliases
+
+- Status: `prepared`; Linear state: In Progress; assignee:
+  `konstantin@wendy.sh`; project: `E2E Tests`.
+- Worktree: `.worktrees/kb.wdy-1512-hidden-deprecated-aliases`; branch:
+  `kb.wdy-1512-hidden-deprecated-aliases`.
+- Draft PR: https://github.com/wendylabsinc/WendyOS/pull/992 with
+  `Closes WDY-1512`.
+- Setup commit: `a774ae29 chore: start WDY-1512 CLI alias audit`.
+- Scope: align hidden deprecated commands, public aliases, Cobra aliases, help
+  text, deprecation diagnostics, and E2E references for `device version`,
+  `cloud device version`, `cloud run`, direct/cloud `device ps`, and Bluetooth
+  `bt`. Do not broaden into WDY-1513+ route/reference cleanup.
+- Resume:
+  `cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1512-hidden-deprecated-aliases && ai --prompt "Read HANDOVER.md and follow its instructions."`
+
 ## Issue ledger
 
 ### WDY-1352 — Verify discovery and device selection for WendyAgentMac
