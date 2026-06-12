@@ -248,6 +248,15 @@ ledger for history; remaining active planning starts with WDY-1510.
 7. **WDY-1481** — Done: Add local E2E matrix coverage for macOS↔macOS and Ubuntu↔Ubuntu.
 8. **WDY-1479** — Done: Investigate SER9 Swift E2E mTLS auth failure.
 
+## One-off route/workflow PRs
+
+- **PR #995** — Temporarily disables the physical macOS 26 → Ubuntu 24/SER9
+  Swift E2E route while WDY-1519 adds IPv4 fallback preflight hardening:
+  https://github.com/wendylabsinc/WendyOS/pull/995
+  Branch/worktree: `kb.disable-ser9-e2e-ipv6` at
+  `/Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.disable-ser9-e2e-ipv6`.
+  Local YAML parse and actionlint passed. Do not merge unless CI passes.
+
 ## Backlog / only-if-blocking
 
 Use this section for E2E Tests project issues that should not be started yet, or

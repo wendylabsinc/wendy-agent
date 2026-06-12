@@ -135,8 +135,20 @@ WDY-1510 was canceled because no Raspberry Pi 5 is currently available on CI:
   - Linear: https://linear.app/wendylabsinc/issue/WDY-1521/teach-e2e-ai-review-to-explain-why-a-run-failed
   - Setup commit: `89dc863`
 
+## One-off SER9 route disable
+
+- PR #995 temporarily disables the physical macOS 26 → Ubuntu 24/SER9 Swift E2E
+  route while WDY-1519 adds IPv4 fallback preflight hardening:
+  https://github.com/wendylabsinc/WendyOS/pull/995
+- Branch/worktree: `kb.disable-ser9-e2e-ipv6` at
+  `/Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.disable-ser9-e2e-ipv6`
+- Commit: `4197a25d ci: temporarily disable SER9 Swift E2E route`
+- Local validation passed: YAML parse and actionlint.
+- Do not merge unless CI passes; if CI fails, stop and report failing checks.
+
 ## Remaining intended next steps
 
+- Watch PR #995 checks; do not merge unless CI passes.
 - Continue WDY-1527 in its dedicated worktree first; implementation should not
   happen in this coordinator worktree.
 - Keep WDY-1521 paused until WDY-1527 settles the aggregate layout.
