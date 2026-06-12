@@ -129,27 +129,23 @@ in per-issue worktree sessions, not in this master planning session.
 
 ### WDY-1527 — Rework Swift E2E aggregate storage for attempt-level artifacts
 
-- Status: `in progress`
+- Status: `done`
 - Linear project: E2E Tests
 - Linear: https://linear.app/wendylabsinc/issue/WDY-1527/rework-swift-e2e-aggregate-storage-for-attempt-level-artifacts
 - Linear assignee: `konstantin@wendy.sh`
-- Linear state: In Progress (`started`)
-- Branch/worktree name: `kb.wdy-1527-e2e-attempt-artifacts`
-- Worktree path: `/Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1527-e2e-attempt-artifacts`
-- PR: https://github.com/wendylabsinc/WendyOS/pull/994 (draft setup PR)
+- Linear state: Done (`completed`)
+- Branch/worktree name: `kb.wdy-1527-e2e-attempt-artifacts` (merged; local worktree removed)
+- Worktree path: removed after merge
+- PR: https://github.com/wendylabsinc/WendyOS/pull/994 (merged, merge commit `3a4b42b0`)
 - PR closing reference: `Closes WDY-1527`
 - Scope: decide and implement a canonical aggregate storage location for
   attempt-level artifacts (`attempt.json`, full `test-results.xml`, future
   `attempt.log`) instead of copying them into every per-test observation
   directory. Preserve current report compatibility where possible and make early
   failures/no-observation attempts retain attempt-level evidence.
-- Validation: run relevant shell/YAML/actionlint checks and Swift E2E package
-  tests if aggregation/report Swift code changes. CI must pass before merge.
-- Resume command:
-
-  ```sh
-  cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1527-e2e-attempt-artifacts && ai --prompt "Read HANDOVER.md and follow its instructions."
-  ```
+- Validation: PR #994 passed CI before merge, including Swift E2E with SER9
+  disabled and Jetson active.
+- Resume command: not applicable; issue complete and worktree removed.
 
 ### WDY-1521 — Teach E2E AI review to explain why a run failed
 
@@ -157,7 +153,7 @@ in per-issue worktree sessions, not in this master planning session.
 - Linear project: E2E Tests
 - Linear: https://linear.app/wendylabsinc/issue/WDY-1521/teach-e2e-ai-review-to-explain-why-a-run-failed
 - Linear assignee: `konstantin@wendy.sh`
-- Linear state: In Progress (`started`; paused pending WDY-1527)
+- Linear state: In Progress (`started`; paused pending WDY-1528)
 - Branch/worktree name: `kb.wdy-1521-e2e-ai-failure-diagnosis`
 - Worktree path: `/Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1521-e2e-ai-failure-diagnosis`
 - PR: https://github.com/wendylabsinc/WendyOS/pull/993 (draft setup PR)
@@ -167,7 +163,8 @@ in per-issue worktree sessions, not in this master planning session.
   or inconclusive status, and recommended next action. It should handle
   preflight/setup failures that produce no attempt artifact, and make the output
   useful for Slack or PR comments.
-- Blocked by: WDY-1527 aggregate storage cleanup.
+- Blocked by: WDY-1528 machine-readable recording metadata. WDY-1527 aggregate
+  storage cleanup is complete.
 - Validation: use representative failed run artifacts/logs where practical;
   ensure prompt/report changes keep existing aggregation/report rendering green.
 - Resume command:
@@ -273,8 +270,8 @@ WDY-1528.
 
 1. **WDY-1528** — ASAP blocker: Add machine-readable Swift E2E recording metadata.
 2. **WDY-1519** — In progress: Add IPv4 fallback preflight for physical Swift E2E targets.
-3. **WDY-1527** — In progress: Rework Swift E2E aggregate storage for attempt-level artifacts.
-4. **WDY-1521** — Paused: Teach E2E AI review to explain why a run failed.
+3. **WDY-1521** — Paused: Teach E2E AI review to explain why a run failed.
+4. **WDY-1527** — Done: Rework Swift E2E aggregate storage for attempt-level artifacts.
 5. **WDY-1510** — Canceled: Re-enable Raspberry Pi physical Swift E2E route.
 6. **WDY-1482** — Done: Gate device-to-device E2E jobs behind successful local E2E runs.
 7. **WDY-1494** — Done: Clean up Swift E2E route matrix and restore commented route ledger.
@@ -286,9 +283,8 @@ WDY-1528.
 - **PR #995** — Temporarily disables the physical macOS 26 → Ubuntu 24/SER9
   Swift E2E route while WDY-1519 adds IPv4 fallback preflight hardening:
   https://github.com/wendylabsinc/WendyOS/pull/995
-  Branch/worktree: `kb.disable-ser9-e2e-ipv6` at
-  `/Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.disable-ser9-e2e-ipv6`.
-  Local YAML parse and actionlint passed. Do not merge unless CI passes.
+  Merged after CI passed, merge commit `d8406c21`. The local one-off worktree
+  `kb.disable-ser9-e2e-ipv6` was removed.
 
 ## Backlog / only-if-blocking
 

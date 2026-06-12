@@ -20,8 +20,8 @@ per-issue worktrees.
 
 1. `WDY-1528` — ASAP blocker: Add machine-readable Swift E2E recording metadata
 2. `WDY-1519` — In progress: Add IPv4 fallback preflight for physical Swift E2E targets
-3. `WDY-1527` — In progress: Rework Swift E2E aggregate storage for attempt-level artifacts
-4. `WDY-1521` — Paused: Teach E2E AI review to explain why a run failed
+3. `WDY-1521` — Paused: Teach E2E AI review to explain why a run failed
+4. `WDY-1527` — Done: Rework Swift E2E aggregate storage for attempt-level artifacts
 5. `WDY-1510` — Canceled: Re-enable Raspberry Pi physical Swift E2E route
 6. `WDY-1482` — Done: Gate device-to-device E2E jobs behind successful local E2E runs
 7. `WDY-1494` — Done: Clean up Swift E2E route matrix and restore commented route ledger
@@ -112,23 +112,15 @@ WDY-1510 was canceled because no Raspberry Pi 5 is currently available on CI:
 - WDY-1520 — Backlog: consider the long-term product CLI fix for dual-stack
   hostnames where IPv6 fails but IPv4 succeeds.
   https://linear.app/wendylabsinc/issue/WDY-1520/consider-cli-ipv6-to-ipv4-fallback-for-device-connections
-- WDY-1527 — In Progress, E2E Tests project: rework Swift E2E aggregate
-  storage for attempt-level artifacts. This is blocking WDY-1521 and should be
-  addressed first.
-  - Worktree: `/Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1527-e2e-attempt-artifacts`
-  - Branch: `kb.wdy-1527-e2e-attempt-artifacts`
-  - Draft PR: https://github.com/wendylabsinc/WendyOS/pull/994
-  - Linear: https://linear.app/wendylabsinc/issue/WDY-1527/rework-swift-e2e-aggregate-storage-for-attempt-level-artifacts
-  - Setup commit: `c34db74`
-  - Resume command:
-
-    ```sh
-    cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1527-e2e-attempt-artifacts && ai --prompt "Read HANDOVER.md and follow its instructions."
-    ```
+- WDY-1527 — Done, E2E Tests project: reworked Swift E2E aggregate storage for
+  attempt-level artifacts.
+  - PR: https://github.com/wendylabsinc/WendyOS/pull/994 (merged after CI passed)
+  - Merge commit: `3a4b42b0`
+  - Branch/worktree: `kb.wdy-1527-e2e-attempt-artifacts` merged; local worktree removed.
 - WDY-1521 — Paused, E2E Tests project: teach E2E AI review to explain why a
   specific run failed and what to do next, including preflight/setup failures
-  with missing attempt artifacts. Resume after WDY-1527 settles the aggregate
-  layout. Linear has a pause comment:
+  with missing attempt artifacts. WDY-1527 is complete; resume after WDY-1528
+  adds machine-readable recording metadata. Linear has the earlier pause comment:
   https://linear.app/wendylabsinc/issue/WDY-1521/teach-e2e-ai-review-to-explain-why-a-run-failed#comment-c3373c24
   - Worktree: `/Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1521-e2e-ai-failure-diagnosis`
   - Branch: `kb.wdy-1521-e2e-ai-failure-diagnosis`
@@ -153,25 +145,25 @@ previously represented in this coordinator include:
 
 ## One-off SER9 route disable
 
-- PR #995 temporarily disables the physical macOS 26 → Ubuntu 24/SER9 Swift E2E
+- PR #995 temporarily disabled the physical macOS 26 → Ubuntu 24/SER9 Swift E2E
   route while WDY-1519 adds IPv4 fallback preflight hardening:
   https://github.com/wendylabsinc/WendyOS/pull/995
-- Branch/worktree: `kb.disable-ser9-e2e-ipv6` at
-  `/Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.disable-ser9-e2e-ipv6`
-- Commit: `4197a25d ci: temporarily disable SER9 Swift E2E route`
+- Merged after CI passed; merge commit `d8406c21`.
+- Branch/worktree: `kb.disable-ser9-e2e-ipv6` merged; local worktree removed.
+- Implementation commit: `4197a25d ci: temporarily disable SER9 Swift E2E route`
 - Local validation passed: YAML parse and actionlint.
-- Do not merge unless CI passes; if CI fails, stop and report failing checks.
 
 ## Remaining intended next steps
 
 - Address WDY-1528 ASAP as the current blocker. Follow the `PLAN.md` working
   protocol: create a dedicated worktree/branch, setup commit, draft PR, and
   issue-specific `HANDOVER.md`.
-- Watch PR #995 checks; do not merge unless CI passes.
-- Continue WDY-1527 in its dedicated worktree; implementation should not happen
-  in this coordinator worktree.
-- Keep WDY-1521 paused until WDY-1527 settles the aggregate layout.
-- Continue WDY-1519 separately in its dedicated worktree.
+- Continue with WDY-1528 as the ASAP blocker; create its dedicated worktree when
+  asked.
+- Keep WDY-1521 paused until WDY-1528 lands.
+- Continue WDY-1519 separately in its dedicated worktree; PR #991 is still open
+  and currently has failing checks from before the SER9 route was disabled.
+- PR #995 and PR #994 are merged; no action needed there.
 - If Raspberry Pi 5 CI hardware comes online later, open a new Linear issue or
   reopen WDY-1510 and start from the closed PR branch/diff.
 - Treat WDY-968 as related/background only: it is outside the E2E Tests project
