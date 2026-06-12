@@ -68,7 +68,6 @@ func shellGenCmd(name, short string, fn func(*cobra.Command, io.Writer) error) *
 func newCompletionInstallCmd() *cobra.Command {
 	var (
 		shellOverride string
-		outputDir     string
 		printPath     bool
 		toStdout      bool
 	)
@@ -92,7 +91,7 @@ func newCompletionInstallCmd() *cobra.Command {
 			if toStdout {
 				return writeShellScript(c.Root(), shell, c.OutOrStdout())
 			}
-			home, err := resolveHome(outputDir)
+			home, err := os.UserHomeDir()
 			if err != nil {
 				return err
 			}
@@ -114,11 +113,8 @@ func newCompletionInstallCmd() *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&shellOverride, "shell", "", "Override shell (bash|zsh|fish|powershell)")
-	cmd.Flags().StringVar(&outputDir, "output-dir", "", "Use this directory as $HOME (for testing)")
 	cmd.Flags().BoolVar(&printPath, "print-path", false, "Print install paths without writing")
 	cmd.Flags().BoolVar(&toStdout, "stdout", false, "Print the completion script to stdout instead of installing")
-	// --output-dir is a test seam, not a user-facing knob; hide from --help.
-	_ = cmd.Flags().MarkHidden("output-dir")
 	return cmd
 }
 
@@ -158,13 +154,6 @@ func normalizeShell(name string) (string, error) {
 	default:
 		return "", fmt.Errorf("unsupported shell %q (supported: bash, zsh, fish, powershell)", name)
 	}
-}
-
-func resolveHome(override string) (string, error) {
-	if override != "" {
-		return filepath.Abs(override)
-	}
-	return os.UserHomeDir()
 }
 
 func fileExists(path string) bool {
