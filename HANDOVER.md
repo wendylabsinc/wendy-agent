@@ -19,7 +19,7 @@ per-issue worktrees.
 `PLAN.md` is populated with the Linear **E2E Tests** issues and current status:
 
 1. `WDY-1519` — In progress: Add IPv4 fallback preflight for physical Swift E2E targets
-2. `WDY-1521` — Todo: Teach E2E AI review to explain why a run failed
+2. `WDY-1521` — In progress: Teach E2E AI review to explain why a run failed
 3. `WDY-1510` — Canceled: Re-enable Raspberry Pi physical Swift E2E route
 4. `WDY-1482` — Done: Gate device-to-device E2E jobs behind successful local E2E runs
 5. `WDY-1494` — Done: Clean up Swift E2E route matrix and restore commented route ledger
@@ -110,10 +110,19 @@ WDY-1510 was canceled because no Raspberry Pi 5 is currently available on CI:
 - WDY-1520 — Backlog: consider the long-term product CLI fix for dual-stack
   hostnames where IPv6 fails but IPv4 succeeds.
   https://linear.app/wendylabsinc/issue/WDY-1520/consider-cli-ipv6-to-ipv4-fallback-for-device-connections
-- WDY-1521 — Todo, E2E Tests project: teach E2E AI review to explain why a
-  specific run failed and what to do next, including preflight/setup failures
+- WDY-1521 — In Progress, E2E Tests project: teach E2E AI review to explain why
+  a specific run failed and what to do next, including preflight/setup failures
   with missing attempt artifacts.
-  https://linear.app/wendylabsinc/issue/WDY-1521/teach-e2e-ai-review-to-explain-why-a-run-failed
+  - Worktree: `/Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1521-e2e-ai-failure-diagnosis`
+  - Branch: `kb.wdy-1521-e2e-ai-failure-diagnosis`
+  - Draft PR: https://github.com/wendylabsinc/WendyOS/pull/993
+  - Linear: https://linear.app/wendylabsinc/issue/WDY-1521/teach-e2e-ai-review-to-explain-why-a-run-failed
+  - Setup commit: `89dc863`
+  - Resume command:
+
+    ```sh
+    cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1521-e2e-ai-failure-diagnosis && ai --prompt "Read HANDOVER.md and follow its instructions."
+    ```
 
 ## Remaining intended next steps
 
