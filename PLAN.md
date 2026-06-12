@@ -100,15 +100,16 @@ in per-issue worktree sessions, not in this master planning session.
 
 ### WDY-1528 — Add machine-readable Swift E2E recording metadata
 
-- Status: `planned-asap`
+- Status: `done`
 - Linear project: E2E Tests
 - Linear: https://linear.app/wendylabsinc/issue/WDY-1528/add-machine-readable-swift-e2e-recording-metadata
 - Linear assignee: `konstantin@wendy.sh`
-- Linear state: Todo (`unstarted`)
-- Branch/worktree name: not prepared yet
-- Worktree path: not prepared yet
-- PR: not created yet
+- Linear state: Done (`completed`)
+- Branch/worktree name: `kb.wdy-1528-e2e-recording-metadata` (merged; local worktree removed)
+- Worktree path: removed after merge
+- PR: https://github.com/wendylabsinc/WendyOS/pull/997 (merged, merge commit `e3c67a72`)
 - PR closing reference: `Closes WDY-1528`
+- Setup commit: `8fa3463`
 - Scope: add a narrow, versioned `recording.json` next to each
   `recording.md`/`recording.sh.txt` with stable source/test identity metadata:
   file path/name, suite, test name, function, and line. Keep the schema focused
@@ -122,10 +123,8 @@ in per-issue worktree sessions, not in this master planning session.
   prefer `recording.json` for xUnit matching while keeping `recording.md` as a
   backward-compatible fallback for older artifacts. Add unit coverage for the
   duplicate-name/multi-suite case.
-- Validation: run targeted Swift E2E package tests for recorder/report/review
-  matching changes, plus shell/YAML/actionlint checks if scripts/workflows are
-  touched.
-- Resume command: not available until prepared
+- Validation: PR #997 passed CI before merge.
+- Resume command: not applicable; issue complete and worktree removed.
 
 ### WDY-1527 — Rework Swift E2E aggregate storage for attempt-level artifacts
 
@@ -149,11 +148,11 @@ in per-issue worktree sessions, not in this master planning session.
 
 ### WDY-1521 — Teach E2E AI review to explain why a run failed
 
-- Status: `paused`
+- Status: `ready to resume`
 - Linear project: E2E Tests
 - Linear: https://linear.app/wendylabsinc/issue/WDY-1521/teach-e2e-ai-review-to-explain-why-a-run-failed
 - Linear assignee: `konstantin@wendy.sh`
-- Linear state: In Progress (`started`; paused pending WDY-1528)
+- Linear state: In Progress (`started`)
 - Branch/worktree name: `kb.wdy-1521-e2e-ai-failure-diagnosis`
 - Worktree path: `/Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1521-e2e-ai-failure-diagnosis`
 - PR: https://github.com/wendylabsinc/WendyOS/pull/993 (draft setup PR)
@@ -163,8 +162,8 @@ in per-issue worktree sessions, not in this master planning session.
   or inconclusive status, and recommended next action. It should handle
   preflight/setup failures that produce no attempt artifact, and make the output
   useful for Slack or PR comments.
-- Blocked by: WDY-1528 machine-readable recording metadata. WDY-1527 aggregate
-  storage cleanup is complete.
+- Unblocked by: WDY-1528 machine-readable recording metadata and WDY-1527
+  aggregate storage cleanup are complete.
 - Validation: use representative failed run artifacts/logs where practical;
   ensure prompt/report changes keep existing aggregation/report rendering green.
 - Resume command:
@@ -265,12 +264,11 @@ in per-issue worktree sessions, not in this master planning session.
 ## E2E Tests issue order
 
 Keep each issue short and validation-focused. Completed issues stay in the
-ledger for history; current active planning starts with the ASAP blocker
-WDY-1528.
+ledger for history; the next issue ready to resume is WDY-1521.
 
-1. **WDY-1528** — ASAP blocker: Add machine-readable Swift E2E recording metadata.
-2. **WDY-1519** — In progress: Add IPv4 fallback preflight for physical Swift E2E targets.
-3. **WDY-1521** — Paused: Teach E2E AI review to explain why a run failed.
+1. **WDY-1528** — Done: Add machine-readable Swift E2E recording metadata.
+2. **WDY-1521** — Ready to resume: Teach E2E AI review to explain why a run failed.
+3. **WDY-1519** — In progress, cleanup later: Add IPv4 fallback preflight for physical Swift E2E targets.
 4. **WDY-1527** — Done: Rework Swift E2E aggregate storage for attempt-level artifacts.
 5. **WDY-1510** — Canceled: Re-enable Raspberry Pi physical Swift E2E route.
 6. **WDY-1482** — Done: Gate device-to-device E2E jobs behind successful local E2E runs.

@@ -18,9 +18,9 @@ per-issue worktrees.
 
 `PLAN.md` is populated with the Linear **E2E Tests** issues and current status:
 
-1. `WDY-1528` — ASAP blocker: Add machine-readable Swift E2E recording metadata
-2. `WDY-1519` — In progress: Add IPv4 fallback preflight for physical Swift E2E targets
-3. `WDY-1521` — Paused: Teach E2E AI review to explain why a run failed
+1. `WDY-1528` — Done: Add machine-readable Swift E2E recording metadata
+2. `WDY-1521` — Ready to resume: Teach E2E AI review to explain why a run failed
+3. `WDY-1519` — In progress, cleanup later: Add IPv4 fallback preflight for physical Swift E2E targets
 4. `WDY-1527` — Done: Rework Swift E2E aggregate storage for attempt-level artifacts
 5. `WDY-1510` — Canceled: Re-enable Raspberry Pi physical Swift E2E route
 6. `WDY-1482` — Done: Gate device-to-device E2E jobs behind successful local E2E runs
@@ -117,25 +117,36 @@ WDY-1510 was canceled because no Raspberry Pi 5 is currently available on CI:
   - PR: https://github.com/wendylabsinc/WendyOS/pull/994 (merged after CI passed)
   - Merge commit: `3a4b42b0`
   - Branch/worktree: `kb.wdy-1527-e2e-attempt-artifacts` merged; local worktree removed.
-- WDY-1521 — Paused, E2E Tests project: teach E2E AI review to explain why a
-  specific run failed and what to do next, including preflight/setup failures
-  with missing attempt artifacts. WDY-1527 is complete; resume after WDY-1528
-  adds machine-readable recording metadata. Linear has the earlier pause comment:
+- WDY-1528 — Done, E2E Tests project: added narrow machine-readable Swift E2E
+  recording metadata sidecars.
+  - PR: https://github.com/wendylabsinc/WendyOS/pull/997 (merged after CI passed)
+  - Merge commit: `e3c67a72`
+  - Branch/worktree: `kb.wdy-1528-e2e-recording-metadata` merged; local worktree removed.
+- WDY-1521 — Ready to resume, E2E Tests project: teach E2E AI review to explain
+  why a specific run failed and what to do next, including preflight/setup
+  failures with missing attempt artifacts. WDY-1527 and WDY-1528 are complete;
+  Linear has the earlier pause comment:
   https://linear.app/wendylabsinc/issue/WDY-1521/teach-e2e-ai-review-to-explain-why-a-run-failed#comment-c3373c24
   - Worktree: `/Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1521-e2e-ai-failure-diagnosis`
   - Branch: `kb.wdy-1521-e2e-ai-failure-diagnosis`
   - Draft PR: https://github.com/wendylabsinc/WendyOS/pull/993
   - Linear: https://linear.app/wendylabsinc/issue/WDY-1521/teach-e2e-ai-review-to-explain-why-a-run-failed
   - Setup commit: `89dc863`
+  - Resume command:
+
+    ```sh
+    cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1521-e2e-ai-failure-diagnosis && ai --prompt "Read HANDOVER.md and follow its instructions."
+    ```
 
 ## Project issue inventory update
 
 Checked the E2E Tests Linear project on 2026-06-12. New/current issues not
 previously represented in this coordinator include:
 
-- WDY-1528 — Todo, assigned to `konstantin@wendy.sh`: add machine-readable
-  Swift E2E recording metadata. This is an ASAP blocker because duplicate test
-  names across suites/files need stable source/test identity for xUnit matching.
+- WDY-1528 — Done, assigned to `konstantin@wendy.sh`: machine-readable Swift
+  E2E recording metadata landed in PR #997. Duplicate test names across
+  suites/files now have stable source/test identity available for xUnit
+  matching.
   https://linear.app/wendylabsinc/issue/WDY-1528/add-machine-readable-swift-e2e-recording-metadata
 - WDY-1512 — In Progress: audit and align hidden deprecated CLI aliases.
 - WDY-1511 — Done: remove misleading hidden completion install `--output-dir`
@@ -155,15 +166,10 @@ previously represented in this coordinator include:
 
 ## Remaining intended next steps
 
-- Address WDY-1528 ASAP as the current blocker. Follow the `PLAN.md` working
-  protocol: create a dedicated worktree/branch, setup commit, draft PR, and
-  issue-specific `HANDOVER.md`.
-- Continue with WDY-1528 as the ASAP blocker; create its dedicated worktree when
-  asked.
-- Keep WDY-1521 paused until WDY-1528 lands.
-- Continue WDY-1519 separately in its dedicated worktree; PR #991 is still open
-  and currently has failing checks from before the SER9 route was disabled.
-- PR #995 and PR #994 are merged; no action needed there.
+- Resume WDY-1521 next; WDY-1528 and WDY-1527 are now complete.
+- Continue WDY-1519 separately later in its dedicated worktree; PR #991 is still
+  open and currently has failing checks from before the SER9 route was disabled.
+- PR #997, PR #995, and PR #994 are merged; no action needed there.
 - If Raspberry Pi 5 CI hardware comes online later, open a new Linear issue or
   reopen WDY-1510 and start from the closed PR branch/diff.
 - Treat WDY-968 as related/background only: it is outside the E2E Tests project
