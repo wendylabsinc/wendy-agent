@@ -32,8 +32,9 @@ Housekeeping snapshot, 2026-06-12:
   for remaining CLI commands. Linear: In Review. PR #996 is open and no longer a
   draft. Issue worktree:
   `/Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1529-macos-unsupported-errors`.
-- Next Mac beta implementation candidate: WDY-1531 — Make `wendy run`
-  gracefully reject project types unsupported on Mac. Linear: Backlog.
+- Active Mac beta setup: WDY-1531 — Make `wendy run` gracefully reject project
+  types unsupported on Mac. Linear: In Progress. Draft PR #999 and issue
+  worktree are prepared; implementation must happen in the issue worktree.
 - Stale/decision candidates inside the Mac beta project:
   - WDY-1365 canceled as stale umbrella work; the post-beta backlog already has
     focused follow-up issues.
@@ -370,6 +371,25 @@ automation scope, follow-up issues filed, and the relevant `Closes WDY-xxxx`.
   volume polling.
 - Resume:
   `cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1529-macos-unsupported-errors && ai --prompt "Read HANDOVER.md and follow its instructions."`
+
+### Active Mac run rejection follow-up
+
+#### WDY-1531 — Make `wendy run` gracefully reject project types unsupported on Mac
+
+- Status: `prepared`; Linear state: In Progress; assignee:
+  `konstantin@wendy.sh`; project: `Wendy for Mac — Beta`.
+- Worktree: `.worktrees/kb.wdy-1531-macos-run-unsupported-projects`; branch:
+  `kb.wdy-1531-macos-run-unsupported-projects`.
+- Draft PR: https://github.com/wendylabsinc/WendyOS/pull/999 with
+  `Closes WDY-1531`.
+- Setup commit: `1bdc71d3 chore: start WDY-1531 Mac run rejection`.
+- Scope: make `wendy run` fail early with clear Wendy Agent for Mac diagnostics
+  when a Darwin/macOS agent is targeted with unsupported Linux/container,
+  Compose, WendyOS-template, or otherwise non-native-Mac project shapes. Keep
+  supported native Darwin SwiftPM and Xcode flows working. Do not implement
+  Linux containers on Mac in this issue.
+- Resume:
+  `cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1531-macos-run-unsupported-projects && ai --prompt "Read HANDOVER.md and follow its instructions."`
 
 ## Issue ledger
 
@@ -742,12 +762,13 @@ WDY-1479 (SER9 Swift E2E mTLS auth failure).
   Wendy Agent for Mac supporting native `platform: "darwin"` app deployment.
   This is Mac-related but belongs to the `New Templates` project, so it is not
   active in this Mac beta project coordinator unless explicitly reprioritized.
-- WDY-1531 — make `wendy run` gracefully reject project types unsupported on
-  Mac. Track in `Wendy for Mac — Beta`: when targeting a Darwin/macOS agent,
-  unsupported Linux-container, Compose, WendyOS-template, or otherwise
-  non-native-Mac project shapes should fail early with a Mac-specific diagnostic
-  instead of generic build/deploy/tooling errors or agent-update hints. Keep
-  native Darwin SwiftPM and Xcode flows working.
+- WDY-1531 — active/prepared in this coordinator. Draft PR #999 and worktree
+  `.worktrees/kb.wdy-1531-macos-run-unsupported-projects` are ready for
+  implementation; when targeting a Darwin/macOS agent, unsupported
+  Linux-container, Compose, WendyOS-template, or otherwise non-native-Mac
+  project shapes should fail early with a Mac-specific diagnostic instead of
+  generic build/deploy/tooling errors or agent-update hints. Keep native Darwin
+  SwiftPM and Xcode flows working.
 - WDY-1509 — manually audit the full CLI surface against Swift E2E stubs across
   Linux/WendyOS and Mac/Darwin. This grew into an umbrella/manual audit and the
   detailed coordination plan has been folded into this master `PLAN.md` under
