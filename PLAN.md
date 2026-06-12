@@ -17,7 +17,9 @@ For each issue we start, this master session only prepares the workspace. It
 must not do the actual issue implementation.
 
 1. Assign the Linear issue to `konstantin@wendy.sh`.
-2. Create a dedicated git worktree and branch for the issue.
+2. Fetch `origin/main` and create a dedicated git worktree/branch from the
+   freshly fetched `origin/main`, unless the issue explicitly requires a
+   different base.
 3. Add an empty setup commit for the issue.
 4. Push the branch.
 5. Create a draft PR from the setup commit using a real markdown body file,
