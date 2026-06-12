@@ -333,7 +333,10 @@ automation scope, follow-up issues filed, and the relevant `Closes WDY-xxxx`.
   of generic agent-update hints for audio, Wi-Fi mutations, Bluetooth
   mutations, camera streaming, persistent volumes, and related dashboard/cloud
   checks. Include the observed `camera view` masking case where local
-  `gst-launch-1.0` preflight hides the remote unsupported stream error.
+  `gst-launch-1.0` preflight hides the remote unsupported stream error, plus the
+  `device apps list` TUI poll-error case where raw `rpc error: code =
+  Unimplemented desc = ...` text leaks into the status line for unsupported
+  volume polling.
 - Resume:
   `cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1529-macos-unsupported-errors && ai --prompt "Read HANDOVER.md and follow its instructions."`
 
