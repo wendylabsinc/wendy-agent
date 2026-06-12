@@ -30,8 +30,9 @@ must not do the actual issue implementation.
 4. Push the branch.
 5. Create a draft PR from the setup commit using a real markdown body file,
    not an inline string with escaped newlines.
-6. Include the Linear issue link/closing reference in the PR body, for example
-   `Closes WDY-1234`, so merging the PR closes the issue.
+6. For mergeable implementation PRs, include the Linear issue link/closing
+   reference in the PR body, for example `Closes WDY-1234`, so merging the PR
+   closes the issue. Do not put closing references on non-merge audit artifacts.
 7. Write a `HANDOVER.md` file into the issue worktree. Put the real prompt
    content there: scope, KISS guidance, validation, commit/push expectations,
    PR details, and known constraints.
@@ -52,10 +53,11 @@ in per-issue worktree sessions, not in this master planning session.
 
 WDY-1509 grew into an umbrella/manual audit. Keep the durable coordination plan
 here in this master worktree so there is only one coordinator session. Do not
-continue using the WDY-1509 issue worktree as a separate planning hub; use that
-worktree/PR only for whatever narrow WDY-1509 umbrella artifacts remain useful.
-Focused cleanup/reference work should happen in child issue worktrees prepared by
-this master session using the protocol above.
+continue using the WDY-1509 issue worktree as a separate planning hub. Treat PR
+#982 as a draft, non-merge audit artifact only; it should not carry a closing
+reference or be used to close WDY-1509. Mergeable cleanup/reference work should
+happen in child issue worktrees prepared by this master session using the
+protocol above.
 
 ### WDY-1509 umbrella goal
 
@@ -233,8 +235,9 @@ wendy --device <mac-agent> os update
 
 ### Child issue sequence
 
-WDY-1509 remains the umbrella/manual audit issue. Focused child issues are
-ordered as follows:
+WDY-1509 remains the umbrella/manual audit issue. PR #982 is only a draft audit
+artifact and is not expected to merge. Focused child issues are the mergeable
+implementation path, ordered as follows:
 
 1. WDY-1511 — Remove misleading hidden completion install `--output-dir` test
    seam.
@@ -245,9 +248,9 @@ ordered as follows:
 6. WDY-1516 — Align cloud-routed device E2E references.
 7. WDY-1517 — Align build and run E2E references.
 
-Use WDY-1509 to keep the command surface ledger and PR summary coherent. Use the
-child issues for implementation/reference cleanup so no single PR becomes a full
-E2E rewrite.
+Use WDY-1509/PR #982 only to preserve the command surface ledger and handoff
+summary as a non-merge artifact. Use the child issues for all mergeable
+implementation/reference cleanup so no single PR becomes a full E2E rewrite.
 
 ### Edit and validation expectations for child work
 
@@ -660,8 +663,9 @@ WDY-1479 (SER9 Swift E2E mTLS auth failure).
     `konstantin@wendy.sh`; project: `E2E Tests`.
   - Worktree: `.worktrees/kb.wdy-1509-cli-e2e-surface-audit`; branch:
     `kb.wdy-1509-cli-e2e-surface-audit`.
-  - Draft PR: https://github.com/wendylabsinc/WendyOS/pull/982 with
-    `Closes WDY-1509`.
+  - Draft PR: https://github.com/wendylabsinc/WendyOS/pull/982 — non-merge
+    audit artifact / do not merge. It intentionally must not include any
+    closing reference for WDY-1509.
   - Child issue order:
     1. WDY-1511 — Remove misleading hidden completion install `--output-dir`
        test seam.
