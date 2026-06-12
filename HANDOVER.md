@@ -18,14 +18,15 @@ per-issue worktrees.
 
 `PLAN.md` is populated with the Linear **E2E Tests** issues and current status:
 
-1. `WDY-1519` — In progress: Add IPv4 fallback preflight for physical Swift E2E targets
-2. `WDY-1527` — In progress: Rework Swift E2E aggregate storage for attempt-level artifacts
-3. `WDY-1521` — Paused: Teach E2E AI review to explain why a run failed
-4. `WDY-1510` — Canceled: Re-enable Raspberry Pi physical Swift E2E route
-5. `WDY-1482` — Done: Gate device-to-device E2E jobs behind successful local E2E runs
-6. `WDY-1494` — Done: Clean up Swift E2E route matrix and restore commented route ledger
-7. `WDY-1481` — Done: Add local E2E matrix coverage for macOS↔macOS and Ubuntu↔Ubuntu
-8. `WDY-1479` — Done: Investigate SER9 Swift E2E mTLS auth failure
+1. `WDY-1528` — ASAP blocker: Add machine-readable Swift E2E recording metadata
+2. `WDY-1519` — In progress: Add IPv4 fallback preflight for physical Swift E2E targets
+3. `WDY-1527` — In progress: Rework Swift E2E aggregate storage for attempt-level artifacts
+4. `WDY-1521` — Paused: Teach E2E AI review to explain why a run failed
+5. `WDY-1510` — Canceled: Re-enable Raspberry Pi physical Swift E2E route
+6. `WDY-1482` — Done: Gate device-to-device E2E jobs behind successful local E2E runs
+7. `WDY-1494` — Done: Clean up Swift E2E route matrix and restore commented route ledger
+8. `WDY-1481` — Done: Add local E2E matrix coverage for macOS↔macOS and Ubuntu↔Ubuntu
+9. `WDY-1479` — Done: Investigate SER9 Swift E2E mTLS auth failure
 
 ## Completed housekeeping
 
@@ -135,6 +136,21 @@ WDY-1510 was canceled because no Raspberry Pi 5 is currently available on CI:
   - Linear: https://linear.app/wendylabsinc/issue/WDY-1521/teach-e2e-ai-review-to-explain-why-a-run-failed
   - Setup commit: `89dc863`
 
+## Project issue inventory update
+
+Checked the E2E Tests Linear project on 2026-06-12. New/current issues not
+previously represented in this coordinator include:
+
+- WDY-1528 — Todo, assigned to `konstantin@wendy.sh`: add machine-readable
+  Swift E2E recording metadata. This is an ASAP blocker because duplicate test
+  names across suites/files need stable source/test identity for xUnit matching.
+  https://linear.app/wendylabsinc/issue/WDY-1528/add-machine-readable-swift-e2e-recording-metadata
+- WDY-1512 — In Progress: audit and align hidden deprecated CLI aliases.
+- WDY-1511 — Done: remove misleading hidden completion install `--output-dir`
+  test seam.
+- WDY-1513 through WDY-1517 — Backlog reference-alignment follow-ups.
+- WDY-1509 — Done: CLI surface audit.
+
 ## One-off SER9 route disable
 
 - PR #995 temporarily disables the physical macOS 26 → Ubuntu 24/SER9 Swift E2E
@@ -148,9 +164,12 @@ WDY-1510 was canceled because no Raspberry Pi 5 is currently available on CI:
 
 ## Remaining intended next steps
 
+- Address WDY-1528 ASAP as the current blocker. Follow the `PLAN.md` working
+  protocol: create a dedicated worktree/branch, setup commit, draft PR, and
+  issue-specific `HANDOVER.md`.
 - Watch PR #995 checks; do not merge unless CI passes.
-- Continue WDY-1527 in its dedicated worktree first; implementation should not
-  happen in this coordinator worktree.
+- Continue WDY-1527 in its dedicated worktree; implementation should not happen
+  in this coordinator worktree.
 - Keep WDY-1521 paused until WDY-1527 settles the aggregate layout.
 - Continue WDY-1519 separately in its dedicated worktree.
 - If Raspberry Pi 5 CI hardware comes online later, open a new Linear issue or

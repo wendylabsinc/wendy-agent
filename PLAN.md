@@ -96,6 +96,35 @@ in per-issue worktree sessions, not in this master planning session.
   cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1519-ipv4-e2e-preflight && ai --prompt "Read HANDOVER.md and follow its instructions."
   ```
 
+### WDY-1528 — Add machine-readable Swift E2E recording metadata
+
+- Status: `planned-asap`
+- Linear project: E2E Tests
+- Linear: https://linear.app/wendylabsinc/issue/WDY-1528/add-machine-readable-swift-e2e-recording-metadata
+- Linear assignee: `konstantin@wendy.sh`
+- Linear state: Todo (`unstarted`)
+- Branch/worktree name: not prepared yet
+- Worktree path: not prepared yet
+- PR: not created yet
+- PR closing reference: `Closes WDY-1528`
+- Scope: add a narrow, versioned `recording.json` next to each
+  `recording.md`/`recording.sh.txt` with stable source/test identity metadata:
+  file path/name, suite, test name, function, and line. Keep the schema focused
+  on source/test identity only; do not add command stdout/stderr JSON or broad
+  redaction design here.
+- Why ASAP/blocker: WDY-1512 exposed duplicate test names across suites/files
+  (`'--json' keeps JSON output clean`). Run/report/review result matching needs
+  machine-readable suite/test identity instead of parsing human Markdown or
+  relying on globally unique test names.
+- Required behavior: `RunOverview`, `ReportCommand`, and `ReviewCommand` should
+  prefer `recording.json` for xUnit matching while keeping `recording.md` as a
+  backward-compatible fallback for older artifacts. Add unit coverage for the
+  duplicate-name/multi-suite case.
+- Validation: run targeted Swift E2E package tests for recorder/report/review
+  matching changes, plus shell/YAML/actionlint checks if scripts/workflows are
+  touched.
+- Resume command: not available until prepared
+
 ### WDY-1527 — Rework Swift E2E aggregate storage for attempt-level artifacts
 
 - Status: `in progress`
@@ -237,16 +266,18 @@ in per-issue worktree sessions, not in this master planning session.
 ## E2E Tests issue order
 
 Keep each issue short and validation-focused. Completed issues stay in the
-ledger for history; remaining active planning starts with WDY-1510.
+ledger for history; current active planning starts with the ASAP blocker
+WDY-1528.
 
-1. **WDY-1519** — In progress: Add IPv4 fallback preflight for physical Swift E2E targets.
-2. **WDY-1527** — In progress: Rework Swift E2E aggregate storage for attempt-level artifacts.
-3. **WDY-1521** — Paused: Teach E2E AI review to explain why a run failed.
-4. **WDY-1510** — Canceled: Re-enable Raspberry Pi physical Swift E2E route.
-5. **WDY-1482** — Done: Gate device-to-device E2E jobs behind successful local E2E runs.
-6. **WDY-1494** — Done: Clean up Swift E2E route matrix and restore commented route ledger.
-7. **WDY-1481** — Done: Add local E2E matrix coverage for macOS↔macOS and Ubuntu↔Ubuntu.
-8. **WDY-1479** — Done: Investigate SER9 Swift E2E mTLS auth failure.
+1. **WDY-1528** — ASAP blocker: Add machine-readable Swift E2E recording metadata.
+2. **WDY-1519** — In progress: Add IPv4 fallback preflight for physical Swift E2E targets.
+3. **WDY-1527** — In progress: Rework Swift E2E aggregate storage for attempt-level artifacts.
+4. **WDY-1521** — Paused: Teach E2E AI review to explain why a run failed.
+5. **WDY-1510** — Canceled: Re-enable Raspberry Pi physical Swift E2E route.
+6. **WDY-1482** — Done: Gate device-to-device E2E jobs behind successful local E2E runs.
+7. **WDY-1494** — Done: Clean up Swift E2E route matrix and restore commented route ledger.
+8. **WDY-1481** — Done: Add local E2E matrix coverage for macOS↔macOS and Ubuntu↔Ubuntu.
+9. **WDY-1479** — Done: Investigate SER9 Swift E2E mTLS auth failure.
 
 ## One-off route/workflow PRs
 
@@ -262,6 +293,20 @@ ledger for history; remaining active planning starts with WDY-1510.
 Use this section for E2E Tests project issues that should not be started yet, or
 for related issues outside the project that matter only if they block active E2E
 work.
+
+Project inventory check on 2026-06-12 also found these E2E Tests issues not yet
+fully represented in this coordinator flow:
+
+- **WDY-1512** — In Progress: Audit and align hidden deprecated CLI aliases.
+- **WDY-1511** — Done: Remove misleading hidden completion install
+  `--output-dir` test seam.
+- **WDY-1513** — Backlog: Align host-only CLI E2E references.
+- **WDY-1514** — Backlog: Align OS imaging and update E2E references.
+- **WDY-1515** — Backlog: Align direct device command E2E references.
+- **WDY-1516** — Backlog: Align cloud-routed device E2E references.
+- **WDY-1517** — Backlog: Align build and run E2E references.
+- **WDY-1509** — Done: Manually audit CLI surface against E2E stubs across
+  Linux and Mac.
 
 - **WDY-1520** — Consider CLI IPv6-to-IPv4 fallback for device connections:
   https://linear.app/wendylabsinc/issue/WDY-1520/consider-cli-ipv6-to-ipv4-fallback-for-device-connections
