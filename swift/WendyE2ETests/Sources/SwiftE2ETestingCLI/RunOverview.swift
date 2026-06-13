@@ -192,9 +192,8 @@ private func makeRunOverview(in runURL: URL) throws -> E2ERunOverview {
                         attempt: attemptName
                     )
                     let result = try overviewObservationResult(
-                        suiteKey: suiteKey,
-                        testKey: testKey,
-                        attemptURL: attemptArtifactsURL
+                        observationURL: attemptURL,
+                        attemptArtifactsURL: attemptArtifactsURL
                     )
                     let artifacts = overviewArtifacts(
                         observationURL: attemptURL,
@@ -249,7 +248,13 @@ private func makeRunOverview(in runURL: URL) throws -> E2ERunOverview {
             }
 
             if hasTargetOutcome {
-                uniqueTests.insert("\(suiteKey)/\(testKey)")
+                if let metadata = try firstE2ETestMetadata(in: testURL) {
+                    uniqueTests.insert(
+                        "\(metadata.sourceFilePath)/\(metadata.suiteName)/\(metadata.testName)"
+                    )
+                } else {
+                    uniqueTests.insert("\(suiteKey)/\(testKey)")
+                }
             }
         }
     }
@@ -292,11 +297,10 @@ private func makeRunOverview(in runURL: URL) throws -> E2ERunOverview {
 }
 
 private func overviewObservationResult(
-    suiteKey: String,
-    testKey: String,
-    attemptURL: URL
+    observationURL: URL,
+    attemptArtifactsURL: URL
 ) throws -> OverviewObservationResult {
-    let resultURL = attemptURL.appendingPathComponent("test-results.xml")
+    let resultURL = attemptArtifactsURL.appendingPathComponent("test-results.xml")
     guard FileManager.default.fileExists(atPath: resultURL.path) else {
         return OverviewObservationResult(
             status: .unknown,
@@ -316,23 +320,26 @@ private func overviewObservationResult(
         )
     }
 
-    if let result = results.first(where: { key, _ in
-        overviewSlug(key.suite) == suiteKey && overviewSlug(key.name) == testKey
-    })?.value {
-        return result
+    let metadata: E2ETestMetadata
+    do {
+        metadata = try loadE2ETestMetadata(in: observationURL)
+    } catch {
+        return OverviewObservationResult(
+            status: .unknown,
+            durationSeconds: nil,
+            detail: "Could not read test.json for this recording: \(error)"
+        )
     }
 
-    let matchingTestNames = results.filter { key, _ in
-        overviewSlug(key.name) == testKey
-    }
-    if matchingTestNames.count == 1, let result = matchingTestNames.first?.value {
+    if let result = results[OverviewResultKey(suite: metadata.suiteName, name: metadata.testName)] {
         return result
     }
 
     return OverviewObservationResult(
         status: .unknown,
         durationSeconds: nil,
-        detail: "No Swift Testing result was found for this test in test-results.xml"
+        detail:
+            "No Swift Testing result was found for \(metadata.suiteName) › \(metadata.testName) in test-results.xml"
     )
 }
 

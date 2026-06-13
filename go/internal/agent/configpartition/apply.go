@@ -348,11 +348,24 @@ func updateAvahiDeviceName(logger *zap.Logger, name string, env []string) {
 // avahi service file to advertise the mTLS port and a tls=true TXT record,
 // then restarts avahi-daemon so the mDNS advertisement reflects that the
 // device is now provisioned.
-//
-// The service file name varies by image (e.g. wendyos-mdns.service or
-// wendy-agent.service), so we scan all files in /etc/avahi/services/ and
-// update the first one that contains a _wendyos._udp block.
 func UpdateAvahiForProvisioning(logger *zap.Logger, mtlsPort int) {
+	updateAvahiService(logger, mtlsPort, true)
+}
+
+// UpdateAvahiForUnprovisioning reverts the _wendyos._udp service block to
+// advertise the plaintext agent port and a tls=false TXT record, then restarts
+// avahi-daemon. It is the inverse of UpdateAvahiForProvisioning, used when a
+// device is unprovisioned so it is rediscoverable for re-enrollment.
+func UpdateAvahiForUnprovisioning(logger *zap.Logger, plaintextPort int) {
+	updateAvahiService(logger, plaintextPort, false)
+}
+
+// updateAvahiService points the _wendyos._udp advertisement at the given port
+// and sets its tls TXT record. The service file name varies by image (e.g.
+// wendyos-mdns.service or wendy-agent.service), so we scan all files in
+// /etc/avahi/services/ and update the first one that contains a _wendyos._udp
+// block.
+func updateAvahiService(logger *zap.Logger, port int, tls bool) {
 	const serviceDir = "/etc/avahi/services"
 
 	entries, err := os.ReadDir(serviceDir)
@@ -374,7 +387,7 @@ func UpdateAvahiForProvisioning(logger *zap.Logger, mtlsPort int) {
 			continue
 		}
 
-		content := updateWendyOSServicePort(string(data), mtlsPort)
+		content := updateWendyOSServicePort(string(data), port, tls)
 		if err := os.WriteFile(serviceFile, []byte(content), 0o644); err != nil {
 			logger.Warn("Could not write avahi service file",
 				zap.String("path", serviceFile), zap.Error(err))
@@ -383,11 +396,11 @@ func UpdateAvahiForProvisioning(logger *zap.Logger, mtlsPort int) {
 
 		restart := exec.Command("/usr/bin/systemctl", "restart", "avahi-daemon")
 		if out, err := restart.CombinedOutput(); err != nil {
-			logger.Warn("systemctl restart avahi-daemon failed after provisioning",
+			logger.Warn("systemctl restart avahi-daemon failed",
 				zap.Error(err), zap.String("output", string(out)))
 		} else {
-			logger.Info("Updated avahi advertisement for mTLS",
-				zap.String("file", e.Name()), zap.Int("port", mtlsPort))
+			logger.Info("Updated avahi advertisement",
+				zap.String("file", e.Name()), zap.Int("port", port), zap.Bool("tls", tls))
 		}
 		return
 	}
@@ -396,9 +409,9 @@ func UpdateAvahiForProvisioning(logger *zap.Logger, mtlsPort int) {
 }
 
 // updateWendyOSServicePort finds the _wendyos._udp service block and updates
-// its port to mtlsPort and adds/updates a tls=true TXT record. Other service
-// blocks (SSH, HTTP, etc.) are left untouched.
-func updateWendyOSServicePort(content string, mtlsPort int) string {
+// its port and tls TXT record. Other service blocks (SSH, HTTP, etc.) are left
+// untouched.
+func updateWendyOSServicePort(content string, port int, tls bool) string {
 	const typeTag = "<type>_wendyos._udp</type>"
 	portRe := regexp.MustCompile(`<port>\d+</port>`)
 
@@ -423,14 +436,18 @@ func updateWendyOSServicePort(content string, mtlsPort int) string {
 	block := content[serviceStart:serviceEnd]
 
 	// Update port only within this block.
-	block = portRe.ReplaceAllString(block, fmt.Sprintf("<port>%d</port>", mtlsPort))
+	block = portRe.ReplaceAllString(block, fmt.Sprintf("<port>%d</port>", port))
 
-	// Add or update the tls=true TXT record.
+	// Add or update the tls TXT record.
+	tlsValue := "false"
+	if tls {
+		tlsValue = "true"
+	}
 	if strings.Contains(block, "<txt-record>tls=") {
-		block = replaceTXTRecord(block, "tls", "true")
+		block = replaceTXTRecord(block, "tls", tlsValue)
 	} else {
 		block = strings.Replace(block, "</service>",
-			"    <txt-record>tls=true</txt-record>\n  </service>", 1)
+			"    <txt-record>tls="+tlsValue+"</txt-record>\n  </service>", 1)
 	}
 
 	return content[:serviceStart] + block + content[serviceEnd:]

@@ -522,6 +522,16 @@ func main() {
 		}
 	}
 
+	// Set up the unprovisioning callback: revert the mDNS advertisement to the
+	// plaintext port and exit so systemd restarts the agent into unprovisioned
+	// mode. A clean restart is simpler and more reliable than tearing down the
+	// mTLS server, tunnel broker, BLE peripheral, and HTTPS registry in place.
+	provisioningSvc.OnUnprovisioned = func() {
+		configpartition.UpdateAvahiForUnprovisioning(logger, agentPortNum)
+		logger.Info("Device unprovisioned — restarting agent into unprovisioned mode")
+		os.Exit(0)
+	}
+
 	otelPort := defaultOTELPort
 	if p := os.Getenv("WENDY_OTEL_PORT"); p != "" {
 		otelPort = p

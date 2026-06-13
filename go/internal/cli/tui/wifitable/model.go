@@ -12,6 +12,7 @@ import (
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
+	"google.golang.org/grpc/status"
 )
 
 // mode tracks which sub-view the model is showing.
@@ -811,15 +812,16 @@ func (m *Model) reconcileRefresh(incoming []Network) []Network {
 // flashFor renders a user-facing message for a completed operation.
 func flashFor(msg OpResultMsg) (string, bool) {
 	if msg.Err != nil {
+		reason := userFacingError(msg.Err)
 		switch msg.Action {
 		case ActionConnect, ActionConnectUnlisted:
-			return fmt.Sprintf("Connect to %s failed: %v", msg.SSID, msg.Err), true
+			return fmt.Sprintf("Connect to %s failed: %s", msg.SSID, reason), true
 		case ActionForget:
-			return fmt.Sprintf("Forget %s failed: %v", msg.SSID, msg.Err), true
+			return fmt.Sprintf("Forget %s failed: %s", msg.SSID, reason), true
 		case ActionReorder:
-			return fmt.Sprintf("Reorder failed: %v", msg.Err), true
+			return fmt.Sprintf("Reorder failed: %s", reason), true
 		default:
-			return msg.Err.Error(), true
+			return reason, true
 		}
 	}
 	switch msg.Action {
@@ -831,6 +833,30 @@ func flashFor(msg OpResultMsg) (string, bool) {
 		return fmt.Sprintf("Updated priority for %d known networks.", msg.Count), false
 	}
 	return "", false
+}
+
+// userFacingError renders a remote error for display, preferring the gRPC
+// status description so internal "rpc error: code = ..." framing is not shown
+// in the table status line. Non-gRPC errors fall back to their plain text.
+func userFacingError(err error) string {
+	if err == nil {
+		return ""
+	}
+	if _, ok := status.FromError(err); ok {
+		if desc, descOK := grpcDescFromErrorString(err.Error()); descOK {
+			return desc
+		}
+	}
+	return err.Error()
+}
+
+func grpcDescFromErrorString(msg string) (string, bool) {
+	idx := strings.Index(msg, "desc = ")
+	if idx < 0 {
+		return "", false
+	}
+	desc := strings.TrimSpace(msg[idx+len("desc = "):])
+	return desc, desc != ""
 }
 
 func clearFlashAfter(d time.Duration) tea.Cmd {

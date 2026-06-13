@@ -98,7 +98,7 @@ struct `'wendy device info'` {
     }
 
     /**
-     If no explicit or default device is available, interactive mode helps the user choose one. The picker discovers LAN, Bluetooth, and provider-backed devices.
+     If no explicit or default device is available, interactive mode helps the user choose one. The picker discovers LAN, BLE, and provider-backed devices.
      */
     @Test(.disabled("INTERACTIVE: requires picker harness"))
     func `opens the device picker when no device is selected`() async throws {
@@ -476,69 +476,5 @@ struct `'wendy device info'` {
             entries.append("\(host):\(port + 1)")
         }
         return entries.joined(separator: ",")
-    }
-}
-
-/// Deprecated compatibility alias for `wendy device info`.
-///
-/// Use `wendy device info` in new scripts and documentation.
-@Suite
-struct `'wendy device version'` {
-    let scenario = CLIAndAgentScenario()
-
-    // MARK: - Compatibility
-
-    /**
-     The deprecated command reports the same device information as `wendy device info` and directs users to the replacement command.
-     */
-    @Test(.disabled("TODO: implement deprecation notice on the CLI side"))
-    func `aliases device info with a deprecation notice`() async throws {
-        try await self.scenario.run { cli, agent in
-            let agentAddress = agent.machine.address
-
-            try await cli.sh("wendy --device \(agentAddress) device version") { result in
-
-                #expect(result.status.isSuccess)
-                #expect(result.stderr.localizedCaseInsensitiveContains("deprecated"))
-                #expect(result.stderr.contains("wendy device info"))
-
-                let json = try #require(
-                    try JSONSerialization.jsonObject(with: Data(result.stdout.utf8))
-                        as? [String: Any]
-                )
-                let version = try #require(json["version"] as? String)
-                let os = try #require(json["os"] as? String)
-                let cpuArchitecture = try #require(json["cpuArchitecture"] as? String)
-                let cliVersion = try #require(json["cliVersion"] as? String)
-
-                #expect(!version.isEmpty)
-                #expect(!os.isEmpty)
-                #expect(!cpuArchitecture.isEmpty)
-                #expect(!cliVersion.isEmpty)
-                #expect(json["hasGpu"] is Bool)
-            }
-        }
-    }
-
-    /**
-     The deprecated command keeps stdout machine-readable in JSON mode. Deprecation guidance is kept out of the JSON payload so existing scripts can continue parsing the response.
-     */
-    @Test
-    func `'--json' aliases device info without contaminating JSON output`() async throws {
-        try await self.scenario.run { cli, _ in
-            try await cli.sh("wendy device version --json") { result in
-                let stderr = result.stderr
-
-                #expect(!result.status.isSuccess)
-                #expect(result.stdout == "")
-                #expect(
-                    stderr.contains(
-                        "no device specified; use --device flag or set a default"
-                    )
-                )
-                #expect(!stderr.localizedCaseInsensitiveContains("deprecated"))
-                #expect(!stderr.contains("Select a device"))
-            }
-        }
     }
 }

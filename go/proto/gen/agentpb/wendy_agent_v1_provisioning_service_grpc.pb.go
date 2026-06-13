@@ -21,6 +21,7 @@ const _ = grpc.SupportPackageIsVersion9
 const (
 	WendyProvisioningService_StartProvisioning_FullMethodName = "/wendy.agent.services.v1.WendyProvisioningService/StartProvisioning"
 	WendyProvisioningService_IsProvisioned_FullMethodName     = "/wendy.agent.services.v1.WendyProvisioningService/IsProvisioned"
+	WendyProvisioningService_Unprovision_FullMethodName       = "/wendy.agent.services.v1.WendyProvisioningService/Unprovision"
 )
 
 // WendyProvisioningServiceClient is the client API for WendyProvisioningService service.
@@ -29,6 +30,10 @@ const (
 type WendyProvisioningServiceClient interface {
 	StartProvisioning(ctx context.Context, in *StartProvisioningRequest, opts ...grpc.CallOption) (*StartProvisioningResponse, error)
 	IsProvisioned(ctx context.Context, in *IsProvisionedRequest, opts ...grpc.CallOption) (*IsProvisionedResponse, error)
+	// Unprovision resets the device to an unprovisioned state: it deletes the
+	// stored enrollment certificates and provisioning state, then restarts the
+	// agent so it comes back up serving plaintext on the unprovisioned port.
+	Unprovision(ctx context.Context, in *UnprovisionRequest, opts ...grpc.CallOption) (*UnprovisionResponse, error)
 }
 
 type wendyProvisioningServiceClient struct {
@@ -59,12 +64,26 @@ func (c *wendyProvisioningServiceClient) IsProvisioned(ctx context.Context, in *
 	return out, nil
 }
 
+func (c *wendyProvisioningServiceClient) Unprovision(ctx context.Context, in *UnprovisionRequest, opts ...grpc.CallOption) (*UnprovisionResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(UnprovisionResponse)
+	err := c.cc.Invoke(ctx, WendyProvisioningService_Unprovision_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // WendyProvisioningServiceServer is the server API for WendyProvisioningService service.
 // All implementations must embed UnimplementedWendyProvisioningServiceServer
 // for forward compatibility.
 type WendyProvisioningServiceServer interface {
 	StartProvisioning(context.Context, *StartProvisioningRequest) (*StartProvisioningResponse, error)
 	IsProvisioned(context.Context, *IsProvisionedRequest) (*IsProvisionedResponse, error)
+	// Unprovision resets the device to an unprovisioned state: it deletes the
+	// stored enrollment certificates and provisioning state, then restarts the
+	// agent so it comes back up serving plaintext on the unprovisioned port.
+	Unprovision(context.Context, *UnprovisionRequest) (*UnprovisionResponse, error)
 	mustEmbedUnimplementedWendyProvisioningServiceServer()
 }
 
@@ -80,6 +99,9 @@ func (UnimplementedWendyProvisioningServiceServer) StartProvisioning(context.Con
 }
 func (UnimplementedWendyProvisioningServiceServer) IsProvisioned(context.Context, *IsProvisionedRequest) (*IsProvisionedResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method IsProvisioned not implemented")
+}
+func (UnimplementedWendyProvisioningServiceServer) Unprovision(context.Context, *UnprovisionRequest) (*UnprovisionResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Unprovision not implemented")
 }
 func (UnimplementedWendyProvisioningServiceServer) mustEmbedUnimplementedWendyProvisioningServiceServer() {
 }
@@ -139,6 +161,24 @@ func _WendyProvisioningService_IsProvisioned_Handler(srv interface{}, ctx contex
 	return interceptor(ctx, in, info, handler)
 }
 
+func _WendyProvisioningService_Unprovision_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(UnprovisionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WendyProvisioningServiceServer).Unprovision(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WendyProvisioningService_Unprovision_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WendyProvisioningServiceServer).Unprovision(ctx, req.(*UnprovisionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // WendyProvisioningService_ServiceDesc is the grpc.ServiceDesc for WendyProvisioningService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -153,6 +193,10 @@ var WendyProvisioningService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "IsProvisioned",
 			Handler:    _WendyProvisioningService_IsProvisioned_Handler,
+		},
+		{
+			MethodName: "Unprovision",
+			Handler:    _WendyProvisioningService_Unprovision_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

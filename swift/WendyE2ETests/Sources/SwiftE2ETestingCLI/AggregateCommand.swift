@@ -98,6 +98,10 @@ struct AggregateCommand: ParsableCommand {
                 withIntermediateDirectories: true
             )
             try copyItem(at: testDirectory, to: destinationURL)
+            try copyTestMetadataIfPresent(
+                from: testDirectory,
+                to: destinationURL.deletingLastPathComponent().deletingLastPathComponent()
+            )
         }
     }
 }
@@ -159,6 +163,12 @@ private func attemptTestDirectories(in attemptURL: URL) throws -> [URL] {
 
 private func isDirectory(_ url: URL) throws -> Bool {
     try url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory == true
+}
+
+private func copyTestMetadataIfPresent(from testDirectoryURL: URL, to testRootURL: URL) throws {
+    let sourceURL = testDirectoryURL.appendingPathComponent(e2eTestMetadataFileName)
+    guard FileManager.default.fileExists(atPath: sourceURL.path) else { return }
+    try copyItem(at: sourceURL, to: testRootURL.appendingPathComponent(e2eTestMetadataFileName))
 }
 
 private func copyAttemptLevelArtifacts(from attemptURL: URL, to destinationURL: URL) throws {

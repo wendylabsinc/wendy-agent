@@ -53,3 +53,10 @@ func (s *ProvisioningServiceV2) StartProvisioning(ctx context.Context, req *agen
 	}
 	return &agentpbv2.StartProvisioningResponse{}, nil
 }
+
+func (s *ProvisioningServiceV2) Unprovision(ctx context.Context, _ *agentpbv2.UnprovisionRequest) (*agentpbv2.UnprovisionResponse, error) {
+	if _, err := s.v1.Unprovision(ctx, &agentpb.UnprovisionRequest{}); err != nil {
+		return nil, err
+	}
+	return &agentpbv2.UnprovisionResponse{}, nil
+}

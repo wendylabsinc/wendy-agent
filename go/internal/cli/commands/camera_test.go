@@ -11,6 +11,8 @@ import (
 	"testing"
 
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // Annex-B NAL header bytes (forbidden_zero | nal_ref_idc | nal_unit_type).
@@ -36,11 +38,17 @@ func joinBytes(parts ...[]byte) []byte {
 }
 
 type mockVideoStream struct {
-	frames []*agentpb.VideoFrame
-	idx    int
+	frames      []*agentpb.VideoFrame
+	idx         int
+	err         error
+	errReturned bool
 }
 
 func (m *mockVideoStream) Recv() (*agentpb.VideoFrame, error) {
+	if m.err != nil && !m.errReturned {
+		m.errReturned = true
+		return nil, m.err
+	}
 	if m.idx >= len(m.frames) {
 		return nil, io.EOF
 	}
@@ -136,13 +144,31 @@ func TestPlayVideoWithGStreamer_MissingGStreamer(t *testing.T) {
 	t.Setenv("PATH", t.TempDir()) // empty dir — no executables on PATH
 	stubGSTFallback(t, nil)       // no install-location fallbacks either
 
-	stream := &mockVideoStream{}
+	stream := &mockVideoStream{frames: []*agentpb.VideoFrame{{Data: []byte{0x00}, Codec: agentpb.VideoCodec_VIDEO_CODEC_H264}}}
 	err := playVideoWithGStreamer(context.Background(), stream)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
 	if !strings.Contains(err.Error(), "not found") {
 		t.Errorf("expected 'not found' error, got: %v", err)
+	}
+}
+
+func TestPlayVideoWithGStreamer_RemoteStreamErrorPrecedesMissingGStreamer(t *testing.T) {
+	t.Setenv("PATH", t.TempDir()) // empty dir — no executables on PATH
+	stubGSTFallback(t, nil)       // no install-location fallbacks either
+
+	remoteErr := status.Error(codes.Unimplemented, "Camera streaming is currently not supported by Wendy Agent for Mac.")
+	stream := &mockVideoStream{err: remoteErr}
+	err := playVideoWithGStreamer(context.Background(), stream)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "Camera streaming is currently not supported by Wendy Agent for Mac.") {
+		t.Fatalf("expected remote unsupported error, got: %v", err)
+	}
+	if strings.Contains(err.Error(), "not found") {
+		t.Fatalf("remote unsupported error should not be masked by missing GStreamer: %v", err)
 	}
 }
 

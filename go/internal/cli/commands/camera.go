@@ -158,12 +158,9 @@ func pipeVideoToStdout(stream videoStream, w io.Writer) error {
 // playVideoWithGStreamer spawns gst-launch-1.0 and feeds it the video stream via stdin.
 // It peeks the first frame to determine the codec, then starts the matching decoder pipeline.
 func playVideoWithGStreamer(ctx context.Context, stream videoStream) error {
-	gstPath, err := resolveGSTLaunch()
-	if err != nil {
-		return err
-	}
-
-	// Peek the first frame to learn the codec.
+	// Peek the first frame before checking local playback dependencies. Server-
+	// streaming RPCs can surface Unimplemented only on Recv(), and that remote
+	// unsupported error is more actionable than a missing local GStreamer binary.
 	first, err := stream.Recv()
 	if err == io.EOF {
 		return nil
@@ -172,6 +169,11 @@ func playVideoWithGStreamer(ctx context.Context, stream videoStream) error {
 		return fmt.Errorf("receiving video: %w", err)
 	}
 	codec := first.GetCodec()
+
+	gstPath, err := resolveGSTLaunch()
+	if err != nil {
+		return err
+	}
 
 	gst := exec.CommandContext(ctx, gstPath, playbackPipelineArgs(codec)...)
 	gst.Stderr = os.Stderr

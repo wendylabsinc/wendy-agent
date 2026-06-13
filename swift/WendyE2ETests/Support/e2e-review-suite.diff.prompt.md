@@ -33,8 +33,9 @@ Guidelines:
   explaining why it may have flaked and how to investigate or stabilize it. Then
   consider unresolved `UNKNOWN` outcomes.
 - Cite concrete evidence in details: source paths, target/attempt names, result
-  details, recording paths, shell script paths, `overview.json` outcome data,
-  and the targeted diff files or hunks you inspected.
+  details, recording paths, shell script paths, `attempts/<target>/<attempt>/attempt.log`
+  when relevant, `overview.json` outcome data, and the targeted diff files or
+  hunks you inspected.
 - Use JSON `locations` only when the review is attributable to source lines.
 - Do not edit source code, tests, xUnit files, recordings, or the run's
   top-level `git-diff-*.txt` files.

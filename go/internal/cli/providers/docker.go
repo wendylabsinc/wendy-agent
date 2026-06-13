@@ -36,7 +36,7 @@ func composeFile(dir string) string {
 	return ""
 }
 
-// DockerProvider builds and runs applications in Docker Desktop containers.
+// DockerProvider builds and runs applications in Docker containers.
 type DockerProvider struct{}
 
 func (p *DockerProvider) Key() string         { return ProviderKeyDocker }

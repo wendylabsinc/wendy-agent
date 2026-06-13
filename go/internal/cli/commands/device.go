@@ -30,8 +30,10 @@ import (
 	otelpb "github.com/wendylabsinc/wendy/go/proto/gen/otelpb"
 	"golang.org/x/term"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 )
 
 func newDeviceCmd() *cobra.Command {
@@ -61,6 +63,7 @@ func newDeviceCmd() *cobra.Command {
 		newDeviceUnsetDefaultCmd(),
 		newDeviceSetupCmd(),
 		newDeviceEnrollCmd(),
+		newDeviceUnenrollCmd(),
 		newDeviceUpdateCmd(),
 	)
 	addToGroup("monitor",
@@ -101,11 +104,15 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 		Short:  "Show agent version, OS, architecture, GPU, and hardware info for the target device",
 		Hidden: deprecated,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := cmd.Context()
 			if deprecated && !jsonOutput {
-				cmd.PrintErrln("Warning: 'wendy device version' is deprecated; use 'wendy device info' instead.")
+				if _, ok := cloudDeviceConfigFromContext(ctx); ok {
+					cmd.PrintErrln("Warning: 'wendy cloud device version' is deprecated; use 'wendy cloud device info' instead.")
+				} else {
+					cmd.PrintErrln("Warning: 'wendy device version' is deprecated; use 'wendy device info' instead.")
+				}
 			}
 
-			ctx := cmd.Context()
 			target, err := resolveTarget(ctx)
 			if err != nil {
 				return err
@@ -627,6 +634,181 @@ func pickAuthEntry(cloudGRPC string) (*config.AuthConfig, error) {
 		return nil, fmt.Errorf("auth entry has no certificates; re-run 'wendy auth login'")
 	}
 	return &cfg.Auth[0], nil
+}
+
+func newDeviceUnenrollCmd() *cobra.Command {
+	var assumeYes bool
+	var cloudGRPC string
+
+	cmd := &cobra.Command{
+		Use:   "unenroll",
+		Short: "Unenroll a device and remove it from Wendy Cloud",
+		Long: "Reverses 'wendy device enroll': deletes the device's enrollment certificates and " +
+			"provisioning state (the agent restarts into unprovisioned mode), then revokes the " +
+			"device's certificates and deletes its asset record in Wendy Cloud.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := cmd.Context()
+
+			conn, err := connectToAgent(ctx, SuppressProvisioningHint())
+			if err != nil {
+				return err
+			}
+			defer conn.Close()
+
+			// Determine the device's current enrollment so we know which cloud
+			// asset to clean up afterwards.
+			provResp, err := conn.ProvisioningService.IsProvisioned(ctx, &agentpb.IsProvisionedRequest{})
+			if err != nil {
+				return fmt.Errorf("checking provisioning status: %w", err)
+			}
+			prov := provResp.GetProvisioned()
+			if prov == nil {
+				return fmt.Errorf("device is not provisioned")
+			}
+			cloudHost := prov.GetCloudHost()
+			orgID := prov.GetOrganizationId()
+			assetID := prov.GetAssetId()
+
+			if !assumeYes {
+				if !isInteractiveTerminal() {
+					return fmt.Errorf("unenroll is destructive; pass --yes to confirm when not running interactively")
+				}
+				fmt.Printf("This will unenroll the device (org: %d, asset: %d) and delete its asset in Wendy Cloud.\n", orgID, assetID)
+				fmt.Print("Continue? [y/N] ")
+				reader := bufio.NewReader(os.Stdin)
+				line, _ := reader.ReadString('\n')
+				answer := strings.TrimSpace(strings.ToLower(line))
+				if answer != "y" && answer != "yes" {
+					fmt.Println("Aborted.")
+					return nil
+				}
+			}
+
+			// Step 1: reset the device. The agent deletes its state and restarts,
+			// so the connection may drop right after the response — tolerate that.
+			if _, err := conn.ProvisioningService.Unprovision(ctx, &agentpb.UnprovisionRequest{}); err != nil {
+				if status.Code(err) == codes.Unavailable {
+					cliLogln("Device connection closed (agent is restarting).")
+				} else {
+					return fmt.Errorf("unprovisioning device: %w", err)
+				}
+			}
+
+			// Step 2: clean up the cloud asset. Best-effort — a failure here leaves
+			// a dangling asset that can be removed from the dashboard, but the
+			// device itself is already reset.
+			certsRevoked, assetDeleted, cloudErr := cloudUnenrollCleanup(ctx, cloudGRPC, cloudHost, assetID)
+
+			if jsonOutput {
+				out := map[string]any{
+					"deviceReset":  true,
+					"certsRevoked": certsRevoked,
+					"assetDeleted": assetDeleted,
+				}
+				if cloudErr != nil {
+					out["cloudError"] = cloudErr.Error()
+				}
+				data, marshalErr := json.MarshalIndent(out, "", "  ")
+				if marshalErr != nil {
+					return marshalErr
+				}
+				fmt.Println(string(data))
+			} else {
+				fmt.Println("Device reset to unprovisioned state.")
+				if cloudErr != nil {
+					fmt.Printf("Warning: cloud cleanup failed: %v\n", cloudErr)
+					fmt.Printf("Delete asset %d from the Wendy Cloud dashboard to finish.\n", assetID)
+				} else {
+					fmt.Printf("Revoked %d certificate(s) and deleted asset %d from Wendy Cloud.\n", certsRevoked, assetID)
+				}
+			}
+
+			if cloudErr != nil {
+				return cloudErr
+			}
+			return nil
+		},
+	}
+
+	cmd.Flags().BoolVar(&assumeYes, "yes", false, "Skip the confirmation prompt")
+	cmd.Flags().StringVar(&cloudGRPC, "cloud-grpc", "", "Cloud gRPC endpoint to use for cleanup (defaults to the device's enrolled cloud host)")
+	return cmd
+}
+
+// cloudUnenrollCleanup revokes the asset's active certificates and then
+// deletes the asset record in Wendy Cloud. It authenticates with the user's
+// stored session for the device's cloud host (or cloudGRPC if provided).
+func cloudUnenrollCleanup(ctx context.Context, cloudGRPC, deviceCloudHost string, assetID int32) (certsRevoked int, assetDeleted bool, err error) {
+	target := cloudGRPC
+	if target == "" {
+		target = deviceCloudHost
+	}
+	auth, err := pickAuthEntry(target)
+	if err != nil {
+		return 0, false, fmt.Errorf("selecting cloud auth session: %w", err)
+	}
+	if len(auth.Certificates) == 0 {
+		return 0, false, fmt.Errorf("auth session has no certificates; re-run 'wendy auth login'")
+	}
+	cert := auth.Certificates[0]
+
+	var transport grpc.DialOption
+	if strings.HasSuffix(auth.CloudGRPC, ":443") {
+		tlsCfg, tlsErr := certs.LoadTLSConfig(
+			cert.PemCertificate,
+			cert.PemCertificateChain,
+			cert.PemPrivateKey,
+			"",
+		)
+		if tlsErr != nil {
+			return 0, false, fmt.Errorf("loading TLS config: %w", tlsErr)
+		}
+		transport = grpc.WithTransportCredentials(credentials.NewTLS(tlsCfg))
+	} else {
+		transport = grpc.WithTransportCredentials(insecure.NewCredentials())
+	}
+
+	cloudConn, dialErr := grpc.NewClient(auth.CloudGRPC, transport)
+	if dialErr != nil {
+		return 0, false, fmt.Errorf("connecting to cloud: %w", dialErr)
+	}
+	defer cloudConn.Close()
+
+	tokenCtx := cloudContext(ctx, auth)
+
+	// Revoke the asset's active certificates first so a stale identity cannot be
+	// reused, then delete the asset record.
+	certClient := cloudpb.NewCertificateServiceClient(cloudConn)
+	stream, listErr := certClient.ListCertificates(tokenCtx, &cloudpb.ListCertificatesRequest{AssetId: assetID})
+	if listErr != nil {
+		return 0, false, fmt.Errorf("listing certificates: %w", listErr)
+	}
+	for {
+		resp, recvErr := stream.Recv()
+		if recvErr == io.EOF {
+			break
+		}
+		if recvErr != nil {
+			return certsRevoked, false, fmt.Errorf("listing certificates: %w", recvErr)
+		}
+		c := resp.GetCertificate()
+		if c == nil || c.GetStatus() != cloudpb.CertificateStatus_CERTIFICATE_STATUS_ACTIVE {
+			continue
+		}
+		if _, revErr := certClient.RevokeCertificate(tokenCtx, &cloudpb.RevokeCertificateRequest{
+			CertificateId: c.GetId(),
+			Reason:        "device unprovisioned",
+		}); revErr != nil {
+			return certsRevoked, false, fmt.Errorf("revoking certificate %d: %w", c.GetId(), revErr)
+		}
+		certsRevoked++
+	}
+
+	assetClient := cloudpb.NewAssetServiceClient(cloudConn)
+	if _, delErr := assetClient.DeleteAsset(tokenCtx, &cloudpb.DeleteAssetRequest{Id: assetID}); delErr != nil {
+		return certsRevoked, false, fmt.Errorf("deleting asset %d: %w", assetID, delErr)
+	}
+	return certsRevoked, true, nil
 }
 
 // scanWiFiNetworks queries the agent for available WiFi networks.

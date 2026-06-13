@@ -424,3 +424,48 @@ func TestApplyPreProvisioning_CreatesConfigDir(t *testing.T) {
 		t.Errorf("configPath should be created automatically: %v", err)
 	}
 }
+
+const avahiServiceTemplate = `<?xml version="1.0" standalone='no'?>
+<service-group>
+  <name replace-wildcards="yes">WendyOS on %h</name>
+  <service>
+    <type>_wendyos._udp</type>
+    <port>50051</port>
+  </service>
+  <service>
+    <type>_ssh._tcp</type>
+    <port>22</port>
+  </service>
+</service-group>
+`
+
+func TestUpdateWendyOSServicePort_Provisioned(t *testing.T) {
+	out := updateWendyOSServicePort(avahiServiceTemplate, 50052, true)
+
+	if !strings.Contains(out, "<port>50052</port>") {
+		t.Errorf("expected wendyos port updated to 50052:\n%s", out)
+	}
+	if !strings.Contains(out, "<txt-record>tls=true</txt-record>") {
+		t.Errorf("expected tls=true TXT record:\n%s", out)
+	}
+	// The unrelated SSH block must be left untouched.
+	if !strings.Contains(out, "<port>22</port>") {
+		t.Errorf("ssh port should be untouched:\n%s", out)
+	}
+}
+
+func TestUpdateWendyOSServicePort_Unprovisioned(t *testing.T) {
+	// Start from a provisioned advertisement and revert it.
+	provisioned := updateWendyOSServicePort(avahiServiceTemplate, 50052, true)
+	out := updateWendyOSServicePort(provisioned, 50051, false)
+
+	if !strings.Contains(out, "<port>50051</port>") {
+		t.Errorf("expected wendyos port reverted to 50051:\n%s", out)
+	}
+	if !strings.Contains(out, "<txt-record>tls=false</txt-record>") {
+		t.Errorf("expected tls=false TXT record after revert:\n%s", out)
+	}
+	if strings.Contains(out, "tls=true") {
+		t.Errorf("tls=true should have been replaced:\n%s", out)
+	}
+}

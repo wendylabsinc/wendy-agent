@@ -252,6 +252,34 @@ func waitForAppsDashVolumes(ch chan appsDashVolumesMsg) tea.Cmd {
 	}
 }
 
+func appsDashPollFlash(err error) string {
+	if status.Code(err) == codes.Unimplemented {
+		return "Poll notice: " + userFacingGRPCError(err)
+	}
+	return "Poll error: " + userFacingGRPCError(err)
+}
+
+func userFacingGRPCError(err error) string {
+	if err == nil {
+		return ""
+	}
+	if _, ok := status.FromError(err); ok {
+		if desc, descOK := grpcDescFromErrorString(err.Error()); descOK {
+			return desc
+		}
+	}
+	return err.Error()
+}
+
+func grpcDescFromErrorString(msg string) (string, bool) {
+	idx := strings.Index(msg, "desc = ")
+	if idx < 0 {
+		return "", false
+	}
+	desc := strings.TrimSpace(msg[idx+len("desc = "):])
+	return desc, desc != ""
+}
+
 // --- Polling goroutines ---
 
 func (m appsDashboardModel) runContainersPoll() {
@@ -353,28 +381,33 @@ func (m appsDashboardModel) runVolumesPoll() {
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 
-	fetch := func() {
+	fetch := func() bool {
 		resp, err := m.conn.ContainerService.ListVolumes(m.ctx, &agentpb.ListVolumesRequest{})
 		if err != nil {
 			select {
 			case m.volumesCh <- appsDashVolumesMsg{err: err}:
 			case <-m.ctx.Done():
 			}
-			return
+			return status.Code(err) != codes.Unimplemented
 		}
 		select {
 		case m.volumesCh <- appsDashVolumesMsg{volumes: resp.GetVolumes()}:
 		case <-m.ctx.Done():
 		}
+		return true
 	}
 
-	fetch()
+	if !fetch() {
+		return
+	}
 	for {
 		select {
 		case <-m.ctx.Done():
 			return
 		case <-ticker.C:
-			fetch()
+			if !fetch() {
+				return
+			}
 		}
 	}
 }
@@ -470,7 +503,7 @@ func (m appsDashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case appsDashVolumesMsg:
 		if msg.err != nil {
-			m.flash = fmt.Sprintf("Poll error: %s", msg.err)
+			m.flash = appsDashPollFlash(msg.err)
 		} else {
 			m.cachedVolumes = msg.volumes
 			m.refreshTable()

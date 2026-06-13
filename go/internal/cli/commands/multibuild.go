@@ -76,10 +76,6 @@ func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 		return err
 	}
 
-	if err := requireRegistryAuth(ctx, conn); err != nil {
-		return err
-	}
-
 	versionResp, err := conn.AgentService.GetAgentVersion(ctx, &agentpb.GetAgentVersionRequest{})
 	if err != nil {
 		return fmt.Errorf("querying device version: %w", err)
@@ -91,6 +87,13 @@ func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 		architecture = "arm64"
 	}
 	platform := resolveAgentPlatform(appCfg.Platform, agentOS, architecture)
+	if strings.EqualFold(agentOS, appconfig.PlatformDarwin) {
+		return rejectUnsupportedMacRunProject("multi-service", platform)
+	}
+
+	if err := requireRegistryAuth(ctx, conn); err != nil {
+		return err
+	}
 
 	regPort := registryPort(agentOS)
 	registryAddr, proxyCleanup, err := resolveRegistryForAgent(ctx, conn, regPort)

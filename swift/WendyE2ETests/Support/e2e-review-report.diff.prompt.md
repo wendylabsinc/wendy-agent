@@ -19,6 +19,16 @@ Guidelines:
   what to do next, and cite the lower-level review/artifact evidence. For flakes,
   explicitly explain why the outcome may be nondeterministic and how to
   investigate or stabilize it.
+- If the prompt lists any attempt-level artifact with `marker=diagnosis-needed`,
+  write a concise top-level failure diagnosis even if it is not plausibly caused
+  by the diff; make that distinction explicit and do not blame the diff without
+  evidence. Inspect `attempt.json` and `attempt.log`; explain whether the attempt
+  failed in setup, build, preflight, test launch, product code, device/network,
+  auth, CI infrastructure, or is inconclusive. If no `attempt.log` is listed,
+  say that job-log details are unavailable and keep the diagnosis tentative.
+- Start every failure-diagnosis summary with these compact fields in prose or
+  bullets: likely category, affected target/job, key evidence, confidence, and
+  recommended next action.
 - Use JSON `severity` to classify each issue as `info`, `concern`, or
   `fail`. Keep those exact JSON values. Do not include severity labels or
   severity emoji in review titles, Markdown headings, or summary text; the

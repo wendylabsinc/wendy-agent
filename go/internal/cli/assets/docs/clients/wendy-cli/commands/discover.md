@@ -51,16 +51,16 @@ or macOS permissions.
 
 Without `--json`, discover renders a live table that refreshes as devices come
 and go (`↑`/`↓` navigate, `enter` copy, `a` copy all, `u` update agent, `d` set
-default, `x` unset default, `q` quit). A leading `★` marks the current default
+default, `x` unset default, `q` quit). A leading `✦` marks the current default
 device.
 
 | Column | Description |
 |--------|-------------|
 | Name | Device display name |
-| Type | Transport(s) the device was discovered on (LAN, USB, Bluetooth, …) |
+| Type | Transport(s) the device was discovered on (LAN, USB, BLE, …) |
 | Address | IP address (or hostname) and port |
-| wendy-agent version | Running agent version; `⚠` marks an agent older than the CLI; blank when the metadata probe hasn't succeeded |
-| WendyOS Version | OS version reported by the agent |
+| Agent | Running agent version; `⚠` marks an agent older than the CLI; blank when the metadata probe hasn't succeeded |
+| OS | OS version reported by the agent |
 | Provisioned | `Provisioned` or `Unprovisioned` for LAN devices, from the mDNS-advertised mTLS state; blank for transports that don't report it (BLE-only, USB, external providers) |
 
 ### No-access hint

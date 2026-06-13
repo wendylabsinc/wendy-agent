@@ -339,6 +339,78 @@ func (*StartProvisioningResponse) Descriptor() ([]byte, []int) {
 	return file_wendy_agent_services_v1_wendy_agent_v1_provisioning_service_proto_rawDescGZIP(), []int{5}
 }
 
+type UnprovisionRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *UnprovisionRequest) Reset() {
+	*x = UnprovisionRequest{}
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_provisioning_service_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UnprovisionRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UnprovisionRequest) ProtoMessage() {}
+
+func (x *UnprovisionRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_provisioning_service_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UnprovisionRequest.ProtoReflect.Descriptor instead.
+func (*UnprovisionRequest) Descriptor() ([]byte, []int) {
+	return file_wendy_agent_services_v1_wendy_agent_v1_provisioning_service_proto_rawDescGZIP(), []int{6}
+}
+
+type UnprovisionResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *UnprovisionResponse) Reset() {
+	*x = UnprovisionResponse{}
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_provisioning_service_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UnprovisionResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UnprovisionResponse) ProtoMessage() {}
+
+func (x *UnprovisionResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_provisioning_service_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UnprovisionResponse.ProtoReflect.Descriptor instead.
+func (*UnprovisionResponse) Descriptor() ([]byte, []int) {
+	return file_wendy_agent_services_v1_wendy_agent_v1_provisioning_service_proto_rawDescGZIP(), []int{7}
+}
+
 var File_wendy_agent_services_v1_wendy_agent_v1_provisioning_service_proto protoreflect.FileDescriptor
 
 const file_wendy_agent_services_v1_wendy_agent_v1_provisioning_service_proto_rawDesc = "" +
@@ -362,10 +434,13 @@ const file_wendy_agent_services_v1_wendy_agent_v1_provisioning_service_proto_raw
 	"\n" +
 	"cloud_host\x18\x03 \x01(\tR\tcloudHost\x12\x19\n" +
 	"\basset_id\x18\x04 \x01(\x05R\aassetId\"\x1b\n" +
-	"\x19StartProvisioningResponse2\x86\x02\n" +
+	"\x19StartProvisioningResponse\"\x14\n" +
+	"\x12UnprovisionRequest\"\x15\n" +
+	"\x13UnprovisionResponse2\xf0\x02\n" +
 	"\x18WendyProvisioningService\x12z\n" +
 	"\x11StartProvisioning\x121.wendy.agent.services.v1.StartProvisioningRequest\x1a2.wendy.agent.services.v1.StartProvisioningResponse\x12n\n" +
-	"\rIsProvisioned\x12-.wendy.agent.services.v1.IsProvisionedRequest\x1a..wendy.agent.services.v1.IsProvisionedResponseb\x06proto3"
+	"\rIsProvisioned\x12-.wendy.agent.services.v1.IsProvisionedRequest\x1a..wendy.agent.services.v1.IsProvisionedResponse\x12h\n" +
+	"\vUnprovision\x12+.wendy.agent.services.v1.UnprovisionRequest\x1a,.wendy.agent.services.v1.UnprovisionResponseb\x06proto3"
 
 var (
 	file_wendy_agent_services_v1_wendy_agent_v1_provisioning_service_proto_rawDescOnce sync.Once
@@ -379,7 +454,7 @@ func file_wendy_agent_services_v1_wendy_agent_v1_provisioning_service_proto_rawD
 	return file_wendy_agent_services_v1_wendy_agent_v1_provisioning_service_proto_rawDescData
 }
 
-var file_wendy_agent_services_v1_wendy_agent_v1_provisioning_service_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
+var file_wendy_agent_services_v1_wendy_agent_v1_provisioning_service_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
 var file_wendy_agent_services_v1_wendy_agent_v1_provisioning_service_proto_goTypes = []any{
 	(*IsProvisionedRequest)(nil),      // 0: wendy.agent.services.v1.IsProvisionedRequest
 	(*IsProvisionedResponse)(nil),     // 1: wendy.agent.services.v1.IsProvisionedResponse
@@ -387,16 +462,20 @@ var file_wendy_agent_services_v1_wendy_agent_v1_provisioning_service_proto_goTyp
 	(*ProvisionedResponse)(nil),       // 3: wendy.agent.services.v1.ProvisionedResponse
 	(*StartProvisioningRequest)(nil),  // 4: wendy.agent.services.v1.StartProvisioningRequest
 	(*StartProvisioningResponse)(nil), // 5: wendy.agent.services.v1.StartProvisioningResponse
+	(*UnprovisionRequest)(nil),        // 6: wendy.agent.services.v1.UnprovisionRequest
+	(*UnprovisionResponse)(nil),       // 7: wendy.agent.services.v1.UnprovisionResponse
 }
 var file_wendy_agent_services_v1_wendy_agent_v1_provisioning_service_proto_depIdxs = []int32{
 	2, // 0: wendy.agent.services.v1.IsProvisionedResponse.not_provisioned:type_name -> wendy.agent.services.v1.NotProvisionedResponse
 	3, // 1: wendy.agent.services.v1.IsProvisionedResponse.provisioned:type_name -> wendy.agent.services.v1.ProvisionedResponse
 	4, // 2: wendy.agent.services.v1.WendyProvisioningService.StartProvisioning:input_type -> wendy.agent.services.v1.StartProvisioningRequest
 	0, // 3: wendy.agent.services.v1.WendyProvisioningService.IsProvisioned:input_type -> wendy.agent.services.v1.IsProvisionedRequest
-	5, // 4: wendy.agent.services.v1.WendyProvisioningService.StartProvisioning:output_type -> wendy.agent.services.v1.StartProvisioningResponse
-	1, // 5: wendy.agent.services.v1.WendyProvisioningService.IsProvisioned:output_type -> wendy.agent.services.v1.IsProvisionedResponse
-	4, // [4:6] is the sub-list for method output_type
-	2, // [2:4] is the sub-list for method input_type
+	6, // 4: wendy.agent.services.v1.WendyProvisioningService.Unprovision:input_type -> wendy.agent.services.v1.UnprovisionRequest
+	5, // 5: wendy.agent.services.v1.WendyProvisioningService.StartProvisioning:output_type -> wendy.agent.services.v1.StartProvisioningResponse
+	1, // 6: wendy.agent.services.v1.WendyProvisioningService.IsProvisioned:output_type -> wendy.agent.services.v1.IsProvisionedResponse
+	7, // 7: wendy.agent.services.v1.WendyProvisioningService.Unprovision:output_type -> wendy.agent.services.v1.UnprovisionResponse
+	5, // [5:8] is the sub-list for method output_type
+	2, // [2:5] is the sub-list for method input_type
 	2, // [2:2] is the sub-list for extension type_name
 	2, // [2:2] is the sub-list for extension extendee
 	0, // [0:2] is the sub-list for field type_name
@@ -417,7 +496,7 @@ func file_wendy_agent_services_v1_wendy_agent_v1_provisioning_service_proto_init
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_wendy_agent_services_v1_wendy_agent_v1_provisioning_service_proto_rawDesc), len(file_wendy_agent_services_v1_wendy_agent_v1_provisioning_service_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   6,
+			NumMessages:   8,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

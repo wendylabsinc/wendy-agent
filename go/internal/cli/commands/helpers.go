@@ -653,7 +653,7 @@ func connectFromSelectedDevice(target *SelectedDevice, cfg resolveConfig) (*grpc
 	// The user picked a Bluetooth device — connectToAgent only supports gRPC.
 	// Callers that support BLE should use resolveTarget() instead.
 	if target.Bluetooth != nil {
-		return nil, fmt.Errorf("selected device (%s) is a Bluetooth device; this command requires a LAN connection. Use 'wendy wifi connect' which supports BLE", target.Bluetooth.DisplayName)
+		return nil, fmt.Errorf("selected device (%s) is a Bluetooth device; this command requires a LAN connection. Use 'wendy device wifi connect' which supports BLE", target.Bluetooth.DisplayName)
 	}
 
 	// The user picked a non-gRPC device (e.g. external provider) which

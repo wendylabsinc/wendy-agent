@@ -419,10 +419,21 @@ func userFacingError(err error) string {
 	if err == nil {
 		return ""
 	}
-	if st, ok := status.FromError(err); ok {
-		return st.Message()
+	if _, ok := status.FromError(err); ok {
+		if desc, descOK := grpcDescFromErrorString(err.Error()); descOK {
+			return desc
+		}
 	}
 	return err.Error()
+}
+
+func grpcDescFromErrorString(msg string) (string, bool) {
+	idx := strings.Index(msg, "desc = ")
+	if idx < 0 {
+		return "", false
+	}
+	desc := strings.TrimSpace(msg[idx+len("desc = "):])
+	return desc, desc != ""
 }
 
 // setFlash sets a transient message and returns a command that clears it after

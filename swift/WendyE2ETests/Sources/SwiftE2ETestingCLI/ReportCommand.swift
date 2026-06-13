@@ -47,6 +47,7 @@ struct ReportCommand: ParsableCommand {
         let testResults = try loadRunTestResults(in: runURL)
         let files = try parseTests(
             in: testsURL,
+            packageURL: packageURL,
             runURL: runURL,
             records: records,
             aiReviews: aiReviews,
@@ -386,12 +387,14 @@ private func defaultTestsDir(packageURL: URL) -> URL {
     return packageURL.appendingPathComponent("Tests")
 }
 
-private func loadRecords(in runURL: URL) throws -> [String: [CommandRun]] {
+private func loadRecords(in runURL: URL) throws -> [E2ETestIdentityKey: [CommandRun]] {
     let recordURLs = try commandRecordURLs(in: runURL)
 
-    var records: [String: [CommandRun]] = [:]
+    var records: [E2ETestIdentityKey: [CommandRun]] = [:]
     for recordURL in recordURLs {
-        records[recordKey(for: recordURL, relativeTo: runURL), default: []] +=
+        let observationURL = recordURL.deletingLastPathComponent()
+        let metadata = try loadE2ETestMetadata(in: observationURL)
+        records[metadata.identityKey, default: []] +=
             try parseRecord(
                 at: recordURL,
                 relativeTo: runURL
@@ -443,21 +446,6 @@ private func commandRecordURLs(in runURL: URL) throws -> [URL] {
     }
 
     return try runObservationFileURLs(in: runURL, fileName: "recording.md")
-}
-
-private func recordKey(for recordURL: URL, relativeTo runURL: URL) -> String {
-    if recordURL.lastPathComponent == "recording.md" {
-        let relative = relativePath(from: runURL, to: recordURL)
-        let components = relative.split(separator: "/").map(String.init)
-        if components.count >= 3, components[0] == e2eObservationsDirectoryName {
-            return "\(components[1]).\(components[2])"
-        }
-        if components.count >= 2 {
-            return "\(components[0]).\(components[1])"
-        }
-        return recordURL.deletingLastPathComponent().lastPathComponent
-    }
-    return recordURL.deletingPathExtension().lastPathComponent
 }
 
 private func relativePath(from baseURL: URL, to url: URL) -> String {
@@ -528,17 +516,15 @@ private func parseXUnitResults(at resultURL: URL) throws -> [TestResultKey: Repo
 
 private func loadRunTestResults(
     in runURL: URL
-) throws -> [RunPathKey: ReportRunTestResult] {
-    var observed: [RunPathKey: [String: [ReportTestStatus]]] = [:]
-    var durations: [RunPathKey: [Double]] = [:]
-    var observations: [RunPathKey: [ReportTestObservation]] = [:]
+) throws -> [E2ETestIdentityKey: ReportRunTestResult] {
+    var observed: [E2ETestIdentityKey: [String: [ReportTestStatus]]] = [:]
+    var durations: [E2ETestIdentityKey: [Double]] = [:]
+    var observations: [E2ETestIdentityKey: [ReportTestObservation]] = [:]
 
     for suiteURL in try directoryChildren(of: e2eObservationsRootURL(in: runURL)) {
         let suiteKey = suiteURL.lastPathComponent
         guard !isE2EReviewDirectoryName(suiteKey) else { continue }
         for testURL in try directoryChildren(of: suiteURL) {
-            let testKey = testURL.lastPathComponent
-            let pathKey = RunPathKey(suiteKey: suiteKey, testKey: testKey)
             for targetURL in try directoryChildren(of: testURL) {
                 let targetName = targetURL.lastPathComponent
                 for attemptURL in try directoryChildren(of: targetURL) {
@@ -548,16 +534,20 @@ private func loadRunTestResults(
                         targetName: targetName,
                         attempt: attemptName
                     )
+                    let metadata = try loadE2ETestMetadata(in: attemptURL)
+                    let identityKey = metadata.identityKey
                     let status = try runObservationStatus(
-                        suiteKey: suiteKey,
-                        testKey: testKey,
+                        metadata: metadata,
                         attemptURL: attemptArtifactsURL
                     )
-                    observed[pathKey, default: [:]][targetName, default: []].append(status)
-                    observations[pathKey, default: []].append(
+                    observed[identityKey, default: [:]][targetName, default: []].append(status)
+                    observations[identityKey, default: []].append(
                         ReportTestObservation(
                             target: targetName,
-                            route: try targetRoute(for: targetName, attemptURL: attemptArtifactsURL),
+                            route: try targetRoute(
+                                for: targetName,
+                                attemptURL: attemptArtifactsURL
+                            ),
                             attempt: attemptName,
                             status: status,
                             recordingPath: observationFilePath(
@@ -573,7 +563,7 @@ private func loadRunTestResults(
                         )
                     )
                     if let duration = status.duration {
-                        durations[pathKey, default: []].append(duration.seconds)
+                        durations[identityKey, default: []].append(duration.seconds)
                     }
                 }
             }
@@ -608,8 +598,7 @@ private func observationFilePath(fileName: String, attemptURL: URL, runURL: URL)
 }
 
 private func runObservationStatus(
-    suiteKey: String,
-    testKey: String,
+    metadata: E2ETestMetadata,
     attemptURL: URL
 ) throws -> ReportTestStatus {
     let resultURL = attemptURL.appendingPathComponent("test-results.xml")
@@ -618,20 +607,7 @@ private func runObservationStatus(
     }
 
     let results = try parseXUnitResults(at: resultURL)
-    if let status = results.first(where: { key, _ in
-        slug(key.suite) == suiteKey && slug(key.name) == testKey
-    })?.value {
-        return status
-    }
-
-    let matchingTestNames = results.filter { key, _ in
-        slug(key.name) == testKey
-    }
-    if matchingTestNames.count == 1, let status = matchingTestNames.first?.value {
-        return status
-    }
-
-    return .unknown
+    return results[TestResultKey(suite: metadata.suiteName, name: metadata.testName)] ?? .unknown
 }
 
 private func observationSort(_ lhs: ReportTestObservation, _ rhs: ReportTestObservation) -> Bool {
@@ -927,10 +903,11 @@ private func stripBackticks(_ value: String) -> String {
 
 private func parseTests(
     in testsURL: URL,
+    packageURL: URL,
     runURL: URL,
-    records: [String: [CommandRun]],
+    records: [E2ETestIdentityKey: [CommandRun]],
     aiReviews: RunAIReviews,
-    testResults: [RunPathKey: ReportRunTestResult]
+    testResults: [E2ETestIdentityKey: ReportRunTestResult]
 ) throws -> [ReportTestFile] {
     let sourceURLs = try swiftTestFiles(in: testsURL)
     var files: [ReportTestFile] = []
@@ -983,7 +960,11 @@ private func parseTests(
             tests[testIndex].aiItems = extractAIItems(from: body)
             let recordSuiteKey = recordFileStem(sourceURL)
             let recordTestKey = slug(tests[testIndex].name)
-            let recordKey = "\(recordSuiteKey).\(recordTestKey)"
+            let identityKey = E2ETestIdentityKey(
+                sourceFilePath: e2ePackageRelativePath(from: packageURL, to: sourceURL),
+                suiteName: tests[testIndex].suite,
+                testName: tests[testIndex].name
+            )
             let directRecordName = "recording.md"
             let nestedRecordName = [
                 e2eObservationsDirectoryName,
@@ -991,7 +972,7 @@ private func parseTests(
                 recordTestKey,
                 "recording.md",
             ].joined(separator: "/")
-            if records[recordKey] != nil,
+            if records[identityKey] != nil,
                 FileManager.default.fileExists(
                     atPath: runURL.appendingPathComponent(directRecordName).path
                 )
@@ -1002,13 +983,12 @@ private func parseTests(
             }
             let key = RunPathKey(suiteKey: recordSuiteKey, testKey: recordTestKey)
             tests[testIndex].aiReviews = aiReviews.tests[key, default: []]
-            tests[testIndex].commands = records[recordKey, default: []].filter {
-                command in
+            tests[testIndex].commands = records[identityKey, default: []].filter { command in
                 command.sourceFile == sourceURL.lastPathComponent
                     && tests[testIndex].funcLine <= command.sourceLine
                     && command.sourceLine < nextLine
             }
-            if let result = testResults[key] {
+            if let result = testResults[identityKey] {
                 tests[testIndex].targetOutcomes = result.targetOutcomes
                 tests[testIndex].durationRange = result.durationRange
                 tests[testIndex].observations = result.observations
@@ -1554,7 +1534,8 @@ private func renderObservations(
         let escapedTarget = isFirstTargetRow ? escapeHTML(observation.target) : ""
         let target = escapedTarget
         let route =
-            isFirstTargetRow ? renderTargetRoute(observation.route, escapedTitle: escapedTarget) : ""
+            isFirstTargetRow
+            ? renderTargetRoute(observation.route, escapedTitle: escapedTarget) : ""
         let rowClass = isFirstTargetRow ? "observation-row" : "observation-row same-target"
         chunks.append(
             "<div class=\"\(rowClass)\"><span class=\"observation-route-cell\">\(route)</span><span class=\"observation-target\">\(target)</span><span class=\"observation-spacer\" aria-hidden=\"true\"></span>\(renderObservationLinks(observation))<span class=\"observation-attempt\">\(escapeHTML(observation.attempt))</span><span class=\"badge \(observation.status.statusClass)\">\(observation.status.statusText)</span>\(observationDurationBadge(observation.duration))</div>"
