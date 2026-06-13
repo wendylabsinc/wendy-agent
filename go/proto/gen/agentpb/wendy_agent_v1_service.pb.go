@@ -589,8 +589,13 @@ type GetAgentVersionResponse struct {
 	DiskUsedBytes *int64 `protobuf:"varint,13,opt,name=disk_used_bytes,json=diskUsedBytes,proto3,oneof" json:"disk_used_bytes,omitempty"`
 	// Root filesystem total bytes on the device. Only present when the agent can inspect disk usage.
 	DiskTotalBytes *int64 `protobuf:"varint,14,opt,name=disk_total_bytes,json=diskTotalBytes,proto3,oneof" json:"disk_total_bytes,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// Usage for every real (disk-backed) filesystem mounted on the device. The
+	// root filesystem is included here as well; disk_used_bytes/disk_total_bytes
+	// are retained for backwards compatibility. Empty when the agent cannot
+	// enumerate mounts.
+	Partitions    []*DiskPartition `protobuf:"bytes,15,rep,name=partitions,proto3" json:"partitions,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *GetAgentVersionResponse) Reset() {
@@ -721,6 +726,95 @@ func (x *GetAgentVersionResponse) GetDiskTotalBytes() int64 {
 	return 0
 }
 
+func (x *GetAgentVersionResponse) GetPartitions() []*DiskPartition {
+	if x != nil {
+		return x.Partitions
+	}
+	return nil
+}
+
+// Usage information for a single mounted filesystem.
+type DiskPartition struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Mount point (e.g. "/", "/boot", "/data").
+	Mountpoint string `protobuf:"bytes,1,opt,name=mountpoint,proto3" json:"mountpoint,omitempty"`
+	// Filesystem type (e.g. "ext4", "vfat").
+	Filesystem string `protobuf:"bytes,2,opt,name=filesystem,proto3" json:"filesystem,omitempty"`
+	// Backing block device (e.g. "/dev/mmcblk0p2").
+	Device string `protobuf:"bytes,3,opt,name=device,proto3" json:"device,omitempty"`
+	// Bytes currently used on the filesystem.
+	UsedBytes int64 `protobuf:"varint,4,opt,name=used_bytes,json=usedBytes,proto3" json:"used_bytes,omitempty"`
+	// Total bytes on the filesystem.
+	TotalBytes    int64 `protobuf:"varint,5,opt,name=total_bytes,json=totalBytes,proto3" json:"total_bytes,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DiskPartition) Reset() {
+	*x = DiskPartition{}
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DiskPartition) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DiskPartition) ProtoMessage() {}
+
+func (x *DiskPartition) ProtoReflect() protoreflect.Message {
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DiskPartition.ProtoReflect.Descriptor instead.
+func (*DiskPartition) Descriptor() ([]byte, []int) {
+	return file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *DiskPartition) GetMountpoint() string {
+	if x != nil {
+		return x.Mountpoint
+	}
+	return ""
+}
+
+func (x *DiskPartition) GetFilesystem() string {
+	if x != nil {
+		return x.Filesystem
+	}
+	return ""
+}
+
+func (x *DiskPartition) GetDevice() string {
+	if x != nil {
+		return x.Device
+	}
+	return ""
+}
+
+func (x *DiskPartition) GetUsedBytes() int64 {
+	if x != nil {
+		return x.UsedBytes
+	}
+	return 0
+}
+
+func (x *DiskPartition) GetTotalBytes() int64 {
+	if x != nil {
+		return x.TotalBytes
+	}
+	return 0
+}
+
 // Request message for listing WiFi networks
 type ListWiFiNetworksRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -730,7 +824,7 @@ type ListWiFiNetworksRequest struct {
 
 func (x *ListWiFiNetworksRequest) Reset() {
 	*x = ListWiFiNetworksRequest{}
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[7]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -742,7 +836,7 @@ func (x *ListWiFiNetworksRequest) String() string {
 func (*ListWiFiNetworksRequest) ProtoMessage() {}
 
 func (x *ListWiFiNetworksRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[7]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -755,7 +849,7 @@ func (x *ListWiFiNetworksRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListWiFiNetworksRequest.ProtoReflect.Descriptor instead.
 func (*ListWiFiNetworksRequest) Descriptor() ([]byte, []int) {
-	return file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDescGZIP(), []int{7}
+	return file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDescGZIP(), []int{8}
 }
 
 // Response message for listing WiFi networks
@@ -769,7 +863,7 @@ type ListWiFiNetworksResponse struct {
 
 func (x *ListWiFiNetworksResponse) Reset() {
 	*x = ListWiFiNetworksResponse{}
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[8]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -781,7 +875,7 @@ func (x *ListWiFiNetworksResponse) String() string {
 func (*ListWiFiNetworksResponse) ProtoMessage() {}
 
 func (x *ListWiFiNetworksResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[8]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -794,7 +888,7 @@ func (x *ListWiFiNetworksResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListWiFiNetworksResponse.ProtoReflect.Descriptor instead.
 func (*ListWiFiNetworksResponse) Descriptor() ([]byte, []int) {
-	return file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDescGZIP(), []int{8}
+	return file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *ListWiFiNetworksResponse) GetNetworks() []*ListWiFiNetworksResponse_WiFiNetwork {
@@ -822,7 +916,7 @@ type ConnectToWiFiRequest struct {
 
 func (x *ConnectToWiFiRequest) Reset() {
 	*x = ConnectToWiFiRequest{}
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[9]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -834,7 +928,7 @@ func (x *ConnectToWiFiRequest) String() string {
 func (*ConnectToWiFiRequest) ProtoMessage() {}
 
 func (x *ConnectToWiFiRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[9]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -847,7 +941,7 @@ func (x *ConnectToWiFiRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ConnectToWiFiRequest.ProtoReflect.Descriptor instead.
 func (*ConnectToWiFiRequest) Descriptor() ([]byte, []int) {
-	return file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDescGZIP(), []int{9}
+	return file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *ConnectToWiFiRequest) GetSsid() string {
@@ -891,7 +985,7 @@ type ConnectToWiFiResponse struct {
 
 func (x *ConnectToWiFiResponse) Reset() {
 	*x = ConnectToWiFiResponse{}
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[10]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -903,7 +997,7 @@ func (x *ConnectToWiFiResponse) String() string {
 func (*ConnectToWiFiResponse) ProtoMessage() {}
 
 func (x *ConnectToWiFiResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[10]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -916,7 +1010,7 @@ func (x *ConnectToWiFiResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ConnectToWiFiResponse.ProtoReflect.Descriptor instead.
 func (*ConnectToWiFiResponse) Descriptor() ([]byte, []int) {
-	return file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDescGZIP(), []int{10}
+	return file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *ConnectToWiFiResponse) GetSuccess() bool {
@@ -942,7 +1036,7 @@ type GetWiFiStatusRequest struct {
 
 func (x *GetWiFiStatusRequest) Reset() {
 	*x = GetWiFiStatusRequest{}
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[11]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -954,7 +1048,7 @@ func (x *GetWiFiStatusRequest) String() string {
 func (*GetWiFiStatusRequest) ProtoMessage() {}
 
 func (x *GetWiFiStatusRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[11]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -967,7 +1061,7 @@ func (x *GetWiFiStatusRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetWiFiStatusRequest.ProtoReflect.Descriptor instead.
 func (*GetWiFiStatusRequest) Descriptor() ([]byte, []int) {
-	return file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDescGZIP(), []int{11}
+	return file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDescGZIP(), []int{12}
 }
 
 // Response message for getting WiFi status
@@ -985,7 +1079,7 @@ type GetWiFiStatusResponse struct {
 
 func (x *GetWiFiStatusResponse) Reset() {
 	*x = GetWiFiStatusResponse{}
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[12]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -997,7 +1091,7 @@ func (x *GetWiFiStatusResponse) String() string {
 func (*GetWiFiStatusResponse) ProtoMessage() {}
 
 func (x *GetWiFiStatusResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[12]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1010,7 +1104,7 @@ func (x *GetWiFiStatusResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetWiFiStatusResponse.ProtoReflect.Descriptor instead.
 func (*GetWiFiStatusResponse) Descriptor() ([]byte, []int) {
-	return file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDescGZIP(), []int{12}
+	return file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *GetWiFiStatusResponse) GetConnected() bool {
@@ -1043,7 +1137,7 @@ type DisconnectWiFiRequest struct {
 
 func (x *DisconnectWiFiRequest) Reset() {
 	*x = DisconnectWiFiRequest{}
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[13]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1055,7 +1149,7 @@ func (x *DisconnectWiFiRequest) String() string {
 func (*DisconnectWiFiRequest) ProtoMessage() {}
 
 func (x *DisconnectWiFiRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[13]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1068,7 +1162,7 @@ func (x *DisconnectWiFiRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DisconnectWiFiRequest.ProtoReflect.Descriptor instead.
 func (*DisconnectWiFiRequest) Descriptor() ([]byte, []int) {
-	return file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDescGZIP(), []int{13}
+	return file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDescGZIP(), []int{14}
 }
 
 // Response message for disconnecting from WiFi
@@ -1084,7 +1178,7 @@ type DisconnectWiFiResponse struct {
 
 func (x *DisconnectWiFiResponse) Reset() {
 	*x = DisconnectWiFiResponse{}
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[14]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1096,7 +1190,7 @@ func (x *DisconnectWiFiResponse) String() string {
 func (*DisconnectWiFiResponse) ProtoMessage() {}
 
 func (x *DisconnectWiFiResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[14]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1109,7 +1203,7 @@ func (x *DisconnectWiFiResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DisconnectWiFiResponse.ProtoReflect.Descriptor instead.
 func (*DisconnectWiFiResponse) Descriptor() ([]byte, []int) {
-	return file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDescGZIP(), []int{14}
+	return file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *DisconnectWiFiResponse) GetSuccess() bool {
@@ -1135,7 +1229,7 @@ type ListKnownWiFiNetworksRequest struct {
 
 func (x *ListKnownWiFiNetworksRequest) Reset() {
 	*x = ListKnownWiFiNetworksRequest{}
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[15]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1147,7 +1241,7 @@ func (x *ListKnownWiFiNetworksRequest) String() string {
 func (*ListKnownWiFiNetworksRequest) ProtoMessage() {}
 
 func (x *ListKnownWiFiNetworksRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[15]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1160,7 +1254,7 @@ func (x *ListKnownWiFiNetworksRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListKnownWiFiNetworksRequest.ProtoReflect.Descriptor instead.
 func (*ListKnownWiFiNetworksRequest) Descriptor() ([]byte, []int) {
-	return file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDescGZIP(), []int{15}
+	return file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDescGZIP(), []int{16}
 }
 
 // Response message for listing known (saved) WiFi networks.
@@ -1173,7 +1267,7 @@ type ListKnownWiFiNetworksResponse struct {
 
 func (x *ListKnownWiFiNetworksResponse) Reset() {
 	*x = ListKnownWiFiNetworksResponse{}
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[16]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1185,7 +1279,7 @@ func (x *ListKnownWiFiNetworksResponse) String() string {
 func (*ListKnownWiFiNetworksResponse) ProtoMessage() {}
 
 func (x *ListKnownWiFiNetworksResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[16]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1198,7 +1292,7 @@ func (x *ListKnownWiFiNetworksResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListKnownWiFiNetworksResponse.ProtoReflect.Descriptor instead.
 func (*ListKnownWiFiNetworksResponse) Descriptor() ([]byte, []int) {
-	return file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDescGZIP(), []int{16}
+	return file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *ListKnownWiFiNetworksResponse) GetNetworks() []*ListKnownWiFiNetworksResponse_KnownWiFiNetwork {
@@ -1221,7 +1315,7 @@ type SetWiFiNetworkPriorityRequest struct {
 
 func (x *SetWiFiNetworkPriorityRequest) Reset() {
 	*x = SetWiFiNetworkPriorityRequest{}
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[17]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1233,7 +1327,7 @@ func (x *SetWiFiNetworkPriorityRequest) String() string {
 func (*SetWiFiNetworkPriorityRequest) ProtoMessage() {}
 
 func (x *SetWiFiNetworkPriorityRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[17]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1246,7 +1340,7 @@ func (x *SetWiFiNetworkPriorityRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetWiFiNetworkPriorityRequest.ProtoReflect.Descriptor instead.
 func (*SetWiFiNetworkPriorityRequest) Descriptor() ([]byte, []int) {
-	return file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDescGZIP(), []int{17}
+	return file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *SetWiFiNetworkPriorityRequest) GetSsid() string {
@@ -1273,7 +1367,7 @@ type SetWiFiNetworkPriorityResponse struct {
 
 func (x *SetWiFiNetworkPriorityResponse) Reset() {
 	*x = SetWiFiNetworkPriorityResponse{}
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[18]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1285,7 +1379,7 @@ func (x *SetWiFiNetworkPriorityResponse) String() string {
 func (*SetWiFiNetworkPriorityResponse) ProtoMessage() {}
 
 func (x *SetWiFiNetworkPriorityResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[18]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1298,7 +1392,7 @@ func (x *SetWiFiNetworkPriorityResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetWiFiNetworkPriorityResponse.ProtoReflect.Descriptor instead.
 func (*SetWiFiNetworkPriorityResponse) Descriptor() ([]byte, []int) {
-	return file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDescGZIP(), []int{18}
+	return file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *SetWiFiNetworkPriorityResponse) GetSuccess() bool {
@@ -1327,7 +1421,7 @@ type ReorderKnownWiFiNetworksRequest struct {
 
 func (x *ReorderKnownWiFiNetworksRequest) Reset() {
 	*x = ReorderKnownWiFiNetworksRequest{}
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[19]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1339,7 +1433,7 @@ func (x *ReorderKnownWiFiNetworksRequest) String() string {
 func (*ReorderKnownWiFiNetworksRequest) ProtoMessage() {}
 
 func (x *ReorderKnownWiFiNetworksRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[19]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1352,7 +1446,7 @@ func (x *ReorderKnownWiFiNetworksRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReorderKnownWiFiNetworksRequest.ProtoReflect.Descriptor instead.
 func (*ReorderKnownWiFiNetworksRequest) Descriptor() ([]byte, []int) {
-	return file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDescGZIP(), []int{19}
+	return file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *ReorderKnownWiFiNetworksRequest) GetOrderSsids() []string {
@@ -1372,7 +1466,7 @@ type ReorderKnownWiFiNetworksResponse struct {
 
 func (x *ReorderKnownWiFiNetworksResponse) Reset() {
 	*x = ReorderKnownWiFiNetworksResponse{}
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[20]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1384,7 +1478,7 @@ func (x *ReorderKnownWiFiNetworksResponse) String() string {
 func (*ReorderKnownWiFiNetworksResponse) ProtoMessage() {}
 
 func (x *ReorderKnownWiFiNetworksResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[20]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1397,7 +1491,7 @@ func (x *ReorderKnownWiFiNetworksResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReorderKnownWiFiNetworksResponse.ProtoReflect.Descriptor instead.
 func (*ReorderKnownWiFiNetworksResponse) Descriptor() ([]byte, []int) {
-	return file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDescGZIP(), []int{20}
+	return file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *ReorderKnownWiFiNetworksResponse) GetSuccess() bool {
@@ -1424,7 +1518,7 @@ type ForgetWiFiNetworkRequest struct {
 
 func (x *ForgetWiFiNetworkRequest) Reset() {
 	*x = ForgetWiFiNetworkRequest{}
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[21]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1436,7 +1530,7 @@ func (x *ForgetWiFiNetworkRequest) String() string {
 func (*ForgetWiFiNetworkRequest) ProtoMessage() {}
 
 func (x *ForgetWiFiNetworkRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[21]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1449,7 +1543,7 @@ func (x *ForgetWiFiNetworkRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ForgetWiFiNetworkRequest.ProtoReflect.Descriptor instead.
 func (*ForgetWiFiNetworkRequest) Descriptor() ([]byte, []int) {
-	return file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDescGZIP(), []int{21}
+	return file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *ForgetWiFiNetworkRequest) GetSsid() string {
@@ -1469,7 +1563,7 @@ type ForgetWiFiNetworkResponse struct {
 
 func (x *ForgetWiFiNetworkResponse) Reset() {
 	*x = ForgetWiFiNetworkResponse{}
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[22]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1481,7 +1575,7 @@ func (x *ForgetWiFiNetworkResponse) String() string {
 func (*ForgetWiFiNetworkResponse) ProtoMessage() {}
 
 func (x *ForgetWiFiNetworkResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[22]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1494,7 +1588,7 @@ func (x *ForgetWiFiNetworkResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ForgetWiFiNetworkResponse.ProtoReflect.Descriptor instead.
 func (*ForgetWiFiNetworkResponse) Descriptor() ([]byte, []int) {
-	return file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDescGZIP(), []int{22}
+	return file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *ForgetWiFiNetworkResponse) GetSuccess() bool {
@@ -1522,7 +1616,7 @@ type ListHardwareCapabilitiesRequest struct {
 
 func (x *ListHardwareCapabilitiesRequest) Reset() {
 	*x = ListHardwareCapabilitiesRequest{}
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[23]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1534,7 +1628,7 @@ func (x *ListHardwareCapabilitiesRequest) String() string {
 func (*ListHardwareCapabilitiesRequest) ProtoMessage() {}
 
 func (x *ListHardwareCapabilitiesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[23]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1547,7 +1641,7 @@ func (x *ListHardwareCapabilitiesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListHardwareCapabilitiesRequest.ProtoReflect.Descriptor instead.
 func (*ListHardwareCapabilitiesRequest) Descriptor() ([]byte, []int) {
-	return file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDescGZIP(), []int{23}
+	return file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *ListHardwareCapabilitiesRequest) GetCategoryFilter() string {
@@ -1568,7 +1662,7 @@ type ListHardwareCapabilitiesResponse struct {
 
 func (x *ListHardwareCapabilitiesResponse) Reset() {
 	*x = ListHardwareCapabilitiesResponse{}
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[24]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1580,7 +1674,7 @@ func (x *ListHardwareCapabilitiesResponse) String() string {
 func (*ListHardwareCapabilitiesResponse) ProtoMessage() {}
 
 func (x *ListHardwareCapabilitiesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[24]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1593,7 +1687,7 @@ func (x *ListHardwareCapabilitiesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListHardwareCapabilitiesResponse.ProtoReflect.Descriptor instead.
 func (*ListHardwareCapabilitiesResponse) Descriptor() ([]byte, []int) {
-	return file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDescGZIP(), []int{24}
+	return file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *ListHardwareCapabilitiesResponse) GetCapabilities() []*ListHardwareCapabilitiesResponse_HardwareCapability {
@@ -1611,7 +1705,7 @@ type ScanBluetoothPeripheralsRequest struct {
 
 func (x *ScanBluetoothPeripheralsRequest) Reset() {
 	*x = ScanBluetoothPeripheralsRequest{}
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[25]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1623,7 +1717,7 @@ func (x *ScanBluetoothPeripheralsRequest) String() string {
 func (*ScanBluetoothPeripheralsRequest) ProtoMessage() {}
 
 func (x *ScanBluetoothPeripheralsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[25]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1636,7 +1730,7 @@ func (x *ScanBluetoothPeripheralsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ScanBluetoothPeripheralsRequest.ProtoReflect.Descriptor instead.
 func (*ScanBluetoothPeripheralsRequest) Descriptor() ([]byte, []int) {
-	return file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDescGZIP(), []int{25}
+	return file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDescGZIP(), []int{26}
 }
 
 type DiscoveredBluetoothPeripheral struct {
@@ -1654,7 +1748,7 @@ type DiscoveredBluetoothPeripheral struct {
 
 func (x *DiscoveredBluetoothPeripheral) Reset() {
 	*x = DiscoveredBluetoothPeripheral{}
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[26]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1666,7 +1760,7 @@ func (x *DiscoveredBluetoothPeripheral) String() string {
 func (*DiscoveredBluetoothPeripheral) ProtoMessage() {}
 
 func (x *DiscoveredBluetoothPeripheral) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[26]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1679,7 +1773,7 @@ func (x *DiscoveredBluetoothPeripheral) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DiscoveredBluetoothPeripheral.ProtoReflect.Descriptor instead.
 func (*DiscoveredBluetoothPeripheral) Descriptor() ([]byte, []int) {
-	return file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDescGZIP(), []int{26}
+	return file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *DiscoveredBluetoothPeripheral) GetName() string {
@@ -1740,7 +1834,7 @@ type ScanBluetoothPeripheralsResponse struct {
 
 func (x *ScanBluetoothPeripheralsResponse) Reset() {
 	*x = ScanBluetoothPeripheralsResponse{}
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[27]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1752,7 +1846,7 @@ func (x *ScanBluetoothPeripheralsResponse) String() string {
 func (*ScanBluetoothPeripheralsResponse) ProtoMessage() {}
 
 func (x *ScanBluetoothPeripheralsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[27]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1765,7 +1859,7 @@ func (x *ScanBluetoothPeripheralsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ScanBluetoothPeripheralsResponse.ProtoReflect.Descriptor instead.
 func (*ScanBluetoothPeripheralsResponse) Descriptor() ([]byte, []int) {
-	return file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDescGZIP(), []int{27}
+	return file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *ScanBluetoothPeripheralsResponse) GetDiscoveredDevices() []*DiscoveredBluetoothPeripheral {
@@ -1786,7 +1880,7 @@ type ConnectBluetoothPeripheralRequest struct {
 
 func (x *ConnectBluetoothPeripheralRequest) Reset() {
 	*x = ConnectBluetoothPeripheralRequest{}
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[28]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1798,7 +1892,7 @@ func (x *ConnectBluetoothPeripheralRequest) String() string {
 func (*ConnectBluetoothPeripheralRequest) ProtoMessage() {}
 
 func (x *ConnectBluetoothPeripheralRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[28]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1811,7 +1905,7 @@ func (x *ConnectBluetoothPeripheralRequest) ProtoReflect() protoreflect.Message 
 
 // Deprecated: Use ConnectBluetoothPeripheralRequest.ProtoReflect.Descriptor instead.
 func (*ConnectBluetoothPeripheralRequest) Descriptor() ([]byte, []int) {
-	return file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDescGZIP(), []int{28}
+	return file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *ConnectBluetoothPeripheralRequest) GetAddress() string {
@@ -1843,7 +1937,7 @@ type ConnectBluetoothPeripheralResponse struct {
 
 func (x *ConnectBluetoothPeripheralResponse) Reset() {
 	*x = ConnectBluetoothPeripheralResponse{}
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[29]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1855,7 +1949,7 @@ func (x *ConnectBluetoothPeripheralResponse) String() string {
 func (*ConnectBluetoothPeripheralResponse) ProtoMessage() {}
 
 func (x *ConnectBluetoothPeripheralResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[29]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1868,7 +1962,7 @@ func (x *ConnectBluetoothPeripheralResponse) ProtoReflect() protoreflect.Message
 
 // Deprecated: Use ConnectBluetoothPeripheralResponse.ProtoReflect.Descriptor instead.
 func (*ConnectBluetoothPeripheralResponse) Descriptor() ([]byte, []int) {
-	return file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDescGZIP(), []int{29}
+	return file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDescGZIP(), []int{30}
 }
 
 type DisconnectBluetoothPeripheralRequest struct {
@@ -1880,7 +1974,7 @@ type DisconnectBluetoothPeripheralRequest struct {
 
 func (x *DisconnectBluetoothPeripheralRequest) Reset() {
 	*x = DisconnectBluetoothPeripheralRequest{}
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[30]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1892,7 +1986,7 @@ func (x *DisconnectBluetoothPeripheralRequest) String() string {
 func (*DisconnectBluetoothPeripheralRequest) ProtoMessage() {}
 
 func (x *DisconnectBluetoothPeripheralRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[30]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1905,7 +1999,7 @@ func (x *DisconnectBluetoothPeripheralRequest) ProtoReflect() protoreflect.Messa
 
 // Deprecated: Use DisconnectBluetoothPeripheralRequest.ProtoReflect.Descriptor instead.
 func (*DisconnectBluetoothPeripheralRequest) Descriptor() ([]byte, []int) {
-	return file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDescGZIP(), []int{30}
+	return file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *DisconnectBluetoothPeripheralRequest) GetAddress() string {
@@ -1923,7 +2017,7 @@ type DisconnectBluetoothPeripheralResponse struct {
 
 func (x *DisconnectBluetoothPeripheralResponse) Reset() {
 	*x = DisconnectBluetoothPeripheralResponse{}
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[31]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1935,7 +2029,7 @@ func (x *DisconnectBluetoothPeripheralResponse) String() string {
 func (*DisconnectBluetoothPeripheralResponse) ProtoMessage() {}
 
 func (x *DisconnectBluetoothPeripheralResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[31]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1948,7 +2042,7 @@ func (x *DisconnectBluetoothPeripheralResponse) ProtoReflect() protoreflect.Mess
 
 // Deprecated: Use DisconnectBluetoothPeripheralResponse.ProtoReflect.Descriptor instead.
 func (*DisconnectBluetoothPeripheralResponse) Descriptor() ([]byte, []int) {
-	return file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDescGZIP(), []int{31}
+	return file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDescGZIP(), []int{32}
 }
 
 type ForgetBluetoothPeripheralRequest struct {
@@ -1960,7 +2054,7 @@ type ForgetBluetoothPeripheralRequest struct {
 
 func (x *ForgetBluetoothPeripheralRequest) Reset() {
 	*x = ForgetBluetoothPeripheralRequest{}
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[32]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1972,7 +2066,7 @@ func (x *ForgetBluetoothPeripheralRequest) String() string {
 func (*ForgetBluetoothPeripheralRequest) ProtoMessage() {}
 
 func (x *ForgetBluetoothPeripheralRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[32]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1985,7 +2079,7 @@ func (x *ForgetBluetoothPeripheralRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ForgetBluetoothPeripheralRequest.ProtoReflect.Descriptor instead.
 func (*ForgetBluetoothPeripheralRequest) Descriptor() ([]byte, []int) {
-	return file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDescGZIP(), []int{32}
+	return file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *ForgetBluetoothPeripheralRequest) GetAddress() string {
@@ -2003,7 +2097,7 @@ type ForgetBluetoothPeripheralResponse struct {
 
 func (x *ForgetBluetoothPeripheralResponse) Reset() {
 	*x = ForgetBluetoothPeripheralResponse{}
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[33]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2015,7 +2109,7 @@ func (x *ForgetBluetoothPeripheralResponse) String() string {
 func (*ForgetBluetoothPeripheralResponse) ProtoMessage() {}
 
 func (x *ForgetBluetoothPeripheralResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[33]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2028,7 +2122,7 @@ func (x *ForgetBluetoothPeripheralResponse) ProtoReflect() protoreflect.Message 
 
 // Deprecated: Use ForgetBluetoothPeripheralResponse.ProtoReflect.Descriptor instead.
 func (*ForgetBluetoothPeripheralResponse) Descriptor() ([]byte, []int) {
-	return file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDescGZIP(), []int{33}
+	return file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDescGZIP(), []int{34}
 }
 
 // Request message for updating the OS
@@ -2042,7 +2136,7 @@ type UpdateOSRequest struct {
 
 func (x *UpdateOSRequest) Reset() {
 	*x = UpdateOSRequest{}
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[34]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2054,7 +2148,7 @@ func (x *UpdateOSRequest) String() string {
 func (*UpdateOSRequest) ProtoMessage() {}
 
 func (x *UpdateOSRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[34]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2067,7 +2161,7 @@ func (x *UpdateOSRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateOSRequest.ProtoReflect.Descriptor instead.
 func (*UpdateOSRequest) Descriptor() ([]byte, []int) {
-	return file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDescGZIP(), []int{34}
+	return file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *UpdateOSRequest) GetArtifactUrl() string {
@@ -2092,7 +2186,7 @@ type UpdateOSResponse struct {
 
 func (x *UpdateOSResponse) Reset() {
 	*x = UpdateOSResponse{}
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[35]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2104,7 +2198,7 @@ func (x *UpdateOSResponse) String() string {
 func (*UpdateOSResponse) ProtoMessage() {}
 
 func (x *UpdateOSResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[35]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2117,7 +2211,7 @@ func (x *UpdateOSResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateOSResponse.ProtoReflect.Descriptor instead.
 func (*UpdateOSResponse) Descriptor() ([]byte, []int) {
-	return file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDescGZIP(), []int{35}
+	return file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *UpdateOSResponse) GetResponseType() isUpdateOSResponse_ResponseType {
@@ -2190,7 +2284,7 @@ type RunContainerRequest_Header struct {
 
 func (x *RunContainerRequest_Header) Reset() {
 	*x = RunContainerRequest_Header{}
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[36]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2202,7 +2296,7 @@ func (x *RunContainerRequest_Header) String() string {
 func (*RunContainerRequest_Header) ProtoMessage() {}
 
 func (x *RunContainerRequest_Header) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[36]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2249,7 +2343,7 @@ type RunContainerRequest_Chunk struct {
 
 func (x *RunContainerRequest_Chunk) Reset() {
 	*x = RunContainerRequest_Chunk{}
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[37]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2261,7 +2355,7 @@ func (x *RunContainerRequest_Chunk) String() string {
 func (*RunContainerRequest_Chunk) ProtoMessage() {}
 
 func (x *RunContainerRequest_Chunk) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[37]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2296,7 +2390,7 @@ type ControlCommand_Run struct {
 
 func (x *ControlCommand_Run) Reset() {
 	*x = ControlCommand_Run{}
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[38]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2308,7 +2402,7 @@ func (x *ControlCommand_Run) String() string {
 func (*ControlCommand_Run) ProtoMessage() {}
 
 func (x *ControlCommand_Run) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[38]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2346,7 +2440,7 @@ type ControlCommand_Stop struct {
 
 func (x *ControlCommand_Stop) Reset() {
 	*x = ControlCommand_Stop{}
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[39]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2358,7 +2452,7 @@ func (x *ControlCommand_Stop) String() string {
 func (*ControlCommand_Stop) ProtoMessage() {}
 
 func (x *ControlCommand_Stop) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[39]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2385,7 +2479,7 @@ type RunContainerResponse_Started struct {
 
 func (x *RunContainerResponse_Started) Reset() {
 	*x = RunContainerResponse_Started{}
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[40]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2397,7 +2491,7 @@ func (x *RunContainerResponse_Started) String() string {
 func (*RunContainerResponse_Started) ProtoMessage() {}
 
 func (x *RunContainerResponse_Started) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[40]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2428,7 +2522,7 @@ type RunContainerResponse_Stopped struct {
 
 func (x *RunContainerResponse_Stopped) Reset() {
 	*x = RunContainerResponse_Stopped{}
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[41]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[42]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2440,7 +2534,7 @@ func (x *RunContainerResponse_Stopped) String() string {
 func (*RunContainerResponse_Stopped) ProtoMessage() {}
 
 func (x *RunContainerResponse_Stopped) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[41]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[42]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2466,7 +2560,7 @@ type RunContainerResponse_ConsoleOutput struct {
 
 func (x *RunContainerResponse_ConsoleOutput) Reset() {
 	*x = RunContainerResponse_ConsoleOutput{}
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[42]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[43]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2478,7 +2572,7 @@ func (x *RunContainerResponse_ConsoleOutput) String() string {
 func (*RunContainerResponse_ConsoleOutput) ProtoMessage() {}
 
 func (x *RunContainerResponse_ConsoleOutput) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[42]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[43]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2510,7 +2604,7 @@ type UpdateAgentRequest_Chunk struct {
 
 func (x *UpdateAgentRequest_Chunk) Reset() {
 	*x = UpdateAgentRequest_Chunk{}
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[43]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[44]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2522,7 +2616,7 @@ func (x *UpdateAgentRequest_Chunk) String() string {
 func (*UpdateAgentRequest_Chunk) ProtoMessage() {}
 
 func (x *UpdateAgentRequest_Chunk) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[43]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[44]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2557,7 +2651,7 @@ type UpdateAgentRequest_ControlCommand struct {
 
 func (x *UpdateAgentRequest_ControlCommand) Reset() {
 	*x = UpdateAgentRequest_ControlCommand{}
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[44]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[45]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2569,7 +2663,7 @@ func (x *UpdateAgentRequest_ControlCommand) String() string {
 func (*UpdateAgentRequest_ControlCommand) ProtoMessage() {}
 
 func (x *UpdateAgentRequest_ControlCommand) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[44]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[45]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2621,7 +2715,7 @@ type UpdateAgentRequest_ControlCommand_Update struct {
 
 func (x *UpdateAgentRequest_ControlCommand_Update) Reset() {
 	*x = UpdateAgentRequest_ControlCommand_Update{}
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[45]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[46]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2633,7 +2727,7 @@ func (x *UpdateAgentRequest_ControlCommand_Update) String() string {
 func (*UpdateAgentRequest_ControlCommand_Update) ProtoMessage() {}
 
 func (x *UpdateAgentRequest_ControlCommand_Update) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[45]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[46]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2664,7 +2758,7 @@ type UpdateAgentResponse_Updated struct {
 
 func (x *UpdateAgentResponse_Updated) Reset() {
 	*x = UpdateAgentResponse_Updated{}
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[46]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[47]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2676,7 +2770,7 @@ func (x *UpdateAgentResponse_Updated) String() string {
 func (*UpdateAgentResponse_Updated) ProtoMessage() {}
 
 func (x *UpdateAgentResponse_Updated) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[46]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[47]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2717,7 +2811,7 @@ type ListWiFiNetworksResponse_WiFiNetwork struct {
 
 func (x *ListWiFiNetworksResponse_WiFiNetwork) Reset() {
 	*x = ListWiFiNetworksResponse_WiFiNetwork{}
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[47]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[48]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2729,7 +2823,7 @@ func (x *ListWiFiNetworksResponse_WiFiNetwork) String() string {
 func (*ListWiFiNetworksResponse_WiFiNetwork) ProtoMessage() {}
 
 func (x *ListWiFiNetworksResponse_WiFiNetwork) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[47]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[48]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2742,7 +2836,7 @@ func (x *ListWiFiNetworksResponse_WiFiNetwork) ProtoReflect() protoreflect.Messa
 
 // Deprecated: Use ListWiFiNetworksResponse_WiFiNetwork.ProtoReflect.Descriptor instead.
 func (*ListWiFiNetworksResponse_WiFiNetwork) Descriptor() ([]byte, []int) {
-	return file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDescGZIP(), []int{8, 0}
+	return file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDescGZIP(), []int{9, 0}
 }
 
 func (x *ListWiFiNetworksResponse_WiFiNetwork) GetSsid() string {
@@ -2810,7 +2904,7 @@ type ListKnownWiFiNetworksResponse_KnownWiFiNetwork struct {
 
 func (x *ListKnownWiFiNetworksResponse_KnownWiFiNetwork) Reset() {
 	*x = ListKnownWiFiNetworksResponse_KnownWiFiNetwork{}
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[48]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[49]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2822,7 +2916,7 @@ func (x *ListKnownWiFiNetworksResponse_KnownWiFiNetwork) String() string {
 func (*ListKnownWiFiNetworksResponse_KnownWiFiNetwork) ProtoMessage() {}
 
 func (x *ListKnownWiFiNetworksResponse_KnownWiFiNetwork) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[48]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[49]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2835,7 +2929,7 @@ func (x *ListKnownWiFiNetworksResponse_KnownWiFiNetwork) ProtoReflect() protoref
 
 // Deprecated: Use ListKnownWiFiNetworksResponse_KnownWiFiNetwork.ProtoReflect.Descriptor instead.
 func (*ListKnownWiFiNetworksResponse_KnownWiFiNetwork) Descriptor() ([]byte, []int) {
-	return file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDescGZIP(), []int{16, 0}
+	return file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDescGZIP(), []int{17, 0}
 }
 
 func (x *ListKnownWiFiNetworksResponse_KnownWiFiNetwork) GetSsid() string {
@@ -2883,7 +2977,7 @@ type ListHardwareCapabilitiesResponse_HardwareCapability struct {
 
 func (x *ListHardwareCapabilitiesResponse_HardwareCapability) Reset() {
 	*x = ListHardwareCapabilitiesResponse_HardwareCapability{}
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[49]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[50]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2895,7 +2989,7 @@ func (x *ListHardwareCapabilitiesResponse_HardwareCapability) String() string {
 func (*ListHardwareCapabilitiesResponse_HardwareCapability) ProtoMessage() {}
 
 func (x *ListHardwareCapabilitiesResponse_HardwareCapability) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[49]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[50]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2908,7 +3002,7 @@ func (x *ListHardwareCapabilitiesResponse_HardwareCapability) ProtoReflect() pro
 
 // Deprecated: Use ListHardwareCapabilitiesResponse_HardwareCapability.ProtoReflect.Descriptor instead.
 func (*ListHardwareCapabilitiesResponse_HardwareCapability) Descriptor() ([]byte, []int) {
-	return file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDescGZIP(), []int{24, 0}
+	return file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDescGZIP(), []int{25, 0}
 }
 
 func (x *ListHardwareCapabilitiesResponse_HardwareCapability) GetCategory() string {
@@ -2951,7 +3045,7 @@ type UpdateOSResponse_Progress struct {
 
 func (x *UpdateOSResponse_Progress) Reset() {
 	*x = UpdateOSResponse_Progress{}
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[51]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[52]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2963,7 +3057,7 @@ func (x *UpdateOSResponse_Progress) String() string {
 func (*UpdateOSResponse_Progress) ProtoMessage() {}
 
 func (x *UpdateOSResponse_Progress) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[51]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[52]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2976,7 +3070,7 @@ func (x *UpdateOSResponse_Progress) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateOSResponse_Progress.ProtoReflect.Descriptor instead.
 func (*UpdateOSResponse_Progress) Descriptor() ([]byte, []int) {
-	return file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDescGZIP(), []int{35, 0}
+	return file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDescGZIP(), []int{36, 0}
 }
 
 func (x *UpdateOSResponse_Progress) GetPhase() string {
@@ -3003,7 +3097,7 @@ type UpdateOSResponse_Completed struct {
 
 func (x *UpdateOSResponse_Completed) Reset() {
 	*x = UpdateOSResponse_Completed{}
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[52]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[53]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3015,7 +3109,7 @@ func (x *UpdateOSResponse_Completed) String() string {
 func (*UpdateOSResponse_Completed) ProtoMessage() {}
 
 func (x *UpdateOSResponse_Completed) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[52]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[53]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3028,7 +3122,7 @@ func (x *UpdateOSResponse_Completed) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateOSResponse_Completed.ProtoReflect.Descriptor instead.
 func (*UpdateOSResponse_Completed) Descriptor() ([]byte, []int) {
-	return file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDescGZIP(), []int{35, 1}
+	return file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDescGZIP(), []int{36, 1}
 }
 
 func (x *UpdateOSResponse_Completed) GetRebootRequired() bool {
@@ -3048,7 +3142,7 @@ type UpdateOSResponse_Failed struct {
 
 func (x *UpdateOSResponse_Failed) Reset() {
 	*x = UpdateOSResponse_Failed{}
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[53]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[54]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3060,7 +3154,7 @@ func (x *UpdateOSResponse_Failed) String() string {
 func (*UpdateOSResponse_Failed) ProtoMessage() {}
 
 func (x *UpdateOSResponse_Failed) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[53]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[54]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3073,7 +3167,7 @@ func (x *UpdateOSResponse_Failed) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateOSResponse_Failed.ProtoReflect.Descriptor instead.
 func (*UpdateOSResponse_Failed) Descriptor() ([]byte, []int) {
-	return file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDescGZIP(), []int{35, 2}
+	return file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDescGZIP(), []int{36, 2}
 }
 
 func (x *UpdateOSResponse_Failed) GetErrorMessage() string {
@@ -3137,7 +3231,7 @@ const file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDesc = "" +
 	"\aupdated\x18\x01 \x01(\v24.wendy.agent.services.v1.UpdateAgentResponse.UpdatedH\x00R\aupdated\x1a\t\n" +
 	"\aUpdatedB\x0f\n" +
 	"\rresponse_type\"\x18\n" +
-	"\x16GetAgentVersionRequest\"\xc6\x05\n" +
+	"\x16GetAgentVersionRequest\"\x8e\x06\n" +
 	"\x17GetAgentVersionResponse\x12\x18\n" +
 	"\aversion\x18\x01 \x01(\tR\aversion\x12\"\n" +
 	"\n" +
@@ -3159,7 +3253,10 @@ const file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDesc = "" +
 	"\fcuda_version\x18\v \x01(\tH\x06R\vcudaVersion\x88\x01\x01\x12*\n" +
 	"\x0estorage_medium\x18\f \x01(\tH\aR\rstorageMedium\x88\x01\x01\x12+\n" +
 	"\x0fdisk_used_bytes\x18\r \x01(\x03H\bR\rdiskUsedBytes\x88\x01\x01\x12-\n" +
-	"\x10disk_total_bytes\x18\x0e \x01(\x03H\tR\x0ediskTotalBytes\x88\x01\x01B\r\n" +
+	"\x10disk_total_bytes\x18\x0e \x01(\x03H\tR\x0ediskTotalBytes\x88\x01\x01\x12F\n" +
+	"\n" +
+	"partitions\x18\x0f \x03(\v2&.wendy.agent.services.v1.DiskPartitionR\n" +
+	"partitionsB\r\n" +
 	"\v_os_versionB\r\n" +
 	"\v_public_keyB\x0e\n" +
 	"\f_device_typeB\n" +
@@ -3170,7 +3267,19 @@ const file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDesc = "" +
 	"\r_cuda_versionB\x11\n" +
 	"\x0f_storage_mediumB\x12\n" +
 	"\x10_disk_used_bytesB\x13\n" +
-	"\x11_disk_total_bytes\"\x19\n" +
+	"\x11_disk_total_bytes\"\xa7\x01\n" +
+	"\rDiskPartition\x12\x1e\n" +
+	"\n" +
+	"mountpoint\x18\x01 \x01(\tR\n" +
+	"mountpoint\x12\x1e\n" +
+	"\n" +
+	"filesystem\x18\x02 \x01(\tR\n" +
+	"filesystem\x12\x16\n" +
+	"\x06device\x18\x03 \x01(\tR\x06device\x12\x1d\n" +
+	"\n" +
+	"used_bytes\x18\x04 \x01(\x03R\tusedBytes\x12\x1f\n" +
+	"\vtotal_bytes\x18\x05 \x01(\x03R\n" +
+	"totalBytes\"\x19\n" +
 	"\x17ListWiFiNetworksRequest\"\xbb\x03\n" +
 	"\x18ListWiFiNetworksResponse\x12Y\n" +
 	"\bnetworks\x18\x01 \x03(\v2=.wendy.agent.services.v1.ListWiFiNetworksResponse.WiFiNetworkR\bnetworks\x1a\xc3\x02\n" +
@@ -3330,7 +3439,7 @@ func file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDescGZIP() []b
 }
 
 var file_wendy_agent_services_v1_wendy_agent_v1_service_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes = make([]protoimpl.MessageInfo, 54)
+var file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes = make([]protoimpl.MessageInfo, 55)
 var file_wendy_agent_services_v1_wendy_agent_v1_service_proto_goTypes = []any{
 	(WiFiSecurityType)(0),                                       // 0: wendy.agent.services.v1.WiFiSecurityType
 	(*RunContainerRequest)(nil),                                 // 1: wendy.agent.services.v1.RunContainerRequest
@@ -3340,120 +3449,122 @@ var file_wendy_agent_services_v1_wendy_agent_v1_service_proto_goTypes = []any{
 	(*UpdateAgentResponse)(nil),                                 // 5: wendy.agent.services.v1.UpdateAgentResponse
 	(*GetAgentVersionRequest)(nil),                              // 6: wendy.agent.services.v1.GetAgentVersionRequest
 	(*GetAgentVersionResponse)(nil),                             // 7: wendy.agent.services.v1.GetAgentVersionResponse
-	(*ListWiFiNetworksRequest)(nil),                             // 8: wendy.agent.services.v1.ListWiFiNetworksRequest
-	(*ListWiFiNetworksResponse)(nil),                            // 9: wendy.agent.services.v1.ListWiFiNetworksResponse
-	(*ConnectToWiFiRequest)(nil),                                // 10: wendy.agent.services.v1.ConnectToWiFiRequest
-	(*ConnectToWiFiResponse)(nil),                               // 11: wendy.agent.services.v1.ConnectToWiFiResponse
-	(*GetWiFiStatusRequest)(nil),                                // 12: wendy.agent.services.v1.GetWiFiStatusRequest
-	(*GetWiFiStatusResponse)(nil),                               // 13: wendy.agent.services.v1.GetWiFiStatusResponse
-	(*DisconnectWiFiRequest)(nil),                               // 14: wendy.agent.services.v1.DisconnectWiFiRequest
-	(*DisconnectWiFiResponse)(nil),                              // 15: wendy.agent.services.v1.DisconnectWiFiResponse
-	(*ListKnownWiFiNetworksRequest)(nil),                        // 16: wendy.agent.services.v1.ListKnownWiFiNetworksRequest
-	(*ListKnownWiFiNetworksResponse)(nil),                       // 17: wendy.agent.services.v1.ListKnownWiFiNetworksResponse
-	(*SetWiFiNetworkPriorityRequest)(nil),                       // 18: wendy.agent.services.v1.SetWiFiNetworkPriorityRequest
-	(*SetWiFiNetworkPriorityResponse)(nil),                      // 19: wendy.agent.services.v1.SetWiFiNetworkPriorityResponse
-	(*ReorderKnownWiFiNetworksRequest)(nil),                     // 20: wendy.agent.services.v1.ReorderKnownWiFiNetworksRequest
-	(*ReorderKnownWiFiNetworksResponse)(nil),                    // 21: wendy.agent.services.v1.ReorderKnownWiFiNetworksResponse
-	(*ForgetWiFiNetworkRequest)(nil),                            // 22: wendy.agent.services.v1.ForgetWiFiNetworkRequest
-	(*ForgetWiFiNetworkResponse)(nil),                           // 23: wendy.agent.services.v1.ForgetWiFiNetworkResponse
-	(*ListHardwareCapabilitiesRequest)(nil),                     // 24: wendy.agent.services.v1.ListHardwareCapabilitiesRequest
-	(*ListHardwareCapabilitiesResponse)(nil),                    // 25: wendy.agent.services.v1.ListHardwareCapabilitiesResponse
-	(*ScanBluetoothPeripheralsRequest)(nil),                     // 26: wendy.agent.services.v1.ScanBluetoothPeripheralsRequest
-	(*DiscoveredBluetoothPeripheral)(nil),                       // 27: wendy.agent.services.v1.DiscoveredBluetoothPeripheral
-	(*ScanBluetoothPeripheralsResponse)(nil),                    // 28: wendy.agent.services.v1.ScanBluetoothPeripheralsResponse
-	(*ConnectBluetoothPeripheralRequest)(nil),                   // 29: wendy.agent.services.v1.ConnectBluetoothPeripheralRequest
-	(*ConnectBluetoothPeripheralResponse)(nil),                  // 30: wendy.agent.services.v1.ConnectBluetoothPeripheralResponse
-	(*DisconnectBluetoothPeripheralRequest)(nil),                // 31: wendy.agent.services.v1.DisconnectBluetoothPeripheralRequest
-	(*DisconnectBluetoothPeripheralResponse)(nil),               // 32: wendy.agent.services.v1.DisconnectBluetoothPeripheralResponse
-	(*ForgetBluetoothPeripheralRequest)(nil),                    // 33: wendy.agent.services.v1.ForgetBluetoothPeripheralRequest
-	(*ForgetBluetoothPeripheralResponse)(nil),                   // 34: wendy.agent.services.v1.ForgetBluetoothPeripheralResponse
-	(*UpdateOSRequest)(nil),                                     // 35: wendy.agent.services.v1.UpdateOSRequest
-	(*UpdateOSResponse)(nil),                                    // 36: wendy.agent.services.v1.UpdateOSResponse
-	(*RunContainerRequest_Header)(nil),                          // 37: wendy.agent.services.v1.RunContainerRequest.Header
-	(*RunContainerRequest_Chunk)(nil),                           // 38: wendy.agent.services.v1.RunContainerRequest.Chunk
-	(*ControlCommand_Run)(nil),                                  // 39: wendy.agent.services.v1.ControlCommand.Run
-	(*ControlCommand_Stop)(nil),                                 // 40: wendy.agent.services.v1.ControlCommand.Stop
-	(*RunContainerResponse_Started)(nil),                        // 41: wendy.agent.services.v1.RunContainerResponse.Started
-	(*RunContainerResponse_Stopped)(nil),                        // 42: wendy.agent.services.v1.RunContainerResponse.Stopped
-	(*RunContainerResponse_ConsoleOutput)(nil),                  // 43: wendy.agent.services.v1.RunContainerResponse.ConsoleOutput
-	(*UpdateAgentRequest_Chunk)(nil),                            // 44: wendy.agent.services.v1.UpdateAgentRequest.Chunk
-	(*UpdateAgentRequest_ControlCommand)(nil),                   // 45: wendy.agent.services.v1.UpdateAgentRequest.ControlCommand
-	(*UpdateAgentRequest_ControlCommand_Update)(nil),            // 46: wendy.agent.services.v1.UpdateAgentRequest.ControlCommand.Update
-	(*UpdateAgentResponse_Updated)(nil),                         // 47: wendy.agent.services.v1.UpdateAgentResponse.Updated
-	(*ListWiFiNetworksResponse_WiFiNetwork)(nil),                // 48: wendy.agent.services.v1.ListWiFiNetworksResponse.WiFiNetwork
-	(*ListKnownWiFiNetworksResponse_KnownWiFiNetwork)(nil),      // 49: wendy.agent.services.v1.ListKnownWiFiNetworksResponse.KnownWiFiNetwork
-	(*ListHardwareCapabilitiesResponse_HardwareCapability)(nil), // 50: wendy.agent.services.v1.ListHardwareCapabilitiesResponse.HardwareCapability
-	nil,                                // 51: wendy.agent.services.v1.ListHardwareCapabilitiesResponse.HardwareCapability.PropertiesEntry
-	(*UpdateOSResponse_Progress)(nil),  // 52: wendy.agent.services.v1.UpdateOSResponse.Progress
-	(*UpdateOSResponse_Completed)(nil), // 53: wendy.agent.services.v1.UpdateOSResponse.Completed
-	(*UpdateOSResponse_Failed)(nil),    // 54: wendy.agent.services.v1.UpdateOSResponse.Failed
-	(*RestartPolicy)(nil),              // 55: RestartPolicy
+	(*DiskPartition)(nil),                                       // 8: wendy.agent.services.v1.DiskPartition
+	(*ListWiFiNetworksRequest)(nil),                             // 9: wendy.agent.services.v1.ListWiFiNetworksRequest
+	(*ListWiFiNetworksResponse)(nil),                            // 10: wendy.agent.services.v1.ListWiFiNetworksResponse
+	(*ConnectToWiFiRequest)(nil),                                // 11: wendy.agent.services.v1.ConnectToWiFiRequest
+	(*ConnectToWiFiResponse)(nil),                               // 12: wendy.agent.services.v1.ConnectToWiFiResponse
+	(*GetWiFiStatusRequest)(nil),                                // 13: wendy.agent.services.v1.GetWiFiStatusRequest
+	(*GetWiFiStatusResponse)(nil),                               // 14: wendy.agent.services.v1.GetWiFiStatusResponse
+	(*DisconnectWiFiRequest)(nil),                               // 15: wendy.agent.services.v1.DisconnectWiFiRequest
+	(*DisconnectWiFiResponse)(nil),                              // 16: wendy.agent.services.v1.DisconnectWiFiResponse
+	(*ListKnownWiFiNetworksRequest)(nil),                        // 17: wendy.agent.services.v1.ListKnownWiFiNetworksRequest
+	(*ListKnownWiFiNetworksResponse)(nil),                       // 18: wendy.agent.services.v1.ListKnownWiFiNetworksResponse
+	(*SetWiFiNetworkPriorityRequest)(nil),                       // 19: wendy.agent.services.v1.SetWiFiNetworkPriorityRequest
+	(*SetWiFiNetworkPriorityResponse)(nil),                      // 20: wendy.agent.services.v1.SetWiFiNetworkPriorityResponse
+	(*ReorderKnownWiFiNetworksRequest)(nil),                     // 21: wendy.agent.services.v1.ReorderKnownWiFiNetworksRequest
+	(*ReorderKnownWiFiNetworksResponse)(nil),                    // 22: wendy.agent.services.v1.ReorderKnownWiFiNetworksResponse
+	(*ForgetWiFiNetworkRequest)(nil),                            // 23: wendy.agent.services.v1.ForgetWiFiNetworkRequest
+	(*ForgetWiFiNetworkResponse)(nil),                           // 24: wendy.agent.services.v1.ForgetWiFiNetworkResponse
+	(*ListHardwareCapabilitiesRequest)(nil),                     // 25: wendy.agent.services.v1.ListHardwareCapabilitiesRequest
+	(*ListHardwareCapabilitiesResponse)(nil),                    // 26: wendy.agent.services.v1.ListHardwareCapabilitiesResponse
+	(*ScanBluetoothPeripheralsRequest)(nil),                     // 27: wendy.agent.services.v1.ScanBluetoothPeripheralsRequest
+	(*DiscoveredBluetoothPeripheral)(nil),                       // 28: wendy.agent.services.v1.DiscoveredBluetoothPeripheral
+	(*ScanBluetoothPeripheralsResponse)(nil),                    // 29: wendy.agent.services.v1.ScanBluetoothPeripheralsResponse
+	(*ConnectBluetoothPeripheralRequest)(nil),                   // 30: wendy.agent.services.v1.ConnectBluetoothPeripheralRequest
+	(*ConnectBluetoothPeripheralResponse)(nil),                  // 31: wendy.agent.services.v1.ConnectBluetoothPeripheralResponse
+	(*DisconnectBluetoothPeripheralRequest)(nil),                // 32: wendy.agent.services.v1.DisconnectBluetoothPeripheralRequest
+	(*DisconnectBluetoothPeripheralResponse)(nil),               // 33: wendy.agent.services.v1.DisconnectBluetoothPeripheralResponse
+	(*ForgetBluetoothPeripheralRequest)(nil),                    // 34: wendy.agent.services.v1.ForgetBluetoothPeripheralRequest
+	(*ForgetBluetoothPeripheralResponse)(nil),                   // 35: wendy.agent.services.v1.ForgetBluetoothPeripheralResponse
+	(*UpdateOSRequest)(nil),                                     // 36: wendy.agent.services.v1.UpdateOSRequest
+	(*UpdateOSResponse)(nil),                                    // 37: wendy.agent.services.v1.UpdateOSResponse
+	(*RunContainerRequest_Header)(nil),                          // 38: wendy.agent.services.v1.RunContainerRequest.Header
+	(*RunContainerRequest_Chunk)(nil),                           // 39: wendy.agent.services.v1.RunContainerRequest.Chunk
+	(*ControlCommand_Run)(nil),                                  // 40: wendy.agent.services.v1.ControlCommand.Run
+	(*ControlCommand_Stop)(nil),                                 // 41: wendy.agent.services.v1.ControlCommand.Stop
+	(*RunContainerResponse_Started)(nil),                        // 42: wendy.agent.services.v1.RunContainerResponse.Started
+	(*RunContainerResponse_Stopped)(nil),                        // 43: wendy.agent.services.v1.RunContainerResponse.Stopped
+	(*RunContainerResponse_ConsoleOutput)(nil),                  // 44: wendy.agent.services.v1.RunContainerResponse.ConsoleOutput
+	(*UpdateAgentRequest_Chunk)(nil),                            // 45: wendy.agent.services.v1.UpdateAgentRequest.Chunk
+	(*UpdateAgentRequest_ControlCommand)(nil),                   // 46: wendy.agent.services.v1.UpdateAgentRequest.ControlCommand
+	(*UpdateAgentRequest_ControlCommand_Update)(nil),            // 47: wendy.agent.services.v1.UpdateAgentRequest.ControlCommand.Update
+	(*UpdateAgentResponse_Updated)(nil),                         // 48: wendy.agent.services.v1.UpdateAgentResponse.Updated
+	(*ListWiFiNetworksResponse_WiFiNetwork)(nil),                // 49: wendy.agent.services.v1.ListWiFiNetworksResponse.WiFiNetwork
+	(*ListKnownWiFiNetworksResponse_KnownWiFiNetwork)(nil),      // 50: wendy.agent.services.v1.ListKnownWiFiNetworksResponse.KnownWiFiNetwork
+	(*ListHardwareCapabilitiesResponse_HardwareCapability)(nil), // 51: wendy.agent.services.v1.ListHardwareCapabilitiesResponse.HardwareCapability
+	nil,                                // 52: wendy.agent.services.v1.ListHardwareCapabilitiesResponse.HardwareCapability.PropertiesEntry
+	(*UpdateOSResponse_Progress)(nil),  // 53: wendy.agent.services.v1.UpdateOSResponse.Progress
+	(*UpdateOSResponse_Completed)(nil), // 54: wendy.agent.services.v1.UpdateOSResponse.Completed
+	(*UpdateOSResponse_Failed)(nil),    // 55: wendy.agent.services.v1.UpdateOSResponse.Failed
+	(*RestartPolicy)(nil),              // 56: RestartPolicy
 }
 var file_wendy_agent_services_v1_wendy_agent_v1_service_proto_depIdxs = []int32{
-	37, // 0: wendy.agent.services.v1.RunContainerRequest.header:type_name -> wendy.agent.services.v1.RunContainerRequest.Header
-	38, // 1: wendy.agent.services.v1.RunContainerRequest.chunk:type_name -> wendy.agent.services.v1.RunContainerRequest.Chunk
+	38, // 0: wendy.agent.services.v1.RunContainerRequest.header:type_name -> wendy.agent.services.v1.RunContainerRequest.Header
+	39, // 1: wendy.agent.services.v1.RunContainerRequest.chunk:type_name -> wendy.agent.services.v1.RunContainerRequest.Chunk
 	2,  // 2: wendy.agent.services.v1.RunContainerRequest.control:type_name -> wendy.agent.services.v1.ControlCommand
-	39, // 3: wendy.agent.services.v1.ControlCommand.run:type_name -> wendy.agent.services.v1.ControlCommand.Run
-	40, // 4: wendy.agent.services.v1.ControlCommand.stop:type_name -> wendy.agent.services.v1.ControlCommand.Stop
-	41, // 5: wendy.agent.services.v1.RunContainerResponse.started:type_name -> wendy.agent.services.v1.RunContainerResponse.Started
-	42, // 6: wendy.agent.services.v1.RunContainerResponse.stopped:type_name -> wendy.agent.services.v1.RunContainerResponse.Stopped
-	43, // 7: wendy.agent.services.v1.RunContainerResponse.stdout_output:type_name -> wendy.agent.services.v1.RunContainerResponse.ConsoleOutput
-	43, // 8: wendy.agent.services.v1.RunContainerResponse.stderr_output:type_name -> wendy.agent.services.v1.RunContainerResponse.ConsoleOutput
-	44, // 9: wendy.agent.services.v1.UpdateAgentRequest.chunk:type_name -> wendy.agent.services.v1.UpdateAgentRequest.Chunk
-	45, // 10: wendy.agent.services.v1.UpdateAgentRequest.control:type_name -> wendy.agent.services.v1.UpdateAgentRequest.ControlCommand
-	47, // 11: wendy.agent.services.v1.UpdateAgentResponse.updated:type_name -> wendy.agent.services.v1.UpdateAgentResponse.Updated
-	48, // 12: wendy.agent.services.v1.ListWiFiNetworksResponse.networks:type_name -> wendy.agent.services.v1.ListWiFiNetworksResponse.WiFiNetwork
-	0,  // 13: wendy.agent.services.v1.ConnectToWiFiRequest.security:type_name -> wendy.agent.services.v1.WiFiSecurityType
-	49, // 14: wendy.agent.services.v1.ListKnownWiFiNetworksResponse.networks:type_name -> wendy.agent.services.v1.ListKnownWiFiNetworksResponse.KnownWiFiNetwork
-	50, // 15: wendy.agent.services.v1.ListHardwareCapabilitiesResponse.capabilities:type_name -> wendy.agent.services.v1.ListHardwareCapabilitiesResponse.HardwareCapability
-	27, // 16: wendy.agent.services.v1.ScanBluetoothPeripheralsResponse.discovered_devices:type_name -> wendy.agent.services.v1.DiscoveredBluetoothPeripheral
-	52, // 17: wendy.agent.services.v1.UpdateOSResponse.progress:type_name -> wendy.agent.services.v1.UpdateOSResponse.Progress
-	53, // 18: wendy.agent.services.v1.UpdateOSResponse.completed:type_name -> wendy.agent.services.v1.UpdateOSResponse.Completed
-	54, // 19: wendy.agent.services.v1.UpdateOSResponse.failed:type_name -> wendy.agent.services.v1.UpdateOSResponse.Failed
-	55, // 20: wendy.agent.services.v1.ControlCommand.Run.restart_policy:type_name -> RestartPolicy
-	46, // 21: wendy.agent.services.v1.UpdateAgentRequest.ControlCommand.update:type_name -> wendy.agent.services.v1.UpdateAgentRequest.ControlCommand.Update
-	0,  // 22: wendy.agent.services.v1.ListWiFiNetworksResponse.WiFiNetwork.security:type_name -> wendy.agent.services.v1.WiFiSecurityType
-	0,  // 23: wendy.agent.services.v1.ListKnownWiFiNetworksResponse.KnownWiFiNetwork.security:type_name -> wendy.agent.services.v1.WiFiSecurityType
-	51, // 24: wendy.agent.services.v1.ListHardwareCapabilitiesResponse.HardwareCapability.properties:type_name -> wendy.agent.services.v1.ListHardwareCapabilitiesResponse.HardwareCapability.PropertiesEntry
-	1,  // 25: wendy.agent.services.v1.WendyAgentService.RunContainer:input_type -> wendy.agent.services.v1.RunContainerRequest
-	4,  // 26: wendy.agent.services.v1.WendyAgentService.UpdateAgent:input_type -> wendy.agent.services.v1.UpdateAgentRequest
-	6,  // 27: wendy.agent.services.v1.WendyAgentService.GetAgentVersion:input_type -> wendy.agent.services.v1.GetAgentVersionRequest
-	8,  // 28: wendy.agent.services.v1.WendyAgentService.ListWiFiNetworks:input_type -> wendy.agent.services.v1.ListWiFiNetworksRequest
-	10, // 29: wendy.agent.services.v1.WendyAgentService.ConnectToWiFi:input_type -> wendy.agent.services.v1.ConnectToWiFiRequest
-	12, // 30: wendy.agent.services.v1.WendyAgentService.GetWiFiStatus:input_type -> wendy.agent.services.v1.GetWiFiStatusRequest
-	14, // 31: wendy.agent.services.v1.WendyAgentService.DisconnectWiFi:input_type -> wendy.agent.services.v1.DisconnectWiFiRequest
-	16, // 32: wendy.agent.services.v1.WendyAgentService.ListKnownWiFiNetworks:input_type -> wendy.agent.services.v1.ListKnownWiFiNetworksRequest
-	18, // 33: wendy.agent.services.v1.WendyAgentService.SetWiFiNetworkPriority:input_type -> wendy.agent.services.v1.SetWiFiNetworkPriorityRequest
-	20, // 34: wendy.agent.services.v1.WendyAgentService.ReorderKnownWiFiNetworks:input_type -> wendy.agent.services.v1.ReorderKnownWiFiNetworksRequest
-	22, // 35: wendy.agent.services.v1.WendyAgentService.ForgetWiFiNetwork:input_type -> wendy.agent.services.v1.ForgetWiFiNetworkRequest
-	24, // 36: wendy.agent.services.v1.WendyAgentService.ListHardwareCapabilities:input_type -> wendy.agent.services.v1.ListHardwareCapabilitiesRequest
-	26, // 37: wendy.agent.services.v1.WendyAgentService.ScanBluetoothPeripherals:input_type -> wendy.agent.services.v1.ScanBluetoothPeripheralsRequest
-	29, // 38: wendy.agent.services.v1.WendyAgentService.ConnectBluetoothPeripheral:input_type -> wendy.agent.services.v1.ConnectBluetoothPeripheralRequest
-	31, // 39: wendy.agent.services.v1.WendyAgentService.DisconnectBluetoothPeripheral:input_type -> wendy.agent.services.v1.DisconnectBluetoothPeripheralRequest
-	33, // 40: wendy.agent.services.v1.WendyAgentService.ForgetBluetoothPeripheral:input_type -> wendy.agent.services.v1.ForgetBluetoothPeripheralRequest
-	35, // 41: wendy.agent.services.v1.WendyAgentService.UpdateOS:input_type -> wendy.agent.services.v1.UpdateOSRequest
-	3,  // 42: wendy.agent.services.v1.WendyAgentService.RunContainer:output_type -> wendy.agent.services.v1.RunContainerResponse
-	5,  // 43: wendy.agent.services.v1.WendyAgentService.UpdateAgent:output_type -> wendy.agent.services.v1.UpdateAgentResponse
-	7,  // 44: wendy.agent.services.v1.WendyAgentService.GetAgentVersion:output_type -> wendy.agent.services.v1.GetAgentVersionResponse
-	9,  // 45: wendy.agent.services.v1.WendyAgentService.ListWiFiNetworks:output_type -> wendy.agent.services.v1.ListWiFiNetworksResponse
-	11, // 46: wendy.agent.services.v1.WendyAgentService.ConnectToWiFi:output_type -> wendy.agent.services.v1.ConnectToWiFiResponse
-	13, // 47: wendy.agent.services.v1.WendyAgentService.GetWiFiStatus:output_type -> wendy.agent.services.v1.GetWiFiStatusResponse
-	15, // 48: wendy.agent.services.v1.WendyAgentService.DisconnectWiFi:output_type -> wendy.agent.services.v1.DisconnectWiFiResponse
-	17, // 49: wendy.agent.services.v1.WendyAgentService.ListKnownWiFiNetworks:output_type -> wendy.agent.services.v1.ListKnownWiFiNetworksResponse
-	19, // 50: wendy.agent.services.v1.WendyAgentService.SetWiFiNetworkPriority:output_type -> wendy.agent.services.v1.SetWiFiNetworkPriorityResponse
-	21, // 51: wendy.agent.services.v1.WendyAgentService.ReorderKnownWiFiNetworks:output_type -> wendy.agent.services.v1.ReorderKnownWiFiNetworksResponse
-	23, // 52: wendy.agent.services.v1.WendyAgentService.ForgetWiFiNetwork:output_type -> wendy.agent.services.v1.ForgetWiFiNetworkResponse
-	25, // 53: wendy.agent.services.v1.WendyAgentService.ListHardwareCapabilities:output_type -> wendy.agent.services.v1.ListHardwareCapabilitiesResponse
-	28, // 54: wendy.agent.services.v1.WendyAgentService.ScanBluetoothPeripherals:output_type -> wendy.agent.services.v1.ScanBluetoothPeripheralsResponse
-	30, // 55: wendy.agent.services.v1.WendyAgentService.ConnectBluetoothPeripheral:output_type -> wendy.agent.services.v1.ConnectBluetoothPeripheralResponse
-	32, // 56: wendy.agent.services.v1.WendyAgentService.DisconnectBluetoothPeripheral:output_type -> wendy.agent.services.v1.DisconnectBluetoothPeripheralResponse
-	34, // 57: wendy.agent.services.v1.WendyAgentService.ForgetBluetoothPeripheral:output_type -> wendy.agent.services.v1.ForgetBluetoothPeripheralResponse
-	36, // 58: wendy.agent.services.v1.WendyAgentService.UpdateOS:output_type -> wendy.agent.services.v1.UpdateOSResponse
-	42, // [42:59] is the sub-list for method output_type
-	25, // [25:42] is the sub-list for method input_type
-	25, // [25:25] is the sub-list for extension type_name
-	25, // [25:25] is the sub-list for extension extendee
-	0,  // [0:25] is the sub-list for field type_name
+	40, // 3: wendy.agent.services.v1.ControlCommand.run:type_name -> wendy.agent.services.v1.ControlCommand.Run
+	41, // 4: wendy.agent.services.v1.ControlCommand.stop:type_name -> wendy.agent.services.v1.ControlCommand.Stop
+	42, // 5: wendy.agent.services.v1.RunContainerResponse.started:type_name -> wendy.agent.services.v1.RunContainerResponse.Started
+	43, // 6: wendy.agent.services.v1.RunContainerResponse.stopped:type_name -> wendy.agent.services.v1.RunContainerResponse.Stopped
+	44, // 7: wendy.agent.services.v1.RunContainerResponse.stdout_output:type_name -> wendy.agent.services.v1.RunContainerResponse.ConsoleOutput
+	44, // 8: wendy.agent.services.v1.RunContainerResponse.stderr_output:type_name -> wendy.agent.services.v1.RunContainerResponse.ConsoleOutput
+	45, // 9: wendy.agent.services.v1.UpdateAgentRequest.chunk:type_name -> wendy.agent.services.v1.UpdateAgentRequest.Chunk
+	46, // 10: wendy.agent.services.v1.UpdateAgentRequest.control:type_name -> wendy.agent.services.v1.UpdateAgentRequest.ControlCommand
+	48, // 11: wendy.agent.services.v1.UpdateAgentResponse.updated:type_name -> wendy.agent.services.v1.UpdateAgentResponse.Updated
+	8,  // 12: wendy.agent.services.v1.GetAgentVersionResponse.partitions:type_name -> wendy.agent.services.v1.DiskPartition
+	49, // 13: wendy.agent.services.v1.ListWiFiNetworksResponse.networks:type_name -> wendy.agent.services.v1.ListWiFiNetworksResponse.WiFiNetwork
+	0,  // 14: wendy.agent.services.v1.ConnectToWiFiRequest.security:type_name -> wendy.agent.services.v1.WiFiSecurityType
+	50, // 15: wendy.agent.services.v1.ListKnownWiFiNetworksResponse.networks:type_name -> wendy.agent.services.v1.ListKnownWiFiNetworksResponse.KnownWiFiNetwork
+	51, // 16: wendy.agent.services.v1.ListHardwareCapabilitiesResponse.capabilities:type_name -> wendy.agent.services.v1.ListHardwareCapabilitiesResponse.HardwareCapability
+	28, // 17: wendy.agent.services.v1.ScanBluetoothPeripheralsResponse.discovered_devices:type_name -> wendy.agent.services.v1.DiscoveredBluetoothPeripheral
+	53, // 18: wendy.agent.services.v1.UpdateOSResponse.progress:type_name -> wendy.agent.services.v1.UpdateOSResponse.Progress
+	54, // 19: wendy.agent.services.v1.UpdateOSResponse.completed:type_name -> wendy.agent.services.v1.UpdateOSResponse.Completed
+	55, // 20: wendy.agent.services.v1.UpdateOSResponse.failed:type_name -> wendy.agent.services.v1.UpdateOSResponse.Failed
+	56, // 21: wendy.agent.services.v1.ControlCommand.Run.restart_policy:type_name -> RestartPolicy
+	47, // 22: wendy.agent.services.v1.UpdateAgentRequest.ControlCommand.update:type_name -> wendy.agent.services.v1.UpdateAgentRequest.ControlCommand.Update
+	0,  // 23: wendy.agent.services.v1.ListWiFiNetworksResponse.WiFiNetwork.security:type_name -> wendy.agent.services.v1.WiFiSecurityType
+	0,  // 24: wendy.agent.services.v1.ListKnownWiFiNetworksResponse.KnownWiFiNetwork.security:type_name -> wendy.agent.services.v1.WiFiSecurityType
+	52, // 25: wendy.agent.services.v1.ListHardwareCapabilitiesResponse.HardwareCapability.properties:type_name -> wendy.agent.services.v1.ListHardwareCapabilitiesResponse.HardwareCapability.PropertiesEntry
+	1,  // 26: wendy.agent.services.v1.WendyAgentService.RunContainer:input_type -> wendy.agent.services.v1.RunContainerRequest
+	4,  // 27: wendy.agent.services.v1.WendyAgentService.UpdateAgent:input_type -> wendy.agent.services.v1.UpdateAgentRequest
+	6,  // 28: wendy.agent.services.v1.WendyAgentService.GetAgentVersion:input_type -> wendy.agent.services.v1.GetAgentVersionRequest
+	9,  // 29: wendy.agent.services.v1.WendyAgentService.ListWiFiNetworks:input_type -> wendy.agent.services.v1.ListWiFiNetworksRequest
+	11, // 30: wendy.agent.services.v1.WendyAgentService.ConnectToWiFi:input_type -> wendy.agent.services.v1.ConnectToWiFiRequest
+	13, // 31: wendy.agent.services.v1.WendyAgentService.GetWiFiStatus:input_type -> wendy.agent.services.v1.GetWiFiStatusRequest
+	15, // 32: wendy.agent.services.v1.WendyAgentService.DisconnectWiFi:input_type -> wendy.agent.services.v1.DisconnectWiFiRequest
+	17, // 33: wendy.agent.services.v1.WendyAgentService.ListKnownWiFiNetworks:input_type -> wendy.agent.services.v1.ListKnownWiFiNetworksRequest
+	19, // 34: wendy.agent.services.v1.WendyAgentService.SetWiFiNetworkPriority:input_type -> wendy.agent.services.v1.SetWiFiNetworkPriorityRequest
+	21, // 35: wendy.agent.services.v1.WendyAgentService.ReorderKnownWiFiNetworks:input_type -> wendy.agent.services.v1.ReorderKnownWiFiNetworksRequest
+	23, // 36: wendy.agent.services.v1.WendyAgentService.ForgetWiFiNetwork:input_type -> wendy.agent.services.v1.ForgetWiFiNetworkRequest
+	25, // 37: wendy.agent.services.v1.WendyAgentService.ListHardwareCapabilities:input_type -> wendy.agent.services.v1.ListHardwareCapabilitiesRequest
+	27, // 38: wendy.agent.services.v1.WendyAgentService.ScanBluetoothPeripherals:input_type -> wendy.agent.services.v1.ScanBluetoothPeripheralsRequest
+	30, // 39: wendy.agent.services.v1.WendyAgentService.ConnectBluetoothPeripheral:input_type -> wendy.agent.services.v1.ConnectBluetoothPeripheralRequest
+	32, // 40: wendy.agent.services.v1.WendyAgentService.DisconnectBluetoothPeripheral:input_type -> wendy.agent.services.v1.DisconnectBluetoothPeripheralRequest
+	34, // 41: wendy.agent.services.v1.WendyAgentService.ForgetBluetoothPeripheral:input_type -> wendy.agent.services.v1.ForgetBluetoothPeripheralRequest
+	36, // 42: wendy.agent.services.v1.WendyAgentService.UpdateOS:input_type -> wendy.agent.services.v1.UpdateOSRequest
+	3,  // 43: wendy.agent.services.v1.WendyAgentService.RunContainer:output_type -> wendy.agent.services.v1.RunContainerResponse
+	5,  // 44: wendy.agent.services.v1.WendyAgentService.UpdateAgent:output_type -> wendy.agent.services.v1.UpdateAgentResponse
+	7,  // 45: wendy.agent.services.v1.WendyAgentService.GetAgentVersion:output_type -> wendy.agent.services.v1.GetAgentVersionResponse
+	10, // 46: wendy.agent.services.v1.WendyAgentService.ListWiFiNetworks:output_type -> wendy.agent.services.v1.ListWiFiNetworksResponse
+	12, // 47: wendy.agent.services.v1.WendyAgentService.ConnectToWiFi:output_type -> wendy.agent.services.v1.ConnectToWiFiResponse
+	14, // 48: wendy.agent.services.v1.WendyAgentService.GetWiFiStatus:output_type -> wendy.agent.services.v1.GetWiFiStatusResponse
+	16, // 49: wendy.agent.services.v1.WendyAgentService.DisconnectWiFi:output_type -> wendy.agent.services.v1.DisconnectWiFiResponse
+	18, // 50: wendy.agent.services.v1.WendyAgentService.ListKnownWiFiNetworks:output_type -> wendy.agent.services.v1.ListKnownWiFiNetworksResponse
+	20, // 51: wendy.agent.services.v1.WendyAgentService.SetWiFiNetworkPriority:output_type -> wendy.agent.services.v1.SetWiFiNetworkPriorityResponse
+	22, // 52: wendy.agent.services.v1.WendyAgentService.ReorderKnownWiFiNetworks:output_type -> wendy.agent.services.v1.ReorderKnownWiFiNetworksResponse
+	24, // 53: wendy.agent.services.v1.WendyAgentService.ForgetWiFiNetwork:output_type -> wendy.agent.services.v1.ForgetWiFiNetworkResponse
+	26, // 54: wendy.agent.services.v1.WendyAgentService.ListHardwareCapabilities:output_type -> wendy.agent.services.v1.ListHardwareCapabilitiesResponse
+	29, // 55: wendy.agent.services.v1.WendyAgentService.ScanBluetoothPeripherals:output_type -> wendy.agent.services.v1.ScanBluetoothPeripheralsResponse
+	31, // 56: wendy.agent.services.v1.WendyAgentService.ConnectBluetoothPeripheral:output_type -> wendy.agent.services.v1.ConnectBluetoothPeripheralResponse
+	33, // 57: wendy.agent.services.v1.WendyAgentService.DisconnectBluetoothPeripheral:output_type -> wendy.agent.services.v1.DisconnectBluetoothPeripheralResponse
+	35, // 58: wendy.agent.services.v1.WendyAgentService.ForgetBluetoothPeripheral:output_type -> wendy.agent.services.v1.ForgetBluetoothPeripheralResponse
+	37, // 59: wendy.agent.services.v1.WendyAgentService.UpdateOS:output_type -> wendy.agent.services.v1.UpdateOSResponse
+	43, // [43:60] is the sub-list for method output_type
+	26, // [26:43] is the sub-list for method input_type
+	26, // [26:26] is the sub-list for extension type_name
+	26, // [26:26] is the sub-list for extension extendee
+	0,  // [0:26] is the sub-list for field type_name
 }
 
 func init() { file_wendy_agent_services_v1_wendy_agent_v1_service_proto_init() }
@@ -3485,31 +3596,31 @@ func file_wendy_agent_services_v1_wendy_agent_v1_service_proto_init() {
 		(*UpdateAgentResponse_Updated_)(nil),
 	}
 	file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[6].OneofWrappers = []any{}
-	file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[9].OneofWrappers = []any{}
 	file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[10].OneofWrappers = []any{}
-	file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[12].OneofWrappers = []any{}
-	file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[14].OneofWrappers = []any{}
-	file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[18].OneofWrappers = []any{}
-	file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[20].OneofWrappers = []any{}
-	file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[22].OneofWrappers = []any{}
+	file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[11].OneofWrappers = []any{}
+	file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[13].OneofWrappers = []any{}
+	file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[15].OneofWrappers = []any{}
+	file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[19].OneofWrappers = []any{}
+	file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[21].OneofWrappers = []any{}
 	file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[23].OneofWrappers = []any{}
-	file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[35].OneofWrappers = []any{
+	file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[24].OneofWrappers = []any{}
+	file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[36].OneofWrappers = []any{
 		(*UpdateOSResponse_Progress_)(nil),
 		(*UpdateOSResponse_Completed_)(nil),
 		(*UpdateOSResponse_Failed_)(nil),
 	}
-	file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[38].OneofWrappers = []any{}
-	file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[44].OneofWrappers = []any{
+	file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[39].OneofWrappers = []any{}
+	file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[45].OneofWrappers = []any{
 		(*UpdateAgentRequest_ControlCommand_Update_)(nil),
 	}
-	file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[47].OneofWrappers = []any{}
+	file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[48].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDesc), len(file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   54,
+			NumMessages:   55,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

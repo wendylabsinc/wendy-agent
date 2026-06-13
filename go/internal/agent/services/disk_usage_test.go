@@ -1,6 +1,9 @@
 package services
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+)
 
 func TestCalculateDiskUsage(t *testing.T) {
 	usage, ok := calculateDiskUsage(30_000_000, 29_415_000, 4_000)
@@ -33,5 +36,37 @@ func TestCalculateDiskUsageRejectsInvalidStats(t *testing.T) {
 				t.Fatal("calculateDiskUsage returned true")
 			}
 		})
+	}
+}
+
+func TestParseProcMounts(t *testing.T) {
+	content := `proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0
+sysfs /sys sysfs rw,nosuid,nodev,noexec,relatime 0 0
+tmpfs /run tmpfs rw,nosuid,nodev 0 0
+/dev/mmcblk0p2 / ext4 rw,relatime 0 0
+/dev/mmcblk0p1 /boot vfat rw,relatime 0 0
+cgroup2 /sys/fs/cgroup cgroup2 rw,nosuid,nodev,noexec,relatime 0 0
+overlay /var/lib/containerd/io.containerd.snapshotter.v1.overlayfs overlay rw 0 0
+/dev/mmcblk0p2 /data ext4 rw,relatime 0 0`
+
+	got := parseProcMounts(content)
+	want := []mountEntry{
+		{device: "/dev/mmcblk0p2", mountpoint: "/", filesystem: "ext4"},
+		{device: "/dev/mmcblk0p1", mountpoint: "/boot", filesystem: "vfat"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("parseProcMounts() = %+v, want %+v", got, want)
+	}
+}
+
+func TestParseProcMountsUnescapesMountpoints(t *testing.T) {
+	content := `/dev/sda1 /mnt/my\040drive ext4 rw,relatime 0 0`
+
+	got := parseProcMounts(content)
+	if len(got) != 1 {
+		t.Fatalf("parseProcMounts() returned %d entries, want 1", len(got))
+	}
+	if got[0].mountpoint != "/mnt/my drive" {
+		t.Fatalf("mountpoint = %q, want %q", got[0].mountpoint, "/mnt/my drive")
 	}
 }

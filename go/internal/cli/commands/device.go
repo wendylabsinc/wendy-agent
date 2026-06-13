@@ -114,6 +114,7 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 
 			var agentVersion, osName, osVersion, cpuArch, deviceType, storageMedium, gpuVendor, jetpackVersion, cudaVersion string
 			var diskUsedBytes, diskTotalBytes *int64
+			var partitions []*agentpb.DiskPartition
 			var hasGPU bool
 
 			if target.Bluetooth != nil && target.Bluetooth.IsWendyAgent() {
@@ -148,6 +149,7 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 				cudaVersion = resp.GetCudaVersion()
 				diskUsedBytes = resp.DiskUsedBytes
 				diskTotalBytes = resp.DiskTotalBytes
+				partitions = resp.GetPartitions()
 			} else {
 				return fmt.Errorf("selected device does not support this command")
 			}
@@ -177,6 +179,19 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 				if diskUsedBytes != nil && diskTotalBytes != nil {
 					out["diskUsedBytes"] = *diskUsedBytes
 					out["diskTotalBytes"] = *diskTotalBytes
+				}
+				if len(partitions) > 0 {
+					parts := make([]map[string]any, len(partitions))
+					for i, p := range partitions {
+						parts[i] = map[string]any{
+							"mountpoint": p.GetMountpoint(),
+							"filesystem": p.GetFilesystem(),
+							"device":     p.GetDevice(),
+							"usedBytes":  p.GetUsedBytes(),
+							"totalBytes": p.GetTotalBytes(),
+						}
+					}
+					out["partitions"] = parts
 				}
 				if gpuVendor != "" {
 					out["gpuVendor"] = gpuVendor
@@ -208,7 +223,9 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 			if storageMedium != "" {
 				fmt.Printf("Storage: %s\n", storageMedium)
 			}
-			if diskUsedBytes != nil && diskTotalBytes != nil {
+			if len(partitions) > 0 {
+				fmt.Print(formatPartitionTable(partitions))
+			} else if diskUsedBytes != nil && diskTotalBytes != nil {
 				fmt.Printf("Disk Usage: %s\n", formatDiskUsage(*diskUsedBytes, *diskTotalBytes))
 			}
 			if hasGPU {
