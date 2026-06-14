@@ -93,7 +93,7 @@ func (s *mcpServer) ConnectTo(ctx context.Context, address string) error {
 }
 
 // buildServer constructs and fully registers the MCP server (transport-agnostic).
-func (s *mcpServer) buildServer(ctx context.Context) *server.MCPServer {
+func (s *mcpServer) buildServer() *server.MCPServer {
 	srv := server.NewMCPServer("wendy", version.Version,
 		server.WithToolCapabilities(true),
 		server.WithResourceCapabilities(true, false),
@@ -117,7 +117,7 @@ func (s *mcpServer) buildServer(ctx context.Context) *server.MCPServer {
 
 // Start registers all tools and serves MCP over stdio (default transport).
 func (s *mcpServer) Start(ctx context.Context) error {
-	srv := s.buildServer(ctx)
+	srv := s.buildServer()
 	cleanups := s.registerContainerMCPTools(ctx, srv)
 	defer runCleanups(cleanups)
 	return server.ServeStdio(srv)
@@ -126,7 +126,7 @@ func (s *mcpServer) Start(ctx context.Context) error {
 // StartHTTP serves MCP over streamable HTTP at addr (e.g. "127.0.0.1:7777").
 // token, if non-empty, is required as a Bearer token on the MCP endpoint.
 func (s *mcpServer) StartHTTP(ctx context.Context, addr, token string) error {
-	srv := s.buildServer(ctx)
+	srv := s.buildServer()
 	cleanups := s.registerContainerMCPTools(ctx, srv)
 	defer runCleanups(cleanups)
 	streamSrv := server.NewStreamableHTTPServer(srv)

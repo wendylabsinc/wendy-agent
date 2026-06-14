@@ -38,7 +38,7 @@ func TestRegisterWendyAppUIServesHTML(t *testing.T) {
 
 func TestBuildServerRegistersWendyAppResource(t *testing.T) {
 	s := New(nil, nil)
-	srv := s.buildServer(context.Background())
+	srv := s.buildServer()
 	res := srv.HandleMessage(context.Background(), []byte(`{"jsonrpc":"2.0","id":1,"method":"resources/read","params":{"uri":"ui://wendy/app"}}`))
 	b, _ := json.Marshal(res)
 	if !bytes.Contains(b, []byte("text/html")) {
