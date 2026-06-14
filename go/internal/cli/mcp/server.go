@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"sync"
 	"time"
@@ -91,9 +92,8 @@ func (s *mcpServer) ConnectTo(ctx context.Context, address string) error {
 	return nil
 }
 
-// Start registers all tools and begins serving MCP over stdio. Blocks until
-// the client closes the connection.
-func (s *mcpServer) Start(ctx context.Context) error {
+// buildServer constructs and fully registers the MCP server (transport-agnostic).
+func (s *mcpServer) buildServer(ctx context.Context) *server.MCPServer {
 	srv := server.NewMCPServer("wendy", version.Version,
 		server.WithToolCapabilities(true),
 		server.WithResourceCapabilities(true, false),
@@ -112,13 +112,50 @@ func (s *mcpServer) Start(ctx context.Context) error {
 	s.registerOSTools(srv)
 	s.registerCloudTools(srv)
 	s.registerAppsTools(srv)
+	return srv
+}
+
+// Start registers all tools and serves MCP over stdio (default transport).
+func (s *mcpServer) Start(ctx context.Context) error {
+	srv := s.buildServer(ctx)
 	cleanups := s.registerContainerMCPTools(ctx, srv)
-	defer func() {
-		for _, c := range cleanups {
-			c()
-		}
-	}()
+	defer runCleanups(cleanups)
 	return server.ServeStdio(srv)
+}
+
+// StartHTTP serves MCP over streamable HTTP at addr (e.g. "127.0.0.1:7777").
+// token, if non-empty, is required as a Bearer token on the MCP endpoint.
+func (s *mcpServer) StartHTTP(ctx context.Context, addr, token string) error {
+	srv := s.buildServer(ctx)
+	cleanups := s.registerContainerMCPTools(ctx, srv)
+	defer runCleanups(cleanups)
+	streamSrv := server.NewStreamableHTTPServer(srv)
+	if token == "" {
+		return streamSrv.Start(addr)
+	}
+	// Token required. WithHTTPContextFunc can't reject requests, so wrap the
+	// handler. The streamable server's default endpoint path is /mcp.
+	mux := http.NewServeMux()
+	mux.Handle("/mcp", bearerAuth(token, streamSrv))
+	return http.ListenAndServe(addr, mux)
+}
+
+func runCleanups(cleanups []func()) {
+	for _, c := range cleanups {
+		c()
+	}
+}
+
+// bearerAuth wraps next, requiring "Authorization: Bearer <token>".
+func bearerAuth(token string, next http.Handler) http.Handler {
+	want := "Bearer " + token
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != want {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func errNotConnected() *mcpgo.CallToolResult {

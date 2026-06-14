@@ -36,6 +36,16 @@ func TestRegisterWendyAppUIServesHTML(t *testing.T) {
 	}
 }
 
+func TestBuildServerRegistersWendyAppResource(t *testing.T) {
+	s := New(nil, nil)
+	srv := s.buildServer(context.Background())
+	res := srv.HandleMessage(context.Background(), []byte(`{"jsonrpc":"2.0","id":1,"method":"resources/read","params":{"uri":"ui://wendy/app"}}`))
+	b, _ := json.Marshal(res)
+	if !bytes.Contains(b, []byte("text/html")) {
+		t.Fatalf("buildServer did not register the UI resource: %s", b)
+	}
+}
+
 func TestGuideResource_ReturnsText(t *testing.T) {
 	srv := New(&config.Config{}, nil)
 	contents, err := srv.handleGuideResource(context.Background(), mcpgo.ReadResourceRequest{})
