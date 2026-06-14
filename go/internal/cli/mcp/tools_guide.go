@@ -51,6 +51,19 @@ Use the run tool to build and deploy a local project to a cloud-enrolled device:
 
 device_disconnect — closes the active connection and frees resources.
 
+## In-chat app (MCP Apps)
+
+Wendy exposes an interactive UI at the ui://wendy/app resource. Tools like
+wendy_status, container_*, wifi_*, os_update, apps_list, and app_open render it
+in supported hosts (dashboard / controls / launcher views). Pass an optional
+"device" argument to most tools to target a specific device.
+
+Container apps that declare an mcp entitlement AND expose their own ui:// resource
+appear in apps_list as UI-capable and open via app_open; their UI is proxied
+through Wendy under ui://app/<app>/... and rendered in the same host.
+
+Serve over HTTP instead of stdio with: wendy mcp serve --http
+
 ## Documentation
 
 Detailed documentation is available as MCP resources under wendy://docs/.

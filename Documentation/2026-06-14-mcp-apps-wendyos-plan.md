@@ -1414,3 +1414,21 @@ Commit each app separately.
   for app authors who want to ship a `ui://` app, and noting the required
   `_meta.ui` annotation + `ui://` resource pattern.
 - **Commit:** `docs(examples): document MCP App samples`
+
+---
+
+## Manual validation (run on a device)
+
+These require a real device + an MCP-Apps-capable host; not runnable in CI.
+
+1. stdio: configure Claude Desktop/Code to run `wendy mcp serve`, connect a
+   device, call wendy_status → the dashboard view should render in-chat.
+2. http: `wendy mcp serve --http` (optionally `--token <t>`), connect an
+   HTTP-capable host, confirm the same UI renders.
+3. passthrough: deploy a container app with an mcp entitlement that exposes a
+   ui:// resource; confirm it shows as UI-capable in apps_list and opens via
+   app_open (rendered under ui://app/<app>/...).
+4. device targeting: with two devices, pass the `device` arg and confirm the
+   view reflects the targeted device.
+
+Record outcomes in the PR description when run.

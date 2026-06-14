@@ -1,7 +1,7 @@
 # MCP Apps for WendyOS — Design
 
 **Date:** 2026-06-14
-**Status:** Approved (design); pending implementation plan
+**Status:** Implemented (Tasks 1–8); cloud gateway deferred (see plan)
 **Branch:** `jo.wdy-1546-mcp-setup-version-refresh`
 
 ## Summary
