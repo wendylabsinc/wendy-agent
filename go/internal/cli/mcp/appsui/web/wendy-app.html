@@ -134,9 +134,9 @@
 
 <!-- ── Tabs ── -->
 <div class="tabs">
-  <div class="tab" id="tab-dashboard" onclick="switchTab('dashboard')">Dashboard</div>
-  <div class="tab" id="tab-controls"  onclick="switchTab('controls')">Controls</div>
-  <div class="tab" id="tab-apps"      onclick="switchTab('apps')">Apps <span class="badge" id="apps-badge"></span></div>
+  <div class="tab" id="tab-dashboard" data-tab="dashboard">Dashboard</div>
+  <div class="tab" id="tab-controls"  data-tab="controls">Controls</div>
+  <div class="tab" id="tab-apps"      data-tab="apps">Apps <span class="badge" id="apps-badge"></span></div>
 </div>
 
 <!-- ── Dashboard view ── -->
@@ -191,9 +191,11 @@
     return new Promise((resolve, reject) => {
       const id = ++_seq;
       _pending[id] = { resolve, reject };
+      // "*" target origin is intentional: the host origin is determined by the MCP client and is unknown at bundle authoring time.
       parent.postMessage({ jsonrpc: "2.0", id, method, params }, "*");
     });
   }
+  // Origin is not checked here because this bundle only runs inside a trusted MCP host iframe.
   window.addEventListener("message", (e) => {
     const msg = e.data || {};
     if (msg.id && _pending[msg.id]) {
@@ -242,6 +244,18 @@
   // ── Device selector ──
   const deviceSelect = document.getElementById("devsel");
   deviceSelect.onchange = () => { _device = deviceSelect.value; act("device_info", { device: _device }); };
+
+  // Delegated click handler for tab navigation and all data-act buttons — avoids inline onclick attribute-escaping bugs.
+  document.addEventListener("click", (e) => {
+    const tab = e.target.closest("[data-tab]");
+    if (tab) { switchTab(tab.dataset.tab); return; }
+    const el = e.target.closest("[data-act]");
+    if (!el) return;
+    const args = { device: _device };
+    if (el.dataset.name) args.name = el.dataset.name;
+    if (el.dataset.app)  args.app  = el.dataset.app;
+    act(el.dataset.act, args);
+  });
 
   function setDeviceSelector(name) {
     let found = false;
@@ -297,10 +311,10 @@
           <div><div class="k">MEM</div><div class="val">${memVal(c.mem)}</div></div>
         </div>
         <div class="acts">
-          ${c.hasUi ? `<button class="btn open" onclick="act('app_open',{device:_device,app:${JSON.stringify(c.name)}})">Open app ↗</button>` : ""}
+          ${c.hasUi ? `<button class="btn open" data-act="app_open" data-app="${esc(c.name)}">Open app ↗</button>` : ""}
           ${c.running
-            ? `<button class="btn ghost w" onclick="act('container_stop',{device:_device,name:${JSON.stringify(c.name)}})">Stop</button>`
-            : `<button class="btn w" onclick="act('container_start',{device:_device,name:${JSON.stringify(c.name)}})">Start</button>`
+            ? `<button class="btn ghost w" data-act="container_stop" data-name="${esc(c.name)}">Stop</button>`
+            : `<button class="btn w" data-act="container_start" data-name="${esc(c.name)}">Start</button>`
           }
         </div>`;
       cbox.appendChild(row);
@@ -327,7 +341,7 @@
         <div class="right">
           <span class="state${running ? "" : " off"}">${running ? "RUNNING" : "STOPPED"}</span>
           <div class="sw${running ? "" : " off"}" title="toggle"
-               onclick="act(${JSON.stringify(running ? "container_stop" : "container_start")},{device:_device,name:${JSON.stringify(c.name)}})"></div>
+               data-act="${running ? "container_stop" : "container_start"}" data-name="${esc(c.name)}"></div>
         </div>`;
       cbox.appendChild(row);
     }
@@ -339,7 +353,7 @@
       const b = document.createElement("div"); b.className = "banner";
       b.innerHTML = `<span style="font-size:18px">⬆️</span>
         <div><div class="t">WendyOS ${esc(upd.version || "")} available</div><div class="s">Update will reboot the device once</div></div>
-        <div class="right"><button class="btn accent" onclick="act('os_update',{device:_device})">Update</button></div>`;
+        <div class="right"><button class="btn accent" data-act="os_update">Update</button></div>`;
       bannerBox.appendChild(b);
     }
 
@@ -350,17 +364,17 @@
       <div class="ctl">
         <div class="cic">📶</div>
         <div><div class="nm">Wi-Fi</div><div class="sub">${wifi.network ? "connected · " + esc(wifi.network) : "not connected"}</div></div>
-        <div class="right"><button class="btn ghost" onclick="act('wifi_list',{device:_device})">Switch network</button></div>
+        <div class="right"><button class="btn ghost" data-act="wifi_list">Switch network</button></div>
       </div>
       <div class="ctl">
         <div class="cic">⭐</div>
         <div><div class="nm">Default device</div><div class="sub">commands target this device</div></div>
-        <div class="right"><button class="btn dark" onclick="act('device_set_default',{device:_device})">Set default</button></div>
+        <div class="right"><button class="btn dark" data-act="device_set_default">Set default</button></div>
       </div>
       <div class="ctl">
         <div class="cic">⏻</div>
         <div><div class="nm">Power</div><div class="sub">reboot the device</div></div>
-        <div class="right"><button class="btn danger" onclick="act('device_reboot',{device:_device})">Reboot</button></div>
+        <div class="right"><button class="btn danger" data-act="device_reboot">Reboot</button></div>
       </div>`;
   }
 
@@ -384,7 +398,7 @@
       let tagHTML, btnHTML;
       if (a.status === "ui") {
         tagHTML = `<span class="tag ui">● MCP app</span>`;
-        btnHTML = `<button class="btn dark block" onclick="act('app_open',{device:_device,app:${JSON.stringify(a.name)}})">Open ↗</button>`;
+        btnHTML = `<button class="btn dark block" data-act="app_open" data-app="${esc(a.name)}">Open ↗</button>`;
       } else if (a.status === "tools") {
         tagHTML = `<span class="tag noui">tools only · no UI</span>`;
         btnHTML = `<button class="btn block" disabled>No app UI</button>`;
@@ -426,7 +440,7 @@
   }
 
   // ── Bootstrap: ask host for initial state ──
-  _rpc("ui/initialize", { capabilities: {} }).then(render).catch(() => {});
+  _rpc("ui/initialize", { capabilities: {} }).then(render).catch(err => console.warn("ui/initialize failed — no host connected yet?", err));
 </script>
 </body>
 </html>
