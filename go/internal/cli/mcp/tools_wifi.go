@@ -25,6 +25,7 @@ func (s *mcpServer) registerWiFiTools(srv *server.MCPServer) {
 		mcpgo.WithString("password",
 			mcpgo.Description("WiFi password (leave empty for open networks)"),
 		),
+		mcpgo.WithString("device", mcpgo.Description("Optional device name or host:port to target.")),
 	), WendyAppURI), s.handleWiFiConnect)
 
 	srv.AddTool(mcpgo.NewTool("wifi_status",
@@ -33,6 +34,7 @@ func (s *mcpServer) registerWiFiTools(srv *server.MCPServer) {
 
 	srv.AddTool(appsui.WithUI(mcpgo.NewTool("wifi_disconnect",
 		mcpgo.WithDescription("Disconnect the device from its current WiFi network"),
+		mcpgo.WithString("device", mcpgo.Description("Optional device name or host:port to target.")),
 	), WendyAppURI), s.handleWiFiDisconnect)
 
 	srv.AddTool(mcpgo.NewTool("wifi_known_networks",
@@ -69,9 +71,9 @@ func (s *mcpServer) handleWiFiList(ctx context.Context, _ mcpgo.CallToolRequest)
 }
 
 func (s *mcpServer) handleWiFiConnect(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
-	conn := s.GetConn()
-	if conn == nil {
-		return errNotConnected(), nil
+	conn, err := s.resolveConn(ctx, stringParam(req, "device"))
+	if err != nil {
+		return mcpgo.NewToolResultError(err.Error()), nil
 	}
 	ssid := stringParam(req, "ssid")
 	if ssid == "" {
@@ -88,10 +90,7 @@ func (s *mcpServer) handleWiFiConnect(ctx context.Context, req mcpgo.CallToolReq
 		return mcpgo.NewToolResultError(fmt.Sprintf("connect failed: %s", resp.GetErrorMessage())), nil
 	}
 	res := mcpgo.NewToolResultText(fmt.Sprintf("connected to %s", ssid))
-	deviceLabel := ""
-	if c := s.GetConn(); c != nil {
-		deviceLabel = c.Host
-	}
+	deviceLabel := conn.Host
 	return appsui.ResultWithUI(res, WendyAppURI, "controls", controlsData(deviceLabel, nil)), nil
 }
 
@@ -115,10 +114,10 @@ func (s *mcpServer) handleWiFiStatus(ctx context.Context, _ mcpgo.CallToolReques
 	return mcpgo.NewToolResultText(string(b)), nil
 }
 
-func (s *mcpServer) handleWiFiDisconnect(ctx context.Context, _ mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
-	conn := s.GetConn()
-	if conn == nil {
-		return errNotConnected(), nil
+func (s *mcpServer) handleWiFiDisconnect(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+	conn, err := s.resolveConn(ctx, stringParam(req, "device"))
+	if err != nil {
+		return mcpgo.NewToolResultError(err.Error()), nil
 	}
 	resp, err := conn.AgentService.DisconnectWiFi(ctx, &agentpb.DisconnectWiFiRequest{})
 	if err != nil {
@@ -128,10 +127,7 @@ func (s *mcpServer) handleWiFiDisconnect(ctx context.Context, _ mcpgo.CallToolRe
 		return mcpgo.NewToolResultError(fmt.Sprintf("disconnect failed: %s", resp.GetErrorMessage())), nil
 	}
 	res := mcpgo.NewToolResultText("disconnected from WiFi")
-	deviceLabel := ""
-	if c := s.GetConn(); c != nil {
-		deviceLabel = c.Host
-	}
+	deviceLabel := conn.Host
 	return appsui.ResultWithUI(res, WendyAppURI, "controls", controlsData(deviceLabel, nil)), nil
 }
 

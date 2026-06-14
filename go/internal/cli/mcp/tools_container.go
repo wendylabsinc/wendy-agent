@@ -17,6 +17,7 @@ import (
 func (s *mcpServer) registerContainerTools(srv *server.MCPServer) {
 	srv.AddTool(mcpgo.NewTool("container_list",
 		mcpgo.WithDescription("List all containers on the connected device"),
+		mcpgo.WithString("device", mcpgo.Description("Optional device name or host:port to target.")),
 	), s.handleContainerList)
 
 	srv.AddTool(appsui.WithUI(mcpgo.NewTool("container_start",
@@ -25,6 +26,7 @@ func (s *mcpServer) registerContainerTools(srv *server.MCPServer) {
 			mcpgo.Required(),
 			mcpgo.Description("App name of the container to start"),
 		),
+		mcpgo.WithString("device", mcpgo.Description("Optional device name or host:port to target.")),
 	), WendyAppURI), s.handleContainerStart)
 
 	srv.AddTool(appsui.WithUI(mcpgo.NewTool("container_stop",
@@ -33,6 +35,7 @@ func (s *mcpServer) registerContainerTools(srv *server.MCPServer) {
 			mcpgo.Required(),
 			mcpgo.Description("App name of the container to stop"),
 		),
+		mcpgo.WithString("device", mcpgo.Description("Optional device name or host:port to target.")),
 	), WendyAppURI), s.handleContainerStop)
 
 	srv.AddTool(mcpgo.NewTool("container_delete",
@@ -51,6 +54,7 @@ func (s *mcpServer) registerContainerTools(srv *server.MCPServer) {
 
 	srv.AddTool(mcpgo.NewTool("container_stats",
 		mcpgo.WithDescription("Get memory and storage stats for all containers"),
+		mcpgo.WithString("device", mcpgo.Description("Optional device name or host:port to target.")),
 	), s.handleContainerStats)
 
 	srv.AddTool(mcpgo.NewTool("container_attach",
@@ -65,10 +69,10 @@ func (s *mcpServer) registerContainerTools(srv *server.MCPServer) {
 	), s.handleContainerAttach)
 }
 
-func (s *mcpServer) handleContainerList(ctx context.Context, _ mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
-	conn := s.GetConn()
-	if conn == nil {
-		return errNotConnected(), nil
+func (s *mcpServer) handleContainerList(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+	conn, err := s.resolveConn(ctx, stringParam(req, "device"))
+	if err != nil {
+		return mcpgo.NewToolResultError(err.Error()), nil
 	}
 	stream, err := conn.ContainerService.ListContainers(ctx, &agentpb.ListContainersRequest{})
 	if err != nil {
@@ -102,9 +106,9 @@ func (s *mcpServer) handleContainerList(ctx context.Context, _ mcpgo.CallToolReq
 }
 
 func (s *mcpServer) handleContainerStart(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
-	conn := s.GetConn()
-	if conn == nil {
-		return errNotConnected(), nil
+	conn, err := s.resolveConn(ctx, stringParam(req, "device"))
+	if err != nil {
+		return mcpgo.NewToolResultError(err.Error()), nil
 	}
 	appName := stringParam(req, "app_name")
 	if appName == "" {
@@ -145,31 +149,25 @@ func (s *mcpServer) handleContainerStart(ctx context.Context, req mcpgo.CallTool
 		out = fmt.Sprintf("container %s started", appName)
 	}
 	res := mcpgo.NewToolResultText(out)
-	deviceLabel := ""
-	if c := s.GetConn(); c != nil {
-		deviceLabel = c.Host
-	}
+	deviceLabel := conn.Host
 	return appsui.ResultWithUI(res, WendyAppURI, "controls", controlsData(deviceLabel, nil)), nil
 }
 
 func (s *mcpServer) handleContainerStop(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
-	conn := s.GetConn()
-	if conn == nil {
-		return errNotConnected(), nil
+	conn, err := s.resolveConn(ctx, stringParam(req, "device"))
+	if err != nil {
+		return mcpgo.NewToolResultError(err.Error()), nil
 	}
 	appName := stringParam(req, "app_name")
 	if appName == "" {
 		return mcpgo.NewToolResultError("app_name is required"), nil
 	}
-	_, err := conn.ContainerService.StopContainer(ctx, &agentpb.StopContainerRequest{AppName: appName})
+	_, err = conn.ContainerService.StopContainer(ctx, &agentpb.StopContainerRequest{AppName: appName})
 	if err != nil {
 		return mcpgo.NewToolResultError(grpcErrString(err)), nil
 	}
 	res := mcpgo.NewToolResultText(fmt.Sprintf("container %s stopped", appName))
-	deviceLabel := ""
-	if c := s.GetConn(); c != nil {
-		deviceLabel = c.Host
-	}
+	deviceLabel := conn.Host
 	return appsui.ResultWithUI(res, WendyAppURI, "controls", controlsData(deviceLabel, nil)), nil
 }
 
@@ -193,10 +191,10 @@ func (s *mcpServer) handleContainerDelete(ctx context.Context, req mcpgo.CallToo
 	return mcpgo.NewToolResultText(fmt.Sprintf("container %s deleted", appName)), nil
 }
 
-func (s *mcpServer) handleContainerStats(ctx context.Context, _ mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
-	conn := s.GetConn()
-	if conn == nil {
-		return errNotConnected(), nil
+func (s *mcpServer) handleContainerStats(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+	conn, err := s.resolveConn(ctx, stringParam(req, "device"))
+	if err != nil {
+		return mcpgo.NewToolResultError(err.Error()), nil
 	}
 	resp, err := conn.ContainerService.ListContainerStats(ctx, &agentpb.ListContainerStatsRequest{})
 	if err != nil {

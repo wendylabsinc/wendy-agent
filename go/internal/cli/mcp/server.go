@@ -33,6 +33,7 @@ type mcpServer struct {
 	connectFn     ConnectFunc
 	conn          *grpcclient.AgentConnection
 	connType      string
+	connCache     map[string]*cachedConn
 	cloudTunnels  map[string]*mcpCloudTunnel
 	discoverLANFn func(ctx context.Context, timeout time.Duration) ([]models.LANDevice, error)
 	mu            sync.RWMutex

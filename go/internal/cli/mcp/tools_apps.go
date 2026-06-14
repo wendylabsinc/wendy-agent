@@ -49,9 +49,9 @@ func (s *mcpServer) registerAppsTools(srv *server.MCPServer) {
 }
 
 func (s *mcpServer) handleAppsList(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
-	conn := s.GetConn()
-	if conn == nil {
-		return errNotConnected(), nil
+	conn, err := s.resolveConn(ctx, stringParam(req, "device"))
+	if err != nil {
+		return mcpgo.NewToolResultError(err.Error()), nil
 	}
 	entries, err := s.listAppEntries(ctx, conn)
 	if err != nil {

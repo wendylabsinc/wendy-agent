@@ -18,13 +18,14 @@ func (s *mcpServer) registerOSTools(srv *server.MCPServer) {
 		mcpgo.WithString("artifact_url",
 			mcpgo.Description("URL of the OS update artifact (leave empty to use the device's configured update channel)"),
 		),
+		mcpgo.WithString("device", mcpgo.Description("Optional device name or host:port to target.")),
 	), WendyAppURI), s.handleOSUpdate)
 }
 
 func (s *mcpServer) handleOSUpdate(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
-	conn := s.GetConn()
-	if conn == nil {
-		return errNotConnected(), nil
+	conn, err := s.resolveConn(ctx, stringParam(req, "device"))
+	if err != nil {
+		return mcpgo.NewToolResultError(err.Error()), nil
 	}
 	stream, err := conn.AgentService.UpdateOS(ctx, &agentpb.UpdateOSRequest{
 		ArtifactUrl: stringParam(req, "artifact_url"),
@@ -62,9 +63,6 @@ func (s *mcpServer) handleOSUpdate(ctx context.Context, req mcpgo.CallToolReques
 		out = "OS update initiated"
 	}
 	res := mcpgo.NewToolResultText(out)
-	deviceLabel := ""
-	if c := s.GetConn(); c != nil {
-		deviceLabel = c.Host
-	}
+	deviceLabel := conn.Host
 	return appsui.ResultWithUI(res, WendyAppURI, "controls", controlsData(deviceLabel, nil)), nil
 }

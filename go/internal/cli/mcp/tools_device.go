@@ -35,6 +35,7 @@ func (s *mcpServer) registerDeviceTools(srv *server.MCPServer) {
 
 	srv.AddTool(mcpgo.NewTool("device_info",
 		mcpgo.WithDescription("Get agent version, OS, CPU architecture, and feature set of connected device"),
+		mcpgo.WithString("device", mcpgo.Description("Optional device name or host:port to target.")),
 	), s.handleDeviceInfo)
 
 	srv.AddTool(appsui.WithUI(mcpgo.NewTool("device_set_default",
@@ -43,6 +44,7 @@ func (s *mcpServer) registerDeviceTools(srv *server.MCPServer) {
 			mcpgo.Required(),
 			mcpgo.Description("Device address to save as default"),
 		),
+		mcpgo.WithString("device", mcpgo.Description("Optional device name or host:port to target.")),
 	), WendyAppURI), s.handleDeviceSetDefault)
 }
 
@@ -122,10 +124,10 @@ func (s *mcpServer) handleDeviceDisconnect(_ context.Context, _ mcpgo.CallToolRe
 	return mcpgo.NewToolResultText("disconnected"), nil
 }
 
-func (s *mcpServer) handleDeviceInfo(ctx context.Context, _ mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
-	conn := s.GetConn()
-	if conn == nil {
-		return errNotConnected(), nil
+func (s *mcpServer) handleDeviceInfo(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+	conn, err := s.resolveConn(ctx, stringParam(req, "device"))
+	if err != nil {
+		return mcpgo.NewToolResultError(err.Error()), nil
 	}
 	resp, err := conn.AgentService.GetAgentVersion(ctx, &agentpb.GetAgentVersionRequest{})
 	if err != nil {
@@ -179,7 +181,7 @@ func (s *mcpServer) handleDeviceInfo(ctx context.Context, _ mcpgo.CallToolReques
 	return mcpgo.NewToolResultText(string(b)), nil
 }
 
-func (s *mcpServer) handleDeviceSetDefault(_ context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+func (s *mcpServer) handleDeviceSetDefault(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
 	address := stringParam(req, "address")
 	if address == "" {
 		return mcpgo.NewToolResultError("address is required"), nil
@@ -189,9 +191,10 @@ func (s *mcpServer) handleDeviceSetDefault(_ context.Context, req mcpgo.CallTool
 		return mcpgo.NewToolResultError(fmt.Sprintf("saving config: %s", err.Error())), nil
 	}
 	res := mcpgo.NewToolResultText(fmt.Sprintf("default device set to %s", address))
+	conn, err := s.resolveConn(ctx, stringParam(req, "device"))
 	deviceLabel := ""
-	if c := s.GetConn(); c != nil {
-		deviceLabel = c.Host
+	if err == nil {
+		deviceLabel = conn.Host
 	}
 	return appsui.ResultWithUI(res, WendyAppURI, "controls", controlsData(deviceLabel, nil)), nil
 }
