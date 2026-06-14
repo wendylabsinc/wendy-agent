@@ -1,0 +1,541 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Intercom</title>
+<!--
+  MCP Apps — Intercom push-to-talk UI
+  =====================================
+  Architecture:
+    • This page runs inside a sandboxed iframe managed by the MCP Apps host.
+    • getUserMedia() captures the mic.  The host must grant microphone
+      permission to the iframe.  The server signals this requirement via
+        @mcp.resource("ui://intercom/app", ...,
+                      meta={"ui": {"permissions": ["microphone"]}})
+      FastMCP 1.27.2 serialises `meta` → `_meta` in resources/list; the
+      MCP Apps host reads `_meta.ui.permissions` and adds the `microphone`
+      permission to the iframe's `allow` attribute before loading the page.
+    • The container (WendyOS device) receives the encoded audio via the
+      `play_audio` tool call and plays it on the device speaker via ALSA.
+-->
+<style>
+  :root {
+    --ink: #11151c;
+    --muted: #69707d;
+    --line: #e7e9ee;
+    --accent: #4f6ef7;
+    --accent-soft: #eef1fe;
+    --good: #1fa971;
+    --good-soft: #e6f6ee;
+    --bad: #e53935;
+    --bad-soft: #fdecea;
+    --warn: #e67e22;
+    --warn-soft: #fef3e5;
+    --radius: 12px;
+    --pad: 18px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, system-ui, sans-serif;
+    background: #f4f5f7;
+    color: var(--ink);
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* ── Header ── */
+  .header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 14px var(--pad);
+    background: #fff;
+    border-bottom: 1px solid var(--line);
+  }
+  .header .icon {
+    width: 32px; height: 32px;
+    border-radius: 9px;
+    background: linear-gradient(135deg, #4f6ef7, #7c3aed);
+    display: grid; place-items: center;
+    color: #fff; font-size: 16px;
+  }
+  .header h1 { font-size: 15px; font-weight: 700; }
+
+  /* ── Main content ── */
+  .main {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: var(--pad);
+    gap: 20px;
+  }
+
+  /* ── PTT button ── */
+  .ptt-wrap {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 16px;
+  }
+  .ptt-btn {
+    width: 140px; height: 140px;
+    border-radius: 50%;
+    border: 3px solid var(--accent);
+    background: var(--accent-soft);
+    color: var(--accent);
+    font-size: 48px;
+    cursor: pointer;
+    user-select: none;
+    -webkit-user-select: none;
+    touch-action: none;
+    display: grid;
+    place-items: center;
+    transition: background .15s, border-color .15s, transform .1s, box-shadow .15s;
+    outline: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .ptt-btn:hover {
+    background: #dde4fd;
+  }
+  .ptt-btn.recording {
+    background: var(--bad-soft);
+    border-color: var(--bad);
+    color: var(--bad);
+    transform: scale(1.08);
+    box-shadow: 0 0 0 8px rgba(229,57,53,.12);
+    animation: pulse 1s infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { box-shadow: 0 0 0 8px rgba(229,57,53,.12); }
+    50%       { box-shadow: 0 0 0 16px rgba(229,57,53,.04); }
+  }
+  .ptt-btn.sending {
+    background: var(--warn-soft);
+    border-color: var(--warn);
+    color: var(--warn);
+    cursor: wait;
+  }
+  .ptt-btn.played {
+    background: var(--good-soft);
+    border-color: var(--good);
+    color: var(--good);
+  }
+  .ptt-label {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--muted);
+    letter-spacing: .03em;
+    text-align: center;
+    min-height: 1.4em;
+  }
+
+  /* ── Status card ── */
+  .status-card {
+    background: #fff;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 14px var(--pad);
+    font-size: 13px;
+    color: var(--muted);
+    min-width: 260px;
+    max-width: 400px;
+    width: 100%;
+    text-align: center;
+    line-height: 1.5;
+  }
+  .status-card.error {
+    color: var(--bad);
+    border-color: var(--bad-soft);
+    background: var(--bad-soft);
+  }
+  .status-card.ok {
+    color: var(--good);
+    border-color: var(--good-soft);
+    background: var(--good-soft);
+  }
+
+  /* ── Devices card ── */
+  .devices-section {
+    min-width: 260px;
+    max-width: 400px;
+    width: 100%;
+  }
+  .devices-section h2 {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: .06em;
+    color: var(--muted);
+    font-weight: 700;
+    margin-bottom: 6px;
+  }
+  .device-list {
+    background: #fff;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    overflow: hidden;
+  }
+  .device-row {
+    padding: 9px 14px;
+    font-size: 12px;
+    font-family: ui-monospace, monospace;
+    border-bottom: 1px solid var(--line);
+    color: var(--ink);
+  }
+  .device-row:last-child { border-bottom: none; }
+  .device-empty {
+    padding: 14px;
+    font-size: 13px;
+    color: var(--muted);
+    text-align: center;
+  }
+</style>
+</head>
+<body>
+
+<!-- ── Header ── -->
+<div class="header">
+  <div class="icon">🎙️</div>
+  <h1>Intercom</h1>
+</div>
+
+<!-- ── Main ── -->
+<div class="main">
+
+  <div class="ptt-wrap">
+    <button class="ptt-btn" id="ptt-btn" aria-label="Hold to talk">🎙️</button>
+    <div class="ptt-label" id="ptt-label">Hold to talk</div>
+  </div>
+
+  <div class="status-card" id="status-card">
+    Connecting to MCP host…
+  </div>
+
+  <div class="devices-section">
+    <h2>Audio devices</h2>
+    <div class="device-list" id="device-list">
+      <div class="device-empty">Loading…</div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+  // ==========================================================================
+  // MCP Apps postMessage bridge (host <-> iframe)
+  // Copied/adapted from SecurityCam — do not modify the protocol shape.
+  // ==========================================================================
+  let _seq = 0;
+  const _pending = {};
+
+  function _rpc(method, params) {
+    return new Promise((resolve, reject) => {
+      const id = ++_seq;
+      _pending[id] = { resolve, reject };
+      // "*" target origin is intentional: the host origin is determined by
+      // the MCP client and is unknown at bundle authoring time.
+      parent.postMessage({ jsonrpc: "2.0", id, method, params }, "*");
+    });
+  }
+
+  // Origin is not validated here because this bundle only runs inside a
+  // trusted MCP host iframe.
+  window.addEventListener("message", (e) => {
+    const msg = e.data || {};
+    if (msg.id && _pending[msg.id]) {
+      const p = _pending[msg.id];
+      delete _pending[msg.id];
+      msg.error ? p.reject(msg.error) : p.resolve(msg.result);
+      return;
+    }
+    // Push-rendered data from the host (ui/render or ui/data).
+    if (msg.method === "ui/render" || msg.method === "ui/data") {
+      const payload = msg.params && (msg.params.structuredContent || msg.params);
+      if (payload) handlePush(payload);
+    }
+  });
+
+  function callTool(name, args) {
+    return _rpc("tools/call", { name, arguments: args || {} });
+  }
+
+  // Push handler — not used by this app, kept for bridge parity.
+  function handlePush(payload) {}
+
+  // FastMCP returns structured results as TextContent; unwrap if needed.
+  function extractToolResult(result) {
+    if (!result) return null;
+    // Direct dict result.
+    if (result.ok !== undefined || result.error !== undefined) return result;
+    // Wrapped in MCP content array: [{type:"text", text:"{...}"}]
+    const content = result.content || result.structuredContent;
+    if (Array.isArray(content) && content.length > 0) {
+      const c = content[0];
+      if (c.type === "text" || c.text) {
+        try { return JSON.parse(c.text); } catch (_) { return null; }
+      }
+    }
+    return result;
+  }
+
+  // ==========================================================================
+  // Push-to-talk logic
+  // ==========================================================================
+
+  const pttBtn   = document.getElementById("ptt-btn");
+  const pttLabel = document.getElementById("ptt-label");
+  const statusCard = document.getElementById("status-card");
+  const deviceList = document.getElementById("device-list");
+
+  let _mediaStream = null;
+  let _recorder    = null;
+  let _chunks      = [];
+  let _recording   = false;
+  let _busy        = false;   // sending/playing in progress
+
+  function setStatus(msg, cls) {
+    statusCard.textContent = msg;
+    statusCard.className = "status-card" + (cls ? " " + cls : "");
+  }
+
+  function setLabel(msg) {
+    pttLabel.textContent = msg;
+  }
+
+  // -- Acquire microphone stream (lazy, cached) --
+
+  async function getStream() {
+    if (_mediaStream && _mediaStream.active) return _mediaStream;
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      throw new Error(
+        "getUserMedia is not available. " +
+        "The MCP host must grant microphone permission to this iframe " +
+        "(allow=\"microphone\") — the server requests this via the " +
+        "resource _meta.ui.permissions field."
+      );
+    }
+    _mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    return _mediaStream;
+  }
+
+  // -- Start recording --
+
+  async function startRecording() {
+    if (_recording || _busy) return;
+
+    let stream;
+    try {
+      stream = await getStream();
+    } catch (err) {
+      setStatus("Microphone error: " + (err.message || String(err)), "error");
+      setLabel("Hold to talk");
+      return;
+    }
+
+    _chunks = [];
+    // Prefer webm/opus; fall back to whatever the browser supports.
+    const mimeType =
+      MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+        ? "audio/webm;codecs=opus"
+        : MediaRecorder.isTypeSupported("audio/ogg;codecs=opus")
+          ? "audio/ogg;codecs=opus"
+          : "";
+
+    try {
+      _recorder = mimeType
+        ? new MediaRecorder(stream, { mimeType })
+        : new MediaRecorder(stream);
+    } catch (err) {
+      setStatus("MediaRecorder error: " + (err.message || String(err)), "error");
+      return;
+    }
+
+    _recorder.ondataavailable = (e) => {
+      if (e.data && e.data.size > 0) _chunks.push(e.data);
+    };
+
+    _recorder.start(100);   // collect chunks every 100 ms
+    _recording = true;
+
+    pttBtn.classList.add("recording");
+    setLabel("Recording…");
+    setStatus("Recording — release to send.", "");
+  }
+
+  // -- Stop recording and send --
+
+  function stopRecording() {
+    if (!_recording || !_recorder) return;
+    _recording = false;
+
+    _recorder.onstop = async () => {
+      if (_chunks.length === 0) {
+        setLabel("Hold to talk");
+        setStatus("No audio captured.", "");
+        pttBtn.classList.remove("recording");
+        return;
+      }
+
+      const mimeType = _recorder.mimeType || "audio/webm";
+      const blob = new Blob(_chunks, { type: mimeType });
+      _chunks = [];
+
+      // Derive a short format hint from the MIME type.
+      //   audio/webm;codecs=opus  → "webm"
+      //   audio/ogg;codecs=opus   → "ogg"
+      //   audio/wav               → "wav"
+      const fmt = (mimeType.split(";")[0].split("/")[1] || "webm").trim();
+
+      pttBtn.classList.remove("recording");
+      pttBtn.classList.add("sending");
+      setLabel("Sending…");
+      setStatus("Encoding and sending audio to device…", "");
+      _busy = true;
+
+      let data_b64;
+      try {
+        data_b64 = await blobToBase64(blob);
+      } catch (err) {
+        pttBtn.classList.remove("sending");
+        _busy = false;
+        setLabel("Hold to talk");
+        setStatus("Encoding failed: " + (err.message || String(err)), "error");
+        return;
+      }
+
+      let result;
+      try {
+        result = await callTool("play_audio", { data_b64, format: fmt });
+      } catch (err) {
+        pttBtn.classList.remove("sending");
+        _busy = false;
+        setLabel("Hold to talk");
+        setStatus("Bridge error: " + (err.message || String(err)), "error");
+        return;
+      }
+
+      pttBtn.classList.remove("sending");
+      _busy = false;
+
+      const data = extractToolResult(result);
+      if (data && data.error) {
+        setLabel("Hold to talk");
+        setStatus("Playback error: " + esc(data.error), "error");
+        return;
+      }
+
+      // Success — briefly show "Played" state.
+      pttBtn.classList.add("played");
+      setLabel("Played ✓");
+      setStatus("Audio played on device.", "ok");
+      setTimeout(() => {
+        pttBtn.classList.remove("played");
+        setLabel("Hold to talk");
+        setStatus("Ready.", "");
+      }, 2000);
+    };
+
+    _recorder.stop();
+  }
+
+  // -- Event bindings (pointer events for both mouse and touch) --
+
+  pttBtn.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    startRecording();
+  });
+
+  const stopEvents = ["pointerup", "pointercancel", "pointerleave"];
+  stopEvents.forEach((evt) => {
+    pttBtn.addEventListener(evt, (e) => {
+      e.preventDefault();
+      stopRecording();
+    });
+  });
+
+  // Prevent context menu on long-press (mobile).
+  pttBtn.addEventListener("contextmenu", (e) => e.preventDefault());
+
+  // -- Device list --
+
+  async function loadDevices() {
+    let result;
+    try {
+      result = await callTool("list_audio_devices", {});
+    } catch (_) {
+      deviceList.innerHTML = '<div class="device-empty">Could not list devices.</div>';
+      return;
+    }
+
+    // Unwrap array result (may be wrapped in MCP content).
+    let devices = result;
+    if (!Array.isArray(devices)) {
+      const content = (result && (result.content || result.structuredContent));
+      if (Array.isArray(content) && content.length > 0) {
+        const c = content[0];
+        if (c.type === "text" || c.text) {
+          try { devices = JSON.parse(c.text); } catch (_) { devices = []; }
+        }
+      }
+    }
+
+    if (!Array.isArray(devices) || devices.length === 0) {
+      deviceList.innerHTML = '<div class="device-empty">No ALSA playback devices found.</div>';
+      return;
+    }
+    deviceList.innerHTML = devices
+      .map((d) => `<div class="device-row">${esc(String(d))}</div>`)
+      .join("");
+  }
+
+  // -- Helper: Blob → base64 string --
+
+  function blobToBase64(blob) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        // result is "data:<mime>;base64,<data>"
+        const dataUrl = reader.result;
+        const comma = dataUrl.indexOf(",");
+        if (comma === -1) { reject(new Error("invalid data URL")); return; }
+        resolve(dataUrl.slice(comma + 1));
+      };
+      reader.onerror = () => reject(reader.error || new Error("FileReader failed"));
+      reader.readAsDataURL(blob);
+    });
+  }
+
+  // -- HTML-escape helper --
+
+  function esc(s) {
+    return String(s || "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
+  // ==========================================================================
+  // Bootstrap: handshake with the host, then load initial data
+  // ==========================================================================
+  _rpc("ui/initialize", { capabilities: {} })
+    .then(() => {
+      setStatus("Ready.  Hold the button to speak.", "");
+      setLabel("Hold to talk");
+      loadDevices();
+    })
+    .catch((err) => {
+      // No MCP host iframe — opened directly in a browser for dev/debug.
+      console.warn("ui/initialize failed — running without host bridge:", err);
+      setStatus(
+        "No MCP host connected.  Open this page through 'wendy run' or the MCP Apps host.",
+        "error"
+      );
+      setLabel("No host");
+    });
+</script>
+</body>
+</html>

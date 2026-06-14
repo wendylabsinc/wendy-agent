@@ -1,0 +1,11 @@
+{
+  "appId": "com.wendylabs.examples.intercom",
+  "version": "1.0.0",
+  "language": "python",
+  "python": { "container": { "sourceRoot": "/app" } },
+  "entitlements": [
+    { "type": "network", "mode": "host" },
+    { "type": "audio" },
+    { "type": "mcp", "port": 3001 }
+  ]
+}
