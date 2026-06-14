@@ -463,8 +463,8 @@
   // Handshake: announce the app, then ACK so the host will start sending tool
   // results. The initial view data arrives via ui/notifications/tool-result.
   _rpc("ui/initialize", {
-    appCapabilities: { availableDisplayModes: ["inline"], tools: {} },
-    clientInfo: { name: "WendyOS", version: "1.0.0" },
+    appCapabilities: {},
+    appInfo: { name: "WendyOS", version: "1.0.0" },
     protocolVersion: "2026-01-26",
   }).then((res) => {
     applyHostContext(res && res.hostContext);

@@ -539,8 +539,8 @@
   // Bootstrap: handshake with the host, then load initial data
   // ==========================================================================
   _rpc("ui/initialize", {
-    appCapabilities: { availableDisplayModes: ["inline"], tools: {} },
-    clientInfo: { name: "Intercom", version: "1.0.0" },
+    appCapabilities: {},
+    appInfo: { name: "Intercom", version: "1.0.0" },
     protocolVersion: "2026-01-26",
   })
     .then((res) => {
