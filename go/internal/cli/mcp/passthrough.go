@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"strconv"
 	"strings"
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
@@ -8,6 +9,23 @@ import (
 
 // uiAppPrefix namespaces container app ui:// resources surfaced through Wendy.
 const uiAppPrefix = "ui://app/"
+
+// injectToolPrefix injects `window.__WENDY_TOOL_PREFIX__` into an HTML UI
+// resource. Container tools are aggregated into the Wendy server under prefixed
+// names (<app>__<tool>); the app's own UI calls its tools by their original
+// names, so it must prepend this prefix for those calls to resolve through the
+// proxy. No-op for non-HTML content; empty/standalone when not proxied.
+func injectToolPrefix(html, mimeType, prefix string) string {
+	if !strings.Contains(mimeType, "html") {
+		return html
+	}
+	script := "<script>window.__WENDY_TOOL_PREFIX__=" + strconv.Quote(prefix) + ";</script>"
+	if i := strings.Index(html, "<head>"); i >= 0 {
+		n := i + len("<head>")
+		return html[:n] + script + html[n:]
+	}
+	return script + html
+}
 
 // namespacedUIURI2 wraps an inner container ui:// URI under the app namespace.
 func namespacedUIURI2(app, inner string) string {

@@ -354,6 +354,7 @@ func (s *mcpServer) connectContainerMCPTools(ctx context.Context, srv *server.MC
 			if strings.HasPrefix(origURI, "ui://") {
 				s.setAppUI(appName, nsRes.URI)
 			}
+			toolPrefix := prefix + "__"
 			srv.AddResource(nsRes, func(ctx context.Context, req mcpgo.ReadResourceRequest) ([]mcpgo.ResourceContents, error) {
 				out, rerr := mcpCli.ReadResource(ctx, mcpgo.ReadResourceRequest{Params: mcpgo.ReadResourceParams{URI: origURI}})
 				if rerr != nil {
@@ -363,6 +364,10 @@ func (s *mcpServer) connectContainerMCPTools(ctx context.Context, srv *server.MC
 					switch c := out.Contents[i].(type) {
 					case mcpgo.TextResourceContents:
 						c.URI = req.Params.URI
+						// The container's tools are aggregated into this server under
+						// prefixed names; tell its UI the prefix so its own tools/call
+						// resolve. (No-op for non-HTML resources.)
+						c.Text = injectToolPrefix(c.Text, c.MIMEType, toolPrefix)
 						out.Contents[i] = c
 					case mcpgo.BlobResourceContents:
 						c.URI = req.Params.URI

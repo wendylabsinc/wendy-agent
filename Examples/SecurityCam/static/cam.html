@@ -292,7 +292,7 @@
   // the triggering tool "<app>__<tool>". We mirror that prefix (learned from
   // hostContext.toolInfo at init) so our tool calls resolve. Run standalone
   // (no host/proxy context) the prefix stays empty and original names are used.
-  let _toolPrefix = "";
+  let _toolPrefix = (typeof window !== "undefined" && window.__WENDY_TOOL_PREFIX__) || "";
   function callTool(name, args) {
     const n = (_toolPrefix && name.indexOf("__") < 0) ? _toolPrefix + name : name;
     return _rpc("tools/call", { name: n, arguments: args || {} });
@@ -471,11 +471,6 @@
   })
     .then((res) => {
       applyHostContext(res && res.hostContext);
-      const _ti = res && res.hostContext && res.hostContext.toolInfo;
-      if (_ti && _ti.tool && typeof _ti.tool.name === "string") {
-        const i = _ti.tool.name.indexOf("__");
-        if (i > 0) _toolPrefix = _ti.tool.name.slice(0, i + 2);
-      }
       _notify("ui/notifications/initialized", {});
       setupSizeReporting();
       // First snapshot + device list in parallel.
