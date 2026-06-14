@@ -43,6 +43,7 @@
   body[data-view=dashboard] .view-dashboard{display:block}
   body[data-view=controls]  .view-controls{display:block}
   body[data-view=apps]      .view-apps{display:block}
+  body[data-view=app]       .view-app{display:block}
 
   .empty{color:var(--muted);font-size:13px;padding:24px 0;text-align:center}
 
@@ -183,6 +184,18 @@
   </div>
 </div>
 
+<!-- ── App-open view ── -->
+<div class="view view-app" id="view-app">
+  <div class="summary">
+    <div class="icon">📦</div>
+    <div>
+      <h2 id="app-open-name">Opening…</h2>
+      <div class="meta" id="app-open-msg">Loading the app's interface…</div>
+    </div>
+  </div>
+  <div style="margin-top:12px"><button class="btn" data-tab="apps">← Back to apps</button></div>
+</div>
+
 <script>
   // --- MCP Apps postMessage bridge (host <-> iframe) ---
   let _seq = 0;
@@ -255,14 +268,39 @@
     }
   });
   function callTool(name, args) { return _rpc("tools/call", { name, arguments: args || {} }); }
+  // Call a tool and render whatever view its result carries. Mutating actions
+  // (stop/start/update/…) return the controls view; if the host doesn't echo
+  // structuredContent on the response, fall back to refreshing the dashboard.
+  const _readTools = { apps_list: 1, wendy_status: 1, device_info: 1 };
   async function act(name, args) {
-    try { const r = await callTool(name, args); if (r && r.structuredContent) render(r.structuredContent); }
-    catch (err) { console.error("tool call failed", err); }
+    try {
+      const r = await callTool(name, args);
+      if (r && r.structuredContent) { render(r.structuredContent); return; }
+      // Mutating action with no echoed view data — refresh to reflect it.
+      if (!_readTools[name]) refresh();
+    } catch (err) { console.error("tool call failed", name, err); }
+  }
+  let _refreshing = false;
+  async function refresh() {
+    if (_refreshing) return;
+    _refreshing = true;
+    try {
+      const r = await callTool("wendy_status", { device: _device });
+      if (r && r.structuredContent) render(r.structuredContent);
+    } catch (err) { console.error("refresh failed", err); }
+    finally { _refreshing = false; }
   }
 
   // --- View router: structuredContent = { view, data } ---
   let _device = null;
   const _lastData = {};
+
+  function renderView(view, data) {
+    if (view === "dashboard") renderDashboard(data);
+    else if (view === "controls") renderControls(data);
+    else if (view === "apps") renderApps(data);
+    else if (view === "app") renderApp(data);
+  }
 
   function render(sc) {
     if (!sc) return;
@@ -270,21 +308,30 @@
     const data = sc.data || {};
     if (data.device) _device = data.device;
     _lastData[view] = data;
-    switchTab(view, /* fromRender= */ true);
-    if (view === "dashboard") renderDashboard(data);
-    else if (view === "controls") renderControls(data);
-    else if (view === "apps") renderApps(data);
+    // Controls reuses the dashboard's container list when it has none of its own.
+    if (view === "dashboard") _lastData.controls = _lastData.controls || data;
+    setTab(view);
+    renderView(view, data);
   }
 
-  function switchTab(view, fromRender) {
+  function setTab(view) {
     document.body.dataset.view = view;
     document.querySelectorAll(".tab").forEach(t => t.classList.remove("on"));
     const tabEl = document.getElementById("tab-" + view);
     if (tabEl) tabEl.classList.add("on");
-    if (!fromRender && _lastData[view]) {
-      if (view === "dashboard") renderDashboard(_lastData[view]);
-      else if (view === "controls") renderControls(_lastData[view]);
-      else if (view === "apps") renderApps(_lastData[view]);
+  }
+
+  // User clicked a tab: show what we have, then fetch fresh data for views that
+  // have a backing tool. Controls derives from the dashboard's container list.
+  function switchTab(view) {
+    setTab(view);
+    if (_lastData[view]) renderView(view, _lastData[view]);
+    if (view === "apps") {
+      act("apps_list", { device: _device });
+    } else if (view === "dashboard") {
+      act("wendy_status", { device: _device });
+    } else if (view === "controls" && !_lastData.controls && _lastData.dashboard) {
+      renderControls(_lastData.dashboard);
     }
   }
 
@@ -459,6 +506,14 @@
         ${btnHTML}`;
       grid.appendChild(card);
     }
+  }
+
+  // ── App-open renderer (shown while a container app's own UI loads) ──
+  function renderApp(data) {
+    const app = (data && data.app) || "app";
+    document.getElementById("app-open-name").textContent = app;
+    document.getElementById("app-open-msg").textContent =
+      "Loading this app's interface. If it doesn't appear, ask me to open the " + app + " app.";
   }
 
   // ── Helpers ──
