@@ -1307,3 +1307,110 @@ git commit -m "docs(mcp): document the in-chat app and HTTP transport"
 - **Cloud gateway is out of scope** (design §6). Ensure nothing here hard-codes a
   transport assumption: all registration goes through `buildServer`, which the
   future gateway will reuse.
+
+---
+
+## Sample apps (Tasks 10–12)
+
+These demonstrate the new passthrough end-to-end: a container app exposes its own
+MCP server **and** a `ui://` app resource, which Wendy's launcher discovers
+(`apps_list`) and opens (`app_open`), rendering the container's UI in the same
+host iframe. They depend on Task 8 (passthrough) being complete.
+
+**Shared pattern (from `Examples/MCPExample/`):** Python app using
+`mcp.server.fastmcp.FastMCP`, served over streamable HTTP at `MCP_PORT`, with a
+`Dockerfile`, `requirements.txt`, `main.py`, and a `wendy.json` carrying
+`{"type":"mcp","port":N}` + `{"type":"network","mode":"host"}` + the hardware
+entitlement. Each app additionally:
+
+1. Registers a `ui://` resource returning `text/html` (the in-chat app UI).
+2. Annotates its primary tool with `_meta.ui.resourceUri` pointing at that
+   resource, so the host renders it.
+
+> **Open item to confirm in each task (do first):** whether the installed
+> `FastMCP` exposes a way to (a) register a `ui://` resource with `text/html`
+> and (b) attach `_meta.ui` to a tool. Check `python -c "import mcp; print(mcp.__version__)"`
+> and the FastMCP API (`@mcp.resource("ui://...")`, tool `meta=`/annotations). If
+> FastMCP cannot attach `_meta.ui`, fall back to a low-level `mcp.server.Server`
+> that sets tool `_meta` and serves the resource. Pick the approach in Step 1 of
+> each task and note it. The HTML UIs reuse the same postMessage `ui/` bridge
+> shape as the Wendy bundle (Task 2) — copy that `<script>` block verbatim into
+> each app's HTML so actions round-trip through the host.
+
+Each task: scaffold from `MCPExample`, implement the hardware tool(s) + UI,
+build with `wendy build` (or the repo's documented sample-build path), and
+verify the app appears UI-capable in `apps_list` and opens via `app_open`.
+Commit each app separately.
+
+### Task 10: Security camera (`Examples/SecurityCam/`)
+
+**Files:** `wendy.json`, `main.py`, `requirements.txt`, `Dockerfile`, `static/cam.html`.
+
+- **wendy.json:**
+```json
+{
+  "appId": "com.wendylabs.examples.security-cam",
+  "version": "1.0.0",
+  "language": "python",
+  "python": { "container": { "sourceRoot": "/app" } },
+  "entitlements": [
+    { "type": "network", "mode": "host" },
+    { "type": "camera" },
+    { "type": "mcp", "port": 3000 }
+  ]
+}
+```
+- **Tools:** `snapshot()` → returns a current JPEG frame (base64) from the camera
+  (`/dev/video0` via OpenCV `cv2.VideoCapture` or `picamera2`); `list_cameras()`
+  → enumerates available devices. Annotate `snapshot` with `_meta.ui.resourceUri = "ui://camera/feed"`.
+- **UI (`ui://camera/feed`):** an HTML page that polls `snapshot()` (via the
+  postMessage `tools/call` bridge) every N seconds and shows the frame, with a
+  refresh-interval control and a device picker. This is the "security cam" view.
+- **Verify:** deploy to a device with a camera; in Wendy, `apps_list` shows
+  `security-cam` as UI-capable; `app_open` renders the live feed in-chat.
+- **Commit:** `feat(examples): security camera MCP app with in-chat live feed`
+
+### Task 11: Intercom (`Examples/Intercom/`)
+
+**Files:** `wendy.json`, `main.py`, `requirements.txt`, `Dockerfile`, `static/intercom.html`.
+
+- **wendy.json:** same shape, with `{ "type": "audio" }` instead of camera (mcp
+  port e.g. 3001), `appId` `com.wendylabs.examples.intercom`.
+- **Tools:** `play_audio(data_b64, format)` → decodes and plays through the device
+  speaker (ALSA `aplay`/PipeWire, matching how the `audio` entitlement wires
+  `/dev/snd`); `speak(text)` → optional TTS to speaker. Annotate the primary tool
+  with `_meta.ui.resourceUri = "ui://intercom/app"`.
+- **UI (`ui://intercom/app`):** a push-to-talk page — records mic audio in the
+  iframe (`getUserMedia`; requires the resource's `_meta.ui.permissions` to
+  include `microphone`), and on release calls `play_audio(...)` so the captured
+  clip plays on the WendyOS device speaker. (Host-side mic capture → device
+  speaker is the simplest correct path; document that the iframe captures audio,
+  not the container.)
+- **Verify:** deploy to a device with audio; open the intercom app; talk → audio
+  comes out of the device speaker.
+- **Commit:** `feat(examples): intercom MCP app (push-to-talk to device speaker)`
+
+### Task 12: GPIO control (`Examples/GpioControl/`)
+
+**Files:** `wendy.json`, `main.py`, `requirements.txt`, `Dockerfile`, `static/gpio.html`.
+
+- **wendy.json:** same shape, with `{ "type": "gpio" }` (optionally `"pins": [...]`)
+  + mcp port e.g. 3002, `appId` `com.wendylabs.examples.gpio-control`.
+- **Tools:** `list_pins()` → returns configured pins + states; `set_pin(pin, value)`
+  → drives a GPIO line (via `gpiod`/`libgpiod` against `/dev/gpiochip*` that the
+  `gpio` entitlement mounts); `read_pin(pin)` → reads a line. Annotate `list_pins`
+  with `_meta.ui.resourceUri = "ui://gpio/control"`.
+- **UI (`ui://gpio/control`):** a panel of labeled toggle switches (one per pin)
+  and read-only inputs, wired to `set_pin`/`read_pin` through the bridge — the
+  Controls-style toggles from the approved mockup.
+- **Verify:** deploy to a board with GPIO; toggle a pin from the in-chat app;
+  confirm the physical line changes (LED or `gpioget`).
+- **Commit:** `feat(examples): GPIO control MCP app with in-chat pin toggles`
+
+### Task 13: Sample-app docs
+
+- Add a short `## Sample MCP Apps` section to `tools_guide.go` guide text (or the
+  Examples README) pointing at SecurityCam / Intercom / GpioControl as references
+  for app authors who want to ship a `ui://` app, and noting the required
+  `_meta.ui` annotation + `ui://` resource pattern.
+- **Commit:** `docs(examples): document MCP App samples`
