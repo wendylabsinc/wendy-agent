@@ -111,6 +111,7 @@ func (s *mcpServer) Start(ctx context.Context) error {
 	s.registerProvisioningTools(srv)
 	s.registerOSTools(srv)
 	s.registerCloudTools(srv)
+	s.registerAppsTools(srv)
 	cleanups := s.registerContainerMCPTools(ctx, srv)
 	defer func() {
 		for _, c := range cleanups {
