@@ -90,6 +90,13 @@ func (s *mcpServer) listAppEntries(ctx context.Context, conn *grpcclient.AgentCo
 		if c == nil {
 			continue
 		}
+		// Probe UI capability on demand for running MCP containers so apps
+		// deployed after this session started still surface as UI-capable
+		// (and their ui:// resource gets registered for app_open). A single
+		// attempt keeps the listing fast if the app's MCP server isn't up.
+		if c.GetMcpPort() > 0 && c.GetRunningState() == agentpb.AppRunningState_RUNNING {
+			s.ensureContainerConnected(ctx, conn, c.GetAppName(), 1)
+		}
 		out = append(out, appEntry{
 			Name:    c.GetAppName(),
 			Version: c.GetAppVersion(),
@@ -106,14 +113,19 @@ func (s *mcpServer) containerHasUI(app string, _ bool) bool {
 	return s.getAppHasUI(app)
 }
 
-func (s *mcpServer) handleAppOpen(_ context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+func (s *mcpServer) handleAppOpen(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
 	app := stringParam(req, "app")
 	if app == "" {
 		return mcpgo.NewToolResultError("app is required"), nil
 	}
-	// Open the app's actual registered ui:// resource (recorded during proxy
-	// setup). Fall back to the conventional /main entry point if the app's UI
-	// URI isn't known (e.g. it was started after this MCP session connected).
+	// Ensure the app's MCP server is proxied in so its ui:// resource is
+	// registered (and its real URI recorded) before we hand the host a URI to
+	// fetch — covers apps deployed after this session started.
+	if conn, err := s.resolveConn(ctx, stringParam(req, "device")); err == nil {
+		s.ensureContainerConnected(ctx, conn, app, 1)
+	}
+	// Open the app's actual registered ui:// resource. Fall back to the
+	// conventional /main entry point if the app's UI URI isn't known.
 	uri := s.getAppUIURI(app)
 	if uri == "" {
 		uri = namespacedUIURI(app)

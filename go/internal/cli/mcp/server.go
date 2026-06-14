@@ -40,6 +40,10 @@ type mcpServer struct {
 	appHasUI      map[string]bool
 	appUIURI      map[string]string
 	mu            sync.RWMutex
+
+	srv           *server.MCPServer
+	connectedApps map[string]func() // appName -> proxy cleanup; guards against double-connect
+	connectMu     sync.Mutex        // serializes container connect setup
 }
 
 // setAppUI marks an app as UI-capable and records the host-visible (namespaced)
@@ -149,14 +153,15 @@ func (s *mcpServer) buildServer() *server.MCPServer {
 	s.registerOSTools(srv)
 	s.registerCloudTools(srv)
 	s.registerAppsTools(srv)
+	s.srv = srv
 	return srv
 }
 
 // Start registers all tools and serves MCP over stdio (default transport).
 func (s *mcpServer) Start(ctx context.Context) error {
 	srv := s.buildServer()
-	cleanups := s.registerContainerMCPTools(ctx, srv)
-	defer runCleanups(cleanups)
+	s.registerContainerMCPTools(ctx)
+	defer s.cleanupConnectedApps()
 	return server.ServeStdio(srv)
 }
 
@@ -164,8 +169,8 @@ func (s *mcpServer) Start(ctx context.Context) error {
 // token, if non-empty, is required as a Bearer token on the MCP endpoint.
 func (s *mcpServer) StartHTTP(ctx context.Context, addr, token string) error {
 	srv := s.buildServer()
-	cleanups := s.registerContainerMCPTools(ctx, srv)
-	defer runCleanups(cleanups)
+	s.registerContainerMCPTools(ctx)
+	defer s.cleanupConnectedApps()
 	streamSrv := server.NewStreamableHTTPServer(srv)
 	if token == "" {
 		return streamSrv.Start(addr)
@@ -177,10 +182,36 @@ func (s *mcpServer) StartHTTP(ctx context.Context, addr, token string) error {
 	return http.ListenAndServe(addr, mux)
 }
 
-func runCleanups(cleanups []func()) {
-	for _, c := range cleanups {
+// ensureContainerConnected proxies appName's MCP server into s.srv if not
+// already connected (tools + ui:// resources registered, appHasUI cached).
+// Idempotent and safe for concurrent use. maxAttempts bounds the Initialize
+// retries — pass a small value on demand so a slow/unhealthy app doesn't stall
+// the request; failures aren't cached, so a later call re-probes.
+func (s *mcpServer) ensureContainerConnected(ctx context.Context, conn *grpcclient.AgentConnection, appName string, maxAttempts int) {
+	s.connectMu.Lock()
+	defer s.connectMu.Unlock()
+	if s.connectedApps == nil {
+		s.connectedApps = map[string]func(){}
+	}
+	if _, ok := s.connectedApps[appName]; ok {
+		return
+	}
+	if s.srv == nil {
+		return
+	}
+	if cleanup := s.connectContainerMCPTools(ctx, s.srv, conn, appName, maxAttempts); cleanup != nil {
+		s.connectedApps[appName] = cleanup
+	}
+}
+
+// cleanupConnectedApps closes every container proxy opened during the session.
+func (s *mcpServer) cleanupConnectedApps() {
+	s.connectMu.Lock()
+	defer s.connectMu.Unlock()
+	for _, c := range s.connectedApps {
 		c()
 	}
+	s.connectedApps = nil
 }
 
 // bearerAuth wraps next, requiring "Authorization: Bearer <token>".
@@ -218,21 +249,21 @@ func intParam(req mcpgo.CallToolRequest, name string, defaultVal int) int {
 }
 
 // registerContainerMCPTools scans running containers for mcp_port > 0 and
-// registers each container's tools on srv, prefixed with the app name.
+// eagerly connects each into the session (tools + ui:// resources). Newly
+// deployed containers are picked up lazily later via ensureContainerConnected.
 // Errors per-container are warnings; they do not prevent the session from starting.
-func (s *mcpServer) registerContainerMCPTools(ctx context.Context, srv *server.MCPServer) []func() {
+func (s *mcpServer) registerContainerMCPTools(ctx context.Context) {
 	conn := s.GetConn()
 	if conn == nil {
-		return nil
+		return
 	}
 
 	stream, err := conn.ContainerService.ListContainers(ctx, &agentpb.ListContainersRequest{})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: listing containers for MCP tools: %v\n", err)
-		return nil
+		return
 	}
 
-	var cleanups []func()
 	for {
 		resp, err := stream.Recv()
 		if err == io.EOF {
@@ -240,24 +271,21 @@ func (s *mcpServer) registerContainerMCPTools(ctx context.Context, srv *server.M
 		}
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: reading container list: %v\n", err)
-			return cleanups
+			return
 		}
 		c := resp.GetContainer()
 		if c == nil || c.GetMcpPort() == 0 || c.GetRunningState() != agentpb.AppRunningState_RUNNING {
 			continue
 		}
-		if cleanup := s.connectContainerMCPTools(ctx, srv, conn, c.GetAppName()); cleanup != nil {
-			cleanups = append(cleanups, cleanup)
-		}
+		s.ensureContainerConnected(ctx, conn, c.GetAppName(), 4)
 	}
-	return cleanups
 }
 
 // connectContainerMCPTools proxies a single container's MCP server into srv.
-// It retries Initialize up to 4 times with exponential backoff (2s, 4s, 8s).
-// On success it returns a cleanup function that closes the proxy; on failure it
-// returns nil (after cleaning up internally).
-func (s *mcpServer) connectContainerMCPTools(ctx context.Context, srv *server.MCPServer, conn *grpcclient.AgentConnection, appName string) func() {
+// It retries Initialize up to maxAttempts times with exponential backoff
+// (2s, 4s, 8s). On success it returns a cleanup function that closes the proxy;
+// on failure it returns nil (after cleaning up internally).
+func (s *mcpServer) connectContainerMCPTools(ctx context.Context, srv *server.MCPServer, conn *grpcclient.AgentConnection, appName string, maxAttempts int) func() {
 	addr, closeProxy, err := startMCPProxy(ctx, conn, appName)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: MCP proxy for %s: %v\n", appName, err)
@@ -272,7 +300,7 @@ func (s *mcpServer) connectContainerMCPTools(ctx context.Context, srv *server.MC
 	}
 
 	var initErr error
-	for attempt := 0; attempt < 4; attempt++ {
+	for attempt := 0; attempt < maxAttempts; attempt++ {
 		if attempt > 0 {
 			select {
 			case <-ctx.Done():
