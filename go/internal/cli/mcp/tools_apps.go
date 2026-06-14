@@ -111,7 +111,13 @@ func (s *mcpServer) handleAppOpen(_ context.Context, req mcpgo.CallToolRequest) 
 	if app == "" {
 		return mcpgo.NewToolResultError("app is required"), nil
 	}
-	uri := namespacedUIURI(app)
+	// Open the app's actual registered ui:// resource (recorded during proxy
+	// setup). Fall back to the conventional /main entry point if the app's UI
+	// URI isn't known (e.g. it was started after this MCP session connected).
+	uri := s.getAppUIURI(app)
+	if uri == "" {
+		uri = namespacedUIURI(app)
+	}
 	res := mcpgo.NewToolResultText(fmt.Sprintf("opening %s", app))
 	return appsui.ResultWithUI(res, uri, "app", map[string]any{"app": app}), nil
 }

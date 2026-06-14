@@ -38,18 +38,34 @@ type mcpServer struct {
 	cloudTunnels  map[string]*mcpCloudTunnel
 	discoverLANFn func(ctx context.Context, timeout time.Duration) ([]models.LANDevice, error)
 	appHasUI      map[string]bool
+	appUIURI      map[string]string
 	mu            sync.RWMutex
 }
 
-// setAppHasUI records whether an app exposes a ui:// resource (populated during
-// proxy setup). Safe for concurrent use.
-func (s *mcpServer) setAppHasUI(app string, v bool) {
+// setAppUI marks an app as UI-capable and records the host-visible (namespaced)
+// URI of its primary ui:// resource. The first ui:// resource discovered wins,
+// so the recorded URI is stable across re-scans. Safe for concurrent use.
+func (s *mcpServer) setAppUI(app, nsURI string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.appHasUI == nil {
 		s.appHasUI = map[string]bool{}
 	}
-	s.appHasUI[app] = v
+	if s.appUIURI == nil {
+		s.appUIURI = map[string]string{}
+	}
+	s.appHasUI[app] = true
+	if s.appUIURI[app] == "" {
+		s.appUIURI[app] = nsURI
+	}
+}
+
+// getAppUIURI returns the recorded namespaced ui:// URI for an app, or "" if the
+// app exposed no ui:// resource.
+func (s *mcpServer) getAppUIURI(app string) string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.appUIURI[app]
 }
 
 // getAppHasUI reports the cached UI capability of an app.
@@ -305,7 +321,7 @@ func (s *mcpServer) connectContainerMCPTools(ctx context.Context, srv *server.MC
 			nsRes := r
 			nsRes.URI = namespacedUIURI2(appName, origURI)
 			if strings.HasPrefix(origURI, "ui://") {
-				s.setAppHasUI(appName, true)
+				s.setAppUI(appName, nsRes.URI)
 			}
 			srv.AddResource(nsRes, func(ctx context.Context, req mcpgo.ReadResourceRequest) ([]mcpgo.ResourceContents, error) {
 				out, rerr := mcpCli.ReadResource(ctx, mcpgo.ReadResourceRequest{Params: mcpgo.ReadResourceParams{URI: origURI}})
