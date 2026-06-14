@@ -5,6 +5,14 @@ import (
 	"testing"
 )
 
+func TestControlsDataIncludesContainers(t *testing.T) {
+	d := controlsData("dev1", []containerState{{Name: "cam", Running: true}})
+	cs := d["containers"].([]containerState)
+	if len(cs) != 1 || cs[0].Name != "cam" || !cs[0].Running {
+		t.Fatalf("containers = %+v", cs)
+	}
+}
+
 func TestDashboardDataShape(t *testing.T) {
 	d := dashboardData("jetson-orin-01", "cloud", map[string]any{"cpu": 38})
 	b, _ := json.Marshal(d)

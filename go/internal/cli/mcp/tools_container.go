@@ -10,6 +10,7 @@ import (
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+	"github.com/wendylabsinc/wendy/go/internal/cli/mcp/appsui"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
@@ -18,21 +19,21 @@ func (s *mcpServer) registerContainerTools(srv *server.MCPServer) {
 		mcpgo.WithDescription("List all containers on the connected device"),
 	), s.handleContainerList)
 
-	srv.AddTool(mcpgo.NewTool("container_start",
+	srv.AddTool(appsui.WithUI(mcpgo.NewTool("container_start",
 		mcpgo.WithDescription("Start a container and stream its output (bounded snapshot)"),
 		mcpgo.WithString("app_name",
 			mcpgo.Required(),
 			mcpgo.Description("App name of the container to start"),
 		),
-	), s.handleContainerStart)
+	), WendyAppURI), s.handleContainerStart)
 
-	srv.AddTool(mcpgo.NewTool("container_stop",
+	srv.AddTool(appsui.WithUI(mcpgo.NewTool("container_stop",
 		mcpgo.WithDescription("Stop a running container"),
 		mcpgo.WithString("app_name",
 			mcpgo.Required(),
 			mcpgo.Description("App name of the container to stop"),
 		),
-	), s.handleContainerStop)
+	), WendyAppURI), s.handleContainerStop)
 
 	srv.AddTool(mcpgo.NewTool("container_delete",
 		mcpgo.WithDescription("Delete a container, optionally removing its image and volumes"),
@@ -143,7 +144,12 @@ func (s *mcpServer) handleContainerStart(ctx context.Context, req mcpgo.CallTool
 	if out == "" {
 		out = fmt.Sprintf("container %s started", appName)
 	}
-	return mcpgo.NewToolResultText(out), nil
+	res := mcpgo.NewToolResultText(out)
+	deviceLabel := ""
+	if c := s.GetConn(); c != nil {
+		deviceLabel = c.Host
+	}
+	return appsui.ResultWithUI(res, WendyAppURI, "controls", controlsData(deviceLabel, nil)), nil
 }
 
 func (s *mcpServer) handleContainerStop(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
@@ -159,7 +165,12 @@ func (s *mcpServer) handleContainerStop(ctx context.Context, req mcpgo.CallToolR
 	if err != nil {
 		return mcpgo.NewToolResultError(grpcErrString(err)), nil
 	}
-	return mcpgo.NewToolResultText(fmt.Sprintf("container %s stopped", appName)), nil
+	res := mcpgo.NewToolResultText(fmt.Sprintf("container %s stopped", appName))
+	deviceLabel := ""
+	if c := s.GetConn(); c != nil {
+		deviceLabel = c.Host
+	}
+	return appsui.ResultWithUI(res, WendyAppURI, "controls", controlsData(deviceLabel, nil)), nil
 }
 
 func (s *mcpServer) handleContainerDelete(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {

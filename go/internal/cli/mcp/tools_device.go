@@ -8,6 +8,7 @@ import (
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+	"github.com/wendylabsinc/wendy/go/internal/cli/mcp/appsui"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
@@ -36,13 +37,13 @@ func (s *mcpServer) registerDeviceTools(srv *server.MCPServer) {
 		mcpgo.WithDescription("Get agent version, OS, CPU architecture, and feature set of connected device"),
 	), s.handleDeviceInfo)
 
-	srv.AddTool(mcpgo.NewTool("device_set_default",
+	srv.AddTool(appsui.WithUI(mcpgo.NewTool("device_set_default",
 		mcpgo.WithDescription("Save an address as the default device in ~/.wendy/config.json"),
 		mcpgo.WithString("address",
 			mcpgo.Required(),
 			mcpgo.Description("Device address to save as default"),
 		),
-	), s.handleDeviceSetDefault)
+	), WendyAppURI), s.handleDeviceSetDefault)
 }
 
 func (s *mcpServer) handleDeviceList(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
@@ -187,5 +188,10 @@ func (s *mcpServer) handleDeviceSetDefault(_ context.Context, req mcpgo.CallTool
 	if err := config.Save(s.cfg); err != nil {
 		return mcpgo.NewToolResultError(fmt.Sprintf("saving config: %s", err.Error())), nil
 	}
-	return mcpgo.NewToolResultText(fmt.Sprintf("default device set to %s", address)), nil
+	res := mcpgo.NewToolResultText(fmt.Sprintf("default device set to %s", address))
+	deviceLabel := ""
+	if c := s.GetConn(); c != nil {
+		deviceLabel = c.Host
+	}
+	return appsui.ResultWithUI(res, WendyAppURI, "controls", controlsData(deviceLabel, nil)), nil
 }

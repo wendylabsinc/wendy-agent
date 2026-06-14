@@ -8,16 +8,17 @@ import (
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+	"github.com/wendylabsinc/wendy/go/internal/cli/mcp/appsui"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
 func (s *mcpServer) registerOSTools(srv *server.MCPServer) {
-	srv.AddTool(mcpgo.NewTool("os_update",
+	srv.AddTool(appsui.WithUI(mcpgo.NewTool("os_update",
 		mcpgo.WithDescription("Trigger an OS update on the connected device and stream progress"),
 		mcpgo.WithString("artifact_url",
 			mcpgo.Description("URL of the OS update artifact (leave empty to use the device's configured update channel)"),
 		),
-	), s.handleOSUpdate)
+	), WendyAppURI), s.handleOSUpdate)
 }
 
 func (s *mcpServer) handleOSUpdate(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
@@ -60,5 +61,10 @@ func (s *mcpServer) handleOSUpdate(ctx context.Context, req mcpgo.CallToolReques
 	if out == "" {
 		out = "OS update initiated"
 	}
-	return mcpgo.NewToolResultText(out), nil
+	res := mcpgo.NewToolResultText(out)
+	deviceLabel := ""
+	if c := s.GetConn(); c != nil {
+		deviceLabel = c.Host
+	}
+	return appsui.ResultWithUI(res, WendyAppURI, "controls", controlsData(deviceLabel, nil)), nil
 }
