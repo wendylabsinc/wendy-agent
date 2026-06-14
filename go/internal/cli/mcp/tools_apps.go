@@ -70,8 +70,8 @@ func (s *mcpServer) handleAppsList(ctx context.Context, req mcpgo.CallToolReques
 }
 
 // listAppEntries enumerates running containers and flags UI capability. A
-// container is UI-capable when its proxied MCP server exposes a ui:// resource;
-// Task 8 replaces containerHasUI with a real probe cached during proxy setup.
+// container is UI-capable when its proxied MCP server exposes a ui:// resource
+// (detected via containerHasUI, backed by the cache populated during proxy setup).
 func (s *mcpServer) listAppEntries(ctx context.Context, conn *grpcclient.AgentConnection) ([]appEntry, error) {
 	stream, err := conn.ContainerService.ListContainers(ctx, &agentpb.ListContainersRequest{})
 	if err != nil {
