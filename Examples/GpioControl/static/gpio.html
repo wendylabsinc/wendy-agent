@@ -1,0 +1,453 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GPIO Control</title>
+<style>
+  :root {
+    --ink: #11151c;
+    --muted: #69707d;
+    --line: #e7e9ee;
+    --accent: #ff5a3c;
+    --accent-soft: #ffece7;
+    --good: #1fa971;
+    --good-soft: #e6f6ee;
+    --warn-soft: #fbf2d6;
+    --radius: 12px;
+    --pad: 18px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, system-ui, sans-serif;
+    background: #f4f5f7;
+    color: var(--ink);
+    min-height: 100vh;
+  }
+
+  /* ── Header ── */
+  .header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 14px var(--pad);
+    background: #fff;
+    border-bottom: 1px solid var(--line);
+  }
+  .header .icon {
+    width: 32px; height: 32px;
+    border-radius: 9px;
+    background: linear-gradient(135deg, #48c774, #1e8449);
+    display: grid; place-items: center;
+    color: #fff; font-size: 16px;
+  }
+  .header h1 { font-size: 15px; font-weight: 700; }
+  .header-actions { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+
+  /* ── Main ── */
+  .main { padding: var(--pad); max-width: 560px; margin: 0 auto; }
+
+  /* ── Status banner ── */
+  .banner {
+    border-radius: var(--radius);
+    padding: 10px 14px;
+    font-size: 13px;
+    margin-bottom: 14px;
+    display: none;
+  }
+  .banner.error { background: var(--accent-soft); color: var(--accent); display: block; }
+  .banner.info  { background: var(--warn-soft); color: #7a5c00; display: block; }
+
+  /* ── Pin cards ── */
+  .pins-section h2 {
+    font-size: 12px; text-transform: uppercase; letter-spacing: .05em;
+    color: var(--muted); font-weight: 700; margin-bottom: 8px;
+  }
+  .pin-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .pin-card {
+    background: #fff;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 14px 16px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+  }
+  .pin-badge {
+    min-width: 44px;
+    padding: 4px 8px;
+    border-radius: 7px;
+    background: #f0f1f4;
+    font-family: ui-monospace, monospace;
+    font-size: 12px;
+    font-weight: 700;
+    text-align: center;
+    color: var(--muted);
+  }
+  .pin-label {
+    flex: 1;
+    font-size: 13px;
+    font-weight: 600;
+  }
+  .pin-error {
+    flex: 1;
+    font-size: 12px;
+    color: var(--accent);
+  }
+  .pin-value {
+    font-size: 11px;
+    color: var(--muted);
+    min-width: 28px;
+    text-align: center;
+  }
+
+  /* ── Toggle switch ── */
+  .toggle-wrap { display: flex; align-items: center; gap: 6px; }
+  .toggle {
+    position: relative;
+    width: 44px;
+    height: 24px;
+    cursor: pointer;
+  }
+  .toggle input { opacity: 0; width: 0; height: 0; position: absolute; }
+  .toggle .track {
+    position: absolute;
+    inset: 0;
+    border-radius: 24px;
+    background: #d1d5db;
+    transition: background .2s;
+  }
+  .toggle input:checked + .track { background: var(--good); }
+  .toggle .thumb {
+    position: absolute;
+    top: 3px; left: 3px;
+    width: 18px; height: 18px;
+    border-radius: 50%;
+    background: #fff;
+    box-shadow: 0 1px 3px rgba(0,0,0,.18);
+    transition: transform .2s;
+    pointer-events: none;
+  }
+  .toggle input:checked ~ .thumb { transform: translateX(20px); }
+  .toggle.busy .track { opacity: .55; }
+  .toggle.busy { cursor: wait; }
+
+  /* ── Controls bar ── */
+  .controls-bar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 14px;
+  }
+  button {
+    font-family: inherit;
+    font-size: 13px;
+    border-radius: 8px;
+    border: 1px solid var(--line);
+    padding: 7px 14px;
+    cursor: pointer;
+    outline: none;
+    background: #fff;
+    color: var(--ink);
+  }
+  button.primary {
+    background: var(--ink);
+    color: #fff;
+    border-color: var(--ink);
+    font-weight: 600;
+  }
+  button.primary:hover { background: #2a3040; }
+  button.primary:disabled { opacity: .5; cursor: default; }
+  .last-refresh { font-size: 11px; color: #9aa0ab; margin-left: auto; }
+
+  /* ── Loading placeholder ── */
+  .pin-empty {
+    background: #fff;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 24px;
+    font-size: 13px;
+    color: var(--muted);
+    text-align: center;
+  }
+</style>
+</head>
+<body>
+
+<!-- ── Header ── -->
+<div class="header">
+  <div class="icon">⚡</div>
+  <h1>GPIO Control</h1>
+</div>
+
+<!-- ── Main ── -->
+<div class="main">
+
+  <div class="banner" id="banner"></div>
+
+  <div class="pins-section">
+    <h2>Pins</h2>
+    <div class="pin-list" id="pin-list">
+      <div class="pin-empty" id="pin-empty">Loading pins…</div>
+    </div>
+  </div>
+
+  <div class="controls-bar">
+    <button class="primary" id="refresh-btn">Refresh</button>
+    <span class="last-refresh" id="last-refresh"></span>
+  </div>
+
+</div>
+
+<script>
+  // ==========================================================================
+  // MCP Apps postMessage bridge (host <-> iframe)
+  // Copied/adapted from wendy-app.html — do not modify the protocol shape.
+  // ==========================================================================
+  let _seq = 0;
+  const _pending = {};
+
+  function _rpc(method, params) {
+    return new Promise((resolve, reject) => {
+      const id = ++_seq;
+      _pending[id] = { resolve, reject };
+      // "*" target origin is intentional: the host origin is determined by the
+      // MCP client and is unknown at bundle authoring time.
+      parent.postMessage({ jsonrpc: "2.0", id, method, params }, "*");
+    });
+  }
+
+  // Origin is not checked here because this bundle only runs inside a trusted
+  // MCP host iframe.
+  window.addEventListener("message", (e) => {
+    const msg = e.data || {};
+    if (msg.id && _pending[msg.id]) {
+      const p = _pending[msg.id];
+      delete _pending[msg.id];
+      msg.error ? p.reject(msg.error) : p.resolve(msg.result);
+      return;
+    }
+    // Push-rendered data from the host (e.g. ui/data or ui/render).
+    if (msg.method === "ui/render" || msg.method === "ui/data") {
+      const payload = msg.params && (msg.params.structuredContent || msg.params);
+      if (payload) handlePush(payload);
+    }
+  });
+
+  function callTool(name, args) {
+    return _rpc("tools/call", { name, arguments: args || {} });
+  }
+
+  async function act(name, args) {
+    try {
+      const r = await callTool(name, args);
+      if (r && r.structuredContent) handlePush(r.structuredContent);
+    } catch (err) {
+      console.error("tool call failed", err);
+    }
+  }
+
+  // Push-render handler (not used by this app, kept for bridge parity).
+  function handlePush(payload) {}
+
+  // ==========================================================================
+  // Result extraction helper
+  // FastMCP returns structured results as TextContent; unwrap if needed.
+  // ==========================================================================
+  function extractToolResult(result) {
+    if (!result) return null;
+    // If the host already unwrapped it to a plain object/array, use it.
+    if (Array.isArray(result) || result.pin !== undefined || result.error !== undefined) return result;
+    // Wrapped in MCP content array: [{type:"text", text:"{...}"}]
+    const content = result.content || result.structuredContent;
+    if (Array.isArray(content) && content.length > 0) {
+      const c = content[0];
+      if (c.type === "text" || c.text) {
+        try { return JSON.parse(c.text); } catch (_) { return null; }
+      }
+    }
+    return result;
+  }
+
+  // ==========================================================================
+  // GPIO UI logic
+  // ==========================================================================
+
+  const pinList    = document.getElementById("pin-list");
+  const pinEmpty   = document.getElementById("pin-empty");
+  const banner     = document.getElementById("banner");
+  const refreshBtn = document.getElementById("refresh-btn");
+  const lastRefresh = document.getElementById("last-refresh");
+
+  // Map from pin number → current known value (0 or 1).
+  const _pinState = {};
+
+  function showBanner(msg, kind) {
+    banner.textContent = msg;
+    banner.className = "banner " + (kind || "error");
+  }
+  function hideBanner() {
+    banner.className = "banner";
+  }
+
+  // -- Render pin list --
+
+  function renderPins(pins) {
+    if (!pins || pins.length === 0) {
+      pinList.innerHTML = "";
+      pinEmpty.textContent = "No pins configured.";
+      pinList.appendChild(pinEmpty);
+      return;
+    }
+
+    // Remove the loading placeholder if still present.
+    if (pinEmpty.parentNode === pinList) pinList.removeChild(pinEmpty);
+
+    pins.forEach((entry) => {
+      const pin = entry.pin;
+      const cardId = "pin-card-" + pin;
+
+      let card = document.getElementById(cardId);
+      if (!card) {
+        card = document.createElement("div");
+        card.className = "pin-card";
+        card.id = cardId;
+        pinList.appendChild(card);
+      }
+
+      if (entry.error) {
+        card.innerHTML =
+          `<div class="pin-badge">GPIO${esc(pin)}</div>` +
+          `<div class="pin-error">${esc(entry.error)}</div>`;
+        return;
+      }
+
+      const val = entry.value;
+      _pinState[pin] = val;
+      const checked = val === 1 ? "checked" : "";
+
+      card.innerHTML =
+        `<div class="pin-badge">GPIO${esc(pin)}</div>` +
+        `<div class="pin-label">Pin ${esc(pin)}</div>` +
+        `<div class="pin-value">${val === 1 ? "HIGH" : "LOW"}</div>` +
+        `<label class="toggle" id="toggle-${pin}" title="Toggle GPIO${pin}">` +
+          `<input type="checkbox" ${checked} data-pin="${pin}">` +
+          `<span class="track"></span>` +
+          `<span class="thumb"></span>` +
+        `</label>`;
+
+      const input = card.querySelector("input");
+      input.addEventListener("change", onToggle);
+    });
+
+    lastRefresh.textContent = "Last updated " + new Date().toLocaleTimeString();
+  }
+
+  // -- Toggle handler --
+
+  async function onToggle(e) {
+    const input = e.currentTarget;
+    const pin = parseInt(input.dataset.pin, 10);
+    const newValue = input.checked ? 1 : 0;
+    const toggleEl = document.getElementById("toggle-" + pin);
+
+    // Optimistic UI: mark busy.
+    toggleEl.classList.add("busy");
+    input.disabled = true;
+
+    let result;
+    try {
+      result = await callTool("set_pin", { pin, value: newValue });
+    } catch (err) {
+      showBanner("Bridge error: " + (err.message || String(err)), "error");
+      // Revert toggle.
+      input.checked = !input.checked;
+      toggleEl.classList.remove("busy");
+      input.disabled = false;
+      return;
+    }
+
+    toggleEl.classList.remove("busy");
+    input.disabled = false;
+
+    const data = extractToolResult(result);
+    if (!data || data.error) {
+      showBanner("set_pin error: " + (data ? data.error : "no response"), "error");
+      // Revert toggle to last known state.
+      input.checked = (_pinState[pin] === 1);
+      return;
+    }
+
+    // Reflect confirmed state.
+    _pinState[pin] = data.value;
+    input.checked = data.value === 1;
+    hideBanner();
+
+    // Update the HIGH/LOW label in the same card.
+    const card = document.getElementById("pin-card-" + pin);
+    const valEl = card && card.querySelector(".pin-value");
+    if (valEl) valEl.textContent = data.value === 1 ? "HIGH" : "LOW";
+  }
+
+  // -- list_pins --
+
+  async function loadPins() {
+    refreshBtn.disabled = true;
+    hideBanner();
+
+    let result;
+    try {
+      result = await callTool("list_pins", {});
+    } catch (err) {
+      showBanner("Bridge error: " + (err.message || String(err)), "error");
+      refreshBtn.disabled = false;
+      return;
+    }
+
+    refreshBtn.disabled = false;
+    const pins = extractToolResult(result);
+    if (!Array.isArray(pins)) {
+      showBanner("Unexpected response from list_pins.", "error");
+      return;
+    }
+
+    // Surface a top-level gpio error if all pins failed with the same message.
+    const firstError = pins.length > 0 && pins.every(p => p.error) ? pins[0].error : null;
+    if (firstError && firstError.startsWith("gpio unavailable")) {
+      showBanner(firstError, "info");
+    }
+
+    renderPins(pins);
+  }
+
+  // -- Helper: HTML-escape --
+  function esc(s) {
+    return String(s === null || s === undefined ? "" : s)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
+  refreshBtn.addEventListener("click", loadPins);
+
+  // ==========================================================================
+  // Bootstrap: handshake with the host, then load initial pin state
+  // ==========================================================================
+  _rpc("ui/initialize", { capabilities: {} })
+    .then(() => {
+      loadPins();
+    })
+    .catch((err) => {
+      // No host iframe — probably opened directly in a browser.
+      console.warn("ui/initialize failed — running without host bridge:", err);
+      pinEmpty.textContent = "No MCP host connected.";
+      pinEmpty.style.color = "var(--muted)";
+    });
+</script>
+</body>
+</html>

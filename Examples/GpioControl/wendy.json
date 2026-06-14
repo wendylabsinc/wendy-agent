@@ -1,0 +1,11 @@
+{
+  "appId": "com.wendylabs.examples.gpio-control",
+  "version": "1.0.0",
+  "language": "python",
+  "python": { "container": { "sourceRoot": "/app" } },
+  "entitlements": [
+    { "type": "network", "mode": "host" },
+    { "type": "gpio" },
+    { "type": "mcp", "port": 3002 }
+  ]
+}
