@@ -3,7 +3,6 @@ package mcp
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
@@ -39,13 +38,10 @@ func (s *mcpServer) registerAppsTools(srv *server.MCPServer) {
 		mcpgo.WithString("device", mcpgo.Description("Optional device name or host:port to target.")),
 	), WendyAppURI)
 	srv.AddTool(list, s.handleAppsList)
-
-	open := appsui.WithUI(mcpgo.NewTool("app_open",
-		mcpgo.WithDescription("Open a container app's own MCP UI inside the Wendy app."),
-		mcpgo.WithString("app", mcpgo.Required(), mcpgo.Description("Container app name to open.")),
-		mcpgo.WithString("device", mcpgo.Description("Optional device name or host:port to target.")),
-	), WendyAppURI)
-	srv.AddTool(open, s.handleAppOpen)
+	// Note: there is no generic "app_open" tool. A host renders the resource
+	// declared on the *invoked* tool's _meta.ui, so opening a container app's UI
+	// happens by the model calling that container's own proxied UI tool
+	// (e.g. <app>__<tool>), which carries the namespaced ui:// resource.
 }
 
 func (s *mcpServer) handleAppsList(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
@@ -111,25 +107,4 @@ func (s *mcpServer) listAppEntries(ctx context.Context, conn *grpcclient.AgentCo
 // cache populated during connectContainerMCPTools.
 func (s *mcpServer) containerHasUI(app string, _ bool) bool {
 	return s.getAppHasUI(app)
-}
-
-func (s *mcpServer) handleAppOpen(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
-	app := stringParam(req, "app")
-	if app == "" {
-		return mcpgo.NewToolResultError("app is required"), nil
-	}
-	// Ensure the app's MCP server is proxied in so its ui:// resource is
-	// registered (and its real URI recorded) before we hand the host a URI to
-	// fetch — covers apps deployed after this session started.
-	if conn, err := s.resolveConn(ctx, stringParam(req, "device")); err == nil {
-		s.ensureContainerConnected(ctx, conn, app, 1)
-	}
-	// Open the app's actual registered ui:// resource. Fall back to the
-	// conventional /main entry point if the app's UI URI isn't known.
-	uri := s.getAppUIURI(app)
-	if uri == "" {
-		uri = namespacedUIURI(app)
-	}
-	res := mcpgo.NewToolResultText(fmt.Sprintf("opening %s", app))
-	return appsui.ResultWithUI(res, uri, "app", map[string]any{"app": app}), nil
 }

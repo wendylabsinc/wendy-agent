@@ -343,6 +343,8 @@
   document.addEventListener("click", (e) => {
     const tab = e.target.closest("[data-tab]");
     if (tab) { switchTab(tab.dataset.tab); return; }
+    const openEl = e.target.closest("[data-open]");
+    if (openEl) { requestOpen(openEl.dataset.open); return; }
     const el = e.target.closest("[data-act]");
     if (!el) return;
     const args = { device: _device };
@@ -350,6 +352,17 @@
     if (el.dataset.app)  args.app  = el.dataset.app;
     act(el.dataset.act, args);
   });
+
+  // Opening a container app's own UI must be model-driven: the host renders the
+  // resource of the tool the *model* invokes, not one an iframe calls. So ask
+  // the host to open it; the model then calls that app's UI tool, which carries
+  // the container's ui:// resource and renders it as its own in-chat card.
+  function requestOpen(app) {
+    _rpc("ui/message", {
+      role: "user",
+      content: { type: "text", text: "Open the " + app + " app and show its interface." },
+    }).catch((err) => console.warn("ui/message not supported by host:", err));
+  }
 
   function setDeviceSelector(name) {
     let found = false;
@@ -405,7 +418,7 @@
           <div><div class="k">MEM</div><div class="val">${memVal(c.mem)}</div></div>
         </div>
         <div class="acts">
-          ${c.hasUi ? `<button class="btn open" data-act="app_open" data-app="${esc(c.name)}">Open app ↗</button>` : ""}
+          ${c.hasUi ? `<button class="btn open" data-open="${esc(c.name)}">Open app ↗</button>` : ""}
           ${c.running
             ? `<button class="btn ghost w" data-act="container_stop" data-name="${esc(c.name)}">Stop</button>`
             : `<button class="btn w" data-act="container_start" data-name="${esc(c.name)}">Start</button>`
@@ -492,7 +505,7 @@
       let tagHTML, btnHTML;
       if (a.status === "ui") {
         tagHTML = `<span class="tag ui">● MCP app</span>`;
-        btnHTML = `<button class="btn dark block" data-act="app_open" data-app="${esc(a.name)}">Open ↗</button>`;
+        btnHTML = `<button class="btn dark block" data-open="${esc(a.name)}">Open ↗</button>`;
       } else if (a.status === "tools") {
         tagHTML = `<span class="tag noui">tools only · no UI</span>`;
         btnHTML = `<button class="btn block" disabled>No app UI</button>`;
