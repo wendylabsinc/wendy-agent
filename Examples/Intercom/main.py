@@ -59,7 +59,9 @@ _INTERCOM_HTML = (Path(__file__).parent / "static" / "intercom.html").read_text(
 @mcp.resource(
     "ui://intercom/app",
     mime_type="text/html;profile=mcp-app",
-    meta={"ui": {"permissions": ["microphone"]}},
+    # MCP Apps permissions are an OBJECT keyed by capability ({"microphone":{}}),
+    # not an array — hosts reject the array form with an invalid_type error.
+    meta={"ui": {"permissions": {"microphone": {}}}},
 )
 def intercom_ui() -> str:
     """Return the push-to-talk intercom HTML page."""

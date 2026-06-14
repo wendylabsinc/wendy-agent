@@ -16,28 +16,19 @@ import (
 // the RESOURCE_MIME_TYPE constant in @modelcontextprotocol/ext-apps.
 const MIMEType = "text/html;profile=mcp-app"
 
-// UIResourceOptions configures a ui:// resource.
+// UIResourceOptions configures a ui:// resource. csp/permissions belong on the
+// resource's _meta.ui (per the MCP Apps spec); the tool's _meta.ui carries only
+// the resourceUri.
 type UIResourceOptions struct {
-	// CSP lists external origins the app may load resources from.
-	CSP []string
-	// Permissions lists host capabilities the app requests (e.g. "camera").
-	Permissions []string
 	// Description is shown to hosts listing resources.
 	Description string
-}
-
-// uiMeta builds the _meta.ui object for a resource URI.
-func uiMeta(resourceURI string, opts *UIResourceOptions) map[string]any {
-	ui := map[string]any{"resourceUri": resourceURI}
-	if opts != nil {
-		if len(opts.CSP) > 0 {
-			ui["csp"] = opts.CSP
-		}
-		if len(opts.Permissions) > 0 {
-			ui["permissions"] = opts.Permissions
-		}
-	}
-	return ui
+	// Permissions are browser capabilities the sandboxed UI requests. Valid
+	// names: "camera", "microphone", "geolocation", "clipboardWrite".
+	Permissions []string
+	// CSP origins the sandboxed UI may reach (empty = none allowed).
+	CSPConnectDomains  []string
+	CSPResourceDomains []string
+	CSPFrameDomains    []string
 }
 
 func ensureMeta(m *mcpgo.Meta) *mcpgo.Meta {
@@ -50,10 +41,46 @@ func ensureMeta(m *mcpgo.Meta) *mcpgo.Meta {
 	return m
 }
 
-// WithUI annotates a tool so hosts render the given ui:// resource for it.
+// resourceUIMeta builds the resource-level _meta.ui (csp + permissions as
+// OBJECTS, matching @modelcontextprotocol/ext-apps), or nil if nothing is
+// requested. NB: permissions is an object ({"microphone":{}}), not an array,
+// and csp is an object of domain lists — hosts reject the array forms.
+func resourceUIMeta(opts *UIResourceOptions) map[string]any {
+	if opts == nil {
+		return nil
+	}
+	ui := map[string]any{}
+	csp := map[string]any{}
+	if len(opts.CSPConnectDomains) > 0 {
+		csp["connectDomains"] = opts.CSPConnectDomains
+	}
+	if len(opts.CSPResourceDomains) > 0 {
+		csp["resourceDomains"] = opts.CSPResourceDomains
+	}
+	if len(opts.CSPFrameDomains) > 0 {
+		csp["frameDomains"] = opts.CSPFrameDomains
+	}
+	if len(csp) > 0 {
+		ui["csp"] = csp
+	}
+	if len(opts.Permissions) > 0 {
+		perms := map[string]any{}
+		for _, p := range opts.Permissions {
+			perms[p] = map[string]any{}
+		}
+		ui["permissions"] = perms
+	}
+	if len(ui) == 0 {
+		return nil
+	}
+	return ui
+}
+
+// WithUI annotates a tool so hosts render the given ui:// resource for it. The
+// tool's _meta.ui carries only the resourceUri.
 func WithUI(tool mcpgo.Tool, resourceURI string) mcpgo.Tool {
 	tool.Meta = ensureMeta(tool.Meta)
-	tool.Meta.AdditionalFields["ui"] = uiMeta(resourceURI, nil)
+	tool.Meta.AdditionalFields["ui"] = map[string]any{"resourceUri": resourceURI}
 	return tool
 }
 
@@ -61,14 +88,14 @@ func WithUI(tool mcpgo.Tool, resourceURI string) mcpgo.Tool {
 // the view name and data the iframe should display.
 func ResultWithUI(res *mcpgo.CallToolResult, resourceURI, view string, data any) *mcpgo.CallToolResult {
 	res.Meta = ensureMeta(res.Meta)
-	res.Meta.AdditionalFields["ui"] = uiMeta(resourceURI, nil)
+	res.Meta.AdditionalFields["ui"] = map[string]any{"resourceUri": resourceURI}
 	res.StructuredContent = map[string]any{"view": view, "data": data}
 	return res
 }
 
-// RegisterUIResource serves html at resourceURI with the MCP Apps MIME type,
-// recording any CSP/permissions in the resource's _meta.ui for hosts that read
-// them there.
+// RegisterUIResource serves html at resourceURI with the MCP Apps MIME type.
+// Any csp/permissions go on the resource's _meta.ui (in object form); when none
+// are requested no _meta.ui is set, so strict host schemas don't reject it.
 func RegisterUIResource(srv *server.MCPServer, resourceURI, name string, html []byte, opts *UIResourceOptions) {
 	desc := "WendyOS interactive app UI"
 	if opts != nil && opts.Description != "" {
@@ -78,7 +105,9 @@ func RegisterUIResource(srv *server.MCPServer, resourceURI, name string, html []
 		mcpgo.WithResourceDescription(desc),
 		mcpgo.WithMIMEType(MIMEType),
 	)
-	res.Meta = &mcpgo.Meta{AdditionalFields: map[string]any{"ui": uiMeta(resourceURI, opts)}}
+	if ui := resourceUIMeta(opts); ui != nil {
+		res.Meta = &mcpgo.Meta{AdditionalFields: map[string]any{"ui": ui}}
+	}
 	srv.AddResource(res, func(_ context.Context, req mcpgo.ReadResourceRequest) ([]mcpgo.ResourceContents, error) {
 		return []mcpgo.ResourceContents{
 			mcpgo.TextResourceContents{URI: req.Params.URI, MIMEType: MIMEType, Text: string(html)},

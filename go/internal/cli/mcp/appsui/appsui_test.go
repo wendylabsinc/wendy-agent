@@ -49,12 +49,31 @@ func TestWendyAppHTMLEmbedded(t *testing.T) {
 	}
 }
 
-func TestUIMetaIncludesCSPAndPermissions(t *testing.T) {
-	m := uiMeta("ui://x", &UIResourceOptions{CSP: []string{"https://cdn.example"}, Permissions: []string{"camera"}})
-	if got := m["csp"].([]string)[0]; got != "https://cdn.example" {
-		t.Fatalf("csp = %v", got)
+func TestResourceUIMetaUsesObjectShapes(t *testing.T) {
+	ui := resourceUIMeta(&UIResourceOptions{
+		Permissions:       []string{"microphone"},
+		CSPConnectDomains: []string{"https://api.example"},
+	})
+	// permissions must be an object ({"microphone":{}}), not an array — hosts
+	// reject the array form with an invalid_type error.
+	perms, ok := ui["permissions"].(map[string]any)
+	if !ok {
+		t.Fatalf("permissions should be an object, got %T", ui["permissions"])
 	}
-	if got := m["permissions"].([]string)[0]; got != "camera" {
-		t.Fatalf("permissions = %v", got)
+	if _, ok := perms["microphone"]; !ok {
+		t.Fatalf("expected microphone permission, got %v", perms)
+	}
+	csp, ok := ui["csp"].(map[string]any)
+	if !ok {
+		t.Fatalf("csp should be an object, got %T", ui["csp"])
+	}
+	if got := csp["connectDomains"].([]string)[0]; got != "https://api.example" {
+		t.Fatalf("csp connectDomains = %v", got)
+	}
+}
+
+func TestResourceUIMetaNilWhenNothingRequested(t *testing.T) {
+	if resourceUIMeta(&UIResourceOptions{Description: "x"}) != nil {
+		t.Fatalf("expected nil _meta.ui when no csp/permissions requested")
 	}
 }
