@@ -7,12 +7,14 @@ import (
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+	"github.com/wendylabsinc/wendy/go/internal/cli/mcp/appsui"
 )
 
 func (s *mcpServer) registerStatusTools(srv *server.MCPServer) {
-	srv.AddTool(mcpgo.NewTool("wendy_status",
+	tool := appsui.WithUI(mcpgo.NewTool("wendy_status",
 		mcpgo.WithDescription("Return current MCP session connection state and a plain-English suggested next step. Call this first to orient yourself."),
-	), s.handleWendyStatus)
+	), WendyAppURI)
+	srv.AddTool(tool, s.handleWendyStatus)
 }
 
 func (s *mcpServer) handleWendyStatus(_ context.Context, _ mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
@@ -39,5 +41,6 @@ func (s *mcpServer) handleWendyStatus(_ context.Context, _ mcpgo.CallToolRequest
 		"suggested_next_step": fmt.Sprintf("connected to %s via %s — ready to use container, wifi, hardware, telemetry, and os tools", host, connType),
 	}
 	b, _ := json.Marshal(out)
-	return mcpgo.NewToolResultText(string(b)), nil
+	res := mcpgo.NewToolResultText(string(b))
+	return appsui.ResultWithUI(res, WendyAppURI, "dashboard", dashboardData(host, connType, nil)), nil
 }
