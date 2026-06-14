@@ -221,6 +221,16 @@
     });
   }
 
+  function _notify(method, params) {
+    parent.postMessage({ jsonrpc: "2.0", method, params: params || {} }, "*");
+  }
+  function applyHostContext(ctx) {
+    if (!ctx) return;
+    if (ctx.theme) document.body.dataset.theme = ctx.theme;
+    const vars = ctx.styles && ctx.styles.variables;
+    if (vars) for (const k in vars) document.documentElement.style.setProperty(k, vars[k]);
+  }
+
   // Origin is not checked here because this bundle only runs inside a trusted
   // MCP host iframe.
   window.addEventListener("message", (e) => {
@@ -231,10 +241,17 @@
       msg.error ? p.reject(msg.error) : p.resolve(msg.result);
       return;
     }
-    // Push-rendered data from the host (e.g. ui/data or ui/render).
-    if (msg.method === "ui/render" || msg.method === "ui/data") {
-      const payload = msg.params && (msg.params.structuredContent || msg.params);
-      if (payload) handlePush(payload);
+    // Host-initiated notifications/requests (MCP Apps ui/ dialect).
+    switch (msg.method) {
+      case "ui/notifications/tool-result":
+        if ((msg.params || {}).structuredContent) handlePush(msg.params.structuredContent);
+        break;
+      case "ui/notifications/host-context-changed":
+        applyHostContext(msg.params || {});
+        break;
+      case "ui/resource-teardown":
+        if (msg.id != null) parent.postMessage({ jsonrpc: "2.0", id: msg.id, result: {} }, "*");
+        break;
     }
   });
 
@@ -438,8 +455,14 @@
   // ==========================================================================
   // Bootstrap: handshake with the host, then load initial pin state
   // ==========================================================================
-  _rpc("ui/initialize", { capabilities: {} })
-    .then(() => {
+  _rpc("ui/initialize", {
+    appCapabilities: { availableDisplayModes: ["inline"], tools: {} },
+    clientInfo: { name: "GpioControl", version: "1.0.0" },
+    protocolVersion: "2026-01-26",
+  })
+    .then((res) => {
+      applyHostContext(res && res.hostContext);
+      _notify("ui/notifications/initialized", {});
       loadPins();
     })
     .catch((err) => {

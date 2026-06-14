@@ -195,6 +195,17 @@
       parent.postMessage({ jsonrpc: "2.0", id, method, params }, "*");
     });
   }
+  function _notify(method, params) {
+    // "*" target origin is intentional (see above).
+    parent.postMessage({ jsonrpc: "2.0", method, params: params || {} }, "*");
+  }
+  // Apply host theme/CSS variables so the app matches the surrounding chat.
+  function applyHostContext(ctx) {
+    if (!ctx) return;
+    if (ctx.theme) document.body.dataset.theme = ctx.theme;
+    const vars = ctx.styles && ctx.styles.variables;
+    if (vars) for (const k in vars) document.documentElement.style.setProperty(k, vars[k]);
+  }
   // Origin is not checked here because this bundle only runs inside a trusted MCP host iframe.
   window.addEventListener("message", (e) => {
     const msg = e.data || {};
@@ -203,8 +214,17 @@
       msg.error ? p.reject(msg.error) : p.resolve(msg.result);
       return;
     }
-    if (msg.method === "ui/render" || msg.method === "ui/data") {
-      render(msg.params && (msg.params.structuredContent || msg.params));
+    // Host-initiated notifications and requests (MCP Apps ui/ dialect).
+    switch (msg.method) {
+      case "ui/notifications/tool-result":
+        render((msg.params || {}).structuredContent);
+        break;
+      case "ui/notifications/host-context-changed":
+        applyHostContext(msg.params || {});
+        break;
+      case "ui/resource-teardown":
+        if (msg.id != null) parent.postMessage({ jsonrpc: "2.0", id: msg.id, result: {} }, "*");
+        break;
     }
   });
   function callTool(name, args) { return _rpc("tools/call", { name, arguments: args || {} }); }
@@ -440,7 +460,16 @@
   }
 
   // ── Bootstrap: ask host for initial state ──
-  _rpc("ui/initialize", { capabilities: {} }).then(render).catch(err => console.warn("ui/initialize failed — no host connected yet?", err));
+  // Handshake: announce the app, then ACK so the host will start sending tool
+  // results. The initial view data arrives via ui/notifications/tool-result.
+  _rpc("ui/initialize", {
+    appCapabilities: { availableDisplayModes: ["inline"], tools: {} },
+    clientInfo: { name: "WendyOS", version: "1.0.0" },
+    protocolVersion: "2026-01-26",
+  }).then((res) => {
+    applyHostContext(res && res.hostContext);
+    _notify("ui/notifications/initialized", {});
+  }).catch((err) => console.warn("ui/initialize failed — no host?", err));
 </script>
 </body>
 </html>
