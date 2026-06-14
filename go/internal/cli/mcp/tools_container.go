@@ -150,7 +150,7 @@ func (s *mcpServer) handleContainerStart(ctx context.Context, req mcpgo.CallTool
 	}
 	res := mcpgo.NewToolResultText(out)
 	deviceLabel := conn.Host
-	return appsui.ResultWithUI(res, WendyAppURI, "controls", controlsData(deviceLabel, nil)), nil
+	return appsui.ResultWithUI(res, WendyAppURI, "controls", controlsData(deviceLabel, s.gatherContainers(ctx, conn))), nil
 }
 
 func (s *mcpServer) handleContainerStop(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
@@ -168,7 +168,7 @@ func (s *mcpServer) handleContainerStop(ctx context.Context, req mcpgo.CallToolR
 	}
 	res := mcpgo.NewToolResultText(fmt.Sprintf("container %s stopped", appName))
 	deviceLabel := conn.Host
-	return appsui.ResultWithUI(res, WendyAppURI, "controls", controlsData(deviceLabel, nil)), nil
+	return appsui.ResultWithUI(res, WendyAppURI, "controls", controlsData(deviceLabel, s.gatherContainers(ctx, conn))), nil
 }
 
 func (s *mcpServer) handleContainerDelete(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {

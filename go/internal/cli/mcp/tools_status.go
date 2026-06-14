@@ -17,7 +17,7 @@ func (s *mcpServer) registerStatusTools(srv *server.MCPServer) {
 	srv.AddTool(tool, s.handleWendyStatus)
 }
 
-func (s *mcpServer) handleWendyStatus(_ context.Context, _ mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+func (s *mcpServer) handleWendyStatus(ctx context.Context, _ mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
 	conn := s.GetConn()
 	connType := s.GetConnType()
 
@@ -42,5 +42,6 @@ func (s *mcpServer) handleWendyStatus(_ context.Context, _ mcpgo.CallToolRequest
 	}
 	b, _ := json.Marshal(out)
 	res := mcpgo.NewToolResultText(string(b))
-	return appsui.ResultWithUI(res, WendyAppURI, "dashboard", dashboardData(host, connType, nil)), nil
+	data := dashboardData(host, connType, s.deviceStats(ctx, conn), s.gatherContainers(ctx, conn))
+	return appsui.ResultWithUI(res, WendyAppURI, "dashboard", data), nil
 }

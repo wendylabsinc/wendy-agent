@@ -64,5 +64,5 @@ func (s *mcpServer) handleOSUpdate(ctx context.Context, req mcpgo.CallToolReques
 	}
 	res := mcpgo.NewToolResultText(out)
 	deviceLabel := conn.Host
-	return appsui.ResultWithUI(res, WendyAppURI, "controls", controlsData(deviceLabel, nil)), nil
+	return appsui.ResultWithUI(res, WendyAppURI, "controls", controlsData(deviceLabel, s.gatherContainers(ctx, conn))), nil
 }
