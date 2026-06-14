@@ -1,0 +1,432 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Security Camera</title>
+<style>
+  :root {
+    --ink: #11151c;
+    --muted: #69707d;
+    --line: #e7e9ee;
+    --accent: #ff5a3c;
+    --accent-soft: #ffece7;
+    --good: #1fa971;
+    --good-soft: #e6f6ee;
+    --warn-soft: #fbf2d6;
+    --radius: 12px;
+    --pad: 18px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, system-ui, sans-serif;
+    background: #f4f5f7;
+    color: var(--ink);
+    min-height: 100vh;
+  }
+
+  /* ── Header ── */
+  .header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 14px var(--pad);
+    background: #fff;
+    border-bottom: 1px solid var(--line);
+  }
+  .header .icon {
+    width: 32px; height: 32px;
+    border-radius: 9px;
+    background: linear-gradient(135deg, #ff7a5c, #ff3d6e);
+    display: grid; place-items: center;
+    color: #fff; font-size: 16px;
+  }
+  .header h1 { font-size: 15px; font-weight: 700; }
+  .status-dot {
+    margin-left: auto;
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--muted);
+    box-shadow: 0 0 0 3px #e0e2e8;
+    transition: background .3s, box-shadow .3s;
+  }
+  .status-dot.live {
+    background: var(--good);
+    box-shadow: 0 0 0 3px var(--good-soft);
+  }
+
+  /* ── Main content ── */
+  .main { padding: var(--pad); max-width: 680px; margin: 0 auto; }
+
+  /* ── Camera card ── */
+  .cam-card {
+    background: #fff;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    overflow: hidden;
+    margin-bottom: 14px;
+  }
+  .cam-frame {
+    width: 100%;
+    background: #0a0a0a;
+    min-height: 240px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+  }
+  .cam-frame img {
+    width: 100%;
+    height: auto;
+    display: block;
+  }
+  .cam-placeholder {
+    color: #555;
+    font-size: 13px;
+    text-align: center;
+    padding: 40px 20px;
+  }
+  .cam-placeholder .icon { font-size: 32px; display: block; margin-bottom: 8px; }
+  .cam-error {
+    color: var(--accent);
+    font-size: 13px;
+    text-align: center;
+    padding: 40px 20px;
+  }
+  .cam-footer {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 14px;
+    border-top: 1px solid var(--line);
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .ts { margin-left: auto; font-size: 11px; color: #9aa0ab; }
+
+  /* ── Controls card ── */
+  .controls-card {
+    background: #fff;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 14px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    flex-wrap: wrap;
+  }
+  .controls-card label {
+    font-size: 12.5px;
+    color: var(--muted);
+    font-weight: 600;
+  }
+  select, button {
+    font-family: inherit;
+    font-size: 13px;
+    border-radius: 8px;
+    border: 1px solid var(--line);
+    padding: 6px 12px;
+    cursor: pointer;
+    outline: none;
+    background: #fff;
+    color: var(--ink);
+  }
+  select:focus { border-color: var(--accent); }
+  button.primary {
+    background: var(--ink);
+    color: #fff;
+    border-color: var(--ink);
+    font-weight: 600;
+  }
+  button.primary:hover { background: #2a3040; }
+  button.primary:disabled { opacity: .5; cursor: default; }
+
+  /* ── Devices list ── */
+  .devices-section { margin-top: 14px; }
+  .devices-section h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); font-weight: 700; margin-bottom: 8px; }
+  .device-list {
+    background: #fff;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    overflow: hidden;
+  }
+  .device-row {
+    padding: 10px 14px;
+    font-size: 13px;
+    border-bottom: 1px solid var(--line);
+    font-family: ui-monospace, monospace;
+  }
+  .device-row:last-child { border-bottom: none; }
+  .device-empty { padding: 14px; font-size: 13px; color: var(--muted); text-align: center; }
+</style>
+</head>
+<body>
+
+<!-- ── Header ── -->
+<div class="header">
+  <div class="icon">📷</div>
+  <h1>Security Camera</h1>
+  <div class="status-dot" id="status-dot"></div>
+</div>
+
+<!-- ── Main ── -->
+<div class="main">
+
+  <!-- Camera feed card -->
+  <div class="cam-card">
+    <div class="cam-frame" id="cam-frame">
+      <div class="cam-placeholder" id="cam-placeholder">
+        <span class="icon">📷</span>
+        Connecting to camera…
+      </div>
+    </div>
+    <div class="cam-footer">
+      <span id="cam-status">Waiting for first frame…</span>
+      <span class="ts" id="cam-ts"></span>
+    </div>
+  </div>
+
+  <!-- Controls card -->
+  <div class="controls-card">
+    <label for="interval-sel">Auto-refresh:</label>
+    <select id="interval-sel">
+      <option value="0">Manual only</option>
+      <option value="2">Every 2 s</option>
+      <option value="3" selected>Every 3 s</option>
+      <option value="5">Every 5 s</option>
+      <option value="10">Every 10 s</option>
+    </select>
+    <button class="primary" id="refresh-btn">Refresh</button>
+  </div>
+
+  <!-- Known devices list -->
+  <div class="devices-section">
+    <h2>Camera devices</h2>
+    <div class="device-list" id="device-list">
+      <div class="device-empty">Loading…</div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+  // ==========================================================================
+  // MCP Apps postMessage bridge (host <-> iframe)
+  // Copied/adapted from wendy-app.html — do not modify the protocol shape.
+  // ==========================================================================
+  let _seq = 0;
+  const _pending = {};
+
+  function _rpc(method, params) {
+    return new Promise((resolve, reject) => {
+      const id = ++_seq;
+      _pending[id] = { resolve, reject };
+      // "*" target origin is intentional: the host origin is determined by the
+      // MCP client and is unknown at bundle authoring time.
+      parent.postMessage({ jsonrpc: "2.0", id, method, params }, "*");
+    });
+  }
+
+  // Origin is not checked here because this bundle only runs inside a trusted
+  // MCP host iframe.
+  window.addEventListener("message", (e) => {
+    const msg = e.data || {};
+    if (msg.id && _pending[msg.id]) {
+      const p = _pending[msg.id];
+      delete _pending[msg.id];
+      msg.error ? p.reject(msg.error) : p.resolve(msg.result);
+      return;
+    }
+    // Push-rendered data from the host (e.g. ui/data or ui/render).
+    if (msg.method === "ui/render" || msg.method === "ui/data") {
+      const payload = msg.params && (msg.params.structuredContent || msg.params);
+      if (payload) handlePush(payload);
+    }
+  });
+
+  function callTool(name, args) {
+    return _rpc("tools/call", { name, arguments: args || {} });
+  }
+
+  async function act(name, args) {
+    try {
+      const r = await callTool(name, args);
+      if (r && r.structuredContent) handlePush(r.structuredContent);
+    } catch (err) {
+      console.error("tool call failed", err);
+    }
+  }
+
+  // Push-render handler (not used by this app yet, kept for parity).
+  function handlePush(payload) {
+    // No structured-content routing needed for a simple camera page.
+  }
+
+  // ==========================================================================
+  // Camera UI logic
+  // ==========================================================================
+
+  const camFrame   = document.getElementById("cam-frame");
+  const placeholder = document.getElementById("cam-placeholder");
+  const camStatus  = document.getElementById("cam-status");
+  const camTs      = document.getElementById("cam-ts");
+  const statusDot  = document.getElementById("status-dot");
+  const refreshBtn = document.getElementById("refresh-btn");
+  const intervalSel = document.getElementById("interval-sel");
+  const deviceList = document.getElementById("device-list");
+
+  let _timer = null;
+  let _refreshing = false;
+
+  // -- Snapshot --
+
+  async function doSnapshot() {
+    if (_refreshing) return;
+    _refreshing = true;
+    refreshBtn.disabled = true;
+    camStatus.textContent = "Capturing frame…";
+
+    let result;
+    try {
+      result = await callTool("snapshot", {});
+    } catch (err) {
+      showError("Bridge error: " + (err.message || String(err)));
+      return;
+    } finally {
+      _refreshing = false;
+      refreshBtn.disabled = false;
+    }
+
+    // callTool returns the tool result; for structured tools the frame data
+    // may live in result.content[0].text (TextContent JSON) or directly.
+    const data = extractToolResult(result);
+
+    if (data && data.error) {
+      showError(data.error);
+      return;
+    }
+    if (data && data.b64) {
+      showFrame(data.b64);
+      return;
+    }
+    showError("Unexpected response from snapshot tool.");
+  }
+
+  // FastMCP returns structured results as TextContent; unwrap if needed.
+  function extractToolResult(result) {
+    if (!result) return null;
+    // Direct dict result (if structured_output is set or the host unwraps it).
+    if (result.b64 || result.error) return result;
+    // Wrapped in MCP content array: [{type:"text", text:"{...}"}]
+    const content = result.content || result.structuredContent;
+    if (Array.isArray(content) && content.length > 0) {
+      const c = content[0];
+      if (c.type === "text" || c.text) {
+        try { return JSON.parse(c.text); } catch (_) { return null; }
+      }
+    }
+    return result;
+  }
+
+  function showFrame(b64) {
+    // Remove old img if present, keep placeholder hidden.
+    let img = camFrame.querySelector("img");
+    if (!img) {
+      img = document.createElement("img");
+      img.alt = "Camera frame";
+      camFrame.appendChild(img);
+    }
+    placeholder.style.display = "none";
+    img.src = "data:image/jpeg;base64," + b64;
+    img.style.display = "block";
+
+    statusDot.classList.add("live");
+    camStatus.textContent = "Live";
+    camTs.textContent = new Date().toLocaleTimeString();
+  }
+
+  function showError(msg) {
+    let img = camFrame.querySelector("img");
+    if (img) img.style.display = "none";
+    placeholder.style.display = "";
+    placeholder.innerHTML = '<span class="icon">⚠️</span>' + esc(msg);
+    placeholder.style.color = "#c0392b";
+
+    statusDot.classList.remove("live");
+    camStatus.textContent = "Error";
+    camTs.textContent = new Date().toLocaleTimeString();
+  }
+
+  // -- Device list --
+
+  async function loadDevices() {
+    let result;
+    try {
+      result = await callTool("list_cameras", {});
+    } catch (_) {
+      deviceList.innerHTML = '<div class="device-empty">Could not list devices.</div>';
+      return;
+    }
+    const paths = extractDeviceList(result);
+    if (!paths || paths.length === 0) {
+      deviceList.innerHTML = '<div class="device-empty">No /dev/video* devices found.</div>';
+      return;
+    }
+    deviceList.innerHTML = paths.map(p => `<div class="device-row">${esc(p)}</div>`).join("");
+  }
+
+  function extractDeviceList(result) {
+    if (!result) return [];
+    if (Array.isArray(result)) return result;
+    // Wrapped content
+    const content = result.content || result.structuredContent;
+    if (Array.isArray(content) && content.length > 0) {
+      const c = content[0];
+      if (c.type === "text" || c.text) {
+        try { return JSON.parse(c.text); } catch (_) { return []; }
+      }
+    }
+    return [];
+  }
+
+  // -- Auto-refresh timer --
+
+  function startTimer() {
+    clearInterval(_timer);
+    const secs = parseInt(intervalSel.value, 10);
+    if (secs > 0) {
+      _timer = setInterval(doSnapshot, secs * 1000);
+    }
+  }
+
+  intervalSel.addEventListener("change", startTimer);
+  refreshBtn.addEventListener("click", doSnapshot);
+
+  // -- Helper: HTML-escape --
+  function esc(s) {
+    return String(s || "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
+  // ==========================================================================
+  // Bootstrap: handshake with the host, then load initial data
+  // ==========================================================================
+  _rpc("ui/initialize", { capabilities: {} })
+    .then(() => {
+      // First snapshot + device list in parallel.
+      doSnapshot();
+      loadDevices();
+      startTimer();
+    })
+    .catch((err) => {
+      // No host iframe — probably opened directly in a browser.
+      console.warn("ui/initialize failed — running without host bridge:", err);
+      placeholder.innerHTML = '<span class="icon">🔌</span>No MCP host connected.';
+      placeholder.style.color = "var(--muted)";
+    });
+</script>
+</body>
+</html>

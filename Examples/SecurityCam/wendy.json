@@ -1,0 +1,11 @@
+{
+  "appId": "com.wendylabs.examples.security-cam",
+  "version": "1.0.0",
+  "language": "python",
+  "python": { "container": { "sourceRoot": "/app" } },
+  "entitlements": [
+    { "type": "network", "mode": "host" },
+    { "type": "camera" },
+    { "type": "mcp", "port": 3000 }
+  ]
+}
