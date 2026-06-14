@@ -46,7 +46,7 @@ _CAM_HTML = (Path(__file__).parent / "static" / "cam.html").read_text()
 # Resource: UI page
 # ---------------------------------------------------------------------------
 
-@mcp.resource("ui://camera/feed", mime_type="text/html")
+@mcp.resource("ui://camera/feed", mime_type="text/html;profile=mcp-app")
 def camera_feed_ui() -> str:
     """Return the live camera viewer HTML page."""
     return _CAM_HTML

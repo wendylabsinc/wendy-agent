@@ -10,6 +10,12 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 )
 
+// MIMEType is the MIME type MCP Apps hosts require for a ui:// resource's HTML.
+// Hosts (e.g. Claude Desktop) reject bare "text/html" with "Unsupported UI
+// resource content format" — it must carry the mcp-app profile. This matches
+// the RESOURCE_MIME_TYPE constant in @modelcontextprotocol/ext-apps.
+const MIMEType = "text/html;profile=mcp-app"
+
 // UIResourceOptions configures a ui:// resource.
 type UIResourceOptions struct {
 	// CSP lists external origins the app may load resources from.
@@ -60,8 +66,9 @@ func ResultWithUI(res *mcpgo.CallToolResult, resourceURI, view string, data any)
 	return res
 }
 
-// RegisterUIResource serves html at resourceURI as text/html, recording any
-// CSP/permissions in the resource's _meta.ui for hosts that read them there.
+// RegisterUIResource serves html at resourceURI with the MCP Apps MIME type,
+// recording any CSP/permissions in the resource's _meta.ui for hosts that read
+// them there.
 func RegisterUIResource(srv *server.MCPServer, resourceURI, name string, html []byte, opts *UIResourceOptions) {
 	desc := "WendyOS interactive app UI"
 	if opts != nil && opts.Description != "" {
@@ -69,12 +76,12 @@ func RegisterUIResource(srv *server.MCPServer, resourceURI, name string, html []
 	}
 	res := mcpgo.NewResource(resourceURI, name,
 		mcpgo.WithResourceDescription(desc),
-		mcpgo.WithMIMEType("text/html"),
+		mcpgo.WithMIMEType(MIMEType),
 	)
 	res.Meta = &mcpgo.Meta{AdditionalFields: map[string]any{"ui": uiMeta(resourceURI, opts)}}
 	srv.AddResource(res, func(_ context.Context, req mcpgo.ReadResourceRequest) ([]mcpgo.ResourceContents, error) {
 		return []mcpgo.ResourceContents{
-			mcpgo.TextResourceContents{URI: req.Params.URI, MIMEType: "text/html", Text: string(html)},
+			mcpgo.TextResourceContents{URI: req.Params.URI, MIMEType: MIMEType, Text: string(html)},
 		}, nil
 	})
 }

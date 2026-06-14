@@ -58,7 +58,7 @@ _INTERCOM_HTML = (Path(__file__).parent / "static" / "intercom.html").read_text(
 
 @mcp.resource(
     "ui://intercom/app",
-    mime_type="text/html",
+    mime_type="text/html;profile=mcp-app",
     meta={"ui": {"permissions": ["microphone"]}},
 )
 def intercom_ui() -> str:

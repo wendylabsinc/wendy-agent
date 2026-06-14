@@ -58,7 +58,7 @@ _GPIO_HTML = (Path(__file__).parent / "static" / "gpio.html").read_text()
 # Resource: UI page
 # ---------------------------------------------------------------------------
 
-@mcp.resource("ui://gpio/control", mime_type="text/html")
+@mcp.resource("ui://gpio/control", mime_type="text/html;profile=mcp-app")
 def gpio_control_ui() -> str:
     """Return the GPIO control panel HTML page."""
     return _GPIO_HTML
