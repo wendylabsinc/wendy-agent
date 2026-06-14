@@ -236,6 +236,33 @@
     const vars = ctx.styles && ctx.styles.variables;
     if (vars) for (const k in vars) document.documentElement.style.setProperty(k, vars[k]);
   }
+  // Report content size so the host sizes the iframe to fit (MCP Apps autoResize).
+  function setupSizeReporting() {
+    let scheduled = false, lastW = 0, lastH = 0;
+    const send = () => {
+      if (scheduled) return;
+      scheduled = true;
+      requestAnimationFrame(() => {
+        scheduled = false;
+        const html = document.documentElement;
+        const orig = html.style.height;
+        html.style.height = "max-content";
+        const height = Math.ceil(html.getBoundingClientRect().height);
+        html.style.height = orig;
+        const width = Math.ceil(window.innerWidth);
+        if (width !== lastW || height !== lastH) {
+          lastW = width; lastH = height;
+          _notify("ui/notifications/size-changed", { width, height });
+        }
+      });
+    };
+    send();
+    if (window.ResizeObserver) {
+      const ro = new ResizeObserver(send);
+      ro.observe(document.documentElement);
+      ro.observe(document.body);
+    }
+  }
 
   // Origin is not checked here because this bundle only runs inside a trusted
   // MCP host iframe.
@@ -439,6 +466,7 @@
     .then((res) => {
       applyHostContext(res && res.hostContext);
       _notify("ui/notifications/initialized", {});
+      setupSizeReporting();
       // First snapshot + device list in parallel.
       doSnapshot();
       loadDevices();
