@@ -66,9 +66,9 @@ Serve over HTTP instead of stdio with: wendy mcp serve --http
 
 To ship your own in-chat app, register a ui:// resource (mime_type text/html)
 and annotate your tool with _meta.ui.resourceUri pointing at it. See the sample
-apps in Examples/: SecurityCam (camera feed), Intercom (mic to device speaker),
-and GpioControl (pin toggles) — each pairs a hardware entitlement with an mcp
-entitlement and a ui:// resource.
+apps in Examples/: SysMon (live CPU/memory/disk gauges — small payloads, good
+starting point), SecurityCam (camera feed), Intercom (mic to device speaker),
+and GpioControl (pin toggles).
 
 ## Documentation
 

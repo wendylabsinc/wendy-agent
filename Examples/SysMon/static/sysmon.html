@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>System Monitor</title>
+<style>
+  :root{
+    --card:#ffffff; --ink:#11151c; --muted:#69707d; --line:#e7e9ee;
+    --accent:#ff5a3c; --good:#1fa971; --warn:#e0a100; --bad:#c0392b;
+    --track:#eef0f4;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,system-ui,sans-serif;
+    background:var(--card);color:var(--ink);padding:16px 18px}
+  .head{display:flex;align-items:center;gap:10px;margin-bottom:14px}
+  .head .mark{width:28px;height:28px;border-radius:8px;background:linear-gradient(135deg,#ff7a5c,#ff3d6e);
+    display:grid;place-items:center;color:#fff;font-size:15px}
+  .head h1{margin:0;font-size:16px;font-weight:700}
+  .head .live{margin-left:auto;display:flex;align-items:center;gap:6px;font-size:11px;color:var(--muted)}
+  .head .live .dot{width:8px;height:8px;border-radius:50%;background:var(--good)}
+
+  .bars{display:grid;gap:12px;margin-bottom:16px}
+  .bar{border:1px solid var(--line);border-radius:12px;padding:12px 14px}
+  .bar .top{display:flex;align-items:baseline;gap:8px;margin-bottom:8px}
+  .bar .k{font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);font-weight:700}
+  .bar .pct{margin-left:auto;font-size:20px;font-weight:800;font-variant-numeric:tabular-nums}
+  .bar .sub{font-size:11.5px;color:var(--muted)}
+  .track{height:8px;border-radius:5px;background:var(--track);overflow:hidden}
+  .track > i{display:block;height:100%;border-radius:5px;background:var(--good);transition:width .4s ease,background .4s}
+
+  .tiles{display:grid;grid-template-columns:repeat(4,1fr);gap:9px;margin-bottom:14px}
+  .tile{border:1px solid var(--line);border-radius:11px;padding:10px 11px}
+  .tile .k{font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted)}
+  .tile .v{font-size:17px;font-weight:700;margin-top:3px;font-variant-numeric:tabular-nums;white-space:nowrap}
+  .tile .v small{font-size:11px;font-weight:600;color:var(--muted)}
+
+  .foot{display:flex;align-items:center;gap:10px;color:var(--muted);font-size:11.5px}
+  .foot select,.foot button{font:inherit;font-size:12px;border:1px solid var(--line);border-radius:8px;
+    padding:5px 9px;background:#fff;color:var(--ink);cursor:pointer}
+  .foot .err{color:var(--bad)}
+  .empty{color:var(--muted);font-size:13px;padding:28px 0;text-align:center}
+</style>
+</head>
+<body>
+  <div class="head">
+    <span class="mark">W</span><h1>System Monitor</h1>
+    <span class="live"><span class="dot"></span> <span id="age">live</span></span>
+  </div>
+
+  <div class="empty" id="empty">Loading…</div>
+
+  <div id="content" style="display:none">
+    <div class="bars">
+      <div class="bar"><div class="top"><span class="k">CPU</span><span class="pct" id="cpu-pct">—</span></div>
+        <div class="track"><i id="cpu-bar"></i></div><div class="sub" id="cpu-sub"></div></div>
+      <div class="bar"><div class="top"><span class="k">Memory</span><span class="pct" id="mem-pct">—</span></div>
+        <div class="track"><i id="mem-bar"></i></div><div class="sub" id="mem-sub"></div></div>
+      <div class="bar"><div class="top"><span class="k">Disk</span><span class="pct" id="disk-pct">—</span></div>
+        <div class="track"><i id="disk-bar"></i></div><div class="sub" id="disk-sub"></div></div>
+    </div>
+    <div class="tiles">
+      <div class="tile"><div class="k">Load (1m)</div><div class="v" id="t-load">—</div></div>
+      <div class="tile"><div class="k">Cores</div><div class="v" id="t-cores">—</div></div>
+      <div class="tile"><div class="k">Processes</div><div class="v" id="t-proc">—</div></div>
+      <div class="tile"><div class="k">Uptime</div><div class="v" id="t-uptime">—</div></div>
+    </div>
+  </div>
+
+  <div class="foot">
+    <span>Refresh</span>
+    <select id="interval">
+      <option value="0">paused</option>
+      <option value="2000" selected>2s</option>
+      <option value="5000">5s</option>
+      <option value="10000">10s</option>
+    </select>
+    <button id="refresh">Refresh now</button>
+    <span class="err" id="err"></span>
+  </div>
+
+<script>
+  // ===========================================================================
+  // MCP Apps postMessage bridge (host <-> iframe)
+  // ===========================================================================
+  let _seq = 0;
+  const _pending = {};
+
+  function _rpc(method, params) {
+    return new Promise((resolve, reject) => {
+      const id = ++_seq;
+      _pending[id] = { resolve, reject };
+      // "*" target origin is intentional: the host origin is set by the MCP
+      // client and is unknown at authoring time.
+      parent.postMessage({ jsonrpc: "2.0", id, method, params }, "*");
+    });
+  }
+  function _notify(method, params) {
+    parent.postMessage({ jsonrpc: "2.0", method, params: params || {} }, "*");
+  }
+  function applyHostContext(ctx) {
+    if (!ctx) return;
+    if (ctx.theme) document.body.dataset.theme = ctx.theme;
+    const vars = ctx.styles && ctx.styles.variables;
+    if (vars) for (const k in vars) document.documentElement.style.setProperty(k, vars[k]);
+  }
+  // Report content size so the host fits the iframe (MCP Apps autoResize).
+  function setupSizeReporting() {
+    let scheduled = false, lastW = 0, lastH = 0;
+    const send = () => {
+      if (scheduled) return;
+      scheduled = true;
+      requestAnimationFrame(() => {
+        scheduled = false;
+        const html = document.documentElement;
+        const orig = html.style.height;
+        html.style.height = "max-content";
+        const height = Math.ceil(html.getBoundingClientRect().height);
+        html.style.height = orig;
+        const width = Math.ceil(window.innerWidth);
+        if (width !== lastW || height !== lastH) {
+          lastW = width; lastH = height;
+          _notify("ui/notifications/size-changed", { width, height });
+        }
+      });
+    };
+    send();
+    if (window.ResizeObserver) {
+      const ro = new ResizeObserver(send);
+      ro.observe(document.documentElement);
+      ro.observe(document.body);
+    }
+  }
+
+  // Origin is not checked because this bundle only runs inside a trusted MCP host iframe.
+  window.addEventListener("message", (e) => {
+    const msg = e.data || {};
+    if (msg.id && _pending[msg.id]) {
+      const p = _pending[msg.id]; delete _pending[msg.id];
+      msg.error ? p.reject(msg.error) : p.resolve(msg.result);
+      return;
+    }
+    switch (msg.method) {
+      case "ui/notifications/tool-result":
+        render((msg.params || {}).structuredContent);
+        break;
+      case "ui/notifications/host-context-changed":
+        applyHostContext(msg.params || {});
+        break;
+      case "ui/resource-teardown":
+        stopTimer();
+        if (msg.id != null) parent.postMessage({ jsonrpc: "2.0", id: msg.id, result: {} }, "*");
+        break;
+    }
+  });
+
+  // When rendered through Wendy's aggregating proxy, tools are namespaced
+  // <app>__<tool>; Wendy injects the prefix so our calls resolve. Standalone
+  // (no proxy) the global is absent and original names are used.
+  let _toolPrefix = (typeof window !== "undefined" && window.__WENDY_TOOL_PREFIX__) || "";
+  function callTool(name, args) {
+    const n = (_toolPrefix && name.indexOf("__") < 0) ? _toolPrefix + name : name;
+    return _rpc("tools/call", { name: n, arguments: args || {} });
+  }
+
+  // ===========================================================================
+  // Rendering
+  // ===========================================================================
+  function setBar(barId, pctId, subId, pct, sub) {
+    const v = (typeof pct === "number") ? Math.max(0, Math.min(100, pct)) : null;
+    document.getElementById(pctId).textContent = v != null ? v.toFixed(0) + "%" : "—";
+    const bar = document.getElementById(barId);
+    bar.style.width = (v != null ? v : 0) + "%";
+    bar.style.background = v == null ? "var(--track)" : v >= 90 ? "var(--bad)" : v >= 75 ? "var(--warn)" : "var(--good)";
+    document.getElementById(subId).textContent = sub || "";
+  }
+  function fmtUptime(s) {
+    if (s == null) return "—";
+    const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60);
+    if (d) return d + "d " + h + "h";
+    if (h) return h + "h " + m + "m";
+    return m + "m";
+  }
+
+  // Accept either a raw stats dict (from a tools/call result) or {data:{...}}.
+  function render(s) {
+    if (!s) return;
+    if (s.data && typeof s.data === "object") s = s.data;
+    if (typeof s.cpu_percent !== "number" && typeof s.mem_percent !== "number") return;
+    document.getElementById("empty").style.display = "none";
+    document.getElementById("content").style.display = "";
+    document.getElementById("err").textContent = "";
+
+    setBar("cpu-bar", "cpu-pct", "cpu-sub", s.cpu_percent, (s.cpu_count || "?") + " cores");
+    setBar("mem-bar", "mem-pct", "mem-sub", s.mem_percent,
+      s.mem_used_mb != null ? (s.mem_used_mb + " / " + s.mem_total_mb + " MB") : "");
+    setBar("disk-bar", "disk-pct", "disk-sub", s.disk_percent,
+      s.disk_used_gb != null ? (s.disk_used_gb + " / " + s.disk_total_gb + " GB") : "");
+
+    document.getElementById("t-load").textContent = s.load1 != null ? s.load1 : "—";
+    document.getElementById("t-cores").textContent = s.cpu_count != null ? s.cpu_count : "—";
+    document.getElementById("t-proc").textContent = s.processes != null ? s.processes : "—";
+    document.getElementById("t-uptime").textContent = fmtUptime(s.uptime_s);
+    document.getElementById("age").textContent = "updated just now";
+  }
+
+  async function poll() {
+    try {
+      const r = await callTool("stats", {});
+      render(r && (r.structuredContent || r));
+    } catch (err) {
+      document.getElementById("err").textContent = "stats failed: " + (err && err.message ? err.message : err);
+    }
+  }
+
+  // ===========================================================================
+  // Refresh timer
+  // ===========================================================================
+  let _timer = null;
+  function stopTimer() { if (_timer) { clearInterval(_timer); _timer = null; } }
+  function startTimer() {
+    stopTimer();
+    const ms = parseInt(document.getElementById("interval").value, 10);
+    if (ms > 0) _timer = setInterval(poll, ms);
+  }
+  document.getElementById("interval").addEventListener("change", startTimer);
+  document.getElementById("refresh").addEventListener("click", poll);
+
+  // ===========================================================================
+  // Bootstrap: handshake, then start polling
+  // ===========================================================================
+  _rpc("ui/initialize", {
+    appCapabilities: {},
+    appInfo: { name: "SysMon", version: "1.0.0" },
+    protocolVersion: "2026-01-26",
+  })
+    .then((res) => {
+      applyHostContext(res && res.hostContext);
+      _notify("ui/notifications/initialized", {});
+      setupSizeReporting();
+      poll();
+      startTimer();
+    })
+    .catch((err) => {
+      console.warn("ui/initialize failed — running without host bridge:", err);
+      document.getElementById("empty").textContent = "No MCP host connected.";
+    });
+</script>
+</body>
+</html>

@@ -1,0 +1,10 @@
+{
+  "appId": "com.wendylabs.examples.sysmon",
+  "version": "1.0.0",
+  "language": "python",
+  "python": { "container": { "sourceRoot": "/app" } },
+  "entitlements": [
+    { "type": "network", "mode": "host" },
+    { "type": "mcp", "port": 3003 }
+  ]
+}
