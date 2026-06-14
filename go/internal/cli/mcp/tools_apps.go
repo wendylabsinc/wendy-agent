@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -79,8 +80,11 @@ func (s *mcpServer) listAppEntries(ctx context.Context, conn *grpcclient.AgentCo
 	var out []appEntry
 	for {
 		resp, err := stream.Recv()
-		if err != nil {
+		if err == io.EOF {
 			break
+		}
+		if err != nil {
+			return nil, err
 		}
 		c := resp.GetContainer()
 		if c == nil {
