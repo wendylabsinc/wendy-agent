@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -36,7 +37,26 @@ type mcpServer struct {
 	connCache     map[string]*cachedConn
 	cloudTunnels  map[string]*mcpCloudTunnel
 	discoverLANFn func(ctx context.Context, timeout time.Duration) ([]models.LANDevice, error)
+	appHasUI      map[string]bool
 	mu            sync.RWMutex
+}
+
+// setAppHasUI records whether an app exposes a ui:// resource (populated during
+// proxy setup). Safe for concurrent use.
+func (s *mcpServer) setAppHasUI(app string, v bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.appHasUI == nil {
+		s.appHasUI = map[string]bool{}
+	}
+	s.appHasUI[app] = v
+}
+
+// getAppHasUI reports the cached UI capability of an app.
+func (s *mcpServer) getAppHasUI(app string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.appHasUI[app]
 }
 
 func New(cfg *config.Config, connectFn ConnectFunc) *mcpServer {
@@ -268,12 +288,43 @@ func (s *mcpServer) connectContainerMCPTools(ctx context.Context, srv *server.MC
 		proxied := tool
 		proxied.Name = prefix + "__" + tool.Name
 		originalName := tool.Name
+		rewriteToolUIMeta(&proxied, appName)
 		srv.AddTool(proxied, func(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
 			inner := mcpgo.CallToolRequest{}
 			inner.Params.Name = originalName
 			inner.Params.Arguments = req.Params.Arguments
 			return mcpCli.CallTool(ctx, inner)
 		})
+	}
+
+	// Forward the container's resources (including ui:// app resources) under
+	// the app namespace so the host can fetch them through Wendy.
+	if resList, lerr := mcpCli.ListResources(ctx, mcpgo.ListResourcesRequest{}); lerr == nil {
+		for _, r := range resList.Resources {
+			origURI := r.URI
+			nsRes := r
+			nsRes.URI = namespacedUIURI2(appName, origURI)
+			if strings.HasPrefix(origURI, "ui://") {
+				s.setAppHasUI(appName, true)
+			}
+			srv.AddResource(nsRes, func(ctx context.Context, req mcpgo.ReadResourceRequest) ([]mcpgo.ResourceContents, error) {
+				out, rerr := mcpCli.ReadResource(ctx, mcpgo.ReadResourceRequest{Params: mcpgo.ReadResourceParams{URI: origURI}})
+				if rerr != nil {
+					return nil, rerr
+				}
+				for i := range out.Contents {
+					switch c := out.Contents[i].(type) {
+					case mcpgo.TextResourceContents:
+						c.URI = req.Params.URI
+						out.Contents[i] = c
+					case mcpgo.BlobResourceContents:
+						c.URI = req.Params.URI
+						out.Contents[i] = c
+					}
+				}
+				return out.Contents, nil
+			})
+		}
 	}
 	return closeProxy
 }

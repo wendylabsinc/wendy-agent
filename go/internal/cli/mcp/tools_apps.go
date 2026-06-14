@@ -100,11 +100,10 @@ func (s *mcpServer) listAppEntries(ctx context.Context, conn *grpcclient.AgentCo
 	return out, nil
 }
 
-// containerHasUI reports whether a container exposes a ui:// resource. This is a
-// temporary heuristic (mirrors mcp availability); Task 8 replaces it with a
-// probe cached during connectContainerMCPTools.
-func (s *mcpServer) containerHasUI(_ string, hasMCP bool) bool {
-	return hasMCP
+// containerHasUI reports whether a container exposes a ui:// resource, using the
+// cache populated during connectContainerMCPTools.
+func (s *mcpServer) containerHasUI(app string, _ bool) bool {
+	return s.getAppHasUI(app)
 }
 
 func (s *mcpServer) handleAppOpen(_ context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
