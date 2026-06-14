@@ -292,7 +292,10 @@ func (s *mcpServer) connectContainerMCPTools(ctx context.Context, srv *server.MC
 		return nil
 	}
 
-	mcpCli, err := mcpclient.NewStreamableHttpClient("http://" + addr)
+	// Container MCP servers serve the streamable-HTTP endpoint at the standard
+	// /mcp path (FastMCP default, per the MCP spec); the proxy listener forwards
+	// raw bytes, so the path lives in this client URL.
+	mcpCli, err := mcpclient.NewStreamableHttpClient("http://" + addr + "/mcp")
 	if err != nil {
 		closeProxy()
 		fmt.Fprintf(os.Stderr, "Warning: MCP client for %s: %v\n", appName, err)
