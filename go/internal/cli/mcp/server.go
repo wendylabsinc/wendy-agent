@@ -12,6 +12,7 @@ import (
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
+	"github.com/wendylabsinc/wendy/go/internal/cli/mcp/appsui"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
@@ -19,6 +20,9 @@ import (
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	"google.golang.org/grpc/status"
 )
+
+// WendyAppURI is the ui:// resource for Wendy's adaptive in-chat app.
+const WendyAppURI = "ui://wendy/app"
 
 // ConnectFunc connects to a wendy agent at the given address (host:port).
 type ConnectFunc func(ctx context.Context, address string) (*grpcclient.AgentConnection, error)
@@ -96,6 +100,7 @@ func (s *mcpServer) Start(ctx context.Context) error {
 	)
 	s.registerStatusTools(srv)
 	s.registerGuideResource(srv)
+	s.registerWendyAppUI(srv)
 	s.registerDeviceTools(srv)
 	s.registerContainerTools(srv)
 	s.registerTelemetryTools(srv)
@@ -232,6 +237,13 @@ func (s *mcpServer) connectContainerMCPTools(ctx context.Context, srv *server.MC
 		})
 	}
 	return closeProxy
+}
+
+// registerWendyAppUI registers the adaptive WendyOS in-chat app as a ui:// resource.
+func (s *mcpServer) registerWendyAppUI(srv *server.MCPServer) {
+	appsui.RegisterUIResource(srv, WendyAppURI, "WendyOS App", appsui.WendyAppHTML, &appsui.UIResourceOptions{
+		Description: "Adaptive WendyOS app: device dashboard, controls, and app launcher.",
+	})
 }
 
 // sanitizeMCPPrefix converts an app name to a valid MCP tool name prefix

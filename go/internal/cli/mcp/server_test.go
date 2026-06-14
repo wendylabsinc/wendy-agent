@@ -1,10 +1,13 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"testing"
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 )
 
@@ -19,6 +22,17 @@ func TestGetConn_NilBeforeConnect(t *testing.T) {
 	srv := New(&config.Config{}, nil)
 	if srv.GetConn() != nil {
 		t.Fatal("expected nil connection before connect")
+	}
+}
+
+func TestRegisterWendyAppUIServesHTML(t *testing.T) {
+	s := New(nil, nil)
+	srv := server.NewMCPServer("wendy", "test", server.WithResourceCapabilities(true, false))
+	s.registerWendyAppUI(srv)
+	res := srv.HandleMessage(context.Background(), []byte(`{"jsonrpc":"2.0","id":1,"method":"resources/read","params":{"uri":"ui://wendy/app"}}`))
+	b, _ := json.Marshal(res)
+	if !bytes.Contains(b, []byte("text/html")) {
+		t.Fatalf("expected text/html resource, got %s", b)
 	}
 }
 

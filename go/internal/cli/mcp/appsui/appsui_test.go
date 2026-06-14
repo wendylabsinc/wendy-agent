@@ -1,6 +1,7 @@
 package appsui
 
 import (
+	"bytes"
 	"encoding/json"
 	"testing"
 
@@ -36,6 +37,15 @@ func TestResultWithUISetsViewAndData(t *testing.T) {
 	ui := meta["ui"].(map[string]any)
 	if ui["resourceUri"] != "ui://wendy/app" {
 		t.Fatalf("got resourceUri %v", ui["resourceUri"])
+	}
+}
+
+func TestWendyAppHTMLEmbedded(t *testing.T) {
+	if len(WendyAppHTML) < 100 {
+		t.Fatalf("embedded UI bundle looks empty: %d bytes", len(WendyAppHTML))
+	}
+	if !bytes.Contains(WendyAppHTML, []byte("ui/initialize")) {
+		t.Fatalf("UI bundle missing postMessage ui/ bridge")
 	}
 }
 

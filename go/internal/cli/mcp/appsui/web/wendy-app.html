@@ -1,0 +1,432 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WendyOS</title>
+<style>
+  :root{
+    --card:#ffffff; --ink:#11151c; --muted:#69707d;
+    --line:#e7e9ee; --accent:#ff5a3c; --accent-soft:#ffece7;
+    --good:#1fa971; --good-soft:#e6f6ee;
+    --warn:#e0a100; --warn-soft:#fbf2d6;
+    --shadow:0 1px 2px rgba(16,21,28,.06),0 8px 24px rgba(16,21,28,.08);
+    --radius:16px; --pad:18px;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0;
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,system-ui,sans-serif;
+    background:var(--card);color:var(--ink);
+  }
+
+  /* ── Header ── */
+  .ah{display:flex;align-items:center;gap:12px;padding:14px var(--pad);border-bottom:1px solid var(--line)}
+  .brand{display:flex;align-items:center;gap:9px;font-weight:700;font-size:15px}
+  .brand .mark{width:26px;height:26px;border-radius:8px;background:linear-gradient(135deg,#ff7a5c,#ff3d6e);
+    display:grid;place-items:center;color:#fff;font-size:14px}
+  .devsel{margin-left:auto;display:flex;align-items:center;gap:8px;border:1px solid var(--line);
+    border-radius:10px;padding:6px 11px;font-size:13px;font-weight:600;cursor:pointer;background:#fff}
+  .devsel .live{width:8px;height:8px;border-radius:50%;background:var(--good);box-shadow:0 0 0 3px var(--good-soft)}
+  .devsel .chev{color:var(--muted);font-size:11px}
+
+  /* ── Tabs ── */
+  .tabs{display:flex;gap:4px;padding:10px var(--pad) 0}
+  .tab{padding:8px 14px;font-size:13px;font-weight:600;color:var(--muted);border-radius:10px 10px 0 0;
+    cursor:pointer;position:relative}
+  .tab.on{color:var(--ink);background:#fff}
+  .tab.on:after{content:"";position:absolute;left:12px;right:12px;bottom:-1px;height:2px;background:var(--accent);border-radius:2px}
+  .tab .badge{font-size:10px;background:var(--accent-soft);color:var(--accent);border-radius:6px;padding:1px 5px;margin-left:6px;font-weight:700}
+
+  /* ── Body ── */
+  .view{display:none;padding:16px var(--pad) var(--pad);border-top:1px solid var(--line)}
+  body[data-view=dashboard] .view-dashboard{display:block}
+  body[data-view=controls]  .view-controls{display:block}
+  body[data-view=apps]      .view-apps{display:block}
+
+  .empty{color:var(--muted);font-size:13px;padding:24px 0;text-align:center}
+
+  /* ── Dashboard ── */
+  .summary{display:flex;align-items:center;gap:14px;margin-bottom:14px}
+  .summary .icon{width:42px;height:42px;border-radius:11px;background:#11151c;color:#fff;display:grid;place-items:center;font-size:18px}
+  .summary h2{margin:0;font-size:16px}
+  .summary .meta{color:var(--muted);font-size:12.5px;margin-top:2px}
+  .summary .pill{margin-left:auto;font-size:11px;font-weight:700;color:var(--good);background:var(--good-soft);border-radius:8px;padding:5px 10px}
+  .tiles{display:grid;grid-template-columns:repeat(5,1fr);gap:9px;margin-bottom:18px}
+  .tile{border:1px solid var(--line);border-radius:12px;padding:11px 12px;min-width:0}
+  .tile .k{font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted)}
+  .tile .v{font-size:18px;font-weight:700;margin-top:3px;white-space:nowrap}
+  .tile .v small{font-size:11px;font-weight:600;color:var(--muted)}
+  .bar{height:4px;border-radius:3px;background:#eef0f4;margin-top:8px;overflow:hidden}
+  .bar>i{display:block;height:100%;border-radius:3px;background:var(--accent)}
+  .bar.g>i{background:var(--good)}
+  .sechead{display:flex;align-items:center;margin:4px 0 10px}
+  .sechead h3{margin:0;font-size:13px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted)}
+  .sechead .count{margin-left:8px;font-size:11px;color:#9aa0ab}
+  .crow{display:grid;grid-template-columns:34px 1fr 132px 168px;align-items:center;column-gap:12px;
+    padding:11px 12px;border:1px solid var(--line);border-radius:12px;margin-bottom:8px}
+  .crow .cic{width:34px;height:34px;border-radius:9px;display:grid;place-items:center;font-size:16px;background:var(--accent-soft)}
+  .crow .info{min-width:0}
+  .crow .nm{font-weight:650;font-size:13.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .crow .sub{color:var(--muted);font-size:11.5px;margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .crow .mini{display:grid;grid-template-columns:1fr 1fr;gap:10px;text-align:right}
+  .crow .mini .k{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+  .crow .mini .val{font-size:13px;font-weight:700}
+  .crow .acts{display:flex;gap:6px;justify-content:flex-end}
+  .foot{display:flex;align-items:center;gap:7px;color:#9aa0ab;font-size:11px;margin-top:8px;padding-left:2px}
+  .foot .live{width:7px;height:7px;border-radius:50%;background:var(--good)}
+
+  /* ── Controls ── */
+  .grouphead{font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);font-weight:700;margin:4px 0 10px}
+  .grouphead:not(:first-child){margin-top:20px}
+  .ctl{display:grid;grid-template-columns:34px 1fr auto;align-items:center;column-gap:12px;
+    padding:11px 12px;border:1px solid var(--line);border-radius:12px;margin-bottom:8px}
+  .ctl .cic{width:34px;height:34px;border-radius:9px;display:grid;place-items:center;font-size:16px;background:var(--accent-soft)}
+  .ctl .nm{font-weight:650;font-size:13.5px}
+  .ctl .sub{color:var(--muted);font-size:11.5px;margin-top:1px}
+  .ctl .right{display:flex;align-items:center;gap:8px}
+  .sw{width:42px;height:24px;border-radius:13px;background:var(--good);position:relative;cursor:pointer;flex:0 0 auto}
+  .sw.off{background:#d6d9e0}
+  .sw:after{content:"";position:absolute;top:3px;left:21px;width:18px;height:18px;border-radius:50%;background:#fff;transition:.15s;box-shadow:0 1px 2px rgba(0,0,0,.2)}
+  .sw.off:after{left:3px}
+  .state{font-size:11.5px;font-weight:700;color:var(--good)}
+  .state.off{color:var(--muted)}
+  .banner{display:flex;align-items:center;gap:12px;padding:12px 14px;border-radius:12px;margin-bottom:8px;
+    background:var(--warn-soft);border:1px solid #efe2b4}
+  .banner .t{font-weight:650;font-size:13px}
+  .banner .s{color:#8a7320;font-size:11.5px;margin-top:1px}
+  .banner .right{margin-left:auto}
+
+  /* ── Apps ── */
+  .appsgrid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .acard{border:1px solid var(--line);border-radius:13px;padding:14px;display:flex;flex-direction:column;gap:10px}
+  .acard .top{display:flex;align-items:center;gap:11px}
+  .acard .ic{width:40px;height:40px;border-radius:11px;display:grid;place-items:center;font-size:19px;background:var(--accent-soft)}
+  .acard .nm{font-weight:700;font-size:14px}
+  .acard .ver{color:var(--muted);font-size:11.5px;margin-top:1px}
+  .tag{display:inline-flex;align-items:center;gap:5px;font-size:10.5px;font-weight:700;border-radius:7px;padding:3px 8px}
+  .tag.ui{background:var(--good-soft);color:var(--good)}
+  .tag.noui{background:#f0f1f4;color:#9aa0ab}
+  .acard.disabled{opacity:.6}
+  .apps-hint{margin-top:12px;font-size:11px;color:#9aa0ab}
+
+  /* ── Shared buttons ── */
+  .btn{border:1px solid var(--line);background:#fff;border-radius:9px;padding:6px 12px;font-size:12px;
+    font-weight:600;cursor:pointer;color:var(--ink);white-space:nowrap}
+  .btn.ghost{color:var(--muted)}
+  .btn.open,.btn.dark{background:#11151c;color:#fff;border-color:#11151c}
+  .btn.accent{background:var(--accent);color:#fff;border-color:var(--accent)}
+  .btn.danger{color:#c0392b;border-color:#f0d2cd}
+  .btn.w{min-width:54px;text-align:center}
+  .btn.block{width:100%;text-align:center}
+  .btn:disabled{opacity:.5;cursor:default}
+</style>
+</head>
+<body data-view="dashboard">
+
+<!-- ── Header ── -->
+<div class="ah">
+  <div class="brand"><span class="mark">W</span> WendyOS</div>
+  <select id="devsel" class="devsel">
+    <option value="">No device</option>
+  </select>
+</div>
+
+<!-- ── Tabs ── -->
+<div class="tabs">
+  <div class="tab" id="tab-dashboard" onclick="switchTab('dashboard')">Dashboard</div>
+  <div class="tab" id="tab-controls"  onclick="switchTab('controls')">Controls</div>
+  <div class="tab" id="tab-apps"      onclick="switchTab('apps')">Apps <span class="badge" id="apps-badge"></span></div>
+</div>
+
+<!-- ── Dashboard view ── -->
+<div class="view view-dashboard" id="view-dashboard">
+  <div class="empty" id="dash-empty">Loading…</div>
+  <div id="dash-content" style="display:none">
+    <div class="summary">
+      <div class="icon">▣</div>
+      <div>
+        <h2 id="dash-device-name"></h2>
+        <div class="meta" id="dash-meta"></div>
+      </div>
+      <span class="pill" id="dash-pill">● ONLINE</span>
+    </div>
+    <div class="tiles" id="dash-tiles"></div>
+    <div class="sechead">
+      <h3>Containers</h3>
+      <span class="count" id="dash-container-count"></span>
+    </div>
+    <div id="dash-containers"></div>
+    <div class="foot"><span class="live"></span> Live · clicking a button calls the tool back through the host</div>
+  </div>
+</div>
+
+<!-- ── Controls view ── -->
+<div class="view view-controls" id="view-controls">
+  <div class="empty" id="ctl-empty">Loading…</div>
+  <div id="ctl-content" style="display:none">
+    <div class="grouphead">Containers</div>
+    <div id="ctl-containers"></div>
+    <div class="grouphead">System</div>
+    <div id="ctl-update-banner"></div>
+    <div id="ctl-system-rows"></div>
+  </div>
+</div>
+
+<!-- ── Apps view ── -->
+<div class="view view-apps" id="view-apps">
+  <div class="empty" id="apps-empty">Loading…</div>
+  <div id="apps-content" style="display:none">
+    <div class="grouphead">Container apps on this device</div>
+    <div class="appsgrid" id="apps-grid"></div>
+    <div class="apps-hint">Opening an app loads its own <b>ui://</b> resource — proxied through the agent and rendered in the same iframe.</div>
+  </div>
+</div>
+
+<script>
+  // --- MCP Apps postMessage bridge (host <-> iframe) ---
+  let _seq = 0;
+  const _pending = {};
+  function _rpc(method, params) {
+    return new Promise((resolve, reject) => {
+      const id = ++_seq;
+      _pending[id] = { resolve, reject };
+      parent.postMessage({ jsonrpc: "2.0", id, method, params }, "*");
+    });
+  }
+  window.addEventListener("message", (e) => {
+    const msg = e.data || {};
+    if (msg.id && _pending[msg.id]) {
+      const p = _pending[msg.id]; delete _pending[msg.id];
+      msg.error ? p.reject(msg.error) : p.resolve(msg.result);
+      return;
+    }
+    if (msg.method === "ui/render" || msg.method === "ui/data") {
+      render(msg.params && (msg.params.structuredContent || msg.params));
+    }
+  });
+  function callTool(name, args) { return _rpc("tools/call", { name, arguments: args || {} }); }
+  async function act(name, args) {
+    try { const r = await callTool(name, args); if (r && r.structuredContent) render(r.structuredContent); }
+    catch (err) { console.error("tool call failed", err); }
+  }
+
+  // --- View router: structuredContent = { view, data } ---
+  let _device = null;
+  const _lastData = {};
+
+  function render(sc) {
+    if (!sc) return;
+    const view = sc.view || "dashboard";
+    const data = sc.data || {};
+    if (data.device) _device = data.device;
+    _lastData[view] = data;
+    switchTab(view, /* fromRender= */ true);
+    if (view === "dashboard") renderDashboard(data);
+    else if (view === "controls") renderControls(data);
+    else if (view === "apps") renderApps(data);
+  }
+
+  function switchTab(view, fromRender) {
+    document.body.dataset.view = view;
+    document.querySelectorAll(".tab").forEach(t => t.classList.remove("on"));
+    const tabEl = document.getElementById("tab-" + view);
+    if (tabEl) tabEl.classList.add("on");
+    if (!fromRender && _lastData[view]) {
+      if (view === "dashboard") renderDashboard(_lastData[view]);
+      else if (view === "controls") renderControls(_lastData[view]);
+      else if (view === "apps") renderApps(_lastData[view]);
+    }
+  }
+
+  // ── Device selector ──
+  const deviceSelect = document.getElementById("devsel");
+  deviceSelect.onchange = () => { _device = deviceSelect.value; act("device_info", { device: _device }); };
+
+  function setDeviceSelector(name) {
+    let found = false;
+    for (const opt of deviceSelect.options) { if (opt.value === name) { found = true; break; } }
+    if (!found) { const o = document.createElement("option"); o.value = name; o.text = name; deviceSelect.add(o); }
+    deviceSelect.value = name;
+  }
+
+  // ── Dashboard renderer ──
+  function renderDashboard(data) {
+    const empty = document.getElementById("dash-empty");
+    const content = document.getElementById("dash-content");
+    if (!data || !data.device) { empty.style.display = ""; content.style.display = "none"; return; }
+    empty.style.display = "none"; content.style.display = "";
+
+    setDeviceSelector(data.device);
+    document.getElementById("dash-device-name").textContent = data.device;
+    const s = data.stats || {};
+    document.getElementById("dash-meta").textContent =
+      [data.connection_type && "via " + data.connection_type, s.uptime].filter(Boolean).join(" · ") || data.device;
+    document.getElementById("dash-pill").textContent = "● ONLINE";
+
+    const tiles = document.getElementById("dash-tiles");
+    tiles.innerHTML = "";
+    const stats = [
+      { k:"CPU",    v: pct(s.cpu),      bar: s.cpu,        g: false },
+      { k:"Memory", v: memVal(s.memory),bar: s.memory_pct,  g: false },
+      { k:"GPU",    v: pct(s.gpu),      bar: s.gpu,        g: false },
+      { k:"Disk",   v: diskVal(s.disk), bar: s.disk_pct,   g: true  },
+      { k:"Temp",   v: tempVal(s.temp), bar: s.temp_pct,   g: true  },
+    ];
+    for (const t of stats) {
+      const d = document.createElement("div"); d.className = "tile";
+      d.innerHTML = `<div class="k">${t.k}</div><div class="v">${t.v}</div>` +
+        (t.bar != null ? `<div class="bar${t.g?" g":""}"><i style="width:${clamp(t.bar)}%"></i></div>` : "");
+      tiles.appendChild(d);
+    }
+
+    const containers = data.containers || [];
+    document.getElementById("dash-container-count").textContent =
+      containers.filter(c => c.running).length + " running";
+    const cbox = document.getElementById("dash-containers");
+    cbox.innerHTML = "";
+    for (const c of containers) {
+      const row = document.createElement("div"); row.className = "crow";
+      const subParts = [c.version, c.running ? "running" : "stopped"].filter(Boolean);
+      if (c.hasUi) subParts.push("exposes MCP app");
+      row.innerHTML = `
+        <div class="cic">${appIcon(c.name)}</div>
+        <div class="info"><div class="nm">${esc(c.name)}</div><div class="sub">${esc(subParts.join(" · "))}</div></div>
+        <div class="mini">
+          <div><div class="k">CPU</div><div class="val">${pct(c.cpu)}</div></div>
+          <div><div class="k">MEM</div><div class="val">${memVal(c.mem)}</div></div>
+        </div>
+        <div class="acts">
+          ${c.hasUi ? `<button class="btn open" onclick="act('app_open',{device:_device,app:${JSON.stringify(c.name)}})">Open app ↗</button>` : ""}
+          ${c.running
+            ? `<button class="btn ghost w" onclick="act('container_stop',{device:_device,name:${JSON.stringify(c.name)}})">Stop</button>`
+            : `<button class="btn w" onclick="act('container_start',{device:_device,name:${JSON.stringify(c.name)}})">Start</button>`
+          }
+        </div>`;
+      cbox.appendChild(row);
+    }
+  }
+
+  // ── Controls renderer ──
+  function renderControls(data) {
+    const empty = document.getElementById("ctl-empty");
+    const content = document.getElementById("ctl-content");
+    if (!data || !data.device) { empty.style.display = ""; content.style.display = "none"; return; }
+    empty.style.display = "none"; content.style.display = "";
+
+    setDeviceSelector(data.device);
+
+    const cbox = document.getElementById("ctl-containers");
+    cbox.innerHTML = "";
+    for (const c of (data.containers || [])) {
+      const running = !!c.running;
+      const row = document.createElement("div"); row.className = "ctl";
+      row.innerHTML = `
+        <div class="cic">${appIcon(c.name)}</div>
+        <div><div class="nm">${esc(c.name)}</div><div class="sub">${running ? "running" + (c.cpu != null ? " · " + pct(c.cpu) + " CPU" : "") : "stopped"}</div></div>
+        <div class="right">
+          <span class="state${running ? "" : " off"}">${running ? "RUNNING" : "STOPPED"}</span>
+          <div class="sw${running ? "" : " off"}" title="toggle"
+               onclick="act(${JSON.stringify(running ? "container_stop" : "container_start")},{device:_device,name:${JSON.stringify(c.name)}})"></div>
+        </div>`;
+      cbox.appendChild(row);
+    }
+
+    const bannerBox = document.getElementById("ctl-update-banner");
+    bannerBox.innerHTML = "";
+    const upd = data.update || {};
+    if (upd.available) {
+      const b = document.createElement("div"); b.className = "banner";
+      b.innerHTML = `<span style="font-size:18px">⬆️</span>
+        <div><div class="t">WendyOS ${esc(upd.version || "")} available</div><div class="s">Update will reboot the device once</div></div>
+        <div class="right"><button class="btn accent" onclick="act('os_update',{device:_device})">Update</button></div>`;
+      bannerBox.appendChild(b);
+    }
+
+    const sys = document.getElementById("ctl-system-rows");
+    sys.innerHTML = "";
+    const wifi = data.wifi || {};
+    sys.innerHTML = `
+      <div class="ctl">
+        <div class="cic">📶</div>
+        <div><div class="nm">Wi-Fi</div><div class="sub">${wifi.network ? "connected · " + esc(wifi.network) : "not connected"}</div></div>
+        <div class="right"><button class="btn ghost" onclick="act('wifi_list',{device:_device})">Switch network</button></div>
+      </div>
+      <div class="ctl">
+        <div class="cic">⭐</div>
+        <div><div class="nm">Default device</div><div class="sub">commands target this device</div></div>
+        <div class="right"><button class="btn dark" onclick="act('device_set_default',{device:_device})">Set default</button></div>
+      </div>
+      <div class="ctl">
+        <div class="cic">⏻</div>
+        <div><div class="nm">Power</div><div class="sub">reboot the device</div></div>
+        <div class="right"><button class="btn danger" onclick="act('device_reboot',{device:_device})">Reboot</button></div>
+      </div>`;
+  }
+
+  // ── Apps renderer ──
+  function renderApps(data) {
+    const empty = document.getElementById("apps-empty");
+    const content = document.getElementById("apps-content");
+    if (!data || !data.device) { empty.style.display = ""; content.style.display = "none"; return; }
+    empty.style.display = "none"; content.style.display = "";
+
+    setDeviceSelector(data.device);
+
+    const apps = data.apps || [];
+    document.getElementById("apps-badge").textContent = apps.length || "";
+    const grid = document.getElementById("apps-grid");
+    grid.innerHTML = "";
+    for (const a of apps) {
+      const hasUI = a.status === "ui";
+      const card = document.createElement("div");
+      card.className = "acard" + (hasUI ? "" : " disabled");
+      let tagHTML, btnHTML;
+      if (a.status === "ui") {
+        tagHTML = `<span class="tag ui">● MCP app</span>`;
+        btnHTML = `<button class="btn dark block" onclick="act('app_open',{device:_device,app:${JSON.stringify(a.name)}})">Open ↗</button>`;
+      } else if (a.status === "tools") {
+        tagHTML = `<span class="tag noui">tools only · no UI</span>`;
+        btnHTML = `<button class="btn block" disabled>No app UI</button>`;
+      } else {
+        tagHTML = `<span class="tag noui">no mcp entitlement</span>`;
+        btnHTML = `<button class="btn block" disabled>Not exposed</button>`;
+      }
+      card.innerHTML = `
+        <div class="top"><div class="ic">${appIcon(a.name)}</div><div><div class="nm">${esc(a.name)}</div><div class="ver">${esc(a.version || "")}</div></div></div>
+        <div>${tagHTML}</div>
+        ${btnHTML}`;
+      grid.appendChild(card);
+    }
+  }
+
+  // ── Helpers ──
+  function esc(s) {
+    return String(s || "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+  }
+  function clamp(v) { return Math.min(100, Math.max(0, v || 0)); }
+  function pct(v) { return v != null ? Math.round(v) + "<small>%</small>" : "—"; }
+  function memVal(v) {
+    if (v == null) return "—";
+    if (typeof v === "string") return esc(v);
+    return v >= 1024 ? (v/1024).toFixed(1) + "<small>GB</small>" : Math.round(v) + "<small>MB</small>";
+  }
+  function diskVal(v) {
+    if (v == null) return "—";
+    if (typeof v === "string") return esc(v);
+    return v >= 1024 ? (v/1024).toFixed(0) + "<small>GB</small>" : Math.round(v) + "<small>GB</small>";
+  }
+  function tempVal(v) { return v != null ? Math.round(v) + "<small>°C</small>" : "—"; }
+
+  const _icons = { camera:"🎥", voice:"🔊", audio:"🔊", sensor:"🧪", edge:"🌐", api:"🌐", web:"🌐", robot:"🤖" };
+  function appIcon(name) {
+    const n = (name || "").toLowerCase();
+    for (const [k,v] of Object.entries(_icons)) { if (n.includes(k)) return v; }
+    return "📦";
+  }
+
+  // ── Bootstrap: ask host for initial state ──
+  _rpc("ui/initialize", { capabilities: {} }).then(render).catch(() => {});
+</script>
+</body>
+</html>
