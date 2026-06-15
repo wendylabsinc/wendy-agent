@@ -676,6 +676,7 @@ func (s *ContainerService) DeleteContainer(ctx context.Context, req *agentpb.Del
 		// container (which would be "appID_serviceName" and find nothing).
 		s.deleteVolumes(appName)
 	}
+	s.deleteFileSyncData(appName)
 
 	s.logger.Info("App deleted",
 		zap.String("app_name", appName),
@@ -683,6 +684,25 @@ func (s *ContainerService) DeleteContainer(ctx context.Context, req *agentpb.Del
 		zap.Bool("delete_volumes", req.GetDeleteVolumes()),
 	)
 	return &agentpb.DeleteContainerResponse{}, nil
+}
+
+func (s *ContainerService) deleteFileSyncData(appName string) {
+	dir, err := FileSyncAppDir(appName)
+	if err != nil {
+		s.logger.Warn("deleteFileSyncData: invalid app name; skipping",
+			zap.String("app_name", appName),
+			zap.Error(err),
+		)
+		return
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		s.logger.Warn("Failed to remove file sync data",
+			zap.String("path", dir),
+			zap.Error(err),
+		)
+		return
+	}
+	s.logger.Info("File sync data removed", zap.String("path", dir))
 }
 
 // volumesDir is the base directory for persistent volumes. It's a variable

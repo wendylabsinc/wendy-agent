@@ -227,15 +227,32 @@ func TestStopContainer(t *testing.T) {
 }
 
 func TestDeleteContainer(t *testing.T) {
+	oldFileSyncRoot := fileSyncRoot
+	fileSyncRoot = t.TempDir()
+	t.Cleanup(func() { fileSyncRoot = oldFileSyncRoot })
+	appFilesDir, err := FileSyncAppDir("test-app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(appFilesDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(appFilesDir, "config.txt"), []byte("stale"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
 	client, cleanup := startContainerServer(t, &mockContainerdClient{})
 	defer cleanup()
 
-	_, err := client.DeleteContainer(context.Background(), &agentpb.DeleteContainerRequest{
+	_, err = client.DeleteContainer(context.Background(), &agentpb.DeleteContainerRequest{
 		AppName:     "test-app",
 		DeleteImage: false,
 	})
 	if err != nil {
 		t.Fatalf("DeleteContainer: %v", err)
+	}
+	if _, err := os.Stat(appFilesDir); !os.IsNotExist(err) {
+		t.Fatalf("file sync data still exists or stat failed: %v", err)
 	}
 }
 
