@@ -73,6 +73,34 @@ in per-issue worktree sessions, not in this master planning session.
   cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1510-rpi-swift-e2e && ai --prompt "Read HANDOVER.md and follow its instructions."
   ```
 
+### WDY-1558 — Mark failed Swift E2E attempts without observations as failed
+
+- Status: `in progress`
+- Linear project: E2E Tests
+- Linear: https://linear.app/wendylabsinc/issue/WDY-1558/mark-failed-swift-e2e-attempts-without-observations-as-failed
+- Linear assignee: `konstantin@wendy.sh`
+- Linear state: In Progress (`started`)
+- Branch/worktree name: `kb.wdy-1558-e2e-attempt-failures`
+- Worktree path: `/Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1558-e2e-attempt-failures`
+- PR: https://github.com/wendylabsinc/WendyOS/pull/1032 (draft setup PR)
+- PR closing reference: `Closes WDY-1558`
+- Setup commit: `09f75c4`
+- Scope: fix Swift E2E report/overview classification for preflight or setup
+  failures that produce an attempt-level artifact with `attempt.json.exitStatus`
+  non-zero but no per-test observations. These should be shown as failed target
+  attempts, not unknown empty target rows.
+- Triggering run: https://github.com/wendylabsinc/WendyOS/actions/runs/27543175882
+  failed in `macOS 26 → Jetson Orin Nano` because the CLI auth fixture timed
+  out against `wendyos-strong-dunlin.local`; the AI diagnosis was correct but
+  the target overview showed `macos-jetson-orin-nano` as Unknown.
+- Validation: add regression coverage for an attempt-only failure and run
+  targeted `RunOverviewTests` / `ReportCommandTests`.
+- Resume command:
+
+  ```sh
+  cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1558-e2e-attempt-failures && ai --prompt "Read HANDOVER.md and follow its instructions."
+  ```
+
 ### WDY-1519 — Add IPv4 fallback preflight for physical Swift E2E targets
 
 - Status: `backlog`
@@ -259,18 +287,18 @@ in per-issue worktree sessions, not in this master planning session.
 ## E2E Tests issue order
 
 Keep each issue short and validation-focused. Completed issues stay in the
-ledger for history; remaining active work is in backlog unless explicitly
-started.
+ledger for history; current active work is WDY-1558.
 
-1. **WDY-1521** — Done: Teach E2E AI review to explain why a run failed.
-2. **WDY-1528** — Done: Add machine-readable Swift E2E recording metadata.
-3. **WDY-1519** — Backlog: Add IPv4 fallback preflight for physical Swift E2E targets.
-4. **WDY-1527** — Done: Rework Swift E2E aggregate storage for attempt-level artifacts.
-5. **WDY-1510** — Canceled: Re-enable Raspberry Pi physical Swift E2E route.
-6. **WDY-1482** — Done: Gate device-to-device E2E jobs behind successful local E2E runs.
-7. **WDY-1494** — Done: Clean up Swift E2E route matrix and restore commented route ledger.
-8. **WDY-1481** — Done: Add local E2E matrix coverage for macOS↔macOS and Ubuntu↔Ubuntu.
-9. **WDY-1479** — Done: Investigate SER9 Swift E2E mTLS auth failure.
+1. **WDY-1558** — In progress: Mark failed Swift E2E attempts without observations as failed.
+2. **WDY-1521** — Done: Teach E2E AI review to explain why a run failed.
+3. **WDY-1528** — Done: Add machine-readable Swift E2E recording metadata.
+4. **WDY-1519** — Backlog: Add IPv4 fallback preflight for physical Swift E2E targets.
+5. **WDY-1527** — Done: Rework Swift E2E aggregate storage for attempt-level artifacts.
+6. **WDY-1510** — Canceled: Re-enable Raspberry Pi physical Swift E2E route.
+7. **WDY-1482** — Done: Gate device-to-device E2E jobs behind successful local E2E runs.
+8. **WDY-1494** — Done: Clean up Swift E2E route matrix and restore commented route ledger.
+9. **WDY-1481** — Done: Add local E2E matrix coverage for macOS↔macOS and Ubuntu↔Ubuntu.
+10. **WDY-1479** — Done: Investigate SER9 Swift E2E mTLS auth failure.
 
 ## One-off route/workflow PRs
 
