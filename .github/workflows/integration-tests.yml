@@ -174,7 +174,15 @@ jobs:
             exit 1
           fi
 
-          MATRIX=$(jq -cn --args '$ARGS.positional' "${HOSTS[@]}")
+          # Guard the empty case explicitly: under `set -u`, expanding an empty
+          # "${HOSTS[@]}" aborts with "HOSTS[@]: unbound variable" on the older
+          # bash (3.2) shipped on the macOS runners, which would mask the clean
+          # "No LAN devices found" error below when no allowlisted device is up.
+          if [[ "$COUNT" -eq 0 ]]; then
+            MATRIX='[]'
+          else
+            MATRIX=$(jq -cn --args '$ARGS.positional' "${HOSTS[@]}")
+          fi
           [[ -n "$MATRIX" && "$MATRIX" != "null" ]] || { echo "ERROR: failed to build device matrix" >&2; exit 1; }
           echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
 
