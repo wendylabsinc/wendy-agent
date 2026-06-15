@@ -958,6 +958,11 @@ func swiftBuildBinPath(ctx context.Context, cwd, buildConfig string) (string, er
 }
 
 func validateConfiguredFileSources(cwd string, appCfg *appconfig.AppConfig) error {
+	projectRoot, err := filepath.EvalSymlinks(cwd)
+	if err != nil {
+		return fmt.Errorf("resolving project directory: %w", err)
+	}
+
 	for i, f := range appCfg.Files {
 		path := filepath.Join(cwd, f.Path)
 		if _, err := os.Stat(path); err != nil {
@@ -966,8 +971,24 @@ func validateConfiguredFileSources(cwd string, appCfg *appconfig.AppConfig) erro
 			}
 			return fmt.Errorf("files[%d]: checking path %q: %w", i, f.Path, err)
 		}
+
+		resolved, err := filepath.EvalSymlinks(path)
+		if err != nil {
+			return fmt.Errorf("files[%d]: resolving path %q: %w", i, f.Path, err)
+		}
+		if !pathWithinDirectory(resolved, projectRoot) {
+			return fmt.Errorf("files[%d]: path %q resolves outside the project directory", i, f.Path)
+		}
 	}
 	return nil
+}
+
+func pathWithinDirectory(path, dir string) bool {
+	rel, err := filepath.Rel(dir, path)
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
 }
 
 func syncWendyJSONFilesForLinux(ctx context.Context, conn *grpcclient.AgentConnection, cwd string, appCfg *appconfig.AppConfig) error {

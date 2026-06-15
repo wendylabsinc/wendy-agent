@@ -118,6 +118,74 @@ struct `'wendy device apps remove'` {
     }
 
     /**
+     Synced-file cleanup is scoped to the exact app ID. Removing one app does
+     not delete another app's managed synced-file directory when the other app
+     has a similar prefix in its ID.
+     */
+    @Test(.enabled(if: isAgentLinuxOrWendyOS))
+    func `removes only the exact app scoped synced file directory`() async throws {
+        let appID = Self.appID("exact")
+        let siblingAppID = appID + "-sibling"
+
+        try await self.scenario.run(authenticated: false) { cli, agent in
+            let agentAddress = agent.machine.address
+
+            do {
+                try await cli.sh(Self.createProjectScript(appID: appID))
+                try await cli.sh(Self.createProjectScript(appID: siblingAppID))
+
+                try await cli.sh(
+                    Self.runDeployCommand(
+                        project: Self.projectName(appID),
+                        agentAddress: agentAddress
+                    )
+                ) { result in
+                    #expect(result.status.isSuccess)
+                }
+                try await cli.sh(
+                    Self.runDeployCommand(
+                        project: Self.projectName(siblingAppID),
+                        agentAddress: agentAddress
+                    )
+                ) { result in
+                    #expect(result.status.isSuccess)
+                }
+
+                try await cli.sh(
+                    "wendy --device \(Self.shellQuote(agentAddress)) device apps remove \(Self.shellQuote(appID)) --force"
+                ) { result in
+                    #expect(result.status.isSuccess)
+                }
+
+                try await agent.sh(
+                    Self.privilegedTestCommand("! -e", Self.agentFileSyncDirectory(appID))
+                ) { result in
+                    #expect(result.status.isSuccess)
+                }
+                try await agent.sh(
+                    Self.privilegedTestCommand("-d", Self.agentFileSyncDirectory(siblingAppID))
+                ) { result in
+                    #expect(result.status.isSuccess)
+                }
+            } catch {
+                try? await cli.sh(
+                    "wendy --device \(Self.shellQuote(agentAddress)) device apps remove \(Self.shellQuote(appID)) --force --delete-volumes"
+                )
+                try? await cli.sh(
+                    "wendy --device \(Self.shellQuote(agentAddress)) device apps remove \(Self.shellQuote(siblingAppID)) --force --delete-volumes"
+                )
+                throw error
+            }
+
+            try await cli.sh(
+                "wendy --device \(Self.shellQuote(agentAddress)) device apps remove \(Self.shellQuote(siblingAppID)) --force --delete-volumes"
+            ) { result in
+                #expect(result.status.isSuccess)
+            }
+        }
+    }
+
+    /**
      Removing an application without `--delete-volumes` removes synced
      deployment inputs while preserving persistent volume data for the same
      app. This keeps `wendy.json.files` cleanup independent from durable app

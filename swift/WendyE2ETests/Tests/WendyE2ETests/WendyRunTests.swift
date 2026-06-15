@@ -206,6 +206,64 @@ struct `'wendy run'` {
     }
 
     /**
+     A failed file-sync preflight on redeploy does not replace the previously
+     deployed app-scoped synced files or container. The command fails before
+     build/deploy, and the agent still has the last successful synced content.
+     */
+    @Test(.enabled(if: isAgentLinuxOrWendyOS))
+    func `does not replace a deployed app when file sync validation fails`() async throws {
+        let appID = Self.appID("failedredeploy")
+
+        try await self.scenario.run(authenticated: false) { cli, agent in
+            let agentAddress = agent.machine.address
+            try await Self.withRemovedApp(appID, cli: cli, agentAddress: agentAddress) {
+                try await cli.sh(Self.createFailedRedeployProjectScript(appID: appID))
+
+                try await cli.sh(
+                    Self.runDeployCommand(
+                        project: Self.projectName(appID),
+                        agentAddress: agentAddress
+                    )
+                ) { result in
+                    #expect(result.status.isSuccess)
+                }
+
+                try await cli.sh(
+                    Self.updateFailedRedeployProjectWithMissingFileScript(appID: appID)
+                )
+
+                try await cli.sh(
+                    Self.runDeployCommand(
+                        project: Self.projectName(appID),
+                        agentAddress: agentAddress
+                    )
+                ) { result in
+                    let output = result.normalizedStdout + result.normalizedStderr
+
+                    #expect(result.status.isFailure)
+                    #expect(output.contains("missing.txt"))
+                    #expect(!output.contains("Building and pushing Docker image"))
+                    #expect(!output.contains("Container \(appID) created"))
+                }
+
+                let syncedMessage = Self.agentFileSyncPath(appID, "config/message.txt")
+                try await agent.sh(
+                    "test \"$(\(Self.privilegedShell("cat " + Self.shellQuote(syncedMessage))))\" = v1"
+                ) { result in
+                    #expect(result.status.isSuccess)
+                }
+                try await agent.sh(
+                    Self.privilegedShell(
+                        "ctr -n default containers info \(Self.shellQuote(appID)) >/dev/null"
+                    )
+                ) { result in
+                    #expect(result.status.isSuccess)
+                }
+            }
+        }
+    }
+
+    /**
      Unsafe file-sync source paths are rejected before deployment. Absolute
      `path` values and values containing `..` produce an actionable
      configuration diagnostic, return a failure status, and do not build an
@@ -229,6 +287,35 @@ struct `'wendy run'` {
                 #expect(result.status.isFailure)
                 #expect(output.contains("files[0]"))
                 #expect(output.contains("path must not contain '..'"))
+                #expect(!output.contains("Building and pushing Docker image"))
+                #expect(!output.contains("Creating container"))
+            }
+        }
+    }
+
+    /**
+     Explicitly configured symlinks must not escape the project directory. A
+     `files[].path` symlink that resolves outside the project fails before
+     build/deploy so local files outside the app cannot be uploaded by proxy.
+     */
+    @Test(.enabled(if: isAgentLinuxOrWendyOS))
+    func `rejects configured symlinks that escape the project`() async throws {
+        let appID = Self.appID("symlink")
+
+        try await self.scenario.run(authenticated: false) { cli, agent in
+            try await cli.sh(Self.createEscapingSymlinkProjectScript(appID: appID))
+
+            try await cli.sh(
+                Self.runCommand(
+                    project: Self.projectName(appID),
+                    agentAddress: agent.machine.address
+                )
+            ) { result in
+                let output = result.normalizedStdout + result.normalizedStderr
+
+                #expect(result.status.isFailure)
+                #expect(output.contains("files[0]"))
+                #expect(output.contains("resolves outside the project directory"))
                 #expect(!output.contains("Building and pushing Docker image"))
                 #expect(!output.contains("Creating container"))
             }
@@ -358,6 +445,37 @@ struct `'wendy run'` {
                 Self.runCommand(
                     project: Self.projectName(appID),
                     agentAddress: agent.machine.address
+                )
+            ) { result in
+                let output = result.normalizedStdout + result.normalizedStderr
+
+                #expect(result.status.isFailure)
+                #expect(output.contains("top-level wendy.json files"))
+                #expect(output.contains("multi-service"))
+                #expect(!output.contains("Building service"))
+                #expect(!output.contains("Creating container"))
+            }
+        }
+    }
+
+    /**
+     Selecting an individual service does not make top-level
+     `wendy.json.files` supported for multi-service apps. The command still
+     reports the unsupported top-level files contract before building the
+     selected service or creating containers.
+     */
+    @Test(.enabled(if: isAgentLinuxOrWendyOS))
+    func `reports top-level files as unsupported when running a selected service`() async throws {
+        let appID = Self.appID("service")
+
+        try await self.scenario.run(authenticated: false) { cli, agent in
+            try await cli.sh(Self.createMultiServiceProjectScript(appID: appID))
+
+            try await cli.sh(
+                Self.runServiceCommand(
+                    project: Self.projectName(appID),
+                    agentAddress: agent.machine.address,
+                    service: "api"
                 )
             ) { result in
                 let output = result.normalizedStdout + result.normalizedStderr
@@ -543,6 +661,14 @@ struct `'wendy run'` {
 
     private static func runDeployCommand(project: String, agentAddress: String) -> String {
         "wendy --device \(Self.shellQuote(agentAddress)) run --deploy --prefix \(Self.shellQuote(project))"
+    }
+
+    private static func runServiceCommand(
+        project: String,
+        agentAddress: String,
+        service: String
+    ) -> String {
+        "wendy --device \(Self.shellQuote(agentAddress)) run --prefix \(Self.shellQuote(project)) --service \(Self.shellQuote(service))"
     }
 
     private static func runCommandWithoutMacOSLinuxContainerExperiment(
@@ -738,6 +864,47 @@ struct `'wendy run'` {
             """
     }
 
+    private static func createFailedRedeployProjectScript(appID: String) -> String {
+        let project = Self.projectName(appID)
+        return """
+            set -eu
+            rm -rf \(Self.shellQuote(project))
+            mkdir -p \(Self.shellQuote(project))/config
+            cat > \(Self.shellQuote(project))/Dockerfile <<'EOF'
+            FROM alpine:3.20
+            WORKDIR /work
+            RUN mkdir -p /work/config
+            CMD ["/bin/sh", "-c", "cat config/message.txt"]
+            EOF
+            printf 'v1' > \(Self.shellQuote(project))/config/message.txt
+            cat > \(Self.shellQuote(project))/wendy.json <<'EOF'
+            {
+              "appId": "\(appID)",
+              "files": [
+                { "path": "config/message.txt" }
+              ]
+            }
+            EOF
+            """
+    }
+
+    private static func updateFailedRedeployProjectWithMissingFileScript(appID: String) -> String {
+        let project = Self.projectName(appID)
+        return """
+            set -eu
+            printf 'v2' > \(Self.shellQuote(project))/config/message.txt
+            cat > \(Self.shellQuote(project))/wendy.json <<'EOF'
+            {
+              "appId": "\(appID)",
+              "files": [
+                { "path": "config/message.txt" },
+                { "path": "missing.txt" }
+              ]
+            }
+            EOF
+            """
+    }
+
     private static func createMissingFileProjectScript(appID: String) -> String {
         let project = Self.projectName(appID)
         return """
@@ -774,6 +941,29 @@ struct `'wendy run'` {
               "appId": "\(appID)",
               "files": [
                 { "path": "../outside.txt" }
+              ]
+            }
+            EOF
+            """
+    }
+
+    private static func createEscapingSymlinkProjectScript(appID: String) -> String {
+        let project = Self.projectName(appID)
+        return """
+            set -eu
+            rm -rf \(Self.shellQuote(project)) outside-secret.txt
+            mkdir -p \(Self.shellQuote(project))
+            cat > \(Self.shellQuote(project))/Dockerfile <<'EOF'
+            FROM alpine:3.20
+            CMD ["/bin/sh", "-c", "echo should-not-run"]
+            EOF
+            printf 'outside' > outside-secret.txt
+            ln -s ../outside-secret.txt \(Self.shellQuote(project))/linked.txt
+            cat > \(Self.shellQuote(project))/wendy.json <<'EOF'
+            {
+              "appId": "\(appID)",
+              "files": [
+                { "path": "linked.txt" }
               ]
             }
             EOF
