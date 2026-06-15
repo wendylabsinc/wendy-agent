@@ -45,8 +45,10 @@ struct DockerCLI: Sendable {
         case label(key: String, value: String)
         case publish(hostPort: UInt16, containerPort: UInt16)
         case volume(hostOrName: String, containerPath: String)
+        case bindReadOnly(source: String, target: String)
         case env(key: String, value: String)
         case network(String)
+        case workdir(String)
         case restartUnlessStopped
         case restartNo
         case restartOnFailure(Int)
@@ -61,8 +63,13 @@ struct DockerCLI: Sendable {
             case .label(let k, let v): ["--label", "\(k)=\(v)"]
             case .publish(let h, let c): ["-p", "\(h):\(c)"]
             case .volume(let src, let dst): ["-v", "\(src):\(dst)"]
+            case .bindReadOnly(let src, let dst):
+                [
+                    "--mount", "type=bind,source=\(src),target=\(dst),readonly",
+                ]
             case .env(let k, let v): ["-e", "\(k)=\(v)"]
             case .network(let n): ["--network", n]
+            case .workdir(let dir): ["--workdir", dir]
             case .restartUnlessStopped: ["--restart", "unless-stopped"]
             case .restartNo: ["--restart", "no"]
             case .restartOnFailure(let n): ["--restart", "on-failure:\(n)"]
@@ -150,6 +157,18 @@ struct DockerCLI: Sendable {
     @discardableResult
     func pull(image: String) async throws -> String {
         try await run(arguments: ["pull", image])
+    }
+
+    /// Returns the image-config working directory, if the image declares one.
+    func imageWorkingDirectory(image: String) async throws -> String? {
+        let output = try await run(
+            arguments: ["image", "inspect", image, "--format", "{{json .Config.WorkingDir}}"],
+            timeout: self.startupCommandTimeout
+        )
+        let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let data = trimmed.data(using: .utf8) else { return nil }
+        let workingDir = try JSONDecoder().decode(String.self, from: data)
+        return workingDir.isEmpty ? nil : workingDir
     }
 
     // MARK: - Container lifecycle

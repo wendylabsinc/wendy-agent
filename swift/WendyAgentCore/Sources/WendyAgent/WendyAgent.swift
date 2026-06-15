@@ -172,15 +172,45 @@ public final class WendyAgent {
     private static let linuxContainersUnsupportedMessage =
         "Linux containers aren't supported on Macs yet. Support is planned for a future release."
 
+    nonisolated static func experimentalMacOSLinuxContainersEnabled(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Bool {
+        switch environment["WENDY_EXPERIMENTAL_MACOS_LINUX_CONTAINERS"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        {
+        case "1", "true", "yes", "on":
+            return true
+        default:
+            return false
+        }
+    }
+
     private func prepareDockerIfNeeded() async -> DockerCLI.AvailabilityCheckResult {
-        self.logger.info(
-            "Linux container support disabled on macOS",
-            metadata: ["reason": "\(Self.linuxContainersUnsupportedMessage)"]
-        )
-        return DockerCLI.AvailabilityCheckResult(
-            isAvailable: false,
-            failureMessage: Self.linuxContainersUnsupportedMessage
-        )
+        guard Self.experimentalMacOSLinuxContainersEnabled() else {
+            self.logger.info(
+                "Linux container support disabled on macOS",
+                metadata: ["reason": "\(Self.linuxContainersUnsupportedMessage)"]
+            )
+            return DockerCLI.AvailabilityCheckResult(
+                isAvailable: false,
+                failureMessage: Self.linuxContainersUnsupportedMessage
+            )
+        }
+
+        let docker = DockerCLI()
+        let availability = await docker.checkAvailability()
+        guard availability.isAvailable else { return availability }
+
+        do {
+            try await docker.ensureRegistry()
+            return availability
+        } catch {
+            return DockerCLI.AvailabilityCheckResult(
+                isAvailable: false,
+                failureMessage: "Starting experimental Docker registry failed: \(error)"
+            )
+        }
     }
 
     private func startMainServer(

@@ -42,6 +42,24 @@ struct WendyAppConfig: Codable, Equatable {
     let appId: String
     let platform: String?
     let entitlements: [WendyEntitlement]?
+    let files: [WendyFileSyncConfigEntry]?
+
+    init(
+        appId: String,
+        platform: String? = nil,
+        entitlements: [WendyEntitlement]? = nil,
+        files: [WendyFileSyncConfigEntry]? = nil
+    ) {
+        self.appId = appId
+        self.platform = platform
+        self.entitlements = entitlements
+        self.files = files
+    }
+}
+
+struct WendyFileSyncConfigEntry: Codable, Equatable {
+    let path: String
+    let to: String?
 }
 
 struct WendyEntitlement: Codable, Equatable {

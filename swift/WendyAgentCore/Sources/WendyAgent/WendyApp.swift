@@ -11,6 +11,7 @@ struct WendyApp: Codable {
     struct ContainerMetadata: Codable, Equatable {
         var imageName: String
         var appConfig: WendyAppConfig?
+        var workingDir: String?
     }
 
     var info: WendyAppInfo

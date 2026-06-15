@@ -4,6 +4,67 @@ import Testing
 @testable import WendyAgentCore
 
 struct DockerCLITests {
+    @Test("docker run options include readonly bind mounts")
+    func dockerRunOptionsIncludeReadonlyBindMounts() {
+        let arguments = DockerCLI.RunOption.bindReadOnly(
+            source: "/tmp/source",
+            target: "/app/config.json"
+        ).arguments
+
+        #expect(
+            arguments == [
+                "--mount", "type=bind,source=/tmp/source,target=/app/config.json,readonly",
+            ]
+        )
+    }
+
+    @Test("file sync entries become readonly Docker bind mounts")
+    func fileSyncEntriesBecomeReadonlyDockerBindMounts() async throws {
+        let appDirectory = try Self.makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: appDirectory) }
+
+        let configURL = appDirectory.appendingPathComponent("config/config.json")
+        try FileManager.default.createDirectory(
+            at: configURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try "{}".write(to: configURL, atomically: true, encoding: .utf8)
+
+        let backend = DockerContainerBackend()
+        let options = try await backend.fileSyncMountOptionsForTesting(
+            from: [WendyFileSyncConfigEntry(path: "config.json", to: "config/config.json")],
+            appDirectory: appDirectory,
+            workingDir: "/app"
+        )
+
+        #expect(
+            options.flatMap(\.arguments) == [
+                "--mount",
+                "type=bind,source=\(configURL.path),target=/app/config/config.json,readonly",
+            ]
+        )
+    }
+
+    @Test("experimental macOS Linux containers flag accepts explicit opt in")
+    func experimentalMacOSLinuxContainersFlagAcceptsExplicitOptIn() {
+        #expect(
+            WendyAgent.experimentalMacOSLinuxContainersEnabled(environment: [
+                "WENDY_EXPERIMENTAL_MACOS_LINUX_CONTAINERS": "1"
+            ])
+        )
+        #expect(
+            WendyAgent.experimentalMacOSLinuxContainersEnabled(environment: [
+                "WENDY_EXPERIMENTAL_MACOS_LINUX_CONTAINERS": "true"
+            ])
+        )
+        #expect(!WendyAgent.experimentalMacOSLinuxContainersEnabled(environment: [:]))
+        #expect(
+            !WendyAgent.experimentalMacOSLinuxContainersEnabled(environment: [
+                "WENDY_EXPERIMENTAL_MACOS_LINUX_CONTAINERS": "false"
+            ])
+        )
+    }
+
     @Test("checkAvailability returns false when the docker probe times out")
     func checkAvailabilityReturnsFalseWhenProbeTimesOut() async throws {
         let scriptURL = try Self.makeExecutableScript(
@@ -79,6 +140,13 @@ struct DockerCLITests {
                 "/Applications/Docker.app/Contents/Resources/bin/\(executable)"
             )
         )
+    }
+
+    private static func makeTempDirectory() throws -> URL {
+        let directoryURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+        return directoryURL
     }
 
     private static func makeExecutableScript(name: String, contents: String) throws -> URL {

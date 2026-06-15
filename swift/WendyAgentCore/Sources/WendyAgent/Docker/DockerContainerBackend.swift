@@ -7,6 +7,20 @@ import Logging
 /// delegates to this backend. The image is already in the local Docker registry
 /// at `localhost:<registryPort>` (pushed by the CLI via the standard buildx pipeline).
 actor DockerContainerBackend {
+    enum FileSyncMountError: Error, CustomStringConvertible {
+        case invalidDestination(String)
+        case missingSource(String)
+
+        var description: String {
+            switch self {
+            case .invalidDestination(let path):
+                "Invalid file sync destination: \(path)"
+            case .missingSource(let path):
+                "File sync source does not exist: \(path)"
+            }
+        }
+    }
+
     private let docker = DockerCLI()
     private let logger = Logger(label: "sh.wendy.agent.docker-backend")
 
@@ -22,6 +36,8 @@ actor DockerContainerBackend {
         appName: String,
         imageName: String,
         appConfig: WendyAppConfig?,
+        appDirectory: URL,
+        workingDir explicitWorkingDir: String?,
         terminationHandler: (@Sendable (Foundation.Process) -> Void)? = nil
     ) async throws -> (process: Foundation.Process, stdout: Pipe, stderr: Pipe) {
         let containerName = "wendy-\(appName)"
@@ -40,6 +56,19 @@ actor DockerContainerBackend {
         if let entitlements = appConfig?.entitlements {
             options += dockerOptions(from: entitlements, appName: appName)
         }
+
+        let workingDir: String
+        if let explicitWorkingDir {
+            workingDir = explicitWorkingDir
+            options.append(.workdir(explicitWorkingDir))
+        } else {
+            workingDir = try await docker.imageWorkingDirectory(image: imageName) ?? "/"
+        }
+        options += try fileSyncMountOptions(
+            from: appConfig?.files ?? [],
+            appDirectory: appDirectory,
+            workingDir: workingDir
+        )
 
         logger.info(
             "Starting Docker container",
@@ -73,6 +102,63 @@ actor DockerContainerBackend {
     /// List Wendy-managed Docker containers.
     func listContainers() async throws -> [DockerCLI.ContainerInfo] {
         try await docker.ps(label: "wendy.managed=true")
+    }
+
+    // MARK: - File sync mounts
+
+    func fileSyncMountOptionsForTesting(
+        from files: [WendyFileSyncConfigEntry],
+        appDirectory: URL,
+        workingDir: String
+    ) throws -> [DockerCLI.RunOption] {
+        try fileSyncMountOptions(from: files, appDirectory: appDirectory, workingDir: workingDir)
+    }
+
+    private func fileSyncMountOptions(
+        from files: [WendyFileSyncConfigEntry],
+        appDirectory: URL,
+        workingDir: String
+    ) throws -> [DockerCLI.RunOption] {
+        try files.map { entry in
+            let destinationRelativePath = try cleanFileSyncRelativePath(
+                entry.to ?? stripLeadingDotSlash(entry.path)
+            )
+            let sourceURL = appDirectory.appendingPathComponent(destinationRelativePath)
+            guard FileManager.default.fileExists(atPath: sourceURL.path) else {
+                throw FileSyncMountError.missingSource(sourceURL.path)
+            }
+            return .bindReadOnly(
+                source: sourceURL.path,
+                target: posixJoin(workingDir, destinationRelativePath)
+            )
+        }
+    }
+
+    private func stripLeadingDotSlash(_ path: String) -> String {
+        path.hasPrefix("./") ? String(path.dropFirst(2)) : path
+    }
+
+    private func cleanFileSyncRelativePath(_ path: String) throws -> String {
+        guard !path.isEmpty, !path.hasPrefix("/") else {
+            throw FileSyncMountError.invalidDestination(path)
+        }
+        let components = path.split(separator: "/").map(String.init)
+        guard !components.contains("."), !components.contains("..") else {
+            throw FileSyncMountError.invalidDestination(path)
+        }
+        return components.joined(separator: "/")
+    }
+
+    private func posixJoin(_ base: String, _ relativePath: String) -> String {
+        let cleanBase = base.isEmpty ? "/" : base
+        if cleanBase == "/" {
+            return "/" + relativePath
+        }
+        return cleanBase.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            .split(separator: "/")
+            .reduce(into: "") { result, component in
+                result += "/" + component
+            } + "/" + relativePath
     }
 
     // MARK: - Entitlement mapping

@@ -38,7 +38,16 @@ var cliStyle = lipgloss.NewStyle().Foreground(tui.ColorDim)
 var cliNoticeStyle = lipgloss.NewStyle().Foreground(tui.ColorNotice)
 var execCommandContext = exec.CommandContext
 
-const linuxContainersOnMacsUnsupportedMessage = "Linux containers aren't supported on Macs yet. Support is planned for a future release. For now, deploy a native macOS app (platform: darwin) or target a Linux/WendyOS device."
+const linuxContainersOnMacsUnsupportedMessage = "Linux containers aren't supported on Macs yet. Support is planned for a future release. For now, deploy a native macOS app (platform: darwin) or target a Linux/WendyOS device. Set WENDY_EXPERIMENTAL_MACOS_LINUX_CONTAINERS=1 to try the experimental Docker-backed macOS container path."
+
+func experimentalMacOSLinuxContainersEnabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("WENDY_EXPERIMENTAL_MACOS_LINUX_CONTAINERS"))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
 
 type dimWriter struct {
 	buf strings.Builder
@@ -1203,7 +1212,7 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	}
 
 	platform := resolveAgentPlatform(appCfg.Platform, agentOS, architecture)
-	if agentOS == "darwin" && platformOS(platform) == "linux" {
+	if agentOS == "darwin" && platformOS(platform) == "linux" && !experimentalMacOSLinuxContainersEnabled() {
 		return errors.New(linuxContainersOnMacsUnsupportedMessage)
 	}
 

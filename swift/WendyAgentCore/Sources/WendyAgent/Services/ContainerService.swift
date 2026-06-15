@@ -433,10 +433,36 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         let isLinux = appConfig?.platform?.hasPrefix("linux") == true
 
         if isLinux {
-            throw RPCError(
-                code: .failedPrecondition,
-                message: self.dockerUnavailableMessage ?? self.linuxContainersUnsupportedMessage
+            guard let dockerBackend else {
+                throw RPCError(
+                    code: .failedPrecondition,
+                    message: self.dockerUnavailableMessage ?? self.linuxContainersUnsupportedMessage
+                )
+            }
+            guard !imageName.isEmpty else {
+                throw RPCError(
+                    code: .invalidArgument,
+                    message: "Linux containers require imageName"
+                )
+            }
+
+            let appDirectory = appsBase.appendingPathComponent(appName)
+            try FileManager.default.createDirectory(
+                at: appDirectory,
+                withIntermediateDirectories: true
             )
+            try await dockerBackend.pullImage(imageName)
+            try await self.registerApp(
+                id: appName,
+                kind: .container,
+                container: WendyApp.ContainerMetadata(
+                    imageName: imageName,
+                    appConfig: appConfig,
+                    workingDir: request.message.workingDir.isEmpty
+                        ? nil : request.message.workingDir
+                )
+            )
+            return ServerResponse(message: Wendy_Agent_Services_V1_CreateContainerResponse())
         }
 
         // Native darwin path (existing behavior).
@@ -559,11 +585,95 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
             )
         }
 
-        if app.container != nil {
-            throw RPCError(
-                code: .failedPrecondition,
-                message: self.dockerUnavailableMessage ?? self.linuxContainersUnsupportedMessage
-            )
+        if let container = app.container {
+            guard let dockerBackend else {
+                throw RPCError(
+                    code: .failedPrecondition,
+                    message: self.dockerUnavailableMessage ?? self.linuxContainersUnsupportedMessage
+                )
+            }
+
+            let launchToken = UUID()
+            self.prepareAppForLaunch(id: appName, launchToken: launchToken)
+            do {
+                let launched = try await dockerBackend.createAndStart(
+                    appName: appName,
+                    imageName: container.imageName,
+                    appConfig: container.appConfig,
+                    appDirectory: appsBase.appendingPathComponent(appName),
+                    workingDir: container.workingDir,
+                    terminationHandler: self.makeTerminationHandler(
+                        forAppID: appName,
+                        launchToken: launchToken
+                    )
+                )
+                try await self.markAppRunning(
+                    id: appName,
+                    process: launched.process,
+                    launchToken: launchToken
+                )
+                logger.info(
+                    "Docker container started",
+                    metadata: [
+                        "app_name": "\(appName)",
+                        "pid": "\(launched.process.processIdentifier)",
+                    ]
+                )
+
+                let broadcaster = self.broadcaster
+                let process = launched.process
+                let stdoutPipe = launched.stdout
+                let stderrPipe = launched.stderr
+                return StreamingServerResponse { writer in
+                    var started = Wendy_Agent_Services_V1_RunContainerLayersResponse()
+                    started.responseType = .started(
+                        Wendy_Agent_Services_V1_RunContainerLayersResponse.Started()
+                    )
+                    try await writer.write(started)
+
+                    try await withThrowingTaskGroup(of: Void.self) { group in
+                        group.addTask {
+                            let handle = stdoutPipe.fileHandleForReading
+                            for try await data in handle.bytes(for: appName) {
+                                var response = Wendy_Agent_Services_V1_RunContainerLayersResponse()
+                                response.responseType = .stdoutOutput(.with { $0.data = data })
+                                try await writer.write(response)
+                                await Self.broadcastLog(
+                                    broadcaster: broadcaster,
+                                    appName: appName,
+                                    text: String(decoding: data, as: UTF8.self),
+                                    stream: "stdout",
+                                    severity: .info
+                                )
+                            }
+                        }
+                        group.addTask {
+                            let handle = stderrPipe.fileHandleForReading
+                            for try await data in handle.bytes(for: appName) {
+                                var response = Wendy_Agent_Services_V1_RunContainerLayersResponse()
+                                response.responseType = .stderrOutput(.with { $0.data = data })
+                                try await writer.write(response)
+                                await Self.broadcastLog(
+                                    broadcaster: broadcaster,
+                                    appName: appName,
+                                    text: String(decoding: data, as: UTF8.self),
+                                    stream: "stderr",
+                                    severity: .warn
+                                )
+                            }
+                        }
+                        group.addTask {
+                            process.waitUntilExit()
+                        }
+                        try await group.waitForAll()
+                    }
+
+                    return Metadata()
+                }
+            } catch {
+                self.cancelAppLaunch(id: appName, launchToken: launchToken)
+                throw error
+            }
         }
 
         // Native darwin path.
@@ -727,6 +837,7 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
 
         if self.appsByID[appName]?.container != nil, let dockerBackend {
             try await dockerBackend.remove(appName: appName)
+            try self.removeNativeAppDirectory(appName: appName)
             await self.removeApp(id: appName)
             logger.info("Docker container removed", metadata: ["app_name": "\(appName)"])
         } else {

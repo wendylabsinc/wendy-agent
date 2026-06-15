@@ -253,6 +253,17 @@ func TestAssembleSwiftPMSyncEntries_IncludesSiblingResourceDirectories(t *testin
 	}
 }
 
+func TestExperimentalMacOSLinuxContainersEnabled(t *testing.T) {
+	t.Setenv("WENDY_EXPERIMENTAL_MACOS_LINUX_CONTAINERS", "1")
+	if !experimentalMacOSLinuxContainersEnabled() {
+		t.Fatal("expected experiment to be enabled for 1")
+	}
+	t.Setenv("WENDY_EXPERIMENTAL_MACOS_LINUX_CONTAINERS", "false")
+	if experimentalMacOSLinuxContainersEnabled() {
+		t.Fatal("expected experiment to be disabled for false")
+	}
+}
+
 func TestRunWithAgent_RejectsLinuxContainersOnMacs(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte("FROM scratch\n"), 0o644); err != nil {
