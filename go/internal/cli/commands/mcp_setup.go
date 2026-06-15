@@ -10,18 +10,28 @@ import (
 
 	toml "github.com/BurntSushi/toml"
 	"github.com/spf13/cobra"
+	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/version"
+	"golang.org/x/term"
 )
 
 func newMCPSetupCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "setup",
 		Short: "Configure the Wendy MCP server in supported AI tools",
 		Long:  "Detects installed AI tools and adds the wendy MCP server to their configuration.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			results := setupMCPForAllTools()
-			results = append(results, installSkillsForAllTools()...)
+
+			installSkills, err := resolveInstallSkills(cmd)
+			if err != nil {
+				return err
+			}
+			if installSkills {
+				results = append(results, installSkillsForAllTools()...)
+			}
+
 			for _, r := range results {
 				if r.err != nil {
 					fmt.Fprintf(cmd.OutOrStdout(), "✗ %s: %v\n", r.tool, r.err)
@@ -33,23 +43,49 @@ func newMCPSetupCmd() *cobra.Command {
 				fmt.Fprintln(cmd.OutOrStdout(), "No supported AI tools detected.")
 				fmt.Fprintln(cmd.OutOrStdout(), "Install Claude Code: npm install -g @anthropic-ai/claude-code")
 			}
-			// Record the CLI version so the root command can auto-refresh the
-			// configuration and skills after a later upgrade.
-			recordMCPSetupVersion()
+			// Record the CLI version and skill choice so the root command can
+			// auto-refresh the configuration (and skills, if opted in) after a
+			// later upgrade.
+			recordMCPSetupVersion(installSkills)
 			return nil
 		},
 	}
+	cmd.Flags().Bool("skills", false, "Install the bundled WendyOS skills into detected AI tools (skips the interactive prompt)")
+	return cmd
+}
+
+// resolveInstallSkills decides whether the bundled WendyOS skills should be
+// installed. An explicit --skills flag wins. Otherwise, on an interactive
+// terminal the user is prompted; in a non-interactive context (CI, piped
+// input) it defaults to installing them, preserving the original behavior.
+func resolveInstallSkills(cmd *cobra.Command) (bool, error) {
+	if cmd.Flags().Changed("skills") {
+		return cmd.Flags().GetBool("skills")
+	}
+	if !term.IsTerminal(int(os.Stdin.Fd())) {
+		return true, nil
+	}
+	confirmed, err := tui.ConfirmDefaultYes("Also install the WendyOS skills for your AI tools?")
+	if err != nil {
+		if err == tui.ErrCancelled {
+			return false, nil
+		}
+		return false, err
+	}
+	return confirmed, nil
 }
 
 // recordMCPSetupVersion stores the running CLI version as the last version that
-// performed MCP setup. Failures are non-fatal: at worst auto-refresh re-runs the
+// performed MCP setup, along with whether the user opted into installing the
+// bundled skills. Failures are non-fatal: at worst auto-refresh re-runs the
 // (idempotent) setup again on the next invocation.
-func recordMCPSetupVersion() {
+func recordMCPSetupVersion(skillsInstalled bool) {
 	cfg, err := config.Load()
 	if err != nil {
 		return
 	}
 	cfg.LastMCPSetupVersion = version.Version
+	cfg.MCPSkillsInstalled = skillsInstalled
 	_ = config.Save(cfg)
 }
 
@@ -73,13 +109,16 @@ func shouldRefreshMCPSetup(lastSetupVersion, currentVersion string) bool {
 // the bundled skills when the CLI has been upgraded (or downgraded) since
 // `wendy mcp setup` last ran, so users automatically pick up the latest skills.
 // It runs silently and only touches tools that are already configured; the
-// underlying setup helpers no-op for tools they don't detect.
+// underlying setup helpers no-op for tools they don't detect. Skills are only
+// re-installed when the user opted into them during setup.
 func maybeRefreshMCPSetup(cfg *config.Config) {
 	if !shouldRefreshMCPSetup(cfg.LastMCPSetupVersion, version.Version) {
 		return
 	}
 	setupMCPForAllTools()
-	installSkillsForAllTools()
+	if cfg.MCPSkillsInstalled {
+		installSkillsForAllTools()
+	}
 	cfg.LastMCPSetupVersion = version.Version
 	_ = config.Save(cfg)
 }

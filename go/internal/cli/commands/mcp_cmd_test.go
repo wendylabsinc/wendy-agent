@@ -117,6 +117,33 @@ func TestShouldRefreshMCPSetup(t *testing.T) {
 	}
 }
 
+func TestResolveInstallSkills_ExplicitFlag(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want bool
+	}{
+		{name: "--skills installs", args: []string{"--skills"}, want: true},
+		{name: "--skills=true installs", args: []string{"--skills=true"}, want: true},
+		{name: "--skills=false skips", args: []string{"--skills=false"}, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd := newMCPSetupCmd()
+			if err := cmd.Flags().Parse(tt.args); err != nil {
+				t.Fatalf("parsing flags: %v", err)
+			}
+			got, err := resolveInstallSkills(cmd)
+			if err != nil {
+				t.Fatalf("resolveInstallSkills() error: %v", err)
+			}
+			if got != tt.want {
+				t.Errorf("resolveInstallSkills() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestMCPCmd_HelpText(t *testing.T) {
 	cmd := newMCPCmd()
 	buf := new(bytes.Buffer)

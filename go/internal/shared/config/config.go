@@ -19,6 +19,11 @@ type Config struct {
 	// the MCP server config and bundled skills. Empty means the user has never
 	// run setup, so auto-refresh stays off.
 	LastMCPSetupVersion string `json:"lastMCPSetupVersion,omitempty"`
+	// MCPSkillsInstalled records whether the user opted into installing the
+	// bundled WendyOS skills during `wendy mcp setup`. Auto-refresh only
+	// re-installs skills when this is true, so a user who declined them is not
+	// silently opted back in on the next upgrade.
+	MCPSkillsInstalled bool `json:"mcpSkillsInstalled,omitempty"`
 }
 
 // AuthConfig holds authentication details for a cloud environment.
