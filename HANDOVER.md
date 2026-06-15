@@ -18,17 +18,19 @@ per-issue worktrees.
 
 `PLAN.md` is populated with the Linear **E2E Tests** issues and current status:
 
-1. `WDY-1559` — In progress: Investigate Jetson Orin Nano Swift E2E preflight timeout
-2. `WDY-1558` — In progress: Mark failed Swift E2E attempts without observations as failed
-3. `WDY-1521` — Done: Teach E2E AI review to explain why a run failed
-4. `WDY-1528` — Done: Add machine-readable Swift E2E recording metadata
-5. `WDY-1519` — Backlog: Add IPv4 fallback preflight for physical Swift E2E targets
-6. `WDY-1527` — Done: Rework Swift E2E aggregate storage for attempt-level artifacts
-7. `WDY-1510` — Canceled: Re-enable Raspberry Pi physical Swift E2E route
-8. `WDY-1482` — Done: Gate device-to-device E2E jobs behind successful local E2E runs
-9. `WDY-1494` — Done: Clean up Swift E2E route matrix and restore commented route ledger
-10. `WDY-1481` — Done: Add local E2E matrix coverage for macOS↔macOS and Ubuntu↔Ubuntu
-11. `WDY-1479` — Done: Investigate SER9 Swift E2E mTLS auth failure
+1. `WDY-1561` — In progress: Fix macOS integration discovery empty matrix failure
+2. `WDY-1560` — Todo, High: Run physical Swift E2E only for stable releases until dedicated CI devices exist
+3. `WDY-1558` — In progress: Mark failed Swift E2E attempts without observations as failed
+4. `WDY-1559` — Done: Investigate Jetson Orin Nano Swift E2E preflight timeout
+5. `WDY-1521` — Done: Teach E2E AI review to explain why a run failed
+6. `WDY-1528` — Done: Add machine-readable Swift E2E recording metadata
+7. `WDY-1519` — Backlog: Add IPv4 fallback preflight for physical Swift E2E targets
+8. `WDY-1527` — Done: Rework Swift E2E aggregate storage for attempt-level artifacts
+9. `WDY-1510` — Canceled: Re-enable Raspberry Pi physical Swift E2E route
+10. `WDY-1482` — Done: Gate device-to-device E2E jobs behind successful local E2E runs
+11. `WDY-1494` — Done: Clean up Swift E2E route matrix and restore commented route ledger
+12. `WDY-1481` — Done: Add local E2E matrix coverage for macOS↔macOS and Ubuntu↔Ubuntu
+13. `WDY-1479` — Done: Investigate SER9 Swift E2E mTLS auth failure
 
 ## Completed housekeeping
 
@@ -98,20 +100,29 @@ WDY-1510 was canceled because no Raspberry Pi 5 is currently available on CI:
 
 ## Newly created follow-up issues
 
-- WDY-1559 — In Progress, E2E Tests project: investigate and restore the
-  physical `macOS 26 → Jetson Orin Nano` Swift E2E route after the CLI auth
-  fixture timed out against `wendyos-strong-dunlin.local` before Swift Testing
-  launched in run https://github.com/wendylabsinc/WendyOS/actions/runs/27543175882.
-  - Worktree: `/Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1559-jetson-e2e-timeout`
-  - Branch: `kb.wdy-1559-jetson-e2e-timeout`
-  - Draft PR: https://github.com/wendylabsinc/WendyOS/pull/1033
-  - Linear: https://linear.app/wendylabsinc/issue/WDY-1559/investigate-jetson-orin-nano-swift-e2e-preflight-timeout
-  - Setup commit: `392e8c8`
+- WDY-1561 — In Progress, E2E Tests project: fix `PR Integration Tests` macOS
+  discovery matrix generation when discovery finds LAN devices but none match
+  the allowlist, causing `HOSTS[@]: unbound variable` under `set -u`.
+  - Worktree: `/Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1561-macos-integration-empty-matrix`
+  - Branch: `kb.wdy-1561-macos-integration-empty-matrix`
+  - Draft PR: https://github.com/wendylabsinc/WendyOS/pull/1034
+  - Linear: https://linear.app/wendylabsinc/issue/WDY-1561/fix-macos-integration-discovery-empty-matrix-failure
+  - Setup commit: `26f1dad`
   - Resume command:
 
     ```sh
-    cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1559-jetson-e2e-timeout && ai --prompt "Read HANDOVER.md and follow its instructions."
+    cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1561-macos-integration-empty-matrix && ai --prompt "Read HANDOVER.md and follow its instructions."
     ```
+- WDY-1560 — Todo, High priority, E2E Tests project: run physical Swift E2E only
+  for stable releases until dedicated CI devices exist. PRs should keep local
+  E2E coverage, while physical routes should remain manually triggerable and
+  release-blocking before stable releases.
+  - Linear: https://linear.app/wendylabsinc/issue/WDY-1560/run-physical-swift-e2e-only-for-stable-releases-until-dedicated-ci
+- WDY-1559 — Done, E2E Tests project: investigated the Jetson timeout and
+  temporarily disabled the flaky Jetson Swift E2E route.
+  - PR: https://github.com/wendylabsinc/WendyOS/pull/1033 (merged)
+  - Merge commit: `fda83c1f`
+  - Branch/worktree: `kb.wdy-1559-jetson-e2e-timeout` merged; local worktree removed.
 - WDY-1558 — In Progress, E2E Tests project: mark failed Swift E2E attempts
   without observations as failed. Created after run
   https://github.com/wendylabsinc/WendyOS/actions/runs/27543175882 failed in
@@ -191,15 +202,17 @@ previously represented in this coordinator include:
 
 ## Remaining intended next steps
 
-- Continue WDY-1559 and WDY-1558 in their dedicated worktrees and draft PRs
-  #1033 / #1032.
-- WDY-1521, WDY-1528, WDY-1527, and the SER9 route disable are complete.
+- Continue WDY-1561 and WDY-1558 in their dedicated worktrees and draft PRs
+  #1034 / #1032.
+- WDY-1560 is Todo/High and should be started after the current active fixes
+  unless reprioritized.
+- WDY-1559, WDY-1521, WDY-1528, WDY-1527, and the SER9 route disable are complete.
 - The E2E Tests Linear project update was posted:
   https://linear.app/wendylabsinc/project/e2e-tests-02d5dc2a4b79/activity#project-update-a5ed07b2
 - WDY-1519 and WDY-1520 are in the backlog; do not resume them unless asked.
   PR #991 remains open as a draft with stale failing checks from before the SER9
   route was disabled.
-- PR #993, PR #997, PR #995, and PR #994 are merged; no action needed there.
+- PR #1033, PR #993, PR #997, PR #995, and PR #994 are merged; no action needed there.
 - If Raspberry Pi 5 CI hardware comes online later, open a new Linear issue or
   reopen WDY-1510 and start from the closed PR branch/diff.
 - Treat WDY-968 as related/background only: it is outside the E2E Tests project

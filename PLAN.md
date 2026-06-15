@@ -73,30 +73,69 @@ in per-issue worktree sessions, not in this master planning session.
   cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1510-rpi-swift-e2e && ai --prompt "Read HANDOVER.md and follow its instructions."
   ```
 
-### WDY-1559 — Investigate Jetson Orin Nano Swift E2E preflight timeout
+### WDY-1561 — Fix macOS integration discovery empty matrix failure
 
 - Status: `in progress`
 - Linear project: E2E Tests
-- Linear: https://linear.app/wendylabsinc/issue/WDY-1559/investigate-jetson-orin-nano-swift-e2e-preflight-timeout
+- Linear: https://linear.app/wendylabsinc/issue/WDY-1561/fix-macos-integration-discovery-empty-matrix-failure
 - Linear assignee: `konstantin@wendy.sh`
 - Linear state: In Progress (`started`)
-- Branch/worktree name: `kb.wdy-1559-jetson-e2e-timeout`
-- Worktree path: `/Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1559-jetson-e2e-timeout`
-- PR: https://github.com/wendylabsinc/WendyOS/pull/1033 (draft setup PR)
+- Branch/worktree name: `kb.wdy-1561-macos-integration-empty-matrix`
+- Worktree path: `/Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1561-macos-integration-empty-matrix`
+- PR: https://github.com/wendylabsinc/WendyOS/pull/1034 (draft setup PR)
+- PR closing reference: `Closes WDY-1561`
+- Setup commit: `26f1dad`
+- Scope: fix `PR Integration Tests` macOS discovery matrix generation when
+  discovery finds LAN devices but none match the allowlist. Avoid the current
+  empty-array `HOSTS[@]: unbound variable` failure and make the zero-match
+  outcome explicit.
+- Triggering job: https://github.com/wendylabsinc/WendyOS/actions/runs/27545523756/job/81417947859
+- Validation: run workflow YAML parse and `actionlint` for
+  `.github/workflows/integration-tests.yml`; add a small shell regression if the
+  matrix-generation logic is factored out or otherwise testable.
+- Resume command:
+
+  ```sh
+  cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1561-macos-integration-empty-matrix && ai --prompt "Read HANDOVER.md and follow its instructions."
+  ```
+
+### WDY-1560 — Run physical Swift E2E only for stable releases until dedicated CI devices exist
+
+- Status: `todo` (High priority)
+- Linear project: E2E Tests
+- Linear: https://linear.app/wendylabsinc/issue/WDY-1560/run-physical-swift-e2e-only-for-stable-releases-until-dedicated-ci
+- Linear assignee: `konstantin@wendy.sh`
+- Linear state: Todo (`unstarted`)
+- Linear priority: High
+- Branch/worktree name: not prepared yet
+- Worktree path: not prepared yet
+- PR: not created yet
+- PR closing reference: `Closes WDY-1560`
+- Scope: keep PR validation focused on hosted/local Swift E2E jobs while running
+  physical device-to-device Swift E2E routes as required stable-release gates
+  until dedicated CI hardware exists. Keep a clear manual trigger for physical
+  validation and make physical failures release-blocking.
+- Resume command: not available until prepared
+
+### WDY-1559 — Investigate Jetson Orin Nano Swift E2E preflight timeout
+
+- Status: `done`
+- Linear project: E2E Tests
+- Linear: https://linear.app/wendylabsinc/issue/WDY-1559/investigate-jetson-orin-nano-swift-e2e-preflight-timeout
+- Linear assignee: `konstantin@wendy.sh`
+- Linear state: Done (`completed`)
+- Branch/worktree name: `kb.wdy-1559-jetson-e2e-timeout` (merged; local worktree removed)
+- Worktree path: removed after merge
+- PR: https://github.com/wendylabsinc/WendyOS/pull/1033 (merged, merge commit `fda83c1f`)
 - PR closing reference: `Closes WDY-1559`
 - Setup commit: `392e8c8`
 - Scope: investigate and restore the physical `macOS 26 → Jetson Orin Nano`
   Swift E2E route after the CLI auth fixture timed out against
   `wendyos-strong-dunlin.local` before Swift Testing launched.
-- Triggering run: https://github.com/wendylabsinc/WendyOS/actions/runs/27543175882
-- Validation: operational/device fix should be validated with a rerun of the
-  physical Jetson Swift E2E job or workflow; run YAML/actionlint/shell checks if
-  workflow/script files change.
-- Resume command:
-
-  ```sh
-  cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1559-jetson-e2e-timeout && ai --prompt "Read HANDOVER.md and follow its instructions."
-  ```
+- Outcome: temporarily disabled the flaky Jetson Swift E2E route while physical
+  devices are shared with manual testing; follow-up release-only physical E2E
+  policy is tracked by WDY-1560.
+- Resume command: not applicable; issue complete and worktree removed.
 
 ### WDY-1558 — Mark failed Swift E2E attempts without observations as failed
 
@@ -312,19 +351,21 @@ in per-issue worktree sessions, not in this master planning session.
 ## E2E Tests issue order
 
 Keep each issue short and validation-focused. Completed issues stay in the
-ledger for history; current active work is WDY-1559 and WDY-1558.
+ledger for history; current active work is WDY-1561 and WDY-1558.
 
-1. **WDY-1559** — In progress: Investigate Jetson Orin Nano Swift E2E preflight timeout.
-2. **WDY-1558** — In progress: Mark failed Swift E2E attempts without observations as failed.
-3. **WDY-1521** — Done: Teach E2E AI review to explain why a run failed.
-4. **WDY-1528** — Done: Add machine-readable Swift E2E recording metadata.
-5. **WDY-1519** — Backlog: Add IPv4 fallback preflight for physical Swift E2E targets.
-6. **WDY-1527** — Done: Rework Swift E2E aggregate storage for attempt-level artifacts.
-7. **WDY-1510** — Canceled: Re-enable Raspberry Pi physical Swift E2E route.
-8. **WDY-1482** — Done: Gate device-to-device E2E jobs behind successful local E2E runs.
-9. **WDY-1494** — Done: Clean up Swift E2E route matrix and restore commented route ledger.
-10. **WDY-1481** — Done: Add local E2E matrix coverage for macOS↔macOS and Ubuntu↔Ubuntu.
-11. **WDY-1479** — Done: Investigate SER9 Swift E2E mTLS auth failure.
+1. **WDY-1561** — In progress: Fix macOS integration discovery empty matrix failure.
+2. **WDY-1560** — Todo, High: Run physical Swift E2E only for stable releases until dedicated CI devices exist.
+3. **WDY-1558** — In progress: Mark failed Swift E2E attempts without observations as failed.
+4. **WDY-1559** — Done: Investigate Jetson Orin Nano Swift E2E preflight timeout.
+5. **WDY-1521** — Done: Teach E2E AI review to explain why a run failed.
+6. **WDY-1528** — Done: Add machine-readable Swift E2E recording metadata.
+7. **WDY-1519** — Backlog: Add IPv4 fallback preflight for physical Swift E2E targets.
+8. **WDY-1527** — Done: Rework Swift E2E aggregate storage for attempt-level artifacts.
+9. **WDY-1510** — Canceled: Re-enable Raspberry Pi physical Swift E2E route.
+10. **WDY-1482** — Done: Gate device-to-device E2E jobs behind successful local E2E runs.
+11. **WDY-1494** — Done: Clean up Swift E2E route matrix and restore commented route ledger.
+12. **WDY-1481** — Done: Add local E2E matrix coverage for macOS↔macOS and Ubuntu↔Ubuntu.
+13. **WDY-1479** — Done: Investigate SER9 Swift E2E mTLS auth failure.
 
 ## One-off route/workflow PRs
 
