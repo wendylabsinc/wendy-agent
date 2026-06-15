@@ -2172,14 +2172,28 @@ func extractMemoryBytes(metric *types.Metric) int64 {
 
 func streamReader(r io.Reader, ch chan<- services.ContainerOutput, buildOutput func([]byte) services.ContainerOutput) {
 	buf := make([]byte, 32*1024)
+	var pending []byte
 	for {
 		n, err := r.Read(buf)
 		if n > 0 {
-			data := make([]byte, n)
-			copy(data, buf[:n])
-			ch <- buildOutput(data)
+			pending = append(pending, buf[:n]...)
+			for {
+				idx := bytes.IndexByte(pending, '\n')
+				if idx < 0 {
+					break
+				}
+				line := make([]byte, idx+1)
+				copy(line, pending[:idx+1])
+				ch <- buildOutput(line)
+				pending = pending[idx+1:]
+			}
 		}
 		if err != nil {
+			if len(pending) > 0 {
+				line := make([]byte, len(pending))
+				copy(line, pending)
+				ch <- buildOutput(line)
+			}
 			return
 		}
 	}

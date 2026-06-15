@@ -2,9 +2,12 @@ package containerd
 
 import (
 	"errors"
+	"io"
+	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/wendylabsinc/wendy/go/internal/agent/services"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	"go.uber.org/zap"
@@ -731,5 +734,25 @@ func TestBuildROS2Env_NoConfig(t *testing.T) {
 	got := buildROS2Env(cfg)
 	if len(got) != 0 {
 		t.Errorf("expected empty env for no ROS2 config, got %v", got)
+	}
+}
+
+func TestStreamReaderSplitsLines(t *testing.T) {
+	r := io.MultiReader(
+		strings.NewReader("alpha\nbeta\npar"),
+		strings.NewReader("tial\n"),
+	)
+	ch := make(chan services.ContainerOutput, 16)
+	streamReader(r, ch, func(b []byte) services.ContainerOutput {
+		return services.ContainerOutput{Stdout: b}
+	})
+	close(ch)
+	var lines []string
+	for o := range ch {
+		lines = append(lines, string(o.Stdout))
+	}
+	want := []string{"alpha\n", "beta\n", "partial\n"}
+	if !reflect.DeepEqual(lines, want) {
+		t.Fatalf("got %q, want %q", lines, want)
 	}
 }
