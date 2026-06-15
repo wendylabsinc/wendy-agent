@@ -1,4 +1,5 @@
 import Testing
+import WendyE2ETesting
 
 @Suite
 struct `'wendy run'` {
@@ -21,6 +22,85 @@ struct `'wendy run'` {
      */
     @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
     func `builds, deploys, and starts the current project`() async throws {
+        // TODO: implement.
+    }
+
+    /**
+     Synchronizes top-level `wendy.json.files` before creating a Linux
+     container. A declared file with no `to` value appears under the container
+     working directory at its relative `path`, and a declared directory with a
+     relative `to` value appears at that remapped destination with its nested
+     contents intact.
+
+     The app observes the synced content on first start, and success output
+     still describes the normal build, deploy, and start result rather than
+     exposing host paths.
+     */
+    @Test(
+        .enabled(if: isAgentLinuxOrWendyOS),
+        .disabled("SPEC STUB: behavior agreed, implementation pending")
+    )
+    func `syncs configured files into a Linux container`() async throws {
+        // TODO: implement.
+    }
+
+    /**
+     Re-running a project with changed `wendy.json.files` updates the
+     app-scoped file-sync area before the replacement container starts. Updated
+     files are visible with their new contents and mode, removed declarations
+     are pruned from the managed app file-sync area, and unrelated app data such
+     as persistent volumes remains untouched.
+     */
+    @Test(
+        .enabled(if: isAgentLinuxOrWendyOS),
+        .disabled("SPEC STUB: behavior agreed, implementation pending")
+    )
+    func `updates synced files and prunes stale paths on redeploy`() async throws {
+        // TODO: implement.
+    }
+
+    /**
+     Files and directories declared in top-level `wendy.json.files` are mounted
+     read-only into Linux containers. An app that attempts to overwrite or
+     remove a declared file receives a filesystem failure, and neither the
+     original project file nor the agent-managed synced copy is mutated by the
+     running container.
+     */
+    @Test(
+        .enabled(if: isAgentLinuxOrWendyOS),
+        .disabled("SPEC STUB: behavior agreed, implementation pending")
+    )
+    func `mounts synced files read-only in the container`() async throws {
+        // TODO: implement.
+    }
+
+    /**
+     Unsafe file-sync paths are rejected before deployment. Absolute `path` or
+     `to` values, empty destinations, and values containing `..` produce an
+     actionable configuration diagnostic, return a failure status, and do not
+     build an image, create a container, or write outside the app-scoped
+     file-sync area.
+     */
+    @Test(
+        .enabled(if: isAgentLinuxOrWendyOS),
+        .disabled("SPEC STUB: behavior agreed, implementation pending")
+    )
+    func `rejects unsafe configured file paths before deployment`() async throws {
+        // TODO: implement.
+    }
+
+    /**
+     Multi-service and Compose deployments do not consume top-level
+     `wendy.json.files` yet. A project that combines those deployment modes
+     with top-level file declarations reports the unsupported combination
+     clearly instead of silently ignoring files or mounting them into only one
+     service.
+     */
+    @Test(
+        .enabled(if: isAgentLinuxOrWendyOS),
+        .disabled("SPEC STUB: behavior agreed, implementation pending")
+    )
+    func `reports top-level files as unsupported for multi-service deployments`() async throws {
         // TODO: implement.
     }
 

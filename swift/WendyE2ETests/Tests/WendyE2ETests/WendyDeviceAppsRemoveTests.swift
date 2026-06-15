@@ -1,4 +1,5 @@
 import Testing
+import WendyE2ETesting
 
 @Suite
 struct `'wendy device apps remove'` {
@@ -61,6 +62,21 @@ struct `'wendy device apps remove'` {
      */
     @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
     func `honors cleanup and volume deletion flags`() async throws {
+        // TODO: implement.
+    }
+
+    /**
+     Removing an application also removes its app-scoped synced file data from
+     the agent. This cleanup happens regardless of `--delete-volumes` because
+     top-level `wendy.json.files` are deployment inputs, while persistent
+     volumes and other apps remain intact unless their explicit cleanup flags
+     are provided.
+     */
+    @Test(
+        .enabled(if: isAgentLinuxOrWendyOS),
+        .disabled("SPEC STUB: behavior agreed, implementation pending")
+    )
+    func `removes app scoped synced files when removing an application`() async throws {
         // TODO: implement.
     }
 
