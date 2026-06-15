@@ -63,6 +63,17 @@ struct `'wendy run'` {
     }
 
     /**
+     A configured file can be mounted at a destination different from its
+     project-relative source path. The `to` value is interpreted relative to
+     the container working directory, the source path name does not leak into
+     the destination, and the file contents match the local project file.
+     */
+    @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
+    func `supports configured file destinations with to`() async throws {
+        // TODO: implement.
+    }
+
+    /**
      Re-running a project with changed `wendy.json.files` updates the
      app-scoped file-sync area before the replacement container starts. Updated
      files are visible with their new contents and mode, removed declarations
@@ -148,11 +159,20 @@ struct `'wendy run'` {
     }
 
     /**
-     Unsafe file-sync paths are rejected before deployment. Absolute `path` or
-     `to` values, empty destinations, and values containing `..` produce an
-     actionable configuration diagnostic, return a failure status, and do not
-     build an image, create a container, or write outside the app-scoped
-     file-sync area.
+     A configured source path that does not exist fails before deployment. The
+     diagnostic identifies the missing path, the command exits unsuccessfully,
+     and output does not report that an image, container, or app was deployed.
+     */
+    @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
+    func `rejects missing configured files before deployment`() async throws {
+        // TODO: implement.
+    }
+
+    /**
+     Unsafe file-sync source paths are rejected before deployment. Absolute
+     `path` values and values containing `..` produce an actionable
+     configuration diagnostic, return a failure status, and do not build an
+     image, create a container, or write outside the app-scoped file-sync area.
      */
     @Test(.enabled(if: isAgentLinuxOrWendyOS))
     func `rejects unsafe configured file paths before deployment`() async throws {
@@ -179,11 +199,44 @@ struct `'wendy run'` {
     }
 
     /**
-     Multi-service and Compose deployments do not consume top-level
-     `wendy.json.files` yet. A project that combines those deployment modes
-     with top-level file declarations reports the unsupported combination
-     clearly instead of silently ignoring files or mounting them into only one
-     service.
+     Unsafe file-sync destinations are rejected before deployment. Absolute
+     `to` values, empty destinations, and values containing `..` produce an
+     actionable configuration diagnostic, return a failure status, and do not
+     build an image, create a container, or write outside the app-scoped
+     file-sync area.
+     */
+    @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
+    func `rejects unsafe configured file destinations before deployment`() async throws {
+        // TODO: implement.
+    }
+
+    /**
+     Duplicate effective destinations are rejected before deployment. If two
+     `wendy.json.files` entries would populate the same container-relative
+     destination, the command reports the conflict instead of choosing an
+     arbitrary winner or producing nondeterministic mounts.
+     */
+    @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
+    func `rejects duplicate configured file destinations`() async throws {
+        // TODO: implement.
+    }
+
+    /**
+     The container runtime mounts synced files from the agent-managed
+     app-scoped file-sync area, not directly from the original CLI project
+     path. The observable deployment path is project file -> agent sync area ->
+     read-only container mount, which prevents arbitrary CLI host path mounts.
+     */
+    @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
+    func `mounts configured files from the agent managed sync area`() async throws {
+        // TODO: implement.
+    }
+
+    /**
+     Multi-service deployments do not consume top-level `wendy.json.files` yet.
+     A project that combines services with top-level file declarations reports
+     the unsupported combination clearly instead of silently ignoring files or
+     mounting them into only one service.
      */
     @Test(.enabled(if: isAgentLinuxOrWendyOS))
     func `reports top-level files as unsupported for multi-service deployments`() async throws {
@@ -207,6 +260,28 @@ struct `'wendy run'` {
                 #expect(!output.contains("Creating container"))
             }
         }
+    }
+
+    /**
+     Compose deployments do not consume top-level `wendy.json.files` yet. A
+     project that combines Compose configuration with top-level file
+     declarations reports the unsupported combination clearly instead of
+     silently ignoring files or inventing Compose volume semantics.
+     */
+    @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
+    func `reports top-level files as unsupported for compose deployments`() async throws {
+        // TODO: implement.
+    }
+
+    /**
+     Linux-container deployment from macOS remains unsupported by default. If
+     `WENDY_EXPERIMENTAL_MACOS_LINUX_CONTAINERS` is not set, `wendy run`
+     returns a clear failure and mentions the experimental opt-in flag rather
+     than probing Docker or attempting a container deployment.
+     */
+    @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
+    func `keeps macOS Linux container support behind the experiment flag`() async throws {
+        // TODO: implement.
     }
 
     /**

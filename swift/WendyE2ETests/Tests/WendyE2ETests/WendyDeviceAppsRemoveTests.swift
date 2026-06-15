@@ -118,6 +118,17 @@ struct `'wendy device apps remove'` {
     }
 
     /**
+     Removing an application without `--delete-volumes` removes synced
+     deployment inputs while preserving persistent volume data for the same
+     app. This keeps `wendy.json.files` cleanup independent from durable app
+     state cleanup.
+     */
+    @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
+    func `removes synced files while preserving persistent volumes`() async throws {
+        // TODO: implement.
+    }
+
+    /**
      An app name that is not deployed produces a failure diagnostic and does
      not remove images, volumes, or other apps.
      */
