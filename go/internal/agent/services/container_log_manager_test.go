@@ -244,6 +244,16 @@ func TestContainerLogManager_UnsubscribeNonexistent(t *testing.T) {
 	lm.Unsubscribe("nonexistent-app", "nonexistent-sub")
 }
 
+func TestLogSubscriberCountsDrops(t *testing.T) {
+	s := &logSubscriber{ch: make(chan ContainerOutput, 1)}
+	s.send(ContainerOutput{Stdout: []byte("1\n")}) // fills buffer
+	s.send(ContainerOutput{Stdout: []byte("2\n")}) // dropped
+	s.send(ContainerOutput{Stdout: []byte("3\n")}) // dropped
+	if s.dropped != 2 {
+		t.Fatalf("expected 2 drops, got %d", s.dropped)
+	}
+}
+
 // TestContainerLogManager_ConcurrentPublishUnsubscribe verifies that concurrent
 // calls to Publish and Unsubscribe do not panic or cause a data race.
 // The logSubscriber mutex ensures that closing a channel and sending to it

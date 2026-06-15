@@ -2,6 +2,7 @@ package services
 
 import (
 	"fmt"
+	"log"
 	"sync"
 	"time"
 
@@ -11,9 +12,10 @@ import (
 )
 
 type logSubscriber struct {
-	mu     sync.Mutex
-	ch     chan ContainerOutput
-	closed bool
+	mu      sync.Mutex
+	ch      chan ContainerOutput
+	closed  bool
+	dropped int64
 }
 
 // send attempts a non-blocking send to the subscriber.
@@ -28,7 +30,10 @@ func (s *logSubscriber) send(output ContainerOutput) {
 	select {
 	case s.ch <- output:
 	default:
-		// Drop if subscriber is slow.
+		s.dropped++
+		if s.dropped == 1 || s.dropped%100 == 0 {
+			log.Printf("wendy: dropped %d container log batch(es) for a slow log subscriber", s.dropped)
+		}
 	}
 }
 
