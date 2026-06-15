@@ -86,9 +86,13 @@ Additional files or directories to sync before `wendy run` starts the app. Suppo
 | `path` | File or directory relative to `wendy.json` |
 | `to` | Optional destination relative to the app working directory; defaults to `path` with a leading `./` removed |
 
+Use `files` for development inputs that should travel with the app but should not be baked into the image, such as local model directories, calibration bundles, sample datasets, or large static assets. This is especially useful when those assets would otherwise live in the top Docker layer with frequently changing application code: every code edit can invalidate that layer and force a large image push across the LAN. Keeping the image focused on code/runtime and declaring large inputs under `files` lets Wendy sync them separately and skip unchanged content on subsequent runs.
+
 For WendyOS/Linux containers, files are copied to an agent-managed per-app area on the device and then bind-mounted read-only into the container at `<working directory>/<to-or-path>`. Stale files removed from `wendy.json` are deleted from that managed area on the next `wendy run`. Top-level `files` currently apply to single-container `wendy run` deployments; multi-service `services` and Docker Compose deployments do not consume them yet.
 
-`path` and `to` must be relative and must not contain `..` components.
+`files` are deployment inputs, not persistent app data. Use a `persist` entitlement for data that the app writes and should survive redeploys or app removal.
+
+`path` and `to` must be relative and must not contain `..` components. Configured paths must resolve inside the project directory.
 
 ### `entitlements`
 

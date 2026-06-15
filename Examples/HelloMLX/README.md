@@ -43,6 +43,8 @@ After launching the app, make sure camera access is allowed for `WendyAgentMac.a
 
 This example requires you to choose a model tier before running the demo. `wendy.json` deploys `Models/Current`, and the download script updates that symlink to point at the selected model.
 
+The model is declared under top-level `files` instead of being baked into the app artifact. That keeps the fast-changing app build separate from the large model payload, so repeated `wendy run` iterations can reuse unchanged model files instead of transferring a huge top layer every time code changes.
+
 Choose one tier explicitly. Each tier uses a model supported by the current `MLXVLM` dependency in this example:
 
 ```sh

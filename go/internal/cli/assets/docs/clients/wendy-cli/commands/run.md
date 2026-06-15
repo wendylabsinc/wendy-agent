@@ -23,7 +23,17 @@ Wendy Agent for Mac (Darwin targets) currently runs native macOS apps only. When
 | Multi-service `wendy.json` (`services` map) | Rejected |
 | `platform: "linux/..."` or `platform: "wendyos"` | Rejected |
 
-The error explains the project/target mismatch and tells you to set `platform: "darwin"` with a Mac-compatible native SwiftPM or Xcode project, or to target a Linux/WendyOS device. Linux container support on Mac is planned for a future release.
+The error explains the project/target mismatch and tells you to set `platform: "darwin"` with a Mac-compatible native SwiftPM or Xcode project, or to target a Linux/WendyOS device. Linux container support on Mac is experimental and can be enabled with `WENDY_EXPERIMENTAL_MACOS_LINUX_CONTAINERS=1`.
+
+## Development file sync
+
+For single-container WendyOS/Linux deployments and native macOS deployments, `wendy run` also syncs any top-level [`files`](../../../apps/wendy.json.md#files) declared in `wendy.json` before the app starts.
+
+Use this for development inputs that should be available beside the app but should not be baked into the image: local model directories, calibration bundles, sample datasets, generated assets, or other large static files. This helps when a large asset would otherwise sit in the top Docker layer with frequently changing application code. Instead of invalidating that layer and pushing a large image across the LAN on every iteration, Wendy copies the declared files to an agent-managed app area and reuses unchanged content on later runs.
+
+`files` are deployment inputs, not persistent app data. The container sees them as read-only mounts under its working directory. Use a `persist` entitlement for app-written data that should survive redeploys or app removal.
+
+File sync is the normal `wendy run` mechanism for keeping large development inputs out of the image transfer path.
 
 ## Docker build-args
 
@@ -59,7 +69,7 @@ See [Multi-Service Apps with `wendy.json`](../../../apps/wendy-services.md) for 
 
 ## Compose projects
 
-If the current directory contains a `docker-compose.yml` (or `compose.yml`) but no `wendy.json`, `wendy run` automatically runs it as a multi-service compose project. Each service is built, pushed, and started on the device in dependency order. See [Multi-Service Apps with Docker Compose](../../../apps/compose.md) for full details.
+If the current directory contains a `docker-compose.yml` (or `compose.yml`) but no `wendy.json`, `wendy run` automatically runs it as a multi-service compose project. Each service is built, pushed, and started on the device in dependency order. Top-level `wendy.json.files` are not supported for Compose deployments yet. See [Multi-Service Apps with Docker Compose](../../../apps/compose.md) for full details.
 
 > **Wendy Agent for Mac:** Compose projects are not supported when the selected target is Wendy Agent for Mac. `wendy run` returns an error before performing any registry or Docker setup. To deploy a compose workload, target a Linux/WendyOS device. For Mac targets, use a native SwiftPM or Xcode project with `platform: "darwin"`.
 

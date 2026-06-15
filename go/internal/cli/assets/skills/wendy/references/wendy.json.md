@@ -46,7 +46,11 @@ Top-level `files` entries are supported for native Darwin/macOS runs and single-
 }
 ```
 
-`path` is relative to `wendy.json`. `to` is optional and resolves relative to the app working directory; when omitted, the destination is `path` with a leading `./` removed. Both fields must be relative and must not contain `..` components. On WendyOS/Linux, synced files are stored in an agent-managed app-scoped directory and mounted read-only into the container. Stale files removed from `wendy.json` are deleted from that managed area on the next run. Multi-service `services` and Docker Compose deployments do not consume top-level `files` yet.
+`path` is relative to `wendy.json`. `to` is optional and resolves relative to the app working directory; when omitted, the destination is `path` with a leading `./` removed. Both fields must be relative, must not contain `..` components, and configured paths must resolve inside the project directory.
+
+Use `files` for development inputs that should travel with the app but should not be baked into the image, such as local model directories, calibration bundles, sample datasets, or large static assets. This avoids invalidating and pushing a large top image layer every time nearby app code changes; Wendy syncs the declared files separately and skips unchanged content on later runs.
+
+On WendyOS/Linux, synced files are stored in an agent-managed app-scoped directory and mounted read-only into the container. Stale files removed from `wendy.json` are deleted from that managed area on the next run. `files` are deployment inputs, not persistent app data; use a `persist` entitlement for app-written data that should survive redeploys or app removal. Multi-service `services` and Docker Compose deployments do not consume top-level `files` yet.
 
 Minimal SwiftPM/macOS configuration:
 
