@@ -1190,6 +1190,9 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	// Multi-service path: when wendy.json has a services map, build all images
 	// in parallel and manage the app group lifecycle.
 	if len(appCfg.Services) > 0 {
+		if len(appCfg.Files) > 0 {
+			return fmt.Errorf("top-level wendy.json files are not supported for multi-service deployments yet")
+		}
 		return runMultiServiceWithAgent(ctx, conn, cwd, appCfg, opts)
 	}
 

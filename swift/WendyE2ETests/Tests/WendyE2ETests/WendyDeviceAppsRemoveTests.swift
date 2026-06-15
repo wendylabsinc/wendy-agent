@@ -1,8 +1,11 @@
+import Foundation
 import Testing
 import WendyE2ETesting
 
 @Suite
 struct `'wendy device apps remove'` {
+    let scenario = CLIAndAgentScenario()
+
     /**
      Displays usage for `wendy device apps remove`. The output includes the
      command synopsis, local flags, inherited global flags, and concise
@@ -72,12 +75,46 @@ struct `'wendy device apps remove'` {
      volumes and other apps remain intact unless their explicit cleanup flags
      are provided.
      */
-    @Test(
-        .enabled(if: isAgentLinuxOrWendyOS),
-        .disabled("SPEC STUB: behavior agreed, implementation pending")
-    )
+    @Test(.enabled(if: isAgentLinuxOrWendyOS))
     func `removes app scoped synced files when removing an application`() async throws {
-        // TODO: implement.
+        let appID = Self.appID("remove")
+
+        try await self.scenario.run(authenticated: false) { cli, agent in
+            let agentAddress = agent.machine.address
+            try await cli.sh(Self.createProjectScript(appID: appID))
+
+            try await cli.sh(
+                Self.runDeployCommand(project: Self.projectName(appID), agentAddress: agentAddress)
+            ) { result in
+                let output = result.normalizedStdout + result.normalizedStderr
+
+                #expect(result.status.isSuccess)
+                #expect(output.contains("created") || output.contains("deployed"))
+            }
+
+            try await agent.sh(Self.privilegedTestCommand("-d", Self.agentFileSyncDirectory(appID)))
+            {
+                result in
+                #expect(result.status.isSuccess)
+            }
+
+            try await cli.sh(
+                "wendy --device \(Self.shellQuote(agentAddress)) device apps remove \(Self.shellQuote(appID)) --force"
+            ) { result in
+                let output = result.normalizedStdout + result.normalizedStderr
+
+                #expect(result.status.isSuccess)
+                #expect(output.contains("Application \(appID) removed"))
+                #expect(!output.contains("Persistent volume deletion requested"))
+            }
+
+            try await agent.sh(
+                Self.privilegedTestCommand("! -e", Self.agentFileSyncDirectory(appID))
+            ) {
+                result in
+                #expect(result.status.isSuccess)
+            }
+        }
     }
 
     /**
@@ -98,5 +135,55 @@ struct `'wendy device apps remove'` {
     @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
     func `rejects undocumented arguments and flags`() async throws {
         // TODO: implement.
+    }
+    // MARK: - File Sync Helpers
+
+    private static func appID(_ suffix: String) -> String {
+        "sh.wendy.e2e.filesync.\(suffix).\(UUID().uuidString.lowercased())"
+    }
+
+    private static func projectName(_ appID: String) -> String {
+        "project-\(appID)"
+    }
+
+    private static func agentFileSyncDirectory(_ appID: String) -> String {
+        "/var/lib/wendy/files/\(appID)"
+    }
+
+    private static func runDeployCommand(project: String, agentAddress: String) -> String {
+        "wendy --device \(Self.shellQuote(agentAddress)) run --deploy --prefix \(Self.shellQuote(project))"
+    }
+
+    private static func privilegedTestCommand(_ predicate: String, _ path: String) -> String {
+        let testCommand = "test \(predicate) \(Self.shellQuote(path))"
+        return "if [ \"$(id -u)\" = 0 ]; then \(testCommand); else sudo \(testCommand); fi"
+    }
+
+    private static func createProjectScript(appID: String) -> String {
+        let project = Self.projectName(appID)
+        return """
+            set -eu
+            rm -rf \(Self.shellQuote(project))
+            mkdir -p \(Self.shellQuote(project))/config
+            cat > \(Self.shellQuote(project))/Dockerfile <<'EOF'
+            FROM alpine:3.20
+            WORKDIR /work
+            RUN mkdir -p /work/config
+            CMD ["/bin/sh", "-c", "cat config/message.txt"]
+            EOF
+            printf 'remove cleanup' > \(Self.shellQuote(project))/config/message.txt
+            cat > \(Self.shellQuote(project))/wendy.json <<'EOF'
+            {
+              "appId": "\(appID)",
+              "files": [
+                { "path": "config/message.txt" }
+              ]
+            }
+            EOF
+            """
+    }
+
+    private static func shellQuote(_ value: String) -> String {
+        "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 }

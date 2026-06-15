@@ -1,8 +1,11 @@
+import Foundation
 import Testing
 import WendyE2ETesting
 
 @Suite
 struct `'wendy run'` {
+    let scenario = CLIAndAgentScenario()
+
     /**
      Displays usage for `wendy run`. The output includes the command synopsis,
      local flags, inherited global flags, and concise descriptions. Help exits
@@ -36,12 +39,27 @@ struct `'wendy run'` {
      still describes the normal build, deploy, and start result rather than
      exposing host paths.
      */
-    @Test(
-        .enabled(if: isAgentLinuxOrWendyOS),
-        .disabled("SPEC STUB: behavior agreed, implementation pending")
-    )
+    @Test(.enabled(if: isAgentLinuxOrWendyOS))
     func `syncs configured files into a Linux container`() async throws {
-        // TODO: implement.
+        let appID = Self.appID("sync")
+
+        try await self.scenario.run(authenticated: false) { cli, agent in
+            let agentAddress = agent.machine.address
+            try await Self.withRemovedApp(appID, cli: cli, agentAddress: agentAddress) {
+                try await cli.sh(Self.createSyncProjectScript(appID: appID))
+
+                try await cli.sh(
+                    Self.runCommand(project: Self.projectName(appID), agentAddress: agentAddress)
+                ) { result in
+                    let output = result.normalizedStdout + result.normalizedStderr
+
+                    #expect(result.status.isSuccess)
+                    #expect(output.contains("SYNC_FILE:hello from file sync"))
+                    #expect(output.contains("SYNC_DIR:nested asset"))
+                    #expect(!output.contains("/var/lib/wendy/files"))
+                }
+            }
+        }
     }
 
     /**
@@ -51,12 +69,46 @@ struct `'wendy run'` {
      are pruned from the managed app file-sync area, and unrelated app data such
      as persistent volumes remains untouched.
      */
-    @Test(
-        .enabled(if: isAgentLinuxOrWendyOS),
-        .disabled("SPEC STUB: behavior agreed, implementation pending")
-    )
+    @Test(.enabled(if: isAgentLinuxOrWendyOS))
     func `updates synced files and prunes stale paths on redeploy`() async throws {
-        // TODO: implement.
+        let appID = Self.appID("redeploy")
+
+        try await self.scenario.run(authenticated: false) { cli, agent in
+            let agentAddress = agent.machine.address
+            try await Self.withRemovedApp(
+                appID,
+                cli: cli,
+                agentAddress: agentAddress,
+                deleteVolumes: true
+            ) {
+                try await cli.sh(Self.createRedeployProjectScript(appID: appID))
+
+                try await cli.sh(
+                    Self.runCommand(project: Self.projectName(appID), agentAddress: agentAddress)
+                ) { result in
+                    let output = result.normalizedStdout + result.normalizedStderr
+
+                    #expect(result.status.isSuccess)
+                    #expect(output.contains("MSG:v1"))
+                    #expect(output.contains("OLD:present"))
+                    #expect(output.contains("PERSIST:seeded"))
+                }
+
+                try await cli.sh(Self.updateRedeployProjectScript(appID: appID))
+
+                try await cli.sh(
+                    Self.runCommand(project: Self.projectName(appID), agentAddress: agentAddress)
+                ) { result in
+                    let output = result.normalizedStdout + result.normalizedStderr
+
+                    #expect(result.status.isSuccess)
+                    #expect(output.contains("MSG:v2"))
+                    #expect(output.contains("OLD:absent"))
+                    #expect(output.contains("PERSIST:seed\n"))
+                    #expect(!output.contains("PERSIST:seeded"))
+                }
+            }
+        }
     }
 
     /**
@@ -66,12 +118,33 @@ struct `'wendy run'` {
      original project file nor the agent-managed synced copy is mutated by the
      running container.
      */
-    @Test(
-        .enabled(if: isAgentLinuxOrWendyOS),
-        .disabled("SPEC STUB: behavior agreed, implementation pending")
-    )
+    @Test(.enabled(if: isAgentLinuxOrWendyOS))
     func `mounts synced files read-only in the container`() async throws {
-        // TODO: implement.
+        let appID = Self.appID("readonly")
+
+        try await self.scenario.run(authenticated: false) { cli, agent in
+            let agentAddress = agent.machine.address
+            try await Self.withRemovedApp(appID, cli: cli, agentAddress: agentAddress) {
+                try await cli.sh(Self.createReadOnlyProjectScript(appID: appID))
+
+                try await cli.sh(
+                    Self.runCommand(project: Self.projectName(appID), agentAddress: agentAddress)
+                ) { result in
+                    let output = result.normalizedStdout + result.normalizedStderr
+
+                    #expect(result.status.isSuccess)
+                    #expect(output.contains("WRITE:denied"))
+                    #expect(output.contains("REMOVE:denied"))
+                    #expect(output.contains("CONTENT:immutable"))
+                }
+
+                let sourcePath = Self.projectName(appID) + "/config/message.txt"
+                try await cli.sh("test \"$(cat \(Self.shellQuote(sourcePath)))\" = immutable") {
+                    result in
+                    #expect(result.status.isSuccess)
+                }
+            }
+        }
     }
 
     /**
@@ -81,12 +154,28 @@ struct `'wendy run'` {
      build an image, create a container, or write outside the app-scoped
      file-sync area.
      */
-    @Test(
-        .enabled(if: isAgentLinuxOrWendyOS),
-        .disabled("SPEC STUB: behavior agreed, implementation pending")
-    )
+    @Test(.enabled(if: isAgentLinuxOrWendyOS))
     func `rejects unsafe configured file paths before deployment`() async throws {
-        // TODO: implement.
+        let appID = Self.appID("unsafe")
+
+        try await self.scenario.run(authenticated: false) { cli, agent in
+            try await cli.sh(Self.createUnsafeProjectScript(appID: appID))
+
+            try await cli.sh(
+                Self.runCommand(
+                    project: Self.projectName(appID),
+                    agentAddress: agent.machine.address
+                )
+            ) { result in
+                let output = result.normalizedStdout + result.normalizedStderr
+
+                #expect(result.status.isFailure)
+                #expect(output.contains("files[0]"))
+                #expect(output.contains("path must not contain '..'"))
+                #expect(!output.contains("Building and pushing Docker image"))
+                #expect(!output.contains("Creating container"))
+            }
+        }
     }
 
     /**
@@ -96,12 +185,28 @@ struct `'wendy run'` {
      clearly instead of silently ignoring files or mounting them into only one
      service.
      */
-    @Test(
-        .enabled(if: isAgentLinuxOrWendyOS),
-        .disabled("SPEC STUB: behavior agreed, implementation pending")
-    )
+    @Test(.enabled(if: isAgentLinuxOrWendyOS))
     func `reports top-level files as unsupported for multi-service deployments`() async throws {
-        // TODO: implement.
+        let appID = Self.appID("multiservice")
+
+        try await self.scenario.run(authenticated: false) { cli, agent in
+            try await cli.sh(Self.createMultiServiceProjectScript(appID: appID))
+
+            try await cli.sh(
+                Self.runCommand(
+                    project: Self.projectName(appID),
+                    agentAddress: agent.machine.address
+                )
+            ) { result in
+                let output = result.normalizedStdout + result.normalizedStderr
+
+                #expect(result.status.isFailure)
+                #expect(output.contains("top-level wendy.json files"))
+                #expect(output.contains("multi-service"))
+                #expect(!output.contains("Building service"))
+                #expect(!output.contains("Creating container"))
+            }
+        }
     }
 
     /**
@@ -160,5 +265,249 @@ struct `'wendy run'` {
     @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
     func `prints JSON run metadata for automation`() async throws {
         // TODO: implement.
+    }
+    // MARK: - File Sync Helpers
+
+    private static func withRemovedApp(
+        _ appID: String,
+        cli: WendyE2ESession,
+        agentAddress: String,
+        deleteVolumes: Bool = false,
+        _ body: () async throws -> Void
+    ) async throws {
+        do {
+            try await body()
+        } catch {
+            await Self.removeApp(
+                appID,
+                cli: cli,
+                agentAddress: agentAddress,
+                deleteVolumes: deleteVolumes
+            )
+            throw error
+        }
+
+        await Self.removeApp(
+            appID,
+            cli: cli,
+            agentAddress: agentAddress,
+            deleteVolumes: deleteVolumes
+        )
+    }
+
+    private static func removeApp(
+        _ appID: String,
+        cli: WendyE2ESession,
+        agentAddress: String,
+        deleteVolumes: Bool
+    ) async {
+        let deleteVolumesFlag = deleteVolumes ? " --delete-volumes" : ""
+        try? await cli.sh(
+            "wendy --device \(Self.shellQuote(agentAddress)) device apps remove \(Self.shellQuote(appID)) --force\(deleteVolumesFlag)"
+        )
+    }
+
+    private static func appID(_ suffix: String) -> String {
+        "sh.wendy.e2e.filesync.\(suffix).\(UUID().uuidString.lowercased())"
+    }
+
+    private static func projectName(_ appID: String) -> String {
+        "project-\(appID)"
+    }
+
+    private static func runCommand(project: String, agentAddress: String) -> String {
+        "wendy --device \(Self.shellQuote(agentAddress)) run --prefix \(Self.shellQuote(project))"
+    }
+
+    private static func createSyncProjectScript(appID: String) -> String {
+        let project = Self.projectName(appID)
+        return """
+            set -eu
+            rm -rf \(Self.shellQuote(project))
+            mkdir -p \(Self.shellQuote(project))/config \(Self.shellQuote(project))/fixtures/nested
+            cat > \(Self.shellQuote(project))/Dockerfile <<'EOF'
+            FROM alpine:3.20
+            WORKDIR /work
+            RUN mkdir -p /work/config /work/mounted/assets/nested
+            COPY check.sh /check.sh
+            CMD ["/bin/sh", "/check.sh"]
+            EOF
+            cat > \(Self.shellQuote(project))/check.sh <<'EOF'
+            #!/bin/sh
+            set -eu
+            test "$(cat config/message.txt)" = "hello from file sync"
+            test "$(cat mounted/assets/nested/value.txt)" = "nested asset"
+            printf 'SYNC_FILE:%s\n' "$(cat config/message.txt)"
+            printf 'SYNC_DIR:%s\n' "$(cat mounted/assets/nested/value.txt)"
+            EOF
+            printf 'hello from file sync' > \(Self.shellQuote(project))/config/message.txt
+            printf 'nested asset' > \(Self.shellQuote(project))/fixtures/nested/value.txt
+            cat > \(Self.shellQuote(project))/wendy.json <<'EOF'
+            {
+              "appId": "\(appID)",
+              "files": [
+                { "path": "config/message.txt" },
+                { "path": "fixtures", "to": "mounted/assets" }
+              ]
+            }
+            EOF
+            """
+    }
+
+    private static func createRedeployProjectScript(appID: String) -> String {
+        let project = Self.projectName(appID)
+        return """
+            set -eu
+            rm -rf \(Self.shellQuote(project))
+            mkdir -p \(Self.shellQuote(project))/config
+            cat > \(Self.shellQuote(project))/Dockerfile <<'EOF'
+            FROM alpine:3.20
+            WORKDIR /work
+            RUN mkdir -p /work/config /data
+            COPY check.sh /check.sh
+            CMD ["/bin/sh", "/check.sh"]
+            EOF
+            cat > \(Self.shellQuote(project))/check.sh <<'EOF'
+            #!/bin/sh
+            set -eu
+            if [ -f /data/persist.txt ]; then
+              printf 'PERSIST:%s\n' "$(cat /data/persist.txt)"
+            else
+              printf 'seed' > /data/persist.txt
+              printf 'PERSIST:seeded\n'
+            fi
+            if [ -e config/old.txt ]; then
+              printf 'OLD:present\n'
+            else
+              printf 'OLD:absent\n'
+            fi
+            printf 'MSG:%s\n' "$(cat config/message.txt)"
+            EOF
+            printf 'v1' > \(Self.shellQuote(project))/config/message.txt
+            printf 'stale' > \(Self.shellQuote(project))/config/old.txt
+            cat > \(Self.shellQuote(project))/wendy.json <<'EOF'
+            {
+              "appId": "\(appID)",
+              "entitlements": [
+                { "type": "persist", "name": "\(appID)-data", "path": "/data" }
+              ],
+              "files": [
+                { "path": "config/message.txt" },
+                { "path": "config/old.txt" }
+              ]
+            }
+            EOF
+            """
+    }
+
+    private static func updateRedeployProjectScript(appID: String) -> String {
+        let project = Self.projectName(appID)
+        return """
+            set -eu
+            printf 'v2' > \(Self.shellQuote(project))/config/message.txt
+            cat > \(Self.shellQuote(project))/wendy.json <<'EOF'
+            {
+              "appId": "\(appID)",
+              "entitlements": [
+                { "type": "persist", "name": "\(appID)-data", "path": "/data" }
+              ],
+              "files": [
+                { "path": "config/message.txt" }
+              ]
+            }
+            EOF
+            """
+    }
+
+    private static func createReadOnlyProjectScript(appID: String) -> String {
+        let project = Self.projectName(appID)
+        return """
+            set -eu
+            rm -rf \(Self.shellQuote(project))
+            mkdir -p \(Self.shellQuote(project))/config
+            cat > \(Self.shellQuote(project))/Dockerfile <<'EOF'
+            FROM alpine:3.20
+            WORKDIR /work
+            RUN mkdir -p /work/config
+            COPY check.sh /check.sh
+            CMD ["/bin/sh", "/check.sh"]
+            EOF
+            cat > \(Self.shellQuote(project))/check.sh <<'EOF'
+            #!/bin/sh
+            set -eu
+            if echo changed > config/message.txt 2>/tmp/write.err; then
+              printf 'WRITE:unexpected\n'
+              exit 1
+            else
+              printf 'WRITE:denied\n'
+            fi
+            if rm config/message.txt 2>/tmp/remove.err; then
+              printf 'REMOVE:unexpected\n'
+              exit 1
+            else
+              printf 'REMOVE:denied\n'
+            fi
+            printf 'CONTENT:%s\n' "$(cat config/message.txt)"
+            EOF
+            printf 'immutable' > \(Self.shellQuote(project))/config/message.txt
+            cat > \(Self.shellQuote(project))/wendy.json <<'EOF'
+            {
+              "appId": "\(appID)",
+              "files": [
+                { "path": "config/message.txt" }
+              ]
+            }
+            EOF
+            """
+    }
+
+    private static func createUnsafeProjectScript(appID: String) -> String {
+        let project = Self.projectName(appID)
+        return """
+            set -eu
+            rm -rf \(Self.shellQuote(project))
+            mkdir -p \(Self.shellQuote(project))
+            cat > \(Self.shellQuote(project))/Dockerfile <<'EOF'
+            FROM alpine:3.20
+            CMD ["/bin/sh", "-c", "echo should-not-run"]
+            EOF
+            cat > \(Self.shellQuote(project))/wendy.json <<'EOF'
+            {
+              "appId": "\(appID)",
+              "files": [
+                { "path": "../outside.txt" }
+              ]
+            }
+            EOF
+            """
+    }
+
+    private static func createMultiServiceProjectScript(appID: String) -> String {
+        let project = Self.projectName(appID)
+        return """
+            set -eu
+            rm -rf \(Self.shellQuote(project))
+            mkdir -p \(Self.shellQuote(project))/api \(Self.shellQuote(project))/config
+            cat > \(Self.shellQuote(project))/api/Dockerfile <<'EOF'
+            FROM alpine:3.20
+            CMD ["/bin/sh", "-c", "echo should-not-build"]
+            EOF
+            printf 'shared' > \(Self.shellQuote(project))/config/shared.txt
+            cat > \(Self.shellQuote(project))/wendy.json <<'EOF'
+            {
+              "appId": "\(appID)",
+              "files": [
+                { "path": "config/shared.txt" }
+              ],
+              "services": {
+                "api": { "context": "api" }
+              }
+            }
+            EOF
+            """
+    }
+
+    private static func shellQuote(_ value: String) -> String {
+        "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 }
