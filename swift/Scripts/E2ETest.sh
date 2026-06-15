@@ -646,8 +646,18 @@ start_managed_agent() {
     return 64
   fi
 
+  local registry_addr="127.0.0.1:0"
+  local agent_os_lc
+  agent_os_lc="$(printf '%s' "$AGENT_OS" | tr '[:upper:]' '[:lower:]')"
+  case "$agent_os_lc" in
+    linux|wendyos|wendy-os|wendy_os)
+      registry_addr="127.0.0.1:5000"
+      ;;
+  esac
+
   echo "==> Starting managed wendy-agent"
   echo "    Address: ${DEVICE_ADDRESS##*@}"
+  echo "    Registry: $registry_addr"
   echo "    Config:  $config_dir"
   echo "    Logs:    $stdout_path, $stderr_path"
 
@@ -664,7 +674,7 @@ start_managed_agent() {
     WENDY_AGENT_PORT="$port" \
     WENDY_OTEL_PORT=0 \
     WENDY_OTEL_HTTP_PORT=0 \
-    WENDY_REGISTRY_ADDR=127.0.0.1:0 \
+    WENDY_REGISTRY_ADDR="$registry_addr" \
     "$agent_path" >"$stdout_path" 2>"$stderr_path" &
   MANAGED_AGENT_PID=$!
   (umask 077; printf '%s\n' "$MANAGED_AGENT_PID" > "$pid_path")

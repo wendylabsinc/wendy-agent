@@ -63,6 +63,81 @@ installUbuntuPackages() {
     zlib1g-dev
 }
 
+installDockerPackagesIfNeeded() {
+  if command -v docker >/dev/null 2>&1 && docker buildx version >/dev/null 2>&1; then
+    return 0
+  fi
+
+  logStep "Installing Docker E2E dependencies"
+  sudo install -m 0755 -d /etc/apt/keyrings
+  if [ ! -f /etc/apt/keyrings/docker.asc ]; then
+    curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo tee /etc/apt/keyrings/docker.asc >/dev/null
+    sudo chmod a+r /etc/apt/keyrings/docker.asc
+  fi
+
+  # shellcheck disable=SC1091
+  . /etc/os-release
+  local codename="${VERSION_CODENAME:-}"
+  if [ -z "$codename" ]; then
+    codename="$(lsb_release -cs)"
+  fi
+
+  echo \
+    "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu ${codename} stable" | \
+    sudo tee /etc/apt/sources.list.d/docker.list >/dev/null
+
+  sudo apt-get update
+  sudo apt-get install -y --no-install-recommends \
+    containerd.io \
+    docker-buildx-plugin \
+    docker-ce \
+    docker-ce-cli \
+    docker-compose-plugin
+}
+
+startContainerRuntimeServices() {
+  logStep "Starting Docker/containerd services"
+
+  if command -v systemctl >/dev/null 2>&1; then
+    sudo systemctl enable --now containerd >/dev/null 2>&1 || sudo systemctl start containerd >/dev/null 2>&1 || true
+    sudo systemctl enable --now docker >/dev/null 2>&1 || sudo systemctl start docker >/dev/null 2>&1 || true
+  elif command -v service >/dev/null 2>&1; then
+    sudo service containerd start >/dev/null 2>&1 || true
+    sudo service docker start >/dev/null 2>&1 || true
+  fi
+}
+
+configureContainerRuntimeAccessForE2E() {
+  logStep "Configuring container runtime access for E2E"
+
+  sudo groupadd -f docker
+  sudo usermod -aG docker "${USER:-$(id -un)}" || true
+
+  # The managed E2E agent runs as the current user and talks directly to
+  # containerd. Hosted runners often expose /run/containerd/containerd.sock as
+  # root-only, which makes container creation fail before file-sync behavior is
+  # exercised. Loosen the socket only on this ephemeral E2E host.
+  if [ -S /run/containerd/containerd.sock ]; then
+    sudo chmod a+rw /run/containerd/containerd.sock
+  fi
+  if [ -S /var/run/docker.sock ]; then
+    sudo chmod a+rw /var/run/docker.sock
+  fi
+}
+
+setupContainerRuntimeForE2E() {
+  installDockerPackagesIfNeeded
+  startContainerRuntimeServices
+  configureContainerRuntimeAccessForE2E
+
+  checkCommand docker
+  docker info >/dev/null
+  docker buildx version >/dev/null
+  if command -v ctr >/dev/null 2>&1; then
+    ctr version >/dev/null
+  fi
+}
+
 sourceSwiftlyEnvironment() {
   local env_file="${SWIFTLY_HOME_DIR:-$HOME/.local/share/swiftly}/env.sh"
   if [ -f "$env_file" ]; then
@@ -217,6 +292,7 @@ setupE2EUbuntu() {
   export DEBIAN_FRONTEND=noninteractive
 
   installUbuntuPackages
+  setupContainerRuntimeForE2E
   installSwiftUbuntuIfNeeded
   configureSSHDForE2E
   setupSSHLoopback
@@ -226,6 +302,7 @@ setupE2EUbuntu() {
   checkCommand git
   checkCommand go
   checkCommand make
+  checkCommand docker
   checkCommand swift
   checkCommand zip
   checkCommand unzip
