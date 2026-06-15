@@ -1,788 +1,218 @@
-# Wendy for Mac — Beta Work Plan
+# Wendy for Mac — Production Work Plan
 
-## KISS beta policy
+## Purpose
 
-The beta is time-constrained. Keep macOS work aligned with what we currently
-ship for Linux/WendyOS instead of adding a better support surface only for Mac.
+This worktree coordinates the Linear project **Wendy for Mac — Production**.
+It continues the coordinator workflow and lessons from the completed Wendy for
+Mac beta project, but it should not implement issue work directly.
 
-Current Linux standalone-agent docs are intentionally short:
+- Linear project: https://linear.app/wendylabsinc/project/wendy-for-mac-production-a3cf67464606/overview
+- Worktree: `/Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wendy-for-mac-production`
+- Branch: `kb.wendy-for-mac-production`
+- Important file: `PLAN.md`
+- Coordinator role: planning/session handoff only
 
-1. install `wendy-agent`,
-2. verify the service is running,
-3. discover the device / optionally set it as default,
-4. run with an explicit `--device` hostname when discovery is not available,
-5. link to existing app guides.
+Implementation, validation, review-thread handling, and non-empty feature/fix
+commits happen in dedicated per-issue worktrees, not in this coordinator.
 
-For the macOS beta, do the same: install, verify with `device info`, optionally
-set a default device, and run one native macOS app path. Do **not** add broad
-diagnostics, reset/uninstall docs, firewall/VPN recipes, first-launch prompt
-guides, command-by-command matrices, or new E2E infrastructure unless the user
-explicitly asks for a post-beta pass.
+## Project handoff from Wendy for Mac — Beta
 
-## Current coordinator scope and status
+The **Wendy for Mac — Beta** project is closed. Its remaining open issues were
+moved into **Wendy for Mac — Production**.
 
-This coordinator is limited to the Linear project `Wendy for Mac — Beta`. Do not
-use it for general CLI work, E2E-only cleanup, or template-project work unless
-the user explicitly reprioritizes that issue into the Mac beta project. Keep
-general/top-level coordination in a different coordinator worktree.
+Beta closeout summary:
+
+- Core native Mac path validated end-to-end: install Wendy Agent for Mac,
+  connect with the CLI, discover/select the Mac target, run native SwiftPM
+  macOS apps, run the Xcode/HelloMLX flow, and manage deployed app lifecycle
+  commands.
+- Clean Apple Silicon validation completed and fixed important issues such as
+  Login Items auto-start registration and smaller HelloMLX model tiers for
+  constrained Macs.
+- Public/docs surfaces aligned: Mac install page is in navigation,
+  `platform: "darwin"` is documented, support matrix exists, and public copy
+  describes Wendy Agent for Mac as beta without over-promising Linux containers
+  or broad hardware API support.
+- Unsupported paths are clearer: contextual Mac-agent unsupported errors landed,
+  and `wendy run` rejects unsupported Mac-target project shapes early while
+  preserving native Darwin SwiftPM/Xcode flows.
+- Broad beta umbrella cleanup was canceled once focused post-beta follow-ups
+  existed.
+- Final beta project update posted with `onTrack` health:
+  https://linear.app/wendylabsinc/project/wendy-for-mac-beta-22afd1281b23/activity#project-update-ffafe0dd
+
+## Lessons learned / production operating principles
+
+1. **Preserve the shipped path before expanding scope.** Native Darwin SwiftPM
+   and Xcode app deployment are the proven paths. Keep them working while adding
+   production capabilities.
+2. **Be explicit about target/platform mismatches.** When a Mac agent cannot
+   support a project shape, fail early with a Mac-specific diagnostic instead of
+   falling through to container, registry, local-tool, or agent-version errors.
+3. **Do not imply Linux containers on Mac until implemented and verified.**
+   Docker/Linux-container work belongs to focused production issues.
+4. **Keep docs concise and aligned with Linux/WendyOS parity.** Avoid broad
+   Mac-only troubleshooting matrices unless production scope explicitly requires
+   them or Linux/WendyOS gets equivalent treatment.
+5. **Prefer focused follow-ups over umbrella work.** If a broad issue only says
+   “audit” or “create backlog,” close/cancel it once focused issues exist.
+6. **Preserve Linux/WendyOS behavior.** Mac production work should not regress
+   existing Linux/WendyOS CLI, agent, docs, or E2E behavior.
+7. **Document supported vs unsupported behavior in PR bodies.** Especially for
+   build/run, container, security, MCP, and hardware API work.
+8. **Use real issue worktrees.** Coordinator sessions prepare work only; issue
+   sessions implement and validate.
+9. **Keep resume prompts generic.** Put durable context in `HANDOVER.md`, not in
+   long `ai --prompt` strings.
+10. **Linear CLI may be unavailable.** In this environment, previous sessions
+    used Linear GraphQL via `LINEAR_API_KEY` when `linear` was not installed.
+
+## Issue start protocol
+
+For each issue this coordinator starts:
+
+1. Confirm the issue belongs to **Wendy for Mac — Production** or explicitly
+   record why it is being coordinated here.
+2. Assign the Linear issue to `konstantin@wendy.sh`.
+3. Move the Linear issue to `In Progress`.
+4. Create a dedicated git worktree and branch for the issue.
+5. Add an empty setup commit for the issue.
+6. Push the branch.
+7. Create a draft PR from the setup commit using a real markdown body file, not
+   an inline string with escaped newlines.
+8. For mergeable implementation PRs, include `Closes WDY-xxxx` in the PR body.
+   Do not put closing references on non-merge audit artifacts.
+9. Write a `HANDOVER.md` file into the issue worktree with scope, constraints,
+   validation, commit/push expectations, PR details, and known risks.
+10. Leave the user with the worktree path, PR link, and a one-line command to
+    resume from that worktree:
+
+    ```sh
+    cd /path/to/worktree && ai --prompt "Read HANDOVER.md and follow its instructions."
+    ```
+
+## Current status snapshot
 
 Housekeeping snapshot, 2026-06-12:
 
-- Completed: WDY-1529 — Surface contextual macOS unsupported errors for
-  remaining CLI commands. PR #996 merged with `Closes WDY-1529`.
-- Completed: WDY-1531 — Make `wendy run` gracefully reject project types
-  unsupported on Mac. PR #999 merged with `Closes WDY-1531`.
-- No active Mac beta implementation worktree is currently prepared by this
-  coordinator.
-- Project update posted to Linear with `onTrack` health:
-  https://linear.app/wendylabsinc/project/wendy-for-mac-beta-22afd1281b23/activity#project-update-ffafe0dd
-- Open Mac beta issues after housekeeping: 23, all Todo/Backlog.
-- Stale/decision candidates inside the Mac beta project:
-  - WDY-1365 canceled as stale umbrella work; the post-beta backlog already has
-    focused follow-up issues.
-  - WDY-1351 and WDY-1358 are mostly superseded by WDY-1377 and completed
-    WDY-1529; reassess whether to close/cancel them.
-  - WDY-1349 likely overlaps the WDY-1509/WDY-1512+ CLI/E2E audit family, but it
-    remains a Mac beta backlog issue until explicitly closed or canceled.
-- Recently corrected: WDY-1361 is Done; PR #906 exposed the Mac install page in
-  nav and PR #945 updated public beta status/linking.
-- Related but out of this coordinator's current scope: WDY-1512/WDY-1528 are E2E
-  Tests project issues; WDY-1530 is in the New Templates project; WDY-1532 is
-  general/top-level work.
+- Production project state: started.
+- Production project open issues at handoff: 30.
+- Beta project state: completed; open issues there: 0.
+- No production issue has been selected by this coordinator yet.
+- Next issues are **TBD** and should be chosen in the production coordinator
+  session.
 
-## Working protocol
+## Candidate queue
 
-For each issue we start, this master session only prepares the workspace. It
-must not do the actual issue implementation.
+TBD. Choose the first production issue in a future coordinator session.
 
-1. Assign the Linear issue to `konstantin@wendy.sh`.
-2. Create a dedicated git worktree and branch for the issue.
-3. Add an empty setup commit for the issue.
-4. Push the branch.
-5. Create a draft PR from the setup commit using a real markdown body file,
-   not an inline string with escaped newlines.
-6. For mergeable implementation PRs, include the Linear issue link/closing
-   reference in the PR body, for example `Closes WDY-1234`, so merging the PR
-   closes the issue. Do not put closing references on non-merge audit artifacts.
-7. Write a `HANDOVER.md` file into the issue worktree. Put the real prompt
-   content there: scope, KISS guidance, validation, commit/push expectations,
-   PR details, and known constraints.
-8. Leave the user with the worktree path, PR link, and a one-line command to
-   resume from that worktree using a generic `--prompt`, for example:
+Use the backlog categories below as inputs, not as priority order.
 
-   ```sh
-   cd /path/to/worktree && ai --prompt "Read HANDOVER.md and follow its instructions."
-   ```
+### Backlog categories imported from beta
 
-   Keep issue-specific detail out of the `--prompt` argument so future resume
-   commands stay short and all durable context lives in `HANDOVER.md`.
+- **Linux containers / Docker on Mac** — enable and verify Docker-backed Linux
+  container support, clarify USB pass-through possibilities, and keep hardware
+  limitations explicit.
+- **Security / mTLS / exposed port guidance** — align Wendy Agent for Mac with
+  the broader WendyOS security model rather than inventing a Mac-only one.
+- **MCP / container proxy behavior** — make supported/unsupported behavior clear
+  for Mac agents.
+- **E2E and release automation** — add platform-aware E2E gates, native Darwin
+  run specs, device-info specs, unsupported hardware specs, and release artifact
+  smoke flow when the production contract is stable.
+- **Docs / examples / onboarding** — add production-quality but concise docs,
+  examples, first-launch notes, troubleshooting, and onboarding wording as
+  needed.
+- **Platform semantics** — clarify `wendyos`, `linux`, and `darwin` semantics in
+  `wendy.json` and build/deploy paths.
+- **Mac app reliability / packaging / analytics** — production hardening such as
+  crash reporting, analytics, packaging architecture, App Store/TestFlight
+  decisions, process architecture, and real stats.
 
-Implementation, validation, review-thread handling, and non-empty commits happen
-in per-issue worktree sessions, not in this master planning session.
+### Open production backlog snapshot at handoff
 
-## Archived/off-scope CLI/E2E surface audit context
+Do not treat this as priority order.
 
-Housekeeping note, 2026-06-12: this section is retained as historical context
-only. This coordinator now focuses on the `Wendy for Mac — Beta` project. Do not
-start or manage E2E-only issues from this worktree unless the user explicitly
-reassigns them to the Mac beta project. WDY-1512 is complete after WDY-1528 and
-PR #992, but it belongs to E2E/general coordination rather than active Mac beta
-coordination.
+- WDY-1492 — Explore USB pass-through for Linux containers on Wendy for Mac
+- WDY-1480 — Add proper mTLS support for Wendy for Mac
+- WDY-1395 — Evaluate wendyos platform semantics in wendy.json
+- WDY-1385 — Add macOS CLI and agent release artifact smoke flow
+- WDY-1384 — Add macOS unsupported hardware API E2E specs
+- WDY-1383 — Add native Darwin SwiftPM wendy run E2E spec
+- WDY-1382 — Add macOS agent device info E2E spec
+- WDY-1381 — Add platform-aware Swift E2E spec gates and reference rendering
+- WDY-1380 — Document Wendy Agent for macOS first-launch prompts
+- WDY-1379 — Add minimal native macOS SwiftPM deployment example
+- WDY-1376 — Add macOS Wendy Agent security guidance for exposed port 50051
+- WDY-1366 — Simplify Wendy Agent Linux and macOS installation docs
+- WDY-1364 — Review Swift E2E suite against Mac beta contract
+- WDY-1363 — Verify Linux container Docker flow on Mac agent
+- WDY-1362 — Enable Linux container support on Mac via Docker
+- WDY-1358 — Improve CLI rendering of unsupported macOS agent errors
+- WDY-1357 — Document install, reset, uninstall, and troubleshooting
+- WDY-1356 — Validate menu bar state against agent and app lifecycle
+- WDY-1355 — Define Mac beta E2E/smoke subset
+- WDY-1354 — Add clear unsupported MCP/container proxy behavior where needed
+- WDY-1351 — Make unsupported Wi-Fi, Bluetooth, hardware, audio, GPU, and camera flows actionable
+- WDY-1349 — Audit CLI commands against Mac beta support matrix
+- WDY-1347 — Update onboarding copy to avoid over-promising hardware support
+- WDY-1080 — Check network service order and warn user if configuration is suboptimal
+- WDY-973 — Set up crash reporting and analytics
+- WDY-972 — Release to Test Flight?
+- WDY-971 — Release to Mac App Store?
+- WDY-962 — Mac agent (Containerization framework): implement volume/persist entitlement support
+- WDY-943 — Set up CodeQL for Wendy for Mac
+- WDY-930 — Explore more packaging and process architecture options for Wendy on macOS
+- WDY-855 — Grab-bag
+- WDY-854 — Implement real container stats in the Swift mac prototype
 
-WDY-1509 grew into an umbrella/manual audit. Treat PR #982 as a draft, non-merge
-audit artifact only; it should not carry a closing reference or be used to close
-WDY-1509. WDY-1509 is closed in Linear as the umbrella decomposition/audit
-handoff; mergeable cleanup/reference work should happen in child issue worktrees
-outside this Mac beta coordinator unless explicitly reprioritized.
+## Active / paused issues
 
-### WDY-1509 umbrella goal
+- TBD.
 
-Manually audit the current `wendy` CLI surface against the Swift E2E reference
-stubs across Linux/WendyOS and macOS/Darwin routes.
+## Recently completed in this production coordinator
 
-This is a post-beta alignment pass. The goal is to encode the current contract,
-not expand Wendy for Mac support promises or build a new E2E framework.
+- TBD.
 
-### Ground rules
+## Follow-ups / discoveries
 
-- Review manually first; edit stubs only after the behavior contract is clear.
-- Prefer lightweight notes/ledger updates over broad framework work.
-- Keep product fixes out of audit/reference PRs unless tiny and required to make
-  references truthful.
-- File focused follow-up Linear issues for product bugs, missing automation
-  seams, or larger contract questions.
-- Keep commits small and bucketed by concern.
-- The master session coordinates and prepares child worktrees; it does not do
-  the implementation/reference cleanup itself.
+- TBD.
 
-### Current WDY-1509 observations to preserve
+## Issue record template
 
-- `go/bin/wendy --experimental-dump-help` is not supported by the current local
-  build.
-- A temporary Cobra walker was used in the WDY-1509 worktree to generate
-  `.cli-surface-WDY-1509.json` from `commands.NewRootCmd()`.
-- The dump found 135 non-internal commands including hidden deprecated
-  compatibility commands, with 106 leaf commands.
-- Hidden/internal command surface observed:
-  - `wendy __ble-check` is an internal subprocess helper for CoreBluetooth
-    probing and should stay excluded from user-facing E2E reference coverage.
-- Hidden deprecated compatibility commands observed:
-  - `wendy device version`
-  - `wendy cloud device version`
-  - `wendy cloud run`
-- Public alias commands observed:
-  - `wendy device ps` is surfaced in help as an alias for
-    `wendy device apps list`.
-  - `wendy cloud device ps` is surfaced in help as an alias for
-    `wendy cloud device apps list`.
-- Cobra aliases observed:
-  - `wendy device bluetooth` accepts `bt`.
-  - `wendy cloud device bluetooth` accepts `bt`.
-- Hidden test seam observed:
-  - `wendy completion install --output-dir` is misleading because it overrides
-    the home directory used to compute install paths rather than selecting an
-    output directory. Follow-up: WDY-1511.
-- Hidden/deprecated/public alias policy needs a focused cleanup pass for
-  `device version`, `cloud device version`, `cloud run`, public `ps` aliases,
-  and Bluetooth `bt`. Follow-up: WDY-1512.
-- `swift/WendyE2ETests/CLI_SURFACE_LEDGER.md` is a starting ledger, not yet the
-  reviewed source of truth.
+Copy this block when this coordinator starts tracking an issue.
 
-### Audit buckets
+```md
+### WDY-XXXX — Issue title
 
-Review by bucket, not alphabetically.
+- Linear: https://linear.app/wendylabsinc/issue/WDY-XXXX/...
+- State: TBD
+- Project: Wendy for Mac — Production
+- Worktree: `/Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-xxxx-slug`
+- Branch: `kb.wdy-xxxx-slug`
+- Draft PR: TBD
+- Setup commit: TBD
+- Status: TBD
+- Scope:
+  - TBD.
+- Constraints:
+  - Preserve validated native Darwin SwiftPM/Xcode flows unless the issue
+    explicitly targets them.
+  - Preserve Linux/WendyOS behavior.
+  - TBD.
+- Validation expectations:
+  - TBD.
+- Resume:
 
-1. **Host-only CLI/config commands** — `analytics`, `auth`, `cache`,
-   `completion`, `info`, `init`, `json`, `mcp`, `project`, `tour`,
-   `utils open-browser`.
-   - Check whether the command needs a device/agent.
-   - Check JSON/help/no-state-change expectations.
-   - Keep Mac vs Linux differences limited to filesystem, shell, browser, or
-     local tool detection unless behavior proves otherwise.
-2. **Host OS image-management commands** — `os cache`, `os download`,
-   `os install`, `os list-drives`.
-   - Classify host-only support by platform.
-   - Make destructive install gating and platform-specific drive metadata
-     truthful.
-3. **WendyOS OTA/device OS update commands** — `os update`.
-   - Confirm WendyOS OTA-capable Linux target requirement.
-   - State expected behavior for plain Linux agents and Darwin/macOS agents.
-   - Confirm failure happens before artifact serving or destructive side effects.
-4. **Direct local agent commands** — `device info`, `device apps`, `device logs`,
-   `device wifi`, `device bluetooth`, `device camera`, `device hardware`,
-   `device volumes`, `device dashboard`, `device telemetry-stream`.
-   - Distinguish full Linux/WendyOS support from Wendy Agent for Mac beta
-     support/unsupported diagnostics.
-   - Do not let E2E prose overpromise Mac support.
-   - Keep impractical automation as disabled reference stubs with clear reasons.
-5. **Cloud/tunnel agent commands** — `cloud device ...`, `cloud tunnel`, hidden
-   `cloud run`.
-   - Capture auth and tunnel semantics instead of duplicating direct-route prose.
-   - Distinguish broker/tunnel errors from agent errors.
-   - Represent hidden cloud aliases appropriately.
-6. **Build/run commands** — `build`, `run`, hidden `cloud run`.
-   - Separate host OS build paths from target OS deploy paths.
-   - Darwin target means native macOS app deployment, not Linux containers.
-   - Linux containers on Mac agents are unsupported unless a later issue changes
-     that.
-
-### Ledger and cross-reference process
-
-For every leaf command, track:
-
-```text
-command
-public/hidden/deprecated?
-host-only / direct-agent / cloud-agent / OS-imaging / build-deploy?
-Linux/WendyOS expectation
-macOS/Darwin expectation
-existing Swift E2E suite?
-gap/mismatch?
-manual sample needed?
-follow-up issue needed?
+  ```sh
+  cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-xxxx-slug && ai --prompt "Read HANDOVER.md and follow its instructions."
+  ```
 ```
 
-Use `.cli-surface-WDY-1509.json` from the WDY-1509 worktree and
-`swift/WendyE2ETests/CLI_SURFACE_LEDGER.md` as inputs, but treat the ledger as a
-draft until manually reviewed.
-
-For each bucket, compare against:
-
-- `swift/WendyE2ETests/Tests/WendyE2ETests/`
-- `swift/WendyE2ETests/Sources/WendyE2ETesting/`
-- `swift/WendyE2ETests/Tests/WendyE2ETestingTests/`
-- `swift/WendyE2ETests/README.md`
-
-Check suite existence/naming, hidden/deprecated coverage, direct vs cloud route
-language, host-only vs agent-target language, Linux/WendyOS expectations,
-macOS/Darwin supported or intentionally unsupported expectations, and disabled
-stub reasons.
-
-### Manual sampling strategy
-
-Do not run every command. Sample representative commands where classification or
-behavior is unclear.
-
-Help shape:
-
-```sh
-cd go
-make build-cli
-./bin/wendy --help
-./bin/wendy device --help
-./bin/wendy cloud device --help
-./bin/wendy os --help
-./bin/wendy run --help
-```
-
-Hidden aliases:
-
-```sh
-./bin/wendy device version --help
-./bin/wendy device ps --help
-./bin/wendy cloud device version --help
-./bin/wendy cloud device ps --help
-./bin/wendy cloud run --help
-```
-
-No-device and host-only JSON behavior:
-
-```sh
-./bin/wendy --json device info
-./bin/wendy --json device hardware list
-./bin/wendy --json device wifi list
-./bin/wendy --json os update
-./bin/wendy info --json
-./bin/wendy cache list --json
-./bin/wendy os cache list --json
-```
-
-If a Darwin/macOS agent route is available, sample only enough to confirm
-diagnostics and side-effect boundaries:
-
-```sh
-wendy --device <mac-agent> device hardware list
-wendy --device <mac-agent> device wifi list
-wendy --device <mac-agent> device wifi status
-wendy --device <mac-agent> device camera list
-wendy --device <mac-agent> device bluetooth list
-wendy --device <mac-agent> os update
-```
-
-### Child issue sequence
-
-WDY-1509 is complete as the umbrella/manual audit decomposition. PR #982 is only
-a draft audit artifact and is not expected to merge. Focused child issues are
-the mergeable implementation path, ordered as follows:
-
-1. Completed: WDY-1511 — Remove misleading hidden completion install
-   `--output-dir` test seam, PR #990 merged.
-2. Completed: WDY-1512 — Audit and align hidden/deprecated CLI aliases, PR #992
-   merged. This is out of scope for active Mac beta coordination.
-3. WDY-1513 — Align host-only CLI E2E references.
-4. WDY-1514 — Align OS imaging and update E2E references.
-5. WDY-1515 — Align direct device command E2E references.
-6. WDY-1516 — Align cloud-routed device E2E references.
-7. WDY-1517 — Align build and run E2E references.
-
-Use WDY-1509/PR #982 only to preserve the command surface ledger and handoff
-summary as a non-merge artifact. Use the child issues for all mergeable
-implementation/reference cleanup so no single PR becomes a full E2E rewrite.
-
-### Edit and validation expectations for child work
-
-Suggested implementation order inside each child issue:
-
-1. Ledger/doc-only update for reviewed command classification.
-2. Alias/platform/route prose alignment where the current reference overpromises
-   or is ambiguous.
-3. Tiny executable tests only where cheap and deterministic: help output, JSON
-   shape, or missing-device/non-interactive errors.
-4. Avoid long-running streams, destructive paths, OS flashing, Wi-Fi/Bluetooth
-   mutation, large harness work, or unrelated product fixes.
-
-At minimum, after changing Swift E2E code or references:
-
-```sh
-cd swift/WendyE2ETests
-swift test
-```
-
-If that is too broad or environment-dependent, run the smallest targeted subset
-and document why in the PR body. Also run formatting/checks appropriate to any
-touched Swift, Go, or docs files.
-
-Child PR bodies should include what surface was reviewed, how behavior was
-sampled, which references changed, which commands/routes remain manual or out of
-automation scope, follow-up issues filed, and the relevant `Closes WDY-xxxx`.
-
-### Child issue status
-
-#### WDY-1511 — Remove misleading hidden completion install `--output-dir` test seam
-
-- Status: `done`; Linear state: Done; assignee: `konstantin@wendy.sh`;
-  project: `E2E Tests`.
-- Worktree: removed after merge (`.worktrees/kb.wdy-1511-completion-install-output-dir`).
-- PR: https://github.com/wendylabsinc/WendyOS/pull/990 — merged with
-  `Closes WDY-1511`.
-- Setup commit: `320e997d chore: start WDY-1511 completion install seam cleanup`.
-- Merge commit: `5994d583a74104f97a5d431a176a18073d537616`.
-- Scope: removed the misleading hidden `wendy completion install --output-dir`
-  test seam and kept completion install tests isolated without implying a public
-  output-directory contract.
-- Resume command: not needed; issue is complete.
-
-#### WDY-1512 — Audit and align hidden deprecated CLI aliases
-
-- Status: `done / out-of-scope here`; Linear state: Done; assignee:
-  `konstantin@wendy.sh`; project: `E2E Tests`.
-- WDY-1528 is Done and PR #997 merged. WDY-1512 was completed via PR #992; keep
-  any future E2E-only coordination outside this Wendy for Mac beta coordinator
-  unless explicitly reprioritized.
-- Worktree: removed after merge (`.worktrees/kb.wdy-1512-hidden-deprecated-aliases`).
-- PR: https://github.com/wendylabsinc/WendyOS/pull/992 — merged with
-  `Closes WDY-1512`.
-- Setup commit: `a774ae29 chore: start WDY-1512 CLI alias audit`.
-- Scope: align hidden deprecated commands, public aliases, Cobra aliases, help
-  text, deprecation diagnostics, and E2E references for `device version`,
-  `cloud device version`, `cloud run`, direct/cloud `device ps`, and Bluetooth
-  `bt`. Do not broaden into WDY-1513+ route/reference cleanup.
-- Resume command: not needed; issue is complete.
-
-### Completed Mac unsupported-error follow-up
-
-#### WDY-1529 — Surface contextual macOS unsupported errors for remaining CLI commands
-
-- Status: `done`; Linear state: Done; assignee:
-  `konstantin@wendy.sh`; project: `Wendy for Mac — Beta`.
-- Worktree: removed after merge (`.worktrees/kb.wdy-1529-macos-unsupported-errors`).
-- PR: https://github.com/wendylabsinc/WendyOS/pull/996 — merged with
-  `Closes WDY-1529`.
-- Merge commit: `2ab0ee8672ad801b2de85cfb08ee11cac39b04db`.
-- Setup commit: `e8fa4a9f chore: start WDY-1529 macOS unsupported errors`.
-- Scope: preserve contextual Wendy Agent for Mac unsupported messages instead
-  of generic agent-update hints for audio, Wi-Fi mutations, Bluetooth
-  mutations, camera streaming, persistent volumes, and related dashboard/cloud
-  checks. Include the observed `camera view` masking case where local
-  `gst-launch-1.0` preflight hides the remote unsupported stream error, plus the
-  `device apps list` TUI poll-error case where raw `rpc error: code =
-  Unimplemented desc = ...` text leaks into the status line for unsupported
-  volume polling.
-- Resume command: not needed; issue is complete.
-
-### Completed Mac run rejection follow-up
-
-#### WDY-1531 — Make `wendy run` gracefully reject project types unsupported on Mac
-
-- Status: `done`; Linear state: Done; assignee:
-  `konstantin@wendy.sh`; project: `Wendy for Mac — Beta`.
-- Worktree: removed after merge (`.worktrees/kb.wdy-1531-macos-run-unsupported-projects`).
-- PR: https://github.com/wendylabsinc/WendyOS/pull/999 — merged with
-  `Closes WDY-1531`.
-- Merge commit: `434ed98b47c695b0f2b337954fe88c62a4ff004e`.
-- Setup commit: `1bdc71d3 chore: start WDY-1531 Mac run rejection`.
-- Scope: make `wendy run` fail early with clear Wendy Agent for Mac diagnostics
-  when a Darwin/macOS agent is targeted with unsupported Linux/container,
-  Compose, WendyOS-template, or otherwise non-native-Mac project shapes. Keep
-  supported native Darwin SwiftPM and Xcode flows working. Do not implement
-  Linux containers on Mac in this issue.
-- Resume command: not needed; issue is complete.
-
-## Issue ledger
-
-### WDY-1352 — Verify discovery and device selection for WendyAgentMac
-
-- Status: `done`
-- Linear: https://linear.app/wendylabsinc/issue/WDY-1352/verify-discovery-and-device-selection-for-wendyagentmac
-- Linear assignee: `konstantin@wendy.sh`
-- Linear state: Done
-- Branch/worktree name: `kb.wdy-1352-mac-agent-discovery-selection`
-- Worktree path: removed after merge (`.worktrees/kb.wdy-1352-mac-agent-discovery-selection`)
-- PR: https://github.com/wendylabsinc/WendyOS/pull/930 — merged
-- PR closing reference: `Closes WDY-1352`
-- Merge commit on `main`: `a941dcae`
-- KISS scope: matched Linux's simple discover/default/explicit-hostname flow;
-  avoided Mac-specific selection models and diagnostics/troubleshooting content.
-- Validation:
-  - `go test ./go/internal/cli/commands -run 'TestResolveDeviceAddress_(Flag|DefaultDevice|ExplicitHostPortFlag|ExplicitHostPortDefault|NoDevice)$'`
-  - Manual WendyAgentMac targeting checks recorded in PR #930
-- Resume command: not needed; issue is complete
-
-### WDY-1345 — Run and record Mac beta smoke test
-
-- Status: `done`
-- Linear: https://linear.app/wendylabsinc/issue/WDY-1345/run-and-record-mac-beta-smoke-test
-- Linear assignee: `konstantin@wendy.sh`
-- Linear state: Done
-- Branch/worktree name: `kb.wdy-1345-mac-beta-smoke-test`
-- Worktree path: removed after merge (`.worktrees/kb.wdy-1345-mac-beta-smoke-test`)
-- PR: https://github.com/wendylabsinc/WendyOS/pull/934 — merged
-- PR closing reference: `Closes WDY-1345`
-- Merge commit on `main`: `214c8744`
-- KISS scope: minimal release smoke only; launch agent, verify `device info`,
-  confirm one unsupported command is clear, and record versions/commands.
-- Validation: recorded in PR #934
-- Resume command: not needed; issue is complete
-
-### WDY-1346 — Verify native macOS app run flow on Mac agent
-
-- Status: `done`
-- Linear: https://linear.app/wendylabsinc/issue/WDY-1346/verify-native-macos-app-run-flow-on-mac-agent
-- Linear assignee: `konstantin@wendy.sh`
-- Linear state: Done
-- Branch/worktree name: `kb.wdy-1346-native-macos-run-flow`
-- Worktree path: removed after merge (`.worktrees/kb.wdy-1346-native-macos-run-flow`)
-- PR: https://github.com/wendylabsinc/WendyOS/pull/936 — merged
-- PR closing reference: `Closes WDY-1346`
-- Merge commit on `main`: `8a295508`
-- KISS scope: verified one minimal native macOS SwiftPM `wendy run` path;
-  avoided tutorials, sample-app guides, lifecycle deep dives, Docker/container
-  work, and E2E automation.
-- Validation: recorded in PR #936; GitHub checks passed
-- Resume command: not needed; issue is complete
-
-### WDY-1353 — Verify Xcode project run flow with VLMLX on Mac agent
-
-- Status: `done`
-- Linear: https://linear.app/wendylabsinc/issue/WDY-1353/verify-xcode-project-run-flow-with-vlmlx-on-mac-agent
-- Linear assignee: `konstantin@wendy.sh`
-- Linear state: Done
-- Branch/worktree name: `kb.wdy-1353-xcode-hellomlx-run-flow`
-- Worktree path: removed after merge (`.worktrees/kb.wdy-1353-xcode-hellomlx-run-flow`)
-- PR: https://github.com/wendylabsinc/WendyOS/pull/957 — merged
-- PR closing reference: `Closes WDY-1353`
-- Merge commit on `main`: `bb2c2870`
-- KISS scope: verified the Xcode project build/deploy path using the existing
-  `Examples/HelloMLX/HelloMLX.xcodeproj` VLM+MLX app as the VLMLX validation
-  target. Avoided broad Xcode tutorial or sample-app guide work.
-- Validation: recorded in PR #957; GitHub checks passed before merge
-- Notes: validation covered local `wendy run --device localhost:50051 --yes`,
-  model/resource sync, runtime logs, and a narrow direct-agent gRPC keepalive
-  fix exposed by a remote Mac run.
-- Resume command: not needed; issue is complete
-
-### WDY-1396 — Document headless Mac setup for Wendy Agent beta
-
-- Status: `done`
-- Linear: https://linear.app/wendylabsinc/issue/WDY-1396/document-headless-mac-setup-for-wendy-agent-beta
-- Linear assignee: `konstantin@wendy.sh`
-- Linear state: Done
-- Branch/worktree name: `kb.wdy-1396-headless-mac-setup-docs`
-- Worktree path: removed after merge (`.worktrees/kb.wdy-1396-headless-mac-setup-docs`)
-- PR: https://github.com/wendylabsinc/WendyOS/pull/939 — merged
-- PR closing reference: `Closes WDY-1396`
-- Merge commit on `main`: `7b12ae9a`
-- KISS scope: added a short headless Mac note: virtual display dongle / HDMI
-  dummy plug, manual System Settings setup for new Macs, keeping the Mac awake
-  on AC power, and manual macOS Screen Sharing / automatic-login choices only if
-  needed. Avoided broad diagnostics or reset/troubleshooting docs.
-- Related validation: WDY-1360 should validate this guidance if the clean Apple
-  Silicon environment is headless or can reasonably exercise a headless setup.
-- Source reference: `kb.ansible:ansible/roles/power_policy/tasks/macos.yml`
-  uses `sudo pmset -c sleep 0 displaysleep 10 disksleep 0 womp 1` as an
-  implementation reference, not necessarily the public-docs-first path.
-- Validation: recorded in PR #939; GitHub checks passed before merge
-- Resume command: not needed; issue is complete
-
-### WDY-1350 — Verify app lifecycle commands on Mac agent
-
-- Status: `done`
-- Linear: https://linear.app/wendylabsinc/issue/WDY-1350/verify-app-lifecycle-commands-on-mac-agent
-- Linear assignee: `konstantin@wendy.sh`
-- Linear state: Done
-- Branch/worktree name: `kb.wdy-1350-mac-app-lifecycle`
-- Worktree path: removed after merge (`.worktrees/kb.wdy-1350-mac-app-lifecycle`)
-- PR: https://github.com/wendylabsinc/WendyOS/pull/958 — merged
-- PR closing reference: `Closes WDY-1350`
-- Merge commit on `main`: `cc1ea2a2`
-- KISS scope: verified minimal lifecycle sanity for Mac beta: list, stop,
-  and remove against the app paths already validated by WDY-1346 and WDY-1353.
-  Avoided a command matrix, broad diagnostics, and new E2E infrastructure.
-- Validation: recorded in PR #958; found and fixed native Mac app deletion so
-  `device apps remove --force` also removes the synced app payload directory,
-  including orphaned payloads left by prior registry-only removals. Swift
-  `ContainerServiceTests` passed.
-- Resume command: not needed; issue is complete
-
-### WDY-1360 — Validate Mac beta on a clean Apple Silicon macOS device
-
-- Status: `done`
-- Linear: https://linear.app/wendylabsinc/issue/WDY-1360/validate-mac-beta-on-a-clean-apple-silicon-macos-device
-- Linear assignee: `konstantin@wendy.sh`
-- Linear state: Done
-- Branch/worktree name: `kb.wdy-1360-clean-mac-beta-validation`
-- Worktree path: removed after merge (`.worktrees/kb.wdy-1360-clean-mac-beta-validation`)
-- PR: https://github.com/wendylabsinc/WendyOS/pull/963 — merged
-- PR closing reference: `Closes WDY-1360`
-- Merge commit on `main`: `2bbd9d99`
-- KISS scope: validated the shipped Mac beta docs path on a freshly reset Apple
-  Silicon Mac mini, including Wendy CLI/Agent install, permissions, device info,
-  default device, HelloMac native macOS SwiftPM run, HelloMLX Xcode build/run,
-  and WDY-1495 smaller HelloMLX model tiers. Avoided diagnostics,
-  firewall/VPN/TCC matrices, reset/uninstall docs, E2E infra, and mTLS work.
-- Validation: recorded in PR #963. Clean validation found and fixed the macOS
-  CLI installer fallback for missing `/usr/local/bin` and the HelloMLX model-tier
-  download script for Xcode Python 3.9. It also filed follow-ups WDY-1484,
-  WDY-1485, WDY-1487, WDY-1488, WDY-1491, and WDY-1493.
-- Resume command: not needed; issue is complete
-
-### WDY-1486 — Fix Wendy Agent auto-start checkbox not registering in Login Items
-
-- Status: `done`
-- Linear: https://linear.app/wendylabsinc/issue/WDY-1486/fix-wendy-agent-auto-start-checkbox-not-registering-in-login-items
-- Linear assignee: `konstantin@wendy.sh`
-- Linear state: Done
-- Linear project: Wendy for Mac — Beta
-- Branch/worktree name: `kb.wdy-1486-login-items-autostart` (setup PR closed),
-  completed via `kb.fix-login-item-startup`
-- Worktree path: removed after completion (`.worktrees/kb.wdy-1486-login-items-autostart`)
-- Setup PR: https://github.com/wendylabsinc/WendyOS/pull/967 — closed unmerged
-- Completion PR: https://github.com/wendylabsinc/WendyOS/pull/978 — merged
-- PR closing reference: `Closes WDY-1486`
-- Merge commit on `main`: `be639fd2`
-- KISS scope: fixed only the welcome-screen auto-start checkbox/login item
-  registration behavior. Avoided the broader WDY-1460 LaunchAgent replacement,
-  reset/uninstall docs, first-launch guide expansion, diagnostics matrices, and
-  unrelated menu bar changes.
-- Source: found during WDY-1360 clean Mac beta validation on a fresh M1 Mac mini
-  where the checkbox was enabled by default but Wendy Agent did not appear in
-  System Settings → Login Items → Open at Login.
-- Validation: recorded in PR #978; `xcodebuild` WendyAgentMac Debug build passed
-- Resume command: not needed; issue is complete
-
-### WDY-1495 — Let HelloMLX choose smaller models for constrained Macs
-
-- Status: `done`
-- Linear: https://linear.app/wendylabsinc/issue/WDY-1495/let-hellomlx-choose-smaller-models-for-constrained-macs
-- Linear priority: High
-- Linear assignee: `konstantin@wendy.sh`
-- Linear state: Done
-- Linear project: Wendy for Mac — Beta
-- Branch/worktree name: `kb.wdy-1495-hellomlx-smaller-models`
-- Worktree path: removed after merge (`.worktrees/kb.wdy-1495-hellomlx-smaller-models`)
-- PR: https://github.com/wendylabsinc/WendyOS/pull/979 — merged
-- PR closing reference: `Closes WDY-1495`
-- Merge commit on `main`: `11782254`
-- KISS scope: made HelloMLX practical on constrained Apple Silicon Macs by
-  adding explicit model tiers selected with `Scripts/DownloadVLM.sh
-  small|medium|large`, while keeping the Gemma 27B 4-bit large path available
-  for higher-memory machines. Avoided a broad model zoo and unrelated HelloMLX
-  rewrite.
-- Source: WDY-1360 clean Mac validation showed the previous
-  `mlx-community/gemma-3-27b-it-qat-4bit` default downloaded/synced about
-  16–17 GB and was unbearably slow on an M1 Mac mini with 16 GB RAM, with swap
-  nearly exhausted.
-- Validation: recorded in PR #979; covered script syntax/help, `wendy json
-  validate`, Xcode project listing, Release build for macOS arm64, and
-  `git diff --check`.
-- Resume command: not needed; issue is complete
-
-### WDY-1473 — Publicize Wendy for Mac beta across website
-
-- Status: `done`
-- Linear: https://linear.app/wendylabsinc/issue/WDY-1473/publicize-wendy-for-mac-beta-across-website
-- Linear assignee: `konstantin@wendy.sh`
-- Linear state: Done
-- Branch/worktree name: `detail/fix-docs/docs-update-wendy-for-mac-status-from-coming-soon-41b617`
-- Worktree path: removed after merge (`.worktrees/kb.wdy-1473-publicize-mac-beta`)
-- PR: https://github.com/wendylabsinc/WendyOS/pull/945 — merged
-- PR closing reference: `Closes WDY-1473`
-- Merge commit on `main`: `45c4175b`
-- KISS scope: final beta publicity step; updated website/docs status language
-  from coming-soon/future tense to beta-available language without expanding
-  the support promise.
-- Timing: completed after WDY-1353, WDY-1396, WDY-1350, WDY-1360, WDY-1486,
-  and WDY-1495 were complete.
-- Validation: recorded in PR #945; GitHub docs build/deploy, Go checks, CodeQL,
-  docs coverage review, integration coverage review, and security review passed
-  before merge.
-- Resume command: not needed; issue is complete
-
-### WDY-1377 — Show macOS-specific unsupported messages for hardware APIs
-
-- Status: `done`
-- Linear: https://linear.app/wendylabsinc/issue/WDY-1377/show-macos-specific-unsupported-messages-for-hardware-apis
-- Linear assignee: `konstantin@wendy.sh`
-- Linear state: Done
-- Branch/worktree name: `kb.wdy-1377-macos-unsupported-hardware-errors`
-- Worktree path: removed after merge (`.worktrees/kb.wdy-1377-macos-unsupported-hardware-errors`)
-- PR: https://github.com/wendylabsinc/WendyOS/pull/928 — merged
-- PR closing reference: `Closes WDY-1377`
-- Merge commit on `main`: `243fbf32`
-- Validation:
-  - `cd go && go test ./internal/cli/commands`
-  - GitHub checks passed on PR #928
-- Resume command: not needed; issue is complete
-
-### WDY-1359 — Add diagnostics and log collection instructions
-
-- Status: `abandoned`
-- Linear: https://linear.app/wendylabsinc/issue/WDY-1359/add-diagnostics-and-log-collection-instructions
-- Linear assignee: `konstantin@wendy.sh`
-- Linear state: Canceled
-- Branch/worktree name: `kb.wdy-1359-macos-diagnostics-docs`
-- Worktree path: removed after cancellation (`.worktrees/kb.wdy-1359-macos-diagnostics-docs`)
-- PR: https://github.com/wendylabsinc/WendyOS/pull/929 — closed unmerged
-- PR closing reference: `Closes WDY-1359` was present, but PR was canceled
-- Reason: diagnostics/log collection docs are extra compared with current
-  Linux/WendyOS docs and are not part of the minimal beta release.
-- Resume command: not needed; issue is canceled for beta
-
-### WDY-1343 — Create minimal unlisted Wendy for Mac beta docs page
-
-- Status: `done`
-- Branch/worktree name: `kb.wdy-1343-mac-beta-docs`
-- Worktree path: removed after completion (`.worktrees/kb.wdy-1343-mac-beta-docs`)
-- PR: https://github.com/wendylabsinc/WendyOS/pull/906 — merged
-- Closing behavior: PR body includes `Closes WDY-1343`
-- Validation:
-  - `cd docs && npm run types:check`
-  - Manual stable CLI + stable WendyAgentMac install/run smoke validation recorded in PR body
-
-### WDY-1344 — Create Mac beta support matrix
-
-- Status: `done`
-- Linear assignee: `konstantin@wendy.sh`
-- Branch/worktree name: `kb.wdy-1344-mac-beta-support-matrix`
-- Worktree path: removed after completion (`.worktrees/kb.wdy-1344-mac-beta-support-matrix`)
-- PR: https://github.com/wendylabsinc/WendyOS/pull/925 — merged
-- PR closing reference: `Closes WDY-1344`
-- Merge commit on `main`: `49517f19`
-- Validation:
-  - `cd go/internal/cli/assets/docs && npm run types:check` passed
-- Resume command: not needed; issue is complete
-
-### WDY-1378 — Document `platform: "darwin"` in `wendy.json`
-
-- Status: `done`
-- Linear assignee: `konstantin@wendy.sh`
-- Branch/worktree name: `kb.wdy-1378-darwin-platform-docs`
-- Worktree path: removed after completion (`.worktrees/kb.wdy-1378-darwin-platform-docs`)
-- PR: https://github.com/wendylabsinc/WendyOS/pull/926 — merged
-- PR closing reference: `Closes WDY-1378`
-- Merge commit on `main`: `bbb09a4d`
-- Validation: completed in PR #926
-- Resume command: not needed; issue is complete
-
-### WDY-1386 — Add sticky docs preview comments to documentation PRs
-
-- Status: `done`
-- Linear: https://linear.app/wendylabsinc/issue/WDY-1386/add-sticky-docs-preview-comments-to-documentation-prs
-- Linear assignee: `konstantin@wendy.sh`
-- Branch/worktree name: `kb.wdy-1386-docs-preview-comment`
-- Worktree path: removed after completion (`.worktrees/kb.wdy-1386-docs-preview-comment`)
-- PR: https://github.com/wendylabsinc/WendyOS/pull/927 — merged
-- PR closing reference: `Closes WDY-1386`
-- Merge commit on `main`: `6decf523`
-- Validation: completed in PR #927
-- Resume command: not needed; issue is complete
-
-## Minimal beta issue order
-
-Keep each remaining issue short and validation-focused.
-
-1. **Completed: WDY-1352** — minimal device targeting/docs alignment merged in PR #930.
-2. **Completed: WDY-1345** — minimal Mac beta smoke test merged in PR #934.
-3. **Completed: WDY-1346** — native macOS SwiftPM `wendy run` flow merged in PR #936.
-4. **Completed: WDY-1353** — Xcode HelloMLX run flow merged in PR #957.
-5. **Completed: WDY-1396** — minimal headless Mac setup guidance merged in PR #939.
-6. **Completed: WDY-1350** — minimal Mac app lifecycle validation merged in PR #958.
-7. **Completed: WDY-1360** — clean Apple Silicon Mac beta validation merged in PR #963.
-8. **Completed: WDY-1486** — login item registration fix merged in PR #978.
-9. **Completed: WDY-1495** — smaller HelloMLX model choices merged in PR #979.
-10. **Completed: WDY-1473** — final public website/docs beta status update merged in PR #945.
-11. **Completed: WDY-1361** — Mac docs navigation exposure was covered by PR #906 and PR #945; Linear closed as Done during housekeeping.
-12. **Completed: WDY-1529** — contextual unsupported Mac-agent errors merged in PR #996.
-13. **Completed: WDY-1531** — unsupported Mac-target `wendy run` project shapes now reject early via PR #999.
-
-## Backlog / post-beta or only-if-blocking
-
-These Linear issues were updated so agents know they are not part of the
-super time-constrained beta unless the user explicitly re-prioritizes them.
-
-Linear/project check: WDY-1480 now tracks proper mTLS support in the
-`Wendy for Mac — Beta` project backlog. Related non-beta issues include WDY-1212
-(self-signed local CA support for mTLS without cloud), WDY-1376 (macOS exposed
-port 50051 security guidance), WDY-1019 (cloud-tunnel registry mTLS), and
-WDY-1479 (SER9 Swift E2E mTLS auth failure).
-
-- WDY-1347 — onboarding copy; only if a concrete shipped UI over-promises.
-- WDY-1348 — canceled; covered by WDY-1344 unless a specific missing limitation appears.
-- WDY-1349 — post-beta CLI audit. Likely overlaps the WDY-1509/WDY-1512+ CLI/E2E audit family, but remains open in `Wendy for Mac — Beta` until explicitly closed or canceled.
-- WDY-1351 — post-beta broader unsupported-flow improvements; WDY-1377 and WDY-1529 covered the beta minimum. Reassess whether this broad follow-up should be closed/canceled.
-- WDY-1355 — post-beta E2E/smoke subset.
-- WDY-1357 — post-beta install/reset/uninstall/troubleshooting docs.
-- WDY-1358 — post-beta broader CLI unsupported-error rendering; WDY-1377 and WDY-1529 covered the beta minimum. Reassess whether this broad follow-up should be closed/canceled.
-- WDY-1359 — canceled; diagnostics/log docs are not in beta scope.
-- WDY-1364 — post-beta Swift E2E review.
-- WDY-1365 — canceled as stale umbrella work. The current backlog already covers Docker/container, hardware APIs, diagnostics, E2E, security, examples, and mTLS with focused issues.
-- WDY-1366 — post-beta Linux/macOS install-doc restructuring.
-- WDY-1376 — post-beta security guidance unless security explicitly blocks beta; at most one short callout if revived.
-- WDY-1379 — post-beta native macOS SwiftPM example.
-- WDY-1380 — post-beta first-launch prompt docs unless clean validation proves a blocker.
-- WDY-1381 — post-beta platform-aware E2E reference rendering.
-- WDY-1382 — post-beta macOS agent device-info E2E spec.
-- WDY-1383 — post-beta native Darwin SwiftPM E2E spec.
-- WDY-1384 — post-beta unsupported hardware API E2E specs.
-- WDY-1385 — post-beta macOS release artifact smoke workflow.
-- WDY-1460 — post-beta replace Wendy Agent for Mac login/startup item with a
-  proper user LaunchAgent so launchd starts it on login and restarts it if it
-  exits unexpectedly.
-- WDY-1472 — plan the agreed Wendy Agent → Wendy Daemon rename timing: macOS
-  beta-only now, whole-codebase now, or whole-codebase after beta. Sync with
-  Joannis before implementation.
-- WDY-1480 — add proper mTLS support for Wendy for Mac; beta-project backlog,
-  but outside the current KISS beta path unless explicitly reprioritized.
-  Joannis noted on Slack that this is optional for now: “It's not hard to add,
-  but leave it for now 🙂”
-  (https://wendylabs.slack.com/archives/C0AM24AKWF4/p1781091500750299).
-- WDY-1492 — explore USB pass-through for Linux containers on Wendy for Mac;
-  beta-project backlog and explicitly exploratory. Investigate whether Apple's
-  Virtualization.framework + Accessory Access USB pass-through can work with
-  Wendy's Docker-based Linux container path or requires a Wendy-owned VM path.
-  Includes Max's Slack context:
-  https://wendylabs.slack.com/archives/C07RK9XAFD1/p1781155454497069.
-- WDY-1498 — add a headless/device-code flow for `wendy auth login` so SSH or
-  browserless machines can authenticate via a browser on another device. Moved
-  out of `Wendy for Mac — Beta`; this is general CLI/cloud auth backlog, not a
-  Mac-specific beta deliverable. Related issue check found no exact duplicate;
-  nearby work includes WDY-1325/WDY-874/WDY-865 for broader OIDC/auth, WDY-1478
-  for Firebase refresh-token persistence, and WDY-719 for an older fixed CLI
-  login issue.
-- WDY-1529 — completed in PR #996. The CLI now preserves contextual macOS
-  unsupported errors for remaining commands instead of generic agent-update
-  hints.
-- WDY-1530 — add Wendy for Mac templates to `wendy init`. Filed after
-  `wendy init --template` offered only WendyOS and Wendy Lite targets despite
-  Wendy Agent for Mac supporting native `platform: "darwin"` app deployment.
-  This is Mac-related but belongs to the `New Templates` project, so it is not
-  active in this Mac beta project coordinator unless explicitly reprioritized.
-- WDY-1531 — completed in PR #999. When targeting a Darwin/macOS agent,
-  unsupported Linux-container, Compose, WendyOS-template, or otherwise
-  non-native-Mac project shapes fail early with a Mac-specific diagnostic
-  instead of generic build/deploy/tooling errors or agent-update hints. Native
-  Darwin SwiftPM and Xcode flows remain the supported path.
-- WDY-1509 — manually audit the full CLI surface against Swift E2E stubs across
-  Linux/WendyOS and Mac/Darwin. This grew into an umbrella/manual audit and the
-  detailed coordination plan has been folded into this master `PLAN.md` under
-  "Post-beta CLI/E2E surface audit coordination". WDY-1509 is complete as the
-  decomposition/audit handoff; child issues carry the mergeable implementation
-  work.
-  - Status: `done`; Linear state: Done; assignee: `konstantin@wendy.sh`;
-    project: `E2E Tests`.
-  - Worktree: `.worktrees/kb.wdy-1509-cli-e2e-surface-audit`; branch:
-    `kb.wdy-1509-cli-e2e-surface-audit`.
-  - Draft PR: https://github.com/wendylabsinc/WendyOS/pull/982 — non-merge
-    audit artifact / do not merge. It intentionally must not include any
-    closing reference for WDY-1509.
-  - Child issue order:
-    1. Completed: WDY-1511 — Remove misleading hidden completion install
-       `--output-dir` test seam, PR #990 merged.
-    2. Completed: WDY-1512 — Audit and align hidden/deprecated CLI aliases, PR #992 merged.
-    3. WDY-1513 — Align host-only CLI E2E references.
-    4. WDY-1514 — Align OS imaging and update E2E references.
-    5. WDY-1515 — Align direct device command E2E references.
-    6. WDY-1516 — Align cloud-routed device E2E references.
-    7. WDY-1517 — Align build and run E2E references.
-  - Resume WDY-1509 only if the non-merge audit artifact needs correction:
-    `cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1509-cli-e2e-surface-audit && ai --prompt "Read HANDOVER.md and follow its instructions."`
+## Next recommended steps
+
+1. Start a new AI session in this coordinator worktree.
+2. Review this `PLAN.md` and current Linear production issues.
+3. Choose the first production issue to start.
+4. Follow the issue start protocol above.
+5. Commit and push coordinator plan updates after meaningful planning changes.
