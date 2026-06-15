@@ -18,19 +18,20 @@ per-issue worktrees.
 
 `PLAN.md` is populated with the Linear **E2E Tests** issues and current status:
 
-1. `WDY-1561` — In progress: Fix macOS integration discovery empty matrix failure
-2. `WDY-1560` — Todo, High: Run physical Swift E2E only for stable releases until dedicated CI devices exist
-3. `WDY-1558` — In progress: Mark failed Swift E2E attempts without observations as failed
-4. `WDY-1559` — Done: Investigate Jetson Orin Nano Swift E2E preflight timeout
-5. `WDY-1521` — Done: Teach E2E AI review to explain why a run failed
-6. `WDY-1528` — Done: Add machine-readable Swift E2E recording metadata
-7. `WDY-1519` — Backlog: Add IPv4 fallback preflight for physical Swift E2E targets
-8. `WDY-1527` — Done: Rework Swift E2E aggregate storage for attempt-level artifacts
-9. `WDY-1510` — Canceled: Re-enable Raspberry Pi physical Swift E2E route
-10. `WDY-1482` — Done: Gate device-to-device E2E jobs behind successful local E2E runs
-11. `WDY-1494` — Done: Clean up Swift E2E route matrix and restore commented route ledger
-12. `WDY-1481` — Done: Add local E2E matrix coverage for macOS↔macOS and Ubuntu↔Ubuntu
-13. `WDY-1479` — Done: Investigate SER9 Swift E2E mTLS auth failure
+1. `WDY-1562` — In progress: Add legacy app integration suite to Swift E2E
+2. `WDY-1561` — In progress: Fix macOS integration discovery empty matrix failure
+3. `WDY-1560` — Todo, High: Run physical Swift E2E only for stable releases until dedicated CI devices exist
+4. `WDY-1558` — In progress: Mark failed Swift E2E attempts without observations as failed
+5. `WDY-1559` — Done: Investigate Jetson Orin Nano Swift E2E preflight timeout
+6. `WDY-1521` — Done: Teach E2E AI review to explain why a run failed
+7. `WDY-1528` — Done: Add machine-readable Swift E2E recording metadata
+8. `WDY-1519` — Backlog: Add IPv4 fallback preflight for physical Swift E2E targets
+9. `WDY-1527` — Done: Rework Swift E2E aggregate storage for attempt-level artifacts
+10. `WDY-1510` — Canceled: Re-enable Raspberry Pi physical Swift E2E route
+11. `WDY-1482` — Done: Gate device-to-device E2E jobs behind successful local E2E runs
+12. `WDY-1494` — Done: Clean up Swift E2E route matrix and restore commented route ledger
+13. `WDY-1481` — Done: Add local E2E matrix coverage for macOS↔macOS and Ubuntu↔Ubuntu
+14. `WDY-1479` — Done: Investigate SER9 Swift E2E mTLS auth failure
 
 ## Completed housekeeping
 
@@ -100,6 +101,12 @@ WDY-1510 was canceled because no Raspberry Pi 5 is currently available on CI:
 
 ## Newly created follow-up issues
 
+- WDY-1562 — In Progress, E2E Tests project: add legacy app integration suite to
+  Swift E2E. Created because draft PR #867 had no linked/closing Linear issue.
+  - Existing PR: https://github.com/wendylabsinc/WendyOS/pull/867
+  - Branch/worktree: `ai.e2e-app-integration-plan` at `/Volumes/Projects/WendyLabs/wendy-agent/.worktrees/ai.e2e-app-integration-plan`
+  - Linear: https://linear.app/wendylabsinc/issue/WDY-1562/add-legacy-app-integration-suite-to-swift-e2e
+  - PR body now includes `Closes WDY-1562`.
 - WDY-1561 — In Progress, E2E Tests project: fix `PR Integration Tests` macOS
   discovery matrix generation when discovery finds LAN devices but none match
   the allowlist, causing `HOSTS[@]: unbound variable` under `set -u`.
@@ -202,8 +209,8 @@ previously represented in this coordinator include:
 
 ## Remaining intended next steps
 
-- Continue WDY-1561 and WDY-1558 in their dedicated worktrees and draft PRs
-  #1034 / #1032.
+- Continue WDY-1562, WDY-1561, and WDY-1558 in their dedicated worktrees and
+  draft PRs #867 / #1034 / #1032.
 - WDY-1560 is Todo/High and should be started after the current active fixes
   unless reprioritized.
 - WDY-1559, WDY-1521, WDY-1528, WDY-1527, and the SER9 route disable are complete.

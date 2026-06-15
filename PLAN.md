@@ -73,6 +73,29 @@ in per-issue worktree sessions, not in this master planning session.
   cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1510-rpi-swift-e2e && ai --prompt "Read HANDOVER.md and follow its instructions."
   ```
 
+### WDY-1562 — Add legacy app integration suite to Swift E2E
+
+- Status: `in progress`
+- Linear project: E2E Tests
+- Linear: https://linear.app/wendylabsinc/issue/WDY-1562/add-legacy-app-integration-suite-to-swift-e2e
+- Linear assignee: `konstantin@wendy.sh`
+- Linear state: In Progress (`started`)
+- Branch/worktree name: `ai.e2e-app-integration-plan` (existing draft PR branch)
+- Worktree path: `/Volumes/Projects/WendyLabs/wendy-agent/.worktrees/ai.e2e-app-integration-plan`
+- PR: https://github.com/wendylabsinc/WendyOS/pull/867 (draft, existing)
+- PR closing reference: `Closes WDY-1562`
+- Scope: add an opt-in `legacy integration tests` Swift E2E suite mirroring the
+  current `go/scripts/test-ci.sh` app fixture list, while keeping legacy app
+  deploy coverage separate from CLI spec suites.
+- Validation from PR: `swift test --package-path swift/WendyE2ETests --filter 'legacy integration tests'`.
+- Current note: no Linear issue was linked to PR #867, so WDY-1562 was created
+  and the PR body was updated with the closing reference.
+- Resume command:
+
+  ```sh
+  cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/ai.e2e-app-integration-plan && ai --prompt "Read the PR and Linear issue context, then continue WDY-1562."
+  ```
+
 ### WDY-1561 — Fix macOS integration discovery empty matrix failure
 
 - Status: `in progress`
@@ -351,21 +374,22 @@ in per-issue worktree sessions, not in this master planning session.
 ## E2E Tests issue order
 
 Keep each issue short and validation-focused. Completed issues stay in the
-ledger for history; current active work is WDY-1561 and WDY-1558.
+ledger for history; current active work is WDY-1562, WDY-1561, and WDY-1558.
 
-1. **WDY-1561** — In progress: Fix macOS integration discovery empty matrix failure.
-2. **WDY-1560** — Todo, High: Run physical Swift E2E only for stable releases until dedicated CI devices exist.
-3. **WDY-1558** — In progress: Mark failed Swift E2E attempts without observations as failed.
-4. **WDY-1559** — Done: Investigate Jetson Orin Nano Swift E2E preflight timeout.
-5. **WDY-1521** — Done: Teach E2E AI review to explain why a run failed.
-6. **WDY-1528** — Done: Add machine-readable Swift E2E recording metadata.
-7. **WDY-1519** — Backlog: Add IPv4 fallback preflight for physical Swift E2E targets.
-8. **WDY-1527** — Done: Rework Swift E2E aggregate storage for attempt-level artifacts.
-9. **WDY-1510** — Canceled: Re-enable Raspberry Pi physical Swift E2E route.
-10. **WDY-1482** — Done: Gate device-to-device E2E jobs behind successful local E2E runs.
-11. **WDY-1494** — Done: Clean up Swift E2E route matrix and restore commented route ledger.
-12. **WDY-1481** — Done: Add local E2E matrix coverage for macOS↔macOS and Ubuntu↔Ubuntu.
-13. **WDY-1479** — Done: Investigate SER9 Swift E2E mTLS auth failure.
+1. **WDY-1562** — In progress: Add legacy app integration suite to Swift E2E.
+2. **WDY-1561** — In progress: Fix macOS integration discovery empty matrix failure.
+3. **WDY-1560** — Todo, High: Run physical Swift E2E only for stable releases until dedicated CI devices exist.
+4. **WDY-1558** — In progress: Mark failed Swift E2E attempts without observations as failed.
+5. **WDY-1559** — Done: Investigate Jetson Orin Nano Swift E2E preflight timeout.
+6. **WDY-1521** — Done: Teach E2E AI review to explain why a run failed.
+7. **WDY-1528** — Done: Add machine-readable Swift E2E recording metadata.
+8. **WDY-1519** — Backlog: Add IPv4 fallback preflight for physical Swift E2E targets.
+9. **WDY-1527** — Done: Rework Swift E2E aggregate storage for attempt-level artifacts.
+10. **WDY-1510** — Canceled: Re-enable Raspberry Pi physical Swift E2E route.
+11. **WDY-1482** — Done: Gate device-to-device E2E jobs behind successful local E2E runs.
+12. **WDY-1494** — Done: Clean up Swift E2E route matrix and restore commented route ledger.
+13. **WDY-1481** — Done: Add local E2E matrix coverage for macOS↔macOS and Ubuntu↔Ubuntu.
+14. **WDY-1479** — Done: Investigate SER9 Swift E2E mTLS auth failure.
 
 ## One-off route/workflow PRs
 
