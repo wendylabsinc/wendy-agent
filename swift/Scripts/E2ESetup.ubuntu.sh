@@ -113,10 +113,17 @@ configureContainerRuntimeAccessForE2E() {
   sudo groupadd -f docker
   sudo usermod -aG docker "${USER:-$(id -un)}" || true
 
-  # The managed E2E agent runs as the current user and talks directly to
-  # containerd. Hosted runners often expose /run/containerd/containerd.sock as
-  # root-only, which makes container creation fail before file-sync behavior is
-  # exercised. Loosen the socket only on this ephemeral E2E host.
+  # The managed E2E agent runs as the current user and stores app-scoped
+  # volumes and synced deployment files under /var/lib/wendy. Create and loosen
+  # that state root only on this ephemeral E2E host so Linux container tests can
+  # exercise the same paths as a packaged system agent.
+  sudo mkdir -p /var/lib/wendy/files /var/lib/wendy/volumes
+  sudo chmod -R a+rwx /var/lib/wendy
+
+  # The managed E2E agent talks directly to containerd. Hosted runners often
+  # expose /run/containerd/containerd.sock as root-only, which makes container
+  # creation fail before file-sync behavior is exercised. Loosen the socket only
+  # on this ephemeral E2E host.
   if [ -S /run/containerd/containerd.sock ]; then
     sudo chmod a+rw /run/containerd/containerd.sock
   fi
