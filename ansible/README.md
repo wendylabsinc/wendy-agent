@@ -100,6 +100,7 @@ Focused deployment:
 
 ```sh
 make deploy-packages
+make deploy-container-runtime
 make deploy-swift
 make deploy-runner
 make deploy-desktop
@@ -138,6 +139,28 @@ default to `ASK_BECOME_PASS=auto`: if passwordless sudo fails for the selected
 POSIX host, the Makefile adds `--ask-become-pass`. Broad multi-host runs do not
 auto-prompt; pass `ASK_PASS=true` or `ASK_BECOME_PASS=true` if password auth is
 desired.
+
+## Linux container runtime
+
+Ubuntu CI hosts install Docker Engine, the Docker CLI, Buildx, Compose, and
+Docker's `containerd.io` package from Docker's official apt repository. The
+playbook enables both `docker.service` and `containerd.service`, adds the CI
+login user to the `docker` group, and validates Docker/Buildx access through a
+fresh-login-equivalent group context.
+
+After the first run, open a fresh SSH session before manually checking Docker
+without sudo:
+
+```sh
+docker version
+docker buildx version
+```
+
+Use a focused run when only the container runtime needs to converge:
+
+```sh
+make deploy-container-runtime LIMIT=wendy-developer-ubuntu-24-01
+```
 
 ## GitHub runner registration
 

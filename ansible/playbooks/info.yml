@@ -5,6 +5,7 @@
   roles:
     - common
     - developer_tools
+    - container_runtime
     - swift_toolchain
     - wendy_tools
     - github_runner

@@ -1,0 +1,115 @@
+---
+- name: Resolve Docker apt architecture
+  ansible.builtin.set_fact:
+    container_runtime_docker_apt_arch: "{{ container_runtime_docker_arch_map[ansible_facts.architecture] | default('') }}"
+
+- name: Require Docker-supported Ubuntu architecture
+  ansible.builtin.fail:
+    msg: "Docker apt repository architecture is not configured for {{ ansible_facts.architecture }}."
+  when: container_runtime_docker_apt_arch | length == 0
+
+- name: Install Docker apt repository prerequisites
+  ansible.builtin.apt:
+    name: "{{ container_runtime_prerequisite_packages }}"
+    state: present
+    update_cache: true
+  become: true
+
+- name: Ensure Docker apt keyring directory exists
+  ansible.builtin.file:
+    path: "{{ container_runtime_docker_apt_keyring | dirname }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  become: true
+  when: container_runtime_manage_docker_repo
+
+- name: Install Docker apt signing key
+  ansible.builtin.get_url:
+    url: "{{ container_runtime_docker_apt_key_url }}"
+    dest: "{{ container_runtime_docker_apt_keyring }}"
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+  when: container_runtime_manage_docker_repo
+
+- name: Configure Docker apt repository
+  ansible.builtin.apt_repository:
+    repo: >-
+      deb [arch={{ container_runtime_docker_apt_arch }} signed-by={{ container_runtime_docker_apt_keyring }}]
+      {{ container_runtime_docker_apt_repository_url }}
+      {{ ansible_facts.distribution_release }}
+      {{ container_runtime_docker_apt_channel }}
+    filename: docker
+    state: present
+    update_cache: true
+  become: true
+  when: container_runtime_manage_docker_repo
+
+- name: Remove conflicting distro container packages
+  ansible.builtin.apt:
+    name: "{{ container_runtime_conflicting_packages }}"
+    state: absent
+  become: true
+  notify: Restart wendy-agent after container runtime changes
+
+- name: Install Docker Engine and plugins
+  ansible.builtin.apt:
+    name: "{{ container_runtime_docker_packages }}"
+    state: present
+    update_cache: true
+  become: true
+  notify: Restart wendy-agent after container runtime changes
+
+- name: Ensure docker group exists
+  ansible.builtin.group:
+    name: docker
+    state: present
+  become: true
+
+- name: Add CI user to docker group
+  ansible.builtin.user:
+    name: "{{ container_runtime_user }}"
+    groups: docker
+    append: true
+  become: true
+
+- name: Ensure containerd service is enabled and running
+  ansible.builtin.systemd_service:
+    name: containerd.service
+    state: started
+    enabled: true
+  become: true
+  notify: Restart wendy-agent after container runtime changes
+
+- name: Ensure Docker service is enabled and running
+  ansible.builtin.systemd_service:
+    name: docker.service
+    state: started
+    enabled: true
+  become: true
+  notify: Restart wendy-agent after container runtime changes
+
+- name: Validate Docker access for fresh login sessions
+  ansible.builtin.command:
+    argv:
+      - sg
+      - docker
+      - -c
+      - docker version
+  become: true
+  become_user: "{{ container_runtime_user }}"
+  changed_when: false
+
+- name: Validate Docker Buildx access for fresh login sessions
+  ansible.builtin.command:
+    argv:
+      - sg
+      - docker
+      - -c
+      - docker buildx version
+  become: true
+  become_user: "{{ container_runtime_user }}"
+  changed_when: false

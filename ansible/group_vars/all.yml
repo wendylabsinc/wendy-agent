@@ -29,6 +29,7 @@ install_wendy_agent: false
 install_claude_code: false
 install_openai_codex: false
 install_github_runner: false
+install_container_runtime: true
 install_visual_studio_build_tools: true
 install_gnu_make: true
 
@@ -76,6 +77,35 @@ ubuntu_apt_packages:
   - libnss-mdns
   - openssh-client
 ubuntu_install_openssh_server: false
+
+container_runtime_user: "{{ ansible_user_id }}"
+container_runtime_manage_docker_repo: true
+container_runtime_prerequisite_packages:
+  - ca-certificates
+  - curl
+  - gnupg
+container_runtime_docker_packages:
+  - docker-ce
+  - docker-ce-cli
+  - containerd.io
+  - docker-buildx-plugin
+  - docker-compose-plugin
+container_runtime_conflicting_packages:
+  - docker.io
+  - docker-doc
+  - docker-compose
+  - docker-compose-v2
+  - podman-docker
+  - containerd
+  - runc
+container_runtime_docker_arch_map:
+  x86_64: amd64
+  aarch64: arm64
+  armv7l: armhf
+container_runtime_docker_apt_key_url: https://download.docker.com/linux/ubuntu/gpg
+container_runtime_docker_apt_keyring: /etc/apt/keyrings/docker.asc
+container_runtime_docker_apt_repository_url: https://download.docker.com/linux/ubuntu
+container_runtime_docker_apt_channel: stable
 
 windows_winget_packages:
   - id: Git.Git

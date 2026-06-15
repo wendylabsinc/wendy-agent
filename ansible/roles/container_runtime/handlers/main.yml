@@ -1,0 +1,12 @@
+---
+- name: Refresh services before Wendy agent restart
+  ansible.builtin.service_facts:
+  listen: Restart wendy-agent after container runtime changes
+
+- name: Restart wendy-agent after container runtime changes
+  ansible.builtin.systemd_service:
+    name: wendy-agent.service
+    state: restarted
+  become: true
+  when: "'wendy-agent.service' in ansible_facts.services"
+  listen: Restart wendy-agent after container runtime changes

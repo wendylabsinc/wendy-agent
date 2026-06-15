@@ -1,0 +1,16 @@
+---
+- name: Report container runtime state
+  ansible.builtin.shell: |
+    set -e
+    echo "docker=$({ command -v docker >/dev/null && docker --version; } || echo missing)"
+    echo "buildx=$({ command -v docker >/dev/null && docker buildx version; } || echo missing)"
+    echo "containerd=$({ command -v containerd >/dev/null && containerd --version; } || echo missing)"
+  args:
+    executable: /bin/sh
+  register: container_runtime_info
+  changed_when: false
+  failed_when: false
+
+- name: Show container runtime state
+  ansible.builtin.debug:
+    msg: "{{ container_runtime_info.stdout_lines }}"

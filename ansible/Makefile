@@ -32,7 +32,7 @@ export ANSIBLE_SSH_ARGS
 export WENDY_ANSIBLE_SSH_PUBLIC_KEY_FILE
 
 .PHONY: help install lint info deploy converge \
-	deploy-ssh-key deploy-packages deploy-swift deploy-runner \
+	deploy-ssh-key deploy-packages deploy-container-runtime deploy-swift deploy-runner \
 	deploy-desktop deploy-power
 
 help:
@@ -50,6 +50,7 @@ help:
 	@echo ""
 	@echo "Focused deployment ($(INVENTORIES)):"
 	@echo "  make deploy-packages      Deploy CI packages/tools"
+	@echo "  make deploy-container-runtime Deploy CI Docker/containerd runtime"
 	@echo "  make deploy-swift         Deploy CI Swift toolchains"
 	@echo "  make deploy-runner        Deploy CI runner integration"
 	@echo "  make deploy-desktop       Deploy CI desktop access settings"
@@ -95,6 +96,9 @@ deploy-ssh-key:
 
 deploy-packages:
 	$(ANSIBLE_PLAYBOOK) $(INVENTORY_ARGS) playbooks/ci.yml --tags packages $(LIMIT_ARG) $(ASK_PASS_ARGS) $(ASK_BECOME_PASS_ARGS) $(EXTRA_ARGS)
+
+deploy-container-runtime:
+	$(ANSIBLE_PLAYBOOK) $(INVENTORY_ARGS) playbooks/ci.yml --tags container_runtime $(LIMIT_ARG) $(ASK_PASS_ARGS) $(ASK_BECOME_PASS_ARGS) $(EXTRA_ARGS)
 
 deploy-swift:
 	$(ANSIBLE_PLAYBOOK) $(INVENTORY_ARGS) playbooks/ci.yml --tags swift $(LIMIT_ARG) $(ASK_PASS_ARGS) $(ASK_BECOME_PASS_ARGS) $(EXTRA_ARGS)

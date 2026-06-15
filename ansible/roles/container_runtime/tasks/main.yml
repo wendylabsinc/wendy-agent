@@ -1,0 +1,17 @@
+---
+- name: Run container runtime info
+  ansible.builtin.include_tasks:
+    file: info.yml
+    apply:
+      tags: info
+  tags: [info]
+
+- name: Include Ubuntu container runtime tasks
+  ansible.builtin.include_tasks:
+    file: ubuntu.yml
+    apply:
+      tags: [container_runtime, docker]
+  when:
+    - install_container_runtime
+    - ansible_facts.distribution == 'Ubuntu'
+  tags: [container_runtime, docker]
