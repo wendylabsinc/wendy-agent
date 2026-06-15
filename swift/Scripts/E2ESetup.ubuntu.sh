@@ -120,10 +120,16 @@ configureContainerRuntimeAccessForE2E() {
   sudo mkdir -p /var/lib/wendy/files /var/lib/wendy/volumes
   sudo chmod -R a+rwx /var/lib/wendy
 
-  # The managed E2E agent talks directly to containerd. Hosted runners often
-  # expose /run/containerd/containerd.sock as root-only, which makes container
-  # creation fail before file-sync behavior is exercised. Loosen the socket only
-  # on this ephemeral E2E host.
+  # The managed E2E agent talks directly to containerd and the containerd Go
+  # client creates task FIFO paths under /run/containerd/fifo. Hosted runners
+  # keep /run/containerd root-owned, which makes task startup fail before
+  # file-sync behavior is exercised. Loosen this runtime directory only on this
+  # ephemeral E2E host.
+  sudo mkdir -p /run/containerd/fifo
+  sudo chmod -R a+rwx /run/containerd
+
+  # Keep explicit socket chmods for runners whose service manager recreates the
+  # sockets after the directory permissions are adjusted.
   if [ -S /run/containerd/containerd.sock ]; then
     sudo chmod a+rw /run/containerd/containerd.sock
   fi
