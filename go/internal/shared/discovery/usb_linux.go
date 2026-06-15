@@ -3,75 +3,113 @@
 package discovery
 
 import (
-	"bufio"
 	"context"
 	"fmt"
-	"os/exec"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 )
 
-// discoverUSB uses lsusb to find USB-connected Wendy devices on Linux.
-// lsusb output format: "Bus 001 Device 002: ID 1234:5678 Manufacturer Device Name"
-func discoverUSB(ctx context.Context) ([]models.USBDevice, error) {
-	cmd := exec.CommandContext(ctx, "lsusb")
-	out, err := cmd.Output()
+// defaultUSBSysfsRoot is the sysfs directory that enumerates USB devices.
+const defaultUSBSysfsRoot = "/sys/bus/usb/devices"
+
+// discoverUSB enumerates USB devices from sysfs and returns those that look like
+// a Wendy device (by name) or an Espressif ESP32-C6 (by VID:PID). Reading sysfs
+// directly avoids shelling out to lsusb and parsing its human-readable output.
+func discoverUSB(_ context.Context) ([]models.USBDevice, error) {
+	return discoverUSBAt(defaultUSBSysfsRoot)
+}
+
+// discoverUSBAt enumerates USB devices under an explicit sysfs root. The root is
+// trusted configuration (the kernel-controlled sysfs path in production); tests
+// pass a fixture tree directly rather than mutating shared state.
+func discoverUSBAt(root string) ([]models.USBDevice, error) {
+	entries, err := os.ReadDir(root)
 	if err != nil {
-		return nil, fmt.Errorf("running lsusb: %w", err)
+		return nil, fmt.Errorf("reading %s: %w", root, err)
 	}
 
 	var devices []models.USBDevice
-	scanner := bufio.NewScanner(strings.NewReader(string(out)))
-	for scanner.Scan() {
-		line := scanner.Text()
-
-		isWendy := strings.Contains(strings.ToLower(line), "wendy")
-		// Check for Espressif ESP32-C6 VID:PID.
-		esp32Match := strings.TrimPrefix(models.ESP32VendorID, "0x") + ":" + strings.TrimPrefix(models.ESP32ProductID, "0x")
-		isESP32 := strings.Contains(strings.ToLower(line), esp32Match)
-
-		if !isWendy && !isESP32 {
+	for _, entry := range entries {
+		name := entry.Name()
+		// Interface directories (e.g. "1-1:1.0") contain a colon and carry no
+		// idVendor/idProduct; only whole-device directories are of interest.
+		if strings.Contains(name, ":") {
+			continue
+		}
+		// Defensive: os.ReadDir yields base names (never "." / ".." or a name
+		// with a separator), but guard anyway so a redirected root can never be
+		// escaped via filepath.Join.
+		if name == "." || name == ".." || strings.ContainsRune(name, filepath.Separator) {
 			continue
 		}
 
-		dev := models.USBDevice{
-			IsWendyDevice: isWendy || isESP32,
-			IsESP32:       isESP32,
+		dir := filepath.Join(root, name)
+		vid := readSysfsAttr(dir, "idVendor")
+		pid := readSysfsAttr(dir, "idProduct")
+		if vid == "" || pid == "" {
+			continue
 		}
 
-		// Extract "ID VVVV:PPPP"
-		idIdx := strings.Index(line, "ID ")
-		if idIdx >= 0 {
-			rest := line[idIdx+3:]
-			fields := strings.SplitN(rest, " ", 2)
-			if len(fields) >= 1 {
-				vidpid := strings.SplitN(fields[0], ":", 2)
-				if len(vidpid) == 2 {
-					dev.VendorID = fmt.Sprintf("0x%s", vidpid[0])
-					dev.ProductID = fmt.Sprintf("0x%s", vidpid[1])
-				}
-			}
-			if len(fields) >= 2 {
-				dev.Name = strings.TrimSpace(fields[1])
-				dev.DisplayName = dev.Name
-			}
+		dev, ok := usbDeviceFromSysfs(vid, pid,
+			readSysfsAttr(dir, "manufacturer"),
+			readSysfsAttr(dir, "product"))
+		if !ok {
+			continue
 		}
-
-		if dev.Name == "" {
-			if isESP32 {
-				dev.Name = "ESP32-C6"
-			} else {
-				dev.Name = "Wendy Device"
-			}
-			dev.DisplayName = dev.Name
-		}
-
-		if isESP32 {
-			dev.DisplayName = "ESP32-C6"
-		}
-
 		devices = append(devices, dev)
 	}
+
 	return devices, nil
+}
+
+// readSysfsAttr reads a single sysfs attribute file, returning its trimmed
+// contents or "" if the file is absent or unreadable.
+func readSysfsAttr(dir, attr string) string {
+	data, err := os.ReadFile(filepath.Join(dir, attr))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
+}
+
+// usbDeviceFromSysfs builds a USBDevice from sysfs attribute values. vid and pid
+// are hex strings without the "0x" prefix (as exposed by sysfs). It reports
+// false when the device is neither a Wendy device (by name) nor an ESP32-C6 (by
+// VID:PID), matching the filtering previously performed on lsusb output.
+func usbDeviceFromSysfs(vid, pid, manufacturer, product string) (models.USBDevice, bool) {
+	vid = strings.ToLower(vid)
+	pid = strings.ToLower(pid)
+
+	isESP32 := vid == strings.TrimPrefix(models.ESP32VendorID, "0x") &&
+		pid == strings.TrimPrefix(models.ESP32ProductID, "0x")
+	name := strings.TrimSpace(manufacturer + " " + product)
+	isWendy := strings.Contains(strings.ToLower(name), "wendy")
+
+	if !isWendy && !isESP32 {
+		return models.USBDevice{}, false
+	}
+
+	dev := models.USBDevice{
+		IsWendyDevice: isWendy || isESP32,
+		IsESP32:       isESP32,
+		VendorID:      "0x" + vid,
+		ProductID:     "0x" + pid,
+		Name:          name,
+	}
+	if dev.Name == "" {
+		if isESP32 {
+			dev.Name = "ESP32-C6"
+		} else {
+			dev.Name = "Wendy Device"
+		}
+	}
+	dev.DisplayName = dev.Name
+	if isESP32 {
+		dev.DisplayName = "ESP32-C6"
+	}
+
+	return dev, true
 }

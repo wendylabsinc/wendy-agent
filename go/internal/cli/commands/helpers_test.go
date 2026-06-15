@@ -701,6 +701,48 @@ func stubDiscoverLANDevices(t *testing.T, devices []models.LANDevice, err error)
 	})
 }
 
+func TestProvisionedAgentUnauthorizedMentionsCLIUpgrade(t *testing.T) {
+	// A reachability timeout against an mTLS-advertised device should hint at
+	// both stale certs and a too-old CLI.
+	err := newProvisionedAgentUnauthorizedError(errors.New("dial tcp 192.168.1.50:50051: i/o timeout"))
+	msg := err.Error()
+	if !strings.Contains(strings.ToLower(msg), "upgrade") || !strings.Contains(msg, "wendy auth refresh-certs") {
+		t.Fatalf("message should mention upgrading the CLI and refresh-certs, got: %q", msg)
+	}
+}
+
+func TestLanAgentAddressesPrefersUSBLinkLocal(t *testing.T) {
+	tests := []struct {
+		name string
+		dev  models.LANDevice
+		want []string
+	}{
+		{
+			name: "usb present orders link-local before routed wifi ip",
+			dev:  models.LANDevice{Hostname: "playful-reed.local", IPAddress: "192.168.1.50", USB: "en5 (USB Ethernet) 480 Mbps", Port: 50051},
+			want: []string{"playful-reed.local:50051", "192.168.1.50:50051"},
+		},
+		{
+			name: "no usb keeps ip-first ordering",
+			dev:  models.LANDevice{Hostname: "playful-reed.local", IPAddress: "192.168.1.50", Port: 50051},
+			want: []string{"192.168.1.50:50051", "playful-reed.local:50051"},
+		},
+		{
+			name: "usb present but no ip falls back to hostname only",
+			dev:  models.LANDevice{Hostname: "playful-reed.local", USB: "en5 (USB Ethernet) 480 Mbps", Port: 50051},
+			want: []string{"playful-reed.local:50051"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := lanAgentAddresses(tt.dev)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("lanAgentAddresses() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestIsCertRejectionError(t *testing.T) {
 	cases := []struct {
 		name string

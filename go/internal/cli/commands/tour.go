@@ -1839,8 +1839,8 @@ func deviceUsesNVMe(key string) bool {
 
 // validateDeviceNameTour checks that a name is a valid device hostname.
 func validateDeviceNameTour(name string) error {
-	if len(name) < 3 || len(name) > 64 {
-		return fmt.Errorf("must be 3–64 characters")
+	if len(name) < 3 || len(name) > maxDeviceNameLen {
+		return fmt.Errorf("must be 3–%d characters", maxDeviceNameLen)
 	}
 	for i, c := range name {
 		if c >= 'a' && c <= 'z' {

@@ -93,6 +93,30 @@ func TestCodexConfigPath_ReturnsDirBasedPath(t *testing.T) {
 	}
 }
 
+func TestShouldRefreshMCPSetup(t *testing.T) {
+	tests := []struct {
+		name        string
+		lastVersion string
+		current     string
+		want        bool
+	}{
+		{name: "never set up", lastVersion: "", current: "0.11.0", want: false},
+		{name: "dev build never refreshes", lastVersion: "0.10.0", current: "dev", want: false},
+		{name: "same version", lastVersion: "0.11.0", current: "0.11.0", want: false},
+		{name: "upgraded", lastVersion: "0.10.0", current: "0.11.0", want: true},
+		{name: "downgraded", lastVersion: "0.11.0", current: "0.10.0", want: true},
+		{name: "set up on dev then real build", lastVersion: "dev", current: "0.11.0", want: true},
+		{name: "never set up on dev build", lastVersion: "", current: "dev", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := shouldRefreshMCPSetup(tt.lastVersion, tt.current); got != tt.want {
+				t.Errorf("shouldRefreshMCPSetup(%q, %q) = %v, want %v", tt.lastVersion, tt.current, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestMCPCmd_HelpText(t *testing.T) {
 	cmd := newMCPCmd()
 	buf := new(bytes.Buffer)

@@ -24,17 +24,25 @@ Use `kernel` for low-level HCI socket access. Use `bluez` for standard Linux Blu
 
 ## Scan for Devices
 
-List nearby Bluetooth peripherals:
+Run the Bluetooth command without subcommands to open an interactive table for browsing and managing peripherals:
+
+```bash
+wendy device bluetooth
+```
+
+The table shows device name, address, type, pairing state, and connection state. Use arrow keys to navigate, `enter` to connect, `d` to disconnect, `f` to forget, `r` to rescan, and `q` to quit.
+
+For scripting or CI, use the `list` subcommand:
 
 ```bash
 wendy device bluetooth list
 ```
 
-The command shows device name, address, RSSI, type, pairing state, and connection state.
-
 ## Connect and Pair
 
-Connect to a Bluetooth peripheral by address:
+In the interactive table, select a device and press `enter` to connect.
+
+To connect from a script, specify the address:
 
 ```bash
 wendy device bluetooth connect AA:BB:CC:DD:EE:FF
@@ -52,11 +60,15 @@ Disconnect without forgetting the pairing:
 wendy device bluetooth disconnect AA:BB:CC:DD:EE:FF
 ```
 
+Or select the connected device in the interactive table and press `d`.
+
 Forget a paired device:
 
 ```bash
 wendy device bluetooth forget AA:BB:CC:DD:EE:FF
 ```
+
+Or select the paired device in the interactive table and press `f`.
 
 ## App Configuration
 

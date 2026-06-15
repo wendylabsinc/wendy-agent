@@ -701,15 +701,16 @@ func pickWifiNetwork(ctx context.Context, target *SelectedDevice) (string, error
 
 	switch {
 	case target.Bluetooth != nil && !target.Bluetooth.IsWendyAgent():
-		// Wendy Lite — scan from the host machine (one-shot).
+		// Wendy Lite — scan from the host machine. Cached results paint the
+		// picker instantly, then the fresh rescan fills it in, so SSIDs trickle
+		// in rather than appearing all at once when the scan completes.
 		go func() {
 			defer p.Send(tui.PickerDoneMsg{})
-			nets, err := scanLocalWifiNetworks()
-			if err != nil {
+			if err := streamLocalWifiScan(func(batch []localWifiNetwork) {
+				p.Send(tui.PickerAddMsg{Items: localWifiPickerItems(batch)})
+			}); err != nil {
 				recordScanErr(fmt.Errorf("scanning local WiFi networks: %w", err))
-				return
 			}
-			p.Send(tui.PickerAddMsg{Items: localWifiPickerItems(nets)})
 		}()
 
 	case target.Bluetooth != nil || target.Agent != nil:

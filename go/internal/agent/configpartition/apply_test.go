@@ -277,6 +277,7 @@ func TestValidDeviceName(t *testing.T) {
 		"brave-dolphin",
 		"my-device-1",
 		"a23",
+		strings.Repeat("a", maxDeviceNameLen), // at the length cap
 	}
 	for _, name := range valid {
 		if !validDeviceName(name) {
@@ -286,18 +287,27 @@ func TestValidDeviceName(t *testing.T) {
 
 	invalid := []string{
 		"",
-		"ab",                    // too short
-		"1abc",                  // starts with digit
-		"-abc",                  // starts with hyphen
-		"ABC",                   // uppercase
-		"has space",             // space
-		strings.Repeat("a", 65), // too long
-		"valid_but_underscore",  // underscore not allowed
+		"ab",                                    // too short
+		"1abc",                                  // starts with digit
+		"-abc",                                  // starts with hyphen
+		"ABC",                                   // uppercase
+		"has space",                             // space
+		strings.Repeat("a", maxDeviceNameLen+1), // one over the cap
+		"valid_but_underscore",                  // underscore not allowed
 	}
 	for _, name := range invalid {
 		if validDeviceName(name) {
 			t.Errorf("expected %q to be invalid", name)
 		}
+	}
+
+	// The cap exists so the derived "wendyos-<name>" hostname stays within the
+	// 63-octet RFC 1035 label limit (WDY-1518).
+	if maxDeviceNameLen != 55 {
+		t.Errorf("maxDeviceNameLen = %d; want 55", maxDeviceNameLen)
+	}
+	if got := len("wendyos-" + strings.Repeat("a", maxDeviceNameLen)); got > 63 {
+		t.Errorf("derived hostname label is %d octets; exceeds the RFC 1035 limit of 63", got)
 	}
 }
 
@@ -422,5 +432,50 @@ func TestApplyPreProvisioning_CreatesConfigDir(t *testing.T) {
 
 	if _, err := os.Stat(filepath.Join(configPath, "provisioning.json")); err != nil {
 		t.Errorf("configPath should be created automatically: %v", err)
+	}
+}
+
+const avahiServiceTemplate = `<?xml version="1.0" standalone='no'?>
+<service-group>
+  <name replace-wildcards="yes">WendyOS on %h</name>
+  <service>
+    <type>_wendyos._udp</type>
+    <port>50051</port>
+  </service>
+  <service>
+    <type>_ssh._tcp</type>
+    <port>22</port>
+  </service>
+</service-group>
+`
+
+func TestUpdateWendyOSServicePort_Provisioned(t *testing.T) {
+	out := updateWendyOSServicePort(avahiServiceTemplate, 50052, true)
+
+	if !strings.Contains(out, "<port>50052</port>") {
+		t.Errorf("expected wendyos port updated to 50052:\n%s", out)
+	}
+	if !strings.Contains(out, "<txt-record>tls=true</txt-record>") {
+		t.Errorf("expected tls=true TXT record:\n%s", out)
+	}
+	// The unrelated SSH block must be left untouched.
+	if !strings.Contains(out, "<port>22</port>") {
+		t.Errorf("ssh port should be untouched:\n%s", out)
+	}
+}
+
+func TestUpdateWendyOSServicePort_Unprovisioned(t *testing.T) {
+	// Start from a provisioned advertisement and revert it.
+	provisioned := updateWendyOSServicePort(avahiServiceTemplate, 50052, true)
+	out := updateWendyOSServicePort(provisioned, 50051, false)
+
+	if !strings.Contains(out, "<port>50051</port>") {
+		t.Errorf("expected wendyos port reverted to 50051:\n%s", out)
+	}
+	if !strings.Contains(out, "<txt-record>tls=false</txt-record>") {
+		t.Errorf("expected tls=false TXT record after revert:\n%s", out)
+	}
+	if strings.Contains(out, "tls=true") {
+		t.Errorf("tls=true should have been replaced:\n%s", out)
 	}
 }

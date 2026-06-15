@@ -198,6 +198,7 @@ type extScanMsg struct{ devices []models.ExternalDevice }
 
 // discoverDeviceInfo is the JSON structure copied to the clipboard.
 type discoverDeviceInfo struct {
+	ID          int32  `json:"id,omitempty"`
 	Name        string `json:"name"`
 	Type        string `json:"type"`
 	USB         string `json:"usb,omitempty"`

@@ -46,11 +46,12 @@ as a LAN device when local discovery is allowed by the network and macOS Local
 Network permissions.
 
 The picker table shows the same columns as
-[`wendy discover`](./commands/discover.md#interactive-table), including a
-**Provisioned** column for LAN devices. When the highlighted device is
-provisioned but this CLI cannot read its agent details (unprovisioned CLI, or
-logged in with credentials that don't have access), a footer hint explains why
-the version is blank and suggests `wendy auth login`.
+[`wendy discover`](./commands/discover.md#interactive-table). The leading
+marker column displays provisioned state (`●`/`○`) for LAN devices alongside
+the `✦` default marker. When the highlighted device is provisioned but this
+CLI cannot read its agent details (unprovisioned CLI, or logged in with
+credentials that don't have access), a footer hint explains why the version is
+blank and suggests `wendy auth login`.
 
 In scripts, CI, SSH sessions without a TTY, or any other non-interactive
 context, no picker is shown. Pass `--device`, or configure a default with
@@ -64,10 +65,10 @@ context, no picker is shown. Pass `--device`, or configure a default with
 The picker can also show local provider targets when the host supports them.
 These are not WendyOS devices.
 
-### Docker Desktop
+### Docker
 
-Use Docker Desktop for local container runs. Dockerfile and Compose projects run
-through the local Docker daemon. On macOS and Windows, Docker Desktop runs Linux
+Use Docker for local container runs. Dockerfile and Compose projects run
+through the local Docker daemon. On macOS and Windows, Docker runs Linux
 containers inside Docker's Linux environment rather than as native macOS or
 Windows processes.
 
@@ -81,16 +82,16 @@ You can select it directly with:
 wendy run --device docker
 ```
 
-### Local Machine
+### Local
 
-Use Local Machine for host-native apps. The app runs directly on the computer
+Use the local target for host-native apps. The app runs directly on the computer
 that is running the `wendy` CLI:
 
 - On macOS, it runs as a macOS process.
 - On Windows, it runs as a Windows process.
 - On Linux, it runs as a Linux process.
 
-Local Machine is intended for native Swift, Go, and Python projects. It does not
+The local target is intended for native Swift, Go, and Python projects. It does not
 run inside Docker's Linux environment, does not emulate WendyOS, and does not
 provide WendyOS container semantics, hardware entitlements, or device filesystem
 layout.

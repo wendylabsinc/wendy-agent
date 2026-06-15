@@ -72,8 +72,13 @@ type GetDeviceInfoResponse struct {
 	CudaVersion     *string                `protobuf:"bytes,11,opt,name=cuda_version,json=cudaVersion,proto3,oneof" json:"cuda_version,omitempty"`
 	DiskUsedBytes   *int64                 `protobuf:"varint,12,opt,name=disk_used_bytes,json=diskUsedBytes,proto3,oneof" json:"disk_used_bytes,omitempty"`
 	DiskTotalBytes  *int64                 `protobuf:"varint,13,opt,name=disk_total_bytes,json=diskTotalBytes,proto3,oneof" json:"disk_total_bytes,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// Usage for every real (disk-backed) filesystem mounted on the device. The
+	// root filesystem is included here as well; disk_used_bytes/disk_total_bytes
+	// are retained for backwards compatibility. Empty when the agent cannot
+	// enumerate mounts.
+	Partitions    []*DiskPartition `protobuf:"bytes,14,rep,name=partitions,proto3" json:"partitions,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *GetDeviceInfoResponse) Reset() {
@@ -197,6 +202,95 @@ func (x *GetDeviceInfoResponse) GetDiskTotalBytes() int64 {
 	return 0
 }
 
+func (x *GetDeviceInfoResponse) GetPartitions() []*DiskPartition {
+	if x != nil {
+		return x.Partitions
+	}
+	return nil
+}
+
+// Usage information for a single mounted filesystem.
+type DiskPartition struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Mount point (e.g. "/", "/boot", "/data").
+	Mountpoint string `protobuf:"bytes,1,opt,name=mountpoint,proto3" json:"mountpoint,omitempty"`
+	// Filesystem type (e.g. "ext4", "vfat").
+	Filesystem string `protobuf:"bytes,2,opt,name=filesystem,proto3" json:"filesystem,omitempty"`
+	// Backing block device (e.g. "/dev/mmcblk0p2").
+	Device string `protobuf:"bytes,3,opt,name=device,proto3" json:"device,omitempty"`
+	// Bytes currently used on the filesystem.
+	UsedBytes int64 `protobuf:"varint,4,opt,name=used_bytes,json=usedBytes,proto3" json:"used_bytes,omitempty"`
+	// Total bytes on the filesystem.
+	TotalBytes    int64 `protobuf:"varint,5,opt,name=total_bytes,json=totalBytes,proto3" json:"total_bytes,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DiskPartition) Reset() {
+	*x = DiskPartition{}
+	mi := &file_wendy_agent_services_v2_device_info_service_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DiskPartition) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DiskPartition) ProtoMessage() {}
+
+func (x *DiskPartition) ProtoReflect() protoreflect.Message {
+	mi := &file_wendy_agent_services_v2_device_info_service_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DiskPartition.ProtoReflect.Descriptor instead.
+func (*DiskPartition) Descriptor() ([]byte, []int) {
+	return file_wendy_agent_services_v2_device_info_service_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *DiskPartition) GetMountpoint() string {
+	if x != nil {
+		return x.Mountpoint
+	}
+	return ""
+}
+
+func (x *DiskPartition) GetFilesystem() string {
+	if x != nil {
+		return x.Filesystem
+	}
+	return ""
+}
+
+func (x *DiskPartition) GetDevice() string {
+	if x != nil {
+		return x.Device
+	}
+	return ""
+}
+
+func (x *DiskPartition) GetUsedBytes() int64 {
+	if x != nil {
+		return x.UsedBytes
+	}
+	return 0
+}
+
+func (x *DiskPartition) GetTotalBytes() int64 {
+	if x != nil {
+		return x.TotalBytes
+	}
+	return 0
+}
+
 type ListHardwareCapabilitiesRequest struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
 	CategoryFilter *string                `protobuf:"bytes,1,opt,name=category_filter,json=categoryFilter,proto3,oneof" json:"category_filter,omitempty"`
@@ -206,7 +300,7 @@ type ListHardwareCapabilitiesRequest struct {
 
 func (x *ListHardwareCapabilitiesRequest) Reset() {
 	*x = ListHardwareCapabilitiesRequest{}
-	mi := &file_wendy_agent_services_v2_device_info_service_proto_msgTypes[2]
+	mi := &file_wendy_agent_services_v2_device_info_service_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -218,7 +312,7 @@ func (x *ListHardwareCapabilitiesRequest) String() string {
 func (*ListHardwareCapabilitiesRequest) ProtoMessage() {}
 
 func (x *ListHardwareCapabilitiesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_agent_services_v2_device_info_service_proto_msgTypes[2]
+	mi := &file_wendy_agent_services_v2_device_info_service_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -231,7 +325,7 @@ func (x *ListHardwareCapabilitiesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListHardwareCapabilitiesRequest.ProtoReflect.Descriptor instead.
 func (*ListHardwareCapabilitiesRequest) Descriptor() ([]byte, []int) {
-	return file_wendy_agent_services_v2_device_info_service_proto_rawDescGZIP(), []int{2}
+	return file_wendy_agent_services_v2_device_info_service_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *ListHardwareCapabilitiesRequest) GetCategoryFilter() string {
@@ -250,7 +344,7 @@ type ListHardwareCapabilitiesResponse struct {
 
 func (x *ListHardwareCapabilitiesResponse) Reset() {
 	*x = ListHardwareCapabilitiesResponse{}
-	mi := &file_wendy_agent_services_v2_device_info_service_proto_msgTypes[3]
+	mi := &file_wendy_agent_services_v2_device_info_service_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -262,7 +356,7 @@ func (x *ListHardwareCapabilitiesResponse) String() string {
 func (*ListHardwareCapabilitiesResponse) ProtoMessage() {}
 
 func (x *ListHardwareCapabilitiesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_agent_services_v2_device_info_service_proto_msgTypes[3]
+	mi := &file_wendy_agent_services_v2_device_info_service_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -275,7 +369,7 @@ func (x *ListHardwareCapabilitiesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListHardwareCapabilitiesResponse.ProtoReflect.Descriptor instead.
 func (*ListHardwareCapabilitiesResponse) Descriptor() ([]byte, []int) {
-	return file_wendy_agent_services_v2_device_info_service_proto_rawDescGZIP(), []int{3}
+	return file_wendy_agent_services_v2_device_info_service_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *ListHardwareCapabilitiesResponse) GetCapabilities() []*ListHardwareCapabilitiesResponse_HardwareCapability {
@@ -297,7 +391,7 @@ type ListHardwareCapabilitiesResponse_HardwareCapability struct {
 
 func (x *ListHardwareCapabilitiesResponse_HardwareCapability) Reset() {
 	*x = ListHardwareCapabilitiesResponse_HardwareCapability{}
-	mi := &file_wendy_agent_services_v2_device_info_service_proto_msgTypes[4]
+	mi := &file_wendy_agent_services_v2_device_info_service_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -309,7 +403,7 @@ func (x *ListHardwareCapabilitiesResponse_HardwareCapability) String() string {
 func (*ListHardwareCapabilitiesResponse_HardwareCapability) ProtoMessage() {}
 
 func (x *ListHardwareCapabilitiesResponse_HardwareCapability) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_agent_services_v2_device_info_service_proto_msgTypes[4]
+	mi := &file_wendy_agent_services_v2_device_info_service_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -322,7 +416,7 @@ func (x *ListHardwareCapabilitiesResponse_HardwareCapability) ProtoReflect() pro
 
 // Deprecated: Use ListHardwareCapabilitiesResponse_HardwareCapability.ProtoReflect.Descriptor instead.
 func (*ListHardwareCapabilitiesResponse_HardwareCapability) Descriptor() ([]byte, []int) {
-	return file_wendy_agent_services_v2_device_info_service_proto_rawDescGZIP(), []int{3, 0}
+	return file_wendy_agent_services_v2_device_info_service_proto_rawDescGZIP(), []int{4, 0}
 }
 
 func (x *ListHardwareCapabilitiesResponse_HardwareCapability) GetCategory() string {
@@ -358,7 +452,7 @@ var File_wendy_agent_services_v2_device_info_service_proto protoreflect.FileDesc
 const file_wendy_agent_services_v2_device_info_service_proto_rawDesc = "" +
 	"\n" +
 	"1wendy/agent/services/v2/device_info_service.proto\x12\x17wendy.agent.services.v2\"\x16\n" +
-	"\x14GetDeviceInfoRequest\"\x85\x05\n" +
+	"\x14GetDeviceInfoRequest\"\xcd\x05\n" +
 	"\x15GetDeviceInfoResponse\x12\x18\n" +
 	"\aversion\x18\x01 \x01(\tR\aversion\x12\"\n" +
 	"\n" +
@@ -379,7 +473,10 @@ const file_wendy_agent_services_v2_device_info_service_proto_rawDesc = "" +
 	" \x01(\tH\x05R\x0ejetpackVersion\x88\x01\x01\x12&\n" +
 	"\fcuda_version\x18\v \x01(\tH\x06R\vcudaVersion\x88\x01\x01\x12+\n" +
 	"\x0fdisk_used_bytes\x18\f \x01(\x03H\aR\rdiskUsedBytes\x88\x01\x01\x12-\n" +
-	"\x10disk_total_bytes\x18\r \x01(\x03H\bR\x0ediskTotalBytes\x88\x01\x01B\r\n" +
+	"\x10disk_total_bytes\x18\r \x01(\x03H\bR\x0ediskTotalBytes\x88\x01\x01\x12F\n" +
+	"\n" +
+	"partitions\x18\x0e \x03(\v2&.wendy.agent.services.v2.DiskPartitionR\n" +
+	"partitionsB\r\n" +
 	"\v_os_versionB\r\n" +
 	"\v_public_keyB\x0e\n" +
 	"\f_device_typeB\n" +
@@ -389,7 +486,19 @@ const file_wendy_agent_services_v2_device_info_service_proto_rawDesc = "" +
 	"\x10_jetpack_versionB\x0f\n" +
 	"\r_cuda_versionB\x12\n" +
 	"\x10_disk_used_bytesB\x13\n" +
-	"\x11_disk_total_bytes\"c\n" +
+	"\x11_disk_total_bytes\"\xa7\x01\n" +
+	"\rDiskPartition\x12\x1e\n" +
+	"\n" +
+	"mountpoint\x18\x01 \x01(\tR\n" +
+	"mountpoint\x12\x1e\n" +
+	"\n" +
+	"filesystem\x18\x02 \x01(\tR\n" +
+	"filesystem\x12\x16\n" +
+	"\x06device\x18\x03 \x01(\tR\x06device\x12\x1d\n" +
+	"\n" +
+	"used_bytes\x18\x04 \x01(\x03R\tusedBytes\x12\x1f\n" +
+	"\vtotal_bytes\x18\x05 \x01(\x03R\n" +
+	"totalBytes\"c\n" +
 	"\x1fListHardwareCapabilitiesRequest\x12,\n" +
 	"\x0fcategory_filter\x18\x01 \x01(\tH\x00R\x0ecategoryFilter\x88\x01\x01B\x12\n" +
 	"\x10_category_filter\"\xc7\x03\n" +
@@ -422,27 +531,29 @@ func file_wendy_agent_services_v2_device_info_service_proto_rawDescGZIP() []byte
 	return file_wendy_agent_services_v2_device_info_service_proto_rawDescData
 }
 
-var file_wendy_agent_services_v2_device_info_service_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
+var file_wendy_agent_services_v2_device_info_service_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
 var file_wendy_agent_services_v2_device_info_service_proto_goTypes = []any{
 	(*GetDeviceInfoRequest)(nil),                                // 0: wendy.agent.services.v2.GetDeviceInfoRequest
 	(*GetDeviceInfoResponse)(nil),                               // 1: wendy.agent.services.v2.GetDeviceInfoResponse
-	(*ListHardwareCapabilitiesRequest)(nil),                     // 2: wendy.agent.services.v2.ListHardwareCapabilitiesRequest
-	(*ListHardwareCapabilitiesResponse)(nil),                    // 3: wendy.agent.services.v2.ListHardwareCapabilitiesResponse
-	(*ListHardwareCapabilitiesResponse_HardwareCapability)(nil), // 4: wendy.agent.services.v2.ListHardwareCapabilitiesResponse.HardwareCapability
-	nil, // 5: wendy.agent.services.v2.ListHardwareCapabilitiesResponse.HardwareCapability.PropertiesEntry
+	(*DiskPartition)(nil),                                       // 2: wendy.agent.services.v2.DiskPartition
+	(*ListHardwareCapabilitiesRequest)(nil),                     // 3: wendy.agent.services.v2.ListHardwareCapabilitiesRequest
+	(*ListHardwareCapabilitiesResponse)(nil),                    // 4: wendy.agent.services.v2.ListHardwareCapabilitiesResponse
+	(*ListHardwareCapabilitiesResponse_HardwareCapability)(nil), // 5: wendy.agent.services.v2.ListHardwareCapabilitiesResponse.HardwareCapability
+	nil, // 6: wendy.agent.services.v2.ListHardwareCapabilitiesResponse.HardwareCapability.PropertiesEntry
 }
 var file_wendy_agent_services_v2_device_info_service_proto_depIdxs = []int32{
-	4, // 0: wendy.agent.services.v2.ListHardwareCapabilitiesResponse.capabilities:type_name -> wendy.agent.services.v2.ListHardwareCapabilitiesResponse.HardwareCapability
-	5, // 1: wendy.agent.services.v2.ListHardwareCapabilitiesResponse.HardwareCapability.properties:type_name -> wendy.agent.services.v2.ListHardwareCapabilitiesResponse.HardwareCapability.PropertiesEntry
-	0, // 2: wendy.agent.services.v2.WendyDeviceInfoService.GetDeviceInfo:input_type -> wendy.agent.services.v2.GetDeviceInfoRequest
-	2, // 3: wendy.agent.services.v2.WendyDeviceInfoService.ListHardwareCapabilities:input_type -> wendy.agent.services.v2.ListHardwareCapabilitiesRequest
-	1, // 4: wendy.agent.services.v2.WendyDeviceInfoService.GetDeviceInfo:output_type -> wendy.agent.services.v2.GetDeviceInfoResponse
-	3, // 5: wendy.agent.services.v2.WendyDeviceInfoService.ListHardwareCapabilities:output_type -> wendy.agent.services.v2.ListHardwareCapabilitiesResponse
-	4, // [4:6] is the sub-list for method output_type
-	2, // [2:4] is the sub-list for method input_type
-	2, // [2:2] is the sub-list for extension type_name
-	2, // [2:2] is the sub-list for extension extendee
-	0, // [0:2] is the sub-list for field type_name
+	2, // 0: wendy.agent.services.v2.GetDeviceInfoResponse.partitions:type_name -> wendy.agent.services.v2.DiskPartition
+	5, // 1: wendy.agent.services.v2.ListHardwareCapabilitiesResponse.capabilities:type_name -> wendy.agent.services.v2.ListHardwareCapabilitiesResponse.HardwareCapability
+	6, // 2: wendy.agent.services.v2.ListHardwareCapabilitiesResponse.HardwareCapability.properties:type_name -> wendy.agent.services.v2.ListHardwareCapabilitiesResponse.HardwareCapability.PropertiesEntry
+	0, // 3: wendy.agent.services.v2.WendyDeviceInfoService.GetDeviceInfo:input_type -> wendy.agent.services.v2.GetDeviceInfoRequest
+	3, // 4: wendy.agent.services.v2.WendyDeviceInfoService.ListHardwareCapabilities:input_type -> wendy.agent.services.v2.ListHardwareCapabilitiesRequest
+	1, // 5: wendy.agent.services.v2.WendyDeviceInfoService.GetDeviceInfo:output_type -> wendy.agent.services.v2.GetDeviceInfoResponse
+	4, // 6: wendy.agent.services.v2.WendyDeviceInfoService.ListHardwareCapabilities:output_type -> wendy.agent.services.v2.ListHardwareCapabilitiesResponse
+	5, // [5:7] is the sub-list for method output_type
+	3, // [3:5] is the sub-list for method input_type
+	3, // [3:3] is the sub-list for extension type_name
+	3, // [3:3] is the sub-list for extension extendee
+	0, // [0:3] is the sub-list for field type_name
 }
 
 func init() { file_wendy_agent_services_v2_device_info_service_proto_init() }
@@ -451,14 +562,14 @@ func file_wendy_agent_services_v2_device_info_service_proto_init() {
 		return
 	}
 	file_wendy_agent_services_v2_device_info_service_proto_msgTypes[1].OneofWrappers = []any{}
-	file_wendy_agent_services_v2_device_info_service_proto_msgTypes[2].OneofWrappers = []any{}
+	file_wendy_agent_services_v2_device_info_service_proto_msgTypes[3].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_wendy_agent_services_v2_device_info_service_proto_rawDesc), len(file_wendy_agent_services_v2_device_info_service_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   6,
+			NumMessages:   7,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

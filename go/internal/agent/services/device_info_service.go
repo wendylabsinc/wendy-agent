@@ -58,6 +58,16 @@ func (s *DeviceInfoService) GetDeviceInfo(_ context.Context, _ *agentpbv2.GetDev
 		resp.DiskTotalBytes = &usage.totalBytes
 	}
 
+	for _, p := range listDiskPartitions() {
+		resp.Partitions = append(resp.Partitions, &agentpbv2.DiskPartition{
+			Mountpoint: p.mountpoint,
+			Filesystem: p.filesystem,
+			Device:     p.device,
+			UsedBytes:  p.usedBytes,
+			TotalBytes: p.totalBytes,
+		})
+	}
+
 	return resp, nil
 }
 

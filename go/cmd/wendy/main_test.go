@@ -372,6 +372,39 @@ func TestFormatError_LocalPKICoreUnavailable(t *testing.T) {
 	}
 }
 
+func TestFormatError_UnimplementedPreservesContextualDescription(t *testing.T) {
+	err := fmt.Errorf("listing audio devices: %w", status.Error(codes.Unimplemented, "Audio device management is currently not supported by Wendy Agent for Mac."))
+
+	got := formatError(err).Error()
+	want := "listing audio devices: Audio device management is currently not supported by Wendy Agent for Mac."
+	if got != want {
+		t.Fatalf("formatError() = %q, want %q", got, want)
+	}
+	if strings.Contains(got, "Try updating") || strings.Contains(got, "rpc error") {
+		t.Fatalf("formatError() should not render generic update advice or raw gRPC text: %q", got)
+	}
+}
+
+func TestFormatError_UnimplementedKeepsUpdateHintForUnknownMethod(t *testing.T) {
+	err := fmt.Errorf("listing volumes: %w", status.Error(codes.Unimplemented, "unknown method ListVolumes for service agent.ContainerService"))
+
+	got := formatError(err).Error()
+	want := "listing volumes: Not supported by this agent version. Try updating the agent."
+	if got != want {
+		t.Fatalf("formatError() = %q, want %q", got, want)
+	}
+}
+
+func TestFormatError_UnimplementedKeepsUpdateHintForGeneratedStub(t *testing.T) {
+	err := fmt.Errorf("listing volumes: %w", status.Error(codes.Unimplemented, "method ListVolumes not implemented"))
+
+	got := formatError(err).Error()
+	want := "listing volumes: Not supported by this agent version. Try updating the agent."
+	if got != want {
+		t.Fatalf("formatError() = %q, want %q", got, want)
+	}
+}
+
 func TestEnv_IsCITripsKillSwitch(t *testing.T) {
 	// Sanity check that env.IsCI() recognizes the CI variable. The deeper
 	// contract — that analytics.Init refuses to enable in CI — is covered

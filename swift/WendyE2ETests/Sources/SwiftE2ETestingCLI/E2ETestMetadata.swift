@@ -37,17 +37,25 @@ struct E2ETestMetadata: Codable, Sendable {
         guard !value.hasPrefix("/"), !value.split(separator: "/").contains("..") else {
             throw ValidationError("Test metadata has invalid \(field) in \(sourceURL.path)")
         }
-        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/._-")
+        let allowed = CharacterSet(
+            charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/._-"
+        )
         guard value.unicodeScalars.allSatisfy({ allowed.contains($0) }) else {
-            throw ValidationError("Test metadata has invalid \(field) characters in \(sourceURL.path)")
+            throw ValidationError(
+                "Test metadata has invalid \(field) characters in \(sourceURL.path)"
+            )
         }
     }
 
     private func validateName(_ value: String, field: String, sourceURL: URL) throws {
         try validateText(value, field: field, maxLength: 255, sourceURL: sourceURL)
-        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
+        let allowed = CharacterSet(
+            charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-"
+        )
         guard value.unicodeScalars.allSatisfy({ allowed.contains($0) }) else {
-            throw ValidationError("Test metadata has invalid \(field) characters in \(sourceURL.path)")
+            throw ValidationError(
+                "Test metadata has invalid \(field) characters in \(sourceURL.path)"
+            )
         }
     }
 

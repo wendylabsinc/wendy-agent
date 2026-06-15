@@ -50,3 +50,9 @@ docs/superpowers/
 .claude
 go/go/bin
 /wendy-agent
+
+# Python
+__pycache__/
+*.pyc
+.superpowers
+go/internal/cli/assets/docs/superpowers

@@ -38,7 +38,7 @@ var cliStyle = lipgloss.NewStyle().Foreground(tui.ColorDim)
 var cliNoticeStyle = lipgloss.NewStyle().Foreground(tui.ColorNotice)
 var execCommandContext = exec.CommandContext
 
-const linuxContainersOnMacsUnsupportedMessage = "Linux containers aren't supported on Macs yet. Support is planned for a future release. For now, deploy a native macOS app (platform: darwin) or target a Linux/WendyOS device. Set WENDY_EXPERIMENTAL_MACOS_LINUX_CONTAINERS=1 to try the experimental Docker-backed macOS container path."
+const macContainersUnsupportedMessage = "Project/target mismatch: selected target is Wendy Agent for Mac, but this project uses the Linux/container deployment path. Linux containers aren't supported on Macs yet. Wendy Agent for Mac currently runs native macOS apps only. To fix this, set `platform: \"darwin\"` and use a Mac-compatible native SwiftPM or Xcode template, target a Linux/WendyOS device, or set WENDY_EXPERIMENTAL_MACOS_LINUX_CONTAINERS=1 to try the experimental Docker-backed macOS container path."
 
 func experimentalMacOSLinuxContainersEnabled() bool {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv("WENDY_EXPERIMENTAL_MACOS_LINUX_CONTAINERS"))) {
@@ -46,6 +46,28 @@ func experimentalMacOSLinuxContainersEnabled() bool {
 		return true
 	default:
 		return false
+	}
+}
+
+func macPlatformMismatchMessage(platform string) string {
+	return fmt.Sprintf("Project/target mismatch: selected target is Wendy Agent for Mac, but wendy.json resolves to platform %q. Linux containers aren't supported on Macs yet. Wendy Agent for Mac currently runs native macOS apps only. To fix this, set `platform: \"darwin\"` and use a Mac-compatible native SwiftPM or Xcode template, target a Linux/WendyOS device, or set WENDY_EXPERIMENTAL_MACOS_LINUX_CONTAINERS=1 to try the experimental Docker-backed macOS container path.", platform)
+}
+
+func rejectUnsupportedMacRunProject(projectType, platform string) error {
+	if !strings.EqualFold(platformOS(platform), appconfig.PlatformDarwin) {
+		if experimentalMacOSLinuxContainersEnabled() {
+			return nil
+		}
+		return errors.New(macPlatformMismatchMessage(platform))
+	}
+
+	switch projectType {
+	case "swift", "xcode":
+		return nil
+	case "docker", "python", "compose", "multi-service":
+		return errors.New(macContainersUnsupportedMessage)
+	default:
+		return nil
 	}
 }
 
@@ -566,7 +588,7 @@ func runCommand(ctx context.Context, opts runOptions) error {
 
 	// For docker-type projects, resolve which Dockerfile to use before
 	// connecting to the target — so the picker shows regardless of whether
-	// we end up on the agent path or a provider path (Docker Desktop, etc.).
+	// we end up on the agent path or a provider path (Docker, etc.).
 	if projectType == "docker" && opts.dockerfile == "" {
 		resolved, err := resolveDockerfile(cwd, opts.dockerfile, !opts.yes && isInteractiveTerminal())
 		if err != nil {
@@ -576,6 +598,36 @@ func runCommand(ctx context.Context, opts runOptions) error {
 	}
 
 	cfgPath := filepath.Join(cwd, "wendy.json")
+	cfgMissing, err := appConfigFileMissing(cfgPath)
+	if err != nil {
+		return fmt.Errorf("checking wendy.json: %w", err)
+	}
+
+	// If wendy.json is missing, resolve the target before prompting to create
+	// one. That lets Mac beta targets reject container-only project shapes with
+	// the real project/target mismatch instead of first asking about config. The
+	// CLI owns the selected connection lifetime for both the preflight and normal
+	// run paths; lower-level run helpers do not close it.
+	var target *SelectedDevice
+	defer func() {
+		if target != nil && target.Agent != nil {
+			target.Agent.Close()
+		}
+	}()
+	if cfgMissing {
+		var resolveOpts []resolveOption
+		if opts.yes {
+			resolveOpts = append(resolveOpts, NonInteractive())
+		}
+		target, err = resolveRunTarget(ctx, resolveOpts...)
+		if err != nil {
+			return err
+		}
+		if err := preflightMissingAppConfigForMacTarget(ctx, target, projectType); err != nil {
+			return err
+		}
+	}
+
 	appCfg, err := ensureAppConfig(cfgPath, opts.yes)
 	if err != nil {
 		return fmt.Errorf("loading wendy.json: %w", err)
@@ -614,13 +666,15 @@ func runCommand(ctx context.Context, opts runOptions) error {
 	}
 
 	// Step 2: Resolve the target device.
-	var resolveOpts []resolveOption
-	if opts.yes {
-		resolveOpts = append(resolveOpts, NonInteractive())
-	}
-	target, err := resolveRunTarget(ctx, resolveOpts...)
-	if err != nil {
-		return err
+	if target == nil {
+		var resolveOpts []resolveOption
+		if opts.yes {
+			resolveOpts = append(resolveOpts, NonInteractive())
+		}
+		target, err = resolveRunTarget(ctx, resolveOpts...)
+		if err != nil {
+			return err
+		}
 	}
 
 	// Provider-based run path.
@@ -648,8 +702,37 @@ func runCommand(ctx context.Context, opts runOptions) error {
 	}
 
 	// Agent-based run path (existing gRPC pipeline).
-	defer target.Agent.Close()
 	return runWithAgent(ctx, target.Agent, cwd, appCfg, opts)
+}
+
+func appConfigFileMissing(cfgPath string) (bool, error) {
+	if _, err := os.Stat(cfgPath); err != nil {
+		if os.IsNotExist(err) {
+			return true, nil
+		}
+		return false, err
+	}
+	return false, nil
+}
+
+func preflightMissingAppConfigForMacTarget(ctx context.Context, target *SelectedDevice, projectType string) error {
+	if target == nil || target.Agent == nil {
+		return nil
+	}
+	versionResp, err := target.Agent.AgentService.GetAgentVersion(ctx, &agentpb.GetAgentVersionRequest{})
+	if err != nil {
+		return fmt.Errorf("querying device version for Mac target preflight: %w", err)
+	}
+	agentOS := versionResp.GetOs()
+	architecture := versionResp.GetCpuArchitecture()
+	if architecture == "" {
+		architecture = "arm64"
+	}
+	platform := resolveAgentPlatform("", agentOS, architecture)
+	if strings.EqualFold(agentOS, appconfig.PlatformDarwin) {
+		return rejectUnsupportedMacRunProject(projectType, platform)
+	}
+	return nil
 }
 
 func rejectComposeCompanionFiles(cwd string) error {
@@ -680,7 +763,7 @@ func runComposeCommand(ctx context.Context, cwd string, opts runOptions) error {
 	}
 
 	if target.External != nil && target.Provider != nil {
-		// Docker Desktop provider: use docker compose directly.
+		// Docker provider: use docker compose directly.
 		// Compose projects have no wendy.json, so entitlements are nil.
 		return runWithProvider(ctx, target.Provider, *target.External, cwd, filepath.Base(cwd), nil, opts)
 	}
@@ -1270,8 +1353,10 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	}
 
 	platform := resolveAgentPlatform(appCfg.Platform, agentOS, architecture)
-	if agentOS == "darwin" && platformOS(platform) == "linux" && !experimentalMacOSLinuxContainersEnabled() {
-		return errors.New(linuxContainersOnMacsUnsupportedMessage)
+	if strings.EqualFold(agentOS, appconfig.PlatformDarwin) {
+		if err := rejectUnsupportedMacRunProject(projectType, platform); err != nil {
+			return err
+		}
 	}
 
 	// Xcode projects: always use the local-build + file-sync path (darwin only).

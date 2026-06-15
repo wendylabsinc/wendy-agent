@@ -382,7 +382,7 @@ func (m PickerModel) tableView() string {
 	}
 	// Highlight filter matches in the Name column. The cell layout is
 	// 1 padding + content + 1 padding per column; the Name column is first
-	// unless the ★ default column (width 3 + padding) precedes it.
+	// unless the ✦ default column (width 3 + padding) precedes it.
 	cols := m.table.Columns()
 	nameIdx := 0
 	start := 1

@@ -93,6 +93,16 @@ func (s *AgentService) GetAgentVersion(_ context.Context, _ *agentpb.GetAgentVer
 		resp.DiskTotalBytes = &usage.totalBytes
 	}
 
+	for _, p := range listDiskPartitions() {
+		resp.Partitions = append(resp.Partitions, &agentpb.DiskPartition{
+			Mountpoint: p.mountpoint,
+			Filesystem: p.filesystem,
+			Device:     p.device,
+			UsedBytes:  p.usedBytes,
+			TotalBytes: p.totalBytes,
+		})
+	}
+
 	return resp, nil
 }
 

@@ -1,0 +1,59 @@
+# `wendy device enroll`
+
+Enrolls the connected device with Wendy Cloud (or a local [pki-core](../../../../pki/)) and provisions it with mTLS certificates.
+
+## Usage
+
+```sh
+wendy device enroll [--name <name>] [--cloud-grpc <endpoint>] [flags]
+```
+
+## Description
+
+`wendy device enroll` creates an enrollment token using your stored auth session, then calls `StartProvisioning` on the connected agent so it fetches its certificate. Run [`wendy auth login`](../auth/login.md) first.
+
+The enrolled device is registered in Wendy Cloud under a human-readable **name**. The name is fixed at enrollment time and cannot be changed afterward, so the command resolves it as follows:
+
+1. **`--name <name>`** — always wins when provided.
+2. **Hostname default** — when `--name` is omitted and the device is reachable by hostname (e.g. `playful-reed.local`), the name defaults to that hostname with any `.local` suffix stripped (so `playful-reed.local` → `playful-reed`).
+3. **Interactive prompt** — in a terminal, when no `--name` is given the command prompts for a name. When a hostname default is available it is shown in brackets and used if you press Enter without typing anything:
+
+   ```
+   Device name [playful-reed]:
+   ```
+4. **Bare IP / no hostname** — when the device is addressed by a bare IP (no resolvable hostname) and `--name` is omitted, there is no default. In a non-interactive environment this fails with:
+
+   ```
+   device name is required; pass --name when not running interactively
+   ```
+
+   In an interactive terminal it prompts for a name with no default and errors if you leave it blank.
+
+> **Naming an unnamed device:** A device enrolled without a usable name shows up with an empty name in [`wendy cloud discover`](../cloud/discover.md). You can still address it by its numeric asset ID — see [`wendy cloud tunnel --device <id>`](../cloud/tunnel.md).
+
+## Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--name` | hostname (`.local` stripped) | Human-readable device name. Defaults to the device hostname when omitted; required when the device is reachable only by a bare IP address in a non-interactive environment. |
+| `--cloud-grpc` | `""` | Cloud / pki-core gRPC endpoint to use. Required when multiple auth sessions exist. |
+
+## Examples
+
+Enroll, defaulting the name to the device hostname:
+
+```sh
+wendy device enroll --device playful-reed.local
+```
+
+Enroll with an explicit name:
+
+```sh
+wendy device enroll --device 192.168.1.11 --name lab-pi-01
+```
+
+## Related
+
+- [`wendy device setup`](./setup.md) — interactive wizard that provisions, configures WiFi, and enrolls in one flow.
+- `wendy cloud enroll-device` — alias for this command, reachable through the cloud tunnel.
+- [`wendy device provision`](./provision.md) — enroll against a self-hosted pki-core instead of Wendy Cloud.

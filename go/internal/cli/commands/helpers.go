@@ -58,8 +58,24 @@ func (e provisionedAgentUnauthorizedError) Error() string {
 	msg := fmt.Sprintf("%s\nLast mTLS error: %v", provisionedAgentUnauthorizedMessage, e.cause)
 	if isCertRefreshableError(e.cause) {
 		msg += "\nYour stored certificates may be outdated. Run 'wendy auth refresh-certs' to re-issue them."
+	} else if isReachabilityTimeoutError(e.cause) {
+		msg += "\nThe device is enrolled and only serves mTLS on the secure port. Your wendy CLI may be too old or its certificates stale — upgrade the CLI and run 'wendy auth refresh-certs'."
 	}
 	return msg
+}
+
+// isReachabilityTimeoutError reports whether an error is a connection timeout
+// against an mTLS-enrolled device's plaintext port. This indicates the device
+// is up and enrolled (only the mTLS port is open), which may mean the CLI is
+// too old to speak mTLS or its certificates are stale.
+func isReachabilityTimeoutError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "i/o timeout") ||
+		strings.Contains(msg, "connection timed out") ||
+		strings.Contains(msg, "deadline exceeded")
 }
 
 // isCertRefreshableError reports whether an mTLS failure is one that
@@ -101,6 +117,18 @@ var promptYesNoFn = func(prompt string) bool {
 	return answer == "" || answer == "y" || answer == "yes"
 }
 
+// promptYesNoDefaultNoFn reads a y/N answer from stdin; empty input counts as
+// no. Used for more speculative offers (e.g. a timeout against an enrolled
+// device, where refreshing certs is a guess rather than a clear diagnosis).
+// Stubbed in tests.
+var promptYesNoDefaultNoFn = func(prompt string) bool {
+	fmt.Fprint(os.Stderr, prompt)
+	reader := bufio.NewReader(os.Stdin)
+	answer, _ := reader.ReadString('\n')
+	answer = strings.TrimSpace(strings.ToLower(answer))
+	return answer == "y" || answer == "yes"
+}
+
 var refreshAllCertsFn = refreshAllCerts
 
 // offerCertRefreshAndRetry prompts to re-issue mTLS certificates after a
@@ -110,11 +138,24 @@ var refreshAllCertsFn = refreshAllCerts
 // connected; in every other case the caller should surface the original
 // error (whose message already carries the refresh-certs hint).
 func offerCertRefreshAndRetry(ctx context.Context, cause error, retry func() (*grpcclient.AgentConnection, error)) (*grpcclient.AgentConnection, bool) {
-	if jsonOutput || !isInteractiveTerminal() || !isCertRefreshableError(cause) {
+	certRejected := isCertRefreshableError(cause)
+	enrolledTimeout := isReachabilityTimeoutError(cause)
+	if jsonOutput || !isInteractiveTerminal() || !(certRejected || enrolledTimeout) {
 		return nil, false
 	}
-	fmt.Fprintln(os.Stderr, "The device rejected your client certificate; it may be outdated.")
-	if !promptYesNoFn("Refresh certificates and retry? [Y/n] ") {
+	var accepted bool
+	if certRejected {
+		// Clear diagnosis: the agent rejected the cert. Default to yes.
+		fmt.Fprintln(os.Stderr, "The device rejected your client certificate; it may be outdated.")
+		accepted = promptYesNoFn("Refresh certificates and retry? [Y/n] ")
+	} else {
+		// Timeout against an enrolled (mTLS-only) device. Refreshing certs is a
+		// reasonable guess (e.g. clock skew stalling the handshake) but less
+		// certain, so default to no.
+		fmt.Fprintln(os.Stderr, "The device is enrolled and only responds on the secure (mTLS) port. Your certificates may be stale or your CLI too old.")
+		accepted = promptYesNoDefaultNoFn("Refresh certificates and retry? [y/N] ")
+	}
+	if !accepted {
 		return nil, false
 	}
 	if err := refreshAllCertsFn(ctx); err != nil {
@@ -262,9 +303,17 @@ func lanAgentAddresses(dev models.LANDevice) []string {
 		port -= agentMTLSPortOffset // advertised port is mTLS; connectWithAutoTLS will add the offset back
 	}
 
+	hosts := []string{strings.TrimSpace(dev.IPAddress), strings.TrimSpace(dev.Hostname)}
+	if strings.TrimSpace(dev.USB) != "" {
+		// A USB-NCM path exists. The routed Wi-Fi IP (dev.IPAddress) may be
+		// black-holed by AP isolation on residential routers, so try the
+		// link-local .local hostname (reachable over USB) first.
+		hosts = []string{strings.TrimSpace(dev.Hostname), strings.TrimSpace(dev.IPAddress)}
+	}
+
 	var addresses []string
 	seen := make(map[string]bool)
-	for _, host := range []string{strings.TrimSpace(dev.IPAddress), strings.TrimSpace(dev.Hostname)} {
+	for _, host := range hosts {
 		if host == "" || seen[host] {
 			continue
 		}
@@ -653,7 +702,7 @@ func connectFromSelectedDevice(target *SelectedDevice, cfg resolveConfig) (*grpc
 	// The user picked a Bluetooth device — connectToAgent only supports gRPC.
 	// Callers that support BLE should use resolveTarget() instead.
 	if target.Bluetooth != nil {
-		return nil, fmt.Errorf("selected device (%s) is a Bluetooth device; this command requires a LAN connection. Use 'wendy wifi connect' which supports BLE", target.Bluetooth.DisplayName)
+		return nil, fmt.Errorf("selected device (%s) is a Bluetooth device; this command requires a LAN connection. Use 'wendy device wifi connect' which supports BLE", target.Bluetooth.DisplayName)
 	}
 
 	// The user picked a non-gRPC device (e.g. external provider) which
@@ -851,6 +900,11 @@ func checkAndOfferUpdate(ctx context.Context, conn *grpcclient.AgentConnection) 
 	agentVer := resp.GetVersion()
 	// Dev CLI builds skip the update check entirely.
 	if version.Version == "dev" {
+		return conn, nil
+	}
+	// A dev agent build is running intentionally — never offer to replace it
+	// with a stable release (CompareVersions treats "dev" as always-behind).
+	if agentVer == "dev" {
 		return conn, nil
 	}
 	// Unknown agent version — skip to avoid spurious update prompts.

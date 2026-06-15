@@ -13,7 +13,8 @@ const maxProgressDetailLines = 4
 
 // ProgressUpdateMsg updates the progress bar percentage.
 // Written and Total are optional; when both are non-zero the view renders
-// a byte counter like "4.00%  (420.0 MiB / 10.5 GiB)".
+// a byte counter like "4.00%  (420.0 MiB / 10.5 GiB)". When only Written is
+// non-zero (total unknown, e.g. gzip streams) it renders "(420.0 MiB)".
 type ProgressUpdateMsg struct {
 	Percent float64
 	Written int64
@@ -107,6 +108,8 @@ func (m ProgressModel) View() string {
 	byteInfo := ""
 	if m.written > 0 && m.total > 0 {
 		byteInfo = fmt.Sprintf("  (%s / %s)", FormatBytes(m.written), FormatBytes(m.total))
+	} else if m.written > 0 {
+		byteInfo = fmt.Sprintf("  (%s)", FormatBytes(m.written))
 	}
 	details := m.detailView()
 

@@ -214,12 +214,103 @@ runs:
         Write-OutputValue agent_os $env:AGENT_OS
         Write-OutputValue transport $env:TRANSPORT
 
+    - name: Compute Swift E2E run ID (Unix)
+      if: runner.os != 'Windows'
+      id: e2e-run-unix
+      shell: bash
+      env:
+        WORKFLOW_ID: ${{ inputs.workflow_id }}
+        TARGET_ID: ${{ inputs.target_id }}
+      run: |
+        set -euo pipefail
+        slug() {
+          printf '%s' "$1" \
+            | tr '[:upper:]' '[:lower:]' \
+            | sed -E 's/[^[:alnum:]._-]+/-/g; s/-+/-/g; s/^-//; s/-$//'
+        }
+
+        workflow_id="$(slug "$WORKFLOW_ID")"
+        target_id="$(slug "$TARGET_ID")"
+        printf -v attempt_suffix '%04d' "${GITHUB_RUN_ATTEMPT:-1}"
+        echo "run_id=${workflow_id}.gh${GITHUB_RUN_ID}.${target_id}.${attempt_suffix}" >> "$GITHUB_OUTPUT"
+
+    - name: Compute Swift E2E run ID (Windows)
+      if: runner.os == 'Windows'
+      id: e2e-run-windows
+      shell: pwsh
+      env:
+        WORKFLOW_ID: ${{ inputs.workflow_id }}
+        TARGET_ID: ${{ inputs.target_id }}
+      run: |
+        $ErrorActionPreference = 'Stop'
+        function Convert-ToSlug([string]$Value) {
+          $slug = $Value.ToLowerInvariant() -replace '[^a-z0-9._-]+', '-'
+          $slug = $slug -replace '-+', '-'
+          return $slug.Trim('-')
+        }
+
+        $workflowID = Convert-ToSlug $env:WORKFLOW_ID
+        $targetID = Convert-ToSlug $env:TARGET_ID
+        $attempt = if ($env:GITHUB_RUN_ATTEMPT) { [int]$env:GITHUB_RUN_ATTEMPT } else { 1 }
+        $runID = '{0}.gh{1}.{2}.{3:D4}' -f $workflowID, $env:GITHUB_RUN_ID, $targetID, $attempt
+        "run_id=$runID" >> $env:GITHUB_OUTPUT
+
     - name: Set up Swift E2E host (Unix)
       if: runner.os != 'Windows' && inputs.setup == 'true'
       shell: bash
+      env:
+        RUN_ID: ${{ steps.e2e-run-unix.outputs.run_id }}
+        TARGET_ID: ${{ inputs.target_id }}
+        CLI_OS: ${{ inputs.cli_os }}
+        AGENT_OS: ${{ inputs.agent_os }}
+        DEVICE_ADDRESS: ${{ inputs.device_address }}
+        TRANSPORT: ${{ inputs.transport }}
       run: |
         set -euo pipefail
-        bash swift/Scripts/E2ESetup.sh
+        run_dir="${RUNNER_TEMP}/wendy/${RUN_ID}"
+        log_path="${run_dir}/attempt.log"
+        mkdir -p "$run_dir"
+
+        set +e
+        {
+          echo "==> Running Swift E2E host setup"
+          bash swift/Scripts/E2ESetup.sh
+        } 2>&1 | tee "$log_path"
+        setup_status=${PIPESTATUS[0]}
+        set -e
+
+        if [[ "$setup_status" -ne 0 ]]; then
+          RUN_DIR="$run_dir" EXIT_STATUS="$setup_status" python3 - <<'PY'
+        import json, os, time
+        run_dir = os.environ["RUN_DIR"]
+        attempt = {
+            "kind": "wendy-e2e-attempt",
+            "version": 1,
+            "attemptID": os.environ.get("RUN_ID"),
+            "createdAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "exitStatus": int(os.environ.get("EXIT_STATUS", "1") if os.environ.get("EXIT_STATUS", "1").isdigit() else "1"),
+            "github": {
+                "repository": os.environ.get("GITHUB_REPOSITORY"),
+                "workflow": os.environ.get("GITHUB_WORKFLOW"),
+                "runID": os.environ.get("GITHUB_RUN_ID"),
+                "runAttempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
+                "job": os.environ.get("GITHUB_JOB"),
+                "sha": os.environ.get("GITHUB_SHA"),
+            },
+            "target": {
+                "targetID": os.environ.get("TARGET_ID"),
+                "cliOS": os.environ.get("CLI_OS"),
+                "agentOS": os.environ.get("AGENT_OS"),
+                "transport": os.environ.get("TRANSPORT"),
+            },
+            "paths": {"attemptDirectory": run_dir},
+        }
+        with open(os.path.join(run_dir, "attempt.json"), "w", encoding="utf-8") as f:
+            json.dump(attempt, f, indent=2)
+            f.write("\n")
+        PY
+          exit "$setup_status"
+        fi
 
     - name: Configure Swiftly PATH (Unix)
       if: runner.os != 'Windows' && runner.environment == 'github-hosted'
@@ -289,47 +380,6 @@ runs:
         restore-keys: |
           swift-e2e-swiftpm-${{ runner.os }}-${{ steps.swift-toolchain-unix.outputs.version || steps.swift-toolchain-windows.outputs.version }}-
           swift-e2e-swiftpm-${{ runner.os }}-
-
-    - name: Compute Swift E2E run ID (Unix)
-      if: runner.os != 'Windows'
-      id: e2e-run-unix
-      shell: bash
-      env:
-        WORKFLOW_ID: ${{ inputs.workflow_id }}
-        TARGET_ID: ${{ inputs.target_id }}
-      run: |
-        set -euo pipefail
-        slug() {
-          printf '%s' "$1" \
-            | tr '[:upper:]' '[:lower:]' \
-            | sed -E 's/[^[:alnum:]._-]+/-/g; s/-+/-/g; s/^-//; s/-$//'
-        }
-
-        workflow_id="$(slug "$WORKFLOW_ID")"
-        target_id="$(slug "$TARGET_ID")"
-        printf -v attempt_suffix '%04d' "${GITHUB_RUN_ATTEMPT:-1}"
-        echo "run_id=${workflow_id}.gh${GITHUB_RUN_ID}.${target_id}.${attempt_suffix}" >> "$GITHUB_OUTPUT"
-
-    - name: Compute Swift E2E run ID (Windows)
-      if: runner.os == 'Windows'
-      id: e2e-run-windows
-      shell: pwsh
-      env:
-        WORKFLOW_ID: ${{ inputs.workflow_id }}
-        TARGET_ID: ${{ inputs.target_id }}
-      run: |
-        $ErrorActionPreference = 'Stop'
-        function Convert-ToSlug([string]$Value) {
-          $slug = $Value.ToLowerInvariant() -replace '[^a-z0-9._-]+', '-'
-          $slug = $slug -replace '-+', '-'
-          return $slug.Trim('-')
-        }
-
-        $workflowID = Convert-ToSlug $env:WORKFLOW_ID
-        $targetID = Convert-ToSlug $env:TARGET_ID
-        $attempt = if ($env:GITHUB_RUN_ATTEMPT) { [int]$env:GITHUB_RUN_ATTEMPT } else { 1 }
-        $runID = '{0}.gh{1}.{2}.{3:D4}' -f $workflowID, $env:GITHUB_RUN_ID, $targetID, $attempt
-        "run_id=$runID" >> $env:GITHUB_OUTPUT
 
     - name: Run Swift E2E tests (Unix)
       if: runner.os != 'Windows' && steps.validate-unix.outputs.validated == 'true'

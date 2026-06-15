@@ -160,6 +160,7 @@ private struct OverviewTargetAccumulator {
 
 private func makeRunOverview(in runURL: URL) throws -> E2ERunOverview {
     var targetAccumulators: [String: OverviewTargetAccumulator] = [:]
+    var observedAttemptsByTarget: [String: Set<String>] = [:]
     var summaryCounts = OverviewOutcomeCounts()
     var uniqueTests = Set<String>()
     var testTargetCount = 0
@@ -224,6 +225,9 @@ private func makeRunOverview(in runURL: URL) throws -> E2ERunOverview {
                     default: OverviewTargetAccumulator()
                 ]
                 targetAccumulator.attempts.formUnion(attempts.map(\.attempt))
+                observedAttemptsByTarget[targetName, default: []].formUnion(
+                    attempts.map(\.attempt)
+                )
                 targetAccumulator.tests += 1
                 targetAccumulator.counts.add(outcome)
                 targetAccumulators[targetName] = targetAccumulator
@@ -256,6 +260,29 @@ private func makeRunOverview(in runURL: URL) throws -> E2ERunOverview {
                     uniqueTests.insert("\(suiteKey)/\(testKey)")
                 }
             }
+        }
+    }
+
+    for targetURL in try overviewDirectoryChildren(of: e2eAttemptArtifactsRootURL(in: runURL)) {
+        let targetName = targetURL.lastPathComponent
+        let observedAttempts = observedAttemptsByTarget[targetName, default: []]
+        for attemptURL in try overviewDirectoryChildren(of: targetURL) {
+            let attemptName = attemptURL.lastPathComponent
+            guard !observedAttempts.contains(attemptName),
+                let exitStatus = e2eAttemptExitStatus(at: attemptURL), exitStatus != 0
+            else {
+                continue
+            }
+
+            var targetAccumulator = targetAccumulators[
+                targetName,
+                default: OverviewTargetAccumulator()
+            ]
+            targetAccumulator.attempts.insert(attemptName)
+            targetAccumulator.counts.failed += 1
+            targetAccumulators[targetName] = targetAccumulator
+            summaryCounts.failed += 1
+            attemptResultCount += 1
         }
     }
 
@@ -338,7 +365,8 @@ private func overviewObservationResult(
     return OverviewObservationResult(
         status: .unknown,
         durationSeconds: nil,
-        detail: "No Swift Testing result was found for \(metadata.suiteName) › \(metadata.testName) in test-results.xml"
+        detail:
+            "No Swift Testing result was found for \(metadata.suiteName) › \(metadata.testName) in test-results.xml"
     )
 }
 

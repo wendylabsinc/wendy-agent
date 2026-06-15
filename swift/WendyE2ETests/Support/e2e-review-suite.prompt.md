@@ -32,6 +32,7 @@ Guidelines:
   flaked and how to investigate or stabilize it. Then consider unresolved
   `UNKNOWN` outcomes.
 - Cite concrete evidence in details: source paths, target/attempt names, result
-  details, recording paths, shell script paths, and `overview.json` outcome data.
+  details, recording paths, shell script paths, `attempts/<target>/<attempt>/attempt.log`
+  when relevant, and `overview.json` outcome data.
 - Use JSON `locations` only when the review is attributable to source lines.
 - Do not edit source code, tests, xUnit files, or recordings.

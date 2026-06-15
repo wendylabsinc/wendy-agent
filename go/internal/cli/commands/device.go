@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -30,8 +31,10 @@ import (
 	otelpb "github.com/wendylabsinc/wendy/go/proto/gen/otelpb"
 	"golang.org/x/term"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 )
 
 func newDeviceCmd() *cobra.Command {
@@ -61,6 +64,7 @@ func newDeviceCmd() *cobra.Command {
 		newDeviceUnsetDefaultCmd(),
 		newDeviceSetupCmd(),
 		newDeviceEnrollCmd(),
+		newDeviceUnenrollCmd(),
 		newDeviceUpdateCmd(),
 	)
 	addToGroup("monitor",
@@ -101,11 +105,15 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 		Short:  "Show agent version, OS, architecture, GPU, and hardware info for the target device",
 		Hidden: deprecated,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := cmd.Context()
 			if deprecated && !jsonOutput {
-				cmd.PrintErrln("Warning: 'wendy device version' is deprecated; use 'wendy device info' instead.")
+				if _, ok := cloudDeviceConfigFromContext(ctx); ok {
+					cmd.PrintErrln("Warning: 'wendy cloud device version' is deprecated; use 'wendy cloud device info' instead.")
+				} else {
+					cmd.PrintErrln("Warning: 'wendy device version' is deprecated; use 'wendy device info' instead.")
+				}
 			}
 
-			ctx := cmd.Context()
 			target, err := resolveTarget(ctx)
 			if err != nil {
 				return err
@@ -114,6 +122,7 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 
 			var agentVersion, osName, osVersion, cpuArch, deviceType, storageMedium, gpuVendor, jetpackVersion, cudaVersion string
 			var diskUsedBytes, diskTotalBytes *int64
+			var partitions []*agentpb.DiskPartition
 			var hasGPU bool
 
 			if target.Bluetooth != nil && target.Bluetooth.IsWendyAgent() {
@@ -148,6 +157,7 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 				cudaVersion = resp.GetCudaVersion()
 				diskUsedBytes = resp.DiskUsedBytes
 				diskTotalBytes = resp.DiskTotalBytes
+				partitions = resp.GetPartitions()
 			} else {
 				return fmt.Errorf("selected device does not support this command")
 			}
@@ -177,6 +187,19 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 				if diskUsedBytes != nil && diskTotalBytes != nil {
 					out["diskUsedBytes"] = *diskUsedBytes
 					out["diskTotalBytes"] = *diskTotalBytes
+				}
+				if len(partitions) > 0 {
+					parts := make([]map[string]any, len(partitions))
+					for i, p := range partitions {
+						parts[i] = map[string]any{
+							"mountpoint": p.GetMountpoint(),
+							"filesystem": p.GetFilesystem(),
+							"device":     p.GetDevice(),
+							"usedBytes":  p.GetUsedBytes(),
+							"totalBytes": p.GetTotalBytes(),
+						}
+					}
+					out["partitions"] = parts
 				}
 				if gpuVendor != "" {
 					out["gpuVendor"] = gpuVendor
@@ -208,7 +231,9 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 			if storageMedium != "" {
 				fmt.Printf("Storage: %s\n", storageMedium)
 			}
-			if diskUsedBytes != nil && diskTotalBytes != nil {
+			if len(partitions) > 0 {
+				fmt.Print(formatPartitionTable(partitions))
+			} else if diskUsedBytes != nil && diskTotalBytes != nil {
 				fmt.Printf("Disk Usage: %s\n", formatDiskUsage(*diskUsedBytes, *diskTotalBytes))
 			}
 			if hasGPU {
@@ -227,7 +252,7 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 			fmt.Printf("CLI Version: %s\n", version.Version)
 
 			warn := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("214"))
-			if cmp := version.CompareVersions(version.Version, agentVersion); cmp > 0 {
+			if cmp := version.CompareVersions(version.Version, agentVersion); cmp > 0 && agentVersion != "dev" {
 				fmt.Println(warn.Render("\nAgent is behind the CLI — run 'wendy device update' to update."))
 			} else if cmp < 0 {
 				fmt.Println(warn.Render("\nCLI is behind the agent — consider updating the CLI."))
@@ -416,7 +441,7 @@ func newDeviceSetupCmd() *cobra.Command {
 				fmt.Printf("Unable to check agent version: %v\n", err)
 			} else {
 				fmt.Printf("Agent version: %s\n", versionResp.GetVersion())
-				if cmp := version.CompareVersions(version.Version, versionResp.GetVersion()); cmp > 0 {
+				if cmp := version.CompareVersions(version.Version, versionResp.GetVersion()); cmp > 0 && versionResp.GetVersion() != "dev" {
 					fmt.Println("Agent is behind the CLI — consider running 'wendy device update'.")
 				}
 			}
@@ -515,21 +540,44 @@ func promptWifiIfNeeded(ctx context.Context, conn *grpcclient.AgentConnection) {
 	}
 }
 
+// defaultEnrollmentName derives a device name from the connected host,
+// stripping a .local suffix. Returns "" for bare IP addresses (no usable name).
+func defaultEnrollmentName(host string) string {
+	h := strings.TrimSpace(host)
+	if h == "" || net.ParseIP(h) != nil {
+		return ""
+	}
+	return strings.TrimSuffix(h, ".local")
+}
+
 func runEnrollDevice(ctx context.Context, conn *grpcclient.AgentConnection, auth *config.AuthConfig, name string) error {
 	if len(auth.Certificates) == 0 {
 		return fmt.Errorf("selected auth entry has no certificates; re-run 'wendy auth login'")
 	}
 
 	if name == "" {
+		defaultName := defaultEnrollmentName(conn.Host)
 		if !isInteractiveTerminal() {
-			return fmt.Errorf("device name is required; pass --name when not running interactively")
-		}
-		fmt.Print("Device name: ")
-		reader := bufio.NewReader(os.Stdin)
-		line, _ := reader.ReadString('\n')
-		name = strings.TrimSpace(line)
-		if name == "" {
-			return fmt.Errorf("device name is required")
+			if defaultName != "" {
+				name = defaultName
+			} else {
+				return fmt.Errorf("device name is required; pass --name when not running interactively")
+			}
+		} else {
+			prompt := "Device name"
+			if defaultName != "" {
+				prompt = fmt.Sprintf("Device name [%s]", defaultName)
+			}
+			fmt.Printf("%s: ", prompt)
+			reader := bufio.NewReader(os.Stdin)
+			line, _ := reader.ReadString('\n')
+			name = strings.TrimSpace(line)
+			if name == "" {
+				name = defaultName
+			}
+			if name == "" {
+				return fmt.Errorf("device name is required")
+			}
 		}
 	}
 
@@ -610,6 +658,181 @@ func pickAuthEntry(cloudGRPC string) (*config.AuthConfig, error) {
 		return nil, fmt.Errorf("auth entry has no certificates; re-run 'wendy auth login'")
 	}
 	return &cfg.Auth[0], nil
+}
+
+func newDeviceUnenrollCmd() *cobra.Command {
+	var assumeYes bool
+	var cloudGRPC string
+
+	cmd := &cobra.Command{
+		Use:   "unenroll",
+		Short: "Unenroll a device and remove it from Wendy Cloud",
+		Long: "Reverses 'wendy device enroll': deletes the device's enrollment certificates and " +
+			"provisioning state (the agent restarts into unprovisioned mode), then revokes the " +
+			"device's certificates and deletes its asset record in Wendy Cloud.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := cmd.Context()
+
+			conn, err := connectToAgent(ctx, SuppressProvisioningHint())
+			if err != nil {
+				return err
+			}
+			defer conn.Close()
+
+			// Determine the device's current enrollment so we know which cloud
+			// asset to clean up afterwards.
+			provResp, err := conn.ProvisioningService.IsProvisioned(ctx, &agentpb.IsProvisionedRequest{})
+			if err != nil {
+				return fmt.Errorf("checking provisioning status: %w", err)
+			}
+			prov := provResp.GetProvisioned()
+			if prov == nil {
+				return fmt.Errorf("device is not provisioned")
+			}
+			cloudHost := prov.GetCloudHost()
+			orgID := prov.GetOrganizationId()
+			assetID := prov.GetAssetId()
+
+			if !assumeYes {
+				if !isInteractiveTerminal() {
+					return fmt.Errorf("unenroll is destructive; pass --yes to confirm when not running interactively")
+				}
+				fmt.Printf("This will unenroll the device (org: %d, asset: %d) and delete its asset in Wendy Cloud.\n", orgID, assetID)
+				fmt.Print("Continue? [y/N] ")
+				reader := bufio.NewReader(os.Stdin)
+				line, _ := reader.ReadString('\n')
+				answer := strings.TrimSpace(strings.ToLower(line))
+				if answer != "y" && answer != "yes" {
+					fmt.Println("Aborted.")
+					return nil
+				}
+			}
+
+			// Step 1: reset the device. The agent deletes its state and restarts,
+			// so the connection may drop right after the response — tolerate that.
+			if _, err := conn.ProvisioningService.Unprovision(ctx, &agentpb.UnprovisionRequest{}); err != nil {
+				if status.Code(err) == codes.Unavailable {
+					cliLogln("Device connection closed (agent is restarting).")
+				} else {
+					return fmt.Errorf("unprovisioning device: %w", err)
+				}
+			}
+
+			// Step 2: clean up the cloud asset. Best-effort — a failure here leaves
+			// a dangling asset that can be removed from the dashboard, but the
+			// device itself is already reset.
+			certsRevoked, assetDeleted, cloudErr := cloudUnenrollCleanup(ctx, cloudGRPC, cloudHost, assetID)
+
+			if jsonOutput {
+				out := map[string]any{
+					"deviceReset":  true,
+					"certsRevoked": certsRevoked,
+					"assetDeleted": assetDeleted,
+				}
+				if cloudErr != nil {
+					out["cloudError"] = cloudErr.Error()
+				}
+				data, marshalErr := json.MarshalIndent(out, "", "  ")
+				if marshalErr != nil {
+					return marshalErr
+				}
+				fmt.Println(string(data))
+			} else {
+				fmt.Println("Device reset to unprovisioned state.")
+				if cloudErr != nil {
+					fmt.Printf("Warning: cloud cleanup failed: %v\n", cloudErr)
+					fmt.Printf("Delete asset %d from the Wendy Cloud dashboard to finish.\n", assetID)
+				} else {
+					fmt.Printf("Revoked %d certificate(s) and deleted asset %d from Wendy Cloud.\n", certsRevoked, assetID)
+				}
+			}
+
+			if cloudErr != nil {
+				return cloudErr
+			}
+			return nil
+		},
+	}
+
+	cmd.Flags().BoolVar(&assumeYes, "yes", false, "Skip the confirmation prompt")
+	cmd.Flags().StringVar(&cloudGRPC, "cloud-grpc", "", "Cloud gRPC endpoint to use for cleanup (defaults to the device's enrolled cloud host)")
+	return cmd
+}
+
+// cloudUnenrollCleanup revokes the asset's active certificates and then
+// deletes the asset record in Wendy Cloud. It authenticates with the user's
+// stored session for the device's cloud host (or cloudGRPC if provided).
+func cloudUnenrollCleanup(ctx context.Context, cloudGRPC, deviceCloudHost string, assetID int32) (certsRevoked int, assetDeleted bool, err error) {
+	target := cloudGRPC
+	if target == "" {
+		target = deviceCloudHost
+	}
+	auth, err := pickAuthEntry(target)
+	if err != nil {
+		return 0, false, fmt.Errorf("selecting cloud auth session: %w", err)
+	}
+	if len(auth.Certificates) == 0 {
+		return 0, false, fmt.Errorf("auth session has no certificates; re-run 'wendy auth login'")
+	}
+	cert := auth.Certificates[0]
+
+	var transport grpc.DialOption
+	if strings.HasSuffix(auth.CloudGRPC, ":443") {
+		tlsCfg, tlsErr := certs.LoadTLSConfig(
+			cert.PemCertificate,
+			cert.PemCertificateChain,
+			cert.PemPrivateKey,
+			"",
+		)
+		if tlsErr != nil {
+			return 0, false, fmt.Errorf("loading TLS config: %w", tlsErr)
+		}
+		transport = grpc.WithTransportCredentials(credentials.NewTLS(tlsCfg))
+	} else {
+		transport = grpc.WithTransportCredentials(insecure.NewCredentials())
+	}
+
+	cloudConn, dialErr := grpc.NewClient(auth.CloudGRPC, transport)
+	if dialErr != nil {
+		return 0, false, fmt.Errorf("connecting to cloud: %w", dialErr)
+	}
+	defer cloudConn.Close()
+
+	tokenCtx := cloudContext(ctx, auth)
+
+	// Revoke the asset's active certificates first so a stale identity cannot be
+	// reused, then delete the asset record.
+	certClient := cloudpb.NewCertificateServiceClient(cloudConn)
+	stream, listErr := certClient.ListCertificates(tokenCtx, &cloudpb.ListCertificatesRequest{AssetId: assetID})
+	if listErr != nil {
+		return 0, false, fmt.Errorf("listing certificates: %w", listErr)
+	}
+	for {
+		resp, recvErr := stream.Recv()
+		if recvErr == io.EOF {
+			break
+		}
+		if recvErr != nil {
+			return certsRevoked, false, fmt.Errorf("listing certificates: %w", recvErr)
+		}
+		c := resp.GetCertificate()
+		if c == nil || c.GetStatus() != cloudpb.CertificateStatus_CERTIFICATE_STATUS_ACTIVE {
+			continue
+		}
+		if _, revErr := certClient.RevokeCertificate(tokenCtx, &cloudpb.RevokeCertificateRequest{
+			CertificateId: c.GetId(),
+			Reason:        "device unprovisioned",
+		}); revErr != nil {
+			return certsRevoked, false, fmt.Errorf("revoking certificate %d: %w", c.GetId(), revErr)
+		}
+		certsRevoked++
+	}
+
+	assetClient := cloudpb.NewAssetServiceClient(cloudConn)
+	if _, delErr := assetClient.DeleteAsset(tokenCtx, &cloudpb.DeleteAssetRequest{Id: assetID}); delErr != nil {
+		return certsRevoked, false, fmt.Errorf("deleting asset %d: %w", assetID, delErr)
+	}
+	return certsRevoked, true, nil
 }
 
 // scanWiFiNetworks queries the agent for available WiFi networks.

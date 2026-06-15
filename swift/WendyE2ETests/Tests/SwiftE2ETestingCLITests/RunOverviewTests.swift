@@ -11,7 +11,8 @@ struct `run overview` {
         defer { try? FileManager.default.removeItem(at: rootURL) }
 
         let runURL = rootURL.appendingPathComponent("Run", isDirectory: true)
-        let suiteURL = runURL
+        let suiteURL =
+            runURL
             .appendingPathComponent("observations", isDirectory: true)
             .appendingPathComponent("wendy-device-info", isDirectory: true)
         let testURL = suiteURL.appendingPathComponent(
@@ -21,11 +22,18 @@ struct `run overview` {
         let targetURL = testURL.appendingPathComponent("macos-to-rpi", isDirectory: true)
         let attemptOneObservationURL = targetURL.appendingPathComponent("0001", isDirectory: true)
         let attemptTwoObservationURL = targetURL.appendingPathComponent("0002", isDirectory: true)
-        let attemptArtifactsRootURL = runURL
+        let attemptArtifactsRootURL =
+            runURL
             .appendingPathComponent("attempts", isDirectory: true)
             .appendingPathComponent("macos-to-rpi", isDirectory: true)
-        let attemptOneURL = attemptArtifactsRootURL.appendingPathComponent("0001", isDirectory: true)
-        let attemptTwoURL = attemptArtifactsRootURL.appendingPathComponent("0002", isDirectory: true)
+        let attemptOneURL = attemptArtifactsRootURL.appendingPathComponent(
+            "0001",
+            isDirectory: true
+        )
+        let attemptTwoURL = attemptArtifactsRootURL.appendingPathComponent(
+            "0002",
+            isDirectory: true
+        )
 
         try FileManager.default.createDirectory(
             at: attemptOneObservationURL,
@@ -80,6 +88,48 @@ struct `run overview` {
     }
 
     @Test
+    func `marks failed attempt artifacts without observations as failed targets`() throws {
+        let rootURL = e2eTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+
+        let runURL = rootURL.appendingPathComponent("Run", isDirectory: true)
+        let attemptURL =
+            runURL
+            .appendingPathComponent("attempts", isDirectory: true)
+            .appendingPathComponent("macos-jetson-orin-nano", isDirectory: true)
+            .appendingPathComponent("0001", isDirectory: true)
+
+        try FileManager.default.createDirectory(at: attemptURL, withIntermediateDirectories: true)
+        try """
+        {
+          "exitStatus": 1
+        }
+        """.write(
+            to: attemptURL.appendingPathComponent("attempt.json"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let overview = try writeRunOverview(in: runURL)
+
+        #expect(overview.summary.tests == 0)
+        #expect(overview.summary.testTargets == 0)
+        #expect(overview.summary.attemptResults == 1)
+        #expect(overview.summary.failed == 1)
+        #expect(overview.summary.unknown == 0)
+        #expect(overview.targets.count == 1)
+
+        let target = try #require(overview.targets.first)
+        #expect(target.name == "macos-jetson-orin-nano")
+        #expect(target.outcome == .failed)
+        #expect(target.attempts == 1)
+        #expect(target.tests == 0)
+        #expect(target.failed == 1)
+        #expect(target.unknown == 0)
+        #expect(overview.noteworthy.deterministicFailures.isEmpty)
+    }
+
+    @Test
     func `uses test metadata to distinguish duplicate test names`() throws {
         let rootURL = e2eTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: rootURL) }
@@ -87,25 +137,34 @@ struct `run overview` {
         let runURL = rootURL.appendingPathComponent("Run", isDirectory: true)
         let target = "macos-to-rpi"
         let attempt = "0001"
-        let firstObservationURL = runURL
+        let firstObservationURL =
+            runURL
             .appendingPathComponent("observations", isDirectory: true)
             .appendingPathComponent("first-file", isDirectory: true)
             .appendingPathComponent("same-name", isDirectory: true)
             .appendingPathComponent(target, isDirectory: true)
             .appendingPathComponent(attempt, isDirectory: true)
-        let secondObservationURL = runURL
+        let secondObservationURL =
+            runURL
             .appendingPathComponent("observations", isDirectory: true)
             .appendingPathComponent("second-file", isDirectory: true)
             .appendingPathComponent("same-name", isDirectory: true)
             .appendingPathComponent(target, isDirectory: true)
             .appendingPathComponent(attempt, isDirectory: true)
-        let attemptURL = runURL
+        let attemptURL =
+            runURL
             .appendingPathComponent("attempts", isDirectory: true)
             .appendingPathComponent(target, isDirectory: true)
             .appendingPathComponent(attempt, isDirectory: true)
 
-        try FileManager.default.createDirectory(at: firstObservationURL, withIntermediateDirectories: true)
-        try FileManager.default.createDirectory(at: secondObservationURL, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(
+            at: firstObservationURL,
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(
+            at: secondObservationURL,
+            withIntermediateDirectories: true
+        )
         try FileManager.default.createDirectory(at: attemptURL, withIntermediateDirectories: true)
         try writeTestMetadata(
             to: firstObservationURL,
@@ -122,12 +181,12 @@ struct `run overview` {
             testName: "same name"
         )
         try """
-            <?xml version="1.0" encoding="UTF-8"?>
-            <testsuite tests="2">
-              <testcase classname="WendyE2ETests.`first suite`" name="same name()" time="0.1" />
-              <testcase classname="WendyE2ETests.`second suite`" name="same name()" time="0.2"><failure message="nope" /></testcase>
-            </testsuite>
-            """.write(
+        <?xml version="1.0" encoding="UTF-8"?>
+        <testsuite tests="2">
+          <testcase classname="WendyE2ETests.`first suite`" name="same name()" time="0.1" />
+          <testcase classname="WendyE2ETests.`second suite`" name="same name()" time="0.2"><failure message="nope" /></testcase>
+        </testsuite>
+        """.write(
             to: attemptURL.appendingPathComponent("test-results.xml"),
             atomically: true,
             encoding: .utf8
@@ -149,7 +208,8 @@ struct `run overview` {
         defer { try? FileManager.default.removeItem(at: rootURL) }
 
         let runURL = rootURL.appendingPathComponent("Run", isDirectory: true)
-        let suiteURL = runURL
+        let suiteURL =
+            runURL
             .appendingPathComponent("observations", isDirectory: true)
             .appendingPathComponent("wendy-device-info", isDirectory: true)
         let testURL = suiteURL.appendingPathComponent(
@@ -158,7 +218,8 @@ struct `run overview` {
         )
         let targetURL = testURL.appendingPathComponent("macos-to-rpi", isDirectory: true)
         let attemptObservationURL = targetURL.appendingPathComponent("0001", isDirectory: true)
-        let attemptURL = runURL
+        let attemptURL =
+            runURL
             .appendingPathComponent("attempts", isDirectory: true)
             .appendingPathComponent("macos-to-rpi", isDirectory: true)
             .appendingPathComponent("0001", isDirectory: true)
@@ -198,7 +259,11 @@ struct `run overview` {
         #expect(markdown.contains("### 🛑 Agent rejected CLI auth"))
         #expect(!markdown.contains("### 🛑 Error Agent rejected CLI auth"))
         #expect(markdown.contains("The target rejected an otherwise valid authenticated request."))
-        #expect(!markdown.contains("🛑 Error: The target rejected an otherwise valid authenticated request."))
+        #expect(
+            !markdown.contains(
+                "🛑 Error: The target rejected an otherwise valid authenticated request."
+            )
+        )
         #expect(!markdown.contains("Fail: Agent rejected CLI auth"))
     }
 }

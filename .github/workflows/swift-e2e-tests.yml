@@ -139,29 +139,31 @@ jobs:
   #         setup: false
   #         managed_agent: false
 
-  swift-e2e-physical-macos-jetson:
-    name: macOS 26 → Jetson Orin Nano
-    needs: swift-e2e-local-ubuntu
-    if: ${{ inputs.target_group == '' || inputs.target_group == 'all' }}
-    runs-on: [self-hosted, macos-26]
-    concurrency:
-      group: device-jetson-orin-nano
-      cancel-in-progress: false
-      queue: max
-    timeout-minutes: 120
-    steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
-      - uses: ./.github/actions/swift-e2e-run
-        with:
-          tests: ${{ inputs.tests || '' }}
-          target_id: macos-jetson-orin-nano
-          runner_id: macos-26
-          cli_os: macOS
-          device_address: ${{ vars.SWIFT_E2E_JETSON_ORIN_NANO_DEVICE_ADDRESS }}
-          agent_os: wendyOS
-          transport: lan
-          setup: false
-          managed_agent: false
+  # // DISABLED: WDY-1559 Jetson preflight is timing out; restore after investigation.
+  # // https://linear.app/wendylabsinc/issue/WDY-1559/investigate-jetson-orin-nano-swift-e2e-preflight-timeout
+  # swift-e2e-physical-macos-jetson:
+  #   name: macOS 26 → Jetson Orin Nano
+  #   needs: swift-e2e-local-ubuntu
+  #   if: ${{ inputs.target_group == '' || inputs.target_group == 'all' }}
+  #   runs-on: [self-hosted, macos-26]
+  #   concurrency:
+  #     group: device-jetson-orin-nano
+  #     cancel-in-progress: false
+  #     queue: max
+  #   timeout-minutes: 120
+  #   steps:
+  #     - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+  #     - uses: ./.github/actions/swift-e2e-run
+  #       with:
+  #         tests: ${{ inputs.tests || '' }}
+  #         target_id: macos-jetson-orin-nano
+  #         runner_id: macos-26
+  #         cli_os: macOS
+  #         device_address: ${{ vars.SWIFT_E2E_JETSON_ORIN_NANO_DEVICE_ADDRESS }}
+  #         agent_os: wendyOS
+  #         transport: lan
+  #         setup: false
+  #         managed_agent: false
 
   # // DISABLED: no CI hardware set up yet for this job.
   # swift-e2e-physical-windows-ubuntu:
@@ -419,7 +421,6 @@ jobs:
     needs:
       - swift-e2e-local-macos
       - swift-e2e-local-ubuntu
-      - swift-e2e-physical-macos-jetson
     runs-on: [self-hosted, AI]
     timeout-minutes: 60
     steps:

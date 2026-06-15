@@ -400,7 +400,8 @@ private func reviewAggregateSummaryMarkdown(_ value: String) -> String {
     ]
 
     for pattern in patterns {
-        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
+        else {
             continue
         }
         let range = NSRange(original.startIndex..<original.endIndex, in: original)

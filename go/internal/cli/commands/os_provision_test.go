@@ -486,3 +486,116 @@ func TestWriteConfigFiles_NewlineInDeviceName(t *testing.T) {
 		t.Fatal("expected error for device name with newline")
 	}
 }
+
+// withStubbedProvisioning swaps the injectable provisioning hooks for the
+// duration of fn and restores them afterwards.
+func withStubbedProvisioning(t *testing.T, provision func(drive, []wendyconf.WifiCredential, string, []byte) error, interactive bool, confirms []bool) (provisionCalls *int) {
+	t.Helper()
+
+	origProvision := provisionConfigPartitionFn
+	origConfirm := confirmProvisioningRetry
+	origInteractive := isInteractiveTerminalFn
+	t.Cleanup(func() {
+		provisionConfigPartitionFn = origProvision
+		confirmProvisioningRetry = origConfirm
+		isInteractiveTerminalFn = origInteractive
+	})
+
+	calls := 0
+	provisionConfigPartitionFn = func(d drive, c []wendyconf.WifiCredential, name string, j []byte) error {
+		calls++
+		return provision(d, c, name, j)
+	}
+	isInteractiveTerminalFn = func() bool { return interactive }
+
+	idx := 0
+	confirmProvisioningRetry = func() (bool, error) {
+		if idx >= len(confirms) {
+			return false, nil
+		}
+		v := confirms[idx]
+		idx++
+		return v, nil
+	}
+	return &calls
+}
+
+func TestProvisionConfigWithRetry_SuccessFirstTry(t *testing.T) {
+	calls := withStubbedProvisioning(t, func(drive, []wendyconf.WifiCredential, string, []byte) error {
+		return nil
+	}, true, nil)
+
+	out, _ := captureCommandStdout(t, func() error {
+		provisionConfigWithRetry(drive{}, nil, "", nil, true)
+		return nil
+	})
+
+	if *calls != 1 {
+		t.Errorf("provision called %d times; want 1", *calls)
+	}
+	if strings.Contains(strings.ToLower(out), "warning") {
+		t.Errorf("did not expect a warning on success; got %q", out)
+	}
+}
+
+func TestProvisionConfigWithRetry_FailureIsNotFatalAndExplainsBoot(t *testing.T) {
+	calls := withStubbedProvisioning(t, func(drive, []wendyconf.WifiCredential, string, []byte) error {
+		return fmt.Errorf("config partition not found on /dev/mmcblk0")
+	}, false, nil) // non-interactive: no retry prompt
+
+	out, _ := captureCommandStdout(t, func() error {
+		provisionConfigWithRetry(drive{}, []wendyconf.WifiCredential{{SSID: "Home"}}, "", nil, true)
+		return nil
+	})
+
+	if *calls != 1 {
+		t.Errorf("provision called %d times; want 1 (no interactive retry)", *calls)
+	}
+	lower := strings.ToLower(out)
+	if !strings.Contains(lower, "warning") {
+		t.Errorf("expected a warning; got %q", out)
+	}
+	// The OS image already landed on the drive: the user must not read this as
+	// a failure to flash, and must know the device still boots.
+	if !strings.Contains(lower, "written successfully") || !strings.Contains(lower, "boot") {
+		t.Errorf("expected reassurance that the OS wrote and the device boots; got %q", out)
+	}
+	if strings.Contains(lower, "failed to flash") || strings.Contains(lower, "could not write provisioning data to config partition (--wifi") {
+		t.Errorf("must not present provisioning failure as a flash failure; got %q", out)
+	}
+}
+
+func TestProvisionConfigWithRetry_InteractiveRetryThenSuccess(t *testing.T) {
+	failures := 1
+	calls := withStubbedProvisioning(t, func(drive, []wendyconf.WifiCredential, string, []byte) error {
+		if failures > 0 {
+			failures--
+			return fmt.Errorf("locating config partition: not found")
+		}
+		return nil
+	}, true, []bool{true}) // user agrees to retry once
+
+	_, _ = captureCommandStdout(t, func() error {
+		provisionConfigWithRetry(drive{}, nil, "device-x", nil, true)
+		return nil
+	})
+
+	if *calls != 2 {
+		t.Errorf("provision called %d times; want 2 (initial + one retry)", *calls)
+	}
+}
+
+func TestProvisionConfigWithRetry_InteractiveDeclineStops(t *testing.T) {
+	calls := withStubbedProvisioning(t, func(drive, []wendyconf.WifiCredential, string, []byte) error {
+		return fmt.Errorf("mounting config partition: permission denied")
+	}, true, []bool{false}) // user declines retry
+
+	_, _ = captureCommandStdout(t, func() error {
+		provisionConfigWithRetry(drive{}, nil, "", nil, false)
+		return nil
+	})
+
+	if *calls != 1 {
+		t.Errorf("provision called %d times; want 1 (declined retry)", *calls)
+	}
+}

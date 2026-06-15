@@ -58,6 +58,11 @@ func NewRootCmd() *cobra.Command {
 				}
 			}
 
+			// Refresh MCP config and skills if the CLI was upgraded since the
+			// user last ran `wendy mcp setup`. Runs synchronously here, before
+			// the update-check goroutine below also mutates and saves cfg.
+			maybeRefreshMCPSetup(cfg)
+
 			if dueCLIUpdateCheck(cfg) {
 				scheduleCLIUpdateCheck(cfg)
 			}

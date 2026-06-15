@@ -13,7 +13,7 @@ struct UnsupportedRPCTests {
         await assertUnsupportedCases([
             (
                 "RunContainer",
-                "Streaming container upload and execution is currently not supported on macOS.",
+                "Streaming container upload and execution is currently not supported by Wendy Agent for Mac.",
                 {
                     _ = try await service.runContainer(
                         request: makeStreamingRequest(
@@ -28,7 +28,7 @@ struct UnsupportedRPCTests {
             ),
             (
                 "UpdateAgent",
-                "Updating the agent is currently not supported on macOS.",
+                "Updating the agent is currently not supported by Wendy Agent for Mac.",
                 {
                     _ = try await service.updateAgent(
                         request: makeStreamingRequest(
@@ -43,7 +43,7 @@ struct UnsupportedRPCTests {
             ),
             (
                 "ListWiFiNetworks",
-                "Wi-Fi network scanning is currently not supported on macOS.",
+                "Wi-Fi network scanning is currently not supported by Wendy Agent for Mac.",
                 {
                     _ = try await service.listWiFiNetworks(
                         request: ServerRequest(
@@ -59,7 +59,7 @@ struct UnsupportedRPCTests {
             ),
             (
                 "ConnectToWiFi",
-                "Connecting to Wi-Fi networks is currently not supported on macOS.",
+                "Connecting to Wi-Fi networks is currently not supported by Wendy Agent for Mac.",
                 {
                     _ = try await service.connectToWiFi(
                         request: ServerRequest(
@@ -75,7 +75,7 @@ struct UnsupportedRPCTests {
             ),
             (
                 "GetWiFiStatus",
-                "Wi-Fi status reporting is currently not supported on macOS.",
+                "Wi-Fi status reporting is currently not supported by Wendy Agent for Mac.",
                 {
                     _ = try await service.getWiFiStatus(
                         request: ServerRequest(
@@ -91,7 +91,7 @@ struct UnsupportedRPCTests {
             ),
             (
                 "DisconnectWiFi",
-                "Disconnecting from Wi-Fi networks is currently not supported on macOS.",
+                "Disconnecting from Wi-Fi networks is currently not supported by Wendy Agent for Mac.",
                 {
                     _ = try await service.disconnectWiFi(
                         request: ServerRequest(
@@ -107,7 +107,7 @@ struct UnsupportedRPCTests {
             ),
             (
                 "ListKnownWiFiNetworks",
-                "Listing saved Wi-Fi networks is currently not supported on macOS.",
+                "Listing saved Wi-Fi networks is currently not supported by Wendy Agent for Mac.",
                 {
                     _ = try await service.listKnownWiFiNetworks(
                         request: ServerRequest(
@@ -123,7 +123,7 @@ struct UnsupportedRPCTests {
             ),
             (
                 "SetWiFiNetworkPriority",
-                "Wi-Fi network priority management is currently not supported on macOS.",
+                "Wi-Fi network priority management is currently not supported by Wendy Agent for Mac.",
                 {
                     _ = try await service.setWiFiNetworkPriority(
                         request: ServerRequest(
@@ -139,7 +139,7 @@ struct UnsupportedRPCTests {
             ),
             (
                 "ReorderKnownWiFiNetworks",
-                "Reordering saved Wi-Fi networks is currently not supported on macOS.",
+                "Reordering saved Wi-Fi networks is currently not supported by Wendy Agent for Mac.",
                 {
                     _ = try await service.reorderKnownWiFiNetworks(
                         request: ServerRequest(
@@ -155,7 +155,7 @@ struct UnsupportedRPCTests {
             ),
             (
                 "ForgetWiFiNetwork",
-                "Removing saved Wi-Fi networks is currently not supported on macOS.",
+                "Removing saved Wi-Fi networks is currently not supported by Wendy Agent for Mac.",
                 {
                     _ = try await service.forgetWiFiNetwork(
                         request: ServerRequest(
@@ -171,7 +171,7 @@ struct UnsupportedRPCTests {
             ),
             (
                 "ListHardwareCapabilities",
-                "Hardware capability discovery is currently not supported on macOS.",
+                "Hardware capability discovery is currently not supported by Wendy Agent for Mac.",
                 {
                     _ = try await service.listHardwareCapabilities(
                         request: ServerRequest(
@@ -187,7 +187,7 @@ struct UnsupportedRPCTests {
             ),
             (
                 "ScanBluetoothPeripherals",
-                "Bluetooth scanning is currently not supported on macOS.",
+                "Bluetooth scanning is currently not supported by Wendy Agent for Mac.",
                 {
                     _ = try await service.scanBluetoothPeripherals(
                         request: makeStreamingRequest(
@@ -202,7 +202,7 @@ struct UnsupportedRPCTests {
             ),
             (
                 "ConnectBluetoothPeripheral",
-                "Connecting Bluetooth peripherals is currently not supported on macOS.",
+                "Connecting Bluetooth peripherals is currently not supported by Wendy Agent for Mac.",
                 {
                     _ = try await service.connectBluetoothPeripheral(
                         request: ServerRequest(
@@ -218,7 +218,7 @@ struct UnsupportedRPCTests {
             ),
             (
                 "DisconnectBluetoothPeripheral",
-                "Disconnecting Bluetooth peripherals is currently not supported on macOS.",
+                "Disconnecting Bluetooth peripherals is currently not supported by Wendy Agent for Mac.",
                 {
                     _ = try await service.disconnectBluetoothPeripheral(
                         request: ServerRequest(
@@ -235,7 +235,7 @@ struct UnsupportedRPCTests {
             ),
             (
                 "ForgetBluetoothPeripheral",
-                "Forgetting Bluetooth peripherals is currently not supported on macOS.",
+                "Forgetting Bluetooth peripherals is currently not supported by Wendy Agent for Mac.",
                 {
                     _ = try await service.forgetBluetoothPeripheral(
                         request: ServerRequest(
@@ -275,7 +275,7 @@ struct UnsupportedRPCTests {
         await assertUnsupportedCases([
             (
                 "ListAudioDevices",
-                "Listing audio devices is currently not supported on macOS.",
+                "Listing audio devices is currently not supported by Wendy Agent for Mac.",
                 {
                     _ = try await service.listAudioDevices(
                         request: ServerRequest(
@@ -291,7 +291,7 @@ struct UnsupportedRPCTests {
             ),
             (
                 "SetDefaultAudioDevice",
-                "Changing the default audio device is currently not supported on macOS.",
+                "Changing the default audio device is currently not supported by Wendy Agent for Mac.",
                 {
                     _ = try await service.setDefaultAudioDevice(
                         request: ServerRequest(
@@ -307,7 +307,7 @@ struct UnsupportedRPCTests {
             ),
             (
                 "StreamAudioLevels",
-                "Streaming audio levels is currently not supported on macOS.",
+                "Streaming audio levels is currently not supported by Wendy Agent for Mac.",
                 {
                     _ = try await service.streamAudioLevels(
                         request: ServerRequest(
@@ -323,7 +323,7 @@ struct UnsupportedRPCTests {
             ),
             (
                 "StreamAudio",
-                "Streaming audio is currently not supported on macOS.",
+                "Streaming audio is currently not supported by Wendy Agent for Mac.",
                 {
                     _ = try await service.streamAudio(
                         request: ServerRequest(
@@ -350,7 +350,7 @@ struct UnsupportedRPCTests {
         await assertUnsupportedCases([
             (
                 "AttachContainer",
-                "Linux container attach is currently not supported on macOS.",
+                "Linux container attach is currently not supported by Wendy Agent for Mac.",
                 {
                     _ = try await service.attachContainer(
                         request: makeStreamingRequest(
@@ -365,7 +365,7 @@ struct UnsupportedRPCTests {
             ),
             (
                 "ListVolumes",
-                "Container volume management is currently not supported on macOS.",
+                "Container volume management is currently not supported by Wendy Agent for Mac.",
                 {
                     _ = try await service.listVolumes(
                         request: ServerRequest(
@@ -381,7 +381,7 @@ struct UnsupportedRPCTests {
             ),
             (
                 "RemoveVolume",
-                "Removing container volumes is currently not supported on macOS.",
+                "Removing container volumes is currently not supported by Wendy Agent for Mac.",
                 {
                     _ = try await service.removeVolume(
                         request: ServerRequest(
@@ -397,7 +397,7 @@ struct UnsupportedRPCTests {
             ),
             (
                 "ListLayers",
-                "Container layer listing is currently not supported on macOS.",
+                "Container layer listing is currently not supported by Wendy Agent for Mac.",
                 {
                     _ = try await service.listLayers(
                         request: ServerRequest(
@@ -413,7 +413,7 @@ struct UnsupportedRPCTests {
             ),
             (
                 "CreateContainerWithProgress",
-                "Container creation progress streaming is currently not supported on macOS.",
+                "Container creation progress streaming is currently not supported by Wendy Agent for Mac.",
                 {
                     _ = try await service.createContainerWithProgress(
                         request: ServerRequest(
@@ -429,7 +429,7 @@ struct UnsupportedRPCTests {
             ),
             (
                 "RunContainer",
-                "Legacy container streaming execution is currently not supported on macOS. Use the native app lifecycle RPCs instead when applicable.",
+                "Legacy container streaming execution is currently not supported by Wendy Agent for Mac. Use the native app lifecycle RPCs instead when applicable.",
                 {
                     _ = try await service.runContainer(
                         request: ServerRequest(

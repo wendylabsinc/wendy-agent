@@ -16,3 +16,14 @@ func e2eAttemptArtifactsURL(in runURL: URL, targetName: String, attempt: String)
         .appendingPathComponent(targetName, isDirectory: true)
         .appendingPathComponent(attempt, isDirectory: true)
 }
+
+func e2eAttemptExitStatus(at attemptURL: URL) -> Int? {
+    let url = attemptURL.appendingPathComponent("attempt.json")
+    guard FileManager.default.fileExists(atPath: url.path),
+        let data = try? Data(contentsOf: url),
+        let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+    else {
+        return nil
+    }
+    return object["exitStatus"] as? Int
+}

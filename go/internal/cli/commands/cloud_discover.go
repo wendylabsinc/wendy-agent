@@ -293,7 +293,7 @@ func (m cloudDiscoverModel) View() string {
 				sb.WriteString(m.viewLine(dimStyle.Render("No online devices found. Use --all to include offline devices.")) + "\n")
 			}
 		} else {
-			sb.WriteString(m.viewLine(dimStyle.Render("Fetching devices from cloud...")) + "\n")
+			sb.WriteString(m.viewLine(dimStyle.Render("Fetching active devices from cloud...")) + "\n")
 		}
 	}
 
@@ -350,6 +350,7 @@ func cloudDiscoverTableRows(assets []*cloudpb.Asset, versions map[int32]*agentpb
 
 func cloudDeviceInfoFromAsset(a *cloudpb.Asset, ver *agentpb.GetAgentVersionResponse) discoverDeviceInfo {
 	info := discoverDeviceInfo{
+		ID:      a.GetId(),
 		Name:    a.GetName(),
 		Type:    humanReadableDeviceType(a.GetDeviceType()),
 		Address: a.GetIpAddress(),

@@ -16,12 +16,16 @@ struct `aggregate command` {
             "swift-e2e-tests.local0000.macos-to-rpi.0001",
             isDirectory: true
         )
-        let observationURL = attemptURL
+        let observationURL =
+            attemptURL
             .appendingPathComponent("observations", isDirectory: true)
             .appendingPathComponent("wendy-device-info", isDirectory: true)
             .appendingPathComponent("prints-json-device-information", isDirectory: true)
 
-        try FileManager.default.createDirectory(at: observationURL, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(
+            at: observationURL,
+            withIntermediateDirectories: true
+        )
         try "{}\n".write(
             to: attemptURL.appendingPathComponent("attempt.json"),
             atomically: true,
@@ -47,27 +51,69 @@ struct `aggregate command` {
         var command = try AggregateCommand.parse(["--output-dir", outputURL.path, attemptURL.path])
         try command.run()
 
-        let runURL = outputURL.appendingPathComponent("swift-e2e-tests.local0000", isDirectory: true)
-        let attemptArtifactsURL = runURL
+        let runURL = outputURL.appendingPathComponent(
+            "swift-e2e-tests.local0000",
+            isDirectory: true
+        )
+        let attemptArtifactsURL =
+            runURL
             .appendingPathComponent("attempts", isDirectory: true)
             .appendingPathComponent("macos-to-rpi", isDirectory: true)
             .appendingPathComponent("0001", isDirectory: true)
-        let aggregateObservationURL = runURL
+        let aggregateObservationURL =
+            runURL
             .appendingPathComponent("observations", isDirectory: true)
             .appendingPathComponent("wendy-device-info", isDirectory: true)
             .appendingPathComponent("prints-json-device-information", isDirectory: true)
             .appendingPathComponent("macos-to-rpi", isDirectory: true)
             .appendingPathComponent("0001", isDirectory: true)
 
-        #expect(FileManager.default.fileExists(atPath: attemptArtifactsURL.appendingPathComponent("attempt.json").path))
-        #expect(FileManager.default.fileExists(atPath: attemptArtifactsURL.appendingPathComponent("test-results.xml").path))
-        #expect(FileManager.default.fileExists(atPath: attemptArtifactsURL.appendingPathComponent("attempt.log").path))
-        #expect(!FileManager.default.fileExists(atPath: attemptArtifactsURL.appendingPathComponent("observations").path))
-        #expect(FileManager.default.fileExists(atPath: aggregateObservationURL.appendingPathComponent("recording.md").path))
-        #expect(FileManager.default.fileExists(atPath: aggregateObservationURL.appendingPathComponent("test.json").path))
-        #expect(FileManager.default.fileExists(atPath: aggregateObservationURL.deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("test.json").path))
-        #expect(!FileManager.default.fileExists(atPath: aggregateObservationURL.appendingPathComponent("attempt.json").path))
-        #expect(!FileManager.default.fileExists(atPath: aggregateObservationURL.appendingPathComponent("test-results.xml").path))
+        #expect(
+            FileManager.default.fileExists(
+                atPath: attemptArtifactsURL.appendingPathComponent("attempt.json").path
+            )
+        )
+        #expect(
+            FileManager.default.fileExists(
+                atPath: attemptArtifactsURL.appendingPathComponent("test-results.xml").path
+            )
+        )
+        #expect(
+            FileManager.default.fileExists(
+                atPath: attemptArtifactsURL.appendingPathComponent("attempt.log").path
+            )
+        )
+        #expect(
+            !FileManager.default.fileExists(
+                atPath: attemptArtifactsURL.appendingPathComponent("observations").path
+            )
+        )
+        #expect(
+            FileManager.default.fileExists(
+                atPath: aggregateObservationURL.appendingPathComponent("recording.md").path
+            )
+        )
+        #expect(
+            FileManager.default.fileExists(
+                atPath: aggregateObservationURL.appendingPathComponent("test.json").path
+            )
+        )
+        #expect(
+            FileManager.default.fileExists(
+                atPath: aggregateObservationURL.deletingLastPathComponent()
+                    .deletingLastPathComponent().appendingPathComponent("test.json").path
+            )
+        )
+        #expect(
+            !FileManager.default.fileExists(
+                atPath: aggregateObservationURL.appendingPathComponent("attempt.json").path
+            )
+        )
+        #expect(
+            !FileManager.default.fileExists(
+                atPath: aggregateObservationURL.appendingPathComponent("test-results.xml").path
+            )
+        )
     }
 
     @Test
@@ -95,14 +141,26 @@ struct `aggregate command` {
         var command = try AggregateCommand.parse(["--output-dir", outputURL.path, attemptURL.path])
         try command.run()
 
-        let runURL = outputURL.appendingPathComponent("swift-e2e-tests.local0000", isDirectory: true)
-        let attemptArtifactsURL = runURL
+        let runURL = outputURL.appendingPathComponent(
+            "swift-e2e-tests.local0000",
+            isDirectory: true
+        )
+        let attemptArtifactsURL =
+            runURL
             .appendingPathComponent("attempts", isDirectory: true)
             .appendingPathComponent("macos-to-rpi", isDirectory: true)
             .appendingPathComponent("0001", isDirectory: true)
 
-        #expect(FileManager.default.fileExists(atPath: attemptArtifactsURL.appendingPathComponent("attempt.json").path))
-        #expect(FileManager.default.fileExists(atPath: attemptArtifactsURL.appendingPathComponent("test-results.xml").path))
+        #expect(
+            FileManager.default.fileExists(
+                atPath: attemptArtifactsURL.appendingPathComponent("attempt.json").path
+            )
+        )
+        #expect(
+            FileManager.default.fileExists(
+                atPath: attemptArtifactsURL.appendingPathComponent("test-results.xml").path
+            )
+        )
     }
 }
 

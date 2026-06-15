@@ -105,7 +105,7 @@ if preferBluetooth {
 ```swift
 let sorted = interfaces.sorted { a, b in
     if preferBluetooth {
-        return a.type == "Bluetooth" && b.type != "Bluetooth"
+        return a.type == "BLE" && b.type != "BLE"
     } else {
         return a.type == "LAN" && b.type != "LAN"
     }

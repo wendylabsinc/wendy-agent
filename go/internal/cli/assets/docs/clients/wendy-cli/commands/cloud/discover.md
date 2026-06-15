@@ -44,6 +44,29 @@ The TUI displays a table with the following columns for each device:
 
 Pressing `u` on a highlighted device downloads the latest agent release from GitHub, uploads it to the device via the broker tunnel, and waits for the agent to restart (up to 60 seconds). A status message is shown during the update and the version column refreshes automatically on completion.
 
+## JSON output
+
+When run non-interactively (output is piped) or with `--json`, a JSON array is written to stdout. Each element contains:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | integer | Stable numeric asset ID. Pass this value to [`wendy cloud tunnel --device <id>`](./tunnel.md) to target unnamed or ambiguously named devices. Omitted when zero. |
+| `name` | string | Device name (may be empty for devices enrolled without a name). |
+| `type` | string | Human-readable hardware device type. |
+| `address` | string | IP address reported by the cloud. |
+| `version` | string | Running agent version. Omitted when it could not be determined. |
+
+Example:
+
+```json
+[
+  {"id": 42, "name": "playful-reed", "type": "Raspberry Pi 5", "address": "192.168.1.10", "version": "0.10.4"},
+  {"id": 43, "name": "", "type": "Raspberry Pi 5", "address": "192.168.1.11"}
+]
+```
+
+The `id` field is the primary mechanism for addressing a device that was enrolled without a name — pass it to `wendy cloud tunnel --device <id>`.
+
 ## Flags
 
 | Flag | Default | Description |

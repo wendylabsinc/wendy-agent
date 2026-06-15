@@ -544,7 +544,10 @@ private func loadRunTestResults(
                     observations[identityKey, default: []].append(
                         ReportTestObservation(
                             target: targetName,
-                            route: try targetRoute(for: targetName, attemptURL: attemptArtifactsURL),
+                            route: try targetRoute(
+                                for: targetName,
+                                attemptURL: attemptArtifactsURL
+                            ),
                             attempt: attemptName,
                             status: status,
                             recordingPath: observationFilePath(
@@ -1064,8 +1067,10 @@ private func buildTargetOverview(
     files: [ReportTestFile]
 ) throws -> [ReportTargetOverviewRow] {
     var rowsByTarget: [String: ReportTargetOverviewAccumulator] = [:]
+    var observedAttemptsByTarget: [String: Set<String>] = [:]
+    let attemptURLsByTarget = try runAttemptArtifactURLsByTarget(in: runURL)
 
-    for (target, attemptURLs) in try runAttemptArtifactURLsByTarget(in: runURL) {
+    for (target, attemptURLs) in attemptURLsByTarget {
         var row = rowsByTarget[target] ?? ReportTargetOverviewAccumulator()
         row.attempts.formUnion(attemptURLs.map(\.lastPathComponent))
         if row.route == nil, let attemptURL = attemptURLs.first {
@@ -1080,8 +1085,24 @@ private func buildTargetOverview(
             var row = rowsByTarget[target] ?? ReportTargetOverviewAccumulator()
             row.route = row.route ?? observations.first?.route
             row.attempts.formUnion(observations.map(\.attempt))
+            observedAttemptsByTarget[target, default: []].formUnion(
+                observations.map(\.attempt)
+            )
             row.tests += 1
             row.counts.add(targetOutcome(for: observations.map(\.status)))
+            rowsByTarget[target] = row
+        }
+    }
+
+    for (target, attemptURLs) in attemptURLsByTarget {
+        let observedAttempts = observedAttemptsByTarget[target, default: []]
+        for attemptURL in attemptURLs
+        where !observedAttempts.contains(attemptURL.lastPathComponent) {
+            guard let exitStatus = e2eAttemptExitStatus(at: attemptURL), exitStatus != 0 else {
+                continue
+            }
+            var row = rowsByTarget[target] ?? ReportTargetOverviewAccumulator()
+            row.counts.failed += 1
             rowsByTarget[target] = row
         }
     }
@@ -1531,7 +1552,8 @@ private func renderObservations(
         let escapedTarget = isFirstTargetRow ? escapeHTML(observation.target) : ""
         let target = escapedTarget
         let route =
-            isFirstTargetRow ? renderTargetRoute(observation.route, escapedTitle: escapedTarget) : ""
+            isFirstTargetRow
+            ? renderTargetRoute(observation.route, escapedTitle: escapedTarget) : ""
         let rowClass = isFirstTargetRow ? "observation-row" : "observation-row same-target"
         chunks.append(
             "<div class=\"\(rowClass)\"><span class=\"observation-route-cell\">\(route)</span><span class=\"observation-target\">\(target)</span><span class=\"observation-spacer\" aria-hidden=\"true\"></span>\(renderObservationLinks(observation))<span class=\"observation-attempt\">\(escapeHTML(observation.attempt))</span><span class=\"badge \(observation.status.statusClass)\">\(observation.status.statusText)</span>\(observationDurationBadge(observation.duration))</div>"

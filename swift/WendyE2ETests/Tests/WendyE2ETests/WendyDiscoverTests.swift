@@ -25,9 +25,9 @@ struct `'wendy discover'` {
     }
 
     /**
-     `--type` restricts discovery to USB, LAN, Bluetooth, external, or all
-     transports. Output identifies the transport that produced each device.
-     */
+      `--type` restricts discovery to USB, LAN, BLE, external, or all
+      transports. Output identifies the transport that produced each device.
+      */
     @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
     func `filters by discovery transport`() async throws {
         // TODO: implement.

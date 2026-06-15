@@ -607,10 +607,6 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 		cliLogln("warning: %s", w)
 	}
 
-	if err := requireRegistryAuth(ctx, conn); err != nil {
-		return err
-	}
-
 	versionResp, err := conn.AgentService.GetAgentVersion(ctx, &agentpb.GetAgentVersionRequest{})
 	if err != nil {
 		return fmt.Errorf("querying device version: %w", err)
@@ -621,6 +617,13 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 		architecture = "arm64"
 	}
 	platform := resolveAgentPlatform("", agentOS, architecture)
+	if strings.EqualFold(agentOS, appconfig.PlatformDarwin) {
+		return rejectUnsupportedMacRunProject("compose", platform)
+	}
+
+	if err := requireRegistryAuth(ctx, conn); err != nil {
+		return err
+	}
 
 	regPort := registryPort(agentOS)
 	registryAddr, proxyCleanup, err := resolveRegistryForAgent(ctx, conn, regPort)
