@@ -597,6 +597,9 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 	if err != nil {
 		return fmt.Errorf("companion wendy.json: %w", err)
 	}
+	if companion != nil && len(companion.Files) > 0 {
+		return fmt.Errorf("top-level wendy.json files are not supported for Compose deployments yet")
+	}
 	for _, w := range companionWarnings {
 		cliLogln("warning: %s", w)
 	}

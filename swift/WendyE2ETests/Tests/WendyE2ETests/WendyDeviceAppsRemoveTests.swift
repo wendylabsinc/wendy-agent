@@ -123,9 +123,81 @@ struct `'wendy device apps remove'` {
      app. This keeps `wendy.json.files` cleanup independent from durable app
      state cleanup.
      */
-    @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
+    @Test(.enabled(if: isAgentLinuxOrWendyOS))
     func `removes synced files while preserving persistent volumes`() async throws {
-        // TODO: implement.
+        let appID = Self.appID("preserve")
+        let volumeName = "\(appID)-data"
+
+        try await self.scenario.run(authenticated: false) { cli, agent in
+            let agentAddress = agent.machine.address
+
+            do {
+                try await cli.sh(
+                    Self.createVolumeProjectScript(appID: appID, volumeName: volumeName)
+                )
+
+                try await cli.sh(
+                    Self.runCommand(project: Self.projectName(appID), agentAddress: agentAddress)
+                ) { result in
+                    let output = result.normalizedStdout + result.normalizedStderr
+
+                    #expect(result.status.isSuccess)
+                    #expect(output.contains("VOLUME:seeded") || output.contains("VOLUME:seed"))
+                }
+
+                try await agent.sh(
+                    Self.privilegedTestCommand("-d", Self.agentFileSyncDirectory(appID))
+                ) {
+                    result in
+                    #expect(result.status.isSuccess)
+                }
+                try await agent.sh(
+                    Self.privilegedTestCommand("-f", Self.agentVolumeFile(volumeName))
+                ) {
+                    result in
+                    #expect(result.status.isSuccess)
+                }
+
+                try await cli.sh(
+                    "wendy --device \(Self.shellQuote(agentAddress)) device apps remove \(Self.shellQuote(appID)) --force"
+                ) { result in
+                    let output = result.normalizedStdout + result.normalizedStderr
+
+                    #expect(result.status.isSuccess)
+                    #expect(output.contains("Application \(appID) removed"))
+                    #expect(!output.contains("Persistent volume deletion requested"))
+                }
+
+                try await agent.sh(
+                    Self.privilegedTestCommand("! -e", Self.agentFileSyncDirectory(appID))
+                ) {
+                    result in
+                    #expect(result.status.isSuccess)
+                }
+                try await agent.sh(
+                    Self.privilegedTestCommand("-f", Self.agentVolumeFile(volumeName))
+                ) { result in
+                    #expect(result.status.isSuccess)
+                }
+                try await agent.sh(
+                    "test \"$(\(Self.privilegedCommand("cat", Self.agentVolumeFile(volumeName))))\" = seed"
+                ) { result in
+                    #expect(result.status.isSuccess)
+                }
+            } catch {
+                try? await cli.sh(
+                    "wendy --device \(Self.shellQuote(agentAddress)) device apps remove \(Self.shellQuote(appID)) --force --delete-volumes"
+                )
+                try? await agent.sh(
+                    Self.privilegedCommand("rm -rf", Self.agentVolumeDirectory(volumeName))
+                )
+                throw error
+            }
+
+            try await agent.sh(
+                Self.privilegedCommand("rm -rf", Self.agentVolumeDirectory(volumeName))
+            )
+        }
     }
 
     /**
@@ -165,6 +237,23 @@ struct `'wendy device apps remove'` {
         "wendy --device \(Self.shellQuote(agentAddress)) run --deploy --prefix \(Self.shellQuote(project))"
     }
 
+    private static func runCommand(project: String, agentAddress: String) -> String {
+        "wendy --device \(Self.shellQuote(agentAddress)) run --prefix \(Self.shellQuote(project))"
+    }
+
+    private static func agentVolumeDirectory(_ volumeName: String) -> String {
+        "/var/lib/wendy/volumes/\(volumeName)"
+    }
+
+    private static func agentVolumeFile(_ volumeName: String) -> String {
+        Self.agentVolumeDirectory(volumeName) + "/persist.txt"
+    }
+
+    private static func privilegedCommand(_ command: String, _ path: String) -> String {
+        let shellCommand = "\(command) \(Self.shellQuote(path))"
+        return "if [ \"$(id -u)\" = 0 ]; then \(shellCommand); else sudo \(shellCommand); fi"
+    }
+
     private static func privilegedTestCommand(_ predicate: String, _ path: String) -> String {
         let testCommand = "test \(predicate) \(Self.shellQuote(path))"
         return "if [ \"$(id -u)\" = 0 ]; then \(testCommand); else sudo \(testCommand); fi"
@@ -186,6 +275,45 @@ struct `'wendy device apps remove'` {
             cat > \(Self.shellQuote(project))/wendy.json <<'EOF'
             {
               "appId": "\(appID)",
+              "files": [
+                { "path": "config/message.txt" }
+              ]
+            }
+            EOF
+            """
+    }
+
+    private static func createVolumeProjectScript(appID: String, volumeName: String) -> String {
+        let project = Self.projectName(appID)
+        return """
+            set -eu
+            rm -rf \(Self.shellQuote(project))
+            mkdir -p \(Self.shellQuote(project))/config
+            cat > \(Self.shellQuote(project))/Dockerfile <<'EOF'
+            FROM alpine:3.20
+            WORKDIR /work
+            RUN mkdir -p /work/config /data
+            COPY check.sh /check.sh
+            CMD ["/bin/sh", "/check.sh"]
+            EOF
+            cat > \(Self.shellQuote(project))/check.sh <<'EOF'
+            #!/bin/sh
+            set -eu
+            cat config/message.txt >/dev/null
+            if [ -f /data/persist.txt ]; then
+              printf 'VOLUME:%s\n' "$(cat /data/persist.txt)"
+            else
+              printf 'seed' > /data/persist.txt
+              printf 'VOLUME:seeded\n'
+            fi
+            EOF
+            printf 'volume cleanup' > \(Self.shellQuote(project))/config/message.txt
+            cat > \(Self.shellQuote(project))/wendy.json <<'EOF'
+            {
+              "appId": "\(appID)",
+              "entitlements": [
+                { "type": "persist", "name": "\(volumeName)", "path": "/data" }
+              ],
               "files": [
                 { "path": "config/message.txt" }
               ]

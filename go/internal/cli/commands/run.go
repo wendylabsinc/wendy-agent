@@ -584,6 +584,12 @@ func runCommand(ctx context.Context, opts runOptions) error {
 	if err := appCfg.Validate(); err != nil {
 		return fmt.Errorf("invalid wendy.json: %w", err)
 	}
+	if len(appCfg.Services) > 0 && len(appCfg.Files) > 0 {
+		return fmt.Errorf("top-level wendy.json files are not supported for multi-service deployments yet")
+	}
+	if err := validateConfiguredFileSources(cwd, appCfg); err != nil {
+		return fmt.Errorf("invalid wendy.json: %w", err)
+	}
 	if err := warnAppConfigFile(cfgPath); err != nil {
 		return fmt.Errorf("reading wendy.json warnings: %w", err)
 	}
@@ -646,9 +652,24 @@ func runCommand(ctx context.Context, opts runOptions) error {
 	return runWithAgent(ctx, target.Agent, cwd, appCfg, opts)
 }
 
+func rejectComposeCompanionFiles(cwd string) error {
+	companion, _, err := appconfig.LoadComposeCompanion(cwd)
+	if err != nil {
+		return fmt.Errorf("companion wendy.json: %w", err)
+	}
+	if companion != nil && len(companion.Files) > 0 {
+		return fmt.Errorf("top-level wendy.json files are not supported for Compose deployments yet")
+	}
+	return nil
+}
+
 // runComposeCommand handles the full device-selection + execution flow for
 // docker-compose projects, bypassing the wendy.json requirement.
 func runComposeCommand(ctx context.Context, cwd string, opts runOptions) error {
+	if err := rejectComposeCompanionFiles(cwd); err != nil {
+		return err
+	}
+
 	var resolveOpts []resolveOption
 	if opts.yes {
 		resolveOpts = append(resolveOpts, NonInteractive())
@@ -934,6 +955,19 @@ func swiftBuildBinPath(ctx context.Context, cwd, buildConfig string) (string, er
 		return "", fmt.Errorf("swift build --show-bin-path returned an empty path")
 	}
 	return binDir, nil
+}
+
+func validateConfiguredFileSources(cwd string, appCfg *appconfig.AppConfig) error {
+	for i, f := range appCfg.Files {
+		path := filepath.Join(cwd, f.Path)
+		if _, err := os.Stat(path); err != nil {
+			if os.IsNotExist(err) {
+				return fmt.Errorf("files[%d]: path %q does not exist", i, f.Path)
+			}
+			return fmt.Errorf("files[%d]: checking path %q: %w", i, f.Path, err)
+		}
+	}
+	return nil
 }
 
 func syncWendyJSONFilesForLinux(ctx context.Context, conn *grpcclient.AgentConnection, cwd string, appCfg *appconfig.AppConfig) error {

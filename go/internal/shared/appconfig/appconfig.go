@@ -391,6 +391,7 @@ func (c *AppConfig) Validate() error {
 		return err
 	}
 
+	fileDestinations := make(map[string]int, len(c.Files))
 	for i, f := range c.Files {
 		if f.Path == "" {
 			return fmt.Errorf("files[%d]: path is required", i)
@@ -409,6 +410,12 @@ func (c *AppConfig) Validate() error {
 				return fmt.Errorf("files[%d]: to must not contain '..' components", i)
 			}
 		}
+
+		destination := EffectiveFileSyncDestination(f.Path, f.To)
+		if previous, ok := fileDestinations[destination]; ok {
+			return fmt.Errorf("files[%d]: destination %q conflicts with files[%d]", i, destination, previous)
+		}
+		fileDestinations[destination] = i
 	}
 
 	if c.Readiness != nil {

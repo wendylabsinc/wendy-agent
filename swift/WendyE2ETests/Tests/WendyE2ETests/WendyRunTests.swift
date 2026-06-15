@@ -68,9 +68,26 @@ struct `'wendy run'` {
      the container working directory, the source path name does not leak into
      the destination, and the file contents match the local project file.
      */
-    @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
+    @Test(.enabled(if: isAgentLinuxOrWendyOS))
     func `supports configured file destinations with to`() async throws {
-        // TODO: implement.
+        let appID = Self.appID("to")
+
+        try await self.scenario.run(authenticated: false) { cli, agent in
+            let agentAddress = agent.machine.address
+            try await Self.withRemovedApp(appID, cli: cli, agentAddress: agentAddress) {
+                try await cli.sh(Self.createToProjectScript(appID: appID))
+
+                try await cli.sh(
+                    Self.runCommand(project: Self.projectName(appID), agentAddress: agentAddress)
+                ) { result in
+                    let output = result.normalizedStdout + result.normalizedStderr
+
+                    #expect(result.status.isSuccess)
+                    #expect(output.contains("TO:remapped destination"))
+                    #expect(output.contains("SOURCE_PATH:absent"))
+                }
+            }
+        }
     }
 
     /**
@@ -163,9 +180,29 @@ struct `'wendy run'` {
      diagnostic identifies the missing path, the command exits unsuccessfully,
      and output does not report that an image, container, or app was deployed.
      */
-    @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
+    @Test(.enabled(if: isAgentLinuxOrWendyOS))
     func `rejects missing configured files before deployment`() async throws {
-        // TODO: implement.
+        let appID = Self.appID("missing")
+
+        try await self.scenario.run(authenticated: false) { cli, agent in
+            try await cli.sh(Self.createMissingFileProjectScript(appID: appID))
+
+            try await cli.sh(
+                Self.runCommand(
+                    project: Self.projectName(appID),
+                    agentAddress: agent.machine.address
+                )
+            ) { result in
+                let output = result.normalizedStdout + result.normalizedStderr
+
+                #expect(result.status.isFailure)
+                #expect(output.contains("files[0]"))
+                #expect(output.contains("missing.txt"))
+                #expect(!output.contains("Building and pushing Docker image"))
+                #expect(!output.contains("Container \(appID) created"))
+                #expect(!output.contains("Application \(appID) started"))
+            }
+        }
     }
 
     /**
@@ -205,9 +242,28 @@ struct `'wendy run'` {
      build an image, create a container, or write outside the app-scoped
      file-sync area.
      */
-    @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
+    @Test(.enabled(if: isAgentLinuxOrWendyOS))
     func `rejects unsafe configured file destinations before deployment`() async throws {
-        // TODO: implement.
+        let appID = Self.appID("unsafeto")
+
+        try await self.scenario.run(authenticated: false) { cli, agent in
+            try await cli.sh(Self.createUnsafeDestinationProjectScript(appID: appID))
+
+            try await cli.sh(
+                Self.runCommand(
+                    project: Self.projectName(appID),
+                    agentAddress: agent.machine.address
+                )
+            ) { result in
+                let output = result.normalizedStdout + result.normalizedStderr
+
+                #expect(result.status.isFailure)
+                #expect(output.contains("files[0]"))
+                #expect(output.contains("to must not contain '..'"))
+                #expect(!output.contains("Building and pushing Docker image"))
+                #expect(!output.contains("Creating container"))
+            }
+        }
     }
 
     /**
@@ -216,9 +272,29 @@ struct `'wendy run'` {
      destination, the command reports the conflict instead of choosing an
      arbitrary winner or producing nondeterministic mounts.
      */
-    @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
+    @Test(.enabled(if: isAgentLinuxOrWendyOS))
     func `rejects duplicate configured file destinations`() async throws {
-        // TODO: implement.
+        let appID = Self.appID("duplicate")
+
+        try await self.scenario.run(authenticated: false) { cli, agent in
+            try await cli.sh(Self.createDuplicateDestinationProjectScript(appID: appID))
+
+            try await cli.sh(
+                Self.runCommand(
+                    project: Self.projectName(appID),
+                    agentAddress: agent.machine.address
+                )
+            ) { result in
+                let output = result.normalizedStdout + result.normalizedStderr
+
+                #expect(result.status.isFailure)
+                #expect(output.contains("files[1]"))
+                #expect(output.contains("destination"))
+                #expect(output.contains("conflicts with files[0]"))
+                #expect(!output.contains("Building and pushing Docker image"))
+                #expect(!output.contains("Creating container"))
+            }
+        }
     }
 
     /**
@@ -227,9 +303,42 @@ struct `'wendy run'` {
      path. The observable deployment path is project file -> agent sync area ->
      read-only container mount, which prevents arbitrary CLI host path mounts.
      */
-    @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
+    @Test(.enabled(if: isAgentLinuxOrWendyOS))
     func `mounts configured files from the agent managed sync area`() async throws {
-        // TODO: implement.
+        let appID = Self.appID("managed")
+
+        try await self.scenario.run(authenticated: false) { cli, agent in
+            let agentAddress = agent.machine.address
+            try await Self.withRemovedApp(appID, cli: cli, agentAddress: agentAddress) {
+                try await cli.sh(Self.createManagedMountProjectScript(appID: appID))
+
+                try await cli.sh(
+                    Self.runDeployCommand(
+                        project: Self.projectName(appID),
+                        agentAddress: agentAddress
+                    )
+                ) { result in
+                    let output = result.normalizedStdout + result.normalizedStderr
+
+                    #expect(result.status.isSuccess)
+                    #expect(output.contains("Container \(appID) created"))
+                }
+
+                let project = Self.projectName(appID)
+                let expectedSource = Self.agentFileSyncPath(appID, "config/message.txt")
+                try await agent.sh(
+                    Self.privilegedShell(
+                        "ctr -n default containers info \(Self.shellQuote(appID))"
+                    )
+                ) { result in
+                    let output = result.normalizedStdout + result.normalizedStderr
+
+                    #expect(result.status.isSuccess)
+                    #expect(output.contains(expectedSource))
+                    #expect(!output.contains(project))
+                }
+            }
+        }
     }
 
     /**
@@ -268,9 +377,28 @@ struct `'wendy run'` {
      declarations reports the unsupported combination clearly instead of
      silently ignoring files or inventing Compose volume semantics.
      */
-    @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
+    @Test(.enabled(if: isAgentLinuxOrWendyOS))
     func `reports top-level files as unsupported for compose deployments`() async throws {
-        // TODO: implement.
+        let appID = Self.appID("compose")
+
+        try await self.scenario.run(authenticated: false) { cli, agent in
+            try await cli.sh(Self.createComposeFilesProjectScript(appID: appID))
+
+            try await cli.sh(
+                Self.runCommand(
+                    project: Self.projectName(appID),
+                    agentAddress: agent.machine.address
+                )
+            ) { result in
+                let output = result.normalizedStdout + result.normalizedStderr
+
+                #expect(result.status.isFailure)
+                #expect(output.contains("top-level wendy.json files"))
+                #expect(output.contains("Compose"))
+                #expect(!output.contains("Building image for service"))
+                #expect(!output.contains("Creating container"))
+            }
+        }
     }
 
     /**
@@ -279,9 +407,28 @@ struct `'wendy run'` {
      returns a clear failure and mentions the experimental opt-in flag rather
      than probing Docker or attempting a container deployment.
      */
-    @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
+    @Test(.enabled(if: isAgentMacOS && WendyE2EEnvironment.agentAddress != nil))
     func `keeps macOS Linux container support behind the experiment flag`() async throws {
-        // TODO: implement.
+        let appID = Self.appID("maclinux")
+
+        try await self.scenario.run(authenticated: false) { cli, agent in
+            try await cli.sh(Self.createMacOSLinuxContainerProjectScript(appID: appID))
+
+            try await cli.sh(
+                Self.runCommandWithoutMacOSLinuxContainerExperiment(
+                    project: Self.projectName(appID),
+                    agentAddress: agent.machine.address
+                )
+            ) { result in
+                let output = result.normalizedStdout + result.normalizedStderr
+
+                #expect(result.status.isFailure)
+                #expect(output.contains("Linux containers aren't supported on Macs yet"))
+                #expect(output.contains("WENDY_EXPERIMENTAL_MACOS_LINUX_CONTAINERS=1"))
+                #expect(!output.contains("Building and pushing Docker image"))
+                #expect(!output.contains("Creating container"))
+            }
+        }
     }
 
     /**
@@ -394,6 +541,25 @@ struct `'wendy run'` {
         "wendy --device \(Self.shellQuote(agentAddress)) run --prefix \(Self.shellQuote(project))"
     }
 
+    private static func runDeployCommand(project: String, agentAddress: String) -> String {
+        "wendy --device \(Self.shellQuote(agentAddress)) run --deploy --prefix \(Self.shellQuote(project))"
+    }
+
+    private static func runCommandWithoutMacOSLinuxContainerExperiment(
+        project: String,
+        agentAddress: String
+    ) -> String {
+        "env -u WENDY_EXPERIMENTAL_MACOS_LINUX_CONTAINERS \(Self.runCommand(project: project, agentAddress: agentAddress))"
+    }
+
+    private static func agentFileSyncPath(_ appID: String, _ path: String) -> String {
+        "/var/lib/wendy/files/\(appID)/\(path)"
+    }
+
+    private static func privilegedShell(_ command: String) -> String {
+        "if [ \"$(id -u)\" = 0 ]; then \(command); else sudo \(command); fi"
+    }
+
     private static func createSyncProjectScript(appID: String) -> String {
         let project = Self.projectName(appID)
         return """
@@ -423,6 +589,42 @@ struct `'wendy run'` {
               "files": [
                 { "path": "config/message.txt" },
                 { "path": "fixtures", "to": "mounted/assets" }
+              ]
+            }
+            EOF
+            """
+    }
+
+    private static func createToProjectScript(appID: String) -> String {
+        let project = Self.projectName(appID)
+        return """
+            set -eu
+            rm -rf \(Self.shellQuote(project))
+            mkdir -p \(Self.shellQuote(project))/local
+            cat > \(Self.shellQuote(project))/Dockerfile <<'EOF'
+            FROM alpine:3.20
+            WORKDIR /work
+            RUN mkdir -p /work/config
+            COPY check.sh /check.sh
+            CMD ["/bin/sh", "/check.sh"]
+            EOF
+            cat > \(Self.shellQuote(project))/check.sh <<'EOF'
+            #!/bin/sh
+            set -eu
+            test "$(cat config/app.json)" = "remapped destination"
+            if [ -e local/config.json ]; then
+              printf 'SOURCE_PATH:present\n'
+              exit 1
+            fi
+            printf 'TO:%s\n' "$(cat config/app.json)"
+            printf 'SOURCE_PATH:absent\n'
+            EOF
+            printf 'remapped destination' > \(Self.shellQuote(project))/local/config.json
+            cat > \(Self.shellQuote(project))/wendy.json <<'EOF'
+            {
+              "appId": "\(appID)",
+              "files": [
+                { "path": "local/config.json", "to": "config/app.json" }
               ]
             }
             EOF
@@ -536,6 +738,27 @@ struct `'wendy run'` {
             """
     }
 
+    private static func createMissingFileProjectScript(appID: String) -> String {
+        let project = Self.projectName(appID)
+        return """
+            set -eu
+            rm -rf \(Self.shellQuote(project))
+            mkdir -p \(Self.shellQuote(project))
+            cat > \(Self.shellQuote(project))/Dockerfile <<'EOF'
+            FROM alpine:3.20
+            CMD ["/bin/sh", "-c", "echo should-not-run"]
+            EOF
+            cat > \(Self.shellQuote(project))/wendy.json <<'EOF'
+            {
+              "appId": "\(appID)",
+              "files": [
+                { "path": "missing.txt" }
+              ]
+            }
+            EOF
+            """
+    }
+
     private static func createUnsafeProjectScript(appID: String) -> String {
         let project = Self.projectName(appID)
         return """
@@ -551,6 +774,76 @@ struct `'wendy run'` {
               "appId": "\(appID)",
               "files": [
                 { "path": "../outside.txt" }
+              ]
+            }
+            EOF
+            """
+    }
+
+    private static func createUnsafeDestinationProjectScript(appID: String) -> String {
+        let project = Self.projectName(appID)
+        return """
+            set -eu
+            rm -rf \(Self.shellQuote(project))
+            mkdir -p \(Self.shellQuote(project))/config
+            cat > \(Self.shellQuote(project))/Dockerfile <<'EOF'
+            FROM alpine:3.20
+            CMD ["/bin/sh", "-c", "echo should-not-run"]
+            EOF
+            printf 'secret' > \(Self.shellQuote(project))/config/message.txt
+            cat > \(Self.shellQuote(project))/wendy.json <<'EOF'
+            {
+              "appId": "\(appID)",
+              "files": [
+                { "path": "config/message.txt", "to": "../message.txt" }
+              ]
+            }
+            EOF
+            """
+    }
+
+    private static func createDuplicateDestinationProjectScript(appID: String) -> String {
+        let project = Self.projectName(appID)
+        return """
+            set -eu
+            rm -rf \(Self.shellQuote(project))
+            mkdir -p \(Self.shellQuote(project))/config
+            cat > \(Self.shellQuote(project))/Dockerfile <<'EOF'
+            FROM alpine:3.20
+            CMD ["/bin/sh", "-c", "echo should-not-run"]
+            EOF
+            printf 'one' > \(Self.shellQuote(project))/config/one.txt
+            printf 'two' > \(Self.shellQuote(project))/config/two.txt
+            cat > \(Self.shellQuote(project))/wendy.json <<'EOF'
+            {
+              "appId": "\(appID)",
+              "files": [
+                { "path": "config/one.txt", "to": "config/message.txt" },
+                { "path": "config/two.txt", "to": "config/message.txt" }
+              ]
+            }
+            EOF
+            """
+    }
+
+    private static func createManagedMountProjectScript(appID: String) -> String {
+        let project = Self.projectName(appID)
+        return """
+            set -eu
+            rm -rf \(Self.shellQuote(project))
+            mkdir -p \(Self.shellQuote(project))/config
+            cat > \(Self.shellQuote(project))/Dockerfile <<'EOF'
+            FROM alpine:3.20
+            WORKDIR /work
+            RUN mkdir -p /work/config
+            CMD ["/bin/sh", "-c", "cat config/message.txt"]
+            EOF
+            printf 'managed mount' > \(Self.shellQuote(project))/config/message.txt
+            cat > \(Self.shellQuote(project))/wendy.json <<'EOF'
+            {
+              "appId": "\(appID)",
+              "files": [
+                { "path": "config/message.txt" }
               ]
             }
             EOF
@@ -577,6 +870,52 @@ struct `'wendy run'` {
               "services": {
                 "api": { "context": "api" }
               }
+            }
+            EOF
+            """
+    }
+
+    private static func createComposeFilesProjectScript(appID: String) -> String {
+        let project = Self.projectName(appID)
+        return """
+            set -eu
+            rm -rf \(Self.shellQuote(project))
+            mkdir -p \(Self.shellQuote(project))/api \(Self.shellQuote(project))/config
+            cat > \(Self.shellQuote(project))/api/Dockerfile <<'EOF'
+            FROM alpine:3.20
+            CMD ["/bin/sh", "-c", "echo should-not-build"]
+            EOF
+            cat > \(Self.shellQuote(project))/compose.yml <<'EOF'
+            services:
+              api:
+                build: ./api
+            EOF
+            printf 'shared' > \(Self.shellQuote(project))/config/shared.txt
+            cat > \(Self.shellQuote(project))/wendy.json <<'EOF'
+            {
+              "appId": "\(appID)",
+              "files": [
+                { "path": "config/shared.txt" }
+              ]
+            }
+            EOF
+            """
+    }
+
+    private static func createMacOSLinuxContainerProjectScript(appID: String) -> String {
+        let project = Self.projectName(appID)
+        return """
+            set -eu
+            rm -rf \(Self.shellQuote(project))
+            mkdir -p \(Self.shellQuote(project))
+            cat > \(Self.shellQuote(project))/Dockerfile <<'EOF'
+            FROM alpine:3.20
+            CMD ["/bin/sh", "-c", "echo should-not-run"]
+            EOF
+            cat > \(Self.shellQuote(project))/wendy.json <<'EOF'
+            {
+              "appId": "\(appID)",
+              "platform": "linux/amd64"
             }
             EOF
             """
