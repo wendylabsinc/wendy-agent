@@ -26,8 +26,13 @@ use it for general CLI work, E2E-only cleanup, or template-project work unless
 the user explicitly reprioritizes that issue into the Mac beta project. Keep
 general/top-level coordination in a different coordinator worktree.
 
-Housekeeping snapshot, 2026-06-12:
+Final closeout snapshot, 2026-06-12:
 
+- The Linear project `Wendy for Mac — Beta` is completed/closed.
+- Remaining open Mac issues were moved to `Wendy for Mac — Production`:
+  https://linear.app/wendylabsinc/project/wendy-for-mac-production-a3cf67464606/overview
+- New production coordinator worktree:
+  `/Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wendy-for-mac-production`.
 - Completed: WDY-1529 — Surface contextual macOS unsupported errors for
   remaining CLI commands. PR #996 merged with `Closes WDY-1529`.
 - Completed: WDY-1531 — Make `wendy run` gracefully reject project types
@@ -36,14 +41,11 @@ Housekeeping snapshot, 2026-06-12:
   coordinator.
 - Project update posted to Linear with `onTrack` health:
   https://linear.app/wendylabsinc/project/wendy-for-mac-beta-22afd1281b23/activity#project-update-ffafe0dd
-- Open Mac beta issues after housekeeping: 23, all Todo/Backlog.
-- Stale/decision candidates inside the Mac beta project:
-  - WDY-1365 canceled as stale umbrella work; the post-beta backlog already has
-    focused follow-up issues.
-  - WDY-1351 and WDY-1358 are mostly superseded by WDY-1377 and completed
-    WDY-1529; reassess whether to close/cancel them.
-  - WDY-1349 likely overlaps the WDY-1509/WDY-1512+ CLI/E2E audit family, but it
-    remains a Mac beta backlog issue until explicitly closed or canceled.
+- Open Mac beta issues after closeout: 0.
+- Stale/decision candidates were moved to Production with the remaining backlog.
+  Production coordinator should reassess WDY-1351, WDY-1358, and WDY-1349 before
+  starting new work because WDY-1377, WDY-1529, and the WDY-1509/WDY-1512+ audit
+  family may already cover the beta minimum.
 - Recently corrected: WDY-1361 is Done; PR #906 exposed the Mac install page in
   nav and PR #945 updated public beta status/linking.
 - Related but out of this coordinator's current scope: WDY-1512/WDY-1528 are E2E
