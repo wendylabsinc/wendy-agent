@@ -90,22 +90,25 @@ in per-issue worktree sessions, not in this master planning session.
 - Validation from PR: `swift test --package-path swift/WendyE2ETests --filter 'legacy integration tests'`.
 - Current note: no Linear issue was linked to PR #867, so WDY-1562 was created
   and the PR body was updated with the closing reference.
+- Current PR status: draft open; latest visible checks have Claude Security
+  Review failing while the other visible checks pass.
+- Handover: `/Volumes/Projects/WendyLabs/wendy-agent/.worktrees/ai.e2e-app-integration-plan/HANDOVER.md`
 - Resume command:
 
   ```sh
-  cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/ai.e2e-app-integration-plan && ai --prompt "Read the PR and Linear issue context, then continue WDY-1562."
+  cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/ai.e2e-app-integration-plan && ai --prompt "Read HANDOVER.md and follow its instructions."
   ```
 
 ### WDY-1561 — Fix macOS integration discovery empty matrix failure
 
-- Status: `in progress`
+- Status: `done`
 - Linear project: E2E Tests
 - Linear: https://linear.app/wendylabsinc/issue/WDY-1561/fix-macos-integration-discovery-empty-matrix-failure
 - Linear assignee: `konstantin@wendy.sh`
-- Linear state: In Progress (`started`)
-- Branch/worktree name: `kb.wdy-1561-macos-integration-empty-matrix`
-- Worktree path: `/Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1561-macos-integration-empty-matrix`
-- PR: https://github.com/wendylabsinc/WendyOS/pull/1034 (draft setup PR)
+- Linear state: Done (`completed`)
+- Branch/worktree name: `kb.wdy-1561-macos-integration-empty-matrix` (merged; local worktree removed)
+- Worktree path: removed after merge
+- PR: https://github.com/wendylabsinc/WendyOS/pull/1034 (merged, merge commit `238b0c45`)
 - PR closing reference: `Closes WDY-1561`
 - Setup commit: `26f1dad`
 - Scope: fix `PR Integration Tests` macOS discovery matrix generation when
@@ -113,14 +116,9 @@ in per-issue worktree sessions, not in this master planning session.
   empty-array `HOSTS[@]: unbound variable` failure and make the zero-match
   outcome explicit.
 - Triggering job: https://github.com/wendylabsinc/WendyOS/actions/runs/27545523756/job/81417947859
-- Validation: run workflow YAML parse and `actionlint` for
-  `.github/workflows/integration-tests.yml`; add a small shell regression if the
-  matrix-generation logic is factored out or otherwise testable.
-- Resume command:
-
-  ```sh
-  cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1561-macos-integration-empty-matrix && ai --prompt "Read HANDOVER.md and follow its instructions."
-  ```
+- Validation: PR #1034 passed CI before merge, including the macOS integration
+  discovery job and skipped zero-host integration matrix rows.
+- Resume command: not applicable; issue complete and worktree removed.
 
 ### WDY-1560 — Run physical Swift E2E only for stable releases until dedicated CI devices exist
 
@@ -162,14 +160,14 @@ in per-issue worktree sessions, not in this master planning session.
 
 ### WDY-1558 — Mark failed Swift E2E attempts without observations as failed
 
-- Status: `in progress`
+- Status: `done`
 - Linear project: E2E Tests
 - Linear: https://linear.app/wendylabsinc/issue/WDY-1558/mark-failed-swift-e2e-attempts-without-observations-as-failed
 - Linear assignee: `konstantin@wendy.sh`
-- Linear state: In Progress (`started`)
-- Branch/worktree name: `kb.wdy-1558-e2e-attempt-failures`
-- Worktree path: `/Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1558-e2e-attempt-failures`
-- PR: https://github.com/wendylabsinc/WendyOS/pull/1032 (draft setup PR)
+- Linear state: Done (`completed`)
+- Branch/worktree name: `kb.wdy-1558-e2e-attempt-failures` (merged; local worktree removed)
+- Worktree path: removed after merge
+- PR: https://github.com/wendylabsinc/WendyOS/pull/1032 (merged, merge commit `f43124f7`)
 - PR closing reference: `Closes WDY-1558`
 - Setup commit: `09f75c4`
 - Scope: fix Swift E2E report/overview classification for preflight or setup
@@ -180,13 +178,10 @@ in per-issue worktree sessions, not in this master planning session.
   failed in `macOS 26 → Jetson Orin Nano` because the CLI auth fixture timed
   out against `wendyos-strong-dunlin.local`; the AI diagnosis was correct but
   the target overview showed `macos-jetson-orin-nano` as Unknown.
-- Validation: add regression coverage for an attempt-only failure and run
-  targeted `RunOverviewTests` / `ReportCommandTests`.
-- Resume command:
-
-  ```sh
-  cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1558-e2e-attempt-failures && ai --prompt "Read HANDOVER.md and follow its instructions."
-  ```
+- Validation: PR #1032 passed required CI before merge. The physical Jetson job
+  failed as expected/flaky, while E2E analysis succeeded and required checks
+  passed.
+- Resume command: not applicable; issue complete and worktree removed.
 
 ### WDY-1519 — Add IPv4 fallback preflight for physical Swift E2E targets
 
@@ -197,7 +192,7 @@ in per-issue worktree sessions, not in this master planning session.
 - Linear state: Backlog (`backlog`)
 - Branch/worktree name: `kb.wdy-1519-ipv4-e2e-preflight`
 - Worktree path: `/Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1519-ipv4-e2e-preflight`
-- PR: https://github.com/wendylabsinc/WendyOS/pull/991 (draft, left open but not active)
+- PR: https://github.com/wendylabsinc/WendyOS/pull/991 (closed without merge; not active)
 - PR closing reference: `Closes WDY-1519`
 - Scope: add a temporary CI hardening fallback for physical Swift E2E preflight.
   If a configured hostname such as `wendy-SER9.local` fails due to an
@@ -374,16 +369,16 @@ in per-issue worktree sessions, not in this master planning session.
 ## E2E Tests issue order
 
 Keep each issue short and validation-focused. Completed issues stay in the
-ledger for history; current active work is WDY-1562, WDY-1561, and WDY-1558.
+ledger for history; current active work is WDY-1562.
 
 1. **WDY-1562** — In progress: Add legacy app integration suite to Swift E2E.
-2. **WDY-1561** — In progress: Fix macOS integration discovery empty matrix failure.
-3. **WDY-1560** — Todo, High: Run physical Swift E2E only for stable releases until dedicated CI devices exist.
-4. **WDY-1558** — In progress: Mark failed Swift E2E attempts without observations as failed.
+2. **WDY-1560** — Todo, High: Run physical Swift E2E only for stable releases until dedicated CI devices exist.
+3. **WDY-1561** — Done: Fix macOS integration discovery empty matrix failure.
+4. **WDY-1558** — Done: Mark failed Swift E2E attempts without observations as failed.
 5. **WDY-1559** — Done: Investigate Jetson Orin Nano Swift E2E preflight timeout.
 6. **WDY-1521** — Done: Teach E2E AI review to explain why a run failed.
 7. **WDY-1528** — Done: Add machine-readable Swift E2E recording metadata.
-8. **WDY-1519** — Backlog: Add IPv4 fallback preflight for physical Swift E2E targets.
+8. **WDY-1519** — Backlog: Add IPv4 fallback preflight for physical Swift E2E targets; PR #991 closed without merge.
 9. **WDY-1527** — Done: Rework Swift E2E aggregate storage for attempt-level artifacts.
 10. **WDY-1510** — Canceled: Re-enable Raspberry Pi physical Swift E2E route.
 11. **WDY-1482** — Done: Gate device-to-device E2E jobs behind successful local E2E runs.

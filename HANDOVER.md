@@ -19,9 +19,9 @@ per-issue worktrees.
 `PLAN.md` is populated with the Linear **E2E Tests** issues and current status:
 
 1. `WDY-1562` — In progress: Add legacy app integration suite to Swift E2E
-2. `WDY-1561` — In progress: Fix macOS integration discovery empty matrix failure
-3. `WDY-1560` — Todo, High: Run physical Swift E2E only for stable releases until dedicated CI devices exist
-4. `WDY-1558` — In progress: Mark failed Swift E2E attempts without observations as failed
+2. `WDY-1560` — Todo, High: Run physical Swift E2E only for stable releases until dedicated CI devices exist
+3. `WDY-1561` — Done: Fix macOS integration discovery empty matrix failure
+4. `WDY-1558` — Done: Mark failed Swift E2E attempts without observations as failed
 5. `WDY-1559` — Done: Investigate Jetson Orin Nano Swift E2E preflight timeout
 6. `WDY-1521` — Done: Teach E2E AI review to explain why a run failed
 7. `WDY-1528` — Done: Add machine-readable Swift E2E recording metadata
@@ -107,19 +107,17 @@ WDY-1510 was canceled because no Raspberry Pi 5 is currently available on CI:
   - Branch/worktree: `ai.e2e-app-integration-plan` at `/Volumes/Projects/WendyLabs/wendy-agent/.worktrees/ai.e2e-app-integration-plan`
   - Linear: https://linear.app/wendylabsinc/issue/WDY-1562/add-legacy-app-integration-suite-to-swift-e2e
   - PR body now includes `Closes WDY-1562`.
-- WDY-1561 — In Progress, E2E Tests project: fix `PR Integration Tests` macOS
+  - Current PR status: draft open; Claude Security Review is failing while the
+    other visible checks pass.
+  - Handover: `/Volumes/Projects/WendyLabs/wendy-agent/.worktrees/ai.e2e-app-integration-plan/HANDOVER.md`
+- WDY-1561 — Done, E2E Tests project: fixed `PR Integration Tests` macOS
   discovery matrix generation when discovery finds LAN devices but none match
-  the allowlist, causing `HOSTS[@]: unbound variable` under `set -u`.
-  - Worktree: `/Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1561-macos-integration-empty-matrix`
-  - Branch: `kb.wdy-1561-macos-integration-empty-matrix`
-  - Draft PR: https://github.com/wendylabsinc/WendyOS/pull/1034
+  the allowlist, avoiding the `HOSTS[@]: unbound variable` failure under
+  `set -u`.
+  - PR: https://github.com/wendylabsinc/WendyOS/pull/1034 (merged)
+  - Merge commit: `238b0c45`
   - Linear: https://linear.app/wendylabsinc/issue/WDY-1561/fix-macos-integration-discovery-empty-matrix-failure
-  - Setup commit: `26f1dad`
-  - Resume command:
-
-    ```sh
-    cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1561-macos-integration-empty-matrix && ai --prompt "Read HANDOVER.md and follow its instructions."
-    ```
+  - Branch/worktree: `kb.wdy-1561-macos-integration-empty-matrix` merged; local worktree removed.
 - WDY-1560 — Todo, High priority, E2E Tests project: run physical Swift E2E only
   for stable releases until dedicated CI devices exist. PRs should keep local
   E2E coverage, while physical routes should remain manually triggerable and
@@ -130,29 +128,18 @@ WDY-1510 was canceled because no Raspberry Pi 5 is currently available on CI:
   - PR: https://github.com/wendylabsinc/WendyOS/pull/1033 (merged)
   - Merge commit: `fda83c1f`
   - Branch/worktree: `kb.wdy-1559-jetson-e2e-timeout` merged; local worktree removed.
-- WDY-1558 — In Progress, E2E Tests project: mark failed Swift E2E attempts
-  without observations as failed. Created after run
-  https://github.com/wendylabsinc/WendyOS/actions/runs/27543175882 failed in
-  `macOS 26 → Jetson Orin Nano` during preflight. The AI diagnosis correctly
-  found the device/network timeout, but the target overview rendered
-  `macos-jetson-orin-nano` as Unknown despite `attempt.json.exitStatus = 1` and
-  no per-test observations.
-  - Worktree: `/Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1558-e2e-attempt-failures`
-  - Branch: `kb.wdy-1558-e2e-attempt-failures`
-  - Draft PR: https://github.com/wendylabsinc/WendyOS/pull/1032
+- WDY-1558 — Done, E2E Tests project: failed Swift E2E attempt-level artifacts
+  without observations are now marked failed instead of unknown in report output.
+  - PR: https://github.com/wendylabsinc/WendyOS/pull/1032 (merged)
+  - Merge commit: `f43124f7`
   - Linear: https://linear.app/wendylabsinc/issue/WDY-1558/mark-failed-swift-e2e-attempts-without-observations-as-failed
-  - Setup commit: `09f75c4`
-  - Resume command:
-
-    ```sh
-    cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1558-e2e-attempt-failures && ai --prompt "Read HANDOVER.md and follow its instructions."
-    ```
+  - Branch/worktree: `kb.wdy-1558-e2e-attempt-failures` merged; local worktree removed.
 - WDY-1519 — Backlog, E2E Tests project: add temporary IPv4 fallback preflight
   for physical Swift E2E targets after run `27381316219` failed with an
   unreachable IPv6 route to `wendy-SER9.local`.
   - Worktree: `/Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1519-ipv4-e2e-preflight`
   - Branch: `kb.wdy-1519-ipv4-e2e-preflight`
-  - Draft PR: https://github.com/wendylabsinc/WendyOS/pull/991 (left open but not active)
+  - PR: https://github.com/wendylabsinc/WendyOS/pull/991 (closed without merge; not active)
   - Linear: https://linear.app/wendylabsinc/issue/WDY-1519/add-ipv4-fallback-preflight-for-physical-swift-e2e-targets
   - Setup commit: `58a8abf`
   - Resume command:
@@ -209,17 +196,15 @@ previously represented in this coordinator include:
 
 ## Remaining intended next steps
 
-- Continue WDY-1562, WDY-1561, and WDY-1558 in their dedicated worktrees and
-  draft PRs #867 / #1034 / #1032.
-- WDY-1560 is Todo/High and should be started after the current active fixes
+- Continue WDY-1562 in its existing draft PR/worktree (#867).
+- WDY-1560 is Todo/High and should be started after the current active fix
   unless reprioritized.
-- WDY-1559, WDY-1521, WDY-1528, WDY-1527, and the SER9 route disable are complete.
+- WDY-1561, WDY-1558, WDY-1559, WDY-1521, WDY-1528, WDY-1527, and the SER9 route disable are complete.
 - The E2E Tests Linear project update was posted:
   https://linear.app/wendylabsinc/project/e2e-tests-02d5dc2a4b79/activity#project-update-a5ed07b2
 - WDY-1519 and WDY-1520 are in the backlog; do not resume them unless asked.
-  PR #991 remains open as a draft with stale failing checks from before the SER9
-  route was disabled.
-- PR #1033, PR #993, PR #997, PR #995, and PR #994 are merged; no action needed there.
+  PR #991 is closed without merge and remains inactive.
+- PR #1034, PR #1032, PR #1033, PR #993, PR #997, PR #995, and PR #994 are merged; no action needed there.
 - If Raspberry Pi 5 CI hardware comes online later, open a new Linear issue or
   reopen WDY-1510 and start from the closed PR branch/diff.
 - Treat WDY-968 as related/background only: it is outside the E2E Tests project
