@@ -34,6 +34,8 @@ Housekeeping snapshot, 2026-06-12:
   unsupported on Mac. PR #999 merged with `Closes WDY-1531`.
 - No active Mac beta implementation worktree is currently prepared by this
   coordinator.
+- Project update posted to Linear with `onTrack` health:
+  https://linear.app/wendylabsinc/project/wendy-for-mac-beta-22afd1281b23/activity#project-update-ffafe0dd
 - Open Mac beta issues after housekeeping: 23, all Todo/Backlog.
 - Stale/decision candidates inside the Mac beta project:
   - WDY-1365 canceled as stale umbrella work; the post-beta backlog already has
