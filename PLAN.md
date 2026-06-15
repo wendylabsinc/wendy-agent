@@ -148,29 +148,24 @@ in per-issue worktree sessions, not in this master planning session.
 
 ### WDY-1521 — Teach E2E AI review to explain why a run failed
 
-- Status: `ready to resume`
+- Status: `done`
 - Linear project: E2E Tests
 - Linear: https://linear.app/wendylabsinc/issue/WDY-1521/teach-e2e-ai-review-to-explain-why-a-run-failed
 - Linear assignee: `konstantin@wendy.sh`
-- Linear state: In Progress (`started`)
-- Branch/worktree name: `kb.wdy-1521-e2e-ai-failure-diagnosis`
-- Worktree path: `/Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1521-e2e-ai-failure-diagnosis`
-- PR: https://github.com/wendylabsinc/WendyOS/pull/993 (draft setup PR)
+- Linear state: Done (`completed`)
+- Branch/worktree name: `kb.wdy-1521-e2e-ai-failure-diagnosis` (merged; local worktree removed)
+- Worktree path: removed after merge
+- PR: https://github.com/wendylabsinc/WendyOS/pull/993 (merged, merge commit `858eaade`)
 - PR closing reference: `Closes WDY-1521`
 - Scope: adapt Swift E2E AI review/reporting so failed runs include a concise
   diagnosis: likely failure category, evidence from logs/artifacts, confidence
   or inconclusive status, and recommended next action. It should handle
   preflight/setup failures that produce no attempt artifact, and make the output
   useful for Slack or PR comments.
-- Unblocked by: WDY-1528 machine-readable recording metadata and WDY-1527
-  aggregate storage cleanup are complete.
-- Validation: use representative failed run artifacts/logs where practical;
-  ensure prompt/report changes keep existing aggregation/report rendering green.
-- Resume command:
-
-  ```sh
-  cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1521-e2e-ai-failure-diagnosis && ai --prompt "Read HANDOVER.md and follow its instructions."
-  ```
+- Validation: local checks are recorded in PR #993. PR checks included the
+  expected non-required macOS Discover integration failure; required checks and
+  Swift E2E analysis passed before merge.
+- Resume command: not applicable; issue complete and worktree removed.
 
 ### WDY-1494 — Clean up Swift E2E route matrix and restore commented route ledger
 
@@ -264,10 +259,11 @@ in per-issue worktree sessions, not in this master planning session.
 ## E2E Tests issue order
 
 Keep each issue short and validation-focused. Completed issues stay in the
-ledger for history; the next issue ready to resume is WDY-1521.
+ledger for history; remaining active work is in backlog unless explicitly
+started.
 
-1. **WDY-1528** — Done: Add machine-readable Swift E2E recording metadata.
-2. **WDY-1521** — Ready to resume: Teach E2E AI review to explain why a run failed.
+1. **WDY-1521** — Done: Teach E2E AI review to explain why a run failed.
+2. **WDY-1528** — Done: Add machine-readable Swift E2E recording metadata.
 3. **WDY-1519** — Backlog: Add IPv4 fallback preflight for physical Swift E2E targets.
 4. **WDY-1527** — Done: Rework Swift E2E aggregate storage for attempt-level artifacts.
 5. **WDY-1510** — Canceled: Re-enable Raspberry Pi physical Swift E2E route.
@@ -290,10 +286,13 @@ Use this section for E2E Tests project issues that should not be started yet, or
 for related issues outside the project that matter only if they block active E2E
 work.
 
+Project update posted on 2026-06-12:
+https://linear.app/wendylabsinc/project/e2e-tests-02d5dc2a4b79/activity#project-update-a5ed07b2
+
 Project inventory check on 2026-06-12 also found these E2E Tests issues not yet
 fully represented in this coordinator flow:
 
-- **WDY-1512** — In Progress: Audit and align hidden deprecated CLI aliases.
+- **WDY-1512** — Done: Audit and align hidden deprecated CLI aliases.
 - **WDY-1511** — Done: Remove misleading hidden completion install
   `--output-dir` test seam.
 - **WDY-1513** — Backlog: Align host-only CLI E2E references.

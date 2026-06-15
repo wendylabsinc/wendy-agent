@@ -18,8 +18,8 @@ per-issue worktrees.
 
 `PLAN.md` is populated with the Linear **E2E Tests** issues and current status:
 
-1. `WDY-1528` — Done: Add machine-readable Swift E2E recording metadata
-2. `WDY-1521` — Ready to resume: Teach E2E AI review to explain why a run failed
+1. `WDY-1521` — Done: Teach E2E AI review to explain why a run failed
+2. `WDY-1528` — Done: Add machine-readable Swift E2E recording metadata
 3. `WDY-1519` — Backlog: Add IPv4 fallback preflight for physical Swift E2E targets
 4. `WDY-1527` — Done: Rework Swift E2E aggregate storage for attempt-level artifacts
 5. `WDY-1510` — Canceled: Re-enable Raspberry Pi physical Swift E2E route
@@ -122,21 +122,13 @@ WDY-1510 was canceled because no Raspberry Pi 5 is currently available on CI:
   - PR: https://github.com/wendylabsinc/WendyOS/pull/997 (merged after CI passed)
   - Merge commit: `e3c67a72`
   - Branch/worktree: `kb.wdy-1528-e2e-recording-metadata` merged; local worktree removed.
-- WDY-1521 — Ready to resume, E2E Tests project: teach E2E AI review to explain
-  why a specific run failed and what to do next, including preflight/setup
-  failures with missing attempt artifacts. WDY-1527 and WDY-1528 are complete;
-  Linear has the earlier pause comment:
-  https://linear.app/wendylabsinc/issue/WDY-1521/teach-e2e-ai-review-to-explain-why-a-run-failed#comment-c3373c24
-  - Worktree: `/Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1521-e2e-ai-failure-diagnosis`
-  - Branch: `kb.wdy-1521-e2e-ai-failure-diagnosis`
-  - Draft PR: https://github.com/wendylabsinc/WendyOS/pull/993
+- WDY-1521 — Done, E2E Tests project: taught E2E AI review to explain why a
+  specific run failed and what to do next, including preflight/setup failures
+  with missing attempt artifacts.
+  - PR: https://github.com/wendylabsinc/WendyOS/pull/993 (merged)
+  - Merge commit: `858eaade`
   - Linear: https://linear.app/wendylabsinc/issue/WDY-1521/teach-e2e-ai-review-to-explain-why-a-run-failed
-  - Setup commit: `89dc863`
-  - Resume command:
-
-    ```sh
-    cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1521-e2e-ai-failure-diagnosis && ai --prompt "Read HANDOVER.md and follow its instructions."
-    ```
+  - Branch/worktree: `kb.wdy-1521-e2e-ai-failure-diagnosis` merged; local worktree removed.
 
 ## Project issue inventory update
 
@@ -148,7 +140,7 @@ previously represented in this coordinator include:
   suites/files now have stable source/test identity available for xUnit
   matching.
   https://linear.app/wendylabsinc/issue/WDY-1528/add-machine-readable-swift-e2e-recording-metadata
-- WDY-1512 — In Progress: audit and align hidden deprecated CLI aliases.
+- WDY-1512 — Done: audit and align hidden deprecated CLI aliases.
 - WDY-1511 — Done: remove misleading hidden completion install `--output-dir`
   test seam.
 - WDY-1513 through WDY-1517 — Backlog reference-alignment follow-ups.
@@ -166,11 +158,13 @@ previously represented in this coordinator include:
 
 ## Remaining intended next steps
 
-- Resume WDY-1521 next; WDY-1528 and WDY-1527 are now complete.
+- WDY-1521, WDY-1528, WDY-1527, and the SER9 route disable are complete.
+- The E2E Tests Linear project update was posted:
+  https://linear.app/wendylabsinc/project/e2e-tests-02d5dc2a4b79/activity#project-update-a5ed07b2
 - WDY-1519 and WDY-1520 are in the backlog; do not resume them unless asked.
   PR #991 remains open as a draft with stale failing checks from before the SER9
   route was disabled.
-- PR #997, PR #995, and PR #994 are merged; no action needed there.
+- PR #993, PR #997, PR #995, and PR #994 are merged; no action needed there.
 - If Raspberry Pi 5 CI hardware comes online later, open a new Linear issue or
   reopen WDY-1510 and start from the closed PR branch/diff.
 - Treat WDY-968 as related/background only: it is outside the E2E Tests project
