@@ -99,6 +99,25 @@ in per-issue worktree sessions, not in this master planning session.
   cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/ai.e2e-app-integration-plan && ai --prompt "Read HANDOVER.md and follow its instructions."
   ```
 
+### WDY-1574 — Reduce AI compute used by E2E tests
+
+- Status: `todo` (High priority)
+- Linear project: E2E Tests
+- Linear: https://linear.app/wendylabsinc/issue/WDY-1574/reduce-ai-compute-used-by-e2e-tests
+- Linear assignee: `konstantin@wendy.sh`
+- Linear state: Todo (`unstarted`)
+- Linear priority: High
+- Branch/worktree name: not prepared yet
+- Worktree path: not prepared yet
+- PR: not created yet
+- PR closing reference: `Closes WDY-1574`
+- Scope: reduce unnecessary AI model usage in the E2E review/reporting flow.
+  Common successful or skipped-only E2E runs should use little to no AI compute,
+  while actionable failures should still get focused diagnosis from selected
+  artifacts/log excerpts. Prefer deterministic parsing and structured metadata
+  before invoking AI, and make opt-in/opt-out behavior clear in logs/reports.
+- Resume command: not available until prepared
+
 ### WDY-1561 — Fix macOS integration discovery empty matrix failure
 
 - Status: `done`
@@ -372,19 +391,20 @@ Keep each issue short and validation-focused. Completed issues stay in the
 ledger for history; current active work is WDY-1562.
 
 1. **WDY-1562** — In progress: Add legacy app integration suite to Swift E2E.
-2. **WDY-1560** — Todo, High: Run physical Swift E2E only for stable releases until dedicated CI devices exist.
-3. **WDY-1561** — Done: Fix macOS integration discovery empty matrix failure.
-4. **WDY-1558** — Done: Mark failed Swift E2E attempts without observations as failed.
-5. **WDY-1559** — Done: Investigate Jetson Orin Nano Swift E2E preflight timeout.
-6. **WDY-1521** — Done: Teach E2E AI review to explain why a run failed.
-7. **WDY-1528** — Done: Add machine-readable Swift E2E recording metadata.
-8. **WDY-1519** — Backlog: Add IPv4 fallback preflight for physical Swift E2E targets; PR #991 closed without merge.
-9. **WDY-1527** — Done: Rework Swift E2E aggregate storage for attempt-level artifacts.
-10. **WDY-1510** — Canceled: Re-enable Raspberry Pi physical Swift E2E route.
-11. **WDY-1482** — Done: Gate device-to-device E2E jobs behind successful local E2E runs.
-12. **WDY-1494** — Done: Clean up Swift E2E route matrix and restore commented route ledger.
-13. **WDY-1481** — Done: Add local E2E matrix coverage for macOS↔macOS and Ubuntu↔Ubuntu.
-14. **WDY-1479** — Done: Investigate SER9 Swift E2E mTLS auth failure.
+2. **WDY-1574** — Todo, High: Reduce AI compute used by E2E tests.
+3. **WDY-1560** — Todo, High: Run physical Swift E2E only for stable releases until dedicated CI devices exist.
+4. **WDY-1561** — Done: Fix macOS integration discovery empty matrix failure.
+5. **WDY-1558** — Done: Mark failed Swift E2E attempts without observations as failed.
+6. **WDY-1559** — Done: Investigate Jetson Orin Nano Swift E2E preflight timeout.
+7. **WDY-1521** — Done: Teach E2E AI review to explain why a run failed.
+8. **WDY-1528** — Done: Add machine-readable Swift E2E recording metadata.
+9. **WDY-1519** — Backlog: Add IPv4 fallback preflight for physical Swift E2E targets; PR #991 closed without merge.
+10. **WDY-1527** — Done: Rework Swift E2E aggregate storage for attempt-level artifacts.
+11. **WDY-1510** — Canceled: Re-enable Raspberry Pi physical Swift E2E route.
+12. **WDY-1482** — Done: Gate device-to-device E2E jobs behind successful local E2E runs.
+13. **WDY-1494** — Done: Clean up Swift E2E route matrix and restore commented route ledger.
+14. **WDY-1481** — Done: Add local E2E matrix coverage for macOS↔macOS and Ubuntu↔Ubuntu.
+15. **WDY-1479** — Done: Investigate SER9 Swift E2E mTLS auth failure.
 
 ## One-off route/workflow PRs
 
