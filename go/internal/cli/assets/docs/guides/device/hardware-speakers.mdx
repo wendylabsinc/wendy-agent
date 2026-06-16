@@ -31,11 +31,13 @@ The selected output becomes the default device used by apps that play through AL
 
 ## Test Audio Routing
 
-The Wendy CLI can stream microphone input back to your local machine with:
+The Wendy CLI can stream microphone input back to your local machine:
 
 ```bash
-wendy device audio listen --id 1
+wendy device audio listen
 ```
+
+The CLI auto-selects a microphone or shows a picker if multiple devices are available. Pass `--id` to specify a device explicitly.
 
 For speaker playback inside your deployed app, make sure the app uses ALSA or a media framework that targets the default audio output. USB speakerphones usually expose both an input and output device, so `wendy device audio list` is the fastest way to confirm WendyOS sees both sides.
 

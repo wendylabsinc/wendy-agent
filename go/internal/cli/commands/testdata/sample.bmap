@@ -1,0 +1,13 @@
+<?xml version="1.0" ?>
+<bmap version="2.0">
+    <ImageSize>32768</ImageSize>
+    <BlockSize>4096</BlockSize>
+    <BlocksCount>8</BlocksCount>
+    <MappedBlocksCount>4</MappedBlocksCount>
+    <ChecksumType>sha256</ChecksumType>
+    <BmapFileChecksum>0000000000000000000000000000000000000000000000000000000000000000</BmapFileChecksum>
+    <BlockMap>
+        <Range chksum="5fd6c2a1d24f3c2c1e6b1c0a0e1c4d5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d">0-1</Range>
+        <Range chksum="1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b">4-5</Range>
+    </BlockMap>
+</bmap>

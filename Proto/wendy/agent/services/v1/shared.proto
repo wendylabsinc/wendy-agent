@@ -19,8 +19,9 @@ enum AppRunningState {
     RUNNING = 1;
 }
 
-// ServiceEntry describes a single container within a multi-service app group.
-// Only present in AppContainer.services for multi-service apps.
+// ServiceEntry describes a single container within a services-map app group.
+// Present in AppContainer.services for any app that declares named services
+// (single- or multi-service); see AppContainer.services.
 message ServiceEntry {
     string name = 1;
     AppRunningState running_state = 2;
@@ -32,7 +33,8 @@ message AppContainer {
     AppRunningState running_state = 3;  // aggregate: RUNNING if any service is running
     uint32 failure_count = 4;
     uint32 mcp_port = 5;
-    // Non-empty for multi-service (compose) apps; one entry per service container.
-    // Empty for single-service apps.
+    // One entry per service container for apps that declare named services
+    // (single- or multi-service services-map apps). Empty for single-container
+    // apps and flattened single-service apps (those with no service name).
     repeated ServiceEntry services = 6;
 }

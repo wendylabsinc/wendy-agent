@@ -2097,10 +2097,22 @@ func (c *Client) ListContainers(ctx context.Context) ([]*agentpb.AppContainer, e
 	for _, appID := range order {
 		e := grouped[appID]
 
-		// Populate per-service entries only for multi-service apps; single-service
-		// apps leave Services empty so callers can distinguish them cheaply.
+		// Populate per-service entries for any app that declares named services
+		// (single- or multi-service services-map apps). Single-container and
+		// flattened single-service apps have an empty service name and leave
+		// Services empty so callers can still distinguish them cheaply. Exposing
+		// the per-service identity for single-service apps is what lets the
+		// monitor reconcile them by their "{appID}_{serviceName}" container name
+		// instead of restart-looping a healthy app (WDY-1552).
 		var services []*agentpb.ServiceEntry
-		if len(e.services) > 1 {
+		hasNamedService := false
+		for _, s := range e.services {
+			if s.name != "" {
+				hasNamedService = true
+				break
+			}
+		}
+		if hasNamedService {
 			services = make([]*agentpb.ServiceEntry, len(e.services))
 			for i, s := range e.services {
 				services[i] = &agentpb.ServiceEntry{

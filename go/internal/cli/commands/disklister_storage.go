@@ -6,4 +6,5 @@ type StorageType int
 const (
 	StorageUnknown StorageType = iota
 	StorageNVMe
+	StorageUSB
 )

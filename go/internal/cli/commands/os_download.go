@@ -45,7 +45,7 @@ func runOSDownload(flagVersion string, overwrite bool) error {
 	}
 
 	// Validate version exists in manifest before touching the filesystem.
-	imgInfo, err := getImageInfo(dev.Manifest, version)
+	imgInfo, err := getImageInfo(dev.Manifest, version, "")
 	if err != nil {
 		return fmt.Errorf("getting image info: %w", err)
 	}

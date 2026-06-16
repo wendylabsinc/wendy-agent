@@ -1066,6 +1066,15 @@ func updateBuilderConfig(ctx context.Context, builderName, config string, w io.W
 }
 
 func buildAndPushImage(ctx context.Context, dir, registryAddr, registryImage, platform, dockerfile string, buildArgs map[string]string, streamOutput, logOutput io.Writer, useMTLS bool) error {
+	// Serialize against other wendy processes: the buildx builder is shared, and
+	// reconfiguring or restarting it mid-build kills a concurrent build (#1017).
+	// Concurrent builds within this process share the lock via reference counting.
+	releaseLock, err := buildLock.acquire(ctx, logOutput)
+	if err != nil {
+		return err
+	}
+	defer releaseLock()
+
 	builder, effectiveAddr, err := ensureBuildxBuilder(ctx, registryAddr, useMTLS, logOutput)
 	if err != nil {
 		return err
@@ -1247,7 +1256,8 @@ func resolveRegistry(ctx context.Context, host string, port int) (registryAddr s
 		target = net.JoinHostPort(resolved, strconv.Itoa(port))
 	}
 
-	proxy, err := startRegistryProxy(ctx, "0.0.0.0:0", target)
+	// Bind loopback only; the Docker VM forwards host.docker.internal to it.
+	proxy, err := startRegistryProxy(ctx, registryProxyListenAddr, target)
 	if err != nil {
 		return "", nil, fmt.Errorf("starting registry proxy: %w", err)
 	}
@@ -1295,14 +1305,8 @@ func resolveRegistryForAgent(ctx context.Context, conn *grpcclient.AgentConnecti
 			return "", nil, err
 		}
 	} else {
-		// On Linux buildkitd uses host networking so 127.0.0.1 is reachable.
-		// On macOS it runs inside the Docker Desktop VM and must connect via
-		// host.docker.internal, which requires the proxy to bind on all interfaces.
-		listenAddr := "0.0.0.0:0"
-		if runtime.GOOS == "linux" {
-			listenAddr = "127.0.0.1:0"
-		}
-		proxy, proxyErr := startRegistryProxyWithDialer(context.Background(), listenAddr, func(ctx context.Context) (net.Conn, error) {
+		// Bind loopback only; the Docker VM forwards host.docker.internal to it.
+		proxy, proxyErr := startRegistryProxyWithDialer(context.Background(), registryProxyListenAddr, func(ctx context.Context) (net.Conn, error) {
 			return conn.RegistryDialer(ctx, port)
 		})
 		if proxyErr != nil {
@@ -1498,6 +1502,14 @@ func isLinkLocalIP(ip string) bool {
 	}
 	return addr.IsLinkLocalUnicast()
 }
+
+// registryProxyListenAddr is the address the host-side registry proxy binds to.
+// It is always loopback: on Linux buildkitd uses host networking and reaches
+// 127.0.0.1 directly; on macOS/Windows the Docker VM forwards
+// host.docker.internal to the host's loopback. Binding loopback rather than
+// 0.0.0.0 keeps the device registry tunnel off every other interface for the
+// duration of a build (WDY-1168).
+const registryProxyListenAddr = "127.0.0.1:0"
 
 // registryProxy forwards TCP connections from a local port to a remote device
 // registry. This bridges the gap between Docker Desktop's VM (which cannot

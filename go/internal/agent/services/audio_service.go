@@ -630,7 +630,8 @@ func (s *AudioService) StreamAudio(req *agentpb.StreamAudioRequest, stream grpc.
 		"-r", fmt.Sprintf("%d", sampleRate),
 		"-c", fmt.Sprintf("%d", channels),
 		"-t", "raw",
-		"--buffer-time=50000", // 50ms ALSA buffer to minimise capture latency
+		"--buffer-time=20000", // 20ms ALSA buffer to minimise capture latency
+		"--period-time=10000", // 10ms periods so data is delivered in small, frequent reads
 		"-",
 	)
 	var stderrBuf bytes.Buffer
@@ -644,8 +645,8 @@ func (s *AudioService) StreamAudio(req *agentpb.StreamAudioRequest, stream grpc.
 	}
 	defer func() { cmd.Process.Kill(); cmd.Wait() }() //nolint:errcheck
 
-	// Send ~20ms chunks of PCM data.
-	chunkSamples := sampleRate / 50 // 20ms worth of samples
+	// Send ~10ms chunks of PCM data to keep per-chunk latency low.
+	chunkSamples := sampleRate / 100 // 10ms worth of samples
 	chunkBytes := chunkSamples * channels * 2
 	buf := make([]byte, chunkBytes)
 

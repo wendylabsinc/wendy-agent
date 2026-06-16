@@ -42,6 +42,8 @@ const (
 func newOSInstallCmd() *cobra.Command {
 	var nightly bool
 	var force bool
+	var noBmap bool
+	var storageOverride string
 	var yesOverwriteInternal bool
 	var preEnroll bool
 	var deviceType string
@@ -109,12 +111,14 @@ Flags can be provided progressively — omitted values trigger interactive picke
 					mode = preEnrollSkip
 				}
 			}
-			return runOSInstall(cmd.Context(), nightly, deviceType, versionFlag, driveFlag, force, yesOverwriteInternal, opts, deviceName, preEnrollOptions{mode: mode, cloudGRPC: enrollCloudGRPC})
+			return runOSInstall(cmd.Context(), nightly, deviceType, versionFlag, driveFlag, force, yesOverwriteInternal, noBmap, storageOverride, opts, deviceName, preEnrollOptions{mode: mode, cloudGRPC: enrollCloudGRPC})
 		},
 	}
 
 	cmd.Flags().BoolVar(&nightly, "nightly", false, "Use nightly/prerelease builds")
 	cmd.Flags().BoolVar(&force, "force", false, "Skip confirmation prompt")
+	cmd.Flags().BoolVar(&noBmap, "no-bmap", false, "Disable bmap-accelerated flashing even when a block map is available")
+	cmd.Flags().StringVar(&storageOverride, "storage", "", "Force image storage variant: nvme or sd (default: auto-detect from the target drive)")
 	cmd.Flags().BoolVar(&yesOverwriteInternal, "yes-overwrite-internal", false, "Required to wipe an internal (non-removable) drive in non-interactive mode")
 	cmd.Flags().StringVar(&deviceType, "device-type", "", "Device type from manifest (e.g. raspberry-pi-5)")
 	cmd.Flags().StringVar(&versionFlag, "version", "", "WendyOS version to install (interactive if omitted)")
@@ -239,7 +243,10 @@ func pickLinuxDevice() (string, deviceInfo, error) {
 	return key, deviceMap[key], nil
 }
 
-func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion, flagDrive string, force bool, yesOverwriteInternal bool, wifi wifiCLIOptions, deviceName string, preOpts preEnrollOptions) error {
+func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion, flagDrive string, force bool, yesOverwriteInternal bool, noBmap bool, storageOverride string, wifi wifiCLIOptions, deviceName string, preOpts preEnrollOptions) error {
+	if storageOverride != "" && storageOverride != "nvme" && storageOverride != "sd" {
+		return fmt.Errorf("invalid --storage %q: must be \"nvme\" or \"sd\"", storageOverride)
+	}
 	fmt.Println("Fetching available devices...")
 
 	// Fetch Linux devices from GCS manifest.
@@ -338,12 +345,12 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 	if device.IsESP32 {
 		return installESP32Firmware(ctx, nightly, device.ESP32Chip)
 	}
-	return installLinuxImage(ctx, selected, device, nightly, flagVersion, flagDrive, force, yesOverwriteInternal, wifi, deviceName, preOpts)
+	return installLinuxImage(ctx, selected, device, nightly, flagVersion, flagDrive, force, yesOverwriteInternal, noBmap, storageOverride, wifi, deviceName, preOpts)
 }
 
 // installLinuxImage handles the Linux device path: pick version → pick drive → download → write.
 // nightly, flagVersion, flagDrive, and force allow skipping the corresponding interactive prompts.
-func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevice, nightly bool, flagVersion, flagDrive string, force bool, yesOverwriteInternal bool, wifi wifiCLIOptions, deviceName string, preOpts preEnrollOptions) error {
+func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevice, nightly bool, flagVersion, flagDrive string, force bool, yesOverwriteInternal bool, noBmap bool, storageOverride string, wifi wifiCLIOptions, deviceName string, preOpts preEnrollOptions) error {
 	// Authenticate elevation up front so we don't pay for the multi-hundred-MB
 	// image download just to discover the user can't write to a raw disk. On
 	// Windows this offers a UAC re-launch when not elevated; on Unix it
@@ -362,7 +369,7 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 	selectedVersion := device.RawVersion // default: latest (or nightly if --nightly)
 	if flagVersion != "" {
 		// Validate the requested version exists in the manifest.
-		if _, err := getImageInfo(device.Manifest, flagVersion); err != nil {
+		if _, err := getImageInfo(device.Manifest, flagVersion, ""); err != nil {
 			return fmt.Errorf("version %q not found for %s", flagVersion, device.Name)
 		}
 		selectedVersion = flagVersion
@@ -438,30 +445,73 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 		}
 	}
 
-	// Step 5: Resolve image (cached or download) and open streaming reader.
+	// Step 5: Resolve image metadata for the target storage.
 	fmt.Printf("\nPreparing %s %s image...\n", device.Name, selectedVersion)
-	imgInfo, err := getImageInfo(device.Manifest, selectedVersion)
+	imgInfo, err := getImageInfo(device.Manifest, selectedVersion, manifestStorage(targetDrive, storageOverride))
 	if err != nil {
 		return fmt.Errorf("getting image info: %w", err)
 	}
 
-	stream, err := openOSImageStream(deviceKey, imgInfo)
-	if err != nil {
-		return fmt.Errorf("opening OS image: %w", err)
-	}
-	defer stream.Close()
-
-	// One-time sizing pass for compressed images that cannot report their
-	// decompressed size (gzip). Without it the write bar has no usable total.
-	// The result is cached in a sidecar, so this only runs on the first flash
-	// of a given image. Failure is non-fatal: the bar falls back to
-	// compressed-consumption progress.
-	if stream.uncompressedSize == 0 && stream.sourcePath != "" {
-		if err := measureImageWithProgress(stream); err != nil {
-			if errors.Is(err, context.Canceled) {
-				return err
+	// Step 5a: Prefer the seekable-zstd fast path. When the manifest advertises a
+	// .zst for this storage plus a usable bmap (and --no-bmap wasn't passed), we
+	// download only the .zst + bmap and write mapped ranges, skipping holes —
+	// and crucially we do NOT download the full .zip image at all.
+	var seekableZst, seekableBmap string
+	var seekableTotal int64
+	if !noBmap && imgInfo.ZstURL != "" && imgInfo.BmapURL != "" {
+		zstPath, zerr := resolveSeekableZst(deviceKey, selectedVersion, imgInfo.ZstURL)
+		bmapCandidate, berr := osCachedBmapPath(deviceKey, selectedVersion)
+		switch {
+		case zerr != nil:
+			fmt.Printf("Note: could not fetch seekable image (%v); flashing the full image.\n", zerr)
+		case berr != nil:
+			fmt.Printf("Note: cannot resolve block-map cache path (%v); flashing the full image.\n", berr)
+		default:
+			if derr := downloadBmap(imgInfo.BmapURL, bmapCandidate); derr != nil {
+				fmt.Printf("Note: could not fetch block map (%v); flashing the full image.\n", derr)
+			} else if parsed, perr := parseBmap(readFileOrNil(bmapCandidate)); perr != nil {
+				fmt.Printf("Note: block map unusable (%v); flashing the full image.\n", perr)
+			} else {
+				seekableZst, seekableBmap, seekableTotal = zstPath, bmapCandidate, mappedBytes(parsed)
 			}
-			fmt.Printf("Could not determine image size: %v\n", err)
+		}
+	}
+
+	// Step 5b: Fallback path — resolve the .zip/.img stream only when NOT using
+	// the seekable path (so the seekable path never downloads the .zip). For
+	// compressed images, measure the size (skipped when a bmap is present, since
+	// the bmap's ImageSize is the exact total) and prepare the legacy block map.
+	var stream *imageStream
+	var bmapPath string
+	if seekableZst == "" {
+		stream, err = openOSImageStream(deviceKey, imgInfo)
+		if err != nil {
+			return fmt.Errorf("opening OS image: %w", err)
+		}
+		defer stream.Close()
+
+		if stream.uncompressedSize == 0 && stream.sourcePath != "" && imgInfo.BmapURL == "" {
+			if err := measureImageWithProgress(stream); err != nil {
+				if errors.Is(err, context.Canceled) {
+					return err
+				}
+				fmt.Printf("Could not determine image size: %v\n", err)
+			}
+		}
+
+		if !noBmap && imgInfo.BmapURL != "" {
+			candidate, derr := osCachedBmapPath(deviceKey, selectedVersion)
+			if derr != nil {
+				fmt.Printf("Note: cannot resolve block-map cache path (%v); flashing the full image.\n", derr)
+			} else if derr := downloadBmap(imgInfo.BmapURL, candidate); derr != nil {
+				fmt.Printf("Note: could not fetch block map (%v); flashing the full image.\n", derr)
+			} else if parsed, perr := parseBmap(readFileOrNil(candidate)); perr != nil {
+				fmt.Printf("Note: block map unusable (%v); flashing the full image.\n", perr)
+			} else if stream.uncompressedSize > 0 && parsed.ImageSize != stream.uncompressedSize {
+				fmt.Printf("Note: block map is for a %d-byte image but this image is %d bytes; flashing the full image.\n", parsed.ImageSize, stream.uncompressedSize)
+			} else {
+				bmapPath = candidate
+			}
 		}
 	}
 
@@ -471,11 +521,35 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 	wp := tea.NewProgram(writeProg)
 
 	go func() {
-		writeErr := writeImageToDisk(stream, stream.uncompressedSize, targetDrive, func(written int64) {
-			if msg, ok := stream.writeProgressMsg(written); ok {
-				wp.Send(msg)
-			}
-		})
+		var writeErr error
+		switch {
+		case seekableZst != "":
+			fmt.Println("Using seekable block map for faster flashing.")
+			writeErr = writeImageWithBmapSeekable(seekableZst, seekableBmap, targetDrive, func(written int64) {
+				var pct float64
+				if seekableTotal > 0 {
+					pct = float64(written) / float64(seekableTotal)
+				}
+				wp.Send(tui.ProgressUpdateMsg{
+					Percent: pct,
+					Written: written,
+					Total:   seekableTotal,
+				})
+			})
+		case bmapPath != "":
+			fmt.Println("Using block map for faster flashing.")
+			writeErr = writeImageWithBmap(stream, stream.uncompressedSize, targetDrive, bmapPath, func(written int64) {
+				if msg, ok := stream.writeProgressMsg(written); ok {
+					wp.Send(msg)
+				}
+			})
+		default:
+			writeErr = writeImageToDisk(stream, stream.uncompressedSize, targetDrive, func(written int64) {
+				if msg, ok := stream.writeProgressMsg(written); ok {
+					wp.Send(msg)
+				}
+			})
+		}
 		wp.Send(tui.ProgressDoneMsg{Err: writeErr})
 	}()
 
@@ -820,6 +894,16 @@ func osCacheDir() (string, error) {
 	return dir, nil
 }
 
+// readFileOrNil reads path, returning nil on error (used for best-effort bmap
+// validation where failure just disables the bmap fast path).
+func readFileOrNil(path string) []byte {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	return data
+}
+
 func osCachedImagePath(deviceKey, version string) (string, error) {
 	// Sanitize to prevent path traversal from user-supplied --version flag.
 	safeDevice := filepath.Base(deviceKey)
@@ -849,6 +933,75 @@ func osCachedZipPath(deviceKey, version string) (string, error) {
 		return "", err
 	}
 	return filepath.Join(dir, fmt.Sprintf("%s-%s.zip", safeDevice, safeVersion)), nil
+}
+
+func osCachedBmapPath(deviceKey, version string) (string, error) {
+	safeDevice := filepath.Base(deviceKey)
+	safeVersion := filepath.Base(version)
+	if safeDevice != deviceKey || safeVersion != version ||
+		strings.Contains(deviceKey, "..") || strings.Contains(version, "..") {
+		return "", fmt.Errorf("invalid device key or version: %q / %q", deviceKey, version)
+	}
+
+	dir, err := osCacheDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, fmt.Sprintf("%s-%s.bmap", safeDevice, safeVersion)), nil
+}
+
+// manifestStorage maps a target drive's protocol to the manifest storage key,
+// honoring an explicit override. USB-attached drives default to nvme (e.g. a
+// Jetson NVMe in a USB enclosure); built-in SD readers and unknown buses → sd.
+func manifestStorage(d drive, override string) string {
+	switch override {
+	case "nvme", "sd":
+		return override
+	}
+	switch d.StorageType {
+	case StorageNVMe, StorageUSB:
+		return "nvme"
+	default:
+		return "sd"
+	}
+}
+
+func osCachedZstPath(deviceKey, version string) (string, error) {
+	safeDevice := filepath.Base(deviceKey)
+	safeVersion := filepath.Base(version)
+	if safeDevice != deviceKey || safeVersion != version ||
+		strings.Contains(deviceKey, "..") || strings.Contains(version, "..") {
+		return "", fmt.Errorf("invalid device key or version: %q / %q", deviceKey, version)
+	}
+	dir, err := osCacheDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, fmt.Sprintf("%s-%s.img.zst", safeDevice, safeVersion)), nil
+}
+
+// resolveSeekableZst downloads (or cache-hits) the seekable .img.zst for
+// deviceKey+version from zstURL, returning the cached path. Reuses downloadImage
+// (streams to a temp file with progress) then renames into the cache.
+func resolveSeekableZst(deviceKey, version, zstURL string) (string, error) {
+	cached, err := osCachedZstPath(deviceKey, version)
+	if err != nil {
+		return "", err
+	}
+	if info, statErr := os.Stat(cached); statErr == nil && info.Size() > 0 {
+		fmt.Printf("Using cached seekable image (%s)\n", cached)
+		return cached, nil
+	}
+	downloadPath, err := downloadImage(&imageInfo{DownloadURL: zstURL, Version: version})
+	if err != nil {
+		return "", fmt.Errorf("downloading seekable image: %w", err)
+	}
+	os.Remove(cached) // clear stale/0-byte so Rename succeeds on Windows
+	if err := os.Rename(downloadPath, cached); err != nil {
+		os.Remove(downloadPath)
+		return "", fmt.Errorf("caching seekable image: %w", err)
+	}
+	return cached, nil
 }
 
 type zipReadCloser struct {

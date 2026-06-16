@@ -151,8 +151,24 @@ func NewRootCmd() *cobra.Command {
 		},
 	}
 
+	var bmapDevice, bmapFile, bmapSource string
+	bmapWriteCmd := &cobra.Command{
+		Use:    "__bmap-write",
+		Hidden: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if bmapSource != "" {
+				return runBmapWriteSeekable(bmapDevice, bmapFile, bmapSource, cmd.OutOrStdout())
+			}
+			return runBmapWrite(bmapDevice, bmapFile, cmd.InOrStdin())
+		},
+	}
+	bmapWriteCmd.Flags().StringVar(&bmapDevice, "device", "", "Raw device path to write")
+	bmapWriteCmd.Flags().StringVar(&bmapFile, "bmap", "", "Path to the .bmap file")
+	bmapWriteCmd.Flags().StringVar(&bmapSource, "source", "", "Path to the seekable .img.zst source")
+
 	root.AddCommand(
 		bleCheckCmd,
+		bmapWriteCmd,
 		runCmd,
 		buildCmd,
 		initCmd,

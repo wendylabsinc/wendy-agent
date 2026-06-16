@@ -57,3 +57,4 @@ wendy device enroll --device 192.168.1.11 --name lab-pi-01
 - [`wendy device setup`](./setup.md) — interactive wizard that provisions, configures WiFi, and enrolls in one flow.
 - `wendy cloud enroll-device` — alias for this command, reachable through the cloud tunnel.
 - [`wendy device provision`](./provision.md) — enroll against a self-hosted pki-core instead of Wendy Cloud.
+- `wendy device unenroll` — reverse enrollment and delete the device from Wendy Cloud.

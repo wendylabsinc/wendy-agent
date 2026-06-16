@@ -2,11 +2,15 @@ package commands
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
+
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
@@ -188,6 +192,8 @@ func newAudioListenCmd() *cobra.Command {
 	var sampleRate uint32
 	var channels uint32
 	var stdout bool
+	var all bool
+	var bufferMs uint32
 
 	cmd := &cobra.Command{
 		Use:   "listen",
@@ -199,6 +205,29 @@ func newAudioListenCmd() *cobra.Command {
 				return err
 			}
 			defer conn.Close()
+
+			// Resolve the device locally so we always send a concrete ID. The
+			// agent's auto-select (DeviceId == 0) would pick the first ALSA
+			// capture device, which on some platforms (e.g. Jetson Tegra) is a
+			// virtual routing endpoint that fails with an EIO on read.
+			if deviceID == 0 {
+				listResp, err := conn.AudioService.ListAudioDevices(ctx, &agentpb.ListAudioDevicesRequest{})
+				if err != nil {
+					return fmt.Errorf("listing audio devices: %w", err)
+				}
+				interactive := !stdout && term.IsTerminal(int(os.Stdin.Fd()))
+				id, chosen, err := resolveListenDeviceID(listResp.GetDevices(), deviceID, all, interactive, pickAudioDevice)
+				if err != nil {
+					if errors.Is(err, ErrUserCancelled) {
+						return nil
+					}
+					return err
+				}
+				deviceID = id
+				if chosen != nil {
+					fmt.Fprintf(cmd.ErrOrStderr(), "Using %s — %s\n", chosen.GetName(), chosen.GetDescription())
+				}
+			}
 
 			stream, err := conn.AudioService.StreamAudio(ctx, &agentpb.StreamAudioRequest{
 				DeviceId:   deviceID,
@@ -227,14 +256,16 @@ func newAudioListenCmd() *cobra.Command {
 				return nil
 			}
 
-			return playRealtimeAudio(ctx, stream, sampleRate, channels)
+			return playRealtimeAudio(ctx, stream, sampleRate, channels, bufferMs)
 		},
 	}
 
-	cmd.Flags().Uint32Var(&deviceID, "id", 0, "Audio device ID")
+	cmd.Flags().Uint32Var(&deviceID, "id", 0, "Audio device ID (default: auto-select or pick a microphone)")
 	cmd.Flags().Uint32Var(&sampleRate, "sample-rate", 16000, "Sample rate in Hz")
 	cmd.Flags().Uint32Var(&channels, "channels", 1, "Number of audio channels")
 	cmd.Flags().BoolVar(&stdout, "stdout", false, "Write raw PCM to stdout instead of playing")
+	cmd.Flags().BoolVar(&all, "all", false, "Include virtual/dummy capture devices when selecting a microphone")
+	cmd.Flags().Uint32Var(&bufferMs, "buffer-ms", 30, "Playback jitter-buffer target in ms; lower = less latency, more prone to dropouts")
 
 	return cmd
 }

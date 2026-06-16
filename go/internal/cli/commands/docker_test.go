@@ -965,6 +965,31 @@ func TestStartRegistryProxy(t *testing.T) {
 	}
 }
 
+// TestRegistryProxyBindsLoopback guards WDY-1168: the registry proxy must bind
+// loopback only so the device registry tunnel is never exposed on other network
+// interfaces during a build. A regression to "0.0.0.0:0" binds the unspecified
+// address, which is not loopback and fails this test.
+func TestRegistryProxyBindsLoopback(t *testing.T) {
+	target, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer target.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	proxy, err := startRegistryProxy(ctx, registryProxyListenAddr, target.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer proxy.Close()
+
+	ip := proxy.listener.Addr().(*net.TCPAddr).IP
+	if !ip.IsLoopback() {
+		t.Fatalf("registry proxy bound to %s, want a loopback address", ip)
+	}
+}
+
 func TestFindIPv4ViaNeighborTable_UnknownAddress(t *testing.T) {
 	// This test would invoke findIPv4ViaNeighborTable, which may spawn real ndp/arp/ip
 	// commands and read the host's neighbor tables, making it environment-dependent.
