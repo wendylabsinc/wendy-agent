@@ -1,0 +1,67 @@
+[
+  {
+    "name": "redis",
+    "image": "docker.io/library/redis:7",
+    "description": "In-memory key-value store",
+    "defaultConfig": {
+      "appId": "redis",
+      "version": "7",
+      "entitlements": [
+        { "type": "network", "ports": [{ "host": 6379, "container": 6379 }] },
+        { "type": "persist", "name": "data", "path": "/data" }
+      ]
+    }
+  },
+  {
+    "name": "postgres",
+    "image": "docker.io/library/postgres:16",
+    "description": "PostgreSQL relational database",
+    "defaultConfig": {
+      "appId": "postgres",
+      "version": "16",
+      "entitlements": [
+        { "type": "network", "ports": [{ "host": 5432, "container": 5432 }] },
+        { "type": "persist", "name": "data", "path": "/var/lib/postgresql/data" }
+      ]
+    }
+  },
+  {
+    "name": "homeassistant",
+    "image": "ghcr.io/home-assistant/home-assistant:stable",
+    "description": "Home Assistant smart-home hub",
+    "defaultConfig": {
+      "appId": "homeassistant",
+      "version": "stable",
+      "entitlements": [
+        { "type": "network", "mode": "host" },
+        { "type": "persist", "name": "config", "path": "/config" }
+      ]
+    }
+  },
+  {
+    "name": "mosquitto",
+    "image": "docker.io/library/eclipse-mosquitto:2",
+    "description": "Eclipse Mosquitto MQTT broker",
+    "defaultConfig": {
+      "appId": "mosquitto",
+      "version": "2",
+      "entitlements": [
+        { "type": "network", "ports": [{ "host": 1883, "container": 1883 }] },
+        { "type": "persist", "name": "data", "path": "/mosquitto/data" }
+      ]
+    }
+  },
+  {
+    "name": "grafana",
+    "image": "docker.io/grafana/grafana:11",
+    "description": "Grafana observability dashboards",
+    "defaultConfig": {
+      "appId": "grafana",
+      "version": "11",
+      "entitlements": [
+        { "type": "network", "ports": [{ "host": 3000, "container": 3000 }] },
+        { "type": "persist", "name": "data", "path": "/var/lib/grafana" }
+      ]
+    }
+  }
+]
