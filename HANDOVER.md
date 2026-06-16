@@ -120,6 +120,8 @@ WDY-1510 was canceled because no Raspberry Pi 5 is currently available on CI:
   - Draft PR: https://github.com/wendylabsinc/WendyOS/pull/1042
   - Linear: https://linear.app/wendylabsinc/issue/WDY-1574/reduce-ai-compute-used-by-e2e-tests
   - Setup commit: `561d116a`
+  - Related mitigation: one-off PR #1045 temporarily disables the current Swift
+    E2E AI review invocation while WDY-1574 adds tighter gating.
   - Resume command:
 
     ```sh
@@ -199,7 +201,15 @@ previously represented in this coordinator include:
 - WDY-1513 through WDY-1517 — Backlog reference-alignment follow-ups.
 - WDY-1509 — Done: CLI surface audit.
 
-## One-off SER9 route disable
+## One-off workflow/route disables
+
+- PR #1045 temporarily disables Swift E2E AI review because it is consuming too
+  much AI compute while WDY-1574 adds tighter gating:
+  https://github.com/wendylabsinc/WendyOS/pull/1045
+- Branch/worktree: `kb.disable-e2e-ai-review` at
+  `/Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.disable-e2e-ai-review`.
+- Implementation commit: `3bd4d5fa ci: temporarily disable Swift E2E AI review`
+- Local validation passed: YAML parse via Ruby and `actionlint`.
 
 - PR #995 temporarily disabled the physical macOS 26 → Ubuntu 24/SER9 Swift E2E
   route while WDY-1519 adds IPv4 fallback preflight hardening:
@@ -211,6 +221,7 @@ previously represented in this coordinator include:
 
 ## Remaining intended next steps
 
+- Monitor one-off PR #1045 to disable Swift E2E AI review; merge only after CI passes.
 - Continue WDY-1574 and WDY-1562 in their dedicated worktrees and draft PRs
   #1042 / #867.
 - WDY-1560 is Todo/High and should be started after the current active fixes

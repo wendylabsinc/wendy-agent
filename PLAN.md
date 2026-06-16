@@ -117,6 +117,8 @@ in per-issue worktree sessions, not in this master planning session.
   while actionable failures should still get focused diagnosis from selected
   artifacts/log excerpts. Prefer deterministic parsing and structured metadata
   before invoking AI, and make opt-in/opt-out behavior clear in logs/reports.
+- Related one-off mitigation: PR #1045 temporarily comments out the current AI
+  review invocation while this issue adds tighter gating.
 - Resume command:
 
   ```sh
@@ -413,6 +415,12 @@ ledger for history; current active work is WDY-1574 and WDY-1562.
 
 ## One-off route/workflow PRs
 
+- **PR #1045** — Temporarily disables Swift E2E AI review because it is
+  consuming too much AI compute while WDY-1574 adds tighter gating:
+  https://github.com/wendylabsinc/WendyOS/pull/1045
+  Branch/worktree: `kb.disable-e2e-ai-review` at
+  `/Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.disable-e2e-ai-review`.
+  Local validation passed: YAML parse via Ruby and `actionlint`.
 - **PR #995** — Temporarily disables the physical macOS 26 → Ubuntu 24/SER9
   Swift E2E route while WDY-1519 adds IPv4 fallback preflight hardening:
   https://github.com/wendylabsinc/WendyOS/pull/995
