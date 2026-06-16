@@ -18,6 +18,16 @@ func TestLoadParsesAndValidates(t *testing.T) {
 		if e.Name == "" || e.Image == "" {
 			t.Errorf("entry %+v missing name or image", e)
 		}
+		// Every image must pin an explicit tag (or digest): a bare repository
+		// pulls :latest implicitly, and a wrong/missing tag fails the pull at
+		// install time. Check for a ':' or '@' in the final path segment.
+		lastSeg := e.Image
+		if slash := strings.LastIndexByte(lastSeg, '/'); slash >= 0 {
+			lastSeg = lastSeg[slash+1:]
+		}
+		if !strings.ContainsAny(lastSeg, ":@") {
+			t.Errorf("entry %q image %q must pin an explicit tag or digest", e.Name, e.Image)
+		}
 		if e.DefaultConfig.AppID == "" {
 			t.Errorf("entry %q has empty defaultConfig.appId", e.Name)
 		}

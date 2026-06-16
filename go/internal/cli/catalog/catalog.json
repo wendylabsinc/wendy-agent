@@ -58,12 +58,12 @@
   },
   {
     "name": "grafana",
-    "image": "docker.io/grafana/grafana:11",
+    "image": "docker.io/grafana/grafana:11.6",
     "description": "Grafana observability dashboards (web UI on :3000)",
     "category": "Observability",
     "defaultConfig": {
       "appId": "grafana",
-      "version": "11",
+      "version": "11.6",
       "entitlements": [
         { "type": "network", "ports": [{ "host": 3000, "container": 3000 }] },
         { "type": "persist", "name": "data", "path": "/var/lib/grafana" }
