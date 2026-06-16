@@ -88,9 +88,16 @@ field from the request into the containerd client.
 
 `wendy device apps install [name|image]`:
 
-- No arg + interactive terminal → picker with two sections: **Common apps**
-  (catalog) and **Your org** (cloud releases, best-effort). Reuses the existing
-  `tui.Picker` already used by `pickApp`.
+- No arg + interactive terminal → a searchable picker of the curated catalog,
+  grouped by **category** (Database, Home & IoT, Observability, Documents). The
+  picker uses the existing `tui.Picker` with `Filterable` (find-as-you-type)
+  enabled and a Category column; rows are grouped via `SortKey`.
+- **Web UI**: catalog entries for apps with a web interface declare a
+  `hooks.postStart.openURL` (e.g. `http://${WENDY_HOSTNAME}:3000`). After a
+  successful install+start, the command expands the URL against the device host
+  and opens it in the developer's browser, reusing the same `browseropen` +
+  `expandHookEnv` mechanism as `wendy run`. Raw-image installs (no hook) don't
+  open anything.
 - Resolves the selection:
   - catalog name → catalog `image` + `defaultConfig`;
   - org release → internal-registry image ref (from `GetPullCredentials`/release

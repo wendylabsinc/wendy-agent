@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/wendylabsinc/wendy/go/internal/cli/catalog"
 )
 
 func TestDeriveAppID(t *testing.T) {
@@ -161,5 +163,28 @@ func TestLooksLikeAuthError(t *testing.T) {
 	}
 	if looksLikeAuthError(nil) {
 		t.Error("nil is not an auth error")
+	}
+}
+
+func TestCatalogPickerItemsCarryCategory(t *testing.T) {
+	entries, err := catalog.Load()
+	if err != nil {
+		t.Fatalf("catalog.Load: %v", err)
+	}
+	items := catalogPickerItems(entries)
+	if len(items) != len(entries) {
+		t.Fatalf("got %d items for %d entries", len(items), len(entries))
+	}
+	for i, it := range items {
+		e := entries[i]
+		if it.Type != e.Category {
+			t.Errorf("%q: Type=%q want category %q", e.Name, it.Type, e.Category)
+		}
+		if it.SortKey != e.Category+"_"+e.Name {
+			t.Errorf("%q: SortKey=%q want %q", e.Name, it.SortKey, e.Category+"_"+e.Name)
+		}
+		if v, _ := it.Value.(string); v != e.Name {
+			t.Errorf("%q: Value=%v want name", e.Name, it.Value)
+		}
 	}
 }

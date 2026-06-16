@@ -1,6 +1,9 @@
 package catalog
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestLoadParsesAndValidates(t *testing.T) {
 	entries, err := Load()
@@ -18,14 +21,35 @@ func TestLoadParsesAndValidates(t *testing.T) {
 		if e.DefaultConfig.AppID == "" {
 			t.Errorf("entry %q has empty defaultConfig.appId", e.Name)
 		}
+		if e.Category == "" {
+			t.Errorf("entry %q has empty category", e.Name)
+		}
 		cfg := e.DefaultConfig
 		if err := cfg.Validate(); err != nil {
 			t.Errorf("entry %q default config is invalid: %v", e.Name, err)
+		}
+		// Web-UI entries declare a postStart openURL hook; it must template the
+		// device host so the install command can resolve it.
+		if cfg.Hooks != nil && cfg.Hooks.PostStart != nil && cfg.Hooks.PostStart.OpenURL != "" {
+			if !strings.Contains(cfg.Hooks.PostStart.OpenURL, "WENDY_HOSTNAME") {
+				t.Errorf("entry %q openURL %q must reference WENDY_HOSTNAME", e.Name, cfg.Hooks.PostStart.OpenURL)
+			}
 		}
 		if seen[e.Name] {
 			t.Errorf("duplicate catalog entry name %q", e.Name)
 		}
 		seen[e.Name] = true
+	}
+}
+
+func TestCatalogHasPaperless(t *testing.T) {
+	e, ok := Lookup("paperless")
+	if !ok {
+		t.Fatal("expected paperless in the catalog")
+	}
+	if e.DefaultConfig.Hooks == nil || e.DefaultConfig.Hooks.PostStart == nil ||
+		e.DefaultConfig.Hooks.PostStart.OpenURL == "" {
+		t.Error("paperless should declare a web-UI openURL hook")
 	}
 }
 

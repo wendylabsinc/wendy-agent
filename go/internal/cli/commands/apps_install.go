@@ -265,6 +265,7 @@ func newAppsInstallCmd() *cobra.Command {
 			}
 
 			cliSuccess("Installed and started %s.", cfg.AppID)
+			openAppWebUI(&cfg, target.Agent.Host)
 			return nil
 		},
 	}
@@ -276,26 +277,59 @@ func newAppsInstallCmd() *cobra.Command {
 	return cmd
 }
 
-// pickInstallApp shows an interactive picker of the curated catalog and returns
-// the selected app name.
+// openAppWebUI opens the app's web UI in the developer's browser when the
+// config declares a postStart openURL hook (catalog web-UI apps do). The URL is
+// templated against the device host, reusing the same mechanism as `wendy run`.
+func openAppWebUI(cfg *appconfig.AppConfig, host string) {
+	if cfg.Hooks == nil || cfg.Hooks.PostStart == nil || cfg.Hooks.PostStart.OpenURL == "" || host == "" {
+		return
+	}
+	url := expandHookEnv(cfg.Hooks.PostStart.OpenURL, host, cfg.AppID)
+	if err := browserOpen(url); err != nil {
+		cliLogln("Could not open browser for %s: %v", url, err)
+		return
+	}
+	cliLogln("Opening %s", url)
+}
+
+// catalogPickerItems builds picker rows for the catalog, grouped by category.
+// The category is carried in Type (rendered as a column) and SortKey groups
+// rows by "<category>_<name>" so related apps appear together.
+func catalogPickerItems(entries []catalog.Entry) []tui.PickerItem {
+	items := make([]tui.PickerItem, 0, len(entries))
+	for _, e := range entries {
+		items = append(items, tui.PickerItem{
+			Name:        e.Name,
+			Description: e.Description,
+			Type:        e.Category,
+			SortKey:     e.Category + "_" + e.Name,
+			Value:       e.Name,
+		})
+	}
+	return items
+}
+
+// installPickerColumns renders Category, Name, and Description columns.
+func installPickerColumns() []tui.PickerColumn {
+	return []tui.PickerColumn{
+		{Title: "Category", MinWidth: 12, Required: true, Value: func(it tui.PickerItem) string { return it.Type }},
+		{Title: "Name", MinWidth: 14, Required: true, Value: func(it tui.PickerItem) string { return it.Name }},
+		{Title: "Description", MinWidth: 20, Value: func(it tui.PickerItem) string { return it.Description }},
+	}
+}
+
+// pickInstallApp shows an interactive, searchable picker of the curated catalog
+// grouped by category and returns the selected app name.
 func pickInstallApp() (string, error) {
 	entries, err := catalog.Load()
 	if err != nil {
 		return "", err
 	}
-	var items []tui.PickerItem
-	for _, e := range entries {
-		items = append(items, tui.PickerItem{Name: e.Name, Description: e.Description, Value: e.Name})
-	}
-	return runInstallPicker("Select an app to install", items)
-}
-
-// runInstallPicker runs an interactive picker over the given items and returns
-// the selected item's Value as a string.
-func runInstallPicker(title string, items []tui.PickerItem) (string, error) {
-	picker := tui.NewPickerWithTitle(title)
+	picker := tui.NewPickerWithTitleAndColumns("Select an app to install", installPickerColumns())
+	picker.Filterable = true
 	p := tea.NewProgram(picker)
 
+	items := catalogPickerItems(entries)
 	go func() {
 		p.Send(tui.PickerAddMsg{Items: items})
 		p.Send(tui.PickerDoneMsg{})

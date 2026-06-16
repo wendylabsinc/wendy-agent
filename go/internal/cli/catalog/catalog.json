@@ -3,6 +3,7 @@
     "name": "redis",
     "image": "docker.io/library/redis:7",
     "description": "In-memory key-value store",
+    "category": "Database",
     "defaultConfig": {
       "appId": "redis",
       "version": "7",
@@ -16,6 +17,7 @@
     "name": "postgres",
     "image": "docker.io/library/postgres:16",
     "description": "PostgreSQL relational database",
+    "category": "Database",
     "defaultConfig": {
       "appId": "postgres",
       "version": "16",
@@ -28,20 +30,23 @@
   {
     "name": "homeassistant",
     "image": "ghcr.io/home-assistant/home-assistant:stable",
-    "description": "Home Assistant smart-home hub",
+    "description": "Home Assistant smart-home hub (web UI on :8123)",
+    "category": "Home & IoT",
     "defaultConfig": {
       "appId": "homeassistant",
       "version": "stable",
       "entitlements": [
         { "type": "network", "mode": "host" },
         { "type": "persist", "name": "config", "path": "/config" }
-      ]
+      ],
+      "hooks": { "postStart": { "openURL": "http://${WENDY_HOSTNAME}:8123" } }
     }
   },
   {
     "name": "mosquitto",
     "image": "docker.io/library/eclipse-mosquitto:2",
     "description": "Eclipse Mosquitto MQTT broker",
+    "category": "Home & IoT",
     "defaultConfig": {
       "appId": "mosquitto",
       "version": "2",
@@ -54,14 +59,32 @@
   {
     "name": "grafana",
     "image": "docker.io/grafana/grafana:11",
-    "description": "Grafana observability dashboards",
+    "description": "Grafana observability dashboards (web UI on :3000)",
+    "category": "Observability",
     "defaultConfig": {
       "appId": "grafana",
       "version": "11",
       "entitlements": [
         { "type": "network", "ports": [{ "host": 3000, "container": 3000 }] },
         { "type": "persist", "name": "data", "path": "/var/lib/grafana" }
-      ]
+      ],
+      "hooks": { "postStart": { "openURL": "http://${WENDY_HOSTNAME}:3000" } }
+    }
+  },
+  {
+    "name": "paperless",
+    "image": "ghcr.io/paperless-ngx/paperless-ngx:latest",
+    "description": "Paperless-ngx document management (web UI on :8000; needs redis)",
+    "category": "Documents",
+    "defaultConfig": {
+      "appId": "paperless",
+      "version": "latest",
+      "entitlements": [
+        { "type": "network", "mode": "host" },
+        { "type": "persist", "name": "data", "path": "/usr/src/paperless/data" },
+        { "type": "persist", "name": "media", "path": "/usr/src/paperless/media" }
+      ],
+      "hooks": { "postStart": { "openURL": "http://${WENDY_HOSTNAME}:8000" } }
     }
   }
 ]

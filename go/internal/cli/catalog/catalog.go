@@ -15,9 +15,11 @@ var catalogJSON []byte
 
 // Entry is a single installable app in the curated catalog.
 type Entry struct {
-	Name          string              `json:"name"`
-	Image         string              `json:"image"`
-	Description   string              `json:"description"`
+	Name        string `json:"name"`
+	Image       string `json:"image"`
+	Description string `json:"description"`
+	// Category groups related apps in the install picker (e.g. "Database").
+	Category      string              `json:"category"`
 	DefaultConfig appconfig.AppConfig `json:"defaultConfig"`
 }
 
