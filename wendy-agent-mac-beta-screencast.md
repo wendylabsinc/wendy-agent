@@ -19,6 +19,67 @@
 - Intended use: development/trusted-network preview.
 - Next likely work: containers, mTLS/provisioning/cloud, production hardening.
 
+## Research notes / what is safe to show
+
+### Clearly documented and available
+
+- **Install path:** the Mac install docs show:
+
+  ```sh
+  brew tap wendylabsinc/tap
+  brew install --cask wendy-agent
+  open /Applications/WendyAgentMac.app
+  ```
+
+- **Supported target:** Apple Silicon Mac running macOS 15 or later. Intel Macs
+  are explicitly not supported.
+- **Agent model:** Wendy Agent for Mac runs as a macOS menu bar app.
+- **CLI verification:** docs show `wendy --device {hostname}:50051 device info
+  --json`; expected output includes `"os": "darwin"` and
+  `"cpuArchitecture": "arm64"`.
+- **Discovery/default device:** Bonjour/mDNS discovery and
+  `wendy device set-default {hostname}:50051` are documented, with the caveat
+  that discovery depends on network and macOS Local Network permission.
+- **Native Mac deployment:** Mac apps run as native macOS processes, not Linux
+  containers.
+- **`wendy.json` platform:** docs explicitly include `platform: "darwin"` for
+  native macOS apps managed by Wendy Agent for Mac.
+- **Supported `wendy run` project types for Mac:** run docs list native SwiftPM
+  and native Xcode as supported for Darwin targets.
+- **Rejected project types for Mac:** Dockerfile/container images, Python
+  container path, Docker Compose, multi-service `wendy.json`, `linux/...`, and
+  `wendyos` are rejected for Darwin/Mac targets.
+- **SwiftPM host requirement:** macOS-target SwiftPM builds require a macOS host.
+- **Graceful errors:** run docs say unsupported Mac project shapes are rejected
+  before build, registry auth, or registry setup; install docs say unsupported
+  features should fail with actionable unsupported messages.
+
+### Available, but be careful how it is framed
+
+- **Xcode support:** overview/build/run docs mention Xcode support, and the repo
+  includes `Examples/HelloMLX/HelloMLX.xcodeproj`. The Mac install page’s
+  “Should work” list emphasizes SwiftPM, so for Xcode claims show the run docs
+  supported-project-types table or the actual HelloMLX Xcode project.
+- **VLMMLX/MLX Xcode requirement:** this is valid product/demo context and the
+  repo has an Xcode HelloMLX example, but the public docs do not currently spell
+  out “VLMMLX requires Xcode because of SwiftPM limitations.” Mention it in
+  narration as context rather than pointing at docs.
+- **Permissions:** it is okay to show Wendy Agent/macOS permissions as one-time
+  setup, but full app-level hardware API support is not part of the beta. Frame
+  permissions as preparing Wendy Agent to act as the broker for app access over
+  time, not as proof that all hardware APIs are already supported.
+- **mTLS/provisioning/cloud:** not covered on the Mac install page. Mention as a
+  beta boundary in narration, but do not present it as a visible docs claim
+  unless a separate internal/source page is opened.
+
+### Best pages/artifacts to show
+
+1. Mac install page — install, launch, verify, default device, “What Works / Not
+   supported.”
+2. Run command docs — Wendy Agent for Mac supported/rejected project type table.
+3. `wendy.json` docs — `platform: "darwin"` section.
+4. `Examples/HelloMLX/HelloMLX.xcodeproj` — Xcode/VLMMLX/Metal point.
+
 ## Script
 
 ### 0:00 — Intro / framing
@@ -45,6 +106,7 @@
 Install from Homebrew:
 
 ```sh
+brew tap wendylabsinc/tap
 brew install --cask wendy-agent
 ```
 
