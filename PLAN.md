@@ -125,6 +125,26 @@ in per-issue worktree sessions, not in this master planning session.
   cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1574-reduce-e2e-ai-compute && ai --prompt "Read HANDOVER.md and follow its instructions."
   ```
 
+### WDY-1592 — Re-enable E2E AI reviews after compute gating lands
+
+- Status: `todo` (blocked by WDY-1574)
+- Linear project: E2E Tests
+- Linear: https://linear.app/wendylabsinc/issue/WDY-1592/re-enable-e2e-ai-reviews-after-compute-gating-lands
+- Linear assignee: `konstantin@wendy.sh`
+- Linear state: Todo (`unstarted`)
+- Linear priority: No priority
+- Blocked by: WDY-1574
+- Branch/worktree name: not prepared yet
+- Worktree path: not prepared yet
+- PR: not created yet
+- PR closing reference: `Closes WDY-1592`
+- Scope: re-enable Swift E2E AI review after WDY-1574 lands compute controls.
+  Remove or update the temporary `// DISABLED:` comments from one-off PR #1045,
+  restore the review invocation, and preserve WDY-1574's gating so successful or
+  skipped-only runs avoid model calls by default while actionable failures still
+  get focused diagnosis.
+- Resume command: not available until WDY-1574 is complete and this issue is prepared
+
 ### WDY-1561 — Fix macOS integration discovery empty matrix failure
 
 - Status: `done`
@@ -398,20 +418,21 @@ Keep each issue short and validation-focused. Completed issues stay in the
 ledger for history; current active work is WDY-1574 and WDY-1562.
 
 1. **WDY-1574** — In progress, High: Reduce AI compute used by E2E tests.
-2. **WDY-1562** — In progress: Add legacy app integration suite to Swift E2E.
-3. **WDY-1560** — Todo, High: Run physical Swift E2E only for stable releases until dedicated CI devices exist.
-4. **WDY-1561** — Done: Fix macOS integration discovery empty matrix failure.
-5. **WDY-1558** — Done: Mark failed Swift E2E attempts without observations as failed.
-6. **WDY-1559** — Done: Investigate Jetson Orin Nano Swift E2E preflight timeout.
-7. **WDY-1521** — Done: Teach E2E AI review to explain why a run failed.
-8. **WDY-1528** — Done: Add machine-readable Swift E2E recording metadata.
-9. **WDY-1519** — Backlog: Add IPv4 fallback preflight for physical Swift E2E targets; PR #991 closed without merge.
-10. **WDY-1527** — Done: Rework Swift E2E aggregate storage for attempt-level artifacts.
-11. **WDY-1510** — Canceled: Re-enable Raspberry Pi physical Swift E2E route.
-12. **WDY-1482** — Done: Gate device-to-device E2E jobs behind successful local E2E runs.
-13. **WDY-1494** — Done: Clean up Swift E2E route matrix and restore commented route ledger.
-14. **WDY-1481** — Done: Add local E2E matrix coverage for macOS↔macOS and Ubuntu↔Ubuntu.
-15. **WDY-1479** — Done: Investigate SER9 Swift E2E mTLS auth failure.
+2. **WDY-1592** — Todo, blocked by WDY-1574: Re-enable E2E AI reviews after compute gating lands.
+3. **WDY-1562** — In progress: Add legacy app integration suite to Swift E2E.
+4. **WDY-1560** — Todo, High: Run physical Swift E2E only for stable releases until dedicated CI devices exist.
+5. **WDY-1561** — Done: Fix macOS integration discovery empty matrix failure.
+6. **WDY-1558** — Done: Mark failed Swift E2E attempts without observations as failed.
+7. **WDY-1559** — Done: Investigate Jetson Orin Nano Swift E2E preflight timeout.
+8. **WDY-1521** — Done: Teach E2E AI review to explain why a run failed.
+9. **WDY-1528** — Done: Add machine-readable Swift E2E recording metadata.
+10. **WDY-1519** — Backlog: Add IPv4 fallback preflight for physical Swift E2E targets; PR #991 closed without merge.
+11. **WDY-1527** — Done: Rework Swift E2E aggregate storage for attempt-level artifacts.
+12. **WDY-1510** — Canceled: Re-enable Raspberry Pi physical Swift E2E route.
+13. **WDY-1482** — Done: Gate device-to-device E2E jobs behind successful local E2E runs.
+14. **WDY-1494** — Done: Clean up Swift E2E route matrix and restore commented route ledger.
+15. **WDY-1481** — Done: Add local E2E matrix coverage for macOS↔macOS and Ubuntu↔Ubuntu.
+16. **WDY-1479** — Done: Investigate SER9 Swift E2E mTLS auth failure.
 
 ## One-off route/workflow PRs
 

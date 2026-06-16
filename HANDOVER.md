@@ -19,20 +19,21 @@ per-issue worktrees.
 `PLAN.md` is populated with the Linear **E2E Tests** issues and current status:
 
 1. `WDY-1574` — In progress, High: Reduce AI compute used by E2E tests
-2. `WDY-1562` — In progress: Add legacy app integration suite to Swift E2E
-3. `WDY-1560` — Todo, High: Run physical Swift E2E only for stable releases until dedicated CI devices exist
-4. `WDY-1561` — Done: Fix macOS integration discovery empty matrix failure
-5. `WDY-1558` — Done: Mark failed Swift E2E attempts without observations as failed
-6. `WDY-1559` — Done: Investigate Jetson Orin Nano Swift E2E preflight timeout
-7. `WDY-1521` — Done: Teach E2E AI review to explain why a run failed
-8. `WDY-1528` — Done: Add machine-readable Swift E2E recording metadata
-9. `WDY-1519` — Backlog: Add IPv4 fallback preflight for physical Swift E2E targets
-10. `WDY-1527` — Done: Rework Swift E2E aggregate storage for attempt-level artifacts
-11. `WDY-1510` — Canceled: Re-enable Raspberry Pi physical Swift E2E route
-12. `WDY-1482` — Done: Gate device-to-device E2E jobs behind successful local E2E runs
-13. `WDY-1494` — Done: Clean up Swift E2E route matrix and restore commented route ledger
-14. `WDY-1481` — Done: Add local E2E matrix coverage for macOS↔macOS and Ubuntu↔Ubuntu
-15. `WDY-1479` — Done: Investigate SER9 Swift E2E mTLS auth failure
+2. `WDY-1592` — Todo, blocked by WDY-1574: Re-enable E2E AI reviews after compute gating lands
+3. `WDY-1562` — In progress: Add legacy app integration suite to Swift E2E
+4. `WDY-1560` — Todo, High: Run physical Swift E2E only for stable releases until dedicated CI devices exist
+5. `WDY-1561` — Done: Fix macOS integration discovery empty matrix failure
+6. `WDY-1558` — Done: Mark failed Swift E2E attempts without observations as failed
+7. `WDY-1559` — Done: Investigate Jetson Orin Nano Swift E2E preflight timeout
+8. `WDY-1521` — Done: Teach E2E AI review to explain why a run failed
+9. `WDY-1528` — Done: Add machine-readable Swift E2E recording metadata
+10. `WDY-1519` — Backlog: Add IPv4 fallback preflight for physical Swift E2E targets
+11. `WDY-1527` — Done: Rework Swift E2E aggregate storage for attempt-level artifacts
+12. `WDY-1510` — Canceled: Re-enable Raspberry Pi physical Swift E2E route
+13. `WDY-1482` — Done: Gate device-to-device E2E jobs behind successful local E2E runs
+14. `WDY-1494` — Done: Clean up Swift E2E route matrix and restore commented route ledger
+15. `WDY-1481` — Done: Add local E2E matrix coverage for macOS↔macOS and Ubuntu↔Ubuntu
+16. `WDY-1479` — Done: Investigate SER9 Swift E2E mTLS auth failure
 
 ## Completed housekeeping
 
@@ -127,6 +128,13 @@ WDY-1510 was canceled because no Raspberry Pi 5 is currently available on CI:
     ```sh
     cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1574-reduce-e2e-ai-compute && ai --prompt "Read HANDOVER.md and follow its instructions."
     ```
+- WDY-1592 — Todo, E2E Tests project: re-enable Swift E2E AI reviews after
+  WDY-1574 lands compute controls. This is blocked by WDY-1574 and should
+  restore the review invocation while preserving the new gating behavior.
+  - Linear: https://linear.app/wendylabsinc/issue/WDY-1592/re-enable-e2e-ai-reviews-after-compute-gating-lands
+  - Blocked by: WDY-1574
+  - Branch/worktree: not prepared yet
+  - PR: not created yet
 - WDY-1561 — Done, E2E Tests project: fixed `PR Integration Tests` macOS
   discovery matrix generation when discovery finds LAN devices but none match
   the allowlist, avoiding the `HOSTS[@]: unbound variable` failure under
@@ -224,6 +232,8 @@ previously represented in this coordinator include:
 - Monitor one-off PR #1045 to disable Swift E2E AI review; merge only after CI passes.
 - Continue WDY-1574 and WDY-1562 in their dedicated worktrees and draft PRs
   #1042 / #867.
+- WDY-1592 is Todo and blocked by WDY-1574; do not start it until WDY-1574 is
+  addressed.
 - WDY-1560 is Todo/High and should be started after the current active fixes
   unless reprioritized.
 - WDY-1561, WDY-1558, WDY-1559, WDY-1521, WDY-1528, WDY-1527, and the SER9 route disable are complete.
