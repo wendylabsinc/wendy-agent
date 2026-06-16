@@ -168,6 +168,81 @@ Use small, rectangular labels:
   - graceful unsupported error.
 - Avoid flashy transitions; use simple fades or hard cuts.
 
+## Terminal recording with VHS
+
+Use [VHS](https://github.com/charmbracelet/vhs) for every terminal interaction,
+recorded as one clip per screencast screen. Capture GUI-only material — Wendy
+Agent menu bar, macOS permission prompts, Xcode windows, docs pages — with a
+normal screen recorder, then composite the VHS terminal clips into the edit.
+
+### VHS style preset
+
+Use a consistent dark terminal that matches the Wendy site palette:
+
+```tape
+Set Shell zsh
+Set FontFamily "IBM Plex Mono"
+Set FontSize 18
+Set Width 1280
+Set Height 720
+Set Padding 32
+Set Framerate 60
+Set Theme "Catppuccin Mocha"
+```
+
+Prefer real command output from the Mac mini demo environment. If a command is
+slow or flaky, record it once successfully and trim the wait in the edit rather
+than replacing it with fake output. Redact private hostnames, tokens, Wi-Fi
+names, and local paths before final export.
+
+### Per-screen terminal clips
+
+| Screen | VHS clip | Terminal interaction to record |
+|---|---|---|
+| Install and launch | `01-install-launch.tape` | `brew tap wendylabsinc/tap`, `brew install --cask wendy-agent`, `open /Applications/WendyAgentMac.app` |
+| Verify Mac target | `02-device-info.tape` | `wendy --device mac-mini.local:50051 device info --json`; highlight `"os": "darwin"` and `"cpuArchitecture": "arm64"` in the edit |
+| Discovery/default target | `03-discovery-default.tape` | `wendy discover`, then `wendy device set-default mac-mini.local:50051` |
+| Native app shape | `04-native-app-shape.tape` | Show `wendy.json`, `Package.swift`, and/or `.xcodeproj` with `cat`, `ls`, or `tree` |
+| SwiftPM deploy | `05-run-swiftpm.tape` | Run `wendy run --device mac-mini.local:50051` from a SwiftPM project |
+| Xcode/VLMMLX deploy | `06-run-xcode.tape` | Show `.xcodeproj`, then run `wendy run --device mac-mini.local:50051` from the Xcode project |
+| App lifecycle | `07-app-lifecycle.tape` | `wendy device apps list`, `wendy device apps stop <app-id>`, `wendy device apps remove <app-id>` |
+| Unsupported behavior | `08-unsupported.tape` | Run one unsupported Mac beta path, such as a container project or unsupported command, and capture the clear Mac-specific error |
+| Close | `09-final-list.tape` | End on `wendy device apps list` showing the successful native Mac app state |
+
+### Tape template
+
+Create one `.tape` file per row above. Use this structure and change only the
+output path, working directory, and commands:
+
+```tape
+Output recordings/mac-beta/02-device-info.mp4
+
+Set Shell zsh
+Set FontFamily "IBM Plex Mono"
+Set FontSize 18
+Set Width 1280
+Set Height 720
+Set Padding 32
+Set Framerate 60
+Set Theme "Catppuccin Mocha"
+
+Type "wendy --device mac-mini.local:50051 device info --json"
+Enter
+Sleep 4s
+```
+
+Render with:
+
+```sh
+vhs 02-device-info.tape
+```
+
+For a full pass:
+
+```sh
+for tape in *.tape; do vhs "$tape"; done
+```
+
 ## Script
 
 ### 0:00 — Intro / framing
