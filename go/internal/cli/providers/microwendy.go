@@ -3,6 +3,8 @@ package providers
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -170,16 +172,40 @@ func (p *MicroWendyProvider) Run(ctx context.Context, app *BuiltApp, detach bool
 	addr := net.JoinHostPort(ip, port)
 	client := liteclient.NewWendyLiteClient()
 	if app.Device.ConnectionInfo["mtls"] == "true" {
-		certInfo, err := loadFirstCLICert()
+		certInfos, err := loadAllCLICerts()
 		if err != nil {
-			return fmt.Errorf("wendy-lite provider: loading mTLS cert: %w", err)
+			return fmt.Errorf("wendy-lite provider: loading mTLS certs: %w", err)
 		}
-		cert, err := tls.X509KeyPair([]byte(certInfo.PemCertificate), []byte(certInfo.PemPrivateKey))
-		if err != nil {
-			return fmt.Errorf("wendy-lite provider: parsing mTLS cert: %w", err)
+		var connectErrs []error
+		connected := false
+		for _, certInfo := range certInfos {
+			cert, err := tls.X509KeyPair([]byte(certInfo.PemCertificate), []byte(certInfo.PemPrivateKey))
+			if err != nil {
+				return fmt.Errorf("wendy-lite provider: parsing mTLS cert: %w", err)
+			}
+			var rootCAs *x509.CertPool
+			if certInfo.PemCertificateChain != "" {
+				rootCAs = x509.NewCertPool()
+				rootCAs.AppendCertsFromPEM([]byte(certInfo.PemCertificateChain))
+			}
+			if err := client.ConnectWithMutualAuthentication(addr, cert, rootCAs); err != nil {
+				connectErrs = append(connectErrs, err)
+			} else {
+				connected = true
+				break
+			}
 		}
-		if err := client.ConnectWithMutualAuthentication(addr, cert); err != nil {
-			return fmt.Errorf("connect to device (mTLS): %w", err)
+		if !connected {
+			var b strings.Builder
+			fmt.Fprintf(&b, "Wendy Lite connection error")
+			for i, e := range connectErrs {
+				if i == 0 {
+					fmt.Fprintf(&b, ": identity %d: %v", i+1, e)
+				} else {
+					fmt.Fprintf(&b, "; identity %d: %v", i+1, e)
+				}
+			}
+			return errors.New(b.String())
 		}
 	} else {
 		if err := client.Connect(addr); err != nil {
@@ -239,16 +265,17 @@ func (p *MicroWendyProvider) Stop(_ context.Context, app *BuiltApp) error {
 	return nil
 }
 
-func loadFirstCLICert() (*config.CertificateInfo, error) {
+func loadAllCLICerts() ([]config.CertificateInfo, error) {
 	cfg, err := config.Load()
 	if err != nil {
 		return nil, err
 	}
+	var out []config.CertificateInfo
 	for _, auth := range cfg.Auth {
-		if len(auth.Certificates) > 0 {
-			c := auth.Certificates[0]
-			return &c, nil
-		}
+		out = append(out, auth.Certificates...)
 	}
-	return nil, fmt.Errorf("not logged in (no certificate found)")
+	if len(out) == 0 {
+		return nil, fmt.Errorf("not logged in (no certificate found)")
+	}
+	return out, nil
 }

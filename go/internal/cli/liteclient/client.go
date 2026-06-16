@@ -2,6 +2,7 @@ package liteclient
 
 import (
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -51,11 +52,38 @@ func (c *WendyLiteClient) Connect(address string) error {
 	return nil
 }
 
-func (c *WendyLiteClient) ConnectWithMutualAuthentication(address string, cert tls.Certificate) error {
+func (c *WendyLiteClient) ConnectWithMutualAuthentication(address string, cert tls.Certificate, rootCAs *x509.CertPool) error {
 	tlsCfg := &tls.Config{
-		Certificates:       []tls.Certificate{cert},
-		InsecureSkipVerify: true, //nolint:gosec — device uses self-signed certs
-		MinVersion:         tls.VersionTLS12,
+		Certificates: []tls.Certificate{cert},
+		MinVersion:   tls.VersionTLS12,
+	}
+	if rootCAs != nil {
+		// Verify the certificate chain against our root CAs but skip hostname
+		// checking — devices on a local network don't have SANs.
+		tlsCfg.InsecureSkipVerify = true //nolint:gosec
+		tlsCfg.VerifyPeerCertificate = func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
+			certs := make([]*x509.Certificate, len(rawCerts))
+			for i, raw := range rawCerts {
+				c, err := x509.ParseCertificate(raw)
+				if err != nil {
+					return fmt.Errorf("parsing server certificate: %w", err)
+				}
+				certs[i] = c
+			}
+			opts := x509.VerifyOptions{
+				Roots:         rootCAs,
+				Intermediates: x509.NewCertPool(),
+			}
+			for _, c := range certs[1:] {
+				opts.Intermediates.AddCert(c)
+			}
+			if _, err := certs[0].Verify(opts); err != nil {
+				return fmt.Errorf("server certificate verification failed: %w", err)
+			}
+			return nil
+		}
+	} else {
+		tlsCfg.InsecureSkipVerify = true //nolint:gosec — device uses self-signed certs
 	}
 	conn, err := tls.Dial("tcp", address, tlsCfg)
 	if err != nil {
