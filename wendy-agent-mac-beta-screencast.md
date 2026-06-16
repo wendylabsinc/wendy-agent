@@ -80,6 +80,94 @@
 3. `wendy.json` docs — `platform: "darwin"` section.
 4. `Examples/HelloMLX/HelloMLX.xcodeproj` — Xcode/VLMMLX/Metal point.
 
+## Visual style based on wendy.dev
+
+### Overall look
+
+- **Style:** clean, minimal, high-contrast, technical.
+- **Mood:** black/white/neutral base with one bright mint accent.
+- **Shapes:** mostly rectangular, subtle radius if needed.
+  - Marketing site radius: `10px` / `0.625rem`.
+  - Docs style is sharper; for overlays use square or very slightly rounded
+    rectangles.
+
+### Fonts
+
+- **Primary UI/text:** `Helvetica Neue`, `Helvetica`, `Arial`, `sans-serif`.
+- **Code / terminal labels / step numbers:** `IBM Plex Mono`.
+- **Terminal:** any readable monospace, ideally `IBM Plex Mono` or `SF Mono`.
+
+### Core palette
+
+| Use | Color | Hex |
+|---|---:|---|
+| Background | White | `#FFFFFF` |
+| Foreground text | Black | `#000000` |
+| Primary dark | Neutral 900 | `#171717` |
+| Card/dark surface | Near black | `#0C0C0C` |
+| Muted surface | Light gray | `#F5F5F5` |
+| Border | Neutral border | `#E5E5E5` |
+| Muted text | Gray | `#737373` / `#71717B` |
+
+### Brand/accent colors
+
+| Use | Color | Hex |
+|---|---:|---|
+| Main Wendy accent / CTA | Mint | `#9FE2BF` |
+| Hover / stronger mint | Mint green | `#86D3A8` |
+| Success / supported | Emerald | `#00BB7F` |
+| Bright success accent | Emerald 400 | `#00D294` |
+| Beta badge / warning | Orange | `#F99C00` |
+| In-progress / caution | Yellow | `#FCBB00` |
+| Strong warning/orange chart accent | Orange-red | `#F05100` |
+| Teal secondary | Teal | `#009588` |
+| Destructive/error only | Red | `#E40014` |
+
+### Suggested usage
+
+- **Main section titles / callouts:** black text on white.
+- **Beta labels:** orange block or pill, `#F99C00`, with white or black text
+  depending contrast.
+- **Supported/native path:** mint or emerald, `#9FE2BF` / `#00BB7F`.
+- **Unsupported/boundary callouts:** orange `#F99C00`, not red unless something
+  truly failed.
+- **Success highlights in terminal:** emerald `#00BB7F`.
+- **Code highlights:** dark surface `#0C0C0C`, white text, mint highlight.
+
+### Overlay examples
+
+Use small, rectangular labels:
+
+- `BETA` — background `#F99C00`.
+- `platform: "darwin"` — background `#9FE2BF`, text `#000000`.
+- `Native SwiftPM` — border `#00BB7F`.
+- `Xcode + Metal` — border `#9FE2BF`.
+- `Not supported yet` — background `#F99C00`.
+
+### Terminal window styling
+
+- Background: `#0C0C0C`.
+- Text: `#FAFAFA`.
+- Dim text: `#A1A1AA`.
+- Prompt/accent: `#9FE2BF`.
+- Success: `#00BB7F`.
+- Warning: `#F99C00`.
+- macOS window dots if custom rendered:
+  - Red `#FF5F57`.
+  - Yellow `#FEBC2E`.
+  - Green `#28C840`.
+
+### Motion / editing
+
+- Keep cuts crisp.
+- Use quick zooms/highlights on:
+  - `brew install --cask wendy-agent`.
+  - `"os": "darwin"`.
+  - `"platform": "darwin"`.
+  - `wendy run`.
+  - graceful unsupported error.
+- Avoid flashy transitions; use simple fades or hard cuts.
+
 ## Script
 
 ### 0:00 — Intro / framing
