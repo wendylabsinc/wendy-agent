@@ -238,13 +238,30 @@ func newAppsInstallCmd() *cobra.Command {
 				return fmt.Errorf("installing %s: %w", cfg.AppID, err)
 			}
 
-			// Start detached (UNLESS_STOPPED). The returned stream is not consumed:
-			// installed catalog apps run in the background, like `apps start -d`.
-			if _, err := target.Agent.ContainerService.StartContainer(ctx, &agentpb.StartContainerRequest{
+			// Start the app detached under an UNLESS_STOPPED restart policy. We
+			// must read from the stream until the agent confirms the container
+			// has started: StartContainer starts the container synchronously and
+			// only then sends the Started message, so returning early would let
+			// the deferred connection close cancel the in-flight start. Once
+			// Started arrives the container runs independently of this stream.
+			startStream, err := target.Agent.ContainerService.StartContainer(ctx, &agentpb.StartContainerRequest{
 				AppName:       cfg.AppID,
 				RestartPolicy: &agentpb.RestartPolicy{Mode: agentpb.RestartPolicyMode_UNLESS_STOPPED},
-			}); err != nil {
+			})
+			if err != nil {
 				return fmt.Errorf("starting %s: %w", cfg.AppID, err)
+			}
+			for {
+				resp, rerr := startStream.Recv()
+				if rerr == io.EOF {
+					break
+				}
+				if rerr != nil {
+					return fmt.Errorf("starting %s: %w", cfg.AppID, rerr)
+				}
+				if resp.GetStarted() != nil {
+					break
+				}
 			}
 
 			cliSuccess("Installed and started %s.", cfg.AppID)
