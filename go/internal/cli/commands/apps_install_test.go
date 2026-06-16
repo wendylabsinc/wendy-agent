@@ -1,6 +1,12 @@
 package commands
 
-import "testing"
+import (
+	"encoding/base64"
+	"fmt"
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 func TestDeriveAppID(t *testing.T) {
 	cases := map[string]string{
@@ -82,5 +88,78 @@ func TestResolveRegistryAuthAnonymous(t *testing.T) {
 	}
 	if auth != nil {
 		t.Errorf("expected anonymous (nil) auth, got %+v", auth)
+	}
+}
+
+func TestDockerConfigAuth(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("DOCKER_CONFIG", dir)
+	enc := base64.StdEncoding.EncodeToString([]byte("alice:s3cret"))
+	cfg := `{"auths":{"ghcr.io":{"auth":"` + enc + `"}}}`
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, ok := dockerConfigAuth("ghcr.io")
+	if !ok {
+		t.Fatal("expected creds for ghcr.io")
+	}
+	if got.GetUsername() != "alice" || got.GetPassword() != "s3cret" {
+		t.Errorf("got %q/%q", got.GetUsername(), got.GetPassword())
+	}
+	if _, ok := dockerConfigAuth("missing.example.com"); ok {
+		t.Error("did not expect creds for missing host")
+	}
+}
+
+func TestDockerConfigAuthExplicitUserPass(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("DOCKER_CONFIG", dir)
+	cfg := `{"auths":{"reg.example.com":{"username":"bob","password":"pw"}}}`
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, ok := dockerConfigAuth("reg.example.com")
+	if !ok {
+		t.Fatal("expected creds")
+	}
+	if got.GetUsername() != "bob" || got.GetPassword() != "pw" {
+		t.Errorf("got %q/%q", got.GetUsername(), got.GetPassword())
+	}
+}
+
+// Docker Hub credentials are stored under the canonical index key, not "docker.io".
+func TestDockerConfigAuthDockerHubKey(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("DOCKER_CONFIG", dir)
+	enc := base64.StdEncoding.EncodeToString([]byte("hubuser:hubpass"))
+	cfg := `{"auths":{"https://index.docker.io/v1/":{"auth":"` + enc + `"}}}`
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, ok := dockerConfigAuth("docker.io")
+	if !ok {
+		t.Fatal("expected Docker Hub creds via canonical index key")
+	}
+	if got.GetUsername() != "hubuser" || got.GetRegistryHost() != "docker.io" {
+		t.Errorf("got user=%q host=%q", got.GetUsername(), got.GetRegistryHost())
+	}
+}
+
+func TestDockerConfigAuthNoFile(t *testing.T) {
+	t.Setenv("DOCKER_CONFIG", t.TempDir())
+	if _, ok := dockerConfigAuth("ghcr.io"); ok {
+		t.Error("expected no creds when config.json is absent")
+	}
+}
+
+func TestLooksLikeAuthError(t *testing.T) {
+	if !looksLikeAuthError(fmt.Errorf("failed: pull access denied, 401 Unauthorized")) {
+		t.Error("expected 401 to look like an auth error")
+	}
+	if looksLikeAuthError(fmt.Errorf("connection refused")) {
+		t.Error("did not expect a network error to look like an auth error")
+	}
+	if looksLikeAuthError(nil) {
+		t.Error("nil is not an auth error")
 	}
 }

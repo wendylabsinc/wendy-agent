@@ -1,11 +1,12 @@
 package commands
 
 import (
-	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -64,7 +65,11 @@ func resolveInstallSource(arg string) (string, appconfig.AppConfig, error) {
 	if arg == "" {
 		return "", appconfig.AppConfig{}, fmt.Errorf("no app name or image specified")
 	}
-	return arg, appconfig.AppConfig{AppID: deriveAppID(arg)}, nil
+	appID := deriveAppID(arg)
+	if appID == "" {
+		return "", appconfig.AppConfig{}, fmt.Errorf("could not derive an app name from %q; pass --name", arg)
+	}
+	return arg, appconfig.AppConfig{AppID: appID}, nil
 }
 
 // resolveRegistryAuth returns RegistryAuth for the pull, or nil for an
@@ -78,17 +83,85 @@ func resolveRegistryAuth(image, username, password string, passwordStdin bool) (
 		}
 		password = strings.TrimRight(string(data), "\r\n")
 	}
+	host := registryHostFromImage(image)
 	if username != "" || password != "" {
-		return &agentpb.RegistryAuth{
-			RegistryHost: registryHostFromImage(image),
-			Username:     username,
-			Password:     password,
-		}, nil
+		return &agentpb.RegistryAuth{RegistryHost: host, Username: username, Password: password}, nil
 	}
-	if a, ok := dockerConfigAuth(registryHostFromImage(image)); ok {
+	if a, ok := dockerConfigAuth(host); ok {
 		return a, nil
 	}
 	return nil, nil
+}
+
+// dockerConfigAuth reads ~/.docker/config.json (honoring DOCKER_CONFIG) and
+// returns credentials for host if present. Docker Hub credentials are stored
+// under the canonical "https://index.docker.io/v1/" key, so requests for
+// "docker.io" also consult that key.
+func dockerConfigAuth(host string) (*agentpb.RegistryAuth, bool) {
+	base := os.Getenv("DOCKER_CONFIG")
+	if base == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return nil, false
+		}
+		base = filepath.Join(home, ".docker")
+	}
+	data, err := os.ReadFile(filepath.Join(base, "config.json"))
+	if err != nil {
+		return nil, false
+	}
+	var parsed struct {
+		Auths map[string]struct {
+			Auth     string `json:"auth"`
+			Username string `json:"username"`
+			Password string `json:"password"`
+		} `json:"auths"`
+	}
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		return nil, false
+	}
+
+	candidates := []string{host}
+	if host == "docker.io" {
+		candidates = append(candidates, "https://index.docker.io/v1/", "index.docker.io")
+	}
+	for _, key := range candidates {
+		entry, ok := parsed.Auths[key]
+		if !ok {
+			continue
+		}
+		user, pass := entry.Username, entry.Password
+		if entry.Auth != "" {
+			if dec, derr := base64.StdEncoding.DecodeString(entry.Auth); derr == nil {
+				if i := strings.IndexByte(string(dec), ':'); i >= 0 {
+					user = string(dec)[:i]
+					pass = string(dec)[i+1:]
+				}
+			}
+		}
+		if user == "" && pass == "" {
+			continue
+		}
+		return &agentpb.RegistryAuth{RegistryHost: host, Username: user, Password: pass}, true
+	}
+	return nil, false
+}
+
+// looksLikeAuthError reports whether a registry pull error indicates the
+// registry rejected the credentials (or required some). The agent wraps pull
+// failures as codes.Internal, so the gRPC code is not informative; match on
+// the containerd/registry message instead.
+func looksLikeAuthError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	for _, needle := range []string{"401", "403", "unauthorized", "authentication required", "forbidden", "denied"} {
+		if strings.Contains(msg, needle) {
+			return true
+		}
+	}
+	return false
 }
 
 func newAppsInstallCmd() *cobra.Command {
@@ -101,8 +174,13 @@ func newAppsInstallCmd() *cobra.Command {
 		Short: "Install a common app or container image onto the device",
 		Long: "Install an app from the curated catalog (e.g. redis, postgres, " +
 			"homeassistant) or any container image reference. The device pulls the " +
-			"image directly from the registry. Private registries can be accessed " +
-			"with --username/--password or via your local ~/.docker/config.json.",
+			"image directly from the registry.\n\n" +
+			"Private and internal-registry images can be installed by passing the " +
+			"full image reference with credentials, e.g.:\n" +
+			"  wendy device apps install registry.example.com/team/app:1.2.3 \\\n" +
+			"      --username $USER --password $TOKEN\n\n" +
+			"Credentials are also read from ~/.docker/config.json when --username/" +
+			"--password are not given.",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
@@ -111,7 +189,7 @@ func newAppsInstallCmd() *cobra.Command {
 			if len(args) > 0 {
 				arg = args[0]
 			} else {
-				picked, err := pickInstallApp(ctx)
+				picked, err := pickInstallApp()
 				if err != nil {
 					return err
 				}
@@ -152,6 +230,11 @@ func newAppsInstallCmd() *cobra.Command {
 				AppConfig:    cfgBytes,
 				RegistryAuth: auth,
 			}); err != nil {
+				if looksLikeAuthError(err) {
+					return fmt.Errorf("installing %s: %w\n"+
+						"the registry may require credentials; pass --username/--password "+
+						"or log in to the registry with docker", cfg.AppID, err)
+				}
 				return fmt.Errorf("installing %s: %w", cfg.AppID, err)
 			}
 
@@ -176,9 +259,9 @@ func newAppsInstallCmd() *cobra.Command {
 	return cmd
 }
 
-// pickInstallApp shows an interactive picker of installable apps: the curated
-// catalog plus the org's app releases (best-effort) when logged in.
-func pickInstallApp(ctx context.Context) (string, error) {
+// pickInstallApp shows an interactive picker of the curated catalog and returns
+// the selected app name.
+func pickInstallApp() (string, error) {
 	entries, err := catalog.Load()
 	if err != nil {
 		return "", err
@@ -186,13 +269,6 @@ func pickInstallApp(ctx context.Context) (string, error) {
 	var items []tui.PickerItem
 	for _, e := range entries {
 		items = append(items, tui.PickerItem{Name: e.Name, Description: e.Description, Value: e.Name})
-	}
-	if orgApps, oerr := listOrgApps(ctx); oerr != nil {
-		cliNotice("Could not load org apps: %v", oerr)
-	} else {
-		for _, a := range orgApps {
-			items = append(items, tui.PickerItem{Name: a.Name, Description: "your org", Value: a.Name})
-		}
 	}
 	return runInstallPicker("Select an app to install", items)
 }

@@ -139,9 +139,27 @@ wendy device apps install redis
 - **E2E (optional)**: install a public image onto a test agent and assert it runs,
   mirroring the existing chunk-diff e2e style.
 
+## Status note (2026-06-17)
+
+Internal/private-registry **installs work today** via an explicit image
+reference plus credentials, e.g.
+`wendy device apps install registry.example.com/team/app:1.2.3 --username … --password …`
+(or `~/.docker/config.json`). The agent pulls the authenticated image directly.
+
+The **convenience listing of org app releases in the picker is deferred**: the
+`wendyos` copy of the cloud proto (`Proto/cloud/deployments.proto`) does not yet
+expose `GetPullCredentials`, so an `AppRelease` (which carries only an image
+digest, not a full registry reference) cannot be resolved to a pullable image
+ref in-repo. Listing org apps without a working install would be a dead-end, so
+the picker shows the curated catalog only until the cloud proto is synced. The
+follow-up is: sync `GetPullCredentials` into `Proto/cloud`, then resolve a
+selected release to `registry_url`/`full_artifact_path` + short-lived creds at
+install time.
+
 ## Scope / YAGNI
 
-- No new cloud APIs — reuse `ListAppReleases` + `GetPullCredentials`.
+- No new cloud APIs — reuse `ListAppReleases` + `GetPullCredentials` (the latter
+  pending a proto sync; see status note).
 - No persistent "installed-from-catalog" bookkeeping; installed apps are normal
   apps managed by existing `apps list/stop/remove`.
 - Draft PR focuses on agent pull-with-auth, the catalog package, and the install
