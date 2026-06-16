@@ -101,22 +101,27 @@ in per-issue worktree sessions, not in this master planning session.
 
 ### WDY-1574 — Reduce AI compute used by E2E tests
 
-- Status: `todo` (High priority)
+- Status: `in progress` (High priority)
 - Linear project: E2E Tests
 - Linear: https://linear.app/wendylabsinc/issue/WDY-1574/reduce-ai-compute-used-by-e2e-tests
 - Linear assignee: `konstantin@wendy.sh`
-- Linear state: Todo (`unstarted`)
+- Linear state: In Progress (`started`)
 - Linear priority: High
-- Branch/worktree name: not prepared yet
-- Worktree path: not prepared yet
-- PR: not created yet
+- Branch/worktree name: `kb.wdy-1574-reduce-e2e-ai-compute`
+- Worktree path: `/Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1574-reduce-e2e-ai-compute`
+- PR: https://github.com/wendylabsinc/WendyOS/pull/1042 (draft setup PR)
 - PR closing reference: `Closes WDY-1574`
+- Setup commit: `561d116a`
 - Scope: reduce unnecessary AI model usage in the E2E review/reporting flow.
   Common successful or skipped-only E2E runs should use little to no AI compute,
   while actionable failures should still get focused diagnosis from selected
   artifacts/log excerpts. Prefer deterministic parsing and structured metadata
   before invoking AI, and make opt-in/opt-out behavior clear in logs/reports.
-- Resume command: not available until prepared
+- Resume command:
+
+  ```sh
+  cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1574-reduce-e2e-ai-compute && ai --prompt "Read HANDOVER.md and follow its instructions."
+  ```
 
 ### WDY-1561 — Fix macOS integration discovery empty matrix failure
 
@@ -388,10 +393,10 @@ in per-issue worktree sessions, not in this master planning session.
 ## E2E Tests issue order
 
 Keep each issue short and validation-focused. Completed issues stay in the
-ledger for history; current active work is WDY-1562.
+ledger for history; current active work is WDY-1574 and WDY-1562.
 
-1. **WDY-1562** — In progress: Add legacy app integration suite to Swift E2E.
-2. **WDY-1574** — Todo, High: Reduce AI compute used by E2E tests.
+1. **WDY-1574** — In progress, High: Reduce AI compute used by E2E tests.
+2. **WDY-1562** — In progress: Add legacy app integration suite to Swift E2E.
 3. **WDY-1560** — Todo, High: Run physical Swift E2E only for stable releases until dedicated CI devices exist.
 4. **WDY-1561** — Done: Fix macOS integration discovery empty matrix failure.
 5. **WDY-1558** — Done: Mark failed Swift E2E attempts without observations as failed.

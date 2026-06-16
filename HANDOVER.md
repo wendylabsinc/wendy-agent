@@ -18,8 +18,8 @@ per-issue worktrees.
 
 `PLAN.md` is populated with the Linear **E2E Tests** issues and current status:
 
-1. `WDY-1562` — In progress: Add legacy app integration suite to Swift E2E
-2. `WDY-1574` — Todo, High: Reduce AI compute used by E2E tests
+1. `WDY-1574` — In progress, High: Reduce AI compute used by E2E tests
+2. `WDY-1562` — In progress: Add legacy app integration suite to Swift E2E
 3. `WDY-1560` — Todo, High: Run physical Swift E2E only for stable releases until dedicated CI devices exist
 4. `WDY-1561` — Done: Fix macOS integration discovery empty matrix failure
 5. `WDY-1558` — Done: Mark failed Swift E2E attempts without observations as failed
@@ -111,13 +111,20 @@ WDY-1510 was canceled because no Raspberry Pi 5 is currently available on CI:
   - Current PR status: draft open; Claude Security Review is failing while the
     other visible checks pass.
   - Handover: `/Volumes/Projects/WendyLabs/wendy-agent/.worktrees/ai.e2e-app-integration-plan/HANDOVER.md`
-- WDY-1574 — Todo, High priority, E2E Tests project: reduce unnecessary AI
-  compute used by the E2E review/reporting flow. Successful or skipped-only runs
-  should avoid expensive model analysis where possible, while actionable
+- WDY-1574 — In Progress, High priority, E2E Tests project: reduce unnecessary
+  AI compute used by the E2E review/reporting flow. Successful or skipped-only
+  runs should avoid expensive model analysis where possible, while actionable
   failures should still get focused diagnosis from selected artifacts/logs.
+  - Worktree: `/Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1574-reduce-e2e-ai-compute`
+  - Branch: `kb.wdy-1574-reduce-e2e-ai-compute`
+  - Draft PR: https://github.com/wendylabsinc/WendyOS/pull/1042
   - Linear: https://linear.app/wendylabsinc/issue/WDY-1574/reduce-ai-compute-used-by-e2e-tests
-  - Branch/worktree: not prepared yet
-  - PR: not created yet
+  - Setup commit: `561d116a`
+  - Resume command:
+
+    ```sh
+    cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1574-reduce-e2e-ai-compute && ai --prompt "Read HANDOVER.md and follow its instructions."
+    ```
 - WDY-1561 — Done, E2E Tests project: fixed `PR Integration Tests` macOS
   discovery matrix generation when discovery finds LAN devices but none match
   the allowlist, avoiding the `HOSTS[@]: unbound variable` failure under
@@ -204,9 +211,10 @@ previously represented in this coordinator include:
 
 ## Remaining intended next steps
 
-- Continue WDY-1562 in its existing draft PR/worktree (#867).
-- WDY-1574 and WDY-1560 are Todo/High and should be started after the current
-  active fix unless reprioritized.
+- Continue WDY-1574 and WDY-1562 in their dedicated worktrees and draft PRs
+  #1042 / #867.
+- WDY-1560 is Todo/High and should be started after the current active fixes
+  unless reprioritized.
 - WDY-1561, WDY-1558, WDY-1559, WDY-1521, WDY-1528, WDY-1527, and the SER9 route disable are complete.
 - The E2E Tests Linear project update was posted:
   https://linear.app/wendylabsinc/project/e2e-tests-02d5dc2a4b79/activity#project-update-a5ed07b2
