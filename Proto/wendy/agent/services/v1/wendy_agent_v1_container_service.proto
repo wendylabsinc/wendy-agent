@@ -80,9 +80,21 @@ message CreateContainerRequest {
     // Applied after the image's built-in env and before Wendy system env vars,
     // so Wendy vars always win.
     repeated string env = 8;
+
+    // Optional credentials for pulling the image from a private registry.
+    // When unset, the agent performs an anonymous pull (public images).
+    optional RegistryAuth registry_auth = 9;
 }
 
 message CreateContainerResponse {}
+
+// RegistryAuth carries credentials for a single registry pull. The agent only
+// presents these credentials to a request host matching registry_host.
+message RegistryAuth {
+    string registry_host = 1; // e.g. "docker.io", "ghcr.io", "registry.wendy.sh"
+    string username      = 2;
+    string password      = 3; // password or token
+}
 
 message CreateContainerProgress {
     enum Phase {
