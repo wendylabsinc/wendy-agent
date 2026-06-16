@@ -56,6 +56,7 @@ installUbuntuPackages() {
     openssh-client \
     openssh-server \
     pkg-config \
+    acl \
     tar \
     unzip \
     xz-utils \
@@ -113,28 +114,39 @@ configureContainerRuntimeAccessForE2E() {
   sudo groupadd -f docker
   sudo usermod -aG docker "${USER:-$(id -un)}" || true
 
+  local e2e_user="${USER:-$(id -un)}"
+  local e2e_group
+  e2e_group="$(id -gn "$e2e_user")"
+
   # The managed E2E agent runs as the current user and stores app-scoped
-  # volumes and synced deployment files under /var/lib/wendy. Create and loosen
-  # that state root only on this ephemeral E2E host so Linux container tests can
-  # exercise the same paths as a packaged system agent.
+  # volumes and synced deployment files under /var/lib/wendy. Keep ownership
+  # scoped to that runner instead of making the state root world-writable.
   sudo mkdir -p /var/lib/wendy/files /var/lib/wendy/volumes
-  sudo chmod -R a+rwx /var/lib/wendy
+  sudo chown -R "$e2e_user":"$e2e_group" /var/lib/wendy
+  sudo chmod -R u+rwX,go-rwx /var/lib/wendy
 
   # The managed E2E agent talks directly to containerd and the containerd Go
-  # client creates task FIFO paths under /run/containerd/fifo. Hosted runners
-  # keep /run/containerd root-owned, which makes task startup fail before
-  # file-sync behavior is exercised. Loosen this runtime directory only on this
-  # ephemeral E2E host.
+  # client creates task FIFO paths under /run/containerd/fifo. Pre-create that
+  # directory for the runner without broadening permissions on all of
+  # /run/containerd.
   sudo mkdir -p /run/containerd/fifo
-  sudo chmod -R a+rwx /run/containerd
+  sudo chown "$e2e_user":"$e2e_group" /run/containerd/fifo
+  sudo chmod u+rwx,go-rwx /run/containerd/fifo
 
-  # Keep explicit socket chmods for runners whose service manager recreates the
-  # sockets after the directory permissions are adjusted.
+  # Grant this runner access to the runtime sockets. Prefer ACLs so access is
+  # scoped to the E2E user; fall back to owner permissions on these ephemeral CI
+  # sockets if ACLs are unavailable.
   if [ -S /run/containerd/containerd.sock ]; then
-    sudo chmod a+rw /run/containerd/containerd.sock
+    sudo setfacl -m "u:${e2e_user}:rw" /run/containerd/containerd.sock 2>/dev/null || {
+      sudo chown "$e2e_user" /run/containerd/containerd.sock
+      sudo chmod u+rw /run/containerd/containerd.sock
+    }
   fi
   if [ -S /var/run/docker.sock ]; then
-    sudo chmod a+rw /var/run/docker.sock
+    sudo setfacl -m "u:${e2e_user}:rw" /var/run/docker.sock 2>/dev/null || {
+      sudo chown "$e2e_user" /var/run/docker.sock
+      sudo chmod u+rw /var/run/docker.sock
+    }
   fi
 }
 

@@ -3,7 +3,9 @@ package containerd
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
+	"strings"
 	"testing"
 
 	localoci "github.com/wendylabsinc/wendy/go/internal/agent/oci"
@@ -40,15 +42,52 @@ func TestApplyFileSyncMounts_MountsDeclaredFilesAtWorkingDirDestinations(t *test
 	for _, m := range spec.Mounts {
 		mounts[m.Destination] = m
 	}
-	if got := mounts["/app/config.json"].Source; got != filepath.Join(appDir, "config.json") {
+	wantConfigSource, err := filepath.EvalSymlinks(filepath.Join(appDir, "config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := mounts["/app/config.json"].Source; got != wantConfigSource {
 		t.Fatalf("config source = %q", got)
 	}
 	assets := mounts["/app/public/assets"]
-	if assets.Source != filepath.Join(appDir, "public", "assets") {
+	wantAssetsSource, err := filepath.EvalSymlinks(filepath.Join(appDir, "public", "assets"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if assets.Source != wantAssetsSource {
 		t.Fatalf("assets source = %q", assets.Source)
 	}
 	if !slices.Contains(assets.Options, "rbind") || !slices.Contains(assets.Options, "ro") {
 		t.Fatalf("assets options = %v, want rbind and ro", assets.Options)
+	}
+}
+
+func TestApplyFileSyncMounts_RejectsSourceSymlinkEscapes(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink permissions vary on Windows")
+	}
+
+	root := t.TempDir()
+	appDir := filepath.Join(root, "com.example.app")
+	outside := filepath.Join(root, "outside.txt")
+	if err := os.MkdirAll(appDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(outside, []byte("secret"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(appDir, "config.json")); err != nil {
+		t.Fatal(err)
+	}
+
+	orig := fileSyncAppDir
+	fileSyncAppDir = func(appID string) (string, error) { return filepath.Join(root, appID), nil }
+	t.Cleanup(func() { fileSyncAppDir = orig })
+
+	spec := localoci.DefaultSpec("rootfs", []string{"/bin/app"})
+	err := applyFileSyncMounts(spec, "com.example.app", "/app", []appconfig.FileSyncEntry{{Path: "config.json"}})
+	if err == nil || !strings.Contains(err.Error(), "resolves outside app file sync dir") {
+		t.Fatalf("applyFileSyncMounts error = %v, want source escape", err)
 	}
 }
 

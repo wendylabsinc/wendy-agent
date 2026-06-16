@@ -1110,10 +1110,9 @@ func applyFileSyncMounts(spec *localoci.Spec, appID, workingDir string, files []
 		if err != nil {
 			return fmt.Errorf("files[%d] destination %q: %w", i, destRel, err)
 		}
-		source := filepath.Join(appDir, filepath.FromSlash(cleanDestRel))
-		info, err := os.Stat(source)
+		source, info, err := resolvedFileSyncSource(appDir, cleanDestRel)
 		if err != nil {
-			return fmt.Errorf("files[%d] source %s: %w", i, source, err)
+			return fmt.Errorf("files[%d] source: %w", i, err)
 		}
 		destination, err := containerFileSyncDestination(workingDir, cleanDestRel)
 		if err != nil {
@@ -1133,6 +1132,46 @@ func applyFileSyncMounts(spec *localoci.Spec, appID, workingDir string, files []
 		})
 	}
 	return nil
+}
+
+func resolvedFileSyncSource(appDir, rel string) (string, os.FileInfo, error) {
+	cleanRel, err := cleanFileSyncRelativePath(rel)
+	if err != nil {
+		return "", nil, err
+	}
+	appInfo, err := os.Lstat(appDir)
+	if err != nil {
+		return "", nil, fmt.Errorf("stat app file sync dir %s: %w", appDir, err)
+	}
+	if appInfo.Mode()&os.ModeSymlink != 0 || !appInfo.IsDir() {
+		return "", nil, fmt.Errorf("app file sync dir %s must be a real directory", appDir)
+	}
+	resolvedAppDir, err := filepath.EvalSymlinks(appDir)
+	if err != nil {
+		return "", nil, fmt.Errorf("resolving app file sync dir %s: %w", appDir, err)
+	}
+
+	source := filepath.Join(appDir, filepath.FromSlash(cleanRel))
+	info, err := os.Stat(source)
+	if err != nil {
+		return "", nil, fmt.Errorf("%s: %w", source, err)
+	}
+	resolvedSource, err := filepath.EvalSymlinks(source)
+	if err != nil {
+		return "", nil, fmt.Errorf("resolving %s: %w", source, err)
+	}
+	if !pathWithinDir(resolvedAppDir, resolvedSource) {
+		return "", nil, fmt.Errorf("%s resolves outside app file sync dir", source)
+	}
+	return resolvedSource, info, nil
+}
+
+func pathWithinDir(dir, p string) bool {
+	rel, err := filepath.Rel(dir, p)
+	if err != nil || filepath.IsAbs(rel) {
+		return false
+	}
+	return rel == "." || rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator))
 }
 
 func cleanFileSyncRelativePath(p string) (string, error) {
