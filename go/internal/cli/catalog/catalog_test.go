@@ -52,17 +52,6 @@ func TestLoadParsesAndValidates(t *testing.T) {
 	}
 }
 
-func TestCatalogHasPaperless(t *testing.T) {
-	e, ok := Lookup("paperless")
-	if !ok {
-		t.Fatal("expected paperless in the catalog")
-	}
-	if e.DefaultConfig.Hooks == nil || e.DefaultConfig.Hooks.PostStart == nil ||
-		e.DefaultConfig.Hooks.PostStart.OpenURL == "" {
-		t.Error("paperless should declare a web-UI openURL hook")
-	}
-}
-
 func TestLookup(t *testing.T) {
 	e, ok := Lookup("redis")
 	if !ok {

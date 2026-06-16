@@ -50,6 +50,24 @@ message CreateContainerRequest {
 
 No new RPC. Regenerate Go bindings (`agentpb`).
 
+#### Image PATH precedence (fix)
+
+Running arbitrary registry images exposed a pre-existing agent bug: the base
+env hardcoded `PATH=/usr/local/sbin:…:/bin` and appended it last, so per OCI
+"last KEY wins" it clobbered any image's custom `PATH`. Images whose entrypoint
+relies on a custom PATH (e.g. grafana, whose `/run.sh` does `exec grafana` with
+the binary at `/usr/share/grafana/bin`) failed with `exec: <binary>: not found`
+(exit 127). `mergeContainerEnv` now treats `PATH`/`TERM` as defaults the image
+or request may override, while `WENDY_*` identity vars still win.
+
+#### Catalog scope
+
+`redis`, `postgres`, `mosquitto`, `homeassistant`, and `grafana` are
+self-contained single containers. `paperless` was dropped: paperless-ngx hard
+-requires a Redis broker (and ideally Postgres), so it cannot run as a single
+container — it belongs in a future multi-service catalog entry that bundles its
+dependencies.
+
 ### 2. Agent (`go/internal/agent/containerd/client.go`)
 
 In the `Pull` fallback path:

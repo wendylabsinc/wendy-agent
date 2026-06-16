@@ -614,7 +614,11 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 
 	// Build environment variables.
 	// Order: image built-in env → user-provided env (from request) → Wendy system env → OTEL injection.
-	// Wendy vars appear last so they always win in OCI semantics (last KEY wins).
+	// Wendy identity vars appear last so they always win in OCI semantics (last
+	// KEY wins) — except PATH/TERM, which are defaults the image may override
+	// (see mergeContainerEnv). Many images put their entrypoint binary on a
+	// custom PATH (e.g. grafana at /usr/share/grafana/bin); clobbering it breaks
+	// the entrypoint with "exec: <binary>: not found".
 	wendyEnv, err := buildContainerBaseEnv(appID, serviceName)
 	if err != nil {
 		return fmt.Errorf("building container env: %w", err)
@@ -622,12 +626,11 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 	if err := validateUserEnv(req.GetEnv()); err != nil {
 		return fmt.Errorf("invalid env var in request (SOC2-CC6, NIST-SI-10): %w", err)
 	}
-	var env []string
+	var imageEnv []string
 	if specErr == nil {
-		env = append(env, imageSpec.Config.Env...)
+		imageEnv = imageSpec.Config.Env
 	}
-	env = append(env, req.GetEnv()...)
-	env = append(env, wendyEnv...)
+	env := mergeContainerEnv(imageEnv, req.GetEnv(), wendyEnv)
 	env = append(env, buildROS2Env(appCfg)...)
 	env = injectOTELEnvIfNeeded(env, appCfg, appID)
 
@@ -1177,6 +1180,32 @@ func buildContainerBaseEnv(appID, serviceName string) ([]string, error) {
 		env = append(env, "WENDY_APP_ID="+appID)
 	}
 	return env, nil
+}
+
+// mergeContainerEnv composes the container environment with the correct
+// precedence. Order is image env, then request env, then Wendy vars — so Wendy
+// identity vars (WENDY_*) win, matching OCI "last KEY wins" semantics. The
+// exception is PATH and TERM: those Wendy entries are defaults, dropped when the
+// image or request already set them, so an image's custom PATH (e.g. grafana's
+// /usr/share/grafana/bin) survives and its entrypoint can find its binary.
+func mergeContainerEnv(imageEnv, reqEnv, wendyEnv []string) []string {
+	env := make([]string, 0, len(imageEnv)+len(reqEnv)+len(wendyEnv))
+	env = append(env, imageEnv...)
+	env = append(env, reqEnv...)
+
+	set := make(map[string]bool, len(env))
+	for _, e := range env {
+		if k, _, ok := strings.Cut(e, "="); ok {
+			set[k] = true
+		}
+	}
+	for _, e := range wendyEnv {
+		if k, _, ok := strings.Cut(e, "="); ok && (k == "PATH" || k == "TERM") && set[k] {
+			continue
+		}
+		env = append(env, e)
+	}
+	return env
 }
 
 // validateUserEnv rejects caller-supplied env entries that contain characters

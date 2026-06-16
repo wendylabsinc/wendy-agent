@@ -70,21 +70,5 @@
       ],
       "hooks": { "postStart": { "openURL": "http://${WENDY_HOSTNAME}:3000" } }
     }
-  },
-  {
-    "name": "paperless",
-    "image": "ghcr.io/paperless-ngx/paperless-ngx:latest",
-    "description": "Paperless-ngx document management (web UI on :8000; needs redis)",
-    "category": "Documents",
-    "defaultConfig": {
-      "appId": "paperless",
-      "version": "latest",
-      "entitlements": [
-        { "type": "network", "mode": "host" },
-        { "type": "persist", "name": "data", "path": "/usr/src/paperless/data" },
-        { "type": "persist", "name": "media", "path": "/usr/src/paperless/media" }
-      ],
-      "hooks": { "postStart": { "openURL": "http://${WENDY_HOSTNAME}:8000" } }
-    }
   }
 ]
