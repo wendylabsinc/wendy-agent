@@ -531,6 +531,14 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 			pullOpts = append(pullOpts,
 				containerd.WithResolver(docker.NewResolver(docker.ResolverOptions{PlainHTTP: true})),
 			)
+		} else if r := authorizerResolver(req.GetRegistryAuth()); r != nil {
+			// Non-local image with credentials: present them to the matching
+			// registry host. Without auth, fall through to the default
+			// anonymous HTTPS resolver (works for public images).
+			c.logger.Info("Using registry credentials for pull",
+				zap.String("registry_host", req.GetRegistryAuth().GetRegistryHost()),
+			)
+			pullOpts = append(pullOpts, containerd.WithResolver(r))
 		}
 		image, err = c.client.Pull(ctx, imageName, pullOpts...)
 		if err != nil {
