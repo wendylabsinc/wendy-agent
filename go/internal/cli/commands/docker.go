@@ -546,7 +546,7 @@ func injectDebugpy(ctx context.Context, registryAddr, registryImage, platform st
 		return fmt.Errorf("writing debugpy Dockerfile: %w", err)
 	}
 
-	return buildAndPushImage(ctx, tmpDir, registryAddr, registryImage, platform, "", buildArgs, streamOutput, streamOutput, useMTLS)
+	return buildAndPushImage(ctx, tmpDir, registryAddr, registryImage, platform, "", buildArgs, nil, streamOutput, streamOutput, useMTLS)
 }
 
 func generatePythonDockerfile(dir string, debug bool) (string, error) {
@@ -954,10 +954,11 @@ func ensureBuildxBuilder(ctx context.Context, registryAddr string, useMTLS bool,
 	// buildx and buildkitd rejects ']' in table-header keys.
 	effectiveAddr, ipv6IP := splitIPv6RegistryAddr(registryAddr)
 
+	base := buildxBuilderBaseName()
 	if !useMTLS {
-		builderName, err = ensurePlaintextBuilder(ctx, configDir, effectiveAddr, w)
+		builderName, err = ensurePlaintextBuilder(ctx, base, configDir, effectiveAddr, w)
 	} else {
-		builderName, err = ensureMTLSBuilder(ctx, configDir, effectiveAddr, containerCertDir, w)
+		builderName, err = ensureMTLSBuilder(ctx, base+"-mtls", configDir, effectiveAddr, containerCertDir, w)
 	}
 	if err != nil {
 		return "", "", err
@@ -989,11 +990,7 @@ func ensureOCIExportBuilder(ctx context.Context, w io.Writer) (string, error) {
 	ensureBuildxBuilderMu.Lock()
 	defer ensureBuildxBuilderMu.Unlock()
 
-	base := os.Getenv("WENDY_BUILDX_BUILDER")
-	if base == "" {
-		base = "wendy"
-	}
-	builderName := base + "-oci"
+	builderName := buildxBuilderBaseName() + "-oci"
 
 	// Fast path: if the builder's buildkit container is already running, then the
 	// daemon is up, the builder exists, and it is bootstrapped — so we can skip
@@ -1032,6 +1029,134 @@ func ensureOCIExportBuilder(ctx context.Context, w io.Writer) (string, error) {
 		return "", fmt.Errorf("bootstrapping builder %q: %s: %w", builderName, string(out), err)
 	}
 	return builderName, nil
+}
+
+// buildxBuilderBaseName returns the base buildx builder name, honoring the
+// WENDY_BUILDX_BUILDER override (default "wendy"). Variant builders derive from
+// it by suffix: "<base>-mtls", "<base>-oci", "<base>-pool-<i>".
+func buildxBuilderBaseName() string {
+	base := os.Getenv("WENDY_BUILDX_BUILDER")
+	if base == "" {
+		base = "wendy"
+	}
+	return base
+}
+
+// poolBuilderName returns the buildx builder instance name for parallel-build
+// pool slot i. The "-pool-" infix keeps pool builders disjoint from the shared
+// "wendy"/"wendy-mtls"/"wendy-oci" builders so they never contend, and makes
+// leftover pool builders trivial to identify and prune (`docker buildx rm`).
+func poolBuilderName(base string, useMTLS bool, i int) string {
+	if useMTLS {
+		return fmt.Sprintf("%s-mtls-pool-%d", base, i)
+	}
+	return fmt.Sprintf("%s-pool-%d", base, i)
+}
+
+// buildxAssignment is one parallel-build slot's pre-warmed builder instance and
+// its isolated local cache dir. Handing each concurrent service build a distinct
+// builder + cache dir removes the shared buildkit ingest-store and shared local
+// cache races that made parallel multi-service builds flaky (WDY-1554).
+type buildxAssignment struct {
+	name     string // buildx builder instance, e.g. "wendy-pool-2"
+	cacheDir string // isolated --cache-to/--cache-from dir for this slot
+}
+
+// ensureBuilderPool creates (or reuses) a pool of `size` isolated buildx builders
+// for a parallel multi-service build and returns one assignment per slot.
+//
+// Every restart-capable operation — create, config injection, cert copy, restart,
+// bootstrap — happens HERE, up front, before the parallel fan-out. During the
+// fan-out each build only does a cheap "is my builder running" check
+// (ensurePoolBuilderRunning), so no build ever restarts a builder out from under
+// a sibling build. This preserves the #1017/#1018 guarantee while removing the
+// intra-process shared-ingest race the build lock was never meant to cover.
+//
+// Builders are persistent and reused across runs (like the shared builders); the
+// per-builder ".applied" marker makes re-ensure a no-op when the registry config
+// is unchanged. Callers should hold buildLock across this call and the fan-out so
+// a second wendy process can't reconfigure a pool builder mid-build.
+func ensureBuilderPool(ctx context.Context, size int, registryAddr string, useMTLS bool, w io.Writer) ([]buildxAssignment, error) {
+	ensureBuildxBuilderMu.Lock()
+	defer ensureBuildxBuilderMu.Unlock()
+
+	if err := ensureDockerDaemon(ctx); err != nil {
+		return nil, err
+	}
+
+	const containerCertDir = "/etc/buildkit/certs"
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, fmt.Errorf("finding home directory: %w", err)
+	}
+	configDir := filepath.Join(home, ".cache", "wendy")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		return nil, fmt.Errorf("creating config directory: %w", err)
+	}
+
+	userCache, err := os.UserCacheDir()
+	if err != nil {
+		return nil, fmt.Errorf("finding user cache directory: %w", err)
+	}
+
+	// The IPv6 alias is identical for every slot (same registry); compute once.
+	effectiveAddr, ipv6IP := splitIPv6RegistryAddr(registryAddr)
+	base := buildxBuilderBaseName()
+
+	assignments := make([]buildxAssignment, 0, size)
+	for i := 0; i < size; i++ {
+		name := poolBuilderName(base, useMTLS, i)
+
+		// Create + configure each builder sequentially. ensure*Builder restarts the
+		// builder only when its ".applied" marker differs, so a warm pool is a
+		// no-op restart-wise; a cold pool pays the create/config cost once.
+		if useMTLS {
+			_, err = ensureMTLSBuilder(ctx, name, configDir, effectiveAddr, containerCertDir, w)
+		} else {
+			_, err = ensurePlaintextBuilder(ctx, name, configDir, effectiveAddr, w)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("preparing pool builder %q: %w", name, err)
+		}
+
+		// Each buildkitd container has its own /etc/hosts, so the IPv6 alias must
+		// be added per slot (mirrors the single-builder block in ensureBuildxBuilder).
+		if ipv6IP != "" {
+			containerName := "buildx_buildkit_" + name + "0"
+			hostsCmd := exec.CommandContext(ctx, "docker", "exec", containerName, "sh", "-c",
+				fmt.Sprintf("if grep -q ' wendy-registry' /etc/hosts; then sed -i 's/^[^#]* wendy-registry$/%s wendy-registry/' /etc/hosts; else printf '\\n%s wendy-registry\\n' >> /etc/hosts; fi", ipv6IP, ipv6IP))
+			if out, cmdErr := hostsCmd.CombinedOutput(); cmdErr != nil {
+				return nil, fmt.Errorf("adding hosts entry to pool builder %q: %s: %w", name, string(out), cmdErr)
+			}
+		}
+
+		cacheDir := filepath.Join(userCache, "wendy", "buildx-pool", strconv.Itoa(i))
+		if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+			return nil, fmt.Errorf("creating pool cache directory: %w", err)
+		}
+
+		assignments = append(assignments, buildxAssignment{name: name, cacheDir: cacheDir})
+	}
+
+	return assignments, nil
+}
+
+// ensurePoolBuilderRunning is the cheap per-build check used inside the parallel
+// fan-out: it confirms a pre-warmed pool builder's buildkitd container is up
+// without ANY config injection or restart of a running container (a restart could
+// kill a sibling build). On the rare miss — the container died between pre-warm
+// and the build — it re-bootstraps, which is safe because each pool builder is
+// owned by exactly one concurrent build at a time.
+func ensurePoolBuilderRunning(ctx context.Context, builderName string) error {
+	containerName := "buildx_buildkit_" + builderName + "0"
+	if out, err := exec.CommandContext(ctx, "docker", "inspect", "-f", "{{.State.Running}}", containerName).Output(); err == nil && strings.TrimSpace(string(out)) == "true" {
+		return nil
+	}
+	if out, err := exec.CommandContext(ctx, "docker", "buildx", "inspect", "--bootstrap", "--builder", builderName).CombinedOutput(); err != nil {
+		return fmt.Errorf("bootstrapping pool builder %q: %s: %w", builderName, string(out), err)
+	}
+	return nil
 }
 
 // buildkitRegistryConfig generates a buildkitd.toml snippet for the given
@@ -1074,12 +1199,7 @@ func removeBuilder(ctx context.Context, name string) {
 // HTTP registry config. The config is injected into the builder container via
 // docker cp (not --buildkitd-config) to avoid the host-side TOML parser which
 // cannot handle IPv6 brackets in registry addresses.
-func ensurePlaintextBuilder(ctx context.Context, configDir, registryAddr string, w io.Writer) (string, error) {
-	builderName := os.Getenv("WENDY_BUILDX_BUILDER")
-	if builderName == "" {
-		builderName = "wendy"
-	}
-
+func ensurePlaintextBuilder(ctx context.Context, builderName, configDir, registryAddr string, w io.Writer) (string, error) {
 	appliedPath := filepath.Join(configDir, builderName+".applied")
 
 	fullConfig := buildkitRegistryConfig(registryAddr, true, nil)
@@ -1137,14 +1257,8 @@ func ensurePlaintextBuilder(ctx context.Context, configDir, registryAddr string,
 
 // ensureMTLSBuilder ensures the "wendy-mtls" buildx builder exists with mTLS
 // client certs for the device registry.
-func ensureMTLSBuilder(ctx context.Context, configDir, registryAddr, containerCertDir string, w io.Writer) (string, error) {
-	base := os.Getenv("WENDY_BUILDX_BUILDER")
-	if base == "" {
-		base = "wendy"
-	}
-	builderName := base + "-mtls"
-
-	appliedPath := filepath.Join(configDir, base+"-mtls.applied")
+func ensureMTLSBuilder(ctx context.Context, builderName, configDir, registryAddr, containerCertDir string, w io.Writer) (string, error) {
+	appliedPath := filepath.Join(configDir, builderName+".applied")
 
 	certInfo := loadCLICert()
 	if certInfo == nil || certInfo.PemCertificate == "" || certInfo.PemPrivateKey == "" {
@@ -1323,7 +1437,7 @@ func updateBuilderConfig(ctx context.Context, builderName, config string, w io.W
 	return nil
 }
 
-func buildAndPushImage(ctx context.Context, dir, registryAddr, registryImage, platform, dockerfile string, buildArgs map[string]string, streamOutput, logOutput io.Writer, useMTLS bool) error {
+func buildAndPushImage(ctx context.Context, dir, registryAddr, registryImage, platform, dockerfile string, buildArgs map[string]string, asg *buildxAssignment, streamOutput, logOutput io.Writer, useMTLS bool) error {
 	// Serialize against other wendy processes: the buildx builder is shared, and
 	// reconfiguring or restarting it mid-build kills a concurrent build (#1017).
 	// Concurrent builds within this process share the lock via reference counting.
@@ -1333,9 +1447,23 @@ func buildAndPushImage(ctx context.Context, dir, registryAddr, registryImage, pl
 	}
 	defer releaseLock()
 
-	builder, effectiveAddr, err := ensureBuildxBuilder(ctx, registryAddr, useMTLS, logOutput)
-	if err != nil {
-		return err
+	var builder, effectiveAddr string
+	if asg != nil {
+		// Parallel multi-service path: the pool builder was created, configured and
+		// bootstrapped up front (ensureBuilderPool), so here we only confirm it is
+		// running — never inject config or restart, which would kill a sibling build.
+		builder = asg.name
+		if err := ensurePoolBuilderRunning(ctx, builder); err != nil {
+			return err
+		}
+		// ensureBuilderPool applied the same IPv6 alias to every slot, so the image
+		// reference must be rewritten the same way (the recompute is a pure func).
+		effectiveAddr, _ = splitIPv6RegistryAddr(registryAddr)
+	} else {
+		builder, effectiveAddr, err = ensureBuildxBuilder(ctx, registryAddr, useMTLS, logOutput)
+		if err != nil {
+			return err
+		}
 	}
 
 	// When an IPv6 alias is in use, rewrite the image reference to match.
@@ -1350,7 +1478,12 @@ func buildAndPushImage(ctx context.Context, dir, registryAddr, registryImage, pl
 	if err != nil {
 		return fmt.Errorf("finding user cache directory: %w", err)
 	}
+	// Single/shared builds use one shared cache dir; pooled parallel builds each
+	// use their own isolated dir so concurrent --cache-to/--cache-from never race.
 	cacheDir := filepath.Join(userCache, "wendy", "buildx")
+	if asg != nil {
+		cacheDir = asg.cacheDir
+	}
 	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
 		return fmt.Errorf("creating cache directory: %w", err)
 	}
@@ -1458,14 +1591,14 @@ func buildAndPushImage(ctx context.Context, dir, registryAddr, registryImage, pl
 	return nil
 }
 
-func buildAndPushImageWithBuilder(ctx context.Context, builder, dir, registryAddr, registryImage, platform, dockerfile string, buildArgs map[string]string, streamOutput, logOutput io.Writer, useMTLS bool) error {
+func buildAndPushImageWithBuilder(ctx context.Context, builder, dir, registryAddr, registryImage, platform, dockerfile string, buildArgs map[string]string, asg *buildxAssignment, streamOutput, logOutput io.Writer, useMTLS bool) error {
 	normalized, err := normalizeImageBuilder(builder)
 	if err != nil {
 		return err
 	}
 	switch normalized {
 	case imageBuilderDocker:
-		return buildAndPushImage(ctx, dir, registryAddr, registryImage, platform, dockerfile, buildArgs, streamOutput, logOutput, useMTLS)
+		return buildAndPushImage(ctx, dir, registryAddr, registryImage, platform, dockerfile, buildArgs, asg, streamOutput, logOutput, useMTLS)
 	case imageBuilderAppleContainer:
 		return buildAndPushImageWithAppleContainer(ctx, dir, registryImage, platform, dockerfile, buildArgs, streamOutput, logOutput, useMTLS)
 	default:
@@ -1473,24 +1606,26 @@ func buildAndPushImageWithBuilder(ctx context.Context, builder, dir, registryAdd
 	}
 }
 
-func buildAndPushImageForAgent(ctx context.Context, conn *grpcclient.AgentConnection, regPort int, builder, dir, repo, platform, dockerfile string, buildArgs map[string]string, streamOutput, logOutput io.Writer) error {
+func buildAndPushImageForAgent(ctx context.Context, conn *grpcclient.AgentConnection, regPort int, builder, dir, repo, platform, dockerfile string, buildArgs map[string]string, asg *buildxAssignment, streamOutput, logOutput io.Writer) error {
 	if _, err := normalizeImageBuilder(builder); err != nil {
 		return err
 	}
 	if imageBuilderWasExplicit(builder) {
-		return buildAndPushImageForAgentWithBuilder(ctx, conn, regPort, builder, dir, repo, platform, dockerfile, buildArgs, streamOutput, logOutput)
+		return buildAndPushImageForAgentWithBuilder(ctx, conn, regPort, builder, dir, repo, platform, dockerfile, buildArgs, asg, streamOutput, logOutput)
 	}
 	if shouldAutoAttemptAppleContainerBuilder() {
-		if err := buildAndPushImageForAgentWithBuilder(ctx, conn, regPort, imageBuilderAppleContainer, dir, repo, platform, dockerfile, buildArgs, streamOutput, logOutput); err == nil {
+		// Apple Container builds don't use buildx, so the pool assignment never
+		// applies here; only the Docker fallback below consumes it.
+		if err := buildAndPushImageForAgentWithBuilder(ctx, conn, regPort, imageBuilderAppleContainer, dir, repo, platform, dockerfile, buildArgs, nil, streamOutput, logOutput); err == nil {
 			return nil
 		} else {
 			logAppleContainerFallback(logOutput, err)
 		}
 	}
-	return buildAndPushImageForAgentWithBuilder(ctx, conn, regPort, imageBuilderDocker, dir, repo, platform, dockerfile, buildArgs, streamOutput, logOutput)
+	return buildAndPushImageForAgentWithBuilder(ctx, conn, regPort, imageBuilderDocker, dir, repo, platform, dockerfile, buildArgs, asg, streamOutput, logOutput)
 }
 
-func buildAndPushImageForAgentWithBuilder(ctx context.Context, conn *grpcclient.AgentConnection, regPort int, builder, dir, repo, platform, dockerfile string, buildArgs map[string]string, streamOutput, logOutput io.Writer) error {
+func buildAndPushImageForAgentWithBuilder(ctx context.Context, conn *grpcclient.AgentConnection, regPort int, builder, dir, repo, platform, dockerfile string, buildArgs map[string]string, asg *buildxAssignment, streamOutput, logOutput io.Writer) error {
 	normalized, err := normalizeImageBuilder(builder)
 	if err != nil {
 		return err
@@ -1503,7 +1638,7 @@ func buildAndPushImageForAgentWithBuilder(ctx context.Context, conn *grpcclient.
 
 	registryImage := fmt.Sprintf("%s/%s:latest", registryAddr, strings.ToLower(repo))
 	cliLogln("Building and pushing image with %s for %s...", imageBuilderDisplayName(normalized), platform)
-	return buildAndPushImageWithBuilder(ctx, normalized, dir, registryAddr, registryImage, platform, dockerfile, buildArgs, streamOutput, logOutput, useMTLS)
+	return buildAndPushImageWithBuilder(ctx, normalized, dir, registryAddr, registryImage, platform, dockerfile, buildArgs, asg, streamOutput, logOutput, useMTLS)
 }
 
 func buildAndPushImageWithAppleContainer(ctx context.Context, dir, registryImage, platform, dockerfile string, buildArgs map[string]string, streamOutput, logOutput io.Writer, useMTLS bool) error {

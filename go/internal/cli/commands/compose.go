@@ -653,7 +653,7 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 		}
 
 		repo := fmt.Sprintf("%s-%s", projectName, name)
-		if err := buildAndPushImageForAgent(ctx, conn, regPort, opts.builder, ctxDir, repo, platform, dockerfile, allBuildArgs, os.Stdout, os.Stderr); err != nil {
+		if err := buildAndPushImageForAgent(ctx, conn, regPort, opts.builder, ctxDir, repo, platform, dockerfile, allBuildArgs, nil, os.Stdout, os.Stderr); err != nil {
 			return fmt.Errorf("building service %s: %w", name, err)
 		}
 		cliLogln("Service %s image built and pushed.", name)

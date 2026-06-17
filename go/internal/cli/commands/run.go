@@ -1412,7 +1412,7 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	// Build and push the Docker image directly to the device's registry.
 	regPort := registryPort(agentOS)
 	repo := strings.ToLower(appCfg.AppID)
-	if err := buildAndPushImageForAgent(ctx, conn, regPort, opts.builder, cwd, repo, platform, opts.dockerfile, buildArgs, os.Stdout, os.Stderr); err != nil {
+	if err := buildAndPushImageForAgent(ctx, conn, regPort, opts.builder, cwd, repo, platform, opts.dockerfile, buildArgs, nil, os.Stdout, os.Stderr); err != nil {
 		return fmt.Errorf("building and pushing image: %w", err)
 	}
 	cliLogln("Build and push completed.")

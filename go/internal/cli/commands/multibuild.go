@@ -26,6 +26,11 @@ import (
 
 const maxConcurrentBuilds = 4
 
+// buildServiceImage is the per-service build step. It's a package var so tests can
+// substitute it to exercise the parallel scheduling (assignment hand-off, builder
+// mutual-exclusion) without invoking docker.
+var buildServiceImage = buildAndPushImageForAgent
+
 func resolveServiceSubset(services map[string]*appconfig.ServiceConfig, only string) (map[string]*appconfig.ServiceConfig, error) {
 	if only == "" {
 		return services, nil
@@ -114,7 +119,7 @@ func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 	}
 
 	// Build all service images in parallel, then create and start containers.
-	if err := buildServicesParallel(ctx, conn, regPort, cwd, appCfg.AppID, services, platform, buildArgs, opts.builder); err != nil {
+	if err := buildAllServiceImages(ctx, conn, regPort, cwd, appCfg.AppID, services, platform, buildArgs, opts.builder); err != nil {
 		return err
 	}
 
@@ -162,9 +167,69 @@ func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 	return startAndStreamServices(ctx, conn, appCfg.AppID, ordered, opts)
 }
 
+// multiServiceUsesBuildxPool reports whether a multi-service run will build via
+// the Docker buildx path and should therefore use the isolated builder pool. It
+// returns false for Apple Container builds — including the macOS auto path that
+// tries Apple Container before falling back to Docker — since those don't use
+// buildx, and for the WENDY_BUILDX_POOL=0 opt-out.
+func multiServiceUsesBuildxPool(builder string) bool {
+	if os.Getenv("WENDY_BUILDX_POOL") == "0" {
+		return false
+	}
+	normalized, err := normalizeImageBuilder(builder)
+	if err != nil || normalized != imageBuilderDocker {
+		return false
+	}
+	if !imageBuilderWasExplicit(builder) && shouldAutoAttemptAppleContainerBuilder() {
+		return false
+	}
+	return true
+}
+
+// buildAllServiceImages builds every service image. On the parallel Docker path
+// it pre-warms an isolated builder pool (one buildkitd + cache dir per concurrent
+// build) so concurrent builds never race on a shared buildkit ingest store
+// (WDY-1554); otherwise it uses the shared builder exactly as before.
+//
+// For the pool path it holds the cross-process build lock across BOTH pre-warm
+// and the parallel fan-out, so another wendy process can't reconfigure/restart a
+// pool builder mid-build (#1017). The lock is released before this returns, so the
+// subsequent container create/start/stream phase does not block other builds.
+func buildAllServiceImages(ctx context.Context, conn *grpcclient.AgentConnection, regPort int, cwd, appID string, services map[string]*appconfig.ServiceConfig, platform string, buildArgs map[string]string, builder string) error {
+	poolSize := min(maxConcurrentBuilds, len(services))
+	if poolSize <= 1 || !multiServiceUsesBuildxPool(builder) {
+		return buildServicesParallel(ctx, conn, regPort, cwd, appID, services, platform, buildArgs, builder, nil)
+	}
+
+	// Resolve the registry once so the dynamic proxy port is allocated and cached
+	// on conn before pre-warm. Every per-service build then reuses that same cached
+	// address, so the config it would compute matches each pool builder's ".applied"
+	// marker and no slot ever restarts mid-build.
+	registryAddr, cleanup, useMTLS, err := resolveRegistryForImageBuilder(ctx, conn, regPort, imageBuilderDocker)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+
+	releaseLock, err := buildLock.acquire(ctx, os.Stderr)
+	if err != nil {
+		return err
+	}
+	defer releaseLock()
+
+	pool, err := ensureBuilderPool(ctx, poolSize, registryAddr, useMTLS, os.Stderr)
+	if err != nil {
+		return err
+	}
+	return buildServicesParallel(ctx, conn, regPort, cwd, appID, services, platform, buildArgs, builder, pool)
+}
+
 // buildServicesParallel builds all service images concurrently (up to
-// maxConcurrentBuilds at a time). Progress is shown via a Bubbletea multi-
-// spinner in interactive terminals and via plain log lines otherwise.
+// maxConcurrentBuilds at a time). When pool is non-empty each concurrent build is
+// handed a distinct, isolated builder + cache dir from the pool; when pool is nil
+// all builds share the default builder (unchanged behavior). Progress is shown via
+// a Bubbletea multi-spinner in interactive terminals and via plain log lines
+// otherwise.
 func buildServicesParallel(
 	ctx context.Context,
 	conn *grpcclient.AgentConnection,
@@ -174,6 +239,7 @@ func buildServicesParallel(
 	platform string,
 	buildArgs map[string]string,
 	builder string,
+	pool []buildxAssignment,
 ) error {
 	names := make([]string, 0, len(services))
 	for n := range services {
@@ -189,7 +255,24 @@ func buildServicesParallel(
 	}
 
 	results := make(chan result, len(names))
-	sem := make(chan struct{}, maxConcurrentBuilds)
+
+	// Gate concurrency with a channel of builder assignments: each goroutine takes
+	// one token (holding it for its whole build) and returns it on completion. With
+	// a pool every token is a distinct isolated builder + cache dir (WDY-1554);
+	// without one the tokens are nil and builds share the default builder, capped at
+	// maxConcurrentBuilds — exactly as before.
+	var assignments chan *buildxAssignment
+	if len(pool) > 0 {
+		assignments = make(chan *buildxAssignment, len(pool))
+		for i := range pool {
+			assignments <- &pool[i]
+		}
+	} else {
+		assignments = make(chan *buildxAssignment, maxConcurrentBuilds)
+		for i := 0; i < maxConcurrentBuilds; i++ {
+			assignments <- nil
+		}
+	}
 
 	var prog *tea.Program
 	if isInteractiveTerminal() {
@@ -203,8 +286,8 @@ func buildServicesParallel(
 		wg.Add(1)
 		go func(name string, svc *appconfig.ServiceConfig) {
 			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
+			asg := <-assignments
+			defer func() { assignments <- asg }()
 
 			if prog != nil {
 				prog.Send(tui.MultiSpinnerStartMsg{Name: name})
@@ -232,7 +315,7 @@ func buildServicesParallel(
 			}
 			err := dockerfileErr
 			if err == nil {
-				err = buildAndPushImageForAgent(ctx, conn, regPort, builder, contextDir, repo, platform, dockerfile, buildArgs, buildOut, logOut)
+				err = buildServiceImage(ctx, conn, regPort, builder, contextDir, repo, platform, dockerfile, buildArgs, asg, buildOut, logOut)
 			}
 			dur := time.Since(start)
 
