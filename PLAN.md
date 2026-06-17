@@ -53,7 +53,7 @@ in per-issue worktree sessions, not in this coordinator worktree.
 
 ## Current focus
 
-Started WDY-1532 from the general queue. Coordinator setup is complete; implementation must happen in the issue worktree.
+Started WDY-1532 and WDY-1600 from the general queue. Coordinator setup is complete for both; implementation must happen in the issue worktrees.
 
 ## Active / paused issues
 
@@ -83,9 +83,35 @@ Started WDY-1532 from the general queue. Coordinator setup is complete; implemen
   cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1532-file-sync && ai --prompt "Read HANDOVER.md and follow its instructions."
   ```
 
+### WDY-1600 — `wendy device update` reports success before restarted agent is reachable
+
+- Linear: https://linear.app/wendylabsinc/issue/WDY-1600/wendy-device-update-reports-success-before-restarted-agent-is
+- State: In Progress
+- Project: none
+- Worktree: `/Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1600-device-update-restart`
+- Branch: `kb.wdy-1600-device-update-restart`
+- Draft PR: https://github.com/wendylabsinc/WendyOS/pull/1064
+- Setup commit: `9c1ea2432232ca99c3a436033af4eb37ca24f422`
+- Status: Handoff written; ready for implementation in issue worktree.
+- Scope:
+  - First try to reproduce the reported post-update restart-gap failure.
+  - Fix or clarify `wendy device update --binary` readiness semantics so success does not race the agent restart.
+  - Add focused tests for the selected behavior.
+- Constraints:
+  - Keep the PR focused on device-update restart readiness.
+  - Preserve JSON output semantics.
+  - Avoid broad connection retry changes unless they are the smallest safe fix.
+- Validation expectations:
+  - Focused Go tests for changed CLI/agent packages.
+  - Hardware/device reproduction and post-fix validation if available; otherwise document the unavailable hardware and cover behavior with tests/mocks.
+- Resume:
+
+  ```sh
+  cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1600-device-update-restart && ai --prompt "Read HANDOVER.md and follow its instructions."
+  ```
+
 ## Candidate issue queue
 
-- WDY-1600 — `wendy device update` reports success before restarted agent is reachable — https://linear.app/wendylabsinc/issue/WDY-1600/wendy-device-update-reports-success-before-restarted-agent-is
 - WDY-1520 — Consider CLI IPv6-to-IPv4 fallback for device connections — https://linear.app/wendylabsinc/issue/WDY-1520/consider-cli-ipv6-to-ipv4-fallback-for-device-connections
 - WDY-1498 — Add headless device-code flow for `wendy auth login` — https://linear.app/wendylabsinc/issue/WDY-1498/add-headless-device-code-flow-for-wendy-auth-login
 - WDY-1497 — Explore `wendy.json` profiles for selectable app configurations — https://linear.app/wendylabsinc/issue/WDY-1497/explore-wendyjson-profiles-for-selectable-app-configurations
