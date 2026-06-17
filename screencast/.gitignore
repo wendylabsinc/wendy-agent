@@ -12,6 +12,9 @@ stitch/output/*
 !stitch/output/.gitkeep
 stitch/duration-report.tsv
 
+# Generated slide/card raster/video artifacts
+slides/*.png
+
 # Generated title-card raster/video artifacts
 title-card.png
 title-card.svg.png

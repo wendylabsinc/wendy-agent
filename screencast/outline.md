@@ -2,16 +2,18 @@
 
 Audience: engineering peers and engineering management.
 
-Tone: technical and direct. The video explains the product rationale and the runtime behavior without going into unrelated platform experiments.
+Tone: technical, upbeat, and product-oriented. Use slides for rationale and boundaries; use terminal only to show the essential config and run flow.
 
-Goal: show why top-level `wendy.json.files` exists, how an app declares deployment inputs, what `wendy run` does with them, and what guardrails make the feature safe enough for day-to-day development.
+Goal: explain why top-level `wendy.json.files` exists, how a project declares deployment inputs, what `wendy run` does with them, and what guardrails define the first implementation.
 
-Key beats:
+Scene beats:
 
-1. The problem: development inputs such as model weights, prompts, calibration files, and fixtures often change independently from application code.
-2. The config: declare those inputs once in `wendy.json` using relative `path` and optional `to`.
-3. The run behavior: `wendy run` builds the app image, syncs declared inputs into an app-scoped managed directory, and mounts them read-only at the app working directory.
-4. The lifecycle: updates replace changed inputs, stale entries are removed, and app deletion cleans synced inputs because they are not persistent data.
-5. The engineering boundary: single-service support now; multi-service and Compose fail explicitly and are tracked separately.
+1. Title: file sync for `wendy run`.
+2. Slide: inputs change faster than images.
+3. Slide: declare once, sync on run, mount read-only.
+4. Terminal: show the compact `wendy.json.files` shape and app reads.
+5. Terminal: run, update one prompt, run again.
+6. Slide: guardrails and first-PR boundary.
+7. Closing: review/merge path.
 
-Call to action: review PR #998 with the feature boundary in mind; broader auth policy or deeper filesystem-hardening work should remain separate from this implementation PR.
+Avoid unrelated platform details. The story is deployment inputs, developer workflow, and clear lifecycle semantics.
