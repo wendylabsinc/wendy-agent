@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -191,6 +192,43 @@ func TestReceiveFileSyncChunk_RejectsAggregateStreamOverflow(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "exceed manifest total size") {
 		t.Fatalf("receiveFileSyncChunk error = %v, want aggregate stream overflow", err)
+	}
+}
+
+func TestSafeExistingFileSyncPath_RejectsSymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink permissions vary on Windows")
+	}
+
+	appDir := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "outside.txt")
+	if err := os.WriteFile(outside, []byte("secret"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(appDir, "payload.txt")); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err := safeExistingFileSyncPath(appDir, "payload.txt")
+	if err == nil || !strings.Contains(err.Error(), "must not be a symlink") {
+		t.Fatalf("safeExistingFileSyncPath error = %v, want symlink rejection", err)
+	}
+}
+
+func TestPrepareFileSyncInstallPath_RejectsSymlinkParent(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink permissions vary on Windows")
+	}
+
+	appDir := t.TempDir()
+	outsideDir := t.TempDir()
+	if err := os.Symlink(outsideDir, filepath.Join(appDir, "nested")); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := prepareFileSyncInstallPath(appDir, "nested/payload.txt")
+	if err == nil || !strings.Contains(err.Error(), "must not be a symlink") {
+		t.Fatalf("prepareFileSyncInstallPath error = %v, want symlink parent rejection", err)
 	}
 }
 

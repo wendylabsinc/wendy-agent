@@ -1139,31 +1139,54 @@ func resolvedFileSyncSource(appDir, rel string) (string, os.FileInfo, error) {
 	if err != nil {
 		return "", nil, err
 	}
-	appInfo, err := os.Lstat(appDir)
+	source := filepath.Join(appDir, filepath.FromSlash(cleanRel))
+	info, err := safeExistingPathWithinDir(appDir, source)
 	if err != nil {
-		return "", nil, fmt.Errorf("stat app file sync dir %s: %w", appDir, err)
+		return "", nil, err
 	}
-	if appInfo.Mode()&os.ModeSymlink != 0 || !appInfo.IsDir() {
-		return "", nil, fmt.Errorf("app file sync dir %s must be a real directory", appDir)
-	}
-	resolvedAppDir, err := filepath.EvalSymlinks(appDir)
-	if err != nil {
-		return "", nil, fmt.Errorf("resolving app file sync dir %s: %w", appDir, err)
+	return source, info, nil
+}
+
+func safeExistingPathWithinDir(base, full string) (os.FileInfo, error) {
+	base = filepath.Clean(base)
+	full = filepath.Clean(full)
+	if !pathWithinDir(base, full) {
+		return nil, fmt.Errorf("path escapes file sync root")
 	}
 
-	source := filepath.Join(appDir, filepath.FromSlash(cleanRel))
-	info, err := os.Stat(source)
+	baseInfo, err := os.Lstat(base)
 	if err != nil {
-		return "", nil, fmt.Errorf("%s: %w", source, err)
+		return nil, fmt.Errorf("stat app file sync dir %s: %w", base, err)
 	}
-	resolvedSource, err := filepath.EvalSymlinks(source)
+	if baseInfo.Mode()&os.ModeSymlink != 0 || !baseInfo.IsDir() {
+		return nil, fmt.Errorf("app file sync dir %s must be a real directory", base)
+	}
+
+	rel, err := filepath.Rel(base, full)
 	if err != nil {
-		return "", nil, fmt.Errorf("resolving %s: %w", source, err)
+		return nil, err
 	}
-	if !pathWithinDir(resolvedAppDir, resolvedSource) {
-		return "", nil, fmt.Errorf("%s resolves outside app file sync dir", source)
+	if rel == "." {
+		return baseInfo, nil
 	}
-	return resolvedSource, info, nil
+
+	current := base
+	components := strings.Split(rel, string(os.PathSeparator))
+	var info os.FileInfo
+	for i, component := range components {
+		current = filepath.Join(current, component)
+		info, err = os.Lstat(current)
+		if err != nil {
+			return nil, err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return nil, fmt.Errorf("%s must not be a symlink", current)
+		}
+		if i < len(components)-1 && !info.IsDir() {
+			return nil, fmt.Errorf("%s must be a directory", current)
+		}
+	}
+	return info, nil
 }
 
 func pathWithinDir(dir, p string) bool {

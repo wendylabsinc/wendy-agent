@@ -222,7 +222,7 @@ func receiveFileSyncChunk(appDir string, incoming map[string]*incomingFile, mani
 		if len(incoming) >= fileSyncMaxInflightFiles {
 			return fmt.Errorf("too many inflight file sync files: max %d", fileSyncMaxInflightFiles)
 		}
-		if err := os.MkdirAll(appDir, 0o700); err != nil {
+		if err := ensureFileSyncAppDir(appDir); err != nil {
 			return fmt.Errorf("creating file sync dir: %w", err)
 		}
 		tmp, err := os.CreateTemp(appDir, ".sync-*")
@@ -280,25 +280,22 @@ func commitFileSyncFile(appDir string, incoming map[string]*incomingFile, manife
 	if got := state.hash.Sum(nil); !bytes.Equal(got, commit.GetSha256()) || !bytes.Equal(got, entry.GetSha256()) {
 		return fmt.Errorf("hash mismatch for %s", cleaned)
 	}
-	if err := state.file.Close(); err != nil {
-		return fmt.Errorf("closing temp file for %s: %w", cleaned, err)
-	}
-	state.file = nil
-
-	finalPath, err := safeFileSyncJoin(appDir, cleaned)
+	finalPath, err := prepareFileSyncInstallPath(appDir, cleaned)
 	if err != nil {
 		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(finalPath), 0o700); err != nil {
-		return fmt.Errorf("creating parent for %s: %w", cleaned, err)
 	}
 	mode := fs.FileMode(entry.GetMode() & 0o777)
 	if mode == 0 {
 		mode = 0o644
 	}
-	if err := os.Chmod(state.tmpPath, mode); err != nil {
+	if err := state.file.Chmod(mode); err != nil {
 		return fmt.Errorf("chmod temp file for %s: %w", cleaned, err)
 	}
+	if err := state.file.Close(); err != nil {
+		return fmt.Errorf("closing temp file for %s: %w", cleaned, err)
+	}
+	state.file = nil
+
 	if err := os.Rename(state.tmpPath, finalPath); err != nil {
 		return fmt.Errorf("installing %s: %w", cleaned, err)
 	}
@@ -315,9 +312,12 @@ func chmodFileSyncFile(appDir string, chmod *agentpb.FileSyncChmod) error {
 	if err != nil {
 		return fmt.Errorf("invalid chmod path %q: %w", chmod.GetPath(), err)
 	}
-	finalPath, err := safeFileSyncJoin(appDir, cleaned)
+	finalPath, info, err := safeExistingFileSyncPath(appDir, cleaned)
 	if err != nil {
 		return err
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("chmod %s: not a regular file", cleaned)
 	}
 	if err := os.Chmod(finalPath, fs.FileMode(chmod.GetMode()&0o777)); err != nil {
 		return fmt.Errorf("chmod %s: %w", cleaned, err)
@@ -331,9 +331,15 @@ func deleteFileSyncPaths(appDir string, paths []string) error {
 		if err != nil {
 			return fmt.Errorf("invalid delete path %q: %w", p, err)
 		}
-		fullPath, err := safeFileSyncJoin(appDir, cleaned)
+		fullPath, info, err := safeExistingFileSyncPath(appDir, cleaned)
+		if os.IsNotExist(err) {
+			continue
+		}
 		if err != nil {
 			return err
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("delete %s: not a regular file", cleaned)
 		}
 		if err := os.Remove(fullPath); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("delete %s: %w", cleaned, err)
@@ -438,14 +444,101 @@ func safeFileSyncJoin(base, rel string) (string, error) {
 		return "", err
 	}
 	full := filepath.Join(base, filepath.FromSlash(cleaned))
-	relToBase, err := filepath.Rel(base, full)
-	if err != nil {
-		return "", err
-	}
-	if relToBase == "." || strings.HasPrefix(relToBase, "..") || filepath.IsAbs(relToBase) {
+	if !pathWithinDir(base, full) {
 		return "", fmt.Errorf("path escapes file sync root")
 	}
 	return full, nil
+}
+
+func ensureFileSyncAppDir(appDir string) error {
+	if err := os.MkdirAll(appDir, 0o700); err != nil {
+		return err
+	}
+	info, err := os.Lstat(appDir)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return fmt.Errorf("%s must be a real directory", appDir)
+	}
+	return nil
+}
+
+func prepareFileSyncInstallPath(appDir, rel string) (string, error) {
+	finalPath, err := safeFileSyncJoin(appDir, rel)
+	if err != nil {
+		return "", err
+	}
+	parent := filepath.Dir(finalPath)
+	if err := os.MkdirAll(parent, 0o700); err != nil {
+		return "", fmt.Errorf("creating parent for %s: %w", rel, err)
+	}
+	if _, err := safeExistingPathWithinDir(appDir, parent); err != nil {
+		return "", fmt.Errorf("validating parent for %s: %w", rel, err)
+	}
+	return finalPath, nil
+}
+
+func safeExistingFileSyncPath(appDir, rel string) (string, fs.FileInfo, error) {
+	fullPath, err := safeFileSyncJoin(appDir, rel)
+	if err != nil {
+		return "", nil, err
+	}
+	info, err := safeExistingPathWithinDir(appDir, fullPath)
+	if err != nil {
+		return "", nil, err
+	}
+	return fullPath, info, nil
+}
+
+func safeExistingPathWithinDir(base, full string) (fs.FileInfo, error) {
+	base = filepath.Clean(base)
+	full = filepath.Clean(full)
+	if !pathWithinDir(base, full) {
+		return nil, fmt.Errorf("path escapes file sync root")
+	}
+
+	baseInfo, err := os.Lstat(base)
+	if err != nil {
+		return nil, err
+	}
+	if baseInfo.Mode()&os.ModeSymlink != 0 || !baseInfo.IsDir() {
+		return nil, fmt.Errorf("%s must be a real directory", base)
+	}
+
+	rel, err := filepath.Rel(base, full)
+	if err != nil {
+		return nil, err
+	}
+	if rel == "." {
+		return baseInfo, nil
+	}
+
+	current := base
+	components := strings.Split(rel, string(os.PathSeparator))
+	var info fs.FileInfo
+	for i, component := range components {
+		current = filepath.Join(current, component)
+		info, err = os.Lstat(current)
+		if err != nil {
+			return nil, err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return nil, fmt.Errorf("%s must not be a symlink", current)
+		}
+		if i < len(components)-1 && !info.IsDir() {
+			return nil, fmt.Errorf("%s must be a directory", current)
+		}
+	}
+	return info, nil
+}
+
+func pathWithinDir(dir, p string) bool {
+	rel, err := filepath.Rel(filepath.Clean(dir), filepath.Clean(p))
+	if err != nil || filepath.IsAbs(rel) {
+		return false
+	}
+	return rel == "." || rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator))
 }
 
 func pruneEmptyFileSyncDirs(appDir, dir string) {

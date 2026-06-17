@@ -42,19 +42,11 @@ func TestApplyFileSyncMounts_MountsDeclaredFilesAtWorkingDirDestinations(t *test
 	for _, m := range spec.Mounts {
 		mounts[m.Destination] = m
 	}
-	wantConfigSource, err := filepath.EvalSymlinks(filepath.Join(appDir, "config.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := mounts["/app/config.json"].Source; got != wantConfigSource {
+	if got := mounts["/app/config.json"].Source; got != filepath.Join(appDir, "config.json") {
 		t.Fatalf("config source = %q", got)
 	}
 	assets := mounts["/app/public/assets"]
-	wantAssetsSource, err := filepath.EvalSymlinks(filepath.Join(appDir, "public", "assets"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if assets.Source != wantAssetsSource {
+	if assets.Source != filepath.Join(appDir, "public", "assets") {
 		t.Fatalf("assets source = %q", assets.Source)
 	}
 	if !slices.Contains(assets.Options, "rbind") || !slices.Contains(assets.Options, "ro") {
@@ -86,8 +78,8 @@ func TestApplyFileSyncMounts_RejectsSourceSymlinkEscapes(t *testing.T) {
 
 	spec := localoci.DefaultSpec("rootfs", []string{"/bin/app"})
 	err := applyFileSyncMounts(spec, "com.example.app", "/app", []appconfig.FileSyncEntry{{Path: "config.json"}})
-	if err == nil || !strings.Contains(err.Error(), "resolves outside app file sync dir") {
-		t.Fatalf("applyFileSyncMounts error = %v, want source escape", err)
+	if err == nil || !strings.Contains(err.Error(), "must not be a symlink") {
+		t.Fatalf("applyFileSyncMounts error = %v, want symlink rejection", err)
 	}
 }
 

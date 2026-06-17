@@ -119,11 +119,11 @@ configureContainerRuntimeAccessForE2E() {
   e2e_group="$(id -gn "$e2e_user")"
 
   # The managed E2E agent runs as the current user and stores app-scoped
-  # volumes and synced deployment files under /var/lib/wendy. Keep ownership
-  # scoped to that runner instead of making the state root world-writable.
-  sudo mkdir -p /var/lib/wendy/files /var/lib/wendy/volumes
-  sudo chown -R "$e2e_user":"$e2e_group" /var/lib/wendy
-  sudo chmod -R u+rwX,go-rwx /var/lib/wendy
+  # volumes and synced deployment files under /var/lib/wendy. Keep the root
+  # directory root-owned and grant the runner only the exact leaf directories it
+  # needs on this ephemeral host.
+  sudo install -d -m 0755 -o root -g root /var/lib/wendy
+  sudo install -d -m 0700 -o "$e2e_user" -g "$e2e_group" /var/lib/wendy/files /var/lib/wendy/volumes
 
   # The managed E2E agent talks directly to containerd and the containerd Go
   # client creates task FIFO paths under /run/containerd/fifo. Pre-create that
