@@ -1,0 +1,28 @@
+# Generated recordings and final renders
+recordings/*
+!recordings/.gitkeep
+
+# Generated voiceover audio
+voiceover/mp3/*
+!voiceover/mp3/.gitkeep
+
+# Stitch/build outputs
+stitch/build/
+stitch/output/*
+!stitch/output/.gitkeep
+stitch/duration-report.tsv
+
+# Generated title-card raster/video artifacts
+title-card.png
+title-card.svg.png
+title-card.rendered.svg
+closing-card.png
+closing-card.svg.png
+closing-card.rendered.svg
+recordings/00-title-card.mp4
+recordings/99-closing-card.mp4
+
+# Local bytecode and OS metadata
+__pycache__/
+*.pyc
+.DS_Store

@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$WENDY_FILE_SYNC_DEMO"
+rm -f .wendy-demo-first-run
+cat > prompts/system.txt <<'OUT'
+Classify sensor events and explain the decision in one sentence.
+OUT
