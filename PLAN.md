@@ -53,7 +53,7 @@ in per-issue worktree sessions, not in this coordinator worktree.
 
 ## Current focus
 
-Started WDY-1532 and WDY-1600 from the general queue. Coordinator setup is complete for both; implementation must happen in the issue worktrees.
+Started WDY-1532, WDY-1600, and WDY-1602 from the general queue. Coordinator setup is complete for all three; implementation must happen in the issue worktrees.
 
 ## Active / paused issues
 
@@ -110,6 +110,32 @@ Started WDY-1532 and WDY-1600 from the general queue. Coordinator setup is compl
   cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1600-device-update-restart && ai --prompt "Read HANDOVER.md and follow its instructions."
   ```
 
+### WDY-1602 — Fix Fumadocs audit failure from esbuild advisory
+
+- Linear: https://linear.app/wendylabsinc/issue/WDY-1602/fix-fumadocs-audit-failure-from-esbuild-advisory
+- State: In Progress
+- Project: none
+- Worktree: `/Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1602-fumadocs-esbuild-audit`
+- Branch: `kb.wdy-1602-fumadocs-esbuild-audit`
+- Draft PR: https://github.com/wendylabsinc/WendyOS/pull/1066
+- Setup commit: `f423ef4d`
+- Status: Handoff written; ready for implementation in issue worktree.
+- Scope:
+  - First reproduce the Fumadocs `npm audit --audit-level=high` failure.
+  - Apply a minimal docs lockfile update for the esbuild advisory.
+  - Avoid unsafe `npm audit fix --force` dependency churn.
+- Constraints:
+  - Keep the PR focused on docs dependency audit health.
+  - Prefer lockfile-only changes unless validation proves `package.json` must change.
+- Validation expectations:
+  - `cd docs && npm audit --audit-level=high`
+  - `cd docs && npm run build`
+- Resume:
+
+  ```sh
+  cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1602-fumadocs-esbuild-audit && ai --prompt "Read HANDOVER.md and follow its instructions."
+  ```
+
 ## Candidate issue queue
 
 - WDY-1520 — Consider CLI IPv6-to-IPv4 fallback for device connections — https://linear.app/wendylabsinc/issue/WDY-1520/consider-cli-ipv6-to-ipv4-fallback-for-device-connections
@@ -127,6 +153,7 @@ Started WDY-1532 and WDY-1600 from the general queue. Coordinator setup is compl
 - The `linear` CLI is not installed in this environment despite the Linear skill docs; coordinator used Linear GraphQL via `LINEAR_API_KEY` for WDY-1532 assignment/status.
 - Pushing WDY-1532 to `origin` over the default SSH URL hung; pushing via `ssh://git@ssh.github.com:443/wendylabsinc/WendyOS.git` worked. The WDY-1532 worktree has `remote.origin.pushurl` set to that SSH-over-443 URL.
 - The user clarified the intended issue was WDY-1600, not WDY-1063. WDY-1600 references the accidentally-created-and-closed GitHub issue https://github.com/wendylabsinc/WendyOS/issues/1063.
+- WDY-1602 came from the Fumadocs failure on PR #1064; the blocking issue is `npm audit --audit-level=high` flagging locked `esbuild@0.28.0`.
 
 ## Cross-coordinator references
 
