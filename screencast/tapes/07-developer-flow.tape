@@ -14,14 +14,12 @@ Set WindowBarSize 40
 Set Framerate 10
 Set CursorBlink false
 Set TypingSpeed 24ms
-Set Shell bash
+Set Shell zsh
 
 Hide
 Type "/Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1532-file-sync-screencast/screencast/scripts/prepare-filesync-vhs.sh >/dev/null"
 Enter
 Type "source /tmp/wendy-filesync-vhs/env"
-Enter
-Type "export PS1='wendy-demo % '"
 Enter
 Type "clear"
 Enter
