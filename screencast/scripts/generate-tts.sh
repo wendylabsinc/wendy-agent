@@ -8,7 +8,8 @@ OUT_DIR="$PROJECT_DIR/voiceover/mp3"
 
 MODEL="${OPENAI_TTS_MODEL:-gpt-4o-mini-tts}"
 VOICE="${OPENAI_TTS_VOICE:-alloy}"
-INSTRUCTIONS="${OPENAI_TTS_INSTRUCTIONS:-Technical but engaging engineering product narration. Warm, confident, concise, and clear. Sound like an experienced engineer explaining a useful feature to peers and engineering leadership; avoid hype and avoid sounding robotic.}"
+SPEED="${OPENAI_TTS_SPEED:-1.15}"
+INSTRUCTIONS="${OPENAI_TTS_INSTRUCTIONS:-Technical but engaging engineering product narration. Warm, energetic, confident, concise, and clear. Keep the pace brisk, like a senior engineer excited to show a practical workflow improvement to peers and engineering leadership; avoid hype and avoid sounding robotic.}"
 DRY_RUN=0
 
 usage() {
@@ -18,8 +19,8 @@ usage: generate-tts.sh [--dry-run]
 Reads voiceover/text/*.txt and writes matching MP3 files to voiceover/mp3/.
 Requires OPENAI_API_KEY unless --dry-run is used. There is intentionally no
 local fallback voice generator.
-Set OPENAI_TTS_MODEL, OPENAI_TTS_VOICE, or OPENAI_TTS_INSTRUCTIONS to override
-TTS defaults.
+Set OPENAI_TTS_MODEL, OPENAI_TTS_VOICE, OPENAI_TTS_SPEED, or
+OPENAI_TTS_INSTRUCTIONS to override TTS defaults.
 EOF
 }
 
@@ -69,13 +70,14 @@ PY
   fi
 
   payload="$(mktemp)"
-  python3 - "$txt" "$MODEL" "$VOICE" "$INSTRUCTIONS" > "$payload" <<'PY'
+  python3 - "$txt" "$MODEL" "$VOICE" "$SPEED" "$INSTRUCTIONS" > "$payload" <<'PY'
 import json, sys
-text_path, model, voice, instructions = sys.argv[1:]
+text_path, model, voice, speed, instructions = sys.argv[1:]
 text = open(text_path, encoding='utf-8').read().strip()
 print(json.dumps({
     "model": model,
     "voice": voice,
+    "speed": float(speed),
     "input": text,
     "response_format": "mp3",
     "instructions": instructions,
