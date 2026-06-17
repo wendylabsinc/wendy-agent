@@ -31,7 +31,7 @@ For single-container WendyOS/Linux deployments and native macOS deployments, `we
 
 Use this for development inputs that should be available beside the app but should not be baked into the image: local model directories, calibration bundles, sample datasets, generated assets, or other large static files. This helps when a large asset would otherwise sit in the top Docker layer with frequently changing application code. Instead of invalidating that layer and pushing a large image across the LAN on every iteration, Wendy copies the declared files to an agent-managed app area and reuses unchanged content on later runs.
 
-`files` are deployment inputs, not persistent app data. The container sees them as read-only mounts under its working directory. Use a `persist` entitlement for app-written data that should survive redeploys or app removal.
+`files` are runtime app files, not persistent app data. The container sees them as read-only mounts under its working directory. Use a `persist` entitlement for app-written data that should survive redeploys or app removal.
 
 File sync is the normal `wendy run` mechanism for keeping large development inputs out of the image transfer path.
 

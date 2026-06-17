@@ -1,0 +1,2 @@
+classifier-model-v1
+pretend this directory is a large classification model bundle

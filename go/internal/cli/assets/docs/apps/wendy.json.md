@@ -90,11 +90,11 @@ Use `files` for development inputs that should travel with the app but should no
 
 For WendyOS/Linux containers, files are synced to `/var/lib/wendy/files/<appId>/` on the device and then bind-mounted read-only into the container at `<working directory>/<to-or-path>`. Files that are no longer declared in `wendy.json` are removed from that directory on the next `wendy run`, and the entire directory is deleted when the app is removed. Top-level `files` currently apply to single-container `wendy run` deployments; multi-service `services` and Docker Compose deployments do not consume them yet.
 
-`files` are deployment inputs, not persistent app data. Use a `persist` entitlement for data that the app writes and should survive redeploys or app removal.
+`files` are runtime app files, not persistent app data. Use a `persist` entitlement for data that the app writes and should survive redeploys or app removal.
 
 `path` and `to` must be relative and must not contain `..` components. Configured paths must resolve inside the project directory. On Linux container targets, the agent also verifies at container-creation time that synced files do not resolve via symlinks outside the app-scoped sync directory; escaping files cause container creation to fail.
 
-For a worked example of this pattern, see `Examples/HelloMLX/README.md`, which uses `files` to separate a large ML model from the app artifact so repeated `wendy run` iterations can reuse unchanged model files.
+For examples of this pattern, see `Examples/HelloFileSync/README.md` for a minimal container app and `Examples/HelloMLX/README.md` for a larger ML app that keeps model files separate from the app artifact so repeated `wendy run` iterations can reuse unchanged files.
 
 ### `entitlements`
 
