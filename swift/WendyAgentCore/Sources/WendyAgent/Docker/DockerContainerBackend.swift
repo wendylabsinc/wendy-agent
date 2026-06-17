@@ -150,15 +150,29 @@ actor DockerContainerBackend {
     }
 
     private func posixJoin(_ base: String, _ relativePath: String) -> String {
-        let cleanBase = base.isEmpty ? "/" : base
+        let cleanBase = cleanAbsolutePOSIXPath(base)
         if cleanBase == "/" {
             return "/" + relativePath
         }
-        return cleanBase.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-            .split(separator: "/")
-            .reduce(into: "") { result, component in
-                result += "/" + component
-            } + "/" + relativePath
+        return cleanBase + "/" + relativePath
+    }
+
+    private func cleanAbsolutePOSIXPath(_ path: String) -> String {
+        let absolutePath = "/" + path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        var components: [String] = []
+        for component in absolutePath.split(separator: "/") {
+            switch component {
+            case ".":
+                continue
+            case "..":
+                if !components.isEmpty {
+                    components.removeLast()
+                }
+            default:
+                components.append(String(component))
+            }
+        }
+        return components.isEmpty ? "/" : "/" + components.joined(separator: "/")
     }
 
     // MARK: - Entitlement mapping

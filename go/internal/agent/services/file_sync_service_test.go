@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"crypto/sha256"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -23,7 +24,7 @@ func startFileSyncTestServer(t *testing.T) (agentpb.WendyFileSyncServiceClient, 
 
 	lis := bufconn.Listen(1024 * 1024)
 	srv := grpc.NewServer()
-	agentpb.RegisterWendyFileSyncServiceServer(srv, NewFileSyncService())
+	agentpb.RegisterWendyFileSyncServiceServer(srv, NewFileSyncService(nil))
 	go func() { _ = srv.Serve(lis) }()
 
 	conn, err := grpc.NewClient("passthrough:///bufnet", grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
@@ -104,7 +105,8 @@ func TestFileSyncService_WritesCommittedFile(t *testing.T) {
 func TestReceiveFileSyncChunk_RejectsPathMissingFromManifest(t *testing.T) {
 	data := []byte("hello")
 	sum := sha256.Sum256(data)
-	err := receiveFileSyncChunk(t.TempDir(), map[string]*incomingFile{}, map[string]*agentpb.FileSyncEntry{}, &agentpb.FileSyncChunk{
+	var totalReceived int64
+	err := receiveFileSyncChunk(t.TempDir(), map[string]*incomingFile{}, map[string]*agentpb.FileSyncEntry{}, int64(len(data)), &totalReceived, &agentpb.FileSyncChunk{
 		Path:           "missing.txt",
 		Data:           data,
 		Sequence:       0,
@@ -119,9 +121,10 @@ func TestReceiveFileSyncChunk_RejectsPathMissingFromManifest(t *testing.T) {
 func TestReceiveFileSyncChunk_RejectsManifestSizeOverflow(t *testing.T) {
 	data := []byte("hello")
 	sum := sha256.Sum256(data)
+	var totalReceived int64
 	err := receiveFileSyncChunk(t.TempDir(), map[string]*incomingFile{}, map[string]*agentpb.FileSyncEntry{
 		"payload.txt": {Path: "payload.txt", Size: int64(len(data) - 1), Sha256: sum[:], Mode: 0o644},
-	}, &agentpb.FileSyncChunk{
+	}, int64(len(data)-1), &totalReceived, &agentpb.FileSyncChunk{
 		Path:           "payload.txt",
 		Data:           data,
 		Sequence:       0,
@@ -136,9 +139,10 @@ func TestReceiveFileSyncChunk_RejectsManifestSizeOverflow(t *testing.T) {
 func TestReceiveFileSyncChunk_RejectsOversizedChunk(t *testing.T) {
 	data := make([]byte, fileSyncMaxChunkSize+1)
 	sum := sha256.Sum256(data)
+	var totalReceived int64
 	err := receiveFileSyncChunk(t.TempDir(), map[string]*incomingFile{}, map[string]*agentpb.FileSyncEntry{
 		"payload.txt": {Path: "payload.txt", Size: int64(len(data)), Sha256: sum[:], Mode: 0o644},
-	}, &agentpb.FileSyncChunk{
+	}, int64(len(data)), &totalReceived, &agentpb.FileSyncChunk{
 		Path:           "payload.txt",
 		Data:           data,
 		Sequence:       0,
@@ -147,6 +151,46 @@ func TestReceiveFileSyncChunk_RejectsOversizedChunk(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "max") {
 		t.Fatalf("receiveFileSyncChunk error = %v, want oversized chunk", err)
+	}
+}
+
+func TestReceiveFileSyncChunk_RejectsTooManyInflightFiles(t *testing.T) {
+	data := []byte("hello")
+	sum := sha256.Sum256(data)
+	incoming := make(map[string]*incomingFile, fileSyncMaxInflightFiles)
+	for i := 0; i < fileSyncMaxInflightFiles; i++ {
+		incoming[fmt.Sprintf("file-%d.txt", i)] = &incomingFile{}
+	}
+	var totalReceived int64
+	err := receiveFileSyncChunk(t.TempDir(), incoming, map[string]*agentpb.FileSyncEntry{
+		"payload.txt": {Path: "payload.txt", Size: int64(len(data)), Sha256: sum[:], Mode: 0o644},
+	}, int64(len(data)), &totalReceived, &agentpb.FileSyncChunk{
+		Path:           "payload.txt",
+		Data:           data,
+		Sequence:       0,
+		CumulativeSize: int64(len(data)),
+		Sha256:         sum[:],
+	})
+	if err == nil || !strings.Contains(err.Error(), "too many inflight") {
+		t.Fatalf("receiveFileSyncChunk error = %v, want too many inflight files", err)
+	}
+}
+
+func TestReceiveFileSyncChunk_RejectsAggregateStreamOverflow(t *testing.T) {
+	data := []byte("hello")
+	sum := sha256.Sum256(data)
+	var totalReceived int64
+	err := receiveFileSyncChunk(t.TempDir(), map[string]*incomingFile{}, map[string]*agentpb.FileSyncEntry{
+		"payload.txt": {Path: "payload.txt", Size: int64(len(data)), Sha256: sum[:], Mode: 0o644},
+	}, int64(len(data)-1), &totalReceived, &agentpb.FileSyncChunk{
+		Path:           "payload.txt",
+		Data:           data,
+		Sequence:       0,
+		CumulativeSize: int64(len(data)),
+		Sha256:         sum[:],
+	})
+	if err == nil || !strings.Contains(err.Error(), "exceed manifest total size") {
+		t.Fatalf("receiveFileSyncChunk error = %v, want aggregate stream overflow", err)
 	}
 }
 

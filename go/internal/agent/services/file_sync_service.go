@@ -3,6 +3,7 @@ package services
 import (
 	"bytes"
 	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"hash"
@@ -16,11 +17,15 @@ import (
 
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
+	"go.uber.org/zap"
 )
 
 const (
-	defaultFileSyncRoot  = "/var/lib/wendy/files"
-	fileSyncMaxChunkSize = 4 * 1024 * 1024
+	defaultFileSyncRoot          = "/var/lib/wendy/files"
+	fileSyncMaxChunkSize         = 4 * 1024 * 1024
+	fileSyncMaxInflightFiles     = 128
+	fileSyncMaxManifestFiles     = 100_000
+	fileSyncMaxManifestTotalSize = 100 * 1024 * 1024 * 1024
 )
 
 var fileSyncRoot = defaultFileSyncRoot
@@ -40,10 +45,14 @@ func FileSyncAppDir(appID string) (string, error) {
 // by the container runtime; the service never mounts CLI host paths directly.
 type FileSyncService struct {
 	agentpb.UnimplementedWendyFileSyncServiceServer
+	logger *zap.Logger
 }
 
-func NewFileSyncService() *FileSyncService {
-	return &FileSyncService{}
+func NewFileSyncService(logger *zap.Logger) *FileSyncService {
+	if logger == nil {
+		logger = zap.NewNop()
+	}
+	return &FileSyncService{logger: logger}
 }
 
 type incomingFile struct {
@@ -69,8 +78,13 @@ func (s *FileSyncService) SyncFiles(stream agentpb.WendyFileSyncService_SyncFile
 	if err != nil {
 		return fmt.Errorf("invalid appId: %w", err)
 	}
+	appID := start.GetAppId()
 	localManifest := start.GetManifest()
 	manifestByPath := make(map[string]*agentpb.FileSyncEntry, len(localManifest.GetFiles()))
+	var manifestTotalSize int64
+	if len(localManifest.GetFiles()) > fileSyncMaxManifestFiles {
+		return fmt.Errorf("manifest has %d files, max %d", len(localManifest.GetFiles()), fileSyncMaxManifestFiles)
+	}
 	for _, e := range localManifest.GetFiles() {
 		cleaned, err := validateFileSyncPath(e.GetPath())
 		if err != nil {
@@ -81,6 +95,13 @@ func (s *FileSyncService) SyncFiles(stream agentpb.WendyFileSyncService_SyncFile
 		}
 		if _, ok := manifestByPath[cleaned]; ok {
 			return fmt.Errorf("duplicate manifest path %q", cleaned)
+		}
+		if e.GetSize() < 0 {
+			return fmt.Errorf("manifest path %q has negative size", cleaned)
+		}
+		manifestTotalSize += e.GetSize()
+		if manifestTotalSize > fileSyncMaxManifestTotalSize {
+			return fmt.Errorf("manifest total size exceeds %d bytes", fileSyncMaxManifestTotalSize)
 		}
 		manifestByPath[cleaned] = e
 	}
@@ -96,6 +117,7 @@ func (s *FileSyncService) SyncFiles(stream agentpb.WendyFileSyncService_SyncFile
 	}
 
 	incoming := make(map[string]*incomingFile)
+	var totalReceived int64
 	defer cleanupIncoming(incoming)
 
 	for {
@@ -111,13 +133,19 @@ func (s *FileSyncService) SyncFiles(stream agentpb.WendyFileSyncService_SyncFile
 
 		switch r := req.GetRequestType().(type) {
 		case *agentpb.FileSyncRequest_Chunk:
-			if err := receiveFileSyncChunk(appDir, incoming, manifestByPath, r.Chunk); err != nil {
+			if err := receiveFileSyncChunk(appDir, incoming, manifestByPath, manifestTotalSize, &totalReceived, r.Chunk); err != nil {
 				return err
 			}
 		case *agentpb.FileSyncRequest_Commit:
 			if err := commitFileSyncFile(appDir, incoming, manifestByPath, r.Commit); err != nil {
 				return err
 			}
+			s.logger.Info("file sync committed file",
+				zap.String("app_id", appID),
+				zap.String("path", r.Commit.GetPath()),
+				zap.Int64("size", r.Commit.GetSize()),
+				zap.String("sha256_prefix", sha256Prefix(r.Commit.GetSha256())),
+			)
 			if err := stream.Send(&agentpb.FileSyncResponse{
 				ResponseType: &agentpb.FileSyncResponse_Ack{Ack: &agentpb.FileSyncAck{Path: r.Commit.GetPath()}},
 			}); err != nil {
@@ -127,6 +155,11 @@ func (s *FileSyncService) SyncFiles(stream agentpb.WendyFileSyncService_SyncFile
 			if err := chmodFileSyncFile(appDir, r.Chmod); err != nil {
 				return err
 			}
+			s.logger.Info("file sync updated file mode",
+				zap.String("app_id", appID),
+				zap.String("path", r.Chmod.GetPath()),
+				zap.Uint32("mode", r.Chmod.GetMode()&0o777),
+			)
 			if err := stream.Send(&agentpb.FileSyncResponse{
 				ResponseType: &agentpb.FileSyncResponse_Ack{Ack: &agentpb.FileSyncAck{Path: r.Chmod.GetPath()}},
 			}); err != nil {
@@ -135,6 +168,12 @@ func (s *FileSyncService) SyncFiles(stream agentpb.WendyFileSyncService_SyncFile
 		case *agentpb.FileSyncRequest_Delete:
 			if err := deleteFileSyncPaths(appDir, r.Delete.GetPaths()); err != nil {
 				return err
+			}
+			for _, p := range r.Delete.GetPaths() {
+				s.logger.Info("file sync deleted stale file",
+					zap.String("app_id", appID),
+					zap.String("path", p),
+				)
 			}
 		default:
 			return fmt.Errorf("unexpected file sync request %T", req.GetRequestType())
@@ -153,7 +192,7 @@ func cleanupIncoming(files map[string]*incomingFile) {
 	}
 }
 
-func receiveFileSyncChunk(appDir string, incoming map[string]*incomingFile, manifest map[string]*agentpb.FileSyncEntry, chunk *agentpb.FileSyncChunk) error {
+func receiveFileSyncChunk(appDir string, incoming map[string]*incomingFile, manifest map[string]*agentpb.FileSyncEntry, manifestTotalSize int64, totalReceived *int64, chunk *agentpb.FileSyncChunk) error {
 	if chunk == nil {
 		return fmt.Errorf("nil FileSyncChunk")
 	}
@@ -171,11 +210,17 @@ func receiveFileSyncChunk(appDir string, incoming map[string]*incomingFile, mani
 	if chunk.GetCumulativeSize() > entry.GetSize() {
 		return fmt.Errorf("cumulative size for %s exceeds manifest size: got %d, want at most %d", cleaned, chunk.GetCumulativeSize(), entry.GetSize())
 	}
+	if totalReceived != nil && *totalReceived+int64(len(chunk.GetData())) > manifestTotalSize {
+		return fmt.Errorf("streamed file sync bytes exceed manifest total size: got %d, want at most %d", *totalReceived+int64(len(chunk.GetData())), manifestTotalSize)
+	}
 
 	state := incoming[cleaned]
 	if state == nil {
 		if chunk.GetSequence() != 0 {
 			return fmt.Errorf("first chunk for %s has sequence %d", cleaned, chunk.GetSequence())
+		}
+		if len(incoming) >= fileSyncMaxInflightFiles {
+			return fmt.Errorf("too many inflight file sync files: max %d", fileSyncMaxInflightFiles)
 		}
 		if err := os.MkdirAll(appDir, 0o700); err != nil {
 			return fmt.Errorf("creating file sync dir: %w", err)
@@ -200,6 +245,9 @@ func receiveFileSyncChunk(appDir string, incoming map[string]*incomingFile, mani
 		}
 	}
 	state.size += int64(len(data))
+	if totalReceived != nil {
+		*totalReceived += int64(len(data))
+	}
 	if state.size != chunk.GetCumulativeSize() {
 		return fmt.Errorf("cumulative size mismatch for %s: got %d, streamed %d", cleaned, chunk.GetCumulativeSize(), state.size)
 	}
@@ -339,6 +387,13 @@ func buildAgentFileSyncManifest(appDir string) (*agentpb.FileSyncManifest, error
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Path < entries[j].Path })
 	return &agentpb.FileSyncManifest{Files: entries}, nil
+}
+
+func sha256Prefix(sum []byte) string {
+	if len(sum) > 8 {
+		sum = sum[:8]
+	}
+	return hex.EncodeToString(sum)
 }
 
 func hashFileSHA256(filename string) ([]byte, error) {

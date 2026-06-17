@@ -45,6 +45,39 @@ struct DockerCLITests {
         )
     }
 
+    @Test("file sync mount targets clean container working directories")
+    func fileSyncMountTargetsCleanContainerWorkingDirectories() async throws {
+        let appDirectory = try Self.makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: appDirectory) }
+
+        let payloadURL = appDirectory.appendingPathComponent("payload.txt")
+        try "payload".write(to: payloadURL, atomically: true, encoding: .utf8)
+
+        let backend = DockerContainerBackend()
+        let cases: [(workingDir: String, target: String)] = [
+            ("/app/", "/app/payload.txt"),
+            ("app", "/app/payload.txt"),
+            ("/app/./worker", "/app/worker/payload.txt"),
+            ("/app/../work", "/work/payload.txt"),
+            ("/", "/payload.txt"),
+        ]
+
+        for testCase in cases {
+            let options = try await backend.fileSyncMountOptionsForTesting(
+                from: [WendyFileSyncConfigEntry(path: "payload.txt", to: nil)],
+                appDirectory: appDirectory,
+                workingDir: testCase.workingDir
+            )
+
+            #expect(
+                options.flatMap(\.arguments) == [
+                    "--mount",
+                    "type=bind,source=\(payloadURL.path),target=\(testCase.target),readonly",
+                ]
+            )
+        }
+    }
+
     @Test("experimental macOS Linux containers flag accepts explicit opt in")
     func experimentalMacOSLinuxContainersFlagAcceptsExplicitOptIn() {
         #expect(

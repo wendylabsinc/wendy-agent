@@ -172,7 +172,7 @@ func main() {
 	containerSvc := services.NewContainerService(logger, containerdClient,
 		containerSvcOpts...,
 	)
-	fileSyncSvc := services.NewFileSyncService()
+	fileSyncSvc := services.NewFileSyncService(logger)
 	audioSvc := services.NewAudioService(logger)
 
 	provisioningSvc := services.NewProvisioningService(logger, configPath)
