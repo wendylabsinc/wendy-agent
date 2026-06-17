@@ -1,0 +1,1 @@
+The first implementation is intentionally scoped. It supports single-container wendy run, native macOS runs, files and directories, and optional destinations with to. Multi-service projects and Docker Compose are explicit follow-ups, not silent partial support.

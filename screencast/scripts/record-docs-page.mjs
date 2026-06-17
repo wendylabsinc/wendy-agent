@@ -11,7 +11,7 @@ if (!url) {
   process.exit(2);
 }
 
-const output = resolve(process.argv[3] ?? 'recordings/docs-page.mp4');
+const output = resolve(process.argv[3] ?? 'deck/public/videos/docs-page.mp4');
 const chromium = process.env.CHROMIUM_PATH ?? [
   '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
   '/Applications/Chromium.app/Contents/MacOS/Chromium',

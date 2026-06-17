@@ -1,0 +1,1 @@
+These files are not persistent app data. If the app writes user data, logs, a database, or generated state, that belongs in a persistent volume. File Sync is for files that come from the project and are needed by the app at runtime.

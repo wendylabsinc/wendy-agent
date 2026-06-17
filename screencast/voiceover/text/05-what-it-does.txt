@@ -1,0 +1,1 @@
+File Sync makes large runtime files part of wendy run. The developer declares the files in wendy.json. Wendy syncs only the changed files over the existing CLI-to-agent connection, stores them in an app-scoped area on the device, and mounts them read-only beside the app.

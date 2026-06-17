@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Screencast timeline",
+  "type": "object",
+  "required": ["engine", "deck", "size", "steps"],
+  "properties": {
+    "engine": { "const": "slidev" },
+    "deck": { "type": "string" },
+    "size": {
+      "type": "object",
+      "required": ["width", "height", "fps"],
+      "properties": {
+        "width": { "type": "integer", "minimum": 2 },
+        "height": { "type": "integer", "minimum": 2 },
+        "fps": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": false
+    },
+    "steps": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "target", "minSeconds"],
+        "properties": {
+          "id": { "type": "string" },
+          "target": { "type": "string" },
+          "minSeconds": { "type": "number", "minimum": 0 },
+          "voiceover": { "type": ["string", "null"] },
+          "media": { "type": "string" },
+          "notes": { "type": "string" }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

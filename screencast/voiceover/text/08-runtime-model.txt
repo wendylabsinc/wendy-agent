@@ -1,0 +1,1 @@
+At runtime, the app sees these files under its working directory. On Linux and WendyOS, Wendy stores them under the app’s file sync directory and bind-mounts them read-only into the container. No SDK required. No special runtime API. It is just files.

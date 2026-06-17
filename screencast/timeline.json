@@ -1,0 +1,29 @@
+{
+  "$schema": "./timeline.schema.json",
+  "engine": "slidev",
+  "deck": "deck/slides.md",
+  "size": {
+    "width": 1440,
+    "height": 900,
+    "fps": 10
+  },
+  "steps": [
+    { "id": "title", "target": "1", "minSeconds": 10.0, "voiceover": "voiceover/mp3/00-title.mp3" },
+    { "id": "problem", "target": "2", "minSeconds": 10.0, "voiceover": "voiceover/mp3/01-problem.mp3" },
+    { "id": "linear-layers", "target": "3", "minSeconds": 13.0, "voiceover": "voiceover/mp3/02-linear-layers.mp3" },
+    { "id": "workaround", "target": "4", "minSeconds": 13.0, "voiceover": "voiceover/mp3/03-workaround.mp3" },
+    { "id": "one-cable", "target": "5", "minSeconds": 8.0, "voiceover": "voiceover/mp3/04-one-cable.mp3" },
+    { "id": "what-it-does", "target": "6", "minSeconds": 15.0, "voiceover": "voiceover/mp3/05-what-it-does.mp3" },
+    { "id": "config", "target": "7", "minSeconds": 14.0, "voiceover": "voiceover/mp3/06-config.mp3" },
+    { "id": "developer-flow", "target": "8", "minSeconds": 15.0, "voiceover": "voiceover/mp3/07-developer-flow.mp3" },
+    { "id": "runtime-model", "target": "9", "minSeconds": 13.0, "voiceover": "voiceover/mp3/08-runtime-model.mp3" },
+    { "id": "app-code", "target": "10", "minSeconds": 10.0, "voiceover": "voiceover/mp3/09-app-code.mp3" },
+    { "id": "lifecycle", "target": "11", "minSeconds": 12.0, "voiceover": "voiceover/mp3/10-lifecycle.mp3" },
+    { "id": "scope", "target": "12", "minSeconds": 12.0, "voiceover": "voiceover/mp3/11-scope.mp3" },
+    { "id": "guardrails", "target": "13", "minSeconds": 12.0, "voiceover": "voiceover/mp3/12-guardrails.mp3" },
+    { "id": "why-matters", "target": "14", "minSeconds": 13.0, "voiceover": "voiceover/mp3/13-why-matters.mp3" },
+    { "id": "summary", "target": "15", "minSeconds": 11.0, "voiceover": "voiceover/mp3/14-summary.mp3" },
+    { "id": "closing", "target": "16", "minSeconds": 10.0, "voiceover": "voiceover/mp3/15-closing.mp3" },
+    { "id": "contact", "target": "17", "minSeconds": 6.0, "voiceover": "voiceover/mp3/16-contact.mp3" }
+  ]
+}

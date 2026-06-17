@@ -1,9 +1,0 @@
-# scene_id	video_path	min_seconds	voiceover_path	final_seconds
-# Leave final_seconds empty to use max(min_seconds, voiceover duration).
-00	recordings/00-title-card.mp4	3.0		
-01	recordings/01-problem.mp4	18.0	voiceover/mp3/01-problem.mp3	
-02	recordings/02-runtime-model.mp4	18.0	voiceover/mp3/02-runtime-model.mp3	
-03	recordings/03-config.mp4	24.0	voiceover/mp3/03-config.mp3	
-04	recordings/04-run.mp4	28.0	voiceover/mp3/04-run.mp3	
-05	recordings/05-boundary.mp4	22.0	voiceover/mp3/05-boundary.mp3	
-99	recordings/99-closing-card.mp4	5.0		

@@ -1,0 +1,1 @@
+The core value is faster, more reliable iteration for edge apps. Without File Sync, teams have to bake large assets into images, pre-populate volumes manually, write startup download scripts, or manage object-store credentials on the device.

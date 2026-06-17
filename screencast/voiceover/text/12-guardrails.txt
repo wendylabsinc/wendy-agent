@@ -1,0 +1,1 @@
+There are also path safety rules. Path and to must be relative, parent directory traversal is rejected, sources must resolve inside the project, and Linux mount paths are checked to prevent symlink escapes. This is not a general mount anything from my laptop feature.

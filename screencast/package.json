@@ -1,0 +1,14 @@
+{
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "slidev deck/slides.md",
+    "present": "slidev deck/slides.md",
+    "export": "slidev export deck/slides.md --output output/deck.pdf",
+    "render": "scripts/render-deck.mjs"
+  },
+  "devDependencies": {
+    "@slidev/cli": "latest",
+    "@slidev/theme-default": "latest"
+  }
+}

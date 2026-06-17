@@ -4,7 +4,7 @@ Audience: engineering peers and engineering management.
 
 Tone: technical, upbeat, and product-oriented. Use slides for rationale and boundaries; use terminal only to show the essential config and run flow.
 
-Goal: explain why top-level `wendy.json.files` exists, how a project declares deployment inputs, what `wendy run` does with them, and what guardrails define the first implementation.
+Goal: explain why top-level `wendy.json.files` exists, how a project declares large app assets, what `wendy run` does with them, and what guardrails define the first implementation.
 
 Scene beats:
 
@@ -16,4 +16,4 @@ Scene beats:
 6. Slide: guardrails and first-PR boundary.
 7. Closing: review/merge path.
 
-Avoid unrelated platform details. The story is deployment inputs, developer workflow, and clear lifecycle semantics.
+Avoid unrelated platform details. The story is large app assets, developer workflow, and clear lifecycle semantics.

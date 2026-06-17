@@ -1,0 +1,1 @@
+The usual industry workaround is to externalize the files: download from S3, Hugging Face, a model registry, or an init container or sidecar. That works in cloud-native environments, but it assumes the target device has network access, credentials, and extra lifecycle management.

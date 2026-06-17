@@ -1,1 +1,0 @@
-The implementation is deliberately scoped. Sources must stay inside the project, destinations are relative, duplicates are rejected, transfers are bounded, and runtime mounts are read-only. Synced files are removed with the app because they are deployment inputs, not persistent user data. Multi-service and Compose support are explicit follow-ups, not silent partial support.

@@ -1,1 +1,0 @@
-The config stays intentionally boring. Each entry names a project-relative path, and to is optional when the runtime path should differ. In this demo, the app reads a prompt, a runtime config file, and a sample input from normal relative paths. The important bit is that the contract lives in wendy.json, right beside the rest of the app definition.

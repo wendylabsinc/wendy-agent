@@ -1,1 +1,1 @@
-Here’s the product win: teams can move the stuff that changes quickly without rebuilding the whole application image. Prompts, calibration files, model sidecars, and test fixtures become first-class deployment inputs. That keeps the image focused on code and dependencies, while wendy run still gives us one repeatable path from project to device.
+Think about ML models, prompts, calibration data, sample datasets, or generated assets. These files are required by the app at runtime, but they often change on a different timeline than the application code.

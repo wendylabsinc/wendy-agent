@@ -1,0 +1,1 @@
+Container images are great for packaging code and dependencies, but they’re a poor fit for large app files that change independently. This presentation is about Wendy File Sync: making those large files part of the normal wendy run workflow.

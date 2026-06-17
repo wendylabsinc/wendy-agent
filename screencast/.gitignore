@@ -1,32 +1,32 @@
-# Demo runtime state
+# Dependencies and local Slidev outputs
+node_modules/
+.slidev/
+dist/
+
+# Demo/runtime state
 demo/.wendy-demo-first-run
 
-# Generated recordings and final renders
-recordings/*
-!recordings/.gitkeep
+# Generated or captured media embedded by the deck
+deck/public/videos/*
+!deck/public/videos/.gitkeep
+deck/public/images/*
+!deck/public/images/.gitkeep
 
 # Generated voiceover audio
 voiceover/mp3/*
 !voiceover/mp3/.gitkeep
 
-# Stitch/build outputs
-stitch/build/
-stitch/output/*
-!stitch/output/.gitkeep
-stitch/duration-report.tsv
+# Final renders and temporary build outputs
+output/*
+!output/.gitkeep
+build/
 
-# Generated slide/card raster/video artifacts
+# Legacy generated media from earlier drafts
+recordings/*
 slides/*.png
-
-# Generated title-card raster/video artifacts
+stitch/
 title-card.png
-title-card.svg.png
-title-card.rendered.svg
 closing-card.png
-closing-card.svg.png
-closing-card.rendered.svg
-recordings/00-title-card.mp4
-recordings/99-closing-card.mp4
 
 # Local bytecode and OS metadata
 __pycache__/

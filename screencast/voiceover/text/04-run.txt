@@ -1,1 +1,0 @@
-From the developer’s point of view, nothing new is bolted on. They run the app the same way. Wendy builds or reuses the image, syncs the declared inputs, then starts the app with those files available. Change a prompt and run again: Wendy updates the managed inputs without turning every data edit into an image rebuild.

@@ -1,0 +1,1 @@
+The pitch is simple: container images should carry code and dependencies. Wendy File Sync handles large runtime files that change on their own timeline. That keeps images lean, keeps edge devices offline-friendly, and keeps the workflow as simple as wendy run.

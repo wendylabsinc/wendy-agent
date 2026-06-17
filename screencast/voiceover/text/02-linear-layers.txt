@@ -1,0 +1,1 @@
+If we bake those files into the image, Docker layer ordering becomes the problem. Layers are linear. If an earlier large model layer changes, Docker can invalidate unrelated later layers, so one changed file can turn into a much larger rebuild and push.

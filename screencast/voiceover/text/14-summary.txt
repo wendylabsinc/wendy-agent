@@ -1,0 +1,1 @@
+File Sync gives Wendy a cleaner answer. Large runtime files are synced directly from the developer machine, over the same connection as wendy run, with independent change detection and no internet required on the device.

@@ -1,0 +1,1 @@
+From the developer’s point of view, there is no new command. This is just wendy run. Image changes and file changes are decoupled. Code can change frequently without forcing model transfer, and model transfer does not require the device to reach the internet.

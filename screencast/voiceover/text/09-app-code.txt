@@ -1,0 +1,1 @@
+That means the app code stays ordinary. It reads files from normal relative paths. File Sync changes how those files get to the device and into the app, not how the app consumes them.

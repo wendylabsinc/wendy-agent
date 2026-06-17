@@ -1,0 +1,1 @@
+The config is small. Each entry is an independently synced file or directory. If the prompt changes, Wendy syncs the prompt. If one model changes, Wendy syncs that model. The rest are skipped when unchanged.
