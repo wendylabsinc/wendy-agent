@@ -16,7 +16,7 @@ usage() {
   cat <<EOF
 Usage: $(basename "$0") --run-dir RUN_DIR [OPTIONS]
 
-Review WendyAgent Swift E2E run artifacts with an AI review harness.
+Review WendyAgent Swift E2E run artifacts with a single AI review pass.
 
 Options:
   --run-dir DIR      Required E2E run directory produced by E2EAggregate.sh.
@@ -25,6 +25,8 @@ Options:
   --diff RANGE       Git diff range for diff-scoped review, for example
                      origin/main...HEAD.
   --harness NAME     AI review harness: auto, claude, or codex.
+  --review-prompt PATH
+                     Custom single-pass review prompt path.
   --overwrite        Overwrite existing run review files.
   --help             Show this help message.
 
@@ -114,7 +116,7 @@ review_single_run() {
     command_args+=("${EXTRA_ARGS[@]}")
   fi
 
-  echo "==> Reviewing Swift E2E run results"
+  echo "==> Reviewing Swift E2E run results in one AI pass"
   echo "    Package:  $PACKAGE_DIR"
   echo "    Run dir:  $run_dir"
   if [[ -n "$DIFF" ]]; then

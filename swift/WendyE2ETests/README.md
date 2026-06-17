@@ -159,23 +159,28 @@ directories into a run directory:
 │       ├── attempt.json
 │       ├── test-results.xml
 │       └── test-results.raw.xml  # only when present in the source attempt
+├── source-index.md
 └── observations/
-    └── <suite>/<test>/<target-name>/<attempt-number>/
-        ├── recording.md
-        ├── recording.sh.txt
-        └── test.json
+    └── <suite>/<test>/
+        ├── source.md
+        ├── test.json
+        └── <target-name>/<attempt-number>/
+            ├── recording.md
+            ├── recording.sh.txt
+            └── test.json
 ```
 
 The `attempts/` tree keeps every attempt-root artifact except `observations/`,
-so preflight logs and metadata remain attached to the attempt.
+so preflight logs and metadata remain attached to the attempt. Aggregate runs
+also copy `test.json` to the test root and write `source.md`, which contains the
+extracted test source range including the DocC/spec comment above `@Test` when
+present. `source-index.md` lists those source artifacts for AI and human review.
 
-`make e2e-review` writes scoped AI review issue files into the aggregate run
-directory:
+`make e2e-review` runs a single AI review pass and writes run-level issue files
+into the aggregate run directory:
 
 ```text
 <run>/review.<reviewer>/<slug>.md
-<run>/observations/<suite>/review.<reviewer>/<slug>.md
-<run>/observations/<suite>/<test>/review.<reviewer>/<slug>.md
 ```
 
 `make e2e-report` writes the rendered report files at the aggregate run root:
@@ -187,7 +192,9 @@ directory:
 ```
 
 `recording.md` is the human-readable command log. `recording.sh.txt` replays the
-captured `sh()` calls in order for manual debugging.
+captured `sh()` calls in order for manual debugging. `source.md` is kept
+separate from recordings so runtime transcripts stay focused while review still
+has the spec/test source that produced them.
 
 AI review files are Markdown. Top-level `review.md` is the compact aggregate
 that can be posted as a CI comment. Attempt, overview, and AI review JSON

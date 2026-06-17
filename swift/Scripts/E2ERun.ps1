@@ -40,7 +40,7 @@ $runDir = Join-Path $OutputDir $runName
 
 Push-Location $PackageDir
 try {
-    & swift run swift-e2e-testing aggregate --output-dir $OutputDir $attemptDir
+    & swift run swift-e2e-testing aggregate --output-dir $OutputDir --package-dir $PackageDir $attemptDir
     $aggregateStatus = $LASTEXITCODE
 } finally {
     Pop-Location

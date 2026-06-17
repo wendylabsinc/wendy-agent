@@ -203,7 +203,7 @@ struct `run overview` {
     }
 
     @Test
-    func `aggregates failed outcomes with AI review summaries`() throws {
+    func `renders AI review issues without a failed outcome section`() throws {
         let rootURL = e2eTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: rootURL) }
 
@@ -253,9 +253,8 @@ struct `run overview` {
             encoding: .utf8
         )
 
-        #expect(markdown.contains("## Failed and flaked tests"))
-        #expect(markdown.contains("### 🛑 `wendy-device-info/prints-json-device-information`"))
-        #expect(markdown.contains("AI review: **Agent rejected CLI auth**"))
+        #expect(!markdown.contains("## Failed and flaked tests"))
+        #expect(!markdown.contains("### 🛑 `wendy-device-info/prints-json-device-information`"))
         #expect(markdown.contains("### 🛑 Agent rejected CLI auth"))
         #expect(!markdown.contains("### 🛑 Error Agent rejected CLI auth"))
         #expect(markdown.contains("The target rejected an otherwise valid authenticated request."))
