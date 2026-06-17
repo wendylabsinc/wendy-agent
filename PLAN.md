@@ -98,13 +98,13 @@ Housekeeping snapshot, 2026-06-12:
 - Production project state: started.
 - Production project open issues at handoff: 30.
 - Beta project state: completed; open issues there: 0.
-- No production issue has been selected by this coordinator yet.
-- Next issues are **TBD** and should be chosen in the production coordinator
-  session.
+- WDY-1606 has been selected and prepared by this coordinator.
+- Next issues after WDY-1606 are **TBD** and should be chosen in a future
+  production coordinator session.
 
 ## Candidate queue
 
-TBD. Choose the first production issue in a future coordinator session.
+WDY-1606 was started first because the user explicitly requested Brewfile support for Wendy Agent for Mac apps. Choose the next production issue in a future coordinator session.
 
 Use the backlog categories below as inputs, not as priority order.
 
@@ -168,7 +168,36 @@ Do not treat this as priority order.
 
 ## Active / paused issues
 
-- TBD.
+### WDY-1606 — Add Brewfile support for Wendy Agent for Mac apps
+
+- Linear: https://linear.app/wendylabsinc/issue/WDY-1606/add-brewfile-support-for-wendy-agent-for-mac-apps
+- State: In Progress
+- Project: Wendy for Mac — Production
+- Worktree: `/Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1606-brewfile-support`
+- Branch: `kb.wdy-1606-brewfile-support`
+- Draft PR: https://github.com/wendylabsinc/WendyOS/pull/1071
+- Setup commit: `ba738e0501d14fd8e5c4c204e64d2858710617b8`
+- Status: Handoff written; ready for implementation in issue worktree.
+- Scope:
+  - Add Brewfile support for native Wendy Agent for Mac app deployments.
+  - Apply the Brewfile on the target Mac before starting the native app.
+  - Surface contextual errors for missing Homebrew or `brew bundle` failures.
+  - Document supported behavior and limitations.
+- Constraints:
+  - Preserve validated native Darwin SwiftPM/Xcode flows.
+  - Preserve Linux/WendyOS behavior.
+  - Do not imply Linux containers on Mac are supported.
+  - Do not install Homebrew implicitly unless product direction changes.
+- Validation expectations:
+  - Focused Go tests for CLI/app config changes.
+  - Swift tests if Wendy Agent for Mac lifecycle code changes.
+  - Docs build if docs change.
+  - Manual Mac target validation if available, otherwise tested/mocked command behavior.
+- Resume:
+
+  ```sh
+  cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1606-brewfile-support && ai --prompt "Read HANDOVER.md and follow its instructions."
+  ```
 
 ## Recently completed in this production coordinator
 
@@ -176,7 +205,8 @@ Do not treat this as priority order.
 
 ## Follow-ups / discoveries
 
-- TBD.
+- WDY-1606 was originally created under Wendy for Mac — Beta from the general coordinator, then moved to Wendy for Mac — Production before starting because the beta project is closed.
+- User-provided Brew Bundle/Brewfile reference for WDY-1606: https://docs.brew.sh/Brew-Bundle-and-Brewfile.
 
 ## Issue record template
 
