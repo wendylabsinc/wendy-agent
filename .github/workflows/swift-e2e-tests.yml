@@ -508,86 +508,88 @@ jobs:
             --output-dir "${RUNNER_TEMP}/wendy" \
             "${attempt_dirs[@]}"
 
-      - name: Configure self-hosted tool PATH
-        shell: bash
-        run: |
-          set -euo pipefail
-          for dir in \
-            /opt/homebrew/bin \
-            /usr/local/bin \
-            "$HOME/.local/bin" \
-            "$HOME/bin" \
-            "$HOME/.npm-global/bin"
-          do
-            if [[ -d "$dir" ]]; then
-              echo "$dir" >> "$GITHUB_PATH"
-            fi
-          done
-
-      - name: Verify AI review harness
-        shell: bash
-        run: |
-          set -euo pipefail
-          if command -v codex >/dev/null 2>&1; then
-            codex --version
-          fi
-          if command -v claude >/dev/null 2>&1; then
-            claude --version
-          fi
-          if ! command -v codex >/dev/null 2>&1 && ! command -v claude >/dev/null 2>&1; then
-            echo "::error::Codex or Claude Code must be preinstalled on the AI runner"
-            exit 1
-          fi
-
-      - name: Perform Swift E2E AI Review
-        working-directory: swift
-        shell: bash
-        env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY || '' }}
-          DIFF_BASE_REF: ${{ inputs.diff_base_ref || '' }}
-        run: |
-          set -euo pipefail
-          review_args=(--run-dir "${{ steps.e2e-run.outputs.run_dir }}")
-
-          resolve_diff_base_ref() {
-            local ref="$1"
-            local candidate
-            local candidates=("$ref")
-
-            if [[ "$ref" != refs/* ]]; then
-              candidates+=("origin/$ref" "refs/remotes/origin/$ref" "refs/tags/$ref")
-            elif [[ "$ref" == refs/heads/* ]]; then
-              candidates+=("refs/remotes/origin/${ref#refs/heads/}")
-            fi
-
-            for candidate in "${candidates[@]}"; do
-              if git rev-parse --verify --quiet "${candidate}^{commit}" >/dev/null; then
-                printf '%s' "$candidate"
-                return 0
-              fi
-            done
-            return 1
-          }
-
-          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-            review_args+=(--diff "origin/main...HEAD")
-          elif [[ -n "${DIFF_BASE_REF}" ]]; then
-            resolved_base="$(resolve_diff_base_ref "${DIFF_BASE_REF}" || true)"
-            if [[ -z "${resolved_base}" ]]; then
-              if git fetch --force --tags origin "${DIFF_BASE_REF}"; then
-                resolved_base="$(resolve_diff_base_ref "${DIFF_BASE_REF}" || true)"
-                if [[ -z "${resolved_base}" ]] && git rev-parse --verify --quiet "FETCH_HEAD^{commit}" >/dev/null; then
-                  resolved_base="FETCH_HEAD"
-                fi
-              fi
-            fi
-            if [[ -z "${resolved_base}" ]]; then
-              echo "ERROR: unable to resolve diff base ref: ${DIFF_BASE_REF}" >&2
-              exit 1
-            fi
-            review_args+=(--diff "${resolved_base}...HEAD")
-          fi
-          bash ./Scripts/E2EReview.sh "${review_args[@]}"
+      # // DISABLED: E2E AI review is temporarily disabled because it consumes
+      # // too much AI compute. Re-enable after WDY-1574 adds tighter gating.
+      # - name: Configure self-hosted tool PATH
+      #   shell: bash
+      #   run: |
+      #     set -euo pipefail
+      #     for dir in \
+      #       /opt/homebrew/bin \
+      #       /usr/local/bin \
+      #       "$HOME/.local/bin" \
+      #       "$HOME/bin" \
+      #       "$HOME/.npm-global/bin"
+      #     do
+      #       if [[ -d "$dir" ]]; then
+      #         echo "$dir" >> "$GITHUB_PATH"
+      #       fi
+      #     done
+      #
+      # - name: Verify AI review harness
+      #   shell: bash
+      #   run: |
+      #     set -euo pipefail
+      #     if command -v codex >/dev/null 2>&1; then
+      #       codex --version
+      #     fi
+      #     if command -v claude >/dev/null 2>&1; then
+      #       claude --version
+      #     fi
+      #     if ! command -v codex >/dev/null 2>&1 && ! command -v claude >/dev/null 2>&1; then
+      #       echo "::error::Codex or Claude Code must be preinstalled on the AI runner"
+      #       exit 1
+      #     fi
+      #
+      # - name: Perform Swift E2E AI Review
+      #   working-directory: swift
+      #   shell: bash
+      #   env:
+      #     OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY || '' }}
+      #     DIFF_BASE_REF: ${{ inputs.diff_base_ref || '' }}
+      #   run: |
+      #     set -euo pipefail
+      #     review_args=(--run-dir "${{ steps.e2e-run.outputs.run_dir }}")
+      #
+      #     resolve_diff_base_ref() {
+      #       local ref="$1"
+      #       local candidate
+      #       local candidates=("$ref")
+      #
+      #       if [[ "$ref" != refs/* ]]; then
+      #         candidates+=("origin/$ref" "refs/remotes/origin/$ref" "refs/tags/$ref")
+      #       elif [[ "$ref" == refs/heads/* ]]; then
+      #         candidates+=("refs/remotes/origin/${ref#refs/heads/}")
+      #       fi
+      #
+      #       for candidate in "${candidates[@]}"; do
+      #         if git rev-parse --verify --quiet "${candidate}^{commit}" >/dev/null; then
+      #           printf '%s' "$candidate"
+      #           return 0
+      #         fi
+      #       done
+      #       return 1
+      #     }
+      #
+      #     if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+      #       review_args+=(--diff "origin/main...HEAD")
+      #     elif [[ -n "${DIFF_BASE_REF}" ]]; then
+      #       resolved_base="$(resolve_diff_base_ref "${DIFF_BASE_REF}" || true)"
+      #       if [[ -z "${resolved_base}" ]]; then
+      #         if git fetch --force --tags origin "${DIFF_BASE_REF}"; then
+      #           resolved_base="$(resolve_diff_base_ref "${DIFF_BASE_REF}" || true)"
+      #           if [[ -z "${resolved_base}" ]] && git rev-parse --verify --quiet "FETCH_HEAD^{commit}" >/dev/null; then
+      #             resolved_base="FETCH_HEAD"
+      #           fi
+      #         fi
+      #       fi
+      #       if [[ -z "${resolved_base}" ]]; then
+      #         echo "ERROR: unable to resolve diff base ref: ${DIFF_BASE_REF}" >&2
+      #         exit 1
+      #       fi
+      #       review_args+=(--diff "${resolved_base}...HEAD")
+      #     fi
+      #     bash ./Scripts/E2EReview.sh "${review_args[@]}"
 
       - name: Render Swift E2E Report
         if: always()

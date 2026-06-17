@@ -3,25 +3,14 @@ import Logging
 import OTel
 import Tracing
 
+// Export telemetry data every 5 seconds for fast feedback
 var config = OTel.Configuration.default
-config.serviceName = "HelloHTTP"
-
-// Configure OTLP exporters
-config.logs.otlpExporter.endpoint = "http://127.0.0.1:4317"
-config.logs.otlpExporter.protocol = .grpc
-config.metrics.otlpExporter.endpoint = "http://127.0.0.1:4317"
-config.metrics.otlpExporter.protocol = .grpc
-config.traces.otlpExporter.endpoint = "http://127.0.0.1:4317"
-config.traces.otlpExporter.protocol = .grpc
-
-// Export telemetry data every 5 seconds
 config.logs.batchLogRecordProcessor.scheduleDelay = .seconds(5)
 config.metrics.exportInterval = .seconds(5)
 config.traces.batchSpanProcessor.scheduleDelay = .seconds(5)
 
+// Set up OTel
 let observability = try OTel.bootstrap(configuration: config)
-
-let logger = Logger(label: "HelloHTTP")
 
 // create router and add a single GET /hello route
 let router = Router()
@@ -205,7 +194,7 @@ router.get("hello/:name") { request, context -> String in
             innerSpan.attributes["message.length"] = name.count
 
             // Log within the span context - logs are correlated with traces
-            logger.info("Generating greeting for user", metadata: ["name": "\(name)"])
+            context.logger.info("Generating greeting for user", metadata: ["name": "\(name)"])
 
             return "Hello, \(name)!"
         }
@@ -247,11 +236,13 @@ router.get("greet/:name") { request, context -> String in
 }
 
 // create application using router
-var app = Application(
+let app = Application(
     router: router,
-    configuration: .init(address: .hostname("0.0.0.0", port: 8080))
+    configuration: .init(address: .hostname("0.0.0.0", port: 8080)),
+    services: [
+        observability
+    ]
 )
-app.addServices(observability)
 
 // run hummingbird application
 try await app.runService()

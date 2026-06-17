@@ -105,8 +105,13 @@ func validateDeviceTarget(path string) error {
 // runBmapWriteSeekable is the body of `__bmap-write` when --source is given. It
 // opens the seekable image and writes only mapped ranges to the raw device,
 // emitting cumulative bytes written on stdout (one decimal per line) so the
-// parent can drive the progress bar. Runs as root; no stdin pipe.
-func runBmapWriteSeekable(devicePath, bmapPath, sourcePath string, stdout io.Writer) (retErr error) {
+// parent can drive the progress bar. Runs as root; no stdin pipe. writers > 0
+// overrides the writer concurrency (the parent picks it from the storage type);
+// 0 keeps the sequential default that is correct for SD/USB media.
+func runBmapWriteSeekable(devicePath, bmapPath, sourcePath string, writers int, stdout io.Writer) (retErr error) {
+	if writers > 0 {
+		bmapWriteConcurrency = writers
+	}
 	if err := validateDeviceTarget(devicePath); err != nil {
 		return err
 	}

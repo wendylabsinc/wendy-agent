@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/xml"
@@ -8,6 +9,9 @@ import (
 	"io"
 	"strconv"
 	"strings"
+	"sync"
+
+	"golang.org/x/sync/errgroup"
 )
 
 // BmapRange is one contiguous run of mapped blocks in a bmap file.
@@ -68,9 +72,24 @@ func parseBmap(data []byte) (*Bmap, error) {
 	return b, nil
 }
 
-// bmapChunkSize is the read granularity within a mapped range. Package-level
-// (not const) so tests can shrink it to exercise the multi-chunk path.
-var bmapChunkSize int64 = 1 << 20
+// bmapChunkSize is the read/write granularity within a mapped range. Larger
+// chunks mean fewer pwrite syscalls and bigger transfers to the device, which
+// matters on raw character devices (macOS /dev/rdiskN) and USB/SD media.
+// Package-level (not const) so tests can shrink it to exercise the multi-chunk
+// path.
+var bmapChunkSize int64 = 4 << 20
+
+// bmapWriteConcurrency is the number of writer goroutines applyBmapSeekable runs
+// concurrently. Decompression (CPU) and device writes (I/O) are pipelined, so
+// even a single writer keeps the device busy while the next chunk decompresses.
+// The default is 1 (strictly sequential) because that is the right policy for
+// SD/USB media: their flash translation layer is tuned for large sequential
+// writes, and scattering concurrent WriteAt calls across offsets triggers
+// erase-block read-modify-write and is slower, not faster. Only devices with
+// real write-queue depth (NVMe/SSD) benefit from >1 — see writersForStorage,
+// which the write paths use to raise this. Package-level so callers and tests
+// can override it.
+var bmapWriteConcurrency = 1
 
 // applyBmap reconstructs an image onto dst using the block map. It reads src
 // (the decompressed image) strictly sequentially — src may be a pipe — and
@@ -177,54 +196,116 @@ func mappedBytes(b *Bmap) int64 {
 	return total
 }
 
+// bmapWrite is one decompressed chunk handed from the reader goroutine to a
+// writer goroutine: the bytes and the device offset they belong at.
+type bmapWrite struct {
+	buf []byte
+	off int64
+}
+
 // applyBmapSeekable reconstructs an image onto dst using the block map, reading
 // only mapped ranges from a random-access source. It Seeks to each range's
 // start, so the underlying seekable decoder never decodes hole frames — this is
 // where the zero-block speedup comes from. Each range's SHA256 is verified
 // against the bmap; a mismatch aborts. progressFn reports cumulative mapped
-// bytes written.
+// bytes written; calls are serialized and monotonic.
+//
+// Decompression (CPU) and device writes (I/O) run in separate goroutines linked
+// by a bounded buffer pool, so the device is never idle waiting for the next
+// chunk to decompress and vice versa. bmapWriteConcurrency writer goroutines
+// drain the pipeline, keeping the write queue deep on media that benefits. The
+// seekable decoder is touched only by the single reader goroutine, honoring its
+// "not safe for concurrent use" contract.
 func applyBmapSeekable(src io.ReadSeeker, dst io.WriterAt, b *Bmap, progressFn func(int64)) error {
-	buf := make([]byte, bmapChunkSize)
-	var written int64
-	for _, r := range b.Ranges {
-		start := r.First * b.BlockSize
-		end := (r.Last + 1) * b.BlockSize
-		if end > b.ImageSize {
-			end = b.ImageSize
-		}
-		if end <= start {
-			continue
-		}
-		if _, err := src.Seek(start, io.SeekStart); err != nil {
-			return fmt.Errorf("seeking to %d: %w", start, err)
-		}
-		h := sha256.New()
-		off := start
-		for off < end {
-			n := int64(len(buf))
-			if rem := end - off; rem < n {
-				n = rem
-			}
-			if _, err := io.ReadFull(src, buf[:n]); err != nil {
-				return fmt.Errorf("reading mapped range at %d: %w", off, err)
-			}
-			if _, err := dst.WriteAt(buf[:n], off); err != nil {
-				return fmt.Errorf("writing at %d: %w", off, err)
-			}
-			h.Write(buf[:n])
-			off += n
-			written += n
-			progressFn(written)
-		}
-		if r.Checksum != "" {
-			got := hex.EncodeToString(h.Sum(nil))
-			if !strings.EqualFold(got, r.Checksum) {
-				return fmt.Errorf("bmap: checksum mismatch for blocks %d-%d (got %s, want %s)",
-					r.First, r.Last, got, r.Checksum)
-			}
-		}
+	workers := bmapWriteConcurrency
+	if workers < 1 {
+		workers = 1
 	}
-	return nil
+	// One reusable buffer per worker plus slack so the reader can run a couple
+	// of chunks ahead. A buffer only returns to free once its WriteAt completes,
+	// so the reader can never overwrite bytes still in flight.
+	poolSize := workers + 2
+	free := make(chan []byte, poolSize)
+	for i := 0; i < poolSize; i++ {
+		free <- make([]byte, bmapChunkSize)
+	}
+	jobs := make(chan bmapWrite, workers)
+
+	var progMu sync.Mutex
+	var written int64
+	report := func(n int) {
+		progMu.Lock()
+		written += int64(n)
+		progressFn(written)
+		progMu.Unlock()
+	}
+
+	g, ctx := errgroup.WithContext(context.Background())
+
+	for i := 0; i < workers; i++ {
+		g.Go(func() error {
+			for job := range jobs {
+				if _, err := dst.WriteAt(job.buf, job.off); err != nil {
+					return fmt.Errorf("writing at %d: %w", job.off, err)
+				}
+				report(len(job.buf))
+				free <- job.buf[:cap(job.buf)]
+			}
+			return nil
+		})
+	}
+
+	g.Go(func() error {
+		defer close(jobs)
+		for _, r := range b.Ranges {
+			start := r.First * b.BlockSize
+			end := (r.Last + 1) * b.BlockSize
+			if end > b.ImageSize {
+				end = b.ImageSize
+			}
+			if end <= start {
+				continue
+			}
+			if _, err := src.Seek(start, io.SeekStart); err != nil {
+				return fmt.Errorf("seeking to %d: %w", start, err)
+			}
+			h := sha256.New()
+			off := start
+			for off < end {
+				n := bmapChunkSize
+				if rem := end - off; rem < n {
+					n = rem
+				}
+				var buf []byte
+				select {
+				case buf = <-free:
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+				buf = buf[:n]
+				if _, err := io.ReadFull(src, buf); err != nil {
+					return fmt.Errorf("reading mapped range at %d: %w", off, err)
+				}
+				h.Write(buf) // hash on the reader goroutine, off the write path
+				select {
+				case jobs <- bmapWrite{buf: buf, off: off}:
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+				off += n
+			}
+			if r.Checksum != "" {
+				got := hex.EncodeToString(h.Sum(nil))
+				if !strings.EqualFold(got, r.Checksum) {
+					return fmt.Errorf("bmap: checksum mismatch for blocks %d-%d (got %s, want %s)",
+						r.First, r.Last, got, r.Checksum)
+				}
+			}
+		}
+		return nil
+	})
+
+	return g.Wait()
 }
 
 // parseRange parses a bmap range token: either "N" or "N-M".

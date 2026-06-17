@@ -152,12 +152,13 @@ func NewRootCmd() *cobra.Command {
 	}
 
 	var bmapDevice, bmapFile, bmapSource string
+	var bmapWriters int
 	bmapWriteCmd := &cobra.Command{
 		Use:    "__bmap-write",
 		Hidden: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if bmapSource != "" {
-				return runBmapWriteSeekable(bmapDevice, bmapFile, bmapSource, cmd.OutOrStdout())
+				return runBmapWriteSeekable(bmapDevice, bmapFile, bmapSource, bmapWriters, cmd.OutOrStdout())
 			}
 			return runBmapWrite(bmapDevice, bmapFile, cmd.InOrStdin())
 		},
@@ -165,6 +166,7 @@ func NewRootCmd() *cobra.Command {
 	bmapWriteCmd.Flags().StringVar(&bmapDevice, "device", "", "Raw device path to write")
 	bmapWriteCmd.Flags().StringVar(&bmapFile, "bmap", "", "Path to the .bmap file")
 	bmapWriteCmd.Flags().StringVar(&bmapSource, "source", "", "Path to the seekable .img.zst source")
+	bmapWriteCmd.Flags().IntVar(&bmapWriters, "writers", 0, "Concurrent writer goroutines (0 = sequential default)")
 
 	root.AddCommand(
 		bleCheckCmd,
