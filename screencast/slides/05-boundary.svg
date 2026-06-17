@@ -1,21 +1,23 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1440" height="900" viewBox="0 0 1440 900">
-  <rect width="1440" height="900" fill="#171717"/>
-  <rect x="64" y="64" width="1312" height="772" rx="28" fill="#202020" stroke="#3a3a3a" stroke-width="2"/>
-  <rect x="88" y="88" width="190" height="38" rx="19" fill="#274b37"/>
-  <text x="112" y="114" class="eyebrow">ENGINEERING BOUNDARY</text>
-  <text x="96" y="236" class="title">Small surface area, clear guardrails</text>
-  <foreignObject x="96" y="278" width="1160" height="112">
-    <div xmlns="http://www.w3.org/1999/xhtml" class="subtitle">This PR intentionally ships the single-service run path first and fails explicitly outside that scope.</div>
+  <rect width="1440" height="900" fill="#FFFFFF"/>
+  <rect x="54" y="54" width="1332" height="792" rx="32" fill="#FFFFFF" stroke="#E5E5E5" stroke-width="3"/>
+  <rect x="96" y="96" width="270" height="52" rx="26" fill="#9FE2BF"/>
+  <text x="126" y="131" class="eyebrow">FIRST PR BOUNDARY</text>
+  <foreignObject x="96" y="210" width="1220" height="180">
+    <div xmlns="http://www.w3.org/1999/xhtml" class="title">Small surface. Clear guardrails.</div>
   </foreignObject>
-  <circle cx="112" cy="416" r="7" fill="#73e6a7"/><text x="136" y="424" class="bullet">Project-local source validation, including symlink escapes</text><circle cx="112" cy="488" r="7" fill="#73e6a7"/><text x="136" y="496" class="bullet">Duplicate destination checks and bounded transfers</text><circle cx="112" cy="560" r="7" fill="#73e6a7"/><text x="136" y="568" class="bullet">Read-only mounts, stale cleanup, and app-removal cleanup</text><circle cx="112" cy="632" r="7" fill="#73e6a7"/><text x="136" y="640" class="bullet">Multi-service and Compose support tracked separately</text>
-  <line x1="96" x2="1344" y1="742" y2="742" stroke="#3a3a3a" stroke-width="2"/>
-  <text x="96" y="792" class="footer">keep the feature focused; keep broader hardening separate</text>
+  <foreignObject x="96" y="390" width="1180" height="120">
+    <div xmlns="http://www.w3.org/1999/xhtml" class="subtitle">Single-service wendy run first; unsupported shapes fail explicitly.</div>
+  </foreignObject>
+  <rect x="96" y="546" width="726" height="56" rx="28" fill="#E9F8EF" stroke="#9FE2BF" stroke-width="2"/><text x="124" y="583" class="chip">project-local sources</text><rect x="96" y="632" width="598" height="56" rx="28" fill="#E9F8EF" stroke="#9FE2BF" stroke-width="2"/><text x="124" y="669" class="chip">bounded transfers</text><rect x="718" y="632" width="566" height="56" rx="28" fill="#E9F8EF" stroke="#9FE2BF" stroke-width="2"/><text x="746" y="669" class="chip">read-only mounts</text><rect x="96" y="718" width="470" height="56" rx="28" fill="#E9F8EF" stroke="#9FE2BF" stroke-width="2"/><text x="124" y="755" class="chip">stale cleanup</text>
+  <line x1="96" x2="1344" y1="742" y2="742" stroke="#E5E5E5" stroke-width="3"/>
+  <text x="96" y="798" class="footer">multi-service and Compose support are follow-up issues</text>
   <style>
-    text, div { font-family: 'JetBrains Mono', 'SF Mono', Menlo, Monaco, monospace; }
-    .eyebrow { fill: #a8f5c3; font-size: 18px; font-weight: 700; letter-spacing: 2px; }
-    .title { fill: #f4f4f4; font-size: 52px; font-weight: 800; }
-    .subtitle { color: #cfcfcf; font-size: 28px; line-height: 1.35; }
-    .bullet { fill: #f0f0f0; font-size: 29px; font-weight: 600; }
-    .footer { fill: #9d9d9d; font-size: 22px; }
+    text, div { font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; }
+    .eyebrow { fill: #000000; font-size: 22px; font-weight: 800; letter-spacing: 1.8px; }
+    .title { color: #000000; font-size: 76px; line-height: 1.05; font-weight: 850; }
+    .subtitle { color: #404040; font-size: 38px; line-height: 1.25; font-weight: 500; }
+    .chip { fill: #000000; font-size: 26px; font-weight: 750; }
+    .footer { fill: #525252; font-size: 30px; font-weight: 650; }
   </style>
 </svg>

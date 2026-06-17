@@ -8,7 +8,7 @@ OUT_DIR="$PROJECT_DIR/voiceover/mp3"
 
 MODEL="${OPENAI_TTS_MODEL:-gpt-4o-mini-tts}"
 VOICE="${OPENAI_TTS_VOICE:-alloy}"
-INSTRUCTIONS="${OPENAI_TTS_INSTRUCTIONS:-Professional technical screencast narration. Calm, confident, concise, neutral English. Avoid hype; sound like an experienced engineer explaining status and tradeoffs.}"
+INSTRUCTIONS="${OPENAI_TTS_INSTRUCTIONS:-Upbeat engineering product demo narration. Warm, energetic, confident, and concise. Sound like a senior engineer showing a useful feature to peers and engineering leadership; avoid sounding robotic or overly formal.}"
 DRY_RUN=0
 
 usage() {
