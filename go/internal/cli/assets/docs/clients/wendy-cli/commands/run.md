@@ -23,7 +23,7 @@ Wendy Agent for Mac (Darwin targets) currently runs native macOS apps only. When
 | Multi-service `wendy.json` (`services` map) | Rejected |
 | `platform: "linux/..."` or `platform: "wendyos"` | Rejected |
 
-The error explains the project/target mismatch and tells you to set `platform: "darwin"` with a Mac-compatible native SwiftPM or Xcode project, or to target a Linux/WendyOS device. Linux container support on Mac is experimental and can be enabled with `WENDY_EXPERIMENTAL_MACOS_LINUX_CONTAINERS=1`.
+The error explains the project/target mismatch and tells you to set `platform: "darwin"` with a Mac-compatible native SwiftPM or Xcode project, or to target a Linux/WendyOS device.
 
 ## Development file sync
 
@@ -34,6 +34,8 @@ Use this for development inputs that should be available beside the app but shou
 `files` are deployment inputs, not persistent app data. The container sees them as read-only mounts under its working directory. Use a `persist` entitlement for app-written data that should survive redeploys or app removal.
 
 File sync is the normal `wendy run` mechanism for keeping large development inputs out of the image transfer path.
+
+On WendyOS/Linux targets, file sync uses a dedicated `WendyFileSyncService` gRPC streaming RPC (`SyncFiles`) over the existing agent connection. The CLI sends a manifest of local file metadata; the agent responds with its manifest of already-synced files so unchanged files can be skipped. Changed files are streamed in bounded chunks and verified with SHA-256 before they are committed to the app-scoped sync directory. On native macOS targets, files continue to use the existing macOS file-sync path.
 
 ## Docker build-args
 
