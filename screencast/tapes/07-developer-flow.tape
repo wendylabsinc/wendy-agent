@@ -1,11 +1,19 @@
 Output deck/public/videos/file-sync/07-developer-flow.mp4
 Set Width 1440
 Set Height 900
-Set FontSize 21
+Set FontSize 24
 Set FontFamily "JetBrains Mono, JetBrainsMono, JetBrainsMono Nerd Font, JetBrainsMono Nerd Font Mono, monospace"
+Set LineHeight 1.18
+Set Theme "Catppuccin Mocha"
+Set Padding 28
+Set Margin 42
+Set MarginFill "#0b1020"
+Set BorderRadius 18
+Set WindowBar Colorful
+Set WindowBarSize 40
 Set Framerate 10
 Set CursorBlink false
-Set TypingSpeed 25ms
+Set TypingSpeed 24ms
 Set Shell bash
 
 Hide
@@ -29,10 +37,10 @@ Sleep 1700ms
 
 Ctrl+L
 Sleep 400ms
-Type "cat .dockerignore"
+Type "grep -v '^#' .dockerignore"
 Enter
 Sleep 900ms
-Type "jq '.files' wendy.json"
+Type "jq -C '.files' wendy.json"
 Enter
 Sleep 2200ms
 
@@ -47,7 +55,7 @@ Sleep 4300ms
 
 Ctrl+L
 Sleep 400ms
-Type "printf 'classifier-model-v2\npretend this classifier changed independently\n' > models/classifier/model.txt"
+Type "printf 'classifier-model-v2\n' > models/classifier/model.txt"
 Enter
 Sleep 500ms
 Type "wendy run --device wendyos-jetson-orin-nano.local"
