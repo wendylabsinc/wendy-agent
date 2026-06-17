@@ -127,23 +127,28 @@ in per-issue worktree sessions, not in this master planning session.
 
 ### WDY-1592 — Re-enable E2E AI reviews after compute gating lands
 
-- Status: `todo` (blocked by WDY-1574)
+- Status: `in progress` (blocked by WDY-1574)
 - Linear project: E2E Tests
 - Linear: https://linear.app/wendylabsinc/issue/WDY-1592/re-enable-e2e-ai-reviews-after-compute-gating-lands
 - Linear assignee: `konstantin@wendy.sh`
-- Linear state: Todo (`unstarted`)
+- Linear state: In Progress (`started`)
 - Linear priority: No priority
 - Blocked by: WDY-1574
-- Branch/worktree name: not prepared yet
-- Worktree path: not prepared yet
-- PR: not created yet
+- Branch/worktree name: `kb.wdy-1592-reenable-e2e-ai-reviews`
+- Worktree path: `/Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1592-reenable-e2e-ai-reviews`
+- PR: https://github.com/wendylabsinc/WendyOS/pull/1057 (draft setup PR)
 - PR closing reference: `Closes WDY-1592`
+- Setup commit: `75f89f42`
 - Scope: re-enable Swift E2E AI review after WDY-1574 lands compute controls.
   Remove or update the temporary `// DISABLED:` comments from one-off PR #1045,
   restore the review invocation, and preserve WDY-1574's gating so successful or
   skipped-only runs avoid model calls by default while actionable failures still
   get focused diagnosis.
-- Resume command: not available until WDY-1574 is complete and this issue is prepared
+- Resume command:
+
+  ```sh
+  cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1592-reenable-e2e-ai-reviews && ai --prompt "Read HANDOVER.md and follow its instructions."
+  ```
 
 ### WDY-1561 — Fix macOS integration discovery empty matrix failure
 
@@ -418,7 +423,7 @@ Keep each issue short and validation-focused. Completed issues stay in the
 ledger for history; current active work is WDY-1574 and WDY-1562.
 
 1. **WDY-1574** — In progress, High: Reduce AI compute used by E2E tests.
-2. **WDY-1592** — Todo, blocked by WDY-1574: Re-enable E2E AI reviews after compute gating lands.
+2. **WDY-1592** — In progress, blocked by WDY-1574: Re-enable E2E AI reviews after compute gating lands.
 3. **WDY-1562** — In progress: Add legacy app integration suite to Swift E2E.
 4. **WDY-1560** — Todo, High: Run physical Swift E2E only for stable releases until dedicated CI devices exist.
 5. **WDY-1561** — Done: Fix macOS integration discovery empty matrix failure.

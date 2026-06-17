@@ -19,7 +19,7 @@ per-issue worktrees.
 `PLAN.md` is populated with the Linear **E2E Tests** issues and current status:
 
 1. `WDY-1574` — In progress, High: Reduce AI compute used by E2E tests
-2. `WDY-1592` — Todo, blocked by WDY-1574: Re-enable E2E AI reviews after compute gating lands
+2. `WDY-1592` — In progress, blocked by WDY-1574: Re-enable E2E AI reviews after compute gating lands
 3. `WDY-1562` — In progress: Add legacy app integration suite to Swift E2E
 4. `WDY-1560` — Todo, High: Run physical Swift E2E only for stable releases until dedicated CI devices exist
 5. `WDY-1561` — Done: Fix macOS integration discovery empty matrix failure
@@ -128,13 +128,20 @@ WDY-1510 was canceled because no Raspberry Pi 5 is currently available on CI:
     ```sh
     cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1574-reduce-e2e-ai-compute && ai --prompt "Read HANDOVER.md and follow its instructions."
     ```
-- WDY-1592 — Todo, E2E Tests project: re-enable Swift E2E AI reviews after
-  WDY-1574 lands compute controls. This is blocked by WDY-1574 and should
+- WDY-1592 — In Progress, E2E Tests project: re-enable Swift E2E AI reviews
+  after WDY-1574 lands compute controls. This is blocked by WDY-1574 and should
   restore the review invocation while preserving the new gating behavior.
+  - Worktree: `/Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1592-reenable-e2e-ai-reviews`
+  - Branch: `kb.wdy-1592-reenable-e2e-ai-reviews`
+  - Draft PR: https://github.com/wendylabsinc/WendyOS/pull/1057
   - Linear: https://linear.app/wendylabsinc/issue/WDY-1592/re-enable-e2e-ai-reviews-after-compute-gating-lands
   - Blocked by: WDY-1574
-  - Branch/worktree: not prepared yet
-  - PR: not created yet
+  - Setup commit: `75f89f42`
+  - Resume command:
+
+    ```sh
+    cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1592-reenable-e2e-ai-reviews && ai --prompt "Read HANDOVER.md and follow its instructions."
+    ```
 - WDY-1561 — Done, E2E Tests project: fixed `PR Integration Tests` macOS
   discovery matrix generation when discovery finds LAN devices but none match
   the allowlist, avoiding the `HOSTS[@]: unbound variable` failure under
@@ -232,8 +239,8 @@ previously represented in this coordinator include:
 - Monitor one-off PR #1045 to disable Swift E2E AI review; merge only after CI passes.
 - Continue WDY-1574 and WDY-1562 in their dedicated worktrees and draft PRs
   #1042 / #867.
-- WDY-1592 is Todo and blocked by WDY-1574; do not start it until WDY-1574 is
-  addressed.
+- WDY-1592 is prepared and In Progress, but still blocked by WDY-1574; do not
+  implement or merge it until WDY-1574 is addressed.
 - WDY-1560 is Todo/High and should be started after the current active fixes
   unless reprioritized.
 - WDY-1561, WDY-1558, WDY-1559, WDY-1521, WDY-1528, WDY-1527, and the SER9 route disable are complete.
