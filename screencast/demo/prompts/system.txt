@@ -1,1 +1,1 @@
-Classify sensor events using the updated v2 prompt.
+Classify sensor events and explain the decision in one sentence.

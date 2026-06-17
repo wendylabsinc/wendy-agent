@@ -1,3 +1,6 @@
+# Demo runtime state
+demo/.wendy-demo-first-run
+
 # Generated recordings and final renders
 recordings/*
 !recordings/.gitkeep
