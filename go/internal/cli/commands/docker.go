@@ -776,6 +776,50 @@ func ensureBuildxBuilder(ctx context.Context, registryAddr string, useMTLS bool,
 	return builderName, effectiveAddr, nil
 }
 
+// ensureOCIExportBuilder ensures a dedicated buildx builder for OCI-layout
+// export exists and is running, returning its name. Unlike the registry
+// builders it needs NO registry config — OCI export never pushes to a registry
+// and pulls base images over the public network — so once created it is reused
+// across runs with only a lightweight bootstrap check. This avoids the per-run
+// config-inject/restart cycle the registry builder pays because its buildkitd
+// config embeds the per-run dynamic registry-proxy port (which changes every
+// invocation, forcing a reconfigure each time).
+func ensureOCIExportBuilder(ctx context.Context, w io.Writer) (string, error) {
+	ensureBuildxBuilderMu.Lock()
+	defer ensureBuildxBuilderMu.Unlock()
+
+	if err := ensureDockerDaemon(ctx); err != nil {
+		return "", err
+	}
+
+	base := os.Getenv("WENDY_BUILDX_BUILDER")
+	if base == "" {
+		base = "wendy"
+	}
+	builderName := base + "-oci"
+
+	exists := exec.CommandContext(ctx, "docker", "buildx", "inspect", builderName).Run() == nil
+	if !exists {
+		fmt.Fprintf(w, "[buildx] creating OCI-export builder %q\n", builderName)
+		cmd := exec.CommandContext(ctx, "docker", "buildx", "create",
+			"--name", builderName,
+			"--driver", "docker-container",
+			"--driver-opt", "network=host",
+		)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return "", fmt.Errorf("creating buildx builder %q: %s: %w", builderName, string(out), err)
+		}
+	}
+
+	// Ensure the builder is running. This is cheap when it is already up and,
+	// crucially, performs no config injection or container restart.
+	bootstrapCmd := exec.CommandContext(ctx, "docker", "buildx", "inspect", "--bootstrap", "--builder", builderName)
+	if out, err := bootstrapCmd.CombinedOutput(); err != nil {
+		return "", fmt.Errorf("bootstrapping builder %q: %s: %w", builderName, string(out), err)
+	}
+	return builderName, nil
+}
+
 // buildkitRegistryConfig generates a buildkitd.toml snippet for the given
 // registry address. IPv6 addresses must be passed through the hostname alias
 // (e.g. "wendy-registry:5000") rather than in bracket notation, because the

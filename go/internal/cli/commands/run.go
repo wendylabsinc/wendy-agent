@@ -19,6 +19,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
@@ -486,6 +487,9 @@ type runOptions struct {
 	product              string
 	service              string
 	userArgs             []string
+	// quietBuild suppresses the image build (buildx) output, surfacing it only
+	// when the build fails. Set by `wendy watch` to keep the redeploy loop quiet.
+	quietBuild bool
 }
 
 func newRunCmd() *cobra.Command {
@@ -551,6 +555,7 @@ func resolveRunTarget(ctx context.Context, opts ...resolveOption) (*SelectedDevi
 }
 
 func runCommand(ctx context.Context, opts runOptions) error {
+	mark := phaseTimer()
 	// Step 1: Load and validate wendy.json.
 	cwd, err := resolveRunWorkingDir(opts)
 	if err != nil {
@@ -665,6 +670,8 @@ func runCommand(ctx context.Context, opts runOptions) error {
 		}
 	}
 
+	mark("cli setup (project/dockerfile/config)")
+
 	// Step 2: Resolve the target device.
 	if target == nil {
 		var resolveOpts []resolveOption
@@ -676,6 +683,7 @@ func runCommand(ctx context.Context, opts runOptions) error {
 			return err
 		}
 	}
+	mark("resolve + connect device")
 
 	// Provider-based run path.
 	if target.External != nil && target.Provider != nil {
@@ -1325,6 +1333,7 @@ func runWithProvider(ctx context.Context, p providers.DeviceProvider, device mod
 
 // runWithAgent is the existing gRPC agent pipeline.
 func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd string, appCfg *appconfig.AppConfig, opts runOptions) error {
+	mark := phaseTimer()
 	// Multi-service path: when wendy.json has a services map, build all images
 	// in parallel and manage the app group lifecycle.
 	if len(appCfg.Services) > 0 {
@@ -1346,6 +1355,7 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	if err != nil {
 		return fmt.Errorf("querying device version: %w", err)
 	}
+	mark("agent GetAgentVersion (in runWithAgent)")
 	agentOS := versionResp.GetOs()
 	architecture := versionResp.GetCpuArchitecture()
 	if architecture == "" {
@@ -1446,6 +1456,23 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 		buildArgs["WENDY_CUDA_VERSION"] = cv
 	}
 
+	// The fast chunk-diff (CDC) deploy path handles attached (default) and
+	// detached (--detach) runs. Deploy-only (--deploy) is excluded because it
+	// must create the container WITHOUT starting it, whereas RunContainer always
+	// starts; that mode stays on the registry path via startAndStreamContainer.
+	if !opts.deploy {
+		if err := deployByChunkDiff(ctx, conn, cwd, appCfg, platform, opts.dockerfile, buildArgs, opts); err == nil {
+			return nil
+		} else if ctx.Err() != nil {
+			// The deploy was cancelled (e.g. `wendy watch` superseded it with a
+			// newer change, or the user hit Ctrl-C). Don't fall back to a full
+			// registry push — just surface the cancellation.
+			return err
+		} else {
+			cliLogln("Fast layer-diff deploy failed (%v); falling back to registry push.", err)
+		}
+	}
+
 	// Verify auth certs are available if the device's registry requires mTLS.
 	if err := requireRegistryAuth(ctx, conn); err != nil {
 		return err
@@ -1455,9 +1482,9 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	regPort := registryPort(agentOS)
 	// For link-local addresses (USB), a TCP proxy bridges the Docker VM
 	// to the host so buildx can reach the device.
-	registryAddr, proxyCleanup, err := resolveRegistryForAgent(ctx, conn, regPort)
-	if err != nil {
-		return err
+	registryAddr, proxyCleanup, regErr := resolveRegistryForAgent(ctx, conn, regPort)
+	if regErr != nil {
+		return regErr
 	}
 	defer proxyCleanup()
 
@@ -1734,9 +1761,15 @@ func startPostStartHook(ctx context.Context, appCfg *appconfig.AppConfig, hostna
 // Dockerfile base stage selection. Adding a new device only requires adding
 // a case here; templates need no changes until a new platform tier is introduced.
 // Unknown device types fall back to "generic" (CPU-only).
+//
+// jetson-agx-thor (tegra264 / JetPack 7 / CUDA 13) shares the "nvidia-jetson"
+// tier with the Orin boards (tegra234 / JetPack 6 / CUDA 12). The tier only says
+// "NVIDIA Jetson"; templates that ship a JetPack-pinned base image should branch
+// on the WENDY_JETPACK_VERSION / WENDY_CUDA_VERSION build args (also injected by
+// `wendy run`) to pick a Thor-compatible image where the JetPack 6 image differs.
 func wendyPlatform(deviceType string) string {
 	switch deviceType {
-	case "jetson-agx-orin", "jetson-orin-nano":
+	case "jetson-agx-orin", "jetson-orin-nano", "jetson-agx-thor":
 		return "nvidia-jetson"
 	default:
 		return "generic"
@@ -1754,4 +1787,129 @@ func resolveRestartPolicy(opts runOptions) *agentpb.RestartPolicy {
 		mode = agentpb.RestartPolicyMode_NO
 	}
 	return &agentpb.RestartPolicy{Mode: mode}
+}
+
+// streamRunContainer drains a RunContainer server stream, writing stdout/stderr
+// to the corresponding OS streams. When opts.deploy or opts.detach is set the
+// function returns as soon as the Started message is received (mirroring the
+// behaviour of startAndStreamContainer for those flags).
+func streamRunContainer(ctx context.Context, conn *grpcclient.AgentConnection, stream grpc.ServerStreamingClient[agentpb.RunContainerLayersResponse], appCfg *appconfig.AppConfig, opts runOptions) error {
+	for {
+		resp, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("receiving container output: %w", err)
+		}
+		if resp.GetStarted() != nil {
+			if opts.deploy {
+				cliLogln("Container %s created (not started).", appCfg.AppID)
+				return nil
+			}
+			if opts.detach {
+				// Mirror startAndStreamContainer's detach branch: the container
+				// is started; wait for readiness, fire the host post-start hook,
+				// then return without tailing logs. The container keeps running
+				// independently of this (now-abandoned) output stream.
+				cliLogln("Application %s running in detached mode.", appCfg.AppID)
+				if err := waitForReadiness(ctx, appCfg.Readiness, conn.Host); err != nil {
+					cliLogln("Warning: %v", err)
+				}
+				startPostStartHook(context.Background(), appCfg, conn.Host)
+				return nil
+			}
+			continue
+		}
+		if out := resp.GetStdoutOutput(); out != nil {
+			_, _ = os.Stdout.Write(out.GetData())
+		}
+		if out := resp.GetStderrOutput(); out != nil {
+			_, _ = os.Stderr.Write(out.GetData())
+		}
+	}
+	cliLogln("\nApplication %s stopped.", appCfg.AppID)
+	return nil
+}
+
+// phaseTimer returns a closure that logs the elapsed time since the previous
+// call to stderr, but only when WENDY_TIMING is set. It is a lightweight
+// diagnostic for finding where wall-clock time goes in the deploy path.
+func phaseTimer() func(label string) {
+	if os.Getenv("WENDY_TIMING") == "" {
+		return func(string) {}
+	}
+	last := time.Now()
+	return func(label string) {
+		now := time.Now()
+		fmt.Fprintf(os.Stderr, "[timing] %-26s %s\n", label, now.Sub(last).Round(time.Millisecond))
+		last = now
+	}
+}
+
+// deployByChunkDiff builds the image to a local OCI layout tar, diffs the
+// layers against what the device already has via content-defined chunking, and
+// calls RunContainer with the resulting layer headers.
+func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cwd string, appCfg *appconfig.AppConfig, platform, dockerfile string, buildArgs map[string]string, opts runOptions) error {
+	mark := phaseTimer()
+	tmp, err := os.MkdirTemp("", "wendy-oci-*")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(tmp)
+	ociTar := filepath.Join(tmp, "image.tar")
+
+	cliLogln("Building image (OCI layout) for %s...", platform)
+	// In quiet mode (wendy watch) capture the buildx output and surface it only
+	// if the build genuinely fails — but stay silent on a cancellation (a newer
+	// change superseded this build), which would otherwise dump a partial log.
+	var buildOut, buildErr io.Writer = os.Stdout, os.Stderr
+	var buildLog *bytes.Buffer
+	if opts.quietBuild {
+		buildLog = &bytes.Buffer{}
+		buildOut, buildErr = buildLog, buildLog
+	}
+	if err := buildImageToOCILayout(ctx, cwd, dockerfile, platform, buildArgs, ociTar, buildOut, buildErr); err != nil {
+		if buildLog != nil && ctx.Err() == nil {
+			_, _ = os.Stderr.Write(buildLog.Bytes())
+		}
+		return err
+	}
+	mark("build (oci export)")
+	layers, imageConfig, err := readOCILayoutLayers(ociTar)
+	if err != nil {
+		return err
+	}
+	mark("read+decompress layers")
+
+	cliLogln("Diffing %d layer(s) against device...", len(layers))
+	headers, err := pushLayersByChunks(ctx, conn.ContainerService, layers)
+	if err != nil {
+		return err
+	}
+	mark("chunk+query+write")
+
+	appConfigData, err := json.Marshal(appCfg)
+	if err != nil {
+		return err
+	}
+	imageName := strings.ToLower(appCfg.AppID) + ":latest"
+	// Carry the post-start agent-hook metadata so the agent runs the in-container
+	// hook on start, matching the registry path's StartContainer call.
+	runCtx := contextWithPostStartAgentHook(ctx, appCfg)
+	stream, err := conn.ContainerService.RunContainer(runCtx, &agentpb.RunContainerLayersRequest{
+		ImageName:     imageName,
+		AppName:       appCfg.AppID,
+		Layers:        headers,
+		AppConfig:     appConfigData,
+		ImageConfig:   imageConfig,
+		RestartPolicy: resolveRestartPolicy(opts),
+		UserArgs:      opts.userArgs,
+	})
+	if err != nil {
+		return err
+	}
+	err = streamRunContainer(ctx, conn, stream, appCfg, opts)
+	mark("runcontainer (assemble+create+start[+readiness])")
+	return err
 }

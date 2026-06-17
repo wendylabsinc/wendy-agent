@@ -101,6 +101,8 @@ func NewRootCmd() *cobra.Command {
 	// Project Commands
 	runCmd := newRunCmd()
 	runCmd.GroupID = "project"
+	watchCmd := newWatchCmd()
+	watchCmd.GroupID = "project"
 	buildCmd := newBuildCmd()
 	buildCmd.GroupID = "project"
 	initCmd := newInitCmd()
@@ -172,6 +174,7 @@ func NewRootCmd() *cobra.Command {
 		bleCheckCmd,
 		bmapWriteCmd,
 		runCmd,
+		watchCmd,
 		buildCmd,
 		initCmd,
 		projectCmd,

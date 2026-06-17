@@ -743,6 +743,7 @@ var deviceTypeNames = map[string]string{
 	"raspberry-pi-5":   "Raspberry Pi 5",
 	"jetson-agx-orin":  "Jetson AGX Orin",
 	"jetson-orin-nano": "Jetson Orin Nano",
+	"jetson-agx-thor":  "Jetson AGX Thor",
 	"x86_64":           "x86-64",
 }
 
