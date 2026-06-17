@@ -143,6 +143,7 @@ Started WDY-1532, WDY-1600, and WDY-1602 from the general queue. Coordinator set
 - WDY-1497 — Explore `wendy.json` profiles for selectable app configurations — https://linear.app/wendylabsinc/issue/WDY-1497/explore-wendyjson-profiles-for-selectable-app-configurations
 - WDY-1496 — CLI: support explicit `--config` path for `wendy.json` — https://linear.app/wendylabsinc/issue/WDY-1496/cli-support-explicit-config-path-for-wendyjson
 - WDY-1472 — Plan Wendy Agent to Wendy Daemon rename timing — https://linear.app/wendylabsinc/issue/WDY-1472/plan-wendy-agent-to-wendy-daemon-rename-timing
+- WDY-1606 — Add Brewfile support for Wendy Agent for Mac apps — https://linear.app/wendylabsinc/issue/WDY-1606/add-brewfile-support-for-wendy-agent-for-mac-apps — belongs to Wendy for Mac beta coordinator
 
 ## Recently completed
 
@@ -154,6 +155,7 @@ Started WDY-1532, WDY-1600, and WDY-1602 from the general queue. Coordinator set
 - Pushing WDY-1532 to `origin` over the default SSH URL hung; pushing via `ssh://git@ssh.github.com:443/wendylabsinc/WendyOS.git` worked. The WDY-1532 worktree has `remote.origin.pushurl` set to that SSH-over-443 URL.
 - The user clarified the intended issue was WDY-1600, not WDY-1063. WDY-1600 references the accidentally-created-and-closed GitHub issue https://github.com/wendylabsinc/WendyOS/issues/1063.
 - WDY-1602 came from the Fumadocs failure on PR #1064; the blocking issue is `npm audit --audit-level=high` flagging locked `esbuild@0.28.0`.
+- Created WDY-1606 for Wendy Agent for Mac Brewfile support and added the Brew Bundle/Brewfile reference: https://docs.brew.sh/Brew-Bundle-and-Brewfile. Since this belongs to the Wendy for Mac beta theme, start it from the macOS beta coordinator if/when implementation begins.
 
 ## Cross-coordinator references
 
