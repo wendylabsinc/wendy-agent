@@ -85,8 +85,8 @@ Started WDY-1532 from the general queue. Coordinator setup is complete; implemen
 
 ## Candidate issue queue
 
+- WDY-1600 — `wendy device update` reports success before restarted agent is reachable — https://linear.app/wendylabsinc/issue/WDY-1600/wendy-device-update-reports-success-before-restarted-agent-is
 - WDY-1520 — Consider CLI IPv6-to-IPv4 fallback for device connections — https://linear.app/wendylabsinc/issue/WDY-1520/consider-cli-ipv6-to-ipv4-fallback-for-device-connections
-- WDY-1063 / REL-35 — Template: csv-dashboard — https://linear.app/wendylabsinc/issue/REL-35/template-csv-dashboard
 - WDY-1498 — Add headless device-code flow for `wendy auth login` — https://linear.app/wendylabsinc/issue/WDY-1498/add-headless-device-code-flow-for-wendy-auth-login
 - WDY-1497 — Explore `wendy.json` profiles for selectable app configurations — https://linear.app/wendylabsinc/issue/WDY-1497/explore-wendyjson-profiles-for-selectable-app-configurations
 - WDY-1496 — CLI: support explicit `--config` path for `wendy.json` — https://linear.app/wendylabsinc/issue/WDY-1496/cli-support-explicit-config-path-for-wendyjson
@@ -100,7 +100,7 @@ Started WDY-1532 from the general queue. Coordinator setup is complete; implemen
 
 - The `linear` CLI is not installed in this environment despite the Linear skill docs; coordinator used Linear GraphQL via `LINEAR_API_KEY` for WDY-1532 assignment/status.
 - Pushing WDY-1532 to `origin` over the default SSH URL hung; pushing via `ssh://git@ssh.github.com:443/wendylabsinc/WendyOS.git` worked. The WDY-1532 worktree has `remote.origin.pushurl` set to that SSH-over-443 URL.
-- Looking up WDY-1063 in Linear resolves to REL-35 (`Template: csv-dashboard`) in the `New Templates` project; track it with both identifiers unless Linear changes it back.
+- The user clarified the intended issue was WDY-1600, not WDY-1063. WDY-1600 references the accidentally-created-and-closed GitHub issue https://github.com/wendylabsinc/WendyOS/issues/1063.
 
 ## Cross-coordinator references
 
