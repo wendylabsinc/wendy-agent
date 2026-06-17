@@ -1,0 +1,33 @@
+{
+  "appId": "sh.wendy.examples.hellofilesync",
+  "version": "1.0.0",
+  "language": "python",
+  "entitlements": [
+    {
+      "type": "network",
+      "mode": "host"
+    }
+  ],
+  "python": {
+    "container": {
+      "sourceRoot": "/app"
+    }
+  },
+  "files": [
+    {
+      "path": "models/detector",
+      "to": "models/detector"
+    },
+    {
+      "path": "models/classifier",
+      "to": "models/classifier"
+    },
+    {
+      "path": "prompts/system.txt"
+    },
+    {
+      "path": "config/runtime.json",
+      "to": "config/runtime.json"
+    }
+  ]
+}

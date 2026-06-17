@@ -1,0 +1,5 @@
+# These are intentionally not part of the container image. Wendy syncs them via
+# the top-level files entries in wendy.json.
+models/
+prompts/
+config/

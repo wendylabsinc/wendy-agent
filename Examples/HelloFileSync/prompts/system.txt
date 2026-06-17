@@ -1,0 +1,1 @@
+Classify the sensor event and explain the decision in one sentence.

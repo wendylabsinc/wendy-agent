@@ -1,0 +1,2 @@
+detector-model-v1
+pretend this directory is a large detection model bundle
