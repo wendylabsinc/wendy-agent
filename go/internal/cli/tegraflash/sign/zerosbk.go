@@ -41,11 +41,11 @@ func aesCMAC128(key, data []byte) [16]byte {
 	const rb = byte(0x87)
 	var L [16]byte
 	block.Encrypt(L[:], L[:]) // AES_K(0^128)
-	k1 := shiftLeft1(L)
+	k1 := shiftLeft(L)
 	if L[0]&0x80 != 0 {
 		k1[15] ^= rb
 	}
-	k2 := shiftLeft1(k1)
+	k2 := shiftLeft(k1)
 	if k1[0]&0x80 != 0 {
 		k2[15] ^= rb
 	}
@@ -73,12 +73,12 @@ func aesCMAC128(key, data []byte) [16]byte {
 			copy(padded, chunk)
 			if len(chunk) < blockSize {
 				padded[len(chunk)] = 0x80 // ISO/IEC 7816-4 padding
-				xorBlocks1(Y[:], X[:], padded, k2[:])
+				xorBlocks(Y[:], X[:], padded, k2[:])
 			} else {
-				xorBlocks1(Y[:], X[:], padded, k1[:])
+				xorBlocks(Y[:], X[:], padded, k1[:])
 			}
 		} else {
-			xorBytes1(Y[:], X[:], chunk)
+			xorBytes(Y[:], X[:], chunk)
 		}
 		cipher.NewCBCEncrypter(block, make([]byte, 16)).CryptBlocks(X[:], Y[:])
 	}
@@ -87,8 +87,7 @@ func aesCMAC128(key, data []byte) [16]byte {
 	return result
 }
 
-
-func shiftLeft1(b [16]byte) [16]byte {
+func shiftLeft(b [16]byte) [16]byte {
 	var out [16]byte
 	for i := 0; i < 15; i++ {
 		out[i] = (b[i] << 1) | (b[i+1] >> 7)
@@ -97,13 +96,13 @@ func shiftLeft1(b [16]byte) [16]byte {
 	return out
 }
 
-func xorBytes1(dst, a, b []byte) {
+func xorBytes(dst, a, b []byte) {
 	for i := range dst {
 		dst[i] = a[i] ^ b[i]
 	}
 }
 
-func xorBlocks1(dst, a, b, c []byte) {
+func xorBlocks(dst, a, b, c []byte) {
 	for i := range dst {
 		dst[i] = a[i] ^ b[i] ^ c[i]
 	}

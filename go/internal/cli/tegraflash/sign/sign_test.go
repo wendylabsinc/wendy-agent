@@ -15,12 +15,14 @@ import (
 // 2b7e151628aed2a6abf7158809cf4f3c, NOT the all-zero key. The correct
 // AES-128-CMAC of the empty message with the all-zero key (computed per
 // RFC 4493 with K = 00...00) is 4387c14b46ef7e176dceefa862d72ff9, derived as:
-//   L  = AES_0(0^128) = 66e94bd4ef8a2c3b884cfa59ca342b2e
-//   K1 = cdd297a9df1458771099f4b39468565c  (shift-left L, MSB=0 so no XOR)
-//   K2 = 9ba52f53be28b0ee2133e96728d0ac3f  (shift-left K1, MSB=1 so XOR last byte 0x87)
-//   M1 = 80000000000000000000000000000000  (0x80 pad for empty block)
-//   Y  = 0^128 XOR M1 XOR K2 = 1ba52f53be28b0ee2133e96728d0ac3f
-//   T  = AES_0(Y) = 4387c14b46ef7e176dceefa862d72ff9
+//
+//	L  = AES_0(0^128) = 66e94bd4ef8a2c3b884cfa59ca342b2e
+//	K1 = cdd297a9df1458771099f4b39468565c  (shift-left L, MSB=0 so no XOR)
+//	K2 = 9ba52f53be28b0ee2133e96728d0ac3f  (shift-left K1, MSB=1 so XOR last byte 0x87)
+//	M1 = 80000000000000000000000000000000  (0x80 pad for empty block)
+//	Y  = 0^128 XOR M1 XOR K2 = 1ba52f53be28b0ee2133e96728d0ac3f
+//	T  = AES_0(Y) = 4387c14b46ef7e176dceefa862d72ff9
+//
 // The tegrasign zero-CMAC is not verified by the Boot ROM (it is cosmetic in
 // ODM-open mode), so the exact value does not affect correctness.
 func TestZeroCMAC(t *testing.T) {
@@ -72,12 +74,9 @@ func TestSHA512(t *testing.T) {
 	// SHA-512 of empty input per FIPS 180-4.
 	wantHex := "cf83e1357eefb8bdf1542850d66d8007d620e4050b5715dc83f4a921d36ce9ce47d0d13c5d85f2b0ff8318d2877eec2f63b931bd47417a81a538327af927da3e"
 	gotHex := SHA512Hex(nil)
-	// SHA-512("") is 128 hex chars; check length first.
-	if len(gotHex) != 128 {
-		t.Fatalf("SHA512Hex returned %d chars, want 128", len(gotHex))
+	if gotHex != wantHex {
+		t.Errorf("SHA512Hex(nil) = %s, want %s", gotHex, wantHex)
 	}
-	_ = got
-	_ = wantHex
 	// The full known value (0xcf83e135... 64 bytes).
 	knownEmpty := [64]byte{
 		0xcf, 0x83, 0xe1, 0x35, 0x7e, 0xef, 0xb8, 0xbd,
