@@ -253,11 +253,16 @@ func (d *Device) RCMState() (byte, error) {
 }
 
 // parseStateDescriptor extracts the RCM state byte from a GET_STRING_DESCRIPTOR response.
-// NVIDIA's T23x bootROM encodes the RCM state as the first byte of the UTF-16LE
-// payload (buf[2]). Derived from RE of tegrarcm_v2 mainT23x (Thor nightly 20260618).
+// NVIDIA's T23x bootROM encodes the state as an ASCII decimal digit in a UTF-16LE string
+// descriptor: state 0 → '0' (0x30), state 5 → '5' (0x35), etc. buf[2] is the low byte of
+// the first UTF-16LE code unit. Confirmed on live T264 device (buf[2]=0x30 for initial state).
 func parseStateDescriptor(buf []byte, n int) (byte, error) {
 	if n < 3 {
 		return 0, fmt.Errorf("RCM state descriptor too short: got %d bytes, need at least 3", n)
 	}
-	return buf[2], nil
+	b := buf[2]
+	if b < '0' || b > '9' {
+		return 0, fmt.Errorf("RCM state descriptor byte 0x%02x is not an ASCII digit", b)
+	}
+	return b - '0', nil
 }

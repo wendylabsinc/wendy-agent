@@ -13,22 +13,29 @@ func TestParseStateDescriptor(t *testing.T) {
 		wantErr bool
 	}{
 		{
+			// Confirmed on live T264: state 0 (initial) is encoded as ASCII '0' = 0x30.
 			name: "state 0 initial",
-			buf:  []byte{0x06, 0x03, 0x00, 0x00, 0x00, 0x00},
+			buf:  []byte{0x06, 0x03, 0x30, 0x00, 0x00, 0x00},
 			n:    6,
 			want: 0,
 		},
 		{
 			name: "state 5 MB2 applet running",
-			buf:  []byte{0x06, 0x03, 0x05, 0x00, 0x00, 0x00},
+			buf:  []byte{0x06, 0x03, 0x35, 0x00, 0x00, 0x00},
 			n:    6,
 			want: 5,
 		},
 		{
 			name: "state 8 MB2 running",
-			buf:  []byte{0x06, 0x03, 0x08, 0x00, 0x00, 0x00},
+			buf:  []byte{0x06, 0x03, 0x38, 0x00, 0x00, 0x00},
 			n:    6,
 			want: 8,
+		},
+		{
+			name:    "non-digit byte returns error",
+			buf:     []byte{0x06, 0x03, 0x05, 0x00, 0x00, 0x00},
+			n:       6,
+			wantErr: true,
 		},
 		{
 			name:    "n=2 too short",
