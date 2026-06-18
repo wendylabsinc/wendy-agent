@@ -85,8 +85,9 @@ func Compile(opts CompileOptions) (dtbPath string, err error) {
 	// reliably; the flag is omitted there. Output is captured via cmd.Stdout
 	// rather than cpp's -o flag, which avoids a macOS driver quirk where a
 	// named -o argument triggers full-compilation mode instead of preprocessing.
-	// cpp does not accept -D and -I as separate argv tokens on all platforms;
-	// the flag and its value must be combined (e.g. "-DFLAG", "-I/dir").
+	// Apple clang's cpp on macOS requires -D and -I in combined token form
+	// (e.g. "-DFLAG", "-I/dir"); GNU cpp on Linux accepts both forms, so the
+	// combined form is used on all platforms for portability.
 	cppArgs := []string{"-nostdinc"}
 	if runtime.GOOS == "linux" {
 		cppArgs = append(cppArgs, "-x", "assembler-with-cpp")
