@@ -327,7 +327,11 @@ func ensureBlockInFile(path, sentinel, block string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	defer f.Close()
+	defer func() {
+		if f != nil {
+			_ = f.Close()
+		}
+	}()
 
 	var buf strings.Builder
 	if len(existing) > 0 && existing[len(existing)-1] != '\n' {
@@ -340,5 +344,9 @@ func ensureBlockInFile(path, sentinel, block string) (bool, error) {
 	if _, err := f.WriteString(buf.String()); err != nil {
 		return false, err
 	}
+	if err := f.Close(); err != nil {
+		return false, err
+	}
+	f = nil
 	return true, nil
 }
