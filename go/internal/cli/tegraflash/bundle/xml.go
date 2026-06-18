@@ -4,6 +4,7 @@ package bundle
 
 import (
 	"encoding/xml"
+	"fmt"
 	"strconv"
 	"strings"
 )
@@ -85,4 +86,49 @@ func ParseLayout(data []byte) (*PartitionLayout, error) {
 		return nil, err
 	}
 	return &layout, nil
+}
+
+// RCMImage is one entry from the device type="rcm" block of rcmboot-flash.xml.in.
+type RCMImage struct {
+	Name     string
+	Type     string
+	Filename string
+}
+
+// ParseRCMImages parses a tegraflash partition XML and returns the ordered list
+// of partitions in the device type="rcm" block that have non-empty filenames.
+// Partitions with empty or whitespace-only filenames (BCT placeholders etc.) are skipped.
+func ParseRCMImages(data []byte) ([]RCMImage, error) {
+	var layout PartitionLayout
+	if err := xml.Unmarshal(data, &layout); err != nil {
+		return nil, err
+	}
+	for _, dev := range layout.Devices {
+		if dev.Type != "rcm" {
+			continue
+		}
+		var images []RCMImage
+		for _, p := range dev.Partitions {
+			if !p.HasFile() {
+				continue
+			}
+			images = append(images, RCMImage{
+				Name:     p.Name,
+				Type:     p.Type,
+				Filename: strings.TrimSpace(p.Filename),
+			})
+		}
+		return images, nil
+	}
+	return nil, fmt.Errorf("no rcm device block found in partition XML")
+}
+
+// RCMImages parses rcmboot-flash.xml.in from the bundle and returns the ordered
+// list of RCM-phase images. Partitions without filenames are omitted.
+func (b *Bundle) RCMImages() ([]RCMImage, error) {
+	data, err := b.ExtractFile("rcmboot-flash.xml.in")
+	if err != nil {
+		return nil, fmt.Errorf("rcmboot-flash.xml.in not found in bundle: %w", err)
+	}
+	return ParseRCMImages(data)
 }
