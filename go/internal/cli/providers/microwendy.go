@@ -27,6 +27,10 @@ const (
 	// This also works for older projects that expected to build for wasm32-unknown-none-wasm
 	microWendyEmbeddedSDK = "-embedded"
 	microWendySwiftTarget = "wasm32-unknown-wasip1"
+
+	// maxWASMBytesWendyLite is the soft limit for Wendy Lite WASM binaries.
+	// The ESP32-C6 cannot reliably load binaries larger than this after WiFi/BLE start.
+	maxWASMBytesWendyLite = 150 * 1024
 )
 
 // microWendyBuildContext is stored in BuiltApp.Context for WASM builds.
@@ -142,8 +146,15 @@ func (p *MicroWendyProvider) Build(ctx context.Context, device models.ExternalDe
 	}
 
 	wasmPath := filepath.Join(binDir, product+".wasm")
-	if _, err := os.Stat(wasmPath); err != nil {
-		return nil, fmt.Errorf("expected WASM output at %s: %w", wasmPath, err)
+	wasmInfo, statErr := os.Stat(wasmPath)
+	if statErr != nil {
+		return nil, fmt.Errorf("expected WASM output at %s: %w", wasmPath, statErr)
+	}
+	if wasmInfo.Size() > maxWASMBytesWendyLite {
+		return nil, fmt.Errorf(
+			"WASM binary is %d KB — too large for Wendy Lite's ESP32-C6 heap (%d KB limit).\n"+
+				"Tip: use `import CWendyLite` instead of `import WendyLite` to drop ~190 KB of Swift runtime overhead.",
+			wasmInfo.Size()/1024, maxWASMBytesWendyLite/1024)
 	}
 
 	// Collect IPs of all known devices for unicast delivery.
