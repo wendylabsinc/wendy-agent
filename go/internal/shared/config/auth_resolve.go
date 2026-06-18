@@ -59,7 +59,11 @@ func ResolveAuth(cfg *Config, cloudGRPC string, pick SessionPicker) (*AuthConfig
 		return authWithCerts(def)
 	}
 	if pick != nil {
-		return pick(cfg)
+		picked, err := pick(cfg)
+		if err != nil {
+			return nil, err
+		}
+		return authWithCerts(picked)
 	}
 	return nil, fmt.Errorf("%w; pass --cloud-grpc or run 'wendy auth use' to choose a default", ErrMultipleSessions)
 }

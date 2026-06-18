@@ -90,6 +90,15 @@ func TestResolveAuthMultipleUsesPicker(t *testing.T) {
 	}
 }
 
+func TestResolveAuthPickerResultCertValidated(t *testing.T) {
+	cfg := twoSessions()
+	cfg.Auth[1].Certificates = nil // picker returns a cert-less session
+	pick := func(c *Config) (*AuthConfig, error) { return &c.Auth[1], nil }
+	if _, err := ResolveAuth(cfg, "", pick); err == nil || !strings.Contains(err.Error(), "no certificates") {
+		t.Fatalf("want no-certificates error from picker result, got %v", err)
+	}
+}
+
 func TestDefaultAuthLookup(t *testing.T) {
 	cfg := twoSessions()
 	if _, ok := cfg.DefaultAuth(); ok {
