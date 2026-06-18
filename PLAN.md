@@ -177,7 +177,7 @@ Do not treat this as priority order.
 - Branch: `kb.wdy-1606-brewfile-support`
 - Draft PR: https://github.com/wendylabsinc/WendyOS/pull/1071
 - Setup commit: `ba738e0501d14fd8e5c4c204e64d2858710617b8`
-- Status: Handoff written; ready for implementation in issue worktree.
+- Status: Implementation PR is still draft. Current checks show Claude Security Review and Swift lint failures; follow up in the issue worktree before marking ready.
 - Scope:
   - Add Brewfile support for native Wendy Agent for Mac app deployments.
   - Apply the Brewfile on the target Mac before starting the native app.
@@ -207,6 +207,7 @@ Do not treat this as priority order.
 
 - WDY-1606 was originally created under Wendy for Mac — Beta from the general coordinator, then moved to Wendy for Mac — Production before starting because the beta project is closed.
 - User-provided Brew Bundle/Brewfile reference for WDY-1606: https://docs.brew.sh/Brew-Bundle-and-Brewfile.
+- Housekeeping 2026-06-18: PR #1071 remains draft. Most checks pass, but Claude Security Review and Swift lint are failing on head `4521278df4e98ab5c576eb7fa10aedc7fbbac891`.
 
 ## Issue record template
 
