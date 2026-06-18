@@ -32,6 +32,8 @@ type Partition struct {
 	AlignBoundary        uint64
 	AllocationAttribute  uint32
 	PercentReserved      uint32
+	EraseSize            uint32
+	RollbackLevel        uint8
 	OEMSign              bool
 	AuthGroup            bool
 	TypeGUID             [16]byte

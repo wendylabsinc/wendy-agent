@@ -71,10 +71,11 @@ func (l *Layout) Serialize() ([]byte, error) {
 			// +0x28..0x2f: zeros (two unknown u32 fields)
 			// +0x30: allocation_attribute (u32)
 			binary.LittleEndian.PutUint32(rec[0x30:], p.AllocationAttribute)
-			// +0x34: zero (unknown)
+			// +0x34: erase_size (u32)
+			binary.LittleEndian.PutUint32(rec[0x34:], p.EraseSize)
 			// +0x38: percent_reserved (u32)
 			binary.LittleEndian.PutUint32(rec[0x38:], p.PercentReserved)
-			// +0x3c: zero (erase_size, not present in XML)
+			// +0x3c: zero (unknown)
 			// +0x40: file_system_attribute (u64, low word first)
 			binary.LittleEndian.PutUint32(rec[0x40:], uint32(p.FileSystemAttribute))
 			binary.LittleEndian.PutUint32(rec[0x44:], uint32(p.FileSystemAttribute>>32))
@@ -90,7 +91,8 @@ func (l *Layout) Serialize() ([]byte, error) {
 			// +0x4c: align_boundary (u64, low word first)
 			binary.LittleEndian.PutUint32(rec[0x4c:], uint32(p.AlignBoundary))
 			binary.LittleEndian.PutUint32(rec[0x50:], uint32(p.AlignBoundary>>32))
-			// +0x54: rollback_level (u8, not present in XML = 0)
+			// +0x54: rollback_level (u8)
+			rec[0x54] = p.RollbackLevel
 			// +0x55..0x57: padding
 			// +0x58: partition_type_guid (16 bytes)
 			copy(rec[0x58:], p.TypeGUID[:])

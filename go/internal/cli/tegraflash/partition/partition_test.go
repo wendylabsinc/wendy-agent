@@ -63,6 +63,73 @@ func TestFilesystemTypeID(t *testing.T) {
 			t.Errorf("FilesystemTypeID(%q) = %d,%v want %d", name, got, ok, want)
 		}
 	}
+	if _, ok := FilesystemTypeID("not_a_filesystem"); ok {
+		t.Error("unknown filesystem type should return ok=false")
+	}
+}
+
+// TestParseGUIDMixedEndian verifies the standard GPT/UEFI mixed-endian
+// encoding: the first three groups are byte-reversed (little-endian), while
+// groups 4 and 5 are stored as written (big-endian).
+func TestParseGUIDMixedEndian(t *testing.T) {
+	got, err := parseGUID("0FC63DAF-8483-4772-8E79-3D69D8477DE4")
+	if err != nil {
+		t.Fatalf("parseGUID returned unexpected error: %v", err)
+	}
+	want := [16]byte{
+		0xaf, 0x3d, 0xc6, 0x0f, // group 1 little-endian: 0FC63DAF -> af 3d c6 0f
+		0x83, 0x84,             // group 2 little-endian: 8483 -> 83 84
+		0x72, 0x47,             // group 3 little-endian: 4772 -> 72 47
+		0x8e, 0x79,             // group 4 big-endian: 8E79 -> 8e 79
+		0x3d, 0x69, 0xd8, 0x47, 0x7d, 0xe4, // group 5 big-endian
+	}
+	if got != want {
+		t.Errorf("parseGUID mismatch:\ngot  % x\nwant % x", got, want)
+	}
+}
+
+// TestSerializeEraseAndRollback verifies that EraseSize is written at partition
+// record offset 0x34 and RollbackLevel is written at offset 0x54.
+func TestSerializeEraseAndRollback(t *testing.T) {
+	layout := &Layout{
+		Version: 10000,
+		Devices: []Device{
+			{
+				Type:       3, // spi
+				Instance:   0,
+				SectorSize: 512,
+				NumSectors: 131072,
+				Erase:      true,
+				Partitions: []Partition{
+					{
+						Name:          "test",
+						ID:            1,
+						TypeID:        2, // bootloader
+						EraseSize:     0x1000,
+						RollbackLevel: 7,
+						TypeGUID:      defaultTypeGUID,
+					},
+				},
+			},
+		},
+	}
+	layout.Devices[0].NumPartitions = 1
+
+	data, err := layout.Serialize()
+	if err != nil {
+		t.Fatalf("Serialize: %v", err)
+	}
+
+	// Partition records start after: 12-byte header + 1 device * 32 bytes = 44 (0x2c).
+	const partStart = 0x0c + 0x20 // 44
+	gotEraseSize := binary.LittleEndian.Uint32(data[partStart+0x34 : partStart+0x38])
+	if gotEraseSize != 0x1000 {
+		t.Errorf("erase_size at +0x34: got 0x%x, want 0x1000", gotEraseSize)
+	}
+	gotRollback := data[partStart+0x54]
+	if gotRollback != 7 {
+		t.Errorf("rollback_level at +0x54: got %d, want 7", gotRollback)
+	}
 }
 
 func TestSerializeMatchesGolden(t *testing.T) {

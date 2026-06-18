@@ -111,22 +111,70 @@ func parseBool(s string) bool {
 }
 
 // parseGUID parses a GUID string of the form
-// "AABBCCDD-EEFF-GGHH-IIJJ-KKLLMMNNOOPP" into a 16-byte array.
-// The first three groups are little-endian per the standard GUID encoding.
+// "AABBCCDD-EEFF-GGHH-IIJJ-KKLLMMNNOOPP" into a 16-byte array using the
+// standard mixed-endian (GPT/UEFI) on-disk encoding used by
+// NvTegraGuidStrToRec: group 1 (4 bytes) stored little-endian, group 2
+// (2 bytes) little-endian, group 3 (2 bytes) little-endian, groups 4 and 5
+// (8 bytes total) stored big-endian as written.
+//
+// Example: "0FC63DAF-8483-4772-8E79-3D69D8477DE4" encodes to
+// af 3d c6 0f  83 84  72 47  8e 79 3d 69 d8 47 7d e4.
 func parseGUID(s string) ([16]byte, error) {
 	s = strings.TrimSpace(s)
-	s = strings.ReplaceAll(s, "-", "")
-	if len(s) != 32 {
-		return [16]byte{}, fmt.Errorf("invalid GUID %q", s)
+	parts := strings.Split(s, "-")
+	if len(parts) != 5 {
+		return [16]byte{}, fmt.Errorf("invalid GUID %q: expected 5 groups separated by '-'", s)
 	}
-	var b [16]byte
-	for i := 0; i < 16; i++ {
-		v, err := strconv.ParseUint(s[i*2:i*2+2], 16, 8)
-		if err != nil {
-			return [16]byte{}, fmt.Errorf("invalid GUID byte %q: %w", s[i*2:i*2+2], err)
+	// Expected lengths of each group in hex digits.
+	groupLen := [5]int{8, 4, 4, 4, 12}
+	for i, p := range parts {
+		if len(p) != groupLen[i] {
+			return [16]byte{}, fmt.Errorf("invalid GUID %q: group %d has length %d, want %d", s, i+1, len(p), groupLen[i])
 		}
-		b[i] = byte(v)
 	}
+
+	parse := func(hex string) ([]byte, error) {
+		out := make([]byte, len(hex)/2)
+		for i := range out {
+			v, err := strconv.ParseUint(hex[i*2:i*2+2], 16, 8)
+			if err != nil {
+				return nil, fmt.Errorf("invalid hex byte %q: %w", hex[i*2:i*2+2], err)
+			}
+			out[i] = byte(v)
+		}
+		return out, nil
+	}
+
+	var b [16]byte
+
+	// Group 1: 4 bytes, little-endian (byte-reversed).
+	g1, err := parse(parts[0])
+	if err != nil {
+		return [16]byte{}, fmt.Errorf("invalid GUID %q group 1: %w", s, err)
+	}
+	b[0], b[1], b[2], b[3] = g1[3], g1[2], g1[1], g1[0]
+
+	// Group 2: 2 bytes, little-endian (byte-reversed).
+	g2, err := parse(parts[1])
+	if err != nil {
+		return [16]byte{}, fmt.Errorf("invalid GUID %q group 2: %w", s, err)
+	}
+	b[4], b[5] = g2[1], g2[0]
+
+	// Group 3: 2 bytes, little-endian (byte-reversed).
+	g3, err := parse(parts[2])
+	if err != nil {
+		return [16]byte{}, fmt.Errorf("invalid GUID %q group 3: %w", s, err)
+	}
+	b[6], b[7] = g3[1], g3[0]
+
+	// Groups 4 and 5: 4 + 6 bytes, big-endian (as written).
+	g45, err := parse(parts[3] + parts[4])
+	if err != nil {
+		return [16]byte{}, fmt.Errorf("invalid GUID %q groups 4-5: %w", s, err)
+	}
+	copy(b[8:], g45)
+
 	return b, nil
 }
 
@@ -239,6 +287,14 @@ func Parse(xmlData []byte) (*Layout, error) {
 			if err != nil {
 				return nil, fmt.Errorf("device %d partition %d align_boundary: %w", di, pi, err)
 			}
+			eraseSize, err := parseU32(xp.EraseSize)
+			if err != nil {
+				return nil, fmt.Errorf("device %d partition %d erase_size: %w", di, pi, err)
+			}
+			rollbackLevel, err := parseU32(xp.RollbackLevel)
+			if err != nil {
+				return nil, fmt.Errorf("device %d partition %d rollback_level: %w", di, pi, err)
+			}
 
 			// Partition ID: use <id> child if present, else sequential index+1.
 			var partID uint32
@@ -314,6 +370,8 @@ func Parse(xmlData []byte) (*Layout, error) {
 				AlignBoundary:       alignBoundary,
 				AllocationAttribute: allocAttr,
 				PercentReserved:     pctRes,
+				EraseSize:           eraseSize,
+				RollbackLevel:       uint8(rollbackLevel),
 				OEMSign: parseBool(xp.OEMSign),
 				// The field at +0x49 is set by authentication_group="true" OR
 				// by comp_algo="lz4".  The golden binary confirms comp_algo="lz4"
