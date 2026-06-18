@@ -53,20 +53,20 @@ in per-issue worktree sessions, not in this coordinator worktree.
 
 ## Current focus
 
-Started WDY-1532, WDY-1600, and WDY-1602 from the general queue. Coordinator setup is complete for all three; implementation must happen in the issue worktrees.
+WDY-1532 is the active general-coordinator issue currently in review. WDY-1600 and WDY-1602 completed and are tracked below for history.
 
 ## Active / paused issues
 
 ### WDY-1532 — Support `wendy.json` file sync for WendyOS/Linux deployments
 
 - Linear: https://linear.app/wendylabsinc/issue/WDY-1532/support-wendyjson-file-sync-for-wendyoslinux-deployments
-- State: In Progress
+- State: In Review
 - Project: none
 - Worktree: `/Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1532-file-sync`
 - Branch: `kb.wdy-1532-file-sync`
-- Draft PR: https://github.com/wendylabsinc/WendyOS/pull/998
+- PR: https://github.com/wendylabsinc/WendyOS/pull/998
 - Setup commit: `c3ace1815cef5bf69d1d9d72e312cffe52567131`
-- Status: Handoff written; ready for implementation in issue worktree.
+- Status: Implementation PR is ready for review; most checks pass, but Claude Security Review is currently failing and needs follow-up in the issue worktree.
 - Scope:
   - Make top-level `wendy.json.files` work for WendyOS/Linux `wendy run` deployments.
   - Document platform/build-path support, destination resolution, directory/file semantics, and stale/update behavior.
@@ -83,59 +83,6 @@ Started WDY-1532, WDY-1600, and WDY-1602 from the general queue. Coordinator set
   cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1532-file-sync && ai --prompt "Read HANDOVER.md and follow its instructions."
   ```
 
-### WDY-1600 — `wendy device update` reports success before restarted agent is reachable
-
-- Linear: https://linear.app/wendylabsinc/issue/WDY-1600/wendy-device-update-reports-success-before-restarted-agent-is
-- State: In Progress
-- Project: none
-- Worktree: `/Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1600-device-update-restart`
-- Branch: `kb.wdy-1600-device-update-restart`
-- Draft PR: https://github.com/wendylabsinc/WendyOS/pull/1064
-- Setup commit: `9c1ea2432232ca99c3a436033af4eb37ca24f422`
-- Status: Handoff written; ready for implementation in issue worktree.
-- Scope:
-  - First try to reproduce the reported post-update restart-gap failure.
-  - Fix or clarify `wendy device update --binary` readiness semantics so success does not race the agent restart.
-  - Add focused tests for the selected behavior.
-- Constraints:
-  - Keep the PR focused on device-update restart readiness.
-  - Preserve JSON output semantics.
-  - Avoid broad connection retry changes unless they are the smallest safe fix.
-- Validation expectations:
-  - Focused Go tests for changed CLI/agent packages.
-  - Hardware/device reproduction and post-fix validation if available; otherwise document the unavailable hardware and cover behavior with tests/mocks.
-- Resume:
-
-  ```sh
-  cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1600-device-update-restart && ai --prompt "Read HANDOVER.md and follow its instructions."
-  ```
-
-### WDY-1602 — Fix Fumadocs audit failure from esbuild advisory
-
-- Linear: https://linear.app/wendylabsinc/issue/WDY-1602/fix-fumadocs-audit-failure-from-esbuild-advisory
-- State: In Progress
-- Project: none
-- Worktree: `/Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1602-fumadocs-esbuild-audit`
-- Branch: `kb.wdy-1602-fumadocs-esbuild-audit`
-- Draft PR: https://github.com/wendylabsinc/WendyOS/pull/1066
-- Setup commit: `f423ef4d`
-- Status: Handoff written; ready for implementation in issue worktree.
-- Scope:
-  - First reproduce the Fumadocs `npm audit --audit-level=high` failure.
-  - Apply a minimal docs lockfile update for the esbuild advisory.
-  - Avoid unsafe `npm audit fix --force` dependency churn.
-- Constraints:
-  - Keep the PR focused on docs dependency audit health.
-  - Prefer lockfile-only changes unless validation proves `package.json` must change.
-- Validation expectations:
-  - `cd docs && npm audit --audit-level=high`
-  - `cd docs && npm run build`
-- Resume:
-
-  ```sh
-  cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1602-fumadocs-esbuild-audit && ai --prompt "Read HANDOVER.md and follow its instructions."
-  ```
-
 ## Candidate issue queue
 
 - WDY-1520 — Consider CLI IPv6-to-IPv4 fallback for device connections — https://linear.app/wendylabsinc/issue/WDY-1520/consider-cli-ipv6-to-ipv4-fallback-for-device-connections
@@ -146,7 +93,8 @@ Started WDY-1532, WDY-1600, and WDY-1602 from the general queue. Coordinator set
 
 ## Recently completed
 
-- TBD.
+- WDY-1600 — `wendy device update` reports success before restarted agent is reachable — PR https://github.com/wendylabsinc/WendyOS/pull/1064 merged 2026-06-17; Linear is Done.
+- WDY-1602 — Fix Fumadocs audit failure from esbuild advisory — PR https://github.com/wendylabsinc/WendyOS/pull/1066 merged 2026-06-17; Linear is Done.
 
 ## Follow-ups / discoveries
 
