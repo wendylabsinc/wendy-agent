@@ -121,3 +121,29 @@ func TestAppendSigHeaderMatchesGolden(t *testing.T) {
 		t.Fatalf("sigheader mismatch: first diff at offset 0x%04x (%d)", idx, idx)
 	}
 }
+
+// TestAppendSigHeaderMatchesGoldenMultiSize confirms the header is byte-exact
+// across multiple payload sizes. This locks in the non-obvious rule (verified
+// against the real tool at 1008, 4096, and 5008 byte payloads) that the
+// stage1_components[0] image digest at 0x1F30 covers payload[:len-64] while the
+// length field (0x1EE4) and the component digest (0x1460) use the full length.
+func TestAppendSigHeaderMatchesGoldenMultiSize(t *testing.T) {
+	for _, base := range []string{"payload_1008_aligned", "payload_5008_aligned"} {
+		in, err := os.ReadFile("../testdata/golden/" + base + ".bin")
+		if err != nil {
+			t.Skip("golden input not present: " + base)
+		}
+		want, err := os.ReadFile("../testdata/golden/" + base + "_sigheader.bin")
+		if err != nil {
+			t.Skip("golden sigheader not present: " + base)
+		}
+		got, err := sigheader.AppendSigHeader(in, [4]byte{'M', 'B', '1', 'B'}, "")
+		if err != nil {
+			t.Fatalf("%s: %v", base, err)
+		}
+		if !bytes.Equal(got, want) {
+			idx := firstDiff(got, want)
+			t.Fatalf("%s: sigheader mismatch at offset 0x%04x (%d)", base, idx, idx)
+		}
+	}
+}

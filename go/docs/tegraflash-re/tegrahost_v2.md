@@ -209,8 +209,13 @@ signed-section SHA-512 into `0x50`, full-header SHA-512 into `0x04`.
   `--fillcmachash` alternative, not the T264 boot-component path.
 
 * **Three SHA-512 digests are stored in the header** (each 64 bytes):
-  1. **Image digest** at `0x1F30`: SHA-512 of the **payload only** (the bytes at file
-     offset `0x2000` onward), length = the original image length.
+  1. **Image digest** at `0x1F30`: SHA-512 of the payload **minus its trailing 64
+     bytes** — i.e. `sha512(payload[:len-64])`. **CORRECTION (validated 2026-06-19
+     against golden output at payload sizes 1008, 4096, 5008):** this digest does
+     NOT cover the full payload. The length field at `0x1EE4` and the per-component
+     digest at `0x1460` use the full payload length; only `0x1F30` excludes the last
+     64 bytes. The Go port (`internal/cli/tegraflash/sigheader/`) reproduces this
+     byte-exact across all three sizes.
   2. **Signed-section digest** at `0x50`: SHA-512 of header bytes `[0xFC0 .. 0x2000)`
      (length `0x1040`).
   3. **Header digest** at `0x04`: SHA-512 of header bytes `[0x44 .. 0x2000)` (length

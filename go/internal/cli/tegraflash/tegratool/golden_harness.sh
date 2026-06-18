@@ -14,11 +14,15 @@ mkdir -p "$OUT_DIR"
 BUNDLE_DIR="$(cd "$BUNDLE_DIR" && pwd)"
 OUT_DIR="$(cd "$OUT_DIR" && pwd)"
 
-# Generate the deterministic sigheader test payload on the host (the slim
-# container has no python3); the container reads it back from /out.
-python3 - "$OUT_DIR/payload_raw.bin" <<'PY'
-import sys
-open(sys.argv[1], "wb").write(bytes((i * 7 + 3) & 0xff for i in range(4096)))
+# Generate deterministic sigheader test payloads on the host (the slim container
+# has no python3); the container reads them back from /out. Multiple sizes lock
+# in the payload[:len-64] image-digest rule.
+python3 - "$OUT_DIR" <<'PY'
+import sys, os
+d = sys.argv[1]
+open(os.path.join(d, "payload_raw.bin"), "wb").write(bytes((i * 7 + 3) & 0xff for i in range(4096)))
+open(os.path.join(d, "payload_1008_raw.bin"), "wb").write(bytes((i * 3 + 1) & 0xff for i in range(1000)))
+open(os.path.join(d, "payload_5008_raw.bin"), "wb").write(bytes((i * 13 + 5) & 0xff for i in range(5000)))
 PY
 
 docker run --rm --platform linux/386 \
@@ -33,15 +37,17 @@ docker run --rm --platform linux/386 \
     cp rcmboot-flash.bin /out/pt.bin
     cp rcmboot-flash.xml /out/rcmboot-flash.xml
 
-    # 2. BCH sigheader (zerosbk): align the host-provided deterministic payload,
-    #    append an MB1B sigheader. Capture the matched (aligned, sigheader) pair.
-    cp /out/payload_raw.bin payload_aligned.bin
-    ./tegrahost_v2 --chip 0x26 0 --align payload_aligned.bin
-    ./tegrahost_v2 --chip 0x26 0 --magicid MB1B --appendsigheader payload_aligned.bin zerosbk
-    cp payload_aligned.bin /out/payload_aligned.bin
-    # appendsigheader writes <base>_sigheader<ext>
-    cp payload_aligned_sigheader.bin /out/payload_aligned_sigheader.bin 2>/dev/null \
-      || cp payload_sigheader.bin /out/payload_aligned_sigheader.bin 2>/dev/null || true
+    # 2. BCH sigheader (zerosbk): align each host-provided deterministic payload,
+    #    append an MB1B sigheader. Capture the matched (aligned, sigheader) pairs
+    #    at multiple sizes (4096, 1008, 5008) to pin the digest-coverage rule.
+    for spec in "payload_raw.bin:payload_aligned" "payload_1008_raw.bin:payload_1008_aligned" "payload_5008_raw.bin:payload_5008_aligned"; do
+      raw="${spec%%:*}"; out="${spec##*:}"
+      cp "/out/$raw" "$out.bin"
+      ./tegrahost_v2 --chip 0x26 0 --align "$out.bin"
+      ./tegrahost_v2 --chip 0x26 0 --magicid MB1B --appendsigheader "$out.bin" zerosbk
+      cp "$out.bin" "/out/$out.bin"
+      cp "${out}_sigheader.bin" "/out/${out}_sigheader.bin"
+    done
 
     # 3. Best-effort full BCT generation via the bundle driver (--no_flash, no device).
     #    Gated behind the Task 6 RE spike; capture whatever it produces.
