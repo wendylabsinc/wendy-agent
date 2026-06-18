@@ -18,10 +18,10 @@ per-issue worktrees.
 
 `PLAN.md` is populated with the Linear **E2E Tests** issues and current status:
 
-1. `WDY-1574` — In progress, High: Reduce AI compute used by E2E tests
-2. `WDY-1592` — In progress, blocked by WDY-1574: Re-enable E2E AI reviews after compute gating lands
-3. `WDY-1562` — In progress: Add legacy app integration suite to Swift E2E
-4. `WDY-1560` — Todo, High: Run physical Swift E2E only for stable releases until dedicated CI devices exist
+1. `WDY-1562` — In progress: Add legacy app integration suite to Swift E2E
+2. `WDY-1560` — Todo, High: Run physical Swift E2E only for stable releases until dedicated CI devices exist
+3. `WDY-1574` — Done, High: Reduce AI compute used by E2E tests
+4. `WDY-1592` — Done: Re-enable E2E AI reviews after compute gating lands
 5. `WDY-1561` — Done: Fix macOS integration discovery empty matrix failure
 6. `WDY-1558` — Done: Mark failed Swift E2E attempts without observations as failed
 7. `WDY-1559` — Done: Investigate Jetson Orin Nano Swift E2E preflight timeout
@@ -112,36 +112,23 @@ WDY-1510 was canceled because no Raspberry Pi 5 is currently available on CI:
   - Current PR status: draft open; Claude Security Review is failing while the
     other visible checks pass.
   - Handover: `/Volumes/Projects/WendyLabs/wendy-agent/.worktrees/ai.e2e-app-integration-plan/HANDOVER.md`
-- WDY-1574 — In Progress, High priority, E2E Tests project: reduce unnecessary
-  AI compute used by the E2E review/reporting flow. Successful or skipped-only
-  runs should avoid expensive model analysis where possible, while actionable
-  failures should still get focused diagnosis from selected artifacts/logs.
-  - Worktree: `/Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1574-reduce-e2e-ai-compute`
-  - Branch: `kb.wdy-1574-reduce-e2e-ai-compute`
-  - Draft PR: https://github.com/wendylabsinc/WendyOS/pull/1042
+- WDY-1574 — Done, High priority, E2E Tests project: reduced unnecessary AI
+  compute used by the E2E review/reporting flow by collapsing review to a single
+  run-level pass, capping prompt inputs, isolating review failures, and writing
+  review output under the run artifact directory.
+  - PR: https://github.com/wendylabsinc/WendyOS/pull/1042 (merged)
+  - Merge commit: `be0a4638`
   - Linear: https://linear.app/wendylabsinc/issue/WDY-1574/reduce-ai-compute-used-by-e2e-tests
-  - Setup commit: `561d116a`
-  - Related mitigation: one-off PR #1045 temporarily disables the current Swift
-    E2E AI review invocation while WDY-1574 adds tighter gating.
-  - Resume command:
-
-    ```sh
-    cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1574-reduce-e2e-ai-compute && ai --prompt "Read HANDOVER.md and follow its instructions."
-    ```
-- WDY-1592 — In Progress, E2E Tests project: re-enable Swift E2E AI reviews
-  after WDY-1574 lands compute controls. This is blocked by WDY-1574 and should
-  restore the review invocation while preserving the new gating behavior.
-  - Worktree: `/Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1592-reenable-e2e-ai-reviews`
-  - Branch: `kb.wdy-1592-reenable-e2e-ai-reviews`
-  - Draft PR: https://github.com/wendylabsinc/WendyOS/pull/1057
+  - Branch/worktree: `kb.wdy-1574-reduce-e2e-ai-compute` merged; local worktree removed.
+  - Related mitigation: one-off PR #1045 temporarily disabled AI review before
+    PR #1042 restored it with compute gating.
+- WDY-1592 — Done, E2E Tests project: re-enabled Swift E2E AI reviews after
+  WDY-1574 landed compute controls.
+  - Implementation PR: https://github.com/wendylabsinc/WendyOS/pull/1042 (merged; closes WDY-1592)
+  - Setup PR: https://github.com/wendylabsinc/WendyOS/pull/1057 (closed without merge; implementation moved into #1042)
   - Linear: https://linear.app/wendylabsinc/issue/WDY-1592/re-enable-e2e-ai-reviews-after-compute-gating-lands
-  - Blocked by: WDY-1574
   - Setup commit: `75f89f42`
-  - Resume command:
-
-    ```sh
-    cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1592-reenable-e2e-ai-reviews && ai --prompt "Read HANDOVER.md and follow its instructions."
-    ```
+  - Branch/worktree: setup branch/worktree removed / absent.
 - WDY-1561 — Done, E2E Tests project: fixed `PR Integration Tests` macOS
   discovery matrix generation when discovery finds LAN devices but none match
   the allowlist, avoiding the `HOSTS[@]: unbound variable` failure under
@@ -218,13 +205,14 @@ previously represented in this coordinator include:
 
 ## One-off workflow/route disables
 
-- PR #1045 temporarily disables Swift E2E AI review because it is consuming too
-  much AI compute while WDY-1574 adds tighter gating:
+- PR #1045 temporarily disabled Swift E2E AI review because it was consuming too
+  much AI compute while WDY-1574 added tighter gating:
   https://github.com/wendylabsinc/WendyOS/pull/1045
-- Branch/worktree: `kb.disable-e2e-ai-review` at
-  `/Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.disable-e2e-ai-review`.
+- Merged after CI passed; merge commit `8c56e6dc`.
+- Branch/worktree: `kb.disable-e2e-ai-review` merged; local worktree removed.
 - Implementation commit: `3bd4d5fa ci: temporarily disable Swift E2E AI review`
-- Local validation passed: YAML parse via Ruby and `actionlint`.
+- Local validation passed: YAML parse via Ruby and `actionlint`. PR #1042 later
+  restored the review path with compute gating.
 
 - PR #995 temporarily disabled the physical macOS 26 → Ubuntu 24/SER9 Swift E2E
   route while WDY-1519 adds IPv4 fallback preflight hardening:
@@ -236,11 +224,10 @@ previously represented in this coordinator include:
 
 ## Remaining intended next steps
 
-- Monitor one-off PR #1045 to disable Swift E2E AI review; merge only after CI passes.
-- Continue WDY-1574 and WDY-1562 in their dedicated worktrees and draft PRs
-  #1042 / #867.
-- WDY-1592 is prepared and In Progress, but still blocked by WDY-1574; do not
-  implement or merge it until WDY-1574 is addressed.
+- Continue WDY-1562 in its existing draft PR/worktree (#867).
+- WDY-1574 and WDY-1592 are complete via merged PR #1042; PR #1057 was closed
+  without merge after the implementation moved into #1042.
+- PR #1045 is merged and its local worktree has been removed.
 - WDY-1560 is Todo/High and should be started after the current active fixes
   unless reprioritized.
 - WDY-1561, WDY-1558, WDY-1559, WDY-1521, WDY-1528, WDY-1527, and the SER9 route disable are complete.
