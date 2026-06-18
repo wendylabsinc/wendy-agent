@@ -2,14 +2,18 @@
 
 package rcm
 
-import "fmt"
+import (
+	"context"
+	"fmt"
+	"time"
+)
 
 // LoadImagesT23x performs the T23x multi-image RCM download sequence used by
 // T264 (Thor) devices. It probes the bootROM state via USB control transfer,
 // then sends each image as a separate RCM40 DL_MINILOADER bulk write.
 //
 // images must be provided in bootROM-required order (mb1, psc_bl1, applet).
-// The caller extracts the image list from Bundle.RCMImages().
+// The caller extracts the image list from Bundle.PreAppletImages().
 //
 // Protocol derived from RE of tegrarcm_v2 mainT23x (Thor nightly 20260618).
 func LoadImagesT23x(dev *Device, images [][]byte) error {
@@ -20,6 +24,11 @@ func LoadImagesT23x(dev *Device, images [][]byte) error {
 	if state != 0 {
 		return fmt.Errorf("unexpected T23x RCM state %d (want 0): power-cycle the device and retry", state)
 	}
+
+	// T264's bootROM sends the device ECID on the bulk IN endpoint immediately
+	// after the GET_STRING_DESCRIPTOR state-probe response. It must be consumed
+	// before the bootROM will accept bulk OUT writes.
+	drainBulkIn(dev)
 
 	for i, img := range images {
 		msg, err := BuildDLMiniloader(img, [48]byte{})
@@ -40,4 +49,13 @@ func LoadImagesT23x(dev *Device, images [][]byte) error {
 		}
 	}
 	return nil
+}
+
+// drainBulkIn reads and discards any pending data from the bulk IN endpoint.
+// Used to consume the ECID that T264's bootROM sends after the state probe.
+func drainBulkIn(dev *Device) {
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	buf := make([]byte, 512)
+	dev.in.ReadContext(ctx, buf) //nolint:errcheck
 }
