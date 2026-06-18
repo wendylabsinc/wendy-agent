@@ -238,12 +238,46 @@ backed by symbols. The numeric/GUID offsets and the type/id/name/filename
 offsets are confirmed against both `NvTegraPartitionSerialize` and
 `NvTegraPartitionDeSerialize`.
 
+> **CORRECTION (validated 2026-06-18 against golden `pt.bin`, byte-exact).** The
+> static-RE table above had several offsets wrong. The Go port
+> (`internal/cli/tegraflash/partition/serialize.go`) reproduces the real tool's
+> output byte-for-byte; its confirmed partition-record layout is:
+>
+> | Off | Field |
+> |---|---|
+> | `0x18` | `start_location` (u64) |
+> | `0x20` | `size` (u64) |
+> | `0x28`–`0x2f` | two unknown u32, zero in observed data |
+> | `0x30` | `allocation_attribute` (u32) |
+> | `0x34` | `erase_size` (u32) |
+> | `0x38` | `percent_reserved` (u32) |
+> | `0x40` | `file_system_attribute` (u64) |
+> | `0x48` | `oem_sign` flag (u8) |
+> | `0x49` | flag set by `comp_algo="lz4"` (u8) — NOT `authentication_group` |
+> | `0x4c` | `align_boundary` (u64) |
+> | `0x54` | `rollback_level` (u8) |
+> | `0x58` | `partition_type_guid` (16 B) |
+> | `0x68` | `unique_guid` (16 B) |
+> | `0x78` | filename pointer (zero on disk) |
+>
+> i.e. `size`/`start_location` were swapped; `allocation_attribute` is `0x30`
+> (not `0x28`); `percent_reserved` is `0x38` (not `0x30`); `file_system_attribute`
+> is `0x40` (not `0x38`); `align_boundary` is `0x4c` (not `0x40`). Type GUIDs at
+> `0x58` use standard mixed-endian GPT encoding (first three groups little-endian).
+
 ### 3.4 Inline string region
 
 Immediately after `num_partitions * 0x80` bytes, for each partition in order:
 `name\0`, then (if a filename was set) `filename\0`. Strings are byte-tight (no
 padding or alignment). Partition `name` length is therefore **not** bounded by a
 fixed char array; the only enforced limit is the partition-id range `[1, 128]`.
+
+> **CORRECTION (validated 2026-06-18).** The overall layout is **per-device**, not
+> a single global partition array followed by a single global string region. After
+> the device-record array, the file contains, for each device in turn: that
+> device's partition records, then that device's inline name/filename strings, then
+> the next device's partition records, and so on. See
+> `internal/cli/tegraflash/partition/serialize.go` for the byte-exact structure.
 
 ### 3.5 Pointer relocation on read
 
