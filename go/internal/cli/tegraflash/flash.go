@@ -54,9 +54,9 @@ func Flash(opts FlashOptions) error {
 
 	bctData, bctName, err := firstBCT(b, layout)
 	if err != nil {
-		// T234 bundles do not include a pre-compiled BCT — it is generated from
+		// Some bundles do not include a pre-compiled BCT — it is generated from
 		// DTS sources at flash time by tegrabct_v2. Skip DlBCT for these bundles.
-		fmt.Fprintf(out, "  BCT: none (T234 bundle — will skip DlBCT)\n")
+		fmt.Fprintf(out, "  BCT: none (bundle — will skip DlBCT)\n")
 	} else {
 		fmt.Fprintf(out, "  BCT: %s (%d bytes)\n", bctName, len(bctData))
 	}

@@ -30,7 +30,7 @@ type Device struct {
 }
 
 // WaitForDevice blocks until a supported Jetson appears in RCM mode (up to 60 s).
-// Supported PIDs: T234 (Orin, 0x7023) and T264 (AGX Thor, 0x7064).
+// Supported PIDs: T234 (Orin, 0x7023) and T264 (AGX Thor, 0x7026).
 func WaitForDevice() (*Device, error) {
 	ctx := gousb.NewContext()
 	ctx.Debug(0) // suppress libusb noise (LIBUSB_ERROR_INTERRUPTED, etc.)
