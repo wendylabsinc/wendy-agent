@@ -52,22 +52,19 @@ var (
 // includes an explicit skip option (WDY-1476). Returns (nil, nil) when the
 // user chooses to skip enrollment.
 func selectEnrollmentAuth(cfg *config.Config, cloudGRPC string, interactive bool) (*config.AuthConfig, error) {
-	if len(cfg.Auth) == 0 {
-		return nil, fmt.Errorf("not logged in; run 'wendy auth login' first")
+	// Short-circuit for: not-logged-in, --cloud-grpc, single session, and a
+	// valid persisted default. A nil picker makes the multi-session-no-default
+	// case return ErrMultipleSessions so we can fall back to the skip-capable
+	// picker below (WDY-1476).
+	auth, err := config.ResolveAuth(cfg, cloudGRPC, nil)
+	if err == nil {
+		return auth, nil
 	}
-	if cloudGRPC != "" {
-		for i := range cfg.Auth {
-			if cfg.Auth[i].CloudGRPC == cloudGRPC {
-				return authEntryWithCerts(&cfg.Auth[i])
-			}
-		}
-		return nil, fmt.Errorf("no auth session for %s; run 'wendy auth login --cloud-grpc %s' first", cloudGRPC, cloudGRPC)
-	}
-	if len(cfg.Auth) == 1 {
-		return authEntryWithCerts(&cfg.Auth[0])
+	if !errors.Is(err, config.ErrMultipleSessions) {
+		return nil, err
 	}
 	if !interactive {
-		return nil, fmt.Errorf("multiple auth sessions exist; pass --cloud-grpc to select one")
+		return nil, err // message mentions --cloud-grpc
 	}
 
 	items := make([]tui.PickerItem, 0, len(cfg.Auth)+1)

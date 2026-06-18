@@ -305,6 +305,19 @@ func TestResolvePreEnrollmentForcedSkipsConfirm(t *testing.T) {
 	}
 }
 
+func TestSelectEnrollmentAuthUsesDefault(t *testing.T) {
+	stubEnrollPrompts(t) // picker stub fails the test if invoked
+	cfg := twoSessionConfig()
+	cfg.DefaultCloudGRPC = "localhost:50051"
+	auth, err := selectEnrollmentAuth(cfg, "", true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if auth == nil || auth.CloudGRPC != "localhost:50051" {
+		t.Fatalf("default should be used without the picker, got %+v", auth)
+	}
+}
+
 func TestMapConfirmCancel(t *testing.T) {
 	if _, err := mapConfirmCancel(false, tui.ErrCancelled); !errors.Is(err, ErrUserCancelled) {
 		t.Fatalf("tui.ErrCancelled must map to ErrUserCancelled, got %v", err)
