@@ -16,6 +16,7 @@ func TestWendyPlatform(t *testing.T) {
 	}{
 		{"jetson-agx-orin", "nvidia-jetson"},
 		{"jetson-orin-nano", "nvidia-jetson"},
+		{"jetson-agx-thor", "nvidia-jetson"},
 		{"raspberrypi5", "generic"},
 		{"unknown-device", "generic"},
 		{"", "generic"},

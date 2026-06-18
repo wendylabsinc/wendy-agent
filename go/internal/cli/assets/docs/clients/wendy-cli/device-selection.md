@@ -67,7 +67,7 @@ These are not WendyOS devices.
 
 ### Docker
 
-Use Docker for local container runs. Dockerfile and Compose projects run
+Use Docker for local container runs. Dockerfile, Containerfile, and Compose projects run
 through the local Docker daemon. On macOS and Windows, Docker runs Linux
 containers inside Docker's Linux environment rather than as native macOS or
 Windows processes.
@@ -80,6 +80,30 @@ You can select it directly with:
 
 ```sh
 wendy run --device docker
+```
+
+### Apple Container
+
+On Apple silicon Macs, Wendy can use Apple's `container` CLI for local
+Dockerfile and Containerfile runs without Docker Desktop:
+
+```sh
+container system start
+wendy run --device apple-container
+```
+
+Use this target when you want to build and run a single Dockerfile or
+Containerfile project with Apple's lightweight Linux container runtime. Compose
+projects still require the Docker target.
+
+To deploy to a WendyOS device while using Apple Container only as the image
+builder, keep `--device` pointed at the WendyOS device. On Apple silicon Macs,
+Apple Container is tried first by default when it is installed and running, then
+Docker is used as a fallback. Set `--builder apple-container` to require Apple
+Container, or `--builder docker` to force Docker:
+
+```sh
+wendy --device my-wendy.local run --builder apple-container
 ```
 
 ### Local

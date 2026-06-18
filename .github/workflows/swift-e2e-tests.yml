@@ -43,8 +43,6 @@ on:
         required: false
         default: ''
     secrets:
-      OPENAI_API_KEY:
-        required: false
       WENDY_E2E_SLACK_WEBHOOK_URL:
         required: false
 
@@ -540,10 +538,11 @@ jobs:
           fi
 
       - name: Perform Swift E2E AI Review
+        timeout-minutes: 15
+        continue-on-error: true
         working-directory: swift
         shell: bash
         env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY || '' }}
           DIFF_BASE_REF: ${{ inputs.diff_base_ref || '' }}
         run: |
           set -euo pipefail

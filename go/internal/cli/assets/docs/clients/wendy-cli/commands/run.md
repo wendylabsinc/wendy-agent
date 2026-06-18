@@ -17,7 +17,7 @@ Wendy Agent for Mac (Darwin targets) currently runs native macOS apps only. When
 |---|---|
 | Native SwiftPM (`Package.swift`, `platform: "darwin"`) | Supported |
 | Native Xcode (`.xcodeproj`, `platform: "darwin"`) | Supported |
-| Dockerfile / container image | Rejected |
+| Dockerfile / Containerfile / container image | Rejected |
 | Python container path | Rejected |
 | Docker Compose | Rejected |
 | Multi-service `wendy.json` (`services` map) | Rejected |
@@ -25,9 +25,25 @@ Wendy Agent for Mac (Darwin targets) currently runs native macOS apps only. When
 
 The error explains the project/target mismatch and tells you to set `platform: "darwin"` with a Mac-compatible native SwiftPM or Xcode project, or to target a Linux/WendyOS device. Linux container support on Mac is planned for a future release.
 
-## Docker build-args
+## Image build-args
 
-When building a Dockerfile project, `wendy run` passes the target device's hardware parameters as `--build-arg` values so the Dockerfile can branch on platform, GPU vendor, or CUDA version. Declare any arg you want to use with `ARG`:
+When building a Dockerfile or Containerfile project, `wendy run` passes the target device's hardware parameters as `--build-arg` values so the build file can branch on platform, GPU vendor, or CUDA version. Declare any arg you want to use with `ARG`:
+
+On Apple silicon Macs with Apple's `container` runtime started, Wendy tries
+Apple Container first when `--builder` is omitted. If Apple Container is
+unavailable or the build fails, Wendy falls back to Docker. Use
+`--builder docker` to force Docker, or `--builder apple-container` to require
+Apple Container:
+
+```sh
+container system start
+wendy --device my-wendy.local run
+```
+
+For local-only Dockerfile or Containerfile runs on the Mac itself, use `wendy run --device
+apple-container` instead. Compose projects still require the Docker provider for
+local runs, but compose service builds targeting a WendyOS device can use
+`--builder apple-container`.
 
 | Build-arg | Values | Notes |
 |---|---|---|
@@ -39,7 +55,7 @@ When building a Dockerfile project, `wendy run` passes the target device's hardw
 | `WENDY_JETPACK_VERSION` | e.g. `6.0` | Jetson only |
 | `WENDY_CUDA_VERSION` | e.g. `12.6` | Jetson only |
 
-`WENDY_PLATFORM` and `WENDY_DEBUG` are always set. The remaining args are only injected when the agent reports them, so Dockerfiles can define their own `ARG` defaults for devices that predate the field.
+`WENDY_PLATFORM` and `WENDY_DEBUG` are always set. The remaining args are only injected when the agent reports them, so Dockerfiles and Containerfiles can define their own `ARG` defaults for devices that predate the field.
 
 ## Multi-service projects (`wendy.json` with `services`)
 
@@ -81,14 +97,14 @@ When running a Swift Package Manager project on a macOS target, `wendy run`:
 
 ## Swift Package Manager projects — host requirements
 
-Both the macOS-target and Linux-target Swift paths shell out to a host Swift toolchain. The following host OS requirements apply when no `Dockerfile` is present (or when `--build-type=swift` is set explicitly):
+Both the macOS-target and Linux-target Swift paths shell out to a host Swift toolchain. The following host OS requirements apply when no `Dockerfile` or `Containerfile` is present (or when `--build-type=swift` is set explicitly):
 
 | Target platform | Supported host OS | Notes |
 |-----------------|------------------|-------|
 | macOS device | macOS only | Linux's Swift toolchain cannot cross-compile to macOS. |
 | Linux device | macOS or Linux | swift-container-plugin does not yet ship for Windows. |
 
-On a **Windows host**, `wendy run` returns an actionable error for Swift projects that would require the host toolchain. Providing a `Dockerfile` bypasses these restrictions — the build is routed through Docker buildx, which works on all platforms.
+On a **Windows host**, `wendy run` returns an actionable error for Swift projects that would require the host toolchain. Providing a `Dockerfile` or `Containerfile` bypasses these restrictions — the build is routed through the image build path, which works on all platforms.
 
 ## Flags
 

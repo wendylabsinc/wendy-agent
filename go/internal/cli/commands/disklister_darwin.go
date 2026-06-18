@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 )
 
@@ -249,7 +250,8 @@ func writeImageWithBmapSeekable(sourcePath, bmapPath string, d drive, progressFn
 		return fmt.Errorf("locating wendy binary: %w", err)
 	}
 	cmd := exec.Command("sudo", self, "__bmap-write",
-		"--device", d.RawPath, "--bmap", bmapPath, "--source", sourcePath)
+		"--device", d.RawPath, "--bmap", bmapPath, "--source", sourcePath,
+		"--writers", strconv.Itoa(writersForStorage(d.StorageType)))
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return fmt.Errorf("stdout pipe: %w", err)

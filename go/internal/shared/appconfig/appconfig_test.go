@@ -285,7 +285,7 @@ func TestValidate_AllEntitlementTypes(t *testing.T) {
 }
 
 func TestValidate_SerialEntitlement(t *testing.T) {
-	valid := []string{"ttyACM0", "ttyUSB0", "ttyUSB12", "ttyAMA0", "ttyS0"}
+	valid := []string{"ttyACM0", "ttyUSB0", "ttyUSB12"}
 	for _, device := range valid {
 		t.Run("valid/"+device, func(t *testing.T) {
 			cfg := &AppConfig{
@@ -298,7 +298,8 @@ func TestValidate_SerialEntitlement(t *testing.T) {
 		})
 	}
 
-	invalid := []string{"", "ttyACM", "tty", "sda", "ttyACMx", "ttyACM0/../sda", "../mem", "ttyACM-1"}
+	// ttyAMA0/ttyS0 are on-board UARTs: USB-only entitlement rejects them.
+	invalid := []string{"", "ttyACM", "tty", "sda", "ttyACMx", "ttyACM0/../sda", "../mem", "ttyACM-1", "ttyAMA0", "ttyS0"}
 	for _, device := range invalid {
 		t.Run("invalid/"+device, func(t *testing.T) {
 			cfg := &AppConfig{

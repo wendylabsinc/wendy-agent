@@ -67,7 +67,7 @@ func (m *mockContainerdClient) WriteLayer(_ context.Context, digest string, read
 	m.writtenData = data
 	return m.writeLayerErr
 }
-func (m *mockContainerdClient) AssembleImage(_ context.Context, _ string, _ []*agentpb.RunContainerLayerHeader) error {
+func (m *mockContainerdClient) AssembleImage(_ context.Context, _ string, _ []*agentpb.RunContainerLayerHeader, _ []byte) error {
 	return nil
 }
 func (m *mockContainerdClient) CreateContainer(_ context.Context, _ *agentpb.CreateContainerRequest, _ *appconfig.AppConfig) error {
@@ -112,6 +112,18 @@ func (m *mockContainerdClient) GetContainerRestartPolicyLabel(_ context.Context,
 
 func (m *mockContainerdClient) ContainerIDsForApp(_ context.Context, appID string) ([]string, error) {
 	return []string{appID}, nil
+}
+
+func (m *mockContainerdClient) MissingChunks(_ context.Context, hashes [][32]byte) ([][32]byte, error) {
+	return hashes, nil
+}
+
+func (m *mockContainerdClient) StageChunk(_ context.Context, _ [32]byte, _ []byte) error {
+	return nil
+}
+
+func (m *mockContainerdClient) AssembleLayerFromChunks(_ context.Context, _ string, _ [][32]byte) error {
+	return nil
 }
 
 // attachTestMock embeds mockContainerdClient and overrides StartContainerWithStdin

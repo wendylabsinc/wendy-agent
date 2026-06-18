@@ -78,6 +78,12 @@ type Client struct {
 	// Checked by CreateContainerWithProgress to reject concurrent create/stop races
 	// (SOC2-CC6, NIST-AC-3, ISO27001-A.8).
 	appStopping map[string]bool
+
+	// chunkIndex maps CDC chunk hashes to byte ranges in uncompressed layer
+	// blobs (Model B). staging holds chunks received this session until the
+	// following AssembleLayerFromChunks consumes them.
+	chunkIndex *ChunkIndex
+	staging    *staging
 }
 
 func NewClient(logger *zap.Logger, address string, proxyMgr *dbusproxy.Manager) (*Client, error) {
@@ -90,6 +96,12 @@ func NewClient(logger *zap.Logger, address string, proxyMgr *dbusproxy.Manager) 
 		return nil, fmt.Errorf("connecting to containerd at %s: %w", address, err)
 	}
 
+	chunkIndexPath := "/var/lib/wendy/chunk-index.json"
+	idx, err := NewChunkIndex(chunkIndexPath)
+	if err != nil {
+		return nil, fmt.Errorf("loading chunk index: %w", err)
+	}
+
 	return &Client{
 		client:       c,
 		logger:       logger,
@@ -100,6 +112,8 @@ func NewClient(logger *zap.Logger, address string, proxyMgr *dbusproxy.Manager) 
 		appIsolation: make(map[string]string),
 		serviceIPs:   make(map[string]map[string]string),
 		appStopping:  make(map[string]bool),
+		chunkIndex:   idx,
+		staging:      newStaging(defaultChunkStagingDir),
 	}, nil
 }
 
@@ -243,10 +257,22 @@ func layerMediaType(compression agentpb.RunContainerLayerHeader_CompressionType,
 	}
 }
 
-func (c *Client) AssembleImage(ctx context.Context, imageName string, layers []*agentpb.RunContainerLayerHeader) error {
+// maxImageConfigBytes bounds the OCI image config blob accepted over the wire.
+// A real config (Cmd/Entrypoint/Env/WorkingDir/User + metadata) is a few KiB;
+// 1 MiB is generous headroom while still rejecting an abusive payload.
+const maxImageConfigBytes = 1 << 20
+
+func (c *Client) AssembleImage(ctx context.Context, imageName string, layers []*agentpb.RunContainerLayerHeader, imageConfig []byte) error {
 	ctx = c.withNamespace(ctx)
 	cs := c.client.ContentStore()
 	is := c.client.ImageService()
+
+	// Store the image under the SAME normalized name that
+	// CreateContainerWithProgress uses for its GetImage lookup. Without this,
+	// a short ref like "app:latest" is stored verbatim here but looked up as
+	// "docker.io/library/app:latest" at create time, missing the local store
+	// and falling through to a (failing) registry pull.
+	imageName = normalizeImageName(imageName)
 
 	// Build OCI layer descriptors and diff IDs.
 	var layerDescs []ocispec.Descriptor
@@ -276,16 +302,36 @@ func (c *Client) AssembleImage(ctx context.Context, imageName string, layers []*
 		diffIDs = append(diffIDs, did)
 	}
 
-	// Build OCI image config.
+	// Build the OCI image config. When the caller supplies the original config
+	// blob (chunk-diff path), preserve it so the runtime config — Cmd,
+	// Entrypoint, Env, WorkingDir, User — survives reassembly; otherwise a
+	// container created from this image would have no command and exit
+	// immediately. We override RootFS.DiffIDs with the diff IDs we just computed
+	// so the config always matches the layers in this manifest. When no config
+	// is supplied we fall back to a minimal synthesized config (legacy callers).
 	imgConfig := ocispec.Image{
 		Platform: ocispec.Platform{
 			Architecture: "arm64",
 			OS:           "linux",
 		},
-		RootFS: ocispec.RootFS{
-			Type:    "layers",
-			DiffIDs: diffIDs,
-		},
+	}
+	if len(imageConfig) > 0 {
+		// A real OCI image config is small (a few KiB). Reject an oversized blob
+		// before parsing so a misbehaving client cannot force a large allocation.
+		if len(imageConfig) > maxImageConfigBytes {
+			return fmt.Errorf("image config too large: %d > %d bytes", len(imageConfig), maxImageConfigBytes)
+		}
+		// Decode into the typed OCI struct: unknown/extra JSON fields are dropped
+		// on the re-marshal below, so only well-formed config survives.
+		if err := json.Unmarshal(imageConfig, &imgConfig); err != nil {
+			return fmt.Errorf("parsing supplied image config: %w", err)
+		}
+	}
+	// Always re-derive the security-critical layer binding from the diff IDs we
+	// computed locally — never trust RootFS supplied over the wire.
+	imgConfig.RootFS = ocispec.RootFS{
+		Type:    "layers",
+		DiffIDs: diffIDs,
 	}
 	configData, err := json.Marshal(imgConfig)
 	if err != nil {

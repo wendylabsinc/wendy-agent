@@ -2,6 +2,8 @@ import Foundation
 
 let e2eAttemptArtifactsDirectoryName = "attempts"
 let e2eObservationsDirectoryName = "observations"
+let e2eSourceArtifactFileName = "source.md"
+let e2eSourceIndexFileName = "source-index.md"
 
 func e2eAttemptArtifactsRootURL(in runURL: URL) -> URL {
     runURL.appendingPathComponent(e2eAttemptArtifactsDirectoryName, isDirectory: true)

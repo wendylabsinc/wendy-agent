@@ -226,6 +226,73 @@ func TestApplyBmapSeekableWritesOnlyMappedRanges(t *testing.T) {
 	}
 }
 
+// TestApplyBmapSeekableConcurrentWriters stresses the pipelined writer path:
+// tiny chunks force many buffers to cycle through the pool while multiple
+// writer goroutines drain them out of order. A buffer-aliasing bug (the reader
+// overwriting a buffer still queued for write) would corrupt the output, and a
+// non-monotonic/racy progress counter would surface here under -race.
+func TestApplyBmapSeekableConcurrentWriters(t *testing.T) {
+	oldChunk, oldWorkers := bmapChunkSize, bmapWriteConcurrency
+	bmapChunkSize = 13       // tiny: many chunks per range, forces pool cycling
+	bmapWriteConcurrency = 4 // exercise multiple writer goroutines
+	defer func() { bmapChunkSize, bmapWriteConcurrency = oldChunk, oldWorkers }()
+
+	const bs = 4096
+	const blocks = 64
+	img := make([]byte, bs*blocks)
+	for i := range img {
+		img[i] = byte((i*7 + 3) % 256)
+	}
+	// Three mapped ranges separated by holes.
+	b := &Bmap{
+		BlockSize: bs,
+		ImageSize: int64(len(img)),
+		Ranges: []BmapRange{
+			{First: 0, Last: 3, Checksum: blockChecksum(img[0 : bs*4])},
+			{First: 10, Last: 20, Checksum: blockChecksum(img[bs*10 : bs*21])},
+			{First: 60, Last: 63, Checksum: blockChecksum(img[bs*60 : bs*64])},
+		},
+	}
+	comp := encodeSeekable(t, img, bs)
+	si, err := openSeekableZstdFromReader(bytes.NewReader(comp))
+	if err != nil {
+		t.Fatalf("open seekable: %v", err)
+	}
+	defer si.Close()
+
+	dst := newMemWriterAt(b.ImageSize)
+	var progress int64 // safe: applyBmapSeekable serializes progressFn calls
+	if err := applyBmapSeekable(si, dst, b, func(n int64) { progress = n }); err != nil {
+		t.Fatalf("applyBmapSeekable: %v", err)
+	}
+	for _, r := range b.Ranges {
+		s, e := r.First*bs, (r.Last+1)*bs
+		if !bytes.Equal(dst.buf[s:e], img[s:e]) {
+			t.Fatalf("range %d-%d not reconstructed correctly", r.First, r.Last)
+		}
+	}
+	for _, off := range []int{bs * 4, bs*10 - 1, bs * 21, bs*60 - 1} {
+		if dst.written[off] {
+			t.Fatalf("hole byte at offset %d was written", off)
+		}
+	}
+	if progress != mappedBytes(b) {
+		t.Fatalf("progress = %d, want %d", progress, mappedBytes(b))
+	}
+}
+
+func TestWritersForStorage(t *testing.T) {
+	if got := writersForStorage(StorageNVMe); got != 4 {
+		t.Errorf("NVMe writers = %d, want 4", got)
+	}
+	// SD/USB and unknown devices must stay strictly sequential.
+	for _, st := range []StorageType{StorageUSB, StorageUnknown} {
+		if got := writersForStorage(st); got != 1 {
+			t.Errorf("writers for %v = %d, want 1 (sequential)", st, got)
+		}
+	}
+}
+
 func TestApplyBmapSeekableDetectsCorruption(t *testing.T) {
 	img, b := buildSparseImage()
 	img[10] = 0xff // corrupt mapped block 0 before compression

@@ -103,14 +103,16 @@ The serial entitlement grants a container access to a serial tty node so it can 
 }
 ```
 
-- **device**: A bare tty node name (not a path), matching `^(ttyACM|ttyUSB|ttyAMA|ttyS)[0-9]+$` — e.g. `ttyACM0`, `ttyUSB0`, `ttyAMA0`, `ttyS0`. A device that does not match this pattern is rejected at validation.
+- **device**: A bare tty node name (not a path), matching `^(ttyACM|ttyUSB)[0-9]+$` — e.g. `ttyACM0`, `ttyUSB0`. A device that does not match this pattern is rejected at validation. The entitlement is **USB-only**: on-board UARTs (`ttyAMA*`, `ttyS*`) are not supported — `ttyS` shares its major with a board's system-console UART, so allowing it would add attack surface for no peripheral benefit.
 
 The container receives:
 - A bind mount of the named node `/dev/<device>` (e.g. `/dev/ttyACM0`)
-- A cgroup device rule scoped to **exactly that device's** `major:minor` with `rw` access (no `mknod`). The node is resolved by `stat()` on the host at deploy time, so the rule grants access to that one device only — not the whole kernel major. (Expected majors: `ttyACM` = 166, `ttyUSB` = 188, `ttyAMA` = 204, `ttyS` = 4.)
+- A cgroup device rule scoped to **exactly that device's** `major:minor` with `rw` access (no `mknod`). The node is resolved by `stat()` on the host at deploy time, so the rule grants access to that one device only — not the whole kernel major. (Expected majors: `ttyACM` = 166, `ttyUSB` = 188.)
 - Membership in the `dialout` group (GID 20), which owns serial tty nodes on Debian/Ubuntu hosts
 
 > The device must be connected when you deploy: Wendy resolves its `major:minor` at container creation and fails fast with a clear error if `/dev/<device>` is absent.
+
+> **Replug behavior:** the cgroup rule is pinned to the `major:minor` resolved **at deploy time**. The kernel can hand a USB-serial node a different `minor` when you unplug and replug it (e.g. `/dev/ttyACM0` comes back as `/dev/ttyACM1`, or the same name with a new minor). After reconnecting the device, **redeploy the app** (`wendy run`) so Wendy re-resolves the node and rebuilds the rule — until then the container's access points at the old minor.
 
 ### When to use serial vs USB
 
@@ -121,7 +123,7 @@ The container receives:
 
 Use `serial` for serial ports and `usb` for raw USB protocols — they expose different device majors. The SO-101's `/dev/ttyACM0` is reached with `serial`, not `usb`.
 
-> **Security note:** the cgroup rule is scoped to the named device's exact `major:minor`, so — unlike a whole-major grant — it never exposes other devices that share the major (e.g. other `ttyACM*` adapters, or, for `ttyS`/major 4, the virtual consoles `/dev/tty0..63`). If the device is unplugged and reconnects with a different `minor`, redeploy the app so Wendy re-resolves it.
+> **Security note:** the cgroup rule is scoped to the named device's exact `major:minor`, so — unlike a whole-major grant — it never exposes other devices that share the major (e.g. other `ttyACM*`/`ttyUSB*` adapters on the host). The entitlement is USB-only, so it can never reach an on-board console UART. See *Replug behavior* above for why a reconnect needs a redeploy.
 
 ## Persist
 

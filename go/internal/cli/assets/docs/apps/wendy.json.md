@@ -238,7 +238,7 @@ Serial tty device access — e.g. a USB-serial adapter or servo bus (`pyserial`/
 
 | Field | Description |
 |-------|-------------|
-| `device` | Bare tty node name, matching `ttyACM0` / `ttyUSB0` / `ttyAMA0` / `ttyS0` (required). Not a path. |
+| `device` | Bare USB tty node name, matching `ttyACM0` / `ttyUSB0` (required). USB-only; on-board UARTs (`ttyAMA`, `ttyS`) are not supported. Not a path. |
 
 ### `gpio`
 

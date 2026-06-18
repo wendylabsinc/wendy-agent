@@ -104,7 +104,7 @@ To provision WiFi after first boot, use `wendy device setup` or the BLE provisio
 
 1. **Resolve version** — `--version` if provided, otherwise latest (or nightly with `--nightly`).
 2. **Resolve drive** — `--drive` if provided, otherwise an interactive picker of external drives. Internal drives require `--yes-overwrite-internal` in non-interactive mode; in interactive mode the user must type the device path to confirm.
-3. **Download image** — fetched from GCS with a progress bar. Downloaded to `~/Library/Caches/wendy/os-images/` (macOS) or `~/.cache/wendy/os-images/` (Linux). Zip archives are streamed through to the first `.img`, `.raw`, `.wic`, or `.sdimg` entry; gzip-compressed images (`.img.gz`, detected by magic bytes regardless of extension) are decompressed and streamed on the fly. Parallel download (8 workers) is used when the server supports HTTP range requests.
+3. **Download image** — fetched from GCS with a progress bar. Downloaded to `~/Library/Caches/wendy/os-images/` (macOS) or `~/.cache/wendy/os-images/` (Linux). Zip archives are streamed through to the first `.img`, `.raw`, `.wic`, or `.sdimg` entry; gzip-compressed images (`.img.gz`, detected by magic bytes regardless of extension) are decompressed and streamed on the fly. Seekable-zstd images (`.img.zst`) are downloaded and cached directly; when a block map is present, only mapped ranges are decoded during the write step, skipping hole frames entirely. Parallel download (8 workers) is used when the server supports HTTP range requests.
 4. **Write image** — `dd`-equivalent write with elevated privileges (`sudo` on Unix, UAC on Windows), progress bar.
 5. **Write config partition** — downloads the latest stable `wendy-agent-linux-arm64` binary from GitHub, writes it along with any pre-seeded WiFi credentials and device name to the config partition on the newly written drive. Skipped silently on platforms that don't support config-partition writes. This step is **not** fatal: the OS image is already on the drive by this point, so a failure here prints a warning (never an error) and the install is still reported as successful. The device boots regardless — it runs the agent baked into the image and fetches updates and configuration after first boot. On an interactive terminal the CLI offers to retry the write (useful after, e.g., re-seating an SD card whose config partition couldn't be located); non-interactively it prints guidance and continues.
 6. **Eject** — the drive is ejected automatically after writing.
@@ -157,5 +157,7 @@ Requires an active `wendy auth login` session. The CLI creates an enrollment tok
 | `--no-wifi` | false | Skip WiFi setup entirely |
 | `--device-name` | interactive | Set device name on first boot (lowercase letters, digits, hyphens; must start with a letter, 3–55 chars) |
 | `--pre-enroll` | auto | Pre-enroll with Wendy Cloud during imaging |
+| `--storage` | auto | Force image storage variant: `nvme` or `sd` (default: auto-detect from target drive) |
+| `--no-bmap` | false | Disable bmap-accelerated flashing even when a block map is available |
 
 > **TODO**: Post-flashing Linux devices still need certificate provisioning and Wendy Cloud enrollment if `--pre-enroll` was not used. See [`wendy device setup`](../device/setup.md), [PKI](../../../../pki/), and [Wendy Cloud](../../../../cloud/).

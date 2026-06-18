@@ -27,8 +27,8 @@ while ($i -lt $args.Count) {
         '--diff' { $Diff = $args[$i + 1]; $i += 2; continue }
         '--harness' { $Harness = $args[$i + 1]; $i += 2; continue }
         '--overwrite' { $Overwrite = $true; $i += 1; continue }
-        '--help' { 'Usage: E2EReview.ps1 --run-dir RUN_DIR [--diff RANGE] [OPTIONS]'; exit 0 }
-        '-h' { 'Usage: E2EReview.ps1 --run-dir RUN_DIR [--diff RANGE] [OPTIONS]'; exit 0 }
+        '--help' { 'Usage: E2EReview.ps1 --run-dir RUN_DIR [--diff RANGE] [--review-prompt PATH] [OPTIONS]'; exit 0 }
+        '-h' { 'Usage: E2EReview.ps1 --run-dir RUN_DIR [--diff RANGE] [--review-prompt PATH] [OPTIONS]'; exit 0 }
         default { $ExtraArgs += $args[$i]; $i += 1; continue }
     }
 }
@@ -44,7 +44,7 @@ if ($Harness) { $commandArgs += @('--harness', $Harness) }
 if ($Overwrite) { $commandArgs += '--overwrite' }
 $commandArgs += $ExtraArgs
 
-Write-Output '==> Reviewing Swift E2E run results'
+Write-Output '==> Reviewing Swift E2E run results in one AI pass'
 Write-Output "    Package:  $PackageDir"
 Write-Output "    Run dir:  $RunDir"
 if ($Diff) { Write-Output "    Diff:     $Diff" }

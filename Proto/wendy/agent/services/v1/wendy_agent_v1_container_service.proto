@@ -19,6 +19,8 @@ service WendyContainerService {
     rpc RemoveVolume(RemoveVolumeRequest) returns (RemoveVolumeResponse);
     rpc ListContainerStats(ListContainerStatsRequest) returns (ListContainerStatsResponse);
     rpc StreamMCP(stream MCPChunk) returns (stream MCPChunk);
+    rpc QueryChunks(QueryChunksRequest) returns (QueryChunksResponse);
+    rpc WriteChunks(stream WriteChunksRequest) returns (WriteChunksResponse);
 }
 
 message ListContainersRequest {}
@@ -36,6 +38,23 @@ message WriteLayerRequest {
 }
 
 message WriteLayerResponse {}
+
+message QueryChunksRequest {
+    // Candidate chunk hashes (raw 32-byte sha256 digests).
+    repeated bytes chunk_hashes = 1;
+}
+
+message QueryChunksResponse {
+    // Subset of the requested hashes that the device does NOT have.
+    repeated bytes missing_hashes = 1;
+}
+
+message WriteChunksRequest {
+    bytes hash = 1;   // raw 32-byte sha256 of data
+    bytes data = 2;
+}
+
+message WriteChunksResponse {}
 
 message LayerHeader {
     // The hash identity of the layer.
@@ -66,6 +85,12 @@ message RunContainerLayersRequest {
 
     // User-provided runtime arguments to append to the container entrypoint.
     repeated string user_args = 8;
+
+    // OCI image config JSON (the config blob produced by the image builder),
+    // carrying Cmd/Entrypoint/Env/WorkingDir/User. Required by the chunk-diff
+    // path so the assembled image preserves the original runtime config; when
+    // empty the agent synthesises a minimal config (legacy behaviour).
+    bytes image_config = 9;
 }
 
 message CreateContainerRequest {
@@ -145,6 +170,11 @@ message RunContainerLayerHeader {
         COMPRESSION_ZSTD = 1;
         COMPRESSION_NONE = 2;
     }
+
+    // Ordered list of chunk hashes (raw 32-byte sha256) that, concatenated in
+    // order, reconstruct the uncompressed layer tar. When set, the agent
+    // reassembles the layer from chunks instead of receiving inline bytes.
+    repeated bytes chunk_hashes = 9;
 }
 
 message RunContainerLayersResponse {

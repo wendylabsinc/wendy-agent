@@ -54,7 +54,7 @@ func (f *fakeContainerd) ListLayers(ctx context.Context) ([]*agentpb.LayerHeader
 func (f *fakeContainerd) WriteLayer(ctx context.Context, digest string, reader io.Reader, size int64) error {
 	return nil
 }
-func (f *fakeContainerd) AssembleImage(ctx context.Context, imageName string, layers []*agentpb.RunContainerLayerHeader) error {
+func (f *fakeContainerd) AssembleImage(ctx context.Context, imageName string, layers []*agentpb.RunContainerLayerHeader, imageConfig []byte) error {
 	return nil
 }
 func (f *fakeContainerd) CreateContainer(ctx context.Context, req *agentpb.CreateContainerRequest, appCfg *appconfig.AppConfig) error {
@@ -84,6 +84,18 @@ func (f *fakeContainerd) GetContainerMCPPort(ctx context.Context, appName string
 }
 func (f *fakeContainerd) GetContainerRestartPolicyLabel(ctx context.Context, appName string) (string, error) {
 	return "", nil
+}
+
+func (f *fakeContainerd) MissingChunks(_ context.Context, hashes [][32]byte) ([][32]byte, error) {
+	return hashes, nil
+}
+
+func (f *fakeContainerd) StageChunk(_ context.Context, _ [32]byte, _ []byte) error {
+	return nil
+}
+
+func (f *fakeContainerd) AssembleLayerFromChunks(_ context.Context, _ string, _ [][32]byte) error {
+	return nil
 }
 
 func newMonitorWithClient(c services.ContainerdClient) *ContainerMonitor {

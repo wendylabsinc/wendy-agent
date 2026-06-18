@@ -34,11 +34,12 @@ github.com/google/go-cmp/cmp,https://github.com/google/go-cmp/blob/v0.7.0/LICENS
 github.com/google/uuid,https://github.com/google/uuid/blob/v1.6.0/LICENSE,BSD-3-Clause
 github.com/hashicorp/golang-lru/v2,https://github.com/hashicorp/golang-lru/blob/v2.0.7/LICENSE,MPL-2.0
 github.com/hashicorp/golang-lru/v2/simplelru,https://github.com/hashicorp/golang-lru/blob/v2.0.7/simplelru/LICENSE_list,BSD-3-Clause
-github.com/klauspost/compress,https://github.com/klauspost/compress/blob/v1.18.5/LICENSE,Apache-2.0
-github.com/klauspost/compress,https://github.com/klauspost/compress/blob/v1.18.5/LICENSE,BSD-3-Clause
-github.com/klauspost/compress,https://github.com/klauspost/compress/blob/v1.18.5/LICENSE,MIT
-github.com/klauspost/compress/internal/snapref,https://github.com/klauspost/compress/blob/v1.18.5/internal/snapref/LICENSE,BSD-3-Clause
-github.com/klauspost/compress/zstd/internal/xxhash,https://github.com/klauspost/compress/blob/v1.18.5/zstd/internal/xxhash/LICENSE.txt,MIT
+github.com/SaveTheRbtz/zstd-seekable-format-go/pkg,https://github.com/SaveTheRbtz/zstd-seekable-format-go/blob/v0.10.0/pkg/LICENSE,MIT
+github.com/klauspost/compress,https://github.com/klauspost/compress/blob/v1.18.6/LICENSE,Apache-2.0
+github.com/klauspost/compress,https://github.com/klauspost/compress/blob/v1.18.6/LICENSE,BSD-3-Clause
+github.com/klauspost/compress,https://github.com/klauspost/compress/blob/v1.18.6/LICENSE,MIT
+github.com/klauspost/compress/internal/snapref,https://github.com/klauspost/compress/blob/v1.18.6/internal/snapref/LICENSE,BSD-3-Clause
+github.com/klauspost/compress/zstd/internal/xxhash,https://github.com/klauspost/compress/blob/v1.18.6/zstd/internal/xxhash/LICENSE.txt,MIT
 github.com/lucasb-eyer/go-colorful,https://github.com/lucasb-eyer/go-colorful/blob/v1.3.0/LICENSE,MIT
 github.com/mattn/go-isatty,https://github.com/mattn/go-isatty/blob/v0.0.20/LICENSE,MIT
 github.com/mattn/go-runewidth,https://github.com/mattn/go-runewidth/blob/v0.0.21/LICENSE,MIT

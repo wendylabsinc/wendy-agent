@@ -42,7 +42,10 @@ type ProgressFunc func(progress *agentpb.CreateContainerProgress)
 type ContainerdClient interface {
 	ListLayers(ctx context.Context) ([]*agentpb.LayerHeader, error)
 	WriteLayer(ctx context.Context, digest string, reader io.Reader, size int64) error
-	AssembleImage(ctx context.Context, imageName string, layers []*agentpb.RunContainerLayerHeader) error
+	AssembleImage(ctx context.Context, imageName string, layers []*agentpb.RunContainerLayerHeader, imageConfig []byte) error
+	MissingChunks(ctx context.Context, hashes [][32]byte) ([][32]byte, error)
+	StageChunk(ctx context.Context, h [32]byte, data []byte) error
+	AssembleLayerFromChunks(ctx context.Context, diffID string, hashes [][32]byte) error
 	CreateContainer(ctx context.Context, req *agentpb.CreateContainerRequest, appCfg *appconfig.AppConfig) error
 	CreateContainerWithProgress(ctx context.Context, req *agentpb.CreateContainerRequest, appCfg *appconfig.AppConfig, onProgress ProgressFunc) error
 	StartContainer(ctx context.Context, appName, postStartAgentCommand string, restartPolicy *agentpb.RestartPolicy) (<-chan ContainerOutput, error)

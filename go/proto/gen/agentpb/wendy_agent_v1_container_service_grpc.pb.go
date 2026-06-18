@@ -33,6 +33,8 @@ const (
 	WendyContainerService_RemoveVolume_FullMethodName                = "/wendy.agent.services.v1.WendyContainerService/RemoveVolume"
 	WendyContainerService_ListContainerStats_FullMethodName          = "/wendy.agent.services.v1.WendyContainerService/ListContainerStats"
 	WendyContainerService_StreamMCP_FullMethodName                   = "/wendy.agent.services.v1.WendyContainerService/StreamMCP"
+	WendyContainerService_QueryChunks_FullMethodName                 = "/wendy.agent.services.v1.WendyContainerService/QueryChunks"
+	WendyContainerService_WriteChunks_FullMethodName                 = "/wendy.agent.services.v1.WendyContainerService/WriteChunks"
 )
 
 // WendyContainerServiceClient is the client API for WendyContainerService service.
@@ -53,6 +55,8 @@ type WendyContainerServiceClient interface {
 	RemoveVolume(ctx context.Context, in *RemoveVolumeRequest, opts ...grpc.CallOption) (*RemoveVolumeResponse, error)
 	ListContainerStats(ctx context.Context, in *ListContainerStatsRequest, opts ...grpc.CallOption) (*ListContainerStatsResponse, error)
 	StreamMCP(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[MCPChunk, MCPChunk], error)
+	QueryChunks(ctx context.Context, in *QueryChunksRequest, opts ...grpc.CallOption) (*QueryChunksResponse, error)
+	WriteChunks(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[WriteChunksRequest, WriteChunksResponse], error)
 }
 
 type wendyContainerServiceClient struct {
@@ -257,6 +261,29 @@ func (c *wendyContainerServiceClient) StreamMCP(ctx context.Context, opts ...grp
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type WendyContainerService_StreamMCPClient = grpc.BidiStreamingClient[MCPChunk, MCPChunk]
 
+func (c *wendyContainerServiceClient) QueryChunks(ctx context.Context, in *QueryChunksRequest, opts ...grpc.CallOption) (*QueryChunksResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(QueryChunksResponse)
+	err := c.cc.Invoke(ctx, WendyContainerService_QueryChunks_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *wendyContainerServiceClient) WriteChunks(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[WriteChunksRequest, WriteChunksResponse], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &WendyContainerService_ServiceDesc.Streams[8], WendyContainerService_WriteChunks_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[WriteChunksRequest, WriteChunksResponse]{ClientStream: stream}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type WendyContainerService_WriteChunksClient = grpc.ClientStreamingClient[WriteChunksRequest, WriteChunksResponse]
+
 // WendyContainerServiceServer is the server API for WendyContainerService service.
 // All implementations must embed UnimplementedWendyContainerServiceServer
 // for forward compatibility.
@@ -275,6 +302,8 @@ type WendyContainerServiceServer interface {
 	RemoveVolume(context.Context, *RemoveVolumeRequest) (*RemoveVolumeResponse, error)
 	ListContainerStats(context.Context, *ListContainerStatsRequest) (*ListContainerStatsResponse, error)
 	StreamMCP(grpc.BidiStreamingServer[MCPChunk, MCPChunk]) error
+	QueryChunks(context.Context, *QueryChunksRequest) (*QueryChunksResponse, error)
+	WriteChunks(grpc.ClientStreamingServer[WriteChunksRequest, WriteChunksResponse]) error
 	mustEmbedUnimplementedWendyContainerServiceServer()
 }
 
@@ -326,6 +355,12 @@ func (UnimplementedWendyContainerServiceServer) ListContainerStats(context.Conte
 }
 func (UnimplementedWendyContainerServiceServer) StreamMCP(grpc.BidiStreamingServer[MCPChunk, MCPChunk]) error {
 	return status.Error(codes.Unimplemented, "method StreamMCP not implemented")
+}
+func (UnimplementedWendyContainerServiceServer) QueryChunks(context.Context, *QueryChunksRequest) (*QueryChunksResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method QueryChunks not implemented")
+}
+func (UnimplementedWendyContainerServiceServer) WriteChunks(grpc.ClientStreamingServer[WriteChunksRequest, WriteChunksResponse]) error {
+	return status.Error(codes.Unimplemented, "method WriteChunks not implemented")
 }
 func (UnimplementedWendyContainerServiceServer) mustEmbedUnimplementedWendyContainerServiceServer() {}
 func (UnimplementedWendyContainerServiceServer) testEmbeddedByValue()                               {}
@@ -532,6 +567,31 @@ func _WendyContainerService_StreamMCP_Handler(srv interface{}, stream grpc.Serve
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type WendyContainerService_StreamMCPServer = grpc.BidiStreamingServer[MCPChunk, MCPChunk]
 
+func _WendyContainerService_QueryChunks_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(QueryChunksRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WendyContainerServiceServer).QueryChunks(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WendyContainerService_QueryChunks_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WendyContainerServiceServer).QueryChunks(ctx, req.(*QueryChunksRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _WendyContainerService_WriteChunks_Handler(srv interface{}, stream grpc.ServerStream) error {
+	return srv.(WendyContainerServiceServer).WriteChunks(&grpc.GenericServerStream[WriteChunksRequest, WriteChunksResponse]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type WendyContainerService_WriteChunksServer = grpc.ClientStreamingServer[WriteChunksRequest, WriteChunksResponse]
+
 // WendyContainerService_ServiceDesc is the grpc.ServiceDesc for WendyContainerService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -562,6 +622,10 @@ var WendyContainerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListContainerStats",
 			Handler:    _WendyContainerService_ListContainerStats_Handler,
+		},
+		{
+			MethodName: "QueryChunks",
+			Handler:    _WendyContainerService_QueryChunks_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{
@@ -606,6 +670,11 @@ var WendyContainerService_ServiceDesc = grpc.ServiceDesc{
 			StreamName:    "StreamMCP",
 			Handler:       _WendyContainerService_StreamMCP_Handler,
 			ServerStreams: true,
+			ClientStreams: true,
+		},
+		{
+			StreamName:    "WriteChunks",
+			Handler:       _WendyContainerService_WriteChunks_Handler,
 			ClientStreams: true,
 		},
 	},

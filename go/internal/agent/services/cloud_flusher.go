@@ -4,21 +4,16 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/hex"
 	"fmt"
 	"math"
 	"net"
-	"sort"
-	"strings"
 	"time"
 
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/types/known/timestamppb"
 
-	cloudpb "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
 	otelpb "github.com/wendylabsinc/wendy/go/proto/gen/otelpb"
 )
 
@@ -31,42 +26,17 @@ func normalizeCloudHost(host string) string {
 }
 
 const (
-	cloudFlusherMaxBackoff       = 60 * time.Second
-	cloudFlusherBatchSize        = 500
-	cloudFlusherDefaultApp       = "device"
-	cloudFlusherCollector        = "wendy-agent"
-	cloudFlusherMaxEntriesPerApp = 5000 // per-RPC cap to stay under gRPC message size limits
-
-	// PII / payload size guards applied in convertLogRecord before cloud upload.
-	maxLogBodyBytes = 65536 // 64 KiB — prevents oversized payloads
-	maxLabelKeyLen  = 256
-	maxLabelValLen  = 1024
-	maxLabels       = 64
+	cloudFlusherMaxBackoff = 60 * time.Second
+	// cloudFlusherFramesPerPass bounds how many buffered OTLP frames a single
+	// flush pass reads (and exports, one Export RPC each) before looping.
+	cloudFlusherFramesPerPass = 500
 )
 
-// sensitiveLabelDenyList contains substrings that, when found in a label key
-// (case-insensitive), indicate the value may contain credentials or PII.
-// Such labels are dropped before upload to prevent accidental exposure.
-var sensitiveLabelDenyList = []string{
-	"password", "passwd", "secret", "token", "authorization",
-	"api_key", "apikey", "private_key", "credential", "auth",
-	"cookie", "session",
-}
-
-// isSensitiveLabelKey reports whether key contains a deny-listed substring.
-func isSensitiveLabelKey(key string) bool {
-	lower := strings.ToLower(key)
-	for _, denied := range sensitiveLabelDenyList {
-		if strings.Contains(lower, denied) {
-			return true
-		}
-	}
-	return false
-}
-
-// CloudFlusher reads log segments from TelemetryBuffer via ReadFromCursor,
-// converts OTLP LogRecords to cloud LogEntry values, and calls WriteLogEntries.
-// Metrics and traces are not uploaded in this iteration.
+// CloudFlusher reads buffered OTLP frames from TelemetryBuffer via ReadFromCursor
+// and re-exports them to the cloud's standard OTLP collector routes
+// (Logs/Metrics/Trace Service Export) over mTLS gRPC. PII/size guards are
+// applied per frame before export. Identity is derived server-side from the
+// client certificate.
 type CloudFlusher struct {
 	logger          *zap.Logger
 	buffer          *TelemetryBuffer
@@ -75,7 +45,8 @@ type CloudFlusher struct {
 
 // NewCloudFlusher creates a CloudFlusher for tests. The explicit org/asset ID
 // parameters are preserved for compatibility with existing callers, but the
-// flusher does not store them on the struct.
+// flusher does not store them on the struct. They are ignored entirely because
+// device identity is derived from the mTLS client certificate.
 func NewCloudFlusher(logger *zap.Logger, buffer *TelemetryBuffer, orgID, assetID int32) *CloudFlusher {
 	return &CloudFlusher{
 		logger: logger,
@@ -103,12 +74,11 @@ func (f *CloudFlusher) Run(ctx context.Context) {
 	}
 
 	var cloudHost string
-	var orgID, assetID int32
 
 	// Poll until provisioned.
 	for {
 		var enrolled bool
-		cloudHost, orgID, assetID, enrolled = f.provisioningSvc.ProvisioningInfo()
+		cloudHost, _, _, enrolled = f.provisioningSvc.ProvisioningInfo()
 		if enrolled {
 			break
 		}
@@ -132,7 +102,7 @@ func (f *CloudFlusher) Run(ctx context.Context) {
 		}
 
 		certPEM, chainPEM, keyData := f.provisioningSvc.ProvisioningCerts()
-		conn, client, err := f.dial(ctx, cloudHost, certPEM, chainPEM, keyData)
+		conn, err := f.dial(ctx, cloudHost, certPEM, chainPEM, keyData)
 		if err != nil {
 			f.logger.Warn("cloud flusher: dial failed", zap.Error(err))
 			f.sleep(ctx, attempt)
@@ -140,7 +110,11 @@ func (f *CloudFlusher) Run(ctx context.Context) {
 			continue
 		}
 
-		err = f.runOnce(ctx, client, orgID, assetID)
+		err = f.runOnce(ctx,
+			otelpb.NewLogsServiceClient(conn),
+			otelpb.NewMetricsServiceClient(conn),
+			otelpb.NewTraceServiceClient(conn),
+		)
 		conn.Close()
 
 		if err != nil {
@@ -174,7 +148,7 @@ func (f *CloudFlusher) sleep(ctx context.Context, attempt int) {
 
 // dial establishes a TLS 1.3 gRPC connection. keyData is zeroed on return as
 // best-effort protection; crypto/tls may retain additional internal copies.
-func (f *CloudFlusher) dial(ctx context.Context, host, certPEM, chainPEM string, keyData []byte) (*grpc.ClientConn, cloudpb.RemoteLoggingServiceClient, error) {
+func (f *CloudFlusher) dial(ctx context.Context, host, certPEM, chainPEM string, keyData []byte) (*grpc.ClientConn, error) {
 	host = normalizeCloudHost(host)
 	defer func() {
 		for i := range keyData {
@@ -190,7 +164,7 @@ func (f *CloudFlusher) dial(ctx context.Context, host, certPEM, chainPEM string,
 	}
 	cert, err := tls.X509KeyPair(certBundle, keyData)
 	if err != nil {
-		return nil, nil, fmt.Errorf("cloud flusher: parse key pair: %w", err)
+		return nil, fmt.Errorf("cloud flusher: parse key pair: %w", err)
 	}
 
 	caPool, err := x509.SystemCertPool()
@@ -209,225 +183,68 @@ func (f *CloudFlusher) dial(ctx context.Context, host, certPEM, chainPEM string,
 
 	conn, err := grpc.NewClient(host, grpc.WithTransportCredentials(credentials.NewTLS(tlsCfg)))
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	return conn, cloudpb.NewRemoteLoggingServiceClient(conn), nil
+	return conn, nil
 }
 
-// runOnce performs a single read-convert-upload pass. It does not advance the
-// cursor if WriteLogEntries returns an error (ensuring retry safety).
-func (f *CloudFlusher) runOnce(ctx context.Context, client cloudpb.RemoteLoggingServiceClient, orgID, assetID int32) error {
+// runOnce performs a single flush pass over all three OTLP signals. For each
+// signal it reads a batch of buffered frames, sanitizes each, and exports it
+// via the matching OTLP collector route. A signal's cursor advances only after
+// every frame in its batch is exported successfully (at-least-once delivery;
+// the cloud tolerates duplicates). Org/asset identity is derived server-side
+// from the mTLS client certificate, so no identifiers are sent in the request.
+func (f *CloudFlusher) runOnce(ctx context.Context, logs otelpb.LogsServiceClient, metrics otelpb.MetricsServiceClient, traces otelpb.TraceServiceClient) error {
 	if f.buffer == nil {
 		return nil
 	}
-	// cursor.json is HMAC-SHA256 integrity-protected via a device-local key
-	// stored in cursor.key. Any tampering or corruption is detected by
-	// LoadCursor, which resets the offset to zero rather than trusting a
-	// manipulated value.
-	cursor := f.buffer.LoadCursor(SignalLogs)
-	msgs, next, err := f.buffer.ReadFromCursor(SignalLogs, cursor, cloudFlusherBatchSize)
+	if err := f.flushSignal(SignalLogs, func(msg proto.Message) error {
+		req := msg.(*otelpb.ExportLogsServiceRequest)
+		sanitizeLogs(req)
+		_, err := logs.Export(ctx, req)
+		return err
+	}); err != nil {
+		return err
+	}
+	if err := f.flushSignal(SignalMetrics, func(msg proto.Message) error {
+		req := msg.(*otelpb.ExportMetricsServiceRequest)
+		sanitizeMetrics(req)
+		_, err := metrics.Export(ctx, req)
+		return err
+	}); err != nil {
+		return err
+	}
+	return f.flushSignal(SignalTraces, func(msg proto.Message) error {
+		req := msg.(*otelpb.ExportTraceServiceRequest)
+		sanitizeTraces(req)
+		_, err := traces.Export(ctx, req)
+		return err
+	})
+}
+
+// flushSignal reads one batch of buffered frames for sig, exports each via the
+// provided callback, and advances the signal's cursor only if all exports
+// succeed. On any export error the cursor is left untouched so the batch is
+// retried (already-exported frames may be re-sent).
+func (f *CloudFlusher) flushSignal(sig SignalType, export func(proto.Message) error) error {
+	if f.buffer == nil {
+		return nil
+	}
+	cursor := f.buffer.LoadCursor(sig)
+	msgs, next, err := f.buffer.ReadFromCursor(sig, cursor, cloudFlusherFramesPerPass)
 	if err != nil {
-		return fmt.Errorf("cloud flusher: read from cursor: %w", err)
+		return fmt.Errorf("cloud flusher: read %s from cursor: %w", sig, err)
 	}
 	if len(msgs) == 0 {
 		return nil
 	}
-
-	// Group entries by app ID (service.name resource attribute).
-	appEntries := f.groupByApp(msgs)
-
-	// Sort app IDs for deterministic iteration order so that partial-failure
-	// retries always re-send apps in the same sequence.
-	appIDs := make([]string, 0, len(appEntries))
-	for appID := range appEntries {
-		appIDs = append(appIDs, appID)
-	}
-	sort.Strings(appIDs)
-
-	// Each app's entries are sent in one or more RPCs, chunked to at most
-	// cloudFlusherMaxEntriesPerApp entries to stay within gRPC message size limits.
-	// On any failure, the cursor is NOT advanced and the entire batch is retried —
-	// already-uploaded entries will be re-sent. This is intentional at-least-once
-	// delivery; the cloud accepts duplicates.
-	collectorStr := cloudFlusherCollector
-	var sentAny bool
-	for _, appID := range appIDs {
-		allEntries := appEntries[appID]
-		for start := 0; start < len(allEntries); start += cloudFlusherMaxEntriesPerApp {
-			end := start + cloudFlusherMaxEntriesPerApp
-			if end > len(allEntries) {
-				end = len(allEntries)
-			}
-			req := &cloudpb.WriteLogEntriesRequest{
-				OrganizationId: orgID,
-				AssetId:        assetID,
-				AppId:          appID,
-				Collector:      &collectorStr,
-				Entries:        allEntries[start:end],
-			}
-			if _, err := client.WriteLogEntries(ctx, req); err != nil {
-				if sentAny {
-					// Warn operators that already-uploaded entries will be re-sent on retry.
-					f.logger.Warn("cloud flusher: partial batch failure; prior entries will be re-sent on retry",
-						zap.String("failed_app", appID),
-					)
-				}
-				// Do NOT advance cursor; caller will retry.
-				return fmt.Errorf("cloud flusher: WriteLogEntries (app=%s): %w", appID, err)
-			}
-			sentAny = true
+	for _, msg := range msgs {
+		if err := export(msg); err != nil {
+			return fmt.Errorf("cloud flusher: export %s: %w", sig, err)
 		}
 	}
-
-	// All batches succeeded — advance the cursor.
-	if err := f.buffer.SaveCursor(SignalLogs, next); err != nil {
-		f.logger.Warn("cloud flusher: failed to save cursor", zap.Error(err))
-		return fmt.Errorf("saving cursor: %w", err)
+	if err := f.buffer.SaveCursor(sig, next); err != nil {
+		return fmt.Errorf("cloud flusher: save %s cursor: %w", sig, err)
 	}
 	return nil
-}
-
-// groupByApp converts OTLP log messages to cloud LogEntry values grouped by
-// the service.name resource attribute. Entries without a service.name are
-// grouped under "device".
-func (f *CloudFlusher) groupByApp(msgs []proto.Message) map[string][]*cloudpb.LogEntry {
-	result := make(map[string][]*cloudpb.LogEntry)
-
-	for _, msg := range msgs {
-		req, ok := msg.(*otelpb.ExportLogsServiceRequest)
-		if !ok {
-			continue
-		}
-		for _, rl := range req.GetResourceLogs() {
-			appID := cloudFlusherDefaultApp
-			if res := rl.GetResource(); res != nil {
-				for _, kv := range res.GetAttributes() {
-					if kv.GetKey() == "service.name" {
-						if s := kv.GetValue().GetStringValue(); s != "" {
-							appID = s
-						}
-						break
-					}
-				}
-			}
-
-			for _, sl := range rl.GetScopeLogs() {
-				for _, lr := range sl.GetLogRecords() {
-					entry := convertLogRecord(lr)
-					result[appID] = append(result[appID], entry)
-				}
-			}
-		}
-	}
-	return result
-}
-
-// convertLogRecord converts a single OTLP LogRecord to a cloud LogEntry.
-func convertLogRecord(lr *otelpb.LogRecord) *cloudpb.LogEntry {
-	entry := &cloudpb.LogEntry{
-		Severity: otelSeverityToCloud(lr.GetSeverityNumber()),
-	}
-
-	// Timestamp.
-	if ns := lr.GetTimeUnixNano(); ns != 0 {
-		entry.Timestamp = timestamppb.New(time.Unix(0, int64(ns)))
-	}
-	if ns := lr.GetObservedTimeUnixNano(); ns != 0 {
-		entry.ObservedAt = timestamppb.New(time.Unix(0, int64(ns)))
-	}
-
-	// Trace/span IDs as hex strings.
-	if traceID := lr.GetTraceId(); len(traceID) == 16 {
-		entry.TraceId = hex.EncodeToString(traceID)
-	}
-	if spanID := lr.GetSpanId(); len(spanID) == 8 {
-		entry.SpanId = hex.EncodeToString(spanID)
-	}
-
-	// Body → text payload. Truncated to maxLogBodyBytes to prevent oversized
-	// entries from reaching the cloud and to guard against data-exfiltration
-	// via abnormally large log bodies.
-	if body := lr.GetBody(); body != nil {
-		text := otelAnyValueString(body)
-		if len(text) > maxLogBodyBytes {
-			text = text[:maxLogBodyBytes]
-		}
-		entry.Payload = &cloudpb.LogEntry_TextPayload{
-			TextPayload: text,
-		}
-	}
-
-	// Copy log-record attributes into labels, applying PII / size guards:
-	//   • keys matching the credential/PII deny-list are dropped entirely
-	//   • keys and values are truncated to avoid excessive data transfer
-	//   • total label count is capped at maxLabels
-	if attrs := lr.GetAttributes(); len(attrs) > 0 {
-		labels := make(map[string]string, min(len(attrs), maxLabels))
-		for _, kv := range attrs {
-			if len(labels) >= maxLabels {
-				break
-			}
-			k := kv.GetKey()
-			if isSensitiveLabelKey(k) {
-				continue
-			}
-			if len(k) > maxLabelKeyLen {
-				k = k[:maxLabelKeyLen]
-			}
-			v := otelAnyValueString(kv.GetValue())
-			if len(v) > maxLabelValLen {
-				v = v[:maxLabelValLen]
-			}
-			labels[k] = v
-		}
-		entry.Labels = labels
-	}
-
-	return entry
-}
-
-// otelAnyValueString converts an OTLP AnyValue to a human-readable string.
-func otelAnyValueString(v *otelpb.AnyValue) string {
-	if v == nil {
-		return ""
-	}
-	switch val := v.GetValue().(type) {
-	case *otelpb.AnyValue_StringValue:
-		return val.StringValue
-	case *otelpb.AnyValue_BoolValue:
-		if val.BoolValue {
-			return "true"
-		}
-		return "false"
-	case *otelpb.AnyValue_IntValue:
-		return fmt.Sprintf("%d", val.IntValue)
-	case *otelpb.AnyValue_DoubleValue:
-		return fmt.Sprintf("%g", val.DoubleValue)
-	case *otelpb.AnyValue_BytesValue:
-		return hex.EncodeToString(val.BytesValue)
-	default:
-		return fmt.Sprintf("%v", v)
-	}
-}
-
-// otelSeverityToCloud maps an OTLP SeverityNumber to a cloud LogSeverity.
-func otelSeverityToCloud(sev otelpb.SeverityNumber) cloudpb.LogSeverity {
-	switch {
-	case sev == otelpb.SeverityNumber_SEVERITY_NUMBER_UNSPECIFIED:
-		return cloudpb.LogSeverity_LOG_SEVERITY_UNSPECIFIED
-	case sev >= otelpb.SeverityNumber_SEVERITY_NUMBER_TRACE && sev <= otelpb.SeverityNumber_SEVERITY_NUMBER_TRACE4:
-		return cloudpb.LogSeverity_LOG_SEVERITY_DEBUG
-	case sev >= otelpb.SeverityNumber_SEVERITY_NUMBER_DEBUG && sev <= otelpb.SeverityNumber_SEVERITY_NUMBER_DEBUG4:
-		return cloudpb.LogSeverity_LOG_SEVERITY_DEBUG
-	case sev >= otelpb.SeverityNumber_SEVERITY_NUMBER_INFO && sev <= otelpb.SeverityNumber_SEVERITY_NUMBER_INFO4:
-		return cloudpb.LogSeverity_LOG_SEVERITY_INFO
-	case sev >= otelpb.SeverityNumber_SEVERITY_NUMBER_WARN && sev <= otelpb.SeverityNumber_SEVERITY_NUMBER_WARN4:
-		return cloudpb.LogSeverity_LOG_SEVERITY_WARNING
-	case sev >= otelpb.SeverityNumber_SEVERITY_NUMBER_ERROR && sev <= otelpb.SeverityNumber_SEVERITY_NUMBER_ERROR4:
-		return cloudpb.LogSeverity_LOG_SEVERITY_ERROR
-	case sev >= otelpb.SeverityNumber_SEVERITY_NUMBER_FATAL && sev <= otelpb.SeverityNumber_SEVERITY_NUMBER_FATAL4:
-		return cloudpb.LogSeverity_LOG_SEVERITY_CRITICAL
-	default:
-		return cloudpb.LogSeverity_LOG_SEVERITY_UNSPECIFIED
-	}
 }

@@ -14,6 +14,7 @@ var (
 func init() {
 	allProviders = []DeviceProvider{
 		&LocalProvider{},
+		&AppleContainerProvider{},
 		&DockerProvider{},
 		&MicroWendyProvider{},
 	}

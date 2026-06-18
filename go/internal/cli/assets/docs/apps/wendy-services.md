@@ -47,7 +47,7 @@ Each key is a service name. Each value is a `ServiceConfig` object:
 - A service `persist` entitlement missing `name` or `path`, or with a non-absolute or `..`-containing `path`.
 - A service `network` entitlement with a `mode` other than `"host"` or `"none"`.
 - A service `i2c` entitlement with a device not in `i2c-N` format.
-- A service `serial` entitlement with a device not matching the `ttyACM0` / `ttyUSB0` / `ttyAMA0` / `ttyS0` (`tty*N`) pattern.
+- A service `serial` entitlement with a device not matching the USB-only `ttyACM0` / `ttyUSB0` (`tty*N`) pattern.
 - A service `mcp` entitlement with a port outside the range 1–65535.
 - More than one `mcp` entitlement within a single service's `entitlements` array.
 

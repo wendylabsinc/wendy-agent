@@ -707,13 +707,13 @@ func applyI2C(spec *Spec, ent appconfig.Entitlement) error {
 
 // serialDeviceMajors maps a serial tty node-name prefix to its kernel character
 // device major. ttyACM = USB CDC-ACM (cdc_acm), ttyUSB = USB-serial bridges
-// (FTDI/CH340/CP210x via usbserial), ttyAMA = SoC PL011 UART, ttyS = legacy
-// 8250-style UARTs. Prefixes are validated upstream by appconfig.isValidSerialDevice.
+// (FTDI/CH340/CP210x via usbserial). The entitlement is deliberately USB-only:
+// on-board UARTs (ttyAMA, ttyS) are excluded because ttyS in particular shares
+// its major with a board's system-console UART, adding attack surface for no
+// peripheral benefit. Prefixes are validated upstream by appconfig.isValidSerialDevice.
 var serialDeviceMajors = map[string]int64{
 	"ttyACM": 166,
 	"ttyUSB": 188,
-	"ttyAMA": 204,
-	"ttyS":   4,
 }
 
 // serialDeviceMajor returns the cgroup device major for a serial tty node name
@@ -804,7 +804,7 @@ func addScopedCharDevice(spec *Spec, devPath string) (major, minor int64, err er
 // servo bus or sensor on /dev/ttyACM0). Unlike the usb entitlement — which
 // exposes raw libusb access via /dev/bus/usb (major 189) — this grants the
 // kernel tty node that pyserial/termios open, which is a different device major
-// (166 for ttyACM, 188 for ttyUSB, etc.). The device field is a bare node name
+// (166 for ttyACM, 188 for ttyUSB). The device field is a bare node name
 // validated by appconfig.isValidSerialDevice, so it cannot contain a path
 // separator or escape /dev.
 func applySerial(spec *Spec, ent appconfig.Entitlement) error {
@@ -816,10 +816,10 @@ func applySerial(spec *Spec, ent appconfig.Entitlement) error {
 
 	// Resolve the exact node and scope the cgroup rule to this one device
 	// (major:minor), never the whole kernel major. A whole-major rule would
-	// expose every device of that type on the host — and for ttyS (major 4, the
-	// shared TTY major) even the virtual consoles /dev/tty0..63 and /dev/console
-	// (SOC2-CC6, ISO27001-A.8, NIST-AC-3). addScopedCharDevice also fails fast and
-	// clearly when the device is not connected, instead of a cryptic mount error.
+	// expose every other device sharing that major on the host — every ttyACM*
+	// or ttyUSB* adapter (SOC2-CC6, ISO27001-A.8, NIST-AC-3). addScopedCharDevice
+	// also fails fast and clearly when the device is not connected, instead of a
+	// cryptic mount error at start.
 	major, _, err := addScopedCharDevice(spec, devPath)
 	if err != nil {
 		return fmt.Errorf("serial device %s unavailable (need a real, connected tty node): %w", devPath, err)
@@ -834,7 +834,9 @@ func applySerial(spec *Spec, ent appconfig.Entitlement) error {
 
 	// Serial tty nodes are group-owned by dialout; resolve its GID on the host so
 	// a non-root process can open the port, falling back to the Debian/Ubuntu
-	// default when the group is absent (mirrors applySPI's group lookup).
+	// default when the group is absent (mirrors applySPI's group lookup). This GID
+	// applies process-tree-wide, but the major:minor cgroup rule above is the real
+	// access gate — membership alone reaches no device the cgroup rule denies.
 	dialoutGID := dialoutGroupGID
 	if grp, gerr := user.LookupGroup("dialout"); gerr == nil {
 		if gid, perr := strconv.ParseUint(grp.Gid, 10, 32); perr == nil {

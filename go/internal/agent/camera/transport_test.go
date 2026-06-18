@@ -76,6 +76,51 @@ func TestClassify_CSI_SensorDriverImx(t *testing.T) {
 	}
 }
 
+func TestClassify_NonCamera_Bcm2835Isp(t *testing.T) {
+	// The bcm2835-isp m2m capture nodes (bcm2835-isp-capture0/1) advertise
+	// VIDEO_CAPTURE but are the legacy Pi 0-4 ISP output, not a sensor capture
+	// source. They must NOT be classified as CSI cameras.
+	withFakeSysfs(t, map[string]string{"video14": "bcm2835-isp"}, nil)
+	got, drv := Classify("video14")
+	if got != TransportUnknown || drv != "bcm2835-isp" {
+		t.Fatalf("got (%v, %q), want (Unknown, bcm2835-isp)", got, drv)
+	}
+}
+
+func TestClassify_NonCamera_Bcm2835Codec(t *testing.T) {
+	// The bcm2835-codec H.264 encode/decode m2m nodes are not cameras either.
+	withFakeSysfs(t, map[string]string{"video10": "bcm2835-codec"}, nil)
+	got, drv := Classify("video10")
+	if got != TransportUnknown || drv != "bcm2835-codec" {
+		t.Fatalf("got (%v, %q), want (Unknown, bcm2835-codec)", got, drv)
+	}
+}
+
+func TestClassify_NonCamera_IspNotReclassifiedByOfNode(t *testing.T) {
+	// Even when the ISP platform device carries a device-tree of_node, the
+	// non-camera denylist must win over the of_node CSI fallback.
+	withFakeSysfs(t, map[string]string{"video14": "bcm2835-isp"}, map[string]bool{"video14": true})
+	got, drv := Classify("video14")
+	if got != TransportUnknown || drv != "bcm2835-isp" {
+		t.Fatalf("got (%v, %q), want (Unknown, bcm2835-isp)", got, drv)
+	}
+}
+
+func TestIsNonCameraDriver(t *testing.T) {
+	nonCamera := []string{"bcm2835-isp", "bcm2835-codec"}
+	for _, drv := range nonCamera {
+		if !IsNonCameraDriver(drv) {
+			t.Errorf("IsNonCameraDriver(%q) = false, want true", drv)
+		}
+	}
+	camera := []string{"bcm2835-unicam", "unicam", "imx477", "ov5647", "uvcvideo", "tegra-capture-vi", ""}
+	for _, drv := range camera {
+		if IsNonCameraDriver(drv) {
+			t.Errorf("IsNonCameraDriver(%q) = true, want false", drv)
+		}
+	}
+}
+
 func TestClassify_CSI_OfNodeImpliesCSI(t *testing.T) {
 	// Unknown driver but a device-tree node present → still CSI.
 	withFakeSysfs(t, map[string]string{"video0": "mystery-driver"}, map[string]bool{"video0": true})

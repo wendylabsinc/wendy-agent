@@ -538,6 +538,10 @@ func writeImageWithBmapSeekable(sourcePath, bmapPath string, d drive, progressFn
 		return err
 	}
 	defer ld.close()
+	// In-process on Windows (no helper subprocess), so set the writer
+	// concurrency directly from the storage type: parallel for NVMe, sequential
+	// for SD/USB media whose FTL is hurt by scattered concurrent writes.
+	bmapWriteConcurrency = writersForStorage(d.StorageType)
 	return applyBmapSeekable(si, handleWriterAt{h: ld.handle}, b, progressFn)
 }
 

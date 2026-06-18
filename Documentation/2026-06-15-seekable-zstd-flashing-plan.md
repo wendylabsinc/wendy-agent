@@ -19,7 +19,7 @@
   - `nvme_path`, `nvme_checksum`, `nvme_size_bytes`, `nvme_bmap_path`, `nvme_zst_path`, `nvme_zst_checksum`, `nvme_zst_size_bytes`
   - `sd_path`, `sd_checksum`, `sd_size_bytes`, `sd_bmap_path`, `sd_zst_path`, `sd_zst_checksum`, `sd_zst_size_bytes`
   - Legacy fallback (already exist): `path`, `checksum`, `size_bytes`, `bmap_path`; plus new legacy `zst_path`, `zst_checksum`, `zst_size_bytes`.
-- **Storage selector:** `StorageNVMe` → `nvme` variant; anything else (`StorageUnknown`) → `sd` variant. Missing variant → legacy fields.
+- **Storage selector:** `--storage` override wins if set; else `StorageNVMe` or `StorageUSB` → `nvme` variant; `StorageUnknown` → `sd` variant. Missing variant → legacy fields.
 
 ## File structure
 

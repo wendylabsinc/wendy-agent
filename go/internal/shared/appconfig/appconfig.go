@@ -308,7 +308,7 @@ func validateEntitlements(entitlements []Entitlement, prefix string) error {
 				return fmt.Errorf("%s[%d]: serial entitlement requires a device", prefix, i)
 			}
 			if !isValidSerialDevice(e.Device) {
-				return fmt.Errorf("%s[%d]: serial device must be a bare tty node name like ttyACM0, ttyUSB0, ttyAMA0, or ttyS0, got %q", prefix, i, e.Device)
+				return fmt.Errorf("%s[%d]: serial device must be a bare USB tty node name like ttyACM0 or ttyUSB0, got %q", prefix, i, e.Device)
 			}
 		case EntitlementGPIO:
 			// Pins are optional; omitting them grants access to all GPIO chips.
@@ -523,11 +523,13 @@ func isValidI2CDevice(device string) bool {
 
 // SerialDevicePrefixes is the set of accepted serial tty node-name prefixes for
 // the serial entitlement. Each must be followed by one or more digits (the unit
-// number). They cover the common transports: USB CDC-ACM (ttyACM*), USB-serial
-// bridges like FTDI/CH340/CP210x (ttyUSB*), the SoC PL011 UART (ttyAMA*) and
-// legacy 8250-style UARTs (ttyS*). The matching kernel device majors live in the
-// oci package, which builds the cgroup allow rule.
-var SerialDevicePrefixes = []string{"ttyACM", "ttyUSB", "ttyAMA", "ttyS"}
+// number). The entitlement is deliberately USB-only: USB CDC-ACM (ttyACM*) and
+// USB-serial bridges like FTDI/CH340/CP210x (ttyUSB*). On-board UARTs (ttyAMA*,
+// ttyS*) are excluded — ttyS shares its major with a board's system-console
+// UART, so allowing it adds attack surface for no peripheral benefit. The
+// matching kernel device majors live in the oci package, which builds the cgroup
+// allow rule.
+var SerialDevicePrefixes = []string{"ttyACM", "ttyUSB"}
 
 // isValidSerialDevice reports whether device is a safe serial tty node name: one
 // of SerialDevicePrefixes followed by one or more digits (e.g. "ttyACM0"). The

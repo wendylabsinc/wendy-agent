@@ -33,7 +33,7 @@ func stubEnrollPrompts(t *testing.T) {
 		t.Fatal("unexpected continue-unenrolled confirm")
 		return false, nil
 	}
-	preEnrollDeviceFn = func(context.Context, *config.AuthConfig, string, PreEnrollDialer) ([]byte, error) {
+	preEnrollDeviceFn = func(context.Context, *config.AuthConfig, string, PreEnrollDialer) (*PreProvisionedState, error) {
 		t.Fatal("unexpected enrollment call")
 		return nil, nil
 	}
@@ -173,34 +173,34 @@ func TestSelectEnrollmentAuthPickerCancelled(t *testing.T) {
 
 func TestResolvePreEnrollmentSkipMode(t *testing.T) {
 	stubEnrollPrompts(t)
-	js, err := resolvePreEnrollment(context.Background(), twoSessionConfig(), preEnrollOptions{mode: preEnrollSkip}, true, "dev")
-	if err != nil || js != nil {
-		t.Fatalf("skip mode must be a no-op, got %v / %v", js, err)
+	prov, err := resolvePreEnrollment(context.Background(), twoSessionConfig(), preEnrollOptions{mode: preEnrollSkip}, true, "dev")
+	if err != nil || prov != nil {
+		t.Fatalf("skip mode must be a no-op, got %v / %v", prov, err)
 	}
 }
 
 func TestResolvePreEnrollmentAutoNonInteractive(t *testing.T) {
 	stubEnrollPrompts(t)
-	js, err := resolvePreEnrollment(context.Background(), twoSessionConfig(), preEnrollOptions{mode: preEnrollAuto}, false, "dev")
-	if err != nil || js != nil {
-		t.Fatalf("auto mode without a TTY must be a no-op, got %v / %v", js, err)
+	prov, err := resolvePreEnrollment(context.Background(), twoSessionConfig(), preEnrollOptions{mode: preEnrollAuto}, false, "dev")
+	if err != nil || prov != nil {
+		t.Fatalf("auto mode without a TTY must be a no-op, got %v / %v", prov, err)
 	}
 }
 
 func TestResolvePreEnrollmentAutoNoSessions(t *testing.T) {
 	stubEnrollPrompts(t)
-	js, err := resolvePreEnrollment(context.Background(), &config.Config{}, preEnrollOptions{mode: preEnrollAuto}, true, "dev")
-	if err != nil || js != nil {
-		t.Fatalf("auto mode without sessions must be a no-op, got %v / %v", js, err)
+	prov, err := resolvePreEnrollment(context.Background(), &config.Config{}, preEnrollOptions{mode: preEnrollAuto}, true, "dev")
+	if err != nil || prov != nil {
+		t.Fatalf("auto mode without sessions must be a no-op, got %v / %v", prov, err)
 	}
 }
 
 func TestResolvePreEnrollmentAutoDeclined(t *testing.T) {
 	stubEnrollPrompts(t)
 	confirmPreEnroll = func() (bool, error) { return false, nil }
-	js, err := resolvePreEnrollment(context.Background(), twoSessionConfig(), preEnrollOptions{mode: preEnrollAuto}, true, "dev")
-	if err != nil || js != nil {
-		t.Fatalf("declining the pre-enroll offer must be a no-op, got %v / %v", js, err)
+	prov, err := resolvePreEnrollment(context.Background(), twoSessionConfig(), preEnrollOptions{mode: preEnrollAuto}, true, "dev")
+	if err != nil || prov != nil {
+		t.Fatalf("declining the pre-enroll offer must be a no-op, got %v / %v", prov, err)
 	}
 }
 
@@ -208,22 +208,22 @@ func TestResolvePreEnrollmentSuccess(t *testing.T) {
 	stubEnrollPrompts(t)
 	confirmPreEnroll = func() (bool, error) { return true, nil }
 	promptEnrollmentSession = func([]tui.PickerItem) (string, error) { return "0", nil }
-	preEnrollDeviceFn = func(_ context.Context, auth *config.AuthConfig, name string, _ PreEnrollDialer) ([]byte, error) {
+	preEnrollDeviceFn = func(_ context.Context, auth *config.AuthConfig, name string, _ PreEnrollDialer) (*PreProvisionedState, error) {
 		if auth.CloudGRPC != "prod.example.com:443" {
 			t.Fatalf("enrolled against %s; want the picked session", auth.CloudGRPC)
 		}
 		if name != "dev" {
 			t.Fatalf("device name %q; want dev", name)
 		}
-		return []byte(`{"enrolled":true}`), nil
+		return &PreProvisionedState{Enrolled: true}, nil
 	}
 
-	js, err := resolvePreEnrollment(context.Background(), twoSessionConfig(), preEnrollOptions{mode: preEnrollAuto}, true, "dev")
+	prov, err := resolvePreEnrollment(context.Background(), twoSessionConfig(), preEnrollOptions{mode: preEnrollAuto}, true, "dev")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if string(js) != `{"enrolled":true}` {
-		t.Fatalf("got %q; want provisioning JSON", js)
+	if prov == nil || !prov.Enrolled {
+		t.Fatalf("got %+v; want enrolled provisioning state", prov)
 	}
 }
 
@@ -232,9 +232,9 @@ func TestResolvePreEnrollmentUserSkips(t *testing.T) {
 	confirmPreEnroll = func() (bool, error) { return true, nil }
 	promptEnrollmentSession = func([]tui.PickerItem) (string, error) { return skipEnrollmentValue, nil }
 
-	js, err := resolvePreEnrollment(context.Background(), twoSessionConfig(), preEnrollOptions{mode: preEnrollAuto}, true, "dev")
-	if err != nil || js != nil {
-		t.Fatalf("explicit skip must continue without JSON, got %v / %v", js, err)
+	prov, err := resolvePreEnrollment(context.Background(), twoSessionConfig(), preEnrollOptions{mode: preEnrollAuto}, true, "dev")
+	if err != nil || prov != nil {
+		t.Fatalf("explicit skip must continue without JSON, got %v / %v", prov, err)
 	}
 }
 
@@ -242,14 +242,14 @@ func TestResolvePreEnrollmentFailureAcknowledged(t *testing.T) {
 	stubEnrollPrompts(t)
 	confirmPreEnroll = func() (bool, error) { return true, nil }
 	promptEnrollmentSession = func([]tui.PickerItem) (string, error) { return "0", nil }
-	preEnrollDeviceFn = func(context.Context, *config.AuthConfig, string, PreEnrollDialer) ([]byte, error) {
+	preEnrollDeviceFn = func(context.Context, *config.AuthConfig, string, PreEnrollDialer) (*PreProvisionedState, error) {
 		return nil, errors.New("cloud unreachable")
 	}
 	confirmContinueUnenrolled = func() (bool, error) { return true, nil }
 
-	js, err := resolvePreEnrollment(context.Background(), twoSessionConfig(), preEnrollOptions{mode: preEnrollAuto}, true, "dev")
-	if err != nil || js != nil {
-		t.Fatalf("acknowledged failure must continue without JSON, got %v / %v", js, err)
+	prov, err := resolvePreEnrollment(context.Background(), twoSessionConfig(), preEnrollOptions{mode: preEnrollAuto}, true, "dev")
+	if err != nil || prov != nil {
+		t.Fatalf("acknowledged failure must continue without JSON, got %v / %v", prov, err)
 	}
 }
 
@@ -257,7 +257,7 @@ func TestResolvePreEnrollmentFailureDeclinedCancelsInstall(t *testing.T) {
 	stubEnrollPrompts(t)
 	confirmPreEnroll = func() (bool, error) { return true, nil }
 	promptEnrollmentSession = func([]tui.PickerItem) (string, error) { return "0", nil }
-	preEnrollDeviceFn = func(context.Context, *config.AuthConfig, string, PreEnrollDialer) ([]byte, error) {
+	preEnrollDeviceFn = func(context.Context, *config.AuthConfig, string, PreEnrollDialer) (*PreProvisionedState, error) {
 		return nil, errors.New("cloud unreachable")
 	}
 	confirmContinueUnenrolled = func() (bool, error) { return false, nil }
@@ -274,7 +274,7 @@ func TestResolvePreEnrollmentForcedNonInteractiveFailureIsFatal(t *testing.T) {
 		CloudGRPC:    "prod.example.com:443",
 		Certificates: []config.CertificateInfo{{OrganizationID: 7}},
 	}}}
-	preEnrollDeviceFn = func(context.Context, *config.AuthConfig, string, PreEnrollDialer) ([]byte, error) {
+	preEnrollDeviceFn = func(context.Context, *config.AuthConfig, string, PreEnrollDialer) (*PreProvisionedState, error) {
 		return nil, errors.New("cloud unreachable")
 	}
 
@@ -297,8 +297,8 @@ func TestResolvePreEnrollmentForcedSkipsConfirm(t *testing.T) {
 	// confirmPreEnroll stays at the t.Fatal stub: forced mode must never ask
 	// "Pre-enroll this device?".
 	promptEnrollmentSession = func([]tui.PickerItem) (string, error) { return "0", nil }
-	preEnrollDeviceFn = func(context.Context, *config.AuthConfig, string, PreEnrollDialer) ([]byte, error) {
-		return []byte(`{}`), nil
+	preEnrollDeviceFn = func(context.Context, *config.AuthConfig, string, PreEnrollDialer) (*PreProvisionedState, error) {
+		return &PreProvisionedState{}, nil
 	}
 	if _, err := resolvePreEnrollment(context.Background(), twoSessionConfig(), preEnrollOptions{mode: preEnrollForced}, true, "dev"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -336,8 +336,8 @@ func TestResolvePreEnrollmentAuthErrorInteractiveAsksToContinue(t *testing.T) {
 	confirmPreEnroll = func() (bool, error) { return true, nil }
 	confirmContinueUnenrolled = func() (bool, error) { return true, nil }
 
-	js, err := resolvePreEnrollment(context.Background(), cfg, preEnrollOptions{mode: preEnrollAuto}, true, "dev")
-	if err != nil || js != nil {
-		t.Fatalf("acknowledged auth failure must continue without JSON, got %v / %v", js, err)
+	prov, err := resolvePreEnrollment(context.Background(), cfg, preEnrollOptions{mode: preEnrollAuto}, true, "dev")
+	if err != nil || prov != nil {
+		t.Fatalf("acknowledged auth failure must continue without JSON, got %v / %v", prov, err)
 	}
 }

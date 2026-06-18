@@ -1076,8 +1076,6 @@ func TestApplySerial_ValidDevice(t *testing.T) {
 	}{
 		{"ttyACM0", 166},
 		{"ttyUSB0", 188},
-		{"ttyAMA0", 204},
-		{"ttyS0", 4},
 	}
 	// Inject a fake stat so the test needs no real device nodes (which require
 	// root + mknod). Returns the device's expected major and a fixed minor.

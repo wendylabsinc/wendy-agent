@@ -121,7 +121,7 @@ $status = 0
 if ($Stage -in @('aggregate', 'all')) {
     Push-Location $PackageDir
     try {
-        & swift run swift-e2e-testing aggregate --output-dir $OutputDir @($attemptDirs | ForEach-Object { $_.FullName })
+        & swift run swift-e2e-testing aggregate --output-dir $OutputDir --package-dir $PackageDir @($attemptDirs | ForEach-Object { $_.FullName })
         $aggregateStatus = $LASTEXITCODE
     } finally {
         Pop-Location
