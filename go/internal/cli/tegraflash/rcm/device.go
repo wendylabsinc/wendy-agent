@@ -29,27 +29,30 @@ type Device struct {
 	uidCh  <-chan uidResult
 }
 
-// WaitForDevice blocks until an Orin appears in RCM mode (up to 60 s).
+// WaitForDevice blocks until a supported Jetson appears in RCM mode (up to 60 s).
+// Supported PIDs: T234 (Orin, 0x7023) and T264 (AGX Thor, 0x7064).
 func WaitForDevice() (*Device, error) {
 	ctx := gousb.NewContext()
 	ctx.Debug(0) // suppress libusb noise (LIBUSB_ERROR_INTERRUPTED, etc.)
 
 	deadline := time.Now().Add(60 * time.Second)
 	for time.Now().Before(deadline) {
-		dev, err := ctx.OpenDeviceWithVIDPID(VendorNVIDIA, ProductOrin)
-		if err == nil && dev != nil {
-			d, err := openDevice(ctx, dev)
-			if err != nil {
-				dev.Close()
-				return nil, err
+		for _, pid := range []gousb.ID{ProductOrin, ProductThor} {
+			dev, err := ctx.OpenDeviceWithVIDPID(VendorNVIDIA, pid)
+			if err == nil && dev != nil {
+				d, err := openDevice(ctx, dev)
+				if err != nil {
+					dev.Close()
+					return nil, err
+				}
+				return d, nil
 			}
-			return d, nil
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
 
 	ctx.Close()
-	return nil, fmt.Errorf("timed out waiting for Orin in recovery mode")
+	return nil, fmt.Errorf("timed out waiting for Jetson in recovery mode")
 }
 
 // WaitForNv3p waits for the device to re-enumerate after loading the applet.
@@ -212,4 +215,49 @@ func (d *Device) LoadApplet(applet []byte) error {
 	}
 	_ = status
 	return nil
+}
+
+// ProductID returns the USB product ID of the connected device.
+func (d *Device) ProductID() gousb.ID {
+	return d.dev.Desc.Product
+}
+
+// IsT264 reports whether the device is a T264 (Thor) chip.
+func (d *Device) IsT264() bool {
+	return d.ProductID() == ProductThor
+}
+
+// ControlRead reads a USB string descriptor from the bootROM via endpoint 0.
+// T23x bootROMs encode RCM state in string descriptor index 3 using a
+// GET_DESCRIPTOR control transfer (bmRequestType=0x80, bRequest=0x06,
+// wValue=0x0303, wIndex=0x0000). buf must be at least 3 bytes; 96 bytes is typical.
+func (d *Device) ControlRead(buf []byte) (int, error) {
+	return d.dev.Control(
+		0x80,   // rType: IN, standard, device
+		0x06,   // request: GET_DESCRIPTOR
+		0x0303, // val: STRING descriptor type (0x03), index 3
+		0x0000, // idx: language 0
+		buf,
+	)
+}
+
+// RCMState reads the T23x bootROM RCM state via USB control transfer.
+// State 0 means the device is freshly reset and ready for image download.
+func (d *Device) RCMState() (byte, error) {
+	buf := make([]byte, 96)
+	n, err := d.ControlRead(buf)
+	if err != nil {
+		return 0, fmt.Errorf("reading RCM state descriptor: %w", err)
+	}
+	return parseStateDescriptor(buf, n)
+}
+
+// parseStateDescriptor extracts the RCM state byte from a GET_STRING_DESCRIPTOR response.
+// NVIDIA's T23x bootROM encodes the RCM state as the first byte of the UTF-16LE
+// payload (buf[2]). Derived from RE of tegrarcm_v2 mainT23x (Thor nightly 20260618).
+func parseStateDescriptor(buf []byte, n int) (byte, error) {
+	if n < 3 {
+		return 0, fmt.Errorf("RCM state descriptor too short: got %d bytes, need at least 3", n)
+	}
+	return buf[2], nil
 }
