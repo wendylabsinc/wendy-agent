@@ -154,21 +154,7 @@ The config is small. Each entry is an independently synced file or directory. If
 
 # Developer flow
 
-```sh
-wendy run --device lab-edge-01
-```
-
-```text
-Building application image
-✓ Built sh.wendy.demo.vision:latest
-
-Syncing wendy.json files
-  models/detector.onnx      unchanged
-  models/classifier.onnx    changed, syncing
-  prompts/system.txt        unchanged
-
-Starting app
-```
+<video :src="'/videos/file-sync/07-developer-flow.mp4'" controls muted width="100%"></video>
 
 <!--
 Timeline id: developer-flow

@@ -15,7 +15,7 @@
     { "id": "one-cable", "target": "5", "minSeconds": 8.0, "voiceover": "voiceover/mp3/04-one-cable.mp3" },
     { "id": "what-it-does", "target": "6", "minSeconds": 15.0, "voiceover": "voiceover/mp3/05-what-it-does.mp3" },
     { "id": "config", "target": "7", "minSeconds": 14.0, "voiceover": "voiceover/mp3/06-config.mp3" },
-    { "id": "developer-flow", "target": "8", "minSeconds": 15.0, "voiceover": "voiceover/mp3/07-developer-flow.mp3" },
+    { "id": "developer-flow", "target": "8", "minSeconds": 15.0, "voiceover": "voiceover/mp3/07-developer-flow.mp3", "media": "deck/public/videos/file-sync/07-developer-flow.mp4" },
     { "id": "runtime-model", "target": "9", "minSeconds": 13.0, "voiceover": "voiceover/mp3/08-runtime-model.mp3" },
     { "id": "app-code", "target": "10", "minSeconds": 10.0, "voiceover": "voiceover/mp3/09-app-code.mp3" },
     { "id": "lifecycle", "target": "11", "minSeconds": 12.0, "voiceover": "voiceover/mp3/10-lifecycle.mp3" },
