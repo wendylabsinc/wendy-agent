@@ -51,6 +51,10 @@ Final closeout snapshot, 2026-06-12:
 - Related but out of this coordinator's current scope: WDY-1512/WDY-1528 are E2E
   Tests project issues; WDY-1530 is in the New Templates project; WDY-1532 is
   general/top-level work.
+- Explicitly reprioritized by the user on 2026-06-18: WDY-1608 is active from
+  this coordinator despite belonging to `New Templates`, not the closed Mac beta
+  project. Keep the coordinator role limited to setup/handoff; implementation
+  belongs in the per-issue worktree.
 
 ## Working protocol
 
@@ -391,6 +395,27 @@ automation scope, follow-up issues filed, and the relevant `Closes WDY-xxxx`.
 - Resume command: not needed; issue is complete.
 
 ## Issue ledger
+
+### WDY-1608 — Add Swift MLX-LLM template for Open WebUI on Wendy Agent for Mac
+
+- Status: `started / handoff prepared`; Linear state: In Progress; Linear
+  assignee: `konstantin@wendy.sh`; Linear project: `New Templates`.
+- Linear: https://linear.app/wendylabsinc/issue/WDY-1608/add-swift-mlx-llm-template-for-open-webui-on-wendy-agent-for-mac
+- Branch/worktree name: `kb.wdy-1608-mlx-openwebui-template`
+- Worktree path:
+  `/Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1608-mlx-openwebui-template`
+- Draft PR: https://github.com/wendylabsinc/WendyOS/pull/1077
+- PR closing reference: `Closes WDY-1608`
+- Setup commit: `1e2562d7 chore: start WDY-1608 MLX Open WebUI template`
+- Scope: add a Mac-compatible Swift LLM template for `wendy init --template`
+  using MLX / MLX-LLM, with an OpenAI-compatible HTTP backend that Open WebUI
+  can target. Keep it native macOS (`platform: "darwin"`), lightweight or
+  configurable for constrained Macs, and clear that this is not Linux container
+  support on Mac agents.
+- Handoff: `HANDOVER.md` in the worktree contains the durable implementation
+  prompt, constraints, validation expectations, and PR details.
+- Resume command:
+  `cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1608-mlx-openwebui-template && ai --prompt "Read HANDOVER.md and follow its instructions."`
 
 ### WDY-1352 — Verify discovery and device selection for WendyAgentMac
 
