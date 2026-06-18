@@ -83,14 +83,14 @@ func Flash(opts FlashOptions) error {
 	}
 
 	if dev.IsT264() {
-		fmt.Fprintln(out, "Loading images via T23x RCM sequence...")
-		rcmImages, err := b.RCMImages()
+		fmt.Fprintln(out, "Loading pre-applet images via T23x RCM sequence...")
+		preApplet, err := b.PreAppletImages()
 		if err != nil {
 			dev.Close()
-			return fmt.Errorf("loading T264 RCM image list: %w", err)
+			return fmt.Errorf("loading T264 pre-applet image list: %w", err)
 		}
 		var binaries [][]byte
-		for _, img := range rcmImages {
+		for _, img := range preApplet {
 			data, imgErr := b.ExtractFile(img.Filename)
 			if imgErr != nil {
 				fmt.Fprintf(out, "  [skip] %s (%s): not in bundle\n", img.Name, img.Filename)
@@ -101,7 +101,7 @@ func Flash(opts FlashOptions) error {
 		}
 		if len(binaries) == 0 {
 			dev.Close()
-			return fmt.Errorf("no T264 RCM images found in bundle")
+			return fmt.Errorf("no T264 pre-applet images found in bundle")
 		}
 		if err := rcm.LoadImagesT23x(dev, binaries); err != nil {
 			dev.Close()

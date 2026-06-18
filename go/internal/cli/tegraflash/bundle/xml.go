@@ -132,3 +132,56 @@ func (b *Bundle) RCMImages() ([]RCMImage, error) {
 	}
 	return ParseRCMImages(data)
 }
+
+// preAppletTypes is the ordered sequence of partition types sent via RCM40 before
+// the MB2 applet boots. Derived from RE of tegrarcm_v2 mainT23x ImageTable_pre
+// (Thor nightly 20260618), entries 2 (mb1), 3 (psc_bl1), 6 (mb2_applet).
+// For T264, mb1_bootloader and psc_bl1 live in the "spi" device block;
+// mb2_applet lives in the "rcm" device block.
+var preAppletTypes = []string{"mb1_bootloader", "psc_bl1", "mb2_applet"}
+
+// ParsePreAppletImages finds the pre-applet RCM images across ALL device blocks,
+// returning them in ImageTable_pre order (mb1_bootloader → psc_bl1 → mb2_applet).
+// Only partitions with non-empty filenames are included.
+func ParsePreAppletImages(data []byte) ([]RCMImage, error) {
+	var layout PartitionLayout
+	if err := xml.Unmarshal(data, &layout); err != nil {
+		return nil, err
+	}
+	byType := make(map[string]RCMImage)
+	for _, dev := range layout.Devices {
+		for _, p := range dev.Partitions {
+			if !p.HasFile() {
+				continue
+			}
+			if _, seen := byType[p.Type]; !seen {
+				byType[p.Type] = RCMImage{
+					Name:     p.Name,
+					Type:     p.Type,
+					Filename: strings.TrimSpace(p.Filename),
+				}
+			}
+		}
+	}
+	var images []RCMImage
+	for _, t := range preAppletTypes {
+		if img, ok := byType[t]; ok {
+			images = append(images, img)
+		}
+	}
+	if len(images) == 0 {
+		return nil, fmt.Errorf("no pre-applet RCM images found (need types: %v)", preAppletTypes)
+	}
+	return images, nil
+}
+
+// PreAppletImages parses rcmboot-flash.xml.in from the bundle and returns only
+// the pre-applet images (mb1_bootloader, psc_bl1, mb2_applet) in the order the
+// T264 bootROM requires them. These are sent via RCM40 before the applet takes over.
+func (b *Bundle) PreAppletImages() ([]RCMImage, error) {
+	data, err := b.ExtractFile("rcmboot-flash.xml.in")
+	if err != nil {
+		return nil, fmt.Errorf("rcmboot-flash.xml.in not found in bundle: %w", err)
+	}
+	return ParsePreAppletImages(data)
+}
