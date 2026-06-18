@@ -13,6 +13,10 @@ type Config struct {
 	Auth               []AuthConfig     `json:"auth,omitempty"`
 	Analytics          *AnalyticsConfig `json:"analytics,omitempty"`
 	DefaultDevice      string           `json:"defaultDevice,omitempty"`
+	// DefaultCloudGRPC names the auth session (by its gRPC endpoint) used when
+	// several sessions exist and no --cloud-grpc flag is given. Empty means no
+	// default; resolution then falls back to an interactive picker or an error.
+	DefaultCloudGRPC   string           `json:"defaultCloudGRPC,omitempty"`
 	LastCLIUpdateCheck string           `json:"lastCLIUpdateCheck,omitempty"` // RFC3339
 	// LastMCPSetupVersion records the CLI version that last ran `wendy mcp
 	// setup`. It lets the root command detect when an upgrade should refresh
