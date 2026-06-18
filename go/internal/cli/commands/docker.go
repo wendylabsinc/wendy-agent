@@ -37,6 +37,125 @@ import (
 // command execution and outputs.
 var neighborExecCommandContext = exec.CommandContext
 
+var (
+	imageBuilderCommandContext = exec.CommandContext
+	imageBuilderLookPath       = exec.LookPath
+	imageBuilderHostGOOS       = func() string { return runtime.GOOS }
+	imageBuilderHostGOARCH     = func() string { return runtime.GOARCH }
+)
+
+const (
+	imageBuilderDocker         = "docker"
+	imageBuilderAppleContainer = "apple-container"
+)
+
+var buildDockerProjectWithDocker = buildDockerProject
+
+func normalizeImageBuilder(builder string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(builder)) {
+	case "":
+		return imageBuilderDocker, nil
+	case imageBuilderDocker:
+		return imageBuilderDocker, nil
+	case imageBuilderAppleContainer:
+		return imageBuilderAppleContainer, nil
+	default:
+		return "", fmt.Errorf("invalid value %q for --builder: must be one of docker or apple-container", builder)
+	}
+}
+
+func imageBuilderDisplayName(builder string) string {
+	switch builder {
+	case imageBuilderAppleContainer:
+		return "Apple Container"
+	default:
+		return "Docker"
+	}
+}
+
+func imageBuilderWasExplicit(builder string) bool {
+	return strings.TrimSpace(builder) != ""
+}
+
+func shouldAutoAttemptAppleContainerBuilder() bool {
+	return imageBuilderHostGOOS() == "darwin" && imageBuilderHostGOARCH() == "arm64"
+}
+
+func logAppleContainerFallback(w io.Writer, _ error) {
+	fmt.Fprintln(w, "[WARN] Apple Container unavailable or failed; falling back to Docker. Use --builder apple-container to require Apple Container.")
+}
+
+func safeCommandOutputSummary(out []byte, max int) string {
+	s := strings.TrimSpace(string(out))
+	if s == "" {
+		return ""
+	}
+	s = strings.Map(func(r rune) rune {
+		if r < 32 || r == 127 {
+			return ' '
+		}
+		return r
+	}, s)
+	s = strings.Join(strings.Fields(s), " ")
+	if max > 0 && len(s) > max {
+		return s[:max] + "..."
+	}
+	return s
+}
+
+// redactBuildArgsForLog returns a copy of a builder command's args with every
+// --build-arg value masked (the key is kept for debugging). Build-arg values
+// can carry secrets, and these command lines are written to stderr and, under
+// --quiet/`wendy watch`, buffered to disk — so they must never contain raw
+// values.
+func redactBuildArgsForLog(args []string) []string {
+	out := make([]string, len(args))
+	copy(out, args)
+	for i := 0; i < len(out)-1; i++ {
+		if out[i] == "--build-arg" {
+			if k, _, ok := strings.Cut(out[i+1], "="); ok && k != "" {
+				out[i+1] = k + "=<redacted>"
+			}
+		}
+	}
+	return out
+}
+
+func registryImageUsesLoopbackRegistry(image string) bool {
+	registry, _, ok := strings.Cut(image, "/")
+	if !ok || registry == "" {
+		return false
+	}
+	return registryAddrUsesLoopback(registry)
+}
+
+func registryAddrUsesLoopback(registry string) bool {
+	host := registry
+	if splitHost, _, err := net.SplitHostPort(registry); err == nil {
+		host = splitHost
+	}
+	host = strings.Trim(host, "[]")
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	addr, err := netip.ParseAddr(host)
+	if err != nil {
+		// Do not resolve arbitrary hostnames here; Apple Container plaintext
+		// pushes are allowed only to local addresses emitted by Wendy helpers.
+		return false
+	}
+	addr = addr.Unmap()
+	return addr.IsLoopback()
+}
+
+func appleContainerPushScheme(registryImage string) (string, error) {
+	if !registryImageUsesLoopbackRegistry(registryImage) {
+		registry, _, _ := strings.Cut(registryImage, "/")
+		return "", fmt.Errorf("Apple Container builder refuses plaintext push to non-loopback registry %q; use --builder docker", registry)
+	}
+	return "http", nil
+}
+
 // requireRegistryAuth checks whether the device's registry requires mTLS
 // authentication and verifies the CLI has the necessary certs.
 // Returns an error if the device is provisioned but no CLI certs are available.
@@ -55,7 +174,7 @@ func requireRegistryAuth(ctx context.Context, conn *grpcclient.AgentConnection) 
 
 // detectProjectType determines the project type from the directory contents.
 //
-// Precedence: compose > Dockerfile > Package.swift > *.xcodeproj > Python markers.
+// Precedence: compose > Dockerfile/Containerfile > Package.swift > *.xcodeproj > Python markers.
 // Returns an error only when multiple .xcodeproj directories are found.
 func detectProjectType(dir string) (string, error) {
 	for _, name := range []string{"docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml"} {
@@ -63,9 +182,11 @@ func detectProjectType(dir string) (string, error) {
 			return "compose", nil
 		}
 	}
-	// Check base Dockerfile first (fast path), then any Dockerfile.* / Dockerfile-* variant.
-	if _, err := os.Stat(filepath.Join(dir, "Dockerfile")); err == nil {
-		return "docker", nil
+	// Check base build files first (fast path), then any variant.
+	for _, name := range []string{"Dockerfile", "Containerfile"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
+			return "docker", nil
+		}
 	}
 	if entries, readErr := os.ReadDir(dir); readErr == nil {
 		for _, e := range entries {
@@ -73,7 +194,7 @@ func detectProjectType(dir string) (string, error) {
 				continue
 			}
 			name := e.Name()
-			if (strings.HasPrefix(name, "Dockerfile.") || strings.HasPrefix(name, "Dockerfile-")) && !strings.HasSuffix(name, ".dockerignore") {
+			if isContainerBuildFileName(name) {
 				return "docker", nil
 			}
 		}
@@ -100,22 +221,104 @@ func detectProjectType(dir string) (string, error) {
 	return "unknown", nil
 }
 
-// validDockerfileNameRe matches valid Dockerfile names: "Dockerfile" or
-// "Dockerfile" followed by a dot or hyphen and one or more safe characters.
-var validDockerfileNameRe = regexp.MustCompile(`^Dockerfile([.\-][a-zA-Z0-9][a-zA-Z0-9._-]*)?$`)
+// validDockerfileNameRe matches valid container build file names: "Dockerfile",
+// "Containerfile", or either base name followed by a dot or hyphen and one or
+// more safe characters.
+var validDockerfileNameRe = regexp.MustCompile(`^(Dockerfile|Containerfile)([.\-][a-zA-Z0-9][a-zA-Z0-9._-]*)?$`)
+var validBuildArgNameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// Build-arg values are passed to exec.Command as a single KEY=VALUE argument,
+// but keep a narrow allowlist so shell-like metacharacters, whitespace,
+// digests, embedded key separators, and flag-looking values cannot cross into
+// builder CLIs.
+var validBuildArgValueRe = regexp.MustCompile(`^[A-Za-z0-9_.-]*$`)
+
+func isContainerBuildFileName(name string) bool {
+	if strings.HasSuffix(name, ".dockerignore") {
+		return false
+	}
+	return validDockerfileNameRe.MatchString(name)
+}
+
+func preferredContainerBuildFileOption(options []BuildOption) *BuildOption {
+	for _, preferred := range []string{"Dockerfile", "Containerfile"} {
+		for i := range options {
+			if options[i].Type == "docker" && options[i].File == preferred {
+				return &options[i]
+			}
+		}
+	}
+	return nil
+}
 
 func validateDockerfileName(name string) error {
 	cleaned := filepath.Clean(name)
 	if cleaned != filepath.Base(cleaned) {
-		return fmt.Errorf("invalid Dockerfile name %q: path separators are not allowed", name)
+		return fmt.Errorf("invalid container build file name %q: path separators are not allowed", name)
 	}
 	if strings.HasSuffix(cleaned, ".dockerignore") {
-		return fmt.Errorf("invalid Dockerfile name %q: .dockerignore files are not Dockerfiles", cleaned)
+		return fmt.Errorf("invalid container build file name %q: .dockerignore files are not build files", cleaned)
 	}
 	if !validDockerfileNameRe.MatchString(cleaned) {
-		return fmt.Errorf("invalid Dockerfile name %q: must be Dockerfile, Dockerfile.<variant>, or Dockerfile-<variant>", cleaned)
+		return fmt.Errorf("invalid container build file name %q: must be Dockerfile, Containerfile, or a dot/hyphen variant of either", cleaned)
 	}
 	return nil
+}
+
+func validateBuildArgPair(key, value string) error {
+	if !validBuildArgNameRe.MatchString(key) {
+		return fmt.Errorf("invalid build arg name %q: must match [A-Za-z_][A-Za-z0-9_]*", key)
+	}
+	if strings.HasPrefix(value, "-") {
+		return fmt.Errorf("invalid build arg %q: value must not start with '-'", key)
+	}
+	if !validBuildArgValueRe.MatchString(value) {
+		return fmt.Errorf("invalid build arg %q: value must contain only safe ASCII characters", key)
+	}
+	return nil
+}
+
+// applyDeviceBuildArgHints injects the optional device/GPU build-arg hints the
+// agent reports (WENDY_DEVICE_TYPE, WENDY_HAS_GPU, WENDY_GPU_VENDOR,
+// WENDY_JETPACK_VERSION, WENDY_CUDA_VERSION) into buildArgs. Each hint is only
+// set when the agent reports it, so Dockerfiles keep their own ARG defaults on
+// older agents. These values are device-reported and feed straight into a
+// builder CLI, so any hint that fails build-arg validation is skipped with a
+// warning rather than failing the whole deploy — e.g. a Jetson running an L4T
+// release the agent's JetPack table doesn't map reports a fallback like
+// "L4T 38.2.0", whose space is rejected by validBuildArgValueRe.
+func applyDeviceBuildArgHints(buildArgs map[string]string, versionResp *agentpb.GetAgentVersionResponse) {
+	setHint := func(key, value string) {
+		if value == "" {
+			return
+		}
+		if err := validateBuildArgPair(key, value); err != nil {
+			cliLogln("Warning: ignoring device-reported build arg %s=%q: %v", key, value, err)
+			return
+		}
+		buildArgs[key] = value
+	}
+	setHint("WENDY_DEVICE_TYPE", versionResp.GetDeviceType())
+	// WENDY_HAS_GPU is a formatted bool, always allowlist-safe; only set it when
+	// the optional field is present so older agents preserve the ARG default.
+	if versionResp.HasGpu != nil {
+		buildArgs["WENDY_HAS_GPU"] = fmt.Sprintf("%t", versionResp.GetHasGpu())
+	}
+	setHint("WENDY_GPU_VENDOR", versionResp.GetGpuVendor())
+	setHint("WENDY_JETPACK_VERSION", versionResp.GetJetpackVersion())
+	setHint("WENDY_CUDA_VERSION", versionResp.GetCudaVersion())
+}
+
+func sortedValidatedBuildArgKeys(buildArgs map[string]string) ([]string, error) {
+	keys := make([]string, 0, len(buildArgs))
+	for k, v := range buildArgs {
+		if err := validateBuildArgPair(k, v); err != nil {
+			return nil, err
+		}
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys, nil
 }
 
 // validComposeDockerfileNameRe matches the broader naming convention allowed by
@@ -228,25 +431,23 @@ func resolveDockerfile(cwd, requested string, interactive bool) (string, error) 
 	}
 
 	if !interactive {
-		for _, opt := range dockerfiles {
-			if opt.File == "Dockerfile" {
-				file, err := confine(opt.File)
-				if err != nil {
-					return "", err
-				}
-				cliNotice("multiple Dockerfiles detected; using %q. Use --dockerfile to select explicitly.", file)
-				return file, nil
+		if preferred := preferredContainerBuildFileOption(dockerfiles); preferred != nil {
+			file, err := confine(preferred.File)
+			if err != nil {
+				return "", err
 			}
+			cliNotice("multiple container build files detected; using %q. Use --dockerfile to select explicitly.", file)
+			return file, nil
 		}
 		file, err := confine(dockerfiles[0].File)
 		if err != nil {
 			return "", err
 		}
-		cliNotice("multiple Dockerfiles detected; using %q. Use --dockerfile to select explicitly.", file)
+		cliNotice("multiple container build files detected; using %q. Use --dockerfile to select explicitly.", file)
 		return file, nil
 	}
 
-	picked, err := pickBuildOptionWithTitle(dockerfiles, "Select a Dockerfile")
+	picked, err := pickBuildOptionWithTitle(dockerfiles, "Select a container build file")
 	if err != nil {
 		return "", err
 	}
@@ -262,7 +463,7 @@ type BuildOption struct {
 
 // detectBuildOptions finds all buildable project markers in the given directory.
 // Unlike detectProjectType, this returns ALL options rather than the first match,
-// including multiple Dockerfiles (Dockerfile, Dockerfile.*, Dockerfile-*).
+// including multiple container build files (Dockerfile, Containerfile, and variants).
 func detectBuildOptions(dir string) []BuildOption {
 	var options []BuildOption
 
@@ -278,7 +479,7 @@ func detectBuildOptions(dir string) []BuildOption {
 		}
 	}
 
-	// Find all Dockerfiles.
+	// Find all container build files.
 	entries, err := os.ReadDir(dir)
 	if err == nil {
 		for _, e := range entries {
@@ -286,7 +487,7 @@ func detectBuildOptions(dir string) []BuildOption {
 				continue
 			}
 			name := e.Name()
-			if (name == "Dockerfile" || strings.HasPrefix(name, "Dockerfile.") || strings.HasPrefix(name, "Dockerfile-")) && !strings.HasSuffix(name, ".dockerignore") {
+			if isContainerBuildFileName(name) {
 				options = append(options, BuildOption{
 					Label: name,
 					Type:  "docker",
@@ -788,15 +989,28 @@ func ensureOCIExportBuilder(ctx context.Context, w io.Writer) (string, error) {
 	ensureBuildxBuilderMu.Lock()
 	defer ensureBuildxBuilderMu.Unlock()
 
-	if err := ensureDockerDaemon(ctx); err != nil {
-		return "", err
-	}
-
 	base := os.Getenv("WENDY_BUILDX_BUILDER")
 	if base == "" {
 		base = "wendy"
 	}
 	builderName := base + "-oci"
+
+	// Fast path: if the builder's buildkit container is already running, then the
+	// daemon is up, the builder exists, and it is bootstrapped — so we can skip
+	// the `docker version` check and both `docker buildx inspect` calls, which
+	// together cost ~200-280ms of pure verification overhead on every build. The
+	// docker-container driver names the container buildx_buildkit_<name>0; a plain
+	// `docker inspect` is far cheaper than `docker buildx inspect` (no buildx
+	// plugin load, no buildkit gRPC handshake). On any miss we fall through to the
+	// full robust path below.
+	containerName := "buildx_buildkit_" + builderName + "0"
+	if out, err := exec.CommandContext(ctx, "docker", "inspect", "-f", "{{.State.Running}}", containerName).Output(); err == nil && strings.TrimSpace(string(out)) == "true" {
+		return builderName, nil
+	}
+
+	if err := ensureDockerDaemon(ctx); err != nil {
+		return "", err
+	}
 
 	exists := exec.CommandContext(ctx, "docker", "buildx", "inspect", builderName).Run() == nil
 	if !exists {
@@ -1208,11 +1422,10 @@ func buildAndPushImage(ctx context.Context, dir, registryAddr, registryImage, pl
 	args = append(args, "--cache-to", "type=local,dest="+cacheDirSlash)
 	// Sort keys so the argument order is stable across runs, which keeps
 	// build logs reproducible and avoids flakiness in tests that assert args.
-	keys := make([]string, 0, len(buildArgs))
-	for k := range buildArgs {
-		keys = append(keys, k)
+	keys, err := sortedValidatedBuildArgKeys(buildArgs)
+	if err != nil {
+		return err
 	}
-	sort.Strings(keys)
 	for _, k := range keys {
 		args = append(args, "--build-arg", k+"="+buildArgs[k])
 	}
@@ -1221,7 +1434,7 @@ func buildAndPushImage(ctx context.Context, dir, registryAddr, registryImage, pl
 		".",
 	)
 
-	fmt.Fprintf(logOutput, "[buildx] starting build: docker %s\n", strings.Join(args, " "))
+	fmt.Fprintf(logOutput, "[buildx] starting build: docker %s\n", strings.Join(redactBuildArgsForLog(args), " "))
 	cmd := exec.CommandContext(ctx, "docker", args...)
 	cmd.Dir = dir
 	cmd.Stdout = streamOutput
@@ -1243,6 +1456,290 @@ func buildAndPushImage(ctx context.Context, dir, registryAddr, registryImage, pl
 		return fmt.Errorf("docker buildx build failed: %w", err)
 	}
 	return nil
+}
+
+func buildAndPushImageWithBuilder(ctx context.Context, builder, dir, registryAddr, registryImage, platform, dockerfile string, buildArgs map[string]string, streamOutput, logOutput io.Writer, useMTLS bool) error {
+	normalized, err := normalizeImageBuilder(builder)
+	if err != nil {
+		return err
+	}
+	switch normalized {
+	case imageBuilderDocker:
+		return buildAndPushImage(ctx, dir, registryAddr, registryImage, platform, dockerfile, buildArgs, streamOutput, logOutput, useMTLS)
+	case imageBuilderAppleContainer:
+		return buildAndPushImageWithAppleContainer(ctx, dir, registryImage, platform, dockerfile, buildArgs, streamOutput, logOutput, useMTLS)
+	default:
+		return fmt.Errorf("unsupported image builder %q", normalized)
+	}
+}
+
+func buildAndPushImageForAgent(ctx context.Context, conn *grpcclient.AgentConnection, regPort int, builder, dir, repo, platform, dockerfile string, buildArgs map[string]string, streamOutput, logOutput io.Writer) error {
+	if _, err := normalizeImageBuilder(builder); err != nil {
+		return err
+	}
+	if imageBuilderWasExplicit(builder) {
+		return buildAndPushImageForAgentWithBuilder(ctx, conn, regPort, builder, dir, repo, platform, dockerfile, buildArgs, streamOutput, logOutput)
+	}
+	if shouldAutoAttemptAppleContainerBuilder() {
+		if err := buildAndPushImageForAgentWithBuilder(ctx, conn, regPort, imageBuilderAppleContainer, dir, repo, platform, dockerfile, buildArgs, streamOutput, logOutput); err == nil {
+			return nil
+		} else {
+			logAppleContainerFallback(logOutput, err)
+		}
+	}
+	return buildAndPushImageForAgentWithBuilder(ctx, conn, regPort, imageBuilderDocker, dir, repo, platform, dockerfile, buildArgs, streamOutput, logOutput)
+}
+
+func buildAndPushImageForAgentWithBuilder(ctx context.Context, conn *grpcclient.AgentConnection, regPort int, builder, dir, repo, platform, dockerfile string, buildArgs map[string]string, streamOutput, logOutput io.Writer) error {
+	normalized, err := normalizeImageBuilder(builder)
+	if err != nil {
+		return err
+	}
+	registryAddr, cleanup, useMTLS, err := resolveRegistryForImageBuilder(ctx, conn, regPort, normalized)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+
+	registryImage := fmt.Sprintf("%s/%s:latest", registryAddr, strings.ToLower(repo))
+	cliLogln("Building and pushing image with %s for %s...", imageBuilderDisplayName(normalized), platform)
+	return buildAndPushImageWithBuilder(ctx, normalized, dir, registryAddr, registryImage, platform, dockerfile, buildArgs, streamOutput, logOutput, useMTLS)
+}
+
+func buildAndPushImageWithAppleContainer(ctx context.Context, dir, registryImage, platform, dockerfile string, buildArgs map[string]string, streamOutput, logOutput io.Writer, useMTLS bool) error {
+	if useMTLS {
+		return fmt.Errorf("Apple Container builder cannot push directly to an mTLS registry; use --builder docker or connect through a local registry proxy")
+	}
+	if err := checkAppleContainerBuilder(ctx); err != nil {
+		return err
+	}
+	if err := buildImageWithAppleContainer(ctx, dir, registryImage, platform, dockerfile, buildArgs, streamOutput, logOutput); err != nil {
+		return err
+	}
+
+	scheme, err := appleContainerPushScheme(registryImage)
+	if err != nil {
+		return err
+	}
+	args := []string{"image", "push", "--scheme", scheme, "--platform", platform, registryImage}
+	fmt.Fprintf(logOutput, "[apple-container] pushing image: container %s\n", strings.Join(args, " "))
+	cmd := imageBuilderCommandContext(ctx, "container", args...)
+	cmd.Stdout = streamOutput
+	cmd.Stderr = streamOutput
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("container image push failed: %w", err)
+	}
+	return nil
+}
+
+func buildImageWithAppleContainer(ctx context.Context, dir, imageName, platform, dockerfile string, buildArgs map[string]string, streamOutput, logOutput io.Writer) error {
+	buildContext, err := appleContainerBuildContextPath(dir)
+	if err != nil {
+		return fmt.Errorf("resolving project path: %w", err)
+	}
+	args := []string{"build", "--platform", platform, "-t", imageName}
+	if dockerfile != "" {
+		resolvedDockerfile, err := appleContainerBuildFilePath(dir, dockerfile)
+		if err != nil {
+			return err
+		}
+		args = append(args, "-f", resolvedDockerfile)
+	}
+	keys, err := sortedValidatedBuildArgKeys(buildArgs)
+	if err != nil {
+		return err
+	}
+	for _, k := range keys {
+		args = append(args, "--build-arg", k+"="+buildArgs[k])
+	}
+	args = append(args, buildContext)
+
+	fmt.Fprintf(logOutput, "[apple-container] starting build: container %s\n", strings.Join(redactBuildArgsForLog(args), " "))
+	cmd := imageBuilderCommandContext(ctx, "container", args...)
+	cmd.Dir = buildContext
+	cmd.Stdout = streamOutput
+	cmd.Stderr = streamOutput
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("container build failed: %w", err)
+	}
+	return nil
+}
+
+func checkAppleContainerBuilder(ctx context.Context) error {
+	if err := checkAppleContainerCLI(ctx); err != nil {
+		return err
+	}
+	return appleContainerSystemStatus(ctx)
+}
+
+// checkAppleContainerCLI verifies the host can run the Apple Container CLI:
+// Apple silicon, the `container` binary on PATH, and a usable `--version`.
+func checkAppleContainerCLI(ctx context.Context) error {
+	if imageBuilderHostGOOS() != "darwin" || imageBuilderHostGOARCH() != "arm64" {
+		return fmt.Errorf("Apple Container builder requires an Apple silicon Mac")
+	}
+	if _, err := imageBuilderLookPath("container"); err != nil {
+		return fmt.Errorf("container CLI is not installed or not in PATH")
+	}
+	if err := imageBuilderCommandContext(ctx, "container", "--version").Run(); err != nil {
+		return fmt.Errorf("container CLI is not usable: %w", err)
+	}
+	return nil
+}
+
+// appleContainerSystemStatus reports whether the Apple Container system
+// (apiserver) is running, returning a descriptive error when it is not.
+func appleContainerSystemStatus(ctx context.Context) error {
+	cmd := imageBuilderCommandContext(ctx, "container", "system", "status")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		msg := safeCommandOutputSummary(out, 256)
+		if msg != "" {
+			msg = ": " + msg
+		}
+		return fmt.Errorf("Apple Container system is not running%s. Run 'container system start' and try again: %w", msg, err)
+	}
+	return nil
+}
+
+// appleContainerStartTimeout bounds how long we wait for the Apple Container
+// system to become ready after `container system start`.
+// appleContainerStatusPollInterval is how often readiness is re-checked.
+// Both are vars so tests can shrink them.
+var (
+	appleContainerStartTimeout       = 60 * time.Second
+	appleContainerStatusPollInterval = 2 * time.Second
+)
+
+// ensureAppleContainerSystem verifies the Apple Container system is running and
+// offers to start it when it is not. It is called only on explicit
+// `--builder apple-container` paths; the silent auto-attempt paths keep using
+// checkAppleContainerBuilder so they fall back to Docker without side effects.
+//
+// When the system is not running and we are attached to an interactive terminal,
+// the user is prompted before starting. assumeYes (from --yes, and implicitly
+// `wendy watch`) skips the prompt and starts automatically, as does a
+// non-interactive invocation.
+func ensureAppleContainerSystem(ctx context.Context, assumeYes bool) error {
+	if err := checkAppleContainerCLI(ctx); err != nil {
+		return err
+	}
+	if appleContainerSystemStatus(ctx) == nil {
+		return nil
+	}
+
+	if isInteractiveTerminalFn() && !assumeYes {
+		if !promptYesNoFn("Apple Container system is not running. Start it now? [Y/n] ") {
+			return appleContainerSystemStatus(ctx)
+		}
+	}
+
+	fmt.Fprintln(os.Stderr, "[apple-container] Starting Apple Container system...")
+	startCmd := imageBuilderCommandContext(ctx, "container", "system", "start", "--timeout", "60")
+	startOut, startErr := startCmd.CombinedOutput()
+
+	deadline := time.Now().Add(appleContainerStartTimeout)
+	for {
+		if appleContainerSystemStatus(ctx) == nil {
+			fmt.Fprintln(os.Stderr, "[apple-container] Apple Container system is ready")
+			return nil
+		}
+		if !time.Now().Before(deadline) {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(appleContainerStatusPollInterval):
+		}
+	}
+
+	msg := safeCommandOutputSummary(startOut, 256)
+	if msg != "" {
+		msg = ": " + msg
+	}
+	if startErr != nil {
+		return fmt.Errorf("could not start Apple Container system%s: %w", msg, startErr)
+	}
+	return fmt.Errorf("Apple Container system did not become ready within %s%s; run 'container system start' manually and check 'container system status'", appleContainerStartTimeout, msg)
+}
+
+// ensureAppleContainerSystemForBuilder runs ensureAppleContainerSystem only when
+// the builder was explicitly set to apple-container. The silent auto-attempt
+// selection (no --builder, on Apple silicon) is intentionally left to
+// checkAppleContainerBuilder so it can fall back to Docker without prompting or
+// starting the system. Safe to call from any build path: it no-ops unless the
+// builder is explicit apple-container.
+func ensureAppleContainerSystemForBuilder(ctx context.Context, builder string, assumeYes bool) error {
+	if !imageBuilderWasExplicit(builder) {
+		return nil
+	}
+	normalized, err := normalizeImageBuilder(builder)
+	if err != nil {
+		return err
+	}
+	if normalized != imageBuilderAppleContainer {
+		return nil
+	}
+	return ensureAppleContainerSystem(ctx, assumeYes)
+}
+
+func appleContainerBuildContextPath(projectPath string) (string, error) {
+	buildContext, err := filepath.Abs(projectPath)
+	if err != nil {
+		return "", err
+	}
+	if imageBuilderHostGOOS() == "darwin" {
+		if normalized, ok := appleContainerTmpAlias(buildContext); ok {
+			return normalized, nil
+		}
+	}
+	return buildContext, nil
+}
+
+func appleContainerBuildFilePath(projectPath, dockerfile string) (string, error) {
+	resolved, err := confinedDockerfilePath(projectPath, dockerfile)
+	if err != nil {
+		return "", err
+	}
+	if imageBuilderHostGOOS() == "darwin" {
+		if normalized, ok := appleContainerTmpAlias(resolved); ok {
+			return normalized, nil
+		}
+	}
+	return resolved, nil
+}
+
+func appleContainerTmpAlias(path string) (string, bool) {
+	const privateTmp = "/private/tmp"
+	canonical, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return "", false
+	}
+	if canonical != privateTmp && !strings.HasPrefix(canonical, privateTmp+"/") {
+		return "", false
+	}
+	candidate := "/tmp" + strings.TrimPrefix(canonical, privateTmp)
+	candidateCanonical, err := filepath.EvalSymlinks(candidate)
+	if err != nil || candidateCanonical != canonical {
+		return "", false
+	}
+	return candidate, true
+}
+
+func resolveRegistryForImageBuilder(ctx context.Context, conn *grpcclient.AgentConnection, port int, builder string) (registryAddr string, cleanup func(), useMTLS bool, err error) {
+	normalized, err := normalizeImageBuilder(builder)
+	if err != nil {
+		return "", nil, false, err
+	}
+	switch normalized {
+	case imageBuilderDocker:
+		registryAddr, cleanup, err = resolveRegistryForAgent(ctx, conn, port)
+		return registryAddr, cleanup, conn.IsMTLS, err
+	case imageBuilderAppleContainer:
+		return resolveRegistryForAppleContainer(ctx, conn, port)
+	default:
+		return "", nil, false, fmt.Errorf("unsupported image builder %q", normalized)
+	}
 }
 
 // registryHost formats a host:port for use in a registry image reference,
@@ -1431,6 +1928,35 @@ func resolveRegistryForSwiftAgent(ctx context.Context, conn *grpcclient.AgentCon
 	return fmt.Sprintf("127.0.0.1:%d", proxy.Port()), conn.IsMTLS, proxy.Close, nil
 }
 
+func resolveRegistryForAppleContainer(ctx context.Context, conn *grpcclient.AgentConnection, port int) (registryAddr string, cleanup func(), useMTLS bool, err error) {
+	if conn.RegistryDialer != nil || conn.IsMTLS {
+		registryAddr, appleUseMTLS, cleanup, err := resolveRegistryForSwiftAgent(ctx, conn, port)
+		if err != nil {
+			return "", nil, false, err
+		}
+		if appleUseMTLS {
+			cleanup()
+			return "", nil, false, fmt.Errorf("Apple Container builder cannot push directly to an mTLS registry over this connection; use --builder docker")
+		}
+		if !registryAddrUsesLoopback(registryAddr) {
+			cleanup()
+			return "", nil, false, fmt.Errorf("Apple Container builder expected loopback registry proxy, got %q", registryAddr)
+		}
+		return registryAddr, cleanup, false, nil
+	}
+
+	targetHost := resolveRegistryIP(conn.Host)
+	if isLinkLocalIP(targetHost) {
+		targetHost = conn.Host
+	}
+	target := net.JoinHostPort(targetHost, strconv.Itoa(port))
+	proxy, proxyErr := startRegistryProxy(ctx, "127.0.0.1:0", target)
+	if proxyErr != nil {
+		return "", nil, false, fmt.Errorf("starting Apple Container registry proxy: %w", proxyErr)
+	}
+	return fmt.Sprintf("127.0.0.1:%d", proxy.Port()), proxy.Close, false, nil
+}
+
 // mtlsRegistryHTTPProxy is a plain-HTTP reverse proxy that forwards requests
 // to a provisioned device's HTTPS registry using mTLS. The Swift container
 // plugin connects to 127.0.0.1:PORT via plain HTTP (with --allow-insecure-http)
@@ -1473,7 +1999,8 @@ func startMTLSRegistryHTTPProxy(target, certPEM, keyPEM, caPEM string) (*mtlsReg
 				Certificates: []tls.Certificate{cert},
 				// Skip hostname verification: device registry certs are signed by
 				// the Wendy CA but may not include the mDNS hostname as a SAN.
-				// VerifyConnection performs full chain + EKU validation instead.
+				// VerifyConnection performs full chain validation against the Wendy
+				// CA instead.
 				InsecureSkipVerify: true, //nolint:gosec
 				MinVersion:         tls.VersionTLS12,
 				VerifyConnection: func(cs tls.ConnectionState) error {
@@ -1484,10 +2011,27 @@ func startMTLSRegistryHTTPProxy(target, certPEM, keyPEM, caPEM string) (*mtlsReg
 					for _, c := range cs.PeerCertificates[1:] {
 						intermediates.AddCert(c)
 					}
+					// Wendy issues a single mutual-auth identity cert per principal,
+					// used for mTLS in both directions; when a device serves its
+					// registry it presents that identity cert, which carries
+					// clientAuth (mirrored by the agent-side verifier in
+					// agent/mtls) and NOT serverAuth. Requiring serverAuth therefore
+					// rejects a legitimately trusted device cert, so we accept either
+					// authentication EKU — but still require an authentication cert
+					// (rejecting e.g. codeSigning/emailProtection leaves) and full
+					// chain validation against the Wendy CA. The residual exposure
+					// (a clientAuth identity-cert holder impersonating the registry)
+					// requires MITM of the loopback-only proxy's connection to the
+					// device and is identical to the gRPC channel's trust model; the
+					// long-term fix is issuing device registry certs with a
+					// serverAuth EKU at the PKI layer.
 					opts := x509.VerifyOptions{
 						Roots:         caPool,
 						Intermediates: intermediates,
-						KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+						KeyUsages: []x509.ExtKeyUsage{
+							x509.ExtKeyUsageServerAuth,
+							x509.ExtKeyUsageClientAuth,
+						},
 					}
 					_, err := cs.PeerCertificates[0].Verify(opts)
 					return err

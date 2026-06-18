@@ -7,7 +7,7 @@ The build command is mainly used to verify your app can build/compile.
 `wendy build` scans the project directory for a build manifest in the following priority order:
 
 1. `docker-compose.yml` / `compose.yml` — multi-service Compose project
-2. `Dockerfile` (or `Dockerfile.<variant>` / `Dockerfile-<variant>`) — container image build
+2. `Dockerfile` / `Containerfile` (or dot/hyphen variants) — container image build
 3. `Package.swift` — Swift Package Manager project
 4. `*.xcodeproj` — Xcode project (macOS targets only)
 5. `requirements.txt` / `setup.py` / `pyproject.toml` — Python project (Dockerfile auto-generated)
@@ -18,15 +18,31 @@ If multiple manifests are present you can override detection with `--build-type`
 
 | Manifest | Required host | Notes |
 |---|---|---|
-| `Dockerfile` | Docker Desktop (macOS/Windows/Linux) or WendyOS | Built with `docker buildx` |
+| `Dockerfile` / `Containerfile` | Docker Desktop, Apple `container` on Apple silicon macOS, or WendyOS | Local Docker builds use `docker buildx`; `--device apple-container` uses `container build`; WendyOS device builds can select `--builder docker` or `--builder apple-container` |
 | `Package.swift` | macOS or Linux | Requires a host Swift toolchain |
 | `*.xcodeproj` | macOS only | Built with `xcodebuild`; `Brewfile` managed automatically |
 
 ## Build paths
 
-### Dockerfile projects
+### Dockerfile and Containerfile projects
 
-`wendy build` invokes `docker buildx build` targeting the device's CPU architecture. It passes the following build-args so the Dockerfile can adapt to the target hardware — declare them with `ARG` to use them:
+`wendy build` invokes an image builder targeting the device's CPU architecture. It passes the following build-args so the Dockerfile or Containerfile can adapt to the target hardware — declare them with `ARG` to use them:
+
+On Apple silicon Macs with [Apple `container`](https://github.com/apple/container)
+installed and started, Wendy tries Apple Container first for Dockerfile and
+Containerfile builds when `--builder` is omitted. If Apple Container is
+unavailable or the build fails, Wendy falls back to Docker. Use
+`--builder docker` to force Docker, or `--builder apple-container` to require
+Apple Container:
+
+```sh
+container system start
+wendy --device my-wendy.local build
+```
+
+For local-only Dockerfile or Containerfile builds on the Mac itself, select the
+local provider with `--device apple-container`. Compose projects still require
+Docker for local provider runs.
 
 | Build-arg | Values | Notes |
 |---|---|---|
@@ -56,4 +72,4 @@ Builds with `xcodebuild`. If a `Brewfile` is present in the project root, Wendy 
 
 ## Platform support for Swift projects
 
-`wendy build` for Swift packages requires a host Swift toolchain and is supported on **macOS and Linux hosts only**. On Windows, `wendy build` returns an error for Swift projects. The recommended alternative is to provide a `Dockerfile` and use `wendy run`, which routes through the Docker buildx path on all platforms.
+`wendy build` for Swift packages requires a host Swift toolchain and is supported on **macOS and Linux hosts only**. On Windows, `wendy build` returns an error for Swift projects. The recommended alternative is to provide a `Dockerfile` or `Containerfile` and use `wendy run`, which routes through the image build path on all platforms.

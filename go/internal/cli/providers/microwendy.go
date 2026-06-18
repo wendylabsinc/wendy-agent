@@ -2,26 +2,29 @@ package providers
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
+	"errors"
 	"fmt"
 	"net"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/wendylabsinc/wendy/go/internal/cli/liteclient"
 	"github.com/wendylabsinc/wendy/go/internal/cli/swifttoolchain"
+	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 )
 
 const (
-	// microWendyUDPPort is the port ESP32 devices listen on for WENDY_RELOAD messages.
-	microWendyUDPPort = 4210
-
 	// microWendyServiceType is the mDNS service type advertised by ESP32 Wendy devices.
-	microWendyServiceType = "_wendy._tcp"
+	microWendyServiceType = "_wendy-lite._tcp"
 
 	// Currently supported SDK for WASI on Wendy Lite.
 	// This also works for older projects that expected to build for wasm32-unknown-none-wasm
@@ -31,9 +34,7 @@ const (
 
 // microWendyBuildContext is stored in BuiltApp.Context for WASM builds.
 type microWendyBuildContext struct {
-	WASMPath  string
-	TargetIPs []string // IPs of discovered ESP32 devices for unicast
-	cancel    context.CancelFunc
+	WASMPath string
 }
 
 // MicroWendyProvider builds Swift packages to WASM and serves them to ESP32 devices.
@@ -66,7 +67,6 @@ func (p *MicroWendyProvider) DiscoverDevices(ctx context.Context) ([]models.Exte
 		if displayName == "" {
 			displayName = svc.Hostname
 		}
-
 		devices = append(devices, models.ExternalDevice{
 			ID:          fmt.Sprintf("wendy-lite:%s", svc.Hostname),
 			DisplayName: displayName,
@@ -75,6 +75,7 @@ func (p *MicroWendyProvider) DiscoverDevices(ctx context.Context) ([]models.Exte
 				"hostname": svc.Hostname,
 				"ip":       svc.IPAddress,
 				"port":     fmt.Sprintf("%d", svc.Port),
+				"mtls":     fmt.Sprintf("%t", svc.TXTRecords["mtls"] == "true"),
 			},
 			IsWendyDevice:   true,
 			CPUArchitecture: "wasm32",
@@ -146,17 +147,11 @@ func (p *MicroWendyProvider) Build(ctx context.Context, device models.ExternalDe
 		return nil, fmt.Errorf("expected WASM output at %s: %w", wasmPath, err)
 	}
 
-	// Collect IPs of all known devices for unicast delivery.
-	var targetIPs []string
-	if ip := device.ConnectionInfo["ip"]; ip != "" {
-		targetIPs = append(targetIPs, ip)
-	}
-
 	return &BuiltApp{
 		ProviderKey: p.Key(),
 		Device:      device,
 		AppName:     product,
-		Context:     &microWendyBuildContext{WASMPath: wasmPath, TargetIPs: targetIPs},
+		Context:     &microWendyBuildContext{WASMPath: wasmPath},
 	}, nil
 }
 
@@ -168,114 +163,117 @@ func (p *MicroWendyProvider) Run(ctx context.Context, app *BuiltApp, detach bool
 		return fmt.Errorf("wendy-lite provider: invalid build context")
 	}
 
-	serveCtx, cancel := context.WithCancel(ctx)
-	bc.cancel = cancel
-
-	// Serve the .wasm file as /app.wasm over HTTP on a dynamic port.
-	wasmData, err := os.ReadFile(bc.WASMPath)
-	if err != nil {
-		cancel()
-		return fmt.Errorf("reading wasm file: %w", err)
+	ip := app.Device.ConnectionInfo["ip"]
+	port := app.Device.ConnectionInfo["port"]
+	if ip == "" || port == "" {
+		return fmt.Errorf("wendy-lite provider: missing device address in connection info")
 	}
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/app.wasm", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/wasm")
-		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(wasmData)))
-		w.Write(wasmData)
-	})
-
-	listener, err := net.Listen("tcp", ":0")
-	if err != nil {
-		cancel()
-		return fmt.Errorf("listening: %w", err)
-	}
-	httpPort := listener.Addr().(*net.TCPAddr).Port
-
-	server := &http.Server{Handler: mux}
-	go func() {
-		<-serveCtx.Done()
-		server.Close()
-	}()
-
-	go server.Serve(listener)
-
-	// Determine our local IP address for the WENDY_RELOAD message.
-	localIP := getOutboundIP()
-
-	output <- RunOutput{Type: RunOutputStarted}
-	output <- RunOutput{
-		Type: RunOutputStdout,
-		Data: []byte(fmt.Sprintf("Serving WASM at http://%s:%d/app.wasm\n", localIP, httpPort)),
-	}
-
-	// Send WENDY_RELOAD messages: unicast to each known device, then broadcast.
-	reloadMsg := fmt.Sprintf("WENDY_RELOAD %s:%d", localIP, httpPort)
-	go func() {
-		// Brief delay to ensure the HTTP server is fully ready.
-		time.Sleep(500 * time.Millisecond)
-
-		// Unicast to discovered device IPs.
-		for _, ip := range bc.TargetIPs {
-			sendUDP(ip, microWendyUDPPort, reloadMsg)
+	addr := net.JoinHostPort(ip, port)
+	client := liteclient.NewWendyLiteClient()
+	if app.Device.ConnectionInfo["mtls"] == "true" {
+		certInfos, err := loadAllCLICerts()
+		if err != nil {
+			return fmt.Errorf("wendy-lite provider: loading mTLS certs: %w", err)
 		}
-
-		// Subnet broadcast as fallback.
-		sendUDPBroadcast(microWendyUDPPort, reloadMsg)
-
-		output <- RunOutput{
-			Type: RunOutputStdout,
-			Data: []byte(fmt.Sprintf("Sent WENDY_RELOAD to %d device(s) + broadcast\n", len(bc.TargetIPs))),
+		var connectErrs []error
+		connected := false
+		for _, certInfo := range certInfos {
+			cert, err := tls.X509KeyPair([]byte(certInfo.PemCertificate), []byte(certInfo.PemPrivateKey))
+			if err != nil {
+				return fmt.Errorf("wendy-lite provider: parsing mTLS cert: %w", err)
+			}
+			rootCAs := x509.NewCertPool()
+			if certInfo.PemCertificateChain != "" {
+				rootCAs.AppendCertsFromPEM([]byte(certInfo.PemCertificateChain))
+			}
+			if err := client.ConnectWithMutualAuthentication(addr, cert, *rootCAs); err != nil {
+				connectErrs = append(connectErrs, err)
+			} else {
+				connected = true
+				break
+			}
 		}
-	}()
+		if !connected {
+			var b strings.Builder
+			fmt.Fprintf(&b, "Wendy Lite connection error")
+			for i, e := range connectErrs {
+				if i == 0 {
+					fmt.Fprintf(&b, ": identity %d: %v", i+1, e)
+				} else {
+					fmt.Fprintf(&b, "; identity %d: %v", i+1, e)
+				}
+			}
+			return errors.New(b.String())
+		}
+	} else {
+		if err := client.ConnectInsecure(addr); err != nil {
+			return fmt.Errorf("connect to device: %w", err)
+		}
+	}
+	defer client.Close()
+
+	if err := client.StopApp(); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: app stop: %v\n", err)
+	}
 
 	if detach {
-		return nil
+		if err := client.PushApp(bc.WASMPath, nil); err != nil {
+			return fmt.Errorf("push app: %w", err)
+		}
+	} else {
+		fmt.Println()
+		pushProg := tui.NewProgress("Pushing app...")
+		pp := tea.NewProgram(pushProg)
+		go func() {
+			pushErr := client.PushApp(bc.WASMPath, func(written, total uint32) {
+				var pct float64
+				if total > 0 {
+					pct = float64(written) / float64(total)
+				}
+				pp.Send(tui.ProgressUpdateMsg{
+					Percent: pct,
+					Written: int64(written),
+					Total:   int64(total),
+				})
+			})
+			pp.Send(tui.ProgressDoneMsg{Err: pushErr})
+		}()
+		finalModel, err := pp.Run()
+		if err != nil {
+			return fmt.Errorf("progress TUI: %w", err)
+		}
+		if finalModel.(tui.ProgressModel).Err() != nil {
+			return fmt.Errorf("push app: %w", finalModel.(tui.ProgressModel).Err())
+		}
 	}
 
-	// Block until context is cancelled (Ctrl+C).
-	<-serveCtx.Done()
+	fmt.Println()
+	fmt.Println("Starting app...")
+	if err := client.StartApp(); err != nil {
+		return fmt.Errorf("app start: %w", err)
+	}
+
+	output <- RunOutput{Type: RunOutputStarted}
+
 	return nil
 }
 
 func (p *MicroWendyProvider) Stop(_ context.Context, app *BuiltApp) error {
-	bc, ok := app.Context.(*microWendyBuildContext)
-	if !ok {
-		return fmt.Errorf("wendy-lite provider: invalid build context")
-	}
-	if bc.cancel != nil {
-		bc.cancel()
-	}
 	return nil
 }
 
-func getOutboundIP() string {
-	conn, err := net.Dial("udp4", "8.8.8.8:80")
+func loadAllCLICerts() ([]config.CertificateInfo, error) {
+	cfg, err := config.Load()
 	if err != nil {
-		return "127.0.0.1"
+		return nil, err
 	}
-	defer conn.Close()
-	return conn.LocalAddr().(*net.UDPAddr).IP.String()
-}
-
-// sendUDP sends a UDP packet to a specific host:port.
-func sendUDP(host string, port int, msg string) {
-	addr := &net.UDPAddr{IP: net.ParseIP(host), Port: port}
-	conn, err := net.DialUDP("udp4", nil, addr)
-	if err != nil {
-		return
+	var out []config.CertificateInfo
+	for _, auth := range cfg.Auth {
+		out = append(out, auth.Certificates...)
 	}
-	defer conn.Close()
-	conn.Write([]byte(msg))
-}
-
-// sendUDPBroadcast sends a UDP broadcast packet on the given port.
-func sendUDPBroadcast(port int, msg string) {
-	addr := &net.UDPAddr{IP: net.IPv4bcast, Port: port}
-	conn, err := net.DialUDP("udp4", nil, addr)
-	if err != nil {
-		return
+	if len(out) == 0 {
+		return nil, fmt.Errorf("not logged in (no certificate found)")
 	}
-	defer conn.Close()
-	conn.Write([]byte(msg))
+	return out, nil
 }

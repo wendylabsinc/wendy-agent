@@ -1599,7 +1599,11 @@ func newDeviceUpdateCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			defer conn.Close()
+			defer func() {
+				if conn != nil {
+					_ = conn.Close()
+				}
+			}()
 
 			var binaryData []byte
 
@@ -1712,6 +1716,34 @@ func newDeviceUpdateCmd() *cobra.Command {
 				}
 			}
 
+			reconnect := updatedAgentReconnectFunc(ctx, conn)
+			if conn != nil {
+				_ = conn.Close()
+				conn = nil
+			}
+			if isInteractiveTerminal() && !jsonOutput {
+				readyConn, err := runAgentConnectionSpinner(ctx, "Waiting for agent to restart...", func(spinCtx context.Context) (*grpcclient.AgentConnection, error) {
+					return waitForUpdatedAgentReady(spinCtx, reconnect, agentRestartWaitOptions{})
+				})
+				if err != nil {
+					return err
+				}
+				if readyConn != nil {
+					_ = readyConn.Close()
+				}
+			} else {
+				if !jsonOutput {
+					fmt.Println("Waiting for agent to restart...")
+				}
+				readyConn, err := waitForUpdatedAgentReady(ctx, reconnect, agentRestartWaitOptions{})
+				if err != nil {
+					return err
+				}
+				if readyConn != nil {
+					_ = readyConn.Close()
+				}
+			}
+
 			if jsonOutput {
 				resp := map[string]string{
 					"status":  "success",
@@ -1787,6 +1819,18 @@ func checkELFArchitecture(data []byte, deviceArch string) error {
 	return nil
 }
 
+type agentRestartWaitOptions struct {
+	InitialDelay time.Duration
+	Timeout      time.Duration
+	PollInterval time.Duration
+}
+
+const (
+	defaultAgentRestartInitialDelay = time.Second
+	defaultAgentRestartTimeout      = 20 * time.Second
+	defaultAgentRestartPollInterval = time.Second
+)
+
 func deviceUpdateUpload(ctx context.Context, agentService agentpb.WendyAgentServiceClient, binaryData []byte, sha256Hash string) error {
 	stream, err := agentService.UpdateAgent(ctx)
 	if err != nil {
@@ -1846,4 +1890,93 @@ func deviceUpdateUpload(ctx context.Context, agentService agentpb.WendyAgentServ
 	}
 
 	return nil
+}
+
+func updatedAgentReconnectFunc(ctx context.Context, previous *grpcclient.AgentConnection) func(context.Context) (*grpcclient.AgentConnection, error) {
+	if cloudCfg, ok := cloudDeviceConfigFromContext(ctx); ok {
+		return func(waitCtx context.Context) (*grpcclient.AgentConnection, error) {
+			return connectToCloudAgent(waitCtx, cloudCfg.CloudGRPC, cloudCfg.DeviceName, cloudCfg.BrokerURL)
+		}
+	}
+
+	if addr, _, err := resolveDeviceAddress(); err == nil {
+		hostname := addr
+		if host, _, splitErr := net.SplitHostPort(addr); splitErr == nil {
+			hostname = host
+		}
+		return func(waitCtx context.Context) (*grpcclient.AgentConnection, error) {
+			return connectResolvedAgentWithProvisionedHint(waitCtx, hostname, addr, false, deferProvisionedMTLSCheck(waitCtx, addr))
+		}
+	}
+
+	if previous != nil && previous.Host != "" {
+		addr := hostPort(previous.Host, defaultAgentPort)
+		return func(waitCtx context.Context) (*grpcclient.AgentConnection, error) {
+			return connectResolvedAgentWithProvisionedHint(waitCtx, previous.Host, addr, false, func() bool { return false })
+		}
+	}
+
+	return func(waitCtx context.Context) (*grpcclient.AgentConnection, error) {
+		return connectToAgent(waitCtx,
+			ExcludeProviders("local", "docker", "wendy-lite"),
+			ExcludeBluetooth(),
+			SuppressUpdateCheck(),
+			SuppressProvisioningHint(),
+			NonInteractive(),
+		)
+	}
+}
+
+func waitForUpdatedAgentReady(ctx context.Context, reconnect func(context.Context) (*grpcclient.AgentConnection, error), opts agentRestartWaitOptions) (*grpcclient.AgentConnection, error) {
+	if opts.InitialDelay <= 0 {
+		opts.InitialDelay = defaultAgentRestartInitialDelay
+	}
+	if opts.Timeout <= 0 {
+		opts.Timeout = defaultAgentRestartTimeout
+	}
+	if opts.PollInterval <= 0 {
+		opts.PollInterval = defaultAgentRestartPollInterval
+	}
+
+	if err := sleepContext(ctx, opts.InitialDelay); err != nil {
+		return nil, err
+	}
+
+	waitCtx, cancel := context.WithTimeout(ctx, opts.Timeout)
+	defer cancel()
+
+	var lastErr error
+	for {
+		conn, err := reconnect(waitCtx)
+		if err == nil {
+			return conn, nil
+		}
+		lastErr = err
+
+		if waitCtx.Err() != nil {
+			break
+		}
+		if err := sleepContext(waitCtx, opts.PollInterval); err != nil {
+			break
+		}
+	}
+
+	if lastErr != nil {
+		return nil, fmt.Errorf("agent did not become reachable after update: %w", lastErr)
+	}
+	return nil, fmt.Errorf("agent did not become reachable after update: %w", waitCtx.Err())
+}
+
+func sleepContext(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }

@@ -36,14 +36,18 @@ func NewRootCmd() *cobra.Command {
 				jsonOutput = true
 			}
 
+			premark := phaseTimer()
 			providers.Initialize(cmd.Context())
+			premark("  prerun: providers.Initialize")
 
 			cfg, err := config.Load()
 			if err != nil {
 				return err
 			}
+			premark("  prerun: config.Load")
 
 			firstRun := analytics.Init(cfg)
+			premark("  prerun: analytics.Init")
 			if firstRun {
 				cmd.PrintErrln("Attention: The Wendy CLI collects anonymous analytics.")
 				cmd.PrintErrln("They help us understand which commands are used most, identify common errors, and prioritize improvements.")
@@ -62,10 +66,12 @@ func NewRootCmd() *cobra.Command {
 			// user last ran `wendy mcp setup`. Runs synchronously here, before
 			// the update-check goroutine below also mutates and saves cfg.
 			maybeRefreshMCPSetup(cfg)
+			premark("  prerun: maybeRefreshMCPSetup")
 
 			if dueCLIUpdateCheck(cfg) {
 				scheduleCLIUpdateCheck(cfg)
 			}
+			premark("  prerun: dueCLIUpdateCheck")
 
 			return nil
 		},

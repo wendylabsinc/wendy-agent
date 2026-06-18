@@ -286,15 +286,11 @@ func TestPreEnrollDevice_Success(t *testing.T) {
 		chainPEM: "ca-chain",
 	})
 
-	data, err := preEnrollDevice(context.Background(), fakeAuth(t), "my-device", dialer)
+	state, err := preEnrollDevice(context.Background(), fakeAuth(t), "my-device", dialer)
 	if err != nil {
 		t.Fatalf("preEnrollDevice: %v", err)
 	}
 
-	var state preProvisionedState
-	if err := json.Unmarshal(data, &state); err != nil {
-		t.Fatalf("unmarshal result: %v", err)
-	}
 	if !state.Enrolled {
 		t.Error("enrolled should be true")
 	}
@@ -323,9 +319,13 @@ func TestPreEnrollDevice_WritesFile(t *testing.T) {
 		orgID: 1, assetID: 1, token: "t", certPEM: "c", chainPEM: "ch",
 	})
 
-	data, err := preEnrollDevice(context.Background(), fakeAuth(t), "", dialer)
+	state, err := preEnrollDevice(context.Background(), fakeAuth(t), "", dialer)
 	if err != nil {
 		t.Fatalf("preEnrollDevice: %v", err)
+	}
+	data, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
 	}
 
 	dir := t.TempDir()

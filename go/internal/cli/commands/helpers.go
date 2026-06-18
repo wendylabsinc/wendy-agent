@@ -943,6 +943,49 @@ func suggestProvisioning(conn *grpcclient.AgentConnection) {
 	fmt.Fprintf(os.Stderr, "Hint: connected without mTLS. Run 'wendy device setup' to provision this device.\n")
 }
 
+// updateCheckTTL bounds how often checkAndOfferUpdate probes the agent. Within
+// this window of a prior "agent is current" result, the probe (a gRPC
+// round-trip that otherwise sits on the deploy hot path) is skipped entirely.
+const updateCheckTTL = 6 * time.Hour
+
+// updateCheckMarkerPath returns the per-host marker file recording the last time
+// the agent was confirmed current. The CLI version is part of the key so that
+// upgrading the CLI forces a fresh check immediately.
+func updateCheckMarkerPath(host string) string {
+	cacheDir, err := os.UserCacheDir()
+	if err != nil {
+		return ""
+	}
+	key := sha256.Sum256([]byte(host + "\x00" + version.Version))
+	return filepath.Join(cacheDir, "wendy", "update-check", hex.EncodeToString(key[:])+".json")
+}
+
+// updateCheckRecentlyPassed reports whether the agent at host was confirmed
+// current within updateCheckTTL, in which case the version probe can be skipped.
+func updateCheckRecentlyPassed(host string) bool {
+	path := updateCheckMarkerPath(host)
+	if path == "" {
+		return false
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	return time.Since(info.ModTime()) < updateCheckTTL
+}
+
+// markUpdateCheckPassed records that the agent at host is current as of now.
+func markUpdateCheckPassed(host string) {
+	path := updateCheckMarkerPath(host)
+	if path == "" {
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return
+	}
+	_ = os.WriteFile(path, []byte("{}"), 0o644)
+}
+
 // checkAndOfferUpdate probes the agent version and, when the agent is behind
 // the CLI, either warns (non-interactive) or prompts [Y/n] (interactive). If
 // the user accepts, it downloads the latest release, uploads it, and waits for
@@ -951,6 +994,11 @@ func suggestProvisioning(conn *grpcclient.AgentConnection) {
 // but the agent does not come back, conn is closed and an error is returned.
 func checkAndOfferUpdate(ctx context.Context, conn *grpcclient.AgentConnection) (*grpcclient.AgentConnection, error) {
 	if jsonOutput {
+		return conn, nil
+	}
+	// Skip the probe when this agent was confirmed current within updateCheckTTL.
+	// This keeps the gRPC round-trip off the deploy hot path on repeat runs.
+	if updateCheckRecentlyPassed(conn.Host) {
 		return conn, nil
 	}
 	probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
@@ -963,18 +1011,22 @@ func checkAndOfferUpdate(ctx context.Context, conn *grpcclient.AgentConnection) 
 	agentVer := resp.GetVersion()
 	// Dev CLI builds skip the update check entirely.
 	if version.Version == "dev" {
+		markUpdateCheckPassed(conn.Host)
 		return conn, nil
 	}
 	// A dev agent build is running intentionally — never offer to replace it
 	// with a stable release (CompareVersions treats "dev" as always-behind).
 	if agentVer == "dev" {
+		markUpdateCheckPassed(conn.Host)
 		return conn, nil
 	}
 	// Unknown agent version — skip to avoid spurious update prompts.
 	if agentVer == "" {
+		markUpdateCheckPassed(conn.Host)
 		return conn, nil
 	}
 	if version.CompareVersions(version.Version, agentVer) <= 0 {
+		markUpdateCheckPassed(conn.Host)
 		return conn, nil
 	}
 

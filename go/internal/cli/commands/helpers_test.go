@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"net"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
@@ -782,5 +784,41 @@ func TestIsCertRejectionError(t *testing.T) {
 				t.Errorf("isCertRejectionError(%v) = %v, want %v", tc.err, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestUpdateCheckTTLCache(t *testing.T) {
+	tmp := t.TempDir()
+	// Redirect os.UserCacheDir() on both darwin ($HOME/Library/Caches) and
+	// linux ($XDG_CACHE_HOME or $HOME/.cache) into the temp dir.
+	t.Setenv("HOME", tmp)
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(tmp, "cache"))
+
+	const host = "device.local"
+
+	if updateCheckRecentlyPassed(host) {
+		t.Fatal("cold: expected no recent pass before any check")
+	}
+
+	markUpdateCheckPassed(host)
+	if !updateCheckRecentlyPassed(host) {
+		t.Fatal("warm: expected recent pass after marking")
+	}
+
+	if updateCheckRecentlyPassed("other.local") {
+		t.Fatal("marker must be per-host")
+	}
+
+	// Backdate the marker beyond the TTL: it must no longer count as recent.
+	path := updateCheckMarkerPath(host)
+	if path == "" {
+		t.Fatal("expected a non-empty marker path")
+	}
+	old := time.Now().Add(-updateCheckTTL - time.Hour)
+	if err := os.Chtimes(path, old, old); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+	if updateCheckRecentlyPassed(host) {
+		t.Fatal("stale: expected marker older than TTL to fail the check")
 	}
 }

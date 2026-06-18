@@ -42,6 +42,7 @@ func newWatchCmd() *cobra.Command {
 
 	cmd.Flags().StringVar(&opts.buildType, "build-type", "", "Build type when a Dockerfile sits alongside Package.swift or Python markers: docker, swift, or python")
 	cmd.Flags().StringVar(&opts.dockerfile, "dockerfile", "", "Dockerfile to build from (e.g. Dockerfile.prod)")
+	cmd.Flags().StringVar(&opts.builder, "builder", "", "Image builder to force for Dockerfile/Containerfile builds: docker or apple-container")
 	cmd.Flags().BoolVar(&opts.debug, "debug", false, "Enable debug logging")
 	cmd.Flags().StringVar(&opts.prefix, "prefix", "", "Project directory to watch instead of the current working directory")
 	cmd.Flags().StringVar(&opts.product, "product", "", "Swift Package Manager product to build and run")

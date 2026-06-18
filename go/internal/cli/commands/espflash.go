@@ -862,10 +862,20 @@ func flashFirmware(portPath, firmwarePath string, progressFn func(pct float64)) 
 	if info.Size() > maxFlashSize {
 		return fmt.Errorf("firmware too large (%d bytes, max %d)", info.Size(), maxFlashSize)
 	}
-
 	firmware, err := os.ReadFile(firmwarePath)
 	if err != nil {
 		return fmt.Errorf("reading firmware: %w", err)
+	}
+	return flashFirmwareBytes(portPath, firmware, progressFn)
+}
+
+func flashFirmwareImage(portPath string, img *EspFlashImage, progressFn func(pct float64)) error {
+	return flashFirmwareBytes(portPath, img.Bytes(), progressFn)
+}
+
+func flashFirmwareBytes(portPath string, firmware []byte, progressFn func(pct float64)) error {
+	if len(firmware) > maxFlashSize {
+		return fmt.Errorf("firmware too large (%d bytes, max %d)", len(firmware), maxFlashSize)
 	}
 
 	mode := &serial.Mode{

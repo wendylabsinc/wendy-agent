@@ -7,8 +7,10 @@ import (
 	"bufio"
 	"compress/gzip"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
+
 	"fmt"
 	"io"
 	"log"
@@ -21,6 +23,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"google.golang.org/protobuf/proto"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
@@ -343,7 +347,7 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 	device := deviceMap[selected]
 
 	if device.IsESP32 {
-		return installESP32Firmware(ctx, nightly, device.ESP32Chip)
+		return installESP32Firmware(ctx, nightly, device.ESP32Chip, wifi, deviceName, preOpts)
 	}
 	return installLinuxImage(ctx, selected, device, nightly, flagVersion, flagDrive, force, yesOverwriteInternal, noBmap, storageOverride, wifi, deviceName, preOpts)
 }
@@ -439,9 +443,15 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 			}
 			cfg = &config.Config{} // auto mode: treat an unreadable config as not logged in
 		}
-		provisioningJSON, err = resolvePreEnrollment(ctx, cfg, preOpts, isInteractiveTerminal(), provDeviceName)
-		if err != nil {
-			return err
+		provisioning, resolveErr := resolvePreEnrollment(ctx, cfg, preOpts, isInteractiveTerminal(), provDeviceName)
+		if resolveErr != nil {
+			return resolveErr
+		}
+		if provisioning != nil {
+			provisioningJSON, err = json.Marshal(provisioning)
+			if err != nil {
+				return fmt.Errorf("marshaling provisioning state: %w", err)
+			}
 		}
 	}
 
@@ -1871,7 +1881,42 @@ func provisionConfigPartition(d drive, creds []wendyconf.WifiCredential, deviceN
 
 // installESP32Firmware handles the ESP32 path: detect device → download → flash.
 // chip is e.g. "esp32c6" or "esp32c5".
-func installESP32Firmware(ctx context.Context, nightly bool, chip string) error {
+func installESP32Firmware(ctx context.Context, nightly bool, chip string, wifi wifiCLIOptions, deviceName string, preOpts preEnrollOptions) error {
+	provCreds, err := resolveWiFiCredentialsList(wifi)
+	if err != nil {
+		return err
+	}
+
+	provDeviceName, err := resolveDeviceName(deviceName)
+	if err != nil {
+		return err
+	}
+
+	var enrolledState *PreProvisionedState
+	if preOpts.mode != preEnrollSkip {
+		cfg, cfgErr := config.Load()
+		if cfgErr != nil {
+			if preOpts.mode == preEnrollForced {
+				return fmt.Errorf("--pre-enroll: loading config: %w", cfgErr)
+			}
+			cfg = &config.Config{} // auto mode: treat an unreadable config as not logged in
+		}
+		var resolveErr error
+		enrolledState, resolveErr = resolvePreEnrollment(ctx, cfg, preOpts, isInteractiveTerminal(), provDeviceName)
+		if resolveErr != nil {
+			return resolveErr
+		}
+	}
+
+	wendyConf, err := buildWendyConf(provCreds, provDeviceName, enrolledState)
+	if err != nil {
+		return fmt.Errorf("building Wendy config: %w", err)
+	}
+
+	if wendyConf.Wifi != nil && len(wendyConf.Wifi.Networks) > 1 {
+		return fmt.Errorf("this device only supports one Wi-Fi network")
+	}
+
 	fmt.Println("\nScanning for ESP32 devices...")
 
 	serialPort, err := discovery.ResolveESP32SerialPort()
@@ -1892,6 +1937,7 @@ func installESP32Firmware(ctx context.Context, nightly bool, chip string) error 
 	fmt.Printf("Found firmware: %s v%s\n", asset.Name, asset.Version)
 
 	// Download with progress bar.
+
 	prog := tui.NewProgress(fmt.Sprintf("Downloading %s %s...", asset.Name, asset.Version))
 	p := tea.NewProgram(prog)
 
@@ -1922,13 +1968,33 @@ func installESP32Firmware(ctx context.Context, nightly bool, chip string) error 
 	}
 	defer os.Remove(fwPath)
 
+	// Include configuration into the flash image.
+
+	img, err := LoadEspFlashImage(fwPath)
+	if err != nil {
+		return fmt.Errorf("loading firmware image: %w", err)
+	}
+
+	confBytes, err := proto.Marshal(wendyConf)
+	if err != nil {
+		return fmt.Errorf("serializing device config: %w", err)
+	}
+	payload := make([]byte, 8+len(confBytes))
+	copy(payload[0:4], "WYC0")
+	binary.LittleEndian.PutUint32(payload[4:8], uint32(len(confBytes)))
+	copy(payload[8:], confBytes)
+	if err := img.SetPartition("wendy_conf", payload); err != nil {
+		return fmt.Errorf("writing config to firmware image: %w", err)
+	}
+
 	// Flash with progress bar.
+
 	fmt.Println()
 	flashProg := tui.NewProgress(fmt.Sprintf("Flashing to %s...", serialPort))
 	fp := tea.NewProgram(flashProg)
 
 	go func() {
-		flashErr := flashFirmware(serialPort, fwPath, func(pct float64) {
+		flashErr := flashFirmwareImage(serialPort, img, func(pct float64) {
 			fp.Send(tui.ProgressUpdateMsg{Percent: pct})
 		})
 		fp.Send(tui.ProgressDoneMsg{Err: flashErr})

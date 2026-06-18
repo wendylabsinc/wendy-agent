@@ -1049,8 +1049,10 @@ func externalProviderDisplayName(key string) string {
 
 func externalProviderSortKey(providerKey, name string) string {
 	switch providerKey {
+	case providers.ProviderKeyAppleContainer:
+		return "~0_apple_container_" + strings.ToLower(name)
 	case providers.ProviderKeyDocker:
-		return "~0_" + strings.ToLower(name)
+		return "~0_docker_" + strings.ToLower(name)
 	case providers.ProviderKeyLocal:
 		return "~1_" + strings.ToLower(name)
 	}
@@ -1058,11 +1060,11 @@ func externalProviderSortKey(providerKey, name string) string {
 }
 
 // externalProviderAddress returns the provider-qualified ID shown in the
-// Address column. Docker and the local machine have fixed, meaningless IDs
-// ("docker: docker", "local: local"), so their address is hidden.
+// Address column. Local runtime providers have fixed, meaningless IDs, so
+// their address is hidden.
 func externalProviderAddress(providerKey, id string) string {
 	switch providerKey {
-	case providers.ProviderKeyDocker, providers.ProviderKeyLocal:
+	case providers.ProviderKeyAppleContainer, providers.ProviderKeyDocker, providers.ProviderKeyLocal:
 		return ""
 	}
 	return fmt.Sprintf("%s: %s", providerKey, id)
@@ -1070,6 +1072,8 @@ func externalProviderAddress(providerKey, id string) string {
 
 func externalProviderPickerHint(providerKey string) string {
 	switch providerKey {
+	case providers.ProviderKeyAppleContainer:
+		return "Hint: Use Apple Container for local Dockerfile/Containerfile runs on Apple silicon Macs. Compose projects still require Docker."
 	case providers.ProviderKeyDocker:
 		return "Hint: Use Docker for local container or Compose runs when you do not need WendyOS hardware."
 	case providers.ProviderKeyLocal:

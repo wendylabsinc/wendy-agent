@@ -130,7 +130,7 @@ func TestReadOCILayoutLayersUncompressed(t *testing.T) {
 	want := []byte("hello-tar-bytes")
 	writeMinimalOCILayout(t, ociTar, want, "application/vnd.oci.image.layer.v1.tar", want)
 
-	layers, imageConfig, err := readOCILayoutLayers(ociTar)
+	layers, imageConfig, err := readOCILayoutLayers(ociTar, "linux/arm64")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -176,7 +176,7 @@ func TestReadOCILayoutLayersGzip(t *testing.T) {
 
 	writeMinimalOCILayout(t, ociTar, compressedBytes, "application/vnd.oci.image.layer.v1.tar+gzip", want)
 
-	layers, _, err := readOCILayoutLayers(ociTar)
+	layers, _, err := readOCILayoutLayers(ociTar, "linux/arm64")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -193,5 +193,139 @@ func TestReadOCILayoutLayersGzip(t *testing.T) {
 	// The layer digest is the COMPRESSED blob digest (the stable cache key).
 	if layers[0].Digest != "sha256:"+sha256Hex(compressedBytes) {
 		t.Fatalf("layer digest mismatch (should be sha256 of compressed blob): %s", layers[0].Digest)
+	}
+}
+
+// imageManifestBytes builds a single-layer image manifest (+ its config and
+// layer blobs) for the given architecture, returning the manifest JSON and the
+// blob entries to embed in an OCI tar.
+func imageManifestBytes(t *testing.T, arch string, layerRaw []byte) (manifest []byte, entries map[string][]byte) {
+	t.Helper()
+	diffID := "sha256:" + sha256Hex(layerRaw)
+	layerDigest := "sha256:" + sha256Hex(layerRaw)
+	configBytes := []byte(`{"architecture":"` + arch + `","os":"linux","config":{"Cmd":["python","app.py"],"WorkingDir":"/app"},"rootfs":{"type":"layers","diff_ids":["` + diffID + `"]}}`)
+	configDigest := "sha256:" + sha256Hex(configBytes)
+	m := map[string]any{
+		"schemaVersion": 2,
+		"mediaType":     "application/vnd.oci.image.manifest.v1+json",
+		"config":        map[string]any{"mediaType": "application/vnd.oci.image.config.v1+json", "digest": configDigest, "size": len(configBytes)},
+		"layers":        []map[string]any{{"mediaType": "application/vnd.oci.image.layer.v1.tar", "digest": layerDigest, "size": len(layerRaw)}},
+	}
+	manifest, err := json.Marshal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries = map[string][]byte{
+		"blobs/sha256/" + sha256Hex(manifest):    manifest,
+		"blobs/sha256/" + sha256Hex(configBytes): configBytes,
+		"blobs/sha256/" + sha256Hex(layerRaw):    layerRaw,
+	}
+	return manifest, entries
+}
+
+// TestReadOCILayoutLayersNestedIndex covers Apple Container's `image save`
+// shape: index.json → image-index → platform image-manifest.
+func TestReadOCILayoutLayersNestedIndex(t *testing.T) {
+	dir := t.TempDir()
+	ociTar := filepath.Join(dir, "image.tar")
+	layerRaw := []byte("nested-index-layer")
+
+	manifestBytes, entries := imageManifestBytes(t, "arm64", layerRaw)
+	manifestDigest := "sha256:" + sha256Hex(manifestBytes)
+
+	// Inner image-index referencing the arm64 manifest by platform.
+	innerIndex, err := json.Marshal(map[string]any{
+		"schemaVersion": 2,
+		"mediaType":     "application/vnd.oci.image.index.v1+json",
+		"manifests": []map[string]any{
+			{"mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": manifestDigest, "size": len(manifestBytes), "platform": map[string]any{"architecture": "arm64", "os": "linux"}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	innerIndexDigest := "sha256:" + sha256Hex(innerIndex)
+
+	// Top-level index.json points at the inner image-index (no platform).
+	indexBytes, err := json.Marshal(map[string]any{
+		"schemaVersion": 2,
+		"mediaType":     "application/vnd.oci.image.index.v1+json",
+		"manifests": []map[string]any{
+			{"mediaType": "application/vnd.oci.image.index.v1+json", "digest": innerIndexDigest, "size": len(innerIndex)},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	entries["oci-layout"] = []byte(`{"imageLayoutVersion":"1.0.0"}`)
+	entries["index.json"] = indexBytes
+	entries["blobs/sha256/"+innerIndexDigest[len("sha256:"):]] = innerIndex
+	writeOCITar(t, ociTar, entries)
+
+	layers, imageConfig, err := readOCILayoutLayers(ociTar, "linux/arm64")
+	if err != nil {
+		t.Fatalf("readOCILayoutLayers: %v", err)
+	}
+	if len(layers) != 1 {
+		t.Fatalf("expected 1 layer, got %d", len(layers))
+	}
+	got, err := layers[0].decompress()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, layerRaw) {
+		t.Fatalf("layer bytes mismatch: got %q want %q", got, layerRaw)
+	}
+	if len(imageConfig) == 0 {
+		t.Fatal("expected non-empty image config blob")
+	}
+}
+
+// TestReadOCILayoutLayersPlatformSelection ensures a multi-arch index resolves
+// to the manifest matching the requested platform.
+func TestReadOCILayoutLayersPlatformSelection(t *testing.T) {
+	dir := t.TempDir()
+	ociTar := filepath.Join(dir, "image.tar")
+	amdLayer := []byte("amd64-layer")
+	armLayer := []byte("arm64-layer")
+
+	amdManifest, amdEntries := imageManifestBytes(t, "amd64", amdLayer)
+	armManifest, armEntries := imageManifestBytes(t, "arm64", armLayer)
+
+	indexBytes, err := json.Marshal(map[string]any{
+		"schemaVersion": 2,
+		"mediaType":     "application/vnd.oci.image.index.v1+json",
+		"manifests": []map[string]any{
+			{"mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": "sha256:" + sha256Hex(amdManifest), "size": len(amdManifest), "platform": map[string]any{"architecture": "amd64", "os": "linux"}},
+			{"mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": "sha256:" + sha256Hex(armManifest), "size": len(armManifest), "platform": map[string]any{"architecture": "arm64", "os": "linux"}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	entries := map[string][]byte{
+		"oci-layout": []byte(`{"imageLayoutVersion":"1.0.0"}`),
+		"index.json": indexBytes,
+	}
+	for k, v := range amdEntries {
+		entries[k] = v
+	}
+	for k, v := range armEntries {
+		entries[k] = v
+	}
+	writeOCITar(t, ociTar, entries)
+
+	layers, _, err := readOCILayoutLayers(ociTar, "linux/arm64")
+	if err != nil {
+		t.Fatalf("readOCILayoutLayers: %v", err)
+	}
+	got, err := layers[0].decompress()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, armLayer) {
+		t.Fatalf("selected wrong platform layer: got %q want %q", got, armLayer)
 	}
 }

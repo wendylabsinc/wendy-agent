@@ -118,7 +118,7 @@ func authEntryWithCerts(a *config.AuthConfig) (*config.AuthConfig, error) {
 // enrollment is skipped (user choice, auto mode without a TTY/sessions, or an
 // acknowledged failure). The install must not proceed past a failed
 // enrollment without explicit user acknowledgement (WDY-1476).
-func resolvePreEnrollment(ctx context.Context, cfg *config.Config, opts preEnrollOptions, interactive bool, deviceName string) ([]byte, error) {
+func resolvePreEnrollment(ctx context.Context, cfg *config.Config, opts preEnrollOptions, interactive bool, deviceName string) (*PreProvisionedState, error) {
 	switch opts.mode {
 	case preEnrollSkip:
 		return nil, nil
@@ -152,10 +152,10 @@ func resolvePreEnrollment(ctx context.Context, cfg *config.Config, opts preEnrol
 	}
 
 	fmt.Printf("Pre-enrolling device with Wendy Cloud (org: %d)...\n", auth.Certificates[0].OrganizationID)
-	js, enrollErr := preEnrollDeviceFn(ctx, auth, deviceName, nil)
+	state, enrollErr := preEnrollDeviceFn(ctx, auth, deviceName, nil)
 	if enrollErr == nil {
 		fmt.Println("Device pre-enrolled. It will be secure from first boot.")
-		return js, nil
+		return state, nil
 	}
 	if !interactive {
 		return nil, fmt.Errorf("--pre-enroll: pre-enrollment failed: %w", enrollErr)
