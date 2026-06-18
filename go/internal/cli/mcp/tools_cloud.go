@@ -390,27 +390,13 @@ func (s *mcpServer) handleRun(ctx context.Context, req mcpgo.CallToolRequest) (*
 }
 
 func (s *mcpServer) cloudAuthEntry(cloudGRPC string) (*config.AuthConfig, error) {
-	if s.cfg == nil || len(s.cfg.Auth) == 0 {
-		return nil, fmt.Errorf("not logged in; run 'wendy auth login' first")
+	// MCP is non-interactive: pass a nil picker so resolution stops at the
+	// persisted default (or errors when several sessions remain ambiguous).
+	auth, err := config.ResolveAuth(s.cfg, cloudGRPC, nil)
+	if errors.Is(err, config.ErrMultipleSessions) {
+		return nil, fmt.Errorf("multiple auth sessions exist; pass cloud_grpc to select one, or set a default with 'wendy auth use'")
 	}
-	if cloudGRPC != "" {
-		for i := range s.cfg.Auth {
-			if s.cfg.Auth[i].CloudGRPC == cloudGRPC {
-				if len(s.cfg.Auth[i].Certificates) == 0 {
-					return nil, fmt.Errorf("auth entry has no certificates; re-run 'wendy auth login'")
-				}
-				return &s.cfg.Auth[i], nil
-			}
-		}
-		return nil, fmt.Errorf("no auth session for %s; run 'wendy auth login --cloud-grpc %s' first", cloudGRPC, cloudGRPC)
-	}
-	if len(s.cfg.Auth) > 1 {
-		return nil, fmt.Errorf("multiple auth sessions exist; pass cloud_grpc to select one")
-	}
-	if len(s.cfg.Auth[0].Certificates) == 0 {
-		return nil, fmt.Errorf("auth entry has no certificates; re-run 'wendy auth login'")
-	}
-	return &s.cfg.Auth[0], nil
+	return auth, err
 }
 
 func (s *mcpServer) connectToCloudAgent(ctx context.Context, cloudGRPC, deviceName, brokerURL string) (*grpcclient.AgentConnection, *cloudpb.Asset, error) {
