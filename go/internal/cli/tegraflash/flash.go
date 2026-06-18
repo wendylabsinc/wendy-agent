@@ -52,12 +52,6 @@ func Flash(opts FlashOptions) error {
 	totalParts := countWritablePartitions(layout, opts.FullEMMC)
 	fmt.Fprintf(out, "  Partitions to write: %d\n", totalParts)
 
-	applet, err := b.Applet()
-	if err != nil {
-		return fmt.Errorf("extracting applet: %w", err)
-	}
-	fmt.Fprintf(out, "  applet_t234.bin: %d bytes\n", len(applet))
-
 	bctData, bctName, err := firstBCT(b, layout)
 	if err != nil {
 		// T234 bundles do not include a pre-compiled BCT — it is generated from
@@ -88,10 +82,42 @@ func Flash(opts FlashOptions) error {
 		fmt.Fprintf(out, "  UID: %x\n", uid)
 	}
 
-	fmt.Fprintln(out, "Loading applet via RCM...")
-	if err := dev.LoadApplet(applet); err != nil {
-		dev.Close()
-		return fmt.Errorf("loading applet: %w", err)
+	if dev.IsT264() {
+		fmt.Fprintln(out, "Loading images via T23x RCM sequence...")
+		rcmImages, err := b.RCMImages()
+		if err != nil {
+			dev.Close()
+			return fmt.Errorf("loading T264 RCM image list: %w", err)
+		}
+		var binaries [][]byte
+		for _, img := range rcmImages {
+			data, imgErr := b.ExtractFile(img.Filename)
+			if imgErr != nil {
+				fmt.Fprintf(out, "  [skip] %s (%s): not in bundle\n", img.Name, img.Filename)
+				continue
+			}
+			fmt.Fprintf(out, "  queuing %s: %d bytes\n", img.Name, len(data))
+			binaries = append(binaries, data)
+		}
+		if len(binaries) == 0 {
+			dev.Close()
+			return fmt.Errorf("no T264 RCM images found in bundle")
+		}
+		if err := rcm.LoadImagesT23x(dev, binaries); err != nil {
+			dev.Close()
+			return fmt.Errorf("T264 RCM sequence: %w", err)
+		}
+	} else {
+		applet, err := b.Applet()
+		if err != nil {
+			dev.Close()
+			return fmt.Errorf("extracting applet: %w", err)
+		}
+		fmt.Fprintln(out, "Loading applet via RCM...")
+		if err := dev.LoadApplet(applet); err != nil {
+			dev.Close()
+			return fmt.Errorf("loading applet: %w", err)
+		}
 	}
 	fmt.Fprintln(out, "  Applet sent; waiting for nv3p interface...")
 	dev.Close()
