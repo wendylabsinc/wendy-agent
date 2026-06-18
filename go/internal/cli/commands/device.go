@@ -640,24 +640,18 @@ func pickAuthEntry(cloudGRPC string) (*config.AuthConfig, error) {
 	if err != nil {
 		return nil, fmt.Errorf("loading config: %w", err)
 	}
-	if len(cfg.Auth) == 0 {
-		return nil, fmt.Errorf("not logged in; run 'wendy auth login' first")
-	}
-	if cloudGRPC != "" {
-		for i := range cfg.Auth {
-			if cfg.Auth[i].CloudGRPC == cloudGRPC {
-				return &cfg.Auth[i], nil
-			}
+	// A default that points at a removed session is treated as unset; warn so
+	// the user understands why the picker appeared instead of auto-selecting.
+	if cloudGRPC == "" && cfg.DefaultCloudGRPC != "" {
+		if _, ok := cfg.DefaultAuth(); !ok {
+			fmt.Fprintf(os.Stderr, "warning: default session %s no longer exists; clear it with 'wendy auth default --clear'\n", cfg.DefaultCloudGRPC)
 		}
-		return nil, fmt.Errorf("no auth session for %s; run 'wendy auth login --cloud-grpc %s' first", cloudGRPC, cloudGRPC)
 	}
-	if len(cfg.Auth) > 1 {
-		return nil, fmt.Errorf("multiple auth sessions exist; pass --cloud-grpc to select one")
+	var pick config.SessionPicker
+	if isInteractiveTerminal() {
+		pick = pickAuthSessionFn
 	}
-	if len(cfg.Auth[0].Certificates) == 0 {
-		return nil, fmt.Errorf("auth entry has no certificates; re-run 'wendy auth login'")
-	}
-	return &cfg.Auth[0], nil
+	return config.ResolveAuth(cfg, cloudGRPC, pick)
 }
 
 func newDeviceUnenrollCmd() *cobra.Command {
