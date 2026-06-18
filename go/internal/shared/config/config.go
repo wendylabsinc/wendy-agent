@@ -14,6 +14,7 @@ type Config struct {
 	Analytics          *AnalyticsConfig `json:"analytics,omitempty"`
 	DefaultDevice      string           `json:"defaultDevice,omitempty"`
 	LastCLIUpdateCheck string           `json:"lastCLIUpdateCheck,omitempty"` // RFC3339
+	AvailableCLIUpdate string           `json:"availableCLIUpdate,omitempty"` // tag of a newer release, if any
 	// LastMCPSetupVersion records the CLI version that last ran `wendy mcp
 	// setup`. It lets the root command detect when an upgrade should refresh
 	// the MCP server config and bundled skills. Empty means the user has never

@@ -76,20 +76,30 @@ func NewRootCmd() *cobra.Command {
 			return nil
 		},
 		PersistentPostRunE: func(cmd *cobra.Command, args []string) error {
-			select {
-			case latest := <-cliUpdateNoticeCh:
-				var updateCmd string
-				switch runtime.GOOS {
-				case "windows":
-					updateCmd = "winget upgrade WendyLabs.Wendy"
-				case "darwin":
-					updateCmd = "brew upgrade wendy"
-				default:
-					updateCmd = "curl -fsSL https://install.wendy.sh/cli.sh | bash"
-				}
-				cmd.PrintErrf("\nA new version of the Wendy CLI is available: %s (you have %s)\nUpdate with: %s\n", latest, version.Version, updateCmd)
-			default:
+			// Load fresh config so we see any value written by the background
+			// goroutine (possibly from a previous invocation).
+			cfg, err := config.Load()
+			if err != nil || cfg.AvailableCLIUpdate == "" {
+				return nil
 			}
+			// Double-check: user may have updated since the goroutine last ran.
+			if version.CompareVersions(cfg.AvailableCLIUpdate, version.Version) <= 0 {
+				return nil
+			}
+			var updateCmd string
+			switch runtime.GOOS {
+			case "windows":
+				updateCmd = "winget upgrade WendyLabs.Wendy"
+			case "darwin":
+				updateCmd = "brew update && brew install wendy"
+			default:
+				updateCmd = "curl -fsSL https://install.wendy.sh/cli.sh | bash"
+			}
+			msg := "\nA new version of the Wendy CLI is available: %s (you have %s)\nUpdate with: %s\n"
+			if runtime.GOOS == "darwin" {
+				msg += "  (if the tap is untrusted: brew trust wendylabsinc/tap)\n"
+			}
+			cmd.PrintErrf(msg, cfg.AvailableCLIUpdate, version.Version, updateCmd)
 			return nil
 		},
 	}
