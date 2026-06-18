@@ -58,6 +58,7 @@ package config
 
 import (
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -88,7 +89,7 @@ func TestResolveAuthFlagWins(t *testing.T) {
 
 func TestResolveAuthFlagNoMatch(t *testing.T) {
 	_, err := ResolveAuth(twoSessions(), "missing:443", nil)
-	if err == nil || !errorsContains(err, "no auth session for missing:443") {
+	if err == nil || !strings.Contains(err.Error(), "no auth session for missing:443") {
 		t.Fatalf("want no-session error, got %v", err)
 	}
 }
@@ -103,7 +104,7 @@ func TestResolveAuthSingleSession(t *testing.T) {
 
 func TestResolveAuthSingleSessionNoCerts(t *testing.T) {
 	cfg := &Config{Auth: []AuthConfig{{CloudGRPC: "prod:443"}}}
-	if _, err := ResolveAuth(cfg, "", nil); err == nil || !errorsContains(err, "no certificates") {
+	if _, err := ResolveAuth(cfg, "", nil); err == nil || !strings.Contains(err.Error(), "no certificates") {
 		t.Fatalf("want no-certificates error, got %v", err)
 	}
 }
@@ -130,7 +131,7 @@ func TestResolveAuthMultipleNoPicker(t *testing.T) {
 	if !errors.Is(err, ErrMultipleSessions) {
 		t.Fatalf("want ErrMultipleSessions, got %v", err)
 	}
-	if !errorsContains(err, "--cloud-grpc") {
+	if !strings.Contains(err.Error(), "--cloud-grpc") {
 		t.Fatalf("message must mention --cloud-grpc, got %v", err)
 	}
 }
@@ -159,23 +160,6 @@ func TestDefaultAuthLookup(t *testing.T) {
 	if _, ok := cfg.DefaultAuth(); ok {
 		t.Fatal("stale default should return ok=false")
 	}
-}
-
-func errorsContains(err error, sub string) bool {
-	return err != nil && len(sub) > 0 && containsString(err.Error(), sub)
-}
-
-func containsString(s, sub string) bool {
-	return len(s) >= len(sub) && (s == sub || indexString(s, sub) >= 0)
-}
-
-func indexString(s, sub string) int {
-	for i := 0; i+len(sub) <= len(s); i++ {
-		if s[i:i+len(sub)] == sub {
-			return i
-		}
-	}
-	return -1
 }
 ```
 
