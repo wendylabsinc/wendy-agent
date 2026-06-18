@@ -140,6 +140,77 @@ struct `'wendy run'` {
     }
 
     /**
+     A redeploy with unchanged top-level `wendy.json.files` uses the rsync-style
+     metadata quick-check. The second run skips content hashing and transfer for
+     files whose size, mtime, and mode match the agent copy.
+     */
+    @Test(.enabled(if: isAgentLinuxOrWendyOS))
+    func `quick-check skips hashing unchanged synced files on redeploy`() async throws {
+        let appID = Self.appID("quickcheck")
+
+        try await self.scenario.run(authenticated: false) { cli, agent in
+            let agentAddress = agent.machine.address
+            try await Self.withRemovedApp(appID, cli: cli, agentAddress: agentAddress) {
+                try await cli.sh(Self.createQuickCheckProjectScript(appID: appID, message: "stable-v1"))
+
+                try await cli.sh(Self.runCommand(project: Self.projectName(appID), agentAddress: agentAddress)) { result in
+                    let output = result.normalizedStdout + result.normalizedStderr
+                    #expect(result.status.isSuccess)
+                    #expect(output.contains("MSG:stable-v1"))
+                }
+
+                try await cli.sh(Self.runCommand(project: Self.projectName(appID), agentAddress: agentAddress)) { result in
+                    let output = result.normalizedStdout + result.normalizedStderr
+                    #expect(result.status.isSuccess)
+                    #expect(output.contains("Files up to date."))
+                    #expect(output.contains("quick-check skipped 1"))
+                    #expect(output.contains("hashed 0"))
+                }
+            }
+        }
+    }
+
+    /**
+     The `--checksum` flag forces SHA256 comparison for file sync. When local
+     content changes but size and mtime are deliberately spoofed to match the
+     already-synced copy, default quick-check leaves the old content in place,
+     while `--checksum` detects and transfers the new content.
+     */
+    @Test(.enabled(if: isAgentLinuxOrWendyOS))
+    func `checksum flag detects same-size same-mtime synced file changes`() async throws {
+        let appID = Self.appID("checksum")
+
+        try await self.scenario.run(authenticated: false) { cli, agent in
+            let agentAddress = agent.machine.address
+            try await Self.withRemovedApp(appID, cli: cli, agentAddress: agentAddress) {
+                try await cli.sh(Self.createQuickCheckProjectScript(appID: appID, message: "old-value"))
+
+                try await cli.sh(Self.runCommand(project: Self.projectName(appID), agentAddress: agentAddress)) { result in
+                    let output = result.normalizedStdout + result.normalizedStderr
+                    #expect(result.status.isSuccess)
+                    #expect(output.contains("MSG:old-value"))
+                }
+
+                try await cli.sh(Self.updateQuickCheckMessageScript(appID: appID, message: "new-value"))
+
+                try await cli.sh(Self.runCommand(project: Self.projectName(appID), agentAddress: agentAddress)) { result in
+                    let output = result.normalizedStdout + result.normalizedStderr
+                    #expect(result.status.isSuccess)
+                    #expect(output.contains("MSG:old-value"))
+                    #expect(output.contains("quick-check skipped 1"))
+                }
+
+                try await cli.sh(Self.runChecksumCommand(project: Self.projectName(appID), agentAddress: agentAddress)) { result in
+                    let output = result.normalizedStdout + result.normalizedStderr
+                    #expect(result.status.isSuccess)
+                    #expect(output.contains("MSG:new-value"))
+                    #expect(output.contains("hashed 1"))
+                }
+            }
+        }
+    }
+
+    /**
      Files and directories declared in top-level `wendy.json.files` are mounted
      read-only into Linux containers. An app that attempts to overwrite or
      remove a declared file receives a filesystem failure, and neither the
@@ -659,6 +730,10 @@ struct `'wendy run'` {
         "wendy --device \(Self.shellQuote(agentAddress)) run --prefix \(Self.shellQuote(project))"
     }
 
+    private static func runChecksumCommand(project: String, agentAddress: String) -> String {
+        "wendy --device \(Self.shellQuote(agentAddress)) run --checksum --prefix \(Self.shellQuote(project))"
+    }
+
     private static func runDeployCommand(project: String, agentAddress: String) -> String {
         "wendy --device \(Self.shellQuote(agentAddress)) run --deploy --prefix \(Self.shellQuote(project))"
     }
@@ -819,6 +894,49 @@ struct `'wendy run'` {
               ]
             }
             EOF
+            """
+    }
+
+    private static func createQuickCheckProjectScript(appID: String, message: String) -> String {
+        let project = Self.projectName(appID)
+        return """
+            set -eu
+            rm -rf \(Self.shellQuote(project))
+            mkdir -p \(Self.shellQuote(project))/config
+            cat > \(Self.shellQuote(project))/Dockerfile <<'EOF'
+            FROM alpine:3.20
+            WORKDIR /work
+            RUN mkdir -p /work/config
+            COPY check.sh /check.sh
+            CMD ["/bin/sh", "/check.sh"]
+            EOF
+            cat > \(Self.shellQuote(project))/.dockerignore <<'EOF'
+            config/
+            EOF
+            cat > \(Self.shellQuote(project))/check.sh <<'EOF'
+            #!/bin/sh
+            set -eu
+            printf 'MSG:%s\n' "$(cat config/message.txt)"
+            EOF
+            printf \(Self.shellQuote(message)) > \(Self.shellQuote(project))/config/message.txt
+            touch -t 202401020304.05 \(Self.shellQuote(project))/config/message.txt
+            cat > \(Self.shellQuote(project))/wendy.json <<'EOF'
+            {
+              "appId": "\(appID)",
+              "files": [
+                { "path": "config/message.txt" }
+              ]
+            }
+            EOF
+            """
+    }
+
+    private static func updateQuickCheckMessageScript(appID: String, message: String) -> String {
+        let project = Self.projectName(appID)
+        return """
+            set -eu
+            printf \(Self.shellQuote(message)) > \(Self.shellQuote(project))/config/message.txt
+            touch -t 202401020304.05 \(Self.shellQuote(project))/config/message.txt
             """
     }
 

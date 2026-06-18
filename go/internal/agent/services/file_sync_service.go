@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
@@ -106,7 +107,7 @@ func (s *FileSyncService) SyncFiles(stream agentpb.WendyFileSyncService_SyncFile
 		manifestByPath[cleaned] = e
 	}
 
-	manifest, err := buildAgentFileSyncManifest(appDir)
+	manifest, err := buildAgentFileSyncManifest(appDir, start.GetChecksum() || manifestHasChecksums(localManifest))
 	if err != nil {
 		return fmt.Errorf("building agent manifest: %w", err)
 	}
@@ -179,6 +180,15 @@ func (s *FileSyncService) SyncFiles(stream agentpb.WendyFileSyncService_SyncFile
 			return fmt.Errorf("unexpected file sync request %T", req.GetRequestType())
 		}
 	}
+}
+
+func manifestHasChecksums(manifest *agentpb.FileSyncManifest) bool {
+	for _, e := range manifest.GetFiles() {
+		if len(e.GetSha256()) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func cleanupIncoming(files map[string]*incomingFile) {
@@ -277,7 +287,11 @@ func commitFileSyncFile(appDir string, incoming map[string]*incomingFile, manife
 	if state.size != commit.GetSize() || state.size != entry.GetSize() {
 		return fmt.Errorf("size mismatch for %s", cleaned)
 	}
-	if got := state.hash.Sum(nil); !bytes.Equal(got, commit.GetSha256()) || !bytes.Equal(got, entry.GetSha256()) {
+	got := state.hash.Sum(nil)
+	if !bytes.Equal(got, commit.GetSha256()) {
+		return fmt.Errorf("hash mismatch for %s", cleaned)
+	}
+	if len(entry.GetSha256()) > 0 && !bytes.Equal(got, entry.GetSha256()) {
 		return fmt.Errorf("hash mismatch for %s", cleaned)
 	}
 	if err := state.file.Close(); err != nil {
@@ -301,6 +315,12 @@ func commitFileSyncFile(appDir string, incoming map[string]*incomingFile, manife
 	}
 	if err := os.Rename(state.tmpPath, finalPath); err != nil {
 		return fmt.Errorf("installing %s: %w", cleaned, err)
+	}
+	if commit.MtimeUnixNano != nil {
+		mtime := time.Unix(0, commit.GetMtimeUnixNano())
+		if err := os.Chtimes(finalPath, mtime, mtime); err != nil {
+			return fmt.Errorf("setting mtime for %s: %w", cleaned, err)
+		}
 	}
 	state.tmpPath = ""
 	delete(incoming, cleaned)
@@ -343,7 +363,7 @@ func deleteFileSyncPaths(appDir string, paths []string) error {
 	return nil
 }
 
-func buildAgentFileSyncManifest(appDir string) (*agentpb.FileSyncManifest, error) {
+func buildAgentFileSyncManifest(appDir string, includeHashes bool) (*agentpb.FileSyncManifest, error) {
 	var entries []*agentpb.FileSyncEntry
 	if _, err := os.Stat(appDir); os.IsNotExist(err) {
 		return &agentpb.FileSyncManifest{}, nil
@@ -369,16 +389,22 @@ func buildAgentFileSyncManifest(appDir string) (*agentpb.FileSyncManifest, error
 		if err != nil {
 			return err
 		}
-		absPath := filepath.Join(appDir, p)
-		sum, err := hashFileSHA256(absPath)
-		if err != nil {
-			return err
+		var sum []byte
+		if includeHashes {
+			absPath := filepath.Join(appDir, p)
+			var err error
+			sum, err = hashFileSHA256(absPath)
+			if err != nil {
+				return err
+			}
 		}
+		mtime := info.ModTime().UnixNano()
 		entries = append(entries, &agentpb.FileSyncEntry{
-			Path:   filepath.ToSlash(p),
-			Size:   info.Size(),
-			Sha256: sum,
-			Mode:   uint32(info.Mode().Perm()),
+			Path:          filepath.ToSlash(p),
+			Size:          info.Size(),
+			Sha256:        sum,
+			Mode:          uint32(info.Mode().Perm()),
+			MtimeUnixNano: &mtime,
 		})
 		return nil
 	})

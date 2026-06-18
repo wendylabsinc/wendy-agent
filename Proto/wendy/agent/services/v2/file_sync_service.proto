@@ -11,6 +11,7 @@ message FileSyncEntry {
     int64  size   = 2;
     bytes  sha256 = 3;
     uint32 mode   = 4;
+    optional int64 mtime_unix_nano = 5;
 }
 
 message FileSyncRequest {
@@ -26,6 +27,7 @@ message FileSyncRequest {
 message FileSyncStart {
     string           app_id   = 1;
     FileSyncManifest manifest = 2;
+    bool             checksum = 3;
 }
 
 message FileSyncChunk {
@@ -40,6 +42,7 @@ message FileSyncCommit {
     string path   = 1;
     bytes  sha256 = 2;
     int64  size   = 3;
+    optional int64 mtime_unix_nano = 4;
 }
 
 message FileSyncChmod {
@@ -47,6 +50,7 @@ message FileSyncChmod {
     uint32 mode   = 2;
     int64  size   = 3;
     bytes  sha256 = 4;
+    optional int64 mtime_unix_nano = 5;
 }
 
 message FileSyncDelete {

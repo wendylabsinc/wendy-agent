@@ -29,13 +29,13 @@ The error explains the project/target mismatch and tells you to set `platform: "
 
 For single-container WendyOS/Linux deployments and native macOS deployments, `wendy run` also syncs any top-level [`files`](../../../apps/wendy.json.md#files) declared in `wendy.json` before the app starts.
 
-Use this for development inputs that should be available beside the app but should not be baked into the image: local model directories, calibration bundles, sample datasets, generated assets, or other large static files. This helps when a large asset would otherwise sit in the top Docker layer with frequently changing application code. Instead of invalidating that layer and pushing a large image across the LAN on every iteration, Wendy copies the declared files to an agent-managed app area and reuses unchanged content on later runs.
+Use this for extra runtime app files that should be available beside the app but should not be baked into the image: local model directories, calibration bundles, sample datasets, generated assets, or other large static files. This helps when a large asset would otherwise sit in the top Docker layer with frequently changing application code. Instead of invalidating that layer and pushing a large image across the LAN on every iteration, Wendy copies the declared files to an agent-managed app area and reuses unchanged content on later runs.
 
 `files` are runtime app files, not persistent app data. The container sees them as read-only mounts under its working directory. Use a `persist` entitlement for app-written data that should survive redeploys or app removal.
 
-File sync is the normal `wendy run` mechanism for keeping large development inputs out of the image transfer path.
+File sync is the normal `wendy run` mechanism for keeping large runtime app files out of the image transfer path.
 
-On WendyOS/Linux targets, file sync uses a dedicated `WendyFileSyncService` gRPC streaming RPC (`SyncFiles`) over the existing agent connection. The CLI sends a manifest of local file metadata; the agent responds with its manifest of already-synced files so unchanged files can be skipped. Changed files are streamed in bounded chunks and verified with SHA-256 before they are committed to the app-scoped sync directory. On native macOS targets, files continue to use the existing macOS file-sync path.
+On WendyOS/Linux targets, file sync uses a dedicated `WendyFileSyncService` gRPC streaming RPC (`SyncFiles`) over the existing agent connection. By default, Wendy uses an rsync-style quick check: if path, size, mtime, and mode match, the file is skipped without rereading and hashing it locally. Changed files are streamed in bounded chunks and verified with SHA-256 before they are committed to the app-scoped sync directory. Use `wendy run --checksum` when you want full SHA-256 comparison instead of the metadata quick check. On native macOS targets, files continue to use the existing macOS file-sync path.
 
 ## Image build-args
 
@@ -134,6 +134,8 @@ On a **Windows host**, `wendy run` returns an actionable error for Swift project
 | `--product <name>` | Swift Package Manager product to build and run (Swift projects only). |
 | `--service <name>` | Build and run only the named service and its transitive dependencies (multi-service `wendy.json` projects only). Returns an error if the name does not match any key in the `services` map. |
 | `--user-args <args>` | Extra arguments to pass to the container at runtime. |
+| `--checksum` | Force SHA-256 comparison for `wendy.json.files` instead of the default metadata quick check. |
+| `--checksum` | Force SHA-256 comparison for `wendy.json.files` instead of the default metadata quick check. |
 
 ## postStart hooks
 

@@ -25,7 +25,7 @@ import (
 
 func TestBuildLocalManifest_EmptyDir(t *testing.T) {
 	dir := t.TempDir()
-	entries, err := buildLocalManifest(dir)
+	entries, err := buildLocalManifest(dir, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -41,7 +41,7 @@ func TestBuildLocalManifest_SingleFile(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	entries, err := buildLocalManifest(dir)
+	entries, err := buildLocalManifest(dir, true)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -80,7 +80,7 @@ func TestBuildLocalManifest_NestedFiles(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	entries, err := buildLocalManifest(dir)
+	entries, err := buildLocalManifest(dir, true)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -113,7 +113,7 @@ func TestDiffManifests_Identical(t *testing.T) {
 		{Path: "app", Sha256: sha256Bytes([]byte("app")), Size: 10, Mode: 0o755},
 		{Path: "config.json", Sha256: sha256Bytes([]byte("config")), Size: 5, Mode: 0o644},
 	}}
-	result := diffManifests(local, remote)
+	result := diffManifests(local, remote, true)
 	if len(result.contentTransfers) != 0 || len(result.modeOnly) != 0 || len(result.staleRemote) != 0 {
 		t.Errorf("expected empty diff for identical manifests, got %+v", result)
 	}
@@ -128,7 +128,7 @@ func TestDiffManifests_ModeOnlyChangeSeparated(t *testing.T) {
 		Path: "app", Sha256: sharedHash, Size: 4, Mode: 0o644,
 	}}}
 
-	result := diffManifests(local, remote)
+	result := diffManifests(local, remote, true)
 	if len(result.contentTransfers) != 0 {
 		t.Fatalf("expected no content transfer, got %v", result.contentTransfers)
 	}
@@ -155,7 +155,7 @@ func TestDiffManifests_SortsOperationsDeterministically(t *testing.T) {
 		{Path: "a.bin", Sha256: sha256Bytes([]byte("same-a")), Size: 6, Mode: 0o644},
 	}}
 
-	result := diffManifests(local, remote)
+	result := diffManifests(local, remote, true)
 	if got, want := result.contentTransfers, []string{"b.bin", "c.bin"}; !equalStrings(got, want) {
 		t.Fatalf("contentTransfers = %v, want %v", got, want)
 	}
@@ -173,8 +173,10 @@ func TestDiffManifests_SortsOperationsDeterministically(t *testing.T) {
 // all received messages and returning a scripted response.
 type fakeSyncServer struct {
 	agentpb.UnimplementedWendyFileSyncServiceServer
+	agentpb.UnimplementedWendyAgentServiceServer
 
 	agentManifest []*agentpb.FileSyncEntry
+	quickCheck    bool
 
 	mu               sync.Mutex
 	received         []*agentpb.FileSyncRequest
@@ -183,6 +185,14 @@ type fakeSyncServer struct {
 	deletedPaths     []string
 	onStart          func(*agentpb.FileSyncStart)
 	onChunk          func(*agentpb.FileSyncChunk)
+}
+
+func (s *fakeSyncServer) GetAgentVersion(context.Context, *agentpb.GetAgentVersionRequest) (*agentpb.GetAgentVersionResponse, error) {
+	resp := &agentpb.GetAgentVersionResponse{}
+	if s.quickCheck {
+		resp.Featureset = []string{fileSyncQuickCheckFeatureName}
+	}
+	return resp, nil
 }
 
 func (s *fakeSyncServer) SyncFiles(stream agentpb.WendyFileSyncService_SyncFilesServer) error {
@@ -270,6 +280,7 @@ func startFakeServer(t *testing.T, srv *fakeSyncServer) (*grpcclient.AgentConnec
 		grpc.MaxSendMsgSize(16*1024*1024),
 	)
 	agentpb.RegisterWendyFileSyncServiceServer(s, srv)
+	agentpb.RegisterWendyAgentServiceServer(s, srv)
 	go func() { _ = s.Serve(ln) }()
 
 	addr := ln.Addr().String()
@@ -289,6 +300,7 @@ func startFakeServer(t *testing.T, srv *fakeSyncServer) (*grpcclient.AgentConnec
 
 	ac := &grpcclient.AgentConnection{
 		Conn:            conn,
+		AgentService:    agentpb.NewWendyAgentServiceClient(conn),
 		FileSyncService: agentpb.NewWendyFileSyncServiceClient(conn),
 	}
 
@@ -322,7 +334,7 @@ func TestSyncWendyJSONFilesForLinux_SyncsConfiguredFilesAndDestinations(t *testi
 			{Path: "assets", To: "public/assets"},
 		},
 	}
-	if err := syncWendyJSONFilesForLinux(context.Background(), conn, dir, cfg); err != nil {
+	if err := syncWendyJSONFilesForLinux(context.Background(), conn, dir, cfg, runOptions{}); err != nil {
 		t.Fatalf("syncWendyJSONFilesForLinux: %v", err)
 	}
 
@@ -733,11 +745,204 @@ func TestSyncFiles_StaleOnlySendsExplicitDelete(t *testing.T) {
 	}
 }
 
+func TestSyncFiles_QuickCheckUnchangedSkipsHashAndTransfer(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "model.bin")
+	content := []byte("large model placeholder")
+	mtime := setTestFile(t, path, content, 0o644)
+
+	startCh := make(chan *agentpb.FileSyncStart, 1)
+	srv := &fakeSyncServer{
+		quickCheck: true,
+		agentManifest: []*agentpb.FileSyncEntry{{
+			Path: "model.bin", Size: int64(len(content)), Mode: 0o644, MtimeUnixNano: int64p(mtime.UnixNano()),
+		}},
+		onStart: func(start *agentpb.FileSyncStart) {
+			startCh <- start
+		},
+	}
+	conn, cleanup := startFakeServer(t, srv)
+	defer cleanup()
+
+	output := captureStdout(t, func() {
+		if err := syncFiles(context.Background(), conn, "sh.wendy.App", []fileSyncEntry{{localPath: path, remotePath: "model.bin"}}); err != nil {
+			t.Fatalf("syncFiles: %v", err)
+		}
+	})
+
+	assertNoContentTransfer(t, srv)
+	start := <-startCh
+	files := start.GetManifest().GetFiles()
+	if len(files) != 1 {
+		t.Fatalf("start manifest files = %d, want 1", len(files))
+	}
+	if len(files[0].GetSha256()) != 0 {
+		t.Fatalf("quick-check manifest unexpectedly included sha256")
+	}
+	if files[0].MtimeUnixNano == nil || files[0].GetMtimeUnixNano() != mtime.UnixNano() {
+		t.Fatalf("mtime = %v, want %d", files[0].MtimeUnixNano, mtime.UnixNano())
+	}
+	if !strings.Contains(output, "quick-check skipped 1") || !strings.Contains(output, "hashed 0") {
+		t.Fatalf("stdout missing quick-check summary: %q", output)
+	}
+}
+
+func TestSyncFiles_QuickCheckChangedMtimeTransfers(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "model.bin")
+	content := []byte("same size")
+	mtime := setTestFile(t, path, content, 0o644)
+
+	srv := &fakeSyncServer{
+		quickCheck: true,
+		agentManifest: []*agentpb.FileSyncEntry{{
+			Path: "model.bin", Size: int64(len(content)), Mode: 0o644, MtimeUnixNano: int64p(mtime.Add(-time.Second).UnixNano()),
+		}},
+	}
+	conn, cleanup := startFakeServer(t, srv)
+	defer cleanup()
+
+	if err := syncFiles(context.Background(), conn, "sh.wendy.App", []fileSyncEntry{{localPath: path, remotePath: "model.bin"}}); err != nil {
+		t.Fatalf("syncFiles: %v", err)
+	}
+	if !equalStrings(srv.ackedPaths, []string{"model.bin"}) {
+		t.Fatalf("ackedPaths = %v, want [model.bin]", srv.ackedPaths)
+	}
+}
+
+func TestSyncFiles_QuickCheckChangedSizeTransfers(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "model.bin")
+	content := []byte("new content")
+	mtime := setTestFile(t, path, content, 0o644)
+
+	srv := &fakeSyncServer{
+		quickCheck: true,
+		agentManifest: []*agentpb.FileSyncEntry{{
+			Path: "model.bin", Size: int64(len(content) - 1), Mode: 0o644, MtimeUnixNano: int64p(mtime.UnixNano()),
+		}},
+	}
+	conn, cleanup := startFakeServer(t, srv)
+	defer cleanup()
+
+	if err := syncFiles(context.Background(), conn, "sh.wendy.App", []fileSyncEntry{{localPath: path, remotePath: "model.bin"}}); err != nil {
+		t.Fatalf("syncFiles: %v", err)
+	}
+	if !equalStrings(srv.ackedPaths, []string{"model.bin"}) {
+		t.Fatalf("ackedPaths = %v, want [model.bin]", srv.ackedPaths)
+	}
+}
+
+func TestSyncFiles_QuickCheckModeOnlySendsChmod(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "script.sh")
+	content := []byte("#!/bin/sh\n")
+	mtime := setTestFile(t, path, content, 0o755)
+
+	srv := &fakeSyncServer{
+		quickCheck: true,
+		agentManifest: []*agentpb.FileSyncEntry{{
+			Path: "script.sh", Size: int64(len(content)), Mode: 0o644, MtimeUnixNano: int64p(mtime.UnixNano()),
+		}},
+	}
+	conn, cleanup := startFakeServer(t, srv)
+	defer cleanup()
+
+	if err := syncFiles(context.Background(), conn, "sh.wendy.App", []fileSyncEntry{{localPath: path, remotePath: "script.sh"}}); err != nil {
+		t.Fatalf("syncFiles: %v", err)
+	}
+	assertNoContentTransfer(t, srv)
+	if !equalStrings(srv.modeUpdatedPaths, []string{"script.sh"}) {
+		t.Fatalf("modeUpdatedPaths = %v, want [script.sh]", srv.modeUpdatedPaths)
+	}
+}
+
+func TestSyncFiles_QuickCheckDeletesStaleRemote(t *testing.T) {
+	srv := &fakeSyncServer{
+		quickCheck: true,
+		agentManifest: []*agentpb.FileSyncEntry{{
+			Path: "stale.bin", Size: 5, Mode: 0o644, MtimeUnixNano: int64p(time.Unix(1, 2).UnixNano()),
+		}},
+	}
+	conn, cleanup := startFakeServer(t, srv)
+	defer cleanup()
+
+	if err := syncFiles(context.Background(), conn, "sh.wendy.App", []fileSyncEntry{}); err != nil {
+		t.Fatalf("syncFiles: %v", err)
+	}
+	if !equalStrings(srv.deletedPaths, []string{"stale.bin"}) {
+		t.Fatalf("deletedPaths = %v, want [stale.bin]", srv.deletedPaths)
+	}
+}
+
+func TestSyncFiles_ChecksumModeDetectsSpoofedMetadata(t *testing.T) {
+	t.Setenv(fileSyncChecksumEnv, "1")
+	dir := t.TempDir()
+	path := filepath.Join(dir, "model.bin")
+	oldContent := []byte("old-content")
+	newContent := []byte("new-content")
+	mtime := setTestFile(t, path, newContent, 0o644)
+
+	startCh := make(chan *agentpb.FileSyncStart, 1)
+	srv := &fakeSyncServer{
+		quickCheck: true,
+		agentManifest: []*agentpb.FileSyncEntry{{
+			Path: "model.bin", Size: int64(len(newContent)), Sha256: sha256Bytes(oldContent), Mode: 0o644, MtimeUnixNano: int64p(mtime.UnixNano()),
+		}},
+		onStart: func(start *agentpb.FileSyncStart) {
+			startCh <- start
+		},
+	}
+	conn, cleanup := startFakeServer(t, srv)
+	defer cleanup()
+
+	if err := syncFiles(context.Background(), conn, "sh.wendy.App", []fileSyncEntry{{localPath: path, remotePath: "model.bin"}}); err != nil {
+		t.Fatalf("syncFiles: %v", err)
+	}
+	if !equalStrings(srv.ackedPaths, []string{"model.bin"}) {
+		t.Fatalf("ackedPaths = %v, want [model.bin]", srv.ackedPaths)
+	}
+	start := <-startCh
+	if !start.GetChecksum() {
+		t.Fatal("start checksum = false, want true")
+	}
+	if got := start.GetManifest().GetFiles()[0].GetSha256(); !bytes.Equal(got, sha256Bytes(newContent)) {
+		t.Fatalf("start sha256 = %x, want %x", got, sha256Bytes(newContent))
+	}
+}
+
 // ---- helpers ----
 
 func sha256Bytes(data []byte) []byte {
 	h := sha256.Sum256(data)
 	return h[:]
+}
+
+func int64p(v int64) *int64 { return &v }
+
+func setTestFile(t *testing.T, path string, content []byte, mode os.FileMode) time.Time {
+	t.Helper()
+	if err := os.WriteFile(path, content, mode); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	mtime := time.Unix(1_700_000_000, 123_456_789)
+	if err := os.Chtimes(path, mtime, mtime); err != nil {
+		t.Fatalf("Chtimes: %v", err)
+	}
+	if err := os.Chmod(path, mode); err != nil {
+		t.Fatalf("Chmod: %v", err)
+	}
+	return mtime
+}
+
+func assertNoContentTransfer(t *testing.T, srv *fakeSyncServer) {
+	t.Helper()
+	for _, r := range srv.snapshotRequests() {
+		switch r.RequestType.(type) {
+		case *agentpb.FileSyncRequest_Commit, *agentpb.FileSyncRequest_Chunk:
+			t.Fatalf("unexpected content transfer request %T", r.RequestType)
+		}
+	}
 }
 
 func equalStrings(got, want []string) bool {

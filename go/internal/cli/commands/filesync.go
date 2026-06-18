@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/dustin/go-humanize"
@@ -28,12 +29,20 @@ type fileSyncEntry struct {
 	remotePath string // agent-relative path (full path for file; prefix for dir)
 }
 
-const fileSyncChunkSize = 4 * 1024 * 1024
+type fileSyncOptions struct {
+	checksum bool
+}
+
+const (
+	fileSyncChunkSize             = 4 * 1024 * 1024
+	fileSyncChecksumEnv           = "WENDY_FILE_SYNC_CHECKSUM"
+	fileSyncQuickCheckFeatureName = "file-sync-quick-check"
+)
 
 // buildLocalManifest walks root (a directory) and returns a FileSyncEntry for
-// every regular file found: path relative to root, size, SHA256 bytes, and
-// Unix permission bits as uint32. Symlinks and non-regular files are skipped.
-func buildLocalManifest(root string) ([]*agentpb.FileSyncEntry, error) {
+// every regular file found: path relative to root, cheap metadata, and
+// optionally SHA256 bytes. Symlinks and non-regular files are skipped.
+func buildLocalManifest(root string, includeHash bool) ([]*agentpb.FileSyncEntry, error) {
 	var entries []*agentpb.FileSyncEntry
 
 	err := fs.WalkDir(os.DirFS(root), ".", func(path string, d fs.DirEntry, err error) error {
@@ -52,30 +61,47 @@ func buildLocalManifest(root string) ([]*agentpb.FileSyncEntry, error) {
 			return fmt.Errorf("stat %s: %w", path, err)
 		}
 
-		absPath := filepath.Join(root, path)
-		h := sha256.New()
-		f, err := os.Open(absPath)
-		if err != nil {
-			return fmt.Errorf("open %s: %w", absPath, err)
-		}
-		defer f.Close()
-
-		if _, err := io.Copy(h, f); err != nil {
-			return fmt.Errorf("hashing %s: %w", absPath, err)
+		entry := fileSyncManifestEntry(path, info)
+		if includeHash {
+			absPath := filepath.Join(root, path)
+			sum, err := hashLocalFileSHA256(absPath)
+			if err != nil {
+				return err
+			}
+			entry.Sha256 = sum
 		}
 
-		entries = append(entries, &agentpb.FileSyncEntry{
-			Path:   path,
-			Size:   info.Size(),
-			Sha256: append([]byte(nil), h.Sum(nil)...),
-			Mode:   uint32(info.Mode().Perm()),
-		})
+		entries = append(entries, entry)
 		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
 	return entries, nil
+}
+
+func fileSyncManifestEntry(path string, info fs.FileInfo) *agentpb.FileSyncEntry {
+	mtime := info.ModTime().UnixNano()
+	return &agentpb.FileSyncEntry{
+		Path:          path,
+		Size:          info.Size(),
+		Mode:          uint32(info.Mode().Perm()),
+		MtimeUnixNano: &mtime,
+	}
+}
+
+func hashLocalFileSHA256(filename string) ([]byte, error) {
+	h := sha256.New()
+	f, err := os.Open(filename)
+	if err != nil {
+		return nil, fmt.Errorf("open %s: %w", filename, err)
+	}
+	defer f.Close()
+
+	if _, err := io.Copy(h, f); err != nil {
+		return nil, fmt.Errorf("hashing %s: %w", filename, err)
+	}
+	return append([]byte(nil), h.Sum(nil)...), nil
 }
 
 type modeOnlyChange struct {
@@ -89,11 +115,15 @@ type manifestDiff struct {
 	contentTransfers []string
 	modeOnly         []modeOnlyChange
 	staleRemote      []string
+	quickSkipped     int
 }
 
-// diffManifests compares the full file identity and classifies files into
-// content transfers, mode-only changes, and stale remote files.
-func diffManifests(local, remote *agentpb.FileSyncManifest) manifestDiff {
+// diffManifests classifies files into content transfers, mode-only changes,
+// quick-check skips, and stale remote files. In the default mode it follows
+// rsync's normal quick check: path + size + mtime + mode. In checksum mode, or
+// when talking to an older agent that lacks mtime metadata, it falls back to
+// SHA256 comparison.
+func diffManifests(local, remote *agentpb.FileSyncManifest, checksum bool) manifestDiff {
 	remoteByPath := make(map[string]*agentpb.FileSyncEntry, len(remote.GetFiles()))
 	for _, e := range remote.GetFiles() {
 		remoteByPath[e.Path] = e
@@ -109,7 +139,15 @@ func diffManifests(local, remote *agentpb.FileSyncManifest) manifestDiff {
 			continue
 		}
 
-		sameContent := remoteEntry.Size == e.Size && bytes.Equal(remoteEntry.Sha256, e.Sha256)
+		sameContent := false
+		usedQuickCheck := false
+		if !checksum && hasFileSyncMtime(e) && hasFileSyncMtime(remoteEntry) {
+			usedQuickCheck = true
+			sameContent = remoteEntry.Size == e.Size && remoteEntry.GetMtimeUnixNano() == e.GetMtimeUnixNano()
+		} else {
+			sameContent = remoteEntry.Size == e.Size && len(remoteEntry.Sha256) == sha256.Size && len(e.Sha256) == sha256.Size && bytes.Equal(remoteEntry.Sha256, e.Sha256)
+		}
+
 		sameMode := remoteEntry.Mode == e.Mode
 		switch {
 		case !sameContent:
@@ -121,6 +159,8 @@ func diffManifests(local, remote *agentpb.FileSyncManifest) manifestDiff {
 				newMode: e.Mode,
 				entry:   e,
 			})
+		case usedQuickCheck:
+			diff.quickSkipped++
 		}
 	}
 
@@ -138,6 +178,10 @@ func diffManifests(local, remote *agentpb.FileSyncManifest) manifestDiff {
 	return diff
 }
 
+func hasFileSyncMtime(e *agentpb.FileSyncEntry) bool {
+	return e != nil && e.MtimeUnixNano != nil
+}
+
 // syncFiles drives a complete SyncFiles session:
 //  1. Builds the combined local manifest from all entries.
 //  2. Exchanges it with the agent (agent replies with its own manifest).
@@ -151,12 +195,23 @@ func syncFiles(
 	conn *grpcclient.AgentConnection,
 	appID string,
 	entries []fileSyncEntry,
+	opts ...fileSyncOptions,
 ) error {
+	checksumMode := fileSyncChecksumMode()
+	if len(opts) > 0 && opts[0].checksum {
+		checksumMode = true
+	}
+	quickCheck := !checksumMode && fileSyncAgentSupportsQuickCheck(ctx, conn)
+	includeHashes := checksumMode || !quickCheck
+
 	// Build the combined local manifest and a map from agent-relative path → local abs path.
-	localManifest, localFiles, err := buildCombinedManifest(entries)
+	manifestStart := time.Now()
+	localManifest, localFiles, err := buildCombinedManifest(entries, includeHashes)
 	if err != nil {
 		return fmt.Errorf("building local manifest: %w", err)
 	}
+	manifestDuration := time.Since(manifestStart)
+	hashedFiles := countManifestHashes(localManifest)
 
 	// Open bidi stream.
 	stream, err := conn.FileSyncService.SyncFiles(ctx)
@@ -170,6 +225,7 @@ func syncFiles(
 			Start: &agentpb.FileSyncStart{
 				AppId:    appID,
 				Manifest: localManifest,
+				Checksum: checksumMode,
 			},
 		},
 	}); err != nil {
@@ -187,7 +243,17 @@ func syncFiles(
 	}
 
 	// Compute diff.
-	diff := diffManifests(localManifest, agentManifestMsg.Manifest)
+	diffStart := time.Now()
+	diff := diffManifests(localManifest, agentManifestMsg.Manifest, checksumMode)
+	diffDuration := time.Since(diffStart)
+
+	if len(diff.contentTransfers) > 0 && !includeHashes {
+		newHashes, err := ensureLocalHashes(localManifest, localFiles, diff.contentTransfers)
+		if err != nil {
+			return fmt.Errorf("hashing changed files: %w", err)
+		}
+		hashedFiles += newHashes
+	}
 
 	if len(diff.contentTransfers) == 0 && len(diff.modeOnly) == 0 && len(diff.staleRemote) == 0 {
 		if err := stream.CloseSend(); err != nil {
@@ -203,6 +269,7 @@ func syncFiles(
 			}
 		}
 		if len(localManifest.GetFiles()) > 0 || len(agentManifestMsg.Manifest.GetFiles()) > 0 {
+			printFileSyncSummary(localManifest, manifestDuration, diffDuration, diff.quickSkipped, hashedFiles, 0)
 			cliLogln("Files up to date.")
 		}
 		return nil
@@ -312,9 +379,10 @@ func syncFiles(
 		if err := stream.Send(&agentpb.FileSyncRequest{
 			RequestType: &agentpb.FileSyncRequest_Commit{
 				Commit: &agentpb.FileSyncCommit{
-					Path:   agentPath,
-					Sha256: entry.Sha256,
-					Size:   entry.Size,
+					Path:          agentPath,
+					Sha256:        entry.Sha256,
+					Size:          entry.Size,
+					MtimeUnixNano: entry.MtimeUnixNano,
 				},
 			},
 		}); err != nil {
@@ -344,10 +412,11 @@ func syncFiles(
 		if err := stream.Send(&agentpb.FileSyncRequest{
 			RequestType: &agentpb.FileSyncRequest_Chmod{
 				Chmod: &agentpb.FileSyncChmod{
-					Path:   change.path,
-					Mode:   change.entry.Mode,
-					Size:   change.entry.Size,
-					Sha256: change.entry.Sha256,
+					Path:          change.path,
+					Mode:          change.entry.Mode,
+					Size:          change.entry.Size,
+					Sha256:        change.entry.Sha256,
+					MtimeUnixNano: change.entry.MtimeUnixNano,
 				},
 			},
 		}); err != nil {
@@ -397,6 +466,9 @@ func syncFiles(
 	if fileCount > 0 {
 		cliLogln("Total: %s in %d file(s)", humanize.Bytes(uint64(totalBytes)), fileCount)
 	}
+	if len(localManifest.GetFiles()) > 0 || len(agentManifestMsg.Manifest.GetFiles()) > 0 {
+		printFileSyncSummary(localManifest, manifestDuration, diffDuration, diff.quickSkipped, hashedFiles, sentBytes)
+	}
 	return nil
 }
 
@@ -404,7 +476,7 @@ func syncFiles(
 // and returns:
 //   - the combined FileSyncManifest for the FileSyncStart message
 //   - a map from agent-relative path → absolute local path (for chunk transfer)
-func buildCombinedManifest(entries []fileSyncEntry) (*agentpb.FileSyncManifest, map[string]string, error) {
+func buildCombinedManifest(entries []fileSyncEntry, includeHash bool) (*agentpb.FileSyncManifest, map[string]string, error) {
 	var files []*agentpb.FileSyncEntry
 	localFiles := make(map[string]string)
 
@@ -417,27 +489,20 @@ func buildCombinedManifest(entries []fileSyncEntry) (*agentpb.FileSyncManifest, 
 		if !info.IsDir() {
 			// Single file: compute the entry directly.
 			agentPath := e.remotePath
-			h := sha256.New()
-			f, err := os.Open(e.localPath)
-			if err != nil {
-				return nil, nil, fmt.Errorf("open %s: %w", e.localPath, err)
+			entry := fileSyncManifestEntry(agentPath, info)
+			if includeHash {
+				sum, err := hashLocalFileSHA256(e.localPath)
+				if err != nil {
+					return nil, nil, err
+				}
+				entry.Sha256 = sum
 			}
-			if _, err := io.Copy(h, f); err != nil {
-				f.Close()
-				return nil, nil, fmt.Errorf("hashing %s: %w", e.localPath, err)
-			}
-			f.Close()
 
-			files = append(files, &agentpb.FileSyncEntry{
-				Path:   agentPath,
-				Size:   info.Size(),
-				Sha256: append([]byte(nil), h.Sum(nil)...),
-				Mode:   uint32(info.Mode().Perm()),
-			})
+			files = append(files, entry)
 			localFiles[agentPath] = e.localPath
 		} else {
 			// Directory: walk and prefix paths.
-			subEntries, err := buildLocalManifest(e.localPath)
+			subEntries, err := buildLocalManifest(e.localPath, includeHash)
 			if err != nil {
 				return nil, nil, fmt.Errorf("building manifest for %s: %w", e.localPath, err)
 			}
@@ -457,6 +522,79 @@ func buildCombinedManifest(entries []fileSyncEntry) (*agentpb.FileSyncManifest, 
 	}
 
 	return &agentpb.FileSyncManifest{Files: files}, localFiles, nil
+}
+
+func ensureLocalHashes(manifest *agentpb.FileSyncManifest, localFiles map[string]string, paths []string) (int, error) {
+	entries := make(map[string]*agentpb.FileSyncEntry, len(manifest.GetFiles()))
+	for _, e := range manifest.GetFiles() {
+		entries[e.GetPath()] = e
+	}
+
+	var hashed int
+	for _, p := range paths {
+		entry := entries[p]
+		if entry == nil || len(entry.Sha256) == sha256.Size {
+			continue
+		}
+		localPath, ok := localFiles[p]
+		if !ok {
+			return hashed, fmt.Errorf("no local path for %q", p)
+		}
+		sum, err := hashLocalFileSHA256(localPath)
+		if err != nil {
+			return hashed, err
+		}
+		entry.Sha256 = sum
+		hashed++
+	}
+	return hashed, nil
+}
+
+func countManifestHashes(manifest *agentpb.FileSyncManifest) int {
+	count := 0
+	for _, e := range manifest.GetFiles() {
+		if len(e.GetSha256()) == sha256.Size {
+			count++
+		}
+	}
+	return count
+}
+
+func fileSyncChecksumMode() bool {
+	value := strings.TrimSpace(strings.ToLower(os.Getenv(fileSyncChecksumEnv)))
+	switch value {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+func fileSyncAgentSupportsQuickCheck(ctx context.Context, conn *grpcclient.AgentConnection) bool {
+	if conn == nil || conn.AgentService == nil {
+		return false
+	}
+	resp, err := conn.AgentService.GetAgentVersion(ctx, &agentpb.GetAgentVersionRequest{})
+	if err != nil {
+		return false
+	}
+	for _, feature := range resp.GetFeatureset() {
+		if feature == fileSyncQuickCheckFeatureName {
+			return true
+		}
+	}
+	return false
+}
+
+func printFileSyncSummary(manifest *agentpb.FileSyncManifest, manifestDuration, diffDuration time.Duration, quickSkipped, hashedFiles int, transferredBytes int64) {
+	cliLogln("File sync: stat manifest %d file(s) in %s; diff in %s; quick-check skipped %d; hashed %d; transferred %s.",
+		len(manifest.GetFiles()),
+		manifestDuration.Round(time.Millisecond),
+		diffDuration.Round(time.Millisecond),
+		quickSkipped,
+		hashedFiles,
+		humanize.Bytes(uint64(transferredBytes)),
+	)
 }
 
 // printFileSyncProgress prints a single-line progress update for the current file.

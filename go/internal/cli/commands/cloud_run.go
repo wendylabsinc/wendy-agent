@@ -39,6 +39,7 @@ func newCloudRunCmd() *cobra.Command {
 	cmd.Flags().StringVar(&opts.prefix, "prefix", "", "Project directory instead of current working directory")
 	cmd.Flags().StringVar(&opts.product, "product", "", "Swift Package Manager product to build and run")
 	cmd.Flags().StringSliceVar(&opts.userArgs, "user-args", nil, "Extra arguments to pass to the container")
+	cmd.Flags().BoolVar(&opts.checksum, "checksum", false, "Use SHA256 checksums for wendy.json file sync instead of metadata quick-check")
 	cmd.Flags().StringVar(&cloudGRPC, "cloud-grpc", "", "Cloud gRPC endpoint (required when multiple auth sessions exist)")
 	cmd.Flags().StringVar(&deviceName, "device", "", "Device name (skips interactive picker)")
 	cmd.Flags().StringVar(&brokerURL, "broker-url", os.Getenv("WENDY_BROKER_URL"), "Tunnel broker host:port")

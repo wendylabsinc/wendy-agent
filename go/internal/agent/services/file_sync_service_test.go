@@ -47,6 +47,7 @@ func TestFileSyncService_WritesCommittedFile(t *testing.T) {
 
 	data := []byte("hello\n")
 	sum := sha256.Sum256(data)
+	mtime := int64(1_700_000_000_123_456_789)
 	stream, err := client.SyncFiles(context.Background())
 	if err != nil {
 		t.Fatalf("SyncFiles: %v", err)
@@ -54,7 +55,7 @@ func TestFileSyncService_WritesCommittedFile(t *testing.T) {
 	if err := stream.Send(&agentpb.FileSyncRequest{RequestType: &agentpb.FileSyncRequest_Start{Start: &agentpb.FileSyncStart{
 		AppId: "com.example.app",
 		Manifest: &agentpb.FileSyncManifest{Files: []*agentpb.FileSyncEntry{{
-			Path: "config/settings.txt", Size: int64(len(data)), Sha256: sum[:], Mode: 0o600,
+			Path: "config/settings.txt", Size: int64(len(data)), Sha256: sum[:], Mode: 0o600, MtimeUnixNano: &mtime,
 		}}},
 	}}}); err != nil {
 		t.Fatalf("send start: %v", err)
@@ -68,7 +69,7 @@ func TestFileSyncService_WritesCommittedFile(t *testing.T) {
 		t.Fatalf("send chunk: %v", err)
 	}
 	if err := stream.Send(&agentpb.FileSyncRequest{RequestType: &agentpb.FileSyncRequest_Commit{Commit: &agentpb.FileSyncCommit{
-		Path: "config/settings.txt", Size: int64(len(data)), Sha256: sum[:],
+		Path: "config/settings.txt", Size: int64(len(data)), Sha256: sum[:], MtimeUnixNano: &mtime,
 	}}}); err != nil {
 		t.Fatalf("send commit: %v", err)
 	}
@@ -99,6 +100,9 @@ func TestFileSyncService_WritesCommittedFile(t *testing.T) {
 	}
 	if info.Mode().Perm() != 0o600 {
 		t.Fatalf("mode = %o, want 600", info.Mode().Perm())
+	}
+	if got := info.ModTime().UnixNano(); got != mtime {
+		t.Fatalf("mtime = %d, want %d", got, mtime)
 	}
 }
 

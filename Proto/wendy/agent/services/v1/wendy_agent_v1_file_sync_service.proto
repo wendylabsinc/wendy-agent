@@ -16,8 +16,9 @@ service WendyFileSyncService {
 message FileSyncEntry {
   string path   = 1; // relative to app working directory
   int64  size   = 2;
-  bytes  sha256 = 3; // exactly 32 bytes
+  bytes  sha256 = 3; // exactly 32 bytes when checksum data is present
   uint32 mode   = 4; // unix file permissions (e.g. 0755)
+  optional int64 mtime_unix_nano = 5; // file modification time for rsync-style quick check
 }
 
 message FileSyncRequest {
@@ -35,6 +36,7 @@ message FileSyncRequest {
 message FileSyncStart {
   string           app_id   = 1;
   FileSyncManifest manifest = 2;
+  bool             checksum = 3; // request full checksum comparison instead of metadata quick check
 }
 
 // FileSyncChunk carries a slice of a file being transferred along with the
@@ -52,6 +54,7 @@ message FileSyncCommit {
   string path   = 1;
   bytes  sha256 = 2; // exactly 32 bytes
   int64  size   = 3;
+  optional int64 mtime_unix_nano = 4;
 }
 
 // FileSyncChmod applies a metadata-only mode change for an unchanged file.
@@ -59,7 +62,8 @@ message FileSyncChmod {
   string path   = 1;
   uint32 mode   = 2;
   int64  size   = 3;
-  bytes  sha256 = 4; // exactly 32 bytes
+  bytes  sha256 = 4; // exactly 32 bytes when checksum data is present
+  optional int64 mtime_unix_nano = 5;
 }
 
 // FileSyncDelete removes the listed stale files from the app working directory.

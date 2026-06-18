@@ -311,7 +311,7 @@ func runMacOSXcodeWithAgent(ctx context.Context, conn *grpcclient.AgentConnectio
 	}
 
 	// Sync files to the device.
-	if err := syncFiles(ctx, conn, appCfg.AppID, syncEntries); err != nil {
+	if err := syncFiles(ctx, conn, appCfg.AppID, syncEntries, fileSyncOptions{checksum: opts.checksum}); err != nil {
 		return fmt.Errorf("syncing files: %w", err)
 	}
 

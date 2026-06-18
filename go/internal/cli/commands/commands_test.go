@@ -69,7 +69,7 @@ func TestNewRunCmd(t *testing.T) {
 	}
 
 	// Verify expected flags exist.
-	expectedFlags := []string{"build-type", "builder", "debug", "deploy", "detach", "restart-unless-stopped", "restart-on-failure", "no-restart", "prefix", "user-args"}
+	expectedFlags := []string{"build-type", "builder", "debug", "deploy", "detach", "restart-unless-stopped", "restart-on-failure", "no-restart", "prefix", "user-args", "checksum"}
 	for _, name := range expectedFlags {
 		if cmd.Flags().Lookup(name) == nil {
 			t.Errorf("missing flag %q", name)

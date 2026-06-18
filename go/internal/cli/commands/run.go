@@ -488,6 +488,7 @@ type runOptions struct {
 	product              string
 	service              string
 	userArgs             []string
+	checksum             bool
 	// quietBuild suppresses the image build (buildx) output, surfacing it only
 	// when the build fails. Set by `wendy watch` to keep the redeploy loop quiet.
 	quietBuild bool
@@ -519,6 +520,7 @@ func newRunCmd() *cobra.Command {
 	cmd.Flags().StringVar(&opts.product, "product", "", "Swift Package Manager product to build and run")
 	cmd.Flags().StringVar(&opts.service, "service", "", "Build and run only the named service and its dependencies (multi-service projects)")
 	cmd.Flags().StringSliceVar(&opts.userArgs, "user-args", nil, "Extra arguments to pass to the container")
+	cmd.Flags().BoolVar(&opts.checksum, "checksum", false, "Use SHA256 checksums for wendy.json file sync instead of metadata quick-check")
 
 	return cmd
 }
@@ -950,7 +952,7 @@ func runSwiftWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cw
 	// from localhost:<regPort> when creating the container.
 	deviceImage := fmt.Sprintf("localhost:%d/%s:latest", regPort, strings.ToLower(product))
 
-	if err := syncWendyJSONFilesForLinux(ctx, conn, cwd, appCfg); err != nil {
+	if err := syncWendyJSONFilesForLinux(ctx, conn, cwd, appCfg, opts); err != nil {
 		return err
 	}
 
@@ -1025,7 +1027,7 @@ func runMacOSSwiftPMWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 	}
 
 	// Sync files to the device.
-	if err := syncFiles(ctx, conn, appCfg.AppID, syncEntries); err != nil {
+	if err := syncFiles(ctx, conn, appCfg.AppID, syncEntries, fileSyncOptions{checksum: opts.checksum}); err != nil {
 		return fmt.Errorf("syncing files: %w", err)
 	}
 
@@ -1090,7 +1092,7 @@ func pathWithinDirectory(path, dir string) bool {
 	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
 }
 
-func syncWendyJSONFilesForLinux(ctx context.Context, conn *grpcclient.AgentConnection, cwd string, appCfg *appconfig.AppConfig) error {
+func syncWendyJSONFilesForLinux(ctx context.Context, conn *grpcclient.AgentConnection, cwd string, appCfg *appconfig.AppConfig, opts runOptions) error {
 	entries := make([]fileSyncEntry, 0, len(appCfg.Files))
 	for _, f := range appCfg.Files {
 		entries = append(entries, fileSyncEntry{
@@ -1099,7 +1101,7 @@ func syncWendyJSONFilesForLinux(ctx context.Context, conn *grpcclient.AgentConne
 		})
 	}
 
-	err := syncFiles(ctx, conn, appCfg.AppID, entries)
+	err := syncFiles(ctx, conn, appCfg.AppID, entries, fileSyncOptions{checksum: opts.checksum})
 	if err != nil {
 		// Empty manifests are used to clear stale files after users remove the
 		// files block. Do not make otherwise-normal runs fail against older agents
@@ -1516,7 +1518,7 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	// The agent pulls from localhost:<regPort>.
 	deviceImage := fmt.Sprintf("localhost:%d/%s:latest", regPort, repo)
 
-	if err := syncWendyJSONFilesForLinux(ctx, conn, cwd, appCfg); err != nil {
+	if err := syncWendyJSONFilesForLinux(ctx, conn, cwd, appCfg, opts); err != nil {
 		return err
 	}
 

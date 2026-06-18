@@ -215,7 +215,7 @@ func detectCUDAVersion() string {
 }
 
 func detectFeatureset() []string {
-	var features []string
+	features := []string{"file-sync-quick-check"}
 
 	if _, err := os.Stat("/dev/nvidia0"); err == nil {
 		features = append(features, "gpu")

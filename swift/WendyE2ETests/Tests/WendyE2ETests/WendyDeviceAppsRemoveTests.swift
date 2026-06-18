@@ -71,7 +71,7 @@ struct `'wendy device apps remove'` {
     /**
      Removing an application also removes its app-scoped synced file data from
      the agent. This cleanup happens regardless of `--delete-volumes` because
-     top-level `wendy.json.files` are deployment inputs, while persistent
+     top-level `wendy.json.files` are runtime app files, while persistent
      volumes and other apps remain intact unless their explicit cleanup flags
      are provided.
      */
@@ -187,7 +187,7 @@ struct `'wendy device apps remove'` {
 
     /**
      Removing an application without `--delete-volumes` removes synced
-     deployment inputs while preserving persistent volume data for the same
+     runtime app files while preserving persistent volume data for the same
      app. This keeps `wendy.json.files` cleanup independent from durable app
      state cleanup.
      */
