@@ -473,6 +473,9 @@ func main() {
 		agentServer = grpc.NewServer(
 			grpc.UnaryInterceptor(interceptor.UnaryErrorInterceptor(logger)),
 			grpc.StreamInterceptor(interceptor.StreamErrorInterceptor(logger)),
+			// Match the Swift Mac agent request payload limit so 4 MiB
+			// file-sync chunks have room for protobuf framing.
+			grpc.MaxRecvMsgSize(16*1024*1024),
 			grpc.InitialWindowSize(8*1024*1024),
 			grpc.InitialConnWindowSize(16*1024*1024),
 			grpc.KeepaliveParams(keepalive.ServerParameters{

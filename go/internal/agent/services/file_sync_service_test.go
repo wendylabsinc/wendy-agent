@@ -22,14 +22,20 @@ func startFileSyncTestServer(t *testing.T) (agentpb.WendyFileSyncServiceClient, 
 	oldRoot := fileSyncRoot
 	fileSyncRoot = root
 
-	lis := bufconn.Listen(1024 * 1024)
-	srv := grpc.NewServer()
+	lis := bufconn.Listen(32 * 1024 * 1024)
+	srv := grpc.NewServer(
+		grpc.MaxRecvMsgSize(16*1024*1024),
+		grpc.MaxSendMsgSize(16*1024*1024),
+	)
 	agentpb.RegisterWendyFileSyncServiceServer(srv, NewFileSyncService(nil))
 	go func() { _ = srv.Serve(lis) }()
 
 	conn, err := grpc.NewClient("passthrough:///bufnet", grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
 		return lis.Dial()
-	}), grpc.WithInsecure())
+	}), grpc.WithInsecure(), grpc.WithDefaultCallOptions(
+		grpc.MaxCallRecvMsgSize(16*1024*1024),
+		grpc.MaxCallSendMsgSize(16*1024*1024),
+	))
 	if err != nil {
 		t.Fatalf("grpc.NewClient: %v", err)
 	}
@@ -103,6 +109,45 @@ func TestFileSyncService_WritesCommittedFile(t *testing.T) {
 	}
 	if got := info.ModTime().UnixNano(); got != mtime {
 		t.Fatalf("mtime = %d, want %d", got, mtime)
+	}
+}
+
+func TestFileSyncService_AcceptsMaximumCLISizedChunk(t *testing.T) {
+	client, cleanup := startFileSyncTestServer(t)
+	defer cleanup()
+
+	data := make([]byte, fileSyncMaxChunkSize)
+	for i := range data {
+		data[i] = byte(i)
+	}
+	sum := sha256.Sum256(data)
+	stream, err := client.SyncFiles(context.Background())
+	if err != nil {
+		t.Fatalf("SyncFiles: %v", err)
+	}
+	if err := stream.Send(&agentpb.FileSyncRequest{RequestType: &agentpb.FileSyncRequest_Start{Start: &agentpb.FileSyncStart{
+		AppId: "com.example.large",
+		Manifest: &agentpb.FileSyncManifest{Files: []*agentpb.FileSyncEntry{{
+			Path: "models/model.bin", Size: int64(len(data)), Sha256: sum[:], Mode: 0o644,
+		}}},
+	}}}); err != nil {
+		t.Fatalf("send start: %v", err)
+	}
+	if resp, err := stream.Recv(); err != nil || resp.GetManifest() == nil {
+		t.Fatalf("recv manifest = %v, %v", resp, err)
+	}
+	if err := stream.Send(&agentpb.FileSyncRequest{RequestType: &agentpb.FileSyncRequest_Chunk{Chunk: &agentpb.FileSyncChunk{
+		Path: "models/model.bin", Data: data, Sequence: 0, CumulativeSize: int64(len(data)), Sha256: sum[:],
+	}}}); err != nil {
+		t.Fatalf("send max-sized chunk: %v", err)
+	}
+	if err := stream.Send(&agentpb.FileSyncRequest{RequestType: &agentpb.FileSyncRequest_Commit{Commit: &agentpb.FileSyncCommit{
+		Path: "models/model.bin", Size: int64(len(data)), Sha256: sum[:],
+	}}}); err != nil {
+		t.Fatalf("send commit: %v", err)
+	}
+	if resp, err := stream.Recv(); err != nil || resp.GetAck().GetPath() != "models/model.bin" {
+		t.Fatalf("recv ack = %v, %v", resp, err)
 	}
 }
 

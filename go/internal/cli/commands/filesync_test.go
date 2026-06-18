@@ -14,7 +14,9 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
@@ -265,6 +267,40 @@ func (s *fakeSyncServer) snapshotRequests() []*agentpb.FileSyncRequest {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]*agentpb.FileSyncRequest(nil), s.received...)
+}
+
+type eofFileSyncStream struct {
+	grpc.ClientStream
+	recvResp *agentpb.FileSyncResponse
+	recvErr  error
+}
+
+func (s *eofFileSyncStream) Send(*agentpb.FileSyncRequest) error {
+	return io.EOF
+}
+
+func (s *eofFileSyncStream) Recv() (*agentpb.FileSyncResponse, error) {
+	return s.recvResp, s.recvErr
+}
+
+func TestSendFileSyncRequest_ReportsAgentStatusAfterEOF(t *testing.T) {
+	stream := &eofFileSyncStream{
+		recvErr: status.Error(codes.ResourceExhausted, "received message larger than max"),
+	}
+
+	err := sendFileSyncRequest(stream, &agentpb.FileSyncRequest{})
+	if err == nil {
+		t.Fatal("expected send error")
+	}
+	if !strings.Contains(err.Error(), "stream closed by agent") {
+		t.Fatalf("error = %v, want stream closed context", err)
+	}
+	if !strings.Contains(err.Error(), "ResourceExhausted") || !strings.Contains(err.Error(), "received message larger than max") {
+		t.Fatalf("error = %v, want propagated gRPC status", err)
+	}
+	if strings.Contains(err.Error(), "EOF") {
+		t.Fatalf("error = %v, want actionable status instead of bare EOF", err)
+	}
 }
 
 func startFakeServer(t *testing.T, srv *fakeSyncServer) (*grpcclient.AgentConnection, func()) {

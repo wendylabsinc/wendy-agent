@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -182,6 +183,31 @@ func hasFileSyncMtime(e *agentpb.FileSyncEntry) bool {
 	return e != nil && e.MtimeUnixNano != nil
 }
 
+func sendFileSyncRequest(stream agentpb.WendyFileSyncService_SyncFilesClient, req *agentpb.FileSyncRequest) error {
+	if err := stream.Send(req); err != nil {
+		return explainFileSyncSendError(stream, err)
+	}
+	return nil
+}
+
+func explainFileSyncSendError(stream agentpb.WendyFileSyncService_SyncFilesClient, sendErr error) error {
+	if !errors.Is(sendErr, io.EOF) {
+		return sendErr
+	}
+
+	resp, recvErr := stream.Recv()
+	if recvErr != nil {
+		if errors.Is(recvErr, io.EOF) {
+			return fmt.Errorf("stream closed by agent without error details")
+		}
+		return fmt.Errorf("stream closed by agent: %w", recvErr)
+	}
+	if resp == nil {
+		return fmt.Errorf("stream closed by agent after empty response")
+	}
+	return fmt.Errorf("stream closed by agent after unexpected %T response", resp.GetResponseType())
+}
+
 // syncFiles drives a complete SyncFiles session:
 //  1. Builds the combined local manifest from all entries.
 //  2. Exchanges it with the agent (agent replies with its own manifest).
@@ -220,7 +246,7 @@ func syncFiles(
 	}
 
 	// Send FileSyncStart with the local manifest.
-	if err := stream.Send(&agentpb.FileSyncRequest{
+	if err := sendFileSyncRequest(stream, &agentpb.FileSyncRequest{
 		RequestType: &agentpb.FileSyncRequest_Start{
 			Start: &agentpb.FileSyncStart{
 				AppId:    appID,
@@ -326,7 +352,7 @@ func syncFiles(
 			}
 			fileSent += int64(len(data))
 			sentBytes += int64(len(data))
-			return stream.Send(&agentpb.FileSyncRequest{
+			return sendFileSyncRequest(stream, &agentpb.FileSyncRequest{
 				RequestType: &agentpb.FileSyncRequest_Chunk{
 					Chunk: &agentpb.FileSyncChunk{
 						Path:           agentPath,
@@ -376,7 +402,7 @@ func syncFiles(
 			return fmt.Errorf("file %q changed during transfer", agentPath)
 		}
 
-		if err := stream.Send(&agentpb.FileSyncRequest{
+		if err := sendFileSyncRequest(stream, &agentpb.FileSyncRequest{
 			RequestType: &agentpb.FileSyncRequest_Commit{
 				Commit: &agentpb.FileSyncCommit{
 					Path:          agentPath,
@@ -409,7 +435,7 @@ func syncFiles(
 
 	for _, change := range diff.modeOnly {
 		cliLogln("mode changed: %s %04o -> %04o", change.path, change.oldMode, change.newMode)
-		if err := stream.Send(&agentpb.FileSyncRequest{
+		if err := sendFileSyncRequest(stream, &agentpb.FileSyncRequest{
 			RequestType: &agentpb.FileSyncRequest_Chmod{
 				Chmod: &agentpb.FileSyncChmod{
 					Path:          change.path,
@@ -440,7 +466,7 @@ func syncFiles(
 		for _, path := range diff.staleRemote {
 			cliLogln("deleted: %s", path)
 		}
-		if err := stream.Send(&agentpb.FileSyncRequest{
+		if err := sendFileSyncRequest(stream, &agentpb.FileSyncRequest{
 			RequestType: &agentpb.FileSyncRequest_Delete{
 				Delete: &agentpb.FileSyncDelete{Paths: append([]string(nil), diff.staleRemote...)},
 			},
