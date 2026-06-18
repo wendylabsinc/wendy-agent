@@ -38,10 +38,6 @@ func newCloudDiscoverCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if len(auth.Certificates) == 0 {
-				return fmt.Errorf("auth entry has no certificates; re-run 'wendy auth login'")
-			}
-
 			if jsonOutput || !isInteractiveTerminal() {
 				return cloudDiscoverJSON(ctx, auth, all)
 			}

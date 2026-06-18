@@ -734,6 +734,9 @@ func newAuthUseCmd() *cobra.Command {
 				}
 			}
 
+			if len(chosen.Certificates) == 0 {
+				return fmt.Errorf("auth session %s has no certificates; re-run 'wendy auth login'", chosen.CloudGRPC)
+			}
 			cfg.DefaultCloudGRPC = chosen.CloudGRPC
 			if err := config.Save(cfg); err != nil {
 				return fmt.Errorf("saving config: %w", err)
