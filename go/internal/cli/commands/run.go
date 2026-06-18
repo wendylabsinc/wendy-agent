@@ -1092,6 +1092,43 @@ func pathWithinDirectory(path, dir string) bool {
 	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
 }
 
+type chunkDiffNoRegistryFallbackError struct {
+	err error
+}
+
+func (e chunkDiffNoRegistryFallbackError) Error() string {
+	return e.err.Error()
+}
+
+func (e chunkDiffNoRegistryFallbackError) Unwrap() error {
+	return e.err
+}
+
+func withoutChunkDiffRegistryFallback(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &chunkDiffNoRegistryFallbackError{err: err}
+}
+
+func shouldFallbackToRegistryAfterChunkDiff(err error) bool {
+	if err == nil {
+		return false
+	}
+	var noFallback *chunkDiffNoRegistryFallbackError
+	return !errors.As(err, &noFallback)
+}
+
+func shouldTryDetachedRunFastPath(appCfg *appconfig.AppConfig, opts runOptions, hashErr error) bool {
+	if !opts.detach || opts.deploy || hashErr != nil {
+		return false
+	}
+	// wendy.json.files are intentionally outside the image build fingerprint.
+	// Keep the normal deploy lifecycle when they are configured so wendy run can
+	// sync them before any container create/start path.
+	return len(appCfg.Files) == 0
+}
+
 func syncWendyJSONFilesForLinux(ctx context.Context, conn *grpcclient.AgentConnection, cwd string, appCfg *appconfig.AppConfig, opts runOptions) error {
 	entries := make([]fileSyncEntry, 0, len(appCfg.Files))
 	for _, f := range appCfg.Files {
@@ -1468,7 +1505,7 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	// the normal deploy below, so it can never deploy stale code.
 	deviceKey := deviceFingerprintKey(versionResp)
 	inputHash, hashErr := computeBuildInputHash(cwd, opts.dockerfile, platform, buildArgs)
-	if opts.detach && !opts.deploy && hashErr == nil {
+	if shouldTryDetachedRunFastPath(appCfg, opts, hashErr) {
 		if done, _ := tryDeployFastPath(ctx, conn, appCfg, deviceKey, inputHash, opts); done {
 			mark("fast-path (skipped build)")
 			return nil
@@ -1496,6 +1533,8 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 			// The deploy was cancelled (e.g. `wendy watch` superseded it with a
 			// newer change, or the user hit Ctrl-C). Don't fall back to a full
 			// registry push — just surface the cancellation.
+			return err
+		} else if !shouldFallbackToRegistryAfterChunkDiff(err) {
 			return err
 		} else {
 			cliLogln("Fast layer-diff deploy failed (%v); falling back to registry push.", err)
@@ -1907,10 +1946,25 @@ func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cw
 	}
 	mark("chunk+query+write")
 
+	err = runContainerFromChunkDiff(ctx, conn, cwd, appCfg, headers, imageConfig, opts)
+	mark("runcontainer (assemble+create+start[+readiness])")
+	return err
+}
+
+func runContainerFromChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cwd string, appCfg *appconfig.AppConfig, headers []*agentpb.RunContainerLayerHeader, imageConfig []byte, opts runOptions) error {
 	appConfigData, err := json.Marshal(appCfg)
 	if err != nil {
-		return err
+		return withoutChunkDiffRegistryFallback(err)
 	}
+
+	// The layer-diff RPC creates the container as part of RunContainer, so any
+	// wendy.json.files data must already exist on the device before that call.
+	// Treat sync failures as final deploy failures rather than falling back to a
+	// registry push, which would only obscure the real lifecycle error.
+	if err := syncWendyJSONFilesForLinux(ctx, conn, cwd, appCfg, opts); err != nil {
+		return withoutChunkDiffRegistryFallback(err)
+	}
+
 	imageName := strings.ToLower(appCfg.AppID) + ":latest"
 	// Carry the post-start agent-hook metadata so the agent runs the in-container
 	// hook on start, matching the registry path's StartContainer call.
@@ -1927,7 +1981,5 @@ func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cw
 	if err != nil {
 		return err
 	}
-	err = streamRunContainer(ctx, conn, stream, appCfg, opts)
-	mark("runcontainer (assemble+create+start[+readiness])")
-	return err
+	return streamRunContainer(ctx, conn, stream, appCfg, opts)
 }

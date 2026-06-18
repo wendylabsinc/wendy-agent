@@ -3,10 +3,19 @@ package commands
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net"
+	"os"
+	"path/filepath"
 	"runtime"
+	"sync"
 	"testing"
 
+	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
+	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 )
 
 func TestWendyPlatform(t *testing.T) {
@@ -202,5 +211,148 @@ func TestStartPostStartHook_NoHookReturnsNil(t *testing.T) {
 	cfg.Hooks.PostStart = &appconfig.HookCommand{}
 	if cmd := startPostStartHook(context.Background(), cfg, "h"); cmd != nil {
 		t.Errorf("startPostStartHook() = %v, want nil for empty PostStart", cmd)
+	}
+}
+
+type orderingContainerServer struct {
+	agentpb.UnimplementedWendyContainerServiceServer
+
+	syncServer *fakeSyncServer
+	mu         sync.Mutex
+	order      []string
+}
+
+func (s *orderingContainerServer) RunContainer(req *agentpb.RunContainerLayersRequest, stream grpc.ServerStreamingServer[agentpb.RunContainerLayersResponse]) error {
+	s.syncServer.mu.Lock()
+	synced := len(s.syncServer.ackedPaths) > 0
+	s.syncServer.mu.Unlock()
+	if !synced {
+		return fmt.Errorf("RunContainer called before file sync completed")
+	}
+
+	s.mu.Lock()
+	s.order = append(s.order, "run")
+	s.mu.Unlock()
+
+	return stream.Send(&agentpb.RunContainerLayersResponse{
+		ResponseType: &agentpb.RunContainerLayersResponse_Started_{
+			Started: &agentpb.RunContainerLayersResponse_Started{},
+		},
+	})
+}
+
+func startChunkDiffLifecycleTestServer(t *testing.T, syncSrv *fakeSyncServer, containerSrv *orderingContainerServer) (*grpcclient.AgentConnection, func()) {
+	t.Helper()
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("net.Listen: %v", err)
+	}
+
+	s := grpc.NewServer(
+		grpc.MaxRecvMsgSize(16*1024*1024),
+		grpc.MaxSendMsgSize(16*1024*1024),
+	)
+	agentpb.RegisterWendyAgentServiceServer(s, syncSrv)
+	agentpb.RegisterWendyFileSyncServiceServer(s, syncSrv)
+	agentpb.RegisterWendyContainerServiceServer(s, containerSrv)
+	go func() { _ = s.Serve(ln) }()
+
+	conn, err := grpc.NewClient(
+		ln.Addr().String(),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithDefaultCallOptions(
+			grpc.MaxCallRecvMsgSize(16*1024*1024),
+			grpc.MaxCallSendMsgSize(16*1024*1024),
+		),
+	)
+	if err != nil {
+		s.Stop()
+		_ = ln.Close()
+		t.Fatalf("grpc.NewClient: %v", err)
+	}
+
+	ac := &grpcclient.AgentConnection{
+		Conn:             conn,
+		Host:             "127.0.0.1",
+		AgentService:     agentpb.NewWendyAgentServiceClient(conn),
+		ContainerService: agentpb.NewWendyContainerServiceClient(conn),
+		FileSyncService:  agentpb.NewWendyFileSyncServiceClient(conn),
+	}
+
+	cleanup := func() {
+		_ = conn.Close()
+		s.Stop()
+		_ = ln.Close()
+	}
+	return ac, cleanup
+}
+
+func TestRunContainerFromChunkDiff_SyncsFilesBeforeRunContainer(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "model.bin"), []byte("weights"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	var orderMu sync.Mutex
+	order := []string{}
+	syncSrv := &fakeSyncServer{
+		onStart: func(*agentpb.FileSyncStart) {
+			orderMu.Lock()
+			order = append(order, "sync")
+			orderMu.Unlock()
+		},
+	}
+	containerSrv := &orderingContainerServer{syncServer: syncSrv}
+	conn, cleanup := startChunkDiffLifecycleTestServer(t, syncSrv, containerSrv)
+	defer cleanup()
+
+	appCfg := &appconfig.AppConfig{
+		AppID: "com.example.files",
+		Files: []appconfig.FileSyncEntry{{Path: "model.bin"}},
+	}
+	if err := runContainerFromChunkDiff(context.Background(), conn, dir, appCfg, nil, nil, runOptions{detach: true}); err != nil {
+		t.Fatalf("runContainerFromChunkDiff: %v", err)
+	}
+
+	containerSrv.mu.Lock()
+	for _, event := range containerSrv.order {
+		order = append(order, event)
+	}
+	containerSrv.mu.Unlock()
+
+	if got, want := fmt.Sprint(order), "[sync run]"; got != want {
+		t.Fatalf("order = %s, want %s", got, want)
+	}
+}
+
+func TestShouldTryDetachedRunFastPath_SkipsWhenFilesAreConfigured(t *testing.T) {
+	appCfg := &appconfig.AppConfig{
+		AppID: "com.example.files",
+		Files: []appconfig.FileSyncEntry{{Path: "model.bin"}},
+	}
+	if shouldTryDetachedRunFastPath(appCfg, runOptions{detach: true}, nil) {
+		t.Fatal("detached no-build fast path should not skip file sync when wendy.json.files are configured")
+	}
+
+	appCfg.Files = nil
+	if !shouldTryDetachedRunFastPath(appCfg, runOptions{detach: true}, nil) {
+		t.Fatal("detached no-build fast path should remain available without configured files")
+	}
+}
+
+func TestShouldFallbackToRegistryAfterChunkDiff(t *testing.T) {
+	plainErr := errors.New("chunk query failed")
+	if !shouldFallbackToRegistryAfterChunkDiff(plainErr) {
+		t.Fatal("plain chunk-diff errors should allow registry fallback")
+	}
+
+	sentinel := errors.New("syncing wendy.json files: boom")
+	syncErr := withoutChunkDiffRegistryFallback(sentinel)
+	if shouldFallbackToRegistryAfterChunkDiff(syncErr) {
+		t.Fatal("file-sync lifecycle errors should not allow registry fallback")
+	}
+	if !errors.Is(syncErr, sentinel) {
+		t.Fatal("no-fallback wrapper should preserve the original error")
 	}
 }
