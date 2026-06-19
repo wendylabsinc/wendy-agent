@@ -149,6 +149,52 @@ func TestParseFDT_Minimal(t *testing.T) {
 	}
 }
 
+// TestParseFDT_EmptyStrings verifies that a minimal DTB whose strings block is
+// empty (no property names) parses. Such a blob has off_dt_strings == totalsize,
+// which an over-strict bounds check (>= instead of >) wrongly rejects. Real
+// inputs hit this: e.g. the bundle's ~72-byte tegra264-mb1-bct-cprod DTB.
+func TestParseFDT_EmptyStrings(t *testing.T) {
+	be := binary.BigEndian
+	var st []byte
+	app := func(v uint32) {
+		var b [4]byte
+		be.PutUint32(b[:], v)
+		st = append(st, b[:]...)
+	}
+	app(fdtBeginNode)
+	st = append(st, 0, 0, 0, 0) // empty (root) name, 4-byte aligned
+	app(fdtEndNode)
+	app(fdtEnd)
+
+	const headerSize = 40
+	offStruct := uint32(headerSize)
+	offStrings := offStruct + uint32(len(st)) // strings block is empty -> == totalsize
+	totalSize := offStrings
+
+	var hdr [40]byte
+	be.PutUint32(hdr[0:], 0xd00dfeed)
+	be.PutUint32(hdr[4:], totalSize)
+	be.PutUint32(hdr[8:], offStruct)
+	be.PutUint32(hdr[12:], offStrings)
+	be.PutUint32(hdr[16:], headerSize)
+	be.PutUint32(hdr[20:], 17)
+	be.PutUint32(hdr[24:], 16)
+	be.PutUint32(hdr[32:], 0) // size_dt_strings = 0
+	be.PutUint32(hdr[36:], uint32(len(st)))
+
+	blob := append(append([]byte{}, hdr[:]...), st...)
+	fdt, err := dtb.ParseFDT(blob)
+	if err != nil {
+		t.Fatalf("ParseFDT(empty-strings DTB): %v", err)
+	}
+	if !fdt.HasNode("/") {
+		t.Error("root node not found in empty DTB")
+	}
+	if _, ok := fdt.PropertyU32("/", "nope"); ok {
+		t.Error("unexpected property in empty DTB")
+	}
+}
+
 // TestParseFDT_BadMagic verifies that a blob with a wrong magic number is
 // rejected with an appropriate error.
 func TestParseFDT_BadMagic(t *testing.T) {

@@ -73,7 +73,10 @@ func ParseFDT(data []byte) (*FDT, error) {
 		}
 	}
 
-	if int(hdr.OffDtStruct) >= len(data) || int(hdr.OffDtStrings) >= len(data) {
+	// The struct block must contain at least the FDT_END token, so its offset
+	// must be strictly within the blob. The strings block may be empty (a minimal
+	// DTB with no property names), in which case its offset equals the blob size.
+	if int(hdr.OffDtStruct) >= len(data) || int(hdr.OffDtStrings) > len(data) {
 		return nil, fmt.Errorf("fdt: offsets out of range (struct=%d, strings=%d, total=%d)",
 			hdr.OffDtStruct, hdr.OffDtStrings, len(data))
 	}
