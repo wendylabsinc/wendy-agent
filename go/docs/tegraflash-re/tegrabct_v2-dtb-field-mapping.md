@@ -511,3 +511,102 @@ name tables) from the binary rather than hand-typing them. Validate every cluste
 byte-for-byte against the reference `tegrabct_v2` output on real DTB inputs; the
 `--deviceprod`, SDRAM-pack, and `/emc-tables/` outputs especially should be treated as
 golden-output diffs rather than trusted from static analysis alone.
+
+## 7. Pinmux encoding (RE by perturbation)
+
+This section closes the `--pinmux` cluster (section 4.2 / 5.2) to byte-exact. It was
+reverse-engineered by disassembling `PinmuxT264CfgInitHandler` (`0x08072c34`),
+`PinmuxT264CfgPropertyHandler` (`0x08072e80`), `PinmuxT264CfgDeInitHandler`
+(`0x080732c5`), and `AddPinmuxRegValues.constprop.0` (`0x0807297b`), dumping the data
+tables, and validating every byte against the golden MB1 BCT pinmux region
+`[0x35c0, 0x4010)` (2050 non-zero bytes of a 2640-byte region). The Go port
+(`internal/cli/tegraflash/bct/pinmux.go`, tables in `pinmux_tables.go`) reproduces all
+2640 bytes exactly.
+
+### 7.1 Region layout
+
+The DeInit handler `rep movsd`s a `0x7d2`-dword (`0x1f48`-byte) staging buffer into the
+MB1 BCT at `0x35c0 + sku*0x1f48`. The buffer is a `u64` little-endian register-pair
+count followed by that many `{u32 addr, u32 value}` little-endian pairs. The golden
+carries 329 pairs for sku 0 (`8 + 329*8 = 2640` bytes); sku is read from the padctl node
+value at runtime and is 0 here (no `multi_sku_platform_data`). The pair list is built in
+two phases, in this order: GPIO controller writes first, then per-pin pinmux config words.
+
+### 7.2 Data tables (extracted from the binary)
+
+The Property handler's PIC base is `ebx = 0x8172c94`. Relevant tables:
+
+- **`gPinMuxAddrInfo`** @ `0x817b6f8`, 257 entries of stride `0x24`:
+  `{char* name(+0), char* func[5](+4..+0x14), u32 regOffset(+0x18), u32 regBaseIdx(+0x1c),
+  u8 flag(+0x20)}`. `func[0]` is the gpio/default slot; `func[1..4]` are the SFIO
+  functions matched by `nvidia,function`.
+- **`regAddrTable`** @ `0x8113c2c`, 8 u32:
+  `{0xac280000, 0x8c7a0000, 0xb0310000, 0xe82e0000, 0x8db80000, 0x80100000, ...}`.
+  A pin's register address is `regAddrTable[regBaseIdx] + regOffset`.
+- **`defValTable`** @ `0x8113c44`, `{u32 addr, u32 value}` pairs terminated by
+  `addr == 0xffffffff` (400 entries). The per-register default word; the linear search
+  takes the first matching address.
+- **Property name -> id table** @ `0x817db1c`, `{char* name, u32 id}` pairs:
+  `nvidia,pins`=7, `nvidia,function`=8, `nvidia,pull`=9, `nvidia,tristate`=10,
+  `nvidia,enable-input`=11, `nvidia,e-io-od`=12, `nvidia,drv-type`=13, `nvidia,e-lpbk`=14.
+- **GPIO group tables** (`gpioTab_*`): per controller base, the group base addresses
+  indexed by `gpioIndex>>3`. Controller dispatch table `gpioCtrlTable` =
+  `{0xac300000, 0x8cf00000, 0xb0320000, 0xe8300000}`.
+
+### 7.3 Per-pin config word
+
+For each pin node under `pinmux@ADDR/{common,unused_lowpower}/<pin>` (matched to
+`gPinMuxAddrInfo` by leaf name), in DTB child order:
+
+- `addr = regAddrTable[regBaseIdx] + regOffset`; `val = defValTable[addr]`.
+- **Init bit 0x400 (LPDR/park):** clear `0x400`, then set it iff `flag == 0`. The
+  reference then force-clears `0x400` for the `common` group's trailing **GPIO Pin
+  Configuration** section (see 7.5).
+- **`nvidia,function` (id 8):** clear bits `[1:0]`, OR the 0-based index of the matching
+  entry in `func[1..4]` (0 if none).
+- The remaining properties are read-modify-write bit-field inserts; an **absent property
+  leaves the default bit untouched** (the reference only RMWs a present property):
+  - `nvidia,pull` `<<2` mask `0xc`
+  - `nvidia,tristate` `<<4` mask `0x10`
+  - `nvidia,enable-input` `<<6` mask `0x40`
+  - `nvidia,e-io-od` `<<5` mask `0x20`
+  - `nvidia,drv-type` `<<8` mask `0x100`
+  - `nvidia,e-lpbk` `<<7` mask `0x80`
+
+### 7.4 The dp_aux_ch* (regBaseIdx == 5) pins
+
+Pins with `regBaseIdx == 5` (register base `0x80100000`, the shared DP-AUX block; their
+leaf names start `dp_aux_ch`) take a different path: the Init `0x400` logic is skipped and
+the Property handler ignores every property except `nvidia,function`. The emitted value is
+the bare `defValTable[addr]`, with bit 31 (`0x80000000`) set iff the selected function is
+not the default mux option, i.e. its 0-based index over `func[1..4]` is non-zero.
+Consequently each of these registers appears twice in the list (once for the `_p` pin and
+once for the `_n` pin) with identical value.
+
+### 7.5 The common SFIO/GPIO section split (the subtle bit)
+
+The reference splits the `common` group into a leading **SFIO Pin Configuration** section
+(keeps the `0x400` init bit) and a trailing **GPIO Pin Configuration** section (force-clears
+it). The source pinmux DTSI annotates the boundary with a `/* GPIO Pin Configuration */`
+comment, but that comment is stripped by the preprocessor and is **not present in the
+compiled DTB** that tegrabct consumes. The boundary is recoverable from the DTB child order
+alone: the GPIO section is the contiguous suffix of `common` that begins at the first pin
+whose `nvidia,function` is a reserved function (`rsvd*`). Every pin from there to the end of
+`common` clears `0x400`, including the three non-reserved display pins that fall inside the
+block (`soc_gpio250_pf0`/`dca_vsync`, `soc_gpio251_pf1`/`dca_hsync`,
+`dp_aux_ch1_hpd_pf4`/`dp_aux_ch1_hpd`). The port therefore tracks a sticky "in GPIO section"
+flag set on the first `rsvd*` function seen in `common`. `unused_lowpower` pins always keep
+`0x400` (flag is 0 for every entry).
+
+### 7.6 GPIO controller writes
+
+For each `gpio@ADDR/default` node (in DTB controller order, before the pinmux pins), the
+`gpio-input` / `gpio-output-low` / `gpio-output-high` cell arrays hold GPIO pin indices.
+For index `i`: `regBase = gpioTab[ADDR][i>>3] + (i&7)<<5`. Emissions:
+
+- `gpio-input` -> one pair `{regBase, 1}`
+- `gpio-output-low` -> three pairs `{regBase, 3}, {regBase+0xc, 0}, {regBase+0x10, 0}`
+- `gpio-output-high` -> three pairs `{regBase, 3}, {regBase+0xc, 0}, {regBase+0x10, 1}`
+
+Within a controller the order is all `gpio-input`, then all `gpio-output-low`, then all
+`gpio-output-high`, each in listed index order.
