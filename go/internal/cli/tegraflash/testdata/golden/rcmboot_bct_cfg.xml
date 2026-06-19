@@ -1,0 +1,47 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<bct_cfg>
+<brbct_cfg version="01.00.0000">
+    <brbct>br_bct.cfg</brbct>
+    <mb1bct>mb1_cold_boot_bct.cfg</mb1bct>
+    <mb2bct>mb2_cold_boot_bct.cfg</mb2bct>
+    <membct>mem_cold_boot_bct.cfg</membct>
+    <brcommand></brcommand>
+    <device>tegra264-mb1-bct-device-p3834-xxxx.dts</device>
+    <dev_param>tegra264-br-bct-common-l4t.dts</dev_param>
+    <deviceprod>tegra264-mb1-bct-cprod-p3834-xxxx-p4071-0000.dts</deviceprod>
+    <gpioint>tegra264-mb1-bct-gpioint-p3834-xxxx-p4071-0000.dts</gpioint>
+    <misc>tegra264-mb1-bct-misc-p3834-0008-p4071-0000.dts</misc>
+    <pinmux>tegra264-mb1-bct-pinmux-p3834-xxxx-p4071-0000.dts</pinmux>
+    <pmic>tegra264-mb1-bct-pmic-p3834-0008-p4071-0000.dts</pmic>
+    <prod>tegra264-mb1-bct-prod-p3834-xxxx-p4071-0000.dts</prod>
+    <scr>tegra264-mb2-bct-firewall-p3834-xxxx-p4071-0000.dts</scr>
+    <sdram>tegra264-p3834-0008-sdram-bct-l4t.dts</sdram>
+    <uphy>tegra264-mb1-bct-uphy-lanes-p4071-0000.dts</uphy>
+    <wb0sdram>tegra264-p3834-0008-sdram-bct-warmboot-l4t.dts</wb0sdram>
+    <pmc>tegra264-mb1-bct-padvoltage-p3834-xxxx-p4071-0000.dts</pmc>
+    <mb2bctcfg>tegra264-mb2-bct-misc-p3834-xxxx-p4071-0000.dts</mb2bctcfg>
+    <bpmp_mem_cfg>tegra264-p3834-0008-sdram-dfs.dts</bpmp_mem_cfg>
+    <minratchet></minratchet>
+</brbct_cfg>
+<hpct_cfg version="01.00.0000">
+    <brbct>br_bct.cfg</brbct>
+    <dev_param>tegra264-br-bct-common-l4t.dts</dev_param>
+    <sdram>tegra264-p3834-0008-sdram-bct-l4t.dts</sdram>
+    <bl>hpse_bl1_t264_prod.bin</bl>
+    <fw>hpsefw_t264_prod.bin</fw>
+    <hpse_bin>hpse_t264.bin</hpse_bin>
+    <hpse_base>hpse_t264.pkg</hpse_base>
+    <raw_bin>hpseraw_t264_prod.bin</raw_bin>
+</hpct_cfg>
+<sbct_cfg version="01.00.0000">
+    <brbct>br_bct.cfg</brbct>
+    <dev_param>tegra264-br-bct-common-l4t.dts</dev_param>
+    <sdram>tegra264-p3834-0008-sdram-bct-l4t.dts</sdram>
+    <bl>sb_bl1_t264_prod.bin</bl>
+    <fw>sbfw_t264_prod.bin</fw>
+    <sb_bin>sb_t264.bin</sb_bin>
+    <sb_base>sb_t264.pkg</sb_base>
+    <raw_bin>sbraw_t264_prod.bin</raw_bin>
+</sbct_cfg>
+
+</bct_cfg>

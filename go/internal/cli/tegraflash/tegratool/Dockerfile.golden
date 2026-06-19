@@ -1,0 +1,31 @@
+# Image for generating T264 golden-reference BCT fixtures from the bundle's own
+# NVIDIA tools. The i386 tegra binaries (tegrabct_v2 etc.) run via binfmt inside
+# this amd64 image; Python + cpp + dtc run natively. Build ONCE (the dependency
+# install is slow under emulation on arm64 hosts); the layer cache makes every
+# later golden regeneration fast.
+#
+#   docker build --platform linux/amd64 -f Dockerfile.golden -t t264-golden .
+#   docker run --rm --platform linux/amd64 -v <bundle>:/work -w /work t264-golden \
+#       python3 ./tegraflash.py --no_flash --chip 0x26 ... rcmboot
+#
+# See generate_golden_bct.sh for the full invocation.
+FROM --platform=linux/amd64 debian:bookworm-slim
+
+# Python deps for tegraflash.py + tegrasign_v3, the device-tree toolchain, and
+# 32-bit loader support so the statically-linked i386 tools resolve cleanly.
+RUN apt-get update -qq \
+    && apt-get install -y -qq --no-install-recommends \
+        python3 \
+        python3-yaml \
+        python3-cryptography \
+        python3-pip \
+        device-tree-compiler \
+        cpp \
+        libc6-i386 \
+        xxd \
+    && rm -rf /var/lib/apt/lists/*
+
+# pyfdt is imported by some tegraflash paths and is not packaged in Debian.
+RUN pip3 install --no-cache-dir --break-system-packages pyfdt 2>/dev/null || true
+
+WORKDIR /work
