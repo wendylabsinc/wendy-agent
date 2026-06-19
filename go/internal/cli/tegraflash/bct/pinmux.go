@@ -117,30 +117,40 @@ func buildGPIOPairs(fdt *dtb.FDT, gpioNode string) ([]pinmuxRegPair, error) {
 	if !ok {
 		return nil, fmt.Errorf("unknown gpio controller 0x%08x", ctrl)
 	}
-	regBase := func(idx uint32) uint32 {
+	regBase := func(idx uint32) (uint32, error) {
 		grp := idx >> 3
 		if int(grp) >= len(table) {
-			return 0
+			return 0, fmt.Errorf("gpio index %d out of range for controller 0x%08x (%d groups)", idx, ctrl, len(table))
 		}
-		return table[grp] + ((idx & 7) << 5)
+		return table[grp] + ((idx & 7) << 5), nil
 	}
 
 	def := gpioNode + "/default"
 	var pairs []pinmuxRegPair
 	if cells, ok := fdt.PropertyU32Array(def, "gpio-input"); ok {
 		for _, idx := range cells {
-			pairs = append(pairs, pinmuxRegPair{regBase(idx), 1})
+			b, err := regBase(idx)
+			if err != nil {
+				return nil, err
+			}
+			pairs = append(pairs, pinmuxRegPair{b, 1})
 		}
 	}
 	if cells, ok := fdt.PropertyU32Array(def, "gpio-output-low"); ok {
 		for _, idx := range cells {
-			b := regBase(idx)
+			b, err := regBase(idx)
+			if err != nil {
+				return nil, err
+			}
 			pairs = append(pairs, pinmuxRegPair{b, 3}, pinmuxRegPair{b + 0xc, 0}, pinmuxRegPair{b + 0x10, 0})
 		}
 	}
 	if cells, ok := fdt.PropertyU32Array(def, "gpio-output-high"); ok {
 		for _, idx := range cells {
-			b := regBase(idx)
+			b, err := regBase(idx)
+			if err != nil {
+				return nil, err
+			}
 			pairs = append(pairs, pinmuxRegPair{b, 3}, pinmuxRegPair{b + 0xc, 0}, pinmuxRegPair{b + 0x10, 1})
 		}
 	}
@@ -187,7 +197,10 @@ func buildPinPairs(fdt *dtb.FDT, pinmuxNode string) ([]pinmuxRegPair, error) {
 					inGPIOSection = true
 				}
 			}
-			p, ok := pinPair(fdt, path, pin, grp, inGPIOSection)
+			p, ok, err := pinPair(fdt, path, pin, grp, inGPIOSection)
+			if err != nil {
+				return nil, err
+			}
 			if !ok {
 				continue
 			}
@@ -201,13 +214,20 @@ func buildPinPairs(fdt *dtb.FDT, pinmuxNode string) ([]pinmuxRegPair, error) {
 // reproducing the PinmuxT264 Init default + Property bit-field inserts.
 // gpioSection reports whether the pin sits in the common group's trailing GPIO
 // section (which force-clears the init 0x400 bit).
-func pinPair(fdt *dtb.FDT, path, pin, group string, gpioSection bool) (pinmuxRegPair, bool) {
+func pinPair(fdt *dtb.FDT, path, pin, group string, gpioSection bool) (pinmuxRegPair, bool, error) {
 	e, ok := pinMuxEntries[pin]
 	if !ok {
-		return pinmuxRegPair{}, false
+		// Pin not in the chip pin-address table: not a configurable pad, skip.
+		return pinmuxRegPair{}, false, nil
 	}
 	addr := pinMuxRegBase[e.f1c] + e.f18
-	val := pinMuxDefaults[addr]
+	// A pin present in the DTB must have a reset-default; a miss means the
+	// defaults table is incomplete for this board (silently using 0 would emit a
+	// wrong register value), so fail loudly rather than miscompile.
+	val, ok := pinMuxDefaults[addr]
+	if !ok {
+		return pinmuxRegPair{}, false, fmt.Errorf("pin %q: no reset-default for register 0x%08x", pin, addr)
+	}
 
 	fn, _ := fdt.PropertyString(path, "nvidia,function")
 
@@ -215,7 +235,7 @@ func pinPair(fdt *dtb.FDT, path, pin, group string, gpioSection bool) (pinmuxReg
 	// style function path, not the normal bit-field inserts.
 	if e.f1c == 5 {
 		val = applyAuxFunction(val, e, fn)
-		return pinmuxRegPair{addr, val}, true
+		return pinmuxRegPair{addr, val}, true, nil
 	}
 
 	// Init: clear bit 0x400, then re-set it when the pin flag is 0. The
@@ -242,7 +262,7 @@ func pinPair(fdt *dtb.FDT, path, pin, group string, gpioSection bool) (pinmuxReg
 	val = applyPinBit(fdt, path, "nvidia,drv-type", val, 8, 0x100)
 	val = applyPinBit(fdt, path, "nvidia,e-lpbk", val, 7, 0x80)
 
-	return pinmuxRegPair{addr, val}, true
+	return pinmuxRegPair{addr, val}, true, nil
 }
 
 // applyPinBit clears mask in val then ORs (prop<<shift)&mask using the named
