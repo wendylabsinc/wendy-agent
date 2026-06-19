@@ -600,7 +600,7 @@ jobs:
       - name: Upload Swift E2E Report
         id: upload_e2e_report
         if: always()
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7.0.1
         with:
           name: ${{ steps.e2e-run.outputs.run_artifact_id }}
           path: ${{ steps.e2e-run.outputs.run_dir }}/**
