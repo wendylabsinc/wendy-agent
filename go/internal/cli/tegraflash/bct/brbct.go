@@ -156,9 +156,14 @@ func setData(out []byte, fieldIdx int, value uint32, size uint32) error {
 	return nil
 }
 
-// getData reads a little-endian uint32 from a BR BCT field region.
+// getData reads a little-endian uint32 from a BR BCT field region. Returns 0 if
+// the field offset would read past the buffer (a guard against future table
+// transcription errors; all current fields are well within the 0x2000 buffer).
 func getData(out []byte, fieldIdx int) uint32 {
 	f := brBctFields[fieldIdx]
+	if int(f.Offset)+4 > len(out) {
+		return 0
+	}
 	return binary.LittleEndian.Uint32(out[f.Offset:])
 }
 
@@ -227,9 +232,13 @@ func parseDevParam(out []byte, blob []byte) error {
 	}
 
 	// bf_bl_allbits: read-modify-write bit inserts into field index 20.
-	parseBitfield(out, fdt, "/brbct/bf_bl_allbits", 20, bfBlBits)
+	if err := parseBitfield(out, fdt, "/brbct/bf_bl_allbits", 20, bfBlBits); err != nil {
+		return err
+	}
 	// bf_bl_unsigned_allbits: RMW into field index 21.
-	parseBitfield(out, fdt, "/brbct/bf_bl_unsigned_allbits", 21, bfBlUnsignedBits)
+	if err := parseBitfield(out, fdt, "/brbct/bf_bl_unsigned_allbits", 21, bfBlUnsignedBits); err != nil {
+		return err
+	}
 
 	return nil
 }
@@ -237,9 +246,9 @@ func parseDevParam(out []byte, blob []byte) error {
 // parseBitfield reproduces NvTegraT264DtbParseBrBctBfBlBits: for each named
 // child property present in the node, it clears the target bit range in the
 // destination field and ORs in the masked value.
-func parseBitfield(out []byte, fdt *dtb.FDT, node string, fieldIdx int, bits []bfBlBit) {
+func parseBitfield(out []byte, fdt *dtb.FDT, node string, fieldIdx int, bits []bfBlBit) error {
 	if !fdt.HasNode(node) {
-		return
+		return nil
 	}
 	acc := getData(out, fieldIdx)
 	for _, b := range bits {
@@ -251,5 +260,5 @@ func parseBitfield(out []byte, fdt *dtb.FDT, node string, fieldIdx int, bits []b
 		acc &^= mask << b.shift
 		acc |= (v & mask) << b.shift
 	}
-	_ = setData(out, fieldIdx, acc, 4)
+	return setData(out, fieldIdx, acc, 4)
 }

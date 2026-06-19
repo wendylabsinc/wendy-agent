@@ -96,9 +96,9 @@ func TestBRBCTLayout(t *testing.T) {
 
 // TestBRBCTMatchesGoldenSignedSection compares the produced signed section
 // [0x1600, 0x2000) against the golden, excluding the BL-info region
-// (0x1c48-0x1c5c), the hash (0x5d8) / signature (0x618) which are outside the
-// signed range anyway, and the documented SDRAM gap. The tractable dev_param +
-// static fields must match byte-for-byte.
+// (0x1c48-0x1c5c) and the documented SDRAM gap. (The hash at 0x5d8 and signature
+// at 0x618 lie below 0x1600 and are outside the loop range, not actively
+// excluded.) The tractable dev_param + static fields must match byte-for-byte.
 func TestBRBCTMatchesGoldenSignedSection(t *testing.T) {
 	out, err := BuildBRBCT(loadGoldenBRBCTInputs(t))
 	if err != nil {
