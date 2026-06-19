@@ -135,7 +135,6 @@ On a **Windows host**, `wendy run` returns an actionable error for Swift project
 | `--service <name>` | Build and run only the named service and its transitive dependencies (multi-service `wendy.json` projects only). Returns an error if the name does not match any key in the `services` map. |
 | `--user-args <args>` | Extra arguments to pass to the container at runtime. |
 | `--checksum` | Force SHA-256 comparison for `wendy.json.files` instead of the default metadata quick check. |
-| `--checksum` | Force SHA-256 comparison for `wendy.json.files` instead of the default metadata quick check. |
 
 ## postStart hooks
 

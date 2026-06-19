@@ -1,0 +1,4 @@
+{
+    "mode": "ci-filesync-test",
+    "threshold": 0.5
+}

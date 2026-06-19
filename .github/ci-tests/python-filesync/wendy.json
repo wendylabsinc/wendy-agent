@@ -1,0 +1,18 @@
+{
+    "appId": "sh.wendy.ci.python-filesync",
+    "version": "1.0.0",
+    "language": "python",
+    "files": [
+        {
+            "path": "config/runtime.json"
+        },
+        {
+            "path": "data/message.txt",
+            "to": "assets/message.txt"
+        },
+        {
+            "path": "models/detector",
+            "to": "models/detector"
+        }
+    ]
+}

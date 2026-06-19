@@ -1,0 +1,2 @@
+detector-model-ci
+placeholder for a large detection model bundle
