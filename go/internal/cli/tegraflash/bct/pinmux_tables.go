@@ -667,3 +667,14 @@ var pinMuxDefaults = map[uint32]uint32{
 	0x29287325: 0x636d203a,
 	0x6174735f: 0x6d655f74,
 }
+
+// pinMuxGPIOTables maps a gpio@ controller base address to its group
+// table (gpioTab_* in tegrabct_v2): each entry is the per-group register
+// base, indexed by gpioIndex>>3. The final GPIO register address is
+// table[idx>>3] + (idx&7)<<5.
+var pinMuxGPIOTables = map[uint32][]uint32{
+	0xac300000: {0xac313000, 0xac313200, 0xac311000, 0xac311200, 0xac311400, 0xac311600, 0xac311800, 0xac312000, 0xac312200, 0xac312400, 0xac312600, 0xac310000, 0xac310200, 0xac310400, 0xac310600, 0xac310e00, 0xac310a00, 0xac310c00, 0xac310800},
+	0x8cf00000: {0x8cf10000, 0x8cf10200, 0x8cf10400, 0x8cf10600, 0x8cf10800},
+	0xb0320000: {0xb0321000, 0xb0321200, 0xb0323000, 0xb0323200, 0xb0323400, 0xb0323600, 0xb0321400, 0xb0321600},
+	0xe8300000: {0xe8310000, 0xe8310200, 0xe8310400, 0xe8311000, 0xe8311200},
+}

@@ -75,7 +75,6 @@ var mb1DeferredRegions = []deferredRegion{
 	{0x1aac, 0x1e74, "misc", "MISC array block (per-entry 53-byte records at 0x1aac/0x1b9c/0x1c8c/0x1d7c + 0x1e70)"},
 	{0x2528, 0x2558, "misc", "MISC idx 62-71 (0x2528-0x254b)"},
 	{0x3470, 0x3488, "pmc", "--pmc /mb1_bct/pmc@N/ pad-voltage register block (count + 2 reg pairs); bit encoding not yet derived"},
-	{0x35c0, 0x4010, "pinmux", "--pinmux /mb1_bct/padctl@N/ bit-packed per-pin config (0x1f48/sku); needs gPinMuxAddrInfo 257-pin table"},
 	{0x80e0, 0x8240, "gpioint", "--gpioint /mb1_bct/gpio-intmap@N/ packed interrupt-routing bitmap (0x160/port DeInit transform)"},
 	{0x83a0, 0x83a8, "deviceprod", "--deviceprod /deviceprod/ packed controller-prod list (302 dwords, '$'-delimited names)"},
 	{0x8898, 0x8b88, "pmic", "--pmic /mb1_bct/pmic_config@N/ bit-encoded command serializer (0x4b8/rail)"},
@@ -121,8 +120,8 @@ func TestMB1BCTHeader(t *testing.T) {
 // TestMB1BCTMatchesGolden compares BuildMB1BCT(golden inputs) to the golden MB1
 // BCT byte-for-byte, EXCLUDING the documented deferred regions (mb1DeferredRegions).
 // Everything outside those regions, the static header and the fully-decoded
-// --prod and --uphy outputs, must match exactly. The excluded regions are the
-// heavy not-yet-ported handlers (SDRAM pack, pinmux, pmic, pmc, gpioint,
+// --prod, --uphy, and --pinmux outputs, must match exactly. The excluded regions
+// are the heavy not-yet-ported handlers (SDRAM pack, pmic, pmc, gpioint,
 // deviceprod, device, and the 61-handler MISC sub-block).
 func TestMB1BCTMatchesGolden(t *testing.T) {
 	out, err := BuildMB1BCT(loadGoldenMB1Inputs(t))
@@ -211,7 +210,7 @@ func TestMB1BCTGaps(t *testing.T) {
 	matchedNZ := totalGoldenNZ - deferredGoldenNZ
 	t.Logf("golden non-zero bytes: %d; matched byte-exact: %d; in deferred regions: %d",
 		totalGoldenNZ, matchedNZ, deferredGoldenNZ)
-	t.Logf("implemented: static header (0x0-0x18), --prod triples (0x7450), --uphy lane owners (0x8868)")
+	t.Logf("implemented: static header (0x0-0x18), --prod triples (0x7450), --uphy lane owners (0x8868), --pinmux register pairs (0x35c0)")
 	t.Logf("deferred regions (offset range / owning DTB input / golden non-zero bytes):")
 	for _, r := range mb1DeferredRegions {
 		t.Logf("  [0x%05x,0x%05x) len=%-5d %-11s %s", r.start, r.end, r.end-r.start, r.owner, r.note)

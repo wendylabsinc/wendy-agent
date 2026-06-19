@@ -43,7 +43,7 @@ type MB1BCTInputs struct {
 	WB0SDRAM   []byte // --wb0sdram  /sdram/        (second set, deferred)
 	Device     []byte // --device    /mb1_bct/boot_device/ (deferred)
 	UPhy       []byte // --uphy      /uphy-lane@N/  (implemented)
-	Pinmux     []byte // --pinmux    /mb1_bct/padctl@N/ (deferred)
+	Pinmux     []byte // --pinmux    /mb1_bct/padctl@N/ (implemented)
 	PMIC       []byte // --pmic      /mb1_bct/pmic_config@N/ (deferred)
 	PMC        []byte // --pmc       /mb1_bct/pmc@N/ (deferred)
 	Misc       []byte // --misc      /mb1_bct/, /misc/ (deferred)
@@ -55,13 +55,13 @@ type MB1BCTInputs struct {
 
 // BuildMB1BCT assembles the MB1 BCT image (MB1B0264 magic) from the supplied DTB
 // inputs, pre-signing. It writes the static header and the input regions that
-// are fully decoded in this increment (the --prod register triples and the
-// --uphy lane-owner map). The heavy regions (SDRAM pack, pinmux, pmic, pmc,
-// gpioint, deviceprod, device, and the 61-handler MISC sub-block) are validated
-// to parse but intentionally left zero rather than emit incorrect bytes; each
-// is enumerated and characterized by TestMB1BCTGaps so the remaining work is
-// precisely scoped. The 64-byte integrity digest is injected by the signing
-// step (Task 9), not here.
+// are fully decoded (the --prod register triples, the --uphy lane-owner map,
+// and the --pinmux register-pair list; see dtb-field-mapping section 7). The
+// remaining heavy regions (SDRAM pack, pmic, pmc, gpioint, deviceprod, device,
+// and the 61-handler MISC sub-block) are validated to parse but intentionally
+// left zero rather than emit incorrect bytes; each is enumerated and
+// characterized by TestMB1BCTGaps so the remaining work is precisely scoped.
+// The 64-byte integrity digest is injected by the signing step (Task 9), not here.
 func BuildMB1BCT(in MB1BCTInputs) ([]byte, error) {
 	out := make([]byte, mb1BctSize)
 
@@ -77,6 +77,9 @@ func BuildMB1BCT(in MB1BCTInputs) ([]byte, error) {
 	}
 	if err := parseUPhy(out, in.UPhy); err != nil {
 		return nil, fmt.Errorf("bct: mb1 uphy: %w", err)
+	}
+	if err := parsePinmux(out, in.Pinmux); err != nil {
+		return nil, fmt.Errorf("bct: mb1 pinmux: %w", err)
 	}
 
 	// Deferred inputs: validate they parse (so a malformed blob is reported
@@ -183,7 +186,7 @@ func validateDeferredInputs(in MB1BCTInputs) error {
 		blob []byte
 	}{
 		{"sdram", in.SDRAM}, {"wb0sdram", in.WB0SDRAM}, {"device", in.Device},
-		{"pinmux", in.Pinmux}, {"pmic", in.PMIC}, {"pmc", in.PMC},
+		{"pmic", in.PMIC}, {"pmc", in.PMC},
 		{"misc", in.Misc}, {"gpioint", in.GPIOInt}, {"deviceprod", in.DeviceProd},
 		{"minratchet", in.MinRatchet},
 	} {
