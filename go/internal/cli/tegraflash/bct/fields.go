@@ -54,3 +54,78 @@ var brBctFields = [28]Field{
 	26: {Count: 1, Offset: 0x176c, Size: 0x2},   // u16_fuse_revoke_bitmap
 	27: {Count: 1, Offset: 0x17ff, Size: 0x1},   // u8_l4t_marker_based_selection
 }
+
+// mb1BctFields is the T264 s_Mb1BctFields table, transcribed verbatim from
+// docs/tegraflash-re/mb1-mem-mb2-bct-formats.md ("s_Mb1BctFields", 90 entries).
+// The table lives at 0x0817943c in the reference binary, 0x438 bytes = 90
+// entries of 12 bytes each ({uint32 count, uint32 offset, uint32 size}). Only
+// the populated entries are listed in the RE doc; every other index is a
+// reserved/unused all-zero slot. The highest field (idx 89 at 0x9568 + 4 =
+// 0x956c) fits within the MB1 BCT buffer.
+//
+// Several entries describe array fields (Count > 1); for those the per-element
+// stride is Size/Count. Notable clusters: idx 0-4 the SDRAM parameter index
+// records (27 sets), idx 13-14 the large config blocks, idx 15-16 the embedded
+// MISC sub-block header, idx 40-80 scattered MISC scalar/array fields, and idx
+// 86-89 the trailing fields near the end of the buffer.
+var mb1BctFields = [90]Field{
+	0:  {Count: 27, Offset: 0x5e0, Size: 1728}, // SDRAM parameter set table (27 x 64-byte index records)
+	1:  {Count: 27, Offset: 0x5e0, Size: 4},    // per-set field
+	2:  {Count: 27, Offset: 0x5e4, Size: 4},    // per-set field
+	3:  {Count: 27, Offset: 0x5e8, Size: 4},    // per-set field
+	4:  {Count: 27, Offset: 0x5ec, Size: 4},    // per-set field
+	5:  {Count: 1, Offset: 0x0c, Size: 4},
+	6:  {Count: 1, Offset: 0x450, Size: 8},
+	7:  {Count: 1, Offset: 0x444, Size: 1}, // byte flags (idx 7-11 contiguous)
+	8:  {Count: 1, Offset: 0x445, Size: 1},
+	9:  {Count: 1, Offset: 0x446, Size: 1},
+	10: {Count: 1, Offset: 0x447, Size: 1},
+	11: {Count: 1, Offset: 0x448, Size: 1},
+	13: {Count: 9, Offset: 0xca0, Size: 36},    // 9 x 4-byte array
+	14: {Count: 84, Offset: 0xce0, Size: 2352}, // 84 x 28-byte array (large config block)
+	15: {Count: 1, Offset: 0x1610, Size: 4},    // start of embedded MISC block
+	16: {Count: 1, Offset: 0x1618, Size: 8},
+	26: {Count: 1, Offset: 0xcc8, Size: 8},
+	40: {Count: 1, Offset: 0x2b8, Size: 8},
+	41: {Count: 1, Offset: 0x2d8, Size: 4}, // contiguous 4-byte fields (idx 41-50)
+	42: {Count: 1, Offset: 0x2dc, Size: 4},
+	43: {Count: 1, Offset: 0x2e0, Size: 4},
+	44: {Count: 1, Offset: 0x2e4, Size: 4},
+	45: {Count: 1, Offset: 0x2e8, Size: 4},
+	46: {Count: 1, Offset: 0x2ec, Size: 4},
+	47: {Count: 1, Offset: 0x2f0, Size: 4},
+	48: {Count: 1, Offset: 0x2f4, Size: 4},
+	49: {Count: 1, Offset: 0x2f8, Size: 4},
+	50: {Count: 1, Offset: 0x2fc, Size: 4},
+	52: {Count: 1, Offset: 0xcd0, Size: 8},
+	53: {Count: 1, Offset: 0x1638, Size: 8},
+	54: {Count: 1, Offset: 0x19b0, Size: 4},
+	55: {Count: 1, Offset: 0x2c0, Size: 8},
+	56: {Count: 1, Offset: 0x2c8, Size: 8},
+	57: {Count: 1, Offset: 0x438, Size: 4}, // idx 57-59 contiguous 4-byte fields
+	58: {Count: 1, Offset: 0x43c, Size: 4},
+	59: {Count: 1, Offset: 0x440, Size: 4},
+	62: {Count: 1, Offset: 0x2528, Size: 4},
+	63: {Count: 1, Offset: 0x252c, Size: 4},
+	65: {Count: 1, Offset: 0x2530, Size: 4}, // idx 65-71 contiguous 4-byte fields
+	66: {Count: 1, Offset: 0x2534, Size: 4},
+	67: {Count: 1, Offset: 0x2538, Size: 4},
+	68: {Count: 1, Offset: 0x253c, Size: 4},
+	69: {Count: 1, Offset: 0x2540, Size: 4},
+	70: {Count: 1, Offset: 0x2544, Size: 4},
+	71: {Count: 1, Offset: 0x2548, Size: 4},
+	74: {Count: 1, Offset: 0x1640, Size: 4}, // idx 74-77 contiguous 4-byte fields
+	75: {Count: 1, Offset: 0x1644, Size: 4},
+	76: {Count: 1, Offset: 0x1648, Size: 4},
+	77: {Count: 1, Offset: 0x164c, Size: 4},
+	78: {Count: 1, Offset: 0xcd8, Size: 8},
+	79: {Count: 1, Offset: 0x1650, Size: 8},
+	80: {Count: 1, Offset: 0x1664, Size: 4},
+	81: {Count: 2, Offset: 0x3e8, Size: 48}, // 2 x 24-byte array
+	82: {Count: 1, Offset: 0x3a0, Size: 72},
+	85: {Count: 1, Offset: 0x10, Size: 8},
+	86: {Count: 1, Offset: 0x92a8, Size: 4},
+	87: {Count: 1, Offset: 0x92e0, Size: 8},
+	88: {Count: 1, Offset: 0x92e8, Size: 8},
+	89: {Count: 1, Offset: 0x9568, Size: 4}, // near end of buffer
+}
