@@ -178,14 +178,21 @@ func parseUPhy(out []byte, blob []byte) error {
 // exercises the blobs; once a region is implemented its parser will validate
 // strictly, as parseProd and parseUPhy already do.
 func validateDeferredInputs(in MB1BCTInputs) error {
-	for _, blob := range [][]byte{
-		in.SDRAM, in.WB0SDRAM, in.Device, in.Pinmux, in.PMIC, in.PMC,
-		in.Misc, in.GPIOInt, in.DeviceProd, in.MinRatchet,
+	for _, e := range []struct {
+		name string
+		blob []byte
+	}{
+		{"sdram", in.SDRAM}, {"wb0sdram", in.WB0SDRAM}, {"device", in.Device},
+		{"pinmux", in.Pinmux}, {"pmic", in.PMIC}, {"pmc", in.PMC},
+		{"misc", in.Misc}, {"gpioint", in.GPIOInt}, {"deviceprod", in.DeviceProd},
+		{"minratchet", in.MinRatchet},
 	} {
-		if len(blob) == 0 {
+		if len(e.blob) == 0 {
 			continue
 		}
-		_, _ = dtb.ParseFDT(blob)
+		if _, err := dtb.ParseFDT(e.blob); err != nil {
+			return fmt.Errorf("parse %s dtb: %w", e.name, err)
+		}
 	}
 	return nil
 }

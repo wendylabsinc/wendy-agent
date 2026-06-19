@@ -67,7 +67,7 @@ type deferredRegion struct {
 // honest-and-minimal by TestMB1BCTGaps, which asserts that no diff falls outside
 // it and that every listed region actually differs.
 var mb1DeferredRegions = []deferredRegion{
-	{0x02b8, 0x0450, "misc", "MISC scalar/array cluster: idx 40 (0x2b8), 55/56 (0x2c0/0x2c8), 41-50 (0x2d8-0x2fc), 82 (0x3a0), 81 (0x3e8), 57-59 (0x438-0x440), 6 (0x450)"},
+	{0x02b8, 0x0458, "misc", "MISC scalar/array cluster: idx 40 (0x2b8), 55/56 (0x2c0/0x2c8), 41-50 (0x2d8-0x2fc), 82 (0x3a0), 81 (0x3e8), 57-59 (0x438-0x440), 6 (0x450, 8 B)"},
 	{0x05e0, 0x0ca0, "sdram", "SDRAM parameter index table (idx 0-4, 27 sets x 64B) from --sdram NvTegraT264PackSdramParams"},
 	{0x0ca0, 0x1620, "misc", "MISC idx 13 (0xca0), 14 (0xce0 84x28 block), 26,52,78, and idx 15/16 embedded-MISC header"},
 	{0x1638, 0x1670, "misc", "MISC idx 53 (0x1638), 79 (0x1650), 80 (0x1664)"},
