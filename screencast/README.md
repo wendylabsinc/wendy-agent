@@ -23,12 +23,12 @@ Generated media and final renders are build outputs and should not be committed.
 screencast/
   script.md                # content + intent: what to show and say
   scenes/                  # agent-maintained renderable scene files
-    01-intro/
+    01-payoff/
       slide.md             # Slidev Markdown still frame source
       voice.md             # narration source
       voice.md.mp3         # generated narration; ignored by git
       slide.md.mp4         # generated still-slide movie; ignored by git
-    02-demo/
+    05-render-pipeline/
       slide.md
       voice.md
       vhs.tape             # optional terminal recording source
@@ -73,15 +73,15 @@ scripts/stitch [scene-dir ...] [--output output.mp4]
 Examples:
 
 ```sh
-scripts/render-slide scenes/01-intro
-scripts/render-voice /path/to/screencast/scenes/01-intro/voice.md
+scripts/render-slide scenes/01-payoff
+scripts/render-voice /path/to/screencast/scenes/01-payoff/voice.md
 scripts/render-tape 01
 scripts/render-tape x/y/blah.vhs
 scripts/stitch scenes/* --output output/feature-name.mp4
 ```
 
 A short prefix such as `01` expands to the unique matching folder under
-`scenes/`, for example `scenes/01-intro`. Ambiguous prefixes fail.
+`scenes/`, for example `scenes/01-payoff`. Ambiguous prefixes fail.
 
 ## Tape verification
 
@@ -93,7 +93,7 @@ For any scene with `vhs.tape`, add `vhs.sh` alongside it when there are commands
 to verify:
 
 ```text
-scenes/02-demo/
+scenes/05-render-pipeline/
   vhs.tape
   vhs.sh
 ```
@@ -121,9 +121,9 @@ the demo.
 2. The agent updates `scenes/*` to match `script.md`:
 
    ```text
-   scenes/01-intro/slide.md
-   scenes/01-intro/voice.md
-   scenes/02-demo/vhs.tape
+   scenes/01-payoff/slide.md
+   scenes/01-payoff/voice.md
+   scenes/05-render-pipeline/vhs.tape
    ```
 
 3. Add `vhs.tape` only for scenes that need terminal automation. Add
@@ -133,8 +133,8 @@ the demo.
    ```sh
    scripts/render-slide 01
    scripts/render-voice 01
-   scripts/render-tape --dry-run --with-hooks 02
-   scripts/render-tape --with-hooks 02
+   scripts/render-tape --dry-run --with-hooks 05
+   scripts/render-tape --with-hooks 05
    ```
 
 5. Stitch everything. Prefer naming the final file as a dasherized slug of the
@@ -149,7 +149,7 @@ shell glob or list scenes individually:
 
 ```sh
 scripts/stitch scenes/* --output output/feature-name.mp4
-scripts/stitch scenes/01-intro scenes/02-demo --output output/feature-name.mp4
+scripts/stitch scenes/01-payoff scenes/05-render-pipeline --output output/feature-name.mp4
 ```
 
 If no scene folders are provided, `scripts/stitch` reads `scenes/*`. If no output
@@ -250,7 +250,7 @@ For each scene, `scripts/stitch` chooses one visual source:
 4. `slide.md.mp4` as the still-slide fallback.
 
 If a required generated artifact is missing, `stitch` fails with the command to
-run, such as `scripts/render-slide 01-intro` or `scripts/render-voice 01-intro`.
+run, such as `scripts/render-slide 01` or `scripts/render-voice 01`.
 
 ## Timing
 
