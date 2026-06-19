@@ -8,10 +8,24 @@ package rcm
 import (
 	"context"
 	"fmt"
+	"os"
+	"strconv"
 	"time"
 
 	"github.com/google/gousb"
 )
+
+// usbDebugLevel returns the libusb log level from WENDY_USB_DEBUG (0-4), or 0.
+// Level 4 (LIBUSB_LOG_LEVEL_DEBUG) surfaces the darwin backend's IOReturn codes,
+// which the generic "transfer failed" gousb error hides.
+func usbDebugLevel() int {
+	if v := os.Getenv("WENDY_USB_DEBUG"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 && n <= 4 {
+			return n
+		}
+	}
+	return 0
+}
 
 type uidResult struct {
 	data []byte
@@ -33,7 +47,7 @@ type Device struct {
 // Supported PIDs: T234 (Orin, 0x7023) and T264 (AGX Thor, 0x7026).
 func WaitForDevice() (*Device, error) {
 	ctx := gousb.NewContext()
-	ctx.Debug(0) // suppress libusb noise (LIBUSB_ERROR_INTERRUPTED, etc.)
+	ctx.Debug(usbDebugLevel()) // suppress libusb noise (LIBUSB_ERROR_INTERRUPTED, etc.)
 
 	deadline := time.Now().Add(60 * time.Second)
 	for time.Now().Before(deadline) {
@@ -59,7 +73,7 @@ func WaitForDevice() (*Device, error) {
 // The applet may change the USB PID; we look for any NVIDIA device.
 func WaitForNv3p() (*Device, error) {
 	ctx := gousb.NewContext()
-	ctx.Debug(0) // suppress libusb noise
+	ctx.Debug(usbDebugLevel()) // suppress libusb noise
 
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
@@ -83,14 +97,8 @@ func WaitForNv3p() (*Device, error) {
 }
 
 func openDevice(ctx *gousb.Context, dev *gousb.Device) (*Device, error) {
-	cfg, err := dev.Config(1)
-	if err != nil {
-		return nil, fmt.Errorf("claiming config: %w", err)
-	}
-
 	iface, done, err := dev.DefaultInterface()
 	if err != nil {
-		cfg.Close()
 		return nil, fmt.Errorf("claiming interface: %w", err)
 	}
 
@@ -123,23 +131,29 @@ func openDevice(ctx *gousb.Context, dev *gousb.Device) (*Device, error) {
 		return nil, fmt.Errorf("device missing bulk IN or OUT endpoints")
 	}
 
-	// Submit the UID read transfer immediately after endpoint setup. The T234
-	// bootROM sends the UID right when the interface is claimed; submitting here
-	// (before returning to the caller) maximises the capture window on macOS,
-	// where IOKit drops bulk IN data if no transfer is pending.
+	// T234 sends UID immediately on connect; pre-submit a read so IOKit doesn't
+	// drop it before we claim the interface. T264 does not send UID at connect
+	// time, so skip the pre-read: submitting a bulk IN transfer that will be
+	// cancelled leaves the endpoint in a state that blocks subsequent bulk OUT
+	// writes on macOS.
 	ch := make(chan uidResult, 1)
-	go func() {
-		buf := make([]byte, 16)
-		rctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-		defer cancel()
-		n, rerr := inEP.ReadContext(rctx, buf)
-		if rerr != nil {
-			ch <- uidResult{err: rerr}
-		} else {
-			ch <- uidResult{data: buf[:n]}
-		}
+	if dev.Desc.Product != gousb.ID(ProductThor) {
+		go func() {
+			buf := make([]byte, 16)
+			rctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+			defer cancel()
+			n, rerr := inEP.ReadContext(rctx, buf)
+			if rerr != nil {
+				ch <- uidResult{err: rerr}
+			} else {
+				ch <- uidResult{data: buf[:n]}
+			}
+			close(ch)
+		}()
+	} else {
+		ch <- uidResult{err: fmt.Errorf("T264 does not send UID at connect time")}
 		close(ch)
-	}()
+	}
 
 	return &Device{
 		ctx:    ctx,
@@ -172,12 +186,36 @@ func (d *Device) Read(buf []byte) (int, error) {
 	return d.in.ReadContext(ctx, buf)
 }
 
-// Write writes to the bulk OUT endpoint.
+// usbBulkChunkSize matches tegrarcm_v2's NvTegraUsbWriteTimeout, which splits
+// every bulk OUT into 16 KiB ioctl(USBDEVFS_BULK) chunks. macOS IOKit rejects a
+// single bulk transfer of a multi-hundred-KiB RCM image with LIBUSB_TRANSFER_ERROR,
+// so we must chunk the same way the reference tool does.
+const usbBulkChunkSize = 16 * 1024
+
+// Write writes to the bulk OUT endpoint, splitting into 16 KiB chunks to match
+// tegrarcm_v2. If the total length is a multiple of the endpoint max packet size,
+// a zero-length packet is sent to signal end-of-transfer, as the reference tool does.
 func (d *Device) Write(buf []byte) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	_, err := d.out.WriteContext(ctx, buf)
-	return err
+	for off := 0; off < len(buf); off += usbBulkChunkSize {
+		end := off + usbBulkChunkSize
+		if end > len(buf) {
+			end = len(buf)
+		}
+		if _, err := d.out.WriteContext(ctx, buf[off:end]); err != nil {
+			return err
+		}
+	}
+	// Zero-length packet when the transfer is an exact multiple of the max packet
+	// size, so the device knows the transfer is complete.
+	mps := d.out.Desc.MaxPacketSize
+	if mps > 0 && len(buf) > 0 && len(buf)%mps == 0 {
+		if _, err := d.out.WriteContext(ctx, nil); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // ReadUID returns the unique ID sent by the Orin bootROM on first connect.

@@ -11,6 +11,9 @@ const (
 	// TODO: verify 0x7023 against real hardware; tegrarcm_v2 binary
 	// (proprietary, in L4T BSP) handles T234 and would confirm this.
 	ProductOrin = 0x7023
+
+	// T264 (AGX Thor) recovery mode PID = 0x7026 (confirmed from live device).
+	ProductThor = 0x7026
 )
 
 // RCM version encoding: major<<16 | minor
