@@ -7,6 +7,7 @@ script.md
 scenes/*/slide.md
 scenes/*/voice.md
 scenes/*/vhs.tape
+scenes/*/vhs.sh
 ```
 
 Do not commit generated media:
