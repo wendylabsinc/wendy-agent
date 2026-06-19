@@ -44,35 +44,6 @@ in per-issue worktree sessions, not in this master planning session.
 
 ## Issue ledger
 
-### WDY-1616 — Run native Mac E2Es against the Swift Mac agent
-
-- Status: `in progress`
-- Linear project: E2E Tests
-- Linear: https://linear.app/wendylabsinc/issue/WDY-1616/run-native-mac-e2es-against-the-swift-mac-agent
-- Linear assignee: `konstantin@wendy.sh`
-- Linear state: In Progress (`started`)
-- Linear priority: Urgent
-- Branch/worktree name: `kb.wdy-1616-swift-mac-agent-e2e`
-- Worktree path: `/Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1616-swift-mac-agent-e2e`
-- PR: https://github.com/wendylabsinc/WendyOS/pull/1090 (draft)
-- PR closing reference: `Closes WDY-1616`
-- Setup commit: `57614053`
-- Scope: make native macOS Swift E2E managed-agent runs exercise the Swift
-  Wendy Agent for Mac instead of the Go `cmd/wendy-agent`, or expose an
-  explicit managed-agent implementation/capability selector native Mac suites can
-  require. This should unblock PR #1071's native Mac Brewfile E2E suite from
-  failing on unsupported `WendyFileSyncService` before file sync/app creation
-  reaches the Swift agent path.
-- Validation expectation: confirm/reproduce the current managed-agent mismatch,
-  then validate the fix through the macOS local E2E lane or targeted macOS
-  harness commands. Preserve Linux/WendyOS managed-agent behavior.
-- Handover: `/Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1616-swift-mac-agent-e2e/HANDOVER.md`
-- Resume command:
-
-  ```sh
-  cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1616-swift-mac-agent-e2e && ai --prompt "Read HANDOVER.md and follow its instructions."
-  ```
-
 ### WDY-1510 — Re-enable Raspberry Pi physical Swift E2E route
 
 - Status: `canceled`
