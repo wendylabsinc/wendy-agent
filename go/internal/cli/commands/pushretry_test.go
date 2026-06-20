@@ -52,3 +52,26 @@ func TestMultiBuildConcurrency(t *testing.T) {
 		}
 	}
 }
+
+func TestResolveBuildConcurrency(t *testing.T) {
+	tests := []struct {
+		buildCount int
+		override   int
+		want       int
+	}{
+		// override = 0 -> auto heuristic (multiBuildConcurrency)
+		{0, 0, 1},  // nothing to build -> floor 1
+		{4, 0, 4},  // small group, default cap
+		{14, 0, 2}, // large group -> auto-throttled
+		// override > 0 -> use it, clamped to [1, buildCount]
+		{14, 1, 1}, // explicit serialization
+		{14, 6, 6}, // explicit higher than auto
+		{3, 10, 3}, // override capped to buildCount
+		{5, 0, 4},  // 5 services, below large threshold -> default cap 4
+	}
+	for _, tt := range tests {
+		if got := resolveBuildConcurrency(tt.buildCount, tt.override); got != tt.want {
+			t.Errorf("resolveBuildConcurrency(%d, %d) = %d, want %d", tt.buildCount, tt.override, got, tt.want)
+		}
+	}
+}
