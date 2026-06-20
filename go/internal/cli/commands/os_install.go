@@ -122,7 +122,7 @@ Flags can be provided progressively — omitted values trigger interactive picke
 	cmd.Flags().BoolVar(&nightly, "nightly", false, "Use nightly/prerelease builds")
 	cmd.Flags().BoolVar(&force, "force", false, "Skip confirmation prompt")
 	cmd.Flags().BoolVar(&noBmap, "no-bmap", false, "Disable bmap-accelerated flashing even when a block map is available")
-	cmd.Flags().StringVar(&storageOverride, "storage", "", "Force image storage variant: nvme or sd (default: auto-detect from the target drive)")
+	cmd.Flags().StringVar(&storageOverride, "storage", "", "Force image storage variant: nvme or sd (default: auto-detect — real NVMe drives use nvme; a USB-attached drive uses the device's published image, SD for Raspberry Pi / NVMe for Jetson SSD enclosures)")
 	cmd.Flags().BoolVar(&yesOverwriteInternal, "yes-overwrite-internal", false, "Required to wipe an internal (non-removable) drive in non-interactive mode")
 	cmd.Flags().StringVar(&deviceType, "device-type", "", "Device type from manifest (e.g. raspberry-pi-5)")
 	cmd.Flags().StringVar(&versionFlag, "version", "", "WendyOS version to install (interactive if omitted)")
@@ -455,9 +455,18 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 		}
 	}
 
-	// Step 5: Resolve image metadata for the target storage.
+	// Step 5: Resolve image metadata for the target storage. A USB-attached
+	// drive is ambiguous (SD card in a reader vs NVMe SSD in an enclosure), so
+	// the variant is chosen from what this manifest version publishes — see
+	// manifestStorage. Pass --storage to override.
+	ver, ok := device.Manifest.Versions[selectedVersion]
+	if !ok {
+		return fmt.Errorf("version %s not found in device manifest", selectedVersion)
+	}
+	storage := manifestStorage(ver, targetDrive.StorageType, storageOverride)
+
 	fmt.Printf("\nPreparing %s %s image...\n", device.Name, selectedVersion)
-	imgInfo, err := getImageInfo(device.Manifest, selectedVersion, manifestStorage(targetDrive, storageOverride))
+	imgInfo, err := getImageInfo(device.Manifest, selectedVersion, storage)
 	if err != nil {
 		return fmt.Errorf("getting image info: %w", err)
 	}
@@ -469,8 +478,8 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 	var seekableZst, seekableBmap string
 	var seekableTotal int64
 	if !noBmap && imgInfo.ZstURL != "" && imgInfo.BmapURL != "" {
-		zstPath, zerr := resolveSeekableZst(deviceKey, selectedVersion, imgInfo.ZstURL)
-		bmapCandidate, berr := osCachedBmapPath(deviceKey, selectedVersion)
+		zstPath, zerr := resolveSeekableZst(deviceKey, selectedVersion, storage, imgInfo.ZstURL)
+		bmapCandidate, berr := osCachedBmapPath(deviceKey, selectedVersion, storage)
 		switch {
 		case zerr != nil:
 			fmt.Printf("Note: could not fetch seekable image (%v); flashing the full image.\n", zerr)
@@ -510,7 +519,7 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 		}
 
 		if !noBmap && imgInfo.BmapURL != "" {
-			candidate, derr := osCachedBmapPath(deviceKey, selectedVersion)
+			candidate, derr := osCachedBmapPath(deviceKey, selectedVersion, storage)
 			if derr != nil {
 				fmt.Printf("Note: cannot resolve block-map cache path (%v); flashing the full image.\n", derr)
 			} else if derr := downloadBmap(imgInfo.BmapURL, candidate); derr != nil {
@@ -570,7 +579,53 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 
 	writeModel := writeFinal.(tui.ProgressModel)
 	if writeModel.Err() != nil {
-		return fmt.Errorf("writing image: %w", writeModel.Err())
+		// Bmap write failed (typically a checksum mismatch between the published
+		// bmap and the actual image). Fall back to a full sequential dd write.
+		// For the seekable-zstd path the .zst is already on disk — open it as a
+		// sequential reader to avoid re-downloading the full image. For the regular
+		// bmap path the zip is also already cached.
+		var fallbackReader io.Reader
+		var fallbackSize int64
+		var fallbackCloser io.Closer
+		switch {
+		case seekableZst != "":
+			fmt.Printf("\nNote: block map write failed (%v); falling back to full image write.\n", writeModel.Err())
+			si, ferr := openSeekableZstd(seekableZst)
+			if ferr != nil {
+				return fmt.Errorf("writing image: %w", writeModel.Err())
+			}
+			fallbackReader, fallbackSize, fallbackCloser = si, si.Size(), si
+		case bmapPath != "":
+			fmt.Printf("\nNote: block map write failed (%v); falling back to full image write.\n", writeModel.Err())
+			fs, ferr := openOSImageStream(deviceKey, imgInfo)
+			if ferr != nil {
+				return fmt.Errorf("writing image: %w", writeModel.Err())
+			}
+			fallbackReader, fallbackSize, fallbackCloser = fs, fs.uncompressedSize, fs
+		default:
+			return fmt.Errorf("writing image: %w", writeModel.Err())
+		}
+		defer fallbackCloser.Close()
+		fallbackProg := tui.NewProgress(fmt.Sprintf("Writing to %s...", targetDrive.DevicePath))
+		fp := tea.NewProgram(fallbackProg)
+		go func() {
+			fp.Send(tui.ProgressDoneMsg{Err: writeImageToDisk(fallbackReader, fallbackSize, targetDrive, func(written int64) {
+				if fallbackSize > 0 {
+					fp.Send(tui.ProgressUpdateMsg{
+						Percent: float64(written) / float64(fallbackSize),
+						Written: written,
+						Total:   fallbackSize,
+					})
+				}
+			})})
+		}()
+		fallbackFinal, ferr := fp.Run()
+		if ferr != nil {
+			return fmt.Errorf("progress TUI: %w", ferr)
+		}
+		if fm := fallbackFinal.(tui.ProgressModel); fm.Err() != nil {
+			return fmt.Errorf("writing image: %w", fm.Err())
+		}
 	}
 
 	hasProvisioningData := provisioningRequired(provCreds, provDeviceName, provisioningJSON)
@@ -914,87 +969,103 @@ func readFileOrNil(path string) []byte {
 	return data
 }
 
-func osCachedImagePath(deviceKey, version string) (string, error) {
-	// Sanitize to prevent path traversal from user-supplied --version flag.
+// osCachedPath builds a cache file path for deviceKey+version, keyed by the
+// storage variant ("sd"/"nvme") when one is given so an SD image and an NVMe
+// image of the same device+version never share one file. ext includes the dot
+// (e.g. ".img", ".zip", ".bmap", ".img.zst"). Inputs are sanitized to prevent
+// path traversal from the user-supplied --version flag and the storage key.
+func osCachedPath(deviceKey, version, storage, ext string) (string, error) {
 	safeDevice := filepath.Base(deviceKey)
 	safeVersion := filepath.Base(version)
 	if safeDevice != deviceKey || safeVersion != version ||
 		strings.Contains(deviceKey, "..") || strings.Contains(version, "..") {
 		return "", fmt.Errorf("invalid device key or version: %q / %q", deviceKey, version)
 	}
-
-	dir, err := osCacheDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, fmt.Sprintf("%s-%s.img", safeDevice, safeVersion)), nil
-}
-
-func osCachedZipPath(deviceKey, version string) (string, error) {
-	safeDevice := filepath.Base(deviceKey)
-	safeVersion := filepath.Base(version)
-	if safeDevice != deviceKey || safeVersion != version ||
-		strings.Contains(deviceKey, "..") || strings.Contains(version, "..") {
-		return "", fmt.Errorf("invalid device key or version: %q / %q", deviceKey, version)
+	if storage != "" {
+		safeStorage := filepath.Base(storage)
+		if safeStorage != storage || strings.Contains(storage, "..") {
+			return "", fmt.Errorf("invalid storage key: %q", storage)
+		}
 	}
 
 	dir, err := osCacheDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(dir, fmt.Sprintf("%s-%s.zip", safeDevice, safeVersion)), nil
+	name := safeVersion
+	if storage != "" {
+		name = fmt.Sprintf("%s-%s", safeVersion, storage)
+	}
+	return filepath.Join(dir, fmt.Sprintf("%s-%s%s", safeDevice, name, ext)), nil
 }
 
-func osCachedBmapPath(deviceKey, version string) (string, error) {
-	safeDevice := filepath.Base(deviceKey)
-	safeVersion := filepath.Base(version)
-	if safeDevice != deviceKey || safeVersion != version ||
-		strings.Contains(deviceKey, "..") || strings.Contains(version, "..") {
-		return "", fmt.Errorf("invalid device key or version: %q / %q", deviceKey, version)
-	}
-
-	dir, err := osCacheDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, fmt.Sprintf("%s-%s.bmap", safeDevice, safeVersion)), nil
+func osCachedImagePath(deviceKey, version, storage string) (string, error) {
+	return osCachedPath(deviceKey, version, storage, ".img")
 }
 
-// manifestStorage maps a target drive's protocol to the manifest storage key,
-// honoring an explicit override. USB-attached drives default to nvme (e.g. a
-// Jetson NVMe in a USB enclosure); built-in SD readers and unknown buses → sd.
-func manifestStorage(d drive, override string) string {
+func osCachedZipPath(deviceKey, version, storage string) (string, error) {
+	return osCachedPath(deviceKey, version, storage, ".zip")
+}
+
+func osCachedBmapPath(deviceKey, version, storage string) (string, error) {
+	return osCachedPath(deviceKey, version, storage, ".bmap")
+}
+
+// manifestStorage picks the manifest storage key ("sd"/"nvme") for a target
+// drive, honoring an explicit override.
+//
+// A real NVMe controller is unambiguous → nvme. A USB-attached drive is NOT:
+// an SD card in a USB reader and an NVMe SSD in a USB enclosure both enumerate
+// as USB on every platform (the StorageType enum has no SD value), so bus type
+// alone can't tell them apart. We disambiguate from the variants this manifest
+// version actually publishes via defaultManifestStorage: prefer the SD image
+// when the device ships one (Raspberry Pi), else the NVMe image (a Jetson SSD
+// enclosure), else legacy/sd. Unknown buses (built-in card readers) → sd.
+//
+// Assumption: a device that publishes BOTH an sd and an nvme variant is
+// SD-natural for an ambiguous USB target (true for the only dual-variant device
+// today, Raspberry Pi 5). Pass --storage to override.
+func manifestStorage(v deviceVersion, st StorageType, override string) string {
 	switch override {
 	case "nvme", "sd":
 		return override
 	}
-	switch d.StorageType {
-	case StorageNVMe, StorageUSB:
+	switch st {
+	case StorageNVMe:
+		return "nvme"
+	case StorageUSB:
+		return defaultManifestStorage(v)
+	default:
+		return "sd"
+	}
+}
+
+// defaultManifestStorage returns the device's natural removable image variant
+// based on which artifacts the manifest version publishes: an SD variant when
+// present (the common Raspberry Pi case), otherwise an NVMe variant (a Jetson
+// NVMe SSD), otherwise "sd" so resolveTriple falls back to the legacy image.
+// Used when there is no target-drive protocol to consult (wendy os download)
+// and as the ambiguous-USB tiebreaker for manifestStorage.
+func defaultManifestStorage(v deviceVersion) string {
+	switch {
+	case v.SDPath != "":
+		return "sd"
+	case v.NVMEPath != "":
 		return "nvme"
 	default:
 		return "sd"
 	}
 }
 
-func osCachedZstPath(deviceKey, version string) (string, error) {
-	safeDevice := filepath.Base(deviceKey)
-	safeVersion := filepath.Base(version)
-	if safeDevice != deviceKey || safeVersion != version ||
-		strings.Contains(deviceKey, "..") || strings.Contains(version, "..") {
-		return "", fmt.Errorf("invalid device key or version: %q / %q", deviceKey, version)
-	}
-	dir, err := osCacheDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, fmt.Sprintf("%s-%s.img.zst", safeDevice, safeVersion)), nil
+func osCachedZstPath(deviceKey, version, storage string) (string, error) {
+	return osCachedPath(deviceKey, version, storage, ".img.zst")
 }
 
 // resolveSeekableZst downloads (or cache-hits) the seekable .img.zst for
 // deviceKey+version from zstURL, returning the cached path. Reuses downloadImage
 // (streams to a temp file with progress) then renames into the cache.
-func resolveSeekableZst(deviceKey, version, zstURL string) (string, error) {
-	cached, err := osCachedZstPath(deviceKey, version)
+func resolveSeekableZst(deviceKey, version, storage, zstURL string) (string, error) {
+	cached, err := osCachedZstPath(deviceKey, version, storage)
 	if err != nil {
 		return "", err
 	}
@@ -1079,7 +1150,7 @@ func resolveOSImage(deviceKey string, img *imageInfo) (string, error) {
 	isZip := strings.HasSuffix(strings.ToLower(img.DownloadURL), ".zip")
 
 	// Legacy .img cache hit (backward compat with pre-streaming caches).
-	imgCached, err := osCachedImagePath(deviceKey, img.Version)
+	imgCached, err := osCachedImagePath(deviceKey, img.Version, img.Storage)
 	if err != nil {
 		return "", err
 	}
@@ -1090,7 +1161,7 @@ func resolveOSImage(deviceKey string, img *imageInfo) (string, error) {
 
 	if isZip {
 		// Zip cache hit.
-		zipCached, zipErr := osCachedZipPath(deviceKey, img.Version)
+		zipCached, zipErr := osCachedZipPath(deviceKey, img.Version, img.Storage)
 		if zipErr != nil {
 			return "", zipErr
 		}

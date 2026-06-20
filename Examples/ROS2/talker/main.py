@@ -6,14 +6,21 @@ Wendy automatically injects ROS_DOMAIN_ID and RMW_IMPLEMENTATION from the
 `frameworks.ros2` section of wendy.json (WDY-880, PR #897).  No manual env
 var management is needed in the Dockerfile or compose file.
 
-With isolation: shared-network both services share a network namespace —
-exactly what ROS2 DDS multicast discovery requires.
+With isolation: shared-ipc both services share the network *and* IPC
+namespaces plus one /dev/shm — exactly what ROS2 DDS needs: UDP discovery
+over localhost and zero-copy shared-memory transport (CycloneDDS iceoryx).
 
-This example uses pure Python to show the injected vars without needing a full
-ROS2 install.  On a real ROS2 image the same wendy.json pattern works unchanged.
+This example uses pure Python to exercise both channels without needing a
+full ROS2 install:
+
+  * UDP datagrams to 127.0.0.1 — proves the shared network namespace
+  * a file in /dev/shm — proves the shared memory segment
+
+On a real ROS2 image the same wendy.json pattern works unchanged.
 """
 
 import os
+import socket
 import sys
 import time
 
@@ -33,18 +40,27 @@ if rmw != "rmw_cyclonedds_cpp":
 
 print("[talker] ✓ ROS2 env vars injected by Wendy from frameworks.ros2 config", flush=True)
 
-# In a real ROS2 node this is where you'd call rclpy.init() and start publishing.
-# Here we just emit periodic heartbeat lines so the listener can read from /dev/shm.
+# In a real ROS2 node this is where you'd call rclpy.init() and start
+# publishing. Here we emit a heartbeat on both transport channels until the
+# app is stopped (`wendy device apps stop` or ctrl-c on `wendy run`) so the
+# group keeps running for live inspection with `wendy device ros2 ...`.
 SHM = "/dev/shm/ros2-channel"
-for i in range(10):
+UDP_ADDR = ("127.0.0.1", 7447)
+
+sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+i = 0
+while True:
     msg = f"hello world {i}"
+    # Shared-memory channel: atomic replace so the listener never sees a
+    # partial write (mimics a DDS shared-memory segment hand-off).
     tmp = SHM + ".tmp"
     with open(tmp, "w") as f:
         f.write(f"{i}\n")
     os.replace(tmp, SHM)
-    print(f"[talker] published #{i}: {msg!r}", flush=True)
+    # Localhost channel: mimics DDS discovery/data over UDP loopback.
+    sock.sendto(f"{i}".encode(), UDP_ADDR)
+    # Log every 10th message after the first ten so the stream stays readable.
+    if i < 10 or i % 10 == 0:
+        print(f"[talker] published #{i}: {msg!r}", flush=True)
+    i += 1
     time.sleep(1)
-
-with open(SHM, "w") as f:
-    f.write("done\n")
-print("[talker] done", flush=True)

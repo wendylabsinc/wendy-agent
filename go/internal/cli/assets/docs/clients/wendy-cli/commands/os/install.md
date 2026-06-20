@@ -157,7 +157,7 @@ Requires an active `wendy auth login` session. The CLI creates an enrollment tok
 | `--no-wifi` | false | Skip WiFi setup entirely |
 | `--device-name` | interactive | Set device name on first boot (lowercase letters, digits, hyphens; must start with a letter, 3–55 chars) |
 | `--pre-enroll` | auto | Pre-enroll with Wendy Cloud during imaging |
-| `--storage` | auto | Force image storage variant: `nvme` or `sd` (default: auto-detect from target drive) |
+| `--storage` | auto | Force image storage variant: `nvme` or `sd` (default: auto-detect — real NVMe drives use `nvme`; a USB-attached drive uses the device's published image, `sd` for Raspberry Pi / `nvme` for Jetson SSD enclosures) |
 | `--no-bmap` | false | Disable bmap-accelerated flashing even when a block map is available |
 
 > **TODO**: Post-flashing Linux devices still need certificate provisioning and Wendy Cloud enrollment if `--pre-enroll` was not used. See [`wendy device setup`](../device/setup.md), [PKI](../../../../pki/), and [Wendy Cloud](../../../../cloud/).

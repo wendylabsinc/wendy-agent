@@ -1,9 +1,9 @@
 package oci
 
 import (
+	"fmt"
 	"os"
 	"runtime"
-	"strings"
 	"testing"
 )
 
@@ -12,6 +12,50 @@ func requireLinux(t *testing.T) {
 	t.Helper()
 	if runtime.GOOS != "linux" {
 		t.Skipf("procfs namespace paths are only available on Linux (running %s)", runtime.GOOS)
+	}
+}
+
+// TestJoinGroupNamespaces_AddsMissingNamespaceEntry guards against a join
+// silently no-op'ing when the base spec lacks the namespace entry. The function
+// must add a joining entry (Path set) for every namespace the isolation mode
+// requires, not only patch entries that happen to already be present.
+func TestJoinGroupNamespaces_AddsMissingNamespaceEntry(t *testing.T) {
+	requireLinux(t)
+	pid := uint32(os.Getpid())
+	spec := DefaultSpec("rootfs", []string{"/bin/sh"})
+
+	// Simulate a base spec that has no network namespace entry.
+	var filtered []LinuxNamespace
+	for _, ns := range spec.Linux.Namespaces {
+		if ns.Type != "network" {
+			filtered = append(filtered, ns)
+		}
+	}
+	spec.Linux.Namespaces = filtered
+
+	anchors, err := JoinGroupNamespaces(spec, pid, "shared-network")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	defer func() {
+		for _, f := range anchors {
+			f.Close()
+		}
+	}()
+
+	var netPath string
+	found := false
+	for _, ns := range spec.Linux.Namespaces {
+		if ns.Type == "network" {
+			netPath, found = ns.Path, true
+		}
+	}
+	if !found {
+		t.Fatal("network namespace join was silently skipped: no network entry added to spec")
+	}
+	want := fmt.Sprintf("/proc/%d/ns/net", pid)
+	if netPath != want {
+		t.Errorf("network namespace path = %q, want %q", netPath, want)
 	}
 }
 
@@ -38,10 +82,14 @@ func TestJoinGroupNamespaces_SharedIPC(t *testing.T) {
 	for _, ns := range spec.Linux.Namespaces {
 		nsMap[ns.Type] = ns.Path
 	}
-	// Paths must be fd-anchored (/proc/self/fd/{n}) to prevent TOCTOU PID reuse.
-	for _, nsType := range []string{"ipc", "network", "uts"} {
-		if !strings.HasPrefix(nsMap[nsType], "/proc/self/fd/") {
-			t.Errorf("%s namespace path = %q, want /proc/self/fd/<n>", nsType, nsMap[nsType])
+	// Paths must be raw procfs namespace paths: the spec is consumed by runc
+	// in a different process, where an agent-local /proc/self/fd/<n> path can
+	// never resolve. If the primary exits, runc fails with ENOENT (fail-safe).
+	wantNS := map[string]string{"ipc": "ipc", "network": "net", "uts": "uts"}
+	for nsType, kernel := range wantNS {
+		want := fmt.Sprintf("/proc/%d/ns/%s", pid, kernel)
+		if nsMap[nsType] != want {
+			t.Errorf("%s namespace path = %q, want %q", nsType, nsMap[nsType], want)
 		}
 	}
 	if nsMap["pid"] != "" {
@@ -71,10 +119,12 @@ func TestJoinGroupNamespaces_SharedNetwork(t *testing.T) {
 	for _, ns := range spec.Linux.Namespaces {
 		nsMap[ns.Type] = ns.Path
 	}
-	// Paths must be fd-anchored (/proc/self/fd/{n}) to prevent TOCTOU PID reuse.
-	for _, nsType := range []string{"network", "uts"} {
-		if !strings.HasPrefix(nsMap[nsType], "/proc/self/fd/") {
-			t.Errorf("%s namespace path = %q, want /proc/self/fd/<n>", nsType, nsMap[nsType])
+	// Paths must be raw procfs namespace paths resolvable from runc's process.
+	wantNS := map[string]string{"network": "net", "uts": "uts"}
+	for nsType, kernel := range wantNS {
+		want := fmt.Sprintf("/proc/%d/ns/%s", pid, kernel)
+		if nsMap[nsType] != want {
+			t.Errorf("%s namespace path = %q, want %q", nsType, nsMap[nsType], want)
 		}
 	}
 	// ipc should remain isolated in shared-network mode

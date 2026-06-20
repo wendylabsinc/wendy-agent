@@ -25,6 +25,9 @@ const (
 	videoGroupGID uint32 = 44
 	// inputGroupGID is the standard input group GID (for /dev/input devices).
 	inputGroupGID uint32 = 105
+	// dialoutGroupGID is the standard dialout group GID (owns serial tty nodes
+	// like /dev/ttyACM* and /dev/ttyUSB* on Debian/Ubuntu hosts).
+	dialoutGroupGID uint32 = 20
 	// v4l2Major is the standard Video4Linux character device major.
 	v4l2Major int64 = 81
 )
@@ -82,6 +85,10 @@ func ApplyEntitlements(spec *Spec, cfg *appconfig.AppConfig, opts ApplyOptions) 
 			applySPI(spec)
 		case appconfig.EntitlementInput:
 			applyInput(spec)
+		case appconfig.EntitlementSerial:
+			if err := applySerial(spec, ent); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -678,6 +685,133 @@ func applyI2C(spec *Spec, ent appconfig.Entitlement) {
 		Major:  &major,
 		Access: "rwm",
 	})
+}
+
+// serialDeviceMajors maps a serial tty node-name prefix to its kernel character
+// device major. ttyACM = USB CDC-ACM (cdc_acm), ttyUSB = USB-serial bridges
+// (FTDI/CH340/CP210x via usbserial). The entitlement is deliberately USB-only:
+// on-board UARTs (ttyAMA, ttyS) are excluded because ttyS in particular shares
+// its major with a board's system-console UART, adding attack surface for no
+// peripheral benefit. Prefixes are validated upstream by appconfig.isValidSerialDevice.
+var serialDeviceMajors = map[string]int64{
+	"ttyACM": 166,
+	"ttyUSB": 188,
+}
+
+// serialDeviceMajor returns the cgroup device major for a serial tty node name
+// (e.g. "ttyACM0" → 166) and whether the name is a recognized, well-formed node
+// (known prefix followed by one or more digits). The full-name validation here
+// is defense-in-depth against a malformed device slipping past appconfig
+// validation: it guarantees applySerial never bind-mounts a path like
+// "ttyACM0/../sda" that filepath.Clean would resolve outside the intended node.
+func serialDeviceMajor(device string) (int64, bool) {
+	for _, prefix := range appconfig.SerialDevicePrefixes {
+		if !strings.HasPrefix(device, prefix) {
+			continue
+		}
+		suffix := device[len(prefix):]
+		if suffix == "" {
+			return 0, false
+		}
+		for _, c := range suffix {
+			if c < '0' || c > '9' {
+				return 0, false
+			}
+		}
+		major, ok := serialDeviceMajors[prefix]
+		return major, ok
+	}
+	return 0, false
+}
+
+// statSerialDevice resolves a host serial node to its character-device
+// major:minor. It rejects a node that does not exist or is a symlink: runc
+// cannot resolve a symlink target through a bind mount, and a symlink would let
+// the validated node differ from the one ultimately bound. Lstat does not
+// follow the link (mirrors the approach in applyAudio). Behind a var so tests
+// can inject device numbers without root/mknod.
+var statSerialDevice = func(p string) (major, minor int64, err error) {
+	fi, err := os.Lstat(p)
+	if err != nil {
+		return 0, 0, err
+	}
+	if fi.Mode()&os.ModeSymlink != 0 {
+		return 0, 0, fmt.Errorf("%s is a symlink; want a real device node", p)
+	}
+	var st syscall.Stat_t
+	if err := syscall.Stat(p, &st); err != nil {
+		return 0, 0, err
+	}
+	rdev := uint64(st.Rdev)
+	return int64(unix.Major(rdev)), int64(unix.Minor(rdev)), nil
+}
+
+// applySerial adds access to a single serial tty device (e.g. a USB-attached
+// servo bus or sensor on /dev/ttyACM0). Unlike the usb entitlement — which
+// exposes raw libusb access via /dev/bus/usb (major 189) — this grants the
+// kernel tty node that pyserial/termios open, which is a different device major
+// (166 for ttyACM, 188 for ttyUSB). The device field is a bare node name
+// validated by appconfig.isValidSerialDevice, so it cannot contain a path
+// separator or escape /dev.
+func applySerial(spec *Spec, ent appconfig.Entitlement) error {
+	wantMajor, ok := serialDeviceMajor(ent.Device)
+	if !ok {
+		return fmt.Errorf("serial: unrecognized device name %q", ent.Device)
+	}
+	devPath := filepath.Clean(fmt.Sprintf("/dev/%s", ent.Device))
+
+	// Resolve the exact node so the cgroup rule is scoped to this one device
+	// (major:minor), never the whole kernel major. A whole-major rule would
+	// expose every other device sharing that major on the host — every ttyACM*
+	// or ttyUSB* adapter (SOC2-CC6, ISO27001-A.8, NIST-AC-3). Resolution also
+	// fails fast and clearly when the device is not connected, instead of a
+	// cryptic mount error at start.
+	major, minor, err := statSerialDevice(devPath)
+	if err != nil {
+		return fmt.Errorf("serial device %s unavailable (need a real, connected tty node): %w", devPath, err)
+	}
+	// Defense-in-depth: the resolved node must be the character-device major its
+	// name implies, so a node that isn't the expected serial device can't smuggle
+	// in access to an unrelated major.
+	if major != wantMajor {
+		return fmt.Errorf("serial device %s has unexpected major %d (want %d for %q); refusing", devPath, major, wantMajor, ent.Device)
+	}
+
+	// Bind-mount the specific node from the host. nosuid/noexec: a serial tty is
+	// opened for I/O, never executed and never a setuid surface. NOTE: do not add
+	// "nodev" here — the destination *is* a character device node, and nodev makes
+	// the kernel refuse to interpret it as a device, so open() fails with EACCES.
+	spec.Mounts = append(spec.Mounts, Mount{
+		Destination: devPath,
+		Source:      devPath,
+		Type:        "bind",
+		Options:     []string{"rbind", "rw", "nosuid", "noexec"},
+	})
+
+	// Allow exactly this device's major:minor. "rw" (no mknod): the host owns
+	// the node and the bind mount above surfaces it; the container only opens it.
+	maj, min := major, minor
+	spec.Linux.Resources.Devices = append(spec.Linux.Resources.Devices, LinuxDeviceCgroup{
+		Allow:  true,
+		Type:   "c",
+		Major:  &maj,
+		Minor:  &min,
+		Access: "rw",
+	})
+
+	// Serial tty nodes are group-owned by dialout; resolve its GID on the host so
+	// a non-root process can open the port, falling back to the Debian/Ubuntu
+	// default when the group is absent (mirrors applySPI's group lookup). This GID
+	// applies process-tree-wide, but the major:minor cgroup rule above is the real
+	// access gate — membership alone reaches no device the cgroup rule denies.
+	dialoutGID := dialoutGroupGID
+	if grp, gerr := user.LookupGroup("dialout"); gerr == nil {
+		if gid, perr := strconv.ParseUint(grp.Gid, 10, 32); perr == nil {
+			dialoutGID = uint32(gid)
+		}
+	}
+	spec.Process.User.AdditionalGids = appendUnique(spec.Process.User.AdditionalGids, dialoutGID)
+	return nil
 }
 
 // applyGPIO adds GPIO device access for specified pins.

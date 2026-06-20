@@ -55,6 +55,15 @@ The bypass applies only to that PowerShell invocation. Run it from a non-elevate
 | `protoc` + `protoc-gen-go` + `protoc-gen-go-grpc` | Regenerating protobuf code | See [Protobuf section](#regenerating-protobuf-code) |
 | `golangci-lint` | Local linting (mirrors CI) | `go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest` |
 | `containerd` | Running the agent locally on Linux | `sudo apt install containerd` |
+| Node.js 24 + npm | Optional; only for developer screencast tooling in `screencast/` | [nodejs.org](https://nodejs.org) or `nvm install 24` |
+
+### Environment Variables
+
+Local `.env*` files are ignored by git, while `.env.example` files may be
+committed as templates. Do not commit real credentials.
+
+For screencast voiceover variables, use `screencast/.env.example` and see
+[screencast tooling](screencasts.md).
 
 ## Cloning
 

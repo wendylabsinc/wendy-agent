@@ -11,6 +11,7 @@ This guide covers everything you need to contribute to the `wendy-agent` reposit
 | [contributing.md](contributing.md) | Branching model, commit style, PR workflow, code owners |
 | [debugging.md](debugging.md) | Debugging the agent itself: logs, env vars, gRPC tracing, common failures |
 | [docs-site.md](docs-site.md) | Fumadocs local development, CI, hosting, and release docs URLs |
+| [screencasts.md](screencasts.md) | Developer-only screencast production tooling and CI checks |
 
 ## Repository Layout
 
@@ -29,6 +30,7 @@ wendy-agent/
     Makefile            Build targets (run from go/)
   proto-defs/           Protobuf definitions (shared source of truth)
   docs/                 Documentation (symlink -> go/internal/cli/assets/docs)
+  screencast/           Developer-only narrated screencast tooling
   plugins/              Claude Code plugins
   swift/                macOS companion app (WendyAgentMac)
   packaging/            Linux .deb/.rpm packaging scripts

@@ -73,9 +73,14 @@ type ContainerMonitor struct {
 	containerd services.ContainerdClient
 	logManager *services.ContainerLogManager
 	states     map[string]*containerState
-	mu         sync.Mutex
-	interval   time.Duration
-	stopCh     chan struct{}
+	// groupRestarting tracks shared-namespace app groups with an in-flight group
+	// restart, keyed by appID. A group restart stops every member, so a later
+	// tick would otherwise see the siblings stopped and launch a second,
+	// overlapping restart that races on the primary PID. Guarded by mu.
+	groupRestarting map[string]bool
+	mu              sync.Mutex
+	interval        time.Duration
+	stopCh          chan struct{}
 }
 
 func NewContainerMonitor(logger *zap.Logger, client services.ContainerdClient, logManager *services.ContainerLogManager, interval time.Duration) *ContainerMonitor {
@@ -83,12 +88,13 @@ func NewContainerMonitor(logger *zap.Logger, client services.ContainerdClient, l
 		interval = 5 * time.Second
 	}
 	return &ContainerMonitor{
-		logger:     logger,
-		containerd: client,
-		logManager: logManager,
-		states:     make(map[string]*containerState),
-		interval:   interval,
-		stopCh:     make(chan struct{}),
+		logger:          logger,
+		containerd:      client,
+		logManager:      logManager,
+		states:          make(map[string]*containerState),
+		groupRestarting: make(map[string]bool),
+		interval:        interval,
+		stopCh:          make(chan struct{}),
 	}
 }
 
@@ -169,6 +175,121 @@ func (m *ContainerMonitor) checkContainers(ctx context.Context) {
 		return
 	}
 
+	toRestart := m.planRestarts(containers)
+
+	for _, act := range m.planRestartActions(ctx, toRestart) {
+		if act.groupAppID != "" {
+			go m.restartGroup(ctx, act.groupAppID)
+		} else {
+			go m.restartSingle(ctx, act.single)
+		}
+	}
+}
+
+// restartAction is one unit of restart work: either a single container, or an
+// entire shared-namespace app group identified by appID.
+type restartAction struct {
+	single     string // restart this container on its own
+	groupAppID string // restart this shared-namespace group as a unit
+}
+
+// planRestartActions maps the flat list of containers due for restart into
+// restart units, collapsing members of the same shared-namespace group into a
+// single group restart. Members of a shared-namespace group must restart
+// together: a secondary's namespace join is resolved against the primary's live
+// task, so restarting members independently would leave a secondary attached to
+// a dead namespace.
+func (m *ContainerMonitor) planRestartActions(ctx context.Context, toRestart []string) []restartAction {
+	gr, _ := m.containerd.(services.GroupRestarter)
+	seenGroup := make(map[string]bool)
+	var actions []restartAction
+	for _, name := range toRestart {
+		if gr != nil {
+			if appID, grouped := gr.GroupRestartAppID(ctx, name); grouped {
+				if seenGroup[appID] {
+					continue
+				}
+				seenGroup[appID] = true
+				actions = append(actions, restartAction{groupAppID: appID})
+				continue
+			}
+		}
+		actions = append(actions, restartAction{single: name})
+	}
+	return actions
+}
+
+// restartSingle restarts one container and drains its output to the log manager.
+func (m *ContainerMonitor) restartSingle(ctx context.Context, name string) {
+	outputCh, err := m.containerd.StartContainer(ctx, name, "", nil)
+	if err != nil {
+		m.logger.Error("Failed to restart container",
+			zap.String("app_name", name),
+			zap.Error(err),
+		)
+		return
+	}
+	m.drainOutput(name, outputCh)
+}
+
+// restartGroup restarts an entire shared-namespace app group as a unit, draining
+// each member's output to the log manager.
+func (m *ContainerMonitor) restartGroup(ctx context.Context, appID string) {
+	gr, ok := m.containerd.(services.GroupRestarter)
+	if !ok {
+		// Should not happen: only reachable when planRestartActions produced a
+		// group action, which requires the client to be a GroupRestarter.
+		m.logger.Error("group restart requested but client is not a GroupRestarter",
+			zap.String("app_id", appID))
+		return
+	}
+
+	// Guard against overlapping restarts of the same group: a group restart
+	// stops every member, so a later tick can see the siblings stopped and try
+	// to restart the group again while this one is still in flight.
+	m.mu.Lock()
+	if m.groupRestarting[appID] {
+		m.mu.Unlock()
+		return
+	}
+	m.groupRestarting[appID] = true
+	m.mu.Unlock()
+	defer func() {
+		m.mu.Lock()
+		delete(m.groupRestarting, appID)
+		m.mu.Unlock()
+	}()
+	channels, err := gr.RestartGroup(ctx, appID)
+	if err != nil {
+		m.logger.Error("Failed to restart app group",
+			zap.String("app_id", appID),
+			zap.Error(err),
+		)
+		return
+	}
+	for name, ch := range channels {
+		go m.drainOutput(name, ch)
+	}
+}
+
+// drainOutput consumes a container's output channel so the containerd pipe never
+// blocks, publishing through the log manager when available so stdout/stderr
+// from restarted containers reaches OTel (and therefore `wendy device logs`).
+func (m *ContainerMonitor) drainOutput(name string, outputCh <-chan services.ContainerOutput) {
+	for output := range outputCh {
+		if m.logManager != nil {
+			m.logManager.Publish(name, output)
+		}
+	}
+	if m.logManager != nil {
+		m.logManager.Publish(name, services.ContainerOutput{Done: true})
+	}
+}
+
+// planRestarts reconciles the registered container states against the current
+// container list and returns the names of containers that should be restarted,
+// advancing their FailureCount/LastRestart as a side effect.
+func (m *ContainerMonitor) planRestarts(containers []*agentpb.AppContainer) []string {
 	// Build the set of running container identities, keyed the same way the
 	// monitor registers state. Services-map apps are monitored per service under
 	// the "{appID}_{serviceName}" container name (see containerd.ContainerName /
@@ -201,6 +322,7 @@ func (m *ContainerMonitor) checkContainers(ctx context.Context) {
 	}
 
 	m.mu.Lock()
+	defer m.mu.Unlock()
 	var toRestart []string
 	for appName, state := range m.states {
 		if running[appName] {
@@ -220,33 +342,7 @@ func (m *ContainerMonitor) checkContainers(ctx context.Context) {
 		state.LastRestart = time.Now()
 		toRestart = append(toRestart, appName)
 	}
-	m.mu.Unlock()
-
-	for _, name := range toRestart {
-		go func(n string) {
-			outputCh, err := m.containerd.StartContainer(ctx, n, "", nil)
-			if err != nil {
-				m.logger.Error("Failed to restart container",
-					zap.String("app_name", n),
-					zap.Error(err),
-				)
-				return
-			}
-			// Drain outputCh so the containerd pipe never blocks.
-			// Publish through the log manager when available so stdout/stderr
-			// from restarted containers reaches OTel (and therefore `wendy device logs`).
-			go func() {
-				for output := range outputCh {
-					if m.logManager != nil {
-						m.logManager.Publish(n, output)
-					}
-				}
-				if m.logManager != nil {
-					m.logManager.Publish(n, services.ContainerOutput{Done: true})
-				}
-			}()
-		}(name)
-	}
+	return toRestart
 }
 
 // shouldRestart determines whether a container should be restarted based on its policy.

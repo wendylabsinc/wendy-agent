@@ -1,0 +1,85 @@
+#!/usr/bin/env node
+import { spawnSync } from 'node:child_process';
+import { writeFile } from 'node:fs/promises';
+import { resolveSceneFile } from './lib/scene-paths.mjs';
+
+const model = process.env.OPENAI_TTS_MODEL ?? 'gpt-4o-mini-tts';
+const allowedModels = new Set((process.env.OPENAI_TTS_ALLOWED_MODELS ?? 'gpt-4o-mini-tts').split(',').map((item) => item.trim()).filter(Boolean));
+const voice = process.env.OPENAI_TTS_VOICE ?? 'alloy';
+const speed = Number(process.env.OPENAI_TTS_SPEED ?? '1.25');
+const instructions = process.env.OPENAI_TTS_INSTRUCTIONS ?? 'Professional technical screencast narration. Calm, confident, concise, neutral English. Avoid hype; sound like an experienced engineer explaining status and tradeoffs.';
+
+if (!allowedModels.has(model)) {
+  console.error(`error: OPENAI_TTS_MODEL must be one of: ${Array.from(allowedModels).join(', ')}`);
+  process.exit(2);
+}
+if (!Number.isFinite(speed) || speed < 0.25 || speed > 4.0) {
+  console.error('error: OPENAI_TTS_SPEED must be a number between 0.25 and 4.0');
+  process.exit(2);
+}
+
+function usage() {
+  console.log(`usage: render-voice [--dry-run] <scene-dir|voice.md|scene-prefix>
+
+voice.md -> voice.md.mp3
+
+Environment:
+  OPENAI_TTS_SPEED  Speech speed, 0.25-4.0. Default: 1.25`);
+}
+
+let dryRun = false;
+let arg;
+for (const item of process.argv.slice(2)) {
+  if (item === '--dry-run') dryRun = true;
+  else if (item === '-h' || item === '--help') { usage(); process.exit(0); }
+  else if (!arg) arg = item;
+  else { console.error(`error: unexpected argument: ${item}`); process.exit(2); }
+}
+if (!arg) { usage(); process.exit(2); }
+if (!dryRun && !process.env.OPENAI_API_KEY) {
+  console.error('error: OPENAI_API_KEY is required; no local TTS fallback is supported');
+  process.exit(1);
+}
+
+function duration(path) {
+  const result = spawnSync('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'default=nk=1:nw=1', path], { encoding: 'utf8' });
+  return result.status === 0 ? result.stdout.trim() : '';
+}
+
+function estimate(text) {
+  const words = text.match(/\b[\w'-]+\b/g)?.length ?? 0;
+  const seconds = Math.max(1, (words / 155 * 60) / speed);
+  return `${words} words, ~${seconds.toFixed(1)}s at ${speed}x`;
+}
+
+async function main() {
+  const { source } = await resolveSceneFile(arg, 'voice.md');
+  const output = `${source}.mp3`;
+  const text = (await import('node:fs/promises').then(({ readFile }) => readFile(source, 'utf8'))).trim();
+  const stats = estimate(text);
+
+  if (dryRun) {
+    console.log(`would generate ${output} (${stats}, model ${model}, voice ${voice})`);
+    return;
+  }
+
+  const response = await fetch('https://api.openai.com/v1/audio/speech', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ model, voice, input: text, response_format: 'mp3', instructions, speed }),
+  });
+  if (!response.ok) {
+    throw new Error(`TTS failed for ${source} (HTTP ${response.status}): ${await response.text()}`);
+  }
+  await writeFile(output, Buffer.from(await response.arrayBuffer()));
+  const actual = duration(output);
+  console.log(`generated ${output} (${stats}${actual ? `, actual ${actual}s` : ''}, model ${model}, voice ${voice})`);
+}
+
+main().catch((error) => {
+  console.error(error.message ?? error);
+  process.exit(1);
+});

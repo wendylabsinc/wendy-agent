@@ -1,0 +1,214 @@
+#!/usr/bin/env node
+import { spawnSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { mkdir, mkdtemp, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { basename, dirname, join, relative, resolve } from 'node:path';
+import { screencastRoot } from './lib/scene-paths.mjs';
+
+const width = Number(process.env.SCREENCAST_WIDTH ?? 1440);
+const height = Number(process.env.SCREENCAST_HEIGHT ?? 900);
+const fps = Number(process.env.SCREENCAST_FPS ?? 10);
+const crf = process.env.SCREENCAST_CRF ?? '18';
+const defaultSceneSeconds = Number(process.env.SCREENCAST_DEFAULT_SCENE_SECONDS ?? 5);
+
+function usage() {
+  console.log('usage: stitch [scene-dir ...] [--output output.mp4]');
+}
+
+const sceneArgs = [];
+let outArg;
+for (let i = 2; i < process.argv.length; i += 1) {
+  const item = process.argv[i];
+  if (item === '--output') outArg = process.argv[++i];
+  else if (item === '-h' || item === '--help') { usage(); process.exit(0); }
+  else sceneArgs.push(item);
+}
+
+
+for (const tool of ['ffmpeg', 'ffprobe']) {
+  if (spawnSync('which', [tool], { stdio: 'ignore' }).status !== 0) {
+    console.error(`error: required tool not found: ${tool}`);
+    process.exit(2);
+  }
+}
+
+function posix(path) { return path.split('/').join('/'); }
+function run(command, args, options = {}) {
+  const result = spawnSync(command, args, { stdio: 'inherit', ...options });
+  if (result.status !== 0) throw new Error(`${command} exited ${result.status}`);
+}
+function ffprobeDuration(path) {
+  if (!path || !existsSync(path)) return 0;
+  const result = spawnSync('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'default=nk=1:nw=1', path], { encoding: 'utf8' });
+  return result.status === 0 ? Number(result.stdout.trim()) || 0 : 0;
+}
+function concatLine(path) { return `file '${resolve(path).replaceAll("'", "'\\''")}'\n`; }
+function regexForGlob(value) {
+  const escaped = value.replace(/[.+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`^${escaped.replaceAll('*', '.*')}$`);
+}
+
+async function sceneDirectoriesFromParent(parentDir) {
+  if (!existsSync(parentDir)) throw new Error(`no scenes directory: ${parentDir}`);
+  const entries = await readdir(parentDir, { withFileTypes: true });
+  return entries
+    .filter((entry) => entry.isDirectory() && !entry.name.startsWith('.'))
+    .map((entry) => join(parentDir, entry.name))
+    .sort();
+}
+
+async function expandSceneArg(arg) {
+  if (arg.includes('*')) {
+    const absolutePattern = resolve(arg);
+    const parentDir = dirname(absolutePattern);
+    const matcher = regexForGlob(basename(absolutePattern));
+    const entries = await readdir(parentDir, { withFileTypes: true });
+    const matches = entries
+      .filter((entry) => entry.isDirectory() && matcher.test(entry.name))
+      .map((entry) => join(parentDir, entry.name))
+      .sort();
+    if (matches.length === 0) throw new Error(`no scene directories match: ${arg}`);
+    return matches;
+  }
+
+  const sceneDir = resolve(arg);
+  if (!existsSync(sceneDir)) throw new Error(`scene directory not found: ${arg}`);
+  const info = await stat(sceneDir);
+  if (!info.isDirectory()) throw new Error(`scene path is not a directory: ${arg}`);
+  return [sceneDir];
+}
+
+async function selectedSceneDirectories() {
+  if (sceneArgs.length === 0) return sceneDirectoriesFromParent(resolve('scenes'));
+  const groups = await Promise.all(sceneArgs.map(expandSceneArg));
+  return groups.flat();
+}
+
+function rootForScenes(scenes) {
+  if (scenes.length === 0) return process.cwd();
+  const sceneParent = dirname(scenes[0]);
+  return basename(sceneParent) === 'scenes' ? dirname(sceneParent) : sceneParent;
+}
+
+function commandArg(sceneDir) {
+  const rel = relative(screencastRoot, sceneDir);
+  return rel.startsWith('..') ? sceneDir : posix(rel);
+}
+
+async function explicitMedia(sceneDir) {
+  for (const name of ['video.mp4', 'video.webm', 'video.gif']) {
+    if (existsSync(join(sceneDir, name))) return join(sceneDir, name);
+  }
+  const entries = await readdir(sceneDir, { withFileTypes: true });
+  const candidates = entries
+    .filter((entry) => entry.isFile())
+    .map((entry) => entry.name)
+    .filter((name) => /\.(mp4|webm|gif)$/.test(name))
+    .filter((name) => name !== 'slide.md.mp4' && name !== 'vhs.tape.mp4')
+    .sort();
+  if (candidates.length > 1) {
+    throw new Error(`multiple visual media files in ${sceneDir}; keep one or name the intended file video.mp4`);
+  }
+  return candidates[0] ? join(sceneDir, candidates[0]) : null;
+}
+
+async function sceneVisual(sceneDir) {
+  const explicit = await explicitMedia(sceneDir);
+  if (explicit) return explicit;
+
+  const tape = join(sceneDir, 'vhs.tape');
+  if (existsSync(tape)) {
+    const rendered = `${tape}.mp4`;
+    if (!existsSync(rendered)) throw new Error(`${basename(sceneDir)} has vhs.tape but no vhs.tape.mp4; run: scripts/render-tape ${commandArg(sceneDir)}`);
+    return rendered;
+  }
+
+  const slide = join(sceneDir, 'slide.md');
+  const rendered = `${slide}.mp4`;
+  if (!existsSync(rendered)) throw new Error(`${basename(sceneDir)} has no visual media; run: scripts/render-slide ${commandArg(sceneDir)}`);
+  return rendered;
+}
+
+function renderMediaVideo(media, seconds, output) {
+  run('ffmpeg', [
+    '-nostdin', '-y', '-i', media,
+    '-vf', `scale=${width}:${height}:force_original_aspect_ratio=decrease:flags=lanczos,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=black,fps=${fps},setsar=1,format=yuv420p,tpad=stop_mode=clone:stop_duration=${seconds},trim=duration=${seconds},setpts=PTS-STARTPTS`,
+    '-an', '-c:v', 'libx264', '-preset', 'medium', '-crf', crf,
+    '-pix_fmt', 'yuv420p', '-movflags', '+faststart', output,
+  ]);
+}
+
+function renderAudio(voicePath, seconds, output) {
+  if (voicePath && existsSync(voicePath)) {
+    run('ffmpeg', [
+      '-nostdin', '-y', '-i', voicePath,
+      '-af', `apad=pad_dur=${seconds},atrim=0:${seconds},asetpts=PTS-STARTPTS`,
+      '-ar', '48000', '-ac', '2', '-c:a', 'pcm_s16le', output,
+    ]);
+  } else {
+    run('ffmpeg', ['-nostdin', '-y', '-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=48000', '-t', String(seconds), '-c:a', 'pcm_s16le', output]);
+  }
+}
+
+async function main() {
+  const scenes = await selectedSceneDirectories();
+  const root = rootForScenes(scenes);
+  const outFile = resolve(outArg ?? 'output/screencast.mp4');
+  const workdir = await mkdtemp(join(tmpdir(), 'screencast-stitch-'));
+  const videoDir = join(workdir, 'video');
+  const audioDir = join(workdir, 'audio');
+  await mkdir(videoDir, { recursive: true });
+  await mkdir(audioDir, { recursive: true });
+  await mkdir(dirname(outFile), { recursive: true });
+
+  try {
+    const videoList = [];
+    const audioList = [];
+    const report = ['id\tseconds\tvoice_seconds\tmedia_seconds\tvisual_source'];
+
+    for (const [index, sceneDir] of scenes.entries()) {
+      const id = basename(sceneDir);
+      const voiceSource = join(sceneDir, 'voice.md');
+      const voicePath = `${voiceSource}.mp3`;
+      if (existsSync(voiceSource) && !existsSync(voicePath)) {
+        throw new Error(`${id} has voice.md but no voice.md.mp3; run: scripts/render-voice ${commandArg(sceneDir)}`);
+      }
+      const mediaPath = await sceneVisual(sceneDir);
+      const voiceSeconds = ffprobeDuration(voicePath);
+      const mediaSeconds = ffprobeDuration(mediaPath);
+      const seconds = Math.max(voiceSeconds, mediaSeconds, voiceSeconds === 0 && mediaSeconds === 0 ? defaultSceneSeconds : 0);
+      const n = String(index + 1).padStart(3, '0');
+      const videoOut = join(videoDir, `${n}-${id}.mp4`);
+      const audioOut = join(audioDir, `${n}-${id}.wav`);
+
+      console.log(`Rendering ${id}: ${posix(relative(root, mediaPath))}, ${seconds.toFixed(3)}s`);
+      renderMediaVideo(mediaPath, seconds, videoOut);
+      renderAudio(voicePath, seconds, audioOut);
+      videoList.push(videoOut);
+      audioList.push(audioOut);
+      report.push(`${id}\t${seconds.toFixed(3)}\t${voiceSeconds.toFixed(3)}\t${mediaSeconds.toFixed(3)}\t${posix(relative(root, mediaPath))}`);
+    }
+
+    await writeFile(join(workdir, 'video-list.txt'), videoList.map(concatLine).join(''));
+    await writeFile(join(workdir, 'audio-list.txt'), audioList.map(concatLine).join(''));
+    await mkdir(dirname(outFile), { recursive: true });
+    await writeFile(join(dirname(outFile), 'duration-report.tsv'), `${report.join('\n')}\n`);
+
+    const videoFull = join(workdir, 'video-full.mp4');
+    const audioFull = join(workdir, 'audio-full.wav');
+    run('ffmpeg', ['-nostdin', '-y', '-f', 'concat', '-safe', '0', '-i', join(workdir, 'video-list.txt'), '-c', 'copy', videoFull]);
+    run('ffmpeg', ['-nostdin', '-y', '-f', 'concat', '-safe', '0', '-i', join(workdir, 'audio-list.txt'), '-c:a', 'pcm_s16le', audioFull]);
+    run('ffmpeg', ['-nostdin', '-y', '-i', videoFull, '-i', audioFull, '-map', '0:v:0', '-map', '1:a:0', '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k', '-shortest', '-movflags', '+faststart', outFile]);
+    console.log(`wrote ${outFile}`);
+    run('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'default=nk=1:nw=1', outFile]);
+    run('ffprobe', ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=width,height,r_frame_rate', '-of', 'csv=p=0', outFile]);
+  } finally {
+    await rm(workdir, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 }).catch(() => {});
+  }
+}
+
+main().catch((error) => {
+  console.error(error.message ?? error);
+  process.exit(1);
+});

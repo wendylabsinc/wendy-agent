@@ -29,6 +29,52 @@ func bluezAdapterPath() string {
 	return defaultBluezAdapter
 }
 
+// advertisingAdapterPath selects the BlueZ adapter to advertise on. If
+// WENDY_BT_ADAPTER is set, that path is trusted verbatim. Otherwise it
+// enumerates BlueZ's managed objects and returns the first adapter that
+// implements org.bluez.LEAdvertisingManager1 — the interface that exposes
+// RegisterAdvertisement.
+//
+// The default /org/bluez/hci0 is not always the advertising-capable
+// controller: the onboard radio can enumerate as a higher hciN, or a USB
+// dongle may be the only LE-capable adapter. Calling RegisterAdvertisement on
+// an adapter that lacks the interface surfaces as a confusing
+// "RegisterAdvertisement ... doesn't exist" D-Bus error, so discover the right
+// adapter up front and fail fast with a clear message when none supports it.
+func advertisingAdapterPath(conn *dbus.Conn) (string, error) {
+	if p := os.Getenv("WENDY_BT_ADAPTER"); p != "" {
+		return p, nil
+	}
+
+	var managed map[dbus.ObjectPath]map[string]map[string]dbus.Variant
+	root := conn.Object(bluezService, "/")
+	if err := root.Call("org.freedesktop.DBus.ObjectManager.GetManagedObjects", 0).Store(&managed); err != nil {
+		return "", fmt.Errorf("enumerate bluez objects: %w", err)
+	}
+
+	if p := findAdvertisingAdapter(managed); p != "" {
+		return p, nil
+	}
+	return "", fmt.Errorf("no bluetooth adapter implements %s (LE advertising unsupported)", advManagerIface)
+}
+
+// findAdvertisingAdapter returns the path of the adapter implementing
+// org.bluez.LEAdvertisingManager1, or "" if none do. When several adapters
+// qualify it returns the lexicographically lowest path so selection is stable
+// across runs despite Go's randomised map iteration order.
+func findAdvertisingAdapter(managed map[dbus.ObjectPath]map[string]map[string]dbus.Variant) string {
+	var best string
+	for path, ifaces := range managed {
+		if _, ok := ifaces[advManagerIface]; !ok {
+			continue
+		}
+		if s := string(path); best == "" || s < best {
+			best = s
+		}
+	}
+	return best
+}
+
 // advertisement implements org.bluez.LEAdvertisement1 on D-Bus.
 type advertisement struct{}
 
@@ -68,7 +114,12 @@ func startAdvertising(ctx context.Context, logger *zap.Logger) error {
 		return fmt.Errorf("export advertisement properties: %w", err)
 	}
 
-	hci := conn.Object(bluezService, dbus.ObjectPath(bluezAdapterPath()))
+	adapterPath, err := advertisingAdapterPath(conn)
+	if err != nil {
+		conn.Close()
+		return err
+	}
+	hci := conn.Object(bluezService, dbus.ObjectPath(adapterPath))
 
 	// Ensure the adapter is powered on. The call is a no-op if it already is,
 	// but it also clears Command Disallowed state that lingers after a previous
@@ -116,7 +167,10 @@ func startAdvertising(ctx context.Context, logger *zap.Logger) error {
 		return fmt.Errorf("register advertisement: %w", regErr)
 	}
 
-	logger.Info("BLE advertisement registered", zap.String("uuid", wendyServiceUUID), zap.String("name", hostname))
+	logger.Info("BLE advertisement registered",
+		zap.String("adapter", adapterPath),
+		zap.String("uuid", wendyServiceUUID),
+		zap.String("name", hostname))
 
 	// Wait for context cancellation, then unregister.
 	go func() {

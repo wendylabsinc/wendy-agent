@@ -1,7 +1,7 @@
 {
   "appId": "sh.wendy.examples.ros2",
   "version": "1.0.0",
-  "isolation": "shared-network",
+  "isolation": "shared-ipc",
   "frameworks": {
     "ros2": {
       "domainId": 42,

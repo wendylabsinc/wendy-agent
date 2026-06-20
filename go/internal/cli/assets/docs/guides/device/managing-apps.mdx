@@ -16,11 +16,11 @@ The Wendy CLI can help you manage apps on your WendyOS device. This works over U
 
 ## Running Apps
 
-All WendyOS apps are container-based and require a `Dockerfile` in your project directory. When you run `wendy run`, the CLI automatically prepares the local build environment, builds your container image for the ARM64 architecture, and ships it directly to your WendyOS device.
+All WendyOS apps are container-based and require a `Dockerfile` or `Containerfile` in your project directory. When you run `wendy run`, the CLI automatically prepares the local build environment, builds your container image for the ARM64 architecture, and ships it directly to your WendyOS device.
 
 ### Basic Usage
 
-Navigate to your project directory (containing a `Dockerfile`) and run:
+Navigate to your project directory (containing a `Dockerfile` or `Containerfile`) and run:
 
 ```bash
 wendy run
@@ -56,7 +56,7 @@ wendy run --deploy
 
 ### Python Projects
 
-For Python projects without a `Dockerfile`, the Wendy CLI can automatically generate one. It detects:
+For Python projects without a `Dockerfile` or `Containerfile`, the Wendy CLI can automatically generate one. It detects:
 - Entry points (`main.py`, `app.py`, etc.)
 - Frameworks (Flask, FastAPI, Django)
 - Dependencies from `requirements.txt` or `pyproject.toml`

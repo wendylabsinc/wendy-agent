@@ -41,6 +41,8 @@ vendor/
 
 # Local settings
 *.local.*
+.env*
+!.env.example
 
 # Git worktrees
 .worktrees/

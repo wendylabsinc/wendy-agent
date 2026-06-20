@@ -76,6 +76,50 @@ func TestListV4L2Devices_TwoDevices(t *testing.T) {
 	}
 }
 
+func TestListV4L2Devices_ExcludesNonCameraDrivers(t *testing.T) {
+	// On Raspberry Pi 3/4 the bcm2835-isp and bcm2835-codec m2m nodes advertise
+	// VIDEO_CAPTURE and would otherwise pollute `camera list` as fake cameras.
+	// Only the real unicam capture node should be listed.
+	svc := newTestVideoService(
+		func() ([]string, error) {
+			return []string{"/dev/video0", "/dev/video10", "/dev/video14", "/dev/video15"}, nil
+		},
+		func(base string) (string, error) {
+			names := map[string]string{
+				"video0":  "unicam",
+				"video10": "bcm2835-codec-decode",
+				"video14": "bcm2835-isp-capture0",
+				"video15": "bcm2835-isp-capture1",
+			}
+			return names[base], nil
+		},
+	)
+	svc.classifyTransport = func(base string) (camera.Transport, string) {
+		drivers := map[string]string{
+			"video0":  "bcm2835-unicam",
+			"video10": "bcm2835-codec",
+			"video14": "bcm2835-isp",
+			"video15": "bcm2835-isp",
+		}
+		drv := drivers[base]
+		if camera.IsNonCameraDriver(drv) {
+			return camera.TransportUnknown, drv
+		}
+		return camera.TransportCSI, drv
+	}
+
+	devices, err := svc.listV4L2Devices(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(devices) != 1 {
+		t.Fatalf("expected only the unicam node, got %d: %v", len(devices), devices)
+	}
+	if devices[0].GetPath() != "/dev/video0" || devices[0].GetName() != "unicam" {
+		t.Errorf("expected /dev/video0 unicam, got path=%q name=%q", devices[0].GetPath(), devices[0].GetName())
+	}
+}
+
 func TestListV4L2Devices_NoDevices(t *testing.T) {
 	svc := newTestVideoService(
 		func() ([]string, error) { return nil, nil },
@@ -298,6 +342,19 @@ func TestBuildGStreamerArgs_V4L2HardwareEncoder(t *testing.T) {
 	joined := strings.Join(args, " ")
 	if !strings.Contains(joined, "v4l2h264enc") || !strings.Contains(joined, "video/x-h264") {
 		t.Errorf("expected v4l2h264enc pipeline segment: %v", args)
+	}
+}
+
+func TestBuildGStreamerArgs_V4L2PinsH264Level(t *testing.T) {
+	// On the Raspberry Pi bcm2835-codec, a bare v4l2h264enc (even with a
+	// profile-only capsfilter) negotiates an H.264 level the driver then rejects
+	// at QBUF time ("Failed to process frame"). Pinning an explicit level in the
+	// output caps is required for the encoder to run (verified on a Pi 4, WDY-1603).
+	req := &agentpb.StreamVideoRequest{}
+	args := mustBuildGStreamerArgs(t, "/usr/bin/gst-launch-1.0", "/dev/video0", req, "v4l2h264enc", true)
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "level=(string)4") {
+		t.Errorf("v4l2h264enc output caps must pin an H.264 level: %v", args)
 	}
 }
 

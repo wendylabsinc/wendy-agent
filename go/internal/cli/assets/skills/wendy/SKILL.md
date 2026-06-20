@@ -77,7 +77,7 @@ WendyOS is a Linux-based containerized operating system. It uses Linux container
 
 WendyOS uses Swift.org as its flagship language. This uses Swift Package Manager and the Swift Container Plugin to build and run your app. Wendy CLI will cross compile Swift for you.
 
-Other programming languages are supported, but require the use of a Dockerfile to build your app.
+Other programming languages are supported, but require the use of a Dockerfile or Containerfile to build your app.
 
 ### Entitlements
 

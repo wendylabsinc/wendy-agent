@@ -6,6 +6,12 @@ updates:
       interval: weekly
       day: monday
 
+  - package-ecosystem: npm
+    directory: /screencast
+    schedule:
+      interval: weekly
+      day: monday
+
   - package-ecosystem: github-actions
     directory: /
     schedule:

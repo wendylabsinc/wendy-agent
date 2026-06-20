@@ -1,0 +1,1 @@
+The workflow is text first and reviewable. The agent should commit source files: the script, scene Markdown, tape files, hooks, and configuration. It should not commit generated media. CI checks enforce that, along with npm audit policy, script validation, hook checksums, secret scanning, and browser capture guardrails.

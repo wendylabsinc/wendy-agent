@@ -228,6 +228,18 @@ I2C bus access.
 |-------|-------------|
 | `device` | I2C device path (required). |
 
+### `serial`
+
+Serial tty device access — e.g. a USB-serial adapter or servo bus (`pyserial`/termios).
+
+```json
+{ "type": "serial", "device": "ttyACM0" }
+```
+
+| Field | Description |
+|-------|-------------|
+| `device` | Bare USB tty node name, matching `ttyACM0` / `ttyUSB0` (required). USB-only; on-board UARTs (`ttyAMA`, `ttyS`) are not supported. Not a path. |
+
 ### `gpio`
 
 GPIO pin access.

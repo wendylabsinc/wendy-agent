@@ -217,6 +217,20 @@
           "required": ["type"],
           "additionalProperties": false,
           "description": "HID input device access (barcode scanners, keyboards, etc.)."
+        },
+        {
+          "properties": {
+            "type": { "const": "serial" },
+            "device": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^(ttyACM|ttyUSB)[0-9]+$",
+              "description": "USB serial tty node name, e.g. \"ttyACM0\" or \"ttyUSB0\" (bare name, not a path). USB-only; on-board UARTs (ttyAMA, ttyS) are not supported."
+            }
+          },
+          "required": ["type", "device"],
+          "additionalProperties": false,
+          "description": "Serial tty device access (USB-attached servo buses, sensors, microcontrollers)."
         }
       ]
     },

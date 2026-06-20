@@ -86,6 +86,10 @@ type imageInfo struct {
 	Version     string
 	BmapURL     string
 	ZstURL      string
+	// Storage is the resolved manifest variant ("sd"/"nvme"/""), used to keep
+	// the on-disk cache keyed per variant so an SD download and an NVMe download
+	// of the same device+version never collide on one cache file.
+	Storage string
 }
 
 func fetchMainManifest() (*mainManifest, error) {
@@ -193,6 +197,7 @@ func getImageInfo(dm *deviceManifest, ver, storage string) (*imageInfo, error) {
 		DownloadURL: gcsBaseURL + "/" + t.imagePath,
 		ImageSize:   t.imageSize,
 		Version:     ver,
+		Storage:     storage,
 	}
 	if t.bmapPath != "" {
 		info.BmapURL = gcsBaseURL + "/" + t.bmapPath

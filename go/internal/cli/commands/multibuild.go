@@ -118,21 +118,17 @@ func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 		return err
 	}
 
-	// Create containers in dependency order.
+	// Create (and start) containers in dependency order.
 	ordered, err := serviceTopoOrder(services)
 	if err != nil {
 		return err
 	}
-	for _, name := range ordered {
+	createService := func(name string) error {
 		svc := services[name]
 		deviceImage := fmt.Sprintf("localhost:%d/%s-%s:latest", regPort,
 			strings.ToLower(appCfg.AppID), strings.ToLower(name))
 
-		serviceCfg := &appconfig.AppConfig{
-			AppID:        fmt.Sprintf("%s-%s", appCfg.AppID, name),
-			Platform:     appCfg.Platform,
-			Entitlements: svc.Entitlements,
-		}
+		serviceCfg := multiServiceCreateConfig(appCfg, name, svc)
 		appConfigData, err := json.Marshal(serviceCfg)
 		if err != nil {
 			return fmt.Errorf("marshaling config for service %s: %w", name, err)
@@ -141,7 +137,7 @@ func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 		restartPolicy := resolveRestartPolicy(opts)
 		createReq := &agentpb.CreateContainerRequest{
 			ImageName:     deviceImage,
-			AppName:       serviceCfg.AppID,
+			AppName:       serviceCfg.ContainerName(),
 			AppConfig:     appConfigData,
 			RestartPolicy: restartPolicy,
 		}
@@ -151,15 +147,30 @@ func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 			return fmt.Errorf("creating container for service %s: %w", name, err)
 		}
 		cliLogln("Service %s container created.", name)
+		return nil
 	}
 
 	if opts.deploy {
+		// Create-only: no service ever starts, so shared-namespace groups
+		// cannot join here — the join happens at create time against the
+		// primary's running task. Such groups should be deployed without
+		// --deploy (or started service-by-service in dependency order).
+		for _, name := range ordered {
+			if err := createService(name); err != nil {
+				return err
+			}
+		}
 		cliLogln("App group %s created (not started, --deploy).", appCfg.AppID)
 		return nil
 	}
 
-	// Start all containers and multiplex log output with per-service prefixes.
-	return startAndStreamServices(ctx, conn, appCfg.AppID, ordered, opts)
+	// Create and start each service in dependency order, multiplexing log
+	// output with per-service prefixes. Interleaving create and start is
+	// load-bearing for shared-ipc/shared-network groups: a secondary's
+	// namespace join is resolved at container create time against the
+	// primary's running task, so the primary must be started before the
+	// next service is created.
+	return startAndStreamServices(ctx, conn, appCfg.AppID, ordered, opts, createService)
 }
 
 // buildServicesParallel builds all service images concurrently (up to
@@ -282,11 +293,45 @@ func buildServicesParallel(
 
 var serviceLogStyle = lipgloss.NewStyle().Foreground(tui.ColorInfo)
 
+// multiServiceCreateConfig builds the per-service AppConfig transmitted to
+// the agent for a standalone multi-service app. The group identity and
+// runtime context (isolation, frameworks, shared entitlements) must travel
+// with every service: the agent keys namespace sharing, ROS 2 env injection,
+// and container naming on these fields (WDY-878, WDY-884).
+func multiServiceCreateConfig(appCfg *appconfig.AppConfig, name string, svc *appconfig.ServiceConfig) *appconfig.AppConfig {
+	cfg := &appconfig.AppConfig{
+		AppID:       appCfg.AppID,
+		ServiceName: name,
+		Version:     appCfg.Version,
+		Platform:    appCfg.Platform,
+		Isolation:   appCfg.Isolation,
+		Frameworks:  appCfg.Frameworks,
+	}
+	cfg.Entitlements = append(append([]appconfig.Entitlement{}, appCfg.Entitlements...), svc.Entitlements...)
+	cfg.Entitlements = deduplicateEntitlements(cfg.Entitlements)
+	if svc.Frameworks != nil {
+		cfg.Frameworks = svc.Frameworks
+	}
+	return cfg
+}
+
+// multiServiceContainerName returns the container name the agent derives for
+// a service: "{appId}_{serviceName}" (WDY-878). Start/stop calls must address
+// the same name the create path produced.
+func multiServiceContainerName(appID, serviceName string) string {
+	return appID + "_" + serviceName
+}
+
 // startAndStreamServices starts all service containers and streams their
 // combined output to stdout/stderr with a "[serviceName] " prefix per line.
 // This is a best-effort multiplexer; proper per-service log routing is handled
 // by WDY-893 (multiplexed AttachContainer).
-func startAndStreamServices(ctx context.Context, conn *grpcclient.AgentConnection, appID string, ordered []string, opts runOptions) error {
+// createService is invoked for each service, in dependency order, immediately
+// before that service is started — after every earlier service is already
+// running. This ordering is required for shared-ipc/shared-network groups:
+// the agent resolves a secondary's namespace join at container create time
+// against the primary's running task.
+func startAndStreamServices(ctx context.Context, conn *grpcclient.AgentConnection, appID string, ordered []string, opts runOptions, createService func(name string) error) error {
 	runCtx, runCancel := context.WithCancel(ctx)
 	defer runCancel()
 
@@ -306,7 +351,7 @@ func startAndStreamServices(ctx context.Context, conn *grpcclient.AgentConnectio
 			go func(name string) {
 				defer stopWg.Done()
 				_, _ = conn.ContainerService.StopContainer(stopCtx, &agentpb.StopContainerRequest{
-					AppName: fmt.Sprintf("%s-%s", appID, name),
+					AppName: multiServiceContainerName(appID, name),
 				})
 			}(name)
 		}
@@ -315,7 +360,10 @@ func startAndStreamServices(ctx context.Context, conn *grpcclient.AgentConnectio
 
 	if opts.detach {
 		for _, name := range ordered {
-			containerName := fmt.Sprintf("%s-%s", appID, name)
+			if err := createService(name); err != nil {
+				return err
+			}
+			containerName := multiServiceContainerName(appID, name)
 			stream, err := conn.ContainerService.StartContainer(runCtx, &agentpb.StartContainerRequest{
 				AppName: containerName,
 			})
@@ -337,21 +385,33 @@ func startAndStreamServices(ctx context.Context, conn *grpcclient.AgentConnectio
 	}
 	lines := make(chan logLine, 256)
 
+	// Create and start sequentially in dependency order; the first Recv
+	// blocks until the agent's Started ack, guaranteeing each service's task
+	// is running before the next service's container is created.
 	var wg sync.WaitGroup
 	for _, name := range ordered {
+		if err := createService(name); err != nil {
+			runCancel()
+			wg.Wait()
+			return err
+		}
+		containerName := multiServiceContainerName(appID, name)
+		stream, err := conn.ContainerService.StartContainer(runCtx, &agentpb.StartContainerRequest{
+			AppName: containerName,
+		})
+		if err != nil {
+			runCancel()
+			wg.Wait()
+			return fmt.Errorf("starting service %s: %w", name, err)
+		}
+		if _, err := stream.Recv(); err != nil && err != io.EOF {
+			runCancel()
+			wg.Wait()
+			return fmt.Errorf("waiting for service %s to start: %w", name, err)
+		}
 		wg.Add(1)
-		go func(name string) {
+		go func(name string, stream agentpb.WendyContainerService_StartContainerClient) {
 			defer wg.Done()
-			containerName := fmt.Sprintf("%s-%s", appID, name)
-			stream, err := conn.ContainerService.StartContainer(runCtx, &agentpb.StartContainerRequest{
-				AppName: containerName,
-			})
-			if err != nil {
-				if runCtx.Err() == nil {
-					cliLogln("Warning: starting service %s: %v", name, err)
-				}
-				return
-			}
 			for {
 				resp, recvErr := stream.Recv()
 				if recvErr == io.EOF {
@@ -378,7 +438,7 @@ func startAndStreamServices(ctx context.Context, conn *grpcclient.AgentConnectio
 					}
 				}
 			}
-		}(name)
+		}(name, stream)
 	}
 
 	go func() {

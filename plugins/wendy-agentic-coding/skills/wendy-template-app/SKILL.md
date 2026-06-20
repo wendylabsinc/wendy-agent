@@ -19,10 +19,10 @@ Useful searches:
 
 ```bash
 rg -n "realsense|camera|yolo|voice|audio|fullstack|simple-api" ../templates
-find ../templates -name template.json -o -name wendy.json -o -name Dockerfile
+find ../templates -name template.json -o -name wendy.json -o -name Dockerfile -o -name Containerfile
 ```
 
-Read the candidate template's `template.json`, `wendy.json`, `Dockerfile`, and main source files before copying or rewriting code. Use `meta.json` to discover template names and descriptions when present.
+Read the candidate template's `template.json`, `wendy.json`, `Dockerfile` or `Containerfile`, and main source files before copying or rewriting code. Use `meta.json` to discover template names and descriptions when present.
 
 If no local templates repo is available, clone or inspect the GitHub source in a temporary location before building:
 
@@ -52,7 +52,7 @@ Pass every required `template.json` variable with `--var`; otherwise the command
 
 ## Adapt safely
 
-- Preserve the template's proven Dockerfile, entrypoint, readiness probe, hooks, and entitlements unless the requested app needs a real change.
+- Preserve the template's proven Dockerfile/Containerfile, entrypoint, readiness probe, hooks, and entitlements unless the requested app needs a real change.
 - Validate `wendy.json` after edits.
 - If hardware is involved, use `wendy-device-ops` to inspect device capabilities before changing entitlements.
 - If source behavior is unclear, inspect `wendylabsinc/templates` before inventing a replacement.

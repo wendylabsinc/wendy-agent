@@ -981,6 +981,134 @@ func TestApplyI2C_ValidDevice(t *testing.T) {
 	}
 }
 
+// TestApplySerial_ValidDevice verifies a legitimate serial tty is bind-mounted,
+// gets a cgroup allow rule scoped to the device's exact major:minor (never the
+// whole major), and adds the dialout GID.
+func TestApplySerial_ValidDevice(t *testing.T) {
+	cases := []struct {
+		device string
+		major  int64
+	}{
+		{"ttyACM0", 166},
+		{"ttyUSB0", 188},
+	}
+	// Inject a fake stat so the test needs no real device nodes (which require
+	// root + mknod). Returns the device's expected major and a fixed minor.
+	const fakeMinor int64 = 7
+	origStat := statSerialDevice
+	defer func() { statSerialDevice = origStat }()
+
+	for _, tc := range cases {
+		t.Run(tc.device, func(t *testing.T) {
+			statSerialDevice = func(string) (int64, int64, error) { return tc.major, fakeMinor, nil }
+			spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
+			cfg := &appconfig.AppConfig{
+				AppID: "test-app",
+				Entitlements: []appconfig.Entitlement{
+					{Type: appconfig.EntitlementSerial, Device: tc.device},
+				},
+			}
+			if err := ApplyEntitlements(spec, cfg, ApplyOptions{}); err != nil {
+				t.Fatalf("ApplyEntitlements() error = %v", err)
+			}
+			if !hasMountDest(spec, "/dev/"+tc.device) {
+				t.Errorf("serial device %q was not mounted", tc.device)
+			}
+			if !hasMajorMinorRule(spec, tc.major, fakeMinor) {
+				t.Errorf("serial device %q missing scoped cgroup allow rule for %d:%d", tc.device, tc.major, fakeMinor)
+			}
+			if hasWholeMajorRule(spec, tc.major) {
+				t.Errorf("serial device %q emitted a whole-major rule (no minor) — must be device-scoped", tc.device)
+			}
+			if !hasGID(spec, dialoutGroupGID) {
+				t.Errorf("serial device %q did not add dialout GID %d", tc.device, dialoutGroupGID)
+			}
+		})
+	}
+}
+
+// TestApplySerial_DeviceAbsent verifies a clear error (and no spec mutation)
+// when the declared serial device is not present on the host.
+func TestApplySerial_DeviceAbsent(t *testing.T) {
+	origStat := statSerialDevice
+	defer func() { statSerialDevice = origStat }()
+	statSerialDevice = func(string) (int64, int64, error) { return 0, 0, errors.New("no such device") }
+
+	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
+	cfg := &appconfig.AppConfig{
+		AppID:        "test-app",
+		Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementSerial, Device: "ttyACM0"}},
+	}
+	if err := ApplyEntitlements(spec, cfg, ApplyOptions{}); err == nil {
+		t.Fatal("ApplyEntitlements() = nil error for absent serial device, want error")
+	}
+	if hasMountDest(spec, "/dev/ttyACM0") {
+		t.Error("absent serial device should not be mounted")
+	}
+}
+
+// TestStatSerialDevice_RejectsSymlink verifies the real resolver refuses a
+// symlinked node (runc can't follow symlinks through a bind mount, and a
+// symlink would let the validated node differ from the bound one).
+func TestStatSerialDevice_RejectsSymlink(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "real")
+	if err := os.WriteFile(target, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := statSerialDevice(link); err == nil {
+		t.Error("statSerialDevice followed a symlink; want rejection")
+	}
+}
+
+// TestApplySerial_PathTraversal verifies a crafted device name cannot escape
+// /dev or emit an unscoped cgroup rule.
+func TestApplySerial_PathTraversal(t *testing.T) {
+	traversalCases := []string{
+		"ttyACM0/../sda",
+		"../mem",
+		"../../etc/passwd",
+		"sda",
+		"ttyACM",
+		"ttyACMx",
+	}
+	// A real device node never gets stat'd for these — they're rejected by name
+	// before the stat — but inject a permissive stat so a regression that skips
+	// the name check would still be caught by the mount assertions below.
+	origStat := statSerialDevice
+	defer func() { statSerialDevice = origStat }()
+	statSerialDevice = func(string) (int64, int64, error) { return 166, 0, nil }
+
+	for _, device := range traversalCases {
+		t.Run(device, func(t *testing.T) {
+			spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
+			cfg := &appconfig.AppConfig{
+				AppID: "test-app",
+				Entitlements: []appconfig.Entitlement{
+					{Type: appconfig.EntitlementSerial, Device: device},
+				},
+			}
+			// A crafted name must be rejected with an error; either way it must
+			// never produce a mount escaping /dev or the named bad path.
+			if err := ApplyEntitlements(spec, cfg, ApplyOptions{}); err == nil {
+				t.Errorf("crafted device=%q was accepted; want rejection", device)
+			}
+			for _, m := range spec.Mounts {
+				if m.Destination == "/dev/sda" || m.Destination == "/dev/mem" || m.Destination == "/etc/passwd" {
+					t.Errorf("path traversal via device=%q mounted %q", device, m.Destination)
+				}
+				if m.Destination == "/dev/"+device {
+					t.Errorf("unsanitized device=%q was mounted as %q", device, m.Destination)
+				}
+			}
+		})
+	}
+}
+
 // TestApplyPersist_PathTraversalDestination verifies that a crafted mount destination
 // cannot escape the container path validation (WDY-1016).
 func TestApplyPersist_PathTraversalDestination(t *testing.T) {
@@ -1092,6 +1220,25 @@ func installFakeCameraGlobs(t *testing.T, files map[string]int64) {
 		}
 		return 0, os.ErrNotExist
 	}
+}
+
+func hasMajorMinorRule(spec *Spec, major, minor int64) bool {
+	for _, d := range spec.Linux.Resources.Devices {
+		if d.Allow && d.Major != nil && *d.Major == major && d.Minor != nil && *d.Minor == minor {
+			return true
+		}
+	}
+	return false
+}
+
+// hasWholeMajorRule reports an allow rule for a whole major (no minor scope).
+func hasWholeMajorRule(spec *Spec, major int64) bool {
+	for _, d := range spec.Linux.Resources.Devices {
+		if d.Allow && d.Major != nil && *d.Major == major && d.Minor == nil {
+			return true
+		}
+	}
+	return false
 }
 
 func hasMajorRule(spec *Spec, want int64) bool {

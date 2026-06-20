@@ -317,7 +317,21 @@ struct `'wendy device info'` {
 
 `CLIAndAgentScenario` creates CLI and agent sessions, attaches the recorder,
 installs the managed CLI on `PATH`, configures isolated `HOME` and `TMPDIR`, and
-copies the auth fixture for authenticated tests.
+copies the auth fixture for authenticated tests. For scenario-specific target
+setup or cleanup, pass `before` and/or `after` hooks to the scenario initializer;
+`after` runs even when setup or the test body fails, and the original failure is
+preserved unless cleanup is the only failure.
+
+```swift
+let scenario = CLIAndAgentScenario(
+    before: { _, agent in
+        try await agent.sh("brew uninstall --force hello || true")
+    },
+    after: { _, agent in
+        try await agent.sh("brew uninstall --force hello || true")
+    }
+)
+```
 
 ### Specification prose
 

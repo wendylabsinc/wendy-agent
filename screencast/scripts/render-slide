@@ -1,0 +1,182 @@
+#!/usr/bin/env node
+import { spawn, spawnSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { resolveSceneFile, screencastRoot } from './lib/scene-paths.mjs';
+
+const width = Number(process.env.SCREENCAST_WIDTH ?? 1440);
+const height = Number(process.env.SCREENCAST_HEIGHT ?? 900);
+const fps = Number(process.env.SCREENCAST_FPS ?? 10);
+const seconds = Number(process.env.SCREENCAST_SLIDE_SECONDS ?? 1);
+const crf = process.env.SCREENCAST_CRF ?? '18';
+const chromePath = process.env.CHROMIUM_PATH ?? [
+  '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+  '/Applications/Chromium.app/Contents/MacOS/Chromium',
+  `${process.env.HOME}/.cache/rod/browser/chromium-1321438/Chromium.app/Contents/MacOS/Chromium`,
+].find((candidate) => candidate && existsSync(candidate));
+
+function usage() {
+  console.log('usage: render-slide <scene-dir|slide.md|scene-prefix>');
+}
+
+const arg = process.argv[2];
+if (!arg || arg === '-h' || arg === '--help') {
+  usage();
+  process.exit(arg ? 0 : 2);
+}
+if (!chromePath) {
+  console.error('error: set CHROMIUM_PATH to a Chrome or Chromium executable');
+  process.exit(2);
+}
+for (const tool of ['ffmpeg', 'npx']) {
+  if (spawnSync('which', [tool], { stdio: 'ignore' }).status !== 0) {
+    console.error(`error: required tool not found: ${tool}`);
+    process.exit(2);
+  }
+}
+
+function run(command, args, options = {}) {
+  const result = spawnSync(command, args, { stdio: 'inherit', ...options });
+  if (result.status !== 0) throw new Error(`${command} exited ${result.status}`);
+}
+
+async function sleep(ms) {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForHTTP(url, timeoutMs = 30000) {
+  const start = Date.now();
+  let lastError;
+  while (Date.now() - start < timeoutMs) {
+    try {
+      const response = await fetch(url);
+      if (response.ok) return;
+    } catch (error) { lastError = error; }
+    await sleep(250);
+  }
+  throw new Error(`timed out waiting for ${url}: ${lastError?.message ?? 'no response'}`);
+}
+
+async function waitForJSON(endpoint, timeoutMs = 10000) {
+  const start = Date.now();
+  let lastError;
+  while (Date.now() - start < timeoutMs) {
+    try {
+      const response = await fetch(endpoint);
+      if (response.ok) return await response.json();
+    } catch (error) { lastError = error; }
+    await sleep(100);
+  }
+  throw new Error(`timed out waiting for ${endpoint}: ${lastError?.message ?? 'no response'}`);
+}
+
+function connect(wsURL) {
+  const ws = new WebSocket(wsURL);
+  let nextID = 1;
+  const pending = new Map();
+  ws.addEventListener('message', (event) => {
+    const msg = JSON.parse(event.data);
+    if (!msg.id || !pending.has(msg.id)) return;
+    const { resolve, reject } = pending.get(msg.id);
+    pending.delete(msg.id);
+    msg.error ? reject(new Error(JSON.stringify(msg.error))) : resolve(msg.result);
+  });
+  return new Promise((resolve, reject) => {
+    ws.addEventListener('open', () => resolve({
+      send(method, params = {}) {
+        const id = nextID++;
+        ws.send(JSON.stringify({ id, method, params }));
+        return new Promise((resolveRequest, rejectRequest) => pending.set(id, { resolve: resolveRequest, reject: rejectRequest }));
+      },
+      close() { ws.close(); },
+    }), { once: true });
+    ws.addEventListener('error', reject, { once: true });
+  });
+}
+
+async function captureSlideStill(cdp, slidevBaseURL, output) {
+  await cdp.send('Page.navigate', { url: `${slidevBaseURL}/1` });
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    const result = await cdp.send('Runtime.evaluate', {
+      expression: `(() => {
+        const text = document.body?.innerText?.trim() ?? '';
+        const slide = document.querySelector('.slidev-layout, .slidev-page');
+        return Boolean(slide) && text.length > 0 && !text.includes('Loading');
+      })()`,
+      returnByValue: true,
+    }).catch(() => ({ result: { value: false } }));
+    if (result.result?.value) break;
+    await sleep(200);
+  }
+  await sleep(300);
+  await cdp.send('Runtime.evaluate', { expression: 'document.fonts && document.fonts.ready', awaitPromise: true }).catch(() => {});
+  const shot = await cdp.send('Page.captureScreenshot', { format: 'png', fromSurface: true });
+  await writeFile(output, Buffer.from(shot.data, 'base64'));
+}
+
+function renderStillVideo(png, output) {
+  run('ffmpeg', [
+    '-nostdin', '-y', '-loop', '1', '-i', png,
+    '-t', String(seconds),
+    '-vf', `fps=${fps},scale=${width}:${height}:flags=lanczos,setsar=1,format=yuv420p`,
+    '-an', '-c:v', 'libx264', '-preset', 'medium', '-crf', crf,
+    '-pix_fmt', 'yuv420p', '-movflags', '+faststart', output,
+  ]);
+}
+
+async function main() {
+  const { source } = await resolveSceneFile(arg, 'slide.md');
+  const output = `${source}.mp4`;
+  const workdir = await mkdtemp(join(tmpdir(), 'screencast-render-slide-'));
+  const deckPath = join(screencastRoot, `.render-slide-${process.pid}.md`);
+  const png = join(workdir, 'slide.png');
+  const userDataDir = join(workdir, 'chrome-profile');
+  await mkdir(userDataDir, { recursive: true });
+  const body = (await readFile(source, 'utf8')).trimEnd();
+  await writeFile(deckPath, `---\ntheme: default\ncolorSchema: dark\nclass: text-left\ndrawings:\n  persist: false\ntransition: fade-out\nmdc: true\n---\n\n${body}\n`);
+
+  const slidevPort = Number(process.env.SLIDEV_PORT ?? 3030);
+  const chromePort = 9222 + Math.floor(Math.random() * 1000);
+  const slidevBaseURL = `http://localhost:${slidevPort}`;
+  const slidev = spawn('npx', ['slidev', deckPath, '--port', String(slidevPort)], { cwd: screencastRoot, stdio: ['ignore', 'inherit', 'inherit'] });
+  const chrome = spawn(chromePath, [
+    '--headless=new', `--remote-debugging-port=${chromePort}`, `--user-data-dir=${userDataDir}`,
+    '--no-first-run', '--no-default-browser-check', '--disable-gpu', '--disable-background-networking',
+    '--force-color-profile=srgb', `--window-size=${width},${height}`, 'about:blank',
+  ], { stdio: ['ignore', 'ignore', 'pipe'] });
+  chrome.stderr.on('data', (chunk) => {
+    const text = String(chunk);
+    if (!text.includes('DevTools listening')) process.stderr.write(text);
+  });
+
+  let cdp;
+  try {
+    await waitForHTTP(`${slidevBaseURL}/`);
+    await waitForJSON(`http://127.0.0.1:${chromePort}/json/version`);
+    await fetch(`http://127.0.0.1:${chromePort}/json/new?${encodeURIComponent(`${slidevBaseURL}/1`)}`, { method: 'PUT' });
+    const targets = await waitForJSON(`http://127.0.0.1:${chromePort}/json/list`);
+    const target = targets.find((t) => t.type === 'page' && t.url.startsWith(slidevBaseURL)) ?? targets.find((t) => t.type === 'page');
+    if (!target?.webSocketDebuggerUrl) throw new Error('could not find Chrome page target');
+    cdp = await connect(target.webSocketDebuggerUrl);
+    await cdp.send('Page.enable');
+    await cdp.send('Runtime.enable');
+    await cdp.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false });
+    await captureSlideStill(cdp, slidevBaseURL, png);
+    renderStillVideo(png, output);
+    console.log(`wrote ${output}`);
+  } finally {
+    cdp?.close();
+    if (!chrome.killed) chrome.kill('SIGTERM');
+    if (!slidev.killed) slidev.kill('SIGTERM');
+    await sleep(1000);
+    await rm(deckPath, { force: true }).catch(() => {});
+    await rm(workdir, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 }).catch(() => {});
+  }
+}
+
+main().catch((error) => {
+  console.error(error.message ?? error);
+  process.exit(1);
+});

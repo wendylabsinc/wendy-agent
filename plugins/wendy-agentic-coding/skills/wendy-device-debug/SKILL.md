@@ -15,7 +15,7 @@ Use this for live-device and cross-layer runtime bugs. Static code reading is no
    - CLI behavior: command parsing, target selection, build provider, gRPC request.
    - Agent behavior: service implementation, containerd adapter, OCI spec, logs.
    - WendyOS behavior: image version, device type, mounts, CDI, system services.
-   - App behavior: Dockerfile, `wendy.json`, entitlements, environment, startup logs.
+   - App behavior: Dockerfile/Containerfile, `wendy.json`, entitlements, environment, startup logs.
 4. Use `wendy-device-ops` for CLI-native inspection before SSH when the agent and CLI can still answer the question.
 5. If SSH access is available from local instructions or the user, inspect the live device early. Use containerd and `nerdctl`, not Docker.
 

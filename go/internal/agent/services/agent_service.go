@@ -536,6 +536,46 @@ const osUpdateUnsupportedForHostMessage = "This setup cannot be updated with wen
 // "  10%" or "50% 5120 kB" or "Installing:  75%".
 var menderProgressRe = regexp.MustCompile(`(\d{1,3})%`)
 
+// systemctlFn runs systemctl; overridable in tests.
+var systemctlFn = func(ctx context.Context, args ...string) ([]byte, error) {
+	return exec.CommandContext(ctx, "systemctl", args...).CombinedOutput()
+}
+
+const (
+	updaterTimerUnit   = "wendyos-agent-updater.timer"
+	updaterServiceUnit = "wendyos-agent-updater.service"
+)
+
+// inhibitAutoUpdater stops the agent auto-updater (timer+service) and returns a
+// defer-able restore func that re-enables the timer. The updater's "systemctl
+// stop wendyos-agent" would otherwise SIGTERM in-flight mender via the shared
+// service cgroup (default KillMode=control-group) and abort the OTA.
+// Best-effort: failures are logged, not fatal.
+func inhibitAutoUpdater(logger *zap.Logger) func() {
+	sysctl := func(args ...string) ([]byte, error) {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		return systemctlFn(ctx, args...)
+	}
+	run := func(args ...string) {
+		if out, err := sysctl(args...); err != nil {
+			logger.Warn("OTA updater-inhibit: systemctl failed",
+				zap.Strings("args", args), zap.Error(err),
+				zap.String("output", strings.TrimSpace(string(out))))
+		}
+	}
+	// Hosts without the auto-updater (Jetson/QEMU) have nothing to stop — no-op
+	// instead of logging a spurious failure on every OTA. `cat` exits non-zero
+	// when the unit is absent.
+	if _, err := sysctl("cat", updaterTimerUnit); err != nil {
+		return func() {}
+	}
+	run("stop", updaterTimerUnit, updaterServiceUnit)
+	// Restore only the timer: it re-triggers the oneshot service itself, and a
+	// stopped timer re-arms on the next boot regardless.
+	return func() { run("start", updaterTimerUnit) }
+}
+
 func defaultIsWendyOSHost() bool {
 	// Older WendyOS builds did not write /etc/wendyos/device-type, so keep the
 	// version file as a compatibility marker alongside the newer device type.
@@ -642,6 +682,11 @@ func (s *AgentService) UpdateOS(req *agentpb.UpdateOSRequest, stream grpc.Server
 			},
 		})
 	}
+
+	// Stop the auto-updater so it can't SIGTERM in-flight mender mid-OTA; see
+	// inhibitAutoUpdater. Restored on return.
+	restoreUpdater := inhibitAutoUpdater(s.logger)
+	defer restoreUpdater()
 
 	sendProgress := func(phase string, percent int32) {
 		_ = stream.Send(&agentpb.UpdateOSResponse{

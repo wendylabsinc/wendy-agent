@@ -88,7 +88,7 @@ jobs:
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
           echo "Using explicit device: $hostname"
 
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         if: inputs.hostname == '' || inputs.jobs == 'all' || inputs.jobs == 'discover'
 
       - name: Set up Go
@@ -226,7 +226,7 @@ jobs:
       INPUT_HOSTNAME: ${{ matrix.hostname }}
       INPUT_TESTS: ${{ inputs.tests }}
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Set up Go
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
@@ -348,7 +348,7 @@ jobs:
       INPUT_HOSTNAME: ${{ matrix.hostname }}
       INPUT_TESTS: ${{ inputs.tests }}
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Set up Go
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5

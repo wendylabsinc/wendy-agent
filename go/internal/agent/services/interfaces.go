@@ -67,6 +67,27 @@ type ContainerdClient interface {
 	GetContainerRestartPolicyLabel(ctx context.Context, appName string) (string, error)
 }
 
+// GroupRestarter is the optional capability a ContainerdClient may provide to
+// restart a shared-namespace app group as a unit. The container monitor
+// type-asserts for it and falls back to single-container restarts when the
+// client does not implement it (e.g. in tests). It is a separate interface so
+// the large ContainerdClient interface and its many mocks stay untouched.
+type GroupRestarter interface {
+	// GroupRestartAppID reports whether appName belongs to a shared-namespace app
+	// group (shared-ipc/shared-network, more than one service) and returns the
+	// bare appID when it does. Such members must restart together (see
+	// RestartGroup): a secondary's namespace join is resolved against the
+	// primary's live task, so an independent restart strands it in a dead
+	// namespace.
+	GroupRestartAppID(ctx context.Context, appName string) (appID string, grouped bool)
+	// RestartGroup restarts every service of the shared-namespace group as a unit
+	// — stopping all members, starting the primary, then re-resolving each
+	// secondary's namespace join against the primary's new task before starting
+	// it — and returns the per-service output channels keyed by full container
+	// name.
+	RestartGroup(ctx context.Context, appID string) (map[string]<-chan ContainerOutput, error)
+}
+
 // Restart policy constants mirror container.RestartPolicy values and are used
 // as the policy argument to ContainerMonitorRegistrar.Register.
 const (
@@ -105,4 +126,56 @@ type ContainerMetrics struct {
 	UserCPUNanos int64 // cumulative user-mode CPU time in nanoseconds
 	SysCPUNanos  int64 // cumulative kernel-mode CPU time in nanoseconds
 	MemBytes     int64 // current memory usage in bytes
+}
+
+// ROS2Target describes a Wendy-managed container carrying the
+// sh.wendy/entitlement.ros2 label (WDY-884, WDY-1332).
+type ROS2Target struct {
+	ContainerID string
+	AppID       string
+	Distro      string // e.g. "humble"
+	DomainID    int    // resolved ROS_DOMAIN_ID
+	RMW         string // resolved RMW_IMPLEMENTATION (e.g. "rmw_cyclonedds_cpp"); "" if unset
+	Running     bool
+	TaskPID     uint32 // pid of the container's init process; 0 when not running
+}
+
+// ROS2Sidecar describes one running ROS 2 CLI sidecar container. A device with
+// apps on multiple RMWs runs one sidecar per RMW (WDY-1594); each inspects the
+// graph of its own RMW.
+type ROS2Sidecar struct {
+	Name     string // sidecar container ID (per-RMW)
+	Distro   string
+	DomainID int    // default DDS domain, taken from the anchor app container
+	RMW      string // the RMW this sidecar speaks (e.g. "rmw_cyclonedds_cpp"); "" = image default
+}
+
+// ROS2ExecOptions configures a single `ros2` invocation inside the sidecar.
+type ROS2ExecOptions struct {
+	DomainID    int      // ROS_DOMAIN_ID for this invocation
+	Args        []string // arguments after `ros2`, passed without shell interpretation
+	SidecarName string   // which per-RMW sidecar to exec in; empty = the default/first
+}
+
+// ROS2Runtime abstracts the containerd-side ROS 2 sidecar plumbing used by
+// the ROS2Service gRPC handlers (WDY-1332).
+type ROS2Runtime interface {
+	// FindROS2Containers returns all containers labelled with a ros2 config.
+	FindROS2Containers(ctx context.Context) ([]ROS2Target, error)
+	// EnsureROS2Sidecars starts or reuses one CLI sidecar per distinct RMW in
+	// use by the running ROS 2 apps, and tears down sidecars whose RMW is no
+	// longer present. Returns one entry per live RMW graph (WDY-1594). Returns
+	// an error when no ROS 2 app is running.
+	EnsureROS2Sidecars(ctx context.Context) ([]ROS2Sidecar, error)
+	// StopROS2Sidecar stops and removes the sidecar if present.
+	StopROS2Sidecar(ctx context.Context) error
+	// VerifyROS2Sidecar reports whether the sidecar is still anchored to a
+	// live ROS 2 app container. It returns an error describing the problem
+	// when the anchor container stopped or was replaced (e.g. the app was
+	// redeployed), which invalidates the sidecar's network namespace.
+	VerifyROS2Sidecar(ctx context.Context) error
+	// ExecROS2 runs `ros2 <args>` in the sidecar, streaming output to the
+	// writers, and returns the exit code. Cancelling ctx sends SIGINT first
+	// so commands like `ros2 bag record` can finalize.
+	ExecROS2(ctx context.Context, opts ROS2ExecOptions, stdout, stderr io.Writer) (int, error)
 }

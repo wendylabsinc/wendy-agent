@@ -274,12 +274,42 @@ func TestValidate_AllEntitlementTypes(t *testing.T) {
 			{Type: EntitlementI2C, Device: "i2c-1"},
 			{Type: EntitlementGPIO, Pins: []int{7}},
 			{Type: EntitlementInput},
+			{Type: EntitlementSerial, Device: "ttyACM0"},
 			{Type: EntitlementMCP, Port: 3000},
 		},
 	}
 
 	if err := cfg.Validate(); err != nil {
 		t.Errorf("Validate() unexpected error: %v", err)
+	}
+}
+
+func TestValidate_SerialEntitlement(t *testing.T) {
+	valid := []string{"ttyACM0", "ttyUSB0", "ttyUSB12"}
+	for _, device := range valid {
+		t.Run("valid/"+device, func(t *testing.T) {
+			cfg := &AppConfig{
+				AppID:        "com.example.app",
+				Entitlements: []Entitlement{{Type: EntitlementSerial, Device: device}},
+			}
+			if err := cfg.Validate(); err != nil {
+				t.Errorf("Validate() unexpected error for serial device %q: %v", device, err)
+			}
+		})
+	}
+
+	// ttyAMA0/ttyS0 are on-board UARTs: USB-only entitlement rejects them.
+	invalid := []string{"", "ttyACM", "tty", "sda", "ttyACMx", "ttyACM0/../sda", "../mem", "ttyACM-1", "ttyAMA0", "ttyS0"}
+	for _, device := range invalid {
+		t.Run("invalid/"+device, func(t *testing.T) {
+			cfg := &AppConfig{
+				AppID:        "com.example.app",
+				Entitlements: []Entitlement{{Type: EntitlementSerial, Device: device}},
+			}
+			if err := cfg.Validate(); err == nil {
+				t.Errorf("Validate() expected error for serial device %q, got nil", device)
+			}
+		})
 	}
 }
 
@@ -1336,8 +1366,8 @@ func TestLoadComposeCompanion_Valid(t *testing.T) {
 	if cfg.Frameworks == nil || cfg.Frameworks.ROS2 == nil {
 		t.Fatal("Frameworks.ROS2 is nil")
 	}
-	if cfg.Frameworks.ROS2.DomainID != 5 {
-		t.Errorf("ROS2.DomainID = %d, want 5", cfg.Frameworks.ROS2.DomainID)
+	if cfg.Frameworks.ROS2.DomainID == nil || *cfg.Frameworks.ROS2.DomainID != 5 {
+		t.Errorf("ROS2.DomainID = %v, want 5", cfg.Frameworks.ROS2.DomainID)
 	}
 	if cfg.Frameworks.ROS2.RMW != "cyclonedds" {
 		t.Errorf("ROS2.RMW = %q, want %q", cfg.Frameworks.ROS2.RMW, "cyclonedds")
@@ -1382,7 +1412,7 @@ func TestLoadComposeCompanion_WithServices(t *testing.T) {
 	if len(camera.Entitlements) != 2 {
 		t.Errorf("camera entitlements = %d, want 2", len(camera.Entitlements))
 	}
-	if camera.Frameworks == nil || camera.Frameworks.ROS2 == nil || camera.Frameworks.ROS2.DomainID != 42 {
+	if camera.Frameworks == nil || camera.Frameworks.ROS2 == nil || camera.Frameworks.ROS2.DomainID == nil || *camera.Frameworks.ROS2.DomainID != 42 {
 		t.Errorf("camera.Frameworks.ROS2.DomainID mismatch")
 	}
 	if cfg.Services["detector"] == nil {
@@ -1467,8 +1497,8 @@ func TestFrameworksConfig_ParseJSON(t *testing.T) {
 	if cfg.Frameworks.ROS2 == nil {
 		t.Fatal("Frameworks.ROS2 is nil")
 	}
-	if cfg.Frameworks.ROS2.DomainID != 10 {
-		t.Errorf("DomainID = %d, want 10", cfg.Frameworks.ROS2.DomainID)
+	if cfg.Frameworks.ROS2.DomainID == nil || *cfg.Frameworks.ROS2.DomainID != 10 {
+		t.Errorf("DomainID = %v, want 10", cfg.Frameworks.ROS2.DomainID)
 	}
 	if cfg.Frameworks.ROS2.RMW != "fastrtps" {
 		t.Errorf("RMW = %q, want %q", cfg.Frameworks.ROS2.RMW, "fastrtps")

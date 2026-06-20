@@ -27,7 +27,7 @@ wendy init --app-id <app-id> --target wendyos --language rust --template simple-
 
 Template init can still prompt if the selected template has required variables that are not supplied with `--var`. Pass every required template variable, and set `--git-init yes` or `--git-init no`, when the goal is a fully non-interactive agent run.
 
-If the user names an archetype such as `realsense-camera`, `camera-feed`, `camera-feed-yolo`, `voice-assistant`, `audio`, `fullstack`, or `simple-api`, inspect the matching template's `template.json`, `wendy.json`, `Dockerfile`, and source files before creating the destination app.
+If the user names an archetype such as `realsense-camera`, `camera-feed`, `camera-feed-yolo`, `voice-assistant`, `audio`, `fullstack`, or `simple-api`, inspect the matching template's `template.json`, `wendy.json`, `Dockerfile` or `Containerfile`, and source files before creating the destination app.
 
 Project with entitlements:
 

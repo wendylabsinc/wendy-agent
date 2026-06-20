@@ -1,0 +1,58 @@
+name: Screencast
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'screencast/**'
+      - '.github/workflows/screencast.yml'
+      - '.github/dependabot.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: screencast-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Check screencast tooling
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: screencast/package-lock.json
+
+      - name: Install screencast dependencies
+        working-directory: screencast
+        run: npm ci --ignore-scripts
+
+      - name: Audit screencast dependencies
+        working-directory: screencast
+        run: |
+          # Hard gate: fail on any high or critical npm advisory.
+          npm audit --audit-level=high
+          # Policy gate: fail on unallowlisted low/moderate advisories.
+          scripts/audit-npm.mjs
+
+      - name: Validate screencast workflow
+        working-directory: screencast
+        run: |
+          # Validates script syntax, secret scanning, SSRF guards, hook checks,
+          # and generated-media hygiene.
+          scripts/check.sh
+
+      - name: Upload screencast audit logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: screencast-audit-logs
+          path: screencast/output/*.jsonl
+          if-no-files-found: ignore
+          retention-days: 30

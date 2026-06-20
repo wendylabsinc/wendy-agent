@@ -44,21 +44,30 @@ func runOSDownload(flagVersion string, overwrite bool) error {
 		}
 	}
 
+	// download has no target drive to probe, so default to the device's natural
+	// removable image (SD for Raspberry Pi, NVMe for Jetson) rather than the
+	// legacy field, which for dual-variant devices like RPi 5 is the NVMe image.
+	v, ok := dev.Manifest.Versions[version]
+	if !ok {
+		return fmt.Errorf("version %s not found in device manifest", version)
+	}
+	storage := defaultManifestStorage(v)
+
 	// Validate version exists in manifest before touching the filesystem.
-	imgInfo, err := getImageInfo(dev.Manifest, version, "")
+	imgInfo, err := getImageInfo(dev.Manifest, version, storage)
 	if err != nil {
 		return fmt.Errorf("getting image info: %w", err)
 	}
 
 	// Check if already cached — zip format (new) or legacy extracted img.
 	cached := ""
-	if zipPath, zpErr := osCachedZipPath(selectedKey, version); zpErr == nil {
+	if zipPath, zpErr := osCachedZipPath(selectedKey, version, storage); zpErr == nil {
 		if info, statErr := os.Stat(zipPath); statErr == nil && info.Size() > 0 {
 			cached = zipPath
 		}
 	}
 	if cached == "" {
-		if imgPath, ipErr := osCachedImagePath(selectedKey, version); ipErr == nil {
+		if imgPath, ipErr := osCachedImagePath(selectedKey, version, storage); ipErr == nil {
 			if info, statErr := os.Stat(imgPath); statErr == nil && info.Size() > 0 {
 				cached = imgPath
 			}

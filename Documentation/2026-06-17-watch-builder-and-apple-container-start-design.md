@@ -210,14 +210,15 @@ Plus a CLI-surface test that `wendy watch --builder apple-container` parses and 
 
 For Part 3: a test that builds an mTLS proxy backed by a TLS server whose leaf cert carries only
 `ExtKeyUsageClientAuth` (chaining to a test CA) and asserts the proxy forwards the request rather
-than 502-ing — i.e. the relaxed `KeyUsageAny` accepts an identity cert without `serverAuth`.
+than 502-ing — i.e. accepting `{serverAuth, clientAuth}` EKUs allows an identity cert without
+`serverAuth` but still requires an authentication EKU.
 
 ## Files touched
 
 - `go/internal/cli/commands/watch.go` — register `--builder`.
 - `go/internal/cli/commands/docker.go` — `ensureAppleContainerSystem`, shared CLI-presence helper,
   call sites in `buildAndPushImageForAgent` and `buildDockerProjectWithBuilder`; relax
-  `startMTLSRegistryHTTPProxy` verify EKU to `ExtKeyUsageAny`.
+  `startMTLSRegistryHTTPProxy` verify EKU to `{serverAuth, clientAuth}`.
 - `go/internal/cli/commands/multibuild.go` — single ensure call in `buildServicesParallel`.
 - `go/internal/cli/commands/run.go` — ensure call before the chunk-diff build; thread `builder`
   and `platform` into the fast-path build/parse.

@@ -134,7 +134,7 @@ func TestPickManifestVersion_SemverOrdering(t *testing.T) {
 
 func TestOsCachedImagePath_Sanitization(t *testing.T) {
 	// Valid inputs should produce a valid path.
-	path, err := osCachedImagePath("raspberry-pi-5", "0.10.4")
+	path, err := osCachedImagePath("raspberry-pi-5", "0.10.4", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -143,20 +143,26 @@ func TestOsCachedImagePath_Sanitization(t *testing.T) {
 	}
 
 	// Path traversal in version should be rejected.
-	_, err = osCachedImagePath("raspberry-pi-5", "../../../etc/passwd")
+	_, err = osCachedImagePath("raspberry-pi-5", "../../../etc/passwd", "")
 	if err == nil {
 		t.Fatal("expected error for path traversal in version")
 	}
 
 	// Path traversal in device key should be rejected.
-	_, err = osCachedImagePath("../evil", "0.10.4")
+	_, err = osCachedImagePath("../evil", "0.10.4", "")
 	if err == nil {
 		t.Fatal("expected error for path traversal in device key")
+	}
+
+	// Path traversal in storage key should be rejected.
+	_, err = osCachedImagePath("raspberry-pi-5", "0.10.4", "../evil")
+	if err == nil {
+		t.Fatal("expected error for path traversal in storage key")
 	}
 }
 
 func TestOsCachedZipPath_Sanitization(t *testing.T) {
-	path, err := osCachedZipPath("raspberry-pi-5", "0.10.4")
+	path, err := osCachedZipPath("raspberry-pi-5", "0.10.4", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -164,14 +170,45 @@ func TestOsCachedZipPath_Sanitization(t *testing.T) {
 		t.Fatalf("expected .zip suffix, got %q", path)
 	}
 
-	_, err = osCachedZipPath("raspberry-pi-5", "../../../etc/passwd")
+	_, err = osCachedZipPath("raspberry-pi-5", "../../../etc/passwd", "")
 	if err == nil {
 		t.Fatal("expected error for path traversal in version")
 	}
 
-	_, err = osCachedZipPath("../evil", "0.10.4")
+	_, err = osCachedZipPath("../evil", "0.10.4", "")
 	if err == nil {
 		t.Fatal("expected error for path traversal in device key")
+	}
+}
+
+// The storage key, when set, becomes part of the cache filename so an SD image
+// and an NVMe image of the same device+version never collide on one file.
+func TestOsCachedPath_StorageKeyed(t *testing.T) {
+	sd, err := osCachedZipPath("raspberry-pi-5", "0.16.0", "sd")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	nvme, err := osCachedZipPath("raspberry-pi-5", "0.16.0", "nvme")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if sd == nvme {
+		t.Fatalf("sd and nvme cache paths must differ, both = %q", sd)
+	}
+	if !strings.HasSuffix(sd, "raspberry-pi-5-0.16.0-sd.zip") {
+		t.Errorf("unexpected sd cache path: %q", sd)
+	}
+	if !strings.HasSuffix(nvme, "raspberry-pi-5-0.16.0-nvme.zip") {
+		t.Errorf("unexpected nvme cache path: %q", nvme)
+	}
+
+	// Empty storage keeps the legacy (unsuffixed) name for backward compat.
+	legacy, err := osCachedZipPath("raspberry-pi-5", "0.16.0", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.HasSuffix(legacy, "raspberry-pi-5-0.16.0.zip") {
+		t.Errorf("unexpected legacy cache path: %q", legacy)
 	}
 }
 
@@ -878,7 +915,7 @@ func TestResolveOSImage_ZipCacheHit(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 
 	content := []byte("fake image bytes")
-	zipPath, err := osCachedZipPath("test-device", "9.9.9")
+	zipPath, err := osCachedZipPath("test-device", "9.9.9", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -916,7 +953,7 @@ func TestResolveOSImage_LegacyImgCacheHit(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 
-	imgPath, err := osCachedImagePath("test-device", "8.8.8")
+	imgPath, err := osCachedImagePath("test-device", "8.8.8", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -940,7 +977,7 @@ func TestOpenOSImageStream_ZipCacheHit(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 
 	content := []byte("stream me please")
-	zipPath, err := osCachedZipPath("stream-device", "7.7.7")
+	zipPath, err := osCachedZipPath("stream-device", "7.7.7", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -988,7 +1025,7 @@ func TestOpenOSImageStream_LegacyImgCacheHit(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 
 	content := []byte("old img cache data")
-	imgPath, err := osCachedImagePath("legacy-device", "6.6.6")
+	imgPath, err := osCachedImagePath("legacy-device", "6.6.6", "")
 	if err != nil {
 		t.Fatal(err)
 	}

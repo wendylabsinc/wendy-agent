@@ -347,6 +347,11 @@ func (s *VideoService) listV4L2Devices(ctx context.Context) ([]*agentpb.VideoDev
 			name = base
 		}
 		transport, driver := s.classifyTransport(base)
+		// Skip non-camera m2m nodes (Pi 0-4 bcm2835-isp/codec) that advertise
+		// VIDEO_CAPTURE but are not capture sources (WDY-1603).
+		if camera.IsNonCameraDriver(driver) {
+			continue
+		}
 		dev := &agentpb.VideoDevice{
 			Id:        uint32(id),
 			Name:      name,
@@ -1440,7 +1445,12 @@ func encoderSegment(encoder string, hasH264Parse bool, gop int) string {
 		// Jetson L4T hardware encoder; NV12 is its preferred input format.
 		enc = "videoconvert ! video/x-raw,format=NV12 ! nvv4l2h264enc" + kf
 	case "v4l2h264enc":
-		enc = "videoconvert ! video/x-raw,format=I420 ! v4l2h264enc" + kf + " ! video/x-h264,profile=baseline"
+		// The Raspberry Pi bcm2835-codec rejects frames ("Failed to process
+		// frame") unless the output H.264 level is pinned — a bare or
+		// profile-only capsfilter lets it negotiate a level the driver can't
+		// process. level 4 covers up to 1080p30, the encoder's ceiling
+		// (verified on a Pi 4, WDY-1603).
+		enc = "videoconvert ! video/x-raw,format=I420 ! v4l2h264enc" + kf + " ! video/x-h264,profile=baseline,level=(string)4"
 	case "x264enc":
 		enc = "videoconvert ! video/x-raw,format=I420 ! x264enc tune=zerolatency" + kf + " ! video/x-h264,profile=high"
 	case "openh264enc":

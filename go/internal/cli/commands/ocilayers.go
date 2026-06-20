@@ -291,9 +291,11 @@ func digestToHex(digest string) (string, error) {
 	return strings.TrimPrefix(digest, prefix), nil
 }
 
-// buildImageToOCILayout runs `docker buildx build` writing an OCI-layout tar
-// to dest via `--output type=oci,dest=<dest>`. It mirrors the flag/cache/env
-// setup of buildAndPushImage but skips registry push entirely.
+// buildImageToOCILayout builds an OCI-layout tar to dest for the chunk-diff
+// deploy path. When builder is apple-container, it uses the Apple Container CLI;
+// otherwise it runs `docker buildx build` with `--output type=oci,dest=<dest>`.
+// It mirrors the flag/cache/env setup of buildAndPushImage but skips registry
+// push entirely.
 func buildImageToOCILayout(ctx context.Context, cwd, dockerfile, platform string, buildArgs map[string]string, builder, dest string, stdout, stderr io.Writer) error {
 	normalized, err := normalizeImageBuilder(builder)
 	if err != nil {

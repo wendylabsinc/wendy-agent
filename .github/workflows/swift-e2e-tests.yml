@@ -67,7 +67,7 @@ jobs:
       queue: max
     timeout-minutes: 120
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7.0.0
       - uses: ./.github/actions/swift-e2e-run
         with:
           tests: ${{ inputs.tests || '' }}
@@ -90,7 +90,7 @@ jobs:
       queue: max
     timeout-minutes: 120
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7.0.0
       - uses: ./.github/actions/swift-e2e-run
         with:
           tests: ${{ inputs.tests || '' }}
@@ -175,7 +175,7 @@ jobs:
   #     queue: max
   #   timeout-minutes: 120
   #   steps:
-  #     - uses: actions/checkout@v6
+  #     - uses: actions/checkout@v7.0.0
   #     - uses: ./.github/actions/swift-e2e-run
   #       with:
   #         tests: ${{ inputs.tests || '' }}
@@ -200,7 +200,7 @@ jobs:
   #     queue: max
   #   timeout-minutes: 120
   #   steps:
-  #     - uses: actions/checkout@v6
+  #     - uses: actions/checkout@v7.0.0
   #     - uses: ./.github/actions/swift-e2e-run
   #       with:
   #         tests: ${{ inputs.tests || '' }}
@@ -225,7 +225,7 @@ jobs:
   #     queue: max
   #   timeout-minutes: 120
   #   steps:
-  #     - uses: actions/checkout@v6
+  #     - uses: actions/checkout@v7.0.0
   #     - uses: ./.github/actions/swift-e2e-run
   #       with:
   #         tests: ${{ inputs.tests || '' }}
@@ -250,7 +250,7 @@ jobs:
   #     queue: max
   #   timeout-minutes: 120
   #   steps:
-  #     - uses: actions/checkout@v6
+  #     - uses: actions/checkout@v7.0.0
   #     - uses: ./.github/actions/swift-e2e-run
   #       with:
   #         tests: ${{ inputs.tests || '' }}
@@ -275,7 +275,7 @@ jobs:
   #     queue: max
   #   timeout-minutes: 120
   #   steps:
-  #     - uses: actions/checkout@v6
+  #     - uses: actions/checkout@v7.0.0
   #     - uses: ./.github/actions/swift-e2e-run
   #       with:
   #         tests: ${{ inputs.tests || '' }}
@@ -300,7 +300,7 @@ jobs:
   #     queue: max
   #   timeout-minutes: 120
   #   steps:
-  #     - uses: actions/checkout@v6
+  #     - uses: actions/checkout@v7.0.0
   #     - uses: ./.github/actions/swift-e2e-run
   #       with:
   #         tests: ${{ inputs.tests || '' }}
@@ -325,7 +325,7 @@ jobs:
   #     queue: max
   #   timeout-minutes: 120
   #   steps:
-  #     - uses: actions/checkout@v6
+  #     - uses: actions/checkout@v7.0.0
   #     - uses: ./.github/actions/swift-e2e-run
   #       with:
   #         tests: ${{ inputs.tests || '' }}
@@ -350,7 +350,7 @@ jobs:
   #     queue: max
   #   timeout-minutes: 120
   #   steps:
-  #     - uses: actions/checkout@v6
+  #     - uses: actions/checkout@v7.0.0
   #     - uses: ./.github/actions/swift-e2e-run
   #       with:
   #         tests: ${{ inputs.tests || '' }}
@@ -375,7 +375,7 @@ jobs:
   #     queue: max
   #   timeout-minutes: 120
   #   steps:
-  #     - uses: actions/checkout@v6
+  #     - uses: actions/checkout@v7.0.0
   #     - uses: ./.github/actions/swift-e2e-run
   #       with:
   #         tests: ${{ inputs.tests || '' }}
@@ -400,7 +400,7 @@ jobs:
   #     queue: max
   #   timeout-minutes: 120
   #   steps:
-  #     - uses: actions/checkout@v6
+  #     - uses: actions/checkout@v7.0.0
   #     - uses: ./.github/actions/swift-e2e-run
   #       with:
   #         tests: ${{ inputs.tests || '' }}
@@ -422,7 +422,7 @@ jobs:
     runs-on: [self-hosted, AI]
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7.0.0
         with:
           fetch-depth: 0
 
@@ -600,7 +600,7 @@ jobs:
       - name: Upload Swift E2E Report
         id: upload_e2e_report
         if: always()
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7.0.1
         with:
           name: ${{ steps.e2e-run.outputs.run_artifact_id }}
           path: ${{ steps.e2e-run.outputs.run_dir }}/**

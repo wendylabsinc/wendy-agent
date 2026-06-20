@@ -41,6 +41,7 @@ const (
 	EntitlementGPIO      = "gpio"
 	EntitlementSPI       = "spi"
 	EntitlementInput     = "input"
+	EntitlementSerial    = "serial"
 	EntitlementMCP       = "mcp"
 )
 
@@ -58,6 +59,7 @@ var ValidEntitlementTypes = []string{
 	EntitlementGPIO,
 	EntitlementSPI,
 	EntitlementInput,
+	EntitlementSerial,
 	EntitlementMCP,
 }
 
@@ -79,6 +81,7 @@ var allowedKeys = map[string][]string{
 	EntitlementGPIO:      {"type", "pins"},
 	EntitlementSPI:       {"type"},
 	EntitlementInput:     {"type"},
+	EntitlementSerial:    {"type", "device"},
 	EntitlementMCP:       {"type", "port"},
 }
 
@@ -105,8 +108,17 @@ type RunConfig struct {
 
 // ROS2Config holds ROS 2 runtime configuration for a container.
 type ROS2Config struct {
-	DomainID int    `json:"domainId,omitempty"`
-	RMW      string `json:"rmw,omitempty"`
+	// DomainID is the explicit ROS_DOMAIN_ID. When nil, a stable hash of
+	// the appId in the range 0–101 is injected instead (WDY-884).
+	DomainID *int `json:"domainId,omitempty"`
+	// RMW selects the ROS middleware implementation. Accepts short names
+	// ("cyclonedds", "fastrtps") or full identifiers ("rmw_cyclonedds_cpp").
+	// Defaults to CycloneDDS.
+	RMW string `json:"rmw,omitempty"`
+	// Distro is the ROS 2 distribution the app targets (e.g. "humble",
+	// "jazzy"). The agent uses it to pick the matching CLI sidecar image.
+	// Defaults to "humble".
+	Distro string `json:"distro,omitempty"`
 }
 
 // FrameworksConfig holds optional framework-level configuration (e.g. ROS 2).
@@ -220,7 +232,7 @@ type Entitlement struct {
 	Allowlist []string      `json:"allowlist,omitempty"` // Camera, Video
 	Name      string        `json:"name,omitempty"`      // Persist
 	Path      string        `json:"path,omitempty"`      // Persist
-	Device    string        `json:"device,omitempty"`    // I2C
+	Device    string        `json:"device,omitempty"`    // I2C, Serial
 	Pins      []int         `json:"pins,omitempty"`      // GPIO
 	Ports     []PortMapping `json:"ports,omitempty"`     // Network
 	Port      int           `json:"port,omitempty"`      // MCP
@@ -299,6 +311,13 @@ func validateEntitlements(entitlements []Entitlement, prefix string) error {
 			}
 			if !isValidI2CDevice(e.Device) {
 				return fmt.Errorf("%s[%d]: i2c device must be in i2c-N format, got %q", prefix, i, e.Device)
+			}
+		case EntitlementSerial:
+			if e.Device == "" {
+				return fmt.Errorf("%s[%d]: serial entitlement requires a device", prefix, i)
+			}
+			if !isValidSerialDevice(e.Device) {
+				return fmt.Errorf("%s[%d]: serial device must be a bare USB tty node name like ttyACM0 or ttyUSB0, got %q", prefix, i, e.Device)
 			}
 		case EntitlementGPIO:
 			// Pins are optional; omitting them grants access to all GPIO chips.
@@ -509,6 +528,39 @@ func isValidI2CDevice(device string) bool {
 		}
 	}
 	return true
+}
+
+// SerialDevicePrefixes is the set of accepted serial tty node-name prefixes for
+// the serial entitlement. Each must be followed by one or more digits (the unit
+// number). The entitlement is deliberately USB-only: USB CDC-ACM (ttyACM*) and
+// USB-serial bridges like FTDI/CH340/CP210x (ttyUSB*). On-board UARTs (ttyAMA*,
+// ttyS*) are excluded — ttyS shares its major with a board's system-console
+// UART, so allowing it adds attack surface for no peripheral benefit. The
+// matching kernel device majors live in the oci package, which builds the cgroup
+// allow rule.
+var SerialDevicePrefixes = []string{"ttyACM", "ttyUSB"}
+
+// isValidSerialDevice reports whether device is a safe serial tty node name: one
+// of SerialDevicePrefixes followed by one or more digits (e.g. "ttyACM0"). The
+// value is a bare node name, not a path — applySerial prepends "/dev/". This
+// rejects anything with slashes or "..", so it cannot escape /dev.
+func isValidSerialDevice(device string) bool {
+	for _, prefix := range SerialDevicePrefixes {
+		if !strings.HasPrefix(device, prefix) {
+			continue
+		}
+		suffix := device[len(prefix):]
+		if suffix == "" {
+			return false
+		}
+		for _, c := range suffix {
+			if c < '0' || c > '9' {
+				return false
+			}
+		}
+		return true
+	}
+	return false
 }
 
 // ValidateJSON checks raw JSON data for non-fatal issues that should surface

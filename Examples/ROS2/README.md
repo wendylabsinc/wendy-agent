@@ -2,13 +2,13 @@
 
 Demonstrates the `frameworks.ros2` config that auto-injects `ROS_DOMAIN_ID`
 and `RMW_IMPLEMENTATION` env vars into each container (WDY-880, PR #897),
-combined with `isolation: shared-network` so the talker and listener share
-a network namespace — exactly what ROS2 DDS multicast discovery requires
-(WDY-881).
+combined with `isolation: shared-ipc` so the talker and listener share the
+network and IPC namespaces plus one `/dev/shm` — exactly what ROS2 DDS needs:
+UDP discovery over localhost and zero-copy shared-memory transport (WDY-881).
 
 ```
 ROS2/
-├── wendy.json   ← frameworks.ros2 config + isolation: shared-network
+├── wendy.json   ← frameworks.ros2 config + isolation: shared-ipc
 ├── talker/      ← publishes messages; verifies injected ROS2 env vars
 └── listener/    ← subscribes; verifies injected ROS2 env vars
 ```
@@ -40,7 +40,7 @@ to single-service apps) or **per service** inside `services.<name>.frameworks`
 ```jsonc
 {
   "appId": "sh.wendy.examples.ros2",
-  "isolation": "shared-network",      // DDS multicast needs a shared netns
+  "isolation": "shared-ipc",          // shared netns for DDS + shared /dev/shm for zero-copy
   "frameworks": {
     "ros2": {
       "domainId": 42,
@@ -91,7 +91,8 @@ Expected output:
 [talker] published #1: 'hello world 1'
 [listener] received seq #1
 ...
-[listener] ✓ received all messages — shared-network isolation works
+[listener] ✓ UDP over localhost works — shared network namespace
+[listener] ✓ /dev/shm shared — shared-ipc shm segment works
 ```
 
 ## See also

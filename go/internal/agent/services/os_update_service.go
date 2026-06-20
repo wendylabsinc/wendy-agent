@@ -35,6 +35,11 @@ func (s *OSUpdateService) UpdateOS(req *agentpbv2.UpdateOSRequest, stream grpc.S
 		})
 	}
 
+	// Stop the auto-updater so it can't SIGTERM in-flight mender mid-OTA; see
+	// inhibitAutoUpdater. Restored on return.
+	restoreUpdater := inhibitAutoUpdater(s.logger)
+	defer restoreUpdater()
+
 	sendProgress := func(phase string, percent int32) {
 		_ = stream.Send(&agentpbv2.UpdateOSResponse{
 			ResponseType: &agentpbv2.UpdateOSResponse_Progress_{

@@ -260,9 +260,11 @@ Properties:
   style).
 - `--no-bmap` forces the legacy path (a `.img.zst` with no usable bmap offers no
   benefit; we do not add a hole-less seekable mode).
-- Checksum mismatch, short write, decode error, or helper non-zero exit *during*
-  writing → fatal, surfaced with the helper's stderr (as today). No silent
-  fallback mid-flash.
+- Checksum mismatch or other bmap write failure *during* writing → fall back to
+  full sequential write (the `.zst` or `.zip` is already cached). This handles
+  cases where the published bmap is stale or incorrect. Short write, decode
+  error, or helper non-zero exit during the fallback write → fatal, surfaced
+  with the helper's stderr.
 - Helper path validation: reject a `--device` that is not a block/char device
   and a `--source` that escapes the expected cache root.
 
