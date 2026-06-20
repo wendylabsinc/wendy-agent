@@ -103,9 +103,14 @@ func serviceFingerprintKey(appID, service string) string {
 	return appID + "/svc/" + service
 }
 
-// deviceContainerNames returns the lowercased set of container names the device
-// currently knows about (any running state). Best-effort: on any RPC error it
-// returns an empty set, so callers simply don't skip anything.
+// deviceContainerNames returns the lowercased set of container identities the
+// device currently knows about (any running state). ListContainers reports one
+// entry per app group whose AppName is the bare app id; per-service identities
+// live in its Services list. We record both the bare app id (single-container
+// apps) and each "<appId>_<service>" name (multi-service apps), matching
+// AppConfig.ContainerName / multiServiceContainerName so callers can look a
+// service up directly. Best-effort: on any RPC error it returns an empty set, so
+// callers simply don't skip anything.
 func deviceContainerNames(ctx context.Context, conn *grpcclient.AgentConnection) map[string]bool {
 	present := map[string]bool{}
 	stream, err := conn.ContainerService.ListContainers(ctx, &agentpb.ListContainersRequest{})
@@ -120,8 +125,16 @@ func deviceContainerNames(ctx context.Context, conn *grpcclient.AgentConnection)
 		if recvErr != nil {
 			return present
 		}
-		if c := resp.GetContainer(); c != nil {
-			present[strings.ToLower(c.GetAppName())] = true
+		c := resp.GetContainer()
+		if c == nil {
+			continue
+		}
+		app := c.GetAppName()
+		present[strings.ToLower(app)] = true
+		for _, s := range c.GetServices() {
+			if s.GetName() != "" {
+				present[strings.ToLower(app+"_"+s.GetName())] = true
+			}
 		}
 	}
 	return present
