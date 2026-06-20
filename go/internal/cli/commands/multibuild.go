@@ -118,6 +118,11 @@ func serviceTopoOrder(services map[string]*appconfig.ServiceConfig) ([]string, e
 	return appconfig.ServiceTopoOrder(services)
 }
 
+// buildServiceImage is the per-service build+push step. It is a package var so
+// stress/concurrency tests can substitute a fake builder and exercise the
+// parallel scheduling, skip handling, and failure-map collection without Docker.
+var buildServiceImage = buildAndPushImageForAgent
+
 // serviceFingerprintKey namespaces a deploy fingerprint per service within an
 // app group, so each service's build inputs are tracked independently.
 func serviceFingerprintKey(appID, service string) string {
@@ -482,7 +487,7 @@ func buildServicesParallel(
 				// Pass the per-service repo as the build's cache key so each concurrent
 				// build gets its own isolated local buildx cache dir (WDY-1689); sharing
 				// one dir corrupts BuildKit's cache-export ingest store under concurrency.
-				err = buildAndPushImageForAgent(ctx, conn, regPort, builder, contextDir, repo, platform, dockerfile, buildArgs, repo, buildOut, logOut)
+				err = buildServiceImage(ctx, conn, regPort, builder, contextDir, repo, platform, dockerfile, buildArgs, repo, buildOut, logOut)
 			}
 			dur := time.Since(start)
 
