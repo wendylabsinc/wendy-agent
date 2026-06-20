@@ -546,7 +546,7 @@ func injectDebugpy(ctx context.Context, registryAddr, registryImage, platform st
 		return fmt.Errorf("writing debugpy Dockerfile: %w", err)
 	}
 
-	return buildAndPushImage(ctx, tmpDir, registryAddr, registryImage, platform, "", buildArgs, streamOutput, streamOutput, useMTLS)
+	return buildAndPushImage(ctx, tmpDir, registryAddr, registryImage, platform, "", buildArgs, "", streamOutput, streamOutput, useMTLS)
 }
 
 func generatePythonDockerfile(dir string, debug bool) (string, error) {
@@ -1323,7 +1323,22 @@ func updateBuilderConfig(ctx context.Context, builderName, config string, w io.W
 	return nil
 }
 
-func buildAndPushImage(ctx context.Context, dir, registryAddr, registryImage, platform, dockerfile string, buildArgs map[string]string, streamOutput, logOutput io.Writer, useMTLS bool) error {
+// buildxLocalCacheDir returns the local buildx cache directory
+// (--cache-to/--cache-from type=local) for a build. A non-empty cacheKey gives
+// the build its own isolated subdir so concurrent multi-service builds never
+// share one cache dir — BuildKit's local cache-export ingest store is not safe
+// for concurrent writers and parallel builds clobber each other's temp files
+// (WDY-1689). An empty cacheKey uses the shared base dir so single and
+// sequential builds keep their cross-run cache.
+func buildxLocalCacheDir(userCache, cacheKey string) string {
+	dir := filepath.Join(userCache, "wendy", "buildx")
+	if cacheKey != "" {
+		dir = filepath.Join(dir, sanitizeAppleContainerTag(cacheKey))
+	}
+	return dir
+}
+
+func buildAndPushImage(ctx context.Context, dir, registryAddr, registryImage, platform, dockerfile string, buildArgs map[string]string, cacheKey string, streamOutput, logOutput io.Writer, useMTLS bool) error {
 	// Serialize against other wendy processes: the buildx builder is shared, and
 	// reconfiguring or restarting it mid-build kills a concurrent build (#1017).
 	// Concurrent builds within this process share the lock via reference counting.
@@ -1350,7 +1365,7 @@ func buildAndPushImage(ctx context.Context, dir, registryAddr, registryImage, pl
 	if err != nil {
 		return fmt.Errorf("finding user cache directory: %w", err)
 	}
-	cacheDir := filepath.Join(userCache, "wendy", "buildx")
+	cacheDir := buildxLocalCacheDir(userCache, cacheKey)
 	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
 		return fmt.Errorf("creating cache directory: %w", err)
 	}
@@ -1458,14 +1473,14 @@ func buildAndPushImage(ctx context.Context, dir, registryAddr, registryImage, pl
 	return nil
 }
 
-func buildAndPushImageWithBuilder(ctx context.Context, builder, dir, registryAddr, registryImage, platform, dockerfile string, buildArgs map[string]string, streamOutput, logOutput io.Writer, useMTLS bool) error {
+func buildAndPushImageWithBuilder(ctx context.Context, builder, dir, registryAddr, registryImage, platform, dockerfile string, buildArgs map[string]string, cacheKey string, streamOutput, logOutput io.Writer, useMTLS bool) error {
 	normalized, err := normalizeImageBuilder(builder)
 	if err != nil {
 		return err
 	}
 	switch normalized {
 	case imageBuilderDocker:
-		return buildAndPushImage(ctx, dir, registryAddr, registryImage, platform, dockerfile, buildArgs, streamOutput, logOutput, useMTLS)
+		return buildAndPushImage(ctx, dir, registryAddr, registryImage, platform, dockerfile, buildArgs, cacheKey, streamOutput, logOutput, useMTLS)
 	case imageBuilderAppleContainer:
 		return buildAndPushImageWithAppleContainer(ctx, dir, registryImage, platform, dockerfile, buildArgs, streamOutput, logOutput, useMTLS)
 	default:
@@ -1473,24 +1488,26 @@ func buildAndPushImageWithBuilder(ctx context.Context, builder, dir, registryAdd
 	}
 }
 
-func buildAndPushImageForAgent(ctx context.Context, conn *grpcclient.AgentConnection, regPort int, builder, dir, repo, platform, dockerfile string, buildArgs map[string]string, streamOutput, logOutput io.Writer) error {
+func buildAndPushImageForAgent(ctx context.Context, conn *grpcclient.AgentConnection, regPort int, builder, dir, repo, platform, dockerfile string, buildArgs map[string]string, cacheKey string, streamOutput, logOutput io.Writer) error {
 	if _, err := normalizeImageBuilder(builder); err != nil {
 		return err
 	}
 	if imageBuilderWasExplicit(builder) {
-		return buildAndPushImageForAgentWithBuilder(ctx, conn, regPort, builder, dir, repo, platform, dockerfile, buildArgs, streamOutput, logOutput)
+		return buildAndPushImageForAgentWithBuilder(ctx, conn, regPort, builder, dir, repo, platform, dockerfile, buildArgs, cacheKey, streamOutput, logOutput)
 	}
 	if shouldAutoAttemptAppleContainerBuilder() {
-		if err := buildAndPushImageForAgentWithBuilder(ctx, conn, regPort, imageBuilderAppleContainer, dir, repo, platform, dockerfile, buildArgs, streamOutput, logOutput); err == nil {
+		// Apple Container builds don't use buildx, so the local-cache key never
+		// applies; only the Docker fallback below consumes it.
+		if err := buildAndPushImageForAgentWithBuilder(ctx, conn, regPort, imageBuilderAppleContainer, dir, repo, platform, dockerfile, buildArgs, "", streamOutput, logOutput); err == nil {
 			return nil
 		} else {
 			logAppleContainerFallback(logOutput, err)
 		}
 	}
-	return buildAndPushImageForAgentWithBuilder(ctx, conn, regPort, imageBuilderDocker, dir, repo, platform, dockerfile, buildArgs, streamOutput, logOutput)
+	return buildAndPushImageForAgentWithBuilder(ctx, conn, regPort, imageBuilderDocker, dir, repo, platform, dockerfile, buildArgs, cacheKey, streamOutput, logOutput)
 }
 
-func buildAndPushImageForAgentWithBuilder(ctx context.Context, conn *grpcclient.AgentConnection, regPort int, builder, dir, repo, platform, dockerfile string, buildArgs map[string]string, streamOutput, logOutput io.Writer) error {
+func buildAndPushImageForAgentWithBuilder(ctx context.Context, conn *grpcclient.AgentConnection, regPort int, builder, dir, repo, platform, dockerfile string, buildArgs map[string]string, cacheKey string, streamOutput, logOutput io.Writer) error {
 	normalized, err := normalizeImageBuilder(builder)
 	if err != nil {
 		return err
@@ -1503,7 +1520,7 @@ func buildAndPushImageForAgentWithBuilder(ctx context.Context, conn *grpcclient.
 
 	registryImage := fmt.Sprintf("%s/%s:latest", registryAddr, strings.ToLower(repo))
 	cliLogln("Building and pushing image with %s for %s...", imageBuilderDisplayName(normalized), platform)
-	return buildAndPushImageWithBuilder(ctx, normalized, dir, registryAddr, registryImage, platform, dockerfile, buildArgs, streamOutput, logOutput, useMTLS)
+	return buildAndPushImageWithBuilder(ctx, normalized, dir, registryAddr, registryImage, platform, dockerfile, buildArgs, cacheKey, streamOutput, logOutput, useMTLS)
 }
 
 func buildAndPushImageWithAppleContainer(ctx context.Context, dir, registryImage, platform, dockerfile string, buildArgs map[string]string, streamOutput, logOutput io.Writer, useMTLS bool) error {
