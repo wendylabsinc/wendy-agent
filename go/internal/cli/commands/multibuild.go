@@ -97,6 +97,78 @@ func serviceTopoOrder(services map[string]*appconfig.ServiceConfig) ([]string, e
 	return appconfig.ServiceTopoOrder(services)
 }
 
+// serviceFingerprintKey namespaces a deploy fingerprint per service within an
+// app group, so each service's build inputs are tracked independently.
+func serviceFingerprintKey(appID, service string) string {
+	return appID + "/svc/" + service
+}
+
+// deviceContainerNames returns the lowercased set of container names the device
+// currently knows about (any running state). Best-effort: on any RPC error it
+// returns an empty set, so callers simply don't skip anything.
+func deviceContainerNames(ctx context.Context, conn *grpcclient.AgentConnection) map[string]bool {
+	present := map[string]bool{}
+	stream, err := conn.ContainerService.ListContainers(ctx, &agentpb.ListContainersRequest{})
+	if err != nil {
+		return present
+	}
+	for {
+		resp, recvErr := stream.Recv()
+		if recvErr == io.EOF {
+			break
+		}
+		if recvErr != nil {
+			return present
+		}
+		if c := resp.GetContainer(); c != nil {
+			present[strings.ToLower(c.GetAppName())] = true
+		}
+	}
+	return present
+}
+
+// planServicePushSkips decides, per service, whether its build+push can be
+// skipped because the build inputs are unchanged since the last successful push
+// to this device AND the device still has that service's container (so the image
+// is in the device registry). It returns the skip set and the freshly computed
+// per-service input hashes, so the caller can persist fingerprints for the
+// services it actually builds. Best-effort throughout: any error for a service
+// (or WENDY_PUSH_SKIP=0) just means "don't skip it". The single buildkitd content
+// store and the device registry are unaffected; a wrong "present" guess at worst
+// surfaces as a normal create-time pull failure (hardened with a registry digest
+// check in a follow-up, WDY-1692).
+func planServicePushSkips(ctx context.Context, conn *grpcclient.AgentConnection, cwd, appID, deviceKey, platform string, services map[string]*appconfig.ServiceConfig, buildArgs map[string]string) (skip map[string]bool, hashes map[string]string) {
+	skip = map[string]bool{}
+	hashes = map[string]string{}
+	if os.Getenv("WENDY_PUSH_SKIP") == "0" {
+		return skip, hashes
+	}
+
+	present := deviceContainerNames(ctx, conn)
+	for name, svc := range services {
+		contextDir := filepath.Join(cwd, svc.Context)
+		dockerfile, err := resolveDockerfile(contextDir, "", false)
+		if err != nil {
+			continue
+		}
+		hash, err := computeBuildInputHash(contextDir, dockerfile, platform, buildArgs)
+		if err != nil {
+			continue
+		}
+		hashes[name] = hash
+
+		fp, ok := loadDeployFingerprint(serviceFingerprintKey(appID, name), deviceKey)
+		if !ok || fp.InputHash != hash {
+			continue
+		}
+		if !present[strings.ToLower(multiServiceContainerName(appID, name))] {
+			continue
+		}
+		skip[name] = true
+	}
+	return skip, hashes
+}
+
 // runMultiServiceWithAgent orchestrates the full build → push → create →
 // stream pipeline for a multi-service wendy.json on a single agent.
 func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd string, appCfg *appconfig.AppConfig, opts runOptions) error {
@@ -142,9 +214,31 @@ func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 		return err
 	}
 
+	// Decide which services can skip build+push entirely: those whose build
+	// inputs are unchanged since the last successful push to this device and whose
+	// container is still present (so the image is in the device registry). This
+	// avoids re-pushing unchanged images — notably the multi-GB GPU base — and the
+	// HEAD-check storm that re-push triggers (WDY-1692).
+	deviceKey := deviceFingerprintKey(versionResp)
+	skip, hashes := planServicePushSkips(ctx, conn, cwd, appCfg.AppID, deviceKey, platform, services, buildArgs)
+	if n := len(skip); n > 0 {
+		cliLogln("%d of %d services unchanged and already on device; skipping their build/push.", n, len(services))
+	}
+
 	// Build all service images in parallel, then create and start containers.
-	if err := buildServicesParallel(ctx, conn, regPort, cwd, appCfg.AppID, services, platform, buildArgs, opts.builder); err != nil {
+	if err := buildServicesParallel(ctx, conn, regPort, cwd, appCfg.AppID, services, platform, buildArgs, opts.builder, skip); err != nil {
 		return err
+	}
+
+	// Record fingerprints for the services we actually built+pushed, so the next
+	// run can skip them. Skipped services already have a matching fingerprint.
+	for name := range services {
+		if skip[name] {
+			continue
+		}
+		if h, ok := hashes[name]; ok {
+			saveDeployFingerprint(serviceFingerprintKey(appCfg.AppID, name), deviceKey, deployFingerprint{InputHash: h, AppVersion: appCfg.Version})
+		}
 	}
 
 	// Create (and start) containers in dependency order.
@@ -203,8 +297,10 @@ func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 }
 
 // buildServicesParallel builds all service images concurrently (up to
-// maxConcurrentBuilds at a time). Progress is shown via a Bubbletea multi-
-// spinner in interactive terminals and via plain log lines otherwise.
+// maxConcurrentBuilds at a time). Services in skip are already on the device with
+// unchanged inputs, so their build+push is skipped (WDY-1692). Progress is shown
+// via a Bubbletea multi-spinner in interactive terminals and via plain log lines
+// otherwise.
 func buildServicesParallel(
 	ctx context.Context,
 	conn *grpcclient.AgentConnection,
@@ -214,6 +310,7 @@ func buildServicesParallel(
 	platform string,
 	buildArgs map[string]string,
 	builder string,
+	skip map[string]bool,
 ) error {
 	names := make([]string, 0, len(services))
 	for n := range services {
@@ -230,9 +327,17 @@ func buildServicesParallel(
 
 	results := make(chan result, len(names))
 
-	concurrency := multiBuildConcurrency(len(names))
-	if concurrency < maxConcurrentBuilds && concurrency < len(names) {
-		cliLogln("Throttling to %d concurrent builds for %d services to protect the device registry tunnel (WDY-1690).", concurrency, len(names))
+	// Concurrency (and the tunnel pressure it controls) is driven by the services
+	// actually built — skipped ones push nothing.
+	buildCount := 0
+	for _, n := range names {
+		if !skip[n] {
+			buildCount++
+		}
+	}
+	concurrency := multiBuildConcurrency(buildCount)
+	if concurrency < maxConcurrentBuilds && concurrency < buildCount {
+		cliLogln("Throttling to %d concurrent builds for %d services to protect the device registry tunnel (WDY-1690).", concurrency, buildCount)
 	}
 	sem := make(chan struct{}, concurrency)
 
@@ -248,6 +353,19 @@ func buildServicesParallel(
 		wg.Add(1)
 		go func(name string, svc *appconfig.ServiceConfig) {
 			defer wg.Done()
+
+			// Unchanged service already on the device: skip build+push entirely.
+			if skip[name] {
+				if prog != nil {
+					prog.Send(tui.MultiSpinnerStartMsg{Name: name})
+					prog.Send(tui.MultiSpinnerDoneMsg{Name: name, Err: nil, Dur: 0})
+				} else {
+					cliLogln("Service %s unchanged; skipping build/push (already on device).", name)
+				}
+				results <- result{name: name}
+				return
+			}
+
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
