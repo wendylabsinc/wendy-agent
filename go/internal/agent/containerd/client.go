@@ -608,12 +608,20 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 		}
 	}
 
-	// Start D-Bus proxy if bluetooth entitlement is present.
+	// Start D-Bus proxy if bluetooth entitlement is present. The returned
+	// socket directory is keyed by containerName (which includes the service
+	// name for multi-service apps), so it must be threaded through to the
+	// bluetooth entitlement verbatim — reconstructing it from appID alone would
+	// drop the service suffix and runc would fail with a missing bind-mount
+	// source.
 	var dbusProxyStarted bool
+	var dbusProxySocketDir string
 	if c.proxyManager != nil && hasBluetooth(appCfg) {
-		if _, err := c.proxyManager.Start(ctx, containerName); err != nil {
+		dir, err := c.proxyManager.Start(ctx, containerName)
+		if err != nil {
 			return fmt.Errorf("starting D-Bus proxy for %q: %w", containerName, err)
 		}
+		dbusProxySocketDir = dir
 		dbusProxyStarted = true
 		defer func() {
 			if dbusProxyStarted {
@@ -708,7 +716,7 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 	}
 
 	opts := localoci.ApplyOptions{
-		DBusProxyAvailable: c.proxyManager != nil,
+		DBusProxySocketDir: dbusProxySocketDir,
 	}
 	// Pass a shallow copy of appCfg with AppID and ServiceName set to the
 	// derived (validated) values. This ensures ApplyEntitlements always receives

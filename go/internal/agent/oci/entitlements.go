@@ -34,11 +34,17 @@ const (
 
 // ApplyOptions configures optional behavior for entitlement application.
 type ApplyOptions struct {
-	// DBusProxyAvailable indicates that xdg-dbus-proxy is available and the
-	// caller will set up a filtered proxy socket for Bluetooth containers.
-	// When true, the bluetooth entitlement mounts from the proxy socket
-	// directory instead of the host D-Bus socket directly.
-	DBusProxyAvailable bool
+	// DBusProxySocketDir is the host directory holding the xdg-dbus-proxy
+	// filtered socket prepared for this container — the path returned by
+	// dbusproxy.Manager.Start. When non-empty, the bluetooth entitlement
+	// bind-mounts it at /var/run/dbus so the container sees an org.bluez-only
+	// D-Bus. It must be the exact directory the proxy created (which is keyed
+	// by the container name, not the bare app ID); reconstructing it from the
+	// app ID alone drops the per-service suffix and the mount source won't
+	// exist. When empty, the bluetooth entitlement adds no mount and only sets
+	// DBUS_SYSTEM_BUS_ADDRESS — mounting the raw host D-Bus socket directly
+	// would expose every system service, so it is never done.
+	DBusProxySocketDir string
 }
 
 // ApplyEntitlements modifies an OCI spec in-place based on app config entitlements.
@@ -74,7 +80,7 @@ func ApplyEntitlements(spec *Spec, cfg *appconfig.AppConfig, opts ApplyOptions) 
 		case appconfig.EntitlementPersist:
 			applyPersist(spec, ent, cfg.AppID)
 		case appconfig.EntitlementBluetooth:
-			applyBluetooth(spec, cfg.AppID, opts.DBusProxyAvailable)
+			applyBluetooth(spec, opts.DBusProxySocketDir)
 		case appconfig.EntitlementUSB:
 			applyUSB(spec)
 		case appconfig.EntitlementI2C:
@@ -609,16 +615,18 @@ func applyPersist(spec *Spec, ent appconfig.Entitlement, appID string) {
 }
 
 // applyBluetooth adds D-Bus socket mounts for Bluetooth access.
-// When proxyAvailable is true, it mounts from the xdg-dbus-proxy filtered
-// socket directory (only org.bluez allowed). Otherwise, it falls back to
-// mounting the host D-Bus sockets directly (unrestricted access).
-func applyBluetooth(spec *Spec, appID string, proxyAvailable bool) {
-	if proxyAvailable {
+// When proxySocketDir is non-empty, it mounts that xdg-dbus-proxy filtered
+// socket directory (only org.bluez allowed) at /var/run/dbus. The directory
+// is supplied by the caller (the value dbusproxy.Manager.Start returned for
+// this container) rather than reconstructed here, so the mount source always
+// matches what the proxy actually created. When empty, it adds no mount and
+// never falls back to the raw host D-Bus sockets.
+func applyBluetooth(spec *Spec, proxySocketDir string) {
+	if proxySocketDir != "" {
 		// Mount the filtered proxy socket directory.
-		proxyDir := filepath.Join("/run/wendy/dbus-proxy", appID)
 		spec.Mounts = append(spec.Mounts, Mount{
 			Destination: "/var/run/dbus",
-			Source:      proxyDir,
+			Source:      proxySocketDir,
 			Type:        "bind",
 			Options:     []string{"rbind", "nosuid", "noexec"},
 		})
