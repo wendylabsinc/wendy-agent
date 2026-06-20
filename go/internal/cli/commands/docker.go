@@ -1520,7 +1520,7 @@ func buildPushRetryBackoff(attempt int) time.Duration {
 // are worth retrying — the device-registry tunnel collapsing under concurrent
 // pushes surfaces as TLS handshake timeouts and push failures, not as a genuine
 // build error (WDY-1690).
-var transientPushErrorRe = regexp.MustCompile(`(?i)(tls handshake timeout|failed to push|failed to do request|connection reset by peer|i/o timeout|unexpected eof|503 service unavailable|429 too many requests)`)
+var transientPushErrorRe = regexp.MustCompile(`(?i)(tls handshake timeout|failed to push|failed to do request|connection reset by peer|i/o timeout|unexpected eof|broken pipe|write: connection timed out|503 service unavailable|429 too many requests)`)
 
 func isTransientPushError(output string) bool {
 	return transientPushErrorRe.MatchString(output)

@@ -9,6 +9,8 @@ func TestIsTransientPushError(t *testing.T) {
 		`error: read tcp 127.0.0.1->...: connection reset by peer`,
 		`dial tcp: i/o timeout`,
 		`unexpected EOF`,
+		`error: write tcp 127.0.0.1:50342->127.0.0.1:64880: write: broken pipe ; retrying in 1s`,
+		`write: connection timed out`,
 		`received unexpected HTTP status: 503 Service Unavailable`,
 		`429 Too Many Requests`,
 	}
