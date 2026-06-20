@@ -41,7 +41,13 @@ brew install wendy-nightly
 To update:
 
 ```sh
-brew upgrade wendy
+brew update && brew install wendy
+```
+
+If the tap is untrusted after a Homebrew update:
+
+```sh
+brew trust wendylabsinc/tap && brew install wendy
 ```
 
 ### Linux
