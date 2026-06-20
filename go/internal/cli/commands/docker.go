@@ -1449,14 +1449,11 @@ func buildAndPushImage(ctx context.Context, dir, registryAddr, registryImage, pl
 		".",
 	)
 
-	fmt.Fprintf(logOutput, "[buildx] starting build: docker %s\n", strings.Join(redactBuildArgsForLog(args), " "))
-	cmd := exec.CommandContext(ctx, "docker", args...)
-	cmd.Dir = dir
-	cmd.Stdout = streamOutput
-	cmd.Stderr = streamOutput
+	// Build the command environment once; it is reused across retry attempts.
 	// On macOS/Linux, override DOCKER_CONFIG so the buildx client does not
 	// call the host credential helper when setting up the build session.
 	// On Windows we leave DOCKER_CONFIG untouched (cleanDockerConfigDir == "").
+	var cmdEnv []string
 	if cleanDockerConfigDir != "" {
 		baseEnv := make([]string, 0, len(os.Environ()))
 		for _, e := range os.Environ() {
@@ -1464,14 +1461,91 @@ func buildAndPushImage(ctx context.Context, dir, registryAddr, registryImage, pl
 				baseEnv = append(baseEnv, e)
 			}
 		}
-		cmd.Env = append(baseEnv, "DOCKER_CONFIG="+cleanDockerConfigDir)
+		cmdEnv = append(baseEnv, "DOCKER_CONFIG="+cleanDockerConfigDir)
 	}
 
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("docker buildx build failed: %w", err)
+	fmt.Fprintf(logOutput, "[buildx] starting build: docker %s\n", strings.Join(redactBuildArgsForLog(args), " "))
+
+	// Build and push, retrying transient registry/push failures. Images push to
+	// the device registry through one shared mTLS tunnel; under concurrent
+	// multi-service load it can briefly collapse (TLS handshake timeouts on even
+	// cheap blob HEADs) and buildkit reports the whole build as failed though the
+	// device is healthy (WDY-1690). A retry is cheap: the build is a cache hit and
+	// buildkit re-pushes only the blobs that did not make it.
+	var lastErr error
+	for attempt := 1; attempt <= maxBuildPushAttempts; attempt++ {
+		capture := &capturingWriter{w: streamOutput}
+		cmd := exec.CommandContext(ctx, "docker", args...)
+		cmd.Dir = dir
+		cmd.Stdout = capture
+		cmd.Stderr = capture
+		if cmdEnv != nil {
+			cmd.Env = cmdEnv
+		}
+
+		err := cmd.Run()
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		// Don't retry on cancellation, on the final attempt, or for errors that
+		// don't look like a transient registry/push hiccup (a real build failure
+		// would just fail again and waste time).
+		if ctx.Err() != nil || attempt >= maxBuildPushAttempts || !isTransientPushError(capture.String()) {
+			break
+		}
+		backoff := buildPushRetryBackoff(attempt)
+		fmt.Fprintf(logOutput, "[buildx] transient registry/push error; retrying in %s (attempt %d/%d)\n", backoff, attempt+1, maxBuildPushAttempts)
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("docker buildx build failed: %w", lastErr)
+		case <-time.After(backoff):
+		}
 	}
-	return nil
+	return fmt.Errorf("docker buildx build failed: %w", lastErr)
 }
+
+// maxBuildPushAttempts bounds how many times a fused buildx build+push is retried
+// on a transient registry/push failure (WDY-1690).
+const maxBuildPushAttempts = 3
+
+// buildPushRetryBackoff returns the wait before retry N+1 (2s, 4s). The tunnel
+// recovers quickly once concurrent push pressure drops, so a short linear backoff
+// is enough.
+func buildPushRetryBackoff(attempt int) time.Duration {
+	return time.Duration(attempt) * 2 * time.Second
+}
+
+// transientPushErrorRe matches buildkit output for registry/push failures that
+// are worth retrying — the device-registry tunnel collapsing under concurrent
+// pushes surfaces as TLS handshake timeouts and push failures, not as a genuine
+// build error (WDY-1690).
+var transientPushErrorRe = regexp.MustCompile(`(?i)(tls handshake timeout|failed to push|failed to do request|connection reset by peer|i/o timeout|unexpected eof|503 service unavailable|429 too many requests)`)
+
+func isTransientPushError(output string) bool {
+	return transientPushErrorRe.MatchString(output)
+}
+
+// capturingWriter tees writes to an underlying writer while retaining the last
+// maxCaptureBytes bytes, so a failed build's tail can be classified for the
+// push-retry path (WDY-1690) without buffering the entire (large) build log.
+type capturingWriter struct {
+	w   io.Writer
+	buf []byte
+}
+
+const maxCaptureBytes = 64 << 10
+
+func (c *capturingWriter) Write(p []byte) (int, error) {
+	n, err := c.w.Write(p)
+	c.buf = append(c.buf, p[:n]...)
+	if len(c.buf) > maxCaptureBytes {
+		c.buf = append([]byte(nil), c.buf[len(c.buf)-maxCaptureBytes:]...)
+	}
+	return n, err
+}
+
+func (c *capturingWriter) String() string { return string(c.buf) }
 
 func buildAndPushImageWithBuilder(ctx context.Context, builder, dir, registryAddr, registryImage, platform, dockerfile string, buildArgs map[string]string, cacheKey string, streamOutput, logOutput io.Writer, useMTLS bool) error {
 	normalized, err := normalizeImageBuilder(builder)
