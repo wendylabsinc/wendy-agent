@@ -239,14 +239,16 @@ func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 	}
 
 	// Build all service images in parallel, then create and start containers.
-	if err := buildServicesParallel(ctx, conn, regPort, cwd, appCfg.AppID, services, platform, buildArgs, opts.builder, skip); err != nil {
-		return err
+	failed, buildErr := buildServicesParallel(ctx, conn, regPort, cwd, appCfg.AppID, services, platform, buildArgs, opts.builder, skip)
+	if buildErr != nil {
+		return buildErr
 	}
 
 	// Record fingerprints for the services we actually built+pushed, so the next
-	// run can skip them. Skipped services already have a matching fingerprint.
+	// run can skip them. Skipped services already have a matching fingerprint;
+	// failed services must not be recorded (their image isn't on the device).
 	for name := range services {
-		if skip[name] {
+		if skip[name] || failed[name] != nil {
 			continue
 		}
 		if h, ok := hashes[name]; ok {
@@ -254,8 +256,33 @@ func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 		}
 	}
 
+	// Default (all-or-nothing): any build/push failure aborts the whole group so
+	// no half-deployed group is left behind. --keep-going deploys what built and
+	// reports the rest (WDY-1691).
+	if len(failed) > 0 && !opts.keepGoing {
+		return joinServiceErrors(failed)
+	}
+
+	// Determine which services can actually be deployed: those that built and
+	// whose dependencies all built too. partialErr is surfaced at the end so the
+	// command still exits non-zero after deploying the healthy subset.
+	deployServices := services
+	var partialErr error
+	if len(failed) > 0 {
+		deployable, dropped := resolveDeployableServices(services, failed)
+		deployServices = deployable
+		cliNotice("Partial deploy: %d deploying, %d failed (%s)%s.",
+			len(deployable), len(failed), strings.Join(sortedServiceErrorKeys(failed), ", "),
+			droppedSummary(dropped))
+		partialErr = joinServiceErrors(failed)
+		if len(deployable) == 0 {
+			cliNotice("No services left to deploy.")
+			return partialErr
+		}
+	}
+
 	// Create (and start) containers in dependency order.
-	ordered, err := serviceTopoOrder(services)
+	ordered, err := serviceTopoOrder(deployServices)
 	if err != nil {
 		return err
 	}
@@ -297,7 +324,7 @@ func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 			}
 		}
 		cliLogln("App group %s created (not started, --deploy).", appCfg.AppID)
-		return nil
+		return partialErr
 	}
 
 	// Create and start each service in dependency order, multiplexing log
@@ -306,7 +333,26 @@ func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 	// namespace join is resolved at container create time against the
 	// primary's running task, so the primary must be started before the
 	// next service is created.
-	return startAndStreamServices(ctx, conn, appCfg.AppID, ordered, opts, createService)
+	if err := startAndStreamServices(ctx, conn, appCfg.AppID, ordered, opts, createService); err != nil {
+		return err
+	}
+	// In --keep-going mode, exit non-zero after deploying the healthy subset so
+	// callers/CI still see that some services failed.
+	return partialErr
+}
+
+// droppedSummary formats the services skipped because a dependency failed, for
+// the partial-deploy notice. Returns "" when nothing was dropped.
+func droppedSummary(dropped map[string]string) string {
+	if len(dropped) == 0 {
+		return ""
+	}
+	names := make([]string, 0, len(dropped))
+	for n := range dropped {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return fmt.Sprintf(", %d skipped (failed dependency: %s)", len(names), strings.Join(names, ", "))
 }
 
 // buildServicesParallel builds all service images concurrently (up to
@@ -324,7 +370,7 @@ func buildServicesParallel(
 	buildArgs map[string]string,
 	builder string,
 	skip map[string]bool,
-) error {
+) (map[string]error, error) {
 	names := make([]string, 0, len(services))
 	for n := range services {
 		names = append(names, n)
@@ -438,25 +484,96 @@ func buildServicesParallel(
 
 	if prog != nil {
 		if _, runErr := prog.Run(); runErr != nil {
-			return fmt.Errorf("build progress TUI: %w", runErr)
+			return nil, fmt.Errorf("build progress TUI: %w", runErr)
 		}
 	}
 
-	// Collect errors. For failed services, print their buffered output now that
-	// the spinner has exited and the terminal is clean.
-	var errs []error
+	// Collect per-service failures. For failed services, print their buffered
+	// output now that the spinner has exited and the terminal is clean. The caller
+	// decides whether any failure aborts the group (default) or only its own
+	// service is dropped (--keep-going, WDY-1691).
+	failed := map[string]error{}
 	for r := range results {
 		if r.err != nil {
-			errs = append(errs, fmt.Errorf("service %s: %w", r.name, r.err))
+			failed[r.name] = r.err
 			if r.log != "" {
 				fmt.Fprintf(os.Stderr, "\n[%s] build log:\n%s", r.name, r.log)
 			}
 		}
 	}
-	if len(errs) > 0 {
-		return errors.Join(errs...)
+	return failed, nil
+}
+
+// sortedServiceErrorKeys returns the service names in failed, sorted, for stable
+// error/report output.
+func sortedServiceErrorKeys(failed map[string]error) []string {
+	names := make([]string, 0, len(failed))
+	for n := range failed {
+		names = append(names, n)
 	}
-	return nil
+	sort.Strings(names)
+	return names
+}
+
+// joinServiceErrors builds a single error from a per-service failure map, in
+// stable order.
+func joinServiceErrors(failed map[string]error) error {
+	var errs []error
+	for _, n := range sortedServiceErrorKeys(failed) {
+		errs = append(errs, fmt.Errorf("service %s: %w", n, failed[n]))
+	}
+	return errors.Join(errs...)
+}
+
+// resolveDeployableServices returns the subset of services that can be deployed:
+// those that built successfully and whose (transitive) dependencies all built
+// successfully too. dropped maps each service that is skipped *because of a failed
+// dependency* (not its own failure) to a human-readable reason. Failed services
+// are reported separately via the failed map. A dependency cycle is treated as
+// not deployable (serviceTopoOrder reports the cycle itself).
+func resolveDeployableServices(services map[string]*appconfig.ServiceConfig, failed map[string]error) (deployable map[string]*appconfig.ServiceConfig, dropped map[string]string) {
+	deployable = map[string]*appconfig.ServiceConfig{}
+	dropped = map[string]string{}
+
+	const (
+		unknown  = 0
+		yes      = 1
+		no       = 2
+		visiting = 3
+	)
+	state := map[string]int{}
+
+	var canDeploy func(name string) bool
+	canDeploy = func(name string) bool {
+		switch state[name] {
+		case yes:
+			return true
+		case no, visiting:
+			return false
+		}
+		state[name] = visiting
+		svc, ok := services[name]
+		if !ok || svc == nil || failed[name] != nil {
+			state[name] = no
+			return false
+		}
+		for _, dep := range svc.DependsOn {
+			if !canDeploy(dep) {
+				state[name] = no
+				dropped[name] = fmt.Sprintf("dependency %q was not deployed", dep)
+				return false
+			}
+		}
+		state[name] = yes
+		return true
+	}
+
+	for name := range services {
+		if canDeploy(name) {
+			deployable[name] = services[name]
+		}
+	}
+	return deployable, dropped
 }
 
 var serviceLogStyle = lipgloss.NewStyle().Foreground(tui.ColorInfo)
