@@ -96,15 +96,27 @@ well as `WDY`, so Release issues can live in the same project.
 #### REL-65 — Release Wendy OS companion app to TestFlight (upload + certificates/secrets)
 
 - Linear: https://linear.app/wendylabsinc/issue/REL-65/release-wendy-os-companion-app-to-testflight-upload
-- State: Todo
+- State: In Progress
 - Team: Releases (`REL`)
 - Project: Companion App / SDK
 - Assignee: `konstantin@wendy.sh`
 - Priority: High
-- Likely repo: `wendylabsinc/wendy-companion-ios`
-- Status: queued. Needs app release/TestFlight handoff and certificate/secrets
-  validation.
-- Resume: not available until prepared.
+- Repo: `wendylabsinc/wendy-companion-ios`
+- Worktree: `/Volumes/Projects/WendyLabs/wendy-companion-ios/.worktrees/kb.rel-65-testflight`
+- Branch: `kb.rel-65-testflight`
+- Setup commit: `f4d8e1dcd958bd7c87c11b5993d35639cc44a215`
+- Draft PR: blocked. GitHub reports viewer permission `READ`, so pushing the
+  branch fails with `Write access to repository not granted`.
+- Status: started. Local issue worktree and handoff are prepared, but push and
+  draft PR creation need GitHub write access to `wendylabsinc/wendy-companion-ios`.
+- Notes: first `xcodebuild -list` attempt failed because the project references
+  a local Companion SDK package at `../companion-sdk`, expected at
+  `/Volumes/Projects/WendyLabs/wendy-companion-ios/.worktrees/companion-sdk`.
+- Resume:
+
+  ```sh
+  cd /Volumes/Projects/WendyLabs/wendy-companion-ios/.worktrees/kb.rel-65-testflight && ai --prompt "Read HANDOVER.md and follow its instructions."
+  ```
 
 #### REL-66 — Check out skip.dev for Wendy Companion App
 
@@ -196,9 +208,11 @@ Copy this block when this coordinator starts tracking an issue.
 
 ## Next recommended steps
 
-1. Decide whether to start **REL-65 — Release Wendy OS companion app to
-   TestFlight (upload + certificates/secrets)** or **REL-66 — Check out skip.dev
-   for Wendy Companion App** first.
-2. Clone `wendy-companion-ios` locally if it is not present.
-3. Prepare a dedicated issue worktree and draft PR in the companion app repo.
+1. Get GitHub write access to `wendylabsinc/wendy-companion-ios` so the
+   **REL-65 — Release Wendy OS companion app to TestFlight (upload + certificates/secrets)**
+   branch can be pushed and its draft PR can be opened.
+2. Resolve the REL-65 worktree's local Companion SDK dependency at
+   `/Volumes/Projects/WendyLabs/wendy-companion-ios/.worktrees/companion-sdk`.
+3. Continue REL-65 from its worktree handoff, or start **REL-66 — Check out
+   skip.dev for Wendy Companion App** if release access remains blocked.
 4. Commit and push coordinator plan updates after meaningful planning changes.
