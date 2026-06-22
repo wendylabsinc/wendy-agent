@@ -19,12 +19,13 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	NotificationService_CreateNotification_FullMethodName = "/wendycloud.v1.NotificationService/CreateNotification"
-	NotificationService_ListNotifications_FullMethodName  = "/wendycloud.v1.NotificationService/ListNotifications"
-	NotificationService_GetNotification_FullMethodName    = "/wendycloud.v1.NotificationService/GetNotification"
-	NotificationService_DeleteNotification_FullMethodName = "/wendycloud.v1.NotificationService/DeleteNotification"
-	NotificationService_MarkAsRead_FullMethodName         = "/wendycloud.v1.NotificationService/MarkAsRead"
-	NotificationService_GetUnreadCount_FullMethodName     = "/wendycloud.v1.NotificationService/GetUnreadCount"
+	NotificationService_CreateNotification_FullMethodName     = "/wendycloud.v1.NotificationService/CreateNotification"
+	NotificationService_ListNotifications_FullMethodName      = "/wendycloud.v1.NotificationService/ListNotifications"
+	NotificationService_GetNotification_FullMethodName        = "/wendycloud.v1.NotificationService/GetNotification"
+	NotificationService_DeleteNotification_FullMethodName     = "/wendycloud.v1.NotificationService/DeleteNotification"
+	NotificationService_MarkAsRead_FullMethodName             = "/wendycloud.v1.NotificationService/MarkAsRead"
+	NotificationService_GetUnreadCount_FullMethodName         = "/wendycloud.v1.NotificationService/GetUnreadCount"
+	NotificationService_SubscribeNotifications_FullMethodName = "/wendycloud.v1.NotificationService/SubscribeNotifications"
 )
 
 // NotificationServiceClient is the client API for NotificationService service.
@@ -37,6 +38,7 @@ type NotificationServiceClient interface {
 	DeleteNotification(ctx context.Context, in *DeleteNotificationRequest, opts ...grpc.CallOption) (*DeleteNotificationResponse, error)
 	MarkAsRead(ctx context.Context, in *MarkAsReadRequest, opts ...grpc.CallOption) (*MarkAsReadResponse, error)
 	GetUnreadCount(ctx context.Context, in *GetUnreadCountRequest, opts ...grpc.CallOption) (*GetUnreadCountResponse, error)
+	SubscribeNotifications(ctx context.Context, in *SubscribeNotificationsRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[Notification], error)
 }
 
 type notificationServiceClient struct {
@@ -107,6 +109,25 @@ func (c *notificationServiceClient) GetUnreadCount(ctx context.Context, in *GetU
 	return out, nil
 }
 
+func (c *notificationServiceClient) SubscribeNotifications(ctx context.Context, in *SubscribeNotificationsRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[Notification], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &NotificationService_ServiceDesc.Streams[0], NotificationService_SubscribeNotifications_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[SubscribeNotificationsRequest, Notification]{ClientStream: stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type NotificationService_SubscribeNotificationsClient = grpc.ServerStreamingClient[Notification]
+
 // NotificationServiceServer is the server API for NotificationService service.
 // All implementations must embed UnimplementedNotificationServiceServer
 // for forward compatibility.
@@ -117,6 +138,7 @@ type NotificationServiceServer interface {
 	DeleteNotification(context.Context, *DeleteNotificationRequest) (*DeleteNotificationResponse, error)
 	MarkAsRead(context.Context, *MarkAsReadRequest) (*MarkAsReadResponse, error)
 	GetUnreadCount(context.Context, *GetUnreadCountRequest) (*GetUnreadCountResponse, error)
+	SubscribeNotifications(*SubscribeNotificationsRequest, grpc.ServerStreamingServer[Notification]) error
 	mustEmbedUnimplementedNotificationServiceServer()
 }
 
@@ -144,6 +166,9 @@ func (UnimplementedNotificationServiceServer) MarkAsRead(context.Context, *MarkA
 }
 func (UnimplementedNotificationServiceServer) GetUnreadCount(context.Context, *GetUnreadCountRequest) (*GetUnreadCountResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetUnreadCount not implemented")
+}
+func (UnimplementedNotificationServiceServer) SubscribeNotifications(*SubscribeNotificationsRequest, grpc.ServerStreamingServer[Notification]) error {
+	return status.Error(codes.Unimplemented, "method SubscribeNotifications not implemented")
 }
 func (UnimplementedNotificationServiceServer) mustEmbedUnimplementedNotificationServiceServer() {}
 func (UnimplementedNotificationServiceServer) testEmbeddedByValue()                             {}
@@ -274,6 +299,17 @@ func _NotificationService_GetUnreadCount_Handler(srv interface{}, ctx context.Co
 	return interceptor(ctx, in, info, handler)
 }
 
+func _NotificationService_SubscribeNotifications_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(SubscribeNotificationsRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(NotificationServiceServer).SubscribeNotifications(m, &grpc.GenericServerStream[SubscribeNotificationsRequest, Notification]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type NotificationService_SubscribeNotificationsServer = grpc.ServerStreamingServer[Notification]
+
 // NotificationService_ServiceDesc is the grpc.ServiceDesc for NotificationService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -306,6 +342,12 @@ var NotificationService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _NotificationService_GetUnreadCount_Handler,
 		},
 	},
-	Streams:  []grpc.StreamDesc{},
+	Streams: []grpc.StreamDesc{
+		{
+			StreamName:    "SubscribeNotifications",
+			Handler:       _NotificationService_SubscribeNotifications_Handler,
+			ServerStreams: true,
+		},
+	},
 	Metadata: "cloud/notifications.proto",
 }

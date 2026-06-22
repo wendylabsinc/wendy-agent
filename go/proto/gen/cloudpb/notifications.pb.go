@@ -722,6 +722,74 @@ func (x *GetUnreadCountResponse) GetUnreadCount() int32 {
 	return 0
 }
 
+type SubscribeNotificationsRequest struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	OrganizationId int32                  `protobuf:"varint,1,opt,name=organization_id,json=organizationId,proto3" json:"organization_id,omitempty"`
+	UserId         string                 `protobuf:"bytes,2,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	MinSeverity    *NotificationSeverity  `protobuf:"varint,3,opt,name=min_severity,json=minSeverity,proto3,enum=wendycloud.v1.NotificationSeverity,oneof" json:"min_severity,omitempty"`
+	AfterId        *int32                 `protobuf:"varint,4,opt,name=after_id,json=afterId,proto3,oneof" json:"after_id,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *SubscribeNotificationsRequest) Reset() {
+	*x = SubscribeNotificationsRequest{}
+	mi := &file_cloud_notifications_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SubscribeNotificationsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SubscribeNotificationsRequest) ProtoMessage() {}
+
+func (x *SubscribeNotificationsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_cloud_notifications_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SubscribeNotificationsRequest.ProtoReflect.Descriptor instead.
+func (*SubscribeNotificationsRequest) Descriptor() ([]byte, []int) {
+	return file_cloud_notifications_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *SubscribeNotificationsRequest) GetOrganizationId() int32 {
+	if x != nil {
+		return x.OrganizationId
+	}
+	return 0
+}
+
+func (x *SubscribeNotificationsRequest) GetUserId() string {
+	if x != nil {
+		return x.UserId
+	}
+	return ""
+}
+
+func (x *SubscribeNotificationsRequest) GetMinSeverity() NotificationSeverity {
+	if x != nil && x.MinSeverity != nil {
+		return *x.MinSeverity
+	}
+	return NotificationSeverity_NOTIFICATION_SEVERITY_UNSPECIFIED
+}
+
+func (x *SubscribeNotificationsRequest) GetAfterId() int32 {
+	if x != nil && x.AfterId != nil {
+		return *x.AfterId
+	}
+	return 0
+}
+
 var File_cloud_notifications_proto protoreflect.FileDescriptor
 
 const file_cloud_notifications_proto_rawDesc = "" +
@@ -774,13 +842,20 @@ const file_cloud_notifications_proto_rawDesc = "" +
 	"\x0forganization_id\x18\x01 \x01(\x05R\x0eorganizationId\x12\x17\n" +
 	"\auser_id\x18\x02 \x01(\tR\x06userId\";\n" +
 	"\x16GetUnreadCountResponse\x12!\n" +
-	"\funread_count\x18\x01 \x01(\x05R\vunreadCount*\xc5\x01\n" +
+	"\funread_count\x18\x01 \x01(\x05R\vunreadCount\"\xec\x01\n" +
+	"\x1dSubscribeNotificationsRequest\x12'\n" +
+	"\x0forganization_id\x18\x01 \x01(\x05R\x0eorganizationId\x12\x17\n" +
+	"\auser_id\x18\x02 \x01(\tR\x06userId\x12K\n" +
+	"\fmin_severity\x18\x03 \x01(\x0e2#.wendycloud.v1.NotificationSeverityH\x00R\vminSeverity\x88\x01\x01\x12\x1e\n" +
+	"\bafter_id\x18\x04 \x01(\x05H\x01R\aafterId\x88\x01\x01B\x0f\n" +
+	"\r_min_severityB\v\n" +
+	"\t_after_id*\xc5\x01\n" +
 	"\x14NotificationSeverity\x12%\n" +
 	"!NOTIFICATION_SEVERITY_UNSPECIFIED\x10\x00\x12\x1e\n" +
 	"\x1aNOTIFICATION_SEVERITY_INFO\x10\x01\x12!\n" +
 	"\x1dNOTIFICATION_SEVERITY_WARNING\x10\x02\x12\x1f\n" +
 	"\x1bNOTIFICATION_SEVERITY_ERROR\x10\x03\x12\"\n" +
-	"\x1eNOTIFICATION_SEVERITY_CRITICAL\x10\x042\xce\x04\n" +
+	"\x1eNOTIFICATION_SEVERITY_CRITICAL\x10\x042\xb5\x05\n" +
 	"\x13NotificationService\x12[\n" +
 	"\x12CreateNotification\x12(.wendycloud.v1.CreateNotificationRequest\x1a\x1b.wendycloud.v1.Notification\x12f\n" +
 	"\x11ListNotifications\x12'.wendycloud.v1.ListNotificationsRequest\x1a(.wendycloud.v1.ListNotificationsResponse\x12U\n" +
@@ -788,7 +863,8 @@ const file_cloud_notifications_proto_rawDesc = "" +
 	"\x12DeleteNotification\x12(.wendycloud.v1.DeleteNotificationRequest\x1a).wendycloud.v1.DeleteNotificationResponse\x12Q\n" +
 	"\n" +
 	"MarkAsRead\x12 .wendycloud.v1.MarkAsReadRequest\x1a!.wendycloud.v1.MarkAsReadResponse\x12]\n" +
-	"\x0eGetUnreadCount\x12$.wendycloud.v1.GetUnreadCountRequest\x1a%.wendycloud.v1.GetUnreadCountResponseb\x06proto3"
+	"\x0eGetUnreadCount\x12$.wendycloud.v1.GetUnreadCountRequest\x1a%.wendycloud.v1.GetUnreadCountResponse\x12e\n" +
+	"\x16SubscribeNotifications\x12,.wendycloud.v1.SubscribeNotificationsRequest\x1a\x1b.wendycloud.v1.Notification0\x01b\x06proto3"
 
 var (
 	file_cloud_notifications_proto_rawDescOnce sync.Once
@@ -803,49 +879,53 @@ func file_cloud_notifications_proto_rawDescGZIP() []byte {
 }
 
 var file_cloud_notifications_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_cloud_notifications_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
+var file_cloud_notifications_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
 var file_cloud_notifications_proto_goTypes = []any{
-	(NotificationSeverity)(0),          // 0: wendycloud.v1.NotificationSeverity
-	(*Notification)(nil),               // 1: wendycloud.v1.Notification
-	(*CreateNotificationRequest)(nil),  // 2: wendycloud.v1.CreateNotificationRequest
-	(*ListNotificationsRequest)(nil),   // 3: wendycloud.v1.ListNotificationsRequest
-	(*ListNotificationsResponse)(nil),  // 4: wendycloud.v1.ListNotificationsResponse
-	(*GetNotificationRequest)(nil),     // 5: wendycloud.v1.GetNotificationRequest
-	(*DeleteNotificationRequest)(nil),  // 6: wendycloud.v1.DeleteNotificationRequest
-	(*DeleteNotificationResponse)(nil), // 7: wendycloud.v1.DeleteNotificationResponse
-	(*MarkAsReadRequest)(nil),          // 8: wendycloud.v1.MarkAsReadRequest
-	(*MarkAsReadResponse)(nil),         // 9: wendycloud.v1.MarkAsReadResponse
-	(*GetUnreadCountRequest)(nil),      // 10: wendycloud.v1.GetUnreadCountRequest
-	(*GetUnreadCountResponse)(nil),     // 11: wendycloud.v1.GetUnreadCountResponse
-	(*structpb.Struct)(nil),            // 12: google.protobuf.Struct
-	(*timestamppb.Timestamp)(nil),      // 13: google.protobuf.Timestamp
+	(NotificationSeverity)(0),             // 0: wendycloud.v1.NotificationSeverity
+	(*Notification)(nil),                  // 1: wendycloud.v1.Notification
+	(*CreateNotificationRequest)(nil),     // 2: wendycloud.v1.CreateNotificationRequest
+	(*ListNotificationsRequest)(nil),      // 3: wendycloud.v1.ListNotificationsRequest
+	(*ListNotificationsResponse)(nil),     // 4: wendycloud.v1.ListNotificationsResponse
+	(*GetNotificationRequest)(nil),        // 5: wendycloud.v1.GetNotificationRequest
+	(*DeleteNotificationRequest)(nil),     // 6: wendycloud.v1.DeleteNotificationRequest
+	(*DeleteNotificationResponse)(nil),    // 7: wendycloud.v1.DeleteNotificationResponse
+	(*MarkAsReadRequest)(nil),             // 8: wendycloud.v1.MarkAsReadRequest
+	(*MarkAsReadResponse)(nil),            // 9: wendycloud.v1.MarkAsReadResponse
+	(*GetUnreadCountRequest)(nil),         // 10: wendycloud.v1.GetUnreadCountRequest
+	(*GetUnreadCountResponse)(nil),        // 11: wendycloud.v1.GetUnreadCountResponse
+	(*SubscribeNotificationsRequest)(nil), // 12: wendycloud.v1.SubscribeNotificationsRequest
+	(*structpb.Struct)(nil),               // 13: google.protobuf.Struct
+	(*timestamppb.Timestamp)(nil),         // 14: google.protobuf.Timestamp
 }
 var file_cloud_notifications_proto_depIdxs = []int32{
 	0,  // 0: wendycloud.v1.Notification.severity:type_name -> wendycloud.v1.NotificationSeverity
-	12, // 1: wendycloud.v1.Notification.related_entities:type_name -> google.protobuf.Struct
-	13, // 2: wendycloud.v1.Notification.created_at:type_name -> google.protobuf.Timestamp
-	13, // 3: wendycloud.v1.Notification.deleted_at:type_name -> google.protobuf.Timestamp
+	13, // 1: wendycloud.v1.Notification.related_entities:type_name -> google.protobuf.Struct
+	14, // 2: wendycloud.v1.Notification.created_at:type_name -> google.protobuf.Timestamp
+	14, // 3: wendycloud.v1.Notification.deleted_at:type_name -> google.protobuf.Timestamp
 	0,  // 4: wendycloud.v1.CreateNotificationRequest.severity:type_name -> wendycloud.v1.NotificationSeverity
-	12, // 5: wendycloud.v1.CreateNotificationRequest.related_entities:type_name -> google.protobuf.Struct
+	13, // 5: wendycloud.v1.CreateNotificationRequest.related_entities:type_name -> google.protobuf.Struct
 	0,  // 6: wendycloud.v1.ListNotificationsRequest.severity_filter:type_name -> wendycloud.v1.NotificationSeverity
 	1,  // 7: wendycloud.v1.ListNotificationsResponse.notifications:type_name -> wendycloud.v1.Notification
-	2,  // 8: wendycloud.v1.NotificationService.CreateNotification:input_type -> wendycloud.v1.CreateNotificationRequest
-	3,  // 9: wendycloud.v1.NotificationService.ListNotifications:input_type -> wendycloud.v1.ListNotificationsRequest
-	5,  // 10: wendycloud.v1.NotificationService.GetNotification:input_type -> wendycloud.v1.GetNotificationRequest
-	6,  // 11: wendycloud.v1.NotificationService.DeleteNotification:input_type -> wendycloud.v1.DeleteNotificationRequest
-	8,  // 12: wendycloud.v1.NotificationService.MarkAsRead:input_type -> wendycloud.v1.MarkAsReadRequest
-	10, // 13: wendycloud.v1.NotificationService.GetUnreadCount:input_type -> wendycloud.v1.GetUnreadCountRequest
-	1,  // 14: wendycloud.v1.NotificationService.CreateNotification:output_type -> wendycloud.v1.Notification
-	4,  // 15: wendycloud.v1.NotificationService.ListNotifications:output_type -> wendycloud.v1.ListNotificationsResponse
-	1,  // 16: wendycloud.v1.NotificationService.GetNotification:output_type -> wendycloud.v1.Notification
-	7,  // 17: wendycloud.v1.NotificationService.DeleteNotification:output_type -> wendycloud.v1.DeleteNotificationResponse
-	9,  // 18: wendycloud.v1.NotificationService.MarkAsRead:output_type -> wendycloud.v1.MarkAsReadResponse
-	11, // 19: wendycloud.v1.NotificationService.GetUnreadCount:output_type -> wendycloud.v1.GetUnreadCountResponse
-	14, // [14:20] is the sub-list for method output_type
-	8,  // [8:14] is the sub-list for method input_type
-	8,  // [8:8] is the sub-list for extension type_name
-	8,  // [8:8] is the sub-list for extension extendee
-	0,  // [0:8] is the sub-list for field type_name
+	0,  // 8: wendycloud.v1.SubscribeNotificationsRequest.min_severity:type_name -> wendycloud.v1.NotificationSeverity
+	2,  // 9: wendycloud.v1.NotificationService.CreateNotification:input_type -> wendycloud.v1.CreateNotificationRequest
+	3,  // 10: wendycloud.v1.NotificationService.ListNotifications:input_type -> wendycloud.v1.ListNotificationsRequest
+	5,  // 11: wendycloud.v1.NotificationService.GetNotification:input_type -> wendycloud.v1.GetNotificationRequest
+	6,  // 12: wendycloud.v1.NotificationService.DeleteNotification:input_type -> wendycloud.v1.DeleteNotificationRequest
+	8,  // 13: wendycloud.v1.NotificationService.MarkAsRead:input_type -> wendycloud.v1.MarkAsReadRequest
+	10, // 14: wendycloud.v1.NotificationService.GetUnreadCount:input_type -> wendycloud.v1.GetUnreadCountRequest
+	12, // 15: wendycloud.v1.NotificationService.SubscribeNotifications:input_type -> wendycloud.v1.SubscribeNotificationsRequest
+	1,  // 16: wendycloud.v1.NotificationService.CreateNotification:output_type -> wendycloud.v1.Notification
+	4,  // 17: wendycloud.v1.NotificationService.ListNotifications:output_type -> wendycloud.v1.ListNotificationsResponse
+	1,  // 18: wendycloud.v1.NotificationService.GetNotification:output_type -> wendycloud.v1.Notification
+	7,  // 19: wendycloud.v1.NotificationService.DeleteNotification:output_type -> wendycloud.v1.DeleteNotificationResponse
+	9,  // 20: wendycloud.v1.NotificationService.MarkAsRead:output_type -> wendycloud.v1.MarkAsReadResponse
+	11, // 21: wendycloud.v1.NotificationService.GetUnreadCount:output_type -> wendycloud.v1.GetUnreadCountResponse
+	1,  // 22: wendycloud.v1.NotificationService.SubscribeNotifications:output_type -> wendycloud.v1.Notification
+	16, // [16:23] is the sub-list for method output_type
+	9,  // [9:16] is the sub-list for method input_type
+	9,  // [9:9] is the sub-list for extension type_name
+	9,  // [9:9] is the sub-list for extension extendee
+	0,  // [0:9] is the sub-list for field type_name
 }
 
 func init() { file_cloud_notifications_proto_init() }
@@ -855,13 +935,14 @@ func file_cloud_notifications_proto_init() {
 	}
 	file_cloud_notifications_proto_msgTypes[0].OneofWrappers = []any{}
 	file_cloud_notifications_proto_msgTypes[2].OneofWrappers = []any{}
+	file_cloud_notifications_proto_msgTypes[11].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_cloud_notifications_proto_rawDesc), len(file_cloud_notifications_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   11,
+			NumMessages:   12,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

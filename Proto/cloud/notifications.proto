@@ -12,6 +12,7 @@ service NotificationService {
   rpc DeleteNotification(DeleteNotificationRequest) returns (DeleteNotificationResponse);
   rpc MarkAsRead(MarkAsReadRequest) returns (MarkAsReadResponse);
   rpc GetUnreadCount(GetUnreadCountRequest) returns (GetUnreadCountResponse);
+  rpc SubscribeNotifications(SubscribeNotificationsRequest) returns (stream Notification);
 }
 
 enum NotificationSeverity {
@@ -84,4 +85,11 @@ message GetUnreadCountRequest {
 
 message GetUnreadCountResponse {
   int32 unread_count = 1;
+}
+
+message SubscribeNotificationsRequest {
+  int32  organization_id          = 1;
+  string user_id                  = 2;
+  optional NotificationSeverity min_severity = 3;
+  optional int32 after_id         = 4;
 }
