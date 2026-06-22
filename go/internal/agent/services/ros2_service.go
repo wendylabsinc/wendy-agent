@@ -479,6 +479,8 @@ func (s *ROS2Service) EchoTopic(req *agentpbv2.EchoROS2TopicRequest, stream grpc
 		}
 		if serr := stream.Send(&agentpbv2.ROS2Message{Topic: req.GetTopic(), Yaml: doc.String()}); serr != nil {
 			cancel()
+			go func() { _, _ = io.Copy(io.Discard, pr) }()
+			pr.CloseWithError(context.Canceled)
 			<-execDone
 			return serr
 		}
@@ -486,7 +488,11 @@ func (s *ROS2Service) EchoTopic(req *agentpbv2.EchoROS2TopicRequest, stream grpc
 		sent++
 		if req.GetCount() > 0 && sent >= req.GetCount() {
 			cancel()
-			pr.CloseWithError(context.Canceled) // unblock goroutine stuck writing to pw
+			// Drain anything the publisher writes after cancel so a goroutine
+			// blocked mid-Write into pw is released and <-execDone can't wedge
+			// (WDY-1698). CloseWithError alone races a write already in progress.
+			go func() { _, _ = io.Copy(io.Discard, pr) }()
+			pr.CloseWithError(context.Canceled)
 			<-execDone
 			return nil
 		}

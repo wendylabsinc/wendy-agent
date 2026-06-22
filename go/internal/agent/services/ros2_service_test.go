@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"go.uber.org/zap/zaptest"
 	"google.golang.org/grpc"
@@ -344,6 +345,53 @@ func TestROS2Service_EchoTopic_CountLimit(t *testing.T) {
 	}
 	if !strings.Contains(stream.sent[0].GetYaml(), "msg-0") {
 		t.Errorf("first message = %q", stream.sent[0].GetYaml())
+	}
+}
+
+// TestROS2Service_EchoTopic_CountLimit_UnblocksBlockedPublisher guards WDY-1698:
+// once the count limit is reached, EchoTopic must return promptly even if the
+// publisher goroutine is blocked writing into the pipe (it must not wedge on
+// <-execDone). The fake blocks on every write until ctx is cancelled.
+func TestROS2Service_EchoTopic_CountLimit_UnblocksBlockedPublisher(t *testing.T) {
+	rt := &fakeROS2Runtime{
+		sidecar: ROS2Sidecar{Distro: "humble"},
+		execFn: func(ctx context.Context, opts ROS2ExecOptions, stdout, _ io.Writer) (int, error) {
+			// Routing calls (topic list) must return quickly so EchoTopic reaches
+			// the echo loop. Only the topic echo call should block mid-write.
+			if len(opts.Args) > 0 && opts.Args[0] != "topic" || len(opts.Args) < 2 || opts.Args[1] != "echo" {
+				return 0, nil
+			}
+			// Emit enough docs to satisfy the count, then keep trying to write.
+			// Each write may block until the handler stops reading; the fake must
+			// observe ctx cancellation and return rather than spin or wedge.
+			for i := 0; ; i++ {
+				if ctx.Err() != nil {
+					return 130, ctx.Err()
+				}
+				if _, werr := fmt.Fprintf(stdout, "data: msg-%d\n---\n", i); werr != nil {
+					// Pipe closed by the handler after the count limit: stop.
+					return 130, ctx.Err()
+				}
+			}
+		},
+	}
+	svc := newTestROS2Service(t, rt, t.TempDir())
+	stream := &fakeServerStream[agentpbv2.ROS2Message]{ctx: context.Background()}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- svc.EchoTopic(&agentpbv2.EchoROS2TopicRequest{Topic: "/chatter", Count: 3}, stream)
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("EchoTopic: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("EchoTopic did not return after count limit — WDY-1698 deadlock")
+	}
+	if len(stream.sent) != 3 {
+		t.Fatalf("got %d messages, want 3", len(stream.sent))
 	}
 }
 
