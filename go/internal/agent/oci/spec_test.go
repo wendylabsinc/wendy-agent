@@ -161,6 +161,14 @@ func TestDropToMinimalCapabilities(t *testing.T) {
 	if caps == nil {
 		t.Fatal("Capabilities is nil after DropToMinimalCapabilities")
 	}
+	// Assert every capability class is fully empty — this is the primary invariant.
+	// The dangerous-cap loop below is vacuously true when sets are empty; this check
+	// catches regressions where a set is non-empty but happens to miss the short list.
+	for _, set := range [][]string{caps.Bounding, caps.Effective, caps.Permitted, caps.Inheritable, caps.Ambient} {
+		if len(set) != 0 {
+			t.Errorf("expected empty capability set, got %v", set)
+		}
+	}
 	dangerous := []string{"CAP_NET_RAW", "CAP_MKNOD", "CAP_SETUID", "CAP_SETPCAP"}
 	for _, set := range [][]string{caps.Bounding, caps.Effective, caps.Permitted, caps.Inheritable, caps.Ambient} {
 		for _, c := range set {

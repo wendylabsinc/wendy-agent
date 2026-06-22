@@ -602,8 +602,19 @@ func (c *Client) ReapOrphanedROS2Sidecars(ctx context.Context) error {
 		return fmt.Errorf("listing app containers for sidecar reap: %w", err)
 	}
 	for _, ctr := range appCtrs {
+		// WDY-1702 H4: distinguish definitive "anchor gone" from ambiguous errors.
+		// NotFound from Task() means the container has no task — it cleanly stopped
+		// or never started. That is precisely the orphan case: do NOT mark it
+		// unresolvable; omitting it from liveTasks lets its sidecar be reaped.
+		// Any other error (timeout, transient RPC) means liveness is genuinely
+		// unknown — mark unresolvable so its sidecar is kept (safety, WDY-1702 H4).
 		task, terr := ctr.Task(ctx, nil)
 		if terr != nil {
+			if errdefs.IsNotFound(terr) {
+				// Anchor definitively has no task (cleanly stopped/gone): reapable.
+				continue
+			}
+			// Liveness unknown: keep sidecar to avoid false-positive reap.
 			c.logger.Warn("ROS 2 sidecar reap: could not get task for app container, treating as unresolvable",
 				zap.String("container", ctr.ID()), zap.Error(terr))
 			unresolvable[ctr.ID()] = true
@@ -611,6 +622,11 @@ func (c *Client) ReapOrphanedROS2Sidecars(ctx context.Context) error {
 		}
 		st, serr := task.Status(ctx)
 		if serr != nil {
+			if errdefs.IsNotFound(serr) {
+				// Task record gone between Task() and Status(): definitively stopped.
+				continue
+			}
+			// Status unknown: keep sidecar to avoid false-positive reap.
 			c.logger.Warn("ROS 2 sidecar reap: could not get task status for app container, treating as unresolvable",
 				zap.String("container", ctr.ID()), zap.Error(serr))
 			unresolvable[ctr.ID()] = true
