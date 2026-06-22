@@ -58,4 +58,20 @@ func TestSchemaJSON_HasFrameworksAndServices(t *testing.T) {
 	if got, want := len(enumRaw), len(ros2RMWAliases); got != want {
 		t.Errorf("schema rmw enum has %d entries, want %d (keys of ros2RMWAliases)", got, want)
 	}
+
+	// Verify exact parity: each enum value must be a key in ros2RMWAliases, and vice versa.
+	want := make(map[string]bool, len(ros2RMWAliases))
+	for k := range ros2RMWAliases {
+		want[k] = true
+	}
+	for _, v := range enumRaw {
+		s, _ := v.(string)
+		if !want[s] {
+			t.Errorf("schema rmw enum value %q is not a key of ros2RMWAliases", s)
+		}
+		delete(want, s)
+	}
+	for k := range want {
+		t.Errorf("ros2RMWAliases key %q is missing from schema rmw enum", k)
+	}
 }

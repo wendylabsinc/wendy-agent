@@ -1033,6 +1033,13 @@ func TestValidateJSON_UnknownROS2Keys(t *testing.T) {
 	}
 }
 
+func TestValidateJSON_CleanROS2_NoWarnings(t *testing.T) {
+	data := []byte(`{"appId":"com.example.app","frameworks":{"ros2":{"domainId":0,"rmw":"cyclonedds","distro":"humble"}}}`)
+	if got := ValidateJSON(data); len(got) != 0 {
+		t.Errorf("clean ros2 config: got %d warnings, want 0: %v", len(got), got)
+	}
+}
+
 func TestMCPEntitlementValid(t *testing.T) {
 	cfg := &AppConfig{
 		AppID: "test",
@@ -1630,5 +1637,17 @@ func TestValidate_ROS2_PerServiceDomainID(t *testing.T) {
 	}
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("expected error for out-of-range per-service domainId, got nil")
+	}
+}
+
+func TestValidate_ROS2_PerServiceUnknownRMW(t *testing.T) {
+	cfg := &AppConfig{
+		AppID: "com.example.app",
+		Services: map[string]*ServiceConfig{
+			"talker": {Context: "./talker", Frameworks: &FrameworksConfig{ROS2: &ROS2Config{RMW: "rmw_bogus"}}},
+		},
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error for unknown per-service rmw, got nil")
 	}
 }
