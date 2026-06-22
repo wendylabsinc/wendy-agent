@@ -120,4 +120,4 @@ wendy run --service api   # builds db and api only (frontend excluded)
 
 - Log output is multiplexed with a `[serviceName]` prefix on each line. Per-service log stream routing is not yet available.
 - Containers are created via individual `CreateContainer` calls in dependency order. A grouped `CreateAppGroup` RPC for atomic creation is planned as a follow-up.
-- Wendy Agent for Mac is not supported. `wendy run` rejects multi-service `wendy.json` projects when the selected target is Wendy Agent for Mac, before any build or registry operation. Target a Linux/WendyOS device for multi-service workloads.
+- Wendy for Mac is not supported. `wendy run` rejects multi-service `wendy.json` projects when the selected target is Wendy for Mac, before any build or registry operation. Target a Linux/WendyOS device for multi-service workloads.

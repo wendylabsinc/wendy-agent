@@ -122,7 +122,7 @@ All `wendy run` flags work with compose projects:
 
 ## Limitations
 
-- Wendy Agent for Mac is not supported. `wendy run` rejects compose projects before any registry or Docker setup when the selected target is Wendy Agent for Mac. Target a Linux/WendyOS device to use compose.
+- Wendy for Mac is not supported. `wendy run` rejects compose projects before any registry or Docker setup when the selected target is Wendy for Mac. Target a Linux/WendyOS device to use compose.
 - Wendy-specific hardware access entitlements such as `gpu`, `camera`, `audio`, `bluetooth`, `usb`, `i2c`, `gpio`, `spi`, `input`, and `serial` are not inferred from compose fields.
 - Service-specific lifecycle behavior is not supported yet: Compose services cannot declare Wendy readiness probes or `postStart` hooks, and top-level `wendy.json` hooks do not apply to generated Compose service apps.
 - Host networking does not imply shared IPC or shared `/dev/shm`; ROS 2 shared-memory transport requires an app shape that can explicitly share namespaces.

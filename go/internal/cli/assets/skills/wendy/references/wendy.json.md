@@ -28,9 +28,9 @@ The `wendy.json` file configures your WendyOS application's identity and entitle
 |-------|-------------|
 | `wendyos` | Linux edge device running WendyOS; apps run in containers |
 | `wendy-lite` | ESP32 WASM target |
-| `darwin` | Native macOS execution through [Wendy Agent for Mac](/docs/installation/wendy-agent-macos) |
+| `darwin` | Native macOS execution through [Wendy for Mac](/docs/installation/wendy-agent-macos) |
 
-Use `"darwin"` for Apple Silicon Mac targets managed by Wendy Agent for Mac. The CLI builds SwiftPM or Xcode projects on a Mac development machine, syncs the build output to the Mac agent, and starts the app as a native macOS process. Darwin apps run natively and non-containerized, so WendyOS Linux container semantics and hardware entitlements do not apply.
+Use `"darwin"` for Apple Silicon Mac targets managed by Wendy for Mac. The CLI builds SwiftPM or Xcode projects on a Mac development machine, syncs the build output to the Mac agent, and starts the app as a native macOS process. Darwin apps run natively and non-containerized, so WendyOS Linux container semantics and hardware entitlements do not apply.
 
 Minimal SwiftPM/macOS configuration:
 
