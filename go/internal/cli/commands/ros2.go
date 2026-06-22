@@ -545,6 +545,48 @@ func newROS2DoctorCmd() *cobra.Command {
 
 // ── streaming commands ──────────────────────────────────────────────
 
+// echoRecvStream is the minimal interface consumed by drainEchoStream,
+// satisfied by grpc.ServerStreamingClient[agentpbv2.ROS2Message].
+type echoRecvStream interface {
+	Recv() (*agentpbv2.ROS2Message, error)
+}
+
+// drainEchoStream reads messages from stream until io.EOF or ctx cancellation,
+// printing each message to stdout.  When the stream ends having delivered zero
+// messages, it writes a stderr notice so the user isn't left with silent output.
+//
+// WDY-1708 (claim b): exit 0 is intentional — in ROS 2, "no active publishers
+// yet" is not a hard error; topics are dynamic and a streaming echo on an idle
+// or absent topic legitimately produces no output.  However, silence without
+// feedback is confusing, so we emit a single notice on stderr.  At least one
+// message received → no notice.
+func drainEchoStream(ctx context.Context, stream echoRecvStream, topic string, useJSON bool, stderr io.Writer) error {
+	received := 0
+	for {
+		msg, rerr := stream.Recv()
+		if rerr != nil {
+			if rerr == io.EOF || ctx.Err() != nil {
+				// WDY-1708: keep exit 0, but surface a notice when no messages
+				// arrived so the user knows the topic had no active publishers.
+				if received == 0 {
+					fmt.Fprintf(stderr, "Notice: No messages received on %s — the topic may have no active publishers.\n", topic)
+				}
+				return nil
+			}
+			return ros2RPCError(rerr)
+		}
+		received++
+		if useJSON {
+			if jerr := printROS2JSON(map[string]string{"topic": msg.GetTopic(), "yaml": msg.GetYaml()}); jerr != nil {
+				return jerr
+			}
+			continue
+		}
+		fmt.Print(msg.GetYaml())
+		fmt.Println("---")
+	}
+}
+
 func newROS2EchoCmd() *cobra.Command {
 	var domain int32
 	var count int32
@@ -570,23 +612,7 @@ func newROS2EchoCmd() *cobra.Command {
 			if err != nil {
 				return ros2RPCError(err)
 			}
-			for {
-				msg, rerr := stream.Recv()
-				if rerr != nil {
-					if rerr == io.EOF || ctx.Err() != nil {
-						return nil
-					}
-					return ros2RPCError(rerr)
-				}
-				if jsonOutput {
-					if jerr := printROS2JSON(map[string]string{"topic": msg.GetTopic(), "yaml": msg.GetYaml()}); jerr != nil {
-						return jerr
-					}
-					continue
-				}
-				fmt.Print(msg.GetYaml())
-				fmt.Println("---")
-			}
+			return drainEchoStream(ctx, stream, args[0], jsonOutput, os.Stderr)
 		},
 	}
 	ros2DomainFlag(cmd, &domain)

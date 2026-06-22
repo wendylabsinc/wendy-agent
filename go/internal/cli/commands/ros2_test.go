@@ -569,3 +569,83 @@ func TestROS2RPCError_PlainErrorPassesThrough(t *testing.T) {
 		t.Errorf("ros2RPCError(plain) = %v, want same error identity", got)
 	}
 }
+
+// ── drainEchoStream tests (WDY-1708 claim b) ───────────────────────────────
+
+// fakeEchoStream is an echoRecvStream that returns a fixed set of messages
+// then io.EOF.
+type fakeEchoStream struct {
+	msgs []*agentpbv2.ROS2Message
+	pos  int
+}
+
+func (f *fakeEchoStream) Recv() (*agentpbv2.ROS2Message, error) {
+	if f.pos >= len(f.msgs) {
+		return nil, io.EOF
+	}
+	m := f.msgs[f.pos]
+	f.pos++
+	return m, nil
+}
+
+// TestDrainEchoStream_ZeroMessages: stream immediately EOFs → exit 0 AND
+// stderr notice containing the topic name (WDY-1708 claim b).
+func TestDrainEchoStream_ZeroMessages(t *testing.T) {
+	stream := &fakeEchoStream{} // no messages, Recv returns io.EOF immediately
+	var stderr bytes.Buffer
+	err := drainEchoStream(context.Background(), stream, "/does_not_exist", false, &stderr)
+	if err != nil {
+		t.Errorf("drainEchoStream zero-messages = %v, want nil (exit 0 is intentional per WDY-1708)", err)
+	}
+	notice := stderr.String()
+	if !strings.Contains(notice, "/does_not_exist") {
+		t.Errorf("stderr notice %q does not mention the topic name", notice)
+	}
+	if notice == "" {
+		t.Error("stderr was empty — user would receive no feedback on a silent echo (WDY-1708)")
+	}
+}
+
+// TestDrainEchoStream_MessagesReceived: stream delivers messages → exit 0,
+// no stderr notice emitted.
+func TestDrainEchoStream_MessagesReceived(t *testing.T) {
+	stream := &fakeEchoStream{
+		msgs: []*agentpbv2.ROS2Message{
+			{Topic: "/chatter", Yaml: "data: hello\n"},
+			{Topic: "/chatter", Yaml: "data: world\n"},
+		},
+	}
+	var stderr bytes.Buffer
+	err := drainEchoStream(context.Background(), stream, "/chatter", false, &stderr)
+	if err != nil {
+		t.Errorf("drainEchoStream with messages = %v, want nil", err)
+	}
+	if notice := stderr.String(); notice != "" {
+		t.Errorf("unexpected stderr output %q — notice must not appear when messages were received", notice)
+	}
+}
+
+// TestDrainEchoStream_CtxCancelZeroMessages: ctrl-c with zero messages received
+// → exit 0 and notice is still emitted (acceptable; user stopped a silent topic).
+func TestDrainEchoStream_CtxCancelZeroMessages(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // pre-cancel, simulating ctrl-c
+	// Stream returns a context error on Recv (simulates gRPC honouring ctx).
+	stream := &errOnFirstEchoRecv{err: ctx.Err()}
+	var stderr bytes.Buffer
+	err := drainEchoStream(ctx, stream, "/idle_topic", false, &stderr)
+	if err != nil {
+		t.Errorf("drainEchoStream ctx-cancel = %v, want nil", err)
+	}
+	// Notice is acceptable (and expected) when ctrl-c fires after zero messages.
+	if notice := stderr.String(); !strings.Contains(notice, "/idle_topic") {
+		t.Errorf("stderr %q should mention the topic on ctrl-c with zero messages", notice)
+	}
+}
+
+// errOnFirstEchoRecv is an echoRecvStream that always returns a fixed error.
+type errOnFirstEchoRecv struct{ err error }
+
+func (e *errOnFirstEchoRecv) Recv() (*agentpbv2.ROS2Message, error) {
+	return nil, e.err
+}
