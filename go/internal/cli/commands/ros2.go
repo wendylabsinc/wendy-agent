@@ -159,7 +159,7 @@ func newROS2NodesCmd() *cobra.Command {
 				return printROS2JSON(nodes)
 			}
 			if len(resp.GetNodes()) == 0 {
-				cliLogln("No ROS 2 nodes found.")
+				cliNotice("No ROS 2 nodes found.")
 				return nil
 			}
 			rmws := make([]string, 0, len(resp.GetNodes()))
@@ -223,7 +223,7 @@ func newROS2TopicsCmd() *cobra.Command {
 				return printROS2JSON(topics)
 			}
 			if len(resp.GetTopics()) == 0 {
-				cliLogln("No ROS 2 topics found.")
+				cliNotice("No ROS 2 topics found.")
 				return nil
 			}
 			rmws := make([]string, 0, len(resp.GetTopics()))
@@ -334,7 +334,7 @@ func newROS2ServicesCmd() *cobra.Command {
 				return printROS2JSON(svcs)
 			}
 			if len(resp.GetServices()) == 0 {
-				cliLogln("No ROS 2 services found.")
+				cliNotice("No ROS 2 services found.")
 				return nil
 			}
 			rmws := make([]string, 0, len(resp.GetServices()))
@@ -825,7 +825,7 @@ func newROS2BagListCmd() *cobra.Command {
 				return printROS2JSON(bags)
 			}
 			if len(resp.GetBags()) == 0 {
-				cliLogln("No bags recorded on the device.")
+				cliNotice("No bags recorded on the device.")
 				return nil
 			}
 			w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
