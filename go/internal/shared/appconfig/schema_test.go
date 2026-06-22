@@ -2,6 +2,7 @@ package appconfig
 
 import (
 	"encoding/json"
+	"os"
 	"testing"
 )
 
@@ -73,5 +74,29 @@ func TestSchemaJSON_HasFrameworksAndServices(t *testing.T) {
 	}
 	for k := range want {
 		t.Errorf("ros2RMWAliases key %q is missing from schema rmw enum", k)
+	}
+}
+
+func TestSchemaJSON_DeclaresROS2ExampleKeys(t *testing.T) {
+	// The flagship ROS 2 example must validate against the schema (WDY-1700):
+	// every top-level key it uses must be a declared property, else
+	// additionalProperties:false rejects it in editors.
+	data, err := os.ReadFile("../../../../Examples/ROS2/wendy.json")
+	if err != nil {
+		t.Fatalf("reading ROS 2 example: %v", err)
+	}
+	var example map[string]any
+	if err := json.Unmarshal(data, &example); err != nil {
+		t.Fatalf("example is not valid JSON: %v", err)
+	}
+	var schema map[string]any
+	if err := json.Unmarshal([]byte(SchemaJSON), &schema); err != nil {
+		t.Fatalf("schema is not valid JSON: %v", err)
+	}
+	props := schema["properties"].(map[string]any)
+	for k := range example {
+		if _, ok := props[k]; !ok {
+			t.Errorf("ROS 2 example uses top-level key %q not declared in schema properties (additionalProperties:false would reject it)", k)
+		}
 	}
 }
