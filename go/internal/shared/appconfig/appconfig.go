@@ -587,8 +587,9 @@ func ValidateJSON(data []byte) []string {
 	var warnings []string
 	warnings = append(warnings, validateEntitlementsJSON(raw["entitlements"], "entitlement")...)
 	warnings = append(warnings, validateHooksJSON(raw["hooks"])...)
+	warnings = append(warnings, validateFrameworksJSON(raw["frameworks"], "frameworks")...)
 
-	// Validate service-level entitlements when a services map is present.
+	// Validate service-level entitlements and frameworks when a services map is present.
 	// Unmarshal into map[string]json.RawMessage first so a null/invalid entry
 	// for one service doesn't silently drop warnings for all other services.
 	if servicesRaw, ok := raw["services"]; ok && len(servicesRaw) > 0 {
@@ -601,11 +602,44 @@ func ValidateJSON(data []byte) []string {
 				}
 				prefix := fmt.Sprintf("services[%q].entitlement", name)
 				warnings = append(warnings, validateEntitlementsJSON(svc["entitlements"], prefix)...)
+				warnings = append(warnings, validateFrameworksJSON(svc["frameworks"], fmt.Sprintf("services[%q].frameworks", name))...)
 			}
 		}
 	}
 
 	return warnings
+}
+
+// validateFrameworksJSON warns on unknown keys under frameworks.ros2 so a typo
+// like "domian_id" surfaces instead of being silently ignored (WDY-1706 M5).
+func validateFrameworksJSON(frameworksRaw json.RawMessage, prefix string) []string {
+	if len(frameworksRaw) == 0 {
+		return nil
+	}
+	var fw map[string]json.RawMessage
+	if err := json.Unmarshal(frameworksRaw, &fw); err != nil {
+		return nil
+	}
+	ros2Raw, ok := fw["ros2"]
+	if !ok || len(ros2Raw) == 0 {
+		return nil
+	}
+	var ros2 map[string]json.RawMessage
+	if err := json.Unmarshal(ros2Raw, &ros2); err != nil {
+		return nil
+	}
+	allowed := map[string]bool{"domainId": true, "rmw": true, "distro": true}
+	var unknown []string
+	for k := range ros2 {
+		if !allowed[k] {
+			unknown = append(unknown, k)
+		}
+	}
+	if len(unknown) == 0 {
+		return nil
+	}
+	sort.Strings(unknown)
+	return []string{fmt.Sprintf("Unknown key(s) in %s.ros2: %s. Allowed keys are: distro, domainId, rmw", prefix, strings.Join(unknown, ", "))}
 }
 
 // validateEntitlementsJSON checks raw JSON entitlements for deprecated types

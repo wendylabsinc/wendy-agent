@@ -1022,6 +1022,17 @@ func TestValidateJSON_UnknownKeys(t *testing.T) {
 	}
 }
 
+func TestValidateJSON_UnknownROS2Keys(t *testing.T) {
+	data := []byte(`{
+		"appId": "com.example.app",
+		"frameworks": { "ros2": { "domainId": 42, "domian_id": 7, "rmw": "cyclonedds" } }
+	}`)
+	warnings := ValidateJSON(data)
+	if len(warnings) != 1 {
+		t.Fatalf("got %d warnings, want 1 (for domian_id): %v", len(warnings), warnings)
+	}
+}
+
 func TestMCPEntitlementValid(t *testing.T) {
 	cfg := &AppConfig{
 		AppID: "test",
