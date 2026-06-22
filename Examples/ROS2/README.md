@@ -13,8 +13,9 @@ ROS2/
 
 ## What it demonstrates
 
-- `frameworks.ros2` auto-injects `ROS_DOMAIN_ID=42`, `RMW_IMPLEMENTATION=rmw_cyclonedds_cpp`
-  and `WENDY_DISTRO=humble` into both containers (WDY-880, PR #897).
+- `frameworks.ros2` auto-injects `ROS_DOMAIN_ID=42` and `RMW_IMPLEMENTATION=rmw_cyclonedds_cpp`
+  into both containers (WDY-880, PR #897). The `distro` field selects the ROS 2 CLI sidecar
+  image for `wendy device ros2` inspection and is not injected as an environment variable.
 - `isolation: shared-ipc` shares the network and IPC namespaces plus `/dev/shm`
   so CycloneDDS can perform zero-copy intra-host transport.
 - The runtime sets `ROS_LOCALHOST_ONLY=1` automatically — DDS communication
