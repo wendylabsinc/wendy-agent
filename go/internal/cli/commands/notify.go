@@ -37,7 +37,10 @@ func newNotifyStartCmd() *cobra.Command {
 				return fmt.Errorf("installing notification daemon: %w", err)
 			}
 
-			logPath, _ := notifyLogPath()
+			logPath, err := notifyLogPath()
+			if err != nil {
+				logPath = "(log path unavailable)"
+			}
 			cmd.Printf("Wendy notification daemon started.\nLogs: %s\n", logPath)
 			return nil
 		},
@@ -69,7 +72,10 @@ func newNotifyStatusCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			logPath, _ := notifyLogPath()
+			logPath, err := notifyLogPath()
+			if err != nil {
+				logPath = "(log path unavailable)"
+			}
 			cmd.Printf("Notification daemon: %s\nLogs: %s\n", status, logPath)
 			return nil
 		},
