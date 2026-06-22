@@ -109,9 +109,10 @@ well as `WDY`, so Release issues can live in the same project.
   branch fails with `Write access to repository not granted`.
 - Status: started. Local issue worktree and handoff are prepared, but push and
   draft PR creation need GitHub write access to `wendylabsinc/wendy-companion-ios`.
-- Notes: first `xcodebuild -list` attempt failed because the project references
-  a local Companion SDK package at `../companion-sdk`, expected at
-  `/Volumes/Projects/WendyLabs/wendy-companion-ios/.worktrees/companion-sdk`.
+- Notes: the project references the Companion SDK as a local package at
+  `../companion-sdk`; the SDK is now cloned at
+  `/Volumes/Projects/WendyLabs/wendy-companion-ios/.worktrees/companion-sdk`,
+  and `xcodebuild -list -project "WendyOS Companion.xcodeproj"` succeeds.
 - Resume:
 
   ```sh
@@ -211,8 +212,7 @@ Copy this block when this coordinator starts tracking an issue.
 1. Get GitHub write access to `wendylabsinc/wendy-companion-ios` so the
    **REL-65 — Release Wendy OS companion app to TestFlight (upload + certificates/secrets)**
    branch can be pushed and its draft PR can be opened.
-2. Resolve the REL-65 worktree's local Companion SDK dependency at
-   `/Volumes/Projects/WendyLabs/wendy-companion-ios/.worktrees/companion-sdk`.
-3. Continue REL-65 from its worktree handoff, or start **REL-66 — Check out
-   skip.dev for Wendy Companion App** if release access remains blocked.
+2. Continue REL-65 signing/TestFlight validation from its worktree handoff, or
+   start **REL-66 — Check out skip.dev for Wendy Companion App** if release
+   access remains blocked.
 4. Commit and push coordinator plan updates after meaningful planning changes.
