@@ -588,6 +588,89 @@ func TestROS2Service_RecordBag_UnexpectedExitWithHealthyAnchor(t *testing.T) {
 	}
 }
 
+// TestROS2Service_ListNodes_DedupsAcrossSidecars verifies that a node visible to
+// more than one sidecar appears only once per (namespace+name, rmw) pair
+// (WDY-1710). Two sidecars each on their own RMW both emit /talker → 2 nodes
+// kept (distinct RMWs). A sidecar that emits /talker twice in its stdout → only
+// 1 node kept (true duplicate).
+func TestROS2Service_ListNodes_DedupsAcrossSidecars(t *testing.T) {
+	rt := &fakeROS2Runtime{
+		sidecars: []ROS2Sidecar{
+			{Name: "sc-cyc", Distro: "humble", DomainID: 42, RMW: "rmw_cyclonedds_cpp"},
+			{Name: "sc-fast", Distro: "humble", DomainID: 42, RMW: "rmw_fastrtps_cpp"},
+		},
+		// Both sidecars emit /talker (different RMWs → 2 distinct entries kept).
+		// sc-cyc also emits /talker a second time via a duplicate stdout line to
+		// prove within-sidecar dedup (same name+rmw → collapsed to 1).
+		execFn: func(_ context.Context, opts ROS2ExecOptions, stdout, _ io.Writer) (int, error) {
+			switch opts.SidecarName {
+			case "sc-cyc":
+				// Duplicate line simulates a sidecar reporting the same node twice.
+				io.WriteString(stdout, "/talker\n/talker\n")
+			case "sc-fast":
+				io.WriteString(stdout, "/talker\n")
+			}
+			return 0, nil
+		},
+	}
+	svc := newTestROS2Service(t, rt, t.TempDir())
+	resp, err := svc.ListNodes(context.Background(), &agentpbv2.ListROS2NodesRequest{})
+	if err != nil {
+		t.Fatalf("ListNodes: %v", err)
+	}
+	// /talker on rmw_cyclonedds_cpp and /talker on rmw_fastrtps_cpp are distinct
+	// (different RMW) → 2 entries. The duplicate /talker from sc-cyc is collapsed.
+	if len(resp.GetNodes()) != 2 {
+		t.Fatalf("got %d nodes, want 2 distinct (name,rmw) pairs", len(resp.GetNodes()))
+	}
+	// Verify both RMWs are represented.
+	rmws := map[string]bool{}
+	for _, n := range resp.GetNodes() {
+		rmws[n.GetRmw()] = true
+	}
+	if !rmws["rmw_cyclonedds_cpp"] || !rmws["rmw_fastrtps_cpp"] {
+		t.Errorf("RMW coverage = %v, want both cyclonedds and fastrtps", rmws)
+	}
+}
+
+// TestROS2Service_GetGraph_DedupsEdges verifies that a node's publish/subscribe
+// edges are deduplicated when a sidecar's node info stdout contains the same
+// topic twice (same (node, topic, rmw) → collapsed to 1 edge) (WDY-1710).
+func TestROS2Service_GetGraph_DedupsEdges(t *testing.T) {
+	rt := &fakeROS2Runtime{
+		sidecar: ROS2Sidecar{Name: "sc-cyc", Distro: "humble", DomainID: 0, RMW: "rmw_cyclonedds_cpp"},
+		execFn: func(_ context.Context, opts ROS2ExecOptions, stdout, _ io.Writer) (int, error) {
+			key := strings.Join(opts.Args, " ")
+			switch key {
+			case "node list":
+				io.WriteString(stdout, "/talker\n")
+			case "node info /talker":
+				// Duplicate publisher entry simulates noisy node info output.
+				io.WriteString(stdout, `/talker
+  Subscribers:
+  Publishers:
+    /chatter: std_msgs/msg/String
+    /chatter: std_msgs/msg/String
+`)
+			}
+			return 0, nil
+		},
+	}
+	svc := newTestROS2Service(t, rt, t.TempDir())
+	resp, err := svc.GetGraph(context.Background(), &agentpbv2.GetROS2GraphRequest{})
+	if err != nil {
+		t.Fatalf("GetGraph: %v", err)
+	}
+	// The /talker→/chatter publish edge must appear exactly once despite the
+	// duplicate line in node info stdout.
+	if len(resp.GetPublishes()) != 1 {
+		t.Fatalf("got %d publish edges, want 1 (deduped)", len(resp.GetPublishes()))
+	}
+	if resp.GetPublishes()[0].GetNode() != "/talker" || resp.GetPublishes()[0].GetTopic() != "/chatter" {
+		t.Errorf("publish edge = %+v", resp.GetPublishes()[0])
+	}
+}
+
 func TestTailLines(t *testing.T) {
 	in := "a\nb\n\nc\nd\ne\n"
 	if got := tailLines(in, 3); got != "c\nd\ne" {

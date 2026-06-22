@@ -172,9 +172,15 @@ func (s *ROS2Service) ListNodes(ctx context.Context, req *agentpbv2.ListROS2Node
 		return nil, err
 	}
 	resp := &agentpbv2.ListROS2NodesResponse{}
+	seen := map[string]bool{}
 	for _, o := range outs {
 		for _, n := range parseROS2NodeList(o.out) {
 			n.Rmw = o.rmw
+			key := n.GetNamespace() + "/" + n.GetName() + "\x00" + o.rmw
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
 			resp.Nodes = append(resp.Nodes, n)
 		}
 	}
@@ -250,8 +256,14 @@ func (s *ROS2Service) ListServices(ctx context.Context, req *agentpbv2.ListROS2S
 		return nil, err
 	}
 	resp := &agentpbv2.ListROS2ServicesResponse{}
+	seen := map[string]bool{}
 	for _, o := range outs {
 		for _, t := range parseROS2TopicList(o.out) {
+			key := t.GetName() + "\x00" + o.rmw
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
 			resp.Services = append(resp.Services, &agentpbv2.ListROS2ServicesResponse_Service{
 				Name:  t.GetName(),
 				Types: t.GetTypes(),
@@ -363,6 +375,8 @@ func (s *ROS2Service) GetGraph(ctx context.Context, req *agentpbv2.GetROS2GraphR
 	resp := &agentpbv2.GetROS2GraphResponse{}
 	var lastErr error
 	any := false
+	seenNodes := map[string]bool{}
+	seenEdges := map[string]bool{}
 	for _, sc := range scs {
 		out, rerr := s.runIn(ctx, sc, "node", "list")
 		if rerr != nil {
@@ -372,18 +386,30 @@ func (s *ROS2Service) GetGraph(ctx context.Context, req *agentpbv2.GetROS2GraphR
 		any = true
 		for _, node := range parseROS2NodeList(out) {
 			node.Rmw = sc.rmw
-			resp.Nodes = append(resp.Nodes, node)
 			fqn := ros2NodeFQN(node)
+			nodeKey := fqn + "\x00" + sc.rmw
+			if !seenNodes[nodeKey] {
+				seenNodes[nodeKey] = true
+				resp.Nodes = append(resp.Nodes, node)
+			}
 			info, ierr := s.runIn(ctx, sc, "node", "info", fqn)
 			if ierr != nil {
 				continue // node may have exited between list and info
 			}
 			publishes, subscribes := parseROS2NodeInfo(info)
 			for _, topic := range publishes {
-				resp.Publishes = append(resp.Publishes, &agentpbv2.GetROS2GraphResponse_Edge{Node: fqn, Topic: topic, Rmw: sc.rmw})
+				edgeKey := fqn + "\x00" + topic + "\x00" + sc.rmw + "\x00pub"
+				if !seenEdges[edgeKey] {
+					seenEdges[edgeKey] = true
+					resp.Publishes = append(resp.Publishes, &agentpbv2.GetROS2GraphResponse_Edge{Node: fqn, Topic: topic, Rmw: sc.rmw})
+				}
 			}
 			for _, topic := range subscribes {
-				resp.Subscribes = append(resp.Subscribes, &agentpbv2.GetROS2GraphResponse_Edge{Node: fqn, Topic: topic, Rmw: sc.rmw})
+				edgeKey := fqn + "\x00" + topic + "\x00" + sc.rmw + "\x00sub"
+				if !seenEdges[edgeKey] {
+					seenEdges[edgeKey] = true
+					resp.Subscribes = append(resp.Subscribes, &agentpbv2.GetROS2GraphResponse_Edge{Node: fqn, Topic: topic, Rmw: sc.rmw})
+				}
 			}
 		}
 	}
