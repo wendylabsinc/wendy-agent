@@ -10,7 +10,7 @@ export function OverviewIntro() {
       <p className="mt-3 max-w-2xl text-sm leading-relaxed text-zinc-400">
         Plug in an NVIDIA Jetson or Raspberry Pi over USB and start deploying in seconds.{' '}
         <a
-          href="/wendy-for-mac"
+          href="/installation/wendy-agent-macos"
           className="text-orange-400 transition-colors hover:text-orange-300"
         >
           Wendy for macOS

@@ -5,6 +5,7 @@
     "wendyos-nvidia-jetson",
     "wendyos-raspberry-pi-5",
     "wendy-lite-esp32",
-    "wendy-agent-linux"
+    "wendy-agent-linux",
+    "wendy-agent-macos"
   ]
 }
