@@ -432,6 +432,12 @@ func (c *AppConfig) Validate() error {
 		}
 	}
 
+	if c.Frameworks != nil {
+		if err := validateROS2Config("frameworks.ros2", c.Frameworks.ROS2); err != nil {
+			return err
+		}
+	}
+
 	for name, svc := range c.Services {
 		if svc == nil {
 			return fmt.Errorf("services[%q]: must not be null", name)
@@ -452,6 +458,11 @@ func (c *AppConfig) Validate() error {
 		}
 		if err := validateEntitlements(svc.Entitlements, fmt.Sprintf("services[%q].entitlement", name)); err != nil {
 			return err
+		}
+		if svc.Frameworks != nil {
+			if err := validateROS2Config(fmt.Sprintf("services[%q].frameworks.ros2", name), svc.Frameworks.ROS2); err != nil {
+				return err
+			}
 		}
 	}
 

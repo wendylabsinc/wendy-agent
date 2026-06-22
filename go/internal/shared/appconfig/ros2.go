@@ -1,6 +1,7 @@
 package appconfig
 
 import (
+	"fmt"
 	"hash/fnv"
 	"strconv"
 	"strings"
@@ -43,6 +44,24 @@ var ros2RMWAliases = map[string]string{
 	"rmw_fastrtps_cpp":   "rmw_fastrtps_cpp",
 	"rmw_connextdds":     "rmw_connextdds",
 	"rmw_gurumdds_cpp":   "rmw_gurumdds_cpp",
+}
+
+// validateROS2Config rejects an out-of-range domainId or an unknown rmw so a
+// typo fails fast at config-parse / `wendy run` time instead of silently
+// launching a container with no ROS_DOMAIN_ID/RMW_IMPLEMENTATION isolation
+// (WDY-1701). prefix labels the source, e.g. "frameworks.ros2" or
+// `services["talker"].frameworks.ros2`.
+func validateROS2Config(prefix string, r *ROS2Config) error {
+	if r == nil {
+		return nil
+	}
+	if r.DomainID != nil && (*r.DomainID < ROS2DomainIDMin || *r.DomainID > ROS2DomainIDMax) {
+		return fmt.Errorf("%s.domainId must be between %d and %d, got %d", prefix, ROS2DomainIDMin, ROS2DomainIDMax, *r.DomainID)
+	}
+	if r.RMW != "" && ros2RMWAliases[strings.ToLower(r.RMW)] == "" {
+		return fmt.Errorf("%s.rmw %q is not a supported RMW implementation", prefix, r.RMW)
+	}
+	return nil
 }
 
 // IsValidRMWImplementation reports whether s is a full RMW implementation
