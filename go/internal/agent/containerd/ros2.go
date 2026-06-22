@@ -535,6 +535,91 @@ func (c *Client) teardownAllROS2SidecarsLocked(ctx context.Context) {
 	}
 }
 
+// isOrphanedSidecar reports whether a sidecar is orphaned. A sidecar is
+// orphaned when its anchor PID is not present in the live-task set, or when
+// the live task at that PID belongs to a different container (PID recycled).
+// liveTasks maps running task PID → container ID.
+// This is a pure function so it can be unit-tested without containerd.
+func isOrphanedSidecar(anchorID string, anchorPID uint32, liveTasks map[uint32]string) bool {
+	liveID, ok := liveTasks[anchorPID]
+	return !ok || liveID != anchorID
+}
+
+// ReapOrphanedROS2Sidecars deletes any ROS 2 CLI sidecar containers whose
+// anchor app task is no longer running. It is called once at agent boot after
+// the containerd client is ready, so sidecars orphaned by a prior agent crash
+// or ungraceful shutdown are cleaned up before new workloads start.
+//
+// A sidecar is only deleted when its anchor container ID + PID no longer match
+// a live running task. Sidecars with active ExecROS2 calls in flight are
+// skipped (consistent with teardownAllROS2SidecarsLocked).
+func (c *Client) ReapOrphanedROS2Sidecars(ctx context.Context) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	ctx = c.withNamespace(ctx)
+
+	// Build the live-task map: PID → container ID, for all running Wendy app
+	// containers. Sidecars carry labelKeyROS2Sidecar (not labelKeyAppVersion),
+	// so they are naturally excluded from this set.
+	liveTasks := make(map[uint32]string)
+	appCtrs, err := c.client.Containers(ctx, fmt.Sprintf("labels.%q", labelKeyAppVersion))
+	if err != nil {
+		return fmt.Errorf("listing app containers for sidecar reap: %w", err)
+	}
+	for _, ctr := range appCtrs {
+		task, terr := ctr.Task(ctx, nil)
+		if terr != nil {
+			continue
+		}
+		st, serr := task.Status(ctx)
+		if serr != nil || st.Status != containerd.Running {
+			continue
+		}
+		liveTasks[task.Pid()] = ctr.ID()
+	}
+
+	sidecars, err := c.listROS2Sidecars(ctx)
+	if err != nil {
+		return fmt.Errorf("listing ROS 2 sidecars for reap: %w", err)
+	}
+
+	for _, sc := range sidecars {
+		labels, lerr := sc.Labels(ctx)
+		if lerr != nil {
+			c.logger.Warn("ROS 2 sidecar reap: could not read labels, skipping",
+				zap.String("sidecar", sc.ID()), zap.Error(lerr))
+			continue
+		}
+		anchorID := labels[labelKeyROS2AnchorID]
+		anchorPIDStr := labels[labelKeyROS2AnchorPID]
+		anchorPID64, perr := strconv.ParseUint(anchorPIDStr, 10, 32)
+		if perr != nil {
+			c.logger.Warn("ROS 2 sidecar reap: invalid anchor PID label, treating as orphaned",
+				zap.String("sidecar", sc.ID()), zap.String("pid", anchorPIDStr))
+			// Fall through: isOrphanedSidecar with PID 0 will return true.
+		}
+		anchorPID := uint32(anchorPID64)
+
+		if !isOrphanedSidecar(anchorID, anchorPID, liveTasks) {
+			continue
+		}
+		if c.sidecarHasActiveExecsLocked(sc.ID()) {
+			c.logger.Info("ROS 2 sidecar reap: exec in flight, skipping",
+				zap.String("sidecar", sc.ID()))
+			continue
+		}
+		c.logger.Info("ROS 2 sidecar reap: deleting orphaned sidecar",
+			zap.String("sidecar", sc.ID()),
+			zap.String("anchor_id", anchorID),
+			zap.Uint32("anchor_pid", anchorPID))
+		if derr := c.deleteROS2Sidecar(ctx, sc); derr != nil {
+			c.logger.Warn("ROS 2 sidecar reap: delete failed",
+				zap.String("sidecar", sc.ID()), zap.Error(derr))
+		}
+	}
+	return nil
+}
+
 func (c *Client) deleteROS2Sidecar(ctx context.Context, container containerd.Container) error {
 	if task, err := container.Task(ctx, nil); err == nil {
 		_ = task.Kill(ctx, syscall.SIGKILL)

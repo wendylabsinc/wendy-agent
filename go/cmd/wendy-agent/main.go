@@ -266,6 +266,12 @@ func main() {
 		}()
 	}
 
+	if ctrdClient != nil {
+		if err := ctrdClient.ReapOrphanedROS2Sidecars(ctx); err != nil {
+			logger.Warn("ROS 2 sidecar reap on boot failed", zap.Error(err))
+		}
+	}
+
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
