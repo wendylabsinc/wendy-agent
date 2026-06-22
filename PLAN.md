@@ -113,6 +113,9 @@ well as `WDY`, so Release issues can live in the same project.
   `../companion-sdk`; the SDK is now cloned at
   `/Volumes/Projects/WendyLabs/wendy-companion-ios/.worktrees/companion-sdk`,
   and `xcodebuild -list -project "WendyOS Companion.xcodeproj"` succeeds.
+  Current Release signing settings include bundle ID `sh.wendy.Companion`,
+  development team `3YVC792H3S`, automatic signing, marketing version `1.0`,
+  and build number `1`.
 - Resume:
 
   ```sh
