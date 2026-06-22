@@ -36,7 +36,7 @@ The enrolled device is registered in Wendy Cloud under a human-readable **name**
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--name` | hostname (`.local` stripped) | Human-readable device name. Defaults to the device hostname when omitted; required when the device is reachable only by a bare IP address in a non-interactive environment. |
-| `--cloud-grpc` | `""` | Cloud / pki-core gRPC endpoint to use. Required when multiple auth sessions exist. |
+| `--cloud-grpc` | `""` | Cloud / pki-core gRPC endpoint to use. Overrides session selection; when omitted, the persisted default (set with `wendy auth use`) is used if available, otherwise an interactive picker appears. |
 
 ## Examples
 

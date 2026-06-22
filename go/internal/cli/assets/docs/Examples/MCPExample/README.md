@@ -46,6 +46,12 @@ Two entitlements are required:
 - **`network` (host mode)** — lets the agent reach the container's MCP port over loopback (`127.0.0.1:3000`).
 - **`mcp`** — tells the agent that this container runs an MCP server on port `3000`. The agent stores the port in the `sh.wendy/mcp.port` container label and exposes the container's tools through `wendy mcp serve`.
 
+## Authentication
+
+`wendy mcp serve` uses the auth session stored by `wendy auth login`. If multiple sessions are stored, MCP tools inherit whichever session is active — either the persisted default (set with `wendy auth use`) or a session selected via `cloud_grpc` in the tool call.
+
+**Multiple auth sessions:** When more than one Wendy Cloud session is stored, pass `cloud_grpc` in the tool call to select one explicitly, or run `wendy auth use` in your terminal to set a persistent default that MCP tools will use automatically.
+
 ## Running the example
 
 ```sh

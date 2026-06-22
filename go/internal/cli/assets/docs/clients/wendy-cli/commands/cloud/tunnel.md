@@ -36,7 +36,7 @@ When `--device` is omitted and multiple devices are online:
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--cloud-grpc` | `""` | Cloud gRPC endpoint. Required when multiple auth sessions exist. |
+| `--cloud-grpc` | `""` | Cloud gRPC endpoint. Overrides all session selection. When multiple sessions are stored and no default is set, an interactive terminal shows a session picker; a non-interactive environment errors. |
 | `--device` | `""` | Target a specific cloud device by **name** (case-insensitive exact match) or **numeric asset ID**. When omitted with multiple online devices, an interactive terminal shows the picker and a non-interactive environment errors with the available `id=name` pairs. |
 
 ## Examples

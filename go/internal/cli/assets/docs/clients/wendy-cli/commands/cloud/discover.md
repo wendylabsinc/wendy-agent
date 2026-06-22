@@ -73,7 +73,7 @@ The `id` field is the primary mechanism for addressing a device that was enrolle
 |------|---------|-------------|
 | `--all` | `false` | Include offline devices in the results. When omitted only devices with an active broker presence are shown. |
 | `--broker-url` | `$WENDY_BROKER_URL` (or derived from cloud endpoint) | Tunnel broker `host:port`. When empty the CLI derives the address from the cloud gRPC endpoint. |
-| `--cloud-grpc` | `""` | Cloud gRPC endpoint. Required when multiple auth sessions exist and the correct endpoint is ambiguous. |
+| `--cloud-grpc` | `""` | Cloud gRPC endpoint. Overrides session selection. When multiple sessions are stored and no default is set, an interactive terminal shows a session picker; a non-interactive environment errors. |
 
 ## Examples
 
