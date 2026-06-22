@@ -109,7 +109,7 @@ type RunConfig struct {
 // ROS2Config holds ROS 2 runtime configuration for a container.
 type ROS2Config struct {
 	// DomainID is the explicit ROS_DOMAIN_ID. When nil, a stable hash of
-	// the appId in the range 0–101 is injected instead (WDY-884).
+	// the appId in the range 0–232 is injected instead (WDY-884).
 	DomainID *int `json:"domainId,omitempty"`
 	// RMW selects the ROS middleware implementation. Accepts short names
 	// ("cyclonedds", "fastrtps") or full identifiers ("rmw_cyclonedds_cpp").

@@ -21,7 +21,7 @@ func TestROS2Config_ResolvedDomainID(t *testing.T) {
 	if got := (&ROS2Config{DomainID: &explicit}).ResolvedDomainID("app"); got != 42 {
 		t.Errorf("explicit domain ID = %d, want 42", got)
 	}
-	invalid := 102
+	invalid := 233
 	if got := (&ROS2Config{DomainID: &invalid}).ResolvedDomainID("app"); got != -1 {
 		t.Errorf("out-of-range domain ID = %d, want -1", got)
 	}

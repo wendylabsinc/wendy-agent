@@ -20,13 +20,13 @@ const ROS2DefaultDistro = "humble"
 // specify one.
 const ROS2DefaultRMW = "rmw_cyclonedds_cpp"
 
-// ROS2DomainIDMin and ROS2DomainIDMax bound valid ROS_DOMAIN_ID values.
-// The ROS 2 spec defines 0–101 as the conservative portable range; some
-// platforms allow up to 232 but 101 covers all standard deployments
+// ROS2DomainIDMin and ROS2DomainIDMax bound valid ROS_DOMAIN_ID values to the
+// full ROS 2 range (0–232). RMW implementations map the domain ID to UDP ports;
+// 232 is the maximum the DDS port-mapping scheme supports
 // (SOC2-CC6, NIST-SI-10).
 const (
 	ROS2DomainIDMin = 0
-	ROS2DomainIDMax = 101
+	ROS2DomainIDMax = 232
 )
 
 // ros2RMWAliases maps wendy.json rmw values to full RMW implementation
@@ -71,7 +71,7 @@ func ROS2AutoDomainID(appID string) int {
 
 // ResolvedDomainID returns the effective ROS_DOMAIN_ID: the explicit
 // domainId when set, otherwise a stable hash of appID. It returns -1 when an
-// explicit domainId is outside the valid 0–101 range.
+// explicit domainId is outside the valid 0–232 range.
 func (r *ROS2Config) ResolvedDomainID(appID string) int {
 	if r.DomainID == nil {
 		return ROS2AutoDomainID(appID)

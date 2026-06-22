@@ -784,8 +784,8 @@ func TestBuildROS2Env_AutoDomainID(t *testing.T) {
 		t.Fatalf("expected ROS_DOMAIN_ID in env, got %v", got)
 	}
 	id, err := strconv.Atoi(val)
-	if err != nil || id < 0 || id > 101 {
-		t.Errorf("auto domain ID = %q, want integer in [0,101]", val)
+	if err != nil || id < 0 || id > 232 {
+		t.Errorf("auto domain ID = %q, want integer in [0,232]", val)
 	}
 	// Stable: a second call for the same appId must produce the same ID.
 	again := buildROS2Env(cfg, "com.example.app", "")
