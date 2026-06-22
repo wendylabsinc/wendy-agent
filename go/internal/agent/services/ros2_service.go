@@ -457,7 +457,7 @@ func (s *ROS2Service) EchoTopic(req *agentpbv2.EchoROS2TopicRequest, stream grpc
 			DomainID:    sc.domainID,
 			SidecarName: sc.name,
 			Args:        []string{"topic", "echo", req.GetTopic()},
-		}, pw, pw)
+		}, pw, io.Discard)
 		pw.CloseWithError(execErr)
 		execDone <- execErr
 	}()
@@ -522,7 +522,7 @@ func (s *ROS2Service) MonitorHz(req *agentpbv2.MonitorROS2HzRequest, stream grpc
 			DomainID:    sc.domainID,
 			SidecarName: sc.name,
 			Args:        []string{"topic", "hz", req.GetTopic()},
-		}, pw, pw)
+		}, pw, io.Discard)
 		pw.CloseWithError(execErr)
 		execDone <- execErr
 	}()
