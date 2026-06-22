@@ -1122,6 +1122,10 @@ func stripWendyExecGlobals(args []string) (device string, jsonFlag bool, forward
 	forwarded = make([]string, 0, len(args))
 	for i := 0; i < len(args); i++ {
 		switch {
+		case args[i] == "--":
+			// Honor the -- escape: forward the rest verbatim
+			forwarded = append(forwarded, args[i:]...)
+			return
 		case strings.HasPrefix(args[i], "--device="):
 			device = strings.TrimPrefix(args[i], "--device=")
 		case args[i] == "--device":

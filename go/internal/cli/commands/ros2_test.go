@@ -461,6 +461,12 @@ func TestROS2ExecDeviceFlagNotForwarded(t *testing.T) {
 			wantDevice: "",
 			wantFwd:    []string{"node", "list", "--device"},
 		},
+		{
+			name:       "double dash escapes remaining args verbatim",
+			args:       []string{"run", "mypkg", "--", "--device", "/dev/ttyUSB0"},
+			wantDevice: "",
+			wantFwd:    []string{"run", "mypkg", "--", "--device", "/dev/ttyUSB0"},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
