@@ -15,17 +15,13 @@ This page describes the current security posture of Wendy and WendyOS and what's
 
 | Area | Status |
 |------|--------|
-| CLI-to-Agent communication | Authenticated |
+| CLI-to-Agent communication | mTLS Authenticated |
 | Data in transit | mTLS encrypted with Post-Quantum Cryptography |
 | Cloud connectivity | Zero-trust — PKI authentication required |
-| Device identity / Enrollment | Nearing launch |
+| Device identity / Enrollment | Available |
 | Access control | Nearing launch |
 
 ## Security Roadmap
-
-### Secure Device Identity and Enrollment
-
-Devices go through a secure onboarding process with cryptographic identity. Once launched, this enables trusted enrollment into fleets and prevents unauthorized devices from joining your infrastructure.
 
 ### Project-Scoped Access Control
 
