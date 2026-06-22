@@ -18,6 +18,7 @@ type Config struct {
 	// default; resolution then falls back to an interactive picker or an error.
 	DefaultCloudGRPC   string           `json:"defaultCloudGRPC,omitempty"`
 	LastCLIUpdateCheck string           `json:"lastCLIUpdateCheck,omitempty"` // RFC3339
+	AvailableCLIUpdate string           `json:"availableCLIUpdate,omitempty"` // tag of a newer release, if any
 	// LastMCPSetupVersion records the CLI version that last ran `wendy mcp
 	// setup`. It lets the root command detect when an upgrade should refresh
 	// the MCP server config and bundled skills. Empty means the user has never

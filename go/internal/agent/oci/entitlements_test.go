@@ -462,7 +462,7 @@ func TestApplyEntitlements_Bluetooth_NoProxy(t *testing.T) {
 		},
 	}
 
-	if err := ApplyEntitlements(spec, cfg, ApplyOptions{DBusProxyAvailable: false}); err != nil {
+	if err := ApplyEntitlements(spec, cfg, ApplyOptions{DBusProxySocketDir: ""}); err != nil {
 		t.Fatalf("ApplyEntitlements() error = %v", err)
 	}
 
@@ -490,7 +490,12 @@ func TestApplyEntitlements_Bluetooth_Proxy(t *testing.T) {
 		},
 	}
 
-	if err := ApplyEntitlements(spec, cfg, ApplyOptions{DBusProxyAvailable: true}); err != nil {
+	// The caller (containerd client) passes the exact directory the proxy
+	// created, keyed by container name. Here a multi-service container name is
+	// used to guard against the regression where the mount source was rebuilt
+	// from the bare app ID and dropped the service suffix (WDY-1688).
+	const proxyDir = "/run/wendy/dbus-proxy/bt-app_btscan"
+	if err := ApplyEntitlements(spec, cfg, ApplyOptions{DBusProxySocketDir: proxyDir}); err != nil {
 		t.Fatalf("ApplyEntitlements() error = %v", err)
 	}
 
@@ -504,12 +509,11 @@ func TestApplyEntitlements_Bluetooth_Proxy(t *testing.T) {
 		t.Error("bluetooth proxy should not add /run/dbus mount")
 	}
 
-	// Verify source points to proxy directory.
+	// Verify source points to the exact directory the caller supplied.
 	for _, m := range spec.Mounts {
 		if m.Destination == "/var/run/dbus" {
-			expected := "/run/wendy/dbus-proxy/bt-app"
-			if m.Source != expected {
-				t.Errorf("proxy /var/run/dbus source = %q, want %q", m.Source, expected)
+			if m.Source != proxyDir {
+				t.Errorf("proxy /var/run/dbus source = %q, want %q", m.Source, proxyDir)
 			}
 		}
 	}
