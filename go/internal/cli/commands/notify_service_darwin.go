@@ -100,7 +100,10 @@ func uninstallNotifyService() error {
 	cmd := execCommand("launchctl", "unload", plistPath)
 	_ = cmd.Run() // ignore: may already be stopped
 
-	return os.Remove(plistPath)
+	if err := os.Remove(plistPath); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
 }
 
 func notifyServiceStatus() (string, error) {

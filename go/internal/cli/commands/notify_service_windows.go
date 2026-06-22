@@ -22,6 +22,9 @@ func notifyLogPath() (string, error) {
 
 func installNotifyService(cloudGRPC string) error {
 	bin := wendyBinaryPath()
+	if strings.Contains(bin, " ") {
+		bin = `"` + bin + `"`
+	}
 	action := fmt.Sprintf(`%s notify __daemon --cloud-grpc %s`, bin, cloudGRPC)
 
 	cmd := execCommand("schtasks",
@@ -39,7 +42,12 @@ func installNotifyService(cloudGRPC string) error {
 
 func uninstallNotifyService() error {
 	cmd := execCommand("schtasks", "/Delete", "/TN", notifyTaskName, "/F")
-	if out, err := cmd.CombinedOutput(); err != nil {
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		outLower := strings.ToLower(string(out))
+		if strings.Contains(outLower, "cannot find") || strings.Contains(outLower, "does not exist") {
+			return nil
+		}
 		return fmt.Errorf("schtasks /Delete: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	return nil

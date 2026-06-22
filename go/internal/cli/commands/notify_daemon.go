@@ -48,10 +48,12 @@ func defaultNotifyDaemonDeps() notifyDaemonDeps {
 		},
 		sendNotif: sendOSNotification,
 		sleep: func(ctx context.Context, d time.Duration) error {
+			t := time.NewTimer(d)
+			defer t.Stop()
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
-			case <-time.After(d):
+			case <-t.C:
 				return nil
 			}
 		},
@@ -111,6 +113,10 @@ func runNotifyStream(ctx context.Context, auth *config.AuthConfig, state notifyS
 
 	ep := auth.CloudGRPC
 	epState := state[ep]
+
+	if len(auth.Certificates) == 0 {
+		return fmt.Errorf("auth entry has no certificates; re-run 'wendy auth login'")
+	}
 
 	req := &cloudpb.SubscribeNotificationsRequest{
 		OrganizationId: int32(auth.Certificates[0].OrganizationID),

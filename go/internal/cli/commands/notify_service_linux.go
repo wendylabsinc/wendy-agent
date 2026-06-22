@@ -85,7 +85,10 @@ func uninstallNotifyService() error {
 	cmd := execCommand("systemctl", "--user", "disable", "--now", "wendy-notify")
 	_ = cmd.Run() // ignore: may already be stopped
 
-	return os.Remove(unitPath)
+	if err := os.Remove(unitPath); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
 }
 
 func notifyServiceStatus() (string, error) {
