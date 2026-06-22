@@ -1089,18 +1089,23 @@ func extractROS2BagArchive(r io.Reader, dest string) error {
 // peels those flags out so they can select the target device without being
 // forwarded verbatim to ros2 (which would reject them as unknown flags).
 //
-// Only the exact forms --device <value> and --json are recognised; anything
-// else is left in the forwarded slice unchanged (WDY-1553 passthrough).
+// Only the exact forms --device <value>, --device=<value>, --json, and
+// --json=<ignored> are recognised; anything else is left in the forwarded
+// slice unchanged (WDY-1553 passthrough).
 func stripWendyExecGlobals(args []string) (device string, jsonFlag bool, forwarded []string) {
 	forwarded = make([]string, 0, len(args))
 	for i := 0; i < len(args); i++ {
-		switch args[i] {
-		case "--device":
+		switch {
+		case strings.HasPrefix(args[i], "--device="):
+			device = strings.TrimPrefix(args[i], "--device=")
+		case args[i] == "--device":
 			if i+1 < len(args) {
 				device = args[i+1]
 				i++ // consume the value
+			} else {
+				forwarded = append(forwarded, args[i]) // no value — don't silently drop
 			}
-		case "--json":
+		case args[i] == "--json" || strings.HasPrefix(args[i], "--json="):
 			jsonFlag = true
 		default:
 			forwarded = append(forwarded, args[i])

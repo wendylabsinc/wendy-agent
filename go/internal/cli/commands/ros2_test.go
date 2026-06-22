@@ -424,8 +424,14 @@ func TestROS2ExecDeviceFlagNotForwarded(t *testing.T) {
 		wantFwd    []string
 	}{
 		{
-			name:       "device after command",
+			name:       "device after command (space form)",
 			args:       []string{"node", "info", "/talker", "--device", "host"},
+			wantDevice: "host",
+			wantFwd:    []string{"node", "info", "/talker"},
+		},
+		{
+			name:       "device after command (equals form)",
+			args:       []string{"node", "info", "/talker", "--device=host"},
 			wantDevice: "host",
 			wantFwd:    []string{"node", "info", "/talker"},
 		},
@@ -446,6 +452,12 @@ func TestROS2ExecDeviceFlagNotForwarded(t *testing.T) {
 			args:       []string{"topic", "echo", "/chatter", "--once", "--device", "edge.local"},
 			wantDevice: "edge.local",
 			wantFwd:    []string{"topic", "echo", "/chatter", "--once"},
+		},
+		{
+			name:       "trailing bare --device (no value) not dropped",
+			args:       []string{"node", "list", "--device"},
+			wantDevice: "",
+			wantFwd:    []string{"node", "list", "--device"},
 		},
 	}
 	for _, tc := range cases {
