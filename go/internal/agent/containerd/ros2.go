@@ -202,6 +202,11 @@ func (c *Client) EnsureROS2Sidecars(ctx context.Context) ([]services.ROS2Sidecar
 	if existing, lerr := c.listROS2Sidecars(ctx); lerr == nil {
 		for _, ctr := range existing {
 			if _, want := anchorByName[ctr.ID()]; !want {
+				if c.sidecarHasActiveExecsLocked(ctr.ID()) {
+					c.logger.Info("Deferring stale ROS 2 sidecar teardown: exec in flight",
+						zap.String("sidecar", ctr.ID()))
+					continue
+				}
 				_ = c.deleteROS2Sidecar(ctx, ctr)
 			}
 		}
@@ -252,6 +257,11 @@ func (c *Client) ensureOneROS2Sidecar(ctx context.Context, anchor *services.ROS2
 		}
 		c.logger.Info("Recreating stale ROS 2 sidecar",
 			zap.String("sidecar", name), zap.String("anchor", anchor.ContainerID), zap.Bool("anchor_alive", anchorAlive))
+		if c.sidecarHasActiveExecsLocked(name) {
+			c.logger.Info("Deferring stale ROS 2 sidecar recreation: exec in flight",
+				zap.String("sidecar", name))
+			return sidecar, nil
+		}
 		if derr := c.deleteROS2Sidecar(ctx, existing); derr != nil {
 			return services.ROS2Sidecar{}, fmt.Errorf("removing stale ROS 2 sidecar: %w", derr)
 		}
@@ -507,14 +517,20 @@ func (c *Client) StopROS2Sidecar(ctx context.Context) error {
 	return nil
 }
 
-// teardownAllROS2SidecarsLocked removes every sidecar container. Caller must
-// hold c.mu and pass a namespaced ctx.
+// teardownAllROS2SidecarsLocked removes every sidecar container that has no
+// active ExecROS2 calls. Sidecars with in-flight execs are skipped (logged).
+// Caller must hold c.mu and pass a namespaced ctx.
 func (c *Client) teardownAllROS2SidecarsLocked(ctx context.Context) {
 	sidecars, err := c.listROS2Sidecars(ctx)
 	if err != nil {
 		return
 	}
 	for _, ctr := range sidecars {
+		if c.sidecarHasActiveExecsLocked(ctr.ID()) {
+			c.logger.Info("Deferring ROS 2 sidecar teardown: exec in flight",
+				zap.String("sidecar", ctr.ID()))
+			continue
+		}
 		_ = c.deleteROS2Sidecar(ctx, ctr)
 	}
 }
@@ -528,6 +544,49 @@ func (c *Client) deleteROS2Sidecar(ctx context.Context, container containerd.Con
 		return err
 	}
 	return nil
+}
+
+// Locking order for ros2ExecRefs (WDY-1702 H5):
+//
+//   - acquireSidecarExec and releaseSidecarExec each take c.mu briefly only
+//     for the map mutation, then immediately release it.
+//   - ExecROS2 calls acquire/release around task.Exec+proc.Wait but does NOT
+//     hold c.mu for the full duration of the exec. This is intentional:
+//     EnsureROS2Sidecars and StopROS2Sidecar hold c.mu for their entire body,
+//     so if ExecROS2 also held c.mu across a long exec the two would serialize
+//     and risk deadlock.
+//   - Teardown callers (EnsureROS2Sidecars, teardownAllROS2SidecarsLocked)
+//     already hold c.mu when they need to test the refcount, so they use the
+//     sidecarHasActiveExecsLocked variant which skips the redundant lock.
+
+// acquireSidecarExec increments the active-exec refcount for the named sidecar.
+// It takes c.mu briefly; callers must NOT hold c.mu.
+func (c *Client) acquireSidecarExec(name string) {
+	c.mu.Lock()
+	if c.ros2ExecRefs == nil {
+		c.ros2ExecRefs = make(map[string]int)
+	}
+	c.ros2ExecRefs[name]++
+	c.mu.Unlock()
+}
+
+// releaseSidecarExec decrements the active-exec refcount for the named sidecar.
+// It takes c.mu briefly; callers must NOT hold c.mu.
+func (c *Client) releaseSidecarExec(name string) {
+	c.mu.Lock()
+	if c.ros2ExecRefs[name] > 0 {
+		c.ros2ExecRefs[name]--
+	}
+	if c.ros2ExecRefs[name] == 0 {
+		delete(c.ros2ExecRefs, name)
+	}
+	c.mu.Unlock()
+}
+
+// sidecarHasActiveExecsLocked reports whether name has any active ExecROS2
+// calls in flight. Caller must hold c.mu.
+func (c *Client) sidecarHasActiveExecsLocked(name string) bool {
+	return c.ros2ExecRefs[name] > 0
 }
 
 // ExecROS2 runs `ros2 <args...>` inside the CLI sidecar, streaming stdout and
@@ -596,6 +655,13 @@ func (c *Client) ExecROS2(ctx context.Context, opts services.ROS2ExecOptions, st
 			pspec.Env = append(pspec.Env, "CYCLONEDDS_URI="+cycloneDDSInlineConfig)
 		}
 	}
+
+	// Increment the per-sidecar exec refcount so that teardown (EnsureROS2Sidecars /
+	// StopROS2Sidecar) defers deletion while this exec is in flight. The acquire and
+	// release each take c.mu only briefly; c.mu is NOT held across task.Exec or
+	// proc.Wait (see locking-order comment above deleteROS2Sidecar).
+	c.acquireSidecarExec(name)
+	defer c.releaseSidecarExec(name)
 
 	execID := fmt.Sprintf("ros2-exec-%d-%d", time.Now().UnixNano(), ros2ExecCounter.Add(1))
 	proc, err := task.Exec(nctx, execID, pspec, cio.NewCreator(cio.WithStreams(nil, stdout, stderr)))

@@ -79,6 +79,10 @@ type Client struct {
 	// (SOC2-CC6, NIST-AC-3, ISO27001-A.8).
 	appStopping map[string]bool
 
+	// ros2ExecRefs counts active ExecROS2 calls per sidecar name. Protected by mu.
+	// Teardown paths check this before SIGKILLing a sidecar (WDY-1702 H5).
+	ros2ExecRefs map[string]int
+
 	// chunkIndex maps CDC chunk hashes to byte ranges in uncompressed layer
 	// blobs (Model B). staging holds chunks received this session until the
 	// following AssembleLayerFromChunks consumes them.
@@ -112,6 +116,7 @@ func NewClient(logger *zap.Logger, address string, proxyMgr *dbusproxy.Manager) 
 		appIsolation: make(map[string]string),
 		serviceIPs:   make(map[string]map[string]string),
 		appStopping:  make(map[string]bool),
+		ros2ExecRefs: make(map[string]int),
 		chunkIndex:   idx,
 		staging:      newStaging(defaultChunkStagingDir),
 	}, nil
