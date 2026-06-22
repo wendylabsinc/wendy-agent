@@ -3,8 +3,6 @@ title: Security
 description: Current security status and roadmap for Wendy and WendyOS
 ---
 
-import { ShieldAlert, ShieldCheck } from 'lucide-react';
-
 ## Security Overview
 
 This page describes the current security posture of Wendy and WendyOS and what's coming next.
@@ -22,23 +20,6 @@ This page describes the current security posture of Wendy and WendyOS and what's
 | Cloud connectivity | Zero-trust — PKI authentication required |
 | Device identity / Enrollment | Nearing launch |
 | Access control | Nearing launch |
-
-### Safe Usage Guidelines
-
-<Cards>
-  <Card icon={<ShieldCheck />} title="Recommended">
-    Private networks, home labs, classrooms, hackathons, development desks, and any environment where all CLI users are trusted.
-  </Card>
-  <Card icon={<ShieldAlert />} title="Not Recommended">
-    Public or shared networks, production deployments, sensitive data or workloads, and internet-facing devices — until access control ships.
-  </Card>
-</Cards>
-
-**General recommendations:**
-
-- Run Wendy devices on a private or isolated network
-- Do not expose wendy-agent directly to the internet
-- Do not deploy applications that handle credentials, personal data, or sensitive information before access control is available
 
 ## Security Roadmap
 
