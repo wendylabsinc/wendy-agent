@@ -1091,18 +1091,23 @@ type execRecvStream interface {
 //   - the last ExitCode frame reports a non-zero code.
 //
 // It never early-returns on a non-zero code — trailing output is drained first.
-func drainExecStream(stream execRecvStream, args []string, stdout, stderr io.Writer) error {
+// If ctx is cancelled (e.g. ctrl-c) and Recv returns any error, drainExecStream
+// returns nil — the same clean-stop behaviour as EchoTopic and MonitorHz.
+func drainExecStream(ctx context.Context, stream execRecvStream, args []string, stdout, stderr io.Writer) error {
 	var (
 		sawExitFrame bool
 		lastCode     int32
 	)
 	for {
-		msg, err := stream.Recv()
-		if err != nil {
-			if err == io.EOF {
-				break
+		msg, rerr := stream.Recv()
+		if rerr != nil {
+			if ctx.Err() != nil {
+				return nil // user cancelled (ctrl-c) — clean stop, like echo/hz
 			}
-			return ros2RPCError(err)
+			if rerr == io.EOF {
+				break // normal end — evaluate the exit-frame contract below
+			}
+			return ros2RPCError(rerr)
 		}
 		if len(msg.GetStdout()) > 0 {
 			stdout.Write(msg.GetStdout())
@@ -1155,7 +1160,7 @@ the ros2 command; use -- to force the rest of the line through unparsed.`,
 			if err != nil {
 				return ros2RPCError(err)
 			}
-			return drainExecStream(stream, args, os.Stdout, os.Stderr)
+			return drainExecStream(ctx, stream, args, os.Stdout, os.Stderr)
 		},
 	}
 	ros2DomainFlag(cmd, &domain)

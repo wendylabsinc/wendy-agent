@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -299,7 +300,7 @@ func TestDrainExecStream_ExitZero(t *testing.T) {
 		},
 	}
 	var stdout, stderr bytes.Buffer
-	if err := drainExecStream(stream, []string{"node", "list"}, &stdout, &stderr); err != nil {
+	if err := drainExecStream(context.Background(), stream, []string{"node", "list"}, &stdout, &stderr); err != nil {
 		t.Errorf("expected nil, got %v", err)
 	}
 }
@@ -312,7 +313,7 @@ func TestDrainExecStream_ExitNonZero(t *testing.T) {
 		},
 	}
 	var stdout, stderr bytes.Buffer
-	err := drainExecStream(stream, []string{"node", "list"}, &stdout, &stderr)
+	err := drainExecStream(context.Background(), stream, []string{"node", "list"}, &stdout, &stderr)
 	if err == nil {
 		t.Fatal("expected error for exit code 2, got nil")
 	}
@@ -330,7 +331,7 @@ func TestDrainExecStream_NoExitFrame(t *testing.T) {
 		},
 	}
 	var stdout, stderr bytes.Buffer
-	err := drainExecStream(stream, []string{"topic", "echo", "/chatter"}, &stdout, &stderr)
+	err := drainExecStream(context.Background(), stream, []string{"topic", "echo", "/chatter"}, &stdout, &stderr)
 	if err == nil {
 		t.Fatal("expected error when no exit-code frame received, got nil")
 	}
@@ -350,7 +351,7 @@ func TestDrainExecStream_OutputBeforeExit(t *testing.T) {
 		},
 	}
 	var stdout, stderr bytes.Buffer
-	if err := drainExecStream(stream, []string{"node", "list"}, &stdout, &stderr); err != nil {
+	if err := drainExecStream(context.Background(), stream, []string{"node", "list"}, &stdout, &stderr); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if got := stdout.String(); got != "out1out2" {
@@ -373,7 +374,7 @@ func TestDrainExecStream_DrainsAfterNonZero(t *testing.T) {
 		},
 	}
 	var stdout, stderr bytes.Buffer
-	err := drainExecStream(stream, []string{"node", "list"}, &stdout, &stderr)
+	err := drainExecStream(context.Background(), stream, []string{"node", "list"}, &stdout, &stderr)
 	if err == nil {
 		t.Fatal("expected error for exit code 1, got nil")
 	}
@@ -381,6 +382,29 @@ func TestDrainExecStream_DrainsAfterNonZero(t *testing.T) {
 		t.Errorf("stdout = %q, want %q — output was dropped before drain", got, "before exit")
 	}
 }
+
+// TestDrainExecStream_ContextCancelledReturnsNil: ctrl-c cancels the ctx; Recv
+// returns a gRPC Canceled error (or any error) while ctx.Err() != nil.
+// drainExecStream must return nil — NOT an error — even though no exit frame
+// was seen.  This locks the ctrl-c clean-stop behaviour (WDY-1705 regression).
+func TestDrainExecStream_ContextCancelledReturnsNil(t *testing.T) {
+	cancelErr := fmt.Errorf("rpc error: code = Canceled desc = context canceled")
+	// errOnFirstRecv is a minimal execRecvStream that always returns an error.
+	// This simulates gRPC returning Canceled when the context is cancelled.
+	stream := &errOnFirstRecv{err: cancelErr}
+	// Pre-cancel the context, exactly as signal.NotifyContext does on ctrl-c.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var stdout, stderr bytes.Buffer
+	if err := drainExecStream(ctx, stream, []string{"topic", "echo", "/chatter"}, &stdout, &stderr); err != nil {
+		t.Errorf("drainExecStream with cancelled ctx returned %v, want nil (ctrl-c must be a clean stop)", err)
+	}
+}
+
+// errOnFirstRecv is an execRecvStream that returns a fixed error on every Recv.
+type errOnFirstRecv struct{ err error }
+
+func (e *errOnFirstRecv) Recv() (*agentpbv2.ROS2ExecOutput, error) { return nil, e.err }
 
 // TestROS2ExecForwardsFlags guards WDY-1553: the raw escape hatch must forward
 // --flags meant for ros2 verbatim instead of rejecting them as unknown flags,
