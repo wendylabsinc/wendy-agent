@@ -842,6 +842,102 @@ func newROS2BagListCmd() *cobra.Command {
 	}
 }
 
+// bagRecvStream is the minimal interface consumed by downloadAndExtractBag,
+// satisfied by the gRPC grpc.ServerStreamingClient[agentpbv2.ROS2BagChunk]
+// returned by client.DownloadBag.
+type bagRecvStream interface {
+	Recv() (*agentpbv2.ROS2BagChunk, error)
+}
+
+// chunkResult carries the result of a single stream.Recv call.
+type chunkResult struct {
+	chunk *agentpbv2.ROS2BagChunk
+	err   error
+}
+
+// downloadAndExtractBag pumps chunks from stream into a pipe, extracts the
+// resulting tar archive to a temporary directory inside dest, then atomically
+// renames it into place. If extraction fails the pump goroutine is unblocked
+// via pr.CloseWithError and the context cancellation, and the temporary
+// directory is removed.
+func downloadAndExtractBag(ctx context.Context, stream bagRecvStream, dest string) error {
+	// Use a child context so we can signal the pump goroutine on extract error.
+	dlCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	pr, pw := io.Pipe()
+
+	go func() {
+		for {
+			// Run Recv in its own goroutine so we can also select on dlCtx.Done,
+			// allowing the extract-error path to unblock a streaming Recv call that
+			// may not itself inspect the parent context (e.g. in tests or when the
+			// underlying transport is slow to react to cancellation).
+			recv := make(chan chunkResult, 1)
+			go func() {
+				chunk, err := stream.Recv()
+				recv <- chunkResult{chunk, err}
+			}()
+
+			select {
+			case <-dlCtx.Done():
+				pw.CloseWithError(dlCtx.Err())
+				return
+			case r := <-recv:
+				if r.err == io.EOF {
+					pw.Close()
+					return
+				}
+				if r.err != nil {
+					pw.CloseWithError(r.err)
+					return
+				}
+				if _, werr := pw.Write(r.chunk.GetData()); werr != nil {
+					pw.CloseWithError(werr)
+					return
+				}
+			}
+		}
+	}()
+
+	// Extract to a temp directory inside dest so os.Rename is on the same FS.
+	tmpDir, err := os.MkdirTemp(dest, ".bag-download-*")
+	if err != nil {
+		pr.CloseWithError(err)
+		cancel()
+		return err
+	}
+
+	if err := extractROS2BagArchive(pr, tmpDir); err != nil {
+		// Unblock the pump goroutine and clean up the partial temp dir.
+		pr.CloseWithError(err)
+		cancel()
+		_ = os.RemoveAll(tmpDir)
+		return err
+	}
+
+	// Find the single top-level entry (bag directory) written by the extract.
+	entries, err := os.ReadDir(tmpDir)
+	if err != nil {
+		_ = os.RemoveAll(tmpDir)
+		return fmt.Errorf("reading temp extract dir: %w", err)
+	}
+	if len(entries) != 1 {
+		_ = os.RemoveAll(tmpDir)
+		return fmt.Errorf("bag archive must contain exactly one top-level directory, got %d entries", len(entries))
+	}
+	bagName := entries[0].Name()
+	finalPath := filepath.Join(dest, bagName)
+
+	// Atomic rename: tmpDir/bagName → dest/bagName.
+	if err := os.Rename(filepath.Join(tmpDir, bagName), finalPath); err != nil {
+		_ = os.RemoveAll(tmpDir)
+		return fmt.Errorf("renaming bag into place: %w", err)
+	}
+	_ = os.Remove(tmpDir) // remove now-empty temp wrapper dir; ignore error
+	return nil
+}
+
 func newROS2BagDownloadCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "download [name] [dest]",
@@ -877,31 +973,15 @@ interactively.`,
 				}
 			}
 
-			stream, err := client.client.DownloadBag(cmd.Context(), &agentpbv2.DownloadROS2BagRequest{Name: name})
+			dlCtx, cancel := context.WithCancel(cmd.Context())
+			defer cancel()
+
+			stream, err := client.client.DownloadBag(dlCtx, &agentpbv2.DownloadROS2BagRequest{Name: name})
 			if err != nil {
 				return ros2RPCError(err)
 			}
 
-			pr, pw := io.Pipe()
-			go func() {
-				for {
-					chunk, rerr := stream.Recv()
-					if rerr == io.EOF {
-						pw.Close()
-						return
-					}
-					if rerr != nil {
-						pw.CloseWithError(ros2RPCError(rerr))
-						return
-					}
-					if _, werr := pw.Write(chunk.GetData()); werr != nil {
-						pw.CloseWithError(werr)
-						return
-					}
-				}
-			}()
-
-			if err := extractROS2BagArchive(pr, dest); err != nil {
+			if err := downloadAndExtractBag(dlCtx, stream, dest); err != nil {
 				return err
 			}
 			cliSuccess("Downloaded bag %q to %s", name, filepath.Join(dest, name))
