@@ -15,6 +15,8 @@ import (
 	"time"
 
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 func testROS2Graph() *agentpbv2.GetROS2GraphResponse {
@@ -500,5 +502,70 @@ func TestROS2ExecForwardsFlags(t *testing.T) {
 	}
 	if got, want := cmd.Flags().Args(), []string{"topic", "echo", "--once"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("forwarded args = %v, want %v", got, want)
+	}
+}
+
+// ── ros2RPCError regression tests (WDY-1708) ───────────────────────────────
+//
+// These tests lock the exit-code contract: hard CLI failures must propagate a
+// non-nil error so the entrypoint can call os.Exit(1). The "app image does not
+// include the ros2 CLI" FailedPrecondition is the canonical hard-failure path
+// reported in WDY-1708.
+
+// TestROS2RPCError_FailedPreconditionIsNonNil guards against any future change
+// that silently swallows FailedPrecondition errors. A non-nil return is required
+// so RunE → cobra → main.go → os.Exit(1) fires correctly (WDY-1708 regression).
+func TestROS2RPCError_FailedPreconditionIsNonNil(t *testing.T) {
+	// Simulate "app image does not include the ros2 CLI" coming from the agent.
+	agentErr := status.Error(codes.FailedPrecondition,
+		`ROS 2 app image "myapp:latest" runs rmw_fastrtps_cpp but does not include the ros2 CLI, `+
+			`so 'wendy device ros2' cannot inspect it; install the CLI in the app image`)
+
+	got := ros2RPCError(agentErr)
+	if got == nil {
+		t.Fatal("ros2RPCError(FailedPrecondition) = nil, want non-nil error (WDY-1708: must produce non-zero exit)")
+	}
+	// The message from the agent must be preserved so the user sees it.
+	if !strings.Contains(got.Error(), "does not include the ros2 CLI") {
+		t.Errorf("ros2RPCError message = %q; should preserve the agent's description", got.Error())
+	}
+}
+
+// TestROS2RPCError_UnimplementedIsNonNil ensures an agent that is too old to
+// support ROS 2 inspection still causes a non-zero exit.
+func TestROS2RPCError_UnimplementedIsNonNil(t *testing.T) {
+	agentErr := status.Error(codes.Unimplemented, "unknown service agentpb.v2.ROS2Service")
+
+	got := ros2RPCError(agentErr)
+	if got == nil {
+		t.Fatal("ros2RPCError(Unimplemented) = nil, want non-nil error (WDY-1708: must produce non-zero exit)")
+	}
+}
+
+// TestROS2RPCError_OtherGRPCCodeIsNonNil verifies that transport errors
+// (Unavailable, Internal, etc.) are not swallowed.
+func TestROS2RPCError_OtherGRPCCodeIsNonNil(t *testing.T) {
+	for _, code := range []codes.Code{
+		codes.Unavailable,
+		codes.Internal,
+		codes.DeadlineExceeded,
+		codes.Unknown,
+	} {
+		err := ros2RPCError(status.Error(code, "some transport error"))
+		if err == nil {
+			t.Errorf("ros2RPCError(%v) = nil, want non-nil (WDY-1708)", code)
+		}
+	}
+}
+
+// TestROS2RPCError_PlainErrorPassesThrough verifies that a non-gRPC error is
+// returned as-is (non-nil).
+func TestROS2RPCError_PlainErrorPassesThrough(t *testing.T) {
+	plain := errors.New("connection refused")
+	if got := ros2RPCError(plain); got == nil {
+		t.Fatal("ros2RPCError(plain error) = nil, want non-nil")
+	}
+	if got := ros2RPCError(plain); got != plain {
+		t.Errorf("ros2RPCError(plain) = %v, want same error identity", got)
 	}
 }
