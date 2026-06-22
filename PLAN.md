@@ -1,4 +1,16 @@
-# Wendy for Mac — Beta Work Plan
+# Wendy for Mac — Coordinator Work Plan
+
+## Coordinator identity
+
+This coordinator worktree has been renamed from `kb.macos-beta` to
+`kb.wendy-for-mac` so it can track Wendy for Mac coordination after the beta
+project closeout. The active path/branch is:
+
+- Worktree: `/Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wendy-for-mac`
+- Branch: `kb.wendy-for-mac`
+
+Keep this as the coordinator/planning session only. Per-issue implementation,
+validation, and non-empty feature commits belong in dedicated issue worktrees.
 
 ## KISS beta policy
 
@@ -21,10 +33,12 @@ explicitly asks for a post-beta pass.
 
 ## Current coordinator scope and status
 
-This coordinator is limited to the Linear project `Wendy for Mac — Beta`. Do not
-use it for general CLI work, E2E-only cleanup, or template-project work unless
-the user explicitly reprioritizes that issue into the Mac beta project. Keep
-general/top-level coordination in a different coordinator worktree.
+This coordinator started as the `Wendy for Mac — Beta` coordinator. The beta
+project is now closed, so use this worktree for Wendy-for-Mac planning and
+handoff only when the user explicitly asks. Production, demos, templates, or E2E
+work may be coordinated here if it is clearly tied to Wendy for Mac, but
+general/top-level CLI coordination should stay in a different coordinator
+worktree.
 
 Final closeout snapshot, 2026-06-12:
 
