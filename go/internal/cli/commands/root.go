@@ -264,6 +264,7 @@ func NewRootCmd() *cobra.Command {
 		tourCmd,
 		mcpCmd,
 		completionCmd,
+		newNotifyCmd(),
 	)
 
 	root.SetHelpCommandGroupID("misc")
