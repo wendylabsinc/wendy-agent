@@ -982,7 +982,7 @@ interactively.`,
 			}
 
 			if err := downloadAndExtractBag(dlCtx, stream, dest); err != nil {
-				return err
+				return ros2RPCError(err)
 			}
 			cliSuccess("Downloaded bag %q to %s", name, filepath.Join(dest, name))
 			return nil
