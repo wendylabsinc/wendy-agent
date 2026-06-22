@@ -283,6 +283,21 @@ func defaultSeccomp() *LinuxSeccomp {
 	}
 }
 
+// DropToMinimalCapabilities strips the process capability set to empty. The ROS 2
+// CLI sidecar only execs `ros2` and needs none of the default caps
+// (CAP_NET_RAW/MKNOD/SETUID/...), so a network-joined helper should not carry
+// them (WDY-1704; least privilege, SOC2-CC6/NIST-AC-6).
+func DropToMinimalCapabilities(spec *Spec) {
+	empty := []string{}
+	spec.Process.Capabilities = &LinuxCapabilities{
+		Bounding:    empty,
+		Effective:   empty,
+		Inheritable: empty,
+		Permitted:   empty,
+		Ambient:     empty,
+	}
+}
+
 // InjectHostsMount adds a bind-mount that overlays /etc/hosts with the file at
 // hostsPath. Use this for isolated-mode containers so service names resolve.
 func InjectHostsMount(spec *Spec, hostsPath string) {

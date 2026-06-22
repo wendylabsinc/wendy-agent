@@ -154,6 +154,29 @@ func TestSpecNamespaces(t *testing.T) {
 	}
 }
 
+func TestDropToMinimalCapabilities(t *testing.T) {
+	spec := DefaultSpec("rootfs", []string{"sleep", "infinity"})
+	DropToMinimalCapabilities(spec)
+	caps := spec.Process.Capabilities
+	if caps == nil {
+		t.Fatal("Capabilities is nil after DropToMinimalCapabilities")
+	}
+	dangerous := []string{"CAP_NET_RAW", "CAP_MKNOD", "CAP_SETUID", "CAP_SETPCAP"}
+	for _, set := range [][]string{caps.Bounding, caps.Effective, caps.Permitted, caps.Inheritable, caps.Ambient} {
+		for _, c := range set {
+			for _, bad := range dangerous {
+				if c == bad {
+					t.Errorf("minimal caps must not include %s", c)
+				}
+			}
+		}
+	}
+	// Verify NoNewPrivileges is preserved.
+	if !spec.Process.NoNewPrivileges {
+		t.Error("NoNewPrivileges must remain true after DropToMinimalCapabilities")
+	}
+}
+
 func TestInjectHostsMount(t *testing.T) {
 	spec := DefaultSpec("rootfs", []string{"/bin/sh"})
 	InjectHostsMount(spec, "/run/wendy/hosts/com.example.app")

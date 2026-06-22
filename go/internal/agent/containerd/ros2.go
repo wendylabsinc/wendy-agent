@@ -303,6 +303,7 @@ func (c *Client) ensureOneROS2Sidecar(ctx context.Context, anchor *services.ROS2
 	}
 
 	spec := localoci.DefaultSpec("rootfs", []string{"sleep", "infinity"})
+	localoci.DropToMinimalCapabilities(spec)
 	spec.Process.Env = append(spec.Process.Env, "ROS_LOCALHOST_ONLY=1")
 	spec.Mounts = append(spec.Mounts, localoci.Mount{
 		Destination: ROS2BagDir,
