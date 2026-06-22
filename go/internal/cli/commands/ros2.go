@@ -1078,6 +1078,37 @@ func extractROS2BagArchive(r io.Reader, dest string) error {
 
 // ── escape hatch ────────────────────────────────────────────────────
 
+// stripWendyExecGlobals scans args (the post-positional slice captured by
+// SetInterspersed(false)) for --device and --json flags that belong to wendy,
+// removes them from the slice, and returns their values alongside the
+// remaining args that should be forwarded to the remote ros2 process.
+//
+// Because SetInterspersed(false) stops cobra's flag parser at the first
+// positional, any --device/--json placed after the ros2 command word lands in
+// args rather than being parsed by the persistent root flags.  This function
+// peels those flags out so they can select the target device without being
+// forwarded verbatim to ros2 (which would reject them as unknown flags).
+//
+// Only the exact forms --device <value> and --json are recognised; anything
+// else is left in the forwarded slice unchanged (WDY-1553 passthrough).
+func stripWendyExecGlobals(args []string) (device string, jsonFlag bool, forwarded []string) {
+	forwarded = make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--device":
+			if i+1 < len(args) {
+				device = args[i+1]
+				i++ // consume the value
+			}
+		case "--json":
+			jsonFlag = true
+		default:
+			forwarded = append(forwarded, args[i])
+		}
+	}
+	return device, jsonFlag, forwarded
+}
+
 // execRecvStream is the minimal interface consumed by drainExecStream, matching
 // grpc.ServerStreamingClient[agentpbv2.ROS2ExecOutput].
 type execRecvStream interface {
@@ -1147,6 +1178,20 @@ the ros2 command; use -- to force the rest of the line through unparsed.`,
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
 
+			// SetInterspersed(false) stops cobra's flag parser at the first
+			// positional, so --device/--json placed after the ros2 command word
+			// (e.g. `exec node info /talker --device host.local`) land in args
+			// instead of being parsed by the root persistent flags.  Strip them
+			// here and propagate into the package globals before resolveTarget
+			// runs inside newROS2Client (WDY-1707).
+			localDevice, localJSON, fwdArgs := stripWendyExecGlobals(args)
+			if localDevice != "" {
+				deviceFlag = localDevice
+			}
+			if localJSON {
+				jsonOutput = true
+			}
+
 			client, err := newROS2Client(ctx)
 			if err != nil {
 				return err
@@ -1155,12 +1200,12 @@ the ros2 command; use -- to force the rest of the line through unparsed.`,
 
 			stream, err := client.client.Exec(ctx, &agentpbv2.ROS2ExecRequest{
 				DomainId: ros2DomainPtr(domain),
-				Args:     args,
+				Args:     fwdArgs,
 			})
 			if err != nil {
 				return ros2RPCError(err)
 			}
-			return drainExecStream(ctx, stream, args, os.Stdout, os.Stderr)
+			return drainExecStream(ctx, stream, fwdArgs, os.Stdout, os.Stderr)
 		},
 	}
 	ros2DomainFlag(cmd, &domain)

@@ -406,6 +406,64 @@ type errOnFirstRecv struct{ err error }
 
 func (e *errOnFirstRecv) Recv() (*agentpbv2.ROS2ExecOutput, error) { return nil, e.err }
 
+// TestROS2ExecDeviceFlagNotForwarded guards WDY-1707: --device (and --json)
+// appearing after the ros2 command word must be stripped from the forwarded
+// args and the extracted value returned so it can select the target device —
+// not forwarded to the remote ros2 process which rejects unknown flags.
+//
+// Implementation note: cobra's SetInterspersed(false) stops all flag parsing
+// at the first positional, so post-positional --device always lands in
+// Flags().Args() regardless of whether --device is registered locally.
+// The fix uses stripWendyExecGlobals to peel off --device/--json in RunE.
+func TestROS2ExecDeviceFlagNotForwarded(t *testing.T) {
+	cases := []struct {
+		name       string
+		args       []string
+		wantDevice string
+		wantJSON   bool
+		wantFwd    []string
+	}{
+		{
+			name:       "device after command",
+			args:       []string{"node", "info", "/talker", "--device", "host"},
+			wantDevice: "host",
+			wantFwd:    []string{"node", "info", "/talker"},
+		},
+		{
+			name:       "device before command (pre-positional, no strip needed)",
+			args:       []string{"node", "info", "/talker"},
+			wantDevice: "",
+			wantFwd:    []string{"node", "info", "/talker"},
+		},
+		{
+			name:     "json after command",
+			args:     []string{"node", "list", "--json"},
+			wantJSON: true,
+			wantFwd:  []string{"node", "list"},
+		},
+		{
+			name:       "device and ros2 flags coexist",
+			args:       []string{"topic", "echo", "/chatter", "--once", "--device", "edge.local"},
+			wantDevice: "edge.local",
+			wantFwd:    []string{"topic", "echo", "/chatter", "--once"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gotDevice, gotJSON, gotFwd := stripWendyExecGlobals(tc.args)
+			if gotDevice != tc.wantDevice {
+				t.Errorf("device = %q, want %q", gotDevice, tc.wantDevice)
+			}
+			if gotJSON != tc.wantJSON {
+				t.Errorf("json = %v, want %v", gotJSON, tc.wantJSON)
+			}
+			if !reflect.DeepEqual(gotFwd, tc.wantFwd) {
+				t.Errorf("forwarded args = %v, want %v", gotFwd, tc.wantFwd)
+			}
+		})
+	}
+}
+
 // TestROS2ExecForwardsFlags guards WDY-1553: the raw escape hatch must forward
 // --flags meant for ros2 verbatim instead of rejecting them as unknown flags,
 // while still parsing wendy's own flags when they precede the ros2 command.
