@@ -1078,6 +1078,52 @@ func extractROS2BagArchive(r io.Reader, dest string) error {
 
 // ── escape hatch ────────────────────────────────────────────────────
 
+// execRecvStream is the minimal interface consumed by drainExecStream, matching
+// grpc.ServerStreamingClient[agentpbv2.ROS2ExecOutput].
+type execRecvStream interface {
+	Recv() (*agentpbv2.ROS2ExecOutput, error)
+}
+
+// drainExecStream reads all messages from stream until io.EOF, forwarding
+// stdout chunks to stdout and stderr chunks to stderr.  It returns an error if:
+//   - the stream closes without a terminal ExitCode frame ("stream ended before
+//     exit status"), which indicates a truncated or aborted stream; or
+//   - the last ExitCode frame reports a non-zero code.
+//
+// It never early-returns on a non-zero code — trailing output is drained first.
+func drainExecStream(stream execRecvStream, args []string, stdout, stderr io.Writer) error {
+	var (
+		sawExitFrame bool
+		lastCode     int32
+	)
+	for {
+		msg, err := stream.Recv()
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return ros2RPCError(err)
+		}
+		if len(msg.GetStdout()) > 0 {
+			stdout.Write(msg.GetStdout())
+		}
+		if len(msg.GetStderr()) > 0 {
+			stderr.Write(msg.GetStderr())
+		}
+		if msg.ExitCode != nil {
+			sawExitFrame = true
+			lastCode = *msg.ExitCode
+		}
+	}
+	if !sawExitFrame {
+		return fmt.Errorf("ros2 %s: stream ended before exit status", strings.Join(args, " "))
+	}
+	if lastCode != 0 {
+		return fmt.Errorf("ros2 %s exited with code %d", strings.Join(args, " "), lastCode)
+	}
+	return nil
+}
+
 func newROS2ExecCmd() *cobra.Command {
 	var domain int32
 	cmd := &cobra.Command{
@@ -1109,24 +1155,7 @@ the ros2 command; use -- to force the rest of the line through unparsed.`,
 			if err != nil {
 				return ros2RPCError(err)
 			}
-			for {
-				msg, rerr := stream.Recv()
-				if rerr != nil {
-					if rerr == io.EOF || ctx.Err() != nil {
-						return nil
-					}
-					return ros2RPCError(rerr)
-				}
-				if len(msg.GetStdout()) > 0 {
-					os.Stdout.Write(msg.GetStdout())
-				}
-				if len(msg.GetStderr()) > 0 {
-					os.Stderr.Write(msg.GetStderr())
-				}
-				if msg.ExitCode != nil && *msg.ExitCode != 0 {
-					return fmt.Errorf("ros2 %s exited with code %d", strings.Join(args, " "), *msg.ExitCode)
-				}
-			}
+			return drainExecStream(stream, args, os.Stdout, os.Stderr)
 		},
 	}
 	ros2DomainFlag(cmd, &domain)

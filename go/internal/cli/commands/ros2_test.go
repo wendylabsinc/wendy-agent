@@ -267,6 +267,121 @@ func (f *fakeEOFStream) Recv() (*agentpbv2.ROS2BagChunk, error) {
 	return nil, io.EOF
 }
 
+// ── drainExecStream tests (WDY-1705 M7) ────────────────────────────────────
+
+// fakeExecStream simulates a grpc.ServerStreamingClient[ROS2ExecOutput].
+// msgs is consumed in order; after all msgs are exhausted, Recv returns io.EOF.
+type fakeExecStream struct {
+	msgs []*agentpbv2.ROS2ExecOutput
+	errs []error // parallel slice; non-nil entry returns that error instead
+	pos  int
+}
+
+func (f *fakeExecStream) Recv() (*agentpbv2.ROS2ExecOutput, error) {
+	if f.pos >= len(f.msgs) {
+		return nil, io.EOF
+	}
+	i := f.pos
+	f.pos++
+	if f.errs != nil && i < len(f.errs) && f.errs[i] != nil {
+		return nil, f.errs[i]
+	}
+	return f.msgs[i], nil
+}
+
+func int32ptr(v int32) *int32 { return &v }
+
+// TestDrainExecStream_ExitZero: stream ends with ExitCode=0 → nil error.
+func TestDrainExecStream_ExitZero(t *testing.T) {
+	stream := &fakeExecStream{
+		msgs: []*agentpbv2.ROS2ExecOutput{
+			{ExitCode: int32ptr(0)},
+		},
+	}
+	var stdout, stderr bytes.Buffer
+	if err := drainExecStream(stream, []string{"node", "list"}, &stdout, &stderr); err != nil {
+		t.Errorf("expected nil, got %v", err)
+	}
+}
+
+// TestDrainExecStream_ExitNonZero: stream ends with ExitCode=2 → error mentioning the code.
+func TestDrainExecStream_ExitNonZero(t *testing.T) {
+	stream := &fakeExecStream{
+		msgs: []*agentpbv2.ROS2ExecOutput{
+			{ExitCode: int32ptr(2)},
+		},
+	}
+	var stdout, stderr bytes.Buffer
+	err := drainExecStream(stream, []string{"node", "list"}, &stdout, &stderr)
+	if err == nil {
+		t.Fatal("expected error for exit code 2, got nil")
+	}
+	if !strings.Contains(err.Error(), "2") {
+		t.Errorf("error %q does not mention exit code 2", err.Error())
+	}
+}
+
+// TestDrainExecStream_NoExitFrame: stream EOFs with no exit-code frame → error about truncation.
+func TestDrainExecStream_NoExitFrame(t *testing.T) {
+	// Stream sends a stdout chunk but never sends an ExitCode frame.
+	stream := &fakeExecStream{
+		msgs: []*agentpbv2.ROS2ExecOutput{
+			{Stdout: []byte("hello\n")},
+		},
+	}
+	var stdout, stderr bytes.Buffer
+	err := drainExecStream(stream, []string{"topic", "echo", "/chatter"}, &stdout, &stderr)
+	if err == nil {
+		t.Fatal("expected error when no exit-code frame received, got nil")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "exit") {
+		t.Errorf("error %q does not mention exit status", err.Error())
+	}
+}
+
+// TestDrainExecStream_OutputBeforeExit: stdout/stderr chunks before the exit frame are forwarded.
+func TestDrainExecStream_OutputBeforeExit(t *testing.T) {
+	stream := &fakeExecStream{
+		msgs: []*agentpbv2.ROS2ExecOutput{
+			{Stdout: []byte("out1")},
+			{Stderr: []byte("err1")},
+			{Stdout: []byte("out2")},
+			{ExitCode: int32ptr(0)},
+		},
+	}
+	var stdout, stderr bytes.Buffer
+	if err := drainExecStream(stream, []string{"node", "list"}, &stdout, &stderr); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := stdout.String(); got != "out1out2" {
+		t.Errorf("stdout = %q, want %q", got, "out1out2")
+	}
+	if got := stderr.String(); got != "err1" {
+		t.Errorf("stderr = %q, want %q", got, "err1")
+	}
+}
+
+// TestDrainExecStream_DrainsAfterNonZero: trailing output chunks after a non-zero
+// exit code in a single frame are still forwarded (exit frame is the last message).
+func TestDrainExecStream_DrainsAfterNonZero(t *testing.T) {
+	// The agent sends stdout/stderr before the exit frame; this test confirms
+	// we don't early-return before draining all output.
+	stream := &fakeExecStream{
+		msgs: []*agentpbv2.ROS2ExecOutput{
+			{Stdout: []byte("before exit")},
+			{ExitCode: int32ptr(1)},
+		},
+	}
+	var stdout, stderr bytes.Buffer
+	err := drainExecStream(stream, []string{"node", "list"}, &stdout, &stderr)
+	if err == nil {
+		t.Fatal("expected error for exit code 1, got nil")
+	}
+	if got := stdout.String(); got != "before exit" {
+		t.Errorf("stdout = %q, want %q — output was dropped before drain", got, "before exit")
+	}
+}
+
 // TestROS2ExecForwardsFlags guards WDY-1553: the raw escape hatch must forward
 // --flags meant for ros2 verbatim instead of rejecting them as unknown flags,
 // while still parsing wendy's own flags when they precede the ros2 command.
