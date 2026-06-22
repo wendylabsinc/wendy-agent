@@ -486,6 +486,7 @@ func (s *ROS2Service) EchoTopic(req *agentpbv2.EchoROS2TopicRequest, stream grpc
 		sent++
 		if req.GetCount() > 0 && sent >= req.GetCount() {
 			cancel()
+			pr.CloseWithError(context.Canceled) // unblock goroutine stuck writing to pw
 			<-execDone
 			return nil
 		}

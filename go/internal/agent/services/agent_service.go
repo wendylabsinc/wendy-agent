@@ -161,6 +161,7 @@ func detectJetPackVersion() string {
 	// L4T → JetPack version table.
 	// https://developer.nvidia.com/embedded/jetpack-archive
 	jetpack := map[string]string{
+		"39.2": "7.2",
 		"36.4": "6.1",
 		"36.3": "6.0",
 		"36.2": "6.0",

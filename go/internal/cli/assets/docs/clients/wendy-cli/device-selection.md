@@ -41,7 +41,7 @@ mDNS and BLE discover nearby [WendyOS](../../wendyos/),
 A device picker is shown only when the terminal is interactive, so a user can
 select their target device for the current command invocation.
 
-Wendy Agent for Mac advertises over Bonjour/mDNS as `_wendyos._udp` and appears
+Wendy for Mac advertises over Bonjour/mDNS as `_wendyos._udp` and appears
 as a LAN device when local discovery is allowed by the network and macOS Local
 Network permissions.
 

@@ -25,7 +25,7 @@
     "platform": {
       "type": "string",
       "enum": ["wendyos", "wendy-lite", "darwin"],
-      "description": "Target platform: wendyos (Linux edge devices), wendy-lite (ESP32 WASM), or darwin (native macOS via Wendy Agent for Mac)."
+      "description": "Target platform: wendyos (Linux edge devices), wendy-lite (ESP32 WASM), or darwin (native macOS via Wendy for Mac)."
     },
     "language": {
       "type": "string",
