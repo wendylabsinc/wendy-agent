@@ -545,6 +545,17 @@ func isOrphanedSidecar(anchorID string, anchorPID uint32, liveTasks map[uint32]s
 	return !ok || liveID != anchorID
 }
 
+// shouldReapSidecar decides whether a sidecar should be reaped. It is orphaned
+// only when its anchor is confirmably gone; if the anchor's liveness could not
+// be verified (anchorID in unresolvable), the sidecar is KEPT — a boot reaper
+// must never delete a sidecar whose anchor might still be alive (WDY-1702 H4).
+func shouldReapSidecar(anchorID string, anchorPID uint32, liveTasks map[uint32]string, unresolvable map[string]bool) bool {
+	if unresolvable[anchorID] {
+		return false
+	}
+	return isOrphanedSidecar(anchorID, anchorPID, liveTasks)
+}
+
 // ReapOrphanedROS2Sidecars deletes any ROS 2 CLI sidecar containers whose
 // anchor app task is no longer running. It is called once at agent boot after
 // the containerd client is ready, so sidecars orphaned by a prior agent crash
@@ -562,6 +573,7 @@ func (c *Client) ReapOrphanedROS2Sidecars(ctx context.Context) error {
 	// containers. Sidecars carry labelKeyROS2Sidecar (not labelKeyAppVersion),
 	// so they are naturally excluded from this set.
 	liveTasks := make(map[uint32]string)
+	unresolvable := make(map[string]bool)
 	appCtrs, err := c.client.Containers(ctx, fmt.Sprintf("labels.%q", labelKeyAppVersion))
 	if err != nil {
 		return fmt.Errorf("listing app containers for sidecar reap: %w", err)
@@ -569,10 +581,19 @@ func (c *Client) ReapOrphanedROS2Sidecars(ctx context.Context) error {
 	for _, ctr := range appCtrs {
 		task, terr := ctr.Task(ctx, nil)
 		if terr != nil {
+			c.logger.Warn("ROS 2 sidecar reap: could not get task for app container, treating as unresolvable",
+				zap.String("container", ctr.ID()), zap.Error(terr))
+			unresolvable[ctr.ID()] = true
 			continue
 		}
 		st, serr := task.Status(ctx)
-		if serr != nil || st.Status != containerd.Running {
+		if serr != nil {
+			c.logger.Warn("ROS 2 sidecar reap: could not get task status for app container, treating as unresolvable",
+				zap.String("container", ctr.ID()), zap.Error(serr))
+			unresolvable[ctr.ID()] = true
+			continue
+		}
+		if st.Status != containerd.Running {
 			continue
 		}
 		liveTasks[task.Pid()] = ctr.ID()
@@ -600,7 +621,7 @@ func (c *Client) ReapOrphanedROS2Sidecars(ctx context.Context) error {
 		}
 		anchorPID := uint32(anchorPID64)
 
-		if !isOrphanedSidecar(anchorID, anchorPID, liveTasks) {
+		if !shouldReapSidecar(anchorID, anchorPID, liveTasks, unresolvable) {
 			continue
 		}
 		if c.sidecarHasActiveExecsLocked(sc.ID()) {
