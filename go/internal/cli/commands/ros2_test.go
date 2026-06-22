@@ -113,6 +113,57 @@ func TestExtractROS2BagArchive_RejectsTraversal(t *testing.T) {
 	}
 }
 
+func testROS2GraphMixedRMW() *agentpbv2.GetROS2GraphResponse {
+	return &agentpbv2.GetROS2GraphResponse{
+		Nodes: []*agentpbv2.ROS2Node{
+			{Name: "talker", Namespace: "/", Rmw: "rmw_cyclonedds_cpp"},
+			{Name: "listener", Namespace: "/", Rmw: "rmw_cyclonedds_cpp"},
+			{Name: "talker", Namespace: "/", Rmw: "rmw_fastrtps_cpp"},
+			{Name: "listener", Namespace: "/", Rmw: "rmw_fastrtps_cpp"},
+		},
+		Publishes: []*agentpbv2.GetROS2GraphResponse_Edge{
+			{Node: "/talker", Topic: "/chatter", Rmw: "rmw_cyclonedds_cpp"},
+			{Node: "/talker", Topic: "/chatter", Rmw: "rmw_fastrtps_cpp"},
+		},
+		Subscribes: []*agentpbv2.GetROS2GraphResponse_Edge{
+			{Node: "/listener", Topic: "/chatter", Rmw: "rmw_cyclonedds_cpp"},
+			{Node: "/listener", Topic: "/chatter", Rmw: "rmw_fastrtps_cpp"},
+		},
+	}
+}
+
+func TestRenderROS2GraphASCII_NoCrossRMWEdges(t *testing.T) {
+	out := renderROS2GraphASCII(testROS2GraphMixedRMW())
+	// same-RMW edges present
+	if !strings.Contains(out, "[/talker [cyclonedds]] ──/chatter──▶ [/listener [cyclonedds]]") {
+		t.Errorf("missing cyclonedds edge:\n%s", out)
+	}
+	if !strings.Contains(out, "[/talker [fastrtps]] ──/chatter──▶ [/listener [fastrtps]]") {
+		t.Errorf("missing fastrtps edge:\n%s", out)
+	}
+	// cross-RMW edges must NOT appear
+	if strings.Contains(out, "[/talker [cyclonedds]] ──/chatter──▶ [/listener [fastrtps]]") ||
+		strings.Contains(out, "[/talker [fastrtps]] ──/chatter──▶ [/listener [cyclonedds]]") {
+		t.Errorf("cross-RMW edge drawn (WDY-1712):\n%s", out)
+	}
+}
+
+func TestRenderROS2GraphDOT_NoCrossRMWEdges(t *testing.T) {
+	out := renderROS2GraphDOT(testROS2GraphMixedRMW())
+	// same-RMW edges present
+	if !strings.Contains(out, `"/talker [cyclonedds]" -> "/listener [cyclonedds]" [label="/chatter"];`) {
+		t.Errorf("missing cyclonedds DOT edge:\n%s", out)
+	}
+	if !strings.Contains(out, `"/talker [fastrtps]" -> "/listener [fastrtps]" [label="/chatter"];`) {
+		t.Errorf("missing fastrtps DOT edge:\n%s", out)
+	}
+	// cross-RMW edges must NOT appear
+	if strings.Contains(out, `"/talker [cyclonedds]" -> "/listener [fastrtps]"`) ||
+		strings.Contains(out, `"/talker [fastrtps]" -> "/listener [cyclonedds]"`) {
+		t.Errorf("cross-RMW DOT edge drawn (WDY-1712):\n%s", out)
+	}
+}
+
 func TestROS2DomainPtr(t *testing.T) {
 	if got := ros2DomainPtr(-1); got != nil {
 		t.Errorf("ros2DomainPtr(-1) = %v, want nil", got)
