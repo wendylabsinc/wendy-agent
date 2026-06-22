@@ -29,6 +29,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/cli/swifttoolchain"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
+	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
@@ -534,7 +535,7 @@ func detectBuildOptions(dir string) []BuildOption {
 }
 
 // injectDebugpy builds a wrapper image on top of the given image that installs debugpy.
-func injectDebugpy(ctx context.Context, registryAddr, registryImage, platform string, buildArgs map[string]string, streamOutput io.Writer, useMTLS bool) error {
+func injectDebugpy(ctx context.Context, registryAddr, registryImage, platform string, buildArgs map[string]string, streamOutput io.Writer, useMTLS bool, certInfo *config.CertificateInfo) error {
 	tmpDir, err := os.MkdirTemp("", "wendy-debugpy-*")
 	if err != nil {
 		return fmt.Errorf("creating temp dir: %w", err)
@@ -546,7 +547,7 @@ func injectDebugpy(ctx context.Context, registryAddr, registryImage, platform st
 		return fmt.Errorf("writing debugpy Dockerfile: %w", err)
 	}
 
-	return buildAndPushImage(ctx, tmpDir, registryAddr, registryImage, platform, "", buildArgs, streamOutput, streamOutput, useMTLS)
+	return buildAndPushImage(ctx, tmpDir, registryAddr, registryImage, platform, "", buildArgs, streamOutput, streamOutput, useMTLS, certInfo)
 }
 
 func generatePythonDockerfile(dir string, debug bool) (string, error) {
@@ -929,7 +930,7 @@ func dockerRuntimeInstalled(rt dockerRuntime) bool {
 // exists and returns its name plus the effective registry address to use in
 // image references. For IPv6 addresses, a hostname alias is configured inside
 // the builder container to avoid brackets that break the TOML parser.
-func ensureBuildxBuilder(ctx context.Context, registryAddr string, useMTLS bool, w io.Writer) (builderName, effectiveAddr string, err error) {
+func ensureBuildxBuilder(ctx context.Context, registryAddr string, useMTLS bool, certInfo *config.CertificateInfo, w io.Writer) (builderName, effectiveAddr string, err error) {
 	ensureBuildxBuilderMu.Lock()
 	defer ensureBuildxBuilderMu.Unlock()
 
@@ -957,7 +958,7 @@ func ensureBuildxBuilder(ctx context.Context, registryAddr string, useMTLS bool,
 	if !useMTLS {
 		builderName, err = ensurePlaintextBuilder(ctx, configDir, effectiveAddr, w)
 	} else {
-		builderName, err = ensureMTLSBuilder(ctx, configDir, effectiveAddr, containerCertDir, w)
+		builderName, err = ensureMTLSBuilder(ctx, configDir, effectiveAddr, containerCertDir, certInfo, w)
 	}
 	if err != nil {
 		return "", "", err
@@ -1137,7 +1138,7 @@ func ensurePlaintextBuilder(ctx context.Context, configDir, registryAddr string,
 
 // ensureMTLSBuilder ensures the "wendy-mtls" buildx builder exists with mTLS
 // client certs for the device registry.
-func ensureMTLSBuilder(ctx context.Context, configDir, registryAddr, containerCertDir string, w io.Writer) (string, error) {
+func ensureMTLSBuilder(ctx context.Context, configDir, registryAddr, containerCertDir string, certInfo *config.CertificateInfo, w io.Writer) (string, error) {
 	base := os.Getenv("WENDY_BUILDX_BUILDER")
 	if base == "" {
 		base = "wendy"
@@ -1146,7 +1147,6 @@ func ensureMTLSBuilder(ctx context.Context, configDir, registryAddr, containerCe
 
 	appliedPath := filepath.Join(configDir, base+"-mtls.applied")
 
-	certInfo := loadCLICert()
 	if certInfo == nil || certInfo.PemCertificate == "" || certInfo.PemPrivateKey == "" {
 		return "", fmt.Errorf("mTLS connection but no CLI certificates available")
 	}
@@ -1323,7 +1323,7 @@ func updateBuilderConfig(ctx context.Context, builderName, config string, w io.W
 	return nil
 }
 
-func buildAndPushImage(ctx context.Context, dir, registryAddr, registryImage, platform, dockerfile string, buildArgs map[string]string, streamOutput, logOutput io.Writer, useMTLS bool) error {
+func buildAndPushImage(ctx context.Context, dir, registryAddr, registryImage, platform, dockerfile string, buildArgs map[string]string, streamOutput, logOutput io.Writer, useMTLS bool, certInfo *config.CertificateInfo) error {
 	// Serialize against other wendy processes: the buildx builder is shared, and
 	// reconfiguring or restarting it mid-build kills a concurrent build (#1017).
 	// Concurrent builds within this process share the lock via reference counting.
@@ -1333,7 +1333,7 @@ func buildAndPushImage(ctx context.Context, dir, registryAddr, registryImage, pl
 	}
 	defer releaseLock()
 
-	builder, effectiveAddr, err := ensureBuildxBuilder(ctx, registryAddr, useMTLS, logOutput)
+	builder, effectiveAddr, err := ensureBuildxBuilder(ctx, registryAddr, useMTLS, certInfo, logOutput)
 	if err != nil {
 		return err
 	}
@@ -1458,14 +1458,14 @@ func buildAndPushImage(ctx context.Context, dir, registryAddr, registryImage, pl
 	return nil
 }
 
-func buildAndPushImageWithBuilder(ctx context.Context, builder, dir, registryAddr, registryImage, platform, dockerfile string, buildArgs map[string]string, streamOutput, logOutput io.Writer, useMTLS bool) error {
+func buildAndPushImageWithBuilder(ctx context.Context, builder, dir, registryAddr, registryImage, platform, dockerfile string, buildArgs map[string]string, streamOutput, logOutput io.Writer, useMTLS bool, certInfo *config.CertificateInfo) error {
 	normalized, err := normalizeImageBuilder(builder)
 	if err != nil {
 		return err
 	}
 	switch normalized {
 	case imageBuilderDocker:
-		return buildAndPushImage(ctx, dir, registryAddr, registryImage, platform, dockerfile, buildArgs, streamOutput, logOutput, useMTLS)
+		return buildAndPushImage(ctx, dir, registryAddr, registryImage, platform, dockerfile, buildArgs, streamOutput, logOutput, useMTLS, certInfo)
 	case imageBuilderAppleContainer:
 		return buildAndPushImageWithAppleContainer(ctx, dir, registryImage, platform, dockerfile, buildArgs, streamOutput, logOutput, useMTLS)
 	default:
@@ -1503,7 +1503,7 @@ func buildAndPushImageForAgentWithBuilder(ctx context.Context, conn *grpcclient.
 
 	registryImage := fmt.Sprintf("%s/%s:latest", registryAddr, strings.ToLower(repo))
 	cliLogln("Building and pushing image with %s for %s...", imageBuilderDisplayName(normalized), platform)
-	return buildAndPushImageWithBuilder(ctx, normalized, dir, registryAddr, registryImage, platform, dockerfile, buildArgs, streamOutput, logOutput, useMTLS)
+	return buildAndPushImageWithBuilder(ctx, normalized, dir, registryAddr, registryImage, platform, dockerfile, buildArgs, streamOutput, logOutput, useMTLS, conn.CertInfo)
 }
 
 func buildAndPushImageWithAppleContainer(ctx context.Context, dir, registryImage, platform, dockerfile string, buildArgs map[string]string, streamOutput, logOutput io.Writer, useMTLS bool) error {
@@ -1904,7 +1904,7 @@ func resolveRegistryForSwiftAgent(ctx context.Context, conn *grpcclient.AgentCon
 			// by the Wendy Cloud Root CA, which is not in the macOS system keychain.
 			// Stand up a local HTTP reverse proxy that terminates TLS with mTLS so
 			// the Swift container plugin can push via plain HTTP on 127.0.0.1.
-			certInfo := loadCLICert()
+			certInfo := conn.CertInfo
 			if certInfo == nil {
 				return "", false, nil, fmt.Errorf("mTLS connection but no CLI certificates available")
 			}

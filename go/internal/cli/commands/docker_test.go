@@ -79,6 +79,7 @@ func TestBuildAndPushImageWithAppleContainerUsesContainerCLI(t *testing.T) {
 		io.Discard,
 		io.Discard,
 		false,
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("buildAndPushImageWithBuilder: %v", err)

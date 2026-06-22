@@ -138,6 +138,7 @@ func connectCloudAsset(ctx context.Context, auth *config.AuthConfig, asset *clou
 	agentConn := grpcclient.NewFromConn(grpcConn)
 	agentConn.Host = asset.GetName()
 	agentConn.IsMTLS = true
+	agentConn.CertInfo = &cert
 	agentConn.RegistryDialer = func(ctx context.Context, port int) (net.Conn, error) {
 		return openBrokerTunnel(ctx, brokerConn, auth, asset.GetId(), uint32(port))
 	}

@@ -41,8 +41,9 @@ const (
 
 type AgentConnection struct {
 	Conn                *grpc.ClientConn
-	Host                string // hostname or IP of the connected agent
-	IsMTLS              bool   // true when connected via mutual TLS
+	Host                string                  // hostname or IP of the connected agent
+	IsMTLS              bool                    // true when connected via mutual TLS
+	CertInfo            *config.CertificateInfo // cert used to establish mTLS; nil for plaintext
 	RegistryDialer      func(context.Context, int) (net.Conn, error)
 	ExtraClosers        []io.Closer
 	AgentService        agentpb.WendyAgentServiceClient
@@ -116,6 +117,7 @@ func ConnectWithTLS(ctx context.Context, address string, certInfo *config.Certif
 	ac := newAgentConnection(conn)
 	ac.Host = hostFromAddress(address)
 	ac.IsMTLS = true
+	ac.CertInfo = certInfo
 	return ac, nil
 }
 
