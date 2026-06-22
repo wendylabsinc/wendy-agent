@@ -1,0 +1,136 @@
+---
+title: Wendy for Mac
+description: Deploy and debug native macOS apps on Apple Silicon Mac targets with the Wendy CLI.
+full: true
+---
+
+import { ArrowRight } from 'lucide-react';
+
+<Callout type="warn">
+  Wendy for Mac is beta software. Apple Silicon only — Intel Macs are not supported.
+</Callout>
+
+## Overview
+
+Wendy for Mac lets you use any Apple Silicon Mac as a Wendy target. Install Wendy Agent on the Mac, point the CLI at it, and deploy native macOS apps the same way you deploy to a Jetson or Raspberry Pi — with `wendy run`.
+
+Apps run as native macOS processes, not Linux containers. This makes Wendy for Mac a natural fit for:
+
+- **Headless Mac servers** — Mac minis and Mac Studios running AI inference, media processing, or robotics workloads without a display.
+- **Mixed fleets** — teams that deploy to both WendyOS edge devices and Mac targets from the same CLI and CI pipeline.
+- **Mac-native AI apps** — apps that depend on Core ML, Metal, or the Apple Neural Engine alongside standard Wendy tooling.
+
+## Requirements
+
+- An Apple Silicon Mac target running macOS 15 or later
+- Wendy CLI installed on a Mac development machine ([Developer Machine Setup](/docs/installation/developer-machine-setup))
+- A native macOS SwiftPM app project to deploy
+
+Deploying native macOS apps requires a Mac development machine because the Wendy CLI builds the app locally before syncing it to the Mac target. If the same Mac is both your development machine and target, install both the CLI and Wendy Agent on that Mac.
+
+## Installation
+
+The recommended path uses Homebrew:
+
+```bash
+brew tap wendylabsinc/tap
+brew install --cask wendy-agent
+```
+
+For the nightly build:
+
+```bash
+brew install --cask wendy-agent-nightly
+```
+
+Without Homebrew, download the `wendy-agent-macos-arm64` zip from the [Wendy releases page](https://github.com/wendylabsinc/wendy-agent/releases), unzip it, and move `WendyAgentMac.app` to `/Applications`:
+
+```bash
+open /Applications/WendyAgentMac.app
+```
+
+Wendy Agent appears in the macOS menu bar. Open the menu to confirm the agent is running.
+
+## Headless Mac Setup
+
+For any Mac that will run without a monitor, set it up once with a keyboard, mouse, and display attached before putting it on the shelf. Use a virtual display dongle or HDMI dummy plug for the final headless setup.
+
+1. Plug in the virtual display dongle, then open **System Settings → Displays** and confirm macOS sees it.
+2. Open **System Settings → Energy Saver** and keep the Mac awake on AC power: enable **Prevent automatic sleeping when the display is off** and **Wake for network access**.
+3. For a MacBook used as a target, open **System Settings → Battery → Options**, enable **Prevent automatic sleeping on power adapter when the display is off**, and keep it on AC power.
+4. Open **System Settings → Lock Screen** and set **Turn display off on power adapter when inactive** to a short interval. The display can sleep; the Mac itself should stay awake.
+5. Recommended: open **System Settings → General → Sharing** and enable **Screen Sharing** for named trusted admin users so you can administer the Mac remotely.
+6. Recommended: in the same **Sharing** pane, enable **Remote Login** and set up key-based SSH from your development Mac:
+
+   ```bash
+   ssh-copy-id {user}@{hostname}
+   ssh {user}@{hostname}
+   ```
+
+7. When Wendy Agent first opens, leave **Open Wendy Agent automatically when you log in** enabled.
+
+## Verify the Installation
+
+From your development Mac, check that the CLI can reach the Mac target:
+
+```bash
+wendy --device {hostname}:50051 device info --json
+```
+
+The response should report `"os": "darwin"` and `"cpuArchitecture": "arm64"`.
+
+## Discovery and Default Device
+
+Wendy Agent for Mac advertises over Bonjour/mDNS as `_wendyos._udp`. Use `wendy discover` to find it on the local network.
+
+Save the Mac as your default Wendy device:
+
+```bash
+wendy device set-default {hostname}:50051
+wendy device info --json
+```
+
+Clear the default when you want commands to require an explicit target:
+
+```bash
+wendy device unset-default
+```
+
+## Deploying Apps
+
+From a native macOS SwiftPM project configured for a Darwin target:
+
+```bash
+wendy run --device {hostname}:50051
+```
+
+If you set the Mac as your default device, omit `--device`:
+
+```bash
+wendy run
+```
+
+## What Works
+
+- Apple Silicon Mac targets running macOS 15 or later
+- Installing Wendy Agent for Mac with Homebrew or the release zip
+- Deploying native SwiftPM macOS apps with `wendy run`
+- Discovering Mac targets over Bonjour/mDNS
+- Setting the Mac as your default Wendy device
+
+## Not Supported
+
+- Intel Macs
+- Linux container deployment (Dockerfile, Compose)
+- Hardware APIs: Wi-Fi, Bluetooth, audio, camera, GPU, USB, GPIO, I2C
+- WendyOS OTA updates — update macOS and Wendy Agent through their normal install paths
+
+## Troubleshooting
+
+If the CLI cannot connect:
+
+1. Confirm Wendy Agent is open in the menu bar.
+2. Run with an explicit device address: `wendy --device {hostname}:50051 device info --json`
+3. If `wendy discover` doesn't show the Mac, check macOS Local Network permission for the CLI process.
+4. Quit and reopen Wendy Agent from the menu bar.
+5. If you installed both stable and nightly builds, quit both and open only the one you want.
