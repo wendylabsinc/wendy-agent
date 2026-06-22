@@ -82,3 +82,27 @@ func TestSidecarExecRefcountConcurrent(t *testing.T) {
 		t.Fatal("expected no active exec after all goroutines finished")
 	}
 }
+
+// TestSidecarExecCapRejects verifies that the 17th concurrent exec on a single
+// sidecar is rejected and the 16th (at the cap boundary) is accepted.
+func TestSidecarExecCapRejects(t *testing.T) {
+	c := &Client{ros2ExecRefs: map[string]int{}}
+
+	// Acquire up to the cap — all must succeed.
+	for i := 0; i < ros2MaxConcurrentExecs; i++ {
+		if err := c.acquireSidecarExecCapped("sc-cap"); err != nil {
+			t.Fatalf("acquire %d (≤ cap) returned unexpected error: %v", i+1, err)
+		}
+	}
+
+	// The next acquire (17th) must fail.
+	if err := c.acquireSidecarExecCapped("sc-cap"); err == nil {
+		t.Fatal("expected error when acquiring beyond ros2MaxConcurrentExecs; got nil")
+	}
+
+	// After releasing one slot the cap is no longer exceeded; next acquire must succeed.
+	c.releaseSidecarExec("sc-cap")
+	if err := c.acquireSidecarExecCapped("sc-cap"); err != nil {
+		t.Fatalf("acquire after release should succeed; got: %v", err)
+	}
+}
