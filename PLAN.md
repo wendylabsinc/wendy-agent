@@ -1,129 +1,183 @@
-# General Coordinator Work Plan
+# Companion App / SDK — Coordinator Work Plan
 
 ## Purpose
 
-This worktree is for top-level planning and session coordination across Wendy
-Agent issues that do not have a more specific coordinator worktree.
+This worktree is for planning and session coordination for the Wendy Companion
+App and Companion SDK workstream.
 
-- Worktree: `/Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.general`
-- Branch: `kb.general`
+- Worktree: `/Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.companion`
+- Branch: `kb.companion`
 - Purpose: coordinator planning/session handoff only
-- Important file: `PLAN.md`
+- Important files: `PLAN.md`, `HANDOVER.md`
 
-Do not implement issue work in this coordinator worktree. Use it to choose,
-prepare, hand off, and track dedicated issue worktrees.
+Do not implement companion app or SDK work in this coordinator worktree. Use it
+to triage Linear, prepare dedicated implementation worktrees in the correct
+repository, and write durable handoffs.
+
+## Scope
+
+Coordinate work across these repositories:
+
+- iOS app repo: `wendylabsinc/wendy-companion-ios`
+  - URL: https://github.com/wendylabsinc/wendy-companion-ios
+  - Private Swift iOS app repository.
+  - Root indicators: `WendyOS Companion.xcodeproj`, `WendyOS Companion/`,
+    `WendyOS-Companion-Info.plist`.
+  - Mostly authored by Joannis.
+- Swift SDK repo: `wendylabsinc/wendy-companion-sdk`
+  - URL: https://github.com/wendylabsinc/wendy-companion-sdk
+  - Public Swift package repository.
+  - Mostly authored by Joannis.
+- Linear project: **Companion App / SDK**
+  - URL: https://linear.app/wendylabsinc/project/companion-app-sdk-33c2dfb5f9ef
+  - Status: In Progress
+  - Target date: 2026-07-03
+  - Project teams: Engineering (`WDY`) and Releases (`REL`)
+- Linear initiative: **Companion App & SDK**
+  - URL: https://linear.app/wendylabsinc/initiative/companion-app-and-sdk-a20345306f5d
+  - Owner: `konstantin@wendy.sh`
+  - Status: Active
+  - Target date: 2026-07-07
 
 ## Coordinator policy
 
-- Keep this plan current as the durable source of truth for general issue
+- Keep this plan current as the durable source of truth for Companion App / SDK
   coordination.
+- Always list Linear issue titles alongside issue IDs.
 - Prefer focused child issues and small implementation PRs over broad umbrella
   work.
-- When a specialized coordinator exists for a theme, either use that coordinator
-  or record an explicit cross-reference here.
 - Keep issue-specific context in the relevant issue worktree's `HANDOVER.md`.
 - Keep resume prompts generic so all durable context lives in files, not shell
   history.
+- Implementation, validation, review-thread handling, and non-empty commits
+  happen in per-issue worktrees in the companion app or SDK repository, not in
+  this WendyOS coordinator worktree.
+- Use Linear GraphQL via `LINEAR_API_KEY` if the Linear CLI is unavailable.
 
 ## Issue start protocol
 
 For each issue this coordinator starts:
 
-1. Assign the Linear issue to `konstantin@wendy.sh`.
-2. Create a dedicated git worktree and branch for the issue.
-3. Add an empty setup commit for the issue.
-4. Push the branch.
-5. Create a draft PR from the setup commit using a real markdown body file,
+1. Confirm the canonical Linear issue and project. Include the issue title when
+   reporting the ID.
+2. Assign the Linear issue to the intended owner, usually
+   `konstantin@wendy.sh` unless the user specifies otherwise.
+3. Choose the correct implementation repository:
+   - `wendy-companion-ios` for app/TestFlight/UI work.
+   - `wendy-companion-sdk` for Swift SDK/API/transport work.
+   - `WendyOS` only for cross-repo coordination or CLI/agent changes.
+4. Clone the implementation repo under `/Volumes/Projects/WendyLabs/` if it is
+   not already present.
+5. Create a dedicated git worktree/branch for the issue in that implementation
+   repo, ideally from freshly fetched `origin/main`.
+6. Add an empty setup commit for the issue.
+7. Push the branch.
+8. Create a draft PR in the implementation repo using a real markdown body file,
    not an inline string with escaped newlines.
-6. For mergeable implementation PRs, include the Linear issue link/closing
-   reference in the PR body, for example `Closes WDY-1234`, so merging the PR
-   closes the issue. Do not put closing references on non-merge audit artifacts.
-7. Write a `HANDOVER.md` file into the issue worktree. Put the real prompt
-   content there: scope, constraints, validation, commit/push expectations, PR
-   details, and known risks.
-8. Leave the user with the worktree path, PR link, and a one-line command to
-   resume from that worktree using a generic prompt:
+9. For mergeable implementation PRs, include the Linear issue link/closing
+   reference in the PR body, for example `Closes REL-65` or `Closes WDY-1234`.
+10. Write a `HANDOVER.md` file into the issue worktree. Put the real prompt
+    content there: scope, constraints, validation, commit/push expectations, PR
+    details, and known risks.
+11. Leave the user with the worktree path, PR link, and a one-line command to
+    resume from that worktree using a generic prompt:
 
-   ```sh
-   cd /path/to/worktree && ai --prompt "Read HANDOVER.md and follow its instructions."
-   ```
+    ```sh
+    cd /path/to/worktree && ai --prompt "Read HANDOVER.md and follow its instructions."
+    ```
 
-Implementation, validation, review-thread handling, and non-empty commits happen
-in per-issue worktree sessions, not in this coordinator worktree.
+## Current Linear project state
 
-## Current focus
+The **Companion App / SDK** project was updated to include the `REL` team as
+well as `WDY`, so Release issues can live in the same project.
 
-WDY-1532 is the active general-coordinator issue currently in review. WDY-1600 and WDY-1602 completed and are tracked below for history.
+### Active / queued issues
 
-## Active / paused issues
+#### REL-65 — Release Wendy OS companion app to TestFlight (upload + certificates/secrets)
 
-### WDY-1532 — Support `wendy.json` file sync for WendyOS/Linux deployments
+- Linear: https://linear.app/wendylabsinc/issue/REL-65/release-wendy-os-companion-app-to-testflight-upload
+- State: Todo
+- Team: Releases (`REL`)
+- Project: Companion App / SDK
+- Assignee: `konstantin@wendy.sh`
+- Priority: High
+- Likely repo: `wendylabsinc/wendy-companion-ios`
+- Status: queued. Needs app release/TestFlight handoff and certificate/secrets
+  validation.
+- Resume: not available until prepared.
 
-- Linear: https://linear.app/wendylabsinc/issue/WDY-1532/support-wendyjson-file-sync-for-wendyoslinux-deployments
-- State: In Review
-- Project: none
-- Worktree: `/Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1532-file-sync`
-- Branch: `kb.wdy-1532-file-sync`
-- PR: https://github.com/wendylabsinc/WendyOS/pull/998
-- Setup commit: `c3ace1815cef5bf69d1d9d72e312cffe52567131`
-- Status: Implementation PR is ready for review; most checks pass, but Claude Security Review is currently failing and needs follow-up in the issue worktree.
-- Scope:
-  - Make top-level `wendy.json.files` work for WendyOS/Linux `wendy run` deployments.
-  - Document platform/build-path support, destination resolution, directory/file semantics, and stale/update behavior.
-  - Add CLI/agent tests for at least one Linux/WendyOS deployment path.
-- Constraints:
-  - Keep implementation out of this coordinator worktree.
-  - Preserve existing macOS/Darwin file-sync semantics unless sharing helpers requires tiny refactors.
-  - Be explicit about multi-service/Compose support if it is out of scope.
-- Validation expectations:
-  - Focused Go tests for appconfig, CLI command file sync/run behavior, and agent container/spec behavior as changed.
-- Resume:
+#### REL-66 — Check out skip.dev for Wendy Companion App
 
-  ```sh
-  cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1532-file-sync && ai --prompt "Read HANDOVER.md and follow its instructions."
-  ```
+- Linear: https://linear.app/wendylabsinc/issue/REL-66/check-out-skipdev-for-wendy-companion-app
+- State: Backlog
+- Team: Releases (`REL`)
+- Project: Companion App / SDK
+- Assignee: `konstantin@wendy.sh`
+- Priority: No priority
+- Likely repo: `wendylabsinc/wendy-companion-ios` or a research-only handoff
+- Status: queued. Evaluate whether Skip can help the companion app ship across
+  Apple platforms / Android, and record recommendation.
+- Resume: not available until prepared.
 
-## Candidate issue queue
+### Candidate / related issues to triage
 
-- WDY-1520 — Consider CLI IPv6-to-IPv4 fallback for device connections — https://linear.app/wendylabsinc/issue/WDY-1520/consider-cli-ipv6-to-ipv4-fallback-for-device-connections
-- WDY-1498 — Add headless device-code flow for `wendy auth login` — https://linear.app/wendylabsinc/issue/WDY-1498/add-headless-device-code-flow-for-wendy-auth-login
-- WDY-1497 — Explore `wendy.json` profiles for selectable app configurations — https://linear.app/wendylabsinc/issue/WDY-1497/explore-wendyjson-profiles-for-selectable-app-configurations
-- WDY-1496 — CLI: support explicit `--config` path for `wendy.json` — https://linear.app/wendylabsinc/issue/WDY-1496/cli-support-explicit-config-path-for-wendyjson
-- WDY-1472 — Plan Wendy Agent to Wendy Daemon rename timing — https://linear.app/wendylabsinc/issue/WDY-1472/plan-wendy-agent-to-wendy-daemon-rename-timing
+- WDY-1549 — Lead development of the hackathon companion app — Backlog,
+  assignee `martien@wendy.sh`, project none.
+- WDY-1585 — Build the hackathon companion app before the Wednesday engineering
+  meeting — Backlog, assignee `martien@wendy.sh`, project none.
+- WDY-1500 — Test Swift companion SDK on Linux for Wendy Cloud auth — Backlog,
+  assignee `christos@wendy.sh`, project none.
+- EVENT-12 — Define Munich hackathon scope and run a final rehearsal — In
+  Review, assignee `joannis@wendy.sh`, event/hackathon context.
 
-## Recently completed
+### Completed / historical context
 
-- WDY-1600 — `wendy device update` reports success before restarted agent is reachable — PR https://github.com/wendylabsinc/WendyOS/pull/1064 merged 2026-06-17; Linear is Done.
-- WDY-1602 — Fix Fumadocs audit failure from esbuild advisory — PR https://github.com/wendylabsinc/WendyOS/pull/1066 merged 2026-06-17; Linear is Done.
+- WDY-1235 — Establish Companion SDK release timeline — target July 3 — Done,
+  assignee `joannis@wendy.sh`.
+- WDY-1104 — Wendy Companion SDK: mTLS — Done, assignee `joannis@wendy.sh`.
+- WDY-817 — Basic Wendy Companion SDK for iOS — Done, project Wendy Box: iOS
+  Companion App.
 
-## Follow-ups / discoveries
+## Repo discovery notes
 
-- The `linear` CLI is not installed in this environment despite the Linear skill docs; coordinator used Linear GraphQL via `LINEAR_API_KEY` for WDY-1532 assignment/status.
-- Pushing WDY-1532 to `origin` over the default SSH URL hung; pushing via `ssh://git@ssh.github.com:443/wendylabsinc/WendyOS.git` worked. The WDY-1532 worktree has `remote.origin.pushurl` set to that SSH-over-443 URL.
-- The user clarified the intended issue was WDY-1600, not WDY-1063. WDY-1600 references the accidentally-created-and-closed GitHub issue https://github.com/wendylabsinc/WendyOS/issues/1063.
-- WDY-1602 came from the Fumadocs failure on PR #1064; the blocking issue is `npm audit --audit-level=high` flagging locked `esbuild@0.28.0`.
-- Created WDY-1606 for Wendy Agent for Mac Brewfile support and added the Brew Bundle/Brewfile reference: https://docs.brew.sh/Brew-Bundle-and-Brewfile. It was later moved to Wendy for Mac — Production and started from the production coordinator: worktree `/Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1606-brewfile-support`, PR https://github.com/wendylabsinc/WendyOS/pull/1071.
+Found with GitHub repository search:
+
+- `wendylabsinc/wendy-companion-ios` is the primary iOS app repo.
+- `wendylabsinc/wendy-companion-sdk` is the related Swift SDK repo.
+- Both have recent May 2026 commits mostly by Joannis.
+
+If local checkouts are needed:
+
+```sh
+cd /Volumes/Projects/WendyLabs
+gh repo clone wendylabsinc/wendy-companion-ios
+gh repo clone wendylabsinc/wendy-companion-sdk
+```
 
 ## Cross-coordinator references
 
-- Wendy for Mac beta coordinator:
-  `/Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.macos-beta`
+- General coordinator:
+  `/Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.general`
 - Wendy for Mac production coordinator:
   `/Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wendy-for-mac-production`
-- TBD.
+- E2E Tests coordinator:
+  `/Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.e2e-tests`
 
 ## Issue record template
 
 Copy this block when this coordinator starts tracking an issue.
 
 ```md
-### WDY-XXXX — Issue title
+### REL-XXXX / WDY-XXXX — Issue title
 
-- Linear: https://linear.app/wendylabsinc/issue/WDY-XXXX/...
+- Linear: https://linear.app/wendylabsinc/issue/...
 - State: TBD
-- Project: TBD
-- Worktree: `/Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-xxxx-slug`
-- Branch: `kb.wdy-xxxx-slug`
+- Team: TBD
+- Project: Companion App / SDK
+- Assignee: TBD
+- Repo: `wendylabsinc/...`
+- Worktree: `/Volumes/Projects/WendyLabs/<repo>/.worktrees/kb.issue-slug`
+- Branch: `kb.issue-slug`
 - Draft PR: TBD
 - Setup commit: TBD
 - Status: TBD
@@ -136,12 +190,15 @@ Copy this block when this coordinator starts tracking an issue.
 - Resume:
 
   ```sh
-  cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-xxxx-slug && ai --prompt "Read HANDOVER.md and follow its instructions."
+  cd /Volumes/Projects/WendyLabs/<repo>/.worktrees/kb.issue-slug && ai --prompt "Read HANDOVER.md and follow its instructions."
   ```
 ```
 
 ## Next recommended steps
 
-1. Replace the `TBD` sections with the first real issue queue.
-2. For the first selected issue, follow the issue start protocol above.
-3. Commit and push coordinator plan updates after meaningful planning changes.
+1. Decide whether to start **REL-65 — Release Wendy OS companion app to
+   TestFlight (upload + certificates/secrets)** or **REL-66 — Check out skip.dev
+   for Wendy Companion App** first.
+2. Clone `wendy-companion-ios` locally if it is not present.
+3. Prepare a dedicated issue worktree and draft PR in the companion app repo.
+4. Commit and push coordinator plan updates after meaningful planning changes.
