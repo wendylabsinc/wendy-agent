@@ -66,6 +66,7 @@ func newDeviceCmd() *cobra.Command {
 		newDeviceEnrollCmd(),
 		newDeviceUnenrollCmd(),
 		newDeviceUpdateCmd(),
+		newDeviceSyncTimeCmd(),
 	)
 	addToGroup("monitor",
 		newDeviceLogsCmd(),
