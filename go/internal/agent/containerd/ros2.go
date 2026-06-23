@@ -3,6 +3,7 @@ package containerd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -66,6 +67,12 @@ const (
 	// escalating to SIGKILL. `ros2 bag record` needs the grace period to
 	// finalize the bag on disk.
 	ros2ExecStopGrace = 10 * time.Second
+
+	// ros2MaxConcurrentExecs is the maximum number of simultaneous ExecROS2
+	// calls allowed against a single sidecar. Beyond this the exec is rejected
+	// with a clear error so a slow or hung command stream cannot exhaust the
+	// containerd exec table (L6, WDY-1706).
+	ros2MaxConcurrentExecs = 16
 )
 
 // ros2DistroPattern validates ROS 2 distro names read from container labels
@@ -207,18 +214,36 @@ func (c *Client) EnsureROS2Sidecars(ctx context.Context) ([]services.ROS2Sidecar
 	if existing, lerr := c.listROS2Sidecars(ctx); lerr == nil {
 		for _, ctr := range existing {
 			if _, want := anchorByName[ctr.ID()]; !want {
+				if c.sidecarHasActiveExecsLocked(ctr.ID()) {
+					c.logger.Info("Deferring stale ROS 2 sidecar teardown: exec in flight",
+						zap.String("sidecar", ctr.ID()))
+					continue
+				}
 				_ = c.deleteROS2Sidecar(ctx, ctr)
 			}
 		}
 	}
 
+	// Build sidecars for every RMW. On a per-RMW failure we log and continue so
+	// that a broken image for one RMW does not prevent commands against the
+	// remaining RMWs (L3, WDY-1706 partial-success). Only fail the whole call
+	// when every sidecar failed to ensure.
 	sidecars := make([]services.ROS2Sidecar, 0, len(order))
+	var errs []error
 	for _, name := range order {
 		sc, eerr := c.ensureOneROS2Sidecar(ctx, anchorByName[name], name)
 		if eerr != nil {
-			return nil, eerr
+			c.logger.Error("Failed to ensure ROS 2 sidecar; skipping RMW",
+				zap.String("sidecar", name),
+				zap.String("rmw", anchorByName[name].RMW),
+				zap.Error(eerr))
+			errs = append(errs, fmt.Errorf("sidecar %s: %w", name, eerr))
+			continue
 		}
 		sidecars = append(sidecars, sc)
+	}
+	if len(sidecars) == 0 {
+		return nil, fmt.Errorf("all ROS 2 sidecar builds failed: %w", errors.Join(errs...))
 	}
 	return sidecars, nil
 }
@@ -257,6 +282,11 @@ func (c *Client) ensureOneROS2Sidecar(ctx context.Context, anchor *services.ROS2
 		}
 		c.logger.Info("Recreating stale ROS 2 sidecar",
 			zap.String("sidecar", name), zap.String("anchor", anchor.ContainerID), zap.Bool("anchor_alive", anchorAlive))
+		if c.sidecarHasActiveExecsLocked(name) {
+			c.logger.Info("Deferring stale ROS 2 sidecar recreation: exec in flight",
+				zap.String("sidecar", name))
+			return sidecar, nil
+		}
 		if derr := c.deleteROS2Sidecar(ctx, existing); derr != nil {
 			return services.ROS2Sidecar{}, fmt.Errorf("removing stale ROS 2 sidecar: %w", derr)
 		}
@@ -316,6 +346,7 @@ func (c *Client) ensureOneROS2Sidecar(ctx context.Context, anchor *services.ROS2
 	}
 
 	spec := localoci.DefaultSpec("rootfs", []string{"sleep", "infinity"})
+	localoci.DropToMinimalCapabilities(spec)
 	spec.Process.Env = append(spec.Process.Env, "ROS_LOCALHOST_ONLY=1")
 	spec.Mounts = append(spec.Mounts, localoci.Mount{
 		Destination: ROS2BagDir,
@@ -355,9 +386,12 @@ func (c *Client) ensureOneROS2Sidecar(ctx context.Context, anchor *services.ROS2
 			f.Close()
 		}
 	}()
-	// For shared-ipc, replace the sidecar's private tmpfs /dev/shm with the
-	// group's shared segment so it attaches to the same FastRTPS shm pool.
-	if isolation == "shared-ipc" {
+	// For shared-ipc groups using FastRTPS, replace the sidecar's private tmpfs
+	// /dev/shm with the group's shared segment so it attaches to the same
+	// FastRTPS shm pool. CycloneDDS has SharedMemory disabled in
+	// cycloneDDSInlineConfig so the bind would be a no-op for it; skip it to
+	// avoid unnecessary mount complexity (M1, WDY-1706).
+	if isolation == "shared-ipc" && anchor.RMW == "rmw_fastrtps_cpp" {
 		localoci.RemoveDefaultSHM(spec)
 		spec.Mounts = append(spec.Mounts, localoci.SharedSHMMount(sidecarSHM))
 	}
@@ -519,16 +553,144 @@ func (c *Client) StopROS2Sidecar(ctx context.Context) error {
 	return nil
 }
 
-// teardownAllROS2SidecarsLocked removes every sidecar container. Caller must
-// hold c.mu and pass a namespaced ctx.
+// teardownAllROS2SidecarsLocked removes every sidecar container that has no
+// active ExecROS2 calls. Sidecars with in-flight execs are skipped (logged).
+// Caller must hold c.mu and pass a namespaced ctx.
 func (c *Client) teardownAllROS2SidecarsLocked(ctx context.Context) {
 	sidecars, err := c.listROS2Sidecars(ctx)
 	if err != nil {
 		return
 	}
 	for _, ctr := range sidecars {
+		if c.sidecarHasActiveExecsLocked(ctr.ID()) {
+			c.logger.Info("Deferring ROS 2 sidecar teardown: exec in flight",
+				zap.String("sidecar", ctr.ID()))
+			continue
+		}
 		_ = c.deleteROS2Sidecar(ctx, ctr)
 	}
+}
+
+// isOrphanedSidecar reports whether a sidecar is orphaned. A sidecar is
+// orphaned when its anchor PID is not present in the live-task set, or when
+// the live task at that PID belongs to a different container (PID recycled).
+// liveTasks maps running task PID → container ID.
+// This is a pure function so it can be unit-tested without containerd.
+func isOrphanedSidecar(anchorID string, anchorPID uint32, liveTasks map[uint32]string) bool {
+	liveID, ok := liveTasks[anchorPID]
+	return !ok || liveID != anchorID
+}
+
+// shouldReapSidecar decides whether a sidecar should be reaped. It is orphaned
+// only when its anchor is confirmably gone; if the anchor's liveness could not
+// be verified (anchorID in unresolvable), the sidecar is KEPT — a boot reaper
+// must never delete a sidecar whose anchor might still be alive (WDY-1702 H4).
+func shouldReapSidecar(anchorID string, anchorPID uint32, liveTasks map[uint32]string, unresolvable map[string]bool) bool {
+	if unresolvable[anchorID] {
+		return false
+	}
+	return isOrphanedSidecar(anchorID, anchorPID, liveTasks)
+}
+
+// ReapOrphanedROS2Sidecars deletes any ROS 2 CLI sidecar containers whose
+// anchor app task is no longer running. It is called once at agent boot after
+// the containerd client is ready, so sidecars orphaned by a prior agent crash
+// or ungraceful shutdown are cleaned up before new workloads start.
+//
+// A sidecar is only deleted when its anchor container ID + PID no longer match
+// a live running task. Sidecars with active ExecROS2 calls in flight are
+// skipped (consistent with teardownAllROS2SidecarsLocked).
+func (c *Client) ReapOrphanedROS2Sidecars(ctx context.Context) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	ctx = c.withNamespace(ctx)
+
+	// Build the live-task map: PID → container ID, for all running Wendy app
+	// containers. Sidecars carry labelKeyROS2Sidecar (not labelKeyAppVersion),
+	// so they are naturally excluded from this set.
+	liveTasks := make(map[uint32]string)
+	unresolvable := make(map[string]bool)
+	appCtrs, err := c.client.Containers(ctx, fmt.Sprintf("labels.%q", labelKeyAppVersion))
+	if err != nil {
+		return fmt.Errorf("listing app containers for sidecar reap: %w", err)
+	}
+	for _, ctr := range appCtrs {
+		// WDY-1702 H4: distinguish definitive "anchor gone" from ambiguous errors.
+		// NotFound from Task() means the container has no task — it cleanly stopped
+		// or never started. That is precisely the orphan case: do NOT mark it
+		// unresolvable; omitting it from liveTasks lets its sidecar be reaped.
+		// Any other error (timeout, transient RPC) means liveness is genuinely
+		// unknown — mark unresolvable so its sidecar is kept (safety, WDY-1702 H4).
+		task, terr := ctr.Task(ctx, nil)
+		if terr != nil {
+			if errdefs.IsNotFound(terr) {
+				// Anchor definitively has no task (cleanly stopped/gone): reapable.
+				continue
+			}
+			// Liveness unknown: keep sidecar to avoid false-positive reap.
+			c.logger.Warn("ROS 2 sidecar reap: could not get task for app container, treating as unresolvable",
+				zap.String("container", ctr.ID()), zap.Error(terr))
+			unresolvable[ctr.ID()] = true
+			continue
+		}
+		st, serr := task.Status(ctx)
+		if serr != nil {
+			if errdefs.IsNotFound(serr) {
+				// Task record gone between Task() and Status(): definitively stopped.
+				continue
+			}
+			// Status unknown: keep sidecar to avoid false-positive reap.
+			c.logger.Warn("ROS 2 sidecar reap: could not get task status for app container, treating as unresolvable",
+				zap.String("container", ctr.ID()), zap.Error(serr))
+			unresolvable[ctr.ID()] = true
+			continue
+		}
+		if st.Status != containerd.Running {
+			continue
+		}
+		liveTasks[task.Pid()] = ctr.ID()
+	}
+
+	sidecars, err := c.listROS2Sidecars(ctx)
+	if err != nil {
+		return fmt.Errorf("listing ROS 2 sidecars for reap: %w", err)
+	}
+
+	for _, sc := range sidecars {
+		labels, lerr := sc.Labels(ctx)
+		if lerr != nil {
+			c.logger.Warn("ROS 2 sidecar reap: could not read labels, skipping",
+				zap.String("sidecar", sc.ID()), zap.Error(lerr))
+			continue
+		}
+		anchorID := labels[labelKeyROS2AnchorID]
+		anchorPIDStr := labels[labelKeyROS2AnchorPID]
+		anchorPID64, perr := strconv.ParseUint(anchorPIDStr, 10, 32)
+		if perr != nil {
+			c.logger.Warn("ROS 2 sidecar reap: invalid anchor PID label, treating as orphaned",
+				zap.String("sidecar", sc.ID()), zap.String("pid", anchorPIDStr))
+			// Fall through: isOrphanedSidecar with PID 0 will return true.
+		}
+		anchorPID := uint32(anchorPID64)
+
+		if !shouldReapSidecar(anchorID, anchorPID, liveTasks, unresolvable) {
+			continue
+		}
+		if c.sidecarHasActiveExecsLocked(sc.ID()) {
+			c.logger.Info("ROS 2 sidecar reap: exec in flight, skipping",
+				zap.String("sidecar", sc.ID()))
+			continue
+		}
+		c.logger.Info("ROS 2 sidecar reap: deleting orphaned sidecar",
+			zap.String("sidecar", sc.ID()),
+			zap.String("anchor_id", anchorID),
+			zap.Uint32("anchor_pid", anchorPID))
+		if derr := c.deleteROS2Sidecar(ctx, sc); derr != nil {
+			c.logger.Warn("ROS 2 sidecar reap: delete failed",
+				zap.String("sidecar", sc.ID()), zap.Error(derr))
+		}
+	}
+	return nil
 }
 
 func (c *Client) deleteROS2Sidecar(ctx context.Context, container containerd.Container) error {
@@ -540,6 +702,65 @@ func (c *Client) deleteROS2Sidecar(ctx context.Context, container containerd.Con
 		return err
 	}
 	return nil
+}
+
+// Locking order for ros2ExecRefs (WDY-1702 H5):
+//
+//   - acquireSidecarExec and releaseSidecarExec each take c.mu briefly only
+//     for the map mutation, then immediately release it.
+//   - ExecROS2 calls acquire/release around task.Exec+proc.Wait but does NOT
+//     hold c.mu for the full duration of the exec. This is intentional:
+//     EnsureROS2Sidecars and StopROS2Sidecar hold c.mu for their entire body,
+//     so if ExecROS2 also held c.mu across a long exec the two would serialize
+//     and risk deadlock.
+//   - Teardown callers (EnsureROS2Sidecars, teardownAllROS2SidecarsLocked)
+//     already hold c.mu when they need to test the refcount, so they use the
+//     sidecarHasActiveExecsLocked variant which skips the redundant lock.
+
+// acquireSidecarExec increments the active-exec refcount for the named sidecar.
+// It takes c.mu briefly; callers must NOT hold c.mu.
+func (c *Client) acquireSidecarExec(name string) {
+	c.mu.Lock()
+	if c.ros2ExecRefs == nil {
+		c.ros2ExecRefs = make(map[string]int)
+	}
+	c.ros2ExecRefs[name]++
+	c.mu.Unlock()
+}
+
+// acquireSidecarExecCapped is like acquireSidecarExec but returns an error when
+// the per-sidecar exec count would exceed ros2MaxConcurrentExecs (L6, WDY-1706).
+// Callers must NOT hold c.mu.
+func (c *Client) acquireSidecarExecCapped(name string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.ros2ExecRefs == nil {
+		c.ros2ExecRefs = make(map[string]int)
+	}
+	if c.ros2ExecRefs[name] >= ros2MaxConcurrentExecs {
+		return fmt.Errorf("too many concurrent ROS 2 execs on sidecar %q (limit %d); retry later", name, ros2MaxConcurrentExecs)
+	}
+	c.ros2ExecRefs[name]++
+	return nil
+}
+
+// releaseSidecarExec decrements the active-exec refcount for the named sidecar.
+// It takes c.mu briefly; callers must NOT hold c.mu.
+func (c *Client) releaseSidecarExec(name string) {
+	c.mu.Lock()
+	if c.ros2ExecRefs[name] > 0 {
+		c.ros2ExecRefs[name]--
+	}
+	if c.ros2ExecRefs[name] == 0 {
+		delete(c.ros2ExecRefs, name)
+	}
+	c.mu.Unlock()
+}
+
+// sidecarHasActiveExecsLocked reports whether name has any active ExecROS2
+// calls in flight. Caller must hold c.mu.
+func (c *Client) sidecarHasActiveExecsLocked(name string) bool {
+	return c.ros2ExecRefs[name] > 0
 }
 
 // ExecROS2 runs `ros2 <args...>` inside the CLI sidecar, streaming stdout and
@@ -594,7 +815,10 @@ func (c *Client) ExecROS2(ctx context.Context, opts services.ROS2ExecOptions, st
 		fmt.Sprintf("source /opt/ros/%s/setup.bash >/dev/null 2>&1 && exec ros2 \"$@\"", distro),
 		"ros2",
 	}, opts.Args...)
-	pspec.Env = append(pspec.Env,
+	// Copy pspec.Env before appending to avoid mutating the slice header returned
+	// by container.Spec (future callers might cache the spec or share the backing
+	// array across execs — defensive copy prevents env bleed-over, L5, WDY-1706).
+	pspec.Env = append(append([]string(nil), pspec.Env...),
 		"ROS_DOMAIN_ID="+strconv.Itoa(opts.DomainID),
 		"ROS_LOCALHOST_ONLY=1",
 	)
@@ -608,6 +832,17 @@ func (c *Client) ExecROS2(ctx context.Context, opts services.ROS2ExecOptions, st
 			pspec.Env = append(pspec.Env, "CYCLONEDDS_URI="+cycloneDDSInlineConfig)
 		}
 	}
+
+	// Increment the per-sidecar exec refcount so that teardown (EnsureROS2Sidecars /
+	// StopROS2Sidecar) defers deletion while this exec is in flight. The acquire and
+	// release each take c.mu only briefly; c.mu is NOT held across task.Exec or
+	// proc.Wait (see locking-order comment above deleteROS2Sidecar).
+	// acquireSidecarExecCapped rejects the call when the per-sidecar cap is reached
+	// (ros2MaxConcurrentExecs) to prevent exhausting the containerd exec table (L6, WDY-1706).
+	if err := c.acquireSidecarExecCapped(name); err != nil {
+		return -1, err
+	}
+	defer c.releaseSidecarExec(name)
 
 	execID := fmt.Sprintf("ros2-exec-%d-%d", time.Now().UnixNano(), ros2ExecCounter.Add(1))
 	proc, err := task.Exec(nctx, execID, pspec, cio.NewCreator(cio.WithStreams(nil, stdout, stderr)))
