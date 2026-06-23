@@ -14,8 +14,7 @@ import (
 
 // AdvanceTo advances the system clock to t if t is after the current time.
 // It performs a step correction via settimeofday then persists to the hardware
-// RTC so the time survives a power cycle. Subsequent calls where the offset
-// is < 128ms use adjtimex for a smooth slew instead of a step.
+// RTC so the time survives a power cycle.
 func AdvanceTo(t time.Time, logger *zap.Logger) error {
 	now := time.Now()
 	if !t.After(now) {
@@ -23,23 +22,12 @@ func AdvanceTo(t time.Time, logger *zap.Logger) error {
 	}
 	offset := t.Sub(now)
 
-	if offset < 128*time.Millisecond {
-		// Small offset: slew via adjtimex to avoid disrupting in-flight timers.
-		timex := &unix.Timex{
-			Modes: unix.ADJ_SETOFFSET | unix.ADJ_NANO,
-			Time:  unix.Timeval{Sec: int64(offset / time.Second), Usec: int64((offset % time.Second) / time.Nanosecond)},
-		}
-		if _, err := unix.Adjtimex(timex); err != nil {
-			return fmt.Errorf("adjtimex: %w", err)
-		}
-	} else {
-		tv := unix.Timeval{
-			Sec:  t.Unix(),
-			Usec: int64(t.Nanosecond()) / 1000,
-		}
-		if err := unix.Settimeofday(&tv); err != nil {
-			return fmt.Errorf("settimeofday: %w", err)
-		}
+	tv := unix.Timeval{
+		Sec:  t.Unix(),
+		Usec: int64(t.Nanosecond()) / 1000,
+	}
+	if err := unix.Settimeofday(&tv); err != nil {
+		return fmt.Errorf("settimeofday: %w", err)
 	}
 
 	if err := setRTC(t); err != nil && logger != nil {
