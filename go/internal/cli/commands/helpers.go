@@ -23,6 +23,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/cli/ble"
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/cli/providers"
+	clitimesync "github.com/wendylabsinc/wendy/go/internal/cli/timesync"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
@@ -1188,6 +1189,11 @@ func connectBLEAgent(device *models.BluetoothDevice) (*ble.AgentClient, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Best-effort time sync before mTLS handshake — gives the device a chance
+	// to advance its clock before we attempt the TLS handshake.
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	clitimesync.BroadcastTime(ctx) //nolint:errcheck
+	cancel()
 	return ble.ConnectAgent(device, tlsCfg)
 }
 
