@@ -29,7 +29,6 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/cli/swifttoolchain"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
-	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
@@ -308,7 +307,6 @@ func applyDeviceBuildArgHints(buildArgs map[string]string, versionResp *agentpb.
 	setHint("WENDY_GPU_VENDOR", versionResp.GetGpuVendor())
 	setHint("WENDY_JETPACK_VERSION", versionResp.GetJetpackVersion())
 	setHint("WENDY_CUDA_VERSION", versionResp.GetCudaVersion())
-	setHint("WENDY_GPU_ARCH", versionResp.GetGpuArch())
 }
 
 func sortedValidatedBuildArgKeys(buildArgs map[string]string) ([]string, error) {
@@ -536,7 +534,7 @@ func detectBuildOptions(dir string) []BuildOption {
 }
 
 // injectDebugpy builds a wrapper image on top of the given image that installs debugpy.
-func injectDebugpy(ctx context.Context, registryAddr, registryImage, platform string, buildArgs map[string]string, streamOutput io.Writer, useMTLS bool, certInfo *config.CertificateInfo) error {
+func injectDebugpy(ctx context.Context, registryAddr, registryImage, platform string, buildArgs map[string]string, streamOutput io.Writer, useMTLS bool) error {
 	tmpDir, err := os.MkdirTemp("", "wendy-debugpy-*")
 	if err != nil {
 		return fmt.Errorf("creating temp dir: %w", err)
@@ -548,7 +546,7 @@ func injectDebugpy(ctx context.Context, registryAddr, registryImage, platform st
 		return fmt.Errorf("writing debugpy Dockerfile: %w", err)
 	}
 
-	return buildAndPushImage(ctx, tmpDir, registryAddr, registryImage, platform, "", buildArgs, streamOutput, streamOutput, useMTLS, certInfo)
+	return buildAndPushImage(ctx, tmpDir, registryAddr, registryImage, platform, "", buildArgs, "", streamOutput, streamOutput, useMTLS)
 }
 
 func generatePythonDockerfile(dir string, debug bool) (string, error) {
@@ -931,7 +929,7 @@ func dockerRuntimeInstalled(rt dockerRuntime) bool {
 // exists and returns its name plus the effective registry address to use in
 // image references. For IPv6 addresses, a hostname alias is configured inside
 // the builder container to avoid brackets that break the TOML parser.
-func ensureBuildxBuilder(ctx context.Context, registryAddr string, useMTLS bool, certInfo *config.CertificateInfo, w io.Writer) (builderName, effectiveAddr string, err error) {
+func ensureBuildxBuilder(ctx context.Context, registryAddr string, useMTLS bool, w io.Writer) (builderName, effectiveAddr string, err error) {
 	ensureBuildxBuilderMu.Lock()
 	defer ensureBuildxBuilderMu.Unlock()
 
@@ -959,7 +957,7 @@ func ensureBuildxBuilder(ctx context.Context, registryAddr string, useMTLS bool,
 	if !useMTLS {
 		builderName, err = ensurePlaintextBuilder(ctx, configDir, effectiveAddr, w)
 	} else {
-		builderName, err = ensureMTLSBuilder(ctx, configDir, effectiveAddr, containerCertDir, certInfo, w)
+		builderName, err = ensureMTLSBuilder(ctx, configDir, effectiveAddr, containerCertDir, w)
 	}
 	if err != nil {
 		return "", "", err
@@ -1139,7 +1137,7 @@ func ensurePlaintextBuilder(ctx context.Context, configDir, registryAddr string,
 
 // ensureMTLSBuilder ensures the "wendy-mtls" buildx builder exists with mTLS
 // client certs for the device registry.
-func ensureMTLSBuilder(ctx context.Context, configDir, registryAddr, containerCertDir string, certInfo *config.CertificateInfo, w io.Writer) (string, error) {
+func ensureMTLSBuilder(ctx context.Context, configDir, registryAddr, containerCertDir string, w io.Writer) (string, error) {
 	base := os.Getenv("WENDY_BUILDX_BUILDER")
 	if base == "" {
 		base = "wendy"
@@ -1148,6 +1146,7 @@ func ensureMTLSBuilder(ctx context.Context, configDir, registryAddr, containerCe
 
 	appliedPath := filepath.Join(configDir, base+"-mtls.applied")
 
+	certInfo := loadCLICert()
 	if certInfo == nil || certInfo.PemCertificate == "" || certInfo.PemPrivateKey == "" {
 		return "", fmt.Errorf("mTLS connection but no CLI certificates available")
 	}
@@ -1324,7 +1323,22 @@ func updateBuilderConfig(ctx context.Context, builderName, config string, w io.W
 	return nil
 }
 
-func buildAndPushImage(ctx context.Context, dir, registryAddr, registryImage, platform, dockerfile string, buildArgs map[string]string, streamOutput, logOutput io.Writer, useMTLS bool, certInfo *config.CertificateInfo) error {
+// buildxLocalCacheDir returns the local buildx cache directory
+// (--cache-to/--cache-from type=local) for a build. A non-empty cacheKey gives
+// the build its own isolated subdir so concurrent multi-service builds never
+// share one cache dir — BuildKit's local cache-export ingest store is not safe
+// for concurrent writers and parallel builds clobber each other's temp files
+// (WDY-1689). An empty cacheKey uses the shared base dir so single and
+// sequential builds keep their cross-run cache.
+func buildxLocalCacheDir(userCache, cacheKey string) string {
+	dir := filepath.Join(userCache, "wendy", "buildx")
+	if cacheKey != "" {
+		dir = filepath.Join(dir, sanitizeAppleContainerTag(cacheKey))
+	}
+	return dir
+}
+
+func buildAndPushImage(ctx context.Context, dir, registryAddr, registryImage, platform, dockerfile string, buildArgs map[string]string, cacheKey string, streamOutput, logOutput io.Writer, useMTLS bool) error {
 	// Serialize against other wendy processes: the buildx builder is shared, and
 	// reconfiguring or restarting it mid-build kills a concurrent build (#1017).
 	// Concurrent builds within this process share the lock via reference counting.
@@ -1334,7 +1348,7 @@ func buildAndPushImage(ctx context.Context, dir, registryAddr, registryImage, pl
 	}
 	defer releaseLock()
 
-	builder, effectiveAddr, err := ensureBuildxBuilder(ctx, registryAddr, useMTLS, certInfo, logOutput)
+	builder, effectiveAddr, err := ensureBuildxBuilder(ctx, registryAddr, useMTLS, logOutput)
 	if err != nil {
 		return err
 	}
@@ -1351,7 +1365,7 @@ func buildAndPushImage(ctx context.Context, dir, registryAddr, registryImage, pl
 	if err != nil {
 		return fmt.Errorf("finding user cache directory: %w", err)
 	}
-	cacheDir := filepath.Join(userCache, "wendy", "buildx")
+	cacheDir := buildxLocalCacheDir(userCache, cacheKey)
 	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
 		return fmt.Errorf("creating cache directory: %w", err)
 	}
@@ -1459,14 +1473,14 @@ func buildAndPushImage(ctx context.Context, dir, registryAddr, registryImage, pl
 	return nil
 }
 
-func buildAndPushImageWithBuilder(ctx context.Context, builder, dir, registryAddr, registryImage, platform, dockerfile string, buildArgs map[string]string, streamOutput, logOutput io.Writer, useMTLS bool, certInfo *config.CertificateInfo) error {
+func buildAndPushImageWithBuilder(ctx context.Context, builder, dir, registryAddr, registryImage, platform, dockerfile string, buildArgs map[string]string, cacheKey string, streamOutput, logOutput io.Writer, useMTLS bool) error {
 	normalized, err := normalizeImageBuilder(builder)
 	if err != nil {
 		return err
 	}
 	switch normalized {
 	case imageBuilderDocker:
-		return buildAndPushImage(ctx, dir, registryAddr, registryImage, platform, dockerfile, buildArgs, streamOutput, logOutput, useMTLS, certInfo)
+		return buildAndPushImage(ctx, dir, registryAddr, registryImage, platform, dockerfile, buildArgs, cacheKey, streamOutput, logOutput, useMTLS)
 	case imageBuilderAppleContainer:
 		return buildAndPushImageWithAppleContainer(ctx, dir, registryImage, platform, dockerfile, buildArgs, streamOutput, logOutput, useMTLS)
 	default:
@@ -1474,24 +1488,26 @@ func buildAndPushImageWithBuilder(ctx context.Context, builder, dir, registryAdd
 	}
 }
 
-func buildAndPushImageForAgent(ctx context.Context, conn *grpcclient.AgentConnection, regPort int, builder, dir, repo, platform, dockerfile string, buildArgs map[string]string, streamOutput, logOutput io.Writer) error {
+func buildAndPushImageForAgent(ctx context.Context, conn *grpcclient.AgentConnection, regPort int, builder, dir, repo, platform, dockerfile string, buildArgs map[string]string, cacheKey string, streamOutput, logOutput io.Writer) error {
 	if _, err := normalizeImageBuilder(builder); err != nil {
 		return err
 	}
 	if imageBuilderWasExplicit(builder) {
-		return buildAndPushImageForAgentWithBuilder(ctx, conn, regPort, builder, dir, repo, platform, dockerfile, buildArgs, streamOutput, logOutput)
+		return buildAndPushImageForAgentWithBuilder(ctx, conn, regPort, builder, dir, repo, platform, dockerfile, buildArgs, cacheKey, streamOutput, logOutput)
 	}
 	if shouldAutoAttemptAppleContainerBuilder() {
-		if err := buildAndPushImageForAgentWithBuilder(ctx, conn, regPort, imageBuilderAppleContainer, dir, repo, platform, dockerfile, buildArgs, streamOutput, logOutput); err == nil {
+		// Apple Container builds don't use buildx, so the local-cache key never
+		// applies; only the Docker fallback below consumes it.
+		if err := buildAndPushImageForAgentWithBuilder(ctx, conn, regPort, imageBuilderAppleContainer, dir, repo, platform, dockerfile, buildArgs, "", streamOutput, logOutput); err == nil {
 			return nil
 		} else {
 			logAppleContainerFallback(logOutput, err)
 		}
 	}
-	return buildAndPushImageForAgentWithBuilder(ctx, conn, regPort, imageBuilderDocker, dir, repo, platform, dockerfile, buildArgs, streamOutput, logOutput)
+	return buildAndPushImageForAgentWithBuilder(ctx, conn, regPort, imageBuilderDocker, dir, repo, platform, dockerfile, buildArgs, cacheKey, streamOutput, logOutput)
 }
 
-func buildAndPushImageForAgentWithBuilder(ctx context.Context, conn *grpcclient.AgentConnection, regPort int, builder, dir, repo, platform, dockerfile string, buildArgs map[string]string, streamOutput, logOutput io.Writer) error {
+func buildAndPushImageForAgentWithBuilder(ctx context.Context, conn *grpcclient.AgentConnection, regPort int, builder, dir, repo, platform, dockerfile string, buildArgs map[string]string, cacheKey string, streamOutput, logOutput io.Writer) error {
 	normalized, err := normalizeImageBuilder(builder)
 	if err != nil {
 		return err
@@ -1504,7 +1520,7 @@ func buildAndPushImageForAgentWithBuilder(ctx context.Context, conn *grpcclient.
 
 	registryImage := fmt.Sprintf("%s/%s:latest", registryAddr, strings.ToLower(repo))
 	cliLogln("Building and pushing image with %s for %s...", imageBuilderDisplayName(normalized), platform)
-	return buildAndPushImageWithBuilder(ctx, normalized, dir, registryAddr, registryImage, platform, dockerfile, buildArgs, streamOutput, logOutput, useMTLS, conn.CertInfo)
+	return buildAndPushImageWithBuilder(ctx, normalized, dir, registryAddr, registryImage, platform, dockerfile, buildArgs, cacheKey, streamOutput, logOutput, useMTLS)
 }
 
 func buildAndPushImageWithAppleContainer(ctx context.Context, dir, registryImage, platform, dockerfile string, buildArgs map[string]string, streamOutput, logOutput io.Writer, useMTLS bool) error {
@@ -1905,7 +1921,7 @@ func resolveRegistryForSwiftAgent(ctx context.Context, conn *grpcclient.AgentCon
 			// by the Wendy Cloud Root CA, which is not in the macOS system keychain.
 			// Stand up a local HTTP reverse proxy that terminates TLS with mTLS so
 			// the Swift container plugin can push via plain HTTP on 127.0.0.1.
-			certInfo := conn.CertInfo
+			certInfo := loadCLICert()
 			if certInfo == nil {
 				return "", false, nil, fmt.Errorf("mTLS connection but no CLI certificates available")
 			}

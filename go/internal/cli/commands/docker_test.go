@@ -76,6 +76,7 @@ func TestBuildAndPushImageWithAppleContainerUsesContainerCLI(t *testing.T) {
 		"linux/arm64",
 		"Dockerfile",
 		map[string]string{"B": "2", "A": "1"},
+		"",
 		io.Discard,
 		io.Discard,
 		false,

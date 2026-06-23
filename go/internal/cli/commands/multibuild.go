@@ -243,7 +243,10 @@ func buildServicesParallel(
 			}
 			err := dockerfileErr
 			if err == nil {
-				err = buildAndPushImageForAgent(ctx, conn, regPort, builder, contextDir, repo, platform, dockerfile, buildArgs, buildOut, logOut)
+				// Pass the per-service repo as the build's cache key so each concurrent
+				// build gets its own isolated local buildx cache dir (WDY-1689); sharing
+				// one dir corrupts BuildKit's cache-export ingest store under concurrency.
+				err = buildAndPushImageForAgent(ctx, conn, regPort, builder, contextDir, repo, platform, dockerfile, buildArgs, repo, buildOut, logOut)
 			}
 			dur := time.Since(start)
 
