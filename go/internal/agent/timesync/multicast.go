@@ -13,8 +13,7 @@ import (
 const (
 	multicastGroup = "239.255.87.84"
 	multicastPort  = 5887
-	multicastAddr  = "239.255.87.84:5887"
-	udpMaxPktSize  = 65536
+	udpMaxPktSize = 65536
 )
 
 // RunMulticast joins the WendyDatagram multicast group and dispatches incoming
