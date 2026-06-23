@@ -25,6 +25,6 @@ func readFloor(configPath string) time.Time {
 // config-partition provisioning.
 func WriteFloor(configPath string, t time.Time) error {
 	var buf [8]byte
-	binary.BigEndian.PutUint64(buf[:], uint64(t.Unix()))
+	binary.BigEndian.PutUint64(buf[:], uint64(t.Unix())) //nolint:gosec — Unix() is always non-negative for install-time timestamps
 	return os.WriteFile(filepath.Join(configPath, clockFloorFile), buf[:], 0o644)
 }
