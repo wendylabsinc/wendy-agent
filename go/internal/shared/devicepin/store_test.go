@@ -7,10 +7,12 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"io"
 	"math/big"
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -67,10 +69,44 @@ func TestStore_DifferentCert_RotationAccepted(t *testing.T) {
 	store, _ := devicepin.Open(dir)
 	cert1 := makeCert(t, "urn:wendy:org:7:asset:42")
 	_ = store.CheckAndUpdate(cert1, "My Device")
-	// Different cert, same identity key → rotation → accepted silently.
+	// Different cert, same identity key → rotation → accepted (with a warning to stderr).
 	cert2 := makeCert(t, "urn:wendy:org:7:asset:42")
 	if err := store.CheckAndUpdate(cert2, "My Device"); err != nil {
 		t.Errorf("CheckAndUpdate rotation: %v", err)
+	}
+}
+
+func TestStore_DifferentCert_WarnsOnMismatch(t *testing.T) {
+	dir := t.TempDir()
+	store, _ := devicepin.Open(dir)
+	cert1 := makeCert(t, "urn:wendy:org:7:asset:42")
+	_ = store.CheckAndUpdate(cert1, "My Device")
+
+	// Capture stderr during the second call with a different cert.
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	oldStderr := os.Stderr
+	os.Stderr = w
+
+	cert2 := makeCert(t, "urn:wendy:org:7:asset:42")
+	callErr := store.CheckAndUpdate(cert2, "My Device")
+
+	w.Close()
+	os.Stderr = oldStderr
+
+	if callErr != nil {
+		t.Fatalf("CheckAndUpdate rotation returned error: %v", callErr)
+	}
+
+	output, _ := io.ReadAll(r)
+	got := string(output)
+	if !strings.Contains(got, "WARNING") {
+		t.Errorf("expected WARNING in stderr on SPKI mismatch; got: %q", got)
+	}
+	if !strings.Contains(got, "My Device") {
+		t.Errorf("expected device name in warning; got: %q", got)
 	}
 }
 

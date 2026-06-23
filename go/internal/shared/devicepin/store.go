@@ -55,8 +55,8 @@ func Open(dir string) (*Store, error) {
 //   - Not an asset cert: skip (user certs and certs with no identity are not pinned)
 //   - Not previously pinned: store pin, return nil
 //   - Pinned, SPKI match: update LastSeen, return nil
-//   - Pinned, SPKI differs: chain already validated by VerifyConnection (rotation);
-//     update pin silently, return nil
+//   - Pinned, SPKI differs: warn to stderr (potential MITM or legitimate rotation),
+//     update pin, return nil
 func (s *Store) CheckAndUpdate(leaf *x509.Certificate, displayName string) error {
 	identity, ok, err := certs.IdentityFromCert(leaf)
 	if err != nil || !ok || identity.EntityType != "asset" {
@@ -65,6 +65,12 @@ func (s *Store) CheckAndUpdate(leaf *x509.Certificate, displayName string) error
 
 	key := identity.IdentityKey()
 	fingerprint := spkiFingerprint(leaf)
+
+	if existing, pinned := s.devices[key]; pinned && existing.SPKIFingerprint != fingerprint {
+		fmt.Fprintf(os.Stderr,
+			"WARNING: Device %q (%s) presented a different certificate than previously seen (was: %s, now: %s); if this is unexpected, a MITM attack may be in progress.\n",
+			displayName, key, existing.SPKIFingerprint, fingerprint)
+	}
 
 	s.devices[key] = PinnedDevice{
 		SPKIFingerprint: fingerprint,

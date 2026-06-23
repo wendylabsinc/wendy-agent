@@ -24,6 +24,13 @@ import (
 // certificate whose validity window includes a leap-year Feb 29 (max 731 days).
 const maxCertLifetime = (2*365 + 2) * 24 * time.Hour
 
+// maxClockSkewTolerance is the maximum amount by which the NotBefore floor may
+// be advanced to accommodate a cert issued after provisioning. When the device
+// clock is behind notBeforeFloor, effectiveNow is capped at
+// notBeforeFloor+maxClockSkewTolerance so that a cert with NotBefore far in the
+// future (e.g. years ahead) cannot be accepted by a device with a stuck clock.
+const maxClockSkewTolerance = 24 * time.Hour
+
 // checkRevocation enforces that leaf was issued with a validity window short
 // enough that a compromised credential expires within maxCertLifetime even
 // without an explicit CRL/OCSP revocation check.
@@ -174,16 +181,17 @@ func buildVerifyPeerCertificate(caPool *x509.CertPool, caCerts []*x509.Certifica
 		// and the verification call. effectiveNow applies the NotBefore floor only.
 		realNow := time.Now()
 		effectiveNow := maxTime(realNow, notBeforeFloor)
-		// When the device clock is behind its own cert's NotBefore (NTP not yet
-		// synced), the floor is an approximation of "now". A client cert issued
-		// after the device was provisioned has a later NotBefore than the floor,
-		// so effectiveNow would fall before the cert's NotBefore and cause a
-		// spurious "not yet valid" rejection. Advance effectiveNow to the client
-		// cert's NotBefore in this case — a cert is always valid at its own
-		// NotBefore by construction, and the issuing CA is the authoritative
-		// source of that timestamp.
+		// When the device clock is behind notBeforeFloor (NTP not yet synced),
+		// advance effectiveNow up to the cert's NotBefore so a cert issued just
+		// after provisioning is not spuriously rejected. Cap the advancement at
+		// notBeforeFloor+maxClockSkewTolerance: a cert whose NotBefore is further
+		// in the future than that is not accepted by a device with a stuck clock.
 		if realNow.Before(notBeforeFloor) {
-			effectiveNow = maxTime(effectiveNow, leaf.NotBefore)
+			advanced := leaf.NotBefore
+			if cap := notBeforeFloor.Add(maxClockSkewTolerance); advanced.After(cap) {
+				advanced = cap
+			}
+			effectiveNow = maxTime(effectiveNow, advanced)
 		}
 
 		// Pre-reject expired certs before any further processing. The floor must

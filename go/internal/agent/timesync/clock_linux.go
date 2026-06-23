@@ -57,7 +57,7 @@ type rtcTime struct {
 	Isdst int32
 }
 
-func setRTC(t time.Time) error {
+func setRTC(t time.Time) (retErr error) {
 	utc := t.UTC()
 	rt := rtcTime{
 		Sec:  int32(utc.Second()),
@@ -71,7 +71,11 @@ func setRTC(t time.Time) error {
 	if err != nil {
 		return fmt.Errorf("open /dev/rtc0: %w", err)
 	}
-	defer f.Close()
+	defer func() {
+		if cerr := f.Close(); cerr != nil && retErr == nil {
+			retErr = fmt.Errorf("close /dev/rtc0: %w", cerr)
+		}
+	}()
 	_, _, errno := unix.Syscall(unix.SYS_IOCTL, f.Fd(), ioctlRTCSetTime, uintptr(unsafe.Pointer(&rt)))
 	if errno != 0 {
 		return fmt.Errorf("RTC_SET_TIME ioctl: %w", errno)
