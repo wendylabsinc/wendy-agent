@@ -73,11 +73,17 @@ func DecodeMessage(b []byte) (map[uint32][]byte, error) {
 	if n == 0 {
 		return map[uint32][]byte{}, nil
 	}
-	// header: 4 + (n-1)*4 + n*4 bytes
-	headerLen := uint32(4 + (n-1)*4 + n*4)
-	if uint32(len(b)) < headerLen {
-		return nil, fmt.Errorf("roughtime message header truncated (need %d have %d)", headerLen, len(b))
+	// Each tag entry occupies at least 4 bytes; n cannot exceed the buffer.
+	if uint64(n) > uint64(len(b)) {
+		return nil, fmt.Errorf("roughtime message: implausible num_tags %d for %d-byte buffer", n, len(b))
 	}
+	// Compute header length in uint64 to avoid uint32 overflow on large n.
+	// Header layout: [num_tags:4] [(n-1) offsets:4 each] [n tags:4 each]
+	headerLen64 := uint64(4) + uint64(n-1)*4 + uint64(n)*4
+	if uint64(len(b)) < headerLen64 {
+		return nil, fmt.Errorf("roughtime message header truncated (need %d have %d)", headerLen64, len(b))
+	}
+	headerLen := uint32(headerLen64)
 
 	tags := make([]uint32, n)
 	for i := uint32(0); i < n; i++ {
@@ -95,7 +101,8 @@ func DecodeMessage(b []byte) (map[uint32][]byte, error) {
 	start := uint32(0)
 	for i := uint32(0); i < n; i++ {
 		end := endOffsets[i]
-		if end < start || headerLen+end > uint32(len(b)) {
+		// Use uint64 for the upper-bound check to avoid overflow when headerLen+end wraps.
+		if end < start || uint64(headerLen)+uint64(end) > uint64(len(b)) {
 			return nil, fmt.Errorf("roughtime message: value for tag %d out of bounds", i)
 		}
 		val := make([]byte, end-start)

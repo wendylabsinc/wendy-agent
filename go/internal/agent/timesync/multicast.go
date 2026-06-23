@@ -13,7 +13,7 @@ import (
 const (
 	multicastGroup = "239.255.87.84"
 	multicastPort  = 5887
-	udpMaxPktSize = 65536
+	udpMaxPktSize  = 65536
 )
 
 // RunMulticast joins the WendyDatagram multicast group and dispatches incoming
@@ -58,7 +58,7 @@ func (m *Manager) listenMulticast(ctx context.Context) {
 			continue
 		}
 
-		t, err := ProcessMulticastPacket(buf[:n])
+		t, err := safeProcessPacket(buf[:n])
 		if err != nil {
 			if m.logger != nil {
 				m.logger.Debug("timesync: invalid multicast packet", zap.Error(err))
@@ -74,6 +74,18 @@ func (m *Manager) listenMulticast(ctx context.Context) {
 		}
 		m.Apply(t)
 	}
+}
+
+// safeProcessPacket wraps ProcessMulticastPacket with a recover() so that any
+// unexpected panic in the untrusted-input parser cannot crash the agent process.
+// Time-sync failures are always non-fatal; a panic here is treated as a parse error.
+func safeProcessPacket(pkt []byte) (t time.Time, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("panic processing multicast packet: %v", r)
+		}
+	}()
+	return ProcessMulticastPacket(pkt)
 }
 
 // ProcessMulticastPacket parses and verifies a WendyDatagram UDP packet.
