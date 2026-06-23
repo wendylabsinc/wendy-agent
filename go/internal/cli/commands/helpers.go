@@ -1905,16 +1905,33 @@ func pickDevice(ctx context.Context, excludeProviders map[string]bool, excludeBl
 // Rules:
 //   - If cfgPlatform is a full "os/arch" string, use it as-is.
 //   - If cfgPlatform is OS-only (e.g., "linux" or "darwin"), append the agent arch.
-//   - If cfgPlatform is empty, default to the agent's OS and architecture.
+//   - If cfgPlatform is empty, default to the agent's OS (normalized to a valid
+//     OCI platform OS) and architecture.
 func resolveAgentPlatform(cfgPlatform, agentOS, agentArch string) string {
 	if cfgPlatform == "" {
-		return agentOS + "/" + agentArch
+		return ociOS(agentOS) + "/" + agentArch
 	}
 	if strings.Contains(cfgPlatform, "/") {
 		return cfgPlatform
 	}
 	// OS-only: append agent architecture.
 	return cfgPlatform + "/" + agentArch
+}
+
+// ociOS maps the agent-reported OS to a valid OCI image platform OS. The agent
+// reports the Linux distribution ID (e.g. "ubuntu", "debian") as its OS for
+// human-facing device info, but OCI image manifests only use "linux"/"darwin"/
+// "windows". Feeding a distro ID into the buildx --platform produces an invalid
+// platform like "ubuntu/arm64" and every build fails with "no match for
+// platform in manifest", so anything that isn't darwin/windows is treated as
+// linux (WDY-1723).
+func ociOS(agentOS string) string {
+	switch strings.ToLower(agentOS) {
+	case "darwin", "windows":
+		return strings.ToLower(agentOS)
+	default:
+		return "linux"
+	}
 }
 
 func registryPort(agentOS string) int {
