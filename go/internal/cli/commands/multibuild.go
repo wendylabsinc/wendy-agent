@@ -24,7 +24,36 @@ import (
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
-const maxConcurrentBuilds = 4
+const (
+	maxConcurrentBuilds = 4
+
+	// Builds and pushes are fused in one buildx invocation, so build concurrency
+	// also bounds how many multi-GB images push through the single device-registry
+	// mTLS tunnel at once. Large groups (e.g. the 14-service go2 template, with a
+	// ~10 GB GPU image) collapse that tunnel under full fan-out, so groups at or
+	// above largeGroupThreshold are throttled to largeGroupConcurrency concurrent
+	// builds (WDY-1690). This is a heuristic default; an explicit --max-concurrency
+	// override is tracked separately (WDY-1693).
+	largeGroupThreshold   = 8
+	largeGroupConcurrency = 2
+)
+
+// multiBuildConcurrency returns how many service images to build+push at once for
+// a group of numServices, throttling large groups to protect the shared device
+// registry tunnel (WDY-1690).
+func multiBuildConcurrency(numServices int) int {
+	n := maxConcurrentBuilds
+	if numServices >= largeGroupThreshold {
+		n = largeGroupConcurrency
+	}
+	if n > numServices {
+		n = numServices
+	}
+	if n < 1 {
+		n = 1
+	}
+	return n
+}
 
 func resolveServiceSubset(services map[string]*appconfig.ServiceConfig, only string) (map[string]*appconfig.ServiceConfig, error) {
 	if only == "" {
@@ -200,7 +229,12 @@ func buildServicesParallel(
 	}
 
 	results := make(chan result, len(names))
-	sem := make(chan struct{}, maxConcurrentBuilds)
+
+	concurrency := multiBuildConcurrency(len(names))
+	if concurrency < maxConcurrentBuilds && concurrency < len(names) {
+		cliLogln("Throttling to %d concurrent builds for %d services to protect the device registry tunnel (WDY-1690).", concurrency, len(names))
+	}
+	sem := make(chan struct{}, concurrency)
 
 	var prog *tea.Program
 	if isInteractiveTerminal() {
