@@ -159,7 +159,7 @@ func newROS2NodesCmd() *cobra.Command {
 				return printROS2JSON(nodes)
 			}
 			if len(resp.GetNodes()) == 0 {
-				cliLogln("No ROS 2 nodes found.")
+				cliNotice("No ROS 2 nodes found.")
 				return nil
 			}
 			rmws := make([]string, 0, len(resp.GetNodes()))
@@ -223,7 +223,7 @@ func newROS2TopicsCmd() *cobra.Command {
 				return printROS2JSON(topics)
 			}
 			if len(resp.GetTopics()) == 0 {
-				cliLogln("No ROS 2 topics found.")
+				cliNotice("No ROS 2 topics found.")
 				return nil
 			}
 			rmws := make([]string, 0, len(resp.GetTopics()))
@@ -334,7 +334,7 @@ func newROS2ServicesCmd() *cobra.Command {
 				return printROS2JSON(svcs)
 			}
 			if len(resp.GetServices()) == 0 {
-				cliLogln("No ROS 2 services found.")
+				cliNotice("No ROS 2 services found.")
 				return nil
 			}
 			rmws := make([]string, 0, len(resp.GetServices()))
@@ -545,6 +545,48 @@ func newROS2DoctorCmd() *cobra.Command {
 
 // ── streaming commands ──────────────────────────────────────────────
 
+// echoRecvStream is the minimal interface consumed by drainEchoStream,
+// satisfied by grpc.ServerStreamingClient[agentpbv2.ROS2Message].
+type echoRecvStream interface {
+	Recv() (*agentpbv2.ROS2Message, error)
+}
+
+// drainEchoStream reads messages from stream until io.EOF or ctx cancellation,
+// printing each message to stdout.  When the stream ends having delivered zero
+// messages, it writes a stderr notice so the user isn't left with silent output.
+//
+// WDY-1708 (claim b): exit 0 is intentional — in ROS 2, "no active publishers
+// yet" is not a hard error; topics are dynamic and a streaming echo on an idle
+// or absent topic legitimately produces no output.  However, silence without
+// feedback is confusing, so we emit a single notice on stderr.  At least one
+// message received → no notice.
+func drainEchoStream(ctx context.Context, stream echoRecvStream, topic string, useJSON bool, stderr io.Writer) error {
+	received := 0
+	for {
+		msg, rerr := stream.Recv()
+		if rerr != nil {
+			if rerr == io.EOF || ctx.Err() != nil {
+				// WDY-1708: keep exit 0, but surface a notice when no messages
+				// arrived so the user knows the topic had no active publishers.
+				if received == 0 {
+					fmt.Fprintf(stderr, "Notice: No messages received on %s — the topic may have no active publishers.\n", topic)
+				}
+				return nil
+			}
+			return ros2RPCError(rerr)
+		}
+		received++
+		if useJSON {
+			if jerr := printROS2JSON(map[string]string{"topic": msg.GetTopic(), "yaml": msg.GetYaml()}); jerr != nil {
+				return jerr
+			}
+			continue
+		}
+		fmt.Print(msg.GetYaml())
+		fmt.Println("---")
+	}
+}
+
 func newROS2EchoCmd() *cobra.Command {
 	var domain int32
 	var count int32
@@ -570,23 +612,7 @@ func newROS2EchoCmd() *cobra.Command {
 			if err != nil {
 				return ros2RPCError(err)
 			}
-			for {
-				msg, rerr := stream.Recv()
-				if rerr != nil {
-					if rerr == io.EOF || ctx.Err() != nil {
-						return nil
-					}
-					return ros2RPCError(rerr)
-				}
-				if jsonOutput {
-					if jerr := printROS2JSON(map[string]string{"topic": msg.GetTopic(), "yaml": msg.GetYaml()}); jerr != nil {
-						return jerr
-					}
-					continue
-				}
-				fmt.Print(msg.GetYaml())
-				fmt.Println("---")
-			}
+			return drainEchoStream(ctx, stream, args[0], jsonOutput, os.Stderr)
 		},
 	}
 	ros2DomainFlag(cmd, &domain)
@@ -825,7 +851,7 @@ func newROS2BagListCmd() *cobra.Command {
 				return printROS2JSON(bags)
 			}
 			if len(resp.GetBags()) == 0 {
-				cliLogln("No bags recorded on the device.")
+				cliNotice("No bags recorded on the device.")
 				return nil
 			}
 			w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
@@ -840,6 +866,102 @@ func newROS2BagListCmd() *cobra.Command {
 			return w.Flush()
 		},
 	}
+}
+
+// bagRecvStream is the minimal interface consumed by downloadAndExtractBag,
+// satisfied by the gRPC grpc.ServerStreamingClient[agentpbv2.ROS2BagChunk]
+// returned by client.DownloadBag.
+type bagRecvStream interface {
+	Recv() (*agentpbv2.ROS2BagChunk, error)
+}
+
+// chunkResult carries the result of a single stream.Recv call.
+type chunkResult struct {
+	chunk *agentpbv2.ROS2BagChunk
+	err   error
+}
+
+// downloadAndExtractBag pumps chunks from stream into a pipe, extracts the
+// resulting tar archive to a temporary directory inside dest, then atomically
+// renames it into place. If extraction fails the pump goroutine is unblocked
+// via pr.CloseWithError and the context cancellation, and the temporary
+// directory is removed.
+func downloadAndExtractBag(ctx context.Context, stream bagRecvStream, dest string) error {
+	// Use a child context so we can signal the pump goroutine on extract error.
+	dlCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	pr, pw := io.Pipe()
+
+	go func() {
+		for {
+			// Run Recv in its own goroutine so we can also select on dlCtx.Done,
+			// allowing the extract-error path to unblock a streaming Recv call that
+			// may not itself inspect the parent context (e.g. in tests or when the
+			// underlying transport is slow to react to cancellation).
+			recv := make(chan chunkResult, 1)
+			go func() {
+				chunk, err := stream.Recv()
+				recv <- chunkResult{chunk, err}
+			}()
+
+			select {
+			case <-dlCtx.Done():
+				pw.CloseWithError(dlCtx.Err())
+				return
+			case r := <-recv:
+				if r.err == io.EOF {
+					pw.Close()
+					return
+				}
+				if r.err != nil {
+					pw.CloseWithError(r.err)
+					return
+				}
+				if _, werr := pw.Write(r.chunk.GetData()); werr != nil {
+					pw.CloseWithError(werr)
+					return
+				}
+			}
+		}
+	}()
+
+	// Extract to a temp directory inside dest so os.Rename is on the same FS.
+	tmpDir, err := os.MkdirTemp(dest, ".bag-download-*")
+	if err != nil {
+		pr.CloseWithError(err)
+		cancel()
+		return err
+	}
+
+	if err := extractROS2BagArchive(pr, tmpDir); err != nil {
+		// Unblock the pump goroutine and clean up the partial temp dir.
+		pr.CloseWithError(err)
+		cancel()
+		_ = os.RemoveAll(tmpDir)
+		return err
+	}
+
+	// Find the single top-level entry (bag directory) written by the extract.
+	entries, err := os.ReadDir(tmpDir)
+	if err != nil {
+		_ = os.RemoveAll(tmpDir)
+		return fmt.Errorf("reading temp extract dir: %w", err)
+	}
+	if len(entries) != 1 {
+		_ = os.RemoveAll(tmpDir)
+		return fmt.Errorf("bag archive must contain exactly one top-level directory, got %d entries", len(entries))
+	}
+	bagName := entries[0].Name()
+	finalPath := filepath.Join(dest, bagName)
+
+	// Atomic rename: tmpDir/bagName → dest/bagName.
+	if err := os.Rename(filepath.Join(tmpDir, bagName), finalPath); err != nil {
+		_ = os.RemoveAll(tmpDir)
+		return fmt.Errorf("renaming bag into place: %w", err)
+	}
+	_ = os.Remove(tmpDir) // remove now-empty temp wrapper dir; ignore error
+	return nil
 }
 
 func newROS2BagDownloadCmd() *cobra.Command {
@@ -877,32 +999,16 @@ interactively.`,
 				}
 			}
 
-			stream, err := client.client.DownloadBag(cmd.Context(), &agentpbv2.DownloadROS2BagRequest{Name: name})
+			dlCtx, cancel := context.WithCancel(cmd.Context())
+			defer cancel()
+
+			stream, err := client.client.DownloadBag(dlCtx, &agentpbv2.DownloadROS2BagRequest{Name: name})
 			if err != nil {
 				return ros2RPCError(err)
 			}
 
-			pr, pw := io.Pipe()
-			go func() {
-				for {
-					chunk, rerr := stream.Recv()
-					if rerr == io.EOF {
-						pw.Close()
-						return
-					}
-					if rerr != nil {
-						pw.CloseWithError(ros2RPCError(rerr))
-						return
-					}
-					if _, werr := pw.Write(chunk.GetData()); werr != nil {
-						pw.CloseWithError(werr)
-						return
-					}
-				}
-			}()
-
-			if err := extractROS2BagArchive(pr, dest); err != nil {
-				return err
+			if err := downloadAndExtractBag(dlCtx, stream, dest); err != nil {
+				return ros2RPCError(err)
 			}
 			cliSuccess("Downloaded bag %q to %s", name, filepath.Join(dest, name))
 			return nil
@@ -998,6 +1104,97 @@ func extractROS2BagArchive(r io.Reader, dest string) error {
 
 // ── escape hatch ────────────────────────────────────────────────────
 
+// stripWendyExecGlobals scans args (the post-positional slice captured by
+// SetInterspersed(false)) for --device and --json flags that belong to wendy,
+// removes them from the slice, and returns their values alongside the
+// remaining args that should be forwarded to the remote ros2 process.
+//
+// Because SetInterspersed(false) stops cobra's flag parser at the first
+// positional, any --device/--json placed after the ros2 command word lands in
+// args rather than being parsed by the persistent root flags.  This function
+// peels those flags out so they can select the target device without being
+// forwarded verbatim to ros2 (which would reject them as unknown flags).
+//
+// Only the exact forms --device <value>, --device=<value>, --json, and
+// --json=<ignored> are recognised; anything else is left in the forwarded
+// slice unchanged (WDY-1553 passthrough).
+func stripWendyExecGlobals(args []string) (device string, jsonFlag bool, forwarded []string) {
+	forwarded = make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "--":
+			// Honor the -- escape: forward the rest verbatim
+			forwarded = append(forwarded, args[i:]...)
+			return
+		case strings.HasPrefix(args[i], "--device="):
+			device = strings.TrimPrefix(args[i], "--device=")
+		case args[i] == "--device":
+			if i+1 < len(args) {
+				device = args[i+1]
+				i++ // consume the value
+			} else {
+				forwarded = append(forwarded, args[i]) // no value — don't silently drop
+			}
+		case args[i] == "--json" || strings.HasPrefix(args[i], "--json="):
+			jsonFlag = true
+		default:
+			forwarded = append(forwarded, args[i])
+		}
+	}
+	return device, jsonFlag, forwarded
+}
+
+// execRecvStream is the minimal interface consumed by drainExecStream, matching
+// grpc.ServerStreamingClient[agentpbv2.ROS2ExecOutput].
+type execRecvStream interface {
+	Recv() (*agentpbv2.ROS2ExecOutput, error)
+}
+
+// drainExecStream reads all messages from stream until io.EOF, forwarding
+// stdout chunks to stdout and stderr chunks to stderr.  It returns an error if:
+//   - the stream closes without a terminal ExitCode frame ("stream ended before
+//     exit status"), which indicates a truncated or aborted stream; or
+//   - the last ExitCode frame reports a non-zero code.
+//
+// It never early-returns on a non-zero code — trailing output is drained first.
+// If ctx is cancelled (e.g. ctrl-c) and Recv returns any error, drainExecStream
+// returns nil — the same clean-stop behaviour as EchoTopic and MonitorHz.
+func drainExecStream(ctx context.Context, stream execRecvStream, args []string, stdout, stderr io.Writer) error {
+	var (
+		sawExitFrame bool
+		lastCode     int32
+	)
+	for {
+		msg, rerr := stream.Recv()
+		if rerr != nil {
+			if ctx.Err() != nil {
+				return nil // user cancelled (ctrl-c) — clean stop, like echo/hz
+			}
+			if rerr == io.EOF {
+				break // normal end — evaluate the exit-frame contract below
+			}
+			return ros2RPCError(rerr)
+		}
+		if len(msg.GetStdout()) > 0 {
+			stdout.Write(msg.GetStdout())
+		}
+		if len(msg.GetStderr()) > 0 {
+			stderr.Write(msg.GetStderr())
+		}
+		if msg.ExitCode != nil {
+			sawExitFrame = true
+			lastCode = *msg.ExitCode
+		}
+	}
+	if !sawExitFrame {
+		return fmt.Errorf("ros2 %s: stream ended before exit status", strings.Join(args, " "))
+	}
+	if lastCode != 0 {
+		return fmt.Errorf("ros2 %s exited with code %d", strings.Join(args, " "), lastCode)
+	}
+	return nil
+}
+
 func newROS2ExecCmd() *cobra.Command {
 	var domain int32
 	cmd := &cobra.Command{
@@ -1016,6 +1213,20 @@ the ros2 command; use -- to force the rest of the line through unparsed.`,
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
 
+			// SetInterspersed(false) stops cobra's flag parser at the first
+			// positional, so --device/--json placed after the ros2 command word
+			// (e.g. `exec node info /talker --device host.local`) land in args
+			// instead of being parsed by the root persistent flags.  Strip them
+			// here and propagate into the package globals before resolveTarget
+			// runs inside newROS2Client (WDY-1707).
+			localDevice, localJSON, fwdArgs := stripWendyExecGlobals(args)
+			if localDevice != "" {
+				deviceFlag = localDevice
+			}
+			if localJSON {
+				jsonOutput = true
+			}
+
 			client, err := newROS2Client(ctx)
 			if err != nil {
 				return err
@@ -1024,29 +1235,12 @@ the ros2 command; use -- to force the rest of the line through unparsed.`,
 
 			stream, err := client.client.Exec(ctx, &agentpbv2.ROS2ExecRequest{
 				DomainId: ros2DomainPtr(domain),
-				Args:     args,
+				Args:     fwdArgs,
 			})
 			if err != nil {
 				return ros2RPCError(err)
 			}
-			for {
-				msg, rerr := stream.Recv()
-				if rerr != nil {
-					if rerr == io.EOF || ctx.Err() != nil {
-						return nil
-					}
-					return ros2RPCError(rerr)
-				}
-				if len(msg.GetStdout()) > 0 {
-					os.Stdout.Write(msg.GetStdout())
-				}
-				if len(msg.GetStderr()) > 0 {
-					os.Stderr.Write(msg.GetStderr())
-				}
-				if msg.ExitCode != nil && *msg.ExitCode != 0 {
-					return fmt.Errorf("ros2 %s exited with code %d", strings.Join(args, " "), *msg.ExitCode)
-				}
-			}
+			return drainExecStream(ctx, stream, fwdArgs, os.Stdout, os.Stderr)
 		},
 	}
 	ros2DomainFlag(cmd, &domain)

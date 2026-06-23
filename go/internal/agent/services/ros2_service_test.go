@@ -719,6 +719,28 @@ func TestROS2Service_GetGraph_DedupsEdges(t *testing.T) {
 	}
 }
 
+func TestROS2Service_EchoTopic_StderrNotInPayload(t *testing.T) {
+	rt := &fakeROS2Runtime{
+		sidecar: ROS2Sidecar{Distro: "humble"},
+		execFn: func(_ context.Context, _ ROS2ExecOptions, stdout, stderr io.Writer) (int, error) {
+			io.WriteString(stderr, "selected interface \"lo\" is not multicast-capable: disabling multicast\n")
+			io.WriteString(stdout, "data: 'Hello World: 1'\n---\n")
+			return 0, nil
+		},
+	}
+	svc := newTestROS2Service(t, rt, t.TempDir())
+	stream := &fakeServerStream[agentpbv2.ROS2Message]{ctx: context.Background()}
+	if err := svc.EchoTopic(&agentpbv2.EchoROS2TopicRequest{Topic: "/chatter", Count: 1}, stream); err != nil {
+		t.Fatalf("EchoTopic: %v", err)
+	}
+	if len(stream.sent) != 1 {
+		t.Fatalf("got %d messages, want 1", len(stream.sent))
+	}
+	if strings.Contains(stream.sent[0].GetYaml(), "multicast") {
+		t.Errorf("stderr leaked into echo payload (WDY-1708): %q", stream.sent[0].GetYaml())
+	}
+}
+
 func TestTailLines(t *testing.T) {
 	in := "a\nb\n\nc\nd\ne\n"
 	if got := tailLines(in, 3); got != "c\nd\ne" {
