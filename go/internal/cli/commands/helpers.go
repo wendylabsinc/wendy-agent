@@ -1174,7 +1174,7 @@ func bleTLSConfig() (*tls.Config, error) {
 		return nil, fmt.Errorf("not logged in; run 'wendy auth login' to authenticate")
 	}
 	cert := auth.Certificates[0]
-	return ble.NewClientTLSConfig(cert.PemCertificate, cert.PemPrivateKey)
+	return ble.NewClientTLSConfig(cert.PemCertificate, cert.PemPrivateKey, cert.PemCertificateChain)
 }
 
 // connectBLEAgent builds a TLS config and connects to the given Bluetooth
