@@ -53,6 +53,7 @@ func TestDatagram_TooShort(t *testing.T) {
 func TestRoughtimePayload_RoundTrip(t *testing.T) {
 	original := roughtime.RoughtimePayload{
 		ServerIndex: 2,
+		Nonce:       []byte{0x01, 0x02, 0x03},
 		Response:    []byte{0xDE, 0xAD, 0xBE, 0xEF},
 	}
 	encoded := roughtime.EncodeRoughtimePayload(original)
@@ -62,6 +63,9 @@ func TestRoughtimePayload_RoundTrip(t *testing.T) {
 	}
 	if got.ServerIndex != original.ServerIndex {
 		t.Errorf("ServerIndex: got %d want %d", got.ServerIndex, original.ServerIndex)
+	}
+	if !bytes.Equal(got.Nonce, original.Nonce) {
+		t.Errorf("Nonce mismatch")
 	}
 	if !bytes.Equal(got.Response, original.Response) {
 		t.Errorf("Response mismatch")

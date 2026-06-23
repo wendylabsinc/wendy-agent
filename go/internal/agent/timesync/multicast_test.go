@@ -72,6 +72,7 @@ func buildRelayPacket(t *testing.T, serverIdx uint8, priv ed25519.PrivateKey, mi
 
 	payload := roughtime.EncodeRoughtimePayload(roughtime.RoughtimePayload{
 		ServerIndex: serverIdx,
+		Nonce:       nonce,
 		Response:    rawResp,
 	})
 	return roughtime.Encode(roughtime.Datagram{MsgType: roughtime.MsgTypeRoughtime, Payload: payload})
