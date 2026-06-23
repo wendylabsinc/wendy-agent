@@ -37,21 +37,29 @@ func ros2GraphNodeLabel(node, rmw string, tagged bool) string {
 	return node
 }
 
-// ros2GraphEdges builds topic → publishers and topic → subscribers maps from
-// a graph response, skipping hidden infrastructure topics. Node labels carry an
-// RMW tag when the graph spans multiple RMWs.
-func ros2GraphEdges(graph *agentpbv2.GetROS2GraphResponse) (pubs, subs map[string][]string) {
+// ros2EdgeKey identifies a pub/sub bucket by both topic and RMW so that
+// publishers and subscribers are only paired within the same middleware
+// (WDY-1712). When the graph is single-RMW, all edges carry Rmw: "" and
+// therefore share the same key — identical to the pre-fix behaviour.
+type ros2EdgeKey struct{ topic, rmw string }
+
+// ros2GraphEdges builds (topic,rmw) → publishers and (topic,rmw) → subscribers
+// maps from a graph response, skipping hidden infrastructure topics. Node
+// labels carry an RMW tag when the graph spans multiple RMWs.
+func ros2GraphEdges(graph *agentpbv2.GetROS2GraphResponse) (pubs, subs map[ros2EdgeKey][]string) {
 	tagged := graphSpansMultipleRMWs(graph)
-	pubs = make(map[string][]string)
-	subs = make(map[string][]string)
+	pubs = make(map[ros2EdgeKey][]string)
+	subs = make(map[ros2EdgeKey][]string)
 	for _, e := range graph.GetPublishes() {
 		if !ros2HiddenGraphTopics[e.GetTopic()] {
-			pubs[e.GetTopic()] = append(pubs[e.GetTopic()], ros2GraphNodeLabel(e.GetNode(), e.GetRmw(), tagged))
+			k := ros2EdgeKey{e.GetTopic(), e.GetRmw()}
+			pubs[k] = append(pubs[k], ros2GraphNodeLabel(e.GetNode(), e.GetRmw(), tagged))
 		}
 	}
 	for _, e := range graph.GetSubscribes() {
 		if !ros2HiddenGraphTopics[e.GetTopic()] {
-			subs[e.GetTopic()] = append(subs[e.GetTopic()], ros2GraphNodeLabel(e.GetNode(), e.GetRmw(), tagged))
+			k := ros2EdgeKey{e.GetTopic(), e.GetRmw()}
+			subs[k] = append(subs[k], ros2GraphNodeLabel(e.GetNode(), e.GetRmw(), tagged))
 		}
 	}
 	return pubs, subs
@@ -63,23 +71,28 @@ func ros2GraphEdges(graph *agentpbv2.GetROS2GraphResponse) (pubs, subs map[strin
 func renderROS2GraphASCII(graph *agentpbv2.GetROS2GraphResponse) string {
 	pubs, subs := ros2GraphEdges(graph)
 
-	topics := make([]string, 0, len(pubs))
-	for topic := range pubs {
-		topics = append(topics, topic)
+	keys := make([]ros2EdgeKey, 0, len(pubs))
+	for k := range pubs {
+		keys = append(keys, k)
 	}
-	sort.Strings(topics)
+	sort.Slice(keys, func(i, j int) bool {
+		if keys[i].topic != keys[j].topic {
+			return keys[i].topic < keys[j].topic
+		}
+		return keys[i].rmw < keys[j].rmw
+	})
 
 	var b strings.Builder
 	connected := make(map[string]bool)
-	for _, topic := range topics {
-		for _, pub := range pubs[topic] {
-			if len(subs[topic]) == 0 {
-				fmt.Fprintf(&b, "[%s] ──%s──▶ (no subscribers)\n", pub, topic)
+	for _, k := range keys {
+		for _, pub := range pubs[k] {
+			if len(subs[k]) == 0 {
+				fmt.Fprintf(&b, "[%s] ──%s──▶ (no subscribers)\n", pub, k.topic)
 				connected[pub] = true
 				continue
 			}
-			for _, sub := range subs[topic] {
-				fmt.Fprintf(&b, "[%s] ──%s──▶ [%s]\n", pub, topic, sub)
+			for _, sub := range subs[k] {
+				fmt.Fprintf(&b, "[%s] ──%s──▶ [%s]\n", pub, k.topic, sub)
 				connected[pub] = true
 				connected[sub] = true
 			}
@@ -123,15 +136,20 @@ func renderROS2GraphDOT(graph *agentpbv2.GetROS2GraphResponse) string {
 	for _, node := range graph.GetNodes() {
 		fmt.Fprintf(&b, "  %q;\n", ros2GraphNodeLabel(ros2GraphNodeFQN(node), node.GetRmw(), tagged))
 	}
-	topics := make([]string, 0, len(pubs))
-	for topic := range pubs {
-		topics = append(topics, topic)
+	keys := make([]ros2EdgeKey, 0, len(pubs))
+	for k := range pubs {
+		keys = append(keys, k)
 	}
-	sort.Strings(topics)
-	for _, topic := range topics {
-		for _, pub := range pubs[topic] {
-			for _, sub := range subs[topic] {
-				fmt.Fprintf(&b, "  %q -> %q [label=%q];\n", pub, sub, topic)
+	sort.Slice(keys, func(i, j int) bool {
+		if keys[i].topic != keys[j].topic {
+			return keys[i].topic < keys[j].topic
+		}
+		return keys[i].rmw < keys[j].rmw
+	})
+	for _, k := range keys {
+		for _, pub := range pubs[k] {
+			for _, sub := range subs[k] {
+				fmt.Fprintf(&b, "  %q -> %q [label=%q];\n", pub, sub, k.topic)
 			}
 		}
 	}
