@@ -206,7 +206,7 @@ func TestROS2Service_DomainOverride(t *testing.T) {
 		t.Errorf("exec domain = %d, want override 42", rt.calls[0].DomainID)
 	}
 
-	bad := int32(200)
+	bad := int32(233) // first value above the max valid ROS_DOMAIN_ID (232)
 	_, err := svc.ListNodes(context.Background(), &agentpbv2.ListROS2NodesRequest{DomainId: &bad})
 	if status.Code(err) != codes.InvalidArgument {
 		t.Errorf("out-of-range override error = %v, want InvalidArgument", err)
