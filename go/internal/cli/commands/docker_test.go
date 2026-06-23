@@ -1475,8 +1475,6 @@ func TestIsLinkLocalIP(t *testing.T) {
 }
 
 func TestStartRegistryProxy(t *testing.T) {
-	t.Setenv("WENDY_REGISTRY_CHAOS", "1")
-
 	// Start a fake "registry" server.
 	fakeRegistry := make(chan string, 1)
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
