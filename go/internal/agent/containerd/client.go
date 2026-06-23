@@ -134,7 +134,6 @@ func NewClient(logger *zap.Logger, address string, proxyMgr *dbusproxy.Manager) 
 // otherwise "native". Implemented in client_linux.go (Linux) and
 // client_other.go (always "native" on non-Linux platforms).
 
-
 // Close releases the underlying containerd client connection and stops all
 // D-Bus proxy processes.
 func (c *Client) Close() error {
