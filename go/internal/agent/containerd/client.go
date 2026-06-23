@@ -880,6 +880,12 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 		}
 	}
 
+	// Remove duplicate device nodes before handing the spec to runc: independent
+	// provisioners (CDI/L4T-CSV GPU setup and the gpu entitlement) can add the
+	// same node, and runc mknod()s each entry, so a duplicate path would fail
+	// container creation with EEXIST.
+	localoci.DedupeDevices(spec)
+
 	// Serialize our custom OCI spec to JSON for WithSpecFromBytes.
 	specJSON, err := json.Marshal(spec)
 	if err != nil {
@@ -943,7 +949,20 @@ func (c *Client) applyCDIGPU(spec *localoci.Spec) {
 	mgr := cdi.NewManager()
 	cdiSpec, err := mgr.LoadNVIDIACDISpec()
 	if err != nil {
-		c.logger.Warn("No NVIDIA CDI spec found, GPU library mounts may be incomplete", zap.Error(err))
+		// No nvidia-ctk-generated CDI spec. On Tegra/L4T this is expected when the
+		// device's nvidia-container-toolkit predates `nvidia-ctk cdi generate`
+		// (JetPack 5 / r35, toolkit ≤1.11). Fall back to the NVIDIA Container
+		// Runtime CSV-mode file lists, which still ship on those images and list
+		// the real libcuda.so.1 plus the Tegra iGPU device nodes (WDY-1716).
+		if applied, csvErr := cdi.ApplyL4TCSV(spec); csvErr != nil {
+			c.logger.Warn("L4T CSV GPU fallback failed; GPU mounts may be incomplete", zap.Error(csvErr))
+		} else if applied > 0 {
+			c.logger.Info("Applied L4T CSV GPU provisioning (no CDI spec; nvidia-ctk predates CDI)",
+				zap.Int("count", applied))
+			return
+		}
+		c.logger.Warn("No NVIDIA CDI spec and no usable L4T CSV files; GPU library mounts may be incomplete",
+			zap.Error(err))
 		return
 	}
 
