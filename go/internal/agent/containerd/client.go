@@ -84,6 +84,11 @@ type Client struct {
 	// following AssembleLayerFromChunks consumes them.
 	chunkIndex *ChunkIndex
 	staging    *staging
+
+	// snapshotter is the containerd snapshotter to use for new snapshots.
+	// Defaults to "overlayfs" when supported; falls back to "native" on kernels
+	// that do not support overlay mounts (e.g. nested container environments).
+	snapshotter string
 }
 
 func NewClient(logger *zap.Logger, address string, proxyMgr *dbusproxy.Manager) (*Client, error) {
@@ -102,6 +107,8 @@ func NewClient(logger *zap.Logger, address string, proxyMgr *dbusproxy.Manager) 
 		return nil, fmt.Errorf("loading chunk index: %w", err)
 	}
 
+	snapshotter := probeSnapshotter(logger)
+
 	return &Client{
 		client:       c,
 		logger:       logger,
@@ -114,7 +121,41 @@ func NewClient(logger *zap.Logger, address string, proxyMgr *dbusproxy.Manager) 
 		appStopping:  make(map[string]bool),
 		chunkIndex:   idx,
 		staging:      newStaging(defaultChunkStagingDir),
+		snapshotter:  snapshotter,
 	}, nil
+}
+
+// probeSnapshotter returns "overlayfs" if the kernel supports overlay mounts,
+// otherwise falls back to "native". This handles nested container environments
+// (e.g. Docker-in-Docker on OrbStack) where the kernel overlay module is absent.
+func probeSnapshotter(logger *zap.Logger) string {
+	dir, err := os.MkdirTemp("", "wendy-overlay-probe-*")
+	if err != nil {
+		logger.Warn("snapshotter probe: cannot create temp dir, using native", zap.Error(err))
+		return "native"
+	}
+	defer os.RemoveAll(dir)
+
+	lower := dir + "/lower"
+	upper := dir + "/upper"
+	work := dir + "/work"
+	merged := dir + "/merged"
+	for _, d := range []string{lower, upper, work, merged} {
+		if err := os.Mkdir(d, 0o755); err != nil {
+			return "native"
+		}
+	}
+
+	// Attempt an overlay mount; if the kernel does not support it, fall back.
+	err = syscall.Mount("overlay", merged, "overlay", 0,
+		"lowerdir="+lower+",upperdir="+upper+",workdir="+work)
+	if err != nil {
+		logger.Info("overlayfs not supported by kernel, using native snapshotter", zap.Error(err))
+		return "native"
+	}
+	_ = syscall.Unmount(merged, 0)
+	logger.Debug("overlayfs supported, using overlayfs snapshotter")
+	return "overlayfs"
 }
 
 // Close releases the underlying containerd client connection and stops all
@@ -631,7 +672,7 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 	}
 
 	// Unpack the image into the snapshotter if not already done.
-	unpacked, err := image.IsUnpacked(ctx, "")
+	unpacked, err := image.IsUnpacked(ctx, c.snapshotter)
 	if err != nil {
 		c.logger.Warn("Failed to check if image is unpacked", zap.Error(err))
 	}
@@ -849,6 +890,7 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 	snapshotKey := SnapshotKey(appID, serviceName)
 	_, err = c.client.NewContainer(ctx, containerName,
 		containerd.WithImage(image),
+		containerd.WithSnapshotter(c.snapshotter),
 		containerd.WithNewSnapshot(snapshotKey, image),
 		containerd.WithContainerLabels(labels),
 		containerd.WithNewSpec(
@@ -1606,6 +1648,7 @@ func (c *Client) recreateContainer(ctx context.Context, ctr containerd.Container
 	snapshotKey := SnapshotKey(labelAppID, labelSvcName)
 	_, err = c.client.NewContainer(ctx, ContainerName(labelAppID, labelSvcName),
 		containerd.WithImage(image),
+		containerd.WithSnapshotter(c.snapshotter),
 		containerd.WithNewSnapshot(snapshotKey, image),
 		containerd.WithContainerLabels(info.Labels),
 		containerd.WithNewSpec(
@@ -1805,6 +1848,7 @@ func (c *Client) refreshSecondaryNamespaces(ctx context.Context, name string, pr
 	snapshotKey := SnapshotKey(labelAppID, labelSvcName)
 	_, err = c.client.NewContainer(ctx, ContainerName(labelAppID, labelSvcName),
 		containerd.WithImage(image),
+		containerd.WithSnapshotter(c.snapshotter),
 		containerd.WithNewSnapshot(snapshotKey, image),
 		containerd.WithContainerLabels(info.Labels),
 		containerd.WithNewSpec(
