@@ -182,7 +182,7 @@ func detectJetPackVersion() string {
 	if jp, ok := jetpack[key]; ok {
 		return jp
 	}
-	return "L4T " + major + "." + revision
+	return "L4T-" + major + "." + revision
 }
 
 var cudaVersionFileRe = regexp.MustCompile(`(?i)CUDA[^0-9]*([0-9]+\.[0-9]+(?:\.[0-9]+)?)`)
