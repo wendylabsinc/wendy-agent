@@ -174,6 +174,17 @@ func buildVerifyPeerCertificate(caPool *x509.CertPool, caCerts []*x509.Certifica
 		// and the verification call. effectiveNow applies the NotBefore floor only.
 		realNow := time.Now()
 		effectiveNow := maxTime(realNow, notBeforeFloor)
+		// When the device clock is behind its own cert's NotBefore (NTP not yet
+		// synced), the floor is an approximation of "now". A client cert issued
+		// after the device was provisioned has a later NotBefore than the floor,
+		// so effectiveNow would fall before the cert's NotBefore and cause a
+		// spurious "not yet valid" rejection. Advance effectiveNow to the client
+		// cert's NotBefore in this case — a cert is always valid at its own
+		// NotBefore by construction, and the issuing CA is the authoritative
+		// source of that timestamp.
+		if realNow.Before(notBeforeFloor) {
+			effectiveNow = maxTime(effectiveNow, leaf.NotBefore)
+		}
 
 		// Pre-reject expired certs before any further processing. The floor must
 		// not mask real-time expiry: checking here with realNow eliminates any
