@@ -436,6 +436,7 @@ func (s *mcpServer) connectToCloudAgent(ctx context.Context, cloudGRPC, deviceNa
 		ExpectedOrgID: int32(certInfo.OrganizationID),
 	})
 	if err != nil {
+		closeTunnel()
 		return nil, nil, fmt.Errorf("building TLS verifier: %w", err)
 	}
 	tlsCfg := &tls.Config{
