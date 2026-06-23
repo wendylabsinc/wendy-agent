@@ -43,7 +43,7 @@ func TestROS2Config_ResolvedDomainID(t *testing.T) {
 
 func TestROS2Config_ResolvedRMW(t *testing.T) {
 	cases := map[string]string{
-		"":                  "rmw_cyclonedds_cpp",
+		"":                  "rmw_fastrtps_cpp", // default matches stock ros:humble (WDY-1719)
 		"cyclonedds":        "rmw_cyclonedds_cpp",
 		"CycloneDDS":        "rmw_cyclonedds_cpp",
 		"fastrtps":          "rmw_fastrtps_cpp",

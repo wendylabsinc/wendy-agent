@@ -24,7 +24,20 @@ func NewContainerServiceV2(v1 *ContainerService) *ContainerServiceV2 {
 }
 
 func (s *ContainerServiceV2) StartContainer(req *agentpbv2.StartContainerRequest, stream grpc.ServerStreamingServer[agentpbv2.ContainerStreamResponse]) error {
-	return s.v1.streamContainerOutput(stream.Context(), req.GetAppName(), postStartAgentHookFromContext(stream.Context()), nil, &containerStreamV1Adapter{v2stream: stream})
+	ctx := stream.Context()
+	appName := req.GetAppName()
+
+	// Multi-service groups: start every service (detached) rather than rejecting
+	// a bare appID as ambiguous. Mirrors `apps stop <appId>`, which already acts
+	// on the whole group (WDY-1720). streamContainerOutput streams a single
+	// container and would otherwise fail with "has multiple service containers".
+	if s.v1.containerd != nil {
+		if ids, err := s.v1.containerd.ContainerIDsForApp(ctx, appName); err == nil && len(ids) > 1 {
+			return s.v1.startGroupDetached(ctx, appName, ids, nil)
+		}
+	}
+
+	return s.v1.streamContainerOutput(ctx, appName, postStartAgentHookFromContext(ctx), nil, &containerStreamV1Adapter{v2stream: stream})
 }
 
 func (s *ContainerServiceV2) AttachContainer(stream grpc.BidiStreamingServer[agentpbv2.AttachContainerRequest, agentpbv2.ContainerStreamResponse]) error {

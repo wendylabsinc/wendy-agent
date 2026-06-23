@@ -18,8 +18,19 @@ const ROS2AnnotationKey = EntitlementAnnotationKeyPrefix + "ros2"
 const ROS2DefaultDistro = "humble"
 
 // ROS2DefaultRMW is the RMW implementation injected when wendy.json does not
-// specify one.
-const ROS2DefaultRMW = "rmw_cyclonedds_cpp"
+// specify one. It is rmw_fastrtps_cpp — the RMW the stock docker.io/library/ros
+// images actually ship (and ROS 2's own default). Defaulting to CycloneDDS
+// crash-looped real rclpy nodes on stock ros:humble, which lacks
+// librmw_cyclonedds_cpp.so (WDY-1719); the injected default must match what the
+// base image provides. Apps that want CycloneDDS set rmw explicitly and install
+// ros-<distro>-rmw-cyclonedds-cpp in their image.
+const ROS2DefaultRMW = "rmw_fastrtps_cpp"
+
+// ROS2RMWCycloneDDS is the full CycloneDDS RMW identifier. CycloneDDS needs the
+// inline CYCLONEDDS_URI config injected (see cycloneDDSInlineConfig); gating on
+// this constant — rather than ROS2DefaultRMW — keeps that injection correct
+// regardless of which RMW is the default (WDY-1719).
+const ROS2RMWCycloneDDS = "rmw_cyclonedds_cpp"
 
 // ROS2DomainIDMin and ROS2DomainIDMax bound valid ROS_DOMAIN_ID values to the
 // full ROS 2 range (0–232). RMW implementations map the domain ID to UDP ports;

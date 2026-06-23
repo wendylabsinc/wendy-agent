@@ -1899,16 +1899,37 @@ func pickDevice(ctx context.Context, excludeProviders map[string]bool, excludeBl
 	return nil, fmt.Errorf("selected device type is not yet supported")
 }
 
+// ociOSForAgentOS maps a Wendy agent OS string to a valid OCI image OS.
+// WendyOS and Wendy-Lite are Linux distributions, so their images are built and
+// run as "linux"; "darwin" and "windows" pass through unchanged. Any other
+// (Linux-based) device OS also normalizes to "linux".
+//
+// Without this, an agent that reports os="wendyos" (WDY-1717) produces the OCI
+// platform "wendyos/arm64" — not a valid OCI OS — and buildx fails to resolve
+// any base-image manifest ("no match for platform in manifest"), breaking every
+// fresh build to a WendyOS device.
+func ociOSForAgentOS(agentOS string) string {
+	switch strings.ToLower(strings.TrimSpace(agentOS)) {
+	case appconfig.PlatformDarwin, "windows":
+		return strings.ToLower(strings.TrimSpace(agentOS))
+	default:
+		// "linux", "" (default), "wendyos", "wendy-lite", and any other
+		// Linux-based device OS all build/run as linux.
+		return "linux"
+	}
+}
+
 // resolveAgentPlatform determines the target platform string from the user's
 // wendy.json platform field, the agent's OS, and the agent's CPU architecture.
 //
 // Rules:
 //   - If cfgPlatform is a full "os/arch" string, use it as-is.
 //   - If cfgPlatform is OS-only (e.g., "linux" or "darwin"), append the agent arch.
-//   - If cfgPlatform is empty, default to the agent's OS and architecture.
+//   - If cfgPlatform is empty, default to the agent's OS (normalized to a valid
+//     OCI OS via ociOSForAgentOS — e.g. "wendyos" → "linux") and architecture.
 func resolveAgentPlatform(cfgPlatform, agentOS, agentArch string) string {
 	if cfgPlatform == "" {
-		return agentOS + "/" + agentArch
+		return ociOSForAgentOS(agentOS) + "/" + agentArch
 	}
 	if strings.Contains(cfgPlatform, "/") {
 		return cfgPlatform

@@ -52,9 +52,9 @@ const (
 	// ExecROS2 can set RMW_IMPLEMENTATION to match — without it the sidecar's
 	// ros2 CLI falls to the image default and can't see apps on another RMW
 	// (WDY-1593). Empty means the app's RMW_IMPLEMENTATION was not set in its
-	// OCI spec env; Wendy's config layer defaults that to CycloneDDS
+	// OCI spec env; Wendy's config layer defaults that to FastRTPS
 	// (appconfig.ROS2DefaultRMW), so the sidecar layer treats empty as
-	// CycloneDDS too (WDY-1703).
+	// FastRTPS too (WDY-1703, WDY-1719).
 	labelKeyROS2RMW = "sh.wendy/ros2.rmw"
 
 	// rosImageDefaultRMW is the only RMW the stock docker.io/library/ros:<distro>
@@ -145,14 +145,14 @@ func rmwFromEnv(env []string) string {
 
 // ros2SidecarSuffix maps an RMW to a short, containerd-ID-safe sidecar name
 // suffix (e.g. "rmw_cyclonedds_cpp" -> "cyclonedds"). Empty RMW is treated as
-// CycloneDDS — the Wendy config-layer default (appconfig.ROS2DefaultRMW) — so
-// both layers agree on which sidecar serves an unset-RMW app (WDY-1703). One
-// sidecar per suffix means one per distinct RMW.
+// FastRTPS — the Wendy config-layer default (appconfig.ROS2DefaultRMW) — so
+// both layers agree on which sidecar serves an unset-RMW app (WDY-1703,
+// WDY-1719). One sidecar per suffix means one per distinct RMW.
 func ros2SidecarSuffix(rmw string) string {
 	switch rmw {
-	case "rmw_cyclonedds_cpp", "":
+	case "rmw_cyclonedds_cpp":
 		return "cyclonedds"
-	case "rmw_fastrtps_cpp":
+	case "rmw_fastrtps_cpp", "":
 		return "fastrtps"
 	case "rmw_connextdds":
 		return "connext"
@@ -301,17 +301,17 @@ func (c *Client) ensureOneROS2Sidecar(ctx context.Context, anchor *services.ROS2
 	// Pick the sidecar image.
 	//
 	// The stock docker.io/library/ros:<distro> image ships only FastRTPS
-	// (librmw_fastrtps_cpp; no CycloneDDS). It is used only for an explicit
-	// rmw_fastrtps_cpp anchor — the verified path that does not depend on the
-	// app image carrying the ros2 CLI (WDY-1593).
+	// (librmw_fastrtps_cpp; no CycloneDDS). It serves a FastRTPS anchor —
+	// including empty, which Wendy's config layer resolves to FastRTPS
+	// (appconfig.ROS2DefaultRMW, WDY-1719) — the verified path that does not
+	// depend on the app image carrying the ros2 CLI (WDY-1593).
 	//
-	// For every other RMW — including empty (which Wendy's config layer
-	// resolves to CycloneDDS, appconfig.ROS2DefaultRMW, WDY-1703) — reuse the
-	// anchor app's own image: it already carries the matching RMW + ros2 CLI
-	// and is already pulled and unpacked on the device.
+	// For every other RMW (e.g. CycloneDDS) reuse the anchor app's own image:
+	// it already carries the matching RMW + ros2 CLI and is already pulled and
+	// unpacked on the device.
 	var image containerd.Image
 	reusedAnchorImage := false
-	if rmw == rosImageDefaultRMW {
+	if rmw == rosImageDefaultRMW || rmw == "" {
 		// stock docker.io/library/ros:<distro> ships only FastRTPS
 		imageName := "docker.io/library/ros:" + anchor.Distro
 		image, err = c.client.GetImage(ctx, imageName)
@@ -328,8 +328,8 @@ func (c *Client) ensureOneROS2Sidecar(ctx context.Context, anchor *services.ROS2
 			}
 		}
 	} else {
-		// CycloneDDS (incl. the empty/config default) and other RMWs reuse the
-		// anchor app's own image, which carries the matching RMW + ros2 CLI.
+		// CycloneDDS and other non-FastRTPS RMWs reuse the anchor app's own
+		// image, which carries the matching RMW + ros2 CLI.
 		// The anchor image is already pulled/unpacked (the anchor is running),
 		// so skip the pull/unpack dance entirely.
 		image, err = anchorCtr.Image(ctx)
@@ -828,7 +828,7 @@ func (c *Client) ExecROS2(ctx context.Context, opts services.ROS2ExecOptions, st
 	// into the environment as defense-in-depth (SOC2-CC6, NIST-SI-10).
 	if rmw := labels[labelKeyROS2RMW]; appconfig.IsValidRMWImplementation(rmw) {
 		pspec.Env = append(pspec.Env, "RMW_IMPLEMENTATION="+rmw)
-		if rmw == appconfig.ROS2DefaultRMW {
+		if rmw == appconfig.ROS2RMWCycloneDDS {
 			pspec.Env = append(pspec.Env, "CYCLONEDDS_URI="+cycloneDDSInlineConfig)
 		}
 	}

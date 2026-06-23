@@ -13,8 +13,8 @@ import (
 )
 
 // TestROS2SidecarName maps each RMW to a distinct, prefix-scoped sidecar name
-// and collapses empty RMW to the CycloneDDS (config-default) sidecar — the
-// basis for one persistent sidecar per RMW (WDY-1594, WDY-1703).
+// and collapses empty RMW to the FastRTPS (config-default) sidecar — the
+// basis for one persistent sidecar per RMW (WDY-1594, WDY-1703, WDY-1719).
 func TestROS2SidecarName(t *testing.T) {
 	cyc := ros2SidecarName("rmw_cyclonedds_cpp")
 	fast := ros2SidecarName("rmw_fastrtps_cpp")
@@ -22,8 +22,8 @@ func TestROS2SidecarName(t *testing.T) {
 	if cyc == fast {
 		t.Errorf("distinct RMWs must map to distinct sidecars: %q == %q", cyc, fast)
 	}
-	if def != cyc {
-		t.Errorf("empty RMW should map to the CycloneDDS (config-default) sidecar (WDY-1703): %q vs %q", def, cyc)
+	if def != fast {
+		t.Errorf("empty RMW should map to the FastRTPS (config-default) sidecar (WDY-1719): %q vs %q", def, fast)
 	}
 	if got := ros2SidecarName("rmw_bogus"); got != ros2SidecarPrefix+"-default" {
 		t.Errorf("unknown RMW = %q, want %q", got, ros2SidecarPrefix+"-default")
@@ -792,9 +792,13 @@ func TestBuildROS2Env_AutoDomainID(t *testing.T) {
 	if val2, _ := envValue(again, "ROS_DOMAIN_ID"); val2 != val {
 		t.Errorf("auto domain ID not stable: %q vs %q", val, val2)
 	}
-	// Defaults: CycloneDDS RMW with inline config.
-	if !envContains(got, "RMW_IMPLEMENTATION=rmw_cyclonedds_cpp") {
-		t.Errorf("expected default RMW_IMPLEMENTATION=rmw_cyclonedds_cpp, got %v", got)
+	// Default RMW is FastRTPS — what stock ros:humble ships (WDY-1719) — and it
+	// must NOT get the CycloneDDS-only inline config.
+	if !envContains(got, "RMW_IMPLEMENTATION=rmw_fastrtps_cpp") {
+		t.Errorf("expected default RMW_IMPLEMENTATION=rmw_fastrtps_cpp, got %v", got)
+	}
+	if _, ok := envValue(got, "CYCLONEDDS_URI"); ok {
+		t.Errorf("CYCLONEDDS_URI must not be injected for the default (FastRTPS) RMW, got %v", got)
 	}
 }
 
