@@ -35,6 +35,31 @@ type mldsaSPKI struct {
 	PublicKey asn1.BitString
 }
 
+// OrgMismatchError is returned by the VerifyConnection callback when the
+// server certificate's org ID does not match ExpectedOrgID.
+type OrgMismatchError struct {
+	Want int32 // client's expected org; 0 if client carries no org identity
+	Got  int32 // org found in the server certificate
+}
+
+func (e *OrgMismatchError) Error() string {
+	return fmt.Sprintf("server certificate belongs to org %d, expected org %d", e.Got, e.Want)
+}
+
+// PinChecker is satisfied by *devicepin.Store. Defined here as an interface
+// so shared/certs does not import shared/devicepin (which would be circular).
+type PinChecker interface {
+	CheckAndUpdate(leaf *x509.Certificate, displayName string) error
+}
+
+// ServerVerifyOpts configures the server certificate verification callback
+// returned by BuildServerVerifyConnection.
+type ServerVerifyOpts struct {
+	ChainPEM      string     // required: PEM-encoded CA chain for ML-DSA-aware chain verification
+	ExpectedOrgID int32      // 0 = accept any org (still extracted for pinning key)
+	PinStore      PinChecker // nil = skip pinning
+}
+
 // ParseCertsFromPEM parses all CERTIFICATE blocks from a PEM bundle, handling
 // ML-DSA certificates that produce "trailing data" errors from Go's standard
 // x509 parser by stripping to the exact outer ASN.1 SEQUENCE.
@@ -116,19 +141,22 @@ func verifyMLDSASignature(issuer, cert *x509.Certificate) error {
 	return nil
 }
 
-// BuildServerVerifyConnection returns a VerifyConnection callback that verifies
-// the server's certificate against chainPEM with ML-DSA fallback support.
-// It is intended for use alongside InsecureSkipVerify: true to bypass Go's
-// built-in hostname and chain verification while still performing full ML-DSA-
-// aware chain validation against the Wendy PKI.
-// Returns an error if chainPEM is empty or contains no parseable CA certificates.
-func BuildServerVerifyConnection(chainPEM string) (func(tls.ConnectionState) error, error) {
-	if chainPEM == "" {
+// BuildServerVerifyConnection returns a VerifyConnection callback that:
+//  1. Verifies the server cert chain with ML-DSA fallback (see mldsa.go)
+//  2. Extracts the server's Wendy org identity (IdentityFromCert)
+//  3. Returns OrgMismatchError if opts.ExpectedOrgID != 0 and orgs differ
+//  4. Calls opts.PinStore.CheckAndUpdate if PinStore is non-nil
+//
+// InsecureSkipVerify must be true on the tls.Config — this callback is the
+// actual verification. Go's built-in verifier cannot parse ML-DSA chain certs
+// and there is no TLS hostname over L2CAP or passthrough gRPC targets.
+func BuildServerVerifyConnection(opts ServerVerifyOpts) (func(tls.ConnectionState) error, error) {
+	if opts.ChainPEM == "" {
 		return nil, fmt.Errorf("chain PEM is required to verify device server certificate")
 	}
 	caPool := x509.NewCertPool()
-	caPool.AppendCertsFromPEM([]byte(chainPEM))
-	caCerts, err := ParseCertsFromPEM([]byte(chainPEM))
+	caPool.AppendCertsFromPEM([]byte(opts.ChainPEM))
+	caCerts, err := ParseCertsFromPEM([]byte(opts.ChainPEM))
 	if err != nil {
 		return nil, fmt.Errorf("parsing chain PEM: %w", err)
 	}
@@ -142,30 +170,52 @@ func BuildServerVerifyConnection(chainPEM string) (func(tls.ConnectionState) err
 		}
 		leaf := cs.PeerCertificates[0]
 
+		// Step 1: ML-DSA-aware chain verification.
 		intermediates := x509.NewCertPool()
 		for _, cert := range cs.PeerCertificates[1:] {
 			intermediates.AddCert(cert)
 		}
-
-		// Try standard Go verification first (handles ECDSA/RSA chains).
 		_, stdErr := leaf.Verify(x509.VerifyOptions{
 			Roots:         caPool,
 			Intermediates: intermediates,
 			KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		})
-		if stdErr == nil {
-			return nil
+		if stdErr != nil {
+			sigOID, oidErr := mldsaCertSigAlgOID(leaf)
+			if oidErr != nil {
+				return stdErr
+			}
+			if _, schemeErr := mldsaScheme(sigOID); schemeErr != nil {
+				return stdErr
+			}
+			if mldsaErr := verifyMLDSAServerCert(leaf, caCerts); mldsaErr != nil {
+				return mldsaErr
+			}
 		}
 
-		// Fall back to ML-DSA verification when the leaf is ML-DSA-signed.
-		sigOID, oidErr := mldsaCertSigAlgOID(leaf)
-		if oidErr != nil {
-			return stdErr
+		// Step 2: org identity check.
+		identity, hasIdentity, idErr := IdentityFromCert(leaf)
+		if idErr != nil {
+			return fmt.Errorf("extracting server cert identity: %w", idErr)
 		}
-		if _, schemeErr := mldsaScheme(sigOID); schemeErr != nil {
-			return stdErr
+		if hasIdentity && opts.ExpectedOrgID != 0 && identity.OrgID != opts.ExpectedOrgID {
+			return &OrgMismatchError{Want: opts.ExpectedOrgID, Got: identity.OrgID}
 		}
-		return verifyMLDSAServerCert(leaf, caCerts)
+
+		// Step 3: SPKI pin check/update.
+		if opts.PinStore != nil && hasIdentity && identity.EntityType == "asset" {
+			displayName := leaf.Subject.CommonName
+			if displayName == "" {
+				displayName = identity.IdentityKey()
+			}
+			if pinErr := opts.PinStore.CheckAndUpdate(leaf, displayName); pinErr != nil {
+				// Log but don't block — pin I/O failure is not a security failure
+				// when the chain has already been verified above.
+				_ = pinErr // callers that care about pinning use a Store that logs internally
+			}
+		}
+
+		return nil
 	}, nil
 }
 

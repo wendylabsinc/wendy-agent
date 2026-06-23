@@ -96,18 +96,16 @@ func (e *timeoutErr) Error() string   { return "BLE L2CAP: i/o timeout" }
 func (e *timeoutErr) Timeout() bool   { return true }
 func (e *timeoutErr) Temporary() bool { return true }
 
-// NewClientTLSConfig builds a *tls.Config for the BLE client using the
-// provided certificate, private key, and CA chain PEM strings.
-// InsecureSkipVerify bypasses Go's built-in verifier (which cannot parse
-// ML-DSA chain certs and has no TLS hostname to check over L2CAP); the
-// VerifyConnection callback performs full ML-DSA-aware chain validation
-// against chainPEM instead — the same pattern used by the tunnel broker.
-func NewClientTLSConfig(certPEM, keyPEM, chainPEM string) (*tls.Config, error) {
+// NewClientTLSConfig builds a *tls.Config for the BLE client.
+// InsecureSkipVerify bypasses Go's built-in verifier (ML-DSA chain certs
+// fail to parse; no TLS hostname over L2CAP); opts.PinStore and chain
+// verification are handled by the VerifyConnection callback.
+func NewClientTLSConfig(certPEM, keyPEM string, opts certs.ServerVerifyOpts) (*tls.Config, error) {
 	cert, err := tls.X509KeyPair([]byte(certPEM), []byte(keyPEM))
 	if err != nil {
 		return nil, fmt.Errorf("loading BLE client certificate: %w", err)
 	}
-	verifyConn, err := certs.BuildServerVerifyConnection(chainPEM)
+	verifyConn, err := certs.BuildServerVerifyConnection(opts)
 	if err != nil {
 		return nil, fmt.Errorf("building BLE server certificate verifier: %w", err)
 	}

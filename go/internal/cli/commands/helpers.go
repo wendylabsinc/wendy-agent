@@ -25,6 +25,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/cli/providers"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
+	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
@@ -1174,7 +1175,10 @@ func bleTLSConfig() (*tls.Config, error) {
 		return nil, fmt.Errorf("not logged in; run 'wendy auth login' to authenticate")
 	}
 	cert := auth.Certificates[0]
-	return ble.NewClientTLSConfig(cert.PemCertificate, cert.PemPrivateKey, cert.PemCertificateChain)
+	return ble.NewClientTLSConfig(cert.PemCertificate, cert.PemPrivateKey, certs.ServerVerifyOpts{
+		ChainPEM:      cert.PemCertificateChain,
+		ExpectedOrgID: int32(cert.OrganizationID),
+	})
 }
 
 // connectBLEAgent builds a TLS config and connects to the given Bluetooth
