@@ -28,6 +28,8 @@ message GetDeviceInfoResponse {
     // are retained for backwards compatibility. Empty when the agent cannot
     // enumerate mounts.
     repeated DiskPartition partitions = 14;
+    // GPU architecture identifier. Format is vendor-specific (e.g. "sm_87" for NVIDIA).
+    optional string gpu_arch = 15;
 }
 
 // Usage information for a single mounted filesystem.

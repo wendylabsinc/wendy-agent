@@ -593,7 +593,9 @@ type GetAgentVersionResponse struct {
 	// root filesystem is included here as well; disk_used_bytes/disk_total_bytes
 	// are retained for backwards compatibility. Empty when the agent cannot
 	// enumerate mounts.
-	Partitions    []*DiskPartition `protobuf:"bytes,15,rep,name=partitions,proto3" json:"partitions,omitempty"`
+	Partitions []*DiskPartition `protobuf:"bytes,15,rep,name=partitions,proto3" json:"partitions,omitempty"`
+	// GPU architecture identifier. Format is vendor-specific (e.g. "sm_87" for NVIDIA).
+	GpuArch       *string `protobuf:"bytes,16,opt,name=gpu_arch,json=gpuArch,proto3,oneof" json:"gpu_arch,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -731,6 +733,13 @@ func (x *GetAgentVersionResponse) GetPartitions() []*DiskPartition {
 		return x.Partitions
 	}
 	return nil
+}
+
+func (x *GetAgentVersionResponse) GetGpuArch() string {
+	if x != nil && x.GpuArch != nil {
+		return *x.GpuArch
+	}
+	return ""
 }
 
 // Usage information for a single mounted filesystem.
@@ -3231,7 +3240,7 @@ const file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDesc = "" +
 	"\aupdated\x18\x01 \x01(\v24.wendy.agent.services.v1.UpdateAgentResponse.UpdatedH\x00R\aupdated\x1a\t\n" +
 	"\aUpdatedB\x0f\n" +
 	"\rresponse_type\"\x18\n" +
-	"\x16GetAgentVersionRequest\"\x8e\x06\n" +
+	"\x16GetAgentVersionRequest\"\xbb\x06\n" +
 	"\x17GetAgentVersionResponse\x12\x18\n" +
 	"\aversion\x18\x01 \x01(\tR\aversion\x12\"\n" +
 	"\n" +
@@ -3256,7 +3265,9 @@ const file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDesc = "" +
 	"\x10disk_total_bytes\x18\x0e \x01(\x03H\tR\x0ediskTotalBytes\x88\x01\x01\x12F\n" +
 	"\n" +
 	"partitions\x18\x0f \x03(\v2&.wendy.agent.services.v1.DiskPartitionR\n" +
-	"partitionsB\r\n" +
+	"partitions\x12\x1e\n" +
+	"\bgpu_arch\x18\x10 \x01(\tH\n" +
+	"R\agpuArch\x88\x01\x01B\r\n" +
 	"\v_os_versionB\r\n" +
 	"\v_public_keyB\x0e\n" +
 	"\f_device_typeB\n" +
@@ -3267,7 +3278,8 @@ const file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDesc = "" +
 	"\r_cuda_versionB\x11\n" +
 	"\x0f_storage_mediumB\x12\n" +
 	"\x10_disk_used_bytesB\x13\n" +
-	"\x11_disk_total_bytes\"\xa7\x01\n" +
+	"\x11_disk_total_bytesB\v\n" +
+	"\t_gpu_arch\"\xa7\x01\n" +
 	"\rDiskPartition\x12\x1e\n" +
 	"\n" +
 	"mountpoint\x18\x01 \x01(\tR\n" +

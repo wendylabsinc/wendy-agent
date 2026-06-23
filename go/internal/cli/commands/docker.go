@@ -307,6 +307,7 @@ func applyDeviceBuildArgHints(buildArgs map[string]string, versionResp *agentpb.
 	setHint("WENDY_GPU_VENDOR", versionResp.GetGpuVendor())
 	setHint("WENDY_JETPACK_VERSION", versionResp.GetJetpackVersion())
 	setHint("WENDY_CUDA_VERSION", versionResp.GetCudaVersion())
+	setHint("WENDY_GPU_ARCH", versionResp.GetGpuArch())
 }
 
 func sortedValidatedBuildArgKeys(buildArgs map[string]string) ([]string, error) {

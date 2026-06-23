@@ -174,6 +174,9 @@ func (s *mcpServer) handleDeviceInfo(ctx context.Context, _ mcpgo.CallToolReques
 	if resp.CudaVersion != nil {
 		info["cuda_version"] = resp.GetCudaVersion()
 	}
+	if resp.GpuArch != nil {
+		info["gpu_arch"] = resp.GetGpuArch()
+	}
 	b, _ := json.MarshalIndent(info, "", "  ")
 	return mcpgo.NewToolResultText(string(b)), nil
 }

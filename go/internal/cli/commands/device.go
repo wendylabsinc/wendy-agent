@@ -121,7 +121,7 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 			}
 			defer target.Close()
 
-			var agentVersion, osName, osVersion, cpuArch, deviceType, storageMedium, gpuVendor, jetpackVersion, cudaVersion string
+			var agentVersion, osName, osVersion, cpuArch, deviceType, storageMedium, gpuVendor, jetpackVersion, cudaVersion, gpuArch string
 			var diskUsedBytes, diskTotalBytes *int64
 			var partitions []*agentpb.DiskPartition
 			var hasGPU bool
@@ -156,6 +156,7 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 				gpuVendor = resp.GetGpuVendor()
 				jetpackVersion = resp.GetJetpackVersion()
 				cudaVersion = resp.GetCudaVersion()
+				gpuArch = resp.GetGpuArch()
 				diskUsedBytes = resp.DiskUsedBytes
 				diskTotalBytes = resp.DiskTotalBytes
 				partitions = resp.GetPartitions()
@@ -211,6 +212,9 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 				if cudaVersion != "" {
 					out["cudaVersion"] = cudaVersion
 				}
+				if gpuArch != "" {
+					out["gpuArch"] = gpuArch
+				}
 				if checkUpdates {
 					out["latestVersion"] = latestVersion
 					out["updateAvailable"] = version.CompareVersions(latestVersion, agentVersion) > 0
@@ -248,6 +252,9 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 				}
 				if cudaVersion != "" {
 					fmt.Printf("CUDA: %s\n", cudaVersion)
+				}
+				if gpuArch != "" {
+					fmt.Printf("GPU Arch: %s\n", gpuArch)
 				}
 			}
 			fmt.Printf("CLI Version: %s\n", version.Version)

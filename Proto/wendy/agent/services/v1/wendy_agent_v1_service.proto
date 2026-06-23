@@ -187,6 +187,8 @@ message GetAgentVersionResponse {
     // are retained for backwards compatibility. Empty when the agent cannot
     // enumerate mounts.
     repeated DiskPartition partitions = 15;
+    // GPU architecture identifier. Format is vendor-specific (e.g. "sm_87" for NVIDIA).
+    optional string gpu_arch = 16;
 }
 
 // Usage information for a single mounted filesystem.

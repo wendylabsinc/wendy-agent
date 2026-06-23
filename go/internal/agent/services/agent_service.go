@@ -87,6 +87,9 @@ func (s *AgentService) GetAgentVersion(_ context.Context, _ *agentpb.GetAgentVer
 	if gpuInfo.cudaVersion != "" {
 		resp.CudaVersion = &gpuInfo.cudaVersion
 	}
+	if gpuInfo.gpuArch != "" {
+		resp.GpuArch = &gpuInfo.gpuArch
+	}
 
 	if usage, ok := rootDiskUsage(); ok {
 		resp.DiskUsedBytes = &usage.usedBytes
@@ -111,6 +114,7 @@ type gpuInfo struct {
 	vendor         string
 	jetpackVersion string
 	cudaVersion    string
+	gpuArch        string
 }
 
 func detectGPUInfo() gpuInfo {
@@ -134,6 +138,7 @@ func detectGPUInfo() gpuInfo {
 	if info.vendor == "nvidia" {
 		info.jetpackVersion = detectJetPackVersion()
 		info.cudaVersion = detectCUDAVersion()
+		info.gpuArch = detectNvidiaGPUArch()
 	}
 
 	return info
@@ -212,6 +217,22 @@ func detectCUDAVersion() string {
 		}
 	}
 
+	return ""
+}
+
+var computeCapRe = regexp.MustCompile(`^\s*(\d+)\.(\d+)\s*$`)
+
+func detectNvidiaGPUArch() string {
+	if nvidiaSmi, err := exec.LookPath("nvidia-smi"); err == nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		out, err := exec.CommandContext(ctx, nvidiaSmi, "--query-gpu=compute_cap", "--format=csv,noheader,nounits").Output()
+		if err == nil {
+			if m := computeCapRe.FindSubmatch(out); len(m) > 2 {
+				return "sm_" + string(m[1]) + string(m[2])
+			}
+		}
+	}
 	return ""
 }
 
