@@ -174,6 +174,31 @@ type POSIXRlimit struct {
 	Soft uint64 `json:"soft"`
 }
 
+// DedupeDevices removes duplicate device-node entries (same Path) from
+// spec.Linux.Devices, keeping the first occurrence. runc mknod()s each device
+// entry, so a duplicate path makes container creation fail with EEXIST. Several
+// independent provisioners can add the same node — e.g. the NVIDIA CDI spec (or
+// the L4T CSV fallback) and the gpu entitlement both add /dev/nvidiactl — so the
+// finalized spec is deduped once before it is handed to runc. The cgroup allow
+// rules are intentionally left untouched: duplicate allow rules are harmless
+// (purely additive) and a whole-major rule is not redundant with a major:minor
+// one.
+func DedupeDevices(spec *Spec) {
+	if spec.Linux == nil || len(spec.Linux.Devices) < 2 {
+		return
+	}
+	seen := make(map[string]bool, len(spec.Linux.Devices))
+	deduped := spec.Linux.Devices[:0]
+	for _, d := range spec.Linux.Devices {
+		if seen[d.Path] {
+			continue
+		}
+		seen[d.Path] = true
+		deduped = append(deduped, d)
+	}
+	spec.Linux.Devices = deduped
+}
+
 func DefaultSpec(rootfsPath string, args []string) *Spec {
 	return &Spec{
 		OCIVersion: "1.0.2",
