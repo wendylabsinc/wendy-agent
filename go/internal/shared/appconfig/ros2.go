@@ -1,6 +1,7 @@
 package appconfig
 
 import (
+	"fmt"
 	"hash/fnv"
 	"strconv"
 	"strings"
@@ -20,13 +21,13 @@ const ROS2DefaultDistro = "humble"
 // specify one.
 const ROS2DefaultRMW = "rmw_cyclonedds_cpp"
 
-// ROS2DomainIDMin and ROS2DomainIDMax bound valid ROS_DOMAIN_ID values.
-// The ROS 2 spec defines 0–101 as the conservative portable range; some
-// platforms allow up to 232 but 101 covers all standard deployments
+// ROS2DomainIDMin and ROS2DomainIDMax bound valid ROS_DOMAIN_ID values to the
+// full ROS 2 range (0–232). RMW implementations map the domain ID to UDP ports;
+// 232 is the maximum the DDS port-mapping scheme supports
 // (SOC2-CC6, NIST-SI-10).
 const (
 	ROS2DomainIDMin = 0
-	ROS2DomainIDMax = 101
+	ROS2DomainIDMax = 232
 )
 
 // ros2RMWAliases maps wendy.json rmw values to full RMW implementation
@@ -43,6 +44,24 @@ var ros2RMWAliases = map[string]string{
 	"rmw_fastrtps_cpp":   "rmw_fastrtps_cpp",
 	"rmw_connextdds":     "rmw_connextdds",
 	"rmw_gurumdds_cpp":   "rmw_gurumdds_cpp",
+}
+
+// validateROS2Config rejects an out-of-range domainId or an unknown rmw so a
+// typo fails fast at config-parse / `wendy run` time instead of silently
+// launching a container with no ROS_DOMAIN_ID/RMW_IMPLEMENTATION isolation
+// (WDY-1701). prefix labels the source, e.g. "frameworks.ros2" or
+// `services["talker"].frameworks.ros2`.
+func validateROS2Config(prefix string, r *ROS2Config) error {
+	if r == nil {
+		return nil
+	}
+	if r.DomainID != nil && (*r.DomainID < ROS2DomainIDMin || *r.DomainID > ROS2DomainIDMax) {
+		return fmt.Errorf("%s.domainId must be between %d and %d, got %d", prefix, ROS2DomainIDMin, ROS2DomainIDMax, *r.DomainID)
+	}
+	if r.RMW != "" && ros2RMWAliases[strings.ToLower(r.RMW)] == "" {
+		return fmt.Errorf("%s.rmw %q is not a supported RMW implementation", prefix, r.RMW)
+	}
+	return nil
 }
 
 // IsValidRMWImplementation reports whether s is a full RMW implementation
@@ -71,7 +90,7 @@ func ROS2AutoDomainID(appID string) int {
 
 // ResolvedDomainID returns the effective ROS_DOMAIN_ID: the explicit
 // domainId when set, otherwise a stable hash of appID. It returns -1 when an
-// explicit domainId is outside the valid 0–101 range.
+// explicit domainId is outside the valid 0–232 range.
 func (r *ROS2Config) ResolvedDomainID(appID string) int {
 	if r.DomainID == nil {
 		return ROS2AutoDomainID(appID)

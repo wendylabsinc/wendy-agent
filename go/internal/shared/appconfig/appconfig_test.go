@@ -1022,6 +1022,24 @@ func TestValidateJSON_UnknownKeys(t *testing.T) {
 	}
 }
 
+func TestValidateJSON_UnknownROS2Keys(t *testing.T) {
+	data := []byte(`{
+		"appId": "com.example.app",
+		"frameworks": { "ros2": { "domainId": 42, "domian_id": 7, "rmw": "cyclonedds" } }
+	}`)
+	warnings := ValidateJSON(data)
+	if len(warnings) != 1 {
+		t.Fatalf("got %d warnings, want 1 (for domian_id): %v", len(warnings), warnings)
+	}
+}
+
+func TestValidateJSON_CleanROS2_NoWarnings(t *testing.T) {
+	data := []byte(`{"appId":"com.example.app","frameworks":{"ros2":{"domainId":0,"rmw":"cyclonedds","distro":"humble"}}}`)
+	if got := ValidateJSON(data); len(got) != 0 {
+		t.Errorf("clean ros2 config: got %d warnings, want 0: %v", len(got), got)
+	}
+}
+
 func TestMCPEntitlementValid(t *testing.T) {
 	cfg := &AppConfig{
 		AppID: "test",
@@ -1584,4 +1602,52 @@ func TestValidateJSON_ServiceEntitlements(t *testing.T) {
 			t.Fatalf("ValidateJSON() expected no warnings for valid service entitlement, got: %v", warnings)
 		}
 	})
+}
+
+func TestValidate_ROS2_RejectsBadDomainID(t *testing.T) {
+	bad := 500
+	cfg := &AppConfig{AppID: "com.example.app", Frameworks: &FrameworksConfig{ROS2: &ROS2Config{DomainID: &bad}}}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error for out-of-range domainId, got nil")
+	}
+}
+
+func TestValidate_ROS2_RejectsUnknownRMW(t *testing.T) {
+	cfg := &AppConfig{AppID: "com.example.app", Frameworks: &FrameworksConfig{ROS2: &ROS2Config{RMW: "rmw_bogus"}}}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error for unknown rmw, got nil")
+	}
+}
+
+func TestValidate_ROS2_AcceptsValid(t *testing.T) {
+	id := 42
+	cfg := &AppConfig{AppID: "com.example.app", Frameworks: &FrameworksConfig{ROS2: &ROS2Config{DomainID: &id, RMW: "cyclonedds", Distro: "humble"}}}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("valid ros2 config rejected: %v", err)
+	}
+}
+
+func TestValidate_ROS2_PerServiceDomainID(t *testing.T) {
+	bad := -5
+	cfg := &AppConfig{
+		AppID: "com.example.app",
+		Services: map[string]*ServiceConfig{
+			"talker": {Context: "./talker", Frameworks: &FrameworksConfig{ROS2: &ROS2Config{DomainID: &bad}}},
+		},
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error for out-of-range per-service domainId, got nil")
+	}
+}
+
+func TestValidate_ROS2_PerServiceUnknownRMW(t *testing.T) {
+	cfg := &AppConfig{
+		AppID: "com.example.app",
+		Services: map[string]*ServiceConfig{
+			"talker": {Context: "./talker", Frameworks: &FrameworksConfig{ROS2: &ROS2Config{RMW: "rmw_bogus"}}},
+		},
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error for unknown per-service rmw, got nil")
+	}
 }

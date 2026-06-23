@@ -61,6 +61,16 @@
       "items": {
         "$ref": "#/$defs/fileSyncEntry"
       }
+    },
+    "isolation": {
+      "type": "string",
+      "description": "Namespace isolation mode for multi-container deployments (e.g. shared-ipc, shared-network, isolated)."
+    },
+    "frameworks": { "$ref": "#/$defs/frameworks" },
+    "services": {
+      "type": "object",
+      "description": "Per-service build and runtime configuration for a multi-service app.",
+      "additionalProperties": { "$ref": "#/$defs/service" }
     }
   },
   "$defs": {
@@ -334,6 +344,49 @@
             "type": "string"
           }
         }
+      }
+    },
+    "frameworks": {
+      "type": "object",
+      "description": "Optional framework-level configuration (e.g. ROS 2).",
+      "additionalProperties": false,
+      "properties": {
+        "ros2": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "ROS 2 runtime configuration injected into the container.",
+          "properties": {
+            "domainId": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 232,
+              "description": "ROS_DOMAIN_ID. When omitted, a stable hash of appId in [0,232] is used."
+            },
+            "rmw": {
+              "type": "string",
+              "enum": [
+                "cyclonedds", "fastrtps", "fastdds", "connextdds", "gurumdds",
+                "rmw_cyclonedds_cpp", "rmw_fastrtps_cpp", "rmw_connextdds", "rmw_gurumdds_cpp"
+              ],
+              "description": "RMW middleware. Short names or full identifiers. Defaults to rmw_cyclonedds_cpp."
+            },
+            "distro": {
+              "type": "string",
+              "description": "ROS 2 distribution (e.g. humble, jazzy). Defaults to humble."
+            }
+          }
+        }
+      }
+    },
+    "service": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "A single service within a multi-service app.",
+      "properties": {
+        "context": { "type": "string", "description": "Build context directory relative to wendy.json." },
+        "dependsOn": { "type": "array", "items": { "type": "string" }, "description": "Service names this service starts after." },
+        "entitlements": { "type": "array", "items": { "$ref": "#/$defs/entitlement" } },
+        "frameworks": { "$ref": "#/$defs/frameworks" }
       }
     }
   }
