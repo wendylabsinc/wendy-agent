@@ -9,7 +9,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
+	"github.com/wendylabsinc/wendy/go/internal/agent/timesync"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/wendyconf"
@@ -219,6 +221,12 @@ func writeConfigFiles(mountPoint string, agentBinary []byte, creds []wendyconf.W
 		if err := os.WriteFile(provPath, provisioningJSON, 0o600); err != nil {
 			return fmt.Errorf("writing provisioning.json to config partition: %w", err)
 		}
+	}
+
+	// Write current time as a clock floor so the device boots with a sane clock
+	// even before NTP or Roughtime sync completes.
+	if err := timesync.WriteFloor(mountPoint, time.Now()); err != nil {
+		return fmt.Errorf("writing clock_floor to config partition: %w", err)
 	}
 
 	return nil

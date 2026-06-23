@@ -558,4 +558,21 @@ func Apply(logger *zap.Logger, configPath string) {
 	}
 	applyWendyConf(logger, configDir)
 	applyPreProvisioning(logger, configDir, configPath)
+	applyClockFloor(logger, configDir, configPath)
+}
+
+// applyClockFloor copies clock_floor from the config partition directory to
+// the agent config path, so the agent can read it as a startup time floor.
+func applyClockFloor(logger *zap.Logger, cfgDir, configPath string) {
+	src := filepath.Join(cfgDir, "clock_floor")
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return // file absent — not an error on images that predate this feature
+	}
+	dst := filepath.Join(configPath, "clock_floor")
+	if err := os.WriteFile(dst, data, 0o644); err != nil {
+		if logger != nil {
+			logger.Warn("configpartition: failed to write clock_floor", zap.Error(err))
+		}
+	}
 }
