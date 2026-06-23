@@ -431,9 +431,17 @@ func (s *mcpServer) connectToCloudAgent(ctx context.Context, cloudGRPC, deviceNa
 		closeTunnel()
 		return nil, nil, fmt.Errorf("loading agent mTLS cert: %w", err)
 	}
+	verifyConn, err := certs.BuildServerVerifyConnection(certs.ServerVerifyOpts{
+		ChainPEM:      certInfo.PemCertificateChain,
+		ExpectedOrgID: int32(certInfo.OrganizationID),
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("building TLS verifier: %w", err)
+	}
 	tlsCfg := &tls.Config{
 		Certificates:       []tls.Certificate{x509Cert},
-		InsecureSkipVerify: true, //nolint:gosec
+		InsecureSkipVerify: true, //nolint:gosec — hostname bypass only; VerifyConnection validates server cert against Wendy PKI
+		VerifyConnection:   verifyConn,
 		MinVersion:         tls.VersionTLS12,
 	}
 	grpcConn, err := grpc.NewClient(

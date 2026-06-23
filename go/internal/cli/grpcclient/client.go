@@ -13,6 +13,7 @@ import (
 
 	"time"
 
+	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	"google.golang.org/grpc"
@@ -91,9 +92,17 @@ func ConnectWithTLS(ctx context.Context, address string, certInfo *config.Certif
 	if err != nil {
 		return nil, fmt.Errorf("loading TLS cert: %w", err)
 	}
+	verifyConn, err := certs.BuildServerVerifyConnection(certs.ServerVerifyOpts{
+		ChainPEM:      certInfo.PemCertificateChain,
+		ExpectedOrgID: int32(certInfo.OrganizationID),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("building TLS verifier: %w", err)
+	}
 	tlsCfg := &tls.Config{
 		Certificates:       []tls.Certificate{cert},
-		InsecureSkipVerify: true, //nolint:gosec — agent uses self-signed certs
+		InsecureSkipVerify: true, //nolint:gosec — hostname bypass only; VerifyConnection validates server cert against Wendy PKI
+		VerifyConnection:   verifyConn,
 		MinVersion:         tls.VersionTLS12,
 	}
 
