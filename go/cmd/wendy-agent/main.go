@@ -36,6 +36,7 @@ import (
 	agentnet "github.com/wendylabsinc/wendy/go/internal/agent/network"
 	"github.com/wendylabsinc/wendy/go/internal/agent/registry"
 	"github.com/wendylabsinc/wendy/go/internal/agent/services"
+	"github.com/wendylabsinc/wendy/go/internal/agent/timesync"
 	"github.com/wendylabsinc/wendy/go/internal/shared/browseropen"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/version"
@@ -121,6 +122,12 @@ func main() {
 	}
 
 	configpartition.Apply(logger, configPath)
+
+	// Time sync: apply config-partition floor immediately, then start
+	// background Roughtime + multicast sync.
+	timesyncMgr := timesync.NewManager(logger, configPath)
+	timesyncMgr.ApplyFloor()
+
 	services.CommitMenderUpdate(logger)
 
 	services.CleanupOldBackups(logger)
@@ -201,6 +208,9 @@ func main() {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	go timesyncMgr.RunDirect(ctx)
+	go timesyncMgr.RunMulticast(ctx)
 
 	videoSvc := services.NewVideoService(ctx, logger)
 	defer videoSvc.Shutdown()
