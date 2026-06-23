@@ -35,7 +35,10 @@ func selfSignedCert(t *testing.T, cn string, sanURI string) (*x509.Certificate, 
 		BasicConstraintsValid: true,
 	}
 	if sanURI != "" {
-		u, _ := url.Parse(sanURI)
+		u, uriErr := url.Parse(sanURI)
+		if uriErr != nil {
+			t.Fatalf("url.Parse(%q): %v", sanURI, uriErr)
+		}
 		tmpl.URIs = []*url.URL{u}
 	}
 	certDER, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)

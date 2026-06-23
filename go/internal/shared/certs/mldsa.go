@@ -198,6 +198,10 @@ func BuildServerVerifyConnection(opts ServerVerifyOpts) (func(tls.ConnectionStat
 		if idErr != nil {
 			return fmt.Errorf("extracting server cert identity: %w", idErr)
 		}
+		// Grace mode: only reject when the server cert carries a Wendy identity AND it
+		// belongs to a different org. A cert with no Wendy identity (e.g. a legacy
+		// device not yet re-provisioned) is accepted, mirroring the server-side
+		// OrgModeGrace behaviour in interceptor/mtls.go.
 		if hasIdentity && opts.ExpectedOrgID != 0 && identity.OrgID != opts.ExpectedOrgID {
 			return &OrgMismatchError{Want: opts.ExpectedOrgID, Got: identity.OrgID}
 		}

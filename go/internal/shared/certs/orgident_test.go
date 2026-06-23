@@ -250,7 +250,10 @@ func TestIdentityFromCert(t *testing.T) {
 
 func TestOrgFromClientCert_StillWorks(t *testing.T) {
 	mustParseURI := func(raw string) *url.URL {
-		u, _ := url.Parse(raw)
+		u, err := url.Parse(raw)
+		if err != nil {
+			t.Fatalf("url.Parse(%q): %v", raw, err)
+		}
 		return u
 	}
 	cert := &x509.Certificate{
