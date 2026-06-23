@@ -9,7 +9,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
-	"math/rand"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -2254,14 +2253,6 @@ func (p *registryProxy) serve(ctx context.Context) {
 func (p *registryProxy) forward(ctx context.Context, client net.Conn) {
 	defer client.Close()
 
-	// Test-only fault injection: with probability WENDY_REGISTRY_CHAOS, drop the
-	// connection before forwarding to simulate the device-registry tunnel
-	// hiccuping under load (connection reset / broken pipe). Used to exercise the
-	// build+push retry path (WDY-1690) on demand. Off (0) by default.
-	if chaosProxyShouldDrop() {
-		return
-	}
-
 	remote, err := p.dial(ctx)
 	if err != nil {
 		return
@@ -2272,21 +2263,6 @@ func (p *registryProxy) forward(ctx context.Context, client net.Conn) {
 	go func() { _, _ = io.Copy(remote, client); done <- struct{}{} }()
 	go func() { _, _ = io.Copy(client, remote); done <- struct{}{} }()
 	<-done
-}
-
-// chaosProxyShouldDrop reports whether this proxied connection should be dropped
-// for fault-injection testing, per the WENDY_REGISTRY_CHAOS probability (0..1).
-// Returns false (no chaos) when unset, unparseable, or <= 0.
-func chaosProxyShouldDrop() bool {
-	v := os.Getenv("WENDY_REGISTRY_CHAOS")
-	if v == "" {
-		return false
-	}
-	p, err := strconv.ParseFloat(v, 64)
-	if err != nil || p <= 0 {
-		return false
-	}
-	return rand.Float64() < p
 }
 
 // splitIPv6RegistryAddr checks if registryAddr is a bracketed IPv6 address
