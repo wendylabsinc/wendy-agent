@@ -174,3 +174,90 @@ func TestOrgFromClientCert(t *testing.T) {
 		})
 	}
 }
+
+func TestIdentityFromCert(t *testing.T) {
+	mustParseSANURI := func(raw string) *url.URL {
+		u, err := url.Parse(raw)
+		if err != nil {
+			t.Fatalf("parsing URI %q: %v", raw, err)
+		}
+		return u
+	}
+	makeCert := func(cn string, uris ...string) *x509.Certificate {
+		c := &x509.Certificate{Subject: pkix.Name{CommonName: cn}}
+		for _, u := range uris {
+			c.URIs = append(c.URIs, mustParseSANURI(u))
+		}
+		return c
+	}
+
+	tests := []struct {
+		name    string
+		cert    *x509.Certificate
+		wantID  WendyIdentity
+		wantOK  bool
+		wantErr bool
+	}{
+		{
+			name:   "SAN URI asset",
+			cert:   makeCert("ignored", "urn:wendy:org:7:asset:42"),
+			wantID: WendyIdentity{OrgID: 7, EntityType: "asset", EntityID: "42"},
+			wantOK: true,
+		},
+		{
+			name:   "SAN URI user",
+			cert:   makeCert("ignored", "urn:wendy:org:3:user:99"),
+			wantID: WendyIdentity{OrgID: 3, EntityType: "user", EntityID: "99"},
+			wantOK: true,
+		},
+		{
+			name:   "CN fallback sh/wendy",
+			cert:   makeCert("sh/wendy/5/123"),
+			wantID: WendyIdentity{OrgID: 5, EntityType: "asset", EntityID: "123"},
+			wantOK: true,
+		},
+		{
+			name:   "no identity",
+			cert:   makeCert("wendy/user/99"),
+			wantOK: false,
+		},
+		{
+			name:    "multiple wendy URNs",
+			cert:    makeCert("", "urn:wendy:org:1:asset:1", "urn:wendy:org:2:asset:2"),
+			wantErr: true,
+		},
+		{
+			name:    "malformed URN",
+			cert:    makeCert("", "urn:wendy:org:0:asset:5"),
+			wantErr: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			id, ok, err := IdentityFromCert(tt.cert)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("IdentityFromCert() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if ok != tt.wantOK {
+				t.Errorf("ok = %v, want %v", ok, tt.wantOK)
+			}
+			if ok && id != tt.wantID {
+				t.Errorf("identity = %+v, want %+v", id, tt.wantID)
+			}
+		})
+	}
+}
+
+func TestOrgFromClientCert_StillWorks(t *testing.T) {
+	mustParseURI := func(raw string) *url.URL {
+		u, _ := url.Parse(raw)
+		return u
+	}
+	cert := &x509.Certificate{
+		URIs: []*url.URL{mustParseURI("urn:wendy:org:7:asset:42")},
+	}
+	orgID, ok, err := OrgFromClientCert(cert)
+	if err != nil || !ok || orgID != 7 {
+		t.Errorf("OrgFromClientCert() = %d, %v, %v; want 7, true, nil", orgID, ok, err)
+	}
+}
