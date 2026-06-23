@@ -34,6 +34,7 @@ func BroadcastTime(ctx context.Context) (roughtime.Result, error) {
 
 	payload := roughtime.EncodeRoughtimePayload(roughtime.RoughtimePayload{
 		ServerIndex: serverIdx,
+		Nonce:       result.Nonce,
 		Response:    result.RawResponse,
 	})
 	pkt := roughtime.Encode(roughtime.Datagram{

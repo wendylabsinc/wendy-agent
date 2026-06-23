@@ -9,18 +9,30 @@ import (
 // Tag constants: 4-byte ASCII strings interpreted as little-endian uint32.
 // To compute: given ASCII string s, tag = s[0] | s[1]<<8 | s[2]<<16 | s[3]<<24.
 const (
+	TagCERT uint32 = 0x54524543 // "CERT"
+	TagDELE uint32 = 0x454C4544 // "DELE"
 	TagSIG  uint32 = 0x00474953 // "SIG\x00"
 	TagVER  uint32 = 0x00524556 // "VER\x00"
+	TagMAXT uint32 = 0x5458414D // "MAXT"
 	TagNONC uint32 = 0x434E4F4E // "NONC"
+	TagMINT uint32 = 0x544E494D // "MINT"
 	TagPATH uint32 = 0x48544150 // "PATH"
+	TagPUBK uint32 = 0x4B425550 // "PUBK"
 	TagRADI uint32 = 0x49444152 // "RADI"
 	TagMIDP uint32 = 0x5044494D // "MIDP"
 	TagSREP uint32 = 0x50455253 // "SREP"
 	TagROOT uint32 = 0x544F4F52 // "ROOT"
 	TagINDX uint32 = 0x58444E49 // "INDX"
+	TagSRV  uint32 = 0x00565253 // "SRV\x00"
+	TagZZZZ uint32 = 0x5A5A5A5A // "ZZZZ"
+
+	VersionDraft08 uint32 = 0x80000008
+	VersionDraft11 uint32 = 0x8000000b
 
 	// SigContext is the domain-separation string prepended to SREP before signing.
-	SigContext = "RoughTime v1 response\xff"
+	SigContext = "RoughTime v1 response signature\x00"
+	// CertContext is the domain-separation string prepended to DELE before signing.
+	CertContext = "RoughTime v1 delegation signature--\x00"
 )
 
 // EncodeMessage encodes a map of tag→value pairs into the IETF Roughtime TLV format.

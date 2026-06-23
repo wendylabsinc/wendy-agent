@@ -17,6 +17,10 @@ import (
 // response for the given nonce using the provided private key.
 func startFakeRoughtimeServer(t *testing.T, privKey ed25519.PrivateKey, midpMicros uint64, radiMicros uint32) (addr string, stop func()) {
 	t.Helper()
+	_, onlinePriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("online keygen: %v", err)
+	}
 	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
@@ -28,7 +32,18 @@ func startFakeRoughtimeServer(t *testing.T, privKey ed25519.PrivateKey, midpMicr
 			if err != nil {
 				return
 			}
-			req, err := roughtime.DecodeMessage(buf[:n])
+			reqBytes := buf[:n]
+			if n < 1024 {
+				continue
+			}
+			if len(reqBytes) < 12 || string(reqBytes[:8]) != "ROUGHTIM" {
+				continue
+			}
+			msgLen := binary.LittleEndian.Uint32(reqBytes[8:12])
+			if int(msgLen) != len(reqBytes)-12 {
+				continue
+			}
+			req, err := roughtime.DecodeMessage(reqBytes[12:])
 			if err != nil {
 				continue
 			}
@@ -39,33 +54,53 @@ func startFakeRoughtimeServer(t *testing.T, privKey ed25519.PrivateKey, midpMicr
 
 			// Build SREP
 			midpB := make([]byte, 8)
-			binary.LittleEndian.PutUint64(midpB, midpMicros)
+			binary.LittleEndian.PutUint64(midpB, midpMicros/1_000_000)
 			radiB := make([]byte, 4)
-			binary.LittleEndian.PutUint32(radiB, radiMicros)
-			// ROOT = SHA-512/256("\x00" || nonce) for a single-client batch
-			leaf := sha512.Sum512_256(append([]byte{0x00}, nonce...))
+			binary.LittleEndian.PutUint32(radiB, radiMicros/1_000_000)
+			// ROOT = SHA-512("\x00" || nonce) truncated to 32 bytes for a single-client batch.
+			leaf := sha512.Sum512(append([]byte{0x00}, nonce...))
 			verB := make([]byte, 4)
-			binary.LittleEndian.PutUint32(verB, 1)
+			binary.LittleEndian.PutUint32(verB, roughtime.VersionDraft08)
 			srep := roughtime.EncodeMessage(map[uint32][]byte{
-				roughtime.TagVER:  verB,
-				roughtime.TagNONC: nonce,
 				roughtime.TagMIDP: midpB,
 				roughtime.TagRADI: radiB,
-				roughtime.TagROOT: leaf[:],
+				roughtime.TagROOT: leaf[:32],
 			})
 
 			// Sign: context || SREP
 			toSign := append([]byte(roughtime.SigContext), srep...)
-			sig := ed25519.Sign(privKey, toSign)
+			sig := ed25519.Sign(onlinePriv, toSign)
+
+			pubk := ed25519.PrivateKey(onlinePriv).Public().(ed25519.PublicKey)
+			mintB := make([]byte, 8)
+			binary.LittleEndian.PutUint64(mintB, 0)
+			maxtB := make([]byte, 8)
+			binary.LittleEndian.PutUint64(maxtB, ^uint64(0))
+			dele := roughtime.EncodeMessage(map[uint32][]byte{
+				roughtime.TagMINT: mintB,
+				roughtime.TagMAXT: maxtB,
+				roughtime.TagPUBK: pubk,
+			})
+			certSig := ed25519.Sign(privKey, append([]byte(roughtime.CertContext), dele...))
+			cert := roughtime.EncodeMessage(map[uint32][]byte{
+				roughtime.TagSIG:  certSig,
+				roughtime.TagDELE: dele,
+			})
 
 			indxB := make([]byte, 4) // index 0
 			resp := roughtime.EncodeMessage(map[uint32][]byte{
+				roughtime.TagCERT: cert,
+				roughtime.TagNONC: nonce,
 				roughtime.TagSIG:  sig,
 				roughtime.TagSREP: srep,
 				roughtime.TagINDX: indxB,
 				roughtime.TagPATH: {},
+				roughtime.TagVER:  verB,
 			})
-			pc.WriteTo(resp, remote) //nolint:errcheck
+			framed := append([]byte("ROUGHTIM"), make([]byte, 4)...)
+			binary.LittleEndian.PutUint32(framed[8:12], uint32(len(resp)))
+			framed = append(framed, resp...)
+			pc.WriteTo(framed, remote) //nolint:errcheck
 		}
 	}()
 	return pc.LocalAddr().String(), func() { pc.Close() }
@@ -104,7 +139,7 @@ func TestQuery_BadSignature(t *testing.T) {
 	_, priv, _ := ed25519.GenerateKey(rand.Reader)
 	wrongPub, _, _ := ed25519.GenerateKey(rand.Reader) // different key
 
-	addr, stop := startFakeRoughtimeServer(t, priv, uint64(time.Now().UnixMicro()), 100_000)
+	addr, stop := startFakeRoughtimeServer(t, priv, uint64(time.Now().UnixMicro()), 1_000_000)
 	defer stop()
 
 	srv := roughtime.Server{Name: "test", Address: addr, PublicKey: wrongPub}
@@ -118,7 +153,7 @@ func TestQuery_BadSignature(t *testing.T) {
 
 func TestQuery_RadiusTooLarge(t *testing.T) {
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
-	addr, stop := startFakeRoughtimeServer(t, priv, uint64(time.Now().UnixMicro()), 3_000_000) // 3s > 2s limit
+	addr, stop := startFakeRoughtimeServer(t, priv, uint64(time.Now().UnixMicro()), 11_000_000) // 11s > 10s limit
 	defer stop()
 
 	srv := roughtime.Server{Name: "test", Address: addr, PublicKey: pub}
@@ -132,7 +167,7 @@ func TestQuery_RadiusTooLarge(t *testing.T) {
 
 func TestVerifyResponse_TamperedPayload(t *testing.T) {
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
-	addr, stop := startFakeRoughtimeServer(t, priv, uint64(time.Now().UnixMicro()), 100_000)
+	addr, stop := startFakeRoughtimeServer(t, priv, uint64(time.Now().UnixMicro()), 1_000_000)
 	defer stop()
 
 	srv := roughtime.Server{Name: "test", Address: addr, PublicKey: pub}

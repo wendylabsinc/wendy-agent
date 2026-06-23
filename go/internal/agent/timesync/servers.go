@@ -15,29 +15,33 @@ import (
 // encoded as 32-byte ed25519.PublicKey. See design doc for retrieval steps.
 var Servers = []roughtime.Server{
 	{
-		Name:    "cloudflare",
-		Address: "roughtime.cloudflare.com:2002",
-		// Fetch from https://roughtime.cloudflare.com (Client Config section).
+		Name:      "cloudflare",
+		Address:   "roughtime.cloudflare.com:2003",
 		PublicKey: ed25519.PublicKey(mustDecodeKey(cloudflarePublicKeyHex)),
 	},
 	{
-		Name:      "chainpoint",
-		Address:   "roughtime.int.chainpoint.org:2002",
-		PublicKey: ed25519.PublicKey(mustDecodeKey(chainpointPublicKeyHex)),
+		Name:      "int08h",
+		Address:   "roughtime.int08h.com:2002",
+		PublicKey: ed25519.PublicKey(mustDecodeKey(int08hPublicKeyHex)),
 	},
 	{
-		Name:      "google",
-		Address:   "roughtime.sandbox.google.com:2002",
-		PublicKey: ed25519.PublicKey(mustDecodeKey(googlePublicKeyHex)),
+		Name:      "roughtime.se",
+		Address:   "roughtime.se:2002",
+		PublicKey: ed25519.PublicKey(mustDecodeKey(roughtimeSEPublicKeyHex)),
+	},
+	{
+		Name:      "time.txryan.com",
+		Address:   "time.txryan.com:2002",
+		PublicKey: ed25519.PublicKey(mustDecodeKey(txryanPublicKeyHex)),
 	},
 }
 
-// Replace these hex strings with the 64-character (32-byte) hex-encoded
-// Ed25519 public keys from each server's published ecosystem configuration.
+// Public keys are 32-byte Ed25519 keys from Cloudflare's Roughtime ecosystem JSON.
 const (
-	cloudflarePublicKeyHex = "0000000000000000000000000000000000000000000000000000000000000000"
-	chainpointPublicKeyHex = "0000000000000000000000000000000000000000000000000000000000000001"
-	googlePublicKeyHex     = "0000000000000000000000000000000000000000000000000000000000000002"
+	cloudflarePublicKeyHex  = "d060fb737c8ff3111ce19976cdeb8dd9294bbc3555a1c8ec3d22fcfd197fef38"
+	int08hPublicKeyHex      = "016e6e0284d24c37c6e4d7d8d5b4e1d3c1949ceaa545bf875616c9dce0c9bec1"
+	roughtimeSEPublicKeyHex = "4b70337d92790a349d909db564919bc6a7583ff4a813c7d7298d3e6a272c7a12"
+	txryanPublicKeyHex      = "881563c60ff58fbcb5fa44144c161d4da6f10a9a5eb14ff4ec3e0f303264d960"
 )
 
 func mustDecodeKey(hex64 string) []byte {

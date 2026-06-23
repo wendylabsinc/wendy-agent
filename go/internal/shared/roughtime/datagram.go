@@ -55,15 +55,18 @@ func Decode(b []byte) (Datagram, error) {
 // RoughtimePayload is the msg_type=0x01 payload: a relay of a raw Roughtime server response.
 type RoughtimePayload struct {
 	ServerIndex uint8  // index into the agent's baked-in server list
+	Nonce       []byte // request nonce used to obtain Response; optional for old payloads
 	Response    []byte // raw bytes received from the Roughtime server
 }
 
 // EncodeRoughtimePayload serialises p to bytes for use as Datagram.Payload.
 func EncodeRoughtimePayload(p RoughtimePayload) []byte {
-	buf := make([]byte, 4+len(p.Response))
+	buf := make([]byte, 4+len(p.Nonce)+len(p.Response))
 	buf[0] = p.ServerIndex
-	// buf[1:4] reserved, zero
-	copy(buf[4:], p.Response)
+	buf[1] = uint8(len(p.Nonce))
+	// buf[2:4] reserved, zero
+	copy(buf[4:], p.Nonce)
+	copy(buf[4+len(p.Nonce):], p.Response)
 	return buf
 }
 
@@ -72,7 +75,13 @@ func DecodeRoughtimePayload(b []byte) (RoughtimePayload, error) {
 	if len(b) < 4 {
 		return RoughtimePayload{}, fmt.Errorf("roughtime payload too short: %d bytes", len(b))
 	}
-	resp := make([]byte, len(b)-4)
-	copy(resp, b[4:])
-	return RoughtimePayload{ServerIndex: b[0], Response: resp}, nil
+	nonceLen := int(b[1])
+	if len(b) < 4+nonceLen {
+		return RoughtimePayload{}, fmt.Errorf("roughtime payload nonce truncated (have %d want %d)", len(b)-4, nonceLen)
+	}
+	nonce := make([]byte, nonceLen)
+	copy(nonce, b[4:4+nonceLen])
+	resp := make([]byte, len(b)-4-nonceLen)
+	copy(resp, b[4+nonceLen:])
+	return RoughtimePayload{ServerIndex: b[0], Nonce: nonce, Response: resp}, nil
 }

@@ -17,33 +17,58 @@ import (
 // server index and a signed Roughtime response.
 func buildRelayPacket(t *testing.T, serverIdx uint8, priv ed25519.PrivateKey, midpMicros uint64) []byte {
 	t.Helper()
-	nonce := make([]byte, 64)
+	nonce := make([]byte, 32)
 	rand.Read(nonce) //nolint:errcheck
+	_, onlinePriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("online keygen: %v", err)
+	}
 
 	midpB := make([]byte, 8)
-	binary.LittleEndian.PutUint64(midpB, midpMicros)
+	binary.LittleEndian.PutUint64(midpB, midpMicros/1_000_000)
 	radiB := make([]byte, 4)
-	binary.LittleEndian.PutUint32(radiB, 100_000) // 100ms radius
-	leaf := sha512.Sum512_256(append([]byte{0x00}, nonce...))
+	binary.LittleEndian.PutUint32(radiB, 1)
+	leaf := sha512.Sum512(append([]byte{0x00}, nonce...))
 	verB := make([]byte, 4)
-	binary.LittleEndian.PutUint32(verB, 1)
+	binary.LittleEndian.PutUint32(verB, roughtime.VersionDraft08)
 
 	srep := roughtime.EncodeMessage(map[uint32][]byte{
-		roughtime.TagVER:  verB,
-		roughtime.TagNONC: nonce,
 		roughtime.TagMIDP: midpB,
 		roughtime.TagRADI: radiB,
-		roughtime.TagROOT: leaf[:],
+		roughtime.TagROOT: leaf[:32],
 	})
 	toSign := append([]byte(roughtime.SigContext), srep...)
-	sig := ed25519.Sign(priv, toSign)
+	sig := ed25519.Sign(onlinePriv, toSign)
+
+	pubk := ed25519.PrivateKey(onlinePriv).Public().(ed25519.PublicKey)
+	mintB := make([]byte, 8)
+	binary.LittleEndian.PutUint64(mintB, 0)
+	maxtB := make([]byte, 8)
+	binary.LittleEndian.PutUint64(maxtB, ^uint64(0))
+	dele := roughtime.EncodeMessage(map[uint32][]byte{
+		roughtime.TagMINT: mintB,
+		roughtime.TagMAXT: maxtB,
+		roughtime.TagPUBK: pubk,
+	})
+	certSig := ed25519.Sign(priv, append([]byte(roughtime.CertContext), dele...))
+	cert := roughtime.EncodeMessage(map[uint32][]byte{
+		roughtime.TagSIG:  certSig,
+		roughtime.TagDELE: dele,
+	})
+
 	indxB := make([]byte, 4)
-	rawResp := roughtime.EncodeMessage(map[uint32][]byte{
+	resp := roughtime.EncodeMessage(map[uint32][]byte{
+		roughtime.TagCERT: cert,
+		roughtime.TagNONC: nonce,
 		roughtime.TagSIG:  sig,
 		roughtime.TagSREP: srep,
 		roughtime.TagINDX: indxB,
 		roughtime.TagPATH: {},
+		roughtime.TagVER:  verB,
 	})
+	rawResp := append([]byte("ROUGHTIM"), make([]byte, 4)...)
+	binary.LittleEndian.PutUint32(rawResp[8:12], uint32(len(resp)))
+	rawResp = append(rawResp, resp...)
 
 	payload := roughtime.EncodeRoughtimePayload(roughtime.RoughtimePayload{
 		ServerIndex: serverIdx,

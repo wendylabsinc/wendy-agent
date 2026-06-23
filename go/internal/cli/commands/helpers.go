@@ -800,6 +800,7 @@ func connectWithAutoTLSDiagnostics(ctx context.Context, plaintextAddr string) (*
 		}
 	}
 	if len(allCerts) > 0 {
+		pins := openPinStore()
 		host, portStr, _ := net.SplitHostPort(plaintextAddr)
 		if port, err := strconv.Atoi(portStr); err == nil {
 			// Try the given port first (covers explicit tunnel ports that already
@@ -822,7 +823,7 @@ func connectWithAutoTLSDiagnostics(ctx context.Context, plaintextAddr string) (*
 			var mtlsPortCertFails, mtlsPortNonCertFails int
 			for addrIdx, mtlsAddr := range mtlsAddrs {
 				for i := range allCerts {
-					conn, tlsErr := grpcclient.ConnectWithTLS(ctx, mtlsAddr, &allCerts[i])
+					conn, tlsErr := grpcclient.ConnectWithTLSAndPins(ctx, mtlsAddr, &allCerts[i], pins)
 					if tlsErr != nil {
 						recordMTLSErr(mtlsAddr, tlsErr)
 						if tlsDebug {
