@@ -537,6 +537,10 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 	// Step 6: Write image to drive with progress bar.
 	fmt.Printf("Writing image to %s...\n", targetDrive.DevicePath)
 	writeProg := tui.NewProgress(fmt.Sprintf("Writing to %s...", targetDrive.DevicePath))
+	if seekableZst != "" || bmapPath != "" {
+		// bmap failures fall back silently; suppress the TUI error render
+		writeProg = writeProg.WithoutErrorView()
+	}
 	wp := tea.NewProgram(writeProg)
 
 	go func() {
@@ -589,14 +593,12 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 		var fallbackCloser io.Closer
 		switch {
 		case seekableZst != "":
-			fmt.Printf("\nNote: block map write failed (%v); falling back to full image write.\n", writeModel.Err())
 			si, ferr := openSeekableZstd(seekableZst)
 			if ferr != nil {
 				return fmt.Errorf("writing image: %w", writeModel.Err())
 			}
 			fallbackReader, fallbackSize, fallbackCloser = si, si.Size(), si
 		case bmapPath != "":
-			fmt.Printf("\nNote: block map write failed (%v); falling back to full image write.\n", writeModel.Err())
 			fs, ferr := openOSImageStream(deviceKey, imgInfo)
 			if ferr != nil {
 				return fmt.Errorf("writing image: %w", writeModel.Err())

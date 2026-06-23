@@ -21,13 +21,13 @@ var Servers = []roughtime.Server{
 		PublicKey: ed25519.PublicKey(mustDecodeKey(cloudflarePublicKeyHex)),
 	},
 	{
-		Name:    "chainpoint",
-		Address: "roughtime.int.chainpoint.org:2002",
+		Name:      "chainpoint",
+		Address:   "roughtime.int.chainpoint.org:2002",
 		PublicKey: ed25519.PublicKey(mustDecodeKey(chainpointPublicKeyHex)),
 	},
 	{
-		Name:    "google",
-		Address: "roughtime.sandbox.google.com:2002",
+		Name:      "google",
+		Address:   "roughtime.sandbox.google.com:2002",
 		PublicKey: ed25519.PublicKey(mustDecodeKey(googlePublicKeyHex)),
 	},
 }
