@@ -928,8 +928,8 @@ func TestApplyEntitlements_Empty(t *testing.T) {
 	}
 }
 
-// TestApplyI2C_PathTraversal verifies that a crafted device name cannot escape /dev/i2c-
-// (WDY-1015).
+// TestApplyI2C_PathTraversal verifies that a crafted device name is rejected and
+// cannot escape /dev/i2c- (WDY-1015).
 func TestApplyI2C_PathTraversal(t *testing.T) {
 	traversalCases := []string{
 		"../sda",
@@ -940,6 +940,13 @@ func TestApplyI2C_PathTraversal(t *testing.T) {
 		"i2c-",
 		"i2c-1a",
 	}
+	// A crafted name is rejected by name validation before any stat, but inject a
+	// permissive stat so a regression that skips the name check would still be
+	// caught by the mount assertions below.
+	origStat := statDeviceNode
+	defer func() { statDeviceNode = origStat }()
+	statDeviceNode = func(string) (int64, int64, error) { return i2cMajor, 0, nil }
+
 	for _, device := range traversalCases {
 		t.Run(device, func(t *testing.T) {
 			spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
@@ -949,16 +956,14 @@ func TestApplyI2C_PathTraversal(t *testing.T) {
 					{Type: appconfig.EntitlementI2C, Device: device},
 				},
 			}
-			if err := ApplyEntitlements(spec, cfg, ApplyOptions{}); err != nil {
-				t.Fatalf("ApplyEntitlements() error = %v", err)
+			// A crafted name must be rejected with an error; either way it must
+			// never produce a mount escaping /dev or the named bad path.
+			if err := ApplyEntitlements(spec, cfg, ApplyOptions{}); err == nil {
+				t.Errorf("crafted device=%q was accepted; want rejection", device)
 			}
 			for _, m := range spec.Mounts {
-				if !slices.Contains([]string{"/dev/snd", "/dev/input", "/dev/bus/usb"}, m.Destination) &&
-					len(m.Destination) >= 9 && m.Destination[:9] != "/dev/i2c-" {
-					if m.Destination == "/dev/sda" || m.Destination == "/dev/mem" ||
-						m.Destination == "/etc/passwd" {
-						t.Errorf("path traversal via device=%q mounted %q", device, m.Destination)
-					}
+				if m.Destination == "/dev/sda" || m.Destination == "/dev/mem" || m.Destination == "/etc/passwd" {
+					t.Errorf("path traversal via device=%q mounted %q", device, m.Destination)
 				}
 				if m.Destination == "/dev/"+device {
 					t.Errorf("unsanitized device=%q was mounted as %q", device, m.Destination)
@@ -968,8 +973,15 @@ func TestApplyI2C_PathTraversal(t *testing.T) {
 	}
 }
 
-// TestApplyI2C_ValidDevice verifies that a legitimate i2c-N device is still mounted.
+// TestApplyI2C_ValidDevice verifies a legitimate i2c-N bus is bind-mounted and
+// gets a cgroup allow rule scoped to its exact major:minor (never the whole I2C
+// major), mirroring the serial entitlement (WDY-1601).
 func TestApplyI2C_ValidDevice(t *testing.T) {
+	const fakeMinor int64 = 3
+	origStat := statDeviceNode
+	defer func() { statDeviceNode = origStat }()
+	statDeviceNode = func(string) (int64, int64, error) { return i2cMajor, fakeMinor, nil }
+
 	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
 	cfg := &appconfig.AppConfig{
 		AppID: "test-app",
@@ -982,6 +994,79 @@ func TestApplyI2C_ValidDevice(t *testing.T) {
 	}
 	if !hasMountDest(spec, "/dev/i2c-1") {
 		t.Error("valid i2c-1 device was not mounted")
+	}
+	if !hasMajorMinorRule(spec, i2cMajor, fakeMinor) {
+		t.Errorf("i2c-1 missing scoped cgroup allow rule for %d:%d", i2cMajor, fakeMinor)
+	}
+	if hasWholeMajorRule(spec, i2cMajor) {
+		t.Error("i2c-1 emitted a whole-major rule (no minor) — must be device-scoped")
+	}
+	if acc, _ := majorRuleAccess(spec, i2cMajor); strings.Contains(acc, "m") {
+		t.Errorf("i2c rule must not grant mknod, got Access=%q", acc)
+	}
+}
+
+// TestApplyI2C_DeviceAbsent verifies a clear error (and no mount) when the
+// declared I2C bus is not present on the host.
+func TestApplyI2C_DeviceAbsent(t *testing.T) {
+	origStat := statDeviceNode
+	defer func() { statDeviceNode = origStat }()
+	statDeviceNode = func(string) (int64, int64, error) { return 0, 0, errors.New("no such device") }
+
+	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
+	cfg := &appconfig.AppConfig{
+		AppID:        "test-app",
+		Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementI2C, Device: "i2c-1"}},
+	}
+	if err := ApplyEntitlements(spec, cfg, ApplyOptions{}); err == nil {
+		t.Fatal("ApplyEntitlements() = nil error for absent i2c bus, want error")
+	}
+	if hasMountDest(spec, "/dev/i2c-1") {
+		t.Error("absent i2c bus should not be mounted")
+	}
+}
+
+// TestEntitlements_OmitMknod verifies the whole-major device entitlements grant
+// "rw", never "rwm": the host owns the device nodes and bind-mounts them, so the
+// container never needs the mknod bit (WDY-1601). The minor-scoped entitlements
+// (serial, i2c) and camera are covered by their own tests.
+func TestEntitlements_OmitMknod(t *testing.T) {
+	// applyGPU branches on the board (a Raspberry Pi also exposes vcio); pin to
+	// Generic so the result is deterministic regardless of the host running the test.
+	origBoard := boardDetect
+	defer func() { boardDetect = origBoard }()
+	boardDetect = func() board.Info { return board.Info{Kind: board.Generic} }
+
+	cases := []struct {
+		name  string
+		ent   appconfig.Entitlement
+		major int64
+	}{
+		{"usb", appconfig.Entitlement{Type: appconfig.EntitlementUSB}, 189},
+		{"gpio", appconfig.Entitlement{Type: appconfig.EntitlementGPIO}, 254},
+		{"spi", appconfig.Entitlement{Type: appconfig.EntitlementSPI}, 153},
+		{"input", appconfig.Entitlement{Type: appconfig.EntitlementInput}, 13},
+		{"gpu", appconfig.Entitlement{Type: appconfig.EntitlementGPU}, 195},
+		{"audio", appconfig.Entitlement{Type: appconfig.EntitlementAudio}, 116},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
+			cfg := &appconfig.AppConfig{AppID: "test", Entitlements: []appconfig.Entitlement{tc.ent}}
+			if err := ApplyEntitlements(spec, cfg, ApplyOptions{}); err != nil {
+				t.Fatalf("ApplyEntitlements() error = %v", err)
+			}
+			acc, ok := majorRuleAccess(spec, tc.major)
+			if !ok {
+				t.Fatalf("%s entitlement did not emit an allow rule for major %d", tc.name, tc.major)
+			}
+			if acc != "rw" {
+				t.Errorf("%s entitlement major %d must grant \"rw\", got %q", tc.name, tc.major, acc)
+			}
+			if strings.Contains(acc, "m") {
+				t.Errorf("%s entitlement major %d must not grant mknod, got Access=%q", tc.name, tc.major, acc)
+			}
+		})
 	}
 }
 
@@ -999,12 +1084,12 @@ func TestApplySerial_ValidDevice(t *testing.T) {
 	// Inject a fake stat so the test needs no real device nodes (which require
 	// root + mknod). Returns the device's expected major and a fixed minor.
 	const fakeMinor int64 = 7
-	origStat := statSerialDevice
-	defer func() { statSerialDevice = origStat }()
+	origStat := statDeviceNode
+	defer func() { statDeviceNode = origStat }()
 
 	for _, tc := range cases {
 		t.Run(tc.device, func(t *testing.T) {
-			statSerialDevice = func(string) (int64, int64, error) { return tc.major, fakeMinor, nil }
+			statDeviceNode = func(string) (int64, int64, error) { return tc.major, fakeMinor, nil }
 			spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
 			cfg := &appconfig.AppConfig{
 				AppID: "test-app",
@@ -1034,9 +1119,9 @@ func TestApplySerial_ValidDevice(t *testing.T) {
 // TestApplySerial_DeviceAbsent verifies a clear error (and no spec mutation)
 // when the declared serial device is not present on the host.
 func TestApplySerial_DeviceAbsent(t *testing.T) {
-	origStat := statSerialDevice
-	defer func() { statSerialDevice = origStat }()
-	statSerialDevice = func(string) (int64, int64, error) { return 0, 0, errors.New("no such device") }
+	origStat := statDeviceNode
+	defer func() { statDeviceNode = origStat }()
+	statDeviceNode = func(string) (int64, int64, error) { return 0, 0, errors.New("no such device") }
 
 	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
 	cfg := &appconfig.AppConfig{
@@ -1051,10 +1136,10 @@ func TestApplySerial_DeviceAbsent(t *testing.T) {
 	}
 }
 
-// TestStatSerialDevice_RejectsSymlink verifies the real resolver refuses a
+// TestStatDeviceNode_RejectsSymlink verifies the shared resolver refuses a
 // symlinked node (runc can't follow symlinks through a bind mount, and a
 // symlink would let the validated node differ from the bound one).
-func TestStatSerialDevice_RejectsSymlink(t *testing.T) {
+func TestStatDeviceNode_RejectsSymlink(t *testing.T) {
 	dir := t.TempDir()
 	target := filepath.Join(dir, "real")
 	if err := os.WriteFile(target, nil, 0o600); err != nil {
@@ -1064,8 +1149,8 @@ func TestStatSerialDevice_RejectsSymlink(t *testing.T) {
 	if err := os.Symlink(target, link); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := statSerialDevice(link); err == nil {
-		t.Error("statSerialDevice followed a symlink; want rejection")
+	if _, _, err := statDeviceNode(link); err == nil {
+		t.Error("statDeviceNode followed a symlink; want rejection")
 	}
 }
 
@@ -1083,9 +1168,9 @@ func TestApplySerial_PathTraversal(t *testing.T) {
 	// A real device node never gets stat'd for these — they're rejected by name
 	// before the stat — but inject a permissive stat so a regression that skips
 	// the name check would still be caught by the mount assertions below.
-	origStat := statSerialDevice
-	defer func() { statSerialDevice = origStat }()
-	statSerialDevice = func(string) (int64, int64, error) { return 166, 0, nil }
+	origStat := statDeviceNode
+	defer func() { statDeviceNode = origStat }()
+	statDeviceNode = func(string) (int64, int64, error) { return 166, 0, nil }
 
 	for _, device := range traversalCases {
 		t.Run(device, func(t *testing.T) {

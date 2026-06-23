@@ -84,7 +84,9 @@ func ApplyEntitlements(spec *Spec, cfg *appconfig.AppConfig, opts ApplyOptions) 
 		case appconfig.EntitlementUSB:
 			applyUSB(spec)
 		case appconfig.EntitlementI2C:
-			applyI2C(spec, ent)
+			if err := applyI2C(spec, ent); err != nil {
+				return err
+			}
 		case appconfig.EntitlementGPIO:
 			applyGPIO(spec, ent)
 		case appconfig.EntitlementSPI:
@@ -176,13 +178,17 @@ func applyGPU(spec *Spec) {
 		})
 	}
 
-	// Allow access to NVIDIA character devices (major 195).
+	// Allow access to NVIDIA character devices (major 195). Whole-major is kept:
+	// a host exposes several nvidia nodes (nvidia0, nvidiactl, nvidia-modeset, …)
+	// and the NVIDIA runtime/CDI provisions them, so the minors aren't fixed at
+	// apply time. Access is "rw", not "rwm": the driver/CDI creates the nodes; the
+	// container only opens them, so the mknod bit is withheld as least privilege.
 	major := int64(195)
 	spec.Linux.Resources.Devices = append(spec.Linux.Resources.Devices, LinuxDeviceCgroup{
 		Allow:  true,
 		Type:   "c",
 		Major:  &major,
-		Access: "rwm",
+		Access: "rw",
 	})
 
 	// Add environment variables for NVIDIA.
@@ -324,13 +330,16 @@ func applyAudio(spec *Spec) {
 		Options:     []string{"rbind", "nosuid", "noexec"},
 	})
 
-	// Allow all sound devices (major 116).
+	// Allow all sound devices (major 116). Whole-major is kept: /dev/snd is a
+	// directory of nodes (controlC*, pcmC*D*, seq, timer, …) whose minors aren't
+	// known at apply time. Access is "rw", not "rwm": the host owns the nodes and
+	// the /dev/snd bind above surfaces them, so the mknod bit is withheld.
 	major := int64(116)
 	spec.Linux.Resources.Devices = append(spec.Linux.Resources.Devices, LinuxDeviceCgroup{
 		Allow:  true,
 		Type:   "c",
 		Major:  &major,
-		Access: "rwm",
+		Access: "rw",
 	})
 
 	// isSocket reports whether path is a Unix domain socket. Uses Lstat
@@ -652,47 +661,56 @@ func applyUSB(spec *Spec) {
 		Options:     []string{"rbind", "rw"},
 	})
 
-	// Allow USB devices (major 189).
+	// Allow USB devices (major 189). Whole-major is kept: /dev/bus/usb is a tree
+	// of per-device nodes that hotplug re-mints under new minors, so the minors
+	// aren't known at apply time. Access is "rw", not "rwm": the host owns the
+	// nodes and the bind above surfaces them, so the mknod bit is withheld.
 	major := int64(189)
 	spec.Linux.Resources.Devices = append(spec.Linux.Resources.Devices, LinuxDeviceCgroup{
 		Allow:  true,
 		Type:   "c",
 		Major:  &major,
-		Access: "rwm",
+		Access: "rw",
 	})
 }
 
-// applyI2C adds I2C device access for a specific bus.
-func applyI2C(spec *Spec, ent appconfig.Entitlement) {
-	// Validate device name is i2c-N before constructing a path from it.
+// i2cMajor is the standard I2C character-device major (i2c-dev).
+const i2cMajor int64 = 89
+
+// applyI2C adds access to a single named I2C bus (e.g. /dev/i2c-1). The bus is a
+// single, stable node — not a hotplug or directory device — so it is scoped to
+// the node's exact major:minor (via addScopedCharDevice), mirroring serial,
+// rather than granted the whole I2C major. Returns an error when the bus is
+// absent or malformed so the container fails fast with a clear message.
+func applyI2C(spec *Spec, ent appconfig.Entitlement) error {
+	// Validate device name is i2c-N before constructing a path from it
+	// (defense-in-depth against path traversal; appconfig validates this too).
 	if !strings.HasPrefix(ent.Device, "i2c-") {
-		return
+		return fmt.Errorf("i2c: device must be in i2c-N format, got %q", ent.Device)
 	}
 	suffix := ent.Device[len("i2c-"):]
 	if suffix == "" {
-		return
+		return fmt.Errorf("i2c: device must be in i2c-N format, got %q", ent.Device)
 	}
 	for _, c := range suffix {
 		if c < '0' || c > '9' {
-			return
+			return fmt.Errorf("i2c: device must be in i2c-N format, got %q", ent.Device)
 		}
 	}
 	devPath := filepath.Clean(fmt.Sprintf("/dev/%s", ent.Device))
-	spec.Mounts = append(spec.Mounts, Mount{
-		Destination: devPath,
-		Source:      devPath,
-		Type:        "bind",
-		Options:     []string{"rbind", "rw"},
-	})
 
-	// Allow I2C devices (major 89).
-	major := int64(89)
-	spec.Linux.Resources.Devices = append(spec.Linux.Resources.Devices, LinuxDeviceCgroup{
-		Allow:  true,
-		Type:   "c",
-		Major:  &major,
-		Access: "rwm",
-	})
+	// Resolve the exact node and scope the cgroup rule to this one bus's
+	// major:minor with "rw" (no mknod), never the whole I2C major.
+	major, _, err := addScopedCharDevice(spec, devPath)
+	if err != nil {
+		return fmt.Errorf("i2c bus %s unavailable (need a real, present bus node): %w", devPath, err)
+	}
+	// Defense-in-depth: the resolved node must actually be on the I2C major, so a
+	// node that isn't an i2c bus can't smuggle in access to an unrelated major.
+	if major != i2cMajor {
+		return fmt.Errorf("i2c bus %s has unexpected major %d (want %d); refusing", devPath, major, i2cMajor)
+	}
+	return nil
 }
 
 // serialDeviceMajors maps a serial tty node-name prefix to its kernel character
@@ -732,13 +750,18 @@ func serialDeviceMajor(device string) (int64, bool) {
 	return 0, false
 }
 
-// statSerialDevice resolves a host serial node to its character-device
+// statDeviceNode resolves a host device node to its character-device
 // major:minor. It rejects a node that does not exist or is a symlink: runc
 // cannot resolve a symlink target through a bind mount, and a symlink would let
 // the validated node differ from the one ultimately bound. Lstat does not
 // follow the link (mirrors the approach in applyAudio). Behind a var so tests
 // can inject device numbers without root/mknod.
-var statSerialDevice = func(p string) (major, minor int64, err error) {
+//
+// This is the shared stat/scope/symlink resolver for every entitlement that
+// surfaces a single, named device node (serial, i2c). Whole-major entitlements
+// (usb, gpio, spi, input, gpu, audio, camera) don't use it because they expose a
+// directory or hotplug node set whose minors aren't known at apply time.
+var statDeviceNode = func(p string) (major, minor int64, err error) {
 	fi, err := os.Lstat(p)
 	if err != nil {
 		return 0, 0, err
@@ -752,6 +775,37 @@ var statSerialDevice = func(p string) (major, minor int64, err error) {
 	}
 	rdev := uint64(st.Rdev)
 	return int64(unix.Major(rdev)), int64(unix.Minor(rdev)), nil
+}
+
+// addScopedCharDevice resolves a single host character-device node, bind-mounts
+// it, and emits a cgroup allow rule scoped to its exact major:minor. It returns
+// the resolved major:minor so callers can validate the node is the device they
+// expect. The cgroup rule is "rw" (no mknod): the host owns the node and the
+// bind mount surfaces it, so the container only ever opens it — it never needs
+// to create one. The mount is nosuid/noexec: a device node is opened for I/O,
+// never executed and never a setuid surface. On a stat error (missing node or
+// symlink) nothing is appended and the error is returned, so the caller fails
+// fast with a clear message instead of a cryptic mount error at container start.
+func addScopedCharDevice(spec *Spec, devPath string) (major, minor int64, err error) {
+	major, minor, err = statDeviceNode(devPath)
+	if err != nil {
+		return 0, 0, err
+	}
+	spec.Mounts = append(spec.Mounts, Mount{
+		Destination: devPath,
+		Source:      devPath,
+		Type:        "bind",
+		Options:     []string{"rbind", "rw", "nosuid", "noexec"},
+	})
+	maj, min := major, minor
+	spec.Linux.Resources.Devices = append(spec.Linux.Resources.Devices, LinuxDeviceCgroup{
+		Allow:  true,
+		Type:   "c",
+		Major:  &maj,
+		Minor:  &min,
+		Access: "rw",
+	})
+	return major, minor, nil
 }
 
 // applySerial adds access to a single serial tty device (e.g. a USB-attached
@@ -768,44 +822,23 @@ func applySerial(spec *Spec, ent appconfig.Entitlement) error {
 	}
 	devPath := filepath.Clean(fmt.Sprintf("/dev/%s", ent.Device))
 
-	// Resolve the exact node so the cgroup rule is scoped to this one device
+	// Resolve the exact node and scope the cgroup rule to this one device
 	// (major:minor), never the whole kernel major. A whole-major rule would
 	// expose every other device sharing that major on the host — every ttyACM*
-	// or ttyUSB* adapter (SOC2-CC6, ISO27001-A.8, NIST-AC-3). Resolution also
-	// fails fast and clearly when the device is not connected, instead of a
+	// or ttyUSB* adapter (SOC2-CC6, ISO27001-A.8, NIST-AC-3). addScopedCharDevice
+	// also fails fast and clearly when the device is not connected, instead of a
 	// cryptic mount error at start.
-	major, minor, err := statSerialDevice(devPath)
+	major, _, err := addScopedCharDevice(spec, devPath)
 	if err != nil {
 		return fmt.Errorf("serial device %s unavailable (need a real, connected tty node): %w", devPath, err)
 	}
 	// Defense-in-depth: the resolved node must be the character-device major its
 	// name implies, so a node that isn't the expected serial device can't smuggle
-	// in access to an unrelated major.
+	// in access to an unrelated major. (The scoped rule above is discarded with
+	// the whole spec when this returns an error, so nothing is granted.)
 	if major != wantMajor {
 		return fmt.Errorf("serial device %s has unexpected major %d (want %d for %q); refusing", devPath, major, wantMajor, ent.Device)
 	}
-
-	// Bind-mount the specific node from the host. nosuid/noexec: a serial tty is
-	// opened for I/O, never executed and never a setuid surface. NOTE: do not add
-	// "nodev" here — the destination *is* a character device node, and nodev makes
-	// the kernel refuse to interpret it as a device, so open() fails with EACCES.
-	spec.Mounts = append(spec.Mounts, Mount{
-		Destination: devPath,
-		Source:      devPath,
-		Type:        "bind",
-		Options:     []string{"rbind", "rw", "nosuid", "noexec"},
-	})
-
-	// Allow exactly this device's major:minor. "rw" (no mknod): the host owns
-	// the node and the bind mount above surfaces it; the container only opens it.
-	maj, min := major, minor
-	spec.Linux.Resources.Devices = append(spec.Linux.Resources.Devices, LinuxDeviceCgroup{
-		Allow:  true,
-		Type:   "c",
-		Major:  &maj,
-		Minor:  &min,
-		Access: "rw",
-	})
 
 	// Serial tty nodes are group-owned by dialout; resolve its GID on the host so
 	// a non-root process can open the port, falling back to the Debian/Ubuntu
@@ -837,13 +870,16 @@ func applyGPIO(spec *Spec, ent appconfig.Entitlement) {
 		}
 	}
 
-	// Allow GPIO devices (major 254).
+	// Allow GPIO devices (major 254). Whole-major is kept: a host can expose up to
+	// eight /dev/gpiochip* nodes and access is chip-level (pins are validated, not
+	// gated per-node), so all chips share the major. Access is "rw", not "rwm":
+	// the host owns the nodes and the binds above surface them, so mknod is withheld.
 	major := int64(254)
 	spec.Linux.Resources.Devices = append(spec.Linux.Resources.Devices, LinuxDeviceCgroup{
 		Allow:  true,
 		Type:   "c",
 		Major:  &major,
-		Access: "rwm",
+		Access: "rw",
 	})
 
 	_ = ent.Pins // Pins are used for documentation/validation; access is chip-level.
@@ -873,13 +909,17 @@ func applySPI(spec *Spec) {
 		}
 	}
 
-	// Allow SPI devices (major 153).
+	// Allow SPI devices (major 153). Whole-major is kept: a host can expose up to
+	// sixteen /dev/spidev*.* nodes (bus.chipselect) and the entitlement grants the
+	// SPI subsystem rather than one bus, so the minors aren't fixed at apply time.
+	// Access is "rw", not "rwm": the host owns the nodes and the binds above
+	// surface them, so the mknod bit is withheld.
 	spiMajor := int64(153)
 	spec.Linux.Resources.Devices = append(spec.Linux.Resources.Devices, LinuxDeviceCgroup{
 		Allow:  true,
 		Type:   "c",
 		Major:  &spiMajor,
-		Access: "rwm",
+		Access: "rw",
 	})
 }
 
@@ -896,13 +936,16 @@ func applyInput(spec *Spec) {
 		Options:     []string{"rbind", "nosuid", "noexec"},
 	})
 
-	// Allow input devices (major 13).
+	// Allow input devices (major 13). Whole-major is kept: /dev/input is a
+	// directory of event/mouse/js nodes that hotplug re-mints under new minors, so
+	// the minors aren't known at apply time. Access is "rw", not "rwm": the host
+	// owns the nodes and the bind above surfaces them, so the mknod bit is withheld.
 	major := int64(13)
 	spec.Linux.Resources.Devices = append(spec.Linux.Resources.Devices, LinuxDeviceCgroup{
 		Allow:  true,
 		Type:   "c",
 		Major:  &major,
-		Access: "rwm",
+		Access: "rw",
 	})
 }
 
