@@ -476,6 +476,7 @@ type runOptions struct {
 	product              string
 	service              string
 	keepGoing            bool
+	maxConcurrency       int
 	userArgs             []string
 	// quietBuild suppresses the image build (buildx) output, surfacing it only
 	// when the build fails. Set by `wendy watch` to keep the redeploy loop quiet.
@@ -508,6 +509,7 @@ func newRunCmd() *cobra.Command {
 	cmd.Flags().StringVar(&opts.product, "product", "", "Swift Package Manager product to build and run")
 	cmd.Flags().StringVar(&opts.service, "service", "", "Build and run only the named service and its dependencies (multi-service projects)")
 	cmd.Flags().BoolVar(&opts.keepGoing, "keep-going", false, "Multi-service: deploy services that build successfully instead of aborting the whole group on the first build/push failure")
+	cmd.Flags().IntVar(&opts.maxConcurrency, "max-concurrency", 0, "Multi-service: max service images to build+push at once (0 = auto-throttle large groups)")
 	cmd.Flags().StringSliceVar(&opts.userArgs, "user-args", nil, "Extra arguments to pass to the container")
 
 	return cmd
@@ -555,6 +557,9 @@ func runCommand(ctx context.Context, opts runOptions) error {
 	}
 	if _, err := normalizeImageBuilder(opts.builder); err != nil {
 		return err
+	}
+	if opts.maxConcurrency < 0 {
+		return fmt.Errorf("--max-concurrency must be >= 0 (0 = auto)")
 	}
 
 	// --dockerfile implies a docker build; validate the file exists and ensure

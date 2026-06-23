@@ -32,15 +32,15 @@ const (
 	// mTLS tunnel at once. Large groups (e.g. the 14-service go2 template, with a
 	// ~10 GB GPU image) collapse that tunnel under full fan-out, so groups at or
 	// above largeGroupThreshold are throttled to largeGroupConcurrency concurrent
-	// builds (WDY-1690). This is a heuristic default; an explicit --max-concurrency
-	// override is tracked separately (WDY-1693).
+	// builds (WDY-1690). This is the heuristic default; users can override it with
+	// --max-concurrency (WDY-1693).
 	largeGroupThreshold   = 8
 	largeGroupConcurrency = 2
 )
 
-// multiBuildConcurrency returns how many service images to build+push at once for
-// a group of numServices, throttling large groups to protect the shared device
-// registry tunnel (WDY-1690).
+// multiBuildConcurrency returns the auto (heuristic) number of service images to
+// build+push at once for a group of numServices, throttling large groups to
+// protect the shared device registry tunnel (WDY-1690).
 func multiBuildConcurrency(numServices int) int {
 	n := maxConcurrentBuilds
 	if numServices >= largeGroupThreshold {
@@ -48,6 +48,27 @@ func multiBuildConcurrency(numServices int) int {
 	}
 	if n > numServices {
 		n = numServices
+	}
+	if n < 1 {
+		n = 1
+	}
+	return n
+}
+
+// resolveBuildConcurrency returns the effective build+push concurrency for
+// buildCount services. A positive override (--max-concurrency, WDY-1693) takes
+// precedence over the auto heuristic; either way the result is clamped to
+// [1, buildCount].
+func resolveBuildConcurrency(buildCount, override int) int {
+	if buildCount < 1 {
+		return 1
+	}
+	n := multiBuildConcurrency(buildCount)
+	if override > 0 {
+		n = override
+	}
+	if n > buildCount {
+		n = buildCount
 	}
 	if n < 1 {
 		n = 1
@@ -239,7 +260,7 @@ func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 	}
 
 	// Build all service images in parallel, then create and start containers.
-	failed, buildErr := buildServicesParallel(ctx, conn, regPort, cwd, appCfg.AppID, services, platform, buildArgs, opts.builder, skip)
+	failed, buildErr := buildServicesParallel(ctx, conn, regPort, cwd, appCfg.AppID, services, platform, buildArgs, opts.builder, skip, opts.maxConcurrency)
 	if buildErr != nil {
 		return buildErr
 	}
@@ -370,6 +391,7 @@ func buildServicesParallel(
 	buildArgs map[string]string,
 	builder string,
 	skip map[string]bool,
+	maxConcurrency int,
 ) (map[string]error, error) {
 	names := make([]string, 0, len(services))
 	for n := range services {
@@ -394,9 +416,12 @@ func buildServicesParallel(
 			buildCount++
 		}
 	}
-	concurrency := multiBuildConcurrency(buildCount)
-	if concurrency < maxConcurrentBuilds && concurrency < buildCount {
-		cliLogln("Throttling to %d concurrent builds for %d services to protect the device registry tunnel (WDY-1690).", concurrency, buildCount)
+	concurrency := resolveBuildConcurrency(buildCount, maxConcurrency)
+	switch {
+	case maxConcurrency > 0 && concurrency < buildCount:
+		cliLogln("Building up to %d service(s) at a time (--max-concurrency).", concurrency)
+	case maxConcurrency <= 0 && concurrency < maxConcurrentBuilds && concurrency < buildCount:
+		cliLogln("Throttling to %d concurrent builds for %d services to protect the device registry tunnel (WDY-1690); override with --max-concurrency.", concurrency, buildCount)
 	}
 	sem := make(chan struct{}, concurrency)
 
