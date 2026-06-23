@@ -27,13 +27,15 @@ func NewDeviceInfoService(logger *zap.Logger, hd HardwareDiscoverer) *DeviceInfo
 func (s *DeviceInfoService) GetDeviceInfo(_ context.Context, _ *agentpbv2.GetDeviceInfoRequest) (*agentpbv2.GetDeviceInfoResponse, error) {
 	resp := &agentpbv2.GetDeviceInfoResponse{
 		Version:         version.Version,
-		Os:              runtime.GOOS,
+		Os:              detectOS(),
 		CpuArchitecture: runtime.GOARCH,
 		Featureset:      detectFeatureset(),
 	}
 
 	if v, ok := wendyOSVersion(); ok {
 		resp.OsVersion = &v
+	} else if _, distroVer := detectDistro(); distroVer != "" {
+		resp.OsVersion = &distroVer
 	}
 
 	if data, err := os.ReadFile("/etc/wendyos/device-type"); err == nil {

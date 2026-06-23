@@ -57,13 +57,15 @@ func NewAgentService(
 func (s *AgentService) GetAgentVersion(_ context.Context, _ *agentpb.GetAgentVersionRequest) (*agentpb.GetAgentVersionResponse, error) {
 	resp := &agentpb.GetAgentVersionResponse{
 		Version:         version.Version,
-		Os:              runtime.GOOS,
+		Os:              detectOS(),
 		CpuArchitecture: runtime.GOARCH,
 		Featureset:      detectFeatureset(),
 	}
 
 	if v, ok := wendyOSVersion(); ok {
 		resp.OsVersion = &v
+	} else if _, distroVer := detectDistro(); distroVer != "" {
+		resp.OsVersion = &distroVer
 	}
 
 	if data, err := os.ReadFile("/etc/wendyos/device-type"); err == nil {
