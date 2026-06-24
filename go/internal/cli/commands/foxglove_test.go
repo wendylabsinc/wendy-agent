@@ -13,7 +13,6 @@ import (
 
 	"github.com/coder/websocket"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/metadata"
 
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 )
@@ -69,22 +68,6 @@ func (s fakeFGSource) SubscribeRaw(ctx context.Context, _ *agentpbv2.SubscribeRa
 
 // Compile-time assertion: fakeFGSource must satisfy foxgloveSource.
 var _ foxgloveSource = fakeFGSource{}
-
-// --- helpers ---
-
-// noopClientStream is used as a safety net; the embedded nil grpc.ClientStream
-// already satisfies the interface but would panic on any call. We don't need
-// it here because the embedded nil is never called. Keeping as documentation.
-var _ grpc.ClientStream = (*noopClientStream)(nil)
-
-type noopClientStream struct{}
-
-func (noopClientStream) Header() (metadata.MD, error)  { return nil, nil }
-func (noopClientStream) Trailer() metadata.MD           { return nil }
-func (noopClientStream) CloseSend() error               { return nil }
-func (noopClientStream) Context() context.Context       { return context.Background() }
-func (noopClientStream) SendMsg(m any) error            { return nil }
-func (noopClientStream) RecvMsg(m any) error            { return nil }
 
 // --- test server helper ---
 
@@ -145,12 +128,15 @@ func TestFoxgloveServer_Handshake(t *testing.T) {
 	ch := adv.Channels[0]
 
 	// 3. subscribe to that channel
-	sub, _ := json.Marshal(map[string]any{
+	sub, err := json.Marshal(map[string]any{
 		"op": "subscribe",
 		"subscriptions": []map[string]any{
 			{"id": 99, "channelId": ch.ID},
 		},
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := c.Write(ctx, websocket.MessageText, sub); err != nil {
 		t.Fatalf("write subscribe: %v", err)
 	}
