@@ -30,7 +30,7 @@ inputs:
     required: false
     default: lan
   setup:
-    description: Run the platform Swift E2E setup script before tests.
+    description: Run the platform Swift E2E per-run setup/preflight script before tests.
     required: false
     default: 'false'
   managed_agent:

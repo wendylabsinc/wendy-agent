@@ -8,30 +8,27 @@ usage() {
 Usage: $(basename "$0") [OPTIONS]
 
 Prepare the current host for WendyAgent Swift E2E tests by dispatching to the
-platform-specific setup script.
+platform-specific setup/preflight script.
 
 Options:
   --help, -h  Show this help message.
+
+Other options are forwarded to the platform-specific script.
 EOF
 }
 
-while [[ $# -gt 0 ]]; do
-  case "$1" in
+for argument in "$@"; do
+  case "$argument" in
     --help|-h)
       usage
       exit 0
-      ;;
-    *)
-      echo "Unknown option: $1" >&2
-      usage >&2
-      exit 64
       ;;
   esac
 done
 
 case "$(uname -s)" in
   Darwin)
-    exec bash "$SCRIPT_DIR/E2ESetup.macOS.sh"
+    exec bash "$SCRIPT_DIR/E2ESetup.macOS.sh" "$@"
     ;;
   Linux)
     if command -v lsb_release >/dev/null 2>&1; then
@@ -42,7 +39,7 @@ case "$(uname -s)" in
 
     case "${distribution,,}" in
       ubuntu)
-        exec bash "$SCRIPT_DIR/E2ESetup.ubuntu.sh"
+        exec bash "$SCRIPT_DIR/E2ESetup.ubuntu.sh" "$@"
         ;;
       *)
         echo "ERROR: Unsupported Linux distribution for E2E setup: ${distribution:-unknown}" >&2
