@@ -116,6 +116,15 @@ writes (chunked, with ZLP), reads a 4-byte status word, and special-cases the op
 QueryRcmVersion (opcode 6) message prints the version, a DL_MINILOADER (opcode 4) message
 is followed by `sleep(1)`.
 
+> **Validated on a live T264 over macOS (2026-06-24), replaying the four bootROM blobs.** All
+> four writes were accepted (device did not reset). The bootROM sent **no status word** for
+> `bct_br`, `mb1`, or `psc_bl1` (the bulk-IN read just times out); only after `bct_mb1` did it
+> return a ~68-byte ASCII string `"0.25.1.1-t264-75…"` (an mb1/RCM version). The device then
+> advanced past the raw bootROM state (string-descriptor-3 chip ID read back as zero). So the
+> Go port must **not** block on / require a per-image status word — `DownloadBootROMImages` now
+> does a short tolerant read after each write and detects a genuine rejection by the next write
+> failing (a reject resets the USB device).
+
 ## Later phases (post-bootROM)
 
 - **mb2 applet**: `tegraflash_send_mb2_applet` → `tegrarcm_v2 --pollbl --download applet

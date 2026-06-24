@@ -166,9 +166,16 @@ func (d *Device) Close() {
 	d.ctx.Close()
 }
 
-// Read reads from the bulk IN endpoint.
+// Read reads from the bulk IN endpoint with a 5 s timeout.
 func (d *Device) Read(buf []byte) (int, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	return d.ReadWithTimeout(buf, 5*time.Second)
+}
+
+// ReadWithTimeout reads from the bulk IN endpoint, returning when buf is filled,
+// the device sends a short packet, or the timeout elapses. Pass a max-packet-sized
+// buf (>= 512 for high-speed bulk): a sub-packet read length can error on macOS IOKit.
+func (d *Device) ReadWithTimeout(buf []byte, timeout time.Duration) (int, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	return d.in.ReadContext(ctx, buf)
 }

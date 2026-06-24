@@ -7,13 +7,15 @@
 //
 //	thor-replay <bct_br> <mb1> <psc_bl1> <bct_mb1> [...]
 //
-// Unlike thor-probe this WRITES to the device (sends each blob verbatim over RCM).
-// It does not attempt the later nv3p/applet phases.
+// It is a DIAGNOSTIC: it sends each blob verbatim and is tolerant of/loud about the
+// per-image status read (a macOS bulk-IN quirk), so we can observe the whole sequence.
+// It WRITES to the device. It does not attempt the later nv3p/applet phases.
 package main
 
 import (
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/wendylabsinc/wendy/internal/cli/tegraflash/rcm"
 )
@@ -33,7 +35,7 @@ func main() {
 			fmt.Fprintf(os.Stderr, "FAIL reading %s: %v\n", p, err)
 			os.Exit(1)
 		}
-		fmt.Printf("  [%d] %-40s %8d bytes  magic=%s\n", i, p, len(data), magic(data))
+		fmt.Printf("  [%d] %-46s %8d bytes  magic=%s\n", i, p, len(data), magic(data))
 		blobs = append(blobs, data)
 	}
 
@@ -49,23 +51,42 @@ func main() {
 		fmt.Printf("chipID (BR_CID): 0x%s\n", cid)
 	}
 
-	fmt.Printf("\nSending %d images via bootROM RCM sequence...\n", len(blobs))
-	if err := rcm.DownloadBootROMImages(dev, blobs); err != nil {
-		fmt.Fprintf(os.Stderr, "\nSEQUENCE FAILED: %v\n", err)
-		fmt.Fprintln(os.Stderr, ">> The index in the error is the 0-based image that failed.")
-		os.Exit(1)
-	}
-	fmt.Printf("\nOK: bootROM accepted all %d images.\n", len(blobs))
-	fmt.Println(">> Next: the device should advance toward the mb2 applet (nv3p) phase.")
-	if cid, err := dev.ReadChipID(); err == nil {
-		fmt.Printf(">> Device still enumerable in RCM (chipID 0x%s).\n", cid)
+	// Drain any connect-time bulk IN (e.g. ECID), tolerantly.
+	pre := make([]byte, 512)
+	if n, err := dev.Read(pre); err == nil {
+		fmt.Printf("\ndrain: read %d bytes: % x\n", n, pre[:min(n, 16)])
 	} else {
-		fmt.Printf(">> Device no longer answers the RCM control read (%v) — may have re-enumerated.\n", err)
+		fmt.Printf("\ndrain: (nothing / %v)\n", err)
+	}
+
+	fmt.Printf("\nSending %d images...\n", len(blobs))
+	for i, blob := range blobs {
+		t0 := time.Now()
+		if err := dev.Write(blob); err != nil {
+			fmt.Fprintf(os.Stderr, "  [%d] WRITE FAILED after %v: %v\n", i, time.Since(t0), err)
+			os.Exit(1)
+		}
+		fmt.Printf("  [%d] wrote %d bytes in %v\n", i, len(blob), time.Since(t0).Round(time.Millisecond))
+
+		// Status read into a full 512-byte (maxpacket) buffer, tolerant.
+		status := make([]byte, 512)
+		t1 := time.Now()
+		n, rerr := dev.Read(status)
+		if rerr != nil {
+			fmt.Printf("      status: read error after %v: %v (continuing)\n", time.Since(t1).Round(time.Millisecond), rerr)
+		} else {
+			fmt.Printf("      status: %d bytes: % x\n", n, status[:min(n, 16)])
+		}
+	}
+
+	fmt.Println("\nSequence sent. Re-checking device state...")
+	if cid, err := dev.ReadChipID(); err == nil {
+		fmt.Printf(">> Still answering RCM control read, chipID 0x%s (bootROM likely still active).\n", cid)
+	} else {
+		fmt.Printf(">> RCM control read now fails (%v) — device may have advanced/re-enumerated.\n", err)
 	}
 }
 
-// magic returns the 4-byte ASCII magic if printable ("NVDA" for signed blobs),
-// else a hex preview. BCTs may not carry the NVDA magic; this is informational.
 func magic(b []byte) string {
 	if len(b) < 4 {
 		return "(<4 bytes)"
@@ -81,4 +102,11 @@ func magic(b []byte) string {
 		return fmt.Sprintf("%q", string(b[:4]))
 	}
 	return fmt.Sprintf("%02x%02x%02x%02x", b[0], b[1], b[2], b[3])
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
