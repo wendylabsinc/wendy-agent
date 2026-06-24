@@ -67,8 +67,9 @@ Final closeout snapshot, 2026-06-12:
   general/top-level work.
 - Explicitly reprioritized by the user on 2026-06-18: WDY-1608 is active from
   this coordinator despite belonging to `New Templates`, not the closed Mac beta
-  project. Keep the coordinator role limited to setup/handoff; implementation
-  belongs in the per-issue worktree.
+  project. Coordinator setup/handoff is complete, implementation happened in
+  the per-issue worktree, and the current review stack is WendyOS PR #1077 plus
+  companion templates PR #47.
 
 ## Working protocol
 
@@ -412,22 +413,39 @@ automation scope, follow-up issues filed, and the relevant `Closes WDY-xxxx`.
 
 ### WDY-1608 — Add Swift MLX-LLM template for Open WebUI on Wendy Agent for Mac
 
-- Status: `started / handoff prepared`; Linear state: In Progress; Linear
-  assignee: `konstantin@wendy.sh`; Linear project: `New Templates`.
+- Status: `implemented / draft PR stack open`; Linear state: In Progress;
+  Linear assignee: `konstantin@wendy.sh`; Linear project: `New Templates`.
 - Linear: https://linear.app/wendylabsinc/issue/WDY-1608/add-swift-mlx-llm-template-for-open-webui-on-wendy-agent-for-mac
 - Branch/worktree name: `kb.wdy-1608-mlx-openwebui-template`
 - Worktree path:
   `/Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1608-mlx-openwebui-template`
-- Draft PR: https://github.com/wendylabsinc/WendyOS/pull/1077
-- PR closing reference: `Closes WDY-1608`
-- Setup commit: `1e2562d7 chore: start WDY-1608 MLX Open WebUI template`
-- Scope: add a Mac-compatible Swift LLM template for `wendy init --template`
-  using MLX / MLX-LLM, with an OpenAI-compatible HTTP backend that Open WebUI
-  can target. Keep it native macOS (`platform: "darwin"`), lightweight or
-  configurable for constrained Macs, and clear that this is not Linux container
-  support on Mac agents.
-- Handoff: `HANDOVER.md` in the worktree contains the durable implementation
-  prompt, constraints, validation expectations, and PR details.
+- WendyOS draft PR: https://github.com/wendylabsinc/WendyOS/pull/1077
+  - Current head: `096fd64e fix: relax direct agent keepalive pings`
+  - Base: `kb.wdy-1606-brewfile-support` / stacked on WDY-1606 PR #1071.
+  - Scope: CLI support for native Mac templates (`--target darwin` /
+    `--target macos`), target-aware template filtering, Darwin init coverage,
+    template smoke target selection, Mac Xcode template headless builds, and a
+    direct-agent keepalive adjustment found during long-running Mac template
+    validation.
+- Companion templates draft PR: https://github.com/wendylabsinc/templates/pull/47
+  - Scope: macOS side of the shared `llm` template using Swift/MLX and Open
+    WebUI, selected with `wendy init --target darwin --template llm`.
+- PR closing reference: both PR bodies currently include `Closes WDY-1608`; do
+  not add more duplicate closing references elsewhere.
+- Setup commit after stack rebasing:
+  `16d2f1d6 chore: start WDY-1608 MLX Open WebUI template`.
+- Validation recorded in PR bodies:
+  - WendyOS #1077: focused Go tests for template target/init behavior,
+    `bash -n go/scripts/test-templates.sh`, and companion template validation.
+  - templates #47: `jq` validation, rendered `wendy init --target darwin
+    --template llm`, rendered `wendy.json` validation, Swift package describe
+    and build, CLI help checks, and live deployment to `mac-mini.local` proving
+    `uv`/Open WebUI install, localhost MLX backend startup, and `/api/config`.
+- Current review/merge order: finish WDY-1606/#1071 first, rebase/update
+  WDY-1608/#1077 onto the merged base, then finish/merge templates #47.
+- Handoff: local untracked `HANDOVER.md` in the worktree contains the original
+  durable implementation prompt, constraints, validation expectations, and PR
+  details.
 - Resume command:
   `cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1608-mlx-openwebui-template && ai --prompt "Read HANDOVER.md and follow its instructions."`
 
@@ -798,6 +816,9 @@ WDY-1479 (SER9 Swift E2E mTLS auth failure).
   Wendy Agent for Mac supporting native `platform: "darwin"` app deployment.
   This is Mac-related but belongs to the `New Templates` project, so it is not
   active in this Mac beta project coordinator unless explicitly reprioritized.
+  Housekeeping note, 2026-06-24: WDY-1608 WendyOS PR #1077 implements much of
+  the native Mac template-target plumbing, so reassess WDY-1530 after #1077 and
+  templates #47 land.
 - WDY-1531 — completed in PR #999. When targeting a Darwin/macOS agent,
   unsupported Linux-container, Compose, WendyOS-template, or otherwise
   non-native-Mac project shapes fail early with a Mac-specific diagnostic

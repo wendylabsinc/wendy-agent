@@ -17,7 +17,12 @@ This session is for coordination only: Linear updates, planning, creating issue 
 - `PLAN.md` is the durable coordination ledger.
 - `HANDOVER.md` is this file.
 - There is an untracked `install.tape` in this worktree; it pre-existed the rename and has been intentionally left alone.
+- Housekeeping snapshot, 2026-06-24:
+  - Coordinator branch is up to date with `origin/kb.wendy-for-mac`.
+  - WDY-1608 worktree is clean except for its untracked local `HANDOVER.md`; branch is pushed at `096fd64e`.
+  - WDY-1606 worktree has local modified Swift files plus an untracked local `HANDOVER.md`; leave it alone unless explicitly resuming WDY-1606.
 - Recent coordinator commits:
+  - `5004d1a5 docs: add Wendy for Mac coordinator handover`
   - `82b9da05 docs: rename Wendy for Mac coordinator`
   - `f2d1459d docs: record WDY-1608 template handoff`
   - `60b9084f docs: add VHS terminal recording plan`
@@ -143,11 +148,12 @@ Started it properly per the plan:
 
 - Issue worktree: `/Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1608-mlx-openwebui-template`
 - Branch: `kb.wdy-1608-mlx-openwebui-template`
-- Setup commit: `1e2562d7 chore: start WDY-1608 MLX Open WebUI template`
-- Draft PR: https://github.com/wendylabsinc/WendyOS/pull/1077
-- PR body contains `Closes WDY-1608`.
-- Issue worktree contains its own `HANDOVER.md` with implementation scope and validation expectations.
-- A Linear comment was added with the worktree/PR handoff details.
+- Setup commit after stack rebasing: `16d2f1d6 chore: start WDY-1608 MLX Open WebUI template`
+- Draft WendyOS PR: https://github.com/wendylabsinc/WendyOS/pull/1077
+- Companion templates PR: https://github.com/wendylabsinc/templates/pull/47
+- Both PR bodies contain `Closes WDY-1608`; avoid adding additional duplicate closing references elsewhere.
+- Issue worktree contains its own local untracked `HANDOVER.md` with implementation scope and validation expectations.
+- A Linear comment was added with the original worktree/PR handoff details.
 
 Resume command for the implementation session:
 
@@ -155,16 +161,15 @@ Resume command for the implementation session:
 cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1608-mlx-openwebui-template && ai --prompt "Read HANDOVER.md and follow its instructions."
 ```
 
-Important WDY-1608 implementation constraints:
+Current WDY-1608 state as of housekeeping on 2026-06-24:
 
-- Add a Mac-compatible Swift LLM template for `wendy init --template`.
-- Native macOS only: generated `wendy.json` should use `platform: "darwin"`.
-- Use MLX / MLX-LLM for local inference on macOS.
-- Expose enough OpenAI-compatible HTTP API surface for Open WebUI, likely `/v1/models` and `/v1/chat/completions`.
-- Keep model downloads lightweight or configurable for constrained Macs.
-- Do not commit model weights or large artifacts.
-- Do not imply Linux containers on Mac agents are supported.
-- Confirm where template content belongs. This repo has CLI/template tests, but `go/scripts/test-templates.sh` clones `wendylabsinc/templates`, so the implementation may require a companion PR in the templates repo.
+- WendyOS PR #1077 is an open draft, stacked on WDY-1606 / PR #1071, with branch base `kb.wdy-1606-brewfile-support`.
+- PR #1077 adds native Mac template target support in the CLI: `--target darwin` / `--target macos`, template filtering by target, Darwin init tests, and template smoke harness target selection.
+- PR #1077 also carries two Mac-run fixes discovered during template validation: headless Xcode package macro builds and relaxed direct-agent keepalive pings for long-running Mac log streams.
+- Companion templates PR wendylabsinc/templates#47 adds the macOS side of the shared `llm` template using Swift/MLX plus Open WebUI.
+- Templates PR #47 is an open draft with green checks and recorded live validation on `mac-mini.local`: first run installed `uv`, installed Open WebUI 0.9.5, started the localhost MLX backend, served Open WebUI, and returned expected `/api/config` data.
+- Merge/review order is likely: finish/merge WDY-1606 PR #1071 first, then rebase/update WDY-1608 PR #1077, then finish/merge the companion templates PR #47.
+- WDY-1530 should be reassessed after WDY-1608 lands because PR #1077 covers much of the native Mac template-target plumbing.
 
 ### Wendy for Mac — Production project update
 
@@ -287,6 +292,11 @@ There are two related template issues:
 - WDY-1530: adds the Mac template target/path to `wendy init --template`.
 - WDY-1608: adds the requested Swift MLX-LLM/Open WebUI template.
 
+Current implementation split:
+
+- WendyOS PR #1077 covers the CLI/native Mac target side and is stacked on WDY-1606 PR #1071.
+- `wendylabsinc/templates` PR #47 covers the generated Swift MLX/Open WebUI template content.
+
 The template implementation may live outside this repository in `wendylabsinc/templates`. This repo contains:
 
 - CLI/template smoke script: `go/scripts/test-templates.sh`
@@ -318,18 +328,20 @@ Resume WDY-1608 implementation:
 cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1608-mlx-openwebui-template && ai --prompt "Read HANDOVER.md and follow its instructions."
 ```
 
-View WDY-1608 PR:
+View WDY-1608 PRs:
 
 ```sh
 cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1608-mlx-openwebui-template
 gh pr view 1077 --web
+gh pr view 47 --repo wendylabsinc/templates --web
 ```
 
 ## Next likely actions
 
 Depending on what the user asks next:
 
-1. If continuing WDY-1608, open the issue worktree and follow its `HANDOVER.md`.
-2. If starting another Mac production issue, follow the coordinator protocol and add a new ledger entry to `PLAN.md`.
-3. If updating Linear project status, query project updates first and match the existing concise narrative style with health `onTrack` unless evidence suggests otherwise.
-4. If cleaning up coordination after a PR merges, update `PLAN.md` with final state, merge commit, validation, and resume command status.
+1. If continuing WDY-1608, open the issue worktree and follow its `HANDOVER.md`; remember #1077 is stacked on #1071 and has companion templates PR #47.
+2. If WDY-1606/#1071 merges, rebase/update WDY-1608/#1077 and refresh this coordinator ledger.
+3. If starting another Mac production issue, follow the coordinator protocol and add a new ledger entry to `PLAN.md`.
+4. If updating Linear project status, query project updates first and match the existing concise narrative style with health `onTrack` unless evidence suggests otherwise.
+5. If cleaning up coordination after a PR merges, update `PLAN.md` with final state, merge commit, validation, and resume command status.
