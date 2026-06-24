@@ -73,16 +73,13 @@ func Flash(opts FlashOptions) error {
 	}
 	fmt.Fprintf(out, "  Device: %s\n", dev.String())
 
-	// UID is sent by the bootROM on enumeration over bulk IN; on macOS the IOKit
-	// layer drops it before the interface is claimed. Fall back to the BR_CID from
-	// string descriptor 3, which is readable over endpoint 0 on macOS. Informational
-	// only for ODM-open devices.
-	if uid, uidErr := dev.ReadUID(); uidErr == nil {
-		fmt.Fprintf(out, "  UID: %x\n", uid)
-	} else if cid, cidErr := dev.ReadChipID(); cidErr == nil {
+	// Read the chip BR_CID over the EP0 control transfer (ReadChipID). We avoid the
+	// bulk-IN ReadUID here: T264 sends no UID at connect, so it only times out, and a
+	// timed-out bulk-IN read is destructive on macOS. Informational for ODM-open.
+	if cid, err := dev.ReadChipID(); err == nil {
 		fmt.Fprintf(out, "  Chip ID (BR_CID): %s\n", cid)
 	} else {
-		fmt.Fprintf(out, "  UID: (unavailable: %v)\n", uidErr)
+		fmt.Fprintf(out, "  Chip ID: (unavailable: %v)\n", err)
 	}
 
 	if dev.IsT264() {

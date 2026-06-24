@@ -36,6 +36,9 @@ func (d *Device) IsT264() bool { return false }
 func (d *Device) ControlRead([]byte) (int, error) {
 	return 0, fmt.Errorf("Jetson USB recovery flashing is only supported on macOS and Linux")
 }
+func (d *Device) ClearHaltIn() error {
+	return fmt.Errorf("Jetson USB recovery flashing is only supported on macOS and Linux")
+}
 func (d *Device) ReadChipID() (string, error) {
 	return "", fmt.Errorf("Jetson USB recovery flashing is only supported on macOS and Linux")
 }

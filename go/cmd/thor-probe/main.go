@@ -25,12 +25,8 @@ func main() {
 	fmt.Printf("device:   %s\n", dev.String())
 	fmt.Printf("productID: 0x%04x  isT264=%v\n", uint16(dev.ProductID()), dev.IsT264())
 
-	uid, err := dev.ReadUID()
-	if err != nil {
-		fmt.Printf("UID:      (unavailable: %v)\n", err)
-	} else {
-		fmt.Printf("UID:      %x (%d bytes)\n", uid, len(uid))
-	}
+	// Note: no bulk-IN ReadUID here — it's destructive on macOS for T264 (times out →
+	// libusb aborts the endpoint). The chip ID comes from the EP0 control read below.
 
 	// Raw control read of string descriptor index 3. Dump the full response so the
 	// decode can be verified on hardware: the payload is the BR_CID hex string,

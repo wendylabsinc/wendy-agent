@@ -14,11 +14,6 @@ import (
 	"github.com/google/gousb"
 )
 
-type uidResult struct {
-	data []byte
-	err  error
-}
-
 // Device represents a Jetson in RCM mode.
 type Device struct {
 	ctx    *gousb.Context
@@ -27,7 +22,6 @@ type Device struct {
 	in     *gousb.InEndpoint
 	out    *gousb.OutEndpoint
 	doneFn func()
-	uidCh  <-chan uidResult
 }
 
 // WaitForDevice blocks until a supported Jetson appears in RCM mode (up to 60 s).
@@ -124,24 +118,11 @@ func openDevice(ctx *gousb.Context, dev *gousb.Device) (*Device, error) {
 		return nil, fmt.Errorf("device missing bulk IN or OUT endpoints")
 	}
 
-	// Submit the UID read transfer immediately after endpoint setup. The T234
-	// bootROM sends the UID right when the interface is claimed; submitting here
-	// (before returning to the caller) maximises the capture window on macOS,
-	// where IOKit drops bulk IN data if no transfer is pending.
-	ch := make(chan uidResult, 1)
-	go func() {
-		buf := make([]byte, 16)
-		rctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-		defer cancel()
-		n, rerr := inEP.ReadContext(rctx, buf)
-		if rerr != nil {
-			ch <- uidResult{err: rerr}
-		} else {
-			ch <- uidResult{data: buf[:n]}
-		}
-		close(ch)
-	}()
-
+	// Do NOT pre-submit a speculative bulk-IN read here. T264's bootROM sends no
+	// UID at connect, so the read only times out — and on macOS a timed-out bulk-IN
+	// read is destructive: libusb_cancel_transfer aborts the whole endpoint and
+	// issues a CLEAR_FEATURE/ENDPOINT_HALT, desyncing the data toggle (libusb #1110).
+	// Read the chip ID via the EP0 control transfer instead (ReadChipID).
 	return &Device{
 		ctx:    ctx,
 		dev:    dev,
@@ -149,7 +130,6 @@ func openDevice(ctx *gousb.Context, dev *gousb.Device) (*Device, error) {
 		in:     inEP,
 		out:    outEP,
 		doneFn: done,
-		uidCh:  ch,
 	}, nil
 }
 
@@ -212,17 +192,27 @@ func (d *Device) Write(buf []byte) error {
 	return nil
 }
 
-// ReadUID returns the unique ID sent by the Orin bootROM on first connect.
-// The read is pre-submitted in openDevice to avoid missing the UID on macOS.
+// ReadUID does an on-demand 16-byte bulk-IN read for the UID the T234/Orin bootROM
+// emits on connect. T264 sends nothing here, so this times out — and on macOS a
+// timed-out bulk-IN read is destructive (see openDevice / ClearHaltIn). Prefer
+// ReadChipID (EP0 control transfer) for the chip ID; use this only for T234.
 func (d *Device) ReadUID() ([]byte, error) {
-	result, ok := <-d.uidCh
-	if !ok {
-		return nil, fmt.Errorf("UID channel closed")
+	buf := make([]byte, 16)
+	n, err := d.ReadWithTimeout(buf, time.Second)
+	if err != nil {
+		return nil, err
 	}
-	if result.err != nil {
-		return nil, result.err
-	}
-	return result.data, nil
+	return buf[:n], nil
+}
+
+// ClearHaltIn clears a halt/stall on the bulk IN endpoint and resets its data
+// toggle (USB CLEAR_FEATURE(ENDPOINT_HALT) over EP0). Use it to recover the IN
+// endpoint after a bulk-IN read times out on macOS, where libusb's cancel aborts
+// the endpoint and can leave the data toggle desynced (libusb #1110).
+func (d *Device) ClearHaltIn() error {
+	addr := uint16(uint8(d.in.Desc.Number) | 0x80)
+	_, err := d.dev.Control(0x02, 0x01, 0x0000, addr, nil) // CLEAR_FEATURE, ENDPOINT_HALT
+	return err
 }
 
 // LoadApplet sends the RCM message containing the applet to the device.
