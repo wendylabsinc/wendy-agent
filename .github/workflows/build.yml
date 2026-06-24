@@ -203,6 +203,13 @@ jobs:
     runs-on: macos-26
     timeout-minutes: 45
     needs: [determine-version]
+    # Temporarily non-blocking: macOS signing/notarization secrets are broken,
+    # which must not hold back the Linux/Windows agent + CLI release. The job
+    # still runs so it auto-recovers once signing is fixed; the release no longer
+    # gates on it and the Homebrew cask bump skips when the app artifact is absent.
+    # To re-enable as a hard gate: drop this flag and restore the
+    # `needs.build-agent-macos-app.result == 'success'` check in the release job.
+    continue-on-error: true
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
@@ -665,7 +672,6 @@ jobs:
       needs.determine-version.result == 'success' &&
       needs.build.result == 'success' &&
       needs.build-go-macos.result == 'success' &&
-      needs.build-agent-macos-app.result == 'success' &&
       needs.package-linux.result == 'success' &&
       needs.package-windows.result == 'success' &&
       needs.test-templates.result == 'success' &&
@@ -792,13 +798,24 @@ jobs:
 
           AGENT_MACOS_FILE="wendy-agent-macos-arm64-${VERSION}.zip"
           AGENT_MACOS_URL="https://github.com/wendylabsinc/wendy-agent/releases/download/${TAG_NAME}/${AGENT_MACOS_FILE}"
-          AGENT_MACOS_SHA=$(curl -fsSL "$AGENT_MACOS_URL" | sha256sum | awk '{print $1}')
+          # The macOS agent app (build-agent-macos-app) is currently non-blocking
+          # while signing secrets are broken, so its release zip may be absent.
+          # Treat it as optional here: when the artifact isn't published, mark it
+          # unavailable so the Homebrew cask bump is skipped. This auto-recovers
+          # once the build job is green again.
+          if AGENT_MACOS_SHA=$(curl -fsSL "$AGENT_MACOS_URL" | sha256sum | awk '{print $1}'); then
+            AGENT_MACOS_AVAILABLE=true
+          else
+            AGENT_MACOS_AVAILABLE=false
+            AGENT_MACOS_SHA=""
+            echo "::warning::macOS agent app artifact not found at ${AGENT_MACOS_URL}; skipping Homebrew cask bump"
+          fi
 
           echo "URLs and SHA256s:"
           echo "  CLI macOS ARM64: ${CLI_MACOS_URL} -> ${CLI_MACOS_SHA}"
           echo "  CLI Linux ARM64: ${LINUX_ARM_URL} -> ${LINUX_ARM_SHA}"
           echo "  CLI Linux x86_64: ${LINUX_X86_URL} -> ${LINUX_X86_SHA}"
-          echo "  Agent macOS app: ${AGENT_MACOS_URL} -> ${AGENT_MACOS_SHA}"
+          echo "  Agent macOS app: ${AGENT_MACOS_URL} -> ${AGENT_MACOS_SHA:-<unavailable>}"
 
           echo "cli_macos_url=${CLI_MACOS_URL}" >> $GITHUB_OUTPUT
           echo "cli_macos_sha=${CLI_MACOS_SHA}" >> $GITHUB_OUTPUT
@@ -808,6 +825,7 @@ jobs:
           echo "linux_x86_sha=${LINUX_X86_SHA}" >> $GITHUB_OUTPUT
           echo "agent_macos_url=${AGENT_MACOS_URL}" >> $GITHUB_OUTPUT
           echo "agent_macos_sha=${AGENT_MACOS_SHA}" >> $GITHUB_OUTPUT
+          echo "agent_macos_available=${AGENT_MACOS_AVAILABLE}" >> $GITHUB_OUTPUT
 
       # Nightly: update formula and cask directly on main
       - name: Bump nightly formula and cask
@@ -830,6 +848,7 @@ jobs:
           # Update bottle root_url version
           sed -i "s|wendy-nightly-[^\"]*|wendy-nightly-${VERSION}|" "$FORMULA"
 
+          if [ "${{ steps.checksums.outputs.agent_macos_available }}" = "true" ]; then
           mkdir -p "$(dirname "$CASK")"
           cat > "$CASK" <<EOF
           cask "wendy-agent-nightly" do
@@ -846,6 +865,9 @@ jobs:
             app "WendyAgentMac.app"
           end
           EOF
+          else
+          echo "::warning::Skipping nightly cask bump: macOS agent app artifact unavailable"
+          fi
 
           # Verify all URLs and checksums were actually updated
           echo "Verifying nightly formula and cask..."
@@ -855,17 +877,22 @@ jobs:
           grep -q "${{ steps.checksums.outputs.cli_macos_sha }}" "$FORMULA" || { echo "::error::Failed to update macOS SHA256 in formula"; exit 1; }
           grep -q "${{ steps.checksums.outputs.linux_arm_sha }}" "$FORMULA" || { echo "::error::Failed to update Linux ARM64 SHA256 in formula"; exit 1; }
           grep -q "${{ steps.checksums.outputs.linux_x86_sha }}" "$FORMULA" || { echo "::error::Failed to update Linux AMD64 SHA256 in formula"; exit 1; }
+          if [ "${{ steps.checksums.outputs.agent_macos_available }}" = "true" ]; then
           grep -q "version \"${VERSION}\"" "$CASK" || { echo "::error::Failed to update nightly cask version"; exit 1; }
           grep -q "sha256 \"${{ steps.checksums.outputs.agent_macos_sha }}\"" "$CASK" || { echo "::error::Failed to update nightly cask SHA256"; exit 1; }
+          fi
 
           echo "Updated nightly formula:"
           grep -A 1 "url\|sha256" "$FORMULA" | head -20
+          if [ "${{ steps.checksums.outputs.agent_macos_available }}" = "true" ]; then
           echo "Updated nightly cask:"
           grep -E "version|sha256|url" "$CASK"
+          fi
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add "$FORMULA" "$CASK"
+          git add "$FORMULA"
+          if [ "${{ steps.checksums.outputs.agent_macos_available }}" = "true" ]; then git add "$CASK"; fi
           git commit -m "wendy-nightly: update to ${VERSION}"
           git push origin main
 
@@ -893,6 +920,7 @@ jobs:
           # Update bottle root_url version
           sed -i "s|wendy-[0-9][^\"]*|wendy-${VERSION}|" "$FORMULA"
 
+          if [ "${{ steps.checksums.outputs.agent_macos_available }}" = "true" ]; then
           mkdir -p "$(dirname "$CASK")"
           cat > "$CASK" <<EOF
           cask "wendy-agent" do
@@ -909,6 +937,9 @@ jobs:
             app "WendyAgentMac.app"
           end
           EOF
+          else
+          echo "::warning::Skipping stable cask bump: macOS agent app artifact unavailable"
+          fi
 
           # Verify all URLs and checksums were actually updated
           echo "Verifying stable formula and cask..."
@@ -918,17 +949,22 @@ jobs:
           grep -q "${{ steps.checksums.outputs.cli_macos_sha }}" "$FORMULA" || { echo "::error::Failed to update macOS SHA256 in formula"; exit 1; }
           grep -q "${{ steps.checksums.outputs.linux_arm_sha }}" "$FORMULA" || { echo "::error::Failed to update Linux ARM64 SHA256 in formula"; exit 1; }
           grep -q "${{ steps.checksums.outputs.linux_x86_sha }}" "$FORMULA" || { echo "::error::Failed to update Linux AMD64 SHA256 in formula"; exit 1; }
+          if [ "${{ steps.checksums.outputs.agent_macos_available }}" = "true" ]; then
           grep -q "version \"${VERSION}\"" "$CASK" || { echo "::error::Failed to update macOS agent cask version"; exit 1; }
           grep -q "sha256 \"${{ steps.checksums.outputs.agent_macos_sha }}\"" "$CASK" || { echo "::error::Failed to update macOS agent cask SHA256"; exit 1; }
+          fi
 
           echo "Updated stable formula:"
           grep -A 1 "url\|sha256" "$FORMULA" | head -20
+          if [ "${{ steps.checksums.outputs.agent_macos_available }}" = "true" ]; then
           echo "Updated stable cask:"
           grep -E "version|sha256|url" "$CASK"
+          fi
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add "$FORMULA" "$CASK"
+          git add "$FORMULA"
+          if [ "${{ steps.checksums.outputs.agent_macos_available }}" = "true" ]; then git add "$CASK"; fi
           git commit -m "wendy: bump to ${VERSION}"
           git push -u origin "$BRANCH"
 
