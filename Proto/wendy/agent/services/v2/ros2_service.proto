@@ -34,6 +34,24 @@ service ROS2Service {
 
     // Escape hatch — raw `ros2` CLI passthrough.
     rpc Exec(ROS2ExecRequest) returns (stream ROS2ExecOutput);
+
+    // Actions — list/inspect action graphs and dispatch goals (WDY-1722).
+    rpc ListActions(ListROS2ActionsRequest) returns (ListROS2ActionsResponse);
+    rpc GetActionInfo(GetROS2ActionInfoRequest) returns (GetROS2ActionInfoResponse);
+    // SendActionGoal streams feedback/result until the goal finishes or the
+    // client cancels; output frames reuse ROS2ExecOutput.
+    rpc SendActionGoal(SendROS2ActionGoalRequest) returns (stream ROS2ExecOutput);
+
+    // Lifecycle — managed-node state inspection and transitions (WDY-1722).
+    rpc ListLifecycleNodes(ListROS2LifecycleNodesRequest) returns (ListROS2LifecycleNodesResponse);
+    rpc GetLifecycleState(GetROS2LifecycleStateRequest) returns (GetROS2LifecycleStateResponse);
+    rpc ListLifecycleTransitions(ListROS2LifecycleTransitionsRequest) returns (ListROS2LifecycleTransitionsResponse);
+    rpc SetLifecycleState(SetROS2LifecycleStateRequest) returns (SetROS2LifecycleStateResponse);
+
+    // Components — composable-node container management (WDY-1722).
+    rpc ListComponents(ListROS2ComponentsRequest) returns (ListROS2ComponentsResponse);
+    rpc LoadComponent(LoadROS2ComponentRequest) returns (LoadROS2ComponentResponse);
+    rpc UnloadComponent(UnloadROS2ComponentRequest) returns (UnloadROS2ComponentResponse);
 }
 
 message ROS2Node {
@@ -246,4 +264,135 @@ message ROS2ExecOutput {
     bytes stdout = 1;
     bytes stderr = 2;
     optional int32 exit_code = 3; // set on the final message
+}
+
+// --- Actions (WDY-1722) ---
+
+message ROS2Action {
+    string name = 1;
+    repeated string types = 2; // an action can advertise multiple types
+    // rmw identifies which RMW graph this action came from (WDY-1594). Empty on
+    // single-RMW devices.
+    string rmw = 3;
+}
+
+message ListROS2ActionsRequest {
+    optional int32 domain_id = 1;
+}
+
+message ListROS2ActionsResponse {
+    repeated ROS2Action actions = 1;
+}
+
+message GetROS2ActionInfoRequest {
+    optional int32 domain_id = 1;
+    string action = 2;
+}
+
+message GetROS2ActionInfoResponse {
+    string name = 1;
+    repeated string action_clients = 2; // fully-qualified client node names
+    repeated string action_servers = 3; // fully-qualified server node names
+    // Verbose raw `ros2 action info` output.
+    string verbose = 4;
+}
+
+message SendROS2ActionGoalRequest {
+    optional int32 domain_id = 1;
+    string action = 2;
+    string action_type = 3; // e.g. action_tutorials_interfaces/action/Fibonacci
+    string goal = 4;        // YAML goal payload
+    bool feedback = 5;      // forward --feedback to stream feedback messages
+}
+
+// --- Lifecycle / managed nodes (WDY-1722) ---
+
+message ROS2LifecycleTransition {
+    string label = 1; // e.g. "configure"
+    uint32 id = 2;
+    string start_state = 3;
+    string goal_state = 4;
+}
+
+message ListROS2LifecycleNodesRequest {
+    optional int32 domain_id = 1;
+}
+
+message ListROS2LifecycleNodesResponse {
+    repeated ROS2Node nodes = 1;
+}
+
+message GetROS2LifecycleStateRequest {
+    optional int32 domain_id = 1;
+    string node = 2;
+}
+
+message GetROS2LifecycleStateResponse {
+    string state = 1;     // e.g. "unconfigured", "inactive", "active"
+    uint32 state_id = 2;  // numeric state id (e.g. 1)
+}
+
+message ListROS2LifecycleTransitionsRequest {
+    optional int32 domain_id = 1;
+    string node = 2;
+}
+
+message ListROS2LifecycleTransitionsResponse {
+    repeated ROS2LifecycleTransition transitions = 1;
+}
+
+message SetROS2LifecycleStateRequest {
+    optional int32 domain_id = 1;
+    string node = 2;
+    string transition = 3; // e.g. "configure", "activate"
+}
+
+message SetROS2LifecycleStateResponse {
+    bool success = 1;
+    string message = 2;
+}
+
+// --- Components / composable nodes (WDY-1722) ---
+
+message ROS2LoadedComponent {
+    uint32 uid = 1;  // unique id within the container
+    string name = 2; // fully-qualified node name
+}
+
+message ROS2ComponentContainer {
+    string name = 1; // container node name, e.g. /ComponentManager
+    repeated ROS2LoadedComponent components = 2;
+    // rmw identifies which RMW graph this container came from (WDY-1594).
+    string rmw = 3;
+}
+
+message ListROS2ComponentsRequest {
+    optional int32 domain_id = 1;
+}
+
+message ListROS2ComponentsResponse {
+    repeated ROS2ComponentContainer containers = 1;
+}
+
+message LoadROS2ComponentRequest {
+    optional int32 domain_id = 1;
+    string container = 2; // container node name
+    string package = 3;
+    string plugin = 4;    // plugin class, e.g. composition::Talker
+}
+
+message LoadROS2ComponentResponse {
+    uint32 uid = 1;
+    string node_name = 2;
+    string message = 3;
+}
+
+message UnloadROS2ComponentRequest {
+    optional int32 domain_id = 1;
+    string container = 2;
+    uint32 uid = 3;
+}
+
+message UnloadROS2ComponentResponse {
+    string message = 1;
 }

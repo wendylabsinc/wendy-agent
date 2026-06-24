@@ -19,22 +19,32 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	ROS2Service_ListNodes_FullMethodName    = "/wendy.agent.services.v2.ROS2Service/ListNodes"
-	ROS2Service_ListTopics_FullMethodName   = "/wendy.agent.services.v2.ROS2Service/ListTopics"
-	ROS2Service_GetTopicInfo_FullMethodName = "/wendy.agent.services.v2.ROS2Service/GetTopicInfo"
-	ROS2Service_ListServices_FullMethodName = "/wendy.agent.services.v2.ROS2Service/ListServices"
-	ROS2Service_ListParams_FullMethodName   = "/wendy.agent.services.v2.ROS2Service/ListParams"
-	ROS2Service_GetParam_FullMethodName     = "/wendy.agent.services.v2.ROS2Service/GetParam"
-	ROS2Service_SetParam_FullMethodName     = "/wendy.agent.services.v2.ROS2Service/SetParam"
-	ROS2Service_CallService_FullMethodName  = "/wendy.agent.services.v2.ROS2Service/CallService"
-	ROS2Service_GetGraph_FullMethodName     = "/wendy.agent.services.v2.ROS2Service/GetGraph"
-	ROS2Service_Doctor_FullMethodName       = "/wendy.agent.services.v2.ROS2Service/Doctor"
-	ROS2Service_EchoTopic_FullMethodName    = "/wendy.agent.services.v2.ROS2Service/EchoTopic"
-	ROS2Service_MonitorHz_FullMethodName    = "/wendy.agent.services.v2.ROS2Service/MonitorHz"
-	ROS2Service_RecordBag_FullMethodName    = "/wendy.agent.services.v2.ROS2Service/RecordBag"
-	ROS2Service_ListBags_FullMethodName     = "/wendy.agent.services.v2.ROS2Service/ListBags"
-	ROS2Service_DownloadBag_FullMethodName  = "/wendy.agent.services.v2.ROS2Service/DownloadBag"
-	ROS2Service_Exec_FullMethodName         = "/wendy.agent.services.v2.ROS2Service/Exec"
+	ROS2Service_ListNodes_FullMethodName                = "/wendy.agent.services.v2.ROS2Service/ListNodes"
+	ROS2Service_ListTopics_FullMethodName               = "/wendy.agent.services.v2.ROS2Service/ListTopics"
+	ROS2Service_GetTopicInfo_FullMethodName             = "/wendy.agent.services.v2.ROS2Service/GetTopicInfo"
+	ROS2Service_ListServices_FullMethodName             = "/wendy.agent.services.v2.ROS2Service/ListServices"
+	ROS2Service_ListParams_FullMethodName               = "/wendy.agent.services.v2.ROS2Service/ListParams"
+	ROS2Service_GetParam_FullMethodName                 = "/wendy.agent.services.v2.ROS2Service/GetParam"
+	ROS2Service_SetParam_FullMethodName                 = "/wendy.agent.services.v2.ROS2Service/SetParam"
+	ROS2Service_CallService_FullMethodName              = "/wendy.agent.services.v2.ROS2Service/CallService"
+	ROS2Service_GetGraph_FullMethodName                 = "/wendy.agent.services.v2.ROS2Service/GetGraph"
+	ROS2Service_Doctor_FullMethodName                   = "/wendy.agent.services.v2.ROS2Service/Doctor"
+	ROS2Service_EchoTopic_FullMethodName                = "/wendy.agent.services.v2.ROS2Service/EchoTopic"
+	ROS2Service_MonitorHz_FullMethodName                = "/wendy.agent.services.v2.ROS2Service/MonitorHz"
+	ROS2Service_RecordBag_FullMethodName                = "/wendy.agent.services.v2.ROS2Service/RecordBag"
+	ROS2Service_ListBags_FullMethodName                 = "/wendy.agent.services.v2.ROS2Service/ListBags"
+	ROS2Service_DownloadBag_FullMethodName              = "/wendy.agent.services.v2.ROS2Service/DownloadBag"
+	ROS2Service_Exec_FullMethodName                     = "/wendy.agent.services.v2.ROS2Service/Exec"
+	ROS2Service_ListActions_FullMethodName              = "/wendy.agent.services.v2.ROS2Service/ListActions"
+	ROS2Service_GetActionInfo_FullMethodName            = "/wendy.agent.services.v2.ROS2Service/GetActionInfo"
+	ROS2Service_SendActionGoal_FullMethodName           = "/wendy.agent.services.v2.ROS2Service/SendActionGoal"
+	ROS2Service_ListLifecycleNodes_FullMethodName       = "/wendy.agent.services.v2.ROS2Service/ListLifecycleNodes"
+	ROS2Service_GetLifecycleState_FullMethodName        = "/wendy.agent.services.v2.ROS2Service/GetLifecycleState"
+	ROS2Service_ListLifecycleTransitions_FullMethodName = "/wendy.agent.services.v2.ROS2Service/ListLifecycleTransitions"
+	ROS2Service_SetLifecycleState_FullMethodName        = "/wendy.agent.services.v2.ROS2Service/SetLifecycleState"
+	ROS2Service_ListComponents_FullMethodName           = "/wendy.agent.services.v2.ROS2Service/ListComponents"
+	ROS2Service_LoadComponent_FullMethodName            = "/wendy.agent.services.v2.ROS2Service/LoadComponent"
+	ROS2Service_UnloadComponent_FullMethodName          = "/wendy.agent.services.v2.ROS2Service/UnloadComponent"
 )
 
 // ROS2ServiceClient is the client API for ROS2Service service.
@@ -69,6 +79,21 @@ type ROS2ServiceClient interface {
 	DownloadBag(ctx context.Context, in *DownloadROS2BagRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ROS2BagChunk], error)
 	// Escape hatch — raw `ros2` CLI passthrough.
 	Exec(ctx context.Context, in *ROS2ExecRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ROS2ExecOutput], error)
+	// Actions — list/inspect action graphs and dispatch goals (WDY-1722).
+	ListActions(ctx context.Context, in *ListROS2ActionsRequest, opts ...grpc.CallOption) (*ListROS2ActionsResponse, error)
+	GetActionInfo(ctx context.Context, in *GetROS2ActionInfoRequest, opts ...grpc.CallOption) (*GetROS2ActionInfoResponse, error)
+	// SendActionGoal streams feedback/result until the goal finishes or the
+	// client cancels; output frames reuse ROS2ExecOutput.
+	SendActionGoal(ctx context.Context, in *SendROS2ActionGoalRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ROS2ExecOutput], error)
+	// Lifecycle — managed-node state inspection and transitions (WDY-1722).
+	ListLifecycleNodes(ctx context.Context, in *ListROS2LifecycleNodesRequest, opts ...grpc.CallOption) (*ListROS2LifecycleNodesResponse, error)
+	GetLifecycleState(ctx context.Context, in *GetROS2LifecycleStateRequest, opts ...grpc.CallOption) (*GetROS2LifecycleStateResponse, error)
+	ListLifecycleTransitions(ctx context.Context, in *ListROS2LifecycleTransitionsRequest, opts ...grpc.CallOption) (*ListROS2LifecycleTransitionsResponse, error)
+	SetLifecycleState(ctx context.Context, in *SetROS2LifecycleStateRequest, opts ...grpc.CallOption) (*SetROS2LifecycleStateResponse, error)
+	// Components — composable-node container management (WDY-1722).
+	ListComponents(ctx context.Context, in *ListROS2ComponentsRequest, opts ...grpc.CallOption) (*ListROS2ComponentsResponse, error)
+	LoadComponent(ctx context.Context, in *LoadROS2ComponentRequest, opts ...grpc.CallOption) (*LoadROS2ComponentResponse, error)
+	UnloadComponent(ctx context.Context, in *UnloadROS2ComponentRequest, opts ...grpc.CallOption) (*UnloadROS2ComponentResponse, error)
 }
 
 type rOS2ServiceClient struct {
@@ -278,6 +303,115 @@ func (c *rOS2ServiceClient) Exec(ctx context.Context, in *ROS2ExecRequest, opts 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type ROS2Service_ExecClient = grpc.ServerStreamingClient[ROS2ExecOutput]
 
+func (c *rOS2ServiceClient) ListActions(ctx context.Context, in *ListROS2ActionsRequest, opts ...grpc.CallOption) (*ListROS2ActionsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListROS2ActionsResponse)
+	err := c.cc.Invoke(ctx, ROS2Service_ListActions_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *rOS2ServiceClient) GetActionInfo(ctx context.Context, in *GetROS2ActionInfoRequest, opts ...grpc.CallOption) (*GetROS2ActionInfoResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetROS2ActionInfoResponse)
+	err := c.cc.Invoke(ctx, ROS2Service_GetActionInfo_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *rOS2ServiceClient) SendActionGoal(ctx context.Context, in *SendROS2ActionGoalRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ROS2ExecOutput], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &ROS2Service_ServiceDesc.Streams[5], ROS2Service_SendActionGoal_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[SendROS2ActionGoalRequest, ROS2ExecOutput]{ClientStream: stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type ROS2Service_SendActionGoalClient = grpc.ServerStreamingClient[ROS2ExecOutput]
+
+func (c *rOS2ServiceClient) ListLifecycleNodes(ctx context.Context, in *ListROS2LifecycleNodesRequest, opts ...grpc.CallOption) (*ListROS2LifecycleNodesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListROS2LifecycleNodesResponse)
+	err := c.cc.Invoke(ctx, ROS2Service_ListLifecycleNodes_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *rOS2ServiceClient) GetLifecycleState(ctx context.Context, in *GetROS2LifecycleStateRequest, opts ...grpc.CallOption) (*GetROS2LifecycleStateResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetROS2LifecycleStateResponse)
+	err := c.cc.Invoke(ctx, ROS2Service_GetLifecycleState_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *rOS2ServiceClient) ListLifecycleTransitions(ctx context.Context, in *ListROS2LifecycleTransitionsRequest, opts ...grpc.CallOption) (*ListROS2LifecycleTransitionsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListROS2LifecycleTransitionsResponse)
+	err := c.cc.Invoke(ctx, ROS2Service_ListLifecycleTransitions_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *rOS2ServiceClient) SetLifecycleState(ctx context.Context, in *SetROS2LifecycleStateRequest, opts ...grpc.CallOption) (*SetROS2LifecycleStateResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SetROS2LifecycleStateResponse)
+	err := c.cc.Invoke(ctx, ROS2Service_SetLifecycleState_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *rOS2ServiceClient) ListComponents(ctx context.Context, in *ListROS2ComponentsRequest, opts ...grpc.CallOption) (*ListROS2ComponentsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListROS2ComponentsResponse)
+	err := c.cc.Invoke(ctx, ROS2Service_ListComponents_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *rOS2ServiceClient) LoadComponent(ctx context.Context, in *LoadROS2ComponentRequest, opts ...grpc.CallOption) (*LoadROS2ComponentResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(LoadROS2ComponentResponse)
+	err := c.cc.Invoke(ctx, ROS2Service_LoadComponent_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *rOS2ServiceClient) UnloadComponent(ctx context.Context, in *UnloadROS2ComponentRequest, opts ...grpc.CallOption) (*UnloadROS2ComponentResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(UnloadROS2ComponentResponse)
+	err := c.cc.Invoke(ctx, ROS2Service_UnloadComponent_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // ROS2ServiceServer is the server API for ROS2Service service.
 // All implementations must embed UnimplementedROS2ServiceServer
 // for forward compatibility.
@@ -310,6 +444,21 @@ type ROS2ServiceServer interface {
 	DownloadBag(*DownloadROS2BagRequest, grpc.ServerStreamingServer[ROS2BagChunk]) error
 	// Escape hatch — raw `ros2` CLI passthrough.
 	Exec(*ROS2ExecRequest, grpc.ServerStreamingServer[ROS2ExecOutput]) error
+	// Actions — list/inspect action graphs and dispatch goals (WDY-1722).
+	ListActions(context.Context, *ListROS2ActionsRequest) (*ListROS2ActionsResponse, error)
+	GetActionInfo(context.Context, *GetROS2ActionInfoRequest) (*GetROS2ActionInfoResponse, error)
+	// SendActionGoal streams feedback/result until the goal finishes or the
+	// client cancels; output frames reuse ROS2ExecOutput.
+	SendActionGoal(*SendROS2ActionGoalRequest, grpc.ServerStreamingServer[ROS2ExecOutput]) error
+	// Lifecycle — managed-node state inspection and transitions (WDY-1722).
+	ListLifecycleNodes(context.Context, *ListROS2LifecycleNodesRequest) (*ListROS2LifecycleNodesResponse, error)
+	GetLifecycleState(context.Context, *GetROS2LifecycleStateRequest) (*GetROS2LifecycleStateResponse, error)
+	ListLifecycleTransitions(context.Context, *ListROS2LifecycleTransitionsRequest) (*ListROS2LifecycleTransitionsResponse, error)
+	SetLifecycleState(context.Context, *SetROS2LifecycleStateRequest) (*SetROS2LifecycleStateResponse, error)
+	// Components — composable-node container management (WDY-1722).
+	ListComponents(context.Context, *ListROS2ComponentsRequest) (*ListROS2ComponentsResponse, error)
+	LoadComponent(context.Context, *LoadROS2ComponentRequest) (*LoadROS2ComponentResponse, error)
+	UnloadComponent(context.Context, *UnloadROS2ComponentRequest) (*UnloadROS2ComponentResponse, error)
 	mustEmbedUnimplementedROS2ServiceServer()
 }
 
@@ -367,6 +516,36 @@ func (UnimplementedROS2ServiceServer) DownloadBag(*DownloadROS2BagRequest, grpc.
 }
 func (UnimplementedROS2ServiceServer) Exec(*ROS2ExecRequest, grpc.ServerStreamingServer[ROS2ExecOutput]) error {
 	return status.Error(codes.Unimplemented, "method Exec not implemented")
+}
+func (UnimplementedROS2ServiceServer) ListActions(context.Context, *ListROS2ActionsRequest) (*ListROS2ActionsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListActions not implemented")
+}
+func (UnimplementedROS2ServiceServer) GetActionInfo(context.Context, *GetROS2ActionInfoRequest) (*GetROS2ActionInfoResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetActionInfo not implemented")
+}
+func (UnimplementedROS2ServiceServer) SendActionGoal(*SendROS2ActionGoalRequest, grpc.ServerStreamingServer[ROS2ExecOutput]) error {
+	return status.Error(codes.Unimplemented, "method SendActionGoal not implemented")
+}
+func (UnimplementedROS2ServiceServer) ListLifecycleNodes(context.Context, *ListROS2LifecycleNodesRequest) (*ListROS2LifecycleNodesResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListLifecycleNodes not implemented")
+}
+func (UnimplementedROS2ServiceServer) GetLifecycleState(context.Context, *GetROS2LifecycleStateRequest) (*GetROS2LifecycleStateResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetLifecycleState not implemented")
+}
+func (UnimplementedROS2ServiceServer) ListLifecycleTransitions(context.Context, *ListROS2LifecycleTransitionsRequest) (*ListROS2LifecycleTransitionsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListLifecycleTransitions not implemented")
+}
+func (UnimplementedROS2ServiceServer) SetLifecycleState(context.Context, *SetROS2LifecycleStateRequest) (*SetROS2LifecycleStateResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetLifecycleState not implemented")
+}
+func (UnimplementedROS2ServiceServer) ListComponents(context.Context, *ListROS2ComponentsRequest) (*ListROS2ComponentsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListComponents not implemented")
+}
+func (UnimplementedROS2ServiceServer) LoadComponent(context.Context, *LoadROS2ComponentRequest) (*LoadROS2ComponentResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method LoadComponent not implemented")
+}
+func (UnimplementedROS2ServiceServer) UnloadComponent(context.Context, *UnloadROS2ComponentRequest) (*UnloadROS2ComponentResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method UnloadComponent not implemented")
 }
 func (UnimplementedROS2ServiceServer) mustEmbedUnimplementedROS2ServiceServer() {}
 func (UnimplementedROS2ServiceServer) testEmbeddedByValue()                     {}
@@ -638,6 +817,179 @@ func _ROS2Service_Exec_Handler(srv interface{}, stream grpc.ServerStream) error 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type ROS2Service_ExecServer = grpc.ServerStreamingServer[ROS2ExecOutput]
 
+func _ROS2Service_ListActions_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListROS2ActionsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ROS2ServiceServer).ListActions(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ROS2Service_ListActions_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ROS2ServiceServer).ListActions(ctx, req.(*ListROS2ActionsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ROS2Service_GetActionInfo_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetROS2ActionInfoRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ROS2ServiceServer).GetActionInfo(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ROS2Service_GetActionInfo_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ROS2ServiceServer).GetActionInfo(ctx, req.(*GetROS2ActionInfoRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ROS2Service_SendActionGoal_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(SendROS2ActionGoalRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(ROS2ServiceServer).SendActionGoal(m, &grpc.GenericServerStream[SendROS2ActionGoalRequest, ROS2ExecOutput]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type ROS2Service_SendActionGoalServer = grpc.ServerStreamingServer[ROS2ExecOutput]
+
+func _ROS2Service_ListLifecycleNodes_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListROS2LifecycleNodesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ROS2ServiceServer).ListLifecycleNodes(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ROS2Service_ListLifecycleNodes_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ROS2ServiceServer).ListLifecycleNodes(ctx, req.(*ListROS2LifecycleNodesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ROS2Service_GetLifecycleState_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetROS2LifecycleStateRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ROS2ServiceServer).GetLifecycleState(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ROS2Service_GetLifecycleState_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ROS2ServiceServer).GetLifecycleState(ctx, req.(*GetROS2LifecycleStateRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ROS2Service_ListLifecycleTransitions_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListROS2LifecycleTransitionsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ROS2ServiceServer).ListLifecycleTransitions(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ROS2Service_ListLifecycleTransitions_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ROS2ServiceServer).ListLifecycleTransitions(ctx, req.(*ListROS2LifecycleTransitionsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ROS2Service_SetLifecycleState_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetROS2LifecycleStateRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ROS2ServiceServer).SetLifecycleState(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ROS2Service_SetLifecycleState_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ROS2ServiceServer).SetLifecycleState(ctx, req.(*SetROS2LifecycleStateRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ROS2Service_ListComponents_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListROS2ComponentsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ROS2ServiceServer).ListComponents(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ROS2Service_ListComponents_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ROS2ServiceServer).ListComponents(ctx, req.(*ListROS2ComponentsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ROS2Service_LoadComponent_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(LoadROS2ComponentRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ROS2ServiceServer).LoadComponent(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ROS2Service_LoadComponent_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ROS2ServiceServer).LoadComponent(ctx, req.(*LoadROS2ComponentRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ROS2Service_UnloadComponent_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(UnloadROS2ComponentRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ROS2ServiceServer).UnloadComponent(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ROS2Service_UnloadComponent_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ROS2ServiceServer).UnloadComponent(ctx, req.(*UnloadROS2ComponentRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // ROS2Service_ServiceDesc is the grpc.ServiceDesc for ROS2Service service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -689,6 +1041,42 @@ var ROS2Service_ServiceDesc = grpc.ServiceDesc{
 			MethodName: "ListBags",
 			Handler:    _ROS2Service_ListBags_Handler,
 		},
+		{
+			MethodName: "ListActions",
+			Handler:    _ROS2Service_ListActions_Handler,
+		},
+		{
+			MethodName: "GetActionInfo",
+			Handler:    _ROS2Service_GetActionInfo_Handler,
+		},
+		{
+			MethodName: "ListLifecycleNodes",
+			Handler:    _ROS2Service_ListLifecycleNodes_Handler,
+		},
+		{
+			MethodName: "GetLifecycleState",
+			Handler:    _ROS2Service_GetLifecycleState_Handler,
+		},
+		{
+			MethodName: "ListLifecycleTransitions",
+			Handler:    _ROS2Service_ListLifecycleTransitions_Handler,
+		},
+		{
+			MethodName: "SetLifecycleState",
+			Handler:    _ROS2Service_SetLifecycleState_Handler,
+		},
+		{
+			MethodName: "ListComponents",
+			Handler:    _ROS2Service_ListComponents_Handler,
+		},
+		{
+			MethodName: "LoadComponent",
+			Handler:    _ROS2Service_LoadComponent_Handler,
+		},
+		{
+			MethodName: "UnloadComponent",
+			Handler:    _ROS2Service_UnloadComponent_Handler,
+		},
 	},
 	Streams: []grpc.StreamDesc{
 		{
@@ -715,6 +1103,11 @@ var ROS2Service_ServiceDesc = grpc.ServiceDesc{
 		{
 			StreamName:    "Exec",
 			Handler:       _ROS2Service_Exec_Handler,
+			ServerStreams: true,
+		},
+		{
+			StreamName:    "SendActionGoal",
+			Handler:       _ROS2Service_SendActionGoal_Handler,
 			ServerStreams: true,
 		},
 	},

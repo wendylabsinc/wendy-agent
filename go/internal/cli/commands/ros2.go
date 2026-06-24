@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"text/tabwriter"
@@ -49,6 +50,9 @@ ros2 commands there — no SSH and no setup.bash sourcing required.`,
 		newROS2GraphCmd(),
 		newROS2BagCmd(),
 		newROS2DoctorCmd(),
+		newROS2ActionCmd(),
+		newROS2LifecycleCmd(),
+		newROS2ComponentCmd(),
 		newROS2ExecCmd(),
 	)
 	return cmd
@@ -540,6 +544,476 @@ func newROS2DoctorCmd() *cobra.Command {
 		},
 	}
 	ros2DomainFlag(cmd, &domain)
+	return cmd
+}
+
+// ── actions / lifecycle / components (WDY-1722) ─────────────────────
+
+func newROS2ActionCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "action",
+		Short: "Inspect ROS 2 actions and dispatch goals",
+	}
+
+	var listDomain int32
+	list := &cobra.Command{
+		Use:   "list",
+		Short: "List ROS 2 actions",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			client, err := newROS2Client(cmd.Context())
+			if err != nil {
+				return err
+			}
+			defer client.Close()
+
+			resp, err := client.client.ListActions(cmd.Context(), &agentpbv2.ListROS2ActionsRequest{DomainId: ros2DomainPtr(listDomain)})
+			if err != nil {
+				return ros2RPCError(err)
+			}
+			if jsonOutput {
+				type action struct {
+					Name  string   `json:"name"`
+					Types []string `json:"types"`
+					RMW   string   `json:"rmw,omitempty"`
+				}
+				actions := make([]action, 0, len(resp.GetActions()))
+				for _, a := range resp.GetActions() {
+					actions = append(actions, action{Name: a.GetName(), Types: a.GetTypes(), RMW: a.GetRmw()})
+				}
+				return printROS2JSON(actions)
+			}
+			if len(resp.GetActions()) == 0 {
+				cliNotice("No ROS 2 actions found.")
+				return nil
+			}
+			rmws := make([]string, 0, len(resp.GetActions()))
+			for _, a := range resp.GetActions() {
+				rmws = append(rmws, a.GetRmw())
+			}
+			rmwCol := ros2ShowRMWTags(rmws...)
+			w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+			if rmwCol {
+				fmt.Fprintln(w, "ACTION\tTYPE\tRMW")
+				for _, a := range resp.GetActions() {
+					fmt.Fprintf(w, "%s\t%s\t%s\n", a.GetName(), strings.Join(a.GetTypes(), ", "), ros2RMWShort(a.GetRmw()))
+				}
+			} else {
+				fmt.Fprintln(w, "ACTION\tTYPE")
+				for _, a := range resp.GetActions() {
+					fmt.Fprintf(w, "%s\t%s\n", a.GetName(), strings.Join(a.GetTypes(), ", "))
+				}
+			}
+			return w.Flush()
+		},
+	}
+	ros2DomainFlag(list, &listDomain)
+
+	var infoDomain int32
+	info := &cobra.Command{
+		Use:   "info <action>",
+		Short: "Show clients and servers for an action",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, err := newROS2Client(cmd.Context())
+			if err != nil {
+				return err
+			}
+			defer client.Close()
+
+			resp, err := client.client.GetActionInfo(cmd.Context(), &agentpbv2.GetROS2ActionInfoRequest{
+				DomainId: ros2DomainPtr(infoDomain),
+				Action:   args[0],
+			})
+			if err != nil {
+				return ros2RPCError(err)
+			}
+			if jsonOutput {
+				return printROS2JSON(map[string]any{
+					"name":    resp.GetName(),
+					"clients": resp.GetActionClients(),
+					"servers": resp.GetActionServers(),
+					"verbose": resp.GetVerbose(),
+				})
+			}
+			fmt.Print(resp.GetVerbose())
+			return nil
+		},
+	}
+	ros2DomainFlag(info, &infoDomain)
+
+	var sendDomain int32
+	var feedback bool
+	sendGoal := &cobra.Command{
+		Use:   "send_goal <action> <type> <goal>",
+		Short: "Send a goal to an action and stream feedback/result (ctrl-c to cancel)",
+		Args:  cobra.ExactArgs(3),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
+			defer stop()
+
+			client, err := newROS2Client(ctx)
+			if err != nil {
+				return err
+			}
+			defer client.Close()
+
+			stream, err := client.client.SendActionGoal(ctx, &agentpbv2.SendROS2ActionGoalRequest{
+				DomainId:   ros2DomainPtr(sendDomain),
+				Action:     args[0],
+				ActionType: args[1],
+				Goal:       args[2],
+				Feedback:   feedback,
+			})
+			if err != nil {
+				return ros2RPCError(err)
+			}
+			return drainExecStream(ctx, stream, []string{"action", "send_goal", args[0]}, os.Stdout, os.Stderr)
+		},
+	}
+	ros2DomainFlag(sendGoal, &sendDomain)
+	sendGoal.Flags().BoolVar(&feedback, "feedback", false, "Stream feedback messages as the goal executes")
+
+	var cancelDomain int32
+	cancel := &cobra.Command{
+		Use:   "cancel <action>",
+		Short: "Cancel all in-flight goals on an action (wendy-specific, best-effort)",
+		Long: `Cancel all in-flight goals on an action.
+
+Upstream ros2 has no "action cancel" verb; this is a wendy convenience that
+calls the action's _action/cancel_goal service with an all-zero goal id, which
+the action server interprets as "cancel all active goals". To cancel a single
+goal interactively, ctrl-c its "send_goal" instead.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
+			defer stop()
+
+			client, err := newROS2Client(ctx)
+			if err != nil {
+				return err
+			}
+			defer client.Close()
+
+			// Route through the generic Exec passthrough: cancel-all via the
+			// action's cancel_goal service (zero goal id + zero stamp).
+			fwdArgs := []string{
+				"service", "call",
+				strings.TrimRight(args[0], "/") + "/_action/cancel_goal",
+				"action_msgs/srv/CancelGoal",
+				"{goal_info: {goal_id: {uuid: [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]}, stamp: {sec: 0, nanosec: 0}}}",
+			}
+			stream, err := client.client.Exec(ctx, &agentpbv2.ROS2ExecRequest{
+				DomainId: ros2DomainPtr(cancelDomain),
+				Args:     fwdArgs,
+			})
+			if err != nil {
+				return ros2RPCError(err)
+			}
+			return drainExecStream(ctx, stream, fwdArgs, os.Stdout, os.Stderr)
+		},
+	}
+	ros2DomainFlag(cancel, &cancelDomain)
+
+	cmd.AddCommand(list, info, sendGoal, cancel)
+	return cmd
+}
+
+func newROS2LifecycleCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "lifecycle",
+		Short: "Inspect and transition managed (lifecycle) nodes",
+	}
+
+	var nodesDomain int32
+	nodes := &cobra.Command{
+		Use:   "nodes",
+		Short: "List managed (lifecycle) nodes",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			client, err := newROS2Client(cmd.Context())
+			if err != nil {
+				return err
+			}
+			defer client.Close()
+
+			resp, err := client.client.ListLifecycleNodes(cmd.Context(), &agentpbv2.ListROS2LifecycleNodesRequest{DomainId: ros2DomainPtr(nodesDomain)})
+			if err != nil {
+				return ros2RPCError(err)
+			}
+			if jsonOutput {
+				type node struct {
+					Name      string `json:"name"`
+					Namespace string `json:"namespace"`
+					RMW       string `json:"rmw,omitempty"`
+				}
+				ns := make([]node, 0, len(resp.GetNodes()))
+				for _, n := range resp.GetNodes() {
+					ns = append(ns, node{Name: n.GetName(), Namespace: n.GetNamespace(), RMW: n.GetRmw()})
+				}
+				return printROS2JSON(ns)
+			}
+			if len(resp.GetNodes()) == 0 {
+				cliNotice("No managed (lifecycle) nodes found.")
+				return nil
+			}
+			rmws := make([]string, 0, len(resp.GetNodes()))
+			for _, n := range resp.GetNodes() {
+				rmws = append(rmws, n.GetRmw())
+			}
+			showTags := ros2ShowRMWTags(rmws...)
+			for _, n := range resp.GetNodes() {
+				line := ros2GraphNodeFQN(n)
+				if showTags && n.GetRmw() != "" {
+					line += "  [" + ros2RMWShort(n.GetRmw()) + "]"
+				}
+				fmt.Println(line)
+			}
+			return nil
+		},
+	}
+	ros2DomainFlag(nodes, &nodesDomain)
+
+	var getDomain int32
+	get := &cobra.Command{
+		Use:   "get <node>",
+		Short: "Get the current lifecycle state of a node",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, err := newROS2Client(cmd.Context())
+			if err != nil {
+				return err
+			}
+			defer client.Close()
+
+			resp, err := client.client.GetLifecycleState(cmd.Context(), &agentpbv2.GetROS2LifecycleStateRequest{
+				DomainId: ros2DomainPtr(getDomain),
+				Node:     args[0],
+			})
+			if err != nil {
+				return ros2RPCError(err)
+			}
+			if jsonOutput {
+				return printROS2JSON(map[string]any{"node": args[0], "state": resp.GetState(), "stateId": resp.GetStateId()})
+			}
+			fmt.Printf("%s [%d]\n", resp.GetState(), resp.GetStateId())
+			return nil
+		},
+	}
+	ros2DomainFlag(get, &getDomain)
+
+	var listDomain int32
+	list := &cobra.Command{
+		Use:   "list <node>",
+		Short: "List the available lifecycle transitions for a node",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, err := newROS2Client(cmd.Context())
+			if err != nil {
+				return err
+			}
+			defer client.Close()
+
+			resp, err := client.client.ListLifecycleTransitions(cmd.Context(), &agentpbv2.ListROS2LifecycleTransitionsRequest{
+				DomainId: ros2DomainPtr(listDomain),
+				Node:     args[0],
+			})
+			if err != nil {
+				return ros2RPCError(err)
+			}
+			if jsonOutput {
+				type transition struct {
+					Label string `json:"label"`
+					ID    uint32 `json:"id"`
+					Start string `json:"start"`
+					Goal  string `json:"goal"`
+				}
+				ts := make([]transition, 0, len(resp.GetTransitions()))
+				for _, t := range resp.GetTransitions() {
+					ts = append(ts, transition{Label: t.GetLabel(), ID: t.GetId(), Start: t.GetStartState(), Goal: t.GetGoalState()})
+				}
+				return printROS2JSON(ts)
+			}
+			if len(resp.GetTransitions()) == 0 {
+				cliNotice("No lifecycle transitions available.")
+				return nil
+			}
+			w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+			fmt.Fprintln(w, "TRANSITION\tID\tSTART\tGOAL")
+			for _, t := range resp.GetTransitions() {
+				fmt.Fprintf(w, "%s\t%d\t%s\t%s\n", t.GetLabel(), t.GetId(), t.GetStartState(), t.GetGoalState())
+			}
+			return w.Flush()
+		},
+	}
+	ros2DomainFlag(list, &listDomain)
+
+	var setDomain int32
+	set := &cobra.Command{
+		Use:   "set <node> <transition>",
+		Short: "Trigger a lifecycle transition (e.g. configure, activate)",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, err := newROS2Client(cmd.Context())
+			if err != nil {
+				return err
+			}
+			defer client.Close()
+
+			resp, err := client.client.SetLifecycleState(cmd.Context(), &agentpbv2.SetROS2LifecycleStateRequest{
+				DomainId:   ros2DomainPtr(setDomain),
+				Node:       args[0],
+				Transition: args[1],
+			})
+			if err != nil {
+				return ros2RPCError(err)
+			}
+			if jsonOutput {
+				return printROS2JSON(map[string]any{"success": resp.GetSuccess(), "message": resp.GetMessage()})
+			}
+			if !resp.GetSuccess() {
+				return fmt.Errorf("transition failed: %s", resp.GetMessage())
+			}
+			cliSuccess("%s", resp.GetMessage())
+			return nil
+		},
+	}
+	ros2DomainFlag(set, &setDomain)
+
+	cmd.AddCommand(nodes, get, list, set)
+	return cmd
+}
+
+func newROS2ComponentCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "component",
+		Short: "Manage composable-node component containers",
+	}
+
+	var listDomain int32
+	list := &cobra.Command{
+		Use:   "list",
+		Short: "List component containers and their loaded components",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			client, err := newROS2Client(cmd.Context())
+			if err != nil {
+				return err
+			}
+			defer client.Close()
+
+			resp, err := client.client.ListComponents(cmd.Context(), &agentpbv2.ListROS2ComponentsRequest{DomainId: ros2DomainPtr(listDomain)})
+			if err != nil {
+				return ros2RPCError(err)
+			}
+			if jsonOutput {
+				type component struct {
+					UID  uint32 `json:"uid"`
+					Name string `json:"name"`
+				}
+				type container struct {
+					Name       string      `json:"name"`
+					RMW        string      `json:"rmw,omitempty"`
+					Components []component `json:"components"`
+				}
+				containers := make([]container, 0, len(resp.GetContainers()))
+				for _, c := range resp.GetContainers() {
+					comps := make([]component, 0, len(c.GetComponents()))
+					for _, comp := range c.GetComponents() {
+						comps = append(comps, component{UID: comp.GetUid(), Name: comp.GetName()})
+					}
+					containers = append(containers, container{Name: c.GetName(), RMW: c.GetRmw(), Components: comps})
+				}
+				return printROS2JSON(containers)
+			}
+			if len(resp.GetContainers()) == 0 {
+				cliNotice("No component containers found.")
+				return nil
+			}
+			rmws := make([]string, 0, len(resp.GetContainers()))
+			for _, c := range resp.GetContainers() {
+				rmws = append(rmws, c.GetRmw())
+			}
+			showTags := ros2ShowRMWTags(rmws...)
+			for _, c := range resp.GetContainers() {
+				header := c.GetName()
+				if showTags && c.GetRmw() != "" {
+					header += "  [" + ros2RMWShort(c.GetRmw()) + "]"
+				}
+				fmt.Println(header)
+				for _, comp := range c.GetComponents() {
+					fmt.Printf("  %d  %s\n", comp.GetUid(), comp.GetName())
+				}
+			}
+			return nil
+		},
+	}
+	ros2DomainFlag(list, &listDomain)
+
+	var loadDomain int32
+	load := &cobra.Command{
+		Use:   "load <container> <package> <plugin>",
+		Short: "Load a component into a running container",
+		Args:  cobra.ExactArgs(3),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, err := newROS2Client(cmd.Context())
+			if err != nil {
+				return err
+			}
+			defer client.Close()
+
+			resp, err := client.client.LoadComponent(cmd.Context(), &agentpbv2.LoadROS2ComponentRequest{
+				DomainId:  ros2DomainPtr(loadDomain),
+				Container: args[0],
+				Package:   args[1],
+				Plugin:    args[2],
+			})
+			if err != nil {
+				return ros2RPCError(err)
+			}
+			if jsonOutput {
+				return printROS2JSON(map[string]any{"uid": resp.GetUid(), "nodeName": resp.GetNodeName(), "message": resp.GetMessage()})
+			}
+			cliSuccess("%s", resp.GetMessage())
+			return nil
+		},
+	}
+	ros2DomainFlag(load, &loadDomain)
+
+	var unloadDomain int32
+	unload := &cobra.Command{
+		Use:   "unload <container> <uid>",
+		Short: "Unload a component from a running container",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			uid, err := strconv.ParseUint(args[1], 10, 32)
+			if err != nil {
+				return fmt.Errorf("invalid component uid %q: must be a number", args[1])
+			}
+			client, err := newROS2Client(cmd.Context())
+			if err != nil {
+				return err
+			}
+			defer client.Close()
+
+			resp, err := client.client.UnloadComponent(cmd.Context(), &agentpbv2.UnloadROS2ComponentRequest{
+				DomainId:  ros2DomainPtr(unloadDomain),
+				Container: args[0],
+				Uid:       uint32(uid),
+			})
+			if err != nil {
+				return ros2RPCError(err)
+			}
+			if jsonOutput {
+				return printROS2JSON(map[string]any{"message": resp.GetMessage()})
+			}
+			cliSuccess("%s", resp.GetMessage())
+			return nil
+		},
+	}
+	ros2DomainFlag(unload, &unloadDomain)
+
+	cmd.AddCommand(list, load, unload)
 	return cmd
 }
 

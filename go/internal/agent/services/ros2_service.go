@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -160,6 +161,14 @@ func (s *ROS2Service) pickSidecarForNode(ctx context.Context, scs []ros2SC, node
 
 func (s *ROS2Service) pickSidecarForService(ctx context.Context, scs []ros2SC, service string) ros2SC {
 	return s.pickSidecarOwning(ctx, scs, "service", service)
+}
+
+func (s *ROS2Service) pickSidecarForAction(ctx context.Context, scs []ros2SC, action string) ros2SC {
+	return s.pickSidecarOwning(ctx, scs, "action", action)
+}
+
+func (s *ROS2Service) pickSidecarForComponent(ctx context.Context, scs []ros2SC, container string) ros2SC {
+	return s.pickSidecarOwning(ctx, scs, "component", container)
 }
 
 func (s *ROS2Service) ListNodes(ctx context.Context, req *agentpbv2.ListROS2NodesRequest) (*agentpbv2.ListROS2NodesResponse, error) {
@@ -929,6 +938,244 @@ func (w *ros2ExecStreamWriter) Write(p []byte) (int, error) {
 		return 0, err
 	}
 	return len(p), nil
+}
+
+// --- Actions (WDY-1722) ---
+
+func (s *ROS2Service) ListActions(ctx context.Context, req *agentpbv2.ListROS2ActionsRequest) (*agentpbv2.ListROS2ActionsResponse, error) {
+	scs, err := s.resolveSidecars(ctx, req.DomainId)
+	if err != nil {
+		return nil, err
+	}
+	outs, err := s.runMerged(ctx, scs, "action", "list", "-t")
+	if err != nil {
+		return nil, err
+	}
+	resp := &agentpbv2.ListROS2ActionsResponse{}
+	seen := map[string]bool{}
+	for _, o := range outs {
+		for _, a := range parseROS2ActionList(o.out) {
+			a.Rmw = o.rmw
+			key := a.GetName() + "\x00" + o.rmw
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			resp.Actions = append(resp.Actions, a)
+		}
+	}
+	return resp, nil
+}
+
+func (s *ROS2Service) GetActionInfo(ctx context.Context, req *agentpbv2.GetROS2ActionInfoRequest) (*agentpbv2.GetROS2ActionInfoResponse, error) {
+	scs, err := s.resolveSidecars(ctx, req.DomainId)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateROS2GraphName(req.GetAction()); err != nil {
+		return nil, err
+	}
+	sc := s.pickSidecarForAction(ctx, scs, req.GetAction())
+	out, err := s.runIn(ctx, sc, "action", "info", req.GetAction())
+	if err != nil {
+		return nil, err
+	}
+	name, clients, servers := parseROS2ActionInfo(out)
+	if name == "" {
+		name = req.GetAction()
+	}
+	return &agentpbv2.GetROS2ActionInfoResponse{
+		Name:          name,
+		ActionClients: clients,
+		ActionServers: servers,
+		Verbose:       out,
+	}, nil
+}
+
+func (s *ROS2Service) SendActionGoal(req *agentpbv2.SendROS2ActionGoalRequest, stream grpc.ServerStreamingServer[agentpbv2.ROS2ExecOutput]) error {
+	ctx := stream.Context()
+	scs, err := s.resolveSidecars(ctx, req.DomainId)
+	if err != nil {
+		return err
+	}
+	if err := validateROS2GraphName(req.GetAction()); err != nil {
+		return err
+	}
+	if req.GetActionType() == "" {
+		return status.Error(codes.InvalidArgument, "action type must not be empty")
+	}
+	args := []string{"action", "send_goal", req.GetAction(), req.GetActionType(), req.GetGoal()}
+	if req.GetFeedback() {
+		args = append(args, "--feedback")
+	}
+	sc := s.pickSidecarForAction(ctx, scs, req.GetAction())
+	stdout := &ros2ExecStreamWriter{stream: stream, stderr: false}
+	stderr := &ros2ExecStreamWriter{stream: stream, stderr: true}
+	code, execErr := s.runtime.ExecROS2(ctx, ROS2ExecOptions{DomainID: sc.domainID, SidecarName: sc.name, Args: args}, stdout, stderr)
+	if ctx.Err() != nil {
+		return nil
+	}
+	if execErr != nil {
+		return status.Errorf(codes.Internal, "ros2 %s: %v", strings.Join(args, " "), execErr)
+	}
+	exitCode := int32(code)
+	return stream.Send(&agentpbv2.ROS2ExecOutput{ExitCode: &exitCode})
+}
+
+// --- Lifecycle / managed nodes (WDY-1722) ---
+
+func (s *ROS2Service) ListLifecycleNodes(ctx context.Context, req *agentpbv2.ListROS2LifecycleNodesRequest) (*agentpbv2.ListROS2LifecycleNodesResponse, error) {
+	scs, err := s.resolveSidecars(ctx, req.DomainId)
+	if err != nil {
+		return nil, err
+	}
+	outs, err := s.runMerged(ctx, scs, "lifecycle", "nodes")
+	if err != nil {
+		return nil, err
+	}
+	resp := &agentpbv2.ListROS2LifecycleNodesResponse{}
+	seen := map[string]bool{}
+	for _, o := range outs {
+		for _, n := range parseROS2NodeList(o.out) {
+			n.Rmw = o.rmw
+			key := ros2NodeFQN(n) + "\x00" + o.rmw
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			resp.Nodes = append(resp.Nodes, n)
+		}
+	}
+	return resp, nil
+}
+
+func (s *ROS2Service) GetLifecycleState(ctx context.Context, req *agentpbv2.GetROS2LifecycleStateRequest) (*agentpbv2.GetROS2LifecycleStateResponse, error) {
+	scs, err := s.resolveSidecars(ctx, req.DomainId)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateROS2GraphName(req.GetNode()); err != nil {
+		return nil, err
+	}
+	sc := s.pickSidecarForNode(ctx, scs, req.GetNode())
+	out, err := s.runIn(ctx, sc, "lifecycle", "get", req.GetNode())
+	if err != nil {
+		return nil, err
+	}
+	state, id, ok := parseROS2LifecycleState(out)
+	if !ok {
+		return nil, status.Errorf(codes.Internal, "could not parse lifecycle state: %q", strings.TrimSpace(out))
+	}
+	return &agentpbv2.GetROS2LifecycleStateResponse{State: state, StateId: id}, nil
+}
+
+func (s *ROS2Service) ListLifecycleTransitions(ctx context.Context, req *agentpbv2.ListROS2LifecycleTransitionsRequest) (*agentpbv2.ListROS2LifecycleTransitionsResponse, error) {
+	scs, err := s.resolveSidecars(ctx, req.DomainId)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateROS2GraphName(req.GetNode()); err != nil {
+		return nil, err
+	}
+	sc := s.pickSidecarForNode(ctx, scs, req.GetNode())
+	out, err := s.runIn(ctx, sc, "lifecycle", "list", req.GetNode())
+	if err != nil {
+		return nil, err
+	}
+	return &agentpbv2.ListROS2LifecycleTransitionsResponse{
+		Transitions: parseROS2LifecycleTransitions(out),
+	}, nil
+}
+
+func (s *ROS2Service) SetLifecycleState(ctx context.Context, req *agentpbv2.SetROS2LifecycleStateRequest) (*agentpbv2.SetROS2LifecycleStateResponse, error) {
+	scs, err := s.resolveSidecars(ctx, req.DomainId)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateROS2GraphName(req.GetNode()); err != nil {
+		return nil, err
+	}
+	if req.GetTransition() == "" {
+		return nil, status.Error(codes.InvalidArgument, "transition must not be empty")
+	}
+	sc := s.pickSidecarForNode(ctx, scs, req.GetNode())
+	out, err := s.runIn(ctx, sc, "lifecycle", "set", req.GetNode(), req.GetTransition())
+	if err != nil {
+		// `ros2 lifecycle set` reports failures both via exit code and text.
+		return &agentpbv2.SetROS2LifecycleStateResponse{Success: false, Message: err.Error()}, nil
+	}
+	msg := strings.TrimSpace(out)
+	return &agentpbv2.SetROS2LifecycleStateResponse{
+		Success: strings.Contains(msg, "Transitioning successful"),
+		Message: msg,
+	}, nil
+}
+
+// --- Components / composable nodes (WDY-1722) ---
+
+func (s *ROS2Service) ListComponents(ctx context.Context, req *agentpbv2.ListROS2ComponentsRequest) (*agentpbv2.ListROS2ComponentsResponse, error) {
+	scs, err := s.resolveSidecars(ctx, req.DomainId)
+	if err != nil {
+		return nil, err
+	}
+	outs, err := s.runMerged(ctx, scs, "component", "list")
+	if err != nil {
+		return nil, err
+	}
+	resp := &agentpbv2.ListROS2ComponentsResponse{}
+	seen := map[string]bool{}
+	for _, o := range outs {
+		for _, c := range parseROS2ComponentList(o.out) {
+			c.Rmw = o.rmw
+			key := c.GetName() + "\x00" + o.rmw
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			resp.Containers = append(resp.Containers, c)
+		}
+	}
+	return resp, nil
+}
+
+func (s *ROS2Service) LoadComponent(ctx context.Context, req *agentpbv2.LoadROS2ComponentRequest) (*agentpbv2.LoadROS2ComponentResponse, error) {
+	scs, err := s.resolveSidecars(ctx, req.DomainId)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateROS2GraphName(req.GetContainer()); err != nil {
+		return nil, err
+	}
+	if req.GetPackage() == "" || req.GetPlugin() == "" {
+		return nil, status.Error(codes.InvalidArgument, "package and plugin must not be empty")
+	}
+	sc := s.pickSidecarForComponent(ctx, scs, req.GetContainer())
+	out, err := s.runIn(ctx, sc, "component", "load", req.GetContainer(), req.GetPackage(), req.GetPlugin())
+	if err != nil {
+		return nil, err
+	}
+	uid, nodeName, _ := parseROS2ComponentLoad(out)
+	return &agentpbv2.LoadROS2ComponentResponse{
+		Uid:      uid,
+		NodeName: nodeName,
+		Message:  strings.TrimSpace(out),
+	}, nil
+}
+
+func (s *ROS2Service) UnloadComponent(ctx context.Context, req *agentpbv2.UnloadROS2ComponentRequest) (*agentpbv2.UnloadROS2ComponentResponse, error) {
+	scs, err := s.resolveSidecars(ctx, req.DomainId)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateROS2GraphName(req.GetContainer()); err != nil {
+		return nil, err
+	}
+	sc := s.pickSidecarForComponent(ctx, scs, req.GetContainer())
+	out, err := s.runIn(ctx, sc, "component", "unload", req.GetContainer(), strconv.Itoa(int(req.GetUid())))
+	if err != nil {
+		return nil, err
+	}
+	return &agentpbv2.UnloadROS2ComponentResponse{Message: strings.TrimSpace(out)}, nil
 }
 
 // validateROS2GraphName accepts ROS 2 graph names (topics, nodes, services):

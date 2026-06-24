@@ -212,6 +212,196 @@ func parseROS2NodeInfo(out string) (publishes, subscribes []string) {
 	return publishes, subscribes
 }
 
+// parseROS2ActionList parses `ros2 action list -t` output: lines of the form
+// "/name [pkg/action/Type]" (same shape as `ros2 topic list -t`).
+func parseROS2ActionList(out string) []*agentpbv2.ROS2Action {
+	var actions []*agentpbv2.ROS2Action
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || !strings.HasPrefix(line, "/") {
+			continue
+		}
+		name := line
+		var types []string
+		if open := strings.Index(line, " ["); open >= 0 && strings.HasSuffix(line, "]") {
+			name = line[:open]
+			for _, t := range strings.Split(line[open+2:len(line)-1], ",") {
+				if t = strings.TrimSpace(t); t != "" {
+					types = append(types, t)
+				}
+			}
+		}
+		actions = append(actions, &agentpbv2.ROS2Action{Name: name, Types: types})
+	}
+	return actions
+}
+
+// parseROS2ActionInfo extracts the action name plus its client and server node
+// names from `ros2 action info <action>` output:
+//
+//	Action: /fibonacci
+//	Action clients: 1
+//	    /fibonacci_action_client
+//	Action servers: 1
+//	    /fibonacci_action_server
+//
+// Entry lines may carry a trailing " [type]" which is stripped from the name.
+func parseROS2ActionInfo(out string) (name string, clients, servers []string) {
+	section := ""
+	for _, raw := range strings.Split(out, "\n") {
+		trimmed := strings.TrimSpace(raw)
+		if trimmed == "" {
+			continue
+		}
+		switch {
+		case strings.HasPrefix(trimmed, "Action:"):
+			name = strings.TrimSpace(strings.TrimPrefix(trimmed, "Action:"))
+			section = ""
+			continue
+		case strings.HasPrefix(trimmed, "Action clients:"):
+			section = "clients"
+			continue
+		case strings.HasPrefix(trimmed, "Action servers:"):
+			section = "servers"
+			continue
+		}
+		if !strings.HasPrefix(trimmed, "/") {
+			continue
+		}
+		node := trimmed
+		if open := strings.Index(node, " ["); open >= 0 {
+			node = node[:open]
+		}
+		switch section {
+		case "clients":
+			clients = append(clients, node)
+		case "servers":
+			servers = append(servers, node)
+		}
+	}
+	return name, clients, servers
+}
+
+// parseROS2LifecycleState parses `ros2 lifecycle get <node>` output, e.g.
+// "active [3]" → ("active", 3). A bare state with no id is also accepted.
+func parseROS2LifecycleState(out string) (state string, id uint32, ok bool) {
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if open := strings.Index(line, " ["); open >= 0 && strings.HasSuffix(line, "]") {
+			if n, err := strconv.Atoi(strings.TrimSpace(line[open+2 : len(line)-1])); err == nil {
+				return line[:open], uint32(n), true
+			}
+			return line[:open], 0, true
+		}
+		return line, 0, true
+	}
+	return "", 0, false
+}
+
+// parseROS2LifecycleTransitions parses `ros2 lifecycle list <node>` output:
+//
+//   - configure [1]
+//     Start: unconfigured
+//     Goal: configuring
+//   - shutdown [5]
+//     Start: unconfigured
+//     Goal: shuttingdown
+func parseROS2LifecycleTransitions(out string) []*agentpbv2.ROS2LifecycleTransition {
+	var transitions []*agentpbv2.ROS2LifecycleTransition
+	var current *agentpbv2.ROS2LifecycleTransition
+	for _, raw := range strings.Split(out, "\n") {
+		trimmed := strings.TrimSpace(raw)
+		if trimmed == "" {
+			continue
+		}
+		if label, found := strings.CutPrefix(trimmed, "- "); found {
+			t := &agentpbv2.ROS2LifecycleTransition{}
+			if open := strings.Index(label, " ["); open >= 0 && strings.HasSuffix(label, "]") {
+				if n, err := strconv.Atoi(strings.TrimSpace(label[open+2 : len(label)-1])); err == nil {
+					t.Id = uint32(n)
+				}
+				label = label[:open]
+			}
+			t.Label = strings.TrimSpace(label)
+			transitions = append(transitions, t)
+			current = t
+			continue
+		}
+		if current == nil {
+			continue
+		}
+		if v, found := strings.CutPrefix(trimmed, "Start:"); found {
+			current.StartState = strings.TrimSpace(v)
+		} else if v, found := strings.CutPrefix(trimmed, "Goal:"); found {
+			current.GoalState = strings.TrimSpace(v)
+		}
+	}
+	return transitions
+}
+
+// parseROS2ComponentList parses `ros2 component list` output. Container node
+// names are unindented "/name" lines; loaded components follow indented as
+// "  <uid>  /node":
+//
+//	/ComponentManager
+//	  1  /talker
+//	  2  /listener
+func parseROS2ComponentList(out string) []*agentpbv2.ROS2ComponentContainer {
+	var containers []*agentpbv2.ROS2ComponentContainer
+	var current *agentpbv2.ROS2ComponentContainer
+	for _, raw := range strings.Split(out, "\n") {
+		if strings.TrimSpace(raw) == "" {
+			continue
+		}
+		// Container lines are unindented and start with "/".
+		if !strings.HasPrefix(raw, " ") && !strings.HasPrefix(raw, "\t") && strings.HasPrefix(strings.TrimSpace(raw), "/") {
+			current = &agentpbv2.ROS2ComponentContainer{Name: strings.TrimSpace(raw)}
+			containers = append(containers, current)
+			continue
+		}
+		if current == nil {
+			continue
+		}
+		// Component entry lines: "<uid>  /node".
+		fields := strings.Fields(raw)
+		if len(fields) >= 2 {
+			if n, err := strconv.Atoi(fields[0]); err == nil {
+				current.Components = append(current.Components, &agentpbv2.ROS2LoadedComponent{
+					Uid:  uint32(n),
+					Name: fields[1],
+				})
+			}
+		}
+	}
+	return containers
+}
+
+// parseROS2ComponentLoad parses `ros2 component load …` output, e.g.
+// "Loaded node '/talker' as 1" → (1, "/talker").
+func parseROS2ComponentLoad(out string) (uid uint32, nodeName string, ok bool) {
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "Loaded node") {
+			continue
+		}
+		if q1 := strings.Index(line, "'"); q1 >= 0 {
+			if q2 := strings.Index(line[q1+1:], "'"); q2 >= 0 {
+				nodeName = line[q1+1 : q1+1+q2]
+			}
+		}
+		if idx := strings.LastIndex(line, " as "); idx >= 0 {
+			if n, err := strconv.Atoi(strings.TrimSpace(line[idx+4:])); err == nil {
+				uid = uint32(n)
+			}
+		}
+		return uid, nodeName, true
+	}
+	return 0, "", false
+}
+
 // parseROS2BagDurationNanos extracts the recording duration from a rosbag2
 // metadata.yaml. It looks for the "nanoseconds:" entry following the
 // "duration:" key.
