@@ -8,6 +8,7 @@ package rcm
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/gousb"
@@ -227,10 +228,10 @@ func (d *Device) IsT264() bool {
 	return d.ProductID() == ProductThor
 }
 
-// ControlRead reads a USB string descriptor from the bootROM via endpoint 0.
-// T23x bootROMs encode RCM state in string descriptor index 3 using a
-// GET_DESCRIPTOR control transfer (bmRequestType=0x80, bRequest=0x06,
-// wValue=0x0303, wIndex=0x0000). buf must be at least 3 bytes; 96 bytes is typical.
+// ControlRead reads USB string descriptor index 3 from the bootROM via endpoint 0
+// (GET_DESCRIPTOR: bmRequestType=0x80, bRequest=0x06, wValue=0x0303, wIndex=0x0000).
+// The T23x bootROM returns the chip BR_CID here (see ReadChipID). buf should be at
+// least 4 bytes; 96 is typical. Confirmed to work over macOS IOKit on a live T264.
 func (d *Device) ControlRead(buf []byte) (int, error) {
 	return d.dev.Control(
 		0x80,   // rType: IN, standard, device
@@ -241,28 +242,57 @@ func (d *Device) ControlRead(buf []byte) (int, error) {
 	)
 }
 
-// RCMState reads the T23x bootROM RCM state via USB control transfer.
-// State 0 means the device is freshly reset and ready for image download.
-func (d *Device) RCMState() (byte, error) {
+// ReadChipID reads the chip BR_CID from USB string descriptor index 3. The T23x
+// bootROM stores the BR_CID hex string with its characters reversed; this returns
+// it un-reversed, e.g. descriptor "0C08FF61…1008" → "80012641…80C0". The ECID is
+// the BR_CID with the leading chip/SKU identifier removed.
+//
+// This goes over endpoint 0 and is the reliable way to read the chip ID on macOS,
+// where IOKit drops the bootROM's bulk-IN UID transfer (see ReadUID).
+func (d *Device) ReadChipID() (string, error) {
 	buf := make([]byte, 96)
 	n, err := d.ControlRead(buf)
 	if err != nil {
-		return 0, fmt.Errorf("reading RCM state descriptor: %w", err)
+		return "", fmt.Errorf("reading chip-id descriptor: %w", err)
 	}
-	return parseStateDescriptor(buf, n)
+	return parseChipIDDescriptor(buf, n)
 }
 
-// parseStateDescriptor extracts the RCM state byte from a GET_STRING_DESCRIPTOR response.
-// NVIDIA's T23x bootROM encodes the state as an ASCII decimal digit in a UTF-16LE string
-// descriptor: state 0 → '0' (0x30), state 5 → '5' (0x35), etc. buf[2] is the low byte of
-// the first UTF-16LE code unit. Confirmed on live T264 device (buf[2]=0x30 for initial state).
-func parseStateDescriptor(buf []byte, n int) (byte, error) {
-	if n < 3 {
-		return 0, fmt.Errorf("RCM state descriptor too short: got %d bytes, need at least 3", n)
+// parseChipIDDescriptor extracts the BR_CID from a GET_STRING_DESCRIPTOR (index 3)
+// response. Layout: buf[0]=bLength, buf[1]=0x03, buf[2:]=UTF-16LE payload. NVIDIA's
+// T23x bootROM stores the BR_CID hex string reversed, so we take the low byte of each
+// UTF-16LE code unit and reverse the result. Confirmed on a live T264: the reversed
+// descriptor equals the BR_CID reported by tegrarcm_v2 --uid.
+func parseChipIDDescriptor(buf []byte, n int) (string, error) {
+	if n < 4 {
+		return "", fmt.Errorf("chip-id descriptor too short: got %d bytes, need at least 4", n)
 	}
-	b := buf[2]
-	if b < '0' || b > '9' {
-		return 0, fmt.Errorf("RCM state descriptor byte 0x%02x is not an ASCII digit", b)
+	length := int(buf[0])
+	if length > n {
+		length = n
 	}
-	return b - '0', nil
+	var sb strings.Builder
+	for i := 2; i+1 < length; i += 2 {
+		c := buf[i]
+		if !isHexDigit(c) {
+			return "", fmt.Errorf("chip-id descriptor byte 0x%02x is not a hex digit", c)
+		}
+		sb.WriteByte(c)
+	}
+	if sb.Len() == 0 {
+		return "", fmt.Errorf("chip-id descriptor empty")
+	}
+	return reverseASCII(sb.String()), nil
+}
+
+func isHexDigit(c byte) bool {
+	return (c >= '0' && c <= '9') || (c >= 'A' && c <= 'F') || (c >= 'a' && c <= 'f')
+}
+
+func reverseASCII(s string) string {
+	b := []byte(s)
+	for i, j := 0, len(b)-1; i < j; i, j = i+1, j-1 {
+		b[i], b[j] = b[j], b[i]
+	}
+	return string(b)
 }

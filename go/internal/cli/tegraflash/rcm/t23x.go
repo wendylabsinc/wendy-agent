@@ -9,25 +9,21 @@ import (
 )
 
 // LoadImagesT23x performs the T23x multi-image RCM download sequence used by
-// T264 (Thor) devices. It probes the bootROM state via USB control transfer,
-// then sends each image as a separate RCM40 DL_MINILOADER bulk write.
+// T264 (Thor) devices, sending each image as a separate RCM40 DL_MINILOADER
+// bulk write.
 //
-// images must be provided in bootROM-required order (mb1, psc_bl1, applet).
-// The caller extracts the image list from Bundle.PreAppletImages().
+// images must be provided in bootROM-required order. The full T264 bootROM
+// sequence observed from tegrarcm_v2 is bct_br → mb1 → psc_bl1 → bct_mb1 →
+// applet; the BCTs are generated at flash time and must precede the binaries.
+//
+// There is no queryable "RCM state" gate: tegrarcm_v2 issues --new_session and
+// then downloads immediately. (String descriptor index 3 carries the chip
+// BR_CID, not a state — see Device.ReadChipID.)
 //
 // Protocol derived from RE of tegrarcm_v2 mainT23x (Thor nightly 20260618).
 func LoadImagesT23x(dev *Device, images [][]byte) error {
-	state, err := dev.RCMState()
-	if err != nil {
-		return fmt.Errorf("probing T23x RCM state: %w", err)
-	}
-	if state != 0 {
-		return fmt.Errorf("unexpected T23x RCM state %d (want 0): power-cycle the device and retry", state)
-	}
-
-	// T264's bootROM sends the device ECID on the bulk IN endpoint immediately
-	// after the GET_STRING_DESCRIPTOR state-probe response. It must be consumed
-	// before the bootROM will accept bulk OUT writes.
+	// Consume any pending bulk IN (e.g. the ECID the bootROM emits on connect)
+	// before the first bulk OUT, or the write can stall.
 	drainBulkIn(dev)
 
 	for i, img := range images {
@@ -52,7 +48,7 @@ func LoadImagesT23x(dev *Device, images [][]byte) error {
 }
 
 // drainBulkIn reads and discards any pending data from the bulk IN endpoint.
-// Used to consume the ECID that T264's bootROM sends after the state probe.
+// Used to consume the ECID that T264's bootROM emits on connect.
 func drainBulkIn(dev *Device) {
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()

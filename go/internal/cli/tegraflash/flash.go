@@ -73,13 +73,16 @@ func Flash(opts FlashOptions) error {
 	}
 	fmt.Fprintf(out, "  Device: %s\n", dev.String())
 
-	// UID is sent by the bootROM on enumeration; on macOS the IOKit layer drops it
-	// before the interface is claimed. It is informational only for ODM-open devices.
-	uid, err := dev.ReadUID()
-	if err != nil {
-		fmt.Fprintf(out, "  UID: (unavailable: %v)\n", err)
-	} else {
+	// UID is sent by the bootROM on enumeration over bulk IN; on macOS the IOKit
+	// layer drops it before the interface is claimed. Fall back to the BR_CID from
+	// string descriptor 3, which is readable over endpoint 0 on macOS. Informational
+	// only for ODM-open devices.
+	if uid, uidErr := dev.ReadUID(); uidErr == nil {
 		fmt.Fprintf(out, "  UID: %x\n", uid)
+	} else if cid, cidErr := dev.ReadChipID(); cidErr == nil {
+		fmt.Fprintf(out, "  Chip ID (BR_CID): %s\n", cid)
+	} else {
+		fmt.Fprintf(out, "  UID: (unavailable: %v)\n", uidErr)
 	}
 
 	if dev.IsT264() {

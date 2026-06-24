@@ -53,6 +53,18 @@ partition XML ──tegraparser_v2──▶ pt.bin
    flash time from BCT config — they are not in the bundle. This is the main remaining
    work for a working T264 flash.
 
+## macOS validation (2026-06-24, live T264 over USB)
+
+- USB enumeration (`0955:7026`), interface claim, and the **EP0 GET_DESCRIPTOR control
+  transfer all work on macOS IOKit** — the Mac is a viable flashing host.
+- String descriptor index 3 is the **chip BR_CID** (hex string, reversed), *not* an "RCM
+  state". The earlier "state machine 0–8" reading was wrong; `tegrarcm_v2`'s `GetRcmState`
+  reads a host-side file. The device-state gate has been removed from the Go code; the
+  descriptor read is now `Device.ReadChipID` (also recovers the ECID on macOS, where the
+  bulk-IN UID transfer is dropped).
+- Still open: `LoadImagesT23x` wraps images via `BuildDLMiniloader`, contradicting root
+  cause #2 above (send verbatim). To be revisited against hardware.
+
 ## Go port scope
 
 Port set (4 NVIDIA tools + 1 Python module's logic):

@@ -4,35 +4,44 @@ package rcm
 
 import "testing"
 
-func TestParseStateDescriptor(t *testing.T) {
+// utf16Desc builds a USB string descriptor (bLength, 0x03, then UTF-16LE of s).
+func utf16Desc(s string) []byte {
+	b := []byte{0, 0x03}
+	for i := 0; i < len(s); i++ {
+		b = append(b, s[i], 0x00)
+	}
+	b[0] = byte(len(b))
+	return b
+}
+
+func TestParseChipIDDescriptor(t *testing.T) {
+	// Captured from a live T264 (Thor) over macOS IOKit. The descriptor payload is
+	// the BR_CID hex string reversed; un-reversed it equals the BR_CID reported by
+	// tegrarcm_v2 --uid (0x80012641783DE2442400000016FF80C0).
+	liveT264 := utf16Desc("0C08FF6100000042442ED38714621008")
+
 	tests := []struct {
 		name    string
 		buf     []byte
 		n       int
-		want    byte
+		want    string
 		wantErr bool
 	}{
 		{
-			// Confirmed on live T264: state 0 (initial) is encoded as ASCII '0' = 0x30.
-			name: "state 0 initial",
-			buf:  []byte{0x06, 0x03, 0x30, 0x00, 0x00, 0x00},
-			n:    6,
-			want: 0,
+			name: "live T264 BR_CID",
+			buf:  liveT264,
+			n:    len(liveT264),
+			want: "80012641783DE2442400000016FF80C0",
 		},
 		{
-			name: "state 5 MB2 applet running",
-			buf:  []byte{0x06, 0x03, 0x35, 0x00, 0x00, 0x00},
+			// reversal is the whole point: "12" stored → "21" returned
+			name: "reversal",
+			buf:  utf16Desc("12"),
 			n:    6,
-			want: 5,
+			want: "21",
 		},
 		{
-			name: "state 8 MB2 running",
-			buf:  []byte{0x06, 0x03, 0x38, 0x00, 0x00, 0x00},
-			n:    6,
-			want: 8,
-		},
-		{
-			name:    "non-digit byte returns error",
+			name:    "non-hex byte returns error",
 			buf:     []byte{0x06, 0x03, 0x05, 0x00, 0x00, 0x00},
 			n:       6,
 			wantErr: true,
@@ -52,12 +61,12 @@ func TestParseStateDescriptor(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := parseStateDescriptor(tt.buf, tt.n)
+			got, err := parseChipIDDescriptor(tt.buf, tt.n)
 			if (err != nil) != tt.wantErr {
-				t.Fatalf("parseStateDescriptor() error = %v, wantErr %v", err, tt.wantErr)
+				t.Fatalf("parseChipIDDescriptor() error = %v, wantErr %v", err, tt.wantErr)
 			}
 			if !tt.wantErr && got != tt.want {
-				t.Errorf("parseStateDescriptor() = %d, want %d", got, tt.want)
+				t.Errorf("parseChipIDDescriptor() = %q, want %q", got, tt.want)
 			}
 		})
 	}

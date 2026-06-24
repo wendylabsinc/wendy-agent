@@ -11,6 +11,10 @@ const (
 	// TODO: verify 0x7023 against real hardware; tegrarcm_v2 binary
 	// (proprietary, in L4T BSP) handles T234 and would confirm this.
 	ProductOrin = 0x7023
+
+	// T264 (AGX Thor) chip ID byte = 0x26 → PID = 0x7026. Confirmed on
+	// live hardware (lsusb 0955:7026) in the tegraflash run log.
+	ProductThor = 0x7026
 )
 
 // RCM version encoding: major<<16 | minor

@@ -102,16 +102,32 @@ image. The device may reset before sending status; treat a read timeout as succe
 
 ---
 
-## Part 2: T23x bootROM state machine (T264-specific)
+## Part 2: T23x download sequence (T264-specific)
 
-This is the protocol implemented in `mainT23x` in `tegrarcm_v2`, derived from RE. T234 accepts
-a single RCM40 message (the applet) in its open-mode state. T264's bootROM enforces a stricter
-sequence.
+> **Correction (2026-06-24, validated on live T264 over macOS).** An earlier draft of this
+> section described an "RCM state machine" (states 0–8) read from USB string descriptor index 3.
+> That was a misreading. Two corrections:
+>
+> 1. **There is no device-side state gate.** `tegrarcm_v2`'s `GetRcmState` reads a *host-side
+>    local file* (`rcm_state`) for cross-invocation bookkeeping — it is not a device protocol
+>    step. `tegrarcm_v2` issues `--new_session`
+>    and then downloads images immediately, with no state query.
+> 2. **String descriptor index 3 is the chip BR_CID, not a state.** It returns the BR_CID hex
+>    string with its characters reversed. Read on a live T264 over macOS:
+>    `0C08FF61…1008`, which reversed is `80012641783DE2442400000016FF80C0` — exactly the BR_CID
+>    that `tegrarcm_v2 --uid` reports. This is now `Device.ReadChipID`, used only to identify the
+>    chip / recover the ECID on macOS (where the bulk-IN UID read is dropped by IOKit).
+>
+> The actual T264 download order (from the flash log) is `bct_br → mb1 → psc_bl1 → bct_mb1 →
+> applet`, BCTs first. The rest of this section is retained for the descriptor mechanics.
 
-### State probe via USB control transfer
+T234 accepts a single RCM40 message (the applet) in its open-mode state. T264 requires the
+multi-image sequence above.
 
-Before sending any bulk data, probe the bootROM state using a USB control transfer. This uses
-the standard `GET_DESCRIPTOR` request directed at a custom string descriptor:
+### USB control transfer: reading the chip BR_CID (string descriptor 3)
+
+The chip BR_CID is read with the standard `GET_DESCRIPTOR` request for string descriptor 3.
+(This descriptor was previously, and incorrectly, thought to encode an RCM state.)
 
 | Field         | Value  | Meaning                              |
 |---------------|--------|--------------------------------------|
@@ -121,27 +137,18 @@ the standard `GET_DESCRIPTOR` request directed at a custom string descriptor:
 | wIndex        | 0x0000 | language ID 0                        |
 | wLength       | 0x0060 | 96 bytes maximum                     |
 
-NVIDIA's bootROM encodes the RCM state in string descriptor index 3. The response follows the
-standard USB string descriptor layout:
+The response follows the standard USB string descriptor layout:
 
 ```
 Byte 0: bLength — total length including this header
 Byte 1: bDescriptorType = 0x03
-Byte 2+: UTF-16LE encoded payload
+Byte 2+: UTF-16LE encoded payload (low byte of each code unit = one ASCII hex char)
 ```
 
-The `tegrarcm_v2` implementation byte-reverses the UTF-16LE payload to extract raw state bytes.
-The RCM state value is at byte offset 2 of the response (first character, low byte of the UTF-16
-code unit). State values:
-
-| State | Meaning                                       |
-|-------|-----------------------------------------------|
-| 0     | initial — no images loaded yet                |
-| 1-4   | intermediate — pre-applet images loading      |
-| 5     | MB2 applet running — nv3p available           |
-| 6-8   | MB2 running — post-applet images may load     |
-
-For a freshly-reset device the state will be 0.
+Taking the low byte of each UTF-16LE code unit yields the BR_CID hex string *reversed*; reverse
+it to recover the BR_CID. The ECID is the BR_CID with the leading chip/SKU identifier removed
+(e.g. BR_CID `0x80012641783DE2442400000016FF80C0` → ECID `0x1783DE2442400000016FF80C0`). No
+"state" is encoded here.
 
 ### Pre-applet image sequence (state 0)
 
@@ -281,18 +288,9 @@ func (d *Device) ControlRead(buf []byte) (int, error) {
     )
 }
 
-// RCMState reads the T23x bootROM RCM state.
-// Returns the state byte (0 = initial, 5 = MB2 applet running).
-func (d *Device) RCMState() (byte, error) {
-    buf := make([]byte, 96)
-    n, err := d.ControlRead(buf)
-    if err != nil || n < 3 {
-        return 0, fmt.Errorf("reading RCM state: %w", err)
-    }
-    // Standard USB string descriptor: byte 0 = bLength, byte 1 = 0x03,
-    // bytes 2+ = UTF-16LE payload. NVIDIA encodes state as the first char.
-    return buf[2], nil
-}
+// ReadChipID reads the chip BR_CID from string descriptor 3 (returned reversed).
+// Implemented; no device "state" is read. See rcm/device.go for the real version.
+func (d *Device) ReadChipID() (string, error) { /* ... */ }
 ```
 
 ### `rcm/t23x.go` (new)
@@ -302,14 +300,12 @@ func (d *Device) RCMState() (byte, error) {
 // Each image in the slice is sent as a separate RCM40 DL_MINILOADER message.
 // The caller must provide images in bootROM-required order.
 func LoadImagesT23x(dev *Device, images [][]byte) error {
-    state, err := dev.RCMState()
-    if err != nil {
-        return fmt.Errorf("probing RCM state: %w", err)
-    }
-    if state != 0 {
-        return fmt.Errorf("unexpected RCM state %d (want 0)", state)
-    }
+    // No state gate (corrected — see Part 2). Consume any pending bulk IN first.
+    drainBulkIn(dev)
     for i, img := range images {
+        // NOTE (open): tegrarcm_v2 sends each NVDA-signed blob VERBATIM, not wrapped
+        // in a hand-built RCM40 envelope (see tegrarcm_v2-rcm-protocol.md). The code
+        // below still wraps via BuildDLMiniloader and needs revisiting against hardware.
         msg, err := BuildDLMiniloader(img, [48]byte{})
         if err != nil {
             return fmt.Errorf("building RCM message %d: %w", i, err)
@@ -396,17 +392,22 @@ dev.Close()
 
 ## Open questions
 
-1. **State byte offset**: The `buf[2]` extraction for the RCM state assumes the state is the
-   first byte of the UTF-16LE payload. This should be verified against a live T264 device or by
-   capturing USB traffic from `tegrarcm_v2` on Linux.
+1. ~~**State byte offset**~~ **RESOLVED (2026-06-24).** Not a state — string descriptor 3 is the
+   BR_CID (reversed). Validated on a live T264 over macOS; decode matches `tegrarcm_v2 --uid`.
+   Now `Device.ReadChipID`; the state gate has been removed.
 
 2. **Zero-length packet**: The current `Write` implementation does not send a ZLP after
    boundary-aligned writes. Legacy T234 works without it. T264 behaviour is unknown; if images
    fail to load, try adding ZLP handling.
 
-3. **macOS ControlRead**: USB control transfers go through endpoint 0, which does not require
-   interface claiming. `ControlRead` should work on macOS regardless of interface state. Verify
-   empirically on a live T264 device since macOS IOKit behaviour can differ from Linux libusb.
+3. ~~**macOS ControlRead**~~ **RESOLVED (2026-06-24).** The EP0 GET_DESCRIPTOR control transfer
+   works on macOS IOKit — confirmed on a live T264 (66-byte descriptor returned). The bulk-IN UID
+   read still fails on macOS ("transfer was cancelled"); use `ReadChipID` to recover the ECID.
 
 4. **RCM version for T264**: Currently `VersionT264 = Version40`. If T264 requires a different
    RCM version word, capture USB traffic to verify.
+
+5. **Verbatim blob vs RCM40 wrapper (NEW)**: `tegrarcm_v2-rcm-protocol.md` records that bootROM
+   images are sent **verbatim** (the NVDA-signed blob), and that wrapping them in a hand-built
+   RCM40 envelope made the bootROM reset the device. `LoadImagesT23x` still wraps each image via
+   `BuildDLMiniloader`. This needs revisiting — likely send the bundle blobs unmodified.
