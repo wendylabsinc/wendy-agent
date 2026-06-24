@@ -21,6 +21,16 @@ func TestResolveAgentPlatform(t *testing.T) {
 		{"windows preserved", "", "windows", "amd64", "windows/amd64"},
 		{"mixed-case distro normalized", "", "Ubuntu", "arm64", "linux/arm64"},
 
+		// wendy target families ("wendyos"/"wendy-lite") are what `wendy init`
+		// writes by default — they are auto-targets, not OCI OS strings, so they
+		// must derive from the (normalized) agent OS, not pass through as
+		// "wendyos/arm64" (WDY-1723).
+		{"wendyos default, wendyos agent", "wendyos", "wendyos", "arm64", "linux/arm64"},
+		{"wendyos default, ubuntu agent", "wendyos", "ubuntu", "arm64", "linux/arm64"},
+		{"wendyos default, darwin agent", "wendyos", "darwin", "arm64", "darwin/arm64"},
+		{"wendy-lite default normalized", "wendy-lite", "ubuntu", "amd64", "linux/amd64"},
+		{"mixed-case wendyos normalized", "WendyOS", "ubuntu", "arm64", "linux/arm64"},
+
 		// Explicit full cfgPlatform is trusted as-is (user override / workaround).
 		{"explicit full platform as-is", "linux/arm64", "ubuntu", "arm64", "linux/arm64"},
 		{"explicit full platform amd64", "linux/amd64", "ubuntu", "arm64", "linux/amd64"},

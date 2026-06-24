@@ -1905,10 +1905,11 @@ func pickDevice(ctx context.Context, excludeProviders map[string]bool, excludeBl
 // Rules:
 //   - If cfgPlatform is a full "os/arch" string, use it as-is.
 //   - If cfgPlatform is OS-only (e.g., "linux" or "darwin"), append the agent arch.
-//   - If cfgPlatform is empty, default to the agent's OS (normalized to a valid
-//     OCI platform OS) and architecture.
+//   - If cfgPlatform is empty, or a wendy target family ("wendyos"/"wendy-lite")
+//     that `wendy init` writes by default, derive the platform from the agent's
+//     OS (normalized to a valid OCI platform OS) and architecture.
 func resolveAgentPlatform(cfgPlatform, agentOS, agentArch string) string {
-	if cfgPlatform == "" {
+	if cfgPlatform == "" || isWendyTargetFamily(cfgPlatform) {
 		return ociOS(agentOS) + "/" + agentArch
 	}
 	if strings.Contains(cfgPlatform, "/") {
@@ -1916,6 +1917,20 @@ func resolveAgentPlatform(cfgPlatform, agentOS, agentArch string) string {
 	}
 	// OS-only: append agent architecture.
 	return cfgPlatform + "/" + agentArch
+}
+
+// isWendyTargetFamily reports whether the wendy.json platform value is a wendy
+// target family ("wendyos"/"wendy-lite") — the default `wendy init` writes —
+// rather than an OCI "os" or "os/arch". These are placeholders for "auto-derive
+// the OCI platform from the connected agent", not OCI OS strings, so feeding
+// them to buildx --platform yields an invalid platform like "wendyos/arm64"
+// and every build fails (WDY-1723).
+func isWendyTargetFamily(p string) bool {
+	switch strings.ToLower(p) {
+	case appconfig.PlatformWendyOS, appconfig.PlatformWendyLite:
+		return true
+	}
+	return false
 }
 
 // ociOS maps the agent-reported OS to a valid OCI image platform OS. The agent
