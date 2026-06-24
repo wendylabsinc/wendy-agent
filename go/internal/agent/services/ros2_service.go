@@ -642,12 +642,16 @@ func (s *ROS2Service) SubscribeRaw(req *agentpbv2.SubscribeRawROS2Request, strea
 			return serr
 		}
 	}
+	scanErr := scanner.Err()
 	execErr := <-execDone
 	if ctx.Err() != nil {
 		return nil // client cancelled; not an error
 	}
 	if execErr != nil {
 		return status.Errorf(codes.Internal, "ros2 topic echo --raw: %v", execErr)
+	}
+	if scanErr != nil {
+		return status.Errorf(codes.Internal, "reading ros2 topic echo --raw output: %v", scanErr)
 	}
 	return nil
 }

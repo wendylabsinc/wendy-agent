@@ -161,8 +161,9 @@ func TestSubscribeRaw(t *testing.T) {
 				io.WriteString(stdout, "/chatter\n")
 				return 0, nil
 			}
-			// topic echo --raw /chatter
-			io.WriteString(stdout, `b'\x00\x01'`+"\n---\n"+`b'\x02\x03'`+"\n---\n")
+			// topic echo --raw /chatter. An unparseable line is interleaved between
+			// two valid messages: it must be warn-and-skipped, not abort the stream.
+			io.WriteString(stdout, `b'\x00\x01'`+"\n---\n"+"garbage-not-bytes\n---\n"+`b'\x02\x03'`+"\n---\n")
 			return 0, nil
 		},
 	}
@@ -172,12 +173,12 @@ func TestSubscribeRaw(t *testing.T) {
 		t.Fatalf("SubscribeRaw: %v", err)
 	}
 	if len(col.msgs) != 2 {
-		t.Fatalf("got %d messages, want 2", len(col.msgs))
+		t.Fatalf("got %d messages, want 2 (garbage line should be skipped)", len(col.msgs))
 	}
 	if string(col.msgs[0].GetCdr()) != "\x00\x01" || string(col.msgs[1].GetCdr()) != "\x02\x03" {
 		t.Fatalf("payloads wrong: %v %v", col.msgs[0].GetCdr(), col.msgs[1].GetCdr())
 	}
-	if col.msgs[0].GetTimestampNs() == 0 {
-		t.Errorf("expected a non-zero timestamp")
+	if col.msgs[0].GetTimestampNs() == 0 || col.msgs[1].GetTimestampNs() == 0 {
+		t.Errorf("expected non-zero timestamps, got %d and %d", col.msgs[0].GetTimestampNs(), col.msgs[1].GetTimestampNs())
 	}
 }
