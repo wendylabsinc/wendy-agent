@@ -584,6 +584,74 @@ func (s *ROS2Service) EchoTopic(req *agentpbv2.EchoROS2TopicRequest, stream grpc
 	return nil
 }
 
+// SubscribeRaw streams raw CDR bytes for a topic via `ros2 topic echo --raw`.
+//
+// ⚠️ ON-DEVICE VERIFICATION REQUIRED (Task 7): This implementation assumes
+// `ros2 topic echo --raw <topic>` prints each message as a single-line Python
+// bytes repr (e.g. b'\x00\x01…') followed by a "---" separator line, with the
+// CDR encapsulation header included. Confirm against a real device/distro before
+// trusting this handler in production. If the format differs (multi-line literal,
+// no b” wrapper, or header stripped), adjust parsePythonBytesLiteral and/or the
+// scanner logic accordingly.
+func (s *ROS2Service) SubscribeRaw(req *agentpbv2.SubscribeRawROS2Request, stream grpc.ServerStreamingServer[agentpbv2.RawROS2Message]) error {
+	ctx := stream.Context()
+	scs, err := s.resolveSidecars(ctx, req.DomainId)
+	if err != nil {
+		return err
+	}
+	if err := validateROS2GraphName(req.GetTopic()); err != nil {
+		return err
+	}
+	sc := s.pickSidecarForTopic(ctx, scs, req.GetTopic())
+
+	execCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	pr, pw := io.Pipe()
+	execDone := make(chan error, 1)
+	go func() {
+		_, execErr := s.runtime.ExecROS2(execCtx, ROS2ExecOptions{
+			DomainID:    sc.domainID,
+			SidecarName: sc.name,
+			Args:        []string{"topic", "echo", "--raw", req.GetTopic()},
+		}, pw, io.Discard)
+		pw.CloseWithError(execErr)
+		execDone <- execErr
+	}()
+
+	scanner := bufio.NewScanner(pr)
+	scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || line == "---" {
+			continue
+		}
+		cdr, perr := parsePythonBytesLiteral(line)
+		if perr != nil {
+			// A non-bytes line is unexpected with --raw; log and skip rather than
+			// killing the stream.
+			s.logger.Warn("subscribe_raw: unparseable line", zap.String("topic", req.GetTopic()), zap.Error(perr))
+			continue
+		}
+		msg := &agentpbv2.RawROS2Message{Cdr: cdr, TimestampNs: time.Now().UnixNano()}
+		if serr := stream.Send(msg); serr != nil {
+			cancel()
+			go func() { _, _ = io.Copy(io.Discard, pr) }()
+			pr.CloseWithError(context.Canceled)
+			<-execDone
+			return serr
+		}
+	}
+	execErr := <-execDone
+	if ctx.Err() != nil {
+		return nil // client cancelled; not an error
+	}
+	if execErr != nil {
+		return status.Errorf(codes.Internal, "ros2 topic echo --raw: %v", execErr)
+	}
+	return nil
+}
+
 func (s *ROS2Service) MonitorHz(req *agentpbv2.MonitorROS2HzRequest, stream grpc.ServerStreamingServer[agentpbv2.ROS2HzSample]) error {
 	ctx := stream.Context()
 	scs, err := s.resolveSidecars(ctx, req.DomainId)

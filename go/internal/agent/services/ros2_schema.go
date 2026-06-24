@@ -1,6 +1,10 @@
 package services
 
-import "strings"
+import (
+	"fmt"
+	"strconv"
+	"strings"
+)
 
 // ros2OwnFields returns a message type's own field lines from `ros2 interface
 // show` output: the lines with no leading whitespace (nested types are emitted
@@ -58,6 +62,62 @@ func normalizeMsgType(ref string) string {
 		return parts[0] + "/msg/" + parts[1]
 	}
 	return ref
+}
+
+// parsePythonBytesLiteral decodes a Python bytes repr such as b'\x00\x01ABC'
+// (single quote or double quote) into its raw bytes. It handles the escape
+// forms CPython emits for bytes: \xNN, \n, \r, \t, \\, \', \", and \0.
+func parsePythonBytesLiteral(s string) ([]byte, error) {
+	s = strings.TrimSpace(s)
+	if len(s) < 3 || s[0] != 'b' || (s[1] != '\'' && s[1] != '"') {
+		return nil, fmt.Errorf("not a python bytes literal: %q", s)
+	}
+	quote := s[1]
+	if s[len(s)-1] != quote {
+		return nil, fmt.Errorf("unterminated python bytes literal: %q", s)
+	}
+	body := s[2 : len(s)-1]
+	out := make([]byte, 0, len(body))
+	for i := 0; i < len(body); i++ {
+		c := body[i]
+		if c != '\\' {
+			out = append(out, c)
+			continue
+		}
+		i++
+		if i >= len(body) {
+			return nil, fmt.Errorf("trailing backslash in %q", s)
+		}
+		switch body[i] {
+		case 'x':
+			if i+2 >= len(body) {
+				return nil, fmt.Errorf("truncated \\x escape in %q", s)
+			}
+			v, err := strconv.ParseUint(body[i+1:i+3], 16, 8)
+			if err != nil {
+				return nil, fmt.Errorf("bad \\x escape in %q: %w", s, err)
+			}
+			out = append(out, byte(v))
+			i += 2
+		case 'n':
+			out = append(out, '\n')
+		case 'r':
+			out = append(out, '\r')
+		case 't':
+			out = append(out, '\t')
+		case '\\':
+			out = append(out, '\\')
+		case '\'':
+			out = append(out, '\'')
+		case '"':
+			out = append(out, '"')
+		case '0':
+			out = append(out, 0)
+		default:
+			return nil, fmt.Errorf("unsupported escape \\%c in %q", body[i], s)
+		}
+	}
+	return out, nil
 }
 
 // assembleROS2MsgSchema joins a root message body and its dependency bodies into

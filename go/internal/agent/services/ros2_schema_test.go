@@ -2,8 +2,11 @@ package services
 
 import (
 	"context"
+	"io"
 	"strings"
 	"testing"
+
+	"google.golang.org/grpc"
 
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 )
@@ -80,6 +83,35 @@ func TestAssembleROS2MsgSchema(t *testing.T) {
 	}
 }
 
+func TestParsePythonBytesLiteral(t *testing.T) {
+	cases := []struct {
+		in   string
+		want []byte
+	}{
+		{`b'\x00\x01ABC'`, []byte{0x00, 0x01, 'A', 'B', 'C'}},
+		{`b'\n\t\\\''`, []byte{'\n', '\t', '\\', '\''}},
+		{`b"\x00hi"`, []byte{0x00, 'h', 'i'}},
+		{`b''`, []byte{}},
+	}
+	for _, c := range cases {
+		got, err := parsePythonBytesLiteral(c.in)
+		if err != nil {
+			t.Fatalf("parse(%q): %v", c.in, err)
+		}
+		if string(got) != string(c.want) {
+			t.Errorf("parse(%q) = %v, want %v", c.in, got, c.want)
+		}
+	}
+}
+
+func TestParsePythonBytesLiteral_Rejects(t *testing.T) {
+	for _, in := range []string{"", "notbytes", "b'unterminated", "'noprefix'"} {
+		if _, err := parsePythonBytesLiteral(in); err == nil {
+			t.Errorf("parse(%q): expected error", in)
+		}
+	}
+}
+
 func TestGetMessageDefinition(t *testing.T) {
 	rt := &fakeROS2Runtime{
 		sidecar: ROS2Sidecar{Distro: "humble", DomainID: 0},
@@ -105,5 +137,47 @@ func TestGetMessageDefinition(t *testing.T) {
 	}
 	if !strings.HasPrefix(resp.GetSchema(), "std_msgs/Header header\nuint32 height") {
 		t.Fatalf("root body wrong:\n%s", resp.GetSchema())
+	}
+}
+
+// rawCollector implements grpc.ServerStreamingServer[agentpbv2.RawROS2Message].
+type rawCollector struct {
+	grpc.ServerStream
+	ctx  context.Context
+	msgs []*agentpbv2.RawROS2Message
+}
+
+func (c *rawCollector) Context() context.Context { return c.ctx }
+func (c *rawCollector) Send(m *agentpbv2.RawROS2Message) error {
+	c.msgs = append(c.msgs, m)
+	return nil
+}
+
+func TestSubscribeRaw(t *testing.T) {
+	rt := &fakeROS2Runtime{
+		sidecar: ROS2Sidecar{Distro: "humble", DomainID: 0},
+		execFn: func(_ context.Context, opts ROS2ExecOptions, stdout, _ io.Writer) (int, error) {
+			if strings.Join(opts.Args, " ") == "topic list" {
+				io.WriteString(stdout, "/chatter\n")
+				return 0, nil
+			}
+			// topic echo --raw /chatter
+			io.WriteString(stdout, `b'\x00\x01'`+"\n---\n"+`b'\x02\x03'`+"\n---\n")
+			return 0, nil
+		},
+	}
+	svc := newTestROS2Service(t, rt, t.TempDir())
+	col := &rawCollector{ctx: context.Background()}
+	if err := svc.SubscribeRaw(&agentpbv2.SubscribeRawROS2Request{Topic: "/chatter"}, col); err != nil {
+		t.Fatalf("SubscribeRaw: %v", err)
+	}
+	if len(col.msgs) != 2 {
+		t.Fatalf("got %d messages, want 2", len(col.msgs))
+	}
+	if string(col.msgs[0].GetCdr()) != "\x00\x01" || string(col.msgs[1].GetCdr()) != "\x02\x03" {
+		t.Fatalf("payloads wrong: %v %v", col.msgs[0].GetCdr(), col.msgs[1].GetCdr())
+	}
+	if col.msgs[0].GetTimestampNs() == 0 {
+		t.Errorf("expected a non-zero timestamp")
 	}
 }
