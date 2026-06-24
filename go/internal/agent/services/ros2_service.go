@@ -31,6 +31,13 @@ var ros2BagNamePattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]*$`)
 // ros2BagChunkSize is the payload size for DownloadBag stream messages.
 const ros2BagChunkSize = 64 * 1024
 
+// ros2RawMaxUnparseableBeforeFail is how many consecutive unparseable lines
+// SubscribeRaw tolerates before deciding the `ros2 topic echo --raw` output
+// format is unsupported and failing loudly. The guard only fires while zero
+// messages have decoded; once at least one real message is delivered, bad
+// lines remain warn-and-skip only.
+const ros2RawMaxUnparseableBeforeFail = 8
+
 // ROS2Service implements agentpbv2.ROS2ServiceServer by exec-ing `ros2`
 // commands inside the CLI sidecar managed by the ROS2Runtime (WDY-1332).
 type ROS2Service struct {
@@ -619,6 +626,13 @@ func (s *ROS2Service) SubscribeRaw(req *agentpbv2.SubscribeRawROS2Request, strea
 		execDone <- execErr
 	}()
 
+	// parsed counts successfully decoded+sent messages; unparseable counts lines
+	// that failed parsePythonBytesLiteral. If we never decode a single message and
+	// the unparseable count crosses the threshold, the --raw output format is
+	// almost certainly unsupported on this distro — fail loudly so the CLI user
+	// sees it, rather than advertising a channel that silently delivers nothing.
+	parsed := 0
+	unparseable := 0
 	scanner := bufio.NewScanner(pr)
 	scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
 	for scanner.Scan() {
@@ -631,6 +645,16 @@ func (s *ROS2Service) SubscribeRaw(req *agentpbv2.SubscribeRawROS2Request, strea
 			// A non-bytes line is unexpected with --raw; log and skip rather than
 			// killing the stream.
 			s.logger.Warn("subscribe_raw: unparseable line", zap.String("topic", req.GetTopic()), zap.Error(perr))
+			unparseable++
+			// Only bail before any message has decoded; once parsed >= 1 we have a
+			// working format and occasional bad lines stay warn-and-skip.
+			if parsed == 0 && unparseable >= ros2RawMaxUnparseableBeforeFail {
+				cancel()
+				go func() { _, _ = io.Copy(io.Discard, pr) }()
+				pr.CloseWithError(context.Canceled)
+				<-execDone
+				return status.Errorf(codes.Internal, "ros2 topic echo --raw produced no decodable messages after %d lines; the --raw output format may be unsupported on this device's ROS 2 distro", unparseable)
+			}
 			continue
 		}
 		msg := &agentpbv2.RawROS2Message{Cdr: cdr, TimestampNs: time.Now().UnixNano()}
@@ -641,6 +665,7 @@ func (s *ROS2Service) SubscribeRaw(req *agentpbv2.SubscribeRawROS2Request, strea
 			<-execDone
 			return serr
 		}
+		parsed++
 	}
 	scanErr := scanner.Err()
 	execErr := <-execDone

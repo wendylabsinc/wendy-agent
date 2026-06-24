@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 )
@@ -180,5 +182,36 @@ func TestSubscribeRaw(t *testing.T) {
 	}
 	if col.msgs[0].GetTimestampNs() == 0 || col.msgs[1].GetTimestampNs() == 0 {
 		t.Errorf("expected non-zero timestamps, got %d and %d", col.msgs[0].GetTimestampNs(), col.msgs[1].GetTimestampNs())
+	}
+}
+
+// TestSubscribeRaw_AllGarbageFails verifies that when no line ever decodes, the
+// handler fails loudly (codes.Internal) instead of silently advertising a
+// channel that delivers zero messages — the symptom of an unsupported --raw
+// output format on the device's ROS 2 distro.
+func TestSubscribeRaw_AllGarbageFails(t *testing.T) {
+	rt := &fakeROS2Runtime{
+		sidecar: ROS2Sidecar{Distro: "humble", DomainID: 0},
+		execFn: func(_ context.Context, opts ROS2ExecOptions, stdout, _ io.Writer) (int, error) {
+			if strings.Join(opts.Args, " ") == "topic list" {
+				io.WriteString(stdout, "/chatter\n")
+				return 0, nil
+			}
+			// 10 unparseable messages — never a valid b'…' literal.
+			io.WriteString(stdout, strings.Repeat("garbage-not-bytes\n---\n", 10))
+			return 0, nil
+		},
+	}
+	svc := newTestROS2Service(t, rt, t.TempDir())
+	col := &rawCollector{ctx: context.Background()}
+	err := svc.SubscribeRaw(&agentpbv2.SubscribeRawROS2Request{Topic: "/chatter"}, col)
+	if err == nil {
+		t.Fatalf("SubscribeRaw: expected error, got nil")
+	}
+	if status.Code(err) != codes.Internal {
+		t.Fatalf("status code = %v, want Internal", status.Code(err))
+	}
+	if len(col.msgs) != 0 {
+		t.Fatalf("got %d messages, want 0", len(col.msgs))
 	}
 }
