@@ -33,9 +33,9 @@ func TestROS2OwnFields_DropsCommentsAndBlanks(t *testing.T) {
 }
 
 func TestROS2ComplexTypesIn(t *testing.T) {
-	fields := []string{"std_msgs/Header header", "uint32 height", "geometry_msgs/Point[] pts", "string name", "uint8[36] cov"}
+	fields := []string{"std_msgs/Header header", "uint32 height", "geometry_msgs/Point[] pts", "string name", "uint8[36] cov", "some_msgs/Foo<=10 foos"}
 	got := ros2ComplexTypesIn(fields)
-	want := []string{"std_msgs/Header", "geometry_msgs/Point"}
+	want := []string{"std_msgs/Header", "geometry_msgs/Point", "some_msgs/Foo"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("ros2ComplexTypesIn = %v, want %v", got, want)
 	}
@@ -68,16 +68,26 @@ func TestAssembleROS2MsgSchema(t *testing.T) {
 	if got != want {
 		t.Fatalf("assembleROS2MsgSchema =\n%q\nwant\n%q", got, want)
 	}
+
+	// A dependency body carrying a trailing newline must not introduce a blank
+	// line before the next "====" separator (or at end of output).
+	depsNL := map[string]string{
+		"std_msgs/Header":         "builtin_interfaces/Time stamp\nstring frame_id\n",
+		"builtin_interfaces/Time": "int32 sec\nuint32 nanosec\n",
+	}
+	if got := assembleROS2MsgSchema(root, depsNL, order); got != want {
+		t.Fatalf("assembleROS2MsgSchema (trailing newline) =\n%q\nwant\n%q", got, want)
+	}
 }
 
 func TestGetMessageDefinition(t *testing.T) {
 	rt := &fakeROS2Runtime{
 		sidecar: ROS2Sidecar{Distro: "humble", DomainID: 0},
 		outputs: map[string]string{
-			"topic list":                              "/image\n",
-			"topic type /image":                       "sensor_msgs/msg/Image\n",
-			"interface show sensor_msgs/msg/Image":    "std_msgs/Header header\n\tbuiltin_interfaces/Time stamp\n\t\tint32 sec\n\tstring frame_id\nuint32 height\n",
-			"interface show std_msgs/msg/Header":      "builtin_interfaces/Time stamp\n\tint32 sec\nstring frame_id\n",
+			"topic list":                                 "/image\n",
+			"topic type /image":                          "sensor_msgs/msg/Image\n",
+			"interface show sensor_msgs/msg/Image":       "std_msgs/Header header\n\tbuiltin_interfaces/Time stamp\n\t\tint32 sec\n\tstring frame_id\nuint32 height\n",
+			"interface show std_msgs/msg/Header":         "builtin_interfaces/Time stamp\n\tint32 sec\nstring frame_id\n",
 			"interface show builtin_interfaces/msg/Time": "int32 sec\nuint32 nanosec\n",
 		},
 	}

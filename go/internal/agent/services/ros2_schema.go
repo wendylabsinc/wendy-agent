@@ -62,7 +62,10 @@ func normalizeMsgType(ref string) string {
 
 // assembleROS2MsgSchema joins a root message body and its dependency bodies into
 // the concatenated ros2msg schema format Foxglove consumes. Dependencies are
-// keyed by their 2-part name ("pkg/Type") and emitted in `order`.
+// keyed by their 2-part name ("pkg/Type") and emitted in `order`. Each
+// dependency body should contain the type's own field lines with no leading or
+// trailing blank lines; a trailing newline is trimmed defensively so it can
+// never introduce a blank line before the next "====" separator.
 func assembleROS2MsgSchema(rootBody string, depBodies map[string]string, order []string) string {
 	sep := strings.Repeat("=", 80)
 	var b strings.Builder
@@ -73,7 +76,7 @@ func assembleROS2MsgSchema(rootBody string, depBodies map[string]string, order [
 		b.WriteString("\nMSG: ")
 		b.WriteString(name)
 		b.WriteString("\n")
-		b.WriteString(depBodies[name])
+		b.WriteString(strings.TrimRight(depBodies[name], "\n"))
 	}
 	return b.String()
 }
