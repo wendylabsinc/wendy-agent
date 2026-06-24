@@ -36,6 +36,7 @@ const (
 	WendyAgentService_DisconnectBluetoothPeripheral_FullMethodName = "/wendy.agent.services.v1.WendyAgentService/DisconnectBluetoothPeripheral"
 	WendyAgentService_ForgetBluetoothPeripheral_FullMethodName     = "/wendy.agent.services.v1.WendyAgentService/ForgetBluetoothPeripheral"
 	WendyAgentService_UpdateOS_FullMethodName                      = "/wendy.agent.services.v1.WendyAgentService/UpdateOS"
+	WendyAgentService_DumpKernelLog_FullMethodName                 = "/wendy.agent.services.v1.WendyAgentService/DumpKernelLog"
 )
 
 // WendyAgentServiceClient is the client API for WendyAgentService service.
@@ -71,6 +72,11 @@ type WendyAgentServiceClient interface {
 	ForgetBluetoothPeripheral(ctx context.Context, in *ForgetBluetoothPeripheralRequest, opts ...grpc.CallOption) (*ForgetBluetoothPeripheralResponse, error)
 	// Update the operating system using a Mender artifact
 	UpdateOS(ctx context.Context, in *UpdateOSRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[UpdateOSResponse], error)
+	// Dump the current kernel ring buffer (dmesg) for inspection. One-shot:
+	// streams the buffered records and completes. Records are NOT PII-redacted;
+	// this is a local diagnostic dump for an operator connected to their own
+	// device, distinct from the DPIA-gated OTel kernel-log streaming path.
+	DumpKernelLog(ctx context.Context, in *DumpKernelLogRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[DumpKernelLogResponse], error)
 }
 
 type wendyAgentServiceClient struct {
@@ -269,6 +275,25 @@ func (c *wendyAgentServiceClient) UpdateOS(ctx context.Context, in *UpdateOSRequ
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type WendyAgentService_UpdateOSClient = grpc.ServerStreamingClient[UpdateOSResponse]
 
+func (c *wendyAgentServiceClient) DumpKernelLog(ctx context.Context, in *DumpKernelLogRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[DumpKernelLogResponse], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &WendyAgentService_ServiceDesc.Streams[4], WendyAgentService_DumpKernelLog_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[DumpKernelLogRequest, DumpKernelLogResponse]{ClientStream: stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type WendyAgentService_DumpKernelLogClient = grpc.ServerStreamingClient[DumpKernelLogResponse]
+
 // WendyAgentServiceServer is the server API for WendyAgentService service.
 // All implementations must embed UnimplementedWendyAgentServiceServer
 // for forward compatibility.
@@ -302,6 +327,11 @@ type WendyAgentServiceServer interface {
 	ForgetBluetoothPeripheral(context.Context, *ForgetBluetoothPeripheralRequest) (*ForgetBluetoothPeripheralResponse, error)
 	// Update the operating system using a Mender artifact
 	UpdateOS(*UpdateOSRequest, grpc.ServerStreamingServer[UpdateOSResponse]) error
+	// Dump the current kernel ring buffer (dmesg) for inspection. One-shot:
+	// streams the buffered records and completes. Records are NOT PII-redacted;
+	// this is a local diagnostic dump for an operator connected to their own
+	// device, distinct from the DPIA-gated OTel kernel-log streaming path.
+	DumpKernelLog(*DumpKernelLogRequest, grpc.ServerStreamingServer[DumpKernelLogResponse]) error
 	mustEmbedUnimplementedWendyAgentServiceServer()
 }
 
@@ -362,6 +392,9 @@ func (UnimplementedWendyAgentServiceServer) ForgetBluetoothPeripheral(context.Co
 }
 func (UnimplementedWendyAgentServiceServer) UpdateOS(*UpdateOSRequest, grpc.ServerStreamingServer[UpdateOSResponse]) error {
 	return status.Error(codes.Unimplemented, "method UpdateOS not implemented")
+}
+func (UnimplementedWendyAgentServiceServer) DumpKernelLog(*DumpKernelLogRequest, grpc.ServerStreamingServer[DumpKernelLogResponse]) error {
+	return status.Error(codes.Unimplemented, "method DumpKernelLog not implemented")
 }
 func (UnimplementedWendyAgentServiceServer) mustEmbedUnimplementedWendyAgentServiceServer() {}
 func (UnimplementedWendyAgentServiceServer) testEmbeddedByValue()                           {}
@@ -650,6 +683,17 @@ func _WendyAgentService_UpdateOS_Handler(srv interface{}, stream grpc.ServerStre
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type WendyAgentService_UpdateOSServer = grpc.ServerStreamingServer[UpdateOSResponse]
 
+func _WendyAgentService_DumpKernelLog_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(DumpKernelLogRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(WendyAgentServiceServer).DumpKernelLog(m, &grpc.GenericServerStream[DumpKernelLogRequest, DumpKernelLogResponse]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type WendyAgentService_DumpKernelLogServer = grpc.ServerStreamingServer[DumpKernelLogResponse]
+
 // WendyAgentService_ServiceDesc is the grpc.ServiceDesc for WendyAgentService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -732,6 +776,11 @@ var WendyAgentService_ServiceDesc = grpc.ServiceDesc{
 		{
 			StreamName:    "UpdateOS",
 			Handler:       _WendyAgentService_UpdateOS_Handler,
+			ServerStreams: true,
+		},
+		{
+			StreamName:    "DumpKernelLog",
+			Handler:       _WendyAgentService_DumpKernelLog_Handler,
 			ServerStreams: true,
 		},
 	},

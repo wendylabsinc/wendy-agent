@@ -868,18 +868,54 @@ func parseSeverityLevel(name string) int32 {
 	}
 }
 
+// kernelLogConflictFlags are the container-log filters that cannot be combined
+// with --os, which dumps the kernel ring buffer instead of container logs.
+var kernelLogConflictFlags = []string{"app", "service", "min-severity", "level", "tail"}
+
+// conflictingOSFlags returns, in declaration order, the kernelLogConflictFlags
+// that the caller reports as set. changed reports whether a flag was set on the
+// command line (typically cmd.Flags().Changed).
+func conflictingOSFlags(changed func(name string) bool) []string {
+	var out []string
+	for _, f := range kernelLogConflictFlags {
+		if changed(f) {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// formatKernelLogRecord renders a kernel record in classic dmesg style:
+// "[ seconds.microseconds] message", with seconds right-aligned to 5 columns
+// and microseconds zero-padded to 6 digits.
+func formatKernelLogRecord(rec *agentpb.KernelLogRecord) string {
+	ts := rec.GetTimestampUs()
+	sec := ts / 1_000_000
+	usec := ts % 1_000_000
+	return fmt.Sprintf("[%5d.%06d] %s", sec, usec, rec.GetMessage())
+}
+
 func newDeviceLogsCmd() *cobra.Command {
 	var appName string
 	var serviceName string
 	var minSeverity int32
 	var level string
 	var tail int32
+	var osDump bool
 
 	cmd := &cobra.Command{
 		Use:   "logs",
 		Short: "Stream logs from containers on the device",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
+
+			if osDump {
+				if conflicts := conflictingOSFlags(cmd.Flags().Changed); len(conflicts) > 0 {
+					return fmt.Errorf("--os cannot be combined with container log filters: --%s", strings.Join(conflicts, ", --"))
+				}
+				return runKernelLogDump(ctx)
+			}
+
 			conn, err := connectToAgent(ctx)
 			if err != nil {
 				return err
@@ -971,8 +1007,49 @@ func newDeviceLogsCmd() *cobra.Command {
 	cmd.Flags().Int32Var(&minSeverity, "min-severity", 0, "Minimum log severity number")
 	cmd.Flags().StringVar(&level, "level", "", "Minimum log level (trace, debug, info, warn, error, fatal)")
 	cmd.Flags().Int32Var(&tail, "tail", 0, "Replay the last N log batches before streaming live (0 = live only)")
+	cmd.Flags().BoolVar(&osDump, "os", false, "Dump the device kernel ring buffer (dmesg) instead of container logs")
 
 	return cmd
+}
+
+// runKernelLogDump fetches the device kernel ring buffer via DumpKernelLog and
+// prints it in classic dmesg style (or as one JSON object per record when
+// --json is set).
+func runKernelLogDump(ctx context.Context) error {
+	conn, err := connectToAgent(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	stream, err := conn.AgentService.DumpKernelLog(ctx, &agentpb.DumpKernelLogRequest{})
+	if err != nil {
+		return fmt.Errorf("requesting kernel log: %w", err)
+	}
+
+	for {
+		resp, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("receiving kernel log: %w", err)
+		}
+		for _, rec := range resp.GetRecords() {
+			if jsonOutput {
+				data, _ := json.Marshal(map[string]any{
+					"timestamp_us": rec.GetTimestampUs(),
+					"level":        rec.GetLevel(),
+					"message":      rec.GetMessage(),
+				})
+				fmt.Println(string(data))
+			} else {
+				fmt.Println(formatKernelLogRecord(rec))
+			}
+		}
+	}
+
+	return nil
 }
 
 var (
