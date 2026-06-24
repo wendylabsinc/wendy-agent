@@ -220,6 +220,57 @@ func (s *ROS2Service) ListTopics(ctx context.Context, req *agentpbv2.ListROS2Top
 	return resp, nil
 }
 
+func (s *ROS2Service) GetMessageDefinition(ctx context.Context, req *agentpbv2.GetROS2MessageDefinitionRequest) (*agentpbv2.GetROS2MessageDefinitionResponse, error) {
+	scs, err := s.resolveSidecars(ctx, req.DomainId)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateROS2GraphName(req.GetTopic()); err != nil {
+		return nil, err
+	}
+	sc := s.pickSidecarForTopic(ctx, scs, req.GetTopic())
+
+	typeOut, err := s.runIn(ctx, sc, "topic", "type", req.GetTopic())
+	if err != nil {
+		return nil, err
+	}
+	msgType := strings.TrimSpace(typeOut)
+	if msgType == "" {
+		return nil, status.Errorf(codes.NotFound, "topic %q has no resolvable type", req.GetTopic())
+	}
+
+	rootShow, err := s.runIn(ctx, sc, "interface", "show", msgType)
+	if err != nil {
+		return nil, err
+	}
+	rootFields := ros2OwnFields(rootShow)
+	rootBody := strings.Join(rootFields, "\n")
+
+	depBodies := map[string]string{}
+	var order []string
+	queue := ros2ComplexTypesIn(rootFields)
+	for len(queue) > 0 {
+		dep := queue[0]
+		queue = queue[1:]
+		if _, done := depBodies[dep]; done {
+			continue
+		}
+		show, derr := s.runIn(ctx, sc, "interface", "show", normalizeMsgType(dep))
+		if derr != nil {
+			return nil, derr
+		}
+		fields := ros2OwnFields(show)
+		depBodies[dep] = strings.Join(fields, "\n")
+		order = append(order, dep)
+		queue = append(queue, ros2ComplexTypesIn(fields)...)
+	}
+
+	return &agentpbv2.GetROS2MessageDefinitionResponse{
+		MessageType: msgType,
+		Schema:      assembleROS2MsgSchema(rootBody, depBodies, order),
+	}, nil
+}
+
 func (s *ROS2Service) GetTopicInfo(ctx context.Context, req *agentpbv2.GetROS2TopicInfoRequest) (*agentpbv2.GetROS2TopicInfoResponse, error) {
 	scs, err := s.resolveSidecars(ctx, req.DomainId)
 	if err != nil {
