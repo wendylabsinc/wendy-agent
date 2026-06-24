@@ -19,22 +19,24 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	ROS2Service_ListNodes_FullMethodName    = "/wendy.agent.services.v2.ROS2Service/ListNodes"
-	ROS2Service_ListTopics_FullMethodName   = "/wendy.agent.services.v2.ROS2Service/ListTopics"
-	ROS2Service_GetTopicInfo_FullMethodName = "/wendy.agent.services.v2.ROS2Service/GetTopicInfo"
-	ROS2Service_ListServices_FullMethodName = "/wendy.agent.services.v2.ROS2Service/ListServices"
-	ROS2Service_ListParams_FullMethodName   = "/wendy.agent.services.v2.ROS2Service/ListParams"
-	ROS2Service_GetParam_FullMethodName     = "/wendy.agent.services.v2.ROS2Service/GetParam"
-	ROS2Service_SetParam_FullMethodName     = "/wendy.agent.services.v2.ROS2Service/SetParam"
-	ROS2Service_CallService_FullMethodName  = "/wendy.agent.services.v2.ROS2Service/CallService"
-	ROS2Service_GetGraph_FullMethodName     = "/wendy.agent.services.v2.ROS2Service/GetGraph"
-	ROS2Service_Doctor_FullMethodName       = "/wendy.agent.services.v2.ROS2Service/Doctor"
-	ROS2Service_EchoTopic_FullMethodName    = "/wendy.agent.services.v2.ROS2Service/EchoTopic"
-	ROS2Service_MonitorHz_FullMethodName    = "/wendy.agent.services.v2.ROS2Service/MonitorHz"
-	ROS2Service_RecordBag_FullMethodName    = "/wendy.agent.services.v2.ROS2Service/RecordBag"
-	ROS2Service_ListBags_FullMethodName     = "/wendy.agent.services.v2.ROS2Service/ListBags"
-	ROS2Service_DownloadBag_FullMethodName  = "/wendy.agent.services.v2.ROS2Service/DownloadBag"
-	ROS2Service_Exec_FullMethodName         = "/wendy.agent.services.v2.ROS2Service/Exec"
+	ROS2Service_ListNodes_FullMethodName            = "/wendy.agent.services.v2.ROS2Service/ListNodes"
+	ROS2Service_ListTopics_FullMethodName           = "/wendy.agent.services.v2.ROS2Service/ListTopics"
+	ROS2Service_GetTopicInfo_FullMethodName         = "/wendy.agent.services.v2.ROS2Service/GetTopicInfo"
+	ROS2Service_ListServices_FullMethodName         = "/wendy.agent.services.v2.ROS2Service/ListServices"
+	ROS2Service_ListParams_FullMethodName           = "/wendy.agent.services.v2.ROS2Service/ListParams"
+	ROS2Service_GetParam_FullMethodName             = "/wendy.agent.services.v2.ROS2Service/GetParam"
+	ROS2Service_SetParam_FullMethodName             = "/wendy.agent.services.v2.ROS2Service/SetParam"
+	ROS2Service_CallService_FullMethodName          = "/wendy.agent.services.v2.ROS2Service/CallService"
+	ROS2Service_GetGraph_FullMethodName             = "/wendy.agent.services.v2.ROS2Service/GetGraph"
+	ROS2Service_Doctor_FullMethodName               = "/wendy.agent.services.v2.ROS2Service/Doctor"
+	ROS2Service_EchoTopic_FullMethodName            = "/wendy.agent.services.v2.ROS2Service/EchoTopic"
+	ROS2Service_MonitorHz_FullMethodName            = "/wendy.agent.services.v2.ROS2Service/MonitorHz"
+	ROS2Service_GetMessageDefinition_FullMethodName = "/wendy.agent.services.v2.ROS2Service/GetMessageDefinition"
+	ROS2Service_SubscribeRaw_FullMethodName         = "/wendy.agent.services.v2.ROS2Service/SubscribeRaw"
+	ROS2Service_RecordBag_FullMethodName            = "/wendy.agent.services.v2.ROS2Service/RecordBag"
+	ROS2Service_ListBags_FullMethodName             = "/wendy.agent.services.v2.ROS2Service/ListBags"
+	ROS2Service_DownloadBag_FullMethodName          = "/wendy.agent.services.v2.ROS2Service/DownloadBag"
+	ROS2Service_Exec_FullMethodName                 = "/wendy.agent.services.v2.ROS2Service/Exec"
 )
 
 // ROS2ServiceClient is the client API for ROS2Service service.
@@ -61,6 +63,13 @@ type ROS2ServiceClient interface {
 	// Server streaming — continuous observations until the client cancels.
 	EchoTopic(ctx context.Context, in *EchoROS2TopicRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ROS2Message], error)
 	MonitorHz(ctx context.Context, in *MonitorROS2HzRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ROS2HzSample], error)
+	// Foxglove bridge. Returns the full concatenated ros2msg schema for a
+	// topic's message type so a Foxglove channel can be advertised before
+	// subscribing.
+	GetMessageDefinition(ctx context.Context, in *GetROS2MessageDefinitionRequest, opts ...grpc.CallOption) (*GetROS2MessageDefinitionResponse, error)
+	// Foxglove bridge. Streams raw CDR-serialized messages for a topic until
+	// the client cancels (mirrors EchoTopic but emits bytes, not YAML).
+	SubscribeRaw(ctx context.Context, in *SubscribeRawROS2Request, opts ...grpc.CallOption) (grpc.ServerStreamingClient[RawROS2Message], error)
 	// Bidi — controllable bag record/stop session.
 	RecordBag(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[RecordROS2BagRequest, RecordROS2BagResponse], error)
 	// Bag management. Bags are recorded to /var/wendy/ros2-bags on the
@@ -217,9 +226,38 @@ func (c *rOS2ServiceClient) MonitorHz(ctx context.Context, in *MonitorROS2HzRequ
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type ROS2Service_MonitorHzClient = grpc.ServerStreamingClient[ROS2HzSample]
 
+func (c *rOS2ServiceClient) GetMessageDefinition(ctx context.Context, in *GetROS2MessageDefinitionRequest, opts ...grpc.CallOption) (*GetROS2MessageDefinitionResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetROS2MessageDefinitionResponse)
+	err := c.cc.Invoke(ctx, ROS2Service_GetMessageDefinition_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *rOS2ServiceClient) SubscribeRaw(ctx context.Context, in *SubscribeRawROS2Request, opts ...grpc.CallOption) (grpc.ServerStreamingClient[RawROS2Message], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &ROS2Service_ServiceDesc.Streams[2], ROS2Service_SubscribeRaw_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[SubscribeRawROS2Request, RawROS2Message]{ClientStream: stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type ROS2Service_SubscribeRawClient = grpc.ServerStreamingClient[RawROS2Message]
+
 func (c *rOS2ServiceClient) RecordBag(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[RecordROS2BagRequest, RecordROS2BagResponse], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	stream, err := c.cc.NewStream(ctx, &ROS2Service_ServiceDesc.Streams[2], ROS2Service_RecordBag_FullMethodName, cOpts...)
+	stream, err := c.cc.NewStream(ctx, &ROS2Service_ServiceDesc.Streams[3], ROS2Service_RecordBag_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -242,7 +280,7 @@ func (c *rOS2ServiceClient) ListBags(ctx context.Context, in *ListROS2BagsReques
 
 func (c *rOS2ServiceClient) DownloadBag(ctx context.Context, in *DownloadROS2BagRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ROS2BagChunk], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	stream, err := c.cc.NewStream(ctx, &ROS2Service_ServiceDesc.Streams[3], ROS2Service_DownloadBag_FullMethodName, cOpts...)
+	stream, err := c.cc.NewStream(ctx, &ROS2Service_ServiceDesc.Streams[4], ROS2Service_DownloadBag_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -261,7 +299,7 @@ type ROS2Service_DownloadBagClient = grpc.ServerStreamingClient[ROS2BagChunk]
 
 func (c *rOS2ServiceClient) Exec(ctx context.Context, in *ROS2ExecRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ROS2ExecOutput], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	stream, err := c.cc.NewStream(ctx, &ROS2Service_ServiceDesc.Streams[4], ROS2Service_Exec_FullMethodName, cOpts...)
+	stream, err := c.cc.NewStream(ctx, &ROS2Service_ServiceDesc.Streams[5], ROS2Service_Exec_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -302,6 +340,13 @@ type ROS2ServiceServer interface {
 	// Server streaming — continuous observations until the client cancels.
 	EchoTopic(*EchoROS2TopicRequest, grpc.ServerStreamingServer[ROS2Message]) error
 	MonitorHz(*MonitorROS2HzRequest, grpc.ServerStreamingServer[ROS2HzSample]) error
+	// Foxglove bridge. Returns the full concatenated ros2msg schema for a
+	// topic's message type so a Foxglove channel can be advertised before
+	// subscribing.
+	GetMessageDefinition(context.Context, *GetROS2MessageDefinitionRequest) (*GetROS2MessageDefinitionResponse, error)
+	// Foxglove bridge. Streams raw CDR-serialized messages for a topic until
+	// the client cancels (mirrors EchoTopic but emits bytes, not YAML).
+	SubscribeRaw(*SubscribeRawROS2Request, grpc.ServerStreamingServer[RawROS2Message]) error
 	// Bidi — controllable bag record/stop session.
 	RecordBag(grpc.BidiStreamingServer[RecordROS2BagRequest, RecordROS2BagResponse]) error
 	// Bag management. Bags are recorded to /var/wendy/ros2-bags on the
@@ -355,6 +400,12 @@ func (UnimplementedROS2ServiceServer) EchoTopic(*EchoROS2TopicRequest, grpc.Serv
 }
 func (UnimplementedROS2ServiceServer) MonitorHz(*MonitorROS2HzRequest, grpc.ServerStreamingServer[ROS2HzSample]) error {
 	return status.Error(codes.Unimplemented, "method MonitorHz not implemented")
+}
+func (UnimplementedROS2ServiceServer) GetMessageDefinition(context.Context, *GetROS2MessageDefinitionRequest) (*GetROS2MessageDefinitionResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetMessageDefinition not implemented")
+}
+func (UnimplementedROS2ServiceServer) SubscribeRaw(*SubscribeRawROS2Request, grpc.ServerStreamingServer[RawROS2Message]) error {
+	return status.Error(codes.Unimplemented, "method SubscribeRaw not implemented")
 }
 func (UnimplementedROS2ServiceServer) RecordBag(grpc.BidiStreamingServer[RecordROS2BagRequest, RecordROS2BagResponse]) error {
 	return status.Error(codes.Unimplemented, "method RecordBag not implemented")
@@ -591,6 +642,35 @@ func _ROS2Service_MonitorHz_Handler(srv interface{}, stream grpc.ServerStream) e
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type ROS2Service_MonitorHzServer = grpc.ServerStreamingServer[ROS2HzSample]
 
+func _ROS2Service_GetMessageDefinition_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetROS2MessageDefinitionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ROS2ServiceServer).GetMessageDefinition(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ROS2Service_GetMessageDefinition_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ROS2ServiceServer).GetMessageDefinition(ctx, req.(*GetROS2MessageDefinitionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ROS2Service_SubscribeRaw_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(SubscribeRawROS2Request)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(ROS2ServiceServer).SubscribeRaw(m, &grpc.GenericServerStream[SubscribeRawROS2Request, RawROS2Message]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type ROS2Service_SubscribeRawServer = grpc.ServerStreamingServer[RawROS2Message]
+
 func _ROS2Service_RecordBag_Handler(srv interface{}, stream grpc.ServerStream) error {
 	return srv.(ROS2ServiceServer).RecordBag(&grpc.GenericServerStream[RecordROS2BagRequest, RecordROS2BagResponse]{ServerStream: stream})
 }
@@ -686,6 +766,10 @@ var ROS2Service_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _ROS2Service_Doctor_Handler,
 		},
 		{
+			MethodName: "GetMessageDefinition",
+			Handler:    _ROS2Service_GetMessageDefinition_Handler,
+		},
+		{
 			MethodName: "ListBags",
 			Handler:    _ROS2Service_ListBags_Handler,
 		},
@@ -699,6 +783,11 @@ var ROS2Service_ServiceDesc = grpc.ServiceDesc{
 		{
 			StreamName:    "MonitorHz",
 			Handler:       _ROS2Service_MonitorHz_Handler,
+			ServerStreams: true,
+		},
+		{
+			StreamName:    "SubscribeRaw",
+			Handler:       _ROS2Service_SubscribeRaw_Handler,
 			ServerStreams: true,
 		},
 		{

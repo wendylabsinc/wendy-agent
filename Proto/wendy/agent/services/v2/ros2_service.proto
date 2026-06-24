@@ -24,6 +24,15 @@ service ROS2Service {
     rpc EchoTopic(EchoROS2TopicRequest) returns (stream ROS2Message);
     rpc MonitorHz(MonitorROS2HzRequest) returns (stream ROS2HzSample);
 
+    // Foxglove bridge. Returns the full concatenated ros2msg schema for a
+    // topic's message type so a Foxglove channel can be advertised before
+    // subscribing.
+    rpc GetMessageDefinition(GetROS2MessageDefinitionRequest) returns (GetROS2MessageDefinitionResponse);
+
+    // Foxglove bridge. Streams raw CDR-serialized messages for a topic until
+    // the client cancels (mirrors EchoTopic but emits bytes, not YAML).
+    rpc SubscribeRaw(SubscribeRawROS2Request) returns (stream RawROS2Message);
+
     // Bidi — controllable bag record/stop session.
     rpc RecordBag(stream RecordROS2BagRequest) returns (stream RecordROS2BagResponse);
 
@@ -246,4 +255,28 @@ message ROS2ExecOutput {
     bytes stdout = 1;
     bytes stderr = 2;
     optional int32 exit_code = 3; // set on the final message
+}
+
+message GetROS2MessageDefinitionRequest {
+    optional int32 domain_id = 1;
+    string topic = 2;
+}
+
+message GetROS2MessageDefinitionResponse {
+    string message_type = 1; // e.g. "sensor_msgs/msg/Image"
+    // Full concatenated ros2msg definition: the top-level message body, then
+    // each non-primitive dependency, joined with the rosbag2/Foxglove separator
+    // line of 80 '=' characters followed by "MSG: <pkg>/<Type>". Consumed by
+    // Foxglove with schemaEncoding="ros2msg".
+    string schema = 2;
+}
+
+message SubscribeRawROS2Request {
+    optional int32 domain_id = 1;
+    string topic = 2;
+}
+
+message RawROS2Message {
+    bytes cdr = 1;          // serialized message including the 4-byte CDR encapsulation header
+    int64 timestamp_ns = 2; // device receipt time (unix nanoseconds)
 }
