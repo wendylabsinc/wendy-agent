@@ -2,7 +2,10 @@
 
 package rcm
 
-import "fmt"
+import (
+	"fmt"
+	"time"
+)
 
 // Device is a stub on platforms where direct Jetson recovery USB access is not
 // implemented.
@@ -19,6 +22,10 @@ func WaitForNv3p() (*Device, error) {
 func (d *Device) String() string { return "" }
 func (d *Device) Close()         {}
 func (d *Device) Read([]byte) (int, error) {
+	return 0, fmt.Errorf("Jetson USB recovery flashing is only supported on macOS and Linux")
+}
+
+func (d *Device) ReadWithTimeout([]byte, time.Duration) (int, error) {
 	return 0, fmt.Errorf("Jetson USB recovery flashing is only supported on macOS and Linux")
 }
 func (d *Device) Write([]byte) error {
