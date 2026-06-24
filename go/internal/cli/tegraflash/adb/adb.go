@@ -17,6 +17,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/gousb"
@@ -39,6 +40,12 @@ const (
 	protocolADB = 0x01
 
 	syncDataMax = 64 * 1024
+
+	// ioTimeout bounds each USB transfer. It is large because device-side flash
+	// steps (QSPI erase, dd of multi-GB partitions) hold the shell stream open for a
+	// long time with no output, and a timed-out bulk-IN read is destructive on macOS
+	// (it aborts the endpoint), so we must not time out during a legitimate op.
+	ioTimeout = 30 * time.Minute
 )
 
 // Device is a connected ADB transport over USB.
@@ -52,11 +59,43 @@ type Device struct {
 	nextID uint32
 	// Banner is the device identity string from the CNXN reply.
 	Banner string
+	// shellV2 is set when the device advertises the shell_v2 feature; its legacy
+	// shell:/exec: services are non-functional on the T264 flashing adbd, so we must
+	// use the shell-protocol-v2 service instead.
+	shellV2 bool
 }
 
+// shell-protocol-v2 stream message ids (1-byte id + 4-byte LE length + payload).
+const (
+	shellStdout = 1
+	shellStderr = 2
+	shellExit   = 3
+)
+
+// ExitError reports a non-zero shell exit status.
+type ExitError struct{ Code int }
+
+func (e *ExitError) Error() string { return fmt.Sprintf("shell exited with status %d", e.Code) }
+
 // Open finds a USB device exposing an ADB interface, claims it, and performs the
-// CNXN handshake.
+// CNXN handshake. It retries on transient failures: bootburn drives many short-lived
+// adb invocations back-to-back, and macOS/libusb does not release the interface
+// synchronously when the previous process exits, so a claim can briefly fail with
+// "bad access" until the kernel frees it.
 func Open() (*Device, error) {
+	var lastErr error
+	for attempt := 0; attempt < 12; attempt++ {
+		d, err := openOnce()
+		if err == nil {
+			return d, nil
+		}
+		lastErr = err
+		time.Sleep(time.Duration(150+attempt*150) * time.Millisecond)
+	}
+	return nil, lastErr
+}
+
+func openOnce() (*Device, error) {
 	ctx := gousb.NewContext()
 	ctx.Debug(0)
 
@@ -129,6 +168,24 @@ func Open() (*Device, error) {
 	return d, nil
 }
 
+// VendorPresent reports whether any USB device with the given vendor id is present.
+// It only inspects descriptors (the filter returns false), so no device is claimed.
+func VendorPresent(vid uint16) bool {
+	ctx := gousb.NewContext()
+	defer ctx.Close()
+	found := false
+	devs, _ := ctx.OpenDevices(func(desc *gousb.DeviceDesc) bool {
+		if uint16(desc.Vendor) == vid {
+			found = true
+		}
+		return false
+	})
+	for _, d := range devs {
+		d.Close()
+	}
+	return found
+}
+
 // findADBInterface returns the config/interface/alt numbers of the first ADB
 // interface (vendor class 0xFF, subclass 0x42, protocol 0x01) in desc.
 func findADBInterface(desc *gousb.DeviceDesc) (cfgNum, ifNum, altNum int, ok bool) {
@@ -172,6 +229,7 @@ func (d *Device) connect() error {
 		switch cmd {
 		case cmdCNXN:
 			d.Banner = string(data)
+			d.shellV2 = strings.Contains(d.Banner, "shell_v2")
 			return nil
 		case cmdAUTH:
 			return fmt.Errorf("device requires ADB authentication (secure adbd); not supported")
@@ -193,7 +251,7 @@ func (d *Device) writeMsg(cmd, arg0, arg1 uint32, data []byte) error {
 	binary.LittleEndian.PutUint32(hdr[16:], check)
 	binary.LittleEndian.PutUint32(hdr[20:], cmd^0xffffffff)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), ioTimeout)
 	defer cancel()
 	if _, err := d.out.WriteContext(ctx, hdr); err != nil {
 		return err
@@ -208,7 +266,7 @@ func (d *Device) writeMsg(cmd, arg0, arg1 uint32, data []byte) error {
 
 // readMsg reads one ADB message: a 24-byte header then data_length bytes of payload.
 func (d *Device) readMsg() (cmd, arg0, arg1 uint32, data []byte, err error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), ioTimeout)
 	defer cancel()
 
 	// Read into a full max-packet buffer (a sub-packet read length can error on
@@ -242,8 +300,17 @@ func (d *Device) readMsg() (cmd, arg0, arg1 uint32, data []byte, err error) {
 	return
 }
 
-// Shell runs command on the device and returns its combined output.
+// Shell runs command on the device and returns its combined stdout+stderr. If the
+// command exits non-zero the returned error is an *ExitError carrying the code.
+//
+// The T264 flashing adbd advertises shell_v2 and does not service the legacy
+// "shell:"/"exec:" requests (they return "fork failed"), so when shell_v2 is
+// available we use the shell-protocol-v2 service ("shell,v2,raw:") and decode its
+// framed stream. Otherwise we fall back to the legacy raw service.
 func (d *Device) Shell(command string) (string, error) {
+	if d.shellV2 {
+		return d.shellV2Run("shell,v2,raw:" + command)
+	}
 	local := d.nextID
 	d.nextID++
 	if err := d.writeMsg(cmdOPEN, local, 0, []byte("shell:"+command+"\x00")); err != nil {
@@ -265,6 +332,56 @@ func (d *Device) Shell(command string) (string, error) {
 			}
 		case cmdCLSE:
 			_ = d.writeMsg(cmdCLSE, local, a0, nil)
+			return string(out), nil
+		}
+	}
+}
+
+// shellV2Run opens a shell-protocol-v2 service and decodes its framed stream into
+// combined stdout+stderr, returning an *ExitError if the device reports non-zero.
+func (d *Device) shellV2Run(service string) (string, error) {
+	local := d.nextID
+	d.nextID++
+	if err := d.writeMsg(cmdOPEN, local, 0, []byte(service+"\x00")); err != nil {
+		return "", err
+	}
+
+	var out []byte
+	var buf []byte // accumulated, undecoded stream bytes
+	exit := -1
+	for {
+		// Decode whole packets out of buf.
+		for len(buf) >= 5 {
+			length := int(binary.LittleEndian.Uint32(buf[1:5]))
+			if len(buf) < 5+length {
+				break
+			}
+			id, payload := buf[0], buf[5:5+length]
+			switch id {
+			case shellStdout, shellStderr:
+				out = append(out, payload...)
+			case shellExit:
+				if length >= 1 {
+					exit = int(payload[0])
+				}
+			}
+			buf = buf[5+length:]
+		}
+		cmd, a0, _, data, err := d.readMsg()
+		if err != nil {
+			return string(out), err
+		}
+		switch cmd {
+		case cmdWRTE:
+			buf = append(buf, data...)
+			if err := d.writeMsg(cmdOKAY, local, a0, nil); err != nil {
+				return string(out), err
+			}
+		case cmdCLSE:
+			_ = d.writeMsg(cmdCLSE, local, a0, nil)
+			if exit > 0 {
+				return string(out), &ExitError{Code: exit}
+			}
 			return string(out), nil
 		}
 	}
@@ -346,12 +463,57 @@ func (d *Device) Push(data []byte, remotePath string, mode int) error {
 	return nil
 }
 
-// expectOkay reads until an OKAY for our stream and returns the device's stream id.
-func (d *Device) expectOkay(local uint32) (uint32, error) {
+// Stat returns the unix mode of remotePath via the sync STAT service (0 if the
+// path does not exist).
+func (d *Device) Stat(remotePath string) (mode uint32, err error) {
+	local := d.nextID
+	d.nextID++
+	if err := d.writeMsg(cmdOPEN, local, 0, []byte("sync:\x00")); err != nil {
+		return 0, err
+	}
+	remote, err := d.expectOkay(local)
+	if err != nil {
+		return 0, fmt.Errorf("opening sync stream: %w", err)
+	}
+	if err := d.writeMsg(cmdWRTE, local, remote, syncReq("STAT", []byte(remotePath))); err != nil {
+		return 0, err
+	}
 	for {
-		cmd, a0, _, _, err := d.readMsg()
+		cmd, a0, _, data, err := d.readMsg()
 		if err != nil {
 			return 0, err
+		}
+		switch cmd {
+		case cmdWRTE:
+			_ = d.writeMsg(cmdOKAY, local, a0, nil)
+			if len(data) >= 8 && string(data[0:4]) == "STAT" {
+				mode = binary.LittleEndian.Uint32(data[4:])
+				_ = d.writeMsg(cmdCLSE, local, remote, nil)
+				return mode, nil
+			}
+		case cmdCLSE:
+			return mode, nil
+		}
+	}
+}
+
+// IsDir reports whether remotePath is a directory on the device.
+func (d *Device) IsDir(remotePath string) bool {
+	mode, err := d.Stat(remotePath)
+	return err == nil && mode&0o170000 == 0o040000
+}
+
+// expectOkay reads until an OKAY for our stream and returns the device's stream id.
+// Messages addressed to a different local stream (arg1) are stale (e.g. the CLSE
+// ack of a previous stream on this connection) and skipped.
+func (d *Device) expectOkay(local uint32) (uint32, error) {
+	for {
+		cmd, a0, a1, _, err := d.readMsg()
+		if err != nil {
+			return 0, err
+		}
+		if a1 != local {
+			continue
 		}
 		switch cmd {
 		case cmdOKAY:
