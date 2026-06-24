@@ -173,12 +173,36 @@ func (d *Device) Read(buf []byte) (int, error) {
 	return d.in.ReadContext(ctx, buf)
 }
 
-// Write writes to the bulk OUT endpoint.
+// Write sends buf to the bulk OUT endpoint the way the bootROM expects, mirroring
+// tegrarcm_v2's NvTegraUsbWriteTimeout + NvTegraRcmInitBootRomCommunication:
+//
+//   - split into chunks of at most 16 KiB (0x4000) — a single large bulk OUT fails
+//     on macOS IOKit with kIOReturnNotResponding;
+//   - if the total length is an exact multiple of the endpoint max packet size,
+//     follow with a zero-length packet to mark end-of-transfer.
 func (d *Device) Write(buf []byte) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	_, err := d.out.WriteContext(ctx, buf)
-	return err
+
+	const maxChunk = 0x4000 // 16 KiB
+	for off := 0; off < len(buf); {
+		end := off + maxChunk
+		if end > len(buf) {
+			end = len(buf)
+		}
+		n, err := d.out.WriteContext(ctx, buf[off:end])
+		if err != nil {
+			return err
+		}
+		off += n
+	}
+
+	if mps := d.out.Desc.MaxPacketSize; mps > 0 && len(buf) > 0 && len(buf)%mps == 0 {
+		if _, err := d.out.WriteContext(ctx, []byte{}); err != nil {
+			return fmt.Errorf("sending zero-length packet: %w", err)
+		}
+	}
+	return nil
 }
 
 // ReadUID returns the unique ID sent by the Orin bootROM on first connect.

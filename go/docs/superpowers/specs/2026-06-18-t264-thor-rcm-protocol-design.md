@@ -259,7 +259,7 @@ is accumulated across all bytes. Timeout per transfer: 1 second (0xF4240 microse
 | File                                  | Change                                      |
 |---------------------------------------|---------------------------------------------|
 | `internal/cli/tegraflash/rcm/device.go`    | add `ControlRead`, `ProductID`, `IsT264`    |
-| `internal/cli/tegraflash/rcm/t23x.go`     | new — `LoadImagesT23x`                      |
+| `internal/cli/tegraflash/rcm/bootrom.go`  | new — `DownloadBootROMImages` (was `t23x.go`/`LoadImagesT23x`) |
 | `internal/cli/tegraflash/bundle/xml.go`    | add `RCMPartitions` (parse rcmboot XML)     |
 | `internal/cli/tegraflash/flash.go`         | chip dispatch: T264 → T23x path             |
 
@@ -293,35 +293,23 @@ func (d *Device) ControlRead(buf []byte) (int, error) {
 func (d *Device) ReadChipID() (string, error) { /* ... */ }
 ```
 
-### `rcm/t23x.go` (new)
+### `rcm/bootrom.go` (was `t23x.go`)
+
+`LoadImagesT23x` was renamed `DownloadBootROMImages` — "T23x" is NVIDIA's bootROM family
+covering both T234/Orin and T264/Thor, so the old name read as Orin-specific. Each image is
+sent **verbatim** (no `BuildDLMiniloader` wrapper); `Device.Write` does the 16 KiB chunking and
+trailing ZLP. No state gate.
 
 ```go
-// LoadImagesT23x performs the T23x multi-image RCM download sequence.
-// Each image in the slice is sent as a separate RCM40 DL_MINILOADER message.
-// The caller must provide images in bootROM-required order.
-func LoadImagesT23x(dev *Device, images [][]byte) error {
-    // No state gate (corrected — see Part 2). Consume any pending bulk IN first.
-    drainBulkIn(dev)
+func DownloadBootROMImages(dev *Device, images [][]byte) error {
+    drainBulkIn(dev) // consume the connect-time ECID before the first bulk OUT
     for i, img := range images {
-        // NOTE (open): tegrarcm_v2 sends each NVDA-signed blob VERBATIM, not wrapped
-        // in a hand-built RCM40 envelope (see tegrarcm_v2-rcm-protocol.md). The code
-        // below still wraps via BuildDLMiniloader and needs revisiting against hardware.
-        msg, err := BuildDLMiniloader(img, [48]byte{})
-        if err != nil {
-            return fmt.Errorf("building RCM message %d: %w", i, err)
-        }
-        if err := dev.Write(msg); err != nil {
-            return fmt.Errorf("sending image %d: %w", i, err)
+        if err := dev.Write(img); err != nil { // verbatim; Device.Write chunks + ZLP
+            return fmt.Errorf("sending bootROM image %d: %w", i, err)
         }
         status := make([]byte, 4)
         if _, err := dev.Read(status); err != nil {
-            // The applet (last image) causes an immediate device reset; the
-            // bootROM may not send a status word before resetting. Treat a read
-            // error on the last image as success. For earlier images (mb1,
-            // psc_bl1), a read error is a real failure.
-            if i < len(images)-1 {
-                return fmt.Errorf("reading status after image %d: %w", i, err)
-            }
+            return fmt.Errorf("reading status after bootROM image %d: %w", i, err)
         }
     }
     return nil
@@ -359,7 +347,7 @@ if dev.IsT264() {
         if err != nil { continue }
         binaries = append(binaries, data)
     }
-    if err := rcm.LoadImagesT23x(dev, binaries); err != nil {
+    if err := rcm.DownloadBootROMImages(dev, binaries); err != nil {
         return fmt.Errorf("T264 RCM sequence: %w", err)
     }
 } else {
@@ -385,8 +373,9 @@ dev.Close()
   vector.
 - Unit: `TestRCMImages` verifying that `RCMImages()` correctly parses `rcmboot-flash.xml.in`
   and returns only images with non-empty filenames in the right order.
-- Integration: live T264 device required; expected flow is `RCMState()` returns 0, three images
-  (mb1, psc_bl1, applet) load without error, device re-enumerates in nv3p mode.
+- Integration: live T264 device required. Use `cmd/thor-replay` with captured/generated
+  artifacts in bootROM order (`bct_br mb1 psc_bl1 bct_mb1`); expected flow is each blob is
+  accepted (status read OK) and the device then advances to the mb2 applet (nv3p) phase.
 
 ---
 
@@ -407,7 +396,11 @@ dev.Close()
 4. **RCM version for T264**: Currently `VersionT264 = Version40`. If T264 requires a different
    RCM version word, capture USB traffic to verify.
 
-5. **Verbatim blob vs RCM40 wrapper (NEW)**: `tegrarcm_v2-rcm-protocol.md` records that bootROM
-   images are sent **verbatim** (the NVDA-signed blob), and that wrapping them in a hand-built
-   RCM40 envelope made the bootROM reset the device. `LoadImagesT23x` still wraps each image via
-   `BuildDLMiniloader`. This needs revisiting — likely send the bundle blobs unmodified.
+5. ~~**Verbatim blob vs RCM40 wrapper**~~ **RESOLVED (2026-06-24).** Now sent verbatim:
+   `LoadImagesT23x` was renamed `DownloadBootROMImages` and no longer wraps via
+   `BuildDLMiniloader`; `Device.Write` got the required 16 KiB chunking + trailing ZLP. Pending
+   hardware confirmation via `cmd/thor-replay`.
+
+6. **Session establishment (NEW)**: unverified whether `--new_session` needs an explicit
+   Sync/QueryRcmVersion message before the image downloads. `DownloadBootROMImages` currently
+   sends only the blobs (after draining the connect-time bulk-IN). Confirm during replay.

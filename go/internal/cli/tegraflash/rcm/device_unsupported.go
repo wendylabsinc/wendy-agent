@@ -33,6 +33,13 @@ func (d *Device) LoadApplet([]byte) error {
 
 func (d *Device) IsT264() bool { return false }
 
-func LoadImagesT23x(dev *Device, images [][]byte) error {
+func (d *Device) ControlRead([]byte) (int, error) {
+	return 0, fmt.Errorf("Jetson USB recovery flashing is only supported on macOS and Linux")
+}
+func (d *Device) ReadChipID() (string, error) {
+	return "", fmt.Errorf("Jetson USB recovery flashing is only supported on macOS and Linux")
+}
+
+func DownloadBootROMImages(dev *Device, images [][]byte) error {
 	return fmt.Errorf("Jetson USB recovery flashing is only supported on macOS and Linux")
 }

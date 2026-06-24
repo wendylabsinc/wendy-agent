@@ -128,10 +128,17 @@ is followed by `sleep(1)`.
 
 ## Implications for the Go port
 
-1. `Device.Write`: 16 KiB chunking + conditional trailing ZLP. (Done.)
-2. `LoadImagesT23x`: send `NVDA` blobs verbatim, no `BuildDLMiniloader`. (Done.)
+1. `Device.Write`: 16 KiB chunking + conditional trailing ZLP. (Landed 2026-06-24 — the
+   earlier "(Done.)" note predated the actual implementation; `Write` had been a single
+   un-chunked `WriteContext`.)
+2. `DownloadBootROMImages` (was `LoadImagesT23x`): send the blobs verbatim, no
+   `BuildDLMiniloader`. (Landed 2026-06-24.)
 3. The bootROM phase needs `bct_br` first and `bct_mb1` after psc_bl1 — both generated
-   from BCT config. Generating them is the large remaining work (tegrabct_v2 port).
-4. `BuildDLMiniloader` / the RCM40 envelope is not used for the T264 bootROM stage; keep
-   it only if a query/sync message turns out to need it (the recorded sequence sends the
-   BCT/firmware blobs directly).
+   from BCT config. Generating them is the large remaining work (tegrabct_v2 port), or
+   capture them from a real tegraflash run and replay (see `cmd/thor-replay`).
+4. `BuildDLMiniloader` / the RCM40 envelope is not used for the T264 bootROM stage (it
+   remains for the T234/Orin single-applet path). Keep it only if a query/sync message
+   turns out to need it; the recorded T264 sequence sends the BCT/firmware blobs directly.
+5. Not yet validated on hardware: whether `--new_session` requires an explicit Sync/
+   QueryRcmVersion message before the downloads. `DownloadBootROMImages` currently sends
+   only the image blobs; confirm during replay.

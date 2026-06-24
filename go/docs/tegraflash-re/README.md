@@ -62,8 +62,11 @@ partition XML ──tegraparser_v2──▶ pt.bin
   reads a host-side file. The device-state gate has been removed from the Go code; the
   descriptor read is now `Device.ReadChipID` (also recovers the ECID on macOS, where the
   bulk-IN UID transfer is dropped).
-- Still open: `LoadImagesT23x` wraps images via `BuildDLMiniloader`, contradicting root
-  cause #2 above (send verbatim). To be revisited against hardware.
+- Fixed (2026-06-24): the bootROM download now sends blobs verbatim (was wrongly wrapping
+  via `BuildDLMiniloader`, contradicting root cause #2), and `Device.Write` got the required
+  16 KiB chunking + ZLP. The function was renamed `LoadImagesT23x` → `DownloadBootROMImages`.
+  `cmd/thor-probe` (read-only) and `cmd/thor-replay` (sends captured artifacts) are the
+  hardware harnesses.
 
 ## Go port scope
 

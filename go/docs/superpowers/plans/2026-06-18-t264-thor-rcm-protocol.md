@@ -1,5 +1,19 @@
 # T264 Thor RCM Protocol Implementation Plan
 
+> **SUPERSEDED IN PART (2026-06-24).** This plan was written before live-hardware validation.
+> Two of its premises were wrong and have been corrected in code (branch
+> `thombles/emmc-thor-flash`):
+> - **No "RCM state" probe.** String descriptor 3 is the chip BR_CID, not a state machine.
+>   `RCMState`/`parseStateDescriptor` → `ReadChipID`/`parseChipIDDescriptor`; the state gate
+>   is gone. (Tasks 2–3 below describing a state probe are obsolete.)
+> - **Images are sent verbatim**, not wrapped via `BuildDLMiniloader`. `LoadImagesT23x` →
+>   `DownloadBootROMImages` (file `t23x.go` → `bootrom.go`); `Device.Write` now chunks to
+>   16 KiB + sends a ZLP.
+>
+> See the design doc and protocol notes for the corrected
+> protocol. The bootROM order is `bct_br → mb1 → psc_bl1 → bct_mb1`; BCTs are generated at
+> flash time (replay via `cmd/thor-replay`).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make T264 (Thor, USB PID 0x7026) flash end-to-end by implementing the T23x multi-image RCM download sequence.

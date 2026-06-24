@@ -86,7 +86,11 @@ func Flash(opts FlashOptions) error {
 	}
 
 	if dev.IsT264() {
-		fmt.Fprintln(out, "Loading pre-applet images via T23x RCM sequence...")
+		// TODO(thor): this sequence is incomplete. The bootROM requires bct_br FIRST
+		// and bct_mb1 after psc_bl1 — both generated at flash time (not in the bundle)
+		// — and the mb2 applet is delivered separately over nv3p, not here. Wiring the
+		// generated BCTs in is the remaining work.
+		fmt.Fprintln(out, "Loading bootROM images via RCM sequence...")
 		preApplet, err := b.PreAppletImages()
 		if err != nil {
 			dev.Close()
@@ -106,7 +110,7 @@ func Flash(opts FlashOptions) error {
 			dev.Close()
 			return fmt.Errorf("no T264 pre-applet images found in bundle")
 		}
-		if err := rcm.LoadImagesT23x(dev, binaries); err != nil {
+		if err := rcm.DownloadBootROMImages(dev, binaries); err != nil {
 			dev.Close()
 			return fmt.Errorf("T264 RCM sequence: %w", err)
 		}
