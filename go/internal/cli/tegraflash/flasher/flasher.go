@@ -1,166 +1,120 @@
-// Package flasher performs T264 (Thor) stage-2 flashing: once stage-1 RCM boot
-// has brought the device up as the initrd-flash ADB gadget, it drives the
-// device-side writes over ADB (self-contained, via internal/cli/tegraflash/adb —
-// no external adb binary).
+// Package flasher performs T264 (Thor) stage-2 flashing once stage-1 RCM boot has
+// brought the device up as the initrd-flash ADB gadget.
 //
-// The device-side model (from NVIDIA's bootburn flash_bsp_images.py /
-// bootburn_adb.py) is:
+// Rather than reimplementing NVIDIA's device-side flasher, it drives NVIDIA's own
+// bootburn FlashImages() over ADB, unmodified, via a small monkeypatch driver
+// (stage2_flash.py) that skips bootburn's i386-only boot/probe steps (our Go
+// stage-1 already did the equivalent). bootburn's host side only invokes `adb`, so
+// thor-flash points it at our self-contained wendy-adb shim by prepending --adb-dir
+// to PATH — no Google adb binary, no adb server.
 //
-//   - Push a small wrapper, wr_sh.sh, to /tmp. It runs `/bin/sh -c "$*"` and echoes
-//     "EXITCODE=<n>" so the host can read the result of a shell command.
-//   - Run commands as: adb shell /tmp/wr_sh.sh <command>   (AdbShell below).
-//   - Push each partition image to /tmp, then write it to its target offset on the
-//     internal storage (/dev/nvme0n1) and the QSPI boot device with dd/losetup/
-//     blkdiscard, per the bundle's flash index (partition -> device/offset/file).
-//
-// Status: the connect + push + AdbShell enablers are implemented. The full
-// partition-write loop (flash-index parsing + the per-partition dd sequence) is
-// the remaining work; it mirrors bootburn_adb.py. A current gate is the device
-// shell: on a bare RCM boot adbd's `shell:` service reports "fork failed" until the
-// flashing environment is fully up (the real flow runs a provision/platform-detect
-// step first) — see VerifyShell.
+// Requirements at run time:
+//   - python3 on PATH.
+//   - The bundle dir is an extracted+generated WendyOS Thor tegraflash bundle: it
+//     must contain unified_flash/tools/flashtools/bootburn (NVIDIA's scripts) and
+//     out/flash_workspace (the generated flash images), produced on the Linux
+//     builder. See package bringup for how the bundle is generated.
+//   - The device must already be the ADB gadget with a working shell (the flashing
+//     kernel booted) — see the bringup package and project notes on the rcm-flash
+//     environment.
 package flasher
 
 import (
+	_ "embed"
 	"fmt"
 	"io"
 	"os"
-	"strconv"
-	"strings"
-	"time"
-
-	"github.com/wendylabsinc/wendy/internal/cli/tegraflash/adb"
+	"os/exec"
+	"path/filepath"
 )
 
-// wrShWrapper is NVIDIA's tiny device-side shell wrapper: run the args via
-// /bin/sh and report the exit code so the host can read command results.
-const wrShWrapper = "#/bin/sh\n/bin/sh -c \"$*\"\nEXITCODE=$?\necho \"\"\necho \"EXITCODE=$EXITCODE\"\n"
-
-const wrShPath = "/tmp/wr_sh.sh"
+//go:embed stage2_flash.py
+var stage2Driver []byte
 
 // Options controls stage-2 flashing.
 type Options struct {
-	// BundleDir holds the flash-images and tools (the generated flash workspace).
+	// BundleDir is the extracted+generated bundle root (contains unified_flash/ and
+	// out/flash_workspace).
 	BundleDir string
-	Out       io.Writer
+	// ADBDir, if set, is prepended to PATH so bootburn's `adb` calls resolve to our
+	// wendy-adb shim (built as `adb`).
+	ADBDir string
+	// Board is the bootburn board name (default "jetson-t264").
+	Board string
+	Out    io.Writer
 }
 
-// Flasher is a stage-2 session over an ADB transport.
-type Flasher struct {
-	dev *adb.Device
-	out io.Writer
-}
-
-// Connect waits for the initrd-flash ADB gadget to appear and opens it, then
-// pushes the wr_sh.sh shell wrapper.
-func Connect(out io.Writer) (*Flasher, error) {
-	if out == nil {
-		out = os.Stdout
-	}
-	fmt.Fprintln(out, "Waiting for the initrd-flash ADB gadget...")
-	var dev *adb.Device
-	var err error
-	for i := 0; i < 30; i++ {
-		dev, err = adb.Open()
-		if err == nil {
-			break
-		}
-		time.Sleep(time.Second)
-	}
-	if err != nil {
-		return nil, fmt.Errorf("connecting to ADB gadget: %w", err)
-	}
-	fmt.Fprintf(out, "  connected: %s\n", dev.Banner)
-
-	f := &Flasher{dev: dev, out: out}
-	if err := dev.Push([]byte(wrShWrapper), wrShPath, 0o755); err != nil {
-		dev.Close()
-		return nil, fmt.Errorf("pushing %s: %w", wrShPath, err)
-	}
-	return f, nil
-}
-
-// Close releases the transport.
-func (f *Flasher) Close() {
-	if f.dev != nil {
-		f.dev.Close()
-	}
-}
-
-// Shell runs a command on the device through wr_sh.sh and returns its output and
-// exit code.
-func (f *Flasher) Shell(command string) (output string, exit int, err error) {
-	out, err := f.dev.Shell(wrShPath + " " + command)
-	if err != nil {
-		return out, -1, err
-	}
-	// wr_sh.sh appends a trailing "EXITCODE=<n>" line.
-	exit = -1
-	if i := strings.LastIndex(out, "EXITCODE="); i >= 0 {
-		fields := strings.Fields(out[i+len("EXITCODE="):])
-		if len(fields) > 0 {
-			if n, e := strconv.Atoi(fields[0]); e == nil {
-				exit = n
-			}
-		}
-		out = out[:i]
-	}
-	return out, exit, nil
-}
-
-// Push copies local file data to remotePath on the device.
-func (f *Flasher) Push(data []byte, remotePath string) error {
-	return f.dev.Push(data, remotePath, 0o644)
-}
-
-// VerifyShell confirms the device shell is usable (exit 0 for a trivial command).
-// On a bare RCM boot this can fail ("fork failed") until the flashing environment
-// is fully up.
-func (f *Flasher) VerifyShell() error {
-	out, code, err := f.Shell("echo wendy-ok")
-	if err != nil {
-		return fmt.Errorf("shell transport error: %w", err)
-	}
-	if !strings.Contains(out, "wendy-ok") || code != 0 {
-		return fmt.Errorf("device shell not ready (exit=%d, out=%q) — flashing environment not up yet", code, strings.TrimSpace(out))
-	}
-	fmt.Fprintln(f.out, "  device shell ready")
-	return nil
-}
-
-// Run is the stage-2 entry point. It connects, verifies the shell, then performs
-// the partition writes.
+// Run drives bootburn's FlashImages over ADB via the monkeypatch driver.
 func Run(opts Options) error {
 	out := opts.Out
 	if out == nil {
 		out = os.Stdout
 	}
-	f, err := Connect(out)
+	board := opts.Board
+	if board == "" {
+		board = "jetson-t264"
+	}
+
+	bootburnDir := filepath.Join(opts.BundleDir, "unified_flash", "tools", "flashtools", "bootburn")
+	flashWorkspace := filepath.Join(opts.BundleDir, "out", "flash_workspace")
+	if _, err := os.Stat(bootburnDir); err != nil {
+		return fmt.Errorf("bootburn scripts not found at %s (need an extracted+generated bundle): %w", bootburnDir, err)
+	}
+	if _, err := os.Stat(flashWorkspace); err != nil {
+		return fmt.Errorf("flash workspace not found at %s (run the Linux generate step first): %w", flashWorkspace, err)
+	}
+
+	python, err := exec.LookPath("python3")
 	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	if err := f.VerifyShell(); err != nil {
-		return err
+		return fmt.Errorf("python3 not found on PATH: %w", err)
 	}
 
-	// Report the device storage so we can confirm the flashing environment, then
-	// write the partitions.
-	if parts, _, err := f.Shell("cat /proc/partitions"); err == nil {
-		fmt.Fprintf(out, "device partitions:\n%s\n", parts)
+	// Write the monkeypatch driver to a temp file; it adds the bootburn dirs to
+	// sys.path itself (it runs with cwd = bootburnDir).
+	driver, err := os.CreateTemp("", "wendy-stage2-*.py")
+	if err != nil {
+		return fmt.Errorf("creating driver temp file: %w", err)
 	}
+	defer os.Remove(driver.Name())
+	if _, err := driver.Write(stage2Driver); err != nil {
+		driver.Close()
+		return fmt.Errorf("writing driver: %w", err)
+	}
+	driver.Close()
 
-	return f.flashPartitions(opts.BundleDir)
+	// bootburn flash args (mirrors out/doflash.sh, minus the RCM --usb-instance).
+	args := []string{driver.Name(), "-b", board, "--l4t", "-P", flashWorkspace}
+	cmd := exec.Command(python, args...)
+	cmd.Dir = bootburnDir
+	cmd.Stdout = out
+	cmd.Stderr = out
+	cmd.Env = envWithADB(opts.ADBDir)
+
+	if opts.ADBDir != "" {
+		fmt.Fprintf(out, "Using adb from: %s\n", opts.ADBDir)
+	}
+	fmt.Fprintf(out, "Running bootburn flash: %s %v (cwd %s)\n", python, args, bootburnDir)
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("bootburn flash failed: %w", err)
+	}
+	return nil
 }
 
-// flashPartitions writes the bundle's images to the internal storage and QSPI.
-//
-// TODO: implement the per-partition write loop. It mirrors bootburn_adb.py:
-// parse the flash index (partition -> target device, offset, image file), and for
-// each entry push the image to /tmp and dd it into place (with losetup/blkdiscard/
-// resize2fs for the rootfs partitions), plus write the GPTs. The flash index and
-// images live under the bundle's flash workspace (out/flash_workspace/flash-images).
-func (f *Flasher) flashPartitions(bundleDir string) error {
-	return fmt.Errorf("partition write loop not yet implemented (see flasher.flashPartitions; bundleDir=%s)", bundleDir)
+// envWithADB returns the environment with adbDir prepended to PATH (if set).
+func envWithADB(adbDir string) []string {
+	env := os.Environ()
+	if adbDir == "" {
+		return env
+	}
+	abs, err := filepath.Abs(adbDir)
+	if err != nil {
+		abs = adbDir
+	}
+	for i, kv := range env {
+		if len(kv) >= 5 && kv[:5] == "PATH=" {
+			env[i] = "PATH=" + abs + string(os.PathListSeparator) + kv[5:]
+			return env
+		}
+	}
+	return append(env, "PATH="+abs)
 }
