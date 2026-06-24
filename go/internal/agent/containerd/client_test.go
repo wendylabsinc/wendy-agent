@@ -2,6 +2,7 @@ package containerd
 
 import (
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -10,6 +11,29 @@ import (
 	"go.uber.org/zap"
 	"go.uber.org/zap/zaptest/observer"
 )
+
+// TestROS2SidecarName maps each RMW to a distinct, prefix-scoped sidecar name
+// and collapses empty RMW to the CycloneDDS (config-default) sidecar — the
+// basis for one persistent sidecar per RMW (WDY-1594, WDY-1703).
+func TestROS2SidecarName(t *testing.T) {
+	cyc := ros2SidecarName("rmw_cyclonedds_cpp")
+	fast := ros2SidecarName("rmw_fastrtps_cpp")
+	def := ros2SidecarName("")
+	if cyc == fast {
+		t.Errorf("distinct RMWs must map to distinct sidecars: %q == %q", cyc, fast)
+	}
+	if def != cyc {
+		t.Errorf("empty RMW should map to the CycloneDDS (config-default) sidecar (WDY-1703): %q vs %q", def, cyc)
+	}
+	if got := ros2SidecarName("rmw_bogus"); got != ros2SidecarPrefix+"-default" {
+		t.Errorf("unknown RMW = %q, want %q", got, ros2SidecarPrefix+"-default")
+	}
+	for _, n := range []string{cyc, fast, def} {
+		if !strings.HasPrefix(n, ros2SidecarPrefix+"-") {
+			t.Errorf("sidecar name %q lacks the expected prefix", n)
+		}
+	}
+}
 
 func TestCreateContainerProgressMappingUsesApplyPhase(t *testing.T) {
 	progress := UnpackProgress{
@@ -698,38 +722,161 @@ func TestPrimaryPIDTracking(t *testing.T) {
 	}
 }
 
+func envContains(env []string, want string) bool {
+	for _, e := range env {
+		if e == want {
+			return true
+		}
+	}
+	return false
+}
+
+func envValue(env []string, key string) (string, bool) {
+	prefix := key + "="
+	for _, e := range env {
+		if strings.HasPrefix(e, prefix) {
+			return e[len(prefix):], true
+		}
+	}
+	return "", false
+}
+
 func TestBuildROS2Env_WithConfig(t *testing.T) {
+	domainID := 42
 	cfg := &appconfig.AppConfig{
 		Frameworks: &appconfig.FrameworksConfig{
 			ROS2: &appconfig.ROS2Config{
-				DomainID: 42,
+				DomainID: &domainID,
 				RMW:      "rmw_cyclonedds_cpp",
 			},
 		},
 	}
-	got := buildROS2Env(cfg)
-	found42 := false
-	foundRMW := false
-	for _, e := range got {
-		if e == "ROS_DOMAIN_ID=42" {
-			found42 = true
-		}
-		if e == "RMW_IMPLEMENTATION=rmw_cyclonedds_cpp" {
-			foundRMW = true
+	got := buildROS2Env(cfg, "com.example.app", "")
+	for _, want := range []string{
+		"ROS_DOMAIN_ID=42",
+		"RMW_IMPLEMENTATION=rmw_cyclonedds_cpp",
+		"ROS_LOCALHOST_ONLY=1",
+	} {
+		if !envContains(got, want) {
+			t.Errorf("expected %s in env, got %v", want, got)
 		}
 	}
-	if !found42 {
-		t.Errorf("expected ROS_DOMAIN_ID=42 in env, got %v", got)
-	}
-	if !foundRMW {
-		t.Errorf("expected RMW_IMPLEMENTATION=rmw_cyclonedds_cpp in env, got %v", got)
+	if uri, ok := envValue(got, "CYCLONEDDS_URI"); !ok || !strings.Contains(uri, "<SharedMemory>") {
+		t.Errorf("expected inline CYCLONEDDS_URI with shared memory config, got %v", got)
 	}
 }
 
 func TestBuildROS2Env_NoConfig(t *testing.T) {
 	cfg := &appconfig.AppConfig{}
-	got := buildROS2Env(cfg)
+	got := buildROS2Env(cfg, "com.example.app", "")
 	if len(got) != 0 {
 		t.Errorf("expected empty env for no ROS2 config, got %v", got)
+	}
+}
+
+func TestBuildROS2Env_AutoDomainID(t *testing.T) {
+	cfg := &appconfig.AppConfig{
+		Frameworks: &appconfig.FrameworksConfig{ROS2: &appconfig.ROS2Config{}},
+	}
+	got := buildROS2Env(cfg, "com.example.app", "")
+	val, ok := envValue(got, "ROS_DOMAIN_ID")
+	if !ok {
+		t.Fatalf("expected ROS_DOMAIN_ID in env, got %v", got)
+	}
+	id, err := strconv.Atoi(val)
+	if err != nil || id < 0 || id > 232 {
+		t.Errorf("auto domain ID = %q, want integer in [0,232]", val)
+	}
+	// Stable: a second call for the same appId must produce the same ID.
+	again := buildROS2Env(cfg, "com.example.app", "")
+	if val2, _ := envValue(again, "ROS_DOMAIN_ID"); val2 != val {
+		t.Errorf("auto domain ID not stable: %q vs %q", val, val2)
+	}
+	// Defaults: CycloneDDS RMW with inline config.
+	if !envContains(got, "RMW_IMPLEMENTATION=rmw_cyclonedds_cpp") {
+		t.Errorf("expected default RMW_IMPLEMENTATION=rmw_cyclonedds_cpp, got %v", got)
+	}
+}
+
+func TestBuildROS2Env_InvalidDomainID(t *testing.T) {
+	domainID := 500
+	cfg := &appconfig.AppConfig{
+		Frameworks: &appconfig.FrameworksConfig{
+			ROS2: &appconfig.ROS2Config{DomainID: &domainID},
+		},
+	}
+	if got := buildROS2Env(cfg, "com.example.app", ""); len(got) != 0 {
+		t.Errorf("expected empty env for out-of-range domain ID, got %v", got)
+	}
+}
+
+func TestBuildROS2Env_NonCycloneRMWSkipsCycloneURI(t *testing.T) {
+	cfg := &appconfig.AppConfig{
+		Frameworks: &appconfig.FrameworksConfig{
+			ROS2: &appconfig.ROS2Config{RMW: "fastrtps"},
+		},
+	}
+	got := buildROS2Env(cfg, "com.example.app", "")
+	if !envContains(got, "RMW_IMPLEMENTATION=rmw_fastrtps_cpp") {
+		t.Errorf("expected short rmw name to normalize to rmw_fastrtps_cpp, got %v", got)
+	}
+	if _, ok := envValue(got, "CYCLONEDDS_URI"); ok {
+		t.Errorf("CYCLONEDDS_URI must not be injected for non-CycloneDDS RMW, got %v", got)
+	}
+}
+
+func TestBuildROS2Env_ServiceOverride(t *testing.T) {
+	groupID, svcID := 1, 7
+	cfg := &appconfig.AppConfig{
+		Frameworks: &appconfig.FrameworksConfig{ROS2: &appconfig.ROS2Config{DomainID: &groupID}},
+		Services: map[string]*appconfig.ServiceConfig{
+			"detector": {
+				Frameworks: &appconfig.FrameworksConfig{ROS2: &appconfig.ROS2Config{DomainID: &svcID}},
+			},
+			"camera": {},
+		},
+	}
+	got := buildROS2Env(cfg, "com.example.app", "detector")
+	if !envContains(got, "ROS_DOMAIN_ID=7") {
+		t.Errorf("expected service-level override ROS_DOMAIN_ID=7, got %v", got)
+	}
+	got = buildROS2Env(cfg, "com.example.app", "camera")
+	if !envContains(got, "ROS_DOMAIN_ID=1") {
+		t.Errorf("expected group-level ROS_DOMAIN_ID=1 for camera, got %v", got)
+	}
+}
+
+// TestSharedSHMPath verifies the shared-ipc shm path is derived from a valid
+// app ID and that an invalid app ID is rejected (the path is later stat'd to
+// detect shared-ipc topology and bind-mounted into the ROS 2 sidecar, WDY-1555).
+func TestSharedSHMPath(t *testing.T) {
+	path, err := sharedSHMPath("sh.wendy.examples.so101")
+	if err != nil {
+		t.Fatalf("sharedSHMPath valid app ID: unexpected error %v", err)
+	}
+	if want := "/run/wendy/shm/sh.wendy.examples.so101"; path != want {
+		t.Errorf("sharedSHMPath = %q, want %q", path, want)
+	}
+	if _, err := sharedSHMPath(""); err == nil {
+		t.Error("sharedSHMPath(\"\") = nil error, want validation error")
+	}
+	if _, err := sharedSHMPath("../escape"); err == nil {
+		t.Error("sharedSHMPath(\"../escape\") = nil error, want validation error")
+	}
+}
+
+// TestRMWFromEnv verifies the ROS 2 sidecar reads back the anchor app's
+// RMW_IMPLEMENTATION from its OCI spec env so it can match the app's DDS
+// implementation (WDY-1593).
+func TestRMWFromEnv(t *testing.T) {
+	got := rmwFromEnv([]string{"ROS_DOMAIN_ID=42", "RMW_IMPLEMENTATION=rmw_cyclonedds_cpp", "ROS_LOCALHOST_ONLY=1"})
+	if got != "rmw_cyclonedds_cpp" {
+		t.Errorf("rmwFromEnv = %q, want rmw_cyclonedds_cpp", got)
+	}
+	if got := rmwFromEnv([]string{"ROS_DOMAIN_ID=42"}); got != "" {
+		t.Errorf("rmwFromEnv (absent) = %q, want empty", got)
+	}
+	if got := rmwFromEnv(nil); got != "" {
+		t.Errorf("rmwFromEnv(nil) = %q, want empty", got)
 	}
 }

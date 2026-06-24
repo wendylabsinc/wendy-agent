@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/shared/nmcli"
 )
 
@@ -18,20 +19,56 @@ import (
 const wifiScanCacheHint = ""
 
 // scanLocalWifiNetworks uses nmcli on Linux to list WiFi networks visible to
-// the host machine.
+// the host machine. Returns errNoWifiAdapter when the host has no wifi-type
+// device, so callers can offer to skip WiFi setup instead of failing.
 func scanLocalWifiNetworks() ([]localWifiNetwork, error) {
 	nmcliPath, err := exec.LookPath("nmcli")
 	if err != nil {
 		return nil, fmt.Errorf("nmcli not found on PATH: %w", err)
 	}
 
+	// Distinguish "no WiFi hardware" from a transient scan failure before
+	// attempting the scan (WDY-1474). A status-command failure is ignored:
+	// the scan below will surface its own error.
+	if statusOut, statusErr := nmcli.Command(context.Background(), nmcliPath, "-t", "-f", "DEVICE,TYPE", "device", "status").Output(); statusErr == nil {
+		if !nmcliHasWifiDevice(string(statusOut)) {
+			return nil, errNoWifiAdapter
+		}
+	}
+
 	// Trigger a rescan first (may fail if already scanning).
 	_ = nmcli.Command(context.Background(), nmcliPath, "device", "wifi", "rescan").Run()
 
-	cmd := nmcli.Command(context.Background(), nmcliPath, "-t", "-f", "SSID,SIGNAL", "device", "wifi", "list")
+	return nmcliListWifi(nmcliPath)
+}
+
+// cachedLocalWifiNetworks reads nmcli's current scan cache without forcing a
+// rescan, so a streaming picker can paint instantly while scanLocalWifiNetworks
+// runs the slower `device wifi rescan`. `--rescan no` keeps the list call from
+// blocking on a fresh scan when the cache is stale. Best-effort: any failure
+// (including no nmcli on PATH, or an nmcli too old to know `--rescan`) yields
+// no networks rather than an error — the authoritative scan still runs after.
+func cachedLocalWifiNetworks() []localWifiNetwork {
+	nmcliPath, err := exec.LookPath("nmcli")
+	if err != nil {
+		return nil
+	}
+	nets, err := nmcliListWifi(nmcliPath, "--rescan", "no")
+	if err != nil {
+		return nil
+	}
+	return nets
+}
+
+// nmcliListWifi lists the WiFi networks nmcli currently knows about and parses
+// the result. It does not trigger a rescan itself; extraArgs (e.g. "--rescan",
+// "no") are appended to the list command.
+func nmcliListWifi(nmcliPath string, extraArgs ...string) ([]localWifiNetwork, error) {
+	args := append([]string{"-t", "-f", "SSID,SIGNAL,SECURITY", "device", "wifi", "list"}, extraArgs...)
+	cmd := nmcli.Command(context.Background(), nmcliPath, args...)
 	output, err := cmd.Output()
 	if err != nil {
-		return nil, fmt.Errorf("scanning WiFi networks: %w", err)
+		return nil, fmt.Errorf("scanning WiFi networks: %w", exitErrWithStderr(err))
 	}
 
 	seen := make(map[string]bool)
@@ -42,12 +79,12 @@ func scanLocalWifiNetworks() ([]localWifiNetwork, error) {
 		// Use the shared nmcli parser so SSIDs containing literal `:` (escaped
 		// by nmcli as `\:`) and `\` survive intact, and so the parsing is
 		// consistent with the agent side.
-		fields := nmcli.Split(scanner.Text(), 2)
+		fields := nmcli.Split(scanner.Text(), 3)
 		if len(fields) < 2 {
 			continue
 		}
 
-		ssid := fields[0]
+		ssid := tui.StripControl(fields[0])
 		if ssid == "" || seen[ssid] {
 			continue
 		}
@@ -58,7 +95,12 @@ func scanLocalWifiNetworks() ([]localWifiNetwork, error) {
 			signal = int32(s)
 		}
 
-		networks = append(networks, localWifiNetwork{SSID: ssid, SignalStrength: signal})
+		security := ""
+		if len(fields) >= 3 {
+			security = normalizeWifiSecurity(tui.StripControl(fields[2]))
+		}
+
+		networks = append(networks, localWifiNetwork{SSID: ssid, SignalStrength: signal, Security: security})
 	}
 
 	if err := scanner.Err(); err != nil {
@@ -66,6 +108,20 @@ func scanLocalWifiNetworks() ([]localWifiNetwork, error) {
 	}
 
 	return networks, nil
+}
+
+// nmcliHasWifiDevice reports whether `nmcli -t -f DEVICE,TYPE device status`
+// output lists at least one wifi-type device. wifi-p2p entries don't count —
+// they are virtual P2P interfaces, not scannable adapters.
+func nmcliHasWifiDevice(output string) bool {
+	scanner := bufio.NewScanner(strings.NewReader(output))
+	for scanner.Scan() {
+		fields := nmcli.Split(scanner.Text(), 2)
+		if len(fields) >= 2 && fields[1] == "wifi" {
+			return true
+		}
+	}
+	return false
 }
 
 const supportsKeychainLookup = false

@@ -63,7 +63,7 @@ when you need lower-level control:
 - `Scripts/E2ETest.sh` and `Scripts/E2ETest.ps1` run the Swift E2E test package,
   build the managed CLI into the CLI run directory, write per-test sandboxes
   under the CLI and agent run directories, and write recordings under
-  `<output-root>/<run-id>/tests`. They accept options such as `--filter`,
+  `<output-dir>/<attempt-id>/observations/`. They accept options such as `--filter`,
   `--agent-address`, `--agent-user`, and `--verbose`.
 - `Scripts/E2EAnalyze.sh` and `Scripts/E2EAnalyze.ps1` analyze attempt
   directories in an output directory. By default, they only consider attempts

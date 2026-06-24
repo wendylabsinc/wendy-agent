@@ -41,6 +41,7 @@ introduced in WDY-881.
 ```jsonc
 {
   "appId": "sh.wendy.examples.sharedipc",
+  "platform": "linux",
   "isolation": "shared-ipc",
   "services": {
     "primary": {

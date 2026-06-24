@@ -7,9 +7,43 @@ Runs your app on a Wendy-enabled device:
 5. [Starts the app](./device/apps/start.md)
 6. [Attaches the logs](./device/logs.md) if needed (when `--detach` is not provided)
 
-## Docker build-args
+> **Note:** When `wendy.json` is absent, `wendy run` resolves the target device before prompting to create one. If the target is Wendy for Mac and the detected project type is unsupported, the project/target mismatch error is returned immediately without opening the config creation prompt.
 
-When building a Dockerfile project, `wendy run` passes the target device's hardware parameters as `--build-arg` values so the Dockerfile can branch on platform, GPU vendor, or CUDA version. Declare any arg you want to use with `ARG`:
+## Wendy for Mac — supported project types
+
+Wendy for Mac (Darwin targets) currently runs native macOS apps only. When the selected agent reports `os: darwin`, `wendy run` rejects Linux/container deployment paths before any build, registry auth, or registry setup.
+
+| Project type | Mac target support |
+|---|---|
+| Native SwiftPM (`Package.swift`, `platform: "darwin"`) | Supported |
+| Native Xcode (`.xcodeproj`, `platform: "darwin"`) | Supported |
+| Dockerfile / Containerfile / container image | Rejected |
+| Python container path | Rejected |
+| Docker Compose | Rejected |
+| Multi-service `wendy.json` (`services` map) | Rejected |
+| `platform: "linux/..."` or `platform: "wendyos"` | Rejected |
+
+The error explains the project/target mismatch and tells you to set `platform: "darwin"` with a Mac-compatible native SwiftPM or Xcode project, or to target a Linux/WendyOS device. Linux container support on Mac is planned for a future release.
+
+## Image build-args
+
+When building a Dockerfile or Containerfile project, `wendy run` passes the target device's hardware parameters as `--build-arg` values so the build file can branch on platform, GPU vendor, or CUDA version. Declare any arg you want to use with `ARG`:
+
+On Apple silicon Macs with Apple's `container` runtime started, Wendy tries
+Apple Container first when `--builder` is omitted. If Apple Container is
+unavailable or the build fails, Wendy falls back to Docker. Use
+`--builder docker` to force Docker, or `--builder apple-container` to require
+Apple Container:
+
+```sh
+container system start
+wendy --device my-wendy.local run
+```
+
+For local-only Dockerfile or Containerfile runs on the Mac itself, use `wendy run --device
+apple-container` instead. Compose projects still require the Docker provider for
+local runs, but compose service builds targeting a WendyOS device can use
+`--builder apple-container`.
 
 | Build-arg | Values | Notes |
 |---|---|---|
@@ -20,8 +54,9 @@ When building a Dockerfile project, `wendy run` passes the target device's hardw
 | `WENDY_GPU_VENDOR` | e.g. `nvidia`, `qualcomm` | Absent when no GPU is reported |
 | `WENDY_JETPACK_VERSION` | e.g. `6.0` | Jetson only |
 | `WENDY_CUDA_VERSION` | e.g. `12.6` | Jetson only |
+| `WENDY_GPU_ARCH` | e.g. `sm_87` | GPU architecture identifier; absent when no GPU is reported |
 
-`WENDY_PLATFORM` and `WENDY_DEBUG` are always set. The remaining args are only injected when the agent reports them, so Dockerfiles can define their own `ARG` defaults for devices that predate the field.
+`WENDY_PLATFORM` and `WENDY_DEBUG` are always set. The remaining args are only injected when the agent reports them, so Dockerfiles and Containerfiles can define their own `ARG` defaults for devices that predate the field.
 
 ## Multi-service projects (`wendy.json` with `services`)
 
@@ -37,11 +72,21 @@ Use `--service <name>` to build and run only a specific service and its transiti
 
 See [Multi-Service Apps with `wendy.json`](../../../apps/wendy-services.md) for a full walkthrough.
 
+> **Wendy for Mac:** Multi-service `wendy.json` projects are not supported when the selected target is Wendy for Mac. `wendy run` returns an error immediately. Target a Linux/WendyOS device for multi-service workloads.
+
 ## Compose projects
 
 If the current directory contains a `docker-compose.yml` (or `compose.yml`) but no `wendy.json`, `wendy run` automatically runs it as a multi-service compose project. Each service is built, pushed, and started on the device in dependency order. See [Multi-Service Apps with Docker Compose](../../../apps/compose.md) for full details.
 
+> **Wendy for Mac:** Compose projects are not supported when the selected target is Wendy for Mac. `wendy run` returns an error before performing any registry or Docker setup. To deploy a compose workload, target a Linux/WendyOS device. For Mac targets, use a native SwiftPM or Xcode project with `platform: "darwin"`.
+
 ## Swift Package Manager projects (macOS)
+
+From a macOS (Darwin) SwiftPM project, target the Mac agent explicitly:
+
+```bash
+wendy run --device <hostname-or-ip>:50051
+```
 
 When running a Swift Package Manager project on a macOS target, `wendy run`:
 
@@ -53,14 +98,14 @@ When running a Swift Package Manager project on a macOS target, `wendy run`:
 
 ## Swift Package Manager projects — host requirements
 
-Both the macOS-target and Linux-target Swift paths shell out to a host Swift toolchain. The following host OS requirements apply when no `Dockerfile` is present (or when `--build-type=swift` is set explicitly):
+Both the macOS-target and Linux-target Swift paths shell out to a host Swift toolchain. The following host OS requirements apply when no `Dockerfile` or `Containerfile` is present (or when `--build-type=swift` is set explicitly):
 
 | Target platform | Supported host OS | Notes |
 |-----------------|------------------|-------|
 | macOS device | macOS only | Linux's Swift toolchain cannot cross-compile to macOS. |
 | Linux device | macOS or Linux | swift-container-plugin does not yet ship for Windows. |
 
-On a **Windows host**, `wendy run` returns an actionable error for Swift projects that would require the host toolchain. Providing a `Dockerfile` bypasses these restrictions — the build is routed through Docker buildx, which works on all platforms.
+On a **Windows host**, `wendy run` returns an actionable error for Swift projects that would require the host toolchain. Providing a `Dockerfile` or `Containerfile` bypasses these restrictions — the build is routed through the image build path, which works on all platforms.
 
 ## Flags
 
@@ -73,6 +118,7 @@ On a **Windows host**, `wendy run` returns an actionable error for Swift project
 | `--no-restart` | Do not restart the container on exit. |
 | `--debug` | Enable debug logging and inject debug tooling via `WENDY_DEBUG=true`. For SwiftPM projects, builds with `-c debug` instead of `-c release`. |
 | `--yes` / `-y` | Accept all device-selection prompts automatically. |
+| `--builder <name>` | Image builder for Dockerfile/Containerfile builds: `docker` or `apple-container`. |
 | `--build-type <type>` | Override build type detection: `docker`, `swift`, `python`, or `compose`. |
 | `--prefix <dir>` | Run from a project directory other than the current working directory. |
 | `--product <name>` | Swift Package Manager product to build and run (Swift projects only). |

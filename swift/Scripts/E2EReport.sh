@@ -76,20 +76,14 @@ PACKAGE_DIR="$(absolute_existing_dir_path "$PACKAGE_DIR")"
 REPORT_PATH="$RUN_DIR/index.html"
 
 run_test_result_files() {
-  local suite_dir test_dir target_dir attempt_dir result_path
-  for suite_dir in "$RUN_DIR"/*; do
-    [[ -d "$suite_dir" ]] || continue
-    for test_dir in "$suite_dir"/*; do
-      [[ -d "$test_dir" ]] || continue
-      for target_dir in "$test_dir"/*; do
-        [[ -d "$target_dir" ]] || continue
-        for attempt_dir in "$target_dir"/*; do
-          [[ -d "$attempt_dir" ]] || continue
-          result_path="$attempt_dir/test-results.xml"
-          [[ -f "$result_path" ]] || continue
-          printf '%s\n' "$result_path"
-        done
-      done
+  local target_dir attempt_dir result_path
+  for target_dir in "$RUN_DIR"/attempts/*; do
+    [[ -d "$target_dir" ]] || continue
+    for attempt_dir in "$target_dir"/*; do
+      [[ -d "$attempt_dir" ]] || continue
+      result_path="$attempt_dir/test-results.xml"
+      [[ -f "$result_path" ]] || continue
+      printf '%s\n' "$result_path"
     done
   done | sort -u
 }

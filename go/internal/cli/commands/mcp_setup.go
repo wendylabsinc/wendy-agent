@@ -10,6 +10,8 @@ import (
 
 	toml "github.com/BurntSushi/toml"
 	"github.com/spf13/cobra"
+	"github.com/wendylabsinc/wendy/go/internal/shared/config"
+	"github.com/wendylabsinc/wendy/go/internal/shared/version"
 )
 
 func newMCPSetupCmd() *cobra.Command {
@@ -31,9 +33,55 @@ func newMCPSetupCmd() *cobra.Command {
 				fmt.Fprintln(cmd.OutOrStdout(), "No supported AI tools detected.")
 				fmt.Fprintln(cmd.OutOrStdout(), "Install Claude Code: npm install -g @anthropic-ai/claude-code")
 			}
+			// Record the CLI version so the root command can auto-refresh the
+			// configuration and skills after a later upgrade.
+			recordMCPSetupVersion()
 			return nil
 		},
 	}
+}
+
+// recordMCPSetupVersion stores the running CLI version as the last version that
+// performed MCP setup. Failures are non-fatal: at worst auto-refresh re-runs the
+// (idempotent) setup again on the next invocation.
+func recordMCPSetupVersion() {
+	cfg, err := config.Load()
+	if err != nil {
+		return
+	}
+	cfg.LastMCPSetupVersion = version.Version
+	_ = config.Save(cfg)
+}
+
+// shouldRefreshMCPSetup reports whether the root command should silently re-run
+// MCP setup. It refreshes only when the user has previously run `wendy mcp
+// setup` (non-empty lastSetupVersion) and the running CLI differs from the
+// version that last set it up. A "dev" build never auto-refreshes, and the
+// comparison is an exact mismatch so downgrades re-install the matching skills
+// too. It never opts a user into the MCP server on its own.
+func shouldRefreshMCPSetup(lastSetupVersion, currentVersion string) bool {
+	if currentVersion == "dev" {
+		return false
+	}
+	if lastSetupVersion == "" {
+		return false
+	}
+	return lastSetupVersion != currentVersion
+}
+
+// maybeRefreshMCPSetup re-applies the MCP server configuration and re-installs
+// the bundled skills when the CLI has been upgraded (or downgraded) since
+// `wendy mcp setup` last ran, so users automatically pick up the latest skills.
+// It runs silently and only touches tools that are already configured; the
+// underlying setup helpers no-op for tools they don't detect.
+func maybeRefreshMCPSetup(cfg *config.Config) {
+	if !shouldRefreshMCPSetup(cfg.LastMCPSetupVersion, version.Version) {
+		return
+	}
+	setupMCPForAllTools()
+	installSkillsForAllTools()
+	cfg.LastMCPSetupVersion = version.Version
+	_ = config.Save(cfg)
 }
 
 type mcpSetupResult struct {

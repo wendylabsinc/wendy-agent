@@ -1,13 +1,28 @@
 package commands
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
+	"google.golang.org/grpc"
+
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/cli/tui/bttable"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
+)
+
+// Per-operation timeouts bound each Bluetooth gRPC call so a hung agent cannot
+// block the TUI indefinitely. They are generous: pairing in particular can be
+// slow and may require user interaction on the peripheral.
+const (
+	btConnectTimeout    = 60 * time.Second
+	btDisconnectTimeout = 30 * time.Second
+	btForgetTimeout     = 30 * time.Second
 )
 
 func newBluetoothCmd() *cobra.Command {
@@ -15,6 +30,9 @@ func newBluetoothCmd() *cobra.Command {
 		Use:     "bluetooth",
 		Aliases: []string{"bt"},
 		Short:   "Manage Bluetooth on the target device",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runBluetoothInteractive(cmd)
+		},
 	}
 
 	cmd.AddCommand(
@@ -25,6 +43,128 @@ func newBluetoothCmd() *cobra.Command {
 	)
 
 	return cmd
+}
+
+// ── Interactive TUI entry point ─────────────────────────────────────
+
+func runBluetoothInteractive(cmd *cobra.Command) error {
+	ctx := cmd.Context()
+	conn, err := connectToAgent(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	model := bttable.NewModel(nil).WithHandler(&btTUIHandler{ctx: ctx, agent: conn.AgentService})
+	p := tea.NewProgram(model)
+	if _, err := p.Run(); err != nil {
+		return fmt.Errorf("bluetooth TUI: %w", err)
+	}
+	return nil
+}
+
+// btTUIHandler adapts the agent client to the bttable.Handler interface so the
+// TUI can scan and execute operations inline and stay open between actions.
+type btTUIHandler struct {
+	ctx    context.Context
+	agent  agentpb.WendyAgentServiceClient
+	stream grpc.BidiStreamingClient[agentpb.ScanBluetoothPeripheralsRequest, agentpb.ScanBluetoothPeripheralsResponse]
+}
+
+// openScan (re)opens a scan stream and sends the scan request, mirroring the
+// `list` command's error handling for unsupported (macOS beta) agents. Any
+// prior stream is closed first so a rescan never leaves one half-open.
+func (h *btTUIHandler) openScan() error {
+	if h.stream != nil {
+		_ = h.stream.CloseSend()
+		h.stream = nil
+	}
+	stream, err := h.agent.ScanBluetoothPeripherals(h.ctx)
+	if err != nil {
+		return h.wrapScanErr(err)
+	}
+	if err := stream.Send(&agentpb.ScanBluetoothPeripheralsRequest{}); err != nil && err != io.EOF {
+		return h.wrapScanErr(err)
+	}
+	if err := stream.CloseSend(); err != nil && err != io.EOF {
+		return h.wrapScanErr(err)
+	}
+	h.stream = stream
+	return nil
+}
+
+func (h *btTUIHandler) wrapScanErr(err error) error {
+	if macErr := macOSBetaUnsupportedFeatureError(h.ctx, h.agent, err, "Bluetooth scanning"); macErr != nil {
+		return macErr
+	}
+	return err
+}
+
+// recv reads the next scan event and maps it to a model message.
+func (h *btTUIHandler) recv() tea.Msg {
+	if h.stream == nil {
+		return bttable.ScanDoneMsg{}
+	}
+	resp, err := h.stream.Recv()
+	if err == io.EOF {
+		return bttable.ScanDoneMsg{}
+	}
+	if err != nil {
+		return bttable.ScanDoneMsg{Err: h.wrapScanErr(err)}
+	}
+	return bttable.ScanResultMsg{Peripherals: peripheralsFromProto(resp.GetDiscoveredDevices())}
+}
+
+func (h *btTUIHandler) StartScan() tea.Cmd {
+	return func() tea.Msg {
+		if err := h.openScan(); err != nil {
+			return bttable.ScanDoneMsg{Err: err}
+		}
+		return h.recv()
+	}
+}
+
+func (h *btTUIHandler) NextScanEvent() tea.Cmd {
+	return func() tea.Msg { return h.recv() }
+}
+
+func (h *btTUIHandler) Connect(address string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(h.ctx, btConnectTimeout)
+		defer cancel()
+		_, err := h.agent.ConnectBluetoothPeripheral(ctx, &agentpb.ConnectBluetoothPeripheralRequest{
+			Address: address,
+			Pair:    true,
+			Trust:   true,
+		})
+		return bttable.OpResultMsg{Action: bttable.ActionConnect, Address: address, Err: err}
+	}
+}
+
+func (h *btTUIHandler) Disconnect(address string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(h.ctx, btDisconnectTimeout)
+		defer cancel()
+		_, err := h.agent.DisconnectBluetoothPeripheral(ctx, &agentpb.DisconnectBluetoothPeripheralRequest{Address: address})
+		return bttable.OpResultMsg{Action: bttable.ActionDisconnect, Address: address, Err: err}
+	}
+}
+
+func (h *btTUIHandler) Forget(address string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(h.ctx, btForgetTimeout)
+		defer cancel()
+		_, err := h.agent.ForgetBluetoothPeripheral(ctx, &agentpb.ForgetBluetoothPeripheralRequest{Address: address})
+		return bttable.OpResultMsg{Action: bttable.ActionForget, Address: address, Err: err}
+	}
+}
+
+func peripheralsFromProto(devs []*agentpb.DiscoveredBluetoothPeripheral) []bttable.Peripheral {
+	out := make([]bttable.Peripheral, 0, len(devs))
+	for _, d := range devs {
+		out = append(out, bttable.FromProto(d))
+	}
+	return out
 }
 
 func newBluetoothListCmd() *cobra.Command {

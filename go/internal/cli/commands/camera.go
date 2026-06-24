@@ -23,6 +23,9 @@ func newCameraCmd() *cobra.Command {
 	cmd.AddCommand(
 		newCameraListCmd(),
 		newCameraViewCmd(),
+		// "watch" is a hidden alias for "view": it just works for muscle memory
+		// but stays out of help to keep the listed commands focused.
+		newCameraWatchCmd(),
 	)
 	return cmd
 }
@@ -93,12 +96,26 @@ func transportLabel(t agentpb.VideoTransport) string {
 }
 
 func newCameraViewCmd() *cobra.Command {
+	return newCameraStreamCmd("view", false)
+}
+
+// newCameraWatchCmd is a hidden alias for "view". It just works for muscle
+// memory but is kept out of help so the listed subcommands stay focused.
+func newCameraWatchCmd() *cobra.Command {
+	return newCameraStreamCmd("watch", true)
+}
+
+// newCameraStreamCmd builds the camera streaming command under the given name.
+// "view" is the canonical, listed command; "watch" reuses the same logic as a
+// hidden alias.
+func newCameraStreamCmd(use string, hidden bool) *cobra.Command {
 	var deviceID, width, height, fps uint32
 	var toStdout bool
 
 	cmd := &cobra.Command{
-		Use:   "view",
-		Short: "Stream H.264 video from a device camera",
+		Use:    use,
+		Hidden: hidden,
+		Short:  "Stream H.264 video from a device camera",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			conn, err := connectToAgent(ctx)
@@ -158,12 +175,9 @@ func pipeVideoToStdout(stream videoStream, w io.Writer) error {
 // playVideoWithGStreamer spawns gst-launch-1.0 and feeds it the video stream via stdin.
 // It peeks the first frame to determine the codec, then starts the matching decoder pipeline.
 func playVideoWithGStreamer(ctx context.Context, stream videoStream) error {
-	gstPath, err := resolveGSTLaunch()
-	if err != nil {
-		return err
-	}
-
-	// Peek the first frame to learn the codec.
+	// Peek the first frame before checking local playback dependencies. Server-
+	// streaming RPCs can surface Unimplemented only on Recv(), and that remote
+	// unsupported error is more actionable than a missing local GStreamer binary.
 	first, err := stream.Recv()
 	if err == io.EOF {
 		return nil
@@ -172,6 +186,11 @@ func playVideoWithGStreamer(ctx context.Context, stream videoStream) error {
 		return fmt.Errorf("receiving video: %w", err)
 	}
 	codec := first.GetCodec()
+
+	gstPath, err := resolveGSTLaunch()
+	if err != nil {
+		return err
+	}
 
 	gst := exec.CommandContext(ctx, gstPath, playbackPipelineArgs(codec)...)
 	gst.Stderr = os.Stderr

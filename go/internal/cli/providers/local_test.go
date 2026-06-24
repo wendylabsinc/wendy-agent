@@ -26,20 +26,20 @@ func TestLocalProviderSupportsOnlyNativeBuildTypes(t *testing.T) {
 	}
 }
 
-func TestLocalProviderDoesNotClaimDockerfileProjects(t *testing.T) {
+func TestLocalProviderDoesNotClaimContainerBuildFileProjects(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte("FROM scratch\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "Containerfile"), []byte("FROM scratch\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
 	p := &LocalProvider{}
 	if p.CanBuild(dir) {
-		t.Fatal("LocalProvider.CanBuild() = true for Dockerfile-only project, want false")
+		t.Fatal("LocalProvider.CanBuild() = true for container-build-file-only project, want false")
 	}
 
 	_, err := p.Build(context.Background(), models.ExternalDevice{ID: "local", ProviderKey: p.Key()}, dir, "app", false)
 	if err == nil {
-		t.Fatal("LocalProvider.Build() succeeded for Dockerfile-only project, want error")
+		t.Fatal("LocalProvider.Build() succeeded for container-build-file-only project, want error")
 	}
 	if !strings.Contains(err.Error(), "cannot determine build method") {
 		t.Fatalf("LocalProvider.Build() error = %q, want cannot determine build method", err)

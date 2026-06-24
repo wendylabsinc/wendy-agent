@@ -10,11 +10,14 @@ This page mirrors the current public roadmap language for engineering and docs r
 
 ## In Progress
 
-- **Wendy for Mac**: headless Mac mini and Mac Studio support using a macOS-specific `wendy-agent` workflow.
 - **Jetson AGX Thor support**: WendyOS support for AGX Thor-class physical AI workloads.
 - **MLX Swift support**: MLX Swift integration for unified-memory AI workloads.
 - **Companion SDK** — _planned release **2026-07-03**, not yet shipped_ ([WDY-1235](https://linear.app/wendylabsinc/issue/WDY-1235)): the companion SDK and its associated applications are demoable today but still need polish for an official release. The launch is sequenced one week after the Pipecat Agent template refresh ([WDY-1228](https://linear.app/wendylabsinc/issue/WDY-1228)) to avoid overlapping marketing pushes.
 - **MLX LLM in a local container** — _planned, not yet shipped_ ([WDY-1229](https://linear.app/wendylabsinc/issue/WDY-1229)): MLX currently compiles as a Swift package; remaining work is Wendy-ecosystem integration plus Dockerfiles for Linux compilation, building toward a containerised demo of MLX LLM.
+
+## Available Beta
+
+- **Wendy for Mac**: deploy native macOS apps to Apple Silicon Mac targets with [Wendy for Mac](/docs/installation/wendy-agent-macos). Beta limitations are documented in the macOS install guide.
 
 ## Shipped
 
@@ -28,5 +31,4 @@ This page mirrors the current public roadmap language for engineering and docs r
 
 - **RISC-V support**.
 - **3D geospatial digital twin** targeted for Q3.
-- **ROS 2 support** — _planned, not yet shipped_: officially designated as a development priority. Many prospective users and partners expect first-class Robot Operating System 2 (ROS 2) compatibility; scope and timeline are still being defined.
 - **Wendy Swift initiative** — _planned, separate release track, not yet shipped_: Swift support is being developed as a separate initiative from the primary release cycle so that its launch is not diluted by adjacent releases. Target window is approximately one week after the Pipecat Agent template refresh ([WDY-1228](https://linear.app/wendylabsinc/issue/WDY-1228)).

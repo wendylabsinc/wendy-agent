@@ -96,11 +96,11 @@ func (m *Manager) GetCDIDevices(categories []string) ([]CDIDeviceInfo, error) {
 }
 
 // LoadNVIDIACDISpec loads the NVIDIA CDI spec from YAML.
-// It tries /etc/cdi/nvidia.yaml first, then /var/run/cdi/nvidia.yaml.
+// It tries /var/run/cdi/nvidia.yaml first, then /etc/cdi/nvidia.yaml.
 func (m *Manager) LoadNVIDIACDISpec() (*CDISpecification, error) {
 	possiblePaths := []string{
-		filepath.Join(m.specPath, "nvidia.yaml"),
 		"/var/run/cdi/nvidia.yaml",
+		filepath.Join(m.specPath, "nvidia.yaml"),
 	}
 
 	var specPath string

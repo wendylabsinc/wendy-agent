@@ -198,11 +198,13 @@ type extScanMsg struct{ devices []models.ExternalDevice }
 
 // discoverDeviceInfo is the JSON structure copied to the clipboard.
 type discoverDeviceInfo struct {
-	Name    string `json:"name"`
-	Type    string `json:"type"`
-	USB     string `json:"usb,omitempty"`
-	Address string `json:"address"`
-	Version string `json:"version,omitempty"`
+	ID          int32  `json:"id,omitempty"`
+	Name        string `json:"name"`
+	Type        string `json:"type"`
+	USB         string `json:"usb,omitempty"`
+	Address     string `json:"address"`
+	Version     string `json:"version,omitempty"`
+	Provisioned string `json:"provisioned,omitempty"`
 }
 
 type discoverTableItem struct {
@@ -231,6 +233,7 @@ type discoverModel struct {
 	ctx                context.Context
 	opts               discovery.DiscoveryOptions
 	collection         *models.DevicesCollection
+	tableItems         []discoverTableItem  // cached by refreshTable; row order matches the table
 	bleSeen            map[string]time.Time // device ID -> time last seen in a BLE scan
 	usbInterval        increasingRefreshInterval
 	ethernetInterval   increasingRefreshInterval
@@ -345,7 +348,7 @@ func (m discoverModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.quitting = true
 			return m, tea.Quit
 		case "enter":
-			items := discoverTableItems(m.collection)
+			items := m.tableItems
 			cursor := m.table.Cursor()
 			if len(items) > 0 && cursor >= 0 && cursor < len(items) {
 				m.flashMessage, m.flashIsError = copyDeviceJSON(items[cursor].info)
@@ -353,7 +356,7 @@ func (m discoverModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		case "a":
-			items := discoverTableItems(m.collection)
+			items := m.tableItems
 			if len(items) > 0 {
 				var all []discoverDeviceInfo
 				for _, item := range items {
@@ -370,7 +373,7 @@ func (m discoverModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.updatingDeviceName != "" {
 				return m, nil // already updating
 			}
-			items := discoverTableItems(m.collection)
+			items := m.tableItems
 			cursor := m.table.Cursor()
 			if len(items) == 0 || cursor < 0 || cursor >= len(items) {
 				return m, nil
@@ -392,7 +395,7 @@ func (m discoverModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.flashIsError = false
 			return m, m.startDeviceUpdateCmd(addr, item.info.Name)
 		case "d":
-			items := discoverTableItems(m.collection)
+			items := m.tableItems
 			cursor := m.table.Cursor()
 			if len(items) > 0 && cursor >= 0 && cursor < len(items) {
 				deviceID := items[cursor].defaultDevice
@@ -535,6 +538,7 @@ var (
 	scanStyle       = lipgloss.NewStyle().Foreground(tui.ColorPrimary)
 	flashStyle      = lipgloss.NewStyle().Foreground(tui.ColorAccent)
 	flashErrorStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("196")) // red
+	hintWarnStyle   = lipgloss.NewStyle().Foreground(tui.ColorNotice)
 )
 
 func (m discoverModel) View() string {
@@ -567,6 +571,10 @@ func (m discoverModel) View() string {
 
 	if !m.collection.IsEmpty() {
 		sb.WriteString(m.tableView() + "\n")
+		sb.WriteString(m.viewLine(dimStyle.Render("  "+tui.DeviceTableLegend)) + "\n")
+		if hint := m.selectedHint(); hint != "" {
+			sb.WriteString(m.viewLine(hintWarnStyle.Render("  ⚠  "+hint)) + "\n")
+		}
 	} else if m.hasResults {
 		sb.WriteString(m.viewLine(dimStyle.Render("No devices found yet...")) + "\n")
 	}
@@ -585,8 +593,8 @@ func (m discoverModel) View() string {
 }
 
 func (m *discoverModel) refreshTable() {
-	items := discoverTableItems(m.collection)
-	pickerItems := discoverPickerItems(items)
+	m.tableItems = discoverTableItems(m.collection)
+	pickerItems := discoverPickerItems(m.tableItems)
 	cols, rows := tui.PickerDeviceTableData(pickerItems, discoverDefaultKey(), true)
 	m.table.SetColumns(cols)
 	m.table.SetRows(rows)
@@ -595,6 +603,16 @@ func (m *discoverModel) refreshTable() {
 	}
 	m.table.SetWidth(tui.PickerTableWidth(m.table.Columns()))
 	m.table.SetHeight(tui.PickerTableHeight(len(rows), m.windowHeight))
+}
+
+// selectedHint returns the hint for the highlighted table row, e.g. the
+// no-access explanation for a provisioned device this CLI cannot query.
+func (m discoverModel) selectedHint() string {
+	cursor := m.table.Cursor()
+	if cursor < 0 || cursor >= len(m.tableItems) {
+		return ""
+	}
+	return strings.TrimSpace(m.tableItems[cursor].picker.Hint)
 }
 
 func (m discoverModel) viewLine(line string) string {
@@ -706,7 +724,7 @@ func renderDeviceTable(collection *models.DevicesCollection) string {
 	t.SetWidth(tui.PickerTableWidth(t.Columns()))
 	t.SetHeight(max(len(rows)+1, 1))
 
-	return t.View() + "\n"
+	return t.View() + "\n" + dimStyle.Render("  "+tui.DeviceTableLegend) + "\n"
 }
 
 func newDiscoverTable(interactive bool) tui.BubbleTable {
@@ -725,6 +743,7 @@ var deviceTypeNames = map[string]string{
 	"raspberry-pi-5":   "Raspberry Pi 5",
 	"jetson-agx-orin":  "Jetson AGX Orin",
 	"jetson-orin-nano": "Jetson Orin Nano",
+	"jetson-agx-thor":  "Jetson AGX Thor",
 	"x86_64":           "x86-64",
 }
 
@@ -733,6 +752,34 @@ func humanReadableDeviceType(dt string) string {
 		return name
 	}
 	return dt
+}
+
+// discoverNoAccessHint explains a blank version column on a provisioned
+// device: the metadata probe failed because this CLI has no certificate the
+// device accepts (unprovisioned CLI, or logged into a different account).
+const discoverNoAccessHint = "This device is provisioned and this CLI does not have access, so agent details cannot be read. Run 'wendy auth login' with an account that can access it."
+
+// lanProvisionedDisplay maps a LAN device's advertised mTLS state to the
+// "Provisioned" column value. Non-LAN devices don't advertise this, so nil
+// returns "".
+func lanProvisionedDisplay(lan *models.LANDevice) string {
+	if lan == nil {
+		return ""
+	}
+	if lan.IsMTLS {
+		return "Provisioned"
+	}
+	return "Unprovisioned"
+}
+
+// lanNoAccessHint returns discoverNoAccessHint when the device advertises
+// mTLS (provisioned) but the agent metadata probe came back empty — the
+// signature of a CLI that cannot authenticate to it.
+func lanNoAccessHint(lan *models.LANDevice, agentVersion string) string {
+	if lan != nil && lan.IsMTLS && agentVersion == "" {
+		return discoverNoAccessHint
+	}
+	return ""
 }
 
 // markOutdated prefixes the version string with "* " when the agent is behind
@@ -897,6 +944,7 @@ func discoverTableItems(collection *models.DevicesCollection) []discoverTableIte
 			address = preferredLANAddress(*d.LAN)
 			defaultDevice = firstNonEmpty(d.LAN.Hostname, d.LAN.IPAddress, d.LAN.DisplayName)
 		}
+		provisioned := lanProvisionedDisplay(d.LAN)
 		items = append(items, discoverTableItem{
 			picker: tui.PickerItem{
 				Name:         discovery.SanitiseDisplayName(d.DisplayName),
@@ -905,15 +953,18 @@ func discoverTableItems(collection *models.DevicesCollection) []discoverTableIte
 				Address:      address,
 				AgentVersion: discoverAgentVersionDisplay(d.AgentVersion),
 				OSVersion:    d.OSVersion,
+				Provisioned:  provisioned,
+				Hint:         lanNoAccessHint(d.LAN, d.AgentVersion),
 				DedupKey:     d.DisplayName,
 				SortKey:      usbFirstSortKey(d.DisplayName, usb),
 			},
 			info: discoverDeviceInfo{
-				Name:    d.DisplayName,
-				Type:    deviceType,
-				USB:     usb,
-				Address: address,
-				Version: d.AgentVersion,
+				Name:        d.DisplayName,
+				Type:        deviceType,
+				USB:         usb,
+				Address:     address,
+				Version:     d.AgentVersion,
+				Provisioned: provisioned,
 			},
 			lanName:       lanName,
 			defaultDevice: defaultDevice,
@@ -924,7 +975,7 @@ func discoverTableItems(collection *models.DevicesCollection) []discoverTableIte
 		if d.ProviderKey == "wendy-lite" {
 			continue
 		}
-		addr := fmt.Sprintf("%s: %s", d.ProviderKey, d.ID)
+		addr := externalProviderAddress(d.ProviderKey, d.ID)
 		deviceType := externalProviderDisplayName(d.ProviderKey)
 		items = append(items, discoverTableItem{
 			picker: tui.PickerItem{
@@ -998,20 +1049,35 @@ func externalProviderDisplayName(key string) string {
 
 func externalProviderSortKey(providerKey, name string) string {
 	switch providerKey {
+	case providers.ProviderKeyAppleContainer:
+		return "~0_apple_container_" + strings.ToLower(name)
 	case providers.ProviderKeyDocker:
-		return "~0_" + strings.ToLower(name)
+		return "~0_docker_" + strings.ToLower(name)
 	case providers.ProviderKeyLocal:
 		return "~1_" + strings.ToLower(name)
 	}
 	return ""
 }
 
+// externalProviderAddress returns the provider-qualified ID shown in the
+// Address column. Local runtime providers have fixed, meaningless IDs, so
+// their address is hidden.
+func externalProviderAddress(providerKey, id string) string {
+	switch providerKey {
+	case providers.ProviderKeyAppleContainer, providers.ProviderKeyDocker, providers.ProviderKeyLocal:
+		return ""
+	}
+	return fmt.Sprintf("%s: %s", providerKey, id)
+}
+
 func externalProviderPickerHint(providerKey string) string {
 	switch providerKey {
+	case providers.ProviderKeyAppleContainer:
+		return "Hint: Use Apple Container for local Dockerfile/Containerfile runs on Apple silicon Macs. Compose projects still require Docker."
 	case providers.ProviderKeyDocker:
-		return "Hint: Use Docker Desktop for local container or Compose runs when you do not need WendyOS hardware."
+		return "Hint: Use Docker for local container or Compose runs when you do not need WendyOS hardware."
 	case providers.ProviderKeyLocal:
-		return "Hint: Use Local Machine for native Swift, Go, or Python apps that should run directly on this computer."
+		return fmt.Sprintf("Hint: Use %s for native Swift, Go, or Python apps that should run directly on this computer.", providers.LocalDisplayName())
 	}
 	return ""
 }

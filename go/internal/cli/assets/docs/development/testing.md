@@ -45,6 +45,7 @@ Depending on the language, a test directory contains:
 ```json
 {
   "appId": "sh.wendy.ci.<name>",
+  "platform": "linux",
   "version": "1.0.0",
   "language": "python",
   "entitlements": [...]

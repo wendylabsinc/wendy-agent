@@ -24,8 +24,8 @@
     },
     "platform": {
       "type": "string",
-      "enum": ["wendyos", "wendy-lite", "darwin"],
-      "description": "Target platform: wendyos (Linux edge devices), wendy-lite (ESP32 WASM), or darwin (native macOS via Wendy Agent for Mac)."
+      "pattern": "^(linux|wendyos|darwin)(/[A-Za-z0-9._-]+){0,2}$|^wendy-lite$",
+      "description": "Target platform: linux (default Linux edge devices), wendyos (compatibility alias for linux), wendy-lite (ESP32 WASM), or darwin (native macOS via Wendy for Mac)."
     },
     "language": {
       "type": "string",
@@ -61,6 +61,16 @@
       "items": {
         "$ref": "#/$defs/fileSyncEntry"
       }
+    },
+    "isolation": {
+      "type": "string",
+      "description": "Namespace isolation mode for multi-container deployments (e.g. shared-ipc, shared-network, isolated)."
+    },
+    "frameworks": { "$ref": "#/$defs/frameworks" },
+    "services": {
+      "type": "object",
+      "description": "Per-service build and runtime configuration for a multi-service app.",
+      "additionalProperties": { "$ref": "#/$defs/service" }
     }
   },
   "$defs": {
@@ -217,6 +227,20 @@
           "required": ["type"],
           "additionalProperties": false,
           "description": "HID input device access (barcode scanners, keyboards, etc.)."
+        },
+        {
+          "properties": {
+            "type": { "const": "serial" },
+            "device": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^(ttyACM|ttyUSB)[0-9]+$",
+              "description": "USB serial tty node name, e.g. \"ttyACM0\" or \"ttyUSB0\" (bare name, not a path). USB-only; on-board UARTs (ttyAMA, ttyS) are not supported."
+            }
+          },
+          "required": ["type", "device"],
+          "additionalProperties": false,
+          "description": "Serial tty device access (USB-attached servo buses, sensors, microcontrollers)."
         }
       ]
     },
@@ -320,6 +344,49 @@
             "type": "string"
           }
         }
+      }
+    },
+    "frameworks": {
+      "type": "object",
+      "description": "Optional framework-level configuration (e.g. ROS 2).",
+      "additionalProperties": false,
+      "properties": {
+        "ros2": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "ROS 2 runtime configuration injected into the container.",
+          "properties": {
+            "domainId": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 232,
+              "description": "ROS_DOMAIN_ID. When omitted, a stable hash of appId in [0,232] is used."
+            },
+            "rmw": {
+              "type": "string",
+              "enum": [
+                "cyclonedds", "fastrtps", "fastdds", "connextdds", "gurumdds",
+                "rmw_cyclonedds_cpp", "rmw_fastrtps_cpp", "rmw_connextdds", "rmw_gurumdds_cpp"
+              ],
+              "description": "RMW middleware. Short names or full identifiers. Defaults to rmw_cyclonedds_cpp."
+            },
+            "distro": {
+              "type": "string",
+              "description": "ROS 2 distribution (e.g. humble, jazzy). Defaults to humble."
+            }
+          }
+        }
+      }
+    },
+    "service": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "A single service within a multi-service app.",
+      "properties": {
+        "context": { "type": "string", "description": "Build context directory relative to wendy.json." },
+        "dependsOn": { "type": "array", "items": { "type": "string" }, "description": "Service names this service starts after." },
+        "entitlements": { "type": "array", "items": { "$ref": "#/$defs/entitlement" } },
+        "frameworks": { "$ref": "#/$defs/frameworks" }
       }
     }
   }

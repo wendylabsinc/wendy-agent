@@ -290,7 +290,9 @@ func runInitWizard(args []string, opts initOptions) error {
 	}
 
 	// Step 4: Generate wendy.json.
-	platform := appconfig.PlatformWendyOS
+	// WendyOS is Linux, so the WendyOS target writes the plain "linux"
+	// platform. wendy-lite is the only target that needs a distinct value.
+	platform := appconfig.PlatformLinux
 	if target == targetWendyLite {
 		platform = appconfig.PlatformWendyLite
 	}

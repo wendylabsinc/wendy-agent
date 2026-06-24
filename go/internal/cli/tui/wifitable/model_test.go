@@ -2,11 +2,14 @@ package wifitable
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
 
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // fakeHandler records dispatched ops and never blocks — callers drive the
@@ -228,6 +231,23 @@ func TestForgetErrorSurfacesAndSkipsRefresh(t *testing.T) {
 	}
 	if h.refreshCalls != 0 {
 		t.Errorf("Refresh should not run on failure, got %d calls", h.refreshCalls)
+	}
+}
+
+func TestOpErrorFlashStripsGRPCFraming(t *testing.T) {
+	networks := []Network{{SSID: "Home", Known: true}}
+	h := &fakeHandler{forgetResult: status.Error(codes.Unimplemented, "Wi-Fi configuration is currently not supported by Wendy Agent for Mac.")}
+	m := NewModel(networks).WithHandler(h)
+	m.table.SetCursor(0)
+
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'f'}})
+	m = runCmd(next.(Model), cmd)
+
+	if !strings.Contains(m.flashMessage, "Wi-Fi configuration is currently not supported by Wendy Agent for Mac.") {
+		t.Fatalf("flash should keep contextual error, got %q", m.flashMessage)
+	}
+	if strings.Contains(m.flashMessage, "rpc error") || strings.Contains(m.flashMessage, "code = Unimplemented") {
+		t.Fatalf("flash should not leak raw gRPC status: %q", m.flashMessage)
 	}
 }
 

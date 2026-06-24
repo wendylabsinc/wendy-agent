@@ -262,6 +262,13 @@ func buildMLDSACACertExpired(t *testing.T, subject pkix.Name) (*x509.Certificate
 // issuer using ML-DSA-65. The leaf has the clientAuth EKU and no CertSign KeyUsage.
 func buildMLDSALeafCert(t *testing.T, issuerCert *x509.Certificate, issuerPriv circlSign.PrivateKey) *x509.Certificate {
 	t.Helper()
+	now := time.Now()
+	return buildMLDSALeafCertAt(t, issuerCert, issuerPriv, now.Add(-time.Hour), now.Add(24*time.Hour))
+}
+
+// buildMLDSALeafCertAt creates a leaf certificate with custom validity times.
+func buildMLDSALeafCertAt(t *testing.T, issuerCert *x509.Certificate, issuerPriv circlSign.PrivateKey, notBefore, notAfter time.Time) *x509.Certificate {
+	t.Helper()
 
 	scheme := mldsa65.Scheme()
 	pub, _, err := scheme.GenerateKey()
@@ -292,17 +299,16 @@ func buildMLDSALeafCert(t *testing.T, issuerCert *x509.Certificate, issuerPriv c
 		PublicKey: asn1.BitString{Bytes: pubBytes, BitLength: len(pubBytes) * 8},
 	}
 
-	now := time.Now()
 	tbs := tbsCertificate{
 		Version:      2,
-		SerialNumber: big.NewInt(now.UnixNano() + 1),
+		SerialNumber: big.NewInt(notBefore.UnixNano() + 1),
 		Signature:    algID{Algorithm: oidMLDSA65},
 		// Issuer bytes come directly from the issuer's RawSubject so that
 		// bytes.Equal(ca.RawSubject, leaf.RawIssuer) is guaranteed to hold.
 		Issuer: asn1.RawValue{FullBytes: issuerCert.RawSubject},
 		Validity: validity{
-			NotBefore: now.Add(-time.Hour),
-			NotAfter:  now.Add(24 * time.Hour),
+			NotBefore: notBefore,
+			NotAfter:  notAfter,
 		},
 		Subject:              asn1.RawValue{FullBytes: subjectRDN},
 		SubjectPublicKeyInfo: spki,
@@ -574,5 +580,56 @@ func TestVerifyMLDSAClientCert_IssuerNotFound(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "issuer not found") {
 		t.Errorf("error %q does not contain %q", err.Error(), "issuer not found")
+	}
+}
+
+// TestBuildVerifyPeerCertificate_FutureNotBeforeCapped verifies that a cert whose
+// NotBefore is more than maxClockSkewTolerance past notBeforeFloor is rejected even
+// when the device clock is behind the floor (stuck clock scenario).
+//
+// floor is set 1 hour ahead of real time so that time.Now() inside verifyFn is
+// always behind the floor, exercising the advancement branch. Without the cap, the
+// old code advanced effectiveNow to leaf.NotBefore unconditionally, accepting a cert
+// issued far in the future.
+func TestBuildVerifyPeerCertificate_FutureNotBeforeCapped(t *testing.T) {
+	subject := sameSubjectName()
+	ca, caPriv := buildMLDSACACert(t, subject, true)
+
+	// Set floor 1h ahead so time.Now() inside the closure is always before it.
+	floor := time.Now().Add(time.Hour)
+
+	// Leaf whose NotBefore is floor+48h — well past the 24h cap.
+	leaf := buildMLDSALeafCertAt(t, ca, caPriv, floor.Add(48*time.Hour), floor.Add(72*time.Hour))
+
+	caPool := x509.NewCertPool()
+	caPool.AddCert(ca)
+
+	verifyFn := buildVerifyPeerCertificate(caPool, []*x509.Certificate{ca}, nil, floor)
+
+	if err := verifyFn([][]byte{leaf.Raw}, nil); err == nil {
+		t.Fatal("expected cert with NotBefore far past the floor to be rejected with stuck clock; got nil")
+	}
+}
+
+// TestBuildVerifyPeerCertificate_NearFutureNotBeforeAccepted verifies that a cert
+// whose NotBefore is within maxClockSkewTolerance of the floor is still accepted
+// when the device clock is behind the floor.
+func TestBuildVerifyPeerCertificate_NearFutureNotBeforeAccepted(t *testing.T) {
+	subject := sameSubjectName()
+	ca, caPriv := buildMLDSACACert(t, subject, true)
+
+	// Set floor 1h ahead so time.Now() inside the closure is always before it.
+	floor := time.Now().Add(time.Hour)
+
+	// Leaf whose NotBefore is floor+12h — within the 24h cap.
+	leaf := buildMLDSALeafCertAt(t, ca, caPriv, floor.Add(12*time.Hour), floor.Add(48*time.Hour))
+
+	caPool := x509.NewCertPool()
+	caPool.AddCert(ca)
+
+	verifyFn := buildVerifyPeerCertificate(caPool, []*x509.Certificate{ca}, nil, floor)
+
+	if err := verifyFn([][]byte{leaf.Raw}, nil); err != nil {
+		t.Errorf("expected cert with NotBefore within cap to be accepted with stuck clock; got: %v", err)
 	}
 }

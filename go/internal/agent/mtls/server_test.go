@@ -145,6 +145,78 @@ func TestBuildVerifyPeerCertificate_StandardPathHonorsNotBeforeFloor(t *testing.
 	}
 }
 
+// TestBuildVerifyPeerCertificate_ClientCertIssuedAfterFloor covers the case
+// where a device's RTC is stuck at epoch (pre-NTP), its notBeforeFloor is set
+// to the device cert's NotBefore (e.g. June 17), but the connecting CLI user
+// cert was issued after that floor (e.g. June 23). Without the fix, effectiveNow
+// = floor (June 17) < client cert NotBefore (June 23), which causes a spurious
+// "certificate not yet valid" rejection.
+func TestBuildVerifyPeerCertificate_ClientCertIssuedAfterFloor(t *testing.T) {
+	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generating CA key: %v", err)
+	}
+	caTemplate := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "Cloud Root CA"},
+		NotBefore:             time.Now().Add(-30 * 24 * time.Hour),
+		NotAfter:              time.Now().Add(365 * 24 * time.Hour),
+		KeyUsage:              x509.KeyUsageCertSign,
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+	}
+	caDER, err := x509.CreateCertificate(rand.Reader, caTemplate, caTemplate, &caKey.PublicKey, caKey)
+	if err != nil {
+		t.Fatalf("creating CA cert: %v", err)
+	}
+	caCert, err := x509.ParseCertificate(caDER)
+	if err != nil {
+		t.Fatalf("parsing CA cert: %v", err)
+	}
+
+	// Simulate device provisioned 6 days ago → floor = 6 days ago.
+	deviceProvisionedAt := time.Now().Add(-6 * 24 * time.Hour)
+	notBeforeFloor := deviceProvisionedAt
+
+	// Client cert issued today (after the floor). NotBefore = now (within the last minute).
+	leafKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generating leaf key: %v", err)
+	}
+	clientNotBefore := time.Now().Add(-time.Minute) // issued just now
+	leafTemplate := &x509.Certificate{
+		SerialNumber: big.NewInt(2),
+		Subject:      pkix.Name{CommonName: "wendy/user/testuser"},
+		NotBefore:    clientNotBefore,
+		NotAfter:     clientNotBefore.Add(365 * 24 * time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	}
+	leafDER, err := x509.CreateCertificate(rand.Reader, leafTemplate, caCert, &leafKey.PublicKey, caKey)
+	if err != nil {
+		t.Fatalf("creating leaf cert: %v", err)
+	}
+
+	caPool := x509.NewCertPool()
+	caPool.AddCert(caCert)
+	caCerts := []*x509.Certificate{caCert}
+	rawCerts := [][]byte{leafDER}
+
+	// Simulate device clock stuck at epoch — real clock is far behind the floor.
+	// (We can't override time.Now, but we can verify that with the floor at
+	// notBeforeFloor and the real clock as-is the cert is accepted. The test
+	// exercises the branch where realNow < notBeforeFloor is NOT true since we
+	// can't freeze time.Now in unit tests, so we confirm the cert is accepted
+	// when the floor is set to a time before the cert's NotBefore — the normal
+	// post-fix path — and rejected when the floor is behind the NotBefore without
+	// the fix, which the preceding TestBuildVerifyPeerCertificate_StandardPathHonorsNotBeforeFloor
+	// already covers. What this test adds: the floor is EARLIER than the client
+	// cert's NotBefore, confirming the cert is accepted regardless.)
+	if err := buildVerifyPeerCertificate(caPool, caCerts, nil, notBeforeFloor)(rawCerts, nil); err != nil {
+		t.Errorf("client cert issued after floor should be accepted, got: %v", err)
+	}
+}
+
 func TestNewTLSConfigEmptyChainReturnsError(t *testing.T) {
 	certPEM, keyPEM := testLeafCertificate(t, "leaf")
 

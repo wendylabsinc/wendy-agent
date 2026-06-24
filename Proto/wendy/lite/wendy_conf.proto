@@ -1,0 +1,38 @@
+syntax = "proto3";
+
+enum WendyConfWifiSecurity {
+    WENDY_CONF_WIFI_SECURITY_UNSPECIFIED = 0;
+    WENDY_CONF_WIFI_SECURITY_OPEN        = 1;
+    WENDY_CONF_WIFI_SECURITY_WPA2        = 2;
+    WENDY_CONF_WIFI_SECURITY_WPA3        = 3;
+}
+
+message WendyConfWifiNetwork {
+    string                ssid     = 1;
+    string                password = 2;
+    int32                 priority = 3; // higher wins; 0 = unspecified
+    bool                  hidden   = 4;
+    WendyConfWifiSecurity security = 5;
+}
+
+// Optional — absent means no WiFi pre-configuration.
+message WendyConfWifi {
+    repeated WendyConfWifiNetwork networks = 1;
+}
+
+// Optional — absent means device boots unenrolled.
+message WendyConfCloudProvisioning {
+    bool   enrolled   = 1;
+    string cloud_host = 2;
+    int32  org_id     = 3;
+    int32  asset_id   = 4;
+    bytes  key        = 5;
+    bytes  cert       = 6;
+    bytes  chain      = 7;
+}
+
+message WendyConf {
+    optional string            device_name  = 1;
+    WendyConfWifi              wifi         = 2;
+    WendyConfCloudProvisioning provisioning = 3;
+}

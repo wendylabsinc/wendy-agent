@@ -68,6 +68,19 @@ struct `machine` {
         #expect(machine.isLocal == false)
         #expect(machine.address == "192.168.64.2")
     }
+
+    @Test
+    func `can use an explicit address for a local machine`() {
+        let machine = WendyE2EMachine(
+            id: "local-agent",
+            name: "Local Agent",
+            address: "127.0.0.1:50051",
+            isLocal: true
+        )
+
+        #expect(machine.isLocal)
+        #expect(machine.address == "127.0.0.1:50051")
+    }
 }
 
 @Suite

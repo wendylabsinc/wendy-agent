@@ -157,7 +157,7 @@ type DiscoveredDevice struct {
 }
 
 // ConnectionTypes returns a human-readable list of available transports,
-// e.g. "LAN", "Bluetooth", or "LAN, Bluetooth".
+// e.g. "LAN", "BLE", or "LAN, BLE".
 func (d *DiscoveredDevice) ConnectionTypes() string {
 	var types []string
 	if d.LAN != nil {
@@ -165,7 +165,7 @@ func (d *DiscoveredDevice) ConnectionTypes() string {
 	}
 	if d.Bluetooth != nil {
 		if d.Bluetooth.IsWendyAgent() {
-			types = append(types, "Bluetooth")
+			types = append(types, "BLE")
 		} else {
 			types = append(types, "BLE (Lite)")
 		}

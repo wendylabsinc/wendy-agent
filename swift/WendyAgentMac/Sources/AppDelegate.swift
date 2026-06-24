@@ -11,7 +11,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         subsystem: Bundle.main.bundleIdentifier!,
         category: "AppDelegate"
     )
-    private let wendyAgent = WendyAgent()
+    private let wendyAgent = WendyAgent(configuration: .default)
     private let welcomeAndPermissions = WelcomeAndPermissions()
     private var statusMenuController: StatusMenuController?
     private var welcomeAndPermissionsWindow: NSWindow?
@@ -24,6 +24,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     private var isQuitting = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        self.welcomeAndPermissions.configureLaunchAtLoginOnStartup()
+
         self.statusMenuController = StatusMenuController(
             wendyAgent: self.wendyAgent,
             delegate: self

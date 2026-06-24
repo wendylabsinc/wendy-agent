@@ -1,5 +1,6 @@
 {
   "appId": "sh.wendy.examples.isolatedservices",
+  "platform": "linux",
   "version": "1.0.0",
   "isolation": "isolated",
   "services": {

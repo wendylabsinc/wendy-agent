@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -10,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
@@ -59,21 +61,28 @@ func certificateServiceAddr(cloudHost string) string {
 // when done. certPEM and chainPEM are plain strings (public material).
 type OnProvisionedFunc func(certPEM, chainPEM string, keyData []byte)
 
+// OnUnprovisionedFunc is called after the device has been unprovisioned and its
+// state has been cleared. It is invoked asynchronously, shortly after the RPC
+// response is sent, so implementations can revert the mDNS advertisement and
+// restart the agent process. If nil, no post-unprovision action is taken.
+type OnUnprovisionedFunc func()
+
 // ProvisioningService implements agentpb.WendyProvisioningServiceServer.
 type ProvisioningService struct {
 	agentpb.UnimplementedWendyProvisioningServiceServer
-	logger        *zap.Logger
-	configPath    string
-	mu            sync.Mutex
-	enrolled      bool
-	cloudHost     string
-	orgID         int32
-	assetID       int32
-	keyPEM        []byte // stored as []byte so it can be zeroed on rotation/shutdown
-	certPEM       string
-	chainPEM      string
-	CloudDialer   CloudDialer
-	OnProvisioned OnProvisionedFunc
+	logger          *zap.Logger
+	configPath      string
+	mu              sync.Mutex
+	enrolled        bool
+	cloudHost       string
+	orgID           int32
+	assetID         int32
+	keyPEM          []byte // stored as []byte so it can be zeroed on rotation/shutdown
+	certPEM         string
+	chainPEM        string
+	CloudDialer     CloudDialer
+	OnProvisioned   OnProvisionedFunc
+	OnUnprovisioned OnUnprovisionedFunc
 }
 
 func NewProvisioningService(logger *zap.Logger, configPath string) *ProvisioningService {
@@ -156,9 +165,12 @@ func (s *ProvisioningService) StartProvisioning(ctx context.Context, req *agentp
 		return nil, status.Errorf(codes.Internal, "failed to load or generate key pair: %v", err)
 	}
 
-	// Generate CSR using org and asset as common name.
+	// Generate CSR using org and asset as common name. The device identity acts
+	// as both a TLS client (to the cloud) and a TLS server (agent gRPC and tunnel
+	// endpoints), so request both EKUs.
 	commonName := fmt.Sprintf("sh/wendy/%d/%d", req.GetOrganizationId(), req.GetAssetId())
-	csrPEM, err := certs.GenerateCSR(keyPEM, commonName)
+	csrPEM, err := certs.GenerateCSR(keyPEM, commonName,
+		x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to generate CSR: %v", err)
 	}
@@ -250,6 +262,84 @@ func (s *ProvisioningService) StartProvisioning(ctx context.Context, req *agentp
 		cb(certPEM, chainPEM, cbKeyPEM)
 	}
 	return &agentpb.StartProvisioningResponse{}, nil
+}
+
+// Unprovision resets the device to an unprovisioned state. It deletes the
+// stored enrollment certificates and provisioning state from disk, clears the
+// in-memory state, and (if configured) invokes OnUnprovisioned shortly after
+// the response is sent so the agent can revert its mDNS advertisement and
+// restart into plaintext mode.
+func (s *ProvisioningService) Unprovision(_ context.Context, _ *agentpb.UnprovisionRequest) (*agentpb.UnprovisionResponse, error) {
+	s.mu.Lock()
+	locked := true
+	defer func() {
+		if locked {
+			s.mu.Unlock()
+		}
+	}()
+
+	if !s.enrolled {
+		return nil, status.Error(codes.FailedPrecondition, "agent is not provisioned")
+	}
+
+	s.logger.Info("Unprovisioning device",
+		zap.Int32("org_id", s.orgID),
+		zap.Int32("asset_id", s.assetID),
+	)
+
+	if err := s.clearStateFiles(); err != nil {
+		s.logger.Error("Failed to delete provisioning state files", zap.Error(err))
+		return nil, status.Errorf(codes.Internal, "failed to delete provisioning state: %v", err)
+	}
+
+	// Zero the in-memory key before dropping the reference, then clear state.
+	for i := range s.keyPEM {
+		s.keyPEM[i] = 0
+	}
+	s.enrolled = false
+	s.cloudHost = ""
+	s.orgID = 0
+	s.assetID = 0
+	s.keyPEM = nil
+	s.certPEM = ""
+	s.chainPEM = ""
+
+	s.logger.Info("Device unprovisioned; agent will restart into unprovisioned mode")
+
+	cb := s.OnUnprovisioned
+	locked = false
+	s.mu.Unlock()
+
+	if cb != nil {
+		// Invoke asynchronously after a short delay so the RPC response is
+		// flushed to the client before the agent restarts. Mirrors the agent
+		// update and reboot flows.
+		go func() {
+			time.Sleep(500 * time.Millisecond)
+			cb()
+		}()
+	}
+
+	return &agentpb.UnprovisionResponse{}, nil
+}
+
+// clearStateFiles removes all on-disk provisioning artifacts: the state file,
+// the device private key, the mounted PEM files, and the .provisioned marker.
+// A missing file is not treated as an error.
+func (s *ProvisioningService) clearStateFiles() error {
+	files := []string{
+		s.statePath(),
+		filepath.Join(s.configPath, "device-key.pem"),
+		filepath.Join(s.configPath, "device.pem"),
+		filepath.Join(s.configPath, "ca.pem"),
+		filepath.Join(s.configPath, ".provisioned"),
+	}
+	for _, f := range files {
+		if err := os.Remove(f); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("removing %s: %w", f, err)
+		}
+	}
+	return nil
 }
 
 func (s *ProvisioningService) statePath() string {

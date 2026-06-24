@@ -1,0 +1,15 @@
+{
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "render": "scripts/stitch",
+    "render:slide": "scripts/render-slide",
+    "render:tape": "scripts/render-tape",
+    "render:voice": "scripts/render-voice",
+    "check": "scripts/check.sh"
+  },
+  "devDependencies": {
+    "@slidev/cli": "52.16.0",
+    "@slidev/theme-default": "0.25.0"
+  }
+}

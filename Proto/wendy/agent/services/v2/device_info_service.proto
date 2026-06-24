@@ -23,6 +23,27 @@ message GetDeviceInfoResponse {
     optional string cuda_version = 11;
     optional int64 disk_used_bytes = 12;
     optional int64 disk_total_bytes = 13;
+    // Usage for every real (disk-backed) filesystem mounted on the device. The
+    // root filesystem is included here as well; disk_used_bytes/disk_total_bytes
+    // are retained for backwards compatibility. Empty when the agent cannot
+    // enumerate mounts.
+    repeated DiskPartition partitions = 14;
+    // GPU architecture identifier. Format is vendor-specific (e.g. "sm_87" for NVIDIA).
+    optional string gpu_arch = 15;
+}
+
+// Usage information for a single mounted filesystem.
+message DiskPartition {
+    // Mount point (e.g. "/", "/boot", "/data").
+    string mountpoint = 1;
+    // Filesystem type (e.g. "ext4", "vfat").
+    string filesystem = 2;
+    // Backing block device (e.g. "/dev/mmcblk0p2").
+    string device = 3;
+    // Bytes currently used on the filesystem.
+    int64 used_bytes = 4;
+    // Total bytes on the filesystem.
+    int64 total_bytes = 5;
 }
 
 message ListHardwareCapabilitiesRequest {

@@ -271,6 +271,12 @@ func parseEntitlementsFromAnnotations(annotations map[string]string) []appconfig
 		}
 		suffix := k[len(appconfig.EntitlementAnnotationKeyPrefix):]
 
+		// sh.wendy/entitlement.ros2 carries framework config (distro, DDS
+		// domain), not an entitlement; it has its own codec (WDY-884).
+		if suffix == "ros2" {
+			continue
+		}
+
 		entType := suffix
 		idx := 0
 		if dot := strings.LastIndex(suffix, "."); dot >= 0 {

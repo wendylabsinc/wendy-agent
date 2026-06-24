@@ -1,0 +1,33 @@
+# Dependencies and local Slidev outputs
+node_modules/
+.slidev/
+dist/
+.render-slide-*.md
+
+# Generated scene-local media/audio
+scenes/*/*.mp4
+scenes/*/*.webm
+scenes/*/*.gif
+scenes/*/*.mp3
+scenes/*/.render-slide.md
+template/scenes/*/*.mp4
+template/scenes/*/*.webm
+template/scenes/*/*.gif
+template/scenes/*/*.mp3
+template/scenes/*/.render-slide.md
+
+# Final renders and temporary build outputs
+output/*
+!output/.gitkeep
+template/output/*
+!template/output/.gitkeep
+build/
+
+# Local secrets and environment
+.env*
+!.env.example
+
+# Local bytecode and OS metadata
+__pycache__/
+*.pyc
+.DS_Store

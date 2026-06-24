@@ -254,9 +254,13 @@ final class Camera: NSObject {
         }
 
         let modelDirectory = URL(fileURLWithPath: (modelPath as NSString).expandingTildeInPath)
-        let configuredName = modelDirectory.lastPathComponent
-        await state.setModelLoading(name: configuredName)
+        let metadata = loadModelMetadata(from: modelDirectory)
+        let configuredName = metadata?.displayName ?? modelDirectory.lastPathComponent
+        await state.setModelLoading(name: configuredName, metadata: metadata)
         print("Loading model: \(modelDirectory.path) …")
+        if let metadata {
+            print("Selected model: \(metadata.modelClass) · \(metadata.huggingFaceId) · \(metadata.size.hint)")
+        }
 
         do {
             let container = try await VLMModelFactory.shared.loadContainer(
@@ -266,13 +270,33 @@ final class Camera: NSObject {
                 print("  Loading: \(percent)%")
             }
             let loadedName = await container.perform { context in context.configuration.name }
+            let displayName = metadata?.displayName ?? loadedName
             model = container
-            modelName = loadedName
-            print("Model loaded successfully: \(loadedName)")
-            await state.setModelReady(name: loadedName)
+            modelName = displayName
+            print("Model loaded successfully: \(displayName)")
+            await state.setModelReady(name: displayName, metadata: metadata)
         } catch {
             print("Failed to load model: \(error)")
-            await state.setModelFailed(message: "Failed to load model: \(error.localizedDescription)", name: configuredName)
+            await state.setModelFailed(
+                message: "Failed to load model: \(error.localizedDescription)",
+                name: configuredName,
+                metadata: metadata
+            )
+        }
+    }
+
+    private func loadModelMetadata(from modelDirectory: URL) -> ModelMetadata? {
+        let metadataURL = modelDirectory.appendingPathComponent("info.json")
+        guard FileManager.default.fileExists(atPath: metadataURL.path) else {
+            return nil
+        }
+
+        do {
+            let data = try Data(contentsOf: metadataURL)
+            return try AppJSON.decoder.decode(ModelMetadata.self, from: data)
+        } catch {
+            print("Failed to read model metadata at \(metadataURL.path): \(error)")
+            return nil
         }
     }
 

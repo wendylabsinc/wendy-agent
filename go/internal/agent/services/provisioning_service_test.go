@@ -4,7 +4,9 @@ import (
 	"context"
 	"net"
 	"os"
+	"path/filepath"
 	"testing"
+	"time"
 
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
@@ -154,6 +156,71 @@ func TestStartProvisioning(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected error when already provisioned")
+	}
+}
+
+func TestUnprovision_NotProvisioned(t *testing.T) {
+	svc, tmpDir := newTestProvisioningService(t)
+	defer os.RemoveAll(tmpDir)
+
+	if _, err := svc.Unprovision(context.Background(), &agentpb.UnprovisionRequest{}); err == nil {
+		t.Fatal("expected error when unprovisioning a device that is not provisioned")
+	}
+}
+
+func TestUnprovision_ClearsStateAndFiles(t *testing.T) {
+	svc, tmpDir := newTestProvisioningService(t)
+	defer os.RemoveAll(tmpDir)
+
+	if _, err := svc.StartProvisioning(context.Background(), &agentpb.StartProvisioningRequest{
+		OrganizationId: 7,
+		CloudHost:      "unprov.wendy.io",
+		AssetId:        70,
+	}); err != nil {
+		t.Fatalf("StartProvisioning: %v", err)
+	}
+
+	// All on-disk artifacts should exist after provisioning.
+	stateFiles := []string{"provisioning.json", "device-key.pem", "device.pem", "ca.pem", ".provisioned"}
+	for _, f := range stateFiles {
+		if _, err := os.Stat(filepath.Join(tmpDir, f)); err != nil {
+			t.Fatalf("expected %s to exist after provisioning: %v", f, err)
+		}
+	}
+
+	// OnUnprovisioned fires asynchronously after the response; capture it.
+	called := make(chan struct{}, 1)
+	svc.OnUnprovisioned = func() { called <- struct{}{} }
+
+	if _, err := svc.Unprovision(context.Background(), &agentpb.UnprovisionRequest{}); err != nil {
+		t.Fatalf("Unprovision: %v", err)
+	}
+
+	// All artifacts should be gone.
+	for _, f := range stateFiles {
+		if _, err := os.Stat(filepath.Join(tmpDir, f)); !os.IsNotExist(err) {
+			t.Errorf("expected %s to be removed after unprovision (err=%v)", f, err)
+		}
+	}
+
+	// In-memory state should report not provisioned.
+	resp, err := svc.IsProvisioned(context.Background(), &agentpb.IsProvisionedRequest{})
+	if err != nil {
+		t.Fatalf("IsProvisioned: %v", err)
+	}
+	if resp.GetNotProvisioned() == nil {
+		t.Error("expected NotProvisioned after unprovision")
+	}
+
+	select {
+	case <-called:
+	case <-time.After(3 * time.Second):
+		t.Error("OnUnprovisioned callback was not invoked")
+	}
+
+	// A subsequent unprovision should fail (already cleared).
+	if _, err := svc.Unprovision(context.Background(), &agentpb.UnprovisionRequest{}); err == nil {
+		t.Error("expected error when unprovisioning an already-unprovisioned device")
 	}
 }
 

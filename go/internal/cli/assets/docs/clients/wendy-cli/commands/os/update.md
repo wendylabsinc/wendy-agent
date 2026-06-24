@@ -33,7 +33,7 @@ Hosts that are not WendyOS OTA targets — including macOS, Windows, unknown pla
 | macOS, Windows, unknown non-WendyOS platform, Wendy Lite, external/local provider | `This setup cannot be updated with wendy os update. Use this machine's normal OS update tools instead. To use WendyOS OTA updates, install WendyOS on supported hardware with wendy os install.` |
 | Generic Linux host with `wendy-agent` but no WendyOS identity (including hosts that also have `mender-update` installed) | `This Linux host has wendy-agent installed, but it cannot be updated with WendyOS OTA artifacts. Use the Linux distribution's package manager, such as apt, dnf, or pacman, to update this machine.` |
 | WendyOS identity present but `mender-update` not found | `This WendyOS image does not support OTA updates because mender-update was not found. Reinstall or upgrade to a WendyOS image with OTA support.` |
-| No explicit artifact and the device type is missing, unknown, or has no matching stable/nightly OTA artifact | `Cannot choose an OTA artifact for this device. Provide a specific .mender artifact, or update/reinstall WendyOS so the device reports a supported device type.` |
+| No explicit artifact and the device type is missing or unrecognized in the update catalog | Shows a warning and prompts the user to select the correct device type from a picker. The latest version (stable or nightly) is then chosen automatically. |
 
 > **Note:** macOS agents report a host OS version, but this does not qualify the host as a WendyOS OTA target. Only a `WendyOS-`-prefixed `os_version` or a non-empty `device_type` on a Linux host qualifies.
 
@@ -45,7 +45,7 @@ Hosts that are not WendyOS OTA targets — including macOS, Windows, unknown pla
 2. **Update the agent** — ensure the agent binary is at the latest release before proceeding with the OS image update. GitHub release lookups use the `GITHUB_TOKEN` environment variable when present, and fall back to unauthenticated requests otherwise.
 3. **Re-query version** — query `GetAgentVersion` again after the agent update.
 4. **Validate OTA support** — confirm `mender` is present in the featureset.
-5. **Resolve artifact** — if no artifact or URL was provided, look up the latest OTA artifact for the device's reported `device_type`. Exits with an error if the device type is missing or has no matching artifact.
+5. **Resolve artifact** — if no artifact or URL was provided, look up the latest OTA artifact for the device's reported `device_type`. If the device type is missing or not recognized, shows a warning and prompts the user to select the correct device type.
 6. **Check current version** — if the device is already at the latest version, exits without updating.
 7. **Stream update** — call `UpdateOS` on the agent, which runs `mender-update install` and streams progress to the terminal.
 
@@ -53,7 +53,7 @@ Hosts that are not WendyOS OTA targets — including macOS, Windows, unknown pla
 
 ## Artifact auto-selection
 
-When no artifact path or `--artifact-url` is given, the CLI uses the device's `device_type` field to look up the latest OTA artifact from the WendyOS release manifest. The OTA picker fallback is not used; if no matching artifact exists for the device type, the command exits with an error.
+When no artifact path or `--artifact-url` is given, the CLI uses the device's `device_type` field to look up the latest OTA artifact from the WendyOS release manifest. If the device type is missing or not recognized in the update catalog, the CLI shows a warning and falls back to an interactive device-type picker. The latest version (stable or nightly) is then chosen automatically.
 
 Use `--nightly` to select nightly (pre-release) artifacts instead of stable ones.
 

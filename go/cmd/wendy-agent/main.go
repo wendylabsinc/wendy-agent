@@ -36,7 +36,9 @@ import (
 	agentnet "github.com/wendylabsinc/wendy/go/internal/agent/network"
 	"github.com/wendylabsinc/wendy/go/internal/agent/registry"
 	"github.com/wendylabsinc/wendy/go/internal/agent/services"
+	"github.com/wendylabsinc/wendy/go/internal/agent/timesync"
 	"github.com/wendylabsinc/wendy/go/internal/shared/browseropen"
+	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/version"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
@@ -120,6 +122,12 @@ func main() {
 	}
 
 	configpartition.Apply(logger, configPath)
+
+	// Time sync: apply config-partition floor immediately, then start
+	// background Roughtime + multicast sync.
+	timesyncMgr := timesync.NewManager(logger, configPath)
+	timesyncMgr.ApplyFloor()
+
 	services.CommitMenderUpdate(logger)
 
 	services.CleanupOldBackups(logger)
@@ -186,6 +194,12 @@ func main() {
 	provisioningSvcV2 := services.NewProvisioningServiceV2(provisioningSvc)
 	audioSvcV2 := services.NewAudioServiceV2(audioSvc)
 	telemetrySvcV2 := services.NewTelemetryServiceV2(logger, broadcaster, telemetryBuf)
+	// ROS 2 inspection requires the containerd-backed sidecar runtime; the
+	// service is only registered when containerd connected (WDY-1332).
+	var ros2Svc *services.ROS2Service
+	if ctrdClient != nil {
+		ros2Svc = services.NewROS2Service(logger, ctrdClient, agentcontainerd.ROS2BagDir)
+	}
 
 	// OTEL receivers.
 	otelLogReceiver := services.NewOTELLogsReceiver(telemetryBuf)
@@ -194,6 +208,9 @@ func main() {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	go timesyncMgr.RunDirect(ctx)
+	go timesyncMgr.RunMulticast(ctx)
 
 	videoSvc := services.NewVideoService(ctx, logger)
 	defer videoSvc.Shutdown()
@@ -260,6 +277,12 @@ func main() {
 		}()
 	}
 
+	if ctrdClient != nil {
+		if err := ctrdClient.ReapOrphanedROS2Sidecars(ctx); err != nil {
+			logger.Warn("ROS 2 sidecar reap on boot failed", zap.Error(err))
+		}
+	}
+
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -308,6 +331,17 @@ func main() {
 	} else {
 		logger.Info("kernel dmesg collection disabled (set WENDY_COLLECT_DMESG=true to enable)")
 	}
+
+	// mTLS organization-equality enforcement mode. Read once here so the
+	// startMTLSServer closure can capture it. The default (empty value) is grace,
+	// which enforces org-equality for certs that carry an org identity but allows
+	// legacy certs without one — easing migration before cert rotation completes.
+	orgMode, ok := interceptor.ParseOrgMode(os.Getenv("WENDY_MTLS_ORG_ENFORCEMENT"))
+	if !ok {
+		logger.Warn("WENDY_MTLS_ORG_ENFORCEMENT has unrecognised value; defaulting to grace",
+			zap.String("value", os.Getenv("WENDY_MTLS_ORG_ENFORCEMENT")))
+	}
+	logger.Info("mTLS org enforcement mode", zap.String("mode", orgMode.String()))
 
 	// Main agent gRPC server port.
 	agentPort := defaultAgentPort
@@ -366,6 +400,9 @@ func main() {
 		agentpbv2.RegisterWendyProvisioningServiceServer(srv, provisioningSvcV2)
 		agentpbv2.RegisterWendyAudioServiceServer(srv, audioSvcV2)
 		agentpbv2.RegisterWendyTelemetryServiceServer(srv, telemetrySvcV2)
+		if ros2Svc != nil {
+			agentpbv2.RegisterROS2ServiceServer(srv, ros2Svc)
+		}
 	}
 
 	startMTLSServer := func(certPEM, chainPEM, keyPEM string) {
@@ -388,7 +425,30 @@ func main() {
 			)
 		}
 
-		srv, err := mtls.NewServer(certPEM, chainPEM, keyPEM, logger, floor,
+		// Derive this device's own organization from its leaf certificate so the
+		// mTLS interceptor can enforce org-equality. We deliberately derive from
+		// certPEM (the device's own leaf) rather than provisioningSvc.ProvisioningInfo():
+		// startMTLSServer is also invoked from inside the OnProvisioned callback,
+		// where taking the provisioning mutex would risk re-entrancy (see the comment
+		// at the startTunnelBroker closure). Both call sites already pass certPEM.
+		expectedOrg, haveOrg := deviceOrgFromCertPEM(certPEM)
+		effectiveMode := orgMode
+		if orgMode != interceptor.OrgModeOff && !haveOrg {
+			// Fail safe: the device cannot determine its own org, so it cannot
+			// meaningfully compare a client's org against it. Rather than brick the
+			// device (rejecting all clients) or silently enforce against an unknown
+			// self-org, disable enforcement for this server and log loudly.
+			logger.Error("cannot determine device organization from own certificate; mTLS org enforcement DISABLED for this server",
+				zap.String("configuredMode", orgMode.String()))
+			effectiveMode = interceptor.OrgModeOff
+		}
+		if effectiveMode != interceptor.OrgModeOff {
+			logger.Info("mTLS server enforcing org",
+				zap.Int32("org", expectedOrg),
+				zap.String("mode", effectiveMode.String()))
+		}
+
+		srv, err := mtls.NewServer(certPEM, chainPEM, keyPEM, logger, floor, expectedOrg, effectiveMode,
 			// UnaryMTLSInterceptor and StreamMTLSInterceptor are embedded inside
 			// mtls.NewServer and run before these caller-provided interceptors.
 			grpc.ChainUnaryInterceptor(interceptor.UnaryErrorInterceptor(logger)),
@@ -522,6 +582,16 @@ func main() {
 		}
 	}
 
+	// Set up the unprovisioning callback: revert the mDNS advertisement to the
+	// plaintext port and exit so systemd restarts the agent into unprovisioned
+	// mode. A clean restart is simpler and more reliable than tearing down the
+	// mTLS server, tunnel broker, BLE peripheral, and HTTPS registry in place.
+	provisioningSvc.OnUnprovisioned = func() {
+		configpartition.UpdateAvahiForUnprovisioning(logger, agentPortNum)
+		logger.Info("Device unprovisioned — restarting agent into unprovisioned mode")
+		os.Exit(0)
+	}
+
 	otelPort := defaultOTELPort
 	if p := os.Getenv("WENDY_OTEL_PORT"); p != "" {
 		otelPort = p
@@ -645,6 +715,39 @@ func certNotBeforeFloor(certPEM string) time.Time {
 		return time.Time{}
 	}
 	return cert.NotBefore
+}
+
+// deviceOrgFromCertPEM parses the device's own leaf certificate (ML-DSA aware,
+// mirroring certNotBeforeFloor) and extracts its organization ID via
+// certs.OrgFromClientCert. It returns (org, true) when an org identity is present
+// and valid, and (0, false) on any parse/extract error or when the cert carries no
+// org identity. The caller treats (0, false) as "device org unknown".
+func deviceOrgFromCertPEM(certPEM string) (int32, bool) {
+	if certPEM == "" {
+		return 0, false
+	}
+	block, _ := pem.Decode([]byte(certPEM))
+	if block == nil {
+		return 0, false
+	}
+	// ML-DSA certs from pki-core have trailing ASN.1 bytes that cause
+	// x509.ParseCertificate to fail. Strip them with the same fallback used by
+	// certNotBeforeFloor and internal/agent/mtls/mldsa_verify.go.
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		var raw asn1.RawValue
+		if _, asn1Err := asn1.Unmarshal(block.Bytes, &raw); asn1Err == nil {
+			cert, err = x509.ParseCertificate(raw.FullBytes)
+		}
+	}
+	if err != nil {
+		return 0, false
+	}
+	org, hasOrg, err := certs.OrgFromClientCert(cert)
+	if err != nil || !hasOrg {
+		return 0, false
+	}
+	return org, true
 }
 
 func brokerURLForCloudHost(cloudHost string) string {

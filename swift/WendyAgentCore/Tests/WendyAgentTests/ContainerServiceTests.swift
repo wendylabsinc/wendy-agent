@@ -54,6 +54,7 @@ struct ContainerServiceTests {
 
         try await deleteApp(service: service, appID: appID)
         #expect(await recorder.last() == .some([]))
+        #expect(!FileManager.default.fileExists(atPath: appDirectory.path))
     }
 
     @Test("spontaneous native exits publish a stopped app update")
@@ -350,6 +351,32 @@ struct ContainerServiceTests {
         #expect(await service.currentAppInfosForTesting().isEmpty)
     }
 
+    @Test("delete removes orphaned native app directories")
+    func deleteRemovesOrphanedNativeAppDirectories() async throws {
+        let appsBase = try makeTempDir()
+        defer { cleanup(appsBase) }
+
+        let appID = "sh.wendy.tests.OrphanedAppDirectory"
+        let appDirectory = URL(fileURLWithPath: appsBase).appendingPathComponent(appID)
+        try FileManager.default.createDirectory(at: appDirectory, withIntermediateDirectories: true)
+        try "orphaned".write(
+            to: appDirectory.appendingPathComponent("payload.txt"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let service = ContainerService(
+            broadcaster: TelemetryBroadcaster(),
+            executablePath: "/usr/bin/false",
+            appsBase: URL(fileURLWithPath: appsBase)
+        )
+
+        try await deleteApp(service: service, appID: appID)
+
+        #expect(!FileManager.default.fileExists(atPath: appDirectory.path))
+        #expect(await service.currentAppInfosForTesting().isEmpty)
+    }
+
     @Test("delete of a running app publishes stopped before removal")
     func deleteOfARunningAppPublishesStoppedBeforeRemoval() async throws {
         let appsBase = try makeTempDir()
@@ -443,6 +470,70 @@ struct ContainerServiceTests {
                 context: makeServerContext(method: "CreateContainer")
             )
             Issue.record("Expected createContainer to reject Linux containers on Macs")
+        } catch let error as RPCError {
+            #expect(error.code == .failedPrecondition)
+            #expect("\(error)".contains("Linux containers aren't supported on Macs yet"))
+        }
+    }
+
+    @Test("create requests without a platform default to Linux")
+    func createContainerRejectsMissingPlatformAsLinux() async throws {
+        let appsBase = try makeTempDir()
+        defer { cleanup(appsBase) }
+
+        let appID = "sh.wendy.tests.MissingPlatformCreate"
+        let service = ContainerService(
+            broadcaster: TelemetryBroadcaster(),
+            executablePath: "/usr/bin/false",
+            appsBase: URL(fileURLWithPath: appsBase)
+        )
+
+        var request = Wendy_Agent_Services_V1_CreateContainerRequest()
+        request.appName = appID
+        request.imageName = "localhost:5000/sh.wendy.tests.missingplatformcreate:latest"
+        request.appConfig = try JSONEncoder().encode(
+            WendyAppConfig(appId: appID, platform: nil, entitlements: nil)
+        )
+
+        do {
+            _ = try await service.createContainer(
+                request: ServerRequest(metadata: [:], message: request),
+                context: makeServerContext(method: "CreateContainer")
+            )
+            Issue.record(
+                "Expected createContainer to reject missing-platform apps as Linux containers"
+            )
+        } catch let error as RPCError {
+            #expect(error.code == .failedPrecondition)
+            #expect("\(error)".contains("Linux containers aren't supported on Macs yet"))
+        }
+    }
+
+    @Test("WendyOS platform create requests are treated as Linux")
+    func createContainerRejectsWendyOSPlatformAsLinux() async throws {
+        let appsBase = try makeTempDir()
+        defer { cleanup(appsBase) }
+
+        let appID = "sh.wendy.tests.WendyOSPlatformCreate"
+        let service = ContainerService(
+            broadcaster: TelemetryBroadcaster(),
+            executablePath: "/usr/bin/false",
+            appsBase: URL(fileURLWithPath: appsBase)
+        )
+
+        var request = Wendy_Agent_Services_V1_CreateContainerRequest()
+        request.appName = appID
+        request.imageName = "localhost:5000/sh.wendy.tests.wendyosplatformcreate:latest"
+        request.appConfig = try JSONEncoder().encode(
+            WendyAppConfig(appId: appID, platform: "wendyos", entitlements: nil)
+        )
+
+        do {
+            _ = try await service.createContainer(
+                request: ServerRequest(metadata: [:], message: request),
+                context: makeServerContext(method: "CreateContainer")
+            )
+            Issue.record("Expected createContainer to reject wendyos apps as Linux containers")
         } catch let error as RPCError {
             #expect(error.code == .failedPrecondition)
             #expect("\(error)".contains("Linux containers aren't supported on Macs yet"))

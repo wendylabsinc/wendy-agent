@@ -25,9 +25,17 @@ func scanLocalWifiNetworks() ([]localWifiNetwork, error) {
 	cmd := exec.Command("netsh", "wlan", "show", "networks", "mode=bssid")
 	output, err := cmd.Output()
 	if err != nil {
-		return nil, fmt.Errorf("scanning WiFi networks: %w", err)
+		return nil, fmt.Errorf("scanning WiFi networks: %w", exitErrWithStderr(err))
 	}
 	return parseNetshNetworks(string(output)), nil
+}
+
+// cachedLocalWifiNetworks returns no networks on Windows: netsh already reads
+// the WLAN service's cached scan list (see scanLocalWifiNetworks), so the
+// single scan is effectively instant and a separate cached pre-paint would
+// just run netsh twice. streamLocalWifiScan falls through to the fresh scan.
+func cachedLocalWifiNetworks() []localWifiNetwork {
+	return nil
 }
 
 // wifiScanCacheHint is appended to empty-scan messages on Windows because

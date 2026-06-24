@@ -7,6 +7,7 @@ When your project needs more than one container managed through a `wendy.json` f
 ```json
 {
   "appId": "com.example.myapp",
+  "platform": "linux",
   "services": {
     "db": {
       "context": "db"
@@ -47,6 +48,7 @@ Each key is a service name. Each value is a `ServiceConfig` object:
 - A service `persist` entitlement missing `name` or `path`, or with a non-absolute or `..`-containing `path`.
 - A service `network` entitlement with a `mode` other than `"host"` or `"none"`.
 - A service `i2c` entitlement with a device not in `i2c-N` format.
+- A service `serial` entitlement with a device not matching the USB-only `ttyACM0` / `ttyUSB0` (`tty*N`) pattern.
 - A service `mcp` entitlement with a port outside the range 1–65535.
 - More than one `mcp` entitlement within a single service's `entitlements` array.
 
@@ -119,3 +121,4 @@ wendy run --service api   # builds db and api only (frontend excluded)
 
 - Log output is multiplexed with a `[serviceName]` prefix on each line. Per-service log stream routing is not yet available.
 - Containers are created via individual `CreateContainer` calls in dependency order. A grouped `CreateAppGroup` RPC for atomic creation is planned as a follow-up.
+- Wendy for Mac is not supported. `wendy run` rejects multi-service `wendy.json` projects when the selected target is Wendy for Mac, before any build or registry operation. Target a Linux/WendyOS device for multi-service workloads.

@@ -57,7 +57,8 @@ public struct WendyE2EMachine: Sendable, Equatable {
         os: WendyE2EMachineOS = .current,
         tags: Set<WendyE2EMachineTag> = [],
         user: String? = nil,
-        address: String? = nil
+        address: String? = nil,
+        isLocal: Bool? = nil
     ) {
         precondition(!id.isEmpty, "id must not be empty")
         precondition(!name.isEmpty, "name must not be empty")
@@ -70,7 +71,7 @@ public struct WendyE2EMachine: Sendable, Equatable {
         self.name = name
         self.os = os
         self.tags = tags
-        self.isLocal = address == nil
+        self.isLocal = isLocal ?? (address == nil)
         self.user = user
         self.address = resolvedAddress
     }
@@ -104,7 +105,8 @@ public struct WendyE2EMachine: Sendable, Equatable {
             os: WendyE2EEnvironment.agentOS ?? .current,
             tags: [.agent],
             user: WendyE2EEnvironment.agentUser,
-            address: WendyE2EEnvironment.agentAddress
+            address: WendyE2EEnvironment.agentAddress ?? WendyE2EEnvironment.deviceAddress,
+            isLocal: WendyE2EEnvironment.agentAddress == nil ? true : nil
         )
     }
 

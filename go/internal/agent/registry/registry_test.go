@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"sync"
@@ -267,5 +268,105 @@ func TestPushManifestNoopForEmptyTag(t *testing.T) {
 	imgs, _ := imgStore.List(ctx)
 	if len(imgs) != 0 {
 		t.Errorf("expected no image service entries after tagless push, got %d", len(imgs))
+	}
+}
+
+// resumeWriter is a content.Writer whose reported ingest offset is driven by
+// its parent store, letting a test simulate a containerd ingest that already
+// holds bytes from an earlier (interrupted) upload attempt.
+type resumeWriter struct {
+	store *resumeContentStore
+	buf   bytes.Buffer
+}
+
+func (w *resumeWriter) Write(p []byte) (int, error) { return w.buf.Write(p) }
+func (w *resumeWriter) Close() error                { return nil }
+func (w *resumeWriter) Digest() digest.Digest       { return "" }
+func (w *resumeWriter) Truncate(int64) error        { return nil }
+func (w *resumeWriter) Status() (content.Status, error) {
+	return content.Status{Ref: "resume-ref", Offset: w.store.offset}, nil
+}
+func (w *resumeWriter) Commit(context.Context, int64, digest.Digest, ...content.Opt) error {
+	return nil
+}
+
+// resumeContentStore hands out resumeWriters and records Abort calls. Abort
+// resets the reported offset to 0, mimicking containerd discarding a stale
+// ingest so the next writer starts from the beginning.
+type resumeContentStore struct {
+	content.Store
+	offset      int64
+	abortCalled bool
+}
+
+func (s *resumeContentStore) Writer(context.Context, ...content.WriterOpt) (content.Writer, error) {
+	return &resumeWriter{store: s}, nil
+}
+
+func (s *resumeContentStore) Abort(context.Context, string) error {
+	s.abortCalled = true
+	s.offset = 0
+	return nil
+}
+
+func newTestRegistryWithContentStore(t *testing.T, cs content.Store) containerdRegistry {
+	t.Helper()
+	client, err := containerd.New("",
+		containerd.WithDefaultNamespace("default"),
+		containerd.WithServices(
+			containerd.WithImageStore(newTestImageStore()),
+			containerd.WithContentStore(cs),
+			containerd.WithLeasesService(&testLeasesManager{}),
+		),
+	)
+	if err != nil {
+		t.Fatalf("creating test containerd client: %v", err)
+	}
+	t.Cleanup(func() { client.Close() })
+	return containerdRegistry{
+		client:              client,
+		imagePrefix:         "localhost:5000/",
+		blobLeaseExpiration: time.Minute,
+		manifestSizeLimit:   4 * 1024 * 1024,
+	}
+}
+
+// TestPushBlobChunkedResumeRestartFromZero covers the case where a client
+// (e.g. Apple's `container image push`) restarts an interrupted blob upload
+// from offset 0 even though the containerd ingest still holds bytes from the
+// earlier attempt. The registry must abort the stale ingest and reopen a fresh
+// writer rather than rejecting with 416 Range Not Satisfiable, which would
+// wedge the client into retrying the same mismatched request forever.
+func TestPushBlobChunkedResumeRestartFromZero(t *testing.T) {
+	cs := &resumeContentStore{offset: 223728952}
+	r := newTestRegistryWithContentStore(t, cs)
+
+	// chunkSize must be non-zero so the offset==0 path is not short-circuited
+	// to the "info" (offset == -1) case.
+	w, err := r.PushBlobChunkedResume(context.Background(), "llm", "upload-id", 0, 4096)
+	if err != nil {
+		t.Fatalf("expected restart-from-zero to succeed, got error: %v", err)
+	}
+	if w == nil {
+		t.Fatal("expected a blob writer, got nil")
+	}
+	if !cs.abortCalled {
+		t.Error("expected the stale ingest to be aborted before reopening")
+	}
+}
+
+// TestPushBlobChunkedResumeGenuineMismatch ensures we still reject a real
+// mid-stream offset mismatch (a client resuming at the wrong non-zero offset)
+// with 416, since that indicates lost data we cannot recover.
+func TestPushBlobChunkedResumeGenuineMismatch(t *testing.T) {
+	cs := &resumeContentStore{offset: 1000}
+	r := newTestRegistryWithContentStore(t, cs)
+
+	_, err := r.PushBlobChunkedResume(context.Background(), "llm", "upload-id", 500, 4096)
+	if err == nil {
+		t.Fatal("expected a 416 error for a genuine non-zero offset mismatch, got nil")
+	}
+	if cs.abortCalled {
+		t.Error("must not abort the ingest on a genuine mid-stream mismatch")
 	}
 }

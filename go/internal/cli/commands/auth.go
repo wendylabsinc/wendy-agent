@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -40,6 +41,8 @@ func newAuthCmd() *cobra.Command {
 		newAuthLogoutCmd(),
 		newAuthRefreshCertsCmd(),
 		newAuthStatusCmd(),
+		newAuthUseCmd(),
+		newAuthDefaultCmd(),
 	)
 
 	return cmd
@@ -83,6 +86,11 @@ func newAuthLoginCmd() *cobra.Command {
 	return cmd
 }
 
+type loginCallbackResult struct {
+	EnrollmentToken string
+	APIKey          string
+}
+
 func performLogin(ctx context.Context, cloudDashboard, cloudGRPC string) error {
 	// Step 1: Start a local HTTP server to receive the OAuth callback.
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -91,8 +99,8 @@ func performLogin(ctx context.Context, cloudDashboard, cloudGRPC string) error {
 	}
 	port := listener.Addr().(*net.TCPAddr).Port
 
-	// Channel to receive the enrollment token from the callback.
-	tokenCh := make(chan string, 1)
+	// Channel to receive the enrollment token and PAT from the callback.
+	tokenCh := make(chan loginCallbackResult, 1)
 	errCh := make(chan error, 1)
 
 	mux := http.NewServeMux()
@@ -102,6 +110,10 @@ func performLogin(ctx context.Context, cloudDashboard, cloudGRPC string) error {
 			http.Error(w, "missing token parameter", http.StatusBadRequest)
 			errCh <- fmt.Errorf("callback received without token")
 			return
+		}
+		apiKey := r.URL.Query().Get("api_key")
+		if !strings.HasPrefix(apiKey, "wnd_pat_") || len(apiKey) > 256 {
+			apiKey = ""
 		}
 
 		w.Header().Set("Content-Type", "text/html")
@@ -152,7 +164,7 @@ func performLogin(ctx context.Context, cloudDashboard, cloudGRPC string) error {
   </div>
 </body>
 </html>`)
-		tokenCh <- token
+		tokenCh <- loginCallbackResult{EnrollmentToken: token, APIKey: apiKey}
 	})
 
 	server := &http.Server{Handler: mux}
@@ -184,10 +196,10 @@ func performLogin(ctx context.Context, cloudDashboard, cloudGRPC string) error {
 
 	fmt.Println(tui.InfoMessage("Waiting for authentication..."))
 
-	// Wait for the token.
-	var enrollmentToken string
+	// Wait for the token and PAT.
+	var result loginCallbackResult
 	select {
-	case enrollmentToken = <-tokenCh:
+	case result = <-tokenCh:
 		fmt.Println(tui.SuccessMessage("Received enrollment token."))
 	case loginErr := <-errCh:
 		return fmt.Errorf("login failed: %w", loginErr)
@@ -201,7 +213,7 @@ func performLogin(ctx context.Context, cloudDashboard, cloudGRPC string) error {
 		return fmt.Errorf("generating key pair: %w", err)
 	}
 
-	commonName, err := enrollmentTokenCommonName(enrollmentToken)
+	commonName, err := enrollmentTokenCommonName(result.EnrollmentToken)
 	if err != nil {
 		return fmt.Errorf("reading enrollment token identity: %w", err)
 	}
@@ -229,7 +241,7 @@ func performLogin(ctx context.Context, cloudDashboard, cloudGRPC string) error {
 	certClient := cloudpb.NewCertificateServiceClient(certConn)
 	issueResp, err := certClient.IssueCertificate(ctx, &cloudpb.IssueCertificateRequest{
 		PemCsr:          csrPEM,
-		EnrollmentToken: enrollmentToken,
+		EnrollmentToken: result.EnrollmentToken,
 	})
 	if err != nil {
 		return fmt.Errorf("issuing certificate: %w", err)
@@ -261,6 +273,7 @@ func performLogin(ctx context.Context, cloudDashboard, cloudGRPC string) error {
 	authEntry := config.AuthConfig{
 		CloudDashboard: cloudDashboard,
 		CloudGRPC:      cloudGRPC,
+		APIKey:         result.APIKey,
 		Certificates:   []config.CertificateInfo{certInfo},
 	}
 
@@ -375,6 +388,7 @@ func performLocalLogin(ctx context.Context, cloudGRPC, apiKey string, orgID int3
 		PemCertificateChain: cert.GetPemCertificateChain(),
 		PemPrivateKey:       privateKeyPEM,
 		OrganizationID:      int(issueResp.GetOrganizationId()),
+		AssetID:             int(issueResp.GetAssetId()),
 	}
 	authEntry := config.AuthConfig{
 		CloudGRPC:    cloudGRPC,
@@ -432,41 +446,51 @@ func newAuthRefreshCertsCmd() *cobra.Command {
 		Short: "Refresh mTLS certificates",
 		Long:  "Generates a new key pair and CSR, then issues new certificates using existing credentials.",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ctx := cmd.Context()
-
-			cfg, err := config.Load()
-			if err != nil {
-				return fmt.Errorf("loading config: %w", err)
-			}
-
-			if len(cfg.Auth) == 0 {
-				return fmt.Errorf("not logged in; run 'wendy auth login' first")
-			}
-
-			// Refresh certificates for each auth entry.
-			for i, auth := range cfg.Auth {
-				if len(auth.Certificates) == 0 {
-					fmt.Println(tui.WarningMessage(fmt.Sprintf("Skipping %s: no certificates to refresh", auth.CloudDashboard)))
-					continue
-				}
-
-				fmt.Println(tui.InfoMessage(fmt.Sprintf("Refreshing certificates for %s...", auth.CloudDashboard)))
-
-				if err := refreshCertsForAuth(ctx, &cfg.Auth[i]); err != nil {
-					fmt.Println(tui.ErrorMessage(fmt.Sprintf("Failed to refresh for %s: %v", auth.CloudDashboard, err)))
-					continue
-				}
-
-				fmt.Println(tui.SuccessMessage(fmt.Sprintf("Certificates refreshed for %s.", auth.CloudDashboard)))
-			}
-
-			if err := config.Save(cfg); err != nil {
-				return fmt.Errorf("saving config: %w", err)
-			}
-
-			return nil
+			return refreshAllCerts(cmd.Context())
 		},
 	}
+}
+
+// refreshAllCerts re-issues certificates for every stored auth entry and
+// saves the updated config. It returns an error when not logged in or when
+// no entry could be refreshed, so callers that retry a connection afterwards
+// do not retry with the same stale certificates.
+func refreshAllCerts(ctx context.Context) error {
+	cfg, err := config.Load()
+	if err != nil {
+		return fmt.Errorf("loading config: %w", err)
+	}
+
+	if len(cfg.Auth) == 0 {
+		return fmt.Errorf("not logged in; run 'wendy auth login' first")
+	}
+
+	refreshed := 0
+	for i, auth := range cfg.Auth {
+		if len(auth.Certificates) == 0 {
+			fmt.Println(tui.WarningMessage(fmt.Sprintf("Skipping %s: no certificates to refresh", auth.CloudDashboard)))
+			continue
+		}
+
+		fmt.Println(tui.InfoMessage(fmt.Sprintf("Refreshing certificates for %s...", auth.CloudDashboard)))
+
+		if err := refreshCertsForAuth(ctx, &cfg.Auth[i]); err != nil {
+			fmt.Println(tui.ErrorMessage(fmt.Sprintf("Failed to refresh for %s: %v", auth.CloudDashboard, err)))
+			continue
+		}
+
+		refreshed++
+		fmt.Println(tui.SuccessMessage(fmt.Sprintf("Certificates refreshed for %s.", auth.CloudDashboard)))
+	}
+
+	if err := config.Save(cfg); err != nil {
+		return fmt.Errorf("saving config: %w", err)
+	}
+
+	if refreshed == 0 {
+		return fmt.Errorf("no certificates were refreshed")
+	}
+	return nil
 }
 
 // certCommonName extracts the Subject CN from a PEM-encoded certificate.
@@ -635,4 +659,129 @@ var openBrowser = browseropen.Open
 // authConfigToJSON marshals an auth config for debugging.
 func authConfigToJSON(auth *config.AuthConfig) ([]byte, error) {
 	return json.MarshalIndent(auth, "", "  ")
+}
+
+// matchAuthSelector resolves a user-supplied selector to exactly one session.
+// An all-digit selector matches a certificate OrganizationID; otherwise it is a
+// case-insensitive substring of the gRPC endpoint or dashboard URL. It errors
+// when nothing matches or when more than one session matches.
+func matchAuthSelector(cfg *config.Config, selector string) (*config.AuthConfig, error) {
+	selector = strings.TrimSpace(selector)
+	if selector == "" {
+		return nil, fmt.Errorf("empty selector")
+	}
+	var matches []*config.AuthConfig
+	if orgID, err := strconv.Atoi(selector); err == nil {
+		for i := range cfg.Auth {
+			for _, c := range cfg.Auth[i].Certificates {
+				if c.OrganizationID == orgID {
+					matches = append(matches, &cfg.Auth[i])
+					break
+				}
+			}
+		}
+	} else {
+		q := strings.ToLower(selector)
+		for i := range cfg.Auth {
+			if strings.Contains(strings.ToLower(cfg.Auth[i].CloudGRPC), q) ||
+				strings.Contains(strings.ToLower(cfg.Auth[i].CloudDashboard), q) {
+				matches = append(matches, &cfg.Auth[i])
+			}
+		}
+	}
+	switch len(matches) {
+	case 0:
+		return nil, fmt.Errorf("no auth session matches %q", selector)
+	case 1:
+		return matches[0], nil
+	default:
+		var b strings.Builder
+		for _, m := range matches {
+			fmt.Fprintf(&b, "\n  - %s", authSessionLabel(m))
+		}
+		return nil, fmt.Errorf("selector %q matches multiple sessions:%s", selector, b.String())
+	}
+}
+
+func newAuthUseCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "use [selector]",
+		Short: "Set the default Wendy Cloud session",
+		Long:  "Sets the default session used when several exist and no --cloud-grpc flag is given. The selector is an organization ID or a substring of the gRPC endpoint or dashboard URL. With no selector in an interactive terminal, a picker is shown.",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := config.Load()
+			if err != nil {
+				return fmt.Errorf("loading config: %w", err)
+			}
+			if len(cfg.Auth) == 0 {
+				return fmt.Errorf("not logged in; run 'wendy auth login' first")
+			}
+
+			var chosen *config.AuthConfig
+			if len(args) == 1 {
+				chosen, err = matchAuthSelector(cfg, args[0])
+				if err != nil {
+					return err
+				}
+			} else {
+				if !isInteractiveTerminal() {
+					return fmt.Errorf("provide a selector (org ID or endpoint substring) when not running interactively")
+				}
+				chosen, err = pickAuthSessionFn(cfg)
+				if err != nil {
+					return err
+				}
+			}
+
+			if len(chosen.Certificates) == 0 {
+				return fmt.Errorf("auth session %s has no certificates; re-run 'wendy auth login'", chosen.CloudGRPC)
+			}
+			cfg.DefaultCloudGRPC = chosen.CloudGRPC
+			if err := config.Save(cfg); err != nil {
+				return fmt.Errorf("saving config: %w", err)
+			}
+			fmt.Println(tui.SuccessMessage(fmt.Sprintf("Default session set to %s.", authSessionLabel(chosen))))
+			return nil
+		},
+	}
+}
+
+func newAuthDefaultCmd() *cobra.Command {
+	var clear bool
+	cmd := &cobra.Command{
+		Use:   "default",
+		Short: "Show or clear the default Wendy Cloud session",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := config.Load()
+			if err != nil {
+				return fmt.Errorf("loading config: %w", err)
+			}
+			if clear {
+				cfg.DefaultCloudGRPC = ""
+				if err := config.Save(cfg); err != nil {
+					return fmt.Errorf("saving config: %w", err)
+				}
+				fmt.Println(tui.SuccessMessage("Default session cleared."))
+				return nil
+			}
+			if cfg.DefaultCloudGRPC == "" {
+				fmt.Println("No default session set.")
+				return nil
+			}
+			def, ok := cfg.DefaultAuth()
+			if !ok {
+				fmt.Println(tui.WarningMessage(fmt.Sprintf("Default session %s no longer exists; clearing it.", cfg.DefaultCloudGRPC)))
+				cfg.DefaultCloudGRPC = ""
+				if err := config.Save(cfg); err != nil {
+					return fmt.Errorf("saving config: %w", err)
+				}
+				return nil
+			}
+			fmt.Printf("Default session: %s\n", authSessionLabel(def))
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&clear, "clear", false, "Unset the default session")
+	return cmd
 }

@@ -81,7 +81,7 @@ E2E_USE_EXISTING_VM=true E2E_VM_PATH=/path/to/meta-wendyos-virtual swift test
 - Don't use `Issue.record()` for expected failures (like WiFi in VM) - it counts as failure
 
 ### CI Limitations
-GitHub-hosted runners don't support nested virtualization. Use self-hosted runners or run E2E tests locally.
+GitHub-hosted runners support local E2E tests with managed agent mode. Physical device tests require self-hosted runners.
 
 ### Test Suites
 | Suite | Tests | Time | Notes |

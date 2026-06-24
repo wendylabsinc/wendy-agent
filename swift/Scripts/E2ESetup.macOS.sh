@@ -188,7 +188,6 @@ setupE2EMacOS() {
   checkCommand go
   checkCommand make
   checkCommand swift
-  checkCommand swiftly
   checkCommand zip
   checkCommand ssh "openssh-client"
   checkCommand ssh-keygen

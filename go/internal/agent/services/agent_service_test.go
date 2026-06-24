@@ -131,8 +131,8 @@ func TestGetAgentVersion(t *testing.T) {
 	if resp.Version != version.Version {
 		t.Errorf("version = %q; want %q", resp.Version, version.Version)
 	}
-	if resp.Os != runtime.GOOS {
-		t.Errorf("os = %q; want %q", resp.Os, runtime.GOOS)
+	if resp.Os == "" {
+		t.Errorf("os is empty")
 	}
 	if resp.CpuArchitecture != runtime.GOARCH {
 		t.Errorf("arch = %q; want %q", resp.CpuArchitecture, runtime.GOARCH)

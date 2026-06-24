@@ -1,9 +1,49 @@
+import Foundation
 import Testing
 
 @testable import WendyE2ETesting
 
 @Suite
 struct `recorder` {
+    @Test
+    func `writes test metadata JSON`() async throws {
+        let recorder = try WendyE2ERecorder(filePath: #filePath, function: #function, line: #line)
+        let session = try await WendyE2ESession.begin(
+            for: WendyE2EMachine(id: "local", name: "Local", os: .linux)
+        )
+
+        recorder.record(
+            session: session,
+            command: "printf 'ok'",
+            processID: "123",
+            status: "exit(0)",
+            duration: .seconds(1),
+            standardOutput: "ok",
+            standardError: "",
+            harnessPrefix: [],
+            scriptShellName: "sh"
+        )
+
+        let metadataURL = URL(fileURLWithPath: recorder.testDirectoryPath, isDirectory: true)
+            .appendingPathComponent("test.json")
+        let metadata = try JSONDecoder().decode(
+            WendyE2ERecorder.TestMetadata.self,
+            from: Data(contentsOf: metadataURL)
+        )
+
+        #expect(metadata.schema == "wendy.e2e.test.v1")
+        #expect(
+            metadata.sourceFilePath == "Tests/WendyE2ETestingTests/WendyE2ERecorderTests.swift"
+        )
+        #expect(metadata.sourceFileName == "WendyE2ERecorderTests")
+        #expect(metadata.suiteName == "recorder")
+        #expect(metadata.testName == "writes test metadata JSON")
+        #expect(metadata.functionName.contains("writes test metadata JSON"))
+        #expect(metadata.declarationLine > 0)
+        #expect(metadata.sourceStartLine <= metadata.declarationLine)
+        #expect(metadata.declarationLine <= metadata.sourceEndLine)
+    }
+
     @Test
     func `redacts sensitive environment values`() {
         let description = WendyE2ERecorder.redactedEnvironmentDescription([

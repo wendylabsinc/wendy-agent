@@ -561,6 +561,30 @@
       return value.toFixed(3).replace(/\.0+$|0+$/g, '').replace(/\.$/, '');
     }
 
+    function formatBytes(value) {
+      if (!Number.isFinite(value)) return null;
+      const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
+      let size = value;
+      let unitIndex = 0;
+      while (size >= 1024 && unitIndex < units.length - 1) {
+        size /= 1024;
+        unitIndex += 1;
+      }
+      return `${formatNumber(size)} ${units[unitIndex]}`;
+    }
+
+    function formatModel(model) {
+      const parts = [model.status];
+      if (model.metadata) {
+        parts.push(model.metadata.class, model.metadata.huggingFaceId);
+        const size = formatBytes(model.metadata.size?.bytes);
+        if (size) parts.push(size);
+      } else if (model.name) {
+        parts.push(model.name);
+      }
+      return parts.join(' · ');
+    }
+
     function formatSquareResolution(value) {
       return `${value}x${value}`;
     }
@@ -625,9 +649,7 @@
       elements.cameraStatus.textContent = payload.camera.name
         ? `${payload.camera.status} · ${payload.camera.name}`
         : payload.camera.status;
-      elements.modelStatus.textContent = payload.model.name
-        ? `${payload.model.status} · ${payload.model.name}`
-        : payload.model.status;
+      elements.modelStatus.textContent = formatModel(payload.model);
       elements.runConfig.textContent = `${formatNumber(payload.run.interval)}s window · ${formatNumber(payload.run.fps)} fps · ${formatSquareResolution(payload.run.resolution)}`;
       elements.lastRunDuration.textContent = formatDuration(payload.run.latestRunDuration);
       elements.latestRun.textContent = payload.run.latestRunID

@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -43,7 +44,10 @@ func certXFCC(cert config.CertificateInfo) string {
 	if cert.UserID != "" {
 		return fmt.Sprintf("URI=urn:wendy:org:%d:user:%s", cert.OrganizationID, cert.UserID)
 	}
-	return fmt.Sprintf("URI=urn:wendy:org:%d:user:unknown", cert.OrganizationID)
+	if cert.AssetID != 0 {
+		return fmt.Sprintf("URI=urn:wendy:org:%d:asset:%d", cert.OrganizationID, cert.AssetID)
+	}
+	return ""
 }
 
 func cloudContext(ctx context.Context, auth *config.AuthConfig) context.Context {
@@ -56,8 +60,10 @@ func cloudContext(ctx context.Context, auth *config.AuthConfig) context.Context 
 		md.Set("authorization", "Bearer "+auth.APIKey)
 	}
 	certHeader := certXFCC(cert)
-	md.Set("x-wendy-client-cert", certHeader)
-	md.Set("x-forwarded-client-cert", certHeader)
+	if certHeader != "" {
+		md.Set("x-wendy-client-cert", certHeader)
+		md.Set("x-forwarded-client-cert", certHeader)
+	}
 	return metadata.NewOutgoingContext(ctx, md)
 }
 
@@ -104,9 +110,18 @@ func connectCloudAsset(ctx context.Context, auth *config.AuthConfig, asset *clou
 		closeTunnel()
 		return nil, fmt.Errorf("loading agent mTLS cert: %w", err)
 	}
+	verifyConn, err := certs.BuildServerVerifyConnection(certs.ServerVerifyOpts{
+		ChainPEM:      cert.PemCertificateChain,
+		ExpectedOrgID: int32(cert.OrganizationID),
+	})
+	if err != nil {
+		closeTunnel()
+		return nil, fmt.Errorf("building TLS verifier: %w", err)
+	}
 	tlsCfg := &tls.Config{
 		Certificates:       []tls.Certificate{x509Cert},
-		InsecureSkipVerify: true, //nolint:gosec — agent uses self-signed certs; chain verified server-side
+		InsecureSkipVerify: true, //nolint:gosec — hostname bypass only; VerifyConnection validates server cert against Wendy PKI
+		VerifyConnection:   verifyConn,
 		MinVersion:         tls.VersionTLS12,
 	}
 
@@ -132,6 +147,7 @@ func connectCloudAsset(ctx context.Context, auth *config.AuthConfig, asset *clou
 	agentConn := grpcclient.NewFromConn(grpcConn)
 	agentConn.Host = asset.GetName()
 	agentConn.IsMTLS = true
+	agentConn.CertInfo = &cert
 	agentConn.RegistryDialer = func(ctx context.Context, port int) (net.Conn, error) {
 		return openBrokerTunnel(ctx, brokerConn, auth, asset.GetId(), uint32(port))
 	}
@@ -343,12 +359,31 @@ func resolveCloudAsset(assets []*cloudpb.Asset, deviceName string) (*cloudpb.Ass
 		if matched != nil {
 			return matched, nil
 		}
-		return nil, fmt.Errorf("no device named %q found; omit --device to choose from a list", deviceName)
+		// Numeric asset-id fallback: allows targeting unnamed devices.
+		if id, err := strconv.Atoi(strings.TrimSpace(deviceName)); err == nil {
+			for _, a := range assets {
+				if a.GetId() == int32(id) {
+					return a, nil
+				}
+			}
+		}
+		return nil, fmt.Errorf("no device named or with id %q found; run 'wendy cloud discover --json' to list ids", deviceName)
 	}
 	if len(assets) == 1 {
 		return assets[0], nil
 	}
-	return nil, nil // multiple devices — show picker
+	var b strings.Builder
+	for i, a := range assets {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		name := a.GetName()
+		if name == "" {
+			name = "(unnamed)"
+		}
+		fmt.Fprintf(&b, "%d=%s", a.GetId(), name)
+	}
+	return nil, fmt.Errorf("multiple cloud devices found; rerun with --device <id|name> (%s)", b.String())
 }
 
 func pickCloudDevice(ctx context.Context, auth *config.AuthConfig, deviceName, brokerURL string) (*cloudpb.Asset, error) {
@@ -382,13 +417,16 @@ func pickCloudDevice(ctx context.Context, auth *config.AuthConfig, deviceName, b
 		}
 	}
 
-	asset, err := resolveCloudAsset(assets, deviceName)
-	if err != nil || asset != nil {
-		return asset, err
-	}
-
-	if !isInteractiveTerminal() {
-		return nil, fmt.Errorf("multiple cloud devices found; rerun with --device in a non-interactive environment")
+	// When running interactively with no --device and multiple assets, skip
+	// resolveCloudAsset (which now returns an enumerated error) and fall
+	// straight through to the interactive picker.
+	if isInteractiveTerminal() && deviceName == "" && len(assets) > 1 {
+		// fall through to picker below
+	} else {
+		asset, err := resolveCloudAsset(assets, deviceName)
+		if err != nil || asset != nil {
+			return asset, err
+		}
 	}
 
 	m := newCloudDiscoverModel(ctx, auth, brokerURL, false, true, assets)

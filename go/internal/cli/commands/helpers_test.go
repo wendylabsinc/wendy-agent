@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"net"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
@@ -60,6 +62,66 @@ func TestHostPort(t *testing.T) {
 	}
 }
 
+func TestResolveAgentPlatform(t *testing.T) {
+	tests := []struct {
+		name        string
+		cfgPlatform string
+		agentOS     string
+		agentArch   string
+		want        string
+	}{
+		{
+			name:        "full platform is used as-is",
+			cfgPlatform: "linux/amd64",
+			agentOS:     "darwin",
+			agentArch:   "arm64",
+			want:        "linux/amd64",
+		},
+		{
+			name:        "full wendyos platform is normalized to linux",
+			cfgPlatform: "wendyos/arm64",
+			agentOS:     "darwin",
+			agentArch:   "amd64",
+			want:        "linux/arm64",
+		},
+		{
+			name:        "OS-only platform uses agent architecture",
+			cfgPlatform: "darwin",
+			agentOS:     "linux",
+			agentArch:   "arm64",
+			want:        "darwin/arm64",
+		},
+		{
+			name:        "OS-only wendyos platform is normalized to linux",
+			cfgPlatform: "wendyos",
+			agentOS:     "darwin",
+			agentArch:   "arm64",
+			want:        "linux/arm64",
+		},
+		{
+			name:      "empty platform defaults to linux on Linux agent",
+			agentOS:   "linux",
+			agentArch: "arm64",
+			want:      "linux/arm64",
+		},
+		{
+			name:      "empty platform defaults to linux on Darwin agent",
+			agentOS:   "darwin",
+			agentArch: "arm64",
+			want:      "linux/arm64",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := resolveAgentPlatform(tt.cfgPlatform, tt.agentOS, tt.agentArch)
+			if got != tt.want {
+				t.Fatalf("resolveAgentPlatform(%q, %q, %q) = %q, want %q", tt.cfgPlatform, tt.agentOS, tt.agentArch, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestLANAgentAddressesPrefersIPAddress(t *testing.T) {
 	dev := models.LANDevice{
 		IPAddress: "192.168.1.23",
@@ -87,12 +149,12 @@ func TestExternalProviderPickerHint(t *testing.T) {
 		{
 			name:        "docker",
 			providerKey: providers.ProviderKeyDocker,
-			want:        "Docker Desktop",
+			want:        "Docker",
 		},
 		{
 			name:        "local",
 			providerKey: providers.ProviderKeyLocal,
-			want:        "Local Machine",
+			want:        providers.LocalDisplayName(),
 		},
 		{
 			name:        "other",
@@ -112,6 +174,11 @@ func TestExternalProviderPickerHint(t *testing.T) {
 			}
 			if !strings.Contains(got, tt.want) {
 				t.Fatalf("hint = %q, want it to mention %q", got, tt.want)
+			}
+			for _, stale := range []string{"Docker Desktop", "Local Machine"} {
+				if strings.Contains(got, stale) {
+					t.Fatalf("hint = %q, want long label %q replaced", got, stale)
+				}
 			}
 		})
 	}
@@ -334,6 +401,42 @@ func TestResolveDeviceAddress_DefaultDevice(t *testing.T) {
 	}
 }
 
+func TestResolveDeviceAddress_ExplicitHostPortFlag(t *testing.T) {
+	origFlag := deviceFlag
+	defer func() { deviceFlag = origFlag }()
+	deviceFlag = "my-mac.local:50051"
+
+	addr, isDefault, err := resolveDeviceAddress()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if isDefault {
+		t.Fatal("expected isDefault=false when --device flag is set")
+	}
+	if addr != "my-mac.local:50051" {
+		t.Fatalf("addr = %q, want %q", addr, "my-mac.local:50051")
+	}
+}
+
+func TestResolveDeviceAddress_ExplicitHostPortDefault(t *testing.T) {
+	origFlag := deviceFlag
+	defer func() { deviceFlag = origFlag }()
+	deviceFlag = ""
+
+	setTempConfig(t, &config.Config{DefaultDevice: "my-mac.local:50051"})
+
+	addr, isDefault, err := resolveDeviceAddress()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !isDefault {
+		t.Fatal("expected isDefault=true when using default device from config")
+	}
+	if addr != "my-mac.local:50051" {
+		t.Fatalf("addr = %q, want %q", addr, "my-mac.local:50051")
+	}
+}
+
 func TestResolveDeviceAddress_IPv6ZoneFlag(t *testing.T) {
 	origFlag := deviceFlag
 	defer func() { deviceFlag = origFlag }()
@@ -546,7 +649,7 @@ func TestConnectResolvedAgent_NoAuthProvisionedAgentRequiresLogin(t *testing.T) 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	conn, err := connectResolvedAgentWithProvisionedHint(ctx, "127.0.0.1", plaintextAddr, false, knownProvisionedMTLS)
+	conn, err := connectResolvedAgentWithProvisionedHint(ctx, "127.0.0.1", plaintextAddr, false, func() bool { return knownProvisionedMTLS })
 	if conn != nil {
 		conn.Close()
 		t.Fatal("connectResolvedAgent() returned a connection for an auth-only agent")
@@ -588,7 +691,7 @@ func TestConnectResolvedAgent_ProvisionedAgentPreservesMTLSError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	conn, err := connectResolvedAgentWithProvisionedHint(ctx, "127.0.0.1", plaintextAddr, false, knownProvisionedMTLS)
+	conn, err := connectResolvedAgentWithProvisionedHint(ctx, "127.0.0.1", plaintextAddr, false, func() bool { return knownProvisionedMTLS })
 	if conn != nil {
 		conn.Close()
 		t.Fatal("connectResolvedAgent() returned a connection for an auth-only agent")
@@ -660,6 +763,48 @@ func stubDiscoverLANDevices(t *testing.T, devices []models.LANDevice, err error)
 	})
 }
 
+func TestProvisionedAgentUnauthorizedMentionsCLIUpgrade(t *testing.T) {
+	// A reachability timeout against an mTLS-advertised device should hint at
+	// both stale certs and a too-old CLI.
+	err := newProvisionedAgentUnauthorizedError(errors.New("dial tcp 192.168.1.50:50051: i/o timeout"))
+	msg := err.Error()
+	if !strings.Contains(strings.ToLower(msg), "upgrade") || !strings.Contains(msg, "wendy auth refresh-certs") {
+		t.Fatalf("message should mention upgrading the CLI and refresh-certs, got: %q", msg)
+	}
+}
+
+func TestLanAgentAddressesPrefersUSBLinkLocal(t *testing.T) {
+	tests := []struct {
+		name string
+		dev  models.LANDevice
+		want []string
+	}{
+		{
+			name: "usb present orders link-local before routed wifi ip",
+			dev:  models.LANDevice{Hostname: "playful-reed.local", IPAddress: "192.168.1.50", USB: "en5 (USB Ethernet) 480 Mbps", Port: 50051},
+			want: []string{"playful-reed.local:50051", "192.168.1.50:50051"},
+		},
+		{
+			name: "no usb keeps ip-first ordering",
+			dev:  models.LANDevice{Hostname: "playful-reed.local", IPAddress: "192.168.1.50", Port: 50051},
+			want: []string{"192.168.1.50:50051", "playful-reed.local:50051"},
+		},
+		{
+			name: "usb present but no ip falls back to hostname only",
+			dev:  models.LANDevice{Hostname: "playful-reed.local", USB: "en5 (USB Ethernet) 480 Mbps", Port: 50051},
+			want: []string{"playful-reed.local:50051"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := lanAgentAddresses(tt.dev)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("lanAgentAddresses() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestIsCertRejectionError(t *testing.T) {
 	cases := []struct {
 		name string
@@ -699,5 +844,41 @@ func TestIsCertRejectionError(t *testing.T) {
 				t.Errorf("isCertRejectionError(%v) = %v, want %v", tc.err, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestUpdateCheckTTLCache(t *testing.T) {
+	tmp := t.TempDir()
+	// Redirect os.UserCacheDir() on both darwin ($HOME/Library/Caches) and
+	// linux ($XDG_CACHE_HOME or $HOME/.cache) into the temp dir.
+	t.Setenv("HOME", tmp)
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(tmp, "cache"))
+
+	const host = "device.local"
+
+	if updateCheckRecentlyPassed(host) {
+		t.Fatal("cold: expected no recent pass before any check")
+	}
+
+	markUpdateCheckPassed(host)
+	if !updateCheckRecentlyPassed(host) {
+		t.Fatal("warm: expected recent pass after marking")
+	}
+
+	if updateCheckRecentlyPassed("other.local") {
+		t.Fatal("marker must be per-host")
+	}
+
+	// Backdate the marker beyond the TTL: it must no longer count as recent.
+	path := updateCheckMarkerPath(host)
+	if path == "" {
+		t.Fatal("expected a non-empty marker path")
+	}
+	old := time.Now().Add(-updateCheckTTL - time.Hour)
+	if err := os.Chtimes(path, old, old); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+	if updateCheckRecentlyPassed(host) {
+		t.Fatal("stale: expected marker older than TTL to fail the check")
 	}
 }

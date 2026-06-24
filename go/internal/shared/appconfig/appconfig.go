@@ -41,6 +41,7 @@ const (
 	EntitlementGPIO      = "gpio"
 	EntitlementSPI       = "spi"
 	EntitlementInput     = "input"
+	EntitlementSerial    = "serial"
 	EntitlementMCP       = "mcp"
 )
 
@@ -58,6 +59,7 @@ var ValidEntitlementTypes = []string{
 	EntitlementGPIO,
 	EntitlementSPI,
 	EntitlementInput,
+	EntitlementSerial,
 	EntitlementMCP,
 }
 
@@ -79,11 +81,13 @@ var allowedKeys = map[string][]string{
 	EntitlementGPIO:      {"type", "pins"},
 	EntitlementSPI:       {"type"},
 	EntitlementInput:     {"type"},
+	EntitlementSerial:    {"type", "device"},
 	EntitlementMCP:       {"type", "port"},
 }
 
 // Platform constants identify the target hardware family.
 const (
+	PlatformLinux     = "linux"
 	PlatformWendyOS   = "wendyos"
 	PlatformWendyLite = "wendy-lite"
 	PlatformDarwin    = "darwin"
@@ -105,8 +109,17 @@ type RunConfig struct {
 
 // ROS2Config holds ROS 2 runtime configuration for a container.
 type ROS2Config struct {
-	DomainID int    `json:"domainId,omitempty"`
-	RMW      string `json:"rmw,omitempty"`
+	// DomainID is the explicit ROS_DOMAIN_ID. When nil, a stable hash of
+	// the appId in the range 0–232 is injected instead (WDY-884).
+	DomainID *int `json:"domainId,omitempty"`
+	// RMW selects the ROS middleware implementation. Accepts short names
+	// ("cyclonedds", "fastrtps") or full identifiers ("rmw_cyclonedds_cpp").
+	// Defaults to CycloneDDS.
+	RMW string `json:"rmw,omitempty"`
+	// Distro is the ROS 2 distribution the app targets (e.g. "humble",
+	// "jazzy"). The agent uses it to pick the matching CLI sidecar image.
+	// Defaults to "humble".
+	Distro string `json:"distro,omitempty"`
 }
 
 // FrameworksConfig holds optional framework-level configuration (e.g. ROS 2).
@@ -220,7 +233,7 @@ type Entitlement struct {
 	Allowlist []string      `json:"allowlist,omitempty"` // Camera, Video
 	Name      string        `json:"name,omitempty"`      // Persist
 	Path      string        `json:"path,omitempty"`      // Persist
-	Device    string        `json:"device,omitempty"`    // I2C
+	Device    string        `json:"device,omitempty"`    // I2C, Serial
 	Pins      []int         `json:"pins,omitempty"`      // GPIO
 	Ports     []PortMapping `json:"ports,omitempty"`     // Network
 	Port      int           `json:"port,omitempty"`      // MCP
@@ -299,6 +312,13 @@ func validateEntitlements(entitlements []Entitlement, prefix string) error {
 			}
 			if !isValidI2CDevice(e.Device) {
 				return fmt.Errorf("%s[%d]: i2c device must be in i2c-N format, got %q", prefix, i, e.Device)
+			}
+		case EntitlementSerial:
+			if e.Device == "" {
+				return fmt.Errorf("%s[%d]: serial entitlement requires a device", prefix, i)
+			}
+			if !isValidSerialDevice(e.Device) {
+				return fmt.Errorf("%s[%d]: serial device must be a bare USB tty node name like ttyACM0 or ttyUSB0, got %q", prefix, i, e.Device)
 			}
 		case EntitlementGPIO:
 			// Pins are optional; omitting them grants access to all GPIO chips.
@@ -413,6 +433,12 @@ func (c *AppConfig) Validate() error {
 		}
 	}
 
+	if c.Frameworks != nil {
+		if err := validateROS2Config("frameworks.ros2", c.Frameworks.ROS2); err != nil {
+			return err
+		}
+	}
+
 	for name, svc := range c.Services {
 		if svc == nil {
 			return fmt.Errorf("services[%q]: must not be null", name)
@@ -433,6 +459,11 @@ func (c *AppConfig) Validate() error {
 		}
 		if err := validateEntitlements(svc.Entitlements, fmt.Sprintf("services[%q].entitlement", name)); err != nil {
 			return err
+		}
+		if svc.Frameworks != nil {
+			if err := validateROS2Config(fmt.Sprintf("services[%q].frameworks.ros2", name), svc.Frameworks.ROS2); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -511,6 +542,39 @@ func isValidI2CDevice(device string) bool {
 	return true
 }
 
+// SerialDevicePrefixes is the set of accepted serial tty node-name prefixes for
+// the serial entitlement. Each must be followed by one or more digits (the unit
+// number). The entitlement is deliberately USB-only: USB CDC-ACM (ttyACM*) and
+// USB-serial bridges like FTDI/CH340/CP210x (ttyUSB*). On-board UARTs (ttyAMA*,
+// ttyS*) are excluded — ttyS shares its major with a board's system-console
+// UART, so allowing it adds attack surface for no peripheral benefit. The
+// matching kernel device majors live in the oci package, which builds the cgroup
+// allow rule.
+var SerialDevicePrefixes = []string{"ttyACM", "ttyUSB"}
+
+// isValidSerialDevice reports whether device is a safe serial tty node name: one
+// of SerialDevicePrefixes followed by one or more digits (e.g. "ttyACM0"). The
+// value is a bare node name, not a path — applySerial prepends "/dev/". This
+// rejects anything with slashes or "..", so it cannot escape /dev.
+func isValidSerialDevice(device string) bool {
+	for _, prefix := range SerialDevicePrefixes {
+		if !strings.HasPrefix(device, prefix) {
+			continue
+		}
+		suffix := device[len(prefix):]
+		if suffix == "" {
+			return false
+		}
+		for _, c := range suffix {
+			if c < '0' || c > '9' {
+				return false
+			}
+		}
+		return true
+	}
+	return false
+}
+
 // ValidateJSON checks raw JSON data for non-fatal issues that should surface
 // as user-visible warnings (unknown entitlement keys, deprecated entitlement
 // types, non-portable hook commands) and returns them. Call this after
@@ -524,8 +588,9 @@ func ValidateJSON(data []byte) []string {
 	var warnings []string
 	warnings = append(warnings, validateEntitlementsJSON(raw["entitlements"], "entitlement")...)
 	warnings = append(warnings, validateHooksJSON(raw["hooks"])...)
+	warnings = append(warnings, validateFrameworksJSON(raw["frameworks"], "frameworks")...)
 
-	// Validate service-level entitlements when a services map is present.
+	// Validate service-level entitlements and frameworks when a services map is present.
 	// Unmarshal into map[string]json.RawMessage first so a null/invalid entry
 	// for one service doesn't silently drop warnings for all other services.
 	if servicesRaw, ok := raw["services"]; ok && len(servicesRaw) > 0 {
@@ -538,11 +603,44 @@ func ValidateJSON(data []byte) []string {
 				}
 				prefix := fmt.Sprintf("services[%q].entitlement", name)
 				warnings = append(warnings, validateEntitlementsJSON(svc["entitlements"], prefix)...)
+				warnings = append(warnings, validateFrameworksJSON(svc["frameworks"], fmt.Sprintf("services[%q].frameworks", name))...)
 			}
 		}
 	}
 
 	return warnings
+}
+
+// validateFrameworksJSON warns on unknown keys under frameworks.ros2 so a typo
+// like "domian_id" surfaces instead of being silently ignored (WDY-1706 M5).
+func validateFrameworksJSON(frameworksRaw json.RawMessage, prefix string) []string {
+	if len(frameworksRaw) == 0 {
+		return nil
+	}
+	var fw map[string]json.RawMessage
+	if err := json.Unmarshal(frameworksRaw, &fw); err != nil {
+		return nil
+	}
+	ros2Raw, ok := fw["ros2"]
+	if !ok || len(ros2Raw) == 0 {
+		return nil
+	}
+	var ros2 map[string]json.RawMessage
+	if err := json.Unmarshal(ros2Raw, &ros2); err != nil {
+		return nil
+	}
+	allowed := map[string]bool{"domainId": true, "rmw": true, "distro": true}
+	var unknown []string
+	for k := range ros2 {
+		if !allowed[k] {
+			unknown = append(unknown, k)
+		}
+	}
+	if len(unknown) == 0 {
+		return nil
+	}
+	sort.Strings(unknown)
+	return []string{fmt.Sprintf("Unknown key(s) in %s.ros2: %s. Allowed keys are: distro, domainId, rmw", prefix, strings.Join(unknown, ", "))}
 }
 
 // validateEntitlementsJSON checks raw JSON entitlements for deprecated types

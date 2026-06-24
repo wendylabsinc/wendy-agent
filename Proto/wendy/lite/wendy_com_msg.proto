@@ -1,0 +1,63 @@
+syntax = "proto3";
+
+// Response data for WENDY_COM_CMD_GET_PROTOCOL_VERSION
+message WendyComProtocolVersion {
+    uint32 major = 1;
+    uint32 minor = 2;
+}
+
+// Command parameter messages — empty ones serve as presence markers.
+message WendyComProtocolVersionParams {
+    uint32 major = 1;
+    uint32 minor = 2;
+}
+
+message WendyComPingParams {}
+message WendyComRebootParams {}
+
+// Params for WENDY_COM_CMD_APP_PUSH_BEGIN
+message WendyComAppPushBeginParams {
+    uint32 size = 1;
+}
+
+// Params for WENDY_COM_CMD_APP_PUSH_DATA
+message WendyComAppPushDataParams {
+    uint32 offset = 1;
+    bytes  data   = 2;
+}
+
+message WendyComAppPushEndParams {}
+message WendyComAppStartParams {}
+message WendyComAppStopParams {}
+
+// Top-level command message — the oneof variant identifies the command.
+message WendyComCommand {
+    uint32 request_id = 1;
+    oneof params {
+        WendyComProtocolVersionParams protocol_version = 2;
+        WendyComPingParams            ping             = 3;
+        WendyComRebootParams          reboot           = 4;
+        WendyComAppPushBeginParams    app_push_begin   = 5;
+        WendyComAppPushDataParams     app_push_data    = 6;
+        WendyComAppPushEndParams      app_push_end     = 7;
+        WendyComAppStartParams        app_start        = 8;
+        WendyComAppStopParams         app_stop         = 9;
+    }
+}
+
+enum WendyComResult {
+    WENDY_COM_RESULT_OK                   = 0;
+    WENDY_COM_RESULT_UNKNOWN_ERROR        = 1;
+    WENDY_COM_RESULT_BAD_PROTOCOL_VERSION = 2;
+    WENDY_COM_RESULT_BAD_STATE            = 3;
+    WENDY_COM_RESULT_BUSY                 = 4;
+}
+
+// Response to a WendyComCommand — request_id matches the request.
+message WendyComResponse {
+    uint32         request_id = 1;
+    WendyComResult result     = 2;
+    oneof data {
+        WendyComProtocolVersion protocol_version = 3;
+    }
+}

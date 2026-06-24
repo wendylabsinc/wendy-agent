@@ -23,8 +23,18 @@ func ResolveESP32SerialPort() (string, error) {
 	wantPID := strings.TrimPrefix(models.ESP32ProductID, "0x")
 
 	for _, entry := range entries {
-		vidPath := filepath.Join(entry, "device", "..", "idVendor")
-		pidPath := filepath.Join(entry, "device", "..", "idProduct")
+		deviceSymlink := filepath.Join(entry, "device")
+		resolvedIface, err := filepath.EvalSymlinks(deviceSymlink)
+		if err != nil {
+			continue
+		}
+		// Constrain resolved path to sysfs to prevent traversal via adversarial symlinks.
+		if !strings.HasPrefix(resolvedIface, "/sys/devices/") {
+			continue
+		}
+		usbDevPath := filepath.Dir(resolvedIface)
+		vidPath := filepath.Join(usbDevPath, "idVendor")
+		pidPath := filepath.Join(usbDevPath, "idProduct")
 
 		vid, err := os.ReadFile(vidPath)
 		if err != nil {

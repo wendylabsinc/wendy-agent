@@ -187,8 +187,8 @@ func TestMergedDevices_LANAndBLESameName(t *testing.T) {
 	if d.Bluetooth == nil {
 		t.Fatal("Bluetooth is nil, want non-nil")
 	}
-	if d.ConnectionTypes() != "LAN, Bluetooth" {
-		t.Errorf("ConnectionTypes() = %q, want %q", d.ConnectionTypes(), "LAN, Bluetooth")
+	if d.ConnectionTypes() != "LAN, BLE" {
+		t.Errorf("ConnectionTypes() = %q, want %q", d.ConnectionTypes(), "LAN, BLE")
 	}
 	if d.Address() != "192.168.1.10" {
 		t.Errorf("Address() = %q, want %q", d.Address(), "192.168.1.10")
@@ -240,8 +240,8 @@ func TestMergedDevices_BLEOnly(t *testing.T) {
 	if d.Bluetooth == nil {
 		t.Fatal("Bluetooth should be non-nil")
 	}
-	if d.ConnectionTypes() != "Bluetooth" {
-		t.Errorf("ConnectionTypes() = %q, want %q", d.ConnectionTypes(), "Bluetooth")
+	if d.ConnectionTypes() != "BLE" {
+		t.Errorf("ConnectionTypes() = %q, want %q", d.ConnectionTypes(), "BLE")
 	}
 	if d.Address() != "11:22:33:44:55:66" {
 		t.Errorf("Address() = %q, want BLE address", d.Address())

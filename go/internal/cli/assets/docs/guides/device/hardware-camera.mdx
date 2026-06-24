@@ -17,28 +17,28 @@ The older `video` entitlement is still accepted for compatibility, but new proje
 
 ## Inspect Cameras on a Device
 
-Use the device video commands to see which cameras WendyOS can see:
+Use the device camera commands to see which cameras WendyOS can see:
 
 ```bash
-wendy device video list
+wendy device camera list
 ```
 
-The output includes a device ID, transport type (usb or csi), name, and path such as `/dev/video0`. Use the ID with stream commands:
+The output includes a device ID, transport type (usb or csi), name, and path such as `/dev/video0`. Use the ID with view commands:
 
 ```bash
-wendy device video stream --id 0
+wendy device camera view --id 0
 ```
 
 To request a specific stream shape:
 
 ```bash
-wendy device video stream --id 0 --width 1280 --height 720 --fps 30
+wendy device camera view --id 0 --width 1280 --height 720 --fps 30
 ```
 
 If you want to pipe the encoded stream instead of opening a local preview window:
 
 ```bash
-wendy device video stream --id 0 --stdout
+wendy device camera view --id 0 --stdout
 ```
 
 For broad hardware inspection, filter the device capability list:
@@ -54,6 +54,7 @@ A minimal `wendy.json` camera app looks like this:
 ```json
 {
   "appId": "com.example.camera",
+  "platform": "linux",
   "version": "1.0.0",
   "entitlements": [
     { "type": "camera" }

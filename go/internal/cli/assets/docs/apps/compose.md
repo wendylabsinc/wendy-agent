@@ -70,7 +70,7 @@ Wendy honours the following compose fields. Fields not listed here are ignored.
 | `build` | Build context: a path string or a `{ context, dockerfile, args }` mapping. Custom Dockerfile paths must resolve inside the build context. Services without `build` use a pre-built image via `image`. |
 | `image` | Pre-built image to pull and run on the device (e.g. `redis:7-alpine`). Public image names are normalised to their fully-qualified form automatically. |
 | `command` | Override the container's default command. Accepts a string (shell-split) or a YAML sequence. |
-| `environment` | Parsed from key-value maps or `KEY=VALUE` lists, but not forwarded to device containers yet. |
+| `environment` | Environment variables to inject. Parsed from key-value maps or `KEY=VALUE` lists. Applied in order: image env → compose env → Wendy system vars → framework vars (e.g., ROS2) → OTEL vars. OCI last-wins semantics apply. |
 | `ports` | Port mappings (`host:container`). Adds a `network` entitlement when present. |
 | `network_mode: host` | Adds a `host` network entitlement. |
 | `volumes` | Named volumes are created as `persist` entitlements. Host bind mounts (paths starting with `.` or `/`) are silently skipped. |
@@ -122,8 +122,8 @@ All `wendy run` flags work with compose projects:
 
 ## Limitations
 
-- The `environment:` values are not forwarded to the container at runtime yet — set environment variables in the Dockerfile or via entrypoint scripts as a workaround.
-- Wendy-specific hardware access entitlements such as `gpu`, `camera`, `audio`, `bluetooth`, `usb`, `i2c`, `gpio`, `spi`, and `input` are not inferred from compose fields.
+- Wendy for Mac is not supported. `wendy run` rejects compose projects before any registry or Docker setup when the selected target is Wendy for Mac. Target a Linux/WendyOS device to use compose.
+- Wendy-specific hardware access entitlements such as `gpu`, `camera`, `audio`, `bluetooth`, `usb`, `i2c`, `gpio`, `spi`, `input`, and `serial` are not inferred from compose fields.
 - Service-specific lifecycle behavior is not supported yet: Compose services cannot declare Wendy readiness probes or `postStart` hooks, and top-level `wendy.json` hooks do not apply to generated Compose service apps.
 - Host networking does not imply shared IPC or shared `/dev/shm`; ROS 2 shared-memory transport requires an app shape that can explicitly share namespaces.
 - Linux containers on macOS require a target WendyOS device; local Docker Desktop compose is used as a fallback when no device is targeted.

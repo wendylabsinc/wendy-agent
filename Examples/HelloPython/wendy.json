@@ -1,6 +1,7 @@
 {
     "appId": "sh.wendy.examples.hellopython",
     "version": "1.0.0",
+    "platform": "linux",
     "language": "python",
     "entitlements": [
         {

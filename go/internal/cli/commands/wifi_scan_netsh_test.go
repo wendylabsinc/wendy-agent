@@ -26,6 +26,31 @@ func TestParseNetshNetworks(t *testing.T) {
 		if got[0].SignalStrength != 78 {
 			t.Errorf("SignalStrength = %d, want 78", got[0].SignalStrength)
 		}
+		if got[0].Security != "WPA2" {
+			t.Errorf("Security = %q, want WPA2", got[0].Security)
+		}
+	})
+
+	t.Run("authentication labels are normalized", func(t *testing.T) {
+		input := "SSID 1 : Third\r\n" +
+			"    Authentication          : WPA3-Personal\r\n" +
+			"         Signal             : 70%\r\n" +
+			"SSID 2 : Corp\r\n" +
+			"    Authentication          : WPA2-Enterprise\r\n" +
+			"         Signal             : 60%\r\n" +
+			"SSID 3 : Free\r\n" +
+			"    Authentication          : Open\r\n" +
+			"         Signal             : 50%\r\n"
+		got := parseNetshNetworks(input)
+		if len(got) != 3 {
+			t.Fatalf("got %d networks, want 3: %+v", len(got), got)
+		}
+		want := []string{"WPA3", "WPA2-Ent", "Open"}
+		for i, n := range got {
+			if n.Security != want[i] {
+				t.Errorf("got[%d].Security = %q, want %q", i, n.Security, want[i])
+			}
+		}
 	})
 
 	t.Run("multiple networks preserve order", func(t *testing.T) {
@@ -147,4 +172,29 @@ func TestParseNetshNetworks(t *testing.T) {
 			t.Errorf("SSID = %q, want %q", got[0].SSID, "Café: Wi-Fi")
 		}
 	})
+}
+
+func TestNormalizeWifiSecurity(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"", ""},
+		{"--", "Open"},
+		{"none", "Open"},
+		{"Open", "Open"},
+		{"WEP", "WEP"},
+		{"WPA1 WPA2", "WPA2"},
+		{"WPA2", "WPA2"},
+		{"WPA2 WPA3", "WPA3"},
+		{"WPA3-Personal", "WPA3"},
+		{"WPA2-Enterprise", "WPA2-Ent"},
+		{"WPA2 802.1X", "WPA2-Ent"},
+		{"WPA3-Enterprise", "WPA3-Ent"},
+		{"SAE", "WPA3"},
+		{"OWE", "Open"},
+		{"SomethingElse", ""}, // unknown scan-derived suites are omitted, not echoed
+	}
+	for _, c := range cases {
+		if got := normalizeWifiSecurity(c.in); got != c.want {
+			t.Errorf("normalizeWifiSecurity(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
 }

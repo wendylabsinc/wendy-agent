@@ -172,8 +172,9 @@ func (x *RestartPolicy) GetOnFailureMaxRetries() int32 {
 	return 0
 }
 
-// ServiceEntry describes a single container within a multi-service app group.
-// Only present in AppContainer.services for multi-service apps.
+// ServiceEntry describes a single container within a services-map app group.
+// Present in AppContainer.services for any app that declares named services
+// (single- or multi-service); see AppContainer.services.
 type ServiceEntry struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
@@ -233,8 +234,9 @@ type AppContainer struct {
 	RunningState AppRunningState        `protobuf:"varint,3,opt,name=running_state,json=runningState,proto3,enum=AppRunningState" json:"running_state,omitempty"` // aggregate: RUNNING if any service is running
 	FailureCount uint32                 `protobuf:"varint,4,opt,name=failure_count,json=failureCount,proto3" json:"failure_count,omitempty"`
 	McpPort      uint32                 `protobuf:"varint,5,opt,name=mcp_port,json=mcpPort,proto3" json:"mcp_port,omitempty"`
-	// Non-empty for multi-service (compose) apps; one entry per service container.
-	// Empty for single-service apps.
+	// One entry per service container for apps that declare named services
+	// (single- or multi-service services-map apps). Empty for single-container
+	// apps and flattened single-service apps (those with no service name).
 	Services      []*ServiceEntry `protobuf:"bytes,6,rep,name=services,proto3" json:"services,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

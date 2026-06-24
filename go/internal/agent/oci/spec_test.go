@@ -154,6 +154,37 @@ func TestSpecNamespaces(t *testing.T) {
 	}
 }
 
+func TestDropToMinimalCapabilities(t *testing.T) {
+	spec := DefaultSpec("rootfs", []string{"sleep", "infinity"})
+	DropToMinimalCapabilities(spec)
+	caps := spec.Process.Capabilities
+	if caps == nil {
+		t.Fatal("Capabilities is nil after DropToMinimalCapabilities")
+	}
+	// Assert every capability class is fully empty — this is the primary invariant.
+	// The dangerous-cap loop below is vacuously true when sets are empty; this check
+	// catches regressions where a set is non-empty but happens to miss the short list.
+	for _, set := range [][]string{caps.Bounding, caps.Effective, caps.Permitted, caps.Inheritable, caps.Ambient} {
+		if len(set) != 0 {
+			t.Errorf("expected empty capability set, got %v", set)
+		}
+	}
+	dangerous := []string{"CAP_NET_RAW", "CAP_MKNOD", "CAP_SETUID", "CAP_SETPCAP"}
+	for _, set := range [][]string{caps.Bounding, caps.Effective, caps.Permitted, caps.Inheritable, caps.Ambient} {
+		for _, c := range set {
+			for _, bad := range dangerous {
+				if c == bad {
+					t.Errorf("minimal caps must not include %s", c)
+				}
+			}
+		}
+	}
+	// Verify NoNewPrivileges is preserved.
+	if !spec.Process.NoNewPrivileges {
+		t.Error("NoNewPrivileges must remain true after DropToMinimalCapabilities")
+	}
+}
+
 func TestInjectHostsMount(t *testing.T) {
 	spec := DefaultSpec("rootfs", []string{"/bin/sh"})
 	InjectHostsMount(spec, "/run/wendy/hosts/com.example.app")

@@ -193,15 +193,32 @@ func (n *NMCLINetworkManager) ListWiFiNetworks(ctx context.Context) ([]*agentpb.
 		// columns will be blank.
 		n.logger.Warn("Failed to list saved WiFi profiles; continuing with scan-only results", zap.Error(knownErr))
 	}
+
+	networks := parseWiFiList(string(output), known)
+	n.logger.Info("Listed WiFi networks", zap.Int("count", len(networks)))
+	return networks, nil
+}
+
+// parseWiFiList merges the output of `nmcli -t -f IN-USE,SSID,SIGNAL,SECURITY
+// device wifi list` with the saved profiles, producing one entry per SSID.
+//
+// A single SSID often surfaces on several BSS rows (multi-band APs, mesh nodes,
+// repeaters). nmcli marks IN-USE (`*`) only on the one BSS the device is
+// actually associated with, and sorts the list by signal — so the marked BSS is
+// not necessarily the first row for its SSID. We keep the first (strongest) row
+// for the displayed signal/security but OR the IN-USE marker across every BSS of
+// the SSID. Without this, the "Connected" status flaps off whenever the
+// associated BSS's signal dips below a sibling BSS between polls.
+func parseWiFiList(scanOutput string, known []knownProfile) []*agentpb.ListWiFiNetworksResponse_WiFiNetwork {
 	knownBySSID := make(map[string]knownProfile, len(known))
 	for _, k := range known {
 		knownBySSID[k.SSID] = k
 	}
 
 	var networks []*agentpb.ListWiFiNetworksResponse_WiFiNetwork
-	seen := make(map[string]bool)
+	bySSID := make(map[string]*agentpb.ListWiFiNetworksResponse_WiFiNetwork)
 
-	scanner := bufio.NewScanner(strings.NewReader(string(output)))
+	scanner := bufio.NewScanner(strings.NewReader(scanOutput))
 	for scanner.Scan() {
 		fields := splitNMCLI(scanner.Text(), 4)
 		if len(fields) < 4 {
@@ -209,10 +226,18 @@ func (n *NMCLINetworkManager) ListWiFiNetworks(ctx context.Context) ([]*agentpb.
 		}
 		inUse := strings.TrimSpace(fields[0]) == "*"
 		ssid := fields[1]
-		if ssid == "" || seen[ssid] {
+		if ssid == "" {
 			continue
 		}
-		seen[ssid] = true
+		if existing, ok := bySSID[ssid]; ok {
+			// Another BSS for an SSID we've already recorded. Keep the
+			// stronger first row's display fields, but a connected marker on
+			// any BSS means the SSID is connected.
+			if inUse {
+				existing.IsConnected = true
+			}
+			continue
+		}
 
 		net := &agentpb.ListWiFiNetworksResponse_WiFiNetwork{
 			Ssid:     ssid,
@@ -235,6 +260,7 @@ func (n *NMCLINetworkManager) ListWiFiNetworks(ctx context.Context) ([]*agentpb.
 			delete(knownBySSID, ssid)
 		}
 		networks = append(networks, net)
+		bySSID[ssid] = net
 	}
 
 	// Include saved-but-not-currently-visible networks so the TUI can still
@@ -249,8 +275,7 @@ func (n *NMCLINetworkManager) ListWiFiNetworks(ctx context.Context) ([]*agentpb.
 		})
 	}
 
-	n.logger.Info("Listed WiFi networks", zap.Int("count", len(networks)))
-	return networks, nil
+	return networks
 }
 
 // Connect connects to a WiFi network using nmcli, resolving the binary path

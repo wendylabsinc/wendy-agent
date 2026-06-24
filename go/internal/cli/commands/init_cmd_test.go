@@ -326,8 +326,8 @@ func TestInitCommand_NonInteractiveFlagsCreateProject(t *testing.T) {
 	if cfg.AppID != "demo-app" {
 		t.Fatalf("AppID = %q, want %q", cfg.AppID, "demo-app")
 	}
-	if cfg.Platform != appconfig.PlatformWendyOS {
-		t.Fatalf("Platform = %q, want %q", cfg.Platform, appconfig.PlatformWendyOS)
+	if cfg.Platform != appconfig.PlatformLinux {
+		t.Fatalf("Platform = %q, want %q", cfg.Platform, appconfig.PlatformLinux)
 	}
 	if cfg.Language != "python" {
 		t.Fatalf("Language = %q, want %q", cfg.Language, "python")

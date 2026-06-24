@@ -1,0 +1,173 @@
+#!/usr/bin/env node
+import { createHash } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
+import { existsSync, readFileSync, readSync, rmSync, writeFileSync } from 'node:fs';
+import { basename, dirname, join } from 'node:path';
+import { resolveSceneFile, screencastRoot } from './lib/scene-paths.mjs';
+
+let runPreflight = true;
+let runSetup = false;
+let runTeardown = false;
+let dryRun = false;
+let yes = false;
+let forceCIHooks = false;
+let arg;
+
+function usage() {
+  console.log(`usage: render-tape [options] <scene-dir|tape-file|scene-prefix>
+
+Renders vhs.tape -> vhs.tape.mp4, or any tape file -> <filename>.mp4.
+
+Options:
+  --with-hooks      Run setup and teardown hooks around rendering.
+  --setup           Run hooks/setup.sh before rendering.
+  --teardown        Run hooks/teardown.sh after rendering.
+  --skip-preflight  Do not run hooks/preflight.sh.
+  --yes, -y         Skip confirmation prompts.
+  --force-ci-hooks  Allow hooks in CI. Requires --yes and is refused for dry-run.
+  --dry-run         Print what would run without executing hooks, vhs.sh, or vhs.`);
+}
+
+for (const item of process.argv.slice(2)) {
+  if (item === '--with-hooks') { runSetup = true; runTeardown = true; }
+  else if (item === '--setup') runSetup = true;
+  else if (item === '--teardown') runTeardown = true;
+  else if (item === '--skip-preflight') runPreflight = false;
+  else if (item === '--yes' || item === '-y') yes = true;
+  else if (item === '--force-ci-hooks') forceCIHooks = true;
+  else if (item === '--dry-run') dryRun = true;
+  else if (item === '--help' || item === '-h') { usage(); process.exit(0); }
+  else if (!arg) arg = item;
+  else { console.error(`error: unexpected argument: ${item}`); process.exit(2); }
+}
+if (!arg) { usage(); process.exit(2); }
+if (forceCIHooks && dryRun) {
+  console.error('error: --force-ci-hooks is not meaningful with --dry-run');
+  process.exit(2);
+}
+
+function run(command, args, options = {}) {
+  const result = spawnSync(command, args, { stdio: 'inherit', ...options });
+  if (result.status !== 0) throw new Error(`${command} exited ${result.status}`);
+}
+
+function hookRootFor(source) {
+  const templateRoot = join(screencastRoot, 'template');
+  return source.startsWith(`${templateRoot}/`) ? templateRoot : screencastRoot;
+}
+
+function hookPath(name, hookRoot) {
+  return join(hookRoot, 'hooks', `${name}.sh`);
+}
+
+function verifyHookChecksum(name, hookRoot) {
+  const hook = hookPath(name, hookRoot);
+  const manifest = join(hookRoot, 'hooks', 'CHECKSUMS.sha256');
+  if (!existsSync(manifest)) throw new Error(`missing hook checksum manifest: ${manifest}`);
+
+  const expected = readFileSync(manifest, 'utf8')
+    .split('\n')
+    .map((line) => line.trim().split(/\s+/))
+    .find((parts) => parts.length >= 2 && parts[1] === `${name}.sh`)?.[0];
+  if (!expected) throw new Error(`missing checksum for hook: ${name}.sh`);
+
+  const actual = createHash('sha256').update(readFileSync(hook)).digest('hex');
+  if (actual !== expected) throw new Error(`hook checksum mismatch for ${name}.sh`);
+}
+
+function assertHookAllowed(name, hookRoot) {
+  const hook = hookPath(name, hookRoot);
+  if (!existsSync(hook) || dryRun) return;
+  verifyHookChecksum(name, hookRoot);
+  if (process.env.CI === 'true' && !forceCIHooks) {
+    throw new Error(`refusing to run ${name} hook in CI without --force-ci-hooks --yes`);
+  }
+  if (forceCIHooks && !yes) {
+    throw new Error('--force-ci-hooks requires --yes');
+  }
+}
+
+function runHook(name, hookRoot) {
+  const hook = hookPath(name, hookRoot);
+  if (!existsSync(hook)) return;
+  assertHookAllowed(name, hookRoot);
+  const env = { ...process.env, SCREENCAST_ROOT: hookRoot, SCREENCAST_YES: yes ? '1' : '0', SCREENCAST_DRY_RUN: dryRun ? '1' : '0' };
+  if (dryRun) console.log(`dry-run: ${hook}`);
+  else run(hook, [], { env });
+}
+
+function confirm(tapePath, output) {
+  if (yes || dryRun) return;
+  console.log(`This will render a VHS tape and execute its commands. If ${join(dirname(tapePath), 'vhs.sh')} exists, it will be run first as a command verification step.\n\nTape:   ${tapePath}\nOutput: ${output}\n`);
+  process.stdout.write('Continue? [y/N] ');
+  const buffer = Buffer.alloc(1024);
+  const length = readSync(0, buffer, 0, buffer.length, null);
+  const answer = buffer.toString('utf8', 0, length).trim();
+  if (!['y', 'Y', 'yes', 'YES'].includes(answer)) {
+    console.log('aborted');
+    process.exit(1);
+  }
+}
+
+function renderedTapeContent(tapePath, outputName) {
+  const text = readFileSync(tapePath, 'utf8');
+  const line = `Output ${outputName}`;
+  if (/^Output\s+.*$/m.test(text)) return text.replace(/^Output\s+.*$/m, line);
+  return `${line}\n${text}`;
+}
+
+function runVerificationScript(tapePath, sceneDir) {
+  const verifyScript = join(dirname(tapePath), 'vhs.sh');
+  if (!existsSync(verifyScript)) return;
+  const env = {
+    ...process.env,
+    SCREENCAST_DIR: screencastRoot,
+    SCREENCAST_SCENE_DIR: sceneDir,
+    SCREENCAST_TAPE: tapePath,
+    SCREENCAST_DRY_RUN: dryRun ? '1' : '0',
+  };
+  if (dryRun) console.log(`dry-run: (cd ${sceneDir} && bash ${verifyScript})`);
+  else run('bash', [verifyScript], { cwd: sceneDir, env });
+}
+
+async function main() {
+  if (spawnSync('which', ['vhs'], { stdio: 'ignore' }).status !== 0) {
+    console.error('error: required command not found: vhs');
+    process.exit(2);
+  }
+
+  const { source: tapePath, sceneDir } = await resolveSceneFile(arg, 'vhs.tape');
+  const output = `${tapePath}.mp4`;
+  const outputName = `${basename(tapePath)}.mp4`;
+  const tempTape = join(dirname(tapePath), `.${basename(tapePath)}.render.tape`);
+
+  const hookRoot = hookRootFor(tapePath);
+
+  confirm(tapePath, output);
+  if (runPreflight) runHook('preflight', hookRoot);
+  if (runSetup) runHook('setup', hookRoot);
+  runVerificationScript(tapePath, sceneDir);
+
+  try {
+    const content = renderedTapeContent(tapePath, outputName);
+    if (dryRun) {
+      console.log(`dry-run: write ${tempTape} with Output ${outputName}`);
+      console.log(`dry-run: rm -f ${output}`);
+      console.log(`dry-run: (cd ${sceneDir} && vhs ${tempTape})`);
+    } else {
+      writeFileSync(tempTape, content);
+      run('vhs', ['validate', tempTape]);
+      rmSync(output, { force: true });
+      run('vhs', [tempTape], { cwd: sceneDir });
+      console.log(`wrote ${output}`);
+    }
+  } finally {
+    if (!dryRun) rmSync(tempTape, { force: true });
+    if (runTeardown) runHook('teardown', hookRoot);
+  }
+}
+
+main().catch((error) => {
+  console.error(error.message ?? error);
+  process.exit(1);
+});

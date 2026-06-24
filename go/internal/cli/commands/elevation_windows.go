@@ -3,6 +3,7 @@
 package commands
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -161,3 +162,7 @@ func preAuthElevation() error {
 func elevationHint() string {
 	return "Administrator privileges are required for disk writing."
 }
+
+// keepElevationAlive is a no-op on Windows: UAC elevation is process-wide and
+// does not expire, so there is no credential cache to refresh.
+func keepElevationAlive(_ context.Context) {}

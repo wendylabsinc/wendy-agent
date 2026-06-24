@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 
@@ -13,10 +12,18 @@ import (
 
 func executeCompletion(t *testing.T, args ...string) (stdout, stderr *bytes.Buffer, err error) {
 	t.Helper()
-	// Isolate from host env so --output-dir gives a self-contained sandbox.
-	// Without this, host ZDOTDIR/XDG_* would redirect rc and script paths
-	// outside the test's tmp dir and could clobber the developer's real config.
-	for _, k := range []string{"ZDOTDIR", "XDG_DATA_HOME", "XDG_CONFIG_HOME"} {
+	return executeCompletionInHome(t, t.TempDir(), args...)
+}
+
+func executeCompletionInHome(t *testing.T, home string, args ...string) (stdout, stderr *bytes.Buffer, err error) {
+	t.Helper()
+	// Isolate from host env so the command uses a self-contained sandbox.
+	// Without this, host home/ZDOTDIR/XDG_* values could redirect rc and script
+	// paths outside the test's tmp dir and clobber the developer's real config.
+	for _, k := range []string{"HOME", "USERPROFILE"} {
+		t.Setenv(k, home)
+	}
+	for _, k := range []string{"HOMEDRIVE", "HOMEPATH", "ZDOTDIR", "XDG_DATA_HOME", "XDG_CONFIG_HOME"} {
 		t.Setenv(k, "")
 	}
 	root := NewRootCmd()
@@ -237,12 +244,38 @@ func TestComputeInstallPlan_UnsupportedShell(t *testing.T) {
 	}
 }
 
-func TestInstall_WritesFile(t *testing.T) {
-	tmp := t.TempDir()
-	stdout, _, err := executeCompletion(t,
+func TestInstall_HelpDoesNotExposeOutputDir(t *testing.T) {
+	stdout, _, err := executeCompletion(t, "completion", "install", "--help")
+	if err != nil {
+		t.Fatalf("install --help: %v", err)
+	}
+	if strings.Contains(stdout.String(), "output-dir") {
+		t.Errorf("install help exposed output-dir seam: %s", stdout.String())
+	}
+}
+
+func TestInstall_OutputDirRejected(t *testing.T) {
+	stdout, stderr, err := executeCompletion(t,
 		"completion", "install",
 		"--shell", "fish",
-		"--output-dir", tmp,
+		"--output-dir", t.TempDir(),
+	)
+	if err == nil {
+		t.Fatal("expected --output-dir to be rejected")
+	}
+	if stdout.Len() != 0 {
+		t.Errorf("unexpected stdout: %s", stdout.String())
+	}
+	if !strings.Contains(err.Error(), "unknown flag: --output-dir") && !strings.Contains(stderr.String(), "unknown flag: --output-dir") {
+		t.Errorf("missing unknown flag diagnostic; err: %v; stderr: %s", err, stderr.String())
+	}
+}
+
+func TestInstall_WritesFile(t *testing.T) {
+	tmp := t.TempDir()
+	stdout, _, err := executeCompletionInHome(t, tmp,
+		"completion", "install",
+		"--shell", "fish",
 	)
 	if err != nil {
 		t.Fatalf("install: %v\nstdout: %s", err, stdout.String())
@@ -266,10 +299,9 @@ func TestInstall_Stdout(t *testing.T) {
 	for _, shell := range []string{"bash", "zsh", "fish", "powershell"} {
 		t.Run(shell, func(t *testing.T) {
 			tmp := t.TempDir()
-			stdout, _, err := executeCompletion(t,
+			stdout, _, err := executeCompletionInHome(t, tmp,
 				"completion", "install",
 				"--shell", shell,
-				"--output-dir", tmp,
 				"--stdout",
 			)
 			if err != nil {
@@ -295,11 +327,9 @@ func TestInstall_Stdout(t *testing.T) {
 }
 
 func TestInstall_StdoutAndPrintPathConflict(t *testing.T) {
-	tmp := t.TempDir()
 	_, _, err := executeCompletion(t,
 		"completion", "install",
 		"--shell", "bash",
-		"--output-dir", tmp,
 		"--stdout",
 		"--print-path",
 	)
@@ -310,10 +340,9 @@ func TestInstall_StdoutAndPrintPathConflict(t *testing.T) {
 
 func TestInstall_PrintPath(t *testing.T) {
 	tmp := t.TempDir()
-	stdout, _, err := executeCompletion(t,
+	stdout, _, err := executeCompletionInHome(t, tmp,
 		"completion", "install",
 		"--shell", "zsh",
-		"--output-dir", tmp,
 		"--print-path",
 	)
 	if err != nil {
@@ -338,10 +367,9 @@ func TestInstall_RcLineIdempotent(t *testing.T) {
 	tmp := t.TempDir()
 
 	// First install: should add the sentinel block.
-	if _, _, err := executeCompletion(t,
+	if _, _, err := executeCompletionInHome(t, tmp,
 		"completion", "install",
 		"--shell", "zsh",
-		"--output-dir", tmp,
 	); err != nil {
 		t.Fatalf("install 1: %v", err)
 	}
@@ -356,10 +384,9 @@ func TestInstall_RcLineIdempotent(t *testing.T) {
 	}
 
 	// Second install: must not re-append.
-	if _, _, err := executeCompletion(t,
+	if _, _, err := executeCompletionInHome(t, tmp,
 		"completion", "install",
 		"--shell", "zsh",
-		"--output-dir", tmp,
 	); err != nil {
 		t.Fatalf("install 2: %v", err)
 	}
@@ -431,28 +458,5 @@ func TestEnsureBlockInFile_AppendsLeadingNewline(t *testing.T) {
 	want := "existing-line-no-newline\n# sentinel\nblock-line\n"
 	if string(got) != want {
 		t.Errorf("got %q; want %q", got, want)
-	}
-}
-
-func TestResolveHome_Override(t *testing.T) {
-	got, err := resolveHome("/tmp/x")
-	if err != nil {
-		t.Fatalf("resolveHome: %v", err)
-	}
-	if got != "/tmp/x" {
-		t.Errorf("got %q; want %q", got, "/tmp/x")
-	}
-}
-
-func TestResolveHome_Default(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("UserHomeDir behavior on Windows depends on env not set in CI")
-	}
-	got, err := resolveHome("")
-	if err != nil {
-		t.Fatalf("resolveHome: %v", err)
-	}
-	if got == "" {
-		t.Error("expected non-empty home")
 	}
 }

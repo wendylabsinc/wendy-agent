@@ -174,13 +174,38 @@ func formatError(err error) error {
 	case strings.Contains(msg, "code = DeadlineExceeded"):
 		return fmt.Errorf("%sConnection timed out.", prefix)
 	case strings.Contains(msg, "code = Unimplemented"):
+		// Preserve intentional, contextual Unimplemented descriptions from the
+		// agent (for example Wendy Agent for Mac feature gaps). Keep the legacy
+		// update hint only for generic protocol-mismatch responses where gRPC or
+		// an old agent did not recognize the service/method.
+		if desc, ok := grpcDesc(msg); ok && !isGenericUnimplementedDesc(desc) {
+			return fmt.Errorf("%s%s", prefix, desc)
+		}
 		return fmt.Errorf("%sNot supported by this agent version. Try updating the agent.", prefix)
 	default:
 		// Strip transport noise, keep the desc message.
-		if idx := strings.Index(msg, "desc = "); idx >= 0 {
-			desc := msg[idx+len("desc = "):]
+		if desc, ok := grpcDesc(msg); ok {
 			return fmt.Errorf("%s%s", prefix, desc)
 		}
 		return err
 	}
+}
+
+func grpcDesc(msg string) (string, bool) {
+	idx := strings.Index(msg, "desc = ")
+	if idx < 0 {
+		return "", false
+	}
+	desc := strings.TrimSpace(msg[idx+len("desc = "):])
+	return desc, desc != ""
+}
+
+func isGenericUnimplementedDesc(desc string) bool {
+	lower := strings.ToLower(strings.TrimSpace(desc))
+	if lower == "" {
+		return true
+	}
+	return strings.HasPrefix(lower, "unknown service ") ||
+		strings.HasPrefix(lower, "unknown method ") ||
+		(strings.HasPrefix(lower, "method ") && strings.HasSuffix(lower, " not implemented"))
 }

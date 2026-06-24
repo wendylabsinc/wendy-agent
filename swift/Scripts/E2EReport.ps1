@@ -37,17 +37,14 @@ Write-Output "    Run dir: $script:RunDir"
 Write-Output "    Output:  $ReportPath"
 
 $resultPaths = @()
-Get-ChildItem -LiteralPath $script:RunDir -Directory | ForEach-Object {
-    $suiteDir = $_.FullName
-    Get-ChildItem -LiteralPath $suiteDir -Directory | ForEach-Object {
-        $testDir = $_.FullName
-        Get-ChildItem -LiteralPath $testDir -Directory | ForEach-Object {
-            $targetDir = $_.FullName
-            Get-ChildItem -LiteralPath $targetDir -Directory | ForEach-Object {
-                $candidate = Join-Path $_.FullName 'test-results.xml'
-                if (Test-Path -LiteralPath $candidate -PathType Leaf) {
-                    $resultPaths += $candidate
-                }
+$attemptsDir = Join-Path $script:RunDir 'attempts'
+if (Test-Path -LiteralPath $attemptsDir -PathType Container) {
+    Get-ChildItem -LiteralPath $attemptsDir -Directory | ForEach-Object {
+        $targetDir = $_.FullName
+        Get-ChildItem -LiteralPath $targetDir -Directory | ForEach-Object {
+            $candidate = Join-Path $_.FullName 'test-results.xml'
+            if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+                $resultPaths += $candidate
             }
         }
     }

@@ -1,5 +1,6 @@
 {
     "appId": "engineer.edge.examples.invalidconfig",
+    "platform": "linux",
     "version": "1.0.0",
     "language": "swift",
     "entitlements": [

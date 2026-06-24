@@ -21,8 +21,19 @@ type localBuildContext struct {
 // LocalProvider builds and runs applications on the local machine.
 type LocalProvider struct{}
 
+// LocalDisplayName is the user-facing name for the local machine, e.g.
+// "This Mac" on macOS and "This PC" elsewhere.
+func LocalDisplayName() string { return localDisplayNameFor(runtime.GOOS) }
+
+func localDisplayNameFor(goos string) string {
+	if goos == "darwin" {
+		return "This Mac"
+	}
+	return "This PC"
+}
+
 func (p *LocalProvider) Key() string         { return ProviderKeyLocal }
-func (p *LocalProvider) DisplayName() string { return "This Device" }
+func (p *LocalProvider) DisplayName() string { return LocalDisplayName() }
 
 func (p *LocalProvider) IsAvailable(_ context.Context) bool { return true }
 
@@ -32,7 +43,7 @@ func (p *LocalProvider) DiscoverDevices(_ context.Context) ([]models.ExternalDev
 	return []models.ExternalDevice{
 		{
 			ID:              "local",
-			DisplayName:     "Local Machine",
+			DisplayName:     LocalDisplayName(),
 			ProviderKey:     p.Key(),
 			IsWendyDevice:   false,
 			OS:              runtime.GOOS,

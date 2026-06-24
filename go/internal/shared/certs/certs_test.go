@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/asn1"
 	"encoding/pem"
 	"math/big"
 	"strings"
@@ -264,5 +265,115 @@ func TestGenerateAndCSR_RoundTrip(t *testing.T) {
 
 	if csrPub.X.Cmp(extPub.X) != 0 || csrPub.Y.Cmp(extPub.Y) != 0 {
 		t.Error("CSR public key does not match extracted public key")
+	}
+}
+
+func TestGenerateCSRRequestsClientAuthUsage(t *testing.T) {
+	keyPEM, err := GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("GenerateKeyPair() error = %v", err)
+	}
+
+	csrPEM, err := GenerateCSR([]byte(keyPEM), "wendy/user/abc")
+	if err != nil {
+		t.Fatalf("GenerateCSR() error = %v", err)
+	}
+
+	block, _ := pem.Decode([]byte(csrPEM))
+	csr, err := x509.ParseCertificateRequest(block.Bytes)
+	if err != nil {
+		t.Fatalf("parsing generated CSR: %v", err)
+	}
+	if err := csr.CheckSignature(); err != nil {
+		t.Fatalf("CSR signature invalid: %v", err)
+	}
+
+	var keyUsage asn1.BitString
+	var ekus []asn1.ObjectIdentifier
+	for _, ext := range csr.Extensions {
+		switch {
+		case ext.Id.Equal(asn1.ObjectIdentifier{2, 5, 29, 15}):
+			if _, err := asn1.Unmarshal(ext.Value, &keyUsage); err != nil {
+				t.Fatalf("unmarshaling key usage: %v", err)
+			}
+		case ext.Id.Equal(asn1.ObjectIdentifier{2, 5, 29, 37}):
+			if _, err := asn1.Unmarshal(ext.Value, &ekus); err != nil {
+				t.Fatalf("unmarshaling extended key usage: %v", err)
+			}
+		}
+	}
+
+	// digitalSignature is bit 0 of the KeyUsage BIT STRING.
+	if keyUsage.BitLength == 0 || keyUsage.At(0) != 1 {
+		t.Errorf("CSR key usage missing digitalSignature, got %v", keyUsage)
+	}
+
+	clientAuthOID := asn1.ObjectIdentifier{1, 3, 6, 1, 5, 5, 7, 3, 2}
+	found := false
+	for _, oid := range ekus {
+		if oid.Equal(clientAuthOID) {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("CSR extended key usage missing clientAuth, got %v", ekus)
+	}
+
+	// The default (no explicit usages) must remain clientAuth-only so user/CLI
+	// certs stay scoped to client authentication.
+	serverAuthOID := asn1.ObjectIdentifier{1, 3, 6, 1, 5, 5, 7, 3, 1}
+	for _, oid := range ekus {
+		if oid.Equal(serverAuthOID) {
+			t.Errorf("default CSR extended key usage unexpectedly includes serverAuth, got %v", ekus)
+		}
+	}
+}
+
+func TestGenerateCSRRequestsClientAndServerAuthUsage(t *testing.T) {
+	keyPEM, err := GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("GenerateKeyPair() error = %v", err)
+	}
+
+	csrPEM, err := GenerateCSR([]byte(keyPEM), "sh/wendy/1/2",
+		x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth)
+	if err != nil {
+		t.Fatalf("GenerateCSR() error = %v", err)
+	}
+
+	block, _ := pem.Decode([]byte(csrPEM))
+	csr, err := x509.ParseCertificateRequest(block.Bytes)
+	if err != nil {
+		t.Fatalf("parsing generated CSR: %v", err)
+	}
+	if err := csr.CheckSignature(); err != nil {
+		t.Fatalf("CSR signature invalid: %v", err)
+	}
+
+	var ekus []asn1.ObjectIdentifier
+	for _, ext := range csr.Extensions {
+		if ext.Id.Equal(asn1.ObjectIdentifier{2, 5, 29, 37}) {
+			if _, err := asn1.Unmarshal(ext.Value, &ekus); err != nil {
+				t.Fatalf("unmarshaling extended key usage: %v", err)
+			}
+		}
+	}
+
+	clientAuthOID := asn1.ObjectIdentifier{1, 3, 6, 1, 5, 5, 7, 3, 2}
+	serverAuthOID := asn1.ObjectIdentifier{1, 3, 6, 1, 5, 5, 7, 3, 1}
+	var hasClient, hasServer bool
+	for _, oid := range ekus {
+		if oid.Equal(clientAuthOID) {
+			hasClient = true
+		}
+		if oid.Equal(serverAuthOID) {
+			hasServer = true
+		}
+	}
+	if !hasClient {
+		t.Errorf("CSR extended key usage missing clientAuth, got %v", ekus)
+	}
+	if !hasServer {
+		t.Errorf("CSR extended key usage missing serverAuth, got %v", ekus)
 	}
 }

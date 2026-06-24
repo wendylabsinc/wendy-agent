@@ -27,7 +27,7 @@ func TestNewOSInstallCmd_Flags(t *testing.T) {
 		t.Errorf("Use = %q; want %q", cmd.Use, "install [image] [drive]")
 	}
 
-	expectedFlags := []string{"nightly", "force", "yes-overwrite-internal", "device-type", "version", "drive", "wifi-ssid", "wifi-password", "wifi", "no-wifi", "device-name"}
+	expectedFlags := []string{"nightly", "force", "yes-overwrite-internal", "device-type", "version", "drive", "wifi-ssid", "wifi-password", "wifi", "no-wifi", "device-name", "storage", "no-bmap"}
 	for _, name := range expectedFlags {
 		if cmd.Flags().Lookup(name) == nil {
 			t.Errorf("missing flag %q", name)
@@ -65,7 +65,7 @@ func TestNewOSInstallCmd_PositionalArgsIncompatibleWithFlags(t *testing.T) {
 			if err == nil {
 				t.Fatal("expected error when positional args are combined with manifest flags")
 			}
-			expected := "positional [image] [drive] arguments cannot be combined with --device-type, --version, --drive, --wifi-ssid, --wifi-password, --wifi, --no-wifi, or --device-name"
+			expected := "positional [image] [drive] arguments cannot be combined with --device-type, --version, --drive, --wifi-ssid, --wifi-password, --wifi, --no-wifi, --device-name, or --cloud-grpc"
 			if got := err.Error(); got != expected {
 				t.Errorf("unexpected error: %q; want %q", got, expected)
 			}
@@ -134,7 +134,7 @@ func TestPickManifestVersion_SemverOrdering(t *testing.T) {
 
 func TestOsCachedImagePath_Sanitization(t *testing.T) {
 	// Valid inputs should produce a valid path.
-	path, err := osCachedImagePath("raspberry-pi-5", "0.10.4")
+	path, err := osCachedImagePath("raspberry-pi-5", "0.10.4", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -143,20 +143,26 @@ func TestOsCachedImagePath_Sanitization(t *testing.T) {
 	}
 
 	// Path traversal in version should be rejected.
-	_, err = osCachedImagePath("raspberry-pi-5", "../../../etc/passwd")
+	_, err = osCachedImagePath("raspberry-pi-5", "../../../etc/passwd", "")
 	if err == nil {
 		t.Fatal("expected error for path traversal in version")
 	}
 
 	// Path traversal in device key should be rejected.
-	_, err = osCachedImagePath("../evil", "0.10.4")
+	_, err = osCachedImagePath("../evil", "0.10.4", "")
 	if err == nil {
 		t.Fatal("expected error for path traversal in device key")
+	}
+
+	// Path traversal in storage key should be rejected.
+	_, err = osCachedImagePath("raspberry-pi-5", "0.10.4", "../evil")
+	if err == nil {
+		t.Fatal("expected error for path traversal in storage key")
 	}
 }
 
 func TestOsCachedZipPath_Sanitization(t *testing.T) {
-	path, err := osCachedZipPath("raspberry-pi-5", "0.10.4")
+	path, err := osCachedZipPath("raspberry-pi-5", "0.10.4", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -164,14 +170,45 @@ func TestOsCachedZipPath_Sanitization(t *testing.T) {
 		t.Fatalf("expected .zip suffix, got %q", path)
 	}
 
-	_, err = osCachedZipPath("raspberry-pi-5", "../../../etc/passwd")
+	_, err = osCachedZipPath("raspberry-pi-5", "../../../etc/passwd", "")
 	if err == nil {
 		t.Fatal("expected error for path traversal in version")
 	}
 
-	_, err = osCachedZipPath("../evil", "0.10.4")
+	_, err = osCachedZipPath("../evil", "0.10.4", "")
 	if err == nil {
 		t.Fatal("expected error for path traversal in device key")
+	}
+}
+
+// The storage key, when set, becomes part of the cache filename so an SD image
+// and an NVMe image of the same device+version never collide on one file.
+func TestOsCachedPath_StorageKeyed(t *testing.T) {
+	sd, err := osCachedZipPath("raspberry-pi-5", "0.16.0", "sd")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	nvme, err := osCachedZipPath("raspberry-pi-5", "0.16.0", "nvme")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if sd == nvme {
+		t.Fatalf("sd and nvme cache paths must differ, both = %q", sd)
+	}
+	if !strings.HasSuffix(sd, "raspberry-pi-5-0.16.0-sd.zip") {
+		t.Errorf("unexpected sd cache path: %q", sd)
+	}
+	if !strings.HasSuffix(nvme, "raspberry-pi-5-0.16.0-nvme.zip") {
+		t.Errorf("unexpected nvme cache path: %q", nvme)
+	}
+
+	// Empty storage keeps the legacy (unsuffixed) name for backward compat.
+	legacy, err := osCachedZipPath("raspberry-pi-5", "0.16.0", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.HasSuffix(legacy, "raspberry-pi-5-0.16.0.zip") {
+		t.Errorf("unexpected legacy cache path: %q", legacy)
 	}
 }
 
@@ -202,15 +239,15 @@ func TestStreamZipImageEntry(t *testing.T) {
 
 	t.Run("reads img entry", func(t *testing.T) {
 		zipPath := makeTestZip(t, "wendyos.img", content)
-		r, size, err := streamZipImageEntry(zipPath)
+		stream, err := streamZipImageEntry(zipPath)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		defer r.Close()
-		if size != int64(len(content)) {
-			t.Errorf("size = %d; want %d", size, len(content))
+		defer stream.Close()
+		if stream.uncompressedSize != int64(len(content)) {
+			t.Errorf("uncompressedSize = %d; want %d", stream.uncompressedSize, len(content))
 		}
-		got, err := io.ReadAll(r)
+		got, err := io.ReadAll(stream)
 		if err != nil {
 			t.Fatalf("reading: %v", err)
 		}
@@ -221,41 +258,41 @@ func TestStreamZipImageEntry(t *testing.T) {
 
 	t.Run("reads raw entry", func(t *testing.T) {
 		zipPath := makeTestZip(t, "wendyos.raw", content)
-		r, _, err := streamZipImageEntry(zipPath)
+		stream, err := streamZipImageEntry(zipPath)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		r.Close()
+		stream.Close()
 	})
 
 	t.Run("reads wic entry", func(t *testing.T) {
 		zipPath := makeTestZip(t, "wendyos.wic", content)
-		r, _, err := streamZipImageEntry(zipPath)
+		stream, err := streamZipImageEntry(zipPath)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		r.Close()
+		stream.Close()
 	})
 
 	t.Run("reads sdimg entry", func(t *testing.T) {
 		zipPath := makeTestZip(t, "wendyos.sdimg", content)
-		r, _, err := streamZipImageEntry(zipPath)
+		stream, err := streamZipImageEntry(zipPath)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		r.Close()
+		stream.Close()
 	})
 
 	t.Run("no image entry returns error", func(t *testing.T) {
 		zipPath := makeTestZip(t, "readme.txt", content)
-		_, _, err := streamZipImageEntry(zipPath)
+		_, err := streamZipImageEntry(zipPath)
 		if err == nil {
 			t.Fatal("expected error for zip with no image entry")
 		}
 	})
 
 	t.Run("nonexistent file returns error", func(t *testing.T) {
-		_, _, err := streamZipImageEntry("/nonexistent/path/image.zip")
+		_, err := streamZipImageEntry("/nonexistent/path/image.zip")
 		if err == nil {
 			t.Fatal("expected error for nonexistent file")
 		}
@@ -322,30 +359,206 @@ func TestIsGzipFile(t *testing.T) {
 func TestStreamGzipImage(t *testing.T) {
 	content := []byte("fake decompressed wendyos image payload")
 
-	t.Run("decompresses content and reports ISIZE", func(t *testing.T) {
+	t.Run("decompresses content and reports compressed progress", func(t *testing.T) {
 		path := makeTestGzip(t, "image-*.img.gz", content)
-		r, size, err := streamGzipImage(path)
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		stream, err := streamGzipImage(path)
 		if err != nil {
 			t.Fatalf("streamGzipImage() error = %v", err)
 		}
-		defer r.Close()
+		defer stream.Close()
 
-		if size != int64(len(content)) {
-			t.Errorf("size = %d; want %d (gzip ISIZE trailer)", size, len(content))
+		// gzip's ISIZE trailer stores the uncompressed size mod 2^32, so it
+		// must never be trusted: a 19.2 GiB image reports 3.2 GiB and the
+		// progress bar overshoots its total (WDY: writing 17.3 GiB / 3.2 GiB).
+		if stream.uncompressedSize != 0 {
+			t.Errorf("uncompressedSize = %d; want 0 (unknown before measuring)", stream.uncompressedSize)
+		}
+		if stream.compressedSize != info.Size() {
+			t.Errorf("compressedSize = %d; want %d (gzip file size)", stream.compressedSize, info.Size())
+		}
+		if stream.compressedRead == nil {
+			t.Fatal("compressedRead = nil; want counter over the compressed source")
+		}
+		if stream.sourcePath != path {
+			t.Errorf("sourcePath = %q; want %q (needed for measuring)", stream.sourcePath, path)
 		}
 
-		got, err := io.ReadAll(r)
+		got, err := io.ReadAll(stream)
 		if err != nil {
 			t.Fatalf("reading decompressed stream: %v", err)
 		}
 		if !bytes.Equal(got, content) {
 			t.Errorf("decompressed content = %q; want %q", got, content)
 		}
+		if read := stream.compressedRead(); read != info.Size() {
+			t.Errorf("compressedRead() after full read = %d; want %d", read, info.Size())
+		}
 	})
 
 	t.Run("nonexistent file returns error", func(t *testing.T) {
-		if _, _, err := streamGzipImage("/nonexistent/path/image.img.gz"); err == nil {
+		if _, err := streamGzipImage("/nonexistent/path/image.img.gz"); err == nil {
 			t.Fatal("expected error for nonexistent file")
+		}
+	})
+}
+
+func TestMeasureGzipImage(t *testing.T) {
+	// Zero-heavy payload mimicking a sparse disk image: the decompressed size
+	// vastly exceeds the compressed size, the case where the ISIZE trailer
+	// and compressed-progress heuristics both mislead.
+	content := make([]byte, 4<<20)
+	copy(content, []byte("partition data at the front"))
+	path := makeTestGzip(t, "image-*.img.gz", content)
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var lastRead, lastTotal int64
+	size, err := measureGzipImage(path, func(read, total int64) { lastRead, lastTotal = read, total })
+	if err != nil {
+		t.Fatalf("measureGzipImage() error = %v", err)
+	}
+	if size != int64(len(content)) {
+		t.Errorf("size = %d; want %d (exact decompressed size)", size, len(content))
+	}
+	if lastTotal != info.Size() {
+		t.Errorf("progress total = %d; want %d (compressed file size)", lastTotal, info.Size())
+	}
+	if lastRead != info.Size() {
+		t.Errorf("final progress read = %d; want %d (whole compressed file)", lastRead, info.Size())
+	}
+
+	t.Run("nil progress is allowed", func(t *testing.T) {
+		if _, err := measureGzipImage(path, nil); err != nil {
+			t.Fatalf("measureGzipImage() error = %v", err)
+		}
+	})
+
+	t.Run("corrupt file returns error", func(t *testing.T) {
+		bad := makeTestPlainFile(t, "image-*.img.gz", []byte("not gzip at all"))
+		if _, err := measureGzipImage(bad, nil); err == nil {
+			t.Fatal("expected error for non-gzip file")
+		}
+	})
+}
+
+func TestImageStreamMeasureUncompressedSize(t *testing.T) {
+	content := bytes.Repeat([]byte("wendyos"), 1<<16)
+
+	t.Run("measures once and caches in a sidecar", func(t *testing.T) {
+		path := makeTestGzip(t, "image-*.img.gz", content)
+
+		stream, err := streamGzipImage(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer stream.Close()
+		if stream.uncompressedSize != 0 {
+			t.Fatalf("uncompressedSize = %d before measuring; want 0", stream.uncompressedSize)
+		}
+
+		if err := stream.measureUncompressedSize(nil); err != nil {
+			t.Fatalf("measureUncompressedSize() error = %v", err)
+		}
+		if stream.uncompressedSize != int64(len(content)) {
+			t.Errorf("uncompressedSize = %d; want %d", stream.uncompressedSize, len(content))
+		}
+
+		// A fresh stream over the same file must pick the size up from the
+		// sidecar without another measuring pass.
+		again, err := streamGzipImage(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer again.Close()
+		if again.uncompressedSize != int64(len(content)) {
+			t.Errorf("uncompressedSize from sidecar = %d; want %d", again.uncompressedSize, len(content))
+		}
+	})
+
+	t.Run("stale sidecar is ignored", func(t *testing.T) {
+		path := makeTestGzip(t, "image-*.img.gz", content)
+		// Sidecar recorded against a different compressed size — e.g. the
+		// cached image was replaced by a new version under the same name.
+		writeImageSizeSidecar(path, 12345, 99999)
+
+		stream, err := streamGzipImage(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer stream.Close()
+		if stream.uncompressedSize != 0 {
+			t.Errorf("uncompressedSize = %d; want 0 (stale sidecar must be ignored)", stream.uncompressedSize)
+		}
+	})
+
+	t.Run("no-op when size already known", func(t *testing.T) {
+		s := &imageStream{uncompressedSize: 42}
+		if err := s.measureUncompressedSize(nil); err != nil {
+			t.Fatalf("measureUncompressedSize() error = %v", err)
+		}
+		if s.uncompressedSize != 42 {
+			t.Errorf("uncompressedSize = %d; want 42 (unchanged)", s.uncompressedSize)
+		}
+	})
+
+	t.Run("no-op without a source path", func(t *testing.T) {
+		s := &imageStream{}
+		if err := s.measureUncompressedSize(nil); err != nil {
+			t.Fatalf("measureUncompressedSize() error = %v", err)
+		}
+		if s.uncompressedSize != 0 {
+			t.Errorf("uncompressedSize = %d; want 0", s.uncompressedSize)
+		}
+	})
+}
+
+func TestImageStreamWriteProgressMsg(t *testing.T) {
+	t.Run("exact uncompressed size drives percent and total", func(t *testing.T) {
+		s := &imageStream{uncompressedSize: 200}
+		msg, ok := s.writeProgressMsg(50)
+		if !ok {
+			t.Fatal("writeProgressMsg() ok = false; want true")
+		}
+		if msg.Percent != 0.25 {
+			t.Errorf("Percent = %v; want 0.25", msg.Percent)
+		}
+		if msg.Written != 50 || msg.Total != 200 {
+			t.Errorf("Written/Total = %d/%d; want 50/200", msg.Written, msg.Total)
+		}
+	})
+
+	t.Run("unknown size falls back to compressed progress without a total", func(t *testing.T) {
+		s := &imageStream{
+			compressedRead: func() int64 { return 75 },
+			compressedSize: 100,
+		}
+		const written = int64(18_575_000_000) // ~17.3 GiB, far past any bogus total
+		msg, ok := s.writeProgressMsg(written)
+		if !ok {
+			t.Fatal("writeProgressMsg() ok = false; want true")
+		}
+		if msg.Percent != 0.75 {
+			t.Errorf("Percent = %v; want 0.75 (compressed bytes consumed)", msg.Percent)
+		}
+		if msg.Written != written {
+			t.Errorf("Written = %d; want %d", msg.Written, written)
+		}
+		if msg.Total != 0 {
+			t.Errorf("Total = %d; want 0 (unknown, must not render a bogus total)", msg.Total)
+		}
+	})
+
+	t.Run("no size information yields no update", func(t *testing.T) {
+		s := &imageStream{}
+		if _, ok := s.writeProgressMsg(50); ok {
+			t.Error("writeProgressMsg() ok = true; want false with no size info")
 		}
 	})
 }
@@ -497,14 +710,150 @@ func TestResolveDeviceNameInteractiveBlankReturnsEmpty(t *testing.T) {
 	}
 }
 
+// stubWifiPrompts replaces all interactive prompt hooks used by
+// promptAddOneCredential and restores them on test cleanup.
+func stubWifiPrompts(t *testing.T) {
+	t.Helper()
+	origSelect := selectWifiNetworkFromScan
+	origManual := confirmManualWifiEntry
+	origKeychain := confirmKeychainLookup
+	origSSID := promptWifiSSID
+	origPassword := promptWifiPassword
+	t.Cleanup(func() {
+		selectWifiNetworkFromScan = origSelect
+		confirmManualWifiEntry = origManual
+		confirmKeychainLookup = origKeychain
+		promptWifiSSID = origSSID
+		promptWifiPassword = origPassword
+	})
+}
+
+func TestPromptAddOneCredentialSkipsWhenManualEntryDeclined(t *testing.T) {
+	stubWifiPrompts(t)
+	selectWifiNetworkFromScan = func() (wifiScanSelection, error) {
+		return wifiScanSelection{ScanErr: errNoWifiAdapter}, nil
+	}
+	confirmManualWifiEntry = func() (bool, error) { return false, nil }
+	promptWifiSSID = func() (string, error) {
+		t.Fatal("SSID prompt must not be shown after declining manual entry")
+		return "", nil
+	}
+
+	_, added, err := promptAddOneCredential(0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if added {
+		t.Fatal("expected added=false when the user skips WiFi setup")
+	}
+}
+
+func TestPromptAddOneCredentialManualEntryAfterScanFailure(t *testing.T) {
+	stubWifiPrompts(t)
+	selectWifiNetworkFromScan = func() (wifiScanSelection, error) {
+		return wifiScanSelection{ScanErr: errors.New("exit status 1")}, nil
+	}
+	confirmManualWifiEntry = func() (bool, error) { return true, nil }
+	confirmKeychainLookup = func(string) (bool, error) { return false, nil }
+	promptWifiSSID = func() (string, error) { return "homenet", nil }
+	promptWifiPassword = func(string) (string, error) { return "hunter2", nil }
+
+	c, added, err := promptAddOneCredential(0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !added {
+		t.Fatal("expected added=true after manual entry")
+	}
+	if c.SSID != "homenet" || c.Password != "hunter2" {
+		t.Fatalf("got SSID=%q password=%q; want homenet/hunter2", c.SSID, c.Password)
+	}
+	if c.Priority != 100 {
+		t.Fatalf("got priority %d; want 100 for first network", c.Priority)
+	}
+}
+
+func TestPromptAddOneCredentialEmptyScanOffersSkip(t *testing.T) {
+	stubWifiPrompts(t)
+	selectWifiNetworkFromScan = func() (wifiScanSelection, error) {
+		return wifiScanSelection{}, nil
+	}
+	confirmManualWifiEntry = func() (bool, error) { return false, nil }
+
+	_, added, err := promptAddOneCredential(0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if added {
+		t.Fatal("expected added=false when scan finds nothing and user declines manual entry")
+	}
+}
+
+func TestPromptAddOneCredentialScanCancelled(t *testing.T) {
+	stubWifiPrompts(t)
+	selectWifiNetworkFromScan = func() (wifiScanSelection, error) {
+		return wifiScanSelection{}, ErrUserCancelled
+	}
+
+	_, _, err := promptAddOneCredential(0)
+	if !errors.Is(err, ErrUserCancelled) {
+		t.Fatalf("expected ErrUserCancelled, got %v", err)
+	}
+}
+
+func TestPromptAddOneCredentialUsesPickedNetwork(t *testing.T) {
+	stubWifiPrompts(t)
+	selectWifiNetworkFromScan = func() (wifiScanSelection, error) {
+		return wifiScanSelection{SSID: "cafe", HadNetworks: true}, nil
+	}
+	confirmManualWifiEntry = func() (bool, error) {
+		t.Fatal("skip confirm must not be shown after a successful pick")
+		return false, nil
+	}
+	confirmKeychainLookup = func(string) (bool, error) { return false, nil }
+	promptWifiPassword = func(string) (string, error) { return "hunter2", nil }
+
+	c, added, err := promptAddOneCredential(0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !added || c.SSID != "cafe" {
+		t.Fatalf("got added=%v SSID=%q; want picked network", added, c.SSID)
+	}
+}
+
+func TestPromptAddOneCredentialEscWithNetworksGoesManual(t *testing.T) {
+	stubWifiPrompts(t)
+	// Networks were listed but the user pressed esc to type manually, as
+	// the picker title advertises: no skip confirm, straight to the prompt.
+	selectWifiNetworkFromScan = func() (wifiScanSelection, error) {
+		return wifiScanSelection{HadNetworks: true}, nil
+	}
+	confirmManualWifiEntry = func() (bool, error) {
+		t.Fatal("skip confirm must not be shown when the user chose manual entry")
+		return false, nil
+	}
+	confirmKeychainLookup = func(string) (bool, error) { return false, nil }
+	promptWifiSSID = func() (string, error) { return "homenet", nil }
+	promptWifiPassword = func(string) (string, error) { return "hunter2", nil }
+
+	c, added, err := promptAddOneCredential(0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !added || c.SSID != "homenet" {
+		t.Fatalf("got added=%v SSID=%q; want manual entry", added, c.SSID)
+	}
+}
+
 func TestResolveDeviceNameFlagValidation(t *testing.T) {
 	tests := []struct {
 		name    string
 		in      string
 		wantErr string
 	}{
-		{"too short", "ab", "3–64 characters"},
-		{"too long", strings.Repeat("a", 65), "3–64 characters"},
+		{"too short", "ab", "3–55 characters"},
+		{"too long", strings.Repeat("a", 56), "3–55 characters"},
 		{"starts with number", "1device", "start with a lowercase letter"},
 		{"uppercase", "Wendy", "lowercase letters, digits, and hyphens"},
 		{"underscore", "wendy_pi", "lowercase letters, digits, and hyphens"},
@@ -522,6 +871,27 @@ func TestResolveDeviceNameFlagValidation(t *testing.T) {
 				t.Fatalf("error %q should contain %q", err.Error(), tc.wantErr)
 			}
 		})
+	}
+}
+
+// TestValidateDeviceNameLengthBoundary pins the device-name length cap to the
+// value that keeps the agent-derived "wendyos-<name>" hostname within the
+// 63-octet RFC 1035 label limit (WDY-1518).
+func TestValidateDeviceNameLengthBoundary(t *testing.T) {
+	if maxDeviceNameLen != 55 {
+		t.Fatalf("maxDeviceNameLen = %d; want 55 so wendyos-<name> stays a valid DNS label", maxDeviceNameLen)
+	}
+
+	maxName := strings.Repeat("a", maxDeviceNameLen)
+	if err := validateDeviceName(maxName); err != nil {
+		t.Fatalf("name of max length %d should be valid: %v", maxDeviceNameLen, err)
+	}
+	if got := len("wendyos-" + maxName); got > 63 {
+		t.Fatalf("derived hostname label is %d octets; exceeds the RFC 1035 limit of 63", got)
+	}
+
+	if err := validateDeviceName(strings.Repeat("a", maxDeviceNameLen+1)); err == nil {
+		t.Fatalf("name longer than %d should be rejected", maxDeviceNameLen)
 	}
 }
 
@@ -545,7 +915,7 @@ func TestResolveOSImage_ZipCacheHit(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 
 	content := []byte("fake image bytes")
-	zipPath, err := osCachedZipPath("test-device", "9.9.9")
+	zipPath, err := osCachedZipPath("test-device", "9.9.9", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -583,7 +953,7 @@ func TestResolveOSImage_LegacyImgCacheHit(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 
-	imgPath, err := osCachedImagePath("test-device", "8.8.8")
+	imgPath, err := osCachedImagePath("test-device", "8.8.8", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -607,7 +977,7 @@ func TestOpenOSImageStream_ZipCacheHit(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 
 	content := []byte("stream me please")
-	zipPath, err := osCachedZipPath("stream-device", "7.7.7")
+	zipPath, err := osCachedZipPath("stream-device", "7.7.7", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -632,16 +1002,16 @@ func TestOpenOSImageStream_ZipCacheHit(t *testing.T) {
 	}
 
 	img := &imageInfo{Version: "7.7.7", DownloadURL: "https://example.com/image.zip"}
-	r, size, err := openOSImageStream("stream-device", img)
+	stream, err := openOSImageStream("stream-device", img)
 	if err != nil {
 		t.Fatalf("openOSImageStream: %v", err)
 	}
-	defer r.Close()
+	defer stream.Close()
 
-	if size != int64(len(content)) {
-		t.Errorf("size = %d; want %d", size, len(content))
+	if stream.uncompressedSize != int64(len(content)) {
+		t.Errorf("uncompressedSize = %d; want %d", stream.uncompressedSize, len(content))
 	}
-	got, err := io.ReadAll(r)
+	got, err := io.ReadAll(stream)
 	if err != nil {
 		t.Fatalf("reading: %v", err)
 	}
@@ -655,7 +1025,7 @@ func TestOpenOSImageStream_LegacyImgCacheHit(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 
 	content := []byte("old img cache data")
-	imgPath, err := osCachedImagePath("legacy-device", "6.6.6")
+	imgPath, err := osCachedImagePath("legacy-device", "6.6.6", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -665,16 +1035,16 @@ func TestOpenOSImageStream_LegacyImgCacheHit(t *testing.T) {
 	}
 
 	img := &imageInfo{Version: "6.6.6", DownloadURL: "https://example.com/image.zip"}
-	r, size, err := openOSImageStream("legacy-device", img)
+	stream, err := openOSImageStream("legacy-device", img)
 	if err != nil {
 		t.Fatalf("openOSImageStream: %v", err)
 	}
-	defer r.Close()
+	defer stream.Close()
 
-	if size != int64(len(content)) {
-		t.Errorf("size = %d; want %d", size, len(content))
+	if stream.uncompressedSize != int64(len(content)) {
+		t.Errorf("uncompressedSize = %d; want %d", stream.uncompressedSize, len(content))
 	}
-	got, err := io.ReadAll(r)
+	got, err := io.ReadAll(stream)
 	if err != nil {
 		t.Fatalf("reading: %v", err)
 	}
@@ -893,5 +1263,46 @@ func TestDownloadParallel(t *testing.T) {
 				break
 			}
 		}
+	}
+}
+
+func TestResolveDeviceNamePromptStatesConstraints(t *testing.T) {
+	origInteractive := isInteractiveTerminalFn
+	origPrompt := promptDeviceName
+	isInteractiveTerminalFn = func() bool { return true }
+
+	var gotHint string
+	var gotValidate tui.ValidateFunc
+	promptDeviceName = func(_, hint string, validate tui.ValidateFunc) (string, error) {
+		gotHint = hint
+		gotValidate = validate
+		return "brave-dolphin", nil
+	}
+	t.Cleanup(func() {
+		isInteractiveTerminalFn = origInteractive
+		promptDeviceName = origPrompt
+	})
+
+	if _, err := resolveDeviceName(""); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// The hint must surface the naming constraints inline (WDY-1475).
+	for _, want := range []string{"a-z", "3–55", "auto-generate"} {
+		if !strings.Contains(gotHint, want) {
+			t.Errorf("hint %q should mention %q", gotHint, want)
+		}
+	}
+
+	// The prompt must be wired to the real validator so invalid input
+	// re-prompts with the specific violation instead of terminating.
+	if gotValidate == nil {
+		t.Fatal("prompt must receive a validator")
+	}
+	if err := gotValidate("MyDevice"); err == nil || !strings.Contains(err.Error(), "lowercase") {
+		t.Fatalf("validator should reject uppercase with a specific message, got %v", err)
+	}
+	if err := gotValidate(""); err != nil {
+		t.Fatalf("validator should accept empty (auto-generate), got %v", err)
 	}
 }

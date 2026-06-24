@@ -21,7 +21,7 @@ sudo bmaptool copy edgeos-rpi-image-*.wic.bz2 /dev/sdX
 
 # Using dd on macOS
 diskutil unmountDisk /dev/diskN && \
-bzcat output/edgeos-rpi5.wic.bz2 | sudo dd of=/dev/rdiskN bs=4m status=progress && \
+bzcat output/edgeos-rpi5.wic.bz2 | sudo dd of=/dev/rdiskN bs=4m iflag=fullblock status=progress && \
 diskutil eject /dev/diskN
 ```
 

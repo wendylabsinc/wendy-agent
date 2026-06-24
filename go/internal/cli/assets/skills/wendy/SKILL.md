@@ -77,7 +77,7 @@ WendyOS is a Linux-based containerized operating system. It uses Linux container
 
 WendyOS uses Swift.org as its flagship language. This uses Swift Package Manager and the Swift Container Plugin to build and run your app. Wendy CLI will cross compile Swift for you.
 
-Other programming languages are supported, but require the use of a Dockerfile to build your app.
+Other programming languages are supported, but require the use of a Dockerfile or Containerfile to build your app.
 
 ### Entitlements
 
@@ -97,7 +97,7 @@ See `references/wendy.json.md` for detailed entitlement configuration.
 | Entitlement | Use Case |
 |-------------|----------|
 | `network` (host mode) | Web servers, HTTP APIs, incoming connections |
-| `gpu` | ML inference, computer vision (Jetson only) |
+| `gpu` | ML inference/computer vision (Jetson), board telemetry (Raspberry Pi) |
 | `video` | Camera access, video capture |
 | `audio` | Microphone, speakers |
 | `bluetooth` | BLE devices, Bluetooth communication |
@@ -150,7 +150,7 @@ The local collector handles forwarding telemetry to your backend infrastructure.
 |---------|----------|
 | Device not found | Check USB/LAN connection, run `wendy discover` |
 | Network access denied | Add network entitlement with host mode |
-| GPU not detected | Add gpu entitlement (Jetson only) |
+| GPU not detected | Add gpu entitlement (Jetson for CUDA, Raspberry Pi for board telemetry) |
 | Camera not found | Add camera entitlement, verify camera at `/dev/video0` (for CSI cameras also check `/run/udev` is present on host) |
 | Build fails | Check Swift version compatibility, try `wendy run --verbose` |
 

@@ -13,6 +13,7 @@ import (
 
 	"time"
 
+	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	"google.golang.org/grpc"
@@ -31,14 +32,19 @@ const (
 	grpcInitialConnWindow   = 512 * 1024
 	grpcReadBufferSize      = 256 * 1024
 	grpcWriteBufferSize     = 256 * 1024
-	grpcKeepaliveTime       = 30 * time.Second
-	grpcKeepaliveTimeout    = 10 * time.Second
+
+	// Keep direct-agent pings conservative. macOS agents may close long-running
+	// build/deploy/log streams when clients ping more frequently than the
+	// server's HTTP/2 keepalive policy allows.
+	grpcKeepaliveTime    = 5 * time.Minute
+	grpcKeepaliveTimeout = 10 * time.Second
 )
 
 type AgentConnection struct {
 	Conn                *grpc.ClientConn
-	Host                string // hostname or IP of the connected agent
-	IsMTLS              bool   // true when connected via mutual TLS
+	Host                string                  // hostname or IP of the connected agent
+	IsMTLS              bool                    // true when connected via mutual TLS
+	CertInfo            *config.CertificateInfo // cert used to establish mTLS; nil for plaintext
 	RegistryDialer      func(context.Context, int) (net.Conn, error)
 	ExtraClosers        []io.Closer
 	AgentService        agentpb.WendyAgentServiceClient
@@ -61,7 +67,7 @@ func Connect(ctx context.Context, address string) (*AgentConnection, error) {
 		grpc.WithKeepaliveParams(keepalive.ClientParameters{
 			Time:                grpcKeepaliveTime,
 			Timeout:             grpcKeepaliveTimeout,
-			PermitWithoutStream: true,
+			PermitWithoutStream: false,
 		}),
 	)
 	if err != nil {
@@ -74,6 +80,10 @@ func Connect(ctx context.Context, address string) (*AgentConnection, error) {
 }
 
 func ConnectWithTLS(ctx context.Context, address string, certInfo *config.CertificateInfo) (*AgentConnection, error) {
+	return ConnectWithTLSAndPins(ctx, address, certInfo, nil)
+}
+
+func ConnectWithTLSAndPins(ctx context.Context, address string, certInfo *config.CertificateInfo, pins certs.PinChecker) (*AgentConnection, error) {
 	// Only load the leaf cert — not the chain. Go's TLS library calls
 	// x509.ParseCertificate on every cert sent in the handshake, and ML-DSA
 	// chain certs (from pki-core) cause parse failures on the agent's server.
@@ -86,9 +96,18 @@ func ConnectWithTLS(ctx context.Context, address string, certInfo *config.Certif
 	if err != nil {
 		return nil, fmt.Errorf("loading TLS cert: %w", err)
 	}
+	verifyConn, err := certs.BuildServerVerifyConnection(certs.ServerVerifyOpts{
+		ChainPEM:      certInfo.PemCertificateChain,
+		ExpectedOrgID: int32(certInfo.OrganizationID),
+		PinStore:      pins,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("building TLS verifier: %w", err)
+	}
 	tlsCfg := &tls.Config{
 		Certificates:       []tls.Certificate{cert},
-		InsecureSkipVerify: true, //nolint:gosec — agent uses self-signed certs
+		InsecureSkipVerify: true, //nolint:gosec — hostname bypass only; VerifyConnection validates server cert against Wendy PKI
+		VerifyConnection:   verifyConn,
 		MinVersion:         tls.VersionTLS12,
 	}
 
@@ -102,7 +121,7 @@ func ConnectWithTLS(ctx context.Context, address string, certInfo *config.Certif
 		grpc.WithKeepaliveParams(keepalive.ClientParameters{
 			Time:                grpcKeepaliveTime,
 			Timeout:             grpcKeepaliveTimeout,
-			PermitWithoutStream: true,
+			PermitWithoutStream: false,
 		}),
 	)
 	if err != nil {
@@ -112,6 +131,7 @@ func ConnectWithTLS(ctx context.Context, address string, certInfo *config.Certif
 	ac := newAgentConnection(conn)
 	ac.Host = hostFromAddress(address)
 	ac.IsMTLS = true
+	ac.CertInfo = certInfo
 	return ac, nil
 }
 

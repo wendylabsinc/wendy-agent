@@ -250,6 +250,7 @@ The following entitlements are supported:
 | `gpio` | GPIO pin access. Specific pins may be declared or all available pins claimed. |
 | `spi` | SPI device access. |
 | `input` | HID input device access. |
+| `serial` | Serial tty device access (USB-serial adapters, servo buses, etc.). Requires a specific tty node to be named. |
 
 5.1.1 An application has a display name set in Wendy Cloud and a system identifier declared in the embedded manifest. The display name is a human-readable label and may be changed at any time. The system identifier is set by the developer in the manifest and must be consistent across all releases of the same application; it is how the cloud and Wendy OS track which application a release belongs to. The system identifier must be unique within the organisation.  
 5.1.2 Members, admins, and owners may view applications. Viewers may not view applications.  

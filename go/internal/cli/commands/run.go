@@ -19,6 +19,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
@@ -38,7 +39,26 @@ var cliStyle = lipgloss.NewStyle().Foreground(tui.ColorDim)
 var cliNoticeStyle = lipgloss.NewStyle().Foreground(tui.ColorNotice)
 var execCommandContext = exec.CommandContext
 
-const linuxContainersOnMacsUnsupportedMessage = "Linux containers aren't supported on Macs yet. Support is planned for a future release. For now, deploy a native macOS app (platform: darwin) or target a Linux/WendyOS device."
+const macContainersUnsupportedMessage = "Project/target mismatch: selected target is Wendy Agent for Mac, but this project uses the Linux/container deployment path. Linux containers aren't supported on Macs yet. Wendy Agent for Mac currently runs native macOS apps only. To fix this, set `platform: \"darwin\"` and use a Mac-compatible native SwiftPM or Xcode template, or target a Linux/WendyOS device."
+
+func macPlatformMismatchMessage(platform string) string {
+	return fmt.Sprintf("Project/target mismatch: selected target is Wendy Agent for Mac, but wendy.json resolves to platform %q. Wendy Agent for Mac currently runs native macOS apps only. To fix this, set `platform: \"darwin\"` and use a Mac-compatible native SwiftPM or Xcode template, or target a Linux/WendyOS device.", platform)
+}
+
+func rejectUnsupportedMacRunProject(projectType, platform string) error {
+	if !strings.EqualFold(platformOS(platform), appconfig.PlatformDarwin) {
+		return errors.New(macPlatformMismatchMessage(platform))
+	}
+
+	switch projectType {
+	case "swift", "xcode":
+		return nil
+	case "docker", "python", "compose", "multi-service":
+		return errors.New(macContainersUnsupportedMessage)
+	default:
+		return nil
+	}
+}
 
 type dimWriter struct {
 	buf strings.Builder
@@ -444,6 +464,7 @@ func createContainerWithProgress(ctx context.Context, svc agentpb.WendyContainer
 type runOptions struct {
 	buildType            string
 	dockerfile           string
+	builder              string
 	debug                bool
 	deploy               bool
 	detach               bool
@@ -454,7 +475,12 @@ type runOptions struct {
 	prefix               string
 	product              string
 	service              string
+	keepGoing            bool
+	maxConcurrency       int
 	userArgs             []string
+	// quietBuild suppresses the image build (buildx) output, surfacing it only
+	// when the build fails. Set by `wendy watch` to keep the redeploy loop quiet.
+	quietBuild bool
 }
 
 func newRunCmd() *cobra.Command {
@@ -469,8 +495,9 @@ func newRunCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&opts.buildType, "build-type", "", "Build type to use when Dockerfile is present alongside Package.swift or Python project markers: docker, swift, or python")
-	cmd.Flags().StringVar(&opts.dockerfile, "dockerfile", "", "Dockerfile to build from (e.g. Dockerfile.prod); shows a selection menu when multiple Dockerfiles exist")
+	cmd.Flags().StringVar(&opts.buildType, "build-type", "", "Build type to use when Dockerfile/Containerfile is present alongside Package.swift or Python project markers: docker, swift, or python")
+	cmd.Flags().StringVar(&opts.dockerfile, "dockerfile", "", "Dockerfile or Containerfile to build from (e.g. Dockerfile.prod or Containerfile); shows a selection menu when multiple build files exist")
+	cmd.Flags().StringVar(&opts.builder, "builder", "", "Image builder to force for Dockerfile/Containerfile builds: docker or apple-container")
 	cmd.Flags().BoolVar(&opts.debug, "debug", false, "Enable debug logging")
 	cmd.Flags().BoolVar(&opts.deploy, "deploy", false, "Create container but do not start it")
 	cmd.Flags().BoolVar(&opts.detach, "detach", false, "Start container but do not stream logs")
@@ -481,6 +508,8 @@ func newRunCmd() *cobra.Command {
 	cmd.Flags().StringVar(&opts.prefix, "prefix", "", "Project directory to run from instead of the current working directory")
 	cmd.Flags().StringVar(&opts.product, "product", "", "Swift Package Manager product to build and run")
 	cmd.Flags().StringVar(&opts.service, "service", "", "Build and run only the named service and its dependencies (multi-service projects)")
+	cmd.Flags().BoolVar(&opts.keepGoing, "keep-going", false, "Multi-service: deploy services that build successfully instead of aborting the whole group on the first build/push failure")
+	cmd.Flags().IntVar(&opts.maxConcurrency, "max-concurrency", 0, "Multi-service: max service images to build+push at once (0 = auto-throttle large groups)")
 	cmd.Flags().StringSliceVar(&opts.userArgs, "user-args", nil, "Extra arguments to pass to the container")
 
 	return cmd
@@ -520,10 +549,17 @@ func resolveRunTarget(ctx context.Context, opts ...resolveOption) (*SelectedDevi
 }
 
 func runCommand(ctx context.Context, opts runOptions) error {
+	mark := phaseTimer()
 	// Step 1: Load and validate wendy.json.
 	cwd, err := resolveRunWorkingDir(opts)
 	if err != nil {
 		return fmt.Errorf("resolving working directory: %w", err)
+	}
+	if _, err := normalizeImageBuilder(opts.builder); err != nil {
+		return err
+	}
+	if opts.maxConcurrency < 0 {
+		return fmt.Errorf("--max-concurrency must be >= 0 (0 = auto)")
 	}
 
 	// --dockerfile implies a docker build; validate the file exists and ensure
@@ -555,9 +591,9 @@ func runCommand(ctx context.Context, opts runOptions) error {
 		return runComposeCommand(ctx, cwd, opts)
 	}
 
-	// For docker-type projects, resolve which Dockerfile to use before
+	// For docker-type projects, resolve which build file to use before
 	// connecting to the target — so the picker shows regardless of whether
-	// we end up on the agent path or a provider path (Docker Desktop, etc.).
+	// we end up on the agent path or a provider path (Docker, etc.).
 	if projectType == "docker" && opts.dockerfile == "" {
 		resolved, err := resolveDockerfile(cwd, opts.dockerfile, !opts.yes && isInteractiveTerminal())
 		if err != nil {
@@ -567,6 +603,36 @@ func runCommand(ctx context.Context, opts runOptions) error {
 	}
 
 	cfgPath := filepath.Join(cwd, "wendy.json")
+	cfgMissing, err := appConfigFileMissing(cfgPath)
+	if err != nil {
+		return fmt.Errorf("checking wendy.json: %w", err)
+	}
+
+	// If wendy.json is missing, resolve the target before prompting to create
+	// one. That lets Mac beta targets reject container-only project shapes with
+	// the real project/target mismatch instead of first asking about config. The
+	// CLI owns the selected connection lifetime for both the preflight and normal
+	// run paths; lower-level run helpers do not close it.
+	var target *SelectedDevice
+	defer func() {
+		if target != nil && target.Agent != nil {
+			target.Agent.Close()
+		}
+	}()
+	if cfgMissing {
+		var resolveOpts []resolveOption
+		if opts.yes {
+			resolveOpts = append(resolveOpts, NonInteractive())
+		}
+		target, err = resolveRunTarget(ctx, resolveOpts...)
+		if err != nil {
+			return err
+		}
+		if err := preflightMissingAppConfigForMacTarget(ctx, target, projectType); err != nil {
+			return err
+		}
+	}
+
 	appCfg, err := ensureAppConfig(cfgPath, opts.yes)
 	if err != nil {
 		return fmt.Errorf("loading wendy.json: %w", err)
@@ -598,15 +664,20 @@ func runCommand(ctx context.Context, opts runOptions) error {
 		}
 	}
 
+	mark("cli setup (project/dockerfile/config)")
+
 	// Step 2: Resolve the target device.
-	var resolveOpts []resolveOption
-	if opts.yes {
-		resolveOpts = append(resolveOpts, NonInteractive())
+	if target == nil {
+		var resolveOpts []resolveOption
+		if opts.yes {
+			resolveOpts = append(resolveOpts, NonInteractive())
+		}
+		target, err = resolveRunTarget(ctx, resolveOpts...)
+		if err != nil {
+			return err
+		}
 	}
-	target, err := resolveRunTarget(ctx, resolveOpts...)
-	if err != nil {
-		return err
-	}
+	mark("resolve + connect device")
 
 	// Provider-based run path.
 	if target.External != nil && target.Provider != nil {
@@ -633,8 +704,37 @@ func runCommand(ctx context.Context, opts runOptions) error {
 	}
 
 	// Agent-based run path (existing gRPC pipeline).
-	defer target.Agent.Close()
 	return runWithAgent(ctx, target.Agent, cwd, appCfg, opts)
+}
+
+func appConfigFileMissing(cfgPath string) (bool, error) {
+	if _, err := os.Stat(cfgPath); err != nil {
+		if os.IsNotExist(err) {
+			return true, nil
+		}
+		return false, err
+	}
+	return false, nil
+}
+
+func preflightMissingAppConfigForMacTarget(ctx context.Context, target *SelectedDevice, projectType string) error {
+	if target == nil || target.Agent == nil {
+		return nil
+	}
+	versionResp, err := target.Agent.AgentService.GetAgentVersion(ctx, &agentpb.GetAgentVersionRequest{})
+	if err != nil {
+		return fmt.Errorf("querying device version for Mac target preflight: %w", err)
+	}
+	agentOS := versionResp.GetOs()
+	architecture := versionResp.GetCpuArchitecture()
+	if architecture == "" {
+		architecture = "arm64"
+	}
+	platform := resolveAgentPlatform("", agentOS, architecture)
+	if strings.EqualFold(agentOS, appconfig.PlatformDarwin) {
+		return rejectUnsupportedMacRunProject(projectType, platform)
+	}
+	return nil
 }
 
 // runComposeCommand handles the full device-selection + execution flow for
@@ -650,7 +750,10 @@ func runComposeCommand(ctx context.Context, cwd string, opts runOptions) error {
 	}
 
 	if target.External != nil && target.Provider != nil {
-		// Docker Desktop provider: use docker compose directly.
+		if opts.builder != "" {
+			return fmt.Errorf("--builder is only used when --device selects a WendyOS device; use --device docker for local Compose runs")
+		}
+		// External providers handle local compose support themselves.
 		// Compose projects have no wendy.json, so entitlements are nil.
 		return runWithProvider(ctx, target.Provider, *target.External, cwd, filepath.Base(cwd), nil, opts)
 	}
@@ -987,14 +1090,16 @@ func resolveRunProjectType(dir, requestedType string) (string, error) {
 			}
 		}
 	case "docker":
-		// Accept the base Dockerfile or any Dockerfile.* / Dockerfile-* variant.
+		// Accept Dockerfile/Containerfile and dot/hyphen variants.
 		entries, readErr := os.ReadDir(dir)
 		if readErr != nil {
-			marker := filepath.Join(dir, "Dockerfile")
-			if _, err := os.Stat(marker); err == nil {
-				return "docker", nil
-			} else if !os.IsNotExist(err) {
-				return "", fmt.Errorf("checking for %s: %w", marker, err)
+			for _, base := range []string{"Dockerfile", "Containerfile"} {
+				marker := filepath.Join(dir, base)
+				if _, err := os.Stat(marker); err == nil {
+					return "docker", nil
+				} else if !os.IsNotExist(err) {
+					return "", fmt.Errorf("checking for %s: %w", marker, err)
+				}
 			}
 		} else {
 			for _, e := range entries {
@@ -1002,7 +1107,7 @@ func resolveRunProjectType(dir, requestedType string) (string, error) {
 					continue
 				}
 				name := e.Name()
-				if (name == "Dockerfile" || strings.HasPrefix(name, "Dockerfile.") || strings.HasPrefix(name, "Dockerfile-")) && !strings.HasSuffix(name, ".dockerignore") {
+				if isContainerBuildFileName(name) {
 					return "docker", nil
 				}
 			}
@@ -1030,6 +1135,9 @@ func resolveRunProjectType(dir, requestedType string) (string, error) {
 
 // runWithProvider builds and runs via an external device provider.
 func runWithProvider(ctx context.Context, p providers.DeviceProvider, device models.ExternalDevice, projectPath, product string, entitlements []appconfig.Entitlement, opts runOptions) error {
+	if opts.builder != "" {
+		return fmt.Errorf("--builder is only used when --device selects a WendyOS device; use --device docker or --device apple-container for local provider runs")
+	}
 	projectType, err := resolveRunProjectType(projectPath, opts.buildType)
 	if err != nil {
 		return err
@@ -1041,7 +1149,7 @@ func runWithProvider(ctx context.Context, p providers.DeviceProvider, device mod
 	// Resolve Swift product name from Package.swift.
 	if projectType == "swift" {
 		if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
-			return fmt.Errorf("`wendy run` for Swift packages is not supported on %s; provide a Dockerfile", runtime.GOOS)
+			return fmt.Errorf("`wendy run` for Swift packages is not supported on %s; provide a Dockerfile or Containerfile", runtime.GOOS)
 		}
 		if err := swifttoolchain.EnsureSwiftVersion(ctx, &dimWriter{}, os.Stderr); err != nil {
 			return err
@@ -1055,7 +1163,7 @@ func runWithProvider(ctx context.Context, p providers.DeviceProvider, device mod
 		}
 		product = swiftProduct
 	} else if p.CanBuild(projectPath) {
-		// Dockerfile exists — try to use Swift product name if Package.swift is also present.
+		// A container build file exists — try to use Swift product name if Package.swift is also present.
 		if swiftProduct, err := swifttoolchain.FindSwiftProductWithOptions(projectPath, opts.product, false); err == nil {
 			product = swiftProduct
 		}
@@ -1068,7 +1176,7 @@ func runWithProvider(ctx context.Context, p providers.DeviceProvider, device mod
 		return fmt.Errorf("Xcode projects are not supported by the %s provider; use 'wendy run' with a macOS target instead", p.DisplayName())
 	}
 
-	// Swift projects without a Dockerfile: cross-compile on the host and
+	// Swift projects without a container build file: cross-compile on the host and
 	// build a Docker image, bypassing the provider's normal Build method.
 	if projectType == "swift" {
 		if ib, ok := p.(providers.ImageBuilder); ok {
@@ -1152,13 +1260,14 @@ func runWithProvider(ctx context.Context, p providers.DeviceProvider, device mod
 
 // runWithAgent is the existing gRPC agent pipeline.
 func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd string, appCfg *appconfig.AppConfig, opts runOptions) error {
+	mark := phaseTimer()
 	// Multi-service path: when wendy.json has a services map, build all images
 	// in parallel and manage the app group lifecycle.
 	if len(appCfg.Services) > 0 {
 		return runMultiServiceWithAgent(ctx, conn, cwd, appCfg, opts)
 	}
 
-	// Detect project type and ensure a Dockerfile exists.
+	// Detect project type and ensure a build file exists when needed.
 	projectType, err := resolveRunProjectType(cwd, opts.buildType)
 	if err != nil {
 		return err
@@ -1170,6 +1279,7 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	if err != nil {
 		return fmt.Errorf("querying device version: %w", err)
 	}
+	mark("agent GetAgentVersion (in runWithAgent)")
 	agentOS := versionResp.GetOs()
 	architecture := versionResp.GetCpuArchitecture()
 	if architecture == "" {
@@ -1177,8 +1287,10 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	}
 
 	platform := resolveAgentPlatform(appCfg.Platform, agentOS, architecture)
-	if agentOS == "darwin" && platformOS(platform) == "linux" {
-		return errors.New(linuxContainersOnMacsUnsupportedMessage)
+	if strings.EqualFold(agentOS, appconfig.PlatformDarwin) {
+		if err := rejectUnsupportedMacRunProject(projectType, platform); err != nil {
+			return err
+		}
 	}
 
 	// Xcode projects: always use the local-build + file-sync path (darwin only).
@@ -1191,28 +1303,31 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 
 	// Swift projects use a native darwin path for macOS targets and
 	// swift-container-plugin for Linux targets when --build-type=swift
-	// explicitly selects that path or when no Dockerfile is present.
+	// explicitly selects that path or when no Dockerfile/Containerfile is present.
 	// Both paths shell out to a host Swift toolchain:
 	//   - darwin target: `swift build` on the host. Requires a darwin host —
 	//     Linux's swift toolchain cannot cross-compile to macOS.
 	//   - linux target: swift-container-plugin via `swift package`. Requires
 	//     a darwin or linux host — swift-container-plugin does not yet ship
 	//     for Windows.
-	// On a Windows host with a Dockerfile the docker buildx path below
+	// On a Windows host with a Dockerfile/Containerfile the docker buildx path below
 	// handles the build, so the gates only trip when the host swift path
 	// would actually be taken.
 	if projectType == "swift" {
 		targetIsDarwin := platformOS(platform) == "darwin"
 		explicitSwift := normalizeBuildType(opts.buildType) == "swift"
-		_, dockerfileStatErr := os.Stat(filepath.Join(cwd, "Dockerfile"))
-		needsHostSwift := explicitSwift || os.IsNotExist(dockerfileStatErr)
+		resolvedBuildFile, dockerfileResolveErr := resolveDockerfile(cwd, "", false)
+		if dockerfileResolveErr != nil {
+			return dockerfileResolveErr
+		}
+		needsHostSwift := explicitSwift || resolvedBuildFile == ""
 
 		if needsHostSwift {
 			if targetIsDarwin && runtime.GOOS != "darwin" {
-				return fmt.Errorf("`wendy run` for Swift packages targeting darwin requires a darwin host (got %s); provide a Dockerfile to build a Linux image instead", runtime.GOOS)
+				return fmt.Errorf("`wendy run` for Swift packages targeting darwin requires a darwin host (got %s); provide a Dockerfile or Containerfile to build a Linux image instead", runtime.GOOS)
 			}
 			if !targetIsDarwin && runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
-				return fmt.Errorf("`wendy run` for Swift packages is not supported on %s; provide a Dockerfile", runtime.GOOS)
+				return fmt.Errorf("`wendy run` for Swift packages is not supported on %s; provide a Dockerfile or Containerfile", runtime.GOOS)
 			}
 			if targetIsDarwin {
 				return runMacOSSwiftPMWithAgent(ctx, conn, cwd, appCfg, opts)
@@ -1223,7 +1338,7 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 
 	switch projectType {
 	case "docker":
-		// Dockerfile already exists.
+		// Dockerfile/Containerfile already exists.
 	case "compose":
 		return runComposeWithAgent(ctx, conn, cwd, opts)
 	case "python":
@@ -1237,9 +1352,12 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 			cliLogln("Note: --debug requires debugpy in the container image. Ensure your Dockerfile installs debugpy (e.g. RUN pip install debugpy).")
 		}
 	case "swift":
-		// Dockerfile exists; use the Docker build path.
+		if normalized, _ := normalizeImageBuilder(opts.builder); normalized == imageBuilderAppleContainer {
+			return fmt.Errorf("Apple Container builder is only supported for Dockerfile/Containerfile builds; provide a build file or omit --builder")
+		}
+		// A container build file exists; use the image build path.
 	default:
-		return fmt.Errorf("unable to detect project type; ensure a Dockerfile, requirements.txt, or Package.swift is present")
+		return fmt.Errorf("unable to detect project type; ensure a Dockerfile/Containerfile, requirements.txt, or Package.swift is present")
 	}
 
 	deviceType := versionResp.GetDeviceType()
@@ -1248,24 +1366,49 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 		"WENDY_DEBUG":    fmt.Sprintf("%t", opts.debug),
 	}
 	// Only set WENDY_DEVICE_TYPE / GPU args when the agent reports them so
-	// Dockerfiles can apply their own defaults on older agents.
-	if deviceType != "" {
-		buildArgs["WENDY_DEVICE_TYPE"] = deviceType
+	// Dockerfiles can apply their own defaults on older agents; device-reported
+	// values that fail build-arg validation are skipped rather than fatal.
+	applyDeviceBuildArgHints(buildArgs, versionResp)
+
+	// Detached fast path: when nothing that affects the image has changed since
+	// the last successful deploy to this device, skip the build entirely and
+	// just ensure the existing container is running. Best-effort — a missing or
+	// mismatched fingerprint, a missing app, or any RPC error falls through to
+	// the normal deploy below, so it can never deploy stale code.
+	deviceKey := deviceFingerprintKey(versionResp)
+	inputHash, hashErr := computeBuildInputHash(cwd, opts.dockerfile, platform, buildArgs)
+	if opts.detach && !opts.deploy && hashErr == nil {
+		if done, _ := tryDeployFastPath(ctx, conn, appCfg, deviceKey, inputHash, opts); done {
+			mark("fast-path (skipped build)")
+			return nil
+		}
 	}
-	// WENDY_HAS_GPU is only set when the optional field is present; omitting it
-	// on older agents preserves any Dockerfile ARG default.
-	if versionResp.HasGpu != nil {
-		buildArgs["WENDY_HAS_GPU"] = fmt.Sprintf("%t", versionResp.GetHasGpu())
+
+	// A build will run below (the no-build fast path returned above), so make
+	// sure the Apple Container system is up when --builder apple-container is
+	// explicit. This covers both the chunk-diff and the registry-push build.
+	if err := ensureAppleContainerSystemForBuilder(ctx, opts.builder, opts.yes); err != nil {
+		return err
 	}
-	// Remaining GPU build args — only set when the agent reports them.
-	if vendor := versionResp.GetGpuVendor(); vendor != "" {
-		buildArgs["WENDY_GPU_VENDOR"] = vendor
-	}
-	if jv := versionResp.GetJetpackVersion(); jv != "" {
-		buildArgs["WENDY_JETPACK_VERSION"] = jv
-	}
-	if cv := versionResp.GetCudaVersion(); cv != "" {
-		buildArgs["WENDY_CUDA_VERSION"] = cv
+
+	// The fast chunk-diff (CDC) deploy path handles attached (default) and
+	// detached (--detach) runs. Deploy-only (--deploy) is excluded because it
+	// must create the container WITHOUT starting it, whereas RunContainer always
+	// starts; that mode stays on the registry path via startAndStreamContainer.
+	if !opts.deploy {
+		if err := deployByChunkDiff(ctx, conn, cwd, appCfg, platform, opts.dockerfile, buildArgs, opts); err == nil {
+			if hashErr == nil {
+				saveDeployFingerprint(appCfg.AppID, deviceKey, deployFingerprint{InputHash: inputHash, AppVersion: appCfg.Version})
+			}
+			return nil
+		} else if ctx.Err() != nil {
+			// The deploy was cancelled (e.g. `wendy watch` superseded it with a
+			// newer change, or the user hit Ctrl-C). Don't fall back to a full
+			// registry push — just surface the cancellation.
+			return err
+		} else {
+			cliLogln("Fast layer-diff deploy failed (%v); falling back to registry push.", err)
+		}
 	}
 
 	// Verify auth certs are available if the device's registry requires mTLS.
@@ -1275,20 +1418,11 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 
 	// Build and push the Docker image directly to the device's registry.
 	regPort := registryPort(agentOS)
-	// For link-local addresses (USB), a TCP proxy bridges the Docker VM
-	// to the host so buildx can reach the device.
-	registryAddr, proxyCleanup, err := resolveRegistryForAgent(ctx, conn, regPort)
-	if err != nil {
-		return err
-	}
-	defer proxyCleanup()
-
 	repo := strings.ToLower(appCfg.AppID)
-	registryImage := fmt.Sprintf("%s/%s:latest", registryAddr, repo)
-
-	cliLogln("Building and pushing Docker image for %s...", platform)
-	if err := buildAndPushImage(ctx, cwd, registryAddr, registryImage, platform, opts.dockerfile, buildArgs, os.Stdout, os.Stderr, conn.IsMTLS); err != nil {
-		return fmt.Errorf("building and pushing Docker image: %w", err)
+	// Single-service build: no concurrency, so keep the shared local cache dir
+	// (empty cache key) for cross-run cache reuse.
+	if err := buildAndPushImageForAgent(ctx, conn, regPort, opts.builder, cwd, repo, platform, opts.dockerfile, buildArgs, "", os.Stdout, os.Stderr); err != nil {
+		return fmt.Errorf("building and pushing image: %w", err)
 	}
 	cliLogln("Build and push completed.")
 
@@ -1552,9 +1686,15 @@ func startPostStartHook(ctx context.Context, appCfg *appconfig.AppConfig, hostna
 // Dockerfile base stage selection. Adding a new device only requires adding
 // a case here; templates need no changes until a new platform tier is introduced.
 // Unknown device types fall back to "generic" (CPU-only).
+//
+// jetson-agx-thor (tegra264 / JetPack 7 / CUDA 13) shares the "nvidia-jetson"
+// tier with the Orin boards (tegra234 / JetPack 6 / CUDA 12). The tier only says
+// "NVIDIA Jetson"; templates that ship a JetPack-pinned base image should branch
+// on the WENDY_JETPACK_VERSION / WENDY_CUDA_VERSION build args (also injected by
+// `wendy run`) to pick a Thor-compatible image where the JetPack 6 image differs.
 func wendyPlatform(deviceType string) string {
 	switch deviceType {
-	case "jetson-agx-orin", "jetson-orin-nano":
+	case "jetson-agx-orin", "jetson-orin-nano", "jetson-agx-thor":
 		return "nvidia-jetson"
 	default:
 		return "generic"
@@ -1572,4 +1712,129 @@ func resolveRestartPolicy(opts runOptions) *agentpb.RestartPolicy {
 		mode = agentpb.RestartPolicyMode_NO
 	}
 	return &agentpb.RestartPolicy{Mode: mode}
+}
+
+// streamRunContainer drains a RunContainer server stream, writing stdout/stderr
+// to the corresponding OS streams. When opts.deploy or opts.detach is set the
+// function returns as soon as the Started message is received (mirroring the
+// behaviour of startAndStreamContainer for those flags).
+func streamRunContainer(ctx context.Context, conn *grpcclient.AgentConnection, stream grpc.ServerStreamingClient[agentpb.RunContainerLayersResponse], appCfg *appconfig.AppConfig, opts runOptions) error {
+	for {
+		resp, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("receiving container output: %w", err)
+		}
+		if resp.GetStarted() != nil {
+			if opts.deploy {
+				cliLogln("Container %s created (not started).", appCfg.AppID)
+				return nil
+			}
+			if opts.detach {
+				// Mirror startAndStreamContainer's detach branch: the container
+				// is started; wait for readiness, fire the host post-start hook,
+				// then return without tailing logs. The container keeps running
+				// independently of this (now-abandoned) output stream.
+				cliLogln("Application %s running in detached mode.", appCfg.AppID)
+				if err := waitForReadiness(ctx, appCfg.Readiness, conn.Host); err != nil {
+					cliLogln("Warning: %v", err)
+				}
+				startPostStartHook(context.Background(), appCfg, conn.Host)
+				return nil
+			}
+			continue
+		}
+		if out := resp.GetStdoutOutput(); out != nil {
+			_, _ = os.Stdout.Write(out.GetData())
+		}
+		if out := resp.GetStderrOutput(); out != nil {
+			_, _ = os.Stderr.Write(out.GetData())
+		}
+	}
+	cliLogln("\nApplication %s stopped.", appCfg.AppID)
+	return nil
+}
+
+// phaseTimer returns a closure that logs the elapsed time since the previous
+// call to stderr, but only when WENDY_TIMING is set. It is a lightweight
+// diagnostic for finding where wall-clock time goes in the deploy path.
+func phaseTimer() func(label string) {
+	if os.Getenv("WENDY_TIMING") == "" {
+		return func(string) {}
+	}
+	last := time.Now()
+	return func(label string) {
+		now := time.Now()
+		fmt.Fprintf(os.Stderr, "[timing] %-26s %s\n", label, now.Sub(last).Round(time.Millisecond))
+		last = now
+	}
+}
+
+// deployByChunkDiff builds the image to a local OCI layout tar, diffs the
+// layers against what the device already has via content-defined chunking, and
+// calls RunContainer with the resulting layer headers.
+func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cwd string, appCfg *appconfig.AppConfig, platform, dockerfile string, buildArgs map[string]string, opts runOptions) error {
+	mark := phaseTimer()
+	tmp, err := os.MkdirTemp("", "wendy-oci-*")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(tmp)
+	ociTar := filepath.Join(tmp, "image.tar")
+
+	cliLogln("Building image (OCI layout) for %s...", platform)
+	// In quiet mode (wendy watch) capture the buildx output and surface it only
+	// if the build genuinely fails — but stay silent on a cancellation (a newer
+	// change superseded this build), which would otherwise dump a partial log.
+	var buildOut, buildErr io.Writer = os.Stdout, os.Stderr
+	var buildLog *bytes.Buffer
+	if opts.quietBuild {
+		buildLog = &bytes.Buffer{}
+		buildOut, buildErr = buildLog, buildLog
+	}
+	if err := buildImageToOCILayout(ctx, cwd, dockerfile, platform, buildArgs, opts.builder, ociTar, buildOut, buildErr); err != nil {
+		if buildLog != nil && ctx.Err() == nil {
+			_, _ = os.Stderr.Write(buildLog.Bytes())
+		}
+		return err
+	}
+	mark("build (oci export)")
+	layers, imageConfig, err := readOCILayoutLayers(ociTar, platform)
+	if err != nil {
+		return err
+	}
+	mark("read+decompress layers")
+
+	cliLogln("Diffing %d layer(s) against device...", len(layers))
+	headers, err := pushLayersByChunks(ctx, conn.ContainerService, layers)
+	if err != nil {
+		return err
+	}
+	mark("chunk+query+write")
+
+	appConfigData, err := json.Marshal(appCfg)
+	if err != nil {
+		return err
+	}
+	imageName := strings.ToLower(appCfg.AppID) + ":latest"
+	// Carry the post-start agent-hook metadata so the agent runs the in-container
+	// hook on start, matching the registry path's StartContainer call.
+	runCtx := contextWithPostStartAgentHook(ctx, appCfg)
+	stream, err := conn.ContainerService.RunContainer(runCtx, &agentpb.RunContainerLayersRequest{
+		ImageName:     imageName,
+		AppName:       appCfg.AppID,
+		Layers:        headers,
+		AppConfig:     appConfigData,
+		ImageConfig:   imageConfig,
+		RestartPolicy: resolveRestartPolicy(opts),
+		UserArgs:      opts.userArgs,
+	})
+	if err != nil {
+		return err
+	}
+	err = streamRunContainer(ctx, conn, stream, appCfg, opts)
+	mark("runcontainer (assemble+create+start[+readiness])")
+	return err
 }

@@ -160,6 +160,7 @@ private struct OverviewTargetAccumulator {
 
 private func makeRunOverview(in runURL: URL) throws -> E2ERunOverview {
     var targetAccumulators: [String: OverviewTargetAccumulator] = [:]
+    var observedAttemptsByTarget: [String: Set<String>] = [:]
     var summaryCounts = OverviewOutcomeCounts()
     var uniqueTests = Set<String>()
     var testTargetCount = 0
@@ -169,7 +170,7 @@ private func makeRunOverview(in runURL: URL) throws -> E2ERunOverview {
     var flakes: [E2ERunOverviewIssue] = []
     var unknowns: [E2ERunOverviewIssue] = []
 
-    for suiteURL in try overviewDirectoryChildren(of: runURL) {
+    for suiteURL in try overviewDirectoryChildren(of: e2eObservationsRootURL(in: runURL)) {
         let suiteKey = suiteURL.lastPathComponent
         guard !isE2EReviewDirectoryName(suiteKey) else { continue }
 
@@ -186,12 +187,20 @@ private func makeRunOverview(in runURL: URL) throws -> E2ERunOverview {
                 for attemptURL in try overviewDirectoryChildren(of: targetURL) {
                     let attemptName = attemptURL.lastPathComponent
                     guard !isE2EReviewDirectoryName(attemptName) else { continue }
-                    let result = try overviewObservationResult(
-                        suiteKey: suiteKey,
-                        testKey: testKey,
-                        attemptURL: attemptURL
+                    let attemptArtifactsURL = e2eAttemptArtifactsURL(
+                        in: runURL,
+                        targetName: targetName,
+                        attempt: attemptName
                     )
-                    let artifacts = overviewArtifacts(attemptURL: attemptURL, runURL: runURL)
+                    let result = try overviewObservationResult(
+                        observationURL: attemptURL,
+                        attemptArtifactsURL: attemptArtifactsURL
+                    )
+                    let artifacts = overviewArtifacts(
+                        observationURL: attemptURL,
+                        attemptArtifactsURL: attemptArtifactsURL,
+                        runURL: runURL
+                    )
                     attempts.append(
                         E2ERunOverviewIssueAttempt(
                             attempt: attemptName,
@@ -216,6 +225,9 @@ private func makeRunOverview(in runURL: URL) throws -> E2ERunOverview {
                     default: OverviewTargetAccumulator()
                 ]
                 targetAccumulator.attempts.formUnion(attempts.map(\.attempt))
+                observedAttemptsByTarget[targetName, default: []].formUnion(
+                    attempts.map(\.attempt)
+                )
                 targetAccumulator.tests += 1
                 targetAccumulator.counts.add(outcome)
                 targetAccumulators[targetName] = targetAccumulator
@@ -240,8 +252,37 @@ private func makeRunOverview(in runURL: URL) throws -> E2ERunOverview {
             }
 
             if hasTargetOutcome {
-                uniqueTests.insert("\(suiteKey)/\(testKey)")
+                if let metadata = try firstE2ETestMetadata(in: testURL) {
+                    uniqueTests.insert(
+                        "\(metadata.sourceFilePath)/\(metadata.suiteName)/\(metadata.testName)"
+                    )
+                } else {
+                    uniqueTests.insert("\(suiteKey)/\(testKey)")
+                }
             }
+        }
+    }
+
+    for targetURL in try overviewDirectoryChildren(of: e2eAttemptArtifactsRootURL(in: runURL)) {
+        let targetName = targetURL.lastPathComponent
+        let observedAttempts = observedAttemptsByTarget[targetName, default: []]
+        for attemptURL in try overviewDirectoryChildren(of: targetURL) {
+            let attemptName = attemptURL.lastPathComponent
+            guard !observedAttempts.contains(attemptName),
+                let exitStatus = e2eAttemptExitStatus(at: attemptURL), exitStatus != 0
+            else {
+                continue
+            }
+
+            var targetAccumulator = targetAccumulators[
+                targetName,
+                default: OverviewTargetAccumulator()
+            ]
+            targetAccumulator.attempts.insert(attemptName)
+            targetAccumulator.counts.failed += 1
+            targetAccumulators[targetName] = targetAccumulator
+            summaryCounts.failed += 1
+            attemptResultCount += 1
         }
     }
 
@@ -283,11 +324,10 @@ private func makeRunOverview(in runURL: URL) throws -> E2ERunOverview {
 }
 
 private func overviewObservationResult(
-    suiteKey: String,
-    testKey: String,
-    attemptURL: URL
+    observationURL: URL,
+    attemptArtifactsURL: URL
 ) throws -> OverviewObservationResult {
-    let resultURL = attemptURL.appendingPathComponent("test-results.xml")
+    let resultURL = attemptArtifactsURL.appendingPathComponent("test-results.xml")
     guard FileManager.default.fileExists(atPath: resultURL.path) else {
         return OverviewObservationResult(
             status: .unknown,
@@ -307,23 +347,26 @@ private func overviewObservationResult(
         )
     }
 
-    if let result = results.first(where: { key, _ in
-        overviewSlug(key.suite) == suiteKey && overviewSlug(key.name) == testKey
-    })?.value {
-        return result
+    let metadata: E2ETestMetadata
+    do {
+        metadata = try loadE2ETestMetadata(in: observationURL)
+    } catch {
+        return OverviewObservationResult(
+            status: .unknown,
+            durationSeconds: nil,
+            detail: "Could not read test.json for this recording: \(error)"
+        )
     }
 
-    let matchingTestNames = results.filter { key, _ in
-        overviewSlug(key.name) == testKey
-    }
-    if matchingTestNames.count == 1, let result = matchingTestNames.first?.value {
+    if let result = results[OverviewResultKey(suite: metadata.suiteName, name: metadata.testName)] {
         return result
     }
 
     return OverviewObservationResult(
         status: .unknown,
         durationSeconds: nil,
-        detail: "No Swift Testing result was found for this test in test-results.xml"
+        detail:
+            "No Swift Testing result was found for \(metadata.suiteName) › \(metadata.testName) in test-results.xml"
     )
 }
 
@@ -340,21 +383,25 @@ private func overviewParseXUnitResults(
     return parser.results
 }
 
-private func overviewArtifacts(attemptURL: URL, runURL: URL) -> E2ERunOverviewArtifacts {
+private func overviewArtifacts(
+    observationURL: URL,
+    attemptArtifactsURL: URL,
+    runURL: URL
+) -> E2ERunOverviewArtifacts {
     E2ERunOverviewArtifacts(
         recording: overviewRelativeFilePath(
             fileName: "recording.md",
-            attemptURL: attemptURL,
+            attemptURL: observationURL,
             runURL: runURL
         ),
         shell: overviewRelativeFilePath(
             fileName: "recording.sh.txt",
-            attemptURL: attemptURL,
+            attemptURL: observationURL,
             runURL: runURL
         ),
         testResults: overviewRelativeFilePath(
             fileName: "test-results.xml",
-            attemptURL: attemptURL,
+            attemptURL: attemptArtifactsURL,
             runURL: runURL
         )
     )

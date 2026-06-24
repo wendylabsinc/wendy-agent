@@ -27,13 +27,15 @@ func NewDeviceInfoService(logger *zap.Logger, hd HardwareDiscoverer) *DeviceInfo
 func (s *DeviceInfoService) GetDeviceInfo(_ context.Context, _ *agentpbv2.GetDeviceInfoRequest) (*agentpbv2.GetDeviceInfoResponse, error) {
 	resp := &agentpbv2.GetDeviceInfoResponse{
 		Version:         version.Version,
-		Os:              runtime.GOOS,
+		Os:              detectOS(),
 		CpuArchitecture: runtime.GOARCH,
 		Featureset:      detectFeatureset(),
 	}
 
 	if v, ok := wendyOSVersion(); ok {
 		resp.OsVersion = &v
+	} else if _, distroVer := detectDistro(); distroVer != "" {
+		resp.OsVersion = &distroVer
 	}
 
 	if data, err := os.ReadFile("/etc/wendyos/device-type"); err == nil {
@@ -52,10 +54,23 @@ func (s *DeviceInfoService) GetDeviceInfo(_ context.Context, _ *agentpbv2.GetDev
 	if gpuInfo.cudaVersion != "" {
 		resp.CudaVersion = &gpuInfo.cudaVersion
 	}
+	if gpuInfo.gpuArch != "" {
+		resp.GpuArch = &gpuInfo.gpuArch
+	}
 
 	if usage, ok := rootDiskUsage(); ok {
 		resp.DiskUsedBytes = &usage.usedBytes
 		resp.DiskTotalBytes = &usage.totalBytes
+	}
+
+	for _, p := range listDiskPartitions() {
+		resp.Partitions = append(resp.Partitions, &agentpbv2.DiskPartition{
+			Mountpoint: p.mountpoint,
+			Filesystem: p.filesystem,
+			Device:     p.device,
+			UsedBytes:  p.usedBytes,
+			TotalBytes: p.totalBytes,
+		})
 	}
 
 	return resp, nil

@@ -3,8 +3,10 @@
 package commands
 
 import (
+	"context"
 	"fmt"
 	"os/exec"
+	"time"
 )
 
 // preAuthElevation pre-authenticates sudo so the password prompt appears
@@ -15,6 +17,24 @@ func preAuthElevation() error {
 		return fmt.Errorf("sudo authentication failed: %w", err)
 	}
 	return nil
+}
+
+// keepElevationAlive refreshes the sudo timestamp every minute until ctx is
+// cancelled. Call after preAuthElevation() to prevent the cached credential
+// from expiring during a long-running operation such as a multi-GB download.
+func keepElevationAlive(ctx context.Context) {
+	go func() {
+		t := time.NewTicker(60 * time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				exec.Command("sudo", "-v").Run() //nolint:errcheck
+			}
+		}
+	}()
 }
 
 func elevationHint() string {

@@ -50,6 +50,7 @@ V2_AGENT_PROTOS=(
     "wendy/agent/services/v2/audio_service.proto"
     "wendy/agent/services/v2/telemetry_service.proto"
     "wendy/agent/services/v2/file_sync_service.proto"
+    "wendy/agent/services/v2/ros2_service.proto"
 )
 
 V2_AGENT_M_OPTS=""
@@ -143,5 +144,17 @@ protoc \
     --go-grpc_out="$GEN_DIR/cloudpb" \
     --go-grpc_opt=module="$CLOUD_PKG" \
     ${CLOUD_PROTOS[@]}
+
+echo "Generating Wendy Lite protos..."
+LITE_PKG="$MODULE/go/proto/gen/litepb"
+mkdir -p "$GEN_DIR/litepb"
+protoc \
+    --proto_path="$PROTO_DIR" \
+    --go_out="$GEN_DIR/litepb" \
+    --go_opt=module="$LITE_PKG" \
+    --go_opt=Mwendy/lite/wendy_com_msg.proto="$LITE_PKG" \
+    --go_opt=Mwendy/lite/wendy_conf.proto="$LITE_PKG" \
+    wendy/lite/wendy_com_msg.proto \
+    wendy/lite/wendy_conf.proto
 
 echo "Proto generation complete!"

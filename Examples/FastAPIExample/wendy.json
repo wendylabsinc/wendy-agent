@@ -1,5 +1,6 @@
 {
   "appId": "com.example.fastapiexample",
+  "platform": "linux",
   "version": "1.0.0",
   "language": "python",
   "python": {

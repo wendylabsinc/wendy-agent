@@ -152,7 +152,7 @@ ValueError: libcublas.so.*[0-9] not found in the system path
 
 ```bash
 ssh edgeos@wendyos-patient-cedar.local
-cat /etc/cdi/nvidia.yaml
+cat /var/run/cdi/nvidia.yaml 2>/dev/null || cat /etc/cdi/nvidia.yaml
 ```
 
 The CDI spec should include environment variables for CUDA libraries.

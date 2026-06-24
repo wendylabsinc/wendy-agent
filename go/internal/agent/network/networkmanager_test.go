@@ -1,6 +1,7 @@
 package network
 
 import (
+	"strings"
 	"testing"
 
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
@@ -54,46 +55,82 @@ func TestClassifySecurity(t *testing.T) {
 	}
 }
 
+// bySSID finds the parsed network for an SSID, or nil if absent.
+func bySSID(nets []*agentpb.ListWiFiNetworksResponse_WiFiNetwork, ssid string) *agentpb.ListWiFiNetworksResponse_WiFiNetwork {
+	for _, n := range nets {
+		if n.GetSsid() == ssid {
+			return n
+		}
+	}
+	return nil
+}
+
 func TestParseWiFiList(t *testing.T) {
-	// Simulate nmcli -t output format: SSID:SIGNAL:SECURITY:IN-USE
-	lines := []string{
-		"HomeNet:80:WPA2:*",
-		"OfficeNet:65:WPA2:",
-		"OpenNet:45::",
-		":30:WPA2:",        // empty SSID, should be skipped
-		"HomeNet:75:WPA2:", // duplicate SSID, should be skipped
-	}
+	// Real nmcli -t output format: IN-USE:SSID:SIGNAL:SECURITY.
+	scan := strings.Join([]string{
+		"*:HomeNet:80:WPA2",
+		":OfficeNet:65:WPA2",
+		":OpenNet:45:",
+		"::30:WPA2",        // empty SSID, should be skipped
+		":HomeNet:75:WPA2", // duplicate SSID, keeps the first row
+	}, "\n")
 
-	seen := make(map[string]bool)
-	type network struct {
-		ssid string
+	got := parseWiFiList(scan, nil)
+	if len(got) != 3 {
+		t.Fatalf("parsed %d networks; want 3 (got=%v)", len(got), got)
 	}
-	var networks []network
+	if got[0].GetSsid() != "HomeNet" || got[1].GetSsid() != "OfficeNet" || got[2].GetSsid() != "OpenNet" {
+		t.Errorf("ssids = [%q %q %q]; want [HomeNet OfficeNet OpenNet]",
+			got[0].GetSsid(), got[1].GetSsid(), got[2].GetSsid())
+	}
+	if home := bySSID(got, "HomeNet"); home == nil || !home.GetIsConnected() {
+		t.Errorf("HomeNet IsConnected = %v; want true", home.GetIsConnected())
+	}
+	if office := bySSID(got, "OfficeNet"); office == nil || office.GetIsConnected() {
+		t.Errorf("OfficeNet should not be connected")
+	}
+}
 
-	for _, line := range lines {
-		fields := splitFields(line, 4)
-		if len(fields) < 4 {
-			continue
+// TestParseWiFiList_ConnectedNotStrongestBSS reproduces the "Connected" label
+// flicker: when the associated BSS (carrying nmcli's `*` IN-USE marker) is not
+// the strongest BSS for its SSID, nmcli sorts it below a sibling BSS, so the
+// first row for the SSID lacks the marker. The SSID must still report connected
+// — the marker on any BSS counts. Modeled on a real multi-AP capture where the
+// connected AP's signal dipped below a same-SSID sibling between polls.
+func TestParseWiFiList_ConnectedNotStrongestBSS(t *testing.T) {
+	scan := strings.Join([]string{
+		":Cafe5G:100:WPA2",
+		":GuestWiFi:100:WPA2",
+		":Cafe5G:100:WPA2",
+		":MeshNet:92:WPA2", // first row for the connected SSID: no marker
+		":GuestWiFi:92:WPA2",
+		"*:MeshNet:84:WPA2", // the associated BSS, sorted lower by signal
+		":MeshNet:82:WPA2",
+		":Patio:39:WPA2",
+	}, "\n")
+
+	got := parseWiFiList(scan, nil)
+
+	mesh := bySSID(got, "MeshNet")
+	if mesh == nil {
+		t.Fatal("MeshNet missing from parsed networks")
+	}
+	if !mesh.GetIsConnected() {
+		t.Errorf("MeshNet IsConnected = false; want true (the `*` BSS was not the strongest, so the marker was dropped)")
+	}
+	// The display row should still reflect the strongest BSS for the SSID.
+	if mesh.GetSignalStrength() != 92 {
+		t.Errorf("MeshNet signal = %d; want 92 (strongest BSS)", mesh.GetSignalStrength())
+	}
+	// Exactly one SSID entry for the connected network (BSS rows collapsed).
+	count := 0
+	for _, n := range got {
+		if n.GetSsid() == "MeshNet" {
+			count++
 		}
-		ssid := fields[0]
-		if ssid == "" || seen[ssid] {
-			continue
-		}
-		seen[ssid] = true
-		networks = append(networks, network{ssid: ssid})
 	}
-
-	if len(networks) != 3 {
-		t.Fatalf("parsed %d networks; want 3", len(networks))
-	}
-	if networks[0].ssid != "HomeNet" {
-		t.Errorf("networks[0].ssid = %q; want HomeNet", networks[0].ssid)
-	}
-	if networks[1].ssid != "OfficeNet" {
-		t.Errorf("networks[1].ssid = %q; want OfficeNet", networks[1].ssid)
-	}
-	if networks[2].ssid != "OpenNet" {
-		t.Errorf("networks[2].ssid = %q; want OpenNet", networks[2].ssid)
+	if count != 1 {
+		t.Errorf("MeshNet appears %d times; want 1", count)
 	}
 }
 

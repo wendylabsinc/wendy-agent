@@ -72,6 +72,10 @@ public enum WendyE2EEnvironment {
         value("WENDY_E2E_AGENT_ADDRESS")
     }
 
+    public static var deviceAddress: String? {
+        value("WENDY_E2E_DEVICE_ADDRESS")
+    }
+
     public static var agentRunDirectory: String? {
         value("WENDY_E2E_AGENT_RUN_DIR")
     }

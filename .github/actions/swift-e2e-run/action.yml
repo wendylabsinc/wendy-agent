@@ -29,17 +29,329 @@ inputs:
     description: Transport label for run metadata.
     required: false
     default: lan
+  setup:
+    description: Run the platform Swift E2E setup script before tests.
+    required: false
+    default: 'false'
+  managed_agent:
+    description: Build and launch a local wendy-agent process for this run.
+    required: false
+    default: 'false'
 
 runs:
   using: composite
   steps:
+    - name: Validate Swift E2E inputs (Unix)
+      id: validate-unix
+      if: runner.os != 'Windows'
+      shell: bash
+      env:
+        WORKFLOW_ID: ${{ inputs.workflow_id }}
+        TARGET_ID: ${{ inputs.target_id }}
+        RUNNER_ID: ${{ inputs.runner_id }}
+        CLI_OS: ${{ inputs.cli_os }}
+        AGENT_OS: ${{ inputs.agent_os }}
+        TRANSPORT: ${{ inputs.transport }}
+        MANAGED_AGENT: ${{ inputs.managed_agent }}
+        DEVICE_ADDRESS: ${{ inputs.device_address }}
+        TESTS: ${{ inputs.tests }}
+      run: |
+        set -euo pipefail
+        require_match() {
+          local name="$1" value="$2" pattern="$3"
+          if [[ ! "$value" =~ $pattern ]]; then
+            echo "ERROR: invalid $name" >&2
+            exit 64
+          fi
+        }
+        reject_newline() {
+          local name="$1" value="$2"
+          if [[ "$value" == *$'\n'* || "$value" == *$'\r'* ]]; then
+            echo "ERROR: invalid newline in $name" >&2
+            exit 64
+          fi
+        }
+        validate_port() {
+          local port="$1"
+          [[ "$port" =~ ^[0-9]{1,5}$ ]] || return 1
+          (( 10#$port >= 1 && 10#$port <= 65535 ))
+        }
+        valid_device_address() {
+          local value="$1" port=""
+          [[ "$value" != *@* ]] || return 1
+          if [[ "$value" =~ ^[A-Za-z0-9._-]{1,253}(:([0-9]{1,5}))?$ ]]; then
+            port="${BASH_REMATCH[2]:-}"
+          elif [[ "$value" =~ ^\[[0-9A-Fa-f:]+\](:([0-9]{1,5}))?$ ]]; then
+            port="${BASH_REMATCH[2]:-}"
+          else
+            return 1
+          fi
+          [[ -z "$port" ]] || validate_port "$port"
+        }
+        validate_tests() {
+          local value="$1" filter
+          local filters=()
+          [[ ${#value} -le 500 ]] || return 1
+          [[ "$value" != *'<<'* ]] || return 1
+          [[ -n "$value" ]] || return 0
+          [[ "$value" =~ ^[A-Za-z0-9][A-Za-z0-9\,\ \._:/\|\(\)_-]*$ ]] || return 1
+          IFS=',' read -ra filters <<< "$value"
+          for filter in "${filters[@]}"; do
+            filter="${filter#${filter%%[![:space:]]*}}"
+            filter="${filter%${filter##*[![:space:]]}}"
+            [[ -z "$filter" || "$filter" != -* ]] || return 1
+          done
+        }
+        write_output() {
+          local name="$1" value="$2" delimiter
+          delimiter="WENDY_EOF_${name}"
+          {
+            printf '%s<<%s\n' "$name" "$delimiter"
+            printf '%s\n' "$value"
+            printf '%s\n' "$delimiter"
+          } >> "$GITHUB_OUTPUT"
+        }
+        require_match WORKFLOW_ID "$WORKFLOW_ID" '^[A-Za-z0-9._-]{1,80}$'
+        require_match TARGET_ID "$TARGET_ID" '^[A-Za-z0-9._-]{1,80}$'
+        require_match RUNNER_ID "$RUNNER_ID" '^[A-Za-z0-9._-]{1,80}$'
+        require_match CLI_OS "$CLI_OS" '^[A-Za-z0-9._-]{1,40}$'
+        require_match AGENT_OS "$AGENT_OS" '^[A-Za-z0-9._-]{1,40}$'
+        require_match TRANSPORT "$TRANSPORT" '^[A-Za-z0-9._-]{1,40}$'
+        require_match MANAGED_AGENT "$MANAGED_AGENT" '^(true|false)$'
+        reject_newline DEVICE_ADDRESS "$DEVICE_ADDRESS"
+        reject_newline TESTS "$TESTS"
+        if ! valid_device_address "$DEVICE_ADDRESS"; then
+          echo "ERROR: invalid DEVICE_ADDRESS" >&2
+          exit 64
+        fi
+        if ! validate_tests "$TESTS"; then
+          echo "ERROR: invalid TESTS" >&2
+          exit 64
+        fi
+        write_output validated true
+        write_output tests "$TESTS"
+        write_output managed_agent "$MANAGED_AGENT"
+        write_output device_address "$DEVICE_ADDRESS"
+        write_output cli_os "$CLI_OS"
+        write_output agent_os "$AGENT_OS"
+        write_output transport "$TRANSPORT"
+
+    - name: Validate Swift E2E inputs (Windows)
+      id: validate-windows
+      if: runner.os == 'Windows'
+      shell: pwsh
+      env:
+        WORKFLOW_ID: ${{ inputs.workflow_id }}
+        TARGET_ID: ${{ inputs.target_id }}
+        RUNNER_ID: ${{ inputs.runner_id }}
+        CLI_OS: ${{ inputs.cli_os }}
+        AGENT_OS: ${{ inputs.agent_os }}
+        TRANSPORT: ${{ inputs.transport }}
+        MANAGED_AGENT: ${{ inputs.managed_agent }}
+        DEVICE_ADDRESS: ${{ inputs.device_address }}
+        TESTS: ${{ inputs.tests }}
+      run: |
+        $ErrorActionPreference = 'Stop'
+        function Require-Match([string]$Name, [string]$Value, [string]$Pattern) {
+          if ($Value -notmatch $Pattern) { throw "invalid $Name" }
+        }
+        function Reject-Newline([string]$Name, [string]$Value) {
+          if ($Value -match "[`r`n]") { throw "invalid newline in $Name" }
+        }
+        function Test-Port([string]$Port) {
+          if ($Port -notmatch '^[0-9]{1,5}$') { return $false }
+          $Number = [int]$Port
+          return ($Number -ge 1 -and $Number -le 65535)
+        }
+        function Test-DeviceAddress([string]$Value) {
+          if ($Value -match '@') { return $false }
+          $Port = $null
+          if ($Value -match '^[A-Za-z0-9._-]{1,253}(:([0-9]{1,5}))?$') {
+            $Port = $Matches[2]
+          } elseif ($Value -match '^\[[0-9A-Fa-f:]+\](:([0-9]{1,5}))?$') {
+            $Port = $Matches[2]
+          } else {
+            return $false
+          }
+          return ([string]::IsNullOrEmpty($Port) -or (Test-Port $Port))
+        }
+        function Test-Tests([string]$Value) {
+          if ($Value.Length -gt 500) { return $false }
+          if ($Value.Length -gt 0 -and $Value -notmatch '^[A-Za-z0-9][A-Za-z0-9, ._:/|()_-]*$') { return $false }
+          if ($Value.Contains('<<')) { return $false }
+          foreach ($Filter in ($Value -split ',')) {
+            $Trimmed = $Filter.Trim()
+            if ($Trimmed.StartsWith('-')) { return $false }
+          }
+          return $true
+        }
+        function Write-OutputValue([string]$Name, [string]$Value) {
+          $Delimiter = "WENDY_EOF_$Name"
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "$Name<<$Delimiter"
+          Add-Content -Path $env:GITHUB_OUTPUT -Value $Value
+          Add-Content -Path $env:GITHUB_OUTPUT -Value $Delimiter
+        }
+        Require-Match WORKFLOW_ID $env:WORKFLOW_ID '^[A-Za-z0-9._-]{1,80}$'
+        Require-Match TARGET_ID $env:TARGET_ID '^[A-Za-z0-9._-]{1,80}$'
+        Require-Match RUNNER_ID $env:RUNNER_ID '^[A-Za-z0-9._-]{1,80}$'
+        Require-Match CLI_OS $env:CLI_OS '^[A-Za-z0-9._-]{1,40}$'
+        Require-Match AGENT_OS $env:AGENT_OS '^[A-Za-z0-9._-]{1,40}$'
+        Require-Match TRANSPORT $env:TRANSPORT '^[A-Za-z0-9._-]{1,40}$'
+        Require-Match MANAGED_AGENT $env:MANAGED_AGENT '^(true|false)$'
+        Reject-Newline DEVICE_ADDRESS $env:DEVICE_ADDRESS
+        Reject-Newline TESTS $env:TESTS
+        if (-not (Test-DeviceAddress $env:DEVICE_ADDRESS)) {
+          throw 'invalid DEVICE_ADDRESS'
+        }
+        if (-not (Test-Tests $env:TESTS)) {
+          throw 'invalid TESTS'
+        }
+        Write-OutputValue validated 'true'
+        Write-OutputValue tests $env:TESTS
+        Write-OutputValue managed_agent $env:MANAGED_AGENT
+        Write-OutputValue device_address $env:DEVICE_ADDRESS
+        Write-OutputValue cli_os $env:CLI_OS
+        Write-OutputValue agent_os $env:AGENT_OS
+        Write-OutputValue transport $env:TRANSPORT
+
+    - name: Compute Swift E2E run ID (Unix)
+      if: runner.os != 'Windows'
+      id: e2e-run-unix
+      shell: bash
+      env:
+        WORKFLOW_ID: ${{ inputs.workflow_id }}
+        TARGET_ID: ${{ inputs.target_id }}
+      run: |
+        set -euo pipefail
+        slug() {
+          printf '%s' "$1" \
+            | tr '[:upper:]' '[:lower:]' \
+            | sed -E 's/[^[:alnum:]._-]+/-/g; s/-+/-/g; s/^-//; s/-$//'
+        }
+
+        workflow_id="$(slug "$WORKFLOW_ID")"
+        target_id="$(slug "$TARGET_ID")"
+        printf -v attempt_suffix '%04d' "${GITHUB_RUN_ATTEMPT:-1}"
+        echo "run_id=${workflow_id}.gh${GITHUB_RUN_ID}.${target_id}.${attempt_suffix}" >> "$GITHUB_OUTPUT"
+
+    - name: Compute Swift E2E run ID (Windows)
+      if: runner.os == 'Windows'
+      id: e2e-run-windows
+      shell: pwsh
+      env:
+        WORKFLOW_ID: ${{ inputs.workflow_id }}
+        TARGET_ID: ${{ inputs.target_id }}
+      run: |
+        $ErrorActionPreference = 'Stop'
+        function Convert-ToSlug([string]$Value) {
+          $slug = $Value.ToLowerInvariant() -replace '[^a-z0-9._-]+', '-'
+          $slug = $slug -replace '-+', '-'
+          return $slug.Trim('-')
+        }
+
+        $workflowID = Convert-ToSlug $env:WORKFLOW_ID
+        $targetID = Convert-ToSlug $env:TARGET_ID
+        $attempt = if ($env:GITHUB_RUN_ATTEMPT) { [int]$env:GITHUB_RUN_ATTEMPT } else { 1 }
+        $runID = '{0}.gh{1}.{2}.{3:D4}' -f $workflowID, $env:GITHUB_RUN_ID, $targetID, $attempt
+        "run_id=$runID" >> $env:GITHUB_OUTPUT
+
+    - name: Set up Swift E2E host (Unix)
+      if: runner.os != 'Windows' && inputs.setup == 'true'
+      shell: bash
+      env:
+        RUN_ID: ${{ steps.e2e-run-unix.outputs.run_id }}
+        TARGET_ID: ${{ inputs.target_id }}
+        CLI_OS: ${{ inputs.cli_os }}
+        AGENT_OS: ${{ inputs.agent_os }}
+        DEVICE_ADDRESS: ${{ inputs.device_address }}
+        TRANSPORT: ${{ inputs.transport }}
+      run: |
+        set -euo pipefail
+        run_dir="${RUNNER_TEMP}/wendy/${RUN_ID}"
+        log_path="${run_dir}/attempt.log"
+        mkdir -p "$run_dir"
+
+        set +e
+        {
+          echo "==> Running Swift E2E host setup"
+          bash swift/Scripts/E2ESetup.sh
+        } 2>&1 | tee "$log_path"
+        setup_status=${PIPESTATUS[0]}
+        set -e
+
+        if [[ "$setup_status" -ne 0 ]]; then
+          RUN_DIR="$run_dir" EXIT_STATUS="$setup_status" python3 - <<'PY'
+        import json, os, time
+        run_dir = os.environ["RUN_DIR"]
+        attempt = {
+            "kind": "wendy-e2e-attempt",
+            "version": 1,
+            "attemptID": os.environ.get("RUN_ID"),
+            "createdAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "exitStatus": int(os.environ.get("EXIT_STATUS", "1") if os.environ.get("EXIT_STATUS", "1").isdigit() else "1"),
+            "github": {
+                "repository": os.environ.get("GITHUB_REPOSITORY"),
+                "workflow": os.environ.get("GITHUB_WORKFLOW"),
+                "runID": os.environ.get("GITHUB_RUN_ID"),
+                "runAttempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
+                "job": os.environ.get("GITHUB_JOB"),
+                "sha": os.environ.get("GITHUB_SHA"),
+            },
+            "target": {
+                "targetID": os.environ.get("TARGET_ID"),
+                "cliOS": os.environ.get("CLI_OS"),
+                "agentOS": os.environ.get("AGENT_OS"),
+                "transport": os.environ.get("TRANSPORT"),
+            },
+            "paths": {"attemptDirectory": run_dir},
+        }
+        with open(os.path.join(run_dir, "attempt.json"), "w", encoding="utf-8") as f:
+            json.dump(attempt, f, indent=2)
+            f.write("\n")
+        PY
+          exit "$setup_status"
+        fi
+
+    - name: Configure Swiftly PATH (Unix)
+      if: runner.os != 'Windows' && runner.environment == 'github-hosted'
+      shell: bash
+      run: |
+        set -euo pipefail
+        append_path_dir() {
+          local dir="$1"
+          if [[ -z "$dir" || "$dir" != /* || "$dir" == *$'\n'* || "$dir" == *$'\r'* ]]; then
+            return 0
+          fi
+          case "$dir" in
+            "$HOME/.swiftly/bin"|"$HOME/.local/share/swiftly/bin"|/usr/bin|/usr/local/bin|/usr/share/swift/usr/bin)
+              printf '%s\n' "$dir" >> "$GITHUB_PATH"
+              ;;
+            *)
+              echo "WARN: skipping non-allowlisted Swift PATH directory: $dir" >&2
+              ;;
+          esac
+        }
+
+        for dir in "$HOME/.swiftly/bin" "$HOME/.local/share/swiftly/bin"; do
+          if [[ -d "$dir" ]]; then
+            append_path_dir "$dir"
+          fi
+        done
+        for tool in swift swiftly; do
+          if tool_path="$(command -v "$tool" 2>/dev/null)"; then
+            append_path_dir "$(dirname "$tool_path")"
+          fi
+        done
+
     - name: Capture Swift toolchain version (Unix)
       if: runner.os != 'Windows'
       id: swift-toolchain-unix
       shell: bash
+      env:
+        RUNNER_ID: ${{ inputs.runner_id }}
       run: |
         set -euo pipefail
-        if [[ "${{ inputs.runner_id }}" == "macos-26" ]]; then
+        if [[ "$RUNNER_ID" == "macos-26" ]]; then
           version="$(xcodebuild -version | awk '/Xcode/ { print $2 }')"
         else
           version="$(swift --version | head -n 1 | tr -cs '[:alnum:]._-' '-')"
@@ -69,74 +381,53 @@ runs:
           swift-e2e-swiftpm-${{ runner.os }}-${{ steps.swift-toolchain-unix.outputs.version || steps.swift-toolchain-windows.outputs.version }}-
           swift-e2e-swiftpm-${{ runner.os }}-
 
-    - name: Compute Swift E2E run ID (Unix)
-      if: runner.os != 'Windows'
-      id: e2e-run-unix
-      shell: bash
-      run: |
-        set -euo pipefail
-        slug() {
-          printf '%s' "$1" \
-            | tr '[:upper:]' '[:lower:]' \
-            | sed -E 's/[^[:alnum:]._-]+/-/g; s/-+/-/g; s/^-//; s/-$//'
-        }
-
-        workflow_id="$(slug "${{ inputs.workflow_id }}")"
-        target_id="$(slug "${{ inputs.target_id }}")"
-        printf -v attempt_suffix '%04d' "${GITHUB_RUN_ATTEMPT:-1}"
-        echo "run_id=${workflow_id}.gh${GITHUB_RUN_ID}.${target_id}.${attempt_suffix}" >> "$GITHUB_OUTPUT"
-
-    - name: Compute Swift E2E run ID (Windows)
-      if: runner.os == 'Windows'
-      id: e2e-run-windows
-      shell: pwsh
-      run: |
-        $ErrorActionPreference = 'Stop'
-        function Convert-ToSlug([string]$Value) {
-          $slug = $Value.ToLowerInvariant() -replace '[^a-z0-9._-]+', '-'
-          $slug = $slug -replace '-+', '-'
-          return $slug.Trim('-')
-        }
-
-        $workflowID = Convert-ToSlug '${{ inputs.workflow_id }}'
-        $targetID = Convert-ToSlug '${{ inputs.target_id }}'
-        $attempt = if ($env:GITHUB_RUN_ATTEMPT) { [int]$env:GITHUB_RUN_ATTEMPT } else { 1 }
-        $runID = '{0}.gh{1}.{2}.{3:D4}' -f $workflowID, $env:GITHUB_RUN_ID, $targetID, $attempt
-        "run_id=$runID" >> $env:GITHUB_OUTPUT
-
     - name: Run Swift E2E tests (Unix)
-      if: runner.os != 'Windows'
+      if: runner.os != 'Windows' && steps.validate-unix.outputs.validated == 'true'
       working-directory: swift
       shell: bash
       env:
         GITHUB_TOKEN: ${{ github.token }}
-        WENDY_E2E_TEST_FILTERS: ${{ inputs.tests }}
+        WENDY_E2E_TEST_FILTERS: ${{ steps.validate-unix.outputs.tests }}
         WENDY_E2E_RUN_ID: ${{ steps.e2e-run-unix.outputs.run_id }}
-        WENDY_E2E_CLI_OS: ${{ inputs.cli_os }}
-        WENDY_E2E_AGENT_OS: ${{ inputs.agent_os }}
-        WENDY_E2E_TRANSPORT: ${{ inputs.transport }}
+        WENDY_E2E_CLI_OS: ${{ steps.validate-unix.outputs.cli_os }}
+        WENDY_E2E_AGENT_OS: ${{ steps.validate-unix.outputs.agent_os }}
+        WENDY_E2E_TRANSPORT: ${{ steps.validate-unix.outputs.transport }}
+        MANAGED_AGENT: ${{ steps.validate-unix.outputs.managed_agent }}
+        DEVICE_ADDRESS: ${{ steps.validate-unix.outputs.device_address }}
       run: |
         set -euo pipefail
         output_dir="${RUNNER_TEMP}/wendy"
-        bash ./Scripts/E2ETest.sh \
-          --output-dir "$output_dir" \
-          --agent-address "${{ inputs.device_address }}"
+        args=(--output-dir "$output_dir")
+        if [[ "$MANAGED_AGENT" == "true" ]]; then
+          args+=(--managed-agent --device-address "$DEVICE_ADDRESS")
+        else
+          args+=(--agent-address "$DEVICE_ADDRESS")
+        fi
+        bash ./Scripts/E2ETest.sh "${args[@]}"
 
     - name: Run Swift E2E tests (Windows)
-      if: runner.os == 'Windows'
+      if: runner.os == 'Windows' && steps.validate-windows.outputs.validated == 'true'
       working-directory: swift
       shell: pwsh
       env:
         GITHUB_TOKEN: ${{ github.token }}
-        WENDY_E2E_TEST_FILTERS: ${{ inputs.tests }}
+        WENDY_E2E_TEST_FILTERS: ${{ steps.validate-windows.outputs.tests }}
         WENDY_E2E_RUN_ID: ${{ steps.e2e-run-windows.outputs.run_id }}
-        WENDY_E2E_CLI_OS: ${{ inputs.cli_os }}
-        WENDY_E2E_AGENT_OS: ${{ inputs.agent_os }}
-        WENDY_E2E_TRANSPORT: ${{ inputs.transport }}
+        WENDY_E2E_CLI_OS: ${{ steps.validate-windows.outputs.cli_os }}
+        WENDY_E2E_AGENT_OS: ${{ steps.validate-windows.outputs.agent_os }}
+        WENDY_E2E_TRANSPORT: ${{ steps.validate-windows.outputs.transport }}
+        MANAGED_AGENT: ${{ steps.validate-windows.outputs.managed_agent }}
+        DEVICE_ADDRESS: ${{ steps.validate-windows.outputs.device_address }}
       run: |
         $ErrorActionPreference = 'Stop'
+        # This step only consumes values emitted by validate-windows above.
+        if ($env:MANAGED_AGENT -eq 'true') {
+          throw 'managed_agent is not supported by the Windows Swift E2E runner yet.'
+        }
         $outputDir = Join-Path $env:RUNNER_TEMP 'wendy'
-        & ./Scripts/E2ETest.ps1 --output-dir $outputDir --agent-address "${{ inputs.device_address }}"
+        $deviceAddress = [string]$env:DEVICE_ADDRESS
+        $e2eArgs = @('--output-dir', $outputDir, '--agent-address', $deviceAddress)
+        & ./Scripts/E2ETest.ps1 @e2eArgs
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
     - name: Upload Swift E2E run (Unix)

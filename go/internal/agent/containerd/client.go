@@ -78,6 +78,21 @@ type Client struct {
 	// Checked by CreateContainerWithProgress to reject concurrent create/stop races
 	// (SOC2-CC6, NIST-AC-3, ISO27001-A.8).
 	appStopping map[string]bool
+
+	// ros2ExecRefs counts active ExecROS2 calls per sidecar name. Protected by mu.
+	// Teardown paths check this before SIGKILLing a sidecar (WDY-1702 H5).
+	ros2ExecRefs map[string]int
+
+	// chunkIndex maps CDC chunk hashes to byte ranges in uncompressed layer
+	// blobs (Model B). staging holds chunks received this session until the
+	// following AssembleLayerFromChunks consumes them.
+	chunkIndex *ChunkIndex
+	staging    *staging
+
+	// snapshotter is the containerd snapshotter to use for new snapshots.
+	// Defaults to "overlayfs" when supported; falls back to "native" on kernels
+	// that do not support overlay mounts (e.g. nested container environments).
+	snapshotter string
 }
 
 func NewClient(logger *zap.Logger, address string, proxyMgr *dbusproxy.Manager) (*Client, error) {
@@ -90,6 +105,14 @@ func NewClient(logger *zap.Logger, address string, proxyMgr *dbusproxy.Manager) 
 		return nil, fmt.Errorf("connecting to containerd at %s: %w", address, err)
 	}
 
+	chunkIndexPath := "/var/lib/wendy/chunk-index.json"
+	idx, err := NewChunkIndex(chunkIndexPath)
+	if err != nil {
+		return nil, fmt.Errorf("loading chunk index: %w", err)
+	}
+
+	snapshotter := probeSnapshotter(logger)
+
 	return &Client{
 		client:       c,
 		logger:       logger,
@@ -100,8 +123,16 @@ func NewClient(logger *zap.Logger, address string, proxyMgr *dbusproxy.Manager) 
 		appIsolation: make(map[string]string),
 		serviceIPs:   make(map[string]map[string]string),
 		appStopping:  make(map[string]bool),
+		ros2ExecRefs: make(map[string]int),
+		chunkIndex:   idx,
+		staging:      newStaging(defaultChunkStagingDir),
+		snapshotter:  snapshotter,
 	}, nil
 }
+
+// probeSnapshotter returns "overlayfs" if the kernel supports overlay mounts,
+// otherwise "native". Implemented in client_linux.go (Linux) and
+// client_other.go (always "native" on non-Linux platforms).
 
 // Close releases the underlying containerd client connection and stops all
 // D-Bus proxy processes.
@@ -130,6 +161,30 @@ func (c *Client) setPrimaryPID(appID string, pid uint32) {
 func (c *Client) getPrimaryPID(appID string) (uint32, bool) {
 	pid, ok := c.primaryPIDs[appID]
 	return pid, ok
+}
+
+// primaryTaskAlive reports whether pid belongs to a currently running task of
+// one of appID's containers. Used to detect stale primaryPIDs entries left
+// behind when a primary exits or is redeployed without a group stop. ctx must
+// already carry the containerd namespace; caller must hold c.mu.
+func (c *Client) primaryTaskAlive(ctx context.Context, appID string, pid uint32) bool {
+	ctrs, err := c.containersForApp(ctx, appID)
+	if err != nil {
+		return false
+	}
+	for _, ctr := range ctrs {
+		task, terr := ctr.Task(ctx, nil)
+		if terr != nil {
+			continue
+		}
+		if st, serr := task.Status(ctx); serr != nil || st.Status != containerd.Running {
+			continue
+		}
+		if task.Pid() == pid {
+			return true
+		}
+	}
+	return false
 }
 
 // clearPrimaryPID removes the primary PID entry when the app group stops.
@@ -243,10 +298,22 @@ func layerMediaType(compression agentpb.RunContainerLayerHeader_CompressionType,
 	}
 }
 
-func (c *Client) AssembleImage(ctx context.Context, imageName string, layers []*agentpb.RunContainerLayerHeader) error {
+// maxImageConfigBytes bounds the OCI image config blob accepted over the wire.
+// A real config (Cmd/Entrypoint/Env/WorkingDir/User + metadata) is a few KiB;
+// 1 MiB is generous headroom while still rejecting an abusive payload.
+const maxImageConfigBytes = 1 << 20
+
+func (c *Client) AssembleImage(ctx context.Context, imageName string, layers []*agentpb.RunContainerLayerHeader, imageConfig []byte) error {
 	ctx = c.withNamespace(ctx)
 	cs := c.client.ContentStore()
 	is := c.client.ImageService()
+
+	// Store the image under the SAME normalized name that
+	// CreateContainerWithProgress uses for its GetImage lookup. Without this,
+	// a short ref like "app:latest" is stored verbatim here but looked up as
+	// "docker.io/library/app:latest" at create time, missing the local store
+	// and falling through to a (failing) registry pull.
+	imageName = normalizeImageName(imageName)
 
 	// Build OCI layer descriptors and diff IDs.
 	var layerDescs []ocispec.Descriptor
@@ -276,16 +343,36 @@ func (c *Client) AssembleImage(ctx context.Context, imageName string, layers []*
 		diffIDs = append(diffIDs, did)
 	}
 
-	// Build OCI image config.
+	// Build the OCI image config. When the caller supplies the original config
+	// blob (chunk-diff path), preserve it so the runtime config — Cmd,
+	// Entrypoint, Env, WorkingDir, User — survives reassembly; otherwise a
+	// container created from this image would have no command and exit
+	// immediately. We override RootFS.DiffIDs with the diff IDs we just computed
+	// so the config always matches the layers in this manifest. When no config
+	// is supplied we fall back to a minimal synthesized config (legacy callers).
 	imgConfig := ocispec.Image{
 		Platform: ocispec.Platform{
 			Architecture: "arm64",
 			OS:           "linux",
 		},
-		RootFS: ocispec.RootFS{
-			Type:    "layers",
-			DiffIDs: diffIDs,
-		},
+	}
+	if len(imageConfig) > 0 {
+		// A real OCI image config is small (a few KiB). Reject an oversized blob
+		// before parsing so a misbehaving client cannot force a large allocation.
+		if len(imageConfig) > maxImageConfigBytes {
+			return fmt.Errorf("image config too large: %d > %d bytes", len(imageConfig), maxImageConfigBytes)
+		}
+		// Decode into the typed OCI struct: unknown/extra JSON fields are dropped
+		// on the re-marshal below, so only well-formed config survives.
+		if err := json.Unmarshal(imageConfig, &imgConfig); err != nil {
+			return fmt.Errorf("parsing supplied image config: %w", err)
+		}
+	}
+	// Always re-derive the security-critical layer binding from the diff IDs we
+	// computed locally — never trust RootFS supplied over the wire.
+	imgConfig.RootFS = ocispec.RootFS{
+		Type:    "layers",
+		DiffIDs: diffIDs,
 	}
 	configData, err := json.Marshal(imgConfig)
 	if err != nil {
@@ -538,12 +625,20 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 		}
 	}
 
-	// Start D-Bus proxy if bluetooth entitlement is present.
+	// Start D-Bus proxy if bluetooth entitlement is present. The returned
+	// socket directory is keyed by containerName (which includes the service
+	// name for multi-service apps), so it must be threaded through to the
+	// bluetooth entitlement verbatim — reconstructing it from appID alone would
+	// drop the service suffix and runc would fail with a missing bind-mount
+	// source.
 	var dbusProxyStarted bool
+	var dbusProxySocketDir string
 	if c.proxyManager != nil && hasBluetooth(appCfg) {
-		if _, err := c.proxyManager.Start(ctx, containerName); err != nil {
+		dir, err := c.proxyManager.Start(ctx, containerName)
+		if err != nil {
 			return fmt.Errorf("starting D-Bus proxy for %q: %w", containerName, err)
 		}
+		dbusProxySocketDir = dir
 		dbusProxyStarted = true
 		defer func() {
 			if dbusProxyStarted {
@@ -553,7 +648,7 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 	}
 
 	// Unpack the image into the snapshotter if not already done.
-	unpacked, err := image.IsUnpacked(ctx, "")
+	unpacked, err := image.IsUnpacked(ctx, c.snapshotter)
 	if err != nil {
 		c.logger.Warn("Failed to check if image is unpacked", zap.Error(err))
 	}
@@ -620,7 +715,7 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 	}
 	env = append(env, req.GetEnv()...)
 	env = append(env, wendyEnv...)
-	env = append(env, buildROS2Env(appCfg)...)
+	env = append(env, buildROS2Env(appCfg, appID, serviceName)...)
 	env = injectOTELEnvIfNeeded(env, appCfg, appID)
 
 	// Build OCI spec using local oci package, then apply entitlements.
@@ -638,7 +733,7 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 	}
 
 	opts := localoci.ApplyOptions{
-		DBusProxyAvailable: c.proxyManager != nil,
+		DBusProxySocketDir: dbusProxySocketDir,
 	}
 	// Pass a shallow copy of appCfg with AppID and ServiceName set to the
 	// derived (validated) values. This ensures ApplyEntitlements always receives
@@ -675,6 +770,15 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 
 	labels := wendyLabels(appID, serviceName, version, req.GetRestartPolicy(), appCfg.Entitlements)
 
+	// Publish the resolved ROS 2 configuration as a container label so the
+	// agent can discover ROS 2 containers at runtime and configure the CLI
+	// sidecar with the right distro and DDS domain (WDY-884, WDY-1332).
+	if ros2 := appCfg.ResolveROS2ConfigForService(serviceName); ros2 != nil {
+		if v := appconfig.ROS2AnnotationValue(ros2, appID); v != "" {
+			labels[appconfig.ROS2AnnotationKey] = v
+		}
+	}
+
 	// Inject /etc/hosts bind-mount for isolated multi-service apps so service
 	// names resolve via CNI-assigned IPs.
 	if appCfg.Isolation == "isolated" && len(appCfg.Services) > 1 {
@@ -702,6 +806,19 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 	// Apply isolation-specific namespace and shm settings for shared-namespace groups.
 	if appconfig.IsSharedNamespaceIsolation(appCfg.Isolation) {
 		primaryPID, hasPrimary := c.getPrimaryPID(appID)
+		// The recorded primary is only trustworthy while its task is alive: a
+		// primary that exited on its own or was replaced by a redeploy never
+		// passes through the StopContainer path that clears the entry.
+		// Joining a stale (possibly recycled) PID would fail — or worse, join
+		// the wrong namespace — so verify it against a running container task
+		// and promote this service to primary when stale (SOC2-CC6,
+		// NIST-SC-7, ISO27001-A.8).
+		if hasPrimary && !c.primaryTaskAlive(ctx, appID, primaryPID) {
+			c.logger.Info("Recorded primary for app group is stale; this service becomes the new primary",
+				zap.String("app_id", appID), zap.Uint32("stale_pid", primaryPID))
+			c.clearPrimaryPID(appID)
+			hasPrimary = false
+		}
 		if hasPrimary {
 			// Secondary service: join the primary's namespaces.
 			// nsAnchors holds open fds for each namespace so the paths embedded
@@ -724,14 +841,26 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 				spec.Mounts = append(spec.Mounts, localoci.SharedSHMMount(shmPath))
 			}
 		} else {
-			// Primary service: create shared shm dir so secondaries can find it.
+			// Primary service: mount the shared shm segment too. Creating the
+			// host dir alone is not enough — without the bind mount the
+			// primary keeps its private tmpfs /dev/shm and never shares
+			// segments with the secondaries that mount /run/wendy/shm/<appID>.
 			if appCfg.Isolation == "shared-ipc" {
-				if _, shmErr := ensureSharedSHM(appID); shmErr != nil {
+				shmPath, shmErr := ensureSharedSHM(appID)
+				if shmErr != nil {
 					return shmErr
 				}
+				localoci.RemoveDefaultSHM(spec)
+				spec.Mounts = append(spec.Mounts, localoci.SharedSHMMount(shmPath))
 			}
 		}
 	}
+
+	// Remove duplicate device nodes before handing the spec to runc: independent
+	// provisioners (CDI/L4T-CSV GPU setup and the gpu entitlement) can add the
+	// same node, and runc mknod()s each entry, so a duplicate path would fail
+	// container creation with EEXIST.
+	localoci.DedupeDevices(spec)
 
 	// Serialize our custom OCI spec to JSON for WithSpecFromBytes.
 	specJSON, err := json.Marshal(spec)
@@ -743,6 +872,7 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 	snapshotKey := SnapshotKey(appID, serviceName)
 	_, err = c.client.NewContainer(ctx, containerName,
 		containerd.WithImage(image),
+		containerd.WithSnapshotter(c.snapshotter),
 		containerd.WithNewSnapshot(snapshotKey, image),
 		containerd.WithContainerLabels(labels),
 		containerd.WithNewSpec(
@@ -795,7 +925,20 @@ func (c *Client) applyCDIGPU(spec *localoci.Spec) {
 	mgr := cdi.NewManager()
 	cdiSpec, err := mgr.LoadNVIDIACDISpec()
 	if err != nil {
-		c.logger.Warn("No NVIDIA CDI spec found, GPU library mounts may be incomplete", zap.Error(err))
+		// No nvidia-ctk-generated CDI spec. On Tegra/L4T this is expected when the
+		// device's nvidia-container-toolkit predates `nvidia-ctk cdi generate`
+		// (JetPack 5 / r35, toolkit ≤1.11). Fall back to the NVIDIA Container
+		// Runtime CSV-mode file lists, which still ship on those images and list
+		// the real libcuda.so.1 plus the Tegra iGPU device nodes (WDY-1716).
+		if applied, csvErr := cdi.ApplyL4TCSV(spec); csvErr != nil {
+			c.logger.Warn("L4T CSV GPU fallback failed; GPU mounts may be incomplete", zap.Error(csvErr))
+		} else if applied > 0 {
+			c.logger.Info("Applied L4T CSV GPU provisioning (no CDI spec; nvidia-ctk predates CDI)",
+				zap.Int("count", applied))
+			return
+		}
+		c.logger.Warn("No NVIDIA CDI spec and no usable L4T CSV files; GPU library mounts may be incomplete",
+			zap.Error(err))
 		return
 	}
 
@@ -850,6 +993,21 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 			return nil, fmt.Errorf("app %q has multiple service containers; use the full container name (appID_serviceName) to start a specific service", appName)
 		}
 		container = ctrs[0]
+	}
+
+	// Name parsing is ambiguous for multi-service containers because '_' is
+	// also legal inside appIDs: "app_talker" parses as a bare appID, which
+	// would key the group bookkeeping below (isolation mode, primary PID for
+	// namespace joins, CNI per-service records) under the wrong identity.
+	// The labels written at create time are authoritative — prefer them,
+	// re-validating since labels are external state (SOC2-CC6, NIST-SI-10).
+	if labels, lerr := container.Labels(ctx); lerr == nil {
+		if id := labels[labelKeyAppID]; id != "" && appconfig.ValidateAppID(id) == nil {
+			svc := labels[labelKeyServiceName]
+			if svc == "" || appconfig.ValidateServiceName(svc) == nil {
+				appID, serviceName = id, svc
+			}
+		}
 	}
 
 	if restartPolicy != nil {
@@ -1232,45 +1390,46 @@ func validateUserEnv(entries []string) error {
 	return nil
 }
 
-// ros2DomainIDMax is the conservative upper bound for ROS 2 domain IDs.
-// The ROS 2 spec defines valid IDs as 0–101 (conservative); some platforms
-// allow up to 232 but 101 covers all standard deployments (SOC2-CC6, NIST-SI-10).
-const (
-	ros2DomainIDMin = 0
-	ros2DomainIDMax = 101
-)
+// cycloneDDSInlineConfig is the CycloneDDS configuration passed inline via
+// CYCLONEDDS_URI (not a file mount). SharedMemory (iceoryx zero-copy) is
+// DISABLED: it requires an iox-roudi daemon that WendyOS does not run, and
+// enabling it makes CycloneDDS block at startup ("RouDi not found - waiting")
+// until the container is SIGKILLed, restart-looping. With it off, CycloneDDS
+// uses UDP over loopback, which works within the app group's shared network
+// namespace — ROS_LOCALHOST_ONLY=1 (always injected alongside) pins it to lo.
+// No <Interfaces> block: localhost-only already selects lo, and an autodetermine
+// interface on top makes it select "lo" twice ("the same interface may not be
+// selected twice"), which fails domain creation. Re-enabling zero-copy needs an
+// iox-roudi system service on the device first (WDY-884).
+const cycloneDDSInlineConfig = `<CycloneDDS><Domain><SharedMemory><Enable>false</Enable></SharedMemory></Domain></CycloneDDS>`
 
-// validRMWImplementations is the allowlist of known RMW (ROS Middleware)
-// implementation identifiers. Validating against a fixed set prevents
-// injection of arbitrary strings into the container environment via the
-// RMW field in wendy.json (SOC2-CC6, ISO27001-A.8, NIST-SI-10).
-var validRMWImplementations = map[string]bool{
-	"rmw_cyclonedds_cpp": true,
-	"rmw_fastrtps_cpp":   true,
-	"rmw_connextdds":     true,
-	"rmw_gurumdds_cpp":   true,
-}
-
-// buildROS2Env returns ROS2 environment variables from the app's frameworks.ros2 config.
-func buildROS2Env(appCfg *appconfig.AppConfig) []string {
-	ros2 := appCfg.GetROS2Config()
+// buildROS2Env returns ROS2 environment variables for the container resolved
+// from the app's frameworks.ros2 config (group-level, overridden by the
+// service-level config for multi-service apps). The injected set is
+// ROS_DOMAIN_ID, RMW_IMPLEMENTATION, CYCLONEDDS_URI (CycloneDDS only), and
+// ROS_LOCALHOST_ONLY (WDY-884).
+func buildROS2Env(appCfg *appconfig.AppConfig, appID, serviceName string) []string {
+	ros2 := appCfg.ResolveROS2ConfigForService(serviceName)
 	if ros2 == nil {
 		return nil
 	}
-	if ros2.DomainID < ros2DomainIDMin || ros2.DomainID > ros2DomainIDMax {
-		return nil // invalid domain ID; caller should have validated at config parse time
+	domainID := ros2.ResolvedDomainID(appID)
+	if domainID < 0 {
+		return nil // invalid explicit domain ID; caller should have validated at config parse time
 	}
-	env := []string{fmt.Sprintf("ROS_DOMAIN_ID=%d", ros2.DomainID)}
-	if ros2.RMW != "" {
-		// Allowlist validation: only known RMW identifiers are injected.
-		// A control-char check alone is insufficient — an unknown value with
-		// only printable chars could still corrupt the env or trigger
-		// plugin-specific parsing bugs (SOC2-CC6, NIST-SI-10).
-		if !validRMWImplementations[ros2.RMW] {
-			return env // unknown RMW: drop rather than inject
+	env := []string{fmt.Sprintf("ROS_DOMAIN_ID=%d", domainID)}
+	// ResolvedRMW validates against a fixed allowlist and returns "" for
+	// unknown values, so arbitrary wendy.json strings can never reach the
+	// container environment (SOC2-CC6, ISO27001-A.8, NIST-SI-10).
+	if rmw := ros2.ResolvedRMW(); rmw != "" {
+		env = append(env, "RMW_IMPLEMENTATION="+rmw)
+		if rmw == appconfig.ROS2DefaultRMW {
+			env = append(env, "CYCLONEDDS_URI="+cycloneDDSInlineConfig)
 		}
-		env = append(env, "RMW_IMPLEMENTATION="+ros2.RMW)
 	}
+	// Services in an app group share a network namespace, so localhost is
+	// sufficient and DDS must not discover nodes on the wider network.
+	env = append(env, "ROS_LOCALHOST_ONLY=1")
 	return env
 }
 
@@ -1484,6 +1643,7 @@ func (c *Client) recreateContainer(ctx context.Context, ctr containerd.Container
 	snapshotKey := SnapshotKey(labelAppID, labelSvcName)
 	_, err = c.client.NewContainer(ctx, ContainerName(labelAppID, labelSvcName),
 		containerd.WithImage(image),
+		containerd.WithSnapshotter(c.snapshotter),
 		containerd.WithNewSnapshot(snapshotKey, image),
 		containerd.WithContainerLabels(info.Labels),
 		containerd.WithNewSpec(
@@ -1495,6 +1655,204 @@ func (c *Client) recreateContainer(ctx context.Context, ctr containerd.Container
 	}
 
 	c.logger.Info("Recreated container to clear orphaned task", zap.String("app_name", appName))
+	return nil
+}
+
+// Compile-time assertion that *Client provides the group-restart capability the
+// container monitor type-asserts for. Without this, a signature drift would make
+// the monitor's runtime type assertion silently fail and fall back to
+// single-container restarts, leaving shared-namespace groups broken on restart.
+var _ services.GroupRestarter = (*Client)(nil)
+
+// GroupRestartAppID reports whether appName is a member of a shared-namespace
+// app group (shared-ipc/shared-network with more than one service) and, if so,
+// returns the bare appID. The container monitor uses this to route a member's
+// restart through RestartGroup instead of an independent StartContainer, which
+// would leave a secondary attached to the primary's now-dead namespace.
+func (c *Client) GroupRestartAppID(ctx context.Context, appName string) (string, bool) {
+	appID, svcName, err := ParseContainerName(appName)
+	if err != nil || svcName == "" {
+		return "", false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !appconfig.IsSharedNamespaceIsolation(c.getIsolation(appID)) {
+		return "", false
+	}
+	if len(c.appServices[appID]) <= 1 {
+		return "", false
+	}
+	return appID, true
+}
+
+// RestartGroup restarts every service of a shared-namespace app group as a unit.
+// A secondary's namespace join is resolved at container-create time against the
+// primary's *running* task, and the resolved /proc/<pid>/ns/* path is baked into
+// the stored OCI spec. When the primary restarts it gets a new PID and brand-new
+// kernel namespaces, so any secondary still pointing at the old PID is stranded
+// in a dead (or worse, recycled) namespace — observable as a secondary that
+// shares /dev/shm (a host bind-mount, PID-independent) but cannot reach the
+// primary over localhost (network namespace gone).
+//
+// To restore the invariant it: (1) stops every member task, (2) clears the
+// stale primary PID, (3) starts the primary so it re-registers a live PID, then
+// (4) re-resolves each secondary's namespace join against that new PID before
+// starting it. It returns the per-service output channels keyed by full
+// container name so the caller can drain them.
+func (c *Client) RestartGroup(ctx context.Context, appID string) (map[string]<-chan services.ContainerOutput, error) {
+	ctx = c.withNamespace(ctx)
+
+	c.mu.Lock()
+	isolation := c.getIsolation(appID)
+	servicesMap := c.appServices[appID]
+	c.mu.Unlock()
+
+	if !appconfig.IsSharedNamespaceIsolation(isolation) {
+		return nil, fmt.Errorf("RestartGroup: app %q is not a shared-namespace group (isolation %q)", appID, isolation)
+	}
+	if len(servicesMap) <= 1 {
+		return nil, fmt.Errorf("RestartGroup: app %q has %d service(s); not a group", appID, len(servicesMap))
+	}
+	order, err := appconfig.ServiceTopoOrder(servicesMap)
+	if err != nil {
+		return nil, fmt.Errorf("RestartGroup: resolving service order for %q: %w", appID, err)
+	}
+
+	// 1. Stop every member task so no secondary is left attached to a namespace
+	//    about to be recreated. Containers are kept; only tasks are deleted.
+	for _, svc := range order {
+		name := ContainerName(appID, svc)
+		if serr := c.stopOne(ctx, name); serr != nil {
+			c.logger.Warn("RestartGroup: failed to stop group member (continuing)",
+				zap.String("app_id", appID), zap.String("service", svc), zap.Error(serr))
+		}
+	}
+
+	// 2. Clear the stale primary PID; the primary started below re-registers it.
+	c.mu.Lock()
+	c.clearPrimaryPID(appID)
+	c.mu.Unlock()
+
+	results := make(map[string]<-chan services.ContainerOutput, len(order))
+
+	// 3. Start the primary first so setPrimaryPID records the new live PID
+	//    before any secondary resolves its join against it.
+	primaryName := ContainerName(appID, order[0])
+	primaryCh, err := c.StartContainer(ctx, primaryName, "", nil)
+	if err != nil {
+		return nil, fmt.Errorf("RestartGroup: starting primary %q: %w", primaryName, err)
+	}
+	results[primaryName] = primaryCh
+
+	c.mu.Lock()
+	primaryPID, hasPrimary := c.getPrimaryPID(appID)
+	c.mu.Unlock()
+	if !hasPrimary || primaryPID == 0 {
+		return results, fmt.Errorf("RestartGroup: primary %q started but no PID recorded", primaryName)
+	}
+
+	// 4. Re-resolve each secondary's namespace join against the new primary PID,
+	//    then start it.
+	for _, svc := range order[1:] {
+		name := ContainerName(appID, svc)
+		if rerr := c.refreshSecondaryNamespaces(ctx, name, primaryPID, isolation); rerr != nil {
+			c.logger.Error("RestartGroup: failed to refresh secondary namespaces",
+				zap.String("app_id", appID), zap.String("service", svc), zap.Error(rerr))
+			continue
+		}
+		ch, serr := c.StartContainer(ctx, name, "", nil)
+		if serr != nil {
+			c.logger.Error("RestartGroup: failed to start secondary",
+				zap.String("app_id", appID), zap.String("service", svc), zap.Error(serr))
+			continue
+		}
+		results[name] = ch
+	}
+	return results, nil
+}
+
+// refreshSecondaryNamespaces rewrites a secondary container's stored OCI spec so
+// its namespace join targets primaryPID, then delete+recreates the container
+// with the refreshed spec (the spec is immutable on a live container; recreating
+// is the same mechanism used by recreateContainer). The container's image and
+// labels are preserved.
+func (c *Client) refreshSecondaryNamespaces(ctx context.Context, name string, primaryPID uint32, isolation string) error {
+	ctr, err := c.client.LoadContainer(ctx, name)
+	if err != nil {
+		return fmt.Errorf("loading container %q: %w", name, err)
+	}
+	info, err := ctr.Info(ctx)
+	if err != nil {
+		return fmt.Errorf("getting container info: %w", err)
+	}
+	image, err := ctr.Image(ctx)
+	if err != nil {
+		return fmt.Errorf("getting container image: %w", err)
+	}
+	if info.Spec == nil {
+		return fmt.Errorf("container %q has no stored spec", name)
+	}
+
+	// Decode the stored spec into our spec type. The agent always stores a
+	// localoci.Spec-shaped JSON (via WithSpecFromBytes), so this round-trips.
+	var spec localoci.Spec
+	if err := json.Unmarshal(info.Spec.GetValue(), &spec); err != nil {
+		return fmt.Errorf("decoding stored spec for %q: %w", name, err)
+	}
+
+	// Re-resolve the namespace join against the new primary PID. JoinGroupNamespaces
+	// overwrites the Path on the existing ipc/network/uts entries.
+	anchors, err := localoci.JoinGroupNamespaces(&spec, primaryPID, isolation)
+	if err != nil {
+		return fmt.Errorf("re-resolving group namespaces: %w", err)
+	}
+	defer func() {
+		for _, f := range anchors {
+			f.Close()
+		}
+	}()
+
+	newSpecJSON, err := json.Marshal(&spec)
+	if err != nil {
+		return fmt.Errorf("marshaling refreshed spec: %w", err)
+	}
+
+	// Derive identity from labels (authoritative; set at creation by wendyLabels),
+	// falling back to the name only when the label is absent (SOC2-CC8).
+	labelAppID := info.Labels[labelKeyAppID]
+	labelSvcName := info.Labels[labelKeyServiceName]
+	if labelAppID == "" {
+		var parseErr error
+		labelAppID, labelSvcName, parseErr = ParseContainerName(name)
+		if parseErr != nil {
+			return fmt.Errorf("refusing to recreate container with malformed name: %w", parseErr)
+		}
+	}
+	if err := appconfig.ValidateAppID(labelAppID); err != nil {
+		return fmt.Errorf("refusing to recreate container with invalid appID in labels: %w", err)
+	}
+	if labelSvcName != "" {
+		if err := appconfig.ValidateServiceName(labelSvcName); err != nil {
+			return fmt.Errorf("refusing to recreate container with invalid serviceName in labels: %w", err)
+		}
+	}
+
+	if err := ctr.Delete(ctx, containerd.WithSnapshotCleanup); err != nil {
+		return fmt.Errorf("deleting container: %w", err)
+	}
+	snapshotKey := SnapshotKey(labelAppID, labelSvcName)
+	_, err = c.client.NewContainer(ctx, ContainerName(labelAppID, labelSvcName),
+		containerd.WithImage(image),
+		containerd.WithSnapshotter(c.snapshotter),
+		containerd.WithNewSnapshot(snapshotKey, image),
+		containerd.WithContainerLabels(info.Labels),
+		containerd.WithNewSpec(
+			oci.WithSpecFromBytes(newSpecJSON),
+		),
+	)
+	if err != nil {
+		return fmt.Errorf("recreating container with refreshed namespaces: %w", err)
+	}
 	return nil
 }
 
@@ -1834,13 +2192,24 @@ func (c *Client) resolveStopOrder(ctx context.Context, appID string, ctrs []cont
 	return result
 }
 
+// sharedSHMPath returns the host-side shared memory directory for a shared-ipc
+// app group after validating the app ID. It does NOT create the directory — use
+// ensureSharedSHM for that. Its presence on disk is the agent's signal that an
+// app group runs with shared-ipc isolation.
+func sharedSHMPath(appID string) (string, error) {
+	if err := appconfig.ValidateAppID(appID); err != nil {
+		return "", fmt.Errorf("sharedSHMPath: %w", err)
+	}
+	return "/run/wendy/shm/" + appID, nil
+}
+
 // ensureSharedSHM creates the host-side shared memory directory for a
 // shared-ipc app group. Returns the path so it can be bind-mounted.
 func ensureSharedSHM(appID string) (string, error) {
-	if err := appconfig.ValidateAppID(appID); err != nil {
-		return "", fmt.Errorf("ensureSharedSHM: %w", err)
+	path, err := sharedSHMPath(appID)
+	if err != nil {
+		return "", err
 	}
-	path := "/run/wendy/shm/" + appID
 	// Lock the OS thread so that the umask change below is thread-local and
 	// does not race with other goroutines on the same process (SOC2-CC6,
 	// NIST-SC-7, ISO27001-A.8). Without this, a permissive umask could widen
@@ -2020,10 +2389,22 @@ func (c *Client) ListContainers(ctx context.Context) ([]*agentpb.AppContainer, e
 	for _, appID := range order {
 		e := grouped[appID]
 
-		// Populate per-service entries only for multi-service apps; single-service
-		// apps leave Services empty so callers can distinguish them cheaply.
+		// Populate per-service entries for any app that declares named services
+		// (single- or multi-service services-map apps). Single-container and
+		// flattened single-service apps have an empty service name and leave
+		// Services empty so callers can still distinguish them cheaply. Exposing
+		// the per-service identity for single-service apps is what lets the
+		// monitor reconcile them by their "{appID}_{serviceName}" container name
+		// instead of restart-looping a healthy app (WDY-1552).
 		var services []*agentpb.ServiceEntry
-		if len(e.services) > 1 {
+		hasNamedService := false
+		for _, s := range e.services {
+			if s.name != "" {
+				hasNamedService = true
+				break
+			}
+		}
+		if hasNamedService {
 			services = make([]*agentpb.ServiceEntry, len(e.services))
 			for i, s := range e.services {
 				services[i] = &agentpb.ServiceEntry{

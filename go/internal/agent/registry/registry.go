@@ -699,13 +699,35 @@ func (r containerdRegistry) PushBlobChunkedResume(ctx context.Context, repo, id 
 	}
 
 	if offset != -1 {
-		if status, err := writer.Status(); err != nil {
+		status, err := writer.Status()
+		if err != nil {
 			return nil, err
-		} else if offset != status.Offset {
-			return nil, ociregistry.NewHTTPError(
-				errors.New("offset ("+strconv.FormatInt(offset, 10)+") must match previous value ("+strconv.FormatInt(status.Offset, 10)+")"),
-				http.StatusRequestedRangeNotSatisfiable, nil, nil,
-			)
+		}
+		if offset != status.Offset {
+			// Some clients (notably Apple's `container image push`) restart an
+			// interrupted upload from the beginning, re-sending the whole blob
+			// in the closing PUT with a Content-Range starting at 0. The
+			// containerd ingest for this upload ID still holds the bytes from
+			// the earlier attempt, so its offset isn't 0. Rejecting with 416
+			// wedges such clients into retrying the same mismatched request
+			// forever, so instead abort the stale ingest and reopen a fresh
+			// writer at offset 0. The digest is verified on Commit, so a
+			// restart cannot corrupt the stored blob.
+			if offset == 0 && status.Offset > 0 {
+				_ = writer.Close()
+				if err := cs.Abort(ctx, id); err != nil && !errdefs.IsNotFound(err) {
+					return nil, err
+				}
+				writer, err = content.OpenWriter(ctx, cs, content.WithRef(id))
+				if err != nil {
+					return nil, err
+				}
+			} else {
+				return nil, ociregistry.NewHTTPError(
+					errors.New("offset ("+strconv.FormatInt(offset, 10)+") must match previous value ("+strconv.FormatInt(status.Offset, 10)+")"),
+					http.StatusRequestedRangeNotSatisfiable, nil, nil,
+				)
+			}
 		}
 	}
 

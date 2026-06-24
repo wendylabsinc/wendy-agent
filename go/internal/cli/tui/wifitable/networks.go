@@ -4,6 +4,7 @@ package wifitable
 import (
 	"sort"
 
+	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
@@ -23,10 +24,12 @@ type Network struct {
 	Priority int32
 }
 
-// FromProto converts a ListWiFiNetworksResponse network into the local Network.
+// FromProto converts a ListWiFiNetworksResponse network into the local
+// Network. The SSID comes from over-the-air beacon frames, so control
+// characters are stripped to keep escape sequences out of the terminal.
 func FromProto(n *agentpb.ListWiFiNetworksResponse_WiFiNetwork) Network {
 	out := Network{
-		SSID:      n.GetSsid(),
+		SSID:      tui.StripControl(n.GetSsid()),
 		Known:     n.GetIsKnown(),
 		Connected: n.GetIsConnected(),
 		Security:  n.GetSecurity(),

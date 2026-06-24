@@ -10,6 +10,7 @@ set -euo pipefail
 REPO="wendylabsinc/wendy-agent"
 INSTALL_DIR="/usr/local/bin"
 BINARY_NAME="wendy"
+HOMEBREW_TAP="wendylabsinc/tap"
 HOMEBREW_FORMULA="wendylabsinc/tap/wendy"
 YES=false
 
@@ -92,6 +93,24 @@ homebrew_supports_trust() {
   brew help trust >/dev/null 2>&1
 }
 
+trust_homebrew_tap() {
+  local tap="$1"
+
+  if ! homebrew_supports_trust; then
+    return 0
+  fi
+
+  echo "Trusting Homebrew tap: ${tap}"
+  if brew trust "$tap"; then
+    return 0
+  fi
+
+  echo "Error: Homebrew could not trust ${tap}." >&2
+  echo "Run this command, then re-run the installer:" >&2
+  echo "  brew trust ${tap}" >&2
+  exit 1
+}
+
 trust_homebrew_formula() {
   local formula="$1"
 
@@ -157,12 +176,14 @@ if [[ "$OS" == "darwin" ]]; then
   if command -v brew &>/dev/null; then
     if homebrew_supports_trust; then
       echo "Homebrew detected. Will trust and install via:"
+      echo "  brew trust ${HOMEBREW_TAP}"
       echo "  brew trust --formula ${HOMEBREW_FORMULA}"
       echo "  brew install ${HOMEBREW_FORMULA}"
     else
       echo "Homebrew detected. Will install via: brew install ${HOMEBREW_FORMULA}"
     fi
     confirm "Proceed?"
+    trust_homebrew_tap "$HOMEBREW_TAP"
     trust_homebrew_formula "$HOMEBREW_FORMULA"
     brew install "$HOMEBREW_FORMULA"
   else
@@ -178,6 +199,9 @@ if [[ "$OS" == "darwin" ]]; then
     echo "Downloading ${URL}..."
     download "$URL" "${TMPDIR_DL}/${ARTIFACT}"
     tar -xzf "${TMPDIR_DL}/${ARTIFACT}" -C "$TMPDIR_DL"
+    if [[ ! -d "$INSTALL_DIR" ]]; then
+      mkdir -p "$INSTALL_DIR" 2>/dev/null || sudo mkdir -p "$INSTALL_DIR"
+    fi
     sudo install -m 755 "${TMPDIR_DL}/wendy-cli-darwin-${ARCH}/${BINARY_NAME}" "${INSTALL_DIR}/${BINARY_NAME}"
   fi
 

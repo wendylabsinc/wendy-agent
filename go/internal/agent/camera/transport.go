@@ -82,11 +82,37 @@ var csiDriverPrefixes = []string{
 	"nvcsi",
 	"unicam",
 	"bcm2835-unicam",
-	"bcm2835-isp",
 	"rkisp1",
 	"rzg2l-cru",
 	"imx",
 	"ov",
+}
+
+// nonCameraDriverPrefixes are kernel driver names that bind V4L2 memory-to-memory
+// devices which advertise VIDEO_CAPTURE but are NOT capture sources — the legacy
+// Raspberry Pi 0-4 ISP (bcm2835-isp, exposed as bcm2835-isp-capture0/1) and the
+// H.264 codec (bcm2835-codec). Without this denylist they would surface in
+// `camera list` as phantom CSI cameras (WDY-1603). Pi 5 (rp1-cfe/pispbe) and
+// Jetson (tegra-*) use different drivers and are unaffected.
+var nonCameraDriverPrefixes = []string{
+	"bcm2835-isp",
+	"bcm2835-codec",
+}
+
+// IsNonCameraDriver reports whether driver binds a non-camera V4L2 m2m device
+// (ISP/codec) that should be excluded from camera enumeration. Matching is
+// case-insensitive prefix semantics, consistent with the transport classifiers.
+func IsNonCameraDriver(driver string) bool {
+	if driver == "" {
+		return false
+	}
+	lower := strings.ToLower(driver)
+	for _, p := range nonCameraDriverPrefixes {
+		if strings.HasPrefix(lower, p) {
+			return true
+		}
+	}
+	return false
 }
 
 // Classify returns the transport for /dev/<base> (e.g. base == "video0").
@@ -97,6 +123,12 @@ func Classify(base string) (Transport, string) {
 	driver := ""
 	if err == nil {
 		driver = filepath.Base(target)
+	}
+	// Non-camera m2m devices (ISP/codec) advertise VIDEO_CAPTURE and may carry an
+	// of_node; exclude them up front so neither the prefix match nor the of_node
+	// fallback below misclassifies them as a CSI camera.
+	if IsNonCameraDriver(driver) {
+		return TransportUnknown, driver
 	}
 	if t := transportFromDriver(driver); t != TransportUnknown {
 		return t, driver

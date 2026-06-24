@@ -66,7 +66,7 @@ func (s *mcpServer) registerCloudTools(srv *server.MCPServer) {
 	srv.AddTool(mcpgo.NewTool("cloud_discover",
 		mcpgo.WithDescription("List enrolled cloud devices for the selected Wendy Cloud auth session"),
 		mcpgo.WithString("cloud_grpc",
-			mcpgo.Description("Cloud gRPC endpoint to use when multiple auth sessions exist"),
+			mcpgo.Description("Cloud gRPC endpoint to use (optional when a default session is set via 'wendy auth use')"),
 		),
 		mcpgo.WithBoolean("online_only",
 			mcpgo.Description("Only list devices with active tunnel broker presence (default true)"),
@@ -82,7 +82,7 @@ func (s *mcpServer) registerCloudTools(srv *server.MCPServer) {
 			mcpgo.Description("Device name; optional only when exactly one cloud device is available"),
 		),
 		mcpgo.WithString("cloud_grpc",
-			mcpgo.Description("Cloud gRPC endpoint to use when multiple auth sessions exist"),
+			mcpgo.Description("Cloud gRPC endpoint to use (optional when a default session is set via 'wendy auth use')"),
 		),
 		mcpgo.WithString("broker_url",
 			mcpgo.Description("Tunnel broker host:port (default: cloud :443 endpoint, otherwise <cloud-host>:50052)"),
@@ -95,7 +95,7 @@ func (s *mcpServer) registerCloudTools(srv *server.MCPServer) {
 			mcpgo.Description("Device name; optional only when exactly one cloud device is available"),
 		),
 		mcpgo.WithString("cloud_grpc",
-			mcpgo.Description("Cloud gRPC endpoint to use when multiple auth sessions exist"),
+			mcpgo.Description("Cloud gRPC endpoint to use (optional when a default session is set via 'wendy auth use')"),
 		),
 		mcpgo.WithString("broker_url",
 			mcpgo.Description("Tunnel broker host:port (default: cloud :443 endpoint, otherwise <cloud-host>:50052)"),
@@ -109,7 +109,7 @@ func (s *mcpServer) registerCloudTools(srv *server.MCPServer) {
 			mcpgo.Description("Name to assign to the device in Wendy Cloud"),
 		),
 		mcpgo.WithString("cloud_grpc",
-			mcpgo.Description("Cloud gRPC endpoint to use when multiple auth sessions exist"),
+			mcpgo.Description("Cloud gRPC endpoint to use (optional when a default session is set via 'wendy auth use')"),
 		),
 	), s.handleCloudEnrollDevice)
 
@@ -126,7 +126,7 @@ func (s *mcpServer) registerCloudTools(srv *server.MCPServer) {
 			mcpgo.Description("Device name; optional only when exactly one cloud device is available"),
 		),
 		mcpgo.WithString("cloud_grpc",
-			mcpgo.Description("Cloud gRPC endpoint to use when multiple auth sessions exist"),
+			mcpgo.Description("Cloud gRPC endpoint to use (optional when a default session is set via 'wendy auth use')"),
 		),
 		mcpgo.WithString("broker_url",
 			mcpgo.Description("Tunnel broker host:port (default: cloud :443 endpoint, otherwise <cloud-host>:50052)"),
@@ -143,7 +143,7 @@ func (s *mcpServer) registerCloudTools(srv *server.MCPServer) {
 			mcpgo.Description("Cloud device name"),
 		),
 		mcpgo.WithString("cloud_grpc",
-			mcpgo.Description("Cloud gRPC endpoint to use when multiple auth sessions exist"),
+			mcpgo.Description("Cloud gRPC endpoint to use (optional when a default session is set via 'wendy auth use')"),
 		),
 		mcpgo.WithString("broker_url",
 			mcpgo.Description("Tunnel broker host:port; omit to use the default derived from cloud_grpc (port 443 when cloud_grpc ends in :443, otherwise port 50052)"),
@@ -178,7 +178,7 @@ func (s *mcpServer) registerCloudTools(srv *server.MCPServer) {
 			mcpgo.Description("Cloud device name"),
 		),
 		mcpgo.WithString("cloud_grpc",
-			mcpgo.Description("Cloud gRPC endpoint to use when multiple auth sessions exist"),
+			mcpgo.Description("Cloud gRPC endpoint to use (optional when a default session is set via 'wendy auth use')"),
 		),
 		mcpgo.WithString("broker_url",
 			mcpgo.Description("Tunnel broker host:port (default: cloud :443 endpoint, otherwise <cloud-host>:50052)"),
@@ -390,27 +390,13 @@ func (s *mcpServer) handleRun(ctx context.Context, req mcpgo.CallToolRequest) (*
 }
 
 func (s *mcpServer) cloudAuthEntry(cloudGRPC string) (*config.AuthConfig, error) {
-	if s.cfg == nil || len(s.cfg.Auth) == 0 {
-		return nil, fmt.Errorf("not logged in; run 'wendy auth login' first")
+	// MCP is non-interactive: pass a nil picker so resolution stops at the
+	// persisted default (or errors when several sessions remain ambiguous).
+	auth, err := config.ResolveAuth(s.cfg, cloudGRPC, nil)
+	if errors.Is(err, config.ErrMultipleSessions) {
+		return nil, fmt.Errorf("multiple auth sessions exist; pass cloud_grpc to select one, or set a default with 'wendy auth use'")
 	}
-	if cloudGRPC != "" {
-		for i := range s.cfg.Auth {
-			if s.cfg.Auth[i].CloudGRPC == cloudGRPC {
-				if len(s.cfg.Auth[i].Certificates) == 0 {
-					return nil, fmt.Errorf("auth entry has no certificates; re-run 'wendy auth login'")
-				}
-				return &s.cfg.Auth[i], nil
-			}
-		}
-		return nil, fmt.Errorf("no auth session for %s; run 'wendy auth login --cloud-grpc %s' first", cloudGRPC, cloudGRPC)
-	}
-	if len(s.cfg.Auth) > 1 {
-		return nil, fmt.Errorf("multiple auth sessions exist; pass cloud_grpc to select one")
-	}
-	if len(s.cfg.Auth[0].Certificates) == 0 {
-		return nil, fmt.Errorf("auth entry has no certificates; re-run 'wendy auth login'")
-	}
-	return &s.cfg.Auth[0], nil
+	return auth, err
 }
 
 func (s *mcpServer) connectToCloudAgent(ctx context.Context, cloudGRPC, deviceName, brokerURL string) (*grpcclient.AgentConnection, *cloudpb.Asset, error) {
@@ -445,9 +431,18 @@ func (s *mcpServer) connectToCloudAgent(ctx context.Context, cloudGRPC, deviceNa
 		closeTunnel()
 		return nil, nil, fmt.Errorf("loading agent mTLS cert: %w", err)
 	}
+	verifyConn, err := certs.BuildServerVerifyConnection(certs.ServerVerifyOpts{
+		ChainPEM:      certInfo.PemCertificateChain,
+		ExpectedOrgID: int32(certInfo.OrganizationID),
+	})
+	if err != nil {
+		closeTunnel()
+		return nil, nil, fmt.Errorf("building TLS verifier: %w", err)
+	}
 	tlsCfg := &tls.Config{
 		Certificates:       []tls.Certificate{x509Cert},
-		InsecureSkipVerify: true, //nolint:gosec
+		InsecureSkipVerify: true, //nolint:gosec — hostname bypass only; VerifyConnection validates server cert against Wendy PKI
+		VerifyConnection:   verifyConn,
 		MinVersion:         tls.VersionTLS12,
 	}
 	grpcConn, err := grpc.NewClient(

@@ -272,8 +272,52 @@ func TestDiscoverModel_DKeySetsDefaultAndMarksSelectedDevice(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("expected clearFlashAfter cmd")
 	}
-	if !strings.Contains(um.table.View(), "★") {
+	if !strings.Contains(um.table.View(), "✦") {
 		t.Fatalf("expected selected default device to show marker, got %q", um.table.View())
+	}
+}
+
+func TestDiscoverTableItemsHidesAddressForDockerAndLocal(t *testing.T) {
+	collection := &models.DevicesCollection{
+		ExternalDevices: []models.ExternalDevice{
+			{ID: "docker", DisplayName: "Docker", ProviderKey: "docker"},
+			{ID: "local", DisplayName: "This Mac", ProviderKey: "local"},
+			{ID: "emulator-5554", DisplayName: "Pixel 8", ProviderKey: "android-adb"},
+		},
+	}
+
+	items := discoverTableItems(collection)
+	byName := make(map[string]discoverTableItem, len(items))
+	for _, item := range items {
+		byName[item.info.Name] = item
+	}
+
+	for _, name := range []string{"Docker", "This Mac"} {
+		if got := byName[name].picker.Address; got != "" {
+			t.Fatalf("%s Address = %q, want hidden", name, got)
+		}
+	}
+	if got := byName["Pixel 8"].picker.Address; got != "android-adb: emulator-5554" {
+		t.Fatalf("Pixel 8 Address = %q, want provider-qualified ID", got)
+	}
+}
+
+func TestDiscoverModel_ViewShowsLegendWithDevices(t *testing.T) {
+	m := newDiscoverModel(context.Background(), defaultOpts())
+
+	if strings.Contains(m.View(), tui.DeviceTableLegend) {
+		t.Fatalf("expected no legend before any device is found, got %q", m.View())
+	}
+
+	updated, _ := m.Update(lanScanMsg{devices: []models.LANDevice{{
+		DisplayName: "ubuntu",
+		Hostname:    "ubuntu.local",
+		Port:        defaultAgentPort,
+	}}})
+	m = updated.(discoverModel)
+
+	if !strings.Contains(m.View(), tui.DeviceTableLegend) {
+		t.Fatalf("expected legend under device table, got %q", m.View())
 	}
 }
 
@@ -289,7 +333,7 @@ func TestRenderDeviceTable(t *testing.T) {
 	}
 
 	output := renderDeviceTable(collection)
-	for _, want := range []string{"Name", "Type", "Address", "wendy-agent version", "WendyOS Version", "wendy-alpha", "1.2.3", "WendyOS-0.10.4", "LAN", "192.168.1.10:8443"} {
+	for _, want := range []string{"Name", "Type", "Address", "Agent", "OS", "wendy-alpha", "1.2.3", "WendyOS-0.10.4", "LAN", "192.168.1.10:8443", tui.DeviceTableLegend} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("expected output to contain %q, got %q", want, output)
 		}
@@ -363,6 +407,159 @@ func TestDiscoverTableItemsAnnotatesLANUSBFromEthernetInterface(t *testing.T) {
 	_, rows := tui.PickerDeviceTableData(discoverPickerItems(items), "", true)
 	if rows[0][2] != "USB, LAN" {
 		t.Fatalf("Type display cell = %q, want \"USB, LAN\"", rows[0][2])
+	}
+}
+
+func TestDiscoverTableItemsProvisionedStateAndNoAccessHint(t *testing.T) {
+	collection := &models.DevicesCollection{
+		LANDevices: []models.LANDevice{
+			// Provisioned device the CLI cannot read (metadata probe failed).
+			{DisplayName: "wendy-locked", IPAddress: "192.168.1.30", IsMTLS: true},
+			// Provisioned device the CLI can read.
+			{DisplayName: "wendy-mine", IPAddress: "192.168.1.31", IsMTLS: true, AgentVersion: "1.2.3"},
+			// Unprovisioned device.
+			{DisplayName: "wendy-open", IPAddress: "192.168.1.32", AgentVersion: "1.2.3"},
+		},
+	}
+
+	items := discoverTableItems(collection)
+	if len(items) != 3 {
+		t.Fatalf("got %d items, want 3", len(items))
+	}
+	byName := make(map[string]discoverTableItem, len(items))
+	for _, item := range items {
+		byName[item.info.Name] = item
+	}
+
+	locked := byName["wendy-locked"]
+	if locked.picker.Provisioned != "Provisioned" {
+		t.Fatalf("locked Provisioned = %q, want \"Provisioned\"", locked.picker.Provisioned)
+	}
+	if locked.picker.Hint != discoverNoAccessHint {
+		t.Fatalf("locked Hint = %q, want no-access hint", locked.picker.Hint)
+	}
+	if locked.info.Provisioned != "Provisioned" {
+		t.Fatalf("locked info.Provisioned = %q, want \"Provisioned\"", locked.info.Provisioned)
+	}
+
+	mine := byName["wendy-mine"]
+	if mine.picker.Provisioned != "Provisioned" {
+		t.Fatalf("mine Provisioned = %q, want \"Provisioned\"", mine.picker.Provisioned)
+	}
+	if mine.picker.Hint != "" {
+		t.Fatalf("mine Hint = %q, want empty for accessible device", mine.picker.Hint)
+	}
+
+	open := byName["wendy-open"]
+	if open.picker.Provisioned != "Unprovisioned" {
+		t.Fatalf("open Provisioned = %q, want \"Unprovisioned\"", open.picker.Provisioned)
+	}
+	if open.picker.Hint != "" {
+		t.Fatalf("open Hint = %q, want empty", open.picker.Hint)
+	}
+
+	_, rows := tui.PickerDeviceTableData(discoverPickerItems(items), "", true)
+	// Columns: 0=marker (provisioned glyph + ✦ default) 1=Name 2=Type 3=Address 4=Agent 5=OS.
+	if rows[0][0] != "●" {
+		t.Fatalf("provisioned marker cell = %q, want \"●\"", rows[0][0])
+	}
+}
+
+func TestMergePickerItemClearsNoAccessHintWhenVersionKnown(t *testing.T) {
+	lanItem := func(dev models.LANDevice) tui.PickerItem {
+		return tui.PickerItem{
+			Name:         dev.DisplayName,
+			Type:         "LAN",
+			AgentVersion: dev.AgentVersion,
+			Provisioned:  lanProvisionedDisplay(&dev),
+			Hint:         lanNoAccessHint(&dev, dev.AgentVersion),
+			DedupKey:     dev.DisplayName,
+			Value:        &pickerEntry{mergedDevice: &models.DiscoveredDevice{DisplayName: dev.DisplayName, AgentVersion: dev.AgentVersion, LAN: &dev}},
+		}
+	}
+
+	// A successful probe followed by a failed re-probe: the carried-over
+	// version must not coexist with a hint claiming details are unreadable.
+	existing := lanItem(models.LANDevice{DisplayName: "wendy-mine", IsMTLS: true, AgentVersion: "1.2.3"})
+	mergePickerItem(&existing, lanItem(models.LANDevice{DisplayName: "wendy-mine", IsMTLS: true}))
+	if existing.Hint != "" {
+		t.Fatalf("Hint = %q, want empty when AgentVersion is already known", existing.Hint)
+	}
+	if existing.AgentVersion != "1.2.3" {
+		t.Fatalf("AgentVersion = %q, want carried-over version", existing.AgentVersion)
+	}
+
+	// A failed probe followed by a successful one clears the hint.
+	existing = lanItem(models.LANDevice{DisplayName: "wendy-locked", IsMTLS: true})
+	if existing.Hint == "" {
+		t.Fatal("expected no-access hint on inaccessible provisioned device")
+	}
+	mergePickerItem(&existing, lanItem(models.LANDevice{DisplayName: "wendy-locked", IsMTLS: true, AgentVersion: "1.2.3"}))
+	if existing.Hint != "" {
+		t.Fatalf("Hint = %q, want cleared after successful probe", existing.Hint)
+	}
+
+	// Still-failing probes keep the hint while no version is known.
+	existing = lanItem(models.LANDevice{DisplayName: "wendy-locked", IsMTLS: true})
+	mergePickerItem(&existing, lanItem(models.LANDevice{DisplayName: "wendy-locked", IsMTLS: true}))
+	if existing.Hint != discoverNoAccessHint {
+		t.Fatalf("Hint = %q, want no-access hint to persist", existing.Hint)
+	}
+
+	// A BLE backfill that supplies the version must also clear the hint,
+	// not just LAN merges.
+	existing = lanItem(models.LANDevice{DisplayName: "wendy-locked", IsMTLS: true})
+	bleDev := models.BluetoothDevice{DisplayName: "wendy-locked", AgentVersion: "1.2.3"}
+	mergePickerItem(&existing, tui.PickerItem{
+		Name:         bleDev.DisplayName,
+		Type:         "Bluetooth",
+		AgentVersion: bleDev.AgentVersion,
+		DedupKey:     bleDev.DisplayName,
+		Value: &pickerEntry{mergedDevice: &models.DiscoveredDevice{
+			DisplayName:  bleDev.DisplayName,
+			AgentVersion: bleDev.AgentVersion,
+			Bluetooth:    &bleDev,
+		}},
+	})
+	if existing.AgentVersion != "1.2.3" {
+		t.Fatalf("AgentVersion = %q, want BLE-backfilled version", existing.AgentVersion)
+	}
+	if existing.Hint != "" {
+		t.Fatalf("Hint = %q, want cleared after BLE version backfill", existing.Hint)
+	}
+}
+
+func TestDiscoverModelViewShowsNoAccessHintForHighlightedDevice(t *testing.T) {
+	m := newDiscoverModel(context.Background(), discovery.DiscoveryOptions{})
+	updated, _ := m.Update(lanScanMsg{devices: []models.LANDevice{{
+		DisplayName: "wendy-locked",
+		IPAddress:   "192.168.1.30",
+		IsMTLS:      true,
+	}}})
+	dm := updated.(discoverModel)
+
+	view := ansi.Strip(dm.View())
+	if !strings.Contains(view, "does not have access") {
+		t.Fatalf("expected no-access hint in view, got %q", view)
+	}
+	if !strings.Contains(view, "wendy auth login") {
+		t.Fatalf("expected login suggestion in view, got %q", view)
+	}
+}
+
+func TestDiscoverModelViewOmitsHintForAccessibleDevice(t *testing.T) {
+	m := newDiscoverModel(context.Background(), discovery.DiscoveryOptions{})
+	updated, _ := m.Update(lanScanMsg{devices: []models.LANDevice{{
+		DisplayName:  "wendy-mine",
+		IPAddress:    "192.168.1.31",
+		IsMTLS:       true,
+		AgentVersion: "1.2.3",
+	}}})
+	dm := updated.(discoverModel)
+
+	view := ansi.Strip(dm.View())
+	if strings.Contains(view, "does not have access") {
+		t.Fatalf("unexpected no-access hint for accessible device: %q", view)
 	}
 }
 

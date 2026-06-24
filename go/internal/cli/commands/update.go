@@ -14,34 +14,23 @@ const githubReleasesURL = "https://api.github.com/repos/wendylabsinc/wendy-agent
 
 const cliUpdateCheckInterval = 24 * time.Hour
 
-// cliUpdateNoticeCh receives the latest version string when a background update
-// check finds a newer release. Buffered so the goroutine never blocks.
-var cliUpdateNoticeCh = make(chan string, 1)
-
-// scheduleCLIUpdateCheck launches a goroutine that fetches the latest release.
-// The timestamp is written only after the network call completes so that a
-// fast process exit (goroutine killed before it finishes) doesn't burn the 24 h
-// window. If a newer version is found it sends it to cliUpdateNoticeCh for
-// PersistentPostRunE to display.
+// scheduleCLIUpdateCheck launches a goroutine that fetches the latest release
+// and persists the result to config. PersistentPostRunE reads the persisted
+// value on the next invocation, which avoids the race where the HTTP call
+// hasn't finished by the time a fast command completes.
 func scheduleCLIUpdateCheck(cfg *config.Config) {
 	go func() {
 		latest, err := checkLatestRelease()
-		// Persist the timestamp regardless of outcome so we don't hammer the
-		// API on repeated fast invocations when the network is unavailable.
 		cfg.LastCLIUpdateCheck = time.Now().UTC().Format(time.RFC3339)
-		if saveErr := config.Save(cfg); saveErr != nil {
-			// If we can't persist the timestamp, bail out so we retry next time.
-			return
-		}
-		if err != nil {
-			return
-		}
-		if version.CompareVersions(latest, version.Version) > 0 {
-			select {
-			case cliUpdateNoticeCh <- latest:
-			default:
+		if err == nil {
+			if version.CompareVersions(latest, version.Version) > 0 {
+				cfg.AvailableCLIUpdate = latest
+			} else {
+				cfg.AvailableCLIUpdate = ""
 			}
 		}
+		// Best-effort: if we can't save, we'll retry on the next check.
+		_ = config.Save(cfg)
 	}()
 }
 

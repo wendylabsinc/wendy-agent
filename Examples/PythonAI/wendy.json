@@ -1,5 +1,6 @@
 {
     "appId": "engineer.edge.examples.hello-python-ai",
+    "platform": "linux",
     "version": "1.0.0",
     "entitlements": [
         {

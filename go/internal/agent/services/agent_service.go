@@ -57,13 +57,15 @@ func NewAgentService(
 func (s *AgentService) GetAgentVersion(_ context.Context, _ *agentpb.GetAgentVersionRequest) (*agentpb.GetAgentVersionResponse, error) {
 	resp := &agentpb.GetAgentVersionResponse{
 		Version:         version.Version,
-		Os:              runtime.GOOS,
+		Os:              detectOS(),
 		CpuArchitecture: runtime.GOARCH,
 		Featureset:      detectFeatureset(),
 	}
 
 	if v, ok := wendyOSVersion(); ok {
 		resp.OsVersion = &v
+	} else if _, distroVer := detectDistro(); distroVer != "" {
+		resp.OsVersion = &distroVer
 	}
 
 	if data, err := os.ReadFile("/etc/wendyos/device-type"); err == nil {
@@ -87,10 +89,23 @@ func (s *AgentService) GetAgentVersion(_ context.Context, _ *agentpb.GetAgentVer
 	if gpuInfo.cudaVersion != "" {
 		resp.CudaVersion = &gpuInfo.cudaVersion
 	}
+	if gpuInfo.gpuArch != "" {
+		resp.GpuArch = &gpuInfo.gpuArch
+	}
 
 	if usage, ok := rootDiskUsage(); ok {
 		resp.DiskUsedBytes = &usage.usedBytes
 		resp.DiskTotalBytes = &usage.totalBytes
+	}
+
+	for _, p := range listDiskPartitions() {
+		resp.Partitions = append(resp.Partitions, &agentpb.DiskPartition{
+			Mountpoint: p.mountpoint,
+			Filesystem: p.filesystem,
+			Device:     p.device,
+			UsedBytes:  p.usedBytes,
+			TotalBytes: p.totalBytes,
+		})
 	}
 
 	return resp, nil
@@ -101,6 +116,7 @@ type gpuInfo struct {
 	vendor         string
 	jetpackVersion string
 	cudaVersion    string
+	gpuArch        string
 }
 
 func detectGPUInfo() gpuInfo {
@@ -124,6 +140,7 @@ func detectGPUInfo() gpuInfo {
 	if info.vendor == "nvidia" {
 		info.jetpackVersion = detectJetPackVersion()
 		info.cudaVersion = detectCUDAVersion()
+		info.gpuArch = detectNvidiaGPUArch()
 	}
 
 	return info
@@ -151,6 +168,7 @@ func detectJetPackVersion() string {
 	// L4T → JetPack version table.
 	// https://developer.nvidia.com/embedded/jetpack-archive
 	jetpack := map[string]string{
+		"39.2": "7.2",
 		"36.4": "6.1",
 		"36.3": "6.0",
 		"36.2": "6.0",
@@ -171,7 +189,7 @@ func detectJetPackVersion() string {
 	if jp, ok := jetpack[key]; ok {
 		return jp
 	}
-	return "L4T " + major + "." + revision
+	return "L4T-" + major + "." + revision
 }
 
 var cudaVersionFileRe = regexp.MustCompile(`(?i)CUDA[^0-9]*([0-9]+\.[0-9]+(?:\.[0-9]+)?)`)
@@ -201,6 +219,22 @@ func detectCUDAVersion() string {
 		}
 	}
 
+	return ""
+}
+
+var computeCapRe = regexp.MustCompile(`^\s*(\d+)\.(\d+)\s*$`)
+
+func detectNvidiaGPUArch() string {
+	if nvidiaSmi, err := exec.LookPath("nvidia-smi"); err == nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		out, err := exec.CommandContext(ctx, nvidiaSmi, "--query-gpu=compute_cap", "--format=csv,noheader,nounits").Output()
+		if err == nil {
+			if m := computeCapRe.FindSubmatch(out); len(m) > 2 {
+				return "sm_" + string(m[1]) + string(m[2])
+			}
+		}
+	}
 	return ""
 }
 
@@ -526,6 +560,46 @@ const osUpdateUnsupportedForHostMessage = "This setup cannot be updated with wen
 // "  10%" or "50% 5120 kB" or "Installing:  75%".
 var menderProgressRe = regexp.MustCompile(`(\d{1,3})%`)
 
+// systemctlFn runs systemctl; overridable in tests.
+var systemctlFn = func(ctx context.Context, args ...string) ([]byte, error) {
+	return exec.CommandContext(ctx, "systemctl", args...).CombinedOutput()
+}
+
+const (
+	updaterTimerUnit   = "wendyos-agent-updater.timer"
+	updaterServiceUnit = "wendyos-agent-updater.service"
+)
+
+// inhibitAutoUpdater stops the agent auto-updater (timer+service) and returns a
+// defer-able restore func that re-enables the timer. The updater's "systemctl
+// stop wendyos-agent" would otherwise SIGTERM in-flight mender via the shared
+// service cgroup (default KillMode=control-group) and abort the OTA.
+// Best-effort: failures are logged, not fatal.
+func inhibitAutoUpdater(logger *zap.Logger) func() {
+	sysctl := func(args ...string) ([]byte, error) {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		return systemctlFn(ctx, args...)
+	}
+	run := func(args ...string) {
+		if out, err := sysctl(args...); err != nil {
+			logger.Warn("OTA updater-inhibit: systemctl failed",
+				zap.Strings("args", args), zap.Error(err),
+				zap.String("output", strings.TrimSpace(string(out))))
+		}
+	}
+	// Hosts without the auto-updater (Jetson/QEMU) have nothing to stop — no-op
+	// instead of logging a spurious failure on every OTA. `cat` exits non-zero
+	// when the unit is absent.
+	if _, err := sysctl("cat", updaterTimerUnit); err != nil {
+		return func() {}
+	}
+	run("stop", updaterTimerUnit, updaterServiceUnit)
+	// Restore only the timer: it re-triggers the oneshot service itself, and a
+	// stopped timer re-arms on the next boot regardless.
+	return func() { run("start", updaterTimerUnit) }
+}
+
 func defaultIsWendyOSHost() bool {
 	// Older WendyOS builds did not write /etc/wendyos/device-type, so keep the
 	// version file as a compatibility marker alongside the newer device type.
@@ -633,6 +707,11 @@ func (s *AgentService) UpdateOS(req *agentpb.UpdateOSRequest, stream grpc.Server
 		})
 	}
 
+	// Stop the auto-updater so it can't SIGTERM in-flight mender mid-OTA; see
+	// inhibitAutoUpdater. Restored on return.
+	restoreUpdater := inhibitAutoUpdater(s.logger)
+	defer restoreUpdater()
+
 	sendProgress := func(phase string, percent int32) {
 		_ = stream.Send(&agentpb.UpdateOSResponse{
 			ResponseType: &agentpb.UpdateOSResponse_Progress_{
@@ -711,11 +790,17 @@ func (s *AgentService) UpdateOS(req *agentpb.UpdateOSRequest, stream grpc.Server
 	phase := "downloading"
 	lastPercent := int32(0)
 
+	// Retain the tail of mender's output so a non-zero exit can report the
+	// real cause (e.g. an incompatible device type) instead of a bare
+	// "exit status 1".
+	outputTail := newLineRing(menderErrorTailLines)
+
 	scanLines := func(r io.Reader) {
 		scanner := bufio.NewScanner(r)
 		scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
 		for scanner.Scan() {
 			line := scanner.Text()
+			outputTail.push(line)
 			lower := strings.ToLower(line)
 			s.logger.Debug("mender output", zap.String("line", line))
 
@@ -765,10 +850,12 @@ func (s *AgentService) UpdateOS(req *agentpb.UpdateOSRequest, stream grpc.Server
 	wg.Wait()
 
 	if err := cmd.Wait(); err != nil {
+		msg := formatMenderFailure(err, outputTail.tail())
+		s.logger.Error("mender install failed", zap.Error(err), zap.Strings("output_tail", outputTail.tail()))
 		return stream.Send(&agentpb.UpdateOSResponse{
 			ResponseType: &agentpb.UpdateOSResponse_Failed_{
 				Failed: &agentpb.UpdateOSResponse_Failed{
-					ErrorMessage: fmt.Sprintf("mender install failed: %v", err),
+					ErrorMessage: msg,
 				},
 			},
 		})

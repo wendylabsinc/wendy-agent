@@ -28,6 +28,11 @@ type BuildResult struct {
 type buildOptions struct {
 	buildType  string
 	dockerfile string
+	builder    string
+}
+
+var appleContainerLocalProviderHintSupported = func() bool {
+	return runtime.GOOS == "darwin" && runtime.GOARCH == "arm64"
 }
 
 func newBuildCmd() *cobra.Command {
@@ -40,6 +45,9 @@ func newBuildCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if opts.dockerfile != "" && opts.buildType != "" && normalizeBuildType(opts.buildType) != "docker" {
 				return fmt.Errorf("--dockerfile cannot be used with --build-type=%s", opts.buildType)
+			}
+			if _, err := normalizeImageBuilder(opts.builder); err != nil {
+				return err
 			}
 			// --dockerfile implies a Docker build; prevent the provider from
 			// auto-selecting a Compose file when both markers are present.
@@ -76,6 +84,9 @@ func newBuildCmd() *cobra.Command {
 
 			// If the target is an external provider device, use the provider build path.
 			if target != nil && target.External != nil && target.Provider != nil {
+				if opts.builder != "" {
+					return fmt.Errorf("--builder is only used when --device selects a WendyOS device; use --device docker or --device apple-container for local provider builds")
+				}
 				product := filepath.Base(cwd)
 				if cfgErr == nil {
 					product = appCfg.AppID
@@ -96,12 +107,12 @@ func newBuildCmd() *cobra.Command {
 					return err
 				}
 
-				// Swift projects without a Dockerfile: cross-compile on the host and
+				// Swift projects without a container build file: cross-compile on the host and
 				// build a Docker image, bypassing the provider's normal Build method.
 				if projectType == "swift" {
 					if _, ok := target.Provider.(providers.ImageBuilder); ok {
 						if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
-							return fmt.Errorf("`wendy build` for Swift packages is not supported on %s; provide a Dockerfile", runtime.GOOS)
+							return fmt.Errorf("`wendy build` for Swift packages is not supported on %s; provide a Dockerfile or Containerfile", runtime.GOOS)
 						}
 						if err := swifttoolchain.EnsureSwiftVersion(cmd.Context(), &dimWriter{}, os.Stderr); err != nil {
 							return err
@@ -117,9 +128,9 @@ func newBuildCmd() *cobra.Command {
 					}
 				}
 
-				// For docker-type projects, resolve which Dockerfile to use before
+				// For docker-type projects, resolve which build file to use before
 				// calling the provider — shows an interactive picker when multiple
-				// Dockerfiles exist and no --dockerfile flag was given.
+				// build files exist and no --dockerfile flag was given.
 				if projectType == "docker" && opts.dockerfile == "" {
 					resolved, resolveErr := resolveDockerfile(cwd, "", isInteractiveTerminal())
 					if resolveErr != nil {
@@ -196,12 +207,13 @@ func newBuildCmd() *cobra.Command {
 				appID = appCfg.AppID
 			}
 
-			return buildProject(cmd.Context(), cwd, selected, appID, platform)
+			return buildProject(cmd.Context(), cwd, selected, appID, platform, opts.builder)
 		},
 	}
 
 	cmd.Flags().StringVar(&opts.buildType, "build-type", "", "Build type to use when multiple project markers are present: docker, swift, or python")
-	cmd.Flags().StringVar(&opts.dockerfile, "dockerfile", "", "Dockerfile to build from (e.g. Dockerfile.prod); shows a selection menu when multiple Dockerfiles exist")
+	cmd.Flags().StringVar(&opts.dockerfile, "dockerfile", "", "Dockerfile or Containerfile to build from (e.g. Dockerfile.prod or Containerfile); shows a selection menu when multiple build files exist")
+	cmd.Flags().StringVar(&opts.builder, "builder", "", "Image builder to force for Dockerfile/Containerfile builds: docker or apple-container")
 
 	return cmd
 }
@@ -230,10 +242,11 @@ func resolveDetectedBuildOption(options []BuildOption, requestedType, requestedD
 		return preferred, nil
 	}
 
-	// Non-interactive (CI) fallback: when all detected options are Dockerfiles,
-	// prefer the base "Dockerfile" and fall back to the first variant rather than
-	// failing with "multiple build types detected". This mirrors the run-command
-	// behaviour and lets CI pipelines that omit --dockerfile build predictably.
+	// Non-interactive (CI) fallback: when all detected options are container build
+	// files, prefer the base "Dockerfile" or "Containerfile" and fall back to the
+	// first variant rather than failing with "multiple build types detected".
+	// This mirrors the run-command behaviour and lets CI pipelines that omit
+	// --dockerfile build predictably.
 	if !interactive {
 		allDocker := len(options) > 0
 		for _, opt := range options {
@@ -243,13 +256,14 @@ func resolveDetectedBuildOption(options []BuildOption, requestedType, requestedD
 			}
 		}
 		if allDocker {
-			for i := range options {
-				if options[i].File == "Dockerfile" {
-					cliNotice("multiple Dockerfiles detected; using %q. Use --dockerfile to select explicitly.", options[i].File)
-					return &options[i], nil
-				}
+			if len(options) == 1 {
+				return &options[0], nil
 			}
-			cliNotice("multiple Dockerfiles detected; using %q. Use --dockerfile to select explicitly.", options[0].File)
+			if preferred := preferredContainerBuildFileOption(options); preferred != nil {
+				cliNotice("multiple container build files detected; using %q. Use --dockerfile to select explicitly.", preferred.File)
+				return preferred, nil
+			}
+			cliNotice("multiple container build files detected; using %q. Use --dockerfile to select explicitly.", options[0].File)
 			return &options[0], nil
 		}
 	}
@@ -315,23 +329,20 @@ func pickBuildOptionWithTitle(options []BuildOption, title string) (*BuildOption
 func preferredBuildOption(options []BuildOption, interactive bool) *BuildOption {
 	hasLanguageMarker := false
 	dockerCount := 0
-	dockerfile := (*BuildOption)(nil)
 	for i := range options {
 		switch {
 		case options[i].Type == "swift" || options[i].Type == "python":
 			hasLanguageMarker = true
 		case options[i].Type == "docker":
 			dockerCount++
-			if options[i].File == "Dockerfile" {
-				dockerfile = &options[i]
-			}
 		}
 	}
-	if !hasLanguageMarker || dockerfile == nil {
+	buildFile := preferredContainerBuildFileOption(options)
+	if !hasLanguageMarker || buildFile == nil {
 		return nil
 	}
 	if dockerCount == 1 || !interactive {
-		return dockerfile
+		return buildFile
 	}
 	return nil
 }
@@ -353,23 +364,18 @@ func buildOptionForType(options []BuildOption, requestedType string, interactive
 	}
 
 	if buildType == "docker" {
-		var dockerfile *BuildOption
-		for i := range matches {
-			if matches[i].File == "Dockerfile" {
-				dockerfile = &matches[i]
-				if !interactive {
-					return dockerfile, nil
-				}
-			}
+		buildFile := preferredContainerBuildFileOption(matches)
+		if buildFile != nil && !interactive {
+			return buildFile, nil
 		}
 		if len(matches) > 1 {
 			if interactive {
-				return pickBuildOptionWithTitle(matches, "Select a Dockerfile")
+				return pickBuildOptionWithTitle(matches, "Select a container build file")
 			}
-			return nil, fmt.Errorf("multiple Dockerfiles detected (%s); keep only one Dockerfile or omit --build-type to choose interactively", strings.Join(buildOptionLabels(matches), ", "))
+			return nil, fmt.Errorf("multiple container build files detected (%s); keep only one build file or omit --build-type to choose interactively", strings.Join(buildOptionLabels(matches), ", "))
 		}
-		if dockerfile != nil {
-			return dockerfile, nil
+		if buildFile != nil {
+			return buildFile, nil
 		}
 	}
 
@@ -418,12 +424,13 @@ func ensureProviderSupportsProjectType(provider providers.DeviceProvider, projec
 	}
 
 	providerName := provider.DisplayName()
-	if provider.Key() == providers.ProviderKeyLocal {
-		providerName = "Local Machine"
-	}
 
 	if provider.Key() == providers.ProviderKeyLocal && (projectType == "docker" || projectType == "compose") {
-		return fmt.Errorf("%s runs host-native apps and does not support %s projects; choose Docker Desktop with --device docker for local container runs", providerName, projectType)
+		containerTargets := "Docker with --device docker"
+		if projectType == "docker" && appleContainerLocalProviderHintSupported() {
+			containerTargets += " or Apple Container with --device apple-container"
+		}
+		return fmt.Errorf("%s runs host-native apps and does not support %s projects; choose %s for local container runs", providerName, projectType, containerTargets)
 	}
 
 	return fmt.Errorf("%s provider does not support %s projects; supported build types: %s", providerName, projectType, strings.Join(provider.SupportedBuildTypes(), ", "))
@@ -456,26 +463,39 @@ func detectProjectTypeWithLanguage(dir, language string) string {
 	return t
 }
 
-func buildProject(ctx context.Context, dir string, option *BuildOption, appID, platform string) error {
+func buildProject(ctx context.Context, dir string, option *BuildOption, appID, platform, builder string) error {
 	imageName := strings.ToLower(appID) + ":latest"
+	normalizedBuilder, err := normalizeImageBuilder(builder)
+	if err != nil {
+		return err
+	}
 
 	switch option.Type {
 	case "compose":
+		if normalizedBuilder == imageBuilderAppleContainer {
+			return fmt.Errorf("Apple Container builder does not support Compose builds; use --builder docker")
+		}
 		return buildComposeProject(dir)
 	case "docker":
-		return buildDockerProject(dir, imageName, platform, option.File)
+		return buildDockerProjectWithBuilder(ctx, builder, dir, imageName, platform, option.File)
 	case "python":
-		return buildPythonProject(dir, imageName, platform)
+		return buildPythonProject(ctx, builder, dir, imageName, platform)
 	case "swift":
+		if normalizedBuilder == imageBuilderAppleContainer {
+			return fmt.Errorf("Apple Container builder is only supported for Dockerfile/Containerfile builds; provide a build file or omit --builder")
+		}
 		// Cross-compiling Swift requires a host toolchain; only darwin and linux ship one.
 		if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
-			return fmt.Errorf("`wendy build` for Swift packages is not supported on %s; provide a Dockerfile", runtime.GOOS)
+			return fmt.Errorf("`wendy build` for Swift packages is not supported on %s; provide a Dockerfile or Containerfile", runtime.GOOS)
 		}
 		return buildSwiftContainerProject(ctx, dir, appID, platform)
 	case "xcode":
+		if normalizedBuilder == imageBuilderAppleContainer {
+			return fmt.Errorf("Apple Container builder is only supported for Dockerfile/Containerfile builds; provide a build file or omit --builder")
+		}
 		return buildXcodeProject(ctx, dir, option.File)
 	default:
-		return fmt.Errorf("unknown project type; add a Dockerfile, a Compose file (docker-compose.yml, docker-compose.yaml, compose.yml, or compose.yaml), Package.swift, or requirements.txt")
+		return fmt.Errorf("unknown project type; add a Dockerfile/Containerfile, a Compose file (docker-compose.yml, docker-compose.yaml, compose.yml, or compose.yaml), Package.swift, or requirements.txt")
 	}
 }
 
@@ -538,7 +558,40 @@ func buildDockerProject(dir, imageName, platform, dockerfile string) error {
 	return nil
 }
 
-func buildPythonProject(dir, imageName, platform string) error {
+func buildDockerProjectWithBuilder(ctx context.Context, builder, dir, imageName, platform, dockerfile string) error {
+	normalized, err := normalizeImageBuilder(builder)
+	if err != nil {
+		return err
+	}
+	if !imageBuilderWasExplicit(builder) && shouldAutoAttemptAppleContainerBuilder() {
+		cliLogln("Building Apple Container image %s for %s...", imageName, platform)
+		if err := checkAppleContainerBuilder(ctx); err == nil {
+			if err := buildImageWithAppleContainer(ctx, dir, imageName, platform, dockerfile, nil, os.Stdout, os.Stderr); err == nil {
+				cliSuccess("Build completed successfully.")
+				return nil
+			} else {
+				logAppleContainerFallback(os.Stderr, err)
+			}
+		} else {
+			logAppleContainerFallback(os.Stderr, err)
+		}
+	}
+	if normalized == imageBuilderDocker {
+		return buildDockerProjectWithDocker(dir, imageName, platform, dockerfile)
+	}
+
+	cliLogln("Building Apple Container image %s for %s...", imageName, platform)
+	if err := ensureAppleContainerSystem(ctx, false); err != nil {
+		return err
+	}
+	if err := buildImageWithAppleContainer(ctx, dir, imageName, platform, dockerfile, nil, os.Stdout, os.Stderr); err != nil {
+		return err
+	}
+	cliSuccess("Build completed successfully.")
+	return nil
+}
+
+func buildPythonProject(ctx context.Context, builder, dir, imageName, platform string) error {
 	dockerfilePath := filepath.Join(dir, "Dockerfile")
 	generatedDockerfile := false
 	if _, err := os.Stat(dockerfilePath); os.IsNotExist(err) {
@@ -550,7 +603,7 @@ func buildPythonProject(dir, imageName, platform string) error {
 		cliSuccess("Generated Dockerfile.")
 	}
 
-	err := buildDockerProject(dir, imageName, platform, "Dockerfile")
+	err := buildDockerProjectWithBuilder(ctx, builder, dir, imageName, platform, "Dockerfile")
 
 	if generatedDockerfile {
 		os.Remove(dockerfilePath)

@@ -1,5 +1,6 @@
 {
   "appId" : "com.example.persistence",
+  "platform": "linux",
   "entitlements" : [
     {
       "name" : "counter",

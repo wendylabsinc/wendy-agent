@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"context"
 	"crypto/sha256"
-	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -15,6 +14,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -22,9 +22,12 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/cli/ble"
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/cli/providers"
+	clitimesync "github.com/wendylabsinc/wendy/go/internal/cli/timesync"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
+	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
+	"github.com/wendylabsinc/wendy/go/internal/shared/devicepin"
 	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 	"github.com/wendylabsinc/wendy/go/internal/shared/version"
@@ -37,6 +40,12 @@ const agentMTLSPortOffset = 1
 
 const lanAddressProbeTimeout = 1500 * time.Millisecond
 const agentPlaintextProbeTimeout = 3 * time.Second
+
+// mtlsProbeTimeout bounds a single mTLS connect+probe. The dial target is
+// already an IP (resolveAddrOnce), so this only needs to cover TCP + TLS
+// handshake; keeping it tight stops an unreachable/plaintext-only mTLS port
+// from stalling the connect before the plaintext fallback.
+const mtlsProbeTimeout = 3 * time.Second
 const provisionedAgentMetadataDiscoveryTimeout = 500 * time.Millisecond
 
 const provisionedAgentUnauthorizedMessage = "Unauthorized. Run 'wendy auth login' with an account that can access this provisioned wendy-agent."
@@ -55,7 +64,119 @@ func newProvisionedAgentUnauthorizedError(cause error) error {
 }
 
 func (e provisionedAgentUnauthorizedError) Error() string {
-	return fmt.Sprintf("%s\nLast mTLS error: %v", provisionedAgentUnauthorizedMessage, e.cause)
+	msg := fmt.Sprintf("%s\nLast mTLS error: %v", provisionedAgentUnauthorizedMessage, e.cause)
+	if isCertRefreshableError(e.cause) {
+		msg += "\nYour stored certificates may be outdated. Run 'wendy auth refresh-certs' to re-issue them."
+	} else if isReachabilityTimeoutError(e.cause) {
+		msg += "\nThe device is enrolled and only serves mTLS on the secure port. Your wendy CLI may be too old or its certificates stale — upgrade the CLI and run 'wendy auth refresh-certs'."
+	}
+	return msg
+}
+
+// isReachabilityTimeoutError reports whether an error is a connection timeout
+// against an mTLS-enrolled device's plaintext port. This indicates the device
+// is up and enrolled (only the mTLS port is open), which may mean the CLI is
+// too old to speak mTLS or its certificates are stale.
+func isReachabilityTimeoutError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "i/o timeout") ||
+		strings.Contains(msg, "connection timed out") ||
+		strings.Contains(msg, "deadline exceeded")
+}
+
+// isCertRefreshableError reports whether an mTLS failure is one that
+// re-issuing the client certificate can fix: the agent rejecting a cert
+// without the clientAuth EKU, an expired or not-yet-valid cert, or a
+// server-sent TLS alert rejecting the presented cert. Reachability problems
+// and plaintext ports probed with TLS are excluded — new certs cannot fix
+// those.
+func isCertRefreshableError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "first record does not look like a TLS handshake") {
+		return false
+	}
+	for _, signal := range []string{
+		"certificate is not valid for client authentication",
+		"certificate not valid at current time",
+		"certificate has expired",
+		"expired certificate",
+		"remote error: tls: bad certificate",
+		"remote error: tls: certificate required",
+	} {
+		if strings.Contains(msg, signal) {
+			return true
+		}
+	}
+	return false
+}
+
+// promptYesNoFn reads a Y/n answer from stdin; empty input counts as yes.
+// Stubbed in tests.
+var promptYesNoFn = func(prompt string) bool {
+	fmt.Fprint(os.Stderr, prompt)
+	reader := bufio.NewReader(os.Stdin)
+	answer, _ := reader.ReadString('\n')
+	answer = strings.TrimSpace(strings.ToLower(answer))
+	return answer == "" || answer == "y" || answer == "yes"
+}
+
+// promptYesNoDefaultNoFn reads a y/N answer from stdin; empty input counts as
+// no. Used for more speculative offers (e.g. a timeout against an enrolled
+// device, where refreshing certs is a guess rather than a clear diagnosis).
+// Stubbed in tests.
+var promptYesNoDefaultNoFn = func(prompt string) bool {
+	fmt.Fprint(os.Stderr, prompt)
+	reader := bufio.NewReader(os.Stdin)
+	answer, _ := reader.ReadString('\n')
+	answer = strings.TrimSpace(strings.ToLower(answer))
+	return answer == "y" || answer == "yes"
+}
+
+var refreshAllCertsFn = refreshAllCerts
+
+// offerCertRefreshAndRetry prompts to re-issue mTLS certificates after a
+// provisioned agent rejected the client certificate for a reason that
+// re-issuance fixes, then retries the connection once. Returns (conn, true)
+// only when the user accepted, the refresh succeeded, and the retry
+// connected; in every other case the caller should surface the original
+// error (whose message already carries the refresh-certs hint).
+func offerCertRefreshAndRetry(ctx context.Context, cause error, retry func() (*grpcclient.AgentConnection, error)) (*grpcclient.AgentConnection, bool) {
+	certRejected := isCertRefreshableError(cause)
+	enrolledTimeout := isReachabilityTimeoutError(cause)
+	if jsonOutput || !isInteractiveTerminal() || !(certRejected || enrolledTimeout) {
+		return nil, false
+	}
+	var accepted bool
+	if certRejected {
+		// Clear diagnosis: the agent rejected the cert. Default to yes.
+		fmt.Fprintln(os.Stderr, "The device rejected your client certificate; it may be outdated.")
+		accepted = promptYesNoFn("Refresh certificates and retry? [Y/n] ")
+	} else {
+		// Timeout against an enrolled (mTLS-only) device. Refreshing certs is a
+		// reasonable guess (e.g. clock skew stalling the handshake) but less
+		// certain, so default to no.
+		fmt.Fprintln(os.Stderr, "The device is enrolled and only responds on the secure (mTLS) port. Your certificates may be stale or your CLI too old.")
+		accepted = promptYesNoDefaultNoFn("Refresh certificates and retry? [y/N] ")
+	}
+	if !accepted {
+		return nil, false
+	}
+	if err := refreshAllCertsFn(ctx); err != nil {
+		fmt.Fprintf(os.Stderr, "Certificate refresh failed: %v\n", err)
+		return nil, false
+	}
+	conn, err := retry()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Still unable to connect after refreshing certificates: %v\n", err)
+		return nil, false
+	}
+	return conn, true
 }
 
 func (e provisionedAgentUnauthorizedError) Is(target error) bool {
@@ -191,9 +312,17 @@ func lanAgentAddresses(dev models.LANDevice) []string {
 		port -= agentMTLSPortOffset // advertised port is mTLS; connectWithAutoTLS will add the offset back
 	}
 
+	hosts := []string{strings.TrimSpace(dev.IPAddress), strings.TrimSpace(dev.Hostname)}
+	if strings.TrimSpace(dev.USB) != "" {
+		// A USB-NCM path exists. The routed Wi-Fi IP (dev.IPAddress) may be
+		// black-holed by AP isolation on residential routers, so try the
+		// link-local .local hostname (reachable over USB) first.
+		hosts = []string{strings.TrimSpace(dev.Hostname), strings.TrimSpace(dev.IPAddress)}
+	}
+
 	var addresses []string
 	seen := make(map[string]bool)
-	for _, host := range []string{strings.TrimSpace(dev.IPAddress), strings.TrimSpace(dev.Hostname)} {
+	for _, host := range hosts {
 		if host == "" || seen[host] {
 			continue
 		}
@@ -444,15 +573,38 @@ func formatElapsedSeconds(elapsed time.Duration) string {
 	return fmt.Sprintf("%.2f %s", seconds, unit)
 }
 
-func connectAgentAtAddress(ctx context.Context, addr string) (*grpcclient.AgentConnection, error) {
-	return connectAgentAtAddressWithProvisionedHint(ctx, addr, false)
+// deferProvisionedMTLSCheck starts the "does this address advertise an
+// mTLS-only agent?" mDNS browse concurrently with the connection attempt and
+// returns a getter for its result. The browse (~0.5s) is only consulted when a
+// plaintext probe FAILS — to tell an unprovisioned device apart from a
+// provisioned one rejecting plaintext — so on the common success path the
+// getter is never called and the browse stays off the critical path. Starting
+// it now (rather than after the probe) keeps the observation tied to this
+// connection attempt, matching the original eager-snapshot intent.
+func deferProvisionedMTLSCheck(ctx context.Context, addr string) func() bool {
+	ch := make(chan bool, 1)
+	go func() { ch <- provisionedAgentAdvertisedMTLS(ctx, addr) }()
+	var (
+		once sync.Once
+		res  bool
+	)
+	return func() bool {
+		once.Do(func() { res = <-ch })
+		return res
+	}
 }
 
-func connectAgentAtAddressWithProvisionedHint(ctx context.Context, addr string, knownProvisionedMTLS bool) (*grpcclient.AgentConnection, error) {
+func connectAgentAtAddress(ctx context.Context, addr string) (*grpcclient.AgentConnection, error) {
+	return connectAgentAtAddressWithProvisionedHint(ctx, addr, func() bool { return false })
+}
+
+func connectAgentAtAddressWithProvisionedHint(ctx context.Context, addr string, provisionedMTLS func() bool) (*grpcclient.AgentConnection, error) {
+	tm := phaseTimer()
 	conn, mtlsErr, err := connectWithAutoTLSDiagnostics(ctx, addr)
 	if err != nil {
 		return nil, err
 	}
+	tm("  ↳ mTLS attempts (connectWithAutoTLSDiagnostics)")
 	if !conn.IsMTLS {
 		// gRPC plaintext connections are lazy. Probe before returning so
 		// command UIs don't surface delayed transport errors, and so provisioned
@@ -460,12 +612,14 @@ func connectAgentAtAddressWithProvisionedHint(ctx context.Context, addr string, 
 		probeCtx, cancel := context.WithTimeout(ctx, agentPlaintextProbeTimeout)
 		_, probeErr := conn.AgentService.GetAgentVersion(probeCtx, &agentpb.GetAgentVersionRequest{})
 		cancel()
+		tm("  ↳ plaintext probe (GetAgentVersion)")
 		if probeErr != nil {
 			conn.Close()
-			// Use only the caller's pre-connection metadata snapshot here.
-			// Running discovery after the failed probe would make the auth
-			// decision depend on a second, unrelated network observation.
-			if knownProvisionedMTLS {
+			// The provisionedMTLS observation was initiated at connection time
+			// (concurrently with this attempt); consult it now to tell an
+			// unprovisioned device apart from a provisioned one rejecting
+			// plaintext, rather than launching a second, later browse.
+			if provisionedMTLS() {
 				return nil, newProvisionedAgentUnauthorizedError(mtlsErr)
 			}
 			return nil, probeErr
@@ -475,16 +629,16 @@ func connectAgentAtAddressWithProvisionedHint(ctx context.Context, addr string, 
 }
 
 func connectResolvedAgent(ctx context.Context, hostname, addr string, isDefault bool) (*grpcclient.AgentConnection, error) {
-	return connectResolvedAgentWithProvisionedHint(ctx, hostname, addr, isDefault, false)
+	return connectResolvedAgentWithProvisionedHint(ctx, hostname, addr, isDefault, func() bool { return false })
 }
 
-func connectResolvedAgentWithProvisionedHint(ctx context.Context, hostname, addr string, isDefault bool, knownProvisionedMTLS bool) (*grpcclient.AgentConnection, error) {
+func connectResolvedAgentWithProvisionedHint(ctx context.Context, hostname, addr string, isDefault bool, provisionedMTLS func() bool) (*grpcclient.AgentConnection, error) {
 	if isDefault && !jsonOutput && isInteractiveTerminal() {
 		return runAgentConnectionSpinner(ctx, defaultDeviceSearchLabel(hostname), func(spinCtx context.Context) (*grpcclient.AgentConnection, error) {
-			return connectAgentAtAddressWithProvisionedHint(spinCtx, addr, knownProvisionedMTLS)
+			return connectAgentAtAddressWithProvisionedHint(spinCtx, addr, provisionedMTLS)
 		})
 	}
-	return connectAgentAtAddressWithProvisionedHint(ctx, addr, knownProvisionedMTLS)
+	return connectAgentAtAddressWithProvisionedHint(ctx, addr, provisionedMTLS)
 }
 
 // connectToAgent establishes a gRPC connection to the target device.
@@ -516,25 +670,31 @@ func connectToAgent(ctx context.Context, opts ...resolveOption) (*grpcclient.Age
 		if host, _, splitErr := net.SplitHostPort(addr); splitErr == nil {
 			hostname = host
 		}
-		knownProvisionedMTLS := provisionedAgentAdvertisedMTLS(ctx, addr)
-		conn, connErr := connectResolvedAgentWithProvisionedHint(ctx, hostname, addr, isDefault, knownProvisionedMTLS)
+		provisionedMTLS := deferProvisionedMTLSCheck(ctx, addr)
+		conn, connErr := connectResolvedAgentWithProvisionedHint(ctx, hostname, addr, isDefault, provisionedMTLS)
 		if connErr != nil {
 			if errors.Is(connErr, ErrUserCancelled) {
 				return nil, connErr
 			}
 			if errors.Is(connErr, errProvisionedAgentUnauthorized) {
-				return nil, connErr
-			}
-			// Default device is unreachable — offer interactive recovery.
-			if isDefault && !jsonOutput && isInteractiveTerminal() {
+				refreshedConn, ok := offerCertRefreshAndRetry(ctx, connErr, func() (*grpcclient.AgentConnection, error) {
+					return connectResolvedAgentWithProvisionedHint(ctx, hostname, addr, isDefault, provisionedMTLS)
+				})
+				if !ok {
+					return nil, connErr
+				}
+				conn = refreshedConn
+			} else if isDefault && !jsonOutput && isInteractiveTerminal() {
+				// Default device is unreachable — offer interactive recovery.
 				hostname, _, _ := net.SplitHostPort(addr)
 				target, recErr := handleDefaultDeviceRecovery(ctx, hostname, time.Since(startedAt), connErr, cfg.excludeProviderKeys, cfg.excludeBluetooth, cfg.suppressUpdateCheck)
 				if recErr != nil {
 					return nil, recErr
 				}
 				return connectFromSelectedDevice(target, cfg)
+			} else {
+				return nil, connErr
 			}
-			return nil, connErr
 		}
 		if !cfg.suppressProvisioningHint {
 			suggestProvisioning(conn)
@@ -576,7 +736,7 @@ func connectFromSelectedDevice(target *SelectedDevice, cfg resolveConfig) (*grpc
 	// The user picked a Bluetooth device — connectToAgent only supports gRPC.
 	// Callers that support BLE should use resolveTarget() instead.
 	if target.Bluetooth != nil {
-		return nil, fmt.Errorf("selected device (%s) is a Bluetooth device; this command requires a LAN connection. Use 'wendy wifi connect' which supports BLE", target.Bluetooth.DisplayName)
+		return nil, fmt.Errorf("selected device (%s) is a Bluetooth device; this command requires a LAN connection. Use 'wendy device wifi connect' which supports BLE", target.Bluetooth.DisplayName)
 	}
 
 	// The user picked a non-gRPC device (e.g. external provider) which
@@ -602,7 +762,35 @@ func connectWithAutoTLS(ctx context.Context, plaintextAddr string) (*grpcclient.
 	return conn, err
 }
 
+// resolveAddrOnce resolves a host:port whose host is a DNS/mDNS name to an
+// IPv4-preferred IP:port, so the dials below target a literal IP. gRPC
+// otherwise resolves the name separately for every ClientConn we open (mTLS
+// port, mTLS port+1, plaintext), and an mDNS ".local" name that resolves to
+// both IPv6 and IPv4 can cost a multi-second IPv6 connect timeout per dial on
+// networks without IPv6 routing. Preferring IPv4 and resolving once removes
+// both costs. On any resolution failure it returns addr unchanged so gRPC's
+// own resolver remains the fallback.
+func resolveAddrOnce(ctx context.Context, addr string) string {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil || net.ParseIP(host) != nil {
+		return addr // not host:port, or already a literal IP
+	}
+	rctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	ips, err := net.DefaultResolver.LookupHost(rctx, host)
+	if err != nil || len(ips) == 0 {
+		return addr
+	}
+	for _, ip := range ips { // prefer IPv4
+		if net.ParseIP(ip).To4() != nil {
+			return net.JoinHostPort(ip, port)
+		}
+	}
+	return net.JoinHostPort(ips[0], port)
+}
+
 func connectWithAutoTLSDiagnostics(ctx context.Context, plaintextAddr string) (*grpcclient.AgentConnection, error, error) {
+	plaintextAddr = resolveAddrOnce(ctx, plaintextAddr)
 	tlsDebug := os.Getenv("WENDY_TLS_DEBUG") != ""
 	allCerts := loadAllCLICerts()
 	var lastMTLSErr error
@@ -612,6 +800,7 @@ func connectWithAutoTLSDiagnostics(ctx context.Context, plaintextAddr string) (*
 		}
 	}
 	if len(allCerts) > 0 {
+		pins := openPinStore()
 		host, portStr, _ := net.SplitHostPort(plaintextAddr)
 		if port, err := strconv.Atoi(portStr); err == nil {
 			// Try the given port first (covers explicit tunnel ports that already
@@ -634,7 +823,7 @@ func connectWithAutoTLSDiagnostics(ctx context.Context, plaintextAddr string) (*
 			var mtlsPortCertFails, mtlsPortNonCertFails int
 			for addrIdx, mtlsAddr := range mtlsAddrs {
 				for i := range allCerts {
-					conn, tlsErr := grpcclient.ConnectWithTLS(ctx, mtlsAddr, &allCerts[i])
+					conn, tlsErr := grpcclient.ConnectWithTLSAndPins(ctx, mtlsAddr, &allCerts[i], pins)
 					if tlsErr != nil {
 						recordMTLSErr(mtlsAddr, tlsErr)
 						if tlsDebug {
@@ -644,8 +833,11 @@ func connectWithAutoTLSDiagnostics(ctx context.Context, plaintextAddr string) (*
 					}
 					// grpc.NewClient is lazy — verify the connection actually
 					// works with a fast probe before committing to mTLS.
-					// 8s allows time for mDNS (.local) resolution + TCP + TLS handshake.
-					probeCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+					// The address is already resolved to an IP by resolveAddrOnce,
+					// so this only needs to cover TCP + the TLS handshake; the old
+					// 8s budget (which also covered .local mDNS resolution) made an
+					// unreachable mTLS port cost 8s before the plaintext fallback.
+					probeCtx, cancel := context.WithTimeout(ctx, mtlsProbeTimeout)
 					_, probeErr := conn.AgentService.GetAgentVersion(probeCtx, &agentpb.GetAgentVersionRequest{})
 					cancel()
 					if probeErr == nil {
@@ -754,6 +946,49 @@ func suggestProvisioning(conn *grpcclient.AgentConnection) {
 	fmt.Fprintf(os.Stderr, "Hint: connected without mTLS. Run 'wendy device setup' to provision this device.\n")
 }
 
+// updateCheckTTL bounds how often checkAndOfferUpdate probes the agent. Within
+// this window of a prior "agent is current" result, the probe (a gRPC
+// round-trip that otherwise sits on the deploy hot path) is skipped entirely.
+const updateCheckTTL = 6 * time.Hour
+
+// updateCheckMarkerPath returns the per-host marker file recording the last time
+// the agent was confirmed current. The CLI version is part of the key so that
+// upgrading the CLI forces a fresh check immediately.
+func updateCheckMarkerPath(host string) string {
+	cacheDir, err := os.UserCacheDir()
+	if err != nil {
+		return ""
+	}
+	key := sha256.Sum256([]byte(host + "\x00" + version.Version))
+	return filepath.Join(cacheDir, "wendy", "update-check", hex.EncodeToString(key[:])+".json")
+}
+
+// updateCheckRecentlyPassed reports whether the agent at host was confirmed
+// current within updateCheckTTL, in which case the version probe can be skipped.
+func updateCheckRecentlyPassed(host string) bool {
+	path := updateCheckMarkerPath(host)
+	if path == "" {
+		return false
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	return time.Since(info.ModTime()) < updateCheckTTL
+}
+
+// markUpdateCheckPassed records that the agent at host is current as of now.
+func markUpdateCheckPassed(host string) {
+	path := updateCheckMarkerPath(host)
+	if path == "" {
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return
+	}
+	_ = os.WriteFile(path, []byte("{}"), 0o644)
+}
+
 // checkAndOfferUpdate probes the agent version and, when the agent is behind
 // the CLI, either warns (non-interactive) or prompts [Y/n] (interactive). If
 // the user accepts, it downloads the latest release, uploads it, and waits for
@@ -762,6 +997,11 @@ func suggestProvisioning(conn *grpcclient.AgentConnection) {
 // but the agent does not come back, conn is closed and an error is returned.
 func checkAndOfferUpdate(ctx context.Context, conn *grpcclient.AgentConnection) (*grpcclient.AgentConnection, error) {
 	if jsonOutput {
+		return conn, nil
+	}
+	// Skip the probe when this agent was confirmed current within updateCheckTTL.
+	// This keeps the gRPC round-trip off the deploy hot path on repeat runs.
+	if updateCheckRecentlyPassed(conn.Host) {
 		return conn, nil
 	}
 	probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
@@ -774,13 +1014,22 @@ func checkAndOfferUpdate(ctx context.Context, conn *grpcclient.AgentConnection) 
 	agentVer := resp.GetVersion()
 	// Dev CLI builds skip the update check entirely.
 	if version.Version == "dev" {
+		markUpdateCheckPassed(conn.Host)
+		return conn, nil
+	}
+	// A dev agent build is running intentionally — never offer to replace it
+	// with a stable release (CompareVersions treats "dev" as always-behind).
+	if agentVer == "dev" {
+		markUpdateCheckPassed(conn.Host)
 		return conn, nil
 	}
 	// Unknown agent version — skip to avoid spurious update prompts.
 	if agentVer == "" {
+		markUpdateCheckPassed(conn.Host)
 		return conn, nil
 	}
 	if version.CompareVersions(version.Version, agentVer) <= 0 {
+		markUpdateCheckPassed(conn.Host)
 		return conn, nil
 	}
 
@@ -920,25 +1169,85 @@ func loadCLIAuth() *config.AuthConfig {
 	return nil
 }
 
-// bleTLSConfig loads the CLI certificate and returns a *tls.Config for mTLS
-// over BLE L2CAP. Returns an error if the user is not logged in.
-func bleTLSConfig() (*tls.Config, error) {
+// openPinStore loads the device pin store from the wendy config directory.
+// Returns nil (without error) if the store cannot be opened, so callers can
+// treat nil PinChecker as "pinning disabled" without failing the connection.
+func openPinStore() certs.PinChecker {
+	dir, err := config.ConfigDir()
+	if err != nil {
+		return nil
+	}
+	store, err := devicepin.Open(dir)
+	if err != nil {
+		return nil
+	}
+	return store
+}
+
+// findCertByOrgID returns the first CertificateInfo across all auth entries
+// whose OrganizationID matches orgID, or nil if none is found.
+func findCertByOrgID(authEntries []config.AuthConfig, orgID int) *config.CertificateInfo {
+	for i := range authEntries {
+		for j := range authEntries[i].Certificates {
+			if authEntries[i].Certificates[j].OrganizationID == orgID {
+				return &authEntries[i].Certificates[j]
+			}
+		}
+	}
+	return nil
+}
+
+// attemptBLEConnect builds a TLS config and connects to device using the
+// given certificate info and pin store.
+func attemptBLEConnect(device *models.BluetoothDevice, cert config.CertificateInfo, pins certs.PinChecker) (*ble.AgentClient, error) {
+	tlsCfg, err := ble.NewClientTLSConfig(cert.PemCertificate, cert.PemPrivateKey, certs.ServerVerifyOpts{
+		ChainPEM:      cert.PemCertificateChain,
+		ExpectedOrgID: int32(cert.OrganizationID),
+		PinStore:      pins,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("building BLE TLS config: %w", err)
+	}
+	return ble.ConnectAgent(device, tlsCfg)
+}
+
+// connectBLEAgent connects to device via BLE mTLS, automatically retrying
+// with the matching cert if the device belongs to a different org than the
+// default auth session.
+func connectBLEAgent(device *models.BluetoothDevice) (*ble.AgentClient, error) {
 	auth := loadCLIAuth()
 	if auth == nil || len(auth.Certificates) == 0 {
 		return nil, fmt.Errorf("not logged in; run 'wendy auth login' to authenticate")
 	}
+	pins := openPinStore()
 	cert := auth.Certificates[0]
-	return ble.NewClientTLSConfig(cert.PemCertificate, cert.PemPrivateKey)
-}
 
-// connectBLEAgent builds a TLS config and connects to the given Bluetooth
-// device over BLE L2CAP mTLS. Callers must Close() the returned client.
-func connectBLEAgent(device *models.BluetoothDevice) (*ble.AgentClient, error) {
-	tlsCfg, err := bleTLSConfig()
-	if err != nil {
+	// Best-effort time sync before mTLS handshake — gives the device a chance
+	// to advance its clock before we attempt the TLS handshake.
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	clitimesync.BroadcastTime(ctx) //nolint:errcheck
+	cancel()
+
+	client, err := attemptBLEConnect(device, cert, pins)
+	if err == nil {
+		return client, nil
+	}
+
+	var mismatch *certs.OrgMismatchError
+	if !errors.As(err, &mismatch) {
 		return nil, err
 	}
-	return ble.ConnectAgent(device, tlsCfg)
+
+	// The device belongs to a different org. Search all auth entries.
+	cfg, cfgErr := config.Load()
+	if cfgErr != nil {
+		return nil, fmt.Errorf("device belongs to org %d but could not load config to find matching certificate: %w", mismatch.Got, cfgErr)
+	}
+	alt := findCertByOrgID(cfg.Auth, int(mismatch.Got))
+	if alt == nil {
+		return nil, fmt.Errorf("device belongs to org %d; authenticate for that org with 'wendy auth login'", mismatch.Got)
+	}
+	return attemptBLEConnect(device, *alt, pins)
 }
 
 // resolveOption configures resolveTarget behaviour.
@@ -1025,6 +1334,8 @@ func resolveTarget(ctx context.Context, opts ...resolveOption) (*SelectedDevice,
 		isDefault = device != ""
 	}
 
+	rt := phaseTimer()
+
 	// Check if the device flag matches a known provider key.
 	if device != "" {
 		if p := providers.ProviderForKey(device); p != nil {
@@ -1042,12 +1353,18 @@ func resolveTarget(ctx context.Context, opts ...resolveOption) (*SelectedDevice,
 		}
 	}
 
-	// Check if the device flag matches a discovered device ID (e.g. "adb:emulator-5554").
-	if device != "" {
+	// Check if the device flag matches a discovered device ID (e.g.
+	// "adb:emulator-5554"). Skip this for anything that looks like a network
+	// address — a ".local" mDNS name, hostname, or IP all contain a "." (or
+	// "[" for IPv6) — because provider IDs are short dotless tokens and the
+	// discovery loop here spins up every provider (e.g. the adb server), costing
+	// seconds. A WendyOS agent address falls through to the gRPC connect below.
+	if device != "" && !strings.Contains(device, ".") && !strings.HasPrefix(device, "[") {
 		if sel := findDeviceByID(ctx, device); sel != nil {
 			return sel, nil
 		}
 	}
+	rt("  ↳ findDeviceByID (provider discovery)")
 
 	// If a device hostname was given, connect via gRPC (with mTLS if authenticated).
 	if device != "" {
@@ -1056,20 +1373,27 @@ func resolveTarget(ctx context.Context, opts ...resolveOption) (*SelectedDevice,
 			addr = hostPort(device, defaultAgentPort)
 		}
 		startedAt := time.Now()
-		knownProvisionedMTLS := provisionedAgentAdvertisedMTLS(ctx, addr)
-		conn, err := connectResolvedAgentWithProvisionedHint(ctx, device, addr, isDefault, knownProvisionedMTLS)
+		provisionedMTLS := deferProvisionedMTLSCheck(ctx, addr)
+		conn, err := connectResolvedAgentWithProvisionedHint(ctx, device, addr, isDefault, provisionedMTLS)
+		rt("  ↳ connectResolvedAgent (dial+probe)")
 		if err != nil {
 			if errors.Is(err, ErrUserCancelled) {
 				return nil, err
 			}
 			if errors.Is(err, errProvisionedAgentUnauthorized) {
+				refreshedConn, ok := offerCertRefreshAndRetry(ctx, err, func() (*grpcclient.AgentConnection, error) {
+					return connectResolvedAgentWithProvisionedHint(ctx, device, addr, isDefault, provisionedMTLS)
+				})
+				if !ok {
+					return nil, err
+				}
+				conn = refreshedConn
+			} else if isDefault && !jsonOutput && !cfg.nonInteractive && isInteractiveTerminal() {
+				// Default device is unreachable — offer interactive recovery.
+				return handleDefaultDeviceRecovery(ctx, device, time.Since(startedAt), err, cfg.excludeProviderKeys, cfg.excludeBluetooth, cfg.suppressUpdateCheck)
+			} else {
 				return nil, err
 			}
-			// Default device is unreachable — offer interactive recovery.
-			if isDefault && !jsonOutput && !cfg.nonInteractive && isInteractiveTerminal() {
-				return handleDefaultDeviceRecovery(ctx, device, time.Since(startedAt), err, cfg.excludeProviderKeys, cfg.excludeBluetooth, cfg.suppressUpdateCheck)
-			}
-			return nil, err
 		}
 		if !cfg.suppressUpdateCheck {
 			var updateErr error
@@ -1078,6 +1402,7 @@ func resolveTarget(ctx context.Context, opts ...resolveOption) (*SelectedDevice,
 				return nil, updateErr
 			}
 		}
+		rt("  ↳ checkAndOfferUpdate")
 		return &SelectedDevice{Agent: conn}, nil
 	}
 
@@ -1281,8 +1606,19 @@ func mergePickerItem(existing *tui.PickerItem, incoming tui.PickerItem) {
 
 	// Propagate security status: LAN probes determine mTLS, BLE doesn't. Once
 	// we know a device is insecure (or secure), update the existing item.
+	// The same goes for the provisioned state and the no-access hint, which
+	// clears once a probe succeeds.
 	if nd.LAN != nil {
 		existing.Insecure = incoming.Insecure
+		existing.Provisioned = incoming.Provisioned
+		existing.Hint = incoming.Hint
+	}
+	// The no-access hint must stay consistent with the version cell no matter
+	// which transport supplied the version: AgentVersion is carried over from
+	// earlier LAN probes or backfilled from BLE above, and a hint claiming
+	// agent details are unreadable must not accompany a displayed version.
+	if existing.AgentVersion != "" && existing.Hint == discoverNoAccessHint {
+		existing.Hint = ""
 	}
 }
 
@@ -1302,7 +1638,7 @@ func pickDevice(ctx context.Context, excludeProviders map[string]bool, excludeBl
 	picker := tui.NewPicker()
 	picker.MergeItem = mergePickerItem
 
-	// Load current default device to show ★ indicator.
+	// Load current default device to show ✦ indicator.
 	if loadedCfg, err := config.Load(); err == nil && loadedCfg.DefaultDevice != "" {
 		picker.DefaultKey = strings.ToLower(loadedCfg.DefaultDevice)
 	}
@@ -1342,6 +1678,8 @@ func pickDevice(ctx context.Context, excludeProviders map[string]bool, excludeBl
 			Address:      preferredLANAddress(dev),
 			AgentVersion: dev.AgentVersion,
 			OSVersion:    dev.OSVersion,
+			Provisioned:  lanProvisionedDisplay(&devCopy),
+			Hint:         lanNoAccessHint(&devCopy, dev.AgentVersion),
 			DedupKey:     dev.DisplayName,
 			SortKey:      usbFirstSortKey(dev.DisplayName, dev.USB),
 			Insecure:     insecure,
@@ -1412,7 +1750,7 @@ func pickDevice(ctx context.Context, excludeProviders map[string]bool, excludeBl
 							items = append(items, tui.PickerItem{
 								Name:         devices[i].DisplayName,
 								Type:         prov.DisplayName(),
-								Address:      fmt.Sprintf("%s: %s", devices[i].ProviderKey, devices[i].ID),
+								Address:      externalProviderAddress(devices[i].ProviderKey, devices[i].ID),
 								AgentVersion: devices[i].AgentVersion,
 								OSVersion:    devices[i].OSVersion,
 								DedupKey:     devices[i].DisplayName,
@@ -1444,7 +1782,7 @@ func pickDevice(ctx context.Context, excludeProviders map[string]bool, excludeBl
 				if err == nil && len(bleDevices) > 0 {
 					var items []tui.PickerItem
 					for i := range bleDevices {
-						connType := "Bluetooth"
+						connType := "BLE"
 						if !bleDevices[i].IsWendyAgent() {
 							connType = "BLE (Lite)"
 						}
@@ -1516,7 +1854,8 @@ func pickDevice(ctx context.Context, excludeProviders map[string]bool, excludeBl
 				}
 				return nil, fmt.Errorf("selected LAN device has no usable address")
 			}
-			conn, err := connectAgentAtAddressWithProvisionedHint(ctx, addr, d.LAN.IsMTLS)
+			mtls := d.LAN.IsMTLS
+			conn, err := connectAgentAtAddressWithProvisionedHint(ctx, addr, func() bool { return mtls })
 			if err == nil {
 				if !suppressUpdateCheck {
 					var updateErr error
@@ -1566,16 +1905,25 @@ func pickDevice(ctx context.Context, excludeProviders map[string]bool, excludeBl
 // Rules:
 //   - If cfgPlatform is a full "os/arch" string, use it as-is.
 //   - If cfgPlatform is OS-only (e.g., "linux" or "darwin"), append the agent arch.
-//   - If cfgPlatform is empty, default to the agent's OS and architecture.
+//   - If cfgPlatform is empty, default to Linux with the agent architecture.
+//   - "wendyos" is a compatibility alias for "linux" and is normalized before
+//     passing the platform to container builders.
 func resolveAgentPlatform(cfgPlatform, agentOS, agentArch string) string {
 	if cfgPlatform == "" {
-		return agentOS + "/" + agentArch
+		return appconfig.PlatformLinux + "/" + agentArch
 	}
-	if strings.Contains(cfgPlatform, "/") {
-		return cfgPlatform
+	if i := strings.IndexByte(cfgPlatform, '/'); i >= 0 {
+		return normalizePlatformOS(cfgPlatform[:i]) + cfgPlatform[i:]
 	}
 	// OS-only: append agent architecture.
-	return cfgPlatform + "/" + agentArch
+	return normalizePlatformOS(cfgPlatform) + "/" + agentArch
+}
+
+func normalizePlatformOS(os string) string {
+	if strings.EqualFold(os, appconfig.PlatformWendyOS) {
+		return appconfig.PlatformLinux
+	}
+	return os
 }
 
 func registryPort(agentOS string) int {

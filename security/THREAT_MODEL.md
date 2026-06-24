@@ -127,11 +127,11 @@ Severity scale: **CRITICAL > HIGH > MEDIUM > LOW > INFO**
 #### TM-S-03 — Impersonation via stolen mTLS client certificate
 - **Severity:** HIGH
 - **Component:** CLI / gRPC mTLS (port 50052)
-- **Description:** Client certificates have no short TTL or revocation check implemented. A stolen or leaked certificate grants indefinite authenticated access.
-- **Existing mitigations:** Certificates are stored in `~/.wendy/` with user-level permissions.
+- **Description:** A stolen or leaked certificate grants authenticated access until the certificate expires (maximum 2 years). Without revocation, the window of exposure is bounded but not eliminated.
+- **Existing mitigations:** Certificates are stored in `~/.wendy/` with user-level permissions. Maximum certificate lifetime of 2 years is enforced at the TLS layer.
 - **Recommended controls:**
   - Implement certificate revocation (OCSP or CRL served by Wendy Cloud).
-  - Enforce short-lived client certificates with automatic renewal.
+  - Shorten certificate lifetime with automatic renewal to reduce the exposure window.
 
 ---
 

@@ -17,10 +17,10 @@ Before PR #897, Wendy silently ignored `environment:` entries in compose files
 — the `TODO` in the CLI read:
 > *"compose `environment:` values aren't sent to the device yet"*
 
-Now `wendy compose` reads each service's `environment:` block and passes it
+Now `wendy run` reads each service's `environment:` block and passes it
 as the new `env` field on `CreateContainerRequest`. The agent applies them in
-the order: **image built-in env → user compose env → Wendy system env**.
-Wendy system vars (`WENDY_APP_ID`, `WENDY_HOSTNAME`, …) always win.
+the order: **image built-in env → user compose env → Wendy system env →
+framework env (e.g., ROS2) → OTEL env**. OCI last-wins semantics apply.
 
 ## Unsupported field warnings (WDY-1270)
 

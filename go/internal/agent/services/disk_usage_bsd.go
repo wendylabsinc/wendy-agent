@@ -14,3 +14,10 @@ func rootDiskUsage() (diskUsage, bool) {
 	}
 	return calculateDiskUsage(stat.Blocks, stat.Bfree, uint64(stat.Bsize))
 }
+
+// listDiskPartitions is only implemented for Linux (which exposes /proc/mounts).
+// On BSD-family systems the device-info disk view falls back to the root
+// filesystem reported by rootDiskUsage.
+func listDiskPartitions() []partitionUsage {
+	return nil
+}

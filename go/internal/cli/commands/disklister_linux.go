@@ -3,11 +3,14 @@
 package commands
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/dustin/go-humanize"
@@ -107,6 +110,8 @@ func listDrivesLinux() ([]drive, error) {
 		storageType := StorageUnknown
 		if dev.Transport == "nvme" {
 			storageType = StorageNVMe
+		} else if dev.Transport == "usb" {
+			storageType = StorageUSB
 		}
 		drives = append(drives, drive{
 			DevicePath: devPath,
@@ -224,6 +229,92 @@ func unmountLsblkDevice(dev lsblkDevice) error {
 		}
 	}
 	return firstErr
+}
+
+// writeImageWithBmap flashes the image to d using the block map. It re-execs
+// this binary as `sudo wendy __bmap-write`, streaming the decompressed image to
+// the helper's stdin; the helper seeks and writes only mapped ranges as root.
+// progressFn receives cumulative uncompressed bytes fed to the helper.
+func writeImageWithBmap(r io.Reader, totalSize int64, d drive, bmapPath string, progressFn func(written int64)) error {
+	if err := unmountDisk(d.DevicePath); err != nil {
+		return err
+	}
+	self, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("locating wendy binary: %w", err)
+	}
+	cmd := exec.Command("sudo", self, "__bmap-write", "--device", d.DevicePath, "--bmap", bmapPath)
+
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return fmt.Errorf("stdin pipe: %w", err)
+	}
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("starting bmap helper: %w", err)
+	}
+
+	cw := &countingWriter{w: stdin, progressFn: progressFn}
+	copyErr := func() error {
+		defer stdin.Close()
+		_, err := io.Copy(cw, r)
+		return err
+	}()
+
+	waitErr := cmd.Wait()
+	if copyErr != nil {
+		// A failure copying the (decompressed) image into the helper is the
+		// root cause; the helper's non-zero exit is just the downstream effect
+		// of its stdin closing early. Surface the copy error first.
+		if waitErr != nil {
+			return fmt.Errorf("streaming image to bmap helper: %w (helper: %v; %s)", copyErr, waitErr, stderr.String())
+		}
+		return fmt.Errorf("streaming image to bmap helper: %w", copyErr)
+	}
+	if waitErr != nil {
+		if stderr.Len() > 0 {
+			return fmt.Errorf("bmap write failed: %w\n%s", waitErr, stderr.String())
+		}
+		return fmt.Errorf("bmap write failed: %w", waitErr)
+	}
+	_ = totalSize
+	return nil
+}
+
+// writeImageWithBmapSeekable flashes via the seekable source: it re-execs
+// `sudo wendy __bmap-write --source <zst> --bmap <bmap> --device <dev>`; the
+// helper reads the source itself and writes mapped ranges as root. progressFn
+// receives cumulative mapped bytes (scanned from the helper's stdout).
+func writeImageWithBmapSeekable(sourcePath, bmapPath string, d drive, progressFn func(int64)) error {
+	if err := unmountDisk(d.DevicePath); err != nil {
+		return err
+	}
+	self, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("locating wendy binary: %w", err)
+	}
+	cmd := exec.Command("sudo", self, "__bmap-write",
+		"--device", d.DevicePath, "--bmap", bmapPath, "--source", sourcePath,
+		"--writers", strconv.Itoa(writersForStorage(d.StorageType)))
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("stdout pipe: %w", err)
+	}
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("starting bmap helper: %w", err)
+	}
+	scanBmapProgress(stdout, progressFn)
+	if err := cmd.Wait(); err != nil {
+		if stderr.Len() > 0 {
+			return fmt.Errorf("bmap write failed: %w\n%s", err, stderr.String())
+		}
+		return fmt.Errorf("bmap write failed: %w", err)
+	}
+	exec.Command("sync").Run() //nolint:errcheck
+	return nil
 }
 
 func writeImageToDisk(r io.Reader, totalSize int64, d drive, progressFn func(written int64)) error {
