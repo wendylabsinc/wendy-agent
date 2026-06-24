@@ -20,8 +20,10 @@ This session is for coordination only: Linear updates, planning, creating issue 
 - Housekeeping snapshot, 2026-06-24:
   - Coordinator branch is up to date with `origin/kb.wendy-for-mac`.
   - WDY-1608 worktree is clean except for its untracked local `HANDOVER.md`; branch is pushed at `096fd64e`.
+  - WDY-1724 worktree is at setup commit `3cf5bfb` with a local untracked `HANDOVER.md`; implementation has not started yet.
   - WDY-1606 worktree has local modified Swift files plus an untracked local `HANDOVER.md`; leave it alone unless explicitly resuming WDY-1606.
 - Recent coordinator commits:
+  - `13e49453 docs: start WDY-1724 setup cleanup`
   - `5004d1a5 docs: add Wendy for Mac coordinator handover`
   - `82b9da05 docs: rename Wendy for Mac coordinator`
   - `f2d1459d docs: record WDY-1608 template handoff`
@@ -110,6 +112,40 @@ with urllib.request.urlopen(req, timeout=20) as r:
 ```
 
 ## Recent coordination actions
+
+### WDY-1724 — Clean up Swift E2E setup scripts for ephemeral local runs
+
+The user asked to add newly-created WDY-1724 to this plan and start it.
+
+Created/started per coordinator protocol:
+
+- Linear: https://linear.app/wendylabsinc/issue/WDY-1724/clean-up-swift-e2e-setup-scripts-for-ephemeral-local-runs
+- State: In Progress
+- Assignee: `konstantin@wendy.sh`
+- Project: E2E Tests
+- Issue worktree: `/Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1724-swift-e2e-setup-scripts`
+- Branch: `kb.wdy-1724-swift-e2e-setup-scripts`
+- Setup commit: `3cf5bfb chore: start WDY-1724 Swift E2E setup cleanup`
+- Draft PR: https://github.com/wendylabsinc/WendyOS/pull/1146
+- PR body contains `Closes WDY-1724`.
+- Issue worktree contains its own local untracked `HANDOVER.md` with implementation scope and validation expectations.
+- Linear handoff comment: https://linear.app/wendylabsinc/issue/WDY-1724/clean-up-swift-e2e-setup-scripts-for-ephemeral-local-runs#comment-e859b04f
+
+Resume command for the implementation session:
+
+```sh
+cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1724-swift-e2e-setup-scripts && ai --prompt "Read HANDOVER.md and follow its instructions."
+```
+
+Current WDY-1724 implementation constraints:
+
+- Clean up Swift E2E setup scripts for ephemeral local runs, especially hosted local macOS.
+- Remove unconditional macOS `sudo -v`.
+- Hosted local macOS Swift E2E runs should not fail just because passwordless sudo is unavailable.
+- Document what is assumed to be pre-provisioned vs what per-run setup does.
+- Any remaining sudo use must be conditional, narrow, and justified.
+- Preserve setup failure attempt artifacts from `.github/actions/swift-e2e-run/action.yml`.
+- Do not turn this into broad CI runner provisioning or unrelated Swift E2E harness rewrites.
 
 ### WDY-1530 — Add Wendy for Mac templates to `wendy init`
 
@@ -340,8 +376,9 @@ gh pr view 47 --repo wendylabsinc/templates --web
 
 Depending on what the user asks next:
 
-1. If continuing WDY-1608, open the issue worktree and follow its `HANDOVER.md`; remember #1077 is stacked on #1071 and has companion templates PR #47.
-2. If WDY-1606/#1071 merges, rebase/update WDY-1608/#1077 and refresh this coordinator ledger.
-3. If starting another Mac production issue, follow the coordinator protocol and add a new ledger entry to `PLAN.md`.
-4. If updating Linear project status, query project updates first and match the existing concise narrative style with health `onTrack` unless evidence suggests otherwise.
-5. If cleaning up coordination after a PR merges, update `PLAN.md` with final state, merge commit, validation, and resume command status.
+1. If continuing WDY-1724, open the issue worktree and follow its `HANDOVER.md`.
+2. If continuing WDY-1608, open the issue worktree and follow its `HANDOVER.md`; remember #1077 is stacked on #1071 and has companion templates PR #47.
+3. If WDY-1606/#1071 merges, rebase/update WDY-1608/#1077 and refresh this coordinator ledger.
+4. If starting another Mac production issue, follow the coordinator protocol and add a new ledger entry to `PLAN.md`.
+5. If updating Linear project status, query project updates first and match the existing concise narrative style with health `onTrack` unless evidence suggests otherwise.
+6. If cleaning up coordination after a PR merges, update `PLAN.md` with final state, merge commit, validation, and resume command status.

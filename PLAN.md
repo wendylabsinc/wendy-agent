@@ -70,6 +70,9 @@ Final closeout snapshot, 2026-06-12:
   project. Coordinator setup/handoff is complete, implementation happened in
   the per-issue worktree, and the current review stack is WendyOS PR #1077 plus
   companion templates PR #47.
+- Explicitly started by the user on 2026-06-24: WDY-1724 is active from this
+  coordinator despite belonging to `E2E Tests`, because it is tied to hosted
+  local macOS Swift E2E setup. Keep implementation in the per-issue worktree.
 
 ## Working protocol
 
@@ -410,6 +413,33 @@ automation scope, follow-up issues filed, and the relevant `Closes WDY-xxxx`.
 - Resume command: not needed; issue is complete.
 
 ## Issue ledger
+
+### WDY-1724 — Clean up Swift E2E setup scripts for ephemeral local runs
+
+- Status: `started / handoff prepared`; Linear state: In Progress; Linear
+  assignee: `konstantin@wendy.sh`; Linear project: `E2E Tests`.
+- Linear: https://linear.app/wendylabsinc/issue/WDY-1724/clean-up-swift-e2e-setup-scripts-for-ephemeral-local-runs
+- Branch/worktree name: `kb.wdy-1724-swift-e2e-setup-scripts`
+- Worktree path:
+  `/Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1724-swift-e2e-setup-scripts`
+- Draft PR: https://github.com/wendylabsinc/WendyOS/pull/1146
+- PR closing reference: `Closes WDY-1724`
+- Setup commit: `3cf5bfb chore: start WDY-1724 Swift E2E setup cleanup`
+- Linear handoff comment:
+  https://linear.app/wendylabsinc/issue/WDY-1724/clean-up-swift-e2e-setup-scripts-for-ephemeral-local-runs#comment-e859b04f
+- Scope: clean up Swift E2E setup scripts and workflow usage so hosted local
+  macOS E2E setup is minimal, predictable, and does not require passwordless
+  sudo unless a specific operation truly needs it. Document pre-provisioning
+  assumptions vs per-run setup, avoid unconditional `sudo -v`, preserve setup
+  failure attempt artifacts, and keep any remaining privileged operations
+  conditional, narrow, and justified.
+- Key files for implementation: `.github/workflows/swift-e2e-tests.yml`,
+  `.github/actions/swift-e2e-run/action.yml`, `swift/Scripts/E2ESetup.sh`,
+  `swift/Scripts/E2ESetup.macOS.sh`, and `swift/Scripts/E2ESetup.ubuntu.sh`.
+- Handoff: local untracked `HANDOVER.md` in the worktree contains the durable
+  implementation prompt, constraints, validation expectations, and PR details.
+- Resume command:
+  `cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1724-swift-e2e-setup-scripts && ai --prompt "Read HANDOVER.md and follow its instructions."`
 
 ### WDY-1608 — Add Swift MLX-LLM template for Open WebUI on Wendy Agent for Mac
 
