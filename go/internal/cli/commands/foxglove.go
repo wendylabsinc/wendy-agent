@@ -169,6 +169,15 @@ func (s *foxgloveServer) handleConn(ctx context.Context, c *websocket.Conn) {
 			subsMu.Unlock()
 		}
 	}
+	// Cancel any still-active subscription stream contexts so their child
+	// context nodes are released immediately (mirror the unsubscribe path)
+	// rather than lingering until GC.
+	subsMu.Lock()
+	for id, cancelFn := range subs {
+		cancelFn()
+		delete(subs, id)
+	}
+	subsMu.Unlock()
 	cancel()
 	wg.Wait()
 }
