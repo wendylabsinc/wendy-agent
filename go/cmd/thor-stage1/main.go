@@ -9,6 +9,35 @@
 //
 // Reading the bct_mb1 response on the same handle is what keeps mb1 alive; bct_mem
 // and blob are then more verbatim downloads on the same handle.
+//
+// Input files (produced on a Linux x86_64 builder; the flash tools are i386/x86-64
+// and do not run on macOS arm64). From a WendyOS Jetson-Thor tegraflash bundle
+// (e.g. jetson-agx-thor .tegraflash-tar):
+//
+//  1. Extract the bundle:    tar xf <bundle>.tegraflash-tar -C bundle-x && cd bundle-x
+//  2. Generate the RCM-boot images WITHOUT a device attached (board info is taken
+//     from the bundled boardvars.sh, so no USB is touched):
+//
+//       MACHINE=jetson-agx-thor-devkit-nvme-wendyos \
+//       BOARDID=3834 FAB=400 BOARDSKU=0008 BOARDREV=G.5 CHIPREV=1 CHIP_SKU=00:00:00:A0 \
+//         ./tegra264-flash-helper.sh --no-flash --rcm-boot -u "" -v "" --datafile "" \
+//         rcmboot-flash.xml.in initrd-flash.img wendyos-image.ext4.simg
+//
+//     (-u/-v empty = the ODM-open zero-key path. BOARD* values come from the bundle's
+//     boardvars.sh; adjust per board.)
+//
+// This writes ./rcmboot_blob/ containing the files this tool needs:
+//
+//	<bct_br>   = br_bct_BR.bct
+//	<mb1>      = mb1_t264_prod_aligned_sigheader.bin.encrypt
+//	<psc_bl1>  = psc_bl1_t264_prod_aligned_sigheader.bin.encrypt
+//	<bct_mb1>  = mb1_bct_MB1_sigheader.bct.encrypt
+//	<bct_mem>  = membct_<N>_sigheader.bct.encrypt   (N = on-board RAMCODE / 2;
+//	             rcmbootcmd.txt selects it at flash time. For RAMCODE 12 → membct_6.)
+//	<blob>     = blob.bin                            (~171 MB; mb2/UEFI/initrd payload)
+//
+// These artifacts are class-level (not per-unit) for ODM-open devices, so they can
+// be generated once per BSP in CI and shipped for the wendy CLI to replay.
 package main
 
 import (
