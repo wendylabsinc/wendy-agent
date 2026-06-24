@@ -20,9 +20,10 @@ This session is for coordination only: Linear updates, planning, creating issue 
 - Housekeeping snapshot, 2026-06-24:
   - Coordinator branch is up to date with `origin/kb.wendy-for-mac`.
   - WDY-1608 worktree is clean except for its untracked local `HANDOVER.md`; branch is pushed at `096fd64e`.
-  - WDY-1724 worktree is at setup commit `3cf5bfb` with a local untracked `HANDOVER.md`; implementation has not started yet.
-  - WDY-1606 worktree has local modified Swift files plus an untracked local `HANDOVER.md`; leave it alone unless explicitly resuming WDY-1606.
+  - WDY-1724 is now canceled in Linear and PR #1146 was closed unmerged; worktree remains locally at setup commit `3cf5bfb` with untracked `HANDOVER.md`.
+  - WDY-1606 is Done; PR #1071 merged as `b9861453b`. Its worktree remains locally with untracked `HANDOVER.md`; leave it alone unless explicitly cleaning merged worktrees.
 - Recent coordinator commits:
+  - `bb880460 docs: record WDY-1724 cancellation`
   - `13e49453 docs: start WDY-1724 setup cleanup`
   - `5004d1a5 docs: add Wendy for Mac coordinator handover`
   - `82b9da05 docs: rename Wendy for Mac coordinator`
@@ -115,37 +116,29 @@ with urllib.request.urlopen(req, timeout=20) as r:
 
 ### WDY-1724 — Clean up Swift E2E setup scripts for ephemeral local runs
 
-The user asked to add newly-created WDY-1724 to this plan and start it.
+The user asked to add newly-created WDY-1724 to this plan and start it. It was started per coordinator protocol, then canceled the same day after investigation showed no setup-script change was needed.
 
-Created/started per coordinator protocol:
+Final coordination state:
 
 - Linear: https://linear.app/wendylabsinc/issue/WDY-1724/clean-up-swift-e2e-setup-scripts-for-ephemeral-local-runs
-- State: In Progress
+- State: Canceled
 - Assignee: `konstantin@wendy.sh`
 - Project: E2E Tests
 - Issue worktree: `/Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1724-swift-e2e-setup-scripts`
 - Branch: `kb.wdy-1724-swift-e2e-setup-scripts`
 - Setup commit: `3cf5bfb chore: start WDY-1724 Swift E2E setup cleanup`
-- Draft PR: https://github.com/wendylabsinc/WendyOS/pull/1146
-- PR body contains `Closes WDY-1724`.
-- Issue worktree contains its own local untracked `HANDOVER.md` with implementation scope and validation expectations.
+- PR: https://github.com/wendylabsinc/WendyOS/pull/1146 — closed unmerged
 - Linear handoff comment: https://linear.app/wendylabsinc/issue/WDY-1724/clean-up-swift-e2e-setup-scripts-for-ephemeral-local-runs#comment-e859b04f
 
-Resume command for the implementation session:
+Reason for cancellation, from PR close comment:
 
-```sh
-cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1724-swift-e2e-setup-scripts && ai --prompt "Read HANDOVER.md and follow its instructions."
-```
+- The failed run was not caused by the setup scripts.
+- The local macOS route uses a GitHub-hosted runner (`runs-on: macos-26`), and GitHub-hosted ephemeral runners are expected to have passwordless sudo.
+- The failing run behaved like the wrong environment: it ran as the `wendy` user without passwordless sudo or a TTY.
+- Since the route worked previously, treat this as a GitHub Actions runner assignment/environment fluke unless it recurs.
+- No setup-script changes are needed for WDY-1724.
 
-Current WDY-1724 implementation constraints:
-
-- Clean up Swift E2E setup scripts for ephemeral local runs, especially hosted local macOS.
-- Remove unconditional macOS `sudo -v`.
-- Hosted local macOS Swift E2E runs should not fail just because passwordless sudo is unavailable.
-- Document what is assumed to be pre-provisioned vs what per-run setup does.
-- Any remaining sudo use must be conditional, narrow, and justified.
-- Preserve setup failure attempt artifacts from `.github/actions/swift-e2e-run/action.yml`.
-- Do not turn this into broad CI runner provisioning or unrelated Swift E2E harness rewrites.
+Resume command: not needed; issue is canceled.
 
 ### WDY-1530 — Add Wendy for Mac templates to `wendy init`
 
@@ -199,12 +192,12 @@ cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1608-mlx-openwebui-
 
 Current WDY-1608 state as of housekeeping on 2026-06-24:
 
-- WendyOS PR #1077 is an open draft, stacked on WDY-1606 / PR #1071, with branch base `kb.wdy-1606-brewfile-support`.
+- WDY-1606 / PR #1071 has merged, so WendyOS PR #1077 is now based on `main` rather than the old Brewfile branch.
 - PR #1077 adds native Mac template target support in the CLI: `--target darwin` / `--target macos`, template filtering by target, Darwin init tests, and template smoke harness target selection.
 - PR #1077 also carries two Mac-run fixes discovered during template validation: headless Xcode package macro builds and relaxed direct-agent keepalive pings for long-running Mac log streams.
 - Companion templates PR wendylabsinc/templates#47 adds the macOS side of the shared `llm` template using Swift/MLX plus Open WebUI.
 - Templates PR #47 is an open draft with green checks and recorded live validation on `mac-mini.local`: first run installed `uv`, installed Open WebUI 0.9.5, started the localhost MLX backend, served Open WebUI, and returned expected `/api/config` data.
-- Merge/review order is likely: finish/merge WDY-1606 PR #1071 first, then rebase/update WDY-1608 PR #1077, then finish/merge the companion templates PR #47.
+- Remaining review order is likely: refresh/finish WDY-1608 PR #1077 on `main`, then finish/merge the companion templates PR #47.
 - WDY-1530 should be reassessed after WDY-1608 lands because PR #1077 covers much of the native Mac template-target plumbing.
 
 ### Wendy for Mac — Production project update
@@ -221,7 +214,7 @@ A new update was posted with health `onTrack`:
 - Body summarized:
   - Production is moving again after beta closeout.
   - Native Darwin SwiftPM and Xcode/HelloMLX paths are validated and backed by clearer CLI guardrails, resource syncing, lifecycle behavior, and project-shape selection.
-  - WDY-1606 Brewfile support is in review as the first production dependency-management improvement.
+  - WDY-1606 Brewfile support merged as the first production dependency-management improvement.
   - WDY-1530 and WDY-1608 carry template follow-through adjacent to Production.
   - Backlog cleanup reduced ambiguity by canceling stale beta/post-beta umbrellas or marking duplicates.
   - Current state at the time: ~15% complete in Linear scope: 4 done, 1 in review, 1 todo, 22 backlog, 6 canceled, 2 duplicates.
@@ -256,7 +249,8 @@ At the time of the latest project update, `Wendy for Mac — Production` had:
 Notable active/recent issues:
 
 - WDY-1606 — Add Brewfile support for Wendy Agent for Mac apps
-  - State: In Review
+  - State: Done
+  - PR: https://github.com/wendylabsinc/WendyOS/pull/1071 — merged as `b9861453b`
   - URL: https://linear.app/wendylabsinc/issue/WDY-1606/add-brewfile-support-for-wendy-agent-for-mac-apps
 - WDY-1362 — Enable Linux container support on Mac via Docker
   - State: Todo
@@ -330,7 +324,7 @@ There are two related template issues:
 
 Current implementation split:
 
-- WendyOS PR #1077 covers the CLI/native Mac target side and is stacked on WDY-1606 PR #1071.
+- WendyOS PR #1077 covers the CLI/native Mac target side and is now based on `main` after WDY-1606 PR #1071 merged.
 - `wendylabsinc/templates` PR #47 covers the generated Swift MLX/Open WebUI template content.
 
 The template implementation may live outside this repository in `wendylabsinc/templates`. This repo contains:
@@ -376,9 +370,9 @@ gh pr view 47 --repo wendylabsinc/templates --web
 
 Depending on what the user asks next:
 
-1. If continuing WDY-1724, open the issue worktree and follow its `HANDOVER.md`.
-2. If continuing WDY-1608, open the issue worktree and follow its `HANDOVER.md`; remember #1077 is stacked on #1071 and has companion templates PR #47.
-3. If WDY-1606/#1071 merges, rebase/update WDY-1608/#1077 and refresh this coordinator ledger.
+1. If continuing WDY-1608, open the issue worktree and follow its `HANDOVER.md`; #1077 is now based on `main` and has companion templates PR #47.
+2. If cleaning up WDY-1606 after merge, remove/archive its local worktree only after confirming no local handoff notes are needed.
+3. If WDY-1724 comes up again, start from the cancellation note above; do not resume implementation unless the runner-environment diagnosis changes.
 4. If starting another Mac production issue, follow the coordinator protocol and add a new ledger entry to `PLAN.md`.
 5. If updating Linear project status, query project updates first and match the existing concise narrative style with health `onTrack` unless evidence suggests otherwise.
 6. If cleaning up coordination after a PR merges, update `PLAN.md` with final state, merge commit, validation, and resume command status.

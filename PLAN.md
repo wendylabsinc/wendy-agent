@@ -70,9 +70,10 @@ Final closeout snapshot, 2026-06-12:
   project. Coordinator setup/handoff is complete, implementation happened in
   the per-issue worktree, and the current review stack is WendyOS PR #1077 plus
   companion templates PR #47.
-- Explicitly started by the user on 2026-06-24: WDY-1724 is active from this
-  coordinator despite belonging to `E2E Tests`, because it is tied to hosted
-  local macOS Swift E2E setup. Keep implementation in the per-issue worktree.
+- Explicitly started by the user on 2026-06-24: WDY-1724 was coordinated here
+  despite belonging to `E2E Tests`, because it was tied to hosted local macOS
+  Swift E2E setup. It was later canceled after investigation showed the failure
+  was a runner-environment fluke rather than a setup-script bug.
 
 ## Working protocol
 
@@ -416,30 +417,26 @@ automation scope, follow-up issues filed, and the relevant `Closes WDY-xxxx`.
 
 ### WDY-1724 — Clean up Swift E2E setup scripts for ephemeral local runs
 
-- Status: `started / handoff prepared`; Linear state: In Progress; Linear
-  assignee: `konstantin@wendy.sh`; Linear project: `E2E Tests`.
+- Status: `canceled`; Linear state: Canceled; Linear assignee:
+  `konstantin@wendy.sh`; Linear project: `E2E Tests`.
 - Linear: https://linear.app/wendylabsinc/issue/WDY-1724/clean-up-swift-e2e-setup-scripts-for-ephemeral-local-runs
 - Branch/worktree name: `kb.wdy-1724-swift-e2e-setup-scripts`
 - Worktree path:
   `/Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1724-swift-e2e-setup-scripts`
-- Draft PR: https://github.com/wendylabsinc/WendyOS/pull/1146
-- PR closing reference: `Closes WDY-1724`
-- Setup commit: `3cf5bfb chore: start WDY-1724 Swift E2E setup cleanup`
+- PR: https://github.com/wendylabsinc/WendyOS/pull/1146 — closed unmerged.
+- Setup commit: `3cf5bfb chore: start WDY-1724 Swift E2E setup cleanup`.
 - Linear handoff comment:
   https://linear.app/wendylabsinc/issue/WDY-1724/clean-up-swift-e2e-setup-scripts-for-ephemeral-local-runs#comment-e859b04f
-- Scope: clean up Swift E2E setup scripts and workflow usage so hosted local
-  macOS E2E setup is minimal, predictable, and does not require passwordless
-  sudo unless a specific operation truly needs it. Document pre-provisioning
-  assumptions vs per-run setup, avoid unconditional `sudo -v`, preserve setup
-  failure attempt artifacts, and keep any remaining privileged operations
-  conditional, narrow, and justified.
-- Key files for implementation: `.github/workflows/swift-e2e-tests.yml`,
-  `.github/actions/swift-e2e-run/action.yml`, `swift/Scripts/E2ESetup.sh`,
-  `swift/Scripts/E2ESetup.macOS.sh`, and `swift/Scripts/E2ESetup.ubuntu.sh`.
-- Handoff: local untracked `HANDOVER.md` in the worktree contains the durable
-  implementation prompt, constraints, validation expectations, and PR details.
-- Resume command:
-  `cd /Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1724-swift-e2e-setup-scripts && ai --prompt "Read HANDOVER.md and follow its instructions."`
+- Cancellation reason: the setup scripts were not the root cause. The local
+  macOS route is configured for a GitHub-hosted `macos-26` runner, where
+  passwordless sudo is expected. The failed run behaved like the wrong runner
+  environment (`wendy` user, no passwordless sudo, no TTY). Since this route
+  worked previously, treat it as a GitHub Actions runner assignment/environment
+  fluke unless it recurs.
+- Implementation note: PR #1146 briefly had a preflight-only macOS setup change
+  (`b2168c8e ci: make macOS Swift E2E setup preflight-only`) during review, but
+  it was closed unmerged after cancellation. No setup-script changes landed.
+- Resume command: not needed; issue is canceled.
 
 ### WDY-1608 — Add Swift MLX-LLM template for Open WebUI on Wendy Agent for Mac
 
@@ -451,7 +448,7 @@ automation scope, follow-up issues filed, and the relevant `Closes WDY-xxxx`.
   `/Volumes/Projects/WendyLabs/wendy-agent/.worktrees/kb.wdy-1608-mlx-openwebui-template`
 - WendyOS draft PR: https://github.com/wendylabsinc/WendyOS/pull/1077
   - Current head: `096fd64e fix: relax direct agent keepalive pings`
-  - Base: `kb.wdy-1606-brewfile-support` / stacked on WDY-1606 PR #1071.
+  - Base: `main` after WDY-1606 PR #1071 merged.
   - Scope: CLI support for native Mac templates (`--target darwin` /
     `--target macos`), target-aware template filtering, Darwin init coverage,
     template smoke target selection, Mac Xcode template headless builds, and a
@@ -471,8 +468,8 @@ automation scope, follow-up issues filed, and the relevant `Closes WDY-xxxx`.
     --template llm`, rendered `wendy.json` validation, Swift package describe
     and build, CLI help checks, and live deployment to `mac-mini.local` proving
     `uv`/Open WebUI install, localhost MLX backend startup, and `/api/config`.
-- Current review/merge order: finish WDY-1606/#1071 first, rebase/update
-  WDY-1608/#1077 onto the merged base, then finish/merge templates #47.
+- Current review/merge order: refresh/finish WDY-1608/#1077 on `main`, then
+  finish/merge templates #47.
 - Handoff: local untracked `HANDOVER.md` in the worktree contains the original
   durable implementation prompt, constraints, validation expectations, and PR
   details.
