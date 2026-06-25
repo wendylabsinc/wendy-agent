@@ -3,13 +3,10 @@ package resolution
 import (
 	"context"
 	"fmt"
-	"net"
 	"strings"
 	"sync"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
-	"github.com/wendylabsinc/wendy/go/internal/shared/config"
-	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
 const maxDialParallelism = 5
@@ -29,42 +26,12 @@ type DialFn func(ctx context.Context, plaintextAddr string) (*grpcclient.AgentCo
 // production use.
 var DefaultDialFn DialFn
 
-// defaultDial implements the auto-TLS probe: try each stored cert on port+1;
-// if all TLS attempts fail, fall back to plaintext on the given port.
+// defaultDial is a plaintext-only fallback used in tests that do not set
+// DefaultDialFn. In production, root.go init() always assigns DefaultDialFn
+// before any cobra command runs, so this function is never called outside of
+// tests. It does not attempt mTLS so that it cannot be used as a certificate
+// oracle against arbitrary resolved addresses.
 func defaultDial(ctx context.Context, plaintextAddr string) (*grpcclient.AgentConnection, error) {
-	host, portStr, err := net.SplitHostPort(plaintextAddr)
-	if err != nil {
-		return nil, fmt.Errorf("parsing address %q: %w", plaintextAddr, err)
-	}
-
-	// Parse port and compute mTLS port (plaintext + 1).
-	var port int
-	if _, err := fmt.Sscanf(portStr, "%d", &port); err != nil {
-		return nil, fmt.Errorf("parsing port %q: %w", portStr, err)
-	}
-	mtlsAddr := fmt.Sprintf("%s:%d", host, port+1)
-
-	cfg, err := config.Load()
-	if err == nil {
-		for i := range cfg.Auth {
-			for j := range cfg.Auth[i].Certificates {
-				cert := cfg.Auth[i].Certificates[j]
-				conn, err := grpcclient.ConnectWithTLS(ctx, mtlsAddr, &cert)
-				if err != nil {
-					continue
-				}
-				// Probe to confirm the connection is live.
-				_, err = conn.AgentService.GetAgentVersion(ctx, &agentpb.GetAgentVersionRequest{})
-				if err != nil {
-					_ = conn.Close()
-					continue
-				}
-				return conn, nil
-			}
-		}
-	}
-
-	// Fallback: plaintext.
 	return grpcclient.Connect(ctx, plaintextAddr)
 }
 
@@ -151,10 +118,10 @@ func DialFirst(ctx context.Context, candidates []Candidate) (*grpcclient.AgentCo
 	}()
 
 	var (
-		errs          []CandidateError
-		received      int
-		total         = len(candidates)
-		winner        *grpcclient.AgentConnection
+		errs            []CandidateError
+		received        int
+		total           = len(candidates)
+		winner          *grpcclient.AgentConnection
 		winnerCandidate *Candidate
 	)
 

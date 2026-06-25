@@ -314,8 +314,11 @@ func newDeviceSetDefaultCmd() *cobra.Command {
 			}
 
 			// Warm the cache so the next command connects without re-resolving.
-			go func() {
-				warmCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			// Run synchronously before printing success so the process does not
+			// exit mid-write. Failures are silently ignored — the hostname is
+			// already saved above and the cache is best-effort.
+			func() {
+				warmCtx, cancel := context.WithTimeout(cmd.Context(), 5*time.Second)
 				defer cancel()
 				candidates, _, err := resolution.Resolve(warmCtx, device)
 				if err != nil || len(candidates) == 0 {

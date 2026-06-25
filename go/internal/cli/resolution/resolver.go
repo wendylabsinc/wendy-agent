@@ -150,6 +150,11 @@ func resolveDNS(ctx context.Context, host string, port uint16) ([]Candidate, str
 		if err != nil {
 			continue
 		}
+		// Link-local addresses from DNS carry no interface/zone context and
+		// cannot be dialed without one; skip them.
+		if ip.IsLinkLocalUnicast() {
+			continue
+		}
 		candidates = append(candidates, Candidate{
 			IP:     ip,
 			Port:   port,
@@ -234,11 +239,17 @@ func dedup(candidates []Candidate) []Candidate {
 	return out
 }
 
+const maxMDNSTimeout = 30 * time.Second
+
 // mdnsTimeout returns the mDNS scan duration from WENDY_MDNS_TIMEOUT env var,
-// falling back to 2 seconds.
+// falling back to 2 seconds. Values above 30 seconds are clamped to prevent
+// a misconfigured or malicious env var from hanging all CLI invocations.
 func mdnsTimeout() time.Duration {
 	if v := os.Getenv("WENDY_MDNS_TIMEOUT"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			if d > maxMDNSTimeout {
+				d = maxMDNSTimeout
+			}
 			return d
 		}
 	}

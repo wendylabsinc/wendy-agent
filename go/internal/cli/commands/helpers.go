@@ -673,7 +673,10 @@ func connectResolvedAgentWithProvisionedHint(ctx context.Context, hostname, addr
 // so that future invocations can connect without a fresh mDNS scan. The caller
 // is responsible for only calling this on the default-device path; the function
 // skips the write when no default device is configured.
-func updateDefaultEndpointCache(winner *resolution.Candidate, conn *grpcclient.AgentConnection) {
+//
+// DefaultDeviceEndpoint always stores the plaintext port (Candidate.Port).
+// The production DialFn (connectWithAutoTLS) adds 1 for mTLS on each connect.
+func updateDefaultEndpointCache(winner *resolution.Candidate, _ *grpcclient.AgentConnection) {
 	if winner == nil {
 		return
 	}
@@ -684,7 +687,7 @@ func updateDefaultEndpointCache(winner *resolution.Candidate, conn *grpcclient.A
 	if cfg.DefaultDevice == "" {
 		return
 	}
-	cfg.DefaultDeviceEndpoint = conn.Host + ":" + strconv.Itoa(int(winner.Port))
+	cfg.DefaultDeviceEndpoint = winner.Addr()
 	_ = config.Save(cfg)
 }
 
