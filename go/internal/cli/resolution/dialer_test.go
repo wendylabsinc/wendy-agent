@@ -3,8 +3,10 @@ package resolution
 import (
 	"context"
 	"errors"
+	"net"
 	"net/netip"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -198,6 +200,62 @@ func TestDialFirst_ContextCancellation(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("DialFirst did not return within 2s after context cancellation")
+	}
+}
+
+// TestDialFirst_DefaultDialFn_Smoke verifies that DialFirst returns an
+// AllFailedError (not a panic or hang) when all candidates fail, and checks
+// for goroutine leaks. Uses a DialFn stub that performs a real TCP probe so
+// that an unused port produces a genuine connection failure.
+func TestDialFirst_DefaultDialFn_Smoke(t *testing.T) {
+	leakCheck := goroutineLeakCheck(t)
+	defer leakCheck()
+
+	// Get an ephemeral port that's not in use, then close the listener so
+	// the port is free (but likely still available in the test window).
+	ln, err := net.Listen("tcp", "localhost:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	ln.Close()
+
+	// Parse the port from the allocated address.
+	_, portStr, err := net.SplitHostPort(addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	portNum, err := strconv.ParseUint(portStr, 10, 16)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Replace DefaultDialFn with a stub that attempts a real TCP dial.
+	setDialFn(t, func(ctx context.Context, dialAddr string) (*grpcclient.AgentConnection, error) {
+		var d net.Dialer
+		conn, err := d.DialContext(ctx, "tcp", dialAddr)
+		if err != nil {
+			return nil, err
+		}
+		_ = conn.Close()
+		return nil, errors.New("unexpected successful connection to " + addr)
+	})
+
+	ip := netip.MustParseAddr("127.0.0.1")
+	candidates := []Candidate{
+		{IP: ip, Port: uint16(portNum), Source: SourceLiteralIP},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err = DialFirst(ctx, candidates)
+	if err == nil {
+		t.Fatal("expected error dialing unused port, got nil")
+	}
+	var allFailed *AllFailedError
+	if !errors.As(err, &allFailed) {
+		t.Fatalf("expected *AllFailedError, got %T: %v", err, err)
 	}
 }
 
