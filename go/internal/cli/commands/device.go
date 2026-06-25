@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -22,6 +23,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
+	"github.com/wendylabsinc/wendy/go/internal/cli/resolution"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
@@ -311,6 +313,27 @@ func newDeviceSetDefaultCmd() *cobra.Command {
 			if err := config.Save(cfg); err != nil {
 				return fmt.Errorf("saving config: %w", err)
 			}
+
+			// Warm the cache so the next command connects without re-resolving.
+			go func() {
+				warmCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				candidates, _, err := resolution.Resolve(warmCtx, device)
+				if err != nil || len(candidates) == 0 {
+					return
+				}
+				conn, err := resolution.DialFirst(warmCtx, candidates)
+				if err != nil {
+					return
+				}
+				defer conn.Close()
+				c, loadErr := config.Load()
+				if loadErr != nil {
+					return
+				}
+				c.DefaultDeviceEndpoint = conn.Host + ":" + strconv.Itoa(int(candidates[0].Port))
+				_ = config.Save(c)
+			}()
 
 			fmt.Printf("Default device set to: %s\n", device)
 			return nil
