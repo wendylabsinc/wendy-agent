@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/wendylabsinc/wendy/go/internal/cli/analytics"
 	"github.com/wendylabsinc/wendy/go/internal/cli/providers"
+	"github.com/wendylabsinc/wendy/go/internal/cli/resolution"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
@@ -273,4 +274,12 @@ func NewRootCmd() *cobra.Command {
 
 	root.Version = version.Version
 	return root
+}
+
+func init() {
+	// Wire the production mTLS-probe dialer into the resolution package so
+	// that DialFirst uses connectWithAutoTLS rather than the fallback in
+	// dialer.go. This runs before any cobra command, ensuring all resolution
+	// paths use the real dialer.
+	resolution.DefaultDialFn = connectWithAutoTLS
 }

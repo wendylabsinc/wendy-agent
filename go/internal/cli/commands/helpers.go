@@ -22,6 +22,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/cli/ble"
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/cli/providers"
+	"github.com/wendylabsinc/wendy/go/internal/cli/resolution"
 	clitimesync "github.com/wendylabsinc/wendy/go/internal/cli/timesync"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
@@ -633,12 +634,60 @@ func connectResolvedAgent(ctx context.Context, hostname, addr string, isDefault 
 }
 
 func connectResolvedAgentWithProvisionedHint(ctx context.Context, hostname, addr string, isDefault bool, provisionedMTLS func() bool) (*grpcclient.AgentConnection, error) {
+	// For raw hostnames (not literal IPs), use the layered resolver so that
+	// .local mDNS names, the config cache, and system DNS are all tried before
+	// handing off a concrete IP:port to the auto-TLS dialer. Literal IP addresses
+	// skip resolution because they already work with the existing path and
+	// the dns resolver in gRPC handles them correctly.
+	host, _, splitErr := net.SplitHostPort(addr)
+	if splitErr != nil {
+		host = addr
+	}
+	if _, parseErr := netip.ParseAddr(host); parseErr != nil {
+		// addr contains a hostname — route through Resolve + DialFirst.
+		dial := func(spinCtx context.Context) (*grpcclient.AgentConnection, error) {
+			candidates, _, resolveErr := resolution.Resolve(spinCtx, addr)
+			if resolveErr != nil {
+				return nil, resolveErr
+			}
+			conn, dialErr := resolution.DialFirst(spinCtx, candidates)
+			if dialErr != nil {
+				return nil, dialErr
+			}
+			go updateDefaultEndpointCache(addr, conn)
+			return conn, nil
+		}
+		if isDefault && !jsonOutput && isInteractiveTerminal() {
+			return runAgentConnectionSpinner(ctx, defaultDeviceSearchLabel(hostname), dial)
+		}
+		return dial(ctx)
+	}
+	// Literal IP: use the existing auto-TLS path directly.
 	if isDefault && !jsonOutput && isInteractiveTerminal() {
 		return runAgentConnectionSpinner(ctx, defaultDeviceSearchLabel(hostname), func(spinCtx context.Context) (*grpcclient.AgentConnection, error) {
 			return connectAgentAtAddressWithProvisionedHint(spinCtx, addr, provisionedMTLS)
 		})
 	}
 	return connectAgentAtAddressWithProvisionedHint(ctx, addr, provisionedMTLS)
+}
+
+// updateDefaultEndpointCache saves the resolved IP endpoint back to the config
+// so that future invocations can connect without a fresh mDNS scan. It only
+// writes when addr matches the currently configured DefaultDevice.
+func updateDefaultEndpointCache(target string, conn *grpcclient.AgentConnection) {
+	cfg, err := config.Load()
+	if err != nil {
+		return
+	}
+	host, _, _ := net.SplitHostPort(target)
+	if host == "" {
+		host = target
+	}
+	if !strings.EqualFold(cfg.DefaultDevice, host) && !strings.EqualFold(cfg.DefaultDevice, target) {
+		return // only cache when the target is the current default
+	}
+	cfg.DefaultDeviceEndpoint = conn.Host + ":" + strconv.Itoa(defaultAgentPort)
+	_ = config.Save(cfg)
 }
 
 // connectToAgent establishes a gRPC connection to the target device.
