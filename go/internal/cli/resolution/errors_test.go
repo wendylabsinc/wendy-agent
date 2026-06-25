@@ -18,10 +18,10 @@ func TestResolutionErrorError_AllFourSources(t *testing.T) {
 
 	output := err.Error()
 	expected := `could not reach "device.local":
-  literal-ip: not an IP
-  mdns:       2 candidate(s) from mDNS
-  dns:        skipped (.local hostname)
-  cache:      no cached endpoint`
+  literal-ip:  not an IP
+  mdns:        2 candidate(s) from mDNS
+  dns:         skipped (.local hostname)
+  cache:       no cached endpoint`
 
 	if output != expected {
 		t.Errorf("unexpected output:\ngot:\n%s\n\nexpected:\n%s", output, expected)
@@ -39,8 +39,8 @@ func TestResolutionErrorError_PartialMap(t *testing.T) {
 
 	output := err.Error()
 	expected := `could not reach "192.168.1.1":
-  mdns:  no response
-  cache: no cached endpoint`
+  mdns:        no response
+  cache:       no cached endpoint`
 
 	if output != expected {
 		t.Errorf("unexpected output:\ngot:\n%s\n\nexpected:\n%s", output, expected)
