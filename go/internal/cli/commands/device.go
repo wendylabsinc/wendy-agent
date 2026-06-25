@@ -14,7 +14,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -322,17 +321,12 @@ func newDeviceSetDefaultCmd() *cobra.Command {
 				if err != nil || len(candidates) == 0 {
 					return
 				}
-				conn, err := resolution.DialFirst(warmCtx, candidates)
-				if err != nil {
+				conn, winner, err := resolution.DialFirst(warmCtx, candidates)
+				if err != nil || winner == nil {
 					return
 				}
 				defer conn.Close()
-				c, loadErr := config.Load()
-				if loadErr != nil {
-					return
-				}
-				c.DefaultDeviceEndpoint = conn.Host + ":" + strconv.Itoa(int(candidates[0].Port))
-				_ = config.Save(c)
+				updateDefaultEndpointCache(winner, conn)
 			}()
 
 			fmt.Printf("Default device set to: %s\n", device)

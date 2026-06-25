@@ -649,11 +649,11 @@ func connectResolvedAgentWithProvisionedHint(ctx context.Context, hostname, addr
 			if resolveErr != nil {
 				return nil, resolveErr
 			}
-			conn, dialErr := resolution.DialFirst(spinCtx, candidates)
+			conn, winner, dialErr := resolution.DialFirst(spinCtx, candidates)
 			if dialErr != nil {
 				return nil, dialErr
 			}
-			go updateDefaultEndpointCache(addr, conn)
+			go updateDefaultEndpointCache(winner, conn)
 			return conn, nil
 		}
 		if isDefault && !jsonOutput && isInteractiveTerminal() {
@@ -670,24 +670,21 @@ func connectResolvedAgentWithProvisionedHint(ctx context.Context, hostname, addr
 }
 
 // updateDefaultEndpointCache saves the resolved IP endpoint back to the config
-// so that future invocations can connect without a fresh mDNS scan. It only
-// writes when addr matches the currently configured DefaultDevice.
-func updateDefaultEndpointCache(target string, conn *grpcclient.AgentConnection) {
+// so that future invocations can connect without a fresh mDNS scan. The caller
+// is responsible for only calling this on the default-device path; the function
+// skips the write when no default device is configured.
+func updateDefaultEndpointCache(winner *resolution.Candidate, conn *grpcclient.AgentConnection) {
+	if winner == nil {
+		return
+	}
 	cfg, err := config.Load()
 	if err != nil {
 		return
 	}
-	host, portStr, _ := net.SplitHostPort(target)
-	if host == "" {
-		host = target
+	if cfg.DefaultDevice == "" {
+		return
 	}
-	if portStr == "" {
-		portStr = strconv.Itoa(defaultAgentPort)
-	}
-	if !strings.EqualFold(cfg.DefaultDevice, host) && !strings.EqualFold(cfg.DefaultDevice, target) {
-		return // only cache when the target is the current default
-	}
-	cfg.DefaultDeviceEndpoint = conn.Host + ":" + portStr
+	cfg.DefaultDeviceEndpoint = conn.Host + ":" + strconv.Itoa(int(winner.Port))
 	_ = config.Save(cfg)
 }
 

@@ -76,7 +76,7 @@ func TestDialFirst_AllFail(t *testing.T) {
 	})
 
 	candidates := buildCandidates(t, 3)
-	_, err := DialFirst(context.Background(), candidates)
+	_, _, err := DialFirst(context.Background(), candidates)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -114,12 +114,15 @@ func TestDialFirst_FirstFailsSecondSucceeds(t *testing.T) {
 		return stubConn(), nil
 	})
 
-	conn, err := DialFirst(context.Background(), candidates)
+	conn, winner, err := DialFirst(context.Background(), candidates)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if conn == nil {
 		t.Fatal("expected a non-nil connection")
+	}
+	if winner == nil {
+		t.Fatal("expected a non-nil winning candidate")
 	}
 }
 
@@ -151,7 +154,7 @@ func TestDialFirst_ParallelismCap(t *testing.T) {
 	})
 
 	candidates := buildCandidates(t, 10)
-	_, err := DialFirst(context.Background(), candidates)
+	_, _, err := DialFirst(context.Background(), candidates)
 	if err == nil {
 		t.Fatal("expected all-failed error")
 	}
@@ -188,7 +191,7 @@ func TestDialFirst_ContextCancellation(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_, _ = DialFirst(ctx, candidates)
+		_, _, _ = DialFirst(ctx, candidates)
 	}()
 
 	// Cancel context after a brief moment, then unblock any goroutines waiting
@@ -249,7 +252,7 @@ func TestDialFirst_DefaultDialFn_Smoke(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	_, err = DialFirst(ctx, candidates)
+	_, _, err = DialFirst(ctx, candidates)
 	if err == nil {
 		t.Fatal("expected error dialing unused port, got nil")
 	}

@@ -77,7 +77,12 @@ func Resolve(ctx context.Context, target string) ([]Candidate, map[Source]string
 	return all, sourceResults, nil
 }
 
-// resolveMDNS runs mDNS discovery and filters by hostname match.
+// normalizeHost strips a trailing dot and lowercases for comparison.
+func normalizeHost(h string) string {
+	return strings.ToLower(strings.TrimSuffix(h, "."))
+}
+
+// resolveMDNS runs mDNS discovery and filters by exact hostname match.
 func resolveMDNS(ctx context.Context, host string, defaultPort uint16) ([]Candidate, string) {
 	timeout := mdnsTimeout()
 	tctx, cancel := context.WithTimeout(ctx, timeout)
@@ -88,13 +93,12 @@ func resolveMDNS(ctx context.Context, host string, defaultPort uint16) ([]Candid
 		return nil, fmt.Sprintf("discovery error: %v", err)
 	}
 
-	// Normalise: strip trailing dot for comparison.
-	wantHost := strings.TrimSuffix(strings.ToLower(host), ".")
+	wantHost := normalizeHost(host)
 
 	var candidates []Candidate
 	for _, dev := range devices {
-		devHost := strings.TrimSuffix(strings.ToLower(dev.Hostname), ".")
-		if !strings.Contains(devHost, wantHost) {
+		devHost := normalizeHost(dev.Hostname)
+		if devHost != wantHost {
 			continue
 		}
 		if dev.IPAddress == "" {

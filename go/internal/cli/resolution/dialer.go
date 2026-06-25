@@ -97,20 +97,24 @@ func (e *AllFailedError) Error() string {
 // DialFirst races all candidates concurrently (capped at maxDialParallelism
 // in-flight at any moment). The first candidate that completes a successful
 // GetAgentVersion probe wins; all other in-flight connections are cancelled
-// and closed. Returns the first successful AgentConnection, or an
-// *AllFailedError if every candidate fails.
+// and closed. Returns the first successful AgentConnection and the winning
+// Candidate, or an *AllFailedError if every candidate fails.
 //
 // The dial function used is DefaultDialFn; tests may replace it before
 // calling DialFirst and restore it via t.Cleanup.
-func DialFirst(ctx context.Context, candidates []Candidate) (*grpcclient.AgentConnection, error) {
-	// nil-guard: fall back to the real implementation when no stub is set.
+func DialFirst(ctx context.Context, candidates []Candidate) (*grpcclient.AgentConnection, *Candidate, error) {
+	// nil-guard: fall back to the degraded test-only implementation when no
+	// stub is set. In production, root.go init() always sets DefaultDialFn =
+	// connectWithAutoTLS before any command runs.
 	fn := DefaultDialFn
 	if fn == nil {
+		// defaultDial is a degraded fallback for tests that do not set DefaultDialFn.
+		// In production, root.go init() always sets DefaultDialFn = connectWithAutoTLS.
 		fn = defaultDial
 	}
 
 	if len(candidates) == 0 {
-		return nil, &AllFailedError{}
+		return nil, nil, &AllFailedError{}
 	}
 
 	dialCtx, cancel := context.WithCancel(ctx)
@@ -147,15 +151,18 @@ func DialFirst(ctx context.Context, candidates []Candidate) (*grpcclient.AgentCo
 	}()
 
 	var (
-		errs     []CandidateError
-		received int
-		total    = len(candidates)
-		winner   *grpcclient.AgentConnection
+		errs          []CandidateError
+		received      int
+		total         = len(candidates)
+		winner        *grpcclient.AgentConnection
+		winnerCandidate *Candidate
 	)
 
 	for r := range results {
 		if r.err == nil && winner == nil {
 			winner = r.conn
+			c := r.candidate
+			winnerCandidate = &c
 			cancel() // cancel remaining dials
 		} else if r.conn != nil {
 			_ = r.conn.Close()
@@ -169,7 +176,7 @@ func DialFirst(ctx context.Context, candidates []Candidate) (*grpcclient.AgentCo
 	}
 
 	if winner != nil {
-		return winner, nil
+		return winner, winnerCandidate, nil
 	}
-	return nil, &AllFailedError{Errors: errs}
+	return nil, nil, &AllFailedError{Errors: errs}
 }
