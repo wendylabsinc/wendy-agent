@@ -644,7 +644,6 @@ func connectResolvedAgentWithProvisionedHint(ctx context.Context, hostname, addr
 		host = addr
 	}
 	if _, parseErr := netip.ParseAddr(host); parseErr != nil {
-		// addr contains a hostname — route through Resolve + DialFirst.
 		dial := func(spinCtx context.Context) (*grpcclient.AgentConnection, error) {
 			candidates, _, resolveErr := resolution.Resolve(spinCtx, addr)
 			if resolveErr != nil {
@@ -662,7 +661,6 @@ func connectResolvedAgentWithProvisionedHint(ctx context.Context, hostname, addr
 		}
 		return dial(ctx)
 	}
-	// Literal IP: use the existing auto-TLS path directly.
 	if isDefault && !jsonOutput && isInteractiveTerminal() {
 		return runAgentConnectionSpinner(ctx, defaultDeviceSearchLabel(hostname), func(spinCtx context.Context) (*grpcclient.AgentConnection, error) {
 			return connectAgentAtAddressWithProvisionedHint(spinCtx, addr, provisionedMTLS)
@@ -679,14 +677,17 @@ func updateDefaultEndpointCache(target string, conn *grpcclient.AgentConnection)
 	if err != nil {
 		return
 	}
-	host, _, _ := net.SplitHostPort(target)
+	host, portStr, _ := net.SplitHostPort(target)
 	if host == "" {
 		host = target
+	}
+	if portStr == "" {
+		portStr = strconv.Itoa(defaultAgentPort)
 	}
 	if !strings.EqualFold(cfg.DefaultDevice, host) && !strings.EqualFold(cfg.DefaultDevice, target) {
 		return // only cache when the target is the current default
 	}
-	cfg.DefaultDeviceEndpoint = conn.Host + ":" + strconv.Itoa(defaultAgentPort)
+	cfg.DefaultDeviceEndpoint = conn.Host + ":" + portStr
 	_ = config.Save(cfg)
 }
 
