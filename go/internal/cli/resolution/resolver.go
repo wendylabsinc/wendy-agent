@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 )
@@ -165,9 +166,40 @@ func resolveDNS(ctx context.Context, host string, port uint16) ([]Candidate, str
 }
 
 // resolveCache checks the CLI config for a cached endpoint matching the target host.
-func resolveCache(_ string, _ uint16) ([]Candidate, string) {
-	// DefaultDeviceEndpoint is not yet in Config; Task 3 adds it and completes this function.
-	return nil, "no cached endpoint"
+func resolveCache(targetHost string, port uint16) ([]Candidate, string) {
+	cfg, err := config.Load()
+	if err != nil {
+		return nil, "config error"
+	}
+	if cfg.DefaultDevice == "" || cfg.DefaultDeviceEndpoint == "" {
+		return nil, "none"
+	}
+	// Only use cache when this target matches the saved default device.
+	savedHost, _, _ := net.SplitHostPort(cfg.DefaultDevice)
+	if savedHost == "" {
+		savedHost = cfg.DefaultDevice
+	}
+	if !strings.EqualFold(strings.TrimSuffix(targetHost, "."), strings.TrimSuffix(savedHost, ".")) {
+		return nil, "none (different host)"
+	}
+	cachedHost, cachedPortStr, err := net.SplitHostPort(cfg.DefaultDeviceEndpoint)
+	if err != nil {
+		return nil, "none (malformed endpoint)"
+	}
+	ip, err := netip.ParseAddr(cachedHost)
+	if err != nil {
+		return nil, "none (unparseable IP in cache)"
+	}
+	cachedPort, err := strconv.ParseUint(cachedPortStr, 10, 16)
+	if err != nil {
+		return nil, "none (unparseable port in cache)"
+	}
+	c := Candidate{
+		IP:     ip,
+		Port:   uint16(cachedPort),
+		Source: SourceCache,
+	}
+	return []Candidate{c}, fmt.Sprintf("1 candidate (%s)", cfg.DefaultDeviceEndpoint)
 }
 
 // hostAndPort splits a target string into host and port. If no port is found,
