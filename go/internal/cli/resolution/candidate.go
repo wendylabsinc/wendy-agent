@@ -5,7 +5,6 @@ import (
 	"net/netip"
 )
 
-// Source identifies which resolution strategy produced a Candidate.
 type Source string
 
 const (
@@ -15,7 +14,6 @@ const (
 	SourceCache     Source = "cache"
 )
 
-// Candidate is a resolved address for a target device.
 type Candidate struct {
 	IP        netip.Addr // parsed IP address
 	Port      uint16     // plaintext port; dialer adds 1 for mTLS

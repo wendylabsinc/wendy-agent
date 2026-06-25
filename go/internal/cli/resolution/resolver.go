@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 )
@@ -45,7 +44,7 @@ func Resolve(ctx context.Context, target string) ([]Candidate, map[Source]string
 	var all []Candidate
 
 	// Strategy 2: mDNS — only for .local hostnames.
-	if strings.HasSuffix(host, ".local") || host == "local" {
+	if strings.HasSuffix(host, ".local") {
 		candidates, result := resolveMDNS(ctx, host, port)
 		sourceResults[SourceMDNS] = result
 		all = append(all, candidates...)
@@ -166,19 +165,8 @@ func resolveDNS(ctx context.Context, host string, port uint16) ([]Candidate, str
 }
 
 // resolveCache checks the CLI config for a cached endpoint matching the target host.
-func resolveCache(host string, _ uint16) ([]Candidate, string) {
-	cfg, err := config.Load()
-	if err != nil {
-		return nil, fmt.Sprintf("config error: %v", err)
-	}
-
-	cfgHost, _ := hostAndPort(cfg.DefaultDevice)
-	if cfgHost == "" || !strings.EqualFold(cfgHost, host) {
-		return nil, "no cached endpoint"
-	}
-
-	// DefaultDeviceEndpoint does not exist in Config; this strategy produces no
-	// candidates until the field is added.
+func resolveCache(_ string, _ uint16) ([]Candidate, string) {
+	// DefaultDeviceEndpoint is not yet in Config; Task 3 adds it and completes this function.
 	return nil, "no cached endpoint"
 }
 
