@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -128,6 +129,9 @@ func (s *foxgloveServer) handleConn(ctx context.Context, c *websocket.Conn) {
 	// subscriptionID -> cancel for its SubscribeRaw stream.
 	subs := map[uint32]context.CancelFunc{}
 	var subsMu sync.Mutex
+	// dropped counts MESSAGE_DATA frames shed across all of this connection's
+	// pump goroutines when the client can't drain the write queue fast enough.
+	var dropped atomic.Uint64
 
 	for {
 		typ, data, rerr := c.Read(connCtx)
@@ -155,7 +159,7 @@ func (s *foxgloveServer) handleConn(ctx context.Context, c *websocket.Conn) {
 				wg.Add(1)
 				go func(subID uint32, topic string, sctx context.Context) {
 					defer wg.Done()
-					s.pump(sctx, subID, topic, out)
+					s.pump(sctx, subID, topic, out, &dropped)
 				}(sub.ID, topic, streamCtx)
 			}
 		case "unsubscribe":
@@ -183,7 +187,9 @@ func (s *foxgloveServer) handleConn(ctx context.Context, c *websocket.Conn) {
 }
 
 // pump opens a SubscribeRaw stream and forwards each message as a binary frame.
-func (s *foxgloveServer) pump(ctx context.Context, subID uint32, topic string, out chan<- []byte) {
+// dropped accumulates frames shed when the shared write queue is full (slow
+// client); see the send below.
+func (s *foxgloveServer) pump(ctx context.Context, subID uint32, topic string, out chan<- []byte, dropped *atomic.Uint64) {
 	stream, err := s.src.SubscribeRaw(ctx, &agentpbv2.SubscribeRawROS2Request{DomainId: s.domainID, Topic: topic})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "subscribe %s: %v\n", topic, ros2RPCError(err))
@@ -206,6 +212,18 @@ func (s *foxgloveServer) pump(ctx context.Context, subID uint32, topic string, o
 		case <-ctx.Done():
 			return
 		case out <- frame:
+		default:
+			// Write queue is full: the Foxglove client can't drain frames as fast
+			// as the device produces them. Drop this frame rather than blocking —
+			// blocking would pin this goroutine and its frame in memory, let gRPC
+			// keep buffering upstream, and delay cancellation when the client goes
+			// away. Live telemetry favours the freshest sample over a growing
+			// backlog (Finding 6 — slow-client memory growth / DoS). Each frame is a
+			// self-contained CDR message, so dropping one only lowers the effective
+			// rate; it never corrupts the stream.
+			if n := dropped.Add(1); n == 1 || n%1000 == 0 {
+				fmt.Fprintf(os.Stderr, "foxglove: client too slow; dropped %d message(s) (most recent on %q)\n", n, topic)
+			}
 		}
 	}
 }

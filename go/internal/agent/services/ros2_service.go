@@ -38,6 +38,28 @@ const ros2BagChunkSize = 64 * 1024
 // lines remain warn-and-skip only.
 const ros2RawMaxUnparseableBeforeFail = 8
 
+// ros2MaxMsgDeps caps how many distinct message types GetMessageDefinition will
+// resolve for a single topic. Each dependency costs one `ros2 interface show`
+// subprocess, so an adversarially deep or wide type graph (from a compromised or
+// buggy device) could otherwise spawn unbounded execs and exhaust file
+// descriptors/goroutines. Real ROS 2 messages stay far below this — even large
+// composite types resolve to a few dozen dependencies (SOC2-A1, NIST-SI-10,
+// ISO27001-A.8).
+const ros2MaxMsgDeps = 256
+
+// ros2RawMaxLineBytes bounds the largest single line SubscribeRaw will buffer
+// from `ros2 topic echo --raw`, capping the worst-case heap allocation a
+// runaway/garbled device output can force per subscription. The ceiling is
+// derived, not arbitrary: the line is a Python bytes repr that expands each
+// binary byte to at most a 4-char "\xNN" escape, and gRPC's default 4 MiB
+// per-message receive limit on the CLI is the largest CDR payload that can be
+// delivered end-to-end — so 4 MiB × 4 = 16 MiB is the smallest bound that still
+// admits every message gRPC itself would accept. A larger buffer would just
+// stage payloads gRPC then rejects; a smaller one would drop legitimate large
+// messages (e.g. uncompressed camera frames) at the scanner. A line over this
+// limit surfaces loudly as codes.Internal below (SOC2-A1, NIST-SI-10).
+const ros2RawMaxLineBytes = 16 * 1024 * 1024
+
 // ROS2Service implements agentpbv2.ROS2ServiceServer by exec-ing `ros2`
 // commands inside the CLI sidecar managed by the ROS2Runtime (WDY-1332).
 type ROS2Service struct {
@@ -255,13 +277,32 @@ func (s *ROS2Service) GetMessageDefinition(ctx context.Context, req *agentpbv2.G
 
 	depBodies := map[string]string{}
 	var order []string
-	queue := ros2ComplexTypesIn(rootFields)
+	// enqueued bounds the walk: a type is recorded the first time it is seen and
+	// never enqueued (or shown) again, so the queue and the number of
+	// `ros2 interface show` execs are capped at ros2MaxMsgDeps. Deduping at
+	// enqueue time (rather than at dequeue) also means children of an
+	// already-seen type are never re-expanded.
+	enqueued := map[string]bool{}
+	var queue []string
+	enqueue := func(types []string) error {
+		for _, t := range types {
+			if enqueued[t] {
+				continue
+			}
+			if len(enqueued) >= ros2MaxMsgDeps {
+				return status.Errorf(codes.ResourceExhausted, "message type for topic %q exceeds the %d-dependency limit", req.GetTopic(), ros2MaxMsgDeps)
+			}
+			enqueued[t] = true
+			queue = append(queue, t)
+		}
+		return nil
+	}
+	if err := enqueue(ros2ComplexTypesIn(rootFields)); err != nil {
+		return nil, err
+	}
 	for len(queue) > 0 {
 		dep := queue[0]
 		queue = queue[1:]
-		if _, done := depBodies[dep]; done {
-			continue
-		}
 		show, derr := s.runIn(ctx, sc, "interface", "show", normalizeMsgType(dep))
 		if derr != nil {
 			return nil, derr
@@ -269,7 +310,9 @@ func (s *ROS2Service) GetMessageDefinition(ctx context.Context, req *agentpbv2.G
 		fields := ros2OwnFields(show)
 		depBodies[dep] = strings.Join(fields, "\n")
 		order = append(order, dep)
-		queue = append(queue, ros2ComplexTypesIn(fields)...)
+		if err := enqueue(ros2ComplexTypesIn(fields)); err != nil {
+			return nil, err
+		}
 	}
 
 	return &agentpbv2.GetROS2MessageDefinitionResponse{
@@ -634,7 +677,7 @@ func (s *ROS2Service) SubscribeRaw(req *agentpbv2.SubscribeRawROS2Request, strea
 	parsed := 0
 	unparseable := 0
 	scanner := bufio.NewScanner(pr)
-	scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
+	scanner.Buffer(make([]byte, 0, 64*1024), ros2RawMaxLineBytes)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" || line == "---" {
@@ -668,15 +711,26 @@ func (s *ROS2Service) SubscribeRaw(req *agentpbv2.SubscribeRawROS2Request, strea
 		parsed++
 	}
 	scanErr := scanner.Err()
+	if scanErr != nil {
+		// The scanner aborted early — e.g. a single line exceeded
+		// ros2RawMaxLineBytes. The producer may still be blocked mid-write into the
+		// pipe, so cancel and drain it before waiting on execDone, mirroring the
+		// in-loop early-exit paths; otherwise <-execDone could wedge forever.
+		cancel()
+		go func() { _, _ = io.Copy(io.Discard, pr) }()
+		pr.CloseWithError(context.Canceled)
+	}
 	execErr := <-execDone
 	if ctx.Err() != nil {
 		return nil // client cancelled; not an error
 	}
-	if execErr != nil {
-		return status.Errorf(codes.Internal, "ros2 topic echo --raw: %v", execErr)
-	}
+	// scanErr is checked before execErr: when we cancelled above, execErr is the
+	// resulting context.Canceled, which would otherwise mask the real cause.
 	if scanErr != nil {
 		return status.Errorf(codes.Internal, "reading ros2 topic echo --raw output: %v", scanErr)
+	}
+	if execErr != nil {
+		return status.Errorf(codes.Internal, "ros2 topic echo --raw: %v", execErr)
 	}
 	return nil
 }

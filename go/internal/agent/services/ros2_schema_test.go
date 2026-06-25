@@ -2,7 +2,9 @@ package services
 
 import (
 	"context"
+	"fmt"
 	"io"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -139,6 +141,83 @@ func TestGetMessageDefinition(t *testing.T) {
 	}
 	if !strings.HasPrefix(resp.GetSchema(), "std_msgs/Header header\nuint32 height") {
 		t.Fatalf("root body wrong:\n%s", resp.GetSchema())
+	}
+}
+
+// TestGetMessageDefinition_DependencyCap verifies the dependency walk is bounded:
+// a type graph that chains to a fresh distinct type forever must fail with
+// codes.ResourceExhausted instead of spawning unbounded `ros2 interface show`
+// execs (Finding 1 — DoS via deep/wide type graphs).
+func TestGetMessageDefinition_DependencyCap(t *testing.T) {
+	rt := &fakeROS2Runtime{
+		sidecar: ROS2Sidecar{Distro: "humble", DomainID: 0},
+		execFn: func(_ context.Context, opts ROS2ExecOptions, stdout, _ io.Writer) (int, error) {
+			args := strings.Join(opts.Args, " ")
+			switch {
+			case args == "topic list":
+				io.WriteString(stdout, "/deep\n")
+			case args == "topic type /deep":
+				io.WriteString(stdout, "pkg/msg/T0\n")
+			case strings.HasPrefix(args, "interface show pkg/msg/T"):
+				// Each type references exactly one fresh, never-before-seen type, so
+				// the graph is an infinite chain T0 -> T1 -> T2 -> ...
+				n, _ := strconv.Atoi(strings.TrimPrefix(args, "interface show pkg/msg/T"))
+				fmt.Fprintf(stdout, "pkg/T%d child\n", n+1)
+			default:
+				return 1, nil
+			}
+			return 0, nil
+		},
+	}
+	svc := newTestROS2Service(t, rt, t.TempDir())
+	_, err := svc.GetMessageDefinition(context.Background(), &agentpbv2.GetROS2MessageDefinitionRequest{Topic: "/deep"})
+	if err == nil {
+		t.Fatal("GetMessageDefinition: expected error on unbounded type graph, got nil")
+	}
+	if status.Code(err) != codes.ResourceExhausted {
+		t.Fatalf("status code = %v, want ResourceExhausted", status.Code(err))
+	}
+	// The walk must stop near the cap, not run away: count the interface-show execs.
+	shows := 0
+	for _, c := range rt.calls {
+		if len(c.Args) >= 2 && c.Args[0] == "interface" && c.Args[1] == "show" {
+			shows++
+		}
+	}
+	if shows > ros2MaxMsgDeps+1 {
+		t.Fatalf("interface show called %d times, want <= %d (cap not enforced)", shows, ros2MaxMsgDeps+1)
+	}
+}
+
+// TestSubscribeRaw_OversizedLineFails verifies a single line larger than
+// ros2RawMaxLineBytes is rejected loudly (codes.Internal) rather than forcing an
+// unbounded heap allocation, and that the handler does not wedge waiting on a
+// producer blocked mid-write (Finding 2 — large per-line allocation / DoS).
+func TestSubscribeRaw_OversizedLineFails(t *testing.T) {
+	rt := &fakeROS2Runtime{
+		sidecar: ROS2Sidecar{Distro: "humble", DomainID: 0},
+		execFn: func(_ context.Context, opts ROS2ExecOptions, stdout, _ io.Writer) (int, error) {
+			if strings.Join(opts.Args, " ") == "topic list" {
+				io.WriteString(stdout, "/chatter\n")
+				return 0, nil
+			}
+			// One line that exceeds the scanner ceiling, never terminated by a
+			// newline before the limit — bufio.Scanner reports ErrTooLong.
+			io.WriteString(stdout, "b'"+strings.Repeat("A", ros2RawMaxLineBytes+16)+"'\n")
+			return 0, nil
+		},
+	}
+	svc := newTestROS2Service(t, rt, t.TempDir())
+	col := &rawCollector{ctx: context.Background()}
+	err := svc.SubscribeRaw(&agentpbv2.SubscribeRawROS2Request{Topic: "/chatter"}, col)
+	if err == nil {
+		t.Fatal("SubscribeRaw: expected error on oversized line, got nil")
+	}
+	if status.Code(err) != codes.Internal {
+		t.Fatalf("status code = %v, want Internal", status.Code(err))
+	}
+	if len(col.msgs) != 0 {
+		t.Fatalf("got %d messages, want 0", len(col.msgs))
 	}
 }
 
