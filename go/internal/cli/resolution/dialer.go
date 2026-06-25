@@ -18,15 +18,16 @@ const maxDialParallelism = 5
 // connection. The address is in host:port form (the plaintext port).
 type DialFn func(ctx context.Context, plaintextAddr string) (*grpcclient.AgentConnection, error)
 
-// DefaultDialFn is the production dialer. It tries mTLS (port+1) first for
-// every certificate stored in the CLI config, then falls back to plaintext.
+// DefaultDialFn is the production dialer. Tests may replace it with a stub
+// before calling DialFirst and restore it via t.Cleanup. A nil value causes
+// DialFirst to fall back to defaultDial automatically.
 //
 // Design choice: the mTLS-probe logic is reproduced inline here using
 // grpcclient.ConnectWithTLS and grpcclient.Connect rather than importing
 // internal/cli/commands, which would create an import cycle (commands imports
 // resolution). The commands package sets this variable at startup for
-// production use; tests inject a stub directly into DialFirst.
-var DefaultDialFn DialFn = defaultDial
+// production use.
+var DefaultDialFn DialFn
 
 // defaultDial implements the auto-TLS probe: try each stored cert on port+1;
 // if all TLS attempts fail, fall back to plaintext on the given port.
@@ -99,12 +100,13 @@ func (e *AllFailedError) Error() string {
 // and closed. Returns the first successful AgentConnection, or an
 // *AllFailedError if every candidate fails.
 //
-// The fn parameter is the dial function to use; pass nil to use DefaultDialFn.
-// This parameter exists solely so tests can inject a stub without touching the
-// package-level variable.
-func DialFirst(ctx context.Context, candidates []Candidate, fn DialFn) (*grpcclient.AgentConnection, error) {
+// The dial function used is DefaultDialFn; tests may replace it before
+// calling DialFirst and restore it via t.Cleanup.
+func DialFirst(ctx context.Context, candidates []Candidate) (*grpcclient.AgentConnection, error) {
+	// nil-guard: fall back to the real implementation when no stub is set.
+	fn := DefaultDialFn
 	if fn == nil {
-		fn = DefaultDialFn
+		fn = defaultDial
 	}
 
 	if len(candidates) == 0 {
@@ -144,33 +146,30 @@ func DialFirst(ctx context.Context, candidates []Candidate, fn DialFn) (*grpccli
 		close(results)
 	}()
 
-	var errs []CandidateError
-	received := 0
-	total := len(candidates)
+	var (
+		errs     []CandidateError
+		received int
+		total    = len(candidates)
+		winner   *grpcclient.AgentConnection
+	)
 
 	for r := range results {
-		received++
-		if r.err != nil {
-			errs = append(errs, CandidateError{Candidate: r.candidate, Err: r.err})
+		if r.err == nil && winner == nil {
+			winner = r.conn
+			cancel() // cancel remaining dials
+		} else if r.conn != nil {
+			_ = r.conn.Close()
 		} else {
-			// First success: cancel all remaining dials.
-			cancel()
-			winner := r.conn
-
-			// Drain remaining results and close losing connections.
-			for received < total {
-				rem, ok := <-results
-				if !ok {
-					break
-				}
-				received++
-				if rem.conn != nil {
-					_ = rem.conn.Close()
-				}
-			}
-			return winner, nil
+			errs = append(errs, CandidateError{Candidate: r.candidate, Err: r.err})
+		}
+		received++
+		if received == total {
+			break
 		}
 	}
 
+	if winner != nil {
+		return winner, nil
+	}
 	return nil, &AllFailedError{Errors: errs}
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/netip"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -41,12 +42,24 @@ func goroutineLeakCheck(t *testing.T) func() {
 	before := runtime.NumGoroutine()
 	return func() {
 		// Allow goroutines a moment to exit after context cancellations.
+		// A tolerance of +2 is used because the Go runtime and test harness
+		// may spin up finalizer or timer goroutines that are unrelated to the
+		// code under test and are not reliably quiesced within the sleep window.
 		time.Sleep(50 * time.Millisecond)
 		after := runtime.NumGoroutine()
 		if after > before+2 {
 			t.Errorf("possible goroutine leak: goroutines before=%d after=%d", before, after)
 		}
 	}
+}
+
+// setDialFn replaces DefaultDialFn with fn for the duration of the test and
+// restores the previous value via t.Cleanup.
+func setDialFn(t *testing.T, fn DialFn) {
+	t.Helper()
+	prev := DefaultDialFn
+	DefaultDialFn = fn
+	t.Cleanup(func() { DefaultDialFn = prev })
 }
 
 // TestDialFirst_AllFail checks that *AllFailedError is returned when every
@@ -56,12 +69,12 @@ func TestDialFirst_AllFail(t *testing.T) {
 	defer checkLeaks()
 
 	errFail := errors.New("dial failed")
-	fn := func(ctx context.Context, addr string) (*grpcclient.AgentConnection, error) {
+	setDialFn(t, func(ctx context.Context, addr string) (*grpcclient.AgentConnection, error) {
 		return nil, errFail
-	}
+	})
 
 	candidates := buildCandidates(t, 3)
-	_, err := DialFirst(context.Background(), candidates, fn)
+	_, err := DialFirst(context.Background(), candidates)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -89,7 +102,7 @@ func TestDialFirst_FirstFailsSecondSucceeds(t *testing.T) {
 	candidates := buildCandidates(t, 2)
 	firstAddr := candidates[0].Addr()
 
-	fn := func(ctx context.Context, addr string) (*grpcclient.AgentConnection, error) {
+	setDialFn(t, func(ctx context.Context, addr string) (*grpcclient.AgentConnection, error) {
 		mu.Lock()
 		call++
 		mu.Unlock()
@@ -97,9 +110,9 @@ func TestDialFirst_FirstFailsSecondSucceeds(t *testing.T) {
 			return nil, errFail
 		}
 		return stubConn(), nil
-	}
+	})
 
-	conn, err := DialFirst(context.Background(), candidates, fn)
+	conn, err := DialFirst(context.Background(), candidates)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -109,7 +122,8 @@ func TestDialFirst_FirstFailsSecondSucceeds(t *testing.T) {
 }
 
 // TestDialFirst_ParallelismCap verifies that at most maxDialParallelism (5)
-// dials are in-flight at any moment, even with 10 candidates.
+// dials are in-flight at any moment, even with 10 candidates, and that the
+// peak concurrency actually reached the cap.
 func TestDialFirst_ParallelismCap(t *testing.T) {
 	checkLeaks := goroutineLeakCheck(t)
 	defer checkLeaks()
@@ -120,7 +134,7 @@ func TestDialFirst_ParallelismCap(t *testing.T) {
 	)
 
 	errFail := errors.New("dial failed")
-	fn := func(ctx context.Context, addr string) (*grpcclient.AgentConnection, error) {
+	setDialFn(t, func(ctx context.Context, addr string) (*grpcclient.AgentConnection, error) {
 		cur := inFlight.Add(1)
 		for {
 			p := peak.Load()
@@ -132,10 +146,10 @@ func TestDialFirst_ParallelismCap(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 		inFlight.Add(-1)
 		return nil, errFail
-	}
+	})
 
 	candidates := buildCandidates(t, 10)
-	_, err := DialFirst(context.Background(), candidates, fn)
+	_, err := DialFirst(context.Background(), candidates)
 	if err == nil {
 		t.Fatal("expected all-failed error")
 	}
@@ -144,8 +158,8 @@ func TestDialFirst_ParallelismCap(t *testing.T) {
 	if p > maxDialParallelism {
 		t.Errorf("parallelism cap exceeded: peak concurrent dials=%d, cap=%d", p, maxDialParallelism)
 	}
-	if p == 0 {
-		t.Error("no dials were attempted")
+	if p < maxDialParallelism {
+		t.Errorf("parallelism cap not reached: peak concurrent dials=%d, expected=%d", p, maxDialParallelism)
 	}
 	t.Logf("peak concurrent dials: %d (cap: %d)", p, maxDialParallelism)
 }
@@ -159,20 +173,20 @@ func TestDialFirst_ContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	unblock := make(chan struct{})
 
-	fn := func(ctx context.Context, addr string) (*grpcclient.AgentConnection, error) {
+	setDialFn(t, func(ctx context.Context, addr string) (*grpcclient.AgentConnection, error) {
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		case <-unblock:
 			return nil, errors.New("dial failed")
 		}
-	}
+	})
 
 	candidates := buildCandidates(t, 5)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_, _ = DialFirst(ctx, candidates, fn)
+		_, _ = DialFirst(ctx, candidates)
 	}()
 
 	// Cancel context after a brief moment, then unblock any goroutines waiting
@@ -202,20 +216,9 @@ func TestAllFailedError_ErrorString(t *testing.T) {
 		t.Error("AllFailedError.Error() returned empty string")
 	}
 	for _, ce := range e.Errors {
-		if addr := ce.Candidate.Addr(); !contains(msg, addr) {
+		if addr := ce.Candidate.Addr(); !strings.Contains(msg, addr) {
 			t.Errorf("error message missing candidate address %q: %s", addr, msg)
 		}
 	}
 	t.Log("AllFailedError:", msg)
-}
-
-func contains(s, sub string) bool {
-	return len(sub) > 0 && len(s) >= len(sub) && (s == sub || len(s) > 0 && func() bool {
-		for i := 0; i <= len(s)-len(sub); i++ {
-			if s[i:i+len(sub)] == sub {
-				return true
-			}
-		}
-		return false
-	}())
 }
