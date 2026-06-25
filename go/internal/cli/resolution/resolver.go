@@ -71,13 +71,7 @@ func Resolve(ctx context.Context, target string) ([]Candidate, map[Source]string
 	all = dedup(all)
 
 	if len(all) == 0 {
-		parts := make([]string, 0, 4)
-		for _, src := range []Source{SourceLiteralIP, SourceMDNS, SourceDNS, SourceCache} {
-			if r, ok := sourceResults[src]; ok {
-				parts = append(parts, fmt.Sprintf("%s: %s", src, r))
-			}
-		}
-		return nil, sourceResults, fmt.Errorf("could not resolve %q: %s", target, strings.Join(parts, "; "))
+		return nil, sourceResults, &ResolutionError{Target: target, SourceResults: sourceResults}
 	}
 
 	return all, sourceResults, nil
