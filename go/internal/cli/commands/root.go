@@ -196,6 +196,7 @@ func NewRootCmd() *cobra.Command {
 	deviceCmd.GroupID = "devices"
 	discoverCmd := newDiscoverCmd()
 	discoverCmd.GroupID = "devices"
+	resolveCmd := newResolveCmd()
 	osCmd := newOSCmd()
 	osCmd.GroupID = "devices"
 	// Misc Commands
@@ -256,6 +257,7 @@ func NewRootCmd() *cobra.Command {
 		cloudCmd,
 		deviceCmd,
 		discoverCmd,
+		resolveCmd,
 		osCmd,
 		cacheCmd,
 		infoCmd,
