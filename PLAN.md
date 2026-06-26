@@ -106,15 +106,19 @@ well as `WDY`, so Release issues can live in the same project.
 - Branch: `kb.rel-65-testflight`
 - Setup commit: `f4d8e1dcd958bd7c87c11b5993d35639cc44a215`
 - Draft PR: https://github.com/wendylabsinc/wendy-companion-ios/pull/1
-- Status: started. Branch is pushed and draft PR is open; continue signing and
-  TestFlight validation from the issue worktree.
-- Notes: the project references the Companion SDK as a local package at
-  `../companion-sdk`; the SDK is now cloned at
-  `/Volumes/Projects/WendyLabs/wendy-companion-ios/.worktrees/companion-sdk`,
-  and `xcodebuild -list -project "WendyOS Companion.xcodeproj"` succeeds.
-  Current Release signing settings include bundle ID `sh.wendy.Companion`,
-  development team `3YVC792H3S`, automatic signing, marketing version `1.0`,
-  and build number `1`.
+- Current HEAD: `1a59c20a132fa1779830edded92ddd020699b6dc` —
+  `build: use HTTPS for companion SDK package`
+- Status: started. Branch is pushed, draft PR is open, and PR body/handoff are
+  current. Continue signing and TestFlight validation from the issue worktree.
+- Notes: the app project is now `WendyCompanioniOS.xcodeproj` with scheme
+  `WendyCompanioniOS`. The Companion SDK resolves from GitHub over HTTPS rather
+  than a local sibling checkout. Current Release signing settings include bundle
+  ID `dev.wendy.WendyCompanioniOS`, development team `3YVC792H3S`, manual
+  signing, distribution identity `Apple Distribution`, provisioning profile
+  `WendyCompanioniOSAppStoreProfile`, marketing version `0000.00.00`, and build
+  number `00000000000000`. `xcodebuild -list` and a Debug iOS Simulator build
+  pass; Release archive is blocked locally because that provisioning profile is
+  not installed.
 - Resume:
 
   ```sh
@@ -211,8 +215,10 @@ Copy this block when this coordinator starts tracking an issue.
 
 ## Next recommended steps
 
-1. Continue **REL-65 — Release Wendy OS companion app to TestFlight (upload + certificates/secrets)**
-   signing/TestFlight validation from its worktree handoff and draft PR.
+1. For **REL-65 — Release Wendy OS companion app to TestFlight (upload + certificates/secrets)**,
+   install/confirm provisioning profile `WendyCompanioniOSAppStoreProfile` for
+   team `3YVC792H3S` and verify the App Store Connect bundle ID
+   `dev.wendy.WendyCompanioniOS` before re-running the Release archive.
 2. Start **REL-66 — Check out skip.dev for Wendy Companion App** when the
    TestFlight release path no longer needs active coordination.
 3. Commit and push coordinator plan updates after meaningful planning changes.
