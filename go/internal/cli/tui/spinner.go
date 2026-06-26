@@ -24,6 +24,7 @@ type SpinnerUpdateMsg struct {
 type SpinnerModel struct {
 	spinner  spinner.Model
 	title    string
+	hints    hintRotator
 	done     bool
 	err      error
 	result   interface{}
@@ -37,12 +38,13 @@ func NewSpinner(title string) SpinnerModel {
 	return SpinnerModel{
 		spinner: s,
 		title:   title,
+		hints:   newHintRotator(),
 	}
 }
 
 // Init implements tea.Model.
 func (m SpinnerModel) Init() tea.Cmd {
-	return m.spinner.Tick
+	return tea.Batch(m.spinner.Tick, m.hints.tick())
 }
 
 // Update implements tea.Model.
@@ -65,6 +67,10 @@ func (m SpinnerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.title = msg.Label
 		return m, nil
 
+	case hintTickMsg:
+		m.hints.next()
+		return m, m.hints.tick()
+
 	case spinner.TickMsg:
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
@@ -85,7 +91,11 @@ func (m SpinnerModel) View() string {
 		}
 		return ""
 	}
-	return fmt.Sprintf("%s %s\n", m.spinner.View(), m.title)
+	out := fmt.Sprintf("%s %s\n", m.spinner.View(), m.title)
+	if hint := m.hints.view(); hint != "" {
+		out += hint + "\n"
+	}
+	return out
 }
 
 func (m SpinnerModel) Result() (interface{}, error) {

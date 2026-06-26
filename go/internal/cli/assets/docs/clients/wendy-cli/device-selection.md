@@ -28,9 +28,11 @@ wendy device info --json
 wendy run
 ```
 
-If the default device cannot be reached from an interactive terminal, the CLI
-shows the picker so you can select another device. In non-interactive shells,
-the command fails instead of opening a picker.
+Use [`wendy device get-default`](./commands/device/get-default.md) to check
+the current default. If the default device cannot be reached from an
+interactive terminal, the CLI shows the picker so you can select another
+device. In non-interactive shells, the command fails with a clear message
+that the default is set but unreachable instead of opening a picker.
 
 > **TODO (test)**: If the target device is outdated, and `--json` is not specified, a warning will be printed to indicate an update is available.
 
@@ -55,7 +57,8 @@ blank and suggests `wendy auth login`.
 
 In scripts, CI, SSH sessions without a TTY, or any other non-interactive
 context, no picker is shown. Pass `--device`, or configure a default with
-`wendy device set-default`, before running commands that need a target.
+`wendy device set-default` (confirm it with `wendy device get-default`),
+before running commands that need a target.
 
 > **TODO (test)**: If the target device is outdated, and `--json` is not specified, a warning will be printed to indicate an update is available.
 > If the terminal is interactive, a prompt will be made to update the device right now.

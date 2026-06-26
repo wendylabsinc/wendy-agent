@@ -193,7 +193,7 @@ func newInitCmd() *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&opts.appID, "app-id", "", "Application ID to write into wendy.json")
-	cmd.Flags().StringVar(&opts.target, "target", "", "Target platform: wendyos or wendy-lite")
+	cmd.Flags().StringVar(&opts.target, "target", "", "Target platform: wendyos (writes \"linux\" to wendy.json) or wendy-lite")
 	cmd.Flags().StringVar(&opts.language, "language", "", "Project language: python, swift, rust, node, or cpp")
 	cmd.Flags().StringVar(&opts.template, "template", "", "Project template (e.g. simple-api, fullstack)")
 	cmd.Flags().StringVar(&opts.branch, "branch", "", fmt.Sprintf("Branch of the templates repo to use (default: %s)", templateRepoBranch))
@@ -662,7 +662,7 @@ func runTemplateFlow(cwd, destDir, appID, tmpl, target string, meta *repoMeta, o
 	}
 
 	cliSuccess("\nScaffolded %s project from template %q", language, tmpl)
-	cliLogln("  Directory: %s/", destDir)
+	cliLogln("  Directory: %s", tui.Path(destDir+"/"))
 	for _, v := range manifest.Variables {
 		if val, ok := vals[v.Name]; ok {
 			cliLogln("  %s: %v", v.Name, val)
@@ -681,7 +681,7 @@ func finishTemplateInit(cwd, destDir, appID string) error {
 	cliSuccess("\nYour project is ready!")
 	cliLogln("Next steps:")
 	for _, step := range templateNextSteps(cwd, destDir, appID) {
-		cliLogln("  %s", step)
+		cliLogln("  %s", tui.Command(step))
 	}
 	if filepath.Clean(destDir) != filepath.Clean(cwd) {
 		cliLogln("Note: run the cd command in your shell; a CLI process cannot change its parent shell directory.")
@@ -1311,7 +1311,7 @@ func installWendySkills(autoInstall bool) error {
 
 func runAIAssistantChoice(choice, appID, target, language string, entitlements []appconfig.Entitlement, installClaudeSkills bool, interactive bool) error {
 	if choice == assistantSkip {
-		cliSuccess("\nYour project is ready! Run `wendy run` to build and deploy.")
+		cliSuccess("\nYour project is ready! Run %s to build and deploy.", tui.Command("wendy run"))
 		return nil
 	}
 

@@ -283,7 +283,7 @@ func (c *Client) indexLayerBlob(ctx context.Context, diffID string) error {
 	}
 	defer ra.Close()
 
-	refs, err := chunk.Chunk(io.NewSectionReader(ra, 0, ra.Size()))
+	refs, err := chunk.ChunkReaderAt(ra, ra.Size())
 	if err != nil {
 		return err
 	}

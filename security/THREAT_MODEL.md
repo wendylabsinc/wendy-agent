@@ -222,7 +222,7 @@ Severity scale: **CRITICAL > HIGH > MEDIUM > LOW > INFO**
 - **Severity:** MEDIUM
 - **Component:** BLE L2CAP stack
 - **Description:** Before provisioning, BLE commands may be accepted without mTLS. Post-provisioning, the L2CAP channel is mTLS-protected, but if the channel is not bound to a unique session nonce, replayed mTLS records from a passive BLE sniffer could replay commands.
-- **Existing mitigations:** Post-provisioning mTLS provides authentication and encryption.
+- **Existing mitigations:** Post-provisioning mTLS provides authentication and encryption. Server certificate verification with org ID matching prevents MITM attacks from devices in other organizations. SPKI pinning (trust-on-first-use) provides additional protection: the first BLE connection pins the device's certificate fingerprint, and subsequent connections verify the fingerprint matches.
 - **Recommended controls:**
   - Verify that TLS session resumption is disabled on BLE channels (disable session tickets / stateless resumption).
   - Confirm pre-provisioning BLE behaviour: document and restrict which commands are available before mTLS is established.

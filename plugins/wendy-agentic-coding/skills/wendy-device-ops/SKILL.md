@@ -21,6 +21,7 @@ Use explicit hostnames when possible:
 
 ```bash
 wendy device set-default <hostname>
+wendy device get-default
 wendy device unset-default
 ```
 

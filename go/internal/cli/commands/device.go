@@ -62,6 +62,7 @@ func newDeviceCmd() *cobra.Command {
 		newDeviceInfoCmd(),
 		newDeprecatedDeviceVersionCmd(),
 		newDeviceSetDefaultCmd(),
+		newDeviceGetDefaultCmd(),
 		newDeviceUnsetDefaultCmd(),
 		newDeviceSetupCmd(),
 		newDeviceEnrollCmd(),
@@ -129,7 +130,7 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 			var hasGPU bool
 
 			if target.Bluetooth != nil && target.Bluetooth.IsWendyAgent() {
-				cliLogln("Connecting to %s via Bluetooth...", target.Bluetooth.DisplayName)
+				cliLogln("Connecting to %s via Bluetooth...", tui.Device(target.Bluetooth.DisplayName))
 				bleClient, bleErr := connectBLEAgent(target.Bluetooth)
 				if bleErr != nil {
 					return bleErr
@@ -229,48 +230,56 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 				return nil
 			}
 
-			fmt.Printf("Agent Version: %s\n", agentVersion)
-			fmt.Printf("OS: %s %s\n", osName, osVersion)
-			fmt.Printf("Architecture: %s\n", cpuArch)
+			fmt.Printf("%s %s\n", tui.Dim("Agent Version:"), tui.Value(agentVersion))
+			fmt.Printf("%s %s\n", tui.Dim("OS:"), tui.Value(osName+" "+osVersion))
+			fmt.Printf("%s %s\n", tui.Dim("Architecture:"), tui.Value(cpuArch))
 			if deviceType != "" {
-				fmt.Printf("Device Type: %s\n", deviceType)
+				fmt.Printf("%s %s\n", tui.Dim("Device Type:"), tui.Value(deviceType))
 			}
 			if storageMedium != "" {
-				fmt.Printf("Storage: %s\n", storageMedium)
+				fmt.Printf("%s %s\n", tui.Dim("Storage:"), tui.Value(storageMedium))
 			}
 			if len(partitions) > 0 {
 				fmt.Print(formatPartitionTable(partitions))
 			} else if diskUsedBytes != nil && diskTotalBytes != nil {
-				fmt.Printf("Disk Usage: %s\n", formatDiskUsage(*diskUsedBytes, *diskTotalBytes))
+				fmt.Printf("%s %s\n", tui.Dim("Disk Usage:"), tui.Value(formatDiskUsage(*diskUsedBytes, *diskTotalBytes)))
 			}
 			if hasGPU {
 				vendor := gpuVendor
 				if vendor == "" {
 					vendor = "unknown"
 				}
-				fmt.Printf("GPU: %s\n", vendor)
+				fmt.Printf("%s %s\n", tui.Dim("GPU:"), tui.Value(vendor))
 				if jetpackVersion != "" {
-					fmt.Printf("JetPack: %s\n", jetpackVersion)
+					fmt.Printf("%s %s\n", tui.Dim("JetPack:"), tui.Value(jetpackVersion))
 				}
 				if cudaVersion != "" {
-					fmt.Printf("CUDA: %s\n", cudaVersion)
+					fmt.Printf("%s %s\n", tui.Dim("CUDA:"), tui.Value(cudaVersion))
 				}
 				if gpuArch != "" {
-					fmt.Printf("GPU Arch: %s\n", gpuArch)
+					fmt.Printf("%s %s\n", tui.Dim("GPU Arch:"), tui.Value(gpuArch))
 				}
 			}
-			fmt.Printf("CLI Version: %s\n", version.Version)
+			fmt.Printf("%s %s\n", tui.Dim("CLI Version:"), tui.Value(version.Version))
 
-			warn := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("214"))
 			if cmp := version.CompareVersions(version.Version, agentVersion); cmp > 0 && agentVersion != "dev" {
-				fmt.Println(warn.Render("\nAgent is behind the CLI — run 'wendy device update' to update."))
+				fmt.Println()
+				fmt.Println(tui.WarningMessage("Agent is behind the CLI — run 'wendy device update' to update."))
 			} else if cmp < 0 {
-				fmt.Println(warn.Render("\nCLI is behind the agent — consider updating the CLI."))
+				fmt.Println()
+				fmt.Println(tui.WarningMessage("CLI is behind the agent — consider updating the CLI."))
 			}
 
 			if checkUpdates {
 				if version.CompareVersions(latestVersion, agentVersion) > 0 {
-					fmt.Printf(warn.Render("\nUpdate available: %s (you have %s)")+"\nUpdate with: wendy device update\n", latestVersion, agentVersion)
+					fmt.Println()
+					fmt.Printf("%s %s %s %s\n",
+						tui.WarningMessage("Update available:"),
+						tui.Value(latestVersion),
+						tui.Dim("(you have"),
+						tui.Value(agentVersion)+tui.Dim(")"),
+					)
+					fmt.Printf("%s %s\n", tui.Dim("Update with:"), tui.Command("wendy device update"))
 				} else {
 					fmt.Println("\nAgent is up to date.")
 				}
@@ -332,7 +341,37 @@ func newDeviceSetDefaultCmd() *cobra.Command {
 				updateDefaultEndpointCache(winner, conn)
 			}()
 
-			fmt.Printf("Default device set to: %s\n", device)
+			fmt.Printf("Default device set to: %s\n", tui.Device(device))
+			return nil
+		},
+	}
+}
+
+func newDeviceGetDefaultCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "get-default",
+		Short: "Show the current default device",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := config.Load()
+			if err != nil {
+				return fmt.Errorf("loading config: %w", err)
+			}
+
+			if jsonOutput {
+				data, err := json.MarshalIndent(map[string]string{"defaultDevice": cfg.DefaultDevice}, "", "  ")
+				if err != nil {
+					return err
+				}
+				fmt.Fprintln(cmd.OutOrStdout(), string(data))
+				return nil
+			}
+
+			if cfg.DefaultDevice == "" {
+				fmt.Fprintln(cmd.OutOrStdout(), "No default device set. Set one with 'wendy device set-default'.")
+				return nil
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "Default device: %s\n", cfg.DefaultDevice)
 			return nil
 		},
 	}

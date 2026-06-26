@@ -281,13 +281,14 @@ func validateBuildArgPair(key, value string) error {
 
 // applyDeviceBuildArgHints injects the optional device/GPU build-arg hints the
 // agent reports (WENDY_DEVICE_TYPE, WENDY_HAS_GPU, WENDY_GPU_VENDOR,
-// WENDY_JETPACK_VERSION, WENDY_CUDA_VERSION) into buildArgs. Each hint is only
-// set when the agent reports it, so Dockerfiles keep their own ARG defaults on
-// older agents. These values are device-reported and feed straight into a
-// builder CLI, so any hint that fails build-arg validation is skipped with a
-// warning rather than failing the whole deploy — e.g. a Jetson running an L4T
-// release the agent's JetPack table doesn't map reports a fallback like
-// "L4T 38.2.0", whose space is rejected by validBuildArgValueRe.
+// WENDY_JETPACK_VERSION, WENDY_JETPACK_MAJOR, WENDY_CUDA_VERSION) into
+// buildArgs. Each hint is only set when the agent reports it, so Dockerfiles
+// keep their own ARG defaults on older agents. These values are device-reported
+// and feed straight into a builder CLI, so any hint that fails build-arg
+// validation is skipped with a warning rather than failing the whole deploy —
+// e.g. a Jetson running an L4T release the agent's JetPack table doesn't map
+// reports a fallback like "L4T 38.2.0", whose space is rejected by
+// validBuildArgValueRe.
 func applyDeviceBuildArgHints(buildArgs map[string]string, versionResp *agentpb.GetAgentVersionResponse) {
 	setHint := func(key, value string) {
 		if value == "" {
@@ -307,7 +308,17 @@ func applyDeviceBuildArgHints(buildArgs map[string]string, versionResp *agentpb.
 	}
 	setHint("WENDY_GPU_VENDOR", versionResp.GetGpuVendor())
 	setHint("WENDY_JETPACK_VERSION", versionResp.GetJetpackVersion())
+	// Coarse major ("7" from "7.2") to aid in per-generation image selection
+	setHint("WENDY_JETPACK_MAJOR", jetpackMajor(versionResp.GetJetpackVersion()))
 	setHint("WENDY_CUDA_VERSION", versionResp.GetCudaVersion())
+}
+
+func jetpackMajor(version string) string {
+	major, _, _ := strings.Cut(version, ".")
+	if _, err := strconv.Atoi(major); err != nil {
+		return "" // empty, or an unmapped "L4T 39.2.0" fallback — not a clean major
+	}
+	return major
 }
 
 func sortedValidatedBuildArgKeys(buildArgs map[string]string) ([]string, error) {

@@ -52,6 +52,7 @@ All environment variables are read at startup. Restart the agent after changing 
 | `WENDY_DEBUG` | _(unset)_ | Set to any value to enable development-mode logging (verbose, human-readable) |
 | `WENDY_TLS_DEBUG` | _(unset)_ | Set to any value to log TLS handshake details for debugging mTLS connection issues |
 | `WENDY_CONFIG_PATH` | `/etc/wendy-agent` | Directory for provisioning certificates and config |
+| `WENDY_AGENT_HOST` | `::` | Host address for the plaintext gRPC server (Swift agent only; accepted values: `127.0.0.1`, `::1`, `localhost`) |
 | `WENDY_AGENT_PORT` | `50051` | Port for the plaintext gRPC server (pre-provisioning only) |
 | `WENDY_CONTAINERD_ADDR` | _(containerd default)_ | Unix socket path for the containerd client |
 | `WENDY_REGISTRY_ADDR` | _(internal default)_ | Address for the embedded OCI registry |
@@ -207,12 +208,18 @@ Check the device clock:
 ssh wendy@<device-ip> 'timedatectl status'
 ```
 
-If NTP is not synchronized, wait for NTP sync or force it:
+If NTP is not synchronized, you can:
 
-```sh
-# Force NTP sync (if using systemd-timesyncd)
-sudo systemctl restart systemd-timesyncd
-```
+1. **Wait for NTP sync** or force it:
+   ```sh
+   sudo systemctl restart systemd-timesyncd
+   ```
+
+2. **Use Roughtime** — The CLI can broadcast cryptographically-signed time to nearby WendyOS devices:
+   ```sh
+   wendy device sync-time
+   ```
+   This queries public Roughtime servers and multicasts the verified timestamp. Devices on the same network receive it and advance their clocks.
 
 The agent logs a warning at startup if it detects clock skew. For TLS handshake details, run the CLI with:
 

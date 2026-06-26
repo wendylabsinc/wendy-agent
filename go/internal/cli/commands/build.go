@@ -157,7 +157,7 @@ func newBuildCmd() *cobra.Command {
 				if buildErr != nil {
 					return fmt.Errorf("provider build: %w", buildErr)
 				}
-				cliSuccess("Build completed successfully (%s).", app.ProviderKey)
+				cliSuccess("Build completed successfully (%s).", tui.Value(app.ProviderKey))
 				return nil
 			}
 
@@ -513,7 +513,7 @@ func buildComposeProject(dir string) error {
 }
 
 func buildDockerProject(dir, imageName, platform, dockerfile string) error {
-	cliLogln("Building Docker image %s for %s...", imageName, platform)
+	cliLogln("Building Docker image %s for %s...", tui.Value(imageName), tui.Value(platform))
 
 	cmd := exec.Command("docker", "buildx", "build",
 		"--platform", platform,
@@ -564,7 +564,7 @@ func buildDockerProjectWithBuilder(ctx context.Context, builder, dir, imageName,
 		return err
 	}
 	if !imageBuilderWasExplicit(builder) && shouldAutoAttemptAppleContainerBuilder() {
-		cliLogln("Building Apple Container image %s for %s...", imageName, platform)
+		cliLogln("Building Apple Container image %s for %s...", tui.Value(imageName), tui.Value(platform))
 		if err := checkAppleContainerBuilder(ctx); err == nil {
 			if err := buildImageWithAppleContainer(ctx, dir, imageName, platform, dockerfile, nil, os.Stdout, os.Stderr); err == nil {
 				cliSuccess("Build completed successfully.")
@@ -626,7 +626,7 @@ func buildXcodeProject(ctx context.Context, dir, xcodeproj string) error {
 		}
 	}
 
-	cliLogln("Building Xcode project %s (scheme: %s)...", xcodeproj, scheme)
+	cliLogln("Building Xcode project %s (scheme: %s)...", tui.Value(xcodeproj), tui.Value(scheme))
 	if err := runXcodebuild(ctx, dir,
 		"-project", xcodeproj,
 		"-scheme", scheme,

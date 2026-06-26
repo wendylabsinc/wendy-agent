@@ -1,6 +1,6 @@
 ---
 name: wendy-app-lifecycle
-description: Use when a developer wants to build, deploy, run, detach, stream logs, start, stop, list, remove, or clean up Wendy apps with `wendy build`, `wendy run`, `wendy device apps`, `wendy device logs`, telemetry streams, or volumes.
+description: Use when a developer wants to build, deploy, run, detach, stream logs, start, stop, list, remove, or clean up Wendy apps with `wendy build`, `wendy run`, `wendy device apps list`, `wendy device logs`, telemetry streams, or volumes.
 ---
 
 # Wendy App Lifecycle Workflow
@@ -85,6 +85,8 @@ wendy run --yes --debug --device <hostname>
 wendy run --yes --restart-unless-stopped --detach --device <hostname>
 wendy run --yes --restart-on-failure --detach --device <hostname>
 wendy run --yes --no-restart --device <hostname>
+wendy run --yes --chunking off --device <hostname>     # registry push only, skip chunk-diff
+wendy run --yes --chunking force --device <hostname>   # chunk-diff only, no fallback
 ```
 
 Attached `wendy run` starts the container and streams output. Ctrl+C stops the container. Detached `wendy run --detach` starts the container, waits for readiness when configured, fires post-start hooks, and exits.

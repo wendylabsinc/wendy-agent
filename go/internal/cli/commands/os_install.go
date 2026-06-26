@@ -204,7 +204,6 @@ type pickerDevice struct {
 	Name       string
 	Version    string // display version (e.g. "0.10.5 (nightly)")
 	RawVersion string // exact version key for manifest lookup
-	Category   string // e.g. "Linux" or "Wendy Lite"
 	IsESP32    bool
 	ESP32Chip  string          // e.g. "esp32c6", "esp32c5"
 	Manifest   *deviceManifest // cached manifest for Linux devices
@@ -278,14 +277,15 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 			Name:       dev.Name,
 			Version:    displayVersion,
 			RawVersion: rawVersion,
-			Category:   "Linux",
 			Manifest:   dev.Manifest,
 		}
 		deviceMap[dev.Key] = pd
 
 		items = append(items, tui.PickerItem{
 			Name:        dev.Name,
-			Description: fmt.Sprintf("%s    %s", displayVersion, pd.Category),
+			Description: displayVersion,
+			Section:     "WendyOS",
+			SortKey:     "0_wendyos_" + strings.ToLower(dev.Name),
 			Value:       dev.Key,
 		})
 	}
@@ -302,13 +302,14 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 			deviceMap[esp.key] = pickerDevice{
 				Name:      esp.name,
 				Version:   espVersion,
-				Category:  "Wendy Lite",
 				IsESP32:   true,
 				ESP32Chip: esp.chip,
 			}
 			items = append(items, tui.PickerItem{
 				Name:        esp.name,
-				Description: fmt.Sprintf("%s    %s", espVersion, "Wendy Lite"),
+				Description: espVersion,
+				Section:     "Wendy Lite",
+				SortKey:     "1_lite_" + strings.ToLower(esp.name),
 				Value:       esp.key,
 			})
 		}

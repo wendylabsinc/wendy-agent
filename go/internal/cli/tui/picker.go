@@ -25,6 +25,13 @@ type PickerItem struct {
 	Provisioned  string // "Provisioned" or "Unprovisioned" when known, empty otherwise
 	Hint         string // optional footer text shown when this item is highlighted
 
+	// Section, when non-empty, groups this item under a non-selectable header
+	// row bearing the section name. Sections are rendered in the order they
+	// first appear after sorting, so callers control grouping order via SortKey.
+	// When no visible item sets Section, the picker renders and navigates
+	// exactly as it does without sections.
+	Section string
+
 	// DedupKey is used for deduplication. If empty, Name is used.
 	// Items with the same DedupKey (case-insensitive) are merged via MergeItem.
 	DedupKey string
@@ -94,9 +101,14 @@ type PickerModel struct {
 	// whose items are free-form text (e.g. WiFi SSIDs).
 	Filterable bool
 
-	filter       string
-	items        []PickerItem
-	seenIdx      map[string]int // dedup key -> index in items
+	filter  string
+	items   []PickerItem
+	seenIdx map[string]int // dedup key -> index in items
+	// rowItem maps each table row to its index in the visible-items slice, or
+	// -1 when the row is a non-selectable section header. When no item sets a
+	// Section this is the identity mapping, so behavior matches the headerless
+	// picker exactly.
+	rowItem      []int
 	table        BubbleTable
 	columns      []pickerColumnDef
 	fixedColumns bool
@@ -170,17 +182,16 @@ func (m PickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch {
 		case key == "enter":
 			visible := m.visibleItems()
-			cursor := m.table.Cursor()
-			if len(visible) > 0 && cursor >= 0 && cursor < len(visible) {
-				item := visible[cursor]
+			if idx := m.itemIndexForRow(m.table.Cursor()); idx >= 0 && idx < len(visible) {
+				item := visible[idx]
 				m.selected = &item
 				return m, tea.Quit
 			}
 		case key == "d" && !m.Filterable:
 			if m.OnSetDefault != nil {
-				cursor := m.table.Cursor()
-				if len(m.items) > 0 && cursor >= 0 && cursor < len(m.items) {
-					item := m.items[cursor]
+				visible := m.visibleItems()
+				if idx := m.itemIndexForRow(m.table.Cursor()); idx >= 0 && idx < len(visible) {
+					item := visible[idx]
 					key := strings.ToLower(item.DedupKey)
 					if key == "" {
 						key = strings.ToLower(item.Name)
@@ -232,8 +243,16 @@ func (m PickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		default:
+			prev := m.table.Cursor()
 			var cmd tea.Cmd
 			m.table, cmd = m.table.Update(msg)
+			// Skip over non-selectable section headers in the direction of
+			// travel so the cursor never rests on one.
+			dir := 1
+			if m.table.Cursor() < prev {
+				dir = -1
+			}
+			m.snapCursorToSelectable(dir)
 			return m, cmd
 		}
 
@@ -341,8 +360,7 @@ func (m PickerModel) View() string {
 		sb.WriteString(m.viewLine(pickerHint.Render("  "+m.legend)) + "\n")
 	}
 
-	cursor := m.table.Cursor()
-	if cursor >= 0 && cursor < len(visible) && visible[cursor].Insecure {
+	if idx := m.itemIndexForRow(m.table.Cursor()); idx >= 0 && idx < len(visible) && visible[idx].Insecure {
 		sb.WriteString(m.viewLine(pickerInsecure.Render("  ⚠  Connection is not secured with mTLS. PKI support is coming soon.")) + "\n")
 	}
 
@@ -362,11 +380,11 @@ func (m PickerModel) View() string {
 
 func (m PickerModel) selectedHint() string {
 	visible := m.visibleItems()
-	cursor := m.table.Cursor()
-	if cursor < 0 || cursor >= len(visible) {
+	idx := m.itemIndexForRow(m.table.Cursor())
+	if idx < 0 || idx >= len(visible) {
 		return ""
 	}
-	return strings.TrimSpace(visible[cursor].Hint)
+	return strings.TrimSpace(visible[idx].Hint)
 }
 
 func (m PickerModel) viewLine(line string) string {
@@ -538,10 +556,57 @@ func (m PickerModel) visibleItems() []PickerItem {
 
 func (m *PickerModel) currentCursorKey() string {
 	visible := m.visibleItems()
-	if cursor := m.table.Cursor(); cursor >= 0 && cursor < len(visible) {
-		return strings.ToLower(pickerItemKey(visible[cursor]))
+	if idx := m.itemIndexForRow(m.table.Cursor()); idx >= 0 && idx < len(visible) {
+		return strings.ToLower(pickerItemKey(visible[idx]))
 	}
 	return ""
+}
+
+// itemIndexForRow maps a table row index to its index in the visible-items
+// slice, or returns -1 when the row is a section header or out of range.
+func (m PickerModel) itemIndexForRow(row int) int {
+	if row < 0 || row >= len(m.rowItem) {
+		return -1
+	}
+	return m.rowItem[row]
+}
+
+// rowForItemIndex maps a visible-items index back to its table row, or -1 if
+// the item has no row (should not happen for in-range indices).
+func (m PickerModel) rowForItemIndex(itemIdx int) int {
+	for row, idx := range m.rowItem {
+		if idx == itemIdx {
+			return row
+		}
+	}
+	return -1
+}
+
+// snapCursorToSelectable nudges the cursor off a section-header row onto the
+// nearest selectable row, searching first in dir (+1 down, -1 up) and then the
+// other way when the list edge is reached. It is a no-op when the cursor is
+// already on a selectable row, which is always the case for headerless pickers.
+func (m *PickerModel) snapCursorToSelectable(dir int) {
+	n := len(m.rowItem)
+	if n == 0 {
+		return
+	}
+	cursor := m.table.Cursor()
+	if cursor >= 0 && cursor < n && m.rowItem[cursor] >= 0 {
+		return
+	}
+	for i := cursor; i >= 0 && i < n; i += dir {
+		if m.rowItem[i] >= 0 {
+			m.table.SetCursor(i)
+			return
+		}
+	}
+	for i := cursor; i >= 0 && i < n; i -= dir {
+		if m.rowItem[i] >= 0 {
+			m.table.SetCursor(i)
+			return
+		}
+	}
 }
 
 func (m *PickerModel) refreshTable() {
@@ -574,7 +639,9 @@ func (m *PickerModel) refreshTableWithCursorKey(cursorKey string) {
 
 	visible := m.visibleItems()
 	hasDefaultCol := m.OnSetDefault != nil
-	cols, rows := pickerTableDataForColumns(visible, m.DefaultKey, hasDefaultCol, m.columns, m.fixedColumns)
+	cols, itemRows := pickerTableDataForColumns(visible, m.DefaultKey, hasDefaultCol, m.columns, m.fixedColumns)
+	rows, rowItem := withSectionHeaders(visible, itemRows, len(cols))
+	m.rowItem = rowItem
 	m.table.SetRows(nil)
 	m.table.SetColumns(cols)
 	m.table.SetRows(rows)
@@ -592,12 +659,14 @@ func (m *PickerModel) refreshTableWithCursorKey(cursorKey string) {
 			}
 		}
 		if visIdx >= 0 {
-			m.table.SetCursor(visIdx)
+			m.table.SetCursor(m.rowForItemIndex(visIdx))
 		} else if m.table.Cursor() < 0 {
 			m.table.SetCursor(0)
 		} else if m.table.Cursor() >= len(rows) {
 			m.table.SetCursor(len(rows) - 1)
 		}
+		// Keep the cursor off a leading/inherited section header.
+		m.snapCursorToSelectable(1)
 	}
 
 	m.table.SetWidth(PickerTableWidth(m.table.Columns()))
@@ -609,6 +678,61 @@ func pickerItemKey(item PickerItem) string {
 		return item.DedupKey
 	}
 	return item.Name
+}
+
+// withSectionHeaders interleaves non-selectable section-header rows ahead of
+// the first item of each section. It returns the full row set (headers + item
+// rows) and a parallel rowItem slice mapping each row to its visible-items
+// index (-1 for headers). When no visible item sets a Section, the item rows
+// are returned unchanged with an identity mapping, preserving the headerless
+// picker's exact behavior.
+func withSectionHeaders(visible []PickerItem, itemRows []bubbleTable.Row, ncols int) ([]bubbleTable.Row, []int) {
+	hasSection := false
+	for _, item := range visible {
+		if item.Section != "" {
+			hasSection = true
+			break
+		}
+	}
+	if !hasSection {
+		rowItem := make([]int, len(itemRows))
+		for i := range rowItem {
+			rowItem[i] = i
+		}
+		return itemRows, rowItem
+	}
+
+	rows := make([]bubbleTable.Row, 0, len(itemRows)+2)
+	rowItem := make([]int, 0, len(itemRows)+2)
+	currentSection := ""
+	for i, item := range visible {
+		if i >= len(itemRows) {
+			break
+		}
+		if item.Section != "" && item.Section != currentSection {
+			currentSection = item.Section
+			rows = append(rows, sectionHeaderRow(currentSection, ncols))
+			rowItem = append(rowItem, -1)
+		}
+		rows = append(rows, itemRows[i])
+		rowItem = append(rowItem, i)
+	}
+	return rows, rowItem
+}
+
+// sectionHeaderRow builds a non-selectable header row whose first column shows
+// the section label and whose remaining columns are blank.
+//
+// The label is intentionally plain text, not a lipgloss-styled string: the
+// underlying bubbles table truncates every cell with runewidth.Truncate, which
+// is not ANSI-aware. A styled value's escape bytes count toward the column
+// width, so truncation cuts inside the escape sequence and the terminal renders
+// garbage. The "── " rule prefix keeps the row readable as a header without
+// embedding color.
+func sectionHeaderRow(label string, ncols int) bubbleTable.Row {
+	row := make(bubbleTable.Row, max(ncols, 1))
+	row[0] = "── " + label
+	return row
 }
 
 func pickerActiveColumnsForDefs(items []PickerItem, defs []pickerColumnDef, fixed bool) []pickerColumnDef {

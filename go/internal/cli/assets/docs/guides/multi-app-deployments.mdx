@@ -39,7 +39,7 @@ For ROS 2, set `network_mode: host` on every service that needs DDS discovery, m
 </Callout>
 
 <Callout type="warning">
-Host networking helps ROS 2 discovery, but it does not join IPC namespaces or share `/dev/shm` between containers. If your stack depends on ROS 2 shared-memory transport, zero-copy camera frames, or other pod-style namespace sharing, use a single container today or the multi-service `wendy.json` path once shared-IPC support is available.
+Host networking helps ROS 2 discovery, but it does not join IPC namespaces or share `/dev/shm` between containers. If your stack depends on ROS 2 shared-memory transport, zero-copy camera frames, or other pod-style namespace sharing, use multi-service `wendy.json` with `"isolation": "shared-ipc"` to share the network and IPC namespaces plus `/dev/shm` across all services in the app.
 </Callout>
 
 Wendy maps a focused subset of Compose into device runtime configuration:

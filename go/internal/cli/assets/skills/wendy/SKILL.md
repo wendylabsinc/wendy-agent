@@ -33,6 +33,7 @@ Whenever you invoke a wendy command, use the JSON structure options to provide s
 - Configure WiFi: `wendy device wifi connect`
 - Install WendyOS on an external drive: `wendy os install`
 - Set a device as default using `wendy device set-default`
+- Check the default device with `wendy device get-default`
 
 ### `wendy init` — Create a New Wendy Lite Project
 

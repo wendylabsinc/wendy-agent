@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -122,6 +123,68 @@ func writeMinimalOCILayout(t *testing.T, path string, blobData []byte, mediaType
 		"blobs/sha256/" + sha256Hex(blobData):      blobData,
 	}
 	writeOCITar(t, path, entries)
+}
+
+// readOCILayoutLayers must reference layer blobs by their byte range in the
+// on-disk tar (never buffering them in RAM), and that range must be exact —
+// the compressed bytes read back have to hash to the layer digest.
+func TestReadOCILayoutLayersStreamsBlobByOffset(t *testing.T) {
+	dir := t.TempDir()
+	ociTar := filepath.Join(dir, "image.tar")
+
+	// Compressible payload large enough to span many tar blocks.
+	raw := bytes.Repeat([]byte("wendy-layer-payload-"), 5000)
+	var gz bytes.Buffer
+	gw := gzip.NewWriter(&gz)
+	if _, err := gw.Write(raw); err != nil {
+		t.Fatal(err)
+	}
+	if err := gw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	compressed := gz.Bytes()
+
+	writeMinimalOCILayout(t, ociTar, compressed, "application/vnd.oci.image.layer.v1.tar+gzip", raw)
+
+	layers, _, err := readOCILayoutLayers(ociTar, "linux/arm64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(layers) != 1 {
+		t.Fatalf("want 1 layer, got %d", len(layers))
+	}
+	l := layers[0]
+
+	if l.Blob != nil {
+		t.Fatalf("layer unexpectedly holds %d compressed bytes in memory", len(l.Blob))
+	}
+	if l.TarPath == "" {
+		t.Fatal("file-backed layer missing TarPath")
+	}
+
+	cr, err := l.compressedReader()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cr.Close()
+	gotCompressed, err := io.ReadAll(cr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if "sha256:"+sha256Hex(gotCompressed) != l.Digest {
+		t.Fatal("compressed bytes read by recorded offset/size do not match the layer digest")
+	}
+	if !bytes.Equal(gotCompressed, compressed) {
+		t.Fatalf("compressed bytes mismatch: got %d want %d", len(gotCompressed), len(compressed))
+	}
+
+	got, err := l.decompress()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, raw) {
+		t.Fatal("decompressed bytes do not match original raw tar")
+	}
 }
 
 func TestReadOCILayoutLayersUncompressed(t *testing.T) {

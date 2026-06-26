@@ -8,4 +8,4 @@ wendy device info --json
 wendy run
 ```
 
-Use `wendy device unset-default` to clear the saved target.
+Use `wendy device get-default` to see the current default, or `wendy device unset-default` to clear it.

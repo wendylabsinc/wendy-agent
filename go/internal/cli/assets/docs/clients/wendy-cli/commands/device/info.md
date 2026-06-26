@@ -14,6 +14,17 @@ wendy device info [flags]
 
 The output format follows the standard `--json` / human-readable convention shared across all device commands.
 
+### GPU output fields
+
+On GPU-capable devices, the following GPU fields are included. Each is omitted from both the human-readable output and the JSON map when the agent does not report it (e.g. non-GPU devices or older agents), so consumers should treat every field as optional.
+
+| Field (JSON) | Human-readable label | Description |
+|---|---|---|
+| `gpuVendor` | `GPU:` | GPU vendor (e.g. `nvidia`, `qualcomm`); shown as `unknown` in human-readable output when a GPU is present but the vendor is unreported. |
+| `jetpackVersion` | `JetPack:` | JetPack/L4T version string (Jetson only). |
+| `cudaVersion` | `CUDA:` | CUDA toolkit version (e.g. `12.6`). |
+| `gpuArch` | `GPU Arch:` | GPU architecture identifier. Format is vendor-specific (e.g. `sm_87` for NVIDIA). |
+
 ## Flags
 
 | Flag | Default | Description |

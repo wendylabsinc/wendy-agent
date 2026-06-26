@@ -6,7 +6,9 @@ import (
 
 	bubbleTable "github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/muesli/termenv"
 )
 
 func TestPickerModel_SelectsFromTable(t *testing.T) {
@@ -636,6 +638,123 @@ func TestPickerModel_DXIgnoredWithoutCallbacks(t *testing.T) {
 	view := pm.View()
 	if strings.Contains(view, "d set default") {
 		t.Error("d/x hint should not appear without callbacks")
+	}
+}
+
+// ── Section headers ──────────────────────────────────────────────────
+
+// sectionedPicker builds a one-shot picker whose items belong to two ordered
+// sections: "WendyOS" (SortKey prefix 0_) before "Wendy Lite" (prefix 1_).
+// After sorting, the display order is:
+//
+//	── WendyOS      (header)
+//	Jetson Orin     (0_wendyos_jetson)
+//	Raspberry Pi 5  (0_wendyos_rpi5)
+//	── Wendy Lite   (header)
+//	ESP32-C5        (1_lite_c5)
+//	ESP32-C6        (1_lite_c6)
+func sectionedPicker(t *testing.T) PickerModel {
+	t.Helper()
+	m := NewPickerWithTitle("Select a device")
+	updated, _ := m.Update(PickerAddMsg{Items: []PickerItem{
+		{Name: "Raspberry Pi 5", Section: "WendyOS", SortKey: "0_wendyos_rpi5", Value: "rpi5"},
+		{Name: "Jetson Orin", Section: "WendyOS", SortKey: "0_wendyos_jetson", Value: "jetson"},
+		{Name: "ESP32-C6", Section: "Wendy Lite", SortKey: "1_lite_c6", Value: "c6"},
+		{Name: "ESP32-C5", Section: "Wendy Lite", SortKey: "1_lite_c5", Value: "c5"},
+	}})
+	return updated.(PickerModel)
+}
+
+func TestPickerModel_RendersSectionHeaders(t *testing.T) {
+	pm := sectionedPicker(t)
+
+	view := ansi.Strip(pm.View())
+	for _, want := range []string{"WendyOS", "Wendy Lite", "Jetson Orin", "Raspberry Pi 5", "ESP32-C5", "ESP32-C6"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("expected sectioned picker view to contain %q, got %q", want, view)
+		}
+	}
+	// The WendyOS header must appear before the Wendy Lite header.
+	if strings.Index(view, "WendyOS") > strings.Index(view, "Wendy Lite") {
+		t.Fatalf("expected WendyOS section before Wendy Lite section, got %q", view)
+	}
+}
+
+// TestPickerModel_RendersSectionHeadersInColor guards against the section
+// header cell carrying lipgloss ANSI escapes into the table: the underlying
+// bubbles table truncates each cell with runewidth.Truncate, which counts the
+// escape bytes as visible width and cuts inside the escape sequence, leaving
+// mangled output (e.g. "…K") on a real color terminal. Tests default to the
+// Ascii profile (no escapes), so this forces truecolor to exercise that path.
+func TestPickerModel_RendersSectionHeadersInColor(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	defer lipgloss.SetColorProfile(termenv.Ascii)
+
+	pm := sectionedPicker(t)
+
+	view := ansi.Strip(pm.View())
+	for _, want := range []string{"WendyOS", "Wendy Lite"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("expected colorized sectioned picker to render header %q intact, got %q", want, view)
+		}
+	}
+}
+
+func TestPickerModel_SectionEnterSelectsDeviceNotHeader(t *testing.T) {
+	pm := sectionedPicker(t)
+
+	// The initial cursor must land on the first device, never the leading
+	// section header. Enter should select that device.
+	updated, cmd := pm.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	pm = updated.(PickerModel)
+
+	if cmd == nil || pm.Selected() == nil {
+		t.Fatal("expected enter to select the first device, not a header row")
+	}
+	if got := pm.Selected().Value.(string); got != "jetson" {
+		t.Fatalf("selected %q, want jetson (first selectable row)", got)
+	}
+}
+
+func TestPickerModel_SectionDownSkipsHeader(t *testing.T) {
+	pm := sectionedPicker(t)
+
+	// From Jetson (first row), Down → Raspberry Pi 5, Down → must skip the
+	// Wendy Lite header and land on ESP32-C5.
+	for i := 0; i < 2; i++ {
+		updated, _ := pm.Update(tea.KeyMsg{Type: tea.KeyDown})
+		pm = updated.(PickerModel)
+	}
+	updated, _ := pm.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	pm = updated.(PickerModel)
+
+	if pm.Selected() == nil {
+		t.Fatal("expected a device selection after navigating down, got none (cursor on header?)")
+	}
+	if got := pm.Selected().Value.(string); got != "c5" {
+		t.Fatalf("after 2× down selected %q, want c5 (first Wendy Lite device)", got)
+	}
+}
+
+func TestPickerModel_SectionUpSkipsHeader(t *testing.T) {
+	pm := sectionedPicker(t)
+
+	// Move down onto ESP32-C5, then Up must skip the Wendy Lite header back to
+	// Raspberry Pi 5 (last WendyOS device).
+	for i := 0; i < 2; i++ {
+		updated, _ := pm.Update(tea.KeyMsg{Type: tea.KeyDown})
+		pm = updated.(PickerModel)
+	}
+	updated, _ := pm.Update(tea.KeyMsg{Type: tea.KeyUp})
+	pm = updated.(PickerModel)
+	updated, _ = pm.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	pm = updated.(PickerModel)
+
+	if pm.Selected() == nil {
+		t.Fatal("expected a device selection after navigating up, got none (cursor on header?)")
+	}
+	if got := pm.Selected().Value.(string); got != "rpi5" {
+		t.Fatalf("after down,down,up selected %q, want rpi5", got)
 	}
 }
 

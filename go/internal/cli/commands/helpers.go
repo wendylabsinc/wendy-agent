@@ -742,6 +742,8 @@ func connectToAgent(ctx context.Context, opts ...resolveOption) (*grpcclient.Age
 					return nil, recErr
 				}
 				return connectFromSelectedDevice(target, cfg)
+			} else if isDefault {
+				return nil, defaultDeviceUnreachableError(hostname, connErr)
 			} else {
 				return nil, connErr
 			}
@@ -812,6 +814,20 @@ func connectWithAutoTLS(ctx context.Context, plaintextAddr string) (*grpcclient.
 	return conn, err
 }
 
+// mdnsBrowseTimeout bounds the mDNS fallback browse so an offline default device
+// does not stall a command for the full default discovery window.
+const mdnsBrowseTimeout = 4 * time.Second
+
+// osLookupHostFn resolves a hostname via the operating system resolver. It is a
+// package variable so tests can simulate a resolver that cannot see mDNS names.
+var osLookupHostFn = func(ctx context.Context, host string) ([]string, error) {
+	return net.DefaultResolver.LookupHost(ctx, host)
+}
+
+// lanBrowseFn browses the LAN for WendyOS devices via mDNS. It is a package
+// variable so tests can substitute a fixture instead of a real network browse.
+var lanBrowseFn = discovery.DiscoverLAN
+
 // resolveAddrOnce resolves a host:port whose host is a DNS/mDNS name to an
 // IPv4-preferred IP:port, so the dials below target a literal IP. gRPC
 // otherwise resolves the name separately for every ClientConn we open (mTLS
@@ -826,17 +842,69 @@ func resolveAddrOnce(ctx context.Context, addr string) string {
 		return addr // not host:port, or already a literal IP
 	}
 	rctx, cancel := context.WithTimeout(ctx, 3*time.Second)
-	defer cancel()
-	ips, err := net.DefaultResolver.LookupHost(rctx, host)
-	if err != nil || len(ips) == 0 {
-		return addr
+	ips, err := osLookupHostFn(rctx, host)
+	cancel()
+	if err == nil && len(ips) > 0 {
+		for _, ip := range ips { // prefer IPv4
+			if net.ParseIP(ip).To4() != nil {
+				return net.JoinHostPort(ip, port)
+			}
+		}
+		return net.JoinHostPort(ips[0], port)
 	}
-	for _, ip := range ips { // prefer IPv4
-		if net.ParseIP(ip).To4() != nil {
-			return net.JoinHostPort(ip, port)
+	// The OS resolver (and thus gRPC's) can't see mDNS ".local" names on
+	// Windows or on Linux hosts without nss-mdns/avahi — only macOS resolves
+	// them natively. Fall back to an mDNS browse so a saved default hostname
+	// still connects on those platforms (issue #1155).
+	if ip := resolveMDNSHost(ctx, host); ip != "" {
+		return net.JoinHostPort(ip, port)
+	}
+	return addr
+}
+
+// resolveMDNSHost browses the LAN via mDNS and returns the IP address advertised
+// by a device whose hostname matches host. It is the fallback used when the OS
+// resolver cannot resolve an mDNS ".local" name — mirroring the discover/picker
+// path, which already prefers discovered IPs for the same reason. Returns "" for
+// non-".local" hosts or when no advertised device matches.
+func resolveMDNSHost(ctx context.Context, host string) string {
+	normalized := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
+	if !strings.HasSuffix(normalized, ".local") {
+		return ""
+	}
+	bctx, cancel := context.WithTimeout(ctx, mdnsBrowseTimeout)
+	defer cancel()
+	devices, err := lanBrowseFn(bctx, mdnsBrowseTimeout)
+	if err != nil {
+		return ""
+	}
+	want := normalizeMDNSHost(host)
+	for _, dev := range devices {
+		if dev.IPAddress == "" {
+			continue
+		}
+		if normalizeMDNSHost(dev.Hostname) == want {
+			return dev.IPAddress
 		}
 	}
-	return net.JoinHostPort(ips[0], port)
+	return ""
+}
+
+// normalizeMDNSHost lowercases a hostname and strips a trailing dot and ".local"
+// suffix so "Wendy-Thor.local." and "wendy-thor" compare equal.
+func normalizeMDNSHost(host string) string {
+	h := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
+	return strings.TrimSuffix(h, ".local")
+}
+
+// defaultDeviceUnreachableError wraps a connection failure for a saved default
+// device so the message makes clear the default IS persisted but could not be
+// reached — rather than letting the failure read as if set-default never took
+// effect (issue #1155).
+func defaultDeviceUnreachableError(hostname string, err error) error {
+	return fmt.Errorf("default device %q is set but could not be reached: %w\n"+
+		"  Confirm it with 'wendy device get-default'; change it with 'wendy device set-default' or clear it with 'wendy device unset-default'.",
+		hostname, err)
 }
 
 func connectWithAutoTLSDiagnostics(ctx context.Context, plaintextAddr string) (*grpcclient.AgentConnection, error, error) {
@@ -1441,6 +1509,8 @@ func resolveTarget(ctx context.Context, opts ...resolveOption) (*SelectedDevice,
 			} else if isDefault && !jsonOutput && !cfg.nonInteractive && isInteractiveTerminal() {
 				// Default device is unreachable — offer interactive recovery.
 				return handleDefaultDeviceRecovery(ctx, device, time.Since(startedAt), err, cfg.excludeProviderKeys, cfg.excludeBluetooth, cfg.suppressUpdateCheck)
+			} else if isDefault {
+				return nil, defaultDeviceUnreachableError(device, err)
 			} else {
 				return nil, err
 			}

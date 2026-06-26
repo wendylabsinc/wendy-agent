@@ -58,6 +58,7 @@ type MultiSpinnerModel struct {
 	rows    []multiSpinnerRow
 	byName  map[string]int
 	spinner spinner.Model
+	hints   hintRotator
 	done    bool
 	err     error
 }
@@ -79,12 +80,13 @@ func NewMultiSpinner(title string, names []string) MultiSpinnerModel {
 		rows:    rows,
 		byName:  byName,
 		spinner: s,
+		hints:   newHintRotator(),
 	}
 }
 
 // Init implements tea.Model.
 func (m MultiSpinnerModel) Init() tea.Cmd {
-	return m.spinner.Tick
+	return tea.Batch(m.spinner.Tick, m.hints.tick())
 }
 
 // Update implements tea.Model.
@@ -101,6 +103,10 @@ func (m MultiSpinnerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
 		return m, cmd
+
+	case hintTickMsg:
+		m.hints.next()
+		return m, m.hints.tick()
 
 	case MultiSpinnerStartMsg:
 		if i, ok := m.byName[msg.Name]; ok {
@@ -191,6 +197,11 @@ func (m MultiSpinnerModel) View() string {
 				msErrorStyle.Render("failed"),
 			))
 		}
+	}
+
+	if hint := m.hints.view(); hint != "" {
+		sb.WriteString(hint)
+		sb.WriteString("\n")
 	}
 
 	return sb.String()

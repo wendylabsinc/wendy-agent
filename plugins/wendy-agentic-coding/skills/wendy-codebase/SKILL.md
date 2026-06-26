@@ -34,7 +34,7 @@ In `wendy-agent`:
 
 The CLI is a Cobra application. Most device commands resolve a target, create a typed gRPC client, then call one of the agent services. The agent starts a plaintext gRPC server on port `50051`, may start an mTLS server on `50052`, registers agent/container/audio/video/provisioning/telemetry services, and uses containerd for app runtime work.
 
-For app deployment, `wendy run` loads and validates `wendy.json`, resolves a target, builds with the appropriate provider, creates or updates a container on the agent through `WendyContainerService`, then starts the container and streams output back to the CLI.
+For app deployment, `wendy run` loads and validates `wendy.json`, resolves a target, builds with the appropriate provider, and deploys to the agent. For container targets it creates/updates a container through `WendyContainerService` then starts it; for native Mac targets it syncs files and optionally runs `brew bundle` before starting the native process. Output is streamed back to the CLI.
 
 ## Implementation rules
 
