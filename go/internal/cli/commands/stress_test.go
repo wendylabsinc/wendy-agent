@@ -133,8 +133,11 @@ func TestBuildServicesParallelStress(t *testing.T) {
 	}
 
 	maxConc := 1 + r.Intn(8)
+	// Exercise both the spinner-buffered and the live prefixed-stream paths under
+	// the race detector so prefixWriter's shared-mutex serialization is covered.
+	plainProgress := r.Intn(2) == 0
 	failed, infraErr := buildServicesParallel(
-		context.Background(), nil, 5000, root, appID, services, "linux/arm64", nil, "docker", skip, maxConc)
+		context.Background(), nil, 5000, root, appID, services, "linux/arm64", nil, "docker", skip, maxConc, plainProgress)
 	if infraErr != nil {
 		t.Fatalf("unexpected infra error: %v", infraErr)
 	}

@@ -486,6 +486,11 @@ type runOptions struct {
 	// push on failure, chunkingForce uses chunk-diff with no fallback, and
 	// chunkingOff skips chunk-diff entirely (registry push only).
 	chunking string
+	// progress controls multi-service build output: progressAuto (default) shows
+	// a multi-spinner and surfaces buildx logs only on failure, while
+	// progressPlain drops the spinner and streams each service's buildx output
+	// live (prefixed per service) so per-layer timings are visible.
+	progress string
 }
 
 // Valid values for runOptions.chunking. An empty value is treated as
@@ -505,6 +510,24 @@ func validateChunkingMode(mode string) error {
 		return nil
 	default:
 		return fmt.Errorf("invalid --chunking value %q: must be auto, force, or off", mode)
+	}
+}
+
+// Valid values for runOptions.progress. An empty value is treated as
+// progressAuto so callers that build runOptions directly keep current behavior.
+const (
+	progressAuto  = "auto"
+	progressPlain = "plain"
+)
+
+// validateProgressMode rejects unknown --progress values. Empty is allowed and
+// means progressAuto.
+func validateProgressMode(mode string) error {
+	switch mode {
+	case "", progressAuto, progressPlain:
+		return nil
+	default:
+		return fmt.Errorf("invalid --progress value %q: must be auto or plain", mode)
 	}
 }
 
@@ -537,6 +560,7 @@ func newRunCmd() *cobra.Command {
 	cmd.Flags().IntVar(&opts.maxConcurrency, "max-concurrency", 0, "Multi-service: max service images to build+push at once (0 = auto-throttle large groups)")
 	cmd.Flags().StringSliceVar(&opts.userArgs, "user-args", nil, "Extra arguments to pass to the container")
 	cmd.Flags().StringVar(&opts.chunking, "chunking", chunkingAuto, "Content-defined chunking (CBC) deploy path: auto (try chunk-diff, fall back to registry push), force (chunk-diff only, no fallback), or off (registry push only)")
+	cmd.Flags().StringVar(&opts.progress, "progress", progressAuto, "Multi-service build output: auto (spinner; show buildx logs only on failure) or plain (stream each service's buildx output live with per-layer timings)")
 
 	return cmd
 }
@@ -588,6 +612,9 @@ func runCommand(ctx context.Context, opts runOptions) error {
 		return fmt.Errorf("--max-concurrency must be >= 0 (0 = auto)")
 	}
 	if err := validateChunkingMode(opts.chunking); err != nil {
+		return err
+	}
+	if err := validateProgressMode(opts.progress); err != nil {
 		return err
 	}
 

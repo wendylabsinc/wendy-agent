@@ -1,6 +1,9 @@
 package commands
 
 import (
+	"bytes"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
@@ -76,6 +79,59 @@ func TestMultiServiceCreateConfig_ServiceFrameworksOverride(t *testing.T) {
 	// Shared + per-service entitlements are merged.
 	if len(got.Entitlements) != 2 {
 		t.Errorf("listener entitlements = %+v, want shared bluetooth + gpu", got.Entitlements)
+	}
+}
+
+func TestPrefixWriter_PrefixesLinesAndBuffersPartial(t *testing.T) {
+	var mu sync.Mutex
+	var out bytes.Buffer
+	pw := &prefixWriter{mu: &mu, w: &out, prefix: "[svc] "}
+
+	// A partial line (no newline yet) is buffered, not emitted — so live buildx
+	// output never interleaves another service's line mid-way.
+	if _, err := pw.Write([]byte("hello")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if out.Len() != 0 {
+		t.Fatalf("partial line should be buffered, got %q", out.String())
+	}
+
+	// Completing the line flushes it, prefixed; the trailing partial stays buffered.
+	if _, err := pw.Write([]byte(" world\nse")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if got, want := out.String(), "[svc] hello world\n"; got != want {
+		t.Fatalf("after newline: got %q, want %q", got, want)
+	}
+
+	// Flush emits the buffered remainder so the last line isn't dropped.
+	pw.Flush()
+	if got, want := out.String(), "[svc] hello world\n[svc] se"; got != want {
+		t.Fatalf("after flush: got %q, want %q", got, want)
+	}
+}
+
+func TestPrefixWriter_EmptyPrefixPassesThrough(t *testing.T) {
+	var mu sync.Mutex
+	var out bytes.Buffer
+	pw := &prefixWriter{mu: &mu, w: &out, prefix: ""}
+	if _, err := pw.Write([]byte("line\n")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if got, want := out.String(), "line\n"; got != want {
+		t.Fatalf("empty prefix: got %q, want %q", got, want)
+	}
+}
+
+func TestServiceLogPrefix_SingleServiceHasNoPrefix(t *testing.T) {
+	// A single-service group reads as a plain single container: its logs stream
+	// unprefixed, like a `docker run`. Multi-service groups keep the prefix so
+	// interleaved lines stay attributable.
+	if got := serviceLogPrefix("talker", true); got != "" {
+		t.Errorf("serviceLogPrefix(single) = %q, want empty", got)
+	}
+	if got := serviceLogPrefix("talker", false); !strings.Contains(got, "talker") {
+		t.Errorf("serviceLogPrefix(multi) = %q, want it to contain the service name", got)
 	}
 }
 

@@ -265,7 +265,7 @@ func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 	}
 
 	// Build all service images in parallel, then create and start containers.
-	failed, buildErr := buildServicesParallel(ctx, conn, regPort, cwd, appCfg.AppID, services, platform, buildArgs, opts.builder, skip, opts.maxConcurrency)
+	failed, buildErr := buildServicesParallel(ctx, conn, regPort, cwd, appCfg.AppID, services, platform, buildArgs, opts.builder, skip, opts.maxConcurrency, opts.progress == progressPlain)
 	if buildErr != nil {
 		return buildErr
 	}
@@ -331,11 +331,19 @@ func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 			RestartPolicy: restartPolicy,
 		}
 
-		cliLogln("Creating container for service %s...", name)
+		if len(services) == 1 {
+			cliLogln("Creating container for %s...", tui.App(appCfg.AppID))
+		} else {
+			cliLogln("Creating container for service %s...", name)
+		}
 		if err := createContainerWithProgress(ctx, conn.ContainerService, createReq); err != nil {
 			return fmt.Errorf("creating container for service %s: %w", name, err)
 		}
-		cliLogln("Service %s container created.", name)
+		if len(services) == 1 {
+			cliLogln("Container %s created.", tui.App(appCfg.AppID))
+		} else {
+			cliLogln("Service %s container created.", name)
+		}
 		return nil
 	}
 
@@ -385,7 +393,9 @@ func droppedSummary(dropped map[string]string) string {
 // maxConcurrentBuilds at a time). Services in skip are already on the device with
 // unchanged inputs, so their build+push is skipped (WDY-1692). Progress is shown
 // via a Bubbletea multi-spinner in interactive terminals and via plain log lines
-// otherwise.
+// otherwise. When plainProgress is set the spinner is dropped and each service's
+// buildx output streams live (prefixed per service) so per-layer timings are
+// visible while the build runs (--progress=plain).
 func buildServicesParallel(
 	ctx context.Context,
 	conn *grpcclient.AgentConnection,
@@ -397,6 +407,7 @@ func buildServicesParallel(
 	builder string,
 	skip map[string]bool,
 	maxConcurrency int,
+	plainProgress bool,
 ) (map[string]error, error) {
 	names := make([]string, 0, len(services))
 	for n := range services {
@@ -430,12 +441,21 @@ func buildServicesParallel(
 	}
 	sem := make(chan struct{}, concurrency)
 
+	// --progress=plain streams each service's buildx output live, so it can't
+	// share the terminal with the multi-spinner; fall back to live prefixed logs.
 	var prog *tea.Program
-	if isInteractiveTerminal() {
+	if isInteractiveTerminal() && !plainProgress {
 		title := fmt.Sprintf("Building %d service(s)...", len(names))
 		m := tui.NewMultiSpinner(title, names)
 		prog = tea.NewProgram(m)
 	}
+	if plainProgress {
+		cliLogln("Streaming build logs (--progress=plain); per-layer timings appear inline.")
+	}
+
+	// streamMu serializes concurrent prefixWriter output so live buildx logs from
+	// different services never interleave mid-line.
+	var streamMu sync.Mutex
 
 	var wg sync.WaitGroup
 	for _, name := range names {
@@ -470,16 +490,26 @@ func buildServicesParallel(
 			dockerfile, dockerfileErr := resolveDockerfile(contextDir, "", false)
 
 			var buildOut io.Writer
+			var logOut io.Writer
 			var logBuf bytes.Buffer
-			if prog != nil {
-				// In interactive mode, buffer all output (setup logs + build output).
-				// On error the buffer is printed after the spinner exits.
+			switch {
+			case prog != nil:
+				// Spinner mode: buffer all output (setup logs + build output). On
+				// error the buffer is printed after the spinner exits.
 				buildOut = &logBuf
-			} else {
+				logOut = &logBuf
+			case plainProgress:
+				// Live mode: stream buildx output as it arrives, prefixed per
+				// service and serialized so concurrent builds stay readable.
+				prefix := serviceLogPrefix(name, len(names) == 1)
+				stdoutPW := &prefixWriter{mu: &streamMu, w: os.Stdout, prefix: prefix}
+				stderrPW := &prefixWriter{mu: &streamMu, w: os.Stderr, prefix: prefix}
+				defer stdoutPW.Flush()
+				defer stderrPW.Flush()
+				buildOut = stdoutPW
+				logOut = stderrPW
+			default:
 				buildOut = os.Stdout
-			}
-			logOut := buildOut
-			if prog == nil {
 				logOut = os.Stderr
 			}
 			err := dockerfileErr
@@ -608,6 +638,66 @@ func resolveDeployableServices(services map[string]*appconfig.ServiceConfig, fai
 
 var serviceLogStyle = lipgloss.NewStyle().Foreground(tui.ColorInfo)
 
+// serviceLogPrefix returns the per-line prefix used when multiplexing service
+// log output. A single-service group is treated as a plain single container —
+// "just do a docker run" — so its logs stream unprefixed; multi-service groups
+// keep the styled "[service] " prefix so interleaved lines stay attributable.
+func serviceLogPrefix(service string, single bool) string {
+	if single {
+		return ""
+	}
+	return serviceLogStyle.Render(fmt.Sprintf("[%s] ", service))
+}
+
+// prefixWriter forwards each complete (newline-terminated) line to w with prefix
+// prepended, serializing through the shared mu so concurrent service builds
+// streaming live buildx output never interleave mid-line. A trailing partial
+// line is held in buf until a later write completes it or Flush is called.
+type prefixWriter struct {
+	mu     *sync.Mutex
+	w      io.Writer
+	prefix string
+	buf    []byte
+}
+
+func (pw *prefixWriter) Write(p []byte) (int, error) {
+	pw.mu.Lock()
+	defer pw.mu.Unlock()
+	pw.buf = append(pw.buf, p...)
+	for {
+		i := bytes.IndexByte(pw.buf, '\n')
+		if i < 0 {
+			break
+		}
+		if err := pw.emitLocked(pw.buf[:i+1]); err != nil {
+			return len(p), err
+		}
+		pw.buf = pw.buf[i+1:]
+	}
+	return len(p), nil
+}
+
+func (pw *prefixWriter) emitLocked(line []byte) error {
+	if pw.prefix != "" {
+		if _, err := io.WriteString(pw.w, pw.prefix); err != nil {
+			return err
+		}
+	}
+	_, err := pw.w.Write(line)
+	return err
+}
+
+// Flush emits any buffered partial line. Call once after the build finishes so
+// a final line without a trailing newline isn't dropped.
+func (pw *prefixWriter) Flush() {
+	pw.mu.Lock()
+	defer pw.mu.Unlock()
+	if len(pw.buf) > 0 {
+		_ = pw.emitLocked(pw.buf)
+		pw.buf = nil
+	}
+}
+
 // multiServiceCreateConfig builds the per-service AppConfig transmitted to
 // the agent for a standalone multi-service app. The group identity and
 // runtime context (isolation, frameworks, shared entitlements) must travel
@@ -647,6 +737,11 @@ func multiServiceContainerName(appID, serviceName string) string {
 // the agent resolves a secondary's namespace join at container create time
 // against the primary's running task.
 func startAndStreamServices(ctx context.Context, conn *grpcclient.AgentConnection, appID string, ordered []string, opts runOptions, createService func(name string) error) error {
+	// A group with exactly one service reads as a plain single container: stream
+	// its logs unprefixed and use single-container messaging ("just do a docker
+	// run") rather than the "App group (N services)" group lifecycle wording.
+	single := len(ordered) == 1
+
 	runCtx, runCancel := context.WithCancel(ctx)
 	defer runCancel()
 
@@ -656,7 +751,11 @@ func startAndStreamServices(ctx context.Context, conn *grpcclient.AgentConnectio
 	defer signal.Stop(sigCh)
 	go func() {
 		<-sigCh
-		cliLogln("\nStopping services...")
+		if single {
+			cliLogln("\nStopping container...")
+		} else {
+			cliLogln("\nStopping services...")
+		}
 		runCancel()
 		stopCtx, stopCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer stopCancel()
@@ -689,7 +788,11 @@ func startAndStreamServices(ctx context.Context, conn *grpcclient.AgentConnectio
 				return fmt.Errorf("waiting for service %s to start: %w", name, err)
 			}
 		}
-		cliLogln("App group %s running in detached mode.", appID)
+		if single {
+			cliLogln("Application %s running in detached mode.", tui.App(appID))
+		} else {
+			cliLogln("App group %s running in detached mode.", appID)
+		}
 		return nil
 	}
 
@@ -761,10 +864,14 @@ func startAndStreamServices(ctx context.Context, conn *grpcclient.AgentConnectio
 		close(lines)
 	}()
 
-	cliLogln("App group %s started (%d services).", appID, len(ordered))
+	if single {
+		cliLogln("Application %s started.", tui.App(appID))
+	} else {
+		cliLogln("App group %s started (%d services).", appID, len(ordered))
+	}
 
 	for line := range lines {
-		prefix := serviceLogStyle.Render(fmt.Sprintf("[%s] ", line.service))
+		prefix := serviceLogPrefix(line.service, single)
 		if line.stdout {
 			fmt.Fprintf(os.Stdout, "%s%s", prefix, line.data)
 		} else {
@@ -772,10 +879,10 @@ func startAndStreamServices(ctx context.Context, conn *grpcclient.AgentConnectio
 		}
 	}
 
-	if runCtx.Err() != nil {
+	if single {
+		cliLogln("\nApplication %s stopped.", tui.App(appID))
+	} else {
 		cliLogln("\nApp group %s stopped.", appID)
-		return nil
 	}
-	cliLogln("\nApp group %s stopped.", appID)
 	return nil
 }
