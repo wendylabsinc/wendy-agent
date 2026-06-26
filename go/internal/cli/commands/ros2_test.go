@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/cobra"
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -705,4 +706,39 @@ type errOnFirstEchoRecv struct{ err error }
 
 func (e *errOnFirstEchoRecv) Recv() (*agentpbv2.ROS2Message, error) {
 	return nil, e.err
+}
+
+// TestROS2CommandTree locks the WDY-1722 command surface: the action,
+// lifecycle, and component groups and their subcommands must be registered,
+// so a missing AddCommand is caught without a live device.
+func TestROS2CommandTree(t *testing.T) {
+	root := newROS2Cmd()
+	find := func(parent *cobra.Command, name string) *cobra.Command {
+		t.Helper()
+		for _, c := range parent.Commands() {
+			if c.Name() == name {
+				return c
+			}
+		}
+		t.Fatalf("%q has no %q subcommand", parent.Name(), name)
+		return nil
+	}
+	want := map[string][]string{
+		"action":    {"list", "info", "send_goal", "cancel"},
+		"lifecycle": {"nodes", "get", "list", "set"},
+		"component": {"list", "load", "unload"},
+	}
+	for group, subs := range want {
+		g := find(root, group)
+		for _, sub := range subs {
+			child := find(g, sub)
+			if child.Flag("domain") == nil {
+				t.Errorf("%s %s: missing --domain flag", group, sub)
+			}
+		}
+	}
+	// send_goal must expose --feedback.
+	if find(find(root, "action"), "send_goal").Flag("feedback") == nil {
+		t.Errorf("action send_goal: missing --feedback flag")
+	}
 }

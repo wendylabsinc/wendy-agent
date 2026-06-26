@@ -505,6 +505,191 @@ func TestROS2Service_DownloadBag(t *testing.T) {
 	}
 }
 
+// --- Actions / lifecycle / components (WDY-1722) ---
+
+func TestROS2Service_ListActions_MergesPerRMW(t *testing.T) {
+	rt := twoSidecarRuntime(func(_ context.Context, opts ROS2ExecOptions, stdout, _ io.Writer) (int, error) {
+		if strings.Join(opts.Args, " ") != "action list -t" {
+			return 1, nil
+		}
+		switch opts.SidecarName {
+		case "sc-cyc":
+			io.WriteString(stdout, "/fibonacci [action_tutorials_interfaces/action/Fibonacci]\n")
+		case "sc-fast":
+			io.WriteString(stdout, "/navigate [nav2_msgs/action/NavigateToPose]\n")
+		}
+		return 0, nil
+	})
+	svc := newTestROS2Service(t, rt, t.TempDir())
+	resp, err := svc.ListActions(context.Background(), &agentpbv2.ListROS2ActionsRequest{})
+	if err != nil {
+		t.Fatalf("ListActions: %v", err)
+	}
+	if len(resp.GetActions()) != 2 {
+		t.Fatalf("got %d actions, want 2 (merged across RMWs)", len(resp.GetActions()))
+	}
+	byRMW := map[string]string{}
+	for _, a := range resp.GetActions() {
+		byRMW[a.GetRmw()] = a.GetName()
+	}
+	if byRMW["rmw_cyclonedds_cpp"] != "/fibonacci" || byRMW["rmw_fastrtps_cpp"] != "/navigate" {
+		t.Errorf("actions not tagged by RMW: %+v", byRMW)
+	}
+}
+
+func TestROS2Service_GetActionInfo(t *testing.T) {
+	rt := &fakeROS2Runtime{
+		sidecar: ROS2Sidecar{Distro: "humble"},
+		outputs: map[string]string{
+			"action list":            "/fibonacci\n",
+			"action info /fibonacci": "Action: /fibonacci\nAction clients: 1\n    /fibonacci_action_client\nAction servers: 1\n    /fibonacci_action_server\n",
+		},
+	}
+	svc := newTestROS2Service(t, rt, t.TempDir())
+	resp, err := svc.GetActionInfo(context.Background(), &agentpbv2.GetROS2ActionInfoRequest{Action: "/fibonacci"})
+	if err != nil {
+		t.Fatalf("GetActionInfo: %v", err)
+	}
+	if resp.GetName() != "/fibonacci" ||
+		len(resp.GetActionClients()) != 1 || resp.GetActionClients()[0] != "/fibonacci_action_client" ||
+		len(resp.GetActionServers()) != 1 || resp.GetActionServers()[0] != "/fibonacci_action_server" {
+		t.Errorf("GetActionInfo resp = %+v", resp)
+	}
+}
+
+func TestROS2Service_GetActionInfo_RejectsBadName(t *testing.T) {
+	rt := &fakeROS2Runtime{sidecar: ROS2Sidecar{Distro: "humble"}}
+	svc := newTestROS2Service(t, rt, t.TempDir())
+	_, err := svc.GetActionInfo(context.Background(), &agentpbv2.GetROS2ActionInfoRequest{Action: "/fib;rm -rf /"})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Errorf("error = %v, want InvalidArgument", err)
+	}
+}
+
+func TestROS2Service_SendActionGoal(t *testing.T) {
+	rt := &fakeROS2Runtime{
+		sidecar: ROS2Sidecar{Distro: "humble"},
+		execFn: func(_ context.Context, opts ROS2ExecOptions, stdout, _ io.Writer) (int, error) {
+			key := strings.Join(opts.Args, " ")
+			if key == "action list" {
+				io.WriteString(stdout, "/fibonacci\n")
+				return 0, nil
+			}
+			io.WriteString(stdout, "Result:\n  sequence: [0, 1, 1, 2, 3]\n")
+			return 0, nil
+		},
+	}
+	svc := newTestROS2Service(t, rt, t.TempDir())
+	stream := &fakeServerStream[agentpbv2.ROS2ExecOutput]{ctx: context.Background()}
+	req := &agentpbv2.SendROS2ActionGoalRequest{
+		Action:     "/fibonacci",
+		ActionType: "action_tutorials_interfaces/action/Fibonacci",
+		Goal:       "{order: 5}",
+		Feedback:   true,
+	}
+	if err := svc.SendActionGoal(req, stream); err != nil {
+		t.Fatalf("SendActionGoal: %v", err)
+	}
+	var out string
+	var exit *int32
+	for _, m := range stream.sent {
+		out += string(m.GetStdout())
+		if m.ExitCode != nil {
+			exit = m.ExitCode
+		}
+	}
+	if !strings.Contains(out, "sequence") {
+		t.Errorf("stream stdout = %q", out)
+	}
+	if exit == nil || *exit != 0 {
+		t.Errorf("exit code = %v, want 0", exit)
+	}
+	// --feedback must be forwarded to ros2.
+	var sawSendGoal bool
+	for _, c := range rt.calls {
+		if len(c.Args) >= 2 && c.Args[0] == "action" && c.Args[1] == "send_goal" {
+			sawSendGoal = true
+			if c.Args[len(c.Args)-1] != "--feedback" {
+				t.Errorf("send_goal args = %v, want trailing --feedback", c.Args)
+			}
+		}
+	}
+	if !sawSendGoal {
+		t.Errorf("send_goal was never invoked; calls=%+v", rt.calls)
+	}
+}
+
+func TestROS2Service_Lifecycle_GetAndSet(t *testing.T) {
+	rt := &fakeROS2Runtime{
+		sidecar: ROS2Sidecar{Distro: "humble"},
+		outputs: map[string]string{
+			"node list":                          "/lc_talker\n",
+			"lifecycle nodes":                    "/lc_talker\n",
+			"lifecycle get /lc_talker":           "unconfigured [1]\n",
+			"lifecycle list /lc_talker":          "- configure [1]\n\tStart: unconfigured\n\tGoal: configuring\n",
+			"lifecycle set /lc_talker configure": "Transitioning successful\n",
+		},
+	}
+	svc := newTestROS2Service(t, rt, t.TempDir())
+
+	nodes, err := svc.ListLifecycleNodes(context.Background(), &agentpbv2.ListROS2LifecycleNodesRequest{})
+	if err != nil || len(nodes.GetNodes()) != 1 || nodes.GetNodes()[0].GetName() != "lc_talker" {
+		t.Fatalf("ListLifecycleNodes = %+v, err=%v", nodes, err)
+	}
+
+	st, err := svc.GetLifecycleState(context.Background(), &agentpbv2.GetROS2LifecycleStateRequest{Node: "/lc_talker"})
+	if err != nil || st.GetState() != "unconfigured" || st.GetStateId() != 1 {
+		t.Fatalf("GetLifecycleState = %+v, err=%v", st, err)
+	}
+
+	tr, err := svc.ListLifecycleTransitions(context.Background(), &agentpbv2.ListROS2LifecycleTransitionsRequest{Node: "/lc_talker"})
+	if err != nil || len(tr.GetTransitions()) != 1 || tr.GetTransitions()[0].GetLabel() != "configure" {
+		t.Fatalf("ListLifecycleTransitions = %+v, err=%v", tr, err)
+	}
+
+	set, err := svc.SetLifecycleState(context.Background(), &agentpbv2.SetROS2LifecycleStateRequest{Node: "/lc_talker", Transition: "configure"})
+	if err != nil {
+		t.Fatalf("SetLifecycleState: %v", err)
+	}
+	if !set.GetSuccess() {
+		t.Errorf("SetLifecycleState success = false, message=%q", set.GetMessage())
+	}
+}
+
+func TestROS2Service_Components(t *testing.T) {
+	rt := &fakeROS2Runtime{
+		sidecar: ROS2Sidecar{Distro: "humble"},
+		outputs: map[string]string{
+			"component list": "/ComponentManager\n  1  /talker\n",
+			"component load /ComponentManager composition composition::Listener": "Loaded node '/listener' as 2\n",
+			"component unload /ComponentManager 1":                               "Unloaded component 1 from '/ComponentManager' container\n",
+		},
+	}
+	svc := newTestROS2Service(t, rt, t.TempDir())
+
+	list, err := svc.ListComponents(context.Background(), &agentpbv2.ListROS2ComponentsRequest{})
+	if err != nil || len(list.GetContainers()) != 1 || list.GetContainers()[0].GetName() != "/ComponentManager" {
+		t.Fatalf("ListComponents = %+v, err=%v", list, err)
+	}
+	if len(list.GetContainers()[0].GetComponents()) != 1 || list.GetContainers()[0].GetComponents()[0].GetUid() != 1 {
+		t.Errorf("loaded components = %+v", list.GetContainers()[0].GetComponents())
+	}
+
+	loaded, err := svc.LoadComponent(context.Background(), &agentpbv2.LoadROS2ComponentRequest{
+		Container: "/ComponentManager", Package: "composition", Plugin: "composition::Listener",
+	})
+	if err != nil || loaded.GetUid() != 2 || loaded.GetNodeName() != "/listener" {
+		t.Fatalf("LoadComponent = %+v, err=%v", loaded, err)
+	}
+
+	unloaded, err := svc.UnloadComponent(context.Background(), &agentpbv2.UnloadROS2ComponentRequest{
+		Container: "/ComponentManager", Uid: 1,
+	})
+	if err != nil || !strings.Contains(unloaded.GetMessage(), "Unloaded component 1") {
+		t.Fatalf("UnloadComponent = %+v, err=%v", unloaded, err)
+	}
+}
+
 func TestROS2Service_Exec(t *testing.T) {
 	rt := &fakeROS2Runtime{
 		sidecar: ROS2Sidecar{Distro: "humble"},
