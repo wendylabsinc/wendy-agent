@@ -111,6 +111,28 @@ func (s *AgentService) GetAgentVersion(_ context.Context, _ *agentpb.GetAgentVer
 	return resp, nil
 }
 
+// SetHostname sets the device's hostname (and mDNS name) to a literal value,
+// applies it live, and persists it across reboots. See applyHostname.
+func (s *AgentService) SetHostname(_ context.Context, req *agentpb.SetHostnameRequest) (*agentpb.SetHostnameResponse, error) {
+	hostname := req.GetHostname()
+	s.logger.Info("SetHostname requested", zap.String("hostname", hostname))
+
+	if !s.isWendyOSHost() {
+		s.logger.Warn("SetHostname rejected: host is not a WendyOS device", zap.String("hostname", hostname))
+		return nil, status.Error(codes.Unavailable, "setting the hostname is only supported on WendyOS devices")
+	}
+
+	if err := applyHostname(s.logger, hostname); err != nil {
+		s.logger.Warn("SetHostname failed", zap.String("hostname", hostname), zap.Error(err))
+		if !validHostname(hostname) {
+			return nil, status.Error(codes.InvalidArgument, err.Error())
+		}
+		return nil, status.Errorf(codes.Internal, "applying hostname: %v", err)
+	}
+
+	return &agentpb.SetHostnameResponse{Hostname: hostname}, nil
+}
+
 type gpuInfo struct {
 	hasGPU         bool
 	vendor         string

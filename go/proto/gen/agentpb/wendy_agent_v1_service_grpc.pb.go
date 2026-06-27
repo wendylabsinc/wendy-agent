@@ -37,6 +37,7 @@ const (
 	WendyAgentService_ForgetBluetoothPeripheral_FullMethodName     = "/wendy.agent.services.v1.WendyAgentService/ForgetBluetoothPeripheral"
 	WendyAgentService_UpdateOS_FullMethodName                      = "/wendy.agent.services.v1.WendyAgentService/UpdateOS"
 	WendyAgentService_GetOSUpdateStatus_FullMethodName             = "/wendy.agent.services.v1.WendyAgentService/GetOSUpdateStatus"
+	WendyAgentService_SetHostname_FullMethodName                   = "/wendy.agent.services.v1.WendyAgentService/SetHostname"
 )
 
 // WendyAgentServiceClient is the client API for WendyAgentService service.
@@ -76,6 +77,10 @@ type WendyAgentServiceClient interface {
 	// after post-reboot healthchecks passed, or rolled back with details on
 	// which critical services failed and why.
 	GetOSUpdateStatus(ctx context.Context, in *GetOSUpdateStatusRequest, opts ...grpc.CallOption) (*GetOSUpdateStatusResponse, error)
+	// Set the device's hostname (and mDNS name) to a literal value. Unlike the
+	// first-boot device-name flow, no "wendyos-" prefix is derived: the hostname
+	// is applied exactly as given. The value is persisted so it survives reboots.
+	SetHostname(ctx context.Context, in *SetHostnameRequest, opts ...grpc.CallOption) (*SetHostnameResponse, error)
 }
 
 type wendyAgentServiceClient struct {
@@ -284,6 +289,16 @@ func (c *wendyAgentServiceClient) GetOSUpdateStatus(ctx context.Context, in *Get
 	return out, nil
 }
 
+func (c *wendyAgentServiceClient) SetHostname(ctx context.Context, in *SetHostnameRequest, opts ...grpc.CallOption) (*SetHostnameResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SetHostnameResponse)
+	err := c.cc.Invoke(ctx, WendyAgentService_SetHostname_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // WendyAgentServiceServer is the server API for WendyAgentService service.
 // All implementations must embed UnimplementedWendyAgentServiceServer
 // for forward compatibility.
@@ -321,6 +336,10 @@ type WendyAgentServiceServer interface {
 	// after post-reboot healthchecks passed, or rolled back with details on
 	// which critical services failed and why.
 	GetOSUpdateStatus(context.Context, *GetOSUpdateStatusRequest) (*GetOSUpdateStatusResponse, error)
+	// Set the device's hostname (and mDNS name) to a literal value. Unlike the
+	// first-boot device-name flow, no "wendyos-" prefix is derived: the hostname
+	// is applied exactly as given. The value is persisted so it survives reboots.
+	SetHostname(context.Context, *SetHostnameRequest) (*SetHostnameResponse, error)
 	mustEmbedUnimplementedWendyAgentServiceServer()
 }
 
@@ -384,6 +403,9 @@ func (UnimplementedWendyAgentServiceServer) UpdateOS(*UpdateOSRequest, grpc.Serv
 }
 func (UnimplementedWendyAgentServiceServer) GetOSUpdateStatus(context.Context, *GetOSUpdateStatusRequest) (*GetOSUpdateStatusResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetOSUpdateStatus not implemented")
+}
+func (UnimplementedWendyAgentServiceServer) SetHostname(context.Context, *SetHostnameRequest) (*SetHostnameResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetHostname not implemented")
 }
 func (UnimplementedWendyAgentServiceServer) mustEmbedUnimplementedWendyAgentServiceServer() {}
 func (UnimplementedWendyAgentServiceServer) testEmbeddedByValue()                           {}
@@ -690,6 +712,24 @@ func _WendyAgentService_GetOSUpdateStatus_Handler(srv interface{}, ctx context.C
 	return interceptor(ctx, in, info, handler)
 }
 
+func _WendyAgentService_SetHostname_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetHostnameRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WendyAgentServiceServer).SetHostname(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WendyAgentService_SetHostname_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WendyAgentServiceServer).SetHostname(ctx, req.(*SetHostnameRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // WendyAgentService_ServiceDesc is the grpc.ServiceDesc for WendyAgentService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -752,6 +792,10 @@ var WendyAgentService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetOSUpdateStatus",
 			Handler:    _WendyAgentService_GetOSUpdateStatus_Handler,
+		},
+		{
+			MethodName: "SetHostname",
+			Handler:    _WendyAgentService_SetHostname_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

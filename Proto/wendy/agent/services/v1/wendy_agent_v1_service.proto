@@ -53,6 +53,11 @@ service WendyAgentService {
     // after post-reboot healthchecks passed, or rolled back with details on
     // which critical services failed and why.
     rpc GetOSUpdateStatus(GetOSUpdateStatusRequest) returns (GetOSUpdateStatusResponse);
+
+    // Set the device's hostname (and mDNS name) to a literal value. Unlike the
+    // first-boot device-name flow, no "wendyos-" prefix is derived: the hostname
+    // is applied exactly as given. The value is persisted so it survives reboots.
+    rpc SetHostname(SetHostnameRequest) returns (SetHostnameResponse);
 }
 
 message RunContainerRequest {
@@ -522,4 +527,16 @@ message GetOSUpdateStatusResponse {
     // the commit command's failure reason, including the OS updater's output,
     // so the failure is diagnosable without shell access to the device.
     string note = 9;
+}
+
+message SetHostnameRequest {
+    // The literal hostname to apply. Must be a valid DNS label: starts with a
+    // lowercase letter, followed by lowercase letters, digits, or hyphens, not
+    // ending in a hyphen, at most 63 characters. No prefix is added.
+    string hostname = 1;
+}
+
+message SetHostnameResponse {
+    // The hostname that was applied.
+    string hostname = 1;
 }

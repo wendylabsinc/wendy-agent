@@ -73,6 +73,7 @@ func newDeviceCmd() *cobra.Command {
 		newDeviceSetupCmd(),
 		newDeviceEnrollCmd(),
 		newDeviceUnenrollCmd(),
+		newDeviceRenameCmd(),
 		newDeviceUpdateCmd(),
 		newDeviceSyncTimeCmd(),
 		newVolumesCmd(),
@@ -810,17 +811,20 @@ func newDeviceUnenrollCmd() *cobra.Command {
 // cloudUnenrollCleanup revokes the asset's active certificates and then
 // deletes the asset record in Wendy Cloud. It authenticates with the user's
 // stored session for the device's cloud host (or cloudGRPC if provided).
-func cloudUnenrollCleanup(ctx context.Context, cloudGRPC, deviceCloudHost string, assetID int32) (certsRevoked int, assetDeleted bool, err error) {
-	target := cloudGRPC
+// dialCloud opens an authenticated gRPC connection to Wendy Cloud using the
+// user's stored session for target (or deviceCloudHost when target is empty).
+// It returns the connection and a context carrying the auth token; the caller
+// must Close the connection.
+func dialCloud(ctx context.Context, target, deviceCloudHost string) (*grpc.ClientConn, context.Context, error) {
 	if target == "" {
 		target = deviceCloudHost
 	}
 	auth, err := pickAuthEntry(target)
 	if err != nil {
-		return 0, false, fmt.Errorf("selecting cloud auth session: %w", err)
+		return nil, nil, fmt.Errorf("selecting cloud auth session: %w", err)
 	}
 	if len(auth.Certificates) == 0 {
-		return 0, false, fmt.Errorf("auth session has no certificates; re-run 'wendy auth login'")
+		return nil, nil, fmt.Errorf("auth session has no certificates; re-run 'wendy auth login'")
 	}
 	cert := auth.Certificates[0]
 
@@ -833,7 +837,7 @@ func cloudUnenrollCleanup(ctx context.Context, cloudGRPC, deviceCloudHost string
 			"",
 		)
 		if tlsErr != nil {
-			return 0, false, fmt.Errorf("loading TLS config: %w", tlsErr)
+			return nil, nil, fmt.Errorf("loading TLS config: %w", tlsErr)
 		}
 		transport = grpc.WithTransportCredentials(credentials.NewTLS(tlsCfg))
 	} else {
@@ -842,11 +846,17 @@ func cloudUnenrollCleanup(ctx context.Context, cloudGRPC, deviceCloudHost string
 
 	cloudConn, dialErr := grpc.NewClient(auth.CloudGRPC, transport)
 	if dialErr != nil {
-		return 0, false, fmt.Errorf("connecting to cloud: %w", dialErr)
+		return nil, nil, fmt.Errorf("connecting to cloud: %w", dialErr)
+	}
+	return cloudConn, cloudContext(ctx, auth), nil
+}
+
+func cloudUnenrollCleanup(ctx context.Context, cloudGRPC, deviceCloudHost string, assetID int32) (certsRevoked int, assetDeleted bool, err error) {
+	cloudConn, tokenCtx, err := dialCloud(ctx, cloudGRPC, deviceCloudHost)
+	if err != nil {
+		return 0, false, err
 	}
 	defer cloudConn.Close()
-
-	tokenCtx := cloudContext(ctx, auth)
 
 	// Revoke the asset's active certificates first so a stale identity cannot be
 	// reused, then delete the asset record.
