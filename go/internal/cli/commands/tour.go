@@ -250,9 +250,30 @@ func newTourWizardModel() tourWizardModel {
 	return tourWizardModel{input: ti}
 }
 
+// wendyLogoArt is the WendyOS mark rendered in ASCII: a small hollow square and
+// a larger solid square, both rotated 45° and sharing a vertical center — the
+// same composition as the app icon (see swift/WendyAgentMac/Design/Logo.svg).
+const wendyLogoArt = "" +
+	"                                █\n" +
+	"                              █████\n" +
+	"              █             █████████\n" +
+	"            ██ ██         █████████████\n" +
+	"          ██     ██     █████████████████\n" +
+	"        ██         ██ █████████████████████\n" +
+	"      ██            █████████████████████████\n" +
+	"    ██            █████████████████████████████\n" +
+	"      ██            █████████████████████████\n" +
+	"        ██         ██ █████████████████████\n" +
+	"          ██     ██     █████████████████\n" +
+	"            ██ ██         █████████████\n" +
+	"              █             █████████\n" +
+	"                              █████\n" +
+	"                                █"
+
 // ─── styles ───────────────────────────────────────────────────────────────────
 
 var (
+	wizLogoStyle     = lipgloss.NewStyle().Foreground(tui.Emerald400)
 	wizTitleStyle    = lipgloss.NewStyle().Bold(true).Foreground(tui.ColorPrimary)
 	wizSubStyle      = lipgloss.NewStyle().Foreground(tui.ColorDim)
 	wizBodyStyle     = lipgloss.NewStyle()
@@ -1082,6 +1103,8 @@ func (m tourWizardModel) View() string {
 
 func (m tourWizardModel) viewWelcome(w int) string {
 	var sb strings.Builder
+	logo := lipgloss.NewStyle().Width(w).Align(lipgloss.Center).Render(wizLogoStyle.Render(wendyLogoArt))
+	sb.WriteString(logo + "\n\n")
 	sb.WriteString(wizTitleStyle.Render("Welcome to Wendy") + "\n")
 	sb.WriteString(wizSubStyle.Render("Let's get you set up from scratch — takes about 5 minutes.") + "\n\n")
 	sb.WriteString(wizBodyStyle.Width(w).Render(
