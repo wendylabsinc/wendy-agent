@@ -11,6 +11,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
+	"github.com/wendylabsinc/wendy/go/internal/cli/diag"
 	"github.com/wendylabsinc/wendy/go/internal/cli/providers"
 	"github.com/wendylabsinc/wendy/go/internal/cli/swifttoolchain"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
@@ -500,6 +501,15 @@ func buildProject(ctx context.Context, dir string, option *BuildOption, appID, p
 	}
 }
 
+// wrapBuildError marks a build failure so the crash reporter classifies it as
+// unrecoverable.
+func wrapBuildError(err error) error {
+	if err == nil {
+		return nil
+	}
+	return diag.MarkBuildFailure(err)
+}
+
 func buildComposeProject(dir string) error {
 	cliLogln("Building Compose services...")
 	cmd := exec.Command("docker", "compose", "build")
@@ -507,7 +517,7 @@ func buildComposeProject(dir string) error {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("docker compose build: %w", err)
+		return fmt.Errorf("docker compose build: %w", wrapBuildError(err))
 	}
 	cliSuccess("Build completed successfully.")
 	return nil
@@ -528,7 +538,7 @@ func buildDockerProject(dir, imageName, platform, dockerfile string) error {
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		if err := cmd.Run(); err != nil {
-			return err
+			return wrapBuildError(err)
 		}
 		cliSuccess("Build completed successfully.")
 		return nil
@@ -552,7 +562,7 @@ func buildDockerProject(dir, imageName, platform, dockerfile string) error {
 	model := finalModel.(tui.SpinnerModel)
 	_, buildErr := model.Result()
 	if buildErr != nil {
-		return buildErr
+		return wrapBuildError(buildErr)
 	}
 
 	cliSuccess("Build completed successfully.")
