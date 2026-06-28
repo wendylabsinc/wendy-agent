@@ -191,6 +191,7 @@ func main() {
 	telemetrySvc := services.NewTelemetryService(logger, broadcaster, telemetryBuf)
 
 	deviceInfoSvc := services.NewDeviceInfoService(logger, hwDiscoverer)
+	timeSyncSvc := services.NewTimeSyncService(logger, timesyncMgr)
 	wifiSvc := services.NewWiFiService(logger, networkMgr)
 	bluetoothSvc := services.NewBluetoothService(logger, btManager)
 	agentUpdateSvc := services.NewAgentUpdateService(logger, installer)
@@ -397,6 +398,7 @@ func main() {
 		agentpb.RegisterWendyProvisioningServiceServer(srv, provisioningSvc)
 		agentpb.RegisterWendyTelemetryServiceServer(srv, telemetrySvc)
 		agentpbv2.RegisterWendyDeviceInfoServiceServer(srv, deviceInfoSvc)
+		agentpbv2.RegisterWendyTimeSyncServiceServer(srv, timeSyncSvc)
 		agentpbv2.RegisterWendyWiFiServiceServer(srv, wifiSvc)
 		agentpbv2.RegisterWendyBluetoothServiceServer(srv, bluetoothSvc)
 		agentpbv2.RegisterWendyAgentUpdateServiceServer(srv, agentUpdateSvc)
