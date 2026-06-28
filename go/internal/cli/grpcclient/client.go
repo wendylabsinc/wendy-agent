@@ -16,6 +16,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
+	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
@@ -63,6 +64,7 @@ type AgentConnection struct {
 	ProvisioningService agentpb.WendyProvisioningServiceClient
 	TelemetryService    agentpb.WendyTelemetryServiceClient
 	FileSyncService     agentpb.WendyFileSyncServiceClient
+	TimeSyncService     agentpbv2.WendyTimeSyncServiceClient
 }
 
 func Connect(ctx context.Context, address string) (*AgentConnection, error) {
@@ -210,6 +212,7 @@ func newAgentConnection(conn *grpc.ClientConn) *AgentConnection {
 		ProvisioningService: agentpb.NewWendyProvisioningServiceClient(conn),
 		TelemetryService:    agentpb.NewWendyTelemetryServiceClient(conn),
 		FileSyncService:     agentpb.NewWendyFileSyncServiceClient(conn),
+		TimeSyncService:     agentpbv2.NewWendyTimeSyncServiceClient(conn),
 	}
 }
 
