@@ -30,6 +30,7 @@ func main() {
 			os.Exit(0)
 		}
 		fmt.Fprintln(os.Stderr, tui.ErrorMessage(formatError(err).Error()))
+		commands.MaybeRunCrashReport(context.Background(), executed, err, errorClass(err))
 		os.Exit(1)
 	}
 }
