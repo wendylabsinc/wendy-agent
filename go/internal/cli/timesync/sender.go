@@ -18,6 +18,7 @@ const (
 // roughtimeQueryFn is indirected for tests.
 var roughtimeQueryFn = roughtime.Query
 
+// Process-lifetime cache (no TTL): the CLI is one-shot, so one proof per run.
 var (
 	proofMu     sync.Mutex
 	proofPkt    []byte

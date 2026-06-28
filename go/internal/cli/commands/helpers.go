@@ -1490,10 +1490,6 @@ func ExcludeProviders(keys ...string) resolveOption {
 	}
 }
 
-// resolveTarget inspects the --device flag and returns either an external
-// provider device or falls back to the gRPC agent connection. If no device
-// is specified and no default is configured, an interactive device picker
-// is presented.
 // resolveTarget resolves the target device and, for agent connections,
 // best-effort corrects a lagging device clock before the caller operates on it
 // (issue #1171). This is the single funnel every command uses to obtain a
@@ -1509,6 +1505,10 @@ func resolveTarget(ctx context.Context, opts ...resolveOption) (*SelectedDevice,
 	return sel, nil
 }
 
+// resolveTargetInner inspects the --device flag and returns either an external
+// provider device or falls back to the gRPC agent connection. If no device
+// is specified and no default is configured, an interactive device picker
+// is presented.
 func resolveTargetInner(ctx context.Context, opts ...resolveOption) (*SelectedDevice, error) {
 	cfg := resolveConfig{excludeProviderKeys: make(map[string]bool)}
 	for _, o := range opts {

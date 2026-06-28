@@ -36,7 +36,7 @@ func NewTimeSyncService(logger *zap.Logger, mgr *timesync.Manager) *TimeSyncServ
 	return &TimeSyncService{
 		logger:  logger,
 		now:     time.Now,
-		process: timesync.ProcessMulticastPacket,
+		process: timesync.SafeProcessPacket,
 		apply:   apply,
 	}
 }

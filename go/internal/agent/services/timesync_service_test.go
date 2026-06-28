@@ -58,7 +58,7 @@ func TestSyncClockAdvancesWhenProofAhead(t *testing.T) {
 func TestSyncClockNoOpWhenProofBehind(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	proof := time.Unix(1_600_000_000, 0) // older than current clock
-	svc, _ := newTestTimeSyncService(now, proof, nil)
+	svc, applied := newTestTimeSyncService(now, proof, nil)
 
 	resp, err := svc.SyncClock(context.Background(), &agentpbv2.SyncClockRequest{Proof: []byte("x")})
 	if err != nil {
@@ -69,6 +69,9 @@ func TestSyncClockNoOpWhenProofBehind(t *testing.T) {
 	}
 	if resp.GetAfterUnixNanos() != now.UnixNano() {
 		t.Fatalf("after = %d, want %d (unchanged)", resp.GetAfterUnixNanos(), now.UnixNano())
+	}
+	if !applied.IsZero() {
+		t.Fatalf("apply must not be called when proof is behind; got %v", *applied)
 	}
 }
 

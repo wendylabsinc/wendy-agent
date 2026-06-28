@@ -76,7 +76,7 @@ func debugClock(format string, args ...any) {
 	}
 }
 
-// formatClockSkew renders a coarse, human-friendly magnitude (e.g. "56y", "3h").
+// formatClockSkew renders a coarse, human-friendly magnitude (e.g. "56y", "3h", "5m").
 func formatClockSkew(d time.Duration) string {
 	switch {
 	case d >= 365*24*time.Hour:
@@ -85,6 +85,8 @@ func formatClockSkew(d time.Duration) string {
 		return fmt.Sprintf("%dd", int(d/(24*time.Hour)))
 	case d >= time.Hour:
 		return fmt.Sprintf("%dh", int(d/time.Hour))
+	case d >= time.Minute:
+		return fmt.Sprintf("%dm", int(d/time.Minute))
 	default:
 		return d.Round(time.Minute).String()
 	}

@@ -92,3 +92,15 @@ func TestMaybeFixClock_BestEffortOnErrors(t *testing.T) {
 	// Nil conn: must not panic.
 	maybeFixClock(context.Background(), nil)
 }
+
+func TestMaybeFixClock_BestEffortOnProofFetchError(t *testing.T) {
+	host := time.Unix(1_700_000_000, 0)
+	withClockTestSeams(t, host, nil, errors.New("no internet"))
+	fake := &fakeTimeSyncClient{
+		clockResp: &agentpbv2.GetClockResponse{UnixNanos: time.Unix(0, 0).UnixNano()}, // device behind -> would relay
+	}
+	maybeFixClock(context.Background(), &grpcclient.AgentConnection{TimeSyncService: fake})
+	if fake.syncCalls != 0 {
+		t.Fatalf("SyncClock calls = %d, want 0 when proof fetch fails", fake.syncCalls)
+	}
+}
