@@ -238,3 +238,23 @@ wendy analytics enable
 ```
 
 Analytics is automatically disabled in CI environments.
+
+### Crash Reports
+
+On unrecoverable failures the CLI may offer to send a **redacted** crash report. This is opt-in: a preview of what will be sent is shown before any data leaves your machine. A successful submission returns a `WDY-XXXXXX` tracking number and a status URL. You can subscribe to be notified when a release resolves the report.
+
+Disable the prompt:
+
+```sh
+export WENDY_CRASHREPORT=false
+```
+
+Crash reports are also automatically disabled in CI environments.
+
+### Platform Banner
+
+Every `wendy` command prints a one-line diagnostic banner to stderr showing the CLI version, developer OS, and (when connected) the target device's OS, hardware, and agent version. To suppress it:
+
+```sh
+export WENDY_NO_BANNER=1
+```

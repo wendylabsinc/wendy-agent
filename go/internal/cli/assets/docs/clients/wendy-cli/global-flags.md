@@ -55,9 +55,21 @@ Its state is persisted in `~/.wendy/config.json`:
 | `completionPromptDismissed` | bool | The user answered `n` to the prompt; permanently suppresses it. |
 | `lastCompletionPromptCheck` | RFC3339 timestamp | When the prompt was last shown; throttles it to once per 24-hour window. |
 
+## Platform banner
+
+On every command, the CLI prints a one-line diagnostic banner to **stderr** showing the CLI version and the developer's OS. When a device is connected, the banner also includes the target device's OS, hardware model, and agent version. Example:
+
+```
+wendy v1.4.2 · macOS 15.1 · device: WendyOS 2.3.0 on rpi5 (agent v1.4.1)
+```
+
+The banner is written to stderr so it never interferes with piped or JSON output. Set `WENDY_NO_BANNER=1` (or any non-empty value) to suppress it.
+
 ## Environment variables
 
 | Variable | Description |
 |----------|-------------|
 | `GITHUB_TOKEN` | When set, the CLI uses it as a bearer token for GitHub API release checks and agent update lookups. When absent, those requests are made unauthenticated. |
 | `WENDY_ANALYTICS` | Set to `false` to disable analytics. |
+| `WENDY_NO_BANNER` | Set to any non-empty value to suppress the per-command platform banner printed to stderr. |
+| `WENDY_CRASHREPORT` | Set to `false` to disable the opt-in crash report prompt on unrecoverable failures. |

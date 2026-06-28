@@ -55,3 +55,37 @@ Analytics can be disabled in several ways:
    wendy analytics disable
    ```
 3. **CI environments** — analytics are hard-disabled automatically when any standard CI environment variable is detected (e.g. `CI=true`). There is no opt-in escape hatch in CI.
+
+## Crash reports & fix subscriptions
+
+When the CLI encounters an **unrecoverable failure** (for example, a docker build error), it may offer to send a redacted crash report to Wendy Labs. This is strictly **opt-in**: the CLI shows a preview of exactly what will be sent before asking for confirmation.
+
+### What is sent
+
+The crash bundle contains only redacted diagnostic data — command name, error category, CLI version, and OS. File paths, hostnames, environment variable values, source code, and free-form error text are stripped before the preview is shown. You can inspect the full preview before deciding whether to submit.
+
+### Tracking number
+
+On a successful submission you receive a `WDY-XXXXXX` tracking number and a status URL, for example:
+
+```
+Crash report submitted: WDY-042891
+Track progress: https://wendy.dev/issues/WDY-042891
+```
+
+### Fix subscriptions
+
+After submitting a report, the CLI asks whether you'd like to be notified when a release resolves it:
+
+- **macOS with the Wendy app installed:** a push notification is delivered to the macOS app.
+- **CLI only:** a brief in-CLI notification is shown at the end of the next `wendy` command you run after the fix ships.
+
+Subscription is per-report and never requires creating an account.
+
+### Disabling crash reports
+
+```sh
+WENDY_CRASHREPORT=false wendy <command>
+```
+
+Crash reports are also **never sent in CI environments** — the prompt is suppressed automatically whenever a standard CI environment variable is detected (e.g. `CI=true`), matching the same rule used for analytics.
