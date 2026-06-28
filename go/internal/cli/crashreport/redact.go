@@ -9,11 +9,19 @@ import (
 )
 
 var (
-	reBearer = regexp.MustCompile(`(?i)(bearer\s+)[A-Za-z0-9._\-]+`)
+	reBearer = regexp.MustCompile(`(?i)(bearer\s+)[A-Za-z0-9._+/=\-]+`)
 	reToken  = regexp.MustCompile(`(?i)(token|api[_-]?key|secret|password)(["']?\s*[:=]\s*["']?)[^\s"',]+`)
 	reEmail  = regexp.MustCompile(`[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}`)
 	reIPv4   = regexp.MustCompile(`\b(?:\d{1,3}\.){3}\d{1,3}\b`)
-	reIPv6   = regexp.MustCompile(`\b(?:[0-9a-fA-F]{1,4}:){2,7}[0-9a-fA-F]{0,4}\b`)
+	// reIPv6 matches compressed IPv6 (which must contain "::") and full 8-group form.
+	// The "::"-requirement prevents false positives on clock timestamps like "12:34:56".
+	// An optional zone ID suffix (%eth0) is also consumed to avoid partial leakage.
+	reIPv6 = regexp.MustCompile(
+		`(?:::[0-9a-fA-F]{0,4}(?::[0-9a-fA-F]{1,4}){0,6}` +
+			`|[0-9a-fA-F]{1,4}(?::[0-9a-fA-F]{1,4}){0,5}::[0-9a-fA-F]{0,4}(?::[0-9a-fA-F]{1,4}){0,6}` +
+			`|(?:[0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4})` +
+			`(?:%[a-zA-Z0-9._-]+)?`,
+	)
 )
 
 // Redact removes or masks sensitive data from a single string: the user's home
