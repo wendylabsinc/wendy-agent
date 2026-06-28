@@ -190,6 +190,7 @@ func newBuildCmd() *cobra.Command {
 			if target != nil && target.Agent != nil {
 				versionResp, err := target.Agent.AgentService.GetAgentVersion(cmd.Context(), &agentpb.GetAgentVersionRequest{})
 				if err == nil {
+					printTargetBanner(cmd, versionResp)
 					agentOS := versionResp.GetOs()
 					if agentOS == "" {
 						agentOS = "linux"
