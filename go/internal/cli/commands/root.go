@@ -37,6 +37,12 @@ func NewRootCmd() *cobra.Command {
 				return nil
 			}
 
+			// Print a compact platform summary on every user-facing command.
+			// verbose=false: run/watch own a local --verbose with a different meaning,
+			// so a root persistent --verbose flag would collide; always use one-line
+			// mode here. Per-command verbose flags are handled by those commands.
+			printPlatformBanner(cmd, false)
+
 			if !cmd.Root().PersistentFlags().Changed("json") && !isInteractiveTerminal() {
 				jsonOutput = true
 			}
