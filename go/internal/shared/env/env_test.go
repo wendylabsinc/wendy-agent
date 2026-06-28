@@ -34,3 +34,28 @@ func TestIsCI_IgnoresWhitespaceOnlyValues(t *testing.T) {
 		t.Error("IsCI should be false for whitespace-only CI value")
 	}
 }
+
+func TestCrashReportDefaultsTrue(t *testing.T) {
+	t.Setenv("WENDY_CRASHREPORT", "")
+	if !CrashReport() {
+		t.Error("CrashReport should default to true")
+	}
+}
+
+func TestCrashReportDisabled(t *testing.T) {
+	t.Setenv("WENDY_CRASHREPORT", "false")
+	if CrashReport() {
+		t.Error("CrashReport should be false when WENDY_CRASHREPORT=false")
+	}
+}
+
+func TestNoBanner(t *testing.T) {
+	t.Setenv("WENDY_NO_BANNER", "")
+	if NoBanner() {
+		t.Error("NoBanner should be false when unset")
+	}
+	t.Setenv("WENDY_NO_BANNER", "1")
+	if !NoBanner() {
+		t.Error("NoBanner should be true when set")
+	}
+}

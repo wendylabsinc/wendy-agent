@@ -32,6 +32,29 @@ func Analytics() bool {
 	}
 }
 
+// CrashReport reports whether the opt-in crash-reporter prompt may run.
+// Defaults to true; only WENDY_CRASHREPORT=false disables it. Mirrors
+// Analytics() parsing.
+func CrashReport() bool {
+	v := strings.TrimSpace(os.Getenv("WENDY_CRASHREPORT"))
+	switch strings.ToLower(v) {
+	case "", "true":
+		return true
+	case "false":
+		return false
+	default:
+		log.Printf("WARNING: invalid WENDY_CRASHREPORT=%q, expected \"true\" or \"false\", defaulting to true", v)
+		return true
+	}
+}
+
+// NoBanner reports whether the startup platform banner should be suppressed.
+// Any non-empty value other than "false" suppresses it.
+func NoBanner() bool {
+	v := strings.ToLower(strings.TrimSpace(os.Getenv("WENDY_NO_BANNER")))
+	return v != "" && v != "false"
+}
+
 // CIEnvVars are env vars whose presence (with any non-empty, non-whitespace
 // value) indicates the process is running inside a CI system. Exported so
 // tests in other packages can clear them without redefining the list.
