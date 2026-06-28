@@ -42,6 +42,18 @@ func MaybeRunCrashReport(ctx context.Context, executed *cobra.Command, err error
 	fmt.Fprintln(out, "\nThe following (redacted) information will be sent:")
 	fmt.Fprintln(out, info.Block())
 	fmt.Fprintf(out, "Error: %s\n", bundle.ErrorChain)
+	if len(bundle.LogTail) > 0 {
+		fmt.Fprintln(out, "\nRecent log lines:")
+		for _, l := range bundle.LogTail {
+			fmt.Fprintln(out, l)
+		}
+	}
+	if len(bundle.BuildOutputTail) > 0 {
+		fmt.Fprintln(out, "\nBuild output:")
+		for _, l := range bundle.BuildOutputTail {
+			fmt.Fprintln(out, l)
+		}
+	}
 	if !crashPromptYesNo("Send this report?", false) {
 		fmt.Fprintln(out, "Report not sent.")
 		return

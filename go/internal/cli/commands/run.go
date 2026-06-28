@@ -24,6 +24,7 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
+	"github.com/wendylabsinc/wendy/go/internal/cli/diag"
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/cli/providers"
 	"github.com/wendylabsinc/wendy/go/internal/cli/swifttoolchain"
@@ -157,21 +158,29 @@ func contextWithPostStartAgentHook(ctx context.Context, appCfg *appconfig.AppCon
 }
 
 func cliLog(format string, args ...any) {
-	fmt.Print(cliStyle.Render(fmt.Sprintf(format, args...)))
+	raw := fmt.Sprintf(format, args...)
+	diag.Record(raw)
+	fmt.Print(cliStyle.Render(raw))
 }
 
 func cliLogln(format string, args ...any) {
-	fmt.Println(cliStyle.Render(fmt.Sprintf(format, args...)))
+	raw := fmt.Sprintf(format, args...)
+	diag.Record(raw)
+	fmt.Println(cliStyle.Render(raw))
 }
 
 func cliNotice(format string, args ...any) {
-	fmt.Fprintln(os.Stderr, cliNoticeStyle.Render(fmt.Sprintf(format, args...)))
+	raw := fmt.Sprintf(format, args...)
+	diag.Record(raw)
+	fmt.Fprintln(os.Stderr, cliNoticeStyle.Render(raw))
 }
 
 var cliSuccessStyle = lipgloss.NewStyle().Foreground(tui.ColorPrimary)
 
 func cliSuccess(format string, args ...any) {
-	fmt.Println(cliSuccessStyle.Render(fmt.Sprintf(format, args...)))
+	raw := fmt.Sprintf(format, args...)
+	diag.Record(raw)
+	fmt.Println(cliSuccessStyle.Render(raw))
 }
 
 func unpackProgressTitle(progress *agentpb.CreateContainerProgress) string {
@@ -1256,7 +1265,7 @@ func runWithProvider(ctx context.Context, p providers.DeviceProvider, device mod
 			cliLogln("Building Swift project for %s...", p.DisplayName())
 			imageName, err := buildSwiftDockerImage(ctx, projectPath, product, runtime.GOARCH, &dimWriter{}, os.Stderr)
 			if err != nil {
-				return fmt.Errorf("building Swift Docker image: %w", err)
+				return wrapBuildError(fmt.Errorf("building Swift Docker image: %w", err))
 			}
 			app = ib.BuildFromImage(device, product, imageName)
 		}
@@ -1274,7 +1283,7 @@ func runWithProvider(ctx context.Context, p providers.DeviceProvider, device mod
 			app, err = p.Build(ctx, device, projectPath, product, opts.debug)
 		}
 		if err != nil {
-			return fmt.Errorf("provider build: %w", err)
+			return wrapBuildError(fmt.Errorf("provider build: %w", err))
 		}
 	}
 
