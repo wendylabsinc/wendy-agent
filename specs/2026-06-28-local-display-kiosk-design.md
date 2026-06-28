@@ -95,23 +95,48 @@ Three independently-shippable layers:
 - **Service:** a `wendyos-kiosk.service` systemd unit that starts cage + browser
   on the seat/VT that owns the display, reads its target URL from a file the
   agent writes (see Layer 2), and restarts on target change.
-- **Feature gate:** a `DISTRO_FEATURES`/image-feature flag (e.g.
-  `wendyos-display`) so the entire stack is absent from headless builds. Default
-  **off**; headless image output must be unchanged when off.
+- **Feature gate:** a `wendyos-display` toggle so the stack is absent from
+  headless builds. Note `wayland` is currently removed at the *distro* level
+  (`wendyos.conf`), shared by all images — so this most likely means a separate
+  display-enabled image/distro variant, not a flag on the base distro (see
+  "The real blocker" below). Headless image output must be unchanged when off.
 
-### Per-board driver stack
+### The real blocker is a config decision, not missing hardware support
+
+An audit of the external Yocto layers (`wendyos-builder`, `meta-wendyos-rpi`)
+found the key fact for scoping: **WendyOS deliberately strips graphics from the
+distro**, but the underlying kernel/driver support is present. The blocker is a
+feature-flag decision, not absent capability.
+
+- `conf/distro/wendyos.conf:99–105` does
+  `DISTRO_FEATURES:remove = " x11 wayland sysvinit ptest 3g "` — Wayland and X11
+  are explicitly removed distro-wide (mirrored in `meta-wendyos-rpi`'s
+  `edgeos-rpi.conf:31–37`).
+- `wendyos.conf:108` adds `DISTRO_FEATURES:append = " opengl"` — but the comment
+  says this is *for TensorRT*, i.e. headless GPU compute, not rendering.
+- No image installs a compositor, browser, `libdrm`, `libgbm`, or mesa runtime.
+
+Because `wayland` is removed at the *distro* level (shared by all images), the
+feature gate (`wendyos-display`) most likely needs to be a **separate
+display-enabled image/distro variant** rather than a flag toggled on the base
+distro — re-adding `wayland` distro-wide would change every image. Confirm
+during Layer-1 implementation.
+
+### Per-board driver stack (evidenced)
 
 | | Raspberry Pi 4/5 | NVIDIA Jetson |
 |---|---|---|
-| KMS driver | `vc4`/`v3d` (mainline, well-supported) | Tegra DRM (`tegra-udrm` / NVIDIA display) |
-| Userspace GL | mesa (`libgles2`, `libegl`, `libgbm`) | NVIDIA EGL/GLES from the L4T BSP |
-| Maturity | **Lower risk** — mainline KMS | **Higher risk** — depends on L4T display libs being in the image; Tegra display is the harder lift |
-| Open question | Confirm vc4 KMS enabled in current Pi defconfig | Confirm L4T display userspace is even shipped in the Jetson BSP, or headless-only |
+| KMS kernel driver | **Present & compiled in** — `CONFIG_DRM=y`, `CONFIG_DRM_VC4=y`, `CONFIG_DRM_FBDEV_EMULATION=y` (`meta-raspberrypi/.../vc4graphics.cfg`); `vc4-kms-v3d` overlay set via `VC4DTBO` in the machine confs | **Present (upstream meta-tegra)** — Tegra DRM/display controller in the BSP kernel/DT; WendyOS kernel bbappends touch only USB-gadget/crypto, not display |
+| Userspace GL | **Available in-layer, not installed** — mesa built with `gallium vc4 v3d kmsro` (`mesa_%.bbappend`); just absent from `IMAGE_INSTALL` | **EGL/GLES core already shipped** — `tegra-libraries-eglcore` + `glescore` installed for the container runtime; full display stack `nvidia-l4t-graphics` (`libEGL_nvidia`, `libGLESv2_nvidia`) exists but is **commented out** in `packagegroup-nvidia-container.bb:51` |
+| Missing for kiosk | `libdrm`, `libgbm`, mesa runtime, `libxkbcommon`, compositor, browser; re-enable `wayland`; set `gpu_mem≥128` for 1080p | `libdrm`, `libgbm`, `nvidia-l4t-graphics`, compositor, browser; re-enable `wayland` |
+| Risk | **Low** — mainline vc4 KMS, well-trodden kiosk path | **Moderate** — needs `nvidia-l4t-graphics` enabled + verified against the cage/Wayland-EGL path; lower than first feared since EGL/GLES core already ships and DRM is in the BSP |
 
-The Pi path is the lower-risk reference implementation; the Jetson path needs a
-spike to confirm the L4T BSP ships display userspace at all. **Both are
-in-scope, but the Jetson display-userspace question is the single biggest
-unknown in this design** and should be answered first (see Open Questions).
+Net: **neither board is fundamentally blocked.** Both have the KMS driver; both
+are missing the same userspace (libdrm/gbm + compositor + browser) and both have
+`wayland` removed at the distro level. Jetson additionally needs the
+already-packaged-but-disabled `nvidia-l4t-graphics`. The Pi path is the
+lower-risk reference implementation; Jetson follows once `nvidia-l4t-graphics`
+on the cage/Wayland path is validated on hardware.
 
 ## Layer 2 — Agent (this repo)
 
@@ -205,21 +230,29 @@ fullscreen-friendly page and declares the `display` entitlement — the canonica
 
 ## Risks & open questions
 
-1. **Jetson display userspace (highest risk).** Does the L4T BSP in the Jetson
-   image actually ship EGL/GLES display libraries, or is it compute-only? A
-   spike must answer this before committing to co-equal Jetson support — it may
-   turn out Pi ships first and Jetson follows once BSP display support is
-   confirmed.
-2. **Image size budget.** Chromium is large. May force WPE/cog WebKit, or a
-   separate display-enabled image variant rather than a feature flag on the base
-   image.
-3. **Boot UX.** What shows before an app claims the display — blank, WendyOS
+1. **Distro-level `wayland` removal (top structural decision).** `wayland`/`x11`
+   are removed in `wendyos.conf` for *all* images. Re-enabling it on the base
+   distro changes every build; the likely answer is a dedicated
+   display-enabled image/distro variant. Decide this before any Layer-1 work —
+   it shapes the whole OS-image change.
+2. **Jetson `nvidia-l4t-graphics` on the Wayland path (moderate).** The package
+   exists but is disabled, and the EGL/GLES *core* already ships. The open
+   question is no longer "does display userspace exist" (it does) but "does
+   `nvidia-l4t-graphics` + cage drive HDMI via Wayland-EGL/DRM-KMS on Orin/Thor
+   cleanly?" — a hardware spike, not a BSP unknown.
+3. **Image size budget.** Chromium is large (~300 MB; expect +200–500 MB total).
+   Strongly consider **cog/WPE WebKit** as the default kiosk browser on size
+   grounds, with Chromium as an opt-in for sites needing Blink.
+4. **GPU memory (Pi).** No explicit `gpu_mem` is set; firmware defaults are
+   borderline for a display. Set `gpu_mem≥128` via a `config.txt` bbappend for
+   1080p.
+5. **Boot UX.** What shows before an app claims the display — blank, WendyOS
    splash, or a "device ready, no display app" status page? Recommend a simple
    built-in status page.
-4. **Security.** The kiosk browser renders `localhost` only by default; it must
+6. **Security.** The kiosk browser renders `localhost` only by default; it must
    not be a pivot to arbitrary remote URLs unless explicitly configured. Keep
    the target strictly `127.0.0.1` for v1.
-5. **Cross-repo coordination.** Layers 1 and 2 live in different repos and must
+7. **Cross-repo coordination.** Layers 1 and 2 live in different repos and must
    land in a compatible order (agent no-op-safe first, OS image second).
 
 ## Roadmap — native in-container GUI (out of scope here)
@@ -246,8 +279,10 @@ working unchanged.
 
 ## Recommended phasing
 
-1. **Spike:** confirm Jetson L4T display userspace + pick the browser (Chromium
-   vs WPE). Answers risks 1 and 2.
+1. **Decide image strategy + spike:** pick the display-enabled-variant approach
+   (risk 1), pick the browser (cog/WPE vs Chromium, risk 3), and validate the
+   cage + Wayland-EGL/DRM-KMS path on real hardware — Pi first (low risk), then
+   Jetson with `nvidia-l4t-graphics` enabled (risk 2).
 2. **Agent (this repo):** `display` entitlement, target-file publish, headless
    no-op, capability field, tests. Ships safely even before any OS image
    supports it.
