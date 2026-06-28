@@ -1,6 +1,7 @@
 import AppKit
 import OSLog
 import SwiftUI
+import UserNotifications
 import WendyAgentCore
 
 @MainActor
@@ -46,6 +47,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         if self.welcomeAndPermissions.shouldShowWelcomeAndPermissions {
             self.showWelcomeAndPermissionsWindow()
         }
+
+        CrashFixNotifications.shared.registerForPush()
+    }
+
+    func application(
+        _ application: NSApplication,
+        didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data
+    ) {
+        CrashFixNotifications.shared.didRegister(deviceToken: deviceToken)
+    }
+
+    func application(
+        _ application: NSApplication,
+        didFailToRegisterForRemoteNotificationsWithError error: any Error
+    ) {
+        // Best-effort: push simply won't be available; the CLI polling fallback still works.
+        logger.warning(
+            "Failed to register for remote notifications: \(error.localizedDescription, privacy: .public)"
+        )
     }
 
     func statusMenuControllerDidSelectAbout(_ controller: StatusMenuController) {
