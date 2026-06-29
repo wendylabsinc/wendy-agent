@@ -374,6 +374,10 @@ func (s *ContainerService) startGroup(
 		if s.monitor != nil {
 			s.monitor.ClearExplicitStop(id)
 		}
+		if err := s.containerd.SetStoppedByUser(ctx, id, false); err != nil {
+			s.logger.Warn("failed to clear stopped-by-user mark",
+				zap.String("container_id", id), zap.Error(err))
+		}
 		s.registerContainerWithMonitor(ctx, id, restartPolicy)
 	}
 
@@ -505,6 +509,13 @@ func (s *ContainerService) streamContainerOutput(
 	if s.monitor != nil {
 		s.monitor.ClearExplicitStop(appName)
 	}
+	// Clear the persisted stop mark too, so a user-initiated start re-enables
+	// boot reconcile for this app. Best-effort. (Only user starts reach this
+	// path; the boot reconcile starts via the monitor and never clears it.)
+	if err := s.containerd.SetStoppedByUser(ctx, appName, false); err != nil {
+		s.logger.Warn("failed to clear stopped-by-user mark",
+			zap.String("app_name", appName), zap.Error(err))
+	}
 
 	s.registerContainerWithMonitor(ctx, appName, restartPolicy)
 
@@ -613,6 +624,10 @@ func (s *ContainerService) AttachContainer(stream grpc.BidiStreamingServer[agent
 	if s.monitor != nil {
 		s.monitor.ClearExplicitStop(appName)
 	}
+	if err := s.containerd.SetStoppedByUser(ctx, appName, false); err != nil {
+		s.logger.Warn("failed to clear stopped-by-user mark",
+			zap.String("app_name", appName), zap.Error(err))
+	}
 	s.registerContainerWithMonitor(ctx, appName, nil)
 
 	if err := stream.Send(&agentpb.RunContainerLayersResponse{
@@ -716,6 +731,15 @@ func (s *ContainerService) StopContainer(ctx context.Context, req *agentpb.StopC
 			}
 		}
 		return nil, status.Errorf(codes.Internal, "failed to stop container: %v", err)
+	}
+	// Persist the stop so it survives a reboot: the boot reconcile skips
+	// containers carrying this mark, so a deliberate stop is not undone by the
+	// restart policy. Best-effort — a label failure must not fail the stop.
+	for _, id := range ids {
+		if err := s.containerd.SetStoppedByUser(ctx, id, true); err != nil {
+			s.logger.Warn("failed to persist stopped-by-user mark",
+				zap.String("container_id", id), zap.Error(err))
+		}
 	}
 	s.logger.Info("App stopped", zap.String("app_name", appName), zap.Int("service_count", len(ids)))
 	return &agentpb.StopContainerResponse{}, nil

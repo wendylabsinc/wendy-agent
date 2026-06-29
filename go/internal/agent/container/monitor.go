@@ -144,6 +144,45 @@ func (m *ContainerMonitor) Start(ctx context.Context) {
 	go m.Run(ctx)
 }
 
+// ReconcileBootContainers brings apps back after a device boot. containerd
+// keeps container definitions across a reboot but loses their tasks, so without
+// this every app sits stopped until manually started. It registers each
+// container whose restart policy keeps it running (and that the user didn't
+// explicitly stop) under that policy, then runs one immediate reconcile so the
+// stopped ones are (re)launched without waiting for the next tick. Intended to
+// be called once at agent startup.
+//
+// Apps deployed with the default policy (unless-stopped) come back; apps
+// deployed with --no-restart, and apps the user explicitly stopped, stay down.
+func (m *ContainerMonitor) ReconcileBootContainers(ctx context.Context) {
+	bcs, err := m.containerd.ListBootContainers(ctx)
+	if err != nil {
+		m.logger.Error("Failed to list boot containers", zap.Error(err))
+		return
+	}
+	if len(bcs) == 0 {
+		return
+	}
+	for _, bc := range bcs {
+		// Empty policy means "default keep-running"; map it to unless-stopped.
+		policy := RestartUnlessStopped
+		if bc.RestartPolicy != "" {
+			p, parseErr := ParseRestartPolicy(bc.RestartPolicy)
+			if parseErr != nil {
+				m.logger.Warn("Skipping boot container with unparseable restart policy",
+					zap.String("app_name", bc.Name), zap.String("policy", bc.RestartPolicy), zap.Error(parseErr))
+				continue
+			}
+			policy = p
+		}
+		m.Register(bc.Name, policy, bc.MaxRetries)
+	}
+	m.logger.Info("Reconciling apps on boot", zap.Int("count", len(bcs)))
+	// Immediate pass: start the ones that aren't running yet (the common
+	// post-reboot case) instead of waiting up to one tick interval.
+	m.checkContainers(ctx)
+}
+
 // Stop signals the monitor to stop.
 func (m *ContainerMonitor) Stop() {
 	close(m.stopCh)

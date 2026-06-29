@@ -2376,6 +2376,70 @@ func (c *Client) DeleteContainer(ctx context.Context, appID string, deleteImage 
 // callers can display individual service state. This ensures that
 // stop/start/remove — which address by appID — operate on the same granularity
 // shown in the list and picker.
+// ListBootContainers returns the containers that should be (re)started when the
+// agent boots: every Wendy container whose restart policy keeps it running
+// (anything other than "no") and that was NOT explicitly stopped by the user.
+// The returned Name is the containerd container ID (the key the restart monitor
+// uses — bare appID for single-container apps, "{appID}_{serviceName}" for
+// services). An absent/empty restart-policy label is treated as keep-running, so
+// apps deployed with the default policy come back on boot.
+func (c *Client) ListBootContainers(ctx context.Context) ([]services.BootContainer, error) {
+	ctx = c.withNamespace(ctx)
+
+	ctrs, err := c.client.Containers(ctx, fmt.Sprintf("labels.%q", labelKeyAppVersion))
+	if err != nil {
+		return nil, fmt.Errorf("listing containers: %w", err)
+	}
+
+	var result []services.BootContainer
+	for _, ctr := range ctrs {
+		info, err := ctr.Info(ctx)
+		if err != nil {
+			c.logger.Warn("Failed to get container info", zap.String("id", ctr.ID()), zap.Error(err))
+			continue
+		}
+		if info.Labels[labelKeyStoppedByUser] == "true" {
+			continue // user stopped it on purpose — stay down across reboot
+		}
+		policy, maxRetries := parseRestartPolicyLabel(info.Labels[labelKeyRestartPolicy])
+		if policy == "no" {
+			continue // opted out of auto-restart (e.g. wendy run --no-restart)
+		}
+		result = append(result, services.BootContainer{
+			Name:          ctr.ID(),
+			RestartPolicy: policy,
+			MaxRetries:    maxRetries,
+		})
+	}
+	return result, nil
+}
+
+// SetStoppedByUser sets or clears the persisted stopped-by-user label on a
+// single container (keyed by container ID). Used by the stop/start RPCs so a
+// deliberate stop survives a reboot. A missing container is not an error — the
+// caller may be operating on a best-effort set of IDs.
+func (c *Client) SetStoppedByUser(ctx context.Context, containerID string, stopped bool) error {
+	ctx = c.withNamespace(ctx)
+	ctr, err := c.client.LoadContainer(ctx, containerID)
+	if err != nil {
+		if errdefs.IsNotFound(err) {
+			return nil
+		}
+		return fmt.Errorf("loading container %q: %w", containerID, err)
+	}
+	return ctr.Update(ctx, func(ctx context.Context, client *containerd.Client, c *containers.Container) error {
+		if c.Labels == nil {
+			c.Labels = map[string]string{}
+		}
+		if stopped {
+			c.Labels[labelKeyStoppedByUser] = "true"
+		} else {
+			delete(c.Labels, labelKeyStoppedByUser)
+		}
+		return nil
+	})
+}
+
 func (c *Client) ListContainers(ctx context.Context) ([]*agentpb.AppContainer, error) {
 	ctx = c.withNamespace(ctx)
 
