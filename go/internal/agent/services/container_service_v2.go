@@ -69,6 +69,14 @@ func (s *ContainerServiceV2) ListContainers(_ *agentpbv2.ListContainersRequest, 
 		return status.Errorf(codes.Internal, "failed to list containers: %v", err)
 	}
 	for _, c := range containers {
+		// Mirror the v1 handler's restart enrichment (WDY-1753); the v2 path
+		// reads containerd directly rather than going through the v1 RPC.
+		if s.v1.monitor != nil {
+			if n, ok := s.v1.monitor.RestartCount(c.AppName); ok {
+				c.RestartCount = n
+				c.FailureCount = n
+			}
+		}
 		if err := stream.Send(&agentpbv2.ListContainersResponse{
 			Container: mapAppContainerToV2(c),
 		}); err != nil {
@@ -133,10 +141,14 @@ func mapAppContainerToV2(c *agentpb.AppContainer) *agentpbv2.AppContainer {
 		state = agentpbv2.AppRunningState_APP_RUNNING_STATE_STOPPED
 	}
 	return &agentpbv2.AppContainer{
-		AppName:      c.AppName,
-		AppVersion:   c.AppVersion,
-		RunningState: state,
-		FailureCount: c.FailureCount,
+		AppName:       c.AppName,
+		AppVersion:    c.AppVersion,
+		RunningState:  state,
+		FailureCount:  c.FailureCount,
+		DeployedAt:    c.DeployedAt,
+		DeployedBy:    c.DeployedBy,
+		LastStartedAt: c.LastStartedAt,
+		RestartCount:  c.RestartCount,
 	}
 }
 

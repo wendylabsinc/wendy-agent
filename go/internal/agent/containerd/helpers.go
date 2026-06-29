@@ -81,6 +81,16 @@ const labelKeyAppID = "sh.wendy/app.id"
 // Set whenever appCfg.ServiceName is non-empty.
 const labelKeyServiceName = "sh.wendy/service"
 
+// labelKeyDeployedAt stores the RFC3339 (UTC) install timestamp recorded at
+// container creation. Survives agent restarts (it's a containerd label) and
+// resets on redeploy because a redeploy deletes and recreates the container.
+const labelKeyDeployedAt = "sh.wendy/deployed.at"
+
+// labelKeyDeployedBy stores the mTLS cert principal that authenticated the
+// deploy RPC (e.g. "wendy/user/42 (org 7)"). Empty for unauthenticated/local
+// deploys. Provenance only — never used for authorization.
+const labelKeyDeployedBy = "sh.wendy/deployed.by"
+
 // ContainerName returns the containerd container ID for the given appID and
 // optional serviceName.
 //
@@ -220,7 +230,11 @@ func sanitizeForLog(s string, maxLen int) string {
 //
 // When serviceName is non-empty (multi-service app), labelKeyServiceName is
 // additionally set to serviceName.
-func wendyLabels(appName, serviceName, version string, restartPolicy *agentpb.RestartPolicy, entitlements []appconfig.Entitlement) map[string]string {
+//
+// deployedAt (RFC3339) and deployedBy (mTLS cert principal) are provenance
+// metadata recorded at deploy time; each is only set when non-empty so that
+// raw/anonymous deploys simply omit the label.
+func wendyLabels(appName, serviceName, version string, restartPolicy *agentpb.RestartPolicy, entitlements []appconfig.Entitlement, deployedAt, deployedBy string) map[string]string {
 	labels := map[string]string{
 		labelKeyAppVersion: version,
 		labelKeyAppID:      appName,
@@ -228,6 +242,13 @@ func wendyLabels(appName, serviceName, version string, restartPolicy *agentpb.Re
 
 	if serviceName != "" {
 		labels[labelKeyServiceName] = serviceName
+	}
+
+	if deployedAt != "" {
+		labels[labelKeyDeployedAt] = deployedAt
+	}
+	if deployedBy != "" {
+		labels[labelKeyDeployedBy] = deployedBy
 	}
 
 	if restartPolicy != nil {

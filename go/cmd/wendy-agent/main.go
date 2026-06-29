@@ -86,6 +86,10 @@ func (a *containerMonitorAdapter) ClearExplicitStop(appName string) {
 	a.m.ClearExplicitStop(appName)
 }
 
+func (a *containerMonitorAdapter) RestartCount(appName string) (uint32, bool) {
+	return a.m.RestartCount(appName)
+}
+
 func main() {
 	if handled, code := handleUtilityCommand(os.Args[1:]); handled {
 		os.Exit(code)

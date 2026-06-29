@@ -120,6 +120,10 @@ type ContainerMonitorRegistrar interface {
 	// automatic restarts for appName. Used to undo a pre-emptive mark when the
 	// stop operation itself fails.
 	ClearExplicitStop(appName string)
+	// RestartCount reports how many automatic restarts the monitor has observed
+	// for appName, and whether appName is currently registered. In-memory only;
+	// resets on agent restart or re-registration.
+	RestartCount(appName string) (uint32, bool)
 }
 
 type ContainerOutput struct {

@@ -175,11 +175,16 @@ func (x *RestartPolicy) GetOnFailureMaxRetries() int32 {
 }
 
 type AppContainer struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	AppName       string                 `protobuf:"bytes,1,opt,name=app_name,json=appName,proto3" json:"app_name,omitempty"`
-	AppVersion    string                 `protobuf:"bytes,2,opt,name=app_version,json=appVersion,proto3" json:"app_version,omitempty"`
-	RunningState  AppRunningState        `protobuf:"varint,3,opt,name=running_state,json=runningState,proto3,enum=wendy.agent.services.v2.AppRunningState" json:"running_state,omitempty"`
-	FailureCount  uint32                 `protobuf:"varint,4,opt,name=failure_count,json=failureCount,proto3" json:"failure_count,omitempty"`
+	state        protoimpl.MessageState `protogen:"open.v1"`
+	AppName      string                 `protobuf:"bytes,1,opt,name=app_name,json=appName,proto3" json:"app_name,omitempty"`
+	AppVersion   string                 `protobuf:"bytes,2,opt,name=app_version,json=appVersion,proto3" json:"app_version,omitempty"`
+	RunningState AppRunningState        `protobuf:"varint,3,opt,name=running_state,json=runningState,proto3,enum=wendy.agent.services.v2.AppRunningState" json:"running_state,omitempty"`
+	FailureCount uint32                 `protobuf:"varint,4,opt,name=failure_count,json=failureCount,proto3" json:"failure_count,omitempty"`
+	// Provenance + uptime (WDY-1753). All best-effort; empty/zero when unknown.
+	DeployedAt    string `protobuf:"bytes,5,opt,name=deployed_at,json=deployedAt,proto3" json:"deployed_at,omitempty"`            // RFC3339 install timestamp (containerd CreatedAt); resets on redeploy
+	DeployedBy    string `protobuf:"bytes,6,opt,name=deployed_by,json=deployedBy,proto3" json:"deployed_by,omitempty"`            // mTLS cert principal that authenticated the deploy, e.g. "wendy/user/42 (org 7)"
+	LastStartedAt string `protobuf:"bytes,7,opt,name=last_started_at,json=lastStartedAt,proto3" json:"last_started_at,omitempty"` // RFC3339 of the current running task's process start; resets on container (re)start
+	RestartCount  uint32 `protobuf:"varint,8,opt,name=restart_count,json=restartCount,proto3" json:"restart_count,omitempty"`     // number of automatic restarts observed by the monitor (in-memory, resets on agent restart)
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -242,6 +247,34 @@ func (x *AppContainer) GetFailureCount() uint32 {
 	return 0
 }
 
+func (x *AppContainer) GetDeployedAt() string {
+	if x != nil {
+		return x.DeployedAt
+	}
+	return ""
+}
+
+func (x *AppContainer) GetDeployedBy() string {
+	if x != nil {
+		return x.DeployedBy
+	}
+	return ""
+}
+
+func (x *AppContainer) GetLastStartedAt() string {
+	if x != nil {
+		return x.LastStartedAt
+	}
+	return ""
+}
+
+func (x *AppContainer) GetRestartCount() uint32 {
+	if x != nil {
+		return x.RestartCount
+	}
+	return 0
+}
+
 var File_wendy_agent_services_v2_shared_proto protoreflect.FileDescriptor
 
 const file_wendy_agent_services_v2_shared_proto_rawDesc = "" +
@@ -249,13 +282,19 @@ const file_wendy_agent_services_v2_shared_proto_rawDesc = "" +
 	"$wendy/agent/services/v2/shared.proto\x12\x17wendy.agent.services.v2\"\x84\x01\n" +
 	"\rRestartPolicy\x12>\n" +
 	"\x04mode\x18\x01 \x01(\x0e2*.wendy.agent.services.v2.RestartPolicyModeR\x04mode\x123\n" +
-	"\x16on_failure_max_retries\x18\x02 \x01(\x05R\x13onFailureMaxRetries\"\xbe\x01\n" +
+	"\x16on_failure_max_retries\x18\x02 \x01(\x05R\x13onFailureMaxRetries\"\xcd\x02\n" +
 	"\fAppContainer\x12\x19\n" +
 	"\bapp_name\x18\x01 \x01(\tR\aappName\x12\x1f\n" +
 	"\vapp_version\x18\x02 \x01(\tR\n" +
 	"appVersion\x12M\n" +
 	"\rrunning_state\x18\x03 \x01(\x0e2(.wendy.agent.services.v2.AppRunningStateR\frunningState\x12#\n" +
-	"\rfailure_count\x18\x04 \x01(\rR\ffailureCount*\xa0\x01\n" +
+	"\rfailure_count\x18\x04 \x01(\rR\ffailureCount\x12\x1f\n" +
+	"\vdeployed_at\x18\x05 \x01(\tR\n" +
+	"deployedAt\x12\x1f\n" +
+	"\vdeployed_by\x18\x06 \x01(\tR\n" +
+	"deployedBy\x12&\n" +
+	"\x0flast_started_at\x18\a \x01(\tR\rlastStartedAt\x12#\n" +
+	"\rrestart_count\x18\b \x01(\rR\frestartCount*\xa0\x01\n" +
 	"\x11RestartPolicyMode\x12#\n" +
 	"\x1fRESTART_POLICY_MODE_UNSPECIFIED\x10\x00\x12&\n" +
 	"\"RESTART_POLICY_MODE_UNLESS_STOPPED\x10\x01\x12\x1a\n" +

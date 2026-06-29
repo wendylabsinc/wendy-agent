@@ -237,7 +237,12 @@ type AppContainer struct {
 	// One entry per service container for apps that declare named services
 	// (single- or multi-service services-map apps). Empty for single-container
 	// apps and flattened single-service apps (those with no service name).
-	Services      []*ServiceEntry `protobuf:"bytes,6,rep,name=services,proto3" json:"services,omitempty"`
+	Services []*ServiceEntry `protobuf:"bytes,6,rep,name=services,proto3" json:"services,omitempty"`
+	// Provenance + uptime (WDY-1753). All best-effort; empty/zero when unknown.
+	DeployedAt    string `protobuf:"bytes,7,opt,name=deployed_at,json=deployedAt,proto3" json:"deployed_at,omitempty"`            // RFC3339 install timestamp (containerd CreatedAt); resets on redeploy
+	DeployedBy    string `protobuf:"bytes,8,opt,name=deployed_by,json=deployedBy,proto3" json:"deployed_by,omitempty"`            // mTLS cert principal that authenticated the deploy, e.g. "wendy/user/42 (org 7)"
+	LastStartedAt string `protobuf:"bytes,9,opt,name=last_started_at,json=lastStartedAt,proto3" json:"last_started_at,omitempty"` // RFC3339 of the current running task's process start; resets on container (re)start
+	RestartCount  uint32 `protobuf:"varint,10,opt,name=restart_count,json=restartCount,proto3" json:"restart_count,omitempty"`    // number of automatic restarts observed by the monitor (in-memory, resets on agent restart)
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -314,6 +319,34 @@ func (x *AppContainer) GetServices() []*ServiceEntry {
 	return nil
 }
 
+func (x *AppContainer) GetDeployedAt() string {
+	if x != nil {
+		return x.DeployedAt
+	}
+	return ""
+}
+
+func (x *AppContainer) GetDeployedBy() string {
+	if x != nil {
+		return x.DeployedBy
+	}
+	return ""
+}
+
+func (x *AppContainer) GetLastStartedAt() string {
+	if x != nil {
+		return x.LastStartedAt
+	}
+	return ""
+}
+
+func (x *AppContainer) GetRestartCount() uint32 {
+	if x != nil {
+		return x.RestartCount
+	}
+	return 0
+}
+
 var File_wendy_agent_services_v1_shared_proto protoreflect.FileDescriptor
 
 const file_wendy_agent_services_v1_shared_proto_rawDesc = "" +
@@ -324,7 +357,7 @@ const file_wendy_agent_services_v1_shared_proto_rawDesc = "" +
 	"\x16on_failure_max_retries\x18\x02 \x01(\x05R\x13onFailureMaxRetries\"Y\n" +
 	"\fServiceEntry\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x125\n" +
-	"\rrunning_state\x18\x02 \x01(\x0e2\x10.AppRunningStateR\frunningState\"\xec\x01\n" +
+	"\rrunning_state\x18\x02 \x01(\x0e2\x10.AppRunningStateR\frunningState\"\xfb\x02\n" +
 	"\fAppContainer\x12\x19\n" +
 	"\bapp_name\x18\x01 \x01(\tR\aappName\x12\x1f\n" +
 	"\vapp_version\x18\x02 \x01(\tR\n" +
@@ -332,7 +365,14 @@ const file_wendy_agent_services_v1_shared_proto_rawDesc = "" +
 	"\rrunning_state\x18\x03 \x01(\x0e2\x10.AppRunningStateR\frunningState\x12#\n" +
 	"\rfailure_count\x18\x04 \x01(\rR\ffailureCount\x12\x19\n" +
 	"\bmcp_port\x18\x05 \x01(\rR\amcpPort\x12)\n" +
-	"\bservices\x18\x06 \x03(\v2\r.ServiceEntryR\bservices*L\n" +
+	"\bservices\x18\x06 \x03(\v2\r.ServiceEntryR\bservices\x12\x1f\n" +
+	"\vdeployed_at\x18\a \x01(\tR\n" +
+	"deployedAt\x12\x1f\n" +
+	"\vdeployed_by\x18\b \x01(\tR\n" +
+	"deployedBy\x12&\n" +
+	"\x0flast_started_at\x18\t \x01(\tR\rlastStartedAt\x12#\n" +
+	"\rrestart_count\x18\n" +
+	" \x01(\rR\frestartCount*L\n" +
 	"\x11RestartPolicyMode\x12\v\n" +
 	"\aDEFAULT\x10\x00\x12\x12\n" +
 	"\x0eUNLESS_STOPPED\x10\x01\x12\x06\n" +

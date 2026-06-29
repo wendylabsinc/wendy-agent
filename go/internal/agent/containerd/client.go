@@ -788,7 +788,12 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 
 	report(&agentpb.CreateContainerProgress{Phase: agentpb.CreateContainerProgress_CREATING_CONTAINER})
 
-	labels := wendyLabels(appID, serviceName, version, req.GetRestartPolicy(), appCfg.Entitlements)
+	// Record deploy provenance (WDY-1753): install timestamp and the mTLS
+	// principal that authenticated this RPC. Both are best-effort — a local
+	// deploy with no client cert simply leaves deployed_by empty.
+	deployedAt := time.Now().UTC().Format(time.RFC3339)
+	deployedBy := deployedByFromContext(ctx)
+	labels := wendyLabels(appID, serviceName, version, req.GetRestartPolicy(), appCfg.Entitlements, deployedAt, deployedBy)
 
 	// Publish the resolved ROS 2 configuration as a container label so the
 	// agent can discover ROS 2 containers at runtime and configure the CLI
@@ -2389,10 +2394,13 @@ func (c *Client) ListContainers(ctx context.Context) ([]*agentpb.AppContainer, e
 		runningState agentpb.AppRunningState
 	}
 	type entry struct {
-		version      string
-		runningState agentpb.AppRunningState
-		mcpPort      uint32
-		services     []serviceEntry
+		version       string
+		runningState  agentpb.AppRunningState
+		mcpPort       uint32
+		services      []serviceEntry
+		deployedAt    time.Time // earliest container CreatedAt in the group
+		deployedBy    string    // first non-empty deployed-by label in the group
+		lastStartedAt time.Time // latest running-task start in the group (continuous-uptime anchor)
 	}
 	grouped := make(map[string]*entry)
 	var order []string
@@ -2406,11 +2414,18 @@ func (c *Client) ListContainers(ctx context.Context) ([]*agentpb.AppContainer, e
 
 		appVersion := info.Labels[labelKeyAppVersion]
 		runningState := agentpb.AppRunningState_STOPPED
+		var lastStartedAt time.Time
 		if task, err := ctr.Task(ctx, nil); err == nil {
 			if st, err := task.Status(ctx); err == nil && st.Status == containerd.Running {
 				runningState = agentpb.AppRunningState_RUNNING
+				if t, ok := processStartTime(task.Pid()); ok {
+					lastStartedAt = t
+				}
 			}
 		}
+
+		deployedAt := info.CreatedAt
+		deployedBy := info.Labels[labelKeyDeployedBy]
 
 		var mcpPort uint32
 		if portStr, ok := info.Labels[labelKeyMCPPort]; ok && portStr != "" {
@@ -2432,10 +2447,13 @@ func (c *Client) ListContainers(ctx context.Context) ([]*agentpb.AppContainer, e
 		if e, ok := grouped[appID]; !ok {
 			order = append(order, appID)
 			grouped[appID] = &entry{
-				version:      appVersion,
-				runningState: runningState,
-				mcpPort:      mcpPort,
-				services:     []serviceEntry{svc},
+				version:       appVersion,
+				runningState:  runningState,
+				mcpPort:       mcpPort,
+				services:      []serviceEntry{svc},
+				deployedAt:    deployedAt,
+				deployedBy:    deployedBy,
+				lastStartedAt: lastStartedAt,
 			}
 		} else {
 			if runningState == agentpb.AppRunningState_RUNNING {
@@ -2445,6 +2463,18 @@ func (c *Client) ListContainers(ctx context.Context) ([]*agentpb.AppContainer, e
 				e.mcpPort = mcpPort
 			}
 			e.services = append(e.services, svc)
+			// deployed_at: keep the earliest create time across the group.
+			if !deployedAt.IsZero() && (e.deployedAt.IsZero() || deployedAt.Before(e.deployedAt)) {
+				e.deployedAt = deployedAt
+			}
+			if e.deployedBy == "" {
+				e.deployedBy = deployedBy
+			}
+			// last_started_at: the app is only "continuously up" since its
+			// most-recently-(re)started service, so keep the latest start.
+			if lastStartedAt.After(e.lastStartedAt) {
+				e.lastStartedAt = lastStartedAt
+			}
 		}
 	}
 
@@ -2477,13 +2507,21 @@ func (c *Client) ListContainers(ctx context.Context) ([]*agentpb.AppContainer, e
 			}
 		}
 
-		result = append(result, &agentpb.AppContainer{
+		ac := &agentpb.AppContainer{
 			AppName:      appID,
 			AppVersion:   e.version,
 			RunningState: e.runningState,
 			McpPort:      e.mcpPort,
 			Services:     services,
-		})
+			DeployedBy:   e.deployedBy,
+		}
+		if !e.deployedAt.IsZero() {
+			ac.DeployedAt = e.deployedAt.UTC().Format(time.RFC3339)
+		}
+		if !e.lastStartedAt.IsZero() {
+			ac.LastStartedAt = e.lastStartedAt.UTC().Format(time.RFC3339)
+		}
+		result = append(result, ac)
 	}
 	return result, nil
 }

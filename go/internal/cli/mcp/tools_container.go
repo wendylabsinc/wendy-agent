@@ -86,12 +86,29 @@ func (s *mcpServer) handleContainerList(ctx context.Context, _ mcpgo.CallToolReq
 		if c == nil {
 			continue
 		}
-		containers = append(containers, map[string]any{
+		entry := map[string]any{
 			"app_name":      c.GetAppName(),
 			"app_version":   c.GetAppVersion(),
 			"running_state": c.GetRunningState().String(),
 			"failure_count": c.GetFailureCount(),
-		})
+			"restart_count": c.GetRestartCount(),
+		}
+		// Provenance + uptime (WDY-1753); omit empty/zero so the payload stays lean.
+		if v := c.GetDeployedAt(); v != "" {
+			entry["deployed_at"] = v
+		}
+		if v := c.GetDeployedBy(); v != "" {
+			entry["deployed_by"] = v
+		}
+		if v := c.GetLastStartedAt(); v != "" {
+			entry["last_started_at"] = v
+			if t, err := time.Parse(time.RFC3339, v); err == nil {
+				if up := time.Since(t); up >= 0 {
+					entry["uptime_seconds"] = int64(up.Seconds())
+				}
+			}
+		}
+		containers = append(containers, entry)
 	}
 	if containers == nil {
 		containers = []map[string]any{}

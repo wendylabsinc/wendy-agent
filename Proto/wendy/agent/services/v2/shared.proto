@@ -25,4 +25,10 @@ message AppContainer {
     string app_version = 2;
     AppRunningState running_state = 3;
     uint32 failure_count = 4;
+
+    // Provenance + uptime (WDY-1753). All best-effort; empty/zero when unknown.
+    string deployed_at = 5;       // RFC3339 install timestamp (containerd CreatedAt); resets on redeploy
+    string deployed_by = 6;       // mTLS cert principal that authenticated the deploy, e.g. "wendy/user/42 (org 7)"
+    string last_started_at = 7;   // RFC3339 of the current running task's process start; resets on container (re)start
+    uint32 restart_count = 8;     // number of automatic restarts observed by the monitor (in-memory, resets on agent restart)
 }

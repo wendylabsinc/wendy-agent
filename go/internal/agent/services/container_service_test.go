@@ -157,12 +157,12 @@ func (m *attachTestMock) StartContainerWithStdin(ctx context.Context, appName st
 
 // ---------- bufconn helper ----------
 
-func startContainerServer(t *testing.T, client ContainerdClient) (agentpb.WendyContainerServiceClient, func()) {
+func startContainerServer(t *testing.T, client ContainerdClient, opts ...ContainerServiceOption) (agentpb.WendyContainerServiceClient, func()) {
 	t.Helper()
 	lis := bufconn.Listen(bufSize)
 	srv := grpc.NewServer()
 	logger := zap.NewNop()
-	svc := NewContainerService(logger, client)
+	svc := NewContainerService(logger, client, opts...)
 	agentpb.RegisterWendyContainerServiceServer(srv, svc)
 
 	go func() { _ = srv.Serve(lis) }()
@@ -238,6 +238,42 @@ func TestListContainers(t *testing.T) {
 	}
 	if received[0].AppName != "app-one" {
 		t.Errorf("containers[0].AppName = %q; want app-one", received[0].AppName)
+	}
+}
+
+// TestListContainers_RestartEnrichment verifies the handler populates
+// RestartCount (and the legacy FailureCount mirror) from the monitor, keyed by
+// app name, and leaves unregistered apps at zero.
+func TestListContainers_RestartEnrichment(t *testing.T) {
+	containers := []*agentpb.AppContainer{
+		{AppName: "app-one", AppVersion: "1.0"},
+		{AppName: "app-two", AppVersion: "2.0"},
+	}
+	mon := &mockMonitorRegistrar{restartCounts: map[string]uint32{"app-one": 3}}
+	client, cleanup := startContainerServer(t, &mockContainerdClient{containers: containers}, WithMonitor(mon))
+	defer cleanup()
+
+	stream, err := client.ListContainers(context.Background(), &agentpb.ListContainersRequest{})
+	if err != nil {
+		t.Fatalf("ListContainers: %v", err)
+	}
+	got := map[string]*agentpb.AppContainer{}
+	for {
+		resp, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("recv: %v", err)
+		}
+		got[resp.Container.AppName] = resp.Container
+	}
+
+	if c := got["app-one"]; c == nil || c.RestartCount != 3 || c.FailureCount != 3 {
+		t.Errorf("app-one restart/failure = %v; want both 3", c)
+	}
+	if c := got["app-two"]; c == nil || c.RestartCount != 0 || c.FailureCount != 0 {
+		t.Errorf("app-two restart/failure = %v; want both 0 (unregistered)", c)
 	}
 }
 
@@ -551,6 +587,9 @@ type mockMonitorRegistrar struct {
 	registerCalls     []registerCall
 	explicitStopCalls []string
 	clearStopCalls    []string
+	// restartCounts maps appName -> restart count returned by RestartCount.
+	// Entries present here report ok=true; absent names report ok=false.
+	restartCounts map[string]uint32
 }
 
 type registerCall struct {
@@ -571,6 +610,11 @@ func (m *mockMonitorRegistrar) MarkExplicitStop(appName string) {
 
 func (m *mockMonitorRegistrar) ClearExplicitStop(appName string) {
 	m.clearStopCalls = append(m.clearStopCalls, appName)
+}
+
+func (m *mockMonitorRegistrar) RestartCount(appName string) (uint32, bool) {
+	n, ok := m.restartCounts[appName]
+	return n, ok
 }
 
 // startContainerServerWithMonitor starts a gRPC bufconn server for ContainerService

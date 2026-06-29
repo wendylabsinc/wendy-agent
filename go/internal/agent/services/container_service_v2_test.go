@@ -13,8 +13,32 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 
+	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 )
+
+func TestMapAppContainerToV2_CarriesProvenance(t *testing.T) {
+	v1 := &agentpb.AppContainer{
+		AppName:       "cam",
+		AppVersion:    "0.1.0",
+		RunningState:  agentpb.AppRunningState_RUNNING,
+		FailureCount:  2,
+		DeployedAt:    "2026-06-28T20:42:00Z",
+		DeployedBy:    "wendy/user/42 (org 7)",
+		LastStartedAt: "2026-06-29T03:52:00Z",
+		RestartCount:  2,
+	}
+	got := mapAppContainerToV2(v1)
+
+	if got.RunningState != agentpbv2.AppRunningState_APP_RUNNING_STATE_RUNNING {
+		t.Errorf("running state = %v; want v2 RUNNING", got.RunningState)
+	}
+	if got.DeployedAt != v1.DeployedAt || got.DeployedBy != v1.DeployedBy ||
+		got.LastStartedAt != v1.LastStartedAt || got.RestartCount != v1.RestartCount ||
+		got.FailureCount != v1.FailureCount {
+		t.Errorf("provenance not carried through: %+v", got)
+	}
+}
 
 func startContainerV2Server(t *testing.T, client ContainerdClient) (agentpbv2.WendyContainerServiceClient, func()) {
 	t.Helper()

@@ -264,7 +264,23 @@ func TestGCTimestamp_IsUTC(t *testing.T) {
 }
 
 func TestWendyLabels_Basic(t *testing.T) {
-	labels := wendyLabels("myapp", "", "1.0.0", nil, nil)
+	labels := wendyLabels("myapp", "", "1.0.0", nil, nil, "2026-06-28T20:42:00Z", "wendy/user/42 (org 7)")
+	if got := labels[labelKeyDeployedAt]; got != "2026-06-28T20:42:00Z" {
+		t.Errorf("deployed-at label = %q; want the supplied timestamp", got)
+	}
+	if got := labels[labelKeyDeployedBy]; got != "wendy/user/42 (org 7)" {
+		t.Errorf("deployed-by label = %q; want the supplied principal", got)
+	}
+
+	// Empty provenance values must omit the labels entirely rather than set
+	// empty strings.
+	bare := wendyLabels("myapp", "", "1.0.0", nil, nil, "", "")
+	if _, ok := bare[labelKeyDeployedAt]; ok {
+		t.Error("deployed-at label should be absent when empty")
+	}
+	if _, ok := bare[labelKeyDeployedBy]; ok {
+		t.Error("deployed-by label should be absent when empty")
+	}
 
 	if v, ok := labels[labelKeyAppVersion]; !ok {
 		t.Error("missing app version label")
@@ -284,7 +300,7 @@ func TestWendyLabels_Basic(t *testing.T) {
 }
 
 func TestWendyLabels_MultiService(t *testing.T) {
-	labels := wendyLabels("com.example.app", "api", "2.0", nil, nil)
+	labels := wendyLabels("com.example.app", "api", "2.0", nil, nil, "", "")
 
 	if v := labels[labelKeyServiceName]; v != "api" {
 		t.Errorf("service label = %q; want %q", v, "api")
@@ -296,7 +312,7 @@ func TestWendyLabels_MultiService(t *testing.T) {
 
 func TestWendyLabels_WithRestartPolicyUnlessStopped(t *testing.T) {
 	rp := &agentpb.RestartPolicy{Mode: agentpb.RestartPolicyMode_UNLESS_STOPPED}
-	labels := wendyLabels("app", "", "2.0", rp, nil)
+	labels := wendyLabels("app", "", "2.0", rp, nil, "", "")
 
 	if v, ok := labels[labelKeyRestartPolicy]; !ok {
 		t.Error("missing restart policy label")
@@ -310,7 +326,7 @@ func TestWendyLabels_WithRestartPolicyOnFailure(t *testing.T) {
 		Mode:                agentpb.RestartPolicyMode_ON_FAILURE,
 		OnFailureMaxRetries: 3,
 	}
-	labels := wendyLabels("app", "", "1.0", rp, nil)
+	labels := wendyLabels("app", "", "1.0", rp, nil, "", "")
 
 	if v := labels[labelKeyRestartPolicy]; v != "on-failure:3" {
 		t.Errorf("restart policy = %q; want %q", v, "on-failure:3")
@@ -319,7 +335,7 @@ func TestWendyLabels_WithRestartPolicyOnFailure(t *testing.T) {
 
 func TestWendyLabels_WithRestartPolicyNo(t *testing.T) {
 	rp := &agentpb.RestartPolicy{Mode: agentpb.RestartPolicyMode_NO}
-	labels := wendyLabels("app", "", "1.0", rp, nil)
+	labels := wendyLabels("app", "", "1.0", rp, nil, "", "")
 
 	if v := labels[labelKeyRestartPolicy]; v != "no" {
 		t.Errorf("restart policy = %q; want %q", v, "no")
@@ -328,7 +344,7 @@ func TestWendyLabels_WithRestartPolicyNo(t *testing.T) {
 
 func TestWendyLabels_WithRestartPolicyDefault(t *testing.T) {
 	rp := &agentpb.RestartPolicy{Mode: agentpb.RestartPolicyMode_DEFAULT}
-	labels := wendyLabels("app", "", "1.0", rp, nil)
+	labels := wendyLabels("app", "", "1.0", rp, nil, "", "")
 
 	if v := labels[labelKeyRestartPolicy]; v != "unless-stopped" {
 		t.Errorf("restart policy = %q; want %q (DEFAULT maps to unless-stopped)", v, "unless-stopped")
@@ -337,7 +353,7 @@ func TestWendyLabels_WithRestartPolicyDefault(t *testing.T) {
 
 func TestWendyLabels_WithMCPEntitlement(t *testing.T) {
 	entitlements := []appconfig.Entitlement{{Type: appconfig.EntitlementMCP, Port: 3000}}
-	labels := wendyLabels("app", "", "1.0", nil, entitlements)
+	labels := wendyLabels("app", "", "1.0", nil, entitlements, "", "")
 	if v, ok := labels[labelKeyMCPPort]; !ok {
 		t.Error("missing mcp port label")
 	} else if v != "3000" {
@@ -347,7 +363,7 @@ func TestWendyLabels_WithMCPEntitlement(t *testing.T) {
 
 func TestWendyLabels_WithMCPPortZero(t *testing.T) {
 	entitlements := []appconfig.Entitlement{{Type: appconfig.EntitlementMCP, Port: 0}}
-	labels := wendyLabels("app", "", "1.0", nil, entitlements)
+	labels := wendyLabels("app", "", "1.0", nil, entitlements, "", "")
 	if _, ok := labels[labelKeyMCPPort]; ok {
 		t.Error("should not have mcp port label when port is 0")
 	}
@@ -358,7 +374,7 @@ func TestWendyLabels_EntitlementsStoredAsKeyValue(t *testing.T) {
 		{Type: appconfig.EntitlementNetwork, Mode: "host"},
 		{Type: appconfig.EntitlementGPU},
 	}
-	labels := wendyLabels("app", "", "1.0", nil, entitlements)
+	labels := wendyLabels("app", "", "1.0", nil, entitlements, "", "")
 
 	cases := []struct {
 		key     string
@@ -383,7 +399,7 @@ func TestWendyLabels_DuplicateEntitlementType(t *testing.T) {
 		{Type: appconfig.EntitlementPersist, Name: "data", Path: "/data"},
 		{Type: appconfig.EntitlementPersist, Name: "logs", Path: "/logs"},
 	}
-	labels := wendyLabels("app", "", "1.0", nil, entitlements)
+	labels := wendyLabels("app", "", "1.0", nil, entitlements, "", "")
 
 	for i, want := range entitlements {
 		key := fmt.Sprintf("%s%s.%d", appconfig.EntitlementAnnotationKeyPrefix, appconfig.EntitlementPersist, i)
@@ -399,7 +415,7 @@ func TestWendyLabels_DuplicateEntitlementType(t *testing.T) {
 }
 
 func TestWendyLabels_NoEntitlementsLabel(t *testing.T) {
-	labels := wendyLabels("app", "", "1.0", nil, nil)
+	labels := wendyLabels("app", "", "1.0", nil, nil, "", "")
 	for k := range labels {
 		if strings.HasPrefix(k, appconfig.EntitlementAnnotationKeyPrefix) {
 			t.Errorf("should not have entitlement label when entitlements are empty, got %q", k)
@@ -467,7 +483,7 @@ func TestParseEntitlementsFromAnnotations_RoundTrip(t *testing.T) {
 		{Type: appconfig.EntitlementGPU},
 	}
 
-	labels := wendyLabels("app", "", "1.0", nil, original)
+	labels := wendyLabels("app", "", "1.0", nil, original, "", "")
 	annotations := make(map[string]string)
 	for k, v := range labels {
 		if strings.HasPrefix(k, appconfig.EntitlementAnnotationKeyPrefix) {

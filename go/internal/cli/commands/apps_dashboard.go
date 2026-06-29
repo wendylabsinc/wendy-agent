@@ -26,6 +26,9 @@ type dashboardRow struct {
 	volumeCount   int
 	volumeBytes   int64
 	failures      uint32
+	deployedAt    string // RFC3339 install timestamp; "" when unknown
+	deployedBy    string // mTLS principal that deployed the app; "" when unknown
+	lastStartedAt string // RFC3339 of the running task's start; "" when stopped
 	hasStats      bool
 	hasVolumes    bool
 	isGroupHeader bool
@@ -78,6 +81,9 @@ func buildDashboardRows(
 				version:       c.GetAppVersion(),
 				state:         c.GetRunningState().String(),
 				failures:      c.GetFailureCount(),
+				deployedAt:    c.GetDeployedAt(),
+				deployedBy:    c.GetDeployedBy(),
+				lastStartedAt: c.GetLastStartedAt(),
 				volumeCount:   volCount[appName],
 				volumeBytes:   volBytes[appName],
 				hasStats:      hasStats,
@@ -105,13 +111,16 @@ func buildDashboardRows(
 			}
 		} else {
 			row := dashboardRow{
-				name:        appName,
-				displayName: appName,
-				version:     c.GetAppVersion(),
-				state:       c.GetRunningState().String(),
-				failures:    c.GetFailureCount(),
-				volumeCount: volCount[appName],
-				volumeBytes: volBytes[appName],
+				name:          appName,
+				displayName:   appName,
+				version:       c.GetAppVersion(),
+				state:         c.GetRunningState().String(),
+				failures:      c.GetFailureCount(),
+				deployedAt:    c.GetDeployedAt(),
+				deployedBy:    c.GetDeployedBy(),
+				lastStartedAt: c.GetLastStartedAt(),
+				volumeCount:   volCount[appName],
+				volumeBytes:   volBytes[appName],
 			}
 			if s, ok := statsMap[appName]; ok {
 				row.hasStats = true
@@ -130,8 +139,9 @@ func buildDashboardRows(
 // --- Message types ---
 
 type appsDashContainersMsg struct {
-	containers []*agentpb.AppContainer
-	err        error
+	containers    []*agentpb.AppContainer
+	deployerNames map[string]string // raw deployed_by -> friendly display
+	err           error
 }
 
 type appsDashStatsMsg struct {
@@ -176,14 +186,20 @@ type appsDashboardModel struct {
 	cachedStats      []*agentpb.ContainerStats
 	cachedVolumes    []*agentpb.VolumeInfo
 
+	// deployer principal -> friendly display (you / email); resolved off the UI
+	// thread in the container poll. resolver caches lookups across polls.
+	resolver      *deployerResolver
+	deployerNames map[string]string
+
 	// Current data.
 	rows  []dashboardRow
 	table tui.BubbleTable
 
 	// UI state.
-	width  int
-	flash  string
-	height int
+	width   int
+	flash   string
+	height  int
+	verbose bool // 'v' toggles provenance columns (Deployed, By)
 
 	// Embedded confirm state for r / R.
 	confirming    bool
@@ -206,6 +222,7 @@ func newAppsDashboardModel(conn *grpcclient.AgentConnection, ctx context.Context
 		statsCh:      make(chan appsDashStatsMsg, 2),
 		volumesCh:    make(chan appsDashVolumesMsg, 2),
 		table:        tui.NewBubbleTable(true, nil),
+		resolver:     newDeployerResolver(),
 	}
 }
 
@@ -317,8 +334,24 @@ func (m appsDashboardModel) runContainersPoll() {
 			}
 			return
 		}
+		// Resolve deployer principals to friendly names here, off the UI thread.
+		// The resolver caches across polls so repeat principals are free.
+		var names map[string]string
+		if m.resolver != nil {
+			names = map[string]string{}
+			for _, c := range containers {
+				by := c.GetDeployedBy()
+				if by == "" {
+					continue
+				}
+				if _, done := names[by]; done {
+					continue
+				}
+				names[by] = m.resolver.Resolve(m.ctx, by)
+			}
+		}
 		select {
-		case m.containersCh <- appsDashContainersMsg{containers: containers}:
+		case m.containersCh <- appsDashContainersMsg{containers: containers, deployerNames: names}:
 		case <-m.ctx.Done():
 		}
 	}
@@ -412,20 +445,44 @@ func (m appsDashboardModel) runVolumesPoll() {
 	}
 }
 
+// displayDeployedBy returns the friendly display for a raw deployed_by
+// principal, using the names resolved off the UI thread; it falls back to the
+// raw principal until resolution lands (or when it can't be resolved).
+func (m *appsDashboardModel) displayDeployedBy(by string) string {
+	if by == "" {
+		return ""
+	}
+	if disp, ok := m.deployerNames[by]; ok && disp != "" {
+		return disp
+	}
+	return by
+}
+
 // refreshTable rebuilds the bubble-table columns and rows from cached state.
 func (m *appsDashboardModel) refreshTable() {
 	m.rows = buildDashboardRows(m.cachedContainers, m.cachedStats, m.cachedVolumes)
 
+	// Base columns; verbose ('v') inserts the provenance pair (Deployed, By)
+	// right after Version so it lines up with the static `apps list` table.
 	cols := []bubbleTable.Column{
 		{Title: "", Width: 2},
 		{Title: "Name", Width: 30},
 		{Title: "Version", Width: 10},
-		{Title: "RAM", Width: 9},
-		{Title: "Storage", Width: 9},
-		{Title: "Vols", Width: 5},
-		{Title: "Vol. Usage", Width: 10},
-		{Title: "Failures", Width: 8},
 	}
+	if m.verbose {
+		cols = append(cols,
+			bubbleTable.Column{Title: "Deployed", Width: 16},
+			bubbleTable.Column{Title: "By", Width: 28},
+		)
+	}
+	cols = append(cols,
+		bubbleTable.Column{Title: "RAM", Width: 9},
+		bubbleTable.Column{Title: "Storage", Width: 9},
+		bubbleTable.Column{Title: "Vols", Width: 5},
+		bubbleTable.Column{Title: "Vol. Usage", Width: 10},
+		bubbleTable.Column{Title: "Uptime", Width: 8},
+		bubbleTable.Column{Title: "Restarts", Width: 8},
+	)
 
 	rows := make([]bubbleTable.Row, len(m.rows))
 	for i, r := range m.rows {
@@ -442,7 +499,12 @@ func (m *appsDashboardModel) refreshTable() {
 			storage = formatBytes(r.storageBytes)
 		}
 		if r.isSubrow {
-			rows[i] = bubbleTable.Row{icon, r.displayName, "", ram, storage, "", "", ""}
+			row := bubbleTable.Row{icon, r.displayName, ""}
+			if m.verbose {
+				row = append(row, "", "")
+			}
+			row = append(row, ram, storage, "", "", "", "")
+			rows[i] = row
 			continue
 		}
 		vols := "—"
@@ -451,20 +513,33 @@ func (m *appsDashboardModel) refreshTable() {
 			vols = fmt.Sprintf("%d", r.volumeCount)
 			volUsage = formatBytes(r.volumeBytes)
 		}
-		rows[i] = bubbleTable.Row{
-			icon,
-			r.displayName,
-			r.version,
+		row := bubbleTable.Row{icon, r.displayName, r.version}
+		if m.verbose {
+			row = append(row, formatDeployedAt(r.deployedAt), formatDeployedBy(m.displayDeployedBy(r.deployedBy)))
+		}
+		row = append(row,
 			ram,
 			storage,
 			vols,
 			volUsage,
+			formatUptime(r.lastStartedAt),
 			fmt.Sprintf("%d", r.failures),
-		}
+		)
+		rows[i] = row
 	}
 
+	// Clear rows before swapping columns: the 'v' toggle changes the column
+	// count, and SetColumns re-renders the currently-set rows against the new
+	// columns — leaving stale rows of the old width panics on index-out-of-range.
+	// Clearing rows also clamps the cursor to -1, so capture and restore it
+	// (this likewise keeps the selection stable across the 2s poll refresh).
+	cursor := m.table.Cursor()
+	m.table.SetRows(nil)
 	m.table.SetColumns(cols)
 	m.table.SetRows(rows)
+	if len(rows) > 0 {
+		m.table.SetCursor(min(max(cursor, 0), len(rows)-1))
+	}
 	if m.height > 0 {
 		tableH := max(m.height-5, 1)
 		m.table.SetHeight(min(len(rows)+1, tableH))
@@ -488,6 +563,7 @@ func (m appsDashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.flash = fmt.Sprintf("Poll error: %s", msg.err)
 		} else {
 			m.cachedContainers = msg.containers
+			m.deployerNames = msg.deployerNames
 			m.refreshTable()
 		}
 		return m, waitForAppsDashContainers(m.containersCh)
@@ -646,6 +722,11 @@ func (m appsDashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 
+		case "v", "V":
+			m.verbose = !m.verbose
+			m.refreshTable()
+			return m, nil
+
 		default:
 			var cmd tea.Cmd
 			m.table, cmd = m.table.Update(msg)
@@ -662,9 +743,13 @@ func (m appsDashboardModel) View() string {
 	var sb strings.Builder
 
 	// Hint line
-	hint := "↑/↓ navigate  s start  x stop  r remove  R remove+vols  enter logs  d default  q quit"
+	verb := "v verbose"
+	if m.verbose {
+		verb = "v less"
+	}
+	hint := "↑/↓ navigate  s start  x stop  r remove  R remove+vols  enter logs  d default  " + verb + "  q quit"
 	if m.table.CanScroll() {
-		hint = "↑/↓ navigate  ←/→ scroll  s start  x stop  r remove  R remove+vols  enter logs  d default  q quit"
+		hint = "↑/↓ navigate  ←/→ scroll  s start  x stop  r remove  R remove+vols  enter logs  d default  " + verb + "  q quit"
 	}
 	sb.WriteString(m.viewLine(dashDimStyle.Render(hint)) + "\n\n")
 

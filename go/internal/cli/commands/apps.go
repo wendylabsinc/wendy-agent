@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -139,11 +140,15 @@ func appsListAgent(ctx context.Context, conn *grpcclient.AgentConnection) error 
 			RunningState string `json:"runningState"`
 		}
 		type jsonApp struct {
-			Name         string        `json:"name"`
-			Version      string        `json:"version,omitempty"`
-			RunningState string        `json:"runningState,omitempty"`
-			FailureCount uint32        `json:"failureCount,omitempty"`
-			Services     []jsonService `json:"services,omitempty"`
+			Name          string        `json:"name"`
+			Version       string        `json:"version,omitempty"`
+			RunningState  string        `json:"runningState,omitempty"`
+			FailureCount  uint32        `json:"failureCount,omitempty"`
+			DeployedAt    string        `json:"deployedAt,omitempty"`
+			DeployedBy    string        `json:"deployedBy,omitempty"`
+			LastStartedAt string        `json:"lastStartedAt,omitempty"`
+			RestartCount  uint32        `json:"restartCount,omitempty"`
+			Services      []jsonService `json:"services,omitempty"`
 		}
 		apps := make([]jsonApp, len(containers))
 		for i, c := range containers {
@@ -155,11 +160,15 @@ func appsListAgent(ctx context.Context, conn *grpcclient.AgentConnection) error 
 				})
 			}
 			apps[i] = jsonApp{
-				Name:         c.GetAppName(),
-				Version:      c.GetAppVersion(),
-				RunningState: c.GetRunningState().String(),
-				FailureCount: c.GetFailureCount(),
-				Services:     svcs,
+				Name:          c.GetAppName(),
+				Version:       c.GetAppVersion(),
+				RunningState:  c.GetRunningState().String(),
+				FailureCount:  c.GetFailureCount(),
+				DeployedAt:    c.GetDeployedAt(),
+				DeployedBy:    c.GetDeployedBy(),
+				LastStartedAt: c.GetLastStartedAt(),
+				RestartCount:  c.GetRestartCount(),
+				Services:      svcs,
 			}
 		}
 		data, err := json.MarshalIndent(apps, "", "  ")
@@ -174,9 +183,14 @@ func appsListAgent(ctx context.Context, conn *grpcclient.AgentConnection) error 
 		cliLogln("No applications deployed.")
 		return nil
 	}
-	headers := []string{"", "Name", "Version", "Failures"}
+	// Resolve deployer principals to friendly names (you / email), best-effort.
+	resolver := newDeployerResolver()
+	defer resolver.Close()
+
+	headers := []string{"", "Name", "Version", "Deployed", "By", "Uptime", "Restarts"}
 	var rows [][]string
 	for _, c := range containers {
+		by := formatDeployedBy(resolver.Resolve(ctx, c.GetDeployedBy()))
 		services := c.GetServices()
 		if len(services) > 1 {
 			// Group header row: aggregate state + app name marked as group.
@@ -184,15 +198,17 @@ func appsListAgent(ctx context.Context, conn *grpcclient.AgentConnection) error 
 				stateIcon(c.GetRunningState().String()),
 				c.GetAppName() + " " + lipgloss.NewStyle().Foreground(tui.ColorDim).Render("[group]"),
 				c.GetAppVersion(),
-				fmt.Sprintf("%d", c.GetFailureCount()),
+				formatDeployedAt(c.GetDeployedAt()),
+				by,
+				formatUptime(c.GetLastStartedAt()),
+				fmt.Sprintf("%d", c.GetRestartCount()),
 			})
 			// Per-service sub-rows indented under the group header.
 			for _, s := range services {
 				rows = append(rows, []string{
 					"",
 					"  ↳ " + s.GetName() + "  " + stateIcon(s.GetRunningState().String()),
-					"",
-					"",
+					"", "", "", "", "",
 				})
 			}
 		} else {
@@ -200,12 +216,76 @@ func appsListAgent(ctx context.Context, conn *grpcclient.AgentConnection) error 
 				stateIcon(c.GetRunningState().String()),
 				c.GetAppName(),
 				c.GetAppVersion(),
-				fmt.Sprintf("%d", c.GetFailureCount()),
+				formatDeployedAt(c.GetDeployedAt()),
+				by,
+				formatUptime(c.GetLastStartedAt()),
+				fmt.Sprintf("%d", c.GetRestartCount()),
 			})
 		}
 	}
 	fmt.Print(tui.RenderTable(headers, rows))
 	return nil
+}
+
+// emDash is the placeholder shown for absent provenance/uptime values.
+const emDash = "—"
+
+// formatDeployedAt renders an RFC3339 deploy timestamp as a local
+// "2006-01-02 15:04" string, or em-dash when empty/unparseable.
+func formatDeployedAt(rfc3339 string) string {
+	if rfc3339 == "" {
+		return emDash
+	}
+	t, err := time.Parse(time.RFC3339, rfc3339)
+	if err != nil {
+		return emDash
+	}
+	return t.Local().Format("2006-01-02 15:04")
+}
+
+// formatDeployedBy elides an overly long principal so the row stays readable.
+func formatDeployedBy(by string) string {
+	if by == "" {
+		return emDash
+	}
+	const max = 28
+	if len(by) > max {
+		return by[:max-1] + "…"
+	}
+	return by
+}
+
+// formatUptime renders the time since the given RFC3339 start as a compact
+// duration (e.g. "7h10m", "3d4h", "45s"), or em-dash when empty/unparseable or
+// in the future. Empty means the container isn't running.
+func formatUptime(rfc3339 string) string {
+	if rfc3339 == "" {
+		return emDash
+	}
+	t, err := time.Parse(time.RFC3339, rfc3339)
+	if err != nil {
+		return emDash
+	}
+	d := time.Since(t)
+	if d < 0 {
+		return emDash
+	}
+	return compactDuration(d)
+}
+
+// compactDuration formats d as at most two significant units, largest first.
+func compactDuration(d time.Duration) string {
+	if d < time.Minute {
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	}
+	if d < time.Hour {
+		return fmt.Sprintf("%dm%ds", int(d.Minutes()), int(d.Seconds())%60)
+	}
+	if d < 24*time.Hour {
+		return fmt.Sprintf("%dh%dm", int(d.Hours()), int(d.Minutes())%60)
+	}
+	days := int(d.Hours()) / 24
+	return fmt.Sprintf("%dd%dh", days, int(d.Hours())%24)
 }
 
 // streamAppLogs streams logs for a single app to stdout after the dashboard exits.
@@ -245,6 +325,9 @@ func runAppsDashboard(ctx context.Context, conn *grpcclient.AgentConnection) err
 	defer cancel()
 
 	m := newAppsDashboardModel(conn, dashCtx)
+	if m.resolver != nil {
+		defer m.resolver.Close()
+	}
 
 	// Wire up the 'd' key to set the current device as default (same pattern as picker).
 	m.OnSetDefault = func() {

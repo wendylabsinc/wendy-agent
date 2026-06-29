@@ -992,6 +992,17 @@ func (s *ContainerService) ListContainers(_ *agentpb.ListContainersRequest, stre
 	}
 
 	for _, c := range containers {
+		// Enrich with the monitor's restart bookkeeping (WDY-1753). The monitor
+		// is keyed by the registered container name, which equals the bare app
+		// name for single-container apps; multi-service apps fall through to 0
+		// (best-effort, documented). failure_count mirrors restart_count for
+		// backward-compatible clients that read the older field.
+		if s.monitor != nil {
+			if n, ok := s.monitor.RestartCount(c.AppName); ok {
+				c.RestartCount = n
+				c.FailureCount = n
+			}
+		}
 		if err := stream.Send(&agentpb.ListContainersResponse{Container: c}); err != nil {
 			return err
 		}

@@ -139,6 +139,21 @@ func (m *ContainerMonitor) ClearExplicitStop(appName string) {
 	}
 }
 
+// RestartCount returns the number of automatic restarts the monitor has
+// observed for the registered container, and whether the container is currently
+// registered. The count is in-memory: it resets when the agent restarts or when
+// the container is re-registered (e.g. on redeploy). It is provenance/health
+// telemetry only, never an authorization input.
+func (m *ContainerMonitor) RestartCount(appName string) (uint32, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	state, ok := m.states[appName]
+	if !ok {
+		return 0, false
+	}
+	return uint32(state.FailureCount), true
+}
+
 // Start begins the monitoring loop in a goroutine.
 func (m *ContainerMonitor) Start(ctx context.Context) {
 	go m.Run(ctx)

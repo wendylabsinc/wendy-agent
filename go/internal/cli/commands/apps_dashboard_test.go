@@ -106,6 +106,47 @@ func TestAppsDashboardModel_ConfirmFlow(t *testing.T) {
 	}
 }
 
+func TestAppsDashboardModel_VerboseToggle(t *testing.T) {
+	m := newAppsDashboardModel(nil, context.Background())
+	m.cachedContainers = []*agentpb.AppContainer{
+		{
+			AppName:      "prov-app",
+			RunningState: agentpb.AppRunningState_RUNNING,
+			DeployedAt:   "2026-06-28T20:42:00Z",
+			DeployedBy:   "wendy/user/abc123",
+		},
+	}
+	m.refreshTable()
+
+	// buildDashboardRows must carry the provenance fields through.
+	if got := m.rows[0].deployedBy; got != "wendy/user/abc123" {
+		t.Fatalf("row deployedBy = %q; want wendy/user/abc123", got)
+	}
+
+	// Default view hides provenance columns.
+	if strings.Contains(m.View(), "Deployed") {
+		t.Error("non-verbose view should not show the Deployed column")
+	}
+
+	// Press 'v' — verbose on; provenance columns appear.
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
+	m = updated.(appsDashboardModel)
+	if !m.verbose {
+		t.Fatal("expected verbose=true after pressing v")
+	}
+	view := m.View()
+	if !strings.Contains(view, "Deployed") || !strings.Contains(view, "By") {
+		t.Errorf("verbose view missing provenance columns:\n%s", view)
+	}
+
+	// Press 'v' again — back to compact.
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
+	m = updated.(appsDashboardModel)
+	if m.verbose {
+		t.Fatal("expected verbose=false after second v")
+	}
+}
+
 func TestAppsDashboardModel_QuitAction(t *testing.T) {
 	m := newAppsDashboardModel(nil, context.Background())
 
