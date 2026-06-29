@@ -112,28 +112,54 @@ func openOnce() (*Device, error) {
 	ctx := gousb.NewContext()
 	ctx.Debug(0)
 
-	// WENDY_ADB_PATH, when set, pins which physical device we drive — the flashing
-	// gadget re-enumerates at the same USB location (bus + parent-port chain) the
-	// RCM device was selected at, so multi-device hosts flash the chosen board.
+	// Open every device exposing an ADB interface; we select among them below. We do
+	// NOT pre-filter by WENDY_ADB_PATH here because the flashing gadget can
+	// re-enumerate at a different USB location than the RCM device was selected at.
 	wantPath := os.Getenv("WENDY_ADB_PATH")
 	devs, err := ctx.OpenDevices(func(desc *gousb.DeviceDesc) bool {
 		_, _, _, ok := findADBInterface(desc)
-		return ok && (wantPath == "" || adbPortKey(desc) == wantPath)
+		return ok
 	})
-	if err != nil {
-		// OpenDevices returns opened handles plus an aggregate error; keep going if
-		// we got at least one device.
-		for i := 1; i < len(devs); i++ {
-			devs[i].Close()
-		}
-	}
+	// OpenDevices returns opened handles plus an aggregate error; proceed as long as
+	// we got at least one usable handle.
 	if len(devs) == 0 {
 		ctx.Close()
 		return nil, fmt.Errorf("no USB device with an ADB interface (ff/42/01) found: %v", err)
 	}
-	dev := devs[0]
-	for i := 1; i < len(devs); i++ {
-		devs[i].Close()
+
+	// Pick which device to drive. WENDY_ADB_PATH pins a physical USB location (bus +
+	// parent-port chain) so a multi-device host flashes the chosen board. But the
+	// flashing gadget often re-enumerates at a *different* port than the RCM device:
+	// on macOS the RCM device is USB-2 Hi-Speed while the ADB gadget is USB-3
+	// SuperSpeed, which lands on the companion port (e.g. 1-1 -> 1-2). So when the pin
+	// matches nothing but exactly one ADB device is present, fall back to it.
+	sel := 0
+	if wantPath != "" {
+		sel = -1
+		for i, d := range devs {
+			if adbPortKey(d.Desc) == wantPath {
+				sel = i
+				break
+			}
+		}
+		if sel == -1 {
+			if len(devs) == 1 {
+				sel = 0
+				fmt.Fprintf(os.Stderr, "wendy adb: no ADB device at usb %s; using the only ADB device present (usb %s)\n", wantPath, adbPortKey(devs[0].Desc))
+			} else {
+				for _, d := range devs {
+					d.Close()
+				}
+				ctx.Close()
+				return nil, fmt.Errorf("no ADB device at usb %s among %d ADB devices present", wantPath, len(devs))
+			}
+		}
+	}
+	dev := devs[sel]
+	for i, d := range devs {
+		if i != sel {
+			d.Close()
+		}
 	}
 
 	cfgNum, ifNum, altNum, ok := findADBInterface(dev.Desc)
