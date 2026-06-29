@@ -46,6 +46,7 @@ func newDeviceCmd() *cobra.Command {
 		&cobra.Group{ID: "common", Title: "Common Commands:"},
 		&cobra.Group{ID: "manage", Title: "Device Management:"},
 		&cobra.Group{ID: "hardware", Title: "Hardware:"},
+		&cobra.Group{ID: "diagnostics", Title: "Diagnostics:"},
 	)
 
 	addToGroup := func(groupID string, cmds ...*cobra.Command) {
@@ -83,6 +84,9 @@ func newDeviceCmd() *cobra.Command {
 		newAudioCmd(),
 		newCameraCmd(),
 		newHardwareCmd(),
+	)
+	addToGroup("diagnostics",
+		newDoctorCmd(),
 	)
 	// Hidden commands stay registered (and runnable) but are kept off the help
 	// menu; they are hidden via their own constructors.
