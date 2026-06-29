@@ -34,6 +34,13 @@ func newWendyOSUpdater(logger *zap.Logger) wendyOSUpdater {
 
 func (w wendyOSUpdater) name() string { return updaterNameWendyOS }
 
+// delegatesHealthcheck is true: wendyos-update runs /etc/wendyos-update/health.d
+// inside `commit`, so the agent gate skips its own CheckAll and acts on the
+// commit verdict instead.
+func (w wendyOSUpdater) delegatesHealthcheck() bool { return true }
+
+func (w wendyOSUpdater) commitCommand() string { return "wendyos-update" }
+
 func (w wendyOSUpdater) available() bool {
 	_, found := resolveWendyOSBinary()
 	return found

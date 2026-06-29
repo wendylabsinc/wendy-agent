@@ -2,6 +2,7 @@ package oshealth
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"go.uber.org/zap"
@@ -28,18 +29,29 @@ type MenderResult struct {
 	Err    error
 }
 
-// Gate decides, at agent startup, whether a pending Mender A/B update is
-// committed or rolled back, based on healthchecks of critical services. All
+// Gate decides, at agent startup, whether a pending A/B update is committed or
+// rolled back. For mender it bases that on agent-run healthchecks of critical
+// services; for a backend that runs its own health gate inside commit
+// (wendyos-update, DelegatedHealth) it acts on the commit verdict instead. All
 // side effects are injected so the decision logic is testable.
 type Gate struct {
 	Logger   *zap.Logger
 	StateDir string
 	Services []CriticalService
 	Checker  *Checker
-	// Commit runs `mender-update commit`.
+	// Commit runs `<backend> commit`.
 	Commit func() MenderResult
-	// Rollback runs `mender-update rollback`.
+	// Rollback runs `<backend> rollback`.
 	Rollback func() MenderResult
+	// DelegatedHealth is true when the update backend runs its own post-commit
+	// health gate (wendyos-update runs /etc/wendyos-update/health.d inside
+	// commit). The gate then skips its own CheckAll and lets the commit decide:
+	// a commit failure is the backend's health verdict, which drives the
+	// rollback. mender (false) keeps the agent-run CheckAll.
+	DelegatedHealth bool
+	// UpdaterLabel names the backend binary in user-facing notes
+	// ("wendyos-update", "mender-update"). Empty defaults to "mender-update".
+	UpdaterLabel string
 	// Reboot restarts the device.
 	Reboot func() error
 	// OSVersion reports the OS version of the currently running slot.
@@ -91,16 +103,26 @@ func (g *Gate) Run(ctx context.Context) {
 		return
 	}
 
-	g.Logger.Info("Pending OS update detected, healthchecking critical services before commit",
-		zap.String("old_os_version", marker.OldOSVersion))
-	results := g.Checker.CheckAll(ctx, g.Services)
-
 	record := UpdateResult{
 		OldOSVersion: marker.OldOSVersion,
 		NewOSVersion: g.OSVersion(),
 		CreatedAt:    g.now(),
-		Services:     results,
 	}
+
+	if g.DelegatedHealth {
+		// The backend (wendyos-update) runs /etc/wendyos-update/health.d inside
+		// `commit`, so the commit itself is the health verdict. Skip the agent's
+		// CheckAll and act on the commit result; a rejection rolls back.
+		g.Logger.Info("Pending OS update detected; delegating healthchecks to the updater's commit",
+			zap.String("old_os_version", marker.OldOSVersion))
+		g.commitDelegated(record)
+		return
+	}
+
+	g.Logger.Info("Pending OS update detected, healthchecking critical services before commit",
+		zap.String("old_os_version", marker.OldOSVersion))
+	results := g.Checker.CheckAll(ctx, g.Services)
+	record.Services = results
 
 	if failed := failedUnits(results); len(failed) > 0 {
 		// Log the full results too: if persisting the record fails, this
@@ -129,7 +151,7 @@ func (g *Gate) commit(record UpdateResult) {
 		// clearing the marker). Treat as success.
 		record.Outcome = OutcomeCommitted
 		record.FinalizedAt = g.now()
-		record.Note = "mender-update reported nothing to commit (update was already committed)"
+		record.Note = g.updaterLabel() + " reported nothing to commit (update was already committed)"
 		g.writeResult(record)
 		g.clearMarker()
 	default:
@@ -138,9 +160,68 @@ func (g *Gate) commit(record UpdateResult) {
 		// uncommitted update means the bootloader reverts on the next reboot,
 		// and rebooting here would throw away a healthy slot.
 		record.Outcome = OutcomeCommitFailed
-		record.Note = menderFailureReason("commit", res)
+		record.Note = menderFailureReason(g.updaterLabel(), "commit", res)
 		g.writeResult(record)
 		g.Logger.Error("Failed to commit OS update", zap.String("reason", record.Note))
+	}
+}
+
+// commitDelegated handles the commit/rollback decision for a backend that runs
+// its own health gate inside `commit` (wendyos-update runs
+// /etc/wendyos-update/health.d). It diverges from commit() only in the failure
+// branch: a commit the updater *rejected* is the health verdict, so it rolls
+// back rather than retrying. The two "no verdict was rendered" cases — a missing
+// binary and the agent's own commit timeout — keep the marker and retry instead,
+// so a transient early-boot hiccup never reverts a possibly-healthy slot.
+func (g *Gate) commitDelegated(record UpdateResult) {
+	res := g.Commit()
+	switch res.Status {
+	case MenderOK:
+		record.Outcome = OutcomeCommitted
+		record.FinalizedAt = g.now()
+		g.writeResult(record)
+		g.clearMarker()
+		g.Logger.Info("Committed OS update (updater-gated healthchecks passed)",
+			zap.String("output", res.Output))
+	case MenderNothingPending:
+		// Already committed (e.g. a previous agent start committed but died
+		// before clearing the marker). Treat as success.
+		record.Outcome = OutcomeCommitted
+		record.FinalizedAt = g.now()
+		record.Note = g.updaterLabel() + " reported nothing to commit (update was already committed)"
+		g.writeResult(record)
+		g.clearMarker()
+	case MenderUnavailable:
+		// The backend recorded in the marker is gone (binary removed between
+		// install and this boot). No health verdict was rendered, so do NOT roll
+		// back a slot over a missing tool. Keep the marker for a retry on the
+		// next start, mirroring the mender commit-failure path.
+		record.Outcome = OutcomeCommitFailed
+		record.Note = g.updaterLabel() + " binary not found at commit"
+		g.writeResult(record)
+		g.Logger.Warn("OS update backend unavailable at commit; leaving the update pending for retry",
+			zap.String("backend", g.updaterLabel()))
+	default:
+		if errors.Is(res.Err, context.DeadlineExceeded) {
+			// The agent's own commit timeout fired — likely storage/D-Bus was
+			// briefly busy early in boot, exactly the unhealthy-boot conditions
+			// this gate runs in. That is not a health verdict, so keep the
+			// marker and retry next start rather than reverting a healthy slot.
+			record.Outcome = OutcomeCommitFailed
+			record.Note = menderFailureReason(g.updaterLabel(), "commit", res)
+			g.writeResult(record)
+			g.Logger.Error("OS update commit timed out; leaving the update pending for retry",
+				zap.String("reason", record.Note))
+			return
+		}
+		// The updater ran and rejected the commit: its health.d failed (or the
+		// deployment is otherwise marked failed). Roll back and reboot — retrying
+		// a marked-failed deployment is futile and a degraded slot must not stay
+		// up. The commit output is the user-facing reason.
+		record.Note = menderFailureReason(g.updaterLabel(), "commit", res)
+		g.Logger.Error("Updater rejected the OS update commit, rolling back",
+			zap.String("reason", record.Note))
+		g.rollBack(record)
 	}
 }
 
@@ -164,16 +245,16 @@ func (g *Gate) rollBack(record UpdateResult) {
 		// stay up and reachable instead of reboot-looping.
 		record.Outcome = OutcomeRollbackFailed
 		if res.Status == MenderNothingPending {
-			record.RollbackError = "mender-update reported nothing to roll back"
+			record.RollbackError = g.updaterLabel() + " reported nothing to roll back"
 		} else {
-			record.RollbackError = "mender-update binary not found"
+			record.RollbackError = g.updaterLabel() + " binary not found"
 		}
 		g.writeResult(record)
 		g.Logger.Error("Cannot roll back OS update", zap.String("reason", record.RollbackError))
 	default:
 		// The rollback command failed, but the update is uncommitted, so the
 		// bootloader falls back to the old slot on reboot anyway.
-		record.RollbackError = menderFailureReason("rollback", res)
+		record.RollbackError = menderFailureReason(g.updaterLabel(), "rollback", res)
 		g.writeResult(record)
 		g.Logger.Error("mender-update rollback failed, rebooting to let the bootloader revert",
 			zap.String("reason", record.RollbackError))
@@ -246,6 +327,16 @@ func (g *Gate) bootID() string {
 	return CurrentBootID()
 }
 
+// updaterLabel is the backend binary name used in user-facing notes. It defaults
+// to "mender-update" so a Gate constructed without UpdaterLabel (e.g. the
+// degraded no-backend path, or older callers) keeps the historical wording.
+func (g *Gate) updaterLabel() string {
+	if g.UpdaterLabel != "" {
+		return g.UpdaterLabel
+	}
+	return "mender-update"
+}
+
 func failedUnits(results []ServiceResult) []string {
 	var failed []string
 	for _, r := range results {
@@ -256,12 +347,12 @@ func failedUnits(results []ServiceResult) []string {
 	return failed
 }
 
-func menderFailureReason(subcommand string, res MenderResult) string {
+func menderFailureReason(label, subcommand string, res MenderResult) string {
 	switch res.Status {
 	case MenderUnavailable:
-		return "mender-update binary not found"
+		return label + " binary not found"
 	default:
-		reason := "mender-update " + subcommand + " failed"
+		reason := label + " " + subcommand + " failed"
 		if res.Err != nil {
 			reason += ": " + res.Err.Error()
 		}

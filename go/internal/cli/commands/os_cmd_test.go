@@ -341,6 +341,15 @@ func TestEvaluateOSUpdateOutcome(t *testing.T) {
 		CreatedAtUnix: fresh,
 		Note:          "wendyos-update commit failed: exit status 1 (tegra: ESRT capsule not staged)",
 	}
+	// A delegated (wendyos-update health.d) rollback has no per-service results;
+	// the reason is carried in Note and must still reach the user.
+	delegatedRolledBack := &agentpb.GetOSUpdateStatusResponse{
+		HasResult:     true,
+		Outcome:       agentpb.GetOSUpdateStatusResponse_OUTCOME_ROLLED_BACK,
+		OldOsVersion:  "WendyOS-0.10.4",
+		CreatedAtUnix: fresh,
+		Note:          "wendyos-update commit failed: exit status 1 (pending update is marked failed; run rollback)",
+	}
 
 	tests := []struct {
 		name         string
@@ -389,6 +398,18 @@ func TestEvaluateOSUpdateOutcome(t *testing.T) {
 				"avahi-daemon.service",
 				"timed out after 30s",
 				"WendyOS-0.10.4",
+			},
+		},
+		{
+			name:    "delegated rollback surfaces the note when there are no service results",
+			resp:    delegatedRolledBack,
+			preVer:  "WendyOS-0.10.4",
+			postVer: "WendyOS-0.10.4",
+			wantErr: true,
+			wantContains: []string{
+				"rolled back",
+				"WendyOS-0.10.4",
+				"is marked failed",
 			},
 		},
 		{

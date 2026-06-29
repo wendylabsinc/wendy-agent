@@ -657,6 +657,11 @@ func evaluateOSUpdateOutcome(
 		}
 		fmt.Fprintf(&b, "Update failed post-reboot healthchecks and was rolled back to %s.\n", rolledBackTo)
 		writeFailedServices(&b, resp.GetServices())
+		// When the updater ran its own health gate (wendyos-update health.d),
+		// there are no per-service results — the reason is carried in the note.
+		if note := resp.GetNote(); note != "" {
+			fmt.Fprintf(&b, "Reason: %s\n", note)
+		}
 		if re := resp.GetRollbackError(); re != "" {
 			fmt.Fprintf(&b, "Rollback error: %s\n", re)
 		}
