@@ -1,0 +1,111 @@
+name: Inspect App Store Certificates
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [kb.companion]
+    paths:
+      - .github/workflows/inspect-appstore-certificates.yml
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    name: Inspect certificate metadata
+    runs-on: [self-hosted, macOS, ARM64]
+    timeout-minutes: 10
+
+    steps:
+      - name: Inspect App Store certificate metadata
+        env:
+          APPSTORE_CERTIFICATES_FILE_BASE64: ${{ secrets.APPSTORE_CERTIFICATES_FILE_BASE64 }}
+          APPSTORE_CERTIFICATES_PASSWORD: ${{ secrets.APPSTORE_CERTIFICATES_PASSWORD }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +x
+
+          if [ -z "${APPSTORE_CERTIFICATES_FILE_BASE64:-}" ]; then
+            echo "::error::APPSTORE_CERTIFICATES_FILE_BASE64 is not available to this workflow run."
+            exit 1
+          fi
+          if [ -z "${APPSTORE_CERTIFICATES_PASSWORD:-}" ]; then
+            echo "::error::APPSTORE_CERTIFICATES_PASSWORD is not available to this workflow run."
+            exit 1
+          fi
+
+          echo "::add-mask::$APPSTORE_CERTIFICATES_PASSWORD"
+
+          CERT_PATH="$RUNNER_TEMP/appstore-certificates.p12"
+          CERTS_PEM="$RUNNER_TEMP/appstore-certificates.pem"
+          KEYCHAIN_PATH="$RUNNER_TEMP/inspect-appstore-signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(uuidgen)"
+
+          cleanup() {
+            security delete-keychain "$KEYCHAIN_PATH" >/dev/null 2>&1 || true
+            rm -f "$CERT_PATH" "$CERTS_PEM" "$RUNNER_TEMP"/appstore-cert-*.pem
+          }
+          trap cleanup EXIT
+
+          python3 - "$CERT_PATH" <<'PY'
+          import base64
+          import os
+          import sys
+          from pathlib import Path
+
+          encoded = os.environ["APPSTORE_CERTIFICATES_FILE_BASE64"]
+          output = Path(sys.argv[1])
+          output.write_bytes(base64.b64decode(encoded))
+          PY
+          chmod 600 "$CERT_PATH"
+
+          echo "== Public certificate metadata from p12 =="
+
+          openssl pkcs12 \
+            -in "$CERT_PATH" \
+            -nokeys \
+            -passin "pass:$APPSTORE_CERTIFICATES_PASSWORD" \
+            -out "$CERTS_PEM"
+
+          csplit -s -f "$RUNNER_TEMP/appstore-cert-" -b "%02d.pem" \
+            "$CERTS_PEM" '/-----BEGIN CERTIFICATE-----/' '{*}' || true
+
+          found_cert=false
+          for cert in "$RUNNER_TEMP"/appstore-cert-*.pem; do
+            [ -f "$cert" ] || continue
+            grep -q "BEGIN CERTIFICATE" "$cert" || continue
+            found_cert=true
+
+            echo
+            echo "--- $(basename "$cert") ---"
+            openssl x509 -in "$cert" -noout \
+              -subject \
+              -issuer \
+              -serial \
+              -dates \
+              -fingerprint -sha256
+
+            echo "Extended key usage:"
+            openssl x509 -in "$cert" -noout -ext extendedKeyUsage 2>/dev/null || true
+          done
+
+          if [ "$found_cert" != true ]; then
+            echo "::error::No certificates found in APPSTORE_CERTIFICATES_FILE_BASE64."
+            exit 1
+          fi
+
+          echo
+          echo "== Temporary keychain signing identities =="
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 600 "$KEYCHAIN_PATH"
+
+          security import "$CERT_PATH" \
+            -k "$KEYCHAIN_PATH" \
+            -P "$APPSTORE_CERTIFICATES_PASSWORD" \
+            -T /usr/bin/codesign \
+            -T /usr/bin/security
+
+          security find-identity -v -p codesigning "$KEYCHAIN_PATH"
