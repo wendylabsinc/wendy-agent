@@ -121,9 +121,13 @@ well as `WDY`, so Release issues can live in the same project.
   `WendyCompanioniOSAppStoreProfile`, marketing version `0000.00.00`, and build
   number `00000000000000`. `xcodebuild -list` and a Debug iOS Simulator build
   pass; Release archive is blocked locally because that provisioning profile is
-  not installed. A manual `Inspect App Store Certificates` workflow exists on
-  the closed companion-app branch, but it cannot inspect the needed secrets
-  there because those secrets belong to `WendyOS.git`.
+  not installed. A temporary WendyOS workflow inspected the repo secrets and
+  found the existing `APPSTORE_CERTIFICATES_*` p12 contains a macOS `Developer
+  ID Application: Wendy Labs Inc. (3YVC792H3S)` certificate, valid 2025-09-29
+  through 2030-09-30, with SHA-256 fingerprint
+  `E5:F5:50:86:36:6F:A2:E8:10:67:5B:65:14:8A:4C:74:91:F3:32:9D:FD:7C:03:4E:68:A2:9F:74:3B:FA:99:47`.
+  That is not an iOS App Store distribution certificate. The temp inspection
+  workflow was removed after the run.
 - Resume:
 
   ```sh
@@ -221,10 +225,13 @@ Copy this block when this coordinator starts tracking an issue.
 ## Next recommended steps
 
 1. For **REL-65 — Release Wendy OS companion app to TestFlight (upload + certificates/secrets)**,
-   continue signing/certificate inspection from `WendyOS.git`, where the GitHub
-   Actions secrets are configured, or intentionally move/duplicate approved
-   secrets into `wendy-companion-ios` before adding companion-app release
-   automation.
+   get or create a real Apple Distribution certificate/provisioning profile for
+   iOS TestFlight. WendyOS secret inspection run
+   https://github.com/wendylabsinc/WendyOS/actions/runs/28361181539 found the
+   existing `APPSTORE_CERTIFICATES_*` secret contains a `Developer ID
+   Application: Wendy Labs Inc. (3YVC792H3S)` certificate, not an iOS App Store
+   distribution certificate; macOS `security import` also rejected the p12 with
+   `MAC verification failed` after OpenSSL extracted public metadata.
 2. Install/confirm provisioning profile `WendyCompanioniOSAppStoreProfile` for
    team `3YVC792H3S` and verify the App Store Connect bundle ID
    `dev.wendy.WendyCompanioniOS` before re-running the Release archive.
