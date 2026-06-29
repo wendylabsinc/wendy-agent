@@ -222,6 +222,42 @@ func TestSummarizeAndReportJSON(t *testing.T) {
 	}
 }
 
+func TestTopConnectionFinding(t *testing.T) {
+	subnet := checkResult{Name: "Subnet", Status: statusFail, Hint: "join the network"}
+	vpn := checkResult{Name: "VPN / tunnel", Status: statusFail, Hint: "disconnect VPN"}
+	hostDownFail := checkResult{Name: "Host reachability", Status: statusFail, Hint: "power it on"}
+	hostPortWarn := checkResult{Name: "Host reachability", Status: statusWarn, Hint: "agent may be down"}
+	vpnWarn := checkResult{Name: "VPN / tunnel", Status: statusWarn, Hint: "maybe VPN"}
+	localPass := checkResult{Name: "Local network", Status: statusPass}
+
+	tests := []struct {
+		name   string
+		checks []checkResult
+		want   string // expected finding Name, "" for nil
+	}{
+		{name: "subnet beats vpn beats host", checks: []checkResult{hostDownFail, vpn, subnet}, want: "Subnet"},
+		{name: "vpn divert beats host down", checks: []checkResult{hostDownFail, vpn}, want: "VPN / tunnel"},
+		{name: "host down only", checks: []checkResult{localPass, hostDownFail}, want: "Host reachability"},
+		{name: "port closed warn surfaces", checks: []checkResult{localPass, hostPortWarn}, want: "Host reachability"},
+		{name: "vpn warn is noise, ignored", checks: []checkResult{localPass, vpnWarn}, want: ""},
+		{name: "nothing actionable", checks: []checkResult{localPass}, want: ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := topConnectionFinding(tc.checks)
+			if tc.want == "" {
+				if got != nil {
+					t.Fatalf("expected nil, got %+v", got)
+				}
+				return
+			}
+			if got == nil || got.Name != tc.want {
+				t.Fatalf("got %v, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // makeCertPEM creates a minimal self-signed certificate PEM with the given
 // expiry, for exercising the mTLS evaluator.
 func makeCertPEM(t *testing.T, notAfter time.Time) string {

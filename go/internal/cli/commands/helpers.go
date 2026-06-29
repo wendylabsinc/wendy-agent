@@ -762,8 +762,10 @@ func connectToAgent(ctx context.Context, opts ...resolveOption) (*grpcclient.Age
 				}
 				return connectFromSelectedDevice(target, cfg)
 			} else if isDefault {
+				maybePrintConnectionDiagnostics(hostname, cfg.nonInteractive)
 				return nil, defaultDeviceUnreachableError(hostname, connErr)
 			} else {
+				maybePrintConnectionDiagnostics(hostname, cfg.nonInteractive)
 				return nil, connErr
 			}
 		}
@@ -1581,8 +1583,10 @@ func resolveTarget(ctx context.Context, opts ...resolveOption) (*SelectedDevice,
 				// Default device is unreachable — offer interactive recovery.
 				return handleDefaultDeviceRecovery(ctx, device, time.Since(startedAt), err, cfg.excludeProviderKeys, cfg.excludeBluetooth, cfg.suppressUpdateCheck)
 			} else if isDefault {
+				maybePrintConnectionDiagnostics(device, cfg.nonInteractive)
 				return nil, defaultDeviceUnreachableError(device, err)
 			} else {
+				maybePrintConnectionDiagnostics(device, cfg.nonInteractive)
 				return nil, err
 			}
 		}

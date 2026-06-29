@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -76,6 +77,10 @@ func newDoctorCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "doctor",
 		Short: "Run device health & connectivity diagnostics",
+		// Hidden: the reachability diagnostics surface automatically on a failed
+		// connection (see maybePrintConnectionDiagnostics). The command stays
+		// available as a manual full-health probe and for --json scripting.
+		Hidden: true,
 		Long: `Run a battery of health and connectivity checks against a device and print a
 pass / warn / fail report with remediation hints.
 
@@ -659,6 +664,52 @@ func resolveIP(host string) string {
 		return ips[0]
 	}
 	return host
+}
+
+// maybePrintConnectionDiagnostics passively explains why an agent is
+// unreachable. It is called from the connection-failure path so a raw
+// "connection refused" becomes an actionable hint, reusing the doctor host
+// network diagnostics. To stay fast on every failed command it runs only the
+// host-side probe (route/VPN/subnet/ping) — not mDNS or a redial, since the
+// caller already knows the dial failed. It is a no-op in JSON mode, when
+// suppressed (e.g. the doctor command itself, which runs its own checks), or
+// when the failure isn't a network reachability problem.
+func maybePrintConnectionDiagnostics(host string, suppress bool) {
+	if jsonOutput || suppress || host == "" {
+		return
+	}
+	top := topConnectionFinding(hostNetworkDiagnostics(resolveIP(host), agentPorts))
+	if top == nil {
+		return
+	}
+	fmt.Fprintln(os.Stderr)
+	fmt.Fprintln(os.Stderr, tui.WarningMessage(fmt.Sprintf("Can't reach %s — %s", host, top.Detail)))
+	if top.Hint != "" {
+		fmt.Fprintf(os.Stderr, "  %s %s\n", tui.Dim("→"), top.Hint)
+	}
+	fmt.Fprintf(os.Stderr, "  %s %s\n", tui.Dim("Full diagnostics:"), tui.Command("wendy device doctor --device "+host))
+}
+
+// topConnectionFinding picks the single most-relevant reachability problem to
+// surface passively: a hard failure (wrong subnet, VPN diverting the route,
+// host down) by specificity, or — absent any failure — the "host up but agent
+// port closed" warning. Returns nil when nothing actionable was found, so we
+// stay quiet rather than guess.
+func topConnectionFinding(checks []checkResult) *checkResult {
+	rank := map[string]int{"Subnet": 4, "VPN / tunnel": 3, "Host reachability": 2}
+	var best *checkResult
+	bestRank := -1
+	for i := range checks {
+		c := &checks[i]
+		surface := c.Status == statusFail || (c.Name == "Host reachability" && c.Status == statusWarn)
+		if !surface || c.Hint == "" {
+			continue
+		}
+		if r := rank[c.Name]; best == nil || r > bestRank {
+			best, bestRank = c, r
+		}
+	}
+	return best
 }
 
 func joinPorts(ports []int) string {
