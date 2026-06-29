@@ -68,8 +68,17 @@ jobs:
             -passin "pass:$APPSTORE_CERTIFICATES_PASSWORD" \
             -out "$CERTS_PEM"
 
-          csplit -s -f "$RUNNER_TEMP/appstore-cert-" -b "%02d.pem" \
-            "$CERTS_PEM" '/-----BEGIN CERTIFICATE-----/' '{*}' || true
+          awk -v dir="$RUNNER_TEMP" '
+            /-----BEGIN CERTIFICATE-----/ {
+              out = sprintf("%s/appstore-cert-%02d.pem", dir, n++)
+              active = 1
+            }
+            active { print > out }
+            /-----END CERTIFICATE-----/ {
+              close(out)
+              active = 0
+            }
+          ' "$CERTS_PEM"
 
           found_cert=false
           for cert in "$RUNNER_TEMP"/appstore-cert-*.pem; do
