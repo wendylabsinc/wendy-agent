@@ -250,6 +250,13 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 	if storageOverride != "" && storageOverride != "nvme" && storageOverride != "sd" {
 		return fmt.Errorf("invalid --storage %q: must be \"nvme\" or \"sd\"", storageOverride)
 	}
+
+	// AGX Thor flashes over USB recovery (not a drive), via its own flashpack
+	// artifact and device selection — a separate path from the disk-image flow below.
+	if flagDeviceType == thorDeviceType {
+		return installThor(ctx, flagVersion, nightly, force)
+	}
+
 	fmt.Println("Fetching available devices...")
 
 	// Fetch Linux devices from GCS manifest.
