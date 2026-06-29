@@ -230,4 +230,4 @@ Copy this block when this coordinator starts tracking an issue.
    `dev.wendy.WendyCompanioniOS` before re-running the Release archive.
 3. Start **REL-66 — Check out skip.dev for Wendy Companion App** when the
    TestFlight release path no longer needs active coordination.
-3. Commit and push coordinator plan updates after meaningful planning changes.
+4. Commit and push coordinator plan updates after meaningful planning changes.
