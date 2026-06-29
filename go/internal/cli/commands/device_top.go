@@ -218,11 +218,17 @@ func listAppContainers(ctx context.Context, conn *grpcclient.AgentConnection) ([
 }
 
 type topJSONHost struct {
-	CPUPercent    float64      `json:"cpuPercent"`
-	CPUCount      uint32       `json:"cpuCount"`
-	MemUsedBytes  int64        `json:"memUsedBytes"`
-	MemTotalBytes int64        `json:"memTotalBytes"`
-	GPUs          []topJSONGPU `json:"gpus,omitempty"`
+	CPUPercent    float64          `json:"cpuPercent"`
+	CPUCount      uint32           `json:"cpuCount"`
+	MemUsedBytes  int64            `json:"memUsedBytes"`
+	MemTotalBytes int64            `json:"memTotalBytes"`
+	GPUs          []topJSONGPU     `json:"gpus,omitempty"`
+	ThermalZones  []topJSONThermal `json:"thermalZones,omitempty"`
+}
+
+type topJSONThermal struct {
+	Name  string  `json:"name"`
+	TempC float64 `json:"tempC"`
 }
 
 type topJSONGPU struct {
@@ -263,6 +269,12 @@ func buildTopJSON(prev, cur topSample, containers []*agentpb.AppContainer) topJS
 				MemTotalBytes: g.GetMemTotalBytes(),
 				TempC:         g.TempC,
 				PowerW:        g.PowerW,
+			})
+		}
+		for _, z := range cur.host.GetThermalZones() {
+			out.Host.ThermalZones = append(out.Host.ThermalZones, topJSONThermal{
+				Name:  z.GetName(),
+				TempC: z.GetTempC(),
 			})
 		}
 	}
@@ -327,6 +339,9 @@ func runTopSnapshot(ctx context.Context, conn *grpcclient.AgentConnection, asJSO
 		for _, g := range cur.host.GetGpus() {
 			fmt.Printf("GPU%d %s: %.0f%%  %s / %s\n", g.GetIndex(), g.GetName(),
 				g.GetUtilPercent(), formatBytes(g.GetMemUsedBytes()), formatBytes(g.GetMemTotalBytes()))
+		}
+		if zones := cur.host.GetThermalZones(); len(zones) > 0 {
+			fmt.Printf("TEMP: %s\n", formatThermalZones(zones))
 		}
 	}
 	cpuByID := map[string]float64{}
@@ -748,6 +763,10 @@ func (m topModel) View() string {
 			}
 			top = append(top, topMeter("GPU", g.GetUtilPercent()/100, val, meterW))
 		}
+
+		if zones := h.GetThermalZones(); len(zones) > 0 {
+			top = append(top, topValDim.Render(" Temp: "+formatThermalZones(zones)))
+		}
 	} else {
 		top = append(top, topValDim.Render(" Connecting…"))
 	}
@@ -917,4 +936,19 @@ func runTopDashboard(ctx context.Context, conn *grpcclient.AgentConnection, inte
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	_, err := p.Run()
 	return err
+}
+
+// formatThermalZones renders thermal zones (already sorted hottest-first by the
+// agent) as a compact one-line summary, e.g. "cpu 49°C  gpu 48°C  soc0 47°C".
+// Zone names are shortened by trimming the conventional "-thermal"/"-therm"
+// suffix for readability.
+func formatThermalZones(zones []*agentpb.ThermalZone) string {
+	parts := make([]string, 0, len(zones))
+	for _, z := range zones {
+		name := z.GetName()
+		name = strings.TrimSuffix(name, "-thermal")
+		name = strings.TrimSuffix(name, "-therm")
+		parts = append(parts, fmt.Sprintf("%s %.0f°C", name, z.GetTempC()))
+	}
+	return strings.Join(parts, "  ")
 }

@@ -943,11 +943,24 @@ func (s *ContainerService) GetResourceStats(ctx context.Context, _ *agentpb.GetR
 		host.MemAvailableBytes = mem.AvailableBytes
 	}
 	host.Gpus = gpuStatsToProto(hoststats.SampleGPU(ctx))
+	host.ThermalZones = thermalZonesToProto(hoststats.SampleThermal())
 
 	return &agentpb.GetResourceStatsResponse{
 		Host:       host,
 		Containers: containers,
 	}, nil
+}
+
+// thermalZonesToProto converts sampled thermal zones to their proto form.
+func thermalZonesToProto(zones []hoststats.ThermalZone) []*agentpb.ThermalZone {
+	if len(zones) == 0 {
+		return nil
+	}
+	out := make([]*agentpb.ThermalZone, len(zones))
+	for i, z := range zones {
+		out[i] = &agentpb.ThermalZone{Name: z.Name, TempC: z.TempC}
+	}
+	return out
 }
 
 // GetContainerPorts returns the listening TCP and bound UDP sockets for the
