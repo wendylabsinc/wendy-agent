@@ -29,16 +29,17 @@ If multiple manifests are present you can override detection with `--build-type`
 `wendy build` invokes an image builder targeting the device's CPU architecture. It passes the following build-args so the Dockerfile or Containerfile can adapt to the target hardware — declare them with `ARG` to use them:
 
 On Apple silicon Macs with [Apple `container`](https://github.com/apple/container)
-installed and started, Wendy tries Apple Container first for Dockerfile and
+installed, Wendy tries Apple Container first for Dockerfile and
 Containerfile builds when `--builder` is omitted. If Apple Container is
 unavailable or the build fails, Wendy falls back to Docker. Use
 `--builder docker` to force Docker, or `--builder apple-container` to require
 Apple Container:
 
 ```sh
-container system start
 wendy --device my-wendy.local build
 ```
+
+Wendy automatically checks for the `container` CLI and offers to install it via Homebrew if missing, and starts the `system` and `builder` services if they are not running.
 
 For local-only Dockerfile or Containerfile builds on the Mac itself, select the
 local provider with `--device apple-container`. Compose projects still require

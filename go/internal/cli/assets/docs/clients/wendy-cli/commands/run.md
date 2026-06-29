@@ -29,16 +29,17 @@ The error explains the project/target mismatch and tells you to set `platform: "
 
 When building a Dockerfile or Containerfile project, `wendy run` passes the target device's hardware parameters as `--build-arg` values so the build file can branch on platform, GPU vendor, or CUDA version. Declare any arg you want to use with `ARG`:
 
-On Apple silicon Macs with Apple's `container` runtime started, Wendy tries
+On Apple silicon Macs with Apple's `container` runtime, Wendy tries
 Apple Container first when `--builder` is omitted. If Apple Container is
 unavailable or the build fails, Wendy falls back to Docker. Use
 `--builder docker` to force Docker, or `--builder apple-container` to require
 Apple Container:
 
 ```sh
-container system start
 wendy --device my-wendy.local run
 ```
+
+Wendy automatically checks for the `container` CLI and offers to install it via Homebrew if missing, and starts the `system` and `builder` services if they are not running.
 
 For local-only Dockerfile or Containerfile runs on the Mac itself, use `wendy run --device
 apple-container` instead. Compose projects still require the Docker provider for

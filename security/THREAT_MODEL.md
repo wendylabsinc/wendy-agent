@@ -65,6 +65,7 @@ fix, debugpy loopback gating, CLI cert/org pinning, and pre-provisioning surface
 | 4318 | OTEL HTTP | None | Always (loopback-bound) |
 | 5000 | OCI Registry HTTP/HTTPS | None / TLS | HTTP pre-prov, HTTPS post-prov |
 | BLE L2CAP | BLE L2CAP mTLS | Client cert | Post-provisioned |
+| `/run/wendy/agent.sock` | gRPC (unix socket) | None | Always; gated by `admin` entitlement |
 
 ---
 

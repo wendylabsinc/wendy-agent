@@ -91,9 +91,10 @@ On Apple silicon Macs, Wendy can use Apple's `container` CLI for local
 Dockerfile and Containerfile runs without Docker Desktop:
 
 ```sh
-container system start
 wendy run --device apple-container
 ```
+
+Wendy automatically checks for the `container` CLI and offers to install it via Homebrew if missing, and starts the `system` and `builder` services if they are not running.
 
 Use this target when you want to build and run a single Dockerfile or
 Containerfile project with Apple's lightweight Linux container runtime. Compose

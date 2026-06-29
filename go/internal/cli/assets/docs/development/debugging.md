@@ -80,8 +80,9 @@ The agent runs different gRPC servers depending on provisioning state:
 | `50052` (default, `agentPort + 1`) | mTLS gRPC | After the device is provisioned |
 | `4317` | OTEL gRPC | Always |
 | `4318` | OTEL HTTP | Always |
+| `/run/wendy/agent.sock` | Plaintext gRPC (unix socket) | Always; gated by `admin` entitlement mount |
 
-Once a device is provisioned, the plaintext port is shut down with `GracefulStop()`. If you are connecting to a provisioned device and getting connection-refused errors on port 50051, check whether the device is already provisioned (look for certificates in `WENDY_CONFIG_PATH`).
+Once a device is provisioned, the plaintext port is shut down with `GracefulStop()`. The local unix socket serves the full gRPC API with no authentication; access is gated by the `admin` entitlement which bind-mounts the socket into entitled containers only. If you are connecting to a provisioned device and getting connection-refused errors on port 50051, check whether the device is already provisioned (look for certificates in `WENDY_CONFIG_PATH`).
 
 ## mTLS Authentication
 

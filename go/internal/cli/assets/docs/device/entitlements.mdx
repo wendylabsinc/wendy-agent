@@ -198,6 +198,47 @@ When enabled, this entitlement:
   **Data Location**: Persistent data is stored at `/var/lib/wendy-agent/storage/{name}` on the host device. Reflashing WendyOS will remove this data unless backed up.
 </Callout>
 
+### Display Entitlement
+
+The display entitlement grants an app the ability to present to a locally-attached monitor as a Wayland client (GPU-accelerated). The app draws directly to the screen without a web browser.
+
+```json
+{
+  "type": "display"
+}
+```
+
+When enabled, this entitlement:
+- Grants `/dev/dri` (GPU render nodes) with cgroup access `rw` (no `mknod`)
+- Adds membership in the `video` and `render` groups
+- Exposes the WendyOS compositor's Wayland socket via `WAYLAND_DISPLAY` / `XDG_RUNTIME_DIR`
+
+On NVIDIA Jetson, GL/EGL userspace is injected from the host through the same CDI path as `gpu`; on Raspberry Pi, the app's own mesa works against the vc4 kernel driver.
+
+<Callout type="info">
+  **Display-enabled image**: The Wayland socket is present only on display-enabled WendyOS images. On a headless image, the entitlement is accepted but nothing renders.
+</Callout>
+
+<Callout type="warning">
+  **Security**: Apps **without** `display` never receive `/dev/dri` — the default GPU/display sandbox is unchanged.
+</Callout>
+
+### Admin Entitlement
+
+The admin entitlement grants the container the wendy-agent's full gRPC over a local unix socket (`/run/wendy/agent.sock`, exposed as `WENDY_AGENT_SOCKET`) — with no authentication.
+
+```json
+{
+  "type": "admin"
+}
+```
+
+An app with `admin` can start, stop, and delete apps and read all device data locally. The socket is bind-mounted **only** into containers that declare `admin` — that mount is the entire trust boundary — and it is never reachable off-device (a unix socket, not TCP). At most one `admin` per app.
+
+<Callout type="warning">
+  **Security**: `admin` is a privileged, deliberate grant equivalent to local device control. Grant it only to fully-trusted first-party apps (e.g. the WendyOS shell). Requires an agent build that serves the local socket.
+</Callout>
+
 ## Common Configurations
 
 ### Web Server with Camera
