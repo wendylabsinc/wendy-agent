@@ -530,8 +530,9 @@ func main() {
 	}
 
 	// Plaintext gRPC server — only needed until the device is provisioned.
-	// Once provisioned the mTLS server handles all gRPC traffic and the plaintext
-	// port is shut down so unprovisioned clients cannot access device services.
+	// Once provisioned, the mTLS server handles remote gRPC traffic and this
+	// plaintext port is shut down. The local unix socket (/run/wendy/agent.sock)
+	// remains active for on-device containers with the admin entitlement.
 	var agentServer *grpc.Server
 	if !alreadyProvisioned {
 		agentServer = grpc.NewServer(
