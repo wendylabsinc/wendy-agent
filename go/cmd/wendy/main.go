@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/wendylabsinc/wendy/go/internal/cli/analytics"
 	"github.com/wendylabsinc/wendy/go/internal/cli/commands"
+	"github.com/wendylabsinc/wendy/go/internal/cli/tegraflash/shim"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/shared/version"
 	"google.golang.org/grpc/codes"
@@ -19,6 +21,14 @@ import (
 )
 
 func main() {
+	// When invoked as adb/lsusb/timeout (via the symlinks wendy plants on PATH for
+	// NVIDIA's bootburn during a Thor flash), act as that tool and exit. macOS only;
+	// IsShimName is always false elsewhere.
+	if shim.IsShimName(filepath.Base(os.Args[0])) {
+		shim.Dispatch()
+		return
+	}
+
 	start := time.Now()
 	cmd := commands.NewRootCmd()
 	executed, err := cmd.ExecuteC()

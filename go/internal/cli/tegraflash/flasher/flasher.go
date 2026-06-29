@@ -1,0 +1,278 @@
+// Package flasher performs T264 (Thor) stage-2 flashing once stage-1 RCM boot has
+// brought the device up as the initrd-flash ADB gadget.
+//
+// Rather than reimplementing NVIDIA's device-side flasher, it drives NVIDIA's own
+// bootburn FlashImages() over ADB, unmodified, via a small monkeypatch driver
+// (stage2_flash.py) that skips bootburn's i386-only boot/probe steps (the Go stage-1
+// already did the equivalent). bootburn shells out to adb/lsusb/timeout; wendy
+// supplies those itself — it re-execs as those names (see package shim), with no
+// Google adb binary and no adb server. The caller (commands.installThor) materializes
+// a shim directory on PATH and replaces the bundle's flash/adb with the same shim;
+// this package just sets up the environment and runs bootburn.
+//
+// Inputs come from a flashpack (see package flashpack), produced offline on an
+// x86_64 builder by scripts/make-thor-flashpack.sh; the relevant dirs are the
+// Options fields below. Run-time requirements: python3 on PATH (PyYAML ships in the
+// flashpack and is put on PYTHONPATH here), and a device already up as the
+// initrd-flash ADB gadget (its adbd advertises shell_v2, which the adb package uses).
+package flasher
+
+import (
+	"bufio"
+	_ "embed"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"time"
+)
+
+// estFlashDuration is a rough estimate shown to the user. Measured ~15.4 min on a
+// jetson-agx-thor devkit (NVMe) over USB; the rootfs A/B writes dominate.
+const estFlashDuration = "around 15 minutes"
+
+//go:embed stage2_flash.py
+var stage2Driver []byte
+
+// Options controls stage-2 flashing.
+type Options struct {
+	// BundleDir is a local copy of the extracted tegraflash bundle; it provides
+	// NVIDIA's bootburn scripts (unified_flash/tools/flashtools/bootburn).
+	BundleDir string
+	// WorkspaceDir is the builder's generated "out" dir. It holds flash_workspace/
+	// (with flash-images/FileToFlash.txt + the signed partition images) and a sibling
+	// tools/ that bootburn reads as <flash_workspace>/../tools; bootburn runs with
+	// -P <WorkspaceDir>/flash_workspace.
+	WorkspaceDir string
+	// ADBDir, if set, is prepended to PATH so bootburn's bare-name lsusb/timeout calls
+	// resolve to wendy's shim. (bootburn also calls adb by absolute path, so the
+	// caller replaces the bundle's flash/adb with the shim too.)
+	ADBDir string
+	// ADBPort, if set, pins the flashing gadget to a specific USB location (a
+	// PathKey) via WENDY_ADB_PATH, which the adb shim honors. Lets a multi-device
+	// host flash the chosen board across the RCM→ADB re-enumeration.
+	ADBPort string
+	// LogPath is where bootburn's full output is written. If empty, a flash.log is
+	// written alongside the workspace.
+	LogPath string
+	// PyYAMLDir is the flashpack's pure-python PyYAML dir (contains a yaml/ package);
+	// it is prepended to PYTHONPATH so bootburn's `import yaml` resolves without pip
+	// or a system PyYAML (macOS system python has none).
+	PyYAMLDir string
+	// Board is the bootburn board name (default "jetson-t264").
+	Board string
+	Out   io.Writer
+}
+
+// Run drives bootburn's FlashImages over ADB via the monkeypatch driver.
+func Run(opts Options) error {
+	out := opts.Out
+	if out == nil {
+		out = os.Stdout
+	}
+	board := opts.Board
+	if board == "" {
+		board = "jetson-t264"
+	}
+
+	bootburnDir := filepath.Join(opts.BundleDir, "unified_flash", "tools", "flashtools", "bootburn")
+	flashWorkspace := filepath.Join(opts.WorkspaceDir, "flash_workspace")
+	if _, err := os.Stat(bootburnDir); err != nil {
+		return fmt.Errorf("bootburn scripts not found at %s (need a local copy of the extracted bundle): %w", bootburnDir, err)
+	}
+	if _, err := os.Stat(filepath.Join(flashWorkspace, "flash-images", "FileToFlash.txt")); err != nil {
+		return fmt.Errorf("flash workspace at %s is missing flash-images/FileToFlash.txt (need the linux-stage2 'out' artifact): %w", flashWorkspace, err)
+	}
+
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		return fmt.Errorf("python3 not found on PATH: %w", err)
+	}
+
+	// Write the monkeypatch driver to a temp file. The name must contain
+	// "flash_bsp_images": bootburn special-cases that argv[0] to take the normal
+	// flashing path (e.g. it then tolerates a chip version not read from the device,
+	// which our skipped ECID step would have set). It adds the bootburn dirs to
+	// sys.path itself (it runs with cwd = bootburnDir).
+	driver, err := os.CreateTemp("", "flash_bsp_images-wendy-*.py")
+	if err != nil {
+		return fmt.Errorf("creating driver temp file: %w", err)
+	}
+	defer os.Remove(driver.Name())
+	if _, err := driver.Write(stage2Driver); err != nil {
+		driver.Close()
+		return fmt.Errorf("writing driver: %w", err)
+	}
+	driver.Close()
+
+	// PyYAML ships in the flashpack; it goes on PYTHONPATH (in envWithADB) so
+	// bootburn's `import yaml` resolves without pip or a system PyYAML.
+	pyDir := opts.PyYAMLDir
+	if pyDir != "" {
+		if _, err := os.Stat(filepath.Join(pyDir, "yaml", "__init__.py")); err != nil {
+			return fmt.Errorf("PyYAML not found in flashpack at %s (need stage2/pyyaml/yaml): %w", pyDir, err)
+		}
+	}
+
+	// Flash args mirror out/doflash.sh minus the RCM --usb-instance. -y disables
+	// pipelining so partitions flash serially: our adb shim claims the USB interface
+	// exclusively, so the parallel path's concurrent adb processes would collide.
+	args := []string{driver.Name(), "-b", board, "--l4t", "-y", "-P", flashWorkspace}
+
+	// bootburn is extremely verbose and emits nothing useful per-partition at the
+	// normal level (it captures the adb/nvdd I/O internally), so stream its full
+	// output to a log file and show a curated summary here instead.
+	logPath := opts.LogPath
+	if logPath == "" {
+		logPath = filepath.Join(opts.WorkspaceDir, "flash.log")
+	}
+	logFile, err := os.Create(logPath)
+	if err != nil {
+		return fmt.Errorf("creating flash log: %w", err)
+	}
+	defer logFile.Close()
+	fmt.Fprintf(logFile, "$ %s %s\n(cwd %s)\n\n", python, strings.Join(args, " "), bootburnDir)
+
+	cmd := exec.Command(python, args...)
+	cmd.Dir = bootburnDir
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
+	cmd.Env = envWithADB(opts.ADBDir, pyDir, opts.ADBPort)
+
+	// Up-front plan from FileToFlash.txt, so the (long, mostly silent) write reads
+	// as deliberate progress rather than a hang.
+	plan := summarizeFlashPlan(filepath.Join(flashWorkspace, "flash-images", "FileToFlash.txt"))
+	fmt.Fprintf(out, "Writing %d partitions to QSPI + internal NVMe over USB.\n", plan.count)
+	if plan.summary != "" {
+		fmt.Fprintf(out, "  Includes: %s\n", plan.summary)
+	}
+	fmt.Fprintf(out, "  Expect %s; the rootfs (A/B slots) is the bulk and writes silently for several minutes — that is normal.\n", estFlashDuration)
+	fmt.Fprintf(out, "  Full log: %s\n", logPath)
+
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("starting bootburn flash: %w", err)
+	}
+
+	// Heartbeat so a multi-minute silent rootfs write doesn't look hung.
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	start := time.Now()
+	ticker := time.NewTicker(60 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case werr := <-done:
+			if werr != nil {
+				fmt.Fprintf(out, "Flash failed after %s. Last lines of the log:\n", elapsed(start))
+				fmt.Fprint(out, tailFile(logPath, 30))
+				return fmt.Errorf("bootburn flash failed (full log: %s): %w", logPath, werr)
+			}
+			fmt.Fprintf(out, "Partitions written in %s.\n", elapsed(start))
+			return nil
+		case <-ticker.C:
+			fmt.Fprintf(out, "  … still flashing (%s elapsed)\n", elapsed(start))
+		}
+	}
+}
+
+// flashPlan is a human summary of FileToFlash.txt.
+type flashPlan struct {
+	count   int    // number of partition entries
+	summary string // notable partitions, e.g. "ESP, rootfs (A/B), config"
+}
+
+// summarizeFlashPlan parses FileToFlash.txt for a count and the notable large
+// NVMe partitions. It is best-effort: a parse miss just yields a thinner summary.
+func summarizeFlashPlan(fileToFlash string) flashPlan {
+	var p flashPlan
+	f, err := os.Open(fileToFlash)
+	if err != nil {
+		return p
+	}
+	defer f.Close()
+	var hasESP, hasRootfs, hasConfig bool
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		p.count++
+		low := strings.ToLower(line)
+		switch {
+		case strings.Contains(low, "esp.img"):
+			hasESP = true
+		case strings.Contains(low, ".simg"):
+			hasRootfs = true
+		case strings.Contains(low, "config-partition"):
+			hasConfig = true
+		}
+	}
+	var parts []string
+	if hasESP {
+		parts = append(parts, "ESP")
+	}
+	if hasRootfs {
+		parts = append(parts, "rootfs (A/B)")
+	}
+	if hasConfig {
+		parts = append(parts, "config")
+	}
+	p.summary = strings.Join(parts, ", ")
+	return p
+}
+
+// elapsed formats time since start to whole seconds.
+func elapsed(start time.Time) time.Duration { return time.Since(start).Round(time.Second) }
+
+// tailFile returns the last n lines of a file (best-effort, for error context).
+func tailFile(path string, n int) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	return strings.Join(lines, "\n") + "\n"
+}
+
+// envWithADB returns the environment with adbDir prepended to PATH, pyDir prepended
+// to PYTHONPATH, and WENDY_ADB_PATH set to adbPort (each only when non-empty). The
+// adb shim inherits WENDY_ADB_PATH and uses it to target the selected device.
+func envWithADB(adbDir, pyDir, adbPort string) []string {
+	env := os.Environ()
+	if adbDir != "" {
+		if abs, err := filepath.Abs(adbDir); err == nil {
+			adbDir = abs
+		}
+		env = prependEnv(env, "PATH", adbDir)
+	}
+	if pyDir != "" {
+		env = prependEnv(env, "PYTHONPATH", pyDir)
+	}
+	if adbPort != "" {
+		env = append(env, "WENDY_ADB_PATH="+adbPort)
+	}
+	return env
+}
+
+// prependEnv prepends val to a path-list env var (key), preserving any existing value.
+func prependEnv(env []string, key, val string) []string {
+	prefix := key + "="
+	for i, kv := range env {
+		if strings.HasPrefix(kv, prefix) {
+			old := kv[len(prefix):]
+			if old == "" {
+				env[i] = prefix + val
+			} else {
+				env[i] = prefix + val + string(os.PathListSeparator) + old
+			}
+			return env
+		}
+	}
+	return append(env, prefix+val)
+}
