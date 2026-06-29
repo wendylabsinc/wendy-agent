@@ -99,7 +99,8 @@ See `references/wendy.json.md` for detailed entitlement configuration.
 |-------------|----------|
 | `network` (host mode) | Web servers, HTTP APIs, incoming connections |
 | `gpu` | ML inference/computer vision (Jetson), board telemetry (Raspberry Pi) |
-| `video` | Camera access, video capture |
+| `display` | Present to local monitor as Wayland client |
+| `camera` | Camera access, video capture |
 | `audio` | Microphone, speakers |
 | `bluetooth` | BLE devices, Bluetooth communication |
 
@@ -159,7 +160,7 @@ The local collector handles forwarding telemetry to your backend infrastructure.
 
 Load these files as needed for specific topics:
 
-- **`references/wendy.json.md`** - App configuration, entitlements (network, gpu, video, audio, bluetooth), common configurations, CLI commands
+- **`references/wendy.json.md`** - App configuration, entitlements (network, gpu, display, camera, audio, bluetooth), common configurations, CLI commands
 
 ## Further Reading
 

@@ -89,6 +89,36 @@ When enabled, this entitlement:
   **Hardware-specific behavior**: What the `gpu` entitlement exposes depends on the device — NVIDIA GPU access on Jetson, and VideoCore board telemetry on Raspberry Pi. See [GPU Access](/docs/hardware/gpu#raspberry-pi-board-telemetry) for the details.
 </Callout>
 
+### Display Entitlement
+
+The display entitlement allows your application to present to a locally-attached monitor as a Wayland client. This is essential for applications that draw directly to the screen without a web browser.
+
+```json
+{
+  "type": "display"
+}
+```
+
+When enabled, this entitlement:
+
+- Grants access to `/dev/dri` (GPU render nodes) with `rw` cgroup access (no `mknod`)
+- Adds membership in the `video` and `render` groups
+- Mounts the WendyOS compositor's Wayland socket and sets `WAYLAND_DISPLAY` / `XDG_RUNTIME_DIR`
+
+On NVIDIA Jetson, the GL/EGL userspace is injected from the host through CDI. On Raspberry Pi, the app's own mesa works against the vc4 kernel driver.
+
+<Callout type="info">
+  **Display-enabled image required**: The Wayland socket is present only on display-enabled WendyOS images. On headless images, the entitlement is accepted but nothing renders.
+</Callout>
+
+| Constraint | |
+|------------|--|
+| At most one `display` per app | enforced at validation |
+
+<Callout type="warning">
+  **Security boundary**: Apps **without** `display` never receive `/dev/dri` — the default GPU/display sandbox is unchanged.
+</Callout>
+
 ### Camera Entitlement
 
 The camera entitlement provides access to video capture devices like USB cameras or CSI cameras.
