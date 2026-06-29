@@ -103,7 +103,7 @@ well as `WDY`, so Release issues can live in the same project.
 - Priority: High
 - Repo: `wendylabsinc/wendy-companion-ios`
 - Worktree: `/Volumes/Projects/WendyLabs/wendy-companion-ios/.worktrees/kb.rel-65-testflight`
-- Branch: `kb.rel-65-testflight`
+- Branch: `kb.rel-65-testflight` (remote branch deleted; local worktree kept for reference)
 - Setup commit: `f4d8e1dcd958bd7c87c11b5993d35639cc44a215`
 - Closed PR: https://github.com/wendylabsinc/wendy-companion-ios/pull/1
 - Current HEAD: `7c0bf8981d2c60554342431b6a52347cf56aaba2` —
