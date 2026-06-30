@@ -198,6 +198,32 @@ func (c *Client) getIsolation(appID string) string {
 	return c.appIsolation[appID]
 }
 
+// cacheAppServicesLocked records appID's services for stop/start-order and group
+// detection, MERGING into any existing entry rather than replacing it.
+//
+// A single-service redeploy (`wendy run --service X`) sends an AppConfig whose
+// Services map holds only X. Replacing would shrink the cached group to {X},
+// after which GroupRestartAppID no longer sees the app as a multi-service group
+// and the monitor restarts a wedged secondary as a lone container against the
+// primary's now-stale namespace PID — crash-looping forever on
+// `lstat /proc/<pid>/ns/ipc` (WDY-1721). Merging preserves the full service set,
+// including the dependsOn graph RestartGroup needs for ordering. Caller must
+// hold c.mu.
+func (c *Client) cacheAppServicesLocked(appID string, services map[string]*appconfig.ServiceConfig) {
+	if len(services) == 0 {
+		return
+	}
+	if c.appServices == nil {
+		c.appServices = make(map[string]map[string]*appconfig.ServiceConfig)
+	}
+	if c.appServices[appID] == nil {
+		c.appServices[appID] = make(map[string]*appconfig.ServiceConfig, len(services))
+	}
+	for name, svc := range services {
+		c.appServices[appID][name] = svc
+	}
+}
+
 // recordServiceIP stores the CNI-assigned IP for a service. Caller must hold c.mu.
 func (c *Client) recordServiceIP(appID, serviceName, ip string) {
 	if c.serviceIPs == nil {
@@ -931,10 +957,7 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 	// StartContainer PID tracking. c.mu is already held for the full function
 	// via defer c.mu.Unlock() above — no inner lock needed.
 	if len(appCfg.Services) > 0 {
-		if c.appServices == nil {
-			c.appServices = make(map[string]map[string]*appconfig.ServiceConfig)
-		}
-		c.appServices[appID] = appCfg.Services
+		c.cacheAppServicesLocked(appID, appCfg.Services)
 	}
 	if appCfg.Isolation != "" {
 		if c.appIsolation == nil {

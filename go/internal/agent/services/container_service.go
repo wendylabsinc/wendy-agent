@@ -346,9 +346,8 @@ func (s *ContainerService) StartContainer(req *agentpb.StartContainerRequest, st
 	return s.streamContainerOutput(ctx, appName, postStartAgentHookFromContext(ctx), req.GetRestartPolicy(), stream)
 }
 
-// startGroup starts each service container in a multi-service app in detach
-// mode and sends a single Started response. Output from individual services
-// is discarded; use wendy device logs to tail per-service logs.
+// startGroup starts every service of a multi-service app in detach mode and
+// sends a single Started response (v1 streaming shape).
 func (s *ContainerService) startGroup(
 	ctx context.Context,
 	appName string,
@@ -356,32 +355,70 @@ func (s *ContainerService) startGroup(
 	restartPolicy *agentpb.RestartPolicy,
 	stream grpc.ServerStreamingServer[agentpb.RunContainerLayersResponse],
 ) error {
+	if err := s.startGroupDetached(ctx, appName, containerIDs, restartPolicy); err != nil {
+		return err
+	}
+	return stream.Send(&agentpb.RunContainerLayersResponse{
+		ResponseType: &agentpb.RunContainerLayersResponse_Started_{
+			Started: &agentpb.RunContainerLayersResponse_Started{},
+		},
+	})
+}
+
+// startGroupDetached starts every service container of a multi-service app in
+// detach mode (output is drained, not streamed — use `wendy device logs`).
+//
+// A shared-namespace group (shared-ipc / shared-network) is started via
+// RestartGroup so members come up in dependency order and each secondary's
+// namespace join is re-resolved against the freshly-started primary's live PID.
+// Starting members independently would re-attach a secondary to the primary's
+// old/dead namespace, leaving it crash-looping on a stale `/proc/<pid>/ns/*`
+// (WDY-1720 makes `apps start <appId>` work for groups; WDY-1721 keeps the
+// shared-namespace invariant across that restart).
+func (s *ContainerService) startGroupDetached(
+	ctx context.Context,
+	appName string,
+	containerIDs []string,
+	restartPolicy *agentpb.RestartPolicy,
+) error {
 	unlock := s.appMu.lockApp(appName)
 	defer unlock()
 
-	for _, id := range containerIDs {
-		outputCh, startErr := s.containerd.StartContainer(ctx, id, "", restartPolicy)
-		if startErr != nil {
-			return status.Errorf(codes.Internal, "failed to start service %q: %v", id, startErr)
-		}
-		// Drain the output channel in the background so the containerd goroutine
-		// does not block. The container runs independently after this.
-		go func(ch <-chan ContainerOutput) {
-			for range ch {
+	register := func(id string, ch <-chan ContainerOutput) {
+		// Drain in the background so the containerd output pipe never blocks.
+		go func(c <-chan ContainerOutput) {
+			for range c {
 			}
-		}(outputCh)
-
+		}(ch)
 		if s.monitor != nil {
 			s.monitor.ClearExplicitStop(id)
 		}
 		s.registerContainerWithMonitor(ctx, id, restartPolicy)
 	}
 
-	return stream.Send(&agentpb.RunContainerLayersResponse{
-		ResponseType: &agentpb.RunContainerLayersResponse_Started_{
-			Started: &agentpb.RunContainerLayersResponse_Started{},
-		},
-	})
+	// Shared-namespace groups must restart as a unit with namespace re-resolution.
+	if gr, ok := s.containerd.(GroupRestarter); ok && len(containerIDs) > 0 {
+		if appID, grouped := gr.GroupRestartAppID(ctx, containerIDs[0]); grouped {
+			channels, err := gr.RestartGroup(ctx, appID)
+			if err != nil {
+				return status.Errorf(codes.Internal, "failed to start app group %q: %v", appName, err)
+			}
+			for id, ch := range channels {
+				register(id, ch)
+			}
+			return nil
+		}
+	}
+
+	// Non-shared-namespace multi-service app: members are independent, start each.
+	for _, id := range containerIDs {
+		outputCh, startErr := s.containerd.StartContainer(ctx, id, "", restartPolicy)
+		if startErr != nil {
+			return status.Errorf(codes.Internal, "failed to start service %q: %v", id, startErr)
+		}
+		register(id, outputCh)
+	}
+	return nil
 }
 
 func postStartAgentHookFromContext(ctx context.Context) string {
