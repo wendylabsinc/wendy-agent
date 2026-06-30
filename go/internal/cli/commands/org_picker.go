@@ -130,10 +130,10 @@ func buildOrgPickerItems(orgs []*cloudpb.Organization, credIDs map[int32]bool) [
 			cred = "✓"
 			group = 0
 			if showSections {
-				section = "Authenticated"
+				section = "AUTHENTICATED"
 			}
 		} else if showSections {
-			section = "Not authenticated"
+			section = "NOT AUTHENTICATED"
 		}
 		// SortKey keeps ordering stable if the picker internally re-sorts.
 		sortKey := fmt.Sprintf("%d_%010d", group, int(id))
