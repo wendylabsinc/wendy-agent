@@ -19,7 +19,7 @@ Yocto image build system, it lives in
 Install or update the `wendy` CLI on macOS or Linux (x86_64 and ARM64):
 
 ```sh
-curl -fsSL https://install.wendy.sh/cli.sh | bash
+curl -fsSL https://install.wendy.dev/cli.sh | bash
 ```
 
 On Windows:
@@ -74,7 +74,7 @@ Wendy target, such as Ubuntu x86_64, Arch Linux, Fedora, Debian, RHEL-compatible
 Linux, or other distributions.
 
 ```sh
-curl -fsSL https://install.wendy.sh/agent.sh | bash
+curl -fsSL https://install.wendy.dev/agent.sh | bash
 ```
 
 The installer supports Linux x86_64 and ARM64. It uses native packages on

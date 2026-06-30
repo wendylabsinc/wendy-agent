@@ -9,7 +9,7 @@ The development Mac holds the selected VLM model locally and `wendy run` deploys
 On the Mac you are using to deploy the demo:
 
 ```sh
-curl -fsSL https://install.wendy.sh/cli.sh | bash
+curl -fsSL https://install.wendy.dev/cli.sh | bash
 ```
 
 Or via Homebrew (see INSTALL.md for trust requirements):
