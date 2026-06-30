@@ -155,8 +155,8 @@ func (f *billyFile) Read(p []byte) (int, error) {
 	}
 	n := copy(p, data)
 	f.off += int64(n)
-	if n == 0 && eof {
-		return 0, io.EOF
+	if eof {
+		return n, io.EOF
 	}
 	return n, nil
 }
@@ -191,6 +191,8 @@ func (f *billyFile) Seek(offset int64, whence int) (int64, error) {
 			return 0, err
 		}
 		f.off = at.GetSize() + offset
+	default:
+		return 0, os.ErrInvalid
 	}
 	return f.off, nil
 }
