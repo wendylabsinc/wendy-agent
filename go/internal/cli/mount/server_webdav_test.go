@@ -21,5 +21,8 @@ func TestServeWebdavStartsOnLoopback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET: %v", err)
 	}
+	if resp.StatusCode >= 500 {
+		t.Fatalf("unexpected server error status: %d", resp.StatusCode)
+	}
 	_ = resp.Body.Close()
 }

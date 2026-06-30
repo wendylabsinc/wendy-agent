@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"net/http"
+	"sync"
 
 	"golang.org/x/net/webdav"
 )
@@ -23,10 +24,22 @@ func ServeWebdav(ctx context.Context, fs webdav.FileSystem) (string, func() erro
 	srv := &http.Server{Handler: handler}
 	go func() { _ = srv.Serve(lis) }()
 
-	stop := func() error { return srv.Close() }
+	var once sync.Once
+	done := make(chan struct{})
+	closeServer := func() error {
+		var err error
+		once.Do(func() {
+			close(done)
+			err = srv.Close()
+		})
+		return err
+	}
 	go func() {
-		<-ctx.Done()
-		_ = srv.Close()
+		select {
+		case <-ctx.Done():
+			closeServer()
+		case <-done:
+		}
 	}()
-	return lis.Addr().String(), stop, nil
+	return lis.Addr().String(), closeServer, nil
 }
