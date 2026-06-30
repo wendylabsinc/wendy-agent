@@ -26,8 +26,10 @@ func TestDeployedByFromContext(t *testing.T) {
 	uri, _ := url.Parse("urn:wendy:org:7:user:42")
 	withURN := &x509.Certificate{URIs: []*url.URL{uri}}
 
-	if got := deployedByFromContext(ctxWithCert(withURN)); got != "wendy/user/42 (org 7)" {
-		t.Errorf("deployedByFromContext = %q; want %q", got, "wendy/user/42 (org 7)")
+	// Org is intentionally omitted from the principal (the device is already
+	// tied to one org), so a URN with org 7 still yields a bare "wendy/user/42".
+	if got := deployedByFromContext(ctxWithCert(withURN)); got != "wendy/user/42" {
+		t.Errorf("deployedByFromContext = %q; want %q", got, "wendy/user/42")
 	}
 
 	// No peer at all → empty (best-effort, must not panic).

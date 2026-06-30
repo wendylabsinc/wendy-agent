@@ -12,8 +12,7 @@ import (
 )
 
 // deployerResolver maps a recorded deployed_by principal (the mTLS cert CN, e.g.
-// "wendy/user/<uid>", or "wendy/user/<id> (org N)") to a human-friendly display
-// string:
+// "wendy/user/<uid>") to a human-friendly display string:
 //
 //   - "you" when the principal is the currently logged-in user (no cloud call),
 //   - the user's email (falling back to name) resolved via the cloud
@@ -48,12 +47,13 @@ func newDeployerResolver() *deployerResolver {
 }
 
 // principalUID extracts the bare user id from a recorded deployed_by value.
-// Recorded forms are "wendy/user/<uid>" (real cert CN) or "wendy/user/<id>
-// (org N)" (URN-derived). Returns ok=false for non-user principals (e.g.
-// "wendy/asset/...") so the caller shows the principal as-is.
+// The recorded form is "wendy/user/<uid>". Returns ok=false for non-user
+// principals (e.g. "wendy/asset/...") so the caller shows the principal as-is.
+// A trailing " (org N)" is tolerated for any labels recorded by an earlier
+// build that included it.
 func principalUID(by string) (string, bool) {
 	s := by
-	if i := strings.Index(s, " ("); i >= 0 { // strip " (org N)" suffix
+	if i := strings.Index(s, " ("); i >= 0 { // tolerate a legacy " (org N)" suffix
 		s = s[:i]
 	}
 	const prefix = "wendy/user/"

@@ -264,11 +264,11 @@ func TestGCTimestamp_IsUTC(t *testing.T) {
 }
 
 func TestWendyLabels_Basic(t *testing.T) {
-	labels := wendyLabels("myapp", "", "1.0.0", nil, nil, "2026-06-28T20:42:00Z", "wendy/user/42 (org 7)")
+	labels := wendyLabels("myapp", "", "1.0.0", nil, nil, "2026-06-28T20:42:00Z", "wendy/user/42")
 	if got := labels[labelKeyDeployedAt]; got != "2026-06-28T20:42:00Z" {
 		t.Errorf("deployed-at label = %q; want the supplied timestamp", got)
 	}
-	if got := labels[labelKeyDeployedBy]; got != "wendy/user/42 (org 7)" {
+	if got := labels[labelKeyDeployedBy]; got != "wendy/user/42" {
 		t.Errorf("deployed-by label = %q; want the supplied principal", got)
 	}
 

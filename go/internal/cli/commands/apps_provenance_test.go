@@ -24,10 +24,10 @@ func TestFormatDeployedBy(t *testing.T) {
 	if got := formatDeployedBy(""); got != emDash {
 		t.Errorf("empty = %q; want em-dash", got)
 	}
-	if got := formatDeployedBy("wendy/user/42 (org 7)"); got != "wendy/user/42 (org 7)" {
+	if got := formatDeployedBy("wendy/user/42"); got != "wendy/user/42" {
 		t.Errorf("short principal was altered: %q", got)
 	}
-	long := "wendy/user/1234567890123456789012345678901234567890 (org 7)"
+	long := "wendy/user/1234567890123456789012345678901234567890"
 	got := formatDeployedBy(long)
 	if len([]rune(got)) != 28 {
 		t.Errorf("elided length = %d runes; want 28", len([]rune(got)))

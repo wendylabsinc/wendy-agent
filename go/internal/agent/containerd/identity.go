@@ -15,7 +15,8 @@ import (
 // string. Preference order:
 //
 //  1. A structured Wendy identity (org URN SAN or legacy sh/wendy CN) →
-//     "wendy/<type>/<id> (org N)".
+//     "wendy/<type>/<id>". The org is intentionally omitted — a device belongs
+//     to exactly one org, so it adds nothing to the label.
 //  2. The raw certificate CommonName — real-world certs use CN="wendy/user/<id>"
 //     (the form the issue calls "the client cert CN is the user identity"),
 //     which IdentityFromCert doesn't parse but is exactly the principal we want.
@@ -35,7 +36,7 @@ func deployedByFromContext(ctx context.Context) string {
 	}
 	leaf := tlsInfo.State.PeerCertificates[0]
 	if id, hasID, err := certs.IdentityFromCert(leaf); err == nil && hasID {
-		return fmt.Sprintf("wendy/%s/%s (org %d)", id.EntityType, id.EntityID, id.OrgID)
+		return fmt.Sprintf("wendy/%s/%s", id.EntityType, id.EntityID)
 	}
 	return leaf.Subject.CommonName
 }

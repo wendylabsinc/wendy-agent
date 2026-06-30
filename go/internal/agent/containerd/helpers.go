@@ -87,7 +87,7 @@ const labelKeyServiceName = "sh.wendy/service"
 const labelKeyDeployedAt = "sh.wendy/deployed.at"
 
 // labelKeyDeployedBy stores the mTLS cert principal that authenticated the
-// deploy RPC (e.g. "wendy/user/42 (org 7)"). Empty for unauthenticated/local
+// deploy RPC (e.g. "wendy/user/42"). Empty for unauthenticated/local
 // deploys. Provenance only — never used for authorization.
 const labelKeyDeployedBy = "sh.wendy/deployed.by"
 

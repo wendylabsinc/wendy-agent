@@ -24,7 +24,7 @@ func TestMapAppContainerToV2_CarriesProvenance(t *testing.T) {
 		RunningState:  agentpb.AppRunningState_RUNNING,
 		FailureCount:  2,
 		DeployedAt:    "2026-06-28T20:42:00Z",
-		DeployedBy:    "wendy/user/42 (org 7)",
+		DeployedBy:    "wendy/user/42",
 		LastStartedAt: "2026-06-29T03:52:00Z",
 		RestartCount:  2,
 	}

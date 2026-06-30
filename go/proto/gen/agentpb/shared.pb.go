@@ -240,7 +240,7 @@ type AppContainer struct {
 	Services []*ServiceEntry `protobuf:"bytes,6,rep,name=services,proto3" json:"services,omitempty"`
 	// Provenance + uptime (WDY-1753). All best-effort; empty/zero when unknown.
 	DeployedAt    string `protobuf:"bytes,7,opt,name=deployed_at,json=deployedAt,proto3" json:"deployed_at,omitempty"`            // RFC3339 install timestamp (containerd CreatedAt); resets on redeploy
-	DeployedBy    string `protobuf:"bytes,8,opt,name=deployed_by,json=deployedBy,proto3" json:"deployed_by,omitempty"`            // mTLS cert principal that authenticated the deploy, e.g. "wendy/user/42 (org 7)"
+	DeployedBy    string `protobuf:"bytes,8,opt,name=deployed_by,json=deployedBy,proto3" json:"deployed_by,omitempty"`            // mTLS cert principal that authenticated the deploy, e.g. "wendy/user/42"
 	LastStartedAt string `protobuf:"bytes,9,opt,name=last_started_at,json=lastStartedAt,proto3" json:"last_started_at,omitempty"` // RFC3339 of the current running task's process start; resets on container (re)start
 	RestartCount  uint32 `protobuf:"varint,10,opt,name=restart_count,json=restartCount,proto3" json:"restart_count,omitempty"`    // number of automatic restarts observed by the monitor (in-memory, resets on agent restart)
 	unknownFields protoimpl.UnknownFields
