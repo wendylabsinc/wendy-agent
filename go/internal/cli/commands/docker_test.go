@@ -320,6 +320,44 @@ func TestBuildDockerProjectWithBuilderFallsBackToDockerWhenAutoAppleContainerFai
 	}
 }
 
+// When Apple Container's CLI is installed but its system is not running, the
+// no-builder auto path now starts the system and uses Apple Container instead
+// of silently falling back to Docker.
+func TestBuildDockerProjectWithBuilderStartsAppleContainerWhenStoppedOnAppleSilicon(t *testing.T) {
+	logFile := setupAppleContainerEnsureSeams(t)
+	isInteractiveTerminalFn = func() bool { return false }
+	promptYesNoFn = func(string) bool { t.Fatal("must not prompt in non-interactive auto path"); return false }
+	// System is down until "container system start" creates the readiness file.
+	t.Setenv("IMAGE_BUILDER_STATUS_READY_FILE", filepath.Join(t.TempDir(), "ready"))
+
+	oldDockerBuild := buildDockerProjectWithDocker
+	t.Cleanup(func() { buildDockerProjectWithDocker = oldDockerBuild })
+	buildDockerProjectWithDocker = func(dir, imageName, platform, dockerfile string) error {
+		t.Fatal("Docker fallback should not run when Apple Container can be started")
+		return nil
+	}
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "Containerfile"), []byte("FROM scratch\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := buildDockerProjectWithBuilder(context.Background(), "", dir, "test-app:latest", "linux/arm64", "Containerfile"); err != nil {
+		t.Fatalf("buildDockerProjectWithBuilder: %v", err)
+	}
+
+	data, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "container\x00system\x00start\x00--timeout\x0060") {
+		t.Fatalf("expected Apple Container system to be started:\n%s", data)
+	}
+	if !strings.Contains(string(data), "container\x00build\x00") {
+		t.Fatalf("expected Apple Container build to run:\n%s", data)
+	}
+}
+
 func fakeImageBuilderCommandContext(logFile string) func(context.Context, string, ...string) *exec.Cmd {
 	return func(ctx context.Context, name string, args ...string) *exec.Cmd {
 		cmdArgs := []string{"-test.run=TestImageBuilderHelperProcess", "--", name}
