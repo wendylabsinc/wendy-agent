@@ -2,7 +2,6 @@ package commands
 
 import (
 	"context"
-	"strings"
 	"testing"
 
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
@@ -39,29 +38,10 @@ func TestFormatKernelLogRecord(t *testing.T) {
 	}
 }
 
-func TestConflictingOSFlags(t *testing.T) {
-	changed := map[string]bool{"app": true, "tail": true, "service": false}
-	got := conflictingOSFlags(func(name string) bool { return changed[name] })
-	// Order follows kernelLogConflictFlags declaration order.
-	want := []string{"app", "tail"}
-	if len(got) != len(want) {
-		t.Fatalf("conflictingOSFlags() = %v, want %v", got, want)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("conflictingOSFlags() = %v, want %v", got, want)
-		}
-	}
-
-	if none := conflictingOSFlags(func(string) bool { return false }); len(none) != 0 {
-		t.Errorf("expected no conflicts when nothing changed, got %v", none)
-	}
-}
-
-func TestDeviceLogsFollowFlag(t *testing.T) {
-	f := newDeviceLogsCmd().Flags().Lookup("follow")
+func TestDeviceOSLogsFollowFlag(t *testing.T) {
+	f := newDeviceOSLogsCmd().Flags().Lookup("follow")
 	if f == nil {
-		t.Fatal("expected --follow flag on device logs command")
+		t.Fatal("expected --follow flag on device os-logs command")
 	}
 	// Follow defaults to true: the kernel dump tails unless explicitly disabled.
 	if f.DefValue != "true" {
@@ -70,16 +50,16 @@ func TestDeviceLogsFollowFlag(t *testing.T) {
 	if f.Shorthand != "f" {
 		t.Errorf("--follow shorthand = %q, want \"f\"", f.Shorthand)
 	}
+}
 
-	// --follow only governs --os; using it for container logs must error rather
-	// than silently do nothing.
-	cmd := newDeviceLogsCmd()
-	cmd.SetArgs([]string{"--follow=false"})
-	cmd.SilenceUsage = true
-	cmd.SilenceErrors = true
-	err := cmd.Execute()
-	if err == nil || !strings.Contains(err.Error(), "--follow only applies to --os") {
-		t.Fatalf("expected --follow-without-os error, got %v", err)
+// The kernel ring buffer is now its own `os-logs` command, not a flag on `logs`.
+// Guard against the flags drifting back onto `logs`.
+func TestDeviceLogsHasNoKernelFlags(t *testing.T) {
+	flags := newDeviceLogsCmd().Flags()
+	for _, name := range []string{"os", "follow"} {
+		if flags.Lookup(name) != nil {
+			t.Errorf("device logs should not have --%s flag; use `device os-logs`", name)
+		}
 	}
 }
 

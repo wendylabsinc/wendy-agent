@@ -62,6 +62,7 @@ func newDeviceCmd() *cobra.Command {
 	addToGroup("common",
 		newAppsCmd(),
 		newDeviceLogsCmd(),
+		newDeviceOSLogsCmd(),
 		newROS2Cmd(),
 		newDeviceDashboardCmd(),
 		newTopCmd(),
@@ -929,23 +930,6 @@ func parseSeverityLevel(name string) int32 {
 	}
 }
 
-// kernelLogConflictFlags are the container-log filters that cannot be combined
-// with --os, which dumps the kernel ring buffer instead of container logs.
-var kernelLogConflictFlags = []string{"app", "service", "min-severity", "level", "tail"}
-
-// conflictingOSFlags returns, in declaration order, the kernelLogConflictFlags
-// that the caller reports as set. changed reports whether a flag was set on the
-// command line (typically cmd.Flags().Changed).
-func conflictingOSFlags(changed func(name string) bool) []string {
-	var out []string
-	for _, f := range kernelLogConflictFlags {
-		if changed(f) {
-			out = append(out, f)
-		}
-	}
-	return out
-}
-
 // formatKernelLogRecord renders a kernel record in classic dmesg style:
 // "[ seconds.microseconds] message", with seconds right-aligned to 5 columns
 // and microseconds zero-padded to 6 digits.
@@ -962,8 +946,6 @@ func newDeviceLogsCmd() *cobra.Command {
 	var minSeverity int32
 	var level string
 	var tail int32
-	var osDump bool
-	var follow bool
 
 	cmd := &cobra.Command{
 		Use:   "logs [app]",
@@ -971,23 +953,11 @@ func newDeviceLogsCmd() *cobra.Command {
 		Long: "Stream logs from containers on the device.\n\n" +
 			"Pass an app name (positionally or with --app) to see only that app's\n" +
 			"logs. Without a filter, logs from every container and the agent itself\n" +
-			"are streamed, which can include agent lifecycle messages.",
+			"are streamed, which can include agent lifecycle messages.\n\n" +
+			"To inspect the device kernel ring buffer (dmesg), use `wendy device os-logs`.",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-
-			if osDump {
-				if conflicts := conflictingOSFlags(cmd.Flags().Changed); len(conflicts) > 0 {
-					return fmt.Errorf("--os cannot be combined with container log filters: --%s", strings.Join(conflicts, ", --"))
-				}
-				return runKernelLogDump(ctx, follow)
-			}
-			// --follow only governs the kernel ring buffer dump; container logs
-			// always stream live. Reject an explicit --follow without --os so the
-			// flag never silently does nothing.
-			if cmd.Flags().Changed("follow") {
-				return errors.New("--follow only applies to --os (the kernel ring buffer dump)")
-			}
 
 			// Accept the app name positionally (e.g. `wendy device logs IronPaws`)
 			// as well as via --app. Without this the positional argument was
@@ -1111,8 +1081,40 @@ func newDeviceLogsCmd() *cobra.Command {
 	cmd.Flags().Int32Var(&minSeverity, "min-severity", 0, "Minimum log severity number")
 	cmd.Flags().StringVar(&level, "level", "", "Minimum log level (trace, debug, info, warn, error, fatal)")
 	cmd.Flags().Int32Var(&tail, "tail", 0, "Replay the last N log batches before streaming live (0 = live only)")
-	cmd.Flags().BoolVar(&osDump, "os", false, "Dump the device kernel ring buffer (dmesg) instead of container logs")
-	cmd.Flags().BoolVarP(&follow, "follow", "f", true, "With --os, keep following new kernel records after the buffer; use --follow=false for a one-shot dump")
+
+	return cmd
+}
+
+// newDeviceOSLogsCmd dumps the device kernel ring buffer (dmesg). It is a sibling
+// of `device logs` (container/agent logs): the kernel buffer is a different data
+// flow — raw, unredacted, and not filterable by app/service — so it lives in its
+// own command rather than as a flag on `logs`.
+func newDeviceOSLogsCmd() *cobra.Command {
+	var follow bool
+
+	cmd := &cobra.Command{
+		Use: "os-logs",
+		// Hidden: a low-level kernel diagnostic for operators who know to reach
+		// for it, kept out of the main `device` listing to avoid cluttering the
+		// everyday command surface. It still works and is documented.
+		Hidden: true,
+		Short:  "Dump the device kernel ring buffer (dmesg)",
+		Long: "Dump the device's kernel ring buffer (dmesg) for inspecting kernel,\n" +
+			"boot, and hardware messages.\n\n" +
+			"By default it replays the buffered records and then keeps following new\n" +
+			"ones until you interrupt with ctrl-c (like `dmesg -w`). Pass --follow=false\n" +
+			"(-f=false) for a one-shot snapshot that prints the current buffer and exits\n" +
+			"(like `dmesg`).\n\n" +
+			"Output is raw and unredacted. Each record is printed in classic dmesg style,\n" +
+			"`[ seconds.microseconds] message`; with --json each record is emitted as one\n" +
+			"JSON object (timestamp_us, level, message). Available on Linux devices only.",
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runKernelLogDump(cmd.Context(), follow)
+		},
+	}
+
+	cmd.Flags().BoolVarP(&follow, "follow", "f", true, "Keep following new kernel records after replaying the buffer; use --follow=false for a one-shot dump")
 
 	return cmd
 }

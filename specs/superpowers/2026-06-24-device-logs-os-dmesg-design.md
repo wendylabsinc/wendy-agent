@@ -3,6 +3,12 @@
 **Date:** 2026-06-24
 **Status:** Approved design
 
+> **Update (2026-06-30, rename):** the `--os` flag on `device logs` was
+> promoted to its own sibling command, `wendy device os-logs` (same behaviour,
+> same `--follow`/`--json` semantics). References to `wendy device logs --os`
+> below describe the original design; the kernel-dump path now lives in
+> `newDeviceOSLogsCmd`.
+
 > **Update (2026-06-30):** `--os` now follows by default. The
 > `DumpKernelLogRequest` carries an `optional bool follow` (true when unset):
 > with follow the agent opens `/dev/kmsg` blocking, replays the buffer, then
