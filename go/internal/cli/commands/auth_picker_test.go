@@ -3,7 +3,6 @@
 package commands
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
@@ -29,17 +28,22 @@ func TestAuthPickerItems(t *testing.T) {
 	if len(items) != 2 {
 		t.Fatalf("want 2 items, got %d", len(items))
 	}
-	if items[0].Name != "https://cloud.wendy.sh" {
+	// Name now shows the org label ("org 7 — prod:443") so each row is
+	// identified by org, not dashboard URL.
+	if items[0].Name != "org 7 — prod:443" {
 		t.Errorf("item 0 name = %q", items[0].Name)
 	}
-	if !strings.Contains(items[0].Description, "org 7") {
+	// Description shows the dashboard URL for environment context.
+	if items[0].Description != "https://cloud.wendy.sh" {
 		t.Errorf("item 0 desc = %q", items[0].Description)
 	}
-	if items[0].Value.(string) != "prod:443" || items[0].DedupKey != "prod:443" {
+	// DedupKey and Value include the org ID so two orgs on the same endpoint
+	// are represented as separate rows.
+	if items[0].Value.(string) != "prod:443::7" || items[0].DedupKey != "prod:443::7" {
 		t.Errorf("item 0 value/dedup wrong: %+v", items[0])
 	}
-	// Session with no dashboard falls back to its endpoint for the Name column.
-	if items[1].Name != "local:50051" {
+	// Session with no dashboard: Name is the session label, Description is endpoint.
+	if items[1].Name != "org 1 — local:50051" {
 		t.Errorf("item 1 name = %q", items[1].Name)
 	}
 }

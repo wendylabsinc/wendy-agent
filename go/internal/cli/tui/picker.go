@@ -848,7 +848,14 @@ func (m *PickerModel) refreshTableWithCursorKey(cursorKey string) {
 	visible := m.visibleItems()
 	hasDefaultCol := m.OnSetDefault != nil
 	cols, itemRows := pickerTableDataForColumns(visible, m.DefaultKey, hasDefaultCol, m.columns, m.fixedColumns)
-	rows, rowItem := withSectionHeaders(visible, itemRows, len(cols))
+	// Determine which column index carries the section label. When a marker
+	// column (default indicator) is present it occupies cols[0] with an empty
+	// title; the first data column is then at index 1.
+	labelOffset := 0
+	if len(cols) > 0 && cols[0].Title == "" {
+		labelOffset = 1
+	}
+	rows, rowItem := withSectionHeaders(visible, itemRows, len(cols), labelOffset)
 	m.rowItem = rowItem
 	m.table.SetRows(nil)
 	m.table.SetColumns(cols)
@@ -894,7 +901,7 @@ func pickerItemKey(item PickerItem) string {
 // index (-1 for headers). When no visible item sets a Section, the item rows
 // are returned unchanged with an identity mapping, preserving the headerless
 // picker's exact behavior.
-func withSectionHeaders(visible []PickerItem, itemRows []bubbleTable.Row, ncols int) ([]bubbleTable.Row, []int) {
+func withSectionHeaders(visible []PickerItem, itemRows []bubbleTable.Row, ncols, labelOffset int) ([]bubbleTable.Row, []int) {
 	hasSection := false
 	for _, item := range visible {
 		if item.Section != "" {
@@ -919,7 +926,7 @@ func withSectionHeaders(visible []PickerItem, itemRows []bubbleTable.Row, ncols 
 		}
 		if item.Section != "" && item.Section != currentSection {
 			currentSection = item.Section
-			rows = append(rows, sectionHeaderRow(currentSection, ncols))
+			rows = append(rows, sectionHeaderRow(currentSection, ncols, labelOffset))
 			rowItem = append(rowItem, -1)
 		}
 		rows = append(rows, itemRows[i])
@@ -936,9 +943,13 @@ func withSectionHeaders(visible []PickerItem, itemRows []bubbleTable.Row, ncols 
 // is not ANSI-aware. A styled value's escape bytes count toward the column
 // width, so truncation cuts inside the escape sequence and the terminal renders
 // garbage.
-func sectionHeaderRow(label string, ncols int) bubbleTable.Row {
+func sectionHeaderRow(label string, ncols, labelOffset int) bubbleTable.Row {
 	row := make(bubbleTable.Row, max(ncols, 1))
-	row[0] = label
+	if labelOffset < len(row) {
+		row[labelOffset] = label
+	} else {
+		row[0] = label
+	}
 	return row
 }
 
