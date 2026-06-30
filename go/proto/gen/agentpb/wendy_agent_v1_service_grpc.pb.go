@@ -73,10 +73,13 @@ type WendyAgentServiceClient interface {
 	ForgetBluetoothPeripheral(ctx context.Context, in *ForgetBluetoothPeripheralRequest, opts ...grpc.CallOption) (*ForgetBluetoothPeripheralResponse, error)
 	// Update the operating system using a Mender artifact
 	UpdateOS(ctx context.Context, in *UpdateOSRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[UpdateOSResponse], error)
-	// Dump the current kernel ring buffer (dmesg) for inspection. One-shot:
-	// streams the buffered records and completes. Records are NOT PII-redacted;
-	// this is a local diagnostic dump for an operator connected to their own
-	// device, distinct from the DPIA-gated OTel kernel-log streaming path.
+	// Dump the current kernel ring buffer (dmesg) for inspection. By default
+	// the agent streams the buffered records and then keeps following new
+	// kernel messages until the client disconnects (like `dmesg -w`); set
+	// follow=false for a one-shot dump that completes once the buffer drains.
+	// Records are NOT PII-redacted; this is a local diagnostic for an operator
+	// connected to their own device, distinct from the DPIA-gated OTel
+	// kernel-log streaming path.
 	DumpKernelLog(ctx context.Context, in *DumpKernelLogRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[DumpKernelLogResponse], error)
 	// Report the outcome of the most recent OS update attempt: committed
 	// after post-reboot healthchecks passed, or rolled back with details on
@@ -342,10 +345,13 @@ type WendyAgentServiceServer interface {
 	ForgetBluetoothPeripheral(context.Context, *ForgetBluetoothPeripheralRequest) (*ForgetBluetoothPeripheralResponse, error)
 	// Update the operating system using a Mender artifact
 	UpdateOS(*UpdateOSRequest, grpc.ServerStreamingServer[UpdateOSResponse]) error
-	// Dump the current kernel ring buffer (dmesg) for inspection. One-shot:
-	// streams the buffered records and completes. Records are NOT PII-redacted;
-	// this is a local diagnostic dump for an operator connected to their own
-	// device, distinct from the DPIA-gated OTel kernel-log streaming path.
+	// Dump the current kernel ring buffer (dmesg) for inspection. By default
+	// the agent streams the buffered records and then keeps following new
+	// kernel messages until the client disconnects (like `dmesg -w`); set
+	// follow=false for a one-shot dump that completes once the buffer drains.
+	// Records are NOT PII-redacted; this is a local diagnostic for an operator
+	// connected to their own device, distinct from the DPIA-gated OTel
+	// kernel-log streaming path.
 	DumpKernelLog(*DumpKernelLogRequest, grpc.ServerStreamingServer[DumpKernelLogResponse]) error
 	// Report the outcome of the most recent OS update attempt: committed
 	// after post-reboot healthchecks passed, or rolled back with details on

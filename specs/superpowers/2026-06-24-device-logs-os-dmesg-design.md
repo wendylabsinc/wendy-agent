@@ -3,6 +3,15 @@
 **Date:** 2026-06-24
 **Status:** Approved design
 
+> **Update (2026-06-30):** `--os` now follows by default. The
+> `DumpKernelLogRequest` carries an `optional bool follow` (true when unset):
+> with follow the agent opens `/dev/kmsg` blocking, replays the buffer, then
+> tails new records until the client disconnects (like `dmesg -w`); the
+> blocked read is unwound by closing the fd when the stream context ends.
+> `--follow=false` keeps the original one-shot snapshot path (non-blocking fd,
+> stop on `EAGAIN`) described below. The "one-shot only" and "Follow is a
+> non-goal" statements in this document are superseded by that change.
+
 ## Goal
 
 Add `wendy device logs --os` to dump the device's kernel ring buffer (dmesg)

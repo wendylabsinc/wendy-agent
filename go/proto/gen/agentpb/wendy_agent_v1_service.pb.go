@@ -2401,9 +2401,15 @@ func (*UpdateOSResponse_Completed_) isUpdateOSResponse_ResponseType() {}
 
 func (*UpdateOSResponse_Failed_) isUpdateOSResponse_ResponseType() {}
 
-// Request to dump the kernel ring buffer. No options in v1.
+// Request to dump the kernel ring buffer.
 type DumpKernelLogRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// When true (the default when the field is omitted), the agent streams the
+	// currently-buffered records and then follows new kernel messages until the
+	// client disconnects (like `dmesg -w`). When explicitly false, the agent
+	// streams the buffered records and completes once the ring buffer is drained
+	// (like `dmesg`). Sent as optional so an unset request defaults to follow.
+	Follow        *bool `protobuf:"varint,1,opt,name=follow,proto3,oneof" json:"follow,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2436,6 +2442,13 @@ func (x *DumpKernelLogRequest) ProtoReflect() protoreflect.Message {
 // Deprecated: Use DumpKernelLogRequest.ProtoReflect.Descriptor instead.
 func (*DumpKernelLogRequest) Descriptor() ([]byte, []int) {
 	return file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDescGZIP(), []int{37}
+}
+
+func (x *DumpKernelLogRequest) GetFollow() bool {
+	if x != nil && x.Follow != nil {
+		return *x.Follow
+	}
+	return false
 }
 
 // A batch of kernel log records. The agent sends records in batches to keep
@@ -3901,8 +3914,10 @@ const file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDesc = "" +
 	"\x0freboot_required\x18\x01 \x01(\bR\x0erebootRequired\x1a-\n" +
 	"\x06Failed\x12#\n" +
 	"\rerror_message\x18\x01 \x01(\tR\ferrorMessageB\x0f\n" +
-	"\rresponse_type\"\x16\n" +
-	"\x14DumpKernelLogRequest\"[\n" +
+	"\rresponse_type\">\n" +
+	"\x14DumpKernelLogRequest\x12\x1b\n" +
+	"\x06follow\x18\x01 \x01(\bH\x00R\x06follow\x88\x01\x01B\t\n" +
+	"\a_follow\"[\n" +
 	"\x15DumpKernelLogResponse\x12B\n" +
 	"\arecords\x18\x01 \x03(\v2(.wendy.agent.services.v1.KernelLogRecordR\arecords\"d\n" +
 	"\x0fKernelLogRecord\x12!\n" +
@@ -4164,6 +4179,7 @@ func file_wendy_agent_services_v1_wendy_agent_v1_service_proto_init() {
 		(*UpdateOSResponse_Completed_)(nil),
 		(*UpdateOSResponse_Failed_)(nil),
 	}
+	file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[37].OneofWrappers = []any{}
 	file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[44].OneofWrappers = []any{}
 	file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[50].OneofWrappers = []any{
 		(*UpdateAgentRequest_ControlCommand_Update_)(nil),

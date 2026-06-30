@@ -14,8 +14,10 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
@@ -956,6 +958,7 @@ func newDeviceLogsCmd() *cobra.Command {
 	var level string
 	var tail int32
 	var osDump bool
+	var follow bool
 
 	cmd := &cobra.Command{
 		Use:   "logs [app]",
@@ -972,7 +975,13 @@ func newDeviceLogsCmd() *cobra.Command {
 				if conflicts := conflictingOSFlags(cmd.Flags().Changed); len(conflicts) > 0 {
 					return fmt.Errorf("--os cannot be combined with container log filters: --%s", strings.Join(conflicts, ", --"))
 				}
-				return runKernelLogDump(ctx)
+				return runKernelLogDump(ctx, follow)
+			}
+			// --follow only governs the kernel ring buffer dump; container logs
+			// always stream live. Reject an explicit --follow without --os so the
+			// flag never silently does nothing.
+			if cmd.Flags().Changed("follow") {
+				return errors.New("--follow only applies to --os (the kernel ring buffer dump)")
 			}
 
 			// Accept the app name positionally (e.g. `wendy device logs IronPaws`)
@@ -1098,28 +1107,36 @@ func newDeviceLogsCmd() *cobra.Command {
 	cmd.Flags().StringVar(&level, "level", "", "Minimum log level (trace, debug, info, warn, error, fatal)")
 	cmd.Flags().Int32Var(&tail, "tail", 0, "Replay the last N log batches before streaming live (0 = live only)")
 	cmd.Flags().BoolVar(&osDump, "os", false, "Dump the device kernel ring buffer (dmesg) instead of container logs")
+	cmd.Flags().BoolVarP(&follow, "follow", "f", true, "With --os, keep following new kernel records after the buffer; use --follow=false for a one-shot dump")
 
 	return cmd
 }
 
 // runKernelLogDump fetches the device kernel ring buffer via DumpKernelLog and
 // prints it in classic dmesg style (or as one JSON object per record when
-// --json is set).
-func runKernelLogDump(ctx context.Context) error {
+// --json is set). With follow=true it keeps streaming new records until the
+// user interrupts (ctrl-c); with follow=false it returns once the buffer drains.
+func runKernelLogDump(ctx context.Context, follow bool) error {
+	// Interrupt cancels the stream so follow mode exits cleanly on ctrl-c.
+	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	conn, err := connectToAgent(ctx)
 	if err != nil {
 		return err
 	}
 	defer conn.Close()
 
-	stream, err := conn.AgentService.DumpKernelLog(ctx, &agentpb.DumpKernelLogRequest{})
+	stream, err := conn.AgentService.DumpKernelLog(ctx, &agentpb.DumpKernelLogRequest{Follow: &follow})
 	if err != nil {
 		return fmt.Errorf("requesting kernel log: %w", err)
 	}
 
 	for {
 		resp, err := stream.Recv()
-		if err == io.EOF {
+		// io.EOF ends a one-shot dump; a cancelled context ends a follow stream
+		// on ctrl-c. Both are clean exits.
+		if err == io.EOF || ctx.Err() != nil {
 			break
 		}
 		if err != nil {

@@ -49,10 +49,13 @@ service WendyAgentService {
     // Update the operating system using a Mender artifact
     rpc UpdateOS(UpdateOSRequest) returns (stream UpdateOSResponse);
 
-    // Dump the current kernel ring buffer (dmesg) for inspection. One-shot:
-    // streams the buffered records and completes. Records are NOT PII-redacted;
-    // this is a local diagnostic dump for an operator connected to their own
-    // device, distinct from the DPIA-gated OTel kernel-log streaming path.
+    // Dump the current kernel ring buffer (dmesg) for inspection. By default
+    // the agent streams the buffered records and then keeps following new
+    // kernel messages until the client disconnects (like `dmesg -w`); set
+    // follow=false for a one-shot dump that completes once the buffer drains.
+    // Records are NOT PII-redacted; this is a local diagnostic for an operator
+    // connected to their own device, distinct from the DPIA-gated OTel
+    // kernel-log streaming path.
     rpc DumpKernelLog(DumpKernelLogRequest) returns (stream DumpKernelLogResponse);
 
     // Report the outcome of the most recent OS update attempt: committed
@@ -473,8 +476,15 @@ message UpdateOSResponse {
     }
 }
 
-// Request to dump the kernel ring buffer. No options in v1.
-message DumpKernelLogRequest {}
+// Request to dump the kernel ring buffer.
+message DumpKernelLogRequest {
+    // When true (the default when the field is omitted), the agent streams the
+    // currently-buffered records and then follows new kernel messages until the
+    // client disconnects (like `dmesg -w`). When explicitly false, the agent
+    // streams the buffered records and completes once the ring buffer is drained
+    // (like `dmesg`). Sent as optional so an unset request defaults to follow.
+    optional bool follow = 1;
+}
 
 // A batch of kernel log records. The agent sends records in batches to keep
 // individual messages well under the gRPC message-size limit, regardless of

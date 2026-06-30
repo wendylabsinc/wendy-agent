@@ -2,6 +2,7 @@ package commands
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
@@ -54,6 +55,31 @@ func TestConflictingOSFlags(t *testing.T) {
 
 	if none := conflictingOSFlags(func(string) bool { return false }); len(none) != 0 {
 		t.Errorf("expected no conflicts when nothing changed, got %v", none)
+	}
+}
+
+func TestDeviceLogsFollowFlag(t *testing.T) {
+	f := newDeviceLogsCmd().Flags().Lookup("follow")
+	if f == nil {
+		t.Fatal("expected --follow flag on device logs command")
+	}
+	// Follow defaults to true: the kernel dump tails unless explicitly disabled.
+	if f.DefValue != "true" {
+		t.Errorf("--follow default = %q, want \"true\"", f.DefValue)
+	}
+	if f.Shorthand != "f" {
+		t.Errorf("--follow shorthand = %q, want \"f\"", f.Shorthand)
+	}
+
+	// --follow only governs --os; using it for container logs must error rather
+	// than silently do nothing.
+	cmd := newDeviceLogsCmd()
+	cmd.SetArgs([]string{"--follow=false"})
+	cmd.SilenceUsage = true
+	cmd.SilenceErrors = true
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "--follow only applies to --os") {
+		t.Fatalf("expected --follow-without-os error, got %v", err)
 	}
 }
 
