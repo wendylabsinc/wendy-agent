@@ -19,7 +19,7 @@ import (
 func newTestFSClient(t *testing.T) (*FSClient, string) {
 	t.Helper()
 	tmp := t.TempDir()
-	services.SetVolumesDirForTest(tmp) // see Step 3 note
+	services.SetVolumesDirForTest(tmp) // override the agent volumes dir for this in-process test
 	t.Cleanup(services.ResetVolumesDirForTest)
 
 	if err := os.MkdirAll(filepath.Join(tmp, "vol"), 0o755); err != nil {

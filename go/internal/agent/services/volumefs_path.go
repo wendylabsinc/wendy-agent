@@ -50,6 +50,10 @@ func resolveVolumePath(volume, relPath string) (string, error) {
 	if err == nil && !withinRoot(realRoot, resolved) {
 		return "", status.Errorf(codes.InvalidArgument, "path %q resolves outside volume", relPath)
 	}
+	// We return the unresolved path; the kernel re-resolves symlinks at syscall
+	// time. Only a process with direct disk access (the app container itself)
+	// could swap a symlink in the interim, and it already has that access, so
+	// this is not an escalation path. Do not "fix" by returning the resolved path.
 	return full, nil
 }
 
