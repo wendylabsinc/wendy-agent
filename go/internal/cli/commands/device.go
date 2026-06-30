@@ -79,6 +79,8 @@ func newDeviceCmd() *cobra.Command {
 		newDeviceUpdateCmd(),
 		newDeviceSyncTimeCmd(),
 		newVolumesCmd(),
+		newMountCmd(),
+		newUnmountCmd(),
 	)
 	addToGroup("hardware",
 		newWifiCmd(),
