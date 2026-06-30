@@ -352,6 +352,14 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 		}
 	}
 
+	// Thor flashes over USB recovery via its flashpack, never to a drive. The
+	// interactive picker reaches here too (the flag is empty), so route it to
+	// installThor here as well — otherwise it falls through to the disk-image
+	// flow and dd's the wrong artifact onto an external drive.
+	if selected == thorDeviceType {
+		return installThor(ctx, flagVersion, nightly, force)
+	}
+
 	device := deviceMap[selected]
 
 	if device.IsESP32 {
