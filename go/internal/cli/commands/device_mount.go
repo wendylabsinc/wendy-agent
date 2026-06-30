@@ -3,6 +3,7 @@ package commands
 import (
 	"fmt"
 	"os/signal"
+	"runtime"
 	"syscall"
 
 	"github.com/spf13/cobra"
@@ -47,7 +48,7 @@ func newMountCmd() *cobra.Command {
 				if v.GetName() == volume {
 					found = true
 					if len(v.GetUsedBy()) > 0 {
-						fmt.Fprintf(cmd.OutOrStdout(),
+						fmt.Fprintf(cmd.OutOrStderr(),
 							"warning: volume %q is in use by %v; writes from your PC and the app can corrupt data\n",
 							volume, v.GetUsedBy())
 					}
@@ -58,14 +59,15 @@ func newMountCmd() *cobra.Command {
 			}
 
 			deviceName := target.Agent.Host
-			if mountpoint == "" && protocol != "webdav" {
-				mountpoint, err = mount.DefaultMountpoint(deviceName, volume)
-				if err != nil {
-					return err
+			if mountpoint == "" {
+				if protocol == "webdav" || (protocol == "" && runtime.GOOS == "windows") {
+					mountpoint = "W:"
+				} else {
+					mountpoint, err = mount.DefaultMountpoint(deviceName, volume)
+					if err != nil {
+						return err
+					}
 				}
-			}
-			if mountpoint == "" { // webdav default drive
-				mountpoint = "W:"
 			}
 
 			// Cancel on SIGINT/SIGTERM for a clean unmount.

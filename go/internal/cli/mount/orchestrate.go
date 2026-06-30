@@ -52,7 +52,11 @@ func Run(ctx context.Context, opts Options) error {
 		if err != nil {
 			return fmt.Errorf("starting NFS server: %w", err)
 		}
-		defer stop()
+		defer func() {
+			if cerr := stop(); cerr != nil {
+				fmt.Fprintf(opts.Stdout, "warning: stopping server: %v\n", cerr)
+			}
+		}()
 		if err := mountNFS(ctx, addr, opts.Mountpoint, opts.ReadOnly); err != nil {
 			return fmt.Errorf("mounting: %w", err)
 		}
@@ -64,7 +68,11 @@ func Run(ctx context.Context, opts Options) error {
 		if err != nil {
 			return fmt.Errorf("starting WebDAV server: %w", err)
 		}
-		defer stop()
+		defer func() {
+			if cerr := stop(); cerr != nil {
+				fmt.Fprintf(opts.Stdout, "warning: stopping server: %v\n", cerr)
+			}
+		}()
 		if err := mapWebdavDrive(ctx, addr, opts.Mountpoint); err != nil {
 			return fmt.Errorf("mapping drive: %w", err)
 		}
