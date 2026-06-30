@@ -29,10 +29,10 @@ func (w *webdavFS) OpenFile(_ context.Context, name string, flag int, perm os.Fi
 		if _, err := w.c.Create(abs, uint32(perm.Perm())); err != nil {
 			return nil, err
 		}
-	}
-	at, err := w.c.Stat(abs)
-	if err != nil && flag&os.O_CREATE == 0 {
-		return nil, err
+	} else {
+		if _, err := w.c.Stat(abs); err != nil {
+			return nil, err
+		}
 	}
 	if flag&os.O_TRUNC != 0 {
 		if err := w.c.Truncate(abs, 0); err != nil {
@@ -40,7 +40,11 @@ func (w *webdavFS) OpenFile(_ context.Context, name string, flag int, perm os.Fi
 		}
 	}
 	f := &webdavFile{c: w.c, name: abs}
-	if flag&os.O_APPEND != 0 && at != nil {
+	if flag&os.O_APPEND != 0 {
+		at, err := w.c.Stat(abs)
+		if err != nil {
+			return nil, err
+		}
 		f.off = at.GetSize()
 	}
 	return f, nil
@@ -71,9 +75,11 @@ func (w *webdavFS) Stat(_ context.Context, name string) (os.FileInfo, error) {
 }
 
 type webdavFile struct {
-	c    *FSClient
-	name string
-	off  int64
+	c       *FSClient
+	name    string
+	off     int64
+	dirSnap []os.FileInfo // nil until first Readdir
+	dirPos  int
 }
 
 func (f *webdavFile) Read(p []byte) (int, error) {
@@ -83,8 +89,8 @@ func (f *webdavFile) Read(p []byte) (int, error) {
 	}
 	n := copy(p, data)
 	f.off += int64(n)
-	if n == 0 && eof {
-		return 0, io.EOF
+	if eof {
+		return n, io.EOF
 	}
 	return n, nil
 }
@@ -114,18 +120,31 @@ func (f *webdavFile) Seek(offset int64, whence int) (int64, error) {
 }
 
 func (f *webdavFile) Readdir(count int) ([]os.FileInfo, error) {
-	entries, err := f.c.ReadDir(f.name)
-	if err != nil {
-		return nil, err
+	if f.dirSnap == nil {
+		entries, err := f.c.ReadDir(f.name)
+		if err != nil {
+			return nil, err
+		}
+		f.dirSnap = make([]os.FileInfo, 0, len(entries))
+		for _, e := range entries {
+			f.dirSnap = append(f.dirSnap, attrToFileInfo(e.GetName(), e.GetAttr()))
+		}
 	}
-	out := make([]os.FileInfo, 0, len(entries))
-	for _, e := range entries {
-		out = append(out, attrToFileInfo(e.GetName(), e.GetAttr()))
+	if count <= 0 {
+		rest := f.dirSnap[f.dirPos:]
+		f.dirPos = len(f.dirSnap)
+		return rest, nil
 	}
-	if count > 0 && len(out) > count {
-		out = out[:count]
+	if f.dirPos >= len(f.dirSnap) {
+		return nil, io.EOF
 	}
-	return out, nil
+	end := f.dirPos + count
+	if end > len(f.dirSnap) {
+		end = len(f.dirSnap)
+	}
+	batch := f.dirSnap[f.dirPos:end]
+	f.dirPos = end
+	return batch, nil
 }
 
 func (f *webdavFile) Stat() (os.FileInfo, error) {
