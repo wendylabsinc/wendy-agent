@@ -67,8 +67,8 @@ func TestBuildOrgPickerItems(t *testing.T) {
 	if items[0].Name != "Acme" {
 		t.Errorf("item 0 name = %q, want Acme (authenticated)", items[0].Name)
 	}
-	if items[0].Type != "yes" {
-		t.Errorf("item 0 credentials = %q, want yes", items[0].Type)
+	if items[0].Type != "✓" {
+		t.Errorf("item 0 credentials = %q, want ✓", items[0].Type)
 	}
 	if items[0].DedupKey != "1" || items[0].Value.(string) != "1" {
 		t.Errorf("item 0 key/value wrong: %+v", items[0])
@@ -76,20 +76,20 @@ func TestBuildOrgPickerItems(t *testing.T) {
 	if items[1].Name != "Customer Co" || items[1].DedupKey != "7" {
 		t.Errorf("item 1 unexpected: %+v", items[1])
 	}
-	if items[1].Type != "no" {
-		t.Errorf("item 1 credentials = %q, want no", items[1].Type)
+	if items[1].Type != "✗" {
+		t.Errorf("item 1 credentials = %q, want ✗", items[1].Type)
 	}
 }
 
-func TestBuildOrgPickerItems_IDDescWithinGroup(t *testing.T) {
+func TestBuildOrgPickerItems_IDAscWithinGroup(t *testing.T) {
 	credIDs := map[int32]bool{} // no credentials
-	orgs := []*cloudpb.Organization{makeOrg(2, "B"), makeOrg(10, "A"), makeOrg(5, "C")}
+	orgs := []*cloudpb.Organization{makeOrg(10, "A"), makeOrg(2, "B"), makeOrg(5, "C")}
 	items := buildOrgPickerItems(orgs, credIDs)
 	if len(items) != 3 {
 		t.Fatalf("want 3 items, got %d", len(items))
 	}
-	// All unauthenticated, sorted by ID descending: 10, 5, 2.
-	wantIDs := []string{"10", "5", "2"}
+	// All unauthenticated, sorted by ID ascending: 2, 5, 10.
+	wantIDs := []string{"2", "5", "10"}
 	for i, want := range wantIDs {
 		if items[i].Description != want {
 			t.Errorf("item[%d] ID = %q, want %q", i, items[i].Description, want)

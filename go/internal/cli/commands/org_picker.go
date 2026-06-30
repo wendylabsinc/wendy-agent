@@ -6,7 +6,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"math"
 	"sort"
 	"strconv"
 
@@ -90,38 +89,54 @@ var orgPickerColumns = []tui.PickerColumn{
 }
 
 // buildOrgPickerItems converts orgs into picker rows sorted and sectioned by
-// credential availability. Authenticated orgs (ID descending) appear first,
-// then unauthenticated (ID descending).
+// credential availability. Authenticated orgs (ID ascending) appear first,
+// then unauthenticated (ID ascending). Sections are suppressed when all orgs
+// belong to the same group.
 func buildOrgPickerItems(orgs []*cloudpb.Organization, credIDs map[int32]bool) []tui.PickerItem {
 	type entry struct {
 		org  *cloudpb.Organization
 		cred bool
 	}
 	entries := make([]entry, 0, len(orgs))
+	hasAuth := false
+	hasUnauth := false
 	for _, org := range orgs {
-		entries = append(entries, entry{org: org, cred: credIDs[org.GetId()]})
+		cred := credIDs[org.GetId()]
+		entries = append(entries, entry{org: org, cred: cred})
+		if cred {
+			hasAuth = true
+		} else {
+			hasUnauth = true
+		}
 	}
+	// Sort: authenticated first, then by ID ascending within each group.
 	sort.Slice(entries, func(i, j int) bool {
 		if entries[i].cred != entries[j].cred {
 			return entries[i].cred // authenticated first
 		}
-		return entries[i].org.GetId() > entries[j].org.GetId() // ID descending
+		return entries[i].org.GetId() < entries[j].org.GetId() // ID ascending
 	})
+
+	showSections := hasAuth && hasUnauth
 
 	items := make([]tui.PickerItem, 0, len(entries))
 	for _, e := range entries {
 		id := e.org.GetId()
 		idStr := strconv.Itoa(int(id))
-		cred := "no"
-		section := "Not authenticated"
+		cred := "✗"
+		section := ""
 		group := 1
 		if e.cred {
-			cred = "yes"
-			section = "Authenticated"
+			cred = "✓"
 			group = 0
+			if showSections {
+				section = "Authenticated"
+			}
+		} else if showSections {
+			section = "Not authenticated"
 		}
 		// SortKey keeps ordering stable if the picker internally re-sorts.
-		sortKey := fmt.Sprintf("%d_%010d", group, math.MaxInt32-int(id))
+		sortKey := fmt.Sprintf("%d_%010d", group, int(id))
 		items = append(items, tui.PickerItem{
 			Name:        e.org.GetName(),
 			Description: idStr,
@@ -179,19 +194,19 @@ func pickOrgInteractive(orgs []*cloudpb.Organization, cfg *config.Config) (int32
 		return "Default cleared."
 	}
 
-	picker.OnRemoveItem = func(item tui.PickerItem) (string, bool) {
+	picker.OnRemoveItem = func(item tui.PickerItem) (string, bool, *tui.PickerItem) {
 		idStr, _ := item.Value.(string)
 		n, err := strconv.Atoi(idStr)
 		if err != nil {
-			return "Invalid org ID.", false
+			return "Invalid org ID.", true, nil
 		}
 		orgID := int32(n)
 		if !credIDs[orgID] {
-			return fmt.Sprintf("No credentials stored for %s.", item.Name), false
+			return fmt.Sprintf("No credentials stored for %s.", item.Name), true, nil
 		}
 		c, err := config.Load()
 		if err != nil {
-			return fmt.Sprintf("Could not remove credentials: %v", err), false
+			return fmt.Sprintf("Could not remove credentials: %v", err), true, nil
 		}
 		filtered := c.Auth[:0]
 		for _, a := range c.Auth {
@@ -201,10 +216,15 @@ func pickOrgInteractive(orgs []*cloudpb.Organization, cfg *config.Config) (int32
 		}
 		c.Auth = filtered
 		if err := config.Save(c); err != nil {
-			return fmt.Sprintf("Could not save config: %v", err), false
+			return fmt.Sprintf("Could not save config: %v", err), true, nil
 		}
 		delete(credIDs, orgID)
-		return fmt.Sprintf("Credentials removed for %s.", item.Name), true
+		// Move the row to "Not authenticated" rather than removing it entirely.
+		updated := item
+		updated.Type = "✗"
+		updated.Section = "Not authenticated"
+		updated.SortKey = fmt.Sprintf("1_%010d", n)
+		return fmt.Sprintf("Credentials removed for %s.", item.Name), false, &updated
 	}
 
 	picker.OnCopyItem = func(item tui.PickerItem) string {

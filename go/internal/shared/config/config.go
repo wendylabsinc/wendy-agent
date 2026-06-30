@@ -161,10 +161,24 @@ func Save(cfg *Config) error {
 	return nil
 }
 
-// AddAuth adds or replaces an auth entry, matching on cloudDashboard and cloudGRPC.
+// authEntryOrgID returns the organization ID from the first certificate in an
+// auth entry, or 0 if none is present.
+func authEntryOrgID(a AuthConfig) int {
+	if len(a.Certificates) > 0 {
+		return a.Certificates[0].OrganizationID
+	}
+	return 0
+}
+
+// AddAuth adds or replaces an auth entry. Matching is by (cloudDashboard,
+// cloudGRPC, orgID) so that multiple orgs on the same cloud endpoint each
+// keep their own entry instead of overwriting one another.
 func (c *Config) AddAuth(auth AuthConfig) {
+	incomingOrg := authEntryOrgID(auth)
 	for i, existing := range c.Auth {
-		if existing.CloudDashboard == auth.CloudDashboard && existing.CloudGRPC == auth.CloudGRPC {
+		if existing.CloudDashboard == auth.CloudDashboard &&
+			existing.CloudGRPC == auth.CloudGRPC &&
+			authEntryOrgID(existing) == incomingOrg {
 			c.Auth[i] = auth
 			return
 		}

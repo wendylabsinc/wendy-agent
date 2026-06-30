@@ -165,9 +165,12 @@ type PickerModel struct {
 	OnUnsetDefault func() string
 
 	// OnRemoveItem is called when the user presses 'r' on the highlighted item.
-	// Returns (flash message, whether the row should be removed from the list).
+	// Returns (flash message, isError, replacement).
+	// If replacement is non-nil, the row is updated in place with the new item.
+	// If replacement is nil and isError is false, the row is removed.
+	// If replacement is nil and isError is true, the row is kept unchanged.
 	// If nil, 'r' is ignored.
-	OnRemoveItem func(item PickerItem) (string, bool)
+	OnRemoveItem func(item PickerItem) (string, bool, *PickerItem)
 
 	// OnCopyItem is called when the user presses Enter. The callback should
 	// perform the copy operation (e.g. write to clipboard) and return a flash
@@ -338,10 +341,33 @@ func (m PickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				visible := m.visibleItems()
 				if idx := m.itemIndexForRow(m.table.Cursor()); idx >= 0 && idx < len(visible) {
 					item := visible[idx]
-					flash, remove := m.OnRemoveItem(item)
+					flash, isError, replacement := m.OnRemoveItem(item)
 					m.flashMessage = flash
-					m.flashIsError = !remove
-					if remove {
+					m.flashIsError = isError
+					if replacement != nil {
+						// Replace the item in the list (e.g. moved to a new section).
+						dedupKey := strings.ToLower(item.DedupKey)
+						if dedupKey == "" {
+							dedupKey = strings.ToLower(item.Name)
+						}
+						for i := range m.items {
+							k := strings.ToLower(m.items[i].DedupKey)
+							if k == "" {
+								k = strings.ToLower(m.items[i].Name)
+							}
+							if k == dedupKey {
+								newKey := strings.ToLower(replacement.DedupKey)
+								if newKey == "" {
+									newKey = strings.ToLower(replacement.Name)
+								}
+								delete(m.seenIdx, dedupKey)
+								m.items[i] = *replacement
+								m.seenIdx[newKey] = i
+								break
+							}
+						}
+					} else if !isError {
+						// No replacement and not an error: remove the row.
 						dedupKey := strings.ToLower(item.DedupKey)
 						if dedupKey == "" {
 							dedupKey = strings.ToLower(item.Name)
@@ -909,11 +935,10 @@ func withSectionHeaders(visible []PickerItem, itemRows []bubbleTable.Row, ncols 
 // underlying bubbles table truncates every cell with runewidth.Truncate, which
 // is not ANSI-aware. A styled value's escape bytes count toward the column
 // width, so truncation cuts inside the escape sequence and the terminal renders
-// garbage. The "── " rule prefix keeps the row readable as a header without
-// embedding color.
+// garbage.
 func sectionHeaderRow(label string, ncols int) bubbleTable.Row {
 	row := make(bubbleTable.Row, max(ncols, 1))
-	row[0] = "── " + label
+	row[0] = label
 	return row
 }
 
