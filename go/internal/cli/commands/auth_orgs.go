@@ -42,7 +42,7 @@ invocation only and prints its details.`,
 
 			// Always force-show the picker: this command exists specifically
 			// to let the user inspect and change their org selection.
-			id, name, err := pickOrgInteractiveFn(orgs, cfg.DefaultOrgID)
+			id, name, err := pickOrgInteractiveFn(orgs, cfg)
 			if err != nil {
 				return err
 			}

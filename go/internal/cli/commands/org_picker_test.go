@@ -27,7 +27,7 @@ func stubListOrgs(t *testing.T, orgs []*cloudpb.Organization, err error) {
 func stubOrgPicker(t *testing.T, retID int32, retName string, retErr error) {
 	t.Helper()
 	orig := pickOrgInteractiveFn
-	pickOrgInteractiveFn = func([]*cloudpb.Organization, int32) (int32, string, error) {
+	pickOrgInteractiveFn = func(_ []*cloudpb.Organization, _ *config.Config) (int32, string, error) {
 		return retID, retName, retErr
 	}
 	t.Cleanup(func() { pickOrgInteractiveFn = orig })
@@ -36,7 +36,7 @@ func stubOrgPicker(t *testing.T, retID int32, retName string, retErr error) {
 func noPickerAllowed(t *testing.T) {
 	t.Helper()
 	orig := pickOrgInteractiveFn
-	pickOrgInteractiveFn = func([]*cloudpb.Organization, int32) (int32, string, error) {
+	pickOrgInteractiveFn = func(_ []*cloudpb.Organization, _ *config.Config) (int32, string, error) {
 		t.Fatal("picker should not be called")
 		return 0, "", nil
 	}
@@ -50,20 +50,50 @@ func testAuth() *config.AuthConfig {
 	}
 }
 
-func TestOrgPickerItems(t *testing.T) {
+func TestBuildOrgPickerItems(t *testing.T) {
+	cfg := &config.Config{
+		Auth: []config.AuthConfig{
+			{Certificates: []config.CertificateInfo{{OrganizationID: 1}}},
+		},
+	}
+	credIDs := authOrgIDs(cfg)
 	orgs := []*cloudpb.Organization{makeOrg(1, "Acme"), makeOrg(7, "Customer Co")}
-	items := orgPickerItems(orgs)
+	items := buildOrgPickerItems(orgs, credIDs)
 	if len(items) != 2 {
 		t.Fatalf("want 2 items, got %d", len(items))
 	}
+	// Acme (ID 1) has credentials, Customer Co (ID 7) does not.
+	// Authenticated orgs come first regardless of ID.
 	if items[0].Name != "Acme" {
-		t.Errorf("item 0 name = %q", items[0].Name)
+		t.Errorf("item 0 name = %q, want Acme (authenticated)", items[0].Name)
+	}
+	if items[0].Type != "yes" {
+		t.Errorf("item 0 credentials = %q, want yes", items[0].Type)
 	}
 	if items[0].DedupKey != "1" || items[0].Value.(string) != "1" {
 		t.Errorf("item 0 key/value wrong: %+v", items[0])
 	}
 	if items[1].Name != "Customer Co" || items[1].DedupKey != "7" {
 		t.Errorf("item 1 unexpected: %+v", items[1])
+	}
+	if items[1].Type != "no" {
+		t.Errorf("item 1 credentials = %q, want no", items[1].Type)
+	}
+}
+
+func TestBuildOrgPickerItems_IDDescWithinGroup(t *testing.T) {
+	credIDs := map[int32]bool{} // no credentials
+	orgs := []*cloudpb.Organization{makeOrg(2, "B"), makeOrg(10, "A"), makeOrg(5, "C")}
+	items := buildOrgPickerItems(orgs, credIDs)
+	if len(items) != 3 {
+		t.Fatalf("want 3 items, got %d", len(items))
+	}
+	// All unauthenticated, sorted by ID descending: 10, 5, 2.
+	wantIDs := []string{"10", "5", "2"}
+	for i, want := range wantIDs {
+		if items[i].Description != want {
+			t.Errorf("item[%d] ID = %q, want %q", i, items[i].Description, want)
+		}
 	}
 }
 
@@ -109,12 +139,12 @@ func TestResolveOrgStaleDefault(t *testing.T) {
 	}
 }
 
-// TestResolveOrgForceShow: default set + forceShow -> picker shown regardless.
-func TestResolveOrgForceShow(t *testing.T) {
+// TestResolveOrgAlwaysPickOrg: default set + alwaysPickOrg -> picker shown regardless.
+func TestResolveOrgAlwaysPickOrg(t *testing.T) {
 	stubListOrgs(t, []*cloudpb.Organization{makeOrg(3, "Org A"), makeOrg(9, "Org B")}, nil)
 	called := false
 	orig := pickOrgInteractiveFn
-	pickOrgInteractiveFn = func(_ []*cloudpb.Organization, _ int32) (int32, string, error) {
+	pickOrgInteractiveFn = func(_ []*cloudpb.Organization, _ *config.Config) (int32, string, error) {
 		called = true
 		return 3, "Org A", nil
 	}
@@ -125,7 +155,7 @@ func TestResolveOrgForceShow(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !called {
-		t.Error("picker was not called with forceShow=true")
+		t.Error("picker was not called with alwaysPickOrg=true")
 	}
 	if res.ID != 3 {
 		t.Errorf("got %+v; want ID=3", res)
@@ -161,13 +191,13 @@ func TestResolveOrgListFailureFallback(t *testing.T) {
 	}
 }
 
-// TestResolveOrgListFailureForceShowErrors: cloud call fails + forceShow -> error.
-func TestResolveOrgListFailureForceShowErrors(t *testing.T) {
+// TestResolveOrgListFailureAlwaysPickOrgErrors: cloud call fails + alwaysPickOrg -> error.
+func TestResolveOrgListFailureAlwaysPickOrgErrors(t *testing.T) {
 	stubListOrgs(t, nil, errors.New("network error"))
 
 	_, err := resolveOrgWithConfig(context.Background(), &config.Config{}, testAuth(), true)
 	if err == nil {
-		t.Fatal("expected error when forceShow=true and list fails")
+		t.Fatal("expected error when alwaysPickOrg=true and list fails")
 	}
 }
 

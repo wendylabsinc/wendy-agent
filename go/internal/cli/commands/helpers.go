@@ -1861,21 +1861,23 @@ func pickDevice(ctx context.Context, excludeProviders map[string]bool, excludeBl
 	}
 
 	// Allow 'd' to set default and 'x' to unset default from the picker.
-	picker.OnSetDefault = func(item tui.PickerItem) {
+	picker.OnSetDefault = func(item tui.PickerItem) string {
 		deviceID := pickerItemDeviceID(item)
 		if deviceID == "" {
-			return
+			return ""
 		}
 		if cfg, err := config.Load(); err == nil {
 			cfg.DefaultDevice = deviceID
 			_ = config.Save(cfg)
 		}
+		return fmt.Sprintf("Default device set to %s.", item.Name)
 	}
-	picker.OnUnsetDefault = func() {
+	picker.OnUnsetDefault = func() string {
 		if cfg, err := config.Load(); err == nil {
 			cfg.DefaultDevice = ""
 			_ = config.Save(cfg)
 		}
+		return "Default device cleared."
 	}
 
 	p := tea.NewProgram(picker)

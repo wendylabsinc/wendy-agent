@@ -49,21 +49,23 @@ func authPickerItems(cfg *config.Config) []tui.PickerItem {
 func pickAuthSession(cfg *config.Config) (*config.AuthConfig, error) {
 	picker := tui.NewPickerWithTitle("Select the Wendy Cloud session to use")
 	picker.DefaultKey = strings.ToLower(cfg.DefaultCloudGRPC)
-	picker.OnSetDefault = func(item tui.PickerItem) {
+	picker.OnSetDefault = func(item tui.PickerItem) string {
 		endpoint, _ := item.Value.(string)
 		if endpoint == "" {
-			return
+			return ""
 		}
 		if c, err := config.Load(); err == nil {
 			c.DefaultCloudGRPC = endpoint
 			_ = config.Save(c)
 		}
+		return fmt.Sprintf("Default session set to %s.", item.Name)
 	}
-	picker.OnUnsetDefault = func() {
+	picker.OnUnsetDefault = func() string {
 		if c, err := config.Load(); err == nil {
 			c.DefaultCloudGRPC = ""
 			_ = config.Save(c)
 		}
+		return "Default session cleared."
 	}
 
 	p := tea.NewProgram(picker)

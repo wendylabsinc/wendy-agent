@@ -155,17 +155,31 @@ type PickerModel struct {
 	MergeItem func(existing *PickerItem, incoming PickerItem)
 
 	// OnSetDefault is called when the user presses 'd' on the highlighted item.
+	// The return value is shown as a flash confirmation; return "" for no message.
 	// If nil, 'd' is ignored.
-	OnSetDefault func(item PickerItem)
+	OnSetDefault func(item PickerItem) string
 
 	// OnUnsetDefault is called when the user presses 'x'.
+	// The return value is shown as a flash confirmation; return "" for no message.
 	// If nil, 'x' is ignored.
-	OnUnsetDefault func()
+	OnUnsetDefault func() string
 
 	// OnRemoveItem is called when the user presses 'r' on the highlighted item.
-	// The callback should remove whatever credentials are associated with the item.
+	// Returns (flash message, whether the row should be removed from the list).
 	// If nil, 'r' is ignored.
-	OnRemoveItem func(item PickerItem)
+	OnRemoveItem func(item PickerItem) (string, bool)
+
+	// OnCopyItem is called when the user presses Enter. The callback should
+	// perform the copy operation (e.g. write to clipboard) and return a flash
+	// confirmation message. When set, Enter does NOT navigate away — the picker
+	// stays open so the user can see the confirmation and press q to quit. If
+	// nil, Enter selects the item and closes the picker as usual.
+	OnCopyItem func(item PickerItem) string
+
+	// flashMessage is the transient status line shown below the table after
+	// an action (d/x/r/enter). Cleared on the next navigation key.
+	flashMessage string
+	flashIsError bool
 
 	// DefaultKey is compared case-insensitively against each item's DedupKey
 	// (or Name if DedupKey is empty). Should be stored lowercase for consistency.
@@ -287,6 +301,11 @@ func (m PickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			visible := m.visibleItems()
 			if idx := m.itemIndexForRow(m.table.Cursor()); idx >= 0 && idx < len(visible) {
 				item := visible[idx]
+				if m.OnCopyItem != nil {
+					m.flashMessage = m.OnCopyItem(item)
+					m.flashIsError = false
+					return m, nil
+				}
 				m.selected = &item
 				return m, tea.Quit
 			}
@@ -295,12 +314,13 @@ func (m PickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				visible := m.visibleItems()
 				if idx := m.itemIndexForRow(m.table.Cursor()); idx >= 0 && idx < len(visible) {
 					item := visible[idx]
-					key := strings.ToLower(item.DedupKey)
-					if key == "" {
-						key = strings.ToLower(item.Name)
+					dk := strings.ToLower(item.DedupKey)
+					if dk == "" {
+						dk = strings.ToLower(item.Name)
 					}
-					m.DefaultKey = key
-					m.OnSetDefault(item)
+					m.DefaultKey = dk
+					m.flashMessage = m.OnSetDefault(item)
+					m.flashIsError = false
 					m.refreshTable()
 				}
 			}
@@ -308,7 +328,8 @@ func (m PickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key == "x" && !m.Filterable:
 			if m.OnUnsetDefault != nil {
 				m.DefaultKey = ""
-				m.OnUnsetDefault()
+				m.flashMessage = m.OnUnsetDefault()
+				m.flashIsError = false
 				m.refreshTable()
 			}
 			return m, nil
@@ -317,24 +338,27 @@ func (m PickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				visible := m.visibleItems()
 				if idx := m.itemIndexForRow(m.table.Cursor()); idx >= 0 && idx < len(visible) {
 					item := visible[idx]
-					m.OnRemoveItem(item)
-					// Remove item from the list so the picker reflects the change immediately.
-					dedupKey := strings.ToLower(item.DedupKey)
-					if dedupKey == "" {
-						dedupKey = strings.ToLower(item.Name)
-					}
-					filtered := m.items[:0]
-					for _, it := range m.items {
-						k := strings.ToLower(it.DedupKey)
-						if k == "" {
-							k = strings.ToLower(it.Name)
+					flash, remove := m.OnRemoveItem(item)
+					m.flashMessage = flash
+					m.flashIsError = !remove
+					if remove {
+						dedupKey := strings.ToLower(item.DedupKey)
+						if dedupKey == "" {
+							dedupKey = strings.ToLower(item.Name)
 						}
-						if k != dedupKey {
-							filtered = append(filtered, it)
+						filtered := m.items[:0]
+						for _, it := range m.items {
+							k := strings.ToLower(it.DedupKey)
+							if k == "" {
+								k = strings.ToLower(it.Name)
+							}
+							if k != dedupKey {
+								filtered = append(filtered, it)
+							}
 						}
+						m.items = filtered
+						delete(m.seenIdx, dedupKey)
 					}
-					m.items = filtered
-					delete(m.seenIdx, dedupKey)
 					m.refreshTable()
 				}
 			}
@@ -383,6 +407,10 @@ func (m PickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				dir = -1
 			}
 			m.snapCursorToSelectable(dir)
+			// Clear any flash message when the user navigates.
+			if m.table.Cursor() != prev {
+				m.flashMessage = ""
+			}
 			return m, cmd
 		}
 
@@ -447,9 +475,13 @@ func (m PickerModel) View() string {
 	if m.canScrollTable() {
 		scrollHint = ", ←/→ scroll"
 	}
-	hint := " (↑/↓ navigate" + scrollHint + ", enter select, q quit)"
+	enterAction := "enter select"
+	if m.OnCopyItem != nil {
+		enterAction = "enter copy"
+	}
+	hint := " (↑/↓ navigate" + scrollHint + ", " + enterAction + ", q quit)"
 	if m.Filterable {
-		hint = " (type to filter, ↑/↓ navigate" + scrollHint + ", enter select, esc quit)"
+		hint = " (type to filter, ↑/↓ navigate" + scrollHint + ", " + enterAction + ", esc quit)"
 	}
 	if m.OnSetDefault != nil || m.OnUnsetDefault != nil || m.OnRemoveItem != nil {
 		extras := ""
@@ -457,12 +489,12 @@ func (m PickerModel) View() string {
 			extras += ", d set default"
 		}
 		if m.OnUnsetDefault != nil {
-			extras += ", x unset default"
+			extras += ", x clear default"
 		}
 		if m.OnRemoveItem != nil {
 			extras += ", r remove creds"
 		}
-		hint = " (↑/↓ navigate" + scrollHint + ", enter select" + extras + ", q quit)"
+		hint = " (↑/↓ navigate" + scrollHint + ", " + enterAction + extras + ", q quit)"
 	}
 	sb.WriteString(m.viewLine(pickerTitle.Render(m.Title)+pickerHint.Render(hint)) + "\n\n")
 
@@ -488,6 +520,14 @@ func (m PickerModel) View() string {
 	}
 
 	sb.WriteString(ColorizeProbeGlyphs(m.tableView()) + "\n")
+
+	if m.flashMessage != "" {
+		style := lipgloss.NewStyle().Foreground(ColorPrimary)
+		if m.flashIsError {
+			style = lipgloss.NewStyle().Foreground(lipgloss.Color("#ef4444"))
+		}
+		sb.WriteString(m.viewLine(style.Render("  "+m.flashMessage)) + "\n")
+	}
 
 	if m.legend != "" {
 		sb.WriteString(m.viewLine(pickerHint.Render("  "+m.legend)) + "\n")

@@ -6,6 +6,8 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math"
+	"sort"
 	"strconv"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -53,63 +55,143 @@ func listOrgsFromCloudImpl(ctx context.Context, auth *config.AuthConfig) ([]*clo
 	return orgs, nil
 }
 
-// orgPickerItems converts a slice of organizations into picker rows. The Name
-// column shows the org name, Description shows the numeric ID, DedupKey and
-// Value both carry the ID as a string so selection and default-marking are
-// stable across name changes.
-func orgPickerItems(orgs []*cloudpb.Organization) []tui.PickerItem {
-	items := make([]tui.PickerItem, 0, len(orgs))
+// authOrgIDs builds a set of org IDs for which the user has a stored auth
+// entry whose primary certificate belongs to that org. An org in this set has
+// local credentials; one absent was discovered via a shared session.
+func authOrgIDs(cfg *config.Config) map[int32]bool {
+	ids := make(map[int32]bool, len(cfg.Auth))
+	for _, a := range cfg.Auth {
+		if len(a.Certificates) > 0 {
+			ids[int32(a.Certificates[0].OrganizationID)] = true
+		}
+	}
+	return ids
+}
+
+// orgPickerColumns defines the three-column layout: org name, numeric ID, and
+// whether local credentials are stored for that org.
+var orgPickerColumns = []tui.PickerColumn{
+	{
+		Title:    "Name",
+		MinWidth: 20,
+		Required: true,
+		Value:    func(item tui.PickerItem) string { return item.Name },
+	},
+	{
+		Title:    "Org. ID",
+		MinWidth: 8,
+		Value:    func(item tui.PickerItem) string { return item.Description },
+	},
+	{
+		Title:    "Credentials",
+		MinWidth: 14,
+		Value:    func(item tui.PickerItem) string { return item.Type },
+	},
+}
+
+// buildOrgPickerItems converts orgs into picker rows sorted and sectioned by
+// credential availability. Authenticated orgs (ID descending) appear first,
+// then unauthenticated (ID descending).
+func buildOrgPickerItems(orgs []*cloudpb.Organization, credIDs map[int32]bool) []tui.PickerItem {
+	type entry struct {
+		org  *cloudpb.Organization
+		cred bool
+	}
+	entries := make([]entry, 0, len(orgs))
 	for _, org := range orgs {
-		id := strconv.Itoa(int(org.GetId()))
+		entries = append(entries, entry{org: org, cred: credIDs[org.GetId()]})
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].cred != entries[j].cred {
+			return entries[i].cred // authenticated first
+		}
+		return entries[i].org.GetId() > entries[j].org.GetId() // ID descending
+	})
+
+	items := make([]tui.PickerItem, 0, len(entries))
+	for _, e := range entries {
+		id := e.org.GetId()
+		idStr := strconv.Itoa(int(id))
+		cred := "no"
+		section := "Not authenticated"
+		group := 1
+		if e.cred {
+			cred = "yes"
+			section = "Authenticated"
+			group = 0
+		}
+		// SortKey keeps ordering stable if the picker internally re-sorts.
+		sortKey := fmt.Sprintf("%d_%010d", group, math.MaxInt32-int(id))
 		items = append(items, tui.PickerItem{
-			Name:        org.GetName(),
-			Description: fmt.Sprintf("ID: %s", id),
-			DedupKey:    id,
-			Value:       id,
+			Name:        e.org.GetName(),
+			Description: idStr,
+			Type:        cred,
+			DedupKey:    idStr,
+			Value:       idStr,
+			Section:     section,
+			SortKey:     sortKey,
 		})
 	}
 	return items
 }
 
-// pickOrgInteractive shows the interactive org picker. 'd' marks the
-// highlighted org as the persisted default (written immediately), 'x' clears
-// it, and Enter selects an org for this invocation only. Returns the selected
-// org ID and name.
-func pickOrgInteractive(orgs []*cloudpb.Organization, defaultOrgID int32) (int32, string, error) {
-	picker := tui.NewPickerWithTitle("Select an organization")
-	if defaultOrgID != 0 {
-		picker.DefaultKey = strconv.Itoa(int(defaultOrgID))
+// pickOrgInteractive shows the interactive org picker. Key bindings:
+//
+//   - d: mark highlighted org as the persisted default.
+//   - x: clear the default.
+//   - r: remove stored credentials for the highlighted org (if any).
+//   - enter: copy the org ID to the clipboard and show a confirmation flash.
+//   - q / esc / ctrl+c: quit without selecting.
+func pickOrgInteractive(orgs []*cloudpb.Organization, cfg *config.Config) (int32, string, error) {
+	credIDs := authOrgIDs(cfg)
+	items := buildOrgPickerItems(orgs, credIDs)
+
+	picker := tui.NewPickerWithTitleAndColumns("Select an organization", orgPickerColumns)
+	if cfg.DefaultOrgID != 0 {
+		picker.DefaultKey = strconv.Itoa(int(cfg.DefaultOrgID))
 	}
-	picker.OnSetDefault = func(item tui.PickerItem) {
-		id, _ := item.Value.(string)
-		if id == "" {
-			return
-		}
-		n, err := strconv.Atoi(id)
-		if err != nil {
-			return
-		}
-		if c, err := config.Load(); err == nil {
-			c.DefaultOrgID = int32(n)
-			_ = config.Save(c)
-		}
-	}
-	picker.OnUnsetDefault = func() {
-		if c, err := config.Load(); err == nil {
-			c.DefaultOrgID = 0
-			_ = config.Save(c)
-		}
-	}
-	picker.OnRemoveItem = func(item tui.PickerItem) {
+
+	picker.OnSetDefault = func(item tui.PickerItem) string {
 		idStr, _ := item.Value.(string)
 		n, err := strconv.Atoi(idStr)
 		if err != nil {
-			return
+			return "Invalid org ID."
 		}
-		orgID := int32(n)
 		c, err := config.Load()
 		if err != nil {
-			return
+			return fmt.Sprintf("Could not save default: %v", err)
+		}
+		c.DefaultOrgID = int32(n)
+		_ = config.Save(c)
+		if !credIDs[int32(n)] {
+			return fmt.Sprintf("Default set to %s. No local credentials — run 'wendy auth login' to authenticate.", item.Name)
+		}
+		return fmt.Sprintf("Default set to %s.", item.Name)
+	}
+
+	picker.OnUnsetDefault = func() string {
+		c, err := config.Load()
+		if err != nil {
+			return fmt.Sprintf("Could not clear default: %v", err)
+		}
+		c.DefaultOrgID = 0
+		_ = config.Save(c)
+		return "Default cleared."
+	}
+
+	picker.OnRemoveItem = func(item tui.PickerItem) (string, bool) {
+		idStr, _ := item.Value.(string)
+		n, err := strconv.Atoi(idStr)
+		if err != nil {
+			return "Invalid org ID.", false
+		}
+		orgID := int32(n)
+		if !credIDs[orgID] {
+			return fmt.Sprintf("No credentials stored for %s.", item.Name), false
+		}
+		c, err := config.Load()
+		if err != nil {
+			return fmt.Sprintf("Could not remove credentials: %v", err), false
 		}
 		filtered := c.Auth[:0]
 		for _, a := range c.Auth {
@@ -118,12 +200,22 @@ func pickOrgInteractive(orgs []*cloudpb.Organization, defaultOrgID int32) (int32
 			}
 		}
 		c.Auth = filtered
-		_ = config.Save(c)
+		if err := config.Save(c); err != nil {
+			return fmt.Sprintf("Could not save config: %v", err), false
+		}
+		delete(credIDs, orgID)
+		return fmt.Sprintf("Credentials removed for %s.", item.Name), true
+	}
+
+	picker.OnCopyItem = func(item tui.PickerItem) string {
+		idStr, _ := item.Value.(string)
+		_ = clipboardWriter(idStr)
+		return fmt.Sprintf("Org ID %s (%s) copied to clipboard.", idStr, item.Name)
 	}
 
 	p := tea.NewProgram(picker)
 	go func() {
-		p.Send(tui.PickerAddMsg{Items: orgPickerItems(orgs)})
+		p.Send(tui.PickerAddMsg{Items: items})
 		p.Send(tui.PickerDoneMsg{})
 	}()
 
@@ -147,8 +239,7 @@ func pickOrgInteractive(orgs []*cloudpb.Organization, defaultOrgID int32) (int32
 	return int32(n), pm.Selected().Name, nil
 }
 
-// OrgResolution holds the resolved organization and a flag indicating whether
-// the org was resolved from config rather than a live cloud fetch.
+// OrgResolution holds the resolved organization.
 type OrgResolution struct {
 	ID   int32
 	Name string
@@ -157,10 +248,10 @@ type OrgResolution struct {
 // resolveOrg determines which organization to use for an operation that must
 // target a specific org. It implements the four selection scenarios:
 //
-//  1. No default + one org   -> use the sole org (no picker).
-//  2. No default + many orgs -> show the picker; the user may set a new default.
-//  3. Default set            -> use the default (no picker).
-//  4. alwaysPickOrg == true      -> always show the picker regardless of a default;
+//  1. No default + one org    -> use the sole org (no picker).
+//  2. No default + many orgs  -> show the picker; the user may set a new default.
+//  3. Default set             -> use the default (no picker).
+//  4. alwaysPickOrg == true   -> always show the picker regardless of a default;
 //     the user may change or clear the default.
 //
 // If fetching the org list fails, resolveOrg falls back to the org embedded in
@@ -169,8 +260,6 @@ func resolveOrg(ctx context.Context, auth *config.AuthConfig, alwaysPickOrg bool
 	return resolveOrgFn(ctx, auth, alwaysPickOrg)
 }
 
-// resolveOrgFn is the indirection point so tests can stub resolveOrg without a
-// live cloud connection.
 var resolveOrgFn = resolveOrgImpl
 
 func resolveOrgImpl(ctx context.Context, auth *config.AuthConfig, alwaysPickOrg bool) (OrgResolution, error) {
@@ -186,8 +275,6 @@ func resolveOrgImpl(ctx context.Context, auth *config.AuthConfig, alwaysPickOrg 
 func resolveOrgWithConfig(ctx context.Context, cfg *config.Config, auth *config.AuthConfig, alwaysPickOrg bool) (OrgResolution, error) {
 	orgs, listErr := listOrgsFromCloud(ctx, auth)
 
-	// Graceful fallback: if the cloud call fails, use the cert's org so the
-	// command still works (with a warning), unless the picker was forced.
 	if listErr != nil {
 		if alwaysPickOrg {
 			return OrgResolution{}, fmt.Errorf("fetching organizations: %w", listErr)
@@ -220,7 +307,7 @@ func resolveOrgWithConfig(ctx context.Context, cfg *config.Config, auth *config.
 	}
 
 	// Scenarios 2 and 4: show the interactive picker.
-	id, name, err := pickOrgInteractiveFn(orgs, cfg.DefaultOrgID)
+	id, name, err := pickOrgInteractiveFn(orgs, cfg)
 	if err != nil {
 		return OrgResolution{}, err
 	}

@@ -462,8 +462,8 @@ func TestPickerModel_ShowsSelectedHintAtBottom(t *testing.T) {
 func TestPickerModel_DefaultKeyShowsStar(t *testing.T) {
 	m := NewPickerWithTitle("Select a device")
 	m.DefaultKey = "alpha"
-	m.OnSetDefault = func(item PickerItem) {}
-	m.OnUnsetDefault = func() {}
+	m.OnSetDefault = func(item PickerItem) string { return "" }
+	m.OnUnsetDefault = func() string { return "" }
 
 	updated, _ := m.Update(PickerAddMsg{Items: []PickerItem{
 		{Name: "alpha", Type: "LAN", Value: "alpha"},
@@ -478,8 +478,8 @@ func TestPickerModel_DefaultKeyShowsStar(t *testing.T) {
 	if !strings.Contains(view, "d set default") {
 		t.Error("expected hint text to contain 'd set default'")
 	}
-	if !strings.Contains(view, "x unset default") {
-		t.Error("expected hint text to contain 'x unset default'")
+	if !strings.Contains(view, "x clear default") {
+		t.Error("expected hint text to contain 'x clear default'")
 	}
 }
 
@@ -540,8 +540,8 @@ func TestPickerTableData_DefaultKeysShowStar(t *testing.T) {
 func TestPickerModel_DKeySetsDefault(t *testing.T) {
 	m := NewPickerWithTitle("Select a device")
 	var setItem PickerItem
-	m.OnSetDefault = func(item PickerItem) { setItem = item }
-	m.OnUnsetDefault = func() {}
+	m.OnSetDefault = func(item PickerItem) string { setItem = item; return "" }
+	m.OnUnsetDefault = func() string { return "" }
 
 	// Add items.
 	updated, _ := m.Update(PickerAddMsg{Items: []PickerItem{
@@ -566,8 +566,8 @@ func TestPickerModel_XKeyClearsDefault(t *testing.T) {
 	m := NewPickerWithTitle("Select a device")
 	m.DefaultKey = "alpha"
 	var unsetCalled bool
-	m.OnSetDefault = func(item PickerItem) {}
-	m.OnUnsetDefault = func() { unsetCalled = true }
+	m.OnSetDefault = func(item PickerItem) string { return "" }
+	m.OnUnsetDefault = func() string { unsetCalled = true; return "" }
 
 	updated, _ := m.Update(PickerAddMsg{Items: []PickerItem{
 		{Name: "alpha", Type: "LAN", Value: "alpha"},
