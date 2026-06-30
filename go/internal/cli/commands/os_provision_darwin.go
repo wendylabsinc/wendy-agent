@@ -4,6 +4,7 @@ package commands
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 
@@ -24,11 +25,11 @@ func writeConfigPartition(d drive, agentBinary []byte, creds []wendyconf.WifiCre
 		return fmt.Errorf("locating config partition on %s: %w", d.DevicePath, err)
 	}
 
-	mountPoint, err := mountConfigPartition(partDev)
+	mountPoint, unmount, err := mountConfigPartition(partDev)
 	if err != nil {
 		return fmt.Errorf("mounting config partition %s: %w", partDev, err)
 	}
-	defer exec.Command("diskutil", "unmount", partDev).Run() //nolint:errcheck
+	defer unmount()
 
 	return writeConfigFiles(mountPoint, agentBinary, creds, deviceName, provisioningJSON)
 }
@@ -60,31 +61,42 @@ func findConfigPartition(diskDev string) (string, error) {
 	return "", fmt.Errorf("config partition not found on %s (is the image fully written?)", diskDev)
 }
 
-// mountConfigPartition ensures partDev is mounted and returns its mount point.
-// It calls `diskutil mount` (a no-op if already mounted) then queries
-// `diskutil info` for the authoritative mount point, avoiding brittle output
-// parsing of the mount command itself.
-func mountConfigPartition(partDev string) (string, error) {
-	// Attempt to mount; ignore errors — the partition may already be auto-mounted
-	// by macOS (FAT32 volumes are mounted automatically when they appear).
-	exec.Command("diskutil", "mount", partDev).Run() //nolint:errcheck
+// mountConfigPartition mounts the FAT32 config partition at a private temp
+// directory owned by the calling user and returns the mount point plus an
+// unmount/cleanup func to defer.
+//
+// macOS auto-mounts FAT volumes when the partition table is rescanned (by the
+// `diskutil list` in findConfigPartition). On removable SD cards that auto-mount
+// ignores ownership and is writable, but on fixed/SSD-backed media (an NVMe SSD,
+// or an SSD in a USB enclosure — the Jetson Nano nvme target) macOS respects
+// ownership and mounts the volume root-owned, so the non-root WriteFile calls in
+// writeConfigFiles fail with EACCES. We drop any such auto-mount, then re-mount
+// via `sudo mount_msdos -u/-g` so the caller owns the files. vfat has no on-disk
+// ownership; the device applies its own uid at boot, so this only affects the
+// host-side view. Mirrors the Linux uid=/gid= fix in os_provision_linux.go.
+func mountConfigPartition(partDev string) (string, func(), error) {
+	// Drop any auto-mount (possibly root-owned) so mount_msdos can take the device.
+	exec.Command("diskutil", "unmount", partDev).Run() //nolint:errcheck
 
-	out, err := exec.Command("diskutil", "info", partDev).Output()
+	tmpDir, err := os.MkdirTemp("", "wendyos-config-*")
 	if err != nil {
-		return "", fmt.Errorf("diskutil info %s: %w", partDev, err)
+		return "", nil, fmt.Errorf("creating temp mount dir: %w", err)
 	}
 
-	// Parse "   Mount Point:               /Volumes/config"
-	for _, line := range strings.Split(string(out), "\n") {
-		if !strings.Contains(line, "Mount Point:") {
-			continue
-		}
-		parts := strings.SplitN(line, ":", 2)
-		if len(parts) == 2 {
-			if mp := strings.TrimSpace(parts[1]); mp != "" {
-				return mp, nil
-			}
-		}
+	args, err := darwinMountMsdosArgs(os.Getuid(), os.Getgid(), partDev, tmpDir)
+	if err != nil {
+		os.RemoveAll(tmpDir) //nolint:errcheck
+		return "", nil, err
 	}
-	return "", fmt.Errorf("config partition %s is not mounted (diskutil mount may have failed)", partDev)
+
+	if out, err := exec.Command("sudo", args...).CombinedOutput(); err != nil {
+		os.RemoveAll(tmpDir) //nolint:errcheck
+		return "", nil, fmt.Errorf("mount_msdos %s: %s: %w", partDev, strings.TrimSpace(string(out)), err)
+	}
+
+	unmount := func() {
+		exec.Command("sudo", "umount", tmpDir).Run() //nolint:errcheck
+		os.RemoveAll(tmpDir)                         //nolint:errcheck
+	}
+	return tmpDir, unmount, nil
 }
