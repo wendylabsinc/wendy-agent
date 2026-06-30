@@ -8,21 +8,21 @@ import (
 	"go.uber.org/zap"
 )
 
-// MenderStatus classifies the result of a mender-update commit/rollback
+// MenderStatus classifies the result of an OS update backend commit/rollback
 // invocation.
 type MenderStatus int
 
 const (
 	MenderOK MenderStatus = iota
-	// MenderNothingPending: mender-update exited with code 2, meaning there
+	// MenderNothingPending: the update backend exited with code 2, meaning there
 	// is no pending update to commit or roll back.
 	MenderNothingPending
-	// MenderUnavailable: the mender-update binary is not installed.
+	// MenderUnavailable: the update backend binary is not installed.
 	MenderUnavailable
 	MenderError
 )
 
-// MenderResult is the outcome of a mender-update invocation.
+// MenderResult is the outcome of an OS update backend invocation.
 type MenderResult struct {
 	Status MenderStatus
 	Output string
@@ -256,7 +256,7 @@ func (g *Gate) rollBack(record UpdateResult) {
 		// bootloader falls back to the old slot on reboot anyway.
 		record.RollbackError = menderFailureReason(g.updaterLabel(), "rollback", res)
 		g.writeResult(record)
-		g.Logger.Error("mender-update rollback failed, rebooting to let the bootloader revert",
+		g.Logger.Error("OS update rollback failed, rebooting to let the bootloader revert",
 			zap.String("reason", record.RollbackError))
 		g.reboot()
 	}
@@ -266,13 +266,13 @@ func (g *Gate) plainCommit() {
 	res := g.Commit()
 	switch res.Status {
 	case MenderOK:
-		g.Logger.Info("Committed Mender update", zap.String("output", res.Output))
+		g.Logger.Info("Committed OS update", zap.String("output", res.Output))
 	case MenderNothingPending:
-		g.Logger.Debug("mender-update commit: nothing to commit")
+		g.Logger.Debug("OS update commit: nothing to commit")
 	case MenderUnavailable:
-		// Not a Mender system — nothing to do.
+		// No update backend available — nothing to do.
 	default:
-		g.Logger.Warn("mender-update commit failed",
+		g.Logger.Warn("OS update commit failed",
 			zap.String("output", res.Output), zap.Error(res.Err))
 	}
 }
