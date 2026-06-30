@@ -34,6 +34,16 @@ func setBuildProgressOut(w io.Writer) func() {
 // maxRawBuildCapture bounds the raw buildx log retained for failure replay.
 const maxRawBuildCapture = 256 << 10
 
+// runAppleContainerBuildWithProgress builds a local image with the Apple
+// Container CLI, rendering its --progress=plain output through the shared build
+// progress UI (the same renderer used by the buildx/buildctl paths).
+func runAppleContainerBuildWithProgress(ctx context.Context, dir, imageName, platform, dockerfile string) error {
+	title := fmt.Sprintf("Building Apple Container image %s for %s...", tui.Value(imageName), tui.Value(platform))
+	return runBuildWithProgress(ctx, title, true, func(stream, logw io.Writer) error {
+		return buildImageWithAppleContainer(ctx, dir, imageName, platform, dockerfile, nil, stream, logw)
+	})
+}
+
 // runBuildWithProgress runs build, rendering its buildx output as a clean live
 // step list (interactive) or concise per-step lines (non-interactive). The raw
 // buildx output is retained and printed if the build fails AND dumpRawOnFailure

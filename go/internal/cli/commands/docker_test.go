@@ -101,7 +101,7 @@ func TestBuildAndPushImageWithAppleContainerUsesContainerCLI(t *testing.T) {
 	for _, want := range []string{
 		"container\x00--version\n",
 		"container\x00system\x00status\n",
-		"container\x00build\x00--platform\x00linux/arm64\x00-t\x00127.0.0.1:5000/test-app:latest\x00-f\x00" + resolvedDockerfile + "\x00--build-arg\x00A=1\x00--build-arg\x00B=2\x00" + buildContext + "\n",
+		"container\x00build\x00--progress\x00plain\x00--platform\x00linux/arm64\x00-t\x00127.0.0.1:5000/test-app:latest\x00-f\x00" + resolvedDockerfile + "\x00--build-arg\x00A=1\x00--build-arg\x00B=2\x00" + buildContext + "\n",
 		"container\x00image\x00push\x00--scheme\x00http\x00--platform\x00linux/arm64\x00127.0.0.1:5000/test-app:latest\n",
 	} {
 		if !strings.Contains(log, want) {
@@ -140,7 +140,7 @@ func TestBuildImageToOCILayoutWithAppleContainer(t *testing.T) {
 	// Builds into the image store under a unique tag, exports via image save,
 	// then removes the temporary tag.
 	for _, want := range []string{
-		"container\x00build\x00--platform\x00linux/arm64\x00-t\x00wendy-oci-build:wendy-oci-123",
+		"container\x00build\x00--progress\x00plain\x00--platform\x00linux/arm64\x00-t\x00wendy-oci-build:wendy-oci-123",
 		"container\x00image\x00save\x00wendy-oci-build:wendy-oci-123\x00--platform\x00linux/arm64\x00-o\x00" + dest,
 		"container\x00image\x00rm\x00wendy-oci-build:wendy-oci-123",
 	} {
@@ -266,7 +266,7 @@ func TestBuildDockerProjectWithBuilderDefaultsToAppleContainerOnAppleSilicon(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "container\x00build\x00--platform\x00linux/arm64\x00-t\x00test-app:latest\x00-f\x00" + resolvedBuildFile + "\x00" + buildContext + "\n"
+	want := "container\x00build\x00--progress\x00plain\x00--platform\x00linux/arm64\x00-t\x00test-app:latest\x00-f\x00" + resolvedBuildFile + "\x00" + buildContext + "\n"
 	if !strings.Contains(string(data), want) {
 		t.Fatalf("command log missing %q in:\n%s", want, string(data))
 	}

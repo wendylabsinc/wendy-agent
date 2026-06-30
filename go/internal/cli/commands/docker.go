@@ -1641,7 +1641,11 @@ func buildImageWithAppleContainer(ctx context.Context, dir, imageName, platform,
 	if err != nil {
 		return fmt.Errorf("resolving project path: %w", err)
 	}
-	args := []string{"build", "--platform", platform, "-t", imageName}
+	// --progress plain emits the deterministic BuildKit log format (#N, DONE Ns,
+	// [stage N/M]) that the shared build parser understands; the default
+	// (--progress auto) renders an interactive [+] Building UI the parser cannot
+	// read, so the renderer would show nothing.
+	args := []string{"build", "--progress", "plain", "--platform", platform, "-t", imageName}
 	if dockerfile != "" {
 		resolvedDockerfile, err := appleContainerBuildFilePath(dir, dockerfile)
 		if err != nil {

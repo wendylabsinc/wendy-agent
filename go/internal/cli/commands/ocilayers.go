@@ -631,7 +631,9 @@ func buildImageToOCILayoutWithAppleContainer(ctx context.Context, cwd, dockerfil
 	// invocations and watch cycles never collide on the temporary image.
 	imageRef := "wendy-oci-build:" + sanitizeAppleContainerTag(filepath.Base(filepath.Dir(dest)))
 
-	args := []string{"build", "--platform", platform, "-t", imageRef}
+	// --progress plain so the shared build parser can read the output (see
+	// buildImageWithAppleContainer for the format rationale).
+	args := []string{"build", "--progress", "plain", "--platform", platform, "-t", imageRef}
 	if dockerfile != "" {
 		resolvedDockerfile, err := appleContainerBuildFilePath(cwd, dockerfile)
 		if err != nil {
