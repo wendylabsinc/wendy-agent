@@ -220,7 +220,11 @@ If NTP is not synchronized, you can:
    sudo systemctl restart systemd-timesyncd
    ```
 
-2. **Use Roughtime** — The CLI can broadcast cryptographically-signed time to nearby WendyOS devices:
+2. **Use Roughtime** — The CLI automatically detects clock skew when connecting to a device and relays a verified Roughtime proof to correct it. If the connection succeeds, you'll see a message like:
+   ```
+   Device clock was 56y behind — synchronized via Roughtime.
+   ```
+   If the device is completely unreachable (connection cannot be established), you can broadcast manually:
    ```sh
    wendy device sync-time
    ```
