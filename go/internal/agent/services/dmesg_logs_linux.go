@@ -532,7 +532,6 @@ func kmsgTimestampToWall(tsUS int64, bootEpoch int64) uint64 {
 	return uint64(now)
 }
 
-
 // kernelLevelToOTEL maps a kernel syslog level (0–7) to an OTel severity.
 // Non-critical levels are mapped into the trace/debug band so they do not
 // pollute default INFO+ views. Critical levels (KERN_CRIT and above) are
