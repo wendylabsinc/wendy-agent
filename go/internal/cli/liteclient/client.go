@@ -1,25 +1,33 @@
 package liteclient
 
 import (
+	"bytes"
+	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"math"
 	"os"
+	"strings"
+	"time"
 
 	wendypb "github.com/wendylabsinc/wendy/go/proto/gen/litepb"
+	"go.bug.st/serial"
 	"google.golang.org/protobuf/proto"
 )
 
 const (
-	headerMagic   = 0xA5
-	headerVersion = 0x01
-	headerSize    = 8
-	chunkSize     = 4096
-	versionMajor  = 1
-	versionMinor  = 0
+	headerMagic        = 0xA5
+	headerVersion      = 0x01
+	headerSize         = 8
+	chunkSize          = 4096
+	chunkSizeForSerial = 1024
+	versionMajor       = 1
+	versionMinor       = 0
+	esc                = 0x1B
 )
 
 type protocolVersion struct {
@@ -27,8 +35,15 @@ type protocolVersion struct {
 	Minor uint32
 }
 
+type DeviceIdentity struct {
+	ID          string
+	Name        string
+	DisplayName string
+}
+
 type WendyLiteClient struct {
 	conn                io.ReadWriteCloser
+	isSerial            bool
 	requestIdGen        uint32
 	peerProtocolVersion protocolVersion
 }
@@ -43,6 +58,7 @@ func (c *WendyLiteClient) ConnectInsecure(address string) error {
 		return fmt.Errorf("connect: %w", err)
 	}
 	c.conn = conn
+	c.isSerial = false
 	err = c.exchangeProtocolVersions()
 	if err != nil {
 		conn.Close()
@@ -86,6 +102,7 @@ func (c *WendyLiteClient) ConnectWithMutualAuthentication(address string, cert t
 		return fmt.Errorf("connect (mTLS): %w", err)
 	}
 	c.conn = conn
+	c.isSerial = false
 	err = c.exchangeProtocolVersions()
 	if err != nil {
 		conn.Close()
@@ -95,11 +112,95 @@ func (c *WendyLiteClient) ConnectWithMutualAuthentication(address string, cert t
 	return nil
 }
 
-func (c *WendyLiteClient) Close() error {
-	if c.conn != nil {
-		return c.conn.Close()
+func (c *WendyLiteClient) ConnectToSerial(device string) error {
+	mode := &serial.Mode{
+		BaudRate: 115200,
+		DataBits: 8,
+		Parity:   serial.NoParity,
+		StopBits: serial.OneStopBit,
+	}
+	port, err := serial.Open(device, mode)
+	if err != nil {
+		return fmt.Errorf("open serial: %w", err)
+	}
+	if err := serialHandshake(port); err != nil {
+		port.Close()
+		return err
+	}
+	c.conn = port
+	c.isSerial = true
+	if err := c.exchangeProtocolVersions(); err != nil {
+		port.Close()
+		c.conn = nil
+		return fmt.Errorf("get protocol version: %w", err)
 	}
 	return nil
+}
+
+func serialHandshake(port serial.Port) error {
+	if _, err := port.Write([]byte{esc, esc, esc, esc, 'e'}); err != nil {
+		return fmt.Errorf("serial handshake: send escape: %w", err)
+	}
+
+	var sentinel string
+
+	if err := port.SetReadTimeout(100 * time.Millisecond); err != nil {
+		return fmt.Errorf("serial handshake: set timeout: %w", err)
+	}
+
+	window := make([]byte, 0, 32)
+	oneByte := make([]byte, 1)
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		n, err := port.Read(oneByte)
+		if err != nil {
+			return fmt.Errorf("serial handshake: read: %w", err)
+		}
+		if n == 0 {
+			// rx timeout, so rx buffer empty, so send sentinel
+			var randBytes [16]byte
+			if _, err := rand.Read(randBytes[:]); err != nil {
+				return fmt.Errorf("serial handshake: generate sentinel: %w", err)
+			}
+			sentinel = hex.EncodeToString(randBytes[:])
+			window = window[:0]
+			if _, err := port.Write([]byte(strings.Repeat(" ", 16) + sentinel)); err != nil {
+				return fmt.Errorf("serial handshake: send sentinel: %w", err)
+			}
+			continue
+		}
+		if n == 1 {
+			if len(window) < 32 {
+				window = append(window, oneByte[0])
+			} else {
+				copy(window, window[1:])
+				window[31] = oneByte[0]
+			}
+			if sentinel != "" && len(window) == 32 && string(window) == sentinel {
+				if err := port.SetReadTimeout(0); err != nil {
+					return fmt.Errorf("serial handshake: clear timeout: %w", err)
+				}
+				if _, err := port.Write([]byte{esc, 'm'}); err != nil {
+					return fmt.Errorf("serial handshake: send mode switch: %w", err)
+				}
+				return nil
+			}
+		}
+	}
+	return fmt.Errorf("serial handshake: sentinel not received within 2 seconds")
+}
+
+func (c *WendyLiteClient) Close() error {
+	if c.conn == nil {
+		return nil
+	}
+	if c.isSerial {
+		if port, ok := c.conn.(serial.Port); ok {
+			_, _ = port.Write([]byte{esc, 'o'})
+			_ = port.Drain()
+		}
+	}
+	return c.conn.Close()
 }
 
 func (c *WendyLiteClient) Ping() error {
@@ -166,7 +267,11 @@ func (c *WendyLiteClient) PushApp(path string, onProgress func(written, total ui
 		return fmt.Errorf("push begin: device returned error %d", resp.Result)
 	}
 
-	buf := make([]byte, chunkSize)
+	chunk := chunkSize
+	if c.isSerial {
+		chunk = chunkSizeForSerial
+	}
+	buf := make([]byte, chunk)
 	var offset uint32
 	for {
 		n, err := f.Read(buf)
@@ -250,6 +355,27 @@ func (c *WendyLiteClient) StartApp() error {
 	return nil
 }
 
+func (c *WendyLiteClient) GetDeviceIdentity() (*DeviceIdentity, error) {
+	c.requestIdGen++
+	resp, err := c.sendCommand(&wendypb.WendyComCommand{
+		RequestId: c.requestIdGen,
+		Params: &wendypb.WendyComCommand_GetDeviceIdentity{
+			GetDeviceIdentity: &wendypb.WendyComGetDeviceIdentityParams{},
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	if resp.Result != wendypb.WendyComResult_WENDY_COM_RESULT_OK {
+		return nil, fmt.Errorf("device returned error %d", resp.Result)
+	}
+	di := resp.GetDeviceIdentity()
+	if di == nil {
+		return nil, fmt.Errorf("device returned no identity")
+	}
+	return &DeviceIdentity{ID: di.GetId(), Name: di.GetName(), DisplayName: di.GetDisplayName()}, nil
+}
+
 func (c *WendyLiteClient) sendCommand(cmd *wendypb.WendyComCommand) (*wendypb.WendyComResponse, error) {
 	body, err := proto.Marshal(cmd)
 	if err != nil {
@@ -260,8 +386,15 @@ func (c *WendyLiteClient) sendCommand(cmd *wendypb.WendyComCommand) (*wendypb.We
 	msg[1] = headerVersion
 	binary.BigEndian.PutUint16(msg[6:8], uint16(len(body)))
 	copy(msg[headerSize:], body)
-	if _, err := c.conn.Write(msg); err != nil {
-		return nil, fmt.Errorf("send: %w", err)
+	if c.isSerial {
+		msg = bytes.ReplaceAll(msg, []byte{esc}, []byte{esc, '_'})
+	}
+	for len(msg) > 0 {
+		n, err := c.conn.Write(msg)
+		if err != nil {
+			return nil, fmt.Errorf("send: %w", err)
+		}
+		msg = msg[n:]
 	}
 	raw, err := c.readResponse()
 	if err != nil {

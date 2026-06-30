@@ -4,6 +4,7 @@ package models
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -153,11 +154,11 @@ type DiscoveredDevice struct {
 
 	LAN       *LANDevice
 	Bluetooth *BluetoothDevice
-	External  *ExternalDevice
+	Externals []*ExternalDevice
 }
 
 // ConnectionTypes returns a human-readable list of available transports,
-// e.g. "LAN", "BLE", or "LAN, BLE".
+// e.g. "LAN", "BLE", "USB", "LAN, BLE", "LAN, USB", ...
 func (d *DiscoveredDevice) ConnectionTypes() string {
 	var types []string
 	if d.LAN != nil {
@@ -170,8 +171,14 @@ func (d *DiscoveredDevice) ConnectionTypes() string {
 			types = append(types, "BLE (Lite)")
 		}
 	}
-	if d.External != nil {
-		types = append(types, "LAN (Lite)")
+	for _, ext := range d.Externals {
+		if ct := ext.ConnectionType(); ct != "" {
+			if ext.ProviderKey == "wendy-lite" {
+				types = append(types, ct+" (Lite)")
+			} else {
+				types = append(types, ct)
+			}
+		}
 	}
 	return strings.Join(types, ", ")
 }
@@ -185,8 +192,8 @@ func (d *DiscoveredDevice) Address() string {
 		}
 		return d.LAN.Hostname
 	}
-	if d.External != nil {
-		if ip := d.External.ConnectionInfo["ip"]; ip != "" {
+	for _, ext := range d.Externals {
+		if ip := ext.ConnectionInfo["ip"]; ip != "" {
 			return ip
 		}
 	}
@@ -270,7 +277,11 @@ func (c *DevicesCollection) MergedDevices() []DiscoveredDevice {
 		}
 		key := strings.ToLower(d.DisplayName)
 		if existing, ok := byName[key]; ok {
-			existing.External = d
+			existing.Externals = append(existing.Externals, d)
+			sort.Slice(existing.Externals, func(i, j int) bool {
+				return existing.Externals[i].Rank() > existing.Externals[j].Rank()
+			})
+
 			if existing.CPUArchitecture == "" {
 				existing.CPUArchitecture = d.CPUArchitecture
 			}
@@ -278,7 +289,7 @@ func (c *DevicesCollection) MergedDevices() []DiscoveredDevice {
 			merged := &DiscoveredDevice{
 				DisplayName:     d.DisplayName,
 				CPUArchitecture: d.CPUArchitecture,
-				External:        d,
+				Externals:       []*ExternalDevice{d},
 			}
 			byName[key] = merged
 			order = append(order, key)

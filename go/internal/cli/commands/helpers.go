@@ -12,6 +12,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -1729,8 +1730,8 @@ func pickerItemDeviceID(item tui.PickerItem) string {
 	if entry.externalDevice != nil {
 		return entry.externalDevice.ProviderKey
 	}
-	if entry.mergedDevice != nil && entry.mergedDevice.External != nil {
-		return entry.mergedDevice.External.ProviderKey
+	if entry.mergedDevice != nil && len(entry.mergedDevice.Externals) > 0 {
+		return entry.mergedDevice.Externals[0].ProviderKey
 	}
 	return ""
 }
@@ -1798,11 +1799,23 @@ func mergePickerItem(existing *tui.PickerItem, incoming tui.PickerItem) {
 	if nd.Bluetooth != nil && md.Bluetooth == nil {
 		md.Bluetooth = nd.Bluetooth
 	}
-	if nd.External != nil && md.External == nil {
-		md.External = nd.External
-		if md.LAN == nil {
-			existing.Address = incoming.Address
+	for _, ext := range nd.Externals {
+		found := false
+		for _, e := range md.Externals {
+			if e.ID == ext.ID {
+				found = true
+				break
+			}
 		}
+		if !found {
+			md.Externals = append(md.Externals, ext)
+			sort.Slice(md.Externals, func(i, j int) bool {
+				return md.Externals[i].Rank() > md.Externals[j].Rank()
+			})
+		}
+	}
+	if md.LAN == nil && len(nd.Externals) > 0 && existing.Address == "" {
+		existing.Address = incoming.Address
 	}
 
 	if md.AgentVersion == "" {
@@ -1980,7 +1993,7 @@ func pickDevice(ctx context.Context, excludeProviders map[string]bool, excludeBl
 							items = append(items, tui.PickerItem{
 								Name:         devices[i].DisplayName,
 								DedupKey:     devices[i].DisplayName,
-								Type:         "LAN (Lite)",
+								Type:         devices[i].ConnectionType() + " (Lite)",
 								Address:      devices[i].ConnectionInfo["ip"],
 								AgentVersion: devices[i].AgentVersion,
 								OS:           devices[i].OS,
@@ -1990,7 +2003,7 @@ func pickDevice(ctx context.Context, excludeProviders map[string]bool, excludeBl
 									AgentVersion:    devices[i].AgentVersion,
 									OSVersion:       devices[i].OSVersion,
 									CPUArchitecture: devices[i].CPUArchitecture,
-									External:        &devices[i],
+									Externals:       []*models.ExternalDevice{&devices[i]},
 								}},
 							})
 						} else {
@@ -2128,9 +2141,9 @@ func pickDevice(ctx context.Context, excludeProviders map[string]bool, excludeBl
 		if d.Bluetooth != nil {
 			sel.Bluetooth = d.Bluetooth
 		}
-		if d.External != nil {
-			sel.External = d.External
-			sel.Provider = providers.ProviderForKey(d.External.ProviderKey)
+		if len(d.Externals) > 0 {
+			sel.External = d.Externals[0]
+			sel.Provider = providers.ProviderForKey(d.Externals[0].ProviderKey)
 		}
 		if sel.Bluetooth != nil || sel.External != nil {
 			return sel, nil
