@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"time"
 
 	"go.uber.org/zap"
 	"golang.org/x/sys/unix"
@@ -139,4 +140,121 @@ func (s *VolumeFsService) StatFs(_ context.Context, req *agentpbv2.StatFsRequest
 		TotalBytes: st.Blocks * uint64(st.Bsize),
 		FreeBytes:  st.Bavail * uint64(st.Bsize),
 	}, nil
+}
+
+func (s *VolumeFsService) Write(_ context.Context, req *agentpbv2.WriteRequest) (*agentpbv2.WriteResponse, error) {
+	full, err := resolveVolumePath(req.GetVolume(), req.GetPath())
+	if err != nil {
+		return nil, err
+	}
+	f, err := os.OpenFile(full, os.O_WRONLY, 0)
+	if err != nil {
+		return nil, osErrToStatus(err)
+	}
+	defer f.Close()
+	n, err := f.WriteAt(req.GetData(), req.GetOffset())
+	if err != nil {
+		return nil, osErrToStatus(err)
+	}
+	if err := f.Sync(); err != nil {
+		return nil, osErrToStatus(err)
+	}
+	return &agentpbv2.WriteResponse{Written: int32(n)}, nil
+}
+
+func (s *VolumeFsService) Create(_ context.Context, req *agentpbv2.CreateRequest) (*agentpbv2.StatResponse, error) {
+	full, err := resolveVolumePath(req.GetVolume(), req.GetPath())
+	if err != nil {
+		return nil, err
+	}
+	f, err := os.OpenFile(full, os.O_CREATE|os.O_WRONLY, os.FileMode(req.GetMode()))
+	if err != nil {
+		return nil, osErrToStatus(err)
+	}
+	_ = f.Close()
+	fi, err := os.Lstat(full)
+	if err != nil {
+		return nil, osErrToStatus(err)
+	}
+	return &agentpbv2.StatResponse{Attr: fileInfoToAttr(fi, "")}, nil
+}
+
+func (s *VolumeFsService) Mkdir(_ context.Context, req *agentpbv2.MkdirRequest) (*agentpbv2.StatResponse, error) {
+	full, err := resolveVolumePath(req.GetVolume(), req.GetPath())
+	if err != nil {
+		return nil, err
+	}
+	if err := os.Mkdir(full, os.FileMode(req.GetMode())); err != nil {
+		return nil, osErrToStatus(err)
+	}
+	fi, err := os.Lstat(full)
+	if err != nil {
+		return nil, osErrToStatus(err)
+	}
+	return &agentpbv2.StatResponse{Attr: fileInfoToAttr(fi, "")}, nil
+}
+
+func (s *VolumeFsService) Rmdir(_ context.Context, req *agentpbv2.RmdirRequest) (*agentpbv2.RmdirResponse, error) {
+	full, err := resolveVolumePath(req.GetVolume(), req.GetPath())
+	if err != nil {
+		return nil, err
+	}
+	if err := os.Remove(full); err != nil {
+		return nil, osErrToStatus(err)
+	}
+	return &agentpbv2.RmdirResponse{}, nil
+}
+
+func (s *VolumeFsService) Unlink(_ context.Context, req *agentpbv2.UnlinkRequest) (*agentpbv2.UnlinkResponse, error) {
+	full, err := resolveVolumePath(req.GetVolume(), req.GetPath())
+	if err != nil {
+		return nil, err
+	}
+	if err := os.Remove(full); err != nil {
+		return nil, osErrToStatus(err)
+	}
+	return &agentpbv2.UnlinkResponse{}, nil
+}
+
+func (s *VolumeFsService) Rename(_ context.Context, req *agentpbv2.RenameRequest) (*agentpbv2.RenameResponse, error) {
+	from, err := resolveVolumePath(req.GetVolume(), req.GetFrom())
+	if err != nil {
+		return nil, err
+	}
+	to, err := resolveVolumePath(req.GetVolume(), req.GetTo())
+	if err != nil {
+		return nil, err
+	}
+	if err := os.Rename(from, to); err != nil {
+		return nil, osErrToStatus(err)
+	}
+	return &agentpbv2.RenameResponse{}, nil
+}
+
+func (s *VolumeFsService) SetAttr(_ context.Context, req *agentpbv2.SetAttrRequest) (*agentpbv2.StatResponse, error) {
+	full, err := resolveVolumePath(req.GetVolume(), req.GetPath())
+	if err != nil {
+		return nil, err
+	}
+	if req.Size != nil {
+		if err := os.Truncate(full, req.GetSize()); err != nil {
+			return nil, osErrToStatus(err)
+		}
+	}
+	if req.Mode != nil {
+		if err := os.Chmod(full, os.FileMode(req.GetMode())); err != nil {
+			return nil, osErrToStatus(err)
+		}
+	}
+	if req.MtimeUnixNano != nil {
+		mt := time.Unix(0, req.GetMtimeUnixNano())
+		if err := os.Chtimes(full, mt, mt); err != nil {
+			return nil, osErrToStatus(err)
+		}
+	}
+	fi, err := os.Lstat(full)
+	if err != nil {
+		return nil, osErrToStatus(err)
+	}
+	return &agentpbv2.StatResponse{Attr: fileInfoToAttr(fi, "")}, nil
 }

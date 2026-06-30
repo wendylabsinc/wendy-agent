@@ -15,6 +15,7 @@ import (
 	"google.golang.org/grpc/test/bufconn"
 
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
+	"google.golang.org/protobuf/proto"
 )
 
 func startVolumeFsServer(t *testing.T) (agentpbv2.WendyVolumeFsServiceClient, string) {
@@ -96,6 +97,45 @@ func TestVolumeFsStatFs(t *testing.T) {
 	}
 	if resp.GetTotalBytes() == 0 || resp.GetFreeBytes() == 0 {
 		t.Fatalf("expected non-zero total/free, got total=%d free=%d", resp.GetTotalBytes(), resp.GetFreeBytes())
+	}
+}
+
+func TestVolumeFsWriteCreateRename(t *testing.T) {
+	cl, root := startVolumeFsServer(t)
+	vdir := filepath.Join(root, "vol")
+	if err := os.MkdirAll(vdir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+
+	if _, err := cl.Create(ctx, &agentpbv2.CreateRequest{Volume: "vol", Path: "new.txt", Mode: 0o644}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := cl.Write(ctx, &agentpbv2.WriteRequest{Volume: "vol", Path: "new.txt", Offset: 0, Data: []byte("abcdef")}); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if _, err := cl.SetAttr(ctx, &agentpbv2.SetAttrRequest{Volume: "vol", Path: "new.txt", Size: proto.Int64(3)}); err != nil {
+		t.Fatalf("SetAttr truncate: %v", err)
+	}
+	if _, err := cl.Rename(ctx, &agentpbv2.RenameRequest{Volume: "vol", From: "new.txt", To: "renamed.txt"}); err != nil {
+		t.Fatalf("Rename: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(vdir, "renamed.txt"))
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if string(got) != "abc" {
+		t.Fatalf("want %q got %q", "abc", got)
+	}
+
+	if _, err := cl.Mkdir(ctx, &agentpbv2.MkdirRequest{Volume: "vol", Path: "d", Mode: 0o755}); err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
+	if _, err := cl.Rmdir(ctx, &agentpbv2.RmdirRequest{Volume: "vol", Path: "d"}); err != nil {
+		t.Fatalf("Rmdir: %v", err)
+	}
+	if _, err := cl.Unlink(ctx, &agentpbv2.UnlinkRequest{Volume: "vol", Path: "renamed.txt"}); err != nil {
+		t.Fatalf("Unlink: %v", err)
 	}
 }
 
