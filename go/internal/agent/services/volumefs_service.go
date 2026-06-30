@@ -167,7 +167,7 @@ func (s *VolumeFsService) Create(_ context.Context, req *agentpbv2.CreateRequest
 	if err != nil {
 		return nil, err
 	}
-	f, err := os.OpenFile(full, os.O_CREATE|os.O_WRONLY, os.FileMode(req.GetMode()))
+	f, err := os.OpenFile(full, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, os.FileMode(req.GetMode()))
 	if err != nil {
 		return nil, osErrToStatus(err)
 	}
