@@ -267,10 +267,10 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 			}
 			fmt.Printf("%s %s\n", tui.Dim("CLI Version:"), tui.Value(version.Version))
 
-			if cmp := version.CompareVersions(version.Version, agentVersion); cmp > 0 && agentVersion != "dev" {
+			if agentBehindCLI(version.Version, agentVersion) {
 				fmt.Println()
 				fmt.Println(tui.WarningMessage("Agent is behind the CLI — run 'wendy device update' to update."))
-			} else if cmp < 0 {
+			} else if cliBehindAgent(version.Version, agentVersion) {
 				fmt.Println()
 				fmt.Println(tui.WarningMessage("CLI is behind the agent — consider updating the CLI."))
 			}
@@ -506,7 +506,7 @@ func newDeviceSetupCmd() *cobra.Command {
 				fmt.Printf("Unable to check agent version: %v\n", err)
 			} else {
 				fmt.Printf("Agent version: %s\n", versionResp.GetVersion())
-				if cmp := version.CompareVersions(version.Version, versionResp.GetVersion()); cmp > 0 && versionResp.GetVersion() != "dev" {
+				if agentBehindCLI(version.Version, versionResp.GetVersion()) {
 					fmt.Println("Agent is behind the CLI — consider running 'wendy device update'.")
 				}
 			}

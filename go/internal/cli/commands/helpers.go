@@ -1198,13 +1198,13 @@ func checkAndOfferUpdate(ctx context.Context, conn *grpcclient.AgentConnection) 
 
 	agentVer := resp.GetVersion()
 	// Dev CLI builds skip the update check entirely.
-	if version.Version == "dev" {
+	if version.IsDev(version.Version) {
 		markUpdateCheckPassed(conn.Host)
 		return conn, nil
 	}
 	// A dev agent build is running intentionally — never offer to replace it
-	// with a stable release (CompareVersions treats "dev" as always-behind).
-	if agentVer == "dev" {
+	// with a stable release (dev is treated as the latest version).
+	if version.IsDev(agentVer) {
 		markUpdateCheckPassed(conn.Host)
 		return conn, nil
 	}

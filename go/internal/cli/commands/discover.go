@@ -451,7 +451,7 @@ func (m discoverModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.flashIsError = true
 				return m, clearFlashAfter(3 * time.Second)
 			}
-			if item.info.Version == "" || version.CompareVersions(version.Version, item.info.Version) <= 0 {
+			if !agentBehindCLI(version.Version, item.info.Version) {
 				m.flashMessage = "Device is already up to date."
 				m.flashIsError = false
 				return m, clearFlashAfter(3 * time.Second)
@@ -924,10 +924,31 @@ func lanNoAccessHint(lan *models.LANDevice, agentVersion string) string {
 	return ""
 }
 
+// agentBehindCLI reports whether agentVer is an older release than cliVer and
+// should be flagged as outdated. A dev build on either side (see version.IsDev)
+// is treated as the latest version, so a dev CLI never flags real agents and a
+// dev agent is never flagged (WDY-1770). An empty agentVer is treated as
+// unknown (not behind).
+func agentBehindCLI(cliVer, agentVer string) bool {
+	if agentVer == "" || version.IsDev(cliVer) || version.IsDev(agentVer) {
+		return false
+	}
+	return version.CompareVersions(cliVer, agentVer) > 0
+}
+
+// cliBehindAgent reports whether cliVer is an older release than agentVer, with
+// the same dev-build handling as agentBehindCLI.
+func cliBehindAgent(cliVer, agentVer string) bool {
+	if agentVer == "" || version.IsDev(cliVer) || version.IsDev(agentVer) {
+		return false
+	}
+	return version.CompareVersions(cliVer, agentVer) < 0
+}
+
 // markOutdated prefixes the version string with "* " when the agent is behind
 // the CLI, serving as a visible indicator in discover-style tables.
 func markOutdated(agentVer string) string {
-	if agentVer != "" && version.CompareVersions(version.Version, agentVer) > 0 {
+	if agentBehindCLI(version.Version, agentVer) {
 		return "* " + agentVer
 	}
 	return agentVer
@@ -1165,7 +1186,7 @@ func discoverAgentVersionDisplay(agentVer string) string {
 	if displayVersion == "" {
 		return ""
 	}
-	if version.CompareVersions(version.Version, agentVer) > 0 {
+	if agentBehindCLI(version.Version, agentVer) {
 		displayVersion += " ⚠"
 	}
 	return displayVersion
