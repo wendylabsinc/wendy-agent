@@ -8,9 +8,43 @@ import (
 	"testing"
 	"time"
 
+	digest "github.com/opencontainers/go-digest"
+
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
+
+func TestChainIDsForDiffIDs(t *testing.T) {
+	d0 := digest.Digest("sha256:" + strings.Repeat("a", 64))
+	d1 := digest.Digest("sha256:" + strings.Repeat("b", 64))
+	d2 := digest.Digest("sha256:" + strings.Repeat("c", 64))
+
+	// Independently compute the expected chain IDs from the OCI definition:
+	//   chainID(L0)       = diffID(L0)
+	//   chainID(L0..Ln)   = SHA256(chainID(L0..Ln-1) + " " + diffID(Ln))
+	expect0 := d0.String()
+	h1 := sha256.Sum256([]byte(expect0 + " " + d1.String()))
+	expect1 := fmt.Sprintf("sha256:%x", h1)
+	h2 := sha256.Sum256([]byte(expect1 + " " + d2.String()))
+	expect2 := fmt.Sprintf("sha256:%x", h2)
+
+	got := chainIDsForDiffIDs([]digest.Digest{d0, d1, d2})
+	want := []string{expect0, expect1, expect2}
+	if len(got) != len(want) {
+		t.Fatalf("len(got) = %d; want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("chainID[%d] = %q; want %q", i, got[i], want[i])
+		}
+	}
+}
+
+func TestChainIDsForDiffIDs_Empty(t *testing.T) {
+	if got := chainIDsForDiffIDs(nil); len(got) != 0 {
+		t.Errorf("len(got) = %d; want 0", len(got))
+	}
+}
 
 func TestContainerName_SingleContainer(t *testing.T) {
 	// Single-container apps: name must equal the appID unchanged.

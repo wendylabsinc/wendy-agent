@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -93,9 +94,18 @@ type Client struct {
 	// Defaults to "overlayfs" when supported; falls back to "native" on kernels
 	// that do not support overlay mounts (e.g. nested container environments).
 	snapshotter string
+
+	// imageGCEnabled gates the post-deploy / boot image garbage collector
+	// (WENDY_IMAGE_GC_ENABLED). When false, both triggerImageGCAsync and
+	// GarbageCollectImages are no-ops.
+	imageGCEnabled bool
+
+	// gcRunning is the single-flight guard for image GC: at most one
+	// mark-and-sweep pass runs at a time across the deploy hook and boot sweep.
+	gcRunning atomic.Bool
 }
 
-func NewClient(logger *zap.Logger, address string, proxyMgr *dbusproxy.Manager) (*Client, error) {
+func NewClient(logger *zap.Logger, address string, proxyMgr *dbusproxy.Manager, imageGCEnabled bool) (*Client, error) {
 	if address == "" {
 		address = DefaultAddress
 	}
@@ -114,19 +124,20 @@ func NewClient(logger *zap.Logger, address string, proxyMgr *dbusproxy.Manager) 
 	snapshotter := probeSnapshotter(logger)
 
 	return &Client{
-		client:       c,
-		logger:       logger,
-		namespace:    "default",
-		proxyManager: proxyMgr,
-		appServices:  make(map[string]map[string]*appconfig.ServiceConfig),
-		primaryPIDs:  make(map[string]uint32),
-		appIsolation: make(map[string]string),
-		serviceIPs:   make(map[string]map[string]string),
-		appStopping:  make(map[string]bool),
-		ros2ExecRefs: make(map[string]int),
-		chunkIndex:   idx,
-		staging:      newStaging(defaultChunkStagingDir),
-		snapshotter:  snapshotter,
+		client:         c,
+		logger:         logger,
+		namespace:      "default",
+		proxyManager:   proxyMgr,
+		appServices:    make(map[string]map[string]*appconfig.ServiceConfig),
+		primaryPIDs:    make(map[string]uint32),
+		appIsolation:   make(map[string]string),
+		serviceIPs:     make(map[string]map[string]string),
+		appStopping:    make(map[string]bool),
+		ros2ExecRefs:   make(map[string]int),
+		chunkIndex:     idx,
+		staging:        newStaging(defaultChunkStagingDir),
+		snapshotter:    snapshotter,
+		imageGCEnabled: imageGCEnabled,
 	}, nil
 }
 
@@ -942,6 +953,12 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 		}
 		c.appIsolation[appID] = appCfg.Isolation
 	}
+
+	// A newer image version is now active for this app: kick off a background
+	// sweep to reclaim the prior version's gc.root snapshots and layer blobs.
+	// Async + single-flight so it never blocks or fails the deploy; the
+	// just-created container and re-pointed image keep the new version safe.
+	c.triggerImageGCAsync()
 
 	return nil
 }

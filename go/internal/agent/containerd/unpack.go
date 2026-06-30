@@ -137,12 +137,7 @@ func (c *Client) UnpackImage(ctx context.Context, img containerd.Image, progress
 	}
 
 	// Pre-compute all chain IDs in a single pass, then check existence in parallel.
-	chainIDs := make([]string, len(diffIDs))
-	parent := ""
-	for i, diffID := range diffIDs {
-		chainIDs[i] = computeChainID(parent, diffID.String())
-		parent = chainIDs[i]
-	}
+	chainIDs := chainIDsForDiffIDs(diffIDs)
 
 	exists, err := statLayers(ctx, sn, chainIDs)
 	if err != nil {
