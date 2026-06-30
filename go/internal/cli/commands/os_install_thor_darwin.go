@@ -39,6 +39,11 @@ func installThor(ctx context.Context, version string, nightly, force bool) error
 	}
 	fmt.Printf("Flashpack: %s (WendyOS %s)\n", fp.Root, fp.Manifest.WendyOSVersion)
 
+	// Brief the user on cabling / recovery mode, then confirm before scanning.
+	if err := confirmThorReady(); err != nil {
+		return err
+	}
+
 	// Pick the device to flash.
 	dev, err := pickRecoveryDevice()
 	if err != nil {
@@ -171,33 +176,96 @@ func verifySHA256(path, want string) error {
 // pickRecoveryDevice lists Jetsons in recovery mode and selects one (auto when there
 // is exactly one, interactive picker when there are several).
 func pickRecoveryDevice() (rcm.RecoveryDevice, error) {
-	devs, err := rcm.ListRecoveryDevices()
-	if err != nil {
-		return rcm.RecoveryDevice{}, err
+	for {
+		devs, err := rcm.ListRecoveryDevices()
+		if err != nil {
+			return rcm.RecoveryDevice{}, err
+		}
+		switch len(devs) {
+		case 0:
+			// The user already confirmed the Thor is in recovery mode, so a zero
+			// scan usually means cabling or the button sequence needs another try.
+			// Offer a rescan instead of aborting.
+			fmt.Print("\nNo Jetson found in USB recovery mode.\n" +
+				"  Check the USB-C cable is in the port next to the HDMI port and re-do the\n" +
+				"  recovery-mode button sequence, then rescan.\n" +
+				"Press Enter to rescan, or 'q' to quit: ")
+			if readQuit() {
+				return rcm.RecoveryDevice{}, ErrUserCancelled
+			}
+			continue
+		case 1:
+			return devs[0], nil
+		default:
+			var items []tui.PickerItem
+			byKey := make(map[string]rcm.RecoveryDevice, len(devs))
+			for _, d := range devs {
+				byKey[d.PathKey] = d
+				items = append(items, tui.PickerItem{
+					Name:        d.Describe(),
+					Description: "",
+					Section:     "Recovery devices",
+					SortKey:     d.PathKey,
+					Value:       d.PathKey,
+				})
+			}
+			sel, err := pickFromItems("Select the Thor to flash", items)
+			if err != nil {
+				return rcm.RecoveryDevice{}, err
+			}
+			return byKey[sel], nil
+		}
 	}
-	if len(devs) == 0 {
-		return rcm.RecoveryDevice{}, fmt.Errorf("no Jetson found in USB recovery mode\n  Put the Thor in recovery (hold force-recovery, tap reset), connect USB, and allow the accessory if macOS prompts.")
+}
+
+// readQuit reads a single line and reports whether the user asked to quit
+// (q/quit). Any other input — including a bare Enter — means "continue".
+func readQuit() bool {
+	s := bufio.NewScanner(os.Stdin)
+	if !s.Scan() {
+		return true // EOF (e.g. closed stdin) — don't loop forever
 	}
-	if len(devs) == 1 {
-		return devs[0], nil
+	switch strings.ToLower(strings.TrimSpace(s.Text())) {
+	case "q", "quit":
+		return true
+	default:
+		return false
 	}
-	var items []tui.PickerItem
-	byKey := make(map[string]rcm.RecoveryDevice, len(devs))
-	for _, d := range devs {
-		byKey[d.PathKey] = d
-		items = append(items, tui.PickerItem{
-			Name:        d.Describe(),
-			Description: "",
-			Section:     "Recovery devices",
-			SortKey:     d.PathKey,
-			Value:       d.PathKey,
-		})
+}
+
+// thorRecoveryBriefing explains the cabling and recovery-mode steps the user
+// must complete before a Thor will appear in the USB recovery scan.
+const thorRecoveryBriefing = `
+Before flashing, please read the following:
+
+  Storage
+    WendyOS is installed to the Thor's internal flash and NVMe drive. It does
+    not use an external USB drive — if one is connected, disconnect it now and
+    leave it out for the rest of this process.
+
+  USB-C cabling
+    Connect this computer to the Thor's USB-C port directly next to the HDMI
+    port. The other USB-C port may be used for power only.
+
+  Entering recovery mode
+    The three front buttons, left to right, are Power, Force Recovery, and Reset.
+    1. Start with the Thor unplugged and powered off.
+    2. Plug in power.
+    3. Press and hold the Force Recovery button (middle). While holding it,
+       briefly press the Reset button (right), then release Force Recovery.
+    4. Connect it to this computer using the USB-C port next to the HDMI port.
+`
+
+// confirmThorReady prints the recovery-mode briefing and asks the user to
+// confirm the target Thor is connected and in recovery mode before scanning.
+// Returns ErrUserCancelled if the user declines.
+func confirmThorReady() error {
+	fmt.Print(thorRecoveryBriefing)
+	fmt.Print("\nIs the target Thor connected and in recovery mode? [y/n] ")
+	if !readYes() {
+		return ErrUserCancelled
 	}
-	sel, err := pickFromItems("Select the Thor to flash", items)
-	if err != nil {
-		return rcm.RecoveryDevice{}, err
-	}
-	return byKey[sel], nil
+	return nil
 }
 
 // readYes reads a single line and reports whether it is an affirmative (y/yes).
