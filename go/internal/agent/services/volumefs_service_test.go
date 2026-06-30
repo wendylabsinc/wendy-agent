@@ -139,6 +139,27 @@ func TestVolumeFsWriteCreateRename(t *testing.T) {
 	}
 }
 
+func TestVolumeFsCreateTruncates(t *testing.T) {
+	cl, root := startVolumeFsServer(t)
+	vdir := filepath.Join(root, "vol")
+	if err := os.MkdirAll(vdir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(vdir, "f.txt"), []byte("stale data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cl.Create(context.Background(), &agentpbv2.CreateRequest{Volume: "vol", Path: "f.txt", Mode: 0o644}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(vdir, "f.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("expected Create to truncate, got %q", got)
+	}
+}
+
 func TestVolumeFsRejectsTraversal(t *testing.T) {
 	cl, root := startVolumeFsServer(t)
 	if err := os.MkdirAll(filepath.Join(root, "vol"), 0o755); err != nil {
