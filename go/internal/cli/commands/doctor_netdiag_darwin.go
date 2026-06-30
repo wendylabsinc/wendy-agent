@@ -42,8 +42,9 @@ func hostNetworkDiagnostics(agentIP string, ports []int) []checkResult {
 		})
 	}
 
-	// Subnet comparison (only meaningful when both IPs are real IPv4).
-	if myIP != "" && net.ParseIP(agentIP) != nil {
+	// Subnet comparison (only meaningful when both IPs are real IPv4; myIP
+	// always is, agentIP may be IPv6 — subnet24 is IPv4-only, so guard on To4).
+	if myIP != "" && net.ParseIP(agentIP).To4() != nil {
 		if subnet24(myIP) != subnet24(agentIP) {
 			out = append(out, checkResult{
 				Name:   "Subnet",
@@ -56,10 +57,12 @@ func hostNetworkDiagnostics(agentIP string, ports []int) []checkResult {
 		}
 	}
 
-	// VPN / tunnel interfaces and which interface routes to the agent.
-	if tunnels := activeTunnels(); len(tunnels) > 0 {
-		routeIface := routeInterface(agentIP)
-		if routeIface != "" && strings.HasPrefix(routeIface, "utun") {
+	// VPN / tunnel. Every Mac runs utun* interfaces for system services
+	// (iCloud Private Relay, Handoff, Personal Hotspot), so their mere presence
+	// is not a VPN signal. Only flag a problem when the route to *this agent*
+	// is actually diverted through a tunnel.
+	if net.ParseIP(agentIP) != nil {
+		if routeIface := routeInterface(agentIP); strings.HasPrefix(routeIface, "utun") {
 			out = append(out, checkResult{
 				Name:   "VPN / tunnel",
 				Status: statusFail,
@@ -67,15 +70,8 @@ func hostNetworkDiagnostics(agentIP string, ports []int) []checkResult {
 				Hint:   "A VPN is diverting the agent route — disconnect it or split-tunnel the device's subnet.",
 			})
 		} else {
-			out = append(out, checkResult{
-				Name:   "VPN / tunnel",
-				Status: statusWarn,
-				Detail: fmt.Sprintf("active tunnel(s): %s (route to agent uses %s)", strings.Join(tunnels, ", "), fallback(routeIface, "unknown")),
-				Hint:   "If the agent is unreachable, try disconnecting the VPN.",
-			})
+			out = append(out, checkResult{Name: "VPN / tunnel", Status: statusPass, Detail: "agent route does not go through a VPN tunnel"})
 		}
-	} else {
-		out = append(out, checkResult{Name: "VPN / tunnel", Status: statusPass, Detail: "no VPN tunnel interfaces active"})
 	}
 
 	// Reachability via ping + MAC.
@@ -105,7 +101,7 @@ func hostNetworkDiagnostics(agentIP string, ports []int) []checkResult {
 }
 
 func defaultRoute() (iface, gateway string) {
-	out, err := runCmd(2*time.Second, "route", "-n", "get", "default")
+	out, err := runCmd(1*time.Second, "route", "-n", "get", "default")
 	if err != nil {
 		return "", ""
 	}
@@ -125,31 +121,15 @@ func defaultRoute() (iface, gateway string) {
 }
 
 func interfaceIPv4(iface string) string {
-	out, err := runCmd(2*time.Second, "ipconfig", "getifaddr", iface)
+	out, err := runCmd(1*time.Second, "ipconfig", "getifaddr", iface)
 	if err != nil {
 		return ""
 	}
 	return strings.TrimSpace(out)
 }
 
-var utunRe = regexp.MustCompile(`^(utun[0-9]+):`)
-
-func activeTunnels() []string {
-	out, err := runCmd(2*time.Second, "ifconfig")
-	if err != nil {
-		return nil
-	}
-	var tunnels []string
-	for _, line := range strings.Split(out, "\n") {
-		if m := utunRe.FindStringSubmatch(line); m != nil {
-			tunnels = append(tunnels, m[1])
-		}
-	}
-	return tunnels
-}
-
 func routeInterface(ip string) string {
-	out, err := runCmd(2*time.Second, "route", "-n", "get", ip)
+	out, err := runCmd(1*time.Second, "route", "-n", "get", ip)
 	if err != nil {
 		return ""
 	}
@@ -163,14 +143,14 @@ func routeInterface(ip string) string {
 }
 
 func pingHost(ip string) bool {
-	_, err := runCmd(3*time.Second, "ping", "-c1", "-t2", ip)
+	_, err := runCmd(2*time.Second, "ping", "-c1", "-t1", ip)
 	return err == nil
 }
 
 var macRe = regexp.MustCompile(`([0-9a-fA-F]{1,2}(:[0-9a-fA-F]{1,2}){5})`)
 
 func arpMAC(ip string) string {
-	out, err := runCmd(2*time.Second, "arp", "-n", ip)
+	out, err := runCmd(1*time.Second, "arp", "-n", ip)
 	if err != nil {
 		return ""
 	}
@@ -186,13 +166,6 @@ func subnet24(ip string) string {
 		return ip[:idx]
 	}
 	return ip
-}
-
-func fallback(s, def string) string {
-	if s == "" {
-		return def
-	}
-	return s
 }
 
 func runCmd(timeout time.Duration, name string, args ...string) (string, error) {

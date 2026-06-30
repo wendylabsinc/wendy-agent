@@ -501,8 +501,12 @@ func evaluateDiskUsage(mount string, used, total int64) checkResult {
 	if total <= 0 {
 		return checkResult{Name: name, Status: statusSkip, Detail: "size unknown"}
 	}
-	freePct := float64(total-used) / float64(total) * 100
-	detail := fmt.Sprintf("%s free of %s (%.0f%% free)", formatBytes(total-used), formatBytes(total), freePct)
+	free := total - used // clamp: agents can report used > total (reserved blocks)
+	if free < 0 {
+		free = 0
+	}
+	freePct := float64(free) / float64(total) * 100
+	detail := fmt.Sprintf("%s free of %s (%.0f%% free)", formatBytes(free), formatBytes(total), freePct)
 	switch {
 	case freePct < diskFailFreePct:
 		return checkResult{Name: name, Status: statusFail, Detail: detail, Hint: "Disk almost full — free space or new deploys will fail."}
@@ -656,6 +660,9 @@ func hostOnly(addr string) string {
 
 // resolveIP returns an IP for host: host itself if it's already an IP, else the
 // first resolved address, else host unchanged (best effort for diagnostics).
+// hostNetworkDiagnostics is macOS-only, and the macOS CLI is built with cgo (it
+// links CoreBluetooth), so the OS resolver here resolves ".local" mDNS names
+// natively — no separate mDNS fallback is needed.
 func resolveIP(host string) string {
 	if net.ParseIP(host) != nil {
 		return host
