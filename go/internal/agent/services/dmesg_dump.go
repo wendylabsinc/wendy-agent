@@ -13,6 +13,22 @@ import (
 // regardless of how large the kernel ring buffer is.
 const dumpKernelLogBatchSize = 256
 
+// contractReader adapts a reader that may violate the io.Reader contract by
+// returning a negative count (notably unix.Read, which reports n == -1 on
+// errors such as EAGAIN). bufio.Scanner treats a negative count as fatal and
+// aborts with ErrBadReadCount ("Read returned impossible count"), masking the
+// underlying error. Clamping to 0 lets the real error surface — for the kmsg
+// snapshot this is the EAGAIN that signals end-of-buffer.
+type contractReader struct{ r io.Reader }
+
+func (c *contractReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	if n < 0 {
+		n = 0
+	}
+	return n, err
+}
+
 // streamKmsgSnapshot reads /dev/kmsg-formatted records from r, parses each with
 // parseKmsgLine, and invokes emit with batches of at most batchSize records.
 // It is a one-shot snapshot: it reads until r reports EOF (or a read error) and
@@ -27,7 +43,7 @@ func streamKmsgSnapshot(r io.Reader, batchSize int, emit func([]*agentpb.KernelL
 	if batchSize < 1 {
 		batchSize = 1
 	}
-	scanner := bufio.NewScanner(r)
+	scanner := bufio.NewScanner(&contractReader{r: r})
 	scanner.Buffer(make([]byte, 0, 8192), 256*1024)
 
 	batch := make([]*agentpb.KernelLogRecord, 0, batchSize)
@@ -49,7 +65,7 @@ func streamKmsgSnapshot(r io.Reader, batchSize int, emit func([]*agentpb.KernelL
 					// A single oversized record must not abort the dump. The
 					// kernel advances /dev/kmsg's read position per-record, so
 					// recreating the scanner resumes at the next record.
-					scanner = bufio.NewScanner(r)
+					scanner = bufio.NewScanner(&contractReader{r: r})
 					scanner.Buffer(make([]byte, 0, 8192), 256*1024)
 					continue
 				}

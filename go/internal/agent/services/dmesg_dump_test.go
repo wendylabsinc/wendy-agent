@@ -3,6 +3,7 @@ package services
 import (
 	"errors"
 	"strings"
+	"syscall"
 	"testing"
 
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
@@ -86,6 +87,44 @@ func TestStreamKmsgSnapshotPropagatesEmitError(t *testing.T) {
 	// Must stop at the first failed emit, not keep sending.
 	if calls != 1 {
 		t.Fatalf("expected emit to be called once before aborting, got %d", calls)
+	}
+}
+
+// eagainReader emits its records once, then mimics a non-blocking /dev/kmsg fd
+// drained to end-of-buffer: unix.Read returns (-1, EAGAIN). The -1 violates the
+// io.Reader contract and, before the kmsgSnapshotReader clamp, made
+// bufio.Scanner abort with ErrBadReadCount ("Read returned impossible count")
+// instead of surfacing the EAGAIN that signals a clean end-of-snapshot.
+type eagainReader struct {
+	data []byte
+	done bool
+}
+
+func (r *eagainReader) Read(p []byte) (int, error) {
+	if !r.done {
+		n := copy(p, r.data)
+		r.done = true
+		return n, nil
+	}
+	// Match unix.Read's contract on error: count is -1, not 0.
+	return -1, syscall.EAGAIN
+}
+
+func TestStreamKmsgSnapshotSurfacesEAGAINNotBadReadCount(t *testing.T) {
+	r := &eagainReader{data: []byte("6,1,100,-;first\n3,2,200,-;second\n")}
+	var got []*agentpb.KernelLogRecord
+	err := streamKmsgSnapshot(r, 8, func(recs []*agentpb.KernelLogRecord) error {
+		got = append(got, append([]*agentpb.KernelLogRecord(nil), recs...)...)
+		return nil
+	})
+	if !errors.Is(err, syscall.EAGAIN) {
+		t.Fatalf("expected EAGAIN to surface, got %v", err)
+	}
+	if err != nil && strings.Contains(err.Error(), "impossible count") {
+		t.Fatalf("scanner aborted with ErrBadReadCount instead of EAGAIN: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 records parsed before EAGAIN, got %d", len(got))
 	}
 }
 

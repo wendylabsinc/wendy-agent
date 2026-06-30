@@ -64,6 +64,10 @@ func (k *kmsgSnapshotReader) Read(p []byte) (int, error) {
 	// /dev/kmsg returns exactly one record per read(); the caller's buffer must
 	// be large enough to hold it. streamKmsgSnapshot uses a 256 KiB buffer,
 	// well above the kernel's per-record limit.
+	//
+	// unix.Read reports n == -1 on error (e.g. EAGAIN when the buffer is
+	// drained). io.Reader requires n >= 0; streamKmsgSnapshot clamps the count
+	// at the bufio.Scanner boundary so the real error surfaces.
 	return unix.Read(k.fd, p)
 }
 
