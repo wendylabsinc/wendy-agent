@@ -7,6 +7,30 @@ import (
 	"testing"
 )
 
+func TestWebdavFSReaddir(t *testing.T) {
+	c, _ := newTestFSClient(t)
+	fs := NewWebdavFS(c)
+	ctx := context.Background()
+	if err := fs.Mkdir(ctx, "d1", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.Mkdir(ctx, "d2", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dir, err := fs.OpenFile(ctx, "", os.O_RDONLY, 0)
+	if err != nil {
+		t.Fatalf("OpenFile root: %v", err)
+	}
+	defer dir.Close()
+	infos, err := dir.Readdir(-1)
+	if err != nil {
+		t.Fatalf("Readdir: %v", err)
+	}
+	if len(infos) != 2 {
+		t.Fatalf("expected 2 entries, got %d", len(infos))
+	}
+}
+
 func TestWebdavFSWriteRead(t *testing.T) {
 	c, _ := newTestFSClient(t)
 	fs := NewWebdavFS(c)
