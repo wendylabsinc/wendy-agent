@@ -672,9 +672,14 @@ func runEnrollDevice(ctx context.Context, conn *grpcclient.AgentConnection, auth
 
 	tokenCtx := cloudContext(ctx, auth)
 
+	org, orgErr := resolveOrg(ctx, auth, false)
+	if orgErr != nil {
+		return fmt.Errorf("resolving organization: %w", orgErr)
+	}
+
 	certClient := cloudpb.NewCertificateServiceClient(cloudConn)
 	tokenResp, err := certClient.CreateAssetEnrollmentToken(tokenCtx, &cloudpb.CreateAssetEnrollmentTokenRequest{
-		OrganizationId: int32(cert.OrganizationID),
+		OrganizationId: org.ID,
 		Name:           name,
 		TtlSeconds:     600,
 	})
@@ -693,8 +698,8 @@ func runEnrollDevice(ctx context.Context, conn *grpcclient.AgentConnection, auth
 		return fmt.Errorf("enrolling device: %w", err)
 	}
 
-	fmt.Printf("Device enrolled (org: %d, asset: %d).\n",
-		tokenResp.GetOrganizationId(), tokenResp.GetAssetId())
+	fmt.Printf("Device enrolled (org: %s / ID: %d, asset: %d).\n",
+		org.Name, tokenResp.GetOrganizationId(), tokenResp.GetAssetId())
 	return nil
 }
 

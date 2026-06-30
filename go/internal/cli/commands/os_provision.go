@@ -42,8 +42,10 @@ func defaultPreEnrollDialer(_ context.Context, addr string, opt grpc.DialOption)
 
 // preEnrollDevice generates a device key pair, gets an enrollment token from
 // Wendy Cloud, issues a certificate, and returns the provisioning state.
-// deviceName is optional. Pass nil for dialer to use the default.
-func preEnrollDevice(ctx context.Context, auth *config.AuthConfig, deviceName string, dialer PreEnrollDialer) (*PreProvisionedState, error) {
+// deviceName is optional. orgID selects the target organization; pass 0 to
+// fall back to the org embedded in the auth certificate. Pass nil for dialer
+// to use the default.
+func preEnrollDevice(ctx context.Context, auth *config.AuthConfig, deviceName string, orgID int32, dialer PreEnrollDialer) (*PreProvisionedState, error) {
 	if dialer == nil {
 		dialer = defaultPreEnrollDialer
 	}
@@ -74,14 +76,17 @@ func preEnrollDevice(ctx context.Context, auth *config.AuthConfig, deviceName st
 
 	tokenCtx := cloudContext(ctx, auth)
 
+	if orgID == 0 {
+		orgID = int32(cert.OrganizationID)
+	}
 	tokenResp, err := certClient.CreateAssetEnrollmentToken(tokenCtx, &cloudpb.CreateAssetEnrollmentTokenRequest{
-		OrganizationId: int32(cert.OrganizationID),
+		OrganizationId: orgID,
 		Name:           deviceName,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("creating enrollment token: %w", err)
 	}
-	orgID := tokenResp.GetOrganizationId()
+	resolvedOrgID := tokenResp.GetOrganizationId()
 	assetID := tokenResp.GetAssetId()
 
 	// Generate key pair in memory only — never written to the local machine's disk.
@@ -92,7 +97,7 @@ func preEnrollDevice(ctx context.Context, auth *config.AuthConfig, deviceName st
 
 	// Device identity acts as both a TLS client (to the cloud) and a TLS server
 	// (agent gRPC and tunnel endpoints), so request both EKUs.
-	csrPEM, err := certs.GenerateCSR([]byte(keyPEM), fmt.Sprintf("sh/wendy/%d/%d", orgID, assetID),
+	csrPEM, err := certs.GenerateCSR([]byte(keyPEM), fmt.Sprintf("sh/wendy/%d/%d", resolvedOrgID, assetID),
 		x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth)
 	if err != nil {
 		return nil, fmt.Errorf("generating CSR: %w", err)
@@ -116,7 +121,7 @@ func preEnrollDevice(ctx context.Context, auth *config.AuthConfig, deviceName st
 	state := &PreProvisionedState{
 		Enrolled:  true,
 		CloudHost: auth.CloudGRPC,
-		OrgID:     orgID,
+		OrgID:     resolvedOrgID,
 		AssetID:   assetID,
 		KeyPEM:    keyPEM,
 		CertPEM:   certObj.GetPemCertificate(),

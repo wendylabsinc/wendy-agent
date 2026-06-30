@@ -46,6 +46,10 @@ type Config struct {
 	// answering at that hostname is caught. Renewal/re-enrollment within the
 	// same org+cloud does not trip it. Keyed by normalized hostname.
 	DevicePins map[string]DevicePin `json:"devicePins,omitempty"`
+	// DefaultOrgID is the organization used when a command needs to target a
+	// specific org and the user belongs to more than one. Zero means no default;
+	// the CLI will then show a picker or use the sole available org.
+	DefaultOrgID int32 `json:"defaultOrgId,omitempty"`
 }
 
 // AuthConfig holds authentication details for a cloud environment.

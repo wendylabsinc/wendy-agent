@@ -20,7 +20,9 @@ func stubEnrollPrompts(t *testing.T) {
 	origSession := promptEnrollmentSession
 	origPreEnroll := confirmPreEnroll
 	origContinue := confirmContinueUnenrolled
+	origWendyOrg := confirmWendyInternalOrg
 	origEnroll := preEnrollDeviceFn
+	origResolveOrg := resolveOrgFn
 	promptEnrollmentSession = func([]tui.PickerItem) (string, error) {
 		t.Fatal("unexpected session picker")
 		return "", nil
@@ -33,15 +35,26 @@ func stubEnrollPrompts(t *testing.T) {
 		t.Fatal("unexpected continue-unenrolled confirm")
 		return false, nil
 	}
-	preEnrollDeviceFn = func(context.Context, *config.AuthConfig, string, PreEnrollDialer) (*PreProvisionedState, error) {
+	confirmWendyInternalOrg = func(string) (bool, error) {
+		t.Fatal("unexpected Wendy-internal-org confirm")
+		return false, nil
+	}
+	preEnrollDeviceFn = func(context.Context, *config.AuthConfig, string, int32, PreEnrollDialer) (*PreProvisionedState, error) {
 		t.Fatal("unexpected enrollment call")
 		return nil, nil
+	}
+	// Default org resolver returns a stable test org so tests that reach
+	// preEnrollDeviceFn don't need a live cloud connection.
+	resolveOrgFn = func(_ context.Context, _ *config.AuthConfig, _ bool) (OrgResolution, error) {
+		return OrgResolution{ID: 7, Name: "Test Org"}, nil
 	}
 	t.Cleanup(func() {
 		promptEnrollmentSession = origSession
 		confirmPreEnroll = origPreEnroll
 		confirmContinueUnenrolled = origContinue
+		confirmWendyInternalOrg = origWendyOrg
 		preEnrollDeviceFn = origEnroll
+		resolveOrgFn = origResolveOrg
 	})
 }
 
@@ -208,7 +221,7 @@ func TestResolvePreEnrollmentSuccess(t *testing.T) {
 	stubEnrollPrompts(t)
 	confirmPreEnroll = func() (bool, error) { return true, nil }
 	promptEnrollmentSession = func([]tui.PickerItem) (string, error) { return "0", nil }
-	preEnrollDeviceFn = func(_ context.Context, auth *config.AuthConfig, name string, _ PreEnrollDialer) (*PreProvisionedState, error) {
+	preEnrollDeviceFn = func(_ context.Context, auth *config.AuthConfig, name string, _ int32, _ PreEnrollDialer) (*PreProvisionedState, error) {
 		if auth.CloudGRPC != "prod.example.com:443" {
 			t.Fatalf("enrolled against %s; want the picked session", auth.CloudGRPC)
 		}
@@ -242,7 +255,7 @@ func TestResolvePreEnrollmentFailureAcknowledged(t *testing.T) {
 	stubEnrollPrompts(t)
 	confirmPreEnroll = func() (bool, error) { return true, nil }
 	promptEnrollmentSession = func([]tui.PickerItem) (string, error) { return "0", nil }
-	preEnrollDeviceFn = func(context.Context, *config.AuthConfig, string, PreEnrollDialer) (*PreProvisionedState, error) {
+	preEnrollDeviceFn = func(context.Context, *config.AuthConfig, string, int32, PreEnrollDialer) (*PreProvisionedState, error) {
 		return nil, errors.New("cloud unreachable")
 	}
 	confirmContinueUnenrolled = func() (bool, error) { return true, nil }
@@ -257,7 +270,7 @@ func TestResolvePreEnrollmentFailureDeclinedCancelsInstall(t *testing.T) {
 	stubEnrollPrompts(t)
 	confirmPreEnroll = func() (bool, error) { return true, nil }
 	promptEnrollmentSession = func([]tui.PickerItem) (string, error) { return "0", nil }
-	preEnrollDeviceFn = func(context.Context, *config.AuthConfig, string, PreEnrollDialer) (*PreProvisionedState, error) {
+	preEnrollDeviceFn = func(context.Context, *config.AuthConfig, string, int32, PreEnrollDialer) (*PreProvisionedState, error) {
 		return nil, errors.New("cloud unreachable")
 	}
 	confirmContinueUnenrolled = func() (bool, error) { return false, nil }
@@ -274,7 +287,7 @@ func TestResolvePreEnrollmentForcedNonInteractiveFailureIsFatal(t *testing.T) {
 		CloudGRPC:    "prod.example.com:443",
 		Certificates: []config.CertificateInfo{{OrganizationID: 7}},
 	}}}
-	preEnrollDeviceFn = func(context.Context, *config.AuthConfig, string, PreEnrollDialer) (*PreProvisionedState, error) {
+	preEnrollDeviceFn = func(context.Context, *config.AuthConfig, string, int32, PreEnrollDialer) (*PreProvisionedState, error) {
 		return nil, errors.New("cloud unreachable")
 	}
 
@@ -297,7 +310,7 @@ func TestResolvePreEnrollmentForcedSkipsConfirm(t *testing.T) {
 	// confirmPreEnroll stays at the t.Fatal stub: forced mode must never ask
 	// "Pre-enroll this device?".
 	promptEnrollmentSession = func([]tui.PickerItem) (string, error) { return "0", nil }
-	preEnrollDeviceFn = func(context.Context, *config.AuthConfig, string, PreEnrollDialer) (*PreProvisionedState, error) {
+	preEnrollDeviceFn = func(context.Context, *config.AuthConfig, string, int32, PreEnrollDialer) (*PreProvisionedState, error) {
 		return &PreProvisionedState{}, nil
 	}
 	if _, err := resolvePreEnrollment(context.Background(), twoSessionConfig(), preEnrollOptions{mode: preEnrollForced}, true, "dev"); err != nil {
