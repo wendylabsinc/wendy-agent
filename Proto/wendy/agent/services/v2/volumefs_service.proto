@@ -1,0 +1,69 @@
+syntax = "proto3";
+package wendy.agent.services.v2;
+option go_package = "github.com/wendylabsinc/wendy/proto/gen/agentpb/v2;agentpbv2";
+
+// Path-scoped filesystem access to a single persistent volume under
+// /var/lib/wendy/volumes/<volume>. All paths are volume-relative; the agent
+// rejects any path escaping the volume root.
+service WendyVolumeFsService {
+    rpc Stat(StatRequest) returns (StatResponse);
+    rpc ReadDir(ReadDirRequest) returns (ReadDirResponse);
+    rpc Read(ReadRequest) returns (ReadResponse);
+    rpc Write(WriteRequest) returns (WriteResponse);
+    rpc Create(CreateRequest) returns (StatResponse);
+    rpc Mkdir(MkdirRequest) returns (StatResponse);
+    rpc Rmdir(RmdirRequest) returns (RmdirResponse);
+    rpc Unlink(UnlinkRequest) returns (UnlinkResponse);
+    rpc Rename(RenameRequest) returns (RenameResponse);
+    rpc SetAttr(SetAttrRequest) returns (StatResponse);
+    rpc StatFs(StatFsRequest) returns (StatFsResponse);
+}
+
+enum FileType {
+    FILE_TYPE_UNSPECIFIED = 0;
+    FILE_TYPE_REGULAR = 1;
+    FILE_TYPE_DIR = 2;
+    FILE_TYPE_SYMLINK = 3;
+}
+
+message Attr {
+    FileType type = 1;
+    int64 size = 2;
+    uint32 mode = 3;            // unix permission bits (lower 12 bits significant)
+    int64 mtime_unix_nano = 4;
+    string symlink_target = 5;  // set only when type == FILE_TYPE_SYMLINK
+}
+
+message StatRequest { string volume = 1; string path = 2; }
+message StatResponse { Attr attr = 1; }
+
+message DirEntry { string name = 1; Attr attr = 2; }
+message ReadDirRequest { string volume = 1; string path = 2; }
+message ReadDirResponse { repeated DirEntry entries = 1; }
+
+message ReadRequest { string volume = 1; string path = 2; int64 offset = 3; int32 length = 4; }
+message ReadResponse { bytes data = 1; bool eof = 2; }
+
+message WriteRequest { string volume = 1; string path = 2; int64 offset = 3; bytes data = 4; }
+message WriteResponse { int32 written = 1; }
+
+message CreateRequest { string volume = 1; string path = 2; uint32 mode = 3; }
+message MkdirRequest { string volume = 1; string path = 2; uint32 mode = 3; }
+
+message RmdirRequest { string volume = 1; string path = 2; }
+message RmdirResponse {}
+message UnlinkRequest { string volume = 1; string path = 2; }
+message UnlinkResponse {}
+message RenameRequest { string volume = 1; string from = 2; string to = 3; }
+message RenameResponse {}
+
+message SetAttrRequest {
+    string volume = 1;
+    string path = 2;
+    optional uint32 mode = 3;
+    optional int64 size = 4;             // truncate target
+    optional int64 mtime_unix_nano = 5;
+}
+
+message StatFsRequest { string volume = 1; }
+message StatFsResponse { uint64 total_bytes = 1; uint64 free_bytes = 2; }
