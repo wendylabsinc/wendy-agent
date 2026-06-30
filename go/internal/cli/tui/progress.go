@@ -33,6 +33,7 @@ type ProgressModel struct {
 	progress progress.Model
 	title    string
 	details  []string
+	hints    hintRotator
 	percent  float64
 	written  int64
 	total    int64
@@ -47,6 +48,7 @@ func NewProgress(title string) ProgressModel {
 	return ProgressModel{
 		progress: p,
 		title:    title,
+		hints:    newHintRotator(),
 		showErr:  true,
 	}
 }
@@ -61,7 +63,7 @@ func (m ProgressModel) WithoutErrorView() ProgressModel {
 
 // Init implements tea.Model.
 func (m ProgressModel) Init() tea.Cmd {
-	return nil
+	return m.hints.tick()
 }
 
 // Update implements tea.Model.
@@ -93,6 +95,10 @@ func (m ProgressModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.err = msg.Err
 		m.percent = 1.0
 		return m, tea.Quit
+
+	case hintTickMsg:
+		m.hints.next()
+		return m, m.hints.tick()
 
 	case progress.FrameMsg:
 		progressModel, cmd := m.progress.Update(msg)
@@ -132,7 +138,11 @@ func (m ProgressModel) View() string {
 		}
 		return fmt.Sprintf("%s\n%s%s%s\n", m.title, details, m.progress.ViewAs(1.0), byteInfo)
 	}
-	return fmt.Sprintf("%s\n%s%s%s\n", m.title, details, m.progress.ViewAs(m.percent), byteInfo)
+	out := fmt.Sprintf("%s\n%s%s%s\n", m.title, details, m.progress.ViewAs(m.percent), byteInfo)
+	if hint := m.hints.view(); hint != "" {
+		out += hint + "\n"
+	}
+	return out
 }
 
 func appendProgressDetail(details []string, detail string) []string {

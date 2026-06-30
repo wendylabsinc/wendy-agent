@@ -10,14 +10,17 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/test/bufconn"
 
+	"github.com/wendylabsinc/wendy/go/internal/agent/oshealth"
 	"github.com/wendylabsinc/wendy/go/internal/shared/version"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
+	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 )
 
 // ---------- mock implementations ----------
@@ -431,5 +434,231 @@ func TestRunContainer_Deprecated(t *testing.T) {
 	// Verify it is an Unimplemented status error.
 	if !strings.Contains(err.Error(), "deprecated") && !strings.Contains(err.Error(), "Unimplemented") {
 		t.Fatalf("expected Unimplemented/deprecated error, got: %v", err)
+	}
+}
+
+func TestParseDeviceTypePrefersBoard(t *testing.T) {
+	tests := []struct {
+		name        string
+		content     string
+		wantType    string
+		wantStorage string
+	}{
+		{
+			name:        "board wins over machine and storage inferred from machine",
+			content:     "BOARD=jetson-orin-nano\nMACHINE=jetson-orin-nano-devkit-nvme-wendyos\n",
+			wantType:    "jetson-orin-nano",
+			wantStorage: "nvme",
+		},
+		{
+			name:        "board wins when listed after machine",
+			content:     "MACHINE=jetson-orin-nano-devkit-nvme-wendyos\nBOARD=jetson-orin-nano\n",
+			wantType:    "jetson-orin-nano",
+			wantStorage: "nvme",
+		},
+		{
+			name:        "emmc inferred from machine",
+			content:     "BOARD=jetson-agx-orin-emmc\nMACHINE=jetson-agx-orin-devkit-emmc-wendyos\n",
+			wantType:    "jetson-agx-orin-emmc",
+			wantStorage: "emmc",
+		},
+		{
+			name:     "non-nvme machine infers no storage",
+			content:  "BOARD=jetson-orin-nano\nMACHINE=jetson-orin-nano-devkit-wendyos\n",
+			wantType: "jetson-orin-nano",
+		},
+		{
+			name:     "machine used only when board absent",
+			content:  "MACHINE=raspberrypi5-wendyos\n",
+			wantType: "raspberrypi5-wendyos",
+		},
+		{
+			name:        "explicit storage wins over machine inference",
+			content:     "BOARD=jetson-orin-nano\nMACHINE=jetson-orin-nano-devkit-nvme-wendyos\nSTORAGE=sd\n",
+			wantType:    "jetson-orin-nano",
+			wantStorage: "sd",
+		},
+		{
+			name:        "explicit storage parsed alongside board",
+			content:     "BOARD=jetson-orin-nano\nSTORAGE=nvme\n",
+			wantType:    "jetson-orin-nano",
+			wantStorage: "nvme",
+		},
+		{
+			name:     "legacy plain string passthrough",
+			content:  "raspberry-pi-5",
+			wantType: "raspberry-pi-5",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			gotType, gotStorage := parseDeviceType(tc.content)
+			if gotType != tc.wantType || gotStorage != tc.wantStorage {
+				t.Fatalf("parseDeviceType(%q) = (%q, %q), want (%q, %q)",
+					tc.content, gotType, gotStorage, tc.wantType, tc.wantStorage)
+			}
+		})
+	}
+}
+
+func TestGetOSUpdateStatus_NoRecord(t *testing.T) {
+	client, cleanup := startAgentServer(t,
+		&mockNetworkManager{},
+		&mockHardwareDiscoverer{},
+		&mockBluetoothManager{},
+		func(svc *AgentService) { svc.osUpdateStateDir = t.TempDir() },
+	)
+	defer cleanup()
+
+	resp, err := client.GetOSUpdateStatus(context.Background(), &agentpb.GetOSUpdateStatusRequest{})
+	if err != nil {
+		t.Fatalf("GetOSUpdateStatus: %v", err)
+	}
+	if resp.GetHasResult() {
+		t.Error("HasResult = true, want false when no record exists")
+	}
+}
+
+func TestGetOSUpdateStatus_MapsRecord(t *testing.T) {
+	dir := t.TempDir()
+	created := time.Date(2026, 6, 9, 12, 0, 0, 0, time.UTC)
+	finalized := created.Add(3 * time.Minute)
+	record := oshealth.UpdateResult{
+		Outcome:        oshealth.OutcomeRolledBack,
+		OldOSVersion:   "WendyOS-0.10.4",
+		NewOSVersion:   "WendyOS-0.11.0",
+		CreatedAt:      created,
+		FinalizedAt:    finalized,
+		FinalOSVersion: "WendyOS-0.10.4",
+		Services: []oshealth.ServiceResult{
+			{Unit: "avahi-daemon.service", Status: oshealth.StatusFailed, Reason: "timed out after 30s"},
+			{Unit: "containerd.service", Status: oshealth.StatusHealthy},
+			{Unit: "NetworkManager.service", Status: oshealth.StatusSkipped, Reason: "unit not present on this device"},
+		},
+		RollbackError: "rollback exploded",
+	}
+	if err := oshealth.WriteUpdateResult(dir, record); err != nil {
+		t.Fatal(err)
+	}
+
+	client, cleanup := startAgentServer(t,
+		&mockNetworkManager{},
+		&mockHardwareDiscoverer{},
+		&mockBluetoothManager{},
+		func(svc *AgentService) { svc.osUpdateStateDir = dir },
+	)
+	defer cleanup()
+
+	resp, err := client.GetOSUpdateStatus(context.Background(), &agentpb.GetOSUpdateStatusRequest{})
+	if err != nil {
+		t.Fatalf("GetOSUpdateStatus: %v", err)
+	}
+	if !resp.GetHasResult() {
+		t.Fatal("HasResult = false, want true")
+	}
+	if resp.GetOutcome() != agentpb.GetOSUpdateStatusResponse_OUTCOME_ROLLED_BACK {
+		t.Errorf("Outcome = %v, want OUTCOME_ROLLED_BACK", resp.GetOutcome())
+	}
+	if resp.GetOldOsVersion() != "WendyOS-0.10.4" || resp.GetNewOsVersion() != "WendyOS-0.11.0" {
+		t.Errorf("versions = %q/%q", resp.GetOldOsVersion(), resp.GetNewOsVersion())
+	}
+	if resp.GetCreatedAtUnix() != created.Unix() {
+		t.Errorf("CreatedAtUnix = %d, want %d", resp.GetCreatedAtUnix(), created.Unix())
+	}
+	if resp.GetFinalizedAtUnix() != finalized.Unix() {
+		t.Errorf("FinalizedAtUnix = %d, want %d", resp.GetFinalizedAtUnix(), finalized.Unix())
+	}
+	if resp.GetRollbackError() != "rollback exploded" {
+		t.Errorf("RollbackError = %q", resp.GetRollbackError())
+	}
+
+	services := resp.GetServices()
+	if len(services) != 3 {
+		t.Fatalf("len(Services) = %d, want 3", len(services))
+	}
+	wantStatuses := []agentpb.GetOSUpdateStatusResponse_ServiceResult_Status{
+		agentpb.GetOSUpdateStatusResponse_ServiceResult_STATUS_FAILED,
+		agentpb.GetOSUpdateStatusResponse_ServiceResult_STATUS_HEALTHY,
+		agentpb.GetOSUpdateStatusResponse_ServiceResult_STATUS_SKIPPED,
+	}
+	for i, want := range wantStatuses {
+		if services[i].GetStatus() != want {
+			t.Errorf("Services[%d].Status = %v, want %v", i, services[i].GetStatus(), want)
+		}
+	}
+	if services[0].GetUnit() != "avahi-daemon.service" || services[0].GetReason() != "timed out after 30s" {
+		t.Errorf("Services[0] = %+v", services[0])
+	}
+}
+
+func TestGetOSUpdateStatusV2_MirrorsRecord(t *testing.T) {
+	dir := t.TempDir()
+	record := oshealth.UpdateResult{
+		Outcome:   oshealth.OutcomeRolledBack,
+		CreatedAt: time.Date(2026, 6, 9, 12, 0, 0, 0, time.UTC),
+		Services: []oshealth.ServiceResult{
+			{Unit: "avahi-daemon.service", Status: oshealth.StatusFailed, Reason: "timed out"},
+		},
+	}
+	if err := oshealth.WriteUpdateResult(dir, record); err != nil {
+		t.Fatal(err)
+	}
+
+	svc := NewOSUpdateService(zap.NewNop())
+	svc.stateDir = dir
+
+	resp, err := svc.GetOSUpdateStatus(context.Background(), &agentpbv2.GetOSUpdateStatusRequest{})
+	if err != nil {
+		t.Fatalf("GetOSUpdateStatus: %v", err)
+	}
+	if !resp.GetHasResult() {
+		t.Fatal("HasResult = false, want true")
+	}
+	if resp.GetOutcome() != agentpbv2.GetOSUpdateStatusResponse_OUTCOME_ROLLED_BACK {
+		t.Errorf("Outcome = %v, want OUTCOME_ROLLED_BACK", resp.GetOutcome())
+	}
+	if len(resp.GetServices()) != 1 ||
+		resp.GetServices()[0].GetStatus() != agentpbv2.GetOSUpdateStatusResponse_ServiceResult_STATUS_FAILED {
+		t.Errorf("Services = %+v", resp.GetServices())
+	}
+
+	empty := NewOSUpdateService(zap.NewNop())
+	empty.stateDir = t.TempDir()
+	emptyResp, err := empty.GetOSUpdateStatus(context.Background(), &agentpbv2.GetOSUpdateStatusRequest{})
+	if err != nil {
+		t.Fatalf("GetOSUpdateStatus (empty): %v", err)
+	}
+	if emptyResp.GetHasResult() {
+		t.Error("HasResult = true, want false when no record exists")
+	}
+}
+
+func TestGetOSUpdateStatus_ZeroFinalizedAt(t *testing.T) {
+	dir := t.TempDir()
+	record := oshealth.UpdateResult{
+		Outcome:   oshealth.OutcomeCommitted,
+		CreatedAt: time.Now(),
+	}
+	if err := oshealth.WriteUpdateResult(dir, record); err != nil {
+		t.Fatal(err)
+	}
+
+	client, cleanup := startAgentServer(t,
+		&mockNetworkManager{},
+		&mockHardwareDiscoverer{},
+		&mockBluetoothManager{},
+		func(svc *AgentService) { svc.osUpdateStateDir = dir },
+	)
+	defer cleanup()
+
+	resp, err := client.GetOSUpdateStatus(context.Background(), &agentpb.GetOSUpdateStatusRequest{})
+	if err != nil {
+		t.Fatalf("GetOSUpdateStatus: %v", err)
+	}
+	if resp.GetOutcome() != agentpb.GetOSUpdateStatusResponse_OUTCOME_COMMITTED {
+		t.Errorf("Outcome = %v, want OUTCOME_COMMITTED", resp.GetOutcome())
+	}
+	if resp.GetFinalizedAtUnix() != 0 {
+		t.Errorf("FinalizedAtUnix = %d, want 0 for unfinalized record", resp.GetFinalizedAtUnix())
 	}
 }

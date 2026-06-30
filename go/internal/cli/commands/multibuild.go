@@ -434,7 +434,7 @@ func buildServicesParallel(
 	if isInteractiveTerminal() {
 		title := fmt.Sprintf("Building %d service(s)...", len(names))
 		m := tui.NewMultiSpinner(title, names)
-		prog = tea.NewProgram(m)
+		prog = tui.NewProgressProgram(m)
 	}
 
 	var wg sync.WaitGroup
@@ -471,28 +471,34 @@ func buildServicesParallel(
 
 			var buildOut io.Writer
 			var logBuf bytes.Buffer
+			var tally func() tui.BuildTally = func() tui.BuildTally { return tui.BuildTally{} }
 			if prog != nil {
-				// In interactive mode, buffer all output (setup logs + build output).
-				// On error the buffer is printed after the spinner exits.
-				buildOut = &logBuf
+				// Parse this service's stream into per-row detail updates and
+				// cache/rebuild tallies. Raw output is still buffered for the
+				// on-failure dump.
+				emit, getTally := newServiceProgressEmitter(prog, name)
+				tally = getTally
+				parser := tui.NewBuildParser(emit)
+				buildOut = io.MultiWriter(parser, &logBuf)
 			} else {
 				buildOut = os.Stdout
 			}
-			logOut := buildOut
+			var logOutW io.Writer = &logBuf
 			if prog == nil {
-				logOut = os.Stderr
+				logOutW = os.Stderr
 			}
 			err := dockerfileErr
 			if err == nil {
 				// Pass the per-service repo as the build's cache key so each concurrent
 				// build gets its own isolated local buildx cache dir (WDY-1689); sharing
 				// one dir corrupts BuildKit's cache-export ingest store under concurrency.
-				err = buildServiceImage(ctx, conn, regPort, builder, contextDir, repo, platform, dockerfile, buildArgs, repo, buildOut, logOut)
+				err = buildServiceImage(ctx, conn, regPort, builder, contextDir, repo, platform, dockerfile, buildArgs, repo, buildOut, logOutW)
 			}
 			dur := time.Since(start)
 
 			if prog != nil {
-				prog.Send(tui.MultiSpinnerDoneMsg{Name: name, Err: err, Dur: dur})
+				t := tally()
+				prog.Send(tui.MultiSpinnerDoneMsg{Name: name, Err: err, Dur: dur, Cached: t.Cached, Rebuilt: t.Rebuilt})
 			} else if err != nil {
 				cliLogln("Service %s build failed: %v", name, err)
 			} else {
@@ -607,6 +613,28 @@ func resolveDeployableServices(services map[string]*appconfig.ServiceConfig, fai
 }
 
 var serviceLogStyle = lipgloss.NewStyle().Foreground(tui.ColorInfo)
+
+// newServiceProgressEmitter returns an emit callback for tui.NewBuildParser that
+// forwards the active step as a MultiSpinner detail line and accumulates the
+// cached/rebuilt tally for the service's done row.
+func newServiceProgressEmitter(prog *tea.Program, name string) (func(tui.BuildStepEvent), func() tui.BuildTally) {
+	var t tui.BuildTally
+	emit := func(e tui.BuildStepEvent) {
+		switch e.Status {
+		case tui.BuildStepRunning:
+			prog.Send(tui.MultiSpinnerDetailMsg{Name: name, Detail: e.Display})
+		case tui.BuildStepCached:
+			if e.Kind == tui.BuildVertexStep {
+				t.Cached++
+			}
+		case tui.BuildStepDone:
+			if e.Kind == tui.BuildVertexStep {
+				t.Rebuilt++
+			}
+		}
+	}
+	return emit, func() tui.BuildTally { return t }
+}
 
 // multiServiceCreateConfig builds the per-service AppConfig transmitted to
 // the agent for a standalone multi-service app. The group identity and

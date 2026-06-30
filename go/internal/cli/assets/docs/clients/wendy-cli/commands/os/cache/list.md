@@ -10,7 +10,7 @@ wendy os cache list [--json]
 
 ## Description
 
-`wendy os cache list` shows OS image files that have been downloaded to the local cache by `wendy os install` or `wendy os download`. Cached images are reused on subsequent installs to avoid re-downloading.
+`wendy os cache list` shows OS image files that have been downloaded to the local cache by `wendy install` or `wendy os download`. Cached images are reused on subsequent installs to avoid re-downloading.
 
 Pass `--json` to receive a JSON array on stdout instead of the human-readable output described below.
 
@@ -62,5 +62,5 @@ If reading the metadata for a cache entry fails, the command exits with an error
 ## Related
 
 - [`wendy cache list`](../../cache/list.md) — lists all cached items, including OS images
-- [`wendy os install`](../install.md) — installs WendyOS and populates the cache
+- [`wendy install`](../install.md) — installs WendyOS and populates the cache
 - [`wendy os download`](../download.md) — downloads WendyOS images into the cache

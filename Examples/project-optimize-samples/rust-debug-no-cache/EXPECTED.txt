@@ -1,0 +1,6 @@
+Expected findings (wendy project optimize):
+  error    arch-image      amd64 base image on arm64 target          (Dockerfile:6)
+  warning  build-cache     cargo build without --mount=type=cache    (Dockerfile:10) [fixable]
+  warning  release-debug   cargo build is a debug build              (Dockerfile:10) [fixable]
+  warning  arch-image      No .dockerignore                          [fixable]
+  info     arch-image      Single-stage build ships its toolchain

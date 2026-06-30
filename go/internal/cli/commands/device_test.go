@@ -1,9 +1,10 @@
 package commands
 
 import (
+	"context"
 	"testing"
 
-	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
+	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
 func TestFormatKernelLogRecord(t *testing.T) {
@@ -81,5 +82,30 @@ func TestDefaultEnrollmentName(t *testing.T) {
 		if got := defaultEnrollmentName(in); got != want {
 			t.Errorf("defaultEnrollmentName(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+func TestMaybeCheckOSUpdateSkips(t *testing.T) {
+	strp := func(s string) *string { return &s }
+
+	tests := []struct {
+		name    string
+		version *agentpb.GetAgentVersionResponse
+	}{
+		{"nil version", nil},
+		{"non-wendyos darwin", &agentpb.GetAgentVersionResponse{Os: "darwin", OsVersion: strp("14.4")}},
+		{"wendyos without mender",
+			&agentpb.GetAgentVersionResponse{Os: "linux", OsVersion: strp("WendyOS-0.10.4"), DeviceType: strp("raspberry-pi-5")}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			// These inputs must return from the cheap pre-reconnect gate, before
+			// any reconnect/manifest/network call. (WendyOS+mender devices do
+			// reconnect to re-read the version, so they're not covered here.)
+			// A nil connection is safe because the gate returns before it is used.
+			if err := maybeCheckOSUpdate(context.Background(), tc.version, nil, false, false, ""); err != nil {
+				t.Fatalf("maybeCheckOSUpdate() error = %v, want nil", err)
+			}
+		})
 	}
 }

@@ -157,7 +157,7 @@ func newBuildCmd() *cobra.Command {
 				if buildErr != nil {
 					return fmt.Errorf("provider build: %w", buildErr)
 				}
-				cliSuccess("Build completed successfully (%s).", app.ProviderKey)
+				cliSuccess("Build completed successfully (%s).", tui.Value(app.ProviderKey))
 				return nil
 			}
 
@@ -513,7 +513,7 @@ func buildComposeProject(dir string) error {
 }
 
 func buildDockerProject(dir, imageName, platform, dockerfile string) error {
-	cliLogln("Building Docker image %s for %s...", imageName, platform)
+	cliLogln("Building Docker image %s for %s...", tui.Value(imageName), tui.Value(platform))
 
 	cmd := exec.Command("docker", "buildx", "build",
 		"--platform", platform,
@@ -534,7 +534,7 @@ func buildDockerProject(dir, imageName, platform, dockerfile string) error {
 	}
 
 	s := tui.NewSpinner("Building Docker image...")
-	p := tea.NewProgram(s)
+	p := tui.NewProgressProgram(s)
 
 	go func() {
 		cmd.Stdout = os.Stdout
@@ -564,7 +564,7 @@ func buildDockerProjectWithBuilder(ctx context.Context, builder, dir, imageName,
 		return err
 	}
 	if !imageBuilderWasExplicit(builder) && shouldAutoAttemptAppleContainerBuilder() {
-		cliLogln("Building Apple Container image %s for %s...", imageName, platform)
+		cliLogln("Building Apple Container image %s for %s...", tui.Value(imageName), tui.Value(platform))
 		if err := checkAppleContainerBuilder(ctx); err == nil {
 			if err := buildImageWithAppleContainer(ctx, dir, imageName, platform, dockerfile, nil, os.Stdout, os.Stderr); err == nil {
 				cliSuccess("Build completed successfully.")
@@ -626,12 +626,22 @@ func buildXcodeProject(ctx context.Context, dir, xcodeproj string) error {
 		}
 	}
 
-	cliLogln("Building Xcode project %s (scheme: %s)...", xcodeproj, scheme)
+	cliLogln("Building Xcode project %s (scheme: %s)...", tui.Value(xcodeproj), tui.Value(scheme))
+	// SECURITY: Xcode project support exists for native Mac packages that cannot be
+	// built correctly with SwiftPM alone today, for example packages that require
+	// Xcode-only resource or shader build steps (see
+	// docs/clients/wendy-cli/commands/build.md).
+	// Xcode's macro/plugin prompts are an interactive consent layer on top of
+	// SwiftPM's build-time code/sandbox model; headless Wendy CLI builds cannot
+	// answer those prompts, so we deliberately make xcodebuild behave like CLI
+	// build tools and rely on a trusted, pinned Package.resolved.
 	if err := runXcodebuild(ctx, dir,
 		"-project", xcodeproj,
 		"-scheme", scheme,
 		"-configuration", "Release",
 		"-derivedDataPath", ".xcode/",
+		"-skipMacroValidation",
+		"-skipPackagePluginValidation",
 	); err != nil {
 		return err
 	}

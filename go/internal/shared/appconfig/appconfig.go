@@ -44,6 +44,11 @@ const (
 	EntitlementInput     = "input"
 	EntitlementSerial    = "serial"
 	EntitlementMCP       = "mcp"
+	EntitlementDisplay   = "display"
+	// EntitlementAdmin grants full, unauthenticated local control of the agent
+	// via its local unix socket — the most security-sensitive entitlement.
+	// See entitlements.md for the blast radius.
+	EntitlementAdmin = "admin"
 )
 
 // ValidEntitlementTypes is the set of all recognized entitlement type strings.
@@ -62,6 +67,8 @@ var ValidEntitlementTypes = []string{
 	EntitlementInput,
 	EntitlementSerial,
 	EntitlementMCP,
+	EntitlementDisplay,
+	EntitlementAdmin,
 }
 
 var deprecatedEntitlementReplacements = map[string]string{
@@ -84,6 +91,8 @@ var allowedKeys = map[string][]string{
 	EntitlementInput:     {"type"},
 	EntitlementSerial:    {"type", "device"},
 	EntitlementMCP:       {"type", "port"},
+	EntitlementDisplay:   {"type"},
+	EntitlementAdmin:     {"type"},
 }
 
 // Platform constants identify the target hardware family.
@@ -138,6 +147,9 @@ type ServiceConfig struct {
 	Entitlements []Entitlement     `json:"entitlements,omitempty"`
 	DependsOn    []string          `json:"dependsOn,omitempty"`
 	Frameworks   *FrameworksConfig `json:"frameworks,omitempty"`
+	// Resources optionally caps this service's CPU/memory/PID usage, overriding
+	// any app-level resources wholesale.
+	Resources *ResourceLimits `json:"resources,omitempty"`
 }
 
 // AppConfig represents the wendy.json application configuration.
@@ -169,6 +181,9 @@ type AppConfig struct {
 	// Nested under "frameworks" per WDY-1339.
 	Frameworks *FrameworksConfig         `json:"frameworks,omitempty"`
 	Services   map[string]*ServiceConfig `json:"services,omitempty"`
+	// Resources optionally caps the app's CPU/memory/PID usage. For
+	// multi-service apps it is the default; a service may override it.
+	Resources *ResourceLimits `json:"resources,omitempty"`
 }
 
 // ContainerName returns the container identifier for this app config.
@@ -293,8 +308,8 @@ func validateEntitlements(entitlements []Entitlement, prefix string) error {
 
 		switch e.Type {
 		case EntitlementNetwork:
-			if e.Mode != "" && e.Mode != "host" && e.Mode != "none" {
-				return fmt.Errorf("%s[%d]: network mode must be \"host\" or \"none\", got %q", prefix, i, e.Mode)
+			if e.Mode != "" && e.Mode != "host" && e.Mode != "host-admin" && e.Mode != "none" {
+				return fmt.Errorf("%s[%d]: network mode must be \"host\", \"host-admin\", or \"none\", got %q", prefix, i, e.Mode)
 			}
 		case EntitlementPersist:
 			if e.Name == "" {
@@ -342,6 +357,26 @@ func validateEntitlements(entitlements []Entitlement, prefix string) error {
 	}
 	if mcpCount > 1 {
 		return fmt.Errorf("at most one mcp entitlement is allowed in %s, found %d", prefix, mcpCount)
+	}
+
+	displayCount := 0
+	for _, e := range entitlements {
+		if e.Type == EntitlementDisplay {
+			displayCount++
+		}
+	}
+	if displayCount > 1 {
+		return fmt.Errorf("at most one display entitlement is allowed in %s, found %d", prefix, displayCount)
+	}
+
+	adminCount := 0
+	for _, e := range entitlements {
+		if e.Type == EntitlementAdmin {
+			adminCount++
+		}
+	}
+	if adminCount > 1 {
+		return fmt.Errorf("at most one admin entitlement is allowed in %s, found %d", prefix, adminCount)
 	}
 
 	return nil
@@ -450,6 +485,10 @@ func (c *AppConfig) Validate() error {
 		}
 	}
 
+	if err := c.Resources.validate("resources"); err != nil {
+		return err
+	}
+
 	for name, svc := range c.Services {
 		if svc == nil {
 			return fmt.Errorf("services[%q]: must not be null", name)
@@ -475,6 +514,9 @@ func (c *AppConfig) Validate() error {
 			if err := validateROS2Config(fmt.Sprintf("services[%q].frameworks.ros2", name), svc.Frameworks.ROS2); err != nil {
 				return err
 			}
+		}
+		if err := svc.Resources.validate(fmt.Sprintf("services[%q].resources", name)); err != nil {
+			return err
 		}
 	}
 

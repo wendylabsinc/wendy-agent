@@ -13,7 +13,6 @@ import (
 	"strings"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/wendylabsinc/wendy/go/internal/cli/liteclient"
 	"github.com/wendylabsinc/wendy/go/internal/cli/swifttoolchain"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
@@ -224,7 +223,7 @@ func (p *MicroWendyProvider) Run(ctx context.Context, app *BuiltApp, detach bool
 	} else {
 		fmt.Println()
 		pushProg := tui.NewProgress("Pushing app...")
-		pp := tea.NewProgram(pushProg)
+		pp := tui.NewProgressProgram(pushProg)
 		go func() {
 			pushErr := client.PushApp(bc.WASMPath, func(written, total uint32) {
 				var pct float64

@@ -23,6 +23,7 @@ Supports: Claude Code, Claude Desktop, Cursor, Windsurf, Codex.
 
 1. Call `wendy_status` to see current connection state and a suggested next step.
 2. Call `device_list` (optionally `scan: true`) to find available devices.
+   - For USB-C tethered devices on Linux, run `sudo wendy device usb-setup` first.
 3. Call `device_connect` or `cloud_connect` to connect.
 4. Use container, WiFi, hardware, telemetry, and OS tools.
 

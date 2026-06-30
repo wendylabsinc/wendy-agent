@@ -1,0 +1,12 @@
+{
+  "title": "Hardware Access",
+  "description": "Grant apps access to cameras, microphones, speakers, Bluetooth, and GPUs",
+  "pages": [
+    "index",
+    "camera",
+    "microphone",
+    "speakers",
+    "bluetooth",
+    "gpu"
+  ]
+}

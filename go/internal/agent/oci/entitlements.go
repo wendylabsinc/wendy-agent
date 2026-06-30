@@ -97,6 +97,14 @@ func ApplyEntitlements(spec *Spec, cfg *appconfig.AppConfig, opts ApplyOptions) 
 			if err := applySerial(spec, ent); err != nil {
 				return err
 			}
+		case appconfig.EntitlementDisplay:
+			applyDisplay(spec)
+			if !didSetDeviceCapabilities {
+				didSetDeviceCapabilities = true
+				SetDeviceCapabilities(spec)
+			}
+		case appconfig.EntitlementAdmin:
+			applyAdmin(spec)
 		}
 	}
 	return nil
@@ -232,6 +240,83 @@ func applyVCIO(spec *Spec) {
 	allowMajorsFromGlob(spec, vcioDevicePath)
 }
 
+// applyDisplay grants an app the ability to present to the local display as a
+// Wayland client: GPU render-node access via /dev/dri plus, when present, the
+// compositor's Wayland socket. It is the ONLY entitlement that exposes
+// /dev/dri — apps without it keep the default no-display-GPU sandbox. On Jetson
+// the NVIDIA EGL/GLES userspace is injected from the host via CDI; here we only
+// ensure the driver advertises graphics+display capabilities.
+func applyDisplay(spec *Spec) {
+	// /dev/dri/card* is group "video"; renderD* is group "render".
+	spec.Process.User.AdditionalGids = appendUnique(spec.Process.User.AdditionalGids, videoGroupGID)
+	if gid, ok := lookupRenderGID(); ok {
+		spec.Process.User.AdditionalGids = appendUnique(spec.Process.User.AdditionalGids, gid)
+	}
+
+	// Allow the DRM major(s) behind /dev/dri (typically 226), discovered at apply
+	// time. "rw", no mknod: the host creates the nodes; the bind below surfaces them.
+	for _, glob := range driGlobs {
+		allowMajorsFromGlob(spec, glob)
+	}
+
+	// Bind the host /dev/dri tree so the container can open card*/renderD* nodes.
+	// nosuid/noexec but NOT nodev — the whole point is to open device nodes.
+	// Skipped when absent so a missing source cannot stop the container starting.
+	if _, err := os.Stat("/dev/dri"); err == nil {
+		spec.Mounts = append(spec.Mounts, Mount{
+			Destination: "/dev/dri",
+			Source:      "/dev/dri",
+			Type:        "bind",
+			Options:     []string{"rbind", "rw", "nosuid", "noexec"},
+		})
+	}
+
+	// On Jetson the NVIDIA graphics userspace is injected by CDI; ensure the
+	// driver capabilities include graphics/display (compute-only otherwise).
+	if boardDetect().IsJetson() {
+		spec.Process.Env = append(spec.Process.Env,
+			"NVIDIA_VISIBLE_DEVICES=all",
+			"NVIDIA_DRIVER_CAPABILITIES=all",
+		)
+	}
+
+	// Bind the compositor's Wayland socket if it exists. Conditional (like the
+	// PipeWire socket) so a device with no running compositor still starts the
+	// container — the socket simply isn't there yet (no-op-safe for Phase 1).
+	const waylandHostSock = "/run/wendyos/wayland-0"
+	if fi, err := os.Lstat(waylandHostSock); err == nil && fi.Mode()&os.ModeSocket != 0 {
+		spec.Mounts = append(spec.Mounts, Mount{
+			Destination: "/run/wendyos/wayland-0",
+			Source:      waylandHostSock,
+			Type:        "bind",
+			Options:     []string{"rbind", "nosuid", "noexec"},
+		})
+		spec.Process.Env = append(spec.Process.Env,
+			"XDG_RUNTIME_DIR=/run/wendyos",
+			"WAYLAND_DISPLAY=wayland-0",
+		)
+	}
+}
+
+// applyAdmin grants a container access to the wendy-agent's local control socket
+// (full gRPC, no mTLS). It is the entire trust boundary: only containers that
+// declare the admin entitlement get the socket, so anything with this can fully
+// control the device's apps. The mount is conditional on the host socket
+// existing so an app still starts if the agent socket is down (no-op-safe).
+func applyAdmin(spec *Spec) {
+	fi, err := os.Lstat(adminAgentSocketPath)
+	if err != nil || fi.Mode()&os.ModeSocket == 0 {
+		return
+	}
+	spec.Mounts = append(spec.Mounts, Mount{
+		Destination: "/run/wendy/agent.sock",
+		Source:      adminAgentSocketPath,
+		Type:        "bind",
+		Options:     []string{"rbind", "nosuid", "noexec"},
+	})
+	spec.Process.Env = append(spec.Process.Env, "WENDY_AGENT_SOCKET=/run/wendy/agent.sock")
+}
+
 // applyNetwork configures the network namespace.
 func applyNetwork(spec *Spec, ent appconfig.Entitlement) {
 	mode := ent.Mode
@@ -239,7 +324,7 @@ func applyNetwork(spec *Spec, ent appconfig.Entitlement) {
 		mode = "host"
 	}
 
-	if mode == "host" {
+	if mode == "host" || mode == "host-admin" {
 		// Remove the network namespace to use host networking.
 		var namespaces []LinuxNamespace
 		for _, ns := range spec.Linux.Namespaces {
@@ -264,10 +349,18 @@ func applyNetwork(spec *Spec, ent appconfig.Entitlement) {
 			}
 		}
 
-		// Add CAP_NET_ADMIN and CAP_NET_RAW for host networking.
-		spec.Process.Capabilities.Bounding = appendUnique(spec.Process.Capabilities.Bounding, "CAP_NET_ADMIN")
-		spec.Process.Capabilities.Effective = appendUnique(spec.Process.Capabilities.Effective, "CAP_NET_ADMIN")
-		spec.Process.Capabilities.Permitted = appendUnique(spec.Process.Capabilities.Permitted, "CAP_NET_ADMIN")
+		// SECURITY (WDY-1094): CAP_NET_ADMIN lets a container reconfigure host
+		// network interfaces, routes, and netfilter — a privilege that plain
+		// host networking (visibility: bind ports, see interfaces) does not
+		// require. Grant it only for the explicit "host-admin" opt-in, so the
+		// reconfiguration capability is separate from, and auditable apart from,
+		// the visibility entitlement. (CAP_NET_RAW for ping etc. comes from the
+		// baseline capability set, not from here, so it is unaffected.)
+		if mode == "host-admin" {
+			spec.Process.Capabilities.Bounding = appendUnique(spec.Process.Capabilities.Bounding, "CAP_NET_ADMIN")
+			spec.Process.Capabilities.Effective = appendUnique(spec.Process.Capabilities.Effective, "CAP_NET_ADMIN")
+			spec.Process.Capabilities.Permitted = appendUnique(spec.Process.Capabilities.Permitted, "CAP_NET_ADMIN")
+		}
 
 		// Mount a resolv.conf from the host so DNS works inside the container.
 		// The container has its own mount namespace, so its rootfs resolv.conf
@@ -418,6 +511,31 @@ var boardDetect = board.Detect
 // in-container enumerator returns nothing (WDY-1342). Behind a var so tests
 // can point it at a path that exists on the test host.
 var udevRuntimeDir = "/run/udev"
+
+// driGlobs are the DRM/KMS device-node patterns the display entitlement scans
+// to discover the render major(s) (typically 226). Behind a var so tests can
+// redirect into a tempdir.
+var driGlobs = []string{"/dev/dri/*"}
+
+// lookupRenderGID resolves the host "render" group GID, which owns
+// /dev/dri/renderD*. Behind a var so tests can stub it. Returns ok=false when
+// the host has no render group (then only the video GID is added).
+var lookupRenderGID = func() (uint32, bool) {
+	g, err := user.LookupGroup("render")
+	if err != nil {
+		return 0, false
+	}
+	gid, err := strconv.ParseUint(g.Gid, 10, 32)
+	if err != nil {
+		return 0, false
+	}
+	return uint32(gid), true
+}
+
+// adminAgentSocketPath is the host wendy-agent local control socket bind-mounted
+// into containers granted the admin entitlement. Behind a var so tests can point
+// it at a temp socket.
+var adminAgentSocketPath = "/run/wendy/agent.sock"
 
 // applyCamera adds camera/V4L2 device access, plus the additional kernel
 // device majors that libcamera (and on Jetson, nvargus/nvhost) require. The

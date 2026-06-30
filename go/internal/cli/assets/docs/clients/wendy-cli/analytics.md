@@ -1,4 +1,4 @@
-We track analytics for our CLI's usage through a self-hosted telemetry service at `https://cloud.wendy.sh/v1/telemetry/events`. This is [opt-out](./commands/analytics/disable.md), or through `WENDY_ANALYTICS=false` in your environment.
+We track analytics for our CLI's usage through a self-hosted telemetry service at `https://cloud.wendy.dev/v1/telemetry/events`. This is [opt-out](./commands/analytics/disable.md), or through `WENDY_ANALYTICS=false` in your environment.
 
 ## How it works
 
@@ -9,7 +9,7 @@ When analytics are enabled, each tracked event is serialised to JSON and sent vi
 Events are posted to:
 
 ```
-https://cloud.wendy.sh/v1/telemetry/events
+https://cloud.wendy.dev/v1/telemetry/events
 ```
 
 Each request has a 5-second timeout. Network errors are silently discarded — telemetry is strictly best-effort and never blocks normal CLI operation.

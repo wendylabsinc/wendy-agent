@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	tea "github.com/charmbracelet/bubbletea"
 	otelpb "github.com/wendylabsinc/wendy/go/proto/gen/otelpb"
 )
 
@@ -142,6 +143,67 @@ func TestFormatLogLinesPreservesInteriorBlankLines(t *testing.T) {
 	}
 	if !strings.HasSuffix(stripANSI(rows[2]), "b") {
 		t.Errorf("row 2 should carry body line b, got %q", stripANSI(rows[2]))
+	}
+}
+
+func TestDashboardLogsHorizontalScrollCropsAtOffset(t *testing.T) {
+	m := dashboardModel{
+		width:  60,
+		height: 12,
+		logs:   []string{"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"},
+	}
+
+	// At offset 0 the visible row begins at the start of the line.
+	rows := m.visibleLogRows()
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 visible row, got %d: %#v", len(rows), rows)
+	}
+	if got := stripANSI(rows[0]); !strings.HasPrefix(got, "0123") {
+		t.Fatalf("offset 0 should start at the line start, got %q", got)
+	}
+
+	// Panning right shifts the visible window further into the line, exposing
+	// content that was previously off-screen to the right.
+	m.logHOffset = 10
+	rows = m.visibleLogRows()
+	if got := stripANSI(rows[0]); !strings.HasPrefix(got, "ABC") {
+		t.Fatalf("offset 10 should start at 'A', got %q", got)
+	}
+}
+
+func TestDashboardLogsHorizontalScrollRightClampsToWidestLine(t *testing.T) {
+	m := dashboardModel{
+		width:  60,
+		height: 12,
+		logs:   []string{"short", strings.Repeat("x", 100)},
+	}
+
+	var model tea.Model = m
+	for range 50 { // far more presses than needed to reach the clamp
+		model, _ = model.Update(tea.KeyMsg{Type: tea.KeyRight})
+	}
+	dm := model.(dashboardModel)
+
+	if dm.logHOffset == 0 {
+		t.Fatalf("expected a non-zero horizontal offset after panning right")
+	}
+	if maxOff := dm.maxLogHOffset(); dm.logHOffset != maxOff {
+		t.Fatalf("expected horizontal offset clamped to %d, got %d", maxOff, dm.logHOffset)
+	}
+}
+
+func TestDashboardLogsHorizontalScrollLeftClampsAtZero(t *testing.T) {
+	m := dashboardModel{
+		width:      60,
+		height:     12,
+		logs:       []string{strings.Repeat("x", 100)},
+		logHOffset: 5,
+	}
+
+	model, _ := m.Update(tea.KeyMsg{Type: tea.KeyLeft})
+	dm := model.(dashboardModel)
+	if dm.logHOffset != 0 {
+		t.Fatalf("expected horizontal offset clamped to 0, got %d", dm.logHOffset)
 	}
 }
 

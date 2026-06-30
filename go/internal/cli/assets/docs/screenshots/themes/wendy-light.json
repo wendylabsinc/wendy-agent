@@ -1,0 +1,23 @@
+{
+  "name": "wendy-light",
+  "background": "#f5f5f5",
+  "foreground": "#0a0a0a",
+  "selection": "#d1d1d1",
+  "cursor": "#10b981",
+  "black": "#0a0a0a",
+  "brightBlack": "#737373",
+  "red": "#ef4444",
+  "brightRed": "#f87171",
+  "green": "#10b981",
+  "brightGreen": "#34d399",
+  "yellow": "#f59e0b",
+  "brightYellow": "#fbbf24",
+  "blue": "#0ea5e9",
+  "brightBlue": "#38bdf8",
+  "magenta": "#8b5cf6",
+  "brightMagenta": "#a78bfa",
+  "cyan": "#06b6d4",
+  "brightCyan": "#22d3ee",
+  "white": "#d4d4d4",
+  "brightWhite": "#fafafa"
+}

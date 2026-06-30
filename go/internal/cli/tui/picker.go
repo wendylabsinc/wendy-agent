@@ -4,10 +4,75 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/spinner"
 	bubbleTable "github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
+
+// newProbeSpinner builds the spinner that animates the Agent/OS columns while a
+// device probe is in flight. Its Style is intentionally empty so View() returns
+// a bare frame rune: the frame is written into plain table cells, which the
+// bubbles table truncates without ANSI awareness, so it must carry no escapes.
+func newProbeSpinner() spinner.Model {
+	return spinner.New(spinner.WithSpinner(spinner.Dot))
+}
+
+// ProbeState describes whether an agent version/OS probe for a device row is in
+// flight, succeeded, or failed. The zero value (ProbeNone) renders the version
+// columns exactly as before, so non-probing pickers are unaffected.
+type ProbeState int
+
+const (
+	ProbeNone    ProbeState = iota // no probe semantics: show version text as-is
+	ProbePending                   // probe in flight: show an animated spinner
+	ProbeOK                        // probe succeeded: show the version
+	ProbeFailed                    // probe failed: show the error glyph
+)
+
+// ProbeFailedGlyph marks a row whose agent probe failed and for which no version
+// is cached. It is rendered red by the view layer (see ColorizeProbeGlyphs); the
+// cell value itself is kept as a plain glyph so the table's non-ANSI-aware
+// truncation stays correct.
+const ProbeFailedGlyph = "▲"
+
+// probeFailedColored wraps the failure glyph in a red foreground that resets
+// only the foreground (\x1b[39m), not the whole SGR state. A full reset would
+// clear a selected row's background for the rest of the line; resetting just the
+// foreground keeps the highlight intact. 196 matches the red used elsewhere in
+// the device tables.
+const probeFailedColored = "\x1b[38;5;196m" + ProbeFailedGlyph + "\x1b[39m"
+
+// ColorizeProbeGlyphs colors the (plain-text) failure glyph red in an
+// already-rendered table view. The glyph is kept plain inside table cells so the
+// table's non-ANSI-aware truncation stays correct; color is applied here, after
+// layout, so it never affects column widths.
+func ColorizeProbeGlyphs(view string) string {
+	return strings.ReplaceAll(view, ProbeFailedGlyph, probeFailedColored)
+}
+
+// probeColumnValue renders an Agent/OS cell for the given probe state. While
+// pending it shows the current spinner frame; on failure with no cached version
+// it shows the error glyph; otherwise it shows the version text (a cached
+// version is preserved even after a later transient failure).
+func probeColumnValue(state ProbeState, version, frame string) string {
+	switch state {
+	case ProbePending:
+		return frame
+	case ProbeFailed:
+		if version == "" {
+			return ProbeFailedGlyph
+		}
+	}
+	return version
+}
+
+// formatOSNameVersion joins an OS/distro name and its version into a single
+// display string (e.g. "ubuntu" + "24.04" -> "ubuntu 24.04"). Either part may
+// be empty; the result never has leading or trailing space.
+func formatOSNameVersion(os, version string) string {
+	return strings.TrimSpace(strings.TrimSpace(os) + " " + strings.TrimSpace(version))
+}
 
 // PickerItem represents a selectable row in the device picker.
 type PickerItem struct {
@@ -21,9 +86,26 @@ type PickerItem struct {
 	USB          string // non-empty when the device is connected over USB
 	Address      string
 	AgentVersion string
+	OS           string // distro/OS name (e.g. "ubuntu"); shown alongside OSVersion
 	OSVersion    string
 	Provisioned  string // "Provisioned" or "Unprovisioned" when known, empty otherwise
 	Hint         string // optional footer text shown when this item is highlighted
+
+	// Probe reflects whether the agent version/OS probe for this row is in
+	// flight (ProbePending), done (ProbeOK), or failed (ProbeFailed). The zero
+	// value (ProbeNone) renders the version columns verbatim.
+	Probe ProbeState
+	// ProbeFrame is the spinner frame shown in the Agent/OS columns while
+	// Probe == ProbePending. The owning model refreshes it on every spinner
+	// tick; it is ignored for every other probe state.
+	ProbeFrame string
+
+	// Section, when non-empty, groups this item under a non-selectable header
+	// row bearing the section name. Sections are rendered in the order they
+	// first appear after sorting, so callers control grouping order via SortKey.
+	// When no visible item sets Section, the picker renders and navigates
+	// exactly as it does without sections.
+	Section string
 
 	// DedupKey is used for deduplication. If empty, Name is used.
 	// Items with the same DedupKey (case-insensitive) are merged via MergeItem.
@@ -94,10 +176,16 @@ type PickerModel struct {
 	// whose items are free-form text (e.g. WiFi SSIDs).
 	Filterable bool
 
-	filter       string
-	items        []PickerItem
-	seenIdx      map[string]int // dedup key -> index in items
+	filter  string
+	items   []PickerItem
+	seenIdx map[string]int // dedup key -> index in items
+	// rowItem maps each table row to its index in the visible-items slice, or
+	// -1 when the row is a non-selectable section header. When no item sets a
+	// Section this is the identity mapping, so behavior matches the headerless
+	// picker exactly.
+	rowItem      []int
 	table        BubbleTable
+	spinner      spinner.Model // animates Agent/OS cells while probes are pending
 	columns      []pickerColumnDef
 	fixedColumns bool
 	legend       string // optional glyph legend rendered under the table
@@ -121,6 +209,7 @@ func NewPicker() PickerModel {
 		Title:        "Select a device",
 		seenIdx:      make(map[string]int),
 		table:        newPickerTable(),
+		spinner:      newProbeSpinner(),
 		columns:      pickerDeviceColumnDefs,
 		fixedColumns: true,
 		legend:       DeviceTableLegend,
@@ -135,6 +224,7 @@ func NewPickerWithTitle(title string) PickerModel {
 		Title:    title,
 		seenIdx:  make(map[string]int),
 		table:    newPickerTable(),
+		spinner:  newProbeSpinner(),
 		scanning: true,
 	}
 	m.refreshTable()
@@ -154,10 +244,30 @@ func NewPickerWithTitleAndColumns(title string, columns []PickerColumn) PickerMo
 	return m
 }
 
-func (m PickerModel) Init() tea.Cmd { return nil }
+func (m PickerModel) Init() tea.Cmd { return m.spinner.Tick }
+
+// anyProbePending reports whether any item still has a probe in flight, i.e.
+// whether the spinner has anything to animate.
+func (m PickerModel) anyProbePending() bool {
+	for i := range m.items {
+		if m.items[i].Probe == ProbePending {
+			return true
+		}
+	}
+	return false
+}
 
 func (m PickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case spinner.TickMsg:
+		var cmd tea.Cmd
+		m.spinner, cmd = m.spinner.Update(msg)
+		// Re-render so pending rows pick up the new frame; skip the rebuild
+		// when nothing is animating, but keep the tick loop alive cheaply.
+		if m.anyProbePending() {
+			m.refreshTable()
+		}
+		return m, cmd
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
@@ -170,17 +280,16 @@ func (m PickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch {
 		case key == "enter":
 			visible := m.visibleItems()
-			cursor := m.table.Cursor()
-			if len(visible) > 0 && cursor >= 0 && cursor < len(visible) {
-				item := visible[cursor]
+			if idx := m.itemIndexForRow(m.table.Cursor()); idx >= 0 && idx < len(visible) {
+				item := visible[idx]
 				m.selected = &item
 				return m, tea.Quit
 			}
 		case key == "d" && !m.Filterable:
 			if m.OnSetDefault != nil {
-				cursor := m.table.Cursor()
-				if len(m.items) > 0 && cursor >= 0 && cursor < len(m.items) {
-					item := m.items[cursor]
+				visible := m.visibleItems()
+				if idx := m.itemIndexForRow(m.table.Cursor()); idx >= 0 && idx < len(visible) {
+					item := visible[idx]
 					key := strings.ToLower(item.DedupKey)
 					if key == "" {
 						key = strings.ToLower(item.Name)
@@ -232,8 +341,16 @@ func (m PickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		default:
+			prev := m.table.Cursor()
 			var cmd tea.Cmd
 			m.table, cmd = m.table.Update(msg)
+			// Skip over non-selectable section headers in the direction of
+			// travel so the cursor never rests on one.
+			dir := 1
+			if m.table.Cursor() < prev {
+				dir = -1
+			}
+			m.snapCursorToSelectable(dir)
 			return m, cmd
 		}
 
@@ -335,14 +452,13 @@ func (m PickerModel) View() string {
 		return sb.String()
 	}
 
-	sb.WriteString(m.tableView() + "\n")
+	sb.WriteString(ColorizeProbeGlyphs(m.tableView()) + "\n")
 
 	if m.legend != "" {
 		sb.WriteString(m.viewLine(pickerHint.Render("  "+m.legend)) + "\n")
 	}
 
-	cursor := m.table.Cursor()
-	if cursor >= 0 && cursor < len(visible) && visible[cursor].Insecure {
+	if idx := m.itemIndexForRow(m.table.Cursor()); idx >= 0 && idx < len(visible) && visible[idx].Insecure {
 		sb.WriteString(m.viewLine(pickerInsecure.Render("  ⚠  Connection is not secured with mTLS. PKI support is coming soon.")) + "\n")
 	}
 
@@ -362,11 +478,11 @@ func (m PickerModel) View() string {
 
 func (m PickerModel) selectedHint() string {
 	visible := m.visibleItems()
-	cursor := m.table.Cursor()
-	if cursor < 0 || cursor >= len(visible) {
+	idx := m.itemIndexForRow(m.table.Cursor())
+	if idx < 0 || idx >= len(visible) {
 		return ""
 	}
-	return strings.TrimSpace(visible[cursor].Hint)
+	return strings.TrimSpace(visible[idx].Hint)
 }
 
 func (m PickerModel) viewLine(line string) string {
@@ -495,14 +611,14 @@ var pickerDeviceColumnDefs = []pickerColumnDef{
 		title:    "Agent",
 		minWidth: 7,
 		value: func(item PickerItem) string {
-			return item.AgentVersion
+			return probeColumnValue(item.Probe, item.AgentVersion, item.ProbeFrame)
 		},
 	},
 	{
 		title:    "OS",
 		minWidth: 4,
 		value: func(item PickerItem) string {
-			return item.OSVersion
+			return probeColumnValue(item.Probe, formatOSNameVersion(item.OS, item.OSVersion), item.ProbeFrame)
 		},
 	},
 	{
@@ -538,10 +654,57 @@ func (m PickerModel) visibleItems() []PickerItem {
 
 func (m *PickerModel) currentCursorKey() string {
 	visible := m.visibleItems()
-	if cursor := m.table.Cursor(); cursor >= 0 && cursor < len(visible) {
-		return strings.ToLower(pickerItemKey(visible[cursor]))
+	if idx := m.itemIndexForRow(m.table.Cursor()); idx >= 0 && idx < len(visible) {
+		return strings.ToLower(pickerItemKey(visible[idx]))
 	}
 	return ""
+}
+
+// itemIndexForRow maps a table row index to its index in the visible-items
+// slice, or returns -1 when the row is a section header or out of range.
+func (m PickerModel) itemIndexForRow(row int) int {
+	if row < 0 || row >= len(m.rowItem) {
+		return -1
+	}
+	return m.rowItem[row]
+}
+
+// rowForItemIndex maps a visible-items index back to its table row, or -1 if
+// the item has no row (should not happen for in-range indices).
+func (m PickerModel) rowForItemIndex(itemIdx int) int {
+	for row, idx := range m.rowItem {
+		if idx == itemIdx {
+			return row
+		}
+	}
+	return -1
+}
+
+// snapCursorToSelectable nudges the cursor off a section-header row onto the
+// nearest selectable row, searching first in dir (+1 down, -1 up) and then the
+// other way when the list edge is reached. It is a no-op when the cursor is
+// already on a selectable row, which is always the case for headerless pickers.
+func (m *PickerModel) snapCursorToSelectable(dir int) {
+	n := len(m.rowItem)
+	if n == 0 {
+		return
+	}
+	cursor := m.table.Cursor()
+	if cursor >= 0 && cursor < n && m.rowItem[cursor] >= 0 {
+		return
+	}
+	for i := cursor; i >= 0 && i < n; i += dir {
+		if m.rowItem[i] >= 0 {
+			m.table.SetCursor(i)
+			return
+		}
+	}
+	for i := cursor; i >= 0 && i < n; i -= dir {
+		if m.rowItem[i] >= 0 {
+			m.table.SetCursor(i)
+			return
+		}
+	}
 }
 
 func (m *PickerModel) refreshTable() {
@@ -549,6 +712,15 @@ func (m *PickerModel) refreshTable() {
 }
 
 func (m *PickerModel) refreshTableWithCursorKey(cursorKey string) {
+	// Stamp the current spinner frame onto pending rows so the Agent/OS columns
+	// animate as the table is rebuilt.
+	frame := m.spinner.View()
+	for i := range m.items {
+		if m.items[i].Probe == ProbePending {
+			m.items[i].ProbeFrame = frame
+		}
+	}
+
 	// Sort items for a stable, predictable display order. When SortKey is set,
 	// it takes precedence; otherwise sort by name (using DedupKey if present).
 	sort.SliceStable(m.items, func(i, j int) bool {
@@ -574,7 +746,9 @@ func (m *PickerModel) refreshTableWithCursorKey(cursorKey string) {
 
 	visible := m.visibleItems()
 	hasDefaultCol := m.OnSetDefault != nil
-	cols, rows := pickerTableDataForColumns(visible, m.DefaultKey, hasDefaultCol, m.columns, m.fixedColumns)
+	cols, itemRows := pickerTableDataForColumns(visible, m.DefaultKey, hasDefaultCol, m.columns, m.fixedColumns)
+	rows, rowItem := withSectionHeaders(visible, itemRows, len(cols))
+	m.rowItem = rowItem
 	m.table.SetRows(nil)
 	m.table.SetColumns(cols)
 	m.table.SetRows(rows)
@@ -592,12 +766,14 @@ func (m *PickerModel) refreshTableWithCursorKey(cursorKey string) {
 			}
 		}
 		if visIdx >= 0 {
-			m.table.SetCursor(visIdx)
+			m.table.SetCursor(m.rowForItemIndex(visIdx))
 		} else if m.table.Cursor() < 0 {
 			m.table.SetCursor(0)
 		} else if m.table.Cursor() >= len(rows) {
 			m.table.SetCursor(len(rows) - 1)
 		}
+		// Keep the cursor off a leading/inherited section header.
+		m.snapCursorToSelectable(1)
 	}
 
 	m.table.SetWidth(PickerTableWidth(m.table.Columns()))
@@ -609,6 +785,61 @@ func pickerItemKey(item PickerItem) string {
 		return item.DedupKey
 	}
 	return item.Name
+}
+
+// withSectionHeaders interleaves non-selectable section-header rows ahead of
+// the first item of each section. It returns the full row set (headers + item
+// rows) and a parallel rowItem slice mapping each row to its visible-items
+// index (-1 for headers). When no visible item sets a Section, the item rows
+// are returned unchanged with an identity mapping, preserving the headerless
+// picker's exact behavior.
+func withSectionHeaders(visible []PickerItem, itemRows []bubbleTable.Row, ncols int) ([]bubbleTable.Row, []int) {
+	hasSection := false
+	for _, item := range visible {
+		if item.Section != "" {
+			hasSection = true
+			break
+		}
+	}
+	if !hasSection {
+		rowItem := make([]int, len(itemRows))
+		for i := range rowItem {
+			rowItem[i] = i
+		}
+		return itemRows, rowItem
+	}
+
+	rows := make([]bubbleTable.Row, 0, len(itemRows)+2)
+	rowItem := make([]int, 0, len(itemRows)+2)
+	currentSection := ""
+	for i, item := range visible {
+		if i >= len(itemRows) {
+			break
+		}
+		if item.Section != "" && item.Section != currentSection {
+			currentSection = item.Section
+			rows = append(rows, sectionHeaderRow(currentSection, ncols))
+			rowItem = append(rowItem, -1)
+		}
+		rows = append(rows, itemRows[i])
+		rowItem = append(rowItem, i)
+	}
+	return rows, rowItem
+}
+
+// sectionHeaderRow builds a non-selectable header row whose first column shows
+// the section label and whose remaining columns are blank.
+//
+// The label is intentionally plain text, not a lipgloss-styled string: the
+// underlying bubbles table truncates every cell with runewidth.Truncate, which
+// is not ANSI-aware. A styled value's escape bytes count toward the column
+// width, so truncation cuts inside the escape sequence and the terminal renders
+// garbage. The "── " rule prefix keeps the row readable as a header without
+// embedding color.
+func sectionHeaderRow(label string, ncols int) bubbleTable.Row {
+	row := make(bubbleTable.Row, max(ncols, 1))
+	row[0] = "── " + label
+	return row
 }
 
 func pickerActiveColumnsForDefs(items []PickerItem, defs []pickerColumnDef, fixed bool) []pickerColumnDef {

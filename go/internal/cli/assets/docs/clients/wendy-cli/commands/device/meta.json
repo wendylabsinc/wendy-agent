@@ -1,0 +1,22 @@
+{
+  "pages": [
+    "apps",
+    "logs",
+    "dashboard",
+    "top",
+    "info",
+    "set-default",
+    "unset-default",
+    "update",
+    "volumes",
+    "wifi",
+    "bluetooth",
+    "---Reference---",
+    "enroll",
+    "setup",
+    "get-default",
+    "provision",
+    "telemetry-stream",
+    "version"
+  ]
+}

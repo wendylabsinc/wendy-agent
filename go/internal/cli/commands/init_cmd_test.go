@@ -229,6 +229,56 @@ func TestResolveTemplateLanguage_RejectsUnavailableTemplateLanguage(t *testing.T
 	}
 }
 
+func TestTemplateTargetMatch_DefaultsToWendyOSOnly(t *testing.T) {
+	if !templateTargetMatch(repoMetaTemplate{Name: "simple-api"}, targetWendyOS) {
+		t.Fatal("template without targets should match WendyOS")
+	}
+	if templateTargetMatch(repoMetaTemplate{Name: "simple-api"}, targetDarwin) {
+		t.Fatal("template without targets should not match Darwin")
+	}
+}
+
+func TestTemplateTargetMatch_AcceptsExplicitDarwinTarget(t *testing.T) {
+	tmpl := repoMetaTemplate{Name: "mac-llm", Targets: []string{targetDarwin}}
+	if !templateTargetMatch(tmpl, targetDarwin) {
+		t.Fatal("template with darwin target should match Darwin")
+	}
+	if templateTargetMatch(tmpl, targetWendyOS) {
+		t.Fatal("template with only darwin target should not match WendyOS")
+	}
+}
+
+func TestResolveTemplateLanguage_DarwinRequiresSwift(t *testing.T) {
+	meta := &repoMeta{
+		Templates: []repoMetaTemplate{
+			{Name: "mac-llm", Languages: []string{langSwift}, Targets: []string{targetDarwin}},
+		},
+		Languages: []repoMetaLanguage{
+			{Key: langPython, Name: "Python"},
+			{Key: langSwift, Name: "Swift"},
+		},
+	}
+
+	language, err := resolveTemplateLanguage(targetDarwin, "mac-llm", meta, initOptions{})
+	if err != nil {
+		t.Fatalf("resolveTemplateLanguage: %v", err)
+	}
+	if language != langSwift {
+		t.Fatalf("language = %q, want %q", language, langSwift)
+	}
+
+	_, err = resolveTemplateLanguage(targetDarwin, "mac-llm", meta, initOptions{
+		language:    langPython,
+		languageSet: true,
+	})
+	if err == nil {
+		t.Fatal("expected Python Darwin template language to fail")
+	}
+	if got, want := err.Error(), `darwin templates require swift`; got != want {
+		t.Fatalf("error = %q, want %q", got, want)
+	}
+}
+
 func TestResolveTemplateLanguage_AcceptsAvailableTemplateLanguage(t *testing.T) {
 	meta := &repoMeta{
 		Templates: []repoMetaTemplate{
@@ -352,6 +402,66 @@ func TestInitCommand_NonInteractiveFlagsCreateProject(t *testing.T) {
 	}
 	if len(expectedEntitlements) != 0 {
 		t.Fatalf("missing entitlements after init: %v", expectedEntitlements)
+	}
+}
+
+// NOTE: Native Mac end-to-end deployment requires a Wendy Agent for Mac target
+// in CI. Until that exists, keep Darwin coverage at the CLI/config boundary here
+// and validate real Mac deploys manually with the companion templates PR.
+func TestInitCommand_NonInteractiveDarwinCreatesNativeSwiftProject(t *testing.T) {
+	tempDir := t.TempDir()
+	prevWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chdir(prevWD)
+	})
+	if err := os.Chdir(tempDir); err != nil {
+		t.Fatalf("Chdir: %v", err)
+	}
+
+	cmd := newInitCmd()
+	cmd.SetArgs([]string{
+		"--app-id", "mac-app",
+		"--target", "macos",
+		"--language", "swift",
+		"--assistant", "skip",
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	cfg, err := appconfig.LoadFromFile(filepath.Join(tempDir, "wendy.json"))
+	if err != nil {
+		t.Fatalf("LoadFromFile: %v", err)
+	}
+
+	if cfg.Platform != appconfig.PlatformDarwin {
+		t.Fatalf("Platform = %q, want %q", cfg.Platform, appconfig.PlatformDarwin)
+	}
+	if cfg.Language != langSwift {
+		t.Fatalf("Language = %q, want %q", cfg.Language, langSwift)
+	}
+	if len(cfg.Entitlements) != 0 {
+		t.Fatalf("Entitlements = %+v, want none for native macOS", cfg.Entitlements)
+	}
+	if _, err := os.Stat(filepath.Join(tempDir, "Package.swift")); err != nil {
+		t.Fatalf("expected Package.swift: %v", err)
+	}
+}
+
+func TestBuildInitEntitlementsFromFlags_RejectsDarwinEntitlements(t *testing.T) {
+	_, err := buildInitEntitlementsFromFlags(targetDarwin, initOptions{
+		entitlementsSet: true,
+		entitlements:    []string{"network"},
+	})
+	if err == nil {
+		t.Fatal("expected Darwin entitlements to fail")
+	}
+	if got, want := err.Error(), `darwin apps do not support WendyOS container entitlements`; got != want {
+		t.Fatalf("error = %q, want %q", got, want)
 	}
 }
 

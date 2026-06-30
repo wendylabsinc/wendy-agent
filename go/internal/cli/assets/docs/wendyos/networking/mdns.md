@@ -113,6 +113,8 @@ dns-sd -L "wendyos-my-device" _wendyos._udp local.
 
 The wendy-agent Go code (`internal/shared/discovery/`) uses `_wendyos._udp` as the service type constant. On Linux it prefers `avahi-browse -rptl _wendyos._udp` when Avahi is installed; otherwise it falls back to the `hashicorp/mdns` library which queries each multicast-capable interface individually. On macOS it uses `dns-sd -B` to browse and `dns-sd -L` to resolve.
 
+**CLI-side note:** The shipped CLI binary is built with `CGO_ENABLED=0`, so it cannot use nss-mdns to resolve `.local` names. Instead, it performs its own mDNS browse for `.local` hostnames when connecting. Set `WENDY_MDNS_DEBUG=1` to log browse failures, or `WENDY_MDNS_TIMEOUT` (1s–30s) to adjust the timeout.
+
 Both the primary `avahi-browse` path and the `hashicorp/mdns` fallback path parse all TXT records into a key→value map, including the `tls` record. A device that advertises `tls=true` has `IsMTLS` set to `true` and is contacted on the mTLS port (50052). The fallback path also resolves `wendyosdevice` and `displayname` TXT records, matching the behaviour of the primary path.
 
 IPv6 link-local addresses returned by mDNS are annotated with the zone ID (`%<ifname>`) so that the caller can use them directly in `net.Dial()` calls.

@@ -288,7 +288,7 @@ Add it to your `template.schema.json` to get editor validation:
 
 ```json
 {
-  "$schema": "https://wendy.sh/schemas/template.schema.json",
+  "$schema": "https://wendy.dev/schemas/template.schema.json",
   "phases": [ ... ]
 }
 ```

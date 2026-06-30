@@ -83,6 +83,35 @@ func TestSave_And_Load(t *testing.T) {
 	}
 }
 
+func TestSave_And_Load_CompletionFields(t *testing.T) {
+	overrideHome(t)
+
+	original := &Config{
+		CompletionInstalled:       true,
+		CompletionPromptDismissed: true,
+		LastCompletionPromptCheck: "2026-06-27T12:00:00Z",
+	}
+
+	if err := Save(original); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	loaded, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	if !loaded.CompletionInstalled {
+		t.Error("CompletionInstalled = false, want true")
+	}
+	if !loaded.CompletionPromptDismissed {
+		t.Error("CompletionPromptDismissed = false, want true")
+	}
+	if loaded.LastCompletionPromptCheck != original.LastCompletionPromptCheck {
+		t.Errorf("LastCompletionPromptCheck = %q, want %q", loaded.LastCompletionPromptCheck, original.LastCompletionPromptCheck)
+	}
+}
+
 func TestAddAuth_NewEntry(t *testing.T) {
 	cfg := &Config{}
 	auth := AuthConfig{

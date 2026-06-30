@@ -1,0 +1,10 @@
+{
+    "appId": "sh.wendy.ci.python-resources",
+    "version": "1.0.0",
+    "language": "python",
+    "resources": {
+        "memory": "128Mi",
+        "cpus": "0.5",
+        "pids": 64
+    }
+}

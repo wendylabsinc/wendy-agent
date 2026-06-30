@@ -117,6 +117,12 @@ type LinuxResources struct {
 	Devices []LinuxDeviceCgroup `json:"devices,omitempty"`
 	Memory  *LinuxMemory        `json:"memory,omitempty"`
 	CPU     *LinuxCPU           `json:"cpu,omitempty"`
+	Pids    *LinuxPids          `json:"pids,omitempty"`
+}
+
+// LinuxPids contains the cgroup pids-controller constraint.
+type LinuxPids struct {
+	Limit int64 `json:"limit"`
 }
 
 // LinuxDeviceCgroup represents a device access rule.
@@ -288,6 +294,25 @@ func defaultSeccomp() *LinuxSeccomp {
 		Syscalls: []LinuxSyscall{
 			{
 				Names:    []string{"ptrace", "unshare"},
+				Action:   ActErrno,
+				ErrnoRet: &eperm,
+			},
+			{
+				// SECURITY (WDY-1012): deny kernel-attack-surface syscalls that
+				// a normal application container never needs — kernel module
+				// loading and kexec. These are pure host-escape primitives;
+				// blocking them here is defense-in-depth on top of the capability
+				// gating that already withholds CAP_SYS_MODULE / CAP_SYS_BOOT.
+				// (create_module is long-removed from Linux but is listed so the
+				// filter denies it on any kernel that still exposes it.)
+				Names: []string{
+					"init_module",
+					"finit_module",
+					"delete_module",
+					"create_module",
+					"kexec_load",
+					"kexec_file_load",
+				},
 				Action:   ActErrno,
 				ErrnoRet: &eperm,
 			},

@@ -18,6 +18,7 @@ import (
 type fakeContainerd struct {
 	mockContainerdClient
 	missingFn    func(ctx context.Context, hashes [][32]byte) ([][32]byte, error)
+	presentFn    func(ctx context.Context, diffIDs []string) (map[string]int64, error)
 	stageChunkFn func(ctx context.Context, h [32]byte, data []byte) error
 	stagedChunks []stagedChunk
 }
@@ -39,6 +40,14 @@ func (f *fakeContainerd) MissingChunks(ctx context.Context, hashes [][32]byte) (
 	return hashes, nil
 }
 
+// PresentLayers delegates to presentFn when set; otherwise reports nothing present.
+func (f *fakeContainerd) PresentLayers(ctx context.Context, diffIDs []string) (map[string]int64, error) {
+	if f.presentFn != nil {
+		return f.presentFn(ctx, diffIDs)
+	}
+	return nil, nil
+}
+
 // StageChunk records the (hash, data) pair and delegates to stageChunkFn when set.
 func (f *fakeContainerd) StageChunk(ctx context.Context, h [32]byte, data []byte) error {
 	f.stagedChunks = append(f.stagedChunks, stagedChunk{hash: h, data: data})
@@ -46,6 +55,13 @@ func (f *fakeContainerd) StageChunk(ctx context.Context, h [32]byte, data []byte
 		return f.stageChunkFn(ctx, h, data)
 	}
 	return nil
+}
+
+func (f *fakeContainerd) GetResourceStats(context.Context) ([]*agentpb.ResourceContainerStats, error) {
+	return nil, nil
+}
+func (f *fakeContainerd) GetListeningPorts(context.Context, string) ([]*agentpb.PortEntry, error) {
+	return nil, nil
 }
 
 func TestQueryChunksReturnsMissing(t *testing.T) {
@@ -65,6 +81,31 @@ func TestQueryChunksReturnsMissing(t *testing.T) {
 	}
 	if len(resp.GetMissingHashes()) != 1 || !bytes.Equal(resp.GetMissingHashes()[0], h1) {
 		t.Fatalf("expected only h1 missing, got %v", resp.GetMissingHashes())
+	}
+}
+
+func TestQueryLayersReportsPresent(t *testing.T) {
+	fake := newFakeContainerd()
+	fake.presentFn = func(_ context.Context, diffIDs []string) (map[string]int64, error) {
+		// Pretend only the first requested layer is present, with a known size.
+		if len(diffIDs) == 0 {
+			return nil, nil
+		}
+		return map[string]int64{diffIDs[0]: 4096}, nil
+	}
+	svc := NewContainerService(zap.NewNop(), fake)
+
+	resp, err := svc.QueryLayers(context.Background(), &agentpb.QueryLayersRequest{
+		DiffIds: []string{"sha256:aaa", "sha256:bbb"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.GetPresent()) != 1 {
+		t.Fatalf("expected 1 present layer, got %d", len(resp.GetPresent()))
+	}
+	if got := resp.GetPresent()[0]; got.GetDiffId() != "sha256:aaa" || got.GetSize() != 4096 {
+		t.Fatalf("present layer mismatch: got %q size %d", got.GetDiffId(), got.GetSize())
 	}
 }
 

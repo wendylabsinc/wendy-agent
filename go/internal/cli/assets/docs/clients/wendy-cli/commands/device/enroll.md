@@ -2,6 +2,10 @@
 
 Enrolls the connected device with Wendy Cloud (or a local [pki-core](../../../../pki/)) and provisions it with mTLS certificates.
 
+> **Note:** `wendy device enroll` is an advanced command and is not listed in
+> `wendy device --help`. It remains fully functional. For most setups, use
+> [`wendy device setup`](./setup.md) instead.
+
 ## Usage
 
 ```sh
@@ -10,7 +14,7 @@ wendy device enroll [--name <name>] [--cloud-grpc <endpoint>] [flags]
 
 ## Description
 
-`wendy device enroll` creates an enrollment token using your stored auth session, then calls `StartProvisioning` on the connected agent so it fetches its certificate. Run [`wendy auth login`](../auth/login.md) first.
+`wendy device enroll` creates an enrollment token using your stored auth session, then calls `StartProvisioning` on the connected agent so it fetches its certificate. Run [`wendy cloud login`](../cloud/login.md) first.
 
 The enrolled device is registered in Wendy Cloud under a human-readable **name**. The name is fixed at enrollment time and cannot be changed afterward, so the command resolves it as follows:
 

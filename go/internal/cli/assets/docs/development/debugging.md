@@ -51,7 +51,10 @@ All environment variables are read at startup. Restart the agent after changing 
 |---|---|---|
 | `WENDY_DEBUG` | _(unset)_ | Set to any value to enable development-mode logging (verbose, human-readable) |
 | `WENDY_TLS_DEBUG` | _(unset)_ | Set to any value to log TLS handshake details for debugging mTLS connection issues |
+| `WENDY_MDNS_DEBUG` | _(unset)_ | Set to any value to log mDNS query failures during discovery |
+| `WENDY_MDNS_TIMEOUT` | `4s` | Timeout for mDNS browse fallback on Linux/Windows hosts (range: 1s–30s) |
 | `WENDY_CONFIG_PATH` | `/etc/wendy-agent` | Directory for provisioning certificates and config |
+| `WENDY_AGENT_HOST` | `::` | Host address for the plaintext gRPC server (Swift agent only; accepted values: `127.0.0.1`, `::1`, `localhost`) |
 | `WENDY_AGENT_PORT` | `50051` | Port for the plaintext gRPC server (pre-provisioning only) |
 | `WENDY_CONTAINERD_ADDR` | _(containerd default)_ | Unix socket path for the containerd client |
 | `WENDY_REGISTRY_ADDR` | _(internal default)_ | Address for the embedded OCI registry |
@@ -77,8 +80,9 @@ The agent runs different gRPC servers depending on provisioning state:
 | `50052` (default, `agentPort + 1`) | mTLS gRPC | After the device is provisioned |
 | `4317` | OTEL gRPC | Always |
 | `4318` | OTEL HTTP | Always |
+| `/run/wendy/agent.sock` | Plaintext gRPC (unix socket) | Always; gated by `admin` entitlement mount |
 
-Once a device is provisioned, the plaintext port is shut down with `GracefulStop()`. If you are connecting to a provisioned device and getting connection-refused errors on port 50051, check whether the device is already provisioned (look for certificates in `WENDY_CONFIG_PATH`).
+Once a device is provisioned, the plaintext port is shut down with `GracefulStop()`. The local unix socket serves the full gRPC API with no authentication; access is gated by the `admin` entitlement which bind-mounts the socket into entitled containers only. If you are connecting to a provisioned device and getting connection-refused errors on port 50051, check whether the device is already provisioned (look for certificates in `WENDY_CONFIG_PATH`).
 
 ## mTLS Authentication
 
@@ -183,6 +187,8 @@ sudo systemctl status avahi-daemon
 
 The agent advertises itself via Avahi using the service definition in `/etc/avahi/services/wendy-agent.service`.
 
+The CLI itself performs an mDNS browse on Linux hosts (shipped binaries are CGO_ENABLED=0 and cannot use nss-mdns). If discovery fails, the CLI prints hints about `avahi-daemon` and UDP port 5353. Set `WENDY_MDNS_DEBUG=1` to log mDNS query failures, or `WENDY_MDNS_TIMEOUT=8s` to extend the browse window on slow networks.
+
 ### mTLS handshake fails after re-provisioning
 
 Old mTLS state may be cached. Refresh certificates on the CLI side:
@@ -207,12 +213,18 @@ Check the device clock:
 ssh wendy@<device-ip> 'timedatectl status'
 ```
 
-If NTP is not synchronized, wait for NTP sync or force it:
+If NTP is not synchronized, you can:
 
-```sh
-# Force NTP sync (if using systemd-timesyncd)
-sudo systemctl restart systemd-timesyncd
-```
+1. **Wait for NTP sync** or force it:
+   ```sh
+   sudo systemctl restart systemd-timesyncd
+   ```
+
+2. **Use Roughtime** — The CLI can broadcast cryptographically-signed time to nearby WendyOS devices:
+   ```sh
+   wendy device sync-time
+   ```
+   This queries public Roughtime servers and multicasts the verified timestamp. Devices on the same network receive it and advance their clocks.
 
 The agent logs a warning at startup if it detects clock skew. For TLS handshake details, run the CLI with:
 

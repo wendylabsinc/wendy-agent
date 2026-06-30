@@ -308,7 +308,7 @@ func queryInterface(ctx context.Context, iface *net.Interface, timeout time.Dura
 	params.Timeout = timeout
 	params.Logger = silentLogger
 
-	_ = mdns.Query(params)
+	logMDNSQueryErr(iface.Name, mdns.Query(params))
 	close(entriesCh)
 	<-done
 

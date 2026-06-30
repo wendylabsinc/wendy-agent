@@ -1,0 +1,31 @@
+---
+title: Robotics
+description: Build, deploy, and operate ROS 2 robots with WendyOS — standard, upstream ROS 2 from prototype to production fleet.
+---
+
+WendyOS is built for ROS 2 robots — and takes them all the way from a prototype on
+your desk to a fleet in production. It runs **standard, upstream ROS 2** in
+containers, deploys to NVIDIA Jetson and Raspberry Pi with one command, and lets you
+inspect, debug, and update everything remotely over one secure connection.
+
+## Why WendyOS for ROS 2
+
+- **Open and standard.** Real upstream ROS 2 in stock containers, with your choice of
+  middleware — CycloneDDS (default), Fast DDS, RTI Connext, or Gurum. Apache-2.0, no
+  lock-in.
+- **Deploy in one command.** Ship a containerized ROS 2 stack to a device with
+  `wendy run` — no flashing, no `source /opt/ros/<distro>/setup.bash`, no toolchain
+  setup.
+- **Production from day one.** Over-the-air updates, multi-device fleets, and
+  fine-grained entitlements that scope each app's access to GPU, camera, audio, and
+  storage.
+
+## The workflow
+
+1. **Deploy** — declare ROS 2 in your `wendy.json` with a `frameworks.ros2` block and
+   ship the stack. See [Multi-app deployments](/docs/guides/multi-app-deployments).
+2. **Operate** — inspect nodes and topics, echo messages, set parameters, and record
+   rosbags on the running device with no SSH. See
+   [Wendy for ROS 2](/docs/integrations/ros2).
+3. **Visualize** — bridge live topics into Foxglove Studio for plots and panels. See
+   [Wendy for Foxglove](/docs/integrations/foxglove).

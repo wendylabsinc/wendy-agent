@@ -1,3 +1,10 @@
+> **Tip:** [`wendy cloud login`](../cloud/login.md) is the recommended entry
+> point for authenticating with Wendy Cloud. This page documents
+> `wendy auth login`, which behaves identically and is kept for backward
+> compatibility but is no longer listed in the top-level help. The advanced
+> session commands (`use`, `default`, `refresh-certs`) remain under
+> `wendy auth`.
+
 Authenticates the CLI with Wendy Cloud. Opens a browser to the cloud dashboard, waits for the OAuth callback, generates a key pair and CSR, then issues and stores an mTLS certificate. Subsequent commands that connect to provisioned devices use this certificate automatically.
 
 After displaying the login URL, the CLI also prints a QR code in the terminal. You can scan this QR code with the **Wendy iOS app** to authenticate on your phone instead of (or in addition to) the browser flow.

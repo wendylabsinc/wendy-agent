@@ -31,10 +31,8 @@ func newWatchCmd() *cobra.Command {
 			"Runs detached (does not stream logs); use 'wendy device logs' to tail output. " +
 			"Build output is hidden unless a build fails; pass --verbose to always show it.",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// The watch loop must never block on logs or prompt between cycles.
-			opts.detach = true
-			opts.yes = true
 			// Keep the loop quiet: hide build output unless a build fails.
+			// Detached + non-interactive are enforced by watchCommand itself.
 			opts.quietBuild = !verbose
 			return watchCommand(cmd.Context(), opts, time.Duration(debounceMS)*time.Millisecond)
 		},
@@ -56,10 +54,22 @@ func newWatchCmd() *cobra.Command {
 	return cmd
 }
 
+// withWatchInvariants returns opts with the settings the watch loop requires:
+// it must run detached and never prompt, so a rapid series of saves can't block
+// on log streaming or an interactive confirmation between redeploy cycles. Both
+// entry points (`wendy watch` and `wendy run --watch`) route through
+// watchCommand, so enforcing the invariants here keeps them from drifting.
+func withWatchInvariants(opts runOptions) runOptions {
+	opts.detach = true
+	opts.yes = true
+	return opts
+}
+
 func watchCommand(ctx context.Context, opts runOptions, debounce time.Duration) error {
 	if debounce <= 0 {
 		debounce = 400 * time.Millisecond
 	}
+	opts = withWatchInvariants(opts)
 	root, err := resolveRunWorkingDir(opts)
 	if err != nil {
 		return err

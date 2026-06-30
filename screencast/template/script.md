@@ -6,7 +6,26 @@ Tone: Calm, practical, developer-focused.
 
 ---
 
-## 01 Payoff First
+## 01 Title
+
+### Say
+
+AI-generated screencasts from one script.
+
+In this screencast, we will show how feature context and one source file can become a complete narrated video, while the render pipeline stays deterministic and reviewable.
+
+### Show (slide)
+
+```text
+AI-Generated Screencasts
+from One Script
+
+script.md → scenes → renders → final MP4
+```
+
+---
+
+## 02 Payoff First
 
 ### Say
 
@@ -29,7 +48,7 @@ minutes, not hours or days
 
 ---
 
-## 02 Why This Exists
+## 03 Why This Exists
 
 ### Say
 
@@ -56,7 +75,7 @@ final edit
 
 ---
 
-## 03 Source of Truth
+## 04 Source of Truth
 
 ### Say
 
@@ -82,7 +101,7 @@ wendy run --device example-device
 
 ---
 
-## 04 Agent First Pass
+## 05 Agent First Pass
 
 ### Say
 
@@ -112,7 +131,7 @@ scenes/
 
 ---
 
-## 05 Render Pipeline
+## 06 Render Pipeline
 
 ### Say
 
@@ -130,8 +149,8 @@ cd screencast
 scripts/render-slide 01
 scripts/render-voice 01
 
-scripts/render-tape --dry-run --with-hooks 02
-scripts/render-tape --with-hooks 02   # runs scenes/02-*/vhs.sh first, if present
+scripts/render-tape --dry-run --with-hooks 06
+scripts/render-tape --with-hooks 06   # runs scenes/06-*/vhs.sh first, if present
 scripts/render-voice 02
 
 scripts/stitch scenes/* --output output/feature-name.mp4
@@ -139,7 +158,7 @@ scripts/stitch scenes/* --output output/feature-name.mp4
 
 ---
 
-## 06 Scene Artifacts
+## 07 Scene Artifacts
 
 ### Say
 
@@ -161,7 +180,7 @@ source file + output extension
 
 ---
 
-## 07 Stitching and Timing
+## 08 Stitching and Timing
 
 ### Say
 
@@ -184,7 +203,7 @@ scene duration = max(voice duration, visual duration)
 
 ---
 
-## 08 Human Second Pass
+## 09 Human Second Pass
 
 ### Say
 
@@ -208,7 +227,7 @@ Placeholder slide is replaced automatically.
 
 ---
 
-## 09 Safety and CI
+## 10 Safety and CI
 
 ### Say
 
@@ -238,7 +257,7 @@ CI validates the guardrails.
 
 ---
 
-## 10 Closing
+## 11 Closing
 
 ### Say
 
@@ -264,7 +283,7 @@ Source of truth:
 
 ---
 
-## 11 Thanks
+## 12 Thanks
 
 ### Say
 

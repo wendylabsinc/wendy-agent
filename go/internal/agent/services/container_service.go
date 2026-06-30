@@ -18,6 +18,7 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
+	"github.com/wendylabsinc/wendy/go/internal/agent/hoststats"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
@@ -238,6 +239,18 @@ func (s *ContainerService) QueryChunks(ctx context.Context, req *agentpb.QueryCh
 		out = append(out, hb[:])
 	}
 	return &agentpb.QueryChunksResponse{MissingHashes: out}, nil
+}
+
+func (s *ContainerService) QueryLayers(ctx context.Context, req *agentpb.QueryLayersRequest) (*agentpb.QueryLayersResponse, error) {
+	present, err := s.containerd.PresentLayers(ctx, req.GetDiffIds())
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "querying layers: %v", err)
+	}
+	out := make([]*agentpb.PresentLayer, 0, len(present))
+	for diffID, size := range present {
+		out = append(out, &agentpb.PresentLayer{DiffId: diffID, Size: size})
+	}
+	return &agentpb.QueryLayersResponse{Present: out}, nil
 }
 
 func (s *ContainerService) WriteChunks(stream grpc.ClientStreamingServer[agentpb.WriteChunksRequest, agentpb.WriteChunksResponse]) error {
@@ -901,6 +914,88 @@ func (s *ContainerService) ListContainerStats(ctx context.Context, _ *agentpb.Li
 		return nil, status.Errorf(codes.Internal, "getting container stats: %v", err)
 	}
 	return &agentpb.ListContainerStatsResponse{Stats: stats}, nil
+}
+
+// GetResourceStats returns host CPU/memory/GPU counters plus per-container CPU
+// and memory for `wendy device top`. Host metrics are best-effort: a failed
+// /proc read or absent GPU tool yields zero/empty fields rather than an error,
+// so the command degrades gracefully on constrained hosts.
+//
+// Like every other method on this service, access is gated by the agent's gRPC
+// transport (the device's trusted control channel); there is no per-RPC
+// authorization layer, so the read-only host topology this returns is no more
+// exposed than the existing container-stats RPCs. The call is logged for audit.
+func (s *ContainerService) GetResourceStats(ctx context.Context, _ *agentpb.GetResourceStatsRequest) (*agentpb.GetResourceStatsResponse, error) {
+	s.logger.Info("GetResourceStats")
+	containers, err := s.containerd.GetResourceStats(ctx)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "getting resource stats: %v", err)
+	}
+
+	host := &agentpb.HostStats{}
+	if cpu, cpuErr := hoststats.ReadCPU(); cpuErr == nil {
+		host.CpuTotalJiffies = cpu.TotalJiffies
+		host.CpuIdleJiffies = cpu.IdleJiffies
+		host.CpuCount = cpu.CPUCount
+	}
+	if mem, memErr := hoststats.ReadMemory(); memErr == nil {
+		host.MemTotalBytes = mem.TotalBytes
+		host.MemAvailableBytes = mem.AvailableBytes
+	}
+	host.Gpus = gpuStatsToProto(hoststats.SampleGPU(ctx))
+	host.ThermalZones = thermalZonesToProto(hoststats.SampleThermal())
+
+	return &agentpb.GetResourceStatsResponse{
+		Host:       host,
+		Containers: containers,
+	}, nil
+}
+
+// thermalZonesToProto converts sampled thermal zones to their proto form.
+func thermalZonesToProto(zones []hoststats.ThermalZone) []*agentpb.ThermalZone {
+	if len(zones) == 0 {
+		return nil
+	}
+	out := make([]*agentpb.ThermalZone, len(zones))
+	for i, z := range zones {
+		out[i] = &agentpb.ThermalZone{Name: z.Name, TempC: z.TempC}
+	}
+	return out
+}
+
+// GetContainerPorts returns the listening TCP and bound UDP sockets for the
+// given app, read from each of its containers' network namespaces. Loopback-bound
+// ports are intentionally included so operators can see services that are exposed
+// only on localhost. Access is gated by the agent's gRPC transport, the same
+// trusted control channel that secures every other method here; the call is
+// logged for audit.
+func (s *ContainerService) GetContainerPorts(ctx context.Context, req *agentpb.GetContainerPortsRequest) (*agentpb.GetContainerPortsResponse, error) {
+	if req.GetAppName() == "" {
+		return nil, status.Errorf(codes.InvalidArgument, "app_name is required")
+	}
+	s.logger.Info("GetContainerPorts", zap.String("app_name", req.GetAppName()))
+	ports, err := s.containerd.GetListeningPorts(ctx, req.GetAppName())
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "getting container ports: %v", err)
+	}
+	return &agentpb.GetContainerPortsResponse{Ports: ports}, nil
+}
+
+func gpuStatsToProto(in []hoststats.GPUStat) []*agentpb.GpuStats {
+	out := make([]*agentpb.GpuStats, 0, len(in))
+	for _, g := range in {
+		pg := &agentpb.GpuStats{
+			Index:         g.Index,
+			Name:          g.Name,
+			UtilPercent:   g.UtilPercent,
+			MemUsedBytes:  g.MemUsedBytes,
+			MemTotalBytes: g.MemTotalBytes,
+			TempC:         g.TempC,
+			PowerW:        g.PowerW,
+		}
+		out = append(out, pg)
+	}
+	return out
 }
 
 func (s *ContainerService) ListContainers(_ *agentpb.ListContainersRequest, stream grpc.ServerStreamingServer[agentpb.ListContainersResponse]) error {

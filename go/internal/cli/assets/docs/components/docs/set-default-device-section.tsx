@@ -20,10 +20,22 @@ export function SetDefaultDeviceSection() {
         device.
       </p>
 
+      <h3 id="get-default-device">Get Default Device</h3>
+      <p>Check which device is currently set as default:</p>
+      <pre>
+        <code className="language-bash">wendy device get-default</code>
+      </pre>
+
       <h3 id="clear-default-device">Clear Default Device</h3>
       <p>Return to interactive selection:</p>
       <pre>
         <code className="language-bash">wendy device unset-default</code>
+      </pre>
+
+      <h3 id="get-default-device">Check Default Device</h3>
+      <p>See which device is currently saved:</p>
+      <pre>
+        <code className="language-bash">wendy device get-default</code>
       </pre>
 
       <h3 id="override-default-temporarily">Override Default Temporarily</h3>

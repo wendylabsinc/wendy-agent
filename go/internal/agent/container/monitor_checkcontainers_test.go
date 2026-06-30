@@ -76,6 +76,12 @@ func (f *fakeContainerd) ContainerIDsForApp(ctx context.Context, appID string) (
 func (f *fakeContainerd) GetContainerStats(ctx context.Context) ([]*agentpb.ContainerStats, error) {
 	return nil, nil
 }
+func (f *fakeContainerd) GetResourceStats(context.Context) ([]*agentpb.ResourceContainerStats, error) {
+	return nil, nil
+}
+func (f *fakeContainerd) GetListeningPorts(context.Context, string) ([]*agentpb.PortEntry, error) {
+	return nil, nil
+}
 func (f *fakeContainerd) GetContainerMetrics(ctx context.Context, appName string) (services.ContainerMetrics, error) {
 	return services.ContainerMetrics{}, nil
 }
@@ -88,6 +94,10 @@ func (f *fakeContainerd) GetContainerRestartPolicyLabel(ctx context.Context, app
 
 func (f *fakeContainerd) MissingChunks(_ context.Context, hashes [][32]byte) ([][32]byte, error) {
 	return hashes, nil
+}
+
+func (f *fakeContainerd) PresentLayers(_ context.Context, _ []string) (map[string]int64, error) {
+	return nil, nil
 }
 
 func (f *fakeContainerd) StageChunk(_ context.Context, _ [32]byte, _ []byte) error {

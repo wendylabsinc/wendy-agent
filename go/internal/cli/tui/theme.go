@@ -40,10 +40,16 @@ const (
 )
 
 var (
-	successStyle = lipgloss.NewStyle().Foreground(ColorAccent).Bold(true)
-	errorStyle   = lipgloss.NewStyle().Foreground(ColorError).Bold(true)
-	warningStyle = lipgloss.NewStyle().Foreground(ColorNotice).Bold(true)
-	infoStyle    = lipgloss.NewStyle().Foreground(ColorInfo).Bold(true)
+	successStyle    = lipgloss.NewStyle().Foreground(ColorAccent).Bold(true)
+	errorStyle      = lipgloss.NewStyle().Foreground(ColorError).Bold(true)
+	warningStyle    = lipgloss.NewStyle().Foreground(ColorNotice).Bold(true)
+	infoStyle       = lipgloss.NewStyle().Foreground(ColorInfo).Bold(true)
+	headerStyleTUI  = lipgloss.NewStyle().Foreground(ColorPrimary).Bold(true)
+	deviceStyleTUI  = lipgloss.NewStyle().Foreground(Emerald300).Bold(true)
+	valueStyleTUI   = lipgloss.NewStyle().Bold(true)
+	commandStyleTUI = lipgloss.NewStyle().Foreground(Sky500)
+	pathStyleTUI    = lipgloss.NewStyle().Foreground(ColorDim).Underline(true)
+	dimStyleTUI     = lipgloss.NewStyle().Foreground(ColorDim)
 )
 
 func SuccessMessage(message string) string {
@@ -61,3 +67,24 @@ func WarningMessage(message string) string {
 func InfoMessage(message string) string {
 	return infoStyle.Render("› " + message)
 }
+
+// Header styles a section title in long output.
+func Header(s string) string { return headerStyleTUI.Render(s) }
+
+// Device styles a device name so it stands out as the subject of an action.
+func Device(s string) string { return deviceStyleTUI.Render(s) }
+
+// App styles an app name. Shares Device's style; named separately for clarity.
+func App(s string) string { return deviceStyleTUI.Render(s) }
+
+// Value styles a value such as an IP, version, count, or duration.
+func Value(s string) string { return valueStyleTUI.Render(s) }
+
+// Command styles a copyable next-step command.
+func Command(s string) string { return commandStyleTUI.Render(s) }
+
+// Path styles a file path or URL.
+func Path(s string) string { return pathStyleTUI.Render(s) }
+
+// Dim styles secondary/hint text so it recedes.
+func Dim(s string) string { return dimStyleTUI.Render(s) }

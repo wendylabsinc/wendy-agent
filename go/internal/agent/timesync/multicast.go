@@ -58,7 +58,7 @@ func (m *Manager) listenMulticast(ctx context.Context) {
 			continue
 		}
 
-		t, err := safeProcessPacket(buf[:n])
+		t, err := SafeProcessPacket(buf[:n])
 		if err != nil {
 			if m.logger != nil {
 				m.logger.Debug("timesync: invalid multicast packet", zap.Error(err))
@@ -76,10 +76,10 @@ func (m *Manager) listenMulticast(ctx context.Context) {
 	}
 }
 
-// safeProcessPacket wraps ProcessMulticastPacket with a recover() so that any
+// SafeProcessPacket wraps ProcessMulticastPacket with a recover() so that any
 // unexpected panic in the untrusted-input parser cannot crash the agent process.
 // Time-sync failures are always non-fatal; a panic here is treated as a parse error.
-func safeProcessPacket(pkt []byte) (t time.Time, err error) {
+func SafeProcessPacket(pkt []byte) (t time.Time, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("panic processing multicast packet: %v", r)

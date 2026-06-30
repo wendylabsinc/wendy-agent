@@ -18,6 +18,7 @@ const skipDirs = new Set([
   'node_modules',
   'out',
   'public',
+  'screenshots',
   'scripts',
 ]);
 const publicAssetExtensions = new Set([

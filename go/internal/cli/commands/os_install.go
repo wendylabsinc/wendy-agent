@@ -204,7 +204,6 @@ type pickerDevice struct {
 	Name       string
 	Version    string // display version (e.g. "0.10.5 (nightly)")
 	RawVersion string // exact version key for manifest lookup
-	Category   string // e.g. "Linux" or "Wendy Lite"
 	IsESP32    bool
 	ESP32Chip  string          // e.g. "esp32c6", "esp32c5"
 	Manifest   *deviceManifest // cached manifest for Linux devices
@@ -278,14 +277,15 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 			Name:       dev.Name,
 			Version:    displayVersion,
 			RawVersion: rawVersion,
-			Category:   "Linux",
 			Manifest:   dev.Manifest,
 		}
 		deviceMap[dev.Key] = pd
 
 		items = append(items, tui.PickerItem{
 			Name:        dev.Name,
-			Description: fmt.Sprintf("%s    %s", displayVersion, pd.Category),
+			Description: displayVersion,
+			Section:     "WendyOS",
+			SortKey:     "0_wendyos_" + strings.ToLower(dev.Name),
 			Value:       dev.Key,
 		})
 	}
@@ -302,13 +302,14 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 			deviceMap[esp.key] = pickerDevice{
 				Name:      esp.name,
 				Version:   espVersion,
-				Category:  "Wendy Lite",
 				IsESP32:   true,
 				ESP32Chip: esp.chip,
 			}
 			items = append(items, tui.PickerItem{
 				Name:        esp.name,
-				Description: fmt.Sprintf("%s    %s", espVersion, "Wendy Lite"),
+				Description: espVersion,
+				Section:     "Wendy Lite",
+				SortKey:     "1_lite_" + strings.ToLower(esp.name),
 				Value:       esp.key,
 			})
 		}
@@ -541,7 +542,7 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 		// bmap failures fall back silently; suppress the TUI error render
 		writeProg = writeProg.WithoutErrorView()
 	}
-	wp := tea.NewProgram(writeProg)
+	wp := tui.NewProgressProgram(writeProg)
 
 	go func() {
 		var writeErr error
@@ -609,7 +610,7 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 		}
 		defer fallbackCloser.Close()
 		fallbackProg := tui.NewProgress(fmt.Sprintf("Writing to %s...", targetDrive.DevicePath))
-		fp := tea.NewProgram(fallbackProg)
+		fp := tui.NewProgressProgram(fallbackProg)
 		go func() {
 			fp.Send(tui.ProgressDoneMsg{Err: writeImageToDisk(fallbackReader, fallbackSize, targetDrive, func(written int64) {
 				if fallbackSize > 0 {
@@ -877,7 +878,7 @@ func downloadImage(img *imageInfo) (string, error) {
 	}
 
 	prog := tui.NewProgress(fmt.Sprintf("Downloading %s...", img.Version))
-	p := tea.NewProgram(prog)
+	p := tui.NewProgressProgram(prog)
 	sendProgress := throttledProgress(p, 33*time.Millisecond)
 
 	contentLength, supportsRanges := probeRangeSupport(client, img)
@@ -1281,7 +1282,7 @@ func measureGzipImage(path string, progress func(read, total int64)) (int64, err
 // the user quits the bar.
 func measureImageWithProgress(stream *imageStream) error {
 	prog := tui.NewProgress("Determining image size (one-time per image)...")
-	p := tea.NewProgram(prog)
+	p := tui.NewProgressProgram(prog)
 	sendProgress := throttledProgress(p, 33*time.Millisecond)
 
 	go func() {
@@ -1517,7 +1518,7 @@ func resolveWiFiCredentialsList(opts wifiCLIOptions) ([]wendyconf.WifiCredential
 			if pw, kerr := lookupKeychainPassword(c.SSID); kerr == nil && pw != "" {
 				c.Password = pw
 			} else if isInteractiveTerminal() {
-				pw, perr := tui.PromptText(fmt.Sprintf("WiFi password for %s", c.SSID), "(leave empty for open network)", nil)
+				pw, perr := tui.PromptPassword(fmt.Sprintf("WiFi password for %s", c.SSID), "(leave empty for open network)", nil)
 				if perr != nil {
 					return nil, fmt.Errorf("reading WiFi password: %w", perr)
 				}
@@ -1642,7 +1643,7 @@ var (
 		return tui.PromptText("WiFi SSID", "", nonEmptyValidator)
 	}
 	promptWifiPassword = func(ssid string) (string, error) {
-		return tui.PromptText(fmt.Sprintf("Password for %s", ssid), "(leave empty for open network)", nil)
+		return tui.PromptPassword(fmt.Sprintf("Password for %s", ssid), "(leave empty for open network)", nil)
 	}
 )
 
@@ -2012,7 +2013,7 @@ func installESP32Firmware(ctx context.Context, nightly bool, chip string, wifi w
 	// Download with progress bar.
 
 	prog := tui.NewProgress(fmt.Sprintf("Downloading %s %s...", asset.Name, asset.Version))
-	p := tea.NewProgram(prog)
+	p := tui.NewProgressProgram(prog)
 
 	var fwPath string
 	var dlErr error
@@ -2064,7 +2065,7 @@ func installESP32Firmware(ctx context.Context, nightly bool, chip string, wifi w
 
 	fmt.Println()
 	flashProg := tui.NewProgress(fmt.Sprintf("Flashing to %s...", serialPort))
-	fp := tea.NewProgram(flashProg)
+	fp := tui.NewProgressProgram(flashProg)
 
 	go func() {
 		flashErr := flashFirmwareImage(serialPort, img, func(pct float64) {

@@ -21,11 +21,126 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+type GetOSUpdateStatusResponse_Outcome int32
+
+const (
+	GetOSUpdateStatusResponse_OUTCOME_UNSPECIFIED GetOSUpdateStatusResponse_Outcome = 0
+	// Healthchecks passed and the update was committed.
+	GetOSUpdateStatusResponse_OUTCOME_COMMITTED GetOSUpdateStatusResponse_Outcome = 1
+	// Healthchecks failed and the previous OS was restored.
+	GetOSUpdateStatusResponse_OUTCOME_ROLLED_BACK GetOSUpdateStatusResponse_Outcome = 2
+	// Healthchecks failed but the rollback could not be performed.
+	GetOSUpdateStatusResponse_OUTCOME_ROLLBACK_FAILED GetOSUpdateStatusResponse_Outcome = 3
+	// Healthchecks passed but committing the update failed.
+	GetOSUpdateStatusResponse_OUTCOME_COMMIT_FAILED GetOSUpdateStatusResponse_Outcome = 4
+)
+
+// Enum value maps for GetOSUpdateStatusResponse_Outcome.
+var (
+	GetOSUpdateStatusResponse_Outcome_name = map[int32]string{
+		0: "OUTCOME_UNSPECIFIED",
+		1: "OUTCOME_COMMITTED",
+		2: "OUTCOME_ROLLED_BACK",
+		3: "OUTCOME_ROLLBACK_FAILED",
+		4: "OUTCOME_COMMIT_FAILED",
+	}
+	GetOSUpdateStatusResponse_Outcome_value = map[string]int32{
+		"OUTCOME_UNSPECIFIED":     0,
+		"OUTCOME_COMMITTED":       1,
+		"OUTCOME_ROLLED_BACK":     2,
+		"OUTCOME_ROLLBACK_FAILED": 3,
+		"OUTCOME_COMMIT_FAILED":   4,
+	}
+)
+
+func (x GetOSUpdateStatusResponse_Outcome) Enum() *GetOSUpdateStatusResponse_Outcome {
+	p := new(GetOSUpdateStatusResponse_Outcome)
+	*p = x
+	return p
+}
+
+func (x GetOSUpdateStatusResponse_Outcome) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (GetOSUpdateStatusResponse_Outcome) Descriptor() protoreflect.EnumDescriptor {
+	return file_wendy_agent_services_v2_os_update_service_proto_enumTypes[0].Descriptor()
+}
+
+func (GetOSUpdateStatusResponse_Outcome) Type() protoreflect.EnumType {
+	return &file_wendy_agent_services_v2_os_update_service_proto_enumTypes[0]
+}
+
+func (x GetOSUpdateStatusResponse_Outcome) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use GetOSUpdateStatusResponse_Outcome.Descriptor instead.
+func (GetOSUpdateStatusResponse_Outcome) EnumDescriptor() ([]byte, []int) {
+	return file_wendy_agent_services_v2_os_update_service_proto_rawDescGZIP(), []int{3, 0}
+}
+
+type GetOSUpdateStatusResponse_ServiceResult_Status int32
+
+const (
+	GetOSUpdateStatusResponse_ServiceResult_STATUS_UNSPECIFIED GetOSUpdateStatusResponse_ServiceResult_Status = 0
+	GetOSUpdateStatusResponse_ServiceResult_STATUS_HEALTHY     GetOSUpdateStatusResponse_ServiceResult_Status = 1
+	// Unit not present on this device or intentionally disabled.
+	GetOSUpdateStatusResponse_ServiceResult_STATUS_SKIPPED GetOSUpdateStatusResponse_ServiceResult_Status = 2
+	GetOSUpdateStatusResponse_ServiceResult_STATUS_FAILED  GetOSUpdateStatusResponse_ServiceResult_Status = 3
+)
+
+// Enum value maps for GetOSUpdateStatusResponse_ServiceResult_Status.
+var (
+	GetOSUpdateStatusResponse_ServiceResult_Status_name = map[int32]string{
+		0: "STATUS_UNSPECIFIED",
+		1: "STATUS_HEALTHY",
+		2: "STATUS_SKIPPED",
+		3: "STATUS_FAILED",
+	}
+	GetOSUpdateStatusResponse_ServiceResult_Status_value = map[string]int32{
+		"STATUS_UNSPECIFIED": 0,
+		"STATUS_HEALTHY":     1,
+		"STATUS_SKIPPED":     2,
+		"STATUS_FAILED":      3,
+	}
+)
+
+func (x GetOSUpdateStatusResponse_ServiceResult_Status) Enum() *GetOSUpdateStatusResponse_ServiceResult_Status {
+	p := new(GetOSUpdateStatusResponse_ServiceResult_Status)
+	*p = x
+	return p
+}
+
+func (x GetOSUpdateStatusResponse_ServiceResult_Status) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (GetOSUpdateStatusResponse_ServiceResult_Status) Descriptor() protoreflect.EnumDescriptor {
+	return file_wendy_agent_services_v2_os_update_service_proto_enumTypes[1].Descriptor()
+}
+
+func (GetOSUpdateStatusResponse_ServiceResult_Status) Type() protoreflect.EnumType {
+	return &file_wendy_agent_services_v2_os_update_service_proto_enumTypes[1]
+}
+
+func (x GetOSUpdateStatusResponse_ServiceResult_Status) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use GetOSUpdateStatusResponse_ServiceResult_Status.Descriptor instead.
+func (GetOSUpdateStatusResponse_ServiceResult_Status) EnumDescriptor() ([]byte, []int) {
+	return file_wendy_agent_services_v2_os_update_service_proto_rawDescGZIP(), []int{3, 0, 0}
+}
+
 type UpdateOSRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	ArtifactUrl   string                 `protobuf:"bytes,1,opt,name=artifact_url,json=artifactUrl,proto3" json:"artifact_url,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	ArtifactUrl string                 `protobuf:"bytes,1,opt,name=artifact_url,json=artifactUrl,proto3" json:"artifact_url,omitempty"`
+	// Updater backend to use: "" or "auto" prefers the in-house wendyos-update
+	// engine and falls back to mender; "wendyos-update" or "mender" force one.
+	UpdaterBackend string `protobuf:"bytes,2,opt,name=updater_backend,json=updaterBackend,proto3" json:"updater_backend,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *UpdateOSRequest) Reset() {
@@ -61,6 +176,13 @@ func (*UpdateOSRequest) Descriptor() ([]byte, []int) {
 func (x *UpdateOSRequest) GetArtifactUrl() string {
 	if x != nil {
 		return x.ArtifactUrl
+	}
+	return ""
+}
+
+func (x *UpdateOSRequest) GetUpdaterBackend() string {
+	if x != nil {
+		return x.UpdaterBackend
 	}
 	return ""
 }
@@ -163,6 +285,163 @@ func (*UpdateOSResponse_Completed_) isUpdateOSResponse_ResponseType() {}
 
 func (*UpdateOSResponse_Failed_) isUpdateOSResponse_ResponseType() {}
 
+type GetOSUpdateStatusRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetOSUpdateStatusRequest) Reset() {
+	*x = GetOSUpdateStatusRequest{}
+	mi := &file_wendy_agent_services_v2_os_update_service_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetOSUpdateStatusRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetOSUpdateStatusRequest) ProtoMessage() {}
+
+func (x *GetOSUpdateStatusRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_wendy_agent_services_v2_os_update_service_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetOSUpdateStatusRequest.ProtoReflect.Descriptor instead.
+func (*GetOSUpdateStatusRequest) Descriptor() ([]byte, []int) {
+	return file_wendy_agent_services_v2_os_update_service_proto_rawDescGZIP(), []int{2}
+}
+
+// Outcome of the most recent OS update attempt, produced by the agent's
+// post-reboot healthcheck gate and persisted on the device's data partition
+// (so it survives an A/B slot rollback).
+type GetOSUpdateStatusResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// False when no update-result record exists on the device.
+	HasResult bool                                       `protobuf:"varint,1,opt,name=has_result,json=hasResult,proto3" json:"has_result,omitempty"`
+	Outcome   GetOSUpdateStatusResponse_Outcome          `protobuf:"varint,2,opt,name=outcome,proto3,enum=wendy.agent.services.v2.GetOSUpdateStatusResponse_Outcome" json:"outcome,omitempty"`
+	Services  []*GetOSUpdateStatusResponse_ServiceResult `protobuf:"bytes,3,rep,name=services,proto3" json:"services,omitempty"`
+	// OS version before the update was applied.
+	OldOsVersion string `protobuf:"bytes,4,opt,name=old_os_version,json=oldOsVersion,proto3" json:"old_os_version,omitempty"`
+	// OS version the update attempted to boot into.
+	NewOsVersion string `protobuf:"bytes,5,opt,name=new_os_version,json=newOsVersion,proto3" json:"new_os_version,omitempty"`
+	// When the healthcheck gate produced this record (unix seconds).
+	CreatedAtUnix int64 `protobuf:"varint,6,opt,name=created_at_unix,json=createdAtUnix,proto3" json:"created_at_unix,omitempty"`
+	// When the post-rollback boot confirmed the record (unix seconds);
+	// 0 until then.
+	FinalizedAtUnix int64 `protobuf:"varint,7,opt,name=finalized_at_unix,json=finalizedAtUnix,proto3" json:"finalized_at_unix,omitempty"`
+	// Non-empty when the rollback command itself errored.
+	RollbackError string `protobuf:"bytes,8,opt,name=rollback_error,json=rollbackError,proto3" json:"rollback_error,omitempty"`
+	// Human-readable detail for the outcome. For OUTCOME_COMMIT_FAILED this is
+	// the commit command's failure reason, including the OS updater's output,
+	// so the failure is diagnosable without shell access to the device.
+	Note          string `protobuf:"bytes,9,opt,name=note,proto3" json:"note,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetOSUpdateStatusResponse) Reset() {
+	*x = GetOSUpdateStatusResponse{}
+	mi := &file_wendy_agent_services_v2_os_update_service_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetOSUpdateStatusResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetOSUpdateStatusResponse) ProtoMessage() {}
+
+func (x *GetOSUpdateStatusResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_wendy_agent_services_v2_os_update_service_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetOSUpdateStatusResponse.ProtoReflect.Descriptor instead.
+func (*GetOSUpdateStatusResponse) Descriptor() ([]byte, []int) {
+	return file_wendy_agent_services_v2_os_update_service_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *GetOSUpdateStatusResponse) GetHasResult() bool {
+	if x != nil {
+		return x.HasResult
+	}
+	return false
+}
+
+func (x *GetOSUpdateStatusResponse) GetOutcome() GetOSUpdateStatusResponse_Outcome {
+	if x != nil {
+		return x.Outcome
+	}
+	return GetOSUpdateStatusResponse_OUTCOME_UNSPECIFIED
+}
+
+func (x *GetOSUpdateStatusResponse) GetServices() []*GetOSUpdateStatusResponse_ServiceResult {
+	if x != nil {
+		return x.Services
+	}
+	return nil
+}
+
+func (x *GetOSUpdateStatusResponse) GetOldOsVersion() string {
+	if x != nil {
+		return x.OldOsVersion
+	}
+	return ""
+}
+
+func (x *GetOSUpdateStatusResponse) GetNewOsVersion() string {
+	if x != nil {
+		return x.NewOsVersion
+	}
+	return ""
+}
+
+func (x *GetOSUpdateStatusResponse) GetCreatedAtUnix() int64 {
+	if x != nil {
+		return x.CreatedAtUnix
+	}
+	return 0
+}
+
+func (x *GetOSUpdateStatusResponse) GetFinalizedAtUnix() int64 {
+	if x != nil {
+		return x.FinalizedAtUnix
+	}
+	return 0
+}
+
+func (x *GetOSUpdateStatusResponse) GetRollbackError() string {
+	if x != nil {
+		return x.RollbackError
+	}
+	return ""
+}
+
+func (x *GetOSUpdateStatusResponse) GetNote() string {
+	if x != nil {
+		return x.Note
+	}
+	return ""
+}
+
 type UpdateOSResponse_Progress struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Phase         string                 `protobuf:"bytes,1,opt,name=phase,proto3" json:"phase,omitempty"`
@@ -173,7 +452,7 @@ type UpdateOSResponse_Progress struct {
 
 func (x *UpdateOSResponse_Progress) Reset() {
 	*x = UpdateOSResponse_Progress{}
-	mi := &file_wendy_agent_services_v2_os_update_service_proto_msgTypes[2]
+	mi := &file_wendy_agent_services_v2_os_update_service_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -185,7 +464,7 @@ func (x *UpdateOSResponse_Progress) String() string {
 func (*UpdateOSResponse_Progress) ProtoMessage() {}
 
 func (x *UpdateOSResponse_Progress) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_agent_services_v2_os_update_service_proto_msgTypes[2]
+	mi := &file_wendy_agent_services_v2_os_update_service_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -224,7 +503,7 @@ type UpdateOSResponse_Completed struct {
 
 func (x *UpdateOSResponse_Completed) Reset() {
 	*x = UpdateOSResponse_Completed{}
-	mi := &file_wendy_agent_services_v2_os_update_service_proto_msgTypes[3]
+	mi := &file_wendy_agent_services_v2_os_update_service_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -236,7 +515,7 @@ func (x *UpdateOSResponse_Completed) String() string {
 func (*UpdateOSResponse_Completed) ProtoMessage() {}
 
 func (x *UpdateOSResponse_Completed) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_agent_services_v2_os_update_service_proto_msgTypes[3]
+	mi := &file_wendy_agent_services_v2_os_update_service_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -268,7 +547,7 @@ type UpdateOSResponse_Failed struct {
 
 func (x *UpdateOSResponse_Failed) Reset() {
 	*x = UpdateOSResponse_Failed{}
-	mi := &file_wendy_agent_services_v2_os_update_service_proto_msgTypes[4]
+	mi := &file_wendy_agent_services_v2_os_update_service_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -280,7 +559,7 @@ func (x *UpdateOSResponse_Failed) String() string {
 func (*UpdateOSResponse_Failed) ProtoMessage() {}
 
 func (x *UpdateOSResponse_Failed) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_agent_services_v2_os_update_service_proto_msgTypes[4]
+	mi := &file_wendy_agent_services_v2_os_update_service_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -303,13 +582,76 @@ func (x *UpdateOSResponse_Failed) GetErrorMessage() string {
 	return ""
 }
 
+type GetOSUpdateStatusResponse_ServiceResult struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// systemd unit name, e.g. "avahi-daemon.service"
+	Unit   string                                         `protobuf:"bytes,1,opt,name=unit,proto3" json:"unit,omitempty"`
+	Status GetOSUpdateStatusResponse_ServiceResult_Status `protobuf:"varint,2,opt,name=status,proto3,enum=wendy.agent.services.v2.GetOSUpdateStatusResponse_ServiceResult_Status" json:"status,omitempty"`
+	// Failure reason; empty for healthy/skipped services.
+	Reason        string `protobuf:"bytes,3,opt,name=reason,proto3" json:"reason,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetOSUpdateStatusResponse_ServiceResult) Reset() {
+	*x = GetOSUpdateStatusResponse_ServiceResult{}
+	mi := &file_wendy_agent_services_v2_os_update_service_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetOSUpdateStatusResponse_ServiceResult) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetOSUpdateStatusResponse_ServiceResult) ProtoMessage() {}
+
+func (x *GetOSUpdateStatusResponse_ServiceResult) ProtoReflect() protoreflect.Message {
+	mi := &file_wendy_agent_services_v2_os_update_service_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetOSUpdateStatusResponse_ServiceResult.ProtoReflect.Descriptor instead.
+func (*GetOSUpdateStatusResponse_ServiceResult) Descriptor() ([]byte, []int) {
+	return file_wendy_agent_services_v2_os_update_service_proto_rawDescGZIP(), []int{3, 0}
+}
+
+func (x *GetOSUpdateStatusResponse_ServiceResult) GetUnit() string {
+	if x != nil {
+		return x.Unit
+	}
+	return ""
+}
+
+func (x *GetOSUpdateStatusResponse_ServiceResult) GetStatus() GetOSUpdateStatusResponse_ServiceResult_Status {
+	if x != nil {
+		return x.Status
+	}
+	return GetOSUpdateStatusResponse_ServiceResult_STATUS_UNSPECIFIED
+}
+
+func (x *GetOSUpdateStatusResponse_ServiceResult) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
 var File_wendy_agent_services_v2_os_update_service_proto protoreflect.FileDescriptor
 
 const file_wendy_agent_services_v2_os_update_service_proto_rawDesc = "" +
 	"\n" +
-	"/wendy/agent/services/v2/os_update_service.proto\x12\x17wendy.agent.services.v2\"4\n" +
+	"/wendy/agent/services/v2/os_update_service.proto\x12\x17wendy.agent.services.v2\"]\n" +
 	"\x0fUpdateOSRequest\x12!\n" +
-	"\fartifact_url\x18\x01 \x01(\tR\vartifactUrl\"\xb7\x03\n" +
+	"\fartifact_url\x18\x01 \x01(\tR\vartifactUrl\x12'\n" +
+	"\x0fupdater_backend\x18\x02 \x01(\tR\x0eupdaterBackend\"\xb7\x03\n" +
 	"\x10UpdateOSResponse\x12P\n" +
 	"\bprogress\x18\x01 \x01(\v22.wendy.agent.services.v2.UpdateOSResponse.ProgressH\x00R\bprogress\x12S\n" +
 	"\tcompleted\x18\x02 \x01(\v23.wendy.agent.services.v2.UpdateOSResponse.CompletedH\x00R\tcompleted\x12J\n" +
@@ -321,9 +663,37 @@ const file_wendy_agent_services_v2_os_update_service_proto_rawDesc = "" +
 	"\x0freboot_required\x18\x01 \x01(\bR\x0erebootRequired\x1a-\n" +
 	"\x06Failed\x12#\n" +
 	"\rerror_message\x18\x01 \x01(\tR\ferrorMessageB\x0f\n" +
-	"\rresponse_type2y\n" +
+	"\rresponse_type\"\x1a\n" +
+	"\x18GetOSUpdateStatusRequest\"\xd2\x06\n" +
+	"\x19GetOSUpdateStatusResponse\x12\x1d\n" +
+	"\n" +
+	"has_result\x18\x01 \x01(\bR\thasResult\x12T\n" +
+	"\aoutcome\x18\x02 \x01(\x0e2:.wendy.agent.services.v2.GetOSUpdateStatusResponse.OutcomeR\aoutcome\x12\\\n" +
+	"\bservices\x18\x03 \x03(\v2@.wendy.agent.services.v2.GetOSUpdateStatusResponse.ServiceResultR\bservices\x12$\n" +
+	"\x0eold_os_version\x18\x04 \x01(\tR\foldOsVersion\x12$\n" +
+	"\x0enew_os_version\x18\x05 \x01(\tR\fnewOsVersion\x12&\n" +
+	"\x0fcreated_at_unix\x18\x06 \x01(\x03R\rcreatedAtUnix\x12*\n" +
+	"\x11finalized_at_unix\x18\a \x01(\x03R\x0ffinalizedAtUnix\x12%\n" +
+	"\x0erollback_error\x18\b \x01(\tR\rrollbackError\x12\x12\n" +
+	"\x04note\x18\t \x01(\tR\x04note\x1a\xf9\x01\n" +
+	"\rServiceResult\x12\x12\n" +
+	"\x04unit\x18\x01 \x01(\tR\x04unit\x12_\n" +
+	"\x06status\x18\x02 \x01(\x0e2G.wendy.agent.services.v2.GetOSUpdateStatusResponse.ServiceResult.StatusR\x06status\x12\x16\n" +
+	"\x06reason\x18\x03 \x01(\tR\x06reason\"[\n" +
+	"\x06Status\x12\x16\n" +
+	"\x12STATUS_UNSPECIFIED\x10\x00\x12\x12\n" +
+	"\x0eSTATUS_HEALTHY\x10\x01\x12\x12\n" +
+	"\x0eSTATUS_SKIPPED\x10\x02\x12\x11\n" +
+	"\rSTATUS_FAILED\x10\x03\"\x8a\x01\n" +
+	"\aOutcome\x12\x17\n" +
+	"\x13OUTCOME_UNSPECIFIED\x10\x00\x12\x15\n" +
+	"\x11OUTCOME_COMMITTED\x10\x01\x12\x17\n" +
+	"\x13OUTCOME_ROLLED_BACK\x10\x02\x12\x1b\n" +
+	"\x17OUTCOME_ROLLBACK_FAILED\x10\x03\x12\x19\n" +
+	"\x15OUTCOME_COMMIT_FAILED\x10\x042\xf5\x01\n" +
 	"\x14WendyOSUpdateService\x12a\n" +
-	"\bUpdateOS\x12(.wendy.agent.services.v2.UpdateOSRequest\x1a).wendy.agent.services.v2.UpdateOSResponse0\x01B>Z<github.com/wendylabsinc/wendy/proto/gen/agentpb/v2;agentpbv2b\x06proto3"
+	"\bUpdateOS\x12(.wendy.agent.services.v2.UpdateOSRequest\x1a).wendy.agent.services.v2.UpdateOSResponse0\x01\x12z\n" +
+	"\x11GetOSUpdateStatus\x121.wendy.agent.services.v2.GetOSUpdateStatusRequest\x1a2.wendy.agent.services.v2.GetOSUpdateStatusResponseB>Z<github.com/wendylabsinc/wendy/proto/gen/agentpb/v2;agentpbv2b\x06proto3"
 
 var (
 	file_wendy_agent_services_v2_os_update_service_proto_rawDescOnce sync.Once
@@ -337,25 +707,36 @@ func file_wendy_agent_services_v2_os_update_service_proto_rawDescGZIP() []byte {
 	return file_wendy_agent_services_v2_os_update_service_proto_rawDescData
 }
 
-var file_wendy_agent_services_v2_os_update_service_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
+var file_wendy_agent_services_v2_os_update_service_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
+var file_wendy_agent_services_v2_os_update_service_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
 var file_wendy_agent_services_v2_os_update_service_proto_goTypes = []any{
-	(*UpdateOSRequest)(nil),            // 0: wendy.agent.services.v2.UpdateOSRequest
-	(*UpdateOSResponse)(nil),           // 1: wendy.agent.services.v2.UpdateOSResponse
-	(*UpdateOSResponse_Progress)(nil),  // 2: wendy.agent.services.v2.UpdateOSResponse.Progress
-	(*UpdateOSResponse_Completed)(nil), // 3: wendy.agent.services.v2.UpdateOSResponse.Completed
-	(*UpdateOSResponse_Failed)(nil),    // 4: wendy.agent.services.v2.UpdateOSResponse.Failed
+	(GetOSUpdateStatusResponse_Outcome)(0),              // 0: wendy.agent.services.v2.GetOSUpdateStatusResponse.Outcome
+	(GetOSUpdateStatusResponse_ServiceResult_Status)(0), // 1: wendy.agent.services.v2.GetOSUpdateStatusResponse.ServiceResult.Status
+	(*UpdateOSRequest)(nil),                             // 2: wendy.agent.services.v2.UpdateOSRequest
+	(*UpdateOSResponse)(nil),                            // 3: wendy.agent.services.v2.UpdateOSResponse
+	(*GetOSUpdateStatusRequest)(nil),                    // 4: wendy.agent.services.v2.GetOSUpdateStatusRequest
+	(*GetOSUpdateStatusResponse)(nil),                   // 5: wendy.agent.services.v2.GetOSUpdateStatusResponse
+	(*UpdateOSResponse_Progress)(nil),                   // 6: wendy.agent.services.v2.UpdateOSResponse.Progress
+	(*UpdateOSResponse_Completed)(nil),                  // 7: wendy.agent.services.v2.UpdateOSResponse.Completed
+	(*UpdateOSResponse_Failed)(nil),                     // 8: wendy.agent.services.v2.UpdateOSResponse.Failed
+	(*GetOSUpdateStatusResponse_ServiceResult)(nil),     // 9: wendy.agent.services.v2.GetOSUpdateStatusResponse.ServiceResult
 }
 var file_wendy_agent_services_v2_os_update_service_proto_depIdxs = []int32{
-	2, // 0: wendy.agent.services.v2.UpdateOSResponse.progress:type_name -> wendy.agent.services.v2.UpdateOSResponse.Progress
-	3, // 1: wendy.agent.services.v2.UpdateOSResponse.completed:type_name -> wendy.agent.services.v2.UpdateOSResponse.Completed
-	4, // 2: wendy.agent.services.v2.UpdateOSResponse.failed:type_name -> wendy.agent.services.v2.UpdateOSResponse.Failed
-	0, // 3: wendy.agent.services.v2.WendyOSUpdateService.UpdateOS:input_type -> wendy.agent.services.v2.UpdateOSRequest
-	1, // 4: wendy.agent.services.v2.WendyOSUpdateService.UpdateOS:output_type -> wendy.agent.services.v2.UpdateOSResponse
-	4, // [4:5] is the sub-list for method output_type
-	3, // [3:4] is the sub-list for method input_type
-	3, // [3:3] is the sub-list for extension type_name
-	3, // [3:3] is the sub-list for extension extendee
-	0, // [0:3] is the sub-list for field type_name
+	6, // 0: wendy.agent.services.v2.UpdateOSResponse.progress:type_name -> wendy.agent.services.v2.UpdateOSResponse.Progress
+	7, // 1: wendy.agent.services.v2.UpdateOSResponse.completed:type_name -> wendy.agent.services.v2.UpdateOSResponse.Completed
+	8, // 2: wendy.agent.services.v2.UpdateOSResponse.failed:type_name -> wendy.agent.services.v2.UpdateOSResponse.Failed
+	0, // 3: wendy.agent.services.v2.GetOSUpdateStatusResponse.outcome:type_name -> wendy.agent.services.v2.GetOSUpdateStatusResponse.Outcome
+	9, // 4: wendy.agent.services.v2.GetOSUpdateStatusResponse.services:type_name -> wendy.agent.services.v2.GetOSUpdateStatusResponse.ServiceResult
+	1, // 5: wendy.agent.services.v2.GetOSUpdateStatusResponse.ServiceResult.status:type_name -> wendy.agent.services.v2.GetOSUpdateStatusResponse.ServiceResult.Status
+	2, // 6: wendy.agent.services.v2.WendyOSUpdateService.UpdateOS:input_type -> wendy.agent.services.v2.UpdateOSRequest
+	4, // 7: wendy.agent.services.v2.WendyOSUpdateService.GetOSUpdateStatus:input_type -> wendy.agent.services.v2.GetOSUpdateStatusRequest
+	3, // 8: wendy.agent.services.v2.WendyOSUpdateService.UpdateOS:output_type -> wendy.agent.services.v2.UpdateOSResponse
+	5, // 9: wendy.agent.services.v2.WendyOSUpdateService.GetOSUpdateStatus:output_type -> wendy.agent.services.v2.GetOSUpdateStatusResponse
+	8, // [8:10] is the sub-list for method output_type
+	6, // [6:8] is the sub-list for method input_type
+	6, // [6:6] is the sub-list for extension type_name
+	6, // [6:6] is the sub-list for extension extendee
+	0, // [0:6] is the sub-list for field type_name
 }
 
 func init() { file_wendy_agent_services_v2_os_update_service_proto_init() }
@@ -373,13 +754,14 @@ func file_wendy_agent_services_v2_os_update_service_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_wendy_agent_services_v2_os_update_service_proto_rawDesc), len(file_wendy_agent_services_v2_os_update_service_proto_rawDesc)),
-			NumEnums:      0,
-			NumMessages:   5,
+			NumEnums:      2,
+			NumMessages:   8,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
 		GoTypes:           file_wendy_agent_services_v2_os_update_service_proto_goTypes,
 		DependencyIndexes: file_wendy_agent_services_v2_os_update_service_proto_depIdxs,
+		EnumInfos:         file_wendy_agent_services_v2_os_update_service_proto_enumTypes,
 		MessageInfos:      file_wendy_agent_services_v2_os_update_service_proto_msgTypes,
 	}.Build()
 	File_wendy_agent_services_v2_os_update_service_proto = out.File

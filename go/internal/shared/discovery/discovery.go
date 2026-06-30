@@ -3,13 +3,25 @@ package discovery
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log"
+	"os"
 	"sync"
 	"time"
 
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 )
+
+// logMDNSQueryErr reports an mDNS query failure to stderr when WENDY_MDNS_DEBUG
+// is set. It is a no-op for nil errors or when debugging is off, so callers can
+// wrap the query directly: logMDNSQueryErr(iface, mdns.Query(params)).
+func logMDNSQueryErr(iface string, err error) {
+	if err == nil || os.Getenv("WENDY_MDNS_DEBUG") == "" {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "wendy: mDNS query on %s failed: %v\n", iface, err)
+}
 
 const (
 	// wendyServiceType is the mDNS service type advertised by WendyOS devices.

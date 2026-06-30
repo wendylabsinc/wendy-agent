@@ -27,8 +27,14 @@ Tests:
   python-no-bluetooth       Verify bluetooth is blocked WITHOUT entitlement
   python-no-ptrace          Verify ptrace is blocked by default seccomp profile (WDY-1099)
   python-no-unshare         Verify unshare is blocked by default seccomp profile (WDY-1099)
+  python-no-kexec-module    Verify kernel-module/kexec syscalls are blocked by seccomp (WDY-1012)
+  python-network-host-admin Verify host-admin networking grants CAP_NET_ADMIN (WDY-1094)
+  python-no-net-admin       Verify plain host networking does NOT grant CAP_NET_ADMIN (WDY-1094)
+  python-resources          Verify app-level CPU/memory/PID limits are enforced via cgroups (WDY-1729)
+  python-multiservice-resources  Verify per-service resource override + app-level inheritance (WDY-1729)
   python-multiservice       Multi-service wendy.json: parallel build + dep-order creation
   python-servicename        Single service with serviceName: verifies WENDY_HOSTNAME/WENDY_APP_GROUP env injection (WDY-878)
+  python-device-top         Deploy a long-running app and verify 'wendy device top --json' reports it (device top)
   compose-hello             docker-compose multi-service deployment with build: Dockerfiles
   compose-images            docker-compose multi-service deployment using public images
   otel-localhost-only       Verify OTEL receivers (4317/4318) are not reachable from the network
@@ -195,12 +201,18 @@ ALL_TESTS=(
     python-no-bluetooth
     python-no-ptrace
     python-no-unshare
+    python-no-kexec-module
+    python-network-host-admin
+    python-no-net-admin
+    python-resources
     python-multiservice
+    python-multiservice-resources
     python-servicename
     compose-hello
     compose-images
     compose-companion
     otel-localhost-only
+    python-device-top
 )
 
 # If specific tests were requested via -t, filter the list.
@@ -273,6 +285,84 @@ for test_name in "${TESTS[@]}"; do
         }
         run_test "python-multiservice (--service ghost -> error)" unknown_service_fails
 
+        continue
+    fi
+
+    # ── Multi-service resource limits (WDY-1729) ─────────────────────────
+    # Deploys two services: 'db' inherits the app-level memory limit (256Mi),
+    # 'api' overrides it to 128Mi while inheriting pids. Each service asserts
+    # its own cgroup limits and prints "<svc>: PASS" / "<svc>: FAIL". We read
+    # back the logs (bounded by a background reader) and require both PASS lines
+    # with no FAIL.
+    if [[ "$test_name" == "python-multiservice-resources" ]]; then
+        echo -e "${BOLD}── $test_name${RESET}"
+        app_id="sh.wendy.ci.python-multiservice-resources"
+
+        run_test "python-multiservice-resources (deploy)" \
+            "$WENDY" run --device "$HOSTNAME" --prefix "$test_dir" --deploy
+
+        per_service_limits_enforced() {
+            local logs logfile
+            logfile=$(mktemp -t wendy-mres-logs.XXXXXX)
+            # device logs streams; read it in the background and stop after a
+            # few seconds (portable: no `timeout` dependency).
+            "$WENDY" device logs --device "$HOSTNAME" --app "$app_id" --tail 50 \
+                >"$logfile" 2>&1 &
+            local logs_pid=$!
+            sleep 8
+            kill "$logs_pid" 2>/dev/null
+            wait "$logs_pid" 2>/dev/null
+            logs=$(cat "$logfile")
+            rm -f "$logfile"
+
+            if echo "$logs" | grep -qi "FAIL"; then
+                echo "Service reported FAIL:"; echo "$logs" | grep -i "fail"
+                return 1
+            fi
+            if echo "$logs" | grep -q "db: PASS" && echo "$logs" | grep -q "api: PASS"; then
+                return 0
+            fi
+            echo "Did not observe both 'db: PASS' and 'api: PASS' in logs:"; echo "$logs"
+            return 1
+        }
+        run_test "python-multiservice-resources (per-service limits)" per_service_limits_enforced
+
+        "$WENDY" device apps remove "$app_id" --device "$HOSTNAME" --force --cleanup >/dev/null 2>&1 || true
+        continue
+    fi
+
+    # ── device top (live monitor) ────────────────────────────────────────
+    # Deploy a long-running app, then verify `wendy device top --json` reports
+    # the host snapshot and lists the deployed container.
+    if [[ "$test_name" == "python-device-top" ]]; then
+        echo -e "${BOLD}── $test_name${RESET}"
+        app_id="sh.wendy.ci.python-device-top"
+
+        run_test "python-device-top (deploy)" \
+            "$WENDY" run --device "$HOSTNAME" --prefix "$test_dir" --detach
+
+        device_top_snapshot() {
+            local out rc
+            out=$("$WENDY" device top --device "$HOSTNAME" --json 2>&1)
+            rc=$?
+            if [[ $rc -ne 0 ]]; then
+                echo "wendy device top --json failed (rc=$rc): $out"
+                return 1
+            fi
+            if ! echo "$out" | jq -e '.host.cpuCount > 0 and .host.memTotalBytes > 0' >/dev/null 2>&1; then
+                echo "host.cpuCount / host.memTotalBytes missing or zero: $out"
+                return 1
+            fi
+            if ! echo "$out" | jq -e --arg a "$app_id" \
+                '(.containers // []) | map(.name) | index($a) != null' >/dev/null 2>&1; then
+                echo "deployed app '$app_id' not found in containers[]: $out"
+                return 1
+            fi
+            return 0
+        }
+        run_test "python-device-top (snapshot reports host + container)" device_top_snapshot
+
+        "$WENDY" device apps remove "$app_id" --device "$HOSTNAME" --force --cleanup >/dev/null 2>&1 || true
         continue
     fi
 

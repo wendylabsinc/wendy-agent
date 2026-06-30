@@ -1,0 +1,1 @@
+AI-generated screencasts from one script. In this screencast, we will show how feature context and one source file can become a complete narrated video, while the render pipeline stays deterministic and reviewable.

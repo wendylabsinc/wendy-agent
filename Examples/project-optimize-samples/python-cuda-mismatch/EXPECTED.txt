@@ -1,0 +1,5 @@
+Expected findings (wendy project optimize):
+  warning  cuda-ml         x86 CUDA base image on an arm64 target               (Dockerfile:5)
+  warning  cuda-ml         GPU entitlement set but a CPU-only ML wheel pinned   (requirements.txt:3)
+  warning  build-cache     pip install without --mount=type=cache              (Dockerfile:9) [fixable]
+  warning  arch-image      No .dockerignore                                     [fixable]

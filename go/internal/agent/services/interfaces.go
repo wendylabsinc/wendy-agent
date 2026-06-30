@@ -44,6 +44,10 @@ type ContainerdClient interface {
 	WriteLayer(ctx context.Context, digest string, reader io.Reader, size int64) error
 	AssembleImage(ctx context.Context, imageName string, layers []*agentpb.RunContainerLayerHeader, imageConfig []byte) error
 	MissingChunks(ctx context.Context, hashes [][32]byte) ([][32]byte, error)
+	// PresentLayers reports which uncompressed layer diff IDs the device already
+	// has, mapping each to its blob size. Used by QueryLayers so the CLI can skip
+	// chunking layers the device can reuse as-is.
+	PresentLayers(ctx context.Context, diffIDs []string) (map[string]int64, error)
 	StageChunk(ctx context.Context, h [32]byte, data []byte) error
 	AssembleLayerFromChunks(ctx context.Context, diffID string, hashes [][32]byte) error
 	CreateContainer(ctx context.Context, req *agentpb.CreateContainerRequest, appCfg *appconfig.AppConfig) error
@@ -59,6 +63,8 @@ type ContainerdClient interface {
 	ContainerIDsForApp(ctx context.Context, appID string) ([]string, error)
 	ListContainers(ctx context.Context) ([]*agentpb.AppContainer, error)
 	GetContainerStats(ctx context.Context) ([]*agentpb.ContainerStats, error)
+	GetResourceStats(ctx context.Context) ([]*agentpb.ResourceContainerStats, error)
+	GetListeningPorts(ctx context.Context, appName string) ([]*agentpb.PortEntry, error)
 	GetContainerMetrics(ctx context.Context, appName string) (ContainerMetrics, error)
 	GetContainerMCPPort(ctx context.Context, appName string) (uint32, error)
 	// GetContainerRestartPolicyLabel returns the raw restart policy label stored on

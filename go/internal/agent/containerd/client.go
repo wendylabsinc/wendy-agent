@@ -445,9 +445,15 @@ func (c *Client) AssembleImage(ctx context.Context, imageName string, layers []*
 }
 
 // wrapWithDebugpy modifies the command args to run through debugpy for remote debugging.
-// It injects "-m debugpy --listen 0.0.0.0:5678" after the Python binary.
+// It injects "-m debugpy --listen 127.0.0.1:5678" after the Python binary.
+//
+// SECURITY (WDY-1010): the listener binds loopback only, never 0.0.0.0. debugpy
+// exposes an unauthenticated DAP endpoint with full Python RCE; binding all
+// interfaces made that reachable by anyone on the device's network during a
+// debug session. Remote attach reaches the listener through a device-side
+// tunnel (e.g. SSH/`wendy` port-forward) terminating on the device's loopback.
 func wrapWithDebugpy(args []string) []string {
-	debugpyArgs := []string{"-m", "debugpy", "--listen", "0.0.0.0:5678"}
+	debugpyArgs := []string{"-m", "debugpy", "--listen", "127.0.0.1:5678"}
 
 	if len(args) > 0 {
 		base := args[0]
@@ -455,7 +461,7 @@ func wrapWithDebugpy(args []string) []string {
 			base = base[i+1:]
 		}
 		if base == "python" || base == "python3" || strings.HasPrefix(base, "python3.") {
-			// python3 app.py -> python3 -m debugpy --listen 0.0.0.0:5678 app.py
+			// python3 app.py -> python3 -m debugpy --listen 127.0.0.1:5678 app.py
 			result := make([]string, 0, len(args)+len(debugpyArgs))
 			result = append(result, args[0])
 			result = append(result, debugpyArgs...)
@@ -631,6 +637,12 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 	// bluetooth entitlement verbatim — reconstructing it from appID alone would
 	// drop the service suffix and runc would fail with a missing bind-mount
 	// source.
+	// SECURITY (WDY-1093): refuse to start a bluetooth container when the D-Bus
+	// proxy is unavailable, rather than silently starting it without the filter.
+	if err := c.requireDBusProxy(appCfg, containerName); err != nil {
+		return err
+	}
+
 	var dbusProxyStarted bool
 	var dbusProxySocketDir string
 	if c.proxyManager != nil && hasBluetooth(appCfg) {
@@ -766,6 +778,14 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 	}
 	spec.Linux.CgroupsPath = fmt.Sprintf("system.slice:%s:%s", sharedenv.SystemdServiceName(), cgroupSuffix)
 
+	// Apply CPU/memory/PID ceilings from wendy.json (per-service overrides
+	// the app-level default). Malformed values are rejected here rather than
+	// silently running the container unbounded. CLI-side validation should
+	// catch these first, but the agent must not trust the request blindly.
+	if err := localoci.ApplyResourceLimits(spec, appCfg.ResolveResourcesForService(serviceName)); err != nil {
+		return fmt.Errorf("applying resource limits: %w", err)
+	}
+
 	report(&agentpb.CreateContainerProgress{Phase: agentpb.CreateContainerProgress_CREATING_CONTAINER})
 
 	labels := wendyLabels(appID, serviceName, version, req.GetRestartPolicy(), appCfg.Entitlements)
@@ -861,6 +881,14 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 	// same node, and runc mknod()s each entry, so a duplicate path would fail
 	// container creation with EEXIST.
 	localoci.DedupeDevices(spec)
+
+	// SECURITY (WDY-1102): backstop against any mount whose source resolves into
+	// containerd's runtime directory (the control socket is a host-escape vector).
+	// Runs on the fully assembled spec — entitlement, shared-SHM, and default
+	// mounts — immediately before it is handed to the runtime.
+	if err := localoci.ValidateMounts(spec); err != nil {
+		return err
+	}
 
 	// Serialize our custom OCI spec to JSON for WithSpecFromBytes.
 	specJSON, err := json.Marshal(spec)
@@ -1247,13 +1275,6 @@ func (c *Client) StartContainerWithStdin(ctx context.Context, appName string, st
 	return outputCh, nil
 }
 
-func shellCommand() (string, string) {
-	if runtime.GOOS == "windows" {
-		return "cmd.exe", "/C"
-	}
-	return "sh", "-c"
-}
-
 var deviceHostnameWithSuffix = func() string {
 	h, err := os.Hostname()
 	if err != nil || h == "" {
@@ -1493,7 +1514,7 @@ func injectOTELEnvIfNeeded(env []string, appCfg *appconfig.AppConfig, appID stri
 
 func hasHostNetworkEntitlement(appCfg *appconfig.AppConfig) bool {
 	for _, e := range appCfg.Entitlements {
-		if e.Type == appconfig.EntitlementNetwork && (e.Mode == "host" || e.Mode == "") {
+		if e.Type == appconfig.EntitlementNetwork && (e.Mode == "host" || e.Mode == "host-admin" || e.Mode == "") {
 			return true
 		}
 	}
@@ -1513,8 +1534,17 @@ func expandAgentHook(command, appName string) string {
 	})
 }
 
-var startPostStartHookCommand = func(shell, flag, command string) (func() error, error) {
-	cmd := exec.Command(shell, flag, command)
+var startPostStartHookCommand = func(argv []string) (func() error, error) {
+	// SECURITY (WDY-1009): exec the hook directly via argv. The command must
+	// never be passed to a shell — doing so would let any app's wendy.json
+	// inject arbitrary commands that run as the agent (root) on the host,
+	// bypassing the container sandbox and entitlement boundary.
+	if len(argv) == 0 {
+		// Keep the argv[0] invariant local to the runner so a future caller
+		// gets an error rather than a panic.
+		return nil, errors.New("postStart hook argv is empty")
+	}
+	cmd := exec.Command(argv[0], argv[1:]...)
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
@@ -1526,9 +1556,32 @@ func (c *Client) startPostStartAgentHook(command, appName string) bool {
 		return false
 	}
 
-	expanded := expandAgentHook(command, appName)
-	shell, flag := shellCommand()
-	wait, err := startPostStartHookCommand(shell, flag, expanded)
+	// Expand ${WENDY_*}/env references, then split into argv on whitespace.
+	// Because the result is exec'd directly (no shell), shell metacharacters in
+	// the command or in any expanded value are inert — they become literal
+	// arguments rather than new commands.
+	argv := strings.Fields(expandAgentHook(command, appName))
+	if len(argv) == 0 {
+		// Log the raw (pre-expansion) command, not the expanded value: it is the
+		// developer-authored wendy.json string (variable references, not their
+		// expanded values), so it is safe to log and tells the operator which
+		// hook misfired.
+		c.logger.Warn("postStart agent hook expanded to an empty command; skipping",
+			zap.String("app_name", appName),
+			zap.String("configured_command", command),
+		)
+		return false
+	}
+	// strings.Fields does not honor shell quoting, so a quoted argument is split
+	// on whitespace. Warn rather than mis-execute silently; quoting users should
+	// move the logic into a script file.
+	if strings.ContainsAny(command, `"'`) {
+		c.logger.Warn("postStart agent hook contains quote characters; quoting is not honored and arguments are split on whitespace — move shell logic into a script file",
+			zap.String("app_name", appName),
+			zap.String("configured_command", command),
+		)
+	}
+	wait, err := startPostStartHookCommand(argv)
 	if err != nil {
 		c.logger.Warn("Failed to start postStart agent hook",
 			zap.String("app_name", appName),
@@ -1907,10 +1960,20 @@ func (c *Client) streamOutput(
 	exitStatus := <-exitStatusCh
 	code, _, err := exitStatus.Result()
 	if err != nil {
-		c.logger.Error("Task exited with error",
-			zap.String("app_name", appName),
-			zap.Error(err),
-		)
+		if errors.Is(err, context.Canceled) {
+			// The wait was canceled because the RPC that started this monitor
+			// ended — e.g. `wendy run --detach` returned and tore down its
+			// deploy stream. The container keeps running; this is normal
+			// teardown, not a task failure, so don't log it as an error.
+			c.logger.Debug("Stopped monitoring task exit (stream canceled)",
+				zap.String("app_name", appName),
+			)
+		} else {
+			c.logger.Error("Task exited with error",
+				zap.String("app_name", appName),
+				zap.Error(err),
+			)
+		}
 	} else {
 		c.logger.Info("Task exited",
 			zap.String("app_name", appName),
@@ -2494,6 +2557,41 @@ func (c *Client) GetContainerStats(ctx context.Context) ([]*agentpb.ContainerSta
 	return result, nil
 }
 
+// cpuUsageNanos returns cumulative user+sys CPU nanoseconds, clamped at 0.
+func cpuUsageNanos(m services.ContainerMetrics) uint64 {
+	total := m.UserCPUNanos + m.SysCPUNanos
+	if total < 0 {
+		return 0
+	}
+	return uint64(total)
+}
+
+// GetResourceStats returns cumulative per-container CPU nanoseconds and current
+// memory usage, keyed by container ID (matching GetContainerStats). The client
+// computes CPU percentages from deltas between consecutive samples.
+func (c *Client) GetResourceStats(ctx context.Context) ([]*agentpb.ResourceContainerStats, error) {
+	ctx = c.withNamespace(ctx)
+
+	containers, err := c.client.Containers(ctx, fmt.Sprintf("labels.%q", labelKeyAppVersion))
+	if err != nil {
+		return nil, fmt.Errorf("listing containers: %w", err)
+	}
+
+	var result []*agentpb.ResourceContainerStats
+	for _, ctr := range containers {
+		stat := &agentpb.ResourceContainerStats{AppName: ctr.ID()}
+		if task, taskErr := ctr.Task(ctx, nil); taskErr == nil {
+			if metric, metErr := task.Metrics(ctx); metErr == nil {
+				m := extractContainerMetrics(metric)
+				stat.CpuUsageNanos = cpuUsageNanos(m)
+				stat.MemoryBytes = m.MemBytes
+			}
+		}
+		result = append(result, stat)
+	}
+	return result, nil
+}
+
 func (c *Client) GetContainerMetrics(ctx context.Context, appName string) (services.ContainerMetrics, error) {
 	ctx = c.withNamespace(ctx)
 	container, err := c.client.LoadContainer(ctx, appName)
@@ -2574,4 +2672,17 @@ func hasBluetooth(cfg *appconfig.AppConfig) bool {
 		}
 	}
 	return false
+}
+
+// requireDBusProxy enforces the D-Bus sandboxing invariant for WDY-1093: a
+// container that declares the bluetooth (D-Bus) entitlement may only start when
+// xdg-dbus-proxy is available to scope D-Bus to org.bluez. When the proxy
+// manager is absent, starting the container would silently break bluetooth (or,
+// in older builds, grant unfiltered system-bus access), so refuse loudly
+// instead of degrading silently. Returns nil when it is safe to proceed.
+func (c *Client) requireDBusProxy(cfg *appconfig.AppConfig, containerName string) error {
+	if hasBluetooth(cfg) && c.proxyManager == nil {
+		return fmt.Errorf("cannot start container %q: the bluetooth entitlement requires xdg-dbus-proxy to filter D-Bus access, which is not available on this device", containerName)
+	}
+	return nil
 }

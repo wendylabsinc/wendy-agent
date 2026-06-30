@@ -1,7 +1,9 @@
 package commands
 
 import (
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -33,5 +35,19 @@ func TestBuildxLocalCacheDir(t *testing.T) {
 	b := buildxLocalCacheDir(userCache, "app-b")
 	if a == b {
 		t.Fatalf("distinct cache keys collided on %q", a)
+	}
+}
+
+func TestBuildxArgsRequestPlainProgress(t *testing.T) {
+	// Both buildx arg builders must request --progress=plain so the CLI can
+	// parse a deterministic format. Guard against accidental removal.
+	for _, f := range []string{"docker.go", "ocilayers.go"} {
+		src, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatalf("read %s: %v", f, err)
+		}
+		if !strings.Contains(string(src), `"--progress", "plain"`) {
+			t.Errorf("%s: expected buildx args to include --progress plain", f)
+		}
 	}
 }

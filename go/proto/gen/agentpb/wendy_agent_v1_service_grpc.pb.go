@@ -37,6 +37,7 @@ const (
 	WendyAgentService_ForgetBluetoothPeripheral_FullMethodName     = "/wendy.agent.services.v1.WendyAgentService/ForgetBluetoothPeripheral"
 	WendyAgentService_UpdateOS_FullMethodName                      = "/wendy.agent.services.v1.WendyAgentService/UpdateOS"
 	WendyAgentService_DumpKernelLog_FullMethodName                 = "/wendy.agent.services.v1.WendyAgentService/DumpKernelLog"
+	WendyAgentService_GetOSUpdateStatus_FullMethodName             = "/wendy.agent.services.v1.WendyAgentService/GetOSUpdateStatus"
 )
 
 // WendyAgentServiceClient is the client API for WendyAgentService service.
@@ -77,6 +78,10 @@ type WendyAgentServiceClient interface {
 	// this is a local diagnostic dump for an operator connected to their own
 	// device, distinct from the DPIA-gated OTel kernel-log streaming path.
 	DumpKernelLog(ctx context.Context, in *DumpKernelLogRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[DumpKernelLogResponse], error)
+	// Report the outcome of the most recent OS update attempt: committed
+	// after post-reboot healthchecks passed, or rolled back with details on
+	// which critical services failed and why.
+	GetOSUpdateStatus(ctx context.Context, in *GetOSUpdateStatusRequest, opts ...grpc.CallOption) (*GetOSUpdateStatusResponse, error)
 }
 
 type wendyAgentServiceClient struct {
@@ -294,6 +299,16 @@ func (c *wendyAgentServiceClient) DumpKernelLog(ctx context.Context, in *DumpKer
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type WendyAgentService_DumpKernelLogClient = grpc.ServerStreamingClient[DumpKernelLogResponse]
 
+func (c *wendyAgentServiceClient) GetOSUpdateStatus(ctx context.Context, in *GetOSUpdateStatusRequest, opts ...grpc.CallOption) (*GetOSUpdateStatusResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetOSUpdateStatusResponse)
+	err := c.cc.Invoke(ctx, WendyAgentService_GetOSUpdateStatus_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // WendyAgentServiceServer is the server API for WendyAgentService service.
 // All implementations must embed UnimplementedWendyAgentServiceServer
 // for forward compatibility.
@@ -332,6 +347,10 @@ type WendyAgentServiceServer interface {
 	// this is a local diagnostic dump for an operator connected to their own
 	// device, distinct from the DPIA-gated OTel kernel-log streaming path.
 	DumpKernelLog(*DumpKernelLogRequest, grpc.ServerStreamingServer[DumpKernelLogResponse]) error
+	// Report the outcome of the most recent OS update attempt: committed
+	// after post-reboot healthchecks passed, or rolled back with details on
+	// which critical services failed and why.
+	GetOSUpdateStatus(context.Context, *GetOSUpdateStatusRequest) (*GetOSUpdateStatusResponse, error)
 	mustEmbedUnimplementedWendyAgentServiceServer()
 }
 
@@ -395,6 +414,9 @@ func (UnimplementedWendyAgentServiceServer) UpdateOS(*UpdateOSRequest, grpc.Serv
 }
 func (UnimplementedWendyAgentServiceServer) DumpKernelLog(*DumpKernelLogRequest, grpc.ServerStreamingServer[DumpKernelLogResponse]) error {
 	return status.Error(codes.Unimplemented, "method DumpKernelLog not implemented")
+}
+func (UnimplementedWendyAgentServiceServer) GetOSUpdateStatus(context.Context, *GetOSUpdateStatusRequest) (*GetOSUpdateStatusResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetOSUpdateStatus not implemented")
 }
 func (UnimplementedWendyAgentServiceServer) mustEmbedUnimplementedWendyAgentServiceServer() {}
 func (UnimplementedWendyAgentServiceServer) testEmbeddedByValue()                           {}
@@ -694,6 +716,24 @@ func _WendyAgentService_DumpKernelLog_Handler(srv interface{}, stream grpc.Serve
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type WendyAgentService_DumpKernelLogServer = grpc.ServerStreamingServer[DumpKernelLogResponse]
 
+func _WendyAgentService_GetOSUpdateStatus_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetOSUpdateStatusRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WendyAgentServiceServer).GetOSUpdateStatus(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WendyAgentService_GetOSUpdateStatus_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WendyAgentServiceServer).GetOSUpdateStatus(ctx, req.(*GetOSUpdateStatusRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // WendyAgentService_ServiceDesc is the grpc.ServiceDesc for WendyAgentService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -752,6 +792,10 @@ var WendyAgentService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ForgetBluetoothPeripheral",
 			Handler:    _WendyAgentService_ForgetBluetoothPeripheral_Handler,
+		},
+		{
+			MethodName: "GetOSUpdateStatus",
+			Handler:    _WendyAgentService_GetOSUpdateStatus_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

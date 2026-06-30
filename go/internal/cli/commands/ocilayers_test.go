@@ -7,10 +7,49 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
 )
+
+// TestIsImageBuildFailure verifies the classification used by the chunk-diff
+// deploy path to decide whether the registry-push fallback would help. Only an
+// imageBuildFailedError (the Dockerfile build itself failing) suppresses the
+// fallback; builder-setup and transport failures stay eligible for it. (#1166)
+func TestIsImageBuildFailure(t *testing.T) {
+	buildErr := &imageBuildFailedError{errors.New("colcon: error: unrecognized arguments: --log-base log")}
+
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"plain transport error", errors.New("QueryChunks unimplemented"), false},
+		{"setup error", errors.New("adding hosts entry to builder: sed: can't move"), false},
+		{"build failure", buildErr, true},
+		{"wrapped build failure", fmt.Errorf("deploy failed: %w", buildErr), true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isImageBuildFailure(tc.err); got != tc.want {
+				t.Fatalf("isImageBuildFailure(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
+	}
+
+	// The error message must surface the underlying build error verbatim so the
+	// user sees the actionable failure, not a fallback-specific wrapper.
+	if got := buildErr.Error(); got != "colcon: error: unrecognized arguments: --log-base log" {
+		t.Fatalf("imageBuildFailedError.Error() = %q, want underlying message", got)
+	}
+	if !errors.Is(buildErr, buildErr.err) {
+		t.Fatal("imageBuildFailedError should unwrap to its underlying error")
+	}
+}
 
 // sha256Hex returns the lowercase hex-encoded SHA-256 digest of b.
 func sha256Hex(b []byte) string {
@@ -124,6 +163,68 @@ func writeMinimalOCILayout(t *testing.T, path string, blobData []byte, mediaType
 	writeOCITar(t, path, entries)
 }
 
+// readOCILayoutLayers must reference layer blobs by their byte range in the
+// on-disk tar (never buffering them in RAM), and that range must be exact —
+// the compressed bytes read back have to hash to the layer digest.
+func TestReadOCILayoutLayersStreamsBlobByOffset(t *testing.T) {
+	dir := t.TempDir()
+	ociTar := filepath.Join(dir, "image.tar")
+
+	// Compressible payload large enough to span many tar blocks.
+	raw := bytes.Repeat([]byte("wendy-layer-payload-"), 5000)
+	var gz bytes.Buffer
+	gw := gzip.NewWriter(&gz)
+	if _, err := gw.Write(raw); err != nil {
+		t.Fatal(err)
+	}
+	if err := gw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	compressed := gz.Bytes()
+
+	writeMinimalOCILayout(t, ociTar, compressed, "application/vnd.oci.image.layer.v1.tar+gzip", raw)
+
+	layers, _, err := readOCILayoutLayers(ociTar, "linux/arm64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(layers) != 1 {
+		t.Fatalf("want 1 layer, got %d", len(layers))
+	}
+	l := layers[0]
+
+	if l.Blob != nil {
+		t.Fatalf("layer unexpectedly holds %d compressed bytes in memory", len(l.Blob))
+	}
+	if l.TarPath == "" {
+		t.Fatal("file-backed layer missing TarPath")
+	}
+
+	cr, err := l.compressedReader()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cr.Close()
+	gotCompressed, err := io.ReadAll(cr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if "sha256:"+sha256Hex(gotCompressed) != l.Digest {
+		t.Fatal("compressed bytes read by recorded offset/size do not match the layer digest")
+	}
+	if !bytes.Equal(gotCompressed, compressed) {
+		t.Fatalf("compressed bytes mismatch: got %d want %d", len(gotCompressed), len(compressed))
+	}
+
+	got, err := l.decompress()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, raw) {
+		t.Fatal("decompressed bytes do not match original raw tar")
+	}
+}
+
 func TestReadOCILayoutLayersUncompressed(t *testing.T) {
 	dir := t.TempDir()
 	ociTar := filepath.Join(dir, "image.tar")
@@ -193,6 +294,42 @@ func TestReadOCILayoutLayersGzip(t *testing.T) {
 	// The layer digest is the COMPRESSED blob digest (the stable cache key).
 	if layers[0].Digest != "sha256:"+sha256Hex(compressedBytes) {
 		t.Fatalf("layer digest mismatch (should be sha256 of compressed blob): %s", layers[0].Digest)
+	}
+}
+
+// TestReadOCILayoutLayersPopulatesDiffID verifies the uncompressed diff ID is
+// read from the image config's rootfs.diff_ids — without decompressing — and is
+// distinct from the compressed layer digest for a gzip layer.
+func TestReadOCILayoutLayersPopulatesDiffID(t *testing.T) {
+	dir := t.TempDir()
+	ociTar := filepath.Join(dir, "image.tar")
+	want := []byte("diffid-probe-payload")
+
+	var compressed bytes.Buffer
+	gw := gzip.NewWriter(&compressed)
+	if _, err := gw.Write(want); err != nil {
+		t.Fatal(err)
+	}
+	if err := gw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	compressedBytes := compressed.Bytes()
+
+	writeMinimalOCILayout(t, ociTar, compressedBytes, "application/vnd.oci.image.layer.v1.tar+gzip", want)
+
+	layers, _, err := readOCILayoutLayers(ociTar, "linux/arm64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(layers) != 1 {
+		t.Fatalf("expected 1 layer, got %d", len(layers))
+	}
+	wantDiffID := "sha256:" + sha256Hex(want)
+	if layers[0].DiffID != wantDiffID {
+		t.Fatalf("DiffID = %q, want %q (from config rootfs.diff_ids)", layers[0].DiffID, wantDiffID)
+	}
+	if layers[0].DiffID == layers[0].Digest {
+		t.Fatal("DiffID must differ from the compressed Digest for a gzip layer")
 	}
 }
 

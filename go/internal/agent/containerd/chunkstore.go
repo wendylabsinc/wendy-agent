@@ -161,6 +161,32 @@ func (c *Client) MissingChunks(_ context.Context, hashes [][32]byte) ([][32]byte
 	return out, nil
 }
 
+// PresentLayers reports which of the given uncompressed layer digests (diff IDs)
+// already exist in the content store, mapping each present diff ID to its blob
+// size. Layers the device does not have are simply absent from the result. The
+// CLI uses this to skip decompressing and chunking layers it can reuse as-is.
+// Malformed digests are skipped rather than failing the whole query.
+func (c *Client) PresentLayers(ctx context.Context, diffIDs []string) (map[string]int64, error) {
+	nsCtx := c.withNamespace(ctx)
+	cs := c.client.ContentStore()
+	present := make(map[string]int64, len(diffIDs))
+	for _, d := range diffIDs {
+		dgst, err := digest.Parse(d)
+		if err != nil {
+			continue
+		}
+		info, err := cs.Info(nsCtx, dgst)
+		if err != nil {
+			if errdefs.IsNotFound(err) {
+				continue
+			}
+			return nil, err
+		}
+		present[d] = info.Size
+	}
+	return present, nil
+}
+
 func (c *Client) StageChunk(_ context.Context, h [32]byte, data []byte) error {
 	if len(data) > maxStagedChunkBytes {
 		return status.Errorf(codes.ResourceExhausted, "chunk too large: %d > %d bytes", len(data), maxStagedChunkBytes)
@@ -283,7 +309,7 @@ func (c *Client) indexLayerBlob(ctx context.Context, diffID string) error {
 	}
 	defer ra.Close()
 
-	refs, err := chunk.Chunk(io.NewSectionReader(ra, 0, ra.Size()))
+	refs, err := chunk.ChunkReaderAt(ra, ra.Size())
 	if err != nil {
 		return err
 	}
