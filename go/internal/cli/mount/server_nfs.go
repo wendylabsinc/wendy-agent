@@ -3,6 +3,7 @@ package mount
 import (
 	"context"
 	"net"
+	"sync"
 
 	"github.com/go-git/go-billy/v5"
 	nfs "github.com/willscott/go-nfs"
@@ -22,10 +23,22 @@ func ServeNFS(ctx context.Context, fs billy.Filesystem) (string, func() error, e
 
 	go func() { _ = nfs.Serve(lis, cacheHandler) }()
 
-	stop := func() error { return lis.Close() }
+	var once sync.Once
+	done := make(chan struct{})
+	stop := func() error {
+		var err error
+		once.Do(func() {
+			close(done)
+			err = lis.Close()
+		})
+		return err
+	}
 	go func() {
-		<-ctx.Done()
-		_ = lis.Close()
+		select {
+		case <-ctx.Done():
+			stop()
+		case <-done:
+		}
 	}()
 	return lis.Addr().String(), stop, nil
 }
