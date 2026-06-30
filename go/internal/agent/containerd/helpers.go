@@ -69,6 +69,14 @@ const labelKeyMCPPort = "sh.wendy/mcp.port"
 // labelKeyGCRoot prevents garbage collection of content blobs.
 const labelKeyGCRoot = "containerd.io/gc.root"
 
+// labelKeyOrphanedAt records, as an RFC3339 UTC timestamp, when the image GC
+// first observed a gc.root-pinned snapshot or content blob to be unreferenced.
+// The GC's orphan-age grace is measured from this value (not the gc.root commit
+// time), so a layer that is re-adopted by a later deploy — which clears this
+// label — keeps its retention window reset. See imagegc.go for the full
+// tombstone semantics.
+const labelKeyOrphanedAt = "sh.wendy/gc.orphaned-at"
+
 // labelKeyWendyLayer marks a content blob as a Wendy-pushed layer.
 const labelKeyWendyLayer = "sh.wendy.layer"
 

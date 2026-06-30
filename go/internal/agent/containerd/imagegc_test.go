@@ -15,6 +15,10 @@ import (
 	"go.uber.org/zap"
 )
 
+// testGrace is the orphan-age grace used throughout these tests (the production
+// default). Tombstones older than this are reapable; younger ones are kept.
+const testGrace = 24 * time.Hour
+
 // --- fakes for the mark-and-sweep orchestration (modeled on mockStatter) ---
 
 type fakeImageStore struct {
@@ -27,9 +31,11 @@ func (f *fakeImageStore) List(_ context.Context, _ ...string) ([]images.Image, e
 }
 
 type fakeSnapshotter struct {
-	infos   map[string]snapshots.Info
-	usage   map[string]int64
-	removed []string
+	infos     map[string]snapshots.Info
+	usage     map[string]int64
+	removed   []string
+	updated   []string
+	updateErr error
 }
 
 func (f *fakeSnapshotter) Walk(ctx context.Context, fn snapshots.WalkFunc, _ ...string) error {
@@ -56,6 +62,27 @@ func (f *fakeSnapshotter) Usage(_ context.Context, key string) (snapshots.Usage,
 	return snapshots.Usage{Size: f.usage[key]}, nil
 }
 
+// Update applies each "labels.<key>" fieldpath to the stored Info, reproducing
+// containerd's metadata semantics: an empty value deletes the label, a non-empty
+// value sets it, and labels outside the named fieldpaths are left untouched (so
+// gc.root survives an orphanedAt write).
+func (f *fakeSnapshotter) Update(_ context.Context, info snapshots.Info, fieldpaths ...string) (snapshots.Info, error) {
+	if f.updateErr != nil {
+		return snapshots.Info{}, f.updateErr
+	}
+	cur, ok := f.infos[info.Name]
+	if !ok {
+		return snapshots.Info{}, errdefs.ErrNotFound
+	}
+	if cur.Labels == nil {
+		cur.Labels = map[string]string{}
+	}
+	applyLabelFieldpaths(cur.Labels, info.Labels, fieldpaths)
+	f.infos[info.Name] = cur
+	f.updated = append(f.updated, info.Name)
+	return cur, nil
+}
+
 func (f *fakeSnapshotter) Remove(_ context.Context, key string) error {
 	for _, info := range f.infos {
 		if info.Parent == key {
@@ -71,8 +98,10 @@ func (f *fakeSnapshotter) Remove(_ context.Context, key string) error {
 }
 
 type fakeContent struct {
-	infos   map[digest.Digest]content.Info
-	deleted []digest.Digest
+	infos     map[digest.Digest]content.Info
+	deleted   []digest.Digest
+	updated   []digest.Digest
+	updateErr error
 }
 
 func (f *fakeContent) Walk(_ context.Context, fn content.WalkFunc, _ ...string) error {
@@ -86,6 +115,23 @@ func (f *fakeContent) Walk(_ context.Context, fn content.WalkFunc, _ ...string) 
 	return nil
 }
 
+func (f *fakeContent) Update(_ context.Context, info content.Info, fieldpaths ...string) (content.Info, error) {
+	if f.updateErr != nil {
+		return content.Info{}, f.updateErr
+	}
+	cur, ok := f.infos[info.Digest]
+	if !ok {
+		return content.Info{}, errdefs.ErrNotFound
+	}
+	if cur.Labels == nil {
+		cur.Labels = map[string]string{}
+	}
+	applyLabelFieldpaths(cur.Labels, info.Labels, fieldpaths)
+	f.infos[info.Digest] = cur
+	f.updated = append(f.updated, info.Digest)
+	return cur, nil
+}
+
 func (f *fakeContent) Delete(_ context.Context, dgst digest.Digest) error {
 	if _, ok := f.infos[dgst]; !ok {
 		return errdefs.ErrNotFound
@@ -95,13 +141,40 @@ func (f *fakeContent) Delete(_ context.Context, dgst digest.Digest) error {
 	return nil
 }
 
-func gcLabel(ts string) map[string]string {
-	return map[string]string{labelKeyGCRoot: ts}
+// applyLabelFieldpaths mutates dst per the "labels.<key>" fieldpaths, mirroring
+// containerd's boltutil.writeMap (empty value -> delete).
+func applyLabelFieldpaths(dst, src map[string]string, fieldpaths []string) {
+	for _, p := range fieldpaths {
+		key, found := strings.CutPrefix(p, "labels.")
+		if !found {
+			continue
+		}
+		if v := src[key]; v == "" {
+			delete(dst, key)
+		} else {
+			dst[key] = v
+		}
+	}
 }
 
-func TestRunImageGC_ReclaimsOldVersionData(t *testing.T) {
+// gcRootLabels marks an artifact gc.root so the fake Walk yields it. The value is
+// irrelevant to the tombstone GC (only presence matters) and never the age basis.
+func gcRootLabels() map[string]string {
+	return map[string]string{labelKeyGCRoot: "x"}
+}
+
+// tombstone marks an artifact gc.root AND stamps its orphanedAt at ts — i.e. an
+// artifact the GC has already observed orphaned.
+func tombstone(ts time.Time) map[string]string {
+	return map[string]string{
+		labelKeyGCRoot:     "x",
+		labelKeyOrphanedAt: ts.UTC().Format(time.RFC3339),
+	}
+}
+
+func TestRunImageGC_ReclaimsAgedOrphans(t *testing.T) {
 	now := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)
-	oldTS := now.Add(-time.Hour).UTC().Format(time.RFC3339) // older than grace
+	aged := now.Add(-48 * time.Hour) // orphaned well past grace
 
 	const (
 		c0     = "sha256:c0" // base layer of current image
@@ -118,19 +191,19 @@ func TestRunImageGC_ReclaimsOldVersionData(t *testing.T) {
 
 	sn := &fakeSnapshotter{
 		infos: map[string]snapshots.Info{
-			c0:     {Name: c0, Labels: gcLabel(oldTS)},
-			c1:     {Name: c1, Parent: c0, Labels: gcLabel(oldTS)},
-			oldA:   {Name: oldA, Parent: c0, Labels: gcLabel(oldTS)},
-			oldB:   {Name: oldB, Parent: oldA, Labels: gcLabel(oldTS)},
+			c0:     {Name: c0, Labels: gcRootLabels()},
+			c1:     {Name: c1, Parent: c0, Labels: gcRootLabels()},
+			oldA:   {Name: oldA, Parent: c0, Labels: tombstone(aged)},
+			oldB:   {Name: oldB, Parent: oldA, Labels: tombstone(aged)},
 			active: {Name: active, Parent: c1}, // no gc.root label
 		},
 		usage: map[string]int64{oldA: 100, oldB: 200},
 	}
 	cs := &fakeContent{
 		infos: map[digest.Digest]content.Info{
-			l0:   {Digest: l0, Size: 10, Labels: gcLabel(oldTS)},
-			l1:   {Digest: l1, Size: 20, Labels: gcLabel(oldTS)},
-			oldL: {Digest: oldL, Size: 33, Labels: gcLabel(oldTS)},
+			l0:   {Digest: l0, Size: 10, Labels: gcRootLabels()},
+			l1:   {Digest: l1, Size: 20, Labels: gcRootLabels()},
+			oldL: {Digest: oldL, Size: 33, Labels: tombstone(aged)},
 		},
 	}
 
@@ -145,7 +218,7 @@ func TestRunImageGC_ReclaimsOldVersionData(t *testing.T) {
 			return []string{active}, nil
 		},
 		now:    func() time.Time { return now },
-		grace:  imageGCGracePeriod,
+		grace:  testGrace,
 		logger: zap.NewNop(),
 	}
 
@@ -158,6 +231,9 @@ func TestRunImageGC_ReclaimsOldVersionData(t *testing.T) {
 	}
 	if stats.BlobsReclaimed != 1 || stats.BlobBytes != 33 {
 		t.Errorf("blobs reclaimed=%d bytes=%d; want 1/33", stats.BlobsReclaimed, stats.BlobBytes)
+	}
+	if stats.SnapshotsTombstoned != 0 || stats.BlobsTombstoned != 0 || stats.StampsCleared != 0 {
+		t.Errorf("unexpected tombstone activity: %+v", stats)
 	}
 	if stats.Errors != 0 {
 		t.Errorf("errors=%d; want 0", stats.Errors)
@@ -183,21 +259,147 @@ func TestRunImageGC_ReclaimsOldVersionData(t *testing.T) {
 	}
 }
 
-func TestRunImageGC_SnapshotsOnlySkipsContent(t *testing.T) {
-	// The per-deploy async path (includeContent=false) reclaims orphan snapshots
-	// but must never touch content blobs — a concurrent deploy's just-pushed blob
-	// is legitimately unreferenced until its image record is created.
-	oldTS := "2020-01-01T00:00:00Z"
+func TestRunImageGC_FirstSightingStampsNotReaps(t *testing.T) {
+	// An orphan with an ANCIENT gc.root commit time but no orphanedAt tombstone
+	// must be stamped (not reaped) on first sighting — this is the core fix: the
+	// grace clock starts when a layer becomes orphaned, never from its commit time.
+	now := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)
 	sn := &fakeSnapshotter{
 		infos: map[string]snapshots.Info{
-			"orphanSnap": {Name: "orphanSnap", Labels: gcLabel(oldTS)},
+			// gc.root value is years old, but there is no orphanedAt label.
+			"orphan": {Name: "orphan", Labels: map[string]string{labelKeyGCRoot: "2020-01-01T00:00:00Z"}},
+		},
+		usage: map[string]int64{"orphan": 500},
+	}
+	env := gcEnv{
+		images:                &fakeImageStore{},
+		snapshots:             sn,
+		content:               &fakeContent{infos: map[digest.Digest]content.Info{}},
+		resolveImage:          func(_ context.Context, _ images.Image) ([]string, []string, error) { return nil, nil, nil },
+		containerSnapshotKeys: func(_ context.Context) ([]string, error) { return nil, nil },
+		now:                   func() time.Time { return now },
+		grace:                 testGrace,
+		logger:                zap.NewNop(),
+	}
+
+	stats, err := runImageGC(context.Background(), env, false)
+	if err != nil {
+		t.Fatalf("runImageGC: %v", err)
+	}
+	if stats.SnapshotsTombstoned != 1 || stats.SnapshotsRemoved != 0 {
+		t.Errorf("tombstoned=%d removed=%d; want 1/0 (stamp, never reap on first sighting)",
+			stats.SnapshotsTombstoned, stats.SnapshotsRemoved)
+	}
+	got := sn.infos["orphan"].Labels[labelKeyOrphanedAt]
+	if want := now.UTC().Format(time.RFC3339); got != want {
+		t.Errorf("orphanedAt=%q; want %q", got, want)
+	}
+}
+
+func TestRunImageGC_ClearOnReachable(t *testing.T) {
+	// A snapshot that is reachable again (re-adopted by a deploy) but still carries
+	// a stale orphanedAt must have that tombstone cleared and must not be reaped —
+	// this resets the retention clock so the layer is never re-uploaded.
+	now := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)
+	stale := now.Add(-72 * time.Hour) // well past grace, yet reachable -> must clear
+	sn := &fakeSnapshotter{
+		infos: map[string]snapshots.Info{
+			"base": {Name: "base", Labels: tombstone(stale)},
+		},
+	}
+	env := gcEnv{
+		images:    &fakeImageStore{imgs: []images.Image{{Name: "app:latest"}}},
+		snapshots: sn,
+		content:   &fakeContent{infos: map[digest.Digest]content.Info{}},
+		resolveImage: func(_ context.Context, _ images.Image) ([]string, []string, error) {
+			return []string{"base"}, nil, nil
+		},
+		containerSnapshotKeys: func(_ context.Context) ([]string, error) { return nil, nil },
+		now:                   func() time.Time { return now },
+		grace:                 testGrace,
+		logger:                zap.NewNop(),
+	}
+
+	stats, err := runImageGC(context.Background(), env, false)
+	if err != nil {
+		t.Fatalf("runImageGC: %v", err)
+	}
+	if stats.StampsCleared != 1 || stats.SnapshotsRemoved != 0 {
+		t.Errorf("cleared=%d removed=%d; want 1/0", stats.StampsCleared, stats.SnapshotsRemoved)
+	}
+	if _, ok := sn.infos["base"].Labels[labelKeyOrphanedAt]; ok {
+		t.Error("orphanedAt must be cleared on a reachable snapshot")
+	}
+	if _, ok := sn.infos["base"].Labels[labelKeyGCRoot]; !ok {
+		t.Error("clearing orphanedAt must preserve the gc.root pin")
+	}
+}
+
+func TestRunImageGC_TwoBootsContent(t *testing.T) {
+	// Content reclamation takes two boots: the first stamps the orphan blob, a
+	// later boot past grace reaps it. The fake carries the label between passes.
+	t0 := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)
+	orphan := digest.Digest("sha256:orphanblob")
+	cs := &fakeContent{
+		infos: map[digest.Digest]content.Info{
+			orphan: {Digest: orphan, Size: 77, Labels: gcRootLabels()},
+		},
+	}
+	newEnv := func(now time.Time) gcEnv {
+		return gcEnv{
+			images:                &fakeImageStore{},
+			snapshots:             &fakeSnapshotter{infos: map[string]snapshots.Info{}},
+			content:               cs,
+			resolveImage:          func(_ context.Context, _ images.Image) ([]string, []string, error) { return nil, nil, nil },
+			containerSnapshotKeys: func(_ context.Context) ([]string, error) { return nil, nil },
+			now:                   func() time.Time { return now },
+			grace:                 testGrace,
+			logger:                zap.NewNop(),
+		}
+	}
+
+	// Boot 1: stamp only.
+	stats, err := runImageGC(context.Background(), newEnv(t0), true)
+	if err != nil {
+		t.Fatalf("boot 1: %v", err)
+	}
+	if stats.BlobsTombstoned != 1 || stats.BlobsReclaimed != 0 {
+		t.Fatalf("boot 1 tombstoned=%d reclaimed=%d; want 1/0", stats.BlobsTombstoned, stats.BlobsReclaimed)
+	}
+	if _, ok := cs.infos[orphan]; !ok {
+		t.Fatal("boot 1 must not reclaim content")
+	}
+
+	// Boot 2, past grace: reap.
+	stats, err = runImageGC(context.Background(), newEnv(t0.Add(48*time.Hour)), true)
+	if err != nil {
+		t.Fatalf("boot 2: %v", err)
+	}
+	if stats.BlobsReclaimed != 1 || stats.BlobBytes != 77 {
+		t.Errorf("boot 2 reclaimed=%d bytes=%d; want 1/77", stats.BlobsReclaimed, stats.BlobBytes)
+	}
+	if _, ok := cs.infos[orphan]; ok {
+		t.Error("boot 2 must reclaim the aged orphan blob")
+	}
+}
+
+func TestRunImageGC_SnapshotsOnlySkipsContent(t *testing.T) {
+	// The per-deploy async path (includeContent=false) reaps aged orphan snapshots
+	// but must never touch content blobs — not even to tombstone them — because a
+	// concurrent deploy's just-pushed blob is legitimately unreferenced until its
+	// image record is created.
+	now := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)
+	aged := now.Add(-48 * time.Hour)
+	sn := &fakeSnapshotter{
+		infos: map[string]snapshots.Info{
+			"orphanSnap": {Name: "orphanSnap", Labels: tombstone(aged)},
 		},
 		usage: map[string]int64{"orphanSnap": 50},
 	}
 	orphanBlob := digest.Digest("sha256:orphanblob")
 	cs := &fakeContent{
 		infos: map[digest.Digest]content.Info{
-			orphanBlob: {Digest: orphanBlob, Size: 99, Labels: gcLabel(oldTS)},
+			orphanBlob: {Digest: orphanBlob, Size: 99, Labels: gcRootLabels()},
 		},
 	}
 	env := gcEnv{
@@ -206,8 +408,8 @@ func TestRunImageGC_SnapshotsOnlySkipsContent(t *testing.T) {
 		content:               cs,
 		resolveImage:          func(_ context.Context, _ images.Image) ([]string, []string, error) { return nil, nil, nil },
 		containerSnapshotKeys: func(_ context.Context) ([]string, error) { return nil, nil },
-		now:                   func() time.Time { return time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC) },
-		grace:                 imageGCGracePeriod,
+		now:                   func() time.Time { return now },
+		grace:                 testGrace,
 		logger:                zap.NewNop(),
 	}
 
@@ -218,18 +420,49 @@ func TestRunImageGC_SnapshotsOnlySkipsContent(t *testing.T) {
 	if stats.SnapshotsRemoved != 1 {
 		t.Errorf("snapshots removed=%d; want 1", stats.SnapshotsRemoved)
 	}
-	if stats.BlobsReclaimed != 0 {
-		t.Errorf("blobs reclaimed=%d; want 0 (content sweep deferred to boot)", stats.BlobsReclaimed)
+	if stats.BlobsReclaimed != 0 || stats.BlobsTombstoned != 0 {
+		t.Errorf("blobs reclaimed=%d tombstoned=%d; want 0/0 (content fully gated)",
+			stats.BlobsReclaimed, stats.BlobsTombstoned)
 	}
-	if _, ok := cs.infos[orphanBlob]; !ok {
-		t.Error("content blob must be kept by the snapshots-only path")
+	if len(cs.updated) != 0 {
+		t.Errorf("content store was updated %d times; want 0 on the snapshots-only path", len(cs.updated))
+	}
+	if _, ok := cs.infos[orphanBlob].Labels[labelKeyOrphanedAt]; ok {
+		t.Error("the snapshots-only path must not tombstone content")
+	}
+}
+
+func TestSweep_StampFailureDoesNotReap(t *testing.T) {
+	// A failed tombstone Update is counted as an error but never removes the
+	// artifact (it is in the stamp bucket, structurally excluded from reaping).
+	now := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)
+	sn := &fakeSnapshotter{
+		infos:     map[string]snapshots.Info{"orphan": {Name: "orphan", Labels: gcRootLabels()}},
+		updateErr: errors.New("update boom"),
+	}
+	env := gcEnv{
+		snapshots: sn,
+		content:   &fakeContent{infos: map[digest.Digest]content.Info{}},
+		now:       func() time.Time { return now },
+		grace:     testGrace,
+		logger:    zap.NewNop(),
+	}
+	stats, err := sweep(context.Background(), env, keySet(), keySet(), false)
+	if err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if stats.Errors != 1 || stats.SnapshotsTombstoned != 0 || stats.SnapshotsRemoved != 0 {
+		t.Errorf("errors=%d tombstoned=%d removed=%d; want 1/0/0", stats.Errors, stats.SnapshotsTombstoned, stats.SnapshotsRemoved)
+	}
+	if _, ok := sn.infos["orphan"]; !ok {
+		t.Error("artifact must be retained when its tombstone write fails")
 	}
 }
 
 func TestRunImageGC_FailClosedOnResolveError(t *testing.T) {
 	sn := &fakeSnapshotter{
 		infos: map[string]snapshots.Info{
-			"orphan": {Name: "orphan", Labels: gcLabel("2020-01-01T00:00:00Z")},
+			"orphan": {Name: "orphan", Labels: tombstone(time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC))},
 		},
 	}
 	env := gcEnv{
@@ -241,7 +474,7 @@ func TestRunImageGC_FailClosedOnResolveError(t *testing.T) {
 		},
 		containerSnapshotKeys: func(_ context.Context) ([]string, error) { return nil, nil },
 		now:                   func() time.Time { return time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC) },
-		grace:                 imageGCGracePeriod,
+		grace:                 testGrace,
 		logger:                zap.NewNop(),
 	}
 	stats, err := runImageGC(context.Background(), env, true)
@@ -251,26 +484,31 @@ func TestRunImageGC_FailClosedOnResolveError(t *testing.T) {
 	if stats.SnapshotsRemoved != 0 {
 		t.Errorf("removed=%d; want 0 deletions on fail-closed", stats.SnapshotsRemoved)
 	}
+	if len(sn.updated) != 0 {
+		t.Errorf("no label may be written when MARK fails; got %d updates", len(sn.updated))
+	}
 	if _, ok := sn.infos["orphan"]; !ok {
 		t.Error("no snapshot may be deleted when MARK fails")
 	}
 }
 
 func TestSweep_HasChildrenBackstop(t *testing.T) {
-	// p is selected as an orphan but still has a reachable child ch; Remove must
-	// fail-precondition and be skipped, not counted as an error.
+	// p is reap-eligible (aged tombstone, unreachable) but still has a reachable
+	// child ch; Remove must fail-precondition and be skipped, not counted an error.
+	now := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)
+	aged := now.Add(-48 * time.Hour)
 	sn := &fakeSnapshotter{
 		infos: map[string]snapshots.Info{
-			"p":  {Name: "p", Labels: gcLabel("2020-01-01T00:00:00Z")},
-			"ch": {Name: "ch", Parent: "p", Labels: gcLabel("2020-01-01T00:00:00Z")},
+			"p":  {Name: "p", Labels: tombstone(aged)},
+			"ch": {Name: "ch", Parent: "p", Labels: gcRootLabels()},
 		},
 		usage: map[string]int64{},
 	}
 	env := gcEnv{
 		snapshots: sn,
 		content:   &fakeContent{infos: map[digest.Digest]content.Info{}},
-		now:       func() time.Time { return time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC) },
-		grace:     imageGCGracePeriod,
+		now:       func() time.Time { return now },
+		grace:     testGrace,
 		logger:    zap.NewNop(),
 	}
 	// ch is reachable; p is not.
@@ -331,61 +569,82 @@ func names(infos []snapshots.Info) map[string]bool {
 	return out
 }
 
-// snapNow and snapOld are a fixed "now" and an over-grace-old gc.root timestamp
-// used by the snapshot selection tests.
+// snapNow is the fixed "now" used by the classify tests.
 var snapNow = time.Date(2026, 2, 1, 12, 0, 0, 0, time.UTC)
 
-func snapOldLabel() map[string]string {
-	return gcLabel(snapNow.Add(-time.Hour).UTC().Format(time.RFC3339)) // older than grace
-}
-
-func TestSelectOrphanSnapshots_AllReachable(t *testing.T) {
-	gcRoots := []snapshots.Info{{Name: "a", Labels: snapOldLabel()}, {Name: "b", Labels: snapOldLabel()}}
-	if got := selectOrphanSnapshots(gcRoots, keySet("a", "b"), snapNow, imageGCGracePeriod); len(got) != 0 {
-		t.Fatalf("got %d orphans; want 0", len(got))
-	}
-}
-
-func TestSelectOrphanSnapshots_OldVersionOrphaned(t *testing.T) {
-	// a,b are the current image chain (reachable); c,d are an old version's
-	// top layers that nothing references any more.
+func TestClassifySnapshots_ReachableClearsTombstone(t *testing.T) {
 	gcRoots := []snapshots.Info{
-		{Name: "a", Labels: snapOldLabel()}, {Name: "b", Labels: snapOldLabel()},
-		{Name: "c", Labels: snapOldLabel()}, {Name: "d", Labels: snapOldLabel()},
+		{Name: "a", Labels: tombstone(snapNow.Add(-time.Hour))}, // reachable + stamped -> clear
+		{Name: "b", Labels: gcRootLabels()},                     // reachable, no stamp -> no-op
 	}
-	got := names(selectOrphanSnapshots(gcRoots, keySet("a", "b"), snapNow, imageGCGracePeriod))
-	if len(got) != 2 || !got["c"] || !got["d"] {
-		t.Fatalf("orphans = %v; want {c,d}", got)
+	c := classifySnapshots(gcRoots, keySet("a", "b"), snapNow, testGrace)
+	if got := names(c.clear); len(got) != 1 || !got["a"] {
+		t.Errorf("clear = %v; want {a}", got)
 	}
-}
-
-func TestSelectOrphanSnapshots_SharedBaseKept(t *testing.T) {
-	// base is still referenced by a current image; only the old top layer is orphaned.
-	gcRoots := []snapshots.Info{
-		{Name: "base", Labels: snapOldLabel()},
-		{Name: "oldtop", Parent: "base", Labels: snapOldLabel()},
-	}
-	got := selectOrphanSnapshots(gcRoots, keySet("base"), snapNow, imageGCGracePeriod)
-	if len(got) != 1 || got[0].Name != "oldtop" {
-		t.Fatalf("orphans = %v; want {oldtop}", names(got))
+	if len(c.stamp) != 0 || len(c.reap) != 0 {
+		t.Errorf("stamp=%v reap=%v; want both empty", names(c.stamp), names(c.reap))
 	}
 }
 
-func TestSelectOrphanSnapshots_FreshSnapshotKept(t *testing.T) {
-	// A back-to-back deploy commits a new gc.root chain-ID snapshot after this
-	// pass built its reachable set; it is unreachable in the stale set but must
-	// NOT be removed because it is within the grace window (WDY-1679 P1 race).
-	fresh := snapNow.Add(-time.Minute).UTC().Format(time.RFC3339)
+func TestClassifySnapshots_FirstSightingStamps(t *testing.T) {
+	// Ancient gc.root, no orphanedAt: must be stamped, never reaped (commit age is
+	// no longer a reap trigger).
 	gcRoots := []snapshots.Info{
-		{Name: "fresh", Labels: gcLabel(fresh)},
-		{Name: "old", Labels: snapOldLabel()},
+		{Name: "a", Labels: gcRootLabels()}, {Name: "b", Labels: gcRootLabels()}, // reachable
+		{Name: "c", Labels: gcRootLabels()}, {Name: "d", Labels: gcRootLabels()}, // orphaned, unstamped
 	}
-	got := names(selectOrphanSnapshots(gcRoots, keySet(), snapNow, imageGCGracePeriod))
-	if got["fresh"] {
-		t.Error("a snapshot committed within grace must be kept (may belong to an in-flight deploy)")
+	c := classifySnapshots(gcRoots, keySet("a", "b"), snapNow, testGrace)
+	if got := names(c.stamp); len(got) != 2 || !got["c"] || !got["d"] {
+		t.Errorf("stamp = %v; want {c,d}", got)
 	}
-	if !got["old"] {
-		t.Error("an old unreachable snapshot must be selected")
+	if len(c.reap) != 0 {
+		t.Errorf("reap = %v; want empty", names(c.reap))
+	}
+}
+
+func TestClassifySnapshots_AgedOrphanReaped(t *testing.T) {
+	// base is still referenced; oldtop has an aged tombstone -> reap.
+	gcRoots := []snapshots.Info{
+		{Name: "base", Labels: gcRootLabels()},
+		{Name: "oldtop", Parent: "base", Labels: tombstone(snapNow.Add(-48 * time.Hour))},
+	}
+	c := classifySnapshots(gcRoots, keySet("base"), snapNow, testGrace)
+	if got := names(c.reap); len(got) != 1 || !got["oldtop"] {
+		t.Errorf("reap = %v; want {oldtop}", got)
+	}
+}
+
+func TestClassifySnapshots_WithinGraceKept(t *testing.T) {
+	// An orphan tombstoned within grace is neither re-stamped nor reaped; an aged
+	// sibling is reaped.
+	gcRoots := []snapshots.Info{
+		{Name: "fresh", Labels: tombstone(snapNow.Add(-time.Minute))},
+		{Name: "old", Labels: tombstone(snapNow.Add(-48 * time.Hour))},
+	}
+	c := classifySnapshots(gcRoots, keySet(), snapNow, testGrace)
+	if names(c.reap)["fresh"] {
+		t.Error("an orphan tombstoned within grace must be kept")
+	}
+	if names(c.stamp)["fresh"] {
+		t.Error("an already-tombstoned orphan must not be re-stamped")
+	}
+	if !names(c.reap)["old"] {
+		t.Error("an orphan tombstoned past grace must be reaped")
+	}
+}
+
+func TestClassifySnapshots_UnparseableStampReStamped(t *testing.T) {
+	// A corrupt orphanedAt is treated as "not yet stamped" -> re-stamped (kept),
+	// so a bad value can only ever delay reclamation.
+	gcRoots := []snapshots.Info{
+		{Name: "bad", Labels: map[string]string{labelKeyGCRoot: "x", labelKeyOrphanedAt: "not-a-time"}},
+	}
+	c := classifySnapshots(gcRoots, keySet(), snapNow, testGrace)
+	if got := names(c.stamp); len(got) != 1 || !got["bad"] {
+		t.Errorf("stamp = %v; want {bad}", got)
+	}
+	if len(c.reap) != 0 {
+		t.Errorf("reap = %v; want empty", names(c.reap))
 	}
 }
 
@@ -425,23 +684,29 @@ func TestOrderLeafFirst_Branching(t *testing.T) {
 	}
 }
 
-func TestSelectOrphanBlobs(t *testing.T) {
+func TestClassifyBlobs(t *testing.T) {
 	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
-	old := now.Add(-time.Hour).UTC().Format(time.RFC3339)         // older than grace
-	fresh := now.Add(-1 * time.Minute).UTC().Format(time.RFC3339) // within grace
+	aged := tombstone(now.Add(-48 * time.Hour)) // orphaned past grace
+	fresh := tombstone(now.Add(-time.Minute))   // orphaned within grace
 
 	d := func(c string) digest.Digest { return digest.Digest("sha256:" + strings.Repeat(c, 64)) }
-	dReach, dOld, dFresh, dBad := d("1"), d("2"), d("3"), d("4")
+	dReach, dOld, dFresh, dNew := d("1"), d("2"), d("3"), d("4")
 
 	infos := []content.Info{
-		{Digest: dReach, Labels: map[string]string{labelKeyGCRoot: old}},   // reachable -> kept
-		{Digest: dOld, Labels: map[string]string{labelKeyGCRoot: old}},     // orphan + old -> selected
-		{Digest: dFresh, Labels: map[string]string{labelKeyGCRoot: fresh}}, // orphan + in-grace -> kept
-		{Digest: dBad, Labels: map[string]string{labelKeyGCRoot: "nope"}},  // orphan + unparseable -> kept
+		{Digest: dReach, Labels: tombstone(now.Add(-48 * time.Hour))}, // reachable + stamped -> clear
+		{Digest: dOld, Labels: aged},                                  // orphan + aged -> reap
+		{Digest: dFresh, Labels: fresh},                               // orphan + in-grace -> keep
+		{Digest: dNew, Labels: gcRootLabels()},                        // orphan + unstamped -> stamp
 	}
 
-	got := selectOrphanBlobs(infos, keySet(dReach.String()), now, imageGCGracePeriod)
-	if len(got) != 1 || got[0] != dOld {
-		t.Fatalf("orphan blobs = %v; want {%s}", got, dOld)
+	c := classifyBlobs(infos, keySet(dReach.String()), now, testGrace)
+	if len(c.reap) != 1 || c.reap[0].Digest != dOld {
+		t.Errorf("reap = %v; want {%s}", c.reap, dOld)
+	}
+	if len(c.clear) != 1 || c.clear[0].Digest != dReach {
+		t.Errorf("clear = %v; want {%s}", c.clear, dReach)
+	}
+	if len(c.stamp) != 1 || c.stamp[0].Digest != dNew {
+		t.Errorf("stamp = %v; want {%s}", c.stamp, dNew)
 	}
 }

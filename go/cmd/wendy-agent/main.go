@@ -40,6 +40,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/agent/timesync"
 	"github.com/wendylabsinc/wendy/go/internal/shared/browseropen"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
+	sharedenv "github.com/wendylabsinc/wendy/go/internal/shared/env"
 	"github.com/wendylabsinc/wendy/go/internal/shared/version"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
@@ -161,6 +162,9 @@ func main() {
 	}
 	// Image garbage collection (WDY-1679) is enabled by default; set
 	// WENDY_IMAGE_GC_ENABLED=false to disable the post-deploy + boot sweeps.
+	// WENDY_IMAGE_GC_GRACE_PERIOD (default 24h, clamped to a 30m floor) is the
+	// orphan-age window a superseded layer must stay unused before it is
+	// reclaimed — longer keeps layers cached for redeploys instead of re-uploaded.
 	imageGCEnabled := true
 	if v := os.Getenv("WENDY_IMAGE_GC_ENABLED"); v != "" {
 		if parsed, perr := strconv.ParseBool(v); perr != nil {
@@ -170,7 +174,8 @@ func main() {
 			imageGCEnabled = parsed
 		}
 	}
-	ctrdClient, ctrdErr := agentcontainerd.NewClient(logger, containerdAddr, proxyMgr, imageGCEnabled)
+	imageGCGrace := sharedenv.ImageGCGracePeriod()
+	ctrdClient, ctrdErr := agentcontainerd.NewClient(logger, containerdAddr, proxyMgr, imageGCEnabled, imageGCGrace)
 	if ctrdErr != nil {
 		logger.Warn("Failed to connect to containerd (container features will be unavailable)", zap.Error(ctrdErr))
 	} else {

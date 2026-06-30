@@ -100,14 +100,36 @@ type Client struct {
 	// GarbageCollectImages are no-ops.
 	imageGCEnabled bool
 
+	// imageGCGrace is the orphan-age grace window for the image GC: a
+	// gc.root-pinned snapshot or content blob must stay continuously
+	// unreferenced for at least this long (measured from its labelKeyOrphanedAt
+	// tombstone) before a sweep may reclaim it. Configured via
+	// WENDY_IMAGE_GC_GRACE_PERIOD and clamped to a floor in NewClient.
+	imageGCGrace time.Duration
+
 	// gcRunning is the single-flight guard for image GC: at most one
 	// mark-and-sweep pass runs at a time across the deploy hook and boot sweep.
 	gcRunning atomic.Bool
 }
 
-func NewClient(logger *zap.Logger, address string, proxyMgr *dbusproxy.Manager, imageGCEnabled bool) (*Client, error) {
+func NewClient(logger *zap.Logger, address string, proxyMgr *dbusproxy.Manager, imageGCEnabled bool, imageGCGrace time.Duration) (*Client, error) {
 	if address == "" {
 		address = DefaultAddress
+	}
+
+	// Clamp the configured grace to a safety floor. Under the tombstone GC the
+	// floor is defense-in-depth against a pathologically small value, not the
+	// primary safety mechanism (see imagegc.go): it keeps the stamp→reap spacing
+	// comfortably above a single pass's imageGCTimeout so an in-flight deploy's
+	// freshly created artifacts are always re-marked reachable before they could
+	// age out.
+	if imageGCGrace < unpackLeaseExpiration {
+		if imageGCGrace > 0 {
+			logger.Warn("WENDY_IMAGE_GC_GRACE_PERIOD below floor; clamping",
+				zap.Duration("requested", imageGCGrace),
+				zap.Duration("floor", unpackLeaseExpiration))
+		}
+		imageGCGrace = unpackLeaseExpiration
 	}
 
 	c, err := containerd.New(address)
@@ -138,6 +160,7 @@ func NewClient(logger *zap.Logger, address string, proxyMgr *dbusproxy.Manager, 
 		staging:        newStaging(defaultChunkStagingDir),
 		snapshotter:    snapshotter,
 		imageGCEnabled: imageGCEnabled,
+		imageGCGrace:   imageGCGrace,
 	}, nil
 }
 

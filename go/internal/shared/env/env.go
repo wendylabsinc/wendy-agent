@@ -19,6 +19,15 @@ func DiscoverExternalInterval() time.Duration {
 	return parseDuration("WENDY_DISCOVER_EXTERNAL_INTERVAL", 5*time.Second)
 }
 
+// ImageGCGracePeriod is how long a superseded image layer must remain
+// continuously unreferenced (orphaned) before the agent's image GC may reclaim
+// it. A longer window keeps layers cached for redeploys/branch-switches so they
+// are not re-uploaded. The caller clamps this to a safety floor; see
+// containerd.NewClient.
+func ImageGCGracePeriod() time.Duration {
+	return parseDuration("WENDY_IMAGE_GC_GRACE_PERIOD", 24*time.Hour)
+}
+
 func Analytics() bool {
 	v := strings.TrimSpace(os.Getenv("WENDY_ANALYTICS"))
 	switch strings.ToLower(v) {
