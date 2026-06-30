@@ -90,6 +90,7 @@ func (s *VolumeFsService) ReadDir(_ context.Context, req *agentpbv2.ReadDirReque
 	for _, e := range entries {
 		fi, err := e.Info()
 		if err != nil {
+			s.logger.Warn("skipping dir entry: stat failed", zap.String("name", e.Name()), zap.Error(err))
 			continue
 		}
 		var target string
