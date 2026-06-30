@@ -63,6 +63,10 @@ type drive struct {
 	SizeBytes   int64  // size in bytes
 	IsRemovable bool
 	StorageType StorageType // underlying storage protocol
+	// MediaFixed is positive evidence that the media is fixed, solid-state
+	// (an SSD) rather than removable (an SD card / thumb drive). Used to
+	// disambiguate a USB-attached SSD enclosure from an SD-card reader.
+	MediaFixed bool
 }
 
 // psDisk is the JSON structure returned by the joined Get-Disk / Get-PhysicalDisk query.
@@ -151,6 +155,11 @@ func listDrivesWindows(externalOnly bool) ([]drive, error) {
 			SizeBytes:   d.Size,
 			IsRemovable: external || looksLikeCardReader(d),
 			StorageType: storageType,
+			// An SSD reports MediaType "SSD"; SD cards / thumb drives report
+			// "Unspecified" or removable. (USB enclosures often report
+			// "Unspecified" too, in which case this stays false and the
+			// ambiguous-USB prompt resolves it.)
+			MediaFixed: strings.EqualFold(d.MediaType, "SSD"),
 		})
 	}
 
