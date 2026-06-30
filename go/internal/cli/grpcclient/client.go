@@ -65,6 +65,7 @@ type AgentConnection struct {
 	TelemetryService    agentpb.WendyTelemetryServiceClient
 	FileSyncService     agentpb.WendyFileSyncServiceClient
 	TimeSyncService     agentpbv2.WendyTimeSyncServiceClient
+	VolumeFsService     agentpbv2.WendyVolumeFsServiceClient
 }
 
 func Connect(ctx context.Context, address string) (*AgentConnection, error) {
@@ -213,6 +214,7 @@ func newAgentConnection(conn *grpc.ClientConn) *AgentConnection {
 		TelemetryService:    agentpb.NewWendyTelemetryServiceClient(conn),
 		FileSyncService:     agentpb.NewWendyFileSyncServiceClient(conn),
 		TimeSyncService:     agentpbv2.NewWendyTimeSyncServiceClient(conn),
+		VolumeFsService:     agentpbv2.NewWendyVolumeFsServiceClient(conn),
 	}
 }
 
