@@ -20,7 +20,6 @@ func stubEnrollPrompts(t *testing.T) {
 	origSession := promptEnrollmentSession
 	origPreEnroll := confirmPreEnroll
 	origContinue := confirmContinueUnenrolled
-	origWendyOrg := confirmWendyInternalOrg
 	origEnroll := preEnrollDeviceFn
 	origResolveOrg := resolveOrgFn
 	promptEnrollmentSession = func([]tui.PickerItem) (string, error) {
@@ -33,10 +32,6 @@ func stubEnrollPrompts(t *testing.T) {
 	}
 	confirmContinueUnenrolled = func() (bool, error) {
 		t.Fatal("unexpected continue-unenrolled confirm")
-		return false, nil
-	}
-	confirmWendyInternalOrg = func(string) (bool, error) {
-		t.Fatal("unexpected Wendy-internal-org confirm")
 		return false, nil
 	}
 	preEnrollDeviceFn = func(context.Context, *config.AuthConfig, string, int32, PreEnrollDialer) (*PreProvisionedState, error) {
@@ -52,7 +47,6 @@ func stubEnrollPrompts(t *testing.T) {
 		promptEnrollmentSession = origSession
 		confirmPreEnroll = origPreEnroll
 		confirmContinueUnenrolled = origContinue
-		confirmWendyInternalOrg = origWendyOrg
 		preEnrollDeviceFn = origEnroll
 		resolveOrgFn = origResolveOrg
 	})

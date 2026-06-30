@@ -15,11 +15,6 @@ import (
 	cloudpb "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
 )
 
-// wendyInternalOrgID is Wendy Labs' own organization. Enrolling a customer
-// device into it is almost always a mistake, so the picker surfaces an extra
-// confirmation step when it is selected.
-const wendyInternalOrgID int32 = 2
-
 // listOrgsFromCloud fetches every organization the authenticated user belongs
 // to, draining the server-streaming ListOrganizations RPC. Declared as a var
 // so unit tests can stub it without a live cloud connection.

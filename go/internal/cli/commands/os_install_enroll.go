@@ -44,12 +44,6 @@ var (
 	confirmContinueUnenrolled = func() (bool, error) {
 		return mapConfirmCancel(tui.Confirm("Continue installing without enrollment?"))
 	}
-	confirmWendyInternalOrg = func(orgName string) (bool, error) {
-		return mapConfirmCancel(tui.Confirm(fmt.Sprintf(
-			"You are enrolling into %q (Wendy's internal org). This is usually not intended for customer devices.\nContinue?",
-			orgName,
-		)))
-	}
 	preEnrollDeviceFn = preEnrollDevice
 )
 
@@ -164,16 +158,6 @@ func resolvePreEnrollment(ctx context.Context, cfg *config.Config, opts preEnrol
 		}
 		fmt.Printf("Cannot resolve organization: %v\n", orgErr)
 		return nil, ackContinueUnenrolled()
-	}
-
-	if interactive && org.ID == wendyInternalOrgID {
-		ok, err := confirmWendyInternalOrg(org.Name)
-		if err != nil {
-			return nil, err
-		}
-		if !ok {
-			return nil, ErrUserCancelled
-		}
 	}
 
 	fmt.Printf("Pre-enrolling device with Wendy Cloud (org: %s / ID: %d)...\n", org.Name, org.ID)
