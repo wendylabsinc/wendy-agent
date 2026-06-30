@@ -231,6 +231,13 @@ func (s *VolumeFsService) Rename(_ context.Context, req *agentpbv2.RenameRequest
 	return &agentpbv2.RenameResponse{}, nil
 }
 
+// SetVolumesDirForTest overrides the volumes root. Test-only helper for
+// cross-package tests; not for production use.
+func SetVolumesDirForTest(dir string) { volumesDir = dir }
+
+// ResetVolumesDirForTest restores the default volumes root.
+func ResetVolumesDirForTest() { volumesDir = "/var/lib/wendy/volumes" }
+
 func (s *VolumeFsService) SetAttr(_ context.Context, req *agentpbv2.SetAttrRequest) (*agentpbv2.StatResponse, error) {
 	full, err := resolveVolumePath(req.GetVolume(), req.GetPath())
 	if err != nil {
