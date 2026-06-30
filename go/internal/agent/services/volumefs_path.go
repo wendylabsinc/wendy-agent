@@ -14,6 +14,9 @@ func volumeRoot(volume string) (string, error) {
 	if volume == "" || strings.ContainsAny(volume, `/\`) || volume == "." || volume == ".." {
 		return "", status.Errorf(codes.InvalidArgument, "invalid volume name %q", volume)
 	}
+	if strings.IndexFunc(volume, func(r rune) bool { return r < 0x20 || r == 0x7f }) >= 0 {
+		return "", status.Errorf(codes.InvalidArgument, "invalid volume name %q", volume)
+	}
 	return filepath.Join(volumesDir, volume), nil
 }
 
@@ -41,7 +44,7 @@ func resolveVolumePath(volume, relPath string) (string, error) {
 	// We use the longest existing prefix so that non-existent leaf paths are still checked.
 	realRoot, err := filepath.EvalSymlinks(root)
 	if err != nil {
-		realRoot = root
+		realRoot, _ = evalSymlinksPartial(root)
 	}
 	resolved, err := evalSymlinksPartial(full)
 	if err == nil && !withinRoot(realRoot, resolved) {

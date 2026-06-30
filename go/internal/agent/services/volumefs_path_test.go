@@ -3,7 +3,6 @@ package services
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -33,6 +32,7 @@ func TestResolveVolumePath(t *testing.T) {
 		{"empty volume", "", "x", true, ""},
 		{"slash in volume", "a/b", "x", true, ""},
 		{"dotdot in volume", "..", "x", true, ""},
+		{"null byte in volume", "vo\x00l", "x", true, ""},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -74,5 +74,4 @@ func TestResolveVolumePathSymlinkEscape(t *testing.T) {
 	if _, err := resolveVolumePath("vol", "link/secret"); err == nil {
 		t.Fatal("expected symlink escape to be rejected")
 	}
-	_ = strings.TrimSpace // keep import if unused after edits
 }
