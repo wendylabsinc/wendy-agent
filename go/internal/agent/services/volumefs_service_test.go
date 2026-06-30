@@ -9,7 +9,9 @@ import (
 
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
@@ -80,5 +82,30 @@ func TestVolumeFsRead(t *testing.T) {
 	}
 	if string(resp.GetData()) != "world" || !resp.GetEof() {
 		t.Fatalf("got %q eof=%v", resp.GetData(), resp.GetEof())
+	}
+}
+
+func TestVolumeFsStatFs(t *testing.T) {
+	cl, root := startVolumeFsServer(t)
+	if err := os.MkdirAll(filepath.Join(root, "vol"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	resp, err := cl.StatFs(context.Background(), &agentpbv2.StatFsRequest{Volume: "vol"})
+	if err != nil {
+		t.Fatalf("StatFs: %v", err)
+	}
+	if resp.GetTotalBytes() == 0 || resp.GetFreeBytes() == 0 {
+		t.Fatalf("expected non-zero total/free, got total=%d free=%d", resp.GetTotalBytes(), resp.GetFreeBytes())
+	}
+}
+
+func TestVolumeFsRejectsTraversal(t *testing.T) {
+	cl, root := startVolumeFsServer(t)
+	if err := os.MkdirAll(filepath.Join(root, "vol"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_, err := cl.Stat(context.Background(), &agentpbv2.StatRequest{Volume: "vol", Path: "../../etc/passwd"})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("expected InvalidArgument, got %v", err)
 	}
 }
