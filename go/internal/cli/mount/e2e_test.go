@@ -41,7 +41,10 @@ func TestE2EBillyThroughGRPCToDisk(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	back, _ := io.ReadAll(rf)
+	back, err := io.ReadAll(rf)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
 	_ = rf.Close()
 	if string(back) != "end to end" {
 		t.Fatalf("read-back %q", back)

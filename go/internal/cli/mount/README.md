@@ -18,7 +18,7 @@ channel (mTLS on LAN, or the cloud tunnel), via `WendyVolumeFsService`.
 
 ## Notes
 
-- macOS may prompt to install command-line NFS on first use; it is built in.
+- macOS and Linux include an NFS client; no extra software is needed.
 - Windows requires the WebClient service running for WebDAV drive mapping.
   **Note:** the Windows `wendy` binary currently does not build due to a
   pre-existing unrelated issue (`device_attach.go` uses `syscall.SIGWINCH`,
