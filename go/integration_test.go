@@ -106,6 +106,10 @@ func (m *statefulContainerdClient) SetStoppedByUser(_ context.Context, _ string,
 	return nil
 }
 
+func (m *statefulContainerdClient) MigrateStoppedByUserOnce(_ context.Context) error {
+	return nil
+}
+
 func (m *statefulContainerdClient) ListContainers(_ context.Context) ([]*agentpb.AppContainer, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

@@ -155,6 +155,14 @@ func (m *ContainerMonitor) Start(ctx context.Context) {
 // Apps deployed with the default policy (unless-stopped) come back; apps
 // deployed with --no-restart, and apps the user explicitly stopped, stay down.
 func (m *ContainerMonitor) ReconcileBootContainers(ctx context.Context) {
+	// One-time upgrade back-fill: apps stopped under an older agent carry no
+	// stopped-by-user mark, so without this the first post-upgrade boot would
+	// resurrect them. Runs once (persistent marker); must precede the listing
+	// below so the marks are in place before we decide what to start.
+	if err := m.containerd.MigrateStoppedByUserOnce(ctx); err != nil {
+		m.logger.Warn("Boot reconcile migration failed; proceeding without it", zap.Error(err))
+	}
+
 	bcs, err := m.containerd.ListBootContainers(ctx)
 	if err != nil {
 		m.logger.Error("Failed to list boot containers", zap.Error(err))

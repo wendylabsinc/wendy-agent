@@ -25,6 +25,7 @@ type fakeContainerd struct {
 	startCalls    []string
 	started       chan string // signalled (buffered) on each StartContainer
 	stoppedByUser map[string]bool
+	migrateCalls  int
 }
 
 func (f *fakeContainerd) ListContainers(ctx context.Context) ([]*agentpb.AppContainer, error) {
@@ -42,6 +43,13 @@ func (f *fakeContainerd) SetStoppedByUser(ctx context.Context, containerID strin
 		f.stoppedByUser = map[string]bool{}
 	}
 	f.stoppedByUser[containerID] = stopped
+	return nil
+}
+
+func (f *fakeContainerd) MigrateStoppedByUserOnce(ctx context.Context) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.migrateCalls++
 	return nil
 }
 
@@ -178,6 +186,23 @@ func TestReconcileBootContainers_StartsStoppedApp(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("expected ReconcileBootContainers to start boot-app, got none")
+	}
+}
+
+// TestReconcileBootContainers_RunsMigration verifies the one-time stopped-by-user
+// back-fill is invoked as part of boot reconcile (before listing eligible apps),
+// so an upgrade can't resurrect apps the user had already stopped.
+func TestReconcileBootContainers_RunsMigration(t *testing.T) {
+	fake := &fakeContainerd{started: make(chan string, 1)}
+	m := newMonitorWithClient(fake)
+
+	m.ReconcileBootContainers(context.Background())
+
+	fake.mu.Lock()
+	calls := fake.migrateCalls
+	fake.mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("MigrateStoppedByUserOnce called %d times, want 1", calls)
 	}
 }
 

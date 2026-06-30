@@ -69,6 +69,10 @@ type ContainerdClient interface {
 	// SetStoppedByUser persists (or clears) the "user explicitly stopped this"
 	// mark on a container so a deliberate stop survives a reboot.
 	SetStoppedByUser(ctx context.Context, containerID string, stopped bool) error
+	// MigrateStoppedByUserOnce back-fills the stopped-by-user mark for apps that
+	// predate it (one-time, persistent-marker-guarded), so upgrading to
+	// boot-reconcile doesn't resurrect apps the user had already stopped.
+	MigrateStoppedByUserOnce(ctx context.Context) error
 	GetContainerStats(ctx context.Context) ([]*agentpb.ContainerStats, error)
 	GetResourceStats(ctx context.Context) ([]*agentpb.ResourceContainerStats, error)
 	GetListeningPorts(ctx context.Context, appName string) ([]*agentpb.PortEntry, error)

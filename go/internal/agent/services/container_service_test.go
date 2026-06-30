@@ -65,6 +65,10 @@ func (m *mockContainerdClient) SetStoppedByUser(_ context.Context, containerID s
 	return nil
 }
 
+func (m *mockContainerdClient) MigrateStoppedByUserOnce(_ context.Context) error {
+	return nil
+}
+
 func (m *mockContainerdClient) ListContainers(_ context.Context) ([]*agentpb.AppContainer, error) {
 	return m.containers, m.listErr
 }
