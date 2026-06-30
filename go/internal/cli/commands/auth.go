@@ -43,7 +43,7 @@ func newAuthCmd() *cobra.Command {
 		newAuthStatusCmd(),
 		newAuthUseCmd(),
 		newAuthDefaultCmd(),
-		newAuthOrgsCmd(),
+		newAuthListOrgsCmd(),
 	)
 
 	return cmd

@@ -9,16 +9,17 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 )
 
-func newAuthOrgsCmd() *cobra.Command {
+func newAuthListOrgsCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "orgs",
+		Use:   "list-orgs",
 		Short: "List and select your Wendy Cloud organizations",
 		Long: `Show all organizations your account belongs to and optionally set a default.
 
 Press 'd' on a highlighted organization to mark it as the default for commands
 that target a specific org (such as 'wendy os install --pre-enroll' and
-'wendy device enroll'). Press 'x' to clear the default. Enter selects an org
-for this invocation only and prints its details.`,
+'wendy device enroll'). Press 'x' to clear the default. Press 'r' to remove
+the stored credentials for the highlighted org. Enter selects an org for this
+invocation only and prints its details.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := config.Load()
 			if err != nil {

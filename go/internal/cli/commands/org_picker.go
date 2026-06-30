@@ -100,6 +100,26 @@ func pickOrgInteractive(orgs []*cloudpb.Organization, defaultOrgID int32) (int32
 			_ = config.Save(c)
 		}
 	}
+	picker.OnRemoveItem = func(item tui.PickerItem) {
+		idStr, _ := item.Value.(string)
+		n, err := strconv.Atoi(idStr)
+		if err != nil {
+			return
+		}
+		orgID := int32(n)
+		c, err := config.Load()
+		if err != nil {
+			return
+		}
+		filtered := c.Auth[:0]
+		for _, a := range c.Auth {
+			if len(a.Certificates) == 0 || int32(a.Certificates[0].OrganizationID) != orgID {
+				filtered = append(filtered, a)
+			}
+		}
+		c.Auth = filtered
+		_ = config.Save(c)
+	}
 
 	p := tea.NewProgram(picker)
 	go func() {
@@ -140,36 +160,36 @@ type OrgResolution struct {
 //  1. No default + one org   -> use the sole org (no picker).
 //  2. No default + many orgs -> show the picker; the user may set a new default.
 //  3. Default set            -> use the default (no picker).
-//  4. forceShow == true      -> always show the picker regardless of a default;
+//  4. alwaysPickOrg == true      -> always show the picker regardless of a default;
 //     the user may change or clear the default.
 //
 // If fetching the org list fails, resolveOrg falls back to the org embedded in
 // the auth session's certificate and logs a warning.
-func resolveOrg(ctx context.Context, auth *config.AuthConfig, forceShow bool) (OrgResolution, error) {
-	return resolveOrgFn(ctx, auth, forceShow)
+func resolveOrg(ctx context.Context, auth *config.AuthConfig, alwaysPickOrg bool) (OrgResolution, error) {
+	return resolveOrgFn(ctx, auth, alwaysPickOrg)
 }
 
 // resolveOrgFn is the indirection point so tests can stub resolveOrg without a
 // live cloud connection.
 var resolveOrgFn = resolveOrgImpl
 
-func resolveOrgImpl(ctx context.Context, auth *config.AuthConfig, forceShow bool) (OrgResolution, error) {
+func resolveOrgImpl(ctx context.Context, auth *config.AuthConfig, alwaysPickOrg bool) (OrgResolution, error) {
 	cfg, err := config.Load()
 	if err != nil {
 		return OrgResolution{}, fmt.Errorf("loading config: %w", err)
 	}
-	return resolveOrgWithConfig(ctx, cfg, auth, forceShow)
+	return resolveOrgWithConfig(ctx, cfg, auth, alwaysPickOrg)
 }
 
 // resolveOrgWithConfig is the inner implementation that accepts an already-
 // loaded config, making it directly testable without touching the config file.
-func resolveOrgWithConfig(ctx context.Context, cfg *config.Config, auth *config.AuthConfig, forceShow bool) (OrgResolution, error) {
+func resolveOrgWithConfig(ctx context.Context, cfg *config.Config, auth *config.AuthConfig, alwaysPickOrg bool) (OrgResolution, error) {
 	orgs, listErr := listOrgsFromCloud(ctx, auth)
 
 	// Graceful fallback: if the cloud call fails, use the cert's org so the
 	// command still works (with a warning), unless the picker was forced.
 	if listErr != nil {
-		if forceShow {
+		if alwaysPickOrg {
 			return OrgResolution{}, fmt.Errorf("fetching organizations: %w", listErr)
 		}
 		fmt.Printf("Warning: could not fetch organizations (%v). Falling back to certificate org.\n", listErr)
@@ -185,12 +205,12 @@ func resolveOrgWithConfig(ctx context.Context, cfg *config.Config, auth *config.
 	}
 
 	// Scenario 1: single org — use it without prompting.
-	if len(orgs) == 1 && !forceShow {
+	if len(orgs) == 1 && !alwaysPickOrg {
 		return OrgResolution{ID: orgs[0].GetId(), Name: orgs[0].GetName()}, nil
 	}
 
 	// Scenario 3: valid default is set and picker not forced.
-	if cfg.DefaultOrgID != 0 && !forceShow {
+	if cfg.DefaultOrgID != 0 && !alwaysPickOrg {
 		for _, org := range orgs {
 			if org.GetId() == cfg.DefaultOrgID {
 				return OrgResolution{ID: org.GetId(), Name: org.GetName()}, nil

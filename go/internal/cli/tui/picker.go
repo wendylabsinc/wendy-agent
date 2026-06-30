@@ -162,6 +162,11 @@ type PickerModel struct {
 	// If nil, 'x' is ignored.
 	OnUnsetDefault func()
 
+	// OnRemoveItem is called when the user presses 'r' on the highlighted item.
+	// The callback should remove whatever credentials are associated with the item.
+	// If nil, 'r' is ignored.
+	OnRemoveItem func(item PickerItem)
+
 	// DefaultKey is compared case-insensitively against each item's DedupKey
 	// (or Name if DedupKey is empty). Should be stored lowercase for consistency.
 	// Shown with a ✦ indicator in the table.
@@ -307,6 +312,33 @@ func (m PickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.refreshTable()
 			}
 			return m, nil
+		case key == "r" && !m.Filterable:
+			if m.OnRemoveItem != nil {
+				visible := m.visibleItems()
+				if idx := m.itemIndexForRow(m.table.Cursor()); idx >= 0 && idx < len(visible) {
+					item := visible[idx]
+					m.OnRemoveItem(item)
+					// Remove item from the list so the picker reflects the change immediately.
+					dedupKey := strings.ToLower(item.DedupKey)
+					if dedupKey == "" {
+						dedupKey = strings.ToLower(item.Name)
+					}
+					filtered := m.items[:0]
+					for _, it := range m.items {
+						k := strings.ToLower(it.DedupKey)
+						if k == "" {
+							k = strings.ToLower(it.Name)
+						}
+						if k != dedupKey {
+							filtered = append(filtered, it)
+						}
+					}
+					m.items = filtered
+					delete(m.seenIdx, dedupKey)
+					m.refreshTable()
+				}
+			}
+			return m, nil
 		case key == "esc" && m.Filterable && m.filter != "":
 			m.filter = ""
 			m.table.SetCursor(0)
@@ -419,13 +451,16 @@ func (m PickerModel) View() string {
 	if m.Filterable {
 		hint = " (type to filter, ↑/↓ navigate" + scrollHint + ", enter select, esc quit)"
 	}
-	if m.OnSetDefault != nil || m.OnUnsetDefault != nil {
+	if m.OnSetDefault != nil || m.OnUnsetDefault != nil || m.OnRemoveItem != nil {
 		extras := ""
 		if m.OnSetDefault != nil {
 			extras += ", d set default"
 		}
 		if m.OnUnsetDefault != nil {
 			extras += ", x unset default"
+		}
+		if m.OnRemoveItem != nil {
+			extras += ", r remove creds"
 		}
 		hint = " (↑/↓ navigate" + scrollHint + ", enter select" + extras + ", q quit)"
 	}
