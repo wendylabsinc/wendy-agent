@@ -138,7 +138,7 @@ func sweep(ctx context.Context, env gcEnv, rSnap, rBlob map[string]struct{}, inc
 		return stats, fmt.Errorf("walking snapshots: %w", err)
 	}
 
-	orphans := selectOrphanSnapshots(gcRootSnaps, rSnap)
+	orphans := selectOrphanSnapshots(gcRootSnaps, rSnap, env.now(), env.grace)
 	for _, key := range orderLeafFirst(orphans) {
 		var size int64
 		if u, uerr := env.snapshots.Usage(ctx, key); uerr == nil {
@@ -189,12 +189,21 @@ func sweep(ctx context.Context, env gcEnv, rSnap, rBlob map[string]struct{}, inc
 	return stats, nil
 }
 
-// imageGCGracePeriod is the minimum age a gc.root-labelled content blob must
-// reach before the sweep may reclaim it. It is pinned to the unpack lease
-// expiration: WriteLayer labels a layer blob with gc.root *before* AssembleImage
-// creates the image record that references it, so a blob written by an in-flight
-// deploy is briefly orphaned-looking. The grace window guarantees such a blob is
-// never reclaimed while a concurrent deploy (or its lease) could still need it.
+// imageGCGracePeriod is the minimum age a gc.root-labelled snapshot or content
+// blob must reach (by its gc.root RFC3339 timestamp) before the sweep may reclaim
+// it. It protects artifacts a concurrent in-flight deploy created that this pass's
+// reachable set may not cover:
+//   - content blobs: WriteLayer labels a layer blob gc.root *before* AssembleImage
+//     creates the referencing image record, so a just-pushed blob is briefly
+//     unreferenced;
+//   - snapshots: the async pass marks reachability once and sweeps later, so a
+//     back-to-back deploy can commit new gc.root chain-ID snapshots after the mark
+//     that are absent from the (older) reachable set.
+//
+// It is pinned to the unpack lease expiration (30m), which far exceeds a single
+// pass's imageGCTimeout (5m); any artifact created during a pass is therefore
+// comfortably within grace and kept, while genuine orphans age past it and are
+// reclaimed by a later pass or the boot sweep.
 const imageGCGracePeriod = unpackLeaseExpiration
 
 // GCStats summarises what one garbage-collection pass reclaimed. It exists purely
@@ -347,15 +356,30 @@ func logGCStats(logger *zap.Logger, stats GCStats) {
 	)
 }
 
-// selectOrphanSnapshots returns the gc.root snapshots whose key is not in the
-// reachable set: layers left behind by an image version that no current image
-// record or running container references any more.
-func selectOrphanSnapshots(gcRoots []snapshots.Info, reachable map[string]struct{}) []snapshots.Info {
+// selectOrphanSnapshots returns the gc.root snapshots eligible for removal:
+// those whose key is not in the reachable set AND whose gc.root timestamp is
+// older than grace. The age guard is essential because the async per-deploy pass
+// builds its reachable set once and sweeps later: a back-to-back deploy can
+// commit new gc.root chain-ID snapshots after the mark, and those would be absent
+// from the (older) reachable set. Keeping anything younger than grace — which far
+// exceeds a single pass's imageGCTimeout — prevents reaping a concurrent deploy's
+// freshly committed layers. A snapshot is kept (conservatively) when its gc.root
+// value is missing/unparseable or still within the grace window; genuine orphans
+// age past grace and are reclaimed by a later pass or the boot sweep.
+func selectOrphanSnapshots(gcRoots []snapshots.Info, reachable map[string]struct{}, now time.Time, grace time.Duration) []snapshots.Info {
 	var orphans []snapshots.Info
 	for _, info := range gcRoots {
-		if _, ok := reachable[info.Name]; !ok {
-			orphans = append(orphans, info)
+		if _, ok := reachable[info.Name]; ok {
+			continue // referenced by a current image or container
 		}
+		ts, err := time.Parse(time.RFC3339, info.Labels[labelKeyGCRoot])
+		if err != nil {
+			continue // unparseable gc.root timestamp -> keep
+		}
+		if now.Sub(ts) <= grace {
+			continue // committed too recently -> may belong to an in-flight deploy
+		}
+		orphans = append(orphans, info)
 	}
 	return orphans
 }

@@ -331,9 +331,17 @@ func names(infos []snapshots.Info) map[string]bool {
 	return out
 }
 
+// snapNow and snapOld are a fixed "now" and an over-grace-old gc.root timestamp
+// used by the snapshot selection tests.
+var snapNow = time.Date(2026, 2, 1, 12, 0, 0, 0, time.UTC)
+
+func snapOldLabel() map[string]string {
+	return gcLabel(snapNow.Add(-time.Hour).UTC().Format(time.RFC3339)) // older than grace
+}
+
 func TestSelectOrphanSnapshots_AllReachable(t *testing.T) {
-	gcRoots := []snapshots.Info{{Name: "a"}, {Name: "b"}}
-	if got := selectOrphanSnapshots(gcRoots, keySet("a", "b")); len(got) != 0 {
+	gcRoots := []snapshots.Info{{Name: "a", Labels: snapOldLabel()}, {Name: "b", Labels: snapOldLabel()}}
+	if got := selectOrphanSnapshots(gcRoots, keySet("a", "b"), snapNow, imageGCGracePeriod); len(got) != 0 {
 		t.Fatalf("got %d orphans; want 0", len(got))
 	}
 }
@@ -341,8 +349,11 @@ func TestSelectOrphanSnapshots_AllReachable(t *testing.T) {
 func TestSelectOrphanSnapshots_OldVersionOrphaned(t *testing.T) {
 	// a,b are the current image chain (reachable); c,d are an old version's
 	// top layers that nothing references any more.
-	gcRoots := []snapshots.Info{{Name: "a"}, {Name: "b"}, {Name: "c"}, {Name: "d"}}
-	got := names(selectOrphanSnapshots(gcRoots, keySet("a", "b")))
+	gcRoots := []snapshots.Info{
+		{Name: "a", Labels: snapOldLabel()}, {Name: "b", Labels: snapOldLabel()},
+		{Name: "c", Labels: snapOldLabel()}, {Name: "d", Labels: snapOldLabel()},
+	}
+	got := names(selectOrphanSnapshots(gcRoots, keySet("a", "b"), snapNow, imageGCGracePeriod))
 	if len(got) != 2 || !got["c"] || !got["d"] {
 		t.Fatalf("orphans = %v; want {c,d}", got)
 	}
@@ -350,10 +361,31 @@ func TestSelectOrphanSnapshots_OldVersionOrphaned(t *testing.T) {
 
 func TestSelectOrphanSnapshots_SharedBaseKept(t *testing.T) {
 	// base is still referenced by a current image; only the old top layer is orphaned.
-	gcRoots := []snapshots.Info{{Name: "base"}, {Name: "oldtop", Parent: "base"}}
-	got := selectOrphanSnapshots(gcRoots, keySet("base"))
+	gcRoots := []snapshots.Info{
+		{Name: "base", Labels: snapOldLabel()},
+		{Name: "oldtop", Parent: "base", Labels: snapOldLabel()},
+	}
+	got := selectOrphanSnapshots(gcRoots, keySet("base"), snapNow, imageGCGracePeriod)
 	if len(got) != 1 || got[0].Name != "oldtop" {
 		t.Fatalf("orphans = %v; want {oldtop}", names(got))
+	}
+}
+
+func TestSelectOrphanSnapshots_FreshSnapshotKept(t *testing.T) {
+	// A back-to-back deploy commits a new gc.root chain-ID snapshot after this
+	// pass built its reachable set; it is unreachable in the stale set but must
+	// NOT be removed because it is within the grace window (WDY-1679 P1 race).
+	fresh := snapNow.Add(-time.Minute).UTC().Format(time.RFC3339)
+	gcRoots := []snapshots.Info{
+		{Name: "fresh", Labels: gcLabel(fresh)},
+		{Name: "old", Labels: snapOldLabel()},
+	}
+	got := names(selectOrphanSnapshots(gcRoots, keySet(), snapNow, imageGCGracePeriod))
+	if got["fresh"] {
+		t.Error("a snapshot committed within grace must be kept (may belong to an in-flight deploy)")
+	}
+	if !got["old"] {
+		t.Error("an old unreachable snapshot must be selected")
 	}
 }
 
