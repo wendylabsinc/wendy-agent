@@ -46,6 +46,7 @@ V2_AGENT_PROTOS=(
     "wendy/agent/services/v2/wifi_service.proto"
     "wendy/agent/services/v2/bluetooth_service.proto"
     "wendy/agent/services/v2/container_service.proto"
+    "wendy/agent/services/v2/volumefs_service.proto"
     "wendy/agent/services/v2/provisioning_service.proto"
     "wendy/agent/services/v2/audio_service.proto"
     "wendy/agent/services/v2/telemetry_service.proto"
