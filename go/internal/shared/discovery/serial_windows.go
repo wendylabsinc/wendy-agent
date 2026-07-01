@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/wendylabsinc/wendy/go/internal/shared/env"
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 )
 
@@ -29,7 +30,7 @@ func ResolveESP32SerialPorts() ([]SerialDevice, error) {
 		vid, pid,
 	)
 
-	cmd := exec.CommandContext(ctx, powershellExe, "-NoProfile", "-NonInteractive", "-Command", script)
+	cmd := exec.CommandContext(ctx, env.PowershellExe(), "-NoProfile", "-NonInteractive", "-Command", script)
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("querying Win32_PnPEntity for ESP32 serial port: %w", err)
