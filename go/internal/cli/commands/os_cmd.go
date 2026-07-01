@@ -430,6 +430,28 @@ func resolveArtifactPath(path string) (string, error) {
 	return "", fmt.Errorf("no .wendy or .mender artifact found in directory: %s", absPath)
 }
 
+// artifactSuffix returns the OS-update artifact extension embedded in a URL or
+// path: ".mender.xz", ".wendy", or ".mender". A wendyos-update (.wendy)
+// artifact and a Mender (.mender) artifact share the manifest's
+// ota_update_path, and the install backends key off the artifact, so the
+// extension must survive a local download+serve round-trip — serving a .wendy
+// artifact under a .mender name makes wendyos-update reject it. Falls back to
+// ".mender" when no known suffix is present (backward-compatible default).
+func artifactSuffix(artifactURL string) string {
+	name := artifactURL
+	if u, err := url.Parse(artifactURL); err == nil && u.Path != "" {
+		name = u.Path
+	}
+	switch {
+	case strings.HasSuffix(name, ".mender.xz"):
+		return ".mender.xz"
+	case strings.HasSuffix(name, ".wendy"):
+		return ".wendy"
+	default:
+		return ".mender"
+	}
+}
+
 // artifactURLPath generates a short hash prefix for the URL path.
 func artifactURLPath(filePath string) string {
 	h := sha256.New()
@@ -657,6 +679,11 @@ func evaluateOSUpdateOutcome(
 		}
 		fmt.Fprintf(&b, "Update failed post-reboot healthchecks and was rolled back to %s.\n", rolledBackTo)
 		writeFailedServices(&b, resp.GetServices())
+		// When the updater ran its own health gate (wendyos-update health.d),
+		// there are no per-service results — the reason is carried in the note.
+		if note := resp.GetNote(); note != "" {
+			fmt.Fprintf(&b, "Reason: %s\n", note)
+		}
 		if re := resp.GetRollbackError(); re != "" {
 			fmt.Fprintf(&b, "Rollback error: %s\n", re)
 		}
@@ -1003,7 +1030,10 @@ func downloadArtifactToTemp(artifactURL string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolving cache dir: %w", err)
 	}
-	tmpFile, err := os.CreateTemp(cacheDir, "wendyos-*.mender")
+	// Preserve the artifact's real extension (.wendy / .mender / .mender.xz) so
+	// the locally served filename matches the artifact type; the device's
+	// install backend keys off it.
+	tmpFile, err := os.CreateTemp(cacheDir, "wendyos-*"+artifactSuffix(artifactURL))
 	if err != nil {
 		return "", fmt.Errorf("creating temp file: %w", err)
 	}

@@ -292,6 +292,15 @@ message HostStats {
     int64 mem_total_bytes = 4;
     int64 mem_available_bytes = 5;
     repeated GpuStats gpus = 6;      // empty when no GPU / no sampler tool present
+    // Every readable thermal sensor on the device (CPU, GPU, SoC, junction, …),
+    // from /sys/class/thermal. Empty when no zones are readable.
+    repeated ThermalZone thermal_zones = 7;
+}
+
+// ThermalZone is one temperature sensor read from /sys/class/thermal.
+message ThermalZone {
+    string name = 1;     // sensor type, e.g. "cpu-thermal", "gpu-thermal", "soc0-thermal", "tj-thermal"
+    double temp_c = 2;   // current temperature in degrees Celsius
 }
 
 message GpuStats {

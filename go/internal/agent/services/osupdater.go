@@ -48,6 +48,15 @@ type osUpdater interface {
 	commit() oshealth.MenderResult
 	// rollback reverts an uncommitted A/B update.
 	rollback() oshealth.MenderResult
+	// delegatesHealthcheck reports whether the backend runs its own post-commit
+	// health gate (wendyos-update runs /etc/wendyos-update/health.d inside
+	// commit), so the agent's boot-time gate must NOT run its own CheckAll for
+	// it. mender has no health.d, so the agent gate keeps owning the healthchecks.
+	delegatesHealthcheck() bool
+	// commitCommand is the binary name surfaced in user-facing commit/rollback
+	// failure notes ("wendyos-update", "mender-update"). It is distinct from
+	// name(): mender's backend id is "mender" but its binary is "mender-update".
+	commitCommand() string
 }
 
 // productionUpdaters returns the available backends in preference order

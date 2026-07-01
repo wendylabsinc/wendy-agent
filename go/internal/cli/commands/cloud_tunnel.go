@@ -106,8 +106,9 @@ func connectCloudAsset(ctx context.Context, auth *config.AuthConfig, asset *clou
 		}
 	}()
 
-	// Provisioned agents only serve mTLS on agentPort+1 (50052); the plaintext
-	// port (50051) is shut down after provisioning.
+	// Provisioned agents serve mTLS on agentPort+1 (50052) for remote clients; the
+	// plaintext port (50051) is shut down after provisioning. (On-device containers
+	// with the admin entitlement can reach the agent via the local unix socket.)
 	tunnelConn, err := openBrokerTunnel(ctx, brokerConn, auth, asset.GetId(), defaultAgentPort+1)
 	if err != nil {
 		return nil, fmt.Errorf("opening cloud tunnel to %s: %w", asset.GetName(), err)

@@ -14,8 +14,10 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
@@ -60,6 +62,7 @@ func newDeviceCmd() *cobra.Command {
 	addToGroup("common",
 		newAppsCmd(),
 		newDeviceLogsCmd(),
+		newDeviceOSLogsCmd(),
 		newROS2Cmd(),
 		newDeviceDashboardCmd(),
 		newTopCmd(),
@@ -264,10 +267,10 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 			}
 			fmt.Printf("%s %s\n", tui.Dim("CLI Version:"), tui.Value(version.Version))
 
-			if cmp := version.CompareVersions(version.Version, agentVersion); cmp > 0 && agentVersion != "dev" {
+			if agentBehindCLI(version.Version, agentVersion) {
 				fmt.Println()
 				fmt.Println(tui.WarningMessage("Agent is behind the CLI — run 'wendy device update' to update."))
-			} else if cmp < 0 {
+			} else if cliBehindAgent(version.Version, agentVersion) {
 				fmt.Println()
 				fmt.Println(tui.WarningMessage("CLI is behind the agent — consider updating the CLI."))
 			}
@@ -503,7 +506,7 @@ func newDeviceSetupCmd() *cobra.Command {
 				fmt.Printf("Unable to check agent version: %v\n", err)
 			} else {
 				fmt.Printf("Agent version: %s\n", versionResp.GetVersion())
-				if cmp := version.CompareVersions(version.Version, versionResp.GetVersion()); cmp > 0 && versionResp.GetVersion() != "dev" {
+				if agentBehindCLI(version.Version, versionResp.GetVersion()) {
 					fmt.Println("Agent is behind the CLI — consider running 'wendy device update'.")
 				}
 			}
@@ -672,9 +675,14 @@ func runEnrollDevice(ctx context.Context, conn *grpcclient.AgentConnection, auth
 
 	tokenCtx := cloudContext(ctx, auth)
 
+	org, orgErr := resolveOrg(ctx, auth, false)
+	if orgErr != nil {
+		return fmt.Errorf("resolving organization: %w", orgErr)
+	}
+
 	certClient := cloudpb.NewCertificateServiceClient(cloudConn)
 	tokenResp, err := certClient.CreateAssetEnrollmentToken(tokenCtx, &cloudpb.CreateAssetEnrollmentTokenRequest{
-		OrganizationId: int32(cert.OrganizationID),
+		OrganizationId: org.ID,
 		Name:           name,
 		TtlSeconds:     600,
 	})
@@ -693,8 +701,8 @@ func runEnrollDevice(ctx context.Context, conn *grpcclient.AgentConnection, auth
 		return fmt.Errorf("enrolling device: %w", err)
 	}
 
-	fmt.Printf("Device enrolled (org: %d, asset: %d).\n",
-		tokenResp.GetOrganizationId(), tokenResp.GetAssetId())
+	fmt.Printf("Device enrolled (org: %s / ID: %d, asset: %d).\n",
+		org.Name, tokenResp.GetOrganizationId(), tokenResp.GetAssetId())
 	return nil
 }
 
@@ -922,6 +930,16 @@ func parseSeverityLevel(name string) int32 {
 	}
 }
 
+// formatKernelLogRecord renders a kernel record in classic dmesg style:
+// "[ seconds.microseconds] message", with seconds right-aligned to 5 columns
+// and microseconds zero-padded to 6 digits.
+func formatKernelLogRecord(rec *agentpb.KernelLogRecord) string {
+	ts := rec.GetTimestampUs()
+	sec := ts / 1_000_000
+	usec := ts % 1_000_000
+	return fmt.Sprintf("[%5d.%06d] %s", sec, usec, rec.GetMessage())
+}
+
 func newDeviceLogsCmd() *cobra.Command {
 	var appName string
 	var serviceName string
@@ -935,7 +953,8 @@ func newDeviceLogsCmd() *cobra.Command {
 		Long: "Stream logs from containers on the device.\n\n" +
 			"Pass an app name (positionally or with --app) to see only that app's\n" +
 			"logs. Without a filter, logs from every container and the agent itself\n" +
-			"are streamed, which can include agent lifecycle messages.",
+			"are streamed, which can include agent lifecycle messages.\n\n" +
+			"To inspect the device kernel ring buffer (dmesg), use `wendy device os-logs`.",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
@@ -1064,6 +1083,87 @@ func newDeviceLogsCmd() *cobra.Command {
 	cmd.Flags().Int32Var(&tail, "tail", 0, "Replay the last N log batches before streaming live (0 = live only)")
 
 	return cmd
+}
+
+// newDeviceOSLogsCmd dumps the device kernel ring buffer (dmesg). It is a sibling
+// of `device logs` (container/agent logs): the kernel buffer is a different data
+// flow — raw, unredacted, and not filterable by app/service — so it lives in its
+// own command rather than as a flag on `logs`.
+func newDeviceOSLogsCmd() *cobra.Command {
+	var follow bool
+
+	cmd := &cobra.Command{
+		Use: "os-logs",
+		// Hidden: a low-level kernel diagnostic for operators who know to reach
+		// for it, kept out of the main `device` listing to avoid cluttering the
+		// everyday command surface. It still works and is documented.
+		Hidden: true,
+		Short:  "Dump the device kernel ring buffer (dmesg)",
+		Long: "Dump the device's kernel ring buffer (dmesg) for inspecting kernel,\n" +
+			"boot, and hardware messages.\n\n" +
+			"By default it replays the buffered records and then keeps following new\n" +
+			"ones until you interrupt with ctrl-c (like `dmesg -w`). Pass --follow=false\n" +
+			"(-f=false) for a one-shot snapshot that prints the current buffer and exits\n" +
+			"(like `dmesg`).\n\n" +
+			"Output is raw and unredacted. Each record is printed in classic dmesg style,\n" +
+			"`[ seconds.microseconds] message`; with --json each record is emitted as one\n" +
+			"JSON object (timestamp_us, level, message). Available on Linux devices only.",
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runKernelLogDump(cmd.Context(), follow)
+		},
+	}
+
+	cmd.Flags().BoolVarP(&follow, "follow", "f", true, "Keep following new kernel records after replaying the buffer; use --follow=false for a one-shot dump")
+
+	return cmd
+}
+
+// runKernelLogDump fetches the device kernel ring buffer via DumpKernelLog and
+// prints it in classic dmesg style (or as one JSON object per record when
+// --json is set). With follow=true it keeps streaming new records until the
+// user interrupts (ctrl-c); with follow=false it returns once the buffer drains.
+func runKernelLogDump(ctx context.Context, follow bool) error {
+	// Interrupt cancels the stream so follow mode exits cleanly on ctrl-c.
+	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	conn, err := connectToAgent(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	stream, err := conn.AgentService.DumpKernelLog(ctx, &agentpb.DumpKernelLogRequest{Follow: &follow})
+	if err != nil {
+		return fmt.Errorf("requesting kernel log: %w", err)
+	}
+
+	for {
+		resp, err := stream.Recv()
+		// io.EOF ends a one-shot dump; a cancelled context ends a follow stream
+		// on ctrl-c. Both are clean exits.
+		if err == io.EOF || ctx.Err() != nil {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("receiving kernel log: %w", err)
+		}
+		for _, rec := range resp.GetRecords() {
+			if jsonOutput {
+				data, _ := json.Marshal(map[string]any{
+					"timestamp_us": rec.GetTimestampUs(),
+					"level":        rec.GetLevel(),
+					"message":      rec.GetMessage(),
+				})
+				fmt.Println(string(data))
+			} else {
+				fmt.Println(formatKernelLogRecord(rec))
+			}
+		}
+	}
+
+	return nil
 }
 
 var (

@@ -13,13 +13,16 @@ import (
 
 // RunOSUpdateGate confirms or rolls back a pending A/B update at agent startup.
 // When an OS update is pending verification (marker written by UpdateOS before
-// the reboot), it healthchecks the critical services first and rolls back to
-// the previous OS if any of them failed to come up. Without a pending update it
+// the reboot), it decides commit-or-rollback; without a pending update it
 // reduces to the plain "commit" the agent has always run on startup.
 //
 // The commit/rollback are driven by the backend that installed the update
 // (recorded in the marker): the in-house wendyos-update engine, or mender as a
-// fallback. The healthcheck logic itself is backend-agnostic.
+// fallback. Where the health verdict comes from depends on the backend:
+// wendyos-update runs its own health gate (/etc/wendyos-update/health.d) inside
+// commit, so the gate just triggers commit and rolls back if it is rejected;
+// mender has no such gate, so the agent healthchecks the critical services
+// itself and rolls back if any fail to come up.
 //
 // This must run before the gRPC server starts: the device must not appear back
 // online to a waiting `wendy os update` until the commit-or-rollback decision
@@ -32,16 +35,18 @@ func RunOSUpdateGate(logger *zap.Logger) {
 		logger.Warn("Pending OS update marker is unreadable; auto-selecting the update backend", zap.Error(err))
 	}
 	requested := requestedBackendFromMarker(marker, found && err == nil)
-	commit, rollback := commitClosures(logger, requested)
+	commit, rollback, delegatedHealth, label := commitClosures(logger, requested)
 
 	gate := &oshealth.Gate{
-		Logger:   logger,
-		StateDir: oshealth.DefaultStateDir,
-		Services: oshealth.DefaultCriticalServices,
-		Checker:  oshealth.NewChecker(logger),
-		Commit:   commit,
-		Rollback: rollback,
-		Reboot:   rebootSystem,
+		Logger:          logger,
+		StateDir:        oshealth.DefaultStateDir,
+		Services:        oshealth.DefaultCriticalServices,
+		Checker:         oshealth.NewChecker(logger),
+		Commit:          commit,
+		Rollback:        rollback,
+		DelegatedHealth: delegatedHealth,
+		UpdaterLabel:    label,
+		Reboot:          rebootSystem,
 		OSVersion: func() string {
 			v, _ := wendyOSVersion()
 			return v
@@ -61,20 +66,33 @@ func requestedBackendFromMarker(marker oshealth.PendingMarker, found bool) strin
 }
 
 // commitClosures resolves the backend for the gate and returns its
-// commit/rollback. It selects by binary presence (chooseUpdaterForCommit), not
-// the install-time connector probe: the update has already been installed, so a
-// transient probe failure must not block committing a healthy slot. If no
-// backend binary is present (e.g. a non-WendyOS host), it returns no-ops
-// reporting "unavailable" so the gate degrades to the pre-multi-backend no-op.
-func commitClosures(logger *zap.Logger, requested string) (commit, rollback func() oshealth.MenderResult) {
+// commit/rollback plus the two policy bits the gate needs: whether the backend
+// delegates healthchecking to its own commit (wendyos-update) and the binary
+// label for user-facing failure notes. It selects by binary presence
+// (chooseUpdaterForCommit), not the install-time connector probe: the update has
+// already been installed, so a transient probe failure must not block committing
+// a healthy slot. If no backend binary is present (e.g. a non-WendyOS host), it
+// returns no-ops reporting "unavailable" so the gate degrades to the
+// pre-multi-backend no-op (and the agent-driven, mender-style path).
+func commitClosures(logger *zap.Logger, requested string) (commit, rollback func() oshealth.MenderResult, delegatedHealth bool, label string) {
 	updater := chooseUpdaterForCommit(requested, productionUpdaters(logger))
 	if updater == nil {
 		logger.Debug("No OS update backend available for the gate; commit/rollback are no-ops",
 			zap.String("requested", requested))
-		noop := func() oshealth.MenderResult { return oshealth.MenderResult{Status: oshealth.MenderUnavailable} }
-		return noop, noop
 	}
-	return updater.commit, updater.rollback
+	return closuresForUpdater(updater)
+}
+
+// closuresForUpdater maps a resolved backend (or nil) to the four values the
+// gate needs. A nil updater (no backend binary present) degrades to no-op
+// commit/rollback that report "unavailable", the non-delegated (agent-run)
+// healthcheck path, and the legacy "mender-update" label.
+func closuresForUpdater(updater osUpdater) (commit, rollback func() oshealth.MenderResult, delegatedHealth bool, label string) {
+	if updater == nil {
+		noop := func() oshealth.MenderResult { return oshealth.MenderResult{Status: oshealth.MenderUnavailable} }
+		return noop, noop, false, "mender-update"
+	}
+	return updater.commit, updater.rollback, updater.delegatesHealthcheck(), updater.commitCommand()
 }
 
 // recordPendingOSUpdate persists the pending-update marker that the healthcheck

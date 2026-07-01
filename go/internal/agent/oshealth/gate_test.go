@@ -446,6 +446,145 @@ func TestGateUnhealthyMenderUnavailable(t *testing.T) {
 	}
 }
 
+// delegateHealth flips a fixture's gate to the wendyos-update path: the backend
+// runs its own health gate inside commit, so the agent gate skips CheckAll.
+func (fx *gateFixture) delegateHealth() {
+	fx.gate.DelegatedHealth = true
+	fx.gate.UpdaterLabel = "wendyos-update"
+}
+
+func TestGateDelegatedHealthyCommitOK(t *testing.T) {
+	fx := newGateFixture(t, MenderResult{Status: MenderOK}, MenderResult{})
+	fx.delegateHealth()
+	fx.writeFreshMarker(t)
+
+	fx.gate.Run(context.Background())
+
+	if fx.commits != 1 || fx.rollback != 0 || fx.reboots != 0 {
+		t.Errorf("commits=%d rollback=%d reboots=%d, want 1/0/0", fx.commits, fx.rollback, fx.reboots)
+	}
+	if n := fx.systemd.callCount("a.service"); n != 0 {
+		t.Errorf("agent healthchecks must not run for a delegated backend (%d calls)", n)
+	}
+	if fx.markerExists(t) {
+		t.Error("marker should be cleared after commit")
+	}
+	rec, found := fx.readResult(t)
+	if !found || rec.Outcome != OutcomeCommitted {
+		t.Fatalf("expected committed record, got found=%v %+v", found, rec)
+	}
+	if len(rec.Services) != 0 {
+		t.Errorf("delegated commit must not record agent service results: %+v", rec.Services)
+	}
+	if rec.FinalizedAt.IsZero() {
+		t.Error("committed record should be finalized")
+	}
+}
+
+func TestGateDelegatedCommitNothingPending(t *testing.T) {
+	fx := newGateFixture(t, MenderResult{Status: MenderNothingPending}, MenderResult{})
+	fx.delegateHealth()
+	fx.writeFreshMarker(t)
+
+	fx.gate.Run(context.Background())
+
+	if fx.rollback != 0 || fx.reboots != 0 {
+		t.Errorf("rollback=%d reboots=%d, want 0/0", fx.rollback, fx.reboots)
+	}
+	if n := fx.systemd.callCount("a.service"); n != 0 {
+		t.Errorf("agent healthchecks must not run for a delegated backend (%d calls)", n)
+	}
+	if fx.markerExists(t) {
+		t.Error("marker should be cleared")
+	}
+	rec, found := fx.readResult(t)
+	if !found || rec.Outcome != OutcomeCommitted {
+		t.Fatalf("expected committed record, got found=%v %+v", found, rec)
+	}
+	if rec.Note == "" {
+		t.Error("expected a note explaining there was nothing to commit")
+	}
+}
+
+func TestGateDelegatedCommitRejectedRollsBack(t *testing.T) {
+	// wendyos-update commit ran its health.d, the deployment is marked failed,
+	// and commit returned a non-zero exit. The agent rolls back and reboots.
+	fx := newGateFixture(t,
+		MenderResult{Status: MenderError, Err: errors.New("exit status 1"),
+			Output: "pending update wendyos-image-... is marked failed; run rollback"},
+		MenderResult{Status: MenderOK})
+	fx.delegateHealth()
+	fx.writeFreshMarker(t)
+
+	fx.gate.Run(context.Background())
+
+	if fx.commits != 1 || fx.rollback != 1 || fx.reboots != 1 {
+		t.Errorf("commits=%d rollback=%d reboots=%d, want 1/1/1", fx.commits, fx.rollback, fx.reboots)
+	}
+	if n := fx.systemd.callCount("a.service"); n != 0 {
+		t.Errorf("agent healthchecks must not run for a delegated backend (%d calls)", n)
+	}
+	if fx.markerExists(t) {
+		t.Error("marker should be cleared before rebooting into the old slot")
+	}
+	rec, found := fx.readResult(t)
+	if !found || rec.Outcome != OutcomeRolledBack {
+		t.Fatalf("expected rolled_back record, got found=%v %+v", found, rec)
+	}
+	if !strings.Contains(rec.Note, "is marked failed") {
+		t.Errorf("note should carry the commit output reason, got %q", rec.Note)
+	}
+	if !rec.FinalizedAt.IsZero() {
+		t.Error("rolled_back record must not be finalized until the old slot boots")
+	}
+}
+
+func TestGateDelegatedCommitUnavailableNoRollback(t *testing.T) {
+	// The recorded backend's binary is gone at commit time. No health verdict
+	// was rendered, so the gate must not roll back a real slot — keep the marker
+	// for a retry on the next start.
+	fx := newGateFixture(t, MenderResult{Status: MenderUnavailable}, MenderResult{Status: MenderOK})
+	fx.delegateHealth()
+	fx.writeFreshMarker(t)
+
+	fx.gate.Run(context.Background())
+
+	if fx.rollback != 0 || fx.reboots != 0 {
+		t.Errorf("rollback=%d reboots=%d, want 0/0 when the backend is unavailable", fx.rollback, fx.reboots)
+	}
+	if !fx.markerExists(t) {
+		t.Error("marker should be kept so the commit is retried next start")
+	}
+	rec, found := fx.readResult(t)
+	if !found || rec.Outcome != OutcomeCommitFailed {
+		t.Fatalf("expected commit_failed record, got found=%v %+v", found, rec)
+	}
+}
+
+func TestGateDelegatedCommitTimeoutRetries(t *testing.T) {
+	// The agent's own commit timeout fired (storage/D-Bus briefly busy early in
+	// boot). That is not a health verdict, so keep the marker and retry rather
+	// than reverting a possibly-healthy slot.
+	fx := newGateFixture(t,
+		MenderResult{Status: MenderError, Err: context.DeadlineExceeded, Output: "timed out"},
+		MenderResult{Status: MenderOK})
+	fx.delegateHealth()
+	fx.writeFreshMarker(t)
+
+	fx.gate.Run(context.Background())
+
+	if fx.rollback != 0 || fx.reboots != 0 {
+		t.Errorf("rollback=%d reboots=%d, want 0/0 on a commit timeout", fx.rollback, fx.reboots)
+	}
+	if !fx.markerExists(t) {
+		t.Error("marker should be kept so the commit is retried next start")
+	}
+	rec, found := fx.readResult(t)
+	if !found || rec.Outcome != OutcomeCommitFailed {
+		t.Fatalf("expected commit_failed record, got found=%v %+v", found, rec)
+	}
+}
+
 func TestGateAllSkippedCountsAsHealthy(t *testing.T) {
 	fx := newGateFixture(t, MenderResult{Status: MenderOK}, MenderResult{})
 	fx.systemd.sequences["a.service"] = []map[string]string{{"LoadState": "not-found", "ActiveState": "inactive"}}

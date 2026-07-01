@@ -604,6 +604,7 @@ func resolveRunTarget(ctx context.Context, opts ...resolveOption) (*SelectedDevi
 	if cloudErr != nil {
 		return nil, err
 	}
+	maybeFixClock(ctx, cloudConn)
 	return &SelectedDevice{Agent: cloudConn}, nil
 }
 

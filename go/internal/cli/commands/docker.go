@@ -1583,9 +1583,13 @@ func buildAndPushImageForAgent(ctx context.Context, conn *grpcclient.AgentConnec
 		return buildAndPushImageForAgentWithBuilder(ctx, conn, regPort, builder, dir, repo, platform, dockerfile, buildArgs, cacheKey, streamOutput, logOutput)
 	}
 	if shouldAutoAttemptAppleContainerBuilder() {
+		// Prefer Apple Container whenever its CLI is available: start the system
+		// if it isn't running yet rather than silently falling back to Docker.
 		// Apple Container builds don't use buildx, so the local-cache key never
 		// applies; only the Docker fallback below consumes it.
-		if err := buildAndPushImageForAgentWithBuilder(ctx, conn, regPort, imageBuilderAppleContainer, dir, repo, platform, dockerfile, buildArgs, "", streamOutput, logOutput); err == nil {
+		if err := ensureAppleContainerSystem(ctx, false); err != nil {
+			logAppleContainerFallback(logOutput, err)
+		} else if err := buildAndPushImageForAgentWithBuilder(ctx, conn, regPort, imageBuilderAppleContainer, dir, repo, platform, dockerfile, buildArgs, "", streamOutput, logOutput); err == nil {
 			return nil
 		} else {
 			logAppleContainerFallback(logOutput, err)
@@ -1641,7 +1645,11 @@ func buildImageWithAppleContainer(ctx context.Context, dir, imageName, platform,
 	if err != nil {
 		return fmt.Errorf("resolving project path: %w", err)
 	}
-	args := []string{"build", "--platform", platform, "-t", imageName}
+	// --progress plain emits the deterministic BuildKit log format (#N, DONE Ns,
+	// [stage N/M]) that the shared build parser understands; the default
+	// (--progress auto) renders an interactive [+] Building UI the parser cannot
+	// read, so the renderer would show nothing.
+	args := []string{"build", "--progress", "plain", "--platform", platform, "-t", imageName}
 	if dockerfile != "" {
 		resolvedDockerfile, err := appleContainerBuildFilePath(dir, dockerfile)
 		if err != nil {
@@ -1715,9 +1723,12 @@ var (
 )
 
 // ensureAppleContainerSystem verifies the Apple Container system is running and
-// offers to start it when it is not. It is called only on explicit
-// `--builder apple-container` paths; the silent auto-attempt paths keep using
-// checkAppleContainerBuilder so they fall back to Docker without side effects.
+// offers to start it when it is not. It is called both on explicit
+// `--builder apple-container` paths and on the no-builder auto-attempt paths
+// (Apple silicon), which now prefer Apple Container whenever its CLI is
+// available and start the system on demand rather than silently falling back to
+// Docker. Callers fall back to Docker when this returns an error (CLI
+// unavailable, user declined, or the system failed to start).
 //
 // When the system is not running and we are attached to an interactive terminal,
 // the user is prompted before starting. assumeYes (from --yes, and implicitly
@@ -1768,11 +1779,10 @@ func ensureAppleContainerSystem(ctx context.Context, assumeYes bool) error {
 }
 
 // ensureAppleContainerSystemForBuilder runs ensureAppleContainerSystem only when
-// the builder was explicitly set to apple-container. The silent auto-attempt
-// selection (no --builder, on Apple silicon) is intentionally left to
-// checkAppleContainerBuilder so it can fall back to Docker without prompting or
-// starting the system. Safe to call from any build path: it no-ops unless the
-// builder is explicit apple-container.
+// the builder was explicitly set to apple-container. The no-builder auto-attempt
+// selection (no --builder, on Apple silicon) calls ensureAppleContainerSystem
+// directly at its decision point, so this helper is a no-op for it. Safe to call
+// from any build path: it no-ops unless the builder is explicit apple-container.
 func ensureAppleContainerSystemForBuilder(ctx context.Context, builder string, assumeYes bool) error {
 	if !imageBuilderWasExplicit(builder) {
 		return nil

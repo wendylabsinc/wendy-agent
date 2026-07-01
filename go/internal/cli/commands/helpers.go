@@ -1198,13 +1198,13 @@ func checkAndOfferUpdate(ctx context.Context, conn *grpcclient.AgentConnection) 
 
 	agentVer := resp.GetVersion()
 	// Dev CLI builds skip the update check entirely.
-	if version.Version == "dev" {
+	if version.IsDev(version.Version) {
 		markUpdateCheckPassed(conn.Host)
 		return conn, nil
 	}
 	// A dev agent build is running intentionally — never offer to replace it
-	// with a stable release (CompareVersions treats "dev" as always-behind).
-	if agentVer == "dev" {
+	// with a stable release (dev is treated as the latest version).
+	if version.IsDev(agentVer) {
 		markUpdateCheckPassed(conn.Host)
 		return conn, nil
 	}
@@ -1490,11 +1490,26 @@ func ExcludeProviders(keys ...string) resolveOption {
 	}
 }
 
-// resolveTarget inspects the --device flag and returns either an external
+// resolveTarget resolves the target device and, for agent connections,
+// best-effort corrects a lagging device clock before the caller operates on it
+// (issue #1171). This is the single funnel every command uses to obtain a
+// device, so the clock fix applies to info, run, deploy, ros2 bag, etc.
+func resolveTarget(ctx context.Context, opts ...resolveOption) (*SelectedDevice, error) {
+	sel, err := resolveTargetInner(ctx, opts...)
+	if err != nil {
+		return nil, err
+	}
+	if sel != nil && sel.Agent != nil {
+		maybeFixClock(ctx, sel.Agent)
+	}
+	return sel, nil
+}
+
+// resolveTargetInner inspects the --device flag and returns either an external
 // provider device or falls back to the gRPC agent connection. If no device
 // is specified and no default is configured, an interactive device picker
 // is presented.
-func resolveTarget(ctx context.Context, opts ...resolveOption) (*SelectedDevice, error) {
+func resolveTargetInner(ctx context.Context, opts ...resolveOption) (*SelectedDevice, error) {
 	cfg := resolveConfig{excludeProviderKeys: make(map[string]bool)}
 	for _, o := range opts {
 		o(&cfg)
@@ -1861,21 +1876,23 @@ func pickDevice(ctx context.Context, excludeProviders map[string]bool, excludeBl
 	}
 
 	// Allow 'd' to set default and 'x' to unset default from the picker.
-	picker.OnSetDefault = func(item tui.PickerItem) {
+	picker.OnSetDefault = func(item tui.PickerItem) string {
 		deviceID := pickerItemDeviceID(item)
 		if deviceID == "" {
-			return
+			return ""
 		}
 		if cfg, err := config.Load(); err == nil {
 			cfg.DefaultDevice = deviceID
 			_ = config.Save(cfg)
 		}
+		return fmt.Sprintf("Default device set to %s.", item.Name)
 	}
-	picker.OnUnsetDefault = func() {
+	picker.OnUnsetDefault = func() string {
 		if cfg, err := config.Load(); err == nil {
 			cfg.DefaultDevice = ""
 			_ = config.Save(cfg)
 		}
+		return "Default device cleared."
 	}
 
 	p := tea.NewProgram(picker)

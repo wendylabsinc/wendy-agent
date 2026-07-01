@@ -287,6 +287,28 @@ func TestResolveArtifactPath(t *testing.T) {
 	})
 }
 
+func TestArtifactSuffix(t *testing.T) {
+	tests := []struct {
+		name string
+		url  string
+		want string
+	}{
+		{"wendy artifact", "https://storage.example.com/images/raspberry-pi-5/1.0/wendyos-image-x.rootfs.wendy", ".wendy"},
+		{"mender artifact", "https://storage.example.com/images/jetson/1.0/wendyos-image-x.mender", ".mender"},
+		{"mender.xz artifact", "https://storage.example.com/images/rpi/1.0/wendyos-image-x.mender.xz", ".mender.xz"},
+		{"wendy with query string", "https://storage.example.com/x.wendy?token=abc&exp=123", ".wendy"},
+		{"unknown extension falls back to mender", "https://storage.example.com/images/x.bin", ".mender"},
+		{"bare local path", "/tmp/update.wendy", ".wendy"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := artifactSuffix(tc.url); got != tc.want {
+				t.Fatalf("artifactSuffix(%q) = %q, want %q", tc.url, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestValidateUpdaterBackend(t *testing.T) {
 	valid := []string{"", "auto", "wendyos", "wendyos-update", "mender"}
 	for _, v := range valid {
@@ -341,6 +363,15 @@ func TestEvaluateOSUpdateOutcome(t *testing.T) {
 		CreatedAtUnix: fresh,
 		Note:          "wendyos-update commit failed: exit status 1 (tegra: ESRT capsule not staged)",
 	}
+	// A delegated (wendyos-update health.d) rollback has no per-service results;
+	// the reason is carried in Note and must still reach the user.
+	delegatedRolledBack := &agentpb.GetOSUpdateStatusResponse{
+		HasResult:     true,
+		Outcome:       agentpb.GetOSUpdateStatusResponse_OUTCOME_ROLLED_BACK,
+		OldOsVersion:  "WendyOS-0.10.4",
+		CreatedAtUnix: fresh,
+		Note:          "wendyos-update commit failed: exit status 1 (pending update is marked failed; run rollback)",
+	}
 
 	tests := []struct {
 		name         string
@@ -389,6 +420,18 @@ func TestEvaluateOSUpdateOutcome(t *testing.T) {
 				"avahi-daemon.service",
 				"timed out after 30s",
 				"WendyOS-0.10.4",
+			},
+		},
+		{
+			name:    "delegated rollback surfaces the note when there are no service results",
+			resp:    delegatedRolledBack,
+			preVer:  "WendyOS-0.10.4",
+			postVer: "WendyOS-0.10.4",
+			wantErr: true,
+			wantContains: []string{
+				"rolled back",
+				"WendyOS-0.10.4",
+				"is marked failed",
 			},
 		},
 		{

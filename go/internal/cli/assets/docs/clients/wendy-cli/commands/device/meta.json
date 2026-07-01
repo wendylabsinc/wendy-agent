@@ -2,6 +2,7 @@
   "pages": [
     "apps",
     "logs",
+    "os-logs",
     "dashboard",
     "top",
     "info",

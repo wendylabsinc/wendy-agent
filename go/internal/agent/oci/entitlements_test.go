@@ -2,6 +2,7 @@ package oci
 
 import (
 	"errors"
+	"net"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -1493,6 +1494,91 @@ func TestApplyCamera_NonJetsonOmitsNvhost(t *testing.T) {
 	}
 }
 
+// installFakeDriGlobs redirects driGlobs at a tempdir of fake /dev/dri nodes and
+// stubs statMajor to report their majors, mirroring installFakeCameraGlobs.
+func installFakeDriGlobs(t *testing.T, files map[string]int64) {
+	t.Helper()
+	dir := t.TempDir()
+	majorsByPath := map[string]int64{}
+	for name, major := range files {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, nil, 0o644); err != nil {
+			t.Fatalf("write %s: %v", p, err)
+		}
+		majorsByPath[p] = major
+	}
+	origGlobs := driGlobs
+	origStat := statMajor
+	t.Cleanup(func() {
+		driGlobs = origGlobs
+		statMajor = origStat
+	})
+	driGlobs = []string{filepath.Join(dir, "*")}
+	statMajor = func(p string) (int64, error) {
+		if m, ok := majorsByPath[p]; ok {
+			return m, nil
+		}
+		return 0, os.ErrNotExist
+	}
+}
+
+func TestApplyDisplay_AllowsDrmMajor(t *testing.T) {
+	installFakeDriGlobs(t, map[string]int64{"card0": 226, "renderD128": 226})
+	boardDetect = func() board.Info { return board.Info{Kind: board.Generic} }
+	origRender := lookupRenderGID
+	t.Cleanup(func() { lookupRenderGID = origRender })
+	lookupRenderGID = func() (uint32, bool) { return 0, false }
+
+	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
+	cfg := &appconfig.AppConfig{AppID: "test", Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementDisplay}}}
+	if err := ApplyEntitlements(spec, cfg, ApplyOptions{}); err != nil {
+		t.Fatalf("ApplyEntitlements: %v", err)
+	}
+	if !hasMajorRule(spec, 226) {
+		t.Error("expected cgroup allow for DRM major 226")
+	}
+	if countMajorRule(spec, 226) != 1 {
+		t.Errorf("DRM major rule should be deduplicated, got %d", countMajorRule(spec, 226))
+	}
+}
+
+func TestApplyDisplay_AddsVideoAndRenderGIDs(t *testing.T) {
+	installFakeDriGlobs(t, map[string]int64{"renderD128": 226})
+	boardDetect = func() board.Info { return board.Info{Kind: board.Generic} }
+	origRender := lookupRenderGID
+	t.Cleanup(func() { lookupRenderGID = origRender })
+	lookupRenderGID = func() (uint32, bool) { return 107, true }
+
+	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
+	cfg := &appconfig.AppConfig{AppID: "test", Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementDisplay}}}
+	if err := ApplyEntitlements(spec, cfg, ApplyOptions{}); err != nil {
+		t.Fatalf("ApplyEntitlements: %v", err)
+	}
+	if !hasGID(spec, videoGroupGID) {
+		t.Error("expected video GID in AdditionalGids")
+	}
+	if !hasGID(spec, 107) {
+		t.Error("expected resolved render GID in AdditionalGids")
+	}
+}
+
+func TestApplyDisplay_NonDisplayAppUnchanged(t *testing.T) {
+	installFakeDriGlobs(t, map[string]int64{"renderD128": 226})
+	boardDetect = func() board.Info { return board.Info{Kind: board.Generic} }
+
+	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
+	cfg := &appconfig.AppConfig{AppID: "test", Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementNetwork}}}
+	if err := ApplyEntitlements(spec, cfg, ApplyOptions{}); err != nil {
+		t.Fatalf("ApplyEntitlements: %v", err)
+	}
+	if hasMajorRule(spec, 226) {
+		t.Error("non-display app must not get the DRM major rule")
+	}
+	if hasGID(spec, 107) {
+		t.Error("non-display app must not get a render GID")
+	}
+}
+
 // TestApplyCamera_DeviceRulesOmitMknod locks in least privilege: every cgroup
 // device rule the camera entitlement adds — the static v4l2 major and every
 // dynamically-discovered media/dma-heap/v4l-subdev/nvhost/nvmap major — must
@@ -1526,5 +1612,65 @@ func TestApplyCamera_DeviceRulesOmitMknod(t *testing.T) {
 		if acc != "rw" {
 			t.Errorf("camera major %d Access = %q, want %q", major, acc, "rw")
 		}
+	}
+}
+
+func hasMount(spec *Spec, dest string) bool {
+	for _, m := range spec.Mounts {
+		if m.Destination == dest {
+			return true
+		}
+	}
+	return false
+}
+
+func TestApplyAdmin_MountsSocketWhenPresent(t *testing.T) {
+	dir := t.TempDir()
+	sock := filepath.Join(dir, "s")
+	l, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer l.Close()
+	origPath := adminAgentSocketPath
+	t.Cleanup(func() { adminAgentSocketPath = origPath })
+	adminAgentSocketPath = sock
+
+	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
+	cfg := &appconfig.AppConfig{AppID: "test", Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementAdmin}}}
+	if err := ApplyEntitlements(spec, cfg, ApplyOptions{}); err != nil {
+		t.Fatalf("ApplyEntitlements: %v", err)
+	}
+	if !hasMount(spec, "/run/wendy/agent.sock") {
+		t.Error("expected /run/wendy/agent.sock bind mount")
+	}
+	if !hasEnv(spec, "WENDY_AGENT_SOCKET=/run/wendy/agent.sock") {
+		t.Error("expected WENDY_AGENT_SOCKET env")
+	}
+}
+
+func TestApplyAdmin_NoSocketWhenAbsent(t *testing.T) {
+	origPath := adminAgentSocketPath
+	t.Cleanup(func() { adminAgentSocketPath = origPath })
+	adminAgentSocketPath = filepath.Join(t.TempDir(), "missing.sock")
+
+	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
+	cfg := &appconfig.AppConfig{AppID: "test", Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementAdmin}}}
+	if err := ApplyEntitlements(spec, cfg, ApplyOptions{}); err != nil {
+		t.Fatalf("ApplyEntitlements: %v", err)
+	}
+	if hasMount(spec, "/run/wendy/agent.sock") {
+		t.Error("must not mount a missing socket")
+	}
+}
+
+func TestApplyAdmin_NonAdminAppUnchanged(t *testing.T) {
+	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
+	cfg := &appconfig.AppConfig{AppID: "test", Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementNetwork}}}
+	if err := ApplyEntitlements(spec, cfg, ApplyOptions{}); err != nil {
+		t.Fatalf("ApplyEntitlements: %v", err)
+	}
+	if hasMount(spec, "/run/wendy/agent.sock") || hasEnv(spec, "WENDY_AGENT_SOCKET=/run/wendy/agent.sock") {
+		t.Error("non-admin app must not get the agent socket")
 	}
 }

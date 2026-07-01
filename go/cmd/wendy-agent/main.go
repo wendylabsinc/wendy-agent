@@ -32,6 +32,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/agent/dbusproxy"
 	"github.com/wendylabsinc/wendy/go/internal/agent/hardware"
 	"github.com/wendylabsinc/wendy/go/internal/agent/interceptor"
+	"github.com/wendylabsinc/wendy/go/internal/agent/localsocket"
 	"github.com/wendylabsinc/wendy/go/internal/agent/mtls"
 	agentnet "github.com/wendylabsinc/wendy/go/internal/agent/network"
 	"github.com/wendylabsinc/wendy/go/internal/agent/registry"
@@ -195,6 +196,7 @@ func main() {
 	telemetrySvc := services.NewTelemetryService(logger, broadcaster, telemetryBuf)
 
 	deviceInfoSvc := services.NewDeviceInfoService(logger, hwDiscoverer)
+	timeSyncSvc := services.NewTimeSyncService(logger, timesyncMgr)
 	wifiSvc := services.NewWiFiService(logger, networkMgr)
 	bluetoothSvc := services.NewBluetoothService(logger, btManager)
 	agentUpdateSvc := services.NewAgentUpdateService(logger, installer)
@@ -276,6 +278,10 @@ func main() {
 			defer wg.Done()
 			monitor.Run(ctx)
 		}()
+		// Re-launch apps that should run after a reboot (per their restart
+		// policy, minus user-stopped ones) now that the monitor is running.
+		// Done in its own goroutine so agent startup isn't blocked on container I/O.
+		go monitor.ReconcileBootContainers(ctx)
 	}
 
 	if containerdClient != nil {
@@ -401,6 +407,7 @@ func main() {
 		agentpb.RegisterWendyProvisioningServiceServer(srv, provisioningSvc)
 		agentpb.RegisterWendyTelemetryServiceServer(srv, telemetrySvc)
 		agentpbv2.RegisterWendyDeviceInfoServiceServer(srv, deviceInfoSvc)
+		agentpbv2.RegisterWendyTimeSyncServiceServer(srv, timeSyncSvc)
 		agentpbv2.RegisterWendyWiFiServiceServer(srv, wifiSvc)
 		agentpbv2.RegisterWendyBluetoothServiceServer(srv, bluetoothSvc)
 		agentpbv2.RegisterWendyAgentUpdateServiceServer(srv, agentUpdateSvc)
@@ -533,8 +540,9 @@ func main() {
 	}
 
 	// Plaintext gRPC server — only needed until the device is provisioned.
-	// Once provisioned the mTLS server handles all gRPC traffic and the plaintext
-	// port is shut down so unprovisioned clients cannot access device services.
+	// Once provisioned, the mTLS server handles remote gRPC traffic and this
+	// plaintext port is shut down. The local unix socket (/run/wendy/agent.sock)
+	// remains active for on-device containers with the admin entitlement.
 	var agentServer *grpc.Server
 	if !alreadyProvisioned {
 		agentServer = grpc.NewServer(
@@ -567,6 +575,34 @@ func main() {
 				logger.Error("Agent gRPC server error", zap.Error(err))
 			}
 		}()
+	}
+
+	// Local control socket: the agent's full gRPC over a unix socket with NO
+	// mTLS. Access is gated solely by the admin entitlement (oci.applyAdmin
+	// bind-mounts this socket into entitled containers). Disabled with
+	// WENDY_LOCAL_SOCKET=off.
+	var localSocketServer *grpc.Server
+	if os.Getenv("WENDY_LOCAL_SOCKET") != "off" {
+		localSocketServer = grpc.NewServer(
+			grpc.UnaryInterceptor(interceptor.UnaryErrorInterceptor(logger)),
+			grpc.StreamInterceptor(interceptor.StreamErrorInterceptor(logger)),
+		)
+		registerAllServices(localSocketServer)
+
+		const localSocketPath = "/run/wendy/agent.sock"
+		localLis, err := localsocket.Listen(localSocketPath)
+		if err != nil {
+			logger.Error("Failed to listen on local control socket", zap.Error(err))
+		} else {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				logger.Info("Agent local control socket listening", zap.String("path", localSocketPath))
+				if err := localSocketServer.Serve(localLis); err != nil {
+					logger.Error("Local control socket server error", zap.Error(err))
+				}
+			}()
+		}
 	}
 
 	// Set up the provisioning callback to start the mTLS server, shut down
@@ -677,6 +713,9 @@ func main() {
 	cancel()
 	if agentServer != nil {
 		agentServer.GracefulStop()
+	}
+	if localSocketServer != nil {
+		localSocketServer.GracefulStop()
 	}
 	otelServer.GracefulStop()
 

@@ -1,37 +1,20 @@
-# App Configuration
+# App Entitlements
 
-The app configuration is a JSON object that contains the app's configuration.
-A minimal version looks like this:
+Entitlements grant a containerized app access to host resources — networking, GPU, cameras, serial ports, and more. An app gets **only** what it declares; anything not listed is unavailable. Entitlements apply to WendyOS container targets (`linux`/`wendyos`) and `wendy-lite`; native macOS (`darwin`) apps run non-containerized and don't use them.
 
-```json
-{
-    "appId": "com.example.app",
-    "platform": "linux",
-    "version": "1.0.0",
-}
-```
-
-The app configuration is stored in the `wendy.json` file in the root of the app's directory.
-
-### Entitlements
-
-Entitlements are a way to grant containers access to resources on the host. Entitlements apply to WendyOS container targets (`linux`/`wendyos`) and `wendy-lite`; native macOS (`darwin`) apps run non-containerized and do not use entitlements. The format of the entitlements is a JSON object with the following fields:
+Declare them in the `entitlements` array of your `wendy.json`, or add one with `wendy project entitlements add <type>`:
 
 ```json
 {
     "appId": "com.example.app",
     "platform": "linux",
-    "version": "1.0.0",
-    ...
     "entitlements": [
-        {
-            "type": "network",
-            "network": "host"
-        },
-        ...
+        { "type": "network", "mode": "host" }
     ]
 }
 ```
+
+> **Complete reference:** for every entitlement type, its options, and security notes, see [wendy.json → Entitlements](../apps/wendy.json.md#entitlements-1). This page is a guide to the common ones and how to choose between similar options.
 
 ## Network
 
@@ -49,14 +32,6 @@ A "network" type entitlement can have the following values:
     "network": "host"
 }
 ```
-
-## Device
-
-The device entitlement allows the container to access the device's hardware.
-
-## Mounts
-
-The mounts entitlement allows the container to access the device's filesystem.
 
 ## Input
 

@@ -286,7 +286,7 @@ func TestPreEnrollDevice_Success(t *testing.T) {
 		chainPEM: "ca-chain",
 	})
 
-	state, err := preEnrollDevice(context.Background(), fakeAuth(t), "my-device", dialer)
+	state, err := preEnrollDevice(context.Background(), fakeAuth(t), "my-device", 0, dialer)
 	if err != nil {
 		t.Fatalf("preEnrollDevice: %v", err)
 	}
@@ -319,7 +319,7 @@ func TestPreEnrollDevice_WritesFile(t *testing.T) {
 		orgID: 1, assetID: 1, token: "t", certPEM: "c", chainPEM: "ch",
 	})
 
-	state, err := preEnrollDevice(context.Background(), fakeAuth(t), "", dialer)
+	state, err := preEnrollDevice(context.Background(), fakeAuth(t), "", 0, dialer)
 	if err != nil {
 		t.Fatalf("preEnrollDevice: %v", err)
 	}
@@ -341,7 +341,7 @@ func TestPreEnrollDevice_WritesFile(t *testing.T) {
 
 func TestPreEnrollDevice_NoAuthCerts(t *testing.T) {
 	auth := &config.AuthConfig{CloudGRPC: "localhost:9999", Certificates: nil}
-	_, err := preEnrollDevice(context.Background(), auth, "", nil)
+	_, err := preEnrollDevice(context.Background(), auth, "", 0, nil)
 	if err == nil {
 		t.Fatal("expected error with no auth certificates")
 	}
@@ -351,7 +351,7 @@ func TestPreEnrollDevice_TokenError(t *testing.T) {
 	dialer := startPreEnrollFakeServer(t, &fakePreEnrollCertService{
 		tokenErr: fmt.Errorf("token denied"),
 	})
-	_, err := preEnrollDevice(context.Background(), fakeAuth(t), "", dialer)
+	_, err := preEnrollDevice(context.Background(), fakeAuth(t), "", 0, dialer)
 	if err == nil {
 		t.Fatal("expected error when token creation fails")
 	}
@@ -362,7 +362,7 @@ func TestPreEnrollDevice_IssueError(t *testing.T) {
 		orgID: 1, assetID: 1, token: "t",
 		issueErr: fmt.Errorf("issuance rejected"),
 	})
-	_, err := preEnrollDevice(context.Background(), fakeAuth(t), "", dialer)
+	_, err := preEnrollDevice(context.Background(), fakeAuth(t), "", 0, dialer)
 	if err == nil {
 		t.Fatal("expected error when certificate issuance fails")
 	}
@@ -373,7 +373,7 @@ func TestPreEnrollDevice_EmptyCert(t *testing.T) {
 		orgID: 1, assetID: 1, token: "t",
 		emptyCert: true,
 	})
-	_, err := preEnrollDevice(context.Background(), fakeAuth(t), "", dialer)
+	_, err := preEnrollDevice(context.Background(), fakeAuth(t), "", 0, dialer)
 	if err == nil {
 		t.Fatal("expected error when cloud returns empty certificate")
 	}

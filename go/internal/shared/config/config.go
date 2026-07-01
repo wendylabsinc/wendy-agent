@@ -46,6 +46,10 @@ type Config struct {
 	// answering at that hostname is caught. Renewal/re-enrollment within the
 	// same org+cloud does not trip it. Keyed by normalized hostname.
 	DevicePins map[string]DevicePin `json:"devicePins,omitempty"`
+	// DefaultOrgID is the organization used when a command needs to target a
+	// specific org and the user belongs to more than one. Zero means no default;
+	// the CLI will then show a picker or use the sole available org.
+	DefaultOrgID int32 `json:"defaultOrgId,omitempty"`
 }
 
 // AuthConfig holds authentication details for a cloud environment.
@@ -157,10 +161,24 @@ func Save(cfg *Config) error {
 	return nil
 }
 
-// AddAuth adds or replaces an auth entry, matching on cloudDashboard and cloudGRPC.
+// authEntryOrgID returns the organization ID from the first certificate in an
+// auth entry, or 0 if none is present.
+func authEntryOrgID(a AuthConfig) int {
+	if len(a.Certificates) > 0 {
+		return a.Certificates[0].OrganizationID
+	}
+	return 0
+}
+
+// AddAuth adds or replaces an auth entry. Matching is by (cloudDashboard,
+// cloudGRPC, orgID) so that multiple orgs on the same cloud endpoint each
+// keep their own entry instead of overwriting one another.
 func (c *Config) AddAuth(auth AuthConfig) {
+	incomingOrg := authEntryOrgID(auth)
 	for i, existing := range c.Auth {
-		if existing.CloudDashboard == auth.CloudDashboard && existing.CloudGRPC == auth.CloudGRPC {
+		if existing.CloudDashboard == auth.CloudDashboard &&
+			existing.CloudGRPC == auth.CloudGRPC &&
+			authEntryOrgID(existing) == incomingOrg {
 			c.Auth[i] = auth
 			return
 		}

@@ -3,3 +3,5 @@ Tails the OTel logs from a wendy-agent, rendering them in the terminal. By defau
 With `--app`, you can filter on a per-app basis. You an also set a minimum log level using, for example, `--level error`.
 
 If you provide `--json`, the output will be JSONL, one line per log statement.
+
+To inspect the device's kernel ring buffer (`dmesg`) instead of container/agent logs, use [`wendy device os-logs`](./os-logs).

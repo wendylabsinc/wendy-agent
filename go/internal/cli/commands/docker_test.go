@@ -101,7 +101,7 @@ func TestBuildAndPushImageWithAppleContainerUsesContainerCLI(t *testing.T) {
 	for _, want := range []string{
 		"container\x00--version\n",
 		"container\x00system\x00status\n",
-		"container\x00build\x00--platform\x00linux/arm64\x00-t\x00127.0.0.1:5000/test-app:latest\x00-f\x00" + resolvedDockerfile + "\x00--build-arg\x00A=1\x00--build-arg\x00B=2\x00" + buildContext + "\n",
+		"container\x00build\x00--progress\x00plain\x00--platform\x00linux/arm64\x00-t\x00127.0.0.1:5000/test-app:latest\x00-f\x00" + resolvedDockerfile + "\x00--build-arg\x00A=1\x00--build-arg\x00B=2\x00" + buildContext + "\n",
 		"container\x00image\x00push\x00--scheme\x00http\x00--platform\x00linux/arm64\x00127.0.0.1:5000/test-app:latest\n",
 	} {
 		if !strings.Contains(log, want) {
@@ -140,7 +140,7 @@ func TestBuildImageToOCILayoutWithAppleContainer(t *testing.T) {
 	// Builds into the image store under a unique tag, exports via image save,
 	// then removes the temporary tag.
 	for _, want := range []string{
-		"container\x00build\x00--platform\x00linux/arm64\x00-t\x00wendy-oci-build:wendy-oci-123",
+		"container\x00build\x00--progress\x00plain\x00--platform\x00linux/arm64\x00-t\x00wendy-oci-build:wendy-oci-123",
 		"container\x00image\x00save\x00wendy-oci-build:wendy-oci-123\x00--platform\x00linux/arm64\x00-o\x00" + dest,
 		"container\x00image\x00rm\x00wendy-oci-build:wendy-oci-123",
 	} {
@@ -266,7 +266,7 @@ func TestBuildDockerProjectWithBuilderDefaultsToAppleContainerOnAppleSilicon(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "container\x00build\x00--platform\x00linux/arm64\x00-t\x00test-app:latest\x00-f\x00" + resolvedBuildFile + "\x00" + buildContext + "\n"
+	want := "container\x00build\x00--progress\x00plain\x00--platform\x00linux/arm64\x00-t\x00test-app:latest\x00-f\x00" + resolvedBuildFile + "\x00" + buildContext + "\n"
 	if !strings.Contains(string(data), want) {
 		t.Fatalf("command log missing %q in:\n%s", want, string(data))
 	}
@@ -317,6 +317,44 @@ func TestBuildDockerProjectWithBuilderFallsBackToDockerWhenAutoAppleContainerFai
 	}
 	if !dockerFallbackCalled {
 		t.Fatal("Docker fallback was not called")
+	}
+}
+
+// When Apple Container's CLI is installed but its system is not running, the
+// no-builder auto path now starts the system and uses Apple Container instead
+// of silently falling back to Docker.
+func TestBuildDockerProjectWithBuilderStartsAppleContainerWhenStoppedOnAppleSilicon(t *testing.T) {
+	logFile := setupAppleContainerEnsureSeams(t)
+	isInteractiveTerminalFn = func() bool { return false }
+	promptYesNoFn = func(string) bool { t.Fatal("must not prompt in non-interactive auto path"); return false }
+	// System is down until "container system start" creates the readiness file.
+	t.Setenv("IMAGE_BUILDER_STATUS_READY_FILE", filepath.Join(t.TempDir(), "ready"))
+
+	oldDockerBuild := buildDockerProjectWithDocker
+	t.Cleanup(func() { buildDockerProjectWithDocker = oldDockerBuild })
+	buildDockerProjectWithDocker = func(dir, imageName, platform, dockerfile string) error {
+		t.Fatal("Docker fallback should not run when Apple Container can be started")
+		return nil
+	}
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "Containerfile"), []byte("FROM scratch\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := buildDockerProjectWithBuilder(context.Background(), "", dir, "test-app:latest", "linux/arm64", "Containerfile"); err != nil {
+		t.Fatalf("buildDockerProjectWithBuilder: %v", err)
+	}
+
+	data, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "container\x00system\x00start\x00--timeout\x0060") {
+		t.Fatalf("expected Apple Container system to be started:\n%s", data)
+	}
+	if !strings.Contains(string(data), "container\x00build\x00") {
+		t.Fatalf("expected Apple Container build to run:\n%s", data)
 	}
 }
 

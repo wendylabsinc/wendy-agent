@@ -9,6 +9,23 @@ import (
 
 func approx(a, b float64) bool { return math.Abs(a-b) < 0.01 }
 
+func TestFormatThermalZones(t *testing.T) {
+	zones := []*agentpb.ThermalZone{
+		{Name: "gpu-thermal", TempC: 52.4},
+		{Name: "cpu-thermal", TempC: 49},
+		{Name: "soc0-therm", TempC: 47},
+		{Name: "thermal_zone9", TempC: 40},
+	}
+	got := formatThermalZones(zones)
+	want := "gpu 52°C  cpu 49°C  soc0 47°C  thermal_zone9 40°C"
+	if got != want {
+		t.Errorf("formatThermalZones = %q; want %q", got, want)
+	}
+	if formatThermalZones(nil) != "" {
+		t.Errorf("formatThermalZones(nil) should be empty")
+	}
+}
+
 func TestHostCPUPercent(t *testing.T) {
 	prev := topSample{host: &agentpb.HostStats{CpuTotalJiffies: 1000, CpuIdleJiffies: 800}}
 	cur := topSample{host: &agentpb.HostStats{CpuTotalJiffies: 1100, CpuIdleJiffies: 850}}
