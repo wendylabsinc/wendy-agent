@@ -87,35 +87,6 @@ func TestAssembleROS2MsgSchema(t *testing.T) {
 	}
 }
 
-func TestParsePythonBytesLiteral(t *testing.T) {
-	cases := []struct {
-		in   string
-		want []byte
-	}{
-		{`b'\x00\x01ABC'`, []byte{0x00, 0x01, 'A', 'B', 'C'}},
-		{`b'\n\t\\\''`, []byte{'\n', '\t', '\\', '\''}},
-		{`b"\x00hi"`, []byte{0x00, 'h', 'i'}},
-		{`b''`, []byte{}},
-	}
-	for _, c := range cases {
-		got, err := parsePythonBytesLiteral(c.in)
-		if err != nil {
-			t.Fatalf("parse(%q): %v", c.in, err)
-		}
-		if string(got) != string(c.want) {
-			t.Errorf("parse(%q) = %v, want %v", c.in, got, c.want)
-		}
-	}
-}
-
-func TestParsePythonBytesLiteral_Rejects(t *testing.T) {
-	for _, in := range []string{"", "notbytes", "b'unterminated", "'noprefix'"} {
-		if _, err := parsePythonBytesLiteral(in); err == nil {
-			t.Errorf("parse(%q): expected error", in)
-		}
-	}
-}
-
 func TestGetMessageDefinition(t *testing.T) {
 	rt := &fakeROS2Runtime{
 		sidecar: ROS2Sidecar{Distro: "humble", DomainID: 0},
@@ -189,38 +160,6 @@ func TestGetMessageDefinition_DependencyCap(t *testing.T) {
 	}
 }
 
-// TestSubscribeRaw_OversizedLineFails verifies a single line larger than
-// ros2RawMaxLineBytes is rejected loudly (codes.Internal) rather than forcing an
-// unbounded heap allocation, and that the handler does not wedge waiting on a
-// producer blocked mid-write (Finding 2 — large per-line allocation / DoS).
-func TestSubscribeRaw_OversizedLineFails(t *testing.T) {
-	rt := &fakeROS2Runtime{
-		sidecar: ROS2Sidecar{Distro: "humble", DomainID: 0},
-		execFn: func(_ context.Context, opts ROS2ExecOptions, stdout, _ io.Writer) (int, error) {
-			if strings.Join(opts.Args, " ") == "topic list" {
-				io.WriteString(stdout, "/chatter\n")
-				return 0, nil
-			}
-			// One line that exceeds the scanner ceiling, never terminated by a
-			// newline before the limit — bufio.Scanner reports ErrTooLong.
-			io.WriteString(stdout, "b'"+strings.Repeat("A", ros2RawMaxLineBytes+16)+"'\n")
-			return 0, nil
-		},
-	}
-	svc := newTestROS2Service(t, rt, t.TempDir())
-	col := &rawCollector{ctx: context.Background()}
-	err := svc.SubscribeRaw(&agentpbv2.SubscribeRawROS2Request{Topic: "/chatter"}, col)
-	if err == nil {
-		t.Fatal("SubscribeRaw: expected error on oversized line, got nil")
-	}
-	if status.Code(err) != codes.Internal {
-		t.Fatalf("status code = %v, want Internal", status.Code(err))
-	}
-	if len(col.msgs) != 0 {
-		t.Fatalf("got %d messages, want 0", len(col.msgs))
-	}
-}
-
 // rawCollector implements grpc.ServerStreamingServer[agentpbv2.RawROS2Message].
 type rawCollector struct {
 	grpc.ServerStream
@@ -230,21 +169,32 @@ type rawCollector struct {
 
 func (c *rawCollector) Context() context.Context { return c.ctx }
 func (c *rawCollector) Send(m *agentpbv2.RawROS2Message) error {
-	c.msgs = append(c.msgs, m)
+	// The handler reuses the frame buffer across sends, so copy the payload the
+	// way gRPC's synchronous marshal would, to make assertions stable.
+	c.msgs = append(c.msgs, &agentpbv2.RawROS2Message{
+		Cdr:         append([]byte(nil), m.GetCdr()...),
+		TimestampNs: m.GetTimestampNs(),
+	})
 	return nil
+}
+
+// isForwarder reports whether an exec invocation is the rclpy CDR forwarder
+// (python3 -c <script> <topic>) rather than a routing `ros2 topic list`.
+func isForwarder(opts ROS2ExecOptions) bool {
+	return opts.Binary == "python3"
 }
 
 func TestSubscribeRaw(t *testing.T) {
 	rt := &fakeROS2Runtime{
 		sidecar: ROS2Sidecar{Distro: "humble", DomainID: 0},
 		execFn: func(_ context.Context, opts ROS2ExecOptions, stdout, _ io.Writer) (int, error) {
-			if strings.Join(opts.Args, " ") == "topic list" {
+			if !isForwarder(opts) { // routing: pickSidecarForTopic runs `topic list`
 				io.WriteString(stdout, "/chatter\n")
 				return 0, nil
 			}
-			// topic echo --raw /chatter. An unparseable line is interleaved between
-			// two valid messages: it must be warn-and-skipped, not abort the stream.
-			io.WriteString(stdout, `b'\x00\x01'`+"\n---\n"+"garbage-not-bytes\n---\n"+`b'\x02\x03'`+"\n---\n")
+			// The forwarder writes length-framed binary CDR frames.
+			stdout.Write(cdrFrame([]byte{0x00, 0x01}))
+			stdout.Write(cdrFrame([]byte{0x02, 0x03}))
 			return 0, nil
 		},
 	}
@@ -254,7 +204,7 @@ func TestSubscribeRaw(t *testing.T) {
 		t.Fatalf("SubscribeRaw: %v", err)
 	}
 	if len(col.msgs) != 2 {
-		t.Fatalf("got %d messages, want 2 (garbage line should be skipped)", len(col.msgs))
+		t.Fatalf("got %d messages, want 2", len(col.msgs))
 	}
 	if string(col.msgs[0].GetCdr()) != "\x00\x01" || string(col.msgs[1].GetCdr()) != "\x02\x03" {
 		t.Fatalf("payloads wrong: %v %v", col.msgs[0].GetCdr(), col.msgs[1].GetCdr())
@@ -262,33 +212,77 @@ func TestSubscribeRaw(t *testing.T) {
 	if col.msgs[0].GetTimestampNs() == 0 || col.msgs[1].GetTimestampNs() == 0 {
 		t.Errorf("expected non-zero timestamps, got %d and %d", col.msgs[0].GetTimestampNs(), col.msgs[1].GetTimestampNs())
 	}
+	// The forwarder must be invoked as `python3 -c <script> <topic>`.
+	var fwd *ROS2ExecOptions
+	for i := range rt.calls {
+		if isForwarder(rt.calls[i]) {
+			fwd = &rt.calls[i]
+		}
+	}
+	if fwd == nil {
+		t.Fatal("forwarder exec (python3) was never invoked")
+	}
+	if len(fwd.Args) != 3 || fwd.Args[0] != "-c" || fwd.Args[2] != "/chatter" {
+		t.Fatalf("forwarder args = %v, want [-c <script> /chatter]", fwd.Args)
+	}
 }
 
-// TestSubscribeRaw_AllGarbageFails verifies that when no line ever decodes, the
-// handler fails loudly (codes.Internal) instead of silently advertising a
-// channel that delivers zero messages — the symptom of an unsupported --raw
-// output format on the device's ROS 2 distro.
-func TestSubscribeRaw_AllGarbageFails(t *testing.T) {
+// TestSubscribeRaw_LargeFrame proves the whole point of the forwarder: a single
+// multi-megabyte message (e.g. an uncompressed camera frame) flows end-to-end
+// intact — the old text path capped this at 16 MiB and inflated it ~4x.
+func TestSubscribeRaw_LargeFrame(t *testing.T) {
+	big := make([]byte, 5*1024*1024)
+	for i := range big {
+		big[i] = byte(i)
+	}
 	rt := &fakeROS2Runtime{
 		sidecar: ROS2Sidecar{Distro: "humble", DomainID: 0},
 		execFn: func(_ context.Context, opts ROS2ExecOptions, stdout, _ io.Writer) (int, error) {
-			if strings.Join(opts.Args, " ") == "topic list" {
+			if !isForwarder(opts) {
+				io.WriteString(stdout, "/image\n")
+				return 0, nil
+			}
+			stdout.Write(cdrFrame(big))
+			return 0, nil
+		},
+	}
+	svc := newTestROS2Service(t, rt, t.TempDir())
+	col := &rawCollector{ctx: context.Background()}
+	if err := svc.SubscribeRaw(&agentpbv2.SubscribeRawROS2Request{Topic: "/image"}, col); err != nil {
+		t.Fatalf("SubscribeRaw: %v", err)
+	}
+	if len(col.msgs) != 1 || len(col.msgs[0].GetCdr()) != len(big) {
+		t.Fatalf("got %d messages (first %d bytes), want 1 of %d bytes", len(col.msgs), len(col.msgs[0].GetCdr()), len(big))
+	}
+}
+
+// TestSubscribeRaw_ForwarderFailsLoudly verifies that when the forwarder exits
+// non-zero having produced zero frames (e.g. rclpy raw subscription unavailable
+// on the distro), the handler fails loudly (codes.Internal) with the forwarder's
+// stderr surfaced, instead of advertising a silently-empty channel.
+func TestSubscribeRaw_ForwarderFailsLoudly(t *testing.T) {
+	rt := &fakeROS2Runtime{
+		sidecar: ROS2Sidecar{Distro: "humble", DomainID: 0},
+		execFn: func(_ context.Context, opts ROS2ExecOptions, stdout, stderr io.Writer) (int, error) {
+			if !isForwarder(opts) {
 				io.WriteString(stdout, "/chatter\n")
 				return 0, nil
 			}
-			// 10 unparseable messages — never a valid b'…' literal.
-			io.WriteString(stdout, strings.Repeat("garbage-not-bytes\n---\n", 10))
-			return 0, nil
+			io.WriteString(stderr, "wendy-forward: could not resolve message type")
+			return 2, nil
 		},
 	}
 	svc := newTestROS2Service(t, rt, t.TempDir())
 	col := &rawCollector{ctx: context.Background()}
 	err := svc.SubscribeRaw(&agentpbv2.SubscribeRawROS2Request{Topic: "/chatter"}, col)
 	if err == nil {
-		t.Fatalf("SubscribeRaw: expected error, got nil")
+		t.Fatal("SubscribeRaw: expected error, got nil")
 	}
 	if status.Code(err) != codes.Internal {
 		t.Fatalf("status code = %v, want Internal", status.Code(err))
+	}
+	if !strings.Contains(err.Error(), "could not resolve message type") {
+		t.Fatalf("error should surface forwarder stderr, got: %v", err)
 	}
 	if len(col.msgs) != 0 {
 		t.Fatalf("got %d messages, want 0", len(col.msgs))

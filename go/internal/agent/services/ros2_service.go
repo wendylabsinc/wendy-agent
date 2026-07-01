@@ -31,13 +31,6 @@ var ros2BagNamePattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]*$`)
 // ros2BagChunkSize is the payload size for DownloadBag stream messages.
 const ros2BagChunkSize = 64 * 1024
 
-// ros2RawMaxUnparseableBeforeFail is how many consecutive unparseable lines
-// SubscribeRaw tolerates before deciding the `ros2 topic echo --raw` output
-// format is unsupported and failing loudly. The guard only fires while zero
-// messages have decoded; once at least one real message is delivered, bad
-// lines remain warn-and-skip only.
-const ros2RawMaxUnparseableBeforeFail = 8
-
 // ros2MaxMsgDeps caps how many distinct message types GetMessageDefinition will
 // resolve for a single topic. Each dependency costs one `ros2 interface show`
 // subprocess, so an adversarially deep or wide type graph (from a compromised or
@@ -47,18 +40,6 @@ const ros2RawMaxUnparseableBeforeFail = 8
 // ISO27001-A.8).
 const ros2MaxMsgDeps = 256
 
-// ros2RawMaxLineBytes bounds the largest single line SubscribeRaw will buffer
-// from `ros2 topic echo --raw`, capping the worst-case heap allocation a
-// runaway/garbled device output can force per subscription. The ceiling is
-// derived, not arbitrary: the line is a Python bytes repr that expands each
-// binary byte to at most a 4-char "\xNN" escape, and gRPC's default 4 MiB
-// per-message receive limit on the CLI is the largest CDR payload that can be
-// delivered end-to-end — so 4 MiB × 4 = 16 MiB is the smallest bound that still
-// admits every message gRPC itself would accept. A larger buffer would just
-// stage payloads gRPC then rejects; a smaller one would drop legitimate large
-// messages (e.g. uncompressed camera frames) at the scanner. A line over this
-// limit surfaces loudly as codes.Internal below (SOC2-A1, NIST-SI-10).
-const ros2RawMaxLineBytes = 16 * 1024 * 1024
 
 // ROS2Service implements agentpbv2.ROS2ServiceServer by exec-ing `ros2`
 // commands inside the CLI sidecar managed by the ROS2Runtime (WDY-1332).
@@ -634,15 +615,26 @@ func (s *ROS2Service) EchoTopic(req *agentpbv2.EchoROS2TopicRequest, stream grpc
 	return nil
 }
 
-// SubscribeRaw streams raw CDR bytes for a topic via `ros2 topic echo --raw`.
+// SubscribeRaw streams raw CDR bytes for a topic to Foxglove.
 //
-// ⚠️ ON-DEVICE VERIFICATION REQUIRED (Task 7): This implementation assumes
-// `ros2 topic echo --raw <topic>` prints each message as a single-line Python
-// bytes repr (e.g. b'\x00\x01…') followed by a "---" separator line, with the
-// CDR encapsulation header included. Confirm against a real device/distro before
-// trusting this handler in production. If the format differs (multi-line literal,
-// no b” wrapper, or header stripped), adjust parsePythonBytesLiteral and/or the
-// scanner logic accordingly.
+// The device side runs an inline rclpy forwarder (ros2ForwarderScript, via
+// `python3 -c`) that raw-subscribes the topic and writes length-framed binary
+// CDR to stdout. We read those frames (readCDRFrames) and forward each verbatim.
+// No text encoding and no per-byte decode on the device — the serialized bytes
+// DDS produced are exactly what Foxglove consumes (encoding=cdr), so the hot
+// path stays a straight passthrough suitable for large messages (uncompressed
+// camera frames, point clouds, lidar).
+//
+// The frame buffer is reused across messages; gRPC's Send marshals the message
+// synchronously before returning, so handing it the reused slice without copying
+// is safe and avoids an allocation + copy per frame on the hot path.
+//
+// ⚠️ ON-DEVICE VERIFICATION GATE (plan Task 14): confirm rclpy's
+// create_subscription(..., raw=True) and ros2topic.api.get_msg_class behave as
+// assumed on the target distro. If the forwarder cannot start (e.g. raw
+// subscriptions unavailable), it exits non-zero having produced zero frames and
+// this handler fails loudly (codes.Internal) with the forwarder's stderr, rather
+// than advertising a silently-empty channel.
 func (s *ROS2Service) SubscribeRaw(req *agentpbv2.SubscribeRawROS2Request, stream grpc.ServerStreamingServer[agentpbv2.RawROS2Message]) error {
 	ctx := stream.Context()
 	scs, err := s.resolveSidecars(ctx, req.DomainId)
@@ -658,79 +650,55 @@ func (s *ROS2Service) SubscribeRaw(req *agentpbv2.SubscribeRawROS2Request, strea
 	defer cancel()
 
 	pr, pw := io.Pipe()
+	var stderr bytes.Buffer // forwarder diagnostics, surfaced on failure
 	execDone := make(chan error, 1)
 	go func() {
-		_, execErr := s.runtime.ExecROS2(execCtx, ROS2ExecOptions{
+		code, execErr := s.runtime.ExecROS2(execCtx, ROS2ExecOptions{
 			DomainID:    sc.domainID,
 			SidecarName: sc.name,
-			Args:        []string{"topic", "echo", "--raw", req.GetTopic()},
-		}, pw, io.Discard)
+			Binary:      "python3",
+			Args:        []string{"-c", ros2ForwarderScript(), req.GetTopic()},
+		}, pw, &stderr)
+		if execErr == nil && code != 0 {
+			execErr = fmt.Errorf("forwarder exited with code %d", code)
+		}
 		pw.CloseWithError(execErr)
 		execDone <- execErr
 	}()
 
-	// parsed counts successfully decoded+sent messages; unparseable counts lines
-	// that failed parsePythonBytesLiteral. If we never decode a single message and
-	// the unparseable count crosses the threshold, the --raw output format is
-	// almost certainly unsupported on this distro — fail loudly so the CLI user
-	// sees it, rather than advertising a channel that silently delivers nothing.
-	parsed := 0
-	unparseable := 0
-	scanner := bufio.NewScanner(pr)
-	scanner.Buffer(make([]byte, 0, 64*1024), ros2RawMaxLineBytes)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || line == "---" {
-			continue
-		}
-		cdr, perr := parsePythonBytesLiteral(line)
-		if perr != nil {
-			// A non-bytes line is unexpected with --raw; log and skip rather than
-			// killing the stream.
-			s.logger.Warn("subscribe_raw: unparseable line", zap.String("topic", req.GetTopic()), zap.Error(perr))
-			unparseable++
-			// Only bail before any message has decoded; once parsed >= 1 we have a
-			// working format and occasional bad lines stay warn-and-skip.
-			if parsed == 0 && unparseable >= ros2RawMaxUnparseableBeforeFail {
-				cancel()
-				go func() { _, _ = io.Copy(io.Discard, pr) }()
-				pr.CloseWithError(context.Canceled)
-				<-execDone
-				return status.Errorf(codes.Internal, "ros2 topic echo --raw produced no decodable messages after %d lines; the --raw output format may be unsupported on this device's ROS 2 distro", unparseable)
-			}
-			continue
-		}
-		msg := &agentpbv2.RawROS2Message{Cdr: cdr, TimestampNs: time.Now().UnixNano()}
-		if serr := stream.Send(msg); serr != nil {
-			cancel()
-			go func() { _, _ = io.Copy(io.Discard, pr) }()
-			pr.CloseWithError(context.Canceled)
-			<-execDone
+	sent := 0
+	var sendErr error
+	readErr := readCDRFrames(pr, func(cdr []byte) error {
+		if serr := stream.Send(&agentpbv2.RawROS2Message{Cdr: cdr, TimestampNs: time.Now().UnixNano()}); serr != nil {
+			sendErr = serr
 			return serr
 		}
-		parsed++
-	}
-	scanErr := scanner.Err()
-	if scanErr != nil {
-		// The scanner aborted early — e.g. a single line exceeded
-		// ros2RawMaxLineBytes. The producer may still be blocked mid-write into the
-		// pipe, so cancel and drain it before waiting on execDone, mirroring the
-		// in-loop early-exit paths; otherwise <-execDone could wedge forever.
-		cancel()
-		go func() { _, _ = io.Copy(io.Discard, pr) }()
-		pr.CloseWithError(context.Canceled)
-	}
+		sent++
+		return nil
+	})
+
+	// Stop the forwarder and unblock any write it has pending into the pipe, then
+	// wait for it to exit so we never leak the exec goroutine.
+	cancel()
+	pr.CloseWithError(context.Canceled)
 	execErr := <-execDone
+
 	if ctx.Err() != nil {
 		return nil // client cancelled; not an error
 	}
-	// scanErr is checked before execErr: when we cancelled above, execErr is the
-	// resulting context.Canceled, which would otherwise mask the real cause.
-	if scanErr != nil {
-		return status.Errorf(codes.Internal, "reading ros2 topic echo --raw output: %v", scanErr)
+	if sendErr != nil {
+		return sendErr
+	}
+	// Nothing decoded and the forwarder failed: the read path is unusable on this
+	// device (e.g. rclpy raw subscription unavailable). Fail loudly with stderr.
+	if sent == 0 && execErr != nil {
+		return status.Errorf(codes.Internal, "ros2 raw forwarder produced no messages: %v; stderr: %s", execErr, strings.TrimSpace(stderr.String()))
+	}
+	if readErr != nil {
+		return status.Errorf(codes.Internal, "reading raw CDR frames: %v; stderr: %s", readErr, strings.TrimSpace(stderr.String()))
 	}
 	if execErr != nil {
-		return status.Errorf(codes.Internal, "ros2 topic echo --raw: %v", execErr)
+		return status.Errorf(codes.Internal, "ros2 raw forwarder: %v; stderr: %s", execErr, strings.TrimSpace(stderr.String()))
 	}
 	return nil
 }
