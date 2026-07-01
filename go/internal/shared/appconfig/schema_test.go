@@ -77,6 +77,38 @@ func TestSchemaJSON_HasFrameworksAndServices(t *testing.T) {
 	}
 }
 
+func TestSchemaJSON_HasResources(t *testing.T) {
+	var schema map[string]any
+	if err := json.Unmarshal([]byte(SchemaJSON), &schema); err != nil {
+		t.Fatalf("schema is not valid JSON: %v", err)
+	}
+
+	props, _ := schema["properties"].(map[string]any)
+	if _, ok := props["resources"]; !ok {
+		t.Error("schema missing top-level 'resources' property")
+	}
+
+	defs, _ := schema["$defs"].(map[string]any)
+	rl, _ := defs["resourceLimits"].(map[string]any)
+	if rl == nil {
+		t.Fatal("schema missing $defs.resourceLimits")
+	}
+	rlProps, _ := rl["properties"].(map[string]any)
+	for _, key := range []string{"memory", "cpus", "pids"} {
+		if _, ok := rlProps[key]; !ok {
+			t.Errorf("$defs.resourceLimits missing %q property", key)
+		}
+	}
+
+	// The service def must also reference resourceLimits so per-service limits
+	// validate in editors.
+	svc, _ := defs["service"].(map[string]any)
+	svcProps, _ := svc["properties"].(map[string]any)
+	if _, ok := svcProps["resources"]; !ok {
+		t.Error("$defs.service missing 'resources' property")
+	}
+}
+
 func TestSchemaJSON_DeclaresROS2ExampleKeys(t *testing.T) {
 	// The flagship ROS 2 example must validate against the schema (WDY-1700):
 	// every top-level key it uses must be a declared property, else

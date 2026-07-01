@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 
+	"go.uber.org/zap"
+
 	"github.com/wendylabsinc/wendy/go/internal/agent/oshealth"
 )
 
@@ -12,6 +14,8 @@ type fakeUpdater struct {
 	nameVal      string
 	detectVal    bool
 	availableVal bool
+	delegatesVal bool
+	commandVal   string
 }
 
 func (f fakeUpdater) name() string    { return f.nameVal }
@@ -22,6 +26,8 @@ func (f fakeUpdater) install(context.Context, string, func(string, int32)) error
 }
 func (f fakeUpdater) commit() oshealth.MenderResult   { return oshealth.MenderResult{} }
 func (f fakeUpdater) rollback() oshealth.MenderResult { return oshealth.MenderResult{} }
+func (f fakeUpdater) delegatesHealthcheck() bool      { return f.delegatesVal }
+func (f fakeUpdater) commitCommand() string           { return f.commandVal }
 
 func TestChooseUpdaterForCommit(t *testing.T) {
 	// The gate must select the commit backend by binary presence (available),
@@ -92,6 +98,74 @@ func TestChooseUpdaterForCommit(t *testing.T) {
 			}
 			if got.name() != tt.wantName {
 				t.Fatalf("chooseUpdaterForCommit(%q) = %q, want %q", tt.requested, got.name(), tt.wantName)
+			}
+		})
+	}
+}
+
+func TestBackendHealthcheckDelegationPolicy(t *testing.T) {
+	logger := zap.NewNop()
+	wendyos := newWendyOSUpdater(logger)
+	mender := newMenderUpdater(logger)
+
+	if !wendyos.delegatesHealthcheck() {
+		t.Error("wendyos-update must delegate healthchecking to its own commit (health.d)")
+	}
+	if wendyos.commitCommand() != "wendyos-update" {
+		t.Errorf("wendyos commitCommand = %q, want wendyos-update", wendyos.commitCommand())
+	}
+	if mender.delegatesHealthcheck() {
+		t.Error("mender has no health.d; the agent gate must run its own healthchecks")
+	}
+	if mender.commitCommand() != "mender-update" {
+		t.Errorf("mender commitCommand = %q, want mender-update", mender.commitCommand())
+	}
+}
+
+func TestClosuresForUpdater(t *testing.T) {
+	tests := []struct {
+		name          string
+		updater       osUpdater
+		wantDelegated bool
+		wantLabel     string
+	}{
+		{
+			name:          "wendyos delegates health and labels with its binary",
+			updater:       fakeUpdater{nameVal: updaterNameWendyOS, delegatesVal: true, commandVal: "wendyos-update"},
+			wantDelegated: true,
+			wantLabel:     "wendyos-update",
+		},
+		{
+			name:          "mender keeps the agent healthcheck path",
+			updater:       fakeUpdater{nameVal: updaterNameMender, delegatesVal: false, commandVal: "mender-update"},
+			wantDelegated: false,
+			wantLabel:     "mender-update",
+		},
+		{
+			name:          "no backend degrades to the non-delegated mender-labelled path",
+			updater:       nil,
+			wantDelegated: false,
+			wantLabel:     "mender-update",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			commit, rollback, delegated, label := closuresForUpdater(tt.updater)
+			if commit == nil || rollback == nil {
+				t.Fatal("commit/rollback closures must never be nil")
+			}
+			if delegated != tt.wantDelegated {
+				t.Errorf("delegated = %v, want %v", delegated, tt.wantDelegated)
+			}
+			if label != tt.wantLabel {
+				t.Errorf("label = %q, want %q", label, tt.wantLabel)
+			}
+			if tt.updater == nil {
+				// The degraded no-op must report "unavailable" so the gate keeps
+				// the marker rather than committing/rolling back a real slot.
+				if got := commit().Status; got != oshealth.MenderUnavailable {
+					t.Errorf("degraded commit status = %v, want MenderUnavailable", got)
+				}
 			}
 		})
 	}

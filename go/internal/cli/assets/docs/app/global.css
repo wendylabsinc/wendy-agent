@@ -2,6 +2,11 @@
 @import 'fumadocs-ui/css/neutral.css';
 @import 'fumadocs-ui/css/preset.css';
 
+@theme {
+  --color-wendy-seafoam: #9fe2bf;
+  --color-wendy-seafoam-hover: #86d3a8;
+}
+
 html {
   scrollbar-gutter: stable;
 }
@@ -25,6 +30,13 @@ html > body[data-scroll-locked] {
 :root {
   --radius: 0px;
   --fd-radius: 0px;
+  --color-fd-primary: var(--color-wendy-seafoam);
+  --color-fd-primary-foreground: hsl(0, 0%, 9%);
+}
+
+.dark {
+  --color-fd-primary: var(--color-wendy-seafoam);
+  --color-fd-primary-foreground: hsl(0, 0%, 9%);
 }
 
 *,

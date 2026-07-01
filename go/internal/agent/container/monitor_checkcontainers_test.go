@@ -18,15 +18,39 @@ import (
 // checkContainers. ListContainers returns a fixed snapshot and StartContainer
 // records the identities the monitor tries to restart.
 type fakeContainerd struct {
-	containers []*agentpb.AppContainer
+	containers     []*agentpb.AppContainer
+	bootContainers []services.BootContainer
 
-	mu         sync.Mutex
-	startCalls []string
-	started    chan string // signalled (buffered) on each StartContainer
+	mu            sync.Mutex
+	startCalls    []string
+	started       chan string // signalled (buffered) on each StartContainer
+	stoppedByUser map[string]bool
+	migrateCalls  int
 }
 
 func (f *fakeContainerd) ListContainers(ctx context.Context) ([]*agentpb.AppContainer, error) {
 	return f.containers, nil
+}
+
+func (f *fakeContainerd) ListBootContainers(ctx context.Context) ([]services.BootContainer, error) {
+	return f.bootContainers, nil
+}
+
+func (f *fakeContainerd) SetStoppedByUser(ctx context.Context, containerID string, stopped bool) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.stoppedByUser == nil {
+		f.stoppedByUser = map[string]bool{}
+	}
+	f.stoppedByUser[containerID] = stopped
+	return nil
+}
+
+func (f *fakeContainerd) MigrateStoppedByUserOnce(ctx context.Context) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.migrateCalls++
+	return nil
 }
 
 func (f *fakeContainerd) StartContainer(ctx context.Context, appName, _ string, _ *agentpb.RestartPolicy) (<-chan services.ContainerOutput, error) {
@@ -139,6 +163,66 @@ func TestCheckContainers_SingleServiceMapApp_NotRestarted(t *testing.T) {
 	m.mu.Unlock()
 	if fc != 0 {
 		t.Fatalf("FailureCount = %d, want 0 (no spurious restart)", fc)
+	}
+}
+
+func TestReconcileBootContainers_StartsStoppedApp(t *testing.T) {
+	fake := &fakeContainerd{
+		started:        make(chan string, 1),
+		bootContainers: []services.BootContainer{{Name: "boot-app", RestartPolicy: "unless-stopped"}},
+		containers: []*agentpb.AppContainer{{
+			AppName:      "boot-app",
+			RunningState: agentpb.AppRunningState_STOPPED,
+		}},
+	}
+	m := newMonitorWithClient(fake)
+
+	m.ReconcileBootContainers(context.Background())
+
+	select {
+	case got := <-fake.started:
+		if got != "boot-app" {
+			t.Fatalf("started %q, want boot-app", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected ReconcileBootContainers to start boot-app, got none")
+	}
+}
+
+// TestReconcileBootContainers_RunsMigration verifies the one-time stopped-by-user
+// back-fill is invoked as part of boot reconcile (before listing eligible apps),
+// so an upgrade can't resurrect apps the user had already stopped.
+func TestReconcileBootContainers_RunsMigration(t *testing.T) {
+	fake := &fakeContainerd{started: make(chan string, 1)}
+	m := newMonitorWithClient(fake)
+
+	m.ReconcileBootContainers(context.Background())
+
+	fake.mu.Lock()
+	calls := fake.migrateCalls
+	fake.mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("MigrateStoppedByUserOnce called %d times, want 1", calls)
+	}
+}
+
+func TestReconcileBootContainers_NothingToDo(t *testing.T) {
+	fake := &fakeContainerd{
+		started: make(chan string, 1),
+		containers: []*agentpb.AppContainer{{
+			AppName:      "plain-app",
+			RunningState: agentpb.AppRunningState_STOPPED,
+		}},
+	}
+	m := newMonitorWithClient(fake)
+
+	m.ReconcileBootContainers(context.Background()) // no bootContainers
+
+	select {
+	case got := <-fake.started:
+		t.Fatalf("started %q; nothing should start when no apps are eligible", got)
+	case <-time.After(200 * time.Millisecond):
+		// expected: nothing started
 	}
 }
 

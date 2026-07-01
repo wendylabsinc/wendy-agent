@@ -117,6 +117,12 @@ type LinuxResources struct {
 	Devices []LinuxDeviceCgroup `json:"devices,omitempty"`
 	Memory  *LinuxMemory        `json:"memory,omitempty"`
 	CPU     *LinuxCPU           `json:"cpu,omitempty"`
+	Pids    *LinuxPids          `json:"pids,omitempty"`
+}
+
+// LinuxPids contains the cgroup pids-controller constraint.
+type LinuxPids struct {
+	Limit int64 `json:"limit"`
 }
 
 // LinuxDeviceCgroup represents a device access rule.

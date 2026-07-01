@@ -40,6 +40,8 @@ Detects the running shell from `$SHELL` (Unix) or defaults to `powershell` (Wind
 
 Running `install` more than once is safe — the rc file is only modified on the first run. Subsequent runs detect the `# wendy-completion` sentinel and make no changes.
 
+A successful `install` also records `completionInstalled: true` in `~/.wendy/config.json`, which permanently suppresses the [ambient install prompt](#automatic-prompt-to-install-completions). The dry-run flags `--print-path` and `--stdout` do **not** set this flag, since they don't actually install anything.
+
 ### Shell detection and install paths
 
 | Shell | Script path | rc file modified |
@@ -92,3 +94,37 @@ wendy completion install --shell bash --stdout
 The `--stdout` flag is intended for package managers such as Homebrew that call the binary directly and expect the completion script on stdout (e.g. via `generate_completions_from_executable`). It prints the script for the selected shell and exits without touching the filesystem or shell rc files.
 
 After installation, restart your shell (or source the relevant rc file) for completions to take effect. Fish and bash-completion v2 load the script automatically on the next shell start without any rc change.
+
+## Automatic prompt to install completions
+
+When shell completions aren't installed yet, the CLI may offer to install them with an ambient prompt after a command finishes:
+
+```
+Shell completions for `wendy` aren't installed yet.
+Install them now? [y/n]
+```
+
+The prompt has no default — you must answer `y` or `n`.
+
+- **`y`** installs completions for the detected shell (same as `wendy completion install`).
+- **`n`** permanently dismisses the prompt (sets `completionPromptDismissed`); it won't be shown again.
+- **Ctrl+C / EOF** leaves the prompt unanswered. It is throttled and won't reappear until the throttle window (24 hours) elapses.
+
+The prompt is intentionally unobtrusive and is **never** shown when:
+
+- the session is non-interactive (no TTY) or output is machine-readable (`--json`),
+- completions are already installed (`completionInstalled`) or the prompt was dismissed (`completionPromptDismissed`),
+- the first-run analytics notice or a CLI-update prompt is shown in the same invocation (the prompt never stacks on top of those),
+- the command runs its own completion flow — `wendy completion …` and [`wendy tour`](tour.md) — or is an internal helper.
+
+> **See also:** [`wendy tour`](tour.md) includes a completions step that installs shell completions as part of first-time setup. Completing the tour, or installing completions there, suppresses this ambient prompt.
+
+### Config fields
+
+The prompt's state is persisted in `~/.wendy/config.json`:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `completionInstalled` | bool | Set once `wendy completion install` (or the prompt/tour install path) succeeds. Permanently suppresses the prompt. |
+| `completionPromptDismissed` | bool | Set when you answer `n` to the prompt. Permanently suppresses the prompt. |
+| `lastCompletionPromptCheck` | RFC3339 timestamp | When the prompt was last shown. Used to throttle it to at most once per 24-hour window. |

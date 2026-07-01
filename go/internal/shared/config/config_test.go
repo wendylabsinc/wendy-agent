@@ -136,17 +136,18 @@ func TestAddAuth_ReplaceExisting(t *testing.T) {
 				CloudDashboard: "https://dash.example.com",
 				CloudGRPC:      "grpc.example.com:443",
 				Certificates: []CertificateInfo{
-					{OrganizationID: 1},
+					{OrganizationID: 1, UserID: "old-user"},
 				},
 			},
 		},
 	}
 
+	// Same (cloudDashboard, cloudGRPC, orgID) replaces the existing entry.
 	replacement := AuthConfig{
 		CloudDashboard: "https://dash.example.com",
 		CloudGRPC:      "grpc.example.com:443",
 		Certificates: []CertificateInfo{
-			{OrganizationID: 99, UserID: "new-user"},
+			{OrganizationID: 1, UserID: "new-user"},
 		},
 	}
 
@@ -155,11 +156,46 @@ func TestAddAuth_ReplaceExisting(t *testing.T) {
 	if len(cfg.Auth) != 1 {
 		t.Fatalf("Auth length = %d, want 1 (should replace, not append)", len(cfg.Auth))
 	}
-	if cfg.Auth[0].Certificates[0].OrganizationID != 99 {
-		t.Errorf("OrganizationID = %d, want 99", cfg.Auth[0].Certificates[0].OrganizationID)
+	if cfg.Auth[0].Certificates[0].OrganizationID != 1 {
+		t.Errorf("OrganizationID = %d, want 1", cfg.Auth[0].Certificates[0].OrganizationID)
 	}
 	if cfg.Auth[0].Certificates[0].UserID != "new-user" {
 		t.Errorf("UserID = %q, want %q", cfg.Auth[0].Certificates[0].UserID, "new-user")
+	}
+}
+
+func TestAddAuth_DifferentOrgAppends(t *testing.T) {
+	cfg := &Config{
+		Auth: []AuthConfig{
+			{
+				CloudDashboard: "https://dash.example.com",
+				CloudGRPC:      "grpc.example.com:443",
+				Certificates: []CertificateInfo{
+					{OrganizationID: 1, UserID: "user-1"},
+				},
+			},
+		},
+	}
+
+	// Same endpoint but a different org keeps both entries.
+	second := AuthConfig{
+		CloudDashboard: "https://dash.example.com",
+		CloudGRPC:      "grpc.example.com:443",
+		Certificates: []CertificateInfo{
+			{OrganizationID: 99, UserID: "user-99"},
+		},
+	}
+
+	cfg.AddAuth(second)
+
+	if len(cfg.Auth) != 2 {
+		t.Fatalf("Auth length = %d, want 2 (different org should append)", len(cfg.Auth))
+	}
+	if cfg.Auth[0].Certificates[0].OrganizationID != 1 {
+		t.Errorf("Auth[0] OrganizationID = %d, want 1", cfg.Auth[0].Certificates[0].OrganizationID)
+	}
+	if cfg.Auth[1].Certificates[0].OrganizationID != 99 {
+		t.Errorf("Auth[1] OrganizationID = %d, want 99", cfg.Auth[1].Certificates[0].OrganizationID)
 	}
 }
 

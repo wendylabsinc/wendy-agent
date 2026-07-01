@@ -10,6 +10,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/spf13/cobra"
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
@@ -79,6 +80,7 @@ type dashboardModel struct {
 
 	logs       []string
 	logOffset  int
+	logHOffset int
 	autoScroll bool
 	metrics    []dashboardMetricEntry
 	metricMap  map[string]int
@@ -198,11 +200,22 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "g":
 			m.logOffset = 0
 			m.autoScroll = false
+		case "right", "l":
+			if maxOff := m.maxLogHOffset(); m.logHOffset < maxOff {
+				m.logHOffset = min(m.logHOffset+dashHScrollStep, maxOff)
+			}
+		case "left", "h":
+			m.logHOffset = max(m.logHOffset-dashHScrollStep, 0)
 		}
+		// A vertical scroll can change which lines are visible (and thus the
+		// widest one), so keep the horizontal offset within range to avoid
+		// leaving the pane stuck on blank columns.
+		m.clampLogHOffset()
 
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		m.clampLogHOffset()
 
 	case dashboardLogMsg:
 		m.logs = append(m.logs, formatLogLines(msg.service, msg.record)...)
@@ -213,6 +226,8 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.logOffset = maxOff
 		}
+		// Tailing onto shorter lines can shrink the widest visible line.
+		m.clampLogHOffset()
 		return m, waitForLog(m.logCh)
 
 	case dashboardAppsMsg:
@@ -251,6 +266,70 @@ func (m dashboardModel) logViewHeight() int {
 		available = 1
 	}
 	return available
+}
+
+// dashHScrollStep is how many columns each ←/→ press pans the logs pane. It
+// mirrors the bubble-table step so horizontal scrolling feels the same across
+// the CLI's TUIs.
+const dashHScrollStep = 8
+
+// logWindow returns the slice of log rows currently visible vertically, after
+// accounting for the two header rows (title + separator) that sit above the log
+// body in the right pane.
+func (m dashboardModel) logWindow() []string {
+	if len(m.logs) == 0 {
+		return nil
+	}
+	start := m.logOffset
+	end := start + m.logViewHeight() - 2 // subtract header rows
+	if end > len(m.logs) {
+		end = len(m.logs)
+	}
+	if start > end {
+		start = end
+	}
+	if start < 0 {
+		start = 0
+	}
+	return m.logs[start:end]
+}
+
+// visibleLogRows returns the currently visible log rows cropped to the logs
+// pane width starting at the horizontal scroll offset. ansi.Cut preserves SGR
+// styling across the cut so colored severity prefixes survive panning.
+func (m dashboardModel) visibleLogRows() []string {
+	lw := m.logsWidth()
+	window := m.logWindow()
+	rows := make([]string, 0, len(window))
+	for _, line := range window {
+		rows = append(rows, ansi.Cut(line, m.logHOffset, m.logHOffset+lw))
+	}
+	return rows
+}
+
+// maxLogHOffset is the furthest right the logs pane can pan: the widest visible
+// line minus the pane width. Beyond this there is nothing more to reveal.
+func (m dashboardModel) maxLogHOffset() int {
+	lw := m.logsWidth()
+	widest := 0
+	for _, line := range m.logWindow() {
+		if w := visibleWidth(line); w > widest {
+			widest = w
+		}
+	}
+	return max(widest-lw, 0)
+}
+
+// clampLogHOffset keeps the horizontal offset within [0, maxLogHOffset] so the
+// pane never gets stuck showing only blank columns after the visible content
+// narrows (e.g. after a vertical scroll or window resize).
+func (m *dashboardModel) clampLogHOffset() {
+	if maxOff := m.maxLogHOffset(); m.logHOffset > maxOff {
+		m.logHOffset = maxOff
+	}
+	if m.logHOffset < 0 {
+		m.logHOffset = 0
+	}
 }
 
 func (m dashboardModel) metricsWidth() int {
@@ -414,17 +493,7 @@ func (m dashboardModel) View() string {
 	if len(m.logs) == 0 {
 		rightLines = append(rightLines, dashDimStyle.Render("  Waiting for logs..."))
 	} else {
-		start := m.logOffset
-		end := start + viewH - 2 // subtract header lines
-		if end > len(m.logs) {
-			end = len(m.logs)
-		}
-		if start > end {
-			start = end
-		}
-		for i := start; i < end; i++ {
-			rightLines = append(rightLines, m.logs[i])
-		}
+		rightLines = append(rightLines, m.visibleLogRows()...)
 	}
 
 	sep := dashDimStyle.Render("│")
@@ -459,7 +528,7 @@ func (m dashboardModel) View() string {
 	}
 
 	// Footer
-	b.WriteString(dashFooterStyle.Render("q/Ctrl+C exit | ↑/↓ scroll logs | G/g end/start"))
+	b.WriteString(dashFooterStyle.Render("q/Ctrl+C exit | ↑/↓ scroll | ←/→ pan logs | G/g end/start"))
 
 	return b.String()
 }

@@ -604,6 +604,7 @@ func resolveRunTarget(ctx context.Context, opts ...resolveOption) (*SelectedDevi
 	if cloudErr != nil {
 		return nil, err
 	}
+	maybeFixClock(ctx, cloudConn)
 	return &SelectedDevice{Agent: cloudConn}, nil
 }
 
@@ -1486,6 +1487,13 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 			// --chunking=force opts out of the registry-push fallback so the
 			// failure is surfaced instead of silently masked by a slower path.
 			return fmt.Errorf("chunk-diff deploy failed and --chunking=force disables the registry-push fallback: %w", err)
+		} else if isImageBuildFailure(err) {
+			// The image build itself failed (e.g. a Dockerfile/build-command
+			// error). The registry-push fallback rebuilds the same image from the
+			// same Dockerfile, so it would fail identically — and can even mask the
+			// real error behind an unrelated builder-setup failure. Surface the
+			// actionable build error directly instead of falling back. (#1166)
+			return err
 		} else {
 			cliLogln("Fast deploy unavailable; using registry push.")
 		}

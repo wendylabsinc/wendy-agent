@@ -2,6 +2,7 @@
   "pages": [
     "init",
     "run",
+    "install",
     "project",
     "device",
     "cloud",

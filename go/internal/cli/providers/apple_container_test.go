@@ -476,7 +476,29 @@ func TestAppleContainerHelperProcess(t *testing.T) {
 		_, _ = os.Stdout.WriteString("container 1.0.0\n")
 		os.Exit(0)
 	}
-	if len(args) >= 3 && args[0] == "container" && args[1] == "system" && args[2] == "status" {
+	// `container <service> status`: report a service as down when the matching
+	// env var is set, otherwise report it running.
+	if len(args) >= 3 && args[0] == "container" && args[2] == "status" {
+		if os.Getenv("APPLE_CONTAINER_HELPER_"+strings.ToUpper(args[1])+"_DOWN") != "" {
+			_, _ = os.Stderr.WriteString(args[1] + " service is not running\n")
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+	// `container <service> start`.
+	if len(args) >= 3 && args[0] == "container" && args[2] == "start" {
+		if os.Getenv("APPLE_CONTAINER_HELPER_START_ERROR") != "" {
+			_, _ = os.Stderr.WriteString("start failed\n")
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+	// `brew install <formula>`: arg0 is the brew binary path, not "container".
+	if len(args) >= 2 && args[0] != "container" && args[1] == "install" {
+		if os.Getenv("APPLE_CONTAINER_HELPER_BREW_ERROR") != "" {
+			_, _ = os.Stderr.WriteString("brew install failed\n")
+			os.Exit(1)
+		}
 		os.Exit(0)
 	}
 	if len(args) >= 2 && args[0] == "container" && args[1] == "build" {

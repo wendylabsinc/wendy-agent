@@ -51,3 +51,20 @@ func TestBuildxArgsRequestPlainProgress(t *testing.T) {
 		}
 	}
 }
+
+func TestAppleContainerBuildRequestsPlainProgress(t *testing.T) {
+	// Apple Container builds must also request --progress=plain so their output
+	// renders through the shared build progress UI (default --progress auto emits
+	// an interactive [+] Building UI the build parser cannot read). The adjacent
+	// "build", "--progress", "plain" tokens are unique to the apple-container arg
+	// builders (buildx prepends "buildx", "build"). Guard against accidental removal.
+	for _, f := range []string{"docker.go", "ocilayers.go"} {
+		src, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatalf("read %s: %v", f, err)
+		}
+		if !strings.Contains(string(src), `"build", "--progress", "plain"`) {
+			t.Errorf("%s: expected apple container build args to include --progress plain", f)
+		}
+	}
+}

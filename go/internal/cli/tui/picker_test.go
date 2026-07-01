@@ -462,8 +462,8 @@ func TestPickerModel_ShowsSelectedHintAtBottom(t *testing.T) {
 func TestPickerModel_DefaultKeyShowsStar(t *testing.T) {
 	m := NewPickerWithTitle("Select a device")
 	m.DefaultKey = "alpha"
-	m.OnSetDefault = func(item PickerItem) {}
-	m.OnUnsetDefault = func() {}
+	m.OnSetDefault = func(item PickerItem) string { return "" }
+	m.OnUnsetDefault = func() string { return "" }
 
 	updated, _ := m.Update(PickerAddMsg{Items: []PickerItem{
 		{Name: "alpha", Type: "LAN", Value: "alpha"},
@@ -478,8 +478,46 @@ func TestPickerModel_DefaultKeyShowsStar(t *testing.T) {
 	if !strings.Contains(view, "d set default") {
 		t.Error("expected hint text to contain 'd set default'")
 	}
-	if !strings.Contains(view, "x unset default") {
-		t.Error("expected hint text to contain 'x unset default'")
+	if !strings.Contains(view, "x clear default") {
+		t.Error("expected hint text to contain 'x clear default'")
+	}
+}
+
+func TestFormatOSNameVersion(t *testing.T) {
+	tests := []struct {
+		name    string
+		os      string
+		version string
+		want    string
+	}{
+		{name: "name and version", os: "ubuntu", version: "24.04", want: "ubuntu 24.04"},
+		{name: "version only", os: "", version: "24.04", want: "24.04"},
+		{name: "name only", os: "arch", version: "", want: "arch"},
+		{name: "both empty", os: "", version: "", want: ""},
+		{name: "trims surrounding space", os: " ubuntu ", version: " 24.04 ", want: "ubuntu 24.04"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := formatOSNameVersion(tt.os, tt.version); got != tt.want {
+				t.Errorf("formatOSNameVersion(%q, %q) = %q; want %q", tt.os, tt.version, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPickerDeviceTableData_OSColumnShowsDistroName(t *testing.T) {
+	_, rows := PickerDeviceTableData([]PickerItem{{
+		Name:      "wendy-ser9",
+		Type:      "LAN",
+		OS:        "ubuntu",
+		OSVersion: "24.04",
+	}}, "", false)
+
+	if len(rows) != 1 {
+		t.Fatalf("got %d rows, want 1", len(rows))
+	}
+	if !strings.Contains(strings.Join(rows[0], " "), "ubuntu 24.04") {
+		t.Errorf("row %v does not contain combined OS name+version %q", rows[0], "ubuntu 24.04")
 	}
 }
 
@@ -502,8 +540,8 @@ func TestPickerTableData_DefaultKeysShowStar(t *testing.T) {
 func TestPickerModel_DKeySetsDefault(t *testing.T) {
 	m := NewPickerWithTitle("Select a device")
 	var setItem PickerItem
-	m.OnSetDefault = func(item PickerItem) { setItem = item }
-	m.OnUnsetDefault = func() {}
+	m.OnSetDefault = func(item PickerItem) string { setItem = item; return "" }
+	m.OnUnsetDefault = func() string { return "" }
 
 	// Add items.
 	updated, _ := m.Update(PickerAddMsg{Items: []PickerItem{
@@ -528,8 +566,8 @@ func TestPickerModel_XKeyClearsDefault(t *testing.T) {
 	m := NewPickerWithTitle("Select a device")
 	m.DefaultKey = "alpha"
 	var unsetCalled bool
-	m.OnSetDefault = func(item PickerItem) {}
-	m.OnUnsetDefault = func() { unsetCalled = true }
+	m.OnSetDefault = func(item PickerItem) string { return "" }
+	m.OnUnsetDefault = func() string { unsetCalled = true; return "" }
 
 	updated, _ := m.Update(PickerAddMsg{Items: []PickerItem{
 		{Name: "alpha", Type: "LAN", Value: "alpha"},

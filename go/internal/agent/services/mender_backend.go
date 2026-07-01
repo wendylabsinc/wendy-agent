@@ -30,6 +30,12 @@ func newMenderUpdater(logger *zap.Logger) menderUpdater {
 
 func (m menderUpdater) name() string { return updaterNameMender }
 
+// delegatesHealthcheck is false: mender has no /etc/wendyos-update/health.d, so
+// the agent's boot-time gate keeps owning the post-reboot healthchecks for it.
+func (m menderUpdater) delegatesHealthcheck() bool { return false }
+
+func (m menderUpdater) commitCommand() string { return "mender-update" }
+
 func (m menderUpdater) available() bool {
 	_, found := resolveMenderBinary()
 	return found

@@ -37,7 +37,7 @@ func scheduleCLIUpdateCheck(cfg *config.Config) {
 // dueCLIUpdateCheck returns true when the CLI is a released build and enough
 // time has passed since the last check.
 func dueCLIUpdateCheck(cfg *config.Config) bool {
-	if version.Version == "dev" {
+	if version.IsDev(version.Version) {
 		return false
 	}
 	if cfg.LastCLIUpdateCheck == "" {

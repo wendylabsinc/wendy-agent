@@ -8,7 +8,7 @@ WendyOS edge devices (Raspberry Pi, NVIDIA Jetson, x86 SBCs, and more).
 Install the CLI:
 
 ```sh
-curl -fsSL https://install.wendy.sh/cli.sh | bash
+curl -fsSL https://install.wendy.dev/cli.sh | bash
 ```
 
 Configure the MCP server for your AI coding tool:

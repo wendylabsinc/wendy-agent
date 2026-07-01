@@ -1,0 +1,11 @@
+{
+  "title": "Device Management",
+  "description": "Connect to, configure, and manage your WendyOS devices",
+  "pages": [
+    "cli-agent-relationship",
+    "connecting-to-wifi",
+    "discovering-devices",
+    "managing-apps",
+    "entitlements"
+  ]
+}

@@ -15,7 +15,7 @@ wendy discover [flags]
 - **Ethernet (USB NCM) discovery** — enumerates host network adapters and
   returns those whose name or interface description contains "wendy"
   (case-insensitive).
-- **LAN discovery** — uses mDNS/Bonjour to find WendyOS devices and Wendy for Mac targets advertising themselves on the local network.
+- **LAN discovery** — uses mDNS/Bonjour to find WendyOS devices and Headless Mac targets advertising themselves on the local network.
 
 ## Platform support
 
@@ -35,7 +35,7 @@ On macOS, the CLI shells out to `dns-sd` and requires Local Network TCC permissi
 For USB-connected devices on Linux, run `wendy device usb-setup` first to bring up
 the interface.
 
-Wendy for Mac advertises the same `_wendyos._udp` service. When discovery
+Headless Mac advertises the same `_wendyos._udp` service. When discovery
 succeeds, Mac agents appear under `lanDevices` in JSON output with
 `"os": "darwin"`. For automation, prefer an explicit target such as
 `--device {hostname}:50051`, because discovery can be blocked by network policy

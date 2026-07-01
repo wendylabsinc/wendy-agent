@@ -34,7 +34,7 @@ Each key is a service name. Each value is a `ServiceConfig` object:
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `context` | string | **yes** | Build context directory, relative to `wendy.json`. Must be a relative path and must not contain `..` components. |
-| `entitlements` | array | no | [Entitlements](../wendy-agent/oci/entitlements.md) to apply to this service's container. Same schema as the top-level `entitlements` field. |
+| `entitlements` | array | no | [Entitlements](../device/entitlements.md) to apply to this service's container. Same schema as the top-level `entitlements` field. |
 | `dependsOn` | array of strings | no | Names of other services in this `services` map that must be created before this one. All referenced names must exist in the same map. |
 
 ### Validation rules
@@ -123,4 +123,4 @@ wendy run --service api   # builds db and api only (frontend excluded)
 
 - Log output is multiplexed with a `[serviceName]` prefix on each line. Per-service log stream routing is not yet available.
 - Containers are created via individual `CreateContainer` calls in dependency order. A grouped `CreateAppGroup` RPC for atomic creation is planned as a follow-up.
-- Wendy for Mac is not supported. `wendy run` rejects multi-service `wendy.json` projects when the selected target is Wendy for Mac, before any build or registry operation. Target a Linux/WendyOS device for multi-service workloads.
+- Headless Mac is not supported. `wendy run` rejects multi-service `wendy.json` projects when the selected target is Headless Mac, before any build or registry operation. Target a Linux/WendyOS device for multi-service workloads.

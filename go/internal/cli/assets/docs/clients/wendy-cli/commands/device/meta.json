@@ -2,7 +2,9 @@
   "pages": [
     "apps",
     "logs",
+    "os-logs",
     "dashboard",
+    "top",
     "info",
     "set-default",
     "unset-default",

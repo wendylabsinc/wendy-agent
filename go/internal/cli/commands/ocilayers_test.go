@@ -7,11 +7,49 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"testing"
 )
+
+// TestIsImageBuildFailure verifies the classification used by the chunk-diff
+// deploy path to decide whether the registry-push fallback would help. Only an
+// imageBuildFailedError (the Dockerfile build itself failing) suppresses the
+// fallback; builder-setup and transport failures stay eligible for it. (#1166)
+func TestIsImageBuildFailure(t *testing.T) {
+	buildErr := &imageBuildFailedError{errors.New("colcon: error: unrecognized arguments: --log-base log")}
+
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"plain transport error", errors.New("QueryChunks unimplemented"), false},
+		{"setup error", errors.New("adding hosts entry to builder: sed: can't move"), false},
+		{"build failure", buildErr, true},
+		{"wrapped build failure", fmt.Errorf("deploy failed: %w", buildErr), true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isImageBuildFailure(tc.err); got != tc.want {
+				t.Fatalf("isImageBuildFailure(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
+	}
+
+	// The error message must surface the underlying build error verbatim so the
+	// user sees the actionable failure, not a fallback-specific wrapper.
+	if got := buildErr.Error(); got != "colcon: error: unrecognized arguments: --log-base log" {
+		t.Fatalf("imageBuildFailedError.Error() = %q, want underlying message", got)
+	}
+	if !errors.Is(buildErr, buildErr.err) {
+		t.Fatal("imageBuildFailedError should unwrap to its underlying error")
+	}
+}
 
 // sha256Hex returns the lowercase hex-encoded SHA-256 digest of b.
 func sha256Hex(b []byte) string {

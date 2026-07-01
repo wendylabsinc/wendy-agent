@@ -17,7 +17,7 @@ This page mirrors the current public roadmap language for engineering and docs r
 
 ## Available Beta
 
-- **Wendy for Mac**: deploy native macOS apps to Apple Silicon Mac targets with [Wendy for Mac](/docs/installation/wendy-agent-macos). Beta limitations are documented in the macOS install guide.
+- **Headless Mac**: deploy native macOS apps to Apple Silicon Mac targets with [Headless Mac](/docs/installation/wendy-agent-macos). Beta limitations are documented in the macOS install guide.
 
 ## Shipped
 

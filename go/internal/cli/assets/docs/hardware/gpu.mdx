@@ -1,0 +1,97 @@
+---
+title: GPU Access
+description: Enable NVIDIA GPU access for CUDA, ML inference, and accelerated vision workloads
+---
+
+## GPU Access
+
+GPU access is most common on NVIDIA Jetson devices for CUDA, ML inference, image processing, DeepStream, PyTorch, TensorRT, and MLX workloads. WendyOS does not expose GPU devices to apps unless the app declares the `gpu` entitlement.
+
+Add the entitlement from your project directory:
+
+```bash
+wendy project entitlements add gpu
+```
+
+## Inspect GPU Capabilities
+
+Check the target device version and hardware summary:
+
+```bash
+wendy device version
+```
+
+For a focused hardware capability view:
+
+```bash
+wendy device hardware list --category gpu
+```
+
+The output reports GPU-related device paths and properties when the target exposes them.
+
+## Common Pairings
+
+GPU apps often also need:
+
+- `camera` for computer vision and live inference
+- `network` for inference APIs or dashboards
+- `audio` for voice AI pipelines
+- `persist` for model caches and local output
+
+For camera inference:
+
+```bash
+wendy project entitlements add camera
+wendy project entitlements add gpu
+```
+
+For a networked inference server:
+
+```bash
+wendy project entitlements add gpu
+wendy project entitlements add network --mode host
+```
+
+## App Configuration
+
+A minimal GPU app uses:
+
+```json
+{
+  "appId": "com.example.gpu",
+  "platform": "linux",
+  "version": "1.0.0",
+  "entitlements": [
+    { "type": "gpu" }
+  ]
+}
+```
+
+Then deploy:
+
+```bash
+wendy run
+```
+
+<CliShot flow="run" step="deploy" alt="The Wendy CLI deploying a GPU-enabled app to a WendyOS device" />
+
+## Raspberry Pi Board Telemetry
+
+On Raspberry Pi hosts, the `gpu` entitlement also exposes the VideoCore mailbox device (`/dev/vcio`). This lets your app read board telemetry — power, voltage and current, temperature, throttling state, and (on Raspberry Pi 5) the PMIC ADC channels — through the firmware property interface, the same channel the `vcgencmd` tool uses.
+
+This is added only on Raspberry Pi hardware, and only when the `/dev/vcio` node is present. On NVIDIA Jetson devices the entitlement grants the CUDA/CDI access described above instead — the VideoCore mailbox is not exposed there — and on hardware that is neither, it has no effect.
+
+```json
+{
+  "appId": "com.example.power-monitor",
+  "platform": "linux",
+  "version": "1.0.0",
+  "entitlements": [
+    { "type": "gpu" }
+  ]
+}
+```
+
+<Callout type="info">
+  Access is read/write to the existing device node only — the container cannot create new device nodes (`mknod`). The grant applies solely when the agent detects Raspberry Pi hardware.
+</Callout>

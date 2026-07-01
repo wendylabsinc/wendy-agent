@@ -778,6 +778,14 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 	}
 	spec.Linux.CgroupsPath = fmt.Sprintf("system.slice:%s:%s", sharedenv.SystemdServiceName(), cgroupSuffix)
 
+	// Apply CPU/memory/PID ceilings from wendy.json (per-service overrides
+	// the app-level default). Malformed values are rejected here rather than
+	// silently running the container unbounded. CLI-side validation should
+	// catch these first, but the agent must not trust the request blindly.
+	if err := localoci.ApplyResourceLimits(spec, appCfg.ResolveResourcesForService(serviceName)); err != nil {
+		return fmt.Errorf("applying resource limits: %w", err)
+	}
+
 	report(&agentpb.CreateContainerProgress{Phase: agentpb.CreateContainerProgress_CREATING_CONTAINER})
 
 	labels := wendyLabels(appID, serviceName, version, req.GetRestartPolicy(), appCfg.Entitlements)
@@ -1952,10 +1960,20 @@ func (c *Client) streamOutput(
 	exitStatus := <-exitStatusCh
 	code, _, err := exitStatus.Result()
 	if err != nil {
-		c.logger.Error("Task exited with error",
-			zap.String("app_name", appName),
-			zap.Error(err),
-		)
+		if errors.Is(err, context.Canceled) {
+			// The wait was canceled because the RPC that started this monitor
+			// ended — e.g. `wendy run --detach` returned and tore down its
+			// deploy stream. The container keeps running; this is normal
+			// teardown, not a task failure, so don't log it as an error.
+			c.logger.Debug("Stopped monitoring task exit (stream canceled)",
+				zap.String("app_name", appName),
+			)
+		} else {
+			c.logger.Error("Task exited with error",
+				zap.String("app_name", appName),
+				zap.Error(err),
+			)
+		}
 	} else {
 		c.logger.Info("Task exited",
 			zap.String("app_name", appName),
@@ -2358,6 +2376,145 @@ func (c *Client) DeleteContainer(ctx context.Context, appID string, deleteImage 
 // callers can display individual service state. This ensures that
 // stop/start/remove — which address by appID — operate on the same granularity
 // shown in the list and picker.
+// ListBootContainers returns the containers that should be (re)started when the
+// agent boots: every Wendy container whose restart policy keeps it running
+// (anything other than "no") and that was NOT explicitly stopped by the user.
+// The returned Name is the containerd container ID (the key the restart monitor
+// uses — bare appID for single-container apps, "{appID}_{serviceName}" for
+// services). An absent/empty restart-policy label is treated as keep-running, so
+// apps deployed with the default policy come back on boot.
+func (c *Client) ListBootContainers(ctx context.Context) ([]services.BootContainer, error) {
+	ctx = c.withNamespace(ctx)
+
+	ctrs, err := c.client.Containers(ctx, fmt.Sprintf("labels.%q", labelKeyAppVersion))
+	if err != nil {
+		return nil, fmt.Errorf("listing containers: %w", err)
+	}
+
+	var result []services.BootContainer
+	for _, ctr := range ctrs {
+		info, err := ctr.Info(ctx)
+		if err != nil {
+			c.logger.Warn("Failed to get container info", zap.String("id", ctr.ID()), zap.Error(err))
+			continue
+		}
+		if info.Labels[labelKeyStoppedByUser] == "true" {
+			continue // user stopped it on purpose — stay down across reboot
+		}
+		policy, maxRetries := parseRestartPolicyLabel(info.Labels[labelKeyRestartPolicy])
+		if policy == "no" {
+			continue // opted out of auto-restart (e.g. wendy run --no-restart)
+		}
+		result = append(result, services.BootContainer{
+			Name:          ctr.ID(),
+			RestartPolicy: policy,
+			MaxRetries:    maxRetries,
+		})
+	}
+	return result, nil
+}
+
+// SetStoppedByUser sets or clears the persisted stopped-by-user label on a
+// single container (keyed by container ID). Used by the stop/start RPCs so a
+// deliberate stop survives a reboot. A missing container is not an error — the
+// caller may be operating on a best-effort set of IDs.
+func (c *Client) SetStoppedByUser(ctx context.Context, containerID string, stopped bool) error {
+	ctx = c.withNamespace(ctx)
+	ctr, err := c.client.LoadContainer(ctx, containerID)
+	if err != nil {
+		if errdefs.IsNotFound(err) {
+			return nil
+		}
+		return fmt.Errorf("loading container %q: %w", containerID, err)
+	}
+	return ctr.Update(ctx, func(ctx context.Context, client *containerd.Client, c *containers.Container) error {
+		if c.Labels == nil {
+			c.Labels = map[string]string{}
+		}
+		if stopped {
+			c.Labels[labelKeyStoppedByUser] = "true"
+		} else {
+			delete(c.Labels, labelKeyStoppedByUser)
+		}
+		return nil
+	})
+}
+
+// bootMigrationMarker records that the one-time stopped-by-user back-fill has
+// run on this device. It lives under the persistent state dir so the migration
+// runs exactly once over the device's lifetime, not once per boot.
+const bootMigrationMarker = "/var/lib/wendy/boot-reconcile-migrated"
+
+// MigrateStoppedByUserOnce back-fills the stopped-by-user mark for apps that
+// predate it, so the upgrade to boot-reconcile doesn't resurrect apps the user
+// had deliberately stopped. Apps stopped under an older agent carry no
+// stopped-by-user label, so without this the first boot after upgrade would see
+// them as eligible and start them.
+//
+// On its single run it marks every container that is NOT currently running as
+// stopped-by-user; running apps (live tasks) are left unmarked so they keep
+// coming back on future boots. This is only correct while the device is up —
+// i.e. at agent upgrade (`wendy device update`), when stopped/running still
+// reflect the user's intent — NOT after a reboot, when every task is dead. The
+// persistent marker guarantees it runs once, on that upgrade. (Residual edge:
+// if the device reboots after the binary is installed but before the agent ever
+// runs, the first run is post-reboot and would mark everything; the normal
+// update path restarts the agent immediately, so this is rare.)
+func (c *Client) MigrateStoppedByUserOnce(ctx context.Context) error {
+	if _, err := os.Stat(bootMigrationMarker); err == nil {
+		return nil // already migrated
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("stat migration marker: %w", err)
+	}
+
+	ctx = c.withNamespace(ctx)
+	ctrs, err := c.client.Containers(ctx, fmt.Sprintf("labels.%q", labelKeyAppVersion))
+	if err != nil {
+		return fmt.Errorf("listing containers: %w", err) // transient; retry, don't mark done
+	}
+
+	var marked int
+	for _, ctr := range ctrs {
+		if c.containerIsRunning(ctx, ctr) {
+			continue // running now → keep eligible for boot reconcile
+		}
+		info, infoErr := ctr.Info(ctx)
+		if infoErr != nil {
+			c.logger.Warn("Boot migration: failed to read container info", zap.String("id", ctr.ID()), zap.Error(infoErr))
+			continue
+		}
+		if info.Labels[labelKeyStoppedByUser] == "true" {
+			continue // already marked
+		}
+		if err := c.SetStoppedByUser(ctx, ctr.ID(), true); err != nil {
+			c.logger.Warn("Boot migration: failed to mark stopped-by-user", zap.String("id", ctr.ID()), zap.Error(err))
+			continue
+		}
+		marked++
+	}
+
+	// Enumeration succeeded, so the snapshot is valid even if a few per-container
+	// updates failed — mark done so we don't re-run (and re-snapshot post-reboot).
+	if err := os.MkdirAll("/var/lib/wendy", 0o755); err != nil {
+		return fmt.Errorf("creating state dir: %w", err)
+	}
+	if err := os.WriteFile(bootMigrationMarker, []byte("1\n"), 0o644); err != nil {
+		return fmt.Errorf("writing migration marker: %w", err)
+	}
+	c.logger.Info("Boot reconcile migration complete", zap.Int("marked_stopped", marked), zap.Int("containers", len(ctrs)))
+	return nil
+}
+
+// containerIsRunning reports whether the container currently has a running task.
+func (c *Client) containerIsRunning(ctx context.Context, ctr containerd.Container) bool {
+	task, err := ctr.Task(ctx, nil)
+	if err != nil {
+		return false
+	}
+	st, err := task.Status(ctx)
+	return err == nil && st.Status == containerd.Running
+}
+
 func (c *Client) ListContainers(ctx context.Context) ([]*agentpb.AppContainer, error) {
 	ctx = c.withNamespace(ctx)
 

@@ -36,6 +36,18 @@ wendy project optimize --agentic  # emit a context bundle for an AI agent
 
 After a slow incremental build (one that reused cached layers and still took more than ~50s), `wendy run` / `wendy build` will run this scan automatically in an interactive terminal, show the findings, and offer to apply the safe fixes for your next build. This never runs in CI or non-interactive shells.
 
+## Sample projects
+
+The repository ships small, deliberately un-optimized sample projects under [`Examples/project-optimize-samples/`](https://github.com/wendylabsinc/wendyos/tree/main/Examples/project-optimize-samples) that each trigger a specific finding, so you can see the analyzer and `--fix` in action:
+
+| Sample | Demonstrates |
+|---|---|
+| `rust-debug-no-cache` | Missing build-cache mount + a debug (non-release) build |
+| `swift-debug-wendy-debug` | A declared-but-unused `WENDY_DEBUG` arg and a debug Swift build |
+| `python-cuda-mismatch` | A CUDA wheel that doesn't match the target's CUDA version |
+
+Run `wendy project optimize` (or `--fix`) inside any sample directory to reproduce the corresponding finding. See the [samples README](https://github.com/wendylabsinc/wendyos/tree/main/Examples/project-optimize-samples) for details.
+
 ## A note on `--agentic` and secrets
 
 The `--agentic` bundle includes the **verbatim contents** of your Dockerfile(s), `requirements.txt`, and `wendy.json` so the agent has full context. These files can contain secrets (`ARG`/`ENV` tokens, private registry URLs). The command prints a reminder to stderr; review the bundle before sending it to an external agent.

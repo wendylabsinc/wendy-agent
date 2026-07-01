@@ -103,6 +103,46 @@ func agentVersionHasFeature(versionResp *agentpb.GetAgentVersionResponse, featur
 	return false
 }
 
+// osAlreadyCurrent reports whether the device's current OS version is at or
+// ahead of the latest available version. The "WendyOS-" display prefix is
+// stripped before comparing so that "WendyOS-0.10.4" and "0.12.0-nightly"
+// compare correctly. Returns false when either version is unknown.
+func osAlreadyCurrent(currentOSVersion, latestVersion string, nightly bool) bool {
+	if currentOSVersion == "" || latestVersion == "" {
+		return false
+	}
+	normalized := strings.TrimPrefix(currentOSVersion, "WendyOS-")
+	return nightly && latestVersion == normalized ||
+		!nightly && version.CompareVersions(latestVersion, normalized) <= 0
+}
+
+// osUpdateAction is the decision for the OS-update step of `device update`.
+type osUpdateAction int
+
+const (
+	osActionAlreadyCurrent osUpdateAction = iota // device is already at/ahead of latest
+	osActionApply                                // apply without prompting (--yes)
+	osActionPrompt                               // interactive: ask the user
+	osActionReportOnly                           // non-interactive, no --yes: report and skip
+)
+
+// decideOSUpdate chooses how the OS-update step behaves when a newer OS may be
+// available. It is pure so it can be unit-tested; the caller is responsible for
+// running the interactive prompt when the result is osActionPrompt.
+func decideOSUpdate(currentOSVersion, latestVersion string, nightly, assumeYes, interactive bool) osUpdateAction {
+	if osAlreadyCurrent(currentOSVersion, latestVersion, nightly) {
+		return osActionAlreadyCurrent
+	}
+	switch {
+	case assumeYes:
+		return osActionApply
+	case interactive:
+		return osActionPrompt
+	default:
+		return osActionReportOnly
+	}
+}
+
 func newOSUpdateCmd() *cobra.Command {
 	var artifactURL string
 	var nightly bool
@@ -202,12 +242,7 @@ the board, falling back to mender. Use --updater to force a backend.`,
 					artifactURL = picked
 				} else {
 					if osVer := versionResp.GetOsVersion(); osVer != "" && latestVer != "" {
-						// Strip the "WendyOS-" display prefix before comparing so that
-						// "WendyOS-0.10.4" and "0.12.0-nightly" compare correctly.
-						normalizedOsVer := strings.TrimPrefix(osVer, "WendyOS-")
-						alreadyCurrent := nightly && latestVer == normalizedOsVer ||
-							!nightly && version.CompareVersions(latestVer, normalizedOsVer) <= 0
-						if alreadyCurrent {
+						if osAlreadyCurrent(osVer, latestVer, nightly) {
 							fmt.Printf("OS is already at the latest version (%s).\n", osVer)
 							return nil
 						}
@@ -265,61 +300,8 @@ the board, falling back to mender. Use --updater to force a backend.`,
 				return fmt.Errorf("provide a local artifact path or --artifact-url")
 			}
 
-			stream, err := conn.AgentService.UpdateOS(ctx, &agentpb.UpdateOSRequest{
-				ArtifactUrl:    artifactURL,
-				UpdaterBackend: updaterBackend,
-			})
-			if err != nil {
-				return fmt.Errorf("starting OS update: %w", err)
-			}
-
-			if isInteractiveTerminal() {
-				spin := tui.NewSpinner("Downloading update...")
-				p := tui.NewProgressProgram(spin)
-
-				go func() {
-					for {
-						resp, err := stream.Recv()
-						if err == io.EOF {
-							p.Send(tui.SpinnerDoneMsg{})
-							return
-						}
-						if err != nil {
-							p.Send(tui.SpinnerDoneMsg{Err: err})
-							return
-						}
-						if progress := resp.GetProgress(); progress != nil {
-							p.Send(tui.SpinnerUpdateMsg{Label: phaseLabel(progress.GetPhase())})
-						}
-						if completed := resp.GetCompleted(); completed != nil {
-							p.Send(tui.SpinnerDoneMsg{})
-							return
-						}
-						if failed := resp.GetFailed(); failed != nil {
-							p.Send(tui.SpinnerDoneMsg{Err: fmt.Errorf("update failed: %s", failed.GetErrorMessage())})
-							return
-						}
-					}
-				}()
-
-				finalModel, err := p.Run()
-				if err != nil {
-					return fmt.Errorf("TUI error: %w", err)
-				}
-				spinModel, ok := finalModel.(tui.SpinnerModel)
-				if !ok {
-					return fmt.Errorf("TUI error: unexpected model type %T", finalModel)
-				}
-				if !spinModel.Done() {
-					return ErrUserCancelled
-				}
-				if _, spinErr := spinModel.Result(); spinErr != nil {
-					return spinErr
-				}
-			} else {
-				if err := drainOSUpdateStream(stream); err != nil {
-					return err
-				}
+			if err := streamOSUpdate(ctx, conn, artifactURL, updaterBackend); err != nil {
+				return err
 			}
 
 			deviceHost := conn.Host
@@ -338,6 +320,67 @@ the board, falling back to mender. Use --updater to force a backend.`,
 		"OS update backend: auto (prefer wendyos-update, fall back to mender), wendyos, or mender")
 
 	return cmd
+}
+
+// streamOSUpdate starts an UpdateOS stream for artifactURL on conn and reports
+// progress: a spinner when interactive, a silent drain otherwise. It does not
+// wait for the post-update reboot.
+func streamOSUpdate(ctx context.Context, conn *grpcclient.AgentConnection, artifactURL, updaterBackend string) error {
+	stream, err := conn.AgentService.UpdateOS(ctx, &agentpb.UpdateOSRequest{
+		ArtifactUrl:    artifactURL,
+		UpdaterBackend: updaterBackend,
+	})
+	if err != nil {
+		return fmt.Errorf("starting OS update: %w", err)
+	}
+
+	if !isInteractiveTerminal() {
+		return drainOSUpdateStream(stream)
+	}
+
+	spin := tui.NewSpinner("Downloading update...")
+	p := tui.NewProgressProgram(spin)
+
+	go func() {
+		for {
+			resp, err := stream.Recv()
+			if err == io.EOF {
+				p.Send(tui.SpinnerDoneMsg{})
+				return
+			}
+			if err != nil {
+				p.Send(tui.SpinnerDoneMsg{Err: err})
+				return
+			}
+			if progress := resp.GetProgress(); progress != nil {
+				p.Send(tui.SpinnerUpdateMsg{Label: progressLabel(progress.GetPhase(), progress.GetPercent())})
+			}
+			if completed := resp.GetCompleted(); completed != nil {
+				p.Send(tui.SpinnerDoneMsg{})
+				return
+			}
+			if failed := resp.GetFailed(); failed != nil {
+				p.Send(tui.SpinnerDoneMsg{Err: fmt.Errorf("update failed: %s", failed.GetErrorMessage())})
+				return
+			}
+		}
+	}()
+
+	finalModel, err := p.Run()
+	if err != nil {
+		return fmt.Errorf("TUI error: %w", err)
+	}
+	spinModel, ok := finalModel.(tui.SpinnerModel)
+	if !ok {
+		return fmt.Errorf("TUI error: unexpected model type %T", finalModel)
+	}
+	if !spinModel.Done() {
+		return ErrUserCancelled
+	}
+	if _, spinErr := spinModel.Result(); spinErr != nil {
+		return spinErr
+	}
+	return nil
 }
 
 // validateUpdaterBackend rejects an unknown --updater value before contacting
@@ -385,6 +428,28 @@ func resolveArtifactPath(path string) (string, error) {
 	}
 
 	return "", fmt.Errorf("no .wendy or .mender artifact found in directory: %s", absPath)
+}
+
+// artifactSuffix returns the OS-update artifact extension embedded in a URL or
+// path: ".mender.xz", ".wendy", or ".mender". A wendyos-update (.wendy)
+// artifact and a Mender (.mender) artifact share the manifest's
+// ota_update_path, and the install backends key off the artifact, so the
+// extension must survive a local download+serve round-trip — serving a .wendy
+// artifact under a .mender name makes wendyos-update reject it. Falls back to
+// ".mender" when no known suffix is present (backward-compatible default).
+func artifactSuffix(artifactURL string) string {
+	name := artifactURL
+	if u, err := url.Parse(artifactURL); err == nil && u.Path != "" {
+		name = u.Path
+	}
+	switch {
+	case strings.HasSuffix(name, ".mender.xz"):
+		return ".mender.xz"
+	case strings.HasSuffix(name, ".wendy"):
+		return ".wendy"
+	default:
+		return ".mender"
+	}
 }
 
 // artifactURLPath generates a short hash prefix for the URL path.
@@ -614,6 +679,11 @@ func evaluateOSUpdateOutcome(
 		}
 		fmt.Fprintf(&b, "Update failed post-reboot healthchecks and was rolled back to %s.\n", rolledBackTo)
 		writeFailedServices(&b, resp.GetServices())
+		// When the updater ran its own health gate (wendyos-update health.d),
+		// there are no per-service results — the reason is carried in the note.
+		if note := resp.GetNote(); note != "" {
+			fmt.Fprintf(&b, "Reason: %s\n", note)
+		}
 		if re := resp.GetRollbackError(); re != "" {
 			fmt.Fprintf(&b, "Rollback error: %s\n", re)
 		}
@@ -802,7 +872,8 @@ func ipForURL(ip string) string {
 // drainOSUpdateStream reads all messages from an UpdateOS stream without a
 // TUI, printing phase label changes to stderr. Used when stdout is not a TTY.
 func drainOSUpdateStream(stream agentpb.WendyAgentService_UpdateOSClient) error {
-	var lastLabel string
+	var lastPhase string
+	lastDecile := int32(-1)
 	for {
 		resp, err := stream.Recv()
 		if err == io.EOF {
@@ -812,9 +883,14 @@ func drainOSUpdateStream(stream agentpb.WendyAgentService_UpdateOSClient) error 
 			return err
 		}
 		if progress := resp.GetProgress(); progress != nil {
-			if label := phaseLabel(progress.GetPhase()); label != lastLabel {
-				fmt.Fprintln(os.Stderr, label)
-				lastLabel = label
+			phase, percent := progress.GetPhase(), progress.GetPercent()
+			// Print on every phase change, and at each 10% step within a phase,
+			// so non-interactive logs show steady progress without flooding.
+			decile := percent / 10
+			if phase != lastPhase || (percent > 0 && decile != lastDecile) {
+				fmt.Fprintln(os.Stderr, progressLabel(phase, percent))
+				lastPhase = phase
+				lastDecile = decile
 			}
 		}
 		if resp.GetCompleted() != nil {
@@ -841,6 +917,18 @@ func phaseLabel(phase string) string {
 		}
 		return "Updating WendyOS..."
 	}
+}
+
+// progressLabel renders a phase plus its percentage when the agent reports one,
+// e.g. "Installing update (42%)". A percent of 0 is treated as "unknown" and
+// the bare phase label is shown. This surfaces real progress during the long
+// download/install so the operation doesn't look hung.
+func progressLabel(phase string, percent int32) string {
+	label := phaseLabel(phase)
+	if percent > 0 {
+		return strings.TrimSuffix(label, "...") + fmt.Sprintf(" (%d%%)", percent)
+	}
+	return label
 }
 
 // ensureAgentUpToDate checks the agent version on the device against the latest
@@ -942,7 +1030,10 @@ func downloadArtifactToTemp(artifactURL string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolving cache dir: %w", err)
 	}
-	tmpFile, err := os.CreateTemp(cacheDir, "wendyos-*.mender")
+	// Preserve the artifact's real extension (.wendy / .mender / .mender.xz) so
+	// the locally served filename matches the artifact type; the device's
+	// install backend keys off it.
+	tmpFile, err := os.CreateTemp(cacheDir, "wendyos-*"+artifactSuffix(artifactURL))
 	if err != nil {
 		return "", fmt.Errorf("creating temp file: %w", err)
 	}

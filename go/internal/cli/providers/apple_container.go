@@ -69,19 +69,16 @@ func (p *AppleContainerProvider) CheckRequirements(ctx context.Context) error {
 	if !appleContainerSupportedHost(appleContainerHostGOOS(), appleContainerHostGOARCH()) {
 		return fmt.Errorf("Apple Container requires an Apple silicon Mac")
 	}
-	if _, err := appleContainerLookPath("container"); err != nil {
-		return fmt.Errorf("container CLI is not installed or not in PATH")
+	if err := ensureAppleContainerInstalled(ctx); err != nil {
+		return err
 	}
 	if err := appleContainerCommandContext(ctx, "container", "--version").Run(); err != nil {
 		return fmt.Errorf("container CLI is not usable: %w", err)
 	}
-	cmd := appleContainerCommandContext(ctx, "container", "system", "status")
-	if out, err := cmd.CombinedOutput(); err != nil {
-		msg := strings.TrimSpace(string(out))
-		if msg != "" {
-			msg = ": " + msg
+	for _, service := range appleContainerServices {
+		if err := ensureAppleContainerServiceRunning(ctx, service); err != nil {
+			return err
 		}
-		return fmt.Errorf("Apple Container system is not running%s. Run 'container system start' and try again: %w", msg, err)
 	}
 	return nil
 }

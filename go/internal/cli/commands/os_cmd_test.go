@@ -13,6 +13,58 @@ import (
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
+func TestOSAlreadyCurrent(t *testing.T) {
+	tests := []struct {
+		name    string
+		current string
+		latest  string
+		nightly bool
+		want    bool
+	}{
+		{"stable equal is current", "WendyOS-0.10.4", "0.10.4", false, true},
+		{"stable newer available", "WendyOS-0.10.4", "0.12.0", false, false},
+		{"stable device ahead is current", "WendyOS-0.12.0", "0.10.4", false, true},
+		{"nightly equal is current", "WendyOS-0.12.0-nightly", "0.12.0-nightly", true, true},
+		{"nightly different available", "WendyOS-0.12.0-nightly", "0.13.0-nightly", true, false},
+		{"empty current not current", "", "0.10.4", false, false},
+		{"empty latest not current", "WendyOS-0.10.4", "", false, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := osAlreadyCurrent(tc.current, tc.latest, tc.nightly); got != tc.want {
+				t.Fatalf("osAlreadyCurrent(%q,%q,%v) = %v, want %v", tc.current, tc.latest, tc.nightly, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestDecideOSUpdate(t *testing.T) {
+	tests := []struct {
+		name        string
+		current     string
+		latest      string
+		nightly     bool
+		assumeYes   bool
+		interactive bool
+		want        osUpdateAction
+	}{
+		{"already current", "WendyOS-0.10.4", "0.10.4", false, false, false, osActionAlreadyCurrent},
+		{"newer with yes", "WendyOS-0.10.4", "0.12.0", false, true, false, osActionApply},
+		{"newer with yes overrides tty", "WendyOS-0.10.4", "0.12.0", false, true, true, osActionApply},
+		{"newer interactive prompts", "WendyOS-0.10.4", "0.12.0", false, false, true, osActionPrompt},
+		{"newer noninteractive reports", "WendyOS-0.10.4", "0.12.0", false, false, false, osActionReportOnly},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := decideOSUpdate(tc.current, tc.latest, tc.nightly, tc.assumeYes, tc.interactive)
+			if got != tc.want {
+				t.Fatalf("decideOSUpdate(%q,%q,nightly=%v,yes=%v,tty=%v) = %v, want %v",
+					tc.current, tc.latest, tc.nightly, tc.assumeYes, tc.interactive, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestValidateOSUpdateIdentityAllowsWendyOSBeforeMenderCheck(t *testing.T) {
 	osVersion := "WendyOS-0.10.4"
 	resp := &agentpb.GetAgentVersionResponse{Os: "linux", OsVersion: &osVersion}
@@ -122,6 +174,25 @@ func TestValidateOSUpdateTarget(t *testing.T) {
 	}
 }
 
+func TestProgressLabel(t *testing.T) {
+	tests := []struct {
+		phase   string
+		percent int32
+		want    string
+	}{
+		{"installing", 42, "Installing update (42%)"},
+		{"installing", 0, "Installing update..."},
+		{"downloading", 0, "Downloading update..."},
+		{"finalizing", 100, "Finalizing (100%)"},
+		{"", 0, "Updating WendyOS..."},
+	}
+	for _, tc := range tests {
+		if got := progressLabel(tc.phase, tc.percent); got != tc.want {
+			t.Errorf("progressLabel(%q,%d) = %q, want %q", tc.phase, tc.percent, got, tc.want)
+		}
+	}
+}
+
 func TestFormatOSUpdateStatus(t *testing.T) {
 	tests := []struct {
 		name         string
@@ -216,6 +287,28 @@ func TestResolveArtifactPath(t *testing.T) {
 	})
 }
 
+func TestArtifactSuffix(t *testing.T) {
+	tests := []struct {
+		name string
+		url  string
+		want string
+	}{
+		{"wendy artifact", "https://storage.example.com/images/raspberry-pi-5/1.0/wendyos-image-x.rootfs.wendy", ".wendy"},
+		{"mender artifact", "https://storage.example.com/images/jetson/1.0/wendyos-image-x.mender", ".mender"},
+		{"mender.xz artifact", "https://storage.example.com/images/rpi/1.0/wendyos-image-x.mender.xz", ".mender.xz"},
+		{"wendy with query string", "https://storage.example.com/x.wendy?token=abc&exp=123", ".wendy"},
+		{"unknown extension falls back to mender", "https://storage.example.com/images/x.bin", ".mender"},
+		{"bare local path", "/tmp/update.wendy", ".wendy"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := artifactSuffix(tc.url); got != tc.want {
+				t.Fatalf("artifactSuffix(%q) = %q, want %q", tc.url, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestValidateUpdaterBackend(t *testing.T) {
 	valid := []string{"", "auto", "wendyos", "wendyos-update", "mender"}
 	for _, v := range valid {
@@ -270,6 +363,15 @@ func TestEvaluateOSUpdateOutcome(t *testing.T) {
 		CreatedAtUnix: fresh,
 		Note:          "wendyos-update commit failed: exit status 1 (tegra: ESRT capsule not staged)",
 	}
+	// A delegated (wendyos-update health.d) rollback has no per-service results;
+	// the reason is carried in Note and must still reach the user.
+	delegatedRolledBack := &agentpb.GetOSUpdateStatusResponse{
+		HasResult:     true,
+		Outcome:       agentpb.GetOSUpdateStatusResponse_OUTCOME_ROLLED_BACK,
+		OldOsVersion:  "WendyOS-0.10.4",
+		CreatedAtUnix: fresh,
+		Note:          "wendyos-update commit failed: exit status 1 (pending update is marked failed; run rollback)",
+	}
 
 	tests := []struct {
 		name         string
@@ -318,6 +420,18 @@ func TestEvaluateOSUpdateOutcome(t *testing.T) {
 				"avahi-daemon.service",
 				"timed out after 30s",
 				"WendyOS-0.10.4",
+			},
+		},
+		{
+			name:    "delegated rollback surfaces the note when there are no service results",
+			resp:    delegatedRolledBack,
+			preVer:  "WendyOS-0.10.4",
+			postVer: "WendyOS-0.10.4",
+			wantErr: true,
+			wantContains: []string{
+				"rolled back",
+				"WendyOS-0.10.4",
+				"is marked failed",
 			},
 		},
 		{

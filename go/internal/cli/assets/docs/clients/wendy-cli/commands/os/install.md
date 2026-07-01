@@ -1,6 +1,8 @@
-# `wendy os install`
+# `wendy install`
 
 Installs WendyOS onto an NVMe or SD card, or flashes Wendy Lite firmware onto an ESP32 over USB.
+
+> **Tip:** [`wendy install`](../install.md) is the recommended, surfaced entry point for this command. `wendy os install` remains available and behaves identically — it is kept for backward compatibility and for discoverability under the `wendy os` group.
 
 The command presents a unified device picker that lists both Linux targets (Raspberry Pi, Jetson, …) and ESP32 targets (C6, C5). Select the device type to take the appropriate path:
 
@@ -9,16 +11,16 @@ The command presents a unified device picker that lists both Linux targets (Rasp
 
 ```sh
 # Interactive (recommended)
-wendy os install
+wendy install
 
 # Install nightly firmware
-wendy os install --nightly
+wendy install --nightly
 
 # Linux: non-interactive with all flags
-wendy os install --device-type raspberry-pi-5 --version 0.10.4 --drive /dev/disk4 --force
+wendy install --device-type raspberry-pi-5 --version 0.10.4 --drive /dev/disk4 --force
 
 # Direct install from a local image (Linux only)
-wendy os install path/to/image.img /dev/disk4 --force
+wendy install path/to/image.img /dev/disk4 --force
 ```
 
 > **Note:** `--device-type` is not supported for ESP32 targets. Use the interactive picker to flash an ESP32.
@@ -109,7 +111,7 @@ To provision WiFi after first boot, use `wendy device setup` or the BLE provisio
 5. **Write config partition** — downloads the latest stable `wendy-agent-linux-arm64` binary from GitHub, writes it along with any pre-seeded WiFi credentials and device name to the config partition on the newly written drive. Skipped silently on platforms that don't support config-partition writes. This step is **not** fatal: the OS image is already on the drive by this point, so a failure here prints a warning (never an error) and the install is still reported as successful. The device boots regardless — it runs the agent baked into the image and fetches updates and configuration after first boot. On an interactive terminal the CLI offers to retry the write (useful after, e.g., re-seating an SD card whose config partition couldn't be located); non-interactively it prints guidance and continues.
 6. **Eject** — the drive is ejected automatically after writing.
 
-> **Exit code:** `wendy os install` exits `0` as long as the OS image was written to the drive, regardless of whether the config-partition provisioning step succeeded. A non-zero exit indicates only that the image itself could not be written. When `--wifi`, `--device-name`, or `--pre-enroll` were requested but couldn't be applied, the warning calls this out explicitly so the values can be re-applied with another `wendy os install`, or configured after the device boots.
+> **Exit code:** `wendy install` exits `0` as long as the OS image was written to the drive, regardless of whether the config-partition provisioning step succeeded. A non-zero exit indicates only that the image itself could not be written. When `--wifi`, `--device-name`, or `--pre-enroll` were requested but couldn't be applied, the warning calls this out explicitly so the values can be re-applied with another `wendy install`, or configured after the device boots.
 
 > **Provisioning retry:** When the config-partition write fails on an interactive terminal, the CLI asks `Retry writing provisioning data to the config partition?`. Answering yes re-attempts the write (download + config-partition write); answering no, or running non-interactively, prints guidance and exits successfully — the OS image is already on the drive.
 
@@ -117,26 +119,28 @@ To provision WiFi after first boot, use `wendy device setup` or the BLE provisio
 
 ```sh
 # Single network
-wendy os install --wifi-ssid MyNetwork --wifi-password hunter2
+wendy install --wifi-ssid MyNetwork --wifi-password hunter2
 
 # Multiple networks, highest-priority first
-wendy os install \
+wendy install \
   --wifi "ssid=Home,password=hunter2,priority=100" \
   --wifi "ssid=Office,password=corp,priority=50" \
   --wifi "ssid=Cafe,hidden=true"
 
 # Skip WiFi setup entirely
-wendy os install --no-wifi
+wendy install --no-wifi
 ```
 
 `--wifi-ssid` without `--wifi-password` checks the system keychain (macOS) first, then prompts. In interactive mode without any `--wifi` flags, the CLI asks whether to configure WiFi and offers to scan nearby networks. If the scan fails or finds no networks, you can choose to enter credentials manually or skip WiFi setup entirely (configure later with `wendy device wifi connect`).
+
+> **Note:** When a password is entered at an interactive prompt, the input is masked — characters appear as `•` so the password is never displayed in plaintext on screen.
 
 The `--wifi` flag accepts `key=value` pairs separated by commas. Keys: `ssid` (required), `password`/`pass`/`psk`, `priority` (integer), `hidden` (true/false), `security` (e.g. `wpa2`). Commas inside values can be escaped with `\,`.
 
 ### Pre-enrollment
 
 ```sh
-wendy os install --pre-enroll
+wendy install --pre-enroll
 ```
 
 Requires an active `wendy auth login` session. The CLI creates an enrollment token via Wendy Cloud and writes provisioning JSON to the config partition so the device enrolls and receives mTLS certificates on first boot. Without `--pre-enroll`, the device boots unenrolled and can be enrolled later with `wendy device enroll`.

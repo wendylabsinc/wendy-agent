@@ -102,6 +102,7 @@ func TestShouldRefreshMCPSetup(t *testing.T) {
 	}{
 		{name: "never set up", lastVersion: "", current: "0.11.0", want: false},
 		{name: "dev build never refreshes", lastVersion: "0.10.0", current: "dev", want: false},
+		{name: "dev branch build never refreshes", lastVersion: "0.10.0", current: "2026.06.30-1-dev", want: false},
 		{name: "same version", lastVersion: "0.11.0", current: "0.11.0", want: false},
 		{name: "upgraded", lastVersion: "0.10.0", current: "0.11.0", want: true},
 		{name: "downgraded", lastVersion: "0.11.0", current: "0.10.0", want: true},

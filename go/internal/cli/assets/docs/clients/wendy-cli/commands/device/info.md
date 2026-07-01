@@ -25,6 +25,8 @@ On GPU-capable devices, the following GPU fields are included. Each is omitted f
 | `cudaVersion` | `CUDA:` | CUDA toolkit version (e.g. `12.6`). |
 | `gpuArch` | `GPU Arch:` | GPU architecture identifier. Format is vendor-specific (e.g. `sm_87` for NVIDIA). |
 
+`wendy device info` reports static GPU *metadata* (vendor, architecture, toolkit versions). For **live** GPU utilization, memory, temperature, and power draw, use [`wendy device top`](top.md).
+
 ## Flags
 
 | Flag | Default | Description |

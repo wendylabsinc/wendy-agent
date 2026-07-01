@@ -12,6 +12,7 @@ import {
   Pi5BuyersTable,
   PiZero2WBuyersTable,
 } from './docs/buyers-tables';
+import { CliClip, CliShot } from './docs/cli-shot';
 import { CliToAgentRelationshipDiagram } from './docs/cli-to-agent-relationship-diagram';
 import { SetDefaultDeviceSection } from './docs/set-default-device-section';
 
@@ -34,6 +35,8 @@ export function getMDXComponents(components?: MDXComponents) {
     Tab,
     Tabs,
     TypeTable,
+    CliClip,
+    CliShot,
     CliToAgentRelationshipDiagram,
     SetDefaultDeviceSection,
     ...components,

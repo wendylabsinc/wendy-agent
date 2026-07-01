@@ -48,6 +48,25 @@ type mockContainerdClient struct {
 	resourceStatsErr      error
 	listeningPorts        []*agentpb.PortEntry
 	listeningPortsErr     error
+	stoppedByUserCalls    []stoppedByUserCall
+}
+
+type stoppedByUserCall struct {
+	containerID string
+	stopped     bool
+}
+
+func (m *mockContainerdClient) ListBootContainers(_ context.Context) ([]BootContainer, error) {
+	return nil, nil
+}
+
+func (m *mockContainerdClient) SetStoppedByUser(_ context.Context, containerID string, stopped bool) error {
+	m.stoppedByUserCalls = append(m.stoppedByUserCalls, stoppedByUserCall{containerID, stopped})
+	return nil
+}
+
+func (m *mockContainerdClient) MigrateStoppedByUserOnce(_ context.Context) error {
+	return nil
 }
 
 func (m *mockContainerdClient) ListContainers(_ context.Context) ([]*agentpb.AppContainer, error) {
@@ -250,6 +269,28 @@ func TestStopContainer(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("StopContainer: %v", err)
+	}
+}
+
+// TestStopContainer_PersistsStoppedByUser verifies a deliberate stop is
+// recorded as a container label so the boot reconcile won't undo it on reboot.
+func TestStopContainer_PersistsStoppedByUser(t *testing.T) {
+	mock := &mockContainerdClient{}
+	client, cleanup := startContainerServer(t, mock)
+	defer cleanup()
+
+	if _, err := client.StopContainer(context.Background(), &agentpb.StopContainerRequest{AppName: "test-app"}); err != nil {
+		t.Fatalf("StopContainer: %v", err)
+	}
+
+	found := false
+	for _, c := range mock.stoppedByUserCalls {
+		if c.containerID == "test-app" && c.stopped {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected SetStoppedByUser(test-app, true); calls = %+v", mock.stoppedByUserCalls)
 	}
 }
 

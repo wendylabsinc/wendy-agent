@@ -2,11 +2,16 @@
   "title": "Documentation",
   "pages": [
     "index",
+    "installation/developer-machine-setup",
     "installation",
     "guides",
-    "buyers-guide",
+    "device",
+    "hardware",
+    "remote-debugging",
+    "integrations",
     "security",
     "faq",
+    "cloud",
     "---",
     "advanced"
   ]
