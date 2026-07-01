@@ -355,6 +355,13 @@ func (d *Device) readMsgTimeout(timeout time.Duration) (cmd, arg0, arg1 uint32, 
 	arg0 = binary.LittleEndian.Uint32(hdr[4:])
 	arg1 = binary.LittleEndian.Uint32(hdr[8:])
 	dlen := binary.LittleEndian.Uint32(hdr[12:])
+	// The length comes from the device; bound it so a malformed/oversized header
+	// can't drive an unbounded allocation in the reassembly loop below. ADB payloads
+	// never exceed the negotiated max.
+	if dlen > maxPayload {
+		err = fmt.Errorf("ADB payload too large: %d bytes (max %d)", dlen, maxPayload)
+		return
+	}
 
 	got := append([]byte{}, hdr[24:n]...) // any payload that rode with the header
 	for uint32(len(got)) < dlen {
