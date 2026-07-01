@@ -180,7 +180,7 @@ func (d *SerialDiscovery) StartScan(repeatInterval time.Duration) {
 	}()
 }
 
-func (d *SerialDiscovery) StopScan(repeatInterval time.Duration) {
+func (d *SerialDiscovery) StopScan() {
 	d.StartScan(0)
 }
 
