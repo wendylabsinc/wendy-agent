@@ -362,7 +362,7 @@ jobs:
       - name: Skip when automation is not authorized
         if: steps.resolve.outputs.pr_number == '' || steps.guard.outputs.proceed != 'true'
         run: |
-          echo "Authorization not granted or not applicable — skipping AI feedback loop without provisioning write tokens."
+          echo "::error::Authorization not granted or not applicable — skipping AI feedback loop without provisioning write tokens."
 
   # Execute job: write-capable tokens (GITHUB_TOKEN pull-requests:write, issues:write)
   # are provisioned ONLY after the gate job has confirmed authorization via live API checks.
