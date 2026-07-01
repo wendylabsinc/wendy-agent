@@ -2098,6 +2098,241 @@ func (x *RawROS2Message) GetTimestampNs() int64 {
 	return 0
 }
 
+type GetROS2ServiceDefinitionRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	DomainId      *int32                 `protobuf:"varint,1,opt,name=domain_id,json=domainId,proto3,oneof" json:"domain_id,omitempty"`
+	Service       string                 `protobuf:"bytes,2,opt,name=service,proto3" json:"service,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetROS2ServiceDefinitionRequest) Reset() {
+	*x = GetROS2ServiceDefinitionRequest{}
+	mi := &file_wendy_agent_services_v2_ros2_service_proto_msgTypes[38]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetROS2ServiceDefinitionRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetROS2ServiceDefinitionRequest) ProtoMessage() {}
+
+func (x *GetROS2ServiceDefinitionRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_wendy_agent_services_v2_ros2_service_proto_msgTypes[38]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetROS2ServiceDefinitionRequest.ProtoReflect.Descriptor instead.
+func (*GetROS2ServiceDefinitionRequest) Descriptor() ([]byte, []int) {
+	return file_wendy_agent_services_v2_ros2_service_proto_rawDescGZIP(), []int{38}
+}
+
+func (x *GetROS2ServiceDefinitionRequest) GetDomainId() int32 {
+	if x != nil && x.DomainId != nil {
+		return *x.DomainId
+	}
+	return 0
+}
+
+func (x *GetROS2ServiceDefinitionRequest) GetService() string {
+	if x != nil {
+		return x.Service
+	}
+	return ""
+}
+
+type GetROS2ServiceDefinitionResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Type  string                 `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"` // e.g. "std_srvs/srv/SetBool"
+	// Concatenated ros2msg schemas (80 '=' + "MSG:" separators) for the request
+	// and response halves of the service, consumed by Foxglove with
+	// schemaEncoding="ros2msg".
+	RequestSchema  string `protobuf:"bytes,2,opt,name=request_schema,json=requestSchema,proto3" json:"request_schema,omitempty"`
+	ResponseSchema string `protobuf:"bytes,3,opt,name=response_schema,json=responseSchema,proto3" json:"response_schema,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *GetROS2ServiceDefinitionResponse) Reset() {
+	*x = GetROS2ServiceDefinitionResponse{}
+	mi := &file_wendy_agent_services_v2_ros2_service_proto_msgTypes[39]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetROS2ServiceDefinitionResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetROS2ServiceDefinitionResponse) ProtoMessage() {}
+
+func (x *GetROS2ServiceDefinitionResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_wendy_agent_services_v2_ros2_service_proto_msgTypes[39]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetROS2ServiceDefinitionResponse.ProtoReflect.Descriptor instead.
+func (*GetROS2ServiceDefinitionResponse) Descriptor() ([]byte, []int) {
+	return file_wendy_agent_services_v2_ros2_service_proto_rawDescGZIP(), []int{39}
+}
+
+func (x *GetROS2ServiceDefinitionResponse) GetType() string {
+	if x != nil {
+		return x.Type
+	}
+	return ""
+}
+
+func (x *GetROS2ServiceDefinitionResponse) GetRequestSchema() string {
+	if x != nil {
+		return x.RequestSchema
+	}
+	return ""
+}
+
+func (x *GetROS2ServiceDefinitionResponse) GetResponseSchema() string {
+	if x != nil {
+		return x.ResponseSchema
+	}
+	return ""
+}
+
+type PublishROS2Request struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	DomainId      *int32                 `protobuf:"varint,1,opt,name=domain_id,json=domainId,proto3,oneof" json:"domain_id,omitempty"`
+	Topic         string                 `protobuf:"bytes,2,opt,name=topic,proto3" json:"topic,omitempty"`
+	Type          string                 `protobuf:"bytes,3,opt,name=type,proto3" json:"type,omitempty"` // e.g. "geometry_msgs/msg/Twist"
+	Yaml          string                 `protobuf:"bytes,4,opt,name=yaml,proto3" json:"yaml,omitempty"` // message body as YAML/JSON, e.g. "{linear: {x: 1.0}}"
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PublishROS2Request) Reset() {
+	*x = PublishROS2Request{}
+	mi := &file_wendy_agent_services_v2_ros2_service_proto_msgTypes[40]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PublishROS2Request) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PublishROS2Request) ProtoMessage() {}
+
+func (x *PublishROS2Request) ProtoReflect() protoreflect.Message {
+	mi := &file_wendy_agent_services_v2_ros2_service_proto_msgTypes[40]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PublishROS2Request.ProtoReflect.Descriptor instead.
+func (*PublishROS2Request) Descriptor() ([]byte, []int) {
+	return file_wendy_agent_services_v2_ros2_service_proto_rawDescGZIP(), []int{40}
+}
+
+func (x *PublishROS2Request) GetDomainId() int32 {
+	if x != nil && x.DomainId != nil {
+		return *x.DomainId
+	}
+	return 0
+}
+
+func (x *PublishROS2Request) GetTopic() string {
+	if x != nil {
+		return x.Topic
+	}
+	return ""
+}
+
+func (x *PublishROS2Request) GetType() string {
+	if x != nil {
+		return x.Type
+	}
+	return ""
+}
+
+func (x *PublishROS2Request) GetYaml() string {
+	if x != nil {
+		return x.Yaml
+	}
+	return ""
+}
+
+type PublishROS2Response struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Success       bool                   `protobuf:"varint,1,opt,name=success,proto3" json:"success,omitempty"`
+	Message       string                 `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PublishROS2Response) Reset() {
+	*x = PublishROS2Response{}
+	mi := &file_wendy_agent_services_v2_ros2_service_proto_msgTypes[41]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PublishROS2Response) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PublishROS2Response) ProtoMessage() {}
+
+func (x *PublishROS2Response) ProtoReflect() protoreflect.Message {
+	mi := &file_wendy_agent_services_v2_ros2_service_proto_msgTypes[41]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PublishROS2Response.ProtoReflect.Descriptor instead.
+func (*PublishROS2Response) Descriptor() ([]byte, []int) {
+	return file_wendy_agent_services_v2_ros2_service_proto_rawDescGZIP(), []int{41}
+}
+
+func (x *PublishROS2Response) GetSuccess() bool {
+	if x != nil {
+		return x.Success
+	}
+	return false
+}
+
+func (x *PublishROS2Response) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
 type ListROS2ServicesResponse_Service struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	Name  string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
@@ -2110,7 +2345,7 @@ type ListROS2ServicesResponse_Service struct {
 
 func (x *ListROS2ServicesResponse_Service) Reset() {
 	*x = ListROS2ServicesResponse_Service{}
-	mi := &file_wendy_agent_services_v2_ros2_service_proto_msgTypes[38]
+	mi := &file_wendy_agent_services_v2_ros2_service_proto_msgTypes[42]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2122,7 +2357,7 @@ func (x *ListROS2ServicesResponse_Service) String() string {
 func (*ListROS2ServicesResponse_Service) ProtoMessage() {}
 
 func (x *ListROS2ServicesResponse_Service) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_agent_services_v2_ros2_service_proto_msgTypes[38]
+	mi := &file_wendy_agent_services_v2_ros2_service_proto_msgTypes[42]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2169,7 +2404,7 @@ type ListROS2ParamsResponse_NodeParams struct {
 
 func (x *ListROS2ParamsResponse_NodeParams) Reset() {
 	*x = ListROS2ParamsResponse_NodeParams{}
-	mi := &file_wendy_agent_services_v2_ros2_service_proto_msgTypes[39]
+	mi := &file_wendy_agent_services_v2_ros2_service_proto_msgTypes[43]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2181,7 +2416,7 @@ func (x *ListROS2ParamsResponse_NodeParams) String() string {
 func (*ListROS2ParamsResponse_NodeParams) ProtoMessage() {}
 
 func (x *ListROS2ParamsResponse_NodeParams) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_agent_services_v2_ros2_service_proto_msgTypes[39]
+	mi := &file_wendy_agent_services_v2_ros2_service_proto_msgTypes[43]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2222,7 +2457,7 @@ type GetROS2GraphResponse_Edge struct {
 
 func (x *GetROS2GraphResponse_Edge) Reset() {
 	*x = GetROS2GraphResponse_Edge{}
-	mi := &file_wendy_agent_services_v2_ros2_service_proto_msgTypes[40]
+	mi := &file_wendy_agent_services_v2_ros2_service_proto_msgTypes[44]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2234,7 +2469,7 @@ func (x *GetROS2GraphResponse_Edge) String() string {
 func (*GetROS2GraphResponse_Edge) ProtoMessage() {}
 
 func (x *GetROS2GraphResponse_Edge) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_agent_services_v2_ros2_service_proto_msgTypes[40]
+	mi := &file_wendy_agent_services_v2_ros2_service_proto_msgTypes[44]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2282,7 +2517,7 @@ type RecordROS2BagRequest_RecordStart struct {
 
 func (x *RecordROS2BagRequest_RecordStart) Reset() {
 	*x = RecordROS2BagRequest_RecordStart{}
-	mi := &file_wendy_agent_services_v2_ros2_service_proto_msgTypes[41]
+	mi := &file_wendy_agent_services_v2_ros2_service_proto_msgTypes[45]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2294,7 +2529,7 @@ func (x *RecordROS2BagRequest_RecordStart) String() string {
 func (*RecordROS2BagRequest_RecordStart) ProtoMessage() {}
 
 func (x *RecordROS2BagRequest_RecordStart) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_agent_services_v2_ros2_service_proto_msgTypes[41]
+	mi := &file_wendy_agent_services_v2_ros2_service_proto_msgTypes[45]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2339,7 +2574,7 @@ type RecordROS2BagRequest_RecordStop struct {
 
 func (x *RecordROS2BagRequest_RecordStop) Reset() {
 	*x = RecordROS2BagRequest_RecordStop{}
-	mi := &file_wendy_agent_services_v2_ros2_service_proto_msgTypes[42]
+	mi := &file_wendy_agent_services_v2_ros2_service_proto_msgTypes[46]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2351,7 +2586,7 @@ func (x *RecordROS2BagRequest_RecordStop) String() string {
 func (*RecordROS2BagRequest_RecordStop) ProtoMessage() {}
 
 func (x *RecordROS2BagRequest_RecordStop) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_agent_services_v2_ros2_service_proto_msgTypes[42]
+	mi := &file_wendy_agent_services_v2_ros2_service_proto_msgTypes[46]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2379,7 +2614,7 @@ type ListROS2BagsResponse_Bag struct {
 
 func (x *ListROS2BagsResponse_Bag) Reset() {
 	*x = ListROS2BagsResponse_Bag{}
-	mi := &file_wendy_agent_services_v2_ros2_service_proto_msgTypes[43]
+	mi := &file_wendy_agent_services_v2_ros2_service_proto_msgTypes[47]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2391,7 +2626,7 @@ func (x *ListROS2BagsResponse_Bag) String() string {
 func (*ListROS2BagsResponse_Bag) ProtoMessage() {}
 
 func (x *ListROS2BagsResponse_Bag) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_agent_services_v2_ros2_service_proto_msgTypes[43]
+	mi := &file_wendy_agent_services_v2_ros2_service_proto_msgTypes[47]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2621,7 +2856,26 @@ const file_wendy_agent_services_v2_ros2_service_proto_rawDesc = "" +
 	"_domain_id\"E\n" +
 	"\x0eRawROS2Message\x12\x10\n" +
 	"\x03cdr\x18\x01 \x01(\fR\x03cdr\x12!\n" +
-	"\ftimestamp_ns\x18\x02 \x01(\x03R\vtimestampNs2\xb4\x0f\n" +
+	"\ftimestamp_ns\x18\x02 \x01(\x03R\vtimestampNs\"k\n" +
+	"\x1fGetROS2ServiceDefinitionRequest\x12 \n" +
+	"\tdomain_id\x18\x01 \x01(\x05H\x00R\bdomainId\x88\x01\x01\x12\x18\n" +
+	"\aservice\x18\x02 \x01(\tR\aserviceB\f\n" +
+	"\n" +
+	"_domain_id\"\x86\x01\n" +
+	" GetROS2ServiceDefinitionResponse\x12\x12\n" +
+	"\x04type\x18\x01 \x01(\tR\x04type\x12%\n" +
+	"\x0erequest_schema\x18\x02 \x01(\tR\rrequestSchema\x12'\n" +
+	"\x0fresponse_schema\x18\x03 \x01(\tR\x0eresponseSchema\"\x82\x01\n" +
+	"\x12PublishROS2Request\x12 \n" +
+	"\tdomain_id\x18\x01 \x01(\x05H\x00R\bdomainId\x88\x01\x01\x12\x14\n" +
+	"\x05topic\x18\x02 \x01(\tR\x05topic\x12\x12\n" +
+	"\x04type\x18\x03 \x01(\tR\x04type\x12\x12\n" +
+	"\x04yaml\x18\x04 \x01(\tR\x04yamlB\f\n" +
+	"\n" +
+	"_domain_id\"I\n" +
+	"\x13PublishROS2Response\x12\x18\n" +
+	"\asuccess\x18\x01 \x01(\bR\asuccess\x12\x18\n" +
+	"\amessage\x18\x02 \x01(\tR\amessage2\xa8\x11\n" +
 	"\vROS2Service\x12j\n" +
 	"\tListNodes\x12-.wendy.agent.services.v2.ListROS2NodesRequest\x1a..wendy.agent.services.v2.ListROS2NodesResponse\x12m\n" +
 	"\n" +
@@ -2638,7 +2892,9 @@ const file_wendy_agent_services_v2_ros2_service_proto_rawDesc = "" +
 	"\tEchoTopic\x12-.wendy.agent.services.v2.EchoROS2TopicRequest\x1a$.wendy.agent.services.v2.ROS2Message0\x01\x12c\n" +
 	"\tMonitorHz\x12-.wendy.agent.services.v2.MonitorROS2HzRequest\x1a%.wendy.agent.services.v2.ROS2HzSample0\x01\x12\x8b\x01\n" +
 	"\x14GetMessageDefinition\x128.wendy.agent.services.v2.GetROS2MessageDefinitionRequest\x1a9.wendy.agent.services.v2.GetROS2MessageDefinitionResponse\x12k\n" +
-	"\fSubscribeRaw\x120.wendy.agent.services.v2.SubscribeRawROS2Request\x1a'.wendy.agent.services.v2.RawROS2Message0\x01\x12n\n" +
+	"\fSubscribeRaw\x120.wendy.agent.services.v2.SubscribeRawROS2Request\x1a'.wendy.agent.services.v2.RawROS2Message0\x01\x12\x8b\x01\n" +
+	"\x14GetServiceDefinition\x128.wendy.agent.services.v2.GetROS2ServiceDefinitionRequest\x1a9.wendy.agent.services.v2.GetROS2ServiceDefinitionResponse\x12d\n" +
+	"\aPublish\x12+.wendy.agent.services.v2.PublishROS2Request\x1a,.wendy.agent.services.v2.PublishROS2Response\x12n\n" +
 	"\tRecordBag\x12-.wendy.agent.services.v2.RecordROS2BagRequest\x1a..wendy.agent.services.v2.RecordROS2BagResponse(\x010\x01\x12g\n" +
 	"\bListBags\x12,.wendy.agent.services.v2.ListROS2BagsRequest\x1a-.wendy.agent.services.v2.ListROS2BagsResponse\x12g\n" +
 	"\vDownloadBag\x12/.wendy.agent.services.v2.DownloadROS2BagRequest\x1a%.wendy.agent.services.v2.ROS2BagChunk0\x01\x12[\n" +
@@ -2657,7 +2913,7 @@ func file_wendy_agent_services_v2_ros2_service_proto_rawDescGZIP() []byte {
 }
 
 var file_wendy_agent_services_v2_ros2_service_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_wendy_agent_services_v2_ros2_service_proto_msgTypes = make([]protoimpl.MessageInfo, 44)
+var file_wendy_agent_services_v2_ros2_service_proto_msgTypes = make([]protoimpl.MessageInfo, 48)
 var file_wendy_agent_services_v2_ros2_service_proto_goTypes = []any{
 	(RecordROS2BagResponse_State)(0),          // 0: wendy.agent.services.v2.RecordROS2BagResponse.State
 	(*ROS2Node)(nil),                          // 1: wendy.agent.services.v2.ROS2Node
@@ -2698,26 +2954,30 @@ var file_wendy_agent_services_v2_ros2_service_proto_goTypes = []any{
 	(*GetROS2MessageDefinitionResponse)(nil),  // 36: wendy.agent.services.v2.GetROS2MessageDefinitionResponse
 	(*SubscribeRawROS2Request)(nil),           // 37: wendy.agent.services.v2.SubscribeRawROS2Request
 	(*RawROS2Message)(nil),                    // 38: wendy.agent.services.v2.RawROS2Message
-	(*ListROS2ServicesResponse_Service)(nil),  // 39: wendy.agent.services.v2.ListROS2ServicesResponse.Service
-	(*ListROS2ParamsResponse_NodeParams)(nil), // 40: wendy.agent.services.v2.ListROS2ParamsResponse.NodeParams
-	(*GetROS2GraphResponse_Edge)(nil),         // 41: wendy.agent.services.v2.GetROS2GraphResponse.Edge
-	(*RecordROS2BagRequest_RecordStart)(nil),  // 42: wendy.agent.services.v2.RecordROS2BagRequest.RecordStart
-	(*RecordROS2BagRequest_RecordStop)(nil),   // 43: wendy.agent.services.v2.RecordROS2BagRequest.RecordStop
-	(*ListROS2BagsResponse_Bag)(nil),          // 44: wendy.agent.services.v2.ListROS2BagsResponse.Bag
+	(*GetROS2ServiceDefinitionRequest)(nil),   // 39: wendy.agent.services.v2.GetROS2ServiceDefinitionRequest
+	(*GetROS2ServiceDefinitionResponse)(nil),  // 40: wendy.agent.services.v2.GetROS2ServiceDefinitionResponse
+	(*PublishROS2Request)(nil),                // 41: wendy.agent.services.v2.PublishROS2Request
+	(*PublishROS2Response)(nil),               // 42: wendy.agent.services.v2.PublishROS2Response
+	(*ListROS2ServicesResponse_Service)(nil),  // 43: wendy.agent.services.v2.ListROS2ServicesResponse.Service
+	(*ListROS2ParamsResponse_NodeParams)(nil), // 44: wendy.agent.services.v2.ListROS2ParamsResponse.NodeParams
+	(*GetROS2GraphResponse_Edge)(nil),         // 45: wendy.agent.services.v2.GetROS2GraphResponse.Edge
+	(*RecordROS2BagRequest_RecordStart)(nil),  // 46: wendy.agent.services.v2.RecordROS2BagRequest.RecordStart
+	(*RecordROS2BagRequest_RecordStop)(nil),   // 47: wendy.agent.services.v2.RecordROS2BagRequest.RecordStop
+	(*ListROS2BagsResponse_Bag)(nil),          // 48: wendy.agent.services.v2.ListROS2BagsResponse.Bag
 }
 var file_wendy_agent_services_v2_ros2_service_proto_depIdxs = []int32{
 	1,  // 0: wendy.agent.services.v2.ListROS2NodesResponse.nodes:type_name -> wendy.agent.services.v2.ROS2Node
 	2,  // 1: wendy.agent.services.v2.ListROS2TopicsResponse.topics:type_name -> wendy.agent.services.v2.ROS2Topic
 	2,  // 2: wendy.agent.services.v2.GetROS2TopicInfoResponse.topic:type_name -> wendy.agent.services.v2.ROS2Topic
-	39, // 3: wendy.agent.services.v2.ListROS2ServicesResponse.services:type_name -> wendy.agent.services.v2.ListROS2ServicesResponse.Service
-	40, // 4: wendy.agent.services.v2.ListROS2ParamsResponse.nodes:type_name -> wendy.agent.services.v2.ListROS2ParamsResponse.NodeParams
+	43, // 3: wendy.agent.services.v2.ListROS2ServicesResponse.services:type_name -> wendy.agent.services.v2.ListROS2ServicesResponse.Service
+	44, // 4: wendy.agent.services.v2.ListROS2ParamsResponse.nodes:type_name -> wendy.agent.services.v2.ListROS2ParamsResponse.NodeParams
 	1,  // 5: wendy.agent.services.v2.GetROS2GraphResponse.nodes:type_name -> wendy.agent.services.v2.ROS2Node
-	41, // 6: wendy.agent.services.v2.GetROS2GraphResponse.publishes:type_name -> wendy.agent.services.v2.GetROS2GraphResponse.Edge
-	41, // 7: wendy.agent.services.v2.GetROS2GraphResponse.subscribes:type_name -> wendy.agent.services.v2.GetROS2GraphResponse.Edge
-	42, // 8: wendy.agent.services.v2.RecordROS2BagRequest.start:type_name -> wendy.agent.services.v2.RecordROS2BagRequest.RecordStart
-	43, // 9: wendy.agent.services.v2.RecordROS2BagRequest.stop:type_name -> wendy.agent.services.v2.RecordROS2BagRequest.RecordStop
+	45, // 6: wendy.agent.services.v2.GetROS2GraphResponse.publishes:type_name -> wendy.agent.services.v2.GetROS2GraphResponse.Edge
+	45, // 7: wendy.agent.services.v2.GetROS2GraphResponse.subscribes:type_name -> wendy.agent.services.v2.GetROS2GraphResponse.Edge
+	46, // 8: wendy.agent.services.v2.RecordROS2BagRequest.start:type_name -> wendy.agent.services.v2.RecordROS2BagRequest.RecordStart
+	47, // 9: wendy.agent.services.v2.RecordROS2BagRequest.stop:type_name -> wendy.agent.services.v2.RecordROS2BagRequest.RecordStop
 	0,  // 10: wendy.agent.services.v2.RecordROS2BagResponse.state:type_name -> wendy.agent.services.v2.RecordROS2BagResponse.State
-	44, // 11: wendy.agent.services.v2.ListROS2BagsResponse.bags:type_name -> wendy.agent.services.v2.ListROS2BagsResponse.Bag
+	48, // 11: wendy.agent.services.v2.ListROS2BagsResponse.bags:type_name -> wendy.agent.services.v2.ListROS2BagsResponse.Bag
 	3,  // 12: wendy.agent.services.v2.ROS2Service.ListNodes:input_type -> wendy.agent.services.v2.ListROS2NodesRequest
 	5,  // 13: wendy.agent.services.v2.ROS2Service.ListTopics:input_type -> wendy.agent.services.v2.ListROS2TopicsRequest
 	7,  // 14: wendy.agent.services.v2.ROS2Service.GetTopicInfo:input_type -> wendy.agent.services.v2.GetROS2TopicInfoRequest
@@ -2732,30 +2992,34 @@ var file_wendy_agent_services_v2_ros2_service_proto_depIdxs = []int32{
 	25, // 23: wendy.agent.services.v2.ROS2Service.MonitorHz:input_type -> wendy.agent.services.v2.MonitorROS2HzRequest
 	35, // 24: wendy.agent.services.v2.ROS2Service.GetMessageDefinition:input_type -> wendy.agent.services.v2.GetROS2MessageDefinitionRequest
 	37, // 25: wendy.agent.services.v2.ROS2Service.SubscribeRaw:input_type -> wendy.agent.services.v2.SubscribeRawROS2Request
-	27, // 26: wendy.agent.services.v2.ROS2Service.RecordBag:input_type -> wendy.agent.services.v2.RecordROS2BagRequest
-	29, // 27: wendy.agent.services.v2.ROS2Service.ListBags:input_type -> wendy.agent.services.v2.ListROS2BagsRequest
-	31, // 28: wendy.agent.services.v2.ROS2Service.DownloadBag:input_type -> wendy.agent.services.v2.DownloadROS2BagRequest
-	33, // 29: wendy.agent.services.v2.ROS2Service.Exec:input_type -> wendy.agent.services.v2.ROS2ExecRequest
-	4,  // 30: wendy.agent.services.v2.ROS2Service.ListNodes:output_type -> wendy.agent.services.v2.ListROS2NodesResponse
-	6,  // 31: wendy.agent.services.v2.ROS2Service.ListTopics:output_type -> wendy.agent.services.v2.ListROS2TopicsResponse
-	8,  // 32: wendy.agent.services.v2.ROS2Service.GetTopicInfo:output_type -> wendy.agent.services.v2.GetROS2TopicInfoResponse
-	10, // 33: wendy.agent.services.v2.ROS2Service.ListServices:output_type -> wendy.agent.services.v2.ListROS2ServicesResponse
-	12, // 34: wendy.agent.services.v2.ROS2Service.ListParams:output_type -> wendy.agent.services.v2.ListROS2ParamsResponse
-	14, // 35: wendy.agent.services.v2.ROS2Service.GetParam:output_type -> wendy.agent.services.v2.GetROS2ParamResponse
-	16, // 36: wendy.agent.services.v2.ROS2Service.SetParam:output_type -> wendy.agent.services.v2.SetROS2ParamResponse
-	18, // 37: wendy.agent.services.v2.ROS2Service.CallService:output_type -> wendy.agent.services.v2.CallROS2ServiceResponse
-	20, // 38: wendy.agent.services.v2.ROS2Service.GetGraph:output_type -> wendy.agent.services.v2.GetROS2GraphResponse
-	22, // 39: wendy.agent.services.v2.ROS2Service.Doctor:output_type -> wendy.agent.services.v2.ROS2DoctorResponse
-	24, // 40: wendy.agent.services.v2.ROS2Service.EchoTopic:output_type -> wendy.agent.services.v2.ROS2Message
-	26, // 41: wendy.agent.services.v2.ROS2Service.MonitorHz:output_type -> wendy.agent.services.v2.ROS2HzSample
-	36, // 42: wendy.agent.services.v2.ROS2Service.GetMessageDefinition:output_type -> wendy.agent.services.v2.GetROS2MessageDefinitionResponse
-	38, // 43: wendy.agent.services.v2.ROS2Service.SubscribeRaw:output_type -> wendy.agent.services.v2.RawROS2Message
-	28, // 44: wendy.agent.services.v2.ROS2Service.RecordBag:output_type -> wendy.agent.services.v2.RecordROS2BagResponse
-	30, // 45: wendy.agent.services.v2.ROS2Service.ListBags:output_type -> wendy.agent.services.v2.ListROS2BagsResponse
-	32, // 46: wendy.agent.services.v2.ROS2Service.DownloadBag:output_type -> wendy.agent.services.v2.ROS2BagChunk
-	34, // 47: wendy.agent.services.v2.ROS2Service.Exec:output_type -> wendy.agent.services.v2.ROS2ExecOutput
-	30, // [30:48] is the sub-list for method output_type
-	12, // [12:30] is the sub-list for method input_type
+	39, // 26: wendy.agent.services.v2.ROS2Service.GetServiceDefinition:input_type -> wendy.agent.services.v2.GetROS2ServiceDefinitionRequest
+	41, // 27: wendy.agent.services.v2.ROS2Service.Publish:input_type -> wendy.agent.services.v2.PublishROS2Request
+	27, // 28: wendy.agent.services.v2.ROS2Service.RecordBag:input_type -> wendy.agent.services.v2.RecordROS2BagRequest
+	29, // 29: wendy.agent.services.v2.ROS2Service.ListBags:input_type -> wendy.agent.services.v2.ListROS2BagsRequest
+	31, // 30: wendy.agent.services.v2.ROS2Service.DownloadBag:input_type -> wendy.agent.services.v2.DownloadROS2BagRequest
+	33, // 31: wendy.agent.services.v2.ROS2Service.Exec:input_type -> wendy.agent.services.v2.ROS2ExecRequest
+	4,  // 32: wendy.agent.services.v2.ROS2Service.ListNodes:output_type -> wendy.agent.services.v2.ListROS2NodesResponse
+	6,  // 33: wendy.agent.services.v2.ROS2Service.ListTopics:output_type -> wendy.agent.services.v2.ListROS2TopicsResponse
+	8,  // 34: wendy.agent.services.v2.ROS2Service.GetTopicInfo:output_type -> wendy.agent.services.v2.GetROS2TopicInfoResponse
+	10, // 35: wendy.agent.services.v2.ROS2Service.ListServices:output_type -> wendy.agent.services.v2.ListROS2ServicesResponse
+	12, // 36: wendy.agent.services.v2.ROS2Service.ListParams:output_type -> wendy.agent.services.v2.ListROS2ParamsResponse
+	14, // 37: wendy.agent.services.v2.ROS2Service.GetParam:output_type -> wendy.agent.services.v2.GetROS2ParamResponse
+	16, // 38: wendy.agent.services.v2.ROS2Service.SetParam:output_type -> wendy.agent.services.v2.SetROS2ParamResponse
+	18, // 39: wendy.agent.services.v2.ROS2Service.CallService:output_type -> wendy.agent.services.v2.CallROS2ServiceResponse
+	20, // 40: wendy.agent.services.v2.ROS2Service.GetGraph:output_type -> wendy.agent.services.v2.GetROS2GraphResponse
+	22, // 41: wendy.agent.services.v2.ROS2Service.Doctor:output_type -> wendy.agent.services.v2.ROS2DoctorResponse
+	24, // 42: wendy.agent.services.v2.ROS2Service.EchoTopic:output_type -> wendy.agent.services.v2.ROS2Message
+	26, // 43: wendy.agent.services.v2.ROS2Service.MonitorHz:output_type -> wendy.agent.services.v2.ROS2HzSample
+	36, // 44: wendy.agent.services.v2.ROS2Service.GetMessageDefinition:output_type -> wendy.agent.services.v2.GetROS2MessageDefinitionResponse
+	38, // 45: wendy.agent.services.v2.ROS2Service.SubscribeRaw:output_type -> wendy.agent.services.v2.RawROS2Message
+	40, // 46: wendy.agent.services.v2.ROS2Service.GetServiceDefinition:output_type -> wendy.agent.services.v2.GetROS2ServiceDefinitionResponse
+	42, // 47: wendy.agent.services.v2.ROS2Service.Publish:output_type -> wendy.agent.services.v2.PublishROS2Response
+	28, // 48: wendy.agent.services.v2.ROS2Service.RecordBag:output_type -> wendy.agent.services.v2.RecordROS2BagResponse
+	30, // 49: wendy.agent.services.v2.ROS2Service.ListBags:output_type -> wendy.agent.services.v2.ListROS2BagsResponse
+	32, // 50: wendy.agent.services.v2.ROS2Service.DownloadBag:output_type -> wendy.agent.services.v2.ROS2BagChunk
+	34, // 51: wendy.agent.services.v2.ROS2Service.Exec:output_type -> wendy.agent.services.v2.ROS2ExecOutput
+	32, // [32:52] is the sub-list for method output_type
+	12, // [12:32] is the sub-list for method input_type
 	12, // [12:12] is the sub-list for extension type_name
 	12, // [12:12] is the sub-list for extension extendee
 	0,  // [0:12] is the sub-list for field type_name
@@ -2786,14 +3050,16 @@ func file_wendy_agent_services_v2_ros2_service_proto_init() {
 	file_wendy_agent_services_v2_ros2_service_proto_msgTypes[33].OneofWrappers = []any{}
 	file_wendy_agent_services_v2_ros2_service_proto_msgTypes[34].OneofWrappers = []any{}
 	file_wendy_agent_services_v2_ros2_service_proto_msgTypes[36].OneofWrappers = []any{}
-	file_wendy_agent_services_v2_ros2_service_proto_msgTypes[41].OneofWrappers = []any{}
+	file_wendy_agent_services_v2_ros2_service_proto_msgTypes[38].OneofWrappers = []any{}
+	file_wendy_agent_services_v2_ros2_service_proto_msgTypes[40].OneofWrappers = []any{}
+	file_wendy_agent_services_v2_ros2_service_proto_msgTypes[45].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_wendy_agent_services_v2_ros2_service_proto_rawDesc), len(file_wendy_agent_services_v2_ros2_service_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   44,
+			NumMessages:   48,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

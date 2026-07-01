@@ -33,6 +33,16 @@ service ROS2Service {
     // the client cancels (mirrors EchoTopic but emits bytes, not YAML).
     rpc SubscribeRaw(SubscribeRawROS2Request) returns (stream RawROS2Message);
 
+    // Foxglove bridge. Returns the request/response ros2msg schemas for a
+    // service so it can be advertised (Foxglove serializes the CDR request from
+    // the request schema and deserializes the CDR response from the response
+    // schema).
+    rpc GetServiceDefinition(GetROS2ServiceDefinitionRequest) returns (GetROS2ServiceDefinitionResponse);
+
+    // Foxglove bridge (client publish). Publishes one message to a topic via
+    // `ros2 topic pub --once`. yaml is the message rendered as YAML/JSON.
+    rpc Publish(PublishROS2Request) returns (PublishROS2Response);
+
     // Bidi — controllable bag record/stop session.
     rpc RecordBag(stream RecordROS2BagRequest) returns (stream RecordROS2BagResponse);
 
@@ -279,4 +289,30 @@ message SubscribeRawROS2Request {
 message RawROS2Message {
     bytes cdr = 1;          // serialized message including the 4-byte CDR encapsulation header
     int64 timestamp_ns = 2; // device receipt time (unix nanoseconds)
+}
+
+message GetROS2ServiceDefinitionRequest {
+    optional int32 domain_id = 1;
+    string service = 2;
+}
+
+message GetROS2ServiceDefinitionResponse {
+    string type = 1; // e.g. "std_srvs/srv/SetBool"
+    // Concatenated ros2msg schemas (80 '=' + "MSG:" separators) for the request
+    // and response halves of the service, consumed by Foxglove with
+    // schemaEncoding="ros2msg".
+    string request_schema = 2;
+    string response_schema = 3;
+}
+
+message PublishROS2Request {
+    optional int32 domain_id = 1;
+    string topic = 2;
+    string type = 3;  // e.g. "geometry_msgs/msg/Twist"
+    string yaml = 4;  // message body as YAML/JSON, e.g. "{linear: {x: 1.0}}"
+}
+
+message PublishROS2Response {
+    bool success = 1;
+    string message = 2;
 }

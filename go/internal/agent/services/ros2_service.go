@@ -253,16 +253,25 @@ func (s *ROS2Service) GetMessageDefinition(ctx context.Context, req *agentpbv2.G
 	if err != nil {
 		return nil, err
 	}
-	rootFields := ros2OwnFields(rootShow)
-	rootBody := strings.Join(rootFields, "\n")
+	schema, err := s.assembleROS2SchemaFromFields(ctx, sc, ros2OwnFields(rootShow), fmt.Sprintf("topic %q", req.GetTopic()))
+	if err != nil {
+		return nil, err
+	}
+	return &agentpbv2.GetROS2MessageDefinitionResponse{
+		MessageType: msgType,
+		Schema:      schema,
+	}, nil
+}
 
+// assembleROS2SchemaFromFields resolves the complex-type dependencies of the
+// given root field lines (breadth-first via `ros2 interface show`) and returns
+// the concatenated ros2msg schema Foxglove consumes. A type is shown at most
+// once and the walk is capped at ros2MaxMsgDeps dependencies. label names the
+// subject in the dependency-limit error.
+func (s *ROS2Service) assembleROS2SchemaFromFields(ctx context.Context, sc ros2SC, rootFields []string, label string) (string, error) {
+	rootBody := strings.Join(rootFields, "\n")
 	depBodies := map[string]string{}
 	var order []string
-	// enqueued bounds the walk: a type is recorded the first time it is seen and
-	// never enqueued (or shown) again, so the queue and the number of
-	// `ros2 interface show` execs are capped at ros2MaxMsgDeps. Deduping at
-	// enqueue time (rather than at dequeue) also means children of an
-	// already-seen type are never re-expanded.
 	enqueued := map[string]bool{}
 	var queue []string
 	enqueue := func(types []string) error {
@@ -271,7 +280,7 @@ func (s *ROS2Service) GetMessageDefinition(ctx context.Context, req *agentpbv2.G
 				continue
 			}
 			if len(enqueued) >= ros2MaxMsgDeps {
-				return status.Errorf(codes.ResourceExhausted, "message type for topic %q exceeds the %d-dependency limit", req.GetTopic(), ros2MaxMsgDeps)
+				return status.Errorf(codes.ResourceExhausted, "message type for %s exceeds the %d-dependency limit", label, ros2MaxMsgDeps)
 			}
 			enqueued[t] = true
 			queue = append(queue, t)
@@ -279,27 +288,99 @@ func (s *ROS2Service) GetMessageDefinition(ctx context.Context, req *agentpbv2.G
 		return nil
 	}
 	if err := enqueue(ros2ComplexTypesIn(rootFields)); err != nil {
-		return nil, err
+		return "", err
 	}
 	for len(queue) > 0 {
 		dep := queue[0]
 		queue = queue[1:]
 		show, derr := s.runIn(ctx, sc, "interface", "show", normalizeMsgType(dep))
 		if derr != nil {
-			return nil, derr
+			return "", derr
 		}
 		fields := ros2OwnFields(show)
 		depBodies[dep] = strings.Join(fields, "\n")
 		order = append(order, dep)
 		if err := enqueue(ros2ComplexTypesIn(fields)); err != nil {
-			return nil, err
+			return "", err
 		}
 	}
+	return assembleROS2MsgSchema(rootBody, depBodies, order), nil
+}
 
-	return &agentpbv2.GetROS2MessageDefinitionResponse{
-		MessageType: msgType,
-		Schema:      assembleROS2MsgSchema(rootBody, depBodies, order),
+// splitROS2ServiceInterface splits `ros2 interface show <pkg>/srv/<Name>` output
+// into its request and response halves at the top-level "---" separator line.
+func splitROS2ServiceInterface(show string) (request, response string) {
+	lines := strings.Split(show, "\n")
+	for i, line := range lines {
+		if strings.TrimSpace(line) == "---" {
+			return strings.Join(lines[:i], "\n"), strings.Join(lines[i+1:], "\n")
+		}
+	}
+	return show, "" // no separator: treat all as request (e.g. Empty-response srv)
+}
+
+// GetServiceDefinition returns the request/response ros2msg schemas for a
+// service so a Foxglove client can serialize the CDR request and deserialize the
+// CDR response.
+func (s *ROS2Service) GetServiceDefinition(ctx context.Context, req *agentpbv2.GetROS2ServiceDefinitionRequest) (*agentpbv2.GetROS2ServiceDefinitionResponse, error) {
+	scs, err := s.resolveSidecars(ctx, req.DomainId)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateROS2GraphName(req.GetService()); err != nil {
+		return nil, err
+	}
+	sc := s.pickSidecarForService(ctx, scs, req.GetService())
+
+	typeOut, err := s.runIn(ctx, sc, "service", "type", req.GetService())
+	if err != nil {
+		return nil, err
+	}
+	svcType := strings.TrimSpace(typeOut)
+	if svcType == "" {
+		return nil, status.Errorf(codes.NotFound, "service %q has no resolvable type", req.GetService())
+	}
+
+	show, err := s.runIn(ctx, sc, "interface", "show", svcType)
+	if err != nil {
+		return nil, err
+	}
+	reqShow, respShow := splitROS2ServiceInterface(show)
+	requestSchema, err := s.assembleROS2SchemaFromFields(ctx, sc, ros2OwnFields(reqShow), fmt.Sprintf("service %q request", req.GetService()))
+	if err != nil {
+		return nil, err
+	}
+	responseSchema, err := s.assembleROS2SchemaFromFields(ctx, sc, ros2OwnFields(respShow), fmt.Sprintf("service %q response", req.GetService()))
+	if err != nil {
+		return nil, err
+	}
+	return &agentpbv2.GetROS2ServiceDefinitionResponse{
+		Type:           svcType,
+		RequestSchema:  requestSchema,
+		ResponseSchema: responseSchema,
 	}, nil
+}
+
+// Publish publishes one message to a topic via `ros2 topic pub --once`. The yaml
+// argument is passed as a single non-shell argument (matching CallService /
+// SetParam), so it is never subject to shell interpretation.
+func (s *ROS2Service) Publish(ctx context.Context, req *agentpbv2.PublishROS2Request) (*agentpbv2.PublishROS2Response, error) {
+	scs, err := s.resolveSidecars(ctx, req.DomainId)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateROS2GraphName(req.GetTopic()); err != nil {
+		return nil, err
+	}
+	if err := validateROS2GraphName(req.GetType()); err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid message type %q: %v", req.GetType(), err)
+	}
+	sc := s.pickSidecarForTopic(ctx, scs, req.GetTopic())
+	out, err := s.runIn(ctx, sc, "topic", "pub", "--once", req.GetTopic(), req.GetType(), req.GetYaml())
+	if err != nil {
+		return &agentpbv2.PublishROS2Response{Success: false, Message: err.Error()}, nil
+	}
+	return &agentpbv2.PublishROS2Response{Success: true, Message: strings.TrimSpace(out)}, nil
 }
 
 func (s *ROS2Service) GetTopicInfo(ctx context.Context, req *agentpbv2.GetROS2TopicInfoRequest) (*agentpbv2.GetROS2TopicInfoResponse, error) {

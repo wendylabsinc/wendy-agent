@@ -33,6 +33,8 @@ const (
 	ROS2Service_MonitorHz_FullMethodName            = "/wendy.agent.services.v2.ROS2Service/MonitorHz"
 	ROS2Service_GetMessageDefinition_FullMethodName = "/wendy.agent.services.v2.ROS2Service/GetMessageDefinition"
 	ROS2Service_SubscribeRaw_FullMethodName         = "/wendy.agent.services.v2.ROS2Service/SubscribeRaw"
+	ROS2Service_GetServiceDefinition_FullMethodName = "/wendy.agent.services.v2.ROS2Service/GetServiceDefinition"
+	ROS2Service_Publish_FullMethodName              = "/wendy.agent.services.v2.ROS2Service/Publish"
 	ROS2Service_RecordBag_FullMethodName            = "/wendy.agent.services.v2.ROS2Service/RecordBag"
 	ROS2Service_ListBags_FullMethodName             = "/wendy.agent.services.v2.ROS2Service/ListBags"
 	ROS2Service_DownloadBag_FullMethodName          = "/wendy.agent.services.v2.ROS2Service/DownloadBag"
@@ -70,6 +72,14 @@ type ROS2ServiceClient interface {
 	// Foxglove bridge. Streams raw CDR-serialized messages for a topic until
 	// the client cancels (mirrors EchoTopic but emits bytes, not YAML).
 	SubscribeRaw(ctx context.Context, in *SubscribeRawROS2Request, opts ...grpc.CallOption) (grpc.ServerStreamingClient[RawROS2Message], error)
+	// Foxglove bridge. Returns the request/response ros2msg schemas for a
+	// service so it can be advertised (Foxglove serializes the CDR request from
+	// the request schema and deserializes the CDR response from the response
+	// schema).
+	GetServiceDefinition(ctx context.Context, in *GetROS2ServiceDefinitionRequest, opts ...grpc.CallOption) (*GetROS2ServiceDefinitionResponse, error)
+	// Foxglove bridge (client publish). Publishes one message to a topic via
+	// `ros2 topic pub --once`. yaml is the message rendered as YAML/JSON.
+	Publish(ctx context.Context, in *PublishROS2Request, opts ...grpc.CallOption) (*PublishROS2Response, error)
 	// Bidi — controllable bag record/stop session.
 	RecordBag(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[RecordROS2BagRequest, RecordROS2BagResponse], error)
 	// Bag management. Bags are recorded to /var/wendy/ros2-bags on the
@@ -255,6 +265,26 @@ func (c *rOS2ServiceClient) SubscribeRaw(ctx context.Context, in *SubscribeRawRO
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type ROS2Service_SubscribeRawClient = grpc.ServerStreamingClient[RawROS2Message]
 
+func (c *rOS2ServiceClient) GetServiceDefinition(ctx context.Context, in *GetROS2ServiceDefinitionRequest, opts ...grpc.CallOption) (*GetROS2ServiceDefinitionResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetROS2ServiceDefinitionResponse)
+	err := c.cc.Invoke(ctx, ROS2Service_GetServiceDefinition_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *rOS2ServiceClient) Publish(ctx context.Context, in *PublishROS2Request, opts ...grpc.CallOption) (*PublishROS2Response, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PublishROS2Response)
+	err := c.cc.Invoke(ctx, ROS2Service_Publish_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *rOS2ServiceClient) RecordBag(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[RecordROS2BagRequest, RecordROS2BagResponse], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	stream, err := c.cc.NewStream(ctx, &ROS2Service_ServiceDesc.Streams[3], ROS2Service_RecordBag_FullMethodName, cOpts...)
@@ -347,6 +377,14 @@ type ROS2ServiceServer interface {
 	// Foxglove bridge. Streams raw CDR-serialized messages for a topic until
 	// the client cancels (mirrors EchoTopic but emits bytes, not YAML).
 	SubscribeRaw(*SubscribeRawROS2Request, grpc.ServerStreamingServer[RawROS2Message]) error
+	// Foxglove bridge. Returns the request/response ros2msg schemas for a
+	// service so it can be advertised (Foxglove serializes the CDR request from
+	// the request schema and deserializes the CDR response from the response
+	// schema).
+	GetServiceDefinition(context.Context, *GetROS2ServiceDefinitionRequest) (*GetROS2ServiceDefinitionResponse, error)
+	// Foxglove bridge (client publish). Publishes one message to a topic via
+	// `ros2 topic pub --once`. yaml is the message rendered as YAML/JSON.
+	Publish(context.Context, *PublishROS2Request) (*PublishROS2Response, error)
 	// Bidi — controllable bag record/stop session.
 	RecordBag(grpc.BidiStreamingServer[RecordROS2BagRequest, RecordROS2BagResponse]) error
 	// Bag management. Bags are recorded to /var/wendy/ros2-bags on the
@@ -406,6 +444,12 @@ func (UnimplementedROS2ServiceServer) GetMessageDefinition(context.Context, *Get
 }
 func (UnimplementedROS2ServiceServer) SubscribeRaw(*SubscribeRawROS2Request, grpc.ServerStreamingServer[RawROS2Message]) error {
 	return status.Error(codes.Unimplemented, "method SubscribeRaw not implemented")
+}
+func (UnimplementedROS2ServiceServer) GetServiceDefinition(context.Context, *GetROS2ServiceDefinitionRequest) (*GetROS2ServiceDefinitionResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetServiceDefinition not implemented")
+}
+func (UnimplementedROS2ServiceServer) Publish(context.Context, *PublishROS2Request) (*PublishROS2Response, error) {
+	return nil, status.Error(codes.Unimplemented, "method Publish not implemented")
 }
 func (UnimplementedROS2ServiceServer) RecordBag(grpc.BidiStreamingServer[RecordROS2BagRequest, RecordROS2BagResponse]) error {
 	return status.Error(codes.Unimplemented, "method RecordBag not implemented")
@@ -671,6 +715,42 @@ func _ROS2Service_SubscribeRaw_Handler(srv interface{}, stream grpc.ServerStream
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type ROS2Service_SubscribeRawServer = grpc.ServerStreamingServer[RawROS2Message]
 
+func _ROS2Service_GetServiceDefinition_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetROS2ServiceDefinitionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ROS2ServiceServer).GetServiceDefinition(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ROS2Service_GetServiceDefinition_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ROS2ServiceServer).GetServiceDefinition(ctx, req.(*GetROS2ServiceDefinitionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ROS2Service_Publish_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PublishROS2Request)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ROS2ServiceServer).Publish(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ROS2Service_Publish_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ROS2ServiceServer).Publish(ctx, req.(*PublishROS2Request))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _ROS2Service_RecordBag_Handler(srv interface{}, stream grpc.ServerStream) error {
 	return srv.(ROS2ServiceServer).RecordBag(&grpc.GenericServerStream[RecordROS2BagRequest, RecordROS2BagResponse]{ServerStream: stream})
 }
@@ -768,6 +848,14 @@ var ROS2Service_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetMessageDefinition",
 			Handler:    _ROS2Service_GetMessageDefinition_Handler,
+		},
+		{
+			MethodName: "GetServiceDefinition",
+			Handler:    _ROS2Service_GetServiceDefinition_Handler,
+		},
+		{
+			MethodName: "Publish",
+			Handler:    _ROS2Service_Publish_Handler,
 		},
 		{
 			MethodName: "ListBags",

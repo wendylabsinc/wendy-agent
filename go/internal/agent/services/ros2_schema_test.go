@@ -184,6 +184,72 @@ func isForwarder(opts ROS2ExecOptions) bool {
 	return opts.Binary == "python3"
 }
 
+func TestGetServiceDefinition(t *testing.T) {
+	rt := &fakeROS2Runtime{
+		sidecar: ROS2Sidecar{Distro: "humble", DomainID: 0},
+		outputs: map[string]string{
+			"service list":                        "/set_bool\n",
+			"service type /set_bool":              "std_srvs/srv/SetBool\n",
+			"interface show std_srvs/srv/SetBool": "bool data\n---\nbool success\nstring message\n",
+		},
+	}
+	svc := newTestROS2Service(t, rt, t.TempDir())
+	resp, err := svc.GetServiceDefinition(context.Background(), &agentpbv2.GetROS2ServiceDefinitionRequest{Service: "/set_bool"})
+	if err != nil {
+		t.Fatalf("GetServiceDefinition: %v", err)
+	}
+	if resp.GetType() != "std_srvs/srv/SetBool" {
+		t.Fatalf("type = %q", resp.GetType())
+	}
+	if strings.TrimSpace(resp.GetRequestSchema()) != "bool data" {
+		t.Fatalf("request schema = %q, want \"bool data\"", resp.GetRequestSchema())
+	}
+	if !strings.Contains(resp.GetResponseSchema(), "bool success") || !strings.Contains(resp.GetResponseSchema(), "string message") {
+		t.Fatalf("response schema = %q", resp.GetResponseSchema())
+	}
+}
+
+func TestPublish(t *testing.T) {
+	var gotArgs []string
+	rt := &fakeROS2Runtime{
+		sidecar: ROS2Sidecar{Distro: "humble", DomainID: 0},
+		execFn: func(_ context.Context, opts ROS2ExecOptions, stdout, _ io.Writer) (int, error) {
+			if strings.Join(opts.Args, " ") == "topic list" {
+				io.WriteString(stdout, "/cmd_vel\n")
+				return 0, nil
+			}
+			gotArgs = opts.Args
+			io.WriteString(stdout, "publisher: beginning loop\npublishing #1\n")
+			return 0, nil
+		},
+	}
+	svc := newTestROS2Service(t, rt, t.TempDir())
+	resp, err := svc.Publish(context.Background(), &agentpbv2.PublishROS2Request{
+		Topic: "/cmd_vel", Type: "geometry_msgs/msg/Twist", Yaml: "{linear: {x: 1.0}}",
+	})
+	if err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	if !resp.GetSuccess() {
+		t.Fatalf("Publish not success: %s", resp.GetMessage())
+	}
+	want := []string{"topic", "pub", "--once", "/cmd_vel", "geometry_msgs/msg/Twist", "{linear: {x: 1.0}}"}
+	if strings.Join(gotArgs, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("pub args = %v, want %v", gotArgs, want)
+	}
+}
+
+func TestPublish_RejectsBadTopic(t *testing.T) {
+	rt := &fakeROS2Runtime{sidecar: ROS2Sidecar{Distro: "humble", DomainID: 0}}
+	svc := newTestROS2Service(t, rt, t.TempDir())
+	_, err := svc.Publish(context.Background(), &agentpbv2.PublishROS2Request{
+		Topic: "/bad topic; rm -rf", Type: "std_msgs/msg/String", Yaml: "{}",
+	})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("want InvalidArgument for a topic with shell metacharacters, got %v", err)
+	}
+}
+
 func TestSubscribeRaw(t *testing.T) {
 	rt := &fakeROS2Runtime{
 		sidecar: ROS2Sidecar{Distro: "humble", DomainID: 0},
