@@ -48,9 +48,11 @@ repo is the related Swift package.
 
 - **REL-68 — Automate Wendy Companion TestFlight upload**
   - Project: Wendy Companion App & SDK
-  - State: Todo
+  - State: In Progress
   - Assignee: `konstantin@wendy.sh`
-  - Likely repo: `wendy-companion-ios`
+  - Repo: `wendy-companion-ios`
+  - Worktree: `/Volumes/Projects/WendyLabs/wendy-companion-ios/.worktrees/kb.rel-68-testflight-upload`
+  - Draft PR: https://github.com/wendylabsinc/wendy-companion-ios/pull/3
 
 - **WDY-1735 — Add deep linking support to Companion app and SDK**
   - Project: Wendy Companion App & SDK

@@ -152,16 +152,22 @@ well as `WDY`, so Release issues can live in the same project.
 #### REL-68 — Automate Wendy Companion TestFlight upload
 
 - Linear: https://linear.app/wendylabsinc/issue/REL-68/automate-wendy-companion-testflight-upload
-- State: Todo
+- State: In Progress
 - Team: Releases (`REL`)
 - Project: Wendy Companion App & SDK
 - Assignee: `konstantin@wendy.sh`
 - Priority: No priority
 - Repo: `wendylabsinc/wendy-companion-ios`
-- Status: queued. Finish deploy CI so signed builds upload to App Store
-  Connect/TestFlight automatically; decide whether macOS `.pkg` upload belongs
-  here or in a follow-up.
-- Resume: not available until prepared.
+- Worktree: `/Volumes/Projects/WendyLabs/wendy-companion-ios/.worktrees/kb.rel-68-testflight-upload`
+- Branch: `kb.rel-68-testflight-upload`
+- Setup commit: `ba2b75e2cf79daaf1e46cd9d2e1a840b4ef65e25`
+- Draft PR: https://github.com/wendylabsinc/wendy-companion-ios/pull/3
+- Status: started. Branch, draft PR, and issue handoff are ready.
+- Resume:
+
+  ```sh
+  cd /Volumes/Projects/WendyLabs/wendy-companion-ios/.worktrees/kb.rel-68-testflight-upload && ai --prompt "Read HANDOVER.md and follow its instructions."
+  ```
 
 #### WDY-1735 — Add deep linking support to Companion app and SDK
 
@@ -381,7 +387,8 @@ Copy this block when this coordinator starts tracking an issue.
 3. Continue **WDY-1782 — Move Wendy Companion SDK into the app repository** from
    its issue worktree and draft PR.
 4. Then start **WDY-1785 — Get Wendy Companion App minimally working and releasable**.
-5. Then start **REL-68 — Automate Wendy Companion TestFlight upload**.
+5. Continue **REL-68 — Automate Wendy Companion TestFlight upload** from its
+   issue worktree and draft PR.
 6. Then start **REL-70 — Prepare public TestFlight release for Wendy Companion App**
    and **REL-69 — Prepare Wendy Companion App Store release listing and submission**
    so review can be kicked off once signing/build access is ready.
