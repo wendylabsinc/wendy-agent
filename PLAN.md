@@ -209,7 +209,10 @@ well as `WDY`, so Release issues can live in the same project.
 - Branch: `kb.wdy-1782-sdk-in-app`
 - Setup commit: `808d0905f1b501fb3c91085b590766a660dfd1ce`
 - Draft PR: https://github.com/wendylabsinc/wendy-companion-ios/pull/2
-- Status: started. Branch, draft PR, and issue handoff are ready.
+- Status: restarted after cancellation. Branch, reopened draft PR, and issue
+  handoff are ready. Plan is to keep SDK as an in-repo Swift package and publish
+  SDK releases later by subtree-splitting the SDK directory back to
+  `wendy-companion-sdk`.
 - Resume:
 
   ```sh
