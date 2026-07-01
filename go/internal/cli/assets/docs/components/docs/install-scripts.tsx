@@ -53,10 +53,24 @@ export function InstallScripts() {
                 Install this on your developer machine or continuous integration machine.
               </p>
               <InstallCommand
+                analyticsEventName="cli_install_copy"
+                analyticsEventParams={{
+                  install_target: 'unix',
+                  install_variant: 'cli for macOS/linux',
+                  install_label: 'macOS/Linux CLI',
+                  location: 'docs_install_scripts_dialog',
+                }}
                 label="macOS / Linux"
                 command={cliCurlCommand}
               />
               <InstallCommand
+                analyticsEventName="cli_install_copy"
+                analyticsEventParams={{
+                  install_target: 'windows',
+                  install_variant: 'cli for windows',
+                  install_label: 'windows CLI',
+                  location: 'docs_install_scripts_dialog',
+                }}
                 label="Windows"
                 command={cliWingetCommand}
               />
@@ -71,6 +85,13 @@ export function InstallScripts() {
                 WendyOS — it&apos;s already there!
               </p>
               <InstallCommand
+                analyticsEventName="cli_install_copy"
+                analyticsEventParams={{
+                  install_target: 'agent-linux',
+                  install_variant: 'wendy-agent for Linux',
+                  install_label: 'wendy-agent for Linux',
+                  location: 'docs_install_scripts_dialog',
+                }}
                 label="Linux"
                 command={agentCurlCommand}
               />

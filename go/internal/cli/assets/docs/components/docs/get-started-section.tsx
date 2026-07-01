@@ -13,16 +13,25 @@ import { withBasePath } from '@/lib/shared';
 type CliPlatform = 'unix' | 'windows';
 
 const cliPlatforms: Array<{
+  analyticsLabel: string;
+  analyticsTarget: string;
+  analyticsVariant: string;
   id: CliPlatform;
   label: string;
   command: string;
 }> = [
   {
+    analyticsLabel: 'macOS/Linux CLI',
+    analyticsTarget: 'unix',
+    analyticsVariant: 'cli for macOS/linux',
     id: 'unix',
     label: 'macOS/Linux',
     command: cliCurlCommand,
   },
   {
+    analyticsLabel: 'windows CLI',
+    analyticsTarget: 'windows',
+    analyticsVariant: 'cli for windows',
     id: 'windows',
     label: 'Windows',
     command: cliWingetCommand,
@@ -103,7 +112,16 @@ export function GetStartedSection() {
               </div>
             </div>
 
-            <InstallCommand command={activePlatform.command} />
+            <InstallCommand
+              analyticsEventName="cli_install_copy"
+              analyticsEventParams={{
+                install_target: activePlatform.analyticsTarget,
+                install_variant: activePlatform.analyticsVariant,
+                install_label: activePlatform.analyticsLabel,
+                location: 'docs_get_started_cli_install_command',
+              }}
+              command={activePlatform.command}
+            />
           </section>
 
           <section className="border-t pt-6">
@@ -118,7 +136,16 @@ export function GetStartedSection() {
             <p className="mt-1 text-sm text-fd-muted-foreground">
               Install this on an existing Linux target. WendyOS images already include it.
             </p>
-            <InstallCommand command={agentCurlCommand} />
+            <InstallCommand
+              analyticsEventName="cli_install_copy"
+              analyticsEventParams={{
+                install_target: 'agent-linux',
+                install_variant: 'wendy-agent for Linux',
+                install_label: 'wendy-agent for Linux',
+                location: 'docs_get_started_agent_install_command',
+              }}
+              command={agentCurlCommand}
+            />
           </section>
 
           <section className="border-t pt-6">
