@@ -27,6 +27,7 @@ type SerialDiscovery struct {
 	running        bool
 	repeatInterval time.Duration
 	probing        map[string]bool
+	probeSem       chan struct{} // limits concurrent probes
 	devices        []SerialDevice
 	listeners      map[ListenerID]func([]SerialDevice)
 	nextID         ListenerID
@@ -42,6 +43,7 @@ func GetSerialDiscovery() *SerialDiscovery {
 	serialDiscoveryInstanceOnce.Do(func() {
 		serialDiscoveryInstance = &SerialDiscovery{
 			probing:   make(map[string]bool),
+			probeSem:  make(chan struct{}, 4),
 			listeners: make(map[ListenerID]func([]SerialDevice)),
 		}
 	})
@@ -130,7 +132,9 @@ func (d *SerialDiscovery) StartScan(repeatInterval time.Duration) {
 						continue
 					}
 					go func(port string) {
+						d.probeSem <- struct{}{}
 						defer func() {
+							<-d.probeSem
 							d.mu.Lock()
 							delete(d.probing, port)
 							d.mu.Unlock()
