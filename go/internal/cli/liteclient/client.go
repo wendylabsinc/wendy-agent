@@ -356,14 +356,14 @@ func (c *WendyLiteClient) StartApp() error {
 	return nil
 }
 
-func (c *WendyLiteClient) GetDeviceIdentity() (*DeviceIdentity, error) {
+func (c *WendyLiteClient) GetDeviceIdentity(timeout time.Duration) (*DeviceIdentity, error) {
 	c.requestIdGen++
 	resp, err := c.sendCommand(&wendypb.WendyComCommand{
 		RequestId: c.requestIdGen,
 		Params: &wendypb.WendyComCommand_GetDeviceIdentity{
 			GetDeviceIdentity: &wendypb.WendyComGetDeviceIdentityParams{},
 		},
-	}, 0)
+	}, timeout)
 	if err != nil {
 		return nil, err
 	}

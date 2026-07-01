@@ -139,7 +139,7 @@ func (d *SerialDiscovery) StartScan(repeatInterval time.Duration) {
 						if err := client.ConnectToSerial(port); err != nil {
 							return
 						}
-						identity, err := client.GetDeviceIdentity()
+						identity, err := client.GetDeviceIdentity(3 * time.Second)
 						client.Close()
 						if err != nil || identity == nil {
 							return
