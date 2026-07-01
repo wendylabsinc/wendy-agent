@@ -157,10 +157,11 @@ jobs:
     strategy:
       matrix:
         include:
+          # Intel (amd64) macOS is not built: the CLI links libusb via cgo
+          # (github.com/google/gousb), and cross-compiling x86_64 on the arm64
+          # macos-15 runner fails to link the arm64-only Homebrew libusb.
           - artifact-name: wendy-cli-darwin-arm64
             goarch: arm64
-          - artifact-name: wendy-cli-darwin-amd64
-            goarch: amd64
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 

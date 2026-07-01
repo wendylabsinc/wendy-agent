@@ -173,6 +173,11 @@ echo ""
 
 # ===== macOS =====
 if [[ "$OS" == "darwin" ]]; then
+  if [[ "$ARCH" != "arm64" ]]; then
+    echo "Error: the Wendy CLI for macOS requires Apple Silicon (arm64)." >&2
+    echo "Intel (x86_64) Macs are no longer supported." >&2
+    exit 1
+  fi
   if command -v brew &>/dev/null; then
     if homebrew_supports_trust; then
       echo "Homebrew detected. Will trust and install via:"
