@@ -10,6 +10,7 @@ package shim
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,6 +19,7 @@ import (
 	"time"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/tegraflash/adb"
+	"github.com/wendylabsinc/wendy/go/internal/cli/tegraflash/flasher"
 )
 
 // adbSerial is the serial we report for the single USB device. bootburn's flasher
@@ -99,14 +101,20 @@ func openADB() *adb.Device {
 
 func waitForDevice() {
 	deadline := time.Now().Add(60 * time.Second)
+	var lastErr error
 	for time.Now().Before(deadline) {
-		if d, err := adb.Open(); err == nil {
+		d, err := adb.Open()
+		if err == nil {
 			d.Close()
 			return
 		}
+		// Surface why each attempt failed; bootburn's `timeout` may SIGKILL us
+		// before the loop ends, so log as we go rather than only at the end.
+		lastErr = err
+		fmt.Fprintf(os.Stderr, "wendy adb: wait-for-device: %v\n", err)
 		time.Sleep(time.Second)
 	}
-	fmt.Fprintln(os.Stderr, "wendy adb: wait-for-device timed out")
+	fmt.Fprintf(os.Stderr, "wendy adb: wait-for-device timed out: %v\n", lastErr)
 	os.Exit(1)
 }
 
@@ -136,11 +144,48 @@ func doPush(rest []string) {
 	if strings.HasSuffix(remote, "/") || d.IsDir(remote) {
 		remote = strings.TrimSuffix(remote, "/") + "/" + filepath.Base(rest[0])
 	}
-	if err := d.Push(file, remote, int(info.Mode().Perm())); err != nil {
+	// Report transfer progress to the parent flasher, when it asked us to.
+	var reader io.Reader = file
+	if pp := os.Getenv(flasher.EnvADBProgress); pp != "" {
+		reader = &progressReader{r: file, path: pp}
+	}
+	if err := d.Push(reader, remote, int(info.Mode().Perm())); err != nil {
 		fmt.Fprintf(os.Stderr, "wendy adb: push failed: %v\n", err)
 		os.Exit(1)
 	}
 	fmt.Printf("%s: 1 file pushed\n", rest[0])
+}
+
+// progressReader tallies bytes read and periodically writes the running total to
+// path (as a single integer), so the parent flasher process can display transfer
+// throughput. Writes are best-effort and atomic via a temp file + rename.
+type progressReader struct {
+	r         io.Reader
+	path      string
+	n         int64
+	lastFlush time.Time
+}
+
+func (p *progressReader) Read(b []byte) (int, error) {
+	n, err := p.r.Read(b)
+	if n > 0 {
+		p.n += int64(n)
+		if now := time.Now(); now.Sub(p.lastFlush) >= 200*time.Millisecond {
+			p.lastFlush = now
+			p.flush()
+		}
+	}
+	if err != nil {
+		p.flush() // final total for this push
+	}
+	return n, err
+}
+
+func (p *progressReader) flush() {
+	tmp := p.path + ".tmp"
+	if os.WriteFile(tmp, []byte(strconv.FormatInt(p.n, 10)), 0o644) == nil {
+		_ = os.Rename(tmp, p.path)
+	}
 }
 
 func doShell(rest []string) {

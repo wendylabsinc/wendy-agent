@@ -20,11 +20,13 @@ package flasher
 import (
 	"bufio"
 	_ "embed"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -32,6 +34,17 @@ import (
 // estFlashDuration is a rough estimate shown to the user. Measured ~15.4 min on a
 // jetson-agx-thor devkit (NVMe) over USB; the rootfs A/B writes dominate.
 const estFlashDuration = "around 15 minutes"
+
+// ErrGadgetUnreachable is returned when the flash fails before a single byte is
+// written — i.e. bootburn never established ADB with the initrd-flash gadget. The
+// device was not modified, so the caller can advise a plain retry rather than
+// warning about a half-flashed (UEFI-only) device.
+var ErrGadgetUnreachable = errors.New("flashing gadget never came up over USB (ADB)")
+
+// EnvADBProgress names the file the adb shim writes its running push byte-count to
+// (cumulative for the current push, reset per push). Run points the shim at a temp
+// file via this env var and polls it to display transfer throughput.
+const EnvADBProgress = "WENDY_ADB_PROGRESS"
 
 //go:embed stage2_flash.py
 var stage2Driver []byte
@@ -135,11 +148,20 @@ func Run(opts Options) error {
 	defer logFile.Close()
 	fmt.Fprintf(logFile, "$ %s %s\n(cwd %s)\n\n", python, strings.Join(args, " "), bootburnDir)
 
+	// The adb shim writes its running push byte-count here so we can show live
+	// throughput; best-effort, so a temp-file failure just disables the readout.
+	progressPath := ""
+	if pf, perr := os.CreateTemp("", "thor-flash-progress-*"); perr == nil {
+		progressPath = pf.Name()
+		pf.Close()
+		defer os.Remove(progressPath)
+	}
+
 	cmd := exec.Command(python, args...)
 	cmd.Dir = bootburnDir
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
-	cmd.Env = envWithADB(opts.ADBDir, pyDir, opts.ADBPort)
+	cmd.Env = envWithADB(opts.ADBDir, pyDir, opts.ADBPort, progressPath)
 
 	// Up-front plan from FileToFlash.txt, so the (long, mostly silent) write reads
 	// as deliberate progress rather than a hang.
@@ -155,26 +177,77 @@ func Run(opts Options) error {
 		return fmt.Errorf("starting bootburn flash: %w", err)
 	}
 
-	// Heartbeat so a multi-minute silent rootfs write doesn't look hung.
+	// Sample bytes-pushed every second (to tell a genuine failure from a gadget
+	// that never came up) and log a heartbeat every minute so a multi-minute silent
+	// rootfs write doesn't look hung in the verbose/CI log.
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
 	start := time.Now()
-	ticker := time.NewTicker(60 * time.Second)
-	defer ticker.Stop()
+	tick := time.NewTicker(time.Second)
+	defer tick.Stop()
+	var maxBytes int64 // most bytes seen pushed; 0 means nothing was ever written
+	lastHeartbeat := start
 	for {
 		select {
 		case werr := <-done:
+			if n, ok := readProgressFile(progressPath); ok && n > maxBytes {
+				maxBytes = n
+			}
 			if werr != nil {
-				fmt.Fprintf(out, "Flash failed after %s. Last lines of the log:\n", elapsed(start))
-				fmt.Fprint(out, tailFile(logPath, 30))
-				return fmt.Errorf("bootburn flash failed (full log: %s): %w", logPath, werr)
+				return flashFailure(out, logPath, elapsed(start).String(), maxBytes, werr)
 			}
 			fmt.Fprintf(out, "Partitions written in %s.\n", elapsed(start))
 			return nil
-		case <-ticker.C:
-			fmt.Fprintf(out, "  … still flashing (%s elapsed)\n", elapsed(start))
+		case now := <-tick.C:
+			if n, ok := readProgressFile(progressPath); ok && n > maxBytes {
+				maxBytes = n
+			}
+			if now.Sub(lastHeartbeat) >= 60*time.Second {
+				lastHeartbeat = now
+				fmt.Fprintf(out, "  … still flashing (%s elapsed)\n", elapsed(start))
+			}
 		}
 	}
+}
+
+// flashFailure writes a concise failure summary (the full bootburn output is in
+// the log) and returns a classified error. When nothing was written it wraps
+// ErrGadgetUnreachable so the caller can advise a plain retry.
+func flashFailure(out io.Writer, logPath, took string, maxBytes int64, werr error) error {
+	reason := classifyFlashFailure(logPath)
+	fmt.Fprintf(out, "Flash failed after %s: %s\n", took, reason)
+	fmt.Fprintf(out, "Full log: %s\n", logPath)
+	if maxBytes == 0 {
+		return fmt.Errorf("%w (full log: %s): %v", ErrGadgetUnreachable, logPath, werr)
+	}
+	return fmt.Errorf("bootburn flash failed after writing data (full log: %s): %w", logPath, werr)
+}
+
+// classifyFlashFailure turns the tail of the bootburn log into a one-line human
+// reason. Best-effort: an unrecognized failure points the user at the log.
+func classifyFlashFailure(logPath string) string {
+	tail := tailFile(logPath, 60)
+	switch {
+	case strings.Contains(tail, "ADB_TIMEOUT"), strings.Contains(tail, "adb wait-for-device"):
+		return "the flashing gadget never came up over USB (ADB timeout)"
+	case strings.Contains(tail, "No such file"), strings.Contains(tail, "not found"):
+		return "a required flash file was missing (see log)"
+	default:
+		return "see the log for details"
+	}
+}
+
+// readProgressFile reads the single integer byte-count the adb shim writes.
+func readProgressFile(path string) (int64, bool) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0, false
+	}
+	n, err := strconv.ParseInt(strings.TrimSpace(string(data)), 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return n, true
 }
 
 // flashPlan is a human summary of FileToFlash.txt.
@@ -241,9 +314,10 @@ func tailFile(path string, n int) string {
 }
 
 // envWithADB returns the environment with adbDir prepended to PATH, pyDir prepended
-// to PYTHONPATH, and WENDY_ADB_PATH set to adbPort (each only when non-empty). The
-// adb shim inherits WENDY_ADB_PATH and uses it to target the selected device.
-func envWithADB(adbDir, pyDir, adbPort string) []string {
+// to PYTHONPATH, WENDY_ADB_PATH set to adbPort, and EnvADBProgress set to
+// progressPath (each only when non-empty). The adb shim inherits WENDY_ADB_PATH to
+// target the selected device and EnvADBProgress to report transfer progress.
+func envWithADB(adbDir, pyDir, adbPort, progressPath string) []string {
 	env := os.Environ()
 	if adbDir != "" {
 		if abs, err := filepath.Abs(adbDir); err == nil {
@@ -256,6 +330,9 @@ func envWithADB(adbDir, pyDir, adbPort string) []string {
 	}
 	if adbPort != "" {
 		env = append(env, "WENDY_ADB_PATH="+adbPort)
+	}
+	if progressPath != "" {
+		env = append(env, EnvADBProgress+"="+progressPath)
 	}
 	return env
 }

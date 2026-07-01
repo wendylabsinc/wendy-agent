@@ -874,11 +874,45 @@ func probeRangeSupport(client *http.Client, img *imageInfo) (contentLength int64
 	return cl, true
 }
 
-// downloadImage downloads an OS image to a temp file with a progress bar.
-// If the server supports HTTP range requests, it downloads in parallel using
-// parallelDownloadWorkers concurrent connections. Falls back to a single
-// sequential stream otherwise.
+// downloadImage downloads an OS image to a temp file behind a standalone
+// progress-bar TUI. Prefer downloadImageInto when embedding the download inside
+// another progress UI (it takes a plain byte callback and owns no TUI).
 func downloadImage(img *imageInfo) (string, error) {
+	prog := tui.NewProgress(fmt.Sprintf("Downloading %s...", img.Version))
+	p := tui.NewProgressProgram(prog)
+	sendProgress := throttledProgress(p, 33*time.Millisecond)
+
+	type result struct {
+		path string
+		err  error
+	}
+	resC := make(chan result, 1)
+	go func() {
+		path, err := downloadImageInto(img, sendProgress)
+		resC <- result{path, err}
+		p.Send(tui.ProgressDoneMsg{Err: err})
+	}()
+
+	if _, err := p.Run(); err != nil {
+		if r := <-resC; r.path != "" {
+			os.Remove(r.path)
+		}
+		return "", fmt.Errorf("progress TUI: %w", err)
+	}
+	r := <-resC
+	return r.path, r.err
+}
+
+// downloadImageInto downloads img to a temp file in the OS cache directory,
+// reporting progress via onProgress(downloaded, total). It runs synchronously
+// and owns no TUI, so callers can drive their own progress display (or pass a
+// nil-effect callback). On any error it removes the partial file. If the server
+// supports HTTP range requests it downloads in parallel across
+// parallelDownloadWorkers connections; otherwise it streams sequentially.
+func downloadImageInto(img *imageInfo, onProgress func(downloaded, total int64)) (string, error) {
+	if onProgress == nil {
+		onProgress = func(int64, int64) {}
+	}
 	client := &http.Client{Timeout: 30 * time.Minute}
 
 	// Write directly into the OS cache directory so we never land in /tmp
@@ -892,77 +926,63 @@ func downloadImage(img *imageInfo) (string, error) {
 		return "", fmt.Errorf("creating temp file: %w", err)
 	}
 
-	prog := tui.NewProgress(fmt.Sprintf("Downloading %s...", img.Version))
-	p := tui.NewProgressProgram(prog)
-	sendProgress := throttledProgress(p, 33*time.Millisecond)
-
 	contentLength, supportsRanges := probeRangeSupport(client, img)
-
+	var dlErr error
 	if supportsRanges {
 		if err := tmpFile.Truncate(contentLength); err != nil {
 			tmpFile.Close()
 			os.Remove(tmpFile.Name())
 			return "", fmt.Errorf("pre-allocating: %w", err)
 		}
-		go func() {
-			p.Send(tui.ProgressDoneMsg{Err: downloadParallel(client, img.DownloadURL, contentLength, tmpFile, sendProgress)})
-		}()
+		dlErr = downloadParallel(client, img.DownloadURL, contentLength, tmpFile, onProgress)
 	} else {
-		go func() {
-			resp, err := client.Get(img.DownloadURL)
-			if err != nil {
-				p.Send(tui.ProgressDoneMsg{Err: fmt.Errorf("downloading: %w", err)})
-				return
-			}
-			defer resp.Body.Close()
-			if resp.StatusCode != http.StatusOK {
-				p.Send(tui.ProgressDoneMsg{Err: fmt.Errorf("download returned status %d", resp.StatusCode)})
-				return
-			}
-			total := resp.ContentLength
-			if img.ImageSize > 0 {
-				total = img.ImageSize
-			}
-			buf := make([]byte, 1*1024*1024)
-			var downloaded int64
-			for {
-				n, readErr := resp.Body.Read(buf)
-				if n > 0 {
-					if _, writeErr := tmpFile.Write(buf[:n]); writeErr != nil {
-						p.Send(tui.ProgressDoneMsg{Err: writeErr})
-						return
-					}
-					downloaded += int64(n)
-					sendProgress(downloaded, total)
-				}
-				if readErr == io.EOF {
-					p.Send(tui.ProgressDoneMsg{})
-					return
-				}
-				if readErr != nil {
-					p.Send(tui.ProgressDoneMsg{Err: readErr})
-					return
-				}
-			}
-		}()
+		dlErr = downloadSequential(client, img, tmpFile, onProgress)
 	}
-
-	finalModel, err := p.Run()
-	if err != nil {
+	if dlErr != nil {
 		tmpFile.Close()
 		os.Remove(tmpFile.Name())
-		return "", fmt.Errorf("progress TUI: %w", err)
+		return "", dlErr
 	}
-
-	model := finalModel.(tui.ProgressModel)
-	if model.Err() != nil {
-		tmpFile.Close()
+	if err := tmpFile.Close(); err != nil {
 		os.Remove(tmpFile.Name())
-		return "", model.Err()
+		return "", err
 	}
-
-	tmpFile.Close()
 	return tmpFile.Name(), nil
+}
+
+// downloadSequential streams img into dst over a single connection, reporting
+// progress via onProgress. Used when the server does not support range requests.
+func downloadSequential(client *http.Client, img *imageInfo, dst *os.File, onProgress func(downloaded, total int64)) error {
+	resp, err := client.Get(img.DownloadURL)
+	if err != nil {
+		return fmt.Errorf("downloading: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("download returned status %d", resp.StatusCode)
+	}
+	total := resp.ContentLength
+	if img.ImageSize > 0 {
+		total = img.ImageSize
+	}
+	buf := make([]byte, 1*1024*1024)
+	var downloaded int64
+	for {
+		n, readErr := resp.Body.Read(buf)
+		if n > 0 {
+			if _, writeErr := dst.Write(buf[:n]); writeErr != nil {
+				return writeErr
+			}
+			downloaded += int64(n)
+			onProgress(downloaded, total)
+		}
+		if readErr == io.EOF {
+			return nil
+		}
+		if readErr != nil {
+			return readErr
+		}
+	}
 }
 
 func osCacheDir() (string, error) {

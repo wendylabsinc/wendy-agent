@@ -59,6 +59,14 @@ const (
 	// long time with no output, and a timed-out bulk-IN read is destructive on macOS
 	// (it aborts the endpoint), so we must not time out during a legitimate op.
 	ioTimeout = 30 * time.Minute
+
+	// handshakeReadTimeout bounds the CNXN reply read specifically. Unlike a data
+	// transfer, the handshake reply is immediate on a healthy adbd, so a short
+	// timeout here lets Open() fail fast and retry (across bootburn's own
+	// `timeout N adb wait-for-device` windows) while the gadget's adbd is still
+	// coming up — instead of blocking on the 30-minute ioTimeout until bootburn
+	// SIGKILLs the probe (rc 124), which also risks poisoning the USB endpoint.
+	handshakeReadTimeout = 3 * time.Second
 )
 
 // Device is a connected ADB transport over USB.
@@ -171,12 +179,16 @@ func openOnce() (*Device, error) {
 
 	cfg, err := dev.Config(cfgNum)
 	if err != nil {
+		// Logged (not just returned) because Open()'s retry loop and bootburn's
+		// outer `timeout` otherwise swallow why the claim keeps failing.
+		fmt.Fprintf(os.Stderr, "wendy adb: usb %s: claiming config %d failed: %v\n", adbPortKey(dev.Desc), cfgNum, err)
 		dev.Close()
 		ctx.Close()
 		return nil, fmt.Errorf("claiming config %d: %w", cfgNum, err)
 	}
 	iface, err := cfg.Interface(ifNum, altNum)
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "wendy adb: usb %s: claiming interface %d.%d failed: %v\n", adbPortKey(dev.Desc), ifNum, altNum, err)
 		cfg.Close()
 		dev.Close()
 		ctx.Close()
@@ -205,6 +217,12 @@ func openOnce() (*Device, error) {
 
 	d := &Device{ctx: ctx, dev: dev, cfg: cfg, iface: iface, in: inEP, out: outEP, nextID: 1}
 	if err := d.connect(); err != nil {
+		// The ADB interface was found and claimed but the CNXN handshake failed.
+		// Surface why here: Open() retries internally and bootburn's outer `timeout`
+		// often kills the process mid-retry before Open() returns, so this is the
+		// only place the underlying reason (adbd not up, USB read error, auth) is
+		// visible in the flash log.
+		fmt.Fprintf(os.Stderr, "wendy adb: claimed ADB interface at usb %s but CNXN handshake failed: %v\n", adbPortKey(dev.Desc), err)
 		d.Close()
 		return nil, err
 	}
@@ -264,8 +282,11 @@ func (d *Device) connect() error {
 	if err := d.writeMsg(cmdCNXN, adbVersion, maxPayload, []byte("host::\x00")); err != nil {
 		return fmt.Errorf("sending CNXN: %w", err)
 	}
+	// Bound the reply read: a healthy adbd answers immediately, so a slow/absent
+	// reply means the gadget isn't ready — fail fast so Open() can retry rather
+	// than block on the 30-minute data timeout.
 	for {
-		cmd, _, _, data, err := d.readMsg()
+		cmd, _, _, data, err := d.readMsgTimeout(handshakeReadTimeout)
 		if err != nil {
 			return fmt.Errorf("reading CNXN reply: %w", err)
 		}
@@ -309,7 +330,13 @@ func (d *Device) writeMsg(cmd, arg0, arg1 uint32, data []byte) error {
 
 // readMsg reads one ADB message: a 24-byte header then data_length bytes of payload.
 func (d *Device) readMsg() (cmd, arg0, arg1 uint32, data []byte, err error) {
-	ctx, cancel := context.WithTimeout(context.Background(), ioTimeout)
+	return d.readMsgTimeout(ioTimeout)
+}
+
+// readMsgTimeout is readMsg with an explicit per-transfer timeout, so the CNXN
+// handshake can use a short bound while data transfers keep the long ioTimeout.
+func (d *Device) readMsgTimeout(timeout time.Duration) (cmd, arg0, arg1 uint32, data []byte, err error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
 	// Read into a full max-packet buffer (a sub-packet read length can error on
