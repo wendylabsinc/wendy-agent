@@ -130,7 +130,7 @@ func DiscoverUSB(ctx context.Context) ([]models.USBDevice, error) {
 }
 
 func filterUSBDevices(devices []models.USBDevice) []models.USBDevice {
-	result := devices[:0]
+	result := make([]models.USBDevice, 0, len(devices))
 	for _, d := range devices {
 		if !d.IsESP32 {
 			result = append(result, d)

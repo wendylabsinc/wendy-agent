@@ -97,7 +97,7 @@ func (d *SerialDiscovery) StartScan(repeatInterval time.Duration) {
 
 				// Remove devices whose ports are no longer present.
 				d.mu.Lock()
-				kept := d.devices[:0]
+				kept := make([]SerialDevice, 0, len(d.devices))
 				var removed int
 				for _, dev := range d.devices {
 					if portSet[dev.Port] {
