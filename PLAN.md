@@ -189,6 +189,19 @@ well as `WDY`, so Release issues can live in the same project.
   while preserving a clean Swift package/module boundary and future split path.
 - Resume: not available until prepared.
 
+#### WDY-1785 — Get Wendy Companion App minimally working and releasable
+
+- Linear: https://linear.app/wendylabsinc/issue/WDY-1785/get-wendy-companion-app-minimally-working-and-releasable
+- State: Backlog
+- Team: Engineering (`WDY`)
+- Project: Wendy Companion App & SDK
+- Assignee: `konstantin@wendy.sh`
+- Priority: No priority
+- Repo: `wendylabsinc/wendy-companion-ios`
+- Status: queued. Make the minimal release path work and hide/disable broken
+  surfaces so TestFlight/App Review sees a coherent app.
+- Resume: not available until prepared.
+
 #### WDY-1783 — Add unit tests for Wendy Companion App and run them in CI
 
 - Linear: https://linear.app/wendylabsinc/issue/WDY-1783/add-unit-tests-for-wendy-companion-app-and-run-them-in-ci
@@ -241,6 +254,19 @@ well as `WDY`, so Release issues can live in the same project.
 - Status: queued. Complete public TestFlight beta metadata, external tester
   configuration, screenshots/review assets, Beta App Review notes, and submit
   once the signed build is ready.
+- Resume: not available until prepared.
+
+#### WDY-1786 — Add push notifications to Wendy Companion App
+
+- Linear: https://linear.app/wendylabsinc/issue/WDY-1786/add-push-notifications-to-wendy-companion-app
+- State: Backlog
+- Team: Engineering (`WDY`)
+- Project: Wendy Companion App & SDK
+- Assignee: `konstantin@wendy.sh`
+- Priority: No priority
+- Repo: `wendylabsinc/wendy-companion-ios`
+- Status: queued. Add push notifications after initial TestFlight/App Store
+  submission prep, including entitlement, APNs setup, and minimal app handling.
 - Resume: not available until prepared.
 
 ### Candidate / related issues to triage
@@ -331,15 +357,16 @@ Copy this block when this coordinator starts tracking an issue.
 2. Install/confirm provisioning profile `WendyCompanioniOSAppStoreProfile` for
    team `3YVC792H3S` and verify the App Store Connect bundle ID
    `dev.wendy.WendyCompanioniOS` before re-running the Release archive.
-3. Start **WDY-1782 — Move Wendy Companion SDK into the app repository** if the
-   fastest path is a temporary monorepo for the app and cross-platform SDK.
-4. Start **REL-70 — Prepare public TestFlight release for Wendy Companion App**
-   and/or **REL-69 — Prepare Wendy Companion App Store release listing and submission**
-   when App Store Connect ownership is settled enough to fill in metadata.
-5. Start **WDY-1781 — Add linting and formatting for Wendy Companion App**,
-   **WDY-1783 — Add unit tests for Wendy Companion App and run them in CI**, or
-   **WDY-1784 — Add UI tests for Wendy Companion App on Mac and iOS and run them in CI if possible**
-   for low-risk app infrastructure work before signing ownership is settled.
-6. Start **REL-66 — Check out skip.dev for Wendy Companion App** when the
+3. Start **WDY-1782 — Move Wendy Companion SDK into the app repository**.
+4. Then start **WDY-1785 — Get Wendy Companion App minimally working and releasable**.
+5. Then start **REL-70 — Prepare public TestFlight release for Wendy Companion App**
+   and **REL-69 — Prepare Wendy Companion App Store release listing and submission**
+   so review can be kicked off once signing/build access is ready.
+6. Then start **WDY-1786 — Add push notifications to Wendy Companion App**.
+7. Later/parallel infrastructure: **WDY-1781 — Add linting and formatting for
+   Wendy Companion App**, **WDY-1783 — Add unit tests for Wendy Companion App and
+   run them in CI**, and **WDY-1784 — Add UI tests for Wendy Companion App on Mac
+   and iOS and run them in CI if possible**.
+8. Start **REL-66 — Check out skip.dev for Wendy Companion App** when the
    TestFlight release path no longer needs active coordination.
-7. Commit and push coordinator plan updates after meaningful planning changes.
+9. Commit and push coordinator plan updates after meaningful planning changes.

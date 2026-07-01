@@ -64,6 +64,12 @@ repo is the related Swift package.
   - Assignee: `konstantin@wendy.sh`
   - Likely repo: `wendy-companion-ios`
 
+- **WDY-1785 — Get Wendy Companion App minimally working and releasable**
+  - Project: Wendy Companion App & SDK
+  - State: Backlog
+  - Assignee: `konstantin@wendy.sh`
+  - Likely repo: `wendy-companion-ios`
+
 - **WDY-1783 — Add unit tests for Wendy Companion App and run them in CI**
   - Project: Wendy Companion App & SDK
   - State: Backlog
@@ -88,6 +94,12 @@ repo is the related Swift package.
   - Assignee: `konstantin@wendy.sh`
   - Likely repo: `wendy-companion-ios` or App Store Connect-only handoff
 
+- **WDY-1786 — Add push notifications to Wendy Companion App**
+  - Project: Wendy Companion App & SDK
+  - State: Backlog
+  - Assignee: `konstantin@wendy.sh`
+  - Likely repo: `wendy-companion-ios`
+
 The **Wendy Companion App & SDK** Linear project has been updated to include both the
 `REL` and `WDY` teams so these Release issues can be attached to it.
 
@@ -99,11 +111,13 @@ The **Wendy Companion App & SDK** Linear project has been updated to include bot
    skip.dev for Wendy Companion App**, **WDY-1735 — Add deep linking support to
    Companion app and SDK**, **WDY-1781 — Add linting and formatting for Wendy
    Companion App**, **WDY-1782 — Move Wendy Companion SDK into the app
-   repository**, **WDY-1783 — Add unit tests for Wendy Companion App and run
+   repository**, **WDY-1785 — Get Wendy Companion App minimally working and
+   releasable**, **WDY-1783 — Add unit tests for Wendy Companion App and run
    them in CI**, **WDY-1784 — Add UI tests for Wendy Companion App on Mac and
    iOS and run them in CI if possible**, **REL-69 — Prepare Wendy Companion App
-   Store release listing and submission**, and **REL-70 — Prepare public
-   TestFlight release for Wendy Companion App**.
+   Store release listing and submission**, **REL-70 — Prepare public TestFlight
+   release for Wendy Companion App**, and **WDY-1786 — Add push notifications to
+   Wendy Companion App**.
 3. If asked to start an issue, follow the issue start protocol in `PLAN.md`:
    assign/confirm assignee, clone the correct repo if needed, create a dedicated
    worktree/branch, add an empty setup commit, push, open a draft PR with a body
