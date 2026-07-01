@@ -20,6 +20,27 @@ import (
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
+func TestParseYesNoAnswer(t *testing.T) {
+	tests := []struct {
+		answer     string
+		defaultYes bool
+		want       bool
+	}{
+		{"", true, true},
+		{"\n", true, true},
+		{"", false, false},
+		{"y", false, true},
+		{" YES \n", false, true},
+		{"n", true, false},
+		{"no", true, false},
+	}
+	for _, tt := range tests {
+		if got := parseYesNoAnswer(tt.answer, tt.defaultYes); got != tt.want {
+			t.Fatalf("parseYesNoAnswer(%q, %t) = %t, want %t", tt.answer, tt.defaultYes, got, tt.want)
+		}
+	}
+}
+
 // ── hostPort ────────────────────────────────────────────────────────
 
 func TestHostPort(t *testing.T) {

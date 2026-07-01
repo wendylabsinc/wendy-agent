@@ -1583,11 +1583,12 @@ func buildAndPushImageForAgent(ctx context.Context, conn *grpcclient.AgentConnec
 		return buildAndPushImageForAgentWithBuilder(ctx, conn, regPort, builder, dir, repo, platform, dockerfile, buildArgs, cacheKey, streamOutput, logOutput)
 	}
 	if shouldAutoAttemptAppleContainerBuilder() {
-		// Prefer Apple Container whenever its CLI is available: start the system
-		// if it isn't running yet rather than silently falling back to Docker.
 		// Apple Container builds don't use buildx, so the local-cache key never
-		// applies; only the Docker fallback below consumes it.
-		if err := ensureAppleContainerSystem(ctx, false); err != nil {
+		// applies; only the Docker fallback below consumes it. The auto-attempt path
+		// must not prompt or start services as a side effect: if Apple Container is
+		// not already ready, fall back to Docker. Use --builder apple-container to
+		// require Apple Container and get the startup prompt.
+		if err := checkAppleContainerBuilder(ctx); err != nil {
 			logAppleContainerFallback(logOutput, err)
 		} else if err := buildAndPushImageForAgentWithBuilder(ctx, conn, regPort, imageBuilderAppleContainer, dir, repo, platform, dockerfile, buildArgs, "", streamOutput, logOutput); err == nil {
 			return nil

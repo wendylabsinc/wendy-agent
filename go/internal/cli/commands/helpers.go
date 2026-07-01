@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/netip"
 	"os"
@@ -143,26 +144,49 @@ func isCertRefreshableError(err error) bool {
 	return false
 }
 
-// promptYesNoFn reads a Y/n answer from stdin; empty input counts as yes.
-// Stubbed in tests.
+// promptYesNoFn reads a Y/n answer from the controlling terminal; empty input
+// counts as yes. Stubbed in tests.
 var promptYesNoFn = func(prompt string) bool {
-	fmt.Fprint(os.Stderr, prompt)
-	reader := bufio.NewReader(os.Stdin)
-	answer, _ := reader.ReadString('\n')
-	answer = strings.TrimSpace(strings.ToLower(answer))
-	return answer == "" || answer == "y" || answer == "yes"
+	return promptYesNoLine(prompt, true)
 }
 
-// promptYesNoDefaultNoFn reads a y/N answer from stdin; empty input counts as
-// no. Used for more speculative offers (e.g. a timeout against an enrolled
-// device, where refreshing certs is a guess rather than a clear diagnosis).
-// Stubbed in tests.
+// promptYesNoDefaultNoFn reads a y/N answer from the controlling terminal;
+// empty input counts as no. Used for more speculative offers (e.g. a timeout
+// against an enrolled device, where refreshing certs is a guess rather than a
+// clear diagnosis). Stubbed in tests.
 var promptYesNoDefaultNoFn = func(prompt string) bool {
-	fmt.Fprint(os.Stderr, prompt)
-	reader := bufio.NewReader(os.Stdin)
-	answer, _ := reader.ReadString('\n')
+	return promptYesNoLine(prompt, false)
+}
+
+func promptYesNoLine(prompt string, defaultYes bool) bool {
+	in, out, cleanup := promptTTYIO()
+	defer cleanup()
+
+	// Clear any stale spinner/hint line before printing the prompt. This keeps a
+	// simple line prompt from visually colliding with a previously-rendered TUI.
+	fmt.Fprint(out, "\r\x1b[2K")
+	fmt.Fprint(out, prompt)
+
+	answer, err := bufio.NewReader(in).ReadString('\n')
+	if err != nil && strings.TrimSpace(answer) == "" {
+		return false
+	}
+	return parseYesNoAnswer(answer, defaultYes)
+}
+
+func parseYesNoAnswer(answer string, defaultYes bool) bool {
 	answer = strings.TrimSpace(strings.ToLower(answer))
+	if answer == "" {
+		return defaultYes
+	}
 	return answer == "y" || answer == "yes"
+}
+
+func promptTTYIO() (io.Reader, io.Writer, func()) {
+	if tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0); err == nil {
+		return tty, tty, func() { _ = tty.Close() }
+	}
+	return os.Stdin, os.Stderr, func() {}
 }
 
 var refreshAllCertsFn = refreshAllCerts

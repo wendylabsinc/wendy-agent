@@ -564,11 +564,11 @@ func buildDockerProjectWithBuilder(ctx context.Context, builder, dir, imageName,
 		return err
 	}
 	if !imageBuilderWasExplicit(builder) && shouldAutoAttemptAppleContainerBuilder() {
-		// Prefer Apple Container whenever its CLI is available: start the system
-		// if it isn't running yet rather than silently falling back to Docker.
-		// We only fall back when the CLI is unavailable, the user declines to
-		// start it, or the build itself fails.
-		if err := ensureAppleContainerSystem(ctx, false); err == nil {
+		// The auto-attempt path must not prompt or start services as a side effect:
+		// if Apple Container is not already ready, fall back to Docker. Use
+		// --builder apple-container to require Apple Container and get the startup
+		// prompt.
+		if err := checkAppleContainerBuilder(ctx); err == nil {
 			if err := runAppleContainerBuildWithProgress(ctx, dir, imageName, platform, dockerfile); err == nil {
 				return nil
 			} else {
