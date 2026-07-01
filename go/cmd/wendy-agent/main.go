@@ -52,6 +52,12 @@ const (
 	defaultOTELHTTPPort = "4318"
 )
 
+// grpcMaxMsgBytes bounds the largest single gRPC message the agent will send or
+// receive. The default is 4 MiB, which silently drops large ROS 2 messages
+// (uncompressed camera frames, point clouds, lidar scans) forwarded to Foxglove
+// via SubscribeRaw. 64 MiB comfortably admits those while still bounding memory.
+const grpcMaxMsgBytes = 64 * 1024 * 1024
+
 // containerMonitorAdapter satisfies services.ContainerMonitorRegistrar without a
 // circular import: container imports services, so we bridge with plain-int policy values
 // that mirror container.RestartPolicy.
@@ -465,6 +471,10 @@ func main() {
 			// mtls.NewServer and run before these caller-provided interceptors.
 			grpc.ChainUnaryInterceptor(interceptor.UnaryErrorInterceptor(logger)),
 			grpc.ChainStreamInterceptor(interceptor.StreamErrorInterceptor(logger)),
+			grpc.MaxRecvMsgSize(grpcMaxMsgBytes),
+			grpc.MaxSendMsgSize(grpcMaxMsgBytes),
+			grpc.InitialWindowSize(8*1024*1024),
+			grpc.InitialConnWindowSize(16*1024*1024),
 		)
 		if err != nil {
 			logger.Error("Failed to create mTLS server", zap.Error(err))
@@ -544,6 +554,8 @@ func main() {
 		agentServer = grpc.NewServer(
 			grpc.UnaryInterceptor(interceptor.UnaryErrorInterceptor(logger)),
 			grpc.StreamInterceptor(interceptor.StreamErrorInterceptor(logger)),
+			grpc.MaxRecvMsgSize(grpcMaxMsgBytes),
+			grpc.MaxSendMsgSize(grpcMaxMsgBytes),
 			grpc.InitialWindowSize(8*1024*1024),
 			grpc.InitialConnWindowSize(16*1024*1024),
 			grpc.KeepaliveParams(keepalive.ServerParameters{
@@ -582,6 +594,8 @@ func main() {
 		localSocketServer = grpc.NewServer(
 			grpc.UnaryInterceptor(interceptor.UnaryErrorInterceptor(logger)),
 			grpc.StreamInterceptor(interceptor.StreamErrorInterceptor(logger)),
+			grpc.MaxRecvMsgSize(grpcMaxMsgBytes),
+			grpc.MaxSendMsgSize(grpcMaxMsgBytes),
 		)
 		registerAllServices(localSocketServer)
 
@@ -641,6 +655,8 @@ func main() {
 	otelServer := grpc.NewServer(
 		grpc.UnaryInterceptor(interceptor.UnaryErrorInterceptor(logger)),
 		grpc.StreamInterceptor(interceptor.StreamErrorInterceptor(logger)),
+		grpc.MaxRecvMsgSize(grpcMaxMsgBytes),
+		grpc.MaxSendMsgSize(grpcMaxMsgBytes),
 		grpc.InitialWindowSize(8*1024*1024),
 		grpc.InitialConnWindowSize(16*1024*1024),
 		grpc.KeepaliveParams(keepalive.ServerParameters{

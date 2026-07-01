@@ -763,7 +763,22 @@ func (c *Client) sidecarHasActiveExecsLocked(name string) bool {
 	return c.ros2ExecRefs[name] > 0
 }
 
-// ExecROS2 runs `ros2 <args...>` inside the CLI sidecar, streaming stdout and
+// ros2ExecBinary maps the requested sidecar binary to the fixed allowlist. Only
+// ros2 and python3 (the latter for the Foxglove raw-CDR forwarder) may run in
+// the sidecar; anything else falls back to ros2. Args are always passed via
+// "$@" with no shell interpretation regardless of the binary (SOC2-CC6,
+// NIST-SI-10, ISO27001-A.8).
+func ros2ExecBinary(requested string) string {
+	switch requested {
+	case "python3":
+		return "python3"
+	default:
+		return "ros2"
+	}
+}
+
+// ExecROS2 runs `<binary> <args...>` (binary defaults to `ros2`) inside the CLI
+// sidecar, streaming stdout and
 // stderr to the given writers, and returns the command's exit code. When ctx
 // is cancelled the process receives SIGINT and, after a grace period, SIGKILL
 // — the SIGINT-first order lets `ros2 bag record` finalize its output.
@@ -810,10 +825,11 @@ func (c *Client) ExecROS2(ctx context.Context, opts services.ROS2ExecOptions, st
 	// indirection keeps user-supplied args out of shell interpretation
 	// (SOC2-CC6, ISO27001-A.8, NIST-SI-10).
 	pspec.Terminal = false
+	bin := ros2ExecBinary(opts.Binary)
 	pspec.Args = append([]string{
 		"/bin/bash", "-c",
-		fmt.Sprintf("source /opt/ros/%s/setup.bash >/dev/null 2>&1 && exec ros2 \"$@\"", distro),
-		"ros2",
+		fmt.Sprintf("source /opt/ros/%s/setup.bash >/dev/null 2>&1 && exec %s \"$@\"", distro, bin),
+		bin,
 	}, opts.Args...)
 	// Copy pspec.Env before appending to avoid mutating the slice header returned
 	// by container.Spec (future callers might cache the spec or share the backing

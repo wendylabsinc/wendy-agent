@@ -34,6 +34,12 @@ const (
 	grpcReadBufferSize      = 256 * 1024
 	grpcWriteBufferSize     = 256 * 1024
 
+	// grpcMaxCallMsgBytes raises the per-call receive/send ceiling from gRPC's
+	// 4 MiB default so large ROS 2 messages (uncompressed frames, point clouds)
+	// forwarded via SubscribeRaw for Foxglove are not dropped. Mirrors the
+	// agent server limit.
+	grpcMaxCallMsgBytes = 64 * 1024 * 1024
+
 	// NOTE: Keep direct-agent pings conservative. macOS agents may close
 	// long-running build/deploy/log streams with ENHANCE_YOUR_CALM/too_many_pings
 	// when clients ping near the server's HTTP/2 keepalive policy floor. This is
@@ -75,6 +81,10 @@ func Connect(ctx context.Context, address string) (*AgentConnection, error) {
 		grpc.WithInitialConnWindowSize(grpcInitialConnWindow),
 		grpc.WithReadBufferSize(grpcReadBufferSize),
 		grpc.WithWriteBufferSize(grpcWriteBufferSize),
+		grpc.WithDefaultCallOptions(
+			grpc.MaxCallRecvMsgSize(grpcMaxCallMsgBytes),
+			grpc.MaxCallSendMsgSize(grpcMaxCallMsgBytes),
+		),
 		grpc.WithKeepaliveParams(keepalive.ClientParameters{
 			Time:                grpcKeepaliveTime,
 			Timeout:             grpcKeepaliveTimeout,
@@ -129,6 +139,10 @@ func ConnectWithTLSAndPins(ctx context.Context, address string, certInfo *config
 		grpc.WithInitialConnWindowSize(grpcInitialConnWindow),
 		grpc.WithReadBufferSize(grpcReadBufferSize),
 		grpc.WithWriteBufferSize(grpcWriteBufferSize),
+		grpc.WithDefaultCallOptions(
+			grpc.MaxCallRecvMsgSize(grpcMaxCallMsgBytes),
+			grpc.MaxCallSendMsgSize(grpcMaxCallMsgBytes),
+		),
 		grpc.WithKeepaliveParams(keepalive.ClientParameters{
 			Time:                grpcKeepaliveTime,
 			Timeout:             grpcKeepaliveTimeout,

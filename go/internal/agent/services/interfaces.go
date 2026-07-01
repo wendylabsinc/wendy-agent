@@ -177,11 +177,16 @@ type ROS2Sidecar struct {
 	RMW      string // the RMW this sidecar speaks (e.g. "rmw_cyclonedds_cpp"); "" = image default
 }
 
-// ROS2ExecOptions configures a single `ros2` invocation inside the sidecar.
+// ROS2ExecOptions configures a single invocation inside the sidecar.
 type ROS2ExecOptions struct {
 	DomainID    int      // ROS_DOMAIN_ID for this invocation
-	Args        []string // arguments after `ros2`, passed without shell interpretation
+	Args        []string // arguments after the binary, passed without shell interpretation
 	SidecarName string   // which per-RMW sidecar to exec in; empty = the default/first
+	// Binary is the executable to run inside the sidecar after sourcing the ROS
+	// environment. Empty means "ros2". Only a fixed allowlist is honoured by the
+	// runtime (ros2, python3 — the latter for the Foxglove CDR forwarder); args
+	// are still passed via "$@" with no shell interpretation.
+	Binary string
 }
 
 // ROS2Runtime abstracts the containerd-side ROS 2 sidecar plumbing used by
