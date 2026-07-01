@@ -46,6 +46,12 @@ repo is the related Swift package.
   - Assignee: `konstantin@wendy.sh`
   - Likely repo: `wendy-companion-ios` or research-only handoff
 
+- **REL-68 — Automate Wendy Companion TestFlight upload**
+  - Project: Wendy Companion App & SDK
+  - State: Todo
+  - Assignee: `konstantin@wendy.sh`
+  - Likely repo: `wendy-companion-ios`
+
 - **WDY-1735 — Add deep linking support to Companion app and SDK**
   - Project: Wendy Companion App & SDK
   - State: Backlog
@@ -110,8 +116,9 @@ The **Wendy Companion App & SDK** Linear project has been updated to include bot
 1. Inspect `PLAN.md`.
 2. Verify Linear state for **REL-65 — Release Wendy OS companion app to
    TestFlight (upload + certificates/secrets)**, **REL-66 — Check out
-   skip.dev for Wendy Companion App**, **WDY-1735 — Add deep linking support to
-   Companion app and SDK**, **WDY-1781 — Add linting and formatting for Wendy
+   skip.dev for Wendy Companion App**, **REL-68 — Automate Wendy Companion
+   TestFlight upload**, **WDY-1735 — Add deep linking support to Companion app
+   and SDK**, **WDY-1781 — Add linting and formatting for Wendy
    Companion App**, **WDY-1782 — Move Wendy Companion SDK into the app
    repository**, **WDY-1785 — Get Wendy Companion App minimally working and
    releasable**, **WDY-1783 — Add unit tests for Wendy Companion App and run

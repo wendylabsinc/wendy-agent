@@ -149,6 +149,20 @@ well as `WDY`, so Release issues can live in the same project.
   Apple platforms / Android, and record recommendation.
 - Resume: not available until prepared.
 
+#### REL-68 — Automate Wendy Companion TestFlight upload
+
+- Linear: https://linear.app/wendylabsinc/issue/REL-68/automate-wendy-companion-testflight-upload
+- State: Todo
+- Team: Releases (`REL`)
+- Project: Wendy Companion App & SDK
+- Assignee: `konstantin@wendy.sh`
+- Priority: No priority
+- Repo: `wendylabsinc/wendy-companion-ios`
+- Status: queued. Finish deploy CI so signed builds upload to App Store
+  Connect/TestFlight automatically; decide whether macOS `.pkg` upload belongs
+  here or in a follow-up.
+- Resume: not available until prepared.
+
 #### WDY-1735 — Add deep linking support to Companion app and SDK
 
 - Linear: https://linear.app/wendylabsinc/issue/WDY-1735/add-deep-linking-support-to-companion-app-and-sdk
@@ -367,14 +381,15 @@ Copy this block when this coordinator starts tracking an issue.
 3. Continue **WDY-1782 — Move Wendy Companion SDK into the app repository** from
    its issue worktree and draft PR.
 4. Then start **WDY-1785 — Get Wendy Companion App minimally working and releasable**.
-5. Then start **REL-70 — Prepare public TestFlight release for Wendy Companion App**
+5. Then start **REL-68 — Automate Wendy Companion TestFlight upload**.
+6. Then start **REL-70 — Prepare public TestFlight release for Wendy Companion App**
    and **REL-69 — Prepare Wendy Companion App Store release listing and submission**
    so review can be kicked off once signing/build access is ready.
-6. Then start **WDY-1786 — Add push notifications to Wendy Companion App**.
-7. Later/parallel infrastructure: **WDY-1781 — Add linting and formatting for
+7. Then start **WDY-1786 — Add push notifications to Wendy Companion App**.
+8. Later/parallel infrastructure: **WDY-1781 — Add linting and formatting for
    Wendy Companion App**, **WDY-1783 — Add unit tests for Wendy Companion App and
    run them in CI**, and **WDY-1784 — Add UI tests for Wendy Companion App on Mac
    and iOS and run them in CI if possible**.
-8. Start **REL-66 — Check out skip.dev for Wendy Companion App** when the
+9. Start **REL-66 — Check out skip.dev for Wendy Companion App** when the
    TestFlight release path no longer needs active coordination.
-9. Commit and push coordinator plan updates after meaningful planning changes.
+10. Commit and push coordinator plan updates after meaningful planning changes.
