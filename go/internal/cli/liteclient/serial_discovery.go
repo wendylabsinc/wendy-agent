@@ -171,11 +171,12 @@ func (d *SerialDiscovery) StartScan(repeatInterval time.Duration) {
 			time.Sleep(next)
 
 			d.mu.Lock()
-			stop := d.repeatInterval == 0
-			d.mu.Unlock()
-			if stop {
+			if d.repeatInterval == 0 {
+				d.running = false
+				d.mu.Unlock()
 				return
 			}
+			d.mu.Unlock()
 		}
 	}()
 }
