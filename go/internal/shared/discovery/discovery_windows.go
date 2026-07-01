@@ -417,14 +417,15 @@ func queryServicesMDNS(iface *net.Interface, serviceType string, timeout time.Du
 			}
 
 			hostname := strings.TrimSuffix(entry.Host, ".")
-			key := fmt.Sprintf("%s-%s-%d", entry.Name, hostname, entry.Port)
+			instanceName, _ := strings.CutSuffix(entry.Name, "."+serviceType+".local.")
+			key := fmt.Sprintf("%s-%s-%d", instanceName, hostname, entry.Port)
 			if seen[key] {
 				continue
 			}
 			seen[key] = true
 
 			services = append(services, MDNSService{
-				InstanceName: entry.Name,
+				InstanceName: instanceName,
 				Hostname:     hostname,
 				IPAddress:    mdnsEntryIPAddress(entry, iface),
 				Port:         entry.Port,
