@@ -11,7 +11,8 @@ type SerialPortInfo struct {
 	ConnectionTime time.Time
 }
 
-// ResolveESP32SerialPort returns the most recently connected ESP32 serial port.
+// ResolveESP32SerialPort returns the best available ESP32 serial port,
+// preferring the most recently connected when ConnectionTime is available.
 func ResolveESP32SerialPort() (string, error) {
 	devices, err := ResolveESP32SerialPorts()
 	if err != nil {
