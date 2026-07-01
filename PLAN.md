@@ -174,6 +174,45 @@ well as `WDY`, so Release issues can live in the same project.
   CI without requiring signing or App Store access.
 - Resume: not available until prepared.
 
+#### WDY-1782 — Move Wendy Companion SDK into the app repository
+
+- Linear: https://linear.app/wendylabsinc/issue/WDY-1782/move-wendy-companion-sdk-into-the-app-repository
+- State: Backlog
+- Team: Engineering (`WDY`)
+- Project: Wendy Companion App & SDK
+- Assignee: `konstantin@wendy.sh`
+- Priority: No priority
+- Repo: `wendylabsinc/wendy-companion-ios`
+- Status: queued. Move SDK source into the app repo for initial product velocity
+  while preserving a clean Swift package/module boundary and future split path.
+- Resume: not available until prepared.
+
+#### WDY-1783 — Add unit tests for Wendy Companion App and run them in CI
+
+- Linear: https://linear.app/wendylabsinc/issue/WDY-1783/add-unit-tests-for-wendy-companion-app-and-run-them-in-ci
+- State: Backlog
+- Team: Engineering (`WDY`)
+- Project: Wendy Companion App & SDK
+- Assignee: `konstantin@wendy.sh`
+- Priority: No priority
+- Repo: `wendylabsinc/wendy-companion-ios`
+- Status: queued. Add deterministic app unit tests and CI coverage that do not
+  require signing, App Store, cloud, or real device access.
+- Resume: not available until prepared.
+
+#### WDY-1784 — Add UI tests for Wendy Companion App on Mac and iOS and run them in CI if possible
+
+- Linear: https://linear.app/wendylabsinc/issue/WDY-1784/add-ui-tests-for-wendy-companion-app-on-mac-and-ios-and-run-them-in-ci
+- State: Backlog
+- Team: Engineering (`WDY`)
+- Project: Wendy Companion App & SDK
+- Assignee: `konstantin@wendy.sh`
+- Priority: No priority
+- Repo: `wendylabsinc/wendy-companion-ios`
+- Status: queued. Add iOS/macOS UI smoke tests and run them in CI where runner
+  support makes that practical; document blockers otherwise.
+- Resume: not available until prepared.
+
 #### REL-69 — Prepare Wendy Companion App Store release listing and submission
 
 - Linear: https://linear.app/wendylabsinc/issue/REL-69/prepare-wendy-companion-app-store-release-listing-and-submission
@@ -290,12 +329,15 @@ Copy this block when this coordinator starts tracking an issue.
 2. Install/confirm provisioning profile `WendyCompanioniOSAppStoreProfile` for
    team `3YVC792H3S` and verify the App Store Connect bundle ID
    `dev.wendy.WendyCompanioniOS` before re-running the Release archive.
-3. Start **REL-70 — Prepare public TestFlight release for Wendy Companion App**
+3. Start **WDY-1782 — Move Wendy Companion SDK into the app repository** if the
+   fastest path is a temporary monorepo for the app and cross-platform SDK.
+4. Start **REL-70 — Prepare public TestFlight release for Wendy Companion App**
    and/or **REL-69 — Prepare Wendy Companion App Store release listing and submission**
    when App Store Connect ownership is settled enough to fill in metadata.
-4. Start **WDY-1781 — Add linting and formatting for Wendy Companion App** if a
-   low-risk app infrastructure task is needed before signing ownership is
-   settled.
-5. Start **REL-66 — Check out skip.dev for Wendy Companion App** when the
+5. Start **WDY-1781 — Add linting and formatting for Wendy Companion App**,
+   **WDY-1783 — Add unit tests for Wendy Companion App and run them in CI**, or
+   **WDY-1784 — Add UI tests for Wendy Companion App on Mac and iOS and run them in CI if possible**
+   for low-risk app infrastructure work before signing ownership is settled.
+6. Start **REL-66 — Check out skip.dev for Wendy Companion App** when the
    TestFlight release path no longer needs active coordination.
-6. Commit and push coordinator plan updates after meaningful planning changes.
+7. Commit and push coordinator plan updates after meaningful planning changes.
