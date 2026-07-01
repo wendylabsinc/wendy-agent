@@ -234,7 +234,6 @@ func (p *MicroWendyProvider) Run(ctx context.Context, app *BuiltApp, detach bool
 				return errors.New(b.String())
 			}
 		} else {
-			addr := net.JoinHostPort(ip, port)
 			if err := client.ConnectInsecure(addr); err != nil {
 				return fmt.Errorf("connect to device: %w", err)
 			}
