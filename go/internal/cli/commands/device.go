@@ -64,6 +64,7 @@ func newDeviceCmd() *cobra.Command {
 		newDeviceLogsCmd(),
 		newDeviceOSLogsCmd(),
 		newROS2Cmd(),
+		newFoxgloveCmd(),
 		newDeviceDashboardCmd(),
 		newTopCmd(),
 	)
@@ -80,13 +81,6 @@ func newDeviceCmd() *cobra.Command {
 		newDeviceUpdateCmd(),
 		newDeviceSyncTimeCmd(),
 		newVolumesCmd(),
-	)
-	addToGroup("monitor",
-		newDeviceLogsCmd(),
-		newDeviceDashboardCmd(),
-		newDeviceTelemetryStreamCmd(),
-		newROS2Cmd(),
-		newFoxgloveCmd(),
 	)
 	addToGroup("hardware",
 		newWifiCmd(),
