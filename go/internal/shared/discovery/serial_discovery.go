@@ -187,7 +187,9 @@ func (d *SerialDiscovery) StartScan(repeatInterval time.Duration) {
 }
 
 func (d *SerialDiscovery) StopScan() {
-	d.StartScan(0)
+	d.mu.Lock()
+	d.repeatInterval = 0
+	d.mu.Unlock()
 }
 
 // notify snapshots the device list and calls all registered listeners serially.
