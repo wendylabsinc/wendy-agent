@@ -204,7 +204,6 @@ type pickerDevice struct {
 	Name       string
 	Version    string // display version (e.g. "0.10.5 (nightly)")
 	RawVersion string // exact version key for manifest lookup
-	Category   string // e.g. "Linux" or "Wendy Lite"
 	IsESP32    bool
 	ESP32Chip  string          // e.g. "esp32c6", "esp32c5"
 	Manifest   *deviceManifest // cached manifest for Linux devices
@@ -278,14 +277,15 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 			Name:       dev.Name,
 			Version:    displayVersion,
 			RawVersion: rawVersion,
-			Category:   "Linux",
 			Manifest:   dev.Manifest,
 		}
 		deviceMap[dev.Key] = pd
 
 		items = append(items, tui.PickerItem{
 			Name:        dev.Name,
-			Description: fmt.Sprintf("%s    %s", displayVersion, pd.Category),
+			Description: displayVersion,
+			Section:     "WendyOS",
+			SortKey:     "0_wendyos_" + strings.ToLower(dev.Name),
 			Value:       dev.Key,
 		})
 	}
@@ -302,13 +302,14 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 			deviceMap[esp.key] = pickerDevice{
 				Name:      esp.name,
 				Version:   espVersion,
-				Category:  "Wendy Lite",
 				IsESP32:   true,
 				ESP32Chip: esp.chip,
 			}
 			items = append(items, tui.PickerItem{
 				Name:        esp.name,
-				Description: fmt.Sprintf("%s    %s", espVersion, "Wendy Lite"),
+				Description: espVersion,
+				Section:     "Wendy Lite",
+				SortKey:     "1_lite_" + strings.ToLower(esp.name),
 				Value:       esp.key,
 			})
 		}
@@ -463,7 +464,30 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 	if !ok {
 		return fmt.Errorf("version %s not found in device manifest", selectedVersion)
 	}
-	storage := manifestStorage(ver, targetDrive.StorageType, storageOverride)
+	storage := manifestStorage(ver, targetDrive.StorageType, targetDrive.MediaFixed, storageOverride)
+
+	// A USB-attached SD reader and an SSD enclosure are indistinguishable by bus
+	// type, and not every platform reports fixed-media signals. When the variant
+	// is a guess on a dual-variant device, ask the user which slot the drive is
+	// for rather than silently picking the wrong image (a wrong guess can produce
+	// a non-booting device). Non-interactive runs keep the manifest default.
+	if storageOverride == "" && storageChoiceAmbiguous(ver, targetDrive.StorageType, targetDrive.MediaFixed) && isInteractiveTerminal() {
+		bootNVMe, err := tui.ConfirmNoDefault(fmt.Sprintf(
+			"Can't tell if %s is an SD card or an SSD. Will it boot from the NVMe/SSD slot?",
+			targetDrive.DevicePath))
+		if err != nil {
+			return err
+		}
+		if bootNVMe {
+			storage = "nvme"
+		} else {
+			storage = "sd"
+		}
+	} else if storageOverride == "" && targetDrive.MediaFixed && storage == "nvme" {
+		// Auto-detected an SSD enclosure. Surface the inference and the override
+		// so a surprising choice is at least visible and reversible.
+		fmt.Printf("Detected a fixed SSD on %s — using the NVMe image (pass --storage sd to override).\n", targetDrive.DevicePath)
+	}
 
 	fmt.Printf("\nPreparing %s %s image...\n", device.Name, selectedVersion)
 	imgInfo, err := getImageInfo(device.Manifest, selectedVersion, storage)
@@ -541,7 +565,7 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 		// bmap failures fall back silently; suppress the TUI error render
 		writeProg = writeProg.WithoutErrorView()
 	}
-	wp := tea.NewProgram(writeProg)
+	wp := tui.NewProgressProgram(writeProg)
 
 	go func() {
 		var writeErr error
@@ -609,7 +633,7 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 		}
 		defer fallbackCloser.Close()
 		fallbackProg := tui.NewProgress(fmt.Sprintf("Writing to %s...", targetDrive.DevicePath))
-		fp := tea.NewProgram(fallbackProg)
+		fp := tui.NewProgressProgram(fallbackProg)
 		go func() {
 			fp.Send(tui.ProgressDoneMsg{Err: writeImageToDisk(fallbackReader, fallbackSize, targetDrive, func(written int64) {
 				if fallbackSize > 0 {
@@ -877,7 +901,7 @@ func downloadImage(img *imageInfo) (string, error) {
 	}
 
 	prog := tui.NewProgress(fmt.Sprintf("Downloading %s...", img.Version))
-	p := tea.NewProgram(prog)
+	p := tui.NewProgressProgram(prog)
 	sendProgress := throttledProgress(p, 33*time.Millisecond)
 
 	contentLength, supportsRanges := probeRangeSupport(client, img)
@@ -1016,18 +1040,18 @@ func osCachedBmapPath(deviceKey, version, storage string) (string, error) {
 // manifestStorage picks the manifest storage key ("sd"/"nvme") for a target
 // drive, honoring an explicit override.
 //
-// A real NVMe controller is unambiguous → nvme. A USB-attached drive is NOT:
+// A real NVMe controller is unambiguous → nvme. A USB-attached drive is harder:
 // an SD card in a USB reader and an NVMe SSD in a USB enclosure both enumerate
 // as USB on every platform (the StorageType enum has no SD value), so bus type
-// alone can't tell them apart. We disambiguate from the variants this manifest
-// version actually publishes via defaultManifestStorage: prefer the SD image
-// when the device ships one (Raspberry Pi), else the NVMe image (a Jetson SSD
-// enclosure), else legacy/sd. Unknown buses (built-in card readers) → sd.
-//
-// Assumption: a device that publishes BOTH an sd and an nvme variant is
-// SD-natural for an ambiguous USB target (true for the only dual-variant device
-// today, Raspberry Pi 5). Pass --storage to override.
-func manifestStorage(v deviceVersion, st StorageType, override string) string {
+// alone can't tell them apart. We disambiguate with mediaFixed — positive
+// evidence from the platform lister that the media is fixed, solid-state (an
+// SSD), not removable (an SD card / thumb drive). An SSD in a USB enclosure is
+// bound for the device's NVMe slot, so when the device also publishes an NVMe
+// variant we pick it. Without that evidence we fall back to what the manifest
+// publishes via defaultManifestStorage: the SD image when the device ships one
+// (Raspberry Pi), else the NVMe image (a Jetson SSD enclosure), else legacy/sd.
+// Unknown buses (built-in card readers) → sd. Pass --storage to override.
+func manifestStorage(v deviceVersion, st StorageType, mediaFixed bool, override string) string {
 	switch override {
 	case "nvme", "sd":
 		return override
@@ -1036,10 +1060,26 @@ func manifestStorage(v deviceVersion, st StorageType, override string) string {
 	case StorageNVMe:
 		return "nvme"
 	case StorageUSB:
+		// Fixed, solid-state media behind a USB bridge is an SSD headed for the
+		// NVMe slot, not an SD card in a reader. Prefer nvme when the device
+		// actually publishes that variant.
+		if mediaFixed && v.NVMEPath != "" {
+			return "nvme"
+		}
 		return defaultManifestStorage(v)
 	default:
 		return "sd"
 	}
+}
+
+// storageChoiceAmbiguous reports whether the image variant for a USB target
+// can't be determined from bus and media signals alone, so the caller should
+// ask the user which slot the drive is for. It is only ambiguous when the bus
+// is USB (an SD reader and an SSD enclosure look identical), the platform found
+// no positive fixed-media evidence, and the device publishes BOTH variants —
+// otherwise there is nothing to choose between.
+func storageChoiceAmbiguous(v deviceVersion, st StorageType, mediaFixed bool) bool {
+	return st == StorageUSB && !mediaFixed && v.SDPath != "" && v.NVMEPath != ""
 }
 
 // defaultManifestStorage returns the device's natural removable image variant
@@ -1281,7 +1321,7 @@ func measureGzipImage(path string, progress func(read, total int64)) (int64, err
 // the user quits the bar.
 func measureImageWithProgress(stream *imageStream) error {
 	prog := tui.NewProgress("Determining image size (one-time per image)...")
-	p := tea.NewProgram(prog)
+	p := tui.NewProgressProgram(prog)
 	sendProgress := throttledProgress(p, 33*time.Millisecond)
 
 	go func() {
@@ -1517,7 +1557,7 @@ func resolveWiFiCredentialsList(opts wifiCLIOptions) ([]wendyconf.WifiCredential
 			if pw, kerr := lookupKeychainPassword(c.SSID); kerr == nil && pw != "" {
 				c.Password = pw
 			} else if isInteractiveTerminal() {
-				pw, perr := tui.PromptText(fmt.Sprintf("WiFi password for %s", c.SSID), "(leave empty for open network)", nil)
+				pw, perr := tui.PromptPassword(fmt.Sprintf("WiFi password for %s", c.SSID), "(leave empty for open network)", nil)
 				if perr != nil {
 					return nil, fmt.Errorf("reading WiFi password: %w", perr)
 				}
@@ -1642,7 +1682,7 @@ var (
 		return tui.PromptText("WiFi SSID", "", nonEmptyValidator)
 	}
 	promptWifiPassword = func(ssid string) (string, error) {
-		return tui.PromptText(fmt.Sprintf("Password for %s", ssid), "(leave empty for open network)", nil)
+		return tui.PromptPassword(fmt.Sprintf("Password for %s", ssid), "(leave empty for open network)", nil)
 	}
 )
 
@@ -2012,7 +2052,7 @@ func installESP32Firmware(ctx context.Context, nightly bool, chip string, wifi w
 	// Download with progress bar.
 
 	prog := tui.NewProgress(fmt.Sprintf("Downloading %s %s...", asset.Name, asset.Version))
-	p := tea.NewProgram(prog)
+	p := tui.NewProgressProgram(prog)
 
 	var fwPath string
 	var dlErr error
@@ -2064,7 +2104,7 @@ func installESP32Firmware(ctx context.Context, nightly bool, chip string, wifi w
 
 	fmt.Println()
 	flashProg := tui.NewProgress(fmt.Sprintf("Flashing to %s...", serialPort))
-	fp := tea.NewProgram(flashProg)
+	fp := tui.NewProgressProgram(flashProg)
 
 	go func() {
 		flashErr := flashFirmwareImage(serialPort, img, func(pct float64) {

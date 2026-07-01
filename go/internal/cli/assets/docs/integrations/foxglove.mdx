@@ -1,0 +1,72 @@
+---
+title: Wendy for Foxglove
+description: Bridge a WendyOS device's live ROS 2 topics into Foxglove Studio for real-time visualization, over the CLI's existing secure connection.
+---
+
+<Callout type="warning">
+**Coming soon.** Wendy for Foxglove is in active development
+([PR #1165](https://github.com/wendylabsinc/WendyOS/pull/1165)) and not yet
+available in a released CLI. This page previews how it will work. Commands and
+flags may change before release.
+</Callout>
+
+Wendy for Foxglove turns a device's live ROS 2 graph into something you can *see*.
+The CLI hosts a [Foxglove WebSocket Protocol](https://foxglove.dev/) server on your
+machine and bridges it to the device's ROS 2 topics, so you can drop a Raw Message
+panel, plot a signal, or watch a camera feed update in real time — without
+installing anything on the device.
+
+## How it will work
+
+The server runs on your machine (default `127.0.0.1:8765`) and reaches the
+device's ROS 2 system over the existing mutually-authenticated gRPC connection.
+Your data never leaves your machine to a third party.
+
+```
+Foxglove Studio ──ws──► wendy CLI (host) ──gRPC (mTLS)──► wendy-agent ──exec──► ros2 sidecar
+ (foxglove.websocket.v1)  foxglove server      ROS2Service          ros2 CLI  (shares app DDS domain)
+```
+
+The CLI discovers the device's ROS 2 topics, advertises them to Foxglove with the
+right encoding and schema, and forwards messages as they arrive — building on the
+same sidecar mechanism as [Wendy for ROS 2](/docs/integrations/ros2).
+
+## Usage (preview)
+
+Start the bridge against your default device:
+
+```bash
+wendy device foxglove serve
+```
+
+Then, in Foxglove Studio (desktop or [app.foxglove.dev](https://app.foxglove.dev)),
+choose **Open connection** and enter:
+
+```
+ws://localhost:8765
+```
+
+Discovered topics appear as channels you can add to any panel.
+
+Planned flags for `wendy device foxglove serve`:
+
+| Flag | Description |
+| --- | --- |
+| `--port` | WebSocket listen port (default `8765`). |
+| `--host` | Bind address (default `127.0.0.1`). |
+| `--domain` | `ROS_DOMAIN_ID` override (default: from the app's ROS 2 config). |
+| `--topic` | Restrict to specific topics; repeatable. Defaults to all topics. |
+
+## Scope at launch
+
+The first release is **read-only** — visualize live topics. It's the first of a
+planned three phases:
+
+- **Available at launch** — subscribe to and visualize live ROS 2 topics.
+- **Later** — Foxglove parameters and service-call support.
+- **Later** — publishing from Foxglove back to the device's topics.
+
+## In the meantime
+
+You can already inspect, echo, and record the same ROS 2 data from the CLI today
+with [Wendy for ROS 2](/docs/integrations/ros2).

@@ -11,8 +11,9 @@ import (
 
 func newJSONCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "json",
-		Short: "Inspect and validate wendy.json",
+		Use:    "json",
+		Short:  "Inspect and validate wendy.json",
+		Hidden: true,
 	}
 
 	cmd.AddCommand(newJSONSchemaCmd())

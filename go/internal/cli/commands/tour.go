@@ -5,6 +5,7 @@ package commands
 import (
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -18,6 +19,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 )
@@ -57,6 +59,7 @@ const (
 	phaseRunProject                     // tea.ExecProcess running wendy run
 	phaseAICheck                        // check claude/codex installation
 	phaseAIMCPSetup                     // offer to configure wendy MCP server
+	phaseCompletions                    // offer to install shell completions
 	phaseCloud                          // cloud ready message
 	phaseDone                           // quit
 	phaseError                          // error with restart hint
@@ -78,14 +81,15 @@ type (
 		networks []localWifiNetwork
 		err      error
 	}
-	tourDriveRescanMsg       struct{}
-	tourDiscoveryTickMsg     struct{}
-	tourDiscoveryFoundMsg    struct{ addr, name string }
-	tourOSInstallDoneMsg     struct{ err error }
-	tourRunDoneMsg           struct{ err error }
-	tourAICheckDoneMsg       struct{ claudePath, codexPath string }
-	tourMCPSetupDoneMsg      struct{ results []mcpSetupResult }
-	tourTemplateFetchDoneMsg struct {
+	tourDriveRescanMsg           struct{}
+	tourDiscoveryTickMsg         struct{}
+	tourDiscoveryFoundMsg        struct{ addr, name string }
+	tourOSInstallDoneMsg         struct{ err error }
+	tourRunDoneMsg               struct{ err error }
+	tourAICheckDoneMsg           struct{ claudePath, codexPath string }
+	tourMCPSetupDoneMsg          struct{ results []mcpSetupResult }
+	tourCompletionInstallDoneMsg struct{ err error }
+	tourTemplateFetchDoneMsg     struct {
 		meta *repoMeta
 		err  error
 	}
@@ -170,6 +174,10 @@ const tourRequirements = "debugpy\n"
 // ─── model ───────────────────────────────────────────────────────────────────
 
 type tourWizardModel struct {
+	// root is the root cobra command, used to generate completion scripts
+	// in-process when installing shell completions.
+	root *cobra.Command
+
 	phase  tourPhase
 	width  int
 	height int
@@ -200,7 +208,7 @@ type tourWizardModel struct {
 	detectedPass string
 	wifiSSID     string
 	wifiPass     string
-	wifiCursor   int                // options menu cursor
+	menuCursor   int                // options menu cursor
 	scanNetworks []localWifiNetwork // results from scanLocalWifiNetworks
 	scanCursor   int
 
@@ -299,7 +307,7 @@ func (m tourWizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint:cyc
 		m.detectedSSID = msg.ssid
 		m.detectedPass = msg.password
 		m.phase = phaseWifiQuestion
-		m.wifiCursor = 0
+		m.menuCursor = 0
 		return m, nil
 
 	case tourWifiScanDoneMsg:
@@ -353,14 +361,25 @@ func (m tourWizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint:cyc
 			m.phase = phaseError
 			return m, nil
 		}
-		m.phase = phaseAICheck
-		return m, m.cmdCheckAITools()
+		m.phase = phaseCloud
+		return m, nil
 
 	case tourAICheckDoneMsg:
 		m.claudePath = msg.claudePath
 		m.codexPath = msg.codexPath
-		m.phase = phaseAICheck
-		return m, nil
+		if m.claudePath != "" || m.codexPath != "" {
+			m.phase = phaseAICheck
+			return m, nil
+		}
+		// No AI CLI installed — skip the AI step entirely.
+		return m.advanceToDeviceSetup()
+
+	case tourCompletionInstallDoneMsg:
+		// Shell completions are optional: whether the install succeeded or
+		// failed (its own output already surfaced any error), continue on to
+		// device discovery.
+		m.phase = phaseLoadDevices
+		return m, loadDevicesCmd()
 
 	case tourMCPSetupDoneMsg:
 		m.mcpSetupResult = msg.results
@@ -416,6 +435,28 @@ func (m tourWizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint:cyc
 	return m, nil
 }
 
+// handleKey dispatches a key press to the handler for the current phase. The
+// tour is a linear wizard with a few branches; the high-level flow is:
+//
+//	welcome
+//	  → AI-tools check → [AI step → MCP setup] ─┐
+//	                                            ↓
+//	  load devices → device list ──→ Other Linux → apt install → enter hostname ─┐
+//	       │                                                                     │
+//	       └→ pick device → OS installed?                                        │
+//	             ├ yes → scan LAN → pick existing device ──────────────→ device found
+//	             └ no  → storage guide → drive wait → device name                │
+//	                       → wifi detect → wifi question                         │
+//	                          (→ scan → network picker) (→ manual SSID)          │
+//	                          → wifi password → ready to install                 │
+//	                          → run OS install → boot instructions → discovering │
+//	                          → device found ←──────────────────────────────────┘
+//	  device found → "deploy a sample app?"
+//	     ├ yes → template loading → template picker → create project → run project → cloud (done)
+//	     └ no  → AI-tools check (loops back into onboarding)
+//
+// Text-input phases route to handleTextInput; spinner/async phases accept only
+// ctrl+c; the terminal phases (cloud/done/error) quit on any key.
 func (m tourWizardModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Text input phases route keys to the embedded textinput.
 	switch m.phase {
@@ -427,395 +468,473 @@ func (m tourWizardModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	switch m.phase {
 	case phaseWelcome:
-		switch key {
-		case "enter", " ":
-			m.phase = phaseLoadDevices
-			return m, loadDevicesCmd()
-		case "q", "ctrl+c":
-			return m, tea.Quit
-		}
-
-	case phaseLoadDevices:
-		if key == "ctrl+c" {
-			return m, tea.Quit
-		}
-
+		return m.handleWelcomeKey(key)
 	case phaseDeviceList:
-		total := len(m.devices) + 1 // +1 for "Other Linux"
-		switch key {
-		case "up", "k":
-			if m.deviceCursor > 0 {
-				m.deviceCursor--
-			}
-		case "down", "j":
-			if m.deviceCursor < total-1 {
-				m.deviceCursor++
-			}
-		case "enter", " ":
-			if m.deviceCursor < len(m.devices) {
-				dev := m.devices[m.deviceCursor]
-				m.selected = &dev
-				m.useNVMe = deviceUsesNVMe(dev.Key)
-				m.phase = phaseOSInstalled
-				m.wifiCursor = 0
-			} else {
-				m.selected = nil
-				m.phase = phaseAptInstall
-			}
-		case "q", "ctrl+c":
-			return m, tea.Quit
-		}
-
+		return m.handleDeviceListKey(key)
 	case phaseOSInstalled:
-		switch key {
-		case "up", "k":
-			if m.wifiCursor > 0 {
-				m.wifiCursor--
-			}
-		case "down", "j":
-			if m.wifiCursor < 1 {
-				m.wifiCursor++
-			}
-		case "enter", " ":
-			if m.wifiCursor == 0 {
-				// WendyOS already installed — scan the network
-				m.phase = phaseExistingDeviceScan
-				return m, scanLANDevicesCmd()
-			} else {
-				// Need to install
-				m.phase = phaseStorageGuide
-			}
-		case "q", "ctrl+c":
-			return m, tea.Quit
-		}
-
-	case phaseExistingDeviceScan:
-		if key == "ctrl+c" {
-			return m, tea.Quit
-		}
-
+		return m.handleOSInstalledKey(key)
 	case phaseExistingDevicePicker:
-		switch key {
-		case "up", "k":
-			if m.lanCursor > 0 {
-				m.lanCursor--
-			}
-		case "down", "j":
-			if m.lanCursor < len(m.lanDevices) {
-				m.lanCursor++
-			}
-		case "r":
-			// re-scan
-			m.phase = phaseExistingDeviceScan
-			return m, scanLANDevicesCmd()
-		case "enter", " ":
-			if m.lanCursor < len(m.lanDevices) {
-				dev := m.lanDevices[m.lanCursor]
-				m.foundAddr = preferredLANAddress(dev)
-				m.foundName = dev.DisplayName
-				m.targetName = strings.TrimSuffix(dev.Hostname, ".local")
-				m.phase = phaseDeviceFound
-			} else {
-				// "Enter manually" option at bottom of list
-				m.phase = phaseEnterHostname
-				m.input.Placeholder = "e.g. my-pi or 192.168.1.100"
-				m.input.SetValue("")
-				m.input.Focus()
-			}
-		case "q", "ctrl+c":
-			return m, tea.Quit
-		}
-
+		return m.handleExistingDevicePickerKey(key)
 	case phaseAptInstall:
-		switch key {
-		case "enter", " ":
-			m.phase = phaseEnterHostname
-			m.input.Placeholder = "e.g. 192.168.1.50 or my-device"
-			m.input.SetValue("")
-			m.input.Focus()
-		case "q", "ctrl+c":
-			return m, tea.Quit
-		}
-
+		return m.handleAptInstallKey(key)
 	case phaseStorageGuide:
-		switch key {
-		case "enter", " ":
-			drives, err := listExternalDrives()
-			if err != nil {
-				m.err = err
-				m.phase = phaseError
-				return m, nil
-			}
-			m.phase = phaseDriveWait
-			m.drives = drives
-			m.driveCursor = 0
-			return m, rescanDrivesAfter(2 * time.Second)
-		case "q", "ctrl+c":
-			return m, tea.Quit
-		}
-
+		return m.handleStorageGuideKey(key)
 	case phaseDriveWait:
-		switch key {
-		case "up", "k":
-			if m.driveCursor > 0 {
-				m.driveCursor--
-			}
-		case "down", "j":
-			if m.driveCursor < len(m.drives)-1 {
-				m.driveCursor++
-			}
-		case "enter", " ":
-			if len(m.drives) > 0 && m.driveCursor < len(m.drives) {
-				d := m.drives[m.driveCursor]
-				m.selDrive = &d
-				m.phase = phaseDeviceName
-				m.input.Placeholder = "e.g. my-pi (lowercase, hyphens ok)"
-				m.input.SetValue("")
-				m.input.Focus()
-			}
-		case "q", "ctrl+c":
-			return m, tea.Quit
-		}
-
+		return m.handleDriveWaitKey(key)
 	case phaseWifiQuestion:
-		opts := wifiQuestionOptions(m.detectedSSID)
-		switch key {
-		case "up", "k":
-			if m.wifiCursor > 0 {
-				m.wifiCursor--
-			}
-		case "down", "j":
-			if m.wifiCursor < len(opts)-1 {
-				m.wifiCursor++
-			}
-		case "enter", " ":
-			switch m.wifiCursor {
-			case 0:
-				if m.detectedSSID != "" {
-					// "Yes, use [detectedSSID]"
-					m.wifiSSID = m.detectedSSID
-					if m.detectedPass != "" {
-						m.wifiPass = m.detectedPass
-						m.phase = phaseReadyToInstall
-					} else {
-						m.phase = phaseWifiPassword
-						m.input.Placeholder = "WiFi password (leave empty for open network)"
-						m.input.EchoMode = textinput.EchoPassword
-						m.input.SetValue("")
-						m.input.Focus()
-					}
-				} else {
-					// "Scan for nearby networks"
-					m.phase = phaseWifiScanLoading
-					return m, scanWifiCmd()
-				}
-			case 1:
-				if m.detectedSSID != "" {
-					// "Scan for a different network"
-					m.phase = phaseWifiScanLoading
-					return m, scanWifiCmd()
-				} else {
-					// "Enter WiFi credentials manually"
-					m.phase = phaseWifiManualSSID
-					m.input.Placeholder = "WiFi network name (SSID)"
-					m.input.EchoMode = textinput.EchoNormal
-					m.input.SetValue("")
-					m.input.Focus()
-				}
-			case 2:
-				if m.detectedSSID != "" {
-					// "Enter WiFi credentials manually"
-					m.phase = phaseWifiManualSSID
-					m.input.Placeholder = "WiFi network name (SSID)"
-					m.input.EchoMode = textinput.EchoNormal
-					m.input.SetValue("")
-					m.input.Focus()
-				} else {
-					// "Skip WiFi setup"
-					m.wifiSSID = ""
-					m.wifiPass = ""
-					m.phase = phaseReadyToInstall
-				}
-			case 3:
-				// "Skip WiFi setup" (only when detectedSSID != "")
-				m.wifiSSID = ""
-				m.wifiPass = ""
-				m.phase = phaseReadyToInstall
-			}
-		case "q", "ctrl+c":
-			return m, tea.Quit
-		}
-
-	case phaseWifiScanLoading:
-		if key == "ctrl+c" {
-			return m, tea.Quit
-		}
-
+		return m.handleWifiQuestionKey(key)
 	case phaseWifiNetworkPicker:
-		switch key {
-		case "up", "k":
-			if m.scanCursor > 0 {
-				m.scanCursor--
-			}
-		case "down", "j":
-			if m.scanCursor < len(m.scanNetworks)-1 {
-				m.scanCursor++
-			}
-		case "enter", " ":
-			if len(m.scanNetworks) > 0 && m.scanCursor < len(m.scanNetworks) {
-				net := m.scanNetworks[m.scanCursor]
-				m.wifiSSID = net.SSID
-				if supportsKeychainLookup {
-					if pwd, err := lookupKeychainPassword(net.SSID); err == nil && pwd != "" {
-						m.wifiPass = pwd
-						m.phase = phaseReadyToInstall
-						return m, nil
-					}
-				}
-				m.phase = phaseWifiPassword
-				m.input.Placeholder = "WiFi password (leave empty for open network)"
-				m.input.EchoMode = textinput.EchoPassword
-				m.input.SetValue("")
-				m.input.Focus()
-			}
-		case "q", "ctrl+c":
-			return m, tea.Quit
-		}
-
+		return m.handleWifiNetworkPickerKey(key)
 	case phaseReadyToInstall:
-		switch key {
-		case "enter", " ":
-			return m, m.cmdRunOSInstall()
-		case "q", "ctrl+c":
-			return m, tea.Quit
-		}
-
+		return m.handleReadyToInstallKey(key)
 	case phaseBootInstructions:
-		switch key {
-		case "enter", " ":
-			m.phase = phaseDiscovering
-			return m, m.cmdDiscoveryCheck()
-		case "q", "ctrl+c":
-			return m, tea.Quit
-		}
-
+		return m.handleBootInstructionsKey(key)
 	case phaseDeviceFound:
-		switch key {
-		case "enter", " ":
-			m.phase = phaseCreateProjectPrompt
-			m.wifiCursor = 0
-		case "q", "ctrl+c":
-			return m, tea.Quit
-		}
-
+		return m.handleDeviceFoundKey(key)
 	case phaseCreateProjectPrompt:
-		switch key {
-		case "up", "k":
-			if m.wifiCursor > 0 {
-				m.wifiCursor--
-			}
-		case "down", "j":
-			if m.wifiCursor < 1 {
-				m.wifiCursor++
-			}
-		case "enter", " ":
-			if m.wifiCursor == 0 {
-				m.phase = phaseTemplateLoading
-				return m, fetchTourTemplatesCmd()
-			} else {
-				m.phase = phaseAICheck
-				return m, m.cmdCheckAITools()
-			}
-		case "q", "ctrl+c":
-			return m, tea.Quit
-		}
-
-	case phaseTemplateLoading:
-		if key == "ctrl+c" {
-			return m, tea.Quit
-		}
-
+		return m.handleCreateProjectPromptKey(key)
 	case phaseTemplatePicker:
-		total := len(m.templateItems) + 1 // +1 for built-in
-		switch key {
-		case "up", "k":
-			if m.templateCursor > 0 {
-				m.templateCursor--
-			}
-		case "down", "j":
-			if m.templateCursor < total-1 {
-				m.templateCursor++
-			}
-		case "enter", " ":
-			if m.templateCursor < len(m.templateItems) {
-				m.selectedTemplate = m.templateItems[m.templateCursor].Name
-				m.phase = phaseTemplateDownloading
-				return m, m.downloadTourTemplateCmd()
-			}
-			// Built-in Python template
-			if err := m.createPythonProject(); err != nil {
-				m.err = err
-				m.phase = phaseError
-				return m, nil
-			}
-			m.phase = phaseCreateProject
-		case "q", "ctrl+c":
-			return m, tea.Quit
-		}
-
-	case phaseTemplateDownloading:
-		if key == "ctrl+c" {
-			return m, tea.Quit
-		}
-
+		return m.handleTemplatePickerKey(key)
 	case phaseCreateProject:
-		switch key {
-		case "enter", " ":
-			return m, m.cmdRunProject()
-		case "q", "ctrl+c":
-			return m, tea.Quit
-		}
-
+		return m.handleCreateProjectKey(key)
 	case phaseAICheck:
-		switch key {
-		case "up", "k":
-			if m.wifiCursor > 0 {
-				m.wifiCursor--
-			}
-		case "down", "j":
-			if m.wifiCursor < 1 {
-				m.wifiCursor++
-			}
-		case "enter", " ":
-			if m.claudePath != "" && m.wifiCursor == 0 {
-				return m, runMCPSetupCmd()
-			}
-			m.phase = phaseCloud
-		case "q", "ctrl+c":
-			return m, tea.Quit
-		}
-
+		return m.handleAICheckKey(key)
 	case phaseAIMCPSetup:
-		switch key {
-		case "enter", " ":
-			m.phase = phaseCloud
-		case "q", "ctrl+c":
-			return m, tea.Quit
-		}
-
-	case phaseCloud, phaseDone:
+		return m.handleAIMCPSetupKey(key)
+	case phaseCompletions:
+		return m.handleCompletionsKey(key)
+	case phaseCloud, phaseDone, phaseError:
 		return m, tea.Quit
-
-	case phaseError:
-		return m, tea.Quit
-
 	default:
+		// Spinner/async phases (loading, scanning, installing, discovering)
+		// accept only ctrl+c to abort.
 		if key == "ctrl+c" {
 			return m, tea.Quit
 		}
 	}
 
 	return m, nil
+}
+
+// moveMenuCursor adjusts menuCursor for an up/down key within [0, count).
+func (m *tourWizardModel) moveMenuCursor(key string, count int) {
+	switch key {
+	case "up", "k":
+		if m.menuCursor > 0 {
+			m.menuCursor--
+		}
+	case "down", "j":
+		if m.menuCursor < count-1 {
+			m.menuCursor++
+		}
+	}
+}
+
+func (m tourWizardModel) handleWelcomeKey(key string) (tea.Model, tea.Cmd) {
+	switch key {
+	case "enter", " ":
+		return m, m.cmdCheckAITools()
+	case "q", "ctrl+c":
+		return m, tea.Quit
+	}
+	return m, nil
+}
+
+func (m tourWizardModel) handleDeviceListKey(key string) (tea.Model, tea.Cmd) {
+	total := len(m.devices) + 1 // +1 for "Other Linux"
+	switch key {
+	case "up", "k":
+		if m.deviceCursor > 0 {
+			m.deviceCursor--
+		}
+	case "down", "j":
+		if m.deviceCursor < total-1 {
+			m.deviceCursor++
+		}
+	case "enter", " ":
+		if m.deviceCursor < len(m.devices) {
+			dev := m.devices[m.deviceCursor]
+			m.selected = &dev
+			m.useNVMe = deviceUsesNVMe(dev.Key)
+			m.phase = phaseOSInstalled
+			m.menuCursor = 0
+		} else {
+			m.selected = nil
+			m.phase = phaseAptInstall
+		}
+	case "q", "ctrl+c":
+		return m, tea.Quit
+	}
+	return m, nil
+}
+
+func (m tourWizardModel) handleOSInstalledKey(key string) (tea.Model, tea.Cmd) {
+	m.moveMenuCursor(key, 2)
+	switch key {
+	case "enter", " ":
+		if m.menuCursor == 0 {
+			// WendyOS already installed — scan the network
+			m.phase = phaseExistingDeviceScan
+			return m, scanLANDevicesCmd()
+		}
+		// Need to install
+		m.phase = phaseStorageGuide
+	case "q", "ctrl+c":
+		return m, tea.Quit
+	}
+	return m, nil
+}
+
+func (m tourWizardModel) handleExistingDevicePickerKey(key string) (tea.Model, tea.Cmd) {
+	switch key {
+	case "up", "k":
+		if m.lanCursor > 0 {
+			m.lanCursor--
+		}
+	case "down", "j":
+		if m.lanCursor < len(m.lanDevices) {
+			m.lanCursor++
+		}
+	case "r":
+		// re-scan
+		m.phase = phaseExistingDeviceScan
+		return m, scanLANDevicesCmd()
+	case "enter", " ":
+		if m.lanCursor < len(m.lanDevices) {
+			dev := m.lanDevices[m.lanCursor]
+			m.foundAddr = preferredLANAddress(dev)
+			m.foundName = dev.DisplayName
+			m.targetName = strings.TrimSuffix(dev.Hostname, ".local")
+			m.phase = phaseDeviceFound
+		} else {
+			// "Enter manually" option at bottom of list
+			m.phase = phaseEnterHostname
+			m.input.Placeholder = "e.g. my-pi or 192.168.1.100"
+			m.input.SetValue("")
+			m.input.Focus()
+		}
+	case "q", "ctrl+c":
+		return m, tea.Quit
+	}
+	return m, nil
+}
+
+func (m tourWizardModel) handleAptInstallKey(key string) (tea.Model, tea.Cmd) {
+	switch key {
+	case "enter", " ":
+		m.phase = phaseEnterHostname
+		m.input.Placeholder = "e.g. 192.168.1.50 or my-device"
+		m.input.SetValue("")
+		m.input.Focus()
+	case "q", "ctrl+c":
+		return m, tea.Quit
+	}
+	return m, nil
+}
+
+func (m tourWizardModel) handleStorageGuideKey(key string) (tea.Model, tea.Cmd) {
+	switch key {
+	case "enter", " ":
+		drives, err := listExternalDrives()
+		if err != nil {
+			m.err = err
+			m.phase = phaseError
+			return m, nil
+		}
+		m.phase = phaseDriveWait
+		m.drives = drives
+		m.driveCursor = 0
+		return m, rescanDrivesAfter(2 * time.Second)
+	case "q", "ctrl+c":
+		return m, tea.Quit
+	}
+	return m, nil
+}
+
+func (m tourWizardModel) handleDriveWaitKey(key string) (tea.Model, tea.Cmd) {
+	switch key {
+	case "up", "k":
+		if m.driveCursor > 0 {
+			m.driveCursor--
+		}
+	case "down", "j":
+		if m.driveCursor < len(m.drives)-1 {
+			m.driveCursor++
+		}
+	case "enter", " ":
+		if len(m.drives) > 0 && m.driveCursor < len(m.drives) {
+			d := m.drives[m.driveCursor]
+			m.selDrive = &d
+			m.phase = phaseDeviceName
+			m.input.Placeholder = "e.g. my-pi (lowercase, hyphens ok)"
+			m.input.SetValue("")
+			m.input.Focus()
+		}
+	case "q", "ctrl+c":
+		return m, tea.Quit
+	}
+	return m, nil
+}
+
+func (m tourWizardModel) handleWifiQuestionKey(key string) (tea.Model, tea.Cmd) {
+	opts := wifiQuestionOptions(m.detectedSSID)
+	m.moveMenuCursor(key, len(opts))
+	switch key {
+	case "enter", " ":
+		switch m.menuCursor {
+		case 0:
+			if m.detectedSSID != "" {
+				// "Yes, use [detectedSSID]"
+				m.wifiSSID = m.detectedSSID
+				if m.detectedPass != "" {
+					m.wifiPass = m.detectedPass
+					m.phase = phaseReadyToInstall
+				} else {
+					m.phase = phaseWifiPassword
+					m.input.Placeholder = "WiFi password (leave empty for open network)"
+					m.input.EchoMode = textinput.EchoPassword
+					m.input.SetValue("")
+					m.input.Focus()
+				}
+			} else {
+				// "Scan for nearby networks"
+				m.phase = phaseWifiScanLoading
+				return m, scanWifiCmd()
+			}
+		case 1:
+			if m.detectedSSID != "" {
+				// "Scan for a different network"
+				m.phase = phaseWifiScanLoading
+				return m, scanWifiCmd()
+			} else {
+				// "Enter WiFi credentials manually"
+				m.phase = phaseWifiManualSSID
+				m.input.Placeholder = "WiFi network name (SSID)"
+				m.input.EchoMode = textinput.EchoNormal
+				m.input.SetValue("")
+				m.input.Focus()
+			}
+		case 2:
+			if m.detectedSSID != "" {
+				// "Enter WiFi credentials manually"
+				m.phase = phaseWifiManualSSID
+				m.input.Placeholder = "WiFi network name (SSID)"
+				m.input.EchoMode = textinput.EchoNormal
+				m.input.SetValue("")
+				m.input.Focus()
+			} else {
+				// "Skip WiFi setup"
+				m.wifiSSID = ""
+				m.wifiPass = ""
+				m.phase = phaseReadyToInstall
+			}
+		case 3:
+			// "Skip WiFi setup" (only when detectedSSID != "")
+			m.wifiSSID = ""
+			m.wifiPass = ""
+			m.phase = phaseReadyToInstall
+		}
+	case "q", "ctrl+c":
+		return m, tea.Quit
+	}
+	return m, nil
+}
+
+func (m tourWizardModel) handleWifiNetworkPickerKey(key string) (tea.Model, tea.Cmd) {
+	switch key {
+	case "up", "k":
+		if m.scanCursor > 0 {
+			m.scanCursor--
+		}
+	case "down", "j":
+		if m.scanCursor < len(m.scanNetworks)-1 {
+			m.scanCursor++
+		}
+	case "enter", " ":
+		if len(m.scanNetworks) > 0 && m.scanCursor < len(m.scanNetworks) {
+			net := m.scanNetworks[m.scanCursor]
+			m.wifiSSID = net.SSID
+			if supportsKeychainLookup {
+				if pwd, err := lookupKeychainPassword(net.SSID); err == nil && pwd != "" {
+					m.wifiPass = pwd
+					m.phase = phaseReadyToInstall
+					return m, nil
+				}
+			}
+			m.phase = phaseWifiPassword
+			m.input.Placeholder = "WiFi password (leave empty for open network)"
+			m.input.EchoMode = textinput.EchoPassword
+			m.input.SetValue("")
+			m.input.Focus()
+		}
+	case "q", "ctrl+c":
+		return m, tea.Quit
+	}
+	return m, nil
+}
+
+func (m tourWizardModel) handleReadyToInstallKey(key string) (tea.Model, tea.Cmd) {
+	switch key {
+	case "enter", " ":
+		return m, m.cmdRunOSInstall()
+	case "q", "ctrl+c":
+		return m, tea.Quit
+	}
+	return m, nil
+}
+
+func (m tourWizardModel) handleBootInstructionsKey(key string) (tea.Model, tea.Cmd) {
+	switch key {
+	case "enter", " ":
+		m.phase = phaseDiscovering
+		return m, m.cmdDiscoveryCheck()
+	case "q", "ctrl+c":
+		return m, tea.Quit
+	}
+	return m, nil
+}
+
+func (m tourWizardModel) handleDeviceFoundKey(key string) (tea.Model, tea.Cmd) {
+	switch key {
+	case "enter", " ":
+		m.phase = phaseCreateProjectPrompt
+		m.menuCursor = 0
+	case "q", "ctrl+c":
+		return m, tea.Quit
+	}
+	return m, nil
+}
+
+func (m tourWizardModel) handleCreateProjectPromptKey(key string) (tea.Model, tea.Cmd) {
+	m.moveMenuCursor(key, 2)
+	switch key {
+	case "enter", " ":
+		if m.menuCursor == 0 {
+			m.phase = phaseTemplateLoading
+			return m, fetchTourTemplatesCmd()
+		}
+		// Skip deploying a sample app — finish the tour. AI-tooling setup was
+		// already offered at the start, so there's nothing left to do here.
+		m.phase = phaseCloud
+		return m, nil
+	case "q", "ctrl+c":
+		return m, tea.Quit
+	}
+	return m, nil
+}
+
+func (m tourWizardModel) handleTemplatePickerKey(key string) (tea.Model, tea.Cmd) {
+	total := len(m.templateItems) + 1 // +1 for built-in
+	switch key {
+	case "up", "k":
+		if m.templateCursor > 0 {
+			m.templateCursor--
+		}
+	case "down", "j":
+		if m.templateCursor < total-1 {
+			m.templateCursor++
+		}
+	case "enter", " ":
+		if m.templateCursor < len(m.templateItems) {
+			m.selectedTemplate = m.templateItems[m.templateCursor].Name
+			m.phase = phaseTemplateDownloading
+			return m, m.downloadTourTemplateCmd()
+		}
+		// Built-in Python template
+		if err := m.createPythonProject(); err != nil {
+			m.err = err
+			m.phase = phaseError
+			return m, nil
+		}
+		m.phase = phaseCreateProject
+	case "q", "ctrl+c":
+		return m, tea.Quit
+	}
+	return m, nil
+}
+
+func (m tourWizardModel) handleCreateProjectKey(key string) (tea.Model, tea.Cmd) {
+	switch key {
+	case "enter", " ":
+		return m, m.cmdRunProject()
+	case "q", "ctrl+c":
+		return m, tea.Quit
+	}
+	return m, nil
+}
+
+func (m tourWizardModel) handleAICheckKey(key string) (tea.Model, tea.Cmd) {
+	m.moveMenuCursor(key, 2)
+	switch key {
+	case "enter", " ":
+		if (m.claudePath != "" || m.codexPath != "") && m.menuCursor == 0 {
+			return m, runMCPSetupCmd()
+		}
+		return m.advanceToDeviceSetup()
+	case "q", "ctrl+c":
+		return m, tea.Quit
+	}
+	return m, nil
+}
+
+func (m tourWizardModel) handleAIMCPSetupKey(key string) (tea.Model, tea.Cmd) {
+	switch key {
+	case "enter", " ":
+		return m.advanceToDeviceSetup()
+	case "q", "ctrl+c":
+		return m, tea.Quit
+	}
+	return m, nil
+}
+
+// advanceToDeviceSetup leaves the AI-tooling onboarding. When shell completions
+// aren't installed yet, it first offers to install them; otherwise it begins
+// device discovery directly.
+func (m tourWizardModel) advanceToDeviceSetup() (tea.Model, tea.Cmd) {
+	if !tourCompletionsInstalled() {
+		m.phase = phaseCompletions
+		m.menuCursor = 0
+		return m, nil
+	}
+	m.phase = phaseLoadDevices
+	return m, loadDevicesCmd()
+}
+
+// tourCompletionsInstalled reports whether shell completions have already been
+// installed through the CLI.
+func tourCompletionsInstalled() bool {
+	cfg, err := config.Load()
+	return err == nil && cfg.CompletionInstalled
+}
+
+func (m tourWizardModel) handleCompletionsKey(key string) (tea.Model, tea.Cmd) {
+	m.moveMenuCursor(key, 2)
+	switch key {
+	case "enter", " ":
+		if m.menuCursor == 0 {
+			return m, m.cmdInstallCompletions()
+		}
+		// Skip — proceed to device discovery.
+		m.phase = phaseLoadDevices
+		return m, loadDevicesCmd()
+	case "q", "ctrl+c":
+		return m, tea.Quit
+	}
+	return m, nil
+}
+
+// cmdInstallCompletions installs shell completions in-process, off the render
+// loop, so the alt-screen tour never flashes out to a subprocess. Install
+// output is discarded; the result is surfaced via the tour's own UI.
+func (m tourWizardModel) cmdInstallCompletions() tea.Cmd {
+	root := m.root
+	return func() tea.Msg {
+		if root == nil {
+			return tourCompletionInstallDoneMsg{}
+		}
+		err := installCompletionsForCurrentShell(root, io.Discard)
+		return tourCompletionInstallDoneMsg{err: err}
+	}
 }
 
 // handleTextInput routes key events to the embedded textinput and advances the
@@ -944,6 +1063,8 @@ func (m tourWizardModel) View() string {
 		body = m.viewAICheck(inner)
 	case phaseAIMCPSetup:
 		body = m.viewAIMCPSetup(inner)
+	case phaseCompletions:
+		body = m.viewCompletions(inner)
 	case phaseCloud:
 		body = m.viewCloud(inner)
 	case phaseError:
@@ -965,9 +1086,10 @@ func (m tourWizardModel) viewWelcome(w int) string {
 	sb.WriteString(wizSubStyle.Render("Let's get you set up from scratch — takes about 5 minutes.") + "\n\n")
 	sb.WriteString(wizBodyStyle.Width(w).Render(
 		"This wizard will:\n"+
-			"  1. Flash WendyOS onto your device\n"+
-			"  2. Boot it and connect over the network\n"+
-			"  3. Deploy a sample Python app\n\n"+
+			"  1. Connect your AI coding assistant (if installed)\n"+
+			"  2. Flash WendyOS onto your device\n"+
+			"  3. Boot it and connect over the network\n"+
+			"  4. Deploy a sample Python app\n\n"+
 			"If anything goes wrong you can restart at any time with:\n") + "\n")
 	sb.WriteString("  " + wizCodeStyle.Render("wendy tour") + "\n\n")
 	sb.WriteString(wizHintStyle.Render("Press Enter to begin"))
@@ -1017,7 +1139,7 @@ func (m tourWizardModel) viewOSInstalled(w int) string {
 
 	opts := []string{"Yes, WendyOS is already installed", "No, I need to install it"}
 	for i, opt := range opts {
-		if i == m.wifiCursor {
+		if i == m.menuCursor {
 			sb.WriteString(wizSelectedStyle.Render("▶ "+opt) + "\n")
 		} else {
 			sb.WriteString(wizNormalStyle.Render("  "+opt) + "\n")
@@ -1197,7 +1319,7 @@ func (m tourWizardModel) viewWifiQuestion(w int) string {
 
 	opts := wifiQuestionOptions(m.detectedSSID)
 	for i, opt := range opts {
-		if i == m.wifiCursor {
+		if i == m.menuCursor {
 			sb.WriteString(wizSelectedStyle.Render("▶ "+opt) + "\n")
 		} else {
 			sb.WriteString(wizNormalStyle.Render("  "+opt) + "\n")
@@ -1353,7 +1475,7 @@ func (m tourWizardModel) viewCreateProjectPrompt(w int) string {
 
 	opts := []string{"Yes, create a sample app", "No, skip"}
 	for i, opt := range opts {
-		if i == m.wifiCursor {
+		if i == m.menuCursor {
 			sb.WriteString(wizSelectedStyle.Render("▶ "+opt) + "\n")
 		} else {
 			sb.WriteString(wizNormalStyle.Render("  "+opt) + "\n")
@@ -1425,39 +1547,29 @@ func (m tourWizardModel) viewCreateProject(w int) string {
 
 func (m tourWizardModel) viewAICheck(w int) string {
 	var sb strings.Builder
-	sb.WriteString(wizTitleStyle.Render("Step 9 — Continue development") + "\n\n")
+	sb.WriteString(wizTitleStyle.Render("Connect your AI coding assistant") + "\n\n")
 
+	var detected []string
 	if m.claudePath != "" {
-		sb.WriteString(wizSuccessStyle.Render("Claude Code detected") + "\n")
-		sb.WriteString(wizBodyStyle.Width(w).Render(
-			"You can continue developing with Claude Code. Open your project in it:") + "\n\n")
-		sb.WriteString("  " + wizCodeStyle.Render(fmt.Sprintf("cd %s && claude", m.projectPath)) + "\n\n")
-		sb.WriteString(wizBodyStyle.Width(w).Render(
-			"Set up the Wendy MCP server so Claude can access your device directly?") + "\n\n")
-		opts := []string{"Yes, set up MCP now", "No, skip"}
-		for i, opt := range opts {
-			if i == m.wifiCursor {
-				sb.WriteString(wizSelectedStyle.Render("▶ "+opt) + "\n")
-			} else {
-				sb.WriteString(wizNormalStyle.Render("  "+opt) + "\n")
-			}
-		}
-		sb.WriteString("\n" + wizHintStyle.Render("↑/↓ navigate  ·  Enter select"))
-	} else if m.codexPath != "" {
-		sb.WriteString(wizSuccessStyle.Render("Codex detected") + "\n")
-		sb.WriteString(wizBodyStyle.Width(w).Render(
-			"Continue development with Codex from your project directory:") + "\n\n")
-		sb.WriteString("  " + wizCodeStyle.Render(fmt.Sprintf("cd %s && codex", m.projectPath)) + "\n\n")
-		sb.WriteString(wizHintStyle.Render("Enter to continue"))
-	} else {
-		sb.WriteString(wizBodyStyle.Width(w).Render(
-			"To get AI-assisted development for Wendy apps, install Claude Code:") + "\n\n")
-		sb.WriteString("  " + wizCodeStyle.Render("npm install -g @anthropic-ai/claude-code") + "\n\n")
-		sb.WriteString(wizBodyStyle.Width(w).Render(
-			"Then open your project and run:") + "\n\n")
-		sb.WriteString("  " + wizCodeStyle.Render(fmt.Sprintf("cd %s && claude", m.projectPath)) + "\n\n")
-		sb.WriteString(wizHintStyle.Render("Enter to continue"))
+		detected = append(detected, "Claude Code")
 	}
+	if m.codexPath != "" {
+		detected = append(detected, "Codex")
+	}
+	sb.WriteString(wizSuccessStyle.Render("Detected: "+strings.Join(detected, ", ")) + "\n\n")
+	sb.WriteString(wizBodyStyle.Width(w).Render(
+		"Set up the Wendy MCP server so your assistant can talk to your devices "+
+			"directly — list devices, manage containers, read telemetry, and more?") + "\n\n")
+
+	opts := []string{"Yes, set up MCP now", "No, skip"}
+	for i, opt := range opts {
+		if i == m.menuCursor {
+			sb.WriteString(wizSelectedStyle.Render("▶ "+opt) + "\n")
+		} else {
+			sb.WriteString(wizNormalStyle.Render("  "+opt) + "\n")
+		}
+	}
+	sb.WriteString("\n" + wizHintStyle.Render("↑/↓ navigate  ·  Enter select"))
 	return sb.String()
 }
 
@@ -1476,19 +1588,43 @@ func (m tourWizardModel) viewAIMCPSetup(w int) string {
 		}
 		sb.WriteString("\n")
 		sb.WriteString(wizBodyStyle.Width(w).Render(
-			"Restart Claude Code to activate the Wendy MCP server.\n"+
-				"Claude will now have tools to list devices, manage containers,\n"+
+			"Restart your AI assistant to activate the Wendy MCP server.\n"+
+				"It will then have tools to list devices, manage containers,\n"+
 				"read telemetry, and more.") + "\n\n")
 		sb.WriteString(wizHintStyle.Render("Enter to continue"))
 	}
 	return sb.String()
 }
 
+func (m tourWizardModel) viewCompletions(w int) string {
+	var sb strings.Builder
+	sb.WriteString(wizTitleStyle.Render("Enable shell completions") + "\n\n")
+	sb.WriteString(wizBodyStyle.Width(w).Render(
+		"Install tab completions for the `wendy` command so your shell can "+
+			"complete subcommands, flags, and device names?") + "\n\n")
+
+	opts := []string{"Yes, install completions", "No, skip"}
+	for i, opt := range opts {
+		if i == m.menuCursor {
+			sb.WriteString(wizSelectedStyle.Render("▶ "+opt) + "\n")
+		} else {
+			sb.WriteString(wizNormalStyle.Render("  "+opt) + "\n")
+		}
+	}
+	sb.WriteString("\n" + wizHintStyle.Render("↑/↓ navigate  ·  Enter select"))
+	return sb.String()
+}
+
 func (m tourWizardModel) viewCloud(w int) string {
 	var sb strings.Builder
 	sb.WriteString(wizSuccessStyle.Render("You're all set!") + "\n\n")
+	intro := "Your device is running, your first app is deployed."
+	if m.projectPath == "" {
+		// Reached by skipping the sample-app deployment.
+		intro = "Your device is up and running."
+	}
 	sb.WriteString(wizBodyStyle.Width(w).Render(
-		"Your device is running, your first app is deployed.\n\n"+
+		intro+"\n\n"+
 			"When you're ready to manage multiple devices remotely,\n"+
 			"Wendy Cloud can help:") + "\n\n")
 	sb.WriteString("  " + wizCodeStyle.Render("wendy auth login") + "\n\n")
@@ -1867,6 +2003,7 @@ func newTourCmd() *cobra.Command {
 				return fmt.Errorf("wendy tour requires an interactive terminal")
 			}
 			m := newTourWizardModel()
+			m.root = cmd.Root()
 			_, err := tea.NewProgram(m, tea.WithAltScreen()).Run()
 			return err
 		},

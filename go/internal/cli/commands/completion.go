@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 )
 
 // completionRcSentinel marks Wendy-managed lines in a user's shell rc file so
@@ -108,7 +109,11 @@ func newCompletionInstallCmd() *cobra.Command {
 				return nil
 			}
 
-			return performInstall(c.Root(), c.ErrOrStderr(), shell, plan)
+			if err := performInstall(c.Root(), c.ErrOrStderr(), shell, plan); err != nil {
+				return err
+			}
+			markCompletionInstalled()
+			return nil
 		},
 	}
 
@@ -265,6 +270,46 @@ func powershellPlan(goos, home string) installPlan {
 		rcBlock:    rcBlock,
 		notes:      notes,
 	}
+}
+
+// installCompletionsForCurrentShell detects the current shell, computes its
+// install plan, and writes the completion script (plus any rc edit), emitting
+// human-readable progress to stderr. On success it records, best-effort, that
+// completions are installed so the CLI stops offering to install them.
+//
+// It is shared by the explicit `wendy completion install` command, the ambient
+// install prompt in the root command, and the `wendy tour` wizard.
+func installCompletionsForCurrentShell(root *cobra.Command, stderr io.Writer) error {
+	shell, err := detectShell("", runtime.GOOS, os.Getenv)
+	if err != nil {
+		return err
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	plan, err := computeInstallPlan(shell, runtime.GOOS, home, os.Getenv, fileExists)
+	if err != nil {
+		return err
+	}
+	if err := performInstall(root, stderr, shell, plan); err != nil {
+		return err
+	}
+	markCompletionInstalled()
+	return nil
+}
+
+// markCompletionInstalled records, best-effort, that shell completions have
+// been installed through the CLI. Failures to load or save config are ignored:
+// the worst case is the CLI offers to install completions again, which is
+// idempotent.
+func markCompletionInstalled() {
+	cfg, err := config.Load()
+	if err != nil || cfg.CompletionInstalled {
+		return
+	}
+	cfg.CompletionInstalled = true
+	_ = config.Save(cfg)
 }
 
 func performInstall(root *cobra.Command, stderr io.Writer, shell string, plan installPlan) error {

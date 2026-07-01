@@ -68,13 +68,21 @@ ip addr show enxXXXXXXXXXXXX    # should show 10.42.0.1/24 if NM sharing is acti
 nmcli connection show | grep -i usb
 ```
 
-If the host is not set up for sharing, run:
+If the host is not set up for sharing, the simplest fix on Linux is to run
+`wendy discover` and accept the offered USB setup — it configures a NetworkManager
+"shared" profile (serving DHCP to the device) and installs a udev rule so
+ModemManager leaves the gadget alone.
+
+The equivalent manual steps:
 ```bash
 sudo ./scripts/setup-host-usb-link-local.sh install
 # Or for full internet sharing (NM):
 nmcli connection add type ethernet ifname enxXXXXXXXXXXXX con-name usb-gadget-sharing ipv4.method shared
 nmcli connection up usb-gadget-sharing
 ```
+
+To remove what the CLI installed: `nmcli connection delete wendy-usb` and
+`sudo rm -f /etc/udev/rules.d/99-wendy-usb.rules`.
 
 **Step 2 — check NetworkManager on the device:**
 ```bash

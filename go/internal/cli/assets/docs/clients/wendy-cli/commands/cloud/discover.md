@@ -27,8 +27,11 @@ The TUI displays a table with the following columns for each device:
 |--------|-------------|
 | Name | Device name |
 | Type | Hardware device type |
-| Address | IP address reported by the cloud |
 | Version | Running agent version (fetched live; `—` while loading) |
+
+The device's IP address is not shown as a column — cloud devices are reached by
+name/ID through the broker tunnel. The address is still included in the
+clipboard/JSON output (see below).
 
 ### Keyboard shortcuts
 
@@ -92,7 +95,7 @@ wendy cloud discover --all
 Point at a specific cloud gRPC endpoint:
 
 ```sh
-wendy cloud discover --cloud-grpc grpc.cloud.wendy.sh:443
+wendy cloud discover --cloud-grpc grpc.cloud.wendy.dev:443
 ```
 
 Output JSON (non-interactive / scripting):

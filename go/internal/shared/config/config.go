@@ -24,6 +24,32 @@ type Config struct {
 	// the MCP server config and bundled skills. Empty means the user has never
 	// run setup, so auto-refresh stays off.
 	LastMCPSetupVersion string `json:"lastMCPSetupVersion,omitempty"`
+	// CompletionInstalled is set once shell completions have been installed
+	// through the CLI (via `wendy completion install` or an accepted prompt).
+	// While false, the CLI may offer to install completions.
+	CompletionInstalled bool `json:"completionInstalled,omitempty"`
+	// CompletionPromptDismissed is set when the user declines the ambient
+	// "install completions?" prompt with "n". Once true, that prompt never
+	// reappears.
+	CompletionPromptDismissed bool `json:"completionPromptDismissed,omitempty"`
+	// LastCompletionPromptCheck records when the ambient completion prompt was
+	// last shown (RFC3339). It throttles the prompt so an unanswered prompt
+	// (e.g. Ctrl-C) doesn't reappear on every invocation.
+	LastCompletionPromptCheck string `json:"lastCompletionPromptCheck,omitempty"`
+	// OptimizeTipShownAt throttles the `wendy project optimize` tip to once per
+	// day per project. Keyed by the project directory, value is an RFC3339 date
+	// (YYYY-MM-DD) of the last time the tip (or a build-time optimize scan) was
+	// surfaced for that project.
+	OptimizeTipShownAt map[string]string `json:"optimizeTipShownAt,omitempty"`
+	// DevicePins binds a device hostname to the organisation + cloud host its
+	// TLS identity must belong to (WDY-1149), so a different trust domain
+	// answering at that hostname is caught. Renewal/re-enrollment within the
+	// same org+cloud does not trip it. Keyed by normalized hostname.
+	DevicePins map[string]DevicePin `json:"devicePins,omitempty"`
+	// DefaultOrgID is the organization used when a command needs to target a
+	// specific org and the user belongs to more than one. Zero means no default;
+	// the CLI will then show a picker or use the sole available org.
+	DefaultOrgID int32 `json:"defaultOrgId,omitempty"`
 }
 
 // AuthConfig holds authentication details for a cloud environment.
@@ -135,10 +161,24 @@ func Save(cfg *Config) error {
 	return nil
 }
 
-// AddAuth adds or replaces an auth entry, matching on cloudDashboard and cloudGRPC.
+// authEntryOrgID returns the organization ID from the first certificate in an
+// auth entry, or 0 if none is present.
+func authEntryOrgID(a AuthConfig) int {
+	if len(a.Certificates) > 0 {
+		return a.Certificates[0].OrganizationID
+	}
+	return 0
+}
+
+// AddAuth adds or replaces an auth entry. Matching is by (cloudDashboard,
+// cloudGRPC, orgID) so that multiple orgs on the same cloud endpoint each
+// keep their own entry instead of overwriting one another.
 func (c *Config) AddAuth(auth AuthConfig) {
+	incomingOrg := authEntryOrgID(auth)
 	for i, existing := range c.Auth {
-		if existing.CloudDashboard == auth.CloudDashboard && existing.CloudGRPC == auth.CloudGRPC {
+		if existing.CloudDashboard == auth.CloudDashboard &&
+			existing.CloudGRPC == auth.CloudGRPC &&
+			authEntryOrgID(existing) == incomingOrg {
 			c.Auth[i] = auth
 			return
 		}

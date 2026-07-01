@@ -11,6 +11,16 @@ Wendy uses mutual TLS (mTLS) to authenticate both devices and CLI clients agains
 
 The device's mTLS CA pool is built from the `chainPem` field in `provisioning.json`. CLI clients must present a certificate whose chain terminates at that same CA. If `chainPem` is absent or empty, the agent refuses to build a TLS configuration and returns an error indicating that the device may need to be re-provisioned.
 
+## Server certificate verification
+
+The CLI verifies device server certificates on all mTLS connections (BLE, LAN gRPC, and cloud tunnel). Verification includes:
+
+1. **Chain validation** — The device's server certificate is validated against the CA chain from the CLI's auth session. ML-DSA chain certificates are handled specially since Go's `crypto/x509` cannot parse them.
+
+2. **Organization matching** — The server certificate's Wendy org ID is extracted and compared against the CLI's expected org ID. If the device belongs to a different organization than the CLI session, the connection is rejected with an `OrgMismatchError`. For BLE connections, the CLI automatically retries with a matching certificate from another org if one is available.
+
+3. **SPKI pinning (BLE)** — On first BLE connection to a device, its SPKI fingerprint is pinned in `~/.config/wendy/known_devices.json`. Subsequent connections verify the device presents the same fingerprint. If the fingerprint differs, a warning is printed to stderr (potential MITM or legitimate rotation).
+
 ## CA key rollover
 
 The trust bundle may contain multiple CA certificates sharing the same subject DN. This is normal during a CA key rollover, where an old CA and a new CA temporarily coexist in the bundle. The agent's ML-DSA client certificate verifier (`verifyMLDSAClientCert`) tries every CA whose subject DN matches the client certificate's issuer DN. Verification succeeds as soon as any matching CA validates the certificate. If all matching CAs fail, the error from the last attempted CA is returned. If no CA in the pool has a matching subject DN, the verifier returns a "client certificate issuer not found in trusted CA pool" error.
@@ -30,6 +40,10 @@ effectiveNow = max(time.Now(), provisioningCert.NotBefore)
 When the device clock is behind the floor at startup, `wendy-agent` logs a `WARN` that includes the device clock, the floor, and how far behind the clock is. If the provisioning certificate cannot be parsed, the floor is zero (disabled) and a `WARN` notes that NTP clock-skew protection is off. Once NTP synchronises the clock the discrepancy disappears on its own.
 
 The systemd unit also orders the agent after `time-sync.target` (`After=`/`Wants=`) so NTP synchronisation is attempted as early as possible; the floor is the primary guard and does not depend on that ordering.
+
+For additional clock resilience, the agent uses **Roughtime** — a cryptographically-signed time protocol — to obtain a trusted timestamp from multiple public servers. Roughtime sync runs on startup and periodically thereafter, advancing the system clock when the verified time is ahead of the local clock.
+
+When connecting to a device, the CLI automatically checks for clock skew. If the device clock lags by more than 2 minutes, the CLI fetches a signed Roughtime proof and relays it to the device, which verifies the signature and advances its clock. The CLI's own clock is never sent as authoritative time — only used to decide whether to relay. The CLI can also broadcast Roughtime time to nearby devices via `wendy device sync-time`.
 
 ## Local development with pki-core
 

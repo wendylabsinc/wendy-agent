@@ -205,7 +205,7 @@ Then run the agent with:
 sudo ./bin/wendy-agent
 ```
 
-The agent listens on port `50051` (plaintext, pre-provisioning) and port `50052` (mTLS, post-provisioning). The OTEL collector listens on `4317` (gRPC) and `4318` (HTTP). All ports can be overridden via environment variables — see [debugging.md](debugging.md).
+The agent listens on port `50051` (plaintext, pre-provisioning) and port `50052` (mTLS, post-provisioning). It also serves a local unix socket at `/run/wendy/agent.sock` for on-device containers with the admin entitlement. The OTEL collector listens on `4317` (gRPC) and `4318` (HTTP). All ports can be overridden via environment variables — see [debugging.md](debugging.md).
 
 ## Dependency License Checks
 

@@ -1,0 +1,91 @@
+---
+title: Hardware Access
+description: Enable cameras, audio, Bluetooth, GPUs, and other device hardware for WendyOS apps
+---
+
+## Hardware Access
+
+WendyOS apps run in isolated containers by default. That means hardware such as cameras, microphones, speakers, Bluetooth adapters, and GPUs is not exposed to an app unless the app asks for it with an entitlement.
+
+Entitlements are stored in your project's `wendy.json` file. The easiest way to add one is with the Wendy CLI:
+
+```bash
+wendy project entitlements add
+```
+
+<CliShot flow="entitlements" step="add" alt="The Wendy CLI interactive menu listing the available entitlements to add, each with a short description" />
+
+Run the command with no arguments for an interactive menu, or pass the entitlement you already know you need:
+
+```bash
+wendy project entitlements add camera
+wendy project entitlements add audio
+wendy project entitlements add bluetooth
+wendy project entitlements add gpu
+```
+
+After updating entitlements, deploy as usual:
+
+```bash
+wendy run
+```
+
+<CliShot flow="run" step="deploy" alt="The Wendy CLI deploying an app to a WendyOS device after updating entitlements" />
+
+## Common Hardware
+
+| Hardware | Entitlement | Use When |
+|----------|-------------|----------|
+| USB or CSI camera | `camera` | Capturing frames, streaming video, computer vision |
+| Microphone | `audio` | Recording, voice commands, audio analysis |
+| Speaker or audio output | `audio` | Playback, alerts, voice responses |
+| Bluetooth adapter | `bluetooth` | BLE devices, Bluetooth sensors, paired accessories |
+| NVIDIA GPU | `gpu` | CUDA, ML inference, accelerated computer vision |
+| Web servers or network APIs | `network` | Serving HTTP, WebSockets, or accepting inbound connections |
+
+## Feature Guides
+
+- [Camera Access](/docs/hardware/camera)
+- [Microphone Access](/docs/hardware/microphone)
+- [Speaker Access](/docs/hardware/speakers)
+- [Bluetooth Access](/docs/hardware/bluetooth)
+- [GPU Access](/docs/hardware/gpu)
+
+## Quick Examples
+
+### Camera App
+
+```bash
+wendy project entitlements add camera
+```
+
+This allows the app to access video capture devices such as `/dev/video0`.
+
+### Microphone and Speaker App
+
+```bash
+wendy project entitlements add audio
+```
+
+This allows the app to use ALSA audio devices for recording and playback.
+
+### Bluetooth App
+
+```bash
+wendy project entitlements add bluetooth
+```
+
+Bluetooth supports different modes. Use the interactive menu if you are not sure which mode your app needs.
+
+### Camera with GPU Acceleration
+
+```bash
+wendy project entitlements add camera
+wendy project entitlements add gpu
+```
+
+This is common for computer vision and ML inference workloads on NVIDIA Jetson devices.
+
+## Learn More
+
+For all entitlement types, options, and `wendy.json` examples, see [App Entitlements](/docs/device/entitlements).

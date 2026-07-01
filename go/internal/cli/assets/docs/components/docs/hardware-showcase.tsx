@@ -22,8 +22,8 @@ const boards: Board[] = [
     ],
   },
   {
-    name: 'Raspberry Pi 5',
-    tagline: 'Pi 5 (8GB recommended)',
+    name: 'Raspberry Pi',
+    tagline: 'Pi 3, 4 & 5 (8GB Pi 5 recommended)',
     logo: '/icons/icons8-raspberry-pi.svg',
     animation: '/images/boards/raspberry-pi-5.webp',
     features: [

@@ -327,10 +327,6 @@ func (m cloudDiscoverModel) viewLine(line string) string {
 func cloudDiscoverTableRows(assets []*cloudpb.Asset, versions map[int32]*agentpb.GetAgentVersionResponse) []bubbleTable.Row {
 	rows := make([]bubbleTable.Row, 0, len(assets))
 	for _, a := range assets {
-		addr := a.GetIpAddress()
-		if addr == "" {
-			addr = "—"
-		}
 		devType := humanReadableDeviceType(a.GetDeviceType())
 		ver := "—"
 		if v := versions[a.GetId()]; v != nil {
@@ -339,7 +335,7 @@ func cloudDiscoverTableRows(assets []*cloudpb.Asset, versions map[int32]*agentpb
 				devType = humanReadableDeviceType(v.GetDeviceType())
 			}
 		}
-		rows = append(rows, bubbleTable.Row{"", a.GetName(), devType, addr, ver})
+		rows = append(rows, bubbleTable.Row{"", a.GetName(), devType, ver})
 	}
 	return rows
 }

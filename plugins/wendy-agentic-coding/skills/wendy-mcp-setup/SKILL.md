@@ -21,6 +21,7 @@ If the MCP server should connect to a device on startup, either set a default de
 ```bash
 wendy discover --json --timeout 5s
 wendy device set-default <hostname>
+wendy device get-default
 ```
 
 ## Automatic setup

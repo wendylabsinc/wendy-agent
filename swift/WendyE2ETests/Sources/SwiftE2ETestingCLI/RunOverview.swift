@@ -192,6 +192,9 @@ private func makeRunOverview(in runURL: URL) throws -> E2ERunOverview {
                         targetName: targetName,
                         attempt: attemptName
                     )
+                    if e2eAttemptInfrastructureFailureDetail(at: attemptArtifactsURL) != nil {
+                        continue
+                    }
                     let result = try overviewObservationResult(
                         observationURL: attemptURL,
                         attemptArtifactsURL: attemptArtifactsURL
@@ -215,6 +218,7 @@ private func makeRunOverview(in runURL: URL) throws -> E2ERunOverview {
                 }
 
                 attempts.sort { $0.attempt < $1.attempt }
+                guard !attempts.isEmpty else { continue }
                 let outcome = overviewOutcome(for: attempts.map(\.status))
                 hasTargetOutcome = true
 
@@ -268,9 +272,12 @@ private func makeRunOverview(in runURL: URL) throws -> E2ERunOverview {
         let observedAttempts = observedAttemptsByTarget[targetName, default: []]
         for attemptURL in try overviewDirectoryChildren(of: targetURL) {
             let attemptName = attemptURL.lastPathComponent
-            guard !observedAttempts.contains(attemptName),
-                let exitStatus = e2eAttemptExitStatus(at: attemptURL), exitStatus != 0
-            else {
+            guard !observedAttempts.contains(attemptName) else {
+                continue
+            }
+            let infrastructureFailure = e2eAttemptInfrastructureFailureDetail(at: attemptURL)
+            let exitStatus = e2eAttemptExitStatus(at: attemptURL)
+            guard infrastructureFailure != nil || (exitStatus != nil && exitStatus != 0) else {
                 continue
             }
 
@@ -327,8 +334,7 @@ private func overviewObservationResult(
     observationURL: URL,
     attemptArtifactsURL: URL
 ) throws -> OverviewObservationResult {
-    let resultURL = attemptArtifactsURL.appendingPathComponent("test-results.xml")
-    guard FileManager.default.fileExists(atPath: resultURL.path) else {
+    guard let resultURL = e2eAttemptXUnitURL(at: attemptArtifactsURL) else {
         return OverviewObservationResult(
             status: .unknown,
             durationSeconds: nil,
@@ -400,7 +406,8 @@ private func overviewArtifacts(
             runURL: runURL
         ),
         testResults: overviewRelativeFilePath(
-            fileName: "test-results.xml",
+            fileName: e2eAttemptXUnitURL(at: attemptArtifactsURL)?.lastPathComponent
+                ?? "test-results.xml",
             attemptURL: attemptArtifactsURL,
             runURL: runURL
         )

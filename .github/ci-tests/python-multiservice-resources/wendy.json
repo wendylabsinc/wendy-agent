@@ -1,0 +1,20 @@
+{
+    "appId": "sh.wendy.ci.python-multiservice-resources",
+    "version": "1.0.0",
+    "resources": {
+        "memory": "256Mi",
+        "pids": 256
+    },
+    "services": {
+        "db": {
+            "context": "db"
+        },
+        "api": {
+            "context": "api",
+            "dependsOn": ["db"],
+            "resources": {
+                "memory": "128Mi"
+            }
+        }
+    }
+}

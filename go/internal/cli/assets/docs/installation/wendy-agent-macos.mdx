@@ -1,31 +1,25 @@
 ---
-title: Wendy for Mac
+title: Mac Mini
 description: Deploy and debug native macOS apps on Apple Silicon Mac targets with the Wendy CLI.
 ---
 
 import { ArrowRight } from 'lucide-react';
 
 <Callout type="warn">
-  Wendy for Mac is beta software. Apple Silicon only — Intel Macs are not supported.
+  Headless Mac is beta software. Apple Silicon only — Intel Macs are not supported.
 </Callout>
 
 ## Overview
 
-Wendy for Mac lets you use any Apple Silicon Mac as a Wendy target. Install Wendy Agent on the Mac, point the CLI at it, and deploy native macOS apps the same way you deploy to a Jetson or Raspberry Pi — with `wendy run`.
-
-Apps run as native macOS processes, not Linux containers. This makes Wendy for Mac a natural fit for:
-
-- **Headless Mac servers** — Mac minis and Mac Studios running AI inference, media processing, or robotics workloads without a display.
-- **Mixed fleets** — teams that deploy to both WendyOS edge devices and Mac targets from the same CLI and CI pipeline.
-- **Mac-native AI apps** — apps that depend on Core ML, Metal, or the Apple Neural Engine alongside standard Wendy tooling.
+Headless Mac turns any Apple Silicon Mac into a Wendy target: install Wendy Agent, point the CLI at it, and deploy native macOS apps with `wendy run` — same as a Jetson or Pi. Apps run as native macOS processes (not Linux containers), making it a fit for headless Mac mini/Studio servers, mixed WendyOS + Mac fleets, and Core ML / Metal / Neural Engine apps.
 
 ## Requirements
 
 - An Apple Silicon Mac target running macOS 15 or later
-- Wendy CLI installed on a Mac development machine ([Developer Machine Setup](/docs/installation/developer-machine-setup))
+- Wendy CLI on a Mac development machine ([Developer Machine Setup](/docs/installation/developer-machine-setup)) — it builds the app locally before syncing to the target
 - A native macOS SwiftPM app project to deploy
 
-Deploying native macOS apps requires a Mac development machine because the Wendy CLI builds the app locally before syncing it to the Mac target. If the same Mac is both your development machine and target, install both the CLI and Wendy Agent on that Mac.
+If one Mac is both development machine and target, install both the CLI and Wendy Agent on it.
 
 ## Installation
 
@@ -78,22 +72,9 @@ wendy --device {hostname}:50051 device info --json
 
 The response should report `"os": "darwin"` and `"cpuArchitecture": "arm64"`.
 
-## Discovery and Default Device
+## Discovery
 
-Wendy for Mac advertises over Bonjour/mDNS as `_wendyos._udp`. Use `wendy discover` to find it on the local network.
-
-Save the Mac as your default Wendy device:
-
-```bash
-wendy device set-default {hostname}:50051
-wendy device info --json
-```
-
-Clear the default when you want commands to require an explicit target:
-
-```bash
-wendy device unset-default
-```
+Headless Mac advertises over Bonjour/mDNS as `_wendyos._udp`. Use `wendy discover` to find it on the local network.
 
 ## Deploying Apps
 
@@ -102,6 +83,8 @@ From a native macOS SwiftPM project configured for a Darwin target:
 ```bash
 wendy run --device {hostname}:50051
 ```
+
+<CliShot flow="run" step="deploy" alt="The wendy run command building a native macOS app and deploying it to a Mac target" />
 
 If you set the Mac as your default device, omit `--device`:
 
@@ -138,7 +121,7 @@ only applies to native Mac deployments.
 ## What Works
 
 - Apple Silicon Mac targets running macOS 15 or later
-- Installing Wendy for Mac with Homebrew or the release zip
+- Installing Headless Mac with Homebrew or the release zip
 - Deploying native SwiftPM macOS apps with `wendy run`
 - Discovering Mac targets over Bonjour/mDNS
 - Setting the Mac as your default Wendy device

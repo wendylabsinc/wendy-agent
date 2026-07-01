@@ -31,6 +31,17 @@ import (
 const (
 	defaultBrokerPort = "50052"
 	maxCloudAssets    = 10_000
+
+	// cloudKeepalivePing is how often the client sends an HTTP/2 keepalive
+	// ping over the tunnel. It must stay >= the agent's MinTime enforcement
+	// policy (10s) and frequent enough to keep the tunnel/NAT warm.
+	cloudKeepalivePing = 30 * time.Second
+	// cloudKeepaliveACKTimeout is how long to wait for a keepalive ACK before
+	// declaring the connection dead. It is generous because long OS-update
+	// streams run while the device is saturated (artifact download + mender
+	// install), and a busy device can take well over the usual 10s to ACK a
+	// ping; a tighter window tears down the stream mid-install.
+	cloudKeepaliveACKTimeout = 20 * time.Second
 )
 
 type closeFunc func()
@@ -95,8 +106,9 @@ func connectCloudAsset(ctx context.Context, auth *config.AuthConfig, asset *clou
 		}
 	}()
 
-	// Provisioned agents only serve mTLS on agentPort+1 (50052); the plaintext
-	// port (50051) is shut down after provisioning.
+	// Provisioned agents serve mTLS on agentPort+1 (50052) for remote clients; the
+	// plaintext port (50051) is shut down after provisioning. (On-device containers
+	// with the admin entitlement can reach the agent via the local unix socket.)
 	tunnelConn, err := openBrokerTunnel(ctx, brokerConn, auth, asset.GetId(), defaultAgentPort+1)
 	if err != nil {
 		return nil, fmt.Errorf("opening cloud tunnel to %s: %w", asset.GetName(), err)
@@ -134,8 +146,8 @@ func connectCloudAsset(ctx context.Context, auth *config.AuthConfig, asset *clou
 		grpc.WithReadBufferSize(256*1024),
 		grpc.WithWriteBufferSize(256*1024),
 		grpc.WithKeepaliveParams(keepalive.ClientParameters{
-			Time:                30 * time.Second,
-			Timeout:             10 * time.Second,
+			Time:                cloudKeepalivePing,
+			Timeout:             cloudKeepaliveACKTimeout,
 			PermitWithoutStream: true,
 		}),
 	)
@@ -150,6 +162,13 @@ func connectCloudAsset(ctx context.Context, auth *config.AuthConfig, asset *clou
 	agentConn.CertInfo = &cert
 	agentConn.RegistryDialer = func(ctx context.Context, port int) (net.Conn, error) {
 		return openBrokerTunnel(ctx, brokerConn, auth, asset.GetId(), uint32(port))
+	}
+	// Pin reconnect to this exact asset (by id) so a post-restart reconnect
+	// can't drift to a different cloud device — the asset name may be empty or
+	// ambiguous, and re-running device discovery while the agent is mid-restart
+	// can match whichever other device happens to be reachable.
+	agentConn.Reconnect = func(rctx context.Context) (*grpcclient.AgentConnection, error) {
+		return waitForCloudAgentRestart(rctx, auth, asset, brokerURL)
 	}
 	agentConn.ExtraClosers = append(agentConn.ExtraClosers, closeFunc(closeTunnel), brokerConn)
 	cleanupBroker = false
@@ -251,8 +270,8 @@ func dialCloudBroker(auth *config.AuthConfig, brokerURL string) (*grpc.ClientCon
 		grpc.WithReadBufferSize(256*1024),
 		grpc.WithWriteBufferSize(256*1024),
 		grpc.WithKeepaliveParams(keepalive.ClientParameters{
-			Time:                30 * time.Second,
-			Timeout:             10 * time.Second,
+			Time:                cloudKeepalivePing,
+			Timeout:             cloudKeepaliveACKTimeout,
 			PermitWithoutStream: true,
 		}),
 	)
@@ -393,7 +412,7 @@ func pickCloudDevice(ctx context.Context, auth *config.AuthConfig, deviceName, b
 
 	var assets []*cloudpb.Asset
 	if isInteractiveTerminal() {
-		prog := tea.NewProgram(tui.NewSpinner("Fetching devices from cloud..."))
+		prog := tui.NewProgressProgram(tui.NewSpinner("Fetching devices from cloud..."))
 		var fetchErr error
 		go func() {
 			assets, fetchErr = fetchCloudAssets(ctx, auth)
@@ -474,8 +493,8 @@ func dialCloudGRPC(auth *config.AuthConfig) (*grpc.ClientConn, error) {
 		grpc.WithReadBufferSize(256*1024),
 		grpc.WithWriteBufferSize(256*1024),
 		grpc.WithKeepaliveParams(keepalive.ClientParameters{
-			Time:                30 * time.Second,
-			Timeout:             10 * time.Second,
+			Time:                cloudKeepalivePing,
+			Timeout:             cloudKeepaliveACKTimeout,
 			PermitWithoutStream: true,
 		}),
 	)

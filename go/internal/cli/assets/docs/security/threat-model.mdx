@@ -1,0 +1,135 @@
+---
+title: Threat Model
+description: WendyOS architecture, trust boundaries, and STRIDE threat analysis with current mitigation status
+---
+
+## Overview
+
+WendyOS is threat-modeled using STRIDE across the agent, CLI, embedded OCI registry, telemetry,
+and BLE surfaces. This page summarizes the architecture, trust boundaries, and the status of
+each control. We publish it because security you can audit is security you can trust.
+
+## Architecture & Trust Boundaries
+
+### System Architecture
+
+```
+┌──────────────────────────────────────────────────────────┐
+│  Wendy Device (Edge)                                     │
+│                                                          │
+│  ┌─────────────┐    gRPC mTLS     ┌──────────────────┐  │
+│  │  wendy CLI  │◄────────────────►│  wendy-agent     │  │
+│  │  (user)     │                  │  (root daemon)   │  │
+│  └─────────────┘                  │                  │  │
+│                                   │  ┌─────────────┐ │  │
+│  ┌─────────────┐    BLE L2CAP     │  │ containerd  │ │  │
+│  │  Mobile App │◄────────────────►│  │ (containers)│ │  │
+│  │  (user)     │   mTLS (post)    │  └─────────────┘ │  │
+│  └─────────────┘                  │                  │  │
+│                                   │  ┌─────────────┐ │  │
+│                                   │  │ OCI Registry│ │  │
+│                                   │  │ :5000       │ │  │
+│                                   └──────────────────┘  │
+│                                          │               │
+│                          ┌───────────────┼──────────────┐│
+│                          │D-Bus          │gRPC TLS      ││
+│                   ┌──────▼──────┐ ┌─────▼────────────┐ ││
+│                   │NetworkMgr / │ │ Wendy Cloud       │ ││
+│                   │BlueZ        │ │ (pki-core, tunnel)│ ││
+│                   └─────────────┘ └──────────────────┘ ││
+└──────────────────────────────────────────────────────────┘
+```
+
+### Network Ports
+
+| Port | Protocol | Auth | Active When |
+|------|----------|------|-------------|
+| 50051 | gRPC plaintext | None | Unprovisioned devices only; provisioning is the mitigation (see TM-S-01) |
+| 50052 | gRPC mTLS | Client cert | Post-provisioned |
+| 4317 | OTEL gRPC | None | Always (loopback-bound) |
+| 4318 | OTEL HTTP | None | Always (loopback-bound) |
+| 5000 | OCI Registry | None / TLS | HTTP pre-provisioning, HTTPS post-provisioned |
+| BLE L2CAP | BLE L2CAP mTLS | Client cert | Post-provisioned |
+
+### Trust Boundaries
+
+| Boundary | Description |
+|----------|-------------|
+| **TB-1** | Network perimeter — Internet / LAN to device ports |
+| **TB-2** | Provisioning state — unprovisioned (no auth) vs. provisioned (mTLS) |
+| **TB-3** | Container isolation — host root context vs. container `appuser` |
+| **TB-4** | D-Bus proxy — container app vs. system D-Bus (xdg-dbus-proxy filtered) |
+| **TB-5** | Volume scope — per-app named volume vs. shared-name volumes |
+| **TB-6** | Cloud trust — device cert chain signed by Wendy CA |
+
+## Threat Summary (STRIDE)
+
+Each row leads with the existing control, then notes hardening underway. Severity reflects inherent risk before mitigations are applied; the status badge reflects the current state of the relevant control.
+
+### Spoofing
+
+| ID | Severity | Status | Summary |
+|----|----------|--------|---------|
+| TM-S-01 | HIGH (inherent; accepted by design) | 📋 Planned | Mitigated by design: unprovisioned devices use a plaintext channel by design; provisioning is the mitigation and establishes mTLS for all subsequent communication. The pre-provisioning window is warned to operators; pre-enrollment at imaging time eliminates it entirely. Hardening underway: narrowing the plaintext port to `ProvisioningService` only, and adding ECDH-protected enrollment token transit. |
+| TM-S-02 | HIGH | 📋 Planned | Mitigated by TLS 1.2+ enforcement on cloud connections and CLI host pinning on `set-default`. Hardening underway: embedding a pinned cloud CA in the firmware image. |
+| TM-S-03 | HIGH | 📋 Planned | Mitigated by: certificates stored at user-level permissions, a 2-year maximum lifetime, and CLI org/host pinning rejecting certs from other orgs. The 2-year ceiling is deliberate — it lets air-gapped and intermittently connected devices operate without relying on frequent online renewal; connected deployments can use shorter lifetimes. Hardening underway: certificate revocation infrastructure (OCSP/CRL) and automatic renewal for connected devices. Offline devices will require a short-lived, offline-capable operator certificate to interact; that handshake staples an OCSP revocation list, so revocation is enforced even without an online path on the device itself. Developer certificates will also carry operator-specific permissions, so each RPC is authorized against the caller's cert claims rather than treating any valid cert as fully privileged — limiting the blast radius of a stolen certificate. |
+
+### Tampering
+
+| ID | Severity | Status | Summary |
+|----|----------|--------|---------|
+| TM-T-01 | HIGH | 🛠 In progress | Mitigated by: containers running as unprivileged `appuser` with namespace isolation, capability dropping, and a baseline seccomp profile. Hardening underway: OCI image signature verification (Cosign / Notary v2) before container start. |
+| TM-T-02 | HIGH | 🛠 In progress | Mitigated by: SHA256 hash verification and mTLS required to call `UpdateAgent`. Hardening underway: binary signature verification against a pinned key embedded in the current binary. |
+| TM-T-03 | HIGH | 🛠 In progress | Mitigated by: OS updates are delivered by the in-house `wendyos-update` tool (deployed), which has replaced Mender. Hardening underway: HTTPS-only artifact downloads with strict TLS validation, and OS artifact code-signing verified against a pinned key before install — part of a coordinated signing rollout alongside `wendy-agent` binary signing and cosign verification for container images. |
+| TM-T-04 | MEDIUM | 📋 Planned | Mitigated by: volume access requires an explicit entitlement declaration. Hardening underway: namespacing volumes by app identity by default. |
+
+### Repudiation
+
+| ID | Severity | Status | Summary |
+|----|----------|--------|---------|
+| TM-R-01 | MEDIUM | 📋 Planned | Mitigated by: agent events written to stdout/journald; debug logging via `WENDY_DEBUG`. Hardening underway: structured, tamper-evident audit log for all state-changing RPCs, forwarded to a remote sink. |
+
+### Information Disclosure
+
+| ID | Severity | Status | Summary |
+|----|----------|--------|---------|
+| TM-I-01 | MEDIUM | 📋 Planned | Mitigated by: OTEL receivers bound to loopback interfaces only (both IPv4 and IPv6); remote access is blocked. Hardening underway: mTLS or bearer-token auth for local OTEL submissions. |
+| TM-I-02 | HIGH | 🛠 In progress | Mitigated by: key files are mode 0o600, root-owned; the config partition copy is deleted after first boot. Hardening underway: HSM/TPM-backed key protection (root of trust) or non-exportable kernel keyring storage. |
+| TM-I-03 | HIGH | 📋 Planned | Mitigated by: enrollment tokens are single-use (invalidated after first use); pre-enrollment at imaging time eliminates in-transit exposure entirely. Hardening underway: ECDH key exchange or TLS-bootstrapped channel for post-boot provisioning flows. |
+| TM-I-04 | MEDIUM | 📋 Planned | Mitigated by: post-provisioning L2CAP channel uses mTLS with server cert verification and org-ID matching; SPKI pinning (trust-on-first-use) pins the device certificate fingerprint on first connection. Hardening underway: confirming TLS session resumption is disabled on BLE channels. |
+| TM-I-05 | MEDIUM | ✅ Shipped | Mitigated by: containers run as non-root `appuser`; a baseline seccomp profile blocks dangerous syscalls (`ptrace`, `unshare`, `clone(CLONE_NEWUSER)`, `kexec`, kernel-module loading); `CAP_SYS_ADMIN` is not granted; and `CAP_NET_ADMIN` requires a separate explicit entitlement rather than being bundled with host networking. Hardening underway: full user-namespace UID remapping (container root → high host UID). |
+
+### Denial of Service
+
+| ID | Severity | Status | Summary |
+|----|----------|--------|---------|
+| TM-D-01 | MEDIUM | 📋 Planned | Mitigated by: OTEL receivers bound to loopback only; data is not persisted (in-memory broadcaster only). Hardening underway: rate limiting and maximum payload size on OTEL receivers. |
+| TM-D-02 | MEDIUM | ✅ Shipped | Mitigated by: a default PID limit (4096) is applied to every container regardless of manifest declarations, guarding against fork-bomb and runaway-task scenarios. CPU and memory limits are applied when declared in the app manifest. |
+| TM-D-03 | LOW | 📋 Planned | Mitigated by: exponential backoff with a maximum interval of 5 minutes on tunnel broker reconnects. Hardening underway: configurable cap on total retry attempts before entering degraded-mode sleep. |
+
+### Elevation of Privilege
+
+| ID | Severity | Status | Summary |
+|----|----------|--------|---------|
+| TM-E-01 | HIGH | ✅ Shipped | Mitigated by: container start is refused with a hard error when a D-Bus entitlement is declared and `xdg-dbus-proxy` is absent — there is no silent unfiltered fallback. The raw host D-Bus socket is never mounted into a container when the proxy is unavailable. |
+| TM-E-02 | MEDIUM | ✅ Shipped | Mitigated by: the containerd socket is not mounted into containers; any bind mount whose source resolves into `/run/containerd` or `/var/run/containerd` is explicitly denied in the container spec builder. |
+| TM-E-03 | HIGH | ✅ Shipped | Mitigated by: `CAP_NET_ADMIN` is no longer granted by host networking alone; it requires a separate explicit `host-admin` entitlement declaration, separating network visibility from the capability to reconfigure the network. |
+
+## Planned Hardening
+
+Beyond the per-threat hardening noted above:
+
+- **Codesigning, PKI & certificate improvements (🛠 In progress, targeted for Q3 2026).** cosign image-signature verification, `wendy-agent` binary signing, OS artifact signing, cloud-CA pinning, OCSP/CRL revocation with OCSP-stapled offline operator certificates, and operator-scoped permissions in developer certificates.
+- **Physical tamper-resistance of the hardware platform.** Hardware-backed protection of key material (HSM/TPM), establishing a root of trust so the device private key cannot be extracted via physical access, is 🛠 in progress. On supported platforms, fuse burning (one-time-programmable eFuses) to lock secure-boot configuration and prevent flashing unsigned firmware or downgrading the bootloader is 📋 planned.
+
+## Out of Scope
+
+The following areas are not covered by this threat model:
+
+- Wendy Cloud backend infrastructure (maintained under a separate threat model)
+- Upstream containerd / Linux kernel vulnerabilities
+- End-user devices running the `wendy` CLI (treated as a trusted principal once a certificate is issued)
+
+## Reporting Security Issues
+
+If you discover a vulnerability in WendyOS, please report it responsibly by emailing **security@wendy.dev** rather than filing a public issue. We review all reports and will respond promptly.

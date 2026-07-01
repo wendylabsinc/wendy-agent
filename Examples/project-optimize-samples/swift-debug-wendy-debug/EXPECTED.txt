@@ -1,0 +1,6 @@
+Expected findings (wendy project optimize):
+  warning  build-cache     swift build without --mount=type=cache      (Dockerfile:11) [fixable]
+  warning  release-debug   swift build is a debug build                (Dockerfile:11) [fixable]
+  info     release-debug   WENDY_DEBUG declared but never used to toggle the build
+  warning  arch-image      No .dockerignore                            [fixable]
+  info     arch-image      Single-stage build ships its toolchain

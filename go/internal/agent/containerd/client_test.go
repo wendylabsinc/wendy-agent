@@ -2,15 +2,47 @@ package containerd
 
 import (
 	"errors"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
 
+	"github.com/wendylabsinc/wendy/go/internal/agent/dbusproxy"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zaptest/observer"
 )
+
+// TestRequireDBusProxyRefusesBluetoothWithoutProxy is the regression test for
+// WDY-1093: a container that declares the bluetooth (D-Bus) entitlement must be
+// refused when xdg-dbus-proxy is unavailable. Without the proxy there is no way
+// to scope D-Bus to org.bluez, so starting the container would silently break
+// bluetooth (or, in older builds, expose the unfiltered system bus). The agent
+// must fail loudly instead of degrading silently.
+func TestRequireDBusProxyRefusesBluetoothWithoutProxy(t *testing.T) {
+	client := &Client{logger: zap.NewNop(), proxyManager: nil}
+	cfg := &appconfig.AppConfig{Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementBluetooth}}}
+	if err := client.requireDBusProxy(cfg, "demo-app"); err == nil {
+		t.Fatal("expected error when bluetooth entitlement is declared but xdg-dbus-proxy is unavailable")
+	}
+}
+
+func TestRequireDBusProxyAllowsBluetoothWithProxy(t *testing.T) {
+	client := &Client{logger: zap.NewNop(), proxyManager: dbusproxy.NewManager(zap.NewNop())}
+	cfg := &appconfig.AppConfig{Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementBluetooth}}}
+	if err := client.requireDBusProxy(cfg, "demo-app"); err != nil {
+		t.Fatalf("expected no error when xdg-dbus-proxy is available; got %v", err)
+	}
+}
+
+func TestRequireDBusProxyAllowsNonBluetoothWithoutProxy(t *testing.T) {
+	client := &Client{logger: zap.NewNop(), proxyManager: nil}
+	cfg := &appconfig.AppConfig{Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementNetwork}}}
+	if err := client.requireDBusProxy(cfg, "demo-app"); err != nil {
+		t.Fatalf("expected no error for a non-bluetooth app without the proxy; got %v", err)
+	}
+}
 
 // TestROS2SidecarName maps each RMW to a distinct, prefix-scoped sidecar name
 // and collapses empty RMW to the CycloneDDS (config-default) sidecar — the
@@ -550,6 +582,21 @@ func TestHasHostNetworkEntitlementEmptyModeIsHost(t *testing.T) {
 	}
 }
 
+// TestHasHostNetworkEntitlementHostAdmin verifies the WDY-1094 opt-in mode is
+// still recognised as host networking (it shares the host network stack; it
+// just additionally carries CAP_NET_ADMIN), so host-network-dependent wiring
+// like OTEL endpoint injection continues to apply.
+func TestHasHostNetworkEntitlementHostAdmin(t *testing.T) {
+	cfg := &appconfig.AppConfig{
+		Entitlements: []appconfig.Entitlement{
+			{Type: appconfig.EntitlementNetwork, Mode: "host-admin"},
+		},
+	}
+	if !hasHostNetworkEntitlement(cfg) {
+		t.Error("host-admin mode should imply host networking")
+	}
+}
+
 func TestExpandAgentHook(t *testing.T) {
 	t.Setenv("EXTRA_VALUE", "ok")
 
@@ -569,12 +616,36 @@ func TestExpandAgentHookMissingEnv(t *testing.T) {
 	}
 }
 
+// TestWrapWithDebugpyBindsLoopback is the regression test for WDY-1010: the
+// debugpy DAP listener must bind to loopback (127.0.0.1), never 0.0.0.0.
+// Binding all interfaces exposed unauthenticated Python RCE to anyone on the
+// device's network for the duration of a debug session. Remote attach now goes
+// through a device-side tunnel to loopback.
+func TestWrapWithDebugpyBindsLoopback(t *testing.T) {
+	cases := map[string][]string{
+		"python entrypoint":     {"python3", "app.py"},
+		"non-python entrypoint": {"/app/server"},
+	}
+	for name, args := range cases {
+		t.Run(name, func(t *testing.T) {
+			got := wrapWithDebugpy(args)
+			joined := strings.Join(got, " ")
+			if strings.Contains(joined, "0.0.0.0:5678") {
+				t.Fatalf("debugpy must not bind 0.0.0.0; got %q", joined)
+			}
+			if !slices.Contains(got, "127.0.0.1:5678") {
+				t.Fatalf("debugpy must bind loopback 127.0.0.1:5678; got %q", joined)
+			}
+		})
+	}
+}
+
 func TestStartPostStartAgentHookSkippedWhenEmpty(t *testing.T) {
 	old := startPostStartHookCommand
 	t.Cleanup(func() { startPostStartHookCommand = old })
 
 	var calls int
-	startPostStartHookCommand = func(_, _, _ string) (func() error, error) {
+	startPostStartHookCommand = func(_ []string) (func() error, error) {
 		calls++
 		return func() error { return nil }, nil
 	}
@@ -594,11 +665,9 @@ func TestStartPostStartAgentHookRunsWhenPresent(t *testing.T) {
 	old := startPostStartHookCommand
 	t.Cleanup(func() { startPostStartHookCommand = old })
 
-	var gotShell, gotFlag, gotCommand string
-	startPostStartHookCommand = func(shell, flag, command string) (func() error, error) {
-		gotShell = shell
-		gotFlag = flag
-		gotCommand = command
+	var gotArgv []string
+	startPostStartHookCommand = func(argv []string) (func() error, error) {
+		gotArgv = argv
 		return func() error { return nil }, nil
 	}
 
@@ -607,12 +676,141 @@ func TestStartPostStartAgentHookRunsWhenPresent(t *testing.T) {
 	if !started {
 		t.Fatal("startPostStartAgentHook returned false with command")
 	}
-	if gotShell == "" || gotFlag == "" {
-		t.Fatalf("shell command not populated: shell=%q flag=%q", gotShell, gotFlag)
+	wantArgv := []string{"echo", "camera-app", "localhost", "ok"}
+	if !slices.Equal(gotArgv, wantArgv) {
+		t.Fatalf("hook argv = %q; want %q", gotArgv, wantArgv)
 	}
-	wantCommand := "echo camera-app localhost ok"
-	if gotCommand != wantCommand {
-		t.Fatalf("hook command = %q; want %q", gotCommand, wantCommand)
+}
+
+// TestStartPostStartAgentHookDoesNotInterpretShellMetacharacters is the
+// regression test for WDY-1009: the hook command must be executed directly via
+// argv, never handed to a shell. Shell metacharacters (;, &&, |, $(...)) must
+// survive as inert literal arguments to argv[0] rather than spawning new
+// commands.
+func TestStartPostStartAgentHookDoesNotInterpretShellMetacharacters(t *testing.T) {
+	old := startPostStartHookCommand
+	t.Cleanup(func() { startPostStartHookCommand = old })
+
+	var gotArgv []string
+	startPostStartHookCommand = func(argv []string) (func() error, error) {
+		gotArgv = argv
+		return func() error { return nil }, nil
+	}
+
+	client := &Client{logger: zap.NewNop()}
+	started := client.startPostStartAgentHook("/app/post-start.sh ; touch /tmp/pwned && rm -rf /", "camera-app")
+	if !started {
+		t.Fatal("startPostStartAgentHook returned false with command")
+	}
+	if len(gotArgv) == 0 {
+		t.Fatal("hook argv is empty")
+	}
+	// The program executed is the first token only; the injected command tokens
+	// must appear verbatim as arguments, proving no shell parsed them.
+	for _, tok := range gotArgv {
+		if tok == "sh" || tok == "-c" || tok == "cmd.exe" || tok == "/C" {
+			t.Fatalf("hook argv must not invoke a shell, got %q", gotArgv)
+		}
+	}
+	// The whole command must survive as argv[0] (the program) plus inert literal
+	// tokens — the metacharacters are arguments, never separators.
+	wantArgv := []string{"/app/post-start.sh", ";", "touch", "/tmp/pwned", "&&", "rm", "-rf", "/"}
+	if !slices.Equal(gotArgv, wantArgv) {
+		t.Fatalf("hook argv = %q; want %q", gotArgv, wantArgv)
+	}
+}
+
+// TestStartPostStartAgentHookEmptyExpansionLogsConfiguredCommand asserts the
+// "expanded to empty" warning is actionable: it carries the raw, pre-expansion
+// command from wendy.json so an operator can tell which hook misfired. The raw
+// command holds variable references (not their expanded values), so it is safe
+// to log — unlike the expanded string, which may contain secrets.
+func TestStartPostStartAgentHookEmptyExpansionLogsConfiguredCommand(t *testing.T) {
+	t.Setenv("MISSING_VALUE", "")
+	old := startPostStartHookCommand
+	t.Cleanup(func() { startPostStartHookCommand = old })
+	startPostStartHookCommand = func(_ []string) (func() error, error) {
+		return func() error { return nil }, nil
+	}
+
+	core, observed := observer.New(zap.WarnLevel)
+	client := &Client{logger: zap.New(core)}
+	client.startPostStartAgentHook("${MISSING_VALUE}", "camera-app")
+
+	logs := observed.FilterMessageSnippet("empty command")
+	if logs.Len() != 1 {
+		t.Fatalf("expected one empty-command warning; got %d", logs.Len())
+	}
+	var found bool
+	for _, f := range logs.All()[0].Context {
+		if f.Key == "configured_command" && f.String == "${MISSING_VALUE}" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("empty-command warning must include the raw configured_command field; got %+v", logs.All()[0].Context)
+	}
+}
+
+// TestStartPostStartAgentHookWarnsOnQuotedArguments guards the silent
+// behavioral regression from dropping `sh -c`: strings.Fields does not honor
+// quotes, so a quoted argument is split on whitespace. The hook still runs
+// (best-effort), but the operator must get a warning rather than silent
+// mis-execution.
+func TestStartPostStartAgentHookWarnsOnQuotedArguments(t *testing.T) {
+	old := startPostStartHookCommand
+	t.Cleanup(func() { startPostStartHookCommand = old })
+	var calls int
+	startPostStartHookCommand = func(_ []string) (func() error, error) {
+		calls++
+		return func() error { return nil }, nil
+	}
+
+	core, observed := observer.New(zap.WarnLevel)
+	client := &Client{logger: zap.New(core)}
+	started := client.startPostStartAgentHook(`/app/run --message "hello world"`, "camera-app")
+
+	if !started {
+		t.Fatal("hook with quoted args should still run (best-effort)")
+	}
+	if calls != 1 {
+		t.Fatalf("hook runner called %d times; want 1", calls)
+	}
+	if observed.FilterMessageSnippet("quot").Len() == 0 {
+		t.Fatal("expected a warning that quoting is not honored")
+	}
+}
+
+// TestStartPostStartHookCommandRejectsEmptyArgv keeps the argv[0] indexing
+// invariant local to the runner: an empty argv must return an error, never
+// panic, even if a future caller forgets the length guard.
+func TestStartPostStartHookCommandRejectsEmptyArgv(t *testing.T) {
+	if _, err := startPostStartHookCommand(nil); err == nil {
+		t.Fatal("expected error for empty argv, got nil")
+	}
+}
+
+// TestStartPostStartAgentHookSkippedWhenExpansionEmpty guards the case where a
+// command consists solely of an env reference that expands to nothing: there is
+// no program to run, so the runner must not be invoked.
+func TestStartPostStartAgentHookSkippedWhenExpansionEmpty(t *testing.T) {
+	t.Setenv("MISSING_VALUE", "")
+	old := startPostStartHookCommand
+	t.Cleanup(func() { startPostStartHookCommand = old })
+
+	var calls int
+	startPostStartHookCommand = func(_ []string) (func() error, error) {
+		calls++
+		return func() error { return nil }, nil
+	}
+
+	client := &Client{logger: zap.NewNop()}
+	started := client.startPostStartAgentHook("${MISSING_VALUE}", "camera-app")
+	if started {
+		t.Fatal("startPostStartAgentHook returned true for a command that expanded to nothing")
+	}
+	if calls != 0 {
+		t.Fatalf("hook runner called %d times; want 0", calls)
 	}
 }
 
@@ -620,7 +818,7 @@ func TestStartPostStartAgentHookStartErrorDoesNotLogCommand(t *testing.T) {
 	old := startPostStartHookCommand
 	t.Cleanup(func() { startPostStartHookCommand = old })
 
-	startPostStartHookCommand = func(_, _, _ string) (func() error, error) {
+	startPostStartHookCommand = func(_ []string) (func() error, error) {
 		return nil, errors.New("start failed")
 	}
 

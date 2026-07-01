@@ -595,9 +595,10 @@ func newAppsRemoveCmd() *cobra.Command {
 
 func newPsCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "ps",
-		Short: "List running containers (alias for 'apps list')",
-		RunE:  newAppsListCmd().RunE,
+		Use:    "ps",
+		Short:  "List running containers (alias for 'apps list')",
+		Hidden: true,
+		RunE:   newAppsListCmd().RunE,
 	}
 }
 

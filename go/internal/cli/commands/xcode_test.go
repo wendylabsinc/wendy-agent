@@ -232,6 +232,18 @@ func TestBuildXcodeProject_CorrectFlags(t *testing.T) {
 			t.Errorf("xcodebuild missing %s %s in args: %v", flag, val, buildArgs)
 		}
 	}
+	for _, flag := range []string{"-skipMacroValidation", "-skipPackagePluginValidation"} {
+		found := false
+		for _, a := range buildArgs {
+			if a == flag {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("xcodebuild missing %s in args: %v", flag, buildArgs)
+		}
+	}
 }
 
 func TestBuildXcodeProject_XcodebuildMissing(t *testing.T) {

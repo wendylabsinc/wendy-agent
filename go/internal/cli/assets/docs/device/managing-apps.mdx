@@ -1,0 +1,171 @@
+---
+title: Managing Apps
+description: Manage apps on your WendyOS device using the Wendy CLI
+---
+
+## Managing Apps on WendyOS Devices
+
+The Wendy CLI can help you manage apps on your WendyOS device. This works over USB connections and over your Local Area Network (LAN).
+
+### Prerequisites
+
+- Wendy CLI installed on your development machine
+- A WendyOS device (NVIDIA Jetson or Raspberry Pi 5) either:
+  - Connected via USB cable, or
+  - Connected to the same network as your development machine
+
+## Running Apps
+
+All WendyOS apps are container-based and require a `Dockerfile` or `Containerfile` in your project directory. When you run `wendy run`, the CLI automatically prepares the local build environment, builds your container image for the ARM64 architecture, and ships it directly to your WendyOS device.
+
+### Basic Usage
+
+Navigate to your project directory (containing a `Dockerfile` or `Containerfile`) and run:
+
+```bash
+wendy run
+```
+
+<CliShot flow="run" step="deploy" alt="The Wendy CLI building an app for ARM64 and deploying it to a WendyOS device" />
+
+The CLI will:
+1. Build your container image for ARM64
+2. Push the image to your WendyOS device's local registry
+3. Create and start the container
+4. Stream logs back to your terminal
+
+### First Run Performance
+
+The first time you run an app, the build and transfer process may take longer, especially for large applications with many dependencies. For the best experience:
+
+- Use a **USB 3.0 cable** connected directly to your WendyOS device for faster transfer speeds
+- Ensure your device has a stable connection (USB or LAN)
+
+Subsequent runs are significantly faster because Docker caches layers that haven't changed. Only modified layers need to be rebuilt and transferred.
+
+### Run Modes
+
+```bash
+# Development mode (default) - streams logs, stops on Ctrl+C
+wendy run
+
+# Detached mode - runs in background
+wendy run --detach
+
+# Deploy mode - auto-restarts on failure (up to 5 retries)
+wendy run --deploy
+```
+
+### Python Projects
+
+For Python projects without a `Dockerfile` or `Containerfile`, the Wendy CLI can automatically generate one. It detects:
+- Entry points (`main.py`, `app.py`, etc.)
+- Frameworks (Flask, FastAPI, Django)
+- Dependencies from `requirements.txt` or `pyproject.toml`
+- PyTorch/TensorFlow (uses optimized Jetson base images)
+
+Simply run `wendy run` in your Python project directory and confirm the generated Dockerfile.
+
+## Listing Apps
+
+To discover all available WendyOS devices, run:
+
+```bash
+wendy device apps list
+```
+
+<CliShot flow="apps-list" step="apps" alt="The Wendy CLI listing apps on a WendyOS device with version, state, and failure columns" />
+
+An example output is:
+
+```bash
+wendy device apps list
+✔︎ Searching for WendyOS devices [5.1s]
+✔︎ Listing applications: True Probe [USB, Ethernet, LAN]
+╭───────────────┬─────────┬─────────┬──────────╮
+│ App           │ Version │ State   │ Failures │
+├───────────────┼─────────┼─────────┼──────────┤
+│ hello-world   │ 0.0.1   │ Stopped │ 0        │
+│ simple-server │ 0.0.0   │ Running │ 0        │
+╰───────────────┴─────────┴─────────┴──────────╯
+```
+
+* `Stopped` means that the app is on the WendyOS device, but not running. This is common where the app runs once and exits. This doesn't necessarily mean that the state of the app is bad, especially if the `Failures` column is 0. Commonly long running applications like web servers will not be in this state.
+* `Running` means that the app is running on the WendyOS device.
+* `Failures` means that the app has failed to start. This is common if the app is not properly configured.
+
+## Stopping an App
+
+To stop an app, run:
+
+```bash
+wendy device apps stop <app-name>
+```
+
+An example output is:
+
+```bash
+✔︎ Searching for WendyOS devices [5.2s]
+✔︎ Stopping application: True Probe [USB, Ethernet, LAN]
+i Info
+  Stop request sent
+```
+
+And then you can verify the app is stopped by listing the apps again:
+
+```bash
+wendy device apps list
+✔︎ Searching for WendyOS devices [5.1s]
+✔︎ Listing applications: True Probe [USB, Ethernet, LAN]
+╭───────────────┬─────────┬─────────┬──────────╮
+│ App           │ Version │ State   │ Failures │
+├───────────────┼─────────┼─────────┼──────────┤
+│ hello-world   │ 0.0.1   │ Stopped │ 0        │
+│ simple-server │ 0.0.0   │ Stopped │ 0        │
+╰───────────────┴─────────┴─────────┴──────────╯
+```
+
+## Starting an App
+
+To start an app, run:
+
+```bash
+wendy device apps start <app-name>
+```
+
+An example output is:
+
+```bash
+wendy device apps start simple-server
+✔︎ Searching for WendyOS devices [5.2s]
+✔︎ Starting application: True Probe [USB, Ethernet, LAN]
+i Info
+  Start request sent
+```
+
+And then you can verify the app is started by listing the apps again:
+
+```bash
+wendy device apps list
+✔︎ Searching for WendyOS devices [5.0s]
+✔︎ Listing applications: True Probe [USB, Ethernet, LAN]
+╭───────────────┬─────────┬─────────┬──────────╮
+│ App           │ Version │ State   │ Failures │
+├───────────────┼─────────┼─────────┼──────────┤
+│ hello-world   │ 0.0.1   │ Stopped │ 0        │
+│ simple-server │ 0.0.0   │ Running │ 0        │
+╰───────────────┴─────────┴─────────┴──────────╯
+```
+
+## Removing (or Deleting) an App
+
+To delete an app, run:
+
+```bash
+wendy device apps delete <app-name>
+```
+
+An example output is:
+
+```bash
+wendy device apps delete simple-server

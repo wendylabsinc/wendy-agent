@@ -47,6 +47,16 @@ func NewTextPrompt(prompt, hint, defaultValue string, validate ValidateFunc) Tex
 	}
 }
 
+// NewPasswordPrompt is like NewTextPrompt but masks the input (echoes '•') so
+// secrets such as WiFi passwords are never shown in plaintext. It takes no
+// default value — pre-filling a secret that can't be read back is pointless.
+func NewPasswordPrompt(prompt, hint string, validate ValidateFunc) TextPromptModel {
+	m := NewTextPrompt(prompt, hint, "", validate)
+	m.input.EchoMode = textinput.EchoPassword
+	m.input.EchoCharacter = '•'
+	return m
+}
+
 func (m TextPromptModel) Init() tea.Cmd {
 	return textinput.Blink
 }
@@ -126,7 +136,19 @@ func PromptText(prompt, hint string, validate ValidateFunc, programOpts ...tea.P
 // PromptTextWithDefault is like PromptText but pre-fills the input with a
 // default value that the user can accept (enter) or edit.
 func PromptTextWithDefault(prompt, hint, defaultValue string, validate ValidateFunc, programOpts ...tea.ProgramOption) (string, error) {
-	m := NewTextPrompt(prompt, hint, defaultValue, validate)
+	return runTextPrompt(NewTextPrompt(prompt, hint, defaultValue, validate), programOpts...)
+}
+
+// PromptPassword runs an interactive prompt whose input is masked (echoes '•'),
+// for secrets that must not appear on screen. Like PromptText, an empty value
+// is allowed unless validate rejects it.
+func PromptPassword(prompt, hint string, validate ValidateFunc, programOpts ...tea.ProgramOption) (string, error) {
+	return runTextPrompt(NewPasswordPrompt(prompt, hint, validate), programOpts...)
+}
+
+// runTextPrompt runs a prepared model to completion and returns its validated
+// value, ErrCancelled if the user quit, or a wrapped Bubble Tea error.
+func runTextPrompt(m TextPromptModel, programOpts ...tea.ProgramOption) (string, error) {
 	p := tea.NewProgram(m, programOpts...)
 	result, err := p.Run()
 	if err != nil {

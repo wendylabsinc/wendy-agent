@@ -1,0 +1,144 @@
+---
+title: Cloud
+description: Manage your fleet from anywhere with the wendy cloud commands — enroll, discover, and operate WendyOS devices over the internet.
+---
+
+import { LogIn, Radar, Plug, Server } from 'lucide-react';
+
+## Managing Your Fleet
+
+Once a device leaves your desk it is no longer on your USB cable or your LAN, so
+the local `wendy device` workflow can't reach it. **Wendy Cloud** closes that
+gap: each device enrolls once, dials home to the cloud broker over mutually
+authenticated TLS, and from then on you can reach it by name from anywhere using
+the `wendy cloud` commands.
+
+`wendy cloud` is the cloud-connected mirror of the local CLI. Everything you do
+to a single device over USB-C — inspect it, deploy apps, stream logs, update the
+agent — you can do to your whole fleet over the internet, with the same commands
+and the same zero-trust [PKI](/docs/advanced/cloud/requirements) backing every
+connection.
+
+<Cards>
+  <Card icon={<LogIn />} title="Authenticate once">
+    Log in to your organization and every following command reuses the stored
+    mTLS session.
+  </Card>
+  <Card icon={<Server />} title="Enroll devices">
+    Provision a device with a cloud identity so it appears in your fleet.
+  </Card>
+  <Card icon={<Radar />} title="Discover your fleet">
+    List which devices are online, their hardware type, and the agent version
+    they're running.
+  </Card>
+  <Card icon={<Plug />} title="Operate remotely">
+    Reach any enrolled device by name to deploy, debug, and update — wherever it is.
+  </Card>
+</Cards>
+
+## Authentication
+
+Before you can manage a fleet you authenticate the CLI with your cloud
+organization. `wendy cloud login` opens your dashboard in a browser, completes
+the OAuth handshake, then issues and stores an mTLS certificate that every
+later command uses automatically.
+
+| Command | What it does |
+|---------|--------------|
+| [`wendy cloud login`](/docs/advanced/clients/wendy-cli/commands/cloud/login) | Sign in to your organization and store an mTLS session. |
+| [`wendy cloud status`](/docs/advanced/clients/wendy-cli/commands/cloud/status) | Show who you're logged in as and the active endpoint. |
+| [`wendy cloud logout`](/docs/advanced/clients/wendy-cli/commands/cloud/logout) | Clear the stored session. |
+
+```sh
+wendy cloud login
+```
+
+## Enrolling Devices
+
+A device joins your fleet by enrolling: the CLI mints an enrollment token from
+your session and provisions the connected device with its own mTLS certificate.
+After enrollment the device connects to the cloud broker on its own and shows up
+in `wendy cloud discover`.
+
+```sh
+# Run while the new device is connected over USB-C
+wendy cloud enroll-device --name shop-floor-01
+```
+
+The device's certificate is what the cloud uses to authenticate and authorize it
+— see [Security](/docs/security) for the trust model.
+
+## Discovering Your Fleet
+
+`wendy cloud discover` lists the devices in your organization. By default it
+shows only **online** devices; pass `--all` to include ones that are currently
+offline. In a terminal it opens a live table that refreshes every few seconds
+and shows each device's name, hardware type, and running agent version.
+
+```sh
+wendy cloud discover           # online devices, live table
+wendy cloud discover --all     # include offline devices
+wendy cloud discover --json    # machine-readable output for scripting
+```
+
+From the live table you can highlight a device and press `u` to update its agent
+to the latest release in place — a quick way to keep the fleet current. For
+scripted rollouts, `--json` gives you each device's stable numeric ID to feed
+into other commands.
+
+See [`wendy cloud discover`](/docs/advanced/clients/wendy-cli/commands/cloud/discover)
+for the full column, keyboard, and flag reference.
+
+## Operating Devices Remotely
+
+Everything under `wendy device` is mirrored under **`wendy cloud device`**, which
+routes the same operations through the cloud broker instead of a local
+connection. You address a device by its enrolled name (or numeric ID), and the
+rest of the command is identical to the local workflow.
+
+```sh
+# List the apps running on a remote device
+wendy cloud device apps --device shop-floor-01
+
+# Stream its logs from anywhere
+wendy cloud device logs --device shop-floor-01
+
+# Push the latest agent to it
+wendy cloud device update --device shop-floor-01
+```
+
+Because it mirrors the local commands, the [Device Management](/docs/device/managing-apps)
+guides apply unchanged — only the transport differs.
+
+### Tunnels
+
+When you need a raw connection to a service running on a device — a web UI, a
+debugger, an SSH session — `wendy cloud tunnel` forwards a local port through the
+broker to the remote device.
+
+```sh
+# Forward local port 8080 to port 80 on the device
+wendy cloud tunnel 8080:80 --device shop-floor-01
+```
+
+See [`wendy cloud tunnel`](/docs/advanced/clients/wendy-cli/commands/cloud/tunnel)
+for device selection and flag details.
+
+## How It Works
+
+1. You authenticate once; the CLI stores an mTLS session for your organization.
+2. Each device enrolls and receives its own client certificate.
+3. Devices dial out to the cloud **broker** and keep a connection open — no
+   inbound ports or static IPs required.
+4. `wendy cloud` commands reach a device by name through that broker tunnel,
+   authenticated end to end with mTLS.
+
+This is the same architecture as the local CLI, extended across the internet.
+For the deeper reference — connectivity, the asset API, telemetry, and
+requirements — see the [Cloud reference](/docs/advanced/cloud/requirements).
+
+<Callout type="info">
+  Wendy Cloud is rolling out for teams scaling from a handful of prototypes to
+  thousands of devices. The `wendy cloud` commands described here are the
+  interface you'll use to manage that fleet.
+</Callout>

@@ -200,7 +200,7 @@ func queryInterfaceMDNS(_ context.Context, iface *net.Interface, serviceType str
 	params.Timeout = timeout
 	params.Logger = silentLogger
 
-	_ = mdns.Query(params)
+	logMDNSQueryErr(iface.Name, mdns.Query(params))
 	close(entriesCh)
 	<-done
 

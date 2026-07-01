@@ -1,0 +1,142 @@
+---
+title: VSCode Extension
+description: Install and use the Wendy for VS Code extension for a seamless development experience
+---
+
+## Wendy for VS Code Extension
+
+The Wendy for VS Code extension brings device management, one-click deployment, and remote debugging into your editor. It works for Swift, Python, and any containerized app.
+
+- **Device discovery & management** — find WendyOS devices on your network or over USB
+- **One-click deployment** — build and run on a device with `F5`
+- **Remote debugging** — breakpoints, stepping, and variable inspection for Swift (LLDB) and Python (debugpy)
+- **Agent updates** — keep a device's agent current from the editor
+- **OS installation** — flash WendyOS onto a disk
+- **WiFi configuration** — connect a device to a wireless network
+
+## Installing the Extension
+
+<Tabs items={['VS Code Marketplace', 'Open VSX Registry (Cursor, Windsurf, etc.)']}>
+  <Tab value="VS Code Marketplace">
+    Install **["Wendy for VS Code"](https://marketplace.visualstudio.com/items?itemName=wendylabsinc.wendy-vscode)** from the Extensions panel (`Cmd+Shift+X` / `Ctrl+Shift+X`), or from the command line:
+
+    ```bash
+    code --install-extension wendylabsinc.wendy-vscode
+    ```
+  </Tab>
+
+  <Tab value="Open VSX Registry (Cursor, Windsurf, etc.)">
+    Editors that use the Open VSX Registry — **Cursor**, **Windsurf**, **Antigravity**, and others — can install the extension from their Extensions panel by searching for **"Wendy"**, or from [open-vsx.org](https://open-vsx.org/extension/wendylabsinc/wendy-vscode).
+
+    If it doesn't appear in your editor's marketplace, download the `.vsix` from Open VSX and run **"Extensions: Install from VSIX..."** from the Command Palette (`Cmd+Shift+P` / `Ctrl+Shift+P`).
+  </Tab>
+</Tabs>
+
+### Prerequisites
+
+- **Wendy CLI** installed on your development machine (`wendy --version` to verify)
+- A **WendyOS device** (NVIDIA Jetson Orin Nano, NVIDIA Jetson Thor, or Raspberry Pi 5)
+- For Swift: the WendyOS Swift SDK and the [Swift extension](https://marketplace.visualstudio.com/items?itemName=swiftlang.swift-vscode)
+- For Python: the [Python extension](https://marketplace.visualstudio.com/items?itemName=ms-python.python)
+
+## The Wendy Sidebar
+
+After installing, click the **Wendy** icon in the Activity Bar to open the sidebar, which has four panels:
+
+| Panel | Description |
+|-------|-------------|
+| **Devices** | Manage and select your WendyOS devices |
+| **Disks** | View available disks and flash WendyOS images |
+| **Operating System Cache** | Browse and clean up downloaded OS images |
+| **Documentation** | Quick links to WendyOS docs |
+
+## Managing Devices
+
+The **Devices** panel lists discovered and manually added devices. Click a device to select it as your deployment target — a checkmark marks the current one. Click the info icon (or right-click) on a device to see its hostname, agent version, device ID, interface type (USB / Ethernet / LAN), and running apps.
+
+- **Add a device manually** (e.g. on a different subnet): click **+** in the panel header and enter a hostname or IP, optionally with a port — `wendyos-humble-pepper.local`, `192.168.1.100`, or `192.168.1.100:50051`.
+- **Refresh**: click the refresh icon, or run `Wendy: Refresh Devices` from the Command Palette.
+
+If a device doesn't appear, see [Discovering Devices](/docs/guides/device/discovering-devices).
+
+## Updating the WendyOS Agent
+
+The extension shows each device's agent version and prompts you when an update is available. To update, right-click a device and select **Update Agent** (or run `Wendy: Update Agent`). The agent downloads, installs, and the device briefly restarts.
+
+## Installing WendyOS
+
+The extension can flash WendyOS onto an SD card or NVMe drive — useful for setting up a new device, reinstalling, or upgrading.
+
+You'll need the storage device connected to your machine, ~8GB+ of free space for the image, and admin/sudo access for disk operations.
+
+<Callout type="warning">
+  **Data loss**: flashing erases all data on the selected disk. Double-check you've selected the correct disk.
+</Callout>
+
+1. Connect the SD card or NVMe drive and open the **Disks** panel
+2. Right-click the target disk and select **Flash WendyOS**
+3. Choose your device type (e.g. NVIDIA Jetson Orin Nano, Raspberry Pi 5) and confirm
+4. Wait for flashing to finish — this can take several minutes
+
+The **Operating System Cache** panel lets you browse cached images, delete old ones to free space, and reveal the cache directory in your file manager. The cache lives at `~/.wendy/cache` (macOS/Linux) or `%LOCALAPPDATA%\Wendy\cache` (Windows).
+
+## Configuring WiFi
+
+Right-click a device, select **Connect WiFi**, pick a network from the scan results, and enter the password.
+
+<Callout type="info">
+  **USB connection recommended**: WiFi configuration is most reliable when the device is connected via USB, since network connectivity may drop during the process.
+</Callout>
+
+## Building, Running, and Debugging
+
+With a device selected, open a Swift package or Python project, press `F5`, and pick a Wendy debug configuration. The extension builds your app, deploys it to the device, starts it with debugging enabled, and attaches the debugger — set breakpoints first and VS Code's debugger works as usual. After editing code mid-session, restart it (`Ctrl+Shift+F5`) to redeploy.
+
+To run without debugging, use the Command Palette's **"Tasks: Run Task"** and pick a Wendy task (e.g. "Wendy: Run").
+
+### Swift
+
+Uses LLDB (via `lldb-dap`) over port **4242**. The extension generates a `Debug [YourAppName] on WendyOS` configuration for each executable target in your package. Requires:
+
+- The WendyOS Swift SDK installed at `~/.swiftpm/swift-sdks/`
+- The [Swift extension for VS Code](https://marketplace.visualstudio.com/items?itemName=swiftlang.swift-vscode)
+
+### Python
+
+Uses debugpy over port **5678** with the `Debug Python App on WendyOS` configuration. Add debugpy to your project's requirements:
+
+```txt
+debugpy>=1.8.0
+```
+
+<Callout type="warning">
+  **Security**: the debugpy listener binds to the device's loopback interface
+  (`127.0.0.1:5678`), not all interfaces. debugpy is an unauthenticated remote
+  code execution endpoint, so it is never exposed on the device's network.
+  Remote attach reaches it through a tunnel that forwards your local `5678` to
+  the device's loopback.
+</Callout>
+
+## Extension Settings
+
+Configure the extension through VS Code settings (`Cmd+,` / `Ctrl+,`):
+
+| Setting | Description | Default |
+|---------|-------------|---------|
+| `wendyos.runtime` | Container runtime to use | `containerd` |
+| `wendyos.cliPath` | Path to Wendy CLI executable | Auto-detected |
+| `wendyos.swiftSdkPath` | Path to WendyOS Swift SDK | `~/.swiftpm/swift-sdks/...` |
+
+## Troubleshooting
+
+**Device not discovered** — Confirm the device is powered on and running WendyOS, check your USB connection, verify both machines are on the same network, and that mDNS/Bonjour isn't blocked. Otherwise add the device manually. See [Discovering Devices](/docs/guides/device/discovering-devices).
+
+**Agent update fails** — Ensure a stable connection (try USB instead of WiFi), confirm the device has enough storage, then restart it and retry.
+
+**Debugging won't connect** — Verify port 4242 (Swift) or 5678 (Python) is reachable and not firewalled, that the app was started with `--debug`, then restart VS Code and the device.
+
+## Next Steps
+
+- [Connect your device to WiFi](/docs/device/connecting-to-wifi) for wireless development
+- [Discover devices](/docs/device/discovering-devices) using the CLI
+- [Manage applications](/docs/device/managing-apps) on your device

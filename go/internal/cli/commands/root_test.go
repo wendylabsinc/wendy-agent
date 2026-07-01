@@ -82,13 +82,23 @@ func TestRootCommand_Help(t *testing.T) {
 	expectedTexts := []string{
 		"Wendy",
 		"edge computing",
-		"Project Commands",
-		"Manage Your Devices",
+		"Develop & Deploy",
+		"Manage",
+		"Cloud",
+		"Settings",
 		"Flags",
 	}
 	for _, text := range expectedTexts {
 		if !strings.Contains(strings.ToLower(output), strings.ToLower(text)) {
 			t.Errorf("help output missing %q", text)
+		}
+	}
+
+	// Commands that were demoted to hidden must not appear in top-level help,
+	// even though they remain registered and runnable.
+	for _, hidden := range []string{"build", "watch", "discover", "os", "utils", "info", "mcp", "tour", "auth", "completion"} {
+		if strings.Contains(output, "\n  "+hidden+" ") {
+			t.Errorf("help output should not list hidden command %q:\n%s", hidden, output)
 		}
 	}
 }

@@ -1,5 +1,5 @@
 ---
-title: WendyOS — NVIDIA Jetson
+title: NVIDIA Jetson
 description: Install WendyOS on your NVIDIA Jetson device
 ---
 
@@ -8,17 +8,19 @@ description: Install WendyOS on your NVIDIA Jetson device
   <h1 style={{ fontSize: '2.25rem', fontWeight: 'bold', margin: 0, lineHeight: '1' }}>NVIDIA Jetson Installation</h1>
 </div>
 
-## What You'll Need
-
-<JetsonBuyersTable />
+You'll need an NVMe SSD to USB-C adapter to flash WendyOS onto your NVMe SSD.
 
 ## Installing WendyOS on NVIDIA Jetson
 
-This guide will walk you through installing WendyOS on supported NVIDIA Jetson devices. WendyOS supports Jetson Orin Nano today, AGX Orin support is imminent, and AGX Thor support is in progress.
+WendyOS supports these NVIDIA Jetson devices:
 
-For DGX Spark, use [Wendy Agent — Linux](/docs/installation/wendy-agent-linux) on the existing OS instead of flashing WendyOS.
+<div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.75rem', margin: '1rem 0' }}>
+  <span style={{ border: '1px solid var(--border, #e5e7eb)', borderRadius: '9999px', padding: '0.35rem 0.9rem', fontWeight: 600 }}>✅ Jetson Orin Nano</span>
+  <span style={{ border: '1px solid var(--border, #e5e7eb)', borderRadius: '9999px', padding: '0.35rem 0.9rem', fontWeight: 600 }}>✅ Jetson AGX Orin</span>
+  <span style={{ border: '1px solid var(--border, #e5e7eb)', borderRadius: '9999px', padding: '0.35rem 0.9rem', fontWeight: 600 }}>✅ Jetson AGX Thor</span>
+</div>
 
-Prefer to follow along with video? Watch the [WendyOS NVIDIA Jetson Orin Nano installation video](https://youtu.be/TtDJAtBUEZI).
+For DGX Spark, use [Wendy Agent — Linux](/docs/installation/wendy-agent-linux) on the existing OS instead of flashing WendyOS. Prefer video? Watch the [Jetson Orin Nano installation walkthrough](https://youtu.be/TtDJAtBUEZI).
 
 ### Installation Steps
 
@@ -42,12 +44,14 @@ Prefer to follow along with video? Watch the [WendyOS NVIDIA Jetson Orin Nano in
     Use the `wendy` CLI to install the operating system:
 
     ```bash
-    wendy os install
+    wendy install
     ```
 
-    Select **NVIDIA Jetson Orin Nano** and then select your drive. You'll begin a process of downloading a copy of WendyOS to your hard drive. This could take a while but soon you'll be prompted to put WendyOS on the NVMe SSD.
+    <CliShot flow="os-install" step="select-device-type" alt="The Wendy CLI prompting you to choose a device type before flashing WendyOS" />
 
-    You'll need to enter your user's administrator password for this to continue.
+    Select **NVIDIA Jetson Orin Nano**, then your drive. WendyOS downloads to the drive (this can take a while), and you'll enter your administrator password to write the image.
+
+    The CLI also offers optional first-boot provisioning — joining WiFi, applying critical updates, and pre-enrolling the device to Wendy Cloud. Each can also be set up after the device boots. See [`wendy install`](/docs/advanced/clients/wendy-cli/commands/os/install) for more.
   </Step>
 
   <Step>
@@ -90,18 +94,16 @@ Prefer to follow along with video? Watch the [WendyOS NVIDIA Jetson Orin Nano in
 
     ```bash
     wendy discover
-    # Set this device as your default
-    wendy device set-default
     ```
 
     You should see your NVIDIA Jetson Orin Nano appear in the list of discovered devices.
 
-    ![Wendy Discover](/images/docs/wendy-discover.png)
+    <CliShot flow="discover" step="devices" alt="The Wendy CLI listing discovered WendyOS devices on the network" />
 
-    Your device is now ready for development! For more information on device discovery and configuration, see [Discovering Devices](/docs/guides/device/discovering-devices).
+    Your device is now ready for development! For more information on device discovery and configuration, see [Discovering Devices](/docs/device/discovering-devices).
   </Step>
 </Steps>
 
 ### Next Steps
 
-Now that WendyOS is installed, you can start deploying apps to your device. Check out the [Hello World Guide](/docs/guides/python/hello-world) to build your first app.
+Now that WendyOS is installed, you can start deploying apps to your device. Check out the [Hello World Guide](/docs/guides/tutorials/python/hello-world) to build your first app.

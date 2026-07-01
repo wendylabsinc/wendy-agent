@@ -1,0 +1,10 @@
+{
+  "title": "TypeScript",
+  "language": "typescript",
+  "pages": [
+    "hello-world",
+    "simple-web-server",
+    "web-app",
+    "camera"
+  ]
+}

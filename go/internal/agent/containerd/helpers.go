@@ -81,6 +81,13 @@ const labelKeyAppID = "sh.wendy/app.id"
 // Set whenever appCfg.ServiceName is non-empty.
 const labelKeyServiceName = "sh.wendy/service"
 
+// labelKeyStoppedByUser records that an app was explicitly stopped by the user
+// (wendy device apps stop). Set to "true" on stop, removed on start. The boot
+// reconcile skips containers carrying it, so a deliberate stop survives a
+// reboot instead of being undone by the restart policy (Docker unless-stopped
+// semantics). Persisted on the container so it outlives the agent process.
+const labelKeyStoppedByUser = "sh.wendy/stopped-by-user"
+
 // ContainerName returns the containerd container ID for the given appID and
 // optional serviceName.
 //

@@ -5,6 +5,42 @@ import (
 	"testing"
 )
 
+// TestDefaultSeccompBlocksKernelAttackSurface is the regression test for
+// WDY-1012: the baseline seccomp profile must deny the kernel-attack-surface
+// syscalls a normal application container never needs (module loading, kexec),
+// in addition to the existing ptrace/unshare/clone-newuser blocks. These are
+// pure host-escape primitives; blocking them at seccomp is defense-in-depth on
+// top of the capability gating that already withholds CAP_SYS_MODULE/BOOT.
+func TestDefaultSeccompBlocksKernelAttackSurface(t *testing.T) {
+	sc := defaultSeccomp()
+	if sc == nil {
+		t.Fatal("defaultSeccomp() returned nil; containers would have no seccomp filter")
+	}
+	blocked := map[string]bool{}
+	for _, s := range sc.Syscalls {
+		if s.Action == ActErrno && len(s.Args) == 0 {
+			for _, n := range s.Names {
+				blocked[n] = true
+			}
+		}
+	}
+	// Existing protections must remain.
+	for _, name := range []string{"ptrace", "unshare"} {
+		if !blocked[name] {
+			t.Errorf("seccomp should still unconditionally block %q", name)
+		}
+	}
+	// WDY-1012: dangerous, never-needed kernel-surface syscalls.
+	for _, name := range []string{
+		"kexec_load", "kexec_file_load",
+		"init_module", "finit_module", "delete_module", "create_module",
+	} {
+		if !blocked[name] {
+			t.Errorf("seccomp must block dangerous syscall %q (WDY-1012)", name)
+		}
+	}
+}
+
 func TestDefaultSpec(t *testing.T) {
 	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
 

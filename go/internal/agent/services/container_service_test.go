@@ -44,6 +44,29 @@ type mockContainerdClient struct {
 	mcpPortErr            error
 	restartPolicyLabel    string
 	restartPolicyLabelErr error
+	resourceStats         []*agentpb.ResourceContainerStats
+	resourceStatsErr      error
+	listeningPorts        []*agentpb.PortEntry
+	listeningPortsErr     error
+	stoppedByUserCalls    []stoppedByUserCall
+}
+
+type stoppedByUserCall struct {
+	containerID string
+	stopped     bool
+}
+
+func (m *mockContainerdClient) ListBootContainers(_ context.Context) ([]BootContainer, error) {
+	return nil, nil
+}
+
+func (m *mockContainerdClient) SetStoppedByUser(_ context.Context, containerID string, stopped bool) error {
+	m.stoppedByUserCalls = append(m.stoppedByUserCalls, stoppedByUserCall{containerID, stopped})
+	return nil
+}
+
+func (m *mockContainerdClient) MigrateStoppedByUserOnce(_ context.Context) error {
+	return nil
 }
 
 func (m *mockContainerdClient) ListContainers(_ context.Context) ([]*agentpb.AppContainer, error) {
@@ -98,6 +121,13 @@ func (m *mockContainerdClient) GetContainerStats(_ context.Context) ([]*agentpb.
 	return m.statsResult, m.statsErr
 }
 
+func (m *mockContainerdClient) GetResourceStats(_ context.Context) ([]*agentpb.ResourceContainerStats, error) {
+	return m.resourceStats, m.resourceStatsErr
+}
+func (m *mockContainerdClient) GetListeningPorts(_ context.Context, _ string) ([]*agentpb.PortEntry, error) {
+	return m.listeningPorts, m.listeningPortsErr
+}
+
 func (m *mockContainerdClient) GetContainerMetrics(_ context.Context, _ string) (ContainerMetrics, error) {
 	return ContainerMetrics{}, nil
 }
@@ -116,6 +146,10 @@ func (m *mockContainerdClient) ContainerIDsForApp(_ context.Context, appID strin
 
 func (m *mockContainerdClient) MissingChunks(_ context.Context, hashes [][32]byte) ([][32]byte, error) {
 	return hashes, nil
+}
+
+func (m *mockContainerdClient) PresentLayers(_ context.Context, _ []string) (map[string]int64, error) {
+	return nil, nil
 }
 
 func (m *mockContainerdClient) StageChunk(_ context.Context, _ [32]byte, _ []byte) error {
@@ -235,6 +269,28 @@ func TestStopContainer(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("StopContainer: %v", err)
+	}
+}
+
+// TestStopContainer_PersistsStoppedByUser verifies a deliberate stop is
+// recorded as a container label so the boot reconcile won't undo it on reboot.
+func TestStopContainer_PersistsStoppedByUser(t *testing.T) {
+	mock := &mockContainerdClient{}
+	client, cleanup := startContainerServer(t, mock)
+	defer cleanup()
+
+	if _, err := client.StopContainer(context.Background(), &agentpb.StopContainerRequest{AppName: "test-app"}); err != nil {
+		t.Fatalf("StopContainer: %v", err)
+	}
+
+	found := false
+	for _, c := range mock.stoppedByUserCalls {
+		if c.containerID == "test-app" && c.stopped {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected SetStoppedByUser(test-app, true); calls = %+v", mock.stoppedByUserCalls)
 	}
 }
 
@@ -1147,6 +1203,55 @@ func TestParseAppConfigAcceptsValidAppID(t *testing.T) {
 	}
 	if cfg.AppID != "com.example.app" {
 		t.Fatalf("appId = %q, want %q", cfg.AppID, "com.example.app")
+	}
+}
+
+func TestGetResourceStatsHandler(t *testing.T) {
+	svc := &ContainerService{
+		logger: zap.NewNop(),
+		containerd: &mockContainerdClient{
+			resourceStats: []*agentpb.ResourceContainerStats{
+				{AppName: "myapp", CpuUsageNanos: 5000, MemoryBytes: 2048},
+			},
+		},
+	}
+	resp, err := svc.GetResourceStats(context.Background(), &agentpb.GetResourceStatsRequest{})
+	if err != nil {
+		t.Fatalf("GetResourceStats: %v", err)
+	}
+	if len(resp.GetContainers()) != 1 || resp.GetContainers()[0].GetAppName() != "myapp" {
+		t.Fatalf("unexpected containers: %+v", resp.GetContainers())
+	}
+	if resp.GetContainers()[0].GetCpuUsageNanos() != 5000 {
+		t.Errorf("cpu = %d, want 5000", resp.GetContainers()[0].GetCpuUsageNanos())
+	}
+	// Host is populated best-effort; on a non-Linux test host the /proc reads may
+	// fail, so we only assert the host message is present (non-nil).
+	if resp.GetHost() == nil {
+		t.Errorf("host stats missing")
+	}
+}
+
+func TestGetContainerPortsHandler(t *testing.T) {
+	svc := &ContainerService{
+		logger: zap.NewNop(),
+		containerd: &mockContainerdClient{
+			listeningPorts: []*agentpb.PortEntry{
+				{Protocol: "tcp", Port: 8080, Address: "0.0.0.0"},
+			},
+		},
+	}
+	resp, err := svc.GetContainerPorts(context.Background(), &agentpb.GetContainerPortsRequest{AppName: "myapp"})
+	if err != nil {
+		t.Fatalf("GetContainerPorts: %v", err)
+	}
+	if len(resp.GetPorts()) != 1 || resp.GetPorts()[0].GetPort() != 8080 {
+		t.Fatalf("unexpected ports: %+v", resp.GetPorts())
+	}
+
+	// Empty app name is rejected.
+	if _, err := svc.GetContainerPorts(context.Background(), &agentpb.GetContainerPortsRequest{}); err == nil {
+		t.Errorf("expected error for empty app_name")
 	}
 }
 

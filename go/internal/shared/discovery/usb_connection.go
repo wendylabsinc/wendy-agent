@@ -2,11 +2,34 @@ package discovery
 
 import (
 	"fmt"
+	"net"
 	"regexp"
 	"strings"
 
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 )
+
+// USBNetworkInterfaceNames returns the names of non-loopback network interfaces
+// that appear to be USB-attached (USB-CDC gadget links), using the same
+// heuristics as device discovery (name patterns plus, on Linux, a sysfs
+// device-path check). The CLI's USB-C auto-setup flow uses it to locate the
+// host's gadget interface.
+func USBNetworkInterfaceNames() ([]string, error) {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return nil, fmt.Errorf("listing interfaces: %w", err)
+	}
+	var out []string
+	for i := range ifaces {
+		if ifaces[i].Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		if looksLikeUSBConnection(ifaces[i].Name, "") {
+			out = append(out, ifaces[i].Name)
+		}
+	}
+	return out, nil
+}
 
 // ansiEscapeRE matches ANSI/VT100 escape sequences (e.g. colour codes).
 var ansiEscapeRE = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
@@ -88,7 +111,11 @@ func looksLikeUSBConnection(interfaceName, displayName string) bool {
 	case linuxUSBInterfaceNameRE.MatchString(name):
 		return true
 	default:
-		return false
+		// Fall back to sysfs: an interface whose real device path traverses the
+		// USB bus is USB-backed regardless of its name. This keeps gadget
+		// detection working under net.ifnames=0 / classic naming (eth0, usb0),
+		// where none of the name heuristics above match. No-op off Linux.
+		return interfaceIsUSBBacked(strings.TrimSpace(interfaceName))
 	}
 }
 

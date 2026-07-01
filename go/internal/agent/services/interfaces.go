@@ -44,6 +44,10 @@ type ContainerdClient interface {
 	WriteLayer(ctx context.Context, digest string, reader io.Reader, size int64) error
 	AssembleImage(ctx context.Context, imageName string, layers []*agentpb.RunContainerLayerHeader, imageConfig []byte) error
 	MissingChunks(ctx context.Context, hashes [][32]byte) ([][32]byte, error)
+	// PresentLayers reports which uncompressed layer diff IDs the device already
+	// has, mapping each to its blob size. Used by QueryLayers so the CLI can skip
+	// chunking layers the device can reuse as-is.
+	PresentLayers(ctx context.Context, diffIDs []string) (map[string]int64, error)
 	StageChunk(ctx context.Context, h [32]byte, data []byte) error
 	AssembleLayerFromChunks(ctx context.Context, diffID string, hashes [][32]byte) error
 	CreateContainer(ctx context.Context, req *agentpb.CreateContainerRequest, appCfg *appconfig.AppConfig) error
@@ -58,13 +62,36 @@ type ContainerdClient interface {
 	// the monitor before issuing a stop or delete.
 	ContainerIDsForApp(ctx context.Context, appID string) ([]string, error)
 	ListContainers(ctx context.Context) ([]*agentpb.AppContainer, error)
+	// ListBootContainers returns the containers that should be (re)started at
+	// agent boot: restart policy keeps them running (not "no") and they were not
+	// explicitly stopped by the user. Used by the boot reconcile.
+	ListBootContainers(ctx context.Context) ([]BootContainer, error)
+	// SetStoppedByUser persists (or clears) the "user explicitly stopped this"
+	// mark on a container so a deliberate stop survives a reboot.
+	SetStoppedByUser(ctx context.Context, containerID string, stopped bool) error
+	// MigrateStoppedByUserOnce back-fills the stopped-by-user mark for apps that
+	// predate it (one-time, persistent-marker-guarded), so upgrading to
+	// boot-reconcile doesn't resurrect apps the user had already stopped.
+	MigrateStoppedByUserOnce(ctx context.Context) error
 	GetContainerStats(ctx context.Context) ([]*agentpb.ContainerStats, error)
+	GetResourceStats(ctx context.Context) ([]*agentpb.ResourceContainerStats, error)
+	GetListeningPorts(ctx context.Context, appName string) ([]*agentpb.PortEntry, error)
 	GetContainerMetrics(ctx context.Context, appName string) (ContainerMetrics, error)
 	GetContainerMCPPort(ctx context.Context, appName string) (uint32, error)
 	// GetContainerRestartPolicyLabel returns the raw restart policy label stored on
 	// the container (e.g. "unless-stopped", "on-failure:5", "no"). An empty string
 	// is returned when the container exists but has no restart policy label.
 	GetContainerRestartPolicyLabel(ctx context.Context, appName string) (string, error)
+}
+
+// BootContainer describes a container the boot reconcile should bring back up,
+// along with the restart policy to register it under. RestartPolicy is the bare
+// policy string ("unless-stopped", "on-failure", "always"; empty means default
+// keep-running); MaxRetries applies to on-failure.
+type BootContainer struct {
+	Name          string
+	RestartPolicy string
+	MaxRetries    int
 }
 
 // GroupRestarter is the optional capability a ContainerdClient may provide to

@@ -172,9 +172,12 @@ scripts/stitch scenes/* --output output/wendy-file-sync.mp4
 focused on content and intent: audience, goal, what to say, what to show, and any
 demo beats.
 
-Use one `##` heading per scene. Inside each scene, use `### Say` for narration
-and `### Show (<role>)` for visual direction. Common show roles are `slide`,
-`terminal`, `UI`, `screen recording`, `code`, and `diagram`.
+Use one `##` heading per scene. Every screencast should include an explicit
+opening title scene and a final closing or thanks scene. The top-level `#` title
+in `script.md` is metadata for humans and agents; it is not rendered as a scene
+unless there is a corresponding `##` scene. Inside each scene, use `### Say` for
+narration and `### Show (<role>)` for visual direction. Common show roles are
+`slide`, `terminal`, `UI`, `screen recording`, `code`, and `diagram`.
 
 ````md
 # Feature Name

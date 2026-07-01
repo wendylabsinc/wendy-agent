@@ -21,11 +21,41 @@ func newCloudCmd() *cobra.Command {
 		Short: "Manage Wendy Cloud resources",
 	}
 
-	cmd.AddCommand(newCloudEnrollDeviceCmd())
-	cmd.AddCommand(newCloudDiscoverCmd())
-	cmd.AddCommand(newCloudRunCmd())
-	cmd.AddCommand(newCloudTunnelCmd())
-	cmd.AddCommand(newCloudDeviceCmd())
+	cmd.AddGroup(
+		&cobra.Group{ID: "auth", Title: "Authentication:"},
+		&cobra.Group{ID: "devices", Title: "Devices:"},
+		&cobra.Group{ID: "connectivity", Title: "Connectivity:"},
+	)
+
+	addToGroup := func(groupID string, cmds ...*cobra.Command) {
+		for _, c := range cmds {
+			c.GroupID = groupID
+			cmd.AddCommand(c)
+		}
+	}
+
+	// Authentication: the common Wendy Cloud auth flow surfaced under
+	// `wendy cloud`. These reuse the same constructors as the (now hidden)
+	// top-level `wendy auth` command; the advanced session commands
+	// (refresh-certs, use, default) remain reachable only via `wendy auth`.
+	addToGroup("auth",
+		newAuthLoginCmd(),
+		newAuthLogoutCmd(),
+		newAuthStatusCmd(),
+	)
+	// Devices: enroll, discover, and operate cloud-connected devices. The
+	// hidden `run` command stays registered (and runnable) but off the help
+	// menu; it is hidden via its own constructor.
+	addToGroup("devices",
+		newCloudEnrollDeviceCmd(),
+		newCloudDiscoverCmd(),
+		newCloudDeviceCmd(),
+		newCloudRunCmd(),
+	)
+	// Connectivity: networking helpers that reach a device through the cloud.
+	addToGroup("connectivity",
+		newCloudTunnelCmd(),
+	)
 	return cmd
 }
 

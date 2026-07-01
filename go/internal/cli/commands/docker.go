@@ -281,13 +281,14 @@ func validateBuildArgPair(key, value string) error {
 
 // applyDeviceBuildArgHints injects the optional device/GPU build-arg hints the
 // agent reports (WENDY_DEVICE_TYPE, WENDY_HAS_GPU, WENDY_GPU_VENDOR,
-// WENDY_JETPACK_VERSION, WENDY_CUDA_VERSION) into buildArgs. Each hint is only
-// set when the agent reports it, so Dockerfiles keep their own ARG defaults on
-// older agents. These values are device-reported and feed straight into a
-// builder CLI, so any hint that fails build-arg validation is skipped with a
-// warning rather than failing the whole deploy — e.g. a Jetson running an L4T
-// release the agent's JetPack table doesn't map reports a fallback like
-// "L4T 38.2.0", whose space is rejected by validBuildArgValueRe.
+// WENDY_JETPACK_VERSION, WENDY_JETPACK_MAJOR, WENDY_CUDA_VERSION) into
+// buildArgs. Each hint is only set when the agent reports it, so Dockerfiles
+// keep their own ARG defaults on older agents. These values are device-reported
+// and feed straight into a builder CLI, so any hint that fails build-arg
+// validation is skipped with a warning rather than failing the whole deploy —
+// e.g. a Jetson running an L4T release the agent's JetPack table doesn't map
+// reports a fallback like "L4T 38.2.0", whose space is rejected by
+// validBuildArgValueRe.
 func applyDeviceBuildArgHints(buildArgs map[string]string, versionResp *agentpb.GetAgentVersionResponse) {
 	setHint := func(key, value string) {
 		if value == "" {
@@ -307,7 +308,17 @@ func applyDeviceBuildArgHints(buildArgs map[string]string, versionResp *agentpb.
 	}
 	setHint("WENDY_GPU_VENDOR", versionResp.GetGpuVendor())
 	setHint("WENDY_JETPACK_VERSION", versionResp.GetJetpackVersion())
+	// Coarse major ("7" from "7.2") to aid in per-generation image selection
+	setHint("WENDY_JETPACK_MAJOR", jetpackMajor(versionResp.GetJetpackVersion()))
 	setHint("WENDY_CUDA_VERSION", versionResp.GetCudaVersion())
+}
+
+func jetpackMajor(version string) string {
+	major, _, _ := strings.Cut(version, ".")
+	if _, err := strconv.Atoi(major); err != nil {
+		return "" // empty, or an unmapped "L4T 39.2.0" fallback — not a clean major
+	}
+	return major
 }
 
 func sortedValidatedBuildArgKeys(buildArgs map[string]string) ([]string, error) {
@@ -1418,6 +1429,7 @@ func buildAndPushImage(ctx context.Context, dir, registryAddr, registryImage, pl
 		"buildx", "build",
 		"--builder", builder,
 		"--platform", platform,
+		"--progress", "plain",
 	}
 	if dockerfile != "" {
 		// Callers validate the filename at their own boundary: the CLI flag path
@@ -1571,9 +1583,13 @@ func buildAndPushImageForAgent(ctx context.Context, conn *grpcclient.AgentConnec
 		return buildAndPushImageForAgentWithBuilder(ctx, conn, regPort, builder, dir, repo, platform, dockerfile, buildArgs, cacheKey, streamOutput, logOutput)
 	}
 	if shouldAutoAttemptAppleContainerBuilder() {
+		// Prefer Apple Container whenever its CLI is available: start the system
+		// if it isn't running yet rather than silently falling back to Docker.
 		// Apple Container builds don't use buildx, so the local-cache key never
 		// applies; only the Docker fallback below consumes it.
-		if err := buildAndPushImageForAgentWithBuilder(ctx, conn, regPort, imageBuilderAppleContainer, dir, repo, platform, dockerfile, buildArgs, "", streamOutput, logOutput); err == nil {
+		if err := ensureAppleContainerSystem(ctx, false); err != nil {
+			logAppleContainerFallback(logOutput, err)
+		} else if err := buildAndPushImageForAgentWithBuilder(ctx, conn, regPort, imageBuilderAppleContainer, dir, repo, platform, dockerfile, buildArgs, "", streamOutput, logOutput); err == nil {
 			return nil
 		} else {
 			logAppleContainerFallback(logOutput, err)
@@ -1629,7 +1645,11 @@ func buildImageWithAppleContainer(ctx context.Context, dir, imageName, platform,
 	if err != nil {
 		return fmt.Errorf("resolving project path: %w", err)
 	}
-	args := []string{"build", "--platform", platform, "-t", imageName}
+	// --progress plain emits the deterministic BuildKit log format (#N, DONE Ns,
+	// [stage N/M]) that the shared build parser understands; the default
+	// (--progress auto) renders an interactive [+] Building UI the parser cannot
+	// read, so the renderer would show nothing.
+	args := []string{"build", "--progress", "plain", "--platform", platform, "-t", imageName}
 	if dockerfile != "" {
 		resolvedDockerfile, err := appleContainerBuildFilePath(dir, dockerfile)
 		if err != nil {
@@ -1703,9 +1723,12 @@ var (
 )
 
 // ensureAppleContainerSystem verifies the Apple Container system is running and
-// offers to start it when it is not. It is called only on explicit
-// `--builder apple-container` paths; the silent auto-attempt paths keep using
-// checkAppleContainerBuilder so they fall back to Docker without side effects.
+// offers to start it when it is not. It is called both on explicit
+// `--builder apple-container` paths and on the no-builder auto-attempt paths
+// (Apple silicon), which now prefer Apple Container whenever its CLI is
+// available and start the system on demand rather than silently falling back to
+// Docker. Callers fall back to Docker when this returns an error (CLI
+// unavailable, user declined, or the system failed to start).
 //
 // When the system is not running and we are attached to an interactive terminal,
 // the user is prompted before starting. assumeYes (from --yes, and implicitly
@@ -1756,11 +1779,10 @@ func ensureAppleContainerSystem(ctx context.Context, assumeYes bool) error {
 }
 
 // ensureAppleContainerSystemForBuilder runs ensureAppleContainerSystem only when
-// the builder was explicitly set to apple-container. The silent auto-attempt
-// selection (no --builder, on Apple silicon) is intentionally left to
-// checkAppleContainerBuilder so it can fall back to Docker without prompting or
-// starting the system. Safe to call from any build path: it no-ops unless the
-// builder is explicit apple-container.
+// the builder was explicitly set to apple-container. The no-builder auto-attempt
+// selection (no --builder, on Apple silicon) calls ensureAppleContainerSystem
+// directly at its decision point, so this helper is a no-op for it. Safe to call
+// from any build path: it no-ops unless the builder is explicit apple-container.
 func ensureAppleContainerSystemForBuilder(ctx context.Context, builder string, assumeYes bool) error {
 	if !imageBuilderWasExplicit(builder) {
 		return nil
@@ -2343,7 +2365,14 @@ func resolveRegistryIP(host string) string {
 func resolveHostPreferRoutable(hostname string) string {
 	addrs, err := net.LookupHost(hostname)
 	if err != nil || len(addrs) == 0 {
-		return ""
+		// The shipped CGO_ENABLED=0 binary can't resolve ".local" via the OS
+		// resolver; fall back to an mDNS browse so a device reached by its
+		// ".local" name still resolves for registry use (issue #1155).
+		if ip := resolveMDNSHost(context.Background(), hostname); ip != "" {
+			addrs = []string{ip}
+		} else {
+			return ""
+		}
 	}
 
 	// Scan all addresses before returning — IPv4 may appear after global IPv6

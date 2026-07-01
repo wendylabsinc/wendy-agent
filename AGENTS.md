@@ -8,7 +8,7 @@ WendyOS edge devices (Raspberry Pi, NVIDIA Jetson, x86 SBCs, and more).
 Install the CLI:
 
 ```sh
-curl -fsSL https://install.wendy.sh/cli.sh | bash
+curl -fsSL https://install.wendy.dev/cli.sh | bash
 ```
 
 Configure the MCP server for your AI coding tool:
@@ -23,6 +23,7 @@ Supports: Claude Code, Claude Desktop, Cursor, Windsurf, Codex.
 
 1. Call `wendy_status` to see current connection state and a suggested next step.
 2. Call `device_list` (optionally `scan: true`) to find available devices.
+   - For USB-C tethered devices on Linux, run `sudo wendy device usb-setup` first.
 3. Call `device_connect` or `cloud_connect` to connect.
 4. Use container, WiFi, hardware, telemetry, and OS tools.
 

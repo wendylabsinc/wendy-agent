@@ -16,8 +16,10 @@ import (
 	"strings"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/shared/version"
@@ -31,6 +33,7 @@ func newOSCmd() *cobra.Command {
 	}
 
 	cmd.AddCommand(newOSUpdateCmd())
+	cmd.AddCommand(newOSUpdateStatusCmd())
 	cmd.AddCommand(newOSListDrivesCmd())
 	addOSInstallCmd(cmd)
 	addOSDownloadCmd(cmd)
@@ -41,32 +44,54 @@ func newOSCmd() *cobra.Command {
 const (
 	osUpdateUnsupportedMessage      = "This setup cannot be updated with wendy os update. Use this machine’s normal OS update tools instead. To use WendyOS OTA updates, install WendyOS on supported hardware with wendy os install."
 	linuxOSUpdateUnsupportedMessage = "This Linux host has wendy-agent installed, but it cannot be updated with WendyOS OTA artifacts. Use the Linux distribution’s package manager, such as apt, dnf, or pacman, to update this machine."
-	wendyOSMissingMenderMessage     = "This WendyOS image does not support OTA updates because mender-update was not found. Reinstall or upgrade to a WendyOS image with OTA support."
+	wendyOSMissingUpdaterMessage    = "This WendyOS image does not support OTA updates because no update backend (wendyos-update or mender) was found. Reinstall or upgrade to a WendyOS image with OTA support."
 )
 
 func validateOSUpdateIdentity(versionResp *agentpb.GetAgentVersionResponse) error {
 	if isWendyOSUpdateTarget(versionResp) {
 		return nil
 	}
-	if versionResp.GetOs() == "linux" {
+	if osIsLinuxFamily(versionResp.GetOs()) {
 		return errors.New(linuxOSUpdateUnsupportedMessage)
 	}
 	return errors.New(osUpdateUnsupportedMessage)
+}
+
+// osIsLinuxFamily reports whether the agent's reported OS is a Linux
+// distribution. Since #1136 the agent reports the /etc/os-release ID (e.g.
+// "ubuntu", "wendyos") instead of "linux", so equality with "linux" no longer
+// identifies Linux hosts. Only darwin and windows agents are non-Linux; an
+// empty/unknown OS is treated as non-Linux so it gets the generic message.
+func osIsLinuxFamily(agentOS string) bool {
+	switch agentOS {
+	case "", "darwin", "windows":
+		return false
+	default:
+		return true
+	}
 }
 
 func validateOSUpdateTarget(versionResp *agentpb.GetAgentVersionResponse) error {
 	if err := validateOSUpdateIdentity(versionResp); err != nil {
 		return err
 	}
-	if !agentVersionHasFeature(versionResp, "mender") {
-		return errors.New(wendyOSMissingMenderMessage)
+	// Either OS update backend qualifies: the in-house wendyos-update engine or
+	// mender. The agent picks one per the request's --updater value.
+	if !agentVersionHasFeature(versionResp, "wendyos-update") && !agentVersionHasFeature(versionResp, "mender") {
+		return errors.New(wendyOSMissingUpdaterMessage)
 	}
 	return nil
 }
 
+// isWendyOSUpdateTarget reports whether the device is a WendyOS OTA target. The
+// signals are WendyOS-specific and authoritative on their own: a "WendyOS-" os
+// version (from /etc/wendyos/version.txt) or a device type (from
+// /etc/wendyos/device-type), neither of which is ever present on a non-WendyOS
+// host. It deliberately does NOT gate on the reported OS, which since #1136 is
+// the os-release ID (e.g. "wendyos"), not "linux".
 func isWendyOSUpdateTarget(versionResp *agentpb.GetAgentVersionResponse) bool {
-	return versionResp.GetOs() == "linux" &&
-		(strings.HasPrefix(versionResp.GetOsVersion(), "WendyOS-") || versionResp.GetDeviceType() != "")
+	return strings.HasPrefix(versionResp.GetOsVersion(), "WendyOS-") ||
+		versionResp.GetDeviceType() != ""
 }
 
 func agentVersionHasFeature(versionResp *agentpb.GetAgentVersionResponse, feature string) bool {
@@ -78,21 +103,69 @@ func agentVersionHasFeature(versionResp *agentpb.GetAgentVersionResponse, featur
 	return false
 }
 
+// osAlreadyCurrent reports whether the device's current OS version is at or
+// ahead of the latest available version. The "WendyOS-" display prefix is
+// stripped before comparing so that "WendyOS-0.10.4" and "0.12.0-nightly"
+// compare correctly. Returns false when either version is unknown.
+func osAlreadyCurrent(currentOSVersion, latestVersion string, nightly bool) bool {
+	if currentOSVersion == "" || latestVersion == "" {
+		return false
+	}
+	normalized := strings.TrimPrefix(currentOSVersion, "WendyOS-")
+	return nightly && latestVersion == normalized ||
+		!nightly && version.CompareVersions(latestVersion, normalized) <= 0
+}
+
+// osUpdateAction is the decision for the OS-update step of `device update`.
+type osUpdateAction int
+
+const (
+	osActionAlreadyCurrent osUpdateAction = iota // device is already at/ahead of latest
+	osActionApply                                // apply without prompting (--yes)
+	osActionPrompt                               // interactive: ask the user
+	osActionReportOnly                           // non-interactive, no --yes: report and skip
+)
+
+// decideOSUpdate chooses how the OS-update step behaves when a newer OS may be
+// available. It is pure so it can be unit-tested; the caller is responsible for
+// running the interactive prompt when the result is osActionPrompt.
+func decideOSUpdate(currentOSVersion, latestVersion string, nightly, assumeYes, interactive bool) osUpdateAction {
+	if osAlreadyCurrent(currentOSVersion, latestVersion, nightly) {
+		return osActionAlreadyCurrent
+	}
+	switch {
+	case assumeYes:
+		return osActionApply
+	case interactive:
+		return osActionPrompt
+	default:
+		return osActionReportOnly
+	}
+}
+
 func newOSUpdateCmd() *cobra.Command {
 	var artifactURL string
 	var nightly bool
+	var updaterBackend string
 
 	cmd := &cobra.Command{
 		Use:   "update [artifact-path]",
 		Short: "Update WendyOS on the target device",
-		Long: `Update WendyOS using a Mender artifact. Provide a local file path or directory
-as a positional argument, or use --artifact-url for a remote URL.
+		Long: `Update WendyOS using an OS update artifact. Provide a local file path or
+directory as a positional argument, or use --artifact-url for a remote URL.
 
 When a local file is provided, the CLI serves it via a temporary HTTP server
-so the device can download it directly.`,
+so the device can download it directly.
+
+By default the device uses the in-house wendyos-update engine when it supports
+the board, falling back to mender. Use --updater to force a backend.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
+
+			if err := validateUpdaterBackend(updaterBackend); err != nil {
+				return err
+			}
 
 			// Determine the artifact URL: local path, remote URL, or manifest picker.
 			if len(args) > 0 && artifactURL != "" {
@@ -132,9 +205,11 @@ so the device can download it directly.`,
 				return err
 			}
 
-			// Step 3: Show current OS version.
-			if osVer := versionResp.GetOsVersion(); osVer != "" {
-				fmt.Printf("Current OS version: %s\n", osVer)
+			// Step 3: Show current OS version. It is also the baseline for
+			// detecting a post-reboot rollback.
+			preUpdateOSVersion := versionResp.GetOsVersion()
+			if preUpdateOSVersion != "" {
+				fmt.Printf("Current OS version: %s\n", preUpdateOSVersion)
 			}
 
 			// No artifact provided — auto-detect from the reported device type.
@@ -167,12 +242,7 @@ so the device can download it directly.`,
 					artifactURL = picked
 				} else {
 					if osVer := versionResp.GetOsVersion(); osVer != "" && latestVer != "" {
-						// Strip the "WendyOS-" display prefix before comparing so that
-						// "WendyOS-0.10.4" and "0.12.0-nightly" compare correctly.
-						normalizedOsVer := strings.TrimPrefix(osVer, "WendyOS-")
-						alreadyCurrent := nightly && latestVer == normalizedOsVer ||
-							!nightly && version.CompareVersions(latestVer, normalizedOsVer) <= 0
-						if alreadyCurrent {
+						if osAlreadyCurrent(osVer, latestVer, nightly) {
 							fmt.Printf("OS is already at the latest version (%s).\n", osVer)
 							return nil
 						}
@@ -230,60 +300,8 @@ so the device can download it directly.`,
 				return fmt.Errorf("provide a local artifact path or --artifact-url")
 			}
 
-			stream, err := conn.AgentService.UpdateOS(ctx, &agentpb.UpdateOSRequest{
-				ArtifactUrl: artifactURL,
-			})
-			if err != nil {
-				return fmt.Errorf("starting OS update: %w", err)
-			}
-
-			if isInteractiveTerminal() {
-				spin := tui.NewSpinner("Downloading update...")
-				p := tea.NewProgram(spin)
-
-				go func() {
-					for {
-						resp, err := stream.Recv()
-						if err == io.EOF {
-							p.Send(tui.SpinnerDoneMsg{})
-							return
-						}
-						if err != nil {
-							p.Send(tui.SpinnerDoneMsg{Err: err})
-							return
-						}
-						if progress := resp.GetProgress(); progress != nil {
-							p.Send(tui.SpinnerUpdateMsg{Label: phaseLabel(progress.GetPhase())})
-						}
-						if completed := resp.GetCompleted(); completed != nil {
-							p.Send(tui.SpinnerDoneMsg{})
-							return
-						}
-						if failed := resp.GetFailed(); failed != nil {
-							p.Send(tui.SpinnerDoneMsg{Err: fmt.Errorf("update failed: %s", failed.GetErrorMessage())})
-							return
-						}
-					}
-				}()
-
-				finalModel, err := p.Run()
-				if err != nil {
-					return fmt.Errorf("TUI error: %w", err)
-				}
-				spinModel, ok := finalModel.(tui.SpinnerModel)
-				if !ok {
-					return fmt.Errorf("TUI error: unexpected model type %T", finalModel)
-				}
-				if !spinModel.Done() {
-					return ErrUserCancelled
-				}
-				if _, spinErr := spinModel.Result(); spinErr != nil {
-					return spinErr
-				}
-			} else {
-				if err := drainOSUpdateStream(stream); err != nil {
-					return err
-				}
+			if err := streamOSUpdate(ctx, conn, artifactURL, updaterBackend); err != nil {
+				return err
 			}
 
 			deviceHost := conn.Host
@@ -292,17 +310,94 @@ so the device can download it directly.`,
 				return err
 			}
 			fmt.Println("Device is back online.")
-			return nil
+			return reportOSUpdateOutcome(ctx, deviceHost, preUpdateOSVersion)
 		},
 	}
 
-	cmd.Flags().StringVar(&artifactURL, "artifact-url", "", "Mender artifact URL (remote)")
+	cmd.Flags().StringVar(&artifactURL, "artifact-url", "", "OS update artifact URL (remote)")
 	cmd.Flags().BoolVar(&nightly, "nightly", false, "Use the latest nightly (prerelease) build for both agent and OS")
+	cmd.Flags().StringVar(&updaterBackend, "updater", "auto",
+		"OS update backend: auto (prefer wendyos-update, fall back to mender), wendyos, or mender")
 
 	return cmd
 }
 
-// resolveArtifactPath resolves a local file path or directory to a .mender artifact file.
+// streamOSUpdate starts an UpdateOS stream for artifactURL on conn and reports
+// progress: a spinner when interactive, a silent drain otherwise. It does not
+// wait for the post-update reboot.
+func streamOSUpdate(ctx context.Context, conn *grpcclient.AgentConnection, artifactURL, updaterBackend string) error {
+	stream, err := conn.AgentService.UpdateOS(ctx, &agentpb.UpdateOSRequest{
+		ArtifactUrl:    artifactURL,
+		UpdaterBackend: updaterBackend,
+	})
+	if err != nil {
+		return fmt.Errorf("starting OS update: %w", err)
+	}
+
+	if !isInteractiveTerminal() {
+		return drainOSUpdateStream(stream)
+	}
+
+	spin := tui.NewSpinner("Downloading update...")
+	p := tui.NewProgressProgram(spin)
+
+	go func() {
+		for {
+			resp, err := stream.Recv()
+			if err == io.EOF {
+				p.Send(tui.SpinnerDoneMsg{})
+				return
+			}
+			if err != nil {
+				p.Send(tui.SpinnerDoneMsg{Err: err})
+				return
+			}
+			if progress := resp.GetProgress(); progress != nil {
+				p.Send(tui.SpinnerUpdateMsg{Label: progressLabel(progress.GetPhase(), progress.GetPercent())})
+			}
+			if completed := resp.GetCompleted(); completed != nil {
+				p.Send(tui.SpinnerDoneMsg{})
+				return
+			}
+			if failed := resp.GetFailed(); failed != nil {
+				p.Send(tui.SpinnerDoneMsg{Err: fmt.Errorf("update failed: %s", failed.GetErrorMessage())})
+				return
+			}
+		}
+	}()
+
+	finalModel, err := p.Run()
+	if err != nil {
+		return fmt.Errorf("TUI error: %w", err)
+	}
+	spinModel, ok := finalModel.(tui.SpinnerModel)
+	if !ok {
+		return fmt.Errorf("TUI error: unexpected model type %T", finalModel)
+	}
+	if !spinModel.Done() {
+		return ErrUserCancelled
+	}
+	if _, spinErr := spinModel.Result(); spinErr != nil {
+		return spinErr
+	}
+	return nil
+}
+
+// validateUpdaterBackend rejects an unknown --updater value before contacting
+// the device. The accepted set mirrors the agent's selectUpdater.
+func validateUpdaterBackend(updater string) error {
+	switch updater {
+	case "", "auto", "wendyos", "wendyos-update", "mender":
+		return nil
+	default:
+		return fmt.Errorf("invalid --updater %q (expected auto, wendyos, or mender)", updater)
+	}
+}
+
+// resolveArtifactPath resolves a local file path or directory to an OS update
+// artifact. A direct file path is returned as-is (any extension). A directory
+// is searched for an artifact the device can install: a .wendy artifact (the
+// in-house engine) or a .mender artifact (the fallback).
 func resolveArtifactPath(path string) (string, error) {
 	absPath, err := filepath.Abs(path)
 	if err != nil {
@@ -318,7 +413,6 @@ func resolveArtifactPath(path string) (string, error) {
 		return absPath, nil
 	}
 
-	// Search directory for a .mender file.
 	entries, err := os.ReadDir(absPath)
 	if err != nil {
 		return "", fmt.Errorf("reading directory: %w", err)
@@ -326,13 +420,36 @@ func resolveArtifactPath(path string) (string, error) {
 
 	for _, e := range entries {
 		name := e.Name()
-		if strings.HasSuffix(name, ".mender") || strings.HasSuffix(name, ".mender.xz") {
+		if strings.HasSuffix(name, ".wendy") ||
+			strings.HasSuffix(name, ".mender") || strings.HasSuffix(name, ".mender.xz") {
 			fmt.Printf("Found artifact: %s\n", name)
 			return filepath.Join(absPath, name), nil
 		}
 	}
 
-	return "", fmt.Errorf("no .mender file found in directory: %s", absPath)
+	return "", fmt.Errorf("no .wendy or .mender artifact found in directory: %s", absPath)
+}
+
+// artifactSuffix returns the OS-update artifact extension embedded in a URL or
+// path: ".mender.xz", ".wendy", or ".mender". A wendyos-update (.wendy)
+// artifact and a Mender (.mender) artifact share the manifest's
+// ota_update_path, and the install backends key off the artifact, so the
+// extension must survive a local download+serve round-trip — serving a .wendy
+// artifact under a .mender name makes wendyos-update reject it. Falls back to
+// ".mender" when no known suffix is present (backward-compatible default).
+func artifactSuffix(artifactURL string) string {
+	name := artifactURL
+	if u, err := url.Parse(artifactURL); err == nil && u.Path != "" {
+		name = u.Path
+	}
+	switch {
+	case strings.HasSuffix(name, ".mender.xz"):
+		return ".mender.xz"
+	case strings.HasSuffix(name, ".wendy"):
+		return ".wendy"
+	default:
+		return ".mender"
+	}
 }
 
 // artifactURLPath generates a short hash prefix for the URL path.
@@ -427,11 +544,12 @@ func pollDeviceOnline(ctx context.Context, addr string) error {
 }
 
 // waitForDeviceOnline polls the device until it responds to GetAgentVersion,
-// or until a 5-minute timeout expires. Shows a spinner when running
-// interactively; polls silently otherwise.
+// or until a 10-minute timeout expires. Shows a spinner when running
+// interactively; polls silently otherwise. The budget must cover the rollback
+// path: two reboots plus the post-update healthcheck timeouts.
 func waitForDeviceOnline(ctx context.Context, host string) error {
 	addr := hostPort(host, defaultAgentPort)
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer cancel()
 
 	if !isInteractiveTerminal() {
@@ -439,7 +557,7 @@ func waitForDeviceOnline(ctx context.Context, host string) error {
 	}
 
 	spin := tui.NewSpinner("Waiting for device to come back online...")
-	p := tea.NewProgram(spin)
+	p := tui.NewProgressProgram(spin)
 	go func() {
 		if err := pollDeviceOnline(ctx, addr); err != nil {
 			p.Send(tui.SpinnerDoneMsg{Err: err})
@@ -453,6 +571,230 @@ func waitForDeviceOnline(ctx context.Context, host string) error {
 	}
 	_, spinErr := finalModel.(tui.SpinnerModel).Result()
 	return spinErr
+}
+
+// osUpdateResultMaxAge guards against mistaking a record left over from a
+// previous update attempt for the one that just completed.
+const osUpdateResultMaxAge = 30 * time.Minute
+
+// reportOSUpdateOutcome queries the freshly booted device for the outcome of
+// the update (healthcheck verdict, rollback details) and prints it. It
+// returns a non-nil error when the update did not stick, so the command exits
+// non-zero.
+func reportOSUpdateOutcome(ctx context.Context, host, preUpdateOSVersion string) error {
+	addr := hostPort(host, defaultAgentPort)
+
+	var resp *agentpb.GetOSUpdateStatusResponse
+	var rpcErr error
+	var postUpdateOSVersion string
+
+	// The agent already answers GetAgentVersion (waitForDeviceOnline), so a
+	// short retry window is enough to absorb transient connection hiccups.
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		callCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		conn, err := connectWithAutoTLS(callCtx, addr)
+		if err == nil {
+			resp, rpcErr = conn.AgentService.GetOSUpdateStatus(callCtx, &agentpb.GetOSUpdateStatusRequest{})
+			if ver, verErr := conn.AgentService.GetAgentVersion(callCtx, &agentpb.GetAgentVersionRequest{}); verErr == nil {
+				postUpdateOSVersion = ver.GetOsVersion()
+			}
+			conn.Close()
+		} else {
+			rpcErr = err
+		}
+		cancel()
+
+		// Unimplemented is definitive (older agent); anything else transient
+		// is retried until the deadline.
+		if rpcErr == nil || status.Code(rpcErr) == codes.Unimplemented || time.Now().After(deadline) {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(2 * time.Second):
+		}
+	}
+
+	msg, outcomeErr := evaluateOSUpdateOutcome(resp, rpcErr, preUpdateOSVersion, postUpdateOSVersion, time.Now())
+	fmt.Println(msg)
+	return outcomeErr
+}
+
+// evaluateOSUpdateOutcome turns the device's update-status report (or the
+// failure to obtain one) into a user-facing message and, when the update did
+// not stick, an error. Pure function, unit-tested.
+func evaluateOSUpdateOutcome(
+	resp *agentpb.GetOSUpdateStatusResponse,
+	rpcErr error,
+	preUpdateOSVersion, postUpdateOSVersion string,
+	now time.Time,
+) (string, error) {
+	usable := rpcErr == nil && resp.GetHasResult() &&
+		resp.GetOutcome() != agentpb.GetOSUpdateStatusResponse_OUTCOME_UNSPECIFIED &&
+		now.Sub(time.Unix(resp.GetCreatedAtUnix(), 0)) <= osUpdateResultMaxAge
+
+	if !usable {
+		// The device cannot report healthcheck results for this update — the
+		// new OS image may bundle an agent without healthcheck support, which
+		// commits without verification. Fall back to comparing OS versions.
+		switch {
+		case postUpdateOSVersion == "":
+			return "The update outcome could not be verified; check the device with `wendy status`.", nil
+		case postUpdateOSVersion == preUpdateOSVersion:
+			return fmt.Sprintf("Warning: the device is still running %s — the update was likely rolled back. "+
+					"This device's agent cannot report healthcheck details; see `journalctl -u wendyos-agent` on the device.",
+					postUpdateOSVersion),
+				errors.New("OS version unchanged after update; the device likely rolled back")
+		default:
+			return fmt.Sprintf("Update applied; device is now running %s. "+
+				"(Post-update health verification is not supported by this device's agent.)", postUpdateOSVersion), nil
+		}
+	}
+
+	switch resp.GetOutcome() {
+	case agentpb.GetOSUpdateStatusResponse_OUTCOME_COMMITTED:
+		// Both versions come from wendyOSVersion() on the device, so they are
+		// directly comparable. A mismatch means the record describes a commit
+		// to an OS the device is not running — most likely a record from an
+		// earlier attempt, or an update that did not survive the reboot.
+		if postUpdateOSVersion != "" && resp.GetNewOsVersion() != "" && postUpdateOSVersion != resp.GetNewOsVersion() {
+			return fmt.Sprintf("Warning: the device reports a committed update to %s but is running %s — "+
+					"the status may belong to an earlier update. Check the device with `wendy status`.",
+					resp.GetNewOsVersion(), postUpdateOSVersion),
+				errors.New("OS update status does not match the running OS version")
+		}
+		runningVersion := postUpdateOSVersion
+		if runningVersion == "" {
+			runningVersion = resp.GetNewOsVersion()
+		}
+		return fmt.Sprintf("Update verified: critical services healthy. Device is running %s.", runningVersion), nil
+
+	case agentpb.GetOSUpdateStatusResponse_OUTCOME_ROLLED_BACK:
+		var b strings.Builder
+		rolledBackTo := resp.GetOldOsVersion()
+		if rolledBackTo == "" {
+			rolledBackTo = postUpdateOSVersion
+		}
+		fmt.Fprintf(&b, "Update failed post-reboot healthchecks and was rolled back to %s.\n", rolledBackTo)
+		writeFailedServices(&b, resp.GetServices())
+		// When the updater ran its own health gate (wendyos-update health.d),
+		// there are no per-service results — the reason is carried in the note.
+		if note := resp.GetNote(); note != "" {
+			fmt.Fprintf(&b, "Reason: %s\n", note)
+		}
+		if re := resp.GetRollbackError(); re != "" {
+			fmt.Fprintf(&b, "Rollback error: %s\n", re)
+		}
+		return strings.TrimRight(b.String(), "\n"),
+			errors.New("OS update rolled back: critical services failed healthchecks")
+
+	case agentpb.GetOSUpdateStatusResponse_OUTCOME_ROLLBACK_FAILED:
+		var b strings.Builder
+		b.WriteString("Update failed post-reboot healthchecks, and the automatic rollback could not be performed. " +
+			"The device may be in a degraded state.\n")
+		writeFailedServices(&b, resp.GetServices())
+		if re := resp.GetRollbackError(); re != "" {
+			fmt.Fprintf(&b, "Rollback error: %s\n", re)
+		}
+		return strings.TrimRight(b.String(), "\n"),
+			errors.New("OS update healthchecks failed and automatic rollback did not run")
+
+	default: // OUTCOME_COMMIT_FAILED
+		msg := "Update healthchecks passed, but the update could not be committed. " +
+			"The device retries the commit on its next agent restart; if it is never committed, the OS reverts on the next reboot."
+		if note := resp.GetNote(); note != "" {
+			msg += "\nReason: " + note
+		}
+		return msg, errors.New("OS update commit failed")
+	}
+}
+
+// newOSUpdateStatusCmd reports the device's record of its most recent OS update
+// without performing one. It is the only way to read why a commit failed when
+// the device has no shell access: the gate persists the reason and re-records
+// it on each agent restart while the commit keeps failing.
+func newOSUpdateStatusCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "update-status",
+		Short: "Show the result of the most recent WendyOS update",
+		Long: `Report the device's record of its most recent OS update attempt
+(committed, rolled back, or commit-failed), including the captured failure
+reason. Useful for diagnosing an update without shell access to the device.`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := cmd.Context()
+			conn, err := connectToAgent(ctx, SuppressUpdateCheck())
+			if err != nil {
+				return err
+			}
+			defer conn.Close()
+
+			resp, err := conn.AgentService.GetOSUpdateStatus(ctx, &agentpb.GetOSUpdateStatusRequest{})
+			if err != nil {
+				if status.Code(err) == codes.Unimplemented {
+					return fmt.Errorf("this device's agent does not report OS update status; update the agent first")
+				}
+				return fmt.Errorf("querying OS update status: %w", err)
+			}
+			fmt.Println(formatOSUpdateStatus(resp))
+			return nil
+		},
+	}
+}
+
+// formatOSUpdateStatus renders a persisted OS-update record as-is, with no
+// staleness or version inference (unlike evaluateOSUpdateOutcome, which judges
+// a just-completed update). This keeps a past commit failure diagnosable after
+// the fact.
+func formatOSUpdateStatus(resp *agentpb.GetOSUpdateStatusResponse) string {
+	if resp == nil || !resp.GetHasResult() {
+		return "No OS update has been recorded on this device."
+	}
+
+	var b strings.Builder
+	switch resp.GetOutcome() {
+	case agentpb.GetOSUpdateStatusResponse_OUTCOME_COMMITTED:
+		b.WriteString("Last OS update: committed (healthchecks passed).\n")
+	case agentpb.GetOSUpdateStatusResponse_OUTCOME_ROLLED_BACK:
+		b.WriteString("Last OS update: rolled back after failed healthchecks.\n")
+	case agentpb.GetOSUpdateStatusResponse_OUTCOME_ROLLBACK_FAILED:
+		b.WriteString("Last OS update: healthchecks failed and the rollback could not be performed.\n")
+	case agentpb.GetOSUpdateStatusResponse_OUTCOME_COMMIT_FAILED:
+		b.WriteString("Last OS update: healthchecks passed but the commit failed.\n")
+	default:
+		b.WriteString("Last OS update: outcome unknown.\n")
+	}
+
+	if v := resp.GetOldOsVersion(); v != "" {
+		fmt.Fprintf(&b, "  Previous version: %s\n", v)
+	}
+	if v := resp.GetNewOsVersion(); v != "" {
+		fmt.Fprintf(&b, "  Update version:   %s\n", v)
+	}
+	writeFailedServices(&b, resp.GetServices())
+	if note := resp.GetNote(); note != "" {
+		fmt.Fprintf(&b, "Reason: %s\n", note)
+	}
+	if re := resp.GetRollbackError(); re != "" {
+		fmt.Fprintf(&b, "Rollback error: %s\n", re)
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+func writeFailedServices(b *strings.Builder, services []*agentpb.GetOSUpdateStatusResponse_ServiceResult) {
+	header := false
+	for _, svc := range services {
+		if svc.GetStatus() != agentpb.GetOSUpdateStatusResponse_ServiceResult_STATUS_FAILED {
+			continue
+		}
+		if !header {
+			b.WriteString("Failed services:\n")
+			header = true
+		}
+		fmt.Fprintf(b, "  - %s: %s\n", svc.GetUnit(), svc.GetReason())
+	}
 }
 
 func localIPForHost(host string) (string, error) {
@@ -475,25 +817,24 @@ func localIPForHost(host string) (string, error) {
 	}
 
 	if parsedIP == nil {
-		// Not an IP literal — resolve via DNS.
-		ips, err := net.LookupHost(host)
-		if err != nil {
-			return "", fmt.Errorf("resolving %s: %w", host, err)
+		// Not an IP literal — resolve via DNS, falling back to an mDNS browse
+		// for ".local" names. The shipped CGO_ENABLED=0 binary can't resolve
+		// ".local" via the OS resolver, so without this fallback `wendy os`
+		// commands targeting a ".local" host fail on Linux/Windows (issue #1155).
+		ip := resolveHostMDNSFallback(context.Background(), host)
+		if ip == "" {
+			return "", fmt.Errorf("resolving %s: no addresses found%s", host, mdnsLocalHint(host))
 		}
-		// Prefer IPv4; fall back to the first result.
-		for _, ip := range ips {
-			if p := net.ParseIP(ip); p != nil && p.To4() != nil {
-				parsedIP = p
-				dialHost = ip
-				break
-			}
+		// An mDNS-discovered IPv6 link-local address carries a zone (e.g.
+		// fe80::1%en0): keep it for dialing but strip it before ParseIP.
+		dialHost = ip
+		ipForParse := ip
+		if i := strings.Index(ip, "%"); i != -1 {
+			ipForParse = ip[:i]
 		}
-		if parsedIP == nil && len(ips) > 0 {
-			dialHost = ips[0]
-			parsedIP = net.ParseIP(ips[0])
-		}
+		parsedIP = net.ParseIP(ipForParse)
 		if parsedIP == nil {
-			return "", fmt.Errorf("no addresses found for %s", host)
+			return "", fmt.Errorf("resolving %s: invalid address %q", host, ip)
 		}
 	}
 
@@ -531,7 +872,8 @@ func ipForURL(ip string) string {
 // drainOSUpdateStream reads all messages from an UpdateOS stream without a
 // TUI, printing phase label changes to stderr. Used when stdout is not a TTY.
 func drainOSUpdateStream(stream agentpb.WendyAgentService_UpdateOSClient) error {
-	var lastLabel string
+	var lastPhase string
+	lastDecile := int32(-1)
 	for {
 		resp, err := stream.Recv()
 		if err == io.EOF {
@@ -541,9 +883,14 @@ func drainOSUpdateStream(stream agentpb.WendyAgentService_UpdateOSClient) error 
 			return err
 		}
 		if progress := resp.GetProgress(); progress != nil {
-			if label := phaseLabel(progress.GetPhase()); label != lastLabel {
-				fmt.Fprintln(os.Stderr, label)
-				lastLabel = label
+			phase, percent := progress.GetPhase(), progress.GetPercent()
+			// Print on every phase change, and at each 10% step within a phase,
+			// so non-interactive logs show steady progress without flooding.
+			decile := percent / 10
+			if phase != lastPhase || (percent > 0 && decile != lastDecile) {
+				fmt.Fprintln(os.Stderr, progressLabel(phase, percent))
+				lastPhase = phase
+				lastDecile = decile
 			}
 		}
 		if resp.GetCompleted() != nil {
@@ -570,6 +917,18 @@ func phaseLabel(phase string) string {
 		}
 		return "Updating WendyOS..."
 	}
+}
+
+// progressLabel renders a phase plus its percentage when the agent reports one,
+// e.g. "Installing update (42%)". A percent of 0 is treated as "unknown" and
+// the bare phase label is shown. This surfaces real progress during the long
+// download/install so the operation doesn't look hung.
+func progressLabel(phase string, percent int32) string {
+	label := phaseLabel(phase)
+	if percent > 0 {
+		return strings.TrimSuffix(label, "...") + fmt.Sprintf(" (%d%%)", percent)
+	}
+	return label
 }
 
 // ensureAgentUpToDate checks the agent version on the device against the latest
@@ -671,14 +1030,17 @@ func downloadArtifactToTemp(artifactURL string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolving cache dir: %w", err)
 	}
-	tmpFile, err := os.CreateTemp(cacheDir, "wendyos-*.mender")
+	// Preserve the artifact's real extension (.wendy / .mender / .mender.xz) so
+	// the locally served filename matches the artifact type; the device's
+	// install backend keys off it.
+	tmpFile, err := os.CreateTemp(cacheDir, "wendyos-*"+artifactSuffix(artifactURL))
 	if err != nil {
 		return "", fmt.Errorf("creating temp file: %w", err)
 	}
 
 	total := resp.ContentLength
 	prog := tui.NewProgress("Downloading artifact...")
-	p := tea.NewProgram(prog)
+	p := tui.NewProgressProgram(prog)
 
 	go func() {
 		var downloaded int64

@@ -48,6 +48,25 @@ service WendyAgentService {
 
     // Update the operating system using a Mender artifact
     rpc UpdateOS(UpdateOSRequest) returns (stream UpdateOSResponse);
+
+    // Dump the current kernel ring buffer (dmesg) for inspection. By default
+    // the agent streams the buffered records and then keeps following new
+    // kernel messages until the client disconnects (like `dmesg -w`); set
+    // follow=false for a one-shot dump that completes once the buffer drains.
+    // Records are NOT PII-redacted; this is a local diagnostic for an operator
+    // connected to their own device, distinct from the DPIA-gated OTel
+    // kernel-log streaming path.
+    rpc DumpKernelLog(DumpKernelLogRequest) returns (stream DumpKernelLogResponse);
+
+    // Report the outcome of the most recent OS update attempt: committed
+    // after post-reboot healthchecks passed, or rolled back with details on
+    // which critical services failed and why.
+    rpc GetOSUpdateStatus(GetOSUpdateStatusRequest) returns (GetOSUpdateStatusResponse);
+
+    // Set the device's hostname (and mDNS name) to a literal value. Unlike the
+    // first-boot device-name flow, no "wendyos-" prefix is derived: the hostname
+    // is applied exactly as given. The value is persisted so it survives reboots.
+    rpc SetHostname(SetHostnameRequest) returns (SetHostnameResponse);
 }
 
 message RunContainerRequest {
@@ -429,8 +448,11 @@ message ForgetBluetoothPeripheralResponse {}
 
 // Request message for updating the OS
 message UpdateOSRequest {
-    // URL to download the Mender artifact from
+    // URL to download the OS update artifact from (a .wendy or .mender artifact)
     string artifact_url = 1;
+    // Updater backend to use: "" or "auto" prefers the in-house wendyos-update
+    // engine and falls back to mender; "wendyos-update" or "mender" force one.
+    string updater_backend = 2;
 }
 
 // Response message for OS update progress
@@ -457,4 +479,101 @@ message UpdateOSResponse {
         // Error message describing the failure
         string error_message = 1;
     }
+}
+
+// Request to dump the kernel ring buffer.
+message DumpKernelLogRequest {
+    // When true (the default when the field is omitted), the agent streams the
+    // currently-buffered records and then follows new kernel messages until the
+    // client disconnects (like `dmesg -w`). When explicitly false, the agent
+    // streams the buffered records and completes once the ring buffer is drained
+    // (like `dmesg`). Sent as optional so an unset request defaults to follow.
+    optional bool follow = 1;
+}
+
+// A batch of kernel log records. The agent sends records in batches to keep
+// individual messages well under the gRPC message-size limit, regardless of
+// how large the kernel ring buffer is.
+message DumpKernelLogResponse {
+    repeated KernelLogRecord records = 1;
+}
+
+// A single kernel ring buffer record (one /dev/kmsg line).
+message KernelLogRecord {
+    // Timestamp in microseconds since boot, as reported by the kernel.
+    int64 timestamp_us = 1;
+    // Kernel syslog level (0=EMERG .. 7=DEBUG).
+    int32 level = 2;
+    // Message text. Control characters are stripped; the body is NOT
+    // PII-redacted.
+    string message = 3;
+}
+
+message GetOSUpdateStatusRequest {}
+
+// Outcome of the most recent OS update attempt, produced by the agent's
+// post-reboot healthcheck gate and persisted on the device's data partition
+// (so it survives an A/B slot rollback).
+message GetOSUpdateStatusResponse {
+    // False when no update-result record exists on the device.
+    bool has_result = 1;
+
+    enum Outcome {
+        OUTCOME_UNSPECIFIED = 0;
+        // Healthchecks passed and the update was committed.
+        OUTCOME_COMMITTED = 1;
+        // Healthchecks failed and the previous OS was restored.
+        OUTCOME_ROLLED_BACK = 2;
+        // Healthchecks failed but the rollback could not be performed.
+        OUTCOME_ROLLBACK_FAILED = 3;
+        // Healthchecks passed but committing the update failed.
+        OUTCOME_COMMIT_FAILED = 4;
+    }
+    Outcome outcome = 2;
+
+    message ServiceResult {
+        // systemd unit name, e.g. "avahi-daemon.service"
+        string unit = 1;
+
+        enum Status {
+            STATUS_UNSPECIFIED = 0;
+            STATUS_HEALTHY = 1;
+            // Unit not present on this device or intentionally disabled.
+            STATUS_SKIPPED = 2;
+            STATUS_FAILED = 3;
+        }
+        Status status = 2;
+
+        // Failure reason; empty for healthy/skipped services.
+        string reason = 3;
+    }
+    repeated ServiceResult services = 3;
+
+    // OS version before the update was applied.
+    string old_os_version = 4;
+    // OS version the update attempted to boot into.
+    string new_os_version = 5;
+    // When the healthcheck gate produced this record (unix seconds).
+    int64 created_at_unix = 6;
+    // When the post-rollback boot confirmed the record (unix seconds);
+    // 0 until then.
+    int64 finalized_at_unix = 7;
+    // Non-empty when the rollback command itself errored.
+    string rollback_error = 8;
+    // Human-readable detail for the outcome. For OUTCOME_COMMIT_FAILED this is
+    // the commit command's failure reason, including the OS updater's output,
+    // so the failure is diagnosable without shell access to the device.
+    string note = 9;
+}
+
+message SetHostnameRequest {
+    // The literal hostname to apply. Must be a valid DNS label: starts with a
+    // lowercase letter, followed by lowercase letters, digits, or hyphens, not
+    // ending in a hyphen, at most 63 characters. No prefix is added.
+    string hostname = 1;
+}
+
+message SetHostnameResponse {
+    // The hostname that was applied.
+    string hostname = 1;
 }

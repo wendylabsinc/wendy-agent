@@ -28,9 +28,11 @@ wendy device info --json
 wendy run
 ```
 
-If the default device cannot be reached from an interactive terminal, the CLI
-shows the picker so you can select another device. In non-interactive shells,
-the command fails instead of opening a picker.
+Use [`wendy device get-default`](./commands/device/get-default.md) to check
+the current default. If the default device cannot be reached from an
+interactive terminal, the CLI shows the picker so you can select another
+device. In non-interactive shells, the command fails with a clear message
+that the default is set but unreachable instead of opening a picker.
 
 > **TODO (test)**: If the target device is outdated, and `--json` is not specified, a warning will be printed to indicate an update is available.
 
@@ -41,7 +43,7 @@ mDNS and BLE discover nearby [WendyOS](../../wendyos/),
 A device picker is shown only when the terminal is interactive, so a user can
 select their target device for the current command invocation.
 
-Wendy for Mac advertises over Bonjour/mDNS as `_wendyos._udp` and appears
+Headless Mac advertises over Bonjour/mDNS as `_wendyos._udp` and appears
 as a LAN device when local discovery is allowed by the network and macOS Local
 Network permissions.
 
@@ -55,7 +57,8 @@ blank and suggests `wendy auth login`.
 
 In scripts, CI, SSH sessions without a TTY, or any other non-interactive
 context, no picker is shown. Pass `--device`, or configure a default with
-`wendy device set-default`, before running commands that need a target.
+`wendy device set-default` (confirm it with `wendy device get-default`),
+before running commands that need a target.
 
 > **TODO (test)**: If the target device is outdated, and `--json` is not specified, a warning will be printed to indicate an update is available.
 > If the terminal is interactive, a prompt will be made to update the device right now.
@@ -88,9 +91,10 @@ On Apple silicon Macs, Wendy can use Apple's `container` CLI for local
 Dockerfile and Containerfile runs without Docker Desktop:
 
 ```sh
-container system start
 wendy run --device apple-container
 ```
+
+Wendy automatically checks for the `container` CLI and offers to install it via Homebrew if missing, and starts the `system` and `builder` services if they are not running.
 
 Use this target when you want to build and run a single Dockerfile or
 Containerfile project with Apple's lightweight Linux container runtime. Compose

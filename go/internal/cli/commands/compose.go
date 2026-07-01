@@ -655,10 +655,12 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 		repo := fmt.Sprintf("%s-%s", projectName, name)
 		// Compose builds run sequentially, so they share the local cache dir
 		// (empty cache key) — no concurrent cache-export race to isolate.
-		if err := buildAndPushImageForAgent(ctx, conn, regPort, opts.builder, ctxDir, repo, platform, dockerfile, allBuildArgs, "", os.Stdout, os.Stderr); err != nil {
+		composeBuildTitle := fmt.Sprintf("Building service %s for %s...", name, tui.Value(platform))
+		if err := runBuildWithProgress(ctx, composeBuildTitle, true, func(stream, logw io.Writer) error {
+			return buildAndPushImageForAgent(ctx, conn, regPort, opts.builder, ctxDir, repo, platform, dockerfile, allBuildArgs, "", stream, logw)
+		}); err != nil {
 			return fmt.Errorf("building service %s: %w", name, err)
 		}
-		cliLogln("Service %s image built and pushed.", name)
 	}
 
 	cliRestartPolicy := resolveRestartPolicy(opts)

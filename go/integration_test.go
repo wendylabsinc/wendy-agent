@@ -98,6 +98,18 @@ func newStatefulContainerdClient() *statefulContainerdClient {
 	}
 }
 
+func (m *statefulContainerdClient) ListBootContainers(_ context.Context) ([]services.BootContainer, error) {
+	return nil, nil
+}
+
+func (m *statefulContainerdClient) SetStoppedByUser(_ context.Context, _ string, _ bool) error {
+	return nil
+}
+
+func (m *statefulContainerdClient) MigrateStoppedByUserOnce(_ context.Context) error {
+	return nil
+}
+
 func (m *statefulContainerdClient) ListContainers(_ context.Context) ([]*agentpb.AppContainer, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -205,6 +217,14 @@ func (m *statefulContainerdClient) GetContainerStats(_ context.Context) ([]*agen
 	return nil, nil
 }
 
+func (m *statefulContainerdClient) GetResourceStats(_ context.Context) ([]*agentpb.ResourceContainerStats, error) {
+	return nil, nil
+}
+
+func (m *statefulContainerdClient) GetListeningPorts(_ context.Context, _ string) ([]*agentpb.PortEntry, error) {
+	return nil, nil
+}
+
 func (m *statefulContainerdClient) GetContainerMetrics(_ context.Context, _ string) (services.ContainerMetrics, error) {
 	return services.ContainerMetrics{}, nil
 }
@@ -232,6 +252,10 @@ func (m *statefulContainerdClient) ContainerIDsForApp(_ context.Context, appID s
 
 func (m *statefulContainerdClient) MissingChunks(_ context.Context, hashes [][32]byte) ([][32]byte, error) {
 	return hashes, nil
+}
+
+func (m *statefulContainerdClient) PresentLayers(_ context.Context, _ []string) (map[string]int64, error) {
+	return nil, nil
 }
 
 func (m *statefulContainerdClient) StageChunk(_ context.Context, _ [32]byte, _ []byte) error {

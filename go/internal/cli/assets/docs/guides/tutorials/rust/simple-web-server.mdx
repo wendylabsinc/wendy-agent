@@ -1,0 +1,364 @@
+---
+title: Simple Web Server
+description: Build a long-running HTTP server on WendyOS using Axum
+language: rust
+---
+
+## Building a Web Server with Axum
+
+<Callout type="info">
+  **Source Code**: The complete source code for this example is available at [github.com/wendylabsinc/samples/rust/simple-server](https://github.com/wendylabsinc/samples/tree/main/rust/simple-server)
+</Callout>
+
+Often times you'll want a long-running server where you can make HTTP or WebSocket calls to your WendyOS device. This allows your device to accept incoming requests and respond to them, making it easy to build interactive applications or APIs that can be accessed from other devices on your network.
+
+To prove this out, we'll use Axum, the most popular and ergonomic web framework in the Rust ecosystem. Axum is built on top of Tokio and Hyper, providing excellent performance and a clean, composable API.
+
+### Prerequisites
+
+- Wendy CLI installed on your development machine
+- Rust 1.85 or later installed (via `rustup`)
+- A WendyOS device plugged in over USB or connectable over Wi-Fi
+
+## Setting Up Your Project
+
+<Steps>
+  <Step>
+    ### Initialize the Project
+
+    Start from the Wendy Axum template:
+
+    ```bash
+    wendy init simple-server --target wendyos --language rust --template simple-api --var APP_ID=simple-server --var PORT=3000 --assistant skip --git-init no
+    cd simple-server
+    ```
+
+    <CliShot flow="init" step="wizard" alt="wendy init scaffolding the Rust simple-server project" />
+
+    The template creates `Cargo.toml`, `src/main.rs`, `Dockerfile`, and `wendy.json`. The sections below explain the generated server and the pieces you can customize.
+  </Step>
+
+  <Step>
+    ### Run on WendyOS
+
+    ```bash
+    wendy run
+    ```
+
+    <CliShot flow="run" step="deploy" alt="wendy run deploying the Axum simple-server to a device" />
+
+    Wendy will build the app, ask you to select a device if one is not already configured, deploy the app, and print the URL or run output.
+  </Step>
+</Steps>
+
+## Code Breakdown
+
+<Steps>
+  <Step>
+    ### Generated Package Dependencies
+
+    Review the generated `Cargo.toml` dependencies for Axum, Tokio, and Serde:
+
+    ```toml
+    [package]
+    name = "simple-server"
+    version = "0.1.0"
+    edition = "2021"
+
+    [dependencies]
+    axum = "0.8.8"
+    tokio = { version = "1", features = ["full"] }
+    serde = { version = "1", features = ["derive"] }
+    serde_json = "1"
+    ```
+  </Step>
+
+  <Step>
+    ### Generated Web Server
+
+    The generated `src/main.rs` contains the server logic:
+
+    ```rust
+    use axum::{
+        http::StatusCode,
+        routing::{get, post},
+        Json, Router,
+    };
+    use serde::{Deserialize, Serialize};
+    use std::env;
+
+    #[tokio::main]
+    async fn main() {
+        let hostname = env::var("WENDY_HOSTNAME").unwrap_or_else(|_| "0.0.0.0".to_string());
+
+        let app = Router::new()
+            .route("/", get(root))
+            .route("/health", get(health))
+            .route("/items", post(create_item));
+
+        let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
+        println!("Server running on http://{}:3000", hostname);
+        axum::serve(listener, app).await.unwrap();
+    }
+
+    async fn root() -> Json<serde_json::Value> {
+        println!("Received request: GET /");
+        Json(serde_json::json!({"message": "hello-world"}))
+    }
+
+    async fn health() -> Json<serde_json::Value> {
+        Json(serde_json::json!({"status": "ok"}))
+    }
+
+    async fn create_item(Json(payload): Json<CreateItem>) -> (StatusCode, Json<ItemResponse>) {
+        println!("Received request: POST /items - {}", payload.name);
+        let item = ItemResponse {
+            id: 1,
+            name: payload.name,
+            price: payload.price,
+        };
+        (StatusCode::CREATED, Json(item))
+    }
+
+    #[derive(Deserialize)]
+    struct CreateItem {
+        name: String,
+        price: f64,
+    }
+
+    #[derive(Serialize)]
+    struct ItemResponse {
+        id: u64,
+        name: String,
+        price: f64,
+    }
+    ```
+
+    <Callout type="info">
+      **Multiple Routes**: This example includes three routes:
+      - `GET /` - Returns `{"message":"hello-world"}`
+      - `GET /health` - Returns `{"status":"ok"}` (handy as a health check)
+      - `POST /items` - Creates an item from a JSON body and returns it with a generated `id`
+    </Callout>
+  </Step>
+
+  <Step>
+    ### Generated Dockerfile
+
+    The generated project includes a multi-stage Dockerfile that builds the release binary with `rust:1.85-slim` and runs it on `debian:bookworm-slim`:
+
+    ```dockerfile
+    FROM rust:1.85-slim AS builder
+
+    WORKDIR /app
+    COPY Cargo.toml ./
+    COPY src ./src
+
+    RUN cargo build --release
+
+    FROM debian:bookworm-slim
+
+    RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        && rm -rf /var/lib/apt/lists/*
+
+    COPY --from=builder /app/target/release/simple-server /usr/local/bin/simple-server
+
+    EXPOSE 3000
+
+    CMD ["simple-server"]
+    ```
+  </Step>
+
+  <Step>
+    ### Generated wendy.json
+
+    The generated `wendy.json` already includes a readiness probe and a `postStart` hook, so the CLI waits for port `3000` and then opens your browser to the running server automatically:
+
+    ```json
+    {
+        "appId": "simple-server",
+        "platform": "linux",
+        "version": "0.1.0",
+        "entitlements": [
+            {
+                "type": "network"
+            }
+        ],
+        "readiness": {
+            "tcpSocket": { "port": 3000 },
+            "timeoutSeconds": 30
+        },
+        "hooks": {
+            "postStart": {
+                "cli": "wendy utils open-browser http://${WENDY_HOSTNAME}:3000"
+            }
+        }
+    }
+    ```
+  </Step>
+</Steps>
+
+## Run Again on WendyOS
+
+Deploy your containerized web server to your WendyOS device:
+
+```bash
+wendy run
+```
+
+The Wendy CLI will build your Docker image, transfer it to your device, and run it with the appropriate port mappings.
+
+## Test Your Server on WendyOS
+
+Your browser will open automatically once the server is ready, thanks to the generated `postStart` hook. If it doesn't, open your browser manually and navigate to:
+
+```
+http://wendyos-true-probe.local:3000
+```
+
+<Callout type="warning">
+  **Replace the hostname**: Each WendyOS device has a unique hostname. Replace `wendyos-true-probe` with your device's actual hostname shown in the CLI output. In addition, don't forget to add the port to the hostname.
+</Callout>
+
+You should see the following response from the root route:
+
+```json
+{"message":"hello-world"}
+```
+
+This confirms your web server is successfully running on your WendyOS device and accepting requests from your network.
+
+## Verifying Deployment
+
+You can verify the server container is running by listing the applications on your device:
+
+```bash
+wendy device apps list
+✔︎ Searching for WendyOS devices [5.3s]
+✔︎ Listing applications: True Probe [USB, Ethernet, LAN]
+╭───────────────┬─────────┬─────────┬──────────╮
+│ App           │ Version │ State   │ Failures │
+├───────────────┼─────────┼─────────┼──────────┤
+│ simple-server │ 0.1.0   │ Running │ 0        │
+╰───────────────┴─────────┴─────────┴──────────╯
+```
+
+<CliShot flow="apps-list" step="apps" alt="wendy device apps list showing the running simple-server app" />
+
+You should see your containerized web server listed among the running applications.
+
+## More Code Notes
+
+Let's break down what the code does:
+
+1. **Import Dependencies**: We import the necessary types from Axum and Serde for routing, HTTP status codes, and JSON serialization.
+
+2. **Async Runtime**: The `#[tokio::main]` attribute sets up Tokio's async runtime, which is required for Axum.
+
+3. **Create a Router**: We create a `Router` and define three routes with different HTTP methods and handlers.
+
+4. **JSON Responses**: The `/` and `/health` routes return JSON using `serde_json::json!`.
+
+5. **JSON Handling**: The `POST /items` route shows how to deserialize a JSON request body into `CreateItem` and serialize a JSON response (`ItemResponse`) using Serde.
+
+6. **Bind to Address**: We create a `TcpListener` that binds to `0.0.0.0:3000`, listening on all network interfaces.
+
+7. **Run the Server**: The `axum::serve()` function starts the server and keeps it running.
+
+## Learn More
+
+Axum is a powerful and ergonomic web framework for Rust. Learn more by visiting [https://docs.rs/axum/latest/axum/](https://docs.rs/axum/latest/axum/) and exploring the examples to build more sophisticated servers.
+
+### Other Popular Rust Web Frameworks
+
+While this guide uses Axum, other excellent Rust web frameworks will work similarly on WendyOS:
+
+- **[Actix Web](https://actix.rs/)**: A powerful, pragmatic framework with excellent performance
+- **[Rocket](https://rocket.rs/)**: A web framework focused on ease-of-use, expressiveness, and speed
+- **[Warp](https://github.com/seanmonstar/warp)**: A composable web framework with a focus on async
+- **[Tide](https://github.com/http-rs/tide)**: A minimal and pragmatic framework built on async-std
+
+All of these frameworks can be containerized and deployed to WendyOS following the same Docker-based approach outlined in this guide.
+
+## Next Steps
+
+Now that you have a basic web server running:
+
+- Add more routes to handle different endpoints
+- Implement PUT and DELETE routes for a full REST API
+- Use Axum's extractors for query strings and headers
+- Add middleware for logging, authentication, and error handling
+- Explore Axum's state management for sharing data across handlers
+- Implement WebSocket support for real-time communication
+- Check out the [Axum examples](https://github.com/tokio-rs/axum/tree/main/examples) for comprehensive patterns
+
+<Accordions>
+  <Accordion title="Testing the app on your own machine">
+    There are times when you might not have a WendyOS device around. You can still test your application locally using Cargo or Docker.
+
+    ### Using Cargo Directly
+
+    ```bash
+    cargo run
+    ```
+
+    You should see:
+
+    ```
+       Compiling simple-server v0.1.0
+        Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.21s
+         Running `target/debug/simple-server`
+    Server running on http://0.0.0.0:3000
+    ```
+
+    ### Using Docker Locally
+
+    Build and run the container:
+
+    ```bash
+    docker build -t simple-server .
+    docker run -p 3000:3000 simple-server
+    ```
+
+    ### Test Your Server
+
+    Open another terminal and test with curl:
+
+    ```bash
+    curl http://localhost:3000
+    ```
+
+    You should see:
+
+    ```json
+    {"message":"hello-world"}
+    ```
+
+    Test the health route:
+
+    ```bash
+    curl http://localhost:3000/health
+    ```
+
+    You should see:
+
+    ```json
+    {"status":"ok"}
+    ```
+
+    Test the POST endpoint:
+
+    ```bash
+    curl -X POST http://localhost:3000/items \
+      -H "Content-Type: application/json" \
+      -d '{"name": "widget", "price": 9.99}'
+    ```
+
+    You should see:
+
+    ```json
+    {"id":1,"name":"widget","price":9.99}
+    ```
+  </Accordion>
+</Accordions>

@@ -37,6 +37,12 @@ inputs:
     description: Build and launch a local wendy-agent process for this run.
     required: false
     default: 'false'
+  test_timeout_minutes:
+    description: >-
+      Maximum minutes allowed for the SwiftPM test process before preserving
+      artifacts and failing the attempt.
+    required: false
+    default: '90'
 
 runs:
   using: composite
@@ -53,6 +59,7 @@ runs:
         AGENT_OS: ${{ inputs.agent_os }}
         TRANSPORT: ${{ inputs.transport }}
         MANAGED_AGENT: ${{ inputs.managed_agent }}
+        TEST_TIMEOUT_MINUTES: ${{ inputs.test_timeout_minutes }}
         DEVICE_ADDRESS: ${{ inputs.device_address }}
         TESTS: ${{ inputs.tests }}
       run: |
@@ -118,6 +125,11 @@ runs:
         require_match AGENT_OS "$AGENT_OS" '^[A-Za-z0-9._-]{1,40}$'
         require_match TRANSPORT "$TRANSPORT" '^[A-Za-z0-9._-]{1,40}$'
         require_match MANAGED_AGENT "$MANAGED_AGENT" '^(true|false)$'
+        require_match TEST_TIMEOUT_MINUTES "$TEST_TIMEOUT_MINUTES" '^(0|[1-9][0-9]{0,3})$'
+        if (( 10#$TEST_TIMEOUT_MINUTES > 1440 )); then
+          echo "ERROR: invalid TEST_TIMEOUT_MINUTES" >&2
+          exit 64
+        fi
         reject_newline DEVICE_ADDRESS "$DEVICE_ADDRESS"
         reject_newline TESTS "$TESTS"
         if ! valid_device_address "$DEVICE_ADDRESS"; then
@@ -135,6 +147,7 @@ runs:
         write_output cli_os "$CLI_OS"
         write_output agent_os "$AGENT_OS"
         write_output transport "$TRANSPORT"
+        write_output test_timeout_seconds "$((10#$TEST_TIMEOUT_MINUTES * 60))"
 
     - name: Validate Swift E2E inputs (Windows)
       id: validate-windows
@@ -148,6 +161,7 @@ runs:
         AGENT_OS: ${{ inputs.agent_os }}
         TRANSPORT: ${{ inputs.transport }}
         MANAGED_AGENT: ${{ inputs.managed_agent }}
+        TEST_TIMEOUT_MINUTES: ${{ inputs.test_timeout_minutes }}
         DEVICE_ADDRESS: ${{ inputs.device_address }}
         TESTS: ${{ inputs.tests }}
       run: |
@@ -198,6 +212,8 @@ runs:
         Require-Match AGENT_OS $env:AGENT_OS '^[A-Za-z0-9._-]{1,40}$'
         Require-Match TRANSPORT $env:TRANSPORT '^[A-Za-z0-9._-]{1,40}$'
         Require-Match MANAGED_AGENT $env:MANAGED_AGENT '^(true|false)$'
+        Require-Match TEST_TIMEOUT_MINUTES $env:TEST_TIMEOUT_MINUTES '^(0|[1-9][0-9]{0,3})$'
+        if ([long]$env:TEST_TIMEOUT_MINUTES -gt 1440) { throw 'invalid TEST_TIMEOUT_MINUTES' }
         Reject-Newline DEVICE_ADDRESS $env:DEVICE_ADDRESS
         Reject-Newline TESTS $env:TESTS
         if (-not (Test-DeviceAddress $env:DEVICE_ADDRESS)) {
@@ -213,6 +229,7 @@ runs:
         Write-OutputValue cli_os $env:CLI_OS
         Write-OutputValue agent_os $env:AGENT_OS
         Write-OutputValue transport $env:TRANSPORT
+        Write-OutputValue test_timeout_seconds ([string]([long]$env:TEST_TIMEOUT_MINUTES * 60))
 
     - name: Compute Swift E2E run ID (Unix)
       if: runner.os != 'Windows'
@@ -295,6 +312,7 @@ runs:
                 "runID": os.environ.get("GITHUB_RUN_ID"),
                 "runAttempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
                 "job": os.environ.get("GITHUB_JOB"),
+                "actor": os.environ.get("GITHUB_ACTOR"),
                 "sha": os.environ.get("GITHUB_SHA"),
             },
             "target": {
@@ -392,6 +410,7 @@ runs:
         WENDY_E2E_CLI_OS: ${{ steps.validate-unix.outputs.cli_os }}
         WENDY_E2E_AGENT_OS: ${{ steps.validate-unix.outputs.agent_os }}
         WENDY_E2E_TRANSPORT: ${{ steps.validate-unix.outputs.transport }}
+        WENDY_E2E_TEST_TIMEOUT_SECONDS: ${{ steps.validate-unix.outputs.test_timeout_seconds }}
         MANAGED_AGENT: ${{ steps.validate-unix.outputs.managed_agent }}
         DEVICE_ADDRESS: ${{ steps.validate-unix.outputs.device_address }}
       run: |
@@ -416,6 +435,7 @@ runs:
         WENDY_E2E_CLI_OS: ${{ steps.validate-windows.outputs.cli_os }}
         WENDY_E2E_AGENT_OS: ${{ steps.validate-windows.outputs.agent_os }}
         WENDY_E2E_TRANSPORT: ${{ steps.validate-windows.outputs.transport }}
+        WENDY_E2E_TEST_TIMEOUT_SECONDS: ${{ steps.validate-windows.outputs.test_timeout_seconds }}
         MANAGED_AGENT: ${{ steps.validate-windows.outputs.managed_agent }}
         DEVICE_ADDRESS: ${{ steps.validate-windows.outputs.device_address }}
       run: |

@@ -1,0 +1,5 @@
+{
+  "title": "Tutorials",
+  "description": "Build with Wendy through practical, language-specific examples",
+  "pages": ["python", "swift", "cpp", "rust", "typescript"]
+}

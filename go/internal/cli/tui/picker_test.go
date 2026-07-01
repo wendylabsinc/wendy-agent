@@ -6,7 +6,9 @@ import (
 
 	bubbleTable "github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/muesli/termenv"
 )
 
 func TestPickerModel_SelectsFromTable(t *testing.T) {
@@ -460,8 +462,8 @@ func TestPickerModel_ShowsSelectedHintAtBottom(t *testing.T) {
 func TestPickerModel_DefaultKeyShowsStar(t *testing.T) {
 	m := NewPickerWithTitle("Select a device")
 	m.DefaultKey = "alpha"
-	m.OnSetDefault = func(item PickerItem) {}
-	m.OnUnsetDefault = func() {}
+	m.OnSetDefault = func(item PickerItem) string { return "" }
+	m.OnUnsetDefault = func() string { return "" }
 
 	updated, _ := m.Update(PickerAddMsg{Items: []PickerItem{
 		{Name: "alpha", Type: "LAN", Value: "alpha"},
@@ -476,8 +478,46 @@ func TestPickerModel_DefaultKeyShowsStar(t *testing.T) {
 	if !strings.Contains(view, "d set default") {
 		t.Error("expected hint text to contain 'd set default'")
 	}
-	if !strings.Contains(view, "x unset default") {
-		t.Error("expected hint text to contain 'x unset default'")
+	if !strings.Contains(view, "x clear default") {
+		t.Error("expected hint text to contain 'x clear default'")
+	}
+}
+
+func TestFormatOSNameVersion(t *testing.T) {
+	tests := []struct {
+		name    string
+		os      string
+		version string
+		want    string
+	}{
+		{name: "name and version", os: "ubuntu", version: "24.04", want: "ubuntu 24.04"},
+		{name: "version only", os: "", version: "24.04", want: "24.04"},
+		{name: "name only", os: "arch", version: "", want: "arch"},
+		{name: "both empty", os: "", version: "", want: ""},
+		{name: "trims surrounding space", os: " ubuntu ", version: " 24.04 ", want: "ubuntu 24.04"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := formatOSNameVersion(tt.os, tt.version); got != tt.want {
+				t.Errorf("formatOSNameVersion(%q, %q) = %q; want %q", tt.os, tt.version, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPickerDeviceTableData_OSColumnShowsDistroName(t *testing.T) {
+	_, rows := PickerDeviceTableData([]PickerItem{{
+		Name:      "wendy-ser9",
+		Type:      "LAN",
+		OS:        "ubuntu",
+		OSVersion: "24.04",
+	}}, "", false)
+
+	if len(rows) != 1 {
+		t.Fatalf("got %d rows, want 1", len(rows))
+	}
+	if !strings.Contains(strings.Join(rows[0], " "), "ubuntu 24.04") {
+		t.Errorf("row %v does not contain combined OS name+version %q", rows[0], "ubuntu 24.04")
 	}
 }
 
@@ -500,8 +540,8 @@ func TestPickerTableData_DefaultKeysShowStar(t *testing.T) {
 func TestPickerModel_DKeySetsDefault(t *testing.T) {
 	m := NewPickerWithTitle("Select a device")
 	var setItem PickerItem
-	m.OnSetDefault = func(item PickerItem) { setItem = item }
-	m.OnUnsetDefault = func() {}
+	m.OnSetDefault = func(item PickerItem) string { setItem = item; return "" }
+	m.OnUnsetDefault = func() string { return "" }
 
 	// Add items.
 	updated, _ := m.Update(PickerAddMsg{Items: []PickerItem{
@@ -526,8 +566,8 @@ func TestPickerModel_XKeyClearsDefault(t *testing.T) {
 	m := NewPickerWithTitle("Select a device")
 	m.DefaultKey = "alpha"
 	var unsetCalled bool
-	m.OnSetDefault = func(item PickerItem) {}
-	m.OnUnsetDefault = func() { unsetCalled = true }
+	m.OnSetDefault = func(item PickerItem) string { return "" }
+	m.OnUnsetDefault = func() string { unsetCalled = true; return "" }
 
 	updated, _ := m.Update(PickerAddMsg{Items: []PickerItem{
 		{Name: "alpha", Type: "LAN", Value: "alpha"},
@@ -636,6 +676,121 @@ func TestPickerModel_DXIgnoredWithoutCallbacks(t *testing.T) {
 	view := pm.View()
 	if strings.Contains(view, "d set default") {
 		t.Error("d/x hint should not appear without callbacks")
+	}
+}
+
+// ── Section headers ──────────────────────────────────────────────────
+
+// sectionedPicker builds a one-shot picker whose items belong to two ordered
+// sections: "WendyOS" (SortKey prefix 0_) before "Wendy Lite" (prefix 1_).
+// After sorting, the display order is:
+//
+//	── WendyOS      (header)
+//	Jetson Orin     (0_wendyos_jetson)
+//	Raspberry Pi 5  (0_wendyos_rpi5)
+//	── Wendy Lite   (header)
+//	ESP32-C5        (1_lite_c5)
+//	ESP32-C6        (1_lite_c6)
+func sectionedPicker(t *testing.T) PickerModel {
+	t.Helper()
+	m := NewPickerWithTitle("Select a device")
+	updated, _ := m.Update(PickerAddMsg{Items: []PickerItem{
+		{Name: "Raspberry Pi 5", Section: "WendyOS", SortKey: "0_wendyos_rpi5", Value: "rpi5"},
+		{Name: "Jetson Orin", Section: "WendyOS", SortKey: "0_wendyos_jetson", Value: "jetson"},
+		{Name: "ESP32-C6", Section: "Wendy Lite", SortKey: "1_lite_c6", Value: "c6"},
+		{Name: "ESP32-C5", Section: "Wendy Lite", SortKey: "1_lite_c5", Value: "c5"},
+	}})
+	return updated.(PickerModel)
+}
+
+func TestPickerModel_RendersSectionHeaders(t *testing.T) {
+	pm := sectionedPicker(t)
+
+	view := ansi.Strip(pm.View())
+	for _, want := range []string{"WendyOS", "Wendy Lite", "Jetson Orin", "Raspberry Pi 5", "ESP32-C5", "ESP32-C6"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("expected sectioned picker view to contain %q, got %q", want, view)
+		}
+	}
+	// The WendyOS header must appear before the Wendy Lite header.
+	if strings.Index(view, "WendyOS") > strings.Index(view, "Wendy Lite") {
+		t.Fatalf("expected WendyOS section before Wendy Lite section, got %q", view)
+	}
+}
+
+// TestPickerModel_RendersSectionHeadersInColor verifies that section headers
+// render correctly in truecolor mode. Headers are plain text (no lipgloss
+// styling) to avoid ANSI truncation issues in the bubble table, but this test
+// ensures they still display correctly when the terminal supports truecolor.
+func TestPickerModel_RendersSectionHeadersInColor(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	defer lipgloss.SetColorProfile(termenv.Ascii)
+
+	pm := sectionedPicker(t)
+
+	view := ansi.Strip(pm.View())
+	for _, want := range []string{"WendyOS", "Wendy Lite"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("expected colorized sectioned picker to render header %q intact, got %q", want, view)
+		}
+	}
+}
+
+func TestPickerModel_SectionEnterSelectsDeviceNotHeader(t *testing.T) {
+	pm := sectionedPicker(t)
+
+	// The initial cursor must land on the first device, never the leading
+	// section header. Enter should select that device.
+	updated, cmd := pm.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	pm = updated.(PickerModel)
+
+	if cmd == nil || pm.Selected() == nil {
+		t.Fatal("expected enter to select the first device, not a header row")
+	}
+	if got := pm.Selected().Value.(string); got != "jetson" {
+		t.Fatalf("selected %q, want jetson (first selectable row)", got)
+	}
+}
+
+func TestPickerModel_SectionDownSkipsHeader(t *testing.T) {
+	pm := sectionedPicker(t)
+
+	// From Jetson (first row), Down → Raspberry Pi 5, Down → must skip the
+	// Wendy Lite header and land on ESP32-C5.
+	for i := 0; i < 2; i++ {
+		updated, _ := pm.Update(tea.KeyMsg{Type: tea.KeyDown})
+		pm = updated.(PickerModel)
+	}
+	updated, _ := pm.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	pm = updated.(PickerModel)
+
+	if pm.Selected() == nil {
+		t.Fatal("expected a device selection after navigating down, got none (cursor on header?)")
+	}
+	if got := pm.Selected().Value.(string); got != "c5" {
+		t.Fatalf("after 2× down selected %q, want c5 (first Wendy Lite device)", got)
+	}
+}
+
+func TestPickerModel_SectionUpSkipsHeader(t *testing.T) {
+	pm := sectionedPicker(t)
+
+	// Move down onto ESP32-C5, then Up must skip the Wendy Lite header back to
+	// Raspberry Pi 5 (last WendyOS device).
+	for i := 0; i < 2; i++ {
+		updated, _ := pm.Update(tea.KeyMsg{Type: tea.KeyDown})
+		pm = updated.(PickerModel)
+	}
+	updated, _ := pm.Update(tea.KeyMsg{Type: tea.KeyUp})
+	pm = updated.(PickerModel)
+	updated, _ = pm.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	pm = updated.(PickerModel)
+
+	if pm.Selected() == nil {
+		t.Fatal("expected a device selection after navigating up, got none (cursor on header?)")
+	}
+	if got := pm.Selected().Value.(string); got != "rpi5" {
+		t.Fatalf("after down,down,up selected %q, want rpi5", got)
 	}
 }
 

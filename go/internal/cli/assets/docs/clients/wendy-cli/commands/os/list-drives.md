@@ -1,1 +1,1 @@
-Lists all flashable drives that are available for [`wendy os install`](./install.md)
+Lists all flashable drives that are available for [`wendy install`](./install.md)

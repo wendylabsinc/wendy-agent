@@ -51,6 +51,23 @@ func TestApplyDeviceBuildArgHints_PassesMappedJetpackVersion(t *testing.T) {
 	}
 }
 
+// TestApplyDeviceBuildArgHints_DerivesJetpackMajor confirms the coarse
+// WENDY_JETPACK_MAJOR selector is derived from a clean version ("7.2" -> "7")
+// and omitted for an unmapped "L4T ..." fallback.
+func TestApplyDeviceBuildArgHints_DerivesJetpackMajor(t *testing.T) {
+	clean := map[string]string{}
+	applyDeviceBuildArgHints(clean, &agentpb.GetAgentVersionResponse{JetpackVersion: strptr("7.2")})
+	if got := clean["WENDY_JETPACK_MAJOR"]; got != "7" {
+		t.Fatalf("WENDY_JETPACK_MAJOR = %q, want %q", got, "7")
+	}
+
+	fallback := map[string]string{}
+	applyDeviceBuildArgHints(fallback, &agentpb.GetAgentVersionResponse{JetpackVersion: strptr("L4T 39.2.0")})
+	if got, ok := fallback["WENDY_JETPACK_MAJOR"]; ok {
+		t.Fatalf("expected WENDY_JETPACK_MAJOR omitted for L4T fallback, got %q", got)
+	}
+}
+
 // TestApplyDeviceBuildArgHints_OmitsUnreportedHints confirms older agents that
 // do not report a field leave the ARG default untouched (no empty value set).
 func TestApplyDeviceBuildArgHints_OmitsUnreportedHints(t *testing.T) {

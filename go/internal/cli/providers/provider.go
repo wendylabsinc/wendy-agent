@@ -4,6 +4,7 @@ package providers
 
 import (
 	"context"
+	"slices"
 
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
@@ -53,6 +54,22 @@ const (
 	ProviderKeyDocker         = "docker"
 	ProviderKeyLocal          = "local"
 )
+
+// LocalProviderKeys are the providers whose "devices" are really this computer
+// or a local container runtime (the local machine, Docker/OrbStack, Apple
+// Container) rather than a separate WendyOS device. `wendy run` and
+// `wendy discover` hide these from the default device list unless --all is
+// given. Real external hardware providers (e.g. android, wendy-lite) are not
+// local and are always shown.
+func LocalProviderKeys() []string {
+	return []string{ProviderKeyLocal, ProviderKeyDocker, ProviderKeyAppleContainer}
+}
+
+// IsLocalProviderKey reports whether key names a local run target (see
+// LocalProviderKeys).
+func IsLocalProviderKey(key string) bool {
+	return slices.Contains(LocalProviderKeys(), key)
+}
 
 const (
 	RunOutputStarted RunOutputType = iota
