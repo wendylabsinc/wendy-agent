@@ -63,7 +63,7 @@ Every push to `main` and every pull request against `main` runs a matrix build f
 | AssemblyScript | `export function _start()` | `@external("wendy", ...)` declarations |
 | WAT | `(export "_start" ...)` | Direct import from `"wendy"` module |
 
-See [`host-api.md`](host-api.md) for the full function reference, [`swift-sdk.md`](swift-sdk.md) for Swift-specific internals, and [`deploying.md`](deploying.md) for the full build-to-device flow including OTA updates.
+See [`host-api.md`](host-api.md) for the full function reference, [`swift-sdk.md`](swift-sdk.md) for Swift-specific internals, [`deploying.md`](deploying.md) for the full build-to-device flow including OTA updates, and [`wendy-com.md`](wendy-com.md) for the WendyCom protocol reference.
 
 ## Deploying a WASM App to Device
 
