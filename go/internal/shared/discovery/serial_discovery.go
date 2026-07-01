@@ -1,6 +1,7 @@
 package discovery
 
 import (
+	"log"
 	"sync"
 	"time"
 
@@ -201,9 +202,18 @@ func (d *SerialDiscovery) notify() {
 
 	d.notifyMu.Lock()
 	for _, cb := range cbs {
-		cb(snap)
+		callListener(cb, snap)
 	}
 	d.notifyMu.Unlock()
+}
+
+func callListener(cb func([]SerialDevice), snap []SerialDevice) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("discovery: listener panic: %v", r)
+		}
+	}()
+	cb(snap)
 }
 
 // Devices returns a snapshot of the current device list.
