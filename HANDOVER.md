@@ -21,6 +21,8 @@ repo is the related Swift package.
 - Implementation should happen in dedicated worktrees in the correct companion
   repository, not here.
 - Always list Linear issue titles alongside issue IDs.
+- Keep Linear issue descriptions succinct: only important/known context, no
+  boilerplate, invented acceptance criteria, or speculative scope.
 - Use Linear GraphQL via `LINEAR_API_KEY` if the Linear CLI is unavailable.
 - Keep resume prompts generic:
 

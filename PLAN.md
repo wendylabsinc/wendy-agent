@@ -46,6 +46,8 @@ Coordinate work across these repositories:
 - Always list Linear issue titles alongside issue IDs.
 - Prefer focused child issues and small implementation PRs over broad umbrella
   work.
+- Keep Linear issue descriptions succinct: only important/known context, no
+  boilerplate, invented acceptance criteria, or speculative scope.
 - Keep issue-specific context in the relevant issue worktree's `HANDOVER.md`.
 - Keep resume prompts generic so all durable context lives in files, not shell
   history.
