@@ -412,17 +412,8 @@ func (c *WendyLiteClient) sendCommand(cmd *wendypb.WendyComCommand, timeout time
 }
 
 func (c *WendyLiteClient) readResponse(timeout time.Duration) ([]byte, error) {
-	if timeout > 0 {
-		if nc, ok := c.conn.(net.Conn); ok {
-			_ = nc.SetReadDeadline(time.Now().Add(timeout))
-			defer nc.SetReadDeadline(time.Time{})
-		} else if sp, ok := c.conn.(serial.Port); ok {
-			_ = sp.SetReadTimeout(timeout)
-			defer sp.SetReadTimeout(serial.NoTimeout)
-		}
-	}
 	header := make([]byte, headerSize)
-	if _, err := io.ReadFull(c.conn, header); err != nil {
+	if err := c.readFull(header, timeout); err != nil {
 		return nil, fmt.Errorf("reading header: %w", err)
 	}
 	if header[0] != headerMagic {
@@ -433,10 +424,56 @@ func (c *WendyLiteClient) readResponse(timeout time.Duration) ([]byte, error) {
 		return nil, nil
 	}
 	body := make([]byte, bodyLen)
-	if _, err := io.ReadFull(c.conn, body); err != nil {
+	if err := c.readFull(body, timeout); err != nil {
 		return nil, fmt.Errorf("reading body: %w", err)
 	}
 	return body, nil
+}
+
+// readFull reads exactly len(buf) bytes from the connection within timeout.
+// A zero timeout means no deadline.
+//
+// For net.Conn, it sets SetReadDeadline for the duration of the call.
+//
+// For serial.Port, SetReadTimeout makes Read return (0, nil) on timeout
+// instead of an error, which would cause io.ReadFull to spin indefinitely.
+// readFull therefore loops manually, trimming the per-Read call to the
+// remaining time until the deadline, and converts (0, nil) to an error.
+func (c *WendyLiteClient) readFull(buf []byte, timeout time.Duration) error {
+	var deadline time.Time
+	if timeout > 0 {
+		deadline = time.Now().Add(timeout)
+	}
+	if !c.isSerial {
+		if nc, ok := c.conn.(net.Conn); ok && !deadline.IsZero() {
+			_ = nc.SetReadDeadline(deadline)
+			defer nc.SetReadDeadline(time.Time{}) //nolint:errcheck
+		}
+		_, err := io.ReadFull(c.conn, buf)
+		return err
+	}
+	sp := c.conn.(serial.Port)
+	defer sp.SetReadTimeout(serial.NoTimeout) //nolint:errcheck
+	for len(buf) > 0 {
+		perRead := serial.NoTimeout
+		if !deadline.IsZero() {
+			remaining := time.Until(deadline)
+			if remaining <= 0 {
+				return fmt.Errorf("read timeout")
+			}
+			perRead = remaining
+		}
+		_ = sp.SetReadTimeout(perRead)
+		n, err := sp.Read(buf)
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return fmt.Errorf("read timeout")
+		}
+		buf = buf[n:]
+	}
+	return nil
 }
 
 func (c *WendyLiteClient) exchangeProtocolVersions() error {
