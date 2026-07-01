@@ -165,7 +165,10 @@ func queryInterfaceMDNS(_ context.Context, iface *net.Interface, serviceType str
 
 			hostname := strings.TrimSuffix(entry.Host, ".")
 
-			instanceName, _ := strings.CutSuffix(entry.Name, "."+serviceType+".local.")
+			instanceName := entry.Name
+			if labels := splitDNSSDLabels(strings.Trim(entry.Name, ".")); len(labels) > 0 {
+				instanceName = labels[0]
+			}
 
 			key := fmt.Sprintf("%s-%s-%d", instanceName, hostname, entry.Port)
 			if seen[key] {
