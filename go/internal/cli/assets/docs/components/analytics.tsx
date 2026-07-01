@@ -1,29 +1,6 @@
 import { GoogleAnalytics } from '@next/third-parties/google';
 import Script from 'next/script';
-
-const GOOGLE_CONSENT_DEFAULT = `
-(function() {
-  var analyticsConsent = 'denied';
-  try {
-    var stored = window.localStorage.getItem('wendy_docs_analytics_consent');
-    var cookieMatch = document.cookie.match(/(?:^|; )wendy_docs_analytics_consent=(granted|denied)(?:;|$)/);
-    if (stored === 'granted' || stored === 'denied') {
-      analyticsConsent = stored;
-    } else if (cookieMatch) {
-      analyticsConsent = cookieMatch[1];
-    }
-  } catch (error) {}
-
-  window.dataLayer = window.dataLayer || [];
-  window.gtag = window.gtag || function(){ window.dataLayer.push(arguments); };
-  window.gtag('consent', 'default', {
-    analytics_storage: analyticsConsent,
-    ad_storage: 'denied',
-    ad_user_data: 'denied',
-    ad_personalization: 'denied'
-  });
-})();
-`;
+import { withBasePath } from '@/lib/shared';
 
 // Google Analytics 4 / Firebase Analytics — shares the same measurement ID as
 // the marketing site (wendy.dev): the "marketing-website-wendy" Firebase web
@@ -41,9 +18,10 @@ export function Analytics() {
 
   return (
     <>
-      <Script id="docs-google-analytics-consent-default" strategy="beforeInteractive">
-        {GOOGLE_CONSENT_DEFAULT}
-      </Script>
+      <Script
+        src={withBasePath('/static/docs-google-analytics-consent-default.js')}
+        strategy="beforeInteractive"
+      />
       <GoogleAnalytics gaId={GA_MEASUREMENT_ID} />
     </>
   );

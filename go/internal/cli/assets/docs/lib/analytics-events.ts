@@ -1,4 +1,5 @@
 export const DOCS_ANALYTICS_CONSENT_KEY = 'wendy_docs_analytics_consent';
+const DOCS_ANALYTICS_CONSENT_MAX_AGE_SECONDS = 60 * 60 * 24 * 180;
 
 export type DocsAnalyticsConsentState = 'granted' | 'denied';
 export type DocsInstallCopyTarget = 'unix' | 'windows' | 'agent-linux';
@@ -57,12 +58,21 @@ function getStoredDocsAnalyticsConsent(): DocsAnalyticsConsentState | null {
 
   if (typeof document === 'undefined') return null;
 
-  const cookieValue =
+  const cookiePrefix = `${DOCS_ANALYTICS_CONSENT_KEY}=`;
+  const encodedCookieValue =
     document.cookie
       .split('; ')
-      .find((cookie) => cookie.startsWith(`${DOCS_ANALYTICS_CONSENT_KEY}=`))
-      ?.split('=')
-      .at(1) ?? null;
+      .find((cookie) => cookie.startsWith(cookiePrefix))
+      ?.slice(cookiePrefix.length) ?? null;
+
+  let cookieValue: string | null = null;
+  if (encodedCookieValue) {
+    try {
+      cookieValue = decodeURIComponent(encodedCookieValue);
+    } catch {
+      cookieValue = encodedCookieValue;
+    }
+  }
 
   return isDocsAnalyticsConsentState(cookieValue) ? cookieValue : null;
 }
@@ -92,7 +102,11 @@ export function setDocsAnalyticsConsent(state: DocsAnalyticsConsentState) {
   }
 
   if (typeof document !== 'undefined') {
-    document.cookie = `${DOCS_ANALYTICS_CONSENT_KEY}=${state}; Path=/; Max-Age=31536000; SameSite=Lax; Secure`;
+    // HttpOnly is intentionally omitted so the pre-bundle consent bootstrap can
+    // read this non-sensitive consent state before GA initializes.
+    document.cookie = `${DOCS_ANALYTICS_CONSENT_KEY}=${encodeURIComponent(
+      state,
+    )}; Path=/; Max-Age=${DOCS_ANALYTICS_CONSENT_MAX_AGE_SECONDS}; SameSite=Lax; Secure`;
   }
 
   updateGoogleAnalyticsConsent(state);
@@ -104,8 +118,6 @@ export function trackDocsAnalyticsEvent<T extends DocsAnalyticsEventName>(
 ) {
   if (typeof window === 'undefined' || typeof window.gtag !== 'function') return;
   if (getStoredDocsAnalyticsConsent() !== 'granted') return;
-
-  updateGoogleAnalyticsConsent('granted');
 
   window.gtag('event', eventName, {
     ...params,
