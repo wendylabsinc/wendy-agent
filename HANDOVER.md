@@ -60,9 +60,11 @@ repo is the related Swift package.
 
 - **WDY-1782 — Move Wendy Companion SDK into the app repository**
   - Project: Wendy Companion App & SDK
-  - State: Backlog
+  - State: In Progress
   - Assignee: `konstantin@wendy.sh`
-  - Likely repo: `wendy-companion-ios`
+  - Repo: `wendy-companion-ios`
+  - Worktree: `/Volumes/Projects/WendyLabs/wendy-companion-ios/.worktrees/kb.wdy-1782-sdk-in-app`
+  - Draft PR: https://github.com/wendylabsinc/wendy-companion-ios/pull/2
 
 - **WDY-1785 — Get Wendy Companion App minimally working and releasable**
   - Project: Wendy Companion App & SDK

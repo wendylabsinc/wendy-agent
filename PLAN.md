@@ -179,15 +179,22 @@ well as `WDY`, so Release issues can live in the same project.
 #### WDY-1782 — Move Wendy Companion SDK into the app repository
 
 - Linear: https://linear.app/wendylabsinc/issue/WDY-1782/move-wendy-companion-sdk-into-the-app-repository
-- State: Backlog
+- State: In Progress
 - Team: Engineering (`WDY`)
 - Project: Wendy Companion App & SDK
 - Assignee: `konstantin@wendy.sh`
 - Priority: No priority
 - Repo: `wendylabsinc/wendy-companion-ios`
-- Status: queued. Move SDK source into the app repo for initial product velocity
-  while preserving a clean Swift package/module boundary and future split path.
-- Resume: not available until prepared.
+- Worktree: `/Volumes/Projects/WendyLabs/wendy-companion-ios/.worktrees/kb.wdy-1782-sdk-in-app`
+- Branch: `kb.wdy-1782-sdk-in-app`
+- Setup commit: `808d0905f1b501fb3c91085b590766a660dfd1ce`
+- Draft PR: https://github.com/wendylabsinc/wendy-companion-ios/pull/2
+- Status: started. Branch, draft PR, and issue handoff are ready.
+- Resume:
+
+  ```sh
+  cd /Volumes/Projects/WendyLabs/wendy-companion-ios/.worktrees/kb.wdy-1782-sdk-in-app && ai --prompt "Read HANDOVER.md and follow its instructions."
+  ```
 
 #### WDY-1785 — Get Wendy Companion App minimally working and releasable
 
@@ -357,7 +364,8 @@ Copy this block when this coordinator starts tracking an issue.
 2. Install/confirm provisioning profile `WendyCompanioniOSAppStoreProfile` for
    team `3YVC792H3S` and verify the App Store Connect bundle ID
    `dev.wendy.WendyCompanioniOS` before re-running the Release archive.
-3. Start **WDY-1782 — Move Wendy Companion SDK into the app repository**.
+3. Continue **WDY-1782 — Move Wendy Companion SDK into the app repository** from
+   its issue worktree and draft PR.
 4. Then start **WDY-1785 — Get Wendy Companion App minimally working and releasable**.
 5. Then start **REL-70 — Prepare public TestFlight release for Wendy Companion App**
    and **REL-69 — Prepare Wendy Companion App Store release listing and submission**
