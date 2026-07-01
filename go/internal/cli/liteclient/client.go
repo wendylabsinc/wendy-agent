@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"net"
 	"os"
 	"strings"
 	"time"
@@ -187,7 +188,7 @@ func serialHandshake(port serial.Port) error {
 			}
 		}
 	}
-	return fmt.Errorf("serial handshake: sentinel not received within 2 seconds")
+	return fmt.Errorf("serial handshake: sentinel not received within 3 seconds")
 }
 
 func (c *WendyLiteClient) Close() error {
@@ -210,7 +211,7 @@ func (c *WendyLiteClient) Ping() error {
 		Params: &wendypb.WendyComCommand_Ping{
 			Ping: &wendypb.WendyComPingParams{},
 		},
-	})
+	}, 0)
 	if err != nil {
 		return err
 	}
@@ -227,7 +228,7 @@ func (c *WendyLiteClient) ResetTargetDevice() error {
 		Params: &wendypb.WendyComCommand_Reboot{
 			Reboot: &wendypb.WendyComRebootParams{},
 		},
-	})
+	}, 0)
 	if err != nil {
 		return err
 	}
@@ -259,7 +260,7 @@ func (c *WendyLiteClient) PushApp(path string, onProgress func(written, total ui
 		Params: &wendypb.WendyComCommand_AppPushBegin{
 			AppPushBegin: &wendypb.WendyComAppPushBeginParams{Size: size},
 		},
-	})
+	}, 0)
 	if err != nil {
 		return fmt.Errorf("push begin: %w", err)
 	}
@@ -285,7 +286,7 @@ func (c *WendyLiteClient) PushApp(path string, onProgress func(written, total ui
 						Data:   buf[:n],
 					},
 				},
-			})
+			}, 0)
 			if serr != nil {
 				return fmt.Errorf("push data at offset %d: %w", offset, serr)
 			}
@@ -311,7 +312,7 @@ func (c *WendyLiteClient) PushApp(path string, onProgress func(written, total ui
 		Params: &wendypb.WendyComCommand_AppPushEnd{
 			AppPushEnd: &wendypb.WendyComAppPushEndParams{},
 		},
-	})
+	}, 0)
 	if err != nil {
 		return fmt.Errorf("push end: %w", err)
 	}
@@ -328,7 +329,7 @@ func (c *WendyLiteClient) StopApp() error {
 		Params: &wendypb.WendyComCommand_AppStop{
 			AppStop: &wendypb.WendyComAppStopParams{},
 		},
-	})
+	}, 0)
 	if err != nil {
 		return err
 	}
@@ -345,7 +346,7 @@ func (c *WendyLiteClient) StartApp() error {
 		Params: &wendypb.WendyComCommand_AppStart{
 			AppStart: &wendypb.WendyComAppStartParams{},
 		},
-	})
+	}, 0)
 	if err != nil {
 		return err
 	}
@@ -362,7 +363,7 @@ func (c *WendyLiteClient) GetDeviceIdentity() (*DeviceIdentity, error) {
 		Params: &wendypb.WendyComCommand_GetDeviceIdentity{
 			GetDeviceIdentity: &wendypb.WendyComGetDeviceIdentityParams{},
 		},
-	})
+	}, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -376,7 +377,7 @@ func (c *WendyLiteClient) GetDeviceIdentity() (*DeviceIdentity, error) {
 	return &DeviceIdentity{ID: di.GetId(), Name: di.GetName(), DisplayName: di.GetDisplayName()}, nil
 }
 
-func (c *WendyLiteClient) sendCommand(cmd *wendypb.WendyComCommand) (*wendypb.WendyComResponse, error) {
+func (c *WendyLiteClient) sendCommand(cmd *wendypb.WendyComCommand, timeout time.Duration) (*wendypb.WendyComResponse, error) {
 	body, err := proto.Marshal(cmd)
 	if err != nil {
 		return nil, fmt.Errorf("marshal: %w", err)
@@ -396,7 +397,7 @@ func (c *WendyLiteClient) sendCommand(cmd *wendypb.WendyComCommand) (*wendypb.We
 		}
 		msg = msg[n:]
 	}
-	raw, err := c.readResponse()
+	raw, err := c.readResponse(timeout)
 	if err != nil {
 		return nil, err
 	}
@@ -410,7 +411,16 @@ func (c *WendyLiteClient) sendCommand(cmd *wendypb.WendyComCommand) (*wendypb.We
 	return resp, nil
 }
 
-func (c *WendyLiteClient) readResponse() ([]byte, error) {
+func (c *WendyLiteClient) readResponse(timeout time.Duration) ([]byte, error) {
+	if timeout > 0 {
+		if nc, ok := c.conn.(net.Conn); ok {
+			_ = nc.SetReadDeadline(time.Now().Add(timeout))
+			defer nc.SetReadDeadline(time.Time{})
+		} else if sp, ok := c.conn.(serial.Port); ok {
+			_ = sp.SetReadTimeout(timeout)
+			defer sp.SetReadTimeout(serial.NoTimeout)
+		}
+	}
 	header := make([]byte, headerSize)
 	if _, err := io.ReadFull(c.conn, header); err != nil {
 		return nil, fmt.Errorf("reading header: %w", err)
@@ -437,7 +447,7 @@ func (c *WendyLiteClient) exchangeProtocolVersions() error {
 				Minor: versionMinor,
 			},
 		},
-	})
+	}, 3*time.Second)
 	if err != nil {
 		return err
 	}
