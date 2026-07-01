@@ -39,24 +39,55 @@ type fgSub struct {
 	ChannelID uint32 `json:"channelId"`
 }
 
-// fgClientMsg is a parsed client->server JSON message (subscribe/unsubscribe).
+// fgParameter is one Foxglove parameter (getParameters/setParameters/
+// parameterValues). Value is the raw JSON value (number/bool/string/array).
+// Type is optional ("byte_array" | "float64" | "float64_array").
+type fgParameter struct {
+	Name  string `json:"name"`
+	Value any    `json:"value,omitempty"`
+	Type  string `json:"type,omitempty"`
+}
+
+// fgParameterValues is the server->client op="parameterValues" reply.
+type fgParameterValues struct {
+	Op         string        `json:"op"`
+	Parameters []fgParameter `json:"parameters"`
+	ID         string        `json:"id,omitempty"`
+}
+
+// fgClientMsg is a parsed client->server JSON message. Fields are populated per
+// op: subscribe/unsubscribe use Subscriptions/UnsubscribeIDs; the parameter ops
+// use ParameterNames/Parameters/ID.
 type fgClientMsg struct {
 	Op             string
 	Subscriptions  []fgSub
 	UnsubscribeIDs []uint32
+	ParameterNames []string
+	Parameters     []fgParameter
+	ID             string
 }
 
 // fgParseClientMessage parses a client text frame into the relevant fields.
 func fgParseClientMessage(data []byte) (fgClientMsg, error) {
 	var raw struct {
-		Op              string   `json:"op"`
-		Subscriptions   []fgSub  `json:"subscriptions"`
-		SubscriptionIDs []uint32 `json:"subscriptionIds"`
+		Op              string        `json:"op"`
+		Subscriptions   []fgSub       `json:"subscriptions"`
+		SubscriptionIDs []uint32      `json:"subscriptionIds"`
+		ParameterNames  []string      `json:"parameterNames"`
+		Parameters      []fgParameter `json:"parameters"`
+		ID              string        `json:"id"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return fgClientMsg{}, err
 	}
-	return fgClientMsg{Op: raw.Op, Subscriptions: raw.Subscriptions, UnsubscribeIDs: raw.SubscriptionIDs}, nil
+	return fgClientMsg{
+		Op:             raw.Op,
+		Subscriptions:  raw.Subscriptions,
+		UnsubscribeIDs: raw.SubscriptionIDs,
+		ParameterNames: raw.ParameterNames,
+		Parameters:     raw.Parameters,
+		ID:             raw.ID,
+	}, nil
 }
 
 // fgAppendMessageData appends a binary MESSAGE_DATA frame to dst and returns the

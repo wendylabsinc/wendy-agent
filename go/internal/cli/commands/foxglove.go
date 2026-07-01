@@ -31,6 +31,10 @@ type foxgloveSource interface {
 	ListTopics(ctx context.Context, in *agentpbv2.ListROS2TopicsRequest, opts ...grpc.CallOption) (*agentpbv2.ListROS2TopicsResponse, error)
 	GetMessageDefinition(ctx context.Context, in *agentpbv2.GetROS2MessageDefinitionRequest, opts ...grpc.CallOption) (*agentpbv2.GetROS2MessageDefinitionResponse, error)
 	SubscribeRaw(ctx context.Context, in *agentpbv2.SubscribeRawROS2Request, opts ...grpc.CallOption) (grpc.ServerStreamingClient[agentpbv2.RawROS2Message], error)
+	// Parameters (P2).
+	ListParams(ctx context.Context, in *agentpbv2.ListROS2ParamsRequest, opts ...grpc.CallOption) (*agentpbv2.ListROS2ParamsResponse, error)
+	GetParam(ctx context.Context, in *agentpbv2.GetROS2ParamRequest, opts ...grpc.CallOption) (*agentpbv2.GetROS2ParamResponse, error)
+	SetParam(ctx context.Context, in *agentpbv2.SetROS2ParamRequest, opts ...grpc.CallOption) (*agentpbv2.SetROS2ParamResponse, error)
 }
 
 // Compile-time assertion: the real generated client must satisfy foxgloveSource.
@@ -196,6 +200,27 @@ func (s *foxgloveServer) handleConn(ctx context.Context, c *websocket.Conn) {
 				}
 			}
 			subsMu.Unlock()
+		case "getParameters":
+			values := s.getParameters(connCtx, msg.ParameterNames, msg.ID)
+			if b, mErr := json.Marshal(values); mErr == nil {
+				outText <- b
+			}
+		case "setParameters":
+			values := s.setParameters(connCtx, msg.Parameters, msg.ID)
+			// Only reply when the client supplied an id (Foxglove correlates the
+			// echo by id); an id-less setParameters is fire-and-forget.
+			if msg.ID != "" {
+				if b, mErr := json.Marshal(values); mErr == nil {
+					outText <- b
+				}
+			}
+		case "subscribeParameterUpdates":
+			// Emit the current values immediately; ongoing updates are delivered by
+			// the --poll re-discovery loop.
+			values := s.getParameters(connCtx, msg.ParameterNames, "")
+			if b, mErr := json.Marshal(values); mErr == nil {
+				outText <- b
+			}
 		}
 	}
 	// Cancel any still-active subscription stream contexts so their child

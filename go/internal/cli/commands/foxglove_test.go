@@ -67,6 +67,16 @@ func (s fakeFGSource) SubscribeRaw(ctx context.Context, _ *agentpbv2.SubscribeRa
 	}, nil
 }
 
+func (s fakeFGSource) ListParams(context.Context, *agentpbv2.ListROS2ParamsRequest, ...grpc.CallOption) (*agentpbv2.ListROS2ParamsResponse, error) {
+	return &agentpbv2.ListROS2ParamsResponse{}, nil
+}
+func (s fakeFGSource) GetParam(context.Context, *agentpbv2.GetROS2ParamRequest, ...grpc.CallOption) (*agentpbv2.GetROS2ParamResponse, error) {
+	return &agentpbv2.GetROS2ParamResponse{}, nil
+}
+func (s fakeFGSource) SetParam(context.Context, *agentpbv2.SetROS2ParamRequest, ...grpc.CallOption) (*agentpbv2.SetROS2ParamResponse, error) {
+	return &agentpbv2.SetROS2ParamResponse{Success: true}, nil
+}
+
 // Compile-time assertion: fakeFGSource must satisfy foxgloveSource.
 var _ foxgloveSource = fakeFGSource{}
 
@@ -98,6 +108,15 @@ func (s eofFGSource) GetMessageDefinition(context.Context, *agentpbv2.GetROS2Mes
 }
 func (s eofFGSource) SubscribeRaw(context.Context, *agentpbv2.SubscribeRawROS2Request, ...grpc.CallOption) (grpc.ServerStreamingClient[agentpbv2.RawROS2Message], error) {
 	return s.stream, nil
+}
+func (s eofFGSource) ListParams(context.Context, *agentpbv2.ListROS2ParamsRequest, ...grpc.CallOption) (*agentpbv2.ListROS2ParamsResponse, error) {
+	return &agentpbv2.ListROS2ParamsResponse{}, nil
+}
+func (s eofFGSource) GetParam(context.Context, *agentpbv2.GetROS2ParamRequest, ...grpc.CallOption) (*agentpbv2.GetROS2ParamResponse, error) {
+	return &agentpbv2.GetROS2ParamResponse{}, nil
+}
+func (s eofFGSource) SetParam(context.Context, *agentpbv2.SetROS2ParamRequest, ...grpc.CallOption) (*agentpbv2.SetROS2ParamResponse, error) {
+	return &agentpbv2.SetROS2ParamResponse{Success: true}, nil
 }
 
 // TestPump_DropsWhenClientSlow verifies pump never blocks on a write queue the
