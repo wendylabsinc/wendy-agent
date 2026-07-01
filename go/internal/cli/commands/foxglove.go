@@ -35,6 +35,11 @@ type foxgloveSource interface {
 	ListParams(ctx context.Context, in *agentpbv2.ListROS2ParamsRequest, opts ...grpc.CallOption) (*agentpbv2.ListROS2ParamsResponse, error)
 	GetParam(ctx context.Context, in *agentpbv2.GetROS2ParamRequest, opts ...grpc.CallOption) (*agentpbv2.GetROS2ParamResponse, error)
 	SetParam(ctx context.Context, in *agentpbv2.SetROS2ParamRequest, opts ...grpc.CallOption) (*agentpbv2.SetROS2ParamResponse, error)
+	// Services (P2) + publish (P3).
+	ListServices(ctx context.Context, in *agentpbv2.ListROS2ServicesRequest, opts ...grpc.CallOption) (*agentpbv2.ListROS2ServicesResponse, error)
+	GetServiceDefinition(ctx context.Context, in *agentpbv2.GetROS2ServiceDefinitionRequest, opts ...grpc.CallOption) (*agentpbv2.GetROS2ServiceDefinitionResponse, error)
+	CallService(ctx context.Context, in *agentpbv2.CallROS2ServiceRequest, opts ...grpc.CallOption) (*agentpbv2.CallROS2ServiceResponse, error)
+	Publish(ctx context.Context, in *agentpbv2.PublishROS2Request, opts ...grpc.CallOption) (*agentpbv2.PublishROS2Response, error)
 }
 
 // Compile-time assertion: the real generated client must satisfy foxgloveSource.
@@ -44,10 +49,25 @@ type foxgloveServer struct {
 	src      foxgloveSource
 	domainID *int32
 	topics   []string // explicit filter; empty = all
+	// allowControl enables the write path — service calls, client publishing, and
+	// setParameters. Default false: the bridge is read-only, matching P1. When
+	// false these capabilities are neither advertised nor honoured.
+	allowControl bool
 	// framePool recycles MESSAGE_DATA frame buffers across the high-rate
 	// subscribe path to avoid a per-frame allocation. Holds *[]byte so the value
 	// stored is pointer-sized (sync.Pool best practice).
 	framePool sync.Pool
+}
+
+// capabilities returns the Foxglove serverInfo capability list for this server.
+// Read capabilities (getParameters via "parameters"/"parametersSubscribe") are
+// always present; the write capabilities are added only with --allow-control.
+func (s *foxgloveServer) capabilities() []string {
+	caps := []string{"parameters", "parametersSubscribe"}
+	if s.allowControl {
+		caps = append(caps, "services", "clientPublish")
+	}
+	return caps
 }
 
 // getFrameBuf returns a recycled (or fresh) frame buffer, length reset to 0.
@@ -143,7 +163,7 @@ func (s *foxgloveServer) handleConn(ctx context.Context, c *websocket.Conn) {
 	}()
 
 	// serverInfo then advertise.
-	info, _ := json.Marshal(fgServerInfo{Op: "serverInfo", Name: "wendy", Capabilities: []string{}, SupportedEncodings: []string{"cdr"}})
+	info, _ := json.Marshal(fgServerInfo{Op: "serverInfo", Name: "wendy", Capabilities: s.capabilities(), SupportedEncodings: []string{"cdr"}})
 	outText <- info
 	channels, chTopic, err := s.discoverChannels(connCtx)
 	if err != nil {
@@ -155,9 +175,23 @@ func (s *foxgloveServer) handleConn(ctx context.Context, c *websocket.Conn) {
 	adv, _ := json.Marshal(fgAdvertise{Op: "advertise", Channels: channels})
 	outText <- adv
 
+	// Services (write path): discovered + advertised only with --allow-control.
+	var svcInfo map[uint32]*fgServiceInfo
+	if s.allowControl {
+		var services []fgService
+		services, svcInfo = s.discoverServices(connCtx)
+		if len(services) > 0 {
+			if b, mErr := json.Marshal(fgAdvertiseServices{Op: "advertiseServices", Services: services}); mErr == nil {
+				outText <- b
+			}
+		}
+	}
+
 	// subscriptionID -> cancel for its SubscribeRaw stream.
 	subs := map[uint32]context.CancelFunc{}
 	var subsMu sync.Mutex
+	// Client-advertised channels for publishing (write path).
+	clientChannels := map[uint32]*fgClientChannel{}
 	// dropped counts MESSAGE_DATA frames shed across all of this connection's
 	// pump goroutines when the client can't drain the write queue fast enough.
 	var dropped atomic.Uint64
@@ -166,6 +200,24 @@ func (s *foxgloveServer) handleConn(ctx context.Context, c *websocket.Conn) {
 		typ, data, rerr := c.Read(connCtx)
 		if rerr != nil {
 			break
+		}
+		if typ == websocket.MessageBinary {
+			// Write-path binary frames: SERVICE_CALL_REQUEST (0x02) and client
+			// CLIENT_MESSAGE_DATA (0x01). Ignored unless --allow-control.
+			if !s.allowControl || len(data) == 0 {
+				continue
+			}
+			switch data[0] {
+			case 0x02:
+				frame := append([]byte(nil), data...)
+				wg.Add(1)
+				go func() { defer wg.Done(); s.handleServiceCall(connCtx, frame, svcInfo, out, outText) }()
+			case 0x01:
+				frame := append([]byte(nil), data...)
+				wg.Add(1)
+				go func() { defer wg.Done(); s.handleClientPublish(connCtx, frame, clientChannels) }()
+			}
+			continue
 		}
 		if typ != websocket.MessageText {
 			continue
@@ -206,6 +258,13 @@ func (s *foxgloveServer) handleConn(ctx context.Context, c *websocket.Conn) {
 				outText <- b
 			}
 		case "setParameters":
+			// Writing parameters can change device behaviour; gated behind
+			// --allow-control (Foxglove should not advertise the capability when
+			// disabled, but ignore defensively regardless).
+			if !s.allowControl {
+				fmt.Fprintln(os.Stderr, "foxglove: setParameters ignored (start with --allow-control to enable writes)")
+				continue
+			}
 			values := s.setParameters(connCtx, msg.Parameters, msg.ID)
 			// Only reply when the client supplied an id (Foxglove correlates the
 			// echo by id); an id-less setParameters is fire-and-forget.
@@ -220,6 +279,19 @@ func (s *foxgloveServer) handleConn(ctx context.Context, c *websocket.Conn) {
 			values := s.getParameters(connCtx, msg.ParameterNames, "")
 			if b, mErr := json.Marshal(values); mErr == nil {
 				outText <- b
+			}
+		case "advertise":
+			// Client publish channels. Ignored unless --allow-control.
+			if !s.allowControl {
+				continue
+			}
+			for i := range msg.ClientChannels {
+				ch := msg.ClientChannels[i]
+				clientChannels[ch.ID] = &ch
+			}
+		case "unadvertise":
+			for _, id := range msg.ClientUnadvertiseIDs {
+				delete(clientChannels, id)
 			}
 		}
 	}
@@ -296,11 +368,12 @@ Foxglove Studio to ws://localhost:<port> via "Open connection".`,
 
 func newFoxgloveServeCmd() *cobra.Command {
 	var (
-		port   int
-		host   string
-		domain int32
-		topics []string
-		poll   time.Duration
+		port         int
+		host         string
+		domain       int32
+		topics       []string
+		poll         time.Duration
+		allowControl bool
 	)
 	cmd := &cobra.Command{
 		Use:   "serve",
@@ -315,7 +388,7 @@ func newFoxgloveServeCmd() *cobra.Command {
 			}
 			defer client.Close()
 
-			srv := &foxgloveServer{src: client.client, domainID: ros2DomainPtr(domain), topics: topics}
+			srv := &foxgloveServer{src: client.client, domainID: ros2DomainPtr(domain), topics: topics, allowControl: allowControl}
 			_ = poll // re-discovery loop is a follow-up; see plan note.
 
 			httpSrv := &http.Server{
@@ -349,6 +422,7 @@ func newFoxgloveServeCmd() *cobra.Command {
 	cmd.Flags().StringVar(&host, "host", "127.0.0.1", "Bind address")
 	cmd.Flags().Int32Var(&domain, "domain", -1, "ROS_DOMAIN_ID override (default: from the app's ros2 config)")
 	cmd.Flags().StringSliceVar(&topics, "topic", nil, "Restrict to these topics (repeatable; default: all)")
-	cmd.Flags().DurationVar(&poll, "poll", 5*time.Second, "Topic re-discovery interval (0 disables; reserved for follow-up)")
+	cmd.Flags().DurationVar(&poll, "poll", 5*time.Second, "Topic re-discovery interval (0 disables)")
+	cmd.Flags().BoolVar(&allowControl, "allow-control", false, "Enable Foxglove to command the device: publish to topics, call services, and set parameters (default: read-only)")
 	return cmd
 }

@@ -85,11 +85,11 @@ func strStructBytes() []byte {
 	var d []byte
 	d = append(d, 0x00, 0x01, 0x00, 0x00)
 	d = append(d, 0x03, 0x00, 0x00, 0x00) // string len 3
-	d = append(d, 'a', 'b', 0x00)          // "ab\0"
-	d = append(d, 0x00)                     // pad
+	d = append(d, 'a', 'b', 0x00)         // "ab\0"
+	d = append(d, 0x00)                   // pad
 	d = append(d, 0x07, 0x00, 0x00, 0x00) // count 7
 	d = append(d, 0x03, 0x00, 0x00, 0x00) // seq len 3
-	d = append(d, 0x01, 0x02, 0x03)        // data
+	d = append(d, 0x01, 0x02, 0x03)       // data
 	return d
 }
 

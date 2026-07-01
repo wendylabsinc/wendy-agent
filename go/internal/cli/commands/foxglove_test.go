@@ -76,6 +76,18 @@ func (s fakeFGSource) GetParam(context.Context, *agentpbv2.GetROS2ParamRequest, 
 func (s fakeFGSource) SetParam(context.Context, *agentpbv2.SetROS2ParamRequest, ...grpc.CallOption) (*agentpbv2.SetROS2ParamResponse, error) {
 	return &agentpbv2.SetROS2ParamResponse{Success: true}, nil
 }
+func (s fakeFGSource) ListServices(context.Context, *agentpbv2.ListROS2ServicesRequest, ...grpc.CallOption) (*agentpbv2.ListROS2ServicesResponse, error) {
+	return &agentpbv2.ListROS2ServicesResponse{}, nil
+}
+func (s fakeFGSource) GetServiceDefinition(context.Context, *agentpbv2.GetROS2ServiceDefinitionRequest, ...grpc.CallOption) (*agentpbv2.GetROS2ServiceDefinitionResponse, error) {
+	return &agentpbv2.GetROS2ServiceDefinitionResponse{}, nil
+}
+func (s fakeFGSource) CallService(context.Context, *agentpbv2.CallROS2ServiceRequest, ...grpc.CallOption) (*agentpbv2.CallROS2ServiceResponse, error) {
+	return &agentpbv2.CallROS2ServiceResponse{Success: true}, nil
+}
+func (s fakeFGSource) Publish(context.Context, *agentpbv2.PublishROS2Request, ...grpc.CallOption) (*agentpbv2.PublishROS2Response, error) {
+	return &agentpbv2.PublishROS2Response{Success: true}, nil
+}
 
 // Compile-time assertion: fakeFGSource must satisfy foxgloveSource.
 var _ foxgloveSource = fakeFGSource{}
@@ -117,6 +129,18 @@ func (s eofFGSource) GetParam(context.Context, *agentpbv2.GetROS2ParamRequest, .
 }
 func (s eofFGSource) SetParam(context.Context, *agentpbv2.SetROS2ParamRequest, ...grpc.CallOption) (*agentpbv2.SetROS2ParamResponse, error) {
 	return &agentpbv2.SetROS2ParamResponse{Success: true}, nil
+}
+func (s eofFGSource) ListServices(context.Context, *agentpbv2.ListROS2ServicesRequest, ...grpc.CallOption) (*agentpbv2.ListROS2ServicesResponse, error) {
+	return &agentpbv2.ListROS2ServicesResponse{}, nil
+}
+func (s eofFGSource) GetServiceDefinition(context.Context, *agentpbv2.GetROS2ServiceDefinitionRequest, ...grpc.CallOption) (*agentpbv2.GetROS2ServiceDefinitionResponse, error) {
+	return &agentpbv2.GetROS2ServiceDefinitionResponse{}, nil
+}
+func (s eofFGSource) CallService(context.Context, *agentpbv2.CallROS2ServiceRequest, ...grpc.CallOption) (*agentpbv2.CallROS2ServiceResponse, error) {
+	return &agentpbv2.CallROS2ServiceResponse{Success: true}, nil
+}
+func (s eofFGSource) Publish(context.Context, *agentpbv2.PublishROS2Request, ...grpc.CallOption) (*agentpbv2.PublishROS2Response, error) {
+	return &agentpbv2.PublishROS2Response{Success: true}, nil
 }
 
 // TestPump_DropsWhenClientSlow verifies pump never blocks on a write queue the
