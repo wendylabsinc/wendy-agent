@@ -14,7 +14,7 @@ import (
 // ResolveESP32SerialPorts returns all connected serial ports whose USB VID/PID
 // match the ESP32 constants, along with each device node's modification time as
 // a proxy for when the device was plugged in.
-func ResolveESP32SerialPorts() ([]SerialDevice, error) {
+func ResolveESP32SerialPorts() ([]SerialPortInfo, error) {
 	entries, err := filepath.Glob("/sys/class/tty/ttyACM*")
 	if err != nil {
 		return nil, fmt.Errorf("globbing tty entries: %w", err)
@@ -23,7 +23,7 @@ func ResolveESP32SerialPorts() ([]SerialDevice, error) {
 	wantVID := strings.TrimPrefix(models.ESP32VendorID, "0x")
 	wantPID := strings.TrimPrefix(models.ESP32ProductID, "0x")
 
-	var result []SerialDevice
+	var result []SerialPortInfo
 	for _, entry := range entries {
 		deviceSymlink := filepath.Join(entry, "device")
 		resolvedIface, err := filepath.EvalSymlinks(deviceSymlink)
@@ -50,7 +50,7 @@ func ResolveESP32SerialPorts() ([]SerialDevice, error) {
 		}
 
 		devPath := "/dev/" + filepath.Base(entry)
-		dev := SerialDevice{Port: devPath}
+		dev := SerialPortInfo{Port: devPath}
 		if info, statErr := os.Stat(devPath); statErr == nil {
 			dev.ConnectionTime = info.ModTime()
 		}

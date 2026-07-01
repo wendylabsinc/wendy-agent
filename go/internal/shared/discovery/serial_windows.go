@@ -18,7 +18,7 @@ import (
 // ResolveESP32SerialPorts returns all connected serial ports whose USB VID/PID
 // match the ESP32 constants. ConnectionTime is not available on Windows and is
 // left as the zero value.
-func ResolveESP32SerialPorts() ([]SerialDevice, error) {
+func ResolveESP32SerialPorts() ([]SerialPortInfo, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -46,7 +46,7 @@ var serialPortRegex = regexp.MustCompile(`\(COM\d+\)`)
 // produced by `Get-CimInstance Win32_PnPEntity | Select-Object Name,
 // PNPDeviceID, Caption | ConvertTo-Json`. Returns bare "COMN" strings with
 // zero ConnectionTime (not available via Win32_PnPEntity).
-func parseESP32SerialPortsJSON(jsonOut string) ([]SerialDevice, error) {
+func parseESP32SerialPortsJSON(jsonOut string) ([]SerialPortInfo, error) {
 	trimmed := strings.TrimSpace(jsonOut)
 	if trimmed == "" {
 		return nil, nil
@@ -65,11 +65,11 @@ func parseESP32SerialPortsJSON(jsonOut string) ([]SerialDevice, error) {
 		return nil, fmt.Errorf("parsing PowerShell JSON output: %w", err)
 	}
 
-	var result []SerialDevice
+	var result []SerialPortInfo
 	for _, entry := range entries {
 		for _, field := range []string{entry.Name, entry.Caption} {
 			if match := serialPortRegex.FindString(field); match != "" {
-				result = append(result, SerialDevice{Port: strings.Trim(match, "()")})
+				result = append(result, SerialPortInfo{Port: strings.Trim(match, "()")})
 				break
 			}
 		}

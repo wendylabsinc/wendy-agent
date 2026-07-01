@@ -114,7 +114,7 @@ import (
 
 // ResolveESP32SerialPorts returns all connected serial ports whose USB VID/PID
 // match the ESP32 constants, along with each device node's plug-in time.
-func ResolveESP32SerialPorts() ([]SerialDevice, error) {
+func ResolveESP32SerialPorts() ([]SerialPortInfo, error) {
 	vid, err := parseHexID(models.ESP32VendorID)
 	if err != nil {
 		return nil, fmt.Errorf("invalid ESP32VendorID %q: %w", models.ESP32VendorID, err)
@@ -133,14 +133,14 @@ func ResolveESP32SerialPorts() ([]SerialDevice, error) {
 	}
 
 	paths := unsafe.Slice(list.paths, count)
-	result := make([]SerialDevice, 0, count)
+	result := make([]SerialPortInfo, 0, count)
 	for _, cp := range paths {
 		path := C.GoString(cp)
 		info, err := os.Stat(path)
 		if err != nil {
 			continue
 		}
-		result = append(result, SerialDevice{Port: path, ConnectionTime: info.ModTime()})
+		result = append(result, SerialPortInfo{Port: path, ConnectionTime: info.ModTime()})
 	}
 	return result, nil
 }

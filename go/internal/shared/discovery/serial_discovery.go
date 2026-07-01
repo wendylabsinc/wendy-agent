@@ -1,10 +1,10 @@
-package liteclient
+package discovery
 
 import (
 	"sync"
 	"time"
 
-	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
+	"github.com/wendylabsinc/wendy/go/internal/cli/liteclient"
 )
 
 // SerialDevice is a Wendy Lite device reachable over a serial port.
@@ -86,7 +86,7 @@ func (d *SerialDiscovery) StartScan(repeatInterval time.Duration) {
 
 	go func() {
 		for {
-			ports, err := discovery.ResolveESP32SerialPorts()
+			ports, err := ResolveESP32SerialPorts()
 			if err == nil {
 				portSet := make(map[string]bool, len(ports))
 				for _, p := range ports {
@@ -135,7 +135,7 @@ func (d *SerialDiscovery) StartScan(repeatInterval time.Duration) {
 							delete(d.probing, port)
 							d.mu.Unlock()
 						}()
-						client := NewWendyLiteClient()
+						client := liteclient.NewWendyLiteClient()
 						if err := client.ConnectToSerial(port); err != nil {
 							return
 						}

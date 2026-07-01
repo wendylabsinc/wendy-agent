@@ -5,8 +5,8 @@ import (
 	"time"
 )
 
-// SerialDevice holds a serial port path and its USB connection time.
-type SerialDevice struct {
+// SerialPortInfo holds a serial port path and its USB connection time.
+type SerialPortInfo struct {
 	Port           string
 	ConnectionTime time.Time
 }
