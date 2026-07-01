@@ -299,8 +299,10 @@ jobs:
           HEAD_BRANCH=$(printf '%s' "$PR_DATA" | jq -r '.head.ref // ""')
           HEAD_SHA=$(printf '%s' "$PR_DATA" | jq -r '.head.sha // ""')
           if ! printf '%s' "$HEAD_BRANCH" | grep -qE '^ai/[a-z0-9]'; then
+            # Non-ai branches are outside this automation's scope. This is a
+            # benign skip, distinct from proceed=false authorization failures.
             echo "PR head branch '$HEAD_BRANCH' does not match ai/ pattern — skipping"
-            echo "proceed=false" >> "$GITHUB_OUTPUT"
+            echo "proceed=skip" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           echo "head_sha=$HEAD_SHA"       >> "$GITHUB_OUTPUT"
@@ -325,7 +327,7 @@ jobs:
           fi
 
           if [ "$ALLOWED" = "false" ]; then
-            echo "Actor '$ACTOR' (assoc: $ACTOR_ASSOC) is not authorized — skipping"
+            echo "::error::Actor '$ACTOR' (assoc: $ACTOR_ASSOC) is not authorized"
             echo "proceed=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -359,17 +361,23 @@ jobs:
 
           echo "proceed=true" >> "$GITHUB_OUTPUT"
 
-      - name: Skip when automation is not authorized
-        if: steps.resolve.outputs.pr_number == '' || steps.guard.outputs.proceed != 'true'
+      - name: Skip when automation is not applicable
+        if: steps.resolve.outputs.pr_number == '' || steps.guard.outputs.proceed == 'skip'
         run: |
-          echo "::error::Authorization not granted or not applicable — skipping AI feedback loop without provisioning write tokens."
+          echo "::notice::AI feedback loop is not applicable for this event or branch; no write-token job will run."
+
+      - name: Fail when automation is not authorized
+        if: steps.guard.outputs.proceed == 'false'
+        run: |
+          echo "::error::Authorization not granted — gate failing to prevent write-token provisioning."
+          exit 1
 
   # Execute job: write-capable tokens (GITHUB_TOKEN pull-requests:write, issues:write)
   # are provisioned ONLY after the gate job has confirmed authorization via live API checks.
   respond:
     name: Address PR feedback via Claude Code
     needs: gate
-    if: needs.gate.outputs.proceed == 'true'
+    if: needs.gate.result == 'success' && needs.gate.outputs.proceed == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
