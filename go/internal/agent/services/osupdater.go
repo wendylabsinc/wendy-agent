@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"os/exec"
 	"strings"
 	"time"
@@ -70,17 +71,45 @@ func productionUpdaters(logger *zap.Logger) []osUpdater {
 
 // selectUpdater chooses the backend for an update request. requested is the
 // caller's `--updater` value ("", "auto", "wendyos"/"wendyos-update", or
-// "mender").
-func selectUpdater(logger *zap.Logger, requested string) (osUpdater, error) {
-	return chooseUpdater(requested, productionUpdaters(logger))
+// "mender"); artifactURL constrains the choice to the backend that can parse
+// the artifact's format.
+func selectUpdater(logger *zap.Logger, requested, artifactURL string) (osUpdater, error) {
+	return chooseUpdater(requested, artifactURL, productionUpdaters(logger))
+}
+
+// requiredUpdaterForArtifact maps an artifact URL to the only backend that can
+// install it: .wendy is the wendyos-update format, .mender(.xz) is Mender's.
+// Returns "" when the extension is unknown (no constraint). The formats are
+// mutually unreadable — a mender-era device streaming a .wendy artifact dies
+// with a parse error — so selection must never route across this line.
+func requiredUpdaterForArtifact(artifactURL string) string {
+	path := artifactURL
+	if u, err := url.Parse(artifactURL); err == nil && u.Path != "" {
+		path = u.Path
+	}
+	switch {
+	case strings.HasSuffix(path, ".wendy"):
+		return updaterNameWendyOS
+	case strings.HasSuffix(path, ".mender"), strings.HasSuffix(path, ".mender.xz"):
+		return updaterNameMender
+	default:
+		return ""
+	}
 }
 
 // chooseUpdater applies the selection policy over candidate backends (ordered
-// by preference). An explicit backend is honored or fails — it never silently
-// falls back. "auto"/"" picks the first candidate that detects the device.
-func chooseUpdater(requested string, candidates []osUpdater) (osUpdater, error) {
+// by preference). The artifact's format is authoritative when recognized: only
+// the backend that can parse it is eligible, and an unavailable or conflicting
+// backend is an immediate, explained error — never a cross-stack fallback.
+// Otherwise an explicit backend is honored or fails (no silent fallback), and
+// "auto"/"" picks the first candidate that detects the device.
+func chooseUpdater(requested, artifactURL string, candidates []osUpdater) (osUpdater, error) {
+	required := requiredUpdaterForArtifact(artifactURL)
 	switch requested {
 	case "", "auto":
+		if required != "" {
+			return requireUpdaterForFormat(candidates, required)
+		}
 		for _, u := range candidates {
 			if u.detect() {
 				return u, nil
@@ -88,12 +117,47 @@ func chooseUpdater(requested string, candidates []osUpdater) (osUpdater, error) 
 		}
 		return nil, fmt.Errorf("no OS update backend is available on this device")
 	case updaterNameMender:
+		if required != "" && required != updaterNameMender {
+			return nil, artifactBackendMismatchError(required, requested)
+		}
 		return requireUpdater(candidates, updaterNameMender)
 	case updaterNameWendyOS, "wendyos":
+		if required != "" && required != updaterNameWendyOS {
+			return nil, artifactBackendMismatchError(required, requested)
+		}
 		return requireUpdater(candidates, updaterNameWendyOS)
 	default:
 		return nil, fmt.Errorf("unknown updater backend %q (expected auto, %s, or %s)",
 			requested, updaterNameWendyOS, updaterNameMender)
+	}
+}
+
+// artifactBackendMismatchError reports an explicit --updater choice that can
+// never parse the artifact's format.
+func artifactBackendMismatchError(required, requested string) error {
+	return fmt.Errorf("the artifact is a %s artifact and cannot be installed with the %q backend", required, requested)
+}
+
+// requireUpdaterForFormat returns the backend the artifact format demands, or
+// a stack-mismatch explanation when the device cannot run it. The wendy-on-
+// mender case is the migration wall: the partition layout changed between the
+// stacks, so the only way forward is reflashing — say so instead of letting
+// mender stream the artifact into a parse error.
+func requireUpdaterForFormat(candidates []osUpdater, required string) (osUpdater, error) {
+	u, err := requireUpdater(candidates, required)
+	if err == nil {
+		return u, nil
+	}
+	switch required {
+	case updaterNameWendyOS:
+		return nil, errors.New("this OS update uses the wendyos-update stack, which this device does not support " +
+			"(it runs the legacy Mender image layout, and the partition layout changed between the stacks); " +
+			"reflash the device with a current WendyOS image to continue receiving OS updates")
+	case updaterNameMender:
+		return nil, errors.New("this OS update is a legacy Mender artifact, which this device (wendyos-update stack) " +
+			"does not support; select a wendyos-update (.wendy) release instead")
+	default:
+		return nil, err
 	}
 }
 

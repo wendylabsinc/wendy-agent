@@ -215,6 +215,74 @@ func TestHasOTABackend(t *testing.T) {
 	}
 }
 
+func TestOSUpdateStackMismatch(t *testing.T) {
+	tests := []struct {
+		name        string
+		features    []string
+		artifactURL string
+		wantErr     bool
+		wantSubstr  string
+	}{
+		{
+			name:        "wendy artifact on a mender-only device requires a reflash",
+			features:    []string{"mender", "os-healthcheck"},
+			artifactURL: "https://storage.googleapis.com/img/wendyos-image.rootfs.wendy",
+			wantErr:     true,
+			wantSubstr:  "reflash",
+		},
+		{
+			name:        "mender artifact on a wendyos-update device is rejected",
+			features:    []string{"wendyos-update", "os-healthcheck"},
+			artifactURL: "https://storage.googleapis.com/img/wendyos-image.mender",
+			wantErr:     true,
+			wantSubstr:  "wendyos-update",
+		},
+		{
+			name:        "wendy artifact on a wendyos-update device is fine",
+			features:    []string{"wendyos-update"},
+			artifactURL: "https://storage.googleapis.com/img/wendyos-image.rootfs.wendy",
+		},
+		{
+			name:        "mender artifact on a mender device is fine",
+			features:    []string{"mender"},
+			artifactURL: "https://storage.googleapis.com/img/wendyos-image.mender",
+		},
+		{
+			name:        "device with both backends accepts either",
+			features:    []string{"wendyos-update", "mender"},
+			artifactURL: "https://storage.googleapis.com/img/wendyos-image.mender",
+		},
+		{
+			name:        "unknown artifact extension is not constrained",
+			features:    []string{"mender"},
+			artifactURL: "https://example.com/custom-artifact",
+		},
+		{
+			name:        "device without advertised backends is left to the agent",
+			features:    nil,
+			artifactURL: "https://storage.googleapis.com/img/wendyos-image.rootfs.wendy",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := &agentpb.GetAgentVersionResponse{Featureset: tc.features}
+			err := osUpdateStackMismatch(resp, tc.artifactURL)
+			if !tc.wantErr {
+				if err != nil {
+					t.Fatalf("osUpdateStackMismatch() = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("osUpdateStackMismatch() = nil, want error")
+			}
+			if !strings.Contains(err.Error(), tc.wantSubstr) {
+				t.Fatalf("error %q should contain %q", err, tc.wantSubstr)
+			}
+		})
+	}
+}
+
 func TestProgressLabel(t *testing.T) {
 	tests := []struct {
 		phase   string

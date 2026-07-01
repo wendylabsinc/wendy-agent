@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"go.uber.org/zap"
@@ -192,16 +193,39 @@ func TestRequestedBackendFromMarker(t *testing.T) {
 	}
 }
 
+func TestRequiredUpdaterForArtifact(t *testing.T) {
+	tests := []struct {
+		name string
+		url  string
+		want string
+	}{
+		{"wendy artifact", "https://storage.googleapis.com/img/wendyos-image.rootfs.wendy", updaterNameWendyOS},
+		{"mender artifact", "https://storage.googleapis.com/img/wendyos-image.mender", updaterNameMender},
+		{"compressed mender artifact", "https://example.com/img/wendyos-image.mender.xz", updaterNameMender},
+		{"query string is ignored", "http://192.168.7.1:9000/abc/img.wendy?sig=x.mender", updaterNameWendyOS},
+		{"unknown extension has no requirement", "https://example.com/img/wendyos-image.tar.gz", ""},
+		{"empty url has no requirement", "", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := requiredUpdaterForArtifact(tt.url); got != tt.want {
+				t.Fatalf("requiredUpdaterForArtifact(%q) = %q, want %q", tt.url, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestChooseUpdater(t *testing.T) {
 	wendyosUp := func(detect bool) osUpdater { return fakeUpdater{nameVal: updaterNameWendyOS, detectVal: detect} }
 	menderUp := func(detect bool) osUpdater { return fakeUpdater{nameVal: updaterNameMender, detectVal: detect} }
 
 	tests := []struct {
-		name       string
-		requested  string
-		candidates []osUpdater
-		wantName   string
-		wantErr    bool
+		name        string
+		requested   string
+		artifactURL string
+		candidates  []osUpdater
+		wantName    string
+		wantErr     bool
 	}{
 		{
 			name:       "auto prefers wendyos when it detects",
@@ -263,11 +287,81 @@ func TestChooseUpdater(t *testing.T) {
 			candidates: []osUpdater{wendyosUp(true), menderUp(true)},
 			wantErr:    true,
 		},
+		{
+			name:        "wendy artifact selects wendyos",
+			requested:   "auto",
+			artifactURL: "https://example.com/img/wendyos-image.wendy",
+			candidates:  []osUpdater{wendyosUp(true), menderUp(true)},
+			wantName:    updaterNameWendyOS,
+		},
+		{
+			name:        "wendy artifact never falls back to mender",
+			requested:   "auto",
+			artifactURL: "https://example.com/img/wendyos-image.wendy",
+			candidates:  []osUpdater{wendyosUp(false), menderUp(true)},
+			wantErr:     true,
+		},
+		{
+			name:        "mender artifact selects mender even when wendyos detects",
+			requested:   "auto",
+			artifactURL: "https://example.com/img/wendyos-image.mender",
+			candidates:  []osUpdater{wendyosUp(true), menderUp(true)},
+			wantName:    updaterNameMender,
+		},
+		{
+			name:        "mender artifact errors when mender is unavailable",
+			requested:   "",
+			artifactURL: "https://example.com/img/wendyos-image.mender",
+			candidates:  []osUpdater{wendyosUp(true), menderUp(false)},
+			wantErr:     true,
+		},
+		{
+			name:        "explicit mender is rejected for a wendy artifact",
+			requested:   "mender",
+			artifactURL: "https://example.com/img/wendyos-image.wendy",
+			candidates:  []osUpdater{wendyosUp(true), menderUp(true)},
+			wantErr:     true,
+		},
+		{
+			name:        "explicit wendyos is rejected for a mender artifact",
+			requested:   "wendyos",
+			artifactURL: "https://example.com/img/wendyos-image.mender",
+			candidates:  []osUpdater{wendyosUp(true), menderUp(true)},
+			wantErr:     true,
+		},
+		{
+			name:        "explicit wendyos is honored for a wendy artifact",
+			requested:   "wendyos-update",
+			artifactURL: "https://example.com/img/wendyos-image.wendy",
+			candidates:  []osUpdater{wendyosUp(true), menderUp(true)},
+			wantName:    updaterNameWendyOS,
+		},
+		{
+			name:        "unknown extension keeps the legacy auto fallback",
+			requested:   "auto",
+			artifactURL: "https://example.com/img/wendyos-image.tar.gz",
+			candidates:  []osUpdater{wendyosUp(false), menderUp(true)},
+			wantName:    updaterNameMender,
+		},
 	}
+
+	// A .wendy artifact on a mender-only device is the stack-migration wall
+	// (the partition layout changed, so OTA cannot cross it); the error must
+	// say the device needs reflashing, not a generic backend failure.
+	t.Run("wendy artifact on mender-only device explains the reflash", func(t *testing.T) {
+		_, err := chooseUpdater("auto", "https://example.com/img/wendyos-image.wendy",
+			[]osUpdater{wendyosUp(false), menderUp(true)})
+		if err == nil {
+			t.Fatal("expected an error, got nil")
+		}
+		if !strings.Contains(err.Error(), "reflash") {
+			t.Fatalf("error %q should tell the user to reflash the device", err)
+		}
+	})
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := chooseUpdater(tt.requested, tt.candidates)
+			got, err := chooseUpdater(tt.requested, tt.artifactURL, tt.candidates)
 			if tt.wantErr {
 				if err == nil {
 					t.Fatalf("chooseUpdater(%q) = %v, want error", tt.requested, got.name())

@@ -92,6 +92,46 @@ func hasOTABackend(versionResp *agentpb.GetAgentVersionResponse) bool {
 		agentVersionHasFeature(versionResp, "mender")
 }
 
+// requiredOTAFeatureForArtifact maps an artifact URL to the featureset entry
+// of the only backend that can install it: .wendy → "wendyos-update",
+// .mender(.xz) → "mender", "" when the extension is unknown. Mirrors the
+// agent's requiredUpdaterForArtifact — the formats are mutually unreadable.
+func requiredOTAFeatureForArtifact(artifactURL string) string {
+	path := artifactURL
+	if u, err := url.Parse(artifactURL); err == nil && u.Path != "" {
+		path = u.Path
+	}
+	switch {
+	case strings.HasSuffix(path, ".wendy"):
+		return "wendyos-update"
+	case strings.HasSuffix(path, ".mender"), strings.HasSuffix(path, ".mender.xz"):
+		return "mender"
+	default:
+		return ""
+	}
+}
+
+// osUpdateStackMismatch reports whether the artifact's OTA stack is one the
+// device cannot run, so the CLI can explain the situation instead of offering
+// an update that is guaranteed to fail on the device. The wendy-on-mender case
+// is the stack-migration wall: the partition layout changed between the
+// stacks, so the device must be reflashed — no OTA can cross it. Devices that
+// advertise no backend at all are left to the agent's own selection error
+// (older agents predate the featureset entries).
+func osUpdateStackMismatch(versionResp *agentpb.GetAgentVersionResponse, artifactURL string) error {
+	required := requiredOTAFeatureForArtifact(artifactURL)
+	if required == "" || !hasOTABackend(versionResp) || agentVersionHasFeature(versionResp, required) {
+		return nil
+	}
+	if required == "wendyos-update" {
+		return errors.New("this update uses the wendyos-update OTA stack, but the device runs the legacy Mender stack; " +
+			"the disk layout changed between the stacks, so the update cannot be applied over the air — " +
+			"reflash the device with a current WendyOS image to continue receiving OS updates")
+	}
+	return errors.New("this update is a legacy Mender artifact, but the device runs the wendyos-update stack; " +
+		"select a wendyos-update (.wendy) release instead")
+}
+
 // isWendyOSUpdateTarget reports whether the device is a WendyOS OTA target. The
 // signals are WendyOS-specific and authoritative on their own: a "WendyOS-" os
 // version (from /etc/wendyos/version.txt) or a device type (from
@@ -307,6 +347,15 @@ the board, falling back to mender. Use --updater to force a backend.`,
 
 			if artifactURL == "" {
 				return fmt.Errorf("provide a local artifact path or --artifact-url")
+			}
+
+			// Refuse a doomed update before anything streams: a .wendy artifact
+			// cannot be installed by a Mender-stack device (and vice versa). An
+			// explicit --updater choice is left to the agent's own validation.
+			if updaterBackend == "" || updaterBackend == "auto" {
+				if err := osUpdateStackMismatch(versionResp, artifactURL); err != nil {
+					return err
+				}
 			}
 
 			if err := streamOSUpdate(ctx, conn, artifactURL, updaterBackend); err != nil {
