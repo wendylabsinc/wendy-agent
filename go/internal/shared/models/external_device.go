@@ -29,12 +29,10 @@ func (d ExternalDevice) HumanReadable() string {
 	return s
 }
 
-/**
- * Some pluggable providers (e.g. MicroWendy) can connect to devices over multiple transport types (USB, LAN, BLE).
- * In that case, this function returns the transport type. Possible values are "USB", "LAN", "BLE".
- * This string is displayed to the user in the device list, under "type".
- * If the provider does not support multiple transport types, this function returns an empty string.
- */
+// Some pluggable providers (e.g. MicroWendy) can connect to devices over multiple transport types (USB, LAN, BLE).
+// In that case, this function returns the transport type. Possible values are "USB", "LAN", "BLE".
+// This string is displayed to the user in the device list, under "type".
+// If the provider does not support multiple transport types, this function returns an empty string.
 func (d ExternalDevice) ConnectionType() string {
 	if d.ConnectionInfo != nil {
 		if t, ok := d.ConnectionInfo["type"]; ok {
@@ -44,9 +42,7 @@ func (d ExternalDevice) ConnectionType() string {
 	return ""
 }
 
-/**
- * When a device can be reached in several ways, we should use the way that has the highest rank.
- */
+// When a device can be reached in several ways, we should use the way that has the highest rank.
 func (d ExternalDevice) Rank() int {
 	if d.ConnectionType() == "USB" {
 		return 3
