@@ -16,7 +16,7 @@ Yocto image build system, it lives in
 
 ## Install the Wendy CLI
 
-Install or update the `wendy` CLI on macOS or Linux (x86_64 and ARM64):
+Install or update the `wendy` CLI on macOS (Apple Silicon) or Linux (x86_64 and ARM64):
 
 ```sh
 curl -fsSL https://install.wendy.dev/cli.sh | bash

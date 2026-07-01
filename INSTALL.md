@@ -6,6 +6,8 @@ For most users, the recommended installation method is the install script docume
 
 ### macOS (Homebrew)
 
+> **Note:** The Wendy CLI for macOS requires **Apple Silicon (arm64)**. Intel (x86_64) Macs are not supported.
+
 On Homebrew versions that support formula trust:
 
 ```sh
