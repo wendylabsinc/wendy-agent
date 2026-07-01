@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/distribution/reference"
+	digest "github.com/opencontainers/go-digest"
 
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
@@ -168,6 +169,20 @@ func computeChainID(parent, diffID string) string {
 	h := sha256.New()
 	h.Write([]byte(parent + " " + diffID))
 	return fmt.Sprintf("sha256:%x", h.Sum(nil))
+}
+
+// chainIDsForDiffIDs folds computeChainID over an ordered list of layer diff IDs
+// to produce the chain ID of each layer prefix. chainIDs[i] is the chain ID of
+// the snapshot built from layers 0..i — the same key UnpackImage commits and the
+// key GarbageCollectImages must keep alive while the image exists.
+func chainIDsForDiffIDs(diffIDs []digest.Digest) []string {
+	chainIDs := make([]string, len(diffIDs))
+	parent := ""
+	for i, diffID := range diffIDs {
+		chainIDs[i] = computeChainID(parent, diffID.String())
+		parent = chainIDs[i]
+	}
+	return chainIDs
 }
 
 // parseRestartPolicyLabel parses a restart policy label value such as

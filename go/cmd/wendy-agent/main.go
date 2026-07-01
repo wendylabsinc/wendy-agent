@@ -158,7 +158,21 @@ func main() {
 	if containerdAddr == "" {
 		containerdAddr = agentcontainerd.DefaultAddress
 	}
-	ctrdClient, ctrdErr := agentcontainerd.NewClient(logger, containerdAddr, proxyMgr)
+	// Image garbage collection (WDY-1679) is enabled by default; set
+	// WENDY_IMAGE_GC_ENABLED=false to disable it. When enabled, the post-deploy
+	// and boot sweeps only run while the containerd filesystem is under disk
+	// pressure (free space below diskspace.WarnFreePct), so roomy devices never
+	// reclaim — and so never force layers to be re-uploaded on the next deploy.
+	imageGCEnabled := true
+	if v := os.Getenv("WENDY_IMAGE_GC_ENABLED"); v != "" {
+		if parsed, perr := strconv.ParseBool(v); perr != nil {
+			logger.Warn("WENDY_IMAGE_GC_ENABLED has unrecognised value; image GC stays enabled",
+				zap.String("value", v))
+		} else {
+			imageGCEnabled = parsed
+		}
+	}
+	ctrdClient, ctrdErr := agentcontainerd.NewClient(logger, containerdAddr, proxyMgr, imageGCEnabled)
 	if ctrdErr != nil {
 		logger.Warn("Failed to connect to containerd (container features will be unavailable)", zap.Error(ctrdErr))
 	} else {
@@ -285,6 +299,12 @@ func main() {
 	if ctrdClient != nil {
 		if err := ctrdClient.ReapOrphanedROS2Sidecars(ctx); err != nil {
 			logger.Warn("ROS 2 sidecar reap on boot failed", zap.Error(err))
+		}
+		// Reclaim stale image layers/blobs left by deploys that completed while
+		// the agent was down or crashed mid-flow (WDY-1679). Runs only under disk
+		// pressure and is a no-op when GC is disabled.
+		if _, err := ctrdClient.GarbageCollectImages(ctx); err != nil {
+			logger.Warn("image GC on boot failed", zap.Error(err))
 		}
 	}
 

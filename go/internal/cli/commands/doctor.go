@@ -21,6 +21,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
+	"github.com/wendylabsinc/wendy/go/internal/shared/diskspace"
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 	"github.com/wendylabsinc/wendy/go/internal/shared/version"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
@@ -59,12 +60,12 @@ type doctorReport struct {
 	Summary doctorSummary `json:"summary"`
 }
 
-// Thresholds for the resource and app-health checks.
+// Thresholds for the resource and app-health checks. The disk free-% thresholds
+// live in shared/diskspace so the agent's image GC engages at the same level
+// this check warns at.
 const (
-	diskWarnFreePct    = 10.0 // warn when a filesystem has less than this % free
-	diskFailFreePct    = 2.0  // fail when a filesystem has less than this % free
-	mtlsExpiryWarnDays = 14   // warn when the client cert expires within this many days
-	crashLoopFailCount = 5    // fail an app whose restart count reaches this
+	mtlsExpiryWarnDays = 14 // warn when the client cert expires within this many days
+	crashLoopFailCount = 5  // fail an app whose restart count reaches this
 )
 
 // agentPorts are the ports the agent serves on: 50051 (plaintext, shut down
@@ -508,9 +509,9 @@ func evaluateDiskUsage(mount string, used, total int64) checkResult {
 	freePct := float64(free) / float64(total) * 100
 	detail := fmt.Sprintf("%s free of %s (%.0f%% free)", formatBytes(free), formatBytes(total), freePct)
 	switch {
-	case freePct < diskFailFreePct:
+	case freePct < diskspace.FailFreePct:
 		return checkResult{Name: name, Status: statusFail, Detail: detail, Hint: "Disk almost full — free space or new deploys will fail."}
-	case freePct < diskWarnFreePct:
+	case freePct < diskspace.WarnFreePct:
 		return checkResult{Name: name, Status: statusWarn, Detail: detail, Hint: "Disk running low — consider clearing old images and volumes."}
 	default:
 		return checkResult{Name: name, Status: statusPass, Detail: detail}
