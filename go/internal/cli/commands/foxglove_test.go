@@ -112,7 +112,7 @@ func TestPump_DropsWhenClientSlow(t *testing.T) {
 	}
 	srv := &foxgloveServer{src: eofFGSource{stream: &eofRawStream{msgs: msgs}}}
 
-	out := make(chan []byte, 1) // tiny and never drained -> forces drops
+	out := make(chan *[]byte, 1) // tiny and never drained -> forces drops
 	var dropped atomic.Uint64
 	done := make(chan struct{})
 	go func() {

@@ -22,6 +22,15 @@ func TestFGEncodeMessageData(t *testing.T) {
 	}
 }
 
+func TestFGAppendMessageData(t *testing.T) {
+	buf := make([]byte, 0, 4)
+	got := fgAppendMessageData(buf[:0], 7, 0x0102030405060708, []byte{0xAA, 0xBB})
+	want := fgEncodeMessageData(7, 0x0102030405060708, []byte{0xAA, 0xBB})
+	if string(got) != string(want) {
+		t.Fatalf("append != encode:\n got %x\nwant %x", got, want)
+	}
+}
+
 func TestFGParseClientMessage_Subscribe(t *testing.T) {
 	in := `{"op":"subscribe","subscriptions":[{"id":0,"channelId":3},{"id":1,"channelId":4}]}`
 	msg, err := fgParseClientMessage([]byte(in))

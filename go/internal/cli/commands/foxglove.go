@@ -40,6 +40,29 @@ type foxgloveServer struct {
 	src      foxgloveSource
 	domainID *int32
 	topics   []string // explicit filter; empty = all
+	// framePool recycles MESSAGE_DATA frame buffers across the high-rate
+	// subscribe path to avoid a per-frame allocation. Holds *[]byte so the value
+	// stored is pointer-sized (sync.Pool best practice).
+	framePool sync.Pool
+}
+
+// getFrameBuf returns a recycled (or fresh) frame buffer, length reset to 0.
+func (s *foxgloveServer) getFrameBuf() *[]byte {
+	if v := s.framePool.Get(); v != nil {
+		p := v.(*[]byte)
+		*p = (*p)[:0]
+		return p
+	}
+	b := make([]byte, 0, 64*1024)
+	return &b
+}
+
+// putFrameBuf returns a frame buffer to the pool. Buffers larger than the gRPC
+// ceiling are dropped rather than retained forever.
+func (s *foxgloveServer) putFrameBuf(p *[]byte) {
+	if cap(*p) <= 64*1024*1024 {
+		s.framePool.Put(p)
+	}
 }
 
 // discoverChannels lists topics (filtered) and fetches each message schema,
@@ -87,7 +110,7 @@ func (s *foxgloveServer) handleConn(ctx context.Context, c *websocket.Conn) {
 
 	// Serialize all writes through one goroutine (coder/websocket allows a
 	// single concurrent writer).
-	out := make(chan []byte, 64)
+	out := make(chan *[]byte, 64)
 	outText := make(chan []byte, 64)
 	connCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -104,8 +127,10 @@ func (s *foxgloveServer) handleConn(ctx context.Context, c *websocket.Conn) {
 					cancel()
 					return
 				}
-			case b := <-out:
-				if err := c.Write(connCtx, websocket.MessageBinary, b); err != nil {
+			case p := <-out:
+				err := c.Write(connCtx, websocket.MessageBinary, *p)
+				s.putFrameBuf(p)
+				if err != nil {
 					cancel()
 					return
 				}
@@ -189,7 +214,7 @@ func (s *foxgloveServer) handleConn(ctx context.Context, c *websocket.Conn) {
 // pump opens a SubscribeRaw stream and forwards each message as a binary frame.
 // dropped accumulates frames shed when the shared write queue is full (slow
 // client); see the send below.
-func (s *foxgloveServer) pump(ctx context.Context, subID uint32, topic string, out chan<- []byte, dropped *atomic.Uint64) {
+func (s *foxgloveServer) pump(ctx context.Context, subID uint32, topic string, out chan<- *[]byte, dropped *atomic.Uint64) {
 	stream, err := s.src.SubscribeRaw(ctx, &agentpbv2.SubscribeRawROS2Request{DomainId: s.domainID, Topic: topic})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "subscribe %s: %v\n", topic, ros2RPCError(err))
@@ -207,12 +232,15 @@ func (s *foxgloveServer) pump(ctx context.Context, subID uint32, topic string, o
 		if ts == 0 {
 			ts = uint64(time.Now().UnixNano())
 		}
-		frame := fgEncodeMessageData(subID, ts, m.GetCdr())
+		p := s.getFrameBuf()
+		*p = fgAppendMessageData((*p)[:0], subID, ts, m.GetCdr())
 		select {
 		case <-ctx.Done():
+			s.putFrameBuf(p)
 			return
-		case out <- frame:
+		case out <- p:
 		default:
+			s.putFrameBuf(p)
 			// Write queue is full: the Foxglove client can't drain frames as fast
 			// as the device produces them. Drop this frame rather than blocking —
 			// blocking would pin this goroutine and its frame in memory, let gRPC

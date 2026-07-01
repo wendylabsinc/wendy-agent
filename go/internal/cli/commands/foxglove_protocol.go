@@ -59,13 +59,20 @@ func fgParseClientMessage(data []byte) (fgClientMsg, error) {
 	return fgClientMsg{Op: raw.Op, Subscriptions: raw.Subscriptions, UnsubscribeIDs: raw.SubscriptionIDs}, nil
 }
 
-// fgEncodeMessageData builds a binary MESSAGE_DATA frame:
-// [opcode 0x01][subscriptionId u32 LE][timestamp u64 LE][payload].
+// fgAppendMessageData appends a binary MESSAGE_DATA frame to dst and returns the
+// grown slice: [opcode 0x01][subscriptionId u32 LE][timestamp u64 LE][payload].
+// Passing a pooled dst[:0] lets the caller avoid a per-frame allocation on the
+// high-rate subscribe path.
+func fgAppendMessageData(dst []byte, subID uint32, timestampNs uint64, payload []byte) []byte {
+	var hdr [13]byte
+	hdr[0] = 0x01
+	binary.LittleEndian.PutUint32(hdr[1:5], subID)
+	binary.LittleEndian.PutUint64(hdr[5:13], timestampNs)
+	dst = append(dst, hdr[:]...)
+	return append(dst, payload...)
+}
+
+// fgEncodeMessageData builds a binary MESSAGE_DATA frame in a fresh slice.
 func fgEncodeMessageData(subID uint32, timestampNs uint64, payload []byte) []byte {
-	frame := make([]byte, 13+len(payload))
-	frame[0] = 0x01
-	binary.LittleEndian.PutUint32(frame[1:5], subID)
-	binary.LittleEndian.PutUint64(frame[5:13], timestampNs)
-	copy(frame[13:], payload)
-	return frame
+	return fgAppendMessageData(make([]byte, 0, 13+len(payload)), subID, timestampNs, payload)
 }
