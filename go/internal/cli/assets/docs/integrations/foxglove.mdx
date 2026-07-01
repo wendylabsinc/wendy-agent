@@ -1,22 +1,22 @@
 ---
 title: Wendy for Foxglove
-description: Bridge a WendyOS device's live ROS 2 topics into Foxglove Studio for real-time visualization, over the CLI's existing secure connection.
+description: Bridge a WendyOS device's live ROS 2 graph into Foxglove Studio — subscribe, set parameters, call services, and publish — over the CLI's existing secure connection.
 ---
 
 <Callout type="warning">
-**Coming soon.** Wendy for Foxglove is in active development
-([PR #1165](https://github.com/wendylabsinc/WendyOS/pull/1165)) and not yet
-available in a released CLI. This page previews how it will work. Commands and
-flags may change before release.
+**In active development** ([PR #1165](https://github.com/wendylabsinc/WendyOS/pull/1165)) and
+not yet in a released CLI. Commands and flags may change before release. The
+write path (publish, service calls, parameter set) still needs on-device
+acceptance against Foxglove Studio.
 </Callout>
 
-Wendy for Foxglove turns a device's live ROS 2 graph into something you can *see*.
-The CLI hosts a [Foxglove WebSocket Protocol](https://foxglove.dev/) server on your
-machine and bridges it to the device's ROS 2 topics, so you can drop a Raw Message
-panel, plot a signal, or watch a camera feed update in real time — without
-installing anything on the device.
+Wendy for Foxglove turns a device's live ROS 2 graph into something you can *see*
+and *drive*. The CLI hosts a [Foxglove WebSocket Protocol](https://foxglove.dev/)
+server on your machine and bridges it to the device's ROS 2 system, so you can
+drop a Raw Message panel, plot a signal, watch a camera feed, set a parameter,
+call a service, or publish a command — without installing anything on the device.
 
-## How it will work
+## How it works
 
 The server runs on your machine (default `127.0.0.1:8765`) and reaches the
 device's ROS 2 system over the existing mutually-authenticated gRPC connection.
@@ -24,14 +24,24 @@ Your data never leaves your machine to a third party.
 
 ```
 Foxglove Studio ──ws──► wendy CLI (host) ──gRPC (mTLS)──► wendy-agent ──exec──► ros2 sidecar
- (foxglove.websocket.v1)  foxglove server      ROS2Service          ros2 CLI  (shares app DDS domain)
+ (foxglove.websocket.v1)  foxglove server      ROS2Service          ros2 / rclpy (shares app DDS domain)
 ```
 
 The CLI discovers the device's ROS 2 topics, advertises them to Foxglove with the
 right encoding and schema, and forwards messages as they arrive — building on the
 same sidecar mechanism as [Wendy for ROS 2](/docs/integrations/ros2).
 
-## Usage (preview)
+### Efficient for large messages
+
+The subscribe path is built for high-bandwidth topics — uncompressed camera
+frames, point clouds, lidar scans. On the device, a small `rclpy` forwarder
+raw-subscribes each topic and streams the serialized **CDR bytes straight
+through**, framed in binary. There is no text encoding and no per-message decode
+on the device, and messages are forwarded to Foxglove exactly as DDS produced
+them (`encoding: cdr`). Large messages that a naïve bridge would drop or inflate
+flow intact.
+
+## Usage
 
 Start the bridge against your default device:
 
@@ -46,9 +56,27 @@ choose **Open connection** and enter:
 ws://localhost:8765
 ```
 
-Discovered topics appear as channels you can add to any panel.
+Discovered topics appear as channels you can add to any panel. New topics are
+advertised (and vanished ones removed) automatically on the `--poll` interval.
 
-Planned flags for `wendy device foxglove serve`:
+### Read-only by default; opt in to control
+
+By default the bridge is **read-only**: you can subscribe to topics and read
+parameters, but Foxglove cannot change anything on the device. To let Foxglove
+**command the device** — publish to topics, call services, and set parameters —
+start with `--allow-control`:
+
+```bash
+wendy device foxglove serve --allow-control
+```
+
+<Callout type="warning">
+`--allow-control` lets Foxglove write to a live robot: publishing to a topic or
+calling a service can move actuators. Only enable it when you intend to control
+the device.
+</Callout>
+
+### Flags
 
 | Flag | Description |
 | --- | --- |
@@ -56,17 +84,22 @@ Planned flags for `wendy device foxglove serve`:
 | `--host` | Bind address (default `127.0.0.1`). |
 | `--domain` | `ROS_DOMAIN_ID` override (default: from the app's ROS 2 config). |
 | `--topic` | Restrict to specific topics; repeatable. Defaults to all topics. |
+| `--poll` | Topic re-discovery interval (default `5s`; `0` disables). |
+| `--allow-control` | Enable the write path — publish, service calls, set parameters (default: read-only). |
 
-## Scope at launch
+## What you can do
 
-The first release is **read-only** — visualize live topics. It's the first of a
-planned three phases:
+- **Visualize** — subscribe to any topic; raw messages, plots, images, 3D, and
+  the full Foxglove panel set work against the device's live data.
+- **Parameters** — read every node's parameters; with `--allow-control`, set them
+  from Foxglove's Parameters panel. (Foxglove names parameters `<node>:<param>`.)
+- **Services** *(`--allow-control`)* — advertised services can be called from
+  Foxglove's Service Call panel; the request/response are bridged to
+  `ros2 service call`.
+- **Publish** *(`--allow-control`)* — publish to a topic from Foxglove; each
+  message is bridged to `ros2 topic pub`.
 
-- **Available at launch** — subscribe to and visualize live ROS 2 topics.
-- **Later** — Foxglove parameters and service-call support.
-- **Later** — publishing from Foxglove back to the device's topics.
+## See also
 
-## In the meantime
-
-You can already inspect, echo, and record the same ROS 2 data from the CLI today
-with [Wendy for ROS 2](/docs/integrations/ros2).
+You can also inspect, echo, record, set parameters, and call services from the
+CLI directly with [Wendy for ROS 2](/docs/integrations/ros2).
