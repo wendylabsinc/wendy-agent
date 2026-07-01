@@ -486,23 +486,16 @@ type runOptions struct {
 	// push on failure, chunkingForce uses chunk-diff with no fallback, and
 	// chunkingOff skips chunk-diff entirely (registry push only).
 	chunking string
-	// allTargets shows local run targets (the local machine, Docker/OrbStack,
-	// Apple Container) in the interactive device picker. They are hidden by
-	// default so the picker lists WendyOS devices first.
-	allTargets bool
 }
 
 // runResolveOptions builds the resolveTarget options shared by every `wendy run`
-// device-selection path. By default the interactive picker hides local run
-// targets (LocalProviderKeys); --all (opts.allTargets) surfaces them again.
-// --yes suppresses the picker entirely.
+// device-selection path. The interactive picker hides local run targets (the
+// local machine, Docker/OrbStack, Apple Container) unless
+// WENDY_SHOW_LOCAL_DEVICES is set; --yes suppresses the picker entirely.
 func runResolveOptions(opts runOptions) []resolveOption {
 	var resolveOpts []resolveOption
 	if opts.yes {
 		resolveOpts = append(resolveOpts, NonInteractive())
-	}
-	if !opts.allTargets {
-		resolveOpts = append(resolveOpts, ExcludeProviders(providers.LocalProviderKeys()...))
 	}
 	return resolveOpts
 }
@@ -566,7 +559,6 @@ func newRunCmd() *cobra.Command {
 	cmd.Flags().IntVar(&opts.maxConcurrency, "max-concurrency", 0, "Multi-service: max service images to build+push at once (0 = auto-throttle large groups)")
 	cmd.Flags().StringSliceVar(&opts.userArgs, "user-args", nil, "Extra arguments to pass to the container")
 	cmd.Flags().StringVar(&opts.chunking, "chunking", chunkingAuto, "Content-defined chunking (CBC) deploy path: auto (try chunk-diff, fall back to registry push), force (chunk-diff only, no fallback), or off (registry push only)")
-	cmd.Flags().BoolVar(&opts.allTargets, "all", false, "Include local run targets (this machine, Docker/OrbStack, Apple Container) in the device picker; hidden by default")
 	cmd.Flags().BoolVar(&watch, "watch", false, "Watch the project directory and redeploy on every change (runs detached; same as 'wendy watch')")
 	cmd.Flags().IntVar(&debounceMS, "debounce", 400, "Watch mode (--watch): quiet period in milliseconds after the last change before redeploying")
 	cmd.Flags().BoolVar(&verbose, "verbose", false, "Watch mode (--watch): always show build output (default: hidden unless the build fails)")

@@ -903,3 +903,40 @@ func TestUpdateCheckTTLCache(t *testing.T) {
 		t.Fatal("stale: expected marker older than TTL to fail the check")
 	}
 }
+
+// TestHideLocalProviders verifies the device picker hides local run targets by
+// default, preserves any caller-supplied excludes, leaves the input map
+// untouched, and reveals local targets when WENDY_SHOW_LOCAL_DEVICES is set.
+func TestHideLocalProviders(t *testing.T) {
+	t.Run("hidden by default", func(t *testing.T) {
+		t.Setenv(providers.ShowLocalDevicesEnv, "")
+		got := hideLocalProviders(nil)
+		for _, k := range providers.LocalProviderKeys() {
+			if !got[k] {
+				t.Errorf("hideLocalProviders(nil)[%q] = false; want true", k)
+			}
+		}
+	})
+
+	t.Run("preserves caller excludes and does not mutate input", func(t *testing.T) {
+		t.Setenv(providers.ShowLocalDevicesEnv, "")
+		in := map[string]bool{"wendy-lite": true}
+		got := hideLocalProviders(in)
+		if !got["wendy-lite"] {
+			t.Error("hideLocalProviders dropped caller-supplied exclude wendy-lite")
+		}
+		if len(in) != 1 {
+			t.Errorf("hideLocalProviders mutated input map: len = %d, want 1", len(in))
+		}
+	})
+
+	t.Run("reveals local targets when opted in", func(t *testing.T) {
+		t.Setenv(providers.ShowLocalDevicesEnv, "1")
+		got := hideLocalProviders(nil)
+		for _, k := range providers.LocalProviderKeys() {
+			if got[k] {
+				t.Errorf("hideLocalProviders(nil)[%q] = true with opt-in set; want false", k)
+			}
+		}
+	})
+}

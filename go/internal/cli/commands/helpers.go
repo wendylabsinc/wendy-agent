@@ -1885,12 +1885,33 @@ func usbFirstSortKey(name, usb string) string {
 	return "0_" + strings.ToLower(name)
 }
 
+// hideLocalProviders returns a copy of excludes that additionally hides the
+// local run targets (this machine, Docker/OrbStack, Apple Container) unless the
+// user opts them back in via providers.ShowLocalDevices. The input map is left
+// untouched (and may be nil); the picker lists separate WendyOS devices by
+// default so local runtimes don't crowd out real hardware.
+func hideLocalProviders(excludes map[string]bool) map[string]bool {
+	merged := make(map[string]bool, len(excludes)+len(providers.LocalProviderKeys()))
+	for k, v := range excludes {
+		merged[k] = v
+	}
+	if !providers.ShowLocalDevices() {
+		for _, k := range providers.LocalProviderKeys() {
+			merged[k] = true
+		}
+	}
+	return merged
+}
+
 // pickDevice runs an interactive TUI that discovers devices across all
 // transports and providers, then lets the user select one.
 // LAN discovery runs continuously so devices that come online after the
 // initial scan still appear in the picker.
-// excludeProviders hides the named provider keys from the picker.
+// excludeProviders hides the named provider keys from the picker. Local run
+// targets are hidden on top of these unless providers.ShowLocalDevices is set.
 func pickDevice(ctx context.Context, excludeProviders map[string]bool, excludeBluetooth bool, suppressUpdateCheck bool) (*SelectedDevice, error) {
+	excludeProviders = hideLocalProviders(excludeProviders)
+
 	picker := tui.NewPicker()
 	picker.MergeItem = mergePickerItem
 

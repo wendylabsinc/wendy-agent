@@ -31,7 +31,6 @@ import (
 func newDiscoverCmd() *cobra.Command {
 	var discoverType string
 	var timeout time.Duration
-	var all bool
 
 	cmd := &cobra.Command{
 		Use:   "discover",
@@ -68,30 +67,30 @@ func newDiscoverCmd() *cobra.Command {
 				}
 				opts.Timeout = timeout
 				// JSON output always lists every target so scripts/MCP keep the
-				// full set regardless of --all.
+				// full set regardless of WENDY_SHOW_LOCAL_DEVICES.
 				return discoverJSON(cmd.Context(), opts)
 			}
 
 			if timeoutSet {
 				opts.Timeout = timeout
-				return discoverOnce(cmd.Context(), opts, all)
+				return discoverOnce(cmd.Context(), opts, providers.ShowLocalDevices())
 			}
-			return discoverContinuous(cmd.Context(), opts, all)
+			return discoverContinuous(cmd.Context(), opts, providers.ShowLocalDevices())
 		},
 	}
 
 	cmd.Flags().StringVar(&discoverType, "type", "all", "Discovery type: usb, lan, bluetooth, external, all")
 	cmd.Flags().DurationVar(&timeout, "timeout", 5*time.Second, "Scan once for this duration then exit")
-	cmd.Flags().BoolVar(&all, "all", false, "Include local run targets (this machine, Docker/OrbStack, Apple Container) in the results; hidden by default")
 
 	return cmd
 }
 
 // discoverExternalDevices queries registered providers for their devices. This
 // uses AllProviders (not just available ones) so devices are discoverable even
-// when the build toolchain isn't installed. Unless includeLocal is set, local
-// run targets (this machine, Docker/OrbStack, Apple Container) are skipped so
-// the table lists separate WendyOS devices by default.
+// when the build toolchain isn't installed. Unless includeLocal is set (see
+// providers.ShowLocalDevices), local run targets (this machine, Docker/OrbStack,
+// Apple Container) are skipped so the table lists separate WendyOS devices by
+// default.
 func discoverExternalDevices(ctx context.Context, includeLocal bool) []models.ExternalDevice {
 	var all []models.ExternalDevice
 	for _, p := range providers.AllProviders() {

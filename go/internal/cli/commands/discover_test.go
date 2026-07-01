@@ -878,15 +878,12 @@ func TestCopyToClipboard_NoToolsFound(t *testing.T) {
 	}
 }
 
-// TestDiscoverCmdHasAllFlag verifies `wendy discover --all` exists and defaults
-// to off, so local run targets are hidden unless explicitly requested.
-func TestDiscoverCmdHasAllFlag(t *testing.T) {
+// TestDiscoverCmdHasNoAllFlag verifies `wendy discover` no longer carries an
+// --all flag: local run targets are hidden by default and revealed only via the
+// WENDY_SHOW_LOCAL_DEVICES environment variable.
+func TestDiscoverCmdHasNoAllFlag(t *testing.T) {
 	cmd := newDiscoverCmd()
-	flag := cmd.Flags().Lookup("all")
-	if flag == nil {
-		t.Fatal("discover is missing the --all flag")
-	}
-	if flag.DefValue != "false" {
-		t.Fatalf("--all default = %q; want false", flag.DefValue)
+	if flag := cmd.Flags().Lookup("all"); flag != nil {
+		t.Fatal("discover should no longer define an --all flag")
 	}
 }

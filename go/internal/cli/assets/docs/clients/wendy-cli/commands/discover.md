@@ -45,15 +45,15 @@ or macOS permissions.
 
 By default `wendy discover` hides **local run targets** — this machine,
 Docker/OrbStack, and Apple Container — so the table shows only separate WendyOS
-devices. Pass `--all` to include them:
+devices. Set `WENDY_SHOW_LOCAL_DEVICES=1` to include them:
 
 ```sh
-wendy discover --all
+WENDY_SHOW_LOCAL_DEVICES=1 wendy discover
 ```
 
 > **Note:** JSON output (`wendy discover --json`) always includes local run
-> targets regardless of `--all`, so scripts and MCP callers continue to receive
-> the full set.
+> targets regardless of `WENDY_SHOW_LOCAL_DEVICES`, so scripts and MCP callers
+> continue to receive the full set.
 
 ## Flags
 
@@ -61,7 +61,12 @@ wendy discover --all
 |------|---------|-------------|
 | `--timeout` | `5s` | How long to wait for mDNS responses |
 | `--json` | `false` | Output results as a JSON array instead of a table |
-| `--all` | `false` | Include local run targets (this machine, Docker/OrbStack, Apple Container) in the table. JSON output always includes them regardless of this flag. |
+
+## Environment variables
+
+| Variable | Description |
+|----------|-------------|
+| `WENDY_SHOW_LOCAL_DEVICES` | When truthy (`1`/`true`/`yes`/`on`), include local run targets (this machine, Docker/OrbStack, Apple Container) in the table. JSON output always includes them regardless. |
 
 ## Interactive table
 
