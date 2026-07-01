@@ -4,7 +4,7 @@ import "fmt"
 
 // ExternalDevice represents a device managed by a pluggable provider (local, Docker, ADB, etc.).
 type ExternalDevice struct {
-	ID              string            `json:"id"` // identify the connection to the device, not the device itself
+	ID              string            `json:"id"` // identifies the connection to the device, not the device itself
 	DisplayName     string            `json:"displayName"`
 	ProviderKey     string            `json:"providerKey"`
 	ConnectionInfo  map[string]string `json:"connectionInfo,omitempty"`
