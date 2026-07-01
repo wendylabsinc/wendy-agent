@@ -2,7 +2,11 @@
 
 package commands
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/wendylabsinc/wendy/go/internal/shared/env"
+)
 
 func TestParseDiskNumber(t *testing.T) {
 	cases := []struct {
@@ -42,7 +46,7 @@ func TestParseDiskNumber(t *testing.T) {
 }
 
 func TestResolvePowershellExe(t *testing.T) {
-	got := resolvePowershellExe()
+	got := env.PowershellExe()
 	if got == "" {
 		t.Fatal("resolvePowershellExe() returned empty string")
 	}
