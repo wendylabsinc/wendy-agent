@@ -1,4 +1,4 @@
-# Companion App / SDK — Coordinator Work Plan
+# Wendy Companion App & SDK — Coordinator Work Plan
 
 ## Purpose
 
@@ -28,8 +28,8 @@ Coordinate work across these repositories:
   - URL: https://github.com/wendylabsinc/wendy-companion-sdk
   - Public Swift package repository.
   - Mostly authored by Joannis.
-- Linear project: **Companion App / SDK**
-  - URL: https://linear.app/wendylabsinc/project/companion-app-sdk-33c2dfb5f9ef
+- Linear project: **Wendy Companion App & SDK**
+  - URL: https://linear.app/wendylabsinc/project/wendy-companion-app-and-sdk-33c2dfb5f9ef
   - Status: In Progress
   - Target date: 2026-07-03
   - Project teams: Engineering (`WDY`) and Releases (`REL`)
@@ -41,7 +41,7 @@ Coordinate work across these repositories:
 
 ## Coordinator policy
 
-- Keep this plan current as the durable source of truth for Companion App / SDK
+- Keep this plan current as the durable source of truth for Wendy Companion App & SDK
   coordination.
 - Always list Linear issue titles alongside issue IDs.
 - Prefer focused child issues and small implementation PRs over broad umbrella
@@ -88,7 +88,7 @@ For each issue this coordinator starts:
 
 ## Current Linear project state
 
-The **Companion App / SDK** project was updated to include the `REL` team as
+The **Wendy Companion App & SDK** project was updated to include the `REL` team as
 well as `WDY`, so Release issues can live in the same project.
 
 ### Active / queued issues
@@ -98,7 +98,7 @@ well as `WDY`, so Release issues can live in the same project.
 - Linear: https://linear.app/wendylabsinc/issue/REL-65/release-wendy-os-companion-app-to-testflight-upload
 - State: In Progress
 - Team: Releases (`REL`)
-- Project: Companion App / SDK
+- Project: Wendy Companion App & SDK
 - Assignee: `konstantin@wendy.sh`
 - Priority: High
 - Repo: `wendylabsinc/wendy-companion-ios`
@@ -139,12 +139,67 @@ well as `WDY`, so Release issues can live in the same project.
 - Linear: https://linear.app/wendylabsinc/issue/REL-66/check-out-skipdev-for-wendy-companion-app
 - State: Backlog
 - Team: Releases (`REL`)
-- Project: Companion App / SDK
+- Project: Wendy Companion App & SDK
 - Assignee: `konstantin@wendy.sh`
 - Priority: No priority
 - Likely repo: `wendylabsinc/wendy-companion-ios` or a research-only handoff
 - Status: queued. Evaluate whether Skip can help the companion app ship across
   Apple platforms / Android, and record recommendation.
+- Resume: not available until prepared.
+
+#### WDY-1735 — Add deep linking support to Companion app and SDK
+
+- Linear: https://linear.app/wendylabsinc/issue/WDY-1735/add-deep-linking-support-to-companion-app-and-sdk
+- State: Backlog
+- Team: Engineering (`WDY`)
+- Project: Wendy Companion App & SDK
+- Assignee: `konstantin@wendy.sh`
+- Priority: No priority
+- Likely repo: `wendylabsinc/wendy-companion-ios` and/or
+  `wendylabsinc/wendy-companion-sdk`
+- Status: queued. Define supported link formats and route connection/auth flows
+  across the app and shared SDK helpers.
+- Resume: not available until prepared.
+
+#### WDY-1781 — Add linting and formatting for Wendy Companion App
+
+- Linear: https://linear.app/wendylabsinc/issue/WDY-1781/add-linting-and-formatting-for-wendy-companion-app
+- State: Backlog
+- Team: Engineering (`WDY`)
+- Project: Wendy Companion App & SDK
+- Assignee: `konstantin@wendy.sh`
+- Priority: No priority
+- Repo: `wendylabsinc/wendy-companion-ios`
+- Status: queued. Add repeatable Swift app linting/formatting locally and in
+  CI without requiring signing or App Store access.
+- Resume: not available until prepared.
+
+#### REL-69 — Prepare Wendy Companion App Store release listing and submission
+
+- Linear: https://linear.app/wendylabsinc/issue/REL-69/prepare-wendy-companion-app-store-release-listing-and-submission
+- State: Backlog
+- Team: Releases (`REL`)
+- Project: Wendy Companion App & SDK
+- Assignee: `konstantin@wendy.sh`
+- Priority: No priority
+- Repo: `wendylabsinc/wendy-companion-ios`
+- Status: queued. Complete App Store Connect listing, screenshots, compliance,
+  privacy, review notes, and submit for App Review once the signed build is
+  ready.
+- Resume: not available until prepared.
+
+#### REL-70 — Prepare public TestFlight release for Wendy Companion App
+
+- Linear: https://linear.app/wendylabsinc/issue/REL-70/prepare-public-testflight-release-for-wendy-companion-app
+- State: Backlog
+- Team: Releases (`REL`)
+- Project: Wendy Companion App & SDK
+- Assignee: `konstantin@wendy.sh`
+- Priority: No priority
+- Repo: `wendylabsinc/wendy-companion-ios`
+- Status: queued. Complete public TestFlight beta metadata, external tester
+  configuration, screenshots/review assets, Beta App Review notes, and submit
+  once the signed build is ready.
 - Resume: not available until prepared.
 
 ### Candidate / related issues to triage
@@ -201,7 +256,7 @@ Copy this block when this coordinator starts tracking an issue.
 - Linear: https://linear.app/wendylabsinc/issue/...
 - State: TBD
 - Team: TBD
-- Project: Companion App / SDK
+- Project: Wendy Companion App & SDK
 - Assignee: TBD
 - Repo: `wendylabsinc/...`
 - Worktree: `/Volumes/Projects/WendyLabs/<repo>/.worktrees/kb.issue-slug`
@@ -235,6 +290,12 @@ Copy this block when this coordinator starts tracking an issue.
 2. Install/confirm provisioning profile `WendyCompanioniOSAppStoreProfile` for
    team `3YVC792H3S` and verify the App Store Connect bundle ID
    `dev.wendy.WendyCompanioniOS` before re-running the Release archive.
-3. Start **REL-66 — Check out skip.dev for Wendy Companion App** when the
+3. Start **REL-70 — Prepare public TestFlight release for Wendy Companion App**
+   and/or **REL-69 — Prepare Wendy Companion App Store release listing and submission**
+   when App Store Connect ownership is settled enough to fill in metadata.
+4. Start **WDY-1781 — Add linting and formatting for Wendy Companion App** if a
+   low-risk app infrastructure task is needed before signing ownership is
+   settled.
+5. Start **REL-66 — Check out skip.dev for Wendy Companion App** when the
    TestFlight release path no longer needs active coordination.
-4. Commit and push coordinator plan updates after meaningful planning changes.
+6. Commit and push coordinator plan updates after meaningful planning changes.
