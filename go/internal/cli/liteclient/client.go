@@ -25,7 +25,7 @@ const (
 	headerVersion      = 0x01
 	headerSize         = 8
 	chunkSize          = 4096
-	chunkSizeForSerial = 1024
+	chunkSizeForSerial = 768
 	versionMajor       = 1
 	versionMinor       = 0
 	esc                = 0x1B
