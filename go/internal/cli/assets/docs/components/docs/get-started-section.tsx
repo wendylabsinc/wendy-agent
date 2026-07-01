@@ -8,14 +8,25 @@ import {
   cliWingetCommand,
   InstallCommand,
 } from '@/components/docs/install-command';
+import type {
+  DocsAnalyticsLocation,
+  DocsInstallCopyLabel,
+  DocsInstallCopyTarget,
+  DocsInstallCopyVariant,
+} from '@/lib/analytics-events';
 import { withBasePath } from '@/lib/shared';
 
 type CliPlatform = 'unix' | 'windows';
+type CliAnalyticsTarget = Extract<DocsInstallCopyTarget, 'unix' | 'windows'>;
+type CliAnalyticsVariant = Extract<
+  DocsInstallCopyVariant,
+  'cli for macOS/linux' | 'cli for windows'
+>;
 
 const cliPlatforms: Array<{
-  analyticsLabel: string;
-  analyticsTarget: string;
-  analyticsVariant: string;
+  analyticsLabel: Extract<DocsInstallCopyLabel, 'macOS/Linux CLI' | 'windows CLI'>;
+  analyticsTarget: CliAnalyticsTarget;
+  analyticsVariant: CliAnalyticsVariant;
   id: CliPlatform;
   label: string;
   command: string;
@@ -37,6 +48,10 @@ const cliPlatforms: Array<{
     command: cliWingetCommand,
   },
 ];
+
+const docsGetStartedCliLocation = 'docs_get_started_cli_install_command' satisfies DocsAnalyticsLocation;
+const docsGetStartedAgentLocation =
+  'docs_get_started_agent_install_command' satisfies DocsAnalyticsLocation;
 
 function detectCliPlatform(): CliPlatform {
   if (typeof navigator === 'undefined') return 'unix';
@@ -118,7 +133,7 @@ export function GetStartedSection() {
                 install_target: activePlatform.analyticsTarget,
                 install_variant: activePlatform.analyticsVariant,
                 install_label: activePlatform.analyticsLabel,
-                location: 'docs_get_started_cli_install_command',
+                location: docsGetStartedCliLocation,
               }}
               command={activePlatform.command}
             />
@@ -142,7 +157,7 @@ export function GetStartedSection() {
                 install_target: 'agent-linux',
                 install_variant: 'wendy-agent for Linux',
                 install_label: 'wendy-agent for Linux',
-                location: 'docs_get_started_agent_install_command',
+                location: docsGetStartedAgentLocation,
               }}
               command={agentCurlCommand}
             />

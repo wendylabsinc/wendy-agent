@@ -2,19 +2,13 @@
 
 import { Check, Copy } from 'lucide-react';
 import { useState } from 'react';
-import {
-  trackDocsAnalyticsEvent,
-  type DocsAnalyticsEventName,
-  type DocsAnalyticsEventParams,
-} from '@/lib/analytics-events';
+import { trackDocsAnalyticsEvent, type DocsAnalyticsTrackingProps } from '@/lib/analytics-events';
 
 export const cliCurlCommand = 'curl -fsSL https://install.wendy.dev/cli.sh | bash';
 export const cliWingetCommand = 'winget install WendyLabs.Wendy --source winget';
 export const agentCurlCommand = 'curl -fsSL https://install.wendy.dev/agent.sh | bash';
 
-type CopyButtonProps = {
-  analyticsEventName?: DocsAnalyticsEventName;
-  analyticsEventParams?: DocsAnalyticsEventParams;
+type CopyButtonProps = DocsAnalyticsTrackingProps & {
   text: string;
 };
 
@@ -44,19 +38,21 @@ function CopyButton({ analyticsEventName, analyticsEventParams, text }: CopyButt
   );
 }
 
-type InstallCommandProps = {
-  analyticsEventName?: DocsAnalyticsEventName;
-  analyticsEventParams?: DocsAnalyticsEventParams;
+type InstallCommandProps = DocsAnalyticsTrackingProps & {
   command: string;
   label?: string;
 };
 
-export function InstallCommand({
-  analyticsEventName,
-  analyticsEventParams,
-  label,
-  command,
-}: InstallCommandProps) {
+export function InstallCommand(props: InstallCommandProps) {
+  const { label, command } = props;
+  const copyButtonProps: CopyButtonProps = props.analyticsEventName
+    ? {
+        analyticsEventName: props.analyticsEventName,
+        analyticsEventParams: props.analyticsEventParams,
+        text: command,
+      }
+    : { text: command };
+
   return (
     <div className="mt-2">
       {label ? (
@@ -66,11 +62,7 @@ export function InstallCommand({
         <code className="min-w-0 flex-1 whitespace-pre-wrap break-all px-3 py-2.5 font-mono text-sm text-fd-foreground">
           {command}
         </code>
-        <CopyButton
-          analyticsEventName={analyticsEventName}
-          analyticsEventParams={analyticsEventParams}
-          text={command}
-        />
+        <CopyButton {...copyButtonProps} />
       </div>
     </div>
   );
