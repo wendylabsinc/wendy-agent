@@ -126,6 +126,7 @@ jobs:
       pr_number:   ${{ steps.resolve.outputs.pr_number }}
       head_sha:    ${{ steps.guard.outputs.head_sha }}
       head_branch: ${{ steps.guard.outputs.head_branch }}
+      proceed:     ${{ steps.guard.outputs.proceed }}
     steps:
       - name: Early actor verification
         # Live API re-check before any write operations or secrets are used.
@@ -352,23 +353,23 @@ jobs:
           if [ "$MATCHING_RULESETS" = "0" ]; then
             echo "::error::No active ruleset covers ai/** branches — server-side push restrictions not configured"
             echo "proceed=false" >> "$GITHUB_OUTPUT"
-            exit 0
+            exit 1
           fi
           echo "Matching active rulesets for ai/**: $MATCHING_RULESETS found"
 
           echo "proceed=true" >> "$GITHUB_OUTPUT"
 
-      - name: Fail if not authorized
+      - name: Skip when automation is not authorized
         if: steps.resolve.outputs.pr_number == '' || steps.guard.outputs.proceed != 'true'
         run: |
-          echo "::error::Authorization not granted — gate failing to prevent write-token provisioning"
-          exit 1
+          echo "Authorization not granted or not applicable — skipping AI feedback loop without provisioning write tokens."
 
   # Execute job: write-capable tokens (GITHUB_TOKEN pull-requests:write, issues:write)
   # are provisioned ONLY after the gate job has confirmed authorization via live API checks.
   respond:
     name: Address PR feedback via Claude Code
     needs: gate
+    if: needs.gate.outputs.proceed == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
