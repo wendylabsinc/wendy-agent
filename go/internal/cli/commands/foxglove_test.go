@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -170,6 +171,55 @@ func TestPump_DropsWhenClientSlow(t *testing.T) {
 	}
 	if dropped.Load() == 0 {
 		t.Fatal("expected dropped > 0 with an undrained write queue, got 0")
+	}
+}
+
+// dynamicTopicSource always reports a single topic "/b" from ListTopics, so a
+// re-discovery pass against an advertised set of {"/a"} yields one addition and
+// one removal.
+type dynamicTopicSource struct{ fakeFGSource }
+
+func (s dynamicTopicSource) ListTopics(context.Context, *agentpbv2.ListROS2TopicsRequest, ...grpc.CallOption) (*agentpbv2.ListROS2TopicsResponse, error) {
+	return &agentpbv2.ListROS2TopicsResponse{Topics: []*agentpbv2.ROS2Topic{{Name: "/b"}}}, nil
+}
+func (s dynamicTopicSource) GetMessageDefinition(context.Context, *agentpbv2.GetROS2MessageDefinitionRequest, ...grpc.CallOption) (*agentpbv2.GetROS2MessageDefinitionResponse, error) {
+	return &agentpbv2.GetROS2MessageDefinitionResponse{MessageType: "std_msgs/msg/String", Schema: "string data"}, nil
+}
+
+func TestFoxgloveRediscover(t *testing.T) {
+	srv := &foxgloveServer{src: dynamicTopicSource{}, poll: 5 * time.Millisecond}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	var mu sync.Mutex
+	chTopic := map[uint32]string{1: "/a"}
+	topicID := map[string]uint32{"/a": 1}
+	nextID := uint32(2)
+	outText := make(chan []byte, 16)
+	go srv.rediscoverLoop(ctx, outText, &mu, chTopic, topicID, &nextID)
+
+	sawAdvertise, sawUnadvertise := false, false
+	deadline := time.After(2 * time.Second)
+	for !sawAdvertise || !sawUnadvertise {
+		select {
+		case b := <-outText:
+			var m map[string]any
+			if json.Unmarshal(b, &m) != nil {
+				continue
+			}
+			switch m["op"] {
+			case "advertise":
+				if chans, _ := m["channels"].([]any); len(chans) > 0 {
+					if ch, _ := chans[0].(map[string]any); ch["topic"] == "/b" {
+						sawAdvertise = true
+					}
+				}
+			case "unadvertise":
+				sawUnadvertise = true
+			}
+		case <-deadline:
+			t.Fatalf("did not see advertise(/b)+unadvertise(/a): advertise=%v unadvertise=%v", sawAdvertise, sawUnadvertise)
+		}
 	}
 }
 

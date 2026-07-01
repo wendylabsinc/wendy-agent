@@ -53,6 +53,8 @@ type foxgloveServer struct {
 	// setParameters. Default false: the bridge is read-only, matching P1. When
 	// false these capabilities are neither advertised nor honoured.
 	allowControl bool
+	// poll is the topic re-discovery interval; 0 disables re-discovery.
+	poll time.Duration
 	// framePool recycles MESSAGE_DATA frame buffers across the high-rate
 	// subscribe path to avoid a per-frame allocation. Holds *[]byte so the value
 	// stored is pointer-sized (sync.Pool best practice).
@@ -89,13 +91,12 @@ func (s *foxgloveServer) putFrameBuf(p *[]byte) {
 	}
 }
 
-// discoverChannels lists topics (filtered) and fetches each message schema,
-// assigning a stable channel id per topic. Channels whose schema fails to load
-// are skipped (logged to stderr) so one bad topic does not block the rest.
-func (s *foxgloveServer) discoverChannels(ctx context.Context) ([]fgChannel, map[uint32]string, error) {
+// discoverTopicNames lists the device's topics, applies the --topic filter, and
+// returns them sorted.
+func (s *foxgloveServer) discoverTopicNames(ctx context.Context) ([]string, error) {
 	resp, err := s.src.ListTopics(ctx, &agentpbv2.ListROS2TopicsRequest{DomainId: s.domainID})
 	if err != nil {
-		return nil, nil, ros2RPCError(err)
+		return nil, ros2RPCError(err)
 	}
 	allow := map[string]bool{}
 	for _, t := range s.topics {
@@ -108,24 +109,123 @@ func (s *foxgloveServer) discoverChannels(ctx context.Context) ([]fgChannel, map
 		}
 	}
 	sort.Strings(names)
+	return names, nil
+}
 
+// channelForTopic fetches a topic's message schema and builds its channel with
+// the given id. ok is false (and the reason is logged) if the schema can't load,
+// so one bad topic never blocks the rest.
+func (s *foxgloveServer) channelForTopic(ctx context.Context, name string, id uint32) (fgChannel, bool) {
+	def, derr := s.src.GetMessageDefinition(ctx, &agentpbv2.GetROS2MessageDefinitionRequest{DomainId: s.domainID, Topic: name})
+	if derr != nil {
+		fmt.Fprintf(os.Stderr, "skipping %s: %v\n", name, ros2RPCError(derr))
+		return fgChannel{}, false
+	}
+	return fgChannel{
+		ID: id, Topic: name, Encoding: "cdr",
+		SchemaName: def.GetMessageType(), Schema: def.GetSchema(), SchemaEncoding: "ros2msg",
+	}, true
+}
+
+// discoverChannels lists topics (filtered) and builds a channel per topic,
+// assigning ids from 1. Returns the channels and the id->topic map.
+func (s *foxgloveServer) discoverChannels(ctx context.Context) ([]fgChannel, map[uint32]string, error) {
+	names, err := s.discoverTopicNames(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
 	var channels []fgChannel
 	chTopic := map[uint32]string{}
 	var id uint32 = 1
 	for _, name := range names {
-		def, derr := s.src.GetMessageDefinition(ctx, &agentpbv2.GetROS2MessageDefinitionRequest{DomainId: s.domainID, Topic: name})
-		if derr != nil {
-			fmt.Fprintf(os.Stderr, "skipping %s: %v\n", name, ros2RPCError(derr))
+		ch, ok := s.channelForTopic(ctx, name, id)
+		if !ok {
 			continue
 		}
-		channels = append(channels, fgChannel{
-			ID: id, Topic: name, Encoding: "cdr",
-			SchemaName: def.GetMessageType(), Schema: def.GetSchema(), SchemaEncoding: "ros2msg",
-		})
+		channels = append(channels, ch)
 		chTopic[id] = name
 		id++
 	}
 	return channels, chTopic, nil
+}
+
+// rediscoverLoop periodically re-lists topics and reconciles the advertised set:
+// topics that appeared are advertised (with fresh ids), topics that vanished are
+// unadvertised. Ids for surviving topics stay stable. The channel maps are
+// shared with the read loop and guarded by mu. Runs until ctx is cancelled.
+func (s *foxgloveServer) rediscoverLoop(ctx context.Context, outText chan<- []byte, mu *sync.Mutex, chTopic map[uint32]string, topicID map[string]uint32, nextID *uint32) {
+	ticker := time.NewTicker(s.poll)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		names, err := s.discoverTopicNames(ctx)
+		if err != nil {
+			continue // transient; try again next tick
+		}
+		current := make(map[string]bool, len(names))
+		for _, n := range names {
+			current[n] = true
+		}
+
+		// Additions: topics present now but not advertised.
+		var added []fgChannel
+		for _, name := range names {
+			mu.Lock()
+			_, have := topicID[name]
+			mu.Unlock()
+			if have {
+				continue
+			}
+			mu.Lock()
+			id := *nextID
+			*nextID++
+			mu.Unlock()
+			ch, ok := s.channelForTopic(ctx, name, id)
+			if !ok {
+				continue
+			}
+			mu.Lock()
+			chTopic[id] = name
+			topicID[name] = id
+			mu.Unlock()
+			added = append(added, ch)
+		}
+
+		// Removals: advertised topics no longer present.
+		var removed []uint32
+		mu.Lock()
+		for id, name := range chTopic {
+			if !current[name] {
+				removed = append(removed, id)
+				delete(chTopic, id)
+				delete(topicID, name)
+			}
+		}
+		mu.Unlock()
+
+		if len(added) > 0 {
+			if b, mErr := json.Marshal(fgAdvertise{Op: "advertise", Channels: added}); mErr == nil {
+				select {
+				case outText <- b:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}
+		if len(removed) > 0 {
+			if b, mErr := json.Marshal(fgUnadvertise{Op: "unadvertise", ChannelIDs: removed}); mErr == nil {
+				select {
+				case outText <- b:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}
+	}
 }
 
 // handleConn drives one Foxglove client connection.
@@ -175,6 +275,19 @@ func (s *foxgloveServer) handleConn(ctx context.Context, c *websocket.Conn) {
 	adv, _ := json.Marshal(fgAdvertise{Op: "advertise", Channels: channels})
 	outText <- adv
 
+	// chMu guards the channel maps + id counter, which the read loop (subscribe)
+	// and the poll re-discovery goroutine both touch. topicID is the reverse of
+	// chTopic; nextID keeps advertised ids stable and monotonic across polls.
+	var chMu sync.Mutex
+	topicID := make(map[string]uint32, len(chTopic))
+	var nextID uint32
+	for id, name := range chTopic {
+		topicID[name] = id
+		if id >= nextID {
+			nextID = id + 1
+		}
+	}
+
 	// Services (write path): discovered + advertised only with --allow-control.
 	var svcInfo map[uint32]*fgServiceInfo
 	if s.allowControl {
@@ -195,6 +308,16 @@ func (s *foxgloveServer) handleConn(ctx context.Context, c *websocket.Conn) {
 	// dropped counts MESSAGE_DATA frames shed across all of this connection's
 	// pump goroutines when the client can't drain the write queue fast enough.
 	var dropped atomic.Uint64
+
+	// Periodic topic re-discovery: advertise topics that appear and unadvertise
+	// those that vanish, keeping ids stable for survivors. 0 disables.
+	if s.poll > 0 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			s.rediscoverLoop(connCtx, outText, &chMu, chTopic, topicID, &nextID)
+		}()
+	}
 
 	for {
 		typ, data, rerr := c.Read(connCtx)
@@ -229,7 +352,9 @@ func (s *foxgloveServer) handleConn(ctx context.Context, c *websocket.Conn) {
 		switch msg.Op {
 		case "subscribe":
 			for _, sub := range msg.Subscriptions {
+				chMu.Lock()
 				topic, ok := chTopic[sub.ChannelID]
+				chMu.Unlock()
 				if !ok {
 					continue
 				}
@@ -388,8 +513,7 @@ func newFoxgloveServeCmd() *cobra.Command {
 			}
 			defer client.Close()
 
-			srv := &foxgloveServer{src: client.client, domainID: ros2DomainPtr(domain), topics: topics, allowControl: allowControl}
-			_ = poll // re-discovery loop is a follow-up; see plan note.
+			srv := &foxgloveServer{src: client.client, domainID: ros2DomainPtr(domain), topics: topics, allowControl: allowControl, poll: poll}
 
 			httpSrv := &http.Server{
 				Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
