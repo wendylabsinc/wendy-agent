@@ -15,7 +15,7 @@ export function trackDocsAnalyticsEvent(
   if (typeof window === 'undefined' || typeof window.gtag !== 'function') return;
 
   window.gtag('event', eventName, {
-    event_category: 'marketing',
     ...params,
+    event_category: 'marketing',
   });
 }
