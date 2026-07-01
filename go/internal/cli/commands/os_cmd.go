@@ -75,12 +75,21 @@ func validateOSUpdateTarget(versionResp *agentpb.GetAgentVersionResponse) error 
 	if err := validateOSUpdateIdentity(versionResp); err != nil {
 		return err
 	}
-	// Either OS update backend qualifies: the in-house wendyos-update engine or
-	// mender. The agent picks one per the request's --updater value.
-	if !agentVersionHasFeature(versionResp, "wendyos-update") && !agentVersionHasFeature(versionResp, "mender") {
+	if !hasOTABackend(versionResp) {
 		return errors.New(wendyOSMissingUpdaterMessage)
 	}
 	return nil
+}
+
+// hasOTABackend reports whether the device advertises an OS update backend the
+// agent can drive: the in-house wendyos-update engine or mender. Both
+// `wendy os update` and `wendy device update` gate their OS-update step on this,
+// so a device with either backend is offered an update and the two paths cannot
+// drift on which backends count. (The agent picks one per the request's
+// --updater value; auto-selection prefers wendyos-update.)
+func hasOTABackend(versionResp *agentpb.GetAgentVersionResponse) bool {
+	return agentVersionHasFeature(versionResp, "wendyos-update") ||
+		agentVersionHasFeature(versionResp, "mender")
 }
 
 // isWendyOSUpdateTarget reports whether the device is a WendyOS OTA target. The

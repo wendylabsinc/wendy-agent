@@ -100,17 +100,22 @@ func TestMaybeCheckOSUpdateSkips(t *testing.T) {
 	}{
 		{"nil version", nil},
 		{"non-wendyos darwin", &agentpb.GetAgentVersionResponse{Os: "darwin", OsVersion: strp("14.4")}},
-		{"wendyos without mender",
+		{"wendyos without an OTA backend",
 			&agentpb.GetAgentVersionResponse{Os: "linux", OsVersion: strp("WendyOS-0.10.4"), DeviceType: strp("raspberry-pi-5")}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			// These inputs must return from the cheap pre-reconnect gate, before
-			// any reconnect/manifest/network call. (WendyOS+mender devices do
-			// reconnect to re-read the version, so they're not covered here.)
-			// A nil connection is safe because the gate returns before it is used.
-			if err := maybeCheckOSUpdate(context.Background(), tc.version, nil, false, false, ""); err != nil {
+			// any reconnect/manifest/network call. (WendyOS devices with an OTA
+			// backend — wendyos-update or mender — do reconnect to re-read the
+			// version, so they're not covered here.) A nil connection is safe
+			// because the gate returns before it is used.
+			outcome, err := maybeCheckOSUpdate(context.Background(), tc.version, nil, false, false, "")
+			if err != nil {
 				t.Fatalf("maybeCheckOSUpdate() error = %v, want nil", err)
+			}
+			if outcome.applied || outcome.online {
+				t.Fatalf("maybeCheckOSUpdate() outcome = %+v, want zero (skipped)", outcome)
 			}
 		})
 	}

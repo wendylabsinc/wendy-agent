@@ -1801,24 +1801,41 @@ func reconnectAgentAfterRestart(ctx context.Context, conn *grpcclient.AgentConne
 	return waitForAgentRestart(ctx, hostPort(conn.Host, defaultAgentPort))
 }
 
+// osUpdateOutcome reports what `device update`'s OS-update step did, so the
+// caller can decide whether a --binary dev agent must be re-applied afterward
+// (see shouldReapplyBinary).
+type osUpdateOutcome struct {
+	// applied is true when an OTA was streamed to the device (it is rebooting
+	// into, or has rebooted into, the new image).
+	applied bool
+	// online is true when the device was confirmed back online within this run.
+	// It is only ever set on the LAN path; the cloud path returns without
+	// waiting for the reboot, so the caller cannot re-apply inline there.
+	online bool
+}
+
 // maybeCheckOSUpdate runs the OS-update step for `device update` after the
 // agent has been updated. preUpdateVersion is the version queried before the
 // agent restart; it is used only for a cheap up-front gate, since whether a
-// device runs WendyOS and supports mender does not change across an agent
-// update. When artifactURLOverride is set, that exact Mender artifact is
-// applied (prompting unless assumeYes) instead of the manifest's latest;
-// otherwise the device_type/storage_medium/os_version used for the decision
-// are re-read from the agent we just installed — a newer agent can report a
-// corrected device_type, so the pre-update snapshot may be stale.
-// Non-WendyOS / no-mender targets are skipped silently (no reconnect), and any
-// failure to re-read or look up the OS is reported but non-fatal — `device
-// update` still succeeds as an agent-only update.
-func maybeCheckOSUpdate(ctx context.Context, preUpdateVersion *agentpb.GetAgentVersionResponse, priorConn *grpcclient.AgentConnection, nightly, assumeYes bool, artifactURLOverride string) error {
+// device runs WendyOS and has an OTA backend does not change across an agent
+// update. priorConn must be a live connection to the just-restarted agent — it
+// is used both to talk to the device and (via its Host/Reconnect) to re-dial
+// the SAME device after the reboot, so this must not be nil once the gate
+// passes. When artifactURLOverride is set, that exact artifact is applied
+// (prompting unless assumeYes) instead of the manifest's latest; otherwise the
+// device_type/storage_medium/os_version used for the decision are re-read from
+// the agent we just installed — a newer agent can report a corrected
+// device_type, so the pre-update snapshot may be stale. Non-WendyOS targets and
+// devices without an OTA backend are skipped silently, and any failure to
+// re-read or look up the OS is reported but non-fatal — `device update` still
+// succeeds as an agent-only update. The returned outcome reports whether an OTA
+// was actually applied and whether the device came back online in this run.
+func maybeCheckOSUpdate(ctx context.Context, preUpdateVersion *agentpb.GetAgentVersionResponse, priorConn *grpcclient.AgentConnection, nightly, assumeYes bool, artifactURLOverride string) (osUpdateOutcome, error) {
 	if preUpdateVersion == nil {
-		return nil
+		return osUpdateOutcome{}, nil
 	}
-	if !isWendyOSUpdateTarget(preUpdateVersion) || !agentVersionHasFeature(preUpdateVersion, "mender") {
-		return nil
+	if !isWendyOSUpdateTarget(preUpdateVersion) || !hasOTABackend(preUpdateVersion) {
+		return osUpdateOutcome{}, nil
 	}
 
 	// Any OS work needs a live connection to the just-restarted agent. Reconnect
@@ -1829,7 +1846,7 @@ func maybeCheckOSUpdate(ctx context.Context, preUpdateVersion *agentpb.GetAgentV
 	conn, err := reconnectAgentAfterRestart(ctx, priorConn)
 	if err != nil {
 		fmt.Printf("Could not check for OS updates: %v\n", err)
-		return nil
+		return osUpdateOutcome{}, nil
 	}
 	defer conn.Close()
 
@@ -1840,11 +1857,11 @@ func maybeCheckOSUpdate(ctx context.Context, preUpdateVersion *agentpb.GetAgentV
 		if !assumeYes {
 			if !isInteractiveTerminal() {
 				fmt.Printf("OS artifact specified (%s). Re-run with --yes to apply.\n", artifactURLOverride)
-				return nil
+				return osUpdateOutcome{}, nil
 			}
 			if !promptYesNoDefaultNoFn(fmt.Sprintf("Apply OS update from %s? [y/N] ", artifactURLOverride)) {
 				fmt.Println("Skipping OS update.")
-				return nil
+				return osUpdateOutcome{}, nil
 			}
 		}
 		otaURL = artifactURLOverride
@@ -1855,19 +1872,19 @@ func maybeCheckOSUpdate(ctx context.Context, preUpdateVersion *agentpb.GetAgentV
 		versionResp, err := conn.AgentService.GetAgentVersion(ctx, &agentpb.GetAgentVersionRequest{})
 		if err != nil {
 			fmt.Printf("Could not check for OS updates: %v\n", err)
-			return nil
+			return osUpdateOutcome{}, nil
 		}
 
 		deviceType := versionResp.GetDeviceType()
 		if deviceType == "" {
 			// No device type → cannot auto-select the GCS artifact; skip quietly.
-			return nil
+			return osUpdateOutcome{}, nil
 		}
 
 		u, latestVer, err := getLatestOTAInfoForDeviceType(deviceType, versionResp.GetStorageMedium(), nightly)
 		if err != nil {
 			fmt.Printf("Could not check for OS updates: %v\n", err)
-			return nil
+			return osUpdateOutcome{}, nil
 		}
 
 		currentOS := versionResp.GetOsVersion()
@@ -1879,35 +1896,47 @@ func maybeCheckOSUpdate(ctx context.Context, preUpdateVersion *agentpb.GetAgentV
 		switch decideOSUpdate(currentOS, latestVer, nightly, assumeYes, isInteractiveTerminal()) {
 		case osActionAlreadyCurrent:
 			fmt.Printf("OS is already at the latest version (%s).\n", currentOS)
-			return nil
+			return osUpdateOutcome{}, nil
 		case osActionReportOnly:
 			fmt.Printf("OS update available (%s). Re-run with --yes or run 'wendy os update' to apply.\n", latestVer)
-			return nil
+			return osUpdateOutcome{}, nil
 		case osActionApply:
 			// fall through to apply
 		case osActionPrompt:
 			if !promptYesNoDefaultNoFn(fmt.Sprintf("OS update available (%s → %s). Apply now? [y/N] ", fromVer, latestVer)) {
 				fmt.Println("Skipping OS update. Run 'wendy os update' to apply later.")
-				return nil
+				return osUpdateOutcome{}, nil
 			}
 		}
 		otaURL = u
 	}
 
 	if err := streamOSUpdate(ctx, conn, otaURL, ""); err != nil {
-		return err
+		return osUpdateOutcome{}, err
 	}
 
 	if _, isCloud := cloudDeviceConfigFromContext(ctx); isCloud {
 		fmt.Println("OS update applied; the device is rebooting. Reconnect once it is back online.")
-		return nil
+		return osUpdateOutcome{applied: true}, nil
 	}
 	fmt.Println("WendyOS update applied. Device is rebooting...")
 	if err := waitForDeviceOnline(ctx, priorConn.Host); err != nil {
-		return err
+		return osUpdateOutcome{applied: true}, err
 	}
 	fmt.Println("Device is back online.")
-	return nil
+	return osUpdateOutcome{applied: true, online: true}, nil
+}
+
+// shouldReapplyBinary reports whether `device update` should re-upload the
+// user-provided --binary agent after the OS update. It re-applies only when the
+// user explicitly passed --binary (a deliberate dev-agent override) AND an OS
+// update was actually applied AND the device came back online in this run. The
+// auto-download path is intentionally excluded: re-pushing a downloaded release
+// over the new image's bundled agent could silently downgrade it. The cloud
+// path (applied but not online here) is excluded too — there is no reboot to
+// wait on inline — and the caller prints guidance to re-run instead.
+func shouldReapplyBinary(binaryProvided bool, outcome osUpdateOutcome) bool {
+	return binaryProvided && outcome.applied && outcome.online
 }
 
 func newDeviceUpdateCmd() *cobra.Command {
@@ -2021,62 +2050,22 @@ func newDeviceUpdateCmd() *cobra.Command {
 			h := sha256.Sum256(binaryData)
 			sha256Hash := hex.EncodeToString(h[:])
 
-			if isInteractiveTerminal() && !jsonOutput {
-				s := tui.NewSpinner("Uploading agent binary...")
-				p := tui.NewProgressProgram(s)
-
-				go func() {
-					uploadErr := deviceUpdateUpload(ctx, conn.AgentService, binaryData, sha256Hash)
-					p.Send(tui.SpinnerDoneMsg{Err: uploadErr})
-				}()
-
-				finalModel, runErr := p.Run()
-				if runErr != nil {
-					return fmt.Errorf("TUI error: %w", runErr)
-				}
-
-				model := finalModel.(tui.SpinnerModel)
-				_, updateErr := model.Result()
-				if updateErr != nil {
-					return updateErr
-				}
-			} else if !jsonOutput {
-				fmt.Println(tui.InfoMessage("Uploading agent binary..."))
-				if err := deviceUpdateUpload(ctx, conn.AgentService, binaryData, sha256Hash); err != nil {
-					return err
-				}
-			} else {
-				if err := deviceUpdateUpload(ctx, conn.AgentService, binaryData, sha256Hash); err != nil {
-					return err
-				}
+			if err := uploadAgentBinary(ctx, conn.AgentService, binaryData, sha256Hash, jsonOutput); err != nil {
+				return err
 			}
 
+			// Keep the connection to the just-restarted agent. maybeCheckOSUpdate
+			// needs a live conn (and its Host/Reconnect) both to drive the OS
+			// update and to re-dial the SAME device after the reboot; passing nil
+			// here would nil-deref once the OS-update gate lets a device through.
 			reconnect := updatedAgentReconnectFunc(ctx, conn)
 			if conn != nil {
 				_ = conn.Close()
 				conn = nil
 			}
-			if isInteractiveTerminal() && !jsonOutput {
-				readyConn, err := runAgentConnectionSpinner(ctx, "Waiting for agent to restart...", func(spinCtx context.Context) (*grpcclient.AgentConnection, error) {
-					return waitForUpdatedAgentReady(spinCtx, reconnect, agentRestartWaitOptions{})
-				})
-				if err != nil {
-					return err
-				}
-				if readyConn != nil {
-					_ = readyConn.Close()
-				}
-			} else {
-				if !jsonOutput {
-					fmt.Println(tui.InfoMessage("Waiting for agent to restart..."))
-				}
-				readyConn, err := waitForUpdatedAgentReady(ctx, reconnect, agentRestartWaitOptions{})
-				if err != nil {
-					return err
-				}
-				if readyConn != nil {
-					_ = readyConn.Close()
-				}
+			conn, err = awaitAgentRestart(ctx, reconnect, jsonOutput)
+			if err != nil {
+				return err
 			}
 
 			if jsonOutput {
@@ -2093,14 +2082,38 @@ func newDeviceUpdateCmd() *cobra.Command {
 				return nil
 			}
 			fmt.Println(tui.SuccessMessage("Agent updated successfully."))
-			if err := maybeCheckOSUpdate(ctx, preUpdateVersion, conn, nightly, assumeYes, artifactURL); err != nil {
-				return err
+
+			var outcome osUpdateOutcome
+			if conn != nil {
+				outcome, err = maybeCheckOSUpdate(ctx, preUpdateVersion, conn, nightly, assumeYes, artifactURL)
+				if err != nil {
+					return err
+				}
+			}
+
+			// A --binary dev agent does not survive an OS update on its own: the
+			// updated image ships its own bundled agent. Re-upload the same binary
+			// so the agent the user explicitly asked for is what ends up running.
+			if binaryPath != "" && outcome.applied && !outcome.online {
+				// Cloud path: the reboot is in flight and we did not wait for it,
+				// so we cannot re-apply inline. Tell the user how to restore it.
+				fmt.Println(tui.InfoMessage(fmt.Sprintf(
+					"The OS update is rebooting the device; its new image ships a bundled agent. "+
+						"Re-run 'wendy device update --binary %s' once it is back online to restore your dev agent.",
+					binaryPath)))
+			}
+			if shouldReapplyBinary(binaryPath != "", outcome) {
+				fmt.Println(tui.InfoMessage("Re-applying your --binary agent onto the updated OS..."))
+				if err := reapplyBinaryAfterOSUpdate(ctx, conn, binaryData, sha256Hash, jsonOutput); err != nil {
+					return fmt.Errorf("re-applying --binary after OS update: %w", err)
+				}
+				fmt.Println(tui.SuccessMessage("Dev agent re-applied; it survived the OS update."))
 			}
 			return nil
 		},
 	}
 
-	cmd.Flags().StringVar(&binaryPath, "binary", "", "Path to a local agent binary to upload (skips download)")
+	cmd.Flags().StringVar(&binaryPath, "binary", "", "Path to a local agent binary to upload (skips download); re-applied after an OS update so it survives the reboot")
 	cmd.Flags().BoolVar(&nightly, "nightly", false, "Use the latest nightly (prerelease) build for both the agent and the OS")
 	cmd.Flags().BoolVarP(&assumeYes, "yes", "y", false, "Apply an available OS update without prompting")
 	cmd.Flags().StringVar(&artifactURL, "artifact-url", "", "Apply this OS (Mender) artifact URL instead of the manifest's latest")
@@ -2171,6 +2184,82 @@ const (
 	defaultAgentRestartTimeout      = 20 * time.Second
 	defaultAgentRestartPollInterval = time.Second
 )
+
+// uploadAgentBinary uploads binaryData to the device, showing a spinner when
+// interactive and a plain status line otherwise (nothing extra in JSON mode).
+// It is the shared upload used by both `device update`'s initial agent update
+// and the post-OS-update --binary re-apply, so the two stay in lockstep.
+func uploadAgentBinary(ctx context.Context, agentService agentpb.WendyAgentServiceClient, binaryData []byte, sha256Hash string, jsonOutput bool) error {
+	if isInteractiveTerminal() && !jsonOutput {
+		s := tui.NewSpinner("Uploading agent binary...")
+		p := tui.NewProgressProgram(s)
+
+		go func() {
+			uploadErr := deviceUpdateUpload(ctx, agentService, binaryData, sha256Hash)
+			p.Send(tui.SpinnerDoneMsg{Err: uploadErr})
+		}()
+
+		finalModel, runErr := p.Run()
+		if runErr != nil {
+			return fmt.Errorf("TUI error: %w", runErr)
+		}
+		model := finalModel.(tui.SpinnerModel)
+		if _, updateErr := model.Result(); updateErr != nil {
+			return updateErr
+		}
+		return nil
+	}
+	if !jsonOutput {
+		fmt.Println(tui.InfoMessage("Uploading agent binary..."))
+	}
+	return deviceUpdateUpload(ctx, agentService, binaryData, sha256Hash)
+}
+
+// awaitAgentRestart waits for the agent to come back after an upload and returns
+// a live connection to it (showing a spinner when interactive).
+func awaitAgentRestart(ctx context.Context, reconnect func(context.Context) (*grpcclient.AgentConnection, error), jsonOutput bool) (*grpcclient.AgentConnection, error) {
+	if isInteractiveTerminal() && !jsonOutput {
+		return runAgentConnectionSpinner(ctx, "Waiting for agent to restart...", func(spinCtx context.Context) (*grpcclient.AgentConnection, error) {
+			return waitForUpdatedAgentReady(spinCtx, reconnect, agentRestartWaitOptions{})
+		})
+	}
+	if !jsonOutput {
+		fmt.Println(tui.InfoMessage("Waiting for agent to restart..."))
+	}
+	return waitForUpdatedAgentReady(ctx, reconnect, agentRestartWaitOptions{})
+}
+
+// reapplyBinaryAfterOSUpdate re-uploads the --binary dev agent after an OS
+// update so it replaces the updated image's bundled agent. priorConn is the
+// (now-stale) connection whose Host/Reconnect identifies the device; the device
+// is expected to already be back online (maybeCheckOSUpdate waited for it), so
+// the first reconnect resolves promptly. The upload restarts the agent, so it
+// then waits once more for the re-applied dev agent to return.
+func reapplyBinaryAfterOSUpdate(ctx context.Context, priorConn *grpcclient.AgentConnection, binaryData []byte, sha256Hash string, jsonOutput bool) error {
+	conn, err := awaitAgentRestart(ctx, updatedAgentReconnectFunc(ctx, priorConn), jsonOutput)
+	if err != nil {
+		return err
+	}
+	if conn == nil {
+		return errors.New("reconnected to a nil agent connection after the OS update")
+	}
+
+	if err := uploadAgentBinary(ctx, conn.AgentService, binaryData, sha256Hash, jsonOutput); err != nil {
+		_ = conn.Close()
+		return err
+	}
+
+	reconnectAfter := updatedAgentReconnectFunc(ctx, conn)
+	_ = conn.Close()
+	readyConn, err := awaitAgentRestart(ctx, reconnectAfter, jsonOutput)
+	if err != nil {
+		return err
+	}
+	if readyConn != nil {
+		_ = readyConn.Close()
+	}
+	return nil
+}
 
 func deviceUpdateUpload(ctx context.Context, agentService agentpb.WendyAgentServiceClient, binaryData []byte, sha256Hash string) error {
 	stream, err := agentService.UpdateAgent(ctx)

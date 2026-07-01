@@ -174,6 +174,47 @@ func TestValidateOSUpdateTarget(t *testing.T) {
 	}
 }
 
+func TestHasOTABackend(t *testing.T) {
+	tests := []struct {
+		name string
+		resp *agentpb.GetAgentVersionResponse
+		want bool
+	}{
+		{
+			name: "wendyos-update only (e.g. Jetson Orin Nano)",
+			resp: &agentpb.GetAgentVersionResponse{Featureset: []string{"gpu", "wendyos-update", "os-healthcheck"}},
+			want: true,
+		},
+		{
+			name: "mender only",
+			resp: &agentpb.GetAgentVersionResponse{Featureset: []string{"mender"}},
+			want: true,
+		},
+		{
+			name: "both backends",
+			resp: &agentpb.GetAgentVersionResponse{Featureset: []string{"wendyos-update", "mender"}},
+			want: true,
+		},
+		{
+			name: "no update backend",
+			resp: &agentpb.GetAgentVersionResponse{Featureset: []string{"gpu", "audio"}},
+			want: false,
+		},
+		{
+			name: "empty featureset",
+			resp: &agentpb.GetAgentVersionResponse{},
+			want: false,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := hasOTABackend(tc.resp); got != tc.want {
+				t.Fatalf("hasOTABackend() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestProgressLabel(t *testing.T) {
 	tests := []struct {
 		phase   string
