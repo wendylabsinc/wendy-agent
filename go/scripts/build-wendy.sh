@@ -4,9 +4,9 @@
 # recovery flashing (gousb) is macOS-only for now; on other platforms wendy needs
 # no libusb and a plain `go build` suffices.
 #
-# Usage:
-#   scripts/build-wendy.sh [output-path]     # build to output-path (default ./bin/wendy)
-#   scripts/build-wendy.sh --install         # go install into GOBIN
+# Usage (run from the repo root):
+#   go/scripts/build-wendy.sh [output-path]  # build to output-path (default ./bin/wendy)
+#   go/scripts/build-wendy.sh --install      # go install into GOBIN
 set -euo pipefail
 cd "$(dirname "$0")/.."   # the go module root
 

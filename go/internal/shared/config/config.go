@@ -114,7 +114,7 @@ func CacheDir() (string, error) {
 func LogDir() (string, error) {
 	dir, err := os.UserCacheDir()
 	if err != nil {
-		return "", fmt.Errorf("determining cache directory: %w", err)
+		return "", fmt.Errorf("determining log directory: %w", err)
 	}
 	logDir := filepath.Join(dir, "wendy", "logs")
 	if err := os.MkdirAll(logDir, 0o755); err != nil {
