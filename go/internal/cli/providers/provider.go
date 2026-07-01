@@ -80,8 +80,9 @@ func IsLocalProviderKey(key string) bool {
 const ShowLocalDevicesEnv = "WENDY_SHOW_LOCAL_DEVICES"
 
 // ShowLocalDevices reports whether local run targets should be shown in the
-// device picker and discovery output. It is false unless ShowLocalDevicesEnv is
-// set to a truthy value ("1", "true", "yes", "on"; case-insensitive).
+// interactive device picker and non-JSON `wendy discover` output. It is false
+// unless ShowLocalDevicesEnv is set to a truthy value ("1", "true", "yes", "on";
+// case-insensitive).
 func ShowLocalDevices() bool {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv(ShowLocalDevicesEnv))) {
 	case "yes", "on":
