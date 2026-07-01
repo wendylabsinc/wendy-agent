@@ -56,7 +56,7 @@ func (p *MicroWendyProvider) CheckRequirements(ctx context.Context) error {
 
 func (p *MicroWendyProvider) DiscoverDevices(ctx context.Context) ([]models.ExternalDevice, error) {
 	sd := liteclient.GetSerialDiscovery()
-	sd.StartScan()
+	sd.StartScan(0)
 
 	services, err := discovery.BrowseMDNSServices(ctx, microWendyServiceType, 3*time.Second)
 	if err != nil {

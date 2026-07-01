@@ -2,6 +2,7 @@ package liteclient
 
 import (
 	"sync"
+	"time"
 
 	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
 )
@@ -21,12 +22,14 @@ type ListenerID uint64
 // reachable Wendy Lite devices. Each port is probed concurrently; all
 // registered listeners are invoked (serially) whenever the list changes.
 type SerialDiscovery struct {
-	mu        sync.Mutex
-	notifyMu  sync.Mutex
-	running   bool
-	devices   []SerialDevice
-	listeners map[ListenerID]func([]SerialDevice)
-	nextID    ListenerID
+	mu             sync.Mutex
+	notifyMu       sync.Mutex
+	running        bool
+	repeatInterval time.Duration
+	probing        map[string]bool
+	devices        []SerialDevice
+	listeners      map[ListenerID]func([]SerialDevice)
+	nextID         ListenerID
 }
 
 var (
@@ -38,6 +41,7 @@ var (
 func GetSerialDiscovery() *SerialDiscovery {
 	serialDiscoveryInstanceOnce.Do(func() {
 		serialDiscoveryInstance = &SerialDiscovery{
+			probing:   make(map[string]bool),
 			listeners: make(map[ListenerID]func([]SerialDevice)),
 		}
 	})
@@ -64,10 +68,15 @@ func (d *SerialDiscovery) RemoveListener(id ListenerID) {
 // StartScan resolves all ESP32 serial ports and probes each one concurrently
 // in the background. A port is added to the list if a WendyCom connection can
 // be established; the connection is closed immediately after the check. Ports
-// that are no longer present are removed. Returns immediately; if a scan is
-// already running, this is a no-op.
-func (d *SerialDiscovery) StartScan() {
+// that are no longer present are removed. Returns immediately.
+//
+// repeatInterval controls automatic re-scanning: zero means run once, any
+// positive value causes the scan to repeat after each run. Calling StartScan
+// again while a scan loop is active updates the interval immediately; the
+// change takes effect after the current iteration completes.
+func (d *SerialDiscovery) StartScan(repeatInterval time.Duration) {
 	d.mu.Lock()
+	d.repeatInterval = repeatInterval
 	if d.running {
 		d.mu.Unlock()
 		return
@@ -76,80 +85,103 @@ func (d *SerialDiscovery) StartScan() {
 	d.mu.Unlock()
 
 	go func() {
-		defer func() {
-			d.mu.Lock()
-			d.running = false
-			d.mu.Unlock()
-		}()
-
-		ports, err := discovery.ResolveESP32SerialPorts()
-		if err != nil {
-			return
-		}
-
-		portSet := make(map[string]bool, len(ports))
-		for _, p := range ports {
-			portSet[p.Port] = true
-		}
-
-		// Remove devices whose ports are no longer present.
-		d.mu.Lock()
-		kept := d.devices[:0]
-		var removed int
-		for _, dev := range d.devices {
-			if portSet[dev.Port] {
-				kept = append(kept, dev)
-			} else {
-				removed++
-			}
-		}
-		d.devices = kept
-		d.mu.Unlock()
-
-		if removed > 0 {
-			d.notify()
-		}
-
-		// Probe ports not already in the list.
-		d.mu.Lock()
-		existing := make(map[string]bool, len(d.devices))
-		for _, dev := range d.devices {
-			existing[dev.Port] = true
-		}
-		d.mu.Unlock()
-
-		var wg sync.WaitGroup
-		for _, p := range ports {
-			if existing[p.Port] {
-				continue
-			}
-			wg.Add(1)
-			go func(port string) {
-				defer wg.Done()
-				client := NewWendyLiteClient()
-				if err := client.ConnectToSerial(port); err != nil {
-					return
-				}
-				identity, err := client.GetDeviceIdentity()
-				client.Close()
-				if err != nil || identity == nil {
-					return
+		for {
+			ports, err := discovery.ResolveESP32SerialPorts()
+			if err == nil {
+				portSet := make(map[string]bool, len(ports))
+				for _, p := range ports {
+					portSet[p.Port] = true
 				}
 
+				// Remove devices whose ports are no longer present.
 				d.mu.Lock()
-				d.devices = append(d.devices, SerialDevice{
-					Port:        port,
-					ID:          identity.ID,
-					Name:        identity.Name,
-					DisplayName: identity.DisplayName,
-				})
+				kept := d.devices[:0]
+				var removed int
+				for _, dev := range d.devices {
+					if portSet[dev.Port] {
+						kept = append(kept, dev)
+					} else {
+						removed++
+					}
+				}
+				d.devices = kept
 				d.mu.Unlock()
 
-				d.notify()
-			}(p.Port)
+				if removed > 0 {
+					d.notify()
+				}
+
+				// Probe ports not already in the list.
+				d.mu.Lock()
+				existing := make(map[string]bool, len(d.devices))
+				for _, dev := range d.devices {
+					existing[dev.Port] = true
+				}
+				d.mu.Unlock()
+
+				for _, p := range ports {
+					d.mu.Lock()
+					skip := existing[p.Port] || d.probing[p.Port]
+					if !skip {
+						d.probing[p.Port] = true
+					}
+					d.mu.Unlock()
+					if skip {
+						continue
+					}
+					go func(port string) {
+						defer func() {
+							d.mu.Lock()
+							delete(d.probing, port)
+							d.mu.Unlock()
+						}()
+						client := NewWendyLiteClient()
+						if err := client.ConnectToSerial(port); err != nil {
+							return
+						}
+						identity, err := client.GetDeviceIdentity()
+						client.Close()
+						if err != nil || identity == nil {
+							return
+						}
+
+						d.mu.Lock()
+						d.devices = append(d.devices, SerialDevice{
+							Port:        port,
+							ID:          identity.ID,
+							Name:        identity.Name,
+							DisplayName: identity.DisplayName,
+						})
+						d.mu.Unlock()
+
+						d.notify()
+					}(p.Port)
+				}
+			}
+
+			d.mu.Lock()
+			next := d.repeatInterval
+			if next <= 0 {
+				d.running = false
+				d.mu.Unlock()
+				return
+			}
+			d.mu.Unlock()
+
+			time.Sleep(next)
+
+			d.mu.Lock()
+			stop := d.repeatInterval == 0
+			d.mu.Unlock()
+			if stop {
+				return
+			}
 		}
-		wg.Wait()
 	}()
+}
+
+func (d *SerialDiscovery) StopScan(repeatInterval time.Duration) {
+	d.StartScan(0)
 }
 
 // notify snapshots the device list and calls all registered listeners serially.
