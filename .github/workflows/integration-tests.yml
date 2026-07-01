@@ -98,6 +98,24 @@ jobs:
           go-version-file: go.mod
           cache: false
 
+      - name: Prepare macOS build dependencies
+        if: inputs.hostname == '' || inputs.jobs == 'all' || inputs.jobs == 'discover'
+        run: |
+          set -euo pipefail
+          echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
+          echo "/usr/local/bin" >> "$GITHUB_PATH"
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+          missing=()
+          if ! command -v pkg-config >/dev/null 2>&1; then
+            missing+=(pkg-config)
+          fi
+          if ! pkg-config --exists libusb-1.0 >/dev/null 2>&1; then
+            missing+=(libusb)
+          fi
+          if [ "${#missing[@]}" -gt 0 ]; then
+            brew install "${missing[@]}"
+          fi
+
       - name: Build CLI
         if: inputs.hostname == '' || inputs.jobs == 'all' || inputs.jobs == 'discover'
         working-directory: go
@@ -233,6 +251,23 @@ jobs:
         with:
           go-version-file: go.mod
           cache: false
+
+      - name: Prepare macOS build dependencies
+        run: |
+          set -euo pipefail
+          echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
+          echo "/usr/local/bin" >> "$GITHUB_PATH"
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+          missing=()
+          if ! command -v pkg-config >/dev/null 2>&1; then
+            missing+=(pkg-config)
+          fi
+          if ! pkg-config --exists libusb-1.0 >/dev/null 2>&1; then
+            missing+=(libusb)
+          fi
+          if [ "${#missing[@]}" -gt 0 ]; then
+            brew install "${missing[@]}"
+          fi
 
       - name: Build CLI
         working-directory: go
