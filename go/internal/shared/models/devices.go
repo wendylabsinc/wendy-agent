@@ -193,6 +193,9 @@ func (d *DiscoveredDevice) Address() string {
 		return d.LAN.Hostname
 	}
 	for _, ext := range d.Externals {
+		if ext == nil || ext.ConnectionInfo == nil {
+			continue
+		}
 		if ip := ext.ConnectionInfo["ip"]; ip != "" {
 			return ip
 		}
