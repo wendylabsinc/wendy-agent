@@ -875,7 +875,7 @@ func runMacOSNativeContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 
 	if opts.detach {
 		stream, err := conn.ContainerService.StartContainer(contextWithPostStartAgentHook(ctx, appCfg), &agentpb.StartContainerRequest{
-			AppName: appCfg.AppID,
+			AppName: appCfg.ContainerName(),
 		})
 		if err != nil {
 			return fmt.Errorf("starting container: %w", err)
@@ -891,7 +891,7 @@ func runMacOSNativeContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 	defer runCancel()
 
 	stream, err := conn.ContainerService.StartContainer(contextWithPostStartAgentHook(runCtx, appCfg), &agentpb.StartContainerRequest{
-		AppName: appCfg.AppID,
+		AppName: appCfg.ContainerName(),
 	})
 	if err != nil {
 		return fmt.Errorf("starting container: %w", err)
@@ -905,7 +905,7 @@ func runMacOSNativeContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 		<-sigCh
 		cliLogln("\nStopping container...")
 		_, _ = conn.ContainerService.StopContainer(context.Background(), &agentpb.StopContainerRequest{
-			AppName: appCfg.AppID,
+			AppName: appCfg.ContainerName(),
 		})
 		runCancel()
 	}()
@@ -1549,7 +1549,7 @@ func startAndStreamContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 
 	if opts.detach {
 		stream, err := conn.ContainerService.StartContainer(contextWithPostStartAgentHook(ctx, appCfg), &agentpb.StartContainerRequest{
-			AppName: appCfg.AppID,
+			AppName: appCfg.ContainerName(),
 		})
 		if err != nil {
 			return fmt.Errorf("starting container: %w", err)
@@ -1571,7 +1571,7 @@ func startAndStreamContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 	runCtx, runCancel := context.WithCancel(ctx)
 	defer runCancel()
 
-	outStream, stdinAttempted, err := openContainerStream(runCtx, conn.ContainerService, appCfg.AppID, appCfg)
+	outStream, stdinAttempted, err := openContainerStream(runCtx, conn.ContainerService, appCfg.ContainerName(), appCfg)
 	if err != nil {
 		return err
 	}
@@ -1585,7 +1585,7 @@ func startAndStreamContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 		<-sigCh
 		cliLogln("\nStopping container...")
 		_, _ = conn.ContainerService.StopContainer(context.Background(), &agentpb.StopContainerRequest{
-			AppName: appCfg.AppID,
+			AppName: appCfg.ContainerName(),
 		})
 		runCancel()
 	}()
@@ -1615,7 +1615,7 @@ func startAndStreamContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 			if stdinAttempted && !gotFirstResponse && status.Code(recvErr) == codes.Unimplemented {
 				cliNotice("Notice: stdin not attached (not supported by agent)")
 				startStream, startErr := conn.ContainerService.StartContainer(contextWithPostStartAgentHook(runCtx, appCfg), &agentpb.StartContainerRequest{
-					AppName: appCfg.AppID,
+					AppName: appCfg.ContainerName(),
 				})
 				if startErr != nil {
 					return fmt.Errorf("starting container: %w", startErr)
