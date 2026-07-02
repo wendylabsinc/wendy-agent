@@ -10,13 +10,18 @@ const resultFile = "last-update-result.json"
 type Outcome string
 
 const (
-	// OutcomeCommitted: healthchecks passed and the update was committed.
+	// OutcomeCommitted: the updater accepted the commit (its own health
+	// verdict, when it renders one) and the update was committed.
 	OutcomeCommitted Outcome = "committed"
-	// OutcomeRolledBack: healthchecks failed and the previous OS was restored.
+	// OutcomeRolledBack: the updater rejected the commit (or the update
+	// otherwise failed healthchecks) and the previous OS was restored.
 	OutcomeRolledBack Outcome = "rolled_back"
-	// OutcomeRollbackFailed: healthchecks failed but the rollback could not run.
+	// OutcomeRollbackFailed: the update failed healthchecks but the rollback
+	// could not run.
 	OutcomeRollbackFailed Outcome = "rollback_failed"
-	// OutcomeCommitFailed: healthchecks passed but committing the update failed.
+	// OutcomeCommitFailed: no health verdict was rendered — the updater binary
+	// was missing at commit, or the agent's own commit timeout fired. The
+	// update stays pending and is retried on the next agent start.
 	OutcomeCommitFailed Outcome = "commit_failed"
 )
 

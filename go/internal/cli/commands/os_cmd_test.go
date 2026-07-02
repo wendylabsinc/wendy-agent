@@ -396,6 +396,15 @@ func TestEvaluateOSUpdateOutcome(t *testing.T) {
 		CreatedAtUnix: fresh,
 		Note:          "wendyos-update commit failed: exit status 1 (pending update is marked failed; run rollback)",
 	}
+	// A rollback-failed record can also carry the commit-rejection reason in
+	// Note; it must not be dropped alongside RollbackError.
+	rollbackFailedWithNote := &agentpb.GetOSUpdateStatusResponse{
+		HasResult:     true,
+		Outcome:       agentpb.GetOSUpdateStatusResponse_OUTCOME_ROLLBACK_FAILED,
+		CreatedAtUnix: fresh,
+		Note:          "wendyos-update commit failed: exit status 1 (pending update is marked failed; run rollback)",
+		RollbackError: "wendyos-update reported nothing to roll back",
+	}
 
 	tests := []struct {
 		name         string
@@ -465,6 +474,17 @@ func TestEvaluateOSUpdateOutcome(t *testing.T) {
 			postVer:      "WendyOS-0.11.0",
 			wantErr:      true,
 			wantContains: []string{"avahi-daemon.service", "nothing to roll back"},
+		},
+		{
+			name:    "rollback failed surfaces the note alongside the rollback error",
+			resp:    rollbackFailedWithNote,
+			preVer:  "WendyOS-0.10.4",
+			postVer: "WendyOS-0.11.0",
+			wantErr: true,
+			wantContains: []string{
+				"is marked failed",
+				"nothing to roll back",
+			},
 		},
 		{
 			name:         "commit failed surfaces the captured reason",

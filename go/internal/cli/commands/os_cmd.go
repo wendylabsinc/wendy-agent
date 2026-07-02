@@ -667,6 +667,11 @@ func evaluateOSUpdateOutcome(
 		b.WriteString("Update failed post-reboot healthchecks, and the automatic rollback could not be performed. " +
 			"The device may be in a degraded state.\n")
 		writeFailedServices(&b, resp.GetServices())
+		// When the updater ran its own health gate (wendyos-update health.d),
+		// there are no per-service results — the reason is carried in the note.
+		if note := resp.GetNote(); note != "" {
+			fmt.Fprintf(&b, "Reason: %s\n", note)
+		}
 		if re := resp.GetRollbackError(); re != "" {
 			fmt.Fprintf(&b, "Rollback error: %s\n", re)
 		}
@@ -674,7 +679,7 @@ func evaluateOSUpdateOutcome(
 			errors.New("OS update healthchecks failed and automatic rollback did not run")
 
 	default: // OUTCOME_COMMIT_FAILED
-		msg := "Update healthchecks passed, but the update could not be committed. " +
+		msg := "The update could not be committed: no health verdict was rendered. " +
 			"The device retries the commit on its next agent restart; if it is never committed, the OS reverts on the next reboot."
 		if note := resp.GetNote(); note != "" {
 			msg += "\nReason: " + note
@@ -734,7 +739,7 @@ func formatOSUpdateStatus(resp *agentpb.GetOSUpdateStatusResponse) string {
 	case agentpb.GetOSUpdateStatusResponse_OUTCOME_ROLLBACK_FAILED:
 		b.WriteString("Last OS update: healthchecks failed and the rollback could not be performed.\n")
 	case agentpb.GetOSUpdateStatusResponse_OUTCOME_COMMIT_FAILED:
-		b.WriteString("Last OS update: healthchecks passed but the commit failed.\n")
+		b.WriteString("Last OS update: the commit did not complete (no health verdict was rendered); it will be retried.\n")
 	default:
 		b.WriteString("Last OS update: outcome unknown.\n")
 	}

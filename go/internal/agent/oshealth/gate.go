@@ -57,7 +57,7 @@ type Gate struct {
 
 // Run executes the commit-or-rollback decision. It blocks until the backend's
 // commit (or rollback) returns; it never panics, and all errors are logged.
-func (g *Gate) Run(ctx context.Context) {
+func (g *Gate) Run() {
 	marker, found, err := ReadPendingMarker(g.StateDir)
 	if err != nil {
 		g.Logger.Warn("Pending OS update marker is unreadable, discarding it", zap.Error(err))

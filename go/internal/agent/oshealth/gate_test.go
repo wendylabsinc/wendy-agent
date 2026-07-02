@@ -83,7 +83,7 @@ func (fx *gateFixture) readResult(t *testing.T) (UpdateResult, bool) {
 func TestGateNoMarkerPlainCommit(t *testing.T) {
 	fx := newGateFixture(t, UpdaterResult{Status: UpdaterNothingPending}, UpdaterResult{})
 
-	fx.gate.Run(context.Background())
+	fx.gate.Run()
 
 	if fx.commits != 1 {
 		t.Errorf("commits = %d, want 1", fx.commits)
@@ -109,7 +109,7 @@ func TestGateNoMarkerFinalizesRolledBackRecord(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	fx.gate.Run(context.Background())
+	fx.gate.Run()
 
 	rec, found := fx.readResult(t)
 	if !found {
@@ -138,7 +138,7 @@ func TestGateNoMarkerDoesNotRefinalize(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	fx.gate.Run(context.Background())
+	fx.gate.Run()
 
 	rec, _ := fx.readResult(t)
 	if !rec.FinalizedAt.Equal(finalized) {
@@ -153,7 +153,7 @@ func TestGateStaleMarker(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	fx.gate.Run(context.Background())
+	fx.gate.Run()
 
 	if fx.markerExists(t) {
 		t.Error("stale marker should be cleared")
@@ -175,7 +175,7 @@ func TestGateCorruptMarker(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	fx.gate.Run(context.Background())
+	fx.gate.Run()
 
 	if fx.markerExists(t) {
 		t.Error("corrupt marker should be cleared")
@@ -196,7 +196,7 @@ func TestGateSameBootLeavesMarkerUntouched(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	fx.gate.Run(context.Background())
+	fx.gate.Run()
 
 	if fx.commits != 0 || fx.rollback != 0 || fx.reboots != 0 {
 		t.Errorf("commits=%d rollback=%d reboots=%d, want 0/0/0 before the reboot",
@@ -225,7 +225,7 @@ func TestGateStaleSameBootLeavesMarker(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	fx.gate.Run(context.Background())
+	fx.gate.Run()
 
 	if fx.commits != 0 || fx.rollback != 0 || fx.reboots != 0 {
 		t.Errorf("commits=%d rollback=%d reboots=%d, want 0/0/0: a never-booted slot must not be committed",
@@ -250,7 +250,7 @@ func TestGateUnhealthyRollbackNothingPending(t *testing.T) {
 		UpdaterResult{Status: UpdaterNothingPending})
 	fx.writeFreshMarker(t)
 
-	fx.gate.Run(context.Background())
+	fx.gate.Run()
 
 	if fx.commits != 1 || fx.rollback != 1 {
 		t.Errorf("commits=%d rollback=%d, want 1/1", fx.commits, fx.rollback)
@@ -273,7 +273,7 @@ func TestGateUnhealthyRollbackError(t *testing.T) {
 		UpdaterResult{Status: UpdaterError, Err: errors.New("rollback exploded")})
 	fx.writeFreshMarker(t)
 
-	fx.gate.Run(context.Background())
+	fx.gate.Run()
 
 	if fx.reboots != 1 {
 		t.Error("should still reboot: the uncommitted update makes the bootloader fall back")
@@ -293,7 +293,7 @@ func TestGateUnhealthyRollbackUnavailable(t *testing.T) {
 		UpdaterResult{Status: UpdaterUnavailable})
 	fx.writeFreshMarker(t)
 
-	fx.gate.Run(context.Background())
+	fx.gate.Run()
 
 	if fx.reboots != 0 {
 		t.Error("must not reboot when the updater is unavailable")
@@ -311,7 +311,7 @@ func TestGateDelegatedHealthyCommitOK(t *testing.T) {
 	fx := newGateFixture(t, UpdaterResult{Status: UpdaterOK}, UpdaterResult{})
 	fx.writeFreshMarker(t)
 
-	fx.gate.Run(context.Background())
+	fx.gate.Run()
 
 	if fx.commits != 1 || fx.rollback != 0 || fx.reboots != 0 {
 		t.Errorf("commits=%d rollback=%d reboots=%d, want 1/0/0", fx.commits, fx.rollback, fx.reboots)
@@ -335,7 +335,7 @@ func TestGateDelegatedCommitNothingPending(t *testing.T) {
 	fx := newGateFixture(t, UpdaterResult{Status: UpdaterNothingPending}, UpdaterResult{})
 	fx.writeFreshMarker(t)
 
-	fx.gate.Run(context.Background())
+	fx.gate.Run()
 
 	if fx.rollback != 0 || fx.reboots != 0 {
 		t.Errorf("rollback=%d reboots=%d, want 0/0", fx.rollback, fx.reboots)
@@ -361,7 +361,7 @@ func TestGateDelegatedCommitRejectedRollsBack(t *testing.T) {
 		UpdaterResult{Status: UpdaterOK})
 	fx.writeFreshMarker(t)
 
-	fx.gate.Run(context.Background())
+	fx.gate.Run()
 
 	if fx.commits != 1 || fx.rollback != 1 || fx.reboots != 1 {
 		t.Errorf("commits=%d rollback=%d reboots=%d, want 1/1/1", fx.commits, fx.rollback, fx.reboots)
@@ -388,7 +388,7 @@ func TestGateDelegatedCommitUnavailableNoRollback(t *testing.T) {
 	fx := newGateFixture(t, UpdaterResult{Status: UpdaterUnavailable}, UpdaterResult{Status: UpdaterOK})
 	fx.writeFreshMarker(t)
 
-	fx.gate.Run(context.Background())
+	fx.gate.Run()
 
 	if fx.rollback != 0 || fx.reboots != 0 {
 		t.Errorf("rollback=%d reboots=%d, want 0/0 when the backend is unavailable", fx.rollback, fx.reboots)
@@ -414,7 +414,7 @@ func TestGateDelegatedCommitTimeoutRetries(t *testing.T) {
 		UpdaterResult{Status: UpdaterOK})
 	fx.writeFreshMarker(t)
 
-	fx.gate.Run(context.Background())
+	fx.gate.Run()
 
 	if fx.rollback != 0 || fx.reboots != 0 {
 		t.Errorf("rollback=%d reboots=%d, want 0/0 on a commit timeout", fx.rollback, fx.reboots)

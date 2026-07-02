@@ -1,7 +1,6 @@
 package services
 
 import (
-	"context"
 	"net/url"
 	"time"
 
@@ -50,7 +49,7 @@ func RunOSUpdateGate(logger *zap.Logger) {
 			return v
 		},
 	}
-	gate.Run(context.Background())
+	gate.Run()
 }
 
 // requestedBackendFromMarker returns the backend the gate should drive: the one

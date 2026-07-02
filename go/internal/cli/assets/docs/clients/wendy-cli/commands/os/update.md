@@ -64,8 +64,10 @@ The verdict — including any failure reason reported by `wendyos-update commit`
 
 ```
 Update failed post-reboot healthchecks and was rolled back to WendyOS-0.10.4.
-Reason: wendyos-update commit failed: exit status 4 (<reason reported by wendyos-update>)
+Reason: wendyos-update commit failed: exit status 4 (health.d/50-containerd.sh exited 1)
 ```
+
+*(the text in parentheses is whatever `wendyos-update commit` itself reported as the failure reason)*
 
 `wendy os update-status` reports the same record (including the `Reason:` line) after the fact, without re-running the update — useful for diagnosing a commit failure without shell access to the device.
 
