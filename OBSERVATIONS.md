@@ -47,6 +47,8 @@ Minor inconsistency: hardware list reports both uvcvideo nodes (video1 is the UV
 
 ## O7 — all container stderr lines are labeled severity=WARN
 
+**Filed: WDY-1812** (2026-07-02)
+
 llama.cpp informational lines (`I slot print_timing: ...`) from HelloVLM's llm service appear with `"severity":"WARN"` purely because they were written to stderr. Many well-behaved servers (uvicorn included) log INFO to stderr, so `--level warn` filtering will be full of INFO noise, and dashboards will over-report warnings. Layer: agent log ingestion. Not Thor-specific.
 
 ## O8 — `wendy run` shows zero build output when an apple-container build fails
