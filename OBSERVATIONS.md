@@ -31,6 +31,8 @@ CLI papercuts, docs gaps, general WendyOS bugs, flaky behavior noticed along the
 
 Minor inconsistency: hardware list reports both uvcvideo nodes (video1 is the UVC metadata node), camera list filters to capture nodes. Arguably correct behavior; recorded for completeness. Not Thor-specific.
 
+**Resolution:** no issue filed (behavior is correct); explanatory help text added to `wendy device camera list` on this branch instead (2026-07-02).
+
 ## O5 — `wendy init --template X --entitlement Y` silently ignores the entitlement flags
 
 `wendy init --app-id autotest-gpu --target wendyos --language python --template simple-api --entitlement gpu` produces a wendy.json with only the template's `network` entitlement — the explicit `--entitlement gpu` is dropped without any warning. Code: `init_cmd.go` — `runTemplateFlow` uses the template's wendy.json verbatim; `resolveInitEntitlements` only runs in the wizard (no-template) flow. Reproduced with dev CLI (worktree @ 66b74dee) and installed 2026.07.01-101829. Expected: merge the requested entitlements into the template config, or error "cannot combine --template with --entitlement". Layer: CLI.
