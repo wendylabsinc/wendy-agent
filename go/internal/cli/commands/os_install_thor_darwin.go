@@ -3,7 +3,6 @@
 package commands
 
 import (
-	"bufio"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -426,63 +425,94 @@ func verifySHA256(path, want string) error {
 }
 
 // pickRecoveryDevice lists Jetsons in recovery mode and selects one (auto when there
-// is exactly one, interactive picker when there are several).
+// is exactly one, interactive picker when there are several). An empty first scan
+// keeps rescanning passively until a device shows up or the user quits.
 func pickRecoveryDevice() (rcm.RecoveryDevice, error) {
-	for {
-		devs, err := rcm.ListRecoveryDevices()
-		if err != nil {
+	devs, err := rcm.ListRecoveryDevices()
+	if err != nil {
+		return rcm.RecoveryDevice{}, err
+	}
+	if len(devs) == 0 {
+		if devs, err = waitForRecoveryDevices(); err != nil {
 			return rcm.RecoveryDevice{}, err
 		}
-		switch len(devs) {
-		case 0:
-			// The user already confirmed the Thor is in recovery mode, so a zero
-			// scan usually means cabling or the button sequence needs another try.
-			// Offer a rescan instead of aborting.
-			fmt.Print("\nNo Jetson found in USB recovery mode.\n" +
-				"  Check the USB-C cable is in the port next to the HDMI port and re-do the\n" +
-				"  recovery-mode button sequence, then rescan.\n" +
-				"Press Enter to rescan, or 'q' to quit: ")
-			if readQuit() {
-				return rcm.RecoveryDevice{}, ErrUserCancelled
-			}
-			continue
-		case 1:
-			return devs[0], nil
-		default:
-			var items []tui.PickerItem
-			byKey := make(map[string]rcm.RecoveryDevice, len(devs))
-			for _, d := range devs {
-				byKey[d.PathKey] = d
-				items = append(items, tui.PickerItem{
-					Name:        d.Describe(),
-					Description: "",
-					Section:     "Recovery devices",
-					SortKey:     d.PathKey,
-					Value:       d.PathKey,
-				})
-			}
-			sel, err := pickFromItems("Select the Thor to flash", items)
-			if err != nil {
-				return rcm.RecoveryDevice{}, err
-			}
-			return byKey[sel], nil
-		}
 	}
+	if len(devs) == 1 {
+		return devs[0], nil
+	}
+	var items []tui.PickerItem
+	byKey := make(map[string]rcm.RecoveryDevice, len(devs))
+	for _, d := range devs {
+		byKey[d.PathKey] = d
+		items = append(items, tui.PickerItem{
+			Name:        d.Describe(),
+			Description: "",
+			Section:     "Recovery devices",
+			SortKey:     d.PathKey,
+			Value:       d.PathKey,
+		})
+	}
+	sel, err := pickFromItems("Select the Thor to flash", items)
+	if err != nil {
+		return rcm.RecoveryDevice{}, err
+	}
+	return byKey[sel], nil
 }
 
-// readQuit reads a single line and reports whether the user asked to quit
-// (q/quit). Any other input — including a bare Enter — means "continue".
-func readQuit() bool {
-	s := bufio.NewScanner(os.Stdin)
-	if !s.Scan() {
-		return true // EOF (e.g. closed stdin) — don't loop forever
+// waitForRecoveryDevices handles an empty recovery scan: the user already
+// confirmed the Thor is in recovery mode, so this usually means cabling or the
+// button sequence needs another try. Explain what to check once, then rescan
+// passively every 1.5s under a spinner until a Jetson appears — no keypress
+// needed — or the user quits with q/ctrl+c. Always returns ≥1 device on success.
+func waitForRecoveryDevices() ([]rcm.RecoveryDevice, error) {
+	if !isInteractiveTerminal() {
+		return nil, fmt.Errorf("no Jetson found in USB recovery mode")
 	}
-	switch strings.ToLower(strings.TrimSpace(s.Text())) {
-	case "q", "quit":
-		return true
-	default:
-		return false
+
+	fmt.Println()
+	fmt.Println(tui.WarningMessage("No Jetson in USB recovery mode yet — it will be picked up automatically once it appears."))
+	fmt.Println("  While this keeps scanning, double-check:")
+	fmt.Println("   • the USB-C cable is in the " + briefPort.Render("port next to the HDMI port"))
+	fmt.Println("   • the recovery button sequence: hold " + briefKey.Render("Force Recovery") + " (middle), tap " + briefKey.Render("Reset") + " (right), release")
+	fmt.Println()
+
+	p := tui.NewProgressProgram(tui.NewSpinner("Waiting for the Thor to appear... (press q to quit)"))
+	stop := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(1500 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ticker.C:
+				devs, err := rcm.ListRecoveryDevices()
+				if err != nil {
+					p.Send(tui.SpinnerDoneMsg{Err: err})
+					return
+				}
+				if len(devs) > 0 {
+					p.Send(tui.SpinnerDoneMsg{Result: devs})
+					return
+				}
+			}
+		}
+	}()
+
+	finalModel, err := p.Run()
+	close(stop)
+	if err != nil {
+		return nil, fmt.Errorf("recovery scan: %w", err)
 	}
+	model := finalModel.(tui.SpinnerModel)
+	if !model.Done() {
+		return nil, ErrUserCancelled // q / ctrl+c
+	}
+	result, serr := model.Result()
+	if serr != nil {
+		return nil, serr
+	}
+	return result.([]rcm.RecoveryDevice), nil
 }
 
 // Styles for the pre-flash briefing. Color carries the hierarchy: emerald
