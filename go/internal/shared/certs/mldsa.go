@@ -182,7 +182,10 @@ func BuildServerVerifyConnection(opts ServerVerifyOpts) (func(tls.ConnectionStat
 		// the chain fails to verify or the peer later rejects our client cert.
 		if opts.OnServerIdentity != nil {
 			if id, ok, idErr := IdentityFromCert(leaf); ok && idErr == nil {
-				opts.OnServerIdentity(id)
+				func() {
+					defer func() { _ = recover() }()
+					opts.OnServerIdentity(id)
+				}()
 			}
 		}
 
