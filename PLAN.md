@@ -299,6 +299,19 @@ well as `WDY`, so Release issues can live in the same project.
   submission prep, including entitlement, APNs setup, and minimal app handling.
 - Resume: not available until prepared.
 
+#### WDY-1794 — Update Wendy Companion App logo with new artwork
+
+- Linear: https://linear.app/wendylabsinc/issue/WDY-1794/update-wendy-companion-app-logo-with-new-artwork
+- State: Backlog
+- Team: Engineering (`WDY`)
+- Project: Wendy Companion App & SDK
+- Assignee: `konstantin@wendy.sh`
+- Priority: No priority
+- Repo: `wendylabsinc/wendy-companion-ios`
+- Status: queued. Replace the app logo/icon with the new artwork Max shared
+  with Konstantin via Slack DM; the asset must be retrieved from that DM.
+- Resume: not available until prepared.
+
 ### Candidate / related issues to triage
 
 - WDY-1549 — Lead development of the hackathon companion app — Backlog,
