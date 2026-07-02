@@ -219,7 +219,7 @@ struct HelloVLM {
             let cleanedResponse = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !cleanedResponse.isEmpty else { continue }
 
-            print("Response: \(cleanedResponse)")
+            print("Response: \(cleanedResponse.prefix(160))\(cleanedResponse.count > 160 ? "…" : "")")
             if let stats = result.stats {
                 print("Stats: \(stats)")
             }
