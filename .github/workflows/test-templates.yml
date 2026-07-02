@@ -257,13 +257,8 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           set -euo pipefail
-          if pkg-config --exists libusb-1.0 2>/dev/null; then exit 0; fi
-          if sudo -n true 2>/dev/null; then
+          if ! pkg-config --exists libusb-1.0 2>/dev/null; then
             sudo apt-get update && sudo apt-get install -y pkg-config libusb-1.0-0-dev
-          else
-            echo "error: libusb-1.0 dev headers missing on this runner and passwordless sudo is unavailable." >&2
-            echo "Install them once with: sudo apt-get install -y pkg-config libusb-1.0-0-dev" >&2
-            exit 1
           fi
 
       - name: Build CLI
