@@ -108,7 +108,7 @@ func (e orgMismatchDeviceError) Error() string {
 		have = strings.Join(parts, ", ")
 	}
 	return fmt.Sprintf(
-		"This device belongs to org %d; your credentials cover %s.\n"+
+		"The device's certificate indicates it belongs to org %d; your credentials cover %s.\n"+
 			"Your account isn't a member of org %d — run 'wendy cloud login' with an account that can access org %d.",
 		e.deviceOrg, have, e.deviceOrg, e.deviceOrg)
 }
