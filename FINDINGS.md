@@ -23,6 +23,8 @@ Issues that would not reproduce on Orin / Raspberry Pi / VM. Each entry: symptom
 
 ## F2 — static GPU-entitlement fallback device list is wrong for Thor (uvm major 487, missing nvidia1)
 
+**Filed: WDY-1804** (2026-07-02)
+
 - **Symptom:** `applyGPU` (go/internal/agent/oci/entitlements.go:159) hardcodes `/dev/nvidia0, nvidiactl, nvidia-uvm, nvidia-uvm-tools, nvidia-modeset` all as char major **195** minor 0, and adds a cgroup allow rule for major 195 only. On Thor the real nodes are: nvidia0=195:0, nvidia1=195:1, nvidiactl=195:255, nvidia-modeset=195:254, **nvidia-uvm=487:0, nvidia-uvm-tools=487:1**, nvidia-caps=501:*. If the CDI path is unavailable (spec generation failed / nvidia-ctk missing), the fallback (a) mknods nvidia-uvm with the wrong major (487 expected, 195 created) and (b) the device-cgroup does not allow major 487, so CUDA init (which requires nvidia-uvm) fails. `/dev/nvidia1` is also absent from the fallback.
 - **Evidence (host):** `ls -l /dev/nvidia*` → `crw-rw-rw- 1 root root 487,0 /dev/nvidia-uvm`, `487,1 nvidia-uvm-tools`, `195,1 nvidia1`. CDI spec at /etc/cdi/nvidia.yaml does include nvidia0/nvidia1/uvm — so the primary path is fine; only the fallback is broken.
 - **Impact/severity:** Medium-low: latent. Only bites when CDI is missing — but that is exactly the "minimal fallback" scenario the code comments promise works. Note uvm's major is dynamically allocated on all recent drivers, so this is not Thor-only in principle, but Thor (JP7/CUDA 13) is where 487 was observed.
