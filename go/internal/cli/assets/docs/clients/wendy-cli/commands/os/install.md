@@ -34,7 +34,7 @@ wendy install https://ci.example.com/artifacts/custom.img.zst
 
 ## Custom blobs
 
-`wendy install <blob>` with a single positional argument installs a custom artifact — a locally built or otherwise unpublished image — instead of a manifest version. The blob may be a local path or an `http(s)` URL (downloaded to a temp file first, with a progress bar).
+`wendy install <blob>` with a single positional argument installs a custom artifact — a locally built or otherwise unpublished image — instead of a manifest version. The blob may be a local path or an `http(s)` URL (downloaded to a temp file first, with a progress bar). Pass `--sha256 <hex>` to verify the blob against a known digest before anything is installed; plain `http://` URLs print a warning since the transfer is unencrypted and unauthenticated.
 
 The blob's type decides the flow:
 
@@ -181,5 +181,6 @@ Requires an active `wendy auth login` session. The CLI creates an enrollment tok
 | `--pre-enroll` | auto | Pre-enroll with Wendy Cloud during imaging |
 | `--storage` | auto | Force image storage variant: `nvme` or `sd` (default: auto-detect — real NVMe drives use `nvme`; a USB-attached drive uses the device's published image, `sd` for Raspberry Pi / `nvme` for Jetson SSD enclosures) |
 | `--no-bmap` | false | Disable bmap-accelerated flashing even when a block map is available |
+| `--sha256` | — | Expected SHA-256 (hex) of a blob argument; verified before installing |
 
 > **TODO**: Post-flashing Linux devices still need certificate provisioning and Wendy Cloud enrollment if `--pre-enroll` was not used. See [`wendy device setup`](../device/setup.md), [PKI](../../../../pki/), and [Wendy Cloud](../../../../cloud/).

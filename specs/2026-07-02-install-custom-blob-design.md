@@ -63,7 +63,8 @@ progress. Two extensions:
 
 1. **zstd decoding** in `openLocalImageStream` — sequential decode (seekable-zstd files
    decode fine sequentially; no bmap fast path for custom blobs). Progress uses the
-   zstd frame content size when present, else the compressed-bytes progress mode.
+   exact size from the seekable-zstd seek table when the file has one, else the
+   compressed-bytes progress mode (a plain zstd stream cannot report its size).
 2. **Provisioning** — after the write, `--wifi*` / `--device-name` / `--pre-enroll`
    are applied via the existing `provisionConfigWithRetry`, same as the manifest flow.
 
@@ -72,17 +73,27 @@ progress. Two extensions:
 `installThor` is refactored to accept a flashpack *source*: manifest plan (unchanged)
 or local tarball. A new `flashpack.ResolveTarball(tarballPath, destDir)` extracts into
 an `os.MkdirTemp` directory, removed after the flash (success or failure) — **no
-caching** of custom flashpacks. No checksum verification; a note is printed that the
-flashpack is unverified. The brief/confirm/RCM/stage-2 flow and step UI are identical;
+caching** of custom flashpacks. There is no published manifest to verify a custom
+flashpack against; a note is printed that the flashpack is unverified, and callers can
+pass `--sha256 <hex>` to pin the blob to a known digest (the tar extraction rejects
+path traversal and skips symlink/hardlink entries, and the embedded stage-1 integrity
+map is still enforced). The brief/confirm/RCM/stage-2 flow and step UI are identical;
 the displayed "version" is the file's basename. On non-macOS platforms a flashpack blob
 fails with a clear "Thor flashing is currently macOS-only" error.
+
+*Future work:* signature-based verification (e.g. a detached Sigstore signature, in
+line with the release SBOM/provenance work) so custom artifacts can be authenticated
+rather than merely pinned by hash.
 
 ## Remote URLs
 
 `http(s)://` arguments download first via the existing `downloadImageInto` (parallel
 range requests + progress) into a temp file in the OS cache dir, removed when the
 install finishes. Detection uses the URL path basename as the extension hint, then
-content-sniffs the downloaded file.
+content-sniffs the downloaded file. When the URL's basename already identifies a
+flashpack, incompatible flags fail before the download starts. Plain `http://` URLs
+print a warning (unencrypted, unauthenticated); `--sha256 <hex>` verifies the
+downloaded blob before any install work.
 
 ## Errors & edge cases
 

@@ -5,8 +5,6 @@ package commands
 import (
 	"bufio"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -393,24 +391,6 @@ func byteProgress(downloaded, total int64) string {
 		return fmt.Sprintf("%.1f GiB", float64(downloaded)/gib)
 	}
 	return fmt.Sprintf("%.1f/%.1f GiB", float64(downloaded)/gib, float64(total)/gib)
-}
-
-// verifySHA256 checks that path's SHA-256 matches the expected lowercase-hex digest.
-func verifySHA256(path, want string) error {
-	f, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
-		return fmt.Errorf("hashing %s: %w", filepath.Base(path), err)
-	}
-	got := hex.EncodeToString(h.Sum(nil))
-	if !strings.EqualFold(got, want) {
-		return fmt.Errorf("flashpack checksum mismatch: got %s, manifest says %s", got, want)
-	}
-	return nil
 }
 
 // pickRecoveryDevice lists Jetsons in recovery mode and selects one (auto when there

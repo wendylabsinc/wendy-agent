@@ -4,11 +4,14 @@ package commands
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"net/url"
 	"os"
 	"path"
+	"path/filepath"
 	"strings"
 
 	"github.com/klauspost/compress/zstd"
@@ -31,6 +34,7 @@ type blobInstallOptions struct {
 	drive                string
 	force                bool
 	yesOverwriteInternal bool
+	sha256               string // expected blob digest (hex); empty skips verification
 	wifi                 wifiCLIOptions
 	deviceName           string
 	preOpts              preEnrollOptions
@@ -86,6 +90,17 @@ func runOSInstallBlob(ctx context.Context, arg string, opts blobInstallOptions) 
 			return fmt.Errorf("invalid blob URL: %w", err)
 		}
 		nameHint = path.Base(u.Path)
+		// Fail fast on flag conflicts detectable from the URL's name alone,
+		// before paying for the download. Ambiguous names are re-checked after
+		// the content sniff below.
+		if kind, known := blobKindFromName(nameHint); known && kind == blobFlashpack {
+			if err := rejectFlashpackFlags(nameHint, opts); err != nil {
+				return err
+			}
+		}
+		if strings.HasPrefix(arg, "http://") {
+			fmt.Println(tui.WarningMessage("Downloading over plain http:// — the transfer is unencrypted and unauthenticated. Prefer https://, or pass --sha256 to verify the blob."))
+		}
 		fmt.Printf("Downloading %s...\n", arg)
 		tmp, err := downloadImage(&imageInfo{DownloadURL: arg, Version: nameHint})
 		if err != nil {
@@ -97,6 +112,13 @@ func runOSInstallBlob(ctx context.Context, arg string, opts blobInstallOptions) 
 		return fmt.Errorf("image file: %w", err)
 	}
 
+	if opts.sha256 != "" {
+		fmt.Println("Verifying blob checksum...")
+		if err := verifySHA256(localPath, opts.sha256); err != nil {
+			return err
+		}
+	}
+
 	kind, err := detectBlobKind(localPath, nameHint)
 	if err != nil {
 		return err
@@ -104,13 +126,40 @@ func runOSInstallBlob(ctx context.Context, arg string, opts blobInstallOptions) 
 
 	switch kind {
 	case blobFlashpack:
-		if bad := opts.flashpackIncompatibleFlags(); len(bad) != 0 {
-			return fmt.Errorf("%s is a Thor flashpack, which flashes over USB recovery: %s cannot be used with it", nameHint, strings.Join(bad, ", "))
+		if err := rejectFlashpackFlags(nameHint, opts); err != nil {
+			return err
 		}
 		return installThorLocalFlashpack(ctx, localPath, nameHint, opts.force)
 	default:
 		return installLocalDiskImage(ctx, localPath, opts)
 	}
+}
+
+// rejectFlashpackFlags errors when flags that make no sense for a flashpack
+// blob were set.
+func rejectFlashpackFlags(nameHint string, opts blobInstallOptions) error {
+	if bad := opts.flashpackIncompatibleFlags(); len(bad) != 0 {
+		return fmt.Errorf("%s is a Thor flashpack, which flashes over USB recovery: %s cannot be used with it", nameHint, strings.Join(bad, ", "))
+	}
+	return nil
+}
+
+// verifySHA256 checks that path's SHA-256 matches the expected lowercase-hex digest.
+func verifySHA256(path, want string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return fmt.Errorf("hashing %s: %w", filepath.Base(path), err)
+	}
+	got := hex.EncodeToString(h.Sum(nil))
+	if !strings.EqualFold(got, want) {
+		return fmt.Errorf("checksum mismatch: got %s, expected %s", got, want)
+	}
+	return nil
 }
 
 // installLocalDiskImage writes a local disk-image blob to a drive: elevation
@@ -204,12 +253,21 @@ func installLocalDiskImage(ctx context.Context, imagePath string, opts blobInsta
 // supplied (a URL's path basename for downloads) and is consulted first; when
 // the extension is unknown or ambiguous the file's magic bytes decide.
 func detectBlobKind(filePath, nameHint string) (blobKind, error) {
+	if kind, known := blobKindFromName(nameHint); known {
+		return kind, nil
+	}
+	return sniffBlobKind(filePath)
+}
+
+// blobKindFromName classifies a blob by its extension alone. known is false
+// when the extension doesn't identify the kind and the content must be sniffed.
+func blobKindFromName(nameHint string) (kind blobKind, known bool) {
 	name := strings.ToLower(path.Base(strings.ReplaceAll(nameHint, "\\", "/")))
 	switch {
 	case strings.HasSuffix(name, ".tegraflash"),
 		strings.HasSuffix(name, ".flashpack"),
 		strings.HasSuffix(name, ".tar.zst"):
-		return blobFlashpack, nil
+		return blobFlashpack, true
 	case strings.HasSuffix(name, ".img"),
 		strings.HasSuffix(name, ".raw"),
 		strings.HasSuffix(name, ".wic"),
@@ -217,9 +275,9 @@ func detectBlobKind(filePath, nameHint string) (blobKind, error) {
 		strings.HasSuffix(name, ".zip"),
 		strings.HasSuffix(name, ".gz"),
 		strings.HasSuffix(name, ".img.zst"):
-		return blobDiskImage, nil
+		return blobDiskImage, true
 	}
-	return sniffBlobKind(filePath)
+	return blobDiskImage, false
 }
 
 // sniffBlobKind classifies a blob by content. gzip and zip are always disk

@@ -59,6 +59,7 @@ func newOSInstallCmd() *cobra.Command {
 	var noWifi bool
 	var deviceName string
 	var enrollCloudGRPC string
+	var sha256Flag string
 
 	cmd := &cobra.Command{
 		Use:   "install [blob] [drive]",
@@ -88,13 +89,17 @@ Pre-seed multiple WiFi networks (repeatable, highest-priority first):
 Flags can be provided progressively — omitted values trigger interactive pickers.`,
 		Args: cobra.MaximumNArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// Two-positional direct-install mode is incompatible with manifest-backed flags.
-			if len(args) == 2 && (deviceType != "" || versionFlag != "" || driveFlag != "" || wifiSSID != "" || wifiPassword != "" || len(wifiEntries) > 0 || noWifi || deviceName != "" || enrollCloudGRPC != "") {
-				return fmt.Errorf("positional [image] [drive] arguments cannot be combined with --device-type, --version, --drive, --wifi-ssid, --wifi-password, --wifi, --no-wifi, --device-name, or --cloud-grpc")
+			// Two-positional direct-install mode ignores manifest and provisioning
+			// steps entirely, so reject flags that would otherwise be silently dropped.
+			if len(args) == 2 && (deviceType != "" || versionFlag != "" || nightly || storageOverride != "" || driveFlag != "" || wifiSSID != "" || wifiPassword != "" || len(wifiEntries) > 0 || noWifi || deviceName != "" || cmd.Flags().Changed("pre-enroll") || enrollCloudGRPC != "" || sha256Flag != "") {
+				return fmt.Errorf("positional [image] [drive] arguments cannot be combined with --device-type, --version, --nightly, --storage, --drive, --wifi-ssid, --wifi-password, --wifi, --no-wifi, --device-name, --pre-enroll, --cloud-grpc, or --sha256")
 			}
 			// A blob carries its own device type and version.
 			if len(args) == 1 && (deviceType != "" || versionFlag != "" || nightly || storageOverride != "") {
 				return fmt.Errorf("a blob install cannot be combined with --device-type, --version, --nightly, or --storage")
+			}
+			if len(args) == 0 && sha256Flag != "" {
+				return fmt.Errorf("--sha256 requires a blob argument (wendy os install <blob> --sha256 <hex>)")
 			}
 			if nightly && versionFlag != "" {
 				return fmt.Errorf("--nightly and --version are mutually exclusive")
@@ -125,6 +130,7 @@ Flags can be provided progressively — omitted values trigger interactive picke
 					drive:                driveFlag,
 					force:                force,
 					yesOverwriteInternal: yesOverwriteInternal,
+					sha256:               sha256Flag,
 					wifi:                 opts,
 					deviceName:           deviceName,
 					preOpts:              preOpts,
@@ -149,6 +155,7 @@ Flags can be provided progressively — omitted values trigger interactive picke
 	cmd.Flags().StringVar(&deviceName, "device-name", "", "Set device name on first boot (e.g. brave-dolphin)")
 	cmd.Flags().BoolVar(&preEnroll, "pre-enroll", false, "Pre-enroll this device with Wendy Cloud during imaging (requires 'wendy auth login')")
 	cmd.Flags().StringVar(&enrollCloudGRPC, "cloud-grpc", "", "Cloud gRPC endpoint of the auth session to use for pre-enrollment (optional when a default is set via 'wendy auth use')")
+	cmd.Flags().StringVar(&sha256Flag, "sha256", "", "Expected SHA-256 (hex) of a blob argument; verified before installing")
 
 	return cmd
 }

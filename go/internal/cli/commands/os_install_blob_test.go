@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/klauspost/compress/zstd"
@@ -216,6 +217,30 @@ func TestFlashpackIncompatibleFlags(t *testing.T) {
 		if bad[i] != want[i] {
 			t.Errorf("flag %d = %q, want %q", i, bad[i], want[i])
 		}
+	}
+}
+
+func TestVerifySHA256(t *testing.T) {
+	path := writeBlob(t, "blob.img", []byte("wendy"))
+	// sha256("wendy")
+	const want = "962cd22346a772beb97a793d2680b0f518615d9de049ce34079d625fbe938f4d"
+	if err := verifySHA256(path, want); err != nil {
+		t.Errorf("matching digest rejected: %v", err)
+	}
+	if err := verifySHA256(path, strings.ToUpper(want)); err != nil {
+		t.Errorf("digest comparison should be case-insensitive: %v", err)
+	}
+	err := verifySHA256(path, "deadbeef")
+	if err == nil || !strings.Contains(err.Error(), "checksum mismatch") {
+		t.Errorf("want checksum mismatch, got %v", err)
+	}
+}
+
+func TestInstallBlobSHA256Mismatch(t *testing.T) {
+	path := writeBlob(t, "blob.img", []byte("payload"))
+	err := runOSInstallBlob(t.Context(), path, blobInstallOptions{sha256: "deadbeef", force: true})
+	if err == nil || !strings.Contains(err.Error(), "checksum mismatch") {
+		t.Fatalf("want checksum mismatch before any install work, got %v", err)
 	}
 }
 
