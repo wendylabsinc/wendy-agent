@@ -341,7 +341,7 @@ Expected: no output (success).
 - [ ] **Step 8: Commit**
 
 ```bash
-cd /Users/joannisorlandos/git/wendy/wendyos-wt-mtls-org
+cd ../wendyos-wt-mtls-org
 git add go/internal/cli/grpcclient/client.go go/internal/cli/grpcclient/observed_org_test.go
 git commit -m "feat(grpcclient): expose ObservedServerOrg from mTLS handshake
 
