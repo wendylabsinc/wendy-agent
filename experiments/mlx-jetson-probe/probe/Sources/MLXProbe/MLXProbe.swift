@@ -1,7 +1,9 @@
 import ArgumentParser
 import Foundation
 import MLX
+import MLXHuggingFace
 import MLXLMCommon
+import Tokenizers
 import MLXVLM
 
 /// Feasibility probe for MLX text generation on NVIDIA Jetson (CUDA).
@@ -40,13 +42,7 @@ struct MLXProbe: AsyncParsableCommand {
         print("Loading model: \(modelDirectory.path) …")
         let loadStartedAt = Date()
         let container = try await VLMModelFactory.shared.loadContainer(
-            configuration: ModelConfiguration(directory: modelDirectory)
-        ) { progress in
-            let percent = Int(progress.fractionCompleted * 100)
-            if percent % 25 == 0 {
-                print("  Loading: \(percent)%")
-            }
-        }
+            from: modelDirectory, using: #huggingFaceTokenizerLoader())
         print(String(format: "Model loaded in %.1fs", Date().timeIntervalSince(loadStartedAt)))
 
         let userInput = UserInput(chat: [.user(prompt)])
@@ -63,7 +59,6 @@ struct MLXProbe: AsyncParsableCommand {
             switch generation {
             case .chunk(let text):
                 print(text, terminator: "")
-                fflush(stdout)
             case .info(let info):
                 print("\n")
                 print("=== RESULT ===")

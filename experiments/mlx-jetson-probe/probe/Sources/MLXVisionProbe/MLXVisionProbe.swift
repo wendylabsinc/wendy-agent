@@ -2,7 +2,9 @@ import ArgumentParser
 import Foundation
 import GStreamer
 import MLX
+import MLXHuggingFace
 import MLXLMCommon
+import Tokenizers
 import MLXVLM
 
 /// Vision feasibility probe for MLX VLMs on NVIDIA Jetson: captures one
@@ -22,6 +24,9 @@ struct MLXVisionProbe: AsyncParsableCommand {
     @Option(name: .long, help: "V4L2 camera device.")
     var cameraDevice: String = "/dev/video0"
 
+    @Option(name: .long, help: "Use a JPEG file instead of the camera (decoded via GStreamer).")
+    var imageFile: String?
+
     @Option(name: .long, help: "Edge length frames are scaled to (the model's native size).")
     var imageSize: Int = 896
 
@@ -34,10 +39,15 @@ struct MLXVisionProbe: AsyncParsableCommand {
     mutating func run() async throws {
         // GStreamer scales/converts to the model's native input so the MLX
         // side needs no resize: RGB, tightly packed (videoconvert), square.
+        let source: String
+        if let imageFile {
+            source = "filesrc location=\(imageFile) ! jpegdec"
+        } else {
+            source = "v4l2src device=\(cameraDevice) ! video/x-raw,width=640,height=480"
+        }
         let pipeline = try Pipeline(
             """
-            v4l2src device=\(cameraDevice) ! \
-            video/x-raw,width=640,height=480 ! \
+            \(source) ! \
             videoconvert ! videoscale ! \
             video/x-raw,format=RGB,width=\(imageSize),height=\(imageSize) ! \
             appsink name=sink
@@ -45,12 +55,12 @@ struct MLXVisionProbe: AsyncParsableCommand {
         let sink = try AppSink(pipeline: pipeline, name: "sink")
         try pipeline.play()
 
-        print("Capturing frame from \(cameraDevice) …")
+        print("Capturing frame from \(imageFile ?? cameraDevice) …")
         var captured: MLXArray?
         var seen = 0
         for try await frame in sink.frames() {
             seen += 1
-            if seen <= warmupFrames { continue }
+            if imageFile == nil, seen <= warmupFrames { continue }
 
             let expected = frame.width * frame.height * 3
             captured = try frame.withUnsafeBytes { buffer -> MLXArray in
@@ -73,8 +83,7 @@ struct MLXVisionProbe: AsyncParsableCommand {
         print("Loading model: \(modelDirectory.path) …")
         let loadStartedAt = Date()
         let container = try await VLMModelFactory.shared.loadContainer(
-            configuration: ModelConfiguration(directory: modelDirectory)
-        ) { _ in }
+            from: modelDirectory, using: #huggingFaceTokenizerLoader())
         print(String(format: "Model loaded in %.1fs", Date().timeIntervalSince(loadStartedAt)))
 
         let userInput = UserInput(chat: [.user(prompt, images: [.array(image)])])
@@ -90,7 +99,6 @@ struct MLXVisionProbe: AsyncParsableCommand {
             switch generation {
             case .chunk(let text):
                 print(text, terminator: "")
-                fflush(stdout)
             case .info(let info):
                 print("\n")
                 print("=== RESULT ===")
