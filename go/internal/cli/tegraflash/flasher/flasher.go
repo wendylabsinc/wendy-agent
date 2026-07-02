@@ -19,6 +19,7 @@ package flasher
 
 import (
 	"bufio"
+	"context"
 	_ "embed"
 	"errors"
 	"fmt"
@@ -77,10 +78,22 @@ type Options struct {
 	// Board is the bootburn board name (default "jetson-t264").
 	Board string
 	Out   io.Writer
+	// Progress, if set, receives the running USB-push byte count (accumulated
+	// across partitions) and the estimated total (summed from the flash plan's
+	// image files; 0 when the plan couldn't be sized). Called ~once per second.
+	// The count tracks transfers only — bootburn's signing/verification time is
+	// invisible to it — and can slightly overshoot total on push retries.
+	Progress func(written, total int64)
 }
 
 // Run drives bootburn's FlashImages over ADB via the monkeypatch driver.
-func Run(opts Options) error {
+// Cancelling ctx aborts the flash: the bootburn process group is killed and
+// ctx's error is returned. The child runs in its own process group, so a
+// terminal ctrl+c does not reach it — cancelling ctx is the only way to stop it.
+func Run(ctx context.Context, opts Options) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	out := opts.Out
 	if out == nil {
 		out = os.Stdout
@@ -162,6 +175,7 @@ func Run(opts Options) error {
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 	cmd.Env = envWithADB(opts.ADBDir, pyDir, opts.ADBPort, progressPath)
+	setProcessGroup(cmd)
 
 	// Up-front plan from FileToFlash.txt, so the (long, mostly silent) write reads
 	// as deliberate progress rather than a hang.
@@ -186,9 +200,18 @@ func Run(opts Options) error {
 	tick := time.NewTicker(time.Second)
 	defer tick.Stop()
 	var maxBytes int64 // most bytes seen pushed; 0 means nothing was ever written
+	// The shim's progress counter is per-push (reset for each partition), so the
+	// running total accumulates completed pushes: a counter that shrank means a
+	// new push started and the previous one's final count is banked.
+	var pushAccum, lastPush int64
 	lastHeartbeat := start
 	for {
 		select {
+		case <-ctx.Done():
+			killProcessGroup(cmd)
+			<-done // reap; ignore the kill-induced error
+			fmt.Fprintf(out, "Flash aborted after %s.\n", elapsed(start))
+			return ctx.Err()
 		case werr := <-done:
 			if n, ok := readProgressFile(progressPath); ok && n > maxBytes {
 				maxBytes = n
@@ -199,8 +222,17 @@ func Run(opts Options) error {
 			fmt.Fprintf(out, "Partitions written in %s.\n", elapsed(start))
 			return nil
 		case now := <-tick.C:
-			if n, ok := readProgressFile(progressPath); ok && n > maxBytes {
-				maxBytes = n
+			if n, ok := readProgressFile(progressPath); ok {
+				if n > maxBytes {
+					maxBytes = n
+				}
+				if n < lastPush {
+					pushAccum += lastPush
+				}
+				lastPush = n
+				if opts.Progress != nil {
+					opts.Progress(pushAccum+n, plan.totalBytes)
+				}
 			}
 			if now.Sub(lastHeartbeat) >= 60*time.Second {
 				lastHeartbeat = now
@@ -260,12 +292,16 @@ func readProgressFile(path string) (int64, bool) {
 
 // flashPlan is a human summary of FileToFlash.txt.
 type flashPlan struct {
-	count   int    // number of partition entries
-	summary string // notable partitions, e.g. "ESP, rootfs (A/B), config"
+	count      int    // number of partition entries
+	summary    string // notable partitions, e.g. "ESP, rootfs (A/B), config"
+	totalBytes int64  // sum of the listed image files' sizes (0 if none could be sized)
 }
 
-// summarizeFlashPlan parses FileToFlash.txt for a count and the notable large
-// NVMe partitions. It is best-effort: a parse miss just yields a thinner summary.
+// summarizeFlashPlan parses FileToFlash.txt for a count, the notable large
+// NVMe partitions, and a total-bytes estimate (each entry's image file — column
+// 3, living next to FileToFlash.txt — stat'ed and summed per occurrence, since
+// A/B slots push the same image twice). Best-effort: a parse or stat miss just
+// yields a thinner summary / smaller total.
 func summarizeFlashPlan(fileToFlash string) flashPlan {
 	var p flashPlan
 	f, err := os.Open(fileToFlash)
@@ -273,6 +309,7 @@ func summarizeFlashPlan(fileToFlash string) flashPlan {
 		return p
 	}
 	defer f.Close()
+	imagesDir := filepath.Dir(fileToFlash)
 	var hasESP, hasRootfs, hasConfig bool
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {
@@ -281,6 +318,15 @@ func summarizeFlashPlan(fileToFlash string) flashPlan {
 			continue
 		}
 		p.count++
+		if fields := strings.Fields(line); len(fields) >= 3 {
+			// Base() confines the stat to imagesDir; plan entries are bare
+			// filenames, so anything with path components is malformed anyway.
+			if name := filepath.Base(fields[2]); name != "." && name != ".." && name != "/" {
+				if fi, serr := os.Stat(filepath.Join(imagesDir, name)); serr == nil {
+					p.totalBytes += fi.Size()
+				}
+			}
+		}
 		low := strings.ToLower(line)
 		switch {
 		case strings.Contains(low, "esp.img"):

@@ -32,11 +32,12 @@ func listUMSDisks() ([]UMSDisk, error) {
 		if !wholeDiskRe.MatchString(bsd) {
 			continue // no media yet, or a partition slice matched first
 		}
+		name, serial := splitInquiry(vendor, ioregString(chunk, "Product Identification"))
 		d := UMSDisk{
 			DevPath: "/dev/" + bsd,
 			RawPath: "/dev/r" + bsd,
-			Vendor:  strings.TrimSpace(vendor),
-			Serial:  strings.TrimSpace(ioregString(chunk, "Product Identification")),
+			Vendor:  name,
+			Serial:  serial,
 		}
 		if size := ioregInt(chunk, "Size"); size > 0 {
 			d.SizeBytes = size

@@ -83,6 +83,11 @@ func installOrin(ctx context.Context, version string, nightly, force bool) error
 	defer cancelElevation()
 	keepElevationAlive(elevationCtx)
 
+	// flashCtx aborts in-flight stage-2 work (the device-side exchange) when the
+	// user confirms a ctrl+c cancel in the steps UI.
+	flashCtx, cancelFlash := context.WithCancel(ctx)
+	defer cancelFlash()
+
 	logPath := ""
 	if dir, derr := config.LogDir(); derr == nil {
 		logPath = filepath.Join(dir, "orin-flash-"+time.Now().Format("20060102-150405")+".log")
@@ -131,14 +136,16 @@ func installOrin(ctx context.Context, version string, nightly, force bool) error
 			})
 		}},
 		{id: orinStepCommands, label: "Stage 2  send flash commands", run: func(out io.Writer, detail func(string)) (bool, error) {
-			return false, stage2(out, detail).SendFlashPackage(ctx)
+			return false, stage2(out, detail).SendFlashPackage(flashCtx)
 		}},
-		{id: orinStepWrite, label: "Stage 2  write eMMC partitions", run: func(out io.Writer, detail func(string)) (bool, error) {
-			return false, stage2(out, detail).WriteRootfsDevice(ctx)
-		}},
+		{id: orinStepWrite, label: "Stage 2  write eMMC partitions",
+			abortWarning: "The eMMC is being written — aborting now can leave the Orin unbootable. Press ctrl+c again to abort anyway.",
+			run: func(out io.Writer, detail func(string)) (bool, error) {
+				return false, stage2(out, detail).WriteRootfsDevice(flashCtx)
+			}},
 		{id: orinStepStatus, label: "Stage 2  device status", run: func(out io.Writer, detail func(string)) (bool, error) {
 			var err error
-			finalStatus, err = stage2(out, detail).AwaitFinalStatus(ctx)
+			finalStatus, err = stage2(out, detail).AwaitFinalStatus(flashCtx)
 			if err != nil {
 				return false, err
 			}
@@ -150,10 +157,16 @@ func installOrin(ctx context.Context, version string, nightly, force bool) error
 		}},
 	}
 
-	failedID, err := runFlashSteps(fmt.Sprintf("Flashing WendyOS %s", plan.version), steps)
+	failedID, err := runFlashSteps(fmt.Sprintf("Flashing WendyOS %s", plan.version), steps, cancelFlash)
 	if err != nil {
 		switch {
 		case errors.Is(err, tui.ErrCancelled):
+			if failedID == orinStepWrite || failedID == orinStepStatus {
+				// The abort interrupted the eMMC write; the Orin can be left
+				// unbootable exactly like a write-step failure. Show the recovery
+				// guide instead of exiting silently.
+				printOrinBadStateHint(os.Stdout)
+			}
 			return ErrUserCancelled
 		case errors.Is(err, t234.ErrDockerMissing):
 			fmt.Println()

@@ -5,6 +5,7 @@ package t234
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -15,10 +16,32 @@ const (
 	GadgetProductID = 0x0104
 )
 
-// SCSI inquiry vendor strings of the exported LUNs (init-flash.sh writes
-// "<export_name><serial>" into the gadget's inquiry_string; the vendor field
-// is the first 8 characters, i.e. the export name).
+// FlashpkgVendor is the export name of the command-package LUN. init-flash.sh
+// writes "<export_name><serial>" into the gadget's inquiry_string; listUMSDisks
+// splits it back into the export name (UMSDisk.Vendor) and session serial via
+// splitInquiry. "flashpkg" happens to be exactly 8 chars — most other export
+// names (e.g. "mmcblk0") are not, which is why the naive 8-byte split fails.
 const FlashpkgVendor = "flashpkg"
+
+// sessionSerialLen is the length of the hex session id init-flash.sh appends to
+// every export name in the gadget's inquiry_string.
+const sessionSerialLen = 8
+
+// splitInquiry recovers a LUN's export name and session serial from the SCSI
+// INQUIRY Vendor + Product Identification fields. The gadget's inquiry_string
+// is "<export_name><serial>", but the INQUIRY response splits it at a fixed
+// 8-byte Vendor / 16-byte Product boundary — so an export name that isn't
+// exactly 8 chars (e.g. "mmcblk0") straddles the two fields, and the serial's
+// leading chars land in the Vendor field. Rejoin the fields and peel the
+// trailing serial off to recover both. A combined string too short to hold a
+// serial (a non-gadget disk) is returned unsplit.
+func splitInquiry(vendor, product string) (name, serial string) {
+	combined := strings.TrimSpace(vendor) + strings.TrimSpace(product)
+	if len(combined) <= sessionSerialLen {
+		return combined, ""
+	}
+	return combined[:len(combined)-sessionSerialLen], combined[len(combined)-sessionSerialLen:]
+}
 
 // UMSDisk is one USB mass-storage LUN the flashing initrd exposed.
 type UMSDisk struct {

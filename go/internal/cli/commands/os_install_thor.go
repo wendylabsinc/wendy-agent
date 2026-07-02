@@ -19,6 +19,8 @@ import (
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
+	"golang.org/x/sys/unix"
+
 	"github.com/wendylabsinc/wendy/go/internal/cli/tegraflash/bringup"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tegraflash/flasher"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tegraflash/flashpack"
@@ -53,6 +55,11 @@ func installThor(ctx context.Context, version string, nightly, force bool) error
 		return err
 	}
 
+	// Fail fast on a full disk, before the user starts cabling the Thor.
+	if err := checkThorDiskSpace(cacheDir, plan); err != nil {
+		return err
+	}
+
 	// Brief the user on cabling / recovery mode, then confirm before scanning.
 	if err := confirmThorReady(plan.version); err != nil {
 		return err
@@ -84,6 +91,11 @@ func installThor(ctx context.Context, version string, nightly, force bool) error
 		logPath = filepath.Join(dir, "thor-flash-"+time.Now().Format("20060102-150405")+".log")
 	}
 
+	// flashCtx aborts in-flight step work (the bootburn child) when the user
+	// confirms a ctrl+c cancel in the steps UI.
+	flashCtx, cancelFlash := context.WithCancel(ctx)
+	defer cancelFlash()
+
 	// fp/shimDir are populated by the download and stage-1 steps and read by
 	// later steps; the steps run sequentially in one goroutine, so no locking.
 	var (
@@ -111,17 +123,22 @@ func installThor(ctx context.Context, version string, nightly, force bool) error
 				Out:        out,
 			})
 		}},
-		{id: stepStage2, label: "Stage 2  flash partitions", run: func(out io.Writer, _ func(string)) (bool, error) {
-			return false, flasher.Run(flasher.Options{
-				BundleDir:    fp.BundleDir(),
-				WorkspaceDir: fp.WorkspaceOutDir(),
-				ADBDir:       shimDir,
-				ADBPort:      dev.PathKey, // pin the flashing gadget to the selected device
-				LogPath:      logPath,
-				PyYAMLDir:    fp.PyYAMLDir(),
-				Out:          out,
-			})
-		}},
+		{id: stepStage2, label: "Stage 2  flash partitions",
+			abortWarning: "Partitions are being written — aborting now can leave the Thor unbootable. Press ctrl+c again to abort anyway.",
+			run: func(out io.Writer, detail func(string)) (bool, error) {
+				return false, flasher.Run(flashCtx, flasher.Options{
+					BundleDir:    fp.BundleDir(),
+					WorkspaceDir: fp.WorkspaceOutDir(),
+					ADBDir:       shimDir,
+					ADBPort:      dev.PathKey, // pin the flashing gadget to the selected device
+					LogPath:      logPath,
+					PyYAMLDir:    fp.PyYAMLDir(),
+					Out:          out,
+					// USB-push progress, e.g. "38% · 6.9/18.1 GiB". Tracks
+					// transfers only, so it pauses during signing/verification.
+					Progress: func(written, total int64) { detail(byteProgress(written, total)) },
+				})
+			}},
 	}
 
 	// A running Google adb server (Android platform-tools) claims every ADB device
@@ -131,13 +148,19 @@ func installThor(ctx context.Context, version string, nightly, force bool) error
 		fmt.Println(tui.InfoMessage("Stopped a running adb server (it would hold the Thor's flashing gadget)."))
 	}
 
-	failedID, err := runFlashSteps(fmt.Sprintf("Flashing WendyOS %s", plan.version), steps)
+	failedID, err := runFlashSteps(fmt.Sprintf("Flashing WendyOS %s", plan.version), steps, cancelFlash)
 	if shimDir != "" {
 		os.RemoveAll(shimDir)
 	}
 	if err != nil {
 		switch {
 		case errors.Is(err, tui.ErrCancelled):
+			if failedID == stepStage2 {
+				// The abort interrupted partition writes; the Thor can be left
+				// unbootable exactly like a stage-2 failure. Show the recovery
+				// guide instead of exiting silently.
+				printThorBadStateHint(os.Stdout)
+			}
 			return ErrUserCancelled
 		case errors.Is(err, rcm.ErrUSBAccess):
 			// Stage 1 re-opens the device (it can re-enumerate between the scan
@@ -159,7 +182,7 @@ func installThor(ctx context.Context, version string, nightly, force bool) error
 		return err
 	}
 
-	fmt.Println(tui.SuccessMessage(fmt.Sprintf("Flashed WendyOS %s — power-cycle the Thor out of recovery to boot it.", plan.version)))
+	fmt.Println(tui.SuccessMessage(fmt.Sprintf("Flashed WendyOS %s — power-cycle the Thor out of recovery to boot it. (press the right button once)", plan.version)))
 	return nil
 }
 
@@ -203,6 +226,52 @@ func flashpackCached(cacheDir, version string) bool {
 		return true
 	}
 	return false
+}
+
+// thorExtractedFactor estimates the extracted flashpack tree from the compressed
+// tarball: observed ~2.2x (3.0 GiB .tar.zst -> ~6.5 GiB tree), padded to 2.5x.
+const thorExtractedFactor = 2.5
+
+// thorFlashpackSpaceNeeded estimates how many bytes downloadAndExtractFlashpack
+// will write into cacheDir for plan: nothing when the tree is already extracted,
+// extraction only when the tarball is cached, download + extraction otherwise.
+// Returns 0 (skip the check) when the size can't be determined.
+func thorFlashpackSpaceNeeded(cacheDir string, plan thorFlashPlan) int64 {
+	if _, err := os.Stat(filepath.Join(cacheDir, flashpack.FlashpackName(plan.version))); err == nil {
+		return 0
+	}
+	if fi, err := os.Stat(flashpack.TarballCachePath(cacheDir, plan.version)); err == nil {
+		return int64(float64(fi.Size()) * thorExtractedFactor)
+	}
+	if plan.info != nil && plan.info.SizeBytes > 0 {
+		return int64(float64(plan.info.SizeBytes) * (1 + thorExtractedFactor))
+	}
+	return 0
+}
+
+// checkThorDiskSpace errors out early when the volume holding cacheDir doesn't
+// have room for the flashpack download + extraction. Best-effort: an unknown
+// size or a failed statfs never blocks the install.
+func checkThorDiskSpace(cacheDir string, plan thorFlashPlan) error {
+	needed := thorFlashpackSpaceNeeded(cacheDir, plan)
+	if needed == 0 {
+		return nil
+	}
+	var stat unix.Statfs_t
+	if err := unix.Statfs(cacheDir, &stat); err != nil {
+		return nil
+	}
+	if stat.Bsize <= 0 {
+		return nil // implausible block size (buggy FUSE driver): can't size the disk safely
+	}
+	avail := int64(stat.Bavail) * int64(stat.Bsize)
+	if avail < 0 || avail >= needed {
+		return nil
+	}
+	const gib = 1 << 30
+	return fmt.Errorf(
+		"not enough free disk space for WendyOS %s: needs about %.1f GiB in %s, but only %.1f GiB is free.\nFree up space (older downloads in %s can be deleted) and try again",
+		plan.version, float64(needed)/gib, cacheDir, float64(avail)/gib, cacheDir)
 }
 
 // downloadAndExtractFlashpack downloads the flashpack (when not cached),
@@ -257,6 +326,10 @@ func setupADBShim(fp *flashpack.Flashpack) (string, error) {
 type flashStep struct {
 	id    int
 	label string
+	// abortWarning, when set, makes ctrl+c during this step require a confirming
+	// second press (shown with this text) instead of cancelling immediately —
+	// for steps where an abort can leave the device in a bad state.
+	abortWarning string
 	// run performs the step. It writes verbose output to out (captured and shown
 	// only on failure in interactive mode) and may call detail to update the live
 	// trailing text (e.g. a byte count). It returns cached=true when the work was
@@ -267,8 +340,11 @@ type flashStep struct {
 // runFlashSteps runs steps in order, rendering them as a live BuildKit-style step
 // list on an interactive terminal (verbose per-step output buffered and printed
 // only if a step fails) or as concise streamed lines otherwise. It returns the id
-// of the failing step (or -1 on success/cancel) and the error.
-func runFlashSteps(title string, steps []flashStep) (int, error) {
+// of the failing step and the error; -1 on success. On a confirmed ctrl+c it
+// calls cancelWork to abort the in-flight step, waits for the worker to wind
+// down, and returns the interrupted step's id with tui.ErrCancelled so the
+// caller can warn when that step leaves the device in a bad state.
+func runFlashSteps(title string, steps []flashStep, cancelWork func()) (int, error) {
 	if !isInteractiveTerminal() {
 		return runFlashStepsPlain(title, steps)
 	}
@@ -281,6 +357,10 @@ func runFlashSteps(title string, steps []flashStep) (int, error) {
 		err      error
 		verbose  []byte
 	}
+	// curID tracks the step being run so a ctrl+c cancel can report which step
+	// was interrupted (the goroutine keeps running briefly after the UI exits).
+	var curID atomic.Int32
+	curID.Store(-1)
 	resC := make(chan outcome, 1)
 	go func() {
 		failedID, runErr := -1, error(nil)
@@ -289,6 +369,8 @@ func runFlashSteps(title string, steps []flashStep) (int, error) {
 			// Per-step buffer so a later failure surfaces only that step's output,
 			// not the successful earlier steps.
 			buf := &boundedBuffer{max: maxRawBuildCapture}
+			curID.Store(int32(s.id))
+			prog.Send(tui.StepAbortGuardMsg{Warning: s.abortWarning})
 			prog.Send(tui.StepStartMsg{ID: s.id, Label: s.label})
 			cached, err := s.run(buf, func(d string) { prog.Send(tui.StepDetailMsg{ID: s.id, Detail: d}) })
 			if err != nil {
@@ -307,7 +389,16 @@ func runFlashSteps(title string, steps []flashStep) (int, error) {
 		return -1, fmt.Errorf("flash progress UI: %w", uiErr)
 	}
 	if cancelErr := final.(tui.StepsModel).Err(); errors.Is(cancelErr, tui.ErrCancelled) {
-		return -1, cancelErr
+		// Abort the in-flight step (kills the bootburn child during stage 2) and
+		// reap the worker so nothing outlives the CLI. Bounded: a step that
+		// ignores cancellation (e.g. stage-1 USB ops) shouldn't wedge the exit.
+		cancelWork()
+		select {
+		case <-resC:
+		case <-time.After(10 * time.Second):
+			fmt.Fprintln(os.Stderr, "warning: the flash worker didn't stop within 10s; temp files may be left behind")
+		}
+		return int(curID.Load()), cancelErr
 	}
 	res := <-resC
 	if res.err != nil {
@@ -354,13 +445,16 @@ func throttledDetail(detail func(string), format func(downloaded, total int64) s
 	}
 }
 
-// byteProgress formats a download's progress like "1.2/3.0 GiB".
-func byteProgress(downloaded, total int64) string {
+// byteProgress formats transfer progress like "40% · 1.2/3.0 GiB". The percent
+// is capped at 99 — completion is the step's ✓, and the stage-2 byte count can
+// slightly overshoot its estimated total (push retries).
+func byteProgress(written, total int64) string {
 	const gib = 1 << 30
 	if total <= 0 {
-		return fmt.Sprintf("%.1f GiB", float64(downloaded)/gib)
+		return fmt.Sprintf("%.1f GiB", float64(written)/gib)
 	}
-	return fmt.Sprintf("%.1f/%.1f GiB", float64(downloaded)/gib, float64(total)/gib)
+	pct := min(written*100/total, 99)
+	return fmt.Sprintf("%d%% · %.1f/%.1f GiB", pct, float64(written)/gib, float64(total)/gib)
 }
 
 // verifySHA256 checks that path's SHA-256 matches the expected lowercase-hex digest.
@@ -504,24 +598,27 @@ func thorRecoveryBriefingBox() string {
 	}
 	lines := []string{
 		section("Storage"),
-		"  WendyOS installs to the Thor's internal flash + NVMe — it uses no",
-		"  external USB drive. " + briefKey.Render("Disconnect any USB drive now") + " and leave it out.",
+		"  WendyOS gets installed to the Thor's internal flash and NVMe, it uses",
+		"  no external USB drive. In case you have a USB drive attached to the",
+		"  Thor, " + briefKey.Render("remove it and leave it out") + ".",
 		"",
 		section("USB-C cabling"),
 		"  Connect this computer to the " + briefPort.Render("USB-C port next to the HDMI port") + ".",
-		"  The other USB-C port is " + briefDim.Render("power-only") + ".",
+		"  The other USB-C port is power-only.",
 		"",
 		section("Entering recovery mode"),
-		"  Front buttons, left → right:  " +
-			briefKey.Render("Power") + briefDim.Render(" · ") +
-			briefKey.Render("Force Recovery") + briefDim.Render(" · ") +
-			briefKey.Render("Reset"),
+		"  In front of the Thor there are three buttons: " +
+			briefKey.Render("Power") + " (left),",
+		"  " + briefKey.Render("Force Recovery") + " (middle) and " + briefKey.Render("Reset") + " (right).",
 		"",
-		step(1, "Start with the Thor "+briefDim.Render("unplugged and powered off")+"."),
-		step(2, "Plug in power."),
-		step(3, "Hold "+briefKey.Render("Force Recovery")+" (middle); briefly tap "+briefKey.Render("Reset")+" (right),"),
-		"       then release " + briefKey.Render("Force Recovery") + ".",
-		step(4, "Connect the "+briefPort.Render("USB-C port next to HDMI")+" to this computer."),
+		"  Follow the instructions below once you have only the USB-C cable",
+		"  connected to this computer as mentioned above:",
+		"",
+		step(1, "Start with the Thor unplugged and powered off."),
+		step(2, "Plug in power (USB-C cable to the second USB-C port)."),
+		step(3, "Briefly press "+briefKey.Render("Power")+" (left)."),
+		step(4, "Hold "+briefKey.Render("Force Recovery")+" (middle); briefly tap "+briefKey.Render("Reset")+" (right),"),
+		"       then release " + briefKey.Render("Force Recovery") + " (middle).",
 	}
 	return briefBorder.Render(strings.Join(lines, "\n"))
 }

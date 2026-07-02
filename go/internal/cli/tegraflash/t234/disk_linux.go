@@ -24,11 +24,12 @@ func listUMSDisks() ([]UMSDisk, error) {
 		if vendor == "" {
 			continue
 		}
+		exportName, serial := splitInquiry(vendor, sysfsString(filepath.Join(e, "device", "model")))
 		d := UMSDisk{
 			DevPath: "/dev/" + name,
 			RawPath: "/dev/" + name,
-			Vendor:  vendor,
-			Serial:  sysfsString(filepath.Join(e, "device", "model")),
+			Vendor:  exportName,
+			Serial:  serial,
 		}
 		if sectors := sysfsString(filepath.Join(e, "size")); sectors != "" {
 			if n, err := strconv.ParseInt(sectors, 10, 64); err == nil {
