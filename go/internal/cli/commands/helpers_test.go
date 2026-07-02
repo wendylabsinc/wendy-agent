@@ -373,6 +373,41 @@ func TestResolveLANAgentVersionFallsBackAcrossAddresses(t *testing.T) {
 	}
 }
 
+// TestResolveLANAgentVersionAllowsMTLSHandshakeTime guards against the
+// nested-timeout inversion that left provisioned devices stuck on the failure
+// glyph in the discover picker: the per-address probe budget
+// (lanAddressProbeTimeout) must comfortably contain a single autoTLS
+// connect+probe, whose own budget is mtlsProbeTimeout. A provisioned device's
+// handshake takes ~2.2s, so a per-address budget shorter than mtlsProbeTimeout
+// cancelled the mTLS probe before it could answer — even though `wendy device
+// info` (which connects with the un-capped root context) succeeded.
+func TestResolveLANAgentVersionAllowsMTLSHandshakeTime(t *testing.T) {
+	orig := getAgentVersionAtAddress
+	defer func() { getAgentVersionAtAddress = orig }()
+
+	// Simulate a provisioned device whose autoTLS handshake takes longer than
+	// the old 1500ms budget but well within a single mtlsProbeTimeout.
+	const handshake = 2200 * time.Millisecond
+	getAgentVersionAtAddress = func(ctx context.Context, _ string) (bool, *agentpb.GetAgentVersionResponse, error) {
+		select {
+		case <-time.After(handshake):
+			return true, &agentpb.GetAgentVersionResponse{Version: "9.9.9"}, nil
+		case <-ctx.Done():
+			return false, nil, ctx.Err()
+		}
+	}
+
+	dev := models.LANDevice{IPAddress: "192.168.1.50", Port: defaultAgentPort}
+
+	_, _, resp, err := resolveLANAgentVersion(context.Background(), dev)
+	if err != nil {
+		t.Fatalf("resolveLANAgentVersion() error = %v; per-address probe budget too short to complete an mTLS handshake", err)
+	}
+	if resp.GetVersion() != "9.9.9" {
+		t.Fatalf("resolveLANAgentVersion() version = %q, want %q", resp.GetVersion(), "9.9.9")
+	}
+}
+
 // setTempConfig points HOME at a temp dir and writes cfg via config.Save so
 // the test uses the same serialisation path as production code. t.Setenv
 // automatically restores the original HOME when the test finishes.

@@ -39,7 +39,6 @@ import (
 const defaultAgentPort = 50051
 const agentMTLSPortOffset = 1
 
-const lanAddressProbeTimeout = 1500 * time.Millisecond
 const agentPlaintextProbeTimeout = 3 * time.Second
 
 // mtlsProbeTimeout bounds a single mTLS connect+probe. The dial target is
@@ -47,6 +46,17 @@ const agentPlaintextProbeTimeout = 3 * time.Second
 // handshake; keeping it tight stops an unreachable/plaintext-only mTLS port
 // from stalling the connect before the plaintext fallback.
 const mtlsProbeTimeout = 3 * time.Second
+
+// lanAddressProbeTimeout bounds a single candidate address in the discover/
+// picker version probe (resolveLANAgentVersion). It wraps connectWithAutoTLS,
+// whose successful path for a provisioned device costs a TCP+TLS handshake plus
+// one mtlsProbeTimeout GetAgentVersion probe (~2.2s observed). A budget shorter
+// than mtlsProbeTimeout therefore cancelled the mTLS probe before it could
+// answer, leaving provisioned rows — especially USB devices, probed via .local
+// first — stuck on the failure glyph even though `wendy device info` (which
+// connects with the un-capped root context) succeeded. Derive it from
+// mtlsProbeTimeout with headroom so the two budgets can't silently invert again.
+const lanAddressProbeTimeout = mtlsProbeTimeout + 2*time.Second
 const provisionedAgentMetadataDiscoveryTimeout = 500 * time.Millisecond
 
 const provisionedAgentUnauthorizedMessage = "Unauthorized. Run 'wendy auth login' with an account that can access this provisioned wendy-agent."
