@@ -9,8 +9,9 @@ timing) and shown in the UI.
 Instead of HelloMLX's Mac-only stack (AVFoundation + MLX), HelloVLM uses:
 
 - **Linux V4L2** (MJPG) for camera capture
-- **llama.cpp's `llama-server`** with `gemma-3-4b-it` (Q4_K_M) for inference,
-  served over the OpenAI-compatible `/v1/chat/completions` API
+- **llama.cpp's `llama-server`** with `gemma-3-27b-it` (Q4_K_M) for inference
+  — the same model as HelloMLX's `large` tier — served over the
+  OpenAI-compatible `/v1/chat/completions` API
 
 ## Layout
 
@@ -40,8 +41,14 @@ cd Examples/HelloVLM/llm
 wendy run --device <device> --detach
 ```
 
-The first build downloads the model weights (~3.3 GB) into the image;
-Docker caches the layer, so subsequent builds are fast.
+The image is small; the model weights (~16.5 GB) are downloaded **on the
+device** at first start (16 parallel connections — Hugging Face throttles
+per connection) into the `hellovlm-models` persist volume, so they never
+transit the developer machine and survive redeploys. Switch models by
+editing `MODEL_URL`/`MMPROJ_URL`/`MODEL_ALIAS` in `llm/Dockerfile`;
+`gemma-3-4b-it` is the fast validation tier. A Hugging Face token dropped
+at `/models/.hf-token` on the volume authenticates downloads (needed for
+gated models).
 
 Then run the app:
 
@@ -53,8 +60,12 @@ wendy run --device <device>
 Open `http://<device>:8080`. Run history is stored on a persist volume
 (`hellovlm-runs`), so it survives app redeploys. The first inference after the backend starts
 takes ~30s extra (one-time CUDA kernel compilation for new GPU
-architectures like Thor's sm_110); after that, expect ~1.5 s of prompt
-processing per frame and 50–100 generated tokens/s on Thor.
+architectures like Thor's sm_110). Measured steady state on Thor:
+
+| Model (Q4_K_M) | Prefill, 3 frames | Decode | Run cadence |
+| --- | --- | --- | --- |
+| gemma-3-4b-it | ~4.4 s | ~56 tok/s | ~8 s |
+| gemma-3-27b-it (default) | ~6.8 s | ~12 tok/s | ~25 s |
 
 Useful app flags (set in `app/wendy.json` under `run.args`):
 
@@ -82,7 +93,8 @@ non-Metal GPUs (`shouldDisableMMProjOffload` in `llm/llama_server.go`,
 reason `shared-memory-gpu`) — and every Jetson is an integrated-GPU
 machine, even a Thor with 122 GB of unified memory.
 
-Measured on AGX Thor with `gemma3:4b` (Q4_K_M), single 640×480 frame:
+Measured on AGX Thor with `gemma3:4b` (Q4_K_M, the small tier), single
+640×480 frame:
 
 | Backend | Image prefill | Decode |
 | --- | --- | --- |
