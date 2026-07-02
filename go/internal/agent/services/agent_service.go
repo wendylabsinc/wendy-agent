@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -217,24 +219,54 @@ func detectJetPackVersion() string {
 var cudaVersionFileRe = regexp.MustCompile(`(?i)CUDA[^0-9]*([0-9]+\.[0-9]+(?:\.[0-9]+)?)`)
 
 func detectCUDAVersion() string {
-	if data, err := os.ReadFile("/usr/local/cuda/version.txt"); err == nil {
-		if m := cudaVersionFileRe.FindSubmatch(data); len(m) > 1 {
-			return string(m[1])
+	return detectCUDAVersionIn("/usr/local", exec.LookPath, runDetectCommand)
+}
+
+// runDetectCommand runs a detection helper binary with a timeout so detection
+// cannot block an RPC handler.
+func runDetectCommand(name string, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	return exec.CommandContext(ctx, name, args...).Output()
+}
+
+// detectCUDAVersionIn probes for the installed CUDA toolkit version under
+// usrLocal (normally /usr/local). lookPath and runCmd are injectable for tests.
+//
+// Probe order:
+//  1. version.txt / version.json under the well-known cuda symlink (legacy
+//     layouts; CUDA 11.1+ dropped version.txt, newer releases also dropped
+//     version.json).
+//  2. nvcc on PATH.
+//  3. nvcc inside versioned toolkit dirs (cuda-X.Y/bin/nvcc), newest first —
+//     the JetPack 7 layout ships no cuda symlink, no version files, and does
+//     not put nvcc on PATH.
+//  4. The nvidia-smi banner ("CUDA Version: X.Y"). This is the driver's CUDA
+//     version rather than the toolkit's, but on Jetson images they match and
+//     it beats returning nothing.
+func detectCUDAVersionIn(usrLocal string, lookPath func(string) (string, error), runCmd func(string, ...string) ([]byte, error)) string {
+	for _, name := range []string{"version.txt", "version.json"} {
+		if data, err := os.ReadFile(filepath.Join(usrLocal, "cuda", name)); err == nil {
+			if m := cudaVersionFileRe.FindSubmatch(data); len(m) > 1 {
+				return string(m[1])
+			}
 		}
 	}
 
-	if data, err := os.ReadFile("/usr/local/cuda/version.json"); err == nil {
-		if m := cudaVersionFileRe.FindSubmatch(data); len(m) > 1 {
-			return string(m[1])
+	if nvcc, err := lookPath("nvcc"); err == nil {
+		if v := cudaVersionFromNvcc(nvcc, runCmd); v != "" {
+			return v
 		}
 	}
 
-	// Fall back to nvcc --version with a timeout so detection cannot block an RPC handler.
-	if nvcc, err := exec.LookPath("nvcc"); err == nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		out, err := exec.CommandContext(ctx, nvcc, "--version").Output()
-		if err == nil {
+	for _, nvcc := range versionedNvccCandidates(usrLocal) {
+		if v := cudaVersionFromNvcc(nvcc, runCmd); v != "" {
+			return v
+		}
+	}
+
+	if smi, err := lookPath("nvidia-smi"); err == nil {
+		if out, err := runCmd(smi); err == nil {
 			if m := cudaVersionFileRe.FindSubmatch(out); len(m) > 1 {
 				return string(m[1])
 			}
@@ -242,6 +274,45 @@ func detectCUDAVersion() string {
 	}
 
 	return ""
+}
+
+func cudaVersionFromNvcc(nvcc string, runCmd func(string, ...string) ([]byte, error)) string {
+	out, err := runCmd(nvcc, "--version")
+	if err != nil {
+		return ""
+	}
+	if m := cudaVersionFileRe.FindSubmatch(out); len(m) > 1 {
+		return string(m[1])
+	}
+	return ""
+}
+
+var cudaDirVersionRe = regexp.MustCompile(`cuda-([0-9]+)(?:\.([0-9]+))?$`)
+
+// versionedNvccCandidates returns the nvcc binaries found inside versioned
+// CUDA toolkit dirs (<usrLocal>/cuda-*/bin/nvcc), highest version first so a
+// host with several toolkits reports the newest one.
+func versionedNvccCandidates(usrLocal string) []string {
+	matches, _ := filepath.Glob(filepath.Join(usrLocal, "cuda-*", "bin", "nvcc"))
+	version := func(nvcc string) (major, minor int) {
+		dir := filepath.Dir(filepath.Dir(nvcc))
+		m := cudaDirVersionRe.FindStringSubmatch(filepath.Base(dir))
+		if m == nil {
+			return 0, 0
+		}
+		major, _ = strconv.Atoi(m[1])
+		minor, _ = strconv.Atoi(m[2])
+		return major, minor
+	}
+	sort.SliceStable(matches, func(i, j int) bool {
+		iMaj, iMin := version(matches[i])
+		jMaj, jMin := version(matches[j])
+		if iMaj != jMaj {
+			return iMaj > jMaj
+		}
+		return iMin > jMin
+	})
+	return matches
 }
 
 var computeCapRe = regexp.MustCompile(`^\s*(\d+)\.(\d+)\s*$`)
