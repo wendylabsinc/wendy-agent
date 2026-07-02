@@ -50,7 +50,8 @@ cd ../app
 wendy run --device <device>
 ```
 
-Open `http://<device>:8080`. The first inference after the backend starts
+Open `http://<device>:8080`. Run history is stored on a persist volume
+(`hellovlm-runs`), so it survives app redeploys. The first inference after the backend starts
 takes ~30s extra (one-time CUDA kernel compilation for new GPU
 architectures like Thor's sm_110); after that, expect ~1.5 s of prompt
 processing per frame and 50–100 generated tokens/s on Thor.

@@ -11,6 +11,11 @@
     },
     {
       "type": "camera"
+    },
+    {
+      "type": "persist",
+      "name": "hellovlm-runs",
+      "path": "/Runs"
     }
   ],
   "run": {
