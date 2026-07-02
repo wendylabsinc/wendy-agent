@@ -161,6 +161,8 @@ jobs:
             runner: ubuntu-24.04-arm
     env:
       LIBUSB_VERSION: "1.0.29"
+      # sha256 of libusb-1.0.29.tar.bz2 from the upstream GitHub release
+      # (github.com/libusb/libusb/releases/tag/v1.0.29), computed at pin time.
       LIBUSB_SHA256: "5977fc950f8d1395ccea9bd48c06b3f808fd3c2c961b44b0c2e6e29fc3a70a85"
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -204,31 +206,34 @@ jobs:
           # gousb resolves libusb via pkg-config; point it at the static build.
           PKG_CONFIG_PATH: ${{ github.workspace }}/libusb-prefix/lib/pkgconfig
         run: |
+          ARTIFACT="${{ matrix.artifact-name }}"
           VERSION="${{ needs.determine-version.outputs.version }}"
           LDFLAGS="-s -w -X github.com/wendylabsinc/wendy/go/internal/shared/version.Version=${VERSION}"
-          mkdir -p ../${{ matrix.artifact-name }}
+          mkdir -p "../${ARTIFACT}"
           go build -tags netgo,osusergo \
             -ldflags "${LDFLAGS} -linkmode external -extldflags -static" \
-            -o ../${{ matrix.artifact-name }}/wendy ./cmd/wendy
+            -o "../${ARTIFACT}/wendy" ./cmd/wendy
           # libusb is statically linked (LGPL-2.1): ship its attribution/license.
-          cp ../NOTICE ../${{ matrix.artifact-name }}/NOTICE
+          cp ../NOTICE "../${ARTIFACT}/NOTICE"
 
       - name: Verify static binary and smoke test
         run: |
           set -euo pipefail
-          if ldd "${{ matrix.artifact-name }}/wendy" >/dev/null 2>&1; then
+          ARTIFACT="${{ matrix.artifact-name }}"
+          if ldd "${ARTIFACT}/wendy" >/dev/null 2>&1; then
             echo "ERROR: wendy is dynamically linked:"
-            ldd "${{ matrix.artifact-name }}/wendy"
+            ldd "${ARTIFACT}/wendy"
             exit 1
           fi
-          ./${{ matrix.artifact-name }}/wendy --version
+          "./${ARTIFACT}/wendy" --version
 
       - name: Create archive
         run: |
+          ARTIFACT="${{ matrix.artifact-name }}"
           VERSION="${{ needs.determine-version.outputs.version }}"
-          ARCHIVE="${{ matrix.artifact-name }}-${VERSION}.tar.gz"
-          tar -czvf "$ARCHIVE" ${{ matrix.artifact-name }}/
-          echo "archive=$ARCHIVE" >> $GITHUB_ENV
+          ARCHIVE="${ARTIFACT}-${VERSION}.tar.gz"
+          tar -czvf "$ARCHIVE" "${ARTIFACT}/"
+          echo "archive=$ARCHIVE" >> "$GITHUB_ENV"
 
       - name: Upload artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -270,10 +275,12 @@ jobs:
           VERSION: ${{ needs.determine-version.outputs.version }}
           GOARCH: ${{ matrix.goarch }}
         run: |
-          mkdir -p ${{ matrix.artifact-name }}
-          go/scripts/build-wendy.sh ../${{ matrix.artifact-name }}/wendy
+          ARTIFACT="${{ matrix.artifact-name }}"
+          mkdir -p "${ARTIFACT}"
+          # build-wendy.sh cds into go/, so the output path is relative to go/.
+          go/scripts/build-wendy.sh "../${ARTIFACT}/wendy"
           # libusb is statically linked (LGPL-2.1): ship its attribution/license.
-          cp NOTICE ${{ matrix.artifact-name }}/NOTICE
+          cp NOTICE "${ARTIFACT}/NOTICE"
 
       - name: Create archive
         working-directory: .
