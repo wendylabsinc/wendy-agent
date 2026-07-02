@@ -21,6 +21,10 @@ CLI papercuts, docs gaps, general WendyOS bugs, flaky behavior noticed along the
 
 `GetDeviceInfoResponse` has disk, GPU, JetPack, partitions — but no RAM size or CPU core count (Thor: 128 GiB / 14 cores, only visible via `device top`). Papercut for fleet inspection; not Thor-specific. Layer: proto/agent/CLI.
 
+## O4 — `wendy device camera list` shows only /dev/video0 for Brio 100 while `hardware list` shows video0+video1
+
+Minor inconsistency: hardware list reports both uvcvideo nodes (video1 is the UVC metadata node), camera list filters to capture nodes. Arguably correct behavior; recorded for completeness. Not Thor-specific.
+
 ## O5 — `wendy init --template X --entitlement Y` silently ignores the entitlement flags
 
 `wendy init --app-id autotest-gpu --target wendyos --language python --template simple-api --entitlement gpu` produces a wendy.json with only the template's `network` entitlement — the explicit `--entitlement gpu` is dropped without any warning. Code: `init_cmd.go` — `runTemplateFlow` uses the template's wendy.json verbatim; `resolveInitEntitlements` only runs in the wizard (no-template) flow. Reproduced with dev CLI (worktree @ 66b74dee) and installed 2026.07.01-101829. Expected: merge the requested entitlements into the template config, or error "cannot combine --template with --entitlement". Layer: CLI.
@@ -40,8 +44,4 @@ llama.cpp informational lines (`I slot print_timing: ...`) from HelloVLM's llm s
 ## O9 — apple-container build contexts under /tmp can silently transfer empty (env issue, but CLI gives no clue)
 
 Mid-session (2026-07-02 ~15:55, container 1.0.0_1 + builder-shim 0.12.0, macOS 25.5.0), every `container build` with a context under /tmp//private/tmp started transferring an empty context (`transferring context: 2B`) → `COPY x: not found`. Same Dockerfile+files build fine from a home directory (context 40B). Reproduced with a trivial FROM alpine/COPY probe in fresh dirs at /tmp/ctxprobe2, /tmp/wendy-thor-tests/*; `container builder stop/start` does NOT fix it. Earlier builds from the same /tmp dirs worked (15:47–15:53), so it regresses at runtime. Wendy is affected because (a) its docs/flows commonly scaffold under /tmp, (b) `appleContainerTmpAlias` special-cases /tmp paths, and (c) combined with O8 the user sees only "exit status 1". Suspected layer: Apple container stack (apiserver context streaming), not wendy — but wendy should surface the buildkit error (O8) and possibly warn on suspiciously tiny contexts. Not Thor-specific.
-
-## O4 — `wendy device camera list` shows only /dev/video0 for Brio 100 while `hardware list` shows video0+video1
-
-Minor inconsistency: hardware list reports both uvcvideo nodes (video1 is the UVC metadata node), camera list filters to capture nodes. Arguably correct behavior; recorded for completeness. Not Thor-specific.
 

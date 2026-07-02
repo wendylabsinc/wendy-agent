@@ -133,3 +133,19 @@ Order roughly by expected signal; adapt freely as findings come in.
 ## Status
 
 - 2026-07-02: worktree created, no tests run yet.
+- 2026-07-02 (evening): campaign COMPLETE — all 7 suggested directions exhausted
+  (introspection, GPU entitlement, deploy churn, Swift cross-compile, audio APE,
+  telemetry/logs under load, E2E re-run) plus an extra build-arg-hint probe.
+  Results: 3 Thor-specific findings in FINDINGS.md (F1 tegrastats parser dead on
+  JP7.2 output; F2 GPU fallback device majors wrong for Thor, latent; F3
+  WENDY_CUDA_VERSION hint empty on Thor), 9 observations in OBSERVATIONS.md
+  (biggest: volume usedBy/--delete-volumes name-prefix heuristic leaks volumes —
+  live-verified; silent build-failure output; apple-container /tmp contexts
+  transfer empty). TESTLOG.md has the full run log. E2E re-run reproduced the
+  morning result exactly (807 tests, only WDY-1798's failure). Device left
+  HelloVLM-only (verified apps+volumes). Deviations: test workspace moved to
+  /Users/ai/wendy-thor-tests mid-session because apple-container /tmp build
+  contexts broke (O9); worktree CLI invoked via go/bin/wendy directly since
+  dendy falls back to the brew CLI outside the repo. GPU note: HelloVLM keeps
+  the GPU at ~98% continuously, so heavy GPU load tests were skipped per
+  sharing rules.
