@@ -35,6 +35,8 @@ Minor inconsistency: hardware list reports both uvcvideo nodes (video1 is the UV
 
 ## O5 — `wendy init --template X --entitlement Y` silently ignores the entitlement flags
 
+**Filed: WDY-1810** (2026-07-02)
+
 `wendy init --app-id autotest-gpu --target wendyos --language python --template simple-api --entitlement gpu` produces a wendy.json with only the template's `network` entitlement — the explicit `--entitlement gpu` is dropped without any warning. Code: `init_cmd.go` — `runTemplateFlow` uses the template's wendy.json verbatim; `resolveInitEntitlements` only runs in the wizard (no-template) flow. Reproduced with dev CLI (worktree @ 66b74dee) and installed 2026.07.01-101829. Expected: merge the requested entitlements into the template config, or error "cannot combine --template with --entitlement". Layer: CLI.
 
 ## O6 — `device logs --app X --tail N` returns nothing when other apps are chatty
