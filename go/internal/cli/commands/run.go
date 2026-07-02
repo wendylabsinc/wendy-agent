@@ -996,12 +996,26 @@ func runSwiftWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cw
 	}
 	restartPolicy := resolveRestartPolicy(opts)
 
+	// wendy.json run.args are the default arguments; explicit `wendy run -- ...`
+	// args take precedence. The agent replaces the image entrypoint whenever
+	// Cmd/UserArgs are set, so pass the product binary as Cmd alongside them —
+	// swift-container-plugin images use /<product> as their entrypoint.
+	userArgs := opts.userArgs
+	if len(userArgs) == 0 && appCfg.Run != nil {
+		userArgs = appCfg.Run.Args
+	}
+	var cmd string
+	if len(userArgs) > 0 {
+		cmd = "/" + product
+	}
+
 	createReq := &agentpb.CreateContainerRequest{
 		ImageName:     deviceImage,
 		AppName:       appCfg.AppID,
 		AppConfig:     appConfigData,
 		RestartPolicy: restartPolicy,
-		UserArgs:      opts.userArgs,
+		Cmd:           cmd,
+		UserArgs:      userArgs,
 	}
 
 	return startAndStreamContainer(ctx, conn, appCfg, createReq, opts)
