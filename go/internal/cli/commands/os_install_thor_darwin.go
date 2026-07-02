@@ -122,7 +122,7 @@ func installThor(ctx context.Context, version string, nightly, force bool) error
 		}},
 		{id: stepStage2, label: "Stage 2  flash partitions",
 			abortWarning: "Partitions are being written — aborting now can leave the Thor unbootable. Press ctrl+c again to abort anyway.",
-			run: func(out io.Writer, _ func(string)) (bool, error) {
+			run: func(out io.Writer, detail func(string)) (bool, error) {
 				return false, flasher.Run(flashCtx, flasher.Options{
 					BundleDir:    fp.BundleDir(),
 					WorkspaceDir: fp.WorkspaceOutDir(),
@@ -131,6 +131,9 @@ func installThor(ctx context.Context, version string, nightly, force bool) error
 					LogPath:      logPath,
 					PyYAMLDir:    fp.PyYAMLDir(),
 					Out:          out,
+					// USB-push progress, e.g. "38% · 6.9/18.1 GiB". Tracks
+					// transfers only, so it pauses during signing/verification.
+					Progress: func(written, total int64) { detail(byteProgress(written, total)) },
 				})
 			}},
 	}
@@ -431,13 +434,16 @@ func throttledDetail(detail func(string), format func(downloaded, total int64) s
 	}
 }
 
-// byteProgress formats a download's progress like "1.2/3.0 GiB".
-func byteProgress(downloaded, total int64) string {
+// byteProgress formats transfer progress like "40% · 1.2/3.0 GiB". The percent
+// is capped at 99 — completion is the step's ✓, and the stage-2 byte count can
+// slightly overshoot its estimated total (push retries).
+func byteProgress(written, total int64) string {
 	const gib = 1 << 30
 	if total <= 0 {
-		return fmt.Sprintf("%.1f GiB", float64(downloaded)/gib)
+		return fmt.Sprintf("%.1f GiB", float64(written)/gib)
 	}
-	return fmt.Sprintf("%.1f/%.1f GiB", float64(downloaded)/gib, float64(total)/gib)
+	pct := min(written*100/total, 99)
+	return fmt.Sprintf("%d%% · %.1f/%.1f GiB", pct, float64(written)/gib, float64(total)/gib)
 }
 
 // verifySHA256 checks that path's SHA-256 matches the expected lowercase-hex digest.

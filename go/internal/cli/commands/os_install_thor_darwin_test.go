@@ -51,12 +51,16 @@ func TestStopADBServer(t *testing.T) {
 
 func TestByteProgress(t *testing.T) {
 	const gib = 1 << 30
-	if got := byteProgress(gib*3/2, gib*3); got != "1.5/3.0 GiB" {
-		t.Errorf("byteProgress = %q, want %q", got, "1.5/3.0 GiB")
+	if got := byteProgress(gib*3/2, gib*3); got != "50% · 1.5/3.0 GiB" {
+		t.Errorf("byteProgress = %q, want %q", got, "50% · 1.5/3.0 GiB")
 	}
-	// Unknown total: report only what's downloaded.
+	// Unknown total: report only what's transferred.
 	if got := byteProgress(gib/2, 0); got != "0.5 GiB" {
 		t.Errorf("byteProgress unknown total = %q, want %q", got, "0.5 GiB")
+	}
+	// At (or past) the estimated total the percent pins at 99: the ✓ marks done.
+	if got := byteProgress(gib*4, gib*3); got != "99% · 4.0/3.0 GiB" {
+		t.Errorf("byteProgress overshoot = %q, want %q", got, "99% · 4.0/3.0 GiB")
 	}
 }
 
