@@ -1,4 +1,4 @@
-//go:build darwin
+//go:build darwin || linux
 
 // USB device handling for the RCM stage (bootROM level).
 // USB transfer mechanics translated from NVIDIA tegrarcm usb.c
@@ -25,6 +25,10 @@ type Device struct {
 }
 
 func openDevice(ctx *gousb.Context, dev *gousb.Device) (*Device, error) {
+	// On Linux a kernel driver bound to the interface makes the claim fail with
+	// "busy"; auto-detach clears it. No-op on macOS (gousb swallows NOT_SUPPORTED).
+	_ = dev.SetAutoDetach(true)
+
 	cfg, err := dev.Config(1)
 	if err != nil {
 		return nil, fmt.Errorf("claiming config: %w", err)

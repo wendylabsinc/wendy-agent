@@ -1,4 +1,4 @@
-//go:build darwin
+//go:build darwin || linux
 
 // Package adb speaks the Android Debug Bridge wire protocol directly over USB —
 // no adb binary and no adb server. It implements the host side of the transport
@@ -16,6 +16,7 @@ package adb
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -132,6 +133,13 @@ func openOnce() (*Device, error) {
 	// we got at least one usable handle.
 	if len(devs) == 0 {
 		ctx.Close()
+		// Distinguish permissions from absence: the gadget re-enumerates with its
+		// own PID (0955:7100), so a host whose udev rules cover only the recovery
+		// PIDs hits this even after a clean stage 1. The message lands in the
+		// flash log, where classifyFlashFailure picks it up.
+		if errors.Is(err, gousb.ErrorAccess) {
+			return nil, fmt.Errorf("USB access denied opening the flashing gadget: %v (install a udev rule covering USB vendor 0955, or run with sudo)", err)
+		}
 		return nil, fmt.Errorf("no USB device with an ADB interface (ff/42/01) found: %v", err)
 	}
 
@@ -169,6 +177,10 @@ func openOnce() (*Device, error) {
 			d.Close()
 		}
 	}
+
+	// On Linux a kernel driver bound to the interface makes the claim fail with
+	// "busy"; auto-detach clears it. No-op on macOS (gousb swallows NOT_SUPPORTED).
+	_ = dev.SetAutoDetach(true)
 
 	cfgNum, ifNum, altNum, ok := findADBInterface(dev.Desc)
 	if !ok {

@@ -1,4 +1,4 @@
-//go:build darwin
+//go:build darwin || linux
 
 package commands
 
@@ -8,10 +8,33 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/tegraflash/flashpack"
 )
+
+// The usbAccessHintBox tells tarball users to install usbUdevRule verbatim, and
+// the deb/rpm install packaging/linux/udev/70-wendy-jetson.rules. The two must
+// stay identical: /etc/udev/rules.d overrides /usr/lib/udev/rules.d for the same
+// filename, so a stale hint-box copy would permanently mask the packaged rule.
+func TestUsbUdevRuleMatchesPackagedRule(t *testing.T) {
+	path := filepath.Join("..", "..", "..", "..", "packaging", "linux", "udev", "70-wendy-jetson.rules")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading packaged udev rule: %v", err)
+	}
+	var rules []string
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" && !strings.HasPrefix(line, "#") {
+			rules = append(rules, line)
+		}
+	}
+	if len(rules) != 1 || rules[0] != usbUdevRule {
+		t.Fatalf("packaged udev rule diverged from usbUdevRule:\npackaged: %q\nconst:    %q", rules, usbUdevRule)
+	}
+}
 
 func TestStopADBServer(t *testing.T) {
 	// No server listening → no-op, false.
