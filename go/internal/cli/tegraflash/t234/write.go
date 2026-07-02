@@ -3,10 +3,12 @@
 package t234
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"syscall"
 )
 
 // This file is the body of the hidden `wendy __t234-write` helper: it runs as
@@ -29,6 +31,18 @@ type WriterOptions struct {
 }
 
 const writeChunk = 4 << 20 // 4 MiB write buffer (padded to full sectors)
+
+// rawSyncError classifies the error from flushing a raw block device. fsync
+// succeeds on Linux block devices, but macOS raw character devices
+// (/dev/rdiskN) reject it with ENOTTY — those writes are unbuffered and have
+// already reached the device, so a missing fsync is harmless. ENOTTY (however
+// os.File.Sync wraps it) is treated as success; any other error is real.
+func rawSyncError(devPath string, err error) error {
+	if err == nil || errors.Is(err, syscall.ENOTTY) {
+		return nil
+	}
+	return fmt.Errorf("syncing %s: %w", devPath, err)
+}
 
 // RunWriter executes the selected operation. It requires root for raw block
 // device access on both macOS and Linux.
@@ -68,7 +82,7 @@ func writeBlob(opts WriterOptions) error {
 	if err := copyFileAt(dev, opts.Blob, 0, func(done int64) { progress(opts.Progress, done, total) }); err != nil {
 		return err
 	}
-	return dev.Sync()
+	return rawSyncError(opts.Device, dev.Sync())
 }
 
 // writePlan writes the GPT (primary + backup) and every partition image at
@@ -131,7 +145,7 @@ func writePlan(opts WriterOptions) error {
 	if _, err := dev.WriteAt(gpt.Backup, gpt.BackupOffset); err != nil {
 		return fmt.Errorf("writing backup GPT: %w", err)
 	}
-	return dev.Sync()
+	return rawSyncError(opts.Device, dev.Sync())
 }
 
 // dumpDevice copies the first DumpBytes of the device into DumpTo (used to
