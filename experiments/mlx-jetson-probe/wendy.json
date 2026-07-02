@@ -1,0 +1,19 @@
+{
+  "appId": "sh.wendy.experiments.mlxprobe",
+  "platform": "linux",
+  "version": "1.0.0",
+  "entitlements": [
+    {
+      "type": "network",
+      "mode": "host"
+    },
+    {
+      "type": "gpu"
+    },
+    {
+      "type": "persist",
+      "name": "mlxprobe-models",
+      "path": "/models"
+    }
+  ]
+}
