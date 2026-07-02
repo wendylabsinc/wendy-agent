@@ -162,7 +162,9 @@ well as `WDY`, so Release issues can live in the same project.
 - Branch: `kb.rel-68-testflight-upload`
 - Setup commit: `ba2b75e2cf79daaf1e46cd9d2e1a840b4ef65e25`
 - Draft PR: https://github.com/wendylabsinc/wendy-companion-ios/pull/3
-- Status: started. Branch, draft PR, and issue handoff are ready.
+- Status: PR #3 was merged into main (`bb16fd5`, observed 2026-07-02 while
+  starting WDY-1794). Verify remaining REL-68 scope and close the Linear issue
+  if the upload automation is complete.
 - Resume:
 
   ```sh
@@ -302,15 +304,25 @@ well as `WDY`, so Release issues can live in the same project.
 #### WDY-1794 — Update Wendy Companion App logo with new artwork
 
 - Linear: https://linear.app/wendylabsinc/issue/WDY-1794/update-wendy-companion-app-logo-with-new-artwork
-- State: Backlog
+- State: In Progress
 - Team: Engineering (`WDY`)
 - Project: Wendy Companion App & SDK
 - Assignee: `konstantin@wendy.sh`
 - Priority: No priority
 - Repo: `wendylabsinc/wendy-companion-ios`
-- Status: queued. Replace the app logo/icon with the new artwork Max shared
-  with Konstantin via Slack DM; the asset must be retrieved from that DM.
-- Resume: not available until prepared.
+- Worktree: `/Volumes/Projects/WendyLabs/wendy-companion-ios/.worktrees/kb.wdy-1794-logo`
+- Branch: `kb.wdy-1794-logo`
+- Setup commit: `6126610`
+- Draft PR: https://github.com/wendylabsinc/wendy-companion-ios/pull/4
+- Status: started. Blocked on the artwork itself: Max shared it with
+  Konstantin via Slack DM and it must be exported into the issue worktree
+  before implementation. Icon source is `Design/AppIcon.svg`; icon set is
+  `Assets/Assets.xcassets/AppIcon.appiconset/` (macOS-style 16–512@2x ladder).
+- Resume:
+
+  ```sh
+  cd /Volumes/Projects/WendyLabs/wendy-companion-ios/.worktrees/kb.wdy-1794-logo && ai harness claude --prompt "Read HANDOVER.md and wait for instructions."
+  ```
 
 ### Candidate / related issues to triage
 
