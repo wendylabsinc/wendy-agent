@@ -11,11 +11,14 @@ import (
 )
 
 // listUMSDisks finds USB mass-storage whole disks and their SCSI inquiry
-// strings by walking `ioreg -rc IOSCSIPeripheralDeviceType00`: each matched
-// subtree carries "Vendor Identification"/"Product Identification" and a
-// descendant IOMedia with the whole-disk "BSD Name".
+// strings by walking `ioreg -rc IOSCSILogicalUnitNub`: the logical-unit nub
+// carries "Vendor Identification"/"Product Identification" (the INQUIRY
+// response) and its subtree holds the IOMedia with the whole-disk "BSD Name".
+// (The properties live on the nub itself — rooting the query any deeper,
+// e.g. at IOSCSIPeripheralDeviceType00, loses them; verified on the real
+// flashing gadget.)
 func listUMSDisks() ([]UMSDisk, error) {
-	out, err := exec.Command("ioreg", "-rc", "IOSCSIPeripheralDeviceType00", "-l", "-w0").Output()
+	out, err := exec.Command("ioreg", "-rc", "IOSCSILogicalUnitNub", "-l", "-w0").Output()
 	if err != nil {
 		return nil, fmt.Errorf("ioreg: %w", err)
 	}
