@@ -71,7 +71,7 @@ while IFS=", " read -r partnumber partloc start_location partsize partfile parta
     devnum=$(echo "$partloc" | cut -d: -f1)
     instnum=$(echo "$partloc" | cut -d: -f2)
     partname=$(echo "$partloc" | cut -d: -f3)
-    if [ "$devnum" -eq 3 ] && [ "$instnum" -eq 0 ] || [ "$devnum" -eq 0 ] && [ "$instnum" -eq 3 ]; then
+    if { [ "$devnum" -eq 3 ] && [ "$instnum" -eq 0 ]; } || { [ "$devnum" -eq 0 ] && [ "$instnum" -eq 3 ]; }; then
         if [ -n "$partfile" ]; then
             cp "$partfile" "$staging/"
         fi
