@@ -53,6 +53,8 @@ llama.cpp informational lines (`I slot print_timing: ...`) from HelloVLM's llm s
 
 ## O8 — `wendy run` shows zero build output when an apple-container build fails
 
+**Filed: WDY-1813** (2026-07-02)
+
 `wendy run --builder apple-container` on a failing build prints only `✗ container build (OCI layout) failed: exit status 1` — no compiler/buildkit output, even with `--debug`. (`--verbose` is watch-mode only.) The underlying error (`COPY Package.swift: not found`) was only discoverable by re-running `container build` manually. `ocilayers.go` wires buildCmd.Stdout/Stderr to streams the progress UI captures and then discards on failure. Expected: dump the captured build log on failure. Layer: CLI.
 
 ## O9 — apple-container build contexts under /tmp can silently transfer empty (env issue, but CLI gives no clue)
