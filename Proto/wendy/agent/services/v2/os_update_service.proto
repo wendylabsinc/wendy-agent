@@ -13,8 +13,7 @@ service WendyOSUpdateService {
 
 message UpdateOSRequest {
     string artifact_url = 1;
-    // Updater backend to use: "" or "auto" prefers the in-house wendyos-update
-    // engine and falls back to mender; "wendyos-update" or "mender" force one.
+    // Optional. Empty/'auto' selects the wendyos-update engine; 'wendyos'/'wendyos-update' force it. Retained for wire compatibility.
     string updater_backend = 2;
 }
 

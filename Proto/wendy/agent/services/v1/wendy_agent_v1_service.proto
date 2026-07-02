@@ -46,7 +46,7 @@ service WendyAgentService {
     rpc DisconnectBluetoothPeripheral(DisconnectBluetoothPeripheralRequest) returns (DisconnectBluetoothPeripheralResponse);
     rpc ForgetBluetoothPeripheral(ForgetBluetoothPeripheralRequest) returns (ForgetBluetoothPeripheralResponse);
 
-    // Update the operating system using a Mender artifact
+    // Update the operating system using an OS update artifact
     rpc UpdateOS(UpdateOSRequest) returns (stream UpdateOSResponse);
 
     // Dump the current kernel ring buffer (dmesg) for inspection. By default
@@ -448,10 +448,9 @@ message ForgetBluetoothPeripheralResponse {}
 
 // Request message for updating the OS
 message UpdateOSRequest {
-    // URL to download the OS update artifact from (a .wendy or .mender artifact)
+    // URL to download the OS update artifact from (a .wendy artifact)
     string artifact_url = 1;
-    // Updater backend to use: "" or "auto" prefers the in-house wendyos-update
-    // engine and falls back to mender; "wendyos-update" or "mender" force one.
+    // Optional. Empty/'auto' selects the wendyos-update engine; 'wendyos'/'wendyos-update' force it. Retained for wire compatibility.
     string updater_backend = 2;
 }
 

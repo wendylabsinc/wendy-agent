@@ -136,8 +136,7 @@ func (GetOSUpdateStatusResponse_ServiceResult_Status) EnumDescriptor() ([]byte, 
 type UpdateOSRequest struct {
 	state       protoimpl.MessageState `protogen:"open.v1"`
 	ArtifactUrl string                 `protobuf:"bytes,1,opt,name=artifact_url,json=artifactUrl,proto3" json:"artifact_url,omitempty"`
-	// Updater backend to use: "" or "auto" prefers the in-house wendyos-update
-	// engine and falls back to mender; "wendyos-update" or "mender" force one.
+	// Optional. Empty/'auto' selects the wendyos-update engine; 'wendyos'/'wendyos-update' force it. Retained for wire compatibility.
 	UpdaterBackend string `protobuf:"bytes,2,opt,name=updater_backend,json=updaterBackend,proto3" json:"updater_backend,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
