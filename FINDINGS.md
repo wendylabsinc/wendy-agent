@@ -14,6 +14,8 @@ Issues that would not reproduce on Orin / Raspberry Pi / VM. Each entry: symptom
 
 ## F3 — WENDY_CUDA_VERSION build-arg hint is empty on Thor (CUDA detection misses JetPack 7.2 layout)
 
+**Filed: WDY-1806** (2026-07-02)
+
 - **Symptom:** `wendy run` injects device build-arg hints so templates can pick generation-correct base images (run.go:1779 explicitly tells Thor templates to branch on `WENDY_CUDA_VERSION` "for finer pins"). On Thor every hint arrives except CUDA: probe container env shows `PROBE_JP_MAJOR=7, PROBE_JP_VERSION=7.2, PROBE_GPU_VENDOR=nvidia, PROBE_HAS_GPU=true, PROBE_CUDA=""` (empty).
 - **Root cause (verified on device):** `detectCUDAVersion()` (agent_service.go:197) probes `/usr/local/cuda/version.{txt,json}` then `nvcc` on PATH. On the Thor WendyOS-0.16.1 image: there is **no `/usr/local/cuda` symlink** (only `/usr/local/cuda-13.2`), **no version.txt/version.json anywhere** (checked `/usr/local/cuda-13.2/` — modern CUDA dropped these files), and **nvcc is not on the agent's PATH** (it exists at `/usr/local/cuda-13.2/bin/nvcc`, which reports "release 13.2, V13.2.78"). All three probes miss → empty.
 - **Repro:** deploy any app whose Dockerfile has `ARG WENDY_CUDA_VERSION` + `ENV PROBE_CUDA=${WENDY_CUDA_VERSION}`; query env. Host check: `ssh wendy@wendyos-curious-meteor.local 'ls /usr/local; ls /usr/local/cuda-13.2/version.* '`.
