@@ -254,8 +254,11 @@ func checkThorDiskSpace(cacheDir string, plan thorFlashPlan) error {
 	if err := unix.Statfs(cacheDir, &stat); err != nil {
 		return nil
 	}
+	if stat.Bsize <= 0 {
+		return nil // implausible block size (buggy FUSE driver): can't size the disk safely
+	}
 	avail := int64(stat.Bavail) * int64(stat.Bsize)
-	if avail >= needed {
+	if avail < 0 || avail >= needed {
 		return nil
 	}
 	const gib = 1 << 30
@@ -386,6 +389,7 @@ func runFlashSteps(title string, steps []flashStep, cancelWork func()) (int, err
 		select {
 		case <-resC:
 		case <-time.After(10 * time.Second):
+			fmt.Fprintln(os.Stderr, "warning: the flash worker didn't stop within 10s; temp files may be left behind")
 		}
 		return int(curID.Load()), cancelErr
 	}

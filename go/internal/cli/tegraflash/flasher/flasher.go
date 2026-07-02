@@ -311,8 +311,12 @@ func summarizeFlashPlan(fileToFlash string) flashPlan {
 		}
 		p.count++
 		if fields := strings.Fields(line); len(fields) >= 3 {
-			if fi, serr := os.Stat(filepath.Join(imagesDir, fields[2])); serr == nil {
-				p.totalBytes += fi.Size()
+			// Base() confines the stat to imagesDir; plan entries are bare
+			// filenames, so anything with path components is malformed anyway.
+			if name := filepath.Base(fields[2]); name != "." && name != ".." && name != "/" {
+				if fi, serr := os.Stat(filepath.Join(imagesDir, name)); serr == nil {
+					p.totalBytes += fi.Size()
+				}
 			}
 		}
 		low := strings.ToLower(line)

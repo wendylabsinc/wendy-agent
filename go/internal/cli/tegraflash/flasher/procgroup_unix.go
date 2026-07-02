@@ -16,10 +16,12 @@ func setProcessGroup(cmd *exec.Cmd) {
 }
 
 // killProcessGroup kills the child's whole process group — bootburn plus the
-// adb shim processes it spawns (they inherit its group).
+// adb shim processes it spawns (they inherit its group). The pid guard matters:
+// kill(0, ...) would signal the CLI's own process group.
 func killProcessGroup(cmd *exec.Cmd) {
-	if cmd.Process == nil {
+	proc := cmd.Process
+	if proc == nil || proc.Pid <= 0 {
 		return
 	}
-	_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	_ = syscall.Kill(-proc.Pid, syscall.SIGKILL)
 }
