@@ -59,5 +59,7 @@ llama.cpp informational lines (`I slot print_timing: ...`) from HelloVLM's llm s
 
 ## O9 — apple-container build contexts under /tmp can silently transfer empty (env issue, but CLI gives no clue)
 
+**Filed: WDY-1814** (2026-07-02)
+
 Mid-session (2026-07-02 ~15:55, container 1.0.0_1 + builder-shim 0.12.0, macOS 25.5.0), every `container build` with a context under /tmp//private/tmp started transferring an empty context (`transferring context: 2B`) → `COPY x: not found`. Same Dockerfile+files build fine from a home directory (context 40B). Reproduced with a trivial FROM alpine/COPY probe in fresh dirs at /tmp/ctxprobe2, /tmp/wendy-thor-tests/*; `container builder stop/start` does NOT fix it. Earlier builds from the same /tmp dirs worked (15:47–15:53), so it regresses at runtime. Wendy is affected because (a) its docs/flows commonly scaffold under /tmp, (b) `appleContainerTmpAlias` special-cases /tmp paths, and (c) combined with O8 the user sees only "exit status 1". Suspected layer: Apple container stack (apiserver context streaming), not wendy — but wendy should surface the buildkit error (O8) and possibly warn on suspiciously tiny contexts. Not Thor-specific.
 
