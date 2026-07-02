@@ -54,6 +54,16 @@ func TestDeviceInfoService_GetDeviceInfo(t *testing.T) {
 	if resp.CpuArchitecture != runtime.GOARCH {
 		t.Errorf("arch = %q; want %q", resp.CpuArchitecture, runtime.GOARCH)
 	}
+	// RAM size and CPU core count come from /proc, so they are only
+	// guaranteed on Linux hosts (WDY-1809).
+	if runtime.GOOS == "linux" {
+		if resp.MemTotalBytes == nil || *resp.MemTotalBytes <= 0 {
+			t.Errorf("memTotalBytes = %v, want > 0 on linux", resp.MemTotalBytes)
+		}
+		if resp.CpuCount == nil || *resp.CpuCount == 0 {
+			t.Errorf("cpuCount = %v, want > 0 on linux", resp.CpuCount)
+		}
+	}
 }
 
 func TestDeviceInfoService_ListHardwareCapabilities(t *testing.T) {
