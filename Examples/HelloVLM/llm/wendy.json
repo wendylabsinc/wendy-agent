@@ -10,6 +10,11 @@
     },
     {
       "type": "gpu"
+    },
+    {
+      "type": "persist",
+      "name": "hellovlm-models",
+      "path": "/models"
     }
   ]
 }
