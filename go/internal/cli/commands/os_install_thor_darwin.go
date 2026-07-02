@@ -560,7 +560,8 @@ func thorRecoveryBriefingBox() string {
 		"",
 		step(1, "Start with the Thor unplugged and powered off."),
 		step(2, "Plug in power (USB-C cable to the second USB-C port)."),
-		step(3, "Hold "+briefKey.Render("Force Recovery")+" (middle); briefly tap "+briefKey.Render("Reset")+" (right),"),
+		step(3, "Briefly press "+briefKey.Render("Power")+" (left)."),
+		step(4, "Hold "+briefKey.Render("Force Recovery")+" (middle); briefly tap "+briefKey.Render("Reset")+" (right),"),
 		"       then release " + briefKey.Render("Force Recovery") + " (middle).",
 	}
 	return briefBorder.Render(strings.Join(lines, "\n"))
