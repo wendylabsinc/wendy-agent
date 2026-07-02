@@ -1952,9 +1952,24 @@ func ensureDeviceWiFiForOSUpdate(ctx context.Context, conn *grpcclient.AgentConn
 		}
 		return
 	}
-	password, err := promptWifiPassword(ssid)
-	if err != nil {
-		return
+	// Offer the saved password from the macOS keychain first, exactly like the
+	// installer's WiFi flow; fall back to typing it.
+	password := ""
+	if supportsKeychainLookup {
+		if useKeychain, cerr := confirmKeychainLookup(ssid); cerr == nil && useKeychain {
+			if pw, kerr := lookupKeychainPassword(ssid); kerr == nil && pw != "" {
+				fmt.Println("Using saved password from keychain.")
+				password = pw
+			} else {
+				fmt.Println("Password not available from keychain.")
+			}
+		}
+	}
+	if password == "" {
+		password, err = promptWifiPassword(ssid)
+		if err != nil {
+			return
+		}
 	}
 
 	fmt.Println(tui.InfoMessage(fmt.Sprintf("Connecting the device to %s...", ssid)))
