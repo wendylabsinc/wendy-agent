@@ -339,7 +339,7 @@ type OSUpdateEngineStatus struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Platform connector driving the A/B scheme, e.g. "tegrauefi" or "ubootenv".
 	Connector string `protobuf:"bytes,1,opt,name=connector,proto3" json:"connector,omitempty"`
-	// Slot the device is currently booted from ("a" or "b").
+	// Slot the device is currently booted from ("A" or "B").
 	CurrentSlot   string                              `protobuf:"bytes,2,opt,name=current_slot,json=currentSlot,proto3" json:"current_slot,omitempty"`
 	Slots         []*OSUpdateEngineStatus_Slot        `protobuf:"bytes,3,rep,name=slots,proto3" json:"slots,omitempty"`
 	System        []*OSUpdateEngineStatus_SystemEntry `protobuf:"bytes,4,rep,name=system,proto3" json:"system,omitempty"`
@@ -687,7 +687,7 @@ func (x *UpdateOSResponse_Failed) GetErrorMessage() string {
 
 type OSUpdateEngineStatus_Slot struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Slot name ("a" or "b").
+	// Slot name ("A" or "B").
 	Slot string `protobuf:"bytes,1,opt,name=slot,proto3" json:"slot,omitempty"`
 	// True for the slot the device is booted from.
 	Booted bool `protobuf:"varint,2,opt,name=booted,proto3" json:"booted,omitempty"`
@@ -854,7 +854,7 @@ type OSUpdateEngineStatus_PendingUpdate struct {
 	ArtifactVersion string                 `protobuf:"bytes,2,opt,name=artifact_version,json=artifactVersion,proto3" json:"artifact_version,omitempty"`
 	// Engine phase, e.g. "installed" (awaiting reboot + commit).
 	Phase string `protobuf:"bytes,3,opt,name=phase,proto3" json:"phase,omitempty"`
-	// Slot the update was written to ("a" or "b").
+	// Slot the update was written to ("A" or "B").
 	TargetSlot    string `protobuf:"bytes,4,opt,name=target_slot,json=targetSlot,proto3" json:"target_slot,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

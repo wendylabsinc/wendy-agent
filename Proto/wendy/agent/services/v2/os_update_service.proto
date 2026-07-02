@@ -52,11 +52,11 @@ message GetOSUpdateStatusRequest {
 message OSUpdateEngineStatus {
     // Platform connector driving the A/B scheme, e.g. "tegrauefi" or "ubootenv".
     string connector = 1;
-    // Slot the device is currently booted from ("a" or "b").
+    // Slot the device is currently booted from ("A" or "B").
     string current_slot = 2;
 
     message Slot {
-        // Slot name ("a" or "b").
+        // Slot name ("A" or "B").
         string slot = 1;
         // True for the slot the device is booted from.
         bool booted = 2;
@@ -89,7 +89,7 @@ message OSUpdateEngineStatus {
         string artifact_version = 2;
         // Engine phase, e.g. "installed" (awaiting reboot + commit).
         string phase = 3;
-        // Slot the update was written to ("a" or "b").
+        // Slot the update was written to ("A" or "B").
         string target_slot = 4;
     }
     PendingUpdate pending = 5;
