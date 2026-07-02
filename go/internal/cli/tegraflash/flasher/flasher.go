@@ -19,6 +19,7 @@ package flasher
 
 import (
 	"bufio"
+	"context"
 	_ "embed"
 	"errors"
 	"fmt"
@@ -80,7 +81,13 @@ type Options struct {
 }
 
 // Run drives bootburn's FlashImages over ADB via the monkeypatch driver.
-func Run(opts Options) error {
+// Cancelling ctx aborts the flash: the bootburn process group is killed and
+// ctx's error is returned. The child runs in its own process group, so a
+// terminal ctrl+c does not reach it — cancelling ctx is the only way to stop it.
+func Run(ctx context.Context, opts Options) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	out := opts.Out
 	if out == nil {
 		out = os.Stdout
@@ -162,6 +169,7 @@ func Run(opts Options) error {
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 	cmd.Env = envWithADB(opts.ADBDir, pyDir, opts.ADBPort, progressPath)
+	setProcessGroup(cmd)
 
 	// Up-front plan from FileToFlash.txt, so the (long, mostly silent) write reads
 	// as deliberate progress rather than a hang.
@@ -189,6 +197,11 @@ func Run(opts Options) error {
 	lastHeartbeat := start
 	for {
 		select {
+		case <-ctx.Done():
+			killProcessGroup(cmd)
+			<-done // reap; ignore the kill-induced error
+			fmt.Fprintf(out, "Flash aborted after %s.\n", elapsed(start))
+			return ctx.Err()
 		case werr := <-done:
 			if n, ok := readProgressFile(progressPath); ok && n > maxBytes {
 				maxBytes = n

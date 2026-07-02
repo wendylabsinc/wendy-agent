@@ -41,9 +41,19 @@ type (
 	}
 	// StepFailMsg marks a step failed (✗).
 	StepFailMsg struct{ ID int }
+	// StepAbortGuardMsg arms or clears the ctrl+c confirmation guard. While a
+	// non-empty Warning is set, the first ctrl+c shows the warning instead of
+	// quitting; a second ctrl+c within stepsAbortWindow actually cancels. Send an
+	// empty Warning to restore instant cancel (for steps that are safe to abort).
+	StepAbortGuardMsg struct{ Warning string }
 	// StepsDoneMsg ends the program; Err is nil on success.
 	StepsDoneMsg struct{ Err error }
 )
+
+// stepsAbortWindow is how long a first ctrl+c stays armed: a second ctrl+c
+// inside the window cancels, a later one just re-shows the warning. The window
+// keeps a stray second press minutes later from aborting a guarded step.
+const stepsAbortWindow = 3 * time.Second
 
 type stepRow struct {
 	id     int
@@ -66,6 +76,10 @@ type StepsModel struct {
 	spinner spinner.Model
 	done    bool
 	err     error
+
+	// ctrl+c confirmation guard (see StepAbortGuardMsg).
+	abortWarning string
+	abortArmedAt time.Time
 }
 
 // NewStepsModel returns a model with the given title (the spinner line shown
@@ -89,10 +103,19 @@ func (m StepsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		if msg.String() == "ctrl+c" {
+			// A guarded step swallows the first ctrl+c and shows the warning;
+			// only a deliberate second press inside the window cancels.
+			if m.abortWarning != "" && (m.abortArmedAt.IsZero() || time.Since(m.abortArmedAt) > stepsAbortWindow) {
+				m.abortArmedAt = time.Now()
+				return m, nil
+			}
 			m.done = true
 			m.err = ErrCancelled
 			return m, tea.Quit
 		}
+	case StepAbortGuardMsg:
+		m.abortWarning = msg.Warning
+		m.abortArmedAt = time.Time{}
 	case spinner.TickMsg:
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
@@ -139,6 +162,7 @@ var (
 	stepCross = lipgloss.NewStyle().Foreground(ColorError).Bold(true)
 	stepDim   = lipgloss.NewStyle().Foreground(ColorDim)
 	stepTitle = lipgloss.NewStyle().Foreground(ColorPrimary)
+	stepWarn  = lipgloss.NewStyle().Foreground(ColorNotice).Bold(true)
 )
 
 const stepsLabelWidth = 26
@@ -166,6 +190,11 @@ func (m StepsModel) View() string {
 		case StepFailed:
 			sb.WriteString(fmt.Sprintf("  %s %s\n", stepCross.Render("✗"), label))
 		}
+	}
+	// The armed abort warning renders only inside the confirmation window; the
+	// spinner's steady ticks keep the view fresh, so it disappears on its own.
+	if m.abortWarning != "" && !m.abortArmedAt.IsZero() && time.Since(m.abortArmedAt) <= stepsAbortWindow {
+		sb.WriteString("\n" + stepWarn.Render("⚠ "+m.abortWarning) + "\n")
 	}
 	return sb.String()
 }

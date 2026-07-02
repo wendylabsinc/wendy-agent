@@ -159,7 +159,7 @@ func TestRunFlashStepsPlain_Sequencing(t *testing.T) {
 		}},
 	}
 
-	failedID, err := runFlashSteps("Flashing", steps)
+	failedID, err := runFlashSteps("Flashing", steps, func() {})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -187,7 +187,7 @@ func TestRunFlashStepsPlain_StopsOnFailure(t *testing.T) {
 		}},
 	}
 
-	failedID, err := runFlashSteps("Flashing", steps)
+	failedID, err := runFlashSteps("Flashing", steps, func() {})
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("err = %v, want sentinel", err)
 	}

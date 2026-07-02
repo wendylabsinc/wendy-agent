@@ -88,6 +88,11 @@ func installThor(ctx context.Context, version string, nightly, force bool) error
 		logPath = filepath.Join(dir, "thor-flash-"+time.Now().Format("20060102-150405")+".log")
 	}
 
+	// flashCtx aborts in-flight step work (the bootburn child) when the user
+	// confirms a ctrl+c cancel in the steps UI.
+	flashCtx, cancelFlash := context.WithCancel(ctx)
+	defer cancelFlash()
+
 	// fp/shimDir are populated by the download and stage-1 steps and read by
 	// later steps; the steps run sequentially in one goroutine, so no locking.
 	var (
@@ -115,17 +120,19 @@ func installThor(ctx context.Context, version string, nightly, force bool) error
 				Out:        out,
 			})
 		}},
-		{id: stepStage2, label: "Stage 2  flash partitions", run: func(out io.Writer, _ func(string)) (bool, error) {
-			return false, flasher.Run(flasher.Options{
-				BundleDir:    fp.BundleDir(),
-				WorkspaceDir: fp.WorkspaceOutDir(),
-				ADBDir:       shimDir,
-				ADBPort:      dev.PathKey, // pin the flashing gadget to the selected device
-				LogPath:      logPath,
-				PyYAMLDir:    fp.PyYAMLDir(),
-				Out:          out,
-			})
-		}},
+		{id: stepStage2, label: "Stage 2  flash partitions",
+			abortWarning: "Partitions are being written — aborting now can leave the Thor unbootable. Press ctrl+c again to abort anyway.",
+			run: func(out io.Writer, _ func(string)) (bool, error) {
+				return false, flasher.Run(flashCtx, flasher.Options{
+					BundleDir:    fp.BundleDir(),
+					WorkspaceDir: fp.WorkspaceOutDir(),
+					ADBDir:       shimDir,
+					ADBPort:      dev.PathKey, // pin the flashing gadget to the selected device
+					LogPath:      logPath,
+					PyYAMLDir:    fp.PyYAMLDir(),
+					Out:          out,
+				})
+			}},
 	}
 
 	// A running Google adb server (Android platform-tools) claims every ADB device
@@ -135,13 +142,19 @@ func installThor(ctx context.Context, version string, nightly, force bool) error
 		fmt.Println(tui.InfoMessage("Stopped a running adb server (it would hold the Thor's flashing gadget)."))
 	}
 
-	failedID, err := runFlashSteps(fmt.Sprintf("Flashing WendyOS %s", plan.version), steps)
+	failedID, err := runFlashSteps(fmt.Sprintf("Flashing WendyOS %s", plan.version), steps, cancelFlash)
 	if shimDir != "" {
 		os.RemoveAll(shimDir)
 	}
 	if err != nil {
 		switch {
 		case errors.Is(err, tui.ErrCancelled):
+			if failedID == stepStage2 {
+				// The abort interrupted partition writes; the Thor can be left
+				// unbootable exactly like a stage-2 failure. Show the recovery
+				// guide instead of exiting silently.
+				printThorBadStateHint(os.Stdout)
+			}
 			return ErrUserCancelled
 		case errors.Is(err, flasher.ErrGadgetUnreachable):
 			// Died at ADB setup before any write — the Thor is untouched, so
@@ -300,6 +313,10 @@ func setupADBShim(fp *flashpack.Flashpack) (string, error) {
 type flashStep struct {
 	id    int
 	label string
+	// abortWarning, when set, makes ctrl+c during this step require a confirming
+	// second press (shown with this text) instead of cancelling immediately —
+	// for steps where an abort can leave the device in a bad state.
+	abortWarning string
 	// run performs the step. It writes verbose output to out (captured and shown
 	// only on failure in interactive mode) and may call detail to update the live
 	// trailing text (e.g. a byte count). It returns cached=true when the work was
@@ -310,8 +327,11 @@ type flashStep struct {
 // runFlashSteps runs steps in order, rendering them as a live BuildKit-style step
 // list on an interactive terminal (verbose per-step output buffered and printed
 // only if a step fails) or as concise streamed lines otherwise. It returns the id
-// of the failing step (or -1 on success/cancel) and the error.
-func runFlashSteps(title string, steps []flashStep) (int, error) {
+// of the failing step and the error; -1 on success. On a confirmed ctrl+c it
+// calls cancelWork to abort the in-flight step, waits for the worker to wind
+// down, and returns the interrupted step's id with tui.ErrCancelled so the
+// caller can warn when that step leaves the device in a bad state.
+func runFlashSteps(title string, steps []flashStep, cancelWork func()) (int, error) {
 	if !isInteractiveTerminal() {
 		return runFlashStepsPlain(title, steps)
 	}
@@ -324,6 +344,10 @@ func runFlashSteps(title string, steps []flashStep) (int, error) {
 		err      error
 		verbose  []byte
 	}
+	// curID tracks the step being run so a ctrl+c cancel can report which step
+	// was interrupted (the goroutine keeps running briefly after the UI exits).
+	var curID atomic.Int32
+	curID.Store(-1)
 	resC := make(chan outcome, 1)
 	go func() {
 		failedID, runErr := -1, error(nil)
@@ -332,6 +356,8 @@ func runFlashSteps(title string, steps []flashStep) (int, error) {
 			// Per-step buffer so a later failure surfaces only that step's output,
 			// not the successful earlier steps.
 			buf := &boundedBuffer{max: maxRawBuildCapture}
+			curID.Store(int32(s.id))
+			prog.Send(tui.StepAbortGuardMsg{Warning: s.abortWarning})
 			prog.Send(tui.StepStartMsg{ID: s.id, Label: s.label})
 			cached, err := s.run(buf, func(d string) { prog.Send(tui.StepDetailMsg{ID: s.id, Detail: d}) })
 			if err != nil {
@@ -350,7 +376,15 @@ func runFlashSteps(title string, steps []flashStep) (int, error) {
 		return -1, fmt.Errorf("flash progress UI: %w", uiErr)
 	}
 	if cancelErr := final.(tui.StepsModel).Err(); errors.Is(cancelErr, tui.ErrCancelled) {
-		return -1, cancelErr
+		// Abort the in-flight step (kills the bootburn child during stage 2) and
+		// reap the worker so nothing outlives the CLI. Bounded: a step that
+		// ignores cancellation (e.g. stage-1 USB ops) shouldn't wedge the exit.
+		cancelWork()
+		select {
+		case <-resC:
+		case <-time.After(10 * time.Second):
+		}
+		return int(curID.Load()), cancelErr
 	}
 	res := <-resC
 	if res.err != nil {
