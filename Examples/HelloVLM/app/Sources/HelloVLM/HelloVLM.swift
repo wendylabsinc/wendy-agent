@@ -38,7 +38,7 @@ struct CLIArguments: ParsableCommand {
 
     @Option(name: .long, help: "Prompt to run against the model and the current camera frames.")
     var prompt: String =
-        "These frames were captured at a fixed interval from a webcam. Describe what is happening and how it changes over the frames. Reply in English."
+        "These frames were captured at a fixed interval from a webcam. Reply in English. You are a comedian using dark humor below the waist line. Ridicule what is shown by the frames."
 
     @Option(name: .long, help: "Name of the camera to use (substring match).")
     var camera: String?

@@ -22,6 +22,51 @@ final class FrameBuffer: @unchecked Sendable {
     }
 }
 
+/// Motion-JPEG frames commonly omit the Huffman tables (DHT) and rely on the
+/// JPEG Annex K defaults. Lenient decoders (llama.cpp, ffmpeg) fill them in;
+/// Safari and macOS ImageIO refuse to decode such frames. Insert the standard
+/// tables before the scan when they are missing.
+func withStandardHuffmanTables(_ jpeg: Data) -> Data {
+    var i = 2
+    while i + 3 < jpeg.count, jpeg[i] == 0xFF {
+        let marker = jpeg[i + 1]
+        if marker == 0xC4 {
+            return jpeg
+        }
+        if marker == 0xDA {
+            break
+        }
+        if (0xD0...0xD9).contains(marker) {
+            i += 2
+            continue
+        }
+        let length = Int(jpeg[i + 2]) << 8 | Int(jpeg[i + 3])
+        i += 2 + length
+    }
+
+    guard i + 1 < jpeg.count, jpeg[i] == 0xFF, jpeg[i + 1] == 0xDA else {
+        return jpeg
+    }
+
+    var patched = Data(capacity: jpeg.count + standardJPEGHuffmanTables.count)
+    patched.append(jpeg.prefix(i))
+    patched.append(standardJPEGHuffmanTables)
+    patched.append(jpeg.suffix(from: i))
+    return patched
+}
+
+/// The four DHT segments (DC/AC, luminance/chrominance) from JPEG Annex K.
+private let standardJPEGHuffmanTables = Data(base64Encoded: [
+    "/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQID",
+    "AAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RF",
+    "RkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKz",
+    "tLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEB",
+    "AQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdh",
+    "cRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElKU1RVVldY",
+    "WVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPE",
+    "xcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq8vP09fb3+Pn6",
+].joined())!
+
 #if os(Linux)
 
 import CLinuxVideo
@@ -185,7 +230,9 @@ final class LinuxCamera: @unchecked Sendable {
 
             if shouldSample {
                 lastSampledAt = now
-                let jpeg = Data(bytes: mapped[Int(buffer.index)].pointer, count: Int(buffer.bytesused))
+                let jpeg = withStandardHuffmanTables(
+                    Data(bytes: mapped[Int(buffer.index)].pointer, count: Int(buffer.bytesused))
+                )
                 let frame = FrameCapture(capturedAt: now, jpeg: jpeg)
                 buffer.bytesused = 0
                 self.buffer.append(frame)
