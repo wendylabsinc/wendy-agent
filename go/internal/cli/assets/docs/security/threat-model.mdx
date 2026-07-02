@@ -80,7 +80,7 @@ Each row leads with the existing control, then notes hardening underway. Severit
 |----|----------|--------|---------|
 | TM-T-01 | HIGH | 🛠 In progress | Mitigated by: containers running as unprivileged `appuser` with namespace isolation, capability dropping, and a baseline seccomp profile. Hardening underway: OCI image signature verification (Cosign / Notary v2) before container start. |
 | TM-T-02 | HIGH | 🛠 In progress | Mitigated by: SHA256 hash verification and mTLS required to call `UpdateAgent`. Hardening underway: binary signature verification against a pinned key embedded in the current binary. |
-| TM-T-03 | HIGH | 🛠 In progress | Mitigated by: OS updates are delivered by the in-house `wendyos-update` tool (deployed), which has replaced Mender. Hardening underway: HTTPS-only artifact downloads with strict TLS validation, and OS artifact code-signing verified against a pinned key before install — part of a coordinated signing rollout alongside `wendy-agent` binary signing and cosign verification for container images. |
+| TM-T-03 | HIGH | 🛠 In progress | Mitigated by: OS updates are delivered by the in-house `wendyos-update` tool over an A/B rootfs mechanism with automatic rollback on a failed health verdict. (The legacy Mender backend has been removed.) Hardening underway: HTTPS-only artifact downloads with strict TLS validation, and OS artifact code-signing verified against a pinned key before install — part of a coordinated signing rollout alongside `wendy-agent` binary signing and cosign verification for container images. |
 | TM-T-04 | MEDIUM | 📋 Planned | Mitigated by: volume access requires an explicit entitlement declaration. Hardening underway: namespacing volumes by app identity by default. |
 
 ### Repudiation
