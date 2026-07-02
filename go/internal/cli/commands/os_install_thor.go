@@ -76,7 +76,7 @@ func installThor(ctx context.Context, version string, nightly, force bool) error
 	if !force {
 		fmt.Println()
 		fmt.Println(tui.WarningMessage("This erases QSPI + internal NVMe on the Thor. This cannot be undone."))
-		ok, err := tui.ConfirmNoDefaultDanger(fmt.Sprintf("Flash %s?", dev.Describe()))
+		ok, err := tui.ConfirmNoDefault(fmt.Sprintf("Flashing will ERASE ALL DATA on %s (internal NVMe + QSPI boot flash). Continue?", dev.Describe()))
 		if errors.Is(err, tui.ErrCancelled) || (err == nil && !ok) {
 			return ErrUserCancelled
 		}

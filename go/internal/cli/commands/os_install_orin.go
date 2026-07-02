@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -64,7 +65,7 @@ func installOrin(ctx context.Context, version string, nightly, force bool) error
 	if !force {
 		fmt.Println()
 		fmt.Println(tui.WarningMessage("This erases the QSPI boot flash + onboard eMMC of the AGX Orin. This cannot be undone."))
-		ok, err := tui.ConfirmNoDefaultDanger(fmt.Sprintf("Flash %s?", dev.Describe()))
+		ok, err := tui.ConfirmNoDefault(fmt.Sprintf("Flashing will ERASE ALL DATA on %s (onboard eMMC + QSPI boot flash). Continue?", dev.Describe()))
 		if errors.Is(err, tui.ErrCancelled) || (err == nil && !ok) {
 			return ErrUserCancelled
 		}
@@ -72,6 +73,11 @@ func installOrin(ctx context.Context, version string, nightly, force bool) error
 			return err
 		}
 	}
+
+	// Warn about the macOS "disk not readable" alerts before the sudo prompt —
+	// users typically authenticate and then step away, so the alert would
+	// otherwise pop up unattended mid-flash.
+	printMacOSUnreadableDiskNotice(os.Stdout)
 
 	// Raw block writes to the exported disks run as root (sudo re-exec of the
 	// hidden __t234-write helper); authenticate up front, and keep the sudo
@@ -389,6 +395,23 @@ func orinRecoveryBriefingBox() string {
 		step(3, "Connect the "+briefPort.Render("USB-C port next to the 40-pin header")+" to this computer."),
 	}
 	return briefBorder.Render(strings.Join(lines, "\n"))
+}
+
+// printMacOSUnreadableDiskNotice warns, on macOS only, about the "disk not
+// readable" alerts Finder raises during stage 2: the Orin exposes its flashpkg
+// LUN and then its eMMC as raw USB disks with no filesystem macOS can mount, so
+// Finder offers to Initialize them. The one rule that matters is to click
+// Ignore — never Initialize or Erase, which would fight the flasher for the
+// disk. It appears once per LUN, so warn up front rather than let it surprise a
+// user who has stepped away after entering their password.
+func printMacOSUnreadableDiskNotice(w io.Writer) {
+	if runtime.GOOS != "darwin" {
+		return
+	}
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, tui.WarningMessage(`Heads-up: during flashing, macOS will report "The disk you inserted was not readable by this computer." This is expected.`))
+	fmt.Fprintln(w, tui.Dim("  The Orin's eMMC + QSPI storage shows up as an uninitialized disk. Click Ignore — never Initialize or Erase."))
+	fmt.Fprintln(w, tui.Dim("  The alert can appear several times, including after you step away. Just dismiss each one; the flash keeps running."))
 }
 
 // printOrinBadStateHint prints a recovery notice for an Orin whose flash was
