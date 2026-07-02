@@ -4,6 +4,8 @@ Issues that would not reproduce on Orin / Raspberry Pi / VM. Each entry: symptom
 
 ## F1 — tegrastats GPU fallback parser yields no GPU stats on Thor (JetPack 7.2 format change)
 
+**Filed: WDY-1803** (2026-07-02)
+
 - **Symptom:** `hoststats.ParseTegrastats` (go/internal/agent/hoststats/gpu.go) matches `GR3D_FREQ (\d+)%` and `VDD_GPU_SOC (\d+)mW`. Thor's tegrastats (JetPack 7.2, kernel 6.8.12-l4t-r39.2.0) emits **neither**: there is no `GR3D_FREQ` field at all (even with the GPU at 85–98% util per nvidia-smi), and GPU power is reported as `VDD_GPU`, not `VDD_GPU_SOC`. The fallback therefore returns nil → no GPU panel/stats if nvidia-smi is ever missing or fails.
 - **Repro:** `ssh wendy@wendyos-curious-meteor.local tegrastats --interval 500 | head -2` while HelloVLM runs inference; grep for `GR3D` → no match.
 - **Evidence:** Thor tegrastats line (2026-07-02 13:45): `... RAM 36529/125749MB ... cpu@60.406C tj@63.281C ... gpu@62.906C ... VDD_GPU 37528mW/37528mW/37528mW VDD_CPU_SOC_MSS 18961mW ...` — no GR3D_FREQ. Simultaneous `nvidia-smi --query-gpu=utilization.gpu` → 85%.
