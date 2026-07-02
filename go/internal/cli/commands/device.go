@@ -1903,6 +1903,7 @@ func maybeCheckOSUpdate(ctx context.Context, preUpdateVersion *agentpb.GetAgentV
 		case osActionApply:
 			// fall through to apply
 		case osActionPrompt:
+			fmt.Println(tui.InfoMessage("The device downloads the OS image itself, so it needs internet access — connect it first (e.g. 'wendy wifi connect') if it is offline."))
 			if !promptYesNoDefaultNoFn(fmt.Sprintf("OS update available (%s → %s). Apply now? [y/N] ", fromVer, latestVer)) {
 				fmt.Println("Skipping OS update. Run 'wendy os update' to apply later.")
 				return osUpdateOutcome{}, nil

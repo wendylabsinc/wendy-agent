@@ -18,6 +18,8 @@ import (
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
+	"golang.org/x/sys/unix"
+
 	"github.com/wendylabsinc/wendy/go/internal/cli/tegraflash/bringup"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tegraflash/flasher"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tegraflash/flashpack"
@@ -49,6 +51,11 @@ func installThor(ctx context.Context, version string, nightly, force bool) error
 	// or extract yet — we do that inside the progress UI, after the user commits.
 	plan, err := planThorFlashpack(cacheDir, version, nightly)
 	if err != nil {
+		return err
+	}
+
+	// Fail fast on a full disk, before the user starts cabling the Thor.
+	if err := checkThorDiskSpace(cacheDir, plan); err != nil {
 		return err
 	}
 
@@ -153,7 +160,7 @@ func installThor(ctx context.Context, version string, nightly, force bool) error
 		return err
 	}
 
-	fmt.Println(tui.SuccessMessage(fmt.Sprintf("Flashed WendyOS %s — power-cycle the Thor out of recovery to boot it.", plan.version)))
+	fmt.Println(tui.SuccessMessage(fmt.Sprintf("Flashed WendyOS %s — power-cycle the Thor out of recovery to boot it. (press the right button once)", plan.version)))
 	return nil
 }
 
@@ -197,6 +204,49 @@ func flashpackCached(cacheDir, version string) bool {
 		return true
 	}
 	return false
+}
+
+// thorExtractedFactor estimates the extracted flashpack tree from the compressed
+// tarball: observed ~2.2x (3.0 GiB .tar.zst -> ~6.5 GiB tree), padded to 2.5x.
+const thorExtractedFactor = 2.5
+
+// thorFlashpackSpaceNeeded estimates how many bytes downloadAndExtractFlashpack
+// will write into cacheDir for plan: nothing when the tree is already extracted,
+// extraction only when the tarball is cached, download + extraction otherwise.
+// Returns 0 (skip the check) when the size can't be determined.
+func thorFlashpackSpaceNeeded(cacheDir string, plan thorFlashPlan) int64 {
+	if _, err := os.Stat(filepath.Join(cacheDir, flashpack.FlashpackName(plan.version))); err == nil {
+		return 0
+	}
+	if fi, err := os.Stat(flashpack.TarballCachePath(cacheDir, plan.version)); err == nil {
+		return int64(float64(fi.Size()) * thorExtractedFactor)
+	}
+	if plan.info != nil && plan.info.SizeBytes > 0 {
+		return int64(float64(plan.info.SizeBytes) * (1 + thorExtractedFactor))
+	}
+	return 0
+}
+
+// checkThorDiskSpace errors out early when the volume holding cacheDir doesn't
+// have room for the flashpack download + extraction. Best-effort: an unknown
+// size or a failed statfs never blocks the install.
+func checkThorDiskSpace(cacheDir string, plan thorFlashPlan) error {
+	needed := thorFlashpackSpaceNeeded(cacheDir, plan)
+	if needed == 0 {
+		return nil
+	}
+	var stat unix.Statfs_t
+	if err := unix.Statfs(cacheDir, &stat); err != nil {
+		return nil
+	}
+	avail := int64(stat.Bavail) * int64(stat.Bsize)
+	if avail >= needed {
+		return nil
+	}
+	const gib = 1 << 30
+	return fmt.Errorf(
+		"not enough free disk space for WendyOS %s: needs about %.1f GiB in %s, but only %.1f GiB is free.\nFree up space (older downloads in %s can be deleted) and try again",
+		plan.version, float64(needed)/gib, cacheDir, float64(avail)/gib, cacheDir)
 }
 
 // downloadAndExtractFlashpack downloads the flashpack (when not cached),
@@ -448,7 +498,6 @@ var (
 	briefKey    = lipgloss.NewStyle().Foreground(tui.ColorNotice).Bold(true) // buttons / "disconnect"
 	briefPort   = lipgloss.NewStyle().Foreground(tui.Sky500).Bold(true)      // cabling / ports
 	briefNum    = lipgloss.NewStyle().Foreground(tui.ColorAccent).Bold(true)
-	briefDim    = lipgloss.NewStyle().Foreground(tui.ColorDim)
 )
 
 // thorRecoveryBriefingBox renders the cabling and recovery-mode steps the user
@@ -463,24 +512,26 @@ func thorRecoveryBriefingBox() string {
 	}
 	lines := []string{
 		section("Storage"),
-		"  WendyOS installs to the Thor's internal flash + NVMe — it uses no",
-		"  external USB drive. " + briefKey.Render("Disconnect any USB drive now") + " and leave it out.",
+		"  WendyOS gets installed to the Thor's internal flash and NVMe, it uses",
+		"  no external USB drive. In case you have a USB drive attached to the",
+		"  Thor, " + briefKey.Render("remove it and leave it out") + ".",
 		"",
 		section("USB-C cabling"),
 		"  Connect this computer to the " + briefPort.Render("USB-C port next to the HDMI port") + ".",
-		"  The other USB-C port is " + briefDim.Render("power-only") + ".",
+		"  The other USB-C port is power-only.",
 		"",
 		section("Entering recovery mode"),
-		"  Front buttons, left → right:  " +
-			briefKey.Render("Power") + briefDim.Render(" · ") +
-			briefKey.Render("Force Recovery") + briefDim.Render(" · ") +
-			briefKey.Render("Reset"),
+		"  In front of the Thor there are three buttons: " +
+			briefKey.Render("Power") + " (left),",
+		"  " + briefKey.Render("Force Recovery") + " (middle) and " + briefKey.Render("Reset") + " (right).",
 		"",
-		step(1, "Start with the Thor "+briefDim.Render("unplugged and powered off")+"."),
-		step(2, "Plug in power."),
+		"  Follow the instructions below once you have only the USB-C cable",
+		"  connected to this computer as mentioned above:",
+		"",
+		step(1, "Start with the Thor unplugged and powered off."),
+		step(2, "Plug in power (USB-C cable to the second USB-C port)."),
 		step(3, "Hold "+briefKey.Render("Force Recovery")+" (middle); briefly tap "+briefKey.Render("Reset")+" (right),"),
-		"       then release " + briefKey.Render("Force Recovery") + ".",
-		step(4, "Connect the "+briefPort.Render("USB-C port next to HDMI")+" to this computer."),
+		"       then release " + briefKey.Render("Force Recovery") + " (middle).",
 	}
 	return briefBorder.Render(strings.Join(lines, "\n"))
 }

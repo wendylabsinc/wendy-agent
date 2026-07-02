@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/tegraflash/flashpack"
@@ -83,6 +84,60 @@ func TestFlashpackCached(t *testing.T) {
 	}
 	if !flashpackCached(dir, version) {
 		t.Fatal("extracted tree should report cached")
+	}
+}
+
+func TestThorFlashpackSpaceNeeded(t *testing.T) {
+	dir := t.TempDir()
+	const version = "0.16.1"
+
+	// Nothing cached, no manifest info: unknown size, skip the check.
+	if got := thorFlashpackSpaceNeeded(dir, thorFlashPlan{version: version}); got != 0 {
+		t.Fatalf("unknown size should return 0, got %d", got)
+	}
+
+	// Nothing cached, manifest size known: download + extraction.
+	plan := thorFlashPlan{version: version, info: &thorFlashpackInfo{SizeBytes: 1000}}
+	if got := thorFlashpackSpaceNeeded(dir, plan); got != 3500 {
+		t.Fatalf("download+extract estimate = %d, want 3500", got)
+	}
+
+	// Tarball cached: extraction only, sized from the tarball on disk.
+	tarball := flashpack.TarballCachePath(dir, version)
+	if err := os.WriteFile(tarball, make([]byte, 100), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := thorFlashpackSpaceNeeded(dir, plan); got != 250 {
+		t.Fatalf("extract-only estimate = %d, want 250", got)
+	}
+
+	// Extracted tree present: nothing left to write.
+	if err := os.MkdirAll(filepath.Join(dir, flashpack.FlashpackName(version)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := thorFlashpackSpaceNeeded(dir, plan); got != 0 {
+		t.Fatalf("extracted tree should return 0, got %d", got)
+	}
+}
+
+func TestCheckThorDiskSpace(t *testing.T) {
+	dir := t.TempDir()
+	const version = "0.16.1"
+
+	// Plenty of room (tiny requirement) passes.
+	plan := thorFlashPlan{version: version, info: &thorFlashpackInfo{SizeBytes: 1}}
+	if err := checkThorDiskSpace(dir, plan); err != nil {
+		t.Fatalf("tiny flashpack should fit: %v", err)
+	}
+
+	// An absurd requirement fails with a readable message.
+	plan.info.SizeBytes = 1 << 60
+	err := checkThorDiskSpace(dir, plan)
+	if err == nil {
+		t.Fatal("1 EiB flashpack should not fit")
+	}
+	if !strings.Contains(err.Error(), "not enough free disk space") {
+		t.Fatalf("unexpected error message: %v", err)
 	}
 }
 
