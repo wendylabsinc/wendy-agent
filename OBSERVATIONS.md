@@ -41,6 +41,8 @@ Minor inconsistency: hardware list reports both uvcvideo nodes (video1 is the UV
 
 ## O6 — `device logs --app X --tail N` returns nothing when other apps are chatty
 
+**Filed: WDY-1811** (2026-07-02)
+
 `--tail` selects the last N log batches globally and only then applies the `--app` filter. On this device HelloVLM's llm service dominates the recent batches, so `device logs --app autotest-gpu --tail 10` printed nothing even though the app had logged seconds before (live streaming with the same filter works). Expected: replay the last N batches *of the filtered app*. Layer: agent StreamLogs or CLI. Not Thor-specific (needs a chatty co-tenant to notice).
 
 ## O7 — all container stderr lines are labeled severity=WARN
