@@ -15,6 +15,9 @@ type RecoveryDevice struct {
 // IsThor reports whether the device is a T264 (AGX Thor).
 func (r RecoveryDevice) IsThor() bool { return r.Product == uint16(ProductThor) }
 
+// IsOrin reports whether the device is a T234 (Orin family).
+func (r RecoveryDevice) IsOrin() bool { return r.Product == uint16(ProductOrin) }
+
 // Describe returns a one-line human label for pickers/logs.
 func (r RecoveryDevice) Describe() string {
 	chip := "Jetson"

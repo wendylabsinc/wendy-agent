@@ -122,7 +122,7 @@ Flags can be provided progressively — omitted values trigger interactive picke
 	cmd.Flags().BoolVar(&nightly, "nightly", false, "Use nightly/prerelease builds")
 	cmd.Flags().BoolVar(&force, "force", false, "Skip confirmation prompt")
 	cmd.Flags().BoolVar(&noBmap, "no-bmap", false, "Disable bmap-accelerated flashing even when a block map is available")
-	cmd.Flags().StringVar(&storageOverride, "storage", "", "Force image storage variant: nvme or sd (default: auto-detect — real NVMe drives use nvme; a USB-attached drive uses the device's published image, SD for Raspberry Pi / NVMe for Jetson SSD enclosures)")
+	cmd.Flags().StringVar(&storageOverride, "storage", "", "Force image storage variant: nvme or sd (default: auto-detect — real NVMe drives use nvme; a USB-attached drive uses the device's published image, SD for Raspberry Pi / NVMe for Jetson SSD enclosures). For jetson-agx-orin, emmc flashes the onboard eMMC over USB recovery instead of writing a drive")
 	cmd.Flags().BoolVar(&yesOverwriteInternal, "yes-overwrite-internal", false, "Required to wipe an internal (non-removable) drive in non-interactive mode")
 	cmd.Flags().StringVar(&deviceType, "device-type", "", "Device type from manifest (e.g. raspberry-pi-5)")
 	cmd.Flags().StringVar(&versionFlag, "version", "", "WendyOS version to install (interactive if omitted)")
@@ -247,14 +247,22 @@ func pickLinuxDevice() (string, deviceInfo, error) {
 }
 
 func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion, flagDrive string, force bool, yesOverwriteInternal bool, noBmap bool, storageOverride string, wifi wifiCLIOptions, deviceName string, preOpts preEnrollOptions) error {
-	if storageOverride != "" && storageOverride != "nvme" && storageOverride != "sd" {
-		return fmt.Errorf("invalid --storage %q: must be \"nvme\" or \"sd\"", storageOverride)
+	if storageOverride != "" && storageOverride != "nvme" && storageOverride != "sd" && storageOverride != "emmc" {
+		return fmt.Errorf("invalid --storage %q: must be \"nvme\", \"sd\", or \"emmc\" (jetson-agx-orin only)", storageOverride)
+	}
+	if storageOverride == "emmc" && flagDeviceType != orinDeviceType {
+		return fmt.Errorf("--storage emmc flashes the onboard eMMC over USB recovery and requires --device-type %s", orinDeviceType)
 	}
 
 	// AGX Thor flashes over USB recovery (not a drive), via its own flashpack
 	// artifact and device selection — a separate path from the disk-image flow below.
 	if flagDeviceType == thorDeviceType {
 		return installThor(ctx, flagVersion, nightly, force)
+	}
+	// So does the AGX Orin's onboard eMMC (--storage emmc); its NVMe variant
+	// stays on the regular disk-image flow below.
+	if flagDeviceType == orinDeviceType && storageOverride == "emmc" {
+		return installOrin(ctx, flagVersion, nightly, force)
 	}
 
 	fmt.Println("Fetching available devices...")
@@ -358,6 +366,24 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 	// flow and dd's the wrong artifact onto an external drive.
 	if selected == thorDeviceType {
 		return installThor(ctx, flagVersion, nightly, force)
+	}
+
+	// The AGX Orin installs either to an NVMe drive (disk image, below) or to
+	// its onboard eMMC over USB recovery. --storage picks non-interactively;
+	// otherwise ask — but only when the version publishes an eMMC bundle.
+	if selected == orinDeviceType && storageOverride == "" && isInteractiveTerminal() {
+		if orinVersionHasEMMC(deviceMap[selected], flagVersion) {
+			mode, err := pickFromItems("Where should WendyOS install?", []tui.PickerItem{
+				{Name: "NVMe SSD", Description: "write a disk image to an SSD in a USB enclosure", Value: "nvme"},
+				{Name: "Onboard eMMC", Description: "flash over USB recovery (erases the eMMC + QSPI)", Value: "emmc"},
+			})
+			if err != nil {
+				return err
+			}
+			if mode == "emmc" {
+				return installOrin(ctx, flagVersion, nightly, force)
+			}
+		}
 	}
 
 	device := deviceMap[selected]

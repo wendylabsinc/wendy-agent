@@ -59,7 +59,8 @@ func installThor(ctx context.Context, version string, nightly, force bool) error
 	}
 
 	// Pick the device to flash.
-	dev, err := pickRecoveryDevice()
+	dev, err := pickRecoveryDevice("Thor", "the port next to the HDMI port",
+		rcm.RecoveryDevice.IsThor)
 	if err != nil {
 		return err
 	}
@@ -380,11 +381,30 @@ func verifySHA256(path, want string) error {
 	return nil
 }
 
-// pickRecoveryDevice lists Jetsons in recovery mode and selects one (auto when there
-// is exactly one, interactive picker when there are several).
-func pickRecoveryDevice() (rcm.RecoveryDevice, error) {
+// pickRecoveryDevice lists Jetsons in recovery mode of the wanted chip and
+// selects one (auto when there is exactly one, interactive picker when there
+// are several). chipLabel names the expected board in prompts (e.g. "Thor");
+// want filters the scan so a mixed bench can't route the wrong image to a
+// board, and cablingHint tells the user which port to check on a zero scan.
+func pickRecoveryDevice(chipLabel, cablingHint string, want func(rcm.RecoveryDevice) bool) (rcm.RecoveryDevice, error) {
 	for {
 		devs, err := rcm.ListRecoveryDevices()
+		if err == nil || errors.Is(err, rcm.ErrUSBAccess) {
+			matched := devs[:0:0]
+			var skipped int
+			for _, d := range devs {
+				if want(d) {
+					matched = append(matched, d)
+				} else {
+					skipped++
+				}
+			}
+			if skipped > 0 {
+				fmt.Println()
+				fmt.Println(tui.WarningMessage(fmt.Sprintf("Ignoring %d Jetson(s) in recovery mode that are not a %s.", skipped, chipLabel)))
+			}
+			devs = matched
+		}
 		switch {
 		case errors.Is(err, rcm.ErrUSBAccess) && len(devs) == 0:
 			// Nothing usable: explain the fix, then offer a rescan — the user can
@@ -406,13 +426,13 @@ func pickRecoveryDevice() (rcm.RecoveryDevice, error) {
 		}
 		switch len(devs) {
 		case 0:
-			// The user already confirmed the Thor is in recovery mode, so a zero
+			// The user already confirmed the board is in recovery mode, so a zero
 			// scan usually means cabling or the button sequence needs another try.
 			// Offer a rescan instead of aborting.
-			fmt.Print("\nNo Jetson found in USB recovery mode.\n" +
-				"  Check the USB-C cable is in the port next to the HDMI port and re-do the\n" +
-				"  recovery-mode button sequence, then rescan.\n" +
-				"Press Enter to rescan, or 'q' to quit: ")
+			fmt.Printf("\nNo %s found in USB recovery mode.\n"+
+				"  Check the USB-C cable is in %s and re-do the\n"+
+				"  recovery-mode button sequence, then rescan.\n"+
+				"Press Enter to rescan, or 'q' to quit: ", chipLabel, cablingHint)
 			if readQuit() {
 				return rcm.RecoveryDevice{}, ErrUserCancelled
 			}
@@ -432,7 +452,7 @@ func pickRecoveryDevice() (rcm.RecoveryDevice, error) {
 					Value:       d.PathKey,
 				})
 			}
-			sel, err := pickFromItems("Select the Thor to flash", items)
+			sel, err := pickFromItems(fmt.Sprintf("Select the %s to flash", chipLabel), items)
 			if err != nil {
 				return rcm.RecoveryDevice{}, err
 			}

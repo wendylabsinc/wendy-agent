@@ -73,6 +73,12 @@ type deviceVersion struct {
 	FlashpackPath      string `json:"flashpack_path"`
 	FlashpackChecksum  string `json:"flashpack_checksum"`
 	FlashpackSizeBytes int64  `json:"flashpack_size_bytes"`
+
+	// Orin eMMC bundle: the meta-tegra .tegraflash-tar wendy flashes to the
+	// board's onboard eMMC over USB recovery. Only present for jetson-agx-orin.
+	EMMCPath      string `json:"emmc_path"`
+	EMMCChecksum  string `json:"emmc_checksum"`
+	EMMCSizeBytes int64  `json:"emmc_size_bytes"`
 }
 
 // deviceInfo is the aggregated info shown in the picker for one device.
@@ -284,6 +290,11 @@ func getLatestOTAInfoForDeviceType(deviceType string, storageMedium string, nigh
 // thorDeviceType is the manifest key / --device-type for the AGX Thor.
 const thorDeviceType = "jetson-agx-thor"
 
+// orinDeviceType is the manifest key / --device-type for the AGX Orin. Unlike
+// Thor it supports two install modes: the NVMe disk image (regular drive
+// flow) and the onboard-eMMC USB-recovery flash (--storage emmc).
+const orinDeviceType = "jetson-agx-orin"
+
 // thorFlashpackInfo is the resolved flashpack download for a Thor version.
 type thorFlashpackInfo struct {
 	URL       string
@@ -327,6 +338,69 @@ func getThorFlashpackInfo(version string, nightly bool) (*thorFlashpackInfo, err
 		URL:       gcsBaseURL + "/" + v.FlashpackPath,
 		Checksum:  v.FlashpackChecksum,
 		SizeBytes: v.FlashpackSizeBytes,
+		Version:   version,
+	}, nil
+}
+
+// orinVersionHasEMMC reports whether the picked (or latest) version of the
+// Orin device publishes an eMMC flash bundle, i.e. the eMMC install mode is
+// available to offer.
+func orinVersionHasEMMC(device pickerDevice, flagVersion string) bool {
+	if device.Manifest == nil {
+		return false
+	}
+	version := flagVersion
+	if version == "" {
+		version = device.RawVersion
+	}
+	v, ok := device.Manifest.Versions[version]
+	return ok && v.EMMCPath != ""
+}
+
+// orinBundleInfo is the resolved eMMC tegraflash bundle for an Orin version.
+type orinBundleInfo struct {
+	URL       string
+	Checksum  string
+	SizeBytes int64
+	Version   string
+}
+
+// getOrinEMMCInfo fetches the jetson-agx-orin manifest and returns the eMMC
+// tegraflash bundle for version (or the latest stable / nightly when version
+// is "").
+func getOrinEMMCInfo(version string, nightly bool) (*orinBundleInfo, error) {
+	main, err := fetchMainManifest()
+	if err != nil {
+		return nil, fmt.Errorf("fetching manifest: %w", err)
+	}
+	dev, ok := main.Devices[orinDeviceType]
+	if !ok || dev.ManifestPath == "" {
+		return nil, fmt.Errorf("%s not found in manifest", orinDeviceType)
+	}
+	dm, err := fetchDeviceManifest(dev.ManifestPath)
+	if err != nil {
+		return nil, fmt.Errorf("fetching device manifest: %w", err)
+	}
+	if version == "" {
+		version = dev.Latest
+		if nightly && dev.LatestNightly != "" {
+			version = dev.LatestNightly
+		}
+	}
+	if version == "" {
+		return nil, fmt.Errorf("no version available for %s", orinDeviceType)
+	}
+	v, ok := dm.Versions[version]
+	if !ok {
+		return nil, fmt.Errorf("version %s not found for %s", version, orinDeviceType)
+	}
+	if v.EMMCPath == "" {
+		return nil, fmt.Errorf("version %s has no eMMC flash bundle in the manifest", version)
+	}
+	return &orinBundleInfo{
+		URL:       gcsBaseURL + "/" + v.EMMCPath,
+		Checksum:  v.EMMCChecksum,
+		SizeBytes: v.EMMCSizeBytes,
 		Version:   version,
 	}, nil
 }
