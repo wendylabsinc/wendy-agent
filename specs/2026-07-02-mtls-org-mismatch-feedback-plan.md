@@ -544,7 +544,7 @@ Expected: `ok` — new tests pass and no existing connect-diagnostics test regre
 - [ ] **Step 7: Commit**
 
 ```bash
-cd /Users/joannisorlandos/git/wendy/wendyos-wt-mtls-org
+cd ../wendyos-wt-mtls-org
 git add go/internal/cli/commands/helpers.go go/internal/cli/commands/org_mismatch_error_test.go
 git commit -m "feat(cli): report cross-org device on mTLS rejection
 
