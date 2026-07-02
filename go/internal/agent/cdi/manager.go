@@ -56,4 +56,3 @@ func (m *Manager) LoadNVIDIACDISpec() (*CDISpecification, error) {
 
 	return &spec, nil
 }
-
