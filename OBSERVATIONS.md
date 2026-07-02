@@ -23,6 +23,8 @@ CLI papercuts, docs gaps, general WendyOS bugs, flaky behavior noticed along the
 
 ## O3 — `device info` has no memory/CPU fields
 
+**Filed: WDY-1809** (2026-07-02)
+
 `GetDeviceInfoResponse` has disk, GPU, JetPack, partitions — but no RAM size or CPU core count (Thor: 128 GiB / 14 cores, only visible via `device top`). Papercut for fleet inspection; not Thor-specific. Layer: proto/agent/CLI.
 
 ## O4 — `wendy device camera list` shows only /dev/video0 for Brio 100 while `hardware list` shows video0+video1
