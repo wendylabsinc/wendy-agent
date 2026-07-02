@@ -1192,7 +1192,7 @@ func streamZipImageEntry(zipPath string) (*imageStream, error) {
 			continue
 		}
 		ext := strings.ToLower(filepath.Ext(f.Name))
-		// .sdimg is the Mender A/B disk image RPi targets now produce.
+		// .sdimg is the A/B disk image RPi targets now produce.
 		if ext != ".img" && ext != ".raw" && ext != ".wic" && ext != ".sdimg" {
 			continue
 		}

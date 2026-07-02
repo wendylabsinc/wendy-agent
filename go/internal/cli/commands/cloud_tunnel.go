@@ -38,7 +38,7 @@ const (
 	cloudKeepalivePing = 30 * time.Second
 	// cloudKeepaliveACKTimeout is how long to wait for a keepalive ACK before
 	// declaring the connection dead. It is generous because long OS-update
-	// streams run while the device is saturated (artifact download + mender
+	// streams run while the device is saturated (artifact download + OS
 	// install), and a busy device can take well over the usual 10s to ACK a
 	// ping; a tighter window tears down the stream mid-install.
 	cloudKeepaliveACKTimeout = 20 * time.Second

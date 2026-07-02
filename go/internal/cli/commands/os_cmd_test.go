@@ -65,11 +65,16 @@ func TestDecideOSUpdate(t *testing.T) {
 	}
 }
 
-func TestValidateOSUpdateIdentityAllowsWendyOSBeforeMenderCheck(t *testing.T) {
+func TestValidateOSUpdateIdentityAllowsWendyOSBeforeBackendCheck(t *testing.T) {
 	osVersion := "WendyOS-0.10.4"
-	resp := &agentpb.GetAgentVersionResponse{Os: "linux", OsVersion: &osVersion}
-	if err := validateOSUpdateIdentity(resp); err != nil {
-		t.Fatalf("validateOSUpdateIdentity() error = %v, want nil", err)
+	cases := []*agentpb.GetAgentVersionResponse{
+		{Os: "linux", OsVersion: &osVersion},
+		{Os: "linux", OsVersion: &osVersion, Featureset: []string{"wendyos-update"}},
+	}
+	for _, resp := range cases {
+		if err := validateOSUpdateIdentity(resp); err != nil {
+			t.Fatalf("validateOSUpdateIdentity(%+v) error = %v, want nil", resp, err)
+		}
 	}
 }
 
@@ -114,8 +119,8 @@ func TestValidateOSUpdateTarget(t *testing.T) {
 			want: linuxOSUpdateUnsupportedMessage,
 		},
 		{
-			name: "linux host with mender is still not WendyOS",
-			resp: &agentpb.GetAgentVersionResponse{Os: "linux", Featureset: []string{"mender"}},
+			name: "linux host with an update backend is still not WendyOS",
+			resp: &agentpb.GetAgentVersionResponse{Os: "linux", Featureset: []string{"wendyos-update"}},
 			want: linuxOSUpdateUnsupportedMessage,
 		},
 		{
@@ -129,16 +134,12 @@ func TestValidateOSUpdateTarget(t *testing.T) {
 			want: wendyOSMissingUpdaterMessage,
 		},
 		{
-			name: "WendyOS version with mender is supported",
-			resp: &agentpb.GetAgentVersionResponse{Os: "linux", OsVersion: strp("WendyOS-0.10.4"), Featureset: []string{"mender"}},
-		},
-		{
 			name: "WendyOS version with wendyos-update is supported",
 			resp: &agentpb.GetAgentVersionResponse{Os: "linux", OsVersion: strp("WendyOS-0.10.4"), Featureset: []string{"wendyos-update"}},
 		},
 		{
-			name: "WendyOS device type with mender is supported",
-			resp: &agentpb.GetAgentVersionResponse{Os: "linux", DeviceType: strp("raspberry-pi-5"), Featureset: []string{"mender"}},
+			name: "WendyOS device type with wendyos-update is supported",
+			resp: &agentpb.GetAgentVersionResponse{Os: "linux", DeviceType: strp("raspberry-pi-5"), Featureset: []string{"wendyos-update"}},
 		},
 		{
 			name: "WendyOS reported as a distro id (post-#1136) is supported",
@@ -146,7 +147,7 @@ func TestValidateOSUpdateTarget(t *testing.T) {
 		},
 		{
 			name: "WendyOS distro id with device type is supported",
-			resp: &agentpb.GetAgentVersionResponse{Os: "edgeos", DeviceType: strp("jetson-orin-nano"), Featureset: []string{"mender"}},
+			resp: &agentpb.GetAgentVersionResponse{Os: "edgeos", DeviceType: strp("jetson-orin-nano"), Featureset: []string{"wendyos-update"}},
 		},
 		{
 			name: "generic distro id host still gets the Linux guidance",
@@ -186,12 +187,14 @@ func TestHasOTABackend(t *testing.T) {
 			want: true,
 		},
 		{
+			// Regression: a legacy mender-only featureset (old CLI talking to a
+			// stale agent) must not be treated as an OTA-capable backend.
 			name: "mender only",
 			resp: &agentpb.GetAgentVersionResponse{Featureset: []string{"mender"}},
-			want: true,
+			want: false,
 		},
 		{
-			name: "both backends",
+			name: "wendyos-update alongside an unrelated legacy entry",
 			resp: &agentpb.GetAgentVersionResponse{Featureset: []string{"wendyos-update", "mender"}},
 			want: true,
 		},
@@ -312,18 +315,14 @@ func TestResolveArtifactPath(t *testing.T) {
 		}
 	})
 
-	t.Run("directory search still finds a .mender artifact", func(t *testing.T) {
+	t.Run("directory search does not find a .mender artifact", func(t *testing.T) {
 		dir := t.TempDir()
 		f := filepath.Join(dir, "image.mender")
 		if err := os.WriteFile(f, []byte("x"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		got, err := resolveArtifactPath(dir)
-		if err != nil {
-			t.Fatalf("resolveArtifactPath(%q) error = %v", dir, err)
-		}
-		if got != f {
-			t.Fatalf("resolveArtifactPath(%q) = %q, want %q", dir, got, f)
+		if _, err := resolveArtifactPath(dir); err == nil {
+			t.Fatalf("resolveArtifactPath(%q) error = nil, want error", dir)
 		}
 	})
 }
@@ -335,10 +334,8 @@ func TestArtifactSuffix(t *testing.T) {
 		want string
 	}{
 		{"wendy artifact", "https://storage.example.com/images/raspberry-pi-5/1.0/wendyos-image-x.rootfs.wendy", ".wendy"},
-		{"mender artifact", "https://storage.example.com/images/jetson/1.0/wendyos-image-x.mender", ".mender"},
-		{"mender.xz artifact", "https://storage.example.com/images/rpi/1.0/wendyos-image-x.mender.xz", ".mender.xz"},
 		{"wendy with query string", "https://storage.example.com/x.wendy?token=abc&exp=123", ".wendy"},
-		{"unknown extension falls back to mender", "https://storage.example.com/images/x.bin", ".mender"},
+		{"unknown extension falls back to wendy", "https://storage.example.com/images/x.bin", ".wendy"},
 		{"bare local path", "/tmp/update.wendy", ".wendy"},
 	}
 	for _, tc := range tests {
@@ -347,20 +344,6 @@ func TestArtifactSuffix(t *testing.T) {
 				t.Fatalf("artifactSuffix(%q) = %q, want %q", tc.url, got, tc.want)
 			}
 		})
-	}
-}
-
-func TestValidateUpdaterBackend(t *testing.T) {
-	valid := []string{"", "auto", "wendyos", "wendyos-update", "mender"}
-	for _, v := range valid {
-		if err := validateUpdaterBackend(v); err != nil {
-			t.Errorf("validateUpdaterBackend(%q) = %v, want nil", v, err)
-		}
-	}
-	for _, v := range []string{"bogus", "Mender", "wendy", "none"} {
-		if err := validateUpdaterBackend(v); err == nil {
-			t.Errorf("validateUpdaterBackend(%q) = nil, want error", v)
-		}
 	}
 }
 
@@ -393,7 +376,7 @@ func TestEvaluateOSUpdateOutcome(t *testing.T) {
 		HasResult:     true,
 		Outcome:       agentpb.GetOSUpdateStatusResponse_OUTCOME_ROLLBACK_FAILED,
 		CreatedAtUnix: fresh,
-		RollbackError: "mender-update reported nothing to roll back",
+		RollbackError: "wendyos-update reported nothing to roll back",
 		Services: []*agentpb.GetOSUpdateStatusResponse_ServiceResult{
 			{Unit: "avahi-daemon.service", Status: agentpb.GetOSUpdateStatusResponse_ServiceResult_STATUS_FAILED, Reason: "timed out"},
 		},

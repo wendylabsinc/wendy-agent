@@ -107,9 +107,9 @@ func TestMaybeCheckOSUpdateSkips(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			// These inputs must return from the cheap pre-reconnect gate, before
 			// any reconnect/manifest/network call. (WendyOS devices with an OTA
-			// backend — wendyos-update or mender — do reconnect to re-read the
-			// version, so they're not covered here.) A nil connection is safe
-			// because the gate returns before it is used.
+			// backend do reconnect to re-read the version, so they're not covered
+			// here.) A nil connection is safe because the gate returns before it
+			// is used.
 			outcome, err := maybeCheckOSUpdate(context.Background(), tc.version, nil, false, false, "")
 			if err != nil {
 				t.Fatalf("maybeCheckOSUpdate() error = %v, want nil", err)

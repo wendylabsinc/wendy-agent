@@ -17,9 +17,6 @@ func (s *mcpServer) registerOSTools(srv *server.MCPServer) {
 		mcpgo.WithString("artifact_url",
 			mcpgo.Description("URL of the OS update artifact (leave empty to use the device's configured update channel)"),
 		),
-		mcpgo.WithString("updater",
-			mcpgo.Description("OS update backend: auto (default; prefer wendyos-update, fall back to mender), wendyos, or mender"),
-		),
 	), s.handleOSUpdate)
 
 	srv.AddTool(mcpgo.NewTool("os_update_status",
@@ -70,7 +67,7 @@ func (s *mcpServer) handleOSUpdate(ctx context.Context, req mcpgo.CallToolReques
 	}
 	stream, err := conn.AgentService.UpdateOS(ctx, &agentpb.UpdateOSRequest{
 		ArtifactUrl:    stringParam(req, "artifact_url"),
-		UpdaterBackend: stringParam(req, "updater"),
+		UpdaterBackend: "",
 	})
 	if err != nil {
 		return mcpgo.NewToolResultError(grpcErrString(err)), nil

@@ -1968,7 +1968,7 @@ func newDeviceUpdateCmd() *cobra.Command {
 		Long: "Updates the agent binary on the device (downloaded from GitHub, or --binary for a local file), then checks for a newer WendyOS image. " +
 			"When an OS update is available it prompts before applying (default no); use --yes to apply without prompting. Non-interactive runs report the available update without applying it. " +
 			"--nightly selects the nightly channel for both the agent and the OS. " +
-			"--artifact-url applies a specific OS (Mender) artifact instead of the manifest's latest; this works over the cloud tunnel (the device downloads the artifact directly from the URL).",
+			"--artifact-url applies a specific OS update artifact instead of the manifest's latest; this works over the cloud tunnel (the device downloads the artifact directly from the URL).",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 
@@ -2133,7 +2133,7 @@ func newDeviceUpdateCmd() *cobra.Command {
 	cmd.Flags().StringVar(&binaryPath, "binary", "", "Path to a local agent binary to upload (skips download); re-applied after an OS update so it survives the reboot")
 	cmd.Flags().BoolVar(&nightly, "nightly", false, "Use the latest nightly (prerelease) build for both the agent and the OS")
 	cmd.Flags().BoolVarP(&assumeYes, "yes", "y", false, "Apply an available OS update without prompting")
-	cmd.Flags().StringVar(&artifactURL, "artifact-url", "", "Apply this OS (Mender) artifact URL instead of the manifest's latest")
+	cmd.Flags().StringVar(&artifactURL, "artifact-url", "", "Apply this OS update artifact URL instead of the manifest's latest")
 
 	return cmd
 }
