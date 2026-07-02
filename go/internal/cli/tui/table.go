@@ -185,6 +185,15 @@ func (t BubbleTable) Rows() []bubbleTable.Row {
 
 func (t *BubbleTable) SetRows(rows []bubbleTable.Row) {
 	t.model.SetRows(rows)
+	// bubbles' table.SetRows drives the cursor to -1 whenever it is called with
+	// an empty slice, and never restores it once rows reappear. A negative
+	// cursor makes UpdateViewport render zero rows, so a table that gets its
+	// data after an initial empty SetRows (a window-resize or empty poll landing
+	// before the first payload) looks empty until the user presses an arrow key.
+	// Clamp the cursor back into range so the first row is visible immediately.
+	if len(rows) > 0 && t.model.Cursor() < 0 {
+		t.model.SetCursor(0)
+	}
 }
 
 func (t BubbleTable) Cursor() int {
