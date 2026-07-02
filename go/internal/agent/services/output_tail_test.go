@@ -66,31 +66,3 @@ func TestLineRingConcurrentPush(t *testing.T) {
 		t.Fatalf("tail length = %d, want 50", got)
 	}
 }
-
-func TestFormatMenderFailureWithoutOutput(t *testing.T) {
-	got := formatMenderFailure(fmt.Errorf("exit status 1"), nil)
-	want := "mender install failed: exit status 1"
-	if got != want {
-		t.Fatalf("got %q, want %q", got, want)
-	}
-}
-
-func TestFormatMenderFailureIncludesOutput(t *testing.T) {
-	tail := []string{
-		"level=info msg=\"Running Mender\"",
-		"level=error msg=\"requested Artifact is not compatible with device jetson-orin-nano-devkit-nvme-wendyos\"",
-	}
-	got := formatMenderFailure(fmt.Errorf("exit status 1"), tail)
-
-	if !strings.HasPrefix(got, "mender install failed: exit status 1") {
-		t.Errorf("missing exit status prefix: %q", got)
-	}
-	if !strings.Contains(got, "not compatible with device") {
-		t.Errorf("failure message dropped the mender output: %q", got)
-	}
-	for _, line := range tail {
-		if !strings.Contains(got, line) {
-			t.Errorf("failure message missing line %q\nfull: %s", line, got)
-		}
-	}
-}

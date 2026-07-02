@@ -69,7 +69,7 @@ func TestCommitStatusForExitCode(t *testing.T) {
 		want oshealth.MenderStatus
 	}{
 		{code: 0, want: oshealth.MenderOK},
-		{code: 2, want: oshealth.MenderNothingPending}, // mirrors mender-update
+		{code: 2, want: oshealth.MenderNothingPending},
 		{code: 1, want: oshealth.MenderError},
 		{code: 4, want: oshealth.MenderError}, // verify failed at commit
 	}

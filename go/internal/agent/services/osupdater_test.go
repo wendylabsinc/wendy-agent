@@ -36,8 +36,10 @@ func TestChooseUpdaterForCommit(t *testing.T) {
 	wendyos := func(detect, available bool) osUpdater {
 		return fakeUpdater{nameVal: updaterNameWendyOS, detectVal: detect, availableVal: available}
 	}
-	mender := func(detect, available bool) osUpdater {
-		return fakeUpdater{nameVal: updaterNameMender, detectVal: detect, availableVal: available}
+	// other is a generic second backend used only to exercise "auto"
+	// ordering/fallback; it is not a real registered backend.
+	other := func(detect, available bool) osUpdater {
+		return fakeUpdater{nameVal: "other-backend", detectVal: detect, availableVal: available}
 	}
 
 	tests := []struct {
@@ -49,37 +51,41 @@ func TestChooseUpdaterForCommit(t *testing.T) {
 		{
 			name:       "named wendyos is returned even when detect fails (binary present)",
 			requested:  updaterNameWendyOS,
-			candidates: []osUpdater{wendyos(false, true), mender(true, true)},
+			candidates: []osUpdater{wendyos(false, true), other(true, true)},
 			wantName:   updaterNameWendyOS,
-		},
-		{
-			name:       "named mender is returned",
-			requested:  updaterNameMender,
-			candidates: []osUpdater{wendyos(true, true), mender(false, true)},
-			wantName:   updaterNameMender,
 		},
 		{
 			name:       "auto prefers an available wendyos without probing detect",
 			requested:  "",
-			candidates: []osUpdater{wendyos(false, true), mender(false, true)},
+			candidates: []osUpdater{wendyos(false, true), other(false, true)},
 			wantName:   updaterNameWendyOS,
 		},
 		{
-			name:       "auto falls back to mender when wendyos binary is absent",
+			name:       "auto falls back to the next available backend when wendyos binary is absent",
 			requested:  "auto",
-			candidates: []osUpdater{wendyos(false, false), mender(false, true)},
-			wantName:   updaterNameMender,
+			candidates: []osUpdater{wendyos(false, false), other(false, true)},
+			wantName:   "other-backend",
 		},
 		{
 			name:       "auto returns nil when no backend binary is present",
 			requested:  "auto",
-			candidates: []osUpdater{wendyos(false, false), mender(false, false)},
+			candidates: []osUpdater{wendyos(false, false), other(false, false)},
 			wantName:   "",
 		},
 		{
-			name:       "unknown backend returns nil",
+			name:       "unknown backend value returns nil",
 			requested:  "bogus",
-			candidates: []osUpdater{wendyos(true, true), mender(true, true)},
+			candidates: []osUpdater{wendyos(true, true), other(true, true)},
+			wantName:   "",
+		},
+		{
+			// Regression: a pending-update marker written by an old agent can
+			// still carry Backend: "mender" (see requestedBackendFromMarker).
+			// It must resolve to nil, not a real backend, so the gate keeps the
+			// marker and retries rather than committing/rolling back nothing.
+			name:       "stale mender request returns nil (regression: mender is no longer a valid backend)",
+			requested:  "mender",
+			candidates: []osUpdater{wendyos(true, true), other(true, true)},
 			wantName:   "",
 		},
 	}
@@ -103,22 +109,14 @@ func TestChooseUpdaterForCommit(t *testing.T) {
 	}
 }
 
-func TestBackendHealthcheckDelegationPolicy(t *testing.T) {
-	logger := zap.NewNop()
-	wendyos := newWendyOSUpdater(logger)
-	mender := newMenderUpdater(logger)
+func TestWendyOSHealthcheckDelegationPolicy(t *testing.T) {
+	wendyos := newWendyOSUpdater(zap.NewNop())
 
 	if !wendyos.delegatesHealthcheck() {
 		t.Error("wendyos-update must delegate healthchecking to its own commit (health.d)")
 	}
 	if wendyos.commitCommand() != "wendyos-update" {
 		t.Errorf("wendyos commitCommand = %q, want wendyos-update", wendyos.commitCommand())
-	}
-	if mender.delegatesHealthcheck() {
-		t.Error("mender has no health.d; the agent gate must run its own healthchecks")
-	}
-	if mender.commitCommand() != "mender-update" {
-		t.Errorf("mender commitCommand = %q, want mender-update", mender.commitCommand())
 	}
 }
 
@@ -136,16 +134,16 @@ func TestClosuresForUpdater(t *testing.T) {
 			wantLabel:     "wendyos-update",
 		},
 		{
-			name:          "mender keeps the agent healthcheck path",
-			updater:       fakeUpdater{nameVal: updaterNameMender, delegatesVal: false, commandVal: "mender-update"},
+			name:          "a non-delegating backend keeps the agent healthcheck path",
+			updater:       fakeUpdater{nameVal: "other-backend", delegatesVal: false, commandVal: "other-backend"},
 			wantDelegated: false,
-			wantLabel:     "mender-update",
+			wantLabel:     "other-backend",
 		},
 		{
-			name:          "no backend degrades to the non-delegated mender-labelled path",
+			name:          "no backend degrades to the non-delegated wendyos-update-labelled path",
 			updater:       nil,
 			wantDelegated: false,
-			wantLabel:     "mender-update",
+			wantLabel:     "wendyos-update",
 		},
 	}
 	for _, tt := range tests {
@@ -181,7 +179,16 @@ func TestRequestedBackendFromMarker(t *testing.T) {
 		{name: "no marker selects auto", found: false, want: ""},
 		{name: "legacy marker without backend selects auto", marker: oshealth.PendingMarker{}, found: true, want: ""},
 		{name: "marker backend is honored", marker: oshealth.PendingMarker{Backend: updaterNameWendyOS}, found: true, want: updaterNameWendyOS},
-		{name: "mender marker is honored", marker: oshealth.PendingMarker{Backend: updaterNameMender}, found: true, want: updaterNameMender},
+		{
+			// Transitional case: a marker written by an old agent mid-update can
+			// still carry Backend: "mender". requestedBackendFromMarker just
+			// echoes it back verbatim; chooseUpdaterForCommit is what resolves
+			// it to nil (see TestChooseUpdaterForCommit).
+			name:   "mender marker is echoed back unresolved",
+			marker: oshealth.PendingMarker{Backend: "mender"},
+			found:  true,
+			want:   "mender",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -194,7 +201,9 @@ func TestRequestedBackendFromMarker(t *testing.T) {
 
 func TestChooseUpdater(t *testing.T) {
 	wendyosUp := func(detect bool) osUpdater { return fakeUpdater{nameVal: updaterNameWendyOS, detectVal: detect} }
-	menderUp := func(detect bool) osUpdater { return fakeUpdater{nameVal: updaterNameMender, detectVal: detect} }
+	// otherUp is a generic second backend used only to exercise "auto"
+	// ordering/fallback; it is not a real registered backend.
+	otherUp := func(detect bool) osUpdater { return fakeUpdater{nameVal: "other-backend", detectVal: detect} }
 
 	tests := []struct {
 		name       string
@@ -206,61 +215,58 @@ func TestChooseUpdater(t *testing.T) {
 		{
 			name:       "auto prefers wendyos when it detects",
 			requested:  "auto",
-			candidates: []osUpdater{wendyosUp(true), menderUp(true)},
+			candidates: []osUpdater{wendyosUp(true), otherUp(true)},
 			wantName:   updaterNameWendyOS,
 		},
 		{
-			name:       "auto falls back to mender when wendyos does not detect",
+			name:       "auto falls back to the next candidate when wendyos does not detect",
 			requested:  "auto",
-			candidates: []osUpdater{wendyosUp(false), menderUp(true)},
-			wantName:   updaterNameMender,
+			candidates: []osUpdater{wendyosUp(false), otherUp(true)},
+			wantName:   "other-backend",
 		},
 		{
 			name:       "empty string behaves like auto",
 			requested:  "",
-			candidates: []osUpdater{wendyosUp(false), menderUp(true)},
-			wantName:   updaterNameMender,
+			candidates: []osUpdater{wendyosUp(false), otherUp(true)},
+			wantName:   "other-backend",
 		},
 		{
 			name:       "auto errors when nothing detects",
 			requested:  "auto",
-			candidates: []osUpdater{wendyosUp(false), menderUp(false)},
+			candidates: []osUpdater{wendyosUp(false), otherUp(false)},
 			wantErr:    true,
 		},
 		{
-			name:       "explicit mender is honored even when wendyos detects",
-			requested:  "mender",
-			candidates: []osUpdater{wendyosUp(true), menderUp(true)},
-			wantName:   updaterNameMender,
-		},
-		{
-			name:       "explicit wendyos is honored even when mender detects",
+			name:       "explicit wendyos is honored even when another candidate detects",
 			requested:  "wendyos",
-			candidates: []osUpdater{wendyosUp(true), menderUp(true)},
+			candidates: []osUpdater{wendyosUp(true), otherUp(true)},
 			wantName:   updaterNameWendyOS,
 		},
 		{
 			name:       "wendyos-update alias selects wendyos",
 			requested:  "wendyos-update",
-			candidates: []osUpdater{wendyosUp(true), menderUp(true)},
+			candidates: []osUpdater{wendyosUp(true), otherUp(true)},
 			wantName:   updaterNameWendyOS,
-		},
-		{
-			name:       "explicit mender errors when mender unavailable (no silent fallback)",
-			requested:  "mender",
-			candidates: []osUpdater{wendyosUp(true), menderUp(false)},
-			wantErr:    true,
 		},
 		{
 			name:       "explicit wendyos errors when wendyos undetected (no silent fallback)",
 			requested:  "wendyos",
-			candidates: []osUpdater{wendyosUp(false), menderUp(true)},
+			candidates: []osUpdater{wendyosUp(false), otherUp(true)},
 			wantErr:    true,
 		},
 		{
 			name:       "unknown backend value errors",
 			requested:  "bogus",
-			candidates: []osUpdater{wendyosUp(true), menderUp(true)},
+			candidates: []osUpdater{wendyosUp(true), otherUp(true)},
+			wantErr:    true,
+		},
+		{
+			// Regression: mender was a valid backend id before its removal. A
+			// stale CLI sending "mender" must be rejected like any other
+			// unknown value, not silently routed anywhere.
+			name:       "mender is rejected (regression: mender is no longer a valid backend)",
+			requested:  "mender",
+			candidates: []osUpdater{wendyosUp(true), otherUp(true)},
 			wantErr:    true,
 		},
 	}

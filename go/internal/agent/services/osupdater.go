@@ -14,22 +14,19 @@ import (
 )
 
 // Backend identifiers. These strings are the contract shared across the agent
-// (featureset advertisement, the pending-update marker, and the CLI
-// `--updater` flag), so they must stay stable.
-const (
-	updaterNameWendyOS = "wendyos-update"
-	updaterNameMender  = "mender"
-)
+// (featureset advertisement, the pending-update marker, and the proto
+// updater_backend field), so they must stay stable.
+const updaterNameWendyOS = "wendyos-update"
 
-// osUpdater abstracts an OS A/B update backend. The agent drives the in-house
-// wendyos-update engine as the primary backend and falls back to mender. Both
-// expose the same install/commit/rollback lifecycle, so the post-reboot
-// healthcheck gate (oshealth.Gate) is backend-agnostic — it injects whichever
-// backend's commit/rollback the pending update recorded.
+// osUpdater abstracts an OS A/B update backend. The agent selects a
+// registered backend via chooseUpdater/chooseUpdaterForCommit — currently
+// just the in-house wendyos-update engine — and the post-reboot healthcheck
+// gate (oshealth.Gate) is backend-agnostic: it injects whichever backend's
+// commit/rollback the pending update recorded.
 type osUpdater interface {
-	// name reports the backend identifier (updaterNameWendyOS/updaterNameMender).
-	// It is persisted in the pending-update marker so the next boot's gate
-	// commits or rolls back with the same backend.
+	// name reports the backend identifier (updaterNameWendyOS). It is
+	// persisted in the pending-update marker so the next boot's gate commits
+	// or rolls back with the same backend.
 	name() string
 	// detect reports whether this backend can update the current device: its
 	// binary is installed and (for wendyos-update) a connector supports the board.
@@ -51,26 +48,23 @@ type osUpdater interface {
 	// delegatesHealthcheck reports whether the backend runs its own post-commit
 	// health gate (wendyos-update runs /etc/wendyos-update/health.d inside
 	// commit), so the agent's boot-time gate must NOT run its own CheckAll for
-	// it. mender has no health.d, so the agent gate keeps owning the healthchecks.
+	// it.
 	delegatesHealthcheck() bool
 	// commitCommand is the binary name surfaced in user-facing commit/rollback
-	// failure notes ("wendyos-update", "mender-update"). It is distinct from
-	// name(): mender's backend id is "mender" but its binary is "mender-update".
+	// failure notes (e.g. "wendyos-update").
 	commitCommand() string
 }
 
-// productionUpdaters returns the available backends in preference order
-// (wendyos-update first, mender second) for the "auto" selection.
+// productionUpdaters returns the registered backends in preference order for
+// the "auto" selection.
 func productionUpdaters(logger *zap.Logger) []osUpdater {
 	return []osUpdater{
 		newWendyOSUpdater(logger),
-		newMenderUpdater(logger),
 	}
 }
 
 // selectUpdater chooses the backend for an update request. requested is the
-// caller's `--updater` value ("", "auto", "wendyos"/"wendyos-update", or
-// "mender").
+// caller's updater_backend value ("", "auto", or "wendyos"/"wendyos-update").
 func selectUpdater(logger *zap.Logger, requested string) (osUpdater, error) {
 	return chooseUpdater(requested, productionUpdaters(logger))
 }
@@ -87,13 +81,11 @@ func chooseUpdater(requested string, candidates []osUpdater) (osUpdater, error) 
 			}
 		}
 		return nil, fmt.Errorf("no OS update backend is available on this device")
-	case updaterNameMender:
-		return requireUpdater(candidates, updaterNameMender)
 	case updaterNameWendyOS, "wendyos":
 		return requireUpdater(candidates, updaterNameWendyOS)
 	default:
-		return nil, fmt.Errorf("unknown updater backend %q (expected auto, %s, or %s)",
-			requested, updaterNameWendyOS, updaterNameMender)
+		return nil, fmt.Errorf("unknown updater backend %q (expected auto, wendyos, or %s)",
+			requested, updaterNameWendyOS)
 	}
 }
 
@@ -122,8 +114,6 @@ func requireUpdater(candidates []osUpdater, name string) (osUpdater, error) {
 // whose binary is present. Returns nil when nothing is usable.
 func chooseUpdaterForCommit(requested string, candidates []osUpdater) osUpdater {
 	switch requested {
-	case updaterNameMender:
-		return findUpdater(candidates, updaterNameMender)
 	case updaterNameWendyOS, "wendyos":
 		return findUpdater(candidates, updaterNameWendyOS)
 	case "", "auto":
@@ -156,9 +146,9 @@ func findUpdater(candidates []osUpdater, name string) osUpdater {
 const updaterCommitTimeout = 60 * time.Second
 
 // commitStatusForExitCode maps a commit/rollback exit code to a status. Exit
-// code 2 is the "nothing pending" signal that `commit` emits (both
-// wendyos-update and mender-update mirror this). `rollback` reports "nothing to
-// roll back" via exit 1, not 2, so for the rollback path exit 2 never occurs.
+// code 2 is the "nothing pending" signal that `wendyos-update commit` emits.
+// `rollback` reports "nothing to roll back" via exit 1, not 2, so for the
+// rollback path exit 2 never occurs.
 func commitStatusForExitCode(code int) oshealth.MenderStatus {
 	switch code {
 	case 0:

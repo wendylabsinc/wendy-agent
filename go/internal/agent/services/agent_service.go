@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -294,20 +293,13 @@ func detectFeatureset() []string {
 		features = append(features, "camera")
 	}
 
-	_, hasMender := resolveMenderBinary()
-	if hasMender {
-		features = append(features, "mender")
-	}
-	_, hasWendyOS := resolveWendyOSBinary()
-	if hasWendyOS {
-		// The in-house wendyos-update engine; the primary OS update backend
-		// when present (mender is the fallback). See selectUpdater.
+	if _, hasWendyOS := resolveWendyOSBinary(); hasWendyOS {
+		// The in-house wendyos-update engine, the OS update backend. See
+		// selectUpdater.
 		features = append(features, "wendyos-update")
-	}
-	if hasMender || hasWendyOS {
 		// "os-healthcheck": OS updates are verified by post-reboot service
 		// healthchecks with automatic rollback (and GetOSUpdateStatus reports
-		// the outcome). Backend-agnostic — see oshealth.Gate.
+		// the outcome). See oshealth.Gate.
 		features = append(features, "os-healthcheck")
 	}
 
@@ -626,10 +618,6 @@ func (s *AgentService) ForgetBluetoothPeripheral(ctx context.Context, req *agent
 
 const osUpdateUnsupportedForHostMessage = "This setup cannot be updated with wendy os update. Use this machine’s normal OS update tools instead. To use WendyOS OTA updates, install WendyOS on supported hardware with wendy os install."
 
-// menderProgressRe matches percentage patterns in mender output, e.g.
-// "  10%" or "50% 5120 kB" or "Installing:  75%".
-var menderProgressRe = regexp.MustCompile(`(\d{1,3})%`)
-
 // systemctlFn runs systemctl; overridable in tests.
 var systemctlFn = func(ctx context.Context, args ...string) ([]byte, error) {
 	return exec.CommandContext(ctx, "systemctl", args...).CombinedOutput()
@@ -642,9 +630,9 @@ const (
 
 // inhibitAutoUpdater stops the agent auto-updater (timer+service) and returns a
 // defer-able restore func that re-enables the timer. The updater's "systemctl
-// stop wendyos-agent" would otherwise SIGTERM in-flight mender via the shared
-// service cgroup (default KillMode=control-group) and abort the OTA.
-// Best-effort: failures are logged, not fatal.
+// stop wendyos-agent" would otherwise SIGTERM the in-flight wendyos-update
+// install via the shared service cgroup (default KillMode=control-group) and
+// abort the OTA. Best-effort: failures are logged, not fatal.
 func inhibitAutoUpdater(logger *zap.Logger) func() {
 	sysctl := func(args ...string) ([]byte, error) {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -699,68 +687,6 @@ func readWendyOSVersionFrom(paths ...string) (string, bool) {
 		}
 	}
 	return "", false
-}
-
-// enableJetsonRootfsAB ensures rootfs A/B redundancy is configured on NVIDIA
-// Jetson devices by writing the required UEFI EFI variables. It is a no-op on
-// non-Jetson hardware (detected by the absence of nvbootctrl).
-//
-// The caller must be running as root; the function returns an error if the
-// device appears to be a Jetson but the prerequisite APP_b partition is absent.
-func enableJetsonRootfsAB(logger *zap.Logger) error {
-	const guid = "781e084c-a330-417c-b678-38e696380cb9"
-	const efivarsDir = "/sys/firmware/efi/efivars"
-
-	nvbootctrl, err := exec.LookPath("nvbootctrl")
-	if err != nil {
-		// Not a Jetson device — nothing to do.
-		return nil
-	}
-
-	if _, err := os.Stat(efivarsDir); err != nil {
-		return fmt.Errorf("EFI vars not accessible at %s: %w", efivarsDir, err)
-	}
-
-	if _, err := os.Stat("/dev/disk/by-partlabel/APP_b"); err != nil {
-		return fmt.Errorf("APP_b partition not found — device needs reflashing for rootfs A/B support")
-	}
-
-	// Exit code 0 means A/B is NOT yet enabled; non-zero means already enabled.
-	checkCmd := exec.Command(nvbootctrl, "-t", "rootfs", "is-rootfs-ab-enabled")
-	if err := checkCmd.Run(); err != nil {
-		logger.Info("Jetson rootfs A/B already enabled, skipping EFI var setup")
-		return nil
-	}
-
-	logger.Info("Enabling Jetson rootfs A/B redundancy")
-
-	writeVar := func(name string, value []byte) error {
-		path := fmt.Sprintf("%s/%s-%s", efivarsDir, name, guid)
-		if _, err := os.Stat(path); err == nil {
-			logger.Info("EFI var already exists, skipping", zap.String("name", name))
-			return nil
-		}
-		// EFI variable format: 4-byte attributes header + value bytes.
-		// Attributes: 0x07 = NV|BS|RT (non-volatile, boot-service, runtime-service).
-		data := append([]byte{0x07, 0x00, 0x00, 0x00}, value...)
-		if err := os.WriteFile(path, data, 0644); err != nil {
-			return fmt.Errorf("writing EFI var %s: %w", name, err)
-		}
-		logger.Info("EFI var written", zap.String("name", name))
-		return nil
-	}
-
-	// RootfsRedundancyLevel = 1, RootfsRetryCountMax = 3.
-	if err := writeVar("RootfsRedundancyLevel", []byte{0x01, 0x00, 0x00, 0x00}); err != nil {
-		return err
-	}
-	if err := writeVar("RootfsRetryCountMax", []byte{0x03, 0x00, 0x00, 0x00}); err != nil {
-		return err
-	}
-
-	out, _ := exec.Command(nvbootctrl, "-t", "rootfs", "dump-slots-info").CombinedOutput()
-	logger.Info("Jetson rootfs A/B enabled", zap.String("slots_info", strings.TrimSpace(string(out))))
-	return nil
 }
 
 func (s *AgentService) UpdateOS(req *agentpb.UpdateOSRequest, stream grpc.ServerStreamingServer[agentpb.UpdateOSResponse]) error {
@@ -841,40 +767,6 @@ func envWithPath(path string) []string {
 		}
 	}
 	return append(env, "PATH="+path)
-}
-
-// resolveMenderBinary finds the mender-update binary. It checks PATH via
-// exec.LookPath and then probes absolute paths directly. The os.Stat fallback
-// is restricted to absolute paths to avoid accidentally executing a file from
-// the current working directory. mender-update is preferred over legacy mender.
-func resolveMenderBinary() (string, bool) {
-	candidates := []string{
-		"mender-update",
-		"/usr/local/sbin/mender-update",
-		"/usr/local/bin/mender-update",
-		"/usr/sbin/mender-update",
-		"/usr/bin/mender-update",
-		"/sbin/mender-update",
-		"/bin/mender-update",
-		"mender",
-		"/usr/local/sbin/mender",
-		"/usr/local/bin/mender",
-		"/usr/sbin/mender",
-		"/usr/bin/mender",
-		"/sbin/mender",
-		"/bin/mender",
-	}
-	for _, c := range candidates {
-		if path, err := exec.LookPath(c); err == nil {
-			return path, true
-		}
-		if filepath.IsAbs(c) {
-			if _, err := os.Stat(c); err == nil {
-				return c, true
-			}
-		}
-	}
-	return "", false
 }
 
 func CleanupOldBackups(logger *zap.Logger) {

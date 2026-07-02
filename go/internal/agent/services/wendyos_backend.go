@@ -19,11 +19,11 @@ import (
 )
 
 // wendyOSUpdater drives the in-house wendyos-update engine
-// (github.com/wendylabsinc/wendyos-update), the primary OS A/B update backend.
-// Its CLI mirrors mender-update's verbs: `commit` reports "nothing pending"
-// with exit 2, the differences being structured JSON-lines progress on stdout
-// and a richer install reject code (exit 3 = artifact rejected). A verify
-// failure surfaces as exit 4 from `commit` (not install), handled by the gate.
+// (github.com/wendylabsinc/wendyos-update), the OS A/B update backend. Its CLI
+// verbs are install/commit/rollback: `commit` reports "nothing pending" with
+// exit 2, install streams structured JSON-lines progress on stdout, and a
+// rejected artifact reports a richer reject code (exit 3). A verify failure
+// surfaces as exit 4 from `commit` (not install), handled by the gate.
 type wendyOSUpdater struct {
 	logger *zap.Logger
 }
@@ -52,7 +52,8 @@ const wendyOSDetectTimeout = 10 * time.Second
 // detect reports whether wendyos-update can update this device. The binary
 // must be present AND `wendyos-update status` must succeed: status resolves the
 // platform connector, so a clean exit confirms a supported board. On
-// unsupported boards it errors and the agent falls back to mender.
+// unsupported boards it errors, so chooseUpdater/chooseUpdaterForCommit report
+// no backend available.
 func (w wendyOSUpdater) detect() bool {
 	binary, found := resolveWendyOSBinary()
 	if !found {
@@ -122,7 +123,7 @@ func (w wendyOSUpdater) runInstall(ctx context.Context, binary, artifactURL stri
 		return false, fmt.Errorf("failed to start wendyos-update: %v", err)
 	}
 
-	outputTail := newLineRing(menderErrorTailLines)
+	outputTail := newLineRing(updaterOutputTailLines)
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() {
@@ -195,8 +196,10 @@ func (w wendyOSUpdater) rollback() oshealth.MenderResult {
 	return runUpdaterCommit(w.logger, binary, "rollback")
 }
 
-// resolveWendyOSBinary finds the wendyos-update binary, preferring PATH and
-// then probing absolute candidates (mirrors resolveMenderBinary).
+// resolveWendyOSBinary finds the wendyos-update binary. It checks PATH via
+// exec.LookPath and then probes absolute paths directly. The os.Stat fallback
+// is restricted to absolute paths to avoid accidentally executing a file from
+// the current working directory.
 func resolveWendyOSBinary() (string, bool) {
 	candidates := []string{
 		"wendyos-update",
