@@ -173,6 +173,17 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 				return fmt.Errorf("selected device does not support this command")
 			}
 
+			// Best-effort OS-update status (wendyos-update slots + last update
+			// outcome). Older agents answer Unimplemented and OTA-less devices
+			// have nothing to report — device info must keep working either way.
+			var osUpdateStatus *agentpb.GetOSUpdateStatusResponse
+			if target.Agent != nil {
+				if resp, err := target.Agent.AgentService.GetOSUpdateStatus(ctx,
+					&agentpb.GetOSUpdateStatusRequest{IncludeEngineStatus: true}); err == nil {
+					osUpdateStatus = resp
+				}
+			}
+
 			var latestVersion string
 			if checkUpdates {
 				release, err := fetchAgentRelease(prerelease)
@@ -224,6 +235,9 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 				if gpuArch != "" {
 					out["gpuArch"] = gpuArch
 				}
+				if osUpdate := osUpdateJSON(osUpdateStatus); osUpdate != nil {
+					out["osUpdate"] = osUpdate
+				}
 				if checkUpdates {
 					out["latestVersion"] = latestVersion
 					out["updateAvailable"] = version.CompareVersions(latestVersion, agentVersion) > 0
@@ -265,6 +279,9 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 				if gpuArch != "" {
 					fmt.Printf("%s %s\n", tui.Dim("GPU Arch:"), tui.Value(gpuArch))
 				}
+			}
+			if block := formatOSUpdateInfo(osUpdateStatus); block != "" {
+				fmt.Print(block)
 			}
 			fmt.Printf("%s %s\n", tui.Dim("CLI Version:"), tui.Value(version.Version))
 
