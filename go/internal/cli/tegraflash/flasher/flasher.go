@@ -229,8 +229,12 @@ func classifyFlashFailure(logPath string) string {
 	tail := tailFile(logPath, 60)
 	switch {
 	// Check access errors before the generic timeout: a denied gadget also times
-	// out, and the wait-for-device retries log the access-denied reason.
-	case strings.Contains(tail, "access denied"), strings.Contains(tail, "bad access"):
+	// out, and the wait-for-device retries log the access-denied reason. Match
+	// only the exact markers our own code emits (adb.openOnce's message and
+	// libusb's "bad access [code -3]" as relayed by the adb shim) so an image
+	// filename or device string can't trip this branch.
+	case strings.Contains(tail, "USB access denied opening the flashing gadget"),
+		strings.Contains(tail, "bad access [code"):
 		return "USB access denied opening the flashing gadget — on Linux install the wendy udev rule (USB vendor 0955) or run with sudo; on macOS quit whatever holds the gadget (e.g. `adb kill-server`)"
 	case strings.Contains(tail, "ADB_TIMEOUT"), strings.Contains(tail, "adb wait-for-device"):
 		return "the flashing gadget never came up over USB (ADB timeout)"
