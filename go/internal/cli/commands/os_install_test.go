@@ -23,8 +23,8 @@ import (
 
 func TestNewOSInstallCmd_Flags(t *testing.T) {
 	cmd := newOSInstallCmd()
-	if cmd.Use != "install [image] [drive]" {
-		t.Errorf("Use = %q; want %q", cmd.Use, "install [image] [drive]")
+	if cmd.Use != "install [blob] [drive]" {
+		t.Errorf("Use = %q; want %q", cmd.Use, "install [blob] [drive]")
 	}
 
 	expectedFlags := []string{"nightly", "force", "yes-overwrite-internal", "device-type", "version", "drive", "wifi-ssid", "wifi-password", "wifi", "no-wifi", "device-name", "storage", "no-bmap"}
@@ -73,16 +73,17 @@ func TestNewOSInstallCmd_PositionalArgsIncompatibleWithFlags(t *testing.T) {
 	}
 }
 
-func TestNewOSInstallCmd_SinglePositionalArgRejected(t *testing.T) {
+// A single positional arg is the blob-install mode: the file is resolved as a
+// custom blob, so a nonexistent path fails at the stat, not at arg validation.
+func TestNewOSInstallCmd_SinglePositionalArgIsBlobMode(t *testing.T) {
 	cmd := newOSInstallCmd()
 	cmd.SetArgs([]string{"image.img"})
 	err := cmd.Execute()
 	if err == nil {
-		t.Fatal("expected error when exactly 1 positional arg is provided")
+		t.Fatal("expected error for a nonexistent blob path")
 	}
-	expected := "positional arguments must be provided as [image] [drive]; got 1 argument"
-	if got := err.Error(); got != expected {
-		t.Errorf("unexpected error: %q; want %q", got, expected)
+	if got := err.Error(); !strings.Contains(got, "image file:") {
+		t.Errorf("unexpected error: %q; want a stat failure for the blob path", got)
 	}
 }
 

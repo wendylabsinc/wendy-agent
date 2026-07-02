@@ -158,6 +158,22 @@ func Resolve(cacheDir, version string) (*Flashpack, error) {
 	return nil, fmt.Errorf("%w: version %s in %s", ErrNotInCache, version, cacheDir)
 }
 
+// ResolveTarball extracts an arbitrary local flashpack tarball (a custom /
+// unpublished build) into destDir and opens it. Unlike Resolve it is not
+// version-keyed and never consults the cache; the caller owns destDir's
+// lifetime. The stage-1 integrity check still runs against the embedded
+// manifest, so a corrupt tarball aborts before flashing.
+func ResolveTarball(tarball, destDir string) (*Flashpack, error) {
+	if err := extractZstTar(tarball, destDir); err != nil {
+		return nil, fmt.Errorf("extracting %s: %w", filepath.Base(tarball), err)
+	}
+	fp, err := open(destDir)
+	if err != nil {
+		return nil, fmt.Errorf("%s is not a valid flashpack: %w", filepath.Base(tarball), err)
+	}
+	return fp, fp.verifyStage1()
+}
+
 func open(root string) (*Flashpack, error) {
 	data, err := os.ReadFile(filepath.Join(root, "manifest.json"))
 	if err != nil {

@@ -21,9 +21,27 @@ wendy install --device-type raspberry-pi-5 --version 0.10.4 --drive /dev/disk4 -
 
 # Direct install from a local image (Linux only)
 wendy install path/to/image.img /dev/disk4 --force
+
+# Custom blob: local or remote disk image / Thor flashpack
+wendy install ./custom.img.zst --drive /dev/disk4 --force
+wendy install ./jetson-agx-thor-dev.flashpack.tar.zst
+wendy install https://ci.example.com/artifacts/custom.img.zst
 ```
 
 > **Note:** `--device-type` is not supported for ESP32 targets. Use the interactive picker to flash an ESP32.
+
+---
+
+## Custom blobs
+
+`wendy install <blob>` with a single positional argument installs a custom artifact — a locally built or otherwise unpublished image — instead of a manifest version. The blob may be a local path or an `http(s)` URL (downloaded to a temp file first, with a progress bar).
+
+The blob's type decides the flow:
+
+- **Disk images** (`.img`, `.raw`, `.wic`, `.sdimg`, `.zip`, `.img.gz`, `.img.zst`) are written to a drive — `--drive` or the interactive picker — exactly like the Linux path below, including config-partition provisioning (`--wifi*`, `--device-name`, `--pre-enroll`). zstd images are decompressed sequentially (no block map is used for custom blobs).
+- **Thor flashpacks** (`.tegraflash`, `.flashpack`, `.flashpack.tar.zst`, or any zstd-compressed tarball) flash a Jetson AGX Thor over USB recovery, exactly like the manifest Thor flow (macOS only). The tarball is extracted to a temp dir and never cached, and its contents are not verified against a published manifest — a note calls this out. `--drive` and provisioning flags are rejected: a Thor flashes over USB recovery, not to a drive.
+
+Type detection uses the file extension first and falls back to content sniffing (gzip/zip/zstd magic bytes; for zstd, the first decompressed block is checked for a tar header to tell a flashpack from an `.img.zst`). Because a blob carries its own device type and version, `--device-type`, `--version`, `--nightly`, and `--storage` are rejected with a blob argument.
 
 ---
 

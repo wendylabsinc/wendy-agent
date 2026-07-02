@@ -52,8 +52,46 @@ func installThor(ctx context.Context, version string, nightly, force bool) error
 		return err
 	}
 
+	return flashThor("WendyOS "+plan.version, "Download flashpack", force,
+		func(detail func(string)) (*flashpack.Flashpack, bool, error) {
+			return downloadAndExtractFlashpack(cacheDir, plan, detail)
+		})
+}
+
+// installThorLocalFlashpack flashes a custom local flashpack tarball (a
+// .tegraflash / .flashpack.tar.zst blob) over USB recovery. The tarball is
+// extracted into a temp dir removed after the flash — custom flashpacks are
+// never cached — and no manifest checksum exists to verify it against, so the
+// user is told the artifact is unverified. displayName is what the user typed
+// (a URL's basename for downloads); localPath is where the bytes live.
+func installThorLocalFlashpack(_ context.Context, localPath, displayName string, force bool) error {
+	label := filepath.Base(strings.ReplaceAll(displayName, "\\", "/"))
+	fmt.Println()
+	fmt.Println(tui.InfoMessage("Custom flashpack: its contents are not verified against a published manifest."))
+
+	tmpDir, err := os.MkdirTemp("", "wendy-flashpack-")
+	if err != nil {
+		return fmt.Errorf("creating temp dir: %w", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	return flashThor(label, "Extract flashpack", force,
+		func(detail func(string)) (*flashpack.Flashpack, bool, error) {
+			detail("extracting")
+			fp, err := flashpack.ResolveTarball(localPath, filepath.Join(tmpDir, "flashpack"))
+			return fp, false, err
+		})
+}
+
+// flashThor is the shared Thor USB-recovery flash flow: recovery-mode briefing
+// and confirm, device pick, destructive-write confirm, then prepare → stage-1
+// RCM boot → stage-2 ADB partition flash as a live step list. title names what
+// is being flashed (e.g. "WendyOS 0.12.0" or a custom tarball's basename);
+// prepare resolves the flashpack (download+extract for manifest installs,
+// extract-only for local tarballs) and reports whether its work was cached.
+func flashThor(title, prepareLabel string, force bool, prepare func(detail func(string)) (*flashpack.Flashpack, bool, error)) error {
 	// Brief the user on cabling / recovery mode, then confirm before scanning.
-	if err := confirmThorReady(plan.version); err != nil {
+	if err := confirmThorReady(title); err != nil {
 		return err
 	}
 
@@ -82,15 +120,15 @@ func installThor(ctx context.Context, version string, nightly, force bool) error
 		logPath = filepath.Join(dir, "thor-flash-"+time.Now().Format("20060102-150405")+".log")
 	}
 
-	// fp/shimDir are populated by the download and stage-1 steps and read by
+	// fp/shimDir are populated by the prepare and stage-1 steps and read by
 	// later steps; the steps run sequentially in one goroutine, so no locking.
 	var (
 		fp      *flashpack.Flashpack
 		shimDir string
 	)
 	steps := []flashStep{
-		{id: stepDownload, label: "Download flashpack", run: func(out io.Writer, detail func(string)) (bool, error) {
-			resolved, cached, err := downloadAndExtractFlashpack(cacheDir, plan, detail)
+		{id: stepDownload, label: prepareLabel, run: func(out io.Writer, detail func(string)) (bool, error) {
+			resolved, cached, err := prepare(detail)
 			fp = resolved
 			return cached, err
 		}},
@@ -129,7 +167,7 @@ func installThor(ctx context.Context, version string, nightly, force bool) error
 		fmt.Println(tui.InfoMessage("Stopped a running adb server (it would hold the Thor's flashing gadget)."))
 	}
 
-	failedID, err := runFlashSteps(fmt.Sprintf("Flashing WendyOS %s", plan.version), steps)
+	failedID, err := runFlashSteps("Flashing "+title, steps)
 	if shimDir != "" {
 		os.RemoveAll(shimDir)
 	}
@@ -153,7 +191,7 @@ func installThor(ctx context.Context, version string, nightly, force bool) error
 		return err
 	}
 
-	fmt.Println(tui.SuccessMessage(fmt.Sprintf("Flashed WendyOS %s — power-cycle the Thor out of recovery to boot it.", plan.version)))
+	fmt.Println(tui.SuccessMessage(fmt.Sprintf("Flashed %s — power-cycle the Thor out of recovery to boot it.", title)))
 	return nil
 }
 
@@ -564,9 +602,9 @@ func printThorGadgetUnreachableHint(w io.Writer) {
 // confirmThorReady prints a titled recovery-mode briefing and asks the user to
 // confirm the target Thor is connected and in recovery mode before scanning.
 // Returns ErrUserCancelled if the user declines or cancels.
-func confirmThorReady(version string) error {
+func confirmThorReady(title string) error {
 	fmt.Println()
-	fmt.Println(tui.Header("Flashing WendyOS " + version))
+	fmt.Println(tui.Header("Flashing " + title))
 	fmt.Println(thorRecoveryBriefingBox())
 	fmt.Println()
 	ok, err := tui.Confirm("Is the target Thor connected and in recovery mode?")

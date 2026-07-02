@@ -61,11 +61,19 @@ func newOSInstallCmd() *cobra.Command {
 	var enrollCloudGRPC string
 
 	cmd := &cobra.Command{
-		Use:   "install [image] [drive]",
+		Use:   "install [blob] [drive]",
 		Short: "Install WendyOS or Wendy Lite firmware on a device",
 		Long: `Interactively select a supported device, download the latest OS image or firmware, and write it to the target.
 
-When called with positional arguments, skips interactive prompts:
+When called with a single positional argument, installs a custom blob — a disk
+image (.img, .wic, .img.zst, .zip, .gz) written to a drive, or a Jetson AGX Thor
+flashpack (.tegraflash, .flashpack.tar.zst) flashed over USB recovery. The blob
+may be a local path or an http(s) URL:
+  wendy os install ./custom.img.zst --drive /dev/disk4 --force
+  wendy os install ./jetson-agx-thor-dev.flashpack.tar.zst
+  wendy os install https://ci.example.com/artifacts/custom.img.zst
+
+When called with two positional arguments, writes a local image without prompts:
   wendy os install <image-path> <drive-id> --force
 
 When called with manifest-backed flags, installs a specific version:
@@ -78,20 +86,15 @@ Pre-seed multiple WiFi networks (repeatable, highest-priority first):
     --wifi "ssid=Cafe,hidden=true"
 
 Flags can be provided progressively — omitted values trigger interactive pickers.`,
-		Args: func(cmd *cobra.Command, args []string) error {
-			switch len(args) {
-			case 0, 2:
-				return nil
-			case 1:
-				return fmt.Errorf("positional arguments must be provided as [image] [drive]; got 1 argument")
-			default:
-				return cobra.MaximumNArgs(2)(cmd, args)
-			}
-		},
+		Args: cobra.MaximumNArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// Positional direct-install mode is incompatible with manifest-backed flags.
-			if len(args) > 0 && (deviceType != "" || versionFlag != "" || driveFlag != "" || wifiSSID != "" || wifiPassword != "" || len(wifiEntries) > 0 || noWifi || deviceName != "" || enrollCloudGRPC != "") {
+			// Two-positional direct-install mode is incompatible with manifest-backed flags.
+			if len(args) == 2 && (deviceType != "" || versionFlag != "" || driveFlag != "" || wifiSSID != "" || wifiPassword != "" || len(wifiEntries) > 0 || noWifi || deviceName != "" || enrollCloudGRPC != "") {
 				return fmt.Errorf("positional [image] [drive] arguments cannot be combined with --device-type, --version, --drive, --wifi-ssid, --wifi-password, --wifi, --no-wifi, --device-name, or --cloud-grpc")
+			}
+			// A blob carries its own device type and version.
+			if len(args) == 1 && (deviceType != "" || versionFlag != "" || nightly || storageOverride != "") {
+				return fmt.Errorf("a blob install cannot be combined with --device-type, --version, --nightly, or --storage")
 			}
 			if nightly && versionFlag != "" {
 				return fmt.Errorf("--nightly and --version are mutually exclusive")
@@ -115,7 +118,19 @@ Flags can be provided progressively — omitted values trigger interactive picke
 					mode = preEnrollSkip
 				}
 			}
-			return runOSInstall(cmd.Context(), nightly, deviceType, versionFlag, driveFlag, force, yesOverwriteInternal, noBmap, storageOverride, opts, deviceName, preEnrollOptions{mode: mode, cloudGRPC: enrollCloudGRPC})
+			preOpts := preEnrollOptions{mode: mode, cloudGRPC: enrollCloudGRPC}
+
+			if len(args) == 1 {
+				return runOSInstallBlob(cmd.Context(), args[0], blobInstallOptions{
+					drive:                driveFlag,
+					force:                force,
+					yesOverwriteInternal: yesOverwriteInternal,
+					wifi:                 opts,
+					deviceName:           deviceName,
+					preOpts:              preOpts,
+				})
+			}
+			return runOSInstall(cmd.Context(), nightly, deviceType, versionFlag, driveFlag, force, yesOverwriteInternal, noBmap, storageOverride, opts, deviceName, preOpts)
 		},
 	}
 
@@ -152,23 +167,12 @@ func runOSInstallDirect(imagePath string, driveID string, force bool, yesOverwri
 	}
 
 	// Find the target drive.
-	drives, err := listAllDrives()
+	targetDrive, err := findDriveByPath(driveID)
 	if err != nil {
-		return fmt.Errorf("listing drives: %w", err)
+		return err
 	}
 
-	var targetDrive *drive
-	for _, d := range drives {
-		if d.DevicePath == driveID {
-			targetDrive = &d
-			break
-		}
-	}
-	if targetDrive == nil {
-		return fmt.Errorf("drive %s not found", driveID)
-	}
-
-	if err := confirmOverwriteInternalDrive(*targetDrive, force, yesOverwriteInternal); err != nil {
+	if err := confirmOverwriteInternalDrive(targetDrive, force, yesOverwriteInternal); err != nil {
 		return err
 	}
 
@@ -191,7 +195,7 @@ func runOSInstallDirect(imagePath string, driveID string, force bool, yesOverwri
 
 	fmt.Printf("Writing image to %s...\n", targetDrive.DevicePath)
 	fmt.Println(elevationHint())
-	if err := writeImageToDisk(stream, stream.uncompressedSize, *targetDrive, nil); err != nil {
+	if err := writeImageToDisk(stream, stream.uncompressedSize, targetDrive, nil); err != nil {
 		return fmt.Errorf("writing image: %w", err)
 	}
 
@@ -398,21 +402,11 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 	// Step 2: Resolve target drive — use flag or interactive picker.
 	var targetDrive drive
 	if flagDrive != "" {
-		drives, err := listAllDrives()
+		d, err := findDriveByPath(flagDrive)
 		if err != nil {
-			return fmt.Errorf("listing drives: %w", err)
+			return err
 		}
-		var found bool
-		for _, d := range drives {
-			if d.DevicePath == flagDrive {
-				targetDrive = d
-				found = true
-				break
-			}
-		}
-		if !found {
-			return fmt.Errorf("drive %s not found", flagDrive)
-		}
+		targetDrive = d
 	} else {
 		fmt.Println()
 		selectedDrive, err := pickExternalDrive(ctx)
@@ -438,37 +432,9 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 		}
 	}
 
-	provCreds, err := resolveWiFiCredentialsList(wifi)
+	provCreds, provDeviceName, provisioningJSON, err := resolveProvisioningInputs(ctx, wifi, deviceName, preOpts)
 	if err != nil {
 		return err
-	}
-
-	provDeviceName, err := resolveDeviceName(deviceName)
-	if err != nil {
-		return err
-	}
-
-	// Resolve pre-enrollment — must happen before provisionConfigPartition because
-	// the config partition is mounted and unmounted inside that call.
-	var provisioningJSON []byte
-	if preOpts.mode != preEnrollSkip {
-		cfg, cfgErr := config.Load()
-		if cfgErr != nil {
-			if preOpts.mode == preEnrollForced {
-				return fmt.Errorf("--pre-enroll: loading config: %w", cfgErr)
-			}
-			cfg = &config.Config{} // auto mode: treat an unreadable config as not logged in
-		}
-		provisioning, resolveErr := resolvePreEnrollment(ctx, cfg, preOpts, isInteractiveTerminal(), provDeviceName)
-		if resolveErr != nil {
-			return resolveErr
-		}
-		if provisioning != nil {
-			provisioningJSON, err = json.Marshal(provisioning)
-			if err != nil {
-				return fmt.Errorf("marshaling provisioning state: %w", err)
-			}
-		}
 	}
 
 	// Step 5: Resolve image metadata for the target storage. A USB-attached
@@ -669,6 +635,72 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 		}
 	}
 
+	if err := applyProvisioningAndEject(targetDrive, provCreds, provDeviceName, provisioningJSON); err != nil {
+		return err
+	}
+
+	fmt.Printf("\nSuccessfully installed %s %s on %s.\n", device.Name, imgInfo.Version, targetDrive.Name)
+	fmt.Println("You can now insert the drive into your device and power it on.")
+	return nil
+}
+
+// findDriveByPath resolves a --drive / positional drive id to a listed drive.
+func findDriveByPath(devicePath string) (drive, error) {
+	drives, err := listAllDrives()
+	if err != nil {
+		return drive{}, fmt.Errorf("listing drives: %w", err)
+	}
+	for _, d := range drives {
+		if d.DevicePath == devicePath {
+			return d, nil
+		}
+	}
+	return drive{}, fmt.Errorf("drive %s not found", devicePath)
+}
+
+// resolveProvisioningInputs gathers everything provisioning needs — WiFi
+// credentials, the device name, and the pre-enrollment payload — before any
+// drive write, because the config partition is mounted and unmounted inside
+// provisionConfigPartition.
+func resolveProvisioningInputs(ctx context.Context, wifi wifiCLIOptions, deviceName string, preOpts preEnrollOptions) ([]wendyconf.WifiCredential, string, []byte, error) {
+	provCreds, err := resolveWiFiCredentialsList(wifi)
+	if err != nil {
+		return nil, "", nil, err
+	}
+
+	provDeviceName, err := resolveDeviceName(deviceName)
+	if err != nil {
+		return nil, "", nil, err
+	}
+
+	var provisioningJSON []byte
+	if preOpts.mode != preEnrollSkip {
+		cfg, cfgErr := config.Load()
+		if cfgErr != nil {
+			if preOpts.mode == preEnrollForced {
+				return nil, "", nil, fmt.Errorf("--pre-enroll: loading config: %w", cfgErr)
+			}
+			cfg = &config.Config{} // auto mode: treat an unreadable config as not logged in
+		}
+		provisioning, resolveErr := resolvePreEnrollment(ctx, cfg, preOpts, isInteractiveTerminal(), provDeviceName)
+		if resolveErr != nil {
+			return nil, "", nil, resolveErr
+		}
+		if provisioning != nil {
+			provisioningJSON, err = json.Marshal(provisioning)
+			if err != nil {
+				return nil, "", nil, fmt.Errorf("marshaling provisioning state: %w", err)
+			}
+		}
+	}
+	return provCreds, provDeviceName, provisioningJSON, nil
+}
+
+// applyProvisioningAndEject writes the provisioning data to the drive's config
+// partition (when the platform supports it) and ejects the drive. Called after
+// the OS image has landed, so a provisioning failure is surfaced without
+// implying the flash failed.
+func applyProvisioningAndEject(targetDrive drive, provCreds []wendyconf.WifiCredential, provDeviceName string, provisioningJSON []byte) error {
 	hasProvisioningData := provisioningRequired(provCreds, provDeviceName, provisioningJSON)
 
 	if !configPartitionSupported {
@@ -690,9 +722,6 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 	}
 
 	ejectDisk(targetDrive)
-
-	fmt.Printf("\nSuccessfully installed %s %s on %s.\n", device.Name, imgInfo.Version, targetDrive.Name)
-	fmt.Println("You can now insert the drive into your device and power it on.")
 	return nil
 }
 
@@ -1524,13 +1553,17 @@ func openOSImageStream(deviceKey string, img *imageInfo) (*imageStream, error) {
 
 // openLocalImageStream opens an arbitrary local file for streaming.
 // If the path ends in .zip it finds the first image entry inside it.
-// Otherwise it opens the file directly as a reader.
+// Compressed images (gzip, zstd) are detected by magic bytes and decompressed
+// on the fly; anything else is opened directly as a raw image.
 func openLocalImageStream(imagePath string) (*imageStream, error) {
 	if strings.HasSuffix(strings.ToLower(imagePath), ".zip") {
 		return streamZipImageEntry(imagePath)
 	}
 	if isGzipFile(imagePath) {
 		return streamGzipImage(imagePath)
+	}
+	if isZstdFile(imagePath) {
+		return streamZstdImage(imagePath)
 	}
 	return openRawImageStream(imagePath)
 }
