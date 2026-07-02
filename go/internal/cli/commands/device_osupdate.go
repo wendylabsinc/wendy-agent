@@ -4,7 +4,19 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/charmbracelet/lipgloss"
+
+	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
+)
+
+// Outcome/health words carry their severity as color: green for a healthy or
+// committed state, amber for a rollback that saved the device, red for
+// anything that needs the user's attention.
+var (
+	osUpdateGoodStyle = lipgloss.NewStyle().Foreground(tui.ColorAccent).Bold(true)
+	osUpdateWarnStyle = lipgloss.NewStyle().Foreground(tui.ColorNotice).Bold(true)
+	osUpdateBadStyle  = lipgloss.NewStyle().Foreground(tui.ColorError).Bold(true)
 )
 
 // formatOSUpdateInfo renders the OS-update block for `wendy device info`: the
@@ -21,24 +33,32 @@ func formatOSUpdateInfo(resp *agentpb.GetOSUpdateStatusResponse) string {
 	}
 
 	var b strings.Builder
-	b.WriteString("OS Update:\n")
+	b.WriteString(tui.Dim("OS Update:") + "\n")
 
 	for _, s := range engine.GetSlots() {
 		b.WriteString("  " + formatOSUpdateSlot(s) + "\n")
 	}
 	if p := engine.GetPending(); p != nil {
-		fmt.Fprintf(&b, "  Pending: %s %s (%s, target slot %s)\n",
-			p.GetArtifactName(), p.GetArtifactVersion(), p.GetPhase(), p.GetTargetSlot())
+		// "failed" means the deployment was marked failed and needs a
+		// rollback — the one pending phase that is bad news.
+		phase := tui.Dim(p.GetPhase())
+		if p.GetPhase() == "failed" {
+			phase = osUpdateBadStyle.Render(p.GetPhase())
+		}
+		fmt.Fprintf(&b, "  %s %s %s%s%s\n",
+			tui.Dim("Pending:"),
+			tui.Value(p.GetArtifactName()+" "+p.GetArtifactVersion()),
+			tui.Dim("("), phase, tui.Dim(", target slot "+p.GetTargetSlot()+")"))
 	}
 
 	if resp.GetHasResult() {
-		line := "  Last update: " + osUpdateOutcomeLabel(resp.GetOutcome())
+		line := "  " + tui.Dim("Last update:") + " " + styledOSUpdateOutcome(resp.GetOutcome())
 		if resp.GetOldOsVersion() != "" && resp.GetNewOsVersion() != "" {
-			line += fmt.Sprintf(" (%s → %s)", resp.GetOldOsVersion(), resp.GetNewOsVersion())
+			line += " " + tui.Dim(fmt.Sprintf("(%s → %s)", resp.GetOldOsVersion(), resp.GetNewOsVersion()))
 		}
 		b.WriteString(line + "\n")
 		if resp.GetOutcome() != agentpb.GetOSUpdateStatusResponse_OUTCOME_COMMITTED {
-			b.WriteString("  Details: wendy device os update-status\n")
+			b.WriteString("  " + tui.Dim("Details:") + " " + tui.Command("wendy device os update-status") + "\n")
 		}
 	}
 
@@ -52,21 +72,42 @@ func formatOSUpdateSlot(s *agentpb.OSUpdateEngineStatus_Slot) string {
 	if s.GetBooted() {
 		state = "booted"
 	}
-	parts := []string{state}
+	parts := []string{tui.Value(state)}
 	if h := s.GetRootfsHealth(); h != "" {
-		parts = append(parts, "rootfs "+h)
+		style := osUpdateBadStyle
+		if h == "normal" {
+			style = osUpdateGoodStyle
+		}
+		parts = append(parts, tui.Value("rootfs ")+style.Render(h))
 	}
 	if d := s.GetDistro(); d != "" {
-		parts = append(parts, d)
+		parts = append(parts, tui.Value(d))
 	}
 	if r := s.GetRetries(); r != "" {
-		parts = append(parts, "retries "+r)
+		parts = append(parts, tui.Value("retries "+r))
 	}
-	line := fmt.Sprintf("Slot %s: %s", s.GetSlot(), strings.Join(parts, ", "))
+	line := tui.Dim(fmt.Sprintf("Slot %s:", s.GetSlot())) + " " + strings.Join(parts, ", ")
 	if n := s.GetNote(); n != "" {
-		line += " (" + n + ")"
+		line += " " + tui.Dim("("+n+")")
 	}
 	return line
+}
+
+// styledOSUpdateOutcome colors the outcome word by severity: committed green,
+// rolled back amber (the safety net worked), both failure modes red.
+func styledOSUpdateOutcome(o agentpb.GetOSUpdateStatusResponse_Outcome) string {
+	label := osUpdateOutcomeLabel(o)
+	switch o {
+	case agentpb.GetOSUpdateStatusResponse_OUTCOME_COMMITTED:
+		return osUpdateGoodStyle.Render(label)
+	case agentpb.GetOSUpdateStatusResponse_OUTCOME_ROLLED_BACK:
+		return osUpdateWarnStyle.Render(label)
+	case agentpb.GetOSUpdateStatusResponse_OUTCOME_ROLLBACK_FAILED,
+		agentpb.GetOSUpdateStatusResponse_OUTCOME_COMMIT_FAILED:
+		return osUpdateBadStyle.Render(label)
+	default:
+		return tui.Value(label)
+	}
 }
 
 // osUpdateOutcomeLabel is the compact outcome wording used in `device info`;
