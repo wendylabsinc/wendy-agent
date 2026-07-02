@@ -4,6 +4,8 @@ CLI papercuts, docs gaps, general WendyOS bugs, flaky behavior noticed along the
 
 ## O1 — `device volumes list` usedBy is a name-prefix heuristic; null for real in-use volumes
 
+**Filed: WDY-1807** (2026-07-02)
+
 `buildVolumeUsageMap` (container_service.go:873) marks a volume as used only if its name starts with the *appID* (`<appID>` or `<appID>-…`). HelloVLM (`sh.wendy.examples.hellovlm`) is RUNNING with `hellovlm-models` (17.4 GB) mounted, yet `wendy device volumes list --json` shows `"usedBy": null` for every volume. Consequence: an operator can't tell live volumes from orphans (e.g. leftover `thor-llm-kb-main-*`, 11.4 GB, from a removed app). Not Thor-specific. Layer: agent.
 
 **Live-verified both directions (2026-07-02, autotest-churn):** deployed with two persist entitlements, `autotest-churn-data` and `autotest-orphanvol` (both declared in the same wendy.json, both mounted):
