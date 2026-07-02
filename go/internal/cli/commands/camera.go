@@ -34,6 +34,12 @@ func newCameraListCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "list",
 		Short: "List cameras",
+		Long: `List cameras on the target device.
+
+Only capture-capable video nodes are listed. A single USB camera typically
+registers two /dev/video* nodes — one for video frames and one metadata-only
+node — so this list is intentionally shorter than the full inventory shown
+by 'wendy device hardware list', which includes the metadata node.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			conn, err := connectToAgent(ctx)
