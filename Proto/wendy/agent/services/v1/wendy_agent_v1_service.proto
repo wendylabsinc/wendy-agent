@@ -208,6 +208,20 @@ message GetAgentVersionResponse {
     repeated DiskPartition partitions = 15;
     // GPU architecture identifier. Format is vendor-specific (e.g. "sm_87" for NVIDIA).
     optional string gpu_arch = 16;
+    // Network interfaces and their assigned IP addresses, as observed on the
+    // device. Loopback, down, and container/virtual bridge interfaces are
+    // omitted, and link-local addresses are excluded. Empty when the agent
+    // cannot enumerate interfaces.
+    repeated NetworkInterface network_interfaces = 17;
+}
+
+// A network interface on the device and the IP addresses assigned to it.
+message NetworkInterface {
+    // Interface name (e.g. "eth0", "wlan0").
+    string name = 1;
+    // Routable IPv4 and IPv6 addresses assigned to the interface, without any
+    // CIDR prefix suffix (e.g. "192.168.1.42").
+    repeated string ip_addresses = 2;
 }
 
 // Usage information for a single mounted filesystem.

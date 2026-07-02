@@ -1562,6 +1562,7 @@ func startAndStreamContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 		if err := waitForReadiness(ctx, appCfg.Readiness, conn.Host); err != nil {
 			cliLogln("Warning: %v", err)
 		}
+		announceReachableURL(ctx, conn, appCfg)
 		// Fire-and-forget: post-start hook outlives the CLI process.
 		startPostStartHook(context.Background(), appCfg, conn.Host)
 		return nil
@@ -1595,6 +1596,9 @@ func startAndStreamContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 		if runCtx.Err() == nil {
 			cliLogln("Warning: %v", err)
 		}
+	}
+	if runCtx.Err() == nil {
+		announceReachableURL(runCtx, conn, appCfg)
 	}
 
 	// Post-start hook tied to runCtx so Ctrl+C kills it.
@@ -1719,6 +1723,34 @@ func expandHookEnv(s, hostname, appID string) string {
 // Indirected through a var so tests can swap it out.
 var browserOpen = browseropen.Open
 
+// announceReachableURL prints an IP-based URL the developer can open to reach a
+// freshly started app. `wendy run` otherwise only surfaces the device's .local
+// hostname, which frequently fails to resolve in a browser (see issue #1301);
+// this asks the agent for the device's routable IPs and prints a URL built
+// from one of them. It is best-effort: it only queries the device when there is
+// something to show (a postStart openURL or a readiness TCP port) and stays
+// silent on any error or when no reachable address can be determined.
+func announceReachableURL(ctx context.Context, conn *grpcclient.AgentConnection, appCfg *appconfig.AppConfig) {
+	var hookURL string
+	if appCfg.Hooks != nil && appCfg.Hooks.PostStart != nil {
+		hookURL = appCfg.Hooks.PostStart.OpenURL
+	}
+	hasPort := appCfg.Readiness != nil && appCfg.Readiness.TCPSocket != nil && appCfg.Readiness.TCPSocket.Port != 0
+	if hookURL == "" && !hasPort {
+		return
+	}
+
+	resp, err := conn.AgentService.GetAgentVersion(ctx, &agentpb.GetAgentVersionRequest{})
+	if err != nil {
+		return
+	}
+	url := reachableAppURL(hookURL, appCfg.AppID, bestReachableIP(resp.GetNetworkInterfaces()), appCfg.Readiness)
+	if url == "" {
+		return
+	}
+	cliLogln("App reachable at %s", tui.Value(url))
+}
+
 // startPostStartHook fires the postStart hook actions for appCfg.
 //
 // If openURL is set, it is expanded and opened in the developer's default
@@ -1824,6 +1856,7 @@ func streamRunContainer(ctx context.Context, conn *grpcclient.AgentConnection, s
 				if err := waitForReadiness(ctx, appCfg.Readiness, conn.Host); err != nil {
 					cliLogln("Warning: %v", err)
 				}
+				announceReachableURL(ctx, conn, appCfg)
 				startPostStartHook(context.Background(), appCfg, conn.Host)
 				return nil
 			}

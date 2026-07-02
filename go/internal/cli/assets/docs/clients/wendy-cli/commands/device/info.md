@@ -27,6 +27,17 @@ On GPU-capable devices, the following GPU fields are included. Each is omitted f
 
 `wendy device info` reports static GPU *metadata* (vendor, architecture, toolkit versions). For **live** GPU utilization, memory, temperature, and power draw, use [`wendy device top`](top.md).
 
+### Network output
+
+The output includes the device's network interfaces and their routable IP addresses under a `Network:` block (human-readable) or a `networkInterfaces` array (JSON). This is the address to use to reach an app running on the device — the `.local` hostname does not always resolve on every network.
+
+Loopback, down, and container/virtual bridge interfaces are omitted, as are link-local addresses. The section is absent entirely when the agent cannot enumerate interfaces (e.g. older agents).
+
+| Field (JSON) | Human-readable label | Description |
+|---|---|---|
+| `networkInterfaces[].name` | (row label) | Interface name (e.g. `eth0`, `wlan0`). |
+| `networkInterfaces[].ipAddresses` | (row value) | Routable IPv4/IPv6 addresses assigned to the interface. |
+
 ## Flags
 
 | Flag | Default | Description |

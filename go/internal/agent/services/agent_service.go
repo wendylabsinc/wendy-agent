@@ -108,6 +108,8 @@ func (s *AgentService) GetAgentVersion(_ context.Context, _ *agentpb.GetAgentVer
 		})
 	}
 
+	resp.NetworkInterfaces = listNetworkInterfaces()
+
 	return resp, nil
 }
 
