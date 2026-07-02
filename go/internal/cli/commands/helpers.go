@@ -90,6 +90,55 @@ func (e tlsHandshakeRejectedError) Error() string {
 	return "TLS handshake rejected by device (possible clock skew or cert mismatch).\n  Check the device clock: ssh wendy@<host> 'timedatectl status'\n  For full TLS details rerun with WENDY_TLS_DEBUG=1"
 }
 
+// orgMismatchDeviceError reports that the device's server certificate belongs
+// to an org the user holds no credentials for — a genuine cross-org mismatch
+// distinct from a same-org handshake failure (clock skew / stale cert).
+type orgMismatchDeviceError struct {
+	deviceOrg int32
+	userOrgs  []int32 // distinct orgs the CLI has credentials for
+}
+
+func (e orgMismatchDeviceError) Error() string {
+	parts := make([]string, len(e.userOrgs))
+	for i, o := range e.userOrgs {
+		parts[i] = fmt.Sprintf("org %d", o)
+	}
+	have := "none"
+	if len(parts) > 0 {
+		have = strings.Join(parts, ", ")
+	}
+	return fmt.Sprintf(
+		"This device belongs to org %d; your credentials cover %s.\n"+
+			"Your account isn't a member of org %d — run 'wendy cloud login' with an account that can access org %d.",
+		e.deviceOrg, have, e.deviceOrg, e.deviceOrg)
+}
+
+// orgInCerts reports whether any of the given certs carries the org ID.
+func orgInCerts(org int32, certs []config.CertificateInfo) bool {
+	for i := range certs {
+		if int32(certs[i].OrganizationID) == org {
+			return true
+		}
+	}
+	return false
+}
+
+// newOrgMismatchDeviceError builds an orgMismatchDeviceError, deduplicating the
+// user's org IDs (in first-seen order) for the message.
+func newOrgMismatchDeviceError(deviceOrg int32, userCerts []config.CertificateInfo) error {
+	var userOrgs []int32
+	seen := map[int32]bool{}
+	for i := range userCerts {
+		o := int32(userCerts[i].OrganizationID)
+		if o == 0 || seen[o] {
+			continue
+		}
+		seen[o] = true
+		userOrgs = append(userOrgs, o)
+	}
+	return orgMismatchDeviceError{deviceOrg: deviceOrg, userOrgs: userOrgs}
+}
+
 type provisionedAgentUnauthorizedError struct {
 	cause error
 }
@@ -1040,6 +1089,7 @@ func connectWithAutoTLSDiagnostics(ctx context.Context, plaintextAddr string) (*
 			// all port+1 probe failures were cert rejections (none were just "unreachable").
 			var plaintextAddrCertReject bool
 			var mtlsPortCertFails, mtlsPortNonCertFails int
+			var observedDeviceOrg int32 // org read from the device's server cert on a failed mTLS probe (0 = none)
 			for addrIdx, mtlsAddr := range mtlsAddrs {
 				for i := range allCerts {
 					conn, tlsErr := grpcclient.ConnectWithTLSAndPins(ctx, mtlsAddr, &allCerts[i], pins)
@@ -1066,6 +1116,9 @@ func connectWithAutoTLSDiagnostics(ctx context.Context, plaintextAddr string) (*
 					if tlsDebug {
 						fmt.Fprintf(os.Stderr, "[tls-debug] GetAgentVersion(%s) error: %v\n", mtlsAddr, probeErr)
 					}
+					if org, ok := conn.ObservedServerOrg(); ok {
+						observedDeviceOrg = org
+					}
 					conn.Close()
 					if addrIdx == 0 {
 						if isCertRejectionError(probeErr) {
@@ -1081,6 +1134,15 @@ func connectWithAutoTLSDiagnostics(ctx context.Context, plaintextAddr string) (*
 				}
 			}
 			if plaintextAddrCertReject || (mtlsPortCertFails > 0 && mtlsPortNonCertFails == 0) {
+				// A genuine cross-org mismatch (device's org is one we hold no cert
+				// for) gets a clear, actionable message. A same-org failure (observed
+				// org is one we have, e.g. clock skew / stale cert) or no observed org
+				// falls through to the generic handshake-rejected error, which
+				// connectToAgent already post-processes with clock-skew and
+				// refresh-certs remedies.
+				if observedDeviceOrg != 0 && !orgInCerts(observedDeviceOrg, allCerts) {
+					return nil, lastMTLSErr, newOrgMismatchDeviceError(observedDeviceOrg, allCerts)
+				}
 				return nil, lastMTLSErr, newTLSHandshakeRejectedError(lastMTLSErr)
 			}
 		}
