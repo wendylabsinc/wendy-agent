@@ -27,6 +27,8 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
     libpython3-dev libsqlite3-0 libxml2-dev libz3-dev \
     ninja-build pkg-config python3 python3-pip tzdata unzip zip zlib1g-dev \
     ca-certificates aria2 \
+    libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+    gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
     && rm -rf /var/lib/apt/lists/*
 
 # cuDNN for the matching CUDA major; package name differs per CUDA version.
@@ -34,6 +36,12 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     libcudnn9-dev-cuda-13 || apt-get install -y --no-install-recommends libcudnn9-dev-cuda-12; \
     rm -rf /var/lib/apt/lists/*
+
+# mlx's CUDA backend includes <cudnn_frontend.h> (NVIDIA's header-only
+# graph API wrapper); it ships with neither the CUDA toolkit nor libcudnn.
+RUN git clone --depth 1 https://github.com/NVIDIA/cudnn-frontend /tmp/cudnn-frontend \
+    && cp -r /tmp/cudnn-frontend/include/* /usr/local/cuda/include/ \
+    && rm -rf /tmp/cudnn-frontend
 
 # Swift toolchain (aarch64). ubuntu24.04 builds; download.swift.org layout.
 RUN set -ex; \
@@ -57,7 +65,9 @@ ENV CUDA_ARCH=${CUDA_ARCH}
 ENV PATH=/usr/local/cuda/bin:${PATH}
 ENV LD_LIBRARY_PATH=/usr/local/cuda/lib64:${LD_LIBRARY_PATH}
 
-RUN swift build -c release && cp .build/release/MLXProbe /usr/local/bin/MLXProbe
+RUN swift build -c release \
+    && cp .build/release/MLXProbe /usr/local/bin/MLXProbe \
+    && cp .build/release/MLXVisionProbe /usr/local/bin/MLXVisionProbe
 
 COPY entrypoint.sh /usr/local/bin/probe-entrypoint
 RUN chmod +x /usr/local/bin/probe-entrypoint

@@ -19,4 +19,8 @@ if [ ! -s "$MODEL_DIR/config.json" ]; then
     hf download "$HF_MODEL" --local-dir "$MODEL_DIR"
 fi
 
-exec MLXProbe --model-path "$MODEL_DIR" "$@"
+BINARY="MLXProbe"
+if [ "${PROBE_MODE:-text}" = "vision" ]; then
+    BINARY="MLXVisionProbe"
+fi
+exec "$BINARY" --model-path "$MODEL_DIR" "$@"

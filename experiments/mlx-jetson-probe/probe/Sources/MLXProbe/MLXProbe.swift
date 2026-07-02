@@ -1,8 +1,8 @@
 import ArgumentParser
 import Foundation
 import MLX
-import MLXLLM
 import MLXLMCommon
+import MLXVLM
 
 /// Feasibility probe for MLX text generation on NVIDIA Jetson (CUDA).
 ///
@@ -39,7 +39,7 @@ struct MLXProbe: AsyncParsableCommand {
         let modelDirectory = URL(fileURLWithPath: modelPath, isDirectory: true)
         print("Loading model: \(modelDirectory.path) …")
         let loadStartedAt = Date()
-        let container = try await LLMModelFactory.shared.loadContainer(
+        let container = try await VLMModelFactory.shared.loadContainer(
             configuration: ModelConfiguration(directory: modelDirectory)
         ) { progress in
             let percent = Int(progress.fractionCompleted * 100)
