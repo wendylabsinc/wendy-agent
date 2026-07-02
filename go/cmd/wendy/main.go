@@ -22,8 +22,8 @@ import (
 
 func main() {
 	// When invoked as adb/lsusb/timeout (via the symlinks wendy plants on PATH for
-	// NVIDIA's bootburn during a Thor flash), act as that tool and exit. macOS only;
-	// IsShimName is always false elsewhere.
+	// NVIDIA's bootburn during a Thor flash), act as that tool and exit. macOS and
+	// Linux only; IsShimName is always false elsewhere.
 	if shim.IsShimName(filepath.Base(os.Args[0])) {
 		shim.Dispatch()
 		return
