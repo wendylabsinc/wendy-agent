@@ -1,0 +1,22 @@
+{
+  "appId": "sh.wendy.examples.hellovlm",
+  "platform": "linux",
+  "version": "1.0.0",
+  "language": "swift",
+  "serviceName": "app",
+  "entitlements": [
+    {
+      "type": "network",
+      "mode": "host"
+    },
+    {
+      "type": "camera"
+    }
+  ],
+  "run": {
+    "args": [
+      "--llm-url", "http://localhost:11434",
+      "--prompt", "These frames were captured at a fixed interval from a webcam. Describe what is happening and how it changes over the frames. Reply in English."
+    ]
+  }
+}

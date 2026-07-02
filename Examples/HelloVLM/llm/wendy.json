@@ -1,0 +1,15 @@
+{
+  "appId": "sh.wendy.examples.hellovlm",
+  "platform": "linux",
+  "version": "1.0.0",
+  "serviceName": "llm",
+  "entitlements": [
+    {
+      "type": "network",
+      "mode": "host"
+    },
+    {
+      "type": "gpu"
+    }
+  ]
+}
