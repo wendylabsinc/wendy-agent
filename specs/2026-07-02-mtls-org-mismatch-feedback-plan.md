@@ -188,7 +188,7 @@ Expected: `ok` — existing `TestBuildServerVerifyConnection_*` tests still pass
 - [ ] **Step 7: Commit**
 
 ```bash
-cd /Users/joannisorlandos/git/wendy/wendyos-wt-mtls-org
+cd ../wendyos-wt-mtls-org
 git add go/internal/shared/certs/mldsa.go go/internal/shared/certs/server_verify_test.go
 git commit -m "feat(certs): add OnServerIdentity sink to server cert verifier
 
@@ -576,7 +576,7 @@ Expected: no output (success).
 
 - [ ] **Step 4: Confirm no stray commits/uncommitted changes**
 
-Run: `cd /Users/joannisorlandos/git/wendy/wendyos-wt-mtls-org && git status --short`
+Run: `cd ../wendyos-wt-mtls-org && git status --short`
 Expected: empty (all work committed across Tasks 1-3).
 
 ---

@@ -138,6 +138,21 @@ func newOrgMismatchDeviceError(deviceOrg int32, userCerts []config.CertificateIn
 	}
 	return orgMismatchDeviceError{deviceOrg: deviceOrg, userOrgs: userOrgs}
 }
+type orgMismatchWithCause struct {
+	mismatch error
+	cause    error
+}
+
+func (e orgMismatchWithCause) Error() string {
+	return e.mismatch.Error()
+}
+
+func (e orgMismatchWithCause) Unwrap() []error {
+	if e.cause == nil {
+		return []error{e.mismatch}
+	}
+	return []error{e.mismatch, e.cause}
+}
 
 // chooseRejectionError picks the error for an mTLS cert-rejection outcome. A
 // genuine cross-org mismatch (the device's observed org is set and is not one
@@ -147,7 +162,10 @@ func newOrgMismatchDeviceError(deviceOrg int32, userCerts []config.CertificateIn
 // clock-skew and refresh-certs remedies.
 func chooseRejectionError(observedDeviceOrg int32, allCerts []config.CertificateInfo, cause error) error {
 	if observedDeviceOrg != 0 && !orgInCerts(observedDeviceOrg, allCerts) {
-		return newOrgMismatchDeviceError(observedDeviceOrg, allCerts)
+		return orgMismatchWithCause{
+			mismatch: newOrgMismatchDeviceError(observedDeviceOrg, allCerts),
+			cause:    cause,
+		}
 	}
 	return newTLSHandshakeRejectedError(cause)
 }
