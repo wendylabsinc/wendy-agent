@@ -34,11 +34,6 @@ func newWendyOSUpdater(logger *zap.Logger) wendyOSUpdater {
 
 func (w wendyOSUpdater) name() string { return updaterNameWendyOS }
 
-// delegatesHealthcheck is true: wendyos-update runs /etc/wendyos-update/health.d
-// inside `commit`, so the agent gate skips its own CheckAll and acts on the
-// commit verdict instead.
-func (w wendyOSUpdater) delegatesHealthcheck() bool { return true }
-
 func (w wendyOSUpdater) commitCommand() string { return "wendyos-update" }
 
 func (w wendyOSUpdater) available() bool {
@@ -52,8 +47,8 @@ const wendyOSDetectTimeout = 10 * time.Second
 // detect reports whether wendyos-update can update this device. The binary
 // must be present AND `wendyos-update status` must succeed: status resolves the
 // platform connector, so a clean exit confirms a supported board. On
-// unsupported boards it errors, so chooseUpdater/chooseUpdaterForCommit report
-// no backend available.
+// unsupported boards it errors, so chooseUpdater (install-time selection)
+// reports no backend available.
 func (w wendyOSUpdater) detect() bool {
 	binary, found := resolveWendyOSBinary()
 	if !found {
@@ -90,7 +85,7 @@ func (w wendyOSUpdater) install(ctx context.Context, artifactURL string, onProgr
 	// Clear it with the rollback the tool itself prescribes (mark-good would
 	// commit the failed slot, which we must not do), then retry the install once.
 	w.logger.Warn("wendyos-update rejected the install: a previous deployment is stuck in flight; clearing it with rollback and retrying")
-	if res := runUpdaterCommit(w.logger, binary, "rollback"); res.Status == oshealth.MenderError {
+	if res := runUpdaterCommit(w.logger, binary, "rollback"); res.Status == oshealth.UpdaterError {
 		w.logger.Error("failed to clear the stuck wendyos-update deployment; surfacing the original install error",
 			zap.String("output", res.Output), zap.Error(res.Err))
 		return err
@@ -180,18 +175,18 @@ func isStaleDeploymentError(tail []string) bool {
 	return false
 }
 
-func (w wendyOSUpdater) commit() oshealth.MenderResult {
+func (w wendyOSUpdater) commit() oshealth.UpdaterResult {
 	binary, found := resolveWendyOSBinary()
 	if !found {
-		return oshealth.MenderResult{Status: oshealth.MenderUnavailable}
+		return oshealth.UpdaterResult{Status: oshealth.UpdaterUnavailable}
 	}
 	return runUpdaterCommit(w.logger, binary, "commit")
 }
 
-func (w wendyOSUpdater) rollback() oshealth.MenderResult {
+func (w wendyOSUpdater) rollback() oshealth.UpdaterResult {
 	binary, found := resolveWendyOSBinary()
 	if !found {
-		return oshealth.MenderResult{Status: oshealth.MenderUnavailable}
+		return oshealth.UpdaterResult{Status: oshealth.UpdaterUnavailable}
 	}
 	return runUpdaterCommit(w.logger, binary, "rollback")
 }

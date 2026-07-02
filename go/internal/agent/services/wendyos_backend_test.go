@@ -66,12 +66,12 @@ func TestParseWendyOSProgress(t *testing.T) {
 func TestCommitStatusForExitCode(t *testing.T) {
 	tests := []struct {
 		code int
-		want oshealth.MenderStatus
+		want oshealth.UpdaterStatus
 	}{
-		{code: 0, want: oshealth.MenderOK},
-		{code: 2, want: oshealth.MenderNothingPending},
-		{code: 1, want: oshealth.MenderError},
-		{code: 4, want: oshealth.MenderError}, // verify failed at commit
+		{code: 0, want: oshealth.UpdaterOK},
+		{code: 2, want: oshealth.UpdaterNothingPending},
+		{code: 1, want: oshealth.UpdaterError},
+		{code: 4, want: oshealth.UpdaterError}, // verify failed at commit
 	}
 	for _, tt := range tests {
 		if got := commitStatusForExitCode(tt.code); got != tt.want {

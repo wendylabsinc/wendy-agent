@@ -41,15 +41,10 @@ type osUpdater interface {
 	// streaming progress via onProgress(phase, percent). It returns a
 	// user-facing error on failure.
 	install(ctx context.Context, artifactURL string, onProgress func(phase string, percent int32)) error
-	// commit confirms a pending A/B update (exit-2 semantics => MenderNothingPending).
-	commit() oshealth.MenderResult
+	// commit confirms a pending A/B update (exit-2 semantics => UpdaterNothingPending).
+	commit() oshealth.UpdaterResult
 	// rollback reverts an uncommitted A/B update.
-	rollback() oshealth.MenderResult
-	// delegatesHealthcheck reports whether the backend runs its own post-commit
-	// health gate (wendyos-update runs /etc/wendyos-update/health.d inside
-	// commit), so the agent's boot-time gate must NOT run its own CheckAll for
-	// it.
-	delegatesHealthcheck() bool
+	rollback() oshealth.UpdaterResult
 	// commitCommand is the binary name surfaced in user-facing commit/rollback
 	// failure notes (e.g. "wendyos-update").
 	commitCommand() string
@@ -149,21 +144,21 @@ const updaterCommitTimeout = 60 * time.Second
 // code 2 is the "nothing pending" signal that `wendyos-update commit` emits.
 // `rollback` reports "nothing to roll back" via exit 1, not 2, so for the
 // rollback path exit 2 never occurs.
-func commitStatusForExitCode(code int) oshealth.MenderStatus {
+func commitStatusForExitCode(code int) oshealth.UpdaterStatus {
 	switch code {
 	case 0:
-		return oshealth.MenderOK
+		return oshealth.UpdaterOK
 	case 2:
-		return oshealth.MenderNothingPending
+		return oshealth.UpdaterNothingPending
 	default:
-		return oshealth.MenderError
+		return oshealth.UpdaterError
 	}
 }
 
 // runUpdaterCommit executes "<binary> <subcommand>" (commit or rollback) and
 // classifies the result. If the update is never committed, the bootloader
 // reverts to the previous slot on the next reboot.
-func runUpdaterCommit(logger *zap.Logger, binary, subcommand string) oshealth.MenderResult {
+func runUpdaterCommit(logger *zap.Logger, binary, subcommand string) oshealth.UpdaterResult {
 	ctx, cancel := context.WithTimeout(context.Background(), updaterCommitTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, binary, subcommand)
@@ -175,18 +170,18 @@ func runUpdaterCommit(logger *zap.Logger, binary, subcommand string) oshealth.Me
 			logger.Error("updater command timed out",
 				zap.String("binary", binary), zap.String("subcommand", subcommand),
 				zap.Duration("timeout", updaterCommitTimeout), zap.String("output", output))
-			return oshealth.MenderResult{Status: oshealth.MenderError, Output: output, Err: ctx.Err()}
+			return oshealth.UpdaterResult{Status: oshealth.UpdaterError, Output: output, Err: ctx.Err()}
 		}
 		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) && commitStatusForExitCode(exitErr.ExitCode()) == oshealth.MenderNothingPending {
-			return oshealth.MenderResult{Status: oshealth.MenderNothingPending, Output: output}
+		if errors.As(err, &exitErr) && commitStatusForExitCode(exitErr.ExitCode()) == oshealth.UpdaterNothingPending {
+			return oshealth.UpdaterResult{Status: oshealth.UpdaterNothingPending, Output: output}
 		}
 		logger.Warn("updater command failed",
 			zap.String("binary", binary), zap.String("subcommand", subcommand),
 			zap.String("output", output), zap.Error(err))
-		return oshealth.MenderResult{Status: oshealth.MenderError, Output: output, Err: err}
+		return oshealth.UpdaterResult{Status: oshealth.UpdaterError, Output: output, Err: err}
 	}
-	return oshealth.MenderResult{Status: oshealth.MenderOK, Output: output}
+	return oshealth.UpdaterResult{Status: oshealth.UpdaterOK, Output: output}
 }
 
 // exitCodeOf extracts the process exit code from an exec error, or -1 if the

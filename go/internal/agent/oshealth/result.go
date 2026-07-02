@@ -20,6 +20,31 @@ const (
 	OutcomeCommitFailed Outcome = "commit_failed"
 )
 
+// ServiceStatus is the verdict of a single critical-service healthcheck.
+//
+// New gates no longer populate ServiceResult: healthchecking is delegated to
+// the update backend's own commit (wendyos-update runs
+// /etc/wendyos-update/health.d). ServiceStatus and ServiceResult remain only
+// because they are part of the persisted UpdateResult.Services schema, read by
+// GetOSUpdateStatus and by on-disk records written before delegation existed.
+type ServiceStatus string
+
+const (
+	StatusHealthy ServiceStatus = "healthy"
+	// StatusSkipped: the unit is not present on this device or is
+	// intentionally disabled, so it does not gate the update.
+	StatusSkipped ServiceStatus = "skipped"
+	StatusFailed  ServiceStatus = "failed"
+)
+
+// ServiceResult is the outcome of checking one critical service. See
+// ServiceStatus for why this is no longer populated by new gates.
+type ServiceResult struct {
+	Unit   string        `json:"unit"`
+	Status ServiceStatus `json:"status"`
+	Reason string        `json:"reason,omitempty"`
+}
+
 // UpdateResult is the persisted outcome of the most recent OS update attempt.
 // It is written by the healthcheck gate on the freshly booted slot and, after
 // a rollback, finalized by the old slot once it is running again.
