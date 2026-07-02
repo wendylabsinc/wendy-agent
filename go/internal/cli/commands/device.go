@@ -1903,7 +1903,7 @@ func maybeCheckOSUpdate(ctx context.Context, preUpdateVersion *agentpb.GetAgentV
 		case osActionApply:
 			// fall through to apply
 		case osActionPrompt:
-			fmt.Println(tui.InfoMessage("The device downloads the OS image itself, so it needs internet access — connect it first (e.g. 'wendy wifi connect') if it is offline."))
+			ensureDeviceWiFiForOSUpdate(ctx, conn)
 			if !promptYesNoDefaultNoFn(fmt.Sprintf("OS update available (%s → %s). Apply now? [y/N] ", fromVer, latestVer)) {
 				fmt.Println("Skipping OS update. Run 'wendy os update' to apply later.")
 				return osUpdateOutcome{}, nil
@@ -1926,6 +1926,47 @@ func maybeCheckOSUpdate(ctx context.Context, preUpdateVersion *agentpb.GetAgentV
 	}
 	fmt.Println("Device is back online.")
 	return osUpdateOutcome{applied: true, online: true}, nil
+}
+
+// ensureDeviceWiFiForOSUpdate passively checks the device's WiFi before the
+// interactive OS-update prompt: the device downloads the OS image itself, so an
+// offline device fails the update with an opaque wendyos-update DNS error.
+// Connected → say nothing. Not connected → explain, then walk the user through
+// joining a network with the device-side scan picker + password prompt (the
+// same UX the installer uses). Best-effort throughout: a status error (older
+// agent, macOS target), an esc'd picker, or a failed join never blocks the
+// update prompt — a wired device is fine without WiFi.
+func ensureDeviceWiFiForOSUpdate(ctx context.Context, conn *grpcclient.AgentConnection) {
+	status, err := conn.AgentService.GetWiFiStatus(ctx, &agentpb.GetWiFiStatusRequest{})
+	if err != nil || status.GetConnected() {
+		return
+	}
+
+	fmt.Println(tui.WarningMessage("This device is not connected to WiFi, and it downloads the OS image itself — without internet the update will fail."))
+	fmt.Println(tui.InfoMessage("Pick a network to connect it now (esc to skip if the device has wired internet)."))
+
+	ssid, err := pickWifiNetwork(ctx, &SelectedDevice{Agent: conn})
+	if err != nil {
+		if !errors.Is(err, ErrUserCancelled) {
+			fmt.Println(tui.WarningMessage(fmt.Sprintf("WiFi selection failed: %v", err)))
+		}
+		return
+	}
+	password, err := promptWifiPassword(ssid)
+	if err != nil {
+		return
+	}
+
+	fmt.Println(tui.InfoMessage(fmt.Sprintf("Connecting the device to %s...", ssid)))
+	resp, err := conn.AgentService.ConnectToWiFi(ctx, &agentpb.ConnectToWiFiRequest{Ssid: ssid, Password: password})
+	switch {
+	case err != nil:
+		fmt.Println(tui.WarningMessage(fmt.Sprintf("Could not connect to %s: %v", ssid, err)))
+	case !resp.GetSuccess():
+		fmt.Println(tui.WarningMessage(fmt.Sprintf("Could not connect to %s: %s", ssid, resp.GetErrorMessage())))
+	default:
+		cliSuccess("Device connected to %s.", ssid)
+	}
 }
 
 // shouldReapplyBinary reports whether `device update` should re-upload the
