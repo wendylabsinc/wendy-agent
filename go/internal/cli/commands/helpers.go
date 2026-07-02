@@ -139,6 +139,19 @@ func newOrgMismatchDeviceError(deviceOrg int32, userCerts []config.CertificateIn
 	return orgMismatchDeviceError{deviceOrg: deviceOrg, userOrgs: userOrgs}
 }
 
+// chooseRejectionError picks the error for an mTLS cert-rejection outcome. A
+// genuine cross-org mismatch (the device's observed org is set and is not one
+// the user holds a cert for) gets the actionable orgMismatchDeviceError; every
+// other case (same-org failure such as clock skew, or no org observed) falls
+// through to errTLSHandshakeRejected, whose downstream handling offers the
+// clock-skew and refresh-certs remedies.
+func chooseRejectionError(observedDeviceOrg int32, allCerts []config.CertificateInfo, cause error) error {
+	if observedDeviceOrg != 0 && !orgInCerts(observedDeviceOrg, allCerts) {
+		return newOrgMismatchDeviceError(observedDeviceOrg, allCerts)
+	}
+	return newTLSHandshakeRejectedError(cause)
+}
+
 type provisionedAgentUnauthorizedError struct {
 	cause error
 }
@@ -824,6 +837,14 @@ func connectToAgent(ctx context.Context, opts ...resolveOption) (*grpcclient.Age
 			if errors.Is(connErr, ErrUserCancelled) {
 				return nil, connErr
 			}
+			// A cross-org mismatch is a credentials problem, not a reachability
+			// one: surface it directly rather than routing it into clock-skew
+			// retry, cert-refresh, or the default-device picker (none of which can
+			// resolve "you have no credentials for this device's org").
+			var orgMismatch orgMismatchDeviceError
+			if errors.As(connErr, &orgMismatch) {
+				return nil, connErr
+			}
 			if syncedConn, ok := autoSyncTimeAndRetry(ctx, connErr, func() (*grpcclient.AgentConnection, error) {
 				return connectResolvedAgentWithProvisionedHint(ctx, hostname, addr, isDefault, provisionedMTLS)
 			}); ok {
@@ -1140,10 +1161,7 @@ func connectWithAutoTLSDiagnostics(ctx context.Context, plaintextAddr string) (*
 				// falls through to the generic handshake-rejected error, which
 				// connectToAgent already post-processes with clock-skew and
 				// refresh-certs remedies.
-				if observedDeviceOrg != 0 && !orgInCerts(observedDeviceOrg, allCerts) {
-					return nil, lastMTLSErr, newOrgMismatchDeviceError(observedDeviceOrg, allCerts)
-				}
-				return nil, lastMTLSErr, newTLSHandshakeRejectedError(lastMTLSErr)
+				return nil, lastMTLSErr, chooseRejectionError(observedDeviceOrg, allCerts, lastMTLSErr)
 			}
 		}
 	}

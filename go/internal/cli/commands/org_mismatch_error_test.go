@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -41,5 +42,37 @@ func TestOrgMismatchDeviceError_SingleUserOrg(t *testing.T) {
 	msg := err.Error()
 	if !strings.Contains(msg, "org 42") || !strings.Contains(msg, "org 3") {
 		t.Errorf("message %q missing device org 42 or user org 3", msg)
+	}
+}
+
+func TestChooseRejectionError_CrossOrgMismatch(t *testing.T) {
+	certs := []config.CertificateInfo{{OrganizationID: 3}, {OrganizationID: 8}}
+	err := chooseRejectionError(42, certs, errors.New("boom"))
+	var mismatch orgMismatchDeviceError
+	if !errors.As(err, &mismatch) {
+		t.Fatalf("expected orgMismatchDeviceError, got %T: %v", err, err)
+	}
+	if mismatch.deviceOrg != 42 {
+		t.Errorf("deviceOrg = %d, want 42", mismatch.deviceOrg)
+	}
+}
+
+func TestChooseRejectionError_SameOrgFallsThrough(t *testing.T) {
+	certs := []config.CertificateInfo{{OrganizationID: 3}, {OrganizationID: 8}}
+	err := chooseRejectionError(3, certs, errors.New("boom"))
+	if !errors.Is(err, errTLSHandshakeRejected) {
+		t.Errorf("same-org failure: expected errTLSHandshakeRejected, got %T: %v", err, err)
+	}
+	var mismatch orgMismatchDeviceError
+	if errors.As(err, &mismatch) {
+		t.Error("same-org failure must not produce orgMismatchDeviceError")
+	}
+}
+
+func TestChooseRejectionError_NoObservedOrgFallsThrough(t *testing.T) {
+	certs := []config.CertificateInfo{{OrganizationID: 3}}
+	err := chooseRejectionError(0, certs, errors.New("boom"))
+	if !errors.Is(err, errTLSHandshakeRejected) {
+		t.Errorf("no observed org: expected errTLSHandshakeRejected, got %T: %v", err, err)
 	}
 }

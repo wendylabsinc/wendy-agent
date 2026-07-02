@@ -220,6 +220,9 @@ func (c *AgentConnection) Close() error {
 // certificate during the TLS handshake, or (0, false) if none was observed
 // (plaintext connection, cert without a Wendy identity, or a handshake that
 // never reached the server certificate). Safe to call after the first RPC.
+// The value comes from the peer's leaf certificate SAN and is NOT validated
+// against any trust chain by this accessor; it is for diagnostic display only
+// and must never be used for an authorization or trust decision.
 func (c *AgentConnection) ObservedServerOrg() (int32, bool) {
 	if c.observedServerOrg == nil {
 		return 0, false
