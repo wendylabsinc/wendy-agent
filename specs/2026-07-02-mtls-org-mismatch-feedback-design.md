@@ -113,16 +113,34 @@ Also add an `errors.As(err, &certs.OrgMismatchError{})` check on this path: the
 ### Component D — Remedy lookup + message
 Small helper in `go/internal/cli/commands/helpers.go`.
 
-Given `observedOrg != expectedOrg`, look up local creds with `loadAllCLICerts`
-+ `findCertByOrgID(observedOrg)`:
+**Important:** `connectWithAutoTLSDiagnostics` calls `loadAllCLICerts()`
+(`helpers.go:1014`) — every cert across **all** the user's orgs — and its loop
+(`helpers.go:1044`) tries *all of them*, ignoring `DefaultOrgID`. So if the user
+has a usable cert for the device's org, the connection simply succeeds; the
+rejection branch is reached only when **none** of the user's certs work for that
+org. Consequently "switch your default org" is *not* a valid remedy on this path
+(switching the default changes nothing about which certs are tried). The message
+reflects what actually helps: log in with an account that can access the org, or
+refresh a stale cert.
 
-- **Have a cert for the device's org:**
-  > This device belongs to org `<X>`; you're operating as org `<Y>`. You have
-  > credentials for org `<X>` — run `wendy auth list-orgs`, select it, and press
-  > `d` to make it your default, then retry.
-- **No cert for it:**
-  > This device belongs to org `<X>`, but you have no credentials for that org
-  > (you're operating as org `<Y>`). Authenticate/enroll in org `<X>` to connect.
+The new error fires for exactly one situation — the device's org is one the
+user holds **no** cert for (a genuine cross-org mismatch):
+
+> This device belongs to org `<X>`; your credentials cover org(s) `<Y…>`. Your
+> account isn't a member of org `<X>` — run `wendy cloud login` with an account
+> that can access org `<X>`.
+
+Gate: build this error only when the observed device org is set **and not**
+among the user's cert orgs. Two adjacent cases are deliberately left to existing
+handling:
+
+- **Observed org *is* one the user holds** (same-org failure — clock skew, or an
+  expired/invalid cert for that org): falls through to the existing
+  `errTLSHandshakeRejected` message, which `connectToAgent` already post-processes
+  with the clock-skew retry and the `wendy auth refresh-certs` offer
+  (`offerCertRefreshAndRetry`). Component D must not duplicate that.
+- **No org observed** (device presented no Wendy identity, or a non-cert
+  transport failure): falls through to `errTLSHandshakeRejected` as today.
 
 ## Scope
 
