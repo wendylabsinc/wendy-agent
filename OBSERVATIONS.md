@@ -17,6 +17,8 @@ CLI papercuts, docs gaps, general WendyOS bugs, flaky behavior noticed along the
 
 ## O2 — `device top`/dashboard shows GPU memory 0 B on Jetson (nvidia-smi returns [N/A])
 
+**Filed: WDY-1808** (2026-07-02)
+
 `nvidia-smi --query-gpu=memory.used,memory.total` on Thor returns `[N/A], [N/A]` (unified memory); `ParseNvidiaSMI` maps that to 0/0 and the JSON/TUI shows 0 B used / 0 B total instead of hiding the field or showing N/A. Affects any Jetson with nvidia-smi (JP6+), not just Thor. Layer: agent hoststats + CLI display.
 
 ## O3 — `device info` has no memory/CPU fields
