@@ -1,14 +1,12 @@
 package commands
 
 import (
-	"bufio"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/netip"
 	"os"
@@ -43,15 +41,29 @@ const agentPlaintextProbeTimeout = 3 * time.Second
 
 // mtlsProbeTimeout bounds a single mTLS connect+probe. The dial target is
 // already an IP (resolveAddrOnce), so this only needs to cover TCP + TLS
-// handshake; keeping it tight stops an unreachable/plaintext-only mTLS port
+// handshake; keeping it bounded stops an unreachable/plaintext-only mTLS port
 // from stalling the connect before the plaintext fallback.
-const mtlsProbeTimeout = 3 * time.Second
+//
+// Provisioned devices authenticate with post-quantum ML-DSA certificates,
+// whose handshake is noticeably slower on constrained hardware (Jetson,
+// Raspberry Pi) than a classical ECDSA/RSA handshake — ~2.2s observed on a
+// quiet device, but under load (CPU contention from an app, concurrent
+// connects, etc.) it has been observed exceeding a 3s budget entirely. When
+// that happens the probe context is cancelled mid-handshake, the direct
+// device-connect path (connectAgentAtAddressWithProvisionedHint) reports it
+// as a timeout, and connectToAgent surfaces a misleading "Unauthorized" error
+// even though the device accepted the client certificate — it just didn't
+// finish in time. 7s gives comfortable headroom above the slowest handshakes
+// observed on hardware while still failing a truly-unreachable device in a
+// bounded time (see retryOnHandshakeTimeout for the belt-and-braces retry on
+// top of this budget).
+const mtlsProbeTimeout = 7 * time.Second
 
 // lanAddressProbeTimeout bounds a single candidate address in the discover/
 // picker version probe (resolveLANAgentVersion). It wraps connectWithAutoTLS,
 // whose successful path for a provisioned device costs a TCP+TLS handshake plus
-// one mtlsProbeTimeout GetAgentVersion probe (~2.2s observed). A budget shorter
-// than mtlsProbeTimeout therefore cancelled the mTLS probe before it could
+// one mtlsProbeTimeout GetAgentVersion probe. A budget shorter than
+// mtlsProbeTimeout therefore cancelled the mTLS probe before it could
 // answer, leaving provisioned rows — especially USB devices, probed via .local
 // first — stuck on the failure glyph even though `wendy device info` (which
 // connects with the un-capped root context) succeeded. Derive it from
@@ -154,49 +166,22 @@ func isCertRefreshableError(err error) bool {
 	return false
 }
 
-// promptYesNoFn reads a Y/n answer from the controlling terminal; empty input
-// counts as yes. Stubbed in tests.
-var promptYesNoFn = func(prompt string) bool {
-	return promptYesNoLine(prompt, true)
+// confirmFn asks a yes/no question defaulting to Yes (empty input / Enter
+// counts as yes), using the shared styled tui.Confirm prompt. It is a package
+// var so tests can stub it. The question must not carry a "[Y/n]" suffix — the
+// prompt renders its own hint. A cancelled prompt (Ctrl+C / q) counts as no.
+var confirmFn = func(question string) bool {
+	ok, err := tui.ConfirmDefaultYes(question, tea.WithOutput(os.Stderr))
+	return err == nil && ok
 }
 
-// promptYesNoDefaultNoFn reads a y/N answer from the controlling terminal;
-// empty input counts as no. Used for more speculative offers (e.g. a timeout
-// against an enrolled device, where refreshing certs is a guess rather than a
-// clear diagnosis). Stubbed in tests.
-var promptYesNoDefaultNoFn = func(prompt string) bool {
-	return promptYesNoLine(prompt, false)
-}
-
-func promptYesNoLine(prompt string, defaultYes bool) bool {
-	in, out, cleanup := promptTTYIO()
-	defer cleanup()
-
-	// Clear any stale spinner/hint line before printing the prompt. This keeps a
-	// simple line prompt from visually colliding with a previously-rendered TUI.
-	fmt.Fprint(out, "\r\x1b[2K")
-	fmt.Fprint(out, prompt)
-
-	answer, err := bufio.NewReader(in).ReadString('\n')
-	if err != nil && strings.TrimSpace(answer) == "" {
-		return false
-	}
-	return parseYesNoAnswer(answer, defaultYes)
-}
-
-func parseYesNoAnswer(answer string, defaultYes bool) bool {
-	answer = strings.TrimSpace(strings.ToLower(answer))
-	if answer == "" {
-		return defaultYes
-	}
-	return answer == "y" || answer == "yes"
-}
-
-func promptTTYIO() (io.Reader, io.Writer, func()) {
-	if tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0); err == nil {
-		return tty, tty, func() { _ = tty.Close() }
-	}
-	return os.Stdin, os.Stderr, func() {}
+// confirmDefaultNoFn asks a yes/no question defaulting to No (empty input /
+// Enter counts as no). Used for more speculative or destructive offers (e.g. a
+// timeout against an enrolled device, where refreshing certs is a guess rather
+// than a clear diagnosis, or applying an OS update). Stubbed in tests.
+var confirmDefaultNoFn = func(question string) bool {
+	ok, err := tui.Confirm(question, tea.WithOutput(os.Stderr))
+	return err == nil && ok
 }
 
 var refreshAllCertsFn = refreshAllCerts
@@ -217,13 +202,13 @@ func offerCertRefreshAndRetry(ctx context.Context, cause error, retry func() (*g
 	if certRejected {
 		// Clear diagnosis: the agent rejected the cert. Default to yes.
 		fmt.Fprintln(os.Stderr, "The device rejected your client certificate; it may be outdated.")
-		accepted = promptYesNoFn("Refresh certificates and retry? [Y/n] ")
+		accepted = confirmFn("Refresh certificates and retry?")
 	} else {
 		// Timeout against an enrolled (mTLS-only) device. Refreshing certs is a
 		// reasonable guess (e.g. clock skew stalling the handshake) but less
 		// certain, so default to no.
 		fmt.Fprintln(os.Stderr, "The device is enrolled and only responds on the secure (mTLS) port. Your certificates may be stale or your CLI too old.")
-		accepted = promptYesNoDefaultNoFn("Refresh certificates and retry? [y/N] ")
+		accepted = confirmDefaultNoFn("Refresh certificates and retry?")
 	}
 	if !accepted {
 		return nil, false
@@ -308,6 +293,57 @@ func autoSyncTimeAndRetry(ctx context.Context, cause error, retry func() (*grpcc
 		return nil, false
 	}
 	return conn, true
+}
+
+// maxHandshakeTimeoutRetries bounds automatic retries of a direct device
+// connection that failed with a handshake-timeout-class error (see
+// isReachabilityTimeoutError) rather than a genuine rejection. Post-quantum
+// ML-DSA mTLS handshakes are slow enough on constrained hardware (Jetson,
+// Raspberry Pi) that even the widened mtlsProbeTimeout occasionally isn't
+// enough under load; retrying turns that one-in-a-few flake into a reliable
+// connect instead of surfacing a misleading "Unauthorized" error for a device
+// that is up and holds a perfectly valid certificate.
+const maxHandshakeTimeoutRetries = 2
+
+// retryOnHandshakeTimeout automatically retries a direct device connection up
+// to maxHandshakeTimeoutRetries times when cause is a transient mTLS
+// handshake timeout rather than a genuine certificate rejection. Unlike
+// offerCertRefreshAndRetry's "enrolled timeout" branch, this runs
+// unconditionally (no interactive prompt, no jsonOutput gate) because
+// retrying a bare timeout has no side effects and no plausible downside — it
+// only ever repeats the same connect attempt.
+//
+// Returns (conn, nil, true) once a retry connects. On failure it returns
+// (nil, cause, false) where cause is the *freshest* error observed: if a retry
+// stops looking like a timeout (e.g. the device now rejects the cert outright),
+// that newer, more specific error is surfaced instead of the original timeout,
+// so the caller's downstream handling — including the interactive cert-refresh
+// offer — diagnoses the real failure rather than the flake. A persistently
+// timing-out or genuinely-unreachable device still fails in bounded time.
+func retryOnHandshakeTimeout(ctx context.Context, cause error, retry func() (*grpcclient.AgentConnection, error)) (*grpcclient.AgentConnection, error, bool) {
+	if !isReachabilityTimeoutError(cause) || isCertRefreshableError(cause) {
+		return nil, cause, false
+	}
+	for attempt := 1; attempt <= maxHandshakeTimeoutRetries; attempt++ {
+		if ctx.Err() != nil {
+			return nil, cause, false
+		}
+		if !jsonOutput {
+			// The trigger is any timeout-class error (isReachabilityTimeoutError
+			// also matches a bare dial timeout to a down device), not strictly a
+			// handshake stall, so keep the wording generic.
+			fmt.Fprintf(os.Stderr, "connection timed out; retrying (%d/%d)...\n", attempt, maxHandshakeTimeoutRetries)
+		}
+		conn, err := retry()
+		if err == nil {
+			return conn, nil, true
+		}
+		cause = err
+		if !isReachabilityTimeoutError(err) || isCertRefreshableError(err) {
+			return nil, cause, false
+		}
+	}
+	return nil, cause, false
 }
 
 func (e provisionedAgentUnauthorizedError) Is(target error) bool {
@@ -775,7 +811,15 @@ func connectToAgent(ctx context.Context, opts ...resolveOption) (*grpcclient.Age
 			if errors.Is(connErr, ErrUserCancelled) {
 				return nil, connErr
 			}
-			if syncedConn, ok := autoSyncTimeAndRetry(ctx, connErr, func() (*grpcclient.AgentConnection, error) {
+			retriedConn, connErr, retried := retryOnHandshakeTimeout(ctx, connErr, func() (*grpcclient.AgentConnection, error) {
+				return connectResolvedAgentWithProvisionedHint(ctx, hostname, addr, isDefault, provisionedMTLS)
+			})
+			// retryOnHandshakeTimeout hands back the freshest error it saw, so a
+			// retry that revealed a more specific failure (e.g. a cert rejection)
+			// now drives the branches below instead of the original timeout.
+			if retried {
+				conn = retriedConn
+			} else if syncedConn, ok := autoSyncTimeAndRetry(ctx, connErr, func() (*grpcclient.AgentConnection, error) {
 				return connectResolvedAgentWithProvisionedHint(ctx, hostname, addr, isDefault, provisionedMTLS)
 			}); ok {
 				conn = syncedConn
@@ -1258,11 +1302,8 @@ func checkAndOfferUpdate(ctx context.Context, conn *grpcclient.AgentConnection) 
 	}
 	warn := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("214"))
 
-	fmt.Fprintf(os.Stderr, warn.Render("Agent is behind the CLI (agent: %s, CLI: %s). Update now? [Y/n] "), agentVer, version.Version)
-	reader := bufio.NewReader(os.Stdin)
-	answer, _ := reader.ReadString('\n')
-	answer = strings.TrimSpace(strings.ToLower(answer))
-	if answer != "" && answer != "y" && answer != "yes" {
+	fmt.Fprintf(os.Stderr, warn.Render("Agent is behind the CLI (agent: %s, CLI: %s).")+"\n", agentVer, version.Version)
+	if !confirmFn("Update the agent now?") {
 		return conn, nil
 	}
 
@@ -1700,13 +1741,7 @@ func ensureAppConfig(cfgPath string, autoAccept bool) (*appconfig.AppConfig, err
 		}
 
 		fmt.Println("No wendy.json found in current directory.")
-		fmt.Printf("Create one with app ID %q? [Y/n] ", dirName)
-
-		reader := bufio.NewReader(os.Stdin)
-		answer, _ := reader.ReadString('\n')
-		answer = strings.TrimSpace(strings.ToLower(answer))
-
-		if answer != "" && answer != "y" && answer != "yes" {
+		if !confirmFn(fmt.Sprintf("Create one with app ID %q?", dirName)) {
 			return nil, fmt.Errorf("wendy.json is required; run 'wendy init <app-id>' to create one")
 		}
 	}
@@ -1816,6 +1851,13 @@ func mergePickerItem(existing *tui.PickerItem, incoming tui.PickerItem) {
 	if nd.LAN != nil && md.LAN == nil {
 		md.LAN = nd.LAN
 		existing.Address = incoming.Address
+		// A LAN entry carries the friendly displayname TXT record; prefer it over
+		// a BLE-advertised hostname for both the visible name and the sort order.
+		if incoming.Name != "" {
+			existing.Name = incoming.Name
+			md.DisplayName = nd.DisplayName
+			existing.SortKey = deviceSortKey(existing.Name, existing.USB)
+		}
 	}
 	if nd.LAN != nil && md.LAN != nil && nd.LAN.USB != "" && md.LAN.USB == "" {
 		md.LAN.USB = nd.LAN.USB
@@ -1823,11 +1865,7 @@ func mergePickerItem(existing *tui.PickerItem, incoming tui.PickerItem) {
 	}
 	if nd.LAN != nil && nd.LAN.USB != "" && existing.USB == "" {
 		existing.USB = nd.LAN.USB
-		key := existing.DedupKey
-		if key == "" {
-			key = existing.Name
-		}
-		existing.SortKey = usbFirstSortKey(key, nd.LAN.USB)
+		existing.SortKey = deviceSortKey(existing.Name, nd.LAN.USB)
 	}
 	if nd.Bluetooth != nil && md.Bluetooth == nil {
 		md.Bluetooth = nd.Bluetooth
@@ -1888,11 +1926,28 @@ func mergePickerItem(existing *tui.PickerItem, incoming tui.PickerItem) {
 	existing.Probe = nextProbeState(existing.Probe, incoming.Probe)
 }
 
-func usbFirstSortKey(name, usb string) string {
-	if usb == "" {
-		return ""
+// deviceSortKey orders device rows by display name, floating USB-tethered
+// devices ("0_") above everything else ("1_"). It sorts on the human-facing
+// name rather than the dedup key so rows stay ordered by name even though
+// deduplication now keys on the hostname (see deviceDedupKey).
+func deviceSortKey(name, usb string) string {
+	prefix := "1_"
+	if usb != "" {
+		prefix = "0_"
 	}
-	return "0_" + strings.ToLower(name)
+	return prefix + strings.ToLower(name)
+}
+
+// deviceDedupKey returns the cross-transport dedup key for a picker row: the
+// device's normalized hostname when known, so an mDNS entry (friendly
+// displayname) and a BLE entry (raw hostname) for the same physical device
+// collapse into a single row. Falls back to the display name when no hostname
+// is available.
+func deviceDedupKey(hostKey, displayName string) string {
+	if hostKey != "" {
+		return hostKey
+	}
+	return strings.ToLower(displayName)
 }
 
 // hideLocalProviders returns a copy of excludes that additionally hides the
@@ -1978,8 +2033,8 @@ func pickDevice(ctx context.Context, excludeProviders map[string]bool, excludeBl
 			Provisioned:  lanProvisionedDisplay(&devCopy),
 			Hint:         hint,
 			Probe:        probe,
-			DedupKey:     dev.DisplayName,
-			SortKey:      usbFirstSortKey(dev.DisplayName, dev.USB),
+			DedupKey:     deviceDedupKey(dev.HostKey(), dev.DisplayName),
+			SortKey:      deviceSortKey(dev.DisplayName, dev.USB),
 			Insecure:     insecure,
 			Value: &pickerEntry{mergedDevice: &models.DiscoveredDevice{
 				DisplayName:     dev.DisplayName,
@@ -2093,7 +2148,8 @@ func pickDevice(ctx context.Context, excludeProviders map[string]bool, excludeBl
 						}
 						items = append(items, tui.PickerItem{
 							Name:         bleDevices[i].DisplayName,
-							DedupKey:     bleDevices[i].DisplayName,
+							DedupKey:     deviceDedupKey(bleDevices[i].HostKey(), bleDevices[i].DisplayName),
+							SortKey:      deviceSortKey(bleDevices[i].DisplayName, ""),
 							Type:         connType,
 							Address:      bleDevices[i].Address,
 							AgentVersion: bleDevices[i].AgentVersion,

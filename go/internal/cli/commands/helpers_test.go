@@ -20,27 +20,6 @@ import (
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
-func TestParseYesNoAnswer(t *testing.T) {
-	tests := []struct {
-		answer     string
-		defaultYes bool
-		want       bool
-	}{
-		{"", true, true},
-		{"\n", true, true},
-		{"", false, false},
-		{"y", false, true},
-		{" YES \n", false, true},
-		{"n", true, false},
-		{"no", true, false},
-	}
-	for _, tt := range tests {
-		if got := parseYesNoAnswer(tt.answer, tt.defaultYes); got != tt.want {
-			t.Fatalf("parseYesNoAnswer(%q, %t) = %t, want %t", tt.answer, tt.defaultYes, got, tt.want)
-		}
-	}
-}
-
 // ── hostPort ────────────────────────────────────────────────────────
 
 func TestHostPort(t *testing.T) {
@@ -405,6 +384,47 @@ func TestResolveLANAgentVersionAllowsMTLSHandshakeTime(t *testing.T) {
 	}
 	if resp.GetVersion() != "9.9.9" {
 		t.Fatalf("resolveLANAgentVersion() version = %q, want %q", resp.GetVersion(), "9.9.9")
+	}
+}
+
+// TestMTLSBudgetInvariants guards the timeout-budget relationships explained
+// in the comments on mtlsProbeTimeout/lanAddressProbeTimeout, so a future edit
+// can't silently invert or shrink them below what a slow post-quantum ML-DSA
+// handshake on constrained hardware (Jetson, Raspberry Pi) needs. Regressing
+// any of these was the direct cause of two prior flakes: provisioned LAN rows
+// stuck on the failure glyph (PR #1297/#1309) and, most recently, direct
+// `wendy device` commands intermittently reporting a spurious "Unauthorized"
+// for a device that was actually up and holding a valid certificate.
+func TestMTLSBudgetInvariants(t *testing.T) {
+	const minTolerableHandshake = 6 * time.Second
+
+	if mtlsProbeTimeout < minTolerableHandshake {
+		t.Fatalf("mtlsProbeTimeout = %s, want >= %s to tolerate a slow ML-DSA handshake on constrained hardware", mtlsProbeTimeout, minTolerableHandshake)
+	}
+	if lanAddressProbeTimeout <= mtlsProbeTimeout {
+		t.Fatalf("lanAddressProbeTimeout (%s) must be strictly greater than mtlsProbeTimeout (%s), or a single mTLS probe can be cancelled before it answers", lanAddressProbeTimeout, mtlsProbeTimeout)
+	}
+	if headroom := lanAddressProbeTimeout - mtlsProbeTimeout; headroom < time.Second {
+		t.Fatalf("lanAddressProbeTimeout headroom over mtlsProbeTimeout = %s, want >= 1s so the two budgets can't converge to the point of flaking again", headroom)
+	}
+
+	// A truly-unreachable device must still fail in a bounded time, not
+	// minutes. Note the total is NOT a fixed wall-clock number: a single
+	// connectWithAutoTLSDiagnostics attempt probes 2 address candidates
+	// (plaintextAddr and port+1) for *each* stored certificate and then makes
+	// one agentPlaintextProbeTimeout-bounded plaintext probe, so the true worst
+	// case scales with len(loadAllCLICerts()). retryOnHandshakeTimeout only
+	// multiplies that by (maxHandshakeTimeoutRetries+1). Guard the two factors
+	// this change actually controls: the retry multiplier stays small, and a
+	// single-certificate attempt (the common case) stays well under a minute.
+	if maxHandshakeTimeoutRetries > 3 {
+		t.Fatalf("maxHandshakeTimeoutRetries = %d, want <= 3 so a genuinely-down device isn't retried into a multi-minute stall", maxHandshakeTimeoutRetries)
+	}
+	const maxSanePerCertBudget = 60 * time.Second
+	singleCertAttempt := 2*mtlsProbeTimeout + agentPlaintextProbeTimeout
+	worstCasePerCert := time.Duration(maxHandshakeTimeoutRetries+1) * singleCertAttempt
+	if worstCasePerCert > maxSanePerCertBudget {
+		t.Fatalf("worst-case per-certificate direct-connect budget = %s ((retries+1) * (2*mtlsProbeTimeout + agentPlaintextProbeTimeout)), want <= %s so a genuinely-down device with one stored cert fails in bounded time", worstCasePerCert, maxSanePerCertBudget)
 	}
 }
 

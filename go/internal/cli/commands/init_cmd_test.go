@@ -89,6 +89,96 @@ func TestResolveInitAppID_TrimsExplicitFlag(t *testing.T) {
 	}
 }
 
+// stubInitDestPrompts replaces the TTY detection and the destination/name
+// prompts used by resolveInitDestAndID with canned answers.
+func stubInitDestPrompts(t *testing.T, interactive, useCurrentDir bool, projectName string) {
+	t.Helper()
+	origInteractive := isInteractiveTerminalFn
+	origConfirm := confirmInitCurrentDir
+	origPrompt := promptInitProjectName
+	isInteractiveTerminalFn = func() bool { return interactive }
+	confirmInitCurrentDir = func() (bool, error) { return useCurrentDir, nil }
+	promptInitProjectName = func() (string, error) { return projectName, nil }
+	t.Cleanup(func() {
+		isInteractiveTerminalFn = origInteractive
+		confirmInitCurrentDir = origConfirm
+		promptInitProjectName = origPrompt
+	})
+}
+
+func TestResolveInitDestAndID_ExplicitAppIDCreatesSubdirectory(t *testing.T) {
+	stubInitDestPrompts(t, false, false, "")
+
+	destDir, appID, err := resolveInitDestAndID("/tmp/workspace", nil, initOptions{
+		appID:    "demo-app",
+		appIDSet: true,
+	})
+	if err != nil {
+		t.Fatalf("resolveInitDestAndID: %v", err)
+	}
+	if destDir != filepath.Join("/tmp/workspace", "demo-app") || appID != "demo-app" {
+		t.Fatalf("destDir, appID = %q, %q, want subdirectory demo-app", destDir, appID)
+	}
+}
+
+// The WDY-1805 repro: partial flags like --target must not suppress the
+// destination and name questions on a TTY.
+func TestResolveInitDestAndID_PromptsDespiteDirectiveFlags(t *testing.T) {
+	stubInitDestPrompts(t, true, false, "demo-app")
+
+	destDir, appID, err := resolveInitDestAndID("/tmp/Build", nil, initOptions{
+		targetSet:   true,
+		languageSet: true,
+		templateSet: true,
+	})
+	if err != nil {
+		t.Fatalf("resolveInitDestAndID: %v", err)
+	}
+	if destDir != filepath.Join("/tmp/Build", "demo-app") || appID != "demo-app" {
+		t.Fatalf("destDir, appID = %q, %q, want prompted demo-app subdirectory", destDir, appID)
+	}
+}
+
+func TestResolveInitDestAndID_CurrentDirUsesValidatedBasename(t *testing.T) {
+	stubInitDestPrompts(t, true, true, "")
+
+	destDir, appID, err := resolveInitDestAndID("/tmp/demo-app", nil, initOptions{targetSet: true})
+	if err != nil {
+		t.Fatalf("resolveInitDestAndID: %v", err)
+	}
+	if destDir != "/tmp/demo-app" || appID != "demo-app" {
+		t.Fatalf("destDir, appID = %q, %q, want current dir demo-app", destDir, appID)
+	}
+}
+
+func TestResolveInitDestAndID_CurrentDirRejectsInvalidBasename(t *testing.T) {
+	stubInitDestPrompts(t, true, true, "")
+
+	_, _, err := resolveInitDestAndID("/tmp/Demo App", nil, initOptions{})
+	if err == nil {
+		t.Fatal("expected invalid directory basename to fail as app ID")
+	}
+	if !strings.Contains(err.Error(), `"Demo App"`) || !strings.Contains(err.Error(), "--app-id") {
+		t.Fatalf("error = %q, want mention of basename and --app-id", err)
+	}
+}
+
+func TestResolveInitDestAndID_NonInteractiveWithoutAppIDFails(t *testing.T) {
+	stubInitDestPrompts(t, false, false, "")
+
+	_, _, err := resolveInitDestAndID("/tmp/Build", nil, initOptions{
+		targetSet:   true,
+		languageSet: true,
+		templateSet: true,
+	})
+	if err == nil {
+		t.Fatal("expected non-interactive template init without app ID to fail")
+	}
+	if !strings.Contains(err.Error(), "--app-id") {
+		t.Fatalf("error = %q, want mention of --app-id", err)
+	}
+}
+
 func TestPathHasPrefix_IsCaseSensitiveOnUnix(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Windows paths are intentionally compared case-insensitively")

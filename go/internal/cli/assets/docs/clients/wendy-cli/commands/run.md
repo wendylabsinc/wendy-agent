@@ -41,6 +41,10 @@ wendy --device my-wendy.local run
 
 Wendy automatically checks for the `container` CLI and offers to install it via Homebrew if missing, and starts the `system` and `builder` services if they are not running.
 
+If Apple Container reports an empty build context for a project under `/tmp` or
+`/private/tmp`, Wendy returns an error with the known workaround: move the
+project to a non-`/tmp` directory and retry.
+
 For local-only Dockerfile or Containerfile runs on the Mac itself, use `wendy run --device
 apple-container` instead. Compose projects still require the Docker provider for
 local runs, but compose service builds targeting a WendyOS device can use
