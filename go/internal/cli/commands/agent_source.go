@@ -2,7 +2,10 @@ package commands
 
 import (
 	"archive/tar"
+	"bytes"
 	"compress/gzip"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -114,4 +117,82 @@ func resolveAgentVersion(nightly bool) (version, source string, err error) {
 		return "", "", err
 	}
 	return rel.TagName, "github", nil
+}
+
+func downloadAgentFromGCS(baseURL string, m *agentManifest, arch string, nightly bool) ([]byte, string, error) {
+	version, err := agentVersionFromManifest(m, nightly)
+	if err != nil {
+		return nil, "", err
+	}
+	ver, ok := m.Versions[version]
+	if !ok {
+		return nil, "", fmt.Errorf("agent manifest missing version entry %q", version)
+	}
+	art, ok := ver.Artifacts[arch]
+	if !ok || art.Path == "" {
+		return nil, "", fmt.Errorf("agent manifest has no linux/%s artifact for version %s", arch, version)
+	}
+
+	client := &http.Client{Timeout: 5 * time.Minute}
+	resp, err := client.Get(baseURL + "/" + art.Path)
+	if err != nil {
+		return nil, "", fmt.Errorf("downloading agent tarball: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, "", fmt.Errorf("agent tarball returned status %d", resp.StatusCode)
+	}
+
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, "", fmt.Errorf("reading agent tarball: %w", err)
+	}
+	if art.Checksum != "" {
+		sum := sha256.Sum256(raw)
+		if got := hex.EncodeToString(sum[:]); got != art.Checksum {
+			return nil, "", fmt.Errorf("agent tarball checksum mismatch: manifest %s, got %s", art.Checksum, got)
+		}
+	}
+	bin, err := extractAgentFromTarGz(bytes.NewReader(raw))
+	if err != nil {
+		return nil, "", err
+	}
+	return bin, version, nil
+}
+
+// resolveAgentBinary returns the wendy-agent binary for linux/<arch>, preferring
+// GCS (to avoid GitHub rate limits) and falling back to GitHub releases on any
+// GCS miss. version is the resolved version tag; source is "gcs" or "github".
+func resolveAgentBinary(arch string, nightly bool) (binary []byte, version, source string, err error) {
+	if m, mErr := fetchAgentManifest(); mErr == nil {
+		if bin, ver, dErr := downloadAgentFromGCS(gcsBaseURL, m, arch, nightly); dErr == nil {
+			return bin, ver, "gcs", nil
+		} else {
+			fmt.Fprintf(os.Stderr, "GCS agent download failed (%v); falling back to GitHub\n", dErr)
+		}
+	} else {
+		fmt.Fprintf(os.Stderr, "GCS agent manifest fetch failed (%v); falling back to GitHub\n", mErr)
+	}
+
+	rel, err := fetchAgentRelease(nightly)
+	if err != nil {
+		return nil, "", "", err
+	}
+	assetPrefix := fmt.Sprintf("wendy-agent-linux-%s-", arch)
+	var matched *githubReleaseAsset
+	for i := range rel.Assets {
+		a := rel.Assets[i]
+		if strings.HasPrefix(a.Name, assetPrefix) && strings.HasSuffix(a.Name, ".tar.gz") {
+			matched = &a
+			break
+		}
+	}
+	if matched == nil {
+		return nil, "", "", fmt.Errorf("no asset for linux/%s in release %s", arch, rel.TagName)
+	}
+	bin, err := downloadAgentBinary(*matched)
+	if err != nil {
+		return nil, "", "", err
+	}
+	return bin, rel.TagName, "github", nil
 }

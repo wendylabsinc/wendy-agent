@@ -4,6 +4,9 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -120,5 +123,64 @@ func TestAgentVersionFromManifestEmptyIsError(t *testing.T) {
 	}
 	if _, err := agentVersionFromManifest(&agentManifest{Latest: "x"}, true); err == nil {
 		t.Fatal("expected error when no nightly version present")
+	}
+}
+
+func TestDownloadAgentFromGCS(t *testing.T) {
+	payload := []byte("agent-binary-bytes")
+	tgz := makeAgentTarGz(t, "wendy-agent-linux-amd64/wendy-agent", payload)
+	sum := sha256.Sum256(tgz)
+	checksum := hex.EncodeToString(sum[:])
+
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/agent/manifest.json":
+			fmt.Fprintf(w, `{"latest":"v1","versions":{"v1":{"is_nightly":false,"artifacts":{"amd64":{"path":"agent/v1/a.tar.gz","checksum":%q,"size_bytes":%d}}}}}`, checksum, len(tgz))
+		case "/agent/v1/a.tar.gz":
+			w.Write(tgz)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	m, err := fetchAgentManifestFrom(srv.URL)
+	if err != nil {
+		t.Fatalf("fetch manifest: %v", err)
+	}
+	bin, ver, err := downloadAgentFromGCS(srv.URL, m, "amd64", false)
+	if err != nil {
+		t.Fatalf("downloadAgentFromGCS: %v", err)
+	}
+	if ver != "v1" || !bytes.Equal(bin, payload) {
+		t.Fatalf("ver=%q bin=%q", ver, bin)
+	}
+}
+
+func TestDownloadAgentFromGCSMissingArch(t *testing.T) {
+	m := &agentManifest{Latest: "v1", Versions: map[string]agentManifestVersion{
+		"v1": {Artifacts: map[string]agentManifestArtifact{"amd64": {Path: "p"}}},
+	}}
+	if _, _, err := downloadAgentFromGCS("http://unused", m, "arm64", false); err == nil {
+		t.Fatal("expected error for missing arch")
+	}
+}
+
+func TestDownloadAgentFromGCSChecksumMismatch(t *testing.T) {
+	tgz := makeAgentTarGz(t, "wendy-agent-linux-amd64/wendy-agent", []byte("x"))
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/agent/v1/a.tar.gz" {
+			w.Write(tgz)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+	m := &agentManifest{Latest: "v1", Versions: map[string]agentManifestVersion{
+		"v1": {Artifacts: map[string]agentManifestArtifact{"amd64": {Path: "agent/v1/a.tar.gz", Checksum: "deadbeef"}}},
+	}}
+	if _, _, err := downloadAgentFromGCS(srv.URL, m, "amd64", false); err == nil {
+		t.Fatal("expected checksum mismatch error")
 	}
 }
