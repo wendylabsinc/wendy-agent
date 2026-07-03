@@ -599,7 +599,7 @@ func generatePythonDockerfile(dir string, debug bool) (string, error) {
 	return dockerfilePath, nil
 }
 
-func buildSwiftContainerImage(ctx context.Context, dir, product, registryAddr, architecture string, swiftUseMTLS bool, toolchainStdout, toolchainStderr io.Writer) error {
+func buildSwiftContainerImage(ctx context.Context, dir, product, registryAddr, architecture string, swiftUseMTLS, debug bool, toolchainStdout, toolchainStderr io.Writer) error {
 	if err := ensureContainerPlugin(dir); err != nil {
 		return err
 	}
@@ -609,10 +609,21 @@ func buildSwiftContainerImage(ctx context.Context, dir, product, registryAddr, a
 		return err
 	}
 
+	// Build release by default so on-device apps are optimized; debug only on
+	// explicit opt-in (matches the native swift-build path). The container plugin
+	// builds with `configuration: .inherit`, i.e. whatever `swift package` is told
+	// here — without this it defaulted to debug, shipping unoptimized binaries
+	// (e.g. a software renderer ran ~30x slower on device).
+	buildConfig := "release"
+	if debug {
+		buildConfig = "debug"
+	}
+
 	// registryAddr is always a plain-HTTP address: either the device's own
 	// unprovisioned registry or a local proxy that handles TLS on our behalf.
 	swiftArgs := []string{
 		"package",
+		"-c", buildConfig,
 		"--swift-sdk=" + sdk,
 		"--allow-network-connections=all",
 		"build-container-image",
