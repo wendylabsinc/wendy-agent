@@ -144,7 +144,10 @@ func TestReconcileRoundTrip_LabelPersistsAcrossSimulatedReboot(t *testing.T) {
 	// Step 2: simulate the agent restarting. A brand new Client has an empty
 	// appIsolation cache, exactly like the real agent after a device reboot.
 	c := &Client{logger: zap.NewNop(), appIsolation: make(map[string]string)}
-	if got := c.getIsolation(appID); got != "" {
+	c.mu.Lock()
+	got := c.getIsolation(appID)
+	c.mu.Unlock()
+	if got != "" {
 		t.Fatalf("precondition: fresh Client must start with no cached isolation, got %q", got)
 	}
 
