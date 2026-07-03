@@ -30,18 +30,26 @@ type UpdaterResult struct {
 }
 
 // Gate decides, at agent startup, whether a pending A/B update is committed or
-// rolled back. The update backend (wendyos-update) runs its own health gate
-// inside commit (/etc/wendyos-update/health.d), so the gate performs no
-// healthchecks itself: it drives commit and acts on the verdict, rolling back
-// when the backend rejects it. All side effects are injected so the decision
-// logic is testable.
+// rolled back. For a backend that runs its own health gate inside commit
+// (wendyos-update, DelegatedHealth) it acts on the commit verdict; otherwise
+// it bases the decision on agent-run healthchecks of critical services. All
+// side effects are injected so the decision logic is testable.
 type Gate struct {
 	Logger   *zap.Logger
 	StateDir string
+	Services []CriticalService
+	Checker  *Checker
 	// Commit runs `<backend> commit`.
 	Commit func() UpdaterResult
 	// Rollback runs `<backend> rollback`.
 	Rollback func() UpdaterResult
+	// DelegatedHealth is true when the update backend runs its own post-commit
+	// health gate (wendyos-update runs /etc/wendyos-update/health.d inside
+	// commit). The gate then skips its own CheckAll and lets the commit decide:
+	// a commit failure is the backend's health verdict, which drives the
+	// rollback. A backend without such a gate (false) keeps the agent-run
+	// CheckAll.
+	DelegatedHealth bool
 	// UpdaterLabel names the backend binary in user-facing notes
 	// (e.g. "wendyos-update"). Empty defaults to "wendyos-update".
 	UpdaterLabel string
@@ -55,9 +63,10 @@ type Gate struct {
 	Now func() time.Time
 }
 
-// Run executes the commit-or-rollback decision. It blocks until the backend's
-// commit (or rollback) returns; it never panics, and all errors are logged.
-func (g *Gate) Run() {
+// Run executes the commit-or-rollback decision. It blocks until the decision
+// is made: milliseconds on healthy boots, up to the largest service timeout
+// when services are unhealthy. It never panics; all errors are logged.
+func (g *Gate) Run(ctx context.Context) {
 	marker, found, err := ReadPendingMarker(g.StateDir)
 	if err != nil {
 		g.Logger.Warn("Pending OS update marker is unreadable, discarding it", zap.Error(err))
@@ -101,19 +110,71 @@ func (g *Gate) Run() {
 		CreatedAt:    g.now(),
 	}
 
-	g.Logger.Info("Pending OS update detected; delegating healthchecks to the updater's commit",
+	if g.DelegatedHealth {
+		// The backend (wendyos-update) runs /etc/wendyos-update/health.d inside
+		// `commit`, so the commit itself is the health verdict. Skip the agent's
+		// CheckAll and act on the commit result; a rejection rolls back.
+		g.Logger.Info("Pending OS update detected; delegating healthchecks to the updater's commit",
+			zap.String("old_os_version", marker.OldOSVersion))
+		g.commitDelegated(record)
+		return
+	}
+
+	g.Logger.Info("Pending OS update detected, healthchecking critical services before commit",
 		zap.String("old_os_version", marker.OldOSVersion))
+	results := g.Checker.CheckAll(ctx, g.Services)
+	record.Services = results
+
+	if failed := failedUnits(results); len(failed) > 0 {
+		// Log the full results too: if persisting the record fails, this
+		// journal line is the only evidence of why the device rolled back.
+		g.Logger.Error("Critical services unhealthy after OS update, rolling back",
+			zap.Strings("failed_units", failed), zap.Any("services", results))
+		g.rollBack(record)
+		return
+	}
+
+	g.Logger.Info("Critical services healthy after OS update, committing")
 	g.commit(record)
 }
 
-// commit drives the backend's commit for a pending update and interprets the
-// verdict. The backend runs its own health gate inside commit (wendyos-update
-// runs /etc/wendyos-update/health.d), so a commit the updater *rejected* is
-// the health verdict: it rolls back rather than retrying. The two "no verdict
-// was rendered" cases — a missing binary and the agent's own commit timeout —
-// keep the marker and retry instead, so a transient early-boot hiccup never
-// reverts a possibly-healthy slot.
 func (g *Gate) commit(record UpdateResult) {
+	res := g.Commit()
+	switch res.Status {
+	case UpdaterOK:
+		record.Outcome = OutcomeCommitted
+		record.FinalizedAt = g.now()
+		g.writeResult(record)
+		g.clearMarker()
+		g.Logger.Info("Committed OS update", zap.String("output", res.Output))
+	case UpdaterNothingPending:
+		// Already committed (e.g. by a previous agent start that died before
+		// clearing the marker). Treat as success.
+		record.Outcome = OutcomeCommitted
+		record.FinalizedAt = g.now()
+		record.Note = g.updaterLabel() + " reported nothing to commit (update was already committed)"
+		g.writeResult(record)
+		g.clearMarker()
+	default:
+		// Keep the marker so the commit is retried on the next agent start;
+		// the staleness window caps how long that goes on. Don't reboot: an
+		// uncommitted update means the bootloader reverts on the next reboot,
+		// and rebooting here would throw away a healthy slot.
+		record.Outcome = OutcomeCommitFailed
+		record.Note = updaterFailureReason(g.updaterLabel(), "commit", res)
+		g.writeResult(record)
+		g.Logger.Error("Failed to commit OS update", zap.String("reason", record.Note))
+	}
+}
+
+// commitDelegated handles the commit/rollback decision for a backend that runs
+// its own health gate inside `commit` (wendyos-update runs
+// /etc/wendyos-update/health.d). It diverges from commit() only in the failure
+// branch: a commit the updater *rejected* is the health verdict, so it rolls
+// back rather than retrying. The two "no verdict was rendered" cases — a missing
+// binary and the agent's own commit timeout — keep the marker and retry instead,
+// so a transient early-boot hiccup never reverts a possibly-healthy slot.
+func (g *Gate) commitDelegated(record UpdateResult) {
 	res := g.Commit()
 	switch res.Status {
 	case UpdaterOK:
@@ -275,6 +336,16 @@ func (g *Gate) updaterLabel() string {
 		return g.UpdaterLabel
 	}
 	return "wendyos-update"
+}
+
+func failedUnits(results []ServiceResult) []string {
+	var failed []string
+	for _, r := range results {
+		if r.Status == StatusFailed {
+			failed = append(failed, r.Unit)
+		}
+	}
+	return failed
 }
 
 func updaterFailureReason(label, subcommand string, res UpdaterResult) string {

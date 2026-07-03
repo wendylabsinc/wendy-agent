@@ -1,8 +1,8 @@
-// Package oshealth implements the post-OS-update commit-or-rollback decision
-// for pending A/B updates. The update backend runs its own health gate inside
-// commit (wendyos-update runs /etc/wendyos-update/health.d); this package
-// tracks the pending-update marker and persisted result across the reboot and
-// interprets the backend's commit/rollback verdict.
+// Package oshealth implements post-OS-update healthchecks for critical
+// system services and the commit-or-rollback decision for pending A/B
+// updates. A backend that runs its own health gate inside commit
+// (wendyos-update runs /etc/wendyos-update/health.d) delegates the verdict to
+// its commit result instead.
 package oshealth
 
 import (

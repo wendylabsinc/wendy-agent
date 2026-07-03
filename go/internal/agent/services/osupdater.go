@@ -45,6 +45,12 @@ type osUpdater interface {
 	commit() oshealth.UpdaterResult
 	// rollback reverts an uncommitted A/B update.
 	rollback() oshealth.UpdaterResult
+	// delegatesHealthcheck reports whether the backend runs its own post-commit
+	// health gate (wendyos-update runs /etc/wendyos-update/health.d inside
+	// commit), so the agent's boot-time gate must NOT run its own CheckAll for
+	// it. A backend without such a gate (false) keeps the agent gate owning the
+	// healthchecks.
+	delegatesHealthcheck() bool
 	// commitCommand is the binary name surfaced in user-facing commit/rollback
 	// failure notes (e.g. "wendyos-update").
 	commitCommand() string

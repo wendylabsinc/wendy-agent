@@ -14,7 +14,10 @@ import (
 
 var gateNow = time.Date(2026, 6, 9, 12, 0, 0, 0, time.UTC)
 
-// gateFixture wires a Gate with recorders for every side effect.
+// gateFixture wires a Gate with recorders for every side effect. It defaults
+// to the delegated-health path (the real wendyos-update backend, the only
+// registered backend): tests that need the agent's own CheckAll instead call
+// useAgentHealthchecks.
 type gateFixture struct {
 	gate     *Gate
 	dir      string
@@ -29,8 +32,9 @@ func newGateFixture(t *testing.T, commitResult, rollbackResult UpdaterResult) *g
 		dir: t.TempDir(),
 	}
 	fx.gate = &Gate{
-		Logger:   zap.NewNop(),
-		StateDir: fx.dir,
+		Logger:          zap.NewNop(),
+		StateDir:        fx.dir,
+		DelegatedHealth: true,
 		Commit: func() UpdaterResult {
 			fx.commits++
 			return commitResult
@@ -48,6 +52,21 @@ func newGateFixture(t *testing.T, commitResult, rollbackResult UpdaterResult) *g
 		Now:       func() time.Time { return gateNow },
 	}
 	return fx
+}
+
+// useAgentHealthchecks switches a fixture's gate to the non-delegated path:
+// the agent runs CheckAll against the given fake systemd responses before
+// deciding commit vs rollback. Returns the fake so tests can assert call
+// counts or mutate sequences mid-test.
+func (fx *gateFixture) useAgentHealthchecks(sequences map[string][]map[string]string, services []CriticalService) *fakeSystemctl {
+	systemd := &fakeSystemctl{sequences: sequences}
+	checker := NewChecker(zap.NewNop())
+	checker.PollInterval = 5 * time.Millisecond
+	checker.SystemctlShow = systemd.show
+	fx.gate.DelegatedHealth = false
+	fx.gate.Services = services
+	fx.gate.Checker = checker
+	return systemd
 }
 
 func (fx *gateFixture) writeFreshMarker(t *testing.T) {
@@ -83,7 +102,7 @@ func (fx *gateFixture) readResult(t *testing.T) (UpdateResult, bool) {
 func TestGateNoMarkerPlainCommit(t *testing.T) {
 	fx := newGateFixture(t, UpdaterResult{Status: UpdaterNothingPending}, UpdaterResult{})
 
-	fx.gate.Run()
+	fx.gate.Run(context.Background())
 
 	if fx.commits != 1 {
 		t.Errorf("commits = %d, want 1", fx.commits)
@@ -109,7 +128,7 @@ func TestGateNoMarkerFinalizesRolledBackRecord(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	fx.gate.Run()
+	fx.gate.Run(context.Background())
 
 	rec, found := fx.readResult(t)
 	if !found {
@@ -138,7 +157,7 @@ func TestGateNoMarkerDoesNotRefinalize(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	fx.gate.Run()
+	fx.gate.Run(context.Background())
 
 	rec, _ := fx.readResult(t)
 	if !rec.FinalizedAt.Equal(finalized) {
@@ -153,7 +172,7 @@ func TestGateStaleMarker(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	fx.gate.Run()
+	fx.gate.Run(context.Background())
 
 	if fx.markerExists(t) {
 		t.Error("stale marker should be cleared")
@@ -175,7 +194,7 @@ func TestGateCorruptMarker(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	fx.gate.Run()
+	fx.gate.Run(context.Background())
 
 	if fx.markerExists(t) {
 		t.Error("corrupt marker should be cleared")
@@ -196,7 +215,7 @@ func TestGateSameBootLeavesMarkerUntouched(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	fx.gate.Run()
+	fx.gate.Run(context.Background())
 
 	if fx.commits != 0 || fx.rollback != 0 || fx.reboots != 0 {
 		t.Errorf("commits=%d rollback=%d reboots=%d, want 0/0/0 before the reboot",
@@ -225,7 +244,7 @@ func TestGateStaleSameBootLeavesMarker(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	fx.gate.Run()
+	fx.gate.Run(context.Background())
 
 	if fx.commits != 0 || fx.rollback != 0 || fx.reboots != 0 {
 		t.Errorf("commits=%d rollback=%d reboots=%d, want 0/0/0: a never-booted slot must not be committed",
@@ -236,13 +255,280 @@ func TestGateStaleSameBootLeavesMarker(t *testing.T) {
 	}
 }
 
-// The following three tests exercise every outcome branch of rollBack():
-// UpdaterNothingPending and UpdaterUnavailable here, UpdaterError (default) in
+// The following tests exercise the agent-run CheckAll path used when the
+// backend does not delegate healthchecking to its own commit.
+
+func TestGateDifferentBootRunsHealthchecks(t *testing.T) {
+	fx := newGateFixture(t, UpdaterResult{Status: UpdaterOK}, UpdaterResult{})
+	fx.useAgentHealthchecks(map[string][]map[string]string{
+		"a.service": {loaded("active")},
+		"b.service": {loaded("active")},
+	}, []CriticalService{
+		{Unit: "a.service", Timeout: 50 * time.Millisecond},
+		{Unit: "b.service", Timeout: 50 * time.Millisecond},
+	})
+	err := WritePendingMarker(fx.dir, PendingMarker{
+		CreatedAt:    gateNow.Add(-2 * time.Minute),
+		OldOSVersion: "WendyOS-0.10.4",
+		BootID:       "boot-before-update",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	fx.gate.Run(context.Background())
+
+	if fx.commits != 1 {
+		t.Errorf("commits = %d, want 1", fx.commits)
+	}
+	rec, found := fx.readResult(t)
+	if !found || rec.Outcome != OutcomeCommitted {
+		t.Fatalf("expected committed record, got found=%v %+v", found, rec)
+	}
+}
+
+func TestGateHealthyCommitOK(t *testing.T) {
+	fx := newGateFixture(t, UpdaterResult{Status: UpdaterOK}, UpdaterResult{})
+	fx.useAgentHealthchecks(map[string][]map[string]string{
+		"a.service": {loaded("active")},
+		"b.service": {loaded("active")},
+	}, []CriticalService{
+		{Unit: "a.service", Timeout: 50 * time.Millisecond},
+		{Unit: "b.service", Timeout: 50 * time.Millisecond},
+	})
+	fx.writeFreshMarker(t)
+
+	fx.gate.Run(context.Background())
+
+	if fx.commits != 1 || fx.rollback != 0 || fx.reboots != 0 {
+		t.Errorf("commits=%d rollback=%d reboots=%d, want 1/0/0", fx.commits, fx.rollback, fx.reboots)
+	}
+	if fx.markerExists(t) {
+		t.Error("marker should be cleared after commit")
+	}
+	rec, found := fx.readResult(t)
+	if !found {
+		t.Fatal("expected a committed record")
+	}
+	if rec.Outcome != OutcomeCommitted {
+		t.Errorf("Outcome = %q, want committed", rec.Outcome)
+	}
+	if rec.OldOSVersion != "WendyOS-0.10.4" || rec.NewOSVersion != "WendyOS-0.11.0" {
+		t.Errorf("versions: %+v", rec)
+	}
+	if len(rec.Services) != 2 || rec.Services[0].Status != StatusHealthy {
+		t.Errorf("services: %+v", rec.Services)
+	}
+	if !rec.CreatedAt.Equal(gateNow) || rec.FinalizedAt.IsZero() {
+		t.Errorf("timestamps: created=%v finalized=%v", rec.CreatedAt, rec.FinalizedAt)
+	}
+}
+
+func TestGateHealthyCommitNothingPending(t *testing.T) {
+	fx := newGateFixture(t, UpdaterResult{Status: UpdaterNothingPending}, UpdaterResult{})
+	fx.useAgentHealthchecks(map[string][]map[string]string{
+		"a.service": {loaded("active")},
+		"b.service": {loaded("active")},
+	}, []CriticalService{
+		{Unit: "a.service", Timeout: 50 * time.Millisecond},
+		{Unit: "b.service", Timeout: 50 * time.Millisecond},
+	})
+	fx.writeFreshMarker(t)
+
+	fx.gate.Run(context.Background())
+
+	if fx.markerExists(t) {
+		t.Error("marker should be cleared")
+	}
+	rec, found := fx.readResult(t)
+	if !found || rec.Outcome != OutcomeCommitted {
+		t.Fatalf("expected committed record, got found=%v %+v", found, rec)
+	}
+	if rec.Note == "" {
+		t.Error("expected a note explaining there was nothing to commit")
+	}
+}
+
+func TestGateHealthyCommitError(t *testing.T) {
+	fx := newGateFixture(t,
+		UpdaterResult{Status: UpdaterError, Err: errors.New("boom"), Output: "commit exploded"},
+		UpdaterResult{})
+	fx.useAgentHealthchecks(map[string][]map[string]string{
+		"a.service": {loaded("active")},
+		"b.service": {loaded("active")},
+	}, []CriticalService{
+		{Unit: "a.service", Timeout: 50 * time.Millisecond},
+		{Unit: "b.service", Timeout: 50 * time.Millisecond},
+	})
+	fx.writeFreshMarker(t)
+
+	fx.gate.Run(context.Background())
+
+	if !fx.markerExists(t) {
+		t.Error("marker should be kept so the commit is retried next start")
+	}
+	if fx.reboots != 0 {
+		t.Error("must not reboot on commit failure")
+	}
+	rec, found := fx.readResult(t)
+	if !found || rec.Outcome != OutcomeCommitFailed {
+		t.Fatalf("expected commit_failed record, got found=%v %+v", found, rec)
+	}
+	if !strings.Contains(rec.Note, "boom") && !strings.Contains(rec.Note, "commit exploded") {
+		t.Errorf("note should carry the commit error, got %q", rec.Note)
+	}
+}
+
+func TestGateAgentHealthcheckRollbackOK(t *testing.T) {
+	fx := newGateFixture(t, UpdaterResult{}, UpdaterResult{Status: UpdaterOK})
+	systemd := fx.useAgentHealthchecks(map[string][]map[string]string{
+		"a.service": {loaded("active")},
+		"b.service": {{
+			"LoadState": "loaded", "ActiveState": "failed", "SubState": "exited",
+			"Result": "exit-code", "UnitFileState": "enabled",
+		}},
+	}, []CriticalService{
+		{Unit: "a.service", Timeout: 50 * time.Millisecond},
+		{Unit: "b.service", Timeout: 50 * time.Millisecond},
+	})
+	fx.writeFreshMarker(t)
+
+	fx.gate.Run(context.Background())
+
+	if systemd == nil {
+		t.Fatal("expected a fake systemd")
+	}
+	if fx.commits != 0 {
+		t.Error("must not commit when a healthcheck failed")
+	}
+	if fx.rollback != 1 || fx.reboots != 1 {
+		t.Errorf("rollback=%d reboots=%d, want 1/1", fx.rollback, fx.reboots)
+	}
+	if fx.markerExists(t) {
+		t.Error("marker should be cleared before rebooting into the old slot")
+	}
+	rec, found := fx.readResult(t)
+	if !found || rec.Outcome != OutcomeRolledBack {
+		t.Fatalf("expected rolled_back record, got found=%v %+v", found, rec)
+	}
+	if !rec.FinalizedAt.IsZero() {
+		t.Error("rolled_back record must not be finalized until the old slot boots")
+	}
+	var failed *ServiceResult
+	for i := range rec.Services {
+		if rec.Services[i].Status == StatusFailed {
+			failed = &rec.Services[i]
+		}
+	}
+	if failed == nil || failed.Unit != "b.service" || !strings.Contains(failed.Reason, "timed out") {
+		t.Errorf("failure details missing: %+v", rec.Services)
+	}
+}
+
+func TestGateAgentHealthcheckRollbackNothingPending(t *testing.T) {
+	fx := newGateFixture(t, UpdaterResult{}, UpdaterResult{Status: UpdaterNothingPending})
+	fx.useAgentHealthchecks(map[string][]map[string]string{
+		"a.service": {loaded("inactive")},
+		"b.service": {loaded("inactive")},
+	}, []CriticalService{
+		{Unit: "a.service", Timeout: 50 * time.Millisecond},
+		{Unit: "b.service", Timeout: 50 * time.Millisecond},
+	})
+	fx.writeFreshMarker(t)
+
+	fx.gate.Run(context.Background())
+
+	if fx.reboots != 0 {
+		t.Error("must not reboot when there is nothing to roll back (no slot change would happen)")
+	}
+	rec, found := fx.readResult(t)
+	if !found || rec.Outcome != OutcomeRollbackFailed {
+		t.Fatalf("expected rollback_failed record, got found=%v %+v", found, rec)
+	}
+	if !strings.Contains(rec.RollbackError, "nothing to roll back") {
+		t.Errorf("RollbackError = %q", rec.RollbackError)
+	}
+}
+
+func TestGateAgentHealthcheckRollbackError(t *testing.T) {
+	fx := newGateFixture(t, UpdaterResult{},
+		UpdaterResult{Status: UpdaterError, Err: errors.New("rollback exploded")})
+	fx.useAgentHealthchecks(map[string][]map[string]string{
+		"a.service": {loaded("inactive")},
+		"b.service": {loaded("inactive")},
+	}, []CriticalService{
+		{Unit: "a.service", Timeout: 50 * time.Millisecond},
+		{Unit: "b.service", Timeout: 50 * time.Millisecond},
+	})
+	fx.writeFreshMarker(t)
+
+	fx.gate.Run(context.Background())
+
+	if fx.reboots != 1 {
+		t.Error("should still reboot: the uncommitted update makes the bootloader fall back")
+	}
+	rec, found := fx.readResult(t)
+	if !found || rec.Outcome != OutcomeRolledBack {
+		t.Fatalf("expected rolled_back record, got found=%v %+v", found, rec)
+	}
+	if !strings.Contains(rec.RollbackError, "rollback exploded") {
+		t.Errorf("RollbackError = %q", rec.RollbackError)
+	}
+}
+
+func TestGateAgentHealthcheckRollbackUnavailable(t *testing.T) {
+	fx := newGateFixture(t, UpdaterResult{}, UpdaterResult{Status: UpdaterUnavailable})
+	fx.useAgentHealthchecks(map[string][]map[string]string{
+		"a.service": {loaded("inactive")},
+		"b.service": {loaded("inactive")},
+	}, []CriticalService{
+		{Unit: "a.service", Timeout: 50 * time.Millisecond},
+		{Unit: "b.service", Timeout: 50 * time.Millisecond},
+	})
+	fx.writeFreshMarker(t)
+
+	fx.gate.Run(context.Background())
+
+	if fx.reboots != 0 {
+		t.Error("must not reboot when the updater is unavailable")
+	}
+	rec, found := fx.readResult(t)
+	if !found || rec.Outcome != OutcomeRollbackFailed {
+		t.Fatalf("expected rollback_failed record, got found=%v %+v", found, rec)
+	}
+}
+
+func TestGateAllSkippedCountsAsHealthy(t *testing.T) {
+	fx := newGateFixture(t, UpdaterResult{Status: UpdaterOK}, UpdaterResult{})
+	fx.useAgentHealthchecks(map[string][]map[string]string{
+		"a.service": {{"LoadState": "not-found", "ActiveState": "inactive"}},
+		"b.service": {{"LoadState": "not-found", "ActiveState": "inactive"}},
+	}, []CriticalService{
+		{Unit: "a.service", Timeout: 50 * time.Millisecond},
+		{Unit: "b.service", Timeout: 50 * time.Millisecond},
+	})
+	fx.writeFreshMarker(t)
+
+	fx.gate.Run(context.Background())
+
+	if fx.commits != 1 || fx.rollback != 0 {
+		t.Errorf("commits=%d rollback=%d, want 1/0", fx.commits, fx.rollback)
+	}
+	rec, found := fx.readResult(t)
+	if !found || rec.Outcome != OutcomeCommitted {
+		t.Fatalf("expected committed record, got found=%v %+v", found, rec)
+	}
+}
+
+// The following three tests exercise every outcome branch of rollBack() for a
+// backend that delegates healthchecking to its own commit (DelegatedHealth,
+// the default in this fixture, matching wendyos-update): UpdaterNothingPending
+// and UpdaterUnavailable here, UpdaterError (default) in
 // TestGateUnhealthyRollbackError, and UpdaterOK in
 // TestGateDelegatedCommitRejectedRollsBack. All three trigger the rollback via
-// a rejected commit, since that is the only way the gate now rolls back — the
-// updater runs its own health gate (/etc/wendyos-update/health.d) inside
-// commit.
+// a rejected commit — the updater runs its own health gate
+// (/etc/wendyos-update/health.d) inside commit, so there is no separate
+// CheckAll failure to trigger it on this path.
 
 func TestGateUnhealthyRollbackNothingPending(t *testing.T) {
 	fx := newGateFixture(t,
@@ -250,7 +536,7 @@ func TestGateUnhealthyRollbackNothingPending(t *testing.T) {
 		UpdaterResult{Status: UpdaterNothingPending})
 	fx.writeFreshMarker(t)
 
-	fx.gate.Run()
+	fx.gate.Run(context.Background())
 
 	if fx.commits != 1 || fx.rollback != 1 {
 		t.Errorf("commits=%d rollback=%d, want 1/1", fx.commits, fx.rollback)
@@ -273,7 +559,7 @@ func TestGateUnhealthyRollbackError(t *testing.T) {
 		UpdaterResult{Status: UpdaterError, Err: errors.New("rollback exploded")})
 	fx.writeFreshMarker(t)
 
-	fx.gate.Run()
+	fx.gate.Run(context.Background())
 
 	if fx.reboots != 1 {
 		t.Error("should still reboot: the uncommitted update makes the bootloader fall back")
@@ -293,7 +579,7 @@ func TestGateUnhealthyRollbackUnavailable(t *testing.T) {
 		UpdaterResult{Status: UpdaterUnavailable})
 	fx.writeFreshMarker(t)
 
-	fx.gate.Run()
+	fx.gate.Run(context.Background())
 
 	if fx.reboots != 0 {
 		t.Error("must not reboot when the updater is unavailable")
@@ -311,7 +597,7 @@ func TestGateDelegatedHealthyCommitOK(t *testing.T) {
 	fx := newGateFixture(t, UpdaterResult{Status: UpdaterOK}, UpdaterResult{})
 	fx.writeFreshMarker(t)
 
-	fx.gate.Run()
+	fx.gate.Run(context.Background())
 
 	if fx.commits != 1 || fx.rollback != 0 || fx.reboots != 0 {
 		t.Errorf("commits=%d rollback=%d reboots=%d, want 1/0/0", fx.commits, fx.rollback, fx.reboots)
@@ -324,7 +610,7 @@ func TestGateDelegatedHealthyCommitOK(t *testing.T) {
 		t.Fatalf("expected committed record, got found=%v %+v", found, rec)
 	}
 	if len(rec.Services) != 0 {
-		t.Errorf("commit must not record agent service results: %+v", rec.Services)
+		t.Errorf("delegated commit must not record agent service results: %+v", rec.Services)
 	}
 	if rec.FinalizedAt.IsZero() {
 		t.Error("committed record should be finalized")
@@ -335,7 +621,7 @@ func TestGateDelegatedCommitNothingPending(t *testing.T) {
 	fx := newGateFixture(t, UpdaterResult{Status: UpdaterNothingPending}, UpdaterResult{})
 	fx.writeFreshMarker(t)
 
-	fx.gate.Run()
+	fx.gate.Run(context.Background())
 
 	if fx.rollback != 0 || fx.reboots != 0 {
 		t.Errorf("rollback=%d reboots=%d, want 0/0", fx.rollback, fx.reboots)
@@ -361,7 +647,7 @@ func TestGateDelegatedCommitRejectedRollsBack(t *testing.T) {
 		UpdaterResult{Status: UpdaterOK})
 	fx.writeFreshMarker(t)
 
-	fx.gate.Run()
+	fx.gate.Run(context.Background())
 
 	if fx.commits != 1 || fx.rollback != 1 || fx.reboots != 1 {
 		t.Errorf("commits=%d rollback=%d reboots=%d, want 1/1/1", fx.commits, fx.rollback, fx.reboots)
@@ -388,7 +674,7 @@ func TestGateDelegatedCommitUnavailableNoRollback(t *testing.T) {
 	fx := newGateFixture(t, UpdaterResult{Status: UpdaterUnavailable}, UpdaterResult{Status: UpdaterOK})
 	fx.writeFreshMarker(t)
 
-	fx.gate.Run()
+	fx.gate.Run(context.Background())
 
 	if fx.rollback != 0 || fx.reboots != 0 {
 		t.Errorf("rollback=%d reboots=%d, want 0/0 when the backend is unavailable", fx.rollback, fx.reboots)
@@ -414,7 +700,7 @@ func TestGateDelegatedCommitTimeoutRetries(t *testing.T) {
 		UpdaterResult{Status: UpdaterOK})
 	fx.writeFreshMarker(t)
 
-	fx.gate.Run()
+	fx.gate.Run(context.Background())
 
 	if fx.rollback != 0 || fx.reboots != 0 {
 		t.Errorf("rollback=%d reboots=%d, want 0/0 on a commit timeout", fx.rollback, fx.reboots)
