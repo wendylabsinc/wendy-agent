@@ -58,11 +58,30 @@ type UMSDisk struct {
 // plus the BSD/block name, so a device advertising an unexpected export name —
 // or a LUN the host never assigned a whole-disk node to — is obvious.
 func observedUMSHint() string {
-	raw := strings.TrimRight(rawUMSInquiry(), "\n")
-	if raw == "" {
-		return "No USB mass-storage LUNs are currently visible to this computer."
+	var parts []string
+	if raw := strings.TrimRight(rawUMSInquiry(), "\n"); raw != "" {
+		parts = append(parts, "USB mass-storage LUNs currently visible (raw SCSI INQUIRY):\n"+raw)
+	} else {
+		parts = append(parts, "No USB mass-storage LUNs are currently visible to this computer.")
 	}
-	return "USB mass-storage LUNs currently visible (raw SCSI INQUIRY):\n" + raw
+	// The board's USB identity tells the failure apart: back in recovery
+	// (0955:70xx) means it rebooted mid-sequence; still the gadget (1d6b:0104)
+	// means the initrd stalled between commands; absent means it left USB.
+	parts = append(parts, tegraUSBHint())
+	return strings.Join(parts, "\n")
+}
+
+// tegraUSBLabel names a Tegra-relevant USB device, or "" for anything else.
+func tegraUSBLabel(vendor, product uint16) string {
+	switch {
+	case vendor == 0x0955 && product == 0x7023:
+		return "0955:7023 (AGX Orin APX recovery)"
+	case vendor == 0x0955:
+		return fmt.Sprintf("0955:%04x (NVIDIA recovery)", product)
+	case vendor == GadgetVendorID && product == GadgetProductID:
+		return "1d6b:0104 (flashing gadget)"
+	}
+	return ""
 }
 
 // WaitForUMSDisk polls until a LUN with the given SCSI vendor string appears
