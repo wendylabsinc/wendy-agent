@@ -8,7 +8,7 @@ description: Install WendyOS on your NVIDIA Jetson device
   <h1 style={{ fontSize: '2.25rem', fontWeight: 'bold', margin: 0, lineHeight: '1' }}>NVIDIA Jetson Installation</h1>
 </div>
 
-You'll need an NVMe SSD to USB-C adapter to flash WendyOS onto your NVMe SSD.
+For Jetson Orin Nano and Jetson AGX Orin, you'll need an NVMe SSD to USB-C adapter to flash WendyOS onto your NVMe SSD. Jetson AGX Thor uses a separate USB recovery flash path and does not use an external drive.
 
 ## Installing WendyOS on NVIDIA Jetson
 
@@ -26,16 +26,23 @@ For DGX Spark, use [Wendy Agent — Linux](/docs/installation/wendy-agent-linux)
 
 <Steps>
   <Step>
-    ### Connect the NVMe SSD to Your Computer
+    ### Prepare Storage or Recovery Mode
 
-    Using an NVMe SSD to USB-C adapter, connect your NVMe SSD into the adapter and then the USB-C end to your MacBook.
+    <Tabs items={['Orin Nano / AGX Orin', 'AGX Thor']} groupId="jetson-model" persist>
+      <Tab value="Orin Nano / AGX Orin">
+        Using an NVMe SSD to USB-C adapter, connect your NVMe SSD into the adapter and then the USB-C end to your computer.
 
-    <video width="100%" autoPlay loop muted playsInline>
-      <source src="/videos/installation/jetson-nvme-mac-adapter.mp4" type="video/mp4" />
-      Your browser does not support the video tag.
-    </video>
+        <video width="100%" autoPlay loop muted playsInline>
+          <source src="/videos/installation/jetson-nvme-mac-adapter.mp4" type="video/mp4" />
+          Your browser does not support the video tag.
+        </video>
 
-    On macOS you'll be presented with a permission dialog to use the adapter. Press **Allow**.
+        On macOS you'll be presented with a permission dialog to use the adapter. Press **Allow**.
+      </Tab>
+      <Tab value="AGX Thor">
+        Start with the Thor powered off. Connect your computer to the USB-C port next to the HDMI port, then enter recovery mode: plug in power, hold **Force Recovery**, briefly tap **Reset**, then release **Force Recovery**. The other USB-C port is power-only.
+      </Tab>
+    </Tabs>
   </Step>
 
   <Step>
@@ -49,26 +56,36 @@ For DGX Spark, use [Wendy Agent — Linux](/docs/installation/wendy-agent-linux)
 
     <CliShot flow="os-install" step="select-device-type" alt="The Wendy CLI prompting you to choose a device type before flashing WendyOS" />
 
-    Select **NVIDIA Jetson Orin Nano**, then your drive. WendyOS downloads to the drive (this can take a while), and you'll enter your administrator password to write the image.
+    Select the Jetson model you are installing:
+
+    - **Jetson Orin Nano** or **Jetson AGX Orin**: select your target drive. WendyOS downloads to the drive, and you'll enter your administrator password to write the image.
+    - **Jetson AGX Thor**: the CLI downloads a Thor flashpack, scans for the board in USB recovery mode, and flashes QSPI plus the internal NVMe. No external drive is selected.
 
     The CLI also offers optional first-boot provisioning — joining WiFi, applying critical updates, and pre-enrolling the device to Wendy Cloud. Each can also be set up after the device boots. See [`wendy install`](/docs/advanced/clients/wendy-cli/commands/os/install) for more.
   </Step>
 
   <Step>
-    ### Install the NVMe SSD into Your Jetson
+    ### Install Storage or Reboot
 
-    Remove the NVMe SSD from your computer and insert it into your NVIDIA Jetson Orin Nano on the M.2 slot on the bottom of the board.
+    <Tabs items={['Orin Nano / AGX Orin', 'AGX Thor']} groupId="jetson-model" persist>
+      <Tab value="Orin Nano / AGX Orin">
+        Remove the NVMe SSD from your computer and insert it into your Jetson's M.2 slot.
 
-    <video width="100%" autoPlay loop muted playsInline>
-      <source src="/videos/installation/jetson-nvme-bottom-insertion.mp4" type="video/mp4" />
-      Your browser does not support the video tag.
-    </video>
+        <video width="100%" autoPlay loop muted playsInline>
+          <source src="/videos/installation/jetson-nvme-bottom-insertion.mp4" type="video/mp4" />
+          Your browser does not support the video tag.
+        </video>
+      </Tab>
+      <Tab value="AGX Thor">
+        After the CLI reports a successful flash, power-cycle the Thor out of recovery mode so it boots WendyOS from its internal storage.
+      </Tab>
+    </Tabs>
   </Step>
 
   <Step>
     ### Connect the Jetson to Your Computer
 
-    Connect your NVIDIA Jetson Orin Nano to your computer using a USB-C cable. This will allow you to deploy and manage apps on your device.
+    Connect your Jetson to your computer using the data-capable USB-C port. This will allow you to deploy and manage apps on your device.
 
     <video width="100%" autoPlay loop muted playsInline>
       <source src="/videos/installation/jetson-mac-usb-cable.mp4" type="video/mp4" />
@@ -79,7 +96,7 @@ For DGX Spark, use [Wendy Agent — Linux](/docs/installation/wendy-agent-linux)
   <Step>
     ### Power On the Device
 
-    With the supplied power supply, insert the power into the power slot on the NVIDIA Jetson Orin Nano and then plug into a power source like your wall outlet.
+    With the supplied power supply, insert the power into the power slot on your Jetson and then plug into a power source like your wall outlet.
 
     <video width="100%" autoPlay loop muted playsInline>
       <source src="/videos/installation/jetson-power-cable-insertion.mp4" type="video/mp4" />
@@ -96,7 +113,7 @@ For DGX Spark, use [Wendy Agent — Linux](/docs/installation/wendy-agent-linux)
     wendy discover
     ```
 
-    You should see your NVIDIA Jetson Orin Nano appear in the list of discovered devices.
+    You should see your Jetson appear in the list of discovered devices.
 
     <CliShot flow="discover" step="devices" alt="The Wendy CLI listing discovered WendyOS devices on the network" />
 

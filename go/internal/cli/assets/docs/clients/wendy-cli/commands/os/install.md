@@ -1,12 +1,13 @@
 # `wendy install`
 
-Installs WendyOS onto an NVMe or SD card, or flashes Wendy Lite firmware onto an ESP32 over USB.
+Installs WendyOS onto an NVMe or SD card, flashes Jetson AGX Thor over USB recovery, or flashes Wendy Lite firmware onto an ESP32 over USB.
 
 > **Tip:** [`wendy install`](../install.md) is the recommended, surfaced entry point for this command. `wendy os install` remains available and behaves identically — it is kept for backward compatibility and for discoverability under the `wendy os` group.
 
-The command presents a unified device picker that lists both Linux targets (Raspberry Pi, Jetson, …) and ESP32 targets (C6, C5). Select the device type to take the appropriate path:
+The command presents a unified device picker that lists Linux targets (Raspberry Pi, Jetson, ...) and ESP32 targets (C6, C5). Select the device type to take the appropriate path:
 
-- **Linux targets** → download OS image → write to SD/NVMe → write config partition
+- **Raspberry Pi and Orin Jetson targets** -> download OS image -> write to SD/NVMe -> write config partition
+- **Jetson AGX Thor** -> download flashpack -> boot over USB recovery -> flash QSPI and internal NVMe
 - **ESP32 targets** → detect USB serial port → download firmware `.bin` → flash over serial
 
 ```sh
@@ -18,6 +19,9 @@ wendy install --nightly
 
 # Linux: non-interactive with all flags
 wendy install --device-type raspberry-pi-5 --version 0.10.4 --drive /dev/disk4 --force
+
+# Jetson AGX Thor: flash over USB recovery (macOS and Linux)
+wendy install --device-type jetson-agx-thor
 
 # Direct install from a local image (Linux only)
 wendy install path/to/image.img /dev/disk4 --force
@@ -104,6 +108,8 @@ To provision WiFi after first boot, use `wendy device setup` or the BLE provisio
 
 ## Linux (WendyOS) path
 
+For Raspberry Pi and Orin-class Jetson devices, the install path writes a disk image to a selected SD card, NVMe drive, or USB-attached enclosure:
+
 1. **Resolve version** — `--version` if provided, otherwise latest (or nightly with `--nightly`).
 2. **Resolve drive** — `--drive` if provided, otherwise an interactive picker of external drives. Internal drives require `--yes-overwrite-internal` in non-interactive mode; in interactive mode the user must type the device path to confirm.
 3. **Download image** — fetched from GCS with a progress bar. Downloaded to `~/Library/Caches/wendy/os-images/` (macOS) or `~/.cache/wendy/os-images/` (Linux). Zip archives are streamed through to the first `.img`, `.raw`, `.wic`, or `.sdimg` entry; gzip-compressed images (`.img.gz`, detected by magic bytes regardless of extension) are decompressed and streamed on the fly. Seekable-zstd images (`.img.zst`) are downloaded and cached directly; when a block map is present, only mapped ranges are decoded during the write step, skipping hole frames entirely. Parallel download (8 workers) is used when the server supports HTTP range requests.
@@ -114,6 +120,16 @@ To provision WiFi after first boot, use `wendy device setup` or the BLE provisio
 > **Exit code:** `wendy install` exits `0` as long as the OS image was written to the drive, regardless of whether the config-partition provisioning step succeeded. A non-zero exit indicates only that the image itself could not be written. When `--wifi`, `--device-name`, or `--pre-enroll` were requested but couldn't be applied, the warning calls this out explicitly so the values can be re-applied with another `wendy install`, or configured after the device boots.
 
 > **Provisioning retry:** When the config-partition write fails on an interactive terminal, the CLI asks `Retry writing provisioning data to the config partition?`. Answering yes re-attempts the write (download + config-partition write); answering no, or running non-interactively, prints guidance and exits successfully — the OS image is already on the drive.
+
+## Jetson AGX Thor recovery flash path
+
+Jetson AGX Thor does not use the drive-writing flow. Selecting `jetson-agx-thor` downloads the Thor flashpack, asks you to put the board into USB recovery mode, scans for the recovery-mode Jetson, then performs:
+
+1. **Stage 1 RCM boot** — sends the Thor recovery payload over USB.
+2. **Stage 2 partition flash** — flashes QSPI and the internal NVMe through the Thor flashing gadget.
+3. **Power-cycle** — after a successful flash, power-cycle the Thor out of recovery mode to boot WendyOS.
+
+The CLI prompts for confirmation before erasing the Thor. No external USB drive is selected, and `--drive` does not apply to this path. Thor flashing is supported on macOS and Linux; Windows returns an unsupported-platform error.
 
 ### WiFi pre-configuration
 

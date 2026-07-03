@@ -15,14 +15,15 @@ WendyOS requires at least **64 GB** of storage. This covers the OS partitions (r
 
 A larger drive is not required by WendyOS itself, but running large container images (for example, ML inference containers with bundled model weights) can consume significant space. If your workload pulls images above a few gigabytes, a 128 GB or larger drive is recommended.
 
-The 64 GB minimum applies to both NVME and SD card installations. On the Jetson Orin Nano the `mender_data` partition auto-expands on first boot to fill any remaining space, so a larger drive is automatically used.
+The 64 GB minimum applies to removable NVME and SD card installations. On Jetson Orin Nano and Jetson AGX Orin, the `mender_data` partition auto-expands on first boot to fill any remaining space, so a larger drive is automatically used. Jetson AGX Thor is flashed over USB recovery to its internal storage instead of to a removable target drive.
 
 ### Partition sizes at a glance
 
 | Device | Root FS (A+B) | Config | Other |
 |--------|--------------|--------|-------|
 | Raspberry Pi (SD / NVME) | 8 GB | 64 MB | — |
-| Jetson Orin Nano (SD / NVME) | 8 GB + 8 GB | 64 MB | 512 MB mender_data (auto-expands) |
+| Jetson Orin Nano / AGX Orin (SD / NVME) | 8 GB + 8 GB | 64 MB | 512 MB mender_data (auto-expands) |
+| Jetson AGX Thor | Flashpack-managed internal partitions | N/A | Flashed over USB recovery; no external SD/NVME target |
 
 See the device-specific pages for full partition layouts:
 - [WendyOS on Raspberry Pi](pi/README.md)
@@ -43,6 +44,6 @@ See the device-specific pages for full partition layouts:
 | Device | Boot media |
 |--------|-----------|
 | Jetson Orin Nano | SD card, NVME |
-| Jetson AGX Orin | Coming soon |
-| Jetson AGX Thor | In progress |
+| Jetson AGX Orin | eMMC, NVME |
+| Jetson AGX Thor | Internal flash + NVME via USB recovery |
 | DGX Spark | Install `wendy-agent` on the existing Linux system (no image flash needed) |

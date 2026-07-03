@@ -7,6 +7,21 @@ Runs your app on a Wendy-enabled device:
 5. [Starts the app](./device/apps/start.md)
 6. [Attaches the logs](./device/logs.md) if needed (when `--detach` is not provided)
 
+## Reachable app URLs
+
+After the app starts, `wendy run` prints an `App reachable at <url>` line when it can infer a browser URL from the app configuration:
+
+```text
+App reachable at http://192.168.123.222:3000
+```
+
+The CLI derives this URL from either:
+
+- `hooks.postStart.openURL`, when the URL contains `WENDY_HOSTNAME`
+- `readiness.tcpSocket.port`
+
+The printed URL uses a routable IP address reported by the device instead of the `.local` hostname, which makes it easier to open from browsers that do not resolve mDNS names reliably. If neither an `openURL` hook nor a TCP readiness port is configured, or if the device cannot report an IP address, `wendy run` skips this line.
+
 > **Note:** When `wendy.json` is absent, `wendy run` resolves the target device before prompting to create one. If the target is Headless Mac and the detected project type is unsupported, the project/target mismatch error is returned immediately without opening the config creation prompt.
 
 ## Headless Mac — supported project types
