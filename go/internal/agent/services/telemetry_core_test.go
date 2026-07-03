@@ -92,6 +92,21 @@ func TestFieldToKeyValue_TimeFullType(t *testing.T) {
 	}
 }
 
+// TestFieldToKeyValue_TimeFullTypeDirect constructs a TimeFullType field
+// directly rather than relying on zap.Time's far-future routing, so the
+// TimeFullType branch stays covered even if zap changes how zap.Time picks
+// between TimeType and TimeFullType.
+func TestFieldToKeyValue_TimeFullTypeDirect(t *testing.T) {
+	ts := time.Date(2026, 7, 3, 12, 30, 45, 123456789, time.UTC)
+	got := fieldToKeyValue(zapcore.Field{Key: "ts", Type: zapcore.TimeFullType, Interface: ts})
+	if got == nil {
+		t.Fatal("TimeFullType produced a nil attribute")
+	}
+	if want := ts.Format(time.RFC3339Nano); got.Value.GetStringValue() != want {
+		t.Errorf("TimeFullType = %q, want %q", got.Value.GetStringValue(), want)
+	}
+}
+
 func TestFieldToKeyValue_TimeTypeNonUTC(t *testing.T) {
 	// Regression: TimeType must render the timestamp in its own offset, not
 	// silently normalize to UTC.

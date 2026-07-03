@@ -537,13 +537,13 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 
 	if err := appconfig.ValidateAppID(rawAppID); err != nil {
 		c.logger.Warn("CreateContainer rejected: invalid app ID",
-			zap.String("app_id", sanitizeForLog(rawAppID, 253)), zap.Error(err))
+			zap.String(logfields.AppID, sanitizeForLog(rawAppID, 253)), zap.Error(err))
 		return fmt.Errorf("invalid app ID: %w", err)
 	}
 	if rawServiceName != "" {
 		if err := appconfig.ValidateServiceName(rawServiceName); err != nil {
 			c.logger.Warn("CreateContainer rejected: invalid service name",
-				zap.String("app_id", sanitizeForLog(rawAppID, 253)),
+				zap.String(logfields.AppID, sanitizeForLog(rawAppID, 253)),
 				zap.String("service_name", sanitizeForLog(rawServiceName, 57)),
 				zap.Error(err))
 			return fmt.Errorf("invalid service name: %w", err)
@@ -576,7 +576,7 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 
 	logFields := []zap.Field{
 		zap.String("container_name", containerName),
-		zap.String("app_id", appID),
+		zap.String(logfields.AppID, appID),
 		zap.String("image", imageName),
 	}
 	if serviceName != "" {
@@ -838,7 +838,7 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 		// NIST-SC-7, ISO27001-A.8).
 		if hasPrimary && !c.primaryTaskAlive(ctx, appID, primaryPID) {
 			c.logger.Info("Recorded primary for app group is stale; this service becomes the new primary",
-				zap.String("app_id", appID), zap.Uint32("stale_pid", primaryPID))
+				zap.String(logfields.AppID, appID), zap.Uint32("stale_pid", primaryPID))
 			c.clearPrimaryPID(appID)
 			hasPrimary = false
 		}
@@ -921,7 +921,7 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 
 	createdFields := []zap.Field{
 		zap.String("container_name", containerName),
-		zap.String("app_id", appID),
+		zap.String(logfields.AppID, appID),
 		zap.String("image", imageName),
 		zap.String("version", version),
 	}
@@ -1125,7 +1125,7 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 		netnsRef, nsErr = os.Open(nsPath)
 		if nsErr != nil {
 			c.logger.Warn("could not anchor netns fd before mutex release; CNI ADD skipped",
-				zap.String("app_id", appID), zap.Error(nsErr))
+				zap.String(logfields.AppID, appID), zap.Error(nsErr))
 		}
 	}
 
@@ -1145,7 +1145,7 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 		ip, cniErr := c.CNIAdd(ctx, appID, appName, netnsPath)
 		cleanupNetns()
 		if cniErr != nil {
-			c.logger.Error("CNI ADD failed", zap.String("app_id", appID), zap.Error(cniErr))
+			c.logger.Error("CNI ADD failed", zap.String(logfields.AppID, appID), zap.Error(cniErr))
 		} else {
 			c.mu.Lock()
 			// Guard against a concurrent StopContainer that may have deleted
@@ -1155,7 +1155,7 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 			if c.appIsolation[appID] == "" {
 				c.mu.Unlock()
 				c.logger.Warn("CNI ADD: app already stopped before IP could be recorded, discarding IP",
-					zap.String("app_id", appID), zap.String("ip", ip))
+					zap.String(logfields.AppID, appID), zap.String("ip", ip))
 				_, _ = task.Delete(ctx, containerd.WithProcessKill)
 				return nil, fmt.Errorf("app %q stopped during CNI ADD; container not started", appID)
 			}
@@ -1169,7 +1169,7 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 					delete(c.serviceIPs[appID], serviceName)
 				}
 				c.logger.Error("security: appID produces unsafe hosts path",
-					zap.String("app_id", appID), zap.Error(pathErr))
+					zap.String(logfields.AppID, appID), zap.Error(pathErr))
 				c.mu.Unlock()
 				_, _ = task.Delete(ctx, containerd.WithProcessKill)
 				return nil, fmt.Errorf("security: appID %q produces unsafe hosts path: %w", appID, pathErr)
@@ -1780,7 +1780,7 @@ func (c *Client) RestartGroup(ctx context.Context, appID string) (map[string]<-c
 		name := ContainerName(appID, svc)
 		if serr := c.stopOne(ctx, name); serr != nil {
 			c.logger.Warn("RestartGroup: failed to stop group member (continuing)",
-				zap.String("app_id", appID), zap.String(logfields.ServiceName, svc), zap.Error(serr))
+				zap.String(logfields.AppID, appID), zap.String(logfields.ServiceName, svc), zap.Error(serr))
 		}
 	}
 
@@ -1813,13 +1813,13 @@ func (c *Client) RestartGroup(ctx context.Context, appID string) (map[string]<-c
 		name := ContainerName(appID, svc)
 		if rerr := c.refreshSecondaryNamespaces(ctx, name, primaryPID, isolation); rerr != nil {
 			c.logger.Error("RestartGroup: failed to refresh secondary namespaces",
-				zap.String("app_id", appID), zap.String(logfields.ServiceName, svc), zap.Error(rerr))
+				zap.String(logfields.AppID, appID), zap.String(logfields.ServiceName, svc), zap.Error(rerr))
 			continue
 		}
 		ch, serr := c.StartContainer(ctx, name, "", nil)
 		if serr != nil {
 			c.logger.Error("RestartGroup: failed to start secondary",
-				zap.String("app_id", appID), zap.String(logfields.ServiceName, svc), zap.Error(serr))
+				zap.String(logfields.AppID, appID), zap.String(logfields.ServiceName, svc), zap.Error(serr))
 			continue
 		}
 		results[name] = ch
@@ -2142,7 +2142,7 @@ func (c *Client) StopContainer(ctx context.Context, appID string) error {
 	if len(ctrs) == 0 {
 		// Idempotent: already stopped / never created.
 		c.logger.Info("StopContainer: no containers found, already stopped",
-			zap.String("app_id", sanitizeForLog(appID, 253)))
+			zap.String(logfields.AppID, sanitizeForLog(appID, 253)))
 		c.mu.Unlock()
 		return nil
 	}
@@ -2240,7 +2240,7 @@ func (c *Client) resolveStopOrder(ctx context.Context, appID string, ctrs []cont
 	ordered, err := appconfig.ServiceTopoOrder(services)
 	if err != nil {
 		c.logger.Warn("resolveStopOrder: topo sort failed, using arbitrary order",
-			zap.String("app_id", appID), zap.Error(err))
+			zap.String(logfields.AppID, appID), zap.Error(err))
 		ids := make([]string, len(ctrs))
 		for i, ctr := range ctrs {
 			ids[i] = ctr.ID()
