@@ -150,6 +150,7 @@ func newOrgMismatchDeviceError(deviceOrg int32, userCerts []config.CertificateIn
 	}
 	return orgMismatchDeviceError{deviceOrg: deviceOrg, userOrgs: userOrgs}
 }
+
 type orgMismatchWithCause struct {
 	mismatch error
 	cause    error
