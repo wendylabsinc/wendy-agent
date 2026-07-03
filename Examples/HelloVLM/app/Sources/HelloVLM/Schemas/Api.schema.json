@@ -86,6 +86,8 @@
         "response": { "type": "string" },
         "cameraName": { "type": "string" },
         "modelName": { "type": "string" },
+        "backend": { "type": "string" },
+        "device": { "type": "string" },
         "interval": { "type": "number" },
         "fps": { "type": "number" },
         "resolution": { "type": "integer" },

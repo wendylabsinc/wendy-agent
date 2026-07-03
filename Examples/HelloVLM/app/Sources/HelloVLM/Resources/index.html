@@ -702,7 +702,8 @@
       card.dataset.runId = run.id;
       fragment.querySelector('.run-time').textContent = formatDate(run.timestamp);
       const resolution = run.resolution ?? 480;
-      const statsSuffix = run.stats ? ` · ${run.stats}` : '';
+      const provenance = [run.modelName, run.backend, run.device].filter(Boolean).join(' · ');
+      const statsSuffix = (provenance ? ` · ${provenance}` : '') + (run.stats ? ` · ${run.stats}` : '');
       fragment.querySelector('.run-frame-count').textContent = `${run.frameCount} frame${run.frameCount === 1 ? '' : 's'} · ${formatNumber(run.interval)}s · ${formatNumber(run.fps)} fps · ${formatSquareResolution(resolution)}${statsSuffix}`;
       fragment.querySelector('.run-duration').textContent = formatDuration(run.duration);
       fragment.querySelector('.run-prompt').textContent = run.prompt;

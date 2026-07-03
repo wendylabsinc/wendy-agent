@@ -149,6 +149,8 @@ struct HelloVLM {
     static func runInferenceLoop(state: AppState, runStore: RunStore, frameBuffer: FrameBuffer) async {
         guard let baseURL = URL(string: appConfig.llmURL) else { return }
         let client = VLMClient(baseURL: baseURL, model: appConfig.model)
+        let deviceName = ProcessInfo.processInfo.environment["WENDY_DEVICE_HOSTNAME"]
+            ?? ProcessInfo.processInfo.hostName
 
         await state.setModelLoading(name: appConfig.model)
         print("Waiting for VLM backend at \(appConfig.llmURL) …")
@@ -225,6 +227,8 @@ struct HelloVLM {
                     frames: frames,
                     cameraName: cameraName,
                     modelName: result.modelName,
+                    backend: modelBackend,
+                    device: deviceName,
                     interval: appConfig.interval,
                     fps: appConfig.fps,
                     resolution: appConfig.height,

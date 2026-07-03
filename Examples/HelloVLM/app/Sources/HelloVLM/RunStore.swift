@@ -54,6 +54,8 @@ struct RunStore: Sendable {
         frames: [FrameCapture],
         cameraName: String?,
         modelName: String?,
+        backend: String?,
+        device: String?,
         interval: Double,
         fps: Double,
         resolution: Int,
@@ -80,7 +82,9 @@ struct RunStore: Sendable {
         }
 
         let run = PersistedRun(
+            backend: backend,
             cameraName: cameraName,
+            device: device,
             duration: duration,
             fps: fps,
             frameCount: persistedFrames.count,
