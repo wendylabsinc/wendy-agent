@@ -260,9 +260,15 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 		return installThor(ctx, flagVersion, nightly, force)
 	}
 	// So does the AGX Orin's onboard eMMC (--storage emmc); its NVMe variant
-	// stays on the regular disk-image flow below.
+	// stays on the regular disk-image flow below. eMMC flashing is gated off for
+	// now — the recovery flow lands stage-1 but the device stalls on the
+	// device-side rootfs export (see t234) — so it's behind a dev escape hatch
+	// while that's resolved; users are steered to NVMe.
 	if flagDeviceType == orinDeviceType && storageOverride == "emmc" {
-		return installOrin(ctx, flagVersion, nightly, force)
+		if orinEMMCExperimental() {
+			return installOrin(ctx, flagVersion, nightly, force)
+		}
+		return errOrinEMMCUnsupported()
 	}
 
 	fmt.Println("Fetching available devices...")
@@ -375,13 +381,16 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 		if orinVersionHasEMMC(deviceMap[selected], flagVersion) {
 			mode, err := pickFromItems("Where should WendyOS install?", []tui.PickerItem{
 				{Name: "NVMe SSD", Description: "write a disk image to an SSD in a USB enclosure", Value: "nvme"},
-				{Name: "Onboard eMMC", Description: "flash over USB recovery (erases the eMMC + QSPI)", Value: "emmc"},
+				{Name: "Onboard eMMC", Description: "not yet supported — install to NVMe instead", Value: "emmc"},
 			})
 			if err != nil {
 				return err
 			}
 			if mode == "emmc" {
-				return installOrin(ctx, flagVersion, nightly, force)
+				if orinEMMCExperimental() {
+					return installOrin(ctx, flagVersion, nightly, force)
+				}
+				return errOrinEMMCUnsupported()
 			}
 		}
 	}
@@ -392,6 +401,21 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 		return installESP32Firmware(ctx, nightly, device.ESP32Chip, wifi, deviceName, preOpts)
 	}
 	return installLinuxImage(ctx, selected, device, nightly, flagVersion, flagDrive, force, yesOverwriteInternal, noBmap, storageOverride, wifi, deviceName, preOpts)
+}
+
+// errOrinEMMCUnsupported reports that onboard-eMMC flashing for the AGX Orin
+// isn't available yet and points at the NVMe path that works. The recovery flow
+// lands stage-1 but the device stalls on the device-side rootfs export; keep
+// the flow (behind orinEMMCExperimental) until that's resolved.
+func errOrinEMMCUnsupported() error {
+	return fmt.Errorf("flashing the AGX Orin's onboard eMMC isn't supported yet — install to NVMe instead "+
+		"(writes the WendyOS image to an SSD in a USB enclosure):\n  wendy os install --device-type %s --storage nvme", orinDeviceType)
+}
+
+// orinEMMCExperimental gates the work-in-progress eMMC recovery flash behind an
+// env var so it stays live and testable while it's not offered to users.
+func orinEMMCExperimental() bool {
+	return os.Getenv("WENDY_ORIN_EMMC_EXPERIMENTAL") == "1"
 }
 
 // installLinuxImage handles the Linux device path: pick version → pick drive → download → write.
