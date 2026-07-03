@@ -231,7 +231,7 @@ func waitForUMSDiskConfirmed(ctx context.Context, vendor string, timeout time.Du
 			}
 		}
 		if time.Now().After(deadline) {
-			return UMSDisk{}, fmt.Errorf("timed out waiting for USB storage %q from the device", vendor)
+			return UMSDisk{}, fmt.Errorf("timed out waiting for USB storage %q from the device\n%s", vendor, observedUMSHint())
 		}
 		select {
 		case <-ctx.Done():

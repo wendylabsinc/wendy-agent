@@ -52,6 +52,19 @@ type UMSDisk struct {
 	Serial    string // SCSI inquiry product: the device's 8-hex session id
 }
 
+// observedUMSHint formats the raw SCSI INQUIRY strings of every USB
+// mass-storage LUN currently visible, for diagnosing a wait that timed out. It
+// reports the vendor/product fields verbatim (before splitInquiry rejoins them)
+// plus the BSD/block name, so a device advertising an unexpected export name —
+// or a LUN the host never assigned a whole-disk node to — is obvious.
+func observedUMSHint() string {
+	raw := strings.TrimRight(rawUMSInquiry(), "\n")
+	if raw == "" {
+		return "No USB mass-storage LUNs are currently visible to this computer."
+	}
+	return "USB mass-storage LUNs currently visible (raw SCSI INQUIRY):\n" + raw
+}
+
 // WaitForUMSDisk polls until a LUN with the given SCSI vendor string appears
 // (the flashing initrd names LUNs after what they carry: "flashpkg" or the
 // rootfs device). It returns an error when several match — wendy flashes one
@@ -86,9 +99,9 @@ func WaitForUMSDisk(ctx context.Context, vendor string, timeout time.Duration) (
 		}
 		if time.Now().After(deadline) {
 			if err != nil {
-				return UMSDisk{}, fmt.Errorf("timed out waiting for USB storage %q (last scan error: %v)", vendor, err)
+				return UMSDisk{}, fmt.Errorf("timed out waiting for USB storage %q (last scan error: %v)\n%s", vendor, err, observedUMSHint())
 			}
-			return UMSDisk{}, fmt.Errorf("timed out waiting for USB storage %q from the device", vendor)
+			return UMSDisk{}, fmt.Errorf("timed out waiting for USB storage %q from the device\n%s", vendor, observedUMSHint())
 		}
 		select {
 		case <-ctx.Done():

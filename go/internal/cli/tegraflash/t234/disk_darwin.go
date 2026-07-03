@@ -47,6 +47,33 @@ func listUMSDisks() ([]UMSDisk, error) {
 	return disks, nil
 }
 
+// rawUMSInquiry lists every IOSCSILogicalUnitNub's raw INQUIRY vendor/product
+// and BSD name, without the whole-disk filter listUMSDisks applies — a
+// diagnostic for a wait that timed out. Showing LUNs that lack a "diskN" BSD
+// name reveals a device that exported the LUN but that macOS never surfaced as
+// a whole disk.
+func rawUMSInquiry() string {
+	out, err := exec.Command("ioreg", "-rc", "IOSCSILogicalUnitNub", "-l", "-w0").Output()
+	if err != nil {
+		return ""
+	}
+	var b strings.Builder
+	for _, chunk := range splitIoregSubtrees(string(out)) {
+		vendor := ioregString(chunk, "Vendor Identification")
+		if vendor == "" {
+			continue
+		}
+		bsd := ioregString(chunk, "BSD Name")
+		if bsd == "" {
+			bsd = "(no BSD name)"
+		}
+		fmt.Fprintf(&b, "  - vendor=%q product=%q bsd=%q size=%d\n",
+			strings.TrimSpace(vendor), strings.TrimSpace(ioregString(chunk, "Product Identification")),
+			bsd, ioregInt(chunk, "Size"))
+	}
+	return b.String()
+}
+
 // splitIoregSubtrees splits `ioreg -r` output into one chunk per matched
 // root object (each starts with "+-o " at column 0).
 func splitIoregSubtrees(out string) []string {

@@ -3,6 +3,7 @@
 package t234
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -39,6 +40,32 @@ func listUMSDisks() ([]UMSDisk, error) {
 		disks = append(disks, d)
 	}
 	return disks, nil
+}
+
+// rawUMSInquiry lists every /sys/block/sd* device's raw SCSI vendor/model — a
+// diagnostic for a wait that timed out, showing what the device actually
+// advertised before splitInquiry rejoins the fields.
+func rawUMSInquiry() string {
+	entries, err := filepath.Glob("/sys/block/sd*")
+	if err != nil {
+		return ""
+	}
+	var b strings.Builder
+	for _, e := range entries {
+		vendor := sysfsString(filepath.Join(e, "device", "vendor"))
+		if vendor == "" {
+			continue
+		}
+		var sizeBytes int64
+		if sectors := sysfsString(filepath.Join(e, "size")); sectors != "" {
+			if n, perr := strconv.ParseInt(sectors, 10, 64); perr == nil {
+				sizeBytes = n * 512
+			}
+		}
+		fmt.Fprintf(&b, "  - vendor=%q model=%q dev=%q size=%d\n",
+			vendor, sysfsString(filepath.Join(e, "device", "model")), filepath.Base(e), sizeBytes)
+	}
+	return b.String()
 }
 
 func sysfsString(path string) string {
