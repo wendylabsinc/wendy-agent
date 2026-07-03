@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Build (or install) the wendy CLI with libusb linked statically, so the shipped
-# binary carries no /opt/homebrew (or other) libusb dylib dependency. Thor USB
-# recovery flashing (gousb) is macOS-only for now; on other platforms wendy needs
-# no libusb and a plain `go build` suffices.
+# Build (or install) the wendy CLI. Thor USB recovery flashing (gousb) needs
+# libusb on macOS and Linux; on macOS it is linked statically so the shipped
+# binary carries no /opt/homebrew (or other) libusb dylib dependency. Linux dev
+# builds link the system libusb dynamically (release builds are fully static —
+# see .github/workflows/build.yml). Windows needs no libusb (unsupported stub).
 #
 # Usage (run from the repo root):
 #   go/scripts/build-wendy.sh [output-path]  # build to output-path (default ./bin/wendy)
@@ -13,7 +14,12 @@ cd "$(dirname "$0")/.."   # the go module root
 LDFLAGS="-s -w -X github.com/wendylabsinc/wendy/go/internal/shared/version.Version=${VERSION:-dev}"
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
-    # No libusb needed off macOS (Thor path compiles to the unsupported stub).
+    # Linux links the system libusb dynamically (dev builds; releases are static
+    # via CI); other platforms need no libusb (Thor path compiles to a stub).
+    if [[ "$(uname -s)" == "Linux" ]] && ! pkg-config --exists libusb-1.0 2>/dev/null; then
+        echo "error: libusb-1.0 dev headers not found (apt install libusb-1.0-0-dev / dnf install libusb1-devel)"
+        exit 1
+    fi
     if [[ "${1:-}" == "--install" ]]; then exec go install -ldflags "$LDFLAGS" ./cmd/wendy; fi
     exec go build -ldflags "$LDFLAGS" -o "${1:-bin/wendy}" ./cmd/wendy
 fi

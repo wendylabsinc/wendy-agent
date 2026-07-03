@@ -719,9 +719,10 @@ func TestPickerModel_RendersSectionHeaders(t *testing.T) {
 }
 
 // TestPickerModel_RendersSectionHeadersInColor verifies that section headers
-// render correctly in truecolor mode. Headers are plain text (no lipgloss
-// styling) to avoid ANSI truncation issues in the bubble table, but this test
-// ensures they still display correctly when the terminal supports truecolor.
+// render correctly in truecolor mode. The header cell text stays plain (no
+// lipgloss styling) to avoid ANSI truncation issues in the bubble table, but
+// this test ensures the label survives intact when the terminal supports
+// truecolor.
 func TestPickerModel_RendersSectionHeadersInColor(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.TrueColor)
 	defer lipgloss.SetColorProfile(termenv.Ascii)
@@ -733,6 +734,45 @@ func TestPickerModel_RendersSectionHeadersInColor(t *testing.T) {
 		if !strings.Contains(view, want) {
 			t.Fatalf("expected colorized sectioned picker to render header %q intact, got %q", want, view)
 		}
+	}
+}
+
+// TestPickerModel_SectionHeadersAreVisuallyDistinct guards the two cues that set
+// a header apart from a selectable device row: the plain-text rule prefix (so it
+// reads as a header even with no color) and the accent color applied after
+// layout (so it pops on capable terminals). Without both, a header like
+// "WendyOS" is indistinguishable from a device name.
+func TestPickerModel_SectionHeadersAreVisuallyDistinct(t *testing.T) {
+	// Rule prefix survives ANSI stripping, so it's present regardless of color.
+	pm := sectionedPicker(t)
+	plain := ansi.Strip(pm.View())
+	for _, label := range []string{"WendyOS", "Wendy Lite"} {
+		if !strings.Contains(plain, sectionHeaderPrefix+label) {
+			t.Fatalf("expected header %q to carry the %q rule prefix, got %q", label, sectionHeaderPrefix, plain)
+		}
+	}
+	// A device row must NOT carry the header prefix.
+	if strings.Contains(plain, sectionHeaderPrefix+"Raspberry Pi 5") {
+		t.Fatalf("device row unexpectedly rendered as a section header: %q", plain)
+	}
+
+	// In truecolor the header line carries escape codes (accent color) that a
+	// plain device row does not.
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	defer lipgloss.SetColorProfile(termenv.Ascii)
+	colored := sectionedPicker(t).View()
+	var headerLine string
+	for _, line := range strings.Split(colored, "\n") {
+		if strings.Contains(ansi.Strip(line), sectionHeaderPrefix+"WendyOS") {
+			headerLine = line
+			break
+		}
+	}
+	if headerLine == "" {
+		t.Fatal("could not locate the WendyOS header line in the colored view")
+	}
+	if headerLine == ansi.Strip(headerLine) {
+		t.Fatalf("expected the header line to be colorized, got plain %q", headerLine)
 	}
 }
 

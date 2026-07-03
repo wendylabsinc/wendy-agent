@@ -1,8 +1,9 @@
-//go:build darwin
+//go:build darwin || linux
 
 package commands
 
 import (
+	"bufio"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -12,6 +13,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -39,7 +41,7 @@ const (
 // flashpack (version + cache state) from the manifest, briefs and confirms with
 // the user, then runs download → stage-1 RCM boot → stage-2 ADB partition flash
 // as a live BuildKit-style step list whose verbose output surfaces only on
-// failure. macOS only.
+// failure. macOS and Linux.
 func installThor(ctx context.Context, version string, nightly, force bool) error {
 	cacheDir, err := osCacheDir()
 	if err != nil {
@@ -159,6 +161,10 @@ func installThor(ctx context.Context, version string, nightly, force bool) error
 				printThorBadStateHint(os.Stdout)
 			}
 			return ErrUserCancelled
+		case errors.Is(err, rcm.ErrUSBAccess):
+			// Stage 1 re-opens the device (it can re-enumerate between the scan
+			// and the flash); a denied re-open gets the same guidance as the scan.
+			fmt.Println("\n" + usbAccessHintBox())
 		case errors.Is(err, flasher.ErrGadgetUnreachable):
 			// Died at ADB setup before any write — the Thor is untouched, so
 			// advise a plain retry rather than a scary bad-state recovery.
@@ -469,38 +475,60 @@ func verifySHA256(path, want string) error {
 }
 
 // pickRecoveryDevice lists Jetsons in recovery mode and selects one (auto when there
-// is exactly one, interactive picker when there are several). An empty first scan
-// keeps rescanning passively until a device shows up or the user quits.
+// is exactly one, interactive picker when there are several). A USB-access denial
+// gets a fix-it hint and a rescan; an empty scan keeps rescanning passively until a
+// device shows up or the user quits.
 func pickRecoveryDevice() (rcm.RecoveryDevice, error) {
-	devs, err := rcm.ListRecoveryDevices()
-	if err != nil {
-		return rcm.RecoveryDevice{}, err
-	}
-	if len(devs) == 0 {
-		if devs, err = waitForRecoveryDevices(); err != nil {
+	for {
+		devs, err := rcm.ListRecoveryDevices()
+		switch {
+		case errors.Is(err, rcm.ErrUSBAccess) && len(devs) == 0:
+			// Nothing usable: explain the fix, then offer a rescan — the user can
+			// install the udev rule (or replug; the ACL grant can race a fresh
+			// plug-in) without restarting the flash.
+			fmt.Println("\n" + usbAccessHintBox())
+			fmt.Print("Press Enter to rescan, or 'q' to quit: ")
+			if readQuit() {
+				return rcm.RecoveryDevice{}, fmt.Errorf("cannot open the Jetson's USB device: permission denied")
+			}
+			continue
+		case errors.Is(err, rcm.ErrUSBAccess):
+			// Some boards opened, another was denied. Warn rather than proceed
+			// silently: auto-select below could otherwise flash the wrong Thor.
+			fmt.Println()
+			fmt.Println(tui.WarningMessage("Another Jetson in recovery mode was detected but couldn't be opened (USB access denied) — it is NOT listed below."))
+		case err != nil:
 			return rcm.RecoveryDevice{}, err
 		}
+		if len(devs) == 0 {
+			// The user already confirmed the Thor is in recovery mode, so an empty
+			// scan usually means cabling or the button sequence needs another try.
+			// Wait passively (spinner) until a device appears or the user quits.
+			if devs, err = waitForRecoveryDevices(); err != nil {
+				return rcm.RecoveryDevice{}, err
+			}
+		}
+		if len(devs) == 1 {
+			return devs[0], nil
+		}
+		var items []tui.PickerItem
+		byKey := make(map[string]rcm.RecoveryDevice, len(devs))
+		for _, d := range devs {
+			byKey[d.PathKey] = d
+			items = append(items, tui.PickerItem{
+				Name:        d.Describe(),
+				Description: "",
+				Section:     "Recovery devices",
+				SortKey:     d.PathKey,
+				Value:       d.PathKey,
+			})
+		}
+		sel, err := pickFromItems("Select the Thor to flash", items)
+		if err != nil {
+			return rcm.RecoveryDevice{}, err
+		}
+		return byKey[sel], nil
 	}
-	if len(devs) == 1 {
-		return devs[0], nil
-	}
-	var items []tui.PickerItem
-	byKey := make(map[string]rcm.RecoveryDevice, len(devs))
-	for _, d := range devs {
-		byKey[d.PathKey] = d
-		items = append(items, tui.PickerItem{
-			Name:        d.Describe(),
-			Description: "",
-			Section:     "Recovery devices",
-			SortKey:     d.PathKey,
-			Value:       d.PathKey,
-		})
-	}
-	sel, err := pickFromItems("Select the Thor to flash", items)
-	if err != nil {
-		return rcm.RecoveryDevice{}, err
-	}
-	return byKey[sel], nil
 }
 
 // waitForRecoveryDevices handles an empty recovery scan: the user already
@@ -685,6 +713,62 @@ func printThorGadgetUnreachableHint(w io.Writer) {
 	fmt.Fprintln(w, tui.Dim("  A running adb server can hold the gadget; if you have Android platform-tools,"))
 	fmt.Fprintln(w, tui.Dim("  run `adb kill-server`. Otherwise unplug/replug the USB-C cable (the port next to"))
 	fmt.Fprintln(w, tui.Dim("  HDMI), re-enter recovery mode, and flash again."))
+}
+
+// The udev rule that grants users access to NVIDIA Jetson USB devices (recovery
+// mode 0955:7023/7026 and the initrd-flash ADB gadget 0955:7100). The deb/rpm
+// packages install the same rule from packaging/linux/udev/70-wendy-jetson.rules;
+// a test asserts the two copies stay identical (a stale copy here would have
+// users write an /etc rule that overrides the packaged /usr/lib one).
+const (
+	usbUdevRulePath = "/etc/udev/rules.d/70-wendy-jetson.rules"
+	usbUdevRule     = `SUBSYSTEM=="usb", ATTRS{idVendor}=="0955", MODE="0660", GROUP="plugdev", TAG+="uaccess"`
+)
+
+// usbAccessHintBox explains how to regain USB access to the Jetson when the OS
+// refuses to open it: on Linux, udev permissions; on macOS, almost always
+// another process holding the device.
+func usbAccessHintBox() string {
+	lines := []string{
+		thorHintTitle.Render("⚠  USB access denied"),
+		"",
+		"A Jetson is in recovery mode, but the OS refused wendy access to its USB device.",
+	}
+	if runtime.GOOS == "linux" {
+		lines = append(lines,
+			"Grant access with a udev rule (one-time; the wendy deb/rpm packages install it):",
+			"",
+			thorHintCmd.Render("  echo '"+usbUdevRule+"' \\"),
+			thorHintCmd.Render("    | sudo tee "+usbUdevRulePath),
+			thorHintCmd.Render("  sudo udevadm control --reload-rules && sudo udevadm trigger"),
+			"",
+			"Add your user to the "+thorHintEmph.Render("plugdev")+" group — if your distro has none, create it",
+			"("+thorHintCmd.Render("sudo groupadd plugdev && sudo usermod -aG plugdev $USER")+", then log in",
+			"again) — replug the USB-C cable and rescan. Or re-run the flash with sudo.",
+		)
+	} else {
+		lines = append(lines,
+			"Another process is likely holding it (another flashing tool, a VM with USB",
+			"passthrough, or another wendy). Quit it, unplug/replug the USB-C cable, and",
+			"rescan.",
+		)
+	}
+	return thorHintBorder.Render(strings.Join(lines, "\n"))
+}
+
+// readQuit reads a single line and reports whether the user asked to quit
+// (q/quit). Any other input — including a bare Enter — means "continue".
+func readQuit() bool {
+	s := bufio.NewScanner(os.Stdin)
+	if !s.Scan() {
+		return true // EOF (e.g. closed stdin) — don't loop forever
+	}
+	switch strings.ToLower(strings.TrimSpace(s.Text())) {
+	case "q", "quit":
+		return true
+	default:
+		return false
+	}
 }
 
 // confirmThorReady prints a titled recovery-mode briefing and asks the user to

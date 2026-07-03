@@ -133,6 +133,7 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 			var agentVersion, osName, osVersion, cpuArch, deviceType, storageMedium, gpuVendor, jetpackVersion, cudaVersion, gpuArch string
 			var diskUsedBytes, diskTotalBytes *int64
 			var partitions []*agentpb.DiskPartition
+			var netInterfaces []*agentpb.NetworkInterface
 			var hasGPU bool
 
 			if target.Bluetooth != nil && target.Bluetooth.IsWendyAgent() {
@@ -169,8 +170,20 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 				diskUsedBytes = resp.DiskUsedBytes
 				diskTotalBytes = resp.DiskTotalBytes
 				partitions = resp.GetPartitions()
+				netInterfaces = resp.GetNetworkInterfaces()
 			} else {
 				return fmt.Errorf("selected device does not support this command")
+			}
+
+			// Best-effort OS-update status (wendyos-update slots + last update
+			// outcome). Older agents answer Unimplemented and OTA-less devices
+			// have nothing to report — device info must keep working either way.
+			var osUpdateStatus *agentpb.GetOSUpdateStatusResponse
+			if target.Agent != nil {
+				if resp, err := target.Agent.AgentService.GetOSUpdateStatus(ctx,
+					&agentpb.GetOSUpdateStatusRequest{IncludeEngineStatus: true}); err == nil {
+					osUpdateStatus = resp
+				}
 			}
 
 			var latestVersion string
@@ -224,6 +237,19 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 				if gpuArch != "" {
 					out["gpuArch"] = gpuArch
 				}
+				if len(netInterfaces) > 0 {
+					ifaces := make([]map[string]any, len(netInterfaces))
+					for i, iface := range netInterfaces {
+						ifaces[i] = map[string]any{
+							"name":        iface.GetName(),
+							"ipAddresses": iface.GetIpAddresses(),
+						}
+					}
+					out["networkInterfaces"] = ifaces
+				}
+				if osUpdate := osUpdateJSON(osUpdateStatus); osUpdate != nil {
+					out["osUpdate"] = osUpdate
+				}
 				if checkUpdates {
 					out["latestVersion"] = latestVersion
 					out["updateAvailable"] = version.CompareVersions(latestVersion, agentVersion) > 0
@@ -250,6 +276,9 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 			} else if diskUsedBytes != nil && diskTotalBytes != nil {
 				fmt.Printf("%s %s\n", tui.Dim("Disk Usage:"), tui.Value(formatDiskUsage(*diskUsedBytes, *diskTotalBytes)))
 			}
+			if len(netInterfaces) > 0 {
+				fmt.Print(formatNetworkInterfaces(netInterfaces))
+			}
 			if hasGPU {
 				vendor := gpuVendor
 				if vendor == "" {
@@ -265,6 +294,9 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 				if gpuArch != "" {
 					fmt.Printf("%s %s\n", tui.Dim("GPU Arch:"), tui.Value(gpuArch))
 				}
+			}
+			if block := formatOSUpdateInfo(osUpdateStatus); block != "" {
+				fmt.Print(block)
 			}
 			fmt.Printf("%s %s\n", tui.Dim("CLI Version:"), tui.Value(version.Version))
 

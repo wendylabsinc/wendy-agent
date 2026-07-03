@@ -391,6 +391,15 @@ jobs:
           go-version-file: go.mod
           cache: false
 
+      # The Linux CLI links libusb via cgo (Thor flashing), so the self-hosted
+      # runner needs the dev headers before `make build-cli`.
+      - name: Prepare Linux build dependencies
+        run: |
+          set -euo pipefail
+          if ! pkg-config --exists libusb-1.0 2>/dev/null; then
+            sudo apt-get update && sudo apt-get install -y pkg-config libusb-1.0-0-dev
+          fi
+
       - name: Build CLI
         working-directory: go
         run: make build-cli

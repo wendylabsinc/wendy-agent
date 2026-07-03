@@ -1,8 +1,9 @@
-//go:build darwin
+//go:build darwin || linux
 
 package rcm
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -10,6 +11,12 @@ import (
 
 	"github.com/google/gousb"
 )
+
+// ErrUSBAccess reports that a Jetson in recovery mode is present but the OS
+// refused to open it (LIBUSB_ERROR_ACCESS). On Linux this means the current user
+// lacks permission on the /dev/bus/usb node — fixed by a udev rule or sudo; the
+// caller turns this into actionable guidance.
+var ErrUSBAccess = errors.New("USB device access denied")
 
 func isRecoveryPID(p gousb.ID) bool {
 	return p == gousb.ID(ProductOrin) || p == gousb.ID(ProductThor)
@@ -31,9 +38,18 @@ func ListRecoveryDevices() ([]RecoveryDevice, error) {
 	ctx.Debug(0)
 	defer ctx.Close()
 
-	devs, _ := ctx.OpenDevices(func(d *gousb.DeviceDesc) bool {
+	devs, err := ctx.OpenDevices(func(d *gousb.DeviceDesc) bool {
 		return d.Vendor == gousb.ID(VendorNVIDIA) && isRecoveryPID(d.Product)
 	})
+	// The filter only opens Jetson recovery devices, so an access error means one
+	// is attached but unopenable. Return it alongside whatever did open — a
+	// multi-device host must not silently flash the wrong board because the
+	// intended one was dropped. Other enumeration errors keep the lenient
+	// "rescan" behavior.
+	var accessErr error
+	if errors.Is(err, gousb.ErrorAccess) {
+		accessErr = fmt.Errorf("%w: a Jetson in recovery mode is connected but could not be opened: %v", ErrUSBAccess, err)
+	}
 	var out []RecoveryDevice
 	for _, dev := range devs {
 		rd := RecoveryDevice{PathKey: portKey(dev.Desc), Product: uint16(dev.Desc.Product)}
@@ -46,7 +62,7 @@ func ListRecoveryDevices() ([]RecoveryDevice, error) {
 		out = append(out, rd)
 		dev.Close()
 	}
-	return out, nil
+	return out, accessErr
 }
 
 // WaitForDeviceAt blocks until the Jetson at pathKey (from ListRecoveryDevices)
@@ -57,10 +73,16 @@ func WaitForDeviceAt(pathKey string) (*Device, error) {
 
 	deadline := time.Now().Add(60 * time.Second)
 	for time.Now().Before(deadline) {
-		devs, _ := ctx.OpenDevices(func(d *gousb.DeviceDesc) bool {
+		devs, err := ctx.OpenDevices(func(d *gousb.DeviceDesc) bool {
 			return d.Vendor == gousb.ID(VendorNVIDIA) && isRecoveryPID(d.Product) &&
 				(pathKey == "" || portKey(d) == pathKey)
 		})
+		// Access denied won't heal within the wait window; fail now with the
+		// classified error instead of spinning to a misleading timeout.
+		if len(devs) == 0 && errors.Is(err, gousb.ErrorAccess) {
+			ctx.Close()
+			return nil, fmt.Errorf("%w: %v", ErrUSBAccess, err)
+		}
 		var chosen *gousb.Device
 		for i, dev := range devs {
 			if i == 0 {

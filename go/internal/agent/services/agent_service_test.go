@@ -662,3 +662,107 @@ func TestGetOSUpdateStatus_ZeroFinalizedAt(t *testing.T) {
 		t.Errorf("FinalizedAtUnix = %d, want 0 for unfinalized record", resp.GetFinalizedAtUnix())
 	}
 }
+
+// ---------- detectCUDAVersionIn ----------
+
+const nvccVersionOutput = `nvcc: NVIDIA (R) Cuda compiler driver
+Copyright (c) 2005-2025 NVIDIA Corporation
+Built on Tue_Oct_14_19:22:29_PDT_2025
+Cuda compilation tools, release 13.2, V13.2.78
+Build cuda_13.2.r13.2/compiler.36123456_0
+`
+
+func noLookPath(string) (string, error) {
+	return "", fmt.Errorf("not found")
+}
+
+func noRunCmd(name string, _ ...string) ([]byte, error) {
+	return nil, fmt.Errorf("unexpected command %q", name)
+}
+
+func writeCUDAFile(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDetectCUDAVersion_LegacyVersionTxt(t *testing.T) {
+	usrLocal := t.TempDir()
+	writeCUDAFile(t, filepath.Join(usrLocal, "cuda", "version.txt"), "CUDA Version 10.2.89")
+
+	if got := detectCUDAVersionIn(usrLocal, noLookPath, noRunCmd); got != "10.2.89" {
+		t.Errorf("detectCUDAVersionIn = %q, want %q", got, "10.2.89")
+	}
+}
+
+func TestDetectCUDAVersion_LegacyVersionJSON(t *testing.T) {
+	usrLocal := t.TempDir()
+	writeCUDAFile(t, filepath.Join(usrLocal, "cuda", "version.json"),
+		`{"cuda": {"name": "CUDA SDK", "version": "12.6.68"}}`)
+
+	if got := detectCUDAVersionIn(usrLocal, noLookPath, noRunCmd); got != "12.6.68" {
+		t.Errorf("detectCUDAVersionIn = %q, want %q", got, "12.6.68")
+	}
+}
+
+func TestDetectCUDAVersion_NvccOnPath(t *testing.T) {
+	usrLocal := t.TempDir()
+	lookPath := func(name string) (string, error) {
+		if name == "nvcc" {
+			return "/opt/bin/nvcc", nil
+		}
+		return "", fmt.Errorf("not found")
+	}
+	runCmd := func(name string, args ...string) ([]byte, error) {
+		if name == "/opt/bin/nvcc" && len(args) == 1 && args[0] == "--version" {
+			return []byte(nvccVersionOutput), nil
+		}
+		return nil, fmt.Errorf("unexpected command %q %v", name, args)
+	}
+
+	if got := detectCUDAVersionIn(usrLocal, lookPath, runCmd); got != "13.2" {
+		t.Errorf("detectCUDAVersionIn = %q, want %q", got, "13.2")
+	}
+}
+
+// JetPack 7 (Thor) layout: no /usr/local/cuda symlink, no version files, nvcc
+// not on PATH — only /usr/local/cuda-13.2/bin/nvcc exists.
+func TestDetectCUDAVersion_JetPack7VersionedDir(t *testing.T) {
+	usrLocal := t.TempDir()
+	nvcc := filepath.Join(usrLocal, "cuda-13.2", "bin", "nvcc")
+	writeCUDAFile(t, nvcc, "")
+
+	runCmd := func(name string, args ...string) ([]byte, error) {
+		if name == nvcc && len(args) == 1 && args[0] == "--version" {
+			return []byte(nvccVersionOutput), nil
+		}
+		return nil, fmt.Errorf("unexpected command %q %v", name, args)
+	}
+
+	if got := detectCUDAVersionIn(usrLocal, noLookPath, runCmd); got != "13.2" {
+		t.Errorf("detectCUDAVersionIn = %q, want %q", got, "13.2")
+	}
+}
+
+func TestDetectCUDAVersion_VersionFileWinsOverNvcc(t *testing.T) {
+	usrLocal := t.TempDir()
+	writeCUDAFile(t, filepath.Join(usrLocal, "cuda", "version.json"),
+		`{"cuda": {"version": "12.6.68"}}`)
+	writeCUDAFile(t, filepath.Join(usrLocal, "cuda-13.2", "bin", "nvcc"), "")
+
+	if got := detectCUDAVersionIn(usrLocal, noLookPath, noRunCmd); got != "12.6.68" {
+		t.Errorf("detectCUDAVersionIn = %q, want %q", got, "12.6.68")
+	}
+}
+
+func TestDetectCUDAVersion_NothingFound(t *testing.T) {
+	usrLocal := t.TempDir()
+
+	if got := detectCUDAVersionIn(usrLocal, noLookPath, noRunCmd); got != "" {
+		t.Errorf("detectCUDAVersionIn = %q, want empty", got)
+	}
+}
