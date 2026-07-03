@@ -13,6 +13,7 @@ let package = Package(
         .package(url: "https://github.com/wendylabsinc/gstreamer-swift.git", branch: "main"),
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.7.1"),
         .package(url: "https://github.com/huggingface/swift-transformers.git", from: "1.3.0"),
+        .package(url: "https://github.com/swhitty/FlyingFox.git", from: "0.20.0"),
     ],
     targets: [
         .executableTarget(
@@ -22,6 +23,18 @@ let package = Package(
                 .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
                 .product(name: "MLXHuggingFace", package: "mlx-swift-lm"),
                 .product(name: "Transformers", package: "swift-transformers"),
+                .product(name: "ArgumentParser", package: "swift-argument-parser"),
+            ]
+        ),
+        .executableTarget(
+            name: "MLXServer",
+            dependencies: [
+                .product(name: "MLXVLM", package: "mlx-swift-lm"),
+                .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
+                .product(name: "MLXHuggingFace", package: "mlx-swift-lm"),
+                .product(name: "Transformers", package: "swift-transformers"),
+                .product(name: "GStreamer", package: "gstreamer-swift"),
+                .product(name: "FlyingFox", package: "FlyingFox"),
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ]
         ),

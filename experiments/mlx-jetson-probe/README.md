@@ -7,17 +7,27 @@ an MLX checkpoint, generates text, and prints tokens/second — directly
 comparable with the llama.cpp numbers measured for HelloVLM on the same
 device (gemma-3-4b Q4: ~56 tok/s decode, gemma-3-27b Q4: ~12 tok/s).
 
-## Why text-only (for now)
+## Status (2026-07-03)
 
-`mlx-swift-lm`'s vision path (MLXVLM) is **gated to Apple platforms**: all
-image preprocessing (`MediaProcessing.swift`), the `CIImage` input type, and
-parts of the VLM model classes are `#if os(macOS/iOS/...)`. On Linux, images
-can only enter as raw `MLXArray` pixels or file URLs with no
-decode/resize/normalize behind them. Until a Linux image pipeline exists in
-`mlx-swift-lm` (JPEG decode + model-specific preprocessing), an MLX-backed
-HelloVLM cannot see camera frames. Text generation is the honest first
-milestone — it validates the CUDA backend, kernels, memory behavior, and
-performance on Thor.
+All three stages proven on the physical Thor:
+
+- **MLXProbe** — text generation, ~44 tok/s (gemma-3-4b-it-4bit; llama.cpp
+  Q4 on the same device: ~56 tok/s).
+- **MLXVisionProbe** — camera (or `--image-file`) → GStreamer 896×896 RGB →
+  `UserInput.Image.array` → gemma-3 vision tower, correct descriptions at
+  ~42 tok/s. Uses the Linux image path added on `mlx-swift-lm`
+  branch `kb/linux-image-path` (draft PR wendylabsinc/mlx-swift-lm#1).
+- **MLXServer** — minimal OpenAI-compatible server (`/v1/models`,
+  non-streaming `/v1/chat/completions` with data-URI JPEG images) around the
+  same stack, so HelloVLM's app runs against MLX **unchanged** — a drop-in
+  alternative to the llama.cpp `llm/` service:
+
+  ```sh
+  MLXServer --model-path /models/mlx/gemma-3-4b-it-4bit --port 11434
+  ```
+
+  One request at a time (like `llama-server -np 1`); images are decoded via
+  GStreamer `jpegdec` at the model's native size, so no MLX-side resize.
 
 ## Findings from the branch study (2026-07-02)
 
@@ -64,10 +74,18 @@ wendy run --device <device> -- --prompt "..." --max-tokens 100
    llama.cpp's 56 tok/s (gemma-3-4b Q4 class).
 3. Memory behavior (unified memory; watch `nvidia-smi` / `free`).
 
-## Next steps after a successful probe
+## Next steps
 
-1. Wrap in an OpenAI-compatible server → drop-in `llm/` alternative for
-   HelloVLM (text-only at first).
-2. Contribute a Linux image pipeline to `mlx-swift-lm` (JPEG decode +
-   preprocessing) to unlock MLXVLM on Jetson — then HelloVLM gains a true
-   MLX backend and converges with HelloMLX.
+1. Finalize the Dockerfile from the on-device dev-container recipe
+   (cudnn-frontend + CUTLASS headers, CUDA 13 `host_config.h` clang cap
+   patch, gfortran, dpkg path-exclude for the read-only CDI glvnd mount)
+   so `wendy run` can deploy MLXServer as a proper `llm-mlx/` service.
+2. Bicubic resize parity in `MLXImageProcessing` (currently bilinear).
+3. Converge with upstream ml-explore/mlx-swift-lm#321 when it lands.
+
+Note for macOS consumers of the same package graph: plain SwiftPM does not
+compile Metal shaders — build through Xcode/`xcodebuild` (upstream mlx-swift
+documents this). Also, the fork's `.gitmodules` references the mlx submodule
+over SSH (`git@github.com:wendylabsinc/mlx.git`), which breaks resolution on
+machines without GitHub SSH keys; workaround:
+`git config --global url."https://github.com/".insteadOf "git@github.com:"`.
