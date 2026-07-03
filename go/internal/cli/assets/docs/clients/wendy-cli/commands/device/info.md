@@ -10,9 +10,20 @@ wendy device info [flags]
 
 ## Description
 
-`wendy device info` queries the connected device's agent and prints its version, operating system, CPU architecture, GPU presence, and other hardware details. Use this command anywhere device metadata is needed — in scripts, CI pipelines, or interactively.
+`wendy device info` queries the connected device's agent and prints its version, operating system, CPU architecture, CPU core count, total RAM, GPU presence, and other hardware details. Use this command anywhere device metadata is needed — in scripts, CI pipelines, or interactively.
 
 The output format follows the standard `--json` / human-readable convention shared across all device commands.
+
+### CPU and memory output
+
+Two headline hardware specs are included when the agent reports them. Both are omitted from the human-readable output and the JSON map when the agent cannot read them (older agents or non-Linux hosts), so treat them as optional.
+
+| Field (JSON) | Human-readable label | Description |
+|---|---|---|
+| `cpuCount` | `CPU Cores:` | Number of online logical CPU cores. |
+| `memTotalBytes` | `Memory:` | Total physical RAM in bytes; human-readable output shows a formatted size (e.g. `131.9 GB`). |
+
+For **live** CPU and memory utilization, use [`wendy device top`](top.md).
 
 ### GPU output fields
 
@@ -26,6 +37,17 @@ On GPU-capable devices, the following GPU fields are included. Each is omitted f
 | `gpuArch` | `GPU Arch:` | GPU architecture identifier. Format is vendor-specific (e.g. `sm_87` for NVIDIA). |
 
 `wendy device info` reports static GPU *metadata* (vendor, architecture, toolkit versions). For **live** GPU utilization, memory, temperature, and power draw, use [`wendy device top`](top.md).
+
+### Network output
+
+The output includes the device's network interfaces and their routable IP addresses under a `Network:` block (human-readable) or a `networkInterfaces` array (JSON). This is the address to use to reach an app running on the device — the `.local` hostname does not always resolve on every network.
+
+Loopback, down, and container/virtual bridge interfaces are omitted, as are link-local addresses. The section is absent entirely when the agent cannot enumerate interfaces (e.g. older agents).
+
+| Field (JSON) | Human-readable label | Description |
+|---|---|---|
+| `networkInterfaces[].name` | (row label) | Interface name (e.g. `eth0`, `wlan0`). |
+| `networkInterfaces[].ipAddresses` | (row value) | Routable IPv4/IPv6 addresses assigned to the interface. |
 
 ## Flags
 
@@ -51,7 +73,7 @@ wendy device info --device my-device.local --json
 Extract specific fields with `jq`:
 
 ```sh
-wendy device info --device my-device.local --json | jq '{osVersion, agentVersion: .version, deviceType}'
+wendy device info --device my-device.local --json | jq '{osVersion, agentVersion: .version, deviceType, cpuCount, memTotalBytes}'
 ```
 
 ## Deprecated alias

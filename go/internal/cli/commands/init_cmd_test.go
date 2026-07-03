@@ -2,6 +2,7 @@ package commands
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -741,5 +742,221 @@ func TestInitCommand_InstallClaudeSkillsFalseDoesNotRequireClaude(t *testing.T) 
 
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("Execute: %v", err)
+	}
+}
+
+func writeTemplateWendyJSON(t *testing.T, content string) string {
+	t.Helper()
+	cfgPath := filepath.Join(t.TempDir(), "wendy.json")
+	if err := os.WriteFile(cfgPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("writing wendy.json: %v", err)
+	}
+	return cfgPath
+}
+
+func readEntitlements(t *testing.T, cfgPath string) []appconfig.Entitlement {
+	t.Helper()
+	cfg, err := appconfig.LoadFromFile(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadFromFile: %v", err)
+	}
+	return cfg.Entitlements
+}
+
+// The WDY-1810 repro: --template simple-api --entitlement gpu must produce a
+// wendy.json containing both the template's network entitlement and gpu.
+func TestMergeTemplateEntitlements_AddsFlagEntitlementToTemplateConfig(t *testing.T) {
+	cfgPath := writeTemplateWendyJSON(t, `{
+  "appId": "autotest-gpu",
+  "version": "0.1.0",
+  "platform": "linux",
+  "language": "python",
+  "entitlements": [{"type": "network"}]
+}`)
+
+	requested, err := templateEntitlementsFromFlags(targetWendyOS, initOptions{
+		entitlementsSet: true,
+		entitlements:    []string{"gpu"},
+	})
+	if err != nil {
+		t.Fatalf("templateEntitlementsFromFlags: %v", err)
+	}
+
+	added, err := mergeTemplateEntitlements(cfgPath, requested)
+	if err != nil {
+		t.Fatalf("mergeTemplateEntitlements: %v", err)
+	}
+	if len(added) != 1 || added[0] != appconfig.EntitlementGPU {
+		t.Fatalf("added = %v, want [gpu]", added)
+	}
+
+	entitlements := readEntitlements(t, cfgPath)
+	gotTypes := map[string]bool{}
+	for _, ent := range entitlements {
+		gotTypes[ent.Type] = true
+	}
+	if !gotTypes[appconfig.EntitlementNetwork] || !gotTypes[appconfig.EntitlementGPU] {
+		t.Fatalf("entitlements = %+v, want network and gpu", entitlements)
+	}
+}
+
+func TestMergeTemplateEntitlements_NoFlagsIsNoOp(t *testing.T) {
+	requested, err := templateEntitlementsFromFlags(targetWendyOS, initOptions{})
+	if err != nil {
+		t.Fatalf("templateEntitlementsFromFlags: %v", err)
+	}
+	if requested != nil {
+		t.Fatalf("requested = %+v, want nil", requested)
+	}
+
+	// No requested entitlements: the file must not even be read.
+	added, err := mergeTemplateEntitlements(filepath.Join(t.TempDir(), "missing", "wendy.json"), nil)
+	if err != nil {
+		t.Fatalf("mergeTemplateEntitlements: %v", err)
+	}
+	if added != nil {
+		t.Fatalf("added = %v, want nil", added)
+	}
+}
+
+func TestMergeTemplateEntitlements_MissingConfigFails(t *testing.T) {
+	_, err := mergeTemplateEntitlements(
+		filepath.Join(t.TempDir(), "wendy.json"),
+		[]appconfig.Entitlement{{Type: appconfig.EntitlementGPU}},
+	)
+	if err == nil {
+		t.Fatal("expected merge into a missing wendy.json to fail")
+	}
+}
+
+func TestMergeTemplateEntitlements_CoveredEntitlementsLeaveFileUntouched(t *testing.T) {
+	content := `{
+  "appId": "demo",
+  "entitlements": [{"type": "network", "mode": "host"}, {"type": "gpu"}]
+}`
+	cfgPath := writeTemplateWendyJSON(t, content)
+
+	added, err := mergeTemplateEntitlements(cfgPath, []appconfig.Entitlement{
+		{Type: appconfig.EntitlementNetwork},
+		{Type: appconfig.EntitlementGPU},
+	})
+	if err != nil {
+		t.Fatalf("mergeTemplateEntitlements: %v", err)
+	}
+	if added != nil {
+		t.Fatalf("added = %v, want nil", added)
+	}
+
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(data) != content {
+		t.Fatalf("wendy.json was rewritten:\n%s", data)
+	}
+}
+
+func TestMergeTemplateEntitlements_PreservesUnknownKeysAndTemplateEntries(t *testing.T) {
+	cfgPath := writeTemplateWendyJSON(t, `{
+  "appId": "demo",
+  "futureKey": {"nested": true},
+  "entitlements": [{"type": "network", "mode": "host", "futureEntKey": 7}]
+}`)
+
+	added, err := mergeTemplateEntitlements(cfgPath, []appconfig.Entitlement{
+		{Type: appconfig.EntitlementNetwork},
+		{Type: appconfig.EntitlementAudio},
+	})
+	if err != nil {
+		t.Fatalf("mergeTemplateEntitlements: %v", err)
+	}
+	if len(added) != 1 || added[0] != appconfig.EntitlementAudio {
+		t.Fatalf("added = %v, want [audio]", added)
+	}
+
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if _, ok := raw["futureKey"]; !ok {
+		t.Fatalf("unknown top-level key dropped: %s", data)
+	}
+	if !strings.Contains(string(raw["entitlements"]), "futureEntKey") {
+		t.Fatalf("unknown entitlement key dropped: %s", raw["entitlements"])
+	}
+
+	entitlements := readEntitlements(t, cfgPath)
+	if len(entitlements) != 2 {
+		t.Fatalf("entitlements = %+v, want template network + audio", entitlements)
+	}
+	if entitlements[0].Type != appconfig.EntitlementNetwork || entitlements[0].Mode != "host" {
+		t.Fatalf("template network entry changed: %+v", entitlements[0])
+	}
+	if entitlements[1].Type != appconfig.EntitlementAudio {
+		t.Fatalf("entitlements[1] = %+v, want audio", entitlements[1])
+	}
+}
+
+func TestMergeTemplateEntitlements_PersistDedupedByName(t *testing.T) {
+	cfgPath := writeTemplateWendyJSON(t, `{
+  "appId": "demo",
+  "entitlements": [
+    {"type": "network"},
+    {"type": "persist", "name": "data", "path": "/data"}
+  ]
+}`)
+
+	added, err := mergeTemplateEntitlements(cfgPath, []appconfig.Entitlement{
+		{Type: appconfig.EntitlementPersist, Name: "data", Path: "/other"},
+		{Type: appconfig.EntitlementPersist, Name: "cache", Path: "/cache"},
+	})
+	if err != nil {
+		t.Fatalf("mergeTemplateEntitlements: %v", err)
+	}
+	if len(added) != 1 || added[0] != appconfig.EntitlementPersist {
+		t.Fatalf("added = %v, want [persist]", added)
+	}
+
+	entitlements := readEntitlements(t, cfgPath)
+	var persistNames []string
+	for _, ent := range entitlements {
+		if ent.Type == appconfig.EntitlementPersist {
+			persistNames = append(persistNames, ent.Name)
+		}
+	}
+	if len(persistNames) != 2 || persistNames[0] != "data" || persistNames[1] != "cache" {
+		t.Fatalf("persist names = %v, want [data cache]", persistNames)
+	}
+}
+
+func TestTemplateEntitlementCovers_GPIOPins(t *testing.T) {
+	allPins := []appconfig.Entitlement{{Type: appconfig.EntitlementGPIO}}
+	somePins := []appconfig.Entitlement{{Type: appconfig.EntitlementGPIO, Pins: []int{17, 27}}}
+
+	req := appconfig.Entitlement{Type: appconfig.EntitlementGPIO, Pins: []int{17}}
+	if !templateEntitlementCovers(allPins, req) {
+		t.Fatal("pinless template gpio entry should cover any requested pins")
+	}
+	if !templateEntitlementCovers(somePins, req) {
+		t.Fatal("template gpio pins [17 27] should cover requested [17]")
+	}
+
+	req.Pins = []int{17, 22}
+	if templateEntitlementCovers(somePins, req) {
+		t.Fatal("template gpio pins [17 27] should not cover requested [17 22]")
+	}
+}
+
+func TestTemplateEntitlementsFromFlags_DarwinRejectsEntitlementFlags(t *testing.T) {
+	_, err := templateEntitlementsFromFlags(targetDarwin, initOptions{
+		entitlementsSet: true,
+		entitlements:    []string{"gpu"},
+	})
+	if err == nil {
+		t.Fatal("expected darwin + --entitlement to fail")
 	}
 }

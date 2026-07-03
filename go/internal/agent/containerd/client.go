@@ -9,8 +9,10 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -2625,6 +2627,66 @@ func (c *Client) ListContainers(ctx context.Context) ([]*agentpb.AppContainer, e
 		})
 	}
 	return result, nil
+}
+
+// AppDeclaredVolumes maps every Wendy-managed app (bare appID) to the
+// persistent volume names its containers declare via persist entitlement
+// labels. Names are sanitized the same way applyPersist sanitizes them before
+// creating the host directory, so they match the directory names under
+// /var/lib/wendy/volumes. Multi-service apps are grouped under their appID
+// with the union of all services' declarations.
+//
+// This is the source of truth for volume ownership: volumes are shared across
+// apps by name, so a name may appear under several apps. Containers deployed
+// before entitlement labels existed carry no persist labels and contribute
+// nothing — callers must treat an app that is absent from the map as
+// "ownership unknown", not "owns nothing", and fail safe.
+func (c *Client) AppDeclaredVolumes(ctx context.Context) (map[string][]string, error) {
+	ctx = c.withNamespace(ctx)
+
+	ctrs, err := c.client.Containers(ctx, fmt.Sprintf("labels.%q", labelKeyAppVersion))
+	if err != nil {
+		return nil, fmt.Errorf("listing containers: %w", err)
+	}
+
+	declared := make(map[string]map[string]bool)
+	for _, ctr := range ctrs {
+		info, err := ctr.Info(ctx)
+		if err != nil {
+			// Propagate rather than skip: a container we cannot inspect might
+			// declare a volume another app is about to delete, and callers rely
+			// on a complete map to protect shared volumes.
+			return nil, fmt.Errorf("getting container info for %q: %w", ctr.ID(), err)
+		}
+		appID := info.Labels[labelKeyAppID]
+		if appID == "" {
+			appID = ctr.ID()
+		}
+		for _, ent := range parseEntitlementsFromAnnotations(info.Labels) {
+			if ent.Type != appconfig.EntitlementPersist {
+				continue
+			}
+			name := filepath.Base(ent.Name)
+			if name == "." || name == ".." || name == "/" || name == "" {
+				continue
+			}
+			if declared[appID] == nil {
+				declared[appID] = make(map[string]bool)
+			}
+			declared[appID][name] = true
+		}
+	}
+
+	out := make(map[string][]string, len(declared))
+	for app, names := range declared {
+		list := make([]string, 0, len(names))
+		for n := range names {
+			list = append(list, n)
+		}
+		sort.Strings(list)
+		out[app] = list
+	}
+	return out, nil
 }
 
 func (c *Client) GetContainerMCPPort(ctx context.Context, appName string) (uint32, error) {

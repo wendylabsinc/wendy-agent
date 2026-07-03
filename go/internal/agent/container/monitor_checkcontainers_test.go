@@ -115,6 +115,9 @@ func (f *fakeContainerd) GetContainerMCPPort(ctx context.Context, appName string
 func (f *fakeContainerd) GetContainerRestartPolicyLabel(ctx context.Context, appName string) (string, error) {
 	return "", nil
 }
+func (f *fakeContainerd) AppDeclaredVolumes(ctx context.Context) (map[string][]string, error) {
+	return nil, nil
+}
 
 func (f *fakeContainerd) MissingChunks(_ context.Context, hashes [][32]byte) ([][32]byte, error) {
 	return hashes, nil
