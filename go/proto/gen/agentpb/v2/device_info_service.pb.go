@@ -250,7 +250,13 @@ type DiskPartition struct {
 	// Bytes currently used on the filesystem.
 	UsedBytes int64 `protobuf:"varint,4,opt,name=used_bytes,json=usedBytes,proto3" json:"used_bytes,omitempty"`
 	// Total bytes on the filesystem.
-	TotalBytes    int64 `protobuf:"varint,5,opt,name=total_bytes,json=totalBytes,proto3" json:"total_bytes,omitempty"`
+	TotalBytes int64 `protobuf:"varint,5,opt,name=total_bytes,json=totalBytes,proto3" json:"total_bytes,omitempty"`
+	// Raw size of the backing block device / partition in bytes, as reported by
+	// the kernel (sysfs) — the provisioned partition size, which is larger than
+	// total_bytes by the filesystem's own metadata overhead (ext4 journal,
+	// inode tables, reserved GDT blocks). Zero when the size cannot be
+	// determined (non-Linux hosts, or agents predating this field).
+	SizeBytes     int64 `protobuf:"varint,6,opt,name=size_bytes,json=sizeBytes,proto3" json:"size_bytes,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -316,6 +322,13 @@ func (x *DiskPartition) GetUsedBytes() int64 {
 func (x *DiskPartition) GetTotalBytes() int64 {
 	if x != nil {
 		return x.TotalBytes
+	}
+	return 0
+}
+
+func (x *DiskPartition) GetSizeBytes() int64 {
+	if x != nil {
+		return x.SizeBytes
 	}
 	return 0
 }
@@ -519,7 +532,7 @@ const file_wendy_agent_services_v2_device_info_service_proto_rawDesc = "" +
 	"\r_cuda_versionB\x12\n" +
 	"\x10_disk_used_bytesB\x13\n" +
 	"\x11_disk_total_bytesB\v\n" +
-	"\t_gpu_arch\"\xa7\x01\n" +
+	"\t_gpu_arch\"\xc6\x01\n" +
 	"\rDiskPartition\x12\x1e\n" +
 	"\n" +
 	"mountpoint\x18\x01 \x01(\tR\n" +
@@ -531,7 +544,9 @@ const file_wendy_agent_services_v2_device_info_service_proto_rawDesc = "" +
 	"\n" +
 	"used_bytes\x18\x04 \x01(\x03R\tusedBytes\x12\x1f\n" +
 	"\vtotal_bytes\x18\x05 \x01(\x03R\n" +
-	"totalBytes\"c\n" +
+	"totalBytes\x12\x1d\n" +
+	"\n" +
+	"size_bytes\x18\x06 \x01(\x03R\tsizeBytes\"c\n" +
 	"\x1fListHardwareCapabilitiesRequest\x12,\n" +
 	"\x0fcategory_filter\x18\x01 \x01(\tH\x00R\x0ecategoryFilter\x88\x01\x01B\x12\n" +
 	"\x10_category_filter\"\xc7\x03\n" +

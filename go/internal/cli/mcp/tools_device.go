@@ -159,6 +159,9 @@ func (s *mcpServer) handleDeviceInfo(ctx context.Context, _ mcpgo.CallToolReques
 				"used_bytes":  p.GetUsedBytes(),
 				"total_bytes": p.GetTotalBytes(),
 			}
+			if p.GetSizeBytes() > 0 {
+				parts[i]["size_bytes"] = p.GetSizeBytes()
+			}
 		}
 		info["partitions"] = parts
 	}

@@ -2,6 +2,9 @@ package services
 
 import (
 	"math"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -17,6 +20,10 @@ type partitionUsage struct {
 	device     string
 	usedBytes  int64
 	totalBytes int64
+	// sizeBytes is the raw backing block-device size (the provisioned
+	// partition size). It is larger than totalBytes by the filesystem's own
+	// metadata overhead. Zero when the size cannot be determined.
+	sizeBytes int64
 }
 
 // mountEntry is one parsed line from /proc/mounts.
@@ -73,6 +80,24 @@ func unescapeMountField(field string) string {
 		`\134`, `\`,
 	)
 	return replacer.Replace(field)
+}
+
+// blockSizeFromSysfs reads the raw size of a block device from
+// classBlockDir/<name>/size, which the kernel always reports in 512-byte
+// sectors regardless of the device's logical block size. Returns the size in
+// bytes, or (0, false) when the entry is missing or unreadable. classBlockDir
+// is a parameter so the reader is testable against a fixture directory; the
+// production caller passes "/sys/class/block".
+func blockSizeFromSysfs(classBlockDir, name string) (int64, bool) {
+	data, err := os.ReadFile(filepath.Join(classBlockDir, name, "size"))
+	if err != nil {
+		return 0, false
+	}
+	sectors, err := strconv.ParseInt(strings.TrimSpace(string(data)), 10, 64)
+	if err != nil || sectors <= 0 || sectors > math.MaxInt64/512 {
+		return 0, false
+	}
+	return sectors * 512, true
 }
 
 func calculateDiskUsage(blocks, freeBlocks, blockSize uint64) (diskUsage, bool) {

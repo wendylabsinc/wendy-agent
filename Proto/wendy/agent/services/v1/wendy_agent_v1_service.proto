@@ -242,6 +242,12 @@ message DiskPartition {
     int64 used_bytes = 4;
     // Total bytes on the filesystem.
     int64 total_bytes = 5;
+    // Raw size of the backing block device / partition in bytes, as reported by
+    // the kernel (sysfs) — the provisioned partition size, which is larger than
+    // total_bytes by the filesystem's own metadata overhead (ext4 journal,
+    // inode tables, reserved GDT blocks). Zero when the size cannot be
+    // determined (non-Linux hosts, or agents predating this field).
+    int64 size_bytes = 6;
 }
 
 // Request message for listing WiFi networks

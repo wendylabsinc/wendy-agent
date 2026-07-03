@@ -107,6 +107,7 @@ func (s *AgentService) GetAgentVersion(_ context.Context, _ *agentpb.GetAgentVer
 			Device:     p.device,
 			UsedBytes:  p.usedBytes,
 			TotalBytes: p.totalBytes,
+			SizeBytes:  p.sizeBytes,
 		})
 	}
 

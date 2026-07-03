@@ -223,17 +223,7 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 					out["cpuCount"] = cpuCount
 				}
 				if len(partitions) > 0 {
-					parts := make([]map[string]any, len(partitions))
-					for i, p := range partitions {
-						parts[i] = map[string]any{
-							"mountpoint": p.GetMountpoint(),
-							"filesystem": p.GetFilesystem(),
-							"device":     p.GetDevice(),
-							"usedBytes":  p.GetUsedBytes(),
-							"totalBytes": p.GetTotalBytes(),
-						}
-					}
-					out["partitions"] = parts
+					out["partitions"] = partitionsJSON(partitions)
 				}
 				if gpuVendor != "" {
 					out["gpuVendor"] = gpuVendor

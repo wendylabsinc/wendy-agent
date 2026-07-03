@@ -954,7 +954,13 @@ type DiskPartition struct {
 	// Bytes currently used on the filesystem.
 	UsedBytes int64 `protobuf:"varint,4,opt,name=used_bytes,json=usedBytes,proto3" json:"used_bytes,omitempty"`
 	// Total bytes on the filesystem.
-	TotalBytes    int64 `protobuf:"varint,5,opt,name=total_bytes,json=totalBytes,proto3" json:"total_bytes,omitempty"`
+	TotalBytes int64 `protobuf:"varint,5,opt,name=total_bytes,json=totalBytes,proto3" json:"total_bytes,omitempty"`
+	// Raw size of the backing block device / partition in bytes, as reported by
+	// the kernel (sysfs) — the provisioned partition size, which is larger than
+	// total_bytes by the filesystem's own metadata overhead (ext4 journal,
+	// inode tables, reserved GDT blocks). Zero when the size cannot be
+	// determined (non-Linux hosts, or agents predating this field).
+	SizeBytes     int64 `protobuf:"varint,6,opt,name=size_bytes,json=sizeBytes,proto3" json:"size_bytes,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1020,6 +1026,13 @@ func (x *DiskPartition) GetUsedBytes() int64 {
 func (x *DiskPartition) GetTotalBytes() int64 {
 	if x != nil {
 		return x.TotalBytes
+	}
+	return 0
+}
+
+func (x *DiskPartition) GetSizeBytes() int64 {
+	if x != nil {
+		return x.SizeBytes
 	}
 	return 0
 }
@@ -4304,7 +4317,7 @@ const file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDesc = "" +
 	"\t_gpu_arch\"I\n" +
 	"\x10NetworkInterface\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12!\n" +
-	"\fip_addresses\x18\x02 \x03(\tR\vipAddresses\"\xa7\x01\n" +
+	"\fip_addresses\x18\x02 \x03(\tR\vipAddresses\"\xc6\x01\n" +
 	"\rDiskPartition\x12\x1e\n" +
 	"\n" +
 	"mountpoint\x18\x01 \x01(\tR\n" +
@@ -4316,7 +4329,9 @@ const file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDesc = "" +
 	"\n" +
 	"used_bytes\x18\x04 \x01(\x03R\tusedBytes\x12\x1f\n" +
 	"\vtotal_bytes\x18\x05 \x01(\x03R\n" +
-	"totalBytes\"\x19\n" +
+	"totalBytes\x12\x1d\n" +
+	"\n" +
+	"size_bytes\x18\x06 \x01(\x03R\tsizeBytes\"\x19\n" +
 	"\x17ListWiFiNetworksRequest\"\xbb\x03\n" +
 	"\x18ListWiFiNetworksResponse\x12Y\n" +
 	"\bnetworks\x18\x01 \x03(\v2=.wendy.agent.services.v1.ListWiFiNetworksResponse.WiFiNetworkR\bnetworks\x1a\xc3\x02\n" +

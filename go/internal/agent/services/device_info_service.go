@@ -73,6 +73,7 @@ func (s *DeviceInfoService) GetDeviceInfo(_ context.Context, _ *agentpbv2.GetDev
 			Device:     p.device,
 			UsedBytes:  p.usedBytes,
 			TotalBytes: p.totalBytes,
+			SizeBytes:  p.sizeBytes,
 		})
 	}
 

@@ -1,6 +1,8 @@
 package services
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 )
@@ -68,5 +70,32 @@ func TestParseProcMountsUnescapesMountpoints(t *testing.T) {
 	}
 	if got[0].mountpoint != "/mnt/my drive" {
 		t.Fatalf("mountpoint = %q, want %q", got[0].mountpoint, "/mnt/my drive")
+	}
+}
+
+func TestBlockSizeFromSysfs(t *testing.T) {
+	root := t.TempDir()
+	// sysfs reports size in 512-byte sectors: 16777216 * 512 = 8589934592 (8 GiB).
+	if err := os.MkdirAll(filepath.Join(root, "mmcblk0p3"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "mmcblk0p3", "size"), []byte("16777216\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, ok := blockSizeFromSysfs(root, "mmcblk0p3")
+	if !ok || got != 8589934592 {
+		t.Errorf("blockSizeFromSysfs = (%d, %v), want (8589934592, true)", got, ok)
+	}
+
+	if _, ok := blockSizeFromSysfs(root, "nonexistent"); ok {
+		t.Errorf("missing device should report ok=false")
+	}
+
+	if err := os.WriteFile(filepath.Join(root, "mmcblk0p3", "size"), []byte("garbage\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := blockSizeFromSysfs(root, "mmcblk0p3"); ok {
+		t.Errorf("non-numeric size should report ok=false")
 	}
 }

@@ -4,6 +4,7 @@ package services
 
 import (
 	"os"
+	"path/filepath"
 
 	"golang.org/x/sys/unix"
 )
@@ -51,8 +52,24 @@ func listDiskPartitions() []partitionUsage {
 			device:     m.device,
 			usedBytes:  usage.usedBytes,
 			totalBytes: usage.totalBytes,
+			sizeBytes:  blockDeviceSizeBytes(m.device),
 		})
 	}
 
 	return partitions
+}
+
+// blockDeviceSizeBytes reports the raw size of the block device backing a
+// mount, or 0 when it cannot be determined. The mount source (e.g. "/dev/root"
+// or "/dev/mmcblk0p3") is resolved through any symlinks to its real device
+// node, whose base name indexes /sys/class/block/<name>/size.
+func blockDeviceSizeBytes(device string) int64 {
+	resolved, err := filepath.EvalSymlinks(device)
+	if err != nil {
+		resolved = device
+	}
+	if size, ok := blockSizeFromSysfs("/sys/class/block", filepath.Base(resolved)); ok {
+		return size
+	}
+	return 0
 }
