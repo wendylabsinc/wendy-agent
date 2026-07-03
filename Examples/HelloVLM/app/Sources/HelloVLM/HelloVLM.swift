@@ -146,32 +146,35 @@ struct HelloVLM {
         }
     }
 
+    /// Polls the backend until a model is served, updating the UI state on
+    /// the way; returns the model name + backend engine. Blocks until the
+    /// backend answers; throws only on task cancellation.
+    static func discoverModel(client: VLMClient, state: AppState) async throws -> (name: String, backend: String?) {
+        await state.setModelLoading(name: appConfig.model)
+        print("Waiting for VLM backend at \(appConfig.llmURL) …")
+        let model = try await client.waitForModel { attempt in
+            if attempt % 10 == 1 {
+                print("  Waiting for VLM backend (attempt \(attempt))…")
+            }
+        }
+        print("VLM backend ready, model: \(model.name)\(model.backend.map { " (\($0))" } ?? "")")
+        await state.setModelReady(name: model.name, backend: model.backend)
+        return model
+    }
+
     static func runInferenceLoop(state: AppState, runStore: RunStore, frameBuffer: FrameBuffer) async {
         guard let baseURL = URL(string: appConfig.llmURL) else { return }
         let client = VLMClient(baseURL: baseURL, model: appConfig.model)
         let deviceName = ProcessInfo.processInfo.environment["WENDY_DEVICE_HOSTNAME"]
             ?? ProcessInfo.processInfo.hostName
 
-        await state.setModelLoading(name: appConfig.model)
-        print("Waiting for VLM backend at \(appConfig.llmURL) …")
-        let modelName: String
-        let modelBackend: String?
+        var modelName: String
+        var modelBackend: String?
         do {
-            (modelName, modelBackend) = try await client.waitForModel { attempt in
-                if attempt % 10 == 1 {
-                    print("  Waiting for VLM backend (attempt \(attempt))…")
-                }
-            }
+            (modelName, modelBackend) = try await discoverModel(client: client, state: state)
         } catch {
-            await state.setModelFailed(
-                message: "VLM backend unavailable: \(error.localizedDescription)",
-                name: appConfig.model
-            )
-            return
+            return  // waitForModel only throws on task cancellation
         }
-
-        print("VLM backend ready, model: \(modelName)\(modelBackend.map { " (\($0))" } ?? "")")
-        await state.setModelReady(name: modelName, backend: modelBackend)
 
         print("Sampling at \(appConfig.fps) fps, evaluating last \(appConfig.interval)s of frames (max \(appConfig.maxFrames)).")
 
@@ -206,6 +209,13 @@ struct HelloVLM {
             } catch {
                 print("Generation failed: \(error)")
                 await state.setError("Generation failed: \(error.localizedDescription)")
+                // The backend may have been replaced under us (llm/ and
+                // llm-mlx/ deploy into the same service slot). Re-discover so
+                // the model label, requested name, and per-run provenance
+                // stay truthful across swaps.
+                if let fresh = try? await discoverModel(client: client, state: state) {
+                    (modelName, modelBackend) = fresh
+                }
             }
             await state.setInferenceRunning(false)
 
