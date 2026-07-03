@@ -9,6 +9,11 @@ dependencies:
     # esp32s31 support only exists on IDF master (reports as 6.x).
     version: ">=6.0.0"
 
+  # Official board support package for this exact devkit. Provides the correct
+  # LCD pin map, panel timings, and bring-up sequence via bsp_display_new().
+  espressif/esp32_s31_korvo_1:
+    version: "^1"
+
   # OV3660 driver over the LCD_CAM DVP interface.
   # NOTE(unverified): esp32-camera must list esp32s31 in its supported
   # targets. If the component manager rejects the target, this is a gap to

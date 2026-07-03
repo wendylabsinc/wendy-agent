@@ -21,9 +21,12 @@ Legend: 🟥 blocker · 🟧 friction · 🟨 papercut · 🟦 note/observation
 | 6 | 🟨 | Shallow IDF clone breaks `idf.py --version` | docs: use tagged clone / capture commit |
 | 10 | 🟦 | Positive: `esp_lcd` RGB **does** build/link for S31 | — |
 
-**Net:** the screen half is achievable today (builds + flashes). The camera half
-is blocked upstream (#8), and using wendy-lite *itself* to drive either is
-blocked by the missing host APIs (#3) and the missing S31 target (#1, #2).
+**Net:** the screen **works on real hardware** — the WENDY demo runs on the
+4.3" panel via the official BSP (#11). Getting there needed the BSP pin map +
+`disp_on_off` + a manual BOOT/RST flash dance (#11–#13). The camera half is
+blocked upstream on `esp32-camera` (#8) but is reachable via `esp_video`/the BSP.
+Driving either from wendy-lite *itself* is still blocked by the missing host
+APIs (#3) and the missing S31 target (#1, #2).
 
 ---
 
@@ -130,6 +133,47 @@ blocked by the missing host APIs (#3) and the missing S31 target (#1, #2).
 - **What:** the 800x480 RGB panel via IDF built-in `esp_lcd` compiles and links
   for esp32s31 with no target gymnastics. The screen half of the demo is sound;
   only the pin map / panel timings need on-hardware confirmation.
+
+---
+
+## 11. On-hardware display bring-up: what it actually took 🟧 (RESOLVED — screen works)
+Getting the 4.3" panel to light up on real S31-Korvo-1 silicon took several
+iterations. The lessons, in priority order:
+- **Use the official BSP `espressif/esp32_s31_korvo_1` — do not hand-guess pins.**
+  My first pin map (from generic S3-EV-board conventions) was entirely wrong
+  (e.g. PCLK 21 vs actual 40; data on 4-19 vs 8-19+33-36) → black screen. The
+  BSP has the correct pins, timings (pclk 18 MHz, HS 40/40/48, VS 23/32/13),
+  and `clk_src = PLL160M`.
+- **`esp_lcd_panel_disp_on_off(panel, true)` is REQUIRED.** With the DISP GPIO
+  (38) wired, the panel's display-enable defaults to OFF. Everything inits
+  ("RGB panel up"), the render loop runs and `draw_bitmap` returns ESP_OK, but
+  the panel stays **black** until you call disp_on_off(true). Easy to miss.
+- **Backlight is hardwired on** (BSP: "board doesn't support changing brightness"),
+  so a lit-but-black panel = data/disp issue, not power.
+
+## 12. No auto-reset wired on the UART bridge → every flash is a manual dance 🟥
+- **What:** `esptool --before default-reset` fails ("No serial data received").
+  DTR/RTS auto-reset-to-bootloader is not wired on this board's UART bridge, so
+  **every flash requires the manual combo** (hold BOOT → tap RST → release BOOT)
+  and **every app boot requires a manual RST tap** (`--after` can't reset either).
+- **Impact:** completely blocks unattended/automated `idf.py flash`. Over a debug
+  session this is a dozen manual button presses. The flashing port is the
+  `usbserial-*` bridge (console UART on GPIO 58/59); the `usbmodem*` native-USB
+  ports did not respond to esptool.
+- **Fix idea:** any Wendy MCU-flash flow for this board must drive the BOOT/RST
+  combo (or document it loudly); auto-reset cannot be assumed.
+
+## 13. Debugging the black screen: passive heartbeat logging beats reset-timing 🟨
+- The boot log is a ~1 s burst at reset; catching it over serial is fiddly given
+  #12. Adding a per-second `ESP_LOGI` heartbeat (frame counter + `draw_bitmap`
+  return) made the state observable with a *passive* read at any time — that's
+  how we confirmed the task was alive and drawing before finding the disp-on gap.
+
+## 14. Software full-frame rendering runs ~12 fps 🟦
+- Rendering the whole 800×480 scene in C each frame (gradient + wordmark + EQ)
+  then `draw_bitmap` gives ~12 fps (30 frames per ~2.4 s in the log), not the
+  targeted 30. Fine for a demo; a real UI should use the PPA/2D accel or LVGL
+  (both available) rather than a full CPU redraw.
 
 ---
 <!-- build-phase findings appended below as they occur -->

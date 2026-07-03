@@ -1,7 +1,8 @@
 idf_component_register(SRCS "demo_main.c"
                        INCLUDE_DIRS "."
                        REQUIRES driver esp_lcd esp_psram esp_driver_cam esp_timer
-                                espressif__esp32-camera)
+                                espressif__esp32-camera
+                                espressif__esp32_s31_korvo_1)
 
 # Optional build knobs, toggled from the command line, e.g.:
 #   idf.py --preview build -DDEMO_ENABLE_CAMERA=1
