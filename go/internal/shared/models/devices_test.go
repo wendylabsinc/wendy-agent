@@ -198,6 +198,59 @@ func TestMergedDevices_LANAndBLESameName(t *testing.T) {
 	}
 }
 
+// TestMergedDevices_LANAndBLEByHostname reproduces the real-world duplicate:
+// mDNS advertises a friendly displayname TXT record ("Agx Orin") while BLE only
+// advertises the raw hostname ("wendyos-agx-orin"). The two must still merge
+// into one device via their shared hostname.
+func TestMergedDevices_LANAndBLEByHostname(t *testing.T) {
+	c := &DevicesCollection{
+		LANDevices: []LANDevice{
+			{DisplayName: "Agx Orin", Hostname: "wendyos-agx-orin.local", IPAddress: "192.168.1.10", Port: 50051, AgentVersion: "1.0.0", OS: "linux"},
+		},
+		BluetoothDevices: []BluetoothDevice{
+			{DisplayName: "wendyos-agx-orin", Address: "EE48983F-300C-3A22-395B-290A76741CA1", RSSI: -50, L2CAPPSM: 128},
+		},
+	}
+
+	merged := c.MergedDevices()
+	if len(merged) != 1 {
+		t.Fatalf("MergedDevices() returned %d entries, want 1 (BLE should merge into LAN by hostname)", len(merged))
+	}
+	d := merged[0]
+	if d.LAN == nil || d.Bluetooth == nil {
+		t.Fatalf("expected both LAN and Bluetooth set; got LAN=%v Bluetooth=%v", d.LAN, d.Bluetooth)
+	}
+	// LAN's friendly display name takes precedence.
+	if d.DisplayName != "Agx Orin" {
+		t.Errorf("DisplayName = %q, want %q", d.DisplayName, "Agx Orin")
+	}
+	if d.ConnectionTypes() != "LAN, BLE" {
+		t.Errorf("ConnectionTypes() = %q, want %q", d.ConnectionTypes(), "LAN, BLE")
+	}
+}
+
+// TestMergedDevices_BLEBeforeLANByHostname covers the same match when the BLE
+// entry is processed and the LAN entry arrives via hostname regardless of the
+// order the transports are registered in.
+func TestMergedDevices_HostnameCaseAndTrailingDot(t *testing.T) {
+	c := &DevicesCollection{
+		LANDevices: []LANDevice{
+			{DisplayName: "Jetson Orin Nano", Hostname: "WendyOS-Jetson-Orin-Nano.local.", Port: 50051},
+		},
+		BluetoothDevices: []BluetoothDevice{
+			{DisplayName: "wendyos-jetson-orin-nano", Address: "9B1BB406-E1B2-69D7-F678-DE3F2BB66B68", L2CAPPSM: 128},
+		},
+	}
+
+	merged := c.MergedDevices()
+	if len(merged) != 1 {
+		t.Fatalf("MergedDevices() returned %d entries, want 1 (case/trailing-dot insensitive hostname match)", len(merged))
+	}
+	if merged[0].LAN == nil || merged[0].Bluetooth == nil {
+		t.Error("expected both LAN and Bluetooth to be set")
+	}
+}
+
 func TestMergedDevices_CaseInsensitive(t *testing.T) {
 	c := &DevicesCollection{
 		LANDevices: []LANDevice{

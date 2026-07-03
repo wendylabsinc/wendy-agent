@@ -1080,7 +1080,7 @@ func discoverTableItems(collection *models.DevicesCollection) []discoverTableIte
 				Address:      d.Hostname,
 				AgentVersion: discoverAgentVersionDisplay(d.AgentVersion),
 				DedupKey:     d.DisplayName,
-				SortKey:      usbFirstSortKey(d.DisplayName, d.USBVersion),
+				SortKey:      deviceSortKey(d.DisplayName, d.USBVersion),
 			},
 			info: discoverDeviceInfo{
 				Name:    d.DisplayName,
@@ -1119,7 +1119,7 @@ func discoverTableItems(collection *models.DevicesCollection) []discoverTableIte
 				Provisioned:  provisioned,
 				Hint:         lanNoAccessHint(d.LAN, d.AgentVersion),
 				DedupKey:     d.DisplayName,
-				SortKey:      usbFirstSortKey(d.DisplayName, usb),
+				SortKey:      deviceSortKey(d.DisplayName, usb),
 			},
 			info: discoverDeviceInfo{
 				Name:        d.DisplayName,

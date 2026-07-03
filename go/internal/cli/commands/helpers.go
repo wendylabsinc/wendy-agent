@@ -1816,6 +1816,13 @@ func mergePickerItem(existing *tui.PickerItem, incoming tui.PickerItem) {
 	if nd.LAN != nil && md.LAN == nil {
 		md.LAN = nd.LAN
 		existing.Address = incoming.Address
+		// A LAN entry carries the friendly displayname TXT record; prefer it over
+		// a BLE-advertised hostname for both the visible name and the sort order.
+		if incoming.Name != "" {
+			existing.Name = incoming.Name
+			md.DisplayName = nd.DisplayName
+			existing.SortKey = deviceSortKey(existing.Name, existing.USB)
+		}
 	}
 	if nd.LAN != nil && md.LAN != nil && nd.LAN.USB != "" && md.LAN.USB == "" {
 		md.LAN.USB = nd.LAN.USB
@@ -1823,11 +1830,7 @@ func mergePickerItem(existing *tui.PickerItem, incoming tui.PickerItem) {
 	}
 	if nd.LAN != nil && nd.LAN.USB != "" && existing.USB == "" {
 		existing.USB = nd.LAN.USB
-		key := existing.DedupKey
-		if key == "" {
-			key = existing.Name
-		}
-		existing.SortKey = usbFirstSortKey(key, nd.LAN.USB)
+		existing.SortKey = deviceSortKey(existing.Name, nd.LAN.USB)
 	}
 	if nd.Bluetooth != nil && md.Bluetooth == nil {
 		md.Bluetooth = nd.Bluetooth
@@ -1888,11 +1891,28 @@ func mergePickerItem(existing *tui.PickerItem, incoming tui.PickerItem) {
 	existing.Probe = nextProbeState(existing.Probe, incoming.Probe)
 }
 
-func usbFirstSortKey(name, usb string) string {
-	if usb == "" {
-		return ""
+// deviceSortKey orders device rows by display name, floating USB-tethered
+// devices ("0_") above everything else ("1_"). It sorts on the human-facing
+// name rather than the dedup key so rows stay ordered by name even though
+// deduplication now keys on the hostname (see deviceDedupKey).
+func deviceSortKey(name, usb string) string {
+	prefix := "1_"
+	if usb != "" {
+		prefix = "0_"
 	}
-	return "0_" + strings.ToLower(name)
+	return prefix + strings.ToLower(name)
+}
+
+// deviceDedupKey returns the cross-transport dedup key for a picker row: the
+// device's normalized hostname when known, so an mDNS entry (friendly
+// displayname) and a BLE entry (raw hostname) for the same physical device
+// collapse into a single row. Falls back to the display name when no hostname
+// is available.
+func deviceDedupKey(hostKey, displayName string) string {
+	if hostKey != "" {
+		return hostKey
+	}
+	return strings.ToLower(displayName)
 }
 
 // hideLocalProviders returns a copy of excludes that additionally hides the
@@ -1978,8 +1998,8 @@ func pickDevice(ctx context.Context, excludeProviders map[string]bool, excludeBl
 			Provisioned:  lanProvisionedDisplay(&devCopy),
 			Hint:         hint,
 			Probe:        probe,
-			DedupKey:     dev.DisplayName,
-			SortKey:      usbFirstSortKey(dev.DisplayName, dev.USB),
+			DedupKey:     deviceDedupKey(dev.HostKey(), dev.DisplayName),
+			SortKey:      deviceSortKey(dev.DisplayName, dev.USB),
 			Insecure:     insecure,
 			Value: &pickerEntry{mergedDevice: &models.DiscoveredDevice{
 				DisplayName:     dev.DisplayName,
@@ -2093,7 +2113,8 @@ func pickDevice(ctx context.Context, excludeProviders map[string]bool, excludeBl
 						}
 						items = append(items, tui.PickerItem{
 							Name:         bleDevices[i].DisplayName,
-							DedupKey:     bleDevices[i].DisplayName,
+							DedupKey:     deviceDedupKey(bleDevices[i].HostKey(), bleDevices[i].DisplayName),
+							SortKey:      deviceSortKey(bleDevices[i].DisplayName, ""),
 							Type:         connType,
 							Address:      bleDevices[i].Address,
 							AgentVersion: bleDevices[i].AgentVersion,

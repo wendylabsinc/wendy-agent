@@ -163,11 +163,33 @@ func TestPickerTableData_KeepsFullColumnContentForScrolling(t *testing.T) {
 			t.Fatalf("expected %s column to remain scrollable", want)
 		}
 	}
-	if width := columnWidth(cols, "Address"); width < len("wendyos-sunny-daisy.local:50052") {
+	// The port is stripped for display, so the column need only fit the host.
+	if width := columnWidth(cols, "Address"); width < len("wendyos-sunny-daisy.local") {
 		t.Fatalf("address column width = %d, want enough for full hostname", width)
 	}
 	if len(rows) != 1 || len(rows[0]) != len(cols) {
 		t.Fatalf("row/column mismatch: rows=%v cols=%v", rows, cols)
+	}
+	if addr := rows[0][columnIndex(cols, "Address")]; strings.TrimSpace(addr) != "wendyos-sunny-daisy.local" {
+		t.Fatalf("address cell = %q, want port stripped for display", addr)
+	}
+}
+
+func TestDisplayAddress(t *testing.T) {
+	cases := map[string]string{
+		"wendyos-thor.local:50051":             "wendyos-thor.local",
+		"wendyos-agx-orin.local:50052":         "wendyos-agx-orin.local",
+		"192.168.1.10:50051":                   "192.168.1.10",
+		"[fe80::1%en0]:50051":                  "fe80::1%en0",
+		"wendyos-thor.local":                   "wendyos-thor.local", // no port
+		"EE48983F-300C-3A22-395B-290A76741CA1": "EE48983F-300C-3A22-395B-290A76741CA1",
+		"docker: my-container":                 "docker: my-container", // non-numeric "port"
+		"":                                     "",
+	}
+	for in, want := range cases {
+		if got := displayAddress(in); got != want {
+			t.Errorf("displayAddress(%q) = %q, want %q", in, got, want)
+		}
 	}
 }
 
@@ -343,8 +365,10 @@ func TestPickerModel_WindowWidthControlsColumns(t *testing.T) {
 			t.Fatalf("cropped line width = %d, want <= 24: %q", got, line)
 		}
 	}
-	if table := pm.table.FullView(); !strings.Contains(table, "wendyos-sunny-daisy.local:50052") {
-		t.Fatalf("underlying table should preserve full address without ellipsis, got %q", table)
+	// The port is stripped for display, but the (port-less) address must still be
+	// preserved in full without ellipsis for horizontal scrolling.
+	if table := pm.table.FullView(); !strings.Contains(table, "wendyos-sunny-daisy.local") || strings.Contains(table, ":50052") {
+		t.Fatalf("underlying table should preserve full port-less address without ellipsis, got %q", table)
 	}
 
 	updated, _ = pm.Update(tea.WindowSizeMsg{Width: 120, Height: 20})
@@ -850,6 +874,15 @@ func columnWidth(cols []bubbleTable.Column, title string) int {
 		}
 	}
 	return 0
+}
+
+func columnIndex(cols []bubbleTable.Column, title string) int {
+	for i, col := range cols {
+		if col.Title == title {
+			return i
+		}
+	}
+	return -1
 }
 
 func lastNonEmptyLine(view string) string {
