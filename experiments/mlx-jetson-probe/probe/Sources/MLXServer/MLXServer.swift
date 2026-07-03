@@ -227,6 +227,12 @@ struct ModelsResponse: Encodable {
     struct Model: Encodable {
         let id: String
         var object = "model"
+        var ownedBy = "mlx"
+
+        enum CodingKeys: String, CodingKey {
+            case id, object
+            case ownedBy = "owned_by"
+        }
     }
     var object = "list"
     let data: [Model]
