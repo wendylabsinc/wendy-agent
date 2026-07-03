@@ -20,6 +20,7 @@ import (
 	"github.com/containerd/errdefs"
 	"go.uber.org/zap"
 
+	"github.com/wendylabsinc/wendy/go/internal/agent/logfields"
 	localoci "github.com/wendylabsinc/wendy/go/internal/agent/oci"
 	"github.com/wendylabsinc/wendy/go/internal/agent/services"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
@@ -100,7 +101,7 @@ func (c *Client) FindROS2Containers(ctx context.Context) ([]services.ROS2Target,
 		distro, domainID, ok := appconfig.ParseROS2Annotation(labels[appconfig.ROS2AnnotationKey])
 		if !ok {
 			c.logger.Warn("Skipping container with malformed ros2 label",
-				zap.String("container", ctr.ID()),
+				zap.String(logfields.ContainerID, ctr.ID()),
 				zap.String("value", labels[appconfig.ROS2AnnotationKey]))
 			continue
 		}
@@ -629,7 +630,7 @@ func (c *Client) ReapOrphanedROS2Sidecars(ctx context.Context) error {
 			}
 			// Liveness unknown: keep sidecar to avoid false-positive reap.
 			c.logger.Warn("ROS 2 sidecar reap: could not get task for app container, treating as unresolvable",
-				zap.String("container", ctr.ID()), zap.Error(terr))
+				zap.String(logfields.ContainerID, ctr.ID()), zap.Error(terr))
 			unresolvable[ctr.ID()] = true
 			continue
 		}
@@ -641,7 +642,7 @@ func (c *Client) ReapOrphanedROS2Sidecars(ctx context.Context) error {
 			}
 			// Status unknown: keep sidecar to avoid false-positive reap.
 			c.logger.Warn("ROS 2 sidecar reap: could not get task status for app container, treating as unresolvable",
-				zap.String("container", ctr.ID()), zap.Error(serr))
+				zap.String(logfields.ContainerID, ctr.ID()), zap.Error(serr))
 			unresolvable[ctr.ID()] = true
 			continue
 		}

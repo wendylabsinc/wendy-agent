@@ -39,6 +39,7 @@ import (
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/cdi"
 	"github.com/wendylabsinc/wendy/go/internal/agent/dbusproxy"
+	"github.com/wendylabsinc/wendy/go/internal/agent/logfields"
 	localoci "github.com/wendylabsinc/wendy/go/internal/agent/oci"
 	"github.com/wendylabsinc/wendy/go/internal/agent/services"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
@@ -1779,7 +1780,7 @@ func (c *Client) RestartGroup(ctx context.Context, appID string) (map[string]<-c
 		name := ContainerName(appID, svc)
 		if serr := c.stopOne(ctx, name); serr != nil {
 			c.logger.Warn("RestartGroup: failed to stop group member (continuing)",
-				zap.String("app_id", appID), zap.String("service", svc), zap.Error(serr))
+				zap.String("app_id", appID), zap.String(logfields.ServiceName, svc), zap.Error(serr))
 		}
 	}
 
@@ -1812,13 +1813,13 @@ func (c *Client) RestartGroup(ctx context.Context, appID string) (map[string]<-c
 		name := ContainerName(appID, svc)
 		if rerr := c.refreshSecondaryNamespaces(ctx, name, primaryPID, isolation); rerr != nil {
 			c.logger.Error("RestartGroup: failed to refresh secondary namespaces",
-				zap.String("app_id", appID), zap.String("service", svc), zap.Error(rerr))
+				zap.String("app_id", appID), zap.String(logfields.ServiceName, svc), zap.Error(rerr))
 			continue
 		}
 		ch, serr := c.StartContainer(ctx, name, "", nil)
 		if serr != nil {
 			c.logger.Error("RestartGroup: failed to start secondary",
-				zap.String("app_id", appID), zap.String("service", svc), zap.Error(serr))
+				zap.String("app_id", appID), zap.String(logfields.ServiceName, svc), zap.Error(serr))
 			continue
 		}
 		results[name] = ch
