@@ -672,12 +672,6 @@ Cuda compilation tools, release 13.2, V13.2.78
 Build cuda_13.2.r13.2/compiler.36123456_0
 `
 
-const nvidiaSmiBanner = `Thu Jul  2 12:00:00 2026
-+-----------------------------------------------------------------------------+
-| NVIDIA-SMI 580.00                 Driver Version: 580.00  CUDA Version: 13.2 |
-+-----------------------------------------------------------------------------+
-`
-
 func noLookPath(string) (string, error) {
 	return "", fmt.Errorf("not found")
 }
@@ -750,50 +744,6 @@ func TestDetectCUDAVersion_JetPack7VersionedDir(t *testing.T) {
 	}
 
 	if got := detectCUDAVersionIn(usrLocal, noLookPath, runCmd); got != "13.2" {
-		t.Errorf("detectCUDAVersionIn = %q, want %q", got, "13.2")
-	}
-}
-
-// Several versioned toolkits: the highest version wins, compared numerically
-// (cuda-13.2 beats cuda-9.0 even though it sorts lower lexically).
-func TestDetectCUDAVersion_PrefersNewestVersionedDir(t *testing.T) {
-	usrLocal := t.TempDir()
-	oldNvcc := filepath.Join(usrLocal, "cuda-9.0", "bin", "nvcc")
-	newNvcc := filepath.Join(usrLocal, "cuda-13.2", "bin", "nvcc")
-	writeCUDAFile(t, oldNvcc, "")
-	writeCUDAFile(t, newNvcc, "")
-
-	runCmd := func(name string, args ...string) ([]byte, error) {
-		switch name {
-		case newNvcc:
-			return []byte(nvccVersionOutput), nil
-		case oldNvcc:
-			return []byte("Cuda compilation tools, release 9.0, V9.0.176"), nil
-		}
-		return nil, fmt.Errorf("unexpected command %q %v", name, args)
-	}
-
-	if got := detectCUDAVersionIn(usrLocal, noLookPath, runCmd); got != "13.2" {
-		t.Errorf("detectCUDAVersionIn = %q, want %q", got, "13.2")
-	}
-}
-
-func TestDetectCUDAVersion_NvidiaSmiFallback(t *testing.T) {
-	usrLocal := t.TempDir()
-	lookPath := func(name string) (string, error) {
-		if name == "nvidia-smi" {
-			return "/usr/sbin/nvidia-smi", nil
-		}
-		return "", fmt.Errorf("not found")
-	}
-	runCmd := func(name string, args ...string) ([]byte, error) {
-		if name == "/usr/sbin/nvidia-smi" && len(args) == 0 {
-			return []byte(nvidiaSmiBanner), nil
-		}
-		return nil, fmt.Errorf("unexpected command %q %v", name, args)
-	}
-
-	if got := detectCUDAVersionIn(usrLocal, lookPath, runCmd); got != "13.2" {
 		t.Errorf("detectCUDAVersionIn = %q, want %q", got, "13.2")
 	}
 }

@@ -12,8 +12,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
-	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -238,12 +236,9 @@ func runDetectCommand(name string, args ...string) ([]byte, error) {
 //     layouts; CUDA 11.1+ dropped version.txt, newer releases also dropped
 //     version.json).
 //  2. nvcc on PATH.
-//  3. nvcc inside versioned toolkit dirs (cuda-X.Y/bin/nvcc), newest first —
-//     the JetPack 7 layout ships no cuda symlink, no version files, and does
-//     not put nvcc on PATH.
-//  4. The nvidia-smi banner ("CUDA Version: X.Y"). This is the driver's CUDA
-//     version rather than the toolkit's, but on Jetson images they match and
-//     it beats returning nothing.
+//  3. nvcc inside versioned toolkit dirs (cuda-X.Y/bin/nvcc) — the JetPack 7
+//     layout ships no cuda symlink, no version files, and does not put nvcc
+//     on PATH.
 func detectCUDAVersionIn(usrLocal string, lookPath func(string) (string, error), runCmd func(string, ...string) ([]byte, error)) string {
 	for _, name := range []string{"version.txt", "version.json"} {
 		if data, err := os.ReadFile(filepath.Join(usrLocal, "cuda", name)); err == nil {
@@ -259,17 +254,10 @@ func detectCUDAVersionIn(usrLocal string, lookPath func(string) (string, error),
 		}
 	}
 
-	for _, nvcc := range versionedNvccCandidates(usrLocal) {
+	matches, _ := filepath.Glob(filepath.Join(usrLocal, "cuda-*", "bin", "nvcc"))
+	for _, nvcc := range matches {
 		if v := cudaVersionFromNvcc(nvcc, runCmd); v != "" {
 			return v
-		}
-	}
-
-	if smi, err := lookPath("nvidia-smi"); err == nil {
-		if out, err := runCmd(smi); err == nil {
-			if m := cudaVersionFileRe.FindSubmatch(out); len(m) > 1 {
-				return string(m[1])
-			}
 		}
 	}
 
@@ -285,34 +273,6 @@ func cudaVersionFromNvcc(nvcc string, runCmd func(string, ...string) ([]byte, er
 		return string(m[1])
 	}
 	return ""
-}
-
-var cudaDirVersionRe = regexp.MustCompile(`cuda-([0-9]+)(?:\.([0-9]+))?$`)
-
-// versionedNvccCandidates returns the nvcc binaries found inside versioned
-// CUDA toolkit dirs (<usrLocal>/cuda-*/bin/nvcc), highest version first so a
-// host with several toolkits reports the newest one.
-func versionedNvccCandidates(usrLocal string) []string {
-	matches, _ := filepath.Glob(filepath.Join(usrLocal, "cuda-*", "bin", "nvcc"))
-	version := func(nvcc string) (major, minor int) {
-		dir := filepath.Dir(filepath.Dir(nvcc))
-		m := cudaDirVersionRe.FindStringSubmatch(filepath.Base(dir))
-		if m == nil {
-			return 0, 0
-		}
-		major, _ = strconv.Atoi(m[1])
-		minor, _ = strconv.Atoi(m[2])
-		return major, minor
-	}
-	sort.SliceStable(matches, func(i, j int) bool {
-		iMaj, iMin := version(matches[i])
-		jMaj, jMin := version(matches[j])
-		if iMaj != jMaj {
-			return iMaj > jMaj
-		}
-		return iMin > jMin
-	})
-	return matches
 }
 
 var computeCapRe = regexp.MustCompile(`^\s*(\d+)\.(\d+)\s*$`)
