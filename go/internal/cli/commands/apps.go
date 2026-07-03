@@ -143,7 +143,7 @@ func appsListAgent(ctx context.Context, conn *grpcclient.AgentConnection) error 
 			Version           string        `json:"version,omitempty"`
 			RunningState      string        `json:"runningState,omitempty"`
 			FailureCount      uint32        `json:"failureCount,omitempty"`
-			ExitCode          int32         `json:"exitCode,omitempty"`
+			ExitCode          *int32        `json:"exitCode,omitempty"` // pointer so a clean exit 0 is still emitted alongside terminationReason
 			TerminationReason string        `json:"terminationReason,omitempty"`
 			Services          []jsonService `json:"services,omitempty"`
 		}
@@ -156,12 +156,17 @@ func appsListAgent(ctx context.Context, conn *grpcclient.AgentConnection) error 
 					RunningState: s.GetRunningState().String(),
 				})
 			}
+			var exitCode *int32
+			if c.GetTerminationReason() != "" {
+				ec := c.GetExitCode()
+				exitCode = &ec
+			}
 			apps[i] = jsonApp{
 				Name:              c.GetAppName(),
 				Version:           c.GetAppVersion(),
 				RunningState:      c.GetRunningState().String(),
 				FailureCount:      c.GetFailureCount(),
-				ExitCode:          c.GetExitCode(),
+				ExitCode:          exitCode,
 				TerminationReason: c.GetTerminationReason(),
 				Services:          svcs,
 			}

@@ -239,10 +239,11 @@ type AppContainer struct {
 	// apps and flattened single-service apps (those with no service name).
 	Services []*ServiceEntry `protobuf:"bytes,6,rep,name=services,proto3" json:"services,omitempty"`
 	// Exit diagnostics for the last run, only meaningful when running_state is
-	// STOPPED. (Fields 7-10 may be claimed by the provenance PR #1234; renumber
-	// on merge conflict.)
-	ExitCode          int32  `protobuf:"varint,7,opt,name=exit_code,json=exitCode,proto3" json:"exit_code,omitempty"`                           // process exit code of the last run; -1 = task never started.
-	TerminationReason string `protobuf:"bytes,8,opt,name=termination_reason,json=terminationReason,proto3" json:"termination_reason,omitempty"` // exited | crashed | oom_killed | start_failed | entitlement_denied; empty if unknown.
+	// STOPPED. Fields 7-10 are left for the in-flight provenance PR #1234, so
+	// these start at 11 to guarantee no wire-number collision on either merge
+	// order.
+	ExitCode          int32  `protobuf:"varint,11,opt,name=exit_code,json=exitCode,proto3" json:"exit_code,omitempty"`                           // process exit code of the last run; -1 = task never started.
+	TerminationReason string `protobuf:"bytes,12,opt,name=termination_reason,json=terminationReason,proto3" json:"termination_reason,omitempty"` // exited | crashed | oom_killed | start_failed | entitlement_denied; empty if unknown.
 	unknownFields     protoimpl.UnknownFields
 	sizeCache         protoimpl.SizeCache
 }
@@ -352,8 +353,8 @@ const file_wendy_agent_services_v1_shared_proto_rawDesc = "" +
 	"\rfailure_count\x18\x04 \x01(\rR\ffailureCount\x12\x19\n" +
 	"\bmcp_port\x18\x05 \x01(\rR\amcpPort\x12)\n" +
 	"\bservices\x18\x06 \x03(\v2\r.ServiceEntryR\bservices\x12\x1b\n" +
-	"\texit_code\x18\a \x01(\x05R\bexitCode\x12-\n" +
-	"\x12termination_reason\x18\b \x01(\tR\x11terminationReason*L\n" +
+	"\texit_code\x18\v \x01(\x05R\bexitCode\x12-\n" +
+	"\x12termination_reason\x18\f \x01(\tR\x11terminationReason*L\n" +
 	"\x11RestartPolicyMode\x12\v\n" +
 	"\aDEFAULT\x10\x00\x12\x12\n" +
 	"\x0eUNLESS_STOPPED\x10\x01\x12\x06\n" +

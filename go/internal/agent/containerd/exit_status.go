@@ -139,5 +139,10 @@ func parseExitLabels(labels map[string]string) (code int32, reason string, ok bo
 // carry registry URLs / host paths); it is already returned to the caller and
 // logged on the normal error path. Best-effort.
 func (c *Client) recordStartFailure(ctx context.Context, containerID string, cause error) {
-	c.recordContainerExit(ctx, containerID, exitCodeDidNotStart, classifyStartError(cause), time.Now())
+	// The caller's ctx just produced an error and may already be cancelled,
+	// which would drop the label write. Detach with a short timeout so the
+	// diagnostic still lands — mirrors the exit-recording path in streamOutput.
+	recCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	c.recordContainerExit(recCtx, containerID, exitCodeDidNotStart, classifyStartError(cause), time.Now())
 }
