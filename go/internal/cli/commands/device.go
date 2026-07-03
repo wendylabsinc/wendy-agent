@@ -1,9 +1,7 @@
 package commands
 
 import (
-	"archive/tar"
 	"bufio"
-	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -1798,32 +1796,7 @@ func downloadAgentBinary(asset githubReleaseAsset) ([]byte, error) {
 		return nil, fmt.Errorf("download returned status %d", resp.StatusCode)
 	}
 
-	gz, err := gzip.NewReader(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("opening gzip reader: %w", err)
-	}
-	defer gz.Close()
-
-	tr := tar.NewReader(gz)
-	for {
-		hdr, err := tr.Next()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return nil, fmt.Errorf("reading tar: %w", err)
-		}
-
-		if hdr.Typeflag == tar.TypeReg && strings.HasSuffix(hdr.Name, "wendy-agent") {
-			data, err := io.ReadAll(tr)
-			if err != nil {
-				return nil, fmt.Errorf("reading binary from tar: %w", err)
-			}
-			return data, nil
-		}
-	}
-
-	return nil, fmt.Errorf("wendy-agent binary not found in tarball")
+	return extractAgentFromTarGz(resp.Body)
 }
 
 // reconnectAgentAfterRestart re-establishes a connection to the SAME device

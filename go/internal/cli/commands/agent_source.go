@@ -1,9 +1,13 @@
 package commands
 
 import (
+	"archive/tar"
+	"compress/gzip"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -46,4 +50,33 @@ func fetchAgentManifestFrom(baseURL string) (*agentManifest, error) {
 
 func fetchAgentManifest() (*agentManifest, error) {
 	return fetchAgentManifestFrom(gcsBaseURL)
+}
+
+// extractAgentFromTarGz reads a gzipped tar stream and returns the bytes of the
+// file whose name ends in "wendy-agent".
+func extractAgentFromTarGz(r io.Reader) ([]byte, error) {
+	gz, err := gzip.NewReader(r)
+	if err != nil {
+		return nil, fmt.Errorf("opening gzip reader: %w", err)
+	}
+	defer gz.Close()
+
+	tr := tar.NewReader(gz)
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("reading tar: %w", err)
+		}
+		if hdr.Typeflag == tar.TypeReg && strings.HasSuffix(hdr.Name, "wendy-agent") {
+			data, err := io.ReadAll(tr)
+			if err != nil {
+				return nil, fmt.Errorf("reading binary from tar: %w", err)
+			}
+			return data, nil
+		}
+	}
+	return nil, fmt.Errorf("wendy-agent binary not found in tarball")
 }
