@@ -98,6 +98,8 @@ func (s *AgentService) GetAgentVersion(_ context.Context, _ *agentpb.GetAgentVer
 		resp.DiskTotalBytes = &usage.totalBytes
 	}
 
+	resp.MemTotalBytes, resp.CpuCount = hostMemAndCPUCount()
+
 	for _, p := range listDiskPartitions() {
 		resp.Partitions = append(resp.Partitions, &agentpb.DiskPartition{
 			Mountpoint: p.mountpoint,

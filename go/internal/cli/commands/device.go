@@ -132,6 +132,8 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 
 			var agentVersion, osName, osVersion, cpuArch, deviceType, storageMedium, gpuVendor, jetpackVersion, cudaVersion, gpuArch string
 			var diskUsedBytes, diskTotalBytes *int64
+			var memTotalBytes int64
+			var cpuCount uint32
 			var partitions []*agentpb.DiskPartition
 			var netInterfaces []*agentpb.NetworkInterface
 			var hasGPU bool
@@ -169,6 +171,8 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 				gpuArch = resp.GetGpuArch()
 				diskUsedBytes = resp.DiskUsedBytes
 				diskTotalBytes = resp.DiskTotalBytes
+				memTotalBytes = resp.GetMemTotalBytes()
+				cpuCount = resp.GetCpuCount()
 				partitions = resp.GetPartitions()
 				netInterfaces = resp.GetNetworkInterfaces()
 			} else {
@@ -211,6 +215,12 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 				if diskUsedBytes != nil && diskTotalBytes != nil {
 					out["diskUsedBytes"] = *diskUsedBytes
 					out["diskTotalBytes"] = *diskTotalBytes
+				}
+				if memTotalBytes > 0 {
+					out["memTotalBytes"] = memTotalBytes
+				}
+				if cpuCount > 0 {
+					out["cpuCount"] = cpuCount
 				}
 				if len(partitions) > 0 {
 					parts := make([]map[string]any, len(partitions))
@@ -265,6 +275,12 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 			fmt.Printf("%s %s\n", tui.Dim("Agent Version:"), tui.Value(agentVersion))
 			fmt.Printf("%s %s\n", tui.Dim("OS:"), tui.Value(osName+" "+osVersion))
 			fmt.Printf("%s %s\n", tui.Dim("Architecture:"), tui.Value(cpuArch))
+			if cpuCount > 0 {
+				fmt.Printf("%s %s\n", tui.Dim("CPU Cores:"), tui.Value(fmt.Sprintf("%d", cpuCount)))
+			}
+			if memTotalBytes > 0 {
+				fmt.Printf("%s %s\n", tui.Dim("Memory:"), tui.Value(formatBytes(memTotalBytes)))
+			}
 			if deviceType != "" {
 				fmt.Printf("%s %s\n", tui.Dim("Device Type:"), tui.Value(deviceType))
 			}
@@ -475,10 +491,7 @@ func newDeviceSetupCmd() *cobra.Command {
 				fmt.Println("Device is not enrolled.")
 				if loadCLICert() == nil {
 					fmt.Println("You are not logged in to Wendy Cloud.")
-					fmt.Print("Log in now? [Y/n] ")
-					answer, _ := reader.ReadString('\n')
-					answer = strings.TrimSpace(strings.ToLower(answer))
-					if answer == "" || answer == "y" || answer == "yes" {
+					if confirmFn("Log in now?") {
 						if loginErr := performLogin(ctx, defaultCloudDashboard, defaultCloudGRPC); loginErr != nil {
 							return fmt.Errorf("login failed: %w", loginErr)
 						}
@@ -599,11 +612,7 @@ func promptWifiIfNeeded(ctx context.Context, conn *grpcclient.AgentConnection) {
 	}
 
 	fmt.Println("No WiFi connection detected on the device.")
-	fmt.Print("Set up WiFi before enrolling? [Y/n] ")
-	reader := bufio.NewReader(os.Stdin)
-	line, _ := reader.ReadString('\n')
-	answer := strings.TrimSpace(strings.ToLower(line))
-	if answer != "" && answer != "y" && answer != "yes" {
+	if !confirmFn("Set up WiFi before enrolling?") {
 		return
 	}
 
@@ -796,11 +805,7 @@ func newDeviceUnenrollCmd() *cobra.Command {
 					return fmt.Errorf("unenroll is destructive; pass --yes to confirm when not running interactively")
 				}
 				fmt.Printf("This will unenroll the device (org: %d, asset: %d) and delete its asset in Wendy Cloud.\n", orgID, assetID)
-				fmt.Print("Continue? [y/N] ")
-				reader := bufio.NewReader(os.Stdin)
-				line, _ := reader.ReadString('\n')
-				answer := strings.TrimSpace(strings.ToLower(line))
-				if answer != "y" && answer != "yes" {
+				if !confirmDefaultNoFn("Continue?") {
 					fmt.Println("Aborted.")
 					return nil
 				}
@@ -1122,7 +1127,7 @@ func newDeviceLogsCmd() *cobra.Command {
 	cmd.Flags().StringVar(&serviceName, "service", "", "Filter by service name")
 	cmd.Flags().Int32Var(&minSeverity, "min-severity", 0, "Minimum log severity number")
 	cmd.Flags().StringVar(&level, "level", "", "Minimum log level (trace, debug, info, warn, error, fatal)")
-	cmd.Flags().Int32Var(&tail, "tail", 0, "Replay the last N log batches before streaming live (0 = live only)")
+	cmd.Flags().Int32Var(&tail, "tail", 0, "Replay the last N log batches matching the filters before streaming live (0 = live only)")
 
 	return cmd
 }
@@ -1891,7 +1896,7 @@ func maybeCheckOSUpdate(ctx context.Context, preUpdateVersion *agentpb.GetAgentV
 				fmt.Printf("OS artifact specified (%s). Re-run with --yes to apply.\n", artifactURLOverride)
 				return osUpdateOutcome{}, nil
 			}
-			if !promptYesNoDefaultNoFn(fmt.Sprintf("Apply OS update from %s? [y/N] ", artifactURLOverride)) {
+			if !confirmDefaultNoFn(fmt.Sprintf("Apply OS update from %s?", artifactURLOverride)) {
 				fmt.Println("Skipping OS update.")
 				return osUpdateOutcome{}, nil
 			}
@@ -1936,7 +1941,7 @@ func maybeCheckOSUpdate(ctx context.Context, preUpdateVersion *agentpb.GetAgentV
 			// fall through to apply
 		case osActionPrompt:
 			ensureDeviceWiFiForOSUpdate(ctx, conn)
-			if !promptYesNoDefaultNoFn(fmt.Sprintf("OS update available (%s → %s). Apply now? [y/N] ", fromVer, latestVer)) {
+			if !confirmDefaultNoFn(fmt.Sprintf("OS update available (%s → %s). Apply now?", fromVer, latestVer)) {
 				fmt.Println("Skipping OS update. Run 'wendy os update' to apply later.")
 				return osUpdateOutcome{}, nil
 			}

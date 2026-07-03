@@ -1,7 +1,9 @@
 package tui
 
 import (
+	"net"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -9,6 +11,22 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
+
+// displayAddress strips a trailing numeric port from an address for display in
+// the device list — the agent port (50051/50052) is an implementation detail and
+// the same for every device. The full host:port is still used to connect and is
+// copied to the clipboard. Values that aren't host:<number> (BLE UUIDs,
+// "provider: id") are returned unchanged.
+func displayAddress(addr string) string {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return addr
+	}
+	if _, err := strconv.Atoi(port); err != nil {
+		return addr
+	}
+	return host
+}
 
 // newProbeSpinner builds the spinner that animates the Agent/OS columns while a
 // device probe is in flight. Its Style is intentionally empty so View() returns
@@ -692,7 +710,7 @@ var pickerColumnDefs = []pickerColumnDef{
 		title:    "Address",
 		minWidth: 14,
 		value: func(item PickerItem) string {
-			return item.Address
+			return displayAddress(item.Address)
 		},
 	},
 	{

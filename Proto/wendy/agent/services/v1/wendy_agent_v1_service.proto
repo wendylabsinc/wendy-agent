@@ -213,6 +213,12 @@ message GetAgentVersionResponse {
     // omitted, and link-local addresses are excluded. Empty when the agent
     // cannot enumerate interfaces.
     repeated NetworkInterface network_interfaces = 17;
+    // Total physical memory (RAM) in bytes, from /proc/meminfo. Zero when the
+    // agent cannot read it (a real host never has 0 bytes of RAM).
+    int64 mem_total_bytes = 18;
+    // Number of online logical CPU cores, from /proc/stat. Zero when the
+    // agent cannot read it.
+    uint32 cpu_count = 19;
 }
 
 // A network interface on the device and the IP addresses assigned to it.

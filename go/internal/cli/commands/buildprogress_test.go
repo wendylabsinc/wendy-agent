@@ -118,6 +118,61 @@ func TestChunkDiffBuildLogDumpedForImageBuildFailureUnderAutoChunking(t *testing
 	}
 }
 
+func TestAppleContainerContextMonitorDiagnosesEmptyTmpTransfer(t *testing.T) {
+	m := &appleContainerBuildContextMonitor{
+		contextPath: "/tmp/ctxprobe",
+		pathInTmp:   true,
+		stats:       appleContainerContextStats{fileCount: 2},
+	}
+	if _, err := m.Write([]byte("#4 [internal] load build context\n#4 transferring context: 2")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Write([]byte("B\n")); err != nil {
+		t.Fatal(err)
+	}
+
+	diagnosis := m.diagnosis()
+	for _, want := range []string{"transferred an empty build context", "known apple-container issue", "non-/tmp directory"} {
+		if !strings.Contains(diagnosis, want) {
+			t.Fatalf("diagnosis missing %q:\n%s", want, diagnosis)
+		}
+	}
+}
+
+func TestAppleContainerContextMonitorIgnoresNonTmpOrNonEmptyTransfer(t *testing.T) {
+	cases := []struct {
+		name string
+		m    appleContainerBuildContextMonitor
+		line string
+	}{
+		{
+			name: "non tmp path",
+			m:    appleContainerBuildContextMonitor{contextPath: "/Users/me/app", pathInTmp: false, stats: appleContainerContextStats{fileCount: 2}},
+			line: "#4 transferring context: 2B\n",
+		},
+		{
+			name: "normal context transfer",
+			m:    appleContainerBuildContextMonitor{contextPath: "/tmp/app", pathInTmp: true, stats: appleContainerContextStats{fileCount: 2}},
+			line: "#4 transferring context: 40B\n",
+		},
+		{
+			name: "empty local project",
+			m:    appleContainerBuildContextMonitor{contextPath: "/tmp/app", pathInTmp: true, stats: appleContainerContextStats{}},
+			line: "#4 transferring context: 2B\n",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := tc.m.Write([]byte(tc.line)); err != nil {
+				t.Fatal(err)
+			}
+			if got := tc.m.diagnosis(); got != "" {
+				t.Fatalf("diagnosis = %q, want empty", got)
+			}
+		})
+	}
+}
+
 func TestShouldDumpChunkDiffBuildLog(t *testing.T) {
 	buildErr := &imageBuildFailedError{errors.New("boom")}
 	setupErr := errors.New("creating buildx builder: boom")

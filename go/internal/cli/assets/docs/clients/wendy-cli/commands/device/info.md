@@ -10,9 +10,20 @@ wendy device info [flags]
 
 ## Description
 
-`wendy device info` queries the connected device's agent and prints its version, operating system, CPU architecture, GPU presence, and other hardware details. Use this command anywhere device metadata is needed — in scripts, CI pipelines, or interactively.
+`wendy device info` queries the connected device's agent and prints its version, operating system, CPU architecture, CPU core count, total RAM, GPU presence, and other hardware details. Use this command anywhere device metadata is needed — in scripts, CI pipelines, or interactively.
 
 The output format follows the standard `--json` / human-readable convention shared across all device commands.
+
+### CPU and memory output
+
+Two headline hardware specs are included when the agent reports them. Both are omitted from the human-readable output and the JSON map when the agent cannot read them (older agents or non-Linux hosts), so treat them as optional.
+
+| Field (JSON) | Human-readable label | Description |
+|---|---|---|
+| `cpuCount` | `CPU Cores:` | Number of online logical CPU cores. |
+| `memTotalBytes` | `Memory:` | Total physical RAM in bytes; human-readable output shows a formatted size (e.g. `131.9 GB`). |
+
+For **live** CPU and memory utilization, use [`wendy device top`](top.md).
 
 ### GPU output fields
 
@@ -62,7 +73,7 @@ wendy device info --device my-device.local --json
 Extract specific fields with `jq`:
 
 ```sh
-wendy device info --device my-device.local --json | jq '{osVersion, agentVersion: .version, deviceType}'
+wendy device info --device my-device.local --json | jq '{osVersion, agentVersion: .version, deviceType, cpuCount, memTotalBytes}'
 ```
 
 ## Deprecated alias
