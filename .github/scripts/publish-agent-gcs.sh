@@ -34,7 +34,7 @@ entry="$(jq -n --argjson nightly "$is_nightly" --argjson arts "$artifacts" '{is_
 
 # 2) Read-modify-write the manifest with a generation-match precondition, retry once.
 merge_and_upload() {
-  local gen current merged
+  local gen merged
   if gcloud storage cp "gs://${BUCKET}/agent/manifest.json" current.json 2>/dev/null; then
     gen="$(gcloud storage objects describe "gs://${BUCKET}/agent/manifest.json" --format='value(generation)')"
   else
@@ -45,6 +45,10 @@ merge_and_upload() {
     --arg version "$VERSION" --argjson entry "$entry" \
     --argjson is_release "$([ "$IS_RELEASE" = "true" ] && echo true || echo false)" \
     current.json)"
+  if [ -z "$merged" ] || ! printf '%s' "$merged" | jq empty 2>/dev/null; then
+    echo "manifest merge produced empty or invalid JSON" >&2
+    return 1
+  fi
   echo "$merged" > manifest.json
   gcloud storage cp manifest.json "gs://${BUCKET}/agent/manifest.json" \
     --cache-control=no-store --if-generation-match="$gen"

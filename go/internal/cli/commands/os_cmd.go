@@ -910,7 +910,8 @@ func progressLabel(phase string, percent int32) string {
 }
 
 // ensureAgentUpToDate checks the agent version on the device against the latest
-// stable GitHub release. If the device is behind, it downloads the latest binary,
+// available version, resolved GCS-first with a GitHub releases fallback (see
+// resolveAgentVersion). If the device is behind, it downloads the latest binary,
 // uploads it (causing the agent to restart), waits for it to come back, and
 // returns a fresh connection. If the agent is already current or the check fails
 // non-fatally, the original connection is returned unchanged.

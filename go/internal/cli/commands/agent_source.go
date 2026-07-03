@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 )
@@ -105,11 +104,7 @@ func resolveAgentVersion(nightly bool) (version, source string, err error) {
 	if m, mErr := fetchAgentManifest(); mErr == nil {
 		if v, vErr := agentVersionFromManifest(m, nightly); vErr == nil {
 			return v, "gcs", nil
-		} else {
-			fmt.Fprintf(os.Stderr, "GCS agent manifest lacks a version (%v); falling back to GitHub\n", vErr)
 		}
-	} else {
-		fmt.Fprintf(os.Stderr, "GCS agent manifest fetch failed (%v); falling back to GitHub\n", mErr)
 	}
 
 	rel, err := fetchAgentRelease(nightly)
@@ -167,11 +162,7 @@ func resolveAgentBinary(arch string, nightly bool) (binary []byte, version, sour
 	if m, mErr := fetchAgentManifest(); mErr == nil {
 		if bin, ver, dErr := downloadAgentFromGCS(gcsBaseURL, m, arch, nightly); dErr == nil {
 			return bin, ver, "gcs", nil
-		} else {
-			fmt.Fprintf(os.Stderr, "GCS agent download failed (%v); falling back to GitHub\n", dErr)
 		}
-	} else {
-		fmt.Fprintf(os.Stderr, "GCS agent manifest fetch failed (%v); falling back to GitHub\n", mErr)
 	}
 
 	rel, err := fetchAgentRelease(nightly)

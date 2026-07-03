@@ -1435,11 +1435,11 @@ func performAgentUpdate(ctx context.Context, conn *grpcclient.AgentConnection, a
 		return fmt.Errorf("device did not report CPU architecture")
 	}
 	fmt.Fprintf(os.Stderr, "Fetching agent for linux/%s...\n", arch)
-	binaryData, version, source, err := resolveAgentBinary(arch, nightly)
+	binaryData, resolvedVer, source, err := resolveAgentBinary(arch, nightly)
 	if err != nil {
 		return fmt.Errorf("resolving agent binary: %w", err)
 	}
-	fmt.Fprintf(os.Stderr, "Downloaded agent %s (from %s)\n", version, source)
+	fmt.Fprintf(os.Stderr, "Downloaded agent %s (from %s)\n", resolvedVer, source)
 
 	h := sha256.Sum256(binaryData)
 	sha256Hash := hex.EncodeToString(h[:])
