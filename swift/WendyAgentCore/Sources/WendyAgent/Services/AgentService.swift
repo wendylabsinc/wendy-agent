@@ -39,6 +39,8 @@ struct AgentService: Wendy_Agent_Services_V1_WendyAgentService.ServiceProtocol {
         #elseif arch(x86_64)
             response.cpuArchitecture = "amd64"
         #endif
+        response.memTotalBytes = Int64(clamping: ProcessInfo.processInfo.physicalMemory)
+        response.cpuCount = UInt32(clamping: ProcessInfo.processInfo.activeProcessorCount)
         return ServerResponse(message: response)
     }
 

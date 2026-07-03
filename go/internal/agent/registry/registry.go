@@ -226,7 +226,6 @@ type containerdRegistry struct {
 
 	blobLeaseExpiration time.Duration
 	manifestSizeLimit   int64
-	maxBlobSize         int64
 }
 
 func (r containerdRegistry) imageName(repo, tag string) string {
@@ -572,13 +571,6 @@ func (s safeDeleteRegistry) DeleteTag(ctx context.Context, repo string, name str
 // ---------------------------------------------------------------------------
 
 func (r containerdRegistry) PushBlob(ctx context.Context, repo string, desc ociregistry.Descriptor, reader io.Reader) (ociregistry.Descriptor, error) {
-	if r.maxBlobSize > 0 && desc.Size > r.maxBlobSize {
-		return ociregistry.Descriptor{}, ociregistry.NewHTTPError(
-			fmt.Errorf("blob size %d exceeds maximum allowed size %d", desc.Size, r.maxBlobSize),
-			http.StatusRequestEntityTooLarge, nil, nil,
-		)
-	}
-
 	cs := r.client.ContentStore()
 	// The lease protects the blob from GC until a manifest references it.
 	// Let the lease expire naturally rather than deleting it immediately.

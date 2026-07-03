@@ -80,7 +80,6 @@ type ContainerMonitor struct {
 	groupRestarting map[string]bool
 	mu              sync.Mutex
 	interval        time.Duration
-	stopCh          chan struct{}
 }
 
 func NewContainerMonitor(logger *zap.Logger, client services.ContainerdClient, logManager *services.ContainerLogManager, interval time.Duration) *ContainerMonitor {
@@ -94,7 +93,6 @@ func NewContainerMonitor(logger *zap.Logger, client services.ContainerdClient, l
 		states:          make(map[string]*containerState),
 		groupRestarting: make(map[string]bool),
 		interval:        interval,
-		stopCh:          make(chan struct{}),
 	}
 }
 
@@ -137,11 +135,6 @@ func (m *ContainerMonitor) ClearExplicitStop(appName string) {
 	if state, ok := m.states[appName]; ok {
 		state.ExplicitStop = false
 	}
-}
-
-// Start begins the monitoring loop in a goroutine.
-func (m *ContainerMonitor) Start(ctx context.Context) {
-	go m.Run(ctx)
 }
 
 // ReconcileBootContainers brings apps back after a device boot. containerd
@@ -191,11 +184,6 @@ func (m *ContainerMonitor) ReconcileBootContainers(ctx context.Context) {
 	m.checkContainers(ctx)
 }
 
-// Stop signals the monitor to stop.
-func (m *ContainerMonitor) Stop() {
-	close(m.stopCh)
-}
-
 // Run is the main monitoring loop that checks container health and restarts as needed.
 func (m *ContainerMonitor) Run(ctx context.Context) {
 	ticker := time.NewTicker(m.interval)
@@ -204,8 +192,6 @@ func (m *ContainerMonitor) Run(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
-			return
-		case <-m.stopCh:
 			return
 		case <-ticker.C:
 			m.checkContainers(ctx)

@@ -10,6 +10,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/wendylabsinc/wendy/go/internal/agent/hoststats"
 	"github.com/wendylabsinc/wendy/go/internal/shared/version"
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 )
@@ -63,6 +64,8 @@ func (s *DeviceInfoService) GetDeviceInfo(_ context.Context, _ *agentpbv2.GetDev
 		resp.DiskTotalBytes = &usage.totalBytes
 	}
 
+	resp.MemTotalBytes, resp.CpuCount = hostMemAndCPUCount()
+
 	for _, p := range listDiskPartitions() {
 		resp.Partitions = append(resp.Partitions, &agentpbv2.DiskPartition{
 			Mountpoint: p.mountpoint,
@@ -74,6 +77,23 @@ func (s *DeviceInfoService) GetDeviceInfo(_ context.Context, _ *agentpbv2.GetDev
 	}
 
 	return resp, nil
+}
+
+// hostMemAndCPUCount reads the device's total RAM and online logical CPU core
+// count from /proc for the device-info response. Values are zero when
+// unreadable (non-Linux hosts) — a real host never has 0 RAM or 0 CPUs, so
+// consumers treat zero as "unknown".
+// REFACTOR: if zero ever needs to be distinguishable from unreadable, make
+// mem_total_bytes/cpu_count `optional` the next time device_info_service.proto
+// is touched, and return pointers here.
+func hostMemAndCPUCount() (memTotal int64, cpuCount uint32) {
+	if mem, err := hoststats.ReadMemory(); err == nil {
+		memTotal = mem.TotalBytes
+	}
+	if cpu, err := hoststats.ReadCPU(); err == nil {
+		cpuCount = cpu.CPUCount
+	}
+	return memTotal, cpuCount
 }
 
 func (s *DeviceInfoService) ListHardwareCapabilities(ctx context.Context, req *agentpbv2.ListHardwareCapabilitiesRequest) (*agentpbv2.ListHardwareCapabilitiesResponse, error) {

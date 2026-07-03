@@ -305,11 +305,18 @@ func tryDeployFastPath(ctx context.Context, conn *grpcclient.AgentConnection, ap
 
 	if state == agentpb.AppRunningState_RUNNING {
 		cliLogln("No changes detected; %s is already up to date and running.", appCfg.AppID)
+		// The container is untouched, so the agent-side (in-container) hook can't
+		// be re-run, but fire the host-side postStart hook so `wendy run` behaves
+		// the same whether or not it took the fast path (e.g. re-opening the URL).
+		runPostStartHostHook(ctx, appCfg, conn.Host)
 		return true, nil
 	}
 
-	// Present but stopped — start it without rebuilding.
-	if _, err := conn.ContainerService.StartContainer(ctx, &agentpb.StartContainerRequest{
+	// Present but stopped — start it without rebuilding. Mirror the normal
+	// detached deploy path so the fast path stays a transparent optimization:
+	// attach the agent-side postStart hook to the start RPC (via context
+	// metadata), then fire the host-side postStart hook below.
+	if _, err := conn.ContainerService.StartContainer(contextWithPostStartAgentHook(ctx, appCfg), &agentpb.StartContainerRequest{
 		AppName:       appCfg.AppID,
 		RestartPolicy: resolveRestartPolicy(opts),
 	}); err != nil {
@@ -317,7 +324,21 @@ func tryDeployFastPath(ctx context.Context, conn *grpcclient.AgentConnection, ap
 		return false, nil
 	}
 	cliLogln("No changes detected; started existing %s.", appCfg.AppID)
+	runPostStartHostHook(ctx, appCfg, conn.Host)
 	return true, nil
+}
+
+// runPostStartHostHook mirrors the normal detached deploy path's host-side
+// postStart handling: wait for readiness, then fire the host hook
+// fire-and-forget on a background context so it outlives the CLI process. The
+// agent-side (in-container) hook is attached separately to the StartContainer
+// RPC's context, so it only runs when the fast path actually (re)starts the
+// container.
+func runPostStartHostHook(ctx context.Context, appCfg *appconfig.AppConfig, host string) {
+	if err := waitForReadiness(ctx, appCfg.Readiness, host); err != nil {
+		cliLogln("Warning: %v", err)
+	}
+	startPostStartHook(context.Background(), appCfg, host)
 }
 
 // lookupAppState queries the device for the running state of a single app.

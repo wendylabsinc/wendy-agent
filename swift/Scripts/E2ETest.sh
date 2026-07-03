@@ -644,6 +644,13 @@ wendy_path="\$cli_bin_dir/wendy"
 
 mkdir -p "\$cli_bin_dir"
 cd "\$cli_repo_dir/go"
+# The Linux CLI links libusb via cgo (Thor flashing); fail with a clear message
+# instead of an opaque cgo error when the CLI machine lacks the dev headers.
+if [[ "\$(uname -s)" == "Linux" ]] && ! pkg-config --exists libusb-1.0 2>/dev/null; then
+  echo "ERROR: building the wendy CLI on Linux needs libusb dev headers" >&2
+  echo "  (apt install libusb-1.0-0-dev / dnf install libusb1-devel)" >&2
+  exit 1
+fi
 go build -o "\$wendy_path" ./cmd/wendy
 
 resolved="\$(PATH="\$cli_bin_dir:\$PATH" command -v wendy || true)"

@@ -1646,6 +1646,8 @@ func buildImageWithAppleContainer(ctx context.Context, dir, imageName, platform,
 	if err != nil {
 		return fmt.Errorf("resolving project path: %w", err)
 	}
+	contextMonitor := newAppleContainerBuildContextMonitor(buildContext)
+	streamOutput = contextMonitor.wrapStream(streamOutput)
 	// --progress plain emits the deterministic BuildKit log format (#N, DONE Ns,
 	// [stage N/M]) that the shared build parser understands; the default
 	// (--progress auto) renders an interactive [+] Building UI the parser cannot
@@ -1673,7 +1675,7 @@ func buildImageWithAppleContainer(ctx context.Context, dir, imageName, platform,
 	cmd.Stdout = streamOutput
 	cmd.Stderr = streamOutput
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("container build failed: %w", err)
+		return fmt.Errorf("container build failed: %w", contextMonitor.wrapBuildError(err))
 	}
 	return nil
 }

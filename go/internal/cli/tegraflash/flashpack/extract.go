@@ -52,6 +52,12 @@ func extractZstTar(tarball, dest string) error {
 			return fmt.Errorf("unsafe path in archive: %q", hdr.Name)
 		}
 		target := filepath.Join(tmp, clean)
+		// Defense-in-depth against path traversal: even after Clean() and the
+		// checks above, require the joined target to stay inside tmp (guards any
+		// edge case the prefix check misses).
+		if target != tmp && !strings.HasPrefix(target, tmp+string(os.PathSeparator)) {
+			return fmt.Errorf("unsafe path in archive: %q", hdr.Name)
+		}
 		switch hdr.Typeflag {
 		case tar.TypeDir:
 			if err := os.MkdirAll(target, 0o755); err != nil {
@@ -69,7 +75,11 @@ func extractZstTar(tarball, dest string) error {
 				out.Close()
 				return err
 			}
-			out.Close()
+			// Check Close on the success path: a deferred flush can fail here and
+			// would otherwise silently truncate the extracted file.
+			if err := out.Close(); err != nil {
+				return fmt.Errorf("writing %s: %w", clean, err)
+			}
 		case tar.TypeSymlink, tar.TypeLink:
 			// The flashpack contains no links; skip rather than risk an escape.
 			continue

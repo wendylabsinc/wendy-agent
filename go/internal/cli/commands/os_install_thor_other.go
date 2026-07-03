@@ -1,4 +1,4 @@
-//go:build !darwin
+//go:build !darwin && !linux
 
 package commands
 
@@ -7,7 +7,7 @@ import (
 	"fmt"
 )
 
-// installThor is macOS-only for now (USB recovery flashing uses gousb/libusb).
+// installThor is macOS/Linux-only (USB recovery flashing uses gousb/libusb).
 func installThor(_ context.Context, _ string, _ bool, _ bool) error {
-	return fmt.Errorf("Thor (jetson-agx-thor) flashing is currently only supported on macOS")
+	return fmt.Errorf("Thor (jetson-agx-thor) flashing is currently only supported on macOS and Linux")
 }

@@ -16,7 +16,7 @@ wendy device enroll [--name <name>] [--cloud-grpc <endpoint>] [flags]
 
 `wendy device enroll` creates an enrollment token using your stored auth session, then calls `StartProvisioning` on the connected agent so it fetches its certificate. Run [`wendy cloud login`](../cloud/login.md) first.
 
-The enrolled device is registered in Wendy Cloud under a human-readable **name**. The name is fixed at enrollment time and cannot be changed afterward, so the command resolves it as follows:
+The enrolled device is registered in Wendy Cloud under a human-readable **name**. The name can be changed later with `wendy device rename`, so the command resolves it as follows:
 
 1. **`--name <name>`** — always wins when provided.
 2. **Hostname default** — when `--name` is omitted and the device is reachable by hostname (e.g. `playful-reed.local`), the name defaults to that hostname with any `.local` suffix stripped (so `playful-reed.local` → `playful-reed`).

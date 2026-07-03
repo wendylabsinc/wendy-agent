@@ -1,11 +1,13 @@
-//go:build darwin
+//go:build darwin || linux
 
 // Package shim is the multi-call host shim for driving the T264 initrd-flash gadget,
 // folded into the wendy binary. NVIDIA's bootburn flasher shells out to `adb`,
-// `lsusb` and `timeout`; on macOS those are missing or x86-only. Rather than ship a
-// separate binary, wendy re-execs itself: a directory of symlinks (adb/lsusb/timeout
-// -> the wendy binary) is put on PATH, and main() dispatches to Dispatch() when it is
-// invoked under one of those names (see IsShimName).
+// `lsusb` and `timeout`; on macOS those are missing or x86-only, and on Linux a
+// stock adb would spawn a server that claims the flashing gadget away from wendy's
+// serverless transport. Rather than ship a separate binary, wendy re-execs itself:
+// a directory of symlinks (adb/lsusb/timeout -> the wendy binary) is put on PATH,
+// and main() dispatches to Dispatch() when it is invoked under one of those names
+// (see IsShimName).
 package shim
 
 import (
