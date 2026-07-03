@@ -578,6 +578,9 @@
       if (model.name) {
         parts.push(model.name);
       }
+      if (model.backend) {
+        parts.push(model.backend);
+      }
       return parts.join(' · ');
     }
 

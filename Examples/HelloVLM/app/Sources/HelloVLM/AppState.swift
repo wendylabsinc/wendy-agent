@@ -20,6 +20,7 @@ actor AppState {
 
     private var modelStatus: ModelStatus = .loading
     private var modelName: String?
+    private var modelBackend: String?
 
     private var promptText: String
     private var promptUpdatedAt = Date()
@@ -55,7 +56,7 @@ actor AppState {
                 status: cameraStatus
             ),
             error: lastError,
-            model: ModelInfo(name: modelName, status: modelStatus),
+            model: ModelInfo(backend: modelBackend, name: modelName, status: modelStatus),
             prompt: PromptInfo(text: promptText, updatedAt: ISO8601.dateString(from: promptUpdatedAt)),
             run: RunInfo(
                 fps: fps,
@@ -112,17 +113,20 @@ actor AppState {
     func setModelLoading(name: String?) {
         modelStatus = .loading
         modelName = name
+        modelBackend = nil
         lastError = nil
     }
 
-    func setModelReady(name: String?) {
+    func setModelReady(name: String?, backend: String?) {
         modelStatus = .ready
         modelName = name
+        modelBackend = backend
     }
 
     func setModelFailed(message: String, name: String?) {
         modelStatus = .failed
         modelName = name
+        modelBackend = nil
         lastError = message
     }
 

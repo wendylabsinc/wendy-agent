@@ -153,8 +153,9 @@ struct HelloVLM {
         await state.setModelLoading(name: appConfig.model)
         print("Waiting for VLM backend at \(appConfig.llmURL) …")
         let modelName: String
+        let modelBackend: String?
         do {
-            modelName = try await client.waitForModel { attempt in
+            (modelName, modelBackend) = try await client.waitForModel { attempt in
                 if attempt % 10 == 1 {
                     print("  Waiting for VLM backend (attempt \(attempt))…")
                 }
@@ -167,8 +168,8 @@ struct HelloVLM {
             return
         }
 
-        print("VLM backend ready, model: \(modelName)")
-        await state.setModelReady(name: modelName)
+        print("VLM backend ready, model: \(modelName)\(modelBackend.map { " (\($0))" } ?? "")")
+        await state.setModelReady(name: modelName, backend: modelBackend)
 
         print("Sampling at \(appConfig.fps) fps, evaluating last \(appConfig.interval)s of frames (max \(appConfig.maxFrames)).")
 

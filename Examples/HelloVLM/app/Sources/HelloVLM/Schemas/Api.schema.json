@@ -43,7 +43,8 @@
       "type": "object",
       "properties": {
         "status": { "$ref": "#/$defs/ModelStatus" },
-        "name": { "type": "string" }
+        "name": { "type": "string" },
+        "backend": { "type": "string" }
       },
       "required": ["status"]
     },

@@ -48,23 +48,29 @@ struct VLMClient {
     /// Polls `/v1/models` until the backend is up and a model is loaded.
     /// The bundled backend may still be downloading the model on first
     /// start, so this can legitimately take minutes.
-    func waitForModel(pollInterval: Duration = .seconds(3), onAttempt: (Int) async -> Void) async throws -> String {
+    func waitForModel(pollInterval: Duration = .seconds(3), onAttempt: (Int) async -> Void) async throws -> (name: String, backend: String?) {
         var attempt = 0
         while !Task.isCancelled {
             attempt += 1
             await onAttempt(attempt)
-            if let name = try? await firstModelName() {
-                return name
+            if let model = try? await firstModel() {
+                return model
             }
             try await Task.sleep(for: pollInterval)
         }
         throw CancellationError()
     }
 
-    private func firstModelName() async throws -> String {
+    private func firstModel() async throws -> (name: String, backend: String?) {
         struct ModelsResponse: Decodable {
             struct Model: Decodable {
                 let id: String
+                let ownedBy: String?
+
+                enum CodingKeys: String, CodingKey {
+                    case id
+                    case ownedBy = "owned_by"
+                }
             }
             let data: [Model]
         }
@@ -78,7 +84,20 @@ struct VLMClient {
         guard let first = models.data.first else {
             throw ClientError.emptyResponse
         }
-        return configuredModel ?? first.id
+        return (configuredModel ?? first.id, Self.backendDisplayName(first.ownedBy))
+    }
+
+    /// Maps the OpenAI `owned_by` field to a display name for the engine.
+    /// llama-server reports "llamacpp"; MLXServer reports "mlx".
+    private static func backendDisplayName(_ ownedBy: String?) -> String? {
+        switch ownedBy?.lowercased() {
+        case nil, "": return nil
+        case "llamacpp": return "llama.cpp"
+        case "mlx": return "MLX"
+        case "ollama": return "Ollama"
+        case "openai", "organization-owner": return nil
+        case .some(let other): return other
+        }
     }
 
     func chat(prompt: String, jpegFrames: [Data], model: String) async throws -> ChatResult {
