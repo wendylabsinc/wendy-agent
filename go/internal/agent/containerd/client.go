@@ -592,16 +592,29 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 	// Delete any pre-existing container with the same name.
 	if existing, err := c.client.LoadContainer(ctx, containerName); err == nil {
 		c.logger.Info("Removing existing container", zap.String("container_name", containerName))
-		// Try to stop/kill the task first.
+		// Kill the old task's whole process group — not just init — and wait
+		// for it to exit. A surviving process keeps devices/ports the new
+		// container needs (WDY-1818: /dev/video0 held for hours after replace).
 		if task, taskErr := existing.Task(ctx, nil); taskErr == nil {
-			_ = task.Kill(ctx, syscall.SIGKILL)
-			_, _ = task.Delete(ctx, containerd.WithProcessKill)
+			if termErr := c.terminateTask(ctx, task, containerName, syscall.SIGKILL, killWaitTimeout, killWaitTimeout); termErr != nil {
+				c.logger.Error("Failed to delete old task during replace; forcing runtime delete",
+					zap.String("container_name", containerName),
+					zap.Error(termErr))
+				c.forceDeleteTask(ctx, containerName)
+			}
 		} else {
 			// Task may be orphaned (shim crashed). Force-delete via the task
 			// service directly so the runtime clears the old task ID.
 			c.forceDeleteTask(ctx, containerName)
 		}
-		_ = existing.Delete(ctx, containerd.WithSnapshotCleanup)
+		if delErr := existing.Delete(ctx, containerd.WithSnapshotCleanup); delErr != nil && !errdefs.IsNotFound(delErr) {
+			// Not fatal here — NewContainer below fails with AlreadyExists if
+			// the old record is truly stuck — but log the root cause so a
+			// failed replace is attributable (WDY-1818).
+			c.logger.Error("Failed to delete existing container during replace",
+				zap.String("container_name", containerName),
+				zap.Error(delErr))
+		}
 		// Stop old D-Bus proxy if any.
 		if c.proxyManager != nil {
 			_ = c.proxyManager.Stop(containerName)
@@ -1619,15 +1632,11 @@ func (c *Client) deleteStaleTask(ctx context.Context, container containerd.Conta
 	if taskErr != nil {
 		return // No task to clean up.
 	}
-	_ = existingTask.Kill(ctx, syscall.SIGKILL)
-	if waitCh, waitErr := existingTask.Wait(ctx); waitErr == nil {
-		select {
-		case <-waitCh:
-		case <-time.After(5 * time.Second):
-			c.logger.Warn("Timed out waiting for stale task to exit", zap.String("app_name", appName))
-		}
+	if err := c.terminateTask(ctx, existingTask, appName, syscall.SIGKILL, killWaitTimeout, killWaitTimeout); err != nil {
+		c.logger.Warn("Failed to delete stale task",
+			zap.String("app_name", appName),
+			zap.Error(err))
 	}
-	_, _ = existingTask.Delete(ctx, containerd.WithProcessKill)
 }
 
 // forceDeleteTask uses the low-level containerd task service to delete a task
@@ -2085,45 +2094,11 @@ func (c *Client) stopOne(ctx context.Context, containerID string) error {
 		}
 	}
 
-	// Send SIGTERM first for graceful shutdown.
-	if err := task.Kill(ctx, syscall.SIGTERM); err != nil {
-		if !errdefs.IsNotFound(err) {
-			c.logger.Warn("Failed to send SIGTERM",
-				zap.String("container_id", containerID),
-				zap.Error(err),
-			)
-		}
-	}
-
-	// Wait up to 10 seconds for graceful exit.
-	waitCh, err := task.Wait(ctx)
-	if err != nil {
-		c.logger.Warn("Failed to wait on task, sending SIGKILL",
-			zap.String("container_id", containerID),
-			zap.Error(err),
-		)
-	} else {
-		select {
-		case <-waitCh:
-			c.logger.Info("Container stopped gracefully", zap.String("container_id", containerID))
-		case <-time.After(10 * time.Second):
-			c.logger.Warn("Container did not stop within 10s, sending SIGKILL",
-				zap.String("container_id", containerID),
-			)
-			if err := task.Kill(ctx, syscall.SIGKILL); err != nil && !errdefs.IsNotFound(err) {
-				c.logger.Error("Failed to send SIGKILL",
-					zap.String("container_id", containerID),
-					zap.Error(err),
-				)
-			}
-			<-waitCh
-		}
-	}
-
-	// Delete the task.
-	_, err = task.Delete(ctx, containerd.WithProcessKill)
-	if err != nil && !errdefs.IsNotFound(err) {
-		return fmt.Errorf("deleting task for %q: %w", containerID, err)
+	// SIGTERM the whole process group for graceful shutdown, escalating to
+	// SIGKILL after the grace period. Group-wide signalling (not just init)
+	// ensures no descendant survives holding devices/ports (WDY-1818).
+	if err := c.terminateTask(ctx, task, containerID, syscall.SIGTERM, stopGracePeriod, killWaitTimeout); err != nil {
+		return err
 	}
 
 	if c.proxyManager != nil {
@@ -2323,8 +2298,14 @@ func ensureSharedSHM(appID string) (string, error) {
 // and the caller must hold c.mu.
 func (c *Client) deleteOne(ctx context.Context, ctr containerd.Container, wantImg bool) (imgName string, err error) {
 	if task, taskErr := ctr.Task(ctx, nil); taskErr == nil {
-		_ = task.Kill(ctx, syscall.SIGKILL)
-		_, _ = task.Delete(ctx, containerd.WithProcessKill)
+		if termErr := c.terminateTask(ctx, task, ctr.ID(), syscall.SIGKILL, killWaitTimeout, killWaitTimeout); termErr != nil {
+			// Keep going: the container Delete below surfaces a meaningful
+			// error if the task record is truly stuck, but log the root cause
+			// so leaked processes are attributable (WDY-1818).
+			c.logger.Warn("Failed to delete task during container delete",
+				zap.String("container_id", ctr.ID()),
+				zap.Error(termErr))
+		}
 	}
 	if wantImg {
 		if img, imgErr := ctr.Image(ctx); imgErr == nil {

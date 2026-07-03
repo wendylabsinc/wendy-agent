@@ -695,8 +695,11 @@ func (c *Client) ReapOrphanedROS2Sidecars(ctx context.Context) error {
 
 func (c *Client) deleteROS2Sidecar(ctx context.Context, container containerd.Container) error {
 	if task, err := container.Task(ctx, nil); err == nil {
-		_ = task.Kill(ctx, syscall.SIGKILL)
-		_, _ = task.Delete(ctx, containerd.WithProcessKill)
+		if termErr := c.terminateTask(ctx, task, container.ID(), syscall.SIGKILL, killWaitTimeout, killWaitTimeout); termErr != nil {
+			c.logger.Warn("Failed to delete ROS 2 sidecar task",
+				zap.String("sidecar", container.ID()),
+				zap.Error(termErr))
+		}
 	}
 	if err := container.Delete(ctx, containerd.WithSnapshotCleanup); err != nil && !errdefs.IsNotFound(err) {
 		return err
