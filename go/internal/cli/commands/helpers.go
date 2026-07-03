@@ -1434,29 +1434,12 @@ func performAgentUpdate(ctx context.Context, conn *grpcclient.AgentConnection, a
 	if arch == "" {
 		return fmt.Errorf("device did not report CPU architecture")
 	}
-	fmt.Fprintf(os.Stderr, "Fetching latest release...\n")
-	release, err := fetchAgentRelease(nightly)
+	fmt.Fprintf(os.Stderr, "Fetching agent for linux/%s...\n", arch)
+	binaryData, version, source, err := resolveAgentBinary(arch, nightly)
 	if err != nil {
-		return fmt.Errorf("fetching release: %w", err)
+		return fmt.Errorf("resolving agent binary: %w", err)
 	}
-
-	assetPrefix := fmt.Sprintf("wendy-agent-linux-%s-", arch)
-	var matchedAsset *githubReleaseAsset
-	for _, a := range release.Assets {
-		if strings.HasPrefix(a.Name, assetPrefix) && strings.HasSuffix(a.Name, ".tar.gz") {
-			matchedAsset = &a
-			break
-		}
-	}
-	if matchedAsset == nil {
-		return fmt.Errorf("no asset for linux/%s in release %s", arch, release.TagName)
-	}
-
-	fmt.Fprintf(os.Stderr, "Downloading %s...\n", matchedAsset.Name)
-	binaryData, err := downloadAgentBinary(*matchedAsset)
-	if err != nil {
-		return fmt.Errorf("downloading binary: %w", err)
-	}
+	fmt.Fprintf(os.Stderr, "Downloaded agent %s (from %s)\n", version, source)
 
 	h := sha256.Sum256(binaryData)
 	sha256Hash := hex.EncodeToString(h[:])

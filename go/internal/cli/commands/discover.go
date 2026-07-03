@@ -802,29 +802,10 @@ func (m discoverModel) startDeviceUpdateCmd(addr, name string) tea.Cmd {
 			return discoverUpdateDoneMsg{deviceName: name, err: fmt.Errorf("device did not report CPU architecture")}
 		}
 
-		release, err := fetchAgentRelease(false)
+		binaryData, _, _, err := resolveAgentBinary(arch, false)
 		if err != nil {
 			conn.Close()
-			return discoverUpdateDoneMsg{deviceName: name, err: fmt.Errorf("fetching release: %w", err)}
-		}
-
-		assetPrefix := fmt.Sprintf("wendy-agent-linux-%s-", arch)
-		var matchedAsset *githubReleaseAsset
-		for _, a := range release.Assets {
-			if strings.HasPrefix(a.Name, assetPrefix) && strings.HasSuffix(a.Name, ".tar.gz") {
-				matchedAsset = &a
-				break
-			}
-		}
-		if matchedAsset == nil {
-			conn.Close()
-			return discoverUpdateDoneMsg{deviceName: name, err: fmt.Errorf("no asset for linux/%s in release %s", arch, release.TagName)}
-		}
-
-		binaryData, err := downloadAgentBinary(*matchedAsset)
-		if err != nil {
-			conn.Close()
-			return discoverUpdateDoneMsg{deviceName: name, err: fmt.Errorf("downloading binary: %w", err)}
+			return discoverUpdateDoneMsg{deviceName: name, err: fmt.Errorf("resolving agent binary: %w", err)}
 		}
 
 		h := sha256.Sum256(binaryData)

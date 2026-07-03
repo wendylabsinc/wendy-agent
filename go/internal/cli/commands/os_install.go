@@ -2000,29 +2000,12 @@ func provisionConfigWithRetry(d drive, creds []wendyconf.WifiCredential, deviceN
 
 // provisionConfigPartition downloads the latest stable arm64 wendy-agent binary
 func provisionConfigPartition(d drive, creds []wendyconf.WifiCredential, deviceName string, provisioningJSON []byte) error {
-	release, err := fetchAgentRelease(false)
+	fmt.Printf("Downloading wendy-agent for device...\n")
+	agentBinary, agentVer, _, err := resolveAgentBinary("arm64", false)
 	if err != nil {
-		return fmt.Errorf("fetching latest agent release: %w", err)
+		return fmt.Errorf("resolving agent binary: %w", err)
 	}
-
-	const assetPrefix = "wendy-agent-linux-arm64-"
-	var matched *githubReleaseAsset
-	for i := range release.Assets {
-		a := &release.Assets[i]
-		if strings.HasPrefix(a.Name, assetPrefix) && strings.HasSuffix(a.Name, ".tar.gz") {
-			matched = a
-			break
-		}
-	}
-	if matched == nil {
-		return fmt.Errorf("no arm64 asset found in release %s", release.TagName)
-	}
-
-	fmt.Printf("Downloading wendy-agent %s for device...\n", release.TagName)
-	agentBinary, err := downloadAgentBinary(*matched)
-	if err != nil {
-		return fmt.Errorf("downloading agent binary: %w", err)
-	}
+	fmt.Printf("Using wendy-agent %s\n", agentVer)
 
 	return writeConfigPartition(d, agentBinary, creds, deviceName, provisioningJSON)
 }

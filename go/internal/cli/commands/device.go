@@ -2075,41 +2075,21 @@ func newDeviceUpdateCmd() *cobra.Command {
 					fmt.Printf("%s %s\n", tui.Dim("Architecture:"), tui.Value(arch))
 				}
 
-				releaseType := "stable"
-				if nightly {
-					releaseType = "nightly"
-				}
 				if !jsonOutput {
-					fmt.Println(tui.InfoMessage(fmt.Sprintf("Fetching latest %s release...", releaseType)))
-				}
-
-				release, err := fetchAgentRelease(nightly)
-				if err != nil {
-					return fmt.Errorf("fetching release: %w", err)
-				}
-				if !jsonOutput {
-					fmt.Printf("%s %s\n", tui.Dim("Release:"), tui.Value(release.TagName))
-				}
-
-				// Find matching asset: wendy-agent-linux-{arch}-*.tar.gz
-				assetPrefix := fmt.Sprintf("wendy-agent-linux-%s-", arch)
-				var matchedAsset *githubReleaseAsset
-				for _, a := range release.Assets {
-					if strings.HasPrefix(a.Name, assetPrefix) && strings.HasSuffix(a.Name, ".tar.gz") {
-						matchedAsset = &a
-						break
+					releaseType := "stable"
+					if nightly {
+						releaseType = "nightly"
 					}
-				}
-				if matchedAsset == nil {
-					return fmt.Errorf("no asset found for linux/%s in release %s", arch, release.TagName)
+					fmt.Println(tui.InfoMessage(fmt.Sprintf("Fetching latest %s agent for linux/%s...", releaseType, arch)))
 				}
 
-				if !jsonOutput {
-					fmt.Println(tui.InfoMessage(fmt.Sprintf("Downloading %s...", matchedAsset.Name)))
-				}
-				binaryData, err = downloadAgentBinary(*matchedAsset)
+				var source, resolvedVer string
+				binaryData, resolvedVer, source, err = resolveAgentBinary(arch, nightly)
 				if err != nil {
-					return fmt.Errorf("downloading binary: %w", err)
+					return fmt.Errorf("resolving agent binary: %w", err)
+				}
+				if !jsonOutput {
+					fmt.Printf("%s %s %s\n", tui.Dim("Release:"), tui.Value(resolvedVer), tui.Dim("(from "+source+")"))
 				}
 			}
 
