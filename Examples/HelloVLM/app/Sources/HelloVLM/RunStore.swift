@@ -1,30 +1,9 @@
 import Foundation
 
-struct PersistedFrame: Codable, Sendable {
-    let capturedAt: Date
-    let url: String
-}
-
-struct PersistedRun: Codable, Sendable {
-    let id: String
-    let timestamp: Date
-    let prompt: String
-    let response: String
-    let cameraName: String?
-    let modelName: String?
-    let interval: Double
-    let fps: Double
-    let resolution: Int?
-    let duration: TimeInterval?
-    let stats: String?
-    let frameCount: Int
-    let frames: [PersistedFrame]
-}
-
-struct RunsResponse: Codable {
-    let items: [PersistedRun]
-    let nextCursor: String?
-}
+// `PersistedFrame`, `PersistedRun`, and `RunsResponse` are generated from
+// `Schemas/Api.schema.json` by the swift-json-schema build plugin. Their
+// timestamp fields are ISO-8601 `String`s (JSON Schema has no date type), so
+// this store formats/parses at the boundary.
 
 struct FrameCapture: Sendable {
     let capturedAt: Date
@@ -94,26 +73,26 @@ struct RunStore: Sendable {
             try frame.jpeg.write(to: fileURL, options: .atomic)
             persistedFrames.append(
                 PersistedFrame(
-                    capturedAt: frame.capturedAt,
+                    capturedAt: ISO8601.dateString(from: frame.capturedAt),
                     url: "/artifacts/runs/\(id)/\(filename)"
                 )
             )
         }
 
         let run = PersistedRun(
-            id: id,
-            timestamp: Date(),
-            prompt: prompt,
-            response: response,
             cameraName: cameraName,
-            modelName: modelName,
-            interval: interval,
-            fps: fps,
-            resolution: resolution,
             duration: duration,
-            stats: stats,
+            fps: fps,
             frameCount: persistedFrames.count,
-            frames: persistedFrames
+            frames: persistedFrames,
+            id: id,
+            interval: interval,
+            modelName: modelName,
+            prompt: prompt,
+            resolution: resolution,
+            response: response,
+            stats: stats,
+            timestamp: ISO8601.dateString(from: Date())
         )
 
         let temporaryURL = directoryURL.appendingPathComponent("result.json.tmp")

@@ -1,4 +1,4 @@
-// swift-tools-version: 6.0
+// swift-tools-version: 6.1
 import PackageDescription
 
 let package = Package(
@@ -7,7 +7,8 @@ let package = Package(
         .macOS(.v15)
     ],
     dependencies: [
-        .package(url: "https://github.com/swhitty/FlyingFox.git", from: "0.20.0"),
+        .package(url: "https://github.com/hummingbird-project/hummingbird.git", from: "2.0.0"),
+        .package(url: "https://github.com/wendylabsinc/swift-json-schema.git", from: "0.1.0"),
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.7.1"),
         .package(url: "https://github.com/apple/swift-container-plugin", from: "1.3.0"),
     ],
@@ -18,13 +19,15 @@ let package = Package(
         .executableTarget(
             name: "HelloVLM",
             dependencies: [
-                .product(name: "FlyingFox", package: "FlyingFox"),
-                .product(name: "FlyingSocks", package: "FlyingFox"),
+                .product(name: "Hummingbird", package: "hummingbird"),
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 .target(name: "CLinuxVideo", condition: .when(platforms: [.linux])),
             ],
             resources: [
                 .copy("Resources")
+            ],
+            plugins: [
+                .plugin(name: "JSONSchemaPlugin", package: "swift-json-schema")
             ]
         ),
     ]

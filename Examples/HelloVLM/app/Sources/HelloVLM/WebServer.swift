@@ -1,101 +1,104 @@
-import FlyingFox
-import FlyingSocks
 import Foundation
+import Hummingbird
+import NIOCore
 
-final class WebServer: Sendable {
-    private let server: HTTPServer
-    private let state: AppState
-    private let runStore: RunStore
-    private let indexHTML: String
+/// Builds the Hummingbird application serving the web UI and JSON API.
+///
+/// The wire types returned/decoded here (`StateResponse`, `RunsResponse`,
+/// `PersistedRun`, `PromptUpdateRequest`, `PromptUpdateResponse`, …) are
+/// generated at build time by the swift-json-schema plugin from
+/// `Schemas/Api.schema.json`; see `WireTypes.swift` for the Hummingbird
+/// conformances layered on top.
+func buildWebApplication(
+    port: Int,
+    state: AppState,
+    runStore: RunStore,
+    indexHTML: String,
+    onServerRunning: @escaping @Sendable (any Channel) async -> Void
+) -> some ApplicationProtocol {
+    let router = Router()
 
-    init(port: UInt16, state: AppState, runStore: RunStore, indexHTML: String) throws {
-        self.state = state
-        self.runStore = runStore
-        self.indexHTML = indexHTML
-        self.server = HTTPServer(address: try sockaddr_in.inet(ip4: "0.0.0.0", port: port))
+    // Preserve the previous server's no-store semantics for every response.
+    router.add(middleware: NoStoreMiddleware())
+
+    // Serve archived run frames from the data directory under /artifacts/*.
+    router.add(middleware: FileMiddleware(runStore.rootURL.path, urlBasePath: "/artifacts"))
+
+    router.get("/") { _, _ -> Response in
+        htmlResponse(indexHTML)
     }
 
-    func start() async throws {
-        await registerRoutes()
-        try await server.run()
+    router.get("/api/state") { _, _ -> StateResponse in
+        await state.snapshot()
     }
 
-    func waitUntilListening() async throws {
-        try await server.waitUntilListening()
+    router.post("/api/prompt") { request, context -> PromptUpdateResponse in
+        let update = try await request.decode(as: PromptUpdateRequest.self, context: context)
+        return await state.savePrompt(update.text)
     }
 
-    private func registerRoutes() async {
-        await server.appendRoute("GET /") { [indexHTML] _ in
-            htmlResponse(indexHTML)
-        }
+    router.get("/api/runs") { request, _ -> RunsResponse in
+        let limit = max(1, min(request.uri.queryParameters.get("limit").flatMap { Int(String($0)) } ?? 4, 50))
+        let before = request.uri.queryParameters.get("before").map { String($0) }
+        return try runStore.listRuns(limit: limit, before: before)
+    }
 
-        await server.appendRoute("GET /api/state") { [state] _ in
-            try jsonResponse(await state.snapshot())
+    router.get("/api/runs/{id}") { _, context -> PersistedRun in
+        let id = try context.parameters.require("id")
+        do {
+            return try runStore.loadRun(id: id)
+        } catch {
+            throw HTTPError(.notFound, message: "Run not found.")
         }
+    }
 
-        await server.appendRoute("POST /api/prompt") { [state] request in
-            let data = try await request.bodyData
-            let update = try AppJSON.decoder.decode(PromptUpdateRequest.self, from: data)
-            return try jsonResponse(await state.savePrompt(update.text))
+    router.get("/frame.jpg") { _, _ -> Response in
+        guard let data = await state.liveFrameJPEG() else {
+            return textResponse("Live frame not available yet.", status: .notFound)
         }
+        return dataResponse(data, contentType: "image/jpeg")
+    }
 
-        await server.appendRoute("GET /api/runs") { [runStore] request in
-            let limit = max(1, min(Int(request.query["limit"] ?? "4") ?? 4, 50))
-            let response = try runStore.listRuns(limit: limit, before: request.query["before"])
-            return try jsonResponse(response)
+    return Application(
+        router: router,
+        configuration: .init(address: .hostname("0.0.0.0", port: port)),
+        onServerRunning: onServerRunning
+    )
+}
+
+/// Adds `Cache-Control: no-store` to any response that does not already set it.
+private struct NoStoreMiddleware<Context: RequestContext>: RouterMiddleware {
+    func handle(
+        _ request: Request,
+        context: Context,
+        next: (Request, Context) async throws -> Response
+    ) async throws -> Response {
+        var response = try await next(request, context)
+        if response.headers[.cacheControl] == nil {
+            response.headers[.cacheControl] = "no-store"
         }
-
-        await server.appendRoute("GET /api/runs/:id") { [runStore] (id: String) in
-            let run = try runStore.loadRun(id: id)
-            return try jsonResponse(run)
-        }
-
-        await server.appendRoute("GET /frame.jpg") { [state] _ in
-            guard let data = await state.liveFrameJPEG() else {
-                return textResponse("Live frame not available yet.", status: .notFound)
-            }
-            return dataResponse(data, contentType: "image/jpeg")
-        }
-
-        await server.appendRoute(
-            "GET,HEAD /artifacts/*",
-            to: DirectoryHTTPHandler(root: runStore.rootURL, serverPath: "/artifacts")
-        )
+        return response
     }
 }
 
-private func htmlResponse(_ html: String) -> HTTPResponse {
+private func htmlResponse(_ html: String) -> Response {
     dataResponse(Data(html.utf8), contentType: "text/html; charset=utf-8")
 }
 
-private func textResponse(_ text: String, status: HTTPStatusCode = .ok) -> HTTPResponse {
-    HTTPResponse(
-        statusCode: status,
-        headers: [
-            .contentType: "text/plain; charset=utf-8",
-            HTTPHeader("Cache-Control"): "no-store"
-        ],
-        body: Data(text.utf8)
-    )
+private func textResponse(_ text: String, status: HTTPResponse.Status = .ok) -> Response {
+    dataResponse(Data(text.utf8), contentType: "text/plain; charset=utf-8", status: status)
 }
 
 private func dataResponse(
     _ data: Data,
     contentType: String,
-    status: HTTPStatusCode = .ok,
-    cacheControl: String = "no-store"
-) -> HTTPResponse {
-    HTTPResponse(
-        statusCode: status,
-        headers: [
-            .contentType: contentType,
-            HTTPHeader("Cache-Control"): cacheControl
-        ],
-        body: data
+    status: HTTPResponse.Status = .ok
+) -> Response {
+    var buffer = ByteBuffer()
+    buffer.writeBytes(data)
+    return Response(
+        status: status,
+        headers: [.contentType: contentType],
+        body: .init(byteBuffer: buffer)
     )
-}
-
-private func jsonResponse<T: Encodable>(_ value: T, status: HTTPStatusCode = .ok) throws -> HTTPResponse {
-    let data = try AppJSON.encoder.encode(value)
-    return dataResponse(data, contentType: "application/json; charset=utf-8", status: status)
 }

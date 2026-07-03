@@ -1,67 +1,10 @@
 import Foundation
 
-enum CameraStatus: String, Codable {
-    case starting
-    case ready
-    case failed
-}
-
-enum ModelStatus: String, Codable {
-    case notConfigured
-    case loading
-    case ready
-    case failed
-}
-
-struct AppInfo: Codable {
-    let startedAt: Date
-    let url: String
-}
-
-struct CameraInfo: Codable {
-    let status: CameraStatus
-    let name: String?
-    let lastFrameAt: Date?
-    let frameURL: String?
-}
-
-struct ModelInfo: Codable {
-    let status: ModelStatus
-    let name: String?
-}
-
-struct PromptInfo: Codable {
-    let text: String
-    let updatedAt: Date
-}
-
-struct RunInfo: Codable {
-    let interval: Double
-    let fps: Double
-    let resolution: Int
-    let isRunningInference: Bool
-    let latestRunID: String?
-    let latestRunDuration: TimeInterval?
-    let lastInferenceAt: Date?
-}
-
-struct StateResponse: Codable {
-    let app: AppInfo
-    let camera: CameraInfo
-    let model: ModelInfo
-    let prompt: PromptInfo
-    let run: RunInfo
-    let error: String?
-}
-
-struct PromptUpdateRequest: Decodable {
-    let text: String
-}
-
-struct PromptUpdateResponse: Codable {
-    let ok: Bool
-    let prompt: PromptInfo
-}
+// The wire types (`StateResponse`, `CameraStatus`, `PromptUpdateRequest`, …)
+// are generated from `Schemas/Api.schema.json` by the swift-json-schema build
+// plugin. Because JSON Schema has no date type, their timestamp fields are
+// ISO-8601 `String`s; this actor keeps `Date` internally and converts at the
+// snapshot boundary.
 
 actor AppState {
     private let startedAt = Date()
@@ -96,33 +39,33 @@ actor AppState {
         self.promptText = config.prompt
         self.latestRunID = latestRun?.id
         self.latestRunDuration = latestRun?.duration
-        self.lastInferenceAt = latestRun?.timestamp
+        self.lastInferenceAt = latestRun.flatMap { ISO8601.date(from: $0.timestamp) }
     }
 
     func snapshot() -> StateResponse {
         StateResponse(
-            app: AppInfo(startedAt: startedAt, url: baseURL),
+            app: AppInfo(startedAt: ISO8601.dateString(from: startedAt), url: baseURL),
             camera: CameraInfo(
-                status: cameraStatus,
-                name: cameraName,
-                lastFrameAt: lastFrameAt,
                 frameURL: lastFrameAt.map {
                     let encoded = ISO8601.dateString(from: $0)
                     return "/frame.jpg?t=\(encoded.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? encoded)"
-                }
+                },
+                lastFrameAt: lastFrameAt.map { ISO8601.dateString(from: $0) },
+                name: cameraName,
+                status: cameraStatus
             ),
-            model: ModelInfo(status: modelStatus, name: modelName),
-            prompt: PromptInfo(text: promptText, updatedAt: promptUpdatedAt),
+            error: lastError,
+            model: ModelInfo(name: modelName, status: modelStatus),
+            prompt: PromptInfo(text: promptText, updatedAt: ISO8601.dateString(from: promptUpdatedAt)),
             run: RunInfo(
-                interval: interval,
                 fps: fps,
-                resolution: resolution,
+                interval: interval,
                 isRunningInference: isRunningInference,
-                latestRunID: latestRunID,
+                lastInferenceAt: lastInferenceAt.map { ISO8601.dateString(from: $0) },
                 latestRunDuration: latestRunDuration,
-                lastInferenceAt: lastInferenceAt
-            ),
-            error: lastError
+                latestRunID: latestRunID,
+                resolution: resolution
+            )
         )
     }
 
@@ -137,7 +80,10 @@ actor AppState {
     func savePrompt(_ text: String) -> PromptUpdateResponse {
         promptText = text
         promptUpdatedAt = Date()
-        return PromptUpdateResponse(ok: true, prompt: PromptInfo(text: promptText, updatedAt: promptUpdatedAt))
+        return PromptUpdateResponse(
+            ok: true,
+            prompt: PromptInfo(text: promptText, updatedAt: ISO8601.dateString(from: promptUpdatedAt))
+        )
     }
 
     func setCameraStarting() {

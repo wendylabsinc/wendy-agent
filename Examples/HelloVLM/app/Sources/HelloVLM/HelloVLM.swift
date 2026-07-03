@@ -1,5 +1,6 @@
 import ArgumentParser
 import Foundation
+import Hummingbird
 
 struct AppConfig: Encodable {
     var llmURL: String
@@ -114,26 +115,17 @@ struct HelloVLM {
             let baseURL = makeAdvertisedBaseURL(port: appConfig.port)
             let state = AppState(config: appConfig, baseURL: baseURL, latestRun: runStore.latestRun())
             let indexHTML = try loadIndexHTML()
-            let webServer = try WebServer(
-                port: UInt16(appConfig.port),
+
+            let app = buildWebApplication(
+                port: appConfig.port,
                 state: state,
                 runStore: runStore,
-                indexHTML: indexHTML
+                indexHTML: indexHTML,
+                onServerRunning: { _ in
+                    print("HELLO_VLM_URL=\(baseURL)")
+                    print("HELLO_VLM_DATA_DIR=\(dataDirectory.path)")
+                }
             )
-
-            let serverTask = Task {
-                try await webServer.start()
-            }
-
-            do {
-                try await webServer.waitUntilListening()
-            } catch {
-                serverTask.cancel()
-                throw error
-            }
-
-            print("HELLO_VLM_URL=\(baseURL)")
-            print("HELLO_VLM_DATA_DIR=\(dataDirectory.path)")
 
             let frameBuffer = FrameBuffer()
             let camera = LinuxCamera(config: appConfig, state: state, buffer: frameBuffer)
@@ -147,7 +139,7 @@ struct HelloVLM {
                 inferenceTask.cancel()
             }
 
-            try await serverTask.value
+            try await app.runService()
         } catch {
             print("HelloVLM failed to start: \(error)")
             exit(1)
@@ -238,7 +230,7 @@ struct HelloVLM {
                     duration: duration,
                     stats: result.stats
                 )
-                await state.recordRun(id: run.id, at: run.timestamp, duration: duration)
+                await state.recordRun(id: run.id, at: ISO8601.date(from: run.timestamp) ?? Date(), duration: duration)
                 await state.setError(nil)
             } catch {
                 await state.setError("Failed to persist run: \(error.localizedDescription)")
