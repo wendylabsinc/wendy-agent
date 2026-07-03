@@ -9,8 +9,10 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -1074,6 +1076,7 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 			stdoutW.Close()
 			stderrR.Close()
 			stderrW.Close()
+			c.recordStartFailure(ctx, appName, err)
 			return nil, fmt.Errorf("creating task for %q: %w", appName, err)
 		}
 	}
@@ -1086,6 +1089,7 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 		stdoutW.Close()
 		stderrR.Close()
 		stderrW.Close()
+		c.recordStartFailure(ctx, appName, err)
 		return nil, fmt.Errorf("waiting on task for %q: %w", appName, err)
 	}
 
@@ -1096,6 +1100,7 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 		stdoutW.Close()
 		stderrR.Close()
 		stderrW.Close()
+		c.recordStartFailure(ctx, appName, err)
 		return nil, fmt.Errorf("starting task for %q: %w", appName, err)
 	}
 
@@ -1240,6 +1245,7 @@ func (c *Client) StartContainerWithStdin(ctx context.Context, appName string, st
 			stdoutW.Close()
 			stderrR.Close()
 			stderrW.Close()
+			c.recordStartFailure(ctx, appName, err)
 			return nil, fmt.Errorf("creating task for %q: %w", appName, err)
 		}
 	}
@@ -1251,6 +1257,7 @@ func (c *Client) StartContainerWithStdin(ctx context.Context, appName string, st
 		stdoutW.Close()
 		stderrR.Close()
 		stderrW.Close()
+		c.recordStartFailure(ctx, appName, err)
 		return nil, fmt.Errorf("waiting on task for %q: %w", appName, err)
 	}
 
@@ -1260,6 +1267,7 @@ func (c *Client) StartContainerWithStdin(ctx context.Context, appName string, st
 		stdoutW.Close()
 		stderrR.Close()
 		stderrW.Close()
+		c.recordStartFailure(ctx, appName, err)
 		return nil, fmt.Errorf("starting task for %q: %w", appName, err)
 	}
 
@@ -1958,13 +1966,14 @@ func (c *Client) streamOutput(
 
 	// Wait for the task to exit.
 	exitStatus := <-exitStatusCh
-	code, _, err := exitStatus.Result()
+	code, exitedAt, err := exitStatus.Result()
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			// The wait was canceled because the RPC that started this monitor
 			// ended — e.g. `wendy run --detach` returned and tore down its
 			// deploy stream. The container keeps running; this is normal
-			// teardown, not a task failure, so don't log it as an error.
+			// teardown, not a task failure, so don't log it as an error — and
+			// crucially, don't record an exit: the container is still up.
 			c.logger.Debug("Stopped monitoring task exit (stream canceled)",
 				zap.String("app_name", appName),
 			)
@@ -1979,6 +1988,13 @@ func (c *Client) streamOutput(
 			zap.String("app_name", appName),
 			zap.Uint32("exit_code", code),
 		)
+		// Persist why this run ended so a stopped/crashed container can explain
+		// itself later (the task and this live stream are about to disappear).
+		// Detached context: the RPC ctx may be torn down the instant we return.
+		recCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		reason := classifyExit(code, taskOOMKilled(recCtx, task))
+		c.recordContainerExit(recCtx, appName, int32(code), reason, exitedAt)
+		cancel()
 	}
 
 	// Close the write ends to unblock readers.
@@ -2532,6 +2548,8 @@ func (c *Client) ListContainers(ctx context.Context) ([]*agentpb.AppContainer, e
 		runningState agentpb.AppRunningState
 		mcpPort      uint32
 		services     []serviceEntry
+		exitCode     int32
+		exitReason   string // "" until an exit label is seen for this app
 	}
 	grouped := make(map[string]*entry)
 	var order []string
@@ -2567,21 +2585,36 @@ func (c *Client) ListContainers(ctx context.Context) ([]*agentpb.AppContainer, e
 		serviceName := info.Labels[labelKeyServiceName]
 
 		svc := serviceEntry{name: serviceName, runningState: runningState}
+		exitCode, exitReason, hasExit := parseExitLabels(info.Labels)
+		// A container the user deliberately stopped isn't a crash to report,
+		// even though its task exited (SIGTERM). The stopped-by-user mark wins.
+		if info.Labels[labelKeyStoppedByUser] == "true" {
+			hasExit = false
+		}
 
 		if e, ok := grouped[appID]; !ok {
 			order = append(order, appID)
-			grouped[appID] = &entry{
+			ne := &entry{
 				version:      appVersion,
 				runningState: runningState,
 				mcpPort:      mcpPort,
 				services:     []serviceEntry{svc},
 			}
+			if hasExit {
+				ne.exitCode, ne.exitReason = exitCode, exitReason
+			}
+			grouped[appID] = ne
 		} else {
 			if runningState == agentpb.AppRunningState_RUNNING {
 				e.runningState = agentpb.AppRunningState_RUNNING
 			}
 			if mcpPort != 0 && e.mcpPort == 0 {
 				e.mcpPort = mcpPort
+			}
+			// Keep the first exit reason seen for the app (multi-service apps
+			// aggregate; a single stopped service's cause is better than none).
+			if e.exitReason == "" && hasExit {
+				e.exitCode, e.exitReason = exitCode, exitReason
 			}
 			e.services = append(e.services, svc)
 		}
@@ -2616,15 +2649,82 @@ func (c *Client) ListContainers(ctx context.Context) ([]*agentpb.AppContainer, e
 			}
 		}
 
-		result = append(result, &agentpb.AppContainer{
+		ac := &agentpb.AppContainer{
 			AppName:      appID,
 			AppVersion:   e.version,
 			RunningState: e.runningState,
 			McpPort:      e.mcpPort,
 			Services:     services,
-		})
+		}
+		// Exit diagnostics are only meaningful for a stopped app; a running app
+		// may carry stale labels from a prior run, so don't surface them.
+		if e.runningState == agentpb.AppRunningState_STOPPED && e.exitReason != "" {
+			ac.ExitCode = e.exitCode
+			ac.TerminationReason = e.exitReason
+		}
+		result = append(result, ac)
 	}
 	return result, nil
+}
+
+// AppDeclaredVolumes maps every Wendy-managed app (bare appID) to the
+// persistent volume names its containers declare via persist entitlement
+// labels. Names are sanitized the same way applyPersist sanitizes them before
+// creating the host directory, so they match the directory names under
+// /var/lib/wendy/volumes. Multi-service apps are grouped under their appID
+// with the union of all services' declarations.
+//
+// This is the source of truth for volume ownership: volumes are shared across
+// apps by name, so a name may appear under several apps. Containers deployed
+// before entitlement labels existed carry no persist labels and contribute
+// nothing — callers must treat an app that is absent from the map as
+// "ownership unknown", not "owns nothing", and fail safe.
+func (c *Client) AppDeclaredVolumes(ctx context.Context) (map[string][]string, error) {
+	ctx = c.withNamespace(ctx)
+
+	ctrs, err := c.client.Containers(ctx, fmt.Sprintf("labels.%q", labelKeyAppVersion))
+	if err != nil {
+		return nil, fmt.Errorf("listing containers: %w", err)
+	}
+
+	declared := make(map[string]map[string]bool)
+	for _, ctr := range ctrs {
+		info, err := ctr.Info(ctx)
+		if err != nil {
+			// Propagate rather than skip: a container we cannot inspect might
+			// declare a volume another app is about to delete, and callers rely
+			// on a complete map to protect shared volumes.
+			return nil, fmt.Errorf("getting container info for %q: %w", ctr.ID(), err)
+		}
+		appID := info.Labels[labelKeyAppID]
+		if appID == "" {
+			appID = ctr.ID()
+		}
+		for _, ent := range parseEntitlementsFromAnnotations(info.Labels) {
+			if ent.Type != appconfig.EntitlementPersist {
+				continue
+			}
+			name := filepath.Base(ent.Name)
+			if name == "." || name == ".." || name == "/" || name == "" {
+				continue
+			}
+			if declared[appID] == nil {
+				declared[appID] = make(map[string]bool)
+			}
+			declared[appID][name] = true
+		}
+	}
+
+	out := make(map[string][]string, len(declared))
+	for app, names := range declared {
+		list := make([]string, 0, len(names))
+		for n := range names {
+			list = append(list, n)
+		}
+		sort.Strings(list)
+		out[app] = list
+	}
+	return out, nil
 }
 
 func (c *Client) GetContainerMCPPort(ctx context.Context, appName string) (uint32, error) {

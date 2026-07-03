@@ -12,16 +12,22 @@ import (
 
 // GetOSUpdateStatus reports the persisted outcome of the most recent OS
 // update attempt (see oshealth.Gate). The record survives an A/B rollback
-// because it lives on the data partition.
-func (s *AgentService) GetOSUpdateStatus(_ context.Context, _ *agentpb.GetOSUpdateStatusRequest) (*agentpb.GetOSUpdateStatusResponse, error) {
+// because it lives on the data partition. When the request asks for it, the
+// response also carries a live `wendyos-update status --json` snapshot,
+// independent of whether an update record exists.
+func (s *AgentService) GetOSUpdateStatus(ctx context.Context, req *agentpb.GetOSUpdateStatusRequest) (*agentpb.GetOSUpdateStatusResponse, error) {
 	record, found, err := oshealth.ReadUpdateResult(s.osUpdateStateDir)
 	if err != nil {
 		s.logger.Warn("Failed to read OS update result record", zap.Error(err))
 	}
-	if !found || err != nil {
-		return &agentpb.GetOSUpdateStatusResponse{HasResult: false}, nil
+	resp := &agentpb.GetOSUpdateStatusResponse{HasResult: false}
+	if found && err == nil {
+		resp = osUpdateStatusToProtoV1(record)
 	}
-	return osUpdateStatusToProtoV1(record), nil
+	if req.GetIncludeEngineStatus() {
+		resp.EngineStatus = probeWendyOSEngineStatus(ctx, s.logger)
+	}
+	return resp, nil
 }
 
 func osUpdateStatusToProtoV1(r oshealth.UpdateResult) *agentpb.GetOSUpdateStatusResponse {
@@ -76,15 +82,19 @@ func serviceStatusToProtoV1(s oshealth.ServiceStatus) agentpb.GetOSUpdateStatusR
 }
 
 // GetOSUpdateStatus is the v2 mirror of AgentService.GetOSUpdateStatus.
-func (s *OSUpdateService) GetOSUpdateStatus(_ context.Context, _ *agentpbv2.GetOSUpdateStatusRequest) (*agentpbv2.GetOSUpdateStatusResponse, error) {
+func (s *OSUpdateService) GetOSUpdateStatus(ctx context.Context, req *agentpbv2.GetOSUpdateStatusRequest) (*agentpbv2.GetOSUpdateStatusResponse, error) {
 	record, found, err := oshealth.ReadUpdateResult(s.stateDir)
 	if err != nil {
 		s.logger.Warn("Failed to read OS update result record", zap.Error(err))
 	}
-	if !found || err != nil {
-		return &agentpbv2.GetOSUpdateStatusResponse{HasResult: false}, nil
+	resp := &agentpbv2.GetOSUpdateStatusResponse{HasResult: false}
+	if found && err == nil {
+		resp = osUpdateStatusToProtoV2(record)
 	}
-	return osUpdateStatusToProtoV2(record), nil
+	if req.GetIncludeEngineStatus() {
+		resp.EngineStatus = engineStatusToProtoV2(probeWendyOSEngineStatus(ctx, s.logger))
+	}
+	return resp, nil
 }
 
 func osUpdateStatusToProtoV2(r oshealth.UpdateResult) *agentpbv2.GetOSUpdateStatusResponse {

@@ -93,6 +93,7 @@ The most useful environment variables are:
 | `WENDY_E2E_CLI_OS` / `WENDY_E2E_AGENT_OS` | Override machine OS metadata. |
 | `WENDY_E2E_ISOLATION` | Sandbox mode: `per-test`, `per-run`, or `none`. |
 | `WENDY_E2E_PARALLEL` | Enables parallel test execution when supported by the runner. |
+| `WENDY_E2E_TEST_TIMEOUT_SECONDS` | SwiftPM test process timeout in seconds; 0 disables. |
 | `WENDY_E2E_VERBOSE` | Print every machine command before it runs. |
 
 Sandbox isolation modes:

@@ -34,6 +34,14 @@ The CLI will:
 3. Create and start the container
 4. Stream logs back to your terminal
 
+When the app exposes a web service, `wendy run` may also print a reachable URL:
+
+```text
+App reachable at http://192.168.123.222:3000
+```
+
+This appears when `wendy.json` defines either `hooks.postStart.openURL` with `WENDY_HOSTNAME` or a `readiness.tcpSocket.port`. The CLI prints a device IP address instead of a `.local` hostname so the URL is easier to open in a browser.
+
 ### First Run Performance
 
 The first time you run an app, the build and transfer process may take longer, especially for large applications with many dependencies. For the best experience:
@@ -52,8 +60,12 @@ wendy run
 # Detached mode - runs in background
 wendy run --detach
 
-# Deploy mode - auto-restarts on failure (up to 5 retries)
+# Deploy mode - create/update the container without starting it
 wendy run --deploy
+
+# Start with a restart policy
+wendy run --restart-on-failure
+wendy run --restart-unless-stopped
 ```
 
 ### Python Projects
@@ -157,15 +169,35 @@ wendy device apps list
 ╰───────────────┴─────────┴─────────┴──────────╯
 ```
 
-## Removing (or Deleting) an App
+## Removing an App
 
-To delete an app, run:
+To remove an app, run:
 
 ```bash
-wendy device apps delete <app-name>
+wendy device apps remove <app-name>
 ```
 
 An example output is:
 
 ```bash
-wendy device apps delete simple-server
+wendy device apps remove simple-server
+✔︎ Searching for WendyOS devices [5.2s]
+? Remove simple-server? This cannot be undone. Yes
+✔ Application simple-server removed.
+```
+
+Use `--force` to skip the confirmation prompt:
+
+```bash
+wendy device apps remove simple-server --force
+```
+
+When connected to a WendyOS agent, you can also clean up storage owned by the app:
+
+```bash
+# Delete the container image too
+wendy device apps remove simple-server --cleanup
+
+# Delete persistent volumes under /var/lib/wendy/volumes too
+wendy device apps remove simple-server --delete-volumes
+```

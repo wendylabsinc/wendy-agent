@@ -133,10 +133,12 @@ func mapAppContainerToV2(c *agentpb.AppContainer) *agentpbv2.AppContainer {
 		state = agentpbv2.AppRunningState_APP_RUNNING_STATE_STOPPED
 	}
 	return &agentpbv2.AppContainer{
-		AppName:      c.AppName,
-		AppVersion:   c.AppVersion,
-		RunningState: state,
-		FailureCount: c.FailureCount,
+		AppName:           c.AppName,
+		AppVersion:        c.AppVersion,
+		RunningState:      state,
+		FailureCount:      c.FailureCount,
+		ExitCode:          c.ExitCode,
+		TerminationReason: c.TerminationReason,
 	}
 }
 

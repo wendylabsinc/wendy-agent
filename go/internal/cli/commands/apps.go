@@ -139,11 +139,13 @@ func appsListAgent(ctx context.Context, conn *grpcclient.AgentConnection) error 
 			RunningState string `json:"runningState"`
 		}
 		type jsonApp struct {
-			Name         string        `json:"name"`
-			Version      string        `json:"version,omitempty"`
-			RunningState string        `json:"runningState,omitempty"`
-			FailureCount uint32        `json:"failureCount,omitempty"`
-			Services     []jsonService `json:"services,omitempty"`
+			Name              string        `json:"name"`
+			Version           string        `json:"version,omitempty"`
+			RunningState      string        `json:"runningState,omitempty"`
+			FailureCount      uint32        `json:"failureCount,omitempty"`
+			ExitCode          *int32        `json:"exitCode,omitempty"` // pointer so a clean exit 0 is still emitted alongside terminationReason
+			TerminationReason string        `json:"terminationReason,omitempty"`
+			Services          []jsonService `json:"services,omitempty"`
 		}
 		apps := make([]jsonApp, len(containers))
 		for i, c := range containers {
@@ -154,12 +156,19 @@ func appsListAgent(ctx context.Context, conn *grpcclient.AgentConnection) error 
 					RunningState: s.GetRunningState().String(),
 				})
 			}
+			var exitCode *int32
+			if c.GetTerminationReason() != "" {
+				ec := c.GetExitCode()
+				exitCode = &ec
+			}
 			apps[i] = jsonApp{
-				Name:         c.GetAppName(),
-				Version:      c.GetAppVersion(),
-				RunningState: c.GetRunningState().String(),
-				FailureCount: c.GetFailureCount(),
-				Services:     svcs,
+				Name:              c.GetAppName(),
+				Version:           c.GetAppVersion(),
+				RunningState:      c.GetRunningState().String(),
+				FailureCount:      c.GetFailureCount(),
+				ExitCode:          exitCode,
+				TerminationReason: c.GetTerminationReason(),
+				Services:          svcs,
 			}
 		}
 		data, err := json.MarshalIndent(apps, "", "  ")
@@ -174,7 +183,7 @@ func appsListAgent(ctx context.Context, conn *grpcclient.AgentConnection) error 
 		cliLogln("No applications deployed.")
 		return nil
 	}
-	headers := []string{"", "Name", "Version", "Failures"}
+	headers := []string{"", "Name", "Version", "Failures", "Reason"}
 	var rows [][]string
 	for _, c := range containers {
 		services := c.GetServices()
@@ -185,12 +194,14 @@ func appsListAgent(ctx context.Context, conn *grpcclient.AgentConnection) error 
 				c.GetAppName() + " " + lipgloss.NewStyle().Foreground(tui.ColorDim).Render("[group]"),
 				c.GetAppVersion(),
 				fmt.Sprintf("%d", c.GetFailureCount()),
+				terminationSummary(c.GetTerminationReason(), c.GetExitCode()),
 			})
 			// Per-service sub-rows indented under the group header.
 			for _, s := range services {
 				rows = append(rows, []string{
 					"",
 					"  ↳ " + s.GetName() + "  " + stateIcon(s.GetRunningState().String()),
+					"",
 					"",
 					"",
 				})
@@ -201,11 +212,34 @@ func appsListAgent(ctx context.Context, conn *grpcclient.AgentConnection) error 
 				c.GetAppName(),
 				c.GetAppVersion(),
 				fmt.Sprintf("%d", c.GetFailureCount()),
+				terminationSummary(c.GetTerminationReason(), c.GetExitCode()),
 			})
 		}
 	}
 	fmt.Print(tui.RenderTable(headers, rows))
 	return nil
+}
+
+// terminationSummary renders a stopped app's exit reason for display. Empty for
+// a running app or one whose cause wasn't recorded. Mirrors the agent's
+// termination_reason vocabulary (see exit_status.go).
+func terminationSummary(reason string, exitCode int32) string {
+	switch reason {
+	case "":
+		return ""
+	case "crashed":
+		return fmt.Sprintf("crashed (exit %d)", exitCode)
+	case "oom_killed":
+		return "OOM killed"
+	case "start_failed":
+		return "start failed"
+	case "entitlement_denied":
+		return "entitlement denied"
+	case "exited":
+		return "exited"
+	default:
+		return reason
+	}
 }
 
 // streamAppLogs streams logs for a single app to stdout after the dashboard exits.

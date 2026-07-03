@@ -2,6 +2,7 @@ package services
 
 import (
 	"encoding/binary"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -298,4 +299,61 @@ func TestTelemetryBuffer_Cursor(t *testing.T) {
 	}
 
 	_ = dir
+}
+
+func TestTelemetryBuffer_ReadLastNMatching(t *testing.T) {
+	// Tiny segments force rotation so the scan for matches spans segment files.
+	buf, _ := makeTestBuffer(t, 10*1024*1024, 100)
+
+	logBody := func(m proto.Message) string {
+		logs, ok := m.(*otelpb.ExportLogsServiceRequest)
+		if !ok {
+			return ""
+		}
+		return logs.GetResourceLogs()[0].GetScopeLogs()[0].GetLogRecords()[0].GetBody().GetStringValue()
+	}
+	matchQuiet := func(m proto.Message) proto.Message {
+		if strings.HasPrefix(logBody(m), "quiet-") {
+			return m
+		}
+		return nil
+	}
+
+	// A quiet producer's entries interleaved with a chatty one that dominates
+	// the tail of the buffer.
+	for i := 0; i < 3; i++ {
+		buf.PublishLogs(makeLogReq(fmt.Sprintf("quiet-%d", i)))
+		for j := 0; j < 10; j++ {
+			buf.PublishLogs(makeLogReq(fmt.Sprintf("chatty-%d-%d", i, j)))
+		}
+	}
+
+	// The window counts matching frames: the last 2 quiet entries come back
+	// even though the most recent frames overall are all chatty.
+	got := buf.ReadLastNMatching(SignalLogs, 2, matchQuiet)
+	if len(got) != 2 || logBody(got[0]) != "quiet-1" || logBody(got[1]) != "quiet-2" {
+		bodies := make([]string, len(got))
+		for i, m := range got {
+			bodies[i] = logBody(m)
+		}
+		t.Errorf("want [quiet-1 quiet-2], got %v", bodies)
+	}
+
+	// n larger than the matching history returns everything that matches.
+	got = buf.ReadLastNMatching(SignalLogs, 50, matchQuiet)
+	if len(got) != 3 {
+		t.Errorf("want all 3 quiet entries, got %d", len(got))
+	}
+
+	// No matches at all returns an empty result.
+	got = buf.ReadLastNMatching(SignalLogs, 5, func(proto.Message) proto.Message { return nil })
+	if len(got) != 0 {
+		t.Errorf("want no entries for non-matching filter, got %d", len(got))
+	}
+
+	// A nil match behaves like ReadLastN.
+	got = buf.ReadLastNMatching(SignalLogs, 2, nil)
+	if len(got) != 2 || logBody(got[1]) != "chatty-2-9" {
+		t.Errorf("nil match: want last 2 frames overall ending in chatty-2-9, got %d entries", len(got))
+	}
 }

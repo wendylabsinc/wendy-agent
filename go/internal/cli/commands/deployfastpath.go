@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
@@ -305,11 +306,18 @@ func tryDeployFastPath(ctx context.Context, conn *grpcclient.AgentConnection, ap
 
 	if state == agentpb.AppRunningState_RUNNING {
 		cliLogln("No changes detected; %s is already up to date and running.", appCfg.AppID)
+		// The container is untouched, so the agent-side (in-container) hook can't
+		// be re-run, but fire the host-side postStart hook so `wendy run` behaves
+		// the same whether or not it took the fast path (e.g. re-opening the URL).
+		runPostStartHostHook(ctx, conn, appCfg)
 		return true, nil
 	}
 
-	// Present but stopped — start it without rebuilding.
-	if _, err := conn.ContainerService.StartContainer(ctx, &agentpb.StartContainerRequest{
+	// Present but stopped — start it without rebuilding. Mirror the normal
+	// detached deploy path so the fast path stays a transparent optimization:
+	// attach the agent-side postStart hook to the start RPC (via context
+	// metadata), then fire the host-side postStart hook below.
+	if _, err := conn.ContainerService.StartContainer(contextWithPostStartAgentHook(ctx, appCfg), &agentpb.StartContainerRequest{
 		AppName:       appCfg.AppID,
 		RestartPolicy: resolveRestartPolicy(opts),
 	}); err != nil {
@@ -317,7 +325,62 @@ func tryDeployFastPath(ctx context.Context, conn *grpcclient.AgentConnection, ap
 		return false, nil
 	}
 	cliLogln("No changes detected; started existing %s.", appCfg.AppID)
+	runPostStartHostHook(ctx, conn, appCfg)
 	return true, nil
+}
+
+// runPostStartHostHook mirrors the normal detached deploy path's host-side
+// postStart handling: wait for readiness, then fire the host hook
+// fire-and-forget on a background context so it outlives the CLI process. The
+// agent-side (in-container) hook is attached separately to the StartContainer
+// RPC's context, so it only runs when the fast path actually (re)starts the
+// container.
+func runPostStartHostHook(ctx context.Context, conn *grpcclient.AgentConnection, appCfg *appconfig.AppConfig) {
+	if err := waitForReadiness(ctx, appCfg.Readiness, conn.Host); err != nil {
+		warnReadiness(ctx, conn, appCfg.AppID, err)
+	}
+	startPostStartHook(context.Background(), appCfg, conn.Host)
+}
+
+// containerExitDetail returns a short human summary of why appID's container
+// stopped (e.g. "container crashed (exit 1)"), or "" if it's running, the cause
+// wasn't recorded, or the lookup fails. Best-effort — it exists only to enrich
+// a readiness failure, so it must never itself error out the deploy.
+func containerExitDetail(ctx context.Context, conn *grpcclient.AgentConnection, appID string) string {
+	cctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	stream, err := conn.ContainerService.ListContainers(cctx, &agentpb.ListContainersRequest{})
+	if err != nil {
+		return ""
+	}
+	for {
+		resp, err := stream.Recv()
+		if err != nil {
+			break
+		}
+		c := resp.GetContainer()
+		if c == nil || !strings.EqualFold(c.GetAppName(), appID) {
+			continue
+		}
+		if c.GetRunningState() == agentpb.AppRunningState_STOPPED {
+			if s := terminationSummary(c.GetTerminationReason(), c.GetExitCode()); s != "" {
+				return "container " + s
+			}
+		}
+		break
+	}
+	return ""
+}
+
+// warnReadiness logs a readiness failure, appending why the container stopped
+// when the agent recorded a reason — so a bare "timed out" isn't the only thing
+// the user sees when a startup crash is the real cause (WDY-1819).
+func warnReadiness(ctx context.Context, conn *grpcclient.AgentConnection, appID string, err error) {
+	msg := err.Error()
+	if d := containerExitDetail(ctx, conn, appID); d != "" {
+		msg += " — " + d
+	}
+	cliLogln("Warning: %s", msg)
 }
 
 // lookupAppState queries the device for the running state of a single app.

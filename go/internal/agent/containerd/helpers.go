@@ -88,6 +88,21 @@ const labelKeyServiceName = "sh.wendy/service"
 // semantics). Persisted on the container so it outlives the agent process.
 const labelKeyStoppedByUser = "sh.wendy/stopped-by-user"
 
+// Exit-diagnostics labels record why a container's last run ended, so a
+// stopped/crashed container can explain itself long after the fact (the task,
+// and any live output stream, are gone). Written when a run exits or fails to
+// start; cleared on a successful (re)start. Persisted on the container so they
+// survive the agent process and reboots.
+const (
+	// labelKeyExitCode is the process exit code of the last run as a decimal
+	// string. "-1" means the task never started (start failure).
+	labelKeyExitCode = "sh.wendy/exit.code"
+	// labelKeyExitReason is a short machine-readable cause: one of exitReason*.
+	labelKeyExitReason = "sh.wendy/exit.reason"
+	// labelKeyExitAt is the RFC3339 (UTC) time the run ended / failed to start.
+	labelKeyExitAt = "sh.wendy/exit.at"
+)
+
 // ContainerName returns the containerd container ID for the given appID and
 // optional serviceName.
 //
