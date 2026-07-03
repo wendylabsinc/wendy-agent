@@ -67,7 +67,8 @@ is nil). Add explicit handling:
 | `ByteStringType` (Interface=`[]byte`) | fmt.Sprint of byte slice | string(bytes) |
 | `Complex64Type` / `Complex128Type` | fmt.Sprint | string form |
 | `UintptrType` | Integer path? (not matched) → default | int value |
-| `ReflectType` / `ObjectMarshalerType` / `ArrayMarshalerType` | fmt.Sprint of opaque value | JSON-encode to string (`json.Marshal`; on error, fmt.Sprint fallback) |
+| `ReflectType` (e.g. `zap.Any(struct)`) | fmt.Sprint of opaque value | JSON-encode to string (`json.Marshal`; on error, fmt.Sprint fallback) |
+| `ObjectMarshalerType` / `ArrayMarshalerType` | fmt.Sprint of opaque value | **left to the `default` fallback** — faithful rendering needs a zap encoder, and neither type is used in the agent (YAGNI) |
 | `NamespaceType` | fmt.Sprint(nil) → dropped | skip (return nil) — namespaces have no value |
 | `SkipType` | default → dropped | skip explicitly (return nil) |
 
