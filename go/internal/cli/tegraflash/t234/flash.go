@@ -14,11 +14,13 @@ import (
 )
 
 // Stage-2 timeouts. The first flashpkg LUN appears once the RCM-booted
-// kernel+initrd are up (~30 s); the final one only after the device finishes
-// programming its QSPI boot flash in the background.
+// kernel+initrd are up (~30 s); the rootfs LUN only after the device has run
+// the earlier command-sequence steps (bootloader → QSPI programming, pre-wipe),
+// which can take many minutes on the device before it exports mmcblk0; the
+// final status LUN only after all programming completes.
 const (
 	flashpkgWait    = 5 * time.Minute
-	rootfsWait      = 5 * time.Minute
+	rootfsWait      = 15 * time.Minute
 	finalStatusWait = 15 * time.Minute
 	disappearWait   = 45 * time.Second
 )
