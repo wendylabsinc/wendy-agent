@@ -1,0 +1,12 @@
+# Name,     Type, SubType, Offset,    Size,      Flags
+# 16 MB flash layout for the ESP32-S31-Korvo-1.
+# Phase 1 (native camera->LCD viewfinder) only needs nvs + factory. The
+# wasm_a / wendy_conf / storage slots are reserved now so the layout does not
+# have to change when Phase 2 (wendy_core) is enabled. Camera + LCD
+# framebuffers live in PSRAM, not flash, so the app slot stays modest.
+nvs,        data, nvs,     0x9000,    0x6000,
+phy_init,   data, phy,     0xf000,    0x1000,
+factory,    app,  factory, 0x10000,   0x300000,
+wasm_a,     data, 0x80,    0x310000,  0xC00000,
+wendy_conf, data, 0x40,    0xF10000,  0x4000,
+storage,    data, spiffs,  0xF14000,  0xEC000,

@@ -1,0 +1,24 @@
+# Universal defaults for the ESP32-S31-Korvo-1 demo.
+# Target-specific overrides live in sdkconfig.defaults.esp32s31.
+
+# --- Partition table: custom CSV sized for a 16 MB flash board ---
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# --- Console over UART (works with the on-board USB-UART bridge) ---
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+
+# --- Size-optimized build ---
+CONFIG_COMPILER_OPTIMIZATION_SIZE=y
+
+# --- Camera + LCD both push framebuffers through PSRAM; make sure large
+#     DMA-capable allocations can spill there. Concrete SPIRAM mode/speed is
+#     set per-target in sdkconfig.defaults.esp32s31 (see the notes there). ---
+CONFIG_SPIRAM_USE_MALLOC=y
+CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+
+# --- mbedTLS dynamic buffers (matches wendy-lite; keeps TLS off the static
+#     heap so WiFi + camera framebuffers don't get starved). ---
+CONFIG_MBEDTLS_DYNAMIC_BUFFER=y
+CONFIG_MBEDTLS_DYNAMIC_FREE_PEER_CERT=y
+CONFIG_MBEDTLS_DYNAMIC_FREE_CONFIG_DATA=y
