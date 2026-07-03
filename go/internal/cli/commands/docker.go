@@ -1,7 +1,6 @@
 package commands
 
 import (
-	"bufio"
 	"context"
 	"crypto/sha256"
 	"crypto/tls"
@@ -761,11 +760,7 @@ func ensureDockerDaemonForHostOS(ctx context.Context, hostOS dockerHostOS) error
 		if !cliOnPath {
 			if !hasRuntime {
 				if isInteractiveTerminalFn() {
-					fmt.Print("Docker runtime app and docker CLI were not found. Install Docker Desktop now with 'brew install --cask docker'? [Y/n] ")
-					reader := bufio.NewReader(os.Stdin)
-					answer, _ := reader.ReadString('\n')
-					answer = strings.TrimSpace(strings.ToLower(answer))
-					if answer != "" && answer != "y" && answer != "yes" {
+					if !confirmFn("Docker runtime app and docker CLI were not found. Install Docker Desktop now with 'brew install --cask docker'?") {
 						return fmt.Errorf("Docker runtime app is not installed — install Docker Desktop, OrbStack, or Rancher Desktop")
 					}
 					fmt.Fprintf(os.Stderr, "[docker] Installing Docker Desktop via Homebrew...\n")
@@ -800,11 +795,7 @@ func ensureDockerDaemonForHostOS(ctx context.Context, hostOS dockerHostOS) error
 		}
 
 		if isInteractiveTerminalFn() {
-			fmt.Printf("Docker daemon is not running or is still starting for %s. Open it now? [Y/n] ", rt.name)
-			reader := bufio.NewReader(os.Stdin)
-			answer, _ := reader.ReadString('\n')
-			answer = strings.TrimSpace(strings.ToLower(answer))
-			if answer != "" && answer != "y" && answer != "yes" {
+			if !confirmFn(fmt.Sprintf("Docker daemon is not running or is still starting for %s. Open it now?", rt.name)) {
 				return fmt.Errorf("docker daemon is not running — please start %s and try again", rt.name)
 			}
 		}
@@ -1744,7 +1735,7 @@ func ensureAppleContainerSystem(ctx context.Context, assumeYes bool) error {
 	}
 
 	if isInteractiveTerminalFn() && !assumeYes {
-		if !promptYesNoFn("Apple Container system is not running. Start it now? [Y/n] ") {
+		if !confirmFn("Apple Container system is not running. Start it now?") {
 			return appleContainerSystemStatus(ctx)
 		}
 	}

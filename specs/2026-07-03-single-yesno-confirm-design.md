@@ -85,6 +85,18 @@ var confirmDefaultNoFn = func(question string) bool {
 From `helpers.go`: `promptYesNoFn`, `promptYesNoDefaultNoFn`, `promptYesNoLine`,
 `parseYesNoAnswer`, and `promptTTYIO` (only consumer was `promptYesNoLine`).
 
+From `init_cmd.go`: `promptYesNo` — a second command-layer wrapper that also
+delegated to `tui.Confirm` but duplicated `confirmDefaultNoFn`'s role. It had no
+test stub and one caller, which now uses `confirmDefaultNoFn` directly.
+
+Deliberately **kept**: `confirmProvisioningRetry` (`os_install.go`). It already
+delegates to `tui.Confirm`, but it is a zero-arg, fixed-question seam whose test
+stub (`os_provision_test.go`) relies on its `(bool, error)` signature to drive
+the provisioning retry loop and exercise the error path. Collapsing it into
+`confirmDefaultNoFn` (which returns only `bool`) would drop that coverage. It is
+a domain-specific test seam over the single implementation, not a competing
+implementation.
+
 ### Call-site migration
 
 Each site drops its inline `[Y/n]` / `[y/N]` suffix (the tui prompt renders its

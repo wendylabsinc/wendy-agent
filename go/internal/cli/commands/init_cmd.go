@@ -1288,12 +1288,6 @@ func validateInitAssistantOptions(opts initOptions) error {
 	return nil
 }
 
-// promptYesNo displays a styled yes/no prompt. It is a variable so tests can
-// replace it with a non-TTY implementation.
-var promptYesNo = func(question string) (bool, error) {
-	return tui.Confirm(question)
-}
-
 func scaffoldProject(dir, appID, target, language string) error {
 	switch {
 	case language == langSwift:
@@ -1457,11 +1451,7 @@ func installWendySkills(autoInstall bool) error {
 	fmt.Println()
 
 	if !autoInstall {
-		install, err := promptYesNo("Install Wendy skills for Claude Code?")
-		if err != nil {
-			return err
-		}
-		if !install {
+		if !confirmDefaultNoFn("Install Wendy skills for Claude Code?") {
 			return nil
 		}
 

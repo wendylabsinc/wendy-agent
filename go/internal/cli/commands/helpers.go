@@ -1,14 +1,12 @@
 package commands
 
 import (
-	"bufio"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/netip"
 	"os"
@@ -154,49 +152,22 @@ func isCertRefreshableError(err error) bool {
 	return false
 }
 
-// promptYesNoFn reads a Y/n answer from the controlling terminal; empty input
-// counts as yes. Stubbed in tests.
-var promptYesNoFn = func(prompt string) bool {
-	return promptYesNoLine(prompt, true)
+// confirmFn asks a yes/no question defaulting to Yes (empty input / Enter
+// counts as yes), using the shared styled tui.Confirm prompt. It is a package
+// var so tests can stub it. The question must not carry a "[Y/n]" suffix — the
+// prompt renders its own hint. A cancelled prompt (Ctrl+C / q) counts as no.
+var confirmFn = func(question string) bool {
+	ok, err := tui.ConfirmDefaultYes(question, tea.WithOutput(os.Stderr))
+	return err == nil && ok
 }
 
-// promptYesNoDefaultNoFn reads a y/N answer from the controlling terminal;
-// empty input counts as no. Used for more speculative offers (e.g. a timeout
-// against an enrolled device, where refreshing certs is a guess rather than a
-// clear diagnosis). Stubbed in tests.
-var promptYesNoDefaultNoFn = func(prompt string) bool {
-	return promptYesNoLine(prompt, false)
-}
-
-func promptYesNoLine(prompt string, defaultYes bool) bool {
-	in, out, cleanup := promptTTYIO()
-	defer cleanup()
-
-	// Clear any stale spinner/hint line before printing the prompt. This keeps a
-	// simple line prompt from visually colliding with a previously-rendered TUI.
-	fmt.Fprint(out, "\r\x1b[2K")
-	fmt.Fprint(out, prompt)
-
-	answer, err := bufio.NewReader(in).ReadString('\n')
-	if err != nil && strings.TrimSpace(answer) == "" {
-		return false
-	}
-	return parseYesNoAnswer(answer, defaultYes)
-}
-
-func parseYesNoAnswer(answer string, defaultYes bool) bool {
-	answer = strings.TrimSpace(strings.ToLower(answer))
-	if answer == "" {
-		return defaultYes
-	}
-	return answer == "y" || answer == "yes"
-}
-
-func promptTTYIO() (io.Reader, io.Writer, func()) {
-	if tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0); err == nil {
-		return tty, tty, func() { _ = tty.Close() }
-	}
-	return os.Stdin, os.Stderr, func() {}
+// confirmDefaultNoFn asks a yes/no question defaulting to No (empty input /
+// Enter counts as no). Used for more speculative or destructive offers (e.g. a
+// timeout against an enrolled device, where refreshing certs is a guess rather
+// than a clear diagnosis, or applying an OS update). Stubbed in tests.
+var confirmDefaultNoFn = func(question string) bool {
+	ok, err := tui.Confirm(question, tea.WithOutput(os.Stderr))
+	return err == nil && ok
 }
 
 var refreshAllCertsFn = refreshAllCerts
@@ -217,13 +188,13 @@ func offerCertRefreshAndRetry(ctx context.Context, cause error, retry func() (*g
 	if certRejected {
 		// Clear diagnosis: the agent rejected the cert. Default to yes.
 		fmt.Fprintln(os.Stderr, "The device rejected your client certificate; it may be outdated.")
-		accepted = promptYesNoFn("Refresh certificates and retry? [Y/n] ")
+		accepted = confirmFn("Refresh certificates and retry?")
 	} else {
 		// Timeout against an enrolled (mTLS-only) device. Refreshing certs is a
 		// reasonable guess (e.g. clock skew stalling the handshake) but less
 		// certain, so default to no.
 		fmt.Fprintln(os.Stderr, "The device is enrolled and only responds on the secure (mTLS) port. Your certificates may be stale or your CLI too old.")
-		accepted = promptYesNoDefaultNoFn("Refresh certificates and retry? [y/N] ")
+		accepted = confirmDefaultNoFn("Refresh certificates and retry?")
 	}
 	if !accepted {
 		return nil, false
@@ -1258,11 +1229,8 @@ func checkAndOfferUpdate(ctx context.Context, conn *grpcclient.AgentConnection) 
 	}
 	warn := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("214"))
 
-	fmt.Fprintf(os.Stderr, warn.Render("Agent is behind the CLI (agent: %s, CLI: %s). Update now? [Y/n] "), agentVer, version.Version)
-	reader := bufio.NewReader(os.Stdin)
-	answer, _ := reader.ReadString('\n')
-	answer = strings.TrimSpace(strings.ToLower(answer))
-	if answer != "" && answer != "y" && answer != "yes" {
+	fmt.Fprintf(os.Stderr, warn.Render("Agent is behind the CLI (agent: %s, CLI: %s).")+"\n", agentVer, version.Version)
+	if !confirmFn("Update the agent now?") {
 		return conn, nil
 	}
 
@@ -1700,13 +1668,7 @@ func ensureAppConfig(cfgPath string, autoAccept bool) (*appconfig.AppConfig, err
 		}
 
 		fmt.Println("No wendy.json found in current directory.")
-		fmt.Printf("Create one with app ID %q? [Y/n] ", dirName)
-
-		reader := bufio.NewReader(os.Stdin)
-		answer, _ := reader.ReadString('\n')
-		answer = strings.TrimSpace(strings.ToLower(answer))
-
-		if answer != "" && answer != "y" && answer != "yes" {
+		if !confirmFn(fmt.Sprintf("Create one with app ID %q?", dirName)) {
 			return nil, fmt.Errorf("wendy.json is required; run 'wendy init <app-id>' to create one")
 		}
 	}
