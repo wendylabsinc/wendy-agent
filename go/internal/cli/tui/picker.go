@@ -96,7 +96,7 @@ func probeColumnValue(state ProbeState, version, frame string) string {
 func formatOSNameVersion(os, version string) string {
 	os = strings.TrimSpace(os)
 	version = strings.TrimSpace(version)
-	if os != "" && version != "" && strings.HasPrefix(strings.ToLower(version), strings.ToLower(os)) {
+	if os != "" && version != "" && len(version) >= len(os) && strings.EqualFold(version[:len(os)], os) {
 		return version
 	}
 	return strings.TrimSpace(os + " " + version)
