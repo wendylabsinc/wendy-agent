@@ -20,9 +20,15 @@ Two deployables that share the app id `sh.wendy.examples.hellovlm`
 
 ```text
 Examples/HelloVLM/
-  app/   Swift app: camera capture, web UI, run history, VLM client
-  llm/   VLM backend: llama-server + baked-in model, GPU-accelerated
+  app/       Swift app: camera capture, web UI, run history, VLM client
+  llm/       Default VLM backend: llama.cpp (llama-server), GPU-accelerated
+  llm-mlx/   Experimental alternative backend: MLX on CUDA (see below)
 ```
+
+Both backends declare the same service name (`llm`) and serve the same
+OpenAI-compatible API on port 11434, so deploying one replaces the other
+and the app never changes. The UI's Model field shows which engine is
+live (`llama.cpp` or `MLX`).
 
 ## Requirements
 
@@ -74,6 +80,56 @@ Useful app flags (set in `app/wendy.json` under `run.args`):
 - `--model` — model name to request (default: first model the backend reports)
 - `--interval` / `--fps` / `--max-frames` — how much camera history each pass sends
 - `--camera` — camera name substring, if the device has several
+
+## MLX backend (experimental)
+
+`llm-mlx/` swaps the engine to [MLX](https://github.com/ml-explore/mlx)
+running on CUDA — same API, same port, zero app changes. It exists to
+prove the MLX-on-Jetson path (WDY-1815); the out-of-the-box demo remains
+`llm/`. Measured on Thor with `gemma-3-4b-it-4bit`: prefill ~12 s
+(2 frames), ~41 tok/s decode. The default model is
+`gemma-3-27b-it-qat-4bit` (~16 GB, downloaded on-device on first start);
+override with `MLX_MODEL` in `llm-mlx/Dockerfile`.
+
+Its base image (`mlx-server:0.1`) is **not published to a registry yet**
+(WDY-1827) — nobody ships prebuilt MLX binaries for CUDA-on-arm64, so we
+build them. To run the demo today you build/load the base image yourself:
+
+1. **Get the MLXServer binary** — built natively on an arm64 device with
+   the CUDA 13 toolchain. Recipe and sources:
+   `experiments/mlx-jetson-probe/` on branch `kb.mlx-jetson-probe`
+   (`probe/` package, `swift build -c release --product MLXServer` inside
+   the provisioned dev container). A Thor builds it in ~15 min clean,
+   seconds incrementally.
+2. **Build the base image** (arm64; Apple Container on a Mac or Docker):
+
+   ```sh
+   cd experiments/mlx-jetson-probe/runtime
+   mkdir -p context && cp Dockerfile entrypoint.sh context/
+   # context/ additionally needs:
+   #   MLXServer      — the binary from step 1
+   #   swift-linux/linux/ — /usr/lib/swift/linux from the build toolchain
+   container build --tag mlx-server:0.1 --file context/Dockerfile context
+   # (docker build works identically)
+   ```
+
+3. **Deploy** — with the image in your builder's local store,
+   `wendy run` in `llm-mlx/` works like any Dockerfile service:
+
+   ```sh
+   cd Examples/HelloVLM/llm-mlx
+   wendy run --device <device> --detach
+   ```
+
+Switching engines is just deploying the other directory — the app
+reconnects within seconds, run history intact.
+
+Known pitfall (WDY-1824): if you rebuild `mlx-server:0.1` under the same
+tag, `wendy run` may skip the push and the device keeps the old image
+while reporting success. Workaround until fixed: ship it manually —
+`container image save` (or `docker save`), copy to the device, then
+`nerdctl load` + `nerdctl tag` + `nerdctl push --insecure-registry` to
+`localhost:5000/sh.wendy.examples.hellovlm:latest`, and redeploy.
 
 ## VLM vs. LLM
 
