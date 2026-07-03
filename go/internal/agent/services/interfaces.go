@@ -62,6 +62,14 @@ type ContainerdClient interface {
 	// the monitor before issuing a stop or delete.
 	ContainerIDsForApp(ctx context.Context, appID string) ([]string, error)
 	ListContainers(ctx context.Context) ([]*agentpb.AppContainer, error)
+	// AppDeclaredVolumes maps every deployed app (bare appID) to the persistent
+	// volume names its containers declare via persist entitlement labels. This
+	// is the source of truth for volume ownership (volumes are shared across
+	// apps by name, so one name may appear under several apps). Apps deployed
+	// before entitlement labels existed are absent — callers must treat that as
+	// "ownership unknown" and fail safe rather than guess from name prefixes
+	// (WDY-1807).
+	AppDeclaredVolumes(ctx context.Context) (map[string][]string, error)
 	// ListBootContainers returns the containers that should be (re)started at
 	// agent boot: restart policy keeps them running (not "no") and they were not
 	// explicitly stopped by the user. Used by the boot reconcile.

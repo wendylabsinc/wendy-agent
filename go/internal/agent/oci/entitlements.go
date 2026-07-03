@@ -6,6 +6,7 @@ import (
 	"os/user"
 	"path"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
@@ -168,36 +169,79 @@ func applyGPU(spec *Spec) {
 	// Add the nvidia group GID for device access.
 	spec.Process.User.AdditionalGids = appendUnique(spec.Process.User.AdditionalGids, nvidiaGroupGID)
 
-	// Add NVIDIA device nodes.
-	nvidiaDevices := []string{
-		"/dev/nvidia0",
-		"/dev/nvidiactl",
-		"/dev/nvidia-uvm",
-		"/dev/nvidia-uvm-tools",
-		"/dev/nvidia-modeset",
-	}
+	// Derive the device list from the live host nodes: nvidia-uvm's major is
+	// dynamically allocated on modern drivers (487 on Thor/JetPack 7, not the
+	// classic 195), and the node set varies per board (Thor adds /dev/nvidia1
+	// and /dev/nvidia-caps/*). A hardcoded list would mknod wrong-major nodes
+	// AND the cgroup rule would block the right ones — guaranteed CUDA failure
+	// exactly when this fallback is needed (WDY-1804).
+	nodes := discoverNvidiaDeviceNodes()
 
-	for _, devPath := range nvidiaDevices {
-		spec.Linux.Devices = append(spec.Linux.Devices, LinuxDevice{
-			Path:  devPath,
-			Type:  "c",
-			Major: 195, // NVIDIA major number.
-			Minor: 0,
+	if len(nodes) == 0 {
+		// No /dev/nvidia* on the host (e.g. driver module not yet loaded).
+		// Keep the historical static list so runc still creates the classic
+		// major-195 nodes in the container. Whole-major rule: 195 is the
+		// statically reserved NVIDIA major, and the real nodes' minors are
+		// unknowable here by definition.
+		staticPaths := []string{
+			"/dev/nvidia0",
+			"/dev/nvidiactl",
+			"/dev/nvidia-uvm",
+			"/dev/nvidia-uvm-tools",
+			"/dev/nvidia-modeset",
+		}
+		for _, devPath := range staticPaths {
+			spec.Linux.Devices = append(spec.Linux.Devices, LinuxDevice{
+				Path:  devPath,
+				Type:  "c",
+				Major: 195, // NVIDIA major number.
+				Minor: 0,
+			})
+		}
+		major := int64(195)
+		spec.Linux.Resources.Devices = append(spec.Linux.Resources.Devices, LinuxDeviceCgroup{
+			Allow:  true,
+			Type:   "c",
+			Major:  &major,
+			Access: "rw",
 		})
+	} else {
+		// One allow rule per discovered major:minor pair — never whole-major.
+		// Dynamic majors (nvidia-uvm's 487 on Thor) come from a shared kernel
+		// pool, so a whole-major rule could cover unrelated drivers that
+		// happen to land on the same number on another boot or kernel. The
+		// exact pairs are known here because these very nodes are mknod'd
+		// into the container below (no hotplug re-minting on this path).
+		// Access is "rw", not "rwm": the container only opens the nodes, so
+		// the mknod bit is withheld as least privilege.
+		// Note on TOCTOU scope: spec.Linux.Devices entries are mknod'd by the
+		// runtime inside the container's own /dev tmpfs from the major:minor
+		// recorded here — the host path is never re-opened by the runtime on
+		// this (root) path, so a post-scan swap of the host node cannot
+		// change what the container receives.
+		seen := map[[2]int64]bool{}
+		for _, n := range nodes {
+			spec.Linux.Devices = append(spec.Linux.Devices, LinuxDevice{
+				Path:  n.path,
+				Type:  "c",
+				Major: n.major,
+				Minor: n.minor,
+			})
+			key := [2]int64{n.major, n.minor}
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			maj, min := n.major, n.minor
+			spec.Linux.Resources.Devices = append(spec.Linux.Resources.Devices, LinuxDeviceCgroup{
+				Allow:  true,
+				Type:   "c",
+				Major:  &maj,
+				Minor:  &min,
+				Access: "rw",
+			})
+		}
 	}
-
-	// Allow access to NVIDIA character devices (major 195). Whole-major is kept:
-	// a host exposes several nvidia nodes (nvidia0, nvidiactl, nvidia-modeset, …)
-	// and the NVIDIA runtime/CDI provisions them, so the minors aren't fixed at
-	// apply time. Access is "rw", not "rwm": the driver/CDI creates the nodes; the
-	// container only opens them, so the mknod bit is withheld as least privilege.
-	major := int64(195)
-	spec.Linux.Resources.Devices = append(spec.Linux.Resources.Devices, LinuxDeviceCgroup{
-		Allow:  true,
-		Type:   "c",
-		Major:  &major,
-		Access: "rw",
-	})
 
 	// Add environment variables for NVIDIA.
 	spec.Process.Env = append(spec.Process.Env,
@@ -211,6 +255,73 @@ func applyGPU(spec *Spec) {
 	if boardDetect().IsRaspberryPi() {
 		applyVCIO(spec)
 	}
+}
+
+// nvidiaDeviceGlobs are the NVIDIA device-node patterns the GPU entitlement
+// scans to build its fallback device list. /dev/nvidia* covers nvidia0..N,
+// nvidiactl, nvidia-uvm, nvidia-uvm-tools and nvidia-modeset; nvidia-caps/*
+// covers the capability nodes (major 501 on Thor). Behind a var so tests can
+// redirect into a tempdir.
+var nvidiaDeviceGlobs = []string{"/dev/nvidia*", "/dev/nvidia-caps/*"}
+
+// nvidiaDeviceNameRe is the allowlist of node names the GPU entitlement will
+// grant from the globs above. Glob results are host filesystem input; an
+// unexpected name (say, a planted /dev/nvidia-evil char device) is rejected
+// rather than handed to the container.
+var nvidiaDeviceNameRe = regexp.MustCompile(`^(nvidia[0-9]+|nvidiactl|nvidia-uvm|nvidia-uvm-tools|nvidia-modeset|nvidia-cap[0-9]+)$`)
+
+type nvidiaDeviceNode struct {
+	path         string
+	major, minor int64
+}
+
+// discoverNvidiaDeviceNodes stats the live NVIDIA nodes matching
+// nvidiaDeviceGlobs and returns their real major:minor numbers. Non-device
+// matches (e.g. the /dev/nvidia-caps directory itself), stat errors, and
+// character devices whose name is not on the NVIDIA allowlist are skipped —
+// a host without the driver loaded simply returns nothing.
+func discoverNvidiaDeviceNodes() []nvidiaDeviceNode {
+	var nodes []nvidiaDeviceNode
+	for _, glob := range nvidiaDeviceGlobs {
+		matches, err := filepath.Glob(glob)
+		if err != nil {
+			continue
+		}
+		for _, p := range matches {
+			major, minor, err := statCharDevice(p)
+			if err != nil {
+				continue
+			}
+			if !nvidiaDeviceNameRe.MatchString(filepath.Base(p)) {
+				continue
+			}
+			nodes = append(nodes, nvidiaDeviceNode{path: p, major: major, minor: minor})
+		}
+	}
+	return nodes
+}
+
+// statCharDevice resolves a host path to its character-device major:minor,
+// rejecting anything that is not a real character device node (directories,
+// regular files, symlinks). A single Lstat supplies both the type check and
+// the device numbers, so the checked inode IS the reported inode — there is
+// no follow-up stat for a concurrent symlink swap to redirect (TOCTOU), and
+// symlinks are never followed. Behind a var so tests can inject device
+// numbers without root/mknod.
+var statCharDevice = func(p string) (major, minor int64, err error) {
+	fi, err := os.Lstat(p)
+	if err != nil {
+		return 0, 0, err
+	}
+	if fi.Mode()&os.ModeCharDevice == 0 {
+		return 0, 0, fmt.Errorf("%s is not a character device node", p)
+	}
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	if !ok {
+		return 0, 0, fmt.Errorf("%s: no raw stat data available", p)
+	}
+	rdev := uint64(st.Rdev)
+	return int64(unix.Major(rdev)), int64(unix.Minor(rdev)), nil
 }
 
 // vcioDevicePath is the host VideoCore mailbox device. Behind a var so tests

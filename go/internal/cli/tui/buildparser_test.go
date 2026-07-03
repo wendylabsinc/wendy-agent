@@ -91,6 +91,28 @@ func TestParserMarksFailedStep(t *testing.T) {
 	}
 }
 
+func TestParseBuildContextTransferBytes(t *testing.T) {
+	cases := []struct {
+		line string
+		want int64
+	}{
+		{"#4 transferring context: 2B", 2},
+		{"#4 transferring context: 2B done", 2},
+		{"#4 transferring context: 40B", 40},
+		{"#4 transferring context: 1.5kB", 1500},
+		{"#4 transferring context: 1.0 MiB", 1024 * 1024},
+	}
+	for _, tc := range cases {
+		got, ok := ParseBuildContextTransferBytes(tc.line)
+		if !ok || got != tc.want {
+			t.Fatalf("ParseBuildContextTransferBytes(%q) = %d, %v; want %d, true", tc.line, got, ok, tc.want)
+		}
+	}
+	if _, ok := ParseBuildContextTransferBytes("#4 DONE 0.0s"); ok {
+		t.Fatal("unexpected context transfer match")
+	}
+}
+
 func TestParserHandlesSplitWrites(t *testing.T) {
 	var got []BuildStepEvent
 	p := NewBuildParser(func(e BuildStepEvent) { got = append(got, e) })

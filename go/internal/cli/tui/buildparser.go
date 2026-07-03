@@ -2,6 +2,7 @@ package tui
 
 import (
 	"bytes"
+	"math"
 	"regexp"
 	"strconv"
 	"strings"
@@ -49,10 +50,11 @@ type BuildStepEvent struct {
 }
 
 var (
-	buildVertexLineRe = regexp.MustCompile(`^#(\d+) (.*)$`)
-	buildDoneRe       = regexp.MustCompile(`^DONE (\d+(?:\.\d+)?)s$`)
-	buildLogLineRe    = regexp.MustCompile(`^\d+\.\d+ `)          // "1.563 Collecting ..."
-	buildStepLabelRe  = regexp.MustCompile(`^\[[^\]]*\d+/\d+\] `) // "[4/6] ", "[stage 2/3] "
+	buildVertexLineRe      = regexp.MustCompile(`^#(\d+) (.*)$`)
+	buildDoneRe            = regexp.MustCompile(`^DONE (\d+(?:\.\d+)?)s$`)
+	buildLogLineRe         = regexp.MustCompile(`^\d+\.\d+ `)          // "1.563 Collecting ..."
+	buildStepLabelRe       = regexp.MustCompile(`^\[[^\]]*\d+/\d+\] `) // "[4/6] ", "[stage 2/3] "
+	buildContextTransferRe = regexp.MustCompile(`\btransferring context:\s*([0-9]+(?:\.[0-9]+)?)\s*([KMGT]?i?B|[kKmMgGtT]?B)\b`)
 )
 
 type buildVertexState struct {
@@ -90,6 +92,47 @@ func (p *BuildParser) Write(b []byte) (int, error) {
 		p.parseLine(line)
 	}
 	return len(b), nil
+}
+
+// ParseBuildContextTransferBytes returns the byte count from a BuildKit plain
+// progress line such as "#4 transferring context: 2B".
+func ParseBuildContextTransferBytes(line string) (int64, bool) {
+	if len(line) > 512 {
+		return 0, false
+	}
+	m := buildContextTransferRe.FindStringSubmatch(line)
+	if m == nil {
+		return 0, false
+	}
+	value, err := strconv.ParseFloat(m[1], 64)
+	if err != nil {
+		return 0, false
+	}
+	unit := strings.ToLower(m[2])
+	var multiplier float64
+	switch unit {
+	case "b":
+		multiplier = 1
+	case "kb":
+		multiplier = 1000
+	case "kib":
+		multiplier = 1024
+	case "mb":
+		multiplier = 1000 * 1000
+	case "mib":
+		multiplier = 1024 * 1024
+	case "gb":
+		multiplier = 1000 * 1000 * 1000
+	case "gib":
+		multiplier = 1024 * 1024 * 1024
+	case "tb":
+		multiplier = 1000 * 1000 * 1000 * 1000
+	case "tib":
+		multiplier = 1024 * 1024 * 1024 * 1024
+	default:
+		return 0, false
+	}
+	return int64(math.Round(value * multiplier)), true
 }
 
 func (p *BuildParser) parseLine(line string) {

@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -778,15 +779,19 @@ func (s *ContainerService) DeleteContainer(ctx context.Context, req *agentpb.Del
 		}
 	}
 
+	// Resolve which volumes the app owns BEFORE deleting its containers: the
+	// persist entitlement labels that record ownership die with the container.
+	var volumesToDelete []string
+	if req.GetDeleteVolumes() {
+		volumesToDelete = s.resolveDeletableVolumes(ctx, appName)
+	}
+
 	if err := s.containerd.DeleteContainer(ctx, appName, req.GetDeleteImage()); err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to delete container: %v", err)
 	}
 
 	if req.GetDeleteVolumes() {
-		// Volumes are keyed by appID, not by per-service container ID, so we
-		// call deleteVolumes once with the app name rather than once per service
-		// container (which would be "appID_serviceName" and find nothing).
-		s.deleteVolumes(appName)
+		s.deleteVolumes(volumesToDelete)
 	}
 
 	s.logger.Info("App deleted",
@@ -801,36 +806,70 @@ func (s *ContainerService) DeleteContainer(ctx context.Context, req *agentpb.Del
 // (not const) so tests can override it with a temp directory.
 var volumesDir = "/var/lib/wendy/volumes"
 
-func (s *ContainerService) deleteVolumes(appName string) {
-	// Guard: volumes are always keyed by plain appID (no "/"). A slash-containing
-	// name would find no matching directories, but reject it explicitly to prevent
-	// any future path-construction change from introducing a traversal vector
-	// (SOC2-CC6, ISO27001-A.8, NIST-SI-10).
-	if strings.Contains(appName, "/") {
-		s.logger.Warn("deleteVolumes: app name contains '/'; volumes are keyed by appID only — skipping")
-		return
-	}
-	entries, err := os.ReadDir(volumesDir)
+// resolveDeletableVolumes returns the persistent volumes to remove when
+// appName is deleted with --delete-volumes: exactly the volume names the app's
+// containers declare via persist entitlements, minus any name that another
+// deployed app also declares (volumes are shared across apps by name — see
+// oci.applyPersist). Ambiguity fails safe: when ownership cannot be resolved,
+// or for apps deployed before entitlement labels existed, nothing is deleted —
+// a leaked volume can still be removed with `wendy device volumes rm`, whereas
+// a wrongly deleted one is unrecoverable.
+func (s *ContainerService) resolveDeletableVolumes(ctx context.Context, appName string) []string {
+	declared, err := s.containerd.AppDeclaredVolumes(ctx)
 	if err != nil {
-		s.logger.Warn("Failed to read volumes directory",
-			zap.String("base", volumesDir),
-			zap.String("app_name", appName),
-			zap.Error(err),
-		)
-		return
+		s.logger.Warn("Skipping volume deletion: cannot resolve volume ownership",
+			zap.String("app_name", appName), zap.Error(err))
+		return nil
 	}
-	for _, e := range entries {
-		if !e.IsDir() {
+	owned := declared[appName]
+	if len(owned) == 0 {
+		s.logger.Info("App declares no persistent volumes; none deleted",
+			zap.String("app_name", appName))
+		return nil
+	}
+
+	otherOwners := make(map[string][]string) // volume name → other apps declaring it
+	for app, vols := range declared {
+		if app == appName {
 			continue
 		}
-		name := e.Name()
-		if name == appName || strings.HasPrefix(name, appName+"-") {
-			path := filepath.Join(volumesDir, name)
-			if err := os.RemoveAll(path); err != nil {
-				s.logger.Warn("Failed to remove volume", zap.String("path", path), zap.Error(err))
-			} else {
-				s.logger.Info("Volume removed", zap.String("path", path))
-			}
+		for _, v := range vols {
+			otherOwners[v] = append(otherOwners[v], app)
+		}
+	}
+
+	var deletable []string
+	for _, v := range owned {
+		if others := otherOwners[v]; len(others) > 0 {
+			s.logger.Warn("Keeping shared volume: also declared by other apps",
+				zap.String("volume", v),
+				zap.String("app_name", appName),
+				zap.Strings("also_declared_by", others))
+			continue
+		}
+		deletable = append(deletable, v)
+	}
+	return deletable
+}
+
+// deleteVolumes removes the given volume directories under volumesDir. The
+// names come from persist entitlement labels; re-apply the same base-name
+// sanitization applyPersist used when creating them so no label value can
+// escape the volumes directory (SOC2-CC6, ISO27001-A.8, NIST-SI-10).
+func (s *ContainerService) deleteVolumes(names []string) {
+	for _, name := range names {
+		if name != filepath.Base(name) || name == "." || name == ".." || name == "/" || name == "" {
+			s.logger.Warn("Skipping volume with unsafe name", zap.String("volume", name))
+			continue
+		}
+		path := filepath.Join(volumesDir, name)
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			continue // declared but never materialized on disk
+		}
+		if err := os.RemoveAll(path); err != nil {
+			s.logger.Warn("Failed to remove volume", zap.String("path", path), zap.Error(err))
+		} else {
+			s.logger.Info("Volume removed", zap.String("path", path))
 		}
 	}
 }
@@ -892,30 +931,25 @@ func (s *ContainerService) RemoveVolume(_ context.Context, req *agentpb.RemoveVo
 	return &agentpb.RemoveVolumeResponse{}, nil
 }
 
-// buildVolumeUsageMap heuristically maps volumes to apps by matching
-// container names. A volume "foo-data" is likely used by app "foo".
+// buildVolumeUsageMap maps each volume name to the apps that declare it via
+// persist entitlement labels — real ownership, not a name-prefix guess.
+// Volumes are shared across apps by name, so several apps may appear for one
+// volume. Volumes no deployed app declares (including those of apps deployed
+// before entitlement labels existed) get an empty usedBy.
 func (s *ContainerService) buildVolumeUsageMap(ctx context.Context) map[string][]string {
 	usage := make(map[string][]string)
-	containers, err := s.containerd.ListContainers(ctx)
+	declared, err := s.containerd.AppDeclaredVolumes(ctx)
 	if err != nil {
+		s.logger.Warn("Failed to resolve volume ownership", zap.Error(err))
 		return usage
 	}
-	var appNames []string
-	for _, c := range containers {
-		appNames = append(appNames, c.AppName)
+	for app, vols := range declared {
+		for _, v := range vols {
+			usage[v] = append(usage[v], app)
+		}
 	}
-
-	entries, _ := os.ReadDir(volumesDir)
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		volName := e.Name()
-		for _, app := range appNames {
-			if volName == app || strings.HasPrefix(volName, app+"-") {
-				usage[volName] = append(usage[volName], app)
-			}
-		}
+	for _, apps := range usage {
+		sort.Strings(apps)
 	}
 	return usage
 }

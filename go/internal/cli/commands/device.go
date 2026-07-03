@@ -132,7 +132,10 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 
 			var agentVersion, osName, osVersion, cpuArch, deviceType, storageMedium, gpuVendor, jetpackVersion, cudaVersion, gpuArch string
 			var diskUsedBytes, diskTotalBytes *int64
+			var memTotalBytes int64
+			var cpuCount uint32
 			var partitions []*agentpb.DiskPartition
+			var netInterfaces []*agentpb.NetworkInterface
 			var hasGPU bool
 
 			if target.Bluetooth != nil && target.Bluetooth.IsWendyAgent() {
@@ -168,7 +171,10 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 				gpuArch = resp.GetGpuArch()
 				diskUsedBytes = resp.DiskUsedBytes
 				diskTotalBytes = resp.DiskTotalBytes
+				memTotalBytes = resp.GetMemTotalBytes()
+				cpuCount = resp.GetCpuCount()
 				partitions = resp.GetPartitions()
+				netInterfaces = resp.GetNetworkInterfaces()
 			} else {
 				return fmt.Errorf("selected device does not support this command")
 			}
@@ -210,6 +216,12 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 					out["diskUsedBytes"] = *diskUsedBytes
 					out["diskTotalBytes"] = *diskTotalBytes
 				}
+				if memTotalBytes > 0 {
+					out["memTotalBytes"] = memTotalBytes
+				}
+				if cpuCount > 0 {
+					out["cpuCount"] = cpuCount
+				}
 				if len(partitions) > 0 {
 					parts := make([]map[string]any, len(partitions))
 					for i, p := range partitions {
@@ -235,6 +247,16 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 				if gpuArch != "" {
 					out["gpuArch"] = gpuArch
 				}
+				if len(netInterfaces) > 0 {
+					ifaces := make([]map[string]any, len(netInterfaces))
+					for i, iface := range netInterfaces {
+						ifaces[i] = map[string]any{
+							"name":        iface.GetName(),
+							"ipAddresses": iface.GetIpAddresses(),
+						}
+					}
+					out["networkInterfaces"] = ifaces
+				}
 				if osUpdate := osUpdateJSON(osUpdateStatus); osUpdate != nil {
 					out["osUpdate"] = osUpdate
 				}
@@ -253,6 +275,12 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 			fmt.Printf("%s %s\n", tui.Dim("Agent Version:"), tui.Value(agentVersion))
 			fmt.Printf("%s %s\n", tui.Dim("OS:"), tui.Value(osName+" "+osVersion))
 			fmt.Printf("%s %s\n", tui.Dim("Architecture:"), tui.Value(cpuArch))
+			if cpuCount > 0 {
+				fmt.Printf("%s %s\n", tui.Dim("CPU Cores:"), tui.Value(fmt.Sprintf("%d", cpuCount)))
+			}
+			if memTotalBytes > 0 {
+				fmt.Printf("%s %s\n", tui.Dim("Memory:"), tui.Value(formatBytes(memTotalBytes)))
+			}
 			if deviceType != "" {
 				fmt.Printf("%s %s\n", tui.Dim("Device Type:"), tui.Value(deviceType))
 			}
@@ -263,6 +291,9 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 				fmt.Print(formatPartitionTable(partitions))
 			} else if diskUsedBytes != nil && diskTotalBytes != nil {
 				fmt.Printf("%s %s\n", tui.Dim("Disk Usage:"), tui.Value(formatDiskUsage(*diskUsedBytes, *diskTotalBytes)))
+			}
+			if len(netInterfaces) > 0 {
+				fmt.Print(formatNetworkInterfaces(netInterfaces))
 			}
 			if hasGPU {
 				vendor := gpuVendor
@@ -460,10 +491,7 @@ func newDeviceSetupCmd() *cobra.Command {
 				fmt.Println("Device is not enrolled.")
 				if loadCLICert() == nil {
 					fmt.Println("You are not logged in to Wendy Cloud.")
-					fmt.Print("Log in now? [Y/n] ")
-					answer, _ := reader.ReadString('\n')
-					answer = strings.TrimSpace(strings.ToLower(answer))
-					if answer == "" || answer == "y" || answer == "yes" {
+					if confirmFn("Log in now?") {
 						if loginErr := performLogin(ctx, defaultCloudDashboard, defaultCloudGRPC); loginErr != nil {
 							return fmt.Errorf("login failed: %w", loginErr)
 						}
@@ -584,11 +612,7 @@ func promptWifiIfNeeded(ctx context.Context, conn *grpcclient.AgentConnection) {
 	}
 
 	fmt.Println("No WiFi connection detected on the device.")
-	fmt.Print("Set up WiFi before enrolling? [Y/n] ")
-	reader := bufio.NewReader(os.Stdin)
-	line, _ := reader.ReadString('\n')
-	answer := strings.TrimSpace(strings.ToLower(line))
-	if answer != "" && answer != "y" && answer != "yes" {
+	if !confirmFn("Set up WiFi before enrolling?") {
 		return
 	}
 
@@ -781,11 +805,7 @@ func newDeviceUnenrollCmd() *cobra.Command {
 					return fmt.Errorf("unenroll is destructive; pass --yes to confirm when not running interactively")
 				}
 				fmt.Printf("This will unenroll the device (org: %d, asset: %d) and delete its asset in Wendy Cloud.\n", orgID, assetID)
-				fmt.Print("Continue? [y/N] ")
-				reader := bufio.NewReader(os.Stdin)
-				line, _ := reader.ReadString('\n')
-				answer := strings.TrimSpace(strings.ToLower(line))
-				if answer != "y" && answer != "yes" {
+				if !confirmDefaultNoFn("Continue?") {
 					fmt.Println("Aborted.")
 					return nil
 				}
@@ -1107,7 +1127,7 @@ func newDeviceLogsCmd() *cobra.Command {
 	cmd.Flags().StringVar(&serviceName, "service", "", "Filter by service name")
 	cmd.Flags().Int32Var(&minSeverity, "min-severity", 0, "Minimum log severity number")
 	cmd.Flags().StringVar(&level, "level", "", "Minimum log level (trace, debug, info, warn, error, fatal)")
-	cmd.Flags().Int32Var(&tail, "tail", 0, "Replay the last N log batches before streaming live (0 = live only)")
+	cmd.Flags().Int32Var(&tail, "tail", 0, "Replay the last N log batches matching the filters before streaming live (0 = live only)")
 
 	return cmd
 }
@@ -1876,7 +1896,7 @@ func maybeCheckOSUpdate(ctx context.Context, preUpdateVersion *agentpb.GetAgentV
 				fmt.Printf("OS artifact specified (%s). Re-run with --yes to apply.\n", artifactURLOverride)
 				return osUpdateOutcome{}, nil
 			}
-			if !promptYesNoDefaultNoFn(fmt.Sprintf("Apply OS update from %s? [y/N] ", artifactURLOverride)) {
+			if !confirmDefaultNoFn(fmt.Sprintf("Apply OS update from %s?", artifactURLOverride)) {
 				fmt.Println("Skipping OS update.")
 				return osUpdateOutcome{}, nil
 			}
@@ -1920,7 +1940,8 @@ func maybeCheckOSUpdate(ctx context.Context, preUpdateVersion *agentpb.GetAgentV
 		case osActionApply:
 			// fall through to apply
 		case osActionPrompt:
-			if !promptYesNoDefaultNoFn(fmt.Sprintf("OS update available (%s → %s). Apply now? [y/N] ", fromVer, latestVer)) {
+			ensureDeviceWiFiForOSUpdate(ctx, conn)
+			if !confirmDefaultNoFn(fmt.Sprintf("OS update available (%s → %s). Apply now?", fromVer, latestVer)) {
 				fmt.Println("Skipping OS update. Run 'wendy os update' to apply later.")
 				return osUpdateOutcome{}, nil
 			}
@@ -1942,6 +1963,62 @@ func maybeCheckOSUpdate(ctx context.Context, preUpdateVersion *agentpb.GetAgentV
 	}
 	fmt.Println("Device is back online.")
 	return osUpdateOutcome{applied: true, online: true}, nil
+}
+
+// ensureDeviceWiFiForOSUpdate passively checks the device's WiFi before the
+// interactive OS-update prompt: the device downloads the OS image itself, so an
+// offline device fails the update with an opaque wendyos-update DNS error.
+// Connected → say nothing. Not connected → explain, then walk the user through
+// joining a network with the device-side scan picker + password prompt (the
+// same UX the installer uses). Best-effort throughout: a status error (older
+// agent, macOS target), an esc'd picker, or a failed join never blocks the
+// update prompt — a wired device is fine without WiFi.
+func ensureDeviceWiFiForOSUpdate(ctx context.Context, conn *grpcclient.AgentConnection) {
+	status, err := conn.AgentService.GetWiFiStatus(ctx, &agentpb.GetWiFiStatusRequest{})
+	if err != nil || status.GetConnected() {
+		return
+	}
+
+	fmt.Println(tui.WarningMessage("This device is not connected to WiFi, and it downloads the OS image itself — without internet the update will fail."))
+	fmt.Println(tui.InfoMessage("Pick a network to connect it now (esc to skip if the device has wired internet)."))
+
+	ssid, err := pickWifiNetwork(ctx, &SelectedDevice{Agent: conn})
+	if err != nil {
+		if !errors.Is(err, ErrUserCancelled) {
+			fmt.Println(tui.WarningMessage(fmt.Sprintf("WiFi selection failed: %v", err)))
+		}
+		return
+	}
+	// Offer the saved password from the macOS keychain first, exactly like the
+	// installer's WiFi flow; fall back to typing it.
+	password := ""
+	if supportsKeychainLookup {
+		if useKeychain, cerr := confirmKeychainLookup(ssid); cerr == nil && useKeychain {
+			if pw, kerr := lookupKeychainPassword(ssid); kerr == nil && pw != "" {
+				fmt.Println("Using saved password from keychain.")
+				password = pw
+			} else {
+				fmt.Println("Password not available from keychain.")
+			}
+		}
+	}
+	if password == "" {
+		password, err = promptWifiPassword(ssid)
+		if err != nil {
+			return
+		}
+	}
+
+	fmt.Println(tui.InfoMessage(fmt.Sprintf("Connecting the device to %s...", ssid)))
+	resp, err := conn.AgentService.ConnectToWiFi(ctx, &agentpb.ConnectToWiFiRequest{Ssid: ssid, Password: password})
+	switch {
+	case err != nil:
+		fmt.Println(tui.WarningMessage(fmt.Sprintf("Could not connect to %s: %v", ssid, err)))
+	case !resp.GetSuccess():
+		fmt.Println(tui.WarningMessage(fmt.Sprintf("Could not connect to %s: %s", ssid, resp.GetErrorMessage())))
+	default:
+		cliSuccess("Device connected to %s.", ssid)
+	}
 }
 
 // shouldReapplyBinary reports whether `device update` should re-upload the

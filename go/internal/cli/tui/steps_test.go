@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -76,5 +77,53 @@ func TestPadLabel(t *testing.T) {
 	}
 	if got := padLabel("abcdefgh", 6); got != "abcde…" {
 		t.Errorf("padLabel truncate = %q, want %q", got, "abcde…")
+	}
+}
+
+func TestStepsModel_CtrlCWithoutGuardCancelsImmediately(t *testing.T) {
+	m := drive(NewStepsModel("Flashing"),
+		StepStartMsg{ID: 0, Label: "Download flashpack"},
+	)
+	mm, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	m = mm.(StepsModel)
+	if m.Err() == nil || cmd == nil {
+		t.Fatal("unguarded ctrl+c should cancel and quit")
+	}
+}
+
+func TestStepsModel_AbortGuardNeedsSecondCtrlC(t *testing.T) {
+	m := drive(NewStepsModel("Flashing"),
+		StepAbortGuardMsg{Warning: "aborting can leave the Thor unbootable"},
+		StepStartMsg{ID: 2, Label: "Stage 2"},
+	)
+
+	// First ctrl+c: swallowed, warning shown, no quit.
+	mm, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	m = mm.(StepsModel)
+	if m.Err() != nil || cmd != nil {
+		t.Fatal("first ctrl+c on a guarded step should not cancel")
+	}
+	if v := ansi.Strip(m.View()); !strings.Contains(v, "unbootable") {
+		t.Fatalf("armed guard should show the warning, got:\n%s", v)
+	}
+
+	// Second ctrl+c inside the window: cancels.
+	mm, cmd = m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	m = mm.(StepsModel)
+	if m.Err() == nil || cmd == nil {
+		t.Fatal("second ctrl+c should cancel")
+	}
+}
+
+func TestStepsModel_ClearedGuardRestoresInstantCancel(t *testing.T) {
+	m := drive(NewStepsModel("Flashing"),
+		StepAbortGuardMsg{Warning: "dangerous"},
+		StepStartMsg{ID: 2, Label: "Stage 2"},
+		StepAbortGuardMsg{}, // next step is safe again
+	)
+	mm, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	m = mm.(StepsModel)
+	if m.Err() == nil || cmd == nil {
+		t.Fatal("clearing the guard should restore instant cancel")
 	}
 }

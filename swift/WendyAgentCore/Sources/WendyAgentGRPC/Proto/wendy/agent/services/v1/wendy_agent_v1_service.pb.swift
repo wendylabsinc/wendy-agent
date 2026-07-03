@@ -533,6 +533,14 @@ public struct Wendy_Agent_Services_V1_GetAgentVersionResponse: Sendable {
   /// Clears the value of `cudaVersion`. Subsequent reads from it will return its default value.
   public mutating func clearCudaVersion() {self._cudaVersion = nil}
 
+  /// Total physical memory (RAM) in bytes, from /proc/meminfo. Zero when the
+  /// agent cannot read it (a real host never has 0 bytes of RAM).
+  public var memTotalBytes: Int64 = 0
+
+  /// Number of online logical CPU cores, from /proc/stat. Zero when the
+  /// agent cannot read it.
+  public var cpuCount: UInt32 = 0
+
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public init() {}
@@ -1944,7 +1952,7 @@ extension Wendy_Agent_Services_V1_GetAgentVersionRequest: SwiftProtobuf.Message,
 
 extension Wendy_Agent_Services_V1_GetAgentVersionResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".GetAgentVersionResponse"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}version\0\u{3}os_version\0\u{1}os\0\u{3}cpu_architecture\0\u{3}public_key\0\u{1}featureset\0\u{3}device_type\0\u{3}has_gpu\0\u{3}gpu_vendor\0\u{3}jetpack_version\0\u{3}cuda_version\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}version\0\u{3}os_version\0\u{1}os\0\u{3}cpu_architecture\0\u{3}public_key\0\u{1}featureset\0\u{3}device_type\0\u{3}has_gpu\0\u{3}gpu_vendor\0\u{3}jetpack_version\0\u{3}cuda_version\0\u{3}storage_medium\0\u{3}disk_used_bytes\0\u{3}disk_total_bytes\0\u{1}partitions\0\u{3}gpu_arch\0\u{3}network_interfaces\0\u{3}mem_total_bytes\0\u{3}cpu_count\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -1963,6 +1971,8 @@ extension Wendy_Agent_Services_V1_GetAgentVersionResponse: SwiftProtobuf.Message
       case 9: try { try decoder.decodeSingularStringField(value: &self._gpuVendor) }()
       case 10: try { try decoder.decodeSingularStringField(value: &self._jetpackVersion) }()
       case 11: try { try decoder.decodeSingularStringField(value: &self._cudaVersion) }()
+      case 18: try { try decoder.decodeSingularInt64Field(value: &self.memTotalBytes) }()
+      case 19: try { try decoder.decodeSingularUInt32Field(value: &self.cpuCount) }()
       default: break
       }
     }
@@ -2006,6 +2016,12 @@ extension Wendy_Agent_Services_V1_GetAgentVersionResponse: SwiftProtobuf.Message
     try { if let v = self._cudaVersion {
       try visitor.visitSingularStringField(value: v, fieldNumber: 11)
     } }()
+    if self.memTotalBytes != 0 {
+      try visitor.visitSingularInt64Field(value: self.memTotalBytes, fieldNumber: 18)
+    }
+    if self.cpuCount != 0 {
+      try visitor.visitSingularUInt32Field(value: self.cpuCount, fieldNumber: 19)
+    }
     try unknownFields.traverse(visitor: &visitor)
   }
 
@@ -2021,6 +2037,8 @@ extension Wendy_Agent_Services_V1_GetAgentVersionResponse: SwiftProtobuf.Message
     if lhs._gpuVendor != rhs._gpuVendor {return false}
     if lhs._jetpackVersion != rhs._jetpackVersion {return false}
     if lhs._cudaVersion != rhs._cudaVersion {return false}
+    if lhs.memTotalBytes != rhs.memTotalBytes {return false}
+    if lhs.cpuCount != rhs.cpuCount {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
