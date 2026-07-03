@@ -100,3 +100,25 @@ func TestExtractAgentFromTarGzMissing(t *testing.T) {
 		t.Fatal("expected error when wendy-agent absent")
 	}
 }
+
+func TestAgentVersionFromManifest(t *testing.T) {
+	m := &agentManifest{Latest: "2026.07.01-120000", LatestNightly: "2026.07.03-093000"}
+
+	v, err := agentVersionFromManifest(m, false)
+	if err != nil || v != "2026.07.01-120000" {
+		t.Fatalf("stable: v=%q err=%v", v, err)
+	}
+	v, err = agentVersionFromManifest(m, true)
+	if err != nil || v != "2026.07.03-093000" {
+		t.Fatalf("nightly: v=%q err=%v", v, err)
+	}
+}
+
+func TestAgentVersionFromManifestEmptyIsError(t *testing.T) {
+	if _, err := agentVersionFromManifest(&agentManifest{}, false); err == nil {
+		t.Fatal("expected error when no stable version present")
+	}
+	if _, err := agentVersionFromManifest(&agentManifest{Latest: "x"}, true); err == nil {
+		t.Fatal("expected error when no nightly version present")
+	}
+}

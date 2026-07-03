@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 )
@@ -79,4 +80,38 @@ func extractAgentFromTarGz(r io.Reader) ([]byte, error) {
 		}
 	}
 	return nil, fmt.Errorf("wendy-agent binary not found in tarball")
+}
+
+func agentVersionFromManifest(m *agentManifest, nightly bool) (string, error) {
+	v := m.Latest
+	if nightly {
+		v = m.LatestNightly
+	}
+	if v == "" {
+		if nightly {
+			return "", fmt.Errorf("agent manifest has no latest_nightly version")
+		}
+		return "", fmt.Errorf("agent manifest has no latest version")
+	}
+	return v, nil
+}
+
+// resolveAgentVersion returns the latest wendy-agent version tag for the channel,
+// preferring the GCS manifest and falling back to GitHub releases on any GCS miss.
+func resolveAgentVersion(nightly bool) (version, source string, err error) {
+	if m, mErr := fetchAgentManifest(); mErr == nil {
+		if v, vErr := agentVersionFromManifest(m, nightly); vErr == nil {
+			return v, "gcs", nil
+		} else {
+			fmt.Fprintf(os.Stderr, "GCS agent manifest lacks a version (%v); falling back to GitHub\n", vErr)
+		}
+	} else {
+		fmt.Fprintf(os.Stderr, "GCS agent manifest fetch failed (%v); falling back to GitHub\n", mErr)
+	}
+
+	rel, err := fetchAgentRelease(nightly)
+	if err != nil {
+		return "", "", err
+	}
+	return rel.TagName, "github", nil
 }
