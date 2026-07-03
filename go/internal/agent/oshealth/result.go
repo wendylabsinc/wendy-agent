@@ -27,11 +27,10 @@ const (
 
 // ServiceStatus is the verdict of a single critical-service healthcheck.
 //
-// New gates no longer populate ServiceResult: healthchecking is delegated to
-// the update backend's own commit (wendyos-update runs
-// /etc/wendyos-update/health.d). ServiceStatus and ServiceResult remain only
-// because they are part of the persisted UpdateResult.Services schema, read by
-// GetOSUpdateStatus and by on-disk records written before delegation existed.
+// A gate only populates ServiceResult when it runs its own CheckAll — a
+// backend that delegates healthchecking to its own commit (wendyos-update
+// runs /etc/wendyos-update/health.d) renders its verdict through the commit
+// result instead, so its UpdateResult.Services is empty.
 type ServiceStatus string
 
 const (
@@ -42,8 +41,7 @@ const (
 	StatusFailed  ServiceStatus = "failed"
 )
 
-// ServiceResult is the outcome of checking one critical service. See
-// ServiceStatus for why this is no longer populated by new gates.
+// ServiceResult is the outcome of checking one critical service.
 type ServiceResult struct {
 	Unit   string        `json:"unit"`
 	Status ServiceStatus `json:"status"`
