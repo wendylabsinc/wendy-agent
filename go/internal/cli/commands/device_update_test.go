@@ -10,6 +10,47 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 )
 
+func TestShouldReapplyBinary(t *testing.T) {
+	tests := []struct {
+		name           string
+		binaryProvided bool
+		outcome        osUpdateOutcome
+		want           bool
+	}{
+		{
+			name:           "--binary + OS applied + back online → re-apply",
+			binaryProvided: true,
+			outcome:        osUpdateOutcome{applied: true, online: true},
+			want:           true,
+		},
+		{
+			name:           "auto-download path is never re-applied",
+			binaryProvided: false,
+			outcome:        osUpdateOutcome{applied: true, online: true},
+			want:           false,
+		},
+		{
+			name:           "no OS update applied → nothing to survive",
+			binaryProvided: true,
+			outcome:        osUpdateOutcome{applied: false},
+			want:           false,
+		},
+		{
+			name:           "applied but device not confirmed online (cloud) → skip inline re-apply",
+			binaryProvided: true,
+			outcome:        osUpdateOutcome{applied: true, online: false},
+			want:           false,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := shouldReapplyBinary(tc.binaryProvided, tc.outcome); got != tc.want {
+				t.Fatalf("shouldReapplyBinary(%v, %+v) = %v, want %v", tc.binaryProvided, tc.outcome, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestWaitForUpdatedAgentReadyRetriesUntilReachable(t *testing.T) {
 	started := time.Now()
 	attempts := 0

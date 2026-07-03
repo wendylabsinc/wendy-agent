@@ -22,6 +22,10 @@ type drive struct {
 	SizeBytes   int64  // size in bytes
 	IsRemovable bool
 	StorageType StorageType // underlying storage protocol
+	// MediaFixed is positive evidence that the media is fixed, solid-state
+	// (an SSD) rather than removable (an SD card / thumb drive). Used to
+	// disambiguate a USB-attached SSD enclosure from an SD-card reader.
+	MediaFixed bool
 }
 
 // listAllDrives lists external physical drives (NVMe, USB, SD cards) on macOS.
@@ -117,18 +121,22 @@ func parseDiskutilOutput(out []byte, seen map[string]bool, isExternal bool) []dr
 			SizeBytes:   sizeBytes,
 			IsRemovable: removable,
 			StorageType: storageType,
+			// "Removable Media: Fixed" + "Solid State: Yes" is an SSD, not an
+			// SD card (which reports removable media).
+			MediaFixed: infoErr == nil && !info.removable && info.solidState,
 		})
 	}
 	return drives
 }
 
 type diskInfo struct {
-	name      string
-	size      string
-	sizeBytes int64
-	removable bool   // "Removable Media: Removable"
-	ejectable bool   // "Ejectable: Yes"
-	protocol  string // "Protocol:" field, e.g. "NVMe", "USB"
+	name       string
+	size       string
+	sizeBytes  int64
+	removable  bool   // "Removable Media: Removable"
+	ejectable  bool   // "Ejectable: Yes"
+	protocol   string // "Protocol:" field, e.g. "NVMe", "USB"
+	solidState bool   // "Solid State: Yes"
 }
 
 func getDiskInfo(devPath string) (*diskInfo, error) {
@@ -166,6 +174,10 @@ func getDiskInfo(devPath string) (*diskInfo, error) {
 		}
 		if strings.HasPrefix(line, "Protocol:") {
 			info.protocol = strings.TrimSpace(strings.TrimPrefix(line, "Protocol:"))
+		}
+		if strings.HasPrefix(line, "Solid State:") {
+			val := strings.TrimSpace(strings.TrimPrefix(line, "Solid State:"))
+			info.solidState = strings.EqualFold(val, "yes")
 		}
 	}
 	return info, nil

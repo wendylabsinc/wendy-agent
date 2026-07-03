@@ -95,7 +95,6 @@ All platform builds are included:
 - `wendy-cli-linux-arm64-${VERSION}.tar.gz`
 - `wendy-cli-linux-amd64-${VERSION}.tar.gz`
 - `wendy-cli-darwin-arm64-${VERSION}.tar.gz`
-- `wendy-cli-darwin-amd64-${VERSION}.tar.gz`
 - `wendy-cli-windows-amd64-${VERSION}.zip`
 - `wendy-cli-windows-arm64-${VERSION}.zip`
 

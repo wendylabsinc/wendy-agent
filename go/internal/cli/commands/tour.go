@@ -1212,10 +1212,10 @@ func (m tourWizardModel) viewAptInstall(w int) string {
 	var sb strings.Builder
 	sb.WriteString(wizTitleStyle.Render("Step 2 — Install the Wendy Agent") + "\n")
 	sb.WriteString(wizSubStyle.Render("Run the following on your Linux device:") + "\n\n")
-	sb.WriteString("  " + wizCodeStyle.Render("curl -fsSL https://install.wendy.sh/agent.sh | bash") + "\n\n")
+	sb.WriteString("  " + wizCodeStyle.Render("curl -fsSL https://install.wendy.dev/agent.sh | bash") + "\n\n")
 	sb.WriteString(wizBodyStyle.Width(w).Render(
 		"Or using APT:\n") + "\n")
-	sb.WriteString("  " + wizCodeStyle.Render("curl -fsSL https://install.wendy.sh/apt-key.gpg | sudo apt-key add -") + "\n")
+	sb.WriteString("  " + wizCodeStyle.Render("curl -fsSL https://install.wendy.dev/apt-key.gpg | sudo apt-key add -") + "\n")
 	sb.WriteString("  " + wizCodeStyle.Render(`echo "deb https://apt.wendy.sh stable main" | sudo tee /etc/apt/sources.list.d/wendy.list`) + "\n")
 	sb.WriteString("  " + wizCodeStyle.Render("sudo apt update && sudo apt install -y wendy-agent") + "\n\n")
 	sb.WriteString(wizBodyStyle.Width(w).Render("Once the agent is installed and the service is running, press Enter.") + "\n\n")

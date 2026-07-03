@@ -250,6 +250,13 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 	if storageOverride != "" && storageOverride != "nvme" && storageOverride != "sd" {
 		return fmt.Errorf("invalid --storage %q: must be \"nvme\" or \"sd\"", storageOverride)
 	}
+
+	// AGX Thor flashes over USB recovery (not a drive), via its own flashpack
+	// artifact and device selection — a separate path from the disk-image flow below.
+	if flagDeviceType == thorDeviceType {
+		return installThor(ctx, flagVersion, nightly, force)
+	}
+
 	fmt.Println("Fetching available devices...")
 
 	// Fetch Linux devices from GCS manifest.
@@ -343,6 +350,14 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 		if err != nil {
 			return err
 		}
+	}
+
+	// Thor flashes over USB recovery via its flashpack, never to a drive. The
+	// interactive picker reaches here too (the flag is empty), so route it to
+	// installThor here as well — otherwise it falls through to the disk-image
+	// flow and dd's the wrong artifact onto an external drive.
+	if selected == thorDeviceType {
+		return installThor(ctx, flagVersion, nightly, force)
 	}
 
 	device := deviceMap[selected]
@@ -464,7 +479,30 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 	if !ok {
 		return fmt.Errorf("version %s not found in device manifest", selectedVersion)
 	}
-	storage := manifestStorage(ver, targetDrive.StorageType, storageOverride)
+	storage := manifestStorage(ver, targetDrive.StorageType, targetDrive.MediaFixed, storageOverride)
+
+	// A USB-attached SD reader and an SSD enclosure are indistinguishable by bus
+	// type, and not every platform reports fixed-media signals. When the variant
+	// is a guess on a dual-variant device, ask the user which slot the drive is
+	// for rather than silently picking the wrong image (a wrong guess can produce
+	// a non-booting device). Non-interactive runs keep the manifest default.
+	if storageOverride == "" && storageChoiceAmbiguous(ver, targetDrive.StorageType, targetDrive.MediaFixed) && isInteractiveTerminal() {
+		bootNVMe, err := tui.ConfirmNoDefault(fmt.Sprintf(
+			"Can't tell if %s is an SD card or an SSD. Will it boot from the NVMe/SSD slot?",
+			targetDrive.DevicePath))
+		if err != nil {
+			return err
+		}
+		if bootNVMe {
+			storage = "nvme"
+		} else {
+			storage = "sd"
+		}
+	} else if storageOverride == "" && targetDrive.MediaFixed && storage == "nvme" {
+		// Auto-detected an SSD enclosure. Surface the inference and the override
+		// so a surprising choice is at least visible and reversible.
+		fmt.Printf("Detected a fixed SSD on %s — using the NVMe image (pass --storage sd to override).\n", targetDrive.DevicePath)
+	}
 
 	fmt.Printf("\nPreparing %s %s image...\n", device.Name, selectedVersion)
 	imgInfo, err := getImageInfo(device.Manifest, selectedVersion, storage)
@@ -859,11 +897,45 @@ func probeRangeSupport(client *http.Client, img *imageInfo) (contentLength int64
 	return cl, true
 }
 
-// downloadImage downloads an OS image to a temp file with a progress bar.
-// If the server supports HTTP range requests, it downloads in parallel using
-// parallelDownloadWorkers concurrent connections. Falls back to a single
-// sequential stream otherwise.
+// downloadImage downloads an OS image to a temp file behind a standalone
+// progress-bar TUI. Prefer downloadImageInto when embedding the download inside
+// another progress UI (it takes a plain byte callback and owns no TUI).
 func downloadImage(img *imageInfo) (string, error) {
+	prog := tui.NewProgress(fmt.Sprintf("Downloading %s...", img.Version))
+	p := tui.NewProgressProgram(prog)
+	sendProgress := throttledProgress(p, 33*time.Millisecond)
+
+	type result struct {
+		path string
+		err  error
+	}
+	resC := make(chan result, 1)
+	go func() {
+		path, err := downloadImageInto(img, sendProgress)
+		resC <- result{path, err}
+		p.Send(tui.ProgressDoneMsg{Err: err})
+	}()
+
+	if _, err := p.Run(); err != nil {
+		if r := <-resC; r.path != "" {
+			os.Remove(r.path)
+		}
+		return "", fmt.Errorf("progress TUI: %w", err)
+	}
+	r := <-resC
+	return r.path, r.err
+}
+
+// downloadImageInto downloads img to a temp file in the OS cache directory,
+// reporting progress via onProgress(downloaded, total). It runs synchronously
+// and owns no TUI, so callers can drive their own progress display (or pass a
+// nil-effect callback). On any error it removes the partial file. If the server
+// supports HTTP range requests it downloads in parallel across
+// parallelDownloadWorkers connections; otherwise it streams sequentially.
+func downloadImageInto(img *imageInfo, onProgress func(downloaded, total int64)) (string, error) {
+	if onProgress == nil {
+		onProgress = func(int64, int64) {}
+	}
 	client := &http.Client{Timeout: 30 * time.Minute}
 
 	// Write directly into the OS cache directory so we never land in /tmp
@@ -877,77 +949,63 @@ func downloadImage(img *imageInfo) (string, error) {
 		return "", fmt.Errorf("creating temp file: %w", err)
 	}
 
-	prog := tui.NewProgress(fmt.Sprintf("Downloading %s...", img.Version))
-	p := tui.NewProgressProgram(prog)
-	sendProgress := throttledProgress(p, 33*time.Millisecond)
-
 	contentLength, supportsRanges := probeRangeSupport(client, img)
-
+	var dlErr error
 	if supportsRanges {
 		if err := tmpFile.Truncate(contentLength); err != nil {
 			tmpFile.Close()
 			os.Remove(tmpFile.Name())
 			return "", fmt.Errorf("pre-allocating: %w", err)
 		}
-		go func() {
-			p.Send(tui.ProgressDoneMsg{Err: downloadParallel(client, img.DownloadURL, contentLength, tmpFile, sendProgress)})
-		}()
+		dlErr = downloadParallel(client, img.DownloadURL, contentLength, tmpFile, onProgress)
 	} else {
-		go func() {
-			resp, err := client.Get(img.DownloadURL)
-			if err != nil {
-				p.Send(tui.ProgressDoneMsg{Err: fmt.Errorf("downloading: %w", err)})
-				return
-			}
-			defer resp.Body.Close()
-			if resp.StatusCode != http.StatusOK {
-				p.Send(tui.ProgressDoneMsg{Err: fmt.Errorf("download returned status %d", resp.StatusCode)})
-				return
-			}
-			total := resp.ContentLength
-			if img.ImageSize > 0 {
-				total = img.ImageSize
-			}
-			buf := make([]byte, 1*1024*1024)
-			var downloaded int64
-			for {
-				n, readErr := resp.Body.Read(buf)
-				if n > 0 {
-					if _, writeErr := tmpFile.Write(buf[:n]); writeErr != nil {
-						p.Send(tui.ProgressDoneMsg{Err: writeErr})
-						return
-					}
-					downloaded += int64(n)
-					sendProgress(downloaded, total)
-				}
-				if readErr == io.EOF {
-					p.Send(tui.ProgressDoneMsg{})
-					return
-				}
-				if readErr != nil {
-					p.Send(tui.ProgressDoneMsg{Err: readErr})
-					return
-				}
-			}
-		}()
+		dlErr = downloadSequential(client, img, tmpFile, onProgress)
 	}
-
-	finalModel, err := p.Run()
-	if err != nil {
+	if dlErr != nil {
 		tmpFile.Close()
 		os.Remove(tmpFile.Name())
-		return "", fmt.Errorf("progress TUI: %w", err)
+		return "", dlErr
 	}
-
-	model := finalModel.(tui.ProgressModel)
-	if model.Err() != nil {
-		tmpFile.Close()
+	if err := tmpFile.Close(); err != nil {
 		os.Remove(tmpFile.Name())
-		return "", model.Err()
+		return "", err
 	}
-
-	tmpFile.Close()
 	return tmpFile.Name(), nil
+}
+
+// downloadSequential streams img into dst over a single connection, reporting
+// progress via onProgress. Used when the server does not support range requests.
+func downloadSequential(client *http.Client, img *imageInfo, dst *os.File, onProgress func(downloaded, total int64)) error {
+	resp, err := client.Get(img.DownloadURL)
+	if err != nil {
+		return fmt.Errorf("downloading: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("download returned status %d", resp.StatusCode)
+	}
+	total := resp.ContentLength
+	if img.ImageSize > 0 {
+		total = img.ImageSize
+	}
+	buf := make([]byte, 1*1024*1024)
+	var downloaded int64
+	for {
+		n, readErr := resp.Body.Read(buf)
+		if n > 0 {
+			if _, writeErr := dst.Write(buf[:n]); writeErr != nil {
+				return writeErr
+			}
+			downloaded += int64(n)
+			onProgress(downloaded, total)
+		}
+		if readErr == io.EOF {
+			return nil
+		}
+		if readErr != nil {
+			return readErr
+		}
+	}
 }
 
 func osCacheDir() (string, error) {
@@ -1017,18 +1075,18 @@ func osCachedBmapPath(deviceKey, version, storage string) (string, error) {
 // manifestStorage picks the manifest storage key ("sd"/"nvme") for a target
 // drive, honoring an explicit override.
 //
-// A real NVMe controller is unambiguous → nvme. A USB-attached drive is NOT:
+// A real NVMe controller is unambiguous → nvme. A USB-attached drive is harder:
 // an SD card in a USB reader and an NVMe SSD in a USB enclosure both enumerate
 // as USB on every platform (the StorageType enum has no SD value), so bus type
-// alone can't tell them apart. We disambiguate from the variants this manifest
-// version actually publishes via defaultManifestStorage: prefer the SD image
-// when the device ships one (Raspberry Pi), else the NVMe image (a Jetson SSD
-// enclosure), else legacy/sd. Unknown buses (built-in card readers) → sd.
-//
-// Assumption: a device that publishes BOTH an sd and an nvme variant is
-// SD-natural for an ambiguous USB target (true for the only dual-variant device
-// today, Raspberry Pi 5). Pass --storage to override.
-func manifestStorage(v deviceVersion, st StorageType, override string) string {
+// alone can't tell them apart. We disambiguate with mediaFixed — positive
+// evidence from the platform lister that the media is fixed, solid-state (an
+// SSD), not removable (an SD card / thumb drive). An SSD in a USB enclosure is
+// bound for the device's NVMe slot, so when the device also publishes an NVMe
+// variant we pick it. Without that evidence we fall back to what the manifest
+// publishes via defaultManifestStorage: the SD image when the device ships one
+// (Raspberry Pi), else the NVMe image (a Jetson SSD enclosure), else legacy/sd.
+// Unknown buses (built-in card readers) → sd. Pass --storage to override.
+func manifestStorage(v deviceVersion, st StorageType, mediaFixed bool, override string) string {
 	switch override {
 	case "nvme", "sd":
 		return override
@@ -1037,10 +1095,26 @@ func manifestStorage(v deviceVersion, st StorageType, override string) string {
 	case StorageNVMe:
 		return "nvme"
 	case StorageUSB:
+		// Fixed, solid-state media behind a USB bridge is an SSD headed for the
+		// NVMe slot, not an SD card in a reader. Prefer nvme when the device
+		// actually publishes that variant.
+		if mediaFixed && v.NVMEPath != "" {
+			return "nvme"
+		}
 		return defaultManifestStorage(v)
 	default:
 		return "sd"
 	}
+}
+
+// storageChoiceAmbiguous reports whether the image variant for a USB target
+// can't be determined from bus and media signals alone, so the caller should
+// ask the user which slot the drive is for. It is only ambiguous when the bus
+// is USB (an SD reader and an SSD enclosure look identical), the platform found
+// no positive fixed-media evidence, and the device publishes BOTH variants —
+// otherwise there is nothing to choose between.
+func storageChoiceAmbiguous(v deviceVersion, st StorageType, mediaFixed bool) bool {
+	return st == StorageUSB && !mediaFixed && v.SDPath != "" && v.NVMEPath != ""
 }
 
 // defaultManifestStorage returns the device's natural removable image variant

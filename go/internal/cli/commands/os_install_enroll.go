@@ -148,8 +148,20 @@ func resolvePreEnrollment(ctx context.Context, cfg *config.Config, opts preEnrol
 		return nil, nil
 	}
 
-	fmt.Printf("Pre-enrolling device with Wendy Cloud (org: %d)...\n", auth.Certificates[0].OrganizationID)
-	state, enrollErr := preEnrollDeviceFn(ctx, auth, deviceName, nil)
+	org, orgErr := resolveOrg(ctx, auth, false)
+	if orgErr != nil {
+		if errors.Is(orgErr, ErrUserCancelled) {
+			return nil, orgErr
+		}
+		if !interactive {
+			return nil, fmt.Errorf("--pre-enroll: resolving organization: %w", orgErr)
+		}
+		fmt.Printf("Cannot resolve organization: %v\n", orgErr)
+		return nil, ackContinueUnenrolled()
+	}
+
+	fmt.Printf("Pre-enrolling device with Wendy Cloud (org: %s / ID: %d)...\n", org.Name, org.ID)
+	state, enrollErr := preEnrollDeviceFn(ctx, auth, deviceName, org.ID, nil)
 	if enrollErr == nil {
 		fmt.Println("Device pre-enrolled. It will be secure from first boot.")
 		return state, nil

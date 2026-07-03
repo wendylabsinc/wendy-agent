@@ -41,10 +41,19 @@ wendy --device my-wendy.local run
 
 Wendy automatically checks for the `container` CLI and offers to install it via Homebrew if missing, and starts the `system` and `builder` services if they are not running.
 
+If Apple Container reports an empty build context for a project under `/tmp` or
+`/private/tmp`, Wendy returns an error with the known workaround: move the
+project to a non-`/tmp` directory and retry.
+
 For local-only Dockerfile or Containerfile runs on the Mac itself, use `wendy run --device
 apple-container` instead. Compose projects still require the Docker provider for
 local runs, but compose service builds targeting a WendyOS device can use
 `--builder apple-container`.
+
+The interactive device picker hides local run targets (this machine,
+Docker/OrbStack, Apple Container) by default so it lists separate WendyOS
+devices first. Select one explicitly with `--device` (as above), or set
+`WENDY_SHOW_LOCAL_DEVICES=1` to list them in the picker.
 
 | Build-arg | Values | Notes |
 |---|---|---|
@@ -130,7 +139,6 @@ On a **Windows host**, `wendy run` returns an actionable error for Swift project
 | `--max-concurrency <n>` | Max service images to build+push at once in multi-service projects. 0 = auto-throttle large groups (default). |
 | `--user-args <args>` | Extra arguments to pass to the container at runtime. |
 | `--chunking <mode>` | Controls the content-based chunking (CBC) chunk-diff deploy path: `auto` (default), `force`, or `off`. See [Deploy path: `--chunking`](#deploy-path---chunking). |
-| `--all` | Include local run targets (this machine, Docker/OrbStack, Apple Container) in the device picker. Hidden by default so the picker lists WendyOS devices first. |
 | `--watch` | Watch the project directory and redeploy on every change. Runs detached and non-interactive. See [Watch mode](#watch-mode). |
 | `--debounce <ms>` | Watch mode only: quiet period in milliseconds after the last change before redeploying (default `400`). |
 | `--verbose` | Watch mode only: always show build output. By default build output is hidden unless a build fails. |

@@ -56,11 +56,26 @@ build-agent-linux-amd64:
 build-agent-linux-arm64:
 	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags "$(LDFLAGS)" -o bin/wendy-agent-linux-arm64 ./cmd/wendy-agent
 
+# The Linux CLI links libusb via cgo (Thor USB recovery flashing), so it can only
+# be built natively: Linux host, matching arch, libusb dev headers installed (see
+# scripts/build-wendy.sh). Release binaries come from CI (build.yml
+# build-cli-linux), which links libusb statically against musl. Elsewhere the
+# target skips — and removes any stale binary so build-all can't hand out an
+# outdated one.
+define build-cli-linux-native
+	@if [ "$(UNAME_S)" = "Linux" ] && [ "$$(go env GOHOSTARCH)" = "$(1)" ]; then \
+		CGO_ENABLED=1 go build -ldflags "$(LDFLAGS)" -o bin/wendy-linux-$(1) ./cmd/wendy; \
+	else \
+		rm -f bin/wendy-linux-$(1); \
+		echo "skipping bin/wendy-linux-$(1): the Linux CLI needs native cgo/libusb — build it on a Linux $(1) host or in CI"; \
+	fi
+endef
+
 build-cli-linux-amd64:
-	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o bin/wendy-linux-amd64 ./cmd/wendy
+	$(call build-cli-linux-native,amd64)
 
 build-cli-linux-arm64:
-	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags "$(LDFLAGS)" -o bin/wendy-linux-arm64 ./cmd/wendy
+	$(call build-cli-linux-native,arm64)
 
 build-cli-darwin-amd64:
 	CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o bin/wendy-darwin-amd64 ./cmd/wendy

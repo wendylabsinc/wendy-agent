@@ -75,12 +75,21 @@ func validateOSUpdateTarget(versionResp *agentpb.GetAgentVersionResponse) error 
 	if err := validateOSUpdateIdentity(versionResp); err != nil {
 		return err
 	}
-	// Either OS update backend qualifies: the in-house wendyos-update engine or
-	// mender. The agent picks one per the request's --updater value.
-	if !agentVersionHasFeature(versionResp, "wendyos-update") && !agentVersionHasFeature(versionResp, "mender") {
+	if !hasOTABackend(versionResp) {
 		return errors.New(wendyOSMissingUpdaterMessage)
 	}
 	return nil
+}
+
+// hasOTABackend reports whether the device advertises an OS update backend the
+// agent can drive: the in-house wendyos-update engine or mender. Both
+// `wendy os update` and `wendy device update` gate their OS-update step on this,
+// so a device with either backend is offered an update and the two paths cannot
+// drift on which backends count. (The agent picks one per the request's
+// --updater value; auto-selection prefers wendyos-update.)
+func hasOTABackend(versionResp *agentpb.GetAgentVersionResponse) bool {
+	return agentVersionHasFeature(versionResp, "wendyos-update") ||
+		agentVersionHasFeature(versionResp, "mender")
 }
 
 // isWendyOSUpdateTarget reports whether the device is a WendyOS OTA target. The
@@ -428,6 +437,28 @@ func resolveArtifactPath(path string) (string, error) {
 	}
 
 	return "", fmt.Errorf("no .wendy or .mender artifact found in directory: %s", absPath)
+}
+
+// artifactSuffix returns the OS-update artifact extension embedded in a URL or
+// path: ".mender.xz", ".wendy", or ".mender". A wendyos-update (.wendy)
+// artifact and a Mender (.mender) artifact share the manifest's
+// ota_update_path, and the install backends key off the artifact, so the
+// extension must survive a local download+serve round-trip — serving a .wendy
+// artifact under a .mender name makes wendyos-update reject it. Falls back to
+// ".mender" when no known suffix is present (backward-compatible default).
+func artifactSuffix(artifactURL string) string {
+	name := artifactURL
+	if u, err := url.Parse(artifactURL); err == nil && u.Path != "" {
+		name = u.Path
+	}
+	switch {
+	case strings.HasSuffix(name, ".mender.xz"):
+		return ".mender.xz"
+	case strings.HasSuffix(name, ".wendy"):
+		return ".wendy"
+	default:
+		return ".mender"
+	}
 }
 
 // artifactURLPath generates a short hash prefix for the URL path.
@@ -1008,7 +1039,10 @@ func downloadArtifactToTemp(artifactURL string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolving cache dir: %w", err)
 	}
-	tmpFile, err := os.CreateTemp(cacheDir, "wendyos-*.mender")
+	// Preserve the artifact's real extension (.wendy / .mender / .mender.xz) so
+	// the locally served filename matches the artifact type; the device's
+	// install backend keys off it.
+	tmpFile, err := os.CreateTemp(cacheDir, "wendyos-*"+artifactSuffix(artifactURL))
 	if err != nil {
 		return "", fmt.Errorf("creating temp file: %w", err)
 	}

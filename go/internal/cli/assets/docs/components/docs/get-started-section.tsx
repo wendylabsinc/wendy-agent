@@ -8,25 +8,50 @@ import {
   cliWingetCommand,
   InstallCommand,
 } from '@/components/docs/install-command';
+import type {
+  DocsAnalyticsLocation,
+  DocsInstallCopyLabel,
+  DocsInstallCopyTarget,
+  DocsInstallCopyVariant,
+} from '@/lib/analytics-events';
+import { withBasePath } from '@/lib/shared';
 
 type CliPlatform = 'unix' | 'windows';
+type CliAnalyticsTarget = Extract<DocsInstallCopyTarget, 'unix' | 'windows'>;
+type CliAnalyticsVariant = Extract<
+  DocsInstallCopyVariant,
+  'cli for macOS/linux' | 'cli for windows'
+>;
 
 const cliPlatforms: Array<{
+  analyticsLabel: Extract<DocsInstallCopyLabel, 'macOS/Linux CLI' | 'windows CLI'>;
+  analyticsTarget: CliAnalyticsTarget;
+  analyticsVariant: CliAnalyticsVariant;
   id: CliPlatform;
   label: string;
   command: string;
 }> = [
   {
+    analyticsLabel: 'macOS/Linux CLI',
+    analyticsTarget: 'unix',
+    analyticsVariant: 'cli for macOS/linux',
     id: 'unix',
     label: 'macOS/Linux',
     command: cliCurlCommand,
   },
   {
+    analyticsLabel: 'windows CLI',
+    analyticsTarget: 'windows',
+    analyticsVariant: 'cli for windows',
     id: 'windows',
     label: 'Windows',
     command: cliWingetCommand,
   },
 ];
+
+const docsGetStartedCliLocation = 'docs_get_started_cli_install_command' satisfies DocsAnalyticsLocation;
+const docsGetStartedAgentLocation =
+  'docs_get_started_agent_install_command' satisfies DocsAnalyticsLocation;
 
 function detectCliPlatform(): CliPlatform {
   if (typeof navigator === 'undefined') return 'unix';
@@ -55,7 +80,7 @@ export function GetStartedSection() {
           <p className="mt-3 max-w-2xl text-sm leading-relaxed text-fd-muted-foreground">
             Plug in an NVIDIA Jetson or Raspberry Pi over USB and start deploying in seconds.{' '}
             <a
-              href="/installation/wendy-agent-macos"
+              href={withBasePath('/installation/wendy-agent-macos/')}
               className="font-medium text-wendy-seafoam no-underline transition-colors hover:text-wendy-seafoam-hover"
             >
               Wendy for macOS
@@ -102,7 +127,16 @@ export function GetStartedSection() {
               </div>
             </div>
 
-            <InstallCommand command={activePlatform.command} />
+            <InstallCommand
+              analyticsEventName="cli_install_copy"
+              analyticsEventParams={{
+                install_target: activePlatform.analyticsTarget,
+                install_variant: activePlatform.analyticsVariant,
+                install_label: activePlatform.analyticsLabel,
+                location: docsGetStartedCliLocation,
+              }}
+              command={activePlatform.command}
+            />
           </section>
 
           <section className="border-t pt-6">
@@ -117,7 +151,16 @@ export function GetStartedSection() {
             <p className="mt-1 text-sm text-fd-muted-foreground">
               Install this on an existing Linux target. WendyOS images already include it.
             </p>
-            <InstallCommand command={agentCurlCommand} />
+            <InstallCommand
+              analyticsEventName="cli_install_copy"
+              analyticsEventParams={{
+                install_target: 'agent-linux',
+                install_variant: 'wendy-agent for Linux',
+                install_label: 'wendy-agent for Linux',
+                location: docsGetStartedAgentLocation,
+              }}
+              command={agentCurlCommand}
+            />
           </section>
 
           <section className="border-t pt-6">
@@ -128,7 +171,7 @@ export function GetStartedSection() {
               Configure your local tools, editor, and first device connection.
             </p>
             <a
-              href="/installation/developer-machine-setup"
+              href={withBasePath('/installation/developer-machine-setup/')}
               className="mt-3 inline-flex items-center gap-2 bg-fd-primary px-4 py-2 text-sm font-medium text-fd-primary-foreground no-underline transition-transform hover:translate-x-0.5"
             >
               Open setup guide

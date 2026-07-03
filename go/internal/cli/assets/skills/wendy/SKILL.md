@@ -67,7 +67,7 @@ This sends WiFi SSID and password to the device so it can connect to the local n
 
 ## Setup and Configuration
 
-Wendy CLI connects to a device over gRPC (TCP) port 50051. If Wendy CLI is not installed yet, run `curl -fsSL https://install.wendy.sh/cli.sh | bash`.
+Wendy CLI connects to a device over gRPC (TCP) port 50051. If Wendy CLI is not installed yet, run `curl -fsSL https://install.wendy.dev/cli.sh | bash`.
 
 Devices are discovered over USB or LAN. If a device is not found, ask the user to check the connection or to connect it over USB.
 If a device is not yet installed, use `wendy os install` to install the OS to an external drive. For NVIDIA Jetson devices, the OS is commonly installed to NVMe.

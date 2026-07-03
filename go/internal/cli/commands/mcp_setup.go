@@ -56,11 +56,11 @@ func recordMCPSetupVersion() {
 // shouldRefreshMCPSetup reports whether the root command should silently re-run
 // MCP setup. It refreshes only when the user has previously run `wendy mcp
 // setup` (non-empty lastSetupVersion) and the running CLI differs from the
-// version that last set it up. A "dev" build never auto-refreshes, and the
+// version that last set it up. A dev build never auto-refreshes, and the
 // comparison is an exact mismatch so downgrades re-install the matching skills
 // too. It never opts a user into the MCP server on its own.
 func shouldRefreshMCPSetup(lastSetupVersion, currentVersion string) bool {
-	if currentVersion == "dev" {
+	if version.IsDev(currentVersion) {
 		return false
 	}
 	if lastSetupVersion == "" {

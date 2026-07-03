@@ -106,6 +106,45 @@ func TestWendyOSInstallErrorMessage(t *testing.T) {
 	}
 }
 
+func TestIsStaleDeploymentError(t *testing.T) {
+	tests := []struct {
+		name string
+		tail []string
+		want bool
+	}{
+		{
+			name: "the in-flight rejection wendyos-update actually prints",
+			tail: []string{
+				"wendyos-update: install: downloading url=https://example/img.wendy status=200 OK",
+				`wendyos-update: an update is already in flight (phase "failed", artifact wendyos-image-jetson-orin-nano-devkit-nvme-wendyos-0.16.1); run rollback or mark-good first`,
+			},
+			want: true,
+		},
+		{
+			name: "match is case-insensitive",
+			tail: []string{`An update is Already In Flight (phase "failed")`},
+			want: true,
+		},
+		{
+			name: "an artifact rejection is not a stale-deployment error",
+			tail: []string{"wendyos-update: checksum mismatch", "wendyos-update: artifact rejected"},
+			want: false,
+		},
+		{
+			name: "empty tail",
+			tail: nil,
+			want: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isStaleDeploymentError(tt.tail); got != tt.want {
+				t.Fatalf("isStaleDeploymentError(%q) = %v, want %v", tt.tail, got, tt.want)
+			}
+		})
+	}
+}
+
 // exit 4 (verify failed) is a commit-time code in the wendyos-update contract;
 // install never emits it. The install error mapper must therefore not mislabel
 // a stray exit 4 as a verification failure — it falls through to the generic

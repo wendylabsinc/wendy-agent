@@ -98,6 +98,8 @@ func (s *AgentService) GetAgentVersion(_ context.Context, _ *agentpb.GetAgentVer
 		resp.DiskTotalBytes = &usage.totalBytes
 	}
 
+	resp.MemTotalBytes, resp.CpuCount = hostMemAndCPUCount()
+
 	for _, p := range listDiskPartitions() {
 		resp.Partitions = append(resp.Partitions, &agentpb.DiskPartition{
 			Mountpoint: p.mountpoint,
@@ -108,7 +110,31 @@ func (s *AgentService) GetAgentVersion(_ context.Context, _ *agentpb.GetAgentVer
 		})
 	}
 
+	resp.NetworkInterfaces = listNetworkInterfaces()
+
 	return resp, nil
+}
+
+// SetHostname sets the device's hostname (and mDNS name) to a literal value,
+// applies it live, and persists it across reboots. See applyHostname.
+func (s *AgentService) SetHostname(_ context.Context, req *agentpb.SetHostnameRequest) (*agentpb.SetHostnameResponse, error) {
+	hostname := req.GetHostname()
+	s.logger.Info("SetHostname requested", zap.String("hostname", hostname))
+
+	if !s.isWendyOSHost() {
+		s.logger.Warn("SetHostname rejected: host is not a WendyOS device", zap.String("hostname", hostname))
+		return nil, status.Error(codes.Unavailable, "setting the hostname is only supported on WendyOS devices")
+	}
+
+	if err := applyHostname(s.logger, hostname); err != nil {
+		s.logger.Warn("SetHostname failed", zap.String("hostname", hostname), zap.Error(err))
+		if !validHostname(hostname) {
+			return nil, status.Error(codes.InvalidArgument, err.Error())
+		}
+		return nil, status.Errorf(codes.Internal, "applying hostname: %v", err)
+	}
+
+	return &agentpb.SetHostnameResponse{Hostname: hostname}, nil
 }
 
 type gpuInfo struct {
@@ -195,30 +221,61 @@ func detectJetPackVersion() string {
 var cudaVersionFileRe = regexp.MustCompile(`(?i)CUDA[^0-9]*([0-9]+\.[0-9]+(?:\.[0-9]+)?)`)
 
 func detectCUDAVersion() string {
-	if data, err := os.ReadFile("/usr/local/cuda/version.txt"); err == nil {
-		if m := cudaVersionFileRe.FindSubmatch(data); len(m) > 1 {
-			return string(m[1])
-		}
-	}
+	return detectCUDAVersionIn("/usr/local", exec.LookPath, runDetectCommand)
+}
 
-	if data, err := os.ReadFile("/usr/local/cuda/version.json"); err == nil {
-		if m := cudaVersionFileRe.FindSubmatch(data); len(m) > 1 {
-			return string(m[1])
-		}
-	}
+// runDetectCommand runs a detection helper binary with a timeout so detection
+// cannot block an RPC handler.
+func runDetectCommand(name string, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	return exec.CommandContext(ctx, name, args...).Output()
+}
 
-	// Fall back to nvcc --version with a timeout so detection cannot block an RPC handler.
-	if nvcc, err := exec.LookPath("nvcc"); err == nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		out, err := exec.CommandContext(ctx, nvcc, "--version").Output()
-		if err == nil {
-			if m := cudaVersionFileRe.FindSubmatch(out); len(m) > 1 {
+// detectCUDAVersionIn probes for the installed CUDA toolkit version under
+// usrLocal (normally /usr/local). lookPath and runCmd are injectable for tests.
+//
+// Probe order:
+//  1. version.txt / version.json under the well-known cuda symlink (legacy
+//     layouts; CUDA 11.1+ dropped version.txt, newer releases also dropped
+//     version.json).
+//  2. nvcc on PATH.
+//  3. nvcc inside versioned toolkit dirs (cuda-X.Y/bin/nvcc) — the JetPack 7
+//     layout ships no cuda symlink, no version files, and does not put nvcc
+//     on PATH.
+func detectCUDAVersionIn(usrLocal string, lookPath func(string) (string, error), runCmd func(string, ...string) ([]byte, error)) string {
+	for _, name := range []string{"version.txt", "version.json"} {
+		if data, err := os.ReadFile(filepath.Join(usrLocal, "cuda", name)); err == nil {
+			if m := cudaVersionFileRe.FindSubmatch(data); len(m) > 1 {
 				return string(m[1])
 			}
 		}
 	}
 
+	if nvcc, err := lookPath("nvcc"); err == nil {
+		if v := cudaVersionFromNvcc(nvcc, runCmd); v != "" {
+			return v
+		}
+	}
+
+	matches, _ := filepath.Glob(filepath.Join(usrLocal, "cuda-*", "bin", "nvcc"))
+	for _, nvcc := range matches {
+		if v := cudaVersionFromNvcc(nvcc, runCmd); v != "" {
+			return v
+		}
+	}
+
+	return ""
+}
+
+func cudaVersionFromNvcc(nvcc string, runCmd func(string, ...string) ([]byte, error)) string {
+	out, err := runCmd(nvcc, "--version")
+	if err != nil {
+		return ""
+	}
+	if m := cudaVersionFileRe.FindSubmatch(out); len(m) > 1 {
+		return string(m[1])
+	}
 	return ""
 }
 

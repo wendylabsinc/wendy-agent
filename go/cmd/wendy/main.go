@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/wendylabsinc/wendy/go/internal/cli/analytics"
 	"github.com/wendylabsinc/wendy/go/internal/cli/commands"
+	"github.com/wendylabsinc/wendy/go/internal/cli/tegraflash/shim"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/shared/version"
 	"google.golang.org/grpc/codes"
@@ -19,6 +21,14 @@ import (
 )
 
 func main() {
+	// When invoked as adb/lsusb/timeout (via the symlinks wendy plants on PATH for
+	// NVIDIA's bootburn during a Thor flash), act as that tool and exit. macOS and
+	// Linux only; IsShimName is always false elsewhere.
+	if shim.IsShimName(filepath.Base(os.Args[0])) {
+		shim.Dispatch()
+		return
+	}
+
 	start := time.Now()
 	cmd := commands.NewRootCmd()
 	executed, err := cmd.ExecuteC()
@@ -43,7 +53,8 @@ func main() {
 //     breakdowns that survive PostHog's 25-row table cap.
 //   - duration_ms: wall-clock time from process start.
 //   - success: bool serialized as "true"/"false".
-//   - is_dev_build: true when version.Version == "dev".
+//   - is_dev_build: true for development builds (version.IsDev) — the local
+//     "dev" default or a CI branch build with a "-dev" suffix.
 //   - error_class (only when err != nil): bounded enum derived from err —
 //     never the error message text, which can leak hostnames or paths.
 func trackCommand(executed *cobra.Command, err error, dur time.Duration) {
@@ -55,7 +66,7 @@ func trackCommand(executed *cobra.Command, err error, dur time.Duration) {
 		"command_root": commandRoot(executed),
 		"duration_ms":  strconv.FormatInt(dur.Milliseconds(), 10),
 		"success":      strconv.FormatBool(err == nil),
-		"is_dev_build": strconv.FormatBool(version.Version == "dev"),
+		"is_dev_build": strconv.FormatBool(version.IsDev(version.Version)),
 	}
 	if err != nil {
 		props["error_class"] = errorClass(err)

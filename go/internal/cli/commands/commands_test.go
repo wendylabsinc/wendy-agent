@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"github.com/spf13/cobra"
-	"github.com/wendylabsinc/wendy/go/internal/cli/providers"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
@@ -126,31 +125,17 @@ func TestRunCmdWatchFlagAlias(t *testing.T) {
 	}
 }
 
-// TestRunResolveOptions_ExcludesLocalByDefault verifies that, without --all,
-// `wendy run`'s interactive picker hides the on-machine run targets.
-func TestRunResolveOptions_ExcludesLocalByDefault(t *testing.T) {
+// TestRunResolveOptions_NoProviderExclusionByDefault verifies `wendy run`
+// itself no longer excludes local run targets: the interactive picker hides
+// them centrally (unless WENDY_SHOW_LOCAL_DEVICES), so runResolveOptions leaves
+// provider filtering to the picker.
+func TestRunResolveOptions_NoProviderExclusionByDefault(t *testing.T) {
 	cfg := resolveConfig{excludeProviderKeys: map[string]bool{}}
 	for _, o := range runResolveOptions(runOptions{}) {
 		o(&cfg)
 	}
-	for _, k := range providers.LocalProviderKeys() {
-		if !cfg.excludeProviderKeys[k] {
-			t.Errorf("provider %q should be excluded from the picker by default", k)
-		}
-	}
-}
-
-// TestRunResolveOptions_AllShowsLocal verifies that --all surfaces the local
-// run targets in the picker again.
-func TestRunResolveOptions_AllShowsLocal(t *testing.T) {
-	cfg := resolveConfig{excludeProviderKeys: map[string]bool{}}
-	for _, o := range runResolveOptions(runOptions{allTargets: true}) {
-		o(&cfg)
-	}
-	for _, k := range providers.LocalProviderKeys() {
-		if cfg.excludeProviderKeys[k] {
-			t.Errorf("--all should not exclude provider %q", k)
-		}
+	if len(cfg.excludeProviderKeys) != 0 {
+		t.Errorf("runResolveOptions should not exclude any providers; got %v", cfg.excludeProviderKeys)
 	}
 }
 

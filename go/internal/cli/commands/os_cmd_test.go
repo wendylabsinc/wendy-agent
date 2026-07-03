@@ -174,6 +174,47 @@ func TestValidateOSUpdateTarget(t *testing.T) {
 	}
 }
 
+func TestHasOTABackend(t *testing.T) {
+	tests := []struct {
+		name string
+		resp *agentpb.GetAgentVersionResponse
+		want bool
+	}{
+		{
+			name: "wendyos-update only (e.g. Jetson Orin Nano)",
+			resp: &agentpb.GetAgentVersionResponse{Featureset: []string{"gpu", "wendyos-update", "os-healthcheck"}},
+			want: true,
+		},
+		{
+			name: "mender only",
+			resp: &agentpb.GetAgentVersionResponse{Featureset: []string{"mender"}},
+			want: true,
+		},
+		{
+			name: "both backends",
+			resp: &agentpb.GetAgentVersionResponse{Featureset: []string{"wendyos-update", "mender"}},
+			want: true,
+		},
+		{
+			name: "no update backend",
+			resp: &agentpb.GetAgentVersionResponse{Featureset: []string{"gpu", "audio"}},
+			want: false,
+		},
+		{
+			name: "empty featureset",
+			resp: &agentpb.GetAgentVersionResponse{},
+			want: false,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := hasOTABackend(tc.resp); got != tc.want {
+				t.Fatalf("hasOTABackend() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestProgressLabel(t *testing.T) {
 	tests := []struct {
 		phase   string
@@ -285,6 +326,28 @@ func TestResolveArtifactPath(t *testing.T) {
 			t.Fatalf("resolveArtifactPath(%q) = %q, want %q", dir, got, f)
 		}
 	})
+}
+
+func TestArtifactSuffix(t *testing.T) {
+	tests := []struct {
+		name string
+		url  string
+		want string
+	}{
+		{"wendy artifact", "https://storage.example.com/images/raspberry-pi-5/1.0/wendyos-image-x.rootfs.wendy", ".wendy"},
+		{"mender artifact", "https://storage.example.com/images/jetson/1.0/wendyos-image-x.mender", ".mender"},
+		{"mender.xz artifact", "https://storage.example.com/images/rpi/1.0/wendyos-image-x.mender.xz", ".mender.xz"},
+		{"wendy with query string", "https://storage.example.com/x.wendy?token=abc&exp=123", ".wendy"},
+		{"unknown extension falls back to mender", "https://storage.example.com/images/x.bin", ".mender"},
+		{"bare local path", "/tmp/update.wendy", ".wendy"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := artifactSuffix(tc.url); got != tc.want {
+				t.Fatalf("artifactSuffix(%q) = %q, want %q", tc.url, got, tc.want)
+			}
+		})
+	}
 }
 
 func TestValidateUpdaterBackend(t *testing.T) {

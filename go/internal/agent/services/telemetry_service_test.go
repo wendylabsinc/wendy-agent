@@ -15,6 +15,7 @@ import (
 	"google.golang.org/grpc/test/bufconn"
 
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
+	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 	otelpb "github.com/wendylabsinc/wendy/go/proto/gen/otelpb"
 )
 
@@ -689,5 +690,232 @@ func TestStreamTraces_LastN(t *testing.T) {
 	}
 	if historyCount != 3 {
 		t.Errorf("want 3 history records, got %d", historyCount)
+	}
+}
+
+// makeLogReqForService builds a single-record log batch attributed to the
+// given service.name, which is what --app/--service filtering matches on.
+func makeLogReqForService(svc, body string) *otelpb.ExportLogsServiceRequest {
+	return &otelpb.ExportLogsServiceRequest{
+		ResourceLogs: []*otelpb.ResourceLogs{{
+			Resource: &otelpb.Resource{Attributes: []*otelpb.KeyValue{{
+				Key:   "service.name",
+				Value: &otelpb.AnyValue{Value: &otelpb.AnyValue_StringValue{StringValue: svc}},
+			}}},
+			ScopeLogs: []*otelpb.ScopeLogs{{
+				LogRecords: []*otelpb.LogRecord{{
+					Body: &otelpb.AnyValue{Value: &otelpb.AnyValue_StringValue{StringValue: body}},
+				}},
+			}},
+		}},
+	}
+}
+
+func firstLogBody(req *otelpb.ExportLogsServiceRequest) string {
+	return req.GetResourceLogs()[0].GetScopeLogs()[0].GetLogRecords()[0].GetBody().GetStringValue()
+}
+
+// newTelemetryTestConn serves the given registration over bufconn and returns
+// a client connection to it.
+func newTelemetryTestConn(t *testing.T, register func(*grpc.Server)) *grpc.ClientConn {
+	t.Helper()
+	lis := bufconn.Listen(1024 * 1024)
+	srv := grpc.NewServer()
+	register(srv)
+	go srv.Serve(lis) //nolint:errcheck
+	t.Cleanup(srv.Stop)
+
+	conn, err := grpc.NewClient("passthrough://bufnet",
+		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) {
+			return lis.DialContext(ctx)
+		}),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	if err != nil {
+		t.Fatalf("grpc.NewClient: %v", err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	return conn
+}
+
+// newChattyQuietBuffer seeds a buffer where a quiet app's 3 batches are
+// followed by 50 batches from a chatty app, so the last N batches
+// device-wide never include the quiet app.
+func newChattyQuietBuffer(t *testing.T) (*TelemetryBroadcaster, *TelemetryBuffer) {
+	t.Helper()
+	broadcaster := NewTelemetryBroadcaster()
+	buf := NewTelemetryBuffer(TelemetryBufferConfig{
+		Dir:           t.TempDir(),
+		MaxTotalBytes: 10 * 1024 * 1024,
+		SegmentBytes:  1 * 1024 * 1024,
+	}, broadcaster, zap.NewNop())
+
+	for i := 0; i < 3; i++ {
+		buf.PublishLogs(makeLogReqForService("quiet", fmt.Sprintf("quiet-%d", i)))
+	}
+	for i := 0; i < 50; i++ {
+		buf.PublishLogs(makeLogReqForService("chatty", fmt.Sprintf("chatty-%d", i)))
+	}
+	return broadcaster, buf
+}
+
+func TestStreamLogs_LastN_FilterBeforeWindow(t *testing.T) {
+	broadcaster, buf := newChattyQuietBuffer(t)
+	svc := NewTelemetryService(zap.NewNop(), broadcaster, buf)
+	conn := newTelemetryTestConn(t, func(srv *grpc.Server) {
+		agentpb.RegisterWendyTelemetryServiceServer(srv, svc)
+	})
+	client := agentpb.NewWendyTelemetryServiceClient(conn)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	appName := "quiet"
+	lastN := int32(2)
+	stream, err := client.StreamLogs(ctx, &agentpb.StreamLogsRequest{LastN: &lastN, AppName: &appName})
+	if err != nil {
+		t.Fatalf("StreamLogs: %v", err)
+	}
+
+	for _, want := range []string{"quiet-1", "quiet-2"} {
+		resp, err := stream.Recv()
+		if err != nil {
+			t.Fatalf("Recv(%s): %v", want, err)
+		}
+		if !resp.IsHistory {
+			t.Errorf("want history record %s, got live", want)
+		}
+		if got := firstLogBody(resp.GetLogs()); got != want {
+			t.Errorf("want body %s, got %s", want, got)
+		}
+	}
+
+	// History is fully replayed before live delivery starts, so a live batch
+	// arriving next proves no extra history records were sent.
+	broadcaster.PublishLogs(makeLogReqForService("quiet", "live-sentinel"))
+	resp, err := stream.Recv()
+	if err != nil {
+		t.Fatalf("Recv(sentinel): %v", err)
+	}
+	if resp.IsHistory || firstLogBody(resp.GetLogs()) != "live-sentinel" {
+		t.Errorf("want live sentinel after 2 history records, got history=%v body=%s",
+			resp.IsHistory, firstLogBody(resp.GetLogs()))
+	}
+}
+
+func TestStreamLogs_LastN_FilterLargerThanHistory(t *testing.T) {
+	broadcaster, buf := newChattyQuietBuffer(t)
+	svc := NewTelemetryService(zap.NewNop(), broadcaster, buf)
+	conn := newTelemetryTestConn(t, func(srv *grpc.Server) {
+		agentpb.RegisterWendyTelemetryServiceServer(srv, svc)
+	})
+	client := agentpb.NewWendyTelemetryServiceClient(conn)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	appName := "quiet"
+	lastN := int32(10)
+	stream, err := client.StreamLogs(ctx, &agentpb.StreamLogsRequest{LastN: &lastN, AppName: &appName})
+	if err != nil {
+		t.Fatalf("StreamLogs: %v", err)
+	}
+
+	for _, want := range []string{"quiet-0", "quiet-1", "quiet-2"} {
+		resp, err := stream.Recv()
+		if err != nil {
+			t.Fatalf("Recv(%s): %v", want, err)
+		}
+		if !resp.IsHistory {
+			t.Errorf("want history record %s, got live", want)
+		}
+		if got := firstLogBody(resp.GetLogs()); got != want {
+			t.Errorf("want body %s, got %s", want, got)
+		}
+	}
+
+	broadcaster.PublishLogs(makeLogReqForService("quiet", "live-sentinel"))
+	resp, err := stream.Recv()
+	if err != nil {
+		t.Fatalf("Recv(sentinel): %v", err)
+	}
+	if resp.IsHistory || firstLogBody(resp.GetLogs()) != "live-sentinel" {
+		t.Errorf("want live sentinel after 3 history records, got history=%v body=%s",
+			resp.IsHistory, firstLogBody(resp.GetLogs()))
+	}
+}
+
+func TestStreamLogs_LastN_FilterWithNoHistory(t *testing.T) {
+	broadcaster, buf := newChattyQuietBuffer(t)
+	svc := NewTelemetryService(zap.NewNop(), broadcaster, buf)
+	conn := newTelemetryTestConn(t, func(srv *grpc.Server) {
+		agentpb.RegisterWendyTelemetryServiceServer(srv, svc)
+	})
+	client := agentpb.NewWendyTelemetryServiceClient(conn)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	appName := "ghost"
+	lastN := int32(5)
+	stream, err := client.StreamLogs(ctx, &agentpb.StreamLogsRequest{LastN: &lastN, AppName: &appName})
+	if err != nil {
+		t.Fatalf("StreamLogs: %v", err)
+	}
+
+	// Publish live batches until the stream delivers one; the subscription
+	// may not be registered yet when the first publish happens.
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		for {
+			select {
+			case <-done:
+				return
+			case <-time.After(10 * time.Millisecond):
+				broadcaster.PublishLogs(makeLogReqForService("ghost", "live-sentinel"))
+			}
+		}
+	}()
+
+	resp, err := stream.Recv()
+	if err != nil {
+		t.Fatalf("Recv: %v", err)
+	}
+	if resp.IsHistory {
+		t.Errorf("app with no logged history must replay nothing, got history record %s",
+			firstLogBody(resp.GetLogs()))
+	}
+}
+
+func TestStreamLogsV2_LastN_FilterBeforeWindow(t *testing.T) {
+	broadcaster, buf := newChattyQuietBuffer(t)
+	svc := NewTelemetryServiceV2(zap.NewNop(), broadcaster, buf)
+	conn := newTelemetryTestConn(t, func(srv *grpc.Server) {
+		agentpbv2.RegisterWendyTelemetryServiceServer(srv, svc)
+	})
+	client := agentpbv2.NewWendyTelemetryServiceClient(conn)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	appName := "quiet"
+	lastN := int32(2)
+	stream, err := client.StreamLogs(ctx, &agentpbv2.StreamLogsRequest{LastN: &lastN, AppName: &appName})
+	if err != nil {
+		t.Fatalf("StreamLogs: %v", err)
+	}
+
+	for _, want := range []string{"quiet-1", "quiet-2"} {
+		resp, err := stream.Recv()
+		if err != nil {
+			t.Fatalf("Recv(%s): %v", want, err)
+		}
+		if !resp.IsHistory {
+			t.Errorf("want history record %s, got live", want)
+		}
+		if got := firstLogBody(resp.GetLogs()); got != want {
+			t.Errorf("want body %s, got %s", want, got)
+		}
 	}
 }

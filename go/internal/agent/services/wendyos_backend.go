@@ -76,6 +76,33 @@ func (w wendyOSUpdater) install(ctx context.Context, artifactURL string, onProgr
 		return errors.New("wendyos-update binary not found")
 	}
 
+	stale, err := w.runInstall(ctx, binary, artifactURL, onProgress)
+	if err == nil || !stale {
+		return err
+	}
+
+	// wendyos-update refused because a previous deployment is still recorded as
+	// in flight ("run rollback or mark-good first"). The post-reboot gate reverts
+	// the A/B slot on a failed update but can leave this terminal record behind,
+	// and the agent exposes no remote verb to clear it — so a single failed
+	// update would otherwise wedge the device out of every future OTA update.
+	// Clear it with the rollback the tool itself prescribes (mark-good would
+	// commit the failed slot, which we must not do), then retry the install once.
+	w.logger.Warn("wendyos-update rejected the install: a previous deployment is stuck in flight; clearing it with rollback and retrying")
+	if res := runUpdaterCommit(w.logger, binary, "rollback"); res.Status == oshealth.MenderError {
+		w.logger.Error("failed to clear the stuck wendyos-update deployment; surfacing the original install error",
+			zap.String("output", res.Output), zap.Error(res.Err))
+		return err
+	}
+	_, retryErr := w.runInstall(ctx, binary, artifactURL, onProgress)
+	return retryErr
+}
+
+// runInstall performs one `wendyos-update install` attempt, streaming progress
+// and returning a user-facing error on failure. stale is true only when the
+// failure was wendyos-update refusing because a prior deployment is stuck in
+// flight — the one case install() clears with a rollback and retries.
+func (w wendyOSUpdater) runInstall(ctx context.Context, binary, artifactURL string, onProgress func(string, int32)) (stale bool, err error) {
 	onProgress("downloading", 0)
 	cmd := exec.CommandContext(ctx, binary, "install", artifactURL)
 	cmd.Env = envWithPath("/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
@@ -84,15 +111,15 @@ func (w wendyOSUpdater) install(ctx context.Context, artifactURL string, onProgr
 	// human logs, whose tail we keep so a non-zero exit reports the real cause.
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return fmt.Errorf("failed to create stdout pipe: %v", err)
+		return false, fmt.Errorf("failed to create stdout pipe: %v", err)
 	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
-		return fmt.Errorf("failed to create stderr pipe: %v", err)
+		return false, fmt.Errorf("failed to create stderr pipe: %v", err)
 	}
 
 	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("failed to start wendyos-update: %v", err)
+		return false, fmt.Errorf("failed to start wendyos-update: %v", err)
 	}
 
 	outputTail := newLineRing(menderErrorTailLines)
@@ -128,12 +155,28 @@ func (w wendyOSUpdater) install(ctx context.Context, artifactURL string, onProgr
 
 	if err := cmd.Wait(); err != nil {
 		code := exitCodeOf(err)
-		msg := wendyOSInstallErrorMessage(code, outputTail.tail())
+		tail := outputTail.tail()
+		msg := wendyOSInstallErrorMessage(code, tail)
 		w.logger.Error("wendyos-update install failed",
-			zap.Int("exit_code", code), zap.Error(err), zap.Strings("output_tail", outputTail.tail()))
-		return errors.New(msg)
+			zap.Int("exit_code", code), zap.Error(err), zap.Strings("output_tail", tail))
+		return isStaleDeploymentError(tail), errors.New(msg)
 	}
-	return nil
+	return false, nil
+}
+
+// isStaleDeploymentError reports whether a failed `wendyos-update install` was
+// refused because a previous deployment is still recorded as in flight — e.g.
+// `an update is already in flight (phase "failed", …); run rollback or mark-good
+// first`. Matching the tool's stable "already in flight" wording keeps this a
+// pure recovery heuristic: if the wording ever changes we simply fall back to
+// today's behavior of surfacing the failure unchanged.
+func isStaleDeploymentError(tail []string) bool {
+	for _, line := range tail {
+		if strings.Contains(strings.ToLower(line), "already in flight") {
+			return true
+		}
+	}
+	return false
 }
 
 func (w wendyOSUpdater) commit() oshealth.MenderResult {

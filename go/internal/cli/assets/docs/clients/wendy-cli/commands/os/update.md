@@ -70,13 +70,18 @@ The agent supports two OS update backends and chooses one per request:
 
 The `--updater` flag overrides selection: `auto` (default), `wendyos`, or `mender`. An explicit choice is honored or fails — it does not silently fall back. The backend that installed an update is recorded on the device so the post-reboot gate commits or rolls back with the same backend.
 
-> **Image requirement:** because the agent's healthcheck gate is the single commit authority (below), the WendyOS image must **not** enable wendyos-update's own `wendyos-update-commit.service` / `wendyos-update-verify.service` units — they would race the agent. The image bundles the `wendyos-update` binary on `PATH` with those units masked.
+> **Image requirement:** the WendyOS image must **not** enable wendyos-update's own `wendyos-update-commit.service` / `wendyos-update-verify.service` units. For mender, the agent runs its own healthchecks before commit, so those units would race the agent; for wendyos-update, the `commit` command runs healthchecks internally via `/etc/wendyos-update/health.d`, so external units would interfere. The image bundles the `wendyos-update` binary on `PATH` with those units masked.
 
 ---
 
 ## Post-update healthchecks and automatic rollback
 
-Both backends use A/B rootfs slots, so an update boots into the new slot while keeping the previous OS intact. The agent's healthcheck gate is backend-agnostic: on the first boot after an update, it healthchecks critical system services **before** committing, regardless of which backend installed it:
+Both backends use A/B rootfs slots, so an update boots into the new slot while keeping the previous OS intact. On the first boot after an update, the agent decides commit-or-rollback; where the health verdict comes from depends on the backend:
+
+- **wendyos-update** runs its own health gate inside `commit` (via `/etc/wendyos-update/health.d`), so the agent skips its own checks and rolls back if the commit is rejected.
+- **mender** has no such gate, so the agent healthchecks critical services itself before committing.
+
+The critical services checked for mender are:
 
 | Service | Why it matters |
 |---------|----------------|
@@ -94,7 +99,7 @@ Failed services:
   - avahi-daemon.service: timed out after 30s waiting for active; last state: ActiveState=failed SubState=exited Result=exit-code
 ```
 
-> **Note:** the healthchecks run inside the agent bundled with the *new* OS image, so they only protect updates to images that ship an agent with healthcheck support. For older target images the CLI falls back to comparing the OS version before and after the reboot, and warns when the device appears to have rolled back.
+> **Note:** for mender, the healthchecks run inside the agent bundled with the *new* OS image, so they only protect updates to images that ship an agent with healthcheck support. For wendyos-update, the healthchecks run inside the `wendyos-update` binary's `commit` command. For older target images the CLI falls back to comparing the OS version before and after the reboot, and warns when the device appears to have rolled back.
 
 ---
 

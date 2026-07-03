@@ -67,6 +67,12 @@ type deviceVersion struct {
 	SDZstPath      string `json:"sd_zst_path"`
 	SDZstChecksum  string `json:"sd_zst_checksum"`
 	SDZstSizeBytes int64  `json:"sd_zst_size_bytes"`
+
+	// Thor flashpack: the USB-recovery flash artifact (a .tar.zst) wendy downloads,
+	// extracts and flashes. Only present for jetson-agx-thor.
+	FlashpackPath      string `json:"flashpack_path"`
+	FlashpackChecksum  string `json:"flashpack_checksum"`
+	FlashpackSizeBytes int64  `json:"flashpack_size_bytes"`
 }
 
 // deviceInfo is the aggregated info shown in the picker for one device.
@@ -273,6 +279,56 @@ func getLatestOTAInfoForDeviceType(deviceType string, storageMedium string, nigh
 		return "", "", err
 	}
 	return u, latest, nil
+}
+
+// thorDeviceType is the manifest key / --device-type for the AGX Thor.
+const thorDeviceType = "jetson-agx-thor"
+
+// thorFlashpackInfo is the resolved flashpack download for a Thor version.
+type thorFlashpackInfo struct {
+	URL       string
+	Checksum  string
+	SizeBytes int64
+	Version   string
+}
+
+// getThorFlashpackInfo fetches the jetson-agx-thor manifest and returns the flashpack
+// artifact for version (or the latest stable / nightly when version is "").
+func getThorFlashpackInfo(version string, nightly bool) (*thorFlashpackInfo, error) {
+	main, err := fetchMainManifest()
+	if err != nil {
+		return nil, fmt.Errorf("fetching manifest: %w", err)
+	}
+	dev, ok := main.Devices[thorDeviceType]
+	if !ok || dev.ManifestPath == "" {
+		return nil, fmt.Errorf("%s not found in manifest", thorDeviceType)
+	}
+	dm, err := fetchDeviceManifest(dev.ManifestPath)
+	if err != nil {
+		return nil, fmt.Errorf("fetching device manifest: %w", err)
+	}
+	if version == "" {
+		version = dev.Latest
+		if nightly && dev.LatestNightly != "" {
+			version = dev.LatestNightly
+		}
+	}
+	if version == "" {
+		return nil, fmt.Errorf("no version available for %s", thorDeviceType)
+	}
+	v, ok := dm.Versions[version]
+	if !ok {
+		return nil, fmt.Errorf("version %s not found for %s", version, thorDeviceType)
+	}
+	if v.FlashpackPath == "" {
+		return nil, fmt.Errorf("version %s has no flashpack artifact in the manifest", version)
+	}
+	return &thorFlashpackInfo{
+		URL:       gcsBaseURL + "/" + v.FlashpackPath,
+		Checksum:  v.FlashpackChecksum,
+		SizeBytes: v.FlashpackSizeBytes,
+		Version:   version,
+	}, nil
 }
 
 // firmwareManifest contains version info for a specific chip.

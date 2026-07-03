@@ -274,6 +274,10 @@ func main() {
 			defer wg.Done()
 			monitor.Run(ctx)
 		}()
+		// Re-launch apps that should run after a reboot (per their restart
+		// policy, minus user-stopped ones) now that the monitor is running.
+		// Done in its own goroutine so agent startup isn't blocked on container I/O.
+		go monitor.ReconcileBootContainers(ctx)
 	}
 
 	if containerdClient != nil {

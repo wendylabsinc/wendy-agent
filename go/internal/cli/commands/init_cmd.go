@@ -643,6 +643,13 @@ func runTemplateFlow(cwd, destDir, appID, tmpl, target string, meta *repoMeta, o
 		return err
 	}
 
+	// Resolve entitlement flags up front so an invalid combination fails
+	// before any files are scaffolded.
+	requestedEntitlements, err := templateEntitlementsFromFlags(target, opts)
+	if err != nil {
+		return err
+	}
+
 	// Parse --var overrides.
 	varOverrides, err := parseVarFlags(opts.vars)
 	if err != nil {
@@ -684,12 +691,20 @@ func runTemplateFlow(cwd, destDir, appID, tmpl, target string, meta *repoMeta, o
 		return err
 	}
 
+	addedEntitlements, err := mergeTemplateEntitlements(filepath.Join(destDir, "wendy.json"), requestedEntitlements)
+	if err != nil {
+		return err
+	}
+
 	cliSuccess("\nScaffolded %s project from template %q", language, tmpl)
 	cliLogln("  Directory: %s", tui.Path(destDir+"/"))
 	for _, v := range manifest.Variables {
 		if val, ok := vals[v.Name]; ok {
 			cliLogln("  %s: %v", v.Name, val)
 		}
+	}
+	if len(addedEntitlements) > 0 {
+		cliLogln("  Entitlements added from flags: %s", strings.Join(addedEntitlements, ", "))
 	}
 
 	// Offer git init.
@@ -753,9 +768,21 @@ func templateNextSteps(cwd, destDir, appID string) []string {
 	return []string{"cd " + shellQuote(appID), "wendy run"}
 }
 
-// resolveInitDestAndID determines the destination directory and app ID for template flow.
-// In fully interactive mode it asks whether to initialize in the current directory
-// or create a new project subdirectory.
+// confirmInitCurrentDir and promptInitProjectName are variables so tests can
+// replace the Bubble Tea prompts with canned answers.
+var confirmInitCurrentDir = func() (bool, error) {
+	return tui.ConfirmDefaultYes("Initialize in the current directory?")
+}
+
+var promptInitProjectName = func() (string, error) {
+	return tui.PromptText("Project name", "directory name and app identifier", validateNewProjectName)
+}
+
+// resolveInitDestAndID determines the destination directory and app ID for
+// the template flow. An explicit app ID (positional or --app-id) answers
+// both; otherwise the user is asked on an interactive terminal. Flags that
+// answer other questions (--target, entitlement flags, ...) never suppress
+// these prompts (WDY-1805).
 func resolveInitDestAndID(cwd string, args []string, opts initOptions) (string, string, error) {
 	// Explicit app ID provided: always create a new subdirectory.
 	if len(args) > 0 || opts.appIDSet {
@@ -766,28 +793,30 @@ func resolveInitDestAndID(cwd string, args []string, opts initOptions) (string, 
 		return filepath.Join(cwd, appID), appID, nil
 	}
 
-	// Fully interactive (no directive flags): ask where to set up the project.
-	if !opts.targetSet && !opts.entitlementsSet && !opts.allEntitlements && !opts.noExtraEntitlements {
-		fmt.Println()
-		useCurrentDir, err := tui.ConfirmDefaultYes("Initialize in the current directory?")
-		if err != nil {
-			return "", "", err
-		}
-		if useCurrentDir {
-			return cwd, strings.TrimSpace(filepath.Base(cwd)), nil
-		}
-
-		fmt.Println()
-		appID, err := tui.PromptText("Project name", "directory name and app identifier", validateNewProjectName)
-		if err != nil {
-			return "", "", err
-		}
-		appID = strings.TrimSpace(appID)
-		return filepath.Join(cwd, appID), appID, nil
+	if !isInteractiveTerminal() {
+		return "", "", fmt.Errorf("an app ID is required when running non-interactively; pass --app-id or an [app-id] argument")
 	}
 
-	// Semi-interactive or non-interactive without explicit app ID: infer from cwd.
-	return cwd, strings.TrimSpace(filepath.Base(cwd)), nil
+	fmt.Println()
+	useCurrentDir, err := confirmInitCurrentDir()
+	if err != nil {
+		return "", "", err
+	}
+	if useCurrentDir {
+		appID := strings.TrimSpace(filepath.Base(cwd))
+		if err := validateNewProjectName(appID); err != nil {
+			return "", "", fmt.Errorf("current directory name %q cannot be used as the app ID: %w; rerun with --app-id", appID, err)
+		}
+		return cwd, appID, nil
+	}
+
+	fmt.Println()
+	appID, err := promptInitProjectName()
+	if err != nil {
+		return "", "", err
+	}
+	appID = strings.TrimSpace(appID)
+	return filepath.Join(cwd, appID), appID, nil
 }
 
 func validateNewProjectName(value string) error {
@@ -1100,6 +1129,122 @@ func buildInitEntitlementsFromFlags(target string, opts initOptions) ([]appconfi
 	return entitlements, nil
 }
 
+// templateEntitlementsFromFlags resolves entitlement-related init flags for
+// the template flow. The template's wendy.json is scaffolded verbatim, so
+// requested entitlements must be merged in afterwards — without that step the
+// flags were silently ignored (WDY-1810).
+func templateEntitlementsFromFlags(target string, opts initOptions) ([]appconfig.Entitlement, error) {
+	if !initEntitlementsProvided(opts) {
+		return nil, nil
+	}
+	return buildInitEntitlementsFromFlags(target, opts)
+}
+
+// mergeTemplateEntitlements merges requested entitlements into the scaffolded
+// wendy.json at cfgPath and reports the entitlement types it added. Only the
+// entitlements key is rewritten; template entries are kept verbatim, and a
+// requested entitlement already covered by the template is skipped so the
+// template's more specific configuration (network mode, ports, ...) wins.
+func mergeTemplateEntitlements(cfgPath string, requested []appconfig.Entitlement) ([]string, error) {
+	if len(requested) == 0 {
+		return nil, nil
+	}
+
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		return nil, fmt.Errorf("reading scaffolded wendy.json to merge entitlement flags: %w", err)
+	}
+
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, fmt.Errorf("parsing scaffolded wendy.json: %w", err)
+	}
+
+	var existingRaw []json.RawMessage
+	if rawEnts, ok := raw["entitlements"]; ok {
+		if err := json.Unmarshal(rawEnts, &existingRaw); err != nil {
+			return nil, fmt.Errorf("parsing scaffolded wendy.json entitlements: %w", err)
+		}
+	}
+	existing := make([]appconfig.Entitlement, len(existingRaw))
+	for i, entRaw := range existingRaw {
+		if err := json.Unmarshal(entRaw, &existing[i]); err != nil {
+			return nil, fmt.Errorf("parsing scaffolded wendy.json entitlements[%d]: %w", i, err)
+		}
+	}
+
+	mergedRaw := existingRaw
+	var added []string
+	for _, req := range requested {
+		if templateEntitlementCovers(existing, req) {
+			continue
+		}
+		entRaw, err := json.Marshal(req)
+		if err != nil {
+			return nil, fmt.Errorf("marshaling %q entitlement: %w", req.Type, err)
+		}
+		mergedRaw = append(mergedRaw, entRaw)
+		existing = append(existing, req)
+		added = append(added, req.Type)
+	}
+	if len(added) == 0 {
+		return nil, nil
+	}
+
+	rawMerged, err := json.Marshal(mergedRaw)
+	if err != nil {
+		return nil, fmt.Errorf("marshaling merged entitlements: %w", err)
+	}
+	raw["entitlements"] = rawMerged
+
+	out, err := json.MarshalIndent(raw, "", "  ")
+	if err != nil {
+		return nil, fmt.Errorf("marshaling scaffolded wendy.json: %w", err)
+	}
+	out = append(out, '\n')
+	if err := os.WriteFile(cfgPath, out, 0o644); err != nil {
+		return nil, fmt.Errorf("writing scaffolded wendy.json: %w", err)
+	}
+	return added, nil
+}
+
+// templateEntitlementCovers reports whether the template's entitlements
+// already grant what req asks for.
+func templateEntitlementCovers(existing []appconfig.Entitlement, req appconfig.Entitlement) bool {
+	for _, e := range existing {
+		if e.Type != req.Type {
+			continue
+		}
+		switch req.Type {
+		case appconfig.EntitlementPersist:
+			if e.Name == req.Name {
+				return true
+			}
+		case appconfig.EntitlementI2C, appconfig.EntitlementSerial:
+			if e.Device == req.Device {
+				return true
+			}
+		case appconfig.EntitlementGPIO:
+			// A gpio entry without pins grants access to all GPIO chips.
+			if len(e.Pins) == 0 || pinsSubset(req.Pins, e.Pins) {
+				return true
+			}
+		default:
+			return true
+		}
+	}
+	return false
+}
+
+func pinsSubset(sub, super []int) bool {
+	for _, p := range sub {
+		if !slices.Contains(super, p) {
+			return false
+		}
+	}
+	return true
+}
+
 func normalizeInitChoice(value string) string {
 	return strings.ToLower(strings.TrimSpace(value))
 }
@@ -1155,12 +1300,6 @@ func validateInitAssistantOptions(opts initOptions) error {
 		return fmt.Errorf("%s is not installed or not on PATH", choice)
 	}
 	return nil
-}
-
-// promptYesNo displays a styled yes/no prompt. It is a variable so tests can
-// replace it with a non-TTY implementation.
-var promptYesNo = func(question string) (bool, error) {
-	return tui.Confirm(question)
 }
 
 func scaffoldProject(dir, appID, target, language string) error {
@@ -1326,11 +1465,7 @@ func installWendySkills(autoInstall bool) error {
 	fmt.Println()
 
 	if !autoInstall {
-		install, err := promptYesNo("Install Wendy skills for Claude Code?")
-		if err != nil {
-			return err
-		}
-		if !install {
+		if !confirmDefaultNoFn("Install Wendy skills for Claude Code?") {
 			return nil
 		}
 
