@@ -1560,7 +1560,7 @@ func startAndStreamContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 		cliLogln("Application %s running in detached mode.", tui.App(appCfg.AppID))
 		// Wait for readiness before firing hook.
 		if err := waitForReadiness(ctx, appCfg.Readiness, conn.Host); err != nil {
-			cliLogln("Warning: %v", err)
+			warnReadiness(ctx, conn, appCfg.AppID, err)
 		}
 		announceReachableURL(ctx, conn, appCfg)
 		// Fire-and-forget: post-start hook outlives the CLI process.
@@ -1594,7 +1594,7 @@ func startAndStreamContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 	// Wait for readiness before firing hook.
 	if err := waitForReadiness(runCtx, appCfg.Readiness, conn.Host); err != nil {
 		if runCtx.Err() == nil {
-			cliLogln("Warning: %v", err)
+			warnReadiness(runCtx, conn, appCfg.AppID, err)
 		}
 	}
 	if runCtx.Err() == nil {
@@ -1854,7 +1854,7 @@ func streamRunContainer(ctx context.Context, conn *grpcclient.AgentConnection, s
 				// independently of this (now-abandoned) output stream.
 				cliLogln("Application %s running in detached mode.", tui.App(appCfg.AppID))
 				if err := waitForReadiness(ctx, appCfg.Readiness, conn.Host); err != nil {
-					cliLogln("Warning: %v", err)
+					warnReadiness(ctx, conn, appCfg.AppID, err)
 				}
 				announceReachableURL(ctx, conn, appCfg)
 				startPostStartHook(context.Background(), appCfg, conn.Host)

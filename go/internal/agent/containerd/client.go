@@ -1076,6 +1076,7 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 			stdoutW.Close()
 			stderrR.Close()
 			stderrW.Close()
+			c.recordStartFailure(ctx, appName, err)
 			return nil, fmt.Errorf("creating task for %q: %w", appName, err)
 		}
 	}
@@ -1088,6 +1089,7 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 		stdoutW.Close()
 		stderrR.Close()
 		stderrW.Close()
+		c.recordStartFailure(ctx, appName, err)
 		return nil, fmt.Errorf("waiting on task for %q: %w", appName, err)
 	}
 
@@ -1098,6 +1100,7 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 		stdoutW.Close()
 		stderrR.Close()
 		stderrW.Close()
+		c.recordStartFailure(ctx, appName, err)
 		return nil, fmt.Errorf("starting task for %q: %w", appName, err)
 	}
 
@@ -1242,6 +1245,7 @@ func (c *Client) StartContainerWithStdin(ctx context.Context, appName string, st
 			stdoutW.Close()
 			stderrR.Close()
 			stderrW.Close()
+			c.recordStartFailure(ctx, appName, err)
 			return nil, fmt.Errorf("creating task for %q: %w", appName, err)
 		}
 	}
@@ -1253,6 +1257,7 @@ func (c *Client) StartContainerWithStdin(ctx context.Context, appName string, st
 		stdoutW.Close()
 		stderrR.Close()
 		stderrW.Close()
+		c.recordStartFailure(ctx, appName, err)
 		return nil, fmt.Errorf("waiting on task for %q: %w", appName, err)
 	}
 
@@ -1262,6 +1267,7 @@ func (c *Client) StartContainerWithStdin(ctx context.Context, appName string, st
 		stdoutW.Close()
 		stderrR.Close()
 		stderrW.Close()
+		c.recordStartFailure(ctx, appName, err)
 		return nil, fmt.Errorf("starting task for %q: %w", appName, err)
 	}
 
@@ -1960,13 +1966,14 @@ func (c *Client) streamOutput(
 
 	// Wait for the task to exit.
 	exitStatus := <-exitStatusCh
-	code, _, err := exitStatus.Result()
+	code, exitedAt, err := exitStatus.Result()
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			// The wait was canceled because the RPC that started this monitor
 			// ended — e.g. `wendy run --detach` returned and tore down its
 			// deploy stream. The container keeps running; this is normal
-			// teardown, not a task failure, so don't log it as an error.
+			// teardown, not a task failure, so don't log it as an error — and
+			// crucially, don't record an exit: the container is still up.
 			c.logger.Debug("Stopped monitoring task exit (stream canceled)",
 				zap.String("app_name", appName),
 			)
@@ -1981,6 +1988,13 @@ func (c *Client) streamOutput(
 			zap.String("app_name", appName),
 			zap.Uint32("exit_code", code),
 		)
+		// Persist why this run ended so a stopped/crashed container can explain
+		// itself later (the task and this live stream are about to disappear).
+		// Detached context: the RPC ctx may be torn down the instant we return.
+		recCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		reason := classifyExit(code, taskOOMKilled(recCtx, task))
+		c.recordContainerExit(recCtx, appName, int32(code), reason, "", exitedAt)
+		cancel()
 	}
 
 	// Close the write ends to unblock readers.
@@ -2534,6 +2548,8 @@ func (c *Client) ListContainers(ctx context.Context) ([]*agentpb.AppContainer, e
 		runningState agentpb.AppRunningState
 		mcpPort      uint32
 		services     []serviceEntry
+		exitCode     int32
+		exitReason   string // "" until an exit label is seen for this app
 	}
 	grouped := make(map[string]*entry)
 	var order []string
@@ -2569,21 +2585,36 @@ func (c *Client) ListContainers(ctx context.Context) ([]*agentpb.AppContainer, e
 		serviceName := info.Labels[labelKeyServiceName]
 
 		svc := serviceEntry{name: serviceName, runningState: runningState}
+		exitCode, exitReason, hasExit := parseExitLabels(info.Labels)
+		// A container the user deliberately stopped isn't a crash to report,
+		// even though its task exited (SIGTERM). The stopped-by-user mark wins.
+		if info.Labels[labelKeyStoppedByUser] == "true" {
+			hasExit = false
+		}
 
 		if e, ok := grouped[appID]; !ok {
 			order = append(order, appID)
-			grouped[appID] = &entry{
+			ne := &entry{
 				version:      appVersion,
 				runningState: runningState,
 				mcpPort:      mcpPort,
 				services:     []serviceEntry{svc},
 			}
+			if hasExit {
+				ne.exitCode, ne.exitReason = exitCode, exitReason
+			}
+			grouped[appID] = ne
 		} else {
 			if runningState == agentpb.AppRunningState_RUNNING {
 				e.runningState = agentpb.AppRunningState_RUNNING
 			}
 			if mcpPort != 0 && e.mcpPort == 0 {
 				e.mcpPort = mcpPort
+			}
+			// Keep the first exit reason seen for the app (multi-service apps
+			// aggregate; a single stopped service's cause is better than none).
+			if e.exitReason == "" && hasExit {
+				e.exitCode, e.exitReason = exitCode, exitReason
 			}
 			e.services = append(e.services, svc)
 		}
@@ -2618,13 +2649,20 @@ func (c *Client) ListContainers(ctx context.Context) ([]*agentpb.AppContainer, e
 			}
 		}
 
-		result = append(result, &agentpb.AppContainer{
+		ac := &agentpb.AppContainer{
 			AppName:      appID,
 			AppVersion:   e.version,
 			RunningState: e.runningState,
 			McpPort:      e.mcpPort,
 			Services:     services,
-		})
+		}
+		// Exit diagnostics are only meaningful for a stopped app; a running app
+		// may carry stale labels from a prior run, so don't surface them.
+		if e.runningState == agentpb.AppRunningState_STOPPED && e.exitReason != "" {
+			ac.ExitCode = e.exitCode
+			ac.TerminationReason = e.exitReason
+		}
+		result = append(result, ac)
 	}
 	return result, nil
 }

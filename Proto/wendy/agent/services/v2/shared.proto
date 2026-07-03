@@ -25,4 +25,9 @@ message AppContainer {
     string app_version = 2;
     AppRunningState running_state = 3;
     uint32 failure_count = 4;
+    // Exit diagnostics for the last run, only meaningful when running_state is
+    // STOPPED. (Fields 5-8 may be claimed by the provenance PR #1234; renumber
+    // on merge conflict.)
+    int32 exit_code = 5;            // process exit code of the last run; -1 = task never started.
+    string termination_reason = 6;  // exited | crashed | oom_killed | start_failed | entitlement_denied; empty if unknown.
 }
