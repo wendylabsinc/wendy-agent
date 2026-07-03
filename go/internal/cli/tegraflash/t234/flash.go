@@ -3,6 +3,7 @@
 package t234
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -65,7 +66,59 @@ func (s *Stage2) SendFlashPackage(ctx context.Context) error {
 	if err := s.RunHelper([]string{"--device", disk.RawPath, "--blob", FlashpkgPath(s.BundleDir)}, nil); err != nil {
 		return fmt.Errorf("writing flash package: %w", err)
 	}
+	if err := s.verifyFlashPackage(disk); err != nil {
+		return err
+	}
 	return s.release(ctx, disk)
+}
+
+// verifyFlashPackage reads the flash package back from the device right after
+// writing it and confirms the command sequence parses and matches what we sent.
+// We overwrite the whole 128 MiB LUN as a raw ext4 image — macOS can't mount
+// ext4 to edit files in place the way the reference Linux host script does — so
+// if that image doesn't land as a filesystem the device can parse, the initrd
+// reads a broken command mailbox and stalls without exporting anything, which
+// is indistinguishable from a device-side hang until we check. Reading it back
+// turns that ambiguity into a clear host-side verdict.
+func (s *Stage2) verifyFlashPackage(disk UMSDisk) error {
+	local, err := os.Open(FlashpkgPath(s.BundleDir))
+	if err != nil {
+		return err
+	}
+	defer local.Close()
+	want, err := Ext4ReadFile(local, "flashpkg/conf/command_sequence")
+	if err != nil {
+		return fmt.Errorf("reading local command_sequence: %w", err)
+	}
+
+	tmp, err := os.CreateTemp("", "t234-verify-*.ext4")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	tmp.Close()
+	defer os.Remove(tmpPath)
+
+	s.detail("verifying flash package on device")
+	if err := s.RunHelper([]string{"--device", disk.RawPath, "--dump", tmpPath, "--bytes", fmt.Sprint(int64(flashpkgSize))}, nil); err != nil {
+		return fmt.Errorf("reading back flash package: %w", err)
+	}
+	img, err := os.Open(tmpPath)
+	if err != nil {
+		return err
+	}
+	defer img.Close()
+	got, err := Ext4ReadFile(img, "flashpkg/conf/command_sequence")
+	if err != nil {
+		return fmt.Errorf("the flash package did not land on the device as a valid filesystem "+
+			"(can't read command_sequence back: %w) — the raw USB write is corrupt", err)
+	}
+	if !bytes.Equal(bytes.TrimSpace(got), bytes.TrimSpace(want)) {
+		return fmt.Errorf("flash package verification failed: device command_sequence is %q, expected %q",
+			strings.TrimSpace(string(got)), strings.TrimSpace(string(want)))
+	}
+	fmt.Fprintln(s.Out, "  verified flash package on device (command sequence intact)")
+	return nil
 }
 
 // WriteRootfsDevice waits for the exported eMMC LUN and writes the GPT and
