@@ -27,6 +27,13 @@ type UpdaterResult struct {
 	Status UpdaterStatus
 	Output string
 	Err    error
+	// RebootRequired is only consulted when Status is UpdaterOK for a
+	// rollback: it reports whether the rollback actually needs a reboot to
+	// take effect, or the firmware had already fallen back to the previous
+	// slot on its own (this boot IS the previous slot, and rollback was pure
+	// bookkeeping). Callers that cannot determine this must set it true —
+	// the safe, always-reboot behavior — rather than leave the zero value.
+	RebootRequired bool
 }
 
 // Gate decides, at agent startup, whether a pending A/B update is committed or
@@ -238,6 +245,20 @@ func (g *Gate) rollBack(record UpdateResult) {
 	res := g.Rollback()
 	switch res.Status {
 	case UpdaterOK:
+		if !res.RebootRequired {
+			// The firmware had already fallen back to the previous slot on its
+			// own — this boot IS the previous slot, so rollback was pure
+			// bookkeeping. Rebooting here would just cycle an already-healthy
+			// boot for no reason. Finalize the record now instead of waiting
+			// for finalizeRolledBackRecord on a "next boot" that a reboot
+			// would never actually deliver.
+			record.FinalizedAt = g.now()
+			record.FinalOSVersion = g.OSVersion()
+			g.writeResult(record)
+			g.Logger.Warn("OS update rolled back; already running the previous version, no reboot needed",
+				zap.String("old_os_version", record.OldOSVersion))
+			return
+		}
 		g.Logger.Warn("OS update rolled back, rebooting into previous version",
 			zap.String("old_os_version", record.OldOSVersion))
 		g.reboot()

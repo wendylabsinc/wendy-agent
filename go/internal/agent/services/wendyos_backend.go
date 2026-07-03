@@ -193,7 +193,41 @@ func (w wendyOSUpdater) rollback() oshealth.UpdaterResult {
 	if !found {
 		return oshealth.UpdaterResult{Status: oshealth.UpdaterUnavailable}
 	}
-	return runUpdaterCommit(w.logger, binary, "rollback")
+	res := runUpdaterCommit(w.logger, binary, "rollback")
+	if res.Status == oshealth.UpdaterOK {
+		res.RebootRequired = parseWendyOSRebootRequired(res.Output)
+	}
+	return res
+}
+
+// wendyOSRollbackLine is the JSON-lines summary `wendyos-update rollback`
+// prints on stdout: {"phase":"rollback","origin_slot":"...","reboot_required":bool}.
+type wendyOSRollbackLine struct {
+	Phase          string `json:"phase"`
+	RebootRequired bool   `json:"reboot_required"`
+}
+
+// parseWendyOSRebootRequired scans a successful rollback's combined output for
+// its JSON summary line and reports whether a reboot is actually needed to
+// finish the rollback, as opposed to the firmware having already fallen back
+// to the previous slot on its own (rollback was then pure bookkeeping). Fails
+// safe to true — the old always-reboot behavior — when the line is missing or
+// malformed, e.g. an older wendyos-update that predates this field.
+func parseWendyOSRebootRequired(output string) bool {
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "{") {
+			continue
+		}
+		var rec wendyOSRollbackLine
+		if err := json.Unmarshal([]byte(line), &rec); err != nil {
+			continue
+		}
+		if rec.Phase == "rollback" {
+			return rec.RebootRequired
+		}
+	}
+	return true
 }
 
 // resolveWendyOSBinary finds the wendyos-update binary. It checks PATH via

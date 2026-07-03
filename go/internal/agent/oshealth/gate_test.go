@@ -380,7 +380,7 @@ func TestGateHealthyCommitError(t *testing.T) {
 }
 
 func TestGateAgentHealthcheckRollbackOK(t *testing.T) {
-	fx := newGateFixture(t, UpdaterResult{}, UpdaterResult{Status: UpdaterOK})
+	fx := newGateFixture(t, UpdaterResult{}, UpdaterResult{Status: UpdaterOK, RebootRequired: true})
 	systemd := fx.useAgentHealthchecks(map[string][]map[string]string{
 		"a.service": {loaded("active")},
 		"b.service": {{
@@ -644,7 +644,7 @@ func TestGateDelegatedCommitRejectedRollsBack(t *testing.T) {
 	fx := newGateFixture(t,
 		UpdaterResult{Status: UpdaterError, Err: errors.New("exit status 1"),
 			Output: "pending update wendyos-image-... is marked failed; run rollback"},
-		UpdaterResult{Status: UpdaterOK})
+		UpdaterResult{Status: UpdaterOK, RebootRequired: true})
 	fx.writeFreshMarker(t)
 
 	fx.gate.Run(context.Background())
@@ -664,6 +664,39 @@ func TestGateDelegatedCommitRejectedRollsBack(t *testing.T) {
 	}
 	if !rec.FinalizedAt.IsZero() {
 		t.Error("rolled_back record must not be finalized until the old slot boots")
+	}
+}
+
+func TestGateDelegatedCommitRejectedRollsBackNoRebootWhenAlreadyOnOrigin(t *testing.T) {
+	// The firmware already fell back to the previous slot on its own before
+	// this boot even started (e.g. it burned its retry budget). This boot IS
+	// the previous slot, so wendyos-update rollback reports reboot_required:
+	// false — pure bookkeeping. Rebooting anyway would just cycle an
+	// already-healthy boot for no reason.
+	fx := newGateFixture(t,
+		UpdaterResult{Status: UpdaterError, Err: errors.New("exit status 1"),
+			Output: "pending update wendyos-image-... is marked failed; run rollback"},
+		UpdaterResult{Status: UpdaterOK, RebootRequired: false})
+	fx.writeFreshMarker(t)
+
+	fx.gate.Run(context.Background())
+
+	if fx.commits != 1 || fx.rollback != 1 || fx.reboots != 0 {
+		t.Errorf("commits=%d rollback=%d reboots=%d, want 1/1/0 (no reboot needed)",
+			fx.commits, fx.rollback, fx.reboots)
+	}
+	if fx.markerExists(t) {
+		t.Error("marker should be cleared once the rollback is finalized")
+	}
+	rec, found := fx.readResult(t)
+	if !found || rec.Outcome != OutcomeRolledBack {
+		t.Fatalf("expected rolled_back record, got found=%v %+v", found, rec)
+	}
+	if rec.FinalizedAt.IsZero() {
+		t.Error("rolled_back record should be finalized immediately: no reboot is coming to do it later")
+	}
+	if rec.FinalOSVersion != "WendyOS-0.11.0" {
+		t.Errorf("FinalOSVersion = %q, want the current (already-rolled-back) OS version", rec.FinalOSVersion)
 	}
 }
 
