@@ -5,6 +5,7 @@
 @theme {
   --color-wendy-seafoam: #9fe2bf;
   --color-wendy-seafoam-hover: #86d3a8;
+  --color-wendy-seafoam-strong: #1f6f4a;
 }
 
 html {
@@ -37,6 +38,16 @@ html > body[data-scroll-locked] {
 .dark {
   --color-fd-primary: var(--color-wendy-seafoam);
   --color-fd-primary-foreground: hsl(0, 0%, 9%);
+}
+
+#nd-sidebar,
+#nd-sidebar-mobile {
+  --color-fd-primary: var(--color-wendy-seafoam-strong);
+}
+
+.dark #nd-sidebar,
+.dark #nd-sidebar-mobile {
+  --color-fd-primary: var(--color-wendy-seafoam);
 }
 
 *,
