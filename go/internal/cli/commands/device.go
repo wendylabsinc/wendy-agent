@@ -190,11 +190,11 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 
 			var latestVersion string
 			if checkUpdates {
-				release, err := fetchAgentRelease(prerelease)
+				v, _, err := resolveAgentVersion(prerelease)
 				if err != nil {
 					return fmt.Errorf("checking for updates: %w", err)
 				}
-				latestVersion = release.TagName
+				latestVersion = v
 			}
 
 			if jsonOutput {
