@@ -161,3 +161,12 @@ func ioregInt(chunk, key string) int64 {
 func unmountUMSDisk(d UMSDisk) {
 	exec.Command("diskutil", "unmountDisk", "force", d.DevPath).Run() //nolint:errcheck
 }
+
+// ejectUMSDisk sends a SCSI eject (START STOP UNIT / power-off) to the LUN — the
+// clean per-LUN "host is done" signal the device's flashing initrd waits for
+// before finalizing a LUN and moving to its next command (e.g. exporting the
+// rootfs device). This is what the reference initrd-flash does via `udisksctl
+// power-off`; `diskutil eject` is the macOS equivalent. Best-effort.
+func ejectUMSDisk(d UMSDisk) {
+	exec.Command("diskutil", "eject", d.DevPath).Run() //nolint:errcheck
+}

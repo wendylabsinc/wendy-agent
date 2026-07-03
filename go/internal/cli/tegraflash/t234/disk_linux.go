@@ -104,3 +104,14 @@ func sysfsString(path string) string {
 func unmountUMSDisk(d UMSDisk) {
 	exec.Command("umount", d.DevPath).Run() //nolint:errcheck
 }
+
+// ejectUMSDisk sends a SCSI eject (START STOP UNIT / power-off) to the LUN — the
+// clean per-LUN "host is done" signal the device's flashing initrd waits for
+// before finalizing a LUN and moving to its next command. This mirrors the
+// reference initrd-flash's `udisksctl power-off`, falling back to util-linux
+// `eject`. Best-effort.
+func ejectUMSDisk(d UMSDisk) {
+	if exec.Command("udisksctl", "power-off", "-b", d.DevPath).Run() != nil {
+		exec.Command("eject", d.DevPath).Run() //nolint:errcheck
+	}
+}

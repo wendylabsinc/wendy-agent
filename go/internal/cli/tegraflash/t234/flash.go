@@ -224,9 +224,42 @@ func (s *Stage2) AwaitFinalStatus(ctx context.Context) (*FinalStatus, error) {
 // match a stale LUN.
 func (s *Stage2) release(ctx context.Context, disk UMSDisk) error {
 	fmt.Fprintf(s.Out, "  releasing %s\n", disk.DevPath)
+	// Primary: a SCSI eject (START STOP UNIT / power-off), matching the vendor
+	// initrd-flash host script. This is the clean per-LUN "host is done" the
+	// device's initrd waits for before finalizing the LUN and moving to its
+	// next command — e.g. exporting the rootfs device. A USB-level disconnect
+	// alone makes the device leave the flashpkg but can be too blunt for it to
+	// then bring up the next LUN.
+	ejectUMSDisk(disk)
+	gone, err := s.waitForDiskGone(ctx, disk)
+	if err != nil {
+		return err
+	}
+	if gone {
+		return nil
+	}
+
+	// Fallback: force a USB-level disconnect (the initrd also proceeds when the
+	// UDC leaves "configured"). Needed when the eject didn't take — e.g. no
+	// udisks/diskutil or a driver holding the node.
+	fmt.Fprintf(s.Out, "  eject didn't release %s; forcing a USB disconnect\n", disk.DevPath)
 	if err := s.RunHelper([]string{"--release", "--serial", disk.Serial}, nil); err != nil {
 		return fmt.Errorf("releasing %s: %w", disk.DevPath, err)
 	}
+	gone, err = s.waitForDiskGone(ctx, disk)
+	if err != nil {
+		return err
+	}
+	if gone {
+		return nil
+	}
+	return fmt.Errorf("%s did not disconnect after release", disk.DevPath)
+}
+
+// waitForDiskGone polls until the LUN's device node disappears (up to
+// disappearWait) so the next wait can't match a stale node. Returns (false,
+// nil) on timeout and (false, ctx.Err()) if the context is cancelled.
+func (s *Stage2) waitForDiskGone(ctx context.Context, disk UMSDisk) (bool, error) {
 	deadline := time.Now().Add(disappearWait)
 	for time.Now().Before(deadline) {
 		disks, err := listUMSDisks()
@@ -237,15 +270,15 @@ func (s *Stage2) release(ctx context.Context, disk UMSDisk) error {
 			}
 		}
 		if gone {
-			return nil
+			return true, nil
 		}
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return false, ctx.Err()
 		case <-time.After(time.Second):
 		}
 	}
-	return fmt.Errorf("%s did not disconnect after release", disk.DevPath)
+	return false, nil
 }
 
 // errGotFlashpkg distinguishes "the device exported its status package
