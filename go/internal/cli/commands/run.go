@@ -156,6 +156,15 @@ func contextWithPostStartAgentHook(ctx context.Context, appCfg *appconfig.AppCon
 	return metadata.AppendToOutgoingContext(ctx, appconfig.PostStartAgentHookMetadataKey, hook)
 }
 
+// containerDisplayName returns the container identity for CLI lifecycle
+// messages (created/started/stopped), styled for terminal output. It is the
+// real container name — "{appID}_{serviceName}" when appCfg describes a single
+// service of a multi-service app — because printing the bare appID obscures
+// which service container a deploy just acted on (WDY-1828).
+func containerDisplayName(appCfg *appconfig.AppConfig) string {
+	return tui.App(appCfg.ContainerName())
+}
+
 func cliLog(format string, args ...any) {
 	fmt.Print(cliStyle.Render(fmt.Sprintf(format, args...)))
 }
@@ -861,7 +870,7 @@ func runMacOSNativeContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 		if appCfg.Brewfile != "" {
 			cliLogln("Brewfile applied.")
 		}
-		cliLogln("Container %s created (not started).", tui.App(appCfg.AppID))
+		cliLogln("Container %s created (not started).", containerDisplayName(appCfg))
 		return nil
 	}
 
@@ -871,7 +880,7 @@ func runMacOSNativeContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 	if appCfg.Brewfile != "" {
 		cliLogln("Brewfile applied.")
 	}
-	cliLogln("Container %s created.", tui.App(appCfg.AppID))
+	cliLogln("Container %s created.", containerDisplayName(appCfg))
 
 	if opts.detach {
 		stream, err := conn.ContainerService.StartContainer(contextWithPostStartAgentHook(ctx, appCfg), &agentpb.StartContainerRequest{
@@ -883,7 +892,7 @@ func runMacOSNativeContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 		if _, err := stream.Recv(); err != nil && err != io.EOF {
 			return fmt.Errorf("waiting for container start: %w", err)
 		}
-		cliLogln("Application %s running in detached mode.", tui.App(appCfg.AppID))
+		cliLogln("Application %s running in detached mode.", containerDisplayName(appCfg))
 		return nil
 	}
 
@@ -897,7 +906,7 @@ func runMacOSNativeContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 		return fmt.Errorf("starting container: %w", err)
 	}
 
-	cliLogln("Application %s started.", tui.App(appCfg.AppID))
+	cliLogln("Application %s started.", containerDisplayName(appCfg))
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt)
@@ -929,7 +938,7 @@ func runMacOSNativeContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 		}
 	}
 
-	cliLogln("\nApplication %s stopped.", tui.App(appCfg.AppID))
+	cliLogln("\nApplication %s stopped.", containerDisplayName(appCfg))
 	return nil
 }
 
@@ -1537,7 +1546,7 @@ func startAndStreamContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 		if err != nil {
 			return fmt.Errorf("creating container: %w", err)
 		}
-		cliLogln("Container %s created (not started).", tui.App(appCfg.AppID))
+		cliLogln("Container %s created (not started).", containerDisplayName(appCfg))
 		return nil
 	}
 
@@ -1545,7 +1554,7 @@ func startAndStreamContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 	if err := createContainerWithProgress(ctx, conn.ContainerService, createReq); err != nil {
 		return err
 	}
-	cliLogln("Container %s created.", tui.App(appCfg.AppID))
+	cliLogln("Container %s created.", containerDisplayName(appCfg))
 
 	if opts.detach {
 		stream, err := conn.ContainerService.StartContainer(contextWithPostStartAgentHook(ctx, appCfg), &agentpb.StartContainerRequest{
@@ -1557,7 +1566,7 @@ func startAndStreamContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 		if _, err := stream.Recv(); err != nil && err != io.EOF {
 			return fmt.Errorf("waiting for container start: %w", err)
 		}
-		cliLogln("Application %s running in detached mode.", tui.App(appCfg.AppID))
+		cliLogln("Application %s running in detached mode.", containerDisplayName(appCfg))
 		// Wait for readiness before firing hook.
 		if err := waitForReadiness(ctx, appCfg.Readiness, conn.Host); err != nil {
 			warnReadiness(ctx, conn, appCfg.AppID, err)
@@ -1577,7 +1586,7 @@ func startAndStreamContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 		return err
 	}
 
-	cliLogln("Application %s started.", tui.App(appCfg.AppID))
+	cliLogln("Application %s started.", containerDisplayName(appCfg))
 
 	// Set up Ctrl+C handler first so readiness polling is cancellable.
 	sigCh := make(chan os.Signal, 1)
@@ -1645,7 +1654,7 @@ func startAndStreamContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 	if postStartCmd != nil {
 		_ = postStartCmd.Wait()
 	}
-	cliLogln("\nApplication %s stopped.", tui.App(appCfg.AppID))
+	cliLogln("\nApplication %s stopped.", containerDisplayName(appCfg))
 	return nil
 }
 
@@ -1844,7 +1853,7 @@ func streamRunContainer(ctx context.Context, conn *grpcclient.AgentConnection, s
 		}
 		if resp.GetStarted() != nil {
 			if opts.deploy {
-				cliLogln("Container %s created (not started).", tui.App(appCfg.AppID))
+				cliLogln("Container %s created (not started).", containerDisplayName(appCfg))
 				return nil
 			}
 			if opts.detach {
@@ -1852,7 +1861,7 @@ func streamRunContainer(ctx context.Context, conn *grpcclient.AgentConnection, s
 				// is started; wait for readiness, fire the host post-start hook,
 				// then return without tailing logs. The container keeps running
 				// independently of this (now-abandoned) output stream.
-				cliLogln("Application %s running in detached mode.", tui.App(appCfg.AppID))
+				cliLogln("Application %s running in detached mode.", containerDisplayName(appCfg))
 				if err := waitForReadiness(ctx, appCfg.Readiness, conn.Host); err != nil {
 					warnReadiness(ctx, conn, appCfg.AppID, err)
 				}
@@ -1869,7 +1878,7 @@ func streamRunContainer(ctx context.Context, conn *grpcclient.AgentConnection, s
 			_, _ = os.Stderr.Write(out.GetData())
 		}
 	}
-	cliLogln("\nApplication %s stopped.", tui.App(appCfg.AppID))
+	cliLogln("\nApplication %s stopped.", containerDisplayName(appCfg))
 	return nil
 }
 
