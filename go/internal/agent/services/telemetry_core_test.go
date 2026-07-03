@@ -1,6 +1,7 @@
 package services
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -71,5 +72,88 @@ func TestFieldToKeyValue_NamespaceAndSkipAreDropped(t *testing.T) {
 	}
 	if got := fieldKV(t, zap.Skip()); got != nil {
 		t.Errorf("zap.Skip = %+v, want nil", got)
+	}
+}
+
+func TestFieldToKeyValue_TimeFullType(t *testing.T) {
+	// zap.Time produces TimeFullType (instead of TimeType) for times outside
+	// the int64-nanos range.
+	ts := time.Date(3000, 1, 1, 0, 0, 0, 0, time.UTC)
+	got := fieldKV(t, zap.Time("ts", ts))
+	if got == nil {
+		t.Fatal("zap.Time (far future) produced a nil attribute")
+	}
+	sv, ok := got.Value.Value.(*otelpb.AnyValue_StringValue)
+	if !ok {
+		t.Fatalf("zap.Time (far future) value type = %T, want string", got.Value.Value)
+	}
+	if want := ts.Format(time.RFC3339Nano); sv.StringValue != want {
+		t.Errorf("zap.Time (far future) = %q, want %q", sv.StringValue, want)
+	}
+}
+
+func TestFieldToKeyValue_TimeTypeNonUTC(t *testing.T) {
+	// Regression: TimeType must render the timestamp in its own offset, not
+	// silently normalize to UTC.
+	loc := time.FixedZone("test", 5*3600)
+	ts := time.Date(2026, 7, 3, 12, 0, 0, 0, loc)
+	got := fieldKV(t, zap.Time("ts", ts))
+	if got == nil {
+		t.Fatal("zap.Time (non-UTC) produced a nil attribute")
+	}
+	sv, ok := got.Value.Value.(*otelpb.AnyValue_StringValue)
+	if !ok {
+		t.Fatalf("zap.Time (non-UTC) value type = %T, want string", got.Value.Value)
+	}
+	want := ts.Format(time.RFC3339Nano)
+	if sv.StringValue != want {
+		t.Errorf("zap.Time (non-UTC) = %q, want %q", sv.StringValue, want)
+	}
+}
+
+func TestFieldToKeyValue_ByteString(t *testing.T) {
+	got := fieldKV(t, zap.ByteString("k", []byte("hi")))
+	if got == nil {
+		t.Fatal("zap.ByteString produced a nil attribute")
+	}
+	if v := got.Value.GetStringValue(); v != "hi" {
+		t.Errorf("zap.ByteString = %q, want %q", v, "hi")
+	}
+}
+
+func TestFieldToKeyValue_Complex128(t *testing.T) {
+	got := fieldKV(t, zap.Complex128("k", complex(1, 2)))
+	if got == nil {
+		t.Fatal("zap.Complex128 produced a nil attribute")
+	}
+	want := fmt.Sprint(complex128(complex(1, 2)))
+	if v := got.Value.GetStringValue(); v != want {
+		t.Errorf("zap.Complex128 = %q, want %q", v, want)
+	}
+}
+
+func TestFieldToKeyValue_Uintptr(t *testing.T) {
+	got := fieldKV(t, zap.Uintptr("k", 0x42))
+	if got == nil {
+		t.Fatal("zap.Uintptr produced a nil attribute")
+	}
+	if v := got.Value.GetIntValue(); v != 66 {
+		t.Errorf("zap.Uintptr = %d, want 66", v)
+	}
+}
+
+func TestFieldToKeyValue_ReflectTypeMarshalErrorFallsBackToSprint(t *testing.T) {
+	// A channel cannot be JSON-marshalled, so zap.Any routes to ReflectType
+	// and json.Marshal errors, exercising the fmt.Sprint fallback.
+	got := fieldKV(t, zap.Any("k", make(chan int)))
+	if got == nil {
+		t.Fatal("zap.Any(chan) produced a nil attribute, want fmt.Sprint fallback")
+	}
+	sv, ok := got.Value.Value.(*otelpb.AnyValue_StringValue)
+	if !ok {
+		t.Fatalf("zap.Any(chan) value type = %T, want string", got.Value.Value)
+	}
+	if sv.StringValue == "" {
+		t.Error("zap.Any(chan) fallback string is empty")
 	}
 }

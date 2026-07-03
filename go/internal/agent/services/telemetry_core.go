@@ -202,8 +202,9 @@ func fieldToKeyValue(f zapcore.Field) *otelpb.KeyValue {
 		}
 		return nil
 	case zapcore.TimeType:
-		// Integer holds the time in UnixNano; Interface holds *time.Location
-		// (nil means the field was built without location info). Without this
+		// Integer holds the time in UnixNano; Interface holds *time.Location.
+		// zap.Time always sets a non-nil location, so the nil guard below is
+		// only defensive against hand-built zapcore.Field values. Without this
 		// case zap.Time falls through to default and exports the location
 		// name (e.g. "UTC") instead of the timestamp.
 		ts := time.Unix(0, f.Integer)
