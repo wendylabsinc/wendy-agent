@@ -40,7 +40,10 @@ struct MLXServer: AsyncParsableCommand {
         print(String(format: "Model loaded in %.1fs", Date().timeIntervalSince(loadStartedAt)))
 
         let generator = Generator(container: container, imageSize: imageSize)
-        let server = HTTPServer(address: try sockaddr_in.inet(ip4: "0.0.0.0", port: port))
+        // FlyingFox's default handler timeout is 15 s — less than one
+        // generation. Match the client's 600 s budget.
+        let server = HTTPServer(
+            address: try sockaddr_in.inet(ip4: "0.0.0.0", port: port), timeout: 600)
 
         await server.appendRoute("GET /v1/models") { _ in
             try jsonResponse(ModelsResponse(data: [.init(id: alias)]))
