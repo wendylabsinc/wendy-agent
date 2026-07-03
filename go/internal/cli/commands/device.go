@@ -1887,6 +1887,13 @@ func maybeCheckOSUpdate(ctx context.Context, preUpdateVersion *agentpb.GetAgentV
 	}
 	defer conn.Close()
 
+	// The OS version running before this update, for the post-reboot outcome
+	// check (reportOSUpdateOutcome). The agent update just applied does not
+	// change the OS, so the version carried in preUpdateVersion is the
+	// pre-OS-update OS; the auto-select branch below refreshes it from the
+	// just-restarted agent.
+	preUpdateOSVersion := preUpdateVersion.GetOsVersion()
+
 	var otaURL string
 	if artifactURLOverride != "" {
 		// Explicit artifact: apply it as-is, no manifest lookup or version
@@ -1925,6 +1932,7 @@ func maybeCheckOSUpdate(ctx context.Context, preUpdateVersion *agentpb.GetAgentV
 		}
 
 		currentOS := versionResp.GetOsVersion()
+		preUpdateOSVersion = currentOS
 		fromVer := strings.TrimPrefix(currentOS, "WendyOS-")
 		if fromVer == "" {
 			fromVer = "unknown"
@@ -1962,6 +1970,13 @@ func maybeCheckOSUpdate(ctx context.Context, preUpdateVersion *agentpb.GetAgentV
 		return osUpdateOutcome{applied: true}, err
 	}
 	fmt.Println("Device is back online.")
+	// The device coming back online does NOT mean the update stuck — a rollback
+	// also reboots and reconnects. Query the recorded outcome and surface a
+	// rollback as an error so `wendy device update` exits non-zero instead of
+	// silently reporting success (mirrors `wendy os update`).
+	if err := reportOSUpdateOutcome(ctx, priorConn.Host, preUpdateOSVersion); err != nil {
+		return osUpdateOutcome{applied: true, online: true}, err
+	}
 	return osUpdateOutcome{applied: true, online: true}, nil
 }
 
