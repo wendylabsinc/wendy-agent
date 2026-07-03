@@ -141,21 +141,13 @@ func TestGetAgentVersion(t *testing.T) {
 		t.Errorf("arch = %q; want %q", resp.CpuArchitecture, runtime.GOARCH)
 	}
 	// RAM size and CPU core count come from /proc, so they are only
-	// guaranteed on Linux hosts (WDY-1809). Elsewhere they must simply be
-	// absent, never zero.
+	// guaranteed on Linux hosts (WDY-1809). Zero means "unknown".
 	if runtime.GOOS == "linux" {
-		if resp.MemTotalBytes == nil || *resp.MemTotalBytes <= 0 {
-			t.Errorf("memTotalBytes = %v, want > 0 on linux", resp.MemTotalBytes)
+		if resp.MemTotalBytes <= 0 {
+			t.Errorf("memTotalBytes = %d, want > 0 on linux", resp.MemTotalBytes)
 		}
-		if resp.CpuCount == nil || *resp.CpuCount == 0 {
-			t.Errorf("cpuCount = %v, want > 0 on linux", resp.CpuCount)
-		}
-	} else {
-		if resp.MemTotalBytes != nil && *resp.MemTotalBytes == 0 {
-			t.Error("memTotalBytes present but zero; should be absent when unreadable")
-		}
-		if resp.CpuCount != nil && *resp.CpuCount == 0 {
-			t.Error("cpuCount present but zero; should be absent when unreadable")
+		if resp.CpuCount == 0 {
+			t.Errorf("cpuCount = 0, want > 0 on linux")
 		}
 	}
 }

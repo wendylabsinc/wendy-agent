@@ -20,7 +20,6 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	"github.com/wendylabsinc/wendy/go/internal/agent/hoststats"
 	"github.com/wendylabsinc/wendy/go/internal/agent/oshealth"
 	"github.com/wendylabsinc/wendy/go/internal/shared/version"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
@@ -99,10 +98,7 @@ func (s *AgentService) GetAgentVersion(_ context.Context, _ *agentpb.GetAgentVer
 		resp.DiskTotalBytes = &usage.totalBytes
 	}
 
-	if mem, cpus, ok := hostMemAndCPUCount(); ok {
-		resp.MemTotalBytes = mem
-		resp.CpuCount = cpus
-	}
+	resp.MemTotalBytes, resp.CpuCount = hostMemAndCPUCount()
 
 	for _, p := range listDiskPartitions() {
 		resp.Partitions = append(resp.Partitions, &agentpb.DiskPartition{
@@ -139,21 +135,6 @@ func (s *AgentService) SetHostname(_ context.Context, req *agentpb.SetHostnameRe
 	}
 
 	return &agentpb.SetHostnameResponse{Hostname: hostname}, nil
-}
-
-// hostMemAndCPUCount reads the device's total RAM and online logical CPU core
-// count from /proc for the device-info responses. Either value may be nil when
-// unreadable (non-Linux hosts); ok is false only when both are.
-func hostMemAndCPUCount() (memTotal *int64, cpuCount *uint32, ok bool) {
-	if mem, err := hoststats.ReadMemory(); err == nil && mem.TotalBytes > 0 {
-		total := mem.TotalBytes
-		memTotal = &total
-	}
-	if cpu, err := hoststats.ReadCPU(); err == nil && cpu.CPUCount > 0 {
-		count := cpu.CPUCount
-		cpuCount = &count
-	}
-	return memTotal, cpuCount, memTotal != nil || cpuCount != nil
 }
 
 type gpuInfo struct {

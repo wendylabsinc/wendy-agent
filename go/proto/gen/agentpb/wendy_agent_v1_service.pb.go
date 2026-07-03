@@ -713,12 +713,12 @@ type GetAgentVersionResponse struct {
 	// omitted, and link-local addresses are excluded. Empty when the agent
 	// cannot enumerate interfaces.
 	NetworkInterfaces []*NetworkInterface `protobuf:"bytes,17,rep,name=network_interfaces,json=networkInterfaces,proto3" json:"network_interfaces,omitempty"`
-	// Total physical memory (RAM) in bytes, from /proc/meminfo. Only present
-	// when the agent can read it.
-	MemTotalBytes *int64 `protobuf:"varint,18,opt,name=mem_total_bytes,json=memTotalBytes,proto3,oneof" json:"mem_total_bytes,omitempty"`
-	// Number of online logical CPU cores, from /proc/stat. Only present when
-	// the agent can read it.
-	CpuCount      *uint32 `protobuf:"varint,19,opt,name=cpu_count,json=cpuCount,proto3,oneof" json:"cpu_count,omitempty"`
+	// Total physical memory (RAM) in bytes, from /proc/meminfo. Zero when the
+	// agent cannot read it (a real host never has 0 bytes of RAM).
+	MemTotalBytes int64 `protobuf:"varint,18,opt,name=mem_total_bytes,json=memTotalBytes,proto3" json:"mem_total_bytes,omitempty"`
+	// Number of online logical CPU cores, from /proc/stat. Zero when the
+	// agent cannot read it.
+	CpuCount      uint32 `protobuf:"varint,19,opt,name=cpu_count,json=cpuCount,proto3" json:"cpu_count,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -873,15 +873,15 @@ func (x *GetAgentVersionResponse) GetNetworkInterfaces() []*NetworkInterface {
 }
 
 func (x *GetAgentVersionResponse) GetMemTotalBytes() int64 {
-	if x != nil && x.MemTotalBytes != nil {
-		return *x.MemTotalBytes
+	if x != nil {
+		return x.MemTotalBytes
 	}
 	return 0
 }
 
 func (x *GetAgentVersionResponse) GetCpuCount() uint32 {
-	if x != nil && x.CpuCount != nil {
-		return *x.CpuCount
+	if x != nil {
+		return x.CpuCount
 	}
 	return 0
 }
@@ -4259,7 +4259,7 @@ const file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDesc = "" +
 	"\aupdated\x18\x01 \x01(\v24.wendy.agent.services.v1.UpdateAgentResponse.UpdatedH\x00R\aupdated\x1a\t\n" +
 	"\aUpdatedB\x0f\n" +
 	"\rresponse_type\"\x18\n" +
-	"\x16GetAgentVersionRequest\"\x86\b\n" +
+	"\x16GetAgentVersionRequest\"\xda\a\n" +
 	"\x17GetAgentVersionResponse\x12\x18\n" +
 	"\aversion\x18\x01 \x01(\tR\aversion\x12\"\n" +
 	"\n" +
@@ -4287,9 +4287,9 @@ const file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDesc = "" +
 	"partitions\x12\x1e\n" +
 	"\bgpu_arch\x18\x10 \x01(\tH\n" +
 	"R\agpuArch\x88\x01\x01\x12X\n" +
-	"\x12network_interfaces\x18\x11 \x03(\v2).wendy.agent.services.v1.NetworkInterfaceR\x11networkInterfaces\x12+\n" +
-	"\x0fmem_total_bytes\x18\x12 \x01(\x03H\vR\rmemTotalBytes\x88\x01\x01\x12 \n" +
-	"\tcpu_count\x18\x13 \x01(\rH\fR\bcpuCount\x88\x01\x01B\r\n" +
+	"\x12network_interfaces\x18\x11 \x03(\v2).wendy.agent.services.v1.NetworkInterfaceR\x11networkInterfaces\x12&\n" +
+	"\x0fmem_total_bytes\x18\x12 \x01(\x03R\rmemTotalBytes\x12\x1b\n" +
+	"\tcpu_count\x18\x13 \x01(\rR\bcpuCountB\r\n" +
 	"\v_os_versionB\r\n" +
 	"\v_public_keyB\x0e\n" +
 	"\f_device_typeB\n" +
@@ -4301,10 +4301,7 @@ const file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDesc = "" +
 	"\x0f_storage_mediumB\x12\n" +
 	"\x10_disk_used_bytesB\x13\n" +
 	"\x11_disk_total_bytesB\v\n" +
-	"\t_gpu_archB\x12\n" +
-	"\x10_mem_total_bytesB\f\n" +
-	"\n" +
-	"_cpu_count\"I\n" +
+	"\t_gpu_arch\"I\n" +
 	"\x10NetworkInterface\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12!\n" +
 	"\fip_addresses\x18\x02 \x03(\tR\vipAddresses\"\xa7\x01\n" +
