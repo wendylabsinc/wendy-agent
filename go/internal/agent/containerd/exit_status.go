@@ -29,9 +29,6 @@ const (
 // its task ran, so callers can distinguish "failed to start" from "exited 0".
 const exitCodeDidNotStart = -1
 
-// exitDetailMaxLen bounds the stored detail string (a label value).
-const exitDetailMaxLen = 512
-
 // classifyExit maps a process exit code to a termination reason. An OOM kill
 // overrides a plain non-zero exit, since exit 137 alone can't distinguish an
 // out-of-memory kill from any other SIGKILL.
@@ -46,12 +43,25 @@ func classifyExit(code uint32, oomKilled bool) string {
 	}
 }
 
+// entitlementErrorMarkers are substrings the agent uses in the errors it raises
+// when a start is blocked by an entitlement (see ApplyEntitlements and the
+// per-entitlement start checks). We match these specific phrasings rather than
+// the bare word "entitlement" so an unrelated failure — e.g. pulling an image
+// named "entitlement-manager" — isn't misclassified as an entitlement denial.
+var entitlementErrorMarkers = []string{"applying entitlements", "entitlement requires"}
+
 // classifyStartError maps a task create/start failure to a termination reason.
 // An entitlement problem is called out explicitly; everything else is a generic
-// start failure carrying the error text as detail.
+// start failure. Note: the reason is a display/diagnostic label, never an
+// authorization decision.
 func classifyStartError(err error) string {
-	if err != nil && strings.Contains(strings.ToLower(err.Error()), "entitlement") {
-		return exitReasonEntitlementDenied
+	if err != nil {
+		msg := strings.ToLower(err.Error())
+		for _, marker := range entitlementErrorMarkers {
+			if strings.Contains(msg, marker) {
+				return exitReasonEntitlementDenied
+			}
+		}
 	}
 	return exitReasonStartFailed
 }
@@ -83,7 +93,7 @@ func taskOOMKilled(ctx context.Context, task containerd.Task) bool {
 // task (and any live output stream) are gone. Best-effort: a missing container
 // or a label-write failure is logged, never fatal — recording diagnostics must
 // not perturb the lifecycle it observes.
-func (c *Client) recordContainerExit(ctx context.Context, containerID string, code int32, reason, detail string, at time.Time) {
+func (c *Client) recordContainerExit(ctx context.Context, containerID string, code int32, reason string, at time.Time) {
 	ctx = c.withNamespace(ctx)
 	ctr, err := c.client.LoadContainer(ctx, containerID)
 	if err != nil {
@@ -93,9 +103,6 @@ func (c *Client) recordContainerExit(ctx context.Context, containerID string, co
 		}
 		return
 	}
-	if len(detail) > exitDetailMaxLen {
-		detail = detail[:exitDetailMaxLen]
-	}
 	updateErr := ctr.Update(ctx, func(ctx context.Context, client *containerd.Client, cc *containers.Container) error {
 		if cc.Labels == nil {
 			cc.Labels = map[string]string{}
@@ -103,11 +110,6 @@ func (c *Client) recordContainerExit(ctx context.Context, containerID string, co
 		cc.Labels[labelKeyExitCode] = strconv.Itoa(int(code))
 		cc.Labels[labelKeyExitReason] = reason
 		cc.Labels[labelKeyExitAt] = at.UTC().Format(time.RFC3339)
-		if detail != "" {
-			cc.Labels[labelKeyExitDetail] = detail
-		} else {
-			delete(cc.Labels, labelKeyExitDetail)
-		}
 		return nil
 	})
 	if updateErr != nil {
@@ -132,12 +134,10 @@ func parseExitLabels(labels map[string]string) (code int32, reason string, ok bo
 	return code, reason, true
 }
 
-// recordStartFailure records that containerID's task never started, capturing
-// the cause. Best-effort.
+// recordStartFailure records that containerID's task never started, classifying
+// the cause into a termination reason. The raw error is NOT persisted (it can
+// carry registry URLs / host paths); it is already returned to the caller and
+// logged on the normal error path. Best-effort.
 func (c *Client) recordStartFailure(ctx context.Context, containerID string, cause error) {
-	detail := ""
-	if cause != nil {
-		detail = cause.Error()
-	}
-	c.recordContainerExit(ctx, containerID, exitCodeDidNotStart, classifyStartError(cause), detail, time.Now())
+	c.recordContainerExit(ctx, containerID, exitCodeDidNotStart, classifyStartError(cause), time.Now())
 }

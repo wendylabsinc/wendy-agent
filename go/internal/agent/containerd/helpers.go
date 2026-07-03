@@ -99,9 +99,6 @@ const (
 	labelKeyExitCode = "sh.wendy/exit.code"
 	// labelKeyExitReason is a short machine-readable cause: one of exitReason*.
 	labelKeyExitReason = "sh.wendy/exit.reason"
-	// labelKeyExitDetail is an optional human-readable detail (e.g. the start
-	// error), truncated. Empty for clean exits.
-	labelKeyExitDetail = "sh.wendy/exit.detail"
 	// labelKeyExitAt is the RFC3339 (UTC) time the run ended / failed to start.
 	labelKeyExitAt = "sh.wendy/exit.at"
 )

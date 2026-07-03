@@ -33,8 +33,12 @@ func TestClassifyStartError(t *testing.T) {
 		err  error
 		want string
 	}{
-		{"entitlement in message", errors.New("applying entitlements: host-admin denied"), exitReasonEntitlementDenied},
-		{"entitlement mixed case", errors.New("Entitlement not granted"), exitReasonEntitlementDenied},
+		{"applying entitlements", errors.New("applying entitlements: host-admin denied"), exitReasonEntitlementDenied},
+		{"entitlement requires (bluetooth)", errors.New("the bluetooth entitlement requires xdg-dbus-proxy"), exitReasonEntitlementDenied},
+		{"case-insensitive marker", errors.New("Applying Entitlements: nope"), exitReasonEntitlementDenied},
+		// False-positive guard: the bare word "entitlement" in an unrelated
+		// failure (e.g. an image name) must NOT be classified as a denial.
+		{"image named entitlement", errors.New("creating task: pulling registry.example.com/entitlement-manager: not found"), exitReasonStartFailed},
 		{"generic image error", errors.New("creating task: image not found"), exitReasonStartFailed},
 		{"nil", nil, exitReasonStartFailed},
 	}

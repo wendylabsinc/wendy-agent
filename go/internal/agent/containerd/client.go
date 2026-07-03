@@ -1993,7 +1993,7 @@ func (c *Client) streamOutput(
 		// Detached context: the RPC ctx may be torn down the instant we return.
 		recCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		reason := classifyExit(code, taskOOMKilled(recCtx, task))
-		c.recordContainerExit(recCtx, appName, int32(code), reason, "", exitedAt)
+		c.recordContainerExit(recCtx, appName, int32(code), reason, exitedAt)
 		cancel()
 	}
 
