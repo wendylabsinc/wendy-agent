@@ -59,6 +59,36 @@ type fakeRunContainerStream struct {
 	grpc.ServerStreamingClient[agentpb.RunContainerLayersResponse] // embedded nil
 }
 
+// attachedRunStream drives streamRunContainer's attached path: it sends a
+// Started message, then keeps emitting stdout chunks until waitFor exists on
+// disk (or the deadline passes), then ends the stream. Gating EOF on the
+// sentinel file makes the "hook fires while logs stream" assertion
+// deterministic: the hook is killed when the stream ends, so ending too early
+// would race the hook process.
+type attachedRunStream struct {
+	grpc.ServerStreamingClient[agentpb.RunContainerLayersResponse] // embedded nil
+
+	waitFor     string
+	deadline    time.Time
+	startedSent bool
+}
+
+func (s *attachedRunStream) Recv() (*agentpb.RunContainerLayersResponse, error) {
+	if !s.startedSent {
+		s.startedSent = true
+		return &agentpb.RunContainerLayersResponse{
+			ResponseType: &agentpb.RunContainerLayersResponse_Started_{Started: &agentpb.RunContainerLayersResponse_Started{}},
+		}, nil
+	}
+	if _, err := os.Stat(s.waitFor); err == nil || time.Now().After(s.deadline) {
+		return nil, io.EOF
+	}
+	time.Sleep(20 * time.Millisecond)
+	return &agentpb.RunContainerLayersResponse{
+		ResponseType: &agentpb.RunContainerLayersResponse_StdoutOutput{StdoutOutput: &agentpb.RunContainerLayersResponse_ConsoleOutput{Data: []byte("log line\n")}},
+	}, nil
+}
+
 // isolateFingerprintCache points os.UserCacheDir() at a temp dir so the deploy
 // fingerprint the test writes is found by tryDeployFastPath, without touching the
 // real user cache.
@@ -132,6 +162,33 @@ func TestTryDeployFastPath_StoppedRunsPostStartHooks(t *testing.T) {
 	// Host-side CLI postStart hook must fire (fire-and-forget → poll briefly).
 	if runtime.GOOS != "windows" {
 		waitForFile(t, sentinel, 3*time.Second)
+	}
+}
+
+// TestStreamRunContainer_AttachedFiresHostPostStartHook verifies the attached
+// (default `wendy run`) chunk-diff path fires the host-side postStart hook once
+// the container reports Started (#1300: it previously only streamed logs, so
+// the hook fired only on runs that fell back to the registry-push path).
+func TestStreamRunContainer_AttachedFiresHostPostStartHook(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("host-side hook uses `touch`, unavailable on Windows")
+	}
+
+	sentinel := filepath.Join(t.TempDir(), "poststart-cli-ran")
+	appCfg := &appconfig.AppConfig{
+		AppID: "attached-app",
+		Hooks: &appconfig.HooksConfig{
+			PostStart: &appconfig.HookCommand{CLI: "touch " + sentinel},
+		},
+	}
+	conn := &grpcclient.AgentConnection{Host: "localhost"}
+	stream := &attachedRunStream{waitFor: sentinel, deadline: time.Now().Add(5 * time.Second)}
+
+	if err := streamRunContainer(context.Background(), conn, stream, appCfg, runOptions{}); err != nil {
+		t.Fatalf("streamRunContainer returned error: %v", err)
+	}
+	if _, err := os.Stat(sentinel); err != nil {
+		t.Fatalf("host-side postStart hook did not run: %v", err)
 	}
 }
 

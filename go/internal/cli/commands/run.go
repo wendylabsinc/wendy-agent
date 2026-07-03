@@ -1832,8 +1832,16 @@ func resolveRestartPolicy(opts runOptions) *agentpb.RestartPolicy {
 // streamRunContainer drains a RunContainer server stream, writing stdout/stderr
 // to the corresponding OS streams. When opts.deploy or opts.detach is set the
 // function returns as soon as the Started message is received (mirroring the
-// behaviour of startAndStreamContainer for those flags).
+// behaviour of startAndStreamContainer for those flags). In attached mode the
+// Started message triggers readiness + the host-side postStart hook (again
+// mirroring startAndStreamContainer), then log streaming continues.
 func streamRunContainer(ctx context.Context, conn *grpcclient.AgentConnection, stream grpc.ServerStreamingClient[agentpb.RunContainerLayersResponse], appCfg *appconfig.AppConfig, opts runOptions) error {
+	// The attached-mode postStart hook is tied to hookCtx so it is terminated
+	// when the stream ends (matching startAndStreamContainer's runCtx handling).
+	hookCtx, hookCancel := context.WithCancel(ctx)
+	defer hookCancel()
+	var postStartCmd *exec.Cmd
+	hookFired := false
 	for {
 		resp, err := stream.Recv()
 		if err == io.EOF {
@@ -1860,6 +1868,18 @@ func streamRunContainer(ctx context.Context, conn *grpcclient.AgentConnection, s
 				startPostStartHook(context.Background(), appCfg, conn.Host)
 				return nil
 			}
+			// Attached: mirror startAndStreamContainer's attached branch — wait
+			// for readiness, announce the URL, and fire the host-side postStart
+			// hook — then keep streaming logs. (#1300: this used to be skipped,
+			// so the hook only fired on runs that took the registry-push path.)
+			if !hookFired {
+				hookFired = true
+				if err := waitForReadiness(ctx, appCfg.Readiness, conn.Host); err != nil {
+					warnReadiness(ctx, conn, appCfg.AppID, err)
+				}
+				announceReachableURL(ctx, conn, appCfg)
+				postStartCmd = startPostStartHook(hookCtx, appCfg, conn.Host)
+			}
 			continue
 		}
 		if out := resp.GetStdoutOutput(); out != nil {
@@ -1868,6 +1888,12 @@ func streamRunContainer(ctx context.Context, conn *grpcclient.AgentConnection, s
 		if out := resp.GetStderrOutput(); out != nil {
 			_, _ = os.Stderr.Write(out.GetData())
 		}
+	}
+	// Terminate the postStart hook if it's still running, then wait for it to
+	// exit so we don't leave orphan processes.
+	hookCancel()
+	if postStartCmd != nil {
+		_ = postStartCmd.Wait()
 	}
 	cliLogln("\nApplication %s stopped.", tui.App(appCfg.AppID))
 	return nil
