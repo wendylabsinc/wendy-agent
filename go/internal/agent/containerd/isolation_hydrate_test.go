@@ -159,7 +159,7 @@ func TestReconcileRoundTrip_LabelPersistsAcrossSimulatedReboot(t *testing.T) {
 	// Step 4: this is exactly what StartContainer's CNI-ADD gate (~client.go:1211),
 	// GroupRestartAppID (~client.go:1827), and RestartGroup (~client.go:1854) read.
 	c.mu.Lock()
-	got := c.getIsolation(appID)
+	got = c.getIsolation(appID)
 	c.mu.Unlock()
 	if got != "isolated" {
 		t.Fatalf("after simulated reboot + reconcile hydrate, getIsolation(%q) = %q; want %q (isolated networking path would be skipped)", appID, got, "isolated")
