@@ -60,16 +60,30 @@ const agentPlaintextProbeTimeout = 3 * time.Second
 // top of this budget).
 const mtlsProbeTimeout = 7 * time.Second
 
-// lanAddressProbeTimeout bounds a single candidate address in the discover/
+// lanAddressProbeBudget bounds a single candidate address in the discover/
 // picker version probe (resolveLANAgentVersion). It wraps connectWithAutoTLS,
 // whose successful path for a provisioned device costs a TCP+TLS handshake plus
-// one mtlsProbeTimeout GetAgentVersion probe. A budget shorter than
-// mtlsProbeTimeout therefore cancelled the mTLS probe before it could
-// answer, leaving provisioned rows — especially USB devices, probed via .local
-// first — stuck on the failure glyph even though `wendy device info` (which
-// connects with the un-capped root context) succeeded. Derive it from
-// mtlsProbeTimeout with headroom so the two budgets can't silently invert again.
-const lanAddressProbeTimeout = mtlsProbeTimeout + 2*time.Second
+// one mtlsProbeTimeout GetAgentVersion probe (~2.2s observed). A budget shorter
+// than mtlsProbeTimeout cancelled the mTLS probe before it could answer, leaving
+// provisioned rows — especially USB devices, probed via .local first — stuck on
+// the failure glyph even though `wendy device info` (which connects with the
+// un-capped root context) succeeded (PR #1297).
+//
+// connectWithAutoTLSDiagnostics also tries every stored org cert in turn, so a
+// user logged into N orgs pays up to N sequential mTLS probes before the cert
+// matching the device's org connects. When that cert is not the first one tried
+// (e.g. the device is in the user's second org), a fixed single-probe budget
+// expires before it is reached — so the picker showed a failure glyph for
+// devices in a non-first org while `wendy device info` (uncapped) still worked.
+// Scale the budget by the cert count so the outer and inner budgets can't
+// silently invert regardless of how many orgs the user is logged into.
+func lanAddressProbeBudget(numCerts int) time.Duration {
+	if numCerts < 1 {
+		numCerts = 1
+	}
+	return time.Duration(numCerts)*mtlsProbeTimeout + 2*time.Second
+}
+
 const provisionedAgentMetadataDiscoveryTimeout = 500 * time.Millisecond
 
 const provisionedAgentUnauthorizedMessage = "Unauthorized. Run 'wendy auth login' with an account that can access this provisioned wendy-agent."
@@ -109,12 +123,27 @@ func (e tlsHandshakeRejectedError) Error() string {
 type orgMismatchDeviceError struct {
 	deviceOrg int32
 	userOrgs  []int32 // distinct orgs the CLI has credentials for
+	// userOrgNames is a best-effort org ID -> name map for the user's own orgs,
+	// resolved live from the cloud when the error is built. It may be nil or
+	// partial (offline, or a name couldn't be fetched); missing entries render as
+	// the bare numeric ID. The device's org is deliberately not resolved — the
+	// account has no access to it, so its name isn't obtainable here.
+	userOrgNames map[int32]string
+}
+
+// formatOrg renders an org as "Name (org N)" when a name was resolved, else the
+// bare "org N".
+func (e orgMismatchDeviceError) formatOrg(id int32) string {
+	if name := e.userOrgNames[id]; name != "" {
+		return fmt.Sprintf("%s (org %d)", name, id)
+	}
+	return fmt.Sprintf("org %d", id)
 }
 
 func (e orgMismatchDeviceError) Error() string {
 	parts := make([]string, len(e.userOrgs))
 	for i, o := range e.userOrgs {
-		parts[i] = fmt.Sprintf("org %d", o)
+		parts[i] = e.formatOrg(o)
 	}
 	have := "none"
 	if len(parts) > 0 {
@@ -137,8 +166,10 @@ func orgInCerts(org int32, certs []config.CertificateInfo) bool {
 }
 
 // newOrgMismatchDeviceError builds an orgMismatchDeviceError, deduplicating the
-// user's org IDs (in first-seen order) for the message.
-func newOrgMismatchDeviceError(deviceOrg int32, userCerts []config.CertificateInfo) error {
+// user's org IDs (in first-seen order) for the message. orgNames is a best-effort
+// ID -> name map for those orgs (may be nil/partial); it only enriches the
+// display and never gates the error.
+func newOrgMismatchDeviceError(deviceOrg int32, userCerts []config.CertificateInfo, orgNames map[int32]string) error {
 	var userOrgs []int32
 	seen := map[int32]bool{}
 	for i := range userCerts {
@@ -149,7 +180,61 @@ func newOrgMismatchDeviceError(deviceOrg int32, userCerts []config.CertificateIn
 		seen[o] = true
 		userOrgs = append(userOrgs, o)
 	}
-	return orgMismatchDeviceError{deviceOrg: deviceOrg, userOrgs: userOrgs}
+	return orgMismatchDeviceError{deviceOrg: deviceOrg, userOrgs: userOrgs, userOrgNames: orgNames}
+}
+
+// orgNameResolveTimeout bounds the best-effort ListOrganizations lookup that
+// turns numeric org IDs into names in the cross-org mismatch message. The lookup
+// runs on an already-failed connection path, so keep it tight and non-fatal.
+const orgNameResolveTimeout = 2 * time.Second
+
+// resolveUserOrgNamesFn resolves the user's own org IDs to human-readable names.
+// Indirected so tests don't hit the network.
+var resolveUserOrgNamesFn = resolveUserOrgNames
+
+// resolveUserOrgNames returns a best-effort org ID -> name map for the orgs the
+// user holds credentials for. Names come from the cloud (ListOrganizations), so
+// this needs connectivity; on any error it returns whatever it resolved (possibly
+// nil) and the message falls back to the bare numeric ID. Only the user's own
+// orgs are resolved — the device's org is one the account has no access to, so
+// its name isn't obtainable here.
+func resolveUserOrgNames(ctx context.Context, userCerts []config.CertificateInfo) map[int32]string {
+	want := map[int32]bool{}
+	for i := range userCerts {
+		if o := int32(userCerts[i].OrganizationID); o != 0 {
+			want[o] = true
+		}
+	}
+	if len(want) == 0 {
+		return nil
+	}
+	cfg, err := config.Load()
+	if err != nil || len(cfg.Auth) == 0 {
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, orgNameResolveTimeout)
+	defer cancel()
+
+	names := map[int32]string{}
+	for i := range cfg.Auth {
+		orgs, err := listOrgsFromCloud(ctx, &cfg.Auth[i])
+		if err != nil {
+			continue
+		}
+		for _, org := range orgs {
+			if id := org.GetId(); want[id] && org.GetName() != "" {
+				names[id] = org.GetName()
+			}
+		}
+		if len(names) == len(want) {
+			break // every org resolved; skip the remaining cloud sessions
+		}
+	}
+	if len(names) == 0 {
+		return nil
+	}
+	return names
 }
 
 type orgMismatchWithCause struct {
@@ -174,10 +259,10 @@ func (e orgMismatchWithCause) Unwrap() []error {
 // other case (same-org failure such as clock skew, or no org observed) falls
 // through to errTLSHandshakeRejected, whose downstream handling offers the
 // clock-skew and refresh-certs remedies.
-func chooseRejectionError(observedDeviceOrg int32, allCerts []config.CertificateInfo, cause error) error {
+func chooseRejectionError(ctx context.Context, observedDeviceOrg int32, allCerts []config.CertificateInfo, cause error) error {
 	if observedDeviceOrg != 0 && !orgInCerts(observedDeviceOrg, allCerts) {
 		return orgMismatchWithCause{
-			mismatch: newOrgMismatchDeviceError(observedDeviceOrg, allCerts),
+			mismatch: newOrgMismatchDeviceError(observedDeviceOrg, allCerts, resolveUserOrgNamesFn(ctx, allCerts)),
 			cause:    cause,
 		}
 	}
@@ -562,9 +647,14 @@ func preferredLANAddress(dev models.LANDevice) string {
 // returns the first one that answers GetAgentVersion, along with whether that
 // connection used mTLS.
 func resolveLANAgentVersion(ctx context.Context, dev models.LANDevice) (string, bool, *agentpb.GetAgentVersionResponse, error) {
+	// connectWithAutoTLSDiagnostics tries every stored org cert in turn, so the
+	// per-address budget must cover all of them — otherwise a device whose org
+	// isn't the user's first cert is cancelled before its cert is reached, even
+	// though `wendy device info` (uncapped context) connects to it fine.
+	budget := lanAddressProbeBudget(len(loadAllCLICerts()))
 	var lastErr error
 	for _, address := range lanAgentAddresses(dev) {
-		attemptCtx, cancel := context.WithTimeout(ctx, lanAddressProbeTimeout)
+		attemptCtx, cancel := context.WithTimeout(ctx, budget)
 		isMTLS, resp, err := getAgentVersionAtAddress(attemptCtx, address)
 		cancel()
 		if err == nil {
@@ -1225,7 +1315,7 @@ func connectWithAutoTLSDiagnostics(ctx context.Context, plaintextAddr string) (*
 				// falls through to the generic handshake-rejected error, which
 				// connectToAgent already post-processes with clock-skew and
 				// refresh-certs remedies.
-				return nil, lastMTLSErr, chooseRejectionError(observedDeviceOrg, allCerts, lastMTLSErr)
+				return nil, lastMTLSErr, chooseRejectionError(ctx, observedDeviceOrg, allCerts, lastMTLSErr)
 			}
 		}
 	}
