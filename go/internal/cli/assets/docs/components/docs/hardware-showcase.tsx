@@ -15,7 +15,7 @@ const boards: Board[] = [
     tagline: 'Orin Nano, AGX Orin',
     logo: '/icons/icons8-nvidia.svg',
     animation: '/images/boards/jetson-orin.webp',
-    href: '/installation/wendyos-nvidia-jetson',
+    href: '/installation/wendyos-nvidia-jetson/',
     features: [
       'Up to 2000 TOPS AI performance',
       'CUDA, PyTorch & MLX support',
@@ -28,7 +28,7 @@ const boards: Board[] = [
     tagline: 'Pi 3, 4 & 5 (8GB Pi 5 recommended)',
     logo: '/icons/icons8-raspberry-pi.svg',
     animation: '/images/boards/raspberry-pi-5.webp',
-    href: '/installation/wendyos-raspberry-pi-5',
+    href: '/installation/wendyos-raspberry-pi-5/',
     features: [
       'Low power consumption',
       'Broad GPIO ecosystem',
