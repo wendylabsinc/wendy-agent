@@ -17,12 +17,17 @@ type TelemetryServiceV2 struct {
 	logger      *zap.Logger
 	broadcaster *TelemetryBroadcaster
 	buffer      *TelemetryBuffer
+	crashPinner CrashPinner // nil if no log manager wired
 }
 
 // NewTelemetryServiceV2 creates a new TelemetryServiceV2.
 func NewTelemetryServiceV2(logger *zap.Logger, broadcaster *TelemetryBroadcaster, buffer *TelemetryBuffer) *TelemetryServiceV2 {
 	return &TelemetryServiceV2{logger: logger, broadcaster: broadcaster, buffer: buffer}
 }
+
+// SetCrashPinner wires a source of retained crash events so they are prepended
+// to a history replay even after the disk buffer evicted them.
+func (s *TelemetryServiceV2) SetCrashPinner(p CrashPinner) { s.crashPinner = p }
 
 func (s *TelemetryServiceV2) StreamLogs(req *agentpbv2.StreamLogsRequest, stream grpc.ServerStreamingServer[agentpbv2.StreamLogsResponse]) error {
 	// Subscribe first (without cache prefill when replaying history) so live
@@ -40,6 +45,20 @@ func (s *TelemetryServiceV2) StreamLogs(req *agentpbv2.StreamLogsRequest, stream
 	// Replay history after subscribing.
 	if req.LastN != nil && *req.LastN > 0 && s.buffer != nil && s.buffer.DiskEnabled() {
 		entries := s.buffer.ReadLastN(SignalLogs, int(*req.LastN))
+
+		// Prepend retained crash events the buffer has already evicted (P2.9).
+		for _, logs := range evictedCrashes(s.crashPinner, entries) {
+			if req.AppName != nil || req.ServiceName != nil || req.MinSeverity != nil {
+				logs = filterLogsV2(logs, req)
+				if logs == nil {
+					continue
+				}
+			}
+			if err := stream.Send(&agentpbv2.StreamLogsResponse{Logs: logs, IsHistory: true}); err != nil {
+				return err
+			}
+		}
+
 		for _, e := range entries {
 			logs, ok := e.(*otelpb.ExportLogsServiceRequest)
 			if !ok {

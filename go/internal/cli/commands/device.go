@@ -60,6 +60,7 @@ func newDeviceCmd() *cobra.Command {
 	addToGroup("common",
 		newAppsCmd(),
 		newDeviceLogsCmd(),
+		newDeviceCrashesCmd(),
 		newROS2Cmd(),
 		newDeviceDashboardCmd(),
 		newTopCmd(),
@@ -928,6 +929,8 @@ func newDeviceLogsCmd() *cobra.Command {
 	var minSeverity int32
 	var level string
 	var tail int32
+	var since time.Duration
+	var previous bool
 
 	cmd := &cobra.Command{
 		Use:   "logs [app]",
@@ -935,7 +938,11 @@ func newDeviceLogsCmd() *cobra.Command {
 		Long: "Stream logs from containers on the device.\n\n" +
 			"Pass an app name (positionally or with --app) to see only that app's\n" +
 			"logs. Without a filter, logs from every container and the agent itself\n" +
-			"are streamed, which can include agent lifecycle messages.",
+			"are streamed, which can include agent lifecycle messages.\n\n" +
+			"Use --tail N to replay recent history before going live. --since 5m\n" +
+			"replays only history newer than the given age. --previous replays the\n" +
+			"crashed/stopped container's last run (the logs up to its most recent\n" +
+			"exit) and then stops — useful for a post-mortem of an app that exited.",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
@@ -966,6 +973,18 @@ func newDeviceLogsCmd() *cobra.Command {
 				}
 			}
 
+			if since < 0 {
+				return fmt.Errorf("--since must be a positive duration")
+			}
+
+			// --since and --previous both work over replayed history. The agent
+			// has no server-side time/run filter, so request a generous replay
+			// window and narrow it client-side. Honour an explicit, larger --tail.
+			historyOnly := previous
+			if (since > 0 || previous) && tail <= 0 {
+				tail = maxLogReplay
+			}
+
 			req := &agentpb.StreamLogsRequest{}
 			if appName != "" {
 				req.AppName = &appName
@@ -983,6 +1002,11 @@ func newDeviceLogsCmd() *cobra.Command {
 			}
 			if tail > 0 {
 				req.LastN = &tail
+			}
+
+			var sinceCutoffNanos uint64
+			if since > 0 {
+				sinceCutoffNanos = uint64(time.Now().Add(-since).UnixNano())
 			}
 			stream, err := conn.TelemetryService.StreamLogs(ctx, req)
 			if err != nil {
@@ -1002,15 +1026,37 @@ func newDeviceLogsCmd() *cobra.Command {
 				case serviceName != "":
 					target = serviceName
 				}
-				if tail > 0 {
+				switch {
+				case previous:
+					cliLogln("Showing the previous run of %s (logs up to its last exit). Done when output ends.", target)
+				case since > 0:
+					cliLogln("Replaying logs from %s newer than %s, then live. Press Ctrl-C to stop.", target, since)
+				case tail > 0:
 					cliLogln("Streaming logs from %s — replaying up to %d recent, then live. Press Ctrl-C to stop.", target, tail)
-				} else {
+				default:
 					cliLogln("Streaming logs from %s. Waiting for new logs — press Ctrl-C to stop.", target)
 				}
 			}
 
 			liveSeparatorPrinted := tail == 0
 			seenHistory := false
+
+			emit := func(rl *otelpb.ResourceLogs) {
+				svcName := resourceServiceName(rl.GetResource())
+				for _, sl := range rl.GetScopeLogs() {
+					for _, lr := range sl.GetLogRecords() {
+						if jsonOutput {
+							printLogRecordJSON(svcName, lr)
+						} else {
+							printLogRecord(svcName, lr)
+						}
+					}
+				}
+			}
+
+			// --previous buffers history so we can cut at the most recent
+			// container-exit boundary (the previous run is the logs before it).
+			var prevHistory []*otelpb.ResourceLogs
 
 			for {
 				resp, err := stream.Recv()
@@ -1026,9 +1072,25 @@ func newDeviceLogsCmd() *cobra.Command {
 					continue
 				}
 
+				// Drop history older than the --since cutoff.
+				if resp.IsHistory && sinceCutoffNanos > 0 {
+					logs = filterResourceLogsAfter(logs, sinceCutoffNanos)
+					if logs == nil {
+						continue
+					}
+				}
+
 				// Track whether any history was received.
 				if resp.IsHistory {
 					seenHistory = true
+				}
+
+				if previous {
+					if resp.IsHistory {
+						prevHistory = append(prevHistory, logs.GetResourceLogs()...)
+					}
+					// Live records are the current run; --previous ignores them.
+					continue
 				}
 
 				// Print separator only when transitioning from actual history to live.
@@ -1040,16 +1102,13 @@ func newDeviceLogsCmd() *cobra.Command {
 				}
 
 				for _, rl := range logs.GetResourceLogs() {
-					svcName := resourceServiceName(rl.GetResource())
-					for _, sl := range rl.GetScopeLogs() {
-						for _, lr := range sl.GetLogRecords() {
-							if jsonOutput {
-								printLogRecordJSON(svcName, lr)
-							} else {
-								printLogRecord(svcName, lr)
-							}
-						}
-					}
+					emit(rl)
+				}
+			}
+
+			if historyOnly {
+				for _, rl := range previousRunLogs(prevHistory) {
+					emit(rl)
 				}
 			}
 
@@ -1062,8 +1121,259 @@ func newDeviceLogsCmd() *cobra.Command {
 	cmd.Flags().Int32Var(&minSeverity, "min-severity", 0, "Minimum log severity number")
 	cmd.Flags().StringVar(&level, "level", "", "Minimum log level (trace, debug, info, warn, error, fatal)")
 	cmd.Flags().Int32Var(&tail, "tail", 0, "Replay the last N log batches before streaming live (0 = live only)")
+	cmd.Flags().DurationVar(&since, "since", 0, "Replay only history newer than this age (e.g. 5m, 1h); implies history replay")
+	cmd.Flags().BoolVar(&previous, "previous", false, "Show the previous run of a stopped/crashed container (logs up to its last exit), then stop")
 
 	return cmd
+}
+
+// maxLogReplay is the history window requested when --since/--previous is used
+// without an explicit --tail. It matches the agent-side replay cap.
+const maxLogReplay = 1000
+
+// containerExitScope is the OTel instrumentation scope the agent stamps on
+// structured container-exit events. Must match the agent's exitEventScope in
+// go/internal/agent/services/container_log_manager.go.
+const containerExitScope = "wendy.container.exit"
+
+// container-exit event attribute keys, mirrored from the agent.
+const (
+	containerExitAttrCode  = "exit.code"
+	containerExitAttrCrash = "crash"
+)
+
+// newDeviceCrashesCmd lists recent container exits/crashes by replaying the
+// structured container-exit events the agent records in its telemetry buffer.
+// It is a thin reader over StreamLogs history — no new RPC — so it surfaces the
+// same retained, eviction-pinned crash records used by `wendy device logs`.
+func newDeviceCrashesCmd() *cobra.Command {
+	var appName string
+	var limit int32
+	var crashesOnly bool
+
+	cmd := &cobra.Command{
+		Use:   "crashes [app]",
+		Short: "List recent container exits and crashes",
+		Long: "List recent container exits and crashes recorded on the device.\n\n" +
+			"Each row is a structured exit event (app, exit code, when). Crashes\n" +
+			"(non-zero or unobservable exits) are retained even after ordinary log\n" +
+			"history rolls over. Use `wendy device logs <app> --previous` to see the\n" +
+			"crashed run's output.",
+		Args: cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := cmd.Context()
+
+			if len(args) == 1 {
+				if appName != "" && appName != args[0] {
+					return fmt.Errorf("conflicting app names: %q (positional) and %q (--app)", args[0], appName)
+				}
+				appName = args[0]
+			}
+
+			conn, err := connectToAgent(ctx)
+			if err != nil {
+				return err
+			}
+			defer conn.Close()
+
+			// Replay history only; we never go live. Request records down to ERROR
+			// so crash events (ERROR) and clean exits (INFO) both arrive, then
+			// filter to exit events client-side.
+			n := limit
+			if n <= 0 {
+				n = maxLogReplay
+			}
+			debugSev := parseSeverityLevel("debug")
+			req := &agentpb.StreamLogsRequest{LastN: &n, MinSeverity: &debugSev}
+			if appName != "" {
+				req.AppName = &appName
+			}
+
+			stream, err := conn.TelemetryService.StreamLogs(ctx, req)
+			if err != nil {
+				return fmt.Errorf("starting log stream: %w", err)
+			}
+
+			var events []crashRow
+			for {
+				resp, err := stream.Recv()
+				if err == io.EOF {
+					break
+				}
+				if err != nil {
+					return fmt.Errorf("receiving logs: %w", err)
+				}
+				// Once the live stream starts, history is complete.
+				if !resp.GetIsHistory() {
+					break
+				}
+				logs := resp.GetLogs()
+				if logs == nil {
+					continue
+				}
+				for _, rl := range logs.GetResourceLogs() {
+					svcName := resourceServiceName(rl.GetResource())
+					for _, sl := range rl.GetScopeLogs() {
+						if sl.GetScope().GetName() != containerExitScope {
+							continue
+						}
+						for _, lr := range sl.GetLogRecords() {
+							row := crashRowFromRecord(svcName, lr)
+							if crashesOnly && !row.crash {
+								continue
+							}
+							events = append(events, row)
+						}
+					}
+				}
+			}
+
+			if jsonOutput {
+				return printCrashesJSON(events)
+			}
+			printCrashesTable(events)
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&appName, "app", "", "Filter by application name")
+	cmd.Flags().Int32Var(&limit, "limit", 0, "Maximum number of recent exit events to scan (0 = default window)")
+	cmd.Flags().BoolVar(&crashesOnly, "crashes-only", false, "Show only crashes (non-zero or unobservable exits), hiding clean exits")
+
+	return cmd
+}
+
+// crashRow is a single rendered exit/crash event.
+type crashRow struct {
+	app      string
+	whenNano uint64
+	exitCode int64
+	hasCode  bool
+	crash    bool
+	body     string
+}
+
+func crashRowFromRecord(svc string, lr *otelpb.LogRecord) crashRow {
+	row := crashRow{
+		app:      svc,
+		whenNano: lr.GetTimeUnixNano(),
+		body:     lr.GetBody().GetStringValue(),
+	}
+	for _, kv := range lr.GetAttributes() {
+		switch kv.GetKey() {
+		case containerExitAttrCode:
+			row.exitCode = kv.GetValue().GetIntValue()
+			row.hasCode = true
+		case containerExitAttrCrash:
+			row.crash = kv.GetValue().GetBoolValue()
+		}
+	}
+	return row
+}
+
+func printCrashesTable(events []crashRow) {
+	if len(events) == 0 {
+		fmt.Println(logMetaStyle.Render("No container exits recorded in the retained window."))
+		return
+	}
+	for _, e := range events {
+		when := time.Unix(0, int64(e.whenNano)).Local().Format("2006-01-02 15:04:05")
+		code := "—"
+		if e.hasCode {
+			code = fmt.Sprintf("%d", e.exitCode)
+		}
+		status, style := "exited", logInfoStyle
+		if e.crash {
+			status, style = "crashed", logErrorStyle
+		}
+		var b strings.Builder
+		b.WriteString(logTimeStyle.Render(when))
+		b.WriteByte(' ')
+		b.WriteString(style.Render(fmt.Sprintf("%-7s", status)))
+		b.WriteByte(' ')
+		b.WriteString(logAppStyle.Render("[" + e.app + "]"))
+		b.WriteByte(' ')
+		b.WriteString(logMetaStyle.Render("exit=" + code))
+		fmt.Println(b.String())
+	}
+}
+
+func printCrashesJSON(events []crashRow) error {
+	type jsonRow struct {
+		App       string `json:"app"`
+		Time      string `json:"time"`
+		ExitCode  *int64 `json:"exitCode,omitempty"`
+		Crash     bool   `json:"crash"`
+		Message   string `json:"message"`
+		TimeNanos uint64 `json:"timeUnixNano"`
+	}
+	out := make([]jsonRow, 0, len(events))
+	for _, e := range events {
+		r := jsonRow{
+			App:       e.app,
+			Time:      time.Unix(0, int64(e.whenNano)).UTC().Format(time.RFC3339),
+			Crash:     e.crash,
+			Message:   e.body,
+			TimeNanos: e.whenNano,
+		}
+		if e.hasCode {
+			c := e.exitCode
+			r.ExitCode = &c
+		}
+		out = append(out, r)
+	}
+	data, err := json.MarshalIndent(out, "", "  ")
+	if err != nil {
+		return err
+	}
+	fmt.Println(string(data))
+	return nil
+}
+
+// filterResourceLogsAfter returns a copy of logs keeping only records whose
+// timestamp is at or after cutoffNanos, or nil if none remain.
+func filterResourceLogsAfter(logs *otelpb.ExportLogsServiceRequest, cutoffNanos uint64) *otelpb.ExportLogsServiceRequest {
+	var keptRL []*otelpb.ResourceLogs
+	for _, rl := range logs.GetResourceLogs() {
+		var keptSL []*otelpb.ScopeLogs
+		for _, sl := range rl.GetScopeLogs() {
+			var kept []*otelpb.LogRecord
+			for _, lr := range sl.GetLogRecords() {
+				if lr.GetTimeUnixNano() >= cutoffNanos {
+					kept = append(kept, lr)
+				}
+			}
+			if len(kept) > 0 {
+				keptSL = append(keptSL, &otelpb.ScopeLogs{Scope: sl.GetScope(), LogRecords: kept})
+			}
+		}
+		if len(keptSL) > 0 {
+			keptRL = append(keptRL, &otelpb.ResourceLogs{Resource: rl.GetResource(), ScopeLogs: keptSL})
+		}
+	}
+	if len(keptRL) == 0 {
+		return nil
+	}
+	return &otelpb.ExportLogsServiceRequest{ResourceLogs: keptRL}
+}
+
+// previousRunLogs returns the subset of buffered history belonging to the
+// container's previous run: everything up to and including the most recent
+// container-exit event. If no exit event is present (the app never exited in
+// the retained window), the full buffered history is returned.
+func previousRunLogs(history []*otelpb.ResourceLogs) []*otelpb.ResourceLogs {
+	lastExit := -1
+	for i, rl := range history {
+		for _, sl := range rl.GetScopeLogs() {
+			if sl.GetScope().GetName() == containerExitScope {
+				lastExit = i
+			}
+		}
+	}
+	if lastExit < 0 {
+		return history
+	}
+	return history[:lastExit+1]
 }
 
 var (

@@ -170,6 +170,155 @@ func TestContainerLogManager_DoneNotBroadcast(t *testing.T) {
 	}
 }
 
+// exitEventRecord returns the single exit-event log record from req, or nil.
+func exitEventRecord(req *otelpb.ExportLogsServiceRequest) *otelpb.LogRecord {
+	for _, rl := range req.GetResourceLogs() {
+		for _, sl := range rl.GetScopeLogs() {
+			if sl.GetScope().GetName() != exitEventScope {
+				continue
+			}
+			recs := sl.GetLogRecords()
+			if len(recs) > 0 {
+				return recs[0]
+			}
+		}
+	}
+	return nil
+}
+
+func attrInt(lr *otelpb.LogRecord, key string) (int64, bool) {
+	for _, kv := range lr.GetAttributes() {
+		if kv.GetKey() == key {
+			return kv.GetValue().GetIntValue(), true
+		}
+	}
+	return 0, false
+}
+
+func attrBool(lr *otelpb.LogRecord, key string) bool {
+	for _, kv := range lr.GetAttributes() {
+		if kv.GetKey() == key {
+			return kv.GetValue().GetBoolValue()
+		}
+	}
+	return false
+}
+
+func TestContainerLogManager_CleanExitEmitsInfoEvent(t *testing.T) {
+	broadcaster := NewTelemetryBroadcaster()
+	lm := NewContainerLogManager(zap.NewNop(), broadcaster)
+
+	telID, telCh := broadcaster.SubscribeLogs()
+	defer broadcaster.UnsubscribeLogs(telID)
+
+	lm.Publish("my-app", ContainerOutput{Done: true, Exit: &ContainerExit{Code: 0}})
+
+	select {
+	case got := <-telCh:
+		lr := exitEventRecord(got)
+		if lr == nil {
+			t.Fatal("expected an exit-event record")
+		}
+		if lr.GetSeverityNumber() != otelpb.SeverityNumber_SEVERITY_NUMBER_INFO {
+			t.Errorf("severity = %v; want INFO for a clean exit", lr.GetSeverityNumber())
+		}
+		if code, ok := attrInt(lr, exitAttrCode); !ok || code != 0 {
+			t.Errorf("exit.code = %d (ok=%v); want 0", code, ok)
+		}
+		if attrBool(lr, exitAttrCrash) {
+			t.Error("crash attr = true; want false for a clean exit")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("did not receive exit event")
+	}
+
+	if got := lm.PinnedCrashes(); len(got) != 0 {
+		t.Errorf("clean exit should not be pinned; got %d pinned", len(got))
+	}
+}
+
+func TestContainerLogManager_CrashEmitsErrorEventAndPins(t *testing.T) {
+	broadcaster := NewTelemetryBroadcaster()
+	lm := NewContainerLogManager(zap.NewNop(), broadcaster)
+
+	telID, telCh := broadcaster.SubscribeLogs()
+	defer broadcaster.UnsubscribeLogs(telID)
+
+	lm.Publish("crasher", ContainerOutput{Done: true, Exit: &ContainerExit{Code: 137}})
+
+	select {
+	case got := <-telCh:
+		lr := exitEventRecord(got)
+		if lr == nil {
+			t.Fatal("expected an exit-event record")
+		}
+		if lr.GetSeverityNumber() != otelpb.SeverityNumber_SEVERITY_NUMBER_ERROR {
+			t.Errorf("severity = %v; want ERROR for a non-zero exit", lr.GetSeverityNumber())
+		}
+		if code, ok := attrInt(lr, exitAttrCode); !ok || code != 137 {
+			t.Errorf("exit.code = %d (ok=%v); want 137", code, ok)
+		}
+		if !attrBool(lr, exitAttrCrash) {
+			t.Error("crash attr = false; want true for a non-zero exit")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("did not receive exit event")
+	}
+
+	pinned := lm.PinnedCrashes()
+	if len(pinned) != 1 {
+		t.Fatalf("expected 1 pinned crash, got %d", len(pinned))
+	}
+	if lr := exitEventRecord(pinned[0]); lr == nil {
+		t.Error("pinned crash is missing its exit-event record")
+	}
+}
+
+func TestContainerLogManager_WaitErrPinsUnobservedExit(t *testing.T) {
+	broadcaster := NewTelemetryBroadcaster()
+	lm := NewContainerLogManager(zap.NewNop(), broadcaster)
+
+	lm.Publish("flaky", ContainerOutput{Done: true, Exit: &ContainerExit{WaitErr: true}})
+
+	pinned := lm.PinnedCrashes()
+	if len(pinned) != 1 {
+		t.Fatalf("expected 1 pinned crash for an unobservable exit, got %d", len(pinned))
+	}
+	lr := exitEventRecord(pinned[0])
+	if lr == nil {
+		t.Fatal("missing exit-event record")
+	}
+	if !attrBool(lr, exitAttrCrash) {
+		t.Error("crash attr = false; want true for an unobservable exit")
+	}
+	if attrBool(lr, exitAttrObserved) {
+		t.Error("exit.observed = true; want false for a wait error")
+	}
+	if _, ok := attrInt(lr, exitAttrCode); ok {
+		t.Error("exit.code should be absent when the exit was not observed")
+	}
+}
+
+func TestContainerLogManager_DoneWithoutExitDoesNotBroadcast(t *testing.T) {
+	broadcaster := NewTelemetryBroadcaster()
+	lm := NewContainerLogManager(zap.NewNop(), broadcaster)
+
+	telID, telCh := broadcaster.SubscribeLogs()
+	defer broadcaster.UnsubscribeLogs(telID)
+
+	// A teardown Done (no Exit) must not emit an exit event.
+	lm.Publish("my-app", ContainerOutput{Done: true})
+
+	select {
+	case <-telCh:
+		t.Error("Done without Exit should not broadcast an event")
+	case <-time.After(50 * time.Millisecond):
+	}
+	if len(lm.PinnedCrashes()) != 0 {
+		t.Error("teardown Done should not pin a crash")
+	}
+}
+
 func TestContainerLogManager_SlowSubscriber(t *testing.T) {
 	broadcaster := NewTelemetryBroadcaster()
 	lm := NewContainerLogManager(zap.NewNop(), broadcaster)

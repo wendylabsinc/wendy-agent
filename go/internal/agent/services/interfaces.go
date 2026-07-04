@@ -126,6 +126,34 @@ type ContainerOutput struct {
 	Stdout []byte
 	Stderr []byte
 	Done   bool
+
+	// Exit carries the container's exit status on the terminal (Done) output.
+	// It is nil for ordinary stdout/stderr chunks and on a Done that merely
+	// signals teardown without an observed exit (e.g. the monitoring stream was
+	// canceled). When set, the log manager emits a structured "container exit"
+	// telemetry event so a stopped/crashed container leaves a serviceable
+	// record. Only meaningful when Done is true.
+	Exit *ContainerExit
+}
+
+// ContainerExit describes how a monitored container's task terminated.
+type ContainerExit struct {
+	// Code is the process exit code reported by containerd. Zero means a clean
+	// exit; non-zero is treated as a crash.
+	Code uint32
+	// WaitErr is true when the exit could not be observed cleanly (the wait
+	// returned an error other than a normal stream cancellation). The code is
+	// not trustworthy in that case, so it is reported as a crash of unknown code.
+	WaitErr bool
+}
+
+// IsCrash reports whether the exit should be surfaced as a crash (non-zero
+// code, or an unobservable exit).
+func (e *ContainerExit) IsCrash() bool {
+	if e == nil {
+		return false
+	}
+	return e.WaitErr || e.Code != 0
 }
 
 type ContainerMetrics struct {

@@ -43,6 +43,20 @@ func (s *logSubscriber) close() {
 	}
 }
 
+// exitEventScope marks the OTel instrumentation scope of structured
+// container-exit telemetry events. Clients (e.g. `wendy device crashes`)
+// recognise an exit/crash record by this scope name.
+const exitEventScope = "wendy.container.exit"
+
+// Exit-event attributes. Stable strings: clients filter and render on them.
+const (
+	exitAttrEvent    = "event"         // always exitEventName
+	exitAttrCode     = "exit.code"     // process exit code (int)
+	exitAttrCrash    = "crash"         // bool: non-zero exit or unobservable exit
+	exitAttrObserved = "exit.observed" // bool: false when the wait errored
+	exitEventName    = "container.exit"
+)
+
 type ContainerLogManager struct {
 	logger      *zap.Logger
 	broadcaster TelemetryPublisher
@@ -50,6 +64,11 @@ type ContainerLogManager struct {
 	subscribers map[string]map[string]*logSubscriber // appName -> subID -> subscriber
 	nextID      uint64
 	resources   map[string]*otelpb.Resource // appName -> pre-built OTel resource (protected by mu)
+	// lastCrash retains the most recent crash exit event per app so it survives
+	// telemetry-buffer eviction (the shared on-disk buffer is a bounded FIFO a
+	// chatty neighbour can roll over). Surfaced first on a history replay via
+	// PinnedCrashes so a post-mortem always has the crash record. Protected by mu.
+	lastCrash map[string]*otelpb.ExportLogsServiceRequest
 }
 
 // NewContainerLogManager creates a new ContainerLogManager.
@@ -59,6 +78,7 @@ func NewContainerLogManager(logger *zap.Logger, broadcaster TelemetryPublisher) 
 		broadcaster: broadcaster,
 		subscribers: make(map[string]map[string]*logSubscriber),
 		resources:   make(map[string]*otelpb.Resource),
+		lastCrash:   make(map[string]*otelpb.ExportLogsServiceRequest),
 	}
 }
 
@@ -140,6 +160,9 @@ func (m *ContainerLogManager) Publish(appName string, output ContainerOutput) {
 // publishes them via the TelemetryBroadcaster.
 func (m *ContainerLogManager) publishToTelemetry(appName string, output ContainerOutput) {
 	if output.Done {
+		if output.Exit != nil {
+			m.publishExitEvent(appName, output.Exit)
+		}
 		return
 	}
 
@@ -214,4 +237,102 @@ func (m *ContainerLogManager) publishToTelemetry(appName string, output Containe
 			},
 		},
 	})
+}
+
+// resourceFor returns the cached OTel resource for appName, or a freshly built
+// one when the app was never registered.
+func (m *ContainerLogManager) resourceFor(appName string) *otelpb.Resource {
+	m.mu.RLock()
+	resource := m.resources[appName]
+	m.mu.RUnlock()
+	if resource == nil {
+		resource = containerResource(appName, "")
+	}
+	return resource
+}
+
+// publishExitEvent emits a structured "container exit" OTEL log record so a
+// stopped or crashed container leaves a serviceable, queryable record in the
+// same telemetry buffer as its stdout/stderr. A crash (non-zero or unobservable
+// exit) is logged at ERROR and pinned per app so it survives buffer eviction.
+func (m *ContainerLogManager) publishExitEvent(appName string, exit *ContainerExit) {
+	crash := exit.IsCrash()
+
+	severity := otelpb.SeverityNumber_SEVERITY_NUMBER_INFO
+	severityText := "INFO"
+	var body string
+	switch {
+	case exit.WaitErr:
+		severity, severityText = otelpb.SeverityNumber_SEVERITY_NUMBER_ERROR, "ERROR"
+		body = fmt.Sprintf("container %q exited (exit status could not be observed)", appName)
+	case crash:
+		severity, severityText = otelpb.SeverityNumber_SEVERITY_NUMBER_ERROR, "ERROR"
+		body = fmt.Sprintf("container %q crashed with exit code %d", appName, exit.Code)
+	default:
+		body = fmt.Sprintf("container %q exited cleanly (exit code 0)", appName)
+	}
+
+	now := uint64(time.Now().UnixNano())
+	attrs := []*otelpb.KeyValue{
+		stringKV(exitAttrEvent, exitEventName),
+		{Key: exitAttrCrash, Value: &otelpb.AnyValue{Value: &otelpb.AnyValue_BoolValue{BoolValue: crash}}},
+		{Key: exitAttrObserved, Value: &otelpb.AnyValue{Value: &otelpb.AnyValue_BoolValue{BoolValue: !exit.WaitErr}}},
+	}
+	if !exit.WaitErr {
+		attrs = append(attrs, &otelpb.KeyValue{
+			Key:   exitAttrCode,
+			Value: &otelpb.AnyValue{Value: &otelpb.AnyValue_IntValue{IntValue: int64(exit.Code)}},
+		})
+	}
+
+	req := &otelpb.ExportLogsServiceRequest{
+		ResourceLogs: []*otelpb.ResourceLogs{
+			{
+				Resource: m.resourceFor(appName),
+				ScopeLogs: []*otelpb.ScopeLogs{
+					{
+						Scope: &otelpb.InstrumentationScope{Name: exitEventScope},
+						LogRecords: []*otelpb.LogRecord{
+							{
+								TimeUnixNano:         now,
+								ObservedTimeUnixNano: now,
+								SeverityNumber:       severity,
+								SeverityText:         severityText,
+								Body:                 &otelpb.AnyValue{Value: &otelpb.AnyValue_StringValue{StringValue: body}},
+								Attributes:           attrs,
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	// Pin crashes so they outlive telemetry-buffer eviction (P2.9). Clean exits
+	// are not pinned: they are not post-mortem material and would mask an earlier
+	// crash that has not yet been viewed.
+	if crash {
+		m.mu.Lock()
+		m.lastCrash[appName] = req
+		m.mu.Unlock()
+	}
+
+	m.broadcaster.PublishLogs(req)
+}
+
+// PinnedCrashes returns a copy of the most-recent retained crash exit event per
+// app, in no particular order. The telemetry service prepends these to a
+// history replay so an evicted crash still surfaces to `wendy device crashes`
+// and `wendy device logs --tail`.
+func (m *ContainerLogManager) PinnedCrashes() []*otelpb.ExportLogsServiceRequest {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if len(m.lastCrash) == 0 {
+		return nil
+	}
+	out := make([]*otelpb.ExportLogsServiceRequest, 0, len(m.lastCrash))
+	for _, req := range m.lastCrash {
+		out = append(out, req)
+	}
+	return out
 }

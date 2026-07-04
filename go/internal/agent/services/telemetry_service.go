@@ -299,11 +299,18 @@ func (b *TelemetryBroadcaster) PublishTraces(req *otelpb.ExportTraceServiceReque
 	}
 }
 
+// CrashPinner exposes retained crash exit events that must survive
+// telemetry-buffer eviction. *ContainerLogManager implements it.
+type CrashPinner interface {
+	PinnedCrashes() []*otelpb.ExportLogsServiceRequest
+}
+
 type TelemetryService struct {
 	agentpb.UnimplementedWendyTelemetryServiceServer
 	logger      *zap.Logger
 	broadcaster *TelemetryBroadcaster
 	buffer      *TelemetryBuffer // nil if disk buffering is unavailable
+	crashPinner CrashPinner      // nil if no log manager wired
 }
 
 // NewTelemetryService creates a new TelemetryService.
@@ -313,6 +320,79 @@ func NewTelemetryService(logger *zap.Logger, broadcaster *TelemetryBroadcaster, 
 		broadcaster: broadcaster,
 		buffer:      buffer,
 	}
+}
+
+// SetCrashPinner wires a source of retained crash events so they are prepended
+// to a history replay even after the disk buffer evicted them.
+func (s *TelemetryService) SetCrashPinner(p CrashPinner) { s.crashPinner = p }
+
+// evictedCrashes returns retained crash events from p that are not already in
+// the replayed entries (deduplicated by record timestamp + body), oldest first.
+// They are prepended to history so an evicted crash still surfaces. Returns nil
+// when there is no pinner or nothing to add.
+func evictedCrashes(p CrashPinner, replayed []proto.Message) []*otelpb.ExportLogsServiceRequest {
+	if p == nil {
+		return nil
+	}
+	pinned := p.PinnedCrashes()
+	if len(pinned) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{})
+	for _, e := range replayed {
+		if logs, ok := e.(*otelpb.ExportLogsServiceRequest); ok {
+			for _, k := range crashEventKeys(logs) {
+				seen[k] = struct{}{}
+			}
+		}
+	}
+	var out []*otelpb.ExportLogsServiceRequest
+	for _, req := range pinned {
+		keys := crashEventKeys(req)
+		if len(keys) == 0 {
+			continue
+		}
+		already := true
+		for _, k := range keys {
+			if _, ok := seen[k]; !ok {
+				already = false
+				break
+			}
+		}
+		if !already {
+			out = append(out, req)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return firstRecordTime(out[i]) < firstRecordTime(out[j])
+	})
+	return out
+}
+
+// crashEventKeys returns a stable identity (timestamp:body) for each log record
+// in req, used to dedupe pinned crashes against replayed history.
+func crashEventKeys(req *otelpb.ExportLogsServiceRequest) []string {
+	var keys []string
+	for _, rl := range req.GetResourceLogs() {
+		for _, sl := range rl.GetScopeLogs() {
+			for _, lr := range sl.GetLogRecords() {
+				keys = append(keys, fmt.Sprintf("%d:%s", lr.GetTimeUnixNano(), lr.GetBody().GetStringValue()))
+			}
+		}
+	}
+	return keys
+}
+
+// firstRecordTime returns the timestamp of req's first log record, for ordering.
+func firstRecordTime(req *otelpb.ExportLogsServiceRequest) uint64 {
+	for _, rl := range req.GetResourceLogs() {
+		for _, sl := range rl.GetScopeLogs() {
+			for _, lr := range sl.GetLogRecords() {
+				return lr.GetTimeUnixNano()
+			}
+		}
+	}
+	return 0
 }
 
 func (s *TelemetryService) Broadcaster() *TelemetryBroadcaster {
@@ -338,6 +418,21 @@ func (s *TelemetryService) StreamLogs(req *agentpb.StreamLogsRequest, stream grp
 	// Replay history if requested (after subscribing so no live items are missed).
 	if req.LastN != nil && *req.LastN > 0 && s.buffer != nil && s.buffer.DiskEnabled() {
 		entries := s.buffer.ReadLastN(SignalLogs, int(*req.LastN))
+
+		// Prepend retained crash events the buffer has already evicted so a
+		// crash post-mortem survives a chatty neighbour rolling the buffer (P2.9).
+		for _, logs := range evictedCrashes(s.crashPinner, entries) {
+			if req.AppName != nil || req.ServiceName != nil || req.MinSeverity != nil {
+				logs = filterLogs(logs, req)
+				if logs == nil {
+					continue
+				}
+			}
+			if err := stream.Send(&agentpb.StreamLogsResponse{Logs: logs, IsHistory: true}); err != nil {
+				return err
+			}
+		}
+
 		for _, e := range entries {
 			logs, ok := e.(*otelpb.ExportLogsServiceRequest)
 			if !ok {

@@ -1959,6 +1959,11 @@ func (c *Client) streamOutput(
 	// Wait for the task to exit.
 	exitStatus := <-exitStatusCh
 	code, _, err := exitStatus.Result()
+
+	// exit is attached to the terminal output so the log manager can emit a
+	// structured "container exit" telemetry event. It stays nil for a canceled
+	// wait, which is normal teardown rather than an observed task exit.
+	var exit *services.ContainerExit
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			// The wait was canceled because the RPC that started this monitor
@@ -1973,12 +1978,14 @@ func (c *Client) streamOutput(
 				zap.String("app_name", appName),
 				zap.Error(err),
 			)
+			exit = &services.ContainerExit{WaitErr: true}
 		}
 	} else {
 		c.logger.Info("Task exited",
 			zap.String("app_name", appName),
 			zap.Uint32("exit_code", code),
 		)
+		exit = &services.ContainerExit{Code: code}
 	}
 
 	// Close the write ends to unblock readers.
@@ -1988,7 +1995,7 @@ func (c *Client) streamOutput(
 	// Wait for readers to finish.
 	wg.Wait()
 
-	outputCh <- services.ContainerOutput{Done: true}
+	outputCh <- services.ContainerOutput{Done: true, Exit: exit}
 }
 
 // containersForApp returns all Wendy-managed containers whose labelKeyAppID

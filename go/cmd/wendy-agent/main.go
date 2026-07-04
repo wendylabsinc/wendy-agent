@@ -189,6 +189,9 @@ func main() {
 
 	provisioningSvc := services.NewProvisioningService(logger, configPath)
 	telemetrySvc := services.NewTelemetryService(logger, broadcaster, telemetryBuf)
+	// Surface retained container-crash events in log history even after the
+	// shared telemetry buffer has evicted them (P2.9).
+	telemetrySvc.SetCrashPinner(logManager)
 
 	deviceInfoSvc := services.NewDeviceInfoService(logger, hwDiscoverer)
 	wifiSvc := services.NewWiFiService(logger, networkMgr)
@@ -199,6 +202,7 @@ func main() {
 	provisioningSvcV2 := services.NewProvisioningServiceV2(provisioningSvc)
 	audioSvcV2 := services.NewAudioServiceV2(audioSvc)
 	telemetrySvcV2 := services.NewTelemetryServiceV2(logger, broadcaster, telemetryBuf)
+	telemetrySvcV2.SetCrashPinner(logManager)
 	// ROS 2 inspection requires the containerd-backed sidecar runtime; the
 	// service is only registered when containerd connected (WDY-1332).
 	var ros2Svc *services.ROS2Service
