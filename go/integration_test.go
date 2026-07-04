@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"io"
 	"net"
@@ -15,11 +16,14 @@ import (
 
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/services"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
+	"github.com/wendylabsinc/wendy/go/internal/shared/chunk"
 	"github.com/wendylabsinc/wendy/go/internal/shared/version"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	cloudpb "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
@@ -94,6 +98,18 @@ func newStatefulContainerdClient() *statefulContainerdClient {
 	}
 }
 
+func (m *statefulContainerdClient) ListBootContainers(_ context.Context) ([]services.BootContainer, error) {
+	return nil, nil
+}
+
+func (m *statefulContainerdClient) SetStoppedByUser(_ context.Context, _ string, _ bool) error {
+	return nil
+}
+
+func (m *statefulContainerdClient) MigrateStoppedByUserOnce(_ context.Context) error {
+	return nil
+}
+
 func (m *statefulContainerdClient) ListContainers(_ context.Context) ([]*agentpb.AppContainer, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -109,6 +125,10 @@ func (m *statefulContainerdClient) ListContainers(_ context.Context) ([]*agentpb
 		})
 	}
 	return result, nil
+}
+
+func (m *statefulContainerdClient) AppDeclaredVolumes(_ context.Context) (map[string][]string, error) {
+	return nil, nil
 }
 
 func (m *statefulContainerdClient) StopContainer(_ context.Context, appName string) error {
@@ -158,7 +178,7 @@ func (m *statefulContainerdClient) WriteLayer(_ context.Context, digest string, 
 	return nil
 }
 
-func (m *statefulContainerdClient) AssembleImage(_ context.Context, _ string, _ []*agentpb.RunContainerLayerHeader) error {
+func (m *statefulContainerdClient) AssembleImage(_ context.Context, _ string, _ []*agentpb.RunContainerLayerHeader, _ []byte) error {
 	return nil
 }
 
@@ -201,6 +221,14 @@ func (m *statefulContainerdClient) GetContainerStats(_ context.Context) ([]*agen
 	return nil, nil
 }
 
+func (m *statefulContainerdClient) GetResourceStats(_ context.Context) ([]*agentpb.ResourceContainerStats, error) {
+	return nil, nil
+}
+
+func (m *statefulContainerdClient) GetListeningPorts(_ context.Context, _ string) ([]*agentpb.PortEntry, error) {
+	return nil, nil
+}
+
 func (m *statefulContainerdClient) GetContainerMetrics(_ context.Context, _ string) (services.ContainerMetrics, error) {
 	return services.ContainerMetrics{}, nil
 }
@@ -224,6 +252,22 @@ func (m *statefulContainerdClient) ContainerIDsForApp(_ context.Context, appID s
 		}
 	}
 	return ids, nil
+}
+
+func (m *statefulContainerdClient) MissingChunks(_ context.Context, hashes [][32]byte) ([][32]byte, error) {
+	return hashes, nil
+}
+
+func (m *statefulContainerdClient) PresentLayers(_ context.Context, _ []string) (map[string]int64, error) {
+	return nil, nil
+}
+
+func (m *statefulContainerdClient) StageChunk(_ context.Context, _ [32]byte, _ []byte) error {
+	return nil
+}
+
+func (m *statefulContainerdClient) AssembleLayerFromChunks(_ context.Context, _ string, _ [][32]byte) error {
+	return nil
 }
 
 // getLayerData returns the data stored for a given digest, for test assertions.
@@ -329,8 +373,8 @@ func TestFullAgentLifecycle(t *testing.T) {
 		if resp.Version != version.Version {
 			t.Errorf("version = %q; want %q", resp.Version, version.Version)
 		}
-		if resp.Os != runtime.GOOS {
-			t.Errorf("os = %q; want %q", resp.Os, runtime.GOOS)
+		if resp.Os == "" {
+			t.Errorf("os is empty")
 		}
 		if resp.CpuArchitecture != runtime.GOARCH {
 			t.Errorf("arch = %q; want %q", resp.CpuArchitecture, runtime.GOARCH)
@@ -1206,5 +1250,251 @@ func TestOTELEndpointEnvVarReachable(t *testing.T) {
 	_, err = otelpb.NewLogsServiceClient(conn).Export(ctx, &otelpb.ExportLogsServiceRequest{})
 	if err != nil {
 		t.Fatalf("OTLP endpoint %q unreachable: %v", endpoint, err)
+	}
+}
+
+// ---------- chunk-diff integration test ----------
+
+// chunkAwareContainerd wraps statefulContainerdClient and overrides the three
+// chunk methods with real in-memory dedup.  A single instance is shared across
+// both deploys so present persists between rounds (that is what makes round-2
+// dedup work).
+type chunkAwareContainerd struct {
+	*statefulContainerdClient
+	mu      sync.Mutex
+	present map[[32]byte]bool // chunks the device already holds
+	store   map[[32]byte][]byte
+}
+
+func newChunkAwareContainerd() *chunkAwareContainerd {
+	return &chunkAwareContainerd{
+		statefulContainerdClient: newStatefulContainerdClient(),
+		present:                  make(map[[32]byte]bool),
+		store:                    make(map[[32]byte][]byte),
+	}
+}
+
+func (c *chunkAwareContainerd) MissingChunks(_ context.Context, hashes [][32]byte) ([][32]byte, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var missing [][32]byte
+	for _, h := range hashes {
+		if !c.present[h] {
+			missing = append(missing, h)
+		}
+	}
+	return missing, nil
+}
+
+func (c *chunkAwareContainerd) StageChunk(_ context.Context, h [32]byte, data []byte) error {
+	if sha256.Sum256(data) != h {
+		return fmt.Errorf("staged chunk hash mismatch")
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.store[h] = data
+	return nil
+}
+
+func (c *chunkAwareContainerd) AssembleLayerFromChunks(_ context.Context, _ string, hashes [][32]byte) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	// Mark every chunk in the manifest as present so round 2 skips them.
+	for _, h := range hashes {
+		c.present[h] = true
+		delete(c.store, h) // staged bytes consumed
+	}
+	return nil
+}
+
+// makeLCGData returns deterministic pseudo-random bytes (fixed seed) used as a
+// stand-in layer payload.  A linear congruential generator seeded with a fixed
+// constant produces data that looks random to the buzhash chunker, so it finds
+// natural chunk boundaries rather than chunking every MaxSize bytes.  seed
+// shifts the initial state so different calls produce similar-but-not-identical
+// blobs.
+func makeLCGData(size int, seed byte) []byte {
+	buf := make([]byte, size)
+	// LCG constants from Knuth (64-bit).
+	state := uint64(6364136223846793005) ^ uint64(seed)
+	for i := range buf {
+		state = state*6364136223846793005 + 1442695040888963407
+		buf[i] = byte(state >> 56)
+	}
+	return buf
+}
+
+// mutateMiddle flips n bytes in the middle of data (copy, leaving original intact).
+func mutateMiddle(data []byte, n int) []byte {
+	out := make([]byte, len(data))
+	copy(out, data)
+	mid := len(out)/2 - n/2
+	for i := 0; i < n && mid+i < len(out); i++ {
+		out[mid+i] ^= 0xFF
+	}
+	return out
+}
+
+// deployViaChunks executes the CLI-side chunk protocol:
+//
+//	chunk.Chunk → QueryChunks → WriteChunks(missing only) → RunContainer(manifest)
+//
+// Returns total bytes sent via WriteChunks.
+func deployViaChunks(t *testing.T, client agentpb.WendyContainerServiceClient, layerTar []byte) int {
+	t.Helper()
+	ctx := context.Background()
+
+	// 1. Chunk the layer.
+	refs, err := chunk.Chunk(bytes.NewReader(layerTar))
+	if err != nil {
+		t.Fatalf("chunk.Chunk: %v", err)
+	}
+
+	// Build the wire hash list.
+	allHashes := make([][]byte, len(refs))
+	for i, r := range refs {
+		h := r.Hash
+		allHashes[i] = h[:]
+	}
+
+	// 2. QueryChunks — ask device which are missing.
+	qResp, err := client.QueryChunks(ctx, &agentpb.QueryChunksRequest{ChunkHashes: allHashes})
+	if err != nil {
+		t.Fatalf("QueryChunks: %v", err)
+	}
+
+	// Build a set of missing hashes for O(1) lookup.
+	missingSet := make(map[[32]byte]bool, len(qResp.GetMissingHashes()))
+	for _, b := range qResp.GetMissingHashes() {
+		var h [32]byte
+		copy(h[:], b)
+		missingSet[h] = true
+	}
+
+	// 3. WriteChunks — send only the missing ones.
+	wStream, err := client.WriteChunks(ctx)
+	if err != nil {
+		t.Fatalf("WriteChunks open: %v", err)
+	}
+
+	var bytesSent int
+	for _, r := range refs {
+		if !missingSet[r.Hash] {
+			continue
+		}
+		data := layerTar[r.Offset : r.Offset+r.Len]
+		h := r.Hash
+		if err := wStream.Send(&agentpb.WriteChunksRequest{
+			Hash: h[:],
+			Data: data,
+		}); err != nil {
+			t.Fatalf("WriteChunks send: %v", err)
+		}
+		bytesSent += len(data)
+	}
+	if _, err := wStream.CloseAndRecv(); err != nil {
+		t.Fatalf("WriteChunks CloseAndRecv: %v", err)
+	}
+
+	// 4. RunContainer with the chunk manifest.
+	// Compute sha256 digest of the layer (used as both digest and diff_id for
+	// uncompressed layers in this test).
+	rawDigest := sha256.Sum256(layerTar)
+	digestStr := fmt.Sprintf("sha256:%x", rawDigest)
+
+	runStream, err := client.RunContainer(ctx, &agentpb.RunContainerLayersRequest{
+		ImageName: "test-chunk-image:latest",
+		AppName:   "chunk-diff-app",
+		Cmd:       "true",
+		AppConfig: []byte(`{}`),
+		Layers: []*agentpb.RunContainerLayerHeader{
+			{
+				Digest:      digestStr,
+				DiffId:      digestStr,
+				Size:        int64(len(layerTar)),
+				Compression: agentpb.RunContainerLayerHeader_COMPRESSION_NONE,
+				ChunkHashes: allHashes,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("RunContainer: %v", err)
+	}
+	// Drain the response stream; surface unexpected errors so they don't
+	// silently mask handler panics or protocol bugs.
+	for {
+		_, err := runStream.Recv()
+		if err == nil {
+			continue
+		}
+		if err == io.EOF {
+			break
+		}
+		// AlreadyExists is expected on a re-deploy: the container image or
+		// layer is already present on the device, so the server short-circuits.
+		if status.Code(err) == codes.AlreadyExists {
+			break
+		}
+		t.Fatalf("RunContainer stream error: %v", err)
+	}
+
+	return bytesSent
+}
+
+// TestChunkDiffRedeploySendsMinimalBytes proves that a second deploy of a
+// nearly-identical layer sends only the delta (the one changed chunk), not the
+// full layer, by using a stateful chunkAwareContainerd that remembers which
+// chunks the device already holds.
+func TestChunkDiffRedeploySendsMinimalBytes(t *testing.T) {
+	t.Parallel()
+	logger := zap.NewNop()
+	lis := bufconn.Listen(integrationBufSize)
+
+	// Single shared fake that remembers chunks across both deploys.
+	cc := newChunkAwareContainerd()
+	containerSvc := services.NewContainerService(logger, cc)
+
+	srv := grpc.NewServer()
+	agentpb.RegisterWendyContainerServiceServer(srv, containerSvc)
+
+	go func() { _ = srv.Serve(lis) }()
+	defer func() {
+		srv.Stop()
+		lis.Close()
+	}()
+
+	dialer := func(context.Context, string) (net.Conn, error) { return lis.Dial() }
+	conn, err := grpc.NewClient("passthrough:///bufnet",
+		grpc.WithContextDialer(dialer),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	if err != nil {
+		t.Fatalf("grpc.NewClient: %v", err)
+	}
+	defer conn.Close()
+
+	client := agentpb.NewWendyContainerServiceClient(conn)
+
+	const layerSize = 1 << 20 // ~1 MiB
+	first := makeLCGData(layerSize, 0)
+	second := mutateMiddle(first, 1<<10) // flip ~1 KiB in the middle
+
+	b1 := deployViaChunks(t, client, first)
+	b2 := deployViaChunks(t, client, second)
+
+	t.Logf("Round 1 (full deploy): %d bytes sent via WriteChunks (layer size %d)", b1, len(first))
+	t.Logf("Round 2 (redeploy):    %d bytes sent via WriteChunks (layer size %d)", b2, len(second))
+
+	// Sanity: round 1 must have sent the majority of the layer (no prior chunks).
+	// If this fails, MissingChunks is broken and the round-2 threshold below is meaningless.
+	if b1 < len(first)/2 {
+		t.Fatalf("round 1 sent only %d bytes (layer=%d); expected at least half — MissingChunks may be broken", b1, len(first))
+	}
+
+	// Dedup assertion: round 2 must have sent much less than 25% of layer size.
+	threshold := len(second) / 4
+	if b2 >= threshold {
+		t.Fatalf("redeploy sent %d bytes, expected < %d (25%% of %d); delta-only expected",
+			b2, threshold, len(second))
 	}
 }

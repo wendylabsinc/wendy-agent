@@ -70,58 +70,6 @@ func (s *AudioService) ListAudioDevices(ctx context.Context, _ *agentpb.ListAudi
 	return &agentpb.ListAudioDevicesResponse{Devices: devices}, nil
 }
 
-// listPipeWireDevices uses pw-cli to list audio nodes.
-func (s *AudioService) listPipeWireDevices(ctx context.Context) ([]*agentpb.AudioDevice, error) {
-	cmd := exec.CommandContext(ctx, "pw-cli", "list-objects", "Node")
-	output, err := cmd.Output()
-	if err != nil {
-		return nil, fmt.Errorf("pw-cli: %w", err)
-	}
-
-	var devices []*agentpb.AudioDevice
-	var current *agentpb.AudioDevice
-
-	scanner := bufio.NewScanner(strings.NewReader(string(output)))
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-
-		if strings.HasPrefix(line, "id ") {
-			if current != nil {
-				devices = append(devices, current)
-			}
-			current = &agentpb.AudioDevice{}
-			parts := strings.Fields(line)
-			if len(parts) >= 2 {
-				if id, err := strconv.ParseUint(parts[1], 10, 32); err == nil {
-					current.Id = uint32(id)
-				}
-			}
-		}
-		if current == nil {
-			continue
-		}
-		if strings.Contains(line, "node.name") {
-			current.Name = extractQuotedValue(line)
-		}
-		if strings.Contains(line, "node.description") {
-			current.Description = extractQuotedValue(line)
-		}
-		if strings.Contains(line, "media.class") {
-			cls := extractQuotedValue(line)
-			if strings.Contains(cls, "Source") || strings.Contains(cls, "Input") {
-				current.Type = agentpb.AudioDeviceType_AUDIO_DEVICE_TYPE_INPUT
-			} else if strings.Contains(cls, "Sink") || strings.Contains(cls, "Output") {
-				current.Type = agentpb.AudioDeviceType_AUDIO_DEVICE_TYPE_OUTPUT
-			}
-		}
-	}
-	if current != nil {
-		devices = append(devices, current)
-	}
-
-	return devices, nil
-}
-
 // listALSADevices falls back to ALSA for audio device enumeration.
 func (s *AudioService) listALSADevices(ctx context.Context) ([]*agentpb.AudioDevice, error) {
 	var devices []*agentpb.AudioDevice
@@ -519,98 +467,6 @@ func (s *AudioService) SetDefaultAudioDevice(ctx context.Context, req *agentpb.S
 	return resp, nil
 }
 
-// listPulseAudioDevices uses pactl to enumerate sinks and sources.
-func (s *AudioService) listPulseAudioDevices(ctx context.Context) ([]*agentpb.AudioDevice, error) {
-	var devices []*agentpb.AudioDevice
-
-	// Collect sinks (output devices).
-	sinkDevices, err := s.parsePulseAudioDevices(ctx, "sink", agentpb.AudioDeviceType_AUDIO_DEVICE_TYPE_OUTPUT)
-	if err != nil {
-		return nil, fmt.Errorf("pactl list sinks: %w", err)
-	}
-	devices = append(devices, sinkDevices...)
-
-	// Collect sources (input devices).
-	sourceDevices, err := s.parsePulseAudioDevices(ctx, "source", agentpb.AudioDeviceType_AUDIO_DEVICE_TYPE_INPUT)
-	if err != nil {
-		return nil, fmt.Errorf("pactl list sources: %w", err)
-	}
-	devices = append(devices, sourceDevices...)
-
-	return devices, nil
-}
-
-// parsePulseAudioDevices parses "pactl list sinks short" and "pactl list sinks" for a device category.
-func (s *AudioService) parsePulseAudioDevices(ctx context.Context, category string, devType agentpb.AudioDeviceType) ([]*agentpb.AudioDevice, error) {
-	plural := category + "s"
-
-	// Get short listing for ID and name.
-	shortCmd := exec.CommandContext(ctx, "pactl", "list", plural, "short")
-	shortOutput, err := shortCmd.Output()
-	if err != nil {
-		return nil, fmt.Errorf("pactl list %s short: %w", plural, err)
-	}
-
-	type paDevice struct {
-		id   uint32
-		name string
-	}
-	var parsed []paDevice
-
-	scanner := bufio.NewScanner(strings.NewReader(string(shortOutput)))
-	for scanner.Scan() {
-		fields := strings.Fields(scanner.Text())
-		if len(fields) < 2 {
-			continue
-		}
-		id, err := strconv.ParseUint(fields[0], 10, 32)
-		if err != nil {
-			continue
-		}
-		parsed = append(parsed, paDevice{id: uint32(id), name: fields[1]})
-	}
-
-	// Get long listing for descriptions.
-	longCmd := exec.CommandContext(ctx, "pactl", "list", plural)
-	longOutput, err := longCmd.Output()
-	if err != nil {
-		// Fall back to short-form only (no descriptions).
-		var devices []*agentpb.AudioDevice
-		for _, p := range parsed {
-			devices = append(devices, &agentpb.AudioDevice{
-				Id:   p.id,
-				Name: p.name,
-				Type: devType,
-			})
-		}
-		return devices, nil
-	}
-
-	// Parse descriptions from long output, indexed by order of appearance.
-	var descriptions []string
-	longScanner := bufio.NewScanner(strings.NewReader(string(longOutput)))
-	for longScanner.Scan() {
-		line := strings.TrimSpace(longScanner.Text())
-		if strings.HasPrefix(line, "Description:") {
-			descriptions = append(descriptions, strings.TrimSpace(strings.TrimPrefix(line, "Description:")))
-		}
-	}
-
-	var devices []*agentpb.AudioDevice
-	for i, p := range parsed {
-		dev := &agentpb.AudioDevice{
-			Id:   p.id,
-			Name: p.name,
-			Type: devType,
-		}
-		if i < len(descriptions) {
-			dev.Description = descriptions[i]
-		}
-		devices = append(devices, dev)
-	}
-	return devices, nil
-}
-
 // setPulseAudioDefaultByALSA resolves the given ALSA card/device to all
 // matching PulseAudio sinks and sources by matching ALSA properties, then sets
 // each as the system default. Both sink and source defaults are updated when a
@@ -774,7 +630,8 @@ func (s *AudioService) StreamAudio(req *agentpb.StreamAudioRequest, stream grpc.
 		"-r", fmt.Sprintf("%d", sampleRate),
 		"-c", fmt.Sprintf("%d", channels),
 		"-t", "raw",
-		"--buffer-time=50000", // 50ms ALSA buffer to minimise capture latency
+		"--buffer-time=20000", // 20ms ALSA buffer to minimise capture latency
+		"--period-time=10000", // 10ms periods so data is delivered in small, frequent reads
 		"-",
 	)
 	var stderrBuf bytes.Buffer
@@ -788,8 +645,8 @@ func (s *AudioService) StreamAudio(req *agentpb.StreamAudioRequest, stream grpc.
 	}
 	defer func() { cmd.Process.Kill(); cmd.Wait() }() //nolint:errcheck
 
-	// Send ~20ms chunks of PCM data.
-	chunkSamples := sampleRate / 50 // 20ms worth of samples
+	// Send ~10ms chunks of PCM data to keep per-chunk latency low.
+	chunkSamples := sampleRate / 100 // 10ms worth of samples
 	chunkBytes := chunkSamples * channels * 2
 	buf := make([]byte, chunkBytes)
 
@@ -849,22 +706,4 @@ func computeAudioLevels(data []byte) (peakDb, rmsDb float32) {
 	rmsDb = float32(20.0 * math.Log10(rmsVal/32768.0))
 
 	return peakDb, rmsDb
-}
-
-// extractQuotedValue extracts a value between quotes from a PipeWire property line.
-func extractQuotedValue(line string) string {
-	start := strings.Index(line, "\"")
-	if start < 0 {
-		// Try without quotes (some pw-cli formats use = value).
-		parts := strings.SplitN(line, "=", 2)
-		if len(parts) == 2 {
-			return strings.TrimSpace(parts[1])
-		}
-		return ""
-	}
-	end := strings.Index(line[start+1:], "\"")
-	if end < 0 {
-		return line[start+1:]
-	}
-	return line[start+1 : start+1+end]
 }

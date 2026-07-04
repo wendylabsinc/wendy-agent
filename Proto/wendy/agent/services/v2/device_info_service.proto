@@ -28,6 +28,14 @@ message GetDeviceInfoResponse {
     // are retained for backwards compatibility. Empty when the agent cannot
     // enumerate mounts.
     repeated DiskPartition partitions = 14;
+    // GPU architecture identifier. Format is vendor-specific (e.g. "sm_87" for NVIDIA).
+    optional string gpu_arch = 15;
+    // Total physical memory (RAM) in bytes, from /proc/meminfo. Zero when the
+    // agent cannot read it (a real host never has 0 bytes of RAM).
+    int64 mem_total_bytes = 16;
+    // Number of online logical CPU cores, from /proc/stat. Zero when the
+    // agent cannot read it.
+    uint32 cpu_count = 17;
 }
 
 // Usage information for a single mounted filesystem.

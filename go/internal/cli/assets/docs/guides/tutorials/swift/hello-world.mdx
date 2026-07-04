@@ -1,0 +1,302 @@
+---
+title: Hello World in Swift
+description: Create your first WendyOS application using Swift
+language: swift
+---
+
+## Creating Your First Swift Application
+
+This guide will walk you through creating your first WendyOS application in Swift. This is a great way to prove that you can send an app to your device and verify your development environment is set up correctly.
+
+The `simple-api` template generates a small, long-running HTTP server built on [Hummingbird](https://hummingbird.codes/). It stays running on your device and responds to requests, so you can open it in a browser and see a live response.
+
+### Prerequisites
+
+- Wendy CLI installed on your development machine
+- Swift 6.2 or later installed **via [swiftly](/docs/installation/developer-machine-setup#install-swift)** (Xcode's Swift is not supported)
+- A WendyOS device plugged in over USB or connectable over Wi-Fi
+
+### Creating the Project
+
+<Steps>
+  <Step>
+    ### Initialize the Project
+
+    Start from the Wendy Swift template:
+
+    ```bash
+    wendy init hello-world --target wendyos --language swift --template simple-api --var APP_ID=hello-world --var PORT=6001 --var SWIFT_VERSION=6.3 --assistant skip --git-init no
+    cd hello-world
+    ```
+
+    <CliShot flow="init" step="wizard" alt="wendy init scaffolding the Swift hello-world project" />
+
+    This creates a ready-to-run Swift project with `Package.swift`, `Dockerfile`, and `wendy.json`. The next steps explain the generated files.
+  </Step>
+
+  <Step>
+    ### Run on WendyOS
+
+    ```bash
+    wendy run
+    ```
+
+    <CliShot flow="run" step="deploy" alt="wendy run building and deploying the Swift hello-world app" />
+
+    <CliClip flow="run" alt="wendy run deploying the Swift hello-world app end to end" />
+
+    Wendy will build the app, ask you to select a device if one is not already configured, deploy the app, and stream the run output. Because this is a long-running server, the app stays running after deploy and the generated `postStart` hook opens the response in your browser automatically.
+  </Step>
+</Steps>
+
+## Code Breakdown
+
+<Steps>
+  <Step>
+    ### Explore the Project Structure
+
+    After initialization, you'll have the following structure:
+
+    ```
+    hello-world/
+    ├── Package.swift
+    ├── Dockerfile
+    ├── wendy.json
+    ├── .swift-version
+    └── Sources/
+        └── hello-world/
+            └── App.swift
+    ```
+
+    The main application code is in `Sources/hello-world/App.swift`.
+  </Step>
+
+  <Step>
+    ### Generated Package.swift
+
+    The generated `Package.swift` pins Swift 6.3 and pulls in Hummingbird plus OpenTelemetry support:
+
+    ```swift
+    // swift-tools-version: 6.3
+
+    import PackageDescription
+
+    let package = Package(
+        name: "hello-world",
+        platforms: [
+            .macOS(.v14)
+        ],
+        dependencies: [
+            .package(url: "https://github.com/hummingbird-project/hummingbird.git", from: "2.21.1", traits: []),
+            .package(url: "https://github.com/swift-otel/swift-otel.git", from: "1.0.0", traits: ["OTLPHTTP", "OTLPGRPC"]),
+            .package(url: "https://github.com/apple/swift-container-plugin", from: "1.0.0"),
+        ],
+        targets: [
+            .executableTarget(
+                name: "hello-world",
+                dependencies: [
+                    .product(name: "Hummingbird", package: "hummingbird"),
+                    .product(name: "OTel", package: "swift-otel"),
+                ]
+            )
+        ]
+    )
+    ```
+  </Step>
+
+  <Step>
+    ### Generated Application Code
+
+    The generated `Sources/hello-world/App.swift` starts a Hummingbird server that listens on port `6001` and serves a few routes:
+
+    ```swift
+    import Hummingbird
+    import Logging
+    import OTel
+    import ServiceLifecycle
+
+    struct Item: Decodable {
+        let name: String
+        let price: Double
+    }
+
+    struct ItemResponse: ResponseCodable {
+        let id: Int
+        let name: String
+        let price: Double
+    }
+
+    @main
+    struct SimpleAPI {
+        static func main() async throws {
+            let observability = try OTel.bootstrap()
+
+            let logger = Logger(label: "hello-world")
+
+            let router = Router()
+            router.middlewares.add(TracingMiddleware())
+            router.middlewares.add(MetricsMiddleware())
+            router.middlewares.add(LogRequestsMiddleware(.info))
+
+            router.get("/") { _, _ in
+                ["message": "hello-world"]
+            }
+
+            router.get("/health") { _, _ -> HTTPResponse.Status in
+                .ok
+            }
+
+            router.post("/items") { request, context -> ItemResponse in
+                let item = try await request.decode(as: Item.self, context: context)
+                return ItemResponse(id: 1, name: item.name, price: item.price)
+            }
+
+            let app = Application(
+                router: router,
+                configuration: .init(address: .hostname("0.0.0.0", port: 6001))
+            )
+
+            let serviceGroup = ServiceGroup(
+                services: [observability, app],
+                gracefulShutdownSignals: [.sigterm, .sigint],
+                logger: logger
+            )
+
+            try await serviceGroup.run()
+        }
+    }
+    ```
+
+    The `@main` attribute marks the entry point. `GET /` returns `{"message":"hello-world"}`, `GET /health` returns `200 OK`, and `POST /items` echoes a decoded item back as JSON. The server binds to `0.0.0.0` so it's reachable from your host machine and the local network, and it runs until it receives a shutdown signal.
+  </Step>
+
+  <Step>
+    ### Generated wendy.json
+
+    The generated `wendy.json` requests the `network` entitlement, adds a readiness probe on port `6001`, and registers a `postStart` hook that opens your browser once the server is ready:
+
+    ```json
+    {
+        "appId": "hello-world",
+        "platform": "linux",
+        "version": "0.1.0",
+        "entitlements": [
+            {
+                "type": "network"
+            }
+        ],
+        "readiness": {
+            "tcpSocket": { "port": 6001 },
+            "timeoutSeconds": 30
+        },
+        "hooks": {
+            "postStart": {
+                "cli": "wendy utils open-browser http://${WENDY_HOSTNAME}:6001"
+            }
+        }
+    }
+    ```
+  </Step>
+
+  <Step>
+    ### Generated Dockerfile
+
+    The generated `Dockerfile` is a multi-stage build: it compiles a release binary with `swift:6.3-bookworm` and runs it on the smaller `swift:6.3-bookworm-slim` image:
+
+    ```dockerfile
+    FROM swift:6.3-bookworm AS builder
+
+    WORKDIR /app
+    COPY Package.swift ./
+    COPY Sources Sources
+    RUN swift build -c release
+
+    FROM swift:6.3-bookworm-slim
+
+    RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        && rm -rf /var/lib/apt/lists/*
+
+    WORKDIR /app
+    COPY --from=builder /app/.build/release/hello-world /usr/local/bin/hello-world
+
+    EXPOSE 6001
+
+    CMD ["hello-world"]
+    ```
+  </Step>
+</Steps>
+
+## Running Your Application
+
+You have two options to run your Swift application:
+
+### Option 1: Run Locally with Swift
+
+You can run the server on your development machine first to make sure everything builds:
+
+```bash
+swift run
+```
+
+The first build fetches the Hummingbird and OpenTelemetry dependencies, then starts the server. It will keep running and listening on `0.0.0.0:6001`. In another terminal you can test it:
+
+```bash
+curl http://localhost:6001
+# {"message":"hello-world"}
+```
+
+Press `Ctrl+C` to stop the local server.
+
+### Option 2: Deploy to a WendyOS Device
+
+Use the Wendy CLI to cross-compile, push, and start your app on a connected device:
+
+```bash
+wendy run
+```
+
+Wendy cross-compiles the binary with Swift 6.3 for the target device, deploys it, and streams logs. Once the readiness probe passes, the `postStart` hook opens `http://${WENDY_HOSTNAME}:6001` in your browser, where you'll see:
+
+```json
+{"message":"hello-world"}
+```
+
+## Verifying Deployment on Your Device
+
+After deploying, you can verify the app is running by listing the applications on your device:
+
+```bash
+wendy device apps list
+```
+
+<CliShot flow="apps-list" step="apps" alt="wendy device apps list showing the running hello-world app" />
+
+You should see output similar to:
+
+```
+wendy device apps list
+✔︎ Searching for WendyOS devices [5.3s]
+✔︎ Listing applications: True Probe [USB, Ethernet, LAN]
+╭───────────────┬─────────┬─────────┬──────────╮
+│ App           │ Version │ State   │ Failures │
+├───────────────┼─────────┼─────────┼──────────┤
+│ hello-world   │ 0.1.0   │ Running │ 0        │
+╰───────────────┴─────────┴─────────┴──────────╯
+```
+
+<Callout type="info">
+  **Expected State**: The app shows as "Running" because it is a long-running HTTP server that keeps listening for requests. The "Failures" column showing `0` confirms your application started successfully without errors. To stop it later, run `wendy device apps stop hello-world`.
+</Callout>
+
+## Next Steps
+
+Now that you have a basic Swift server running:
+
+- Add more routes to handle different endpoints (see the [Simple Web Server](/docs/guides/tutorials/swift/simple-web-server) guide)
+- Explore WendyOS frameworks for hardware access
+- Build more complex applications with user input and data processing
+
+<Callout type="info">
+  **Local vs Device**: `swift run` compiles and runs your application locally on your development machine. `wendy run` cross-compiles with Swift 6.3 for the target device and deploys it automatically.
+</Callout>

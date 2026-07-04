@@ -1,0 +1,631 @@
+---
+title: App Entitlements (wendy.json)
+description: Configure hardware access and permissions for your WendyOS applications
+---
+
+## Understanding Entitlements
+
+Entitlements are permissions that grant your application access to hardware resources and system capabilities on your WendyOS device. By default, applications run in isolated containers with minimal privileges. Entitlements allow you to selectively enable access to features like networking, GPU, video capture, audio, and Bluetooth.
+
+<Callout type="info">
+  Entitlements apply to WendyOS container targets (`linux`/`wendyos`) and `wendy-lite`. Native macOS (`darwin`) apps run non-containerized and do not use the WendyOS entitlement system.
+</Callout>
+
+### Why Entitlements?
+
+WendyOS uses a security-first approach where applications are sandboxed by default. This means:
+
+- Applications cannot access the network unless explicitly granted
+- Hardware devices (cameras, microphones, GPUs) are not accessible by default
+- Bluetooth and other system interfaces require explicit permission
+
+Entitlements provide a declarative way to request these permissions, making it clear what resources your application needs.
+
+## The wendy.json File
+
+Entitlements are configured in your project's `wendy.json` file. This file defines your application's identity and the permissions it requires.
+
+### Basic Structure
+
+```json
+{
+  "appId": "com.example.myapp",
+  "platform": "linux",
+  "version": "1.0.0",
+  "entitlements": [
+    { "type": "network", "mode": "host" }
+  ]
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `appId` | A unique identifier for your application (reverse domain notation recommended) |
+| `version` | Your application's version string |
+| `entitlements` | An array of entitlement objects specifying required permissions |
+
+## Available Entitlements
+
+### Network Entitlement
+
+The network entitlement controls how your application accesses the network.
+
+```json
+{
+  "type": "network",
+  "mode": "host"
+}
+```
+
+| Mode | Description |
+|------|-------------|
+| `host` | Application shares the host's network stack. The container uses the same network interfaces, IP addresses, and ports as the host device. Required for HTTP servers and any network services that need to accept incoming connections. |
+| `none` | Application runs in an isolated network namespace with no network access. Use this for applications that should be completely offline, such as data processing tasks that don't need external connectivity. |
+
+<Callout type="info">
+  **Web Servers**: If you're building a web server or any application that accepts incoming connections, you need `"mode": "host"` to make your service accessible from other devices on the network.
+</Callout>
+
+<Callout type="warning">
+  **Port Conflicts**: With `host` mode, your application's ports are exposed directly on the device. Ensure your application doesn't use ports that conflict with system services or other running applications.
+</Callout>
+
+### GPU Entitlement
+
+The GPU entitlement enables access to NVIDIA GPU hardware on Jetson devices. This is essential for machine learning inference, computer vision, and GPU-accelerated computing.
+
+```json
+{
+  "type": "gpu"
+}
+```
+
+When enabled, this entitlement:
+- Adds your application to the video group for GPU device access
+- Injects NVIDIA Container Device Interface (CDI) specifications
+- Sets up environment variables for CUDA and GPU libraries
+
+<Callout type="info">
+  **Hardware-specific behavior**: What the `gpu` entitlement exposes depends on the device — NVIDIA GPU access on Jetson, and VideoCore board telemetry on Raspberry Pi. See [GPU Access](/docs/hardware/gpu#raspberry-pi-board-telemetry) for the details.
+</Callout>
+
+### Display Entitlement
+
+The display entitlement allows your application to present to a locally-attached monitor as a Wayland client. This is essential for applications that draw directly to the screen without a web browser.
+
+```json
+{
+  "type": "display"
+}
+```
+
+When enabled, this entitlement:
+
+- Grants access to `/dev/dri` (GPU render nodes) with `rw` cgroup access (no `mknod`)
+- Adds membership in the `video` and `render` groups
+- Mounts the WendyOS compositor's Wayland socket and sets `WAYLAND_DISPLAY` / `XDG_RUNTIME_DIR`
+
+On NVIDIA Jetson, the GL/EGL userspace is injected from the host through CDI. On Raspberry Pi, the app's own mesa works against the vc4 kernel driver.
+
+<Callout type="info">
+  **Display-enabled image required**: The Wayland socket is present only on display-enabled WendyOS images. On headless images, the entitlement is accepted but nothing renders.
+</Callout>
+
+| Constraint | |
+|------------|--|
+| At most one `display` per app | enforced at validation |
+
+<Callout type="warning">
+  **Security boundary**: Apps **without** `display` never receive `/dev/dri` — the default GPU/display sandbox is unchanged.
+</Callout>
+
+### Camera Entitlement
+
+The camera entitlement provides access to video capture devices like USB cameras or CSI cameras.
+
+```json
+{
+  "type": "camera"
+}
+```
+
+The older `{ "type": "video" }` entitlement is still accepted for compatibility, but new projects should use `camera`.
+
+When enabled, this entitlement:
+- Mounts `/dev` to expose all video capture devices (USB and CSI)
+- Configures device permissions for video capture
+- Enables access to V4L2 (Video4Linux2) and libcamera interfaces
+
+### Audio Entitlement
+
+The audio entitlement enables access to audio input and output devices.
+
+```json
+{
+  "type": "audio"
+}
+```
+
+When enabled, this entitlement:
+- Mounts the `/dev/snd` directory into your container
+- Configures ALSA device permissions
+- Enables recording and playback capabilities
+
+#### Audio Options
+
+```json
+{
+  "type": "audio",
+  "allowCdiDevSnd": false
+}
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `allowCdiDevSnd` | `false` | On Jetson, NVIDIA CDI specs may include a `/dev/snd` mount with `nodev` that blocks ALSA. When `false`, Wendy filters that CDI mount if audio is requested so playback/recording works. Set `true` only if you intentionally want the NVIDIA CDI `/dev/snd` mount to take precedence. |
+
+<Callout type="info">
+  **GPU + Audio**: With the default `allowCdiDevSnd: false`, GPU and audio entitlements can be used together on Jetson devices without breaking audio.
+</Callout>
+
+### Bluetooth Entitlement
+
+The Bluetooth entitlement allows your application to communicate with Bluetooth devices.
+
+```json
+{
+  "type": "bluetooth",
+  "mode": "kernel"
+}
+```
+
+| Mode | Description |
+|------|-------------|
+| `kernel` | Direct kernel-level Bluetooth access via HCI (Host Controller Interface) sockets. Your application communicates directly with the Bluetooth hardware using raw HCI commands. Best for low-level Bluetooth control and custom protocol implementations. |
+| `bluez` | Uses the BlueZ Bluetooth daemon for device communication. BlueZ provides a higher-level D-Bus API for Bluetooth operations. Recommended for standard Bluetooth profiles like A2DP, HFP, or GATT. |
+
+<Callout type="info">
+  **Which mode to choose?** Use `kernel` mode when you need direct, low-level control over Bluetooth hardware (e.g., custom BLE protocols, raw HCI commands). Use `bluez` mode when working with standard Bluetooth profiles through the BlueZ stack's D-Bus interface.
+</Callout>
+
+When using `kernel` mode, this entitlement:
+- Adds network administration capabilities (`CAP_NET_ADMIN`, `CAP_NET_RAW`)
+- Configures seccomp filters for Bluetooth socket operations
+- Enables direct HCI socket communication with the Bluetooth controller
+
+When using `bluez` mode, this entitlement:
+- Provides access to the BlueZ D-Bus interface
+- Allows interaction with paired devices and Bluetooth profiles
+- Enables use of standard Bluetooth libraries that depend on BlueZ
+
+### Persist Entitlement
+
+The persist entitlement creates a persistent storage volume that survives container restarts. Data written to the mounted path is stored on the host device and persists across application updates and reboots.
+
+```json
+{
+  "type": "persist",
+  "name": "mydata",
+  "path": "/data"
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `name` | A unique identifier for this volume. Creates a directory at `/var/lib/wendy-agent/storage/{name}` on the host. |
+| `path` | The mount point inside your container where the persistent storage will be available. |
+
+When enabled, this entitlement:
+- Creates a bind mount from host storage to your container
+- Persists data across container restarts and application updates
+- Uses secure mount options (`nosuid`, `noexec`) for safety
+
+<Callout type="info">
+  **Multiple Volumes**: You can define multiple persist entitlements with different names and paths to organize your application's persistent data.
+</Callout>
+
+<Callout type="warning">
+  **Data Location**: Persistent data is stored at `/var/lib/wendy-agent/storage/{name}` on the host device. Reflashing WendyOS will remove this data unless backed up.
+</Callout>
+
+### Display Entitlement
+
+The display entitlement grants an app the ability to present to a locally-attached monitor as a Wayland client (GPU-accelerated). The app draws directly to the screen without a web browser.
+
+```json
+{
+  "type": "display"
+}
+```
+
+When enabled, this entitlement:
+- Grants `/dev/dri` (GPU render nodes) with cgroup access `rw` (no `mknod`)
+- Adds membership in the `video` and `render` groups
+- Exposes the WendyOS compositor's Wayland socket via `WAYLAND_DISPLAY` / `XDG_RUNTIME_DIR`
+
+On NVIDIA Jetson, GL/EGL userspace is injected from the host through the same CDI path as `gpu`; on Raspberry Pi, the app's own mesa works against the vc4 kernel driver.
+
+<Callout type="info">
+  **Display-enabled image**: The Wayland socket is present only on display-enabled WendyOS images. On a headless image, the entitlement is accepted but nothing renders.
+</Callout>
+
+<Callout type="warning">
+  **Security**: Apps **without** `display` never receive `/dev/dri` — the default GPU/display sandbox is unchanged.
+</Callout>
+
+### Admin Entitlement
+
+The admin entitlement grants the container the wendy-agent's full gRPC over a local unix socket (`/run/wendy/agent.sock`, exposed as `WENDY_AGENT_SOCKET`) — with no authentication.
+
+```json
+{
+  "type": "admin"
+}
+```
+
+An app with `admin` can start, stop, and delete apps and read all device data locally. The socket is bind-mounted **only** into containers that declare `admin` — that mount is the entire trust boundary — and it is never reachable off-device (a unix socket, not TCP). At most one `admin` per app.
+
+<Callout type="warning">
+  **Security**: `admin` is a privileged, deliberate grant equivalent to local device control. Grant it only to fully-trusted first-party apps (e.g. the WendyOS shell). Requires an agent build that serves the local socket.
+</Callout>
+
+## Common Configurations
+
+### Web Server with Camera
+
+For applications that serve video streams over HTTP:
+
+```json
+{
+  "appId": "com.example.video-streamer",
+  "platform": "linux",
+  "version": "1.0.0",
+  "entitlements": [
+    { "type": "network", "mode": "host" },
+    { "type": "camera" }
+  ]
+}
+```
+
+### Machine Learning Inference Server
+
+For AI/ML applications that expose an API:
+
+```json
+{
+  "appId": "com.example.ml-server",
+  "platform": "linux",
+  "version": "1.0.0",
+  "entitlements": [
+    { "type": "network", "mode": "host" },
+    { "type": "gpu" }
+  ]
+}
+```
+
+### Computer Vision with GPU
+
+For applications that process video using GPU acceleration:
+
+```json
+{
+  "appId": "com.example.vision-app",
+  "platform": "linux",
+  "version": "1.0.0",
+  "entitlements": [
+    { "type": "gpu" },
+    { "type": "camera" }
+  ]
+}
+```
+
+### Voice Assistant
+
+For applications that use audio input/output and Bluetooth:
+
+```json
+{
+  "appId": "com.example.voice-assistant",
+  "platform": "linux",
+  "version": "1.0.0",
+  "entitlements": [
+    { "type": "network", "mode": "host" },
+    { "type": "audio" },
+    { "type": "bluetooth", "mode": "kernel" }
+  ]
+}
+```
+
+### Minimal Hello World
+
+For simple applications that don't need any hardware access:
+
+```json
+{
+  "appId": "com.example.hello-world",
+  "platform": "linux",
+  "version": "1.0.0",
+  "entitlements": []
+}
+```
+
+### Application with Persistent Storage
+
+For applications that need to persist data across restarts (databases, logs, configuration):
+
+```json
+{
+  "appId": "com.example.counter-app",
+  "platform": "linux",
+  "version": "1.0.0",
+  "entitlements": [
+    { "type": "persist", "name": "appdata", "path": "/data" }
+  ]
+}
+```
+
+### Web Server with Database
+
+For applications that serve HTTP and persist data:
+
+```json
+{
+  "appId": "com.example.web-app",
+  "platform": "linux",
+  "version": "1.0.0",
+  "entitlements": [
+    { "type": "network", "mode": "host" },
+    { "type": "persist", "name": "db", "path": "/var/lib/db" },
+    { "type": "persist", "name": "uploads", "path": "/uploads" }
+  ]
+}
+```
+
+## Managing Entitlements with the CLI
+
+You can manage entitlements using the Wendy CLI without manually editing JSON files.
+
+### Add an Entitlement
+
+```bash
+wendy project entitlements add network --mode host
+wendy project entitlements add network --mode none
+wendy project entitlements add gpu
+wendy project entitlements add camera
+wendy project entitlements add audio
+wendy project entitlements add bluetooth --mode kernel
+wendy project entitlements add bluetooth --mode bluez
+wendy project entitlements add persist --name mydata --path /data
+```
+
+### Remove an Entitlement
+
+```bash
+wendy project entitlements remove network
+wendy project entitlements remove gpu
+```
+
+### List Current Entitlements
+
+```bash
+wendy project entitlements list
+```
+
+## Validating wendy.json
+
+The Wendy CLI can validate your `wendy.json` and print its JSON Schema for editor autocompletion.
+
+### Validate
+
+Run `wendy json validate` to check your `wendy.json` for required fields, valid entitlement types, and unknown keys:
+
+```bash
+wendy json validate
+```
+
+You can also pass a path to a specific file or directory:
+
+```bash
+wendy json validate ./my-app/wendy.json
+```
+
+If the file is valid:
+
+```
+wendy.json is valid.
+```
+
+If there are errors, the CLI will tell you exactly what is wrong:
+
+```
+Error: appId is required
+```
+
+```
+Error: entitlement[0]: unknown type "fakeHardware"
+```
+
+```
+Error: entitlement[0]: persist entitlement requires a name
+```
+
+### JSON Schema
+
+Run `wendy json schema` to print the full JSON Schema for `wendy.json`:
+
+```bash
+wendy json schema
+```
+
+You can pipe the output to a file for use with your editor:
+
+```bash
+wendy json schema > wendy-schema.json
+```
+
+
+## Best Practices
+
+1. **Request only what you need**: Only add entitlements that your application actually requires. This follows the principle of least privilege.
+
+2. **Document your entitlements**: Add comments in your README explaining why each entitlement is needed.
+
+3. **Test without entitlements first**: Start with an empty entitlements array and add permissions as needed when you encounter access errors.
+
+4. **Use host networking for servers**: Any application that accepts incoming connections (HTTP servers, WebSocket servers, etc.) needs the network entitlement with `mode: host`.
+
+5. **Combine entitlements thoughtfully**: Some use cases require multiple entitlements. For example, a video streaming server needs both `network` and `video` entitlements.
+
+## Troubleshooting
+
+### Application can't access the network
+
+Ensure you have the network entitlement with host mode:
+
+```json
+{ "type": "network", "mode": "host" }
+```
+
+### GPU not detected in container
+
+Verify the GPU entitlement is present and you're running on a Jetson device:
+
+```json
+{ "type": "gpu" }
+```
+
+### Camera not found
+
+Add the camera entitlement and verify your camera is connected:
+
+```json
+{ "type": "camera" }
+```
+
+Check that your camera appears as `/dev/video0` on the host device.
+
+### Permission denied for audio devices
+
+Add the audio entitlement:
+
+```json
+{ "type": "audio" }
+```
+
+### Bluetooth operations failing
+
+Ensure you have the Bluetooth entitlement with the appropriate mode:
+
+```json
+{ "type": "bluetooth", "mode": "kernel" }
+```
+
+Or if using BlueZ libraries:
+
+```json
+{ "type": "bluetooth", "mode": "bluez" }
+```
+
+### Data not persisting across restarts
+
+Add the persist entitlement with your desired volume name and path:
+
+```json
+{ "type": "persist", "name": "mydata", "path": "/data" }
+```
+
+Ensure your application writes to the mounted path (e.g., `/data`) and not elsewhere in the container filesystem.
+
+## Readiness Probes
+
+Readiness probes let the CLI know when your application is ready to accept traffic. When configured, `wendy run` will poll the specified port and only proceed (including running any lifecycle hooks) once the application is listening.
+
+### TCP Socket Probe
+
+The TCP socket probe checks whether your application is accepting connections on a given port:
+
+```json
+{
+  "appId": "com.example.web-server",
+  "platform": "linux",
+  "version": "1.0.0",
+  "entitlements": [
+    { "type": "network", "mode": "host" }
+  ],
+  "readiness": {
+    "tcpSocket": { "port": 3002 },
+    "timeoutSeconds": 30
+  }
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `tcpSocket.port` | The TCP port to probe. Must match the port your application listens on. |
+| `timeoutSeconds` | Maximum time (in seconds) to wait for the port to become available. Defaults to `30`. |
+
+The probe polls every 500ms with a 2-second dial timeout per attempt. If the port is not reachable within `timeoutSeconds`, the deployment will fail with a timeout error.
+
+## Lifecycle Hooks
+
+Lifecycle hooks let you run commands at specific points in your application's lifecycle. Currently, the `postStart` hook is supported.
+
+### postStart Hook
+
+The `postStart` hook runs after the readiness probe passes (or immediately after the container starts if no readiness probe is configured). It is commonly used to automatically open a browser to your application's UI.
+
+```json
+{
+  "hooks": {
+    "postStart": {
+      "cli": "wendy utils open-browser http://${WENDY_HOSTNAME}:3002"
+    }
+  }
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `hooks.postStart.cli` | A shell command to run on the **developer's machine** (not the device). |
+
+The following environment variables are available for interpolation:
+
+| Variable | Description |
+|----------|-------------|
+| `${WENDY_HOSTNAME}` | The hostname of the target device (e.g., `wendyos-true-probe.local`) |
+| `${WENDY_APP_ID}` | The application ID from `wendy.json` |
+
+<Callout type="info">
+  **Cross-platform browser opening**: Use `wendy utils open-browser` to open URLs in the default browser. This works on macOS, Linux, and Windows.
+</Callout>
+
+### Full Example
+
+Here's a complete `wendy.json` with entitlements, readiness, and a postStart hook:
+
+```json
+{
+  "appId": "com.example.web-app",
+  "platform": "linux",
+  "version": "1.0.0",
+  "entitlements": [
+    { "type": "network", "mode": "host" },
+    { "type": "gpu" }
+  ],
+  "readiness": {
+    "tcpSocket": { "port": 3002 },
+    "timeoutSeconds": 30
+  },
+  "hooks": {
+    "postStart": {
+      "cli": "wendy utils open-browser http://${WENDY_HOSTNAME}:3002"
+    }
+  }
+}
+```
+
+When you run `wendy run`:
+1. The container is built and started on the device
+2. The CLI polls port `3002` on the device every 500ms
+3. Once the port is reachable, the `postStart` hook fires
+4. Your browser opens to the application automatically

@@ -103,6 +103,27 @@ func TestValidate_ValidConfig(t *testing.T) {
 	}
 }
 
+// TestValidate_NetworkHostAdminMode covers the WDY-1094 opt-in: "host-admin"
+// is a valid network mode (host networking + CAP_NET_ADMIN), while an unknown
+// mode is still rejected.
+func TestValidate_NetworkHostAdminMode(t *testing.T) {
+	valid := &AppConfig{
+		AppID:        "com.example.app",
+		Entitlements: []Entitlement{{Type: EntitlementNetwork, Mode: "host-admin"}},
+	}
+	if err := valid.Validate(); err != nil {
+		t.Errorf("Validate() rejected host-admin mode: %v", err)
+	}
+
+	invalid := &AppConfig{
+		AppID:        "com.example.app",
+		Entitlements: []Entitlement{{Type: EntitlementNetwork, Mode: "bogus"}},
+	}
+	if err := invalid.Validate(); err == nil {
+		t.Error("Validate() accepted an unknown network mode; want error")
+	}
+}
+
 func TestValidate_MissingAppID(t *testing.T) {
 	cfg := &AppConfig{}
 	err := cfg.Validate()
@@ -274,12 +295,42 @@ func TestValidate_AllEntitlementTypes(t *testing.T) {
 			{Type: EntitlementI2C, Device: "i2c-1"},
 			{Type: EntitlementGPIO, Pins: []int{7}},
 			{Type: EntitlementInput},
+			{Type: EntitlementSerial, Device: "ttyACM0"},
 			{Type: EntitlementMCP, Port: 3000},
 		},
 	}
 
 	if err := cfg.Validate(); err != nil {
 		t.Errorf("Validate() unexpected error: %v", err)
+	}
+}
+
+func TestValidate_SerialEntitlement(t *testing.T) {
+	valid := []string{"ttyACM0", "ttyUSB0", "ttyUSB12"}
+	for _, device := range valid {
+		t.Run("valid/"+device, func(t *testing.T) {
+			cfg := &AppConfig{
+				AppID:        "com.example.app",
+				Entitlements: []Entitlement{{Type: EntitlementSerial, Device: device}},
+			}
+			if err := cfg.Validate(); err != nil {
+				t.Errorf("Validate() unexpected error for serial device %q: %v", device, err)
+			}
+		})
+	}
+
+	// ttyAMA0/ttyS0 are on-board UARTs: USB-only entitlement rejects them.
+	invalid := []string{"", "ttyACM", "tty", "sda", "ttyACMx", "ttyACM0/../sda", "../mem", "ttyACM-1", "ttyAMA0", "ttyS0"}
+	for _, device := range invalid {
+		t.Run("invalid/"+device, func(t *testing.T) {
+			cfg := &AppConfig{
+				AppID:        "com.example.app",
+				Entitlements: []Entitlement{{Type: EntitlementSerial, Device: device}},
+			}
+			if err := cfg.Validate(); err == nil {
+				t.Errorf("Validate() expected error for serial device %q, got nil", device)
+			}
+		})
 	}
 }
 
@@ -971,6 +1022,53 @@ func TestFiles_RoundTripJSON(t *testing.T) {
 	}
 }
 
+func TestValidate_Brewfile_Valid(t *testing.T) {
+	for _, path := range []string{"ops/Brewfile", "./Brewfile.wendy"} {
+		t.Run(path, func(t *testing.T) {
+			cfg := &AppConfig{AppID: "sh.wendy.App", Brewfile: path}
+			if err := cfg.Validate(); err != nil {
+				t.Errorf("Validate() unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+func TestValidate_Brewfile_AbsolutePath(t *testing.T) {
+	cfg := &AppConfig{AppID: "sh.wendy.App", Brewfile: "/tmp/Brewfile"}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error for absolute brewfile path")
+	}
+}
+
+func TestValidate_Brewfile_UnsafeComponents(t *testing.T) {
+	for _, path := range []string{"../Brewfile", "././Brewfile", "ops/./Brewfile", "ops//Brewfile", "ops/", `ops\\Brewfile`, "ops%2fBrewfile", "ops\r/Brewfile"} {
+		t.Run(path, func(t *testing.T) {
+			cfg := &AppConfig{AppID: "sh.wendy.App", Brewfile: path}
+			if err := cfg.Validate(); err == nil {
+				t.Fatal("expected error for unsafe brewfile path")
+			}
+		})
+	}
+}
+
+func TestBrewfile_RoundTripJSON(t *testing.T) {
+	original := &AppConfig{AppID: "sh.wendy.MyApp", Brewfile: "ops/Brewfile"}
+
+	data, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+
+	var decoded AppConfig
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+
+	if decoded.Brewfile != original.Brewfile {
+		t.Errorf("Brewfile = %q, want %q", decoded.Brewfile, original.Brewfile)
+	}
+}
+
 func TestValidateJSON_UnknownKeys(t *testing.T) {
 	data := []byte(`{
 		"appId": "com.example.app",
@@ -989,6 +1087,24 @@ func TestValidateJSON_UnknownKeys(t *testing.T) {
 	// Should have warnings for entitlement[0] (foobar) and entitlement[2] (unknownField)
 	if len(warnings) != 2 {
 		t.Errorf("ValidateJSON() got %d warnings, want 2", len(warnings))
+	}
+}
+
+func TestValidateJSON_UnknownROS2Keys(t *testing.T) {
+	data := []byte(`{
+		"appId": "com.example.app",
+		"frameworks": { "ros2": { "domainId": 42, "domian_id": 7, "rmw": "cyclonedds" } }
+	}`)
+	warnings := ValidateJSON(data)
+	if len(warnings) != 1 {
+		t.Fatalf("got %d warnings, want 1 (for domian_id): %v", len(warnings), warnings)
+	}
+}
+
+func TestValidateJSON_CleanROS2_NoWarnings(t *testing.T) {
+	data := []byte(`{"appId":"com.example.app","frameworks":{"ros2":{"domainId":0,"rmw":"cyclonedds","distro":"humble"}}}`)
+	if got := ValidateJSON(data); len(got) != 0 {
+		t.Errorf("clean ros2 config: got %d warnings, want 0: %v", len(got), got)
 	}
 }
 
@@ -1044,6 +1160,49 @@ func TestMCPEntitlementPortOutOfRange(t *testing.T) {
 	err := cfg.Validate()
 	if err == nil {
 		t.Fatal("expected error for out-of-range port")
+	}
+}
+
+func TestDisplayEntitlementValid(t *testing.T) {
+	cfg := &AppConfig{
+		AppID:        "test",
+		Entitlements: []Entitlement{{Type: EntitlementDisplay}},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+}
+
+func TestDisplayEntitlementDuplicateRejected(t *testing.T) {
+	cfg := &AppConfig{
+		AppID: "test",
+		Entitlements: []Entitlement{
+			{Type: EntitlementDisplay},
+			{Type: EntitlementDisplay},
+		},
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error for duplicate display entitlement")
+	}
+}
+
+func TestDisplayEntitlementJSONNoWarnings(t *testing.T) {
+	warnings := ValidateJSON([]byte(`{
+		"appId": "test",
+		"entitlements": [ {"type": "display"} ]
+	}`))
+	if len(warnings) != 0 {
+		t.Fatalf("got %d warnings for valid display entitlement, want 0: %v", len(warnings), warnings)
+	}
+}
+
+func TestDisplayEntitlementJSONUnknownKeyWarns(t *testing.T) {
+	warnings := ValidateJSON([]byte(`{
+		"appId": "test",
+		"entitlements": [ {"type": "display", "bogus": 1} ]
+	}`))
+	if len(warnings) == 0 {
+		t.Fatal("expected warning for unknown key on display entitlement, got none")
 	}
 }
 
@@ -1336,8 +1495,8 @@ func TestLoadComposeCompanion_Valid(t *testing.T) {
 	if cfg.Frameworks == nil || cfg.Frameworks.ROS2 == nil {
 		t.Fatal("Frameworks.ROS2 is nil")
 	}
-	if cfg.Frameworks.ROS2.DomainID != 5 {
-		t.Errorf("ROS2.DomainID = %d, want 5", cfg.Frameworks.ROS2.DomainID)
+	if cfg.Frameworks.ROS2.DomainID == nil || *cfg.Frameworks.ROS2.DomainID != 5 {
+		t.Errorf("ROS2.DomainID = %v, want 5", cfg.Frameworks.ROS2.DomainID)
 	}
 	if cfg.Frameworks.ROS2.RMW != "cyclonedds" {
 		t.Errorf("ROS2.RMW = %q, want %q", cfg.Frameworks.ROS2.RMW, "cyclonedds")
@@ -1382,7 +1541,7 @@ func TestLoadComposeCompanion_WithServices(t *testing.T) {
 	if len(camera.Entitlements) != 2 {
 		t.Errorf("camera entitlements = %d, want 2", len(camera.Entitlements))
 	}
-	if camera.Frameworks == nil || camera.Frameworks.ROS2 == nil || camera.Frameworks.ROS2.DomainID != 42 {
+	if camera.Frameworks == nil || camera.Frameworks.ROS2 == nil || camera.Frameworks.ROS2.DomainID == nil || *camera.Frameworks.ROS2.DomainID != 42 {
 		t.Errorf("camera.Frameworks.ROS2.DomainID mismatch")
 	}
 	if cfg.Services["detector"] == nil {
@@ -1467,8 +1626,8 @@ func TestFrameworksConfig_ParseJSON(t *testing.T) {
 	if cfg.Frameworks.ROS2 == nil {
 		t.Fatal("Frameworks.ROS2 is nil")
 	}
-	if cfg.Frameworks.ROS2.DomainID != 10 {
-		t.Errorf("DomainID = %d, want 10", cfg.Frameworks.ROS2.DomainID)
+	if cfg.Frameworks.ROS2.DomainID == nil || *cfg.Frameworks.ROS2.DomainID != 10 {
+		t.Errorf("DomainID = %v, want 10", cfg.Frameworks.ROS2.DomainID)
 	}
 	if cfg.Frameworks.ROS2.RMW != "fastrtps" {
 		t.Errorf("RMW = %q, want %q", cfg.Frameworks.ROS2.RMW, "fastrtps")
@@ -1554,4 +1713,82 @@ func TestValidateJSON_ServiceEntitlements(t *testing.T) {
 			t.Fatalf("ValidateJSON() expected no warnings for valid service entitlement, got: %v", warnings)
 		}
 	})
+}
+
+func TestValidate_ROS2_RejectsBadDomainID(t *testing.T) {
+	bad := 500
+	cfg := &AppConfig{AppID: "com.example.app", Frameworks: &FrameworksConfig{ROS2: &ROS2Config{DomainID: &bad}}}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error for out-of-range domainId, got nil")
+	}
+}
+
+func TestValidate_ROS2_RejectsUnknownRMW(t *testing.T) {
+	cfg := &AppConfig{AppID: "com.example.app", Frameworks: &FrameworksConfig{ROS2: &ROS2Config{RMW: "rmw_bogus"}}}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error for unknown rmw, got nil")
+	}
+}
+
+func TestValidate_ROS2_AcceptsValid(t *testing.T) {
+	id := 42
+	cfg := &AppConfig{AppID: "com.example.app", Frameworks: &FrameworksConfig{ROS2: &ROS2Config{DomainID: &id, RMW: "cyclonedds", Distro: "humble"}}}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("valid ros2 config rejected: %v", err)
+	}
+}
+
+func TestValidate_ROS2_PerServiceDomainID(t *testing.T) {
+	bad := -5
+	cfg := &AppConfig{
+		AppID: "com.example.app",
+		Services: map[string]*ServiceConfig{
+			"talker": {Context: "./talker", Frameworks: &FrameworksConfig{ROS2: &ROS2Config{DomainID: &bad}}},
+		},
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error for out-of-range per-service domainId, got nil")
+	}
+}
+
+func TestValidate_ROS2_PerServiceUnknownRMW(t *testing.T) {
+	cfg := &AppConfig{
+		AppID: "com.example.app",
+		Services: map[string]*ServiceConfig{
+			"talker": {Context: "./talker", Frameworks: &FrameworksConfig{ROS2: &ROS2Config{RMW: "rmw_bogus"}}},
+		},
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error for unknown per-service rmw, got nil")
+	}
+}
+
+func TestAdminEntitlementValid(t *testing.T) {
+	cfg := &AppConfig{AppID: "test", Entitlements: []Entitlement{{Type: EntitlementAdmin}}}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+}
+
+func TestAdminEntitlementDuplicateRejected(t *testing.T) {
+	cfg := &AppConfig{AppID: "test", Entitlements: []Entitlement{
+		{Type: EntitlementAdmin}, {Type: EntitlementAdmin},
+	}}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error for duplicate admin entitlement")
+	}
+}
+
+func TestAdminEntitlementJSONNoWarnings(t *testing.T) {
+	warnings := ValidateJSON([]byte(`{"appId":"test","entitlements":[{"type":"admin"}]}`))
+	if len(warnings) != 0 {
+		t.Fatalf("got %d warnings, want 0: %v", len(warnings), warnings)
+	}
+}
+
+func TestAdminEntitlementJSONUnknownKeyWarns(t *testing.T) {
+	warnings := ValidateJSON([]byte(`{"appId":"test","entitlements":[{"type":"admin","bogus":1}]}`))
+	if len(warnings) == 0 {
+		t.Fatal("expected warning for unknown key on admin entitlement")
+	}
 }

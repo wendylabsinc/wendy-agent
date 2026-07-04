@@ -88,6 +88,118 @@ struct `run overview` {
     }
 
     @Test
+    func `marks failed attempt artifacts without observations as failed targets`() throws {
+        let rootURL = e2eTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+
+        let runURL = rootURL.appendingPathComponent("Run", isDirectory: true)
+        let attemptURL =
+            runURL
+            .appendingPathComponent("attempts", isDirectory: true)
+            .appendingPathComponent("macos-jetson-orin-nano", isDirectory: true)
+            .appendingPathComponent("0001", isDirectory: true)
+
+        try FileManager.default.createDirectory(at: attemptURL, withIntermediateDirectories: true)
+        try """
+        {
+          "exitStatus": 1
+        }
+        """.write(
+            to: attemptURL.appendingPathComponent("attempt.json"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let overview = try writeRunOverview(in: runURL)
+
+        #expect(overview.summary.tests == 0)
+        #expect(overview.summary.testTargets == 0)
+        #expect(overview.summary.attemptResults == 1)
+        #expect(overview.summary.failed == 1)
+        #expect(overview.summary.unknown == 0)
+        #expect(overview.targets.count == 1)
+
+        let target = try #require(overview.targets.first)
+        #expect(target.name == "macos-jetson-orin-nano")
+        #expect(target.outcome == .failed)
+        #expect(target.attempts == 1)
+        #expect(target.tests == 0)
+        #expect(target.failed == 1)
+        #expect(target.unknown == 0)
+        #expect(overview.noteworthy.deterministicFailures.isEmpty)
+    }
+
+    @Test
+    func `collapses truncated xunit attempts into one infrastructure failure`() throws {
+        let rootURL = e2eTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+
+        let runURL = rootURL.appendingPathComponent("Run", isDirectory: true)
+        let target = "local-ubuntu-24"
+        let attempt = "0001"
+        let firstObservationURL =
+            runURL
+            .appendingPathComponent("observations", isDirectory: true)
+            .appendingPathComponent("wendy-device-info", isDirectory: true)
+            .appendingPathComponent("prints-human-readable-device-information", isDirectory: true)
+            .appendingPathComponent(target, isDirectory: true)
+            .appendingPathComponent(attempt, isDirectory: true)
+        let secondObservationURL =
+            runURL
+            .appendingPathComponent("observations", isDirectory: true)
+            .appendingPathComponent("wendy-device-camera-view", isDirectory: true)
+            .appendingPathComponent("prints-command-help", isDirectory: true)
+            .appendingPathComponent(target, isDirectory: true)
+            .appendingPathComponent(attempt, isDirectory: true)
+        let attemptURL =
+            runURL
+            .appendingPathComponent("attempts", isDirectory: true)
+            .appendingPathComponent(target, isDirectory: true)
+            .appendingPathComponent(attempt, isDirectory: true)
+
+        try FileManager.default.createDirectory(
+            at: firstObservationURL,
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(
+            at: secondObservationURL,
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(at: attemptURL, withIntermediateDirectories: true)
+        try writeTestMetadata(to: firstObservationURL)
+        try writeTestMetadata(
+            to: secondObservationURL,
+            sourceFilePath: "Tests/WendyE2ETests/WendyDeviceCameraViewTests.swift",
+            sourceFileName: "WendyDeviceCameraViewTests",
+            suiteName: "wendy device camera view",
+            testName: "prints command help"
+        )
+        try """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <testsuites>
+        """.write(
+            to: attemptURL.appendingPathComponent("test-results-swift-testing.xml"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let overview = try writeRunOverview(in: runURL)
+
+        #expect(overview.summary.tests == 0)
+        #expect(overview.summary.testTargets == 0)
+        #expect(overview.summary.attemptResults == 1)
+        #expect(overview.summary.failed == 1)
+        #expect(overview.summary.unknown == 0)
+        #expect(overview.noteworthy.unknowns.isEmpty)
+
+        let targetOverview = try #require(overview.targets.first)
+        #expect(targetOverview.name == target)
+        #expect(targetOverview.outcome == .failed)
+        #expect(targetOverview.failed == 1)
+        #expect(targetOverview.unknown == 0)
+    }
+
+    @Test
     func `uses test metadata to distinguish duplicate test names`() throws {
         let rootURL = e2eTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: rootURL) }
@@ -161,7 +273,7 @@ struct `run overview` {
     }
 
     @Test
-    func `aggregates failed outcomes with AI review summaries`() throws {
+    func `renders AI review issues without a failed outcome section`() throws {
         let rootURL = e2eTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: rootURL) }
 
@@ -211,9 +323,8 @@ struct `run overview` {
             encoding: .utf8
         )
 
-        #expect(markdown.contains("## Failed and flaked tests"))
-        #expect(markdown.contains("### 🛑 `wendy-device-info/prints-json-device-information`"))
-        #expect(markdown.contains("AI review: **Agent rejected CLI auth**"))
+        #expect(!markdown.contains("## Failed and flaked tests"))
+        #expect(!markdown.contains("### 🛑 `wendy-device-info/prints-json-device-information`"))
         #expect(markdown.contains("### 🛑 Agent rejected CLI auth"))
         #expect(!markdown.contains("### 🛑 Error Agent rejected CLI auth"))
         #expect(markdown.contains("The target rejected an otherwise valid authenticated request."))

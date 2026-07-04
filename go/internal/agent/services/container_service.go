@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -18,6 +19,7 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
+	"github.com/wendylabsinc/wendy/go/internal/agent/hoststats"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
@@ -209,6 +211,74 @@ func (s *ContainerService) CreateContainerWithProgress(req *agentpb.CreateContai
 	})
 }
 
+// to32 converts a wire hash (raw 32 bytes) to a fixed array, rejecting bad sizes.
+func to32(b []byte) ([32]byte, error) {
+	var a [32]byte
+	if len(b) != 32 {
+		return a, status.Errorf(codes.InvalidArgument, "chunk hash must be 32 bytes, got %d", len(b))
+	}
+	copy(a[:], b)
+	return a, nil
+}
+
+func (s *ContainerService) QueryChunks(ctx context.Context, req *agentpb.QueryChunksRequest) (*agentpb.QueryChunksResponse, error) {
+	hashes := make([][32]byte, 0, len(req.GetChunkHashes()))
+	for _, b := range req.GetChunkHashes() {
+		h, err := to32(b)
+		if err != nil {
+			return nil, err
+		}
+		hashes = append(hashes, h)
+	}
+	missing, err := s.containerd.MissingChunks(ctx, hashes)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "querying chunks: %v", err)
+	}
+	out := make([][]byte, 0, len(missing))
+	for _, h := range missing {
+		hb := h
+		out = append(out, hb[:])
+	}
+	return &agentpb.QueryChunksResponse{MissingHashes: out}, nil
+}
+
+func (s *ContainerService) QueryLayers(ctx context.Context, req *agentpb.QueryLayersRequest) (*agentpb.QueryLayersResponse, error) {
+	present, err := s.containerd.PresentLayers(ctx, req.GetDiffIds())
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "querying layers: %v", err)
+	}
+	out := make([]*agentpb.PresentLayer, 0, len(present))
+	for diffID, size := range present {
+		out = append(out, &agentpb.PresentLayer{DiffId: diffID, Size: size})
+	}
+	return &agentpb.QueryLayersResponse{Present: out}, nil
+}
+
+func (s *ContainerService) WriteChunks(stream grpc.ClientStreamingServer[agentpb.WriteChunksRequest, agentpb.WriteChunksResponse]) error {
+	ctx := stream.Context()
+	for {
+		msg, err := stream.Recv()
+		if err == io.EOF {
+			return stream.SendAndClose(&agentpb.WriteChunksResponse{})
+		}
+		if err != nil {
+			return err
+		}
+		h, err := to32(msg.GetHash())
+		if err != nil {
+			return err
+		}
+		if err := s.containerd.StageChunk(ctx, h, msg.GetData()); err != nil {
+			// Preserve an explicit gRPC code from the store (e.g. ResourceExhausted
+			// when a staging limit is hit); otherwise treat it as a bad chunk.
+			if _, ok := status.FromError(err); ok {
+				return err
+			}
+			return status.Errorf(codes.InvalidArgument, "staging chunk: %v", err)
+		}
+	}
+}
+
 func (s *ContainerService) RunContainer(req *agentpb.RunContainerLayersRequest, stream grpc.ServerStreamingServer[agentpb.RunContainerLayersResponse]) error {
 	ctx := stream.Context()
 
@@ -218,7 +288,26 @@ func (s *ContainerService) RunContainer(req *agentpb.RunContainerLayersRequest, 
 	}
 
 	if layers := req.GetLayers(); len(layers) > 0 {
-		if err := s.containerd.AssembleImage(ctx, req.GetImageName(), layers); err != nil {
+		for _, l := range layers {
+			if hs := l.GetChunkHashes(); len(hs) > 0 {
+				order := make([][32]byte, 0, len(hs))
+				for _, b := range hs {
+					h, err := to32(b)
+					if err != nil {
+						return err
+					}
+					order = append(order, h)
+				}
+				diffID := l.GetDiffId()
+				if diffID == "" {
+					diffID = l.GetDigest()
+				}
+				if err := s.containerd.AssembleLayerFromChunks(ctx, diffID, order); err != nil {
+					return status.Errorf(codes.Internal, "reassembling layer %s: %v", diffID, err)
+				}
+			}
+		}
+		if err := s.containerd.AssembleImage(ctx, req.GetImageName(), layers, req.GetImageConfig()); err != nil {
 			return status.Errorf(codes.Internal, "failed to assemble image: %v", err)
 		}
 	}
@@ -285,6 +374,10 @@ func (s *ContainerService) startGroup(
 
 		if s.monitor != nil {
 			s.monitor.ClearExplicitStop(id)
+		}
+		if err := s.containerd.SetStoppedByUser(ctx, id, false); err != nil {
+			s.logger.Warn("failed to clear stopped-by-user mark",
+				zap.String("container_id", id), zap.Error(err))
 		}
 		s.registerContainerWithMonitor(ctx, id, restartPolicy)
 	}
@@ -417,6 +510,13 @@ func (s *ContainerService) streamContainerOutput(
 	if s.monitor != nil {
 		s.monitor.ClearExplicitStop(appName)
 	}
+	// Clear the persisted stop mark too, so a user-initiated start re-enables
+	// boot reconcile for this app. Best-effort. (Only user starts reach this
+	// path; the boot reconcile starts via the monitor and never clears it.)
+	if err := s.containerd.SetStoppedByUser(ctx, appName, false); err != nil {
+		s.logger.Warn("failed to clear stopped-by-user mark",
+			zap.String("app_name", appName), zap.Error(err))
+	}
 
 	s.registerContainerWithMonitor(ctx, appName, restartPolicy)
 
@@ -525,6 +625,10 @@ func (s *ContainerService) AttachContainer(stream grpc.BidiStreamingServer[agent
 	if s.monitor != nil {
 		s.monitor.ClearExplicitStop(appName)
 	}
+	if err := s.containerd.SetStoppedByUser(ctx, appName, false); err != nil {
+		s.logger.Warn("failed to clear stopped-by-user mark",
+			zap.String("app_name", appName), zap.Error(err))
+	}
 	s.registerContainerWithMonitor(ctx, appName, nil)
 
 	if err := stream.Send(&agentpb.RunContainerLayersResponse{
@@ -629,6 +733,15 @@ func (s *ContainerService) StopContainer(ctx context.Context, req *agentpb.StopC
 		}
 		return nil, status.Errorf(codes.Internal, "failed to stop container: %v", err)
 	}
+	// Persist the stop so it survives a reboot: the boot reconcile skips
+	// containers carrying this mark, so a deliberate stop is not undone by the
+	// restart policy. Best-effort — a label failure must not fail the stop.
+	for _, id := range ids {
+		if err := s.containerd.SetStoppedByUser(ctx, id, true); err != nil {
+			s.logger.Warn("failed to persist stopped-by-user mark",
+				zap.String("container_id", id), zap.Error(err))
+		}
+	}
 	s.logger.Info("App stopped", zap.String("app_name", appName), zap.Int("service_count", len(ids)))
 	return &agentpb.StopContainerResponse{}, nil
 }
@@ -666,15 +779,19 @@ func (s *ContainerService) DeleteContainer(ctx context.Context, req *agentpb.Del
 		}
 	}
 
+	// Resolve which volumes the app owns BEFORE deleting its containers: the
+	// persist entitlement labels that record ownership die with the container.
+	var volumesToDelete []string
+	if req.GetDeleteVolumes() {
+		volumesToDelete = s.resolveDeletableVolumes(ctx, appName)
+	}
+
 	if err := s.containerd.DeleteContainer(ctx, appName, req.GetDeleteImage()); err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to delete container: %v", err)
 	}
 
 	if req.GetDeleteVolumes() {
-		// Volumes are keyed by appID, not by per-service container ID, so we
-		// call deleteVolumes once with the app name rather than once per service
-		// container (which would be "appID_serviceName" and find nothing).
-		s.deleteVolumes(appName)
+		s.deleteVolumes(volumesToDelete)
 	}
 
 	s.logger.Info("App deleted",
@@ -689,36 +806,70 @@ func (s *ContainerService) DeleteContainer(ctx context.Context, req *agentpb.Del
 // (not const) so tests can override it with a temp directory.
 var volumesDir = "/var/lib/wendy/volumes"
 
-func (s *ContainerService) deleteVolumes(appName string) {
-	// Guard: volumes are always keyed by plain appID (no "/"). A slash-containing
-	// name would find no matching directories, but reject it explicitly to prevent
-	// any future path-construction change from introducing a traversal vector
-	// (SOC2-CC6, ISO27001-A.8, NIST-SI-10).
-	if strings.Contains(appName, "/") {
-		s.logger.Warn("deleteVolumes: app name contains '/'; volumes are keyed by appID only — skipping")
-		return
-	}
-	entries, err := os.ReadDir(volumesDir)
+// resolveDeletableVolumes returns the persistent volumes to remove when
+// appName is deleted with --delete-volumes: exactly the volume names the app's
+// containers declare via persist entitlements, minus any name that another
+// deployed app also declares (volumes are shared across apps by name — see
+// oci.applyPersist). Ambiguity fails safe: when ownership cannot be resolved,
+// or for apps deployed before entitlement labels existed, nothing is deleted —
+// a leaked volume can still be removed with `wendy device volumes rm`, whereas
+// a wrongly deleted one is unrecoverable.
+func (s *ContainerService) resolveDeletableVolumes(ctx context.Context, appName string) []string {
+	declared, err := s.containerd.AppDeclaredVolumes(ctx)
 	if err != nil {
-		s.logger.Warn("Failed to read volumes directory",
-			zap.String("base", volumesDir),
-			zap.String("app_name", appName),
-			zap.Error(err),
-		)
-		return
+		s.logger.Warn("Skipping volume deletion: cannot resolve volume ownership",
+			zap.String("app_name", appName), zap.Error(err))
+		return nil
 	}
-	for _, e := range entries {
-		if !e.IsDir() {
+	owned := declared[appName]
+	if len(owned) == 0 {
+		s.logger.Info("App declares no persistent volumes; none deleted",
+			zap.String("app_name", appName))
+		return nil
+	}
+
+	otherOwners := make(map[string][]string) // volume name → other apps declaring it
+	for app, vols := range declared {
+		if app == appName {
 			continue
 		}
-		name := e.Name()
-		if name == appName || strings.HasPrefix(name, appName+"-") {
-			path := filepath.Join(volumesDir, name)
-			if err := os.RemoveAll(path); err != nil {
-				s.logger.Warn("Failed to remove volume", zap.String("path", path), zap.Error(err))
-			} else {
-				s.logger.Info("Volume removed", zap.String("path", path))
-			}
+		for _, v := range vols {
+			otherOwners[v] = append(otherOwners[v], app)
+		}
+	}
+
+	var deletable []string
+	for _, v := range owned {
+		if others := otherOwners[v]; len(others) > 0 {
+			s.logger.Warn("Keeping shared volume: also declared by other apps",
+				zap.String("volume", v),
+				zap.String("app_name", appName),
+				zap.Strings("also_declared_by", others))
+			continue
+		}
+		deletable = append(deletable, v)
+	}
+	return deletable
+}
+
+// deleteVolumes removes the given volume directories under volumesDir. The
+// names come from persist entitlement labels; re-apply the same base-name
+// sanitization applyPersist used when creating them so no label value can
+// escape the volumes directory (SOC2-CC6, ISO27001-A.8, NIST-SI-10).
+func (s *ContainerService) deleteVolumes(names []string) {
+	for _, name := range names {
+		if name != filepath.Base(name) || name == "." || name == ".." || name == "/" || name == "" {
+			s.logger.Warn("Skipping volume with unsafe name", zap.String("volume", name))
+			continue
+		}
+		path := filepath.Join(volumesDir, name)
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			continue // declared but never materialized on disk
+		}
+		if err := os.RemoveAll(path); err != nil {
+			s.logger.Warn("Failed to remove volume", zap.String("path", path), zap.Error(err))
+		} else {
+			s.logger.Info("Volume removed", zap.String("path", path))
 		}
 	}
 }
@@ -780,30 +931,25 @@ func (s *ContainerService) RemoveVolume(_ context.Context, req *agentpb.RemoveVo
 	return &agentpb.RemoveVolumeResponse{}, nil
 }
 
-// buildVolumeUsageMap heuristically maps volumes to apps by matching
-// container names. A volume "foo-data" is likely used by app "foo".
+// buildVolumeUsageMap maps each volume name to the apps that declare it via
+// persist entitlement labels — real ownership, not a name-prefix guess.
+// Volumes are shared across apps by name, so several apps may appear for one
+// volume. Volumes no deployed app declares (including those of apps deployed
+// before entitlement labels existed) get an empty usedBy.
 func (s *ContainerService) buildVolumeUsageMap(ctx context.Context) map[string][]string {
 	usage := make(map[string][]string)
-	containers, err := s.containerd.ListContainers(ctx)
+	declared, err := s.containerd.AppDeclaredVolumes(ctx)
 	if err != nil {
+		s.logger.Warn("Failed to resolve volume ownership", zap.Error(err))
 		return usage
 	}
-	var appNames []string
-	for _, c := range containers {
-		appNames = append(appNames, c.AppName)
+	for app, vols := range declared {
+		for _, v := range vols {
+			usage[v] = append(usage[v], app)
+		}
 	}
-
-	entries, _ := os.ReadDir(volumesDir)
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		volName := e.Name()
-		for _, app := range appNames {
-			if volName == app || strings.HasPrefix(volName, app+"-") {
-				usage[volName] = append(usage[volName], app)
-			}
-		}
+	for _, apps := range usage {
+		sort.Strings(apps)
 	}
 	return usage
 }
@@ -826,6 +972,88 @@ func (s *ContainerService) ListContainerStats(ctx context.Context, _ *agentpb.Li
 		return nil, status.Errorf(codes.Internal, "getting container stats: %v", err)
 	}
 	return &agentpb.ListContainerStatsResponse{Stats: stats}, nil
+}
+
+// GetResourceStats returns host CPU/memory/GPU counters plus per-container CPU
+// and memory for `wendy device top`. Host metrics are best-effort: a failed
+// /proc read or absent GPU tool yields zero/empty fields rather than an error,
+// so the command degrades gracefully on constrained hosts.
+//
+// Like every other method on this service, access is gated by the agent's gRPC
+// transport (the device's trusted control channel); there is no per-RPC
+// authorization layer, so the read-only host topology this returns is no more
+// exposed than the existing container-stats RPCs. The call is logged for audit.
+func (s *ContainerService) GetResourceStats(ctx context.Context, _ *agentpb.GetResourceStatsRequest) (*agentpb.GetResourceStatsResponse, error) {
+	s.logger.Info("GetResourceStats")
+	containers, err := s.containerd.GetResourceStats(ctx)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "getting resource stats: %v", err)
+	}
+
+	host := &agentpb.HostStats{}
+	if cpu, cpuErr := hoststats.ReadCPU(); cpuErr == nil {
+		host.CpuTotalJiffies = cpu.TotalJiffies
+		host.CpuIdleJiffies = cpu.IdleJiffies
+		host.CpuCount = cpu.CPUCount
+	}
+	if mem, memErr := hoststats.ReadMemory(); memErr == nil {
+		host.MemTotalBytes = mem.TotalBytes
+		host.MemAvailableBytes = mem.AvailableBytes
+	}
+	host.Gpus = gpuStatsToProto(hoststats.SampleGPU(ctx))
+	host.ThermalZones = thermalZonesToProto(hoststats.SampleThermal())
+
+	return &agentpb.GetResourceStatsResponse{
+		Host:       host,
+		Containers: containers,
+	}, nil
+}
+
+// thermalZonesToProto converts sampled thermal zones to their proto form.
+func thermalZonesToProto(zones []hoststats.ThermalZone) []*agentpb.ThermalZone {
+	if len(zones) == 0 {
+		return nil
+	}
+	out := make([]*agentpb.ThermalZone, len(zones))
+	for i, z := range zones {
+		out[i] = &agentpb.ThermalZone{Name: z.Name, TempC: z.TempC}
+	}
+	return out
+}
+
+// GetContainerPorts returns the listening TCP and bound UDP sockets for the
+// given app, read from each of its containers' network namespaces. Loopback-bound
+// ports are intentionally included so operators can see services that are exposed
+// only on localhost. Access is gated by the agent's gRPC transport, the same
+// trusted control channel that secures every other method here; the call is
+// logged for audit.
+func (s *ContainerService) GetContainerPorts(ctx context.Context, req *agentpb.GetContainerPortsRequest) (*agentpb.GetContainerPortsResponse, error) {
+	if req.GetAppName() == "" {
+		return nil, status.Errorf(codes.InvalidArgument, "app_name is required")
+	}
+	s.logger.Info("GetContainerPorts", zap.String("app_name", req.GetAppName()))
+	ports, err := s.containerd.GetListeningPorts(ctx, req.GetAppName())
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "getting container ports: %v", err)
+	}
+	return &agentpb.GetContainerPortsResponse{Ports: ports}, nil
+}
+
+func gpuStatsToProto(in []hoststats.GPUStat) []*agentpb.GpuStats {
+	out := make([]*agentpb.GpuStats, 0, len(in))
+	for _, g := range in {
+		pg := &agentpb.GpuStats{
+			Index:         g.Index,
+			Name:          g.Name,
+			UtilPercent:   g.UtilPercent,
+			MemUsedBytes:  g.MemUsedBytes,
+			MemTotalBytes: g.MemTotalBytes,
+			TempC:         g.TempC,
+			PowerW:        g.PowerW,
+		}
+		out = append(out, pg)
+	}
+	return out
 }
 
 func (s *ContainerService) ListContainers(_ *agentpb.ListContainersRequest, stream grpc.ServerStreamingServer[agentpb.ListContainersResponse]) error {

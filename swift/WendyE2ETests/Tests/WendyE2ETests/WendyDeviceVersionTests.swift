@@ -30,7 +30,8 @@ struct `'wendy device version'` {
         try await self.scenario.run { cli, agent in
             let agentAddress = agent.machine.address
 
-            try await cli.sh("wendy --json=false --device \(agentAddress) device version") { result in
+            try await cli.sh("wendy --json=false --device \(agentAddress) device version") {
+                result in
 
                 #expect(result.status.isSuccess)
                 #expect(result.stderr.localizedCaseInsensitiveContains("deprecated"))

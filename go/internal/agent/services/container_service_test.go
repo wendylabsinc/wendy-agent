@@ -44,10 +44,38 @@ type mockContainerdClient struct {
 	mcpPortErr            error
 	restartPolicyLabel    string
 	restartPolicyLabelErr error
+	resourceStats         []*agentpb.ResourceContainerStats
+	resourceStatsErr      error
+	listeningPorts        []*agentpb.PortEntry
+	listeningPortsErr     error
+	stoppedByUserCalls    []stoppedByUserCall
+	declaredVolumes       map[string][]string
+	declaredVolumesErr    error
+}
+
+type stoppedByUserCall struct {
+	containerID string
+	stopped     bool
+}
+
+func (m *mockContainerdClient) ListBootContainers(_ context.Context) ([]BootContainer, error) {
+	return nil, nil
+}
+
+func (m *mockContainerdClient) SetStoppedByUser(_ context.Context, containerID string, stopped bool) error {
+	m.stoppedByUserCalls = append(m.stoppedByUserCalls, stoppedByUserCall{containerID, stopped})
+	return nil
+}
+
+func (m *mockContainerdClient) MigrateStoppedByUserOnce(_ context.Context) error {
+	return nil
 }
 
 func (m *mockContainerdClient) ListContainers(_ context.Context) ([]*agentpb.AppContainer, error) {
 	return m.containers, m.listErr
+}
+func (m *mockContainerdClient) AppDeclaredVolumes(_ context.Context) (map[string][]string, error) {
+	return m.declaredVolumes, m.declaredVolumesErr
 }
 func (m *mockContainerdClient) StopContainer(_ context.Context, _ string) error {
 	return m.stopErr
@@ -67,7 +95,7 @@ func (m *mockContainerdClient) WriteLayer(_ context.Context, digest string, read
 	m.writtenData = data
 	return m.writeLayerErr
 }
-func (m *mockContainerdClient) AssembleImage(_ context.Context, _ string, _ []*agentpb.RunContainerLayerHeader) error {
+func (m *mockContainerdClient) AssembleImage(_ context.Context, _ string, _ []*agentpb.RunContainerLayerHeader, _ []byte) error {
 	return nil
 }
 func (m *mockContainerdClient) CreateContainer(_ context.Context, _ *agentpb.CreateContainerRequest, _ *appconfig.AppConfig) error {
@@ -98,6 +126,13 @@ func (m *mockContainerdClient) GetContainerStats(_ context.Context) ([]*agentpb.
 	return m.statsResult, m.statsErr
 }
 
+func (m *mockContainerdClient) GetResourceStats(_ context.Context) ([]*agentpb.ResourceContainerStats, error) {
+	return m.resourceStats, m.resourceStatsErr
+}
+func (m *mockContainerdClient) GetListeningPorts(_ context.Context, _ string) ([]*agentpb.PortEntry, error) {
+	return m.listeningPorts, m.listeningPortsErr
+}
+
 func (m *mockContainerdClient) GetContainerMetrics(_ context.Context, _ string) (ContainerMetrics, error) {
 	return ContainerMetrics{}, nil
 }
@@ -112,6 +147,22 @@ func (m *mockContainerdClient) GetContainerRestartPolicyLabel(_ context.Context,
 
 func (m *mockContainerdClient) ContainerIDsForApp(_ context.Context, appID string) ([]string, error) {
 	return []string{appID}, nil
+}
+
+func (m *mockContainerdClient) MissingChunks(_ context.Context, hashes [][32]byte) ([][32]byte, error) {
+	return hashes, nil
+}
+
+func (m *mockContainerdClient) PresentLayers(_ context.Context, _ []string) (map[string]int64, error) {
+	return nil, nil
+}
+
+func (m *mockContainerdClient) StageChunk(_ context.Context, _ [32]byte, _ []byte) error {
+	return nil
+}
+
+func (m *mockContainerdClient) AssembleLayerFromChunks(_ context.Context, _ string, _ [][32]byte) error {
+	return nil
 }
 
 // attachTestMock embeds mockContainerdClient and overrides StartContainerWithStdin
@@ -223,6 +274,28 @@ func TestStopContainer(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("StopContainer: %v", err)
+	}
+}
+
+// TestStopContainer_PersistsStoppedByUser verifies a deliberate stop is
+// recorded as a container label so the boot reconcile won't undo it on reboot.
+func TestStopContainer_PersistsStoppedByUser(t *testing.T) {
+	mock := &mockContainerdClient{}
+	client, cleanup := startContainerServer(t, mock)
+	defer cleanup()
+
+	if _, err := client.StopContainer(context.Background(), &agentpb.StopContainerRequest{AppName: "test-app"}); err != nil {
+		t.Fatalf("StopContainer: %v", err)
+	}
+
+	found := false
+	for _, c := range mock.stoppedByUserCalls {
+		if c.containerID == "test-app" && c.stopped {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected SetStoppedByUser(test-app, true); calls = %+v", mock.stoppedByUserCalls)
 	}
 }
 
@@ -848,6 +921,239 @@ func TestListVolumes_WithVolumes(t *testing.T) {
 	}
 }
 
+// TestListVolumes_UsedByFromDeclaredVolumes verifies that usedBy comes from
+// declared persist entitlements, not name prefixes (WDY-1807): a declared
+// volume is attributed to its app regardless of its name, a foreign volume
+// whose name merely starts with the app ID is not, and a volume declared by
+// two apps lists both.
+func TestListVolumes_UsedByFromDeclaredVolumes(t *testing.T) {
+	tmp := t.TempDir()
+	old := volumesDir
+	volumesDir = tmp
+	t.Cleanup(func() { volumesDir = old })
+
+	for _, dir := range []string{"autotest-churn-data", "autotest-orphanvol", "hellovlm-models", "shared-cache", "leaked-vol"} {
+		if err := os.MkdirAll(filepath.Join(tmp, dir), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	mock := &mockContainerdClient{
+		declaredVolumes: map[string][]string{
+			"autotest-churn":             {"autotest-churn-data", "autotest-orphanvol", "shared-cache"},
+			"sh.wendy.examples.hellovlm": {"hellovlm-models", "shared-cache"},
+		},
+	}
+	cl, cleanup := startContainerServer(t, mock)
+	defer cleanup()
+
+	resp, err := cl.ListVolumes(context.Background(), &agentpb.ListVolumesRequest{})
+	if err != nil {
+		t.Fatalf("ListVolumes: %v", err)
+	}
+
+	usedBy := make(map[string][]string)
+	for _, v := range resp.GetVolumes() {
+		usedBy[v.GetName()] = v.GetUsedBy()
+	}
+
+	wants := map[string][]string{
+		"autotest-churn-data": {"autotest-churn"},
+		// Declared but unprefixed: must still be attributed (was invisible before).
+		"autotest-orphanvol": {"autotest-churn"},
+		// Prefix collision with app "hellovlm": owned by the declaring app only.
+		"hellovlm-models": {"sh.wendy.examples.hellovlm"},
+		// Shared by name across two apps.
+		"shared-cache": {"autotest-churn", "sh.wendy.examples.hellovlm"},
+		// Declared by nobody: orphan, empty usedBy.
+		"leaked-vol": nil,
+	}
+	for vol, want := range wants {
+		got := usedBy[vol]
+		if len(got) != len(want) {
+			t.Errorf("usedBy[%q] = %v, want %v", vol, got, want)
+			continue
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Errorf("usedBy[%q] = %v, want %v", vol, got, want)
+				break
+			}
+		}
+	}
+}
+
+// deleteVolumesTestSetup creates volume dirs and starts a server whose mock
+// reports the given declared-volumes map.
+func deleteVolumesTestSetup(t *testing.T, dirs []string, declared map[string][]string, declaredErr error) (agentpb.WendyContainerServiceClient, string) {
+	t.Helper()
+	tmp := t.TempDir()
+	old := volumesDir
+	volumesDir = tmp
+	t.Cleanup(func() { volumesDir = old })
+
+	for _, dir := range dirs {
+		if err := os.MkdirAll(filepath.Join(tmp, dir), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	mock := &mockContainerdClient{declaredVolumes: declared, declaredVolumesErr: declaredErr}
+	cl, cleanup := startContainerServer(t, mock)
+	t.Cleanup(cleanup)
+	return cl, tmp
+}
+
+func mustExist(t *testing.T, tmp string, dirs ...string) {
+	t.Helper()
+	for _, dir := range dirs {
+		if _, err := os.Stat(filepath.Join(tmp, dir)); err != nil {
+			t.Errorf("volume %q should still exist: %v", dir, err)
+		}
+	}
+}
+
+func mustNotExist(t *testing.T, tmp string, dirs ...string) {
+	t.Helper()
+	for _, dir := range dirs {
+		if _, err := os.Stat(filepath.Join(tmp, dir)); !os.IsNotExist(err) {
+			t.Errorf("volume %q should have been deleted (err=%v)", dir, err)
+		}
+	}
+}
+
+// TestDeleteContainer_DeleteVolumes_DeclaredNotPrefixed verifies the leak
+// direction of WDY-1807: --delete-volumes removes exactly what the app
+// declared, including volumes whose names don't start with the app ID.
+func TestDeleteContainer_DeleteVolumes_DeclaredNotPrefixed(t *testing.T) {
+	cl, tmp := deleteVolumesTestSetup(t,
+		[]string{"autotest-churn-data", "autotest-orphanvol", "hellovlm-models"},
+		map[string][]string{
+			"autotest-churn":             {"autotest-churn-data", "autotest-orphanvol"},
+			"sh.wendy.examples.hellovlm": {"hellovlm-models"},
+		}, nil)
+
+	_, err := cl.DeleteContainer(context.Background(), &agentpb.DeleteContainerRequest{
+		AppName:       "autotest-churn",
+		DeleteVolumes: true,
+	})
+	if err != nil {
+		t.Fatalf("DeleteContainer: %v", err)
+	}
+
+	mustNotExist(t, tmp, "autotest-churn-data", "autotest-orphanvol")
+	mustExist(t, tmp, "hellovlm-models")
+}
+
+// TestDeleteContainer_DeleteVolumes_PrefixCollision verifies the cross-delete
+// direction of WDY-1807: removing app "hellovlm" must not delete
+// "hellovlm-models", which belongs to a different app that happens to share
+// the name prefix.
+func TestDeleteContainer_DeleteVolumes_PrefixCollision(t *testing.T) {
+	cl, tmp := deleteVolumesTestSetup(t,
+		[]string{"hellovlm-data", "hellovlm-models"},
+		map[string][]string{
+			"hellovlm":                   {"hellovlm-data"},
+			"sh.wendy.examples.hellovlm": {"hellovlm-models"},
+		}, nil)
+
+	_, err := cl.DeleteContainer(context.Background(), &agentpb.DeleteContainerRequest{
+		AppName:       "hellovlm",
+		DeleteVolumes: true,
+	})
+	if err != nil {
+		t.Fatalf("DeleteContainer: %v", err)
+	}
+
+	mustNotExist(t, tmp, "hellovlm-data")
+	mustExist(t, tmp, "hellovlm-models")
+}
+
+// TestDeleteContainer_DeleteVolumes_SharedVolumeKept: a volume declared by
+// another deployed app too is shared by name and must survive.
+func TestDeleteContainer_DeleteVolumes_SharedVolumeKept(t *testing.T) {
+	cl, tmp := deleteVolumesTestSetup(t,
+		[]string{"app-a-data", "shared-cache"},
+		map[string][]string{
+			"app-a": {"app-a-data", "shared-cache"},
+			"app-b": {"shared-cache"},
+		}, nil)
+
+	_, err := cl.DeleteContainer(context.Background(), &agentpb.DeleteContainerRequest{
+		AppName:       "app-a",
+		DeleteVolumes: true,
+	})
+	if err != nil {
+		t.Fatalf("DeleteContainer: %v", err)
+	}
+
+	mustNotExist(t, tmp, "app-a-data")
+	mustExist(t, tmp, "shared-cache")
+}
+
+// TestDeleteContainer_DeleteVolumes_OwnershipUnknown: when ownership cannot be
+// resolved (lookup error, or an app deployed before entitlement labels
+// existed), nothing is deleted — fail safe, even for prefix-matching names.
+func TestDeleteContainer_DeleteVolumes_OwnershipUnknown(t *testing.T) {
+	t.Run("lookup error", func(t *testing.T) {
+		cl, tmp := deleteVolumesTestSetup(t,
+			[]string{"legacy-app-data"},
+			nil, fmt.Errorf("containerd unavailable"))
+
+		_, err := cl.DeleteContainer(context.Background(), &agentpb.DeleteContainerRequest{
+			AppName:       "legacy-app",
+			DeleteVolumes: true,
+		})
+		if err != nil {
+			t.Fatalf("DeleteContainer: %v", err)
+		}
+		mustExist(t, tmp, "legacy-app-data")
+	})
+
+	t.Run("no persist labels", func(t *testing.T) {
+		cl, tmp := deleteVolumesTestSetup(t,
+			[]string{"legacy-app-data"},
+			map[string][]string{}, nil)
+
+		_, err := cl.DeleteContainer(context.Background(), &agentpb.DeleteContainerRequest{
+			AppName:       "legacy-app",
+			DeleteVolumes: true,
+		})
+		if err != nil {
+			t.Fatalf("DeleteContainer: %v", err)
+		}
+		mustExist(t, tmp, "legacy-app-data")
+	})
+}
+
+// TestDeleteVolumes_UnsafeNames: names that would escape the volumes dir are
+// skipped even if they somehow appear in a declared-volumes list.
+func TestDeleteVolumes_UnsafeNames(t *testing.T) {
+	tmp := t.TempDir()
+	old := volumesDir
+	volumesDir = tmp
+	t.Cleanup(func() { volumesDir = old })
+
+	if err := os.MkdirAll(filepath.Join(tmp, "safe-vol"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(tmp, "..", "outside-"+filepath.Base(tmp))
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(outside) })
+
+	svc := NewContainerService(zap.NewNop(), &mockContainerdClient{})
+	svc.deleteVolumes([]string{"../" + filepath.Base(outside), ".", "..", "", "/", "safe-vol"})
+
+	if _, err := os.Stat(outside); err != nil {
+		t.Errorf("path outside volumes dir should not have been touched: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(tmp, "safe-vol")); !os.IsNotExist(err) {
+		t.Error("safe-vol should have been deleted")
+	}
+}
+
 func TestRemoveVolume_Success(t *testing.T) {
 	tmp := t.TempDir()
 	old := volumesDir
@@ -1135,6 +1441,55 @@ func TestParseAppConfigAcceptsValidAppID(t *testing.T) {
 	}
 	if cfg.AppID != "com.example.app" {
 		t.Fatalf("appId = %q, want %q", cfg.AppID, "com.example.app")
+	}
+}
+
+func TestGetResourceStatsHandler(t *testing.T) {
+	svc := &ContainerService{
+		logger: zap.NewNop(),
+		containerd: &mockContainerdClient{
+			resourceStats: []*agentpb.ResourceContainerStats{
+				{AppName: "myapp", CpuUsageNanos: 5000, MemoryBytes: 2048},
+			},
+		},
+	}
+	resp, err := svc.GetResourceStats(context.Background(), &agentpb.GetResourceStatsRequest{})
+	if err != nil {
+		t.Fatalf("GetResourceStats: %v", err)
+	}
+	if len(resp.GetContainers()) != 1 || resp.GetContainers()[0].GetAppName() != "myapp" {
+		t.Fatalf("unexpected containers: %+v", resp.GetContainers())
+	}
+	if resp.GetContainers()[0].GetCpuUsageNanos() != 5000 {
+		t.Errorf("cpu = %d, want 5000", resp.GetContainers()[0].GetCpuUsageNanos())
+	}
+	// Host is populated best-effort; on a non-Linux test host the /proc reads may
+	// fail, so we only assert the host message is present (non-nil).
+	if resp.GetHost() == nil {
+		t.Errorf("host stats missing")
+	}
+}
+
+func TestGetContainerPortsHandler(t *testing.T) {
+	svc := &ContainerService{
+		logger: zap.NewNop(),
+		containerd: &mockContainerdClient{
+			listeningPorts: []*agentpb.PortEntry{
+				{Protocol: "tcp", Port: 8080, Address: "0.0.0.0"},
+			},
+		},
+	}
+	resp, err := svc.GetContainerPorts(context.Background(), &agentpb.GetContainerPortsRequest{AppName: "myapp"})
+	if err != nil {
+		t.Fatalf("GetContainerPorts: %v", err)
+	}
+	if len(resp.GetPorts()) != 1 || resp.GetPorts()[0].GetPort() != 8080 {
+		t.Fatalf("unexpected ports: %+v", resp.GetPorts())
+	}
+
+	// Empty app name is rejected.
+	if _, err := svc.GetContainerPorts(context.Background(), &agentpb.GetContainerPortsRequest{}); err == nil {
+		t.Errorf("expected error for empty app_name")
 	}
 }
 

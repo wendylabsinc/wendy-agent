@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -40,6 +41,9 @@ func newAuthCmd() *cobra.Command {
 		newAuthLogoutCmd(),
 		newAuthRefreshCertsCmd(),
 		newAuthStatusCmd(),
+		newAuthUseCmd(),
+		newAuthDefaultCmd(),
+		newAuthListOrgsCmd(),
 	)
 
 	return cmd
@@ -393,19 +397,7 @@ func performLocalLogin(ctx context.Context, cloudGRPC, apiKey string, orgID int3
 		Certificates: []config.CertificateInfo{certInfo},
 	}
 
-	// Prepend so local cert is tried first by connectWithAutoTLS.
-	cfg.Auth = append([]config.AuthConfig{authEntry}, cfg.Auth...)
-	// Deduplicate: remove older entry for the same cloudGRPC if any.
-	seen := make(map[string]bool)
-	filtered := cfg.Auth[:0]
-	for _, a := range cfg.Auth {
-		if seen[a.CloudGRPC] {
-			continue
-		}
-		seen[a.CloudGRPC] = true
-		filtered = append(filtered, a)
-	}
-	cfg.Auth = filtered
+	cfg.AddAuth(authEntry)
 
 	if err := config.Save(cfg); err != nil {
 		return fmt.Errorf("saving config: %w", err)
@@ -656,4 +648,129 @@ var openBrowser = browseropen.Open
 // authConfigToJSON marshals an auth config for debugging.
 func authConfigToJSON(auth *config.AuthConfig) ([]byte, error) {
 	return json.MarshalIndent(auth, "", "  ")
+}
+
+// matchAuthSelector resolves a user-supplied selector to exactly one session.
+// An all-digit selector matches a certificate OrganizationID; otherwise it is a
+// case-insensitive substring of the gRPC endpoint or dashboard URL. It errors
+// when nothing matches or when more than one session matches.
+func matchAuthSelector(cfg *config.Config, selector string) (*config.AuthConfig, error) {
+	selector = strings.TrimSpace(selector)
+	if selector == "" {
+		return nil, fmt.Errorf("empty selector")
+	}
+	var matches []*config.AuthConfig
+	if orgID, err := strconv.Atoi(selector); err == nil {
+		for i := range cfg.Auth {
+			for _, c := range cfg.Auth[i].Certificates {
+				if c.OrganizationID == orgID {
+					matches = append(matches, &cfg.Auth[i])
+					break
+				}
+			}
+		}
+	} else {
+		q := strings.ToLower(selector)
+		for i := range cfg.Auth {
+			if strings.Contains(strings.ToLower(cfg.Auth[i].CloudGRPC), q) ||
+				strings.Contains(strings.ToLower(cfg.Auth[i].CloudDashboard), q) {
+				matches = append(matches, &cfg.Auth[i])
+			}
+		}
+	}
+	switch len(matches) {
+	case 0:
+		return nil, fmt.Errorf("no auth session matches %q", selector)
+	case 1:
+		return matches[0], nil
+	default:
+		var b strings.Builder
+		for _, m := range matches {
+			fmt.Fprintf(&b, "\n  - %s", authSessionLabel(m))
+		}
+		return nil, fmt.Errorf("selector %q matches multiple sessions:%s", selector, b.String())
+	}
+}
+
+func newAuthUseCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "use [selector]",
+		Short: "Set the default Wendy Cloud session",
+		Long:  "Sets the default session used when several exist and no --cloud-grpc flag is given. The selector is an organization ID or a substring of the gRPC endpoint or dashboard URL. With no selector in an interactive terminal, a picker is shown.",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := config.Load()
+			if err != nil {
+				return fmt.Errorf("loading config: %w", err)
+			}
+			if len(cfg.Auth) == 0 {
+				return fmt.Errorf("not logged in; run 'wendy auth login' first")
+			}
+
+			var chosen *config.AuthConfig
+			if len(args) == 1 {
+				chosen, err = matchAuthSelector(cfg, args[0])
+				if err != nil {
+					return err
+				}
+			} else {
+				if !isInteractiveTerminal() {
+					return fmt.Errorf("provide a selector (org ID or endpoint substring) when not running interactively")
+				}
+				chosen, err = pickAuthSessionFn(cfg)
+				if err != nil {
+					return err
+				}
+			}
+
+			if len(chosen.Certificates) == 0 {
+				return fmt.Errorf("auth session %s has no certificates; re-run 'wendy auth login'", chosen.CloudGRPC)
+			}
+			cfg.DefaultCloudGRPC = chosen.CloudGRPC
+			if err := config.Save(cfg); err != nil {
+				return fmt.Errorf("saving config: %w", err)
+			}
+			fmt.Println(tui.SuccessMessage(fmt.Sprintf("Default session set to %s.", authSessionLabel(chosen))))
+			return nil
+		},
+	}
+}
+
+func newAuthDefaultCmd() *cobra.Command {
+	var clear bool
+	cmd := &cobra.Command{
+		Use:   "default",
+		Short: "Show or clear the default Wendy Cloud session",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := config.Load()
+			if err != nil {
+				return fmt.Errorf("loading config: %w", err)
+			}
+			if clear {
+				cfg.DefaultCloudGRPC = ""
+				if err := config.Save(cfg); err != nil {
+					return fmt.Errorf("saving config: %w", err)
+				}
+				fmt.Println(tui.SuccessMessage("Default session cleared."))
+				return nil
+			}
+			if cfg.DefaultCloudGRPC == "" {
+				fmt.Println("No default session set.")
+				return nil
+			}
+			def, ok := cfg.DefaultAuth()
+			if !ok {
+				fmt.Println(tui.WarningMessage(fmt.Sprintf("Default session %s no longer exists; clearing it.", cfg.DefaultCloudGRPC)))
+				cfg.DefaultCloudGRPC = ""
+				if err := config.Save(cfg); err != nil {
+					return fmt.Errorf("saving config: %w", err)
+				}
+				return nil
+			}
+			fmt.Printf("Default session: %s\n", authSessionLabel(def))
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&clear, "clear", false, "Unset the default session")
+	return cmd
 }

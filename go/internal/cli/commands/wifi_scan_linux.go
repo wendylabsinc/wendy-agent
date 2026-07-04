@@ -39,7 +39,33 @@ func scanLocalWifiNetworks() ([]localWifiNetwork, error) {
 	// Trigger a rescan first (may fail if already scanning).
 	_ = nmcli.Command(context.Background(), nmcliPath, "device", "wifi", "rescan").Run()
 
-	cmd := nmcli.Command(context.Background(), nmcliPath, "-t", "-f", "SSID,SIGNAL,SECURITY", "device", "wifi", "list")
+	return nmcliListWifi(nmcliPath)
+}
+
+// cachedLocalWifiNetworks reads nmcli's current scan cache without forcing a
+// rescan, so a streaming picker can paint instantly while scanLocalWifiNetworks
+// runs the slower `device wifi rescan`. `--rescan no` keeps the list call from
+// blocking on a fresh scan when the cache is stale. Best-effort: any failure
+// (including no nmcli on PATH, or an nmcli too old to know `--rescan`) yields
+// no networks rather than an error — the authoritative scan still runs after.
+func cachedLocalWifiNetworks() []localWifiNetwork {
+	nmcliPath, err := exec.LookPath("nmcli")
+	if err != nil {
+		return nil
+	}
+	nets, err := nmcliListWifi(nmcliPath, "--rescan", "no")
+	if err != nil {
+		return nil
+	}
+	return nets
+}
+
+// nmcliListWifi lists the WiFi networks nmcli currently knows about and parses
+// the result. It does not trigger a rescan itself; extraArgs (e.g. "--rescan",
+// "no") are appended to the list command.
+func nmcliListWifi(nmcliPath string, extraArgs ...string) ([]localWifiNetwork, error) {
+	args := append([]string{"-t", "-f", "SSID,SIGNAL,SECURITY", "device", "wifi", "list"}, extraArgs...)
+	cmd := nmcli.Command(context.Background(), nmcliPath, args...)
 	output, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("scanning WiFi networks: %w", exitErrWithStderr(err))

@@ -1,21 +1,17 @@
 package services
 
 import (
-	"bufio"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
-	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"go.uber.org/zap"
@@ -23,6 +19,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/wendylabsinc/wendy/go/internal/agent/oshealth"
 	"github.com/wendylabsinc/wendy/go/internal/shared/version"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
@@ -35,6 +32,7 @@ type AgentService struct {
 	bluetoothManager   BluetoothManager
 	installer          *AgentInstaller
 	isWendyOSHost      func() bool
+	osUpdateStateDir   string
 }
 
 func NewAgentService(
@@ -51,19 +49,22 @@ func NewAgentService(
 		bluetoothManager:   bm,
 		installer:          installer,
 		isWendyOSHost:      defaultIsWendyOSHost,
+		osUpdateStateDir:   oshealth.DefaultStateDir,
 	}
 }
 
 func (s *AgentService) GetAgentVersion(_ context.Context, _ *agentpb.GetAgentVersionRequest) (*agentpb.GetAgentVersionResponse, error) {
 	resp := &agentpb.GetAgentVersionResponse{
 		Version:         version.Version,
-		Os:              runtime.GOOS,
+		Os:              detectOS(),
 		CpuArchitecture: runtime.GOARCH,
 		Featureset:      detectFeatureset(),
 	}
 
 	if v, ok := wendyOSVersion(); ok {
 		resp.OsVersion = &v
+	} else if _, distroVer := detectDistro(); distroVer != "" {
+		resp.OsVersion = &distroVer
 	}
 
 	if data, err := os.ReadFile("/etc/wendyos/device-type"); err == nil {
@@ -87,11 +88,16 @@ func (s *AgentService) GetAgentVersion(_ context.Context, _ *agentpb.GetAgentVer
 	if gpuInfo.cudaVersion != "" {
 		resp.CudaVersion = &gpuInfo.cudaVersion
 	}
+	if gpuInfo.gpuArch != "" {
+		resp.GpuArch = &gpuInfo.gpuArch
+	}
 
 	if usage, ok := rootDiskUsage(); ok {
 		resp.DiskUsedBytes = &usage.usedBytes
 		resp.DiskTotalBytes = &usage.totalBytes
 	}
+
+	resp.MemTotalBytes, resp.CpuCount = hostMemAndCPUCount()
 
 	for _, p := range listDiskPartitions() {
 		resp.Partitions = append(resp.Partitions, &agentpb.DiskPartition{
@@ -103,7 +109,31 @@ func (s *AgentService) GetAgentVersion(_ context.Context, _ *agentpb.GetAgentVer
 		})
 	}
 
+	resp.NetworkInterfaces = listNetworkInterfaces()
+
 	return resp, nil
+}
+
+// SetHostname sets the device's hostname (and mDNS name) to a literal value,
+// applies it live, and persists it across reboots. See applyHostname.
+func (s *AgentService) SetHostname(_ context.Context, req *agentpb.SetHostnameRequest) (*agentpb.SetHostnameResponse, error) {
+	hostname := req.GetHostname()
+	s.logger.Info("SetHostname requested", zap.String("hostname", hostname))
+
+	if !s.isWendyOSHost() {
+		s.logger.Warn("SetHostname rejected: host is not a WendyOS device", zap.String("hostname", hostname))
+		return nil, status.Error(codes.Unavailable, "setting the hostname is only supported on WendyOS devices")
+	}
+
+	if err := applyHostname(s.logger, hostname); err != nil {
+		s.logger.Warn("SetHostname failed", zap.String("hostname", hostname), zap.Error(err))
+		if !validHostname(hostname) {
+			return nil, status.Error(codes.InvalidArgument, err.Error())
+		}
+		return nil, status.Errorf(codes.Internal, "applying hostname: %v", err)
+	}
+
+	return &agentpb.SetHostnameResponse{Hostname: hostname}, nil
 }
 
 type gpuInfo struct {
@@ -111,6 +141,7 @@ type gpuInfo struct {
 	vendor         string
 	jetpackVersion string
 	cudaVersion    string
+	gpuArch        string
 }
 
 func detectGPUInfo() gpuInfo {
@@ -134,6 +165,7 @@ func detectGPUInfo() gpuInfo {
 	if info.vendor == "nvidia" {
 		info.jetpackVersion = detectJetPackVersion()
 		info.cudaVersion = detectCUDAVersion()
+		info.gpuArch = detectNvidiaGPUArch()
 	}
 
 	return info
@@ -161,6 +193,7 @@ func detectJetPackVersion() string {
 	// L4T → JetPack version table.
 	// https://developer.nvidia.com/embedded/jetpack-archive
 	jetpack := map[string]string{
+		"39.2": "7.2",
 		"36.4": "6.1",
 		"36.3": "6.0",
 		"36.2": "6.0",
@@ -181,36 +214,83 @@ func detectJetPackVersion() string {
 	if jp, ok := jetpack[key]; ok {
 		return jp
 	}
-	return "L4T " + major + "." + revision
+	return "L4T-" + major + "." + revision
 }
 
 var cudaVersionFileRe = regexp.MustCompile(`(?i)CUDA[^0-9]*([0-9]+\.[0-9]+(?:\.[0-9]+)?)`)
 
 func detectCUDAVersion() string {
-	if data, err := os.ReadFile("/usr/local/cuda/version.txt"); err == nil {
-		if m := cudaVersionFileRe.FindSubmatch(data); len(m) > 1 {
-			return string(m[1])
-		}
-	}
+	return detectCUDAVersionIn("/usr/local", exec.LookPath, runDetectCommand)
+}
 
-	if data, err := os.ReadFile("/usr/local/cuda/version.json"); err == nil {
-		if m := cudaVersionFileRe.FindSubmatch(data); len(m) > 1 {
-			return string(m[1])
-		}
-	}
+// runDetectCommand runs a detection helper binary with a timeout so detection
+// cannot block an RPC handler.
+func runDetectCommand(name string, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	return exec.CommandContext(ctx, name, args...).Output()
+}
 
-	// Fall back to nvcc --version with a timeout so detection cannot block an RPC handler.
-	if nvcc, err := exec.LookPath("nvcc"); err == nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		out, err := exec.CommandContext(ctx, nvcc, "--version").Output()
-		if err == nil {
-			if m := cudaVersionFileRe.FindSubmatch(out); len(m) > 1 {
+// detectCUDAVersionIn probes for the installed CUDA toolkit version under
+// usrLocal (normally /usr/local). lookPath and runCmd are injectable for tests.
+//
+// Probe order:
+//  1. version.txt / version.json under the well-known cuda symlink (legacy
+//     layouts; CUDA 11.1+ dropped version.txt, newer releases also dropped
+//     version.json).
+//  2. nvcc on PATH.
+//  3. nvcc inside versioned toolkit dirs (cuda-X.Y/bin/nvcc) — the JetPack 7
+//     layout ships no cuda symlink, no version files, and does not put nvcc
+//     on PATH.
+func detectCUDAVersionIn(usrLocal string, lookPath func(string) (string, error), runCmd func(string, ...string) ([]byte, error)) string {
+	for _, name := range []string{"version.txt", "version.json"} {
+		if data, err := os.ReadFile(filepath.Join(usrLocal, "cuda", name)); err == nil {
+			if m := cudaVersionFileRe.FindSubmatch(data); len(m) > 1 {
 				return string(m[1])
 			}
 		}
 	}
 
+	if nvcc, err := lookPath("nvcc"); err == nil {
+		if v := cudaVersionFromNvcc(nvcc, runCmd); v != "" {
+			return v
+		}
+	}
+
+	matches, _ := filepath.Glob(filepath.Join(usrLocal, "cuda-*", "bin", "nvcc"))
+	for _, nvcc := range matches {
+		if v := cudaVersionFromNvcc(nvcc, runCmd); v != "" {
+			return v
+		}
+	}
+
+	return ""
+}
+
+func cudaVersionFromNvcc(nvcc string, runCmd func(string, ...string) ([]byte, error)) string {
+	out, err := runCmd(nvcc, "--version")
+	if err != nil {
+		return ""
+	}
+	if m := cudaVersionFileRe.FindSubmatch(out); len(m) > 1 {
+		return string(m[1])
+	}
+	return ""
+}
+
+var computeCapRe = regexp.MustCompile(`^\s*(\d+)\.(\d+)\s*$`)
+
+func detectNvidiaGPUArch() string {
+	if nvidiaSmi, err := exec.LookPath("nvidia-smi"); err == nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		out, err := exec.CommandContext(ctx, nvidiaSmi, "--query-gpu=compute_cap", "--format=csv,noheader,nounits").Output()
+		if err == nil {
+			if m := computeCapRe.FindSubmatch(out); len(m) > 2 {
+				return "sm_" + string(m[1]) + string(m[2])
+			}
+		}
+	}
 	return ""
 }
 
@@ -248,8 +328,14 @@ func detectFeatureset() []string {
 		features = append(features, "camera")
 	}
 
-	if _, found := resolveMenderBinary(); found {
-		features = append(features, "mender")
+	if _, hasWendyOS := resolveWendyOSBinary(); hasWendyOS {
+		// The in-house wendyos-update engine, the OS update backend. See
+		// selectUpdater.
+		features = append(features, "wendyos-update")
+		// "os-healthcheck": OS updates are verified by post-reboot service
+		// healthchecks with automatic rollback (and GetOSUpdateStatus reports
+		// the outcome). See oshealth.Gate.
+		features = append(features, "os-healthcheck")
 	}
 
 	return features
@@ -258,12 +344,18 @@ func detectFeatureset() []string {
 // parseDeviceType parses /etc/wendyos/device-type, which may be either a plain
 // string (legacy) or a KEY=VALUE file (new format).
 // Returns (deviceType, storageMedium); either may be empty.
-// MACHINE and BOARD are treated as the same thing (board identifier).
+//
+// BOARD is the stable board identity that matches the OTA manifest keys
+// (e.g. "jetson-orin-nano"), whereas MACHINE is the full Yocto machine name
+// (e.g. "jetson-orin-nano-devkit-nvme-wendyos"). The manifest is keyed by the
+// board id, so BOARD is preferred; MACHINE is only a fallback for images that
+// don't emit a BOARD line.
 func parseDeviceType(content string) (deviceType, storageMedium string) {
 	content = strings.TrimSpace(content)
 	if !strings.Contains(content, "=") {
 		return content, ""
 	}
+	var board, machine string
 	for _, line := range strings.Split(content, "\n") {
 		line = strings.TrimSpace(line)
 		k, v, ok := strings.Cut(line, "=")
@@ -271,13 +363,42 @@ func parseDeviceType(content string) (deviceType, storageMedium string) {
 			continue
 		}
 		switch strings.TrimSpace(k) {
-		case "MACHINE", "BOARD":
-			deviceType = strings.TrimSpace(v)
+		case "BOARD":
+			board = strings.TrimSpace(v)
+		case "MACHINE":
+			machine = strings.TrimSpace(v)
 		case "STORAGE":
 			storageMedium = strings.TrimSpace(v)
 		}
 	}
+	deviceType = board
+	if deviceType == "" {
+		deviceType = machine
+	}
+	// Fall back to inferring the storage medium from the Yocto machine name
+	// (e.g. "...-nvme-wendyos") when the image didn't emit an explicit STORAGE
+	// line. The OTA manifest uses this to pick the storage-specific artifact;
+	// an unknown/absent medium is fine (the default artifact is used).
+	if storageMedium == "" {
+		storageMedium = inferStorageFromMachine(machine)
+	}
 	return deviceType, storageMedium
+}
+
+// inferStorageFromMachine derives a storage medium from a Yocto machine name
+// when no explicit STORAGE was provided. Only the media that need a dedicated
+// OTA artifact are recognized; everything else returns "" (the default
+// artifact applies).
+func inferStorageFromMachine(machine string) string {
+	m := strings.ToLower(machine)
+	switch {
+	case strings.Contains(m, "nvme"):
+		return "nvme"
+	case strings.Contains(m, "emmc"):
+		return "emmc"
+	default:
+		return ""
+	}
 }
 
 // RunContainer is deprecated. Clients should use WendyContainerService.RunContainer
@@ -532,9 +653,45 @@ func (s *AgentService) ForgetBluetoothPeripheral(ctx context.Context, req *agent
 
 const osUpdateUnsupportedForHostMessage = "This setup cannot be updated with wendy os update. Use this machine’s normal OS update tools instead. To use WendyOS OTA updates, install WendyOS on supported hardware with wendy os install."
 
-// menderProgressRe matches percentage patterns in mender output, e.g.
-// "  10%" or "50% 5120 kB" or "Installing:  75%".
-var menderProgressRe = regexp.MustCompile(`(\d{1,3})%`)
+// systemctlFn runs systemctl; overridable in tests.
+var systemctlFn = func(ctx context.Context, args ...string) ([]byte, error) {
+	return exec.CommandContext(ctx, "systemctl", args...).CombinedOutput()
+}
+
+const (
+	updaterTimerUnit   = "wendyos-agent-updater.timer"
+	updaterServiceUnit = "wendyos-agent-updater.service"
+)
+
+// inhibitAutoUpdater stops the agent auto-updater (timer+service) and returns a
+// defer-able restore func that re-enables the timer. The updater's "systemctl
+// stop wendyos-agent" would otherwise SIGTERM the in-flight wendyos-update
+// install via the shared service cgroup (default KillMode=control-group) and
+// abort the OTA. Best-effort: failures are logged, not fatal.
+func inhibitAutoUpdater(logger *zap.Logger) func() {
+	sysctl := func(args ...string) ([]byte, error) {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		return systemctlFn(ctx, args...)
+	}
+	run := func(args ...string) {
+		if out, err := sysctl(args...); err != nil {
+			logger.Warn("OTA updater-inhibit: systemctl failed",
+				zap.Strings("args", args), zap.Error(err),
+				zap.String("output", strings.TrimSpace(string(out))))
+		}
+	}
+	// Hosts without the auto-updater (Jetson/QEMU) have nothing to stop — no-op
+	// instead of logging a spurious failure on every OTA. `cat` exits non-zero
+	// when the unit is absent.
+	if _, err := sysctl("cat", updaterTimerUnit); err != nil {
+		return func() {}
+	}
+	run("stop", updaterTimerUnit, updaterServiceUnit)
+	// Restore only the timer: it re-triggers the oneshot service itself, and a
+	// stopped timer re-arms on the next boot regardless.
+	return func() { run("start", updaterTimerUnit) }
+}
 
 func defaultIsWendyOSHost() bool {
 	// Older WendyOS builds did not write /etc/wendyos/device-type, so keep the
@@ -567,81 +724,26 @@ func readWendyOSVersionFrom(paths ...string) (string, bool) {
 	return "", false
 }
 
-// enableJetsonRootfsAB ensures rootfs A/B redundancy is configured on NVIDIA
-// Jetson devices by writing the required UEFI EFI variables. It is a no-op on
-// non-Jetson hardware (detected by the absence of nvbootctrl).
-//
-// The caller must be running as root; the function returns an error if the
-// device appears to be a Jetson but the prerequisite APP_b partition is absent.
-func enableJetsonRootfsAB(logger *zap.Logger) error {
-	const guid = "781e084c-a330-417c-b678-38e696380cb9"
-	const efivarsDir = "/sys/firmware/efi/efivars"
-
-	nvbootctrl, err := exec.LookPath("nvbootctrl")
-	if err != nil {
-		// Not a Jetson device — nothing to do.
-		return nil
-	}
-
-	if _, err := os.Stat(efivarsDir); err != nil {
-		return fmt.Errorf("EFI vars not accessible at %s: %w", efivarsDir, err)
-	}
-
-	if _, err := os.Stat("/dev/disk/by-partlabel/APP_b"); err != nil {
-		return fmt.Errorf("APP_b partition not found — device needs reflashing for rootfs A/B support")
-	}
-
-	// Exit code 0 means A/B is NOT yet enabled; non-zero means already enabled.
-	checkCmd := exec.Command(nvbootctrl, "-t", "rootfs", "is-rootfs-ab-enabled")
-	if err := checkCmd.Run(); err != nil {
-		logger.Info("Jetson rootfs A/B already enabled, skipping EFI var setup")
-		return nil
-	}
-
-	logger.Info("Enabling Jetson rootfs A/B redundancy")
-
-	writeVar := func(name string, value []byte) error {
-		path := fmt.Sprintf("%s/%s-%s", efivarsDir, name, guid)
-		if _, err := os.Stat(path); err == nil {
-			logger.Info("EFI var already exists, skipping", zap.String("name", name))
-			return nil
-		}
-		// EFI variable format: 4-byte attributes header + value bytes.
-		// Attributes: 0x07 = NV|BS|RT (non-volatile, boot-service, runtime-service).
-		data := append([]byte{0x07, 0x00, 0x00, 0x00}, value...)
-		if err := os.WriteFile(path, data, 0644); err != nil {
-			return fmt.Errorf("writing EFI var %s: %w", name, err)
-		}
-		logger.Info("EFI var written", zap.String("name", name))
-		return nil
-	}
-
-	// RootfsRedundancyLevel = 1, RootfsRetryCountMax = 3.
-	if err := writeVar("RootfsRedundancyLevel", []byte{0x01, 0x00, 0x00, 0x00}); err != nil {
-		return err
-	}
-	if err := writeVar("RootfsRetryCountMax", []byte{0x03, 0x00, 0x00, 0x00}); err != nil {
-		return err
-	}
-
-	out, _ := exec.Command(nvbootctrl, "-t", "rootfs", "dump-slots-info").CombinedOutput()
-	logger.Info("Jetson rootfs A/B enabled", zap.String("slots_info", strings.TrimSpace(string(out))))
-	return nil
-}
-
 func (s *AgentService) UpdateOS(req *agentpb.UpdateOSRequest, stream grpc.ServerStreamingServer[agentpb.UpdateOSResponse]) error {
-	s.logger.Info("UpdateOS started", zap.String("artifact_url", req.GetArtifactUrl()))
+	s.logger.Info("UpdateOS started",
+		zap.String("artifact_url", req.GetArtifactUrl()), zap.String("updater", req.GetUpdaterBackend()))
 
 	if !s.isWendyOSHost() {
 		s.logger.Warn("UpdateOS rejected: host is not a WendyOS OTA target", zap.String("artifact_url", req.GetArtifactUrl()))
-		return stream.Send(&agentpb.UpdateOSResponse{
-			ResponseType: &agentpb.UpdateOSResponse_Failed_{
-				Failed: &agentpb.UpdateOSResponse_Failed{
-					ErrorMessage: osUpdateUnsupportedForHostMessage,
-				},
-			},
-		})
+		return sendOSUpdateFailure(stream, osUpdateUnsupportedForHostMessage)
 	}
+
+	// Stop the auto-updater so it can't SIGTERM the in-flight install mid-OTA;
+	// see inhibitAutoUpdater. Restored on return.
+	restoreUpdater := inhibitAutoUpdater(s.logger)
+	defer restoreUpdater()
+
+	updater, err := selectUpdater(s.logger, req.GetUpdaterBackend())
+	if err != nil {
+		s.logger.Warn("UpdateOS rejected: no usable updater backend", zap.Error(err))
+		return sendOSUpdateFailure(stream, err.Error())
+	}
+	s.logger.Info("UpdateOS using backend", zap.String("backend", updater.name()))
 
 	sendProgress := func(phase string, percent int32) {
 		_ = stream.Send(&agentpb.UpdateOSResponse{
@@ -654,143 +756,11 @@ func (s *AgentService) UpdateOS(req *agentpb.UpdateOSRequest, stream grpc.Server
 		})
 	}
 
-	if err := enableJetsonRootfsAB(s.logger); err != nil {
-		return stream.Send(&agentpb.UpdateOSResponse{
-			ResponseType: &agentpb.UpdateOSResponse_Failed_{
-				Failed: &agentpb.UpdateOSResponse_Failed{
-					ErrorMessage: fmt.Sprintf("Jetson A/B setup failed: %v", err),
-				},
-			},
-		})
+	if err := updater.install(stream.Context(), req.GetArtifactUrl(), sendProgress); err != nil {
+		return sendOSUpdateFailure(stream, err.Error())
 	}
 
-	sendProgress("downloading", 0)
-	cmdName, found := resolveMenderBinary()
-	if !found {
-		return stream.Send(&agentpb.UpdateOSResponse{
-			ResponseType: &agentpb.UpdateOSResponse_Failed_{
-				Failed: &agentpb.UpdateOSResponse_Failed{
-					ErrorMessage: "mender-update binary not found",
-				},
-			},
-		})
-	}
-
-	cmd := exec.CommandContext(stream.Context(), cmdName, "install", req.GetArtifactUrl())
-	cmd.Env = envWithPath("/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
-
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return stream.Send(&agentpb.UpdateOSResponse{
-			ResponseType: &agentpb.UpdateOSResponse_Failed_{
-				Failed: &agentpb.UpdateOSResponse_Failed{
-					ErrorMessage: fmt.Sprintf("failed to create stderr pipe: %v", err),
-				},
-			},
-		})
-	}
-
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return stream.Send(&agentpb.UpdateOSResponse{
-			ResponseType: &agentpb.UpdateOSResponse_Failed_{
-				Failed: &agentpb.UpdateOSResponse_Failed{
-					ErrorMessage: fmt.Sprintf("failed to create stdout pipe: %v", err),
-				},
-			},
-		})
-	}
-
-	if err := cmd.Start(); err != nil {
-		return stream.Send(&agentpb.UpdateOSResponse{
-			ResponseType: &agentpb.UpdateOSResponse_Failed_{
-				Failed: &agentpb.UpdateOSResponse_Failed{
-					ErrorMessage: fmt.Sprintf("failed to start mender: %v", err),
-				},
-			},
-		})
-	}
-
-	// Stream progress by scanning mender's output in real time.
-	// Mender writes structured log lines to stderr; stdout may have additional info.
-	// We merge both and parse for phase transitions and percentage patterns.
-	//
-	// Download progress occupies 0-80% of the overall bar.
-	// Install progress occupies 80-95%.
-	// 95-100% is reserved for finalization.
-	phase := "downloading"
-	lastPercent := int32(0)
-
-	// Retain the tail of mender's output so a non-zero exit can report the
-	// real cause (e.g. an incompatible device type) instead of a bare
-	// "exit status 1".
-	outputTail := newLineRing(menderErrorTailLines)
-
-	scanLines := func(r io.Reader) {
-		scanner := bufio.NewScanner(r)
-		scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
-		for scanner.Scan() {
-			line := scanner.Text()
-			outputTail.push(line)
-			lower := strings.ToLower(line)
-			s.logger.Debug("mender output", zap.String("line", line))
-
-			// Detect phase transitions.
-			switch {
-			case strings.Contains(lower, "installing") || strings.Contains(lower, "writing artifact"):
-				if phase != "installing" {
-					phase = "installing"
-					sendProgress(phase, 80)
-					lastPercent = 80
-				}
-			case strings.Contains(lower, "download complete") || strings.Contains(lower, "download finished"):
-				if phase == "downloading" {
-					sendProgress("downloading", 80)
-					lastPercent = 80
-				}
-			}
-
-			// Extract percentage from the line.
-			if m := menderProgressRe.FindStringSubmatch(line); len(m) > 1 {
-				if pct, err := strconv.Atoi(m[1]); err == nil && pct >= 0 && pct <= 100 {
-					var overall int32
-					if phase == "downloading" {
-						// Map download 0-100% → overall 0-80%
-						overall = int32(pct) * 80 / 100
-					} else {
-						// Map install 0-100% → overall 80-95%
-						overall = 80 + int32(pct)*15/100
-					}
-					if overall > lastPercent {
-						lastPercent = overall
-						sendProgress(phase, overall)
-					}
-				}
-			}
-		}
-		if err := scanner.Err(); err != nil {
-			s.logger.Warn("mender output scan error", zap.Error(err))
-		}
-	}
-
-	var wg sync.WaitGroup
-	wg.Add(2)
-	go func() { defer wg.Done(); scanLines(stderr) }()
-	go func() { defer wg.Done(); scanLines(stdout) }()
-
-	wg.Wait()
-
-	if err := cmd.Wait(); err != nil {
-		msg := formatMenderFailure(err, outputTail.tail())
-		s.logger.Error("mender install failed", zap.Error(err), zap.Strings("output_tail", outputTail.tail()))
-		return stream.Send(&agentpb.UpdateOSResponse{
-			ResponseType: &agentpb.UpdateOSResponse_Failed_{
-				Failed: &agentpb.UpdateOSResponse_Failed{
-					ErrorMessage: msg,
-				},
-			},
-		})
-	}
+	recordPendingOSUpdate(s.logger, s.osUpdateStateDir, req.GetArtifactUrl(), updater.name())
 
 	sendProgress("finalizing", 100)
 
@@ -811,6 +781,15 @@ func (s *AgentService) UpdateOS(req *agentpb.UpdateOSRequest, stream grpc.Server
 	return nil
 }
 
+// sendOSUpdateFailure sends a terminal Failed response on the v1 UpdateOS stream.
+func sendOSUpdateFailure(stream grpc.ServerStreamingServer[agentpb.UpdateOSResponse], msg string) error {
+	return stream.Send(&agentpb.UpdateOSResponse{
+		ResponseType: &agentpb.UpdateOSResponse_Failed_{
+			Failed: &agentpb.UpdateOSResponse_Failed{ErrorMessage: msg},
+		},
+	})
+}
+
 // envWithPath returns os.Environ() with the PATH entry replaced by the given value.
 // This ensures PATH is set exactly once (not duplicated), which matters because
 // getenv on Linux returns the first match — appending would leave the original in place.
@@ -823,64 +802,6 @@ func envWithPath(path string) []string {
 		}
 	}
 	return append(env, "PATH="+path)
-}
-
-// resolveMenderBinary finds the mender-update binary. It checks PATH via
-// exec.LookPath and then probes absolute paths directly. The os.Stat fallback
-// is restricted to absolute paths to avoid accidentally executing a file from
-// the current working directory. mender-update is preferred over legacy mender.
-func resolveMenderBinary() (string, bool) {
-	candidates := []string{
-		"mender-update",
-		"/usr/local/sbin/mender-update",
-		"/usr/local/bin/mender-update",
-		"/usr/sbin/mender-update",
-		"/usr/bin/mender-update",
-		"/sbin/mender-update",
-		"/bin/mender-update",
-		"mender",
-		"/usr/local/sbin/mender",
-		"/usr/local/bin/mender",
-		"/usr/sbin/mender",
-		"/usr/bin/mender",
-		"/sbin/mender",
-		"/bin/mender",
-	}
-	for _, c := range candidates {
-		if path, err := exec.LookPath(c); err == nil {
-			return path, true
-		}
-		if filepath.IsAbs(c) {
-			if _, err := os.Stat(c); err == nil {
-				return c, true
-			}
-		}
-	}
-	return "", false
-}
-
-// CommitMenderUpdate runs "mender-update commit" on startup to confirm a
-// pending Mender A/B update. If not committed, Mender rolls back on next reboot.
-// This is a no-op if mender-update is not installed.
-func CommitMenderUpdate(logger *zap.Logger) {
-	binary, found := resolveMenderBinary()
-	if !found {
-		return
-	}
-	cmd := exec.Command(binary, "commit")
-	cmd.Env = envWithPath("/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) && exitErr.ExitCode() == 2 {
-			// Exit code 2 means "nothing to commit" — not an error.
-			logger.Debug("mender-update commit: nothing to commit", zap.String("output", strings.TrimSpace(string(out))))
-			return
-		}
-		logger.Warn("mender-update commit failed", zap.String("output", strings.TrimSpace(string(out))), zap.Error(err))
-		return
-	}
-	logger.Info("Committed Mender update", zap.String("output", strings.TrimSpace(string(out))))
 }
 
 func CleanupOldBackups(logger *zap.Logger) {

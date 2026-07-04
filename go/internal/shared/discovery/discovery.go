@@ -3,13 +3,25 @@ package discovery
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log"
+	"os"
 	"sync"
 	"time"
 
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 )
+
+// logMDNSQueryErr reports an mDNS query failure to stderr when WENDY_MDNS_DEBUG
+// is set. It is a no-op for nil errors or when debugging is off, so callers can
+// wrap the query directly: logMDNSQueryErr(iface, mdns.Query(params)).
+func logMDNSQueryErr(iface string, err error) {
+	if err == nil || os.Getenv("WENDY_MDNS_DEBUG") == "" {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "wendy: mDNS query on %s failed: %v\n", iface, err)
+}
 
 const (
 	// wendyServiceType is the mDNS service type advertised by WendyOS devices.
@@ -62,8 +74,9 @@ func Discover(ctx context.Context, opts DiscoveryOptions) (*models.DevicesCollec
 		go func() {
 			defer wg.Done()
 			if devices, err := discoverUSB(ctx); err == nil {
+				filtered := filterUSBDevices(devices)
 				mu.Lock()
-				collection.USBDevices = devices
+				collection.USBDevices = filtered
 				mu.Unlock()
 			}
 		}()
@@ -112,7 +125,18 @@ func Discover(ctx context.Context, opts DiscoveryOptions) (*models.DevicesCollec
 
 // DiscoverUSB discovers USB-connected Wendy devices.
 func DiscoverUSB(ctx context.Context) ([]models.USBDevice, error) {
-	return discoverUSB(ctx)
+	devices, err := discoverUSB(ctx)
+	return filterUSBDevices(devices), err
+}
+
+func filterUSBDevices(devices []models.USBDevice) []models.USBDevice {
+	result := make([]models.USBDevice, 0, len(devices))
+	for _, d := range devices {
+		if !d.IsESP32 {
+			result = append(result, d)
+		}
+	}
+	return result
 }
 
 // DiscoverEthernet discovers Ethernet interfaces connected to Wendy devices.

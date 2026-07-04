@@ -3,7 +3,6 @@ package commands
 
 import (
 	"os"
-	"runtime"
 
 	"github.com/spf13/cobra"
 	"github.com/wendylabsinc/wendy/go/internal/cli/analytics"
@@ -19,6 +18,10 @@ var (
 )
 
 func NewRootCmd() *cobra.Command {
+	// firstRun records whether this invocation showed the first-run analytics
+	// notice in PreRunE, so PostRunE can avoid stacking another prompt on top.
+	var firstRun bool
+
 	root := &cobra.Command{
 		Use:           "wendy",
 		Short:         "Wendy CLI - Edge Computing Development Tool",
@@ -27,8 +30,10 @@ func NewRootCmd() *cobra.Command {
 		SilenceErrors: true,
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 			// Skip heavy init for commands that don't need device/cloud setup.
+			// __usb-setup runs as root under sudo; skipping init avoids doing
+			// config/analytics writes (and an update check) as root.
 			switch cmd.Name() {
-			case "__ble-check", "open-browser":
+			case "__ble-check", "__usb-setup", "open-browser":
 				return nil
 			}
 
@@ -36,14 +41,18 @@ func NewRootCmd() *cobra.Command {
 				jsonOutput = true
 			}
 
+			premark := phaseTimer()
 			providers.Initialize(cmd.Context())
+			premark("  prerun: providers.Initialize")
 
 			cfg, err := config.Load()
 			if err != nil {
 				return err
 			}
+			premark("  prerun: config.Load")
 
-			firstRun := analytics.Init(cfg)
+			firstRun = analytics.Init(cfg)
+			premark("  prerun: analytics.Init")
 			if firstRun {
 				cmd.PrintErrln("Attention: The Wendy CLI collects anonymous analytics.")
 				cmd.PrintErrln("They help us understand which commands are used most, identify common errors, and prioritize improvements.")
@@ -62,28 +71,28 @@ func NewRootCmd() *cobra.Command {
 			// user last ran `wendy mcp setup`. Runs synchronously here, before
 			// the update-check goroutine below also mutates and saves cfg.
 			maybeRefreshMCPSetup(cfg)
+			premark("  prerun: maybeRefreshMCPSetup")
 
 			if dueCLIUpdateCheck(cfg) {
 				scheduleCLIUpdateCheck(cfg)
 			}
+			premark("  prerun: dueCLIUpdateCheck")
 
 			return nil
 		},
 		PersistentPostRunE: func(cmd *cobra.Command, args []string) error {
-			select {
-			case latest := <-cliUpdateNoticeCh:
-				var updateCmd string
-				switch runtime.GOOS {
-				case "windows":
-					updateCmd = "winget upgrade WendyLabs.Wendy"
-				case "darwin":
-					updateCmd = "brew upgrade wendy"
-				default:
-					updateCmd = "curl -fsSL https://install.wendy.sh/cli.sh | bash"
-				}
-				cmd.PrintErrf("\nA new version of the Wendy CLI is available: %s (you have %s)\nUpdate with: %s\n", latest, version.Version, updateCmd)
-			default:
+			// Surface a throttled tip about `wendy project optimize` after a
+			// successful build/run (no-op for other commands and in CI).
+			maybeShowOptimizeTip(cmd)
+
+			// Surface any pending CLI-update notice first. If it showed a prompt,
+			// don't stack the completion prompt on top of it this invocation.
+			updateShown, err := notifyCLIUpdate(cmd)
+			if err != nil {
+				return err
 			}
+
+			maybePromptInstallCompletions(cmd, firstRun, updateShown)
 			return nil
 		},
 	}
@@ -91,53 +100,72 @@ func NewRootCmd() *cobra.Command {
 	root.PersistentFlags().BoolVar(&jsonOutput, "json", false, "Output in JSON format")
 	root.PersistentFlags().StringVar(&deviceFlag, "device", "", "Target device hostname")
 
+	// Render the top-level command groups in the deliberate order below rather
+	// than alphabetically, so e.g. "project" lists before "device".
+	cobra.EnableCommandSorting = false
+
 	root.AddGroup(
-		&cobra.Group{ID: "project", Title: "Project Commands:"},
-		&cobra.Group{ID: "cloud", Title: "Manage Your Cloud:"},
-		&cobra.Group{ID: "devices", Title: "Manage Your Devices:"},
-		&cobra.Group{ID: "misc", Title: "Misc.:"},
+		&cobra.Group{ID: "develop", Title: "Develop & Deploy:"},
+		&cobra.Group{ID: "manage", Title: "Manage:"},
+		&cobra.Group{ID: "cloud", Title: "Cloud:"},
+		&cobra.Group{ID: "settings", Title: "Settings:"},
 	)
 
-	// Project Commands
-	runCmd := newRunCmd()
-	runCmd.GroupID = "project"
-	buildCmd := newBuildCmd()
-	buildCmd.GroupID = "project"
+	// Develop & Deploy
 	initCmd := newInitCmd()
-	initCmd.GroupID = "project"
-	projectCmd := newProjectCmd()
-	projectCmd.GroupID = "project"
-	jsonCmd := newJSONCmd()
-	jsonCmd.GroupID = "project"
+	initCmd.GroupID = "develop"
+	runCmd := newRunCmd()
+	runCmd.GroupID = "develop"
+	// `wendy install` is the surfaced alias for `wendy os install` (the `os`
+	// group is hidden). A fresh command instance is used because a cobra
+	// command can only be attached to one parent.
+	installCmd := newOSInstallCmd()
+	installCmd.GroupID = "develop"
 
-	// Cloud Commands
-	authCmd := newAuthCmd()
-	authCmd.GroupID = "cloud"
+	// Manage
+	projectCmd := newProjectCmd()
+	projectCmd.GroupID = "manage"
+	deviceCmd := newDeviceCmd()
+	deviceCmd.GroupID = "manage"
+
+	// Cloud
 	cloudCmd := newCloudCmd()
 	cloudCmd.GroupID = "cloud"
 
-	// Device Commands
-	deviceCmd := newDeviceCmd()
-	deviceCmd.GroupID = "devices"
-	discoverCmd := newDiscoverCmd()
-	discoverCmd.GroupID = "devices"
-	osCmd := newOSCmd()
-	osCmd.GroupID = "devices"
-	// Misc Commands
-	cacheCmd := newCacheCmd()
-	cacheCmd.GroupID = "misc"
-	infoCmd := newInfoCmd()
-	infoCmd.GroupID = "misc"
+	// Settings
 	analyticsCmd := newAnalyticsCmd()
-	analyticsCmd.GroupID = "misc"
+	analyticsCmd.GroupID = "settings"
+	cacheCmd := newCacheCmd()
+	cacheCmd.GroupID = "settings"
+
+	// Hidden commands: still fully functional, just omitted from `wendy --help`
+	// to keep the top-level surface focused on the common workflow. `auth`
+	// remains a working command for back-compat ('wendy cloud login' is the
+	// surfaced entry point); 'json' is already hidden in its constructor.
+	buildCmd := newBuildCmd()
+	buildCmd.Hidden = true
+	watchCmd := newWatchCmd()
+	watchCmd.Hidden = true
+	jsonCmd := newJSONCmd()
+	authCmd := newAuthCmd()
+	authCmd.Hidden = true
+	discoverCmd := newDiscoverCmd()
+	discoverCmd.Hidden = true
+	osCmd := newOSCmd()
+	osCmd.Hidden = true
+	infoCmd := newInfoCmd()
+	infoCmd.Hidden = true
 	utilsCmd := newUtilsCmd()
-	utilsCmd.GroupID = "misc"
+	utilsCmd.Hidden = true
 	tourCmd := newTourCmd()
-	tourCmd.GroupID = "misc"
+	tourCmd.Hidden = true
 	mcpCmd := newMCPCmd()
-	mcpCmd.GroupID = "misc"
+	mcpCmd.Hidden = true
 	completionCmd := newCompletionCmd()
-	completionCmd.GroupID = "misc"
+	completionCmd.Hidden = true
+	// Keep a valid group on the (hidden) completion command so the help/
+	// completion group wiring below stays consistent.
+	completionCmd.GroupID = "settings"
 
 	// Hidden command used by a subprocess to test CoreBluetooth access.
 	// The main process spawns a child process that runs this command so
@@ -151,30 +179,75 @@ func NewRootCmd() *cobra.Command {
 		},
 	}
 
+	var bmapDevice, bmapFile, bmapSource string
+	var bmapWriters int
+	bmapWriteCmd := &cobra.Command{
+		Use:    "__bmap-write",
+		Hidden: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if bmapSource != "" {
+				return runBmapWriteSeekable(bmapDevice, bmapFile, bmapSource, bmapWriters, cmd.OutOrStdout())
+			}
+			return runBmapWrite(bmapDevice, bmapFile, cmd.InOrStdin())
+		},
+	}
+	bmapWriteCmd.Flags().StringVar(&bmapDevice, "device", "", "Raw device path to write")
+	bmapWriteCmd.Flags().StringVar(&bmapFile, "bmap", "", "Path to the .bmap file")
+	bmapWriteCmd.Flags().StringVar(&bmapSource, "source", "", "Path to the seekable .img.zst source")
+	bmapWriteCmd.Flags().IntVar(&bmapWriters, "writers", 0, "Concurrent writer goroutines (0 = sequential default)")
+
+	// Visible commands are added in display order (command sorting is disabled
+	// above); hidden commands follow and never appear in help.
 	root.AddCommand(
-		bleCheckCmd,
-		runCmd,
-		buildCmd,
+		// Develop & Deploy
 		initCmd,
+		runCmd,
+		installCmd,
+		// Manage
 		projectCmd,
+		deviceCmd,
+		// Cloud
+		cloudCmd,
+		// Settings
+		analyticsCmd,
+		cacheCmd,
+		// Hidden
+		bleCheckCmd,
+		bmapWriteCmd,
+		newUSBSetupHiddenCmd(),
+		watchCmd,
+		buildCmd,
 		jsonCmd,
 		authCmd,
-		cloudCmd,
-		deviceCmd,
 		discoverCmd,
 		osCmd,
-		cacheCmd,
 		infoCmd,
-		analyticsCmd,
 		utilsCmd,
 		tourCmd,
 		mcpCmd,
 		completionCmd,
 	)
 
-	root.SetHelpCommandGroupID("misc")
-	root.SetCompletionCommandGroupID("misc")
+	root.SetHelpCommandGroupID("settings")
+	root.SetCompletionCommandGroupID("settings")
 
 	root.Version = version.Version
 	return root
+}
+
+// newUSBSetupHiddenCmd builds the hidden "__usb-setup" subcommand. It is the
+// privileged half of the USB-C auto-setup flow: maybeOfferUSBSetup re-execs the
+// CLI as `sudo wendy __usb-setup --iface <iface>` so the NetworkManager + udev
+// changes run as root. It is hidden because users never invoke it directly.
+func newUSBSetupHiddenCmd() *cobra.Command {
+	var iface string
+	cmd := &cobra.Command{
+		Use:    "__usb-setup",
+		Hidden: true,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return runUSBSetup(cmd.Context(), iface, cmd.OutOrStdout())
+		},
+	}
+	cmd.Flags().StringVar(&iface, "iface", "", "USB gadget interface to configure")
+	return cmd
 }

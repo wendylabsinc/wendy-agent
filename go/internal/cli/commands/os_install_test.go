@@ -27,7 +27,7 @@ func TestNewOSInstallCmd_Flags(t *testing.T) {
 		t.Errorf("Use = %q; want %q", cmd.Use, "install [image] [drive]")
 	}
 
-	expectedFlags := []string{"nightly", "force", "yes-overwrite-internal", "device-type", "version", "drive", "wifi-ssid", "wifi-password", "wifi", "no-wifi", "device-name"}
+	expectedFlags := []string{"nightly", "force", "yes-overwrite-internal", "device-type", "version", "drive", "wifi-ssid", "wifi-password", "wifi", "no-wifi", "device-name", "storage", "no-bmap"}
 	for _, name := range expectedFlags {
 		if cmd.Flags().Lookup(name) == nil {
 			t.Errorf("missing flag %q", name)
@@ -134,7 +134,7 @@ func TestPickManifestVersion_SemverOrdering(t *testing.T) {
 
 func TestOsCachedImagePath_Sanitization(t *testing.T) {
 	// Valid inputs should produce a valid path.
-	path, err := osCachedImagePath("raspberry-pi-5", "0.10.4")
+	path, err := osCachedImagePath("raspberry-pi-5", "0.10.4", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -143,20 +143,26 @@ func TestOsCachedImagePath_Sanitization(t *testing.T) {
 	}
 
 	// Path traversal in version should be rejected.
-	_, err = osCachedImagePath("raspberry-pi-5", "../../../etc/passwd")
+	_, err = osCachedImagePath("raspberry-pi-5", "../../../etc/passwd", "")
 	if err == nil {
 		t.Fatal("expected error for path traversal in version")
 	}
 
 	// Path traversal in device key should be rejected.
-	_, err = osCachedImagePath("../evil", "0.10.4")
+	_, err = osCachedImagePath("../evil", "0.10.4", "")
 	if err == nil {
 		t.Fatal("expected error for path traversal in device key")
+	}
+
+	// Path traversal in storage key should be rejected.
+	_, err = osCachedImagePath("raspberry-pi-5", "0.10.4", "../evil")
+	if err == nil {
+		t.Fatal("expected error for path traversal in storage key")
 	}
 }
 
 func TestOsCachedZipPath_Sanitization(t *testing.T) {
-	path, err := osCachedZipPath("raspberry-pi-5", "0.10.4")
+	path, err := osCachedZipPath("raspberry-pi-5", "0.10.4", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -164,14 +170,45 @@ func TestOsCachedZipPath_Sanitization(t *testing.T) {
 		t.Fatalf("expected .zip suffix, got %q", path)
 	}
 
-	_, err = osCachedZipPath("raspberry-pi-5", "../../../etc/passwd")
+	_, err = osCachedZipPath("raspberry-pi-5", "../../../etc/passwd", "")
 	if err == nil {
 		t.Fatal("expected error for path traversal in version")
 	}
 
-	_, err = osCachedZipPath("../evil", "0.10.4")
+	_, err = osCachedZipPath("../evil", "0.10.4", "")
 	if err == nil {
 		t.Fatal("expected error for path traversal in device key")
+	}
+}
+
+// The storage key, when set, becomes part of the cache filename so an SD image
+// and an NVMe image of the same device+version never collide on one file.
+func TestOsCachedPath_StorageKeyed(t *testing.T) {
+	sd, err := osCachedZipPath("raspberry-pi-5", "0.16.0", "sd")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	nvme, err := osCachedZipPath("raspberry-pi-5", "0.16.0", "nvme")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if sd == nvme {
+		t.Fatalf("sd and nvme cache paths must differ, both = %q", sd)
+	}
+	if !strings.HasSuffix(sd, "raspberry-pi-5-0.16.0-sd.zip") {
+		t.Errorf("unexpected sd cache path: %q", sd)
+	}
+	if !strings.HasSuffix(nvme, "raspberry-pi-5-0.16.0-nvme.zip") {
+		t.Errorf("unexpected nvme cache path: %q", nvme)
+	}
+
+	// Empty storage keeps the legacy (unsuffixed) name for backward compat.
+	legacy, err := osCachedZipPath("raspberry-pi-5", "0.16.0", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.HasSuffix(legacy, "raspberry-pi-5-0.16.0.zip") {
+		t.Errorf("unexpected legacy cache path: %q", legacy)
 	}
 }
 
@@ -815,8 +852,8 @@ func TestResolveDeviceNameFlagValidation(t *testing.T) {
 		in      string
 		wantErr string
 	}{
-		{"too short", "ab", "3–64 characters"},
-		{"too long", strings.Repeat("a", 65), "3–64 characters"},
+		{"too short", "ab", "3–55 characters"},
+		{"too long", strings.Repeat("a", 56), "3–55 characters"},
 		{"starts with number", "1device", "start with a lowercase letter"},
 		{"uppercase", "Wendy", "lowercase letters, digits, and hyphens"},
 		{"underscore", "wendy_pi", "lowercase letters, digits, and hyphens"},
@@ -834,6 +871,27 @@ func TestResolveDeviceNameFlagValidation(t *testing.T) {
 				t.Fatalf("error %q should contain %q", err.Error(), tc.wantErr)
 			}
 		})
+	}
+}
+
+// TestValidateDeviceNameLengthBoundary pins the device-name length cap to the
+// value that keeps the agent-derived "wendyos-<name>" hostname within the
+// 63-octet RFC 1035 label limit (WDY-1518).
+func TestValidateDeviceNameLengthBoundary(t *testing.T) {
+	if maxDeviceNameLen != 55 {
+		t.Fatalf("maxDeviceNameLen = %d; want 55 so wendyos-<name> stays a valid DNS label", maxDeviceNameLen)
+	}
+
+	maxName := strings.Repeat("a", maxDeviceNameLen)
+	if err := validateDeviceName(maxName); err != nil {
+		t.Fatalf("name of max length %d should be valid: %v", maxDeviceNameLen, err)
+	}
+	if got := len("wendyos-" + maxName); got > 63 {
+		t.Fatalf("derived hostname label is %d octets; exceeds the RFC 1035 limit of 63", got)
+	}
+
+	if err := validateDeviceName(strings.Repeat("a", maxDeviceNameLen+1)); err == nil {
+		t.Fatalf("name longer than %d should be rejected", maxDeviceNameLen)
 	}
 }
 
@@ -857,7 +915,7 @@ func TestResolveOSImage_ZipCacheHit(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 
 	content := []byte("fake image bytes")
-	zipPath, err := osCachedZipPath("test-device", "9.9.9")
+	zipPath, err := osCachedZipPath("test-device", "9.9.9", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -895,7 +953,7 @@ func TestResolveOSImage_LegacyImgCacheHit(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 
-	imgPath, err := osCachedImagePath("test-device", "8.8.8")
+	imgPath, err := osCachedImagePath("test-device", "8.8.8", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -919,7 +977,7 @@ func TestOpenOSImageStream_ZipCacheHit(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 
 	content := []byte("stream me please")
-	zipPath, err := osCachedZipPath("stream-device", "7.7.7")
+	zipPath, err := osCachedZipPath("stream-device", "7.7.7", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -967,7 +1025,7 @@ func TestOpenOSImageStream_LegacyImgCacheHit(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 
 	content := []byte("old img cache data")
-	imgPath, err := osCachedImagePath("legacy-device", "6.6.6")
+	imgPath, err := osCachedImagePath("legacy-device", "6.6.6", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1230,7 +1288,7 @@ func TestResolveDeviceNamePromptStatesConstraints(t *testing.T) {
 	}
 
 	// The hint must surface the naming constraints inline (WDY-1475).
-	for _, want := range []string{"a-z", "3–64", "auto-generate"} {
+	for _, want := range []string{"a-z", "3–55", "auto-generate"} {
 		if !strings.Contains(gotHint, want) {
 			t.Errorf("hint %q should mention %q", gotHint, want)
 		}

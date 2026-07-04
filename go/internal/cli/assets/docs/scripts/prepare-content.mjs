@@ -18,11 +18,13 @@ const skipDirs = new Set([
   'node_modules',
   'out',
   'public',
+  'screenshots',
   'scripts',
 ]);
 const publicAssetExtensions = new Set([
   '.gif',
   '.ico',
+  '.js',
   '.jpeg',
   '.jpg',
   '.json',

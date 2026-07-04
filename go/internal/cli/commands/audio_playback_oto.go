@@ -13,22 +13,27 @@ import (
 )
 
 // playRealtimeAudio plays the gRPC audio stream through the local speakers.
-// Chunks are fed into a small ring buffer so stale data is dropped rather
-// than accumulating lag.
+// Chunks are fed into a small jitter buffer so stale data is dropped rather
+// than accumulating lag. bufferMs sets the target playback latency: it sizes
+// both the oto output buffer and the jitter-buffer depth. Lower values reduce
+// latency but make playback more prone to dropouts on a jittery link.
 func playRealtimeAudio(ctx context.Context, stream interface {
 	Recv() (*agentpb.AudioChunk, error)
-}, sampleRate, channels uint32) error {
+}, sampleRate, channels, bufferMs uint32) error {
 	if sampleRate == 0 {
 		sampleRate = 48000
 	}
 	if channels == 0 {
 		channels = 1
 	}
+	if bufferMs < minBufferMs {
+		bufferMs = minBufferMs
+	}
 	otoCtx, readyCh, err := oto.NewContext(&oto.NewContextOptions{
 		SampleRate:   int(sampleRate),
 		ChannelCount: int(channels),
 		Format:       oto.FormatSignedInt16LE,
-		BufferSize:   50 * time.Millisecond,
+		BufferSize:   time.Duration(bufferMs) * time.Millisecond,
 	})
 	if err != nil {
 		return fmt.Errorf("initialising audio output: %w", err)
@@ -39,8 +44,7 @@ func playRealtimeAudio(ctx context.Context, stream interface {
 		return ctx.Err()
 	}
 
-	const ringSize = 4
-	ring := make(chan []byte, ringSize)
+	ring := make(chan []byte, jitterDepthChunks(bufferMs, defaultAgentChunkMs))
 
 	recvErr := make(chan error, 1)
 	go func() {

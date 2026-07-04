@@ -232,6 +232,18 @@ func TestBuildXcodeProject_CorrectFlags(t *testing.T) {
 			t.Errorf("xcodebuild missing %s %s in args: %v", flag, val, buildArgs)
 		}
 	}
+	for _, flag := range []string{"-skipMacroValidation", "-skipPackagePluginValidation"} {
+		found := false
+		for _, a := range buildArgs {
+			if a == flag {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("xcodebuild missing %s in args: %v", flag, buildArgs)
+		}
+	}
 }
 
 func TestBuildXcodeProject_XcodebuildMissing(t *testing.T) {
@@ -689,10 +701,18 @@ func TestAssembleXcodeSyncEntries_SandboxAndFiles(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(cwd, "config.json"), []byte("{}"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// Create an explicit Brewfile outside the project root.
+	if err := os.MkdirAll(filepath.Join(cwd, "ops"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cwd, "ops", "Brewfile"), []byte("brew \"jq\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	cfg := &appconfig.AppConfig{
-		AppID: "tool",
-		Files: []appconfig.FileSyncEntry{{Path: "config.json"}},
+		AppID:    "tool",
+		Files:    []appconfig.FileSyncEntry{{Path: "config.json"}},
+		Brewfile: "ops/Brewfile",
 	}
 
 	entries, err := assembleXcodeSyncEntries(binPath, false, cwd, cfg)
@@ -709,5 +729,8 @@ func TestAssembleXcodeSyncEntries_SandboxAndFiles(t *testing.T) {
 	}
 	if !remotes["config.json"] {
 		t.Error("expected config.json entry from wendy.json Files")
+	}
+	if !remotes["ops/Brewfile"] {
+		t.Error("expected explicit Brewfile entry")
 	}
 }

@@ -38,6 +38,7 @@ func newProjectCmd() *cobra.Command {
 	}
 
 	cmd.AddCommand(newEntitlementsCmd())
+	cmd.AddCommand(newOptimizeCmd())
 	return cmd
 }
 

@@ -26,6 +26,8 @@ type dashboardRow struct {
 	volumeCount   int
 	volumeBytes   int64
 	failures      uint32
+	termReason    string // exit reason for a stopped app; "" otherwise
+	exitCode      int32
 	hasStats      bool
 	hasVolumes    bool
 	isGroupHeader bool
@@ -78,6 +80,8 @@ func buildDashboardRows(
 				version:       c.GetAppVersion(),
 				state:         c.GetRunningState().String(),
 				failures:      c.GetFailureCount(),
+				termReason:    c.GetTerminationReason(),
+				exitCode:      c.GetExitCode(),
 				volumeCount:   volCount[appName],
 				volumeBytes:   volBytes[appName],
 				hasStats:      hasStats,
@@ -110,6 +114,8 @@ func buildDashboardRows(
 				version:     c.GetAppVersion(),
 				state:       c.GetRunningState().String(),
 				failures:    c.GetFailureCount(),
+				termReason:  c.GetTerminationReason(),
+				exitCode:    c.GetExitCode(),
 				volumeCount: volCount[appName],
 				volumeBytes: volBytes[appName],
 			}
@@ -425,6 +431,7 @@ func (m *appsDashboardModel) refreshTable() {
 		{Title: "Vols", Width: 5},
 		{Title: "Vol. Usage", Width: 10},
 		{Title: "Failures", Width: 8},
+		{Title: "Reason", Width: 18},
 	}
 
 	rows := make([]bubbleTable.Row, len(m.rows))
@@ -442,7 +449,7 @@ func (m *appsDashboardModel) refreshTable() {
 			storage = formatBytes(r.storageBytes)
 		}
 		if r.isSubrow {
-			rows[i] = bubbleTable.Row{icon, r.displayName, "", ram, storage, "", "", ""}
+			rows[i] = bubbleTable.Row{icon, r.displayName, "", ram, storage, "", "", "", ""}
 			continue
 		}
 		vols := "—"
@@ -460,6 +467,7 @@ func (m *appsDashboardModel) refreshTable() {
 			vols,
 			volUsage,
 			fmt.Sprintf("%d", r.failures),
+			terminationSummary(r.termReason, r.exitCode),
 		}
 	}
 

@@ -10,15 +10,46 @@ import (
 
 // Config represents the top-level CLI configuration.
 type Config struct {
-	Auth               []AuthConfig     `json:"auth,omitempty"`
-	Analytics          *AnalyticsConfig `json:"analytics,omitempty"`
-	DefaultDevice      string           `json:"defaultDevice,omitempty"`
-	LastCLIUpdateCheck string           `json:"lastCLIUpdateCheck,omitempty"` // RFC3339
+	Auth          []AuthConfig     `json:"auth,omitempty"`
+	Analytics     *AnalyticsConfig `json:"analytics,omitempty"`
+	DefaultDevice string           `json:"defaultDevice,omitempty"`
+	// DefaultCloudGRPC names the auth session (by its gRPC endpoint) used when
+	// several sessions exist and no --cloud-grpc flag is given. Empty means no
+	// default; resolution then falls back to an interactive picker or an error.
+	DefaultCloudGRPC   string `json:"defaultCloudGRPC,omitempty"`
+	LastCLIUpdateCheck string `json:"lastCLIUpdateCheck,omitempty"` // RFC3339
+	AvailableCLIUpdate string `json:"availableCLIUpdate,omitempty"` // tag of a newer release, if any
 	// LastMCPSetupVersion records the CLI version that last ran `wendy mcp
 	// setup`. It lets the root command detect when an upgrade should refresh
 	// the MCP server config and bundled skills. Empty means the user has never
 	// run setup, so auto-refresh stays off.
 	LastMCPSetupVersion string `json:"lastMCPSetupVersion,omitempty"`
+	// CompletionInstalled is set once shell completions have been installed
+	// through the CLI (via `wendy completion install` or an accepted prompt).
+	// While false, the CLI may offer to install completions.
+	CompletionInstalled bool `json:"completionInstalled,omitempty"`
+	// CompletionPromptDismissed is set when the user declines the ambient
+	// "install completions?" prompt with "n". Once true, that prompt never
+	// reappears.
+	CompletionPromptDismissed bool `json:"completionPromptDismissed,omitempty"`
+	// LastCompletionPromptCheck records when the ambient completion prompt was
+	// last shown (RFC3339). It throttles the prompt so an unanswered prompt
+	// (e.g. Ctrl-C) doesn't reappear on every invocation.
+	LastCompletionPromptCheck string `json:"lastCompletionPromptCheck,omitempty"`
+	// OptimizeTipShownAt throttles the `wendy project optimize` tip to once per
+	// day per project. Keyed by the project directory, value is an RFC3339 date
+	// (YYYY-MM-DD) of the last time the tip (or a build-time optimize scan) was
+	// surfaced for that project.
+	OptimizeTipShownAt map[string]string `json:"optimizeTipShownAt,omitempty"`
+	// DevicePins binds a device hostname to the organisation + cloud host its
+	// TLS identity must belong to (WDY-1149), so a different trust domain
+	// answering at that hostname is caught. Renewal/re-enrollment within the
+	// same org+cloud does not trip it. Keyed by normalized hostname.
+	DevicePins map[string]DevicePin `json:"devicePins,omitempty"`
+	// DefaultOrgID is the organization used when a command needs to target a
+	// specific org and the user belongs to more than one. Zero means no default;
+	// the CLI will then show a picker or use the sole available org.
+	DefaultOrgID int32 `json:"defaultOrgId,omitempty"`
 }
 
 // AuthConfig holds authentication details for a cloud environment.
@@ -78,6 +109,22 @@ func CacheDir() (string, error) {
 	return cacheDir, nil
 }
 
+// LogDir returns the directory for CLI-written log files (e.g. the Thor flash log),
+// creating it if needed.
+func LogDir() (string, error) {
+	dir, err := os.UserCacheDir()
+	if err != nil {
+		return "", fmt.Errorf("determining log directory: %w", err)
+	}
+	logDir := filepath.Join(dir, "wendy", "logs")
+	// 0o700: flash logs can contain hardware identifiers (e.g. the device ECID),
+	// so keep them readable only by the owner.
+	if err := os.MkdirAll(logDir, 0o700); err != nil {
+		return "", fmt.Errorf("creating log directory: %w", err)
+	}
+	return logDir, nil
+}
+
 // configPath returns the full path to config.json.
 func configPath() (string, error) {
 	dir, err := ConfigDir()
@@ -130,10 +177,24 @@ func Save(cfg *Config) error {
 	return nil
 }
 
-// AddAuth adds or replaces an auth entry, matching on cloudDashboard and cloudGRPC.
+// authEntryOrgID returns the organization ID from the first certificate in an
+// auth entry, or 0 if none is present.
+func authEntryOrgID(a AuthConfig) int {
+	if len(a.Certificates) > 0 {
+		return a.Certificates[0].OrganizationID
+	}
+	return 0
+}
+
+// AddAuth adds or replaces an auth entry. Matching is by (cloudDashboard,
+// cloudGRPC, orgID) so that multiple orgs on the same cloud endpoint each
+// keep their own entry instead of overwriting one another.
 func (c *Config) AddAuth(auth AuthConfig) {
+	incomingOrg := authEntryOrgID(auth)
 	for i, existing := range c.Auth {
-		if existing.CloudDashboard == auth.CloudDashboard && existing.CloudGRPC == auth.CloudGRPC {
+		if existing.CloudDashboard == auth.CloudDashboard &&
+			existing.CloudGRPC == auth.CloudGRPC &&
+			authEntryOrgID(existing) == incomingOrg {
 			c.Auth[i] = auth
 			return
 		}

@@ -107,21 +107,14 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"time"
 	"unsafe"
 
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 )
 
-// SerialDevice holds a serial port path and its USB connection time.
-type SerialDevice struct {
-	Port           string
-	ConnectionTime time.Time
-}
-
 // ResolveESP32SerialPorts returns all connected serial ports whose USB VID/PID
 // match the ESP32 constants, along with each device node's plug-in time.
-func ResolveESP32SerialPorts() ([]SerialDevice, error) {
+func ResolveESP32SerialPorts() ([]SerialPortInfo, error) {
 	vid, err := parseHexID(models.ESP32VendorID)
 	if err != nil {
 		return nil, fmt.Errorf("invalid ESP32VendorID %q: %w", models.ESP32VendorID, err)
@@ -140,34 +133,16 @@ func ResolveESP32SerialPorts() ([]SerialDevice, error) {
 	}
 
 	paths := unsafe.Slice(list.paths, count)
-	result := make([]SerialDevice, 0, count)
+	result := make([]SerialPortInfo, 0, count)
 	for _, cp := range paths {
 		path := C.GoString(cp)
 		info, err := os.Stat(path)
 		if err != nil {
 			continue
 		}
-		result = append(result, SerialDevice{Port: path, ConnectionTime: info.ModTime()})
+		result = append(result, SerialPortInfo{Port: path, ConnectionTime: info.ModTime()})
 	}
 	return result, nil
-}
-
-// ResolveESP32SerialPort returns the most recently connected ESP32 serial port.
-func ResolveESP32SerialPort() (string, error) {
-	devices, err := ResolveESP32SerialPorts()
-	if err != nil {
-		return "", err
-	}
-	if len(devices) == 0 {
-		return "", fmt.Errorf("no ESP32 serial port found")
-	}
-	best := devices[0]
-	for _, d := range devices[1:] {
-		if d.ConnectionTime.After(best.ConnectionTime) {
-			best = d
-		}
-	}
-	return best.Port, nil
 }
 
 func parseHexID(s string) (int64, error) {

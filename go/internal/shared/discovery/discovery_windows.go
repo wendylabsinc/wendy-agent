@@ -352,12 +352,58 @@ func discoverLANContinuous(ctx context.Context, ch chan<- models.LANDevice) {
 }
 
 // BrowseMDNSServices discovers mDNS services of the given type on Windows
-// using hashicorp/mdns. Returns all services found within the timeout.
+// using hashicorp/mdns. Queries the default interface and each eligible
+// network interface in parallel (mirrors discoverLAN) so that services are
+// found even when Windows does not route multicast on the nil/all-interface
+// path alone.
 func BrowseMDNSServices(ctx context.Context, serviceType string, timeout time.Duration) ([]MDNSService, error) {
 	if timeout == 0 {
 		timeout = defaultTimeout
 	}
 
+	queries := []*net.Interface{nil}
+	ifaces, err := net.Interfaces()
+	if err == nil {
+		for _, iface := range ifaces {
+			if !isMDNSInterfaceEligible(iface) {
+				continue
+			}
+			iface := iface
+			queries = append(queries, &iface)
+		}
+	}
+
+	resultsCh := make(chan []MDNSService, len(queries))
+	var wg sync.WaitGroup
+	for _, iface := range queries {
+		wg.Add(1)
+		go func(iface *net.Interface) {
+			defer wg.Done()
+			resultsCh <- queryServicesMDNS(iface, serviceType, timeout)
+		}(iface)
+	}
+	wg.Wait()
+	close(resultsCh)
+
+	seen := make(map[string]bool)
+	var services []MDNSService
+	for batch := range resultsCh {
+		for _, svc := range batch {
+			key := fmt.Sprintf("%s-%s-%d", svc.InstanceName, svc.Hostname, svc.Port)
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			services = append(services, svc)
+		}
+	}
+
+	return services, nil
+}
+
+// queryServicesMDNS runs a single mDNS query for serviceType on iface.
+// If iface is nil, hashicorp/mdns uses its default all-interface behavior.
+func queryServicesMDNS(iface *net.Interface, serviceType string, timeout time.Duration) []MDNSService {
 	entriesCh := make(chan *mdns.ServiceEntry, 16)
 	var services []MDNSService
 
@@ -366,54 +412,45 @@ func BrowseMDNSServices(ctx context.Context, serviceType string, timeout time.Du
 		defer close(done)
 		seen := make(map[string]bool)
 		for entry := range entriesCh {
-			// Filter out entries that don't match the queried service type.
-			// hashicorp/mdns can return unrelated mDNS responders.
 			if !mdnsEntryMatchesServiceType(entry.Name, serviceType) {
 				continue
 			}
 
 			hostname := strings.TrimSuffix(entry.Host, ".")
-
-			key := fmt.Sprintf("%s-%s-%d", entry.Name, hostname, entry.Port)
+			instanceName := entry.Name
+			if labels := splitDNSSDLabels(strings.Trim(entry.Name, ".")); len(labels) > 0 {
+				instanceName = labels[0]
+			}
+			key := fmt.Sprintf("%s-%s-%d", instanceName, hostname, entry.Port)
 			if seen[key] {
 				continue
 			}
 			seen[key] = true
 
-			ipAddr := ""
-			if entry.AddrV4 != nil {
-				ipAddr = entry.AddrV4.String()
-			} else if entry.AddrV6 != nil {
-				ipAddr = entry.AddrV6.String()
-			}
-
-			txtRecords := make(map[string]string)
-			for _, txt := range entry.InfoFields {
-				if k, v, ok := strings.Cut(txt, "="); ok {
-					txtRecords[k] = v
-				}
-			}
-
 			services = append(services, MDNSService{
-				InstanceName: entry.Name,
+				InstanceName: instanceName,
 				Hostname:     hostname,
-				IPAddress:    ipAddr,
+				IPAddress:    mdnsEntryIPAddress(entry, iface),
 				Port:         entry.Port,
-				TXTRecords:   txtRecords,
+				TXTRecords:   parseMDNSTXTRecords(entry.InfoFields),
 			})
 		}
 	}()
 
+	ifName := "default"
+	if iface != nil {
+		ifName = iface.Name
+	}
+
 	params := mdns.DefaultParams(serviceType)
+	params.Interface = iface
 	params.Entries = entriesCh
 	params.Timeout = timeout
 	params.Logger = silentLogger
 
-	_ = mdns.Query(params)
+	logMDNSQueryErr(ifName, mdns.Query(params))
 	close(entriesCh)
 	<-done
 
-	_ = ctx // respect context via timeout
-
-	return services, nil
+	return services
 }

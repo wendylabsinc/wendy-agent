@@ -1,5 +1,6 @@
 {
     "appId": "sh.wendy.examples.multiservice",
+    "platform": "linux",
     "version": "1.0.0",
     "language": "python",
     "serviceName": "worker",

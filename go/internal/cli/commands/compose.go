@@ -623,11 +623,10 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 	}
 
 	regPort := registryPort(agentOS)
-	registryAddr, proxyCleanup, err := resolveRegistryForAgent(ctx, conn, regPort)
-	if err != nil {
+
+	if err := ensureAppleContainerSystemForBuilder(ctx, opts.builder, opts.yes); err != nil {
 		return err
 	}
-	defer proxyCleanup()
 
 	// Use the project directory name as the project name.
 	projectName := strings.ToLower(filepath.Base(projectDir))
@@ -642,52 +641,26 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 			continue // uses pre-built image
 		}
 
-		imageName := fmt.Sprintf("%s/%s-%s:latest", registryAddr, projectName, name)
 		allBuildArgs := map[string]string{
 			"WENDY_PLATFORM": wendyPlatform(versionResp.GetDeviceType()),
 			"WENDY_DEBUG":    fmt.Sprintf("%t", opts.debug),
 		}
 		// Mirror the single-container build path so compose-built Dockerfiles
 		// see the same WendyOS device hints (e.g. for GPU base-image selection).
-		if deviceType := versionResp.GetDeviceType(); deviceType != "" {
-			allBuildArgs["WENDY_DEVICE_TYPE"] = deviceType
-		}
-		if versionResp.HasGpu != nil {
-			allBuildArgs["WENDY_HAS_GPU"] = fmt.Sprintf("%t", versionResp.GetHasGpu())
-		}
-		if vendor := versionResp.GetGpuVendor(); vendor != "" {
-			allBuildArgs["WENDY_GPU_VENDOR"] = vendor
-		}
-		if jv := versionResp.GetJetpackVersion(); jv != "" {
-			allBuildArgs["WENDY_JETPACK_VERSION"] = jv
-		}
-		if cv := versionResp.GetCudaVersion(); cv != "" {
-			allBuildArgs["WENDY_CUDA_VERSION"] = cv
-		}
+		applyDeviceBuildArgHints(allBuildArgs, versionResp)
 		for k, v := range buildArgs {
 			allBuildArgs[k] = v
 		}
 
-		cliLogln("Building image for service %s...", name)
-
-		// If a non-default Dockerfile is specified, we need to pass it via -f.
-		// buildAndPushImage always uses "." as the path; for compose we pass the
-		// build context dir and rely on a Dockerfile inside it (or via ARG).
-		// We temporarily write a wrapper that delegates to the real Dockerfile when
-		// the dockerfile field differs. For the common case (Dockerfile in context),
-		// it just works.
-		if dockerfile != "Dockerfile" {
-			// Rewrite -f by creating a temp Dockerfile that uses the named file.
-			// Actually, buildAndPushImage doesn't support -f. We need a small workaround:
-			// copy the Dockerfile to the context dir as "Dockerfile" temporarily.
-			// For now, just error with a helpful message.
-			return fmt.Errorf("service %s: custom Dockerfile path %q is not yet supported; rename it to 'Dockerfile'", name, dockerfile)
-		}
-
-		if err := buildAndPushImage(ctx, ctxDir, registryAddr, imageName, platform, "", allBuildArgs, os.Stdout, os.Stderr, conn.IsMTLS); err != nil {
+		repo := fmt.Sprintf("%s-%s", projectName, name)
+		// Compose builds run sequentially, so they share the local cache dir
+		// (empty cache key) — no concurrent cache-export race to isolate.
+		composeBuildTitle := fmt.Sprintf("Building service %s for %s...", name, tui.Value(platform))
+		if err := runBuildWithProgress(ctx, composeBuildTitle, dumpRawAlways, func(stream, logw io.Writer) error {
+			return buildAndPushImageForAgent(ctx, conn, regPort, opts.builder, ctxDir, repo, platform, dockerfile, allBuildArgs, "", stream, logw)
+		}); err != nil {
 			return fmt.Errorf("building service %s: %w", name, err)
 		}
-		cliLogln("Service %s image built and pushed.", name)
 	}
 
 	cliRestartPolicy := resolveRestartPolicy(opts)

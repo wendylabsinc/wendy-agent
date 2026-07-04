@@ -1,0 +1,1 @@
+The naming convention is intentionally simple. Generated files keep the source filename and append the output extension. So slide dot md renders to slide dot md dot mp4, voice dot md renders to voice dot md dot mp3, and VHS tape renders to VHS tape dot mp4. That makes every generated artifact traceable back to the source file that produced it.

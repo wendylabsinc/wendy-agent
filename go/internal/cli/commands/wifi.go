@@ -1,7 +1,6 @@
 package commands
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -145,11 +144,7 @@ type wifiClient struct {
 func newWifiClient(target *SelectedDevice) (*wifiClient, error) {
 	switch {
 	case target.Bluetooth != nil && target.Bluetooth.IsWendyAgent():
-		tlsCfg, err := bleTLSConfig()
-		if err != nil {
-			return nil, err
-		}
-		client, err := ble.ConnectAgent(target.Bluetooth, tlsCfg)
+		client, err := connectBLEAgent(target.Bluetooth)
 		if err != nil {
 			return nil, fmt.Errorf("connecting to %s: %w", target.Bluetooth.DisplayName, err)
 		}
@@ -385,12 +380,7 @@ func newWifiConnectCmd() *cobra.Command {
 
 			if !cmd.Flags().Changed("password") && term.IsTerminal(int(os.Stdin.Fd())) {
 				if supportsKeychainLookup {
-					fmt.Printf("Look up password for '%s' from keychain? (macOS will ask for permission) [Y/n] ", ssid)
-					reader := bufio.NewReader(os.Stdin)
-					line, _ := reader.ReadString('\n')
-					answer := strings.TrimSpace(strings.ToLower(line))
-
-					if answer == "" || answer == "y" || answer == "yes" {
+					if confirmFn(fmt.Sprintf("Look up password for '%s' from keychain? (macOS will ask for permission)", ssid)) {
 						if kp, err := lookupKeychainPassword(ssid); err == nil && kp != "" {
 							cliLogln("Using saved password from keychain.")
 							password = kp
@@ -701,15 +691,16 @@ func pickWifiNetwork(ctx context.Context, target *SelectedDevice) (string, error
 
 	switch {
 	case target.Bluetooth != nil && !target.Bluetooth.IsWendyAgent():
-		// Wendy Lite — scan from the host machine (one-shot).
+		// Wendy Lite — scan from the host machine. Cached results paint the
+		// picker instantly, then the fresh rescan fills it in, so SSIDs trickle
+		// in rather than appearing all at once when the scan completes.
 		go func() {
 			defer p.Send(tui.PickerDoneMsg{})
-			nets, err := scanLocalWifiNetworks()
-			if err != nil {
+			if err := streamLocalWifiScan(func(batch []localWifiNetwork) {
+				p.Send(tui.PickerAddMsg{Items: localWifiPickerItems(batch)})
+			}); err != nil {
 				recordScanErr(fmt.Errorf("scanning local WiFi networks: %w", err))
-				return
 			}
-			p.Send(tui.PickerAddMsg{Items: localWifiPickerItems(nets)})
 		}()
 
 	case target.Bluetooth != nil || target.Agent != nil:
@@ -816,11 +807,7 @@ func pickWifiNetwork(ctx context.Context, target *SelectedDevice) (string, error
 
 func wifiStatusViaBLEAgent(device *models.BluetoothDevice) error {
 	cliLogln("Connecting to %s via Bluetooth...", device.DisplayName)
-	tlsCfg, err := bleTLSConfig()
-	if err != nil {
-		return err
-	}
-	client, err := ble.ConnectAgent(device, tlsCfg)
+	client, err := connectBLEAgent(device)
 	if err != nil {
 		return err
 	}
@@ -853,11 +840,7 @@ func wifiStatusViaBLEAgent(device *models.BluetoothDevice) error {
 
 func wifiDisconnectViaBLEAgent(device *models.BluetoothDevice) error {
 	cliLogln("Connecting to %s via Bluetooth...", device.DisplayName)
-	tlsCfg, err := bleTLSConfig()
-	if err != nil {
-		return err
-	}
-	client, err := ble.ConnectAgent(device, tlsCfg)
+	client, err := connectBLEAgent(device)
 	if err != nil {
 		return err
 	}

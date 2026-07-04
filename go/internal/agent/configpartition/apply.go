@@ -238,10 +238,16 @@ func applyWendyConf(logger *zap.Logger, cfgDir string) {
 	}
 }
 
+// maxDeviceNameLen caps the device name so the hostname this package derives as
+// "wendyos-<name>" (via generate-hostname.sh in applyDeviceName) stays within the
+// 63-octet RFC 1035 label limit. The 8-character "wendyos-" prefix leaves 55
+// characters for the name; longer names produce an invalid hostname label.
+const maxDeviceNameLen = 55
+
 // validDeviceName reports whether name satisfies the WendyOS device name rules:
-// starts with a lowercase letter, followed by 2–63 lowercase letters, digits, or hyphens.
+// starts with a lowercase letter, followed by 2–54 lowercase letters, digits, or hyphens.
 func validDeviceName(name string) bool {
-	if len(name) < 3 || len(name) > 64 {
+	if len(name) < 3 || len(name) > maxDeviceNameLen {
 		return false
 	}
 	for i, c := range name {
@@ -261,7 +267,7 @@ func validDeviceName(name string) bool {
 
 func applyDeviceName(logger *zap.Logger, name string) error {
 	if !validDeviceName(name) {
-		return fmt.Errorf("invalid device name %q: must match ^[a-z][a-z0-9-]{2,63}$", name)
+		return fmt.Errorf("invalid device name %q: must match ^[a-z][a-z0-9-]{2,54}$", name)
 	}
 
 	const deviceNamePath = "/etc/wendyos/device-name"
@@ -552,4 +558,21 @@ func Apply(logger *zap.Logger, configPath string) {
 	}
 	applyWendyConf(logger, configDir)
 	applyPreProvisioning(logger, configDir, configPath)
+	applyClockFloor(logger, configDir, configPath)
+}
+
+// applyClockFloor copies clock_floor from the config partition directory to
+// the agent config path, so the agent can read it as a startup time floor.
+func applyClockFloor(logger *zap.Logger, cfgDir, configPath string) {
+	src := filepath.Join(cfgDir, "clock_floor")
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return // file absent — not an error on images that predate this feature
+	}
+	dst := filepath.Join(configPath, "clock_floor")
+	if err := os.WriteFile(dst, data, 0o644); err != nil {
+		if logger != nil {
+			logger.Warn("configpartition: failed to write clock_floor", zap.Error(err))
+		}
+	}
 }

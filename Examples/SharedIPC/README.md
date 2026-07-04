@@ -41,6 +41,7 @@ introduced in WDY-881.
 ```jsonc
 {
   "appId": "sh.wendy.examples.sharedipc",
+  "platform": "linux",
   "isolation": "shared-ipc",
   "services": {
     "primary": {
@@ -84,4 +85,4 @@ Expected output:
 ## See also
 
 - [IsolatedServices](../IsolatedServices) — isolated mode with CNI + /etc/hosts
-- [ROS2](../ROS2) — shared-network isolation with ROS2 framework config
+- [ROS2](../ROS2) — shared-ipc isolation with ROS2 framework config

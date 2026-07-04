@@ -7,4 +7,4 @@ Use the `wendy-template-app` skill. Search local templates first, then `wendylab
 
 `$ARGUMENTS`
 
-Inspect `template.json`, `wendy.json`, `Dockerfile`, and main source files before creating the destination app. Use explicit `wendy init` flags when possible; otherwise copy and adapt the template, then validate `wendy.json`.
+Inspect `template.json`, `wendy.json`, `Dockerfile` or `Containerfile`, and main source files before creating the destination app. Use explicit `wendy init` flags when possible; otherwise copy and adapt the template, then validate `wendy.json`.

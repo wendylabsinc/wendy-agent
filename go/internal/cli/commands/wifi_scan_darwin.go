@@ -19,7 +19,10 @@ import (
 // a synchronous fresh scan, so the returned set is current.
 const wifiScanCacheHint = ""
 
-const corewlanScanScript = `
+// corewlanPreamble opens the shared CoreWLAN interface and defines the
+// security-label helper. The two obtain snippets below append a `networks`
+// binding; corewlanPrintLoop then emits the tab-delimited rows.
+const corewlanPreamble = `
 import CoreWLAN
 let client = CWWiFiClient.shared()
 guard let iface = client.interface() else {
@@ -38,30 +41,70 @@ func securityLabel(_ net: CWNetwork) -> String {
     if net.supportsSecurity(.none) || net.supportsSecurity(.OWE) || net.supportsSecurity(.oweTransition) { return "Open" }
     return ""
 }
+`
+
+// corewlanFreshObtain performs a synchronous on-demand scan (several seconds).
+const corewlanFreshObtain = `
+let networks: [CWNetwork]
 do {
-    let networks = try iface.scanForNetworks(withSSID: nil)
-    for net in networks.sorted(by: { $0.rssiValue > $1.rssiValue }) {
-        guard let ssid = net.ssid, !ssid.isEmpty else { continue }
-        // Strip C0/DEL/C1 control characters before printing: SSIDs come
-        // from beacon frames, and a tab would shift the tab-delimited
-        // fields, letting attacker bytes land in the security column.
-        let clean = String(ssid.unicodeScalars.filter {
-            $0.value >= 0x20 && $0.value != 0x7F && !(0x80...0x9F).contains($0.value)
-        }.map { Character($0) })
-        guard !clean.isEmpty else { continue }
-        print("\(clean)\t\(net.rssiValue)\t\(securityLabel(net))")
-    }
+    networks = try iface.scanForNetworks(withSSID: nil)
 } catch {
     fputs("scan failed: \(error)\n", stderr)
     exit(1)
 }
 `
 
-// scanLocalWifiNetworks uses CoreWLAN (via a small Swift script) to list WiFi
-// networks visible to the host machine.
+// corewlanCachedObtain returns the most recent scan results without scanning,
+// so it returns instantly (and is empty until the OS has scanned at least once).
+const corewlanCachedObtain = `
+let networks = Array(iface.cachedScanResults() ?? [])
+`
+
+const corewlanPrintLoop = `
+for net in networks.sorted(by: { $0.rssiValue > $1.rssiValue }) {
+    guard let ssid = net.ssid, !ssid.isEmpty else { continue }
+    // Strip C0/DEL/C1 control characters before printing: SSIDs come
+    // from beacon frames, and a tab would shift the tab-delimited
+    // fields, letting attacker bytes land in the security column.
+    let clean = String(ssid.unicodeScalars.filter {
+        $0.value >= 0x20 && $0.value != 0x7F && !(0x80...0x9F).contains($0.value)
+    }.map { Character($0) })
+    guard !clean.isEmpty else { continue }
+    print("\(clean)\t\(net.rssiValue)\t\(securityLabel(net))")
+}
+`
+
+// scanLocalWifiNetworks uses CoreWLAN (via a small Swift script) to perform a
+// fresh on-demand scan of WiFi networks visible to the host machine.
 func scanLocalWifiNetworks() ([]localWifiNetwork, error) {
+	nets, err := runCorewlanScan(corewlanPreamble + corewlanFreshObtain + corewlanPrintLoop)
+	if err != nil {
+		if errors.Is(err, errNoWifiAdapter) {
+			return nil, err
+		}
+		return nil, fmt.Errorf("scanning WiFi networks: %w", err)
+	}
+	return nets, nil
+}
+
+// cachedLocalWifiNetworks returns CoreWLAN's most recent scan results without
+// triggering a fresh scan, so a streaming picker can paint instantly while
+// scanLocalWifiNetworks runs the slower on-demand scan. Best-effort: any
+// failure yields no networks rather than an error.
+func cachedLocalWifiNetworks() []localWifiNetwork {
+	nets, err := runCorewlanScan(corewlanPreamble + corewlanCachedObtain + corewlanPrintLoop)
+	if err != nil {
+		return nil
+	}
+	return nets
+}
+
+// runCorewlanScan runs the given Swift program and parses its tab-delimited
+// "SSID\tRSSI\tSecurity" output. A "no wifi interface" failure is reported as
+// errNoWifiAdapter; other exec failures pass through (with captured stderr).
+func runCorewlanScan(script string) ([]localWifiNetwork, error) {
 	cmd := exec.Command("/usr/bin/swift", "-")
-	cmd.Stdin = strings.NewReader(corewlanScanScript)
+	cmd.Stdin = strings.NewReader(script)
 
 	output, err := cmd.Output()
 	if err != nil {
@@ -69,7 +112,7 @@ func scanLocalWifiNetworks() ([]localWifiNetwork, error) {
 		if errors.As(err, &ee) && strings.Contains(string(ee.Stderr), "no wifi interface") {
 			return nil, errNoWifiAdapter
 		}
-		return nil, fmt.Errorf("scanning WiFi networks: %w", exitErrWithStderr(err))
+		return nil, exitErrWithStderr(err)
 	}
 
 	seen := make(map[string]bool)

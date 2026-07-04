@@ -8,7 +8,7 @@ The `wendy.json` file configures your WendyOS application's identity and entitle
 {
   "appId": "com.example.myapp",
   "version": "1.0.0",
-  "platform": "wendyos",
+  "platform": "linux",
   "entitlements": [
     { "type": "network", "mode": "host" }
   ]
@@ -19,29 +19,40 @@ The `wendy.json` file configures your WendyOS application's identity and entitle
 |-------|-------------|
 | `appId` | Unique identifier (reverse domain notation recommended) |
 | `version` | Application version string |
-| `platform` | Target platform: `wendyos`, `wendy-lite`, or `darwin` |
+| `platform` | Target platform: `linux`, `wendyos`, `wendy-lite`, or `darwin` |
+| `brewfile` | Optional relative Brewfile path for native Darwin deployments; project-root `Brewfile.wendy` is auto-detected |
 | `entitlements` | Array of entitlement objects specifying required permissions |
 
 ## Platforms
 
 | Value | Description |
 |-------|-------------|
-| `wendyos` | Linux edge device running WendyOS; apps run in containers |
+| `linux` | Linux edge device; the device architecture is inferred |
+| `wendyos` | Compatibility alias for `linux`; apps run in containers |
 | `wendy-lite` | ESP32 WASM target |
-| `darwin` | Native macOS execution through [Wendy Agent for Mac](/docs/installation/wendy-agent-macos) |
+| `darwin` | Native macOS execution through [Wendy for Mac](/docs/installation/wendy-agent-macos) |
 
-Use `"darwin"` for Apple Silicon Mac targets managed by Wendy Agent for Mac. The CLI builds SwiftPM or Xcode projects on a Mac development machine, syncs the build output to the Mac agent, and starts the app as a native macOS process. Darwin apps run natively and non-containerized, so WendyOS Linux container semantics and hardware entitlements do not apply.
+Omit `platform` to target Linux. Existing `"wendyos"` configs are accepted as an alias and resolve to `linux` before Docker or Apple Container builds.
 
-Minimal SwiftPM/macOS configuration:
+Use `"darwin"` for Apple Silicon Mac targets managed by Wendy for Mac. The CLI builds SwiftPM or Xcode projects on a Mac development machine, syncs the build output to the Mac agent, and starts the app as a native macOS process. Darwin apps run natively and non-containerized, so WendyOS Linux container semantics and hardware entitlements do not apply.
+
+Minimal SwiftPM/Linux container configuration:
 
 ```json
 {
-  "appId": "com.example.hello-mac",
+  "appId": "com.example.hello-linux",
   "version": "1.0.0",
   "language": "swift",
-  "platform": "darwin"
+  "platform": "linux"
 }
 ```
+
+Native SwiftPM and Xcode Mac apps can use Homebrew dependencies with Brew Bundle.
+Place `Brewfile.wendy` at the project root for auto-detection, or set `"brewfile":
+"ops/Brewfile"` to use a relative path. A plain project-root `Brewfile` is left
+for developer-machine setup unless explicitly referenced. `wendy run` syncs the
+Wendy Brewfile to the target Mac and Wendy Agent runs `brew bundle --file <synced Brewfile>`
+before starting the app. Homebrew must already be installed on the target Mac.
 
 ## Entitlements Overview
 
@@ -81,9 +92,31 @@ When enabled:
 
 **Note**: GPU entitlement behavior is hardware-specific.
 
+### Display Entitlement
+
+Present to a locally-attached monitor as a Wayland client (GPU-accelerated).
+
+```json
+{ "type": "display" }
+```
+
+When enabled:
+- `/dev/dri` (GPU render nodes); cgroup access is `rw`, no `mknod`
+- Membership in the `video` and `render` groups
+- The WendyOS compositor's Wayland socket, exposed via `WAYLAND_DISPLAY` / `XDG_RUNTIME_DIR`
+
+On NVIDIA Jetson the GL/EGL userspace is injected from the host through CDI; on Raspberry Pi the app's own mesa works against the vc4 kernel driver.
+
+| Constraint | |
+|------------|--|
+| At most one `display` per app | enforced at validation |
+| Display-enabled image | the Wayland socket is present only on display-enabled WendyOS images |
+
+> **Security:** apps **without** `display` never receive `/dev/dri` — the default GPU/display sandbox is unchanged.
+
 ### Video Entitlement
 
-Provides access to video capture devices (USB cameras, CSI cameras).
+**Deprecated:** Use `camera` instead. Provides access to video capture devices (USB cameras, CSI cameras).
 
 ```json
 { "type": "video" }
@@ -129,12 +162,47 @@ Allows communication with Bluetooth devices.
 - BlueZ D-Bus interface access
 - Interaction with paired devices and Bluetooth profiles
 
+### Display Entitlement
+
+Present to a locally-attached monitor as a Wayland client (GPU-accelerated).
+
+```json
+{ "type": "display" }
+```
+
+The container receives:
+- `/dev/dri` (GPU render nodes); cgroup access is `rw`, no `mknod`.
+- Membership in the `video` and `render` groups.
+- The WendyOS compositor's Wayland socket, exposed via `WAYLAND_DISPLAY` / `XDG_RUNTIME_DIR`.
+
+On NVIDIA Jetson the GL/EGL userspace is injected from the host through the same CDI path as `gpu`; on Raspberry Pi the app's own mesa works against the vc4 kernel driver.
+
+| Constraint | |
+|------------|--|
+| At most one `display` per app | enforced at validation |
+| Display-enabled image | the Wayland socket is present only on display-enabled WendyOS images; on a headless image the entitlement is accepted but nothing renders |
+
+> **Security:** apps **without** `display` never receive `/dev/dri` — the default GPU/display sandbox is unchanged.
+
+### Admin Entitlement
+
+Grants the container the wendy-agent's full gRPC over a local unix socket (`/run/wendy/agent.sock`, exposed as `WENDY_AGENT_SOCKET`) — with no authentication.
+
+```json
+{ "type": "admin" }
+```
+
+An app with `admin` can start, stop, and delete apps and read all device data locally. The socket is bind-mounted only into containers that declare `admin` — that mount is the entire trust boundary — and it is never reachable off-device (a unix socket, not TCP). At most one `admin` per app.
+
+> **Security:** `admin` is a privileged, deliberate grant equivalent to local device control. Grant it only to fully-trusted first-party apps (e.g. the WendyOS shell). Requires an agent build that serves the local socket.
+
 ## Common Configurations
 
 ### Web Server with Camera
 ```json
 {
   "appId": "com.example.video-streamer",
+  "platform": "linux",
   "version": "1.0.0",
   "entitlements": [
     { "type": "network", "mode": "host" },
@@ -147,6 +215,7 @@ Allows communication with Bluetooth devices.
 ```json
 {
   "appId": "com.example.ml-server",
+  "platform": "linux",
   "version": "1.0.0",
   "entitlements": [
     { "type": "network", "mode": "host" },
@@ -159,6 +228,7 @@ Allows communication with Bluetooth devices.
 ```json
 {
   "appId": "com.example.vision-app",
+  "platform": "linux",
   "version": "1.0.0",
   "entitlements": [
     { "type": "gpu" },
@@ -171,6 +241,7 @@ Allows communication with Bluetooth devices.
 ```json
 {
   "appId": "com.example.voice-assistant",
+  "platform": "linux",
   "version": "1.0.0",
   "entitlements": [
     { "type": "network", "mode": "host" },
@@ -184,6 +255,7 @@ Allows communication with Bluetooth devices.
 ```json
 {
   "appId": "com.example.hello-world",
+  "platform": "linux",
   "version": "1.0.0",
   "entitlements": []
 }

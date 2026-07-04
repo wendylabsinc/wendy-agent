@@ -78,7 +78,9 @@ func NewTLSConfig(certPEM, chainPEM, keyPEM string, logger *zap.Logger, notBefor
 // extraOpts; those run after the mandatory mTLS check.
 // logger may be nil; when provided, rejected client certificates are logged at WARN level.
 // notBeforeFloor is forwarded to NewTLSConfig; see its documentation for details.
-func NewServer(certPEM, chainPEM, keyPEM string, logger *zap.Logger, notBeforeFloor time.Time, extraOpts ...grpc.ServerOption) (*grpc.Server, error) {
+// expectedOrgID and orgMode are forwarded to the mandatory mTLS interceptors, which
+// enforce organization-equality between the connecting client cert and this device.
+func NewServer(certPEM, chainPEM, keyPEM string, logger *zap.Logger, notBeforeFloor time.Time, expectedOrgID int32, orgMode interceptor.OrgMode, extraOpts ...grpc.ServerOption) (*grpc.Server, error) {
 	tlsConfig, err := NewTLSConfig(certPEM, chainPEM, keyPEM, logger, notBeforeFloor)
 	if err != nil {
 		return nil, fmt.Errorf("creating TLS config: %w", err)
@@ -89,8 +91,8 @@ func NewServer(certPEM, chainPEM, keyPEM string, logger *zap.Logger, notBeforeFl
 		grpc.Creds(creds),
 		// mTLS interceptors are mandatory: they run before any caller-provided interceptors
 		// so that no handler can be reached without a verified client certificate.
-		grpc.ChainUnaryInterceptor(interceptor.UnaryMTLSInterceptor(logger)),
-		grpc.ChainStreamInterceptor(interceptor.StreamMTLSInterceptor(logger)),
+		grpc.ChainUnaryInterceptor(interceptor.UnaryMTLSInterceptor(logger, expectedOrgID, orgMode)),
+		grpc.ChainStreamInterceptor(interceptor.StreamMTLSInterceptor(logger, expectedOrgID, orgMode)),
 		grpc.InitialWindowSize(8 * 1024 * 1024),
 		grpc.InitialConnWindowSize(16 * 1024 * 1024),
 		grpc.KeepaliveParams(keepalive.ServerParameters{

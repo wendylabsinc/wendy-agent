@@ -277,6 +277,7 @@ func TestValidDeviceName(t *testing.T) {
 		"brave-dolphin",
 		"my-device-1",
 		"a23",
+		strings.Repeat("a", maxDeviceNameLen), // at the length cap
 	}
 	for _, name := range valid {
 		if !validDeviceName(name) {
@@ -286,18 +287,27 @@ func TestValidDeviceName(t *testing.T) {
 
 	invalid := []string{
 		"",
-		"ab",                    // too short
-		"1abc",                  // starts with digit
-		"-abc",                  // starts with hyphen
-		"ABC",                   // uppercase
-		"has space",             // space
-		strings.Repeat("a", 65), // too long
-		"valid_but_underscore",  // underscore not allowed
+		"ab",                                    // too short
+		"1abc",                                  // starts with digit
+		"-abc",                                  // starts with hyphen
+		"ABC",                                   // uppercase
+		"has space",                             // space
+		strings.Repeat("a", maxDeviceNameLen+1), // one over the cap
+		"valid_but_underscore",                  // underscore not allowed
 	}
 	for _, name := range invalid {
 		if validDeviceName(name) {
 			t.Errorf("expected %q to be invalid", name)
 		}
+	}
+
+	// The cap exists so the derived "wendyos-<name>" hostname stays within the
+	// 63-octet RFC 1035 label limit (WDY-1518).
+	if maxDeviceNameLen != 55 {
+		t.Errorf("maxDeviceNameLen = %d; want 55", maxDeviceNameLen)
+	}
+	if got := len("wendyos-" + strings.Repeat("a", maxDeviceNameLen)); got > 63 {
+		t.Errorf("derived hostname label is %d octets; exceeds the RFC 1035 limit of 63", got)
 	}
 }
 

@@ -2,24 +2,29 @@ package commands
 
 import (
 	"context"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
+	"github.com/wendylabsinc/wendy/go/internal/agent/timesync"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/wendyconf"
 	cloudpb "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
+	"github.com/wendylabsinc/wendy/go/proto/gen/litepb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 )
 
-// preProvisionedState is written to the config partition during imaging.
+// PreProvisionedState is written to the config partition during imaging.
 // JSON tags must match provisioningState in internal/agent/services.
-type preProvisionedState struct {
+type PreProvisionedState struct {
 	Enrolled  bool   `json:"enrolled"`
 	CloudHost string `json:"cloudHost,omitempty"`
 	OrgID     int32  `json:"orgId,omitempty"`
@@ -36,10 +41,11 @@ func defaultPreEnrollDialer(_ context.Context, addr string, opt grpc.DialOption)
 }
 
 // preEnrollDevice generates a device key pair, gets an enrollment token from
-// Wendy Cloud, issues a certificate, and returns the provisioning state as JSON
-// to be written to the config partition. deviceName is optional. Pass nil for
-// dialer to use the default.
-func preEnrollDevice(ctx context.Context, auth *config.AuthConfig, deviceName string, dialer PreEnrollDialer) ([]byte, error) {
+// Wendy Cloud, issues a certificate, and returns the provisioning state.
+// deviceName is optional. orgID selects the target organization; pass 0 to
+// fall back to the org embedded in the auth certificate. Pass nil for dialer
+// to use the default.
+func preEnrollDevice(ctx context.Context, auth *config.AuthConfig, deviceName string, orgID int32, dialer PreEnrollDialer) (*PreProvisionedState, error) {
 	if dialer == nil {
 		dialer = defaultPreEnrollDialer
 	}
@@ -70,14 +76,17 @@ func preEnrollDevice(ctx context.Context, auth *config.AuthConfig, deviceName st
 
 	tokenCtx := cloudContext(ctx, auth)
 
+	if orgID == 0 {
+		orgID = int32(cert.OrganizationID)
+	}
 	tokenResp, err := certClient.CreateAssetEnrollmentToken(tokenCtx, &cloudpb.CreateAssetEnrollmentTokenRequest{
-		OrganizationId: int32(cert.OrganizationID),
+		OrganizationId: orgID,
 		Name:           deviceName,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("creating enrollment token: %w", err)
 	}
-	orgID := tokenResp.GetOrganizationId()
+	resolvedOrgID := tokenResp.GetOrganizationId()
 	assetID := tokenResp.GetAssetId()
 
 	// Generate key pair in memory only — never written to the local machine's disk.
@@ -86,7 +95,10 @@ func preEnrollDevice(ctx context.Context, auth *config.AuthConfig, deviceName st
 		return nil, fmt.Errorf("generating key pair: %w", err)
 	}
 
-	csrPEM, err := certs.GenerateCSR([]byte(keyPEM), fmt.Sprintf("sh/wendy/%d/%d", orgID, assetID))
+	// Device identity acts as both a TLS client (to the cloud) and a TLS server
+	// (agent gRPC and tunnel endpoints), so request both EKUs.
+	csrPEM, err := certs.GenerateCSR([]byte(keyPEM), fmt.Sprintf("sh/wendy/%d/%d", resolvedOrgID, assetID),
+		x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth)
 	if err != nil {
 		return nil, fmt.Errorf("generating CSR: %w", err)
 	}
@@ -106,16 +118,16 @@ func preEnrollDevice(ctx context.Context, auth *config.AuthConfig, deviceName st
 		return nil, fmt.Errorf("cloud returned empty certificate")
 	}
 
-	state := preProvisionedState{
+	state := &PreProvisionedState{
 		Enrolled:  true,
 		CloudHost: auth.CloudGRPC,
-		OrgID:     orgID,
+		OrgID:     resolvedOrgID,
 		AssetID:   assetID,
 		KeyPEM:    keyPEM,
 		CertPEM:   certObj.GetPemCertificate(),
 		ChainPEM:  certObj.GetPemCertificateChain(),
 	}
-	return json.Marshal(state)
+	return state, nil
 }
 
 // psPartition is one row from the Windows partition-listing PowerShell
@@ -216,5 +228,105 @@ func writeConfigFiles(mountPoint string, agentBinary []byte, creds []wendyconf.W
 		}
 	}
 
+	// Write current time as a clock floor so the device boots with a sane clock
+	// even before NTP or Roughtime sync completes.
+	if err := timesync.WriteFloor(mountPoint, time.Now()); err != nil {
+		return fmt.Errorf("writing clock_floor to config partition: %w", err)
+	}
+
 	return nil
+}
+
+func buildWendyConf(creds []wendyconf.WifiCredential, deviceName string, state *PreProvisionedState) (*litepb.WendyConf, error) {
+	conf := &litepb.WendyConf{}
+
+	if deviceName != "" {
+		conf.DeviceName = &deviceName
+	}
+
+	if len(creds) > 0 {
+		networks := make([]*litepb.WendyConfWifiNetwork, len(creds))
+		for i, c := range creds {
+			networks[i] = &litepb.WendyConfWifiNetwork{
+				Ssid:     c.SSID,
+				Password: c.Password,
+				Priority: c.Priority,
+				Hidden:   c.Hidden,
+				Security: wifiSecurityToProto(c.Security),
+			}
+		}
+		conf.Wifi = &litepb.WendyConfWifi{Networks: networks}
+	}
+
+	if state != nil {
+		keyDER, err := pemBlockToDER(state.KeyPEM)
+		if err != nil {
+			return nil, fmt.Errorf("converting key PEM to DER: %w", err)
+		}
+		certDER, err := pemBlockToDER(state.CertPEM)
+		if err != nil {
+			return nil, fmt.Errorf("converting cert PEM to DER: %w", err)
+		}
+		chainDER, err := pemChainToDER(state.ChainPEM)
+		if err != nil {
+			return nil, fmt.Errorf("converting chain PEM to DER: %w", err)
+		}
+		conf.Provisioning = &litepb.WendyConfCloudProvisioning{
+			Enrolled:  state.Enrolled,
+			CloudHost: state.CloudHost,
+			OrgId:     state.OrgID,
+			AssetId:   state.AssetID,
+			Key:       keyDER,
+			Cert:      certDER,
+			Chain:     chainDER,
+		}
+	}
+
+	return conf, nil
+}
+
+// pemBlockToDER decodes the first PEM block from s and returns its raw DER bytes.
+func pemBlockToDER(s string) ([]byte, error) {
+	if s == "" {
+		return nil, nil
+	}
+	block, _ := pem.Decode([]byte(s))
+	if block == nil {
+		return nil, fmt.Errorf("invalid PEM data")
+	}
+	return block.Bytes, nil
+}
+
+// pemChainToDER decodes all PEM blocks from s and concatenates their DER bytes.
+func pemChainToDER(s string) ([]byte, error) {
+	if s == "" {
+		return nil, nil
+	}
+	var der []byte
+	rest := []byte(s)
+	for len(rest) > 0 {
+		var block *pem.Block
+		block, rest = pem.Decode(rest)
+		if block == nil {
+			break
+		}
+		der = append(der, block.Bytes...)
+	}
+	if len(der) == 0 {
+		return nil, fmt.Errorf("invalid PEM chain data")
+	}
+	return der, nil
+}
+
+func wifiSecurityToProto(s string) litepb.WendyConfWifiSecurity {
+	switch s {
+	case "open":
+		return litepb.WendyConfWifiSecurity_WENDY_CONF_WIFI_SECURITY_OPEN
+	case "wpa2":
+		return litepb.WendyConfWifiSecurity_WENDY_CONF_WIFI_SECURITY_WPA2
+	case "wpa3":
+		return litepb.WendyConfWifiSecurity_WENDY_CONF_WIFI_SECURITY_WPA3
+	default:
+		return litepb.WendyConfWifiSecurity_WENDY_CONF_WIFI_SECURITY_UNSPECIFIED
+	}
 }

@@ -54,7 +54,25 @@ In this mode the host receives an address from `10.42.0.2`–`10.42.0.5` and the
 
 ## Host-Side Setup
 
-### Mode 1 host setup — NetworkManager shared (recommended)
+### Easiest — let `wendy discover` set it up (Linux)
+
+On a Linux host, `wendy discover` auto-detects a USB-C-tethered Wendy device
+whose host link isn't configured and offers to set it up for you. Accept the
+prompt and enter your sudo password; the CLI brings the gadget interface up via
+a NetworkManager "shared" profile (the host serves DHCP `10.42.0.1/24`, matching
+the device's default DHCP-client mode) and installs a udev rule so ModemManager
+stops grabbing the gadget's serial console.
+
+To undo it later, remove the profile and rule manually:
+
+```sh
+sudo nmcli connection delete wendy-usb
+sudo rm -f /etc/udev/rules.d/99-wendy-usb.rules
+```
+
+The manual steps below are equivalent and remain available.
+
+### Mode 1 host setup — NetworkManager shared
 
 Run on the host once the NCM interface (`enxXXXXXXXXXXXX`) appears:
 

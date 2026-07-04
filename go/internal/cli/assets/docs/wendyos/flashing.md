@@ -1,18 +1,34 @@
 # Flashing WendyOS
 
-The `wendy os install` command writes a WendyOS image to a drive (SD card, USB, NVMe enclosure, etc.).
+The `wendy install` command writes a WendyOS image to a drive (SD card, USB, NVMe enclosure, etc.).
 
 ## Usage
 
 ```bash
-wendy os install --device-type <type> --drive <device>
+wendy install --device-type <type> --drive <device>
 ```
 
 Use `wendy os list-drives` to enumerate available drives.
 
 ## How it works
 
-`wendy os install` downloads the WendyOS release zip (~5.5 GB) for the selected device type and writes it directly to the target drive. The compressed zip is never fully extracted to disk — the image entry is streamed from the zip to the drive in a single pass, so the peak temporary disk usage is the zip file itself.
+`wendy install` downloads the WendyOS release zip (~5.5 GB) for the selected device type and writes it directly to the target drive. The compressed zip is never fully extracted to disk — the image entry is streamed from the zip to the drive in a single pass, so the peak temporary disk usage is the zip file itself.
+
+### Block map acceleration
+
+When a block map (`.bmap`) and seekable-zstd image (`.img.zst`) are available for the target storage variant, `wendy install` uses them to flash significantly faster:
+
+- Only mapped (non-zero) ranges are written; holes are skipped entirely
+- The seekable zstd format allows random access, so zero regions are never decompressed
+- Typical Jetson images (~19 GB uncompressed, ~4 GB mapped data) flash in a fraction of the time
+
+Use `--no-bmap` to disable this optimization and flash the full image. Use `--storage nvme` or `--storage sd` to force a specific storage variant when the auto-detection is incorrect (e.g., an NVMe drive in a USB enclosure).
+
+### Block map error handling
+
+If a bmap-accelerated write fails — for example due to a checksum mismatch or a stale/incorrect published bmap — `wendy install` automatically falls back to a full sequential write using the already-cached `.img.zst` or `.zip`. No user action and no re-download are required.
+
+A failure that occurs *during* the fallback write (short write, decode error, or a non-zero helper exit) is fatal: the helper's stderr is surfaced as the error.
 
 ### Image formats
 

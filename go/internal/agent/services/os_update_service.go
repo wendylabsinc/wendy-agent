@@ -1,13 +1,10 @@
 package services
 
 import (
-	"bufio"
-	"fmt"
-	"os/exec"
-
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 
+	"github.com/wendylabsinc/wendy/go/internal/agent/oshealth"
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 )
 
@@ -15,25 +12,37 @@ type OSUpdateService struct {
 	agentpbv2.UnimplementedWendyOSUpdateServiceServer
 	logger        *zap.Logger
 	isWendyOSHost func() bool
+	stateDir      string
 }
 
 func NewOSUpdateService(logger *zap.Logger) *OSUpdateService {
-	return &OSUpdateService{logger: logger, isWendyOSHost: defaultIsWendyOSHost}
+	return &OSUpdateService{
+		logger:        logger,
+		isWendyOSHost: defaultIsWendyOSHost,
+		stateDir:      oshealth.DefaultStateDir,
+	}
 }
 
 func (s *OSUpdateService) UpdateOS(req *agentpbv2.UpdateOSRequest, stream grpc.ServerStreamingServer[agentpbv2.UpdateOSResponse]) error {
-	s.logger.Info("UpdateOS started", zap.String("artifact_url", req.GetArtifactUrl()))
+	s.logger.Info("UpdateOS started",
+		zap.String("artifact_url", req.GetArtifactUrl()), zap.String("updater", req.GetUpdaterBackend()))
 
 	if !s.isWendyOSHost() {
 		s.logger.Warn("UpdateOS rejected: host is not a WendyOS OTA target", zap.String("artifact_url", req.GetArtifactUrl()))
-		return stream.Send(&agentpbv2.UpdateOSResponse{
-			ResponseType: &agentpbv2.UpdateOSResponse_Failed_{
-				Failed: &agentpbv2.UpdateOSResponse_Failed{
-					ErrorMessage: osUpdateUnsupportedForHostMessage,
-				},
-			},
-		})
+		return sendOSUpdateFailureV2(stream, osUpdateUnsupportedForHostMessage)
 	}
+
+	// Stop the auto-updater so it can't SIGTERM the in-flight install mid-OTA;
+	// see inhibitAutoUpdater. Restored on return.
+	restoreUpdater := inhibitAutoUpdater(s.logger)
+	defer restoreUpdater()
+
+	updater, err := selectUpdater(s.logger, req.GetUpdaterBackend())
+	if err != nil {
+		s.logger.Warn("UpdateOS rejected: no usable updater backend", zap.Error(err))
+		return sendOSUpdateFailureV2(stream, err.Error())
+	}
+	s.logger.Info("UpdateOS using backend", zap.String("backend", updater.name()))
 
 	sendProgress := func(phase string, percent int32) {
 		_ = stream.Send(&agentpbv2.UpdateOSResponse{
@@ -43,90 +52,24 @@ func (s *OSUpdateService) UpdateOS(req *agentpbv2.UpdateOSRequest, stream grpc.S
 		})
 	}
 
-	if err := enableJetsonRootfsAB(s.logger); err != nil {
-		return stream.Send(&agentpbv2.UpdateOSResponse{
-			ResponseType: &agentpbv2.UpdateOSResponse_Failed_{
-				Failed: &agentpbv2.UpdateOSResponse_Failed{
-					ErrorMessage: fmt.Sprintf("Jetson A/B setup failed: %v", err),
-				},
-			},
-		})
+	if err := updater.install(stream.Context(), req.GetArtifactUrl(), sendProgress); err != nil {
+		return sendOSUpdateFailureV2(stream, err.Error())
 	}
 
-	sendProgress("downloading", 0)
-	cmdName, found := resolveMenderBinary()
-	if !found {
-		return stream.Send(&agentpbv2.UpdateOSResponse{
-			ResponseType: &agentpbv2.UpdateOSResponse_Failed_{
-				Failed: &agentpbv2.UpdateOSResponse_Failed{ErrorMessage: "mender-update binary not found"},
-			},
-		})
-	}
+	recordPendingOSUpdate(s.logger, s.stateDir, req.GetArtifactUrl(), updater.name())
 
-	cmd := exec.CommandContext(stream.Context(), cmdName, "install", req.GetArtifactUrl())
-	cmd.Env = envWithPath("/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
-
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return stream.Send(&agentpbv2.UpdateOSResponse{
-			ResponseType: &agentpbv2.UpdateOSResponse_Failed_{
-				Failed: &agentpbv2.UpdateOSResponse_Failed{
-					ErrorMessage: fmt.Sprintf("failed to create stderr pipe: %v", err),
-				},
-			},
-		})
-	}
-
-	if err := cmd.Start(); err != nil {
-		return stream.Send(&agentpbv2.UpdateOSResponse{
-			ResponseType: &agentpbv2.UpdateOSResponse_Failed_{
-				Failed: &agentpbv2.UpdateOSResponse_Failed{
-					ErrorMessage: fmt.Sprintf("failed to start mender: %v", err),
-				},
-			},
-		})
-	}
-
-	// Retain the tail of mender's output so a non-zero exit can report the
-	// real cause (e.g. an incompatible device type) instead of a bare
-	// "exit status 1".
-	outputTail := newLineRing(menderErrorTailLines)
-	scanner := bufio.NewScanner(stderr)
-	for scanner.Scan() {
-		line := scanner.Text()
-		outputTail.push(line)
-		if m := menderProgressRe.FindStringSubmatch(line); len(m) > 1 {
-			if pct := parseInt32(m[1]); pct >= 0 {
-				sendProgress("installing", pct)
-			}
-		}
-	}
-	if err := scanner.Err(); err != nil {
-		s.logger.Warn("mender output scan error", zap.Error(err))
-	}
-
-	if err := cmd.Wait(); err != nil {
-		msg := formatMenderFailure(err, outputTail.tail())
-		s.logger.Error("mender install failed", zap.Error(err), zap.Strings("output_tail", outputTail.tail()))
-		return stream.Send(&agentpbv2.UpdateOSResponse{
-			ResponseType: &agentpbv2.UpdateOSResponse_Failed_{
-				Failed: &agentpbv2.UpdateOSResponse_Failed{
-					ErrorMessage: msg,
-				},
-			},
-		})
-	}
-
-	rebootRequired := true
 	return stream.Send(&agentpbv2.UpdateOSResponse{
 		ResponseType: &agentpbv2.UpdateOSResponse_Completed_{
-			Completed: &agentpbv2.UpdateOSResponse_Completed{RebootRequired: rebootRequired},
+			Completed: &agentpbv2.UpdateOSResponse_Completed{RebootRequired: true},
 		},
 	})
 }
 
-func parseInt32(s string) int32 {
-	var n int32
-	fmt.Sscanf(s, "%d", &n)
-	return n
+// sendOSUpdateFailureV2 sends a terminal Failed response on the v2 UpdateOS stream.
+func sendOSUpdateFailureV2(stream grpc.ServerStreamingServer[agentpbv2.UpdateOSResponse], msg string) error {
+	return stream.Send(&agentpbv2.UpdateOSResponse{
+		ResponseType: &agentpbv2.UpdateOSResponse_Failed_{
+			Failed: &agentpbv2.UpdateOSResponse_Failed{ErrorMessage: msg},
+		},
+	})
 }

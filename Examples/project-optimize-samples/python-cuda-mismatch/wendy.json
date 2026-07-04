@@ -1,0 +1,7 @@
+{
+  "appId": "python-cuda-mismatch",
+  "platform": "wendyos",
+  "entitlements": [
+    { "type": "gpu" }
+  ]
+}

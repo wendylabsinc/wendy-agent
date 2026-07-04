@@ -12,6 +12,9 @@ struct E2ETestMetadata: Codable, Sendable {
     var testName: String
     var functionName: String
     var line: Int
+    var declarationLine: Int? = nil
+    var sourceStartLine: Int? = nil
+    var sourceEndLine: Int? = nil
 
     var identityKey: E2ETestIdentityKey {
         E2ETestIdentityKey(
@@ -29,6 +32,30 @@ struct E2ETestMetadata: Codable, Sendable {
         try validateText(functionName, field: "functionName", sourceURL: sourceURL)
         guard line > 0 else {
             throw ValidationError("Test metadata has invalid line in \(sourceURL.path)")
+        }
+        try validateOptionalLine(declarationLine, field: "declarationLine", sourceURL: sourceURL)
+        try validateOptionalLine(sourceStartLine, field: "sourceStartLine", sourceURL: sourceURL)
+        try validateOptionalLine(sourceEndLine, field: "sourceEndLine", sourceURL: sourceURL)
+        if let sourceStartLine, let sourceEndLine, sourceStartLine > sourceEndLine {
+            throw ValidationError(
+                "Test metadata has invalid source line range in \(sourceURL.path)"
+            )
+        }
+        if let declarationLine, let sourceStartLine, declarationLine < sourceStartLine {
+            throw ValidationError(
+                "Test metadata has declaration before source range in \(sourceURL.path)"
+            )
+        }
+        if let declarationLine, let sourceEndLine, declarationLine > sourceEndLine {
+            throw ValidationError(
+                "Test metadata has declaration after source range in \(sourceURL.path)"
+            )
+        }
+    }
+
+    private func validateOptionalLine(_ value: Int?, field: String, sourceURL: URL) throws {
+        if let value, value <= 0 {
+            throw ValidationError("Test metadata has invalid \(field) in \(sourceURL.path)")
         }
     }
 

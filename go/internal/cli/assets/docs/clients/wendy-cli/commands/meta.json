@@ -1,0 +1,21 @@
+{
+  "pages": [
+    "init",
+    "run",
+    "install",
+    "project",
+    "device",
+    "cloud",
+    "analytics",
+    "cache",
+    "---Reference---",
+    "auth",
+    "build",
+    "completion",
+    "discover",
+    "json",
+    "os",
+    "tour",
+    "utils"
+  ]
+}

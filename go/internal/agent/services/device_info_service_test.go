@@ -48,11 +48,21 @@ func TestDeviceInfoService_GetDeviceInfo(t *testing.T) {
 	if resp.Version != version.Version {
 		t.Errorf("version = %q; want %q", resp.Version, version.Version)
 	}
-	if resp.Os != runtime.GOOS {
-		t.Errorf("os = %q; want %q", resp.Os, runtime.GOOS)
+	if resp.Os == "" {
+		t.Errorf("os is empty")
 	}
 	if resp.CpuArchitecture != runtime.GOARCH {
 		t.Errorf("arch = %q; want %q", resp.CpuArchitecture, runtime.GOARCH)
+	}
+	// RAM size and CPU core count come from /proc, so they are only
+	// guaranteed on Linux hosts (WDY-1809). Zero means "unknown".
+	if runtime.GOOS == "linux" {
+		if resp.MemTotalBytes <= 0 {
+			t.Errorf("memTotalBytes = %d, want > 0 on linux", resp.MemTotalBytes)
+		}
+		if resp.CpuCount == 0 {
+			t.Errorf("cpuCount = 0, want > 0 on linux")
+		}
 	}
 }
 

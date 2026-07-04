@@ -1,26 +1,13 @@
 ---
-title: Wendy Agent — Linux
+title: Linux Desktop
 description: Install wendy-agent on any Linux machine to turn it into a managed Wendy device
 ---
 
 ## Overview
 
-`wendy-agent` comes pre-installed on WendyOS, which currently supports [NVIDIA Jetson Orin Nano and AGX Orin](/docs/installation/wendyos-nvidia-jetson) plus [Raspberry Pi 5](/docs/installation/wendyos-raspberry-pi-5). If you flashed WendyOS onto your device, you do not need to follow this guide.
+Install `wendy-agent` on **any existing Linux installation** — Ubuntu, Debian, Raspberry Pi OS, DGX Spark, NUCs, cloud VMs, or any other ARM64 or x86_64 distribution — to turn it into a managed Wendy device. Once installed, your `wendy` CLI and the device discover each other over the local network.
 
-Wendy Agent is also available as a standalone install for targets that already run an existing operating system.
-
-For Linux targets (Raspberry Pi OS, Ubuntu, Debian, DGX Spark's Linux image, or another Linux distribution), install the Linux agent directly. Once installed, your `wendy` CLI and device can discover each other over the local area network.
-
-For Apple Silicon Mac targets, use [Wendy Agent for macOS](/docs/installation/wendy-agent-macos). It follows the same `wendy-agent` model, but uses a macOS-specific app instead of this Linux install script.
-
-This works on:
-
-- Raspberry Pi 5 running Raspberry Pi OS
-- DGX Spark
-- Ubuntu / Debian servers or desktops
-- Intel/AMD NUCs
-- Cloud VMs or remote servers
-- Any ARM64 or x86_64 Linux machine
+(`wendy-agent` is already built into [WendyOS](/docs/installation/wendyos-nvidia-jetson) — if you flashed WendyOS, skip this guide.)
 
 ## Requirements
 
@@ -33,7 +20,7 @@ This works on:
 SSH or log into the target machine and run:
 
 ```bash
-curl -fsSL https://install.wendy.sh/agent.sh | bash
+curl -fsSL https://install.wendy.dev/agent.sh | bash
 ```
 
 This installs the `wendy-agent` service, which registers the device on your local network via mDNS so that the Wendy CLI on your developer machine can discover it.
@@ -54,9 +41,9 @@ Once `wendy-agent` is installed and running, go back to your developer machine (
 
 ```bash
 wendy discover
-# Set this device as your default
-wendy device set-default
 ```
+
+<CliShot flow="discover" step="devices" alt="The Wendy CLI listing devices running wendy-agent discovered over the local network" />
 
 This uses mDNS to scan your local area network and list all devices running `wendy-agent`. You should see your newly configured machine appear in the list.
 
@@ -74,6 +61,6 @@ Replace `{hostname}` with the hostname or IP address of your remote machine. Thi
 
 Once your device is discoverable, you can deploy applications to it just like any other WendyOS device:
 
-- [Hello World in Python](/docs/guides/python/hello-world)
-- [Hello World in Swift](/docs/guides/swift/hello-world)
-- [Hello World in TypeScript](/docs/guides/typescript/hello-world)
+- [Hello World in Python](/docs/guides/tutorials/python/hello-world)
+- [Hello World in Swift](/docs/guides/tutorials/swift/hello-world)
+- [Hello World in TypeScript](/docs/guides/tutorials/typescript/hello-world)

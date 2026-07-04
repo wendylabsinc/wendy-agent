@@ -88,7 +88,7 @@ jobs:
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
           echo "Using explicit device: $hostname"
 
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         if: inputs.hostname == '' || inputs.jobs == 'all' || inputs.jobs == 'discover'
 
       - name: Set up Go
@@ -97,6 +97,24 @@ jobs:
         with:
           go-version-file: go.mod
           cache: false
+
+      - name: Prepare macOS build dependencies
+        if: inputs.hostname == '' || inputs.jobs == 'all' || inputs.jobs == 'discover'
+        run: |
+          set -euo pipefail
+          echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
+          echo "/usr/local/bin" >> "$GITHUB_PATH"
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+          missing=()
+          if ! command -v pkg-config >/dev/null 2>&1; then
+            missing+=(pkg-config)
+          fi
+          if ! pkg-config --exists libusb-1.0 >/dev/null 2>&1; then
+            missing+=(libusb)
+          fi
+          if [ "${#missing[@]}" -gt 0 ]; then
+            brew install "${missing[@]}"
+          fi
 
       - name: Build CLI
         if: inputs.hostname == '' || inputs.jobs == 'all' || inputs.jobs == 'discover'
@@ -149,9 +167,11 @@ jobs:
             fi
           }
 
+          DISCOVERED_COUNT=0
           HOSTS=()
           while IFS= read -r host; do
             [[ -z "$host" ]] && continue
+            DISCOVERED_COUNT=$((DISCOVERED_COUNT + 1))
             if ! validate_device_hostname "$host"; then
               echo "ERROR: invalid discovered device hostname: $host" >&2
               exit 1
@@ -174,13 +194,30 @@ jobs:
             exit 1
           fi
 
-          MATRIX=$(jq -cn --args '$ARGS.positional' "${HOSTS[@]}")
+          if [[ "$COUNT" -eq 0 ]]; then
+            MATRIX='[]'
+          else
+            MATRIX=$(jq -cn --args '$ARGS.positional' "${HOSTS[@]}")
+          fi
           [[ -n "$MATRIX" && "$MATRIX" != "null" ]] || { echo "ERROR: failed to build device matrix" >&2; exit 1; }
           echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
 
-          echo "Discovered $COUNT LAN device(s)."
-          if [[ "$INPUT_HOSTNAME" == '' && "$INPUT_JOBS" != 'discover' && "$COUNT" -eq 0 ]]; then
-            echo "ERROR: No LAN devices found via wendy discover"
+          echo "Discovered $DISCOVERED_COUNT LAN device(s); selected $COUNT allowlisted device(s)."
+          if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+            {
+              echo "### Wendy integration discovery"
+              echo
+              echo "- LAN devices discovered: $DISCOVERED_COUNT"
+              echo "- Allowlisted devices selected: $COUNT"
+              if [[ "$DISCOVERED_COUNT" -gt 0 && "$COUNT" -eq 0 ]]; then
+                echo
+                echo "No discovered LAN devices matched the integration allowlist, so downstream integration jobs will be skipped."
+              fi
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          if [[ "$INPUT_HOSTNAME" == '' && "$INPUT_JOBS" != 'discover' && "$DISCOVERED_COUNT" -eq 0 ]]; then
+            echo "ERROR: No LAN devices found via wendy discover" >&2
             exit 1
           fi
 
@@ -207,13 +244,30 @@ jobs:
       INPUT_HOSTNAME: ${{ matrix.hostname }}
       INPUT_TESTS: ${{ inputs.tests }}
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Set up Go
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
           cache: false
+
+      - name: Prepare macOS build dependencies
+        run: |
+          set -euo pipefail
+          echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
+          echo "/usr/local/bin" >> "$GITHUB_PATH"
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+          missing=()
+          if ! command -v pkg-config >/dev/null 2>&1; then
+            missing+=(pkg-config)
+          fi
+          if ! pkg-config --exists libusb-1.0 >/dev/null 2>&1; then
+            missing+=(libusb)
+          fi
+          if [ "${#missing[@]}" -gt 0 ]; then
+            brew install "${missing[@]}"
+          fi
 
       - name: Build CLI
         working-directory: go
@@ -276,7 +330,7 @@ jobs:
               exit 0
             fi
           else
-            for t in swift-hello swift-network swift-bluetooth swift-resources python-hello python-network python-gpu python-onnx-gpu python-bluetooth python-no-network python-no-bluetooth python-no-ptrace python-no-unshare python-multiservice python-servicename otel-localhost-only; do
+            for t in swift-hello swift-network swift-bluetooth swift-resources python-hello python-network python-gpu python-onnx-gpu python-bluetooth python-no-network python-no-bluetooth python-no-ptrace python-no-unshare python-no-kexec-module python-network-host-admin python-no-net-admin python-resources python-multiservice python-multiservice-resources python-servicename python-device-top otel-localhost-only; do
               TEST_ARGS+=(-t "$t")
             done
           fi
@@ -329,13 +383,22 @@ jobs:
       INPUT_HOSTNAME: ${{ matrix.hostname }}
       INPUT_TESTS: ${{ inputs.tests }}
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Set up Go
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
           cache: false
+
+      # The Linux CLI links libusb via cgo (Thor flashing), so the self-hosted
+      # runner needs the dev headers before `make build-cli`.
+      - name: Prepare Linux build dependencies
+        run: |
+          set -euo pipefail
+          if ! pkg-config --exists libusb-1.0 2>/dev/null; then
+            sudo apt-get update && sudo apt-get install -y pkg-config libusb-1.0-0-dev
+          fi
 
       - name: Build CLI
         working-directory: go
@@ -386,7 +449,7 @@ jobs:
               exit 0
             fi
           else
-            for t in python-hello python-network python-gpu python-onnx-gpu python-bluetooth python-no-network python-no-bluetooth python-no-ptrace python-no-unshare python-multiservice python-servicename otel-localhost-only; do
+            for t in python-hello python-network python-gpu python-onnx-gpu python-bluetooth python-no-network python-no-bluetooth python-no-ptrace python-no-unshare python-no-kexec-module python-network-host-admin python-no-net-admin python-resources python-multiservice python-multiservice-resources python-servicename python-device-top otel-localhost-only; do
               TEST_ARGS+=(-t "$t")
             done
           fi

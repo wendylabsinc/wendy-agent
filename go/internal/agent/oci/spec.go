@@ -117,6 +117,12 @@ type LinuxResources struct {
 	Devices []LinuxDeviceCgroup `json:"devices,omitempty"`
 	Memory  *LinuxMemory        `json:"memory,omitempty"`
 	CPU     *LinuxCPU           `json:"cpu,omitempty"`
+	Pids    *LinuxPids          `json:"pids,omitempty"`
+}
+
+// LinuxPids contains the cgroup pids-controller constraint.
+type LinuxPids struct {
+	Limit int64 `json:"limit"`
 }
 
 // LinuxDeviceCgroup represents a device access rule.
@@ -172,6 +178,31 @@ type POSIXRlimit struct {
 	Type string `json:"type"`
 	Hard uint64 `json:"hard"`
 	Soft uint64 `json:"soft"`
+}
+
+// DedupeDevices removes duplicate device-node entries (same Path) from
+// spec.Linux.Devices, keeping the first occurrence. runc mknod()s each device
+// entry, so a duplicate path makes container creation fail with EEXIST. Several
+// independent provisioners can add the same node — e.g. the NVIDIA CDI spec (or
+// the L4T CSV fallback) and the gpu entitlement both add /dev/nvidiactl — so the
+// finalized spec is deduped once before it is handed to runc. The cgroup allow
+// rules are intentionally left untouched: duplicate allow rules are harmless
+// (purely additive) and a whole-major rule is not redundant with a major:minor
+// one.
+func DedupeDevices(spec *Spec) {
+	if spec.Linux == nil || len(spec.Linux.Devices) < 2 {
+		return
+	}
+	seen := make(map[string]bool, len(spec.Linux.Devices))
+	deduped := spec.Linux.Devices[:0]
+	for _, d := range spec.Linux.Devices {
+		if seen[d.Path] {
+			continue
+		}
+		seen[d.Path] = true
+		deduped = append(deduped, d)
+	}
+	spec.Linux.Devices = deduped
 }
 
 func DefaultSpec(rootfsPath string, args []string) *Spec {
@@ -267,6 +298,25 @@ func defaultSeccomp() *LinuxSeccomp {
 				ErrnoRet: &eperm,
 			},
 			{
+				// SECURITY (WDY-1012): deny kernel-attack-surface syscalls that
+				// a normal application container never needs — kernel module
+				// loading and kexec. These are pure host-escape primitives;
+				// blocking them here is defense-in-depth on top of the capability
+				// gating that already withholds CAP_SYS_MODULE / CAP_SYS_BOOT.
+				// (create_module is long-removed from Linux but is listed so the
+				// filter denies it on any kernel that still exposes it.)
+				Names: []string{
+					"init_module",
+					"finit_module",
+					"delete_module",
+					"create_module",
+					"kexec_load",
+					"kexec_file_load",
+				},
+				Action:   ActErrno,
+				ErrnoRet: &eperm,
+			},
+			{
 				Names:  []string{"clone"},
 				Action: ActErrno,
 				Args: []LinuxSeccompArg{
@@ -280,6 +330,21 @@ func defaultSeccomp() *LinuxSeccomp {
 				ErrnoRet: &eperm,
 			},
 		},
+	}
+}
+
+// DropToMinimalCapabilities strips the process capability set to empty. The ROS 2
+// CLI sidecar only execs `ros2` and needs none of the default caps
+// (CAP_NET_RAW/MKNOD/SETUID/...), so a network-joined helper should not carry
+// them (WDY-1704; least privilege, SOC2-CC6/NIST-AC-6).
+func DropToMinimalCapabilities(spec *Spec) {
+	empty := []string{}
+	spec.Process.Capabilities = &LinuxCapabilities{
+		Bounding:    empty,
+		Effective:   empty,
+		Inheritable: empty,
+		Permitted:   empty,
+		Ambient:     empty,
 	}
 }
 

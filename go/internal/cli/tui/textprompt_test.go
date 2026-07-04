@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -83,6 +84,33 @@ func TestTextPromptModel_DefaultValue(t *testing.T) {
 	m = updateTextPrompt(m, tkey("enter"))
 	if m.Value() != "/data" {
 		t.Fatalf("expected %q, got %q", "/data", m.Value())
+	}
+}
+
+func TestNewPasswordPrompt_MasksInput(t *testing.T) {
+	m := NewPasswordPrompt("Password", "", nil)
+	if m.input.EchoMode != textinput.EchoPassword {
+		t.Fatalf("expected EchoPassword, got %v", m.input.EchoMode)
+	}
+	if m.input.EchoCharacter != '•' {
+		t.Fatalf("expected mask char '•', got %q", m.input.EchoCharacter)
+	}
+
+	// Masking is display-only: the real value must still be captured.
+	for _, r := range "s3cret" {
+		m = updateTextPrompt(m, tkey(string(r)))
+	}
+	m = updateTextPrompt(m, tkey("enter"))
+	if m.Value() != "s3cret" {
+		t.Fatalf("expected captured value %q, got %q", "s3cret", m.Value())
+	}
+}
+
+func TestNewTextPrompt_DoesNotMask(t *testing.T) {
+	// Guard the non-secret path from regressing into masked echo.
+	m := NewTextPrompt("Name", "", "", nil)
+	if m.input.EchoMode != textinput.EchoNormal {
+		t.Fatalf("expected EchoNormal for text prompt, got %v", m.input.EchoMode)
 	}
 }
 

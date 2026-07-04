@@ -1,0 +1,23 @@
+{
+  "name": "wendy-dark",
+  "background": "#121212",
+  "foreground": "#ebebeb",
+  "selection": "#3a3a3a",
+  "cursor": "#34d399",
+  "black": "#1a1a1a",
+  "brightBlack": "#a3a3a3",
+  "red": "#ef4444",
+  "brightRed": "#f87171",
+  "green": "#10b981",
+  "brightGreen": "#34d399",
+  "yellow": "#f59e0b",
+  "brightYellow": "#fbbf24",
+  "blue": "#0ea5e9",
+  "brightBlue": "#38bdf8",
+  "magenta": "#8b5cf6",
+  "brightMagenta": "#a78bfa",
+  "cyan": "#06b6d4",
+  "brightCyan": "#22d3ee",
+  "white": "#d4d4d4",
+  "brightWhite": "#fafafa"
+}

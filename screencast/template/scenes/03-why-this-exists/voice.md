@@ -1,0 +1,1 @@
+Engineering screencasts usually involve many disconnected artifacts: a script, slides, terminal demos, voiceover, screen recordings, timing decisions, and final assembly. When those steps are manual, the story and the rendered output drift apart. This workflow gives the agent a clear source of truth and gives humans a repeatable pipeline they can inspect and run themselves.

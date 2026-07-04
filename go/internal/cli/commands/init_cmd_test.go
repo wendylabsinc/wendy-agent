@@ -2,6 +2,7 @@ package commands
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -85,6 +86,96 @@ func TestResolveInitAppID_TrimsExplicitFlag(t *testing.T) {
 	}
 	if appID != "demo-app" {
 		t.Fatalf("appID = %q, want %q", appID, "demo-app")
+	}
+}
+
+// stubInitDestPrompts replaces the TTY detection and the destination/name
+// prompts used by resolveInitDestAndID with canned answers.
+func stubInitDestPrompts(t *testing.T, interactive, useCurrentDir bool, projectName string) {
+	t.Helper()
+	origInteractive := isInteractiveTerminalFn
+	origConfirm := confirmInitCurrentDir
+	origPrompt := promptInitProjectName
+	isInteractiveTerminalFn = func() bool { return interactive }
+	confirmInitCurrentDir = func() (bool, error) { return useCurrentDir, nil }
+	promptInitProjectName = func() (string, error) { return projectName, nil }
+	t.Cleanup(func() {
+		isInteractiveTerminalFn = origInteractive
+		confirmInitCurrentDir = origConfirm
+		promptInitProjectName = origPrompt
+	})
+}
+
+func TestResolveInitDestAndID_ExplicitAppIDCreatesSubdirectory(t *testing.T) {
+	stubInitDestPrompts(t, false, false, "")
+
+	destDir, appID, err := resolveInitDestAndID("/tmp/workspace", nil, initOptions{
+		appID:    "demo-app",
+		appIDSet: true,
+	})
+	if err != nil {
+		t.Fatalf("resolveInitDestAndID: %v", err)
+	}
+	if destDir != filepath.Join("/tmp/workspace", "demo-app") || appID != "demo-app" {
+		t.Fatalf("destDir, appID = %q, %q, want subdirectory demo-app", destDir, appID)
+	}
+}
+
+// The WDY-1805 repro: partial flags like --target must not suppress the
+// destination and name questions on a TTY.
+func TestResolveInitDestAndID_PromptsDespiteDirectiveFlags(t *testing.T) {
+	stubInitDestPrompts(t, true, false, "demo-app")
+
+	destDir, appID, err := resolveInitDestAndID("/tmp/Build", nil, initOptions{
+		targetSet:   true,
+		languageSet: true,
+		templateSet: true,
+	})
+	if err != nil {
+		t.Fatalf("resolveInitDestAndID: %v", err)
+	}
+	if destDir != filepath.Join("/tmp/Build", "demo-app") || appID != "demo-app" {
+		t.Fatalf("destDir, appID = %q, %q, want prompted demo-app subdirectory", destDir, appID)
+	}
+}
+
+func TestResolveInitDestAndID_CurrentDirUsesValidatedBasename(t *testing.T) {
+	stubInitDestPrompts(t, true, true, "")
+
+	destDir, appID, err := resolveInitDestAndID("/tmp/demo-app", nil, initOptions{targetSet: true})
+	if err != nil {
+		t.Fatalf("resolveInitDestAndID: %v", err)
+	}
+	if destDir != "/tmp/demo-app" || appID != "demo-app" {
+		t.Fatalf("destDir, appID = %q, %q, want current dir demo-app", destDir, appID)
+	}
+}
+
+func TestResolveInitDestAndID_CurrentDirRejectsInvalidBasename(t *testing.T) {
+	stubInitDestPrompts(t, true, true, "")
+
+	_, _, err := resolveInitDestAndID("/tmp/Demo App", nil, initOptions{})
+	if err == nil {
+		t.Fatal("expected invalid directory basename to fail as app ID")
+	}
+	if !strings.Contains(err.Error(), `"Demo App"`) || !strings.Contains(err.Error(), "--app-id") {
+		t.Fatalf("error = %q, want mention of basename and --app-id", err)
+	}
+}
+
+func TestResolveInitDestAndID_NonInteractiveWithoutAppIDFails(t *testing.T) {
+	stubInitDestPrompts(t, false, false, "")
+
+	_, _, err := resolveInitDestAndID("/tmp/Build", nil, initOptions{
+		targetSet:   true,
+		languageSet: true,
+		templateSet: true,
+	})
+	if err == nil {
+		t.Fatal("expected non-interactive template init without app ID to fail")
+	}
+	if !strings.Contains(err.Error(), "--app-id") {
+		t.Fatalf("error = %q, want mention of --app-id", err)
 	}
 }
 
@@ -229,6 +320,56 @@ func TestResolveTemplateLanguage_RejectsUnavailableTemplateLanguage(t *testing.T
 	}
 }
 
+func TestTemplateTargetMatch_DefaultsToWendyOSOnly(t *testing.T) {
+	if !templateTargetMatch(repoMetaTemplate{Name: "simple-api"}, targetWendyOS) {
+		t.Fatal("template without targets should match WendyOS")
+	}
+	if templateTargetMatch(repoMetaTemplate{Name: "simple-api"}, targetDarwin) {
+		t.Fatal("template without targets should not match Darwin")
+	}
+}
+
+func TestTemplateTargetMatch_AcceptsExplicitDarwinTarget(t *testing.T) {
+	tmpl := repoMetaTemplate{Name: "mac-llm", Targets: []string{targetDarwin}}
+	if !templateTargetMatch(tmpl, targetDarwin) {
+		t.Fatal("template with darwin target should match Darwin")
+	}
+	if templateTargetMatch(tmpl, targetWendyOS) {
+		t.Fatal("template with only darwin target should not match WendyOS")
+	}
+}
+
+func TestResolveTemplateLanguage_DarwinRequiresSwift(t *testing.T) {
+	meta := &repoMeta{
+		Templates: []repoMetaTemplate{
+			{Name: "mac-llm", Languages: []string{langSwift}, Targets: []string{targetDarwin}},
+		},
+		Languages: []repoMetaLanguage{
+			{Key: langPython, Name: "Python"},
+			{Key: langSwift, Name: "Swift"},
+		},
+	}
+
+	language, err := resolveTemplateLanguage(targetDarwin, "mac-llm", meta, initOptions{})
+	if err != nil {
+		t.Fatalf("resolveTemplateLanguage: %v", err)
+	}
+	if language != langSwift {
+		t.Fatalf("language = %q, want %q", language, langSwift)
+	}
+
+	_, err = resolveTemplateLanguage(targetDarwin, "mac-llm", meta, initOptions{
+		language:    langPython,
+		languageSet: true,
+	})
+	if err == nil {
+		t.Fatal("expected Python Darwin template language to fail")
+	}
+	if got, want := err.Error(), `darwin templates require swift`; got != want {
+		t.Fatalf("error = %q, want %q", got, want)
+	}
+}
+
 func TestResolveTemplateLanguage_AcceptsAvailableTemplateLanguage(t *testing.T) {
 	meta := &repoMeta{
 		Templates: []repoMetaTemplate{
@@ -326,8 +467,8 @@ func TestInitCommand_NonInteractiveFlagsCreateProject(t *testing.T) {
 	if cfg.AppID != "demo-app" {
 		t.Fatalf("AppID = %q, want %q", cfg.AppID, "demo-app")
 	}
-	if cfg.Platform != appconfig.PlatformWendyOS {
-		t.Fatalf("Platform = %q, want %q", cfg.Platform, appconfig.PlatformWendyOS)
+	if cfg.Platform != appconfig.PlatformLinux {
+		t.Fatalf("Platform = %q, want %q", cfg.Platform, appconfig.PlatformLinux)
 	}
 	if cfg.Language != "python" {
 		t.Fatalf("Language = %q, want %q", cfg.Language, "python")
@@ -352,6 +493,66 @@ func TestInitCommand_NonInteractiveFlagsCreateProject(t *testing.T) {
 	}
 	if len(expectedEntitlements) != 0 {
 		t.Fatalf("missing entitlements after init: %v", expectedEntitlements)
+	}
+}
+
+// NOTE: Native Mac end-to-end deployment requires a Wendy Agent for Mac target
+// in CI. Until that exists, keep Darwin coverage at the CLI/config boundary here
+// and validate real Mac deploys manually with the companion templates PR.
+func TestInitCommand_NonInteractiveDarwinCreatesNativeSwiftProject(t *testing.T) {
+	tempDir := t.TempDir()
+	prevWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chdir(prevWD)
+	})
+	if err := os.Chdir(tempDir); err != nil {
+		t.Fatalf("Chdir: %v", err)
+	}
+
+	cmd := newInitCmd()
+	cmd.SetArgs([]string{
+		"--app-id", "mac-app",
+		"--target", "macos",
+		"--language", "swift",
+		"--assistant", "skip",
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	cfg, err := appconfig.LoadFromFile(filepath.Join(tempDir, "wendy.json"))
+	if err != nil {
+		t.Fatalf("LoadFromFile: %v", err)
+	}
+
+	if cfg.Platform != appconfig.PlatformDarwin {
+		t.Fatalf("Platform = %q, want %q", cfg.Platform, appconfig.PlatformDarwin)
+	}
+	if cfg.Language != langSwift {
+		t.Fatalf("Language = %q, want %q", cfg.Language, langSwift)
+	}
+	if len(cfg.Entitlements) != 0 {
+		t.Fatalf("Entitlements = %+v, want none for native macOS", cfg.Entitlements)
+	}
+	if _, err := os.Stat(filepath.Join(tempDir, "Package.swift")); err != nil {
+		t.Fatalf("expected Package.swift: %v", err)
+	}
+}
+
+func TestBuildInitEntitlementsFromFlags_RejectsDarwinEntitlements(t *testing.T) {
+	_, err := buildInitEntitlementsFromFlags(targetDarwin, initOptions{
+		entitlementsSet: true,
+		entitlements:    []string{"network"},
+	})
+	if err == nil {
+		t.Fatal("expected Darwin entitlements to fail")
+	}
+	if got, want := err.Error(), `darwin apps do not support WendyOS container entitlements`; got != want {
+		t.Fatalf("error = %q, want %q", got, want)
 	}
 }
 
@@ -631,5 +832,221 @@ func TestInitCommand_InstallClaudeSkillsFalseDoesNotRequireClaude(t *testing.T) 
 
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("Execute: %v", err)
+	}
+}
+
+func writeTemplateWendyJSON(t *testing.T, content string) string {
+	t.Helper()
+	cfgPath := filepath.Join(t.TempDir(), "wendy.json")
+	if err := os.WriteFile(cfgPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("writing wendy.json: %v", err)
+	}
+	return cfgPath
+}
+
+func readEntitlements(t *testing.T, cfgPath string) []appconfig.Entitlement {
+	t.Helper()
+	cfg, err := appconfig.LoadFromFile(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadFromFile: %v", err)
+	}
+	return cfg.Entitlements
+}
+
+// The WDY-1810 repro: --template simple-api --entitlement gpu must produce a
+// wendy.json containing both the template's network entitlement and gpu.
+func TestMergeTemplateEntitlements_AddsFlagEntitlementToTemplateConfig(t *testing.T) {
+	cfgPath := writeTemplateWendyJSON(t, `{
+  "appId": "autotest-gpu",
+  "version": "0.1.0",
+  "platform": "linux",
+  "language": "python",
+  "entitlements": [{"type": "network"}]
+}`)
+
+	requested, err := templateEntitlementsFromFlags(targetWendyOS, initOptions{
+		entitlementsSet: true,
+		entitlements:    []string{"gpu"},
+	})
+	if err != nil {
+		t.Fatalf("templateEntitlementsFromFlags: %v", err)
+	}
+
+	added, err := mergeTemplateEntitlements(cfgPath, requested)
+	if err != nil {
+		t.Fatalf("mergeTemplateEntitlements: %v", err)
+	}
+	if len(added) != 1 || added[0] != appconfig.EntitlementGPU {
+		t.Fatalf("added = %v, want [gpu]", added)
+	}
+
+	entitlements := readEntitlements(t, cfgPath)
+	gotTypes := map[string]bool{}
+	for _, ent := range entitlements {
+		gotTypes[ent.Type] = true
+	}
+	if !gotTypes[appconfig.EntitlementNetwork] || !gotTypes[appconfig.EntitlementGPU] {
+		t.Fatalf("entitlements = %+v, want network and gpu", entitlements)
+	}
+}
+
+func TestMergeTemplateEntitlements_NoFlagsIsNoOp(t *testing.T) {
+	requested, err := templateEntitlementsFromFlags(targetWendyOS, initOptions{})
+	if err != nil {
+		t.Fatalf("templateEntitlementsFromFlags: %v", err)
+	}
+	if requested != nil {
+		t.Fatalf("requested = %+v, want nil", requested)
+	}
+
+	// No requested entitlements: the file must not even be read.
+	added, err := mergeTemplateEntitlements(filepath.Join(t.TempDir(), "missing", "wendy.json"), nil)
+	if err != nil {
+		t.Fatalf("mergeTemplateEntitlements: %v", err)
+	}
+	if added != nil {
+		t.Fatalf("added = %v, want nil", added)
+	}
+}
+
+func TestMergeTemplateEntitlements_MissingConfigFails(t *testing.T) {
+	_, err := mergeTemplateEntitlements(
+		filepath.Join(t.TempDir(), "wendy.json"),
+		[]appconfig.Entitlement{{Type: appconfig.EntitlementGPU}},
+	)
+	if err == nil {
+		t.Fatal("expected merge into a missing wendy.json to fail")
+	}
+}
+
+func TestMergeTemplateEntitlements_CoveredEntitlementsLeaveFileUntouched(t *testing.T) {
+	content := `{
+  "appId": "demo",
+  "entitlements": [{"type": "network", "mode": "host"}, {"type": "gpu"}]
+}`
+	cfgPath := writeTemplateWendyJSON(t, content)
+
+	added, err := mergeTemplateEntitlements(cfgPath, []appconfig.Entitlement{
+		{Type: appconfig.EntitlementNetwork},
+		{Type: appconfig.EntitlementGPU},
+	})
+	if err != nil {
+		t.Fatalf("mergeTemplateEntitlements: %v", err)
+	}
+	if added != nil {
+		t.Fatalf("added = %v, want nil", added)
+	}
+
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(data) != content {
+		t.Fatalf("wendy.json was rewritten:\n%s", data)
+	}
+}
+
+func TestMergeTemplateEntitlements_PreservesUnknownKeysAndTemplateEntries(t *testing.T) {
+	cfgPath := writeTemplateWendyJSON(t, `{
+  "appId": "demo",
+  "futureKey": {"nested": true},
+  "entitlements": [{"type": "network", "mode": "host", "futureEntKey": 7}]
+}`)
+
+	added, err := mergeTemplateEntitlements(cfgPath, []appconfig.Entitlement{
+		{Type: appconfig.EntitlementNetwork},
+		{Type: appconfig.EntitlementAudio},
+	})
+	if err != nil {
+		t.Fatalf("mergeTemplateEntitlements: %v", err)
+	}
+	if len(added) != 1 || added[0] != appconfig.EntitlementAudio {
+		t.Fatalf("added = %v, want [audio]", added)
+	}
+
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if _, ok := raw["futureKey"]; !ok {
+		t.Fatalf("unknown top-level key dropped: %s", data)
+	}
+	if !strings.Contains(string(raw["entitlements"]), "futureEntKey") {
+		t.Fatalf("unknown entitlement key dropped: %s", raw["entitlements"])
+	}
+
+	entitlements := readEntitlements(t, cfgPath)
+	if len(entitlements) != 2 {
+		t.Fatalf("entitlements = %+v, want template network + audio", entitlements)
+	}
+	if entitlements[0].Type != appconfig.EntitlementNetwork || entitlements[0].Mode != "host" {
+		t.Fatalf("template network entry changed: %+v", entitlements[0])
+	}
+	if entitlements[1].Type != appconfig.EntitlementAudio {
+		t.Fatalf("entitlements[1] = %+v, want audio", entitlements[1])
+	}
+}
+
+func TestMergeTemplateEntitlements_PersistDedupedByName(t *testing.T) {
+	cfgPath := writeTemplateWendyJSON(t, `{
+  "appId": "demo",
+  "entitlements": [
+    {"type": "network"},
+    {"type": "persist", "name": "data", "path": "/data"}
+  ]
+}`)
+
+	added, err := mergeTemplateEntitlements(cfgPath, []appconfig.Entitlement{
+		{Type: appconfig.EntitlementPersist, Name: "data", Path: "/other"},
+		{Type: appconfig.EntitlementPersist, Name: "cache", Path: "/cache"},
+	})
+	if err != nil {
+		t.Fatalf("mergeTemplateEntitlements: %v", err)
+	}
+	if len(added) != 1 || added[0] != appconfig.EntitlementPersist {
+		t.Fatalf("added = %v, want [persist]", added)
+	}
+
+	entitlements := readEntitlements(t, cfgPath)
+	var persistNames []string
+	for _, ent := range entitlements {
+		if ent.Type == appconfig.EntitlementPersist {
+			persistNames = append(persistNames, ent.Name)
+		}
+	}
+	if len(persistNames) != 2 || persistNames[0] != "data" || persistNames[1] != "cache" {
+		t.Fatalf("persist names = %v, want [data cache]", persistNames)
+	}
+}
+
+func TestTemplateEntitlementCovers_GPIOPins(t *testing.T) {
+	allPins := []appconfig.Entitlement{{Type: appconfig.EntitlementGPIO}}
+	somePins := []appconfig.Entitlement{{Type: appconfig.EntitlementGPIO, Pins: []int{17, 27}}}
+
+	req := appconfig.Entitlement{Type: appconfig.EntitlementGPIO, Pins: []int{17}}
+	if !templateEntitlementCovers(allPins, req) {
+		t.Fatal("pinless template gpio entry should cover any requested pins")
+	}
+	if !templateEntitlementCovers(somePins, req) {
+		t.Fatal("template gpio pins [17 27] should cover requested [17]")
+	}
+
+	req.Pins = []int{17, 22}
+	if templateEntitlementCovers(somePins, req) {
+		t.Fatal("template gpio pins [17 27] should not cover requested [17 22]")
+	}
+}
+
+func TestTemplateEntitlementsFromFlags_DarwinRejectsEntitlementFlags(t *testing.T) {
+	_, err := templateEntitlementsFromFlags(targetDarwin, initOptions{
+		entitlementsSet: true,
+		entitlements:    []string{"gpu"},
+	})
+	if err == nil {
+		t.Fatal("expected darwin + --entitlement to fail")
 	}
 }

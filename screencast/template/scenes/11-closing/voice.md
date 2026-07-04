@@ -1,0 +1,1 @@
+To use it, start with feature context or screencast script dot md. Ask the agent to generate and render the screencast. It will create the scenes, render the assets, generate voiceover, and stitch the final MP4. If any scene needs real footage, provide that video in a second pass and let the agent stitch again. The detailed workflow lives in screencast README dot md.

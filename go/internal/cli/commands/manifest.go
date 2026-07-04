@@ -44,6 +44,35 @@ type deviceVersion struct {
 	NVMEOTAUpdatePath      string `json:"nvme_ota_update_path"`
 	NVMEOTAUpdateChecksum  string `json:"nvme_ota_update_checksum"`
 	NVMEOTAUpdateSizeBytes int64  `json:"nvme_ota_update_size_bytes"`
+	BmapPath               string `json:"bmap_path"`
+
+	ZstPath      string `json:"zst_path"`
+	ZstChecksum  string `json:"zst_checksum"`
+	ZstSizeBytes int64  `json:"zst_size_bytes"`
+
+	// Storage-keyed image+bmap+zst triples (NVMe).
+	NVMEPath         string `json:"nvme_path"`
+	NVMEChecksum     string `json:"nvme_checksum"`
+	NVMESizeBytes    int64  `json:"nvme_size_bytes"`
+	NVMEBmapPath     string `json:"nvme_bmap_path"`
+	NVMEZstPath      string `json:"nvme_zst_path"`
+	NVMEZstChecksum  string `json:"nvme_zst_checksum"`
+	NVMEZstSizeBytes int64  `json:"nvme_zst_size_bytes"`
+
+	// Storage-keyed image+bmap+zst triples (SD / removable card; the default).
+	SDPath         string `json:"sd_path"`
+	SDChecksum     string `json:"sd_checksum"`
+	SDSizeBytes    int64  `json:"sd_size_bytes"`
+	SDBmapPath     string `json:"sd_bmap_path"`
+	SDZstPath      string `json:"sd_zst_path"`
+	SDZstChecksum  string `json:"sd_zst_checksum"`
+	SDZstSizeBytes int64  `json:"sd_zst_size_bytes"`
+
+	// Thor flashpack: the USB-recovery flash artifact (a .tar.zst) wendy downloads,
+	// extracts and flashes. Only present for jetson-agx-thor.
+	FlashpackPath      string `json:"flashpack_path"`
+	FlashpackChecksum  string `json:"flashpack_checksum"`
+	FlashpackSizeBytes int64  `json:"flashpack_size_bytes"`
 }
 
 // deviceInfo is the aggregated info shown in the picker for one device.
@@ -61,6 +90,12 @@ type imageInfo struct {
 	DownloadURL string
 	ImageSize   int64
 	Version     string
+	BmapURL     string
+	ZstURL      string
+	// Storage is the resolved manifest variant ("sd"/"nvme"/""), used to keep
+	// the on-disk cache keyed per variant so an SD download and an NVMe download
+	// of the same device+version never collide on one cache file.
+	Storage string
 }
 
 func fetchMainManifest() (*mainManifest, error) {
@@ -145,17 +180,53 @@ func getAvailableDevices() ([]deviceInfo, error) {
 	return devices, nil
 }
 
-func getImageInfo(dm *deviceManifest, ver string) (*imageInfo, error) {
+// imageTriple is the resolved (image, bmap, zst) path set for one storage.
+type imageTriple struct {
+	imagePath string
+	imageSize int64
+	bmapPath  string
+	zstPath   string
+}
+
+// getImageInfo resolves the download URLs for ver on dm, preferring the triple
+// matching storage ("nvme" or "sd") and falling back to the legacy fields when
+// that storage has no dedicated artifacts. Keeping image+bmap+zst from one
+// triple guarantees they describe the same image (no cross-storage mismatch).
+func getImageInfo(dm *deviceManifest, ver, storage string) (*imageInfo, error) {
 	v, ok := dm.Versions[ver]
 	if !ok {
 		return nil, fmt.Errorf("version %s not found in device manifest", ver)
 	}
+	t := resolveTriple(v, storage)
 
-	return &imageInfo{
-		DownloadURL: gcsBaseURL + "/" + v.Path,
-		ImageSize:   v.SizeBytes,
+	info := &imageInfo{
+		DownloadURL: gcsBaseURL + "/" + t.imagePath,
+		ImageSize:   t.imageSize,
 		Version:     ver,
-	}, nil
+		Storage:     storage,
+	}
+	if t.bmapPath != "" {
+		info.BmapURL = gcsBaseURL + "/" + t.bmapPath
+	}
+	if t.zstPath != "" {
+		info.ZstURL = gcsBaseURL + "/" + t.zstPath
+	}
+	return info, nil
+}
+
+func resolveTriple(v deviceVersion, storage string) imageTriple {
+	switch storage {
+	case "nvme":
+		if v.NVMEPath != "" {
+			return imageTriple{v.NVMEPath, v.NVMESizeBytes, v.NVMEBmapPath, v.NVMEZstPath}
+		}
+	case "sd":
+		if v.SDPath != "" {
+			return imageTriple{v.SDPath, v.SDSizeBytes, v.SDBmapPath, v.SDZstPath}
+		}
+	}
+	// Legacy fallback.
+	return imageTriple{v.Path, v.SizeBytes, v.BmapPath, v.ZstPath}
 }
 
 func getOTAUpdateURL(dm *deviceManifest, ver string, storageMedium string) (string, error) {
@@ -208,6 +279,56 @@ func getLatestOTAInfoForDeviceType(deviceType string, storageMedium string, nigh
 		return "", "", err
 	}
 	return u, latest, nil
+}
+
+// thorDeviceType is the manifest key / --device-type for the AGX Thor.
+const thorDeviceType = "jetson-agx-thor"
+
+// thorFlashpackInfo is the resolved flashpack download for a Thor version.
+type thorFlashpackInfo struct {
+	URL       string
+	Checksum  string
+	SizeBytes int64
+	Version   string
+}
+
+// getThorFlashpackInfo fetches the jetson-agx-thor manifest and returns the flashpack
+// artifact for version (or the latest stable / nightly when version is "").
+func getThorFlashpackInfo(version string, nightly bool) (*thorFlashpackInfo, error) {
+	main, err := fetchMainManifest()
+	if err != nil {
+		return nil, fmt.Errorf("fetching manifest: %w", err)
+	}
+	dev, ok := main.Devices[thorDeviceType]
+	if !ok || dev.ManifestPath == "" {
+		return nil, fmt.Errorf("%s not found in manifest", thorDeviceType)
+	}
+	dm, err := fetchDeviceManifest(dev.ManifestPath)
+	if err != nil {
+		return nil, fmt.Errorf("fetching device manifest: %w", err)
+	}
+	if version == "" {
+		version = dev.Latest
+		if nightly && dev.LatestNightly != "" {
+			version = dev.LatestNightly
+		}
+	}
+	if version == "" {
+		return nil, fmt.Errorf("no version available for %s", thorDeviceType)
+	}
+	v, ok := dm.Versions[version]
+	if !ok {
+		return nil, fmt.Errorf("version %s not found for %s", version, thorDeviceType)
+	}
+	if v.FlashpackPath == "" {
+		return nil, fmt.Errorf("version %s has no flashpack artifact in the manifest", version)
+	}
+	return &thorFlashpackInfo{
+		URL:       gcsBaseURL + "/" + v.FlashpackPath,
+		Checksum:  v.FlashpackChecksum,
+		SizeBytes: v.FlashpackSizeBytes,
+		Version:   version,
+	}, nil
 }
 
 // firmwareManifest contains version info for a specific chip.

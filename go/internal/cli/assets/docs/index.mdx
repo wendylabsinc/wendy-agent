@@ -1,35 +1,20 @@
 ---
 title: Overview
-description: Complete guide to Wendy - the modern Physical AI operating system
+description: The open source operating system and toolchain for Physical AI — robots, drones, and edge devices.
 full: true
 ---
 
-import { Database, Monitor, Box, Terminal, ArrowRight } from 'lucide-react';
+import { Database, Monitor, Box, Terminal, Microchip } from 'lucide-react';
 import { HardwareShowcase } from '@/components/docs/hardware-showcase';
+import { OverviewIntro } from '@/components/docs/overview-intro';
+import { USPGrid } from '@/components/docs/usp-grid';
+import { GetStartedSection } from '@/components/docs/get-started-section';
 
-## Introduction
+<OverviewIntro />
 
-**Wendy** is the open source (Apache 2.0) operating system and toolchain for robots, drones, and edge AI. Inspired by the mobile development experience, Wendy lets you plug in an NVIDIA Jetson or Raspberry Pi over USB and start coding instantly. [Wendy Agent for Mac](/docs/installation/wendy-agent-macos) is available in beta for teams that want to deploy and manage native macOS apps on Apple Silicon Mac targets.
+<USPGrid />
 
-Key features include:
-
-- **USB-C deployment and debugging** — No internet or SSH needed. Just plug in and deploy.
-- **Remote Logging** — Real-time logs from devices anywhere in the world.
-- **Atomic OTA Updates** — Push updates to one or ten thousand devices without fear.
-- **VSCode Extension** — Modern development experience with full debugger support.
-- **Apache 2.0 Open Source** — No black boxes. Everything is open and hackable.
-
-<a
-  href="/docs/installation/developer-machine-setup"
-  className="not-prose group my-8 flex flex-col items-center gap-2 border bg-fd-card px-6 py-10 text-center transition-colors hover:border-fd-primary/50 hover:bg-fd-accent no-underline"
->
-  <span className="text-2xl font-semibold text-fd-card-foreground">Get Started!</span>
-  <span className="text-fd-muted-foreground">Set up your developer machine and deploy your first app.</span>
-  <span className="mt-4 inline-flex items-center gap-2 bg-fd-primary px-5 py-2.5 font-medium text-fd-primary-foreground transition-transform group-hover:translate-x-0.5">
-    Developer Machine Setup
-    <ArrowRight className="size-4" />
-  </span>
-</a>
+<GetStartedSection />
 
 ## Supported Hardware
 
@@ -39,32 +24,39 @@ Wendy runs on edge devices with strong local compute. Plug one in over USB-C and
 
 ## Core Components
 
-Wendy consists of three main pillars:
+Wendy consists of several core components:
 
-<Cards>
-  <Card icon={<Database />} title="WendyOS">
+<Cards className="grid-cols-2 lg:grid-cols-3">
+  <Card icon={<Database />} title="WendyOS" className="h-full">
     The Apache 2.0 open source Linux distribution optimized for Physical AI. Includes a mobile-like USB-C development experience, remote debugging, and atomic updates.
   </Card>
 
-  <div className="relative">
-    <span className="absolute -top-px right-0 z-10 bg-orange-500 text-white text-xs px-2 py-1 font-medium">Beta</span>
-    <Card icon={<Terminal />} title="Wendy for Mac">
-      Deploy native macOS apps to Apple Silicon Mac targets with [Wendy Agent for Mac](/docs/installation/wendy-agent-macos) beta. Supports SwiftPM and Xcode projects with the same CLI workflow.
+  <div className="relative flex flex-col">
+    <span className="absolute -top-px right-0 z-10 bg-wendy-seafoam text-zinc-950 text-xs px-2 py-1 font-medium">Beta</span>
+    <Card icon={<Terminal />} title="Wendy for macOS" className="h-full">
+      Deploy native macOS apps to Apple Silicon Mac targets with [Wendy for macOS](/installation/wendy-agent-macos) beta. Supports SwiftPM and Xcode projects with the same CLI workflow.
     </Card>
   </div>
 
-  <div className="relative">
-    <span className="absolute -top-px right-0 z-10 bg-orange-500 text-white text-xs px-2 py-1 font-medium">Coming Soon</span>
-    <Card icon={<Monitor />} title="Wendy Cloud">
+  <div className="relative flex flex-col">
+    <span className="absolute -top-px right-0 z-10 bg-wendy-seafoam text-zinc-950 text-xs px-2 py-1 font-medium">Beta</span>
+    <Card icon={<Monitor />} title="Wendy Cloud" className="h-full">
       A fleet management solution for OTA updates, crash reporting, and remote telemetry. Built for teams scaling from prototypes to thousands of devices.
     </Card>
   </div>
 
-  <Card icon={<Box />} title="Developer Tools">
+  <Card icon={<Box />} title="Developer Tools" className="h-full">
     CLI and VSCode extension for interactive breakpoints, hot reloading, and one-click deployment. Works with VSCode, Cursor, and Windsurf.
   </Card>
 
-  <Card icon={<Terminal />} title="Wendy Frameworks">
+  <Card icon={<Terminal />} title="Wendy Frameworks" className="h-full">
     Performance-first Swift, Python, and Rust frameworks for running AI models, controlling I/O, and handling high-speed telemetry.
   </Card>
+
+  <div className="relative flex flex-col">
+    <span className="absolute -top-px right-0 z-10 bg-purple-600 text-white text-xs px-2 py-1 font-medium">Preview</span>
+    <Card icon={<Microchip />} title="Wendy Lite" className="h-full">
+      WASM-based runtime for microcontrollers. Deploy Swift, Rust, C, or Zig apps to ESP32-C6 with the same CLI workflow.
+    </Card>
+  </div>
 </Cards>

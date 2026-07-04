@@ -32,6 +32,7 @@ This means services can call each other by **service name** (`http://api:8080`,
 ```jsonc
 {
   "appId": "sh.wendy.examples.isolatedservices",
+  "platform": "linux",
   "isolation": "isolated",
   "services": {
     "api": {

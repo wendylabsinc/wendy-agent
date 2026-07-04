@@ -534,6 +534,9 @@ private func loadRunTestResults(
                         targetName: targetName,
                         attempt: attemptName
                     )
+                    if e2eAttemptInfrastructureFailureDetail(at: attemptArtifactsURL) != nil {
+                        continue
+                    }
                     let metadata = try loadE2ETestMetadata(in: attemptURL)
                     let identityKey = metadata.identityKey
                     let status = try runObservationStatus(
@@ -601,8 +604,7 @@ private func runObservationStatus(
     metadata: E2ETestMetadata,
     attemptURL: URL
 ) throws -> ReportTestStatus {
-    let resultURL = attemptURL.appendingPathComponent("test-results.xml")
-    guard FileManager.default.fileExists(atPath: resultURL.path) else {
+    guard let resultURL = e2eAttemptXUnitURL(at: attemptURL) else {
         return .unknown
     }
 
@@ -1067,8 +1069,10 @@ private func buildTargetOverview(
     files: [ReportTestFile]
 ) throws -> [ReportTargetOverviewRow] {
     var rowsByTarget: [String: ReportTargetOverviewAccumulator] = [:]
+    var observedAttemptsByTarget: [String: Set<String>] = [:]
+    let attemptURLsByTarget = try runAttemptArtifactURLsByTarget(in: runURL)
 
-    for (target, attemptURLs) in try runAttemptArtifactURLsByTarget(in: runURL) {
+    for (target, attemptURLs) in attemptURLsByTarget {
         var row = rowsByTarget[target] ?? ReportTargetOverviewAccumulator()
         row.attempts.formUnion(attemptURLs.map(\.lastPathComponent))
         if row.route == nil, let attemptURL = attemptURLs.first {
@@ -1083,8 +1087,26 @@ private func buildTargetOverview(
             var row = rowsByTarget[target] ?? ReportTargetOverviewAccumulator()
             row.route = row.route ?? observations.first?.route
             row.attempts.formUnion(observations.map(\.attempt))
+            observedAttemptsByTarget[target, default: []].formUnion(
+                observations.map(\.attempt)
+            )
             row.tests += 1
             row.counts.add(targetOutcome(for: observations.map(\.status)))
+            rowsByTarget[target] = row
+        }
+    }
+
+    for (target, attemptURLs) in attemptURLsByTarget {
+        let observedAttempts = observedAttemptsByTarget[target, default: []]
+        for attemptURL in attemptURLs
+        where !observedAttempts.contains(attemptURL.lastPathComponent) {
+            let infrastructureFailure = e2eAttemptInfrastructureFailureDetail(at: attemptURL)
+            let exitStatus = e2eAttemptExitStatus(at: attemptURL)
+            guard infrastructureFailure != nil || (exitStatus != nil && exitStatus != 0) else {
+                continue
+            }
+            var row = rowsByTarget[target] ?? ReportTargetOverviewAccumulator()
+            row.counts.failed += 1
             rowsByTarget[target] = row
         }
     }

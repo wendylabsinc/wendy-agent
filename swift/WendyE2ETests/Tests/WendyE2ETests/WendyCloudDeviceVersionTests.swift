@@ -14,7 +14,9 @@ struct `'wendy cloud device version'` {
      the legacy command explicitly.
      */
     @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
-    func `is hidden from parent help while direct help mirrors '... cloud device info'`() async throws {
+    func `is hidden from parent help while direct help mirrors '... cloud device info'`()
+        async throws
+    {
         // TODO: implement.
     }
 

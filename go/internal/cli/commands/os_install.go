@@ -7,8 +7,10 @@ import (
 	"bufio"
 	"compress/gzip"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
+
 	"fmt"
 	"io"
 	"log"
@@ -21,6 +23,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"google.golang.org/protobuf/proto"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
@@ -42,6 +46,8 @@ const (
 func newOSInstallCmd() *cobra.Command {
 	var nightly bool
 	var force bool
+	var noBmap bool
+	var storageOverride string
 	var yesOverwriteInternal bool
 	var preEnroll bool
 	var deviceType string
@@ -109,12 +115,14 @@ Flags can be provided progressively — omitted values trigger interactive picke
 					mode = preEnrollSkip
 				}
 			}
-			return runOSInstall(cmd.Context(), nightly, deviceType, versionFlag, driveFlag, force, yesOverwriteInternal, opts, deviceName, preEnrollOptions{mode: mode, cloudGRPC: enrollCloudGRPC})
+			return runOSInstall(cmd.Context(), nightly, deviceType, versionFlag, driveFlag, force, yesOverwriteInternal, noBmap, storageOverride, opts, deviceName, preEnrollOptions{mode: mode, cloudGRPC: enrollCloudGRPC})
 		},
 	}
 
 	cmd.Flags().BoolVar(&nightly, "nightly", false, "Use nightly/prerelease builds")
 	cmd.Flags().BoolVar(&force, "force", false, "Skip confirmation prompt")
+	cmd.Flags().BoolVar(&noBmap, "no-bmap", false, "Disable bmap-accelerated flashing even when a block map is available")
+	cmd.Flags().StringVar(&storageOverride, "storage", "", "Force image storage variant: nvme or sd (default: auto-detect — real NVMe drives use nvme; a USB-attached drive uses the device's published image, SD for Raspberry Pi / NVMe for Jetson SSD enclosures)")
 	cmd.Flags().BoolVar(&yesOverwriteInternal, "yes-overwrite-internal", false, "Required to wipe an internal (non-removable) drive in non-interactive mode")
 	cmd.Flags().StringVar(&deviceType, "device-type", "", "Device type from manifest (e.g. raspberry-pi-5)")
 	cmd.Flags().StringVar(&versionFlag, "version", "", "WendyOS version to install (interactive if omitted)")
@@ -125,7 +133,7 @@ Flags can be provided progressively — omitted values trigger interactive picke
 	cmd.Flags().BoolVar(&noWifi, "no-wifi", false, "Skip WiFi setup entirely (no interactive prompt, no pre-seeded networks)")
 	cmd.Flags().StringVar(&deviceName, "device-name", "", "Set device name on first boot (e.g. brave-dolphin)")
 	cmd.Flags().BoolVar(&preEnroll, "pre-enroll", false, "Pre-enroll this device with Wendy Cloud during imaging (requires 'wendy auth login')")
-	cmd.Flags().StringVar(&enrollCloudGRPC, "cloud-grpc", "", "Cloud gRPC endpoint of the auth session to use for pre-enrollment (when multiple sessions exist)")
+	cmd.Flags().StringVar(&enrollCloudGRPC, "cloud-grpc", "", "Cloud gRPC endpoint of the auth session to use for pre-enrollment (optional when a default is set via 'wendy auth use')")
 
 	return cmd
 }
@@ -196,7 +204,6 @@ type pickerDevice struct {
 	Name       string
 	Version    string // display version (e.g. "0.10.5 (nightly)")
 	RawVersion string // exact version key for manifest lookup
-	Category   string // e.g. "Linux" or "Wendy Lite"
 	IsESP32    bool
 	ESP32Chip  string          // e.g. "esp32c6", "esp32c5"
 	Manifest   *deviceManifest // cached manifest for Linux devices
@@ -239,7 +246,17 @@ func pickLinuxDevice() (string, deviceInfo, error) {
 	return key, deviceMap[key], nil
 }
 
-func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion, flagDrive string, force bool, yesOverwriteInternal bool, wifi wifiCLIOptions, deviceName string, preOpts preEnrollOptions) error {
+func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion, flagDrive string, force bool, yesOverwriteInternal bool, noBmap bool, storageOverride string, wifi wifiCLIOptions, deviceName string, preOpts preEnrollOptions) error {
+	if storageOverride != "" && storageOverride != "nvme" && storageOverride != "sd" {
+		return fmt.Errorf("invalid --storage %q: must be \"nvme\" or \"sd\"", storageOverride)
+	}
+
+	// AGX Thor flashes over USB recovery (not a drive), via its own flashpack
+	// artifact and device selection — a separate path from the disk-image flow below.
+	if flagDeviceType == thorDeviceType {
+		return installThor(ctx, flagVersion, nightly, force)
+	}
+
 	fmt.Println("Fetching available devices...")
 
 	// Fetch Linux devices from GCS manifest.
@@ -267,14 +284,15 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 			Name:       dev.Name,
 			Version:    displayVersion,
 			RawVersion: rawVersion,
-			Category:   "Linux",
 			Manifest:   dev.Manifest,
 		}
 		deviceMap[dev.Key] = pd
 
 		items = append(items, tui.PickerItem{
 			Name:        dev.Name,
-			Description: fmt.Sprintf("%s    %s", displayVersion, pd.Category),
+			Description: displayVersion,
+			Section:     "WendyOS",
+			SortKey:     "0_wendyos_" + strings.ToLower(dev.Name),
 			Value:       dev.Key,
 		})
 	}
@@ -291,13 +309,14 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 			deviceMap[esp.key] = pickerDevice{
 				Name:      esp.name,
 				Version:   espVersion,
-				Category:  "Wendy Lite",
 				IsESP32:   true,
 				ESP32Chip: esp.chip,
 			}
 			items = append(items, tui.PickerItem{
 				Name:        esp.name,
-				Description: fmt.Sprintf("%s    %s", espVersion, "Wendy Lite"),
+				Description: espVersion,
+				Section:     "Wendy Lite",
+				SortKey:     "1_lite_" + strings.ToLower(esp.name),
 				Value:       esp.key,
 			})
 		}
@@ -333,17 +352,25 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 		}
 	}
 
+	// Thor flashes over USB recovery via its flashpack, never to a drive. The
+	// interactive picker reaches here too (the flag is empty), so route it to
+	// installThor here as well — otherwise it falls through to the disk-image
+	// flow and dd's the wrong artifact onto an external drive.
+	if selected == thorDeviceType {
+		return installThor(ctx, flagVersion, nightly, force)
+	}
+
 	device := deviceMap[selected]
 
 	if device.IsESP32 {
-		return installESP32Firmware(ctx, nightly, device.ESP32Chip)
+		return installESP32Firmware(ctx, nightly, device.ESP32Chip, wifi, deviceName, preOpts)
 	}
-	return installLinuxImage(ctx, selected, device, nightly, flagVersion, flagDrive, force, yesOverwriteInternal, wifi, deviceName, preOpts)
+	return installLinuxImage(ctx, selected, device, nightly, flagVersion, flagDrive, force, yesOverwriteInternal, noBmap, storageOverride, wifi, deviceName, preOpts)
 }
 
 // installLinuxImage handles the Linux device path: pick version → pick drive → download → write.
 // nightly, flagVersion, flagDrive, and force allow skipping the corresponding interactive prompts.
-func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevice, nightly bool, flagVersion, flagDrive string, force bool, yesOverwriteInternal bool, wifi wifiCLIOptions, deviceName string, preOpts preEnrollOptions) error {
+func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevice, nightly bool, flagVersion, flagDrive string, force bool, yesOverwriteInternal bool, noBmap bool, storageOverride string, wifi wifiCLIOptions, deviceName string, preOpts preEnrollOptions) error {
 	// Authenticate elevation up front so we don't pay for the multi-hundred-MB
 	// image download just to discover the user can't write to a raw disk. On
 	// Windows this offers a UAC re-launch when not elevated; on Unix it
@@ -362,7 +389,7 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 	selectedVersion := device.RawVersion // default: latest (or nightly if --nightly)
 	if flagVersion != "" {
 		// Validate the requested version exists in the manifest.
-		if _, err := getImageInfo(device.Manifest, flagVersion); err != nil {
+		if _, err := getImageInfo(device.Manifest, flagVersion, ""); err != nil {
 			return fmt.Errorf("version %q not found for %s", flagVersion, device.Name)
 		}
 		selectedVersion = flagVersion
@@ -432,50 +459,159 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 			}
 			cfg = &config.Config{} // auto mode: treat an unreadable config as not logged in
 		}
-		provisioningJSON, err = resolvePreEnrollment(ctx, cfg, preOpts, isInteractiveTerminal(), provDeviceName)
-		if err != nil {
-			return err
+		provisioning, resolveErr := resolvePreEnrollment(ctx, cfg, preOpts, isInteractiveTerminal(), provDeviceName)
+		if resolveErr != nil {
+			return resolveErr
+		}
+		if provisioning != nil {
+			provisioningJSON, err = json.Marshal(provisioning)
+			if err != nil {
+				return fmt.Errorf("marshaling provisioning state: %w", err)
+			}
 		}
 	}
 
-	// Step 5: Resolve image (cached or download) and open streaming reader.
+	// Step 5: Resolve image metadata for the target storage. A USB-attached
+	// drive is ambiguous (SD card in a reader vs NVMe SSD in an enclosure), so
+	// the variant is chosen from what this manifest version publishes — see
+	// manifestStorage. Pass --storage to override.
+	ver, ok := device.Manifest.Versions[selectedVersion]
+	if !ok {
+		return fmt.Errorf("version %s not found in device manifest", selectedVersion)
+	}
+	storage := manifestStorage(ver, targetDrive.StorageType, targetDrive.MediaFixed, storageOverride)
+
+	// A USB-attached SD reader and an SSD enclosure are indistinguishable by bus
+	// type, and not every platform reports fixed-media signals. When the variant
+	// is a guess on a dual-variant device, ask the user which slot the drive is
+	// for rather than silently picking the wrong image (a wrong guess can produce
+	// a non-booting device). Non-interactive runs keep the manifest default.
+	if storageOverride == "" && storageChoiceAmbiguous(ver, targetDrive.StorageType, targetDrive.MediaFixed) && isInteractiveTerminal() {
+		bootNVMe, err := tui.ConfirmNoDefault(fmt.Sprintf(
+			"Can't tell if %s is an SD card or an SSD. Will it boot from the NVMe/SSD slot?",
+			targetDrive.DevicePath))
+		if err != nil {
+			return err
+		}
+		if bootNVMe {
+			storage = "nvme"
+		} else {
+			storage = "sd"
+		}
+	} else if storageOverride == "" && targetDrive.MediaFixed && storage == "nvme" {
+		// Auto-detected an SSD enclosure. Surface the inference and the override
+		// so a surprising choice is at least visible and reversible.
+		fmt.Printf("Detected a fixed SSD on %s — using the NVMe image (pass --storage sd to override).\n", targetDrive.DevicePath)
+	}
+
 	fmt.Printf("\nPreparing %s %s image...\n", device.Name, selectedVersion)
-	imgInfo, err := getImageInfo(device.Manifest, selectedVersion)
+	imgInfo, err := getImageInfo(device.Manifest, selectedVersion, storage)
 	if err != nil {
 		return fmt.Errorf("getting image info: %w", err)
 	}
 
-	stream, err := openOSImageStream(deviceKey, imgInfo)
-	if err != nil {
-		return fmt.Errorf("opening OS image: %w", err)
-	}
-	defer stream.Close()
-
-	// One-time sizing pass for compressed images that cannot report their
-	// decompressed size (gzip). Without it the write bar has no usable total.
-	// The result is cached in a sidecar, so this only runs on the first flash
-	// of a given image. Failure is non-fatal: the bar falls back to
-	// compressed-consumption progress.
-	if stream.uncompressedSize == 0 && stream.sourcePath != "" {
-		if err := measureImageWithProgress(stream); err != nil {
-			if errors.Is(err, context.Canceled) {
-				return err
+	// Step 5a: Prefer the seekable-zstd fast path. When the manifest advertises a
+	// .zst for this storage plus a usable bmap (and --no-bmap wasn't passed), we
+	// download only the .zst + bmap and write mapped ranges, skipping holes —
+	// and crucially we do NOT download the full .zip image at all.
+	var seekableZst, seekableBmap string
+	var seekableTotal int64
+	if !noBmap && imgInfo.ZstURL != "" && imgInfo.BmapURL != "" {
+		zstPath, zerr := resolveSeekableZst(deviceKey, selectedVersion, storage, imgInfo.ZstURL)
+		bmapCandidate, berr := osCachedBmapPath(deviceKey, selectedVersion, storage)
+		switch {
+		case zerr != nil:
+			fmt.Printf("Note: could not fetch seekable image (%v); flashing the full image.\n", zerr)
+		case berr != nil:
+			fmt.Printf("Note: cannot resolve block-map cache path (%v); flashing the full image.\n", berr)
+		default:
+			if derr := downloadBmap(imgInfo.BmapURL, bmapCandidate); derr != nil {
+				fmt.Printf("Note: could not fetch block map (%v); flashing the full image.\n", derr)
+			} else if parsed, perr := parseBmap(readFileOrNil(bmapCandidate)); perr != nil {
+				fmt.Printf("Note: block map unusable (%v); flashing the full image.\n", perr)
+			} else {
+				seekableZst, seekableBmap, seekableTotal = zstPath, bmapCandidate, mappedBytes(parsed)
 			}
-			fmt.Printf("Could not determine image size: %v\n", err)
+		}
+	}
+
+	// Step 5b: Fallback path — resolve the .zip/.img stream only when NOT using
+	// the seekable path (so the seekable path never downloads the .zip). For
+	// compressed images, measure the size (skipped when a bmap is present, since
+	// the bmap's ImageSize is the exact total) and prepare the legacy block map.
+	var stream *imageStream
+	var bmapPath string
+	if seekableZst == "" {
+		stream, err = openOSImageStream(deviceKey, imgInfo)
+		if err != nil {
+			return fmt.Errorf("opening OS image: %w", err)
+		}
+		defer stream.Close()
+
+		if stream.uncompressedSize == 0 && stream.sourcePath != "" && imgInfo.BmapURL == "" {
+			if err := measureImageWithProgress(stream); err != nil {
+				if errors.Is(err, context.Canceled) {
+					return err
+				}
+				fmt.Printf("Could not determine image size: %v\n", err)
+			}
+		}
+
+		if !noBmap && imgInfo.BmapURL != "" {
+			candidate, derr := osCachedBmapPath(deviceKey, selectedVersion, storage)
+			if derr != nil {
+				fmt.Printf("Note: cannot resolve block-map cache path (%v); flashing the full image.\n", derr)
+			} else if derr := downloadBmap(imgInfo.BmapURL, candidate); derr != nil {
+				fmt.Printf("Note: could not fetch block map (%v); flashing the full image.\n", derr)
+			} else if parsed, perr := parseBmap(readFileOrNil(candidate)); perr != nil {
+				fmt.Printf("Note: block map unusable (%v); flashing the full image.\n", perr)
+			} else if stream.uncompressedSize > 0 && parsed.ImageSize != stream.uncompressedSize {
+				fmt.Printf("Note: block map is for a %d-byte image but this image is %d bytes; flashing the full image.\n", parsed.ImageSize, stream.uncompressedSize)
+			} else {
+				bmapPath = candidate
+			}
 		}
 	}
 
 	// Step 6: Write image to drive with progress bar.
 	fmt.Printf("Writing image to %s...\n", targetDrive.DevicePath)
 	writeProg := tui.NewProgress(fmt.Sprintf("Writing to %s...", targetDrive.DevicePath))
-	wp := tea.NewProgram(writeProg)
+	if seekableZst != "" || bmapPath != "" {
+		// bmap failures fall back silently; suppress the TUI error render
+		writeProg = writeProg.WithoutErrorView()
+	}
+	wp := tui.NewProgressProgram(writeProg)
 
 	go func() {
-		writeErr := writeImageToDisk(stream, stream.uncompressedSize, targetDrive, func(written int64) {
-			if msg, ok := stream.writeProgressMsg(written); ok {
-				wp.Send(msg)
-			}
-		})
+		var writeErr error
+		switch {
+		case seekableZst != "":
+			fmt.Println("Using seekable block map for faster flashing.")
+			writeErr = writeImageWithBmapSeekable(seekableZst, seekableBmap, targetDrive, func(written int64) {
+				var pct float64
+				if seekableTotal > 0 {
+					pct = float64(written) / float64(seekableTotal)
+				}
+				wp.Send(tui.ProgressUpdateMsg{
+					Percent: pct,
+					Written: written,
+					Total:   seekableTotal,
+				})
+			})
+		case bmapPath != "":
+			fmt.Println("Using block map for faster flashing.")
+			writeErr = writeImageWithBmap(stream, stream.uncompressedSize, targetDrive, bmapPath, func(written int64) {
+				if msg, ok := stream.writeProgressMsg(written); ok {
+					wp.Send(msg)
+				}
+			})
+		default:
+			writeErr = writeImageToDisk(stream, stream.uncompressedSize, targetDrive, func(written int64) {
+				if msg, ok := stream.writeProgressMsg(written); ok {
+					wp.Send(msg)
+				}
+			})
+		}
 		wp.Send(tui.ProgressDoneMsg{Err: writeErr})
 	}()
 
@@ -486,7 +622,51 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 
 	writeModel := writeFinal.(tui.ProgressModel)
 	if writeModel.Err() != nil {
-		return fmt.Errorf("writing image: %w", writeModel.Err())
+		// Bmap write failed (typically a checksum mismatch between the published
+		// bmap and the actual image). Fall back to a full sequential dd write.
+		// For the seekable-zstd path the .zst is already on disk — open it as a
+		// sequential reader to avoid re-downloading the full image. For the regular
+		// bmap path the zip is also already cached.
+		var fallbackReader io.Reader
+		var fallbackSize int64
+		var fallbackCloser io.Closer
+		switch {
+		case seekableZst != "":
+			si, ferr := openSeekableZstd(seekableZst)
+			if ferr != nil {
+				return fmt.Errorf("writing image: %w", writeModel.Err())
+			}
+			fallbackReader, fallbackSize, fallbackCloser = si, si.Size(), si
+		case bmapPath != "":
+			fs, ferr := openOSImageStream(deviceKey, imgInfo)
+			if ferr != nil {
+				return fmt.Errorf("writing image: %w", writeModel.Err())
+			}
+			fallbackReader, fallbackSize, fallbackCloser = fs, fs.uncompressedSize, fs
+		default:
+			return fmt.Errorf("writing image: %w", writeModel.Err())
+		}
+		defer fallbackCloser.Close()
+		fallbackProg := tui.NewProgress(fmt.Sprintf("Writing to %s...", targetDrive.DevicePath))
+		fp := tui.NewProgressProgram(fallbackProg)
+		go func() {
+			fp.Send(tui.ProgressDoneMsg{Err: writeImageToDisk(fallbackReader, fallbackSize, targetDrive, func(written int64) {
+				if fallbackSize > 0 {
+					fp.Send(tui.ProgressUpdateMsg{
+						Percent: float64(written) / float64(fallbackSize),
+						Written: written,
+						Total:   fallbackSize,
+					})
+				}
+			})})
+		}()
+		fallbackFinal, ferr := fp.Run()
+		if ferr != nil {
+			return fmt.Errorf("progress TUI: %w", ferr)
+		}
+		if fm := fallbackFinal.(tui.ProgressModel); fm.Err() != nil {
+			return fmt.Errorf("writing image: %w", fm.Err())
+		}
 	}
 
 	hasProvisioningData := provisioningRequired(provCreds, provDeviceName, provisioningJSON)
@@ -502,18 +682,11 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 		fmt.Println("\nNote: config-partition provisioning is not yet supported on this platform; skipping. The device will run the agent baked into the image and fetch updates after first boot.")
 	} else {
 		fmt.Printf("\nWriting provisioning data to config partition...\n")
-		if err := provisionConfigPartition(targetDrive, provCreds, provDeviceName, provisioningJSON); err != nil {
-			if hasProvisioningData {
-				// User asked for --wifi / --device-name / --pre-enroll. Silently
-				// dropping their input and printing "Successfully installed"
-				// would be a lie — this is the user-visible failure mode the
-				// ticket calls out. Fail loudly so the user knows to retry.
-				ejectDisk(targetDrive)
-				return fmt.Errorf("could not write provisioning data to config partition (--wifi / --device-name / --pre-enroll were requested but not applied): %w", err)
-			}
-			fmt.Printf("Warning: could not write config partition: %v\n", err)
-			fmt.Println("Device will boot but agent auto-update will not be pre-configured.")
-		}
+		// A provisioning failure is not a flash failure: the OS image already
+		// landed on the drive above. provisionConfigWithRetry warns and offers
+		// an interactive retry rather than aborting, so the user knows the
+		// device still boots.
+		provisionConfigWithRetry(targetDrive, provCreds, provDeviceName, provisioningJSON, hasProvisioningData)
 	}
 
 	ejectDisk(targetDrive)
@@ -724,11 +897,45 @@ func probeRangeSupport(client *http.Client, img *imageInfo) (contentLength int64
 	return cl, true
 }
 
-// downloadImage downloads an OS image to a temp file with a progress bar.
-// If the server supports HTTP range requests, it downloads in parallel using
-// parallelDownloadWorkers concurrent connections. Falls back to a single
-// sequential stream otherwise.
+// downloadImage downloads an OS image to a temp file behind a standalone
+// progress-bar TUI. Prefer downloadImageInto when embedding the download inside
+// another progress UI (it takes a plain byte callback and owns no TUI).
 func downloadImage(img *imageInfo) (string, error) {
+	prog := tui.NewProgress(fmt.Sprintf("Downloading %s...", img.Version))
+	p := tui.NewProgressProgram(prog)
+	sendProgress := throttledProgress(p, 33*time.Millisecond)
+
+	type result struct {
+		path string
+		err  error
+	}
+	resC := make(chan result, 1)
+	go func() {
+		path, err := downloadImageInto(img, sendProgress)
+		resC <- result{path, err}
+		p.Send(tui.ProgressDoneMsg{Err: err})
+	}()
+
+	if _, err := p.Run(); err != nil {
+		if r := <-resC; r.path != "" {
+			os.Remove(r.path)
+		}
+		return "", fmt.Errorf("progress TUI: %w", err)
+	}
+	r := <-resC
+	return r.path, r.err
+}
+
+// downloadImageInto downloads img to a temp file in the OS cache directory,
+// reporting progress via onProgress(downloaded, total). It runs synchronously
+// and owns no TUI, so callers can drive their own progress display (or pass a
+// nil-effect callback). On any error it removes the partial file. If the server
+// supports HTTP range requests it downloads in parallel across
+// parallelDownloadWorkers connections; otherwise it streams sequentially.
+func downloadImageInto(img *imageInfo, onProgress func(downloaded, total int64)) (string, error) {
+	if onProgress == nil {
+		onProgress = func(int64, int64) {}
+	}
 	client := &http.Client{Timeout: 30 * time.Minute}
 
 	// Write directly into the OS cache directory so we never land in /tmp
@@ -742,77 +949,63 @@ func downloadImage(img *imageInfo) (string, error) {
 		return "", fmt.Errorf("creating temp file: %w", err)
 	}
 
-	prog := tui.NewProgress(fmt.Sprintf("Downloading %s...", img.Version))
-	p := tea.NewProgram(prog)
-	sendProgress := throttledProgress(p, 33*time.Millisecond)
-
 	contentLength, supportsRanges := probeRangeSupport(client, img)
-
+	var dlErr error
 	if supportsRanges {
 		if err := tmpFile.Truncate(contentLength); err != nil {
 			tmpFile.Close()
 			os.Remove(tmpFile.Name())
 			return "", fmt.Errorf("pre-allocating: %w", err)
 		}
-		go func() {
-			p.Send(tui.ProgressDoneMsg{Err: downloadParallel(client, img.DownloadURL, contentLength, tmpFile, sendProgress)})
-		}()
+		dlErr = downloadParallel(client, img.DownloadURL, contentLength, tmpFile, onProgress)
 	} else {
-		go func() {
-			resp, err := client.Get(img.DownloadURL)
-			if err != nil {
-				p.Send(tui.ProgressDoneMsg{Err: fmt.Errorf("downloading: %w", err)})
-				return
-			}
-			defer resp.Body.Close()
-			if resp.StatusCode != http.StatusOK {
-				p.Send(tui.ProgressDoneMsg{Err: fmt.Errorf("download returned status %d", resp.StatusCode)})
-				return
-			}
-			total := resp.ContentLength
-			if img.ImageSize > 0 {
-				total = img.ImageSize
-			}
-			buf := make([]byte, 1*1024*1024)
-			var downloaded int64
-			for {
-				n, readErr := resp.Body.Read(buf)
-				if n > 0 {
-					if _, writeErr := tmpFile.Write(buf[:n]); writeErr != nil {
-						p.Send(tui.ProgressDoneMsg{Err: writeErr})
-						return
-					}
-					downloaded += int64(n)
-					sendProgress(downloaded, total)
-				}
-				if readErr == io.EOF {
-					p.Send(tui.ProgressDoneMsg{})
-					return
-				}
-				if readErr != nil {
-					p.Send(tui.ProgressDoneMsg{Err: readErr})
-					return
-				}
-			}
-		}()
+		dlErr = downloadSequential(client, img, tmpFile, onProgress)
 	}
-
-	finalModel, err := p.Run()
-	if err != nil {
+	if dlErr != nil {
 		tmpFile.Close()
 		os.Remove(tmpFile.Name())
-		return "", fmt.Errorf("progress TUI: %w", err)
+		return "", dlErr
 	}
-
-	model := finalModel.(tui.ProgressModel)
-	if model.Err() != nil {
-		tmpFile.Close()
+	if err := tmpFile.Close(); err != nil {
 		os.Remove(tmpFile.Name())
-		return "", model.Err()
+		return "", err
 	}
-
-	tmpFile.Close()
 	return tmpFile.Name(), nil
+}
+
+// downloadSequential streams img into dst over a single connection, reporting
+// progress via onProgress. Used when the server does not support range requests.
+func downloadSequential(client *http.Client, img *imageInfo, dst *os.File, onProgress func(downloaded, total int64)) error {
+	resp, err := client.Get(img.DownloadURL)
+	if err != nil {
+		return fmt.Errorf("downloading: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("download returned status %d", resp.StatusCode)
+	}
+	total := resp.ContentLength
+	if img.ImageSize > 0 {
+		total = img.ImageSize
+	}
+	buf := make([]byte, 1*1024*1024)
+	var downloaded int64
+	for {
+		n, readErr := resp.Body.Read(buf)
+		if n > 0 {
+			if _, writeErr := dst.Write(buf[:n]); writeErr != nil {
+				return writeErr
+			}
+			downloaded += int64(n)
+			onProgress(downloaded, total)
+		}
+		if readErr == io.EOF {
+			return nil
+		}
+		if readErr != nil {
+			return readErr
+		}
+	}
 }
 
 func osCacheDir() (string, error) {
@@ -827,35 +1020,146 @@ func osCacheDir() (string, error) {
 	return dir, nil
 }
 
-func osCachedImagePath(deviceKey, version string) (string, error) {
-	// Sanitize to prevent path traversal from user-supplied --version flag.
-	safeDevice := filepath.Base(deviceKey)
-	safeVersion := filepath.Base(version)
-	if safeDevice != deviceKey || safeVersion != version ||
-		strings.Contains(deviceKey, "..") || strings.Contains(version, "..") {
-		return "", fmt.Errorf("invalid device key or version: %q / %q", deviceKey, version)
-	}
-
-	dir, err := osCacheDir()
+// readFileOrNil reads path, returning nil on error (used for best-effort bmap
+// validation where failure just disables the bmap fast path).
+func readFileOrNil(path string) []byte {
+	data, err := os.ReadFile(path)
 	if err != nil {
-		return "", err
+		return nil
 	}
-	return filepath.Join(dir, fmt.Sprintf("%s-%s.img", safeDevice, safeVersion)), nil
+	return data
 }
 
-func osCachedZipPath(deviceKey, version string) (string, error) {
+// osCachedPath builds a cache file path for deviceKey+version, keyed by the
+// storage variant ("sd"/"nvme") when one is given so an SD image and an NVMe
+// image of the same device+version never share one file. ext includes the dot
+// (e.g. ".img", ".zip", ".bmap", ".img.zst"). Inputs are sanitized to prevent
+// path traversal from the user-supplied --version flag and the storage key.
+func osCachedPath(deviceKey, version, storage, ext string) (string, error) {
 	safeDevice := filepath.Base(deviceKey)
 	safeVersion := filepath.Base(version)
 	if safeDevice != deviceKey || safeVersion != version ||
 		strings.Contains(deviceKey, "..") || strings.Contains(version, "..") {
 		return "", fmt.Errorf("invalid device key or version: %q / %q", deviceKey, version)
 	}
+	if storage != "" {
+		safeStorage := filepath.Base(storage)
+		if safeStorage != storage || strings.Contains(storage, "..") {
+			return "", fmt.Errorf("invalid storage key: %q", storage)
+		}
+	}
 
 	dir, err := osCacheDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(dir, fmt.Sprintf("%s-%s.zip", safeDevice, safeVersion)), nil
+	name := safeVersion
+	if storage != "" {
+		name = fmt.Sprintf("%s-%s", safeVersion, storage)
+	}
+	return filepath.Join(dir, fmt.Sprintf("%s-%s%s", safeDevice, name, ext)), nil
+}
+
+func osCachedImagePath(deviceKey, version, storage string) (string, error) {
+	return osCachedPath(deviceKey, version, storage, ".img")
+}
+
+func osCachedZipPath(deviceKey, version, storage string) (string, error) {
+	return osCachedPath(deviceKey, version, storage, ".zip")
+}
+
+func osCachedBmapPath(deviceKey, version, storage string) (string, error) {
+	return osCachedPath(deviceKey, version, storage, ".bmap")
+}
+
+// manifestStorage picks the manifest storage key ("sd"/"nvme") for a target
+// drive, honoring an explicit override.
+//
+// A real NVMe controller is unambiguous → nvme. A USB-attached drive is harder:
+// an SD card in a USB reader and an NVMe SSD in a USB enclosure both enumerate
+// as USB on every platform (the StorageType enum has no SD value), so bus type
+// alone can't tell them apart. We disambiguate with mediaFixed — positive
+// evidence from the platform lister that the media is fixed, solid-state (an
+// SSD), not removable (an SD card / thumb drive). An SSD in a USB enclosure is
+// bound for the device's NVMe slot, so when the device also publishes an NVMe
+// variant we pick it. Without that evidence we fall back to what the manifest
+// publishes via defaultManifestStorage: the SD image when the device ships one
+// (Raspberry Pi), else the NVMe image (a Jetson SSD enclosure), else legacy/sd.
+// Unknown buses (built-in card readers) → sd. Pass --storage to override.
+func manifestStorage(v deviceVersion, st StorageType, mediaFixed bool, override string) string {
+	switch override {
+	case "nvme", "sd":
+		return override
+	}
+	switch st {
+	case StorageNVMe:
+		return "nvme"
+	case StorageUSB:
+		// Fixed, solid-state media behind a USB bridge is an SSD headed for the
+		// NVMe slot, not an SD card in a reader. Prefer nvme when the device
+		// actually publishes that variant.
+		if mediaFixed && v.NVMEPath != "" {
+			return "nvme"
+		}
+		return defaultManifestStorage(v)
+	default:
+		return "sd"
+	}
+}
+
+// storageChoiceAmbiguous reports whether the image variant for a USB target
+// can't be determined from bus and media signals alone, so the caller should
+// ask the user which slot the drive is for. It is only ambiguous when the bus
+// is USB (an SD reader and an SSD enclosure look identical), the platform found
+// no positive fixed-media evidence, and the device publishes BOTH variants —
+// otherwise there is nothing to choose between.
+func storageChoiceAmbiguous(v deviceVersion, st StorageType, mediaFixed bool) bool {
+	return st == StorageUSB && !mediaFixed && v.SDPath != "" && v.NVMEPath != ""
+}
+
+// defaultManifestStorage returns the device's natural removable image variant
+// based on which artifacts the manifest version publishes: an SD variant when
+// present (the common Raspberry Pi case), otherwise an NVMe variant (a Jetson
+// NVMe SSD), otherwise "sd" so resolveTriple falls back to the legacy image.
+// Used when there is no target-drive protocol to consult (wendy os download)
+// and as the ambiguous-USB tiebreaker for manifestStorage.
+func defaultManifestStorage(v deviceVersion) string {
+	switch {
+	case v.SDPath != "":
+		return "sd"
+	case v.NVMEPath != "":
+		return "nvme"
+	default:
+		return "sd"
+	}
+}
+
+func osCachedZstPath(deviceKey, version, storage string) (string, error) {
+	return osCachedPath(deviceKey, version, storage, ".img.zst")
+}
+
+// resolveSeekableZst downloads (or cache-hits) the seekable .img.zst for
+// deviceKey+version from zstURL, returning the cached path. Reuses downloadImage
+// (streams to a temp file with progress) then renames into the cache.
+func resolveSeekableZst(deviceKey, version, storage, zstURL string) (string, error) {
+	cached, err := osCachedZstPath(deviceKey, version, storage)
+	if err != nil {
+		return "", err
+	}
+	if info, statErr := os.Stat(cached); statErr == nil && info.Size() > 0 {
+		fmt.Printf("Using cached seekable image (%s)\n", cached)
+		return cached, nil
+	}
+	downloadPath, err := downloadImage(&imageInfo{DownloadURL: zstURL, Version: version})
+	if err != nil {
+		return "", fmt.Errorf("downloading seekable image: %w", err)
+	}
+	os.Remove(cached) // clear stale/0-byte so Rename succeeds on Windows
+	if err := os.Rename(downloadPath, cached); err != nil {
+		os.Remove(downloadPath)
+		return "", fmt.Errorf("caching seekable image: %w", err)
+	}
+	return cached, nil
 }
 
 type zipReadCloser struct {
@@ -888,7 +1192,7 @@ func streamZipImageEntry(zipPath string) (*imageStream, error) {
 			continue
 		}
 		ext := strings.ToLower(filepath.Ext(f.Name))
-		// .sdimg is the Mender A/B disk image RPi targets now produce.
+		// .sdimg is the A/B disk image RPi targets now produce.
 		if ext != ".img" && ext != ".raw" && ext != ".wic" && ext != ".sdimg" {
 			continue
 		}
@@ -923,7 +1227,7 @@ func resolveOSImage(deviceKey string, img *imageInfo) (string, error) {
 	isZip := strings.HasSuffix(strings.ToLower(img.DownloadURL), ".zip")
 
 	// Legacy .img cache hit (backward compat with pre-streaming caches).
-	imgCached, err := osCachedImagePath(deviceKey, img.Version)
+	imgCached, err := osCachedImagePath(deviceKey, img.Version, img.Storage)
 	if err != nil {
 		return "", err
 	}
@@ -934,7 +1238,7 @@ func resolveOSImage(deviceKey string, img *imageInfo) (string, error) {
 
 	if isZip {
 		// Zip cache hit.
-		zipCached, zipErr := osCachedZipPath(deviceKey, img.Version)
+		zipCached, zipErr := osCachedZipPath(deviceKey, img.Version, img.Storage)
 		if zipErr != nil {
 			return "", zipErr
 		}
@@ -1052,7 +1356,7 @@ func measureGzipImage(path string, progress func(read, total int64)) (int64, err
 // the user quits the bar.
 func measureImageWithProgress(stream *imageStream) error {
 	prog := tui.NewProgress("Determining image size (one-time per image)...")
-	p := tea.NewProgram(prog)
+	p := tui.NewProgressProgram(prog)
 	sendProgress := throttledProgress(p, 33*time.Millisecond)
 
 	go func() {
@@ -1288,7 +1592,7 @@ func resolveWiFiCredentialsList(opts wifiCLIOptions) ([]wendyconf.WifiCredential
 			if pw, kerr := lookupKeychainPassword(c.SSID); kerr == nil && pw != "" {
 				c.Password = pw
 			} else if isInteractiveTerminal() {
-				pw, perr := tui.PromptText(fmt.Sprintf("WiFi password for %s", c.SSID), "(leave empty for open network)", nil)
+				pw, perr := tui.PromptPassword(fmt.Sprintf("WiFi password for %s", c.SSID), "(leave empty for open network)", nil)
 				if perr != nil {
 					return nil, fmt.Errorf("reading WiFi password: %w", perr)
 				}
@@ -1413,7 +1717,7 @@ var (
 		return tui.PromptText("WiFi SSID", "", nonEmptyValidator)
 	}
 	promptWifiPassword = func(ssid string) (string, error) {
-		return tui.PromptText(fmt.Sprintf("Password for %s", ssid), "(leave empty for open network)", nil)
+		return tui.PromptPassword(fmt.Sprintf("Password for %s", ssid), "(leave empty for open network)", nil)
 	}
 )
 
@@ -1440,15 +1744,21 @@ func selectWifiNetworkStreaming() (wifiScanSelection, error) {
 	var mu sync.Mutex
 	go func() {
 		defer p.Send(tui.PickerDoneMsg{})
-		nets, err := scanLocalWifiNetworks()
+		// Stream the host scan: cached results paint the picker instantly, then
+		// the fresh rescan fills it in — so SSIDs trickle in rather than the
+		// picker sitting on "Scanning..." until the whole scan completes
+		// (matching the device-side picker in pickWifiNetwork).
+		hadNetworks := false
+		err := streamLocalWifiScan(func(batch []localWifiNetwork) {
+			if len(batch) > 0 {
+				hadNetworks = true
+			}
+			p.Send(tui.PickerAddMsg{Items: localWifiPickerItems(batch)})
+		})
 		mu.Lock()
 		sel.ScanErr = err
-		sel.HadNetworks = len(nets) > 0
+		sel.HadNetworks = hadNetworks
 		mu.Unlock()
-		if err != nil {
-			return
-		}
-		p.Send(tui.PickerAddMsg{Items: localWifiPickerItems(nets)})
 	}()
 	fmt.Println()
 	finalModel, runErr := p.Run()
@@ -1542,9 +1852,16 @@ func nonEmptyValidator(v string) error {
 	return nil
 }
 
+// maxDeviceNameLen caps the device name so the derived hostname stays a valid
+// DNS label. The agent builds the hostname as "wendyos-<name>" (see
+// generate-hostname.sh / configpartition.applyDeviceName); with the 8-character
+// "wendyos-" prefix, a 55-character name yields a 63-octet label — the RFC 1035
+// maximum. Longer names produce an invalid hostname label on the device.
+const maxDeviceNameLen = 55
+
 func validateDeviceName(name string) error {
-	if len(name) < 3 || len(name) > 64 {
-		return fmt.Errorf("device name must be 3–64 characters")
+	if len(name) < 3 || len(name) > maxDeviceNameLen {
+		return fmt.Errorf("device name must be 3–%d characters", maxDeviceNameLen)
 	}
 	for i, c := range name {
 		switch {
@@ -1586,7 +1903,7 @@ func resolveDeviceName(flagName string) (string, error) {
 	fmt.Println()
 	name, err := promptDeviceName(
 		"Device name",
-		"(a-z, 0-9 and hyphens, starts with a letter, 3–64 chars; empty = auto-generate)",
+		fmt.Sprintf("(a-z, 0-9 and hyphens, starts with a letter, 3–%d chars; empty = auto-generate)", maxDeviceNameLen),
 		optionalDeviceNameValidator,
 	)
 	if err != nil {
@@ -1626,6 +1943,61 @@ func confirmOverwriteInternalDrive(d drive, force bool, yesOverwriteInternal boo
 	return nil
 }
 
+// provisionConfigPartitionFn is the provisioning entry point used by
+// provisionConfigWithRetry. It is a package var so tests can stub the real
+// network + disk work it performs.
+var provisionConfigPartitionFn = provisionConfigPartition
+
+// confirmProvisioningRetry asks whether to re-attempt config-partition
+// provisioning after a failure. Declared as a var so tests can drive the loop.
+var confirmProvisioningRetry = func() (bool, error) {
+	return tui.Confirm("Retry writing provisioning data to the config partition?")
+}
+
+// provisionConfigWithRetry writes provisioning data — the agent binary, WiFi
+// credentials, device name, and pre-enrollment material — to the config
+// partition of a freshly imaged drive.
+//
+// A provisioning failure is never fatal. By the time we get here the OS image
+// is already written to the drive, so the device boots regardless: it runs the
+// agent baked into the image and fetches updates and configuration after first
+// boot. Treating "couldn't download the agent update" or "couldn't locate the
+// config partition" as a failure to flash the OS is misleading — so we surface
+// it as a warning instead, loudly when the user explicitly asked for --wifi /
+// --device-name / --pre-enroll (that input did not reach the device), and on an
+// interactive terminal we offer to retry — e.g. after re-seating an SD card
+// whose config partition could not be located.
+func provisionConfigWithRetry(d drive, creds []wendyconf.WifiCredential, deviceName string, provisioningJSON []byte, requested bool) {
+	for {
+		err := provisionConfigPartitionFn(d, creds, deviceName, provisioningJSON)
+		if err == nil {
+			return
+		}
+
+		if requested {
+			fmt.Printf("\nWarning: could not apply provisioning data — --wifi / --device-name / --pre-enroll were requested but not written: %v\n", err)
+		} else {
+			fmt.Printf("\nWarning: could not pre-configure the agent on the config partition: %v\n", err)
+		}
+		fmt.Println("The OS image itself was written successfully — the device will still boot, run the agent baked into the image, and fetch updates after first boot.")
+
+		if !isInteractiveTerminal() {
+			if requested {
+				fmt.Println("Re-run 'wendy os install' to apply WiFi / device-name / pre-enrollment, or configure the device after it boots.")
+			}
+			return
+		}
+
+		retry, err := confirmProvisioningRetry()
+		if err != nil || !retry {
+			if requested {
+				fmt.Println("Skipping provisioning. Re-run 'wendy os install' to apply it, or configure the device after it boots.")
+			}
+			return
+		}
+	}
+}
+
 // provisionConfigPartition downloads the latest stable arm64 wendy-agent binary
 func provisionConfigPartition(d drive, creds []wendyconf.WifiCredential, deviceName string, provisioningJSON []byte) error {
 	release, err := fetchAgentRelease(false)
@@ -1657,7 +2029,42 @@ func provisionConfigPartition(d drive, creds []wendyconf.WifiCredential, deviceN
 
 // installESP32Firmware handles the ESP32 path: detect device → download → flash.
 // chip is e.g. "esp32c6" or "esp32c5".
-func installESP32Firmware(ctx context.Context, nightly bool, chip string) error {
+func installESP32Firmware(ctx context.Context, nightly bool, chip string, wifi wifiCLIOptions, deviceName string, preOpts preEnrollOptions) error {
+	provCreds, err := resolveWiFiCredentialsList(wifi)
+	if err != nil {
+		return err
+	}
+
+	provDeviceName, err := resolveDeviceName(deviceName)
+	if err != nil {
+		return err
+	}
+
+	var enrolledState *PreProvisionedState
+	if preOpts.mode != preEnrollSkip {
+		cfg, cfgErr := config.Load()
+		if cfgErr != nil {
+			if preOpts.mode == preEnrollForced {
+				return fmt.Errorf("--pre-enroll: loading config: %w", cfgErr)
+			}
+			cfg = &config.Config{} // auto mode: treat an unreadable config as not logged in
+		}
+		var resolveErr error
+		enrolledState, resolveErr = resolvePreEnrollment(ctx, cfg, preOpts, isInteractiveTerminal(), provDeviceName)
+		if resolveErr != nil {
+			return resolveErr
+		}
+	}
+
+	wendyConf, err := buildWendyConf(provCreds, provDeviceName, enrolledState)
+	if err != nil {
+		return fmt.Errorf("building Wendy config: %w", err)
+	}
+
+	if wendyConf.Wifi != nil && len(wendyConf.Wifi.Networks) > 1 {
+		return fmt.Errorf("this device only supports one Wi-Fi network")
+	}
+
 	fmt.Println("\nScanning for ESP32 devices...")
 
 	serialPort, err := discovery.ResolveESP32SerialPort()
@@ -1678,8 +2085,9 @@ func installESP32Firmware(ctx context.Context, nightly bool, chip string) error 
 	fmt.Printf("Found firmware: %s v%s\n", asset.Name, asset.Version)
 
 	// Download with progress bar.
+
 	prog := tui.NewProgress(fmt.Sprintf("Downloading %s %s...", asset.Name, asset.Version))
-	p := tea.NewProgram(prog)
+	p := tui.NewProgressProgram(prog)
 
 	var fwPath string
 	var dlErr error
@@ -1708,13 +2116,33 @@ func installESP32Firmware(ctx context.Context, nightly bool, chip string) error 
 	}
 	defer os.Remove(fwPath)
 
+	// Include configuration into the flash image.
+
+	img, err := LoadEspFlashImage(fwPath)
+	if err != nil {
+		return fmt.Errorf("loading firmware image: %w", err)
+	}
+
+	confBytes, err := proto.Marshal(wendyConf)
+	if err != nil {
+		return fmt.Errorf("serializing device config: %w", err)
+	}
+	payload := make([]byte, 8+len(confBytes))
+	copy(payload[0:4], "WYC0")
+	binary.LittleEndian.PutUint32(payload[4:8], uint32(len(confBytes)))
+	copy(payload[8:], confBytes)
+	if err := img.SetPartition("wendy_conf", payload); err != nil {
+		return fmt.Errorf("writing config to firmware image: %w", err)
+	}
+
 	// Flash with progress bar.
+
 	fmt.Println()
 	flashProg := tui.NewProgress(fmt.Sprintf("Flashing to %s...", serialPort))
-	fp := tea.NewProgram(flashProg)
+	fp := tui.NewProgressProgram(flashProg)
 
 	go func() {
-		flashErr := flashFirmware(serialPort, fwPath, func(pct float64) {
+		flashErr := flashFirmwareImage(serialPort, img, func(pct float64) {
 			fp.Send(tui.ProgressUpdateMsg{Percent: pct})
 		})
 		fp.Send(tui.ProgressDoneMsg{Err: flashErr})

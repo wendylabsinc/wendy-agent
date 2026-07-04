@@ -42,6 +42,19 @@ struct WendyAppConfig: Codable, Equatable {
     let appId: String
     let platform: String?
     let entitlements: [WendyEntitlement]?
+    let brewfile: String?
+
+    init(
+        appId: String,
+        platform: String?,
+        entitlements: [WendyEntitlement]?,
+        brewfile: String? = nil
+    ) {
+        self.appId = appId
+        self.platform = platform
+        self.entitlements = entitlements
+        self.brewfile = brewfile
+    }
 }
 
 struct WendyEntitlement: Codable, Equatable {

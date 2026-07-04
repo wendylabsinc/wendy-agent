@@ -10,14 +10,17 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/test/bufconn"
 
+	"github.com/wendylabsinc/wendy/go/internal/agent/oshealth"
 	"github.com/wendylabsinc/wendy/go/internal/shared/version"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
+	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 )
 
 // ---------- mock implementations ----------
@@ -131,11 +134,21 @@ func TestGetAgentVersion(t *testing.T) {
 	if resp.Version != version.Version {
 		t.Errorf("version = %q; want %q", resp.Version, version.Version)
 	}
-	if resp.Os != runtime.GOOS {
-		t.Errorf("os = %q; want %q", resp.Os, runtime.GOOS)
+	if resp.Os == "" {
+		t.Errorf("os is empty")
 	}
 	if resp.CpuArchitecture != runtime.GOARCH {
 		t.Errorf("arch = %q; want %q", resp.CpuArchitecture, runtime.GOARCH)
+	}
+	// RAM size and CPU core count come from /proc, so they are only
+	// guaranteed on Linux hosts (WDY-1809). Zero means "unknown".
+	if runtime.GOOS == "linux" {
+		if resp.MemTotalBytes <= 0 {
+			t.Errorf("memTotalBytes = %d, want > 0 on linux", resp.MemTotalBytes)
+		}
+		if resp.CpuCount == 0 {
+			t.Errorf("cpuCount = 0, want > 0 on linux")
+		}
 	}
 }
 
@@ -353,7 +366,7 @@ func TestUpdateAgent_LockExclusion(t *testing.T) {
 	installer.Unlock()
 }
 
-func TestUpdateOS_NonWendyOSFailsBeforeMender(t *testing.T) {
+func TestUpdateOS_NonWendyOSFailsBeforeUpdate(t *testing.T) {
 	client, cleanup := startAgentServer(t,
 		&mockNetworkManager{},
 		&mockHardwareDiscoverer{},
@@ -363,7 +376,7 @@ func TestUpdateOS_NonWendyOSFailsBeforeMender(t *testing.T) {
 	defer cleanup()
 
 	stream, err := client.UpdateOS(context.Background(), &agentpb.UpdateOSRequest{
-		ArtifactUrl: "http://example.invalid/update.mender",
+		ArtifactUrl: "http://example.invalid/update.wendy",
 	})
 	if err != nil {
 		t.Fatalf("UpdateOS: %v", err)
@@ -431,5 +444,335 @@ func TestRunContainer_Deprecated(t *testing.T) {
 	// Verify it is an Unimplemented status error.
 	if !strings.Contains(err.Error(), "deprecated") && !strings.Contains(err.Error(), "Unimplemented") {
 		t.Fatalf("expected Unimplemented/deprecated error, got: %v", err)
+	}
+}
+
+func TestParseDeviceTypePrefersBoard(t *testing.T) {
+	tests := []struct {
+		name        string
+		content     string
+		wantType    string
+		wantStorage string
+	}{
+		{
+			name:        "board wins over machine and storage inferred from machine",
+			content:     "BOARD=jetson-orin-nano\nMACHINE=jetson-orin-nano-devkit-nvme-wendyos\n",
+			wantType:    "jetson-orin-nano",
+			wantStorage: "nvme",
+		},
+		{
+			name:        "board wins when listed after machine",
+			content:     "MACHINE=jetson-orin-nano-devkit-nvme-wendyos\nBOARD=jetson-orin-nano\n",
+			wantType:    "jetson-orin-nano",
+			wantStorage: "nvme",
+		},
+		{
+			name:        "emmc inferred from machine",
+			content:     "BOARD=jetson-agx-orin-emmc\nMACHINE=jetson-agx-orin-devkit-emmc-wendyos\n",
+			wantType:    "jetson-agx-orin-emmc",
+			wantStorage: "emmc",
+		},
+		{
+			name:     "non-nvme machine infers no storage",
+			content:  "BOARD=jetson-orin-nano\nMACHINE=jetson-orin-nano-devkit-wendyos\n",
+			wantType: "jetson-orin-nano",
+		},
+		{
+			name:     "machine used only when board absent",
+			content:  "MACHINE=raspberrypi5-wendyos\n",
+			wantType: "raspberrypi5-wendyos",
+		},
+		{
+			name:        "explicit storage wins over machine inference",
+			content:     "BOARD=jetson-orin-nano\nMACHINE=jetson-orin-nano-devkit-nvme-wendyos\nSTORAGE=sd\n",
+			wantType:    "jetson-orin-nano",
+			wantStorage: "sd",
+		},
+		{
+			name:        "explicit storage parsed alongside board",
+			content:     "BOARD=jetson-orin-nano\nSTORAGE=nvme\n",
+			wantType:    "jetson-orin-nano",
+			wantStorage: "nvme",
+		},
+		{
+			name:     "legacy plain string passthrough",
+			content:  "raspberry-pi-5",
+			wantType: "raspberry-pi-5",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			gotType, gotStorage := parseDeviceType(tc.content)
+			if gotType != tc.wantType || gotStorage != tc.wantStorage {
+				t.Fatalf("parseDeviceType(%q) = (%q, %q), want (%q, %q)",
+					tc.content, gotType, gotStorage, tc.wantType, tc.wantStorage)
+			}
+		})
+	}
+}
+
+func TestGetOSUpdateStatus_NoRecord(t *testing.T) {
+	client, cleanup := startAgentServer(t,
+		&mockNetworkManager{},
+		&mockHardwareDiscoverer{},
+		&mockBluetoothManager{},
+		func(svc *AgentService) { svc.osUpdateStateDir = t.TempDir() },
+	)
+	defer cleanup()
+
+	resp, err := client.GetOSUpdateStatus(context.Background(), &agentpb.GetOSUpdateStatusRequest{})
+	if err != nil {
+		t.Fatalf("GetOSUpdateStatus: %v", err)
+	}
+	if resp.GetHasResult() {
+		t.Error("HasResult = true, want false when no record exists")
+	}
+}
+
+func TestGetOSUpdateStatus_MapsRecord(t *testing.T) {
+	dir := t.TempDir()
+	created := time.Date(2026, 6, 9, 12, 0, 0, 0, time.UTC)
+	finalized := created.Add(3 * time.Minute)
+	record := oshealth.UpdateResult{
+		Outcome:        oshealth.OutcomeRolledBack,
+		OldOSVersion:   "WendyOS-0.10.4",
+		NewOSVersion:   "WendyOS-0.11.0",
+		CreatedAt:      created,
+		FinalizedAt:    finalized,
+		FinalOSVersion: "WendyOS-0.10.4",
+		Services: []oshealth.ServiceResult{
+			{Unit: "avahi-daemon.service", Status: oshealth.StatusFailed, Reason: "timed out after 30s"},
+			{Unit: "containerd.service", Status: oshealth.StatusHealthy},
+			{Unit: "NetworkManager.service", Status: oshealth.StatusSkipped, Reason: "unit not present on this device"},
+		},
+		RollbackError: "rollback exploded",
+	}
+	if err := oshealth.WriteUpdateResult(dir, record); err != nil {
+		t.Fatal(err)
+	}
+
+	client, cleanup := startAgentServer(t,
+		&mockNetworkManager{},
+		&mockHardwareDiscoverer{},
+		&mockBluetoothManager{},
+		func(svc *AgentService) { svc.osUpdateStateDir = dir },
+	)
+	defer cleanup()
+
+	resp, err := client.GetOSUpdateStatus(context.Background(), &agentpb.GetOSUpdateStatusRequest{})
+	if err != nil {
+		t.Fatalf("GetOSUpdateStatus: %v", err)
+	}
+	if !resp.GetHasResult() {
+		t.Fatal("HasResult = false, want true")
+	}
+	if resp.GetOutcome() != agentpb.GetOSUpdateStatusResponse_OUTCOME_ROLLED_BACK {
+		t.Errorf("Outcome = %v, want OUTCOME_ROLLED_BACK", resp.GetOutcome())
+	}
+	if resp.GetOldOsVersion() != "WendyOS-0.10.4" || resp.GetNewOsVersion() != "WendyOS-0.11.0" {
+		t.Errorf("versions = %q/%q", resp.GetOldOsVersion(), resp.GetNewOsVersion())
+	}
+	if resp.GetCreatedAtUnix() != created.Unix() {
+		t.Errorf("CreatedAtUnix = %d, want %d", resp.GetCreatedAtUnix(), created.Unix())
+	}
+	if resp.GetFinalizedAtUnix() != finalized.Unix() {
+		t.Errorf("FinalizedAtUnix = %d, want %d", resp.GetFinalizedAtUnix(), finalized.Unix())
+	}
+	if resp.GetRollbackError() != "rollback exploded" {
+		t.Errorf("RollbackError = %q", resp.GetRollbackError())
+	}
+
+	services := resp.GetServices()
+	if len(services) != 3 {
+		t.Fatalf("len(Services) = %d, want 3", len(services))
+	}
+	wantStatuses := []agentpb.GetOSUpdateStatusResponse_ServiceResult_Status{
+		agentpb.GetOSUpdateStatusResponse_ServiceResult_STATUS_FAILED,
+		agentpb.GetOSUpdateStatusResponse_ServiceResult_STATUS_HEALTHY,
+		agentpb.GetOSUpdateStatusResponse_ServiceResult_STATUS_SKIPPED,
+	}
+	for i, want := range wantStatuses {
+		if services[i].GetStatus() != want {
+			t.Errorf("Services[%d].Status = %v, want %v", i, services[i].GetStatus(), want)
+		}
+	}
+	if services[0].GetUnit() != "avahi-daemon.service" || services[0].GetReason() != "timed out after 30s" {
+		t.Errorf("Services[0] = %+v", services[0])
+	}
+}
+
+func TestGetOSUpdateStatusV2_MirrorsRecord(t *testing.T) {
+	dir := t.TempDir()
+	record := oshealth.UpdateResult{
+		Outcome:   oshealth.OutcomeRolledBack,
+		CreatedAt: time.Date(2026, 6, 9, 12, 0, 0, 0, time.UTC),
+		Services: []oshealth.ServiceResult{
+			{Unit: "avahi-daemon.service", Status: oshealth.StatusFailed, Reason: "timed out"},
+		},
+	}
+	if err := oshealth.WriteUpdateResult(dir, record); err != nil {
+		t.Fatal(err)
+	}
+
+	svc := NewOSUpdateService(zap.NewNop())
+	svc.stateDir = dir
+
+	resp, err := svc.GetOSUpdateStatus(context.Background(), &agentpbv2.GetOSUpdateStatusRequest{})
+	if err != nil {
+		t.Fatalf("GetOSUpdateStatus: %v", err)
+	}
+	if !resp.GetHasResult() {
+		t.Fatal("HasResult = false, want true")
+	}
+	if resp.GetOutcome() != agentpbv2.GetOSUpdateStatusResponse_OUTCOME_ROLLED_BACK {
+		t.Errorf("Outcome = %v, want OUTCOME_ROLLED_BACK", resp.GetOutcome())
+	}
+	if len(resp.GetServices()) != 1 ||
+		resp.GetServices()[0].GetStatus() != agentpbv2.GetOSUpdateStatusResponse_ServiceResult_STATUS_FAILED {
+		t.Errorf("Services = %+v", resp.GetServices())
+	}
+
+	empty := NewOSUpdateService(zap.NewNop())
+	empty.stateDir = t.TempDir()
+	emptyResp, err := empty.GetOSUpdateStatus(context.Background(), &agentpbv2.GetOSUpdateStatusRequest{})
+	if err != nil {
+		t.Fatalf("GetOSUpdateStatus (empty): %v", err)
+	}
+	if emptyResp.GetHasResult() {
+		t.Error("HasResult = true, want false when no record exists")
+	}
+}
+
+func TestGetOSUpdateStatus_ZeroFinalizedAt(t *testing.T) {
+	dir := t.TempDir()
+	record := oshealth.UpdateResult{
+		Outcome:   oshealth.OutcomeCommitted,
+		CreatedAt: time.Now(),
+	}
+	if err := oshealth.WriteUpdateResult(dir, record); err != nil {
+		t.Fatal(err)
+	}
+
+	client, cleanup := startAgentServer(t,
+		&mockNetworkManager{},
+		&mockHardwareDiscoverer{},
+		&mockBluetoothManager{},
+		func(svc *AgentService) { svc.osUpdateStateDir = dir },
+	)
+	defer cleanup()
+
+	resp, err := client.GetOSUpdateStatus(context.Background(), &agentpb.GetOSUpdateStatusRequest{})
+	if err != nil {
+		t.Fatalf("GetOSUpdateStatus: %v", err)
+	}
+	if resp.GetOutcome() != agentpb.GetOSUpdateStatusResponse_OUTCOME_COMMITTED {
+		t.Errorf("Outcome = %v, want OUTCOME_COMMITTED", resp.GetOutcome())
+	}
+	if resp.GetFinalizedAtUnix() != 0 {
+		t.Errorf("FinalizedAtUnix = %d, want 0 for unfinalized record", resp.GetFinalizedAtUnix())
+	}
+}
+
+// ---------- detectCUDAVersionIn ----------
+
+const nvccVersionOutput = `nvcc: NVIDIA (R) Cuda compiler driver
+Copyright (c) 2005-2025 NVIDIA Corporation
+Built on Tue_Oct_14_19:22:29_PDT_2025
+Cuda compilation tools, release 13.2, V13.2.78
+Build cuda_13.2.r13.2/compiler.36123456_0
+`
+
+func noLookPath(string) (string, error) {
+	return "", fmt.Errorf("not found")
+}
+
+func noRunCmd(name string, _ ...string) ([]byte, error) {
+	return nil, fmt.Errorf("unexpected command %q", name)
+}
+
+func writeCUDAFile(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDetectCUDAVersion_LegacyVersionTxt(t *testing.T) {
+	usrLocal := t.TempDir()
+	writeCUDAFile(t, filepath.Join(usrLocal, "cuda", "version.txt"), "CUDA Version 10.2.89")
+
+	if got := detectCUDAVersionIn(usrLocal, noLookPath, noRunCmd); got != "10.2.89" {
+		t.Errorf("detectCUDAVersionIn = %q, want %q", got, "10.2.89")
+	}
+}
+
+func TestDetectCUDAVersion_LegacyVersionJSON(t *testing.T) {
+	usrLocal := t.TempDir()
+	writeCUDAFile(t, filepath.Join(usrLocal, "cuda", "version.json"),
+		`{"cuda": {"name": "CUDA SDK", "version": "12.6.68"}}`)
+
+	if got := detectCUDAVersionIn(usrLocal, noLookPath, noRunCmd); got != "12.6.68" {
+		t.Errorf("detectCUDAVersionIn = %q, want %q", got, "12.6.68")
+	}
+}
+
+func TestDetectCUDAVersion_NvccOnPath(t *testing.T) {
+	usrLocal := t.TempDir()
+	lookPath := func(name string) (string, error) {
+		if name == "nvcc" {
+			return "/opt/bin/nvcc", nil
+		}
+		return "", fmt.Errorf("not found")
+	}
+	runCmd := func(name string, args ...string) ([]byte, error) {
+		if name == "/opt/bin/nvcc" && len(args) == 1 && args[0] == "--version" {
+			return []byte(nvccVersionOutput), nil
+		}
+		return nil, fmt.Errorf("unexpected command %q %v", name, args)
+	}
+
+	if got := detectCUDAVersionIn(usrLocal, lookPath, runCmd); got != "13.2" {
+		t.Errorf("detectCUDAVersionIn = %q, want %q", got, "13.2")
+	}
+}
+
+// JetPack 7 (Thor) layout: no /usr/local/cuda symlink, no version files, nvcc
+// not on PATH — only /usr/local/cuda-13.2/bin/nvcc exists.
+func TestDetectCUDAVersion_JetPack7VersionedDir(t *testing.T) {
+	usrLocal := t.TempDir()
+	nvcc := filepath.Join(usrLocal, "cuda-13.2", "bin", "nvcc")
+	writeCUDAFile(t, nvcc, "")
+
+	runCmd := func(name string, args ...string) ([]byte, error) {
+		if name == nvcc && len(args) == 1 && args[0] == "--version" {
+			return []byte(nvccVersionOutput), nil
+		}
+		return nil, fmt.Errorf("unexpected command %q %v", name, args)
+	}
+
+	if got := detectCUDAVersionIn(usrLocal, noLookPath, runCmd); got != "13.2" {
+		t.Errorf("detectCUDAVersionIn = %q, want %q", got, "13.2")
+	}
+}
+
+func TestDetectCUDAVersion_VersionFileWinsOverNvcc(t *testing.T) {
+	usrLocal := t.TempDir()
+	writeCUDAFile(t, filepath.Join(usrLocal, "cuda", "version.json"),
+		`{"cuda": {"version": "12.6.68"}}`)
+	writeCUDAFile(t, filepath.Join(usrLocal, "cuda-13.2", "bin", "nvcc"), "")
+
+	if got := detectCUDAVersionIn(usrLocal, noLookPath, noRunCmd); got != "12.6.68" {
+		t.Errorf("detectCUDAVersionIn = %q, want %q", got, "12.6.68")
+	}
+}
+
+func TestDetectCUDAVersion_NothingFound(t *testing.T) {
+	usrLocal := t.TempDir()
+
+	if got := detectCUDAVersionIn(usrLocal, noLookPath, noRunCmd); got != "" {
+		t.Errorf("detectCUDAVersionIn = %q, want empty", got)
 	}
 }

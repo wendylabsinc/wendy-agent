@@ -64,6 +64,22 @@ make e2e-test-linux DEVICE=my-linux-box.local
 make e2e-test-macos DEVICE=mac-mini.local
 ```
 
+### Run legacy app integration tests
+
+The `legacy integration tests` suite preserves parity with `go/scripts/test-ci.sh`
+by deploying fixtures from `.github/ci-tests/`. It is skipped by default because
+it requires Docker/buildx and a real WendyOS target. In CI, set
+`WENDY_E2E_LEGACY_INTEGRATION` only in protected, non-fork workflows: the suite
+deploys apps to a real device, so it must never run against untrusted pull
+requests.
+
+```bash
+WENDY_E2E_LEGACY_INTEGRATION=true \
+  bash Scripts/E2ETest.sh \
+    --output-dir ../Build/e2e \
+    --filter "legacy integration tests"
+```
+
 ## Test environment
 
 `Scripts/E2ETest.sh` is the preferred runner. It:
@@ -89,10 +105,11 @@ The most useful environment variables are:
 | `WENDY_E2E_CLI_ADDRESS` | Optional SSH host for the CLI machine. |
 | `WENDY_E2E_AGENT_ADDRESS` | Optional SSH host for the agent/device machine. |
 | `WENDY_E2E_DEVICE_ADDRESS` | Device address used by CLI commands while the agent session still runs locally; must not include credentials. |
-| `WENDY_E2E_MANAGED_AGENT` | Build and launch a local `wendy-agent` process for the run. |
+| `WENDY_E2E_MANAGED_AGENT` | Build and launch a local `wendy-agent` process for the run. macOS managed-agent runs use the real WendyAgentMac app so native file sync and app lifecycle coverage matches production Mac behavior; Linux/WendyOS managed-agent runs continue to use the Go daemon. |
 | `WENDY_E2E_CLI_OS` / `WENDY_E2E_AGENT_OS` | Override machine OS metadata. |
 | `WENDY_E2E_ISOLATION` | Sandbox mode: `per-test`, `per-run`, or `none`. |
 | `WENDY_E2E_PARALLEL` | Enables parallel test execution when supported by the runner. |
+| `WENDY_E2E_TEST_TIMEOUT_SECONDS` | SwiftPM test process timeout in seconds; 0 disables. |
 | `WENDY_E2E_VERBOSE` | Print every machine command before it runs. |
 
 Sandbox isolation modes:
@@ -159,23 +176,28 @@ directories into a run directory:
 │       ├── attempt.json
 │       ├── test-results.xml
 │       └── test-results.raw.xml  # only when present in the source attempt
+├── source-index.md
 └── observations/
-    └── <suite>/<test>/<target-name>/<attempt-number>/
-        ├── recording.md
-        ├── recording.sh.txt
-        └── test.json
+    └── <suite>/<test>/
+        ├── source.md
+        ├── test.json
+        └── <target-name>/<attempt-number>/
+            ├── recording.md
+            ├── recording.sh.txt
+            └── test.json
 ```
 
 The `attempts/` tree keeps every attempt-root artifact except `observations/`,
-so preflight logs and metadata remain attached to the attempt.
+so preflight logs and metadata remain attached to the attempt. Aggregate runs
+also copy `test.json` to the test root and write `source.md`, which contains the
+extracted test source range including the DocC/spec comment above `@Test` when
+present. `source-index.md` lists those source artifacts for AI and human review.
 
-`make e2e-review` writes scoped AI review issue files into the aggregate run
-directory:
+`make e2e-review` runs a single AI review pass and writes run-level issue files
+into the aggregate run directory:
 
 ```text
 <run>/review.<reviewer>/<slug>.md
-<run>/observations/<suite>/review.<reviewer>/<slug>.md
-<run>/observations/<suite>/<test>/review.<reviewer>/<slug>.md
 ```
 
 `make e2e-report` writes the rendered report files at the aggregate run root:
@@ -187,7 +209,9 @@ directory:
 ```
 
 `recording.md` is the human-readable command log. `recording.sh.txt` replays the
-captured `sh()` calls in order for manual debugging.
+captured `sh()` calls in order for manual debugging. `source.md` is kept
+separate from recordings so runtime transcripts stay focused while review still
+has the spec/test source that produced them.
 
 AI review files are Markdown. Top-level `review.md` is the compact aggregate
 that can be posted as a CI comment. Attempt, overview, and AI review JSON
@@ -310,7 +334,21 @@ struct `'wendy device info'` {
 
 `CLIAndAgentScenario` creates CLI and agent sessions, attaches the recorder,
 installs the managed CLI on `PATH`, configures isolated `HOME` and `TMPDIR`, and
-copies the auth fixture for authenticated tests.
+copies the auth fixture for authenticated tests. For scenario-specific target
+setup or cleanup, pass `before` and/or `after` hooks to the scenario initializer;
+`after` runs even when setup or the test body fails, and the original failure is
+preserved unless cleanup is the only failure.
+
+```swift
+let scenario = CLIAndAgentScenario(
+    before: { _, agent in
+        try await agent.sh("brew uninstall --force hello || true")
+    },
+    after: { _, agent in
+        try await agent.sh("brew uninstall --force hello || true")
+    }
+)
+```
 
 ### Specification prose
 

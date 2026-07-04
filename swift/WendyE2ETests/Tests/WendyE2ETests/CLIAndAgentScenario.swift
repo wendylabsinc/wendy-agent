@@ -4,6 +4,17 @@ import WendyE2ETesting
 final class CLIAndAgentScenario: WendyE2EScenario, Sendable {
     // MARK: - Internal
 
+    typealias Hook =
+        @Sendable (_ cli: WendyE2ESession, _ agent: WendyE2ESession) async throws -> Void
+
+    init(
+        before: Hook? = nil,
+        after: Hook? = nil
+    ) {
+        self.before = before
+        self.after = after
+    }
+
     func run<Result>(
         authenticated: Bool = true,
         filePath: String = #filePath,
@@ -18,25 +29,46 @@ final class CLIAndAgentScenario: WendyE2EScenario, Sendable {
             line: line
         )
 
-        let result: Result
+        var result: Result?
+        var primaryError: (any Error)?
+
         do {
+            if let before {
+                try await before(cli, agent)
+            }
             result = try await body(cli, agent)
         } catch {
-            try? await Self.tearDown(
+            primaryError = error
+        }
+
+        do {
+            if let after {
+                try await after(cli, agent)
+            }
+        } catch {
+            primaryError = primaryError ?? error
+        }
+
+        do {
+            try await Self.tearDown(
                 cli: cli,
                 agent: agent
             )
-            throw error
+        } catch {
+            primaryError = primaryError ?? error
         }
 
-        try await Self.tearDown(
-            cli: cli,
-            agent: agent
-        )
-        return result
+        if let primaryError {
+            throw primaryError
+        }
+
+        return result!
     }
 
     // MARK: - Private
+
+    private let before: Hook?
+    private let after: Hook?
 
     private func setUp(
         authenticated: Bool,

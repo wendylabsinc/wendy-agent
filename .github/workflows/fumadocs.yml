@@ -51,7 +51,7 @@ jobs:
       url: ${{ steps.path.outputs.url }}
     steps:
       - name: Check out repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
 
       - name: Set up Node.js
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
@@ -348,9 +348,14 @@ jobs:
         run: |
           set -euo pipefail
 
+          set +e
+          timeout 180s bash <<'CLEANUP'
+          set -euo pipefail
+
           cutoff_epoch="$(date -u -d "${RETENTION_DAYS} days ago" +%s)"
           listing_file="$(mktemp)"
           delete_file="$(mktemp)"
+          trap 'rm -f "${listing_file}" "${delete_file}"' EXIT
 
           gcloud storage ls -l --recursive "gs://${DOCS_BUCKET}/branch-*/**" \
             --project="${GCP_PROJECT_ID}" > "${listing_file}" 2>/dev/null || true
@@ -368,6 +373,19 @@ jobs:
           if [[ -s "${delete_file}" ]]; then
             xargs -r -n 100 gcloud storage rm --quiet --project="${GCP_PROJECT_ID}" < "${delete_file}"
           fi
+          CLEANUP
+          cleanup_status=$?
+          set -e
+
+          case "${cleanup_status}" in
+            0) ;;
+            124)
+              echo "::warning::Expired branch preview cleanup timed out; docs deployment already completed."
+              ;;
+            *)
+              echo "::warning::Expired branch preview cleanup failed with status ${cleanup_status}; docs deployment already completed."
+              ;;
+          esac
 
   comment-preview:
     name: Comment with docs preview URL

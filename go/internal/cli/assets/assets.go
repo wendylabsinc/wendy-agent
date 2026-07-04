@@ -8,5 +8,5 @@ import "embed"
 // the docs-site source (Next.js app, MDX guides, components, images) lives in the
 // docs tree but is intentionally excluded to keep the CLI binary small.
 //
-//go:embed docs/Examples docs/apps docs/architecture docs/clients docs/cloud docs/debugging docs/development docs/pki docs/vscode docs/wendy-lite docs/wendy-os-publisher docs/wendyos docs/RELEASES.md docs/entitlements.md docs/roadmap.md skills
+//go:embed docs/Examples docs/apps docs/architecture docs/clients docs/cloud docs/debugging docs/development docs/pki docs/vscode docs/wendy-lite docs/wendy-os-publisher docs/wendyos docs/RELEASES.md docs/device/entitlements.md docs/roadmap.md skills
 var FS embed.FS

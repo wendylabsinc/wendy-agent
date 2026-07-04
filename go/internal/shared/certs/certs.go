@@ -37,15 +37,31 @@ func GenerateKeyPair() (privateKeyPEM string, err error) {
 // PEM-encoded private key (as bytes, so callers can zero the slice after use)
 // and common name. The CSR is returned as a PEM string.
 //
-// The CSR requests digitalSignature key usage and the clientAuth EKU so that
-// CAs honoring CSR extensions issue certs the wendy-agent mTLS interceptor
-// accepts (it requires an explicit clientAuth EKU). The Wendy cloud backends
-// set key usages server-side and ignore these, so this only matters for CAs
-// that derive extensions from the CSR.
-func GenerateCSR(privateKeyPEM []byte, commonName string) (csrPEM string, err error) {
+// The CSR requests digitalSignature key usage and the supplied extended key
+// usages so that CAs honoring CSR extensions issue certs the wendy-agent mTLS
+// interceptor accepts (it requires an explicit clientAuth EKU). When no EKUs
+// are supplied it defaults to clientAuth, keeping user/CLI certs scoped to
+// client authentication. Device-provisioning callers (device enroll, os
+// install) pass both clientAuth and serverAuth so the device identity can act
+// as a TLS client to the cloud and a TLS server for the agent's gRPC and tunnel
+// endpoints. The Wendy cloud backends set key usages server-side and ignore
+// these, so this only matters for CAs that derive extensions from the CSR.
+func GenerateCSR(privateKeyPEM []byte, commonName string, extKeyUsages ...x509.ExtKeyUsage) (csrPEM string, err error) {
 	key, err := parseECPrivateKey(privateKeyPEM)
 	if err != nil {
 		return "", err
+	}
+
+	if len(extKeyUsages) == 0 {
+		extKeyUsages = []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}
+	}
+	ekuOIDs := make([]asn1.ObjectIdentifier, 0, len(extKeyUsages))
+	for _, eku := range extKeyUsages {
+		oid, ok := extKeyUsageOID(eku)
+		if !ok {
+			return "", fmt.Errorf("unsupported extended key usage: %d", eku)
+		}
+		ekuOIDs = append(ekuOIDs, oid)
 	}
 
 	// KeyUsage is a BIT STRING; digitalSignature is bit 0 (RFC 5280 4.2.1.3).
@@ -53,9 +69,7 @@ func GenerateCSR(privateKeyPEM []byte, commonName string) (csrPEM string, err er
 	if err != nil {
 		return "", fmt.Errorf("marshaling key usage: %w", err)
 	}
-	ekuValue, err := asn1.Marshal([]asn1.ObjectIdentifier{
-		{1, 3, 6, 1, 5, 5, 7, 3, 2}, // id-kp-clientAuth
-	})
+	ekuValue, err := asn1.Marshal(ekuOIDs)
 	if err != nil {
 		return "", fmt.Errorf("marshaling extended key usage: %w", err)
 	}
@@ -88,6 +102,20 @@ func GenerateCSR(privateKeyPEM []byte, commonName string) (csrPEM string, err er
 	}
 
 	return string(pem.EncodeToMemory(block)), nil
+}
+
+// extKeyUsageOID maps the extended key usages this package supports in CSRs to
+// their RFC 5280 object identifiers. Only the usages relevant to Wendy mTLS are
+// handled; unsupported values report ok=false so callers can fail loudly.
+func extKeyUsageOID(eku x509.ExtKeyUsage) (oid asn1.ObjectIdentifier, ok bool) {
+	switch eku {
+	case x509.ExtKeyUsageServerAuth:
+		return asn1.ObjectIdentifier{1, 3, 6, 1, 5, 5, 7, 3, 1}, true // id-kp-serverAuth
+	case x509.ExtKeyUsageClientAuth:
+		return asn1.ObjectIdentifier{1, 3, 6, 1, 5, 5, 7, 3, 2}, true // id-kp-clientAuth
+	default:
+		return nil, false
+	}
 }
 
 // ExtractPublicKey extracts the public key from a PEM-encoded EC private key

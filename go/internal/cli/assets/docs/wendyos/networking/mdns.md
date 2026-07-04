@@ -52,11 +52,12 @@ If UUID or device-name files are not yet present, the script retries for up to 1
 Avahi broadcasts the device hostname as `<hostname>.local`. The hostname is set by `generate-hostname.sh` via `wendyos-hostname.service`, which runs before `avahi-daemon.service`:
 
 **Resolution order:**
-1. `/etc/wendyos/device-name` — use as-is, lowercased, prefixed with `wendyos-`
+1. `/etc/wendy-agent/hostname` — literal hostname set via `wendy device rename` (no prefix)
+2. `/etc/wendyos/device-name` — use as-is, lowercased, prefixed with `wendyos-`
    → `wendyos-<device-name>.local`
-2. `/etc/wendyos/device-uuid` — take the last 8 hex characters (without dashes)
+3. `/etc/wendyos/device-uuid` — take the last 8 hex characters (without dashes)
    → `wendyos-<8-char-uuid-suffix>.local`
-3. Legacy fallbacks: RPi serial from `/proc/cpuinfo`, first 16 chars of `/etc/machine-id`, first MAC address, random hex
+4. Legacy fallbacks: RPi serial from `/proc/cpuinfo`, first 16 chars of `/etc/machine-id`, first MAC address, random hex
 
 The hostname is written to `/etc/hostname` using a direct write (not `hostnamectl`, to avoid EBUSY issues with bind mounts) and also added to `/etc/hosts` as `127.0.1.1 <hostname> <hostname>.local`.
 
@@ -112,6 +113,8 @@ dns-sd -L "wendyos-my-device" _wendyos._udp local.
 ### wendy-agent Discovery Code
 
 The wendy-agent Go code (`internal/shared/discovery/`) uses `_wendyos._udp` as the service type constant. On Linux it prefers `avahi-browse -rptl _wendyos._udp` when Avahi is installed; otherwise it falls back to the `hashicorp/mdns` library which queries each multicast-capable interface individually. On macOS it uses `dns-sd -B` to browse and `dns-sd -L` to resolve.
+
+**CLI-side note:** The shipped CLI binary is built with `CGO_ENABLED=0`, so it cannot use nss-mdns to resolve `.local` names. Instead, it performs its own mDNS browse for `.local` hostnames when connecting. Set `WENDY_MDNS_DEBUG=1` to log browse failures, or `WENDY_MDNS_TIMEOUT` (1s–30s) to adjust the timeout.
 
 Both the primary `avahi-browse` path and the `hashicorp/mdns` fallback path parse all TXT records into a key→value map, including the `tls` record. A device that advertises `tls=true` has `IsMTLS` set to `true` and is contacted on the mTLS port (50052). The fallback path also resolves `wendyosdevice` and `displayname` TXT records, matching the behaviour of the primary path.
 

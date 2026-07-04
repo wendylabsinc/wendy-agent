@@ -14,6 +14,13 @@ type ConfirmModel struct {
 	choice   bool // true = Yes, false = No
 	answered bool
 	quitting bool
+	// requireExplicit disables a default answer: the prompt resolves only on a
+	// y/n keypress. Enter, arrows, and tab are ignored, and no option is
+	// pre-highlighted. Ctrl+C / q still cancels.
+	requireExplicit bool
+	// danger renders the question in the error (red) style to flag a
+	// security-sensitive decision the user must look at carefully.
+	danger bool
 }
 
 func NewConfirm(question string) ConfirmModel {
@@ -22,6 +29,18 @@ func NewConfirm(question string) ConfirmModel {
 
 func NewConfirmDefaultYes(question string) ConfirmModel {
 	return ConfirmModel{Question: question, choice: true}
+}
+
+// NewConfirmNoDefaultDanger builds a no-default prompt whose question is
+// rendered in red, for security-sensitive decisions that must catch attention.
+func NewConfirmNoDefaultDanger(question string) ConfirmModel {
+	return ConfirmModel{Question: question, requireExplicit: true, danger: true}
+}
+
+// NewConfirmNoDefault builds a prompt with no default answer. The user must
+// press y or n; Enter does nothing.
+func NewConfirmNoDefault(question string) ConfirmModel {
+	return ConfirmModel{Question: question, requireExplicit: true}
 }
 
 func (m ConfirmModel) Init() tea.Cmd { return nil }
@@ -39,15 +58,27 @@ func (m ConfirmModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.answered = true
 			return m, tea.Quit
 		case "enter":
+			if m.requireExplicit {
+				return m, nil // no default; must press y or n
+			}
 			m.answered = true
 			return m, tea.Quit
 		case "left", "h":
+			if m.requireExplicit {
+				return m, nil
+			}
 			m.choice = true
 			return m, nil
 		case "right", "l":
+			if m.requireExplicit {
+				return m, nil
+			}
 			m.choice = false
 			return m, nil
 		case "tab":
+			if m.requireExplicit {
+				return m, nil
+			}
 			m.choice = !m.choice
 			return m, nil
 		case "ctrl+c", "q":
@@ -60,6 +91,7 @@ func (m ConfirmModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 var (
 	confirmQuestion = lipgloss.NewStyle().Bold(true).Foreground(ColorPrimary)
+	confirmDanger   = lipgloss.NewStyle().Bold(true).Foreground(ColorError)
 	confirmActive   = lipgloss.NewStyle().Bold(true).Foreground(ColorSelectedFg).Background(ColorSelectedBg).Padding(0, 1)
 	confirmInactive = lipgloss.NewStyle().Foreground(ColorDim).Padding(0, 1)
 	confirmHint     = lipgloss.NewStyle().Foreground(ColorDim)
@@ -68,6 +100,20 @@ var (
 func (m ConfirmModel) View() string {
 	if m.answered || m.quitting {
 		return ""
+	}
+
+	if m.requireExplicit {
+		// No default: render the question with a neutral hint and no
+		// pre-highlighted option. Danger prompts render the question in red.
+		qStyle := confirmQuestion
+		if m.danger {
+			qStyle = confirmDanger
+		}
+		return fmt.Sprintf(
+			"%s  %s\n",
+			qStyle.Render(m.Question),
+			confirmHint.Render("[y/n]"),
+		)
 	}
 
 	yes := confirmInactive.Render("Yes")
@@ -122,6 +168,18 @@ func Confirm(question string, programOpts ...tea.ProgramOption) (bool, error) {
 // ConfirmDefaultYes runs a styled yes/no prompt defaulting to Yes.
 func ConfirmDefaultYes(question string, programOpts ...tea.ProgramOption) (bool, error) {
 	return runConfirm(NewConfirmDefaultYes(question), programOpts)
+}
+
+// ConfirmNoDefault runs a styled yes/no prompt with no default answer: the user
+// must press y or n. Returns ErrCancelled on Ctrl+C / q.
+func ConfirmNoDefault(question string, programOpts ...tea.ProgramOption) (bool, error) {
+	return runConfirm(NewConfirmNoDefault(question), programOpts)
+}
+
+// ConfirmNoDefaultDanger is ConfirmNoDefault with the question rendered in red,
+// for security-sensitive decisions that must catch the user's attention.
+func ConfirmNoDefaultDanger(question string, programOpts ...tea.ProgramOption) (bool, error) {
+	return runConfirm(NewConfirmNoDefaultDanger(question), programOpts)
 }
 
 // ConfirmWithIO runs a styled yes/no prompt reading from r and discarding

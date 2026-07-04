@@ -21,6 +21,7 @@ Use explicit hostnames when possible:
 
 ```bash
 wendy device set-default <hostname>
+wendy device get-default
 wendy device unset-default
 ```
 
@@ -34,11 +35,11 @@ Local CLI info:
 wendy --json info
 ```
 
-Target device version and platform facts:
+Target device info and platform facts:
 
 ```bash
-wendy --json device version --device <hostname>
-wendy --json device version --check-updates --device <hostname>
+wendy --json device info --device <hostname>
+wendy --json device info --check-updates --device <hostname>
 ```
 
 Hardware capabilities:

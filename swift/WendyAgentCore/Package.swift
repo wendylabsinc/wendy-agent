@@ -21,7 +21,7 @@ let package = Package(
         .macOS(.v15)
     ],
     products: [
-        .library(name: "WendyAgentCore", targets: ["WendyAgentCore"]),
+        .library(name: "WendyAgentCore", targets: ["WendyAgentCore"])
     ],
     dependencies: [
         .package(url: "https://github.com/grpc/grpc-swift-2.git", from: "2.2.1"),

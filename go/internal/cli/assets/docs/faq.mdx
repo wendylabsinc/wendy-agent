@@ -62,17 +62,19 @@ Find answers to common questions about WendyOS.
   <Accordion title="Which devices does WendyOS support?">
     WendyOS officially supports:
     - NVIDIA Jetson Orin Nano
+    - NVIDIA Jetson AGX Orin
+    - NVIDIA Jetson AGX Thor
     - Raspberry Pi 5
     - Raspberry Pi 4
     - Raspberry Pi 3
 
-    NVIDIA Jetson AGX Orin support is imminent, and NVIDIA Jetson AGX Thor support is in progress. For DGX Spark, we recommend installing `wendy-agent` on the existing Linux system instead of flashing WendyOS.
+    For DGX Spark, we recommend installing `wendy-agent` on the existing Linux system instead of flashing WendyOS.
 
-    [Wendy Agent for Mac](/docs/installation/wendy-agent-macos) is available in beta for Apple Silicon Mac targets. This uses `wendy-agent` on macOS rather than flashing WendyOS.
+    [Headless Mac](/docs/installation/wendy-agent-macos) is available in beta for Apple Silicon Mac targets. This uses `wendy-agent` on macOS rather than flashing WendyOS.
   </Accordion>
 
   <Accordion title="Can you support the NVIDIA Jetson Thor or AGX?">
-    **Yes.** WendyOS supports Jetson Orin Nano today. AGX Orin support is imminent, and AGX Thor support is in progress. For DGX Spark, use the `wendy-agent` Linux install path on the existing OS.
+    **Yes.** We now support the full Jetson lineup—Orin Nano, AGX Orin, and AGX Thor all run WendyOS today. For DGX Spark, use the `wendy-agent` Linux install path on the existing OS.
 
     **NVIDIA Jetson Thor** is the ultimate platform for heavy AI workloads and physical AI:
     - **Performance**: 2,070 TOPS (FP4) - delivering 7.5x more AI compute than AGX Orin
@@ -124,14 +126,14 @@ Find answers to common questions about WendyOS.
 
   <Accordion title="What programming languages can I use with WendyOS?">
     WendyOS supports multiple programming languages:
-    - **Swift** (native support, no Docker required) - Our recommended language
-    - **TypeScript/JavaScript** (via Docker containers)
-    - **Python** (via Docker containers)
-    - **Rust** (via Docker containers)
-    - **C++** (via Docker containers)
-    - And other languages via Docker containers
+    - **Swift** (native support, no container build required) - Our recommended language
+    - **TypeScript/JavaScript** (via containers)
+    - **Python** (via containers)
+    - **Rust** (via containers)
+    - **C++** (via containers)
+    - And other languages via containers
 
-    While we support multiple languages through containerization, we highly recommend Swift for the most reliable experience with our frameworks.
+    Container builds run through Docker or, on Apple Silicon, [Apple Container](https://github.com/apple/container) — Docker is not strictly required. While we support multiple languages through containerization, we highly recommend Swift for the most reliable experience with our frameworks.
   </Accordion>
 
   <Accordion title="Which language should I use for physical AI projects?">
@@ -182,15 +184,25 @@ Find answers to common questions about WendyOS.
 
     We looked to mobile development's success: Apple's decision to unify development under Swift is one of their greatest contributions to software development. WendyOS brings this same unification to edge computing, creating a common ecosystem where Swift becomes the lingua franca—just as JavaScript is for web developers and Kotlin is for Android developers.
 
-    **Note**: We do support Python, Rust, C++, and other languages through Docker containers and containerd. However, for the most reliable experience with our frameworks, we highly recommend Swift.
+    **Note**: We do support Python, Rust, C++, and other languages through containers and containerd (built with Docker or Apple Container). However, for the most reliable experience with our frameworks, we highly recommend Swift.
   </Accordion>
 </Accordions>
 
 ### Installation & Setup
 
 <Accordions type="single">
-  <Accordion title="Does Wendy use Docker to build apps?">
-    Yes. Wendy uses containers for app builds and deployment, and the Wendy CLI handles the local Docker setup when it is needed.
+  <Accordion title="Do I need Docker to build apps?">
+    Not necessarily. Wendy uses containers for app builds and deployment, but Docker is only one of the supported builders.
+
+    On an Apple Silicon Mac, Wendy tries [Apple Container](https://github.com/apple/container) first for `Dockerfile` and `Containerfile` builds when `--builder` is omitted, and falls back to Docker if Apple Container is unavailable or the build fails. Use `--builder apple-container` to require Apple Container, or `--builder docker` to force Docker.
+
+    Docker is still required for Docker Compose projects (`docker-compose.yml` / `compose.yml`) on local provider runs. The Wendy CLI handles the local builder setup when it is needed.
+  </Accordion>
+
+  <Accordion title="Can I work from my MacBook?">
+    **Yes.** macOS is fully supported as a developer machine. Install the Wendy CLI, plug in your device over USB-C, and start deploying.
+
+    Windows and Linux are fully supported developer machines too, so you can use whatever you already have.
   </Accordion>
 
   <Accordion title="What operating systems can I use for development?">
@@ -209,13 +221,13 @@ Find answers to common questions about WendyOS.
     | | Linux | <span className="text-emerald-600 dark:text-emerald-400">✓ Supported</span> |
     | | Windows | <span className="text-emerald-600 dark:text-emerald-400">✓ Supported</span> |
     | **Hardware** | NVIDIA Jetson Orin Nano | <span className="text-emerald-600 dark:text-emerald-400">✓ Supported</span> |
-    | | NVIDIA Jetson AGX Orin | <span className="text-yellow-600 dark:text-yellow-400">Imminent</span> |
-    | | NVIDIA Jetson AGX Thor | <span className="text-yellow-600 dark:text-yellow-400">In Progress</span> |
+    | | NVIDIA Jetson AGX Orin | <span className="text-emerald-600 dark:text-emerald-400">✓ Supported</span> |
+    | | NVIDIA Jetson AGX Thor | <span className="text-emerald-600 dark:text-emerald-400">✓ Supported</span> |
     | | DGX Spark | <span className="text-emerald-600 dark:text-emerald-400">Use wendy-agent on Linux</span> |
     | | Raspberry Pi 5 | <span className="text-emerald-600 dark:text-emerald-400">✓ Supported</span> |
     | | Raspberry Pi 4 | <span className="text-emerald-600 dark:text-emerald-400">✓ Supported</span> |
     | | Raspberry Pi 3 | <span className="text-emerald-600 dark:text-emerald-400">✓ Supported</span> |
-    | | Headless Apple Silicon Mac | <span className="text-orange-500 dark:text-orange-400">Beta</span> |
+    | | Headless Apple Silicon Mac | <span className="text-wendy-seafoam">Beta</span> |
     | | Ubuntu (any ARM64/x86_64) | <span className="text-emerald-600 dark:text-emerald-400">✓ Supported</span> |
     | | ESP32-C6 / ESP32-C5 (Wendy Lite) | <span className="text-emerald-600 dark:text-emerald-400">✓ Supported</span> |
   </Accordion>
@@ -227,6 +239,8 @@ Find answers to common questions about WendyOS.
     - **First boot**: 2-3 minutes
 
     Total time: approximately 15-30 minutes.
+
+    `wendy install` also lets you pre-configure the device so it's ready the moment it powers on: connect to WiFi on first boot, automatically install any important OS updates on first boot, and pre-enroll it so it securely links to Wendy Cloud on first boot (it links to your developer machine once you connect it over USB-C). Each of these is optional and can also be set up after the device boots.
   </Accordion>
 
   <Accordion title="Can I use an NVMe SSD with Raspberry Pi 5?">
@@ -272,7 +286,7 @@ Find answers to common questions about WendyOS.
   </Accordion>
 
   <Accordion title="Can I deploy Wendy apps to macOS or other Linux environments?">
-    **Yes.** [Wendy Agent for Mac](/docs/installation/wendy-agent-macos) is in beta for Apple Silicon Mac targets, and `wendy-agent` already works on Linux environments.
+    **Yes.** [Headless Mac](/docs/installation/wendy-agent-macos) is in beta for Apple Silicon Mac targets, and `wendy-agent` already works on Linux environments.
 
     We architected Wendy Agent (the program that manages apps) to be platform agnostic. This means you can deploy Wendy applications to:
     - **macOS** (Apple Silicon Mac targets in beta)

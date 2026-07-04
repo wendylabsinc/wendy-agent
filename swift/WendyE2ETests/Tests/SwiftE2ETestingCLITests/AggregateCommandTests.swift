@@ -12,6 +12,8 @@ struct `aggregate command` {
         defer { try? FileManager.default.removeItem(at: rootURL) }
 
         let outputURL = rootURL.appendingPathComponent("aggregate", isDirectory: true)
+        let packageURL = rootURL.appendingPathComponent("package", isDirectory: true)
+        try writeAggregateTestSource(in: packageURL)
         let attemptURL = rootURL.appendingPathComponent(
             "swift-e2e-tests.local0000.macos-to-rpi.0001",
             isDirectory: true
@@ -48,7 +50,11 @@ struct `aggregate command` {
         )
         try writeAggregateTestMetadata(to: observationURL)
 
-        var command = try AggregateCommand.parse(["--output-dir", outputURL.path, attemptURL.path])
+        var command = try AggregateCommand.parse([
+            "--output-dir", outputURL.path,
+            "--package-dir", packageURL.path,
+            attemptURL.path,
+        ])
         try command.run()
 
         let runURL = outputURL.appendingPathComponent(
@@ -98,12 +104,20 @@ struct `aggregate command` {
                 atPath: aggregateObservationURL.appendingPathComponent("test.json").path
             )
         )
+        let aggregateTestRootURL = aggregateObservationURL.deletingLastPathComponent()
+            .deletingLastPathComponent()
         #expect(
             FileManager.default.fileExists(
-                atPath: aggregateObservationURL.deletingLastPathComponent()
-                    .deletingLastPathComponent().appendingPathComponent("test.json").path
+                atPath: aggregateTestRootURL.appendingPathComponent("test.json").path
             )
         )
+        let sourceURL = aggregateTestRootURL.appendingPathComponent(e2eSourceArtifactFileName)
+        #expect(FileManager.default.fileExists(atPath: sourceURL.path))
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        #expect(source.contains("Documents the expected JSON output."))
+        #expect(source.contains("func `prints JSON device information`()"))
+        let sourceIndexURL = runURL.appendingPathComponent(e2eSourceIndexFileName)
+        #expect(FileManager.default.fileExists(atPath: sourceIndexURL.path))
         #expect(
             !FileManager.default.fileExists(
                 atPath: aggregateObservationURL.appendingPathComponent("attempt.json").path
@@ -172,7 +186,10 @@ private func writeAggregateTestMetadata(to observationURL: URL) throws {
         suiteName: "wendy device info",
         testName: "prints JSON device information",
         functionName: "`prints JSON device information`()",
-        line: 12
+        line: 10,
+        declarationLine: 9,
+        sourceStartLine: 5,
+        sourceEndLine: 11
     )
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -180,6 +197,32 @@ private func writeAggregateTestMetadata(to observationURL: URL) throws {
         to: observationURL.appendingPathComponent(e2eTestMetadataFileName),
         options: .atomic
     )
+}
+
+private func writeAggregateTestSource(in packageURL: URL) throws {
+    let sourceURL =
+        packageURL
+        .appendingPathComponent("Tests/WendyE2ETests", isDirectory: true)
+        .appendingPathComponent("WendyDeviceInfoTests.swift")
+    try FileManager.default.createDirectory(
+        at: sourceURL.deletingLastPathComponent(),
+        withIntermediateDirectories: true
+    )
+    try """
+    import Testing
+
+    @Suite
+    struct `wendy device info` {
+        /**
+         Documents the expected JSON output.
+         */
+        @Test
+        func `prints JSON device information`() async throws {
+            #expect(true)
+        }
+    }
+
+    """.write(to: sourceURL, atomically: true, encoding: .utf8)
 }
 
 private func aggregateTemporaryDirectory() -> URL {

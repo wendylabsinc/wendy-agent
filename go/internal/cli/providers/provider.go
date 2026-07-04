@@ -4,6 +4,10 @@ package providers
 
 import (
 	"context"
+	"os"
+	"slices"
+	"strconv"
+	"strings"
 
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
@@ -49,9 +53,44 @@ type RunOutputType int
 
 // Provider key constants for the built-in providers.
 const (
-	ProviderKeyDocker = "docker"
-	ProviderKeyLocal  = "local"
+	ProviderKeyAppleContainer = "apple-container"
+	ProviderKeyDocker         = "docker"
+	ProviderKeyLocal          = "local"
 )
+
+// LocalProviderKeys are the providers whose "devices" are really this computer
+// or a local container runtime (the local machine, Docker/OrbStack, Apple
+// Container) rather than a separate WendyOS device. The interactive device
+// picker and `wendy discover` hide these from the default device list unless
+// ShowLocalDevices reports true. Real external hardware providers (e.g.
+// android, wendy-lite) are not local and are always shown.
+func LocalProviderKeys() []string {
+	return []string{ProviderKeyLocal, ProviderKeyDocker, ProviderKeyAppleContainer}
+}
+
+// IsLocalProviderKey reports whether key names a local run target (see
+// LocalProviderKeys).
+func IsLocalProviderKey(key string) bool {
+	return slices.Contains(LocalProviderKeys(), key)
+}
+
+// ShowLocalDevicesEnv is the environment variable that opts local run targets
+// (see LocalProviderKeys) back into the device picker and `wendy discover`.
+// They are hidden by default so those surfaces list separate WendyOS devices.
+const ShowLocalDevicesEnv = "WENDY_SHOW_LOCAL_DEVICES"
+
+// ShowLocalDevices reports whether local run targets should be shown in the
+// interactive device picker and non-JSON `wendy discover` output. It is false
+// unless ShowLocalDevicesEnv is set to a truthy value ("1", "true", "yes", "on";
+// case-insensitive).
+func ShowLocalDevices() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(ShowLocalDevicesEnv))) {
+	case "yes", "on":
+		return true
+	}
+	b, err := strconv.ParseBool(strings.TrimSpace(os.Getenv(ShowLocalDevicesEnv)))
+	return err == nil && b
+}
 
 const (
 	RunOutputStarted RunOutputType = iota
@@ -80,8 +119,8 @@ type TypedBuilder interface {
 }
 
 // DockerfileBuilder is optionally implemented by providers that support
-// building from a specific Dockerfile (e.g. Dockerfile.prod). When dockerfile
-// is empty, the provider uses its default Dockerfile resolution.
+// building from a specific Dockerfile/Containerfile (e.g. Dockerfile.prod).
+// When dockerfile is empty, the provider uses its default build-file resolution.
 type DockerfileBuilder interface {
 	BuildWithDockerfile(ctx context.Context, device models.ExternalDevice, projectPath, product, buildType, dockerfile string, debug bool) (*BuiltApp, error)
 }

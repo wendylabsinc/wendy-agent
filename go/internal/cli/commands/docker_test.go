@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -15,6 +16,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -32,6 +34,580 @@ func mustDetectProjectType(t *testing.T, dir string) string {
 		t.Fatalf("detectProjectType unexpected error: %v", err)
 	}
 	return got
+}
+
+func TestBuildAndPushImageWithAppleContainerUsesContainerCLI(t *testing.T) {
+	oldCommand := imageBuilderCommandContext
+	oldLookPath := imageBuilderLookPath
+	oldGOOS := imageBuilderHostGOOS
+	oldGOARCH := imageBuilderHostGOARCH
+	t.Cleanup(func() {
+		imageBuilderCommandContext = oldCommand
+		imageBuilderLookPath = oldLookPath
+		imageBuilderHostGOOS = oldGOOS
+		imageBuilderHostGOARCH = oldGOARCH
+	})
+
+	logFile := filepath.Join(t.TempDir(), "commands.log")
+	imageBuilderCommandContext = fakeImageBuilderCommandContext(logFile)
+	imageBuilderLookPath = func(file string) (string, error) {
+		if file == "container" {
+			return "/usr/local/bin/container", nil
+		}
+		return "", errors.New("not found")
+	}
+	imageBuilderHostGOOS = func() string { return "darwin" }
+	imageBuilderHostGOARCH = func() string { return "arm64" }
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte("FROM scratch\nCOPY app.py .\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "app.py"), []byte("print('hello')\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	err := buildAndPushImageWithBuilder(
+		context.Background(),
+		imageBuilderAppleContainer,
+		dir,
+		"127.0.0.1:5000",
+		"127.0.0.1:5000/test-app:latest",
+		"linux/arm64",
+		"Dockerfile",
+		map[string]string{"B": "2", "A": "1"},
+		"",
+		io.Discard,
+		io.Discard,
+		false,
+	)
+	if err != nil {
+		t.Fatalf("buildAndPushImageWithBuilder: %v", err)
+	}
+
+	resolvedDockerfile, err := appleContainerBuildFilePath(dir, "Dockerfile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	buildContext, err := appleContainerBuildContextPath(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	log := string(data)
+	for _, want := range []string{
+		"container\x00--version\n",
+		"container\x00system\x00status\n",
+		"container\x00build\x00--progress\x00plain\x00--platform\x00linux/arm64\x00-t\x00127.0.0.1:5000/test-app:latest\x00-f\x00" + resolvedDockerfile + "\x00--build-arg\x00A=1\x00--build-arg\x00B=2\x00" + buildContext + "\n",
+		"container\x00image\x00push\x00--scheme\x00http\x00--platform\x00linux/arm64\x00127.0.0.1:5000/test-app:latest\n",
+	} {
+		if !strings.Contains(log, want) {
+			t.Fatalf("command log missing %q in:\n%s", want, log)
+		}
+	}
+}
+
+func TestBuildImageToOCILayoutWithAppleContainer(t *testing.T) {
+	oldCommand := imageBuilderCommandContext
+	t.Cleanup(func() { imageBuilderCommandContext = oldCommand })
+	logFile := filepath.Join(t.TempDir(), "commands.log")
+	imageBuilderCommandContext = fakeImageBuilderCommandContext(logFile)
+
+	cwd := t.TempDir()
+	if err := os.WriteFile(filepath.Join(cwd, "Dockerfile"), []byte("FROM scratch\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dest := filepath.Join(t.TempDir(), "wendy-oci-123", "image.tar")
+	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Route through the apple-container branch of the fast OCI-layout build.
+	err := buildImageToOCILayout(context.Background(), cwd, "Dockerfile", "linux/arm64",
+		map[string]string{"A": "1"}, imageBuilderAppleContainer, dest, io.Discard, io.Discard)
+	if err != nil {
+		t.Fatalf("buildImageToOCILayout(apple-container): %v", err)
+	}
+
+	data, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	log := string(data)
+	// Builds into the image store under a unique tag, exports via image save,
+	// then removes the temporary tag.
+	for _, want := range []string{
+		"container\x00build\x00--progress\x00plain\x00--platform\x00linux/arm64\x00-t\x00wendy-oci-build:wendy-oci-123",
+		"container\x00image\x00save\x00wendy-oci-build:wendy-oci-123\x00--platform\x00linux/arm64\x00-o\x00" + dest,
+		"container\x00image\x00rm\x00wendy-oci-build:wendy-oci-123",
+	} {
+		if !strings.Contains(log, want) {
+			t.Fatalf("command log missing %q in:\n%s", want, log)
+		}
+	}
+}
+
+func TestRedactBuildArgsForLog(t *testing.T) {
+	in := []string{
+		"build", "--platform", "linux/arm64", "-t", "img:latest",
+		"--build-arg", "API_TOKEN=s3cr3t",
+		"--build-arg", "WENDY_DEBUG=false",
+		".",
+	}
+	got := strings.Join(redactBuildArgsForLog(in), " ")
+	if strings.Contains(got, "s3cr3t") {
+		t.Fatalf("redacted command still contains secret value: %s", got)
+	}
+	for _, want := range []string{"API_TOKEN=<redacted>", "WENDY_DEBUG=<redacted>", "-t img:latest"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("redacted command missing %q: %s", want, got)
+		}
+	}
+	// The input slice must not be mutated (it is used to run the real command).
+	if in[6] != "API_TOKEN=s3cr3t" {
+		t.Fatalf("redactBuildArgsForLog mutated its input: %q", in[6])
+	}
+}
+
+func TestAppleContainerPushSchemeRequiresLoopbackRegistry(t *testing.T) {
+	for _, image := range []string{
+		"127.0.0.1:5000/test-app:latest",
+		"127.42.0.1:5000/test-app:latest",
+		"localhost:5000/test-app:latest",
+		"[::1]:5000/test-app:latest",
+		"[::ffff:127.0.0.1]:5000/test-app:latest",
+		"[::ffff:7f00:1]:5000/test-app:latest",
+	} {
+		scheme, err := appleContainerPushScheme(image)
+		if err != nil {
+			t.Fatalf("appleContainerPushScheme(%q): %v", image, err)
+		}
+		if scheme != "http" {
+			t.Fatalf("appleContainerPushScheme(%q) = %q, want http", image, scheme)
+		}
+	}
+
+	for _, image := range []string{
+		"192.168.1.20:5000/test-app:latest",
+		"[::ffff:192.168.1.20]:5000/test-app:latest",
+		"0.0.0.0:5000/test-app:latest",
+		"[::]:5000/test-app:latest",
+		"my-wendy.local:5000/test-app:latest",
+		"host.docker.internal:5000/test-app:latest",
+	} {
+		if _, err := appleContainerPushScheme(image); err == nil {
+			t.Fatalf("appleContainerPushScheme(%q) = nil, want error", image)
+		}
+	}
+}
+
+func TestLogAppleContainerFallbackOmitsRawError(t *testing.T) {
+	var buf bytes.Buffer
+	logAppleContainerFallback(&buf, errors.New("secret path /tmp/wendy/project"))
+	got := buf.String()
+	if !strings.Contains(got, "[WARN] Apple Container unavailable or failed; falling back to Docker") {
+		t.Fatalf("fallback log = %q, want warning", got)
+	}
+	if strings.Contains(got, "secret") || strings.Contains(got, "/tmp/wendy/project") {
+		t.Fatalf("fallback log leaked raw error details: %q", got)
+	}
+}
+
+func TestBuildDockerProjectWithBuilderDefaultsToAppleContainerOnAppleSilicon(t *testing.T) {
+	oldCommand := imageBuilderCommandContext
+	oldLookPath := imageBuilderLookPath
+	oldGOOS := imageBuilderHostGOOS
+	oldGOARCH := imageBuilderHostGOARCH
+	oldDockerBuild := buildDockerProjectWithDocker
+	t.Cleanup(func() {
+		imageBuilderCommandContext = oldCommand
+		imageBuilderLookPath = oldLookPath
+		imageBuilderHostGOOS = oldGOOS
+		imageBuilderHostGOARCH = oldGOARCH
+		buildDockerProjectWithDocker = oldDockerBuild
+	})
+
+	logFile := filepath.Join(t.TempDir(), "commands.log")
+	imageBuilderCommandContext = fakeImageBuilderCommandContext(logFile)
+	imageBuilderLookPath = func(file string) (string, error) {
+		if file == "container" {
+			return "/usr/local/bin/container", nil
+		}
+		return "", errors.New("not found")
+	}
+	imageBuilderHostGOOS = func() string { return "darwin" }
+	imageBuilderHostGOARCH = func() string { return "arm64" }
+	buildDockerProjectWithDocker = func(dir, imageName, platform, dockerfile string) error {
+		t.Fatal("Docker fallback should not run when Apple Container succeeds")
+		return nil
+	}
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "Containerfile"), []byte("FROM scratch\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := buildDockerProjectWithBuilder(context.Background(), "", dir, "test-app:latest", "linux/arm64", "Containerfile"); err != nil {
+		t.Fatalf("buildDockerProjectWithBuilder: %v", err)
+	}
+
+	resolvedBuildFile, err := appleContainerBuildFilePath(dir, "Containerfile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	buildContext, err := appleContainerBuildContextPath(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "container\x00build\x00--progress\x00plain\x00--platform\x00linux/arm64\x00-t\x00test-app:latest\x00-f\x00" + resolvedBuildFile + "\x00" + buildContext + "\n"
+	if !strings.Contains(string(data), want) {
+		t.Fatalf("command log missing %q in:\n%s", want, string(data))
+	}
+}
+
+func TestBuildDockerProjectWithBuilderFallsBackToDockerWhenAutoAppleContainerSystemStoppedDoesNotPrompt(t *testing.T) {
+	oldCommand := imageBuilderCommandContext
+	oldLookPath := imageBuilderLookPath
+	oldGOOS := imageBuilderHostGOOS
+	oldGOARCH := imageBuilderHostGOARCH
+	oldDockerBuild := buildDockerProjectWithDocker
+	oldPrompt := confirmFn
+	t.Cleanup(func() {
+		imageBuilderCommandContext = oldCommand
+		imageBuilderLookPath = oldLookPath
+		imageBuilderHostGOOS = oldGOOS
+		imageBuilderHostGOARCH = oldGOARCH
+		buildDockerProjectWithDocker = oldDockerBuild
+		confirmFn = oldPrompt
+	})
+
+	logFile := filepath.Join(t.TempDir(), "commands.log")
+	t.Setenv("IMAGE_BUILDER_FAIL_STATUS", "1")
+	imageBuilderCommandContext = fakeImageBuilderCommandContext(logFile)
+	imageBuilderLookPath = func(file string) (string, error) {
+		if file == "container" {
+			return "/usr/local/bin/container", nil
+		}
+		return "", errors.New("not found")
+	}
+	imageBuilderHostGOOS = func() string { return "darwin" }
+	imageBuilderHostGOARCH = func() string { return "arm64" }
+	confirmFn = func(string) bool {
+		t.Fatal("auto Apple Container fallback must not prompt")
+		return false
+	}
+
+	var dockerFallbackCalled bool
+	buildDockerProjectWithDocker = func(dir, imageName, platform, dockerfile string) error {
+		dockerFallbackCalled = true
+		return nil
+	}
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte("FROM scratch\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := buildDockerProjectWithBuilder(context.Background(), "", dir, "test-app:latest", "linux/arm64", "Dockerfile"); err != nil {
+		t.Fatalf("buildDockerProjectWithBuilder: %v", err)
+	}
+	if !dockerFallbackCalled {
+		t.Fatal("Docker fallback was not called")
+	}
+}
+
+func TestBuildDockerProjectWithBuilderFallsBackToDockerWhenAutoAppleContainerFails(t *testing.T) {
+	oldCommand := imageBuilderCommandContext
+	oldLookPath := imageBuilderLookPath
+	oldGOOS := imageBuilderHostGOOS
+	oldGOARCH := imageBuilderHostGOARCH
+	oldDockerBuild := buildDockerProjectWithDocker
+	t.Cleanup(func() {
+		imageBuilderCommandContext = oldCommand
+		imageBuilderLookPath = oldLookPath
+		imageBuilderHostGOOS = oldGOOS
+		imageBuilderHostGOARCH = oldGOARCH
+		buildDockerProjectWithDocker = oldDockerBuild
+	})
+
+	logFile := filepath.Join(t.TempDir(), "commands.log")
+	t.Setenv("IMAGE_BUILDER_FAIL_CONTAINER_BUILD", "1")
+	imageBuilderCommandContext = fakeImageBuilderCommandContext(logFile)
+	imageBuilderLookPath = func(file string) (string, error) {
+		if file == "container" {
+			return "/usr/local/bin/container", nil
+		}
+		return "", errors.New("not found")
+	}
+	imageBuilderHostGOOS = func() string { return "darwin" }
+	imageBuilderHostGOARCH = func() string { return "arm64" }
+
+	var dockerFallbackCalled bool
+	buildDockerProjectWithDocker = func(dir, imageName, platform, dockerfile string) error {
+		dockerFallbackCalled = true
+		if imageName != "test-app:latest" || platform != "linux/arm64" || dockerfile != "Dockerfile" {
+			t.Fatalf("fallback args = (%q, %q, %q), want image/platform/Dockerfile", imageName, platform, dockerfile)
+		}
+		return nil
+	}
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte("FROM scratch\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := buildDockerProjectWithBuilder(context.Background(), "", dir, "test-app:latest", "linux/arm64", "Dockerfile"); err != nil {
+		t.Fatalf("buildDockerProjectWithBuilder: %v", err)
+	}
+	if !dockerFallbackCalled {
+		t.Fatal("Docker fallback was not called")
+	}
+}
+
+// When Apple Container's CLI is installed but its system is not running, the
+// no-builder auto path falls back to Docker without prompting or starting Apple
+// Container. Use --builder apple-container to require Apple Container.
+func TestBuildDockerProjectWithBuilderFallsBackWhenAutoAppleContainerStoppedOnAppleSilicon(t *testing.T) {
+	logFile := setupAppleContainerEnsureSeams(t)
+	isInteractiveTerminalFn = func() bool { return false }
+	confirmFn = func(string) bool { t.Fatal("must not prompt in auto path"); return false }
+	// System stays down because the auto path must not run "container system start".
+	t.Setenv("IMAGE_BUILDER_STATUS_READY_FILE", filepath.Join(t.TempDir(), "ready"))
+
+	oldDockerBuild := buildDockerProjectWithDocker
+	t.Cleanup(func() { buildDockerProjectWithDocker = oldDockerBuild })
+	var dockerFallbackCalled bool
+	buildDockerProjectWithDocker = func(dir, imageName, platform, dockerfile string) error {
+		dockerFallbackCalled = true
+		return nil
+	}
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "Containerfile"), []byte("FROM scratch\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := buildDockerProjectWithBuilder(context.Background(), "", dir, "test-app:latest", "linux/arm64", "Containerfile"); err != nil {
+		t.Fatalf("buildDockerProjectWithBuilder: %v", err)
+	}
+	if !dockerFallbackCalled {
+		t.Fatal("Docker fallback was not called")
+	}
+
+	data, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "container\x00system\x00start") {
+		t.Fatalf("did not expect Apple Container system to be started:\n%s", data)
+	}
+	if strings.Contains(string(data), "container\x00build\x00") {
+		t.Fatalf("did not expect Apple Container build to run:\n%s", data)
+	}
+}
+
+func fakeImageBuilderCommandContext(logFile string) func(context.Context, string, ...string) *exec.Cmd {
+	return func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		cmdArgs := []string{"-test.run=TestImageBuilderHelperProcess", "--", name}
+		cmdArgs = append(cmdArgs, args...)
+		cmd := exec.CommandContext(ctx, os.Args[0], cmdArgs...)
+		cmd.Env = append(os.Environ(),
+			"GO_WANT_IMAGE_BUILDER_HELPER_PROCESS=1",
+			"IMAGE_BUILDER_HELPER_LOG="+logFile,
+		)
+		return cmd
+	}
+}
+
+func TestImageBuilderHelperProcess(t *testing.T) {
+	if os.Getenv("GO_WANT_IMAGE_BUILDER_HELPER_PROCESS") != "1" {
+		return
+	}
+	args := os.Args
+	for len(args) > 0 && args[0] != "--" {
+		args = args[1:]
+	}
+	if len(args) > 0 {
+		args = args[1:]
+	}
+	if logFile := os.Getenv("IMAGE_BUILDER_HELPER_LOG"); logFile != "" {
+		f, err := os.OpenFile(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+		if err == nil {
+			_, _ = f.WriteString(strings.Join(args, "\x00") + "\n")
+			_ = f.Close()
+		}
+	}
+	if len(args) >= 2 && args[0] == "container" && args[1] == "--version" {
+		_, _ = os.Stdout.WriteString("container 1.0.0\n")
+		os.Exit(0)
+	}
+	if len(args) >= 4 && args[0] == "container" && args[1] == "system" && args[2] == "start" {
+		// When a readiness-file is configured, "start" makes the system ready by
+		// creating it (unless told to fail). This models the real start/poll loop.
+		if os.Getenv("IMAGE_BUILDER_FAIL_START") == "1" {
+			_, _ = os.Stderr.WriteString("failed to decode apiServerBuild in health check\n")
+			os.Exit(1)
+		}
+		if rf := os.Getenv("IMAGE_BUILDER_STATUS_READY_FILE"); rf != "" {
+			_ = os.WriteFile(rf, []byte("ready"), 0o644)
+		}
+		os.Exit(0)
+	}
+	if len(args) >= 3 && args[0] == "container" && args[1] == "system" && args[2] == "status" {
+		// A readiness-file gate models a system that is down until "start" runs.
+		if rf := os.Getenv("IMAGE_BUILDER_STATUS_READY_FILE"); rf != "" {
+			if _, err := os.Stat(rf); err != nil {
+				_, _ = os.Stderr.WriteString("apiserver is not running\n")
+				os.Exit(1)
+			}
+			os.Exit(0)
+		}
+		if os.Getenv("IMAGE_BUILDER_FAIL_STATUS") == "1" {
+			_, _ = os.Stderr.WriteString("apiserver is not running\n")
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+	if len(args) >= 2 && args[0] == "container" && args[1] == "build" {
+		if os.Getenv("IMAGE_BUILDER_FAIL_CONTAINER_BUILD") == "1" {
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+	if len(args) >= 3 && args[0] == "container" && args[1] == "image" && args[2] == "push" {
+		os.Exit(0)
+	}
+	if len(args) >= 5 && args[0] == "container" && args[1] == "image" && args[2] == "save" {
+		// Emit a placeholder file at the -o dest so the host-side file exists.
+		for i := 3; i < len(args)-1; i++ {
+			if args[i] == "-o" {
+				_ = os.WriteFile(args[i+1], []byte("oci-tar"), 0o644)
+			}
+		}
+		os.Exit(0)
+	}
+	if len(args) >= 4 && args[0] == "container" && args[1] == "image" && args[2] == "rm" {
+		os.Exit(0)
+	}
+	os.Exit(1)
+}
+
+// setupAppleContainerEnsureSeams installs the fakes ensureAppleContainerSystem
+// depends on (Apple silicon host, container CLI on PATH, fast timeouts) and
+// returns the path to the recorded command log.
+func setupAppleContainerEnsureSeams(t *testing.T) string {
+	t.Helper()
+	oldCommand := imageBuilderCommandContext
+	oldLookPath := imageBuilderLookPath
+	oldGOOS := imageBuilderHostGOOS
+	oldGOARCH := imageBuilderHostGOARCH
+	oldInteractive := isInteractiveTerminalFn
+	oldPrompt := confirmFn
+	oldTimeout := appleContainerStartTimeout
+	oldPoll := appleContainerStatusPollInterval
+	t.Cleanup(func() {
+		imageBuilderCommandContext = oldCommand
+		imageBuilderLookPath = oldLookPath
+		imageBuilderHostGOOS = oldGOOS
+		imageBuilderHostGOARCH = oldGOARCH
+		isInteractiveTerminalFn = oldInteractive
+		confirmFn = oldPrompt
+		appleContainerStartTimeout = oldTimeout
+		appleContainerStatusPollInterval = oldPoll
+	})
+
+	logFile := filepath.Join(t.TempDir(), "commands.log")
+	imageBuilderCommandContext = fakeImageBuilderCommandContext(logFile)
+	imageBuilderLookPath = func(file string) (string, error) {
+		if file == "container" {
+			return "/usr/local/bin/container", nil
+		}
+		return "", errors.New("not found")
+	}
+	imageBuilderHostGOOS = func() string { return "darwin" }
+	imageBuilderHostGOARCH = func() string { return "arm64" }
+	appleContainerStartTimeout = 300 * time.Millisecond
+	appleContainerStatusPollInterval = 20 * time.Millisecond
+	return logFile
+}
+
+func TestEnsureAppleContainerSystem_AlreadyRunning(t *testing.T) {
+	logFile := setupAppleContainerEnsureSeams(t)
+	isInteractiveTerminalFn = func() bool { return false }
+
+	if err := ensureAppleContainerSystem(context.Background(), false); err != nil {
+		t.Fatalf("ensureAppleContainerSystem: %v", err)
+	}
+
+	data, _ := os.ReadFile(logFile)
+	if strings.Contains(string(data), "system\x00start") {
+		t.Fatalf("did not expect 'system start' when already running:\n%s", data)
+	}
+}
+
+func TestEnsureAppleContainerSystem_AutoStartsWhenAssumeYes(t *testing.T) {
+	logFile := setupAppleContainerEnsureSeams(t)
+	isInteractiveTerminalFn = func() bool { return false }
+	confirmFn = func(string) bool { t.Fatal("must not prompt when assumeYes"); return false }
+	// System is down until "container system start" creates the readiness file.
+	t.Setenv("IMAGE_BUILDER_STATUS_READY_FILE", filepath.Join(t.TempDir(), "ready"))
+
+	if err := ensureAppleContainerSystem(context.Background(), true); err != nil {
+		t.Fatalf("ensureAppleContainerSystem: %v", err)
+	}
+
+	data, _ := os.ReadFile(logFile)
+	if !strings.Contains(string(data), "container\x00system\x00start\x00--timeout\x0060") {
+		t.Fatalf("expected 'container system start --timeout 60' to be invoked:\n%s", data)
+	}
+}
+
+func TestEnsureAppleContainerSystem_InteractiveDeclined(t *testing.T) {
+	logFile := setupAppleContainerEnsureSeams(t)
+	t.Setenv("IMAGE_BUILDER_FAIL_STATUS", "1")
+	isInteractiveTerminalFn = func() bool { return true }
+	confirmFn = func(string) bool { return false }
+
+	err := ensureAppleContainerSystem(context.Background(), false)
+	if err == nil {
+		t.Fatal("expected error when the user declines to start the system")
+	}
+
+	data, _ := os.ReadFile(logFile)
+	if strings.Contains(string(data), "system\x00start") {
+		t.Fatalf("did not expect 'system start' after the user declined:\n%s", data)
+	}
+}
+
+func TestEnsureAppleContainerSystem_StartFailsSurfacesOutput(t *testing.T) {
+	setupAppleContainerEnsureSeams(t)
+	t.Setenv("IMAGE_BUILDER_FAIL_STATUS", "1")
+	t.Setenv("IMAGE_BUILDER_FAIL_START", "1")
+	isInteractiveTerminalFn = func() bool { return false }
+
+	err := ensureAppleContainerSystem(context.Background(), true)
+	if err == nil {
+		t.Fatal("expected error when the system cannot start")
+	}
+	if !strings.Contains(err.Error(), "could not start Apple Container system") {
+		t.Fatalf("error = %v, want 'could not start Apple Container system'", err)
+	}
+	if !strings.Contains(err.Error(), "failed to decode apiServerBuild in health check") {
+		t.Fatalf("error = %v, want the start output summary surfaced", err)
+	}
+}
+
+func TestWatchCommandHasBuilderFlag(t *testing.T) {
+	if f := newWatchCmd().Flags().Lookup("builder"); f == nil {
+		t.Fatal("wendy watch is missing the --builder flag")
+	}
 }
 
 func TestEnsureDockerDaemon_DarwinUsesBundledCLIWhenRuntimeInstalledButDockerMissingFromPath(t *testing.T) {
@@ -257,6 +833,16 @@ func TestDetectProjectType_Dockerfile(t *testing.T) {
 	}
 }
 
+func TestDetectProjectType_Containerfile(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "Containerfile"), []byte("FROM alpine"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := mustDetectProjectType(t, dir); got != "docker" {
+		t.Errorf("detectProjectType = %q; want %q", got, "docker")
+	}
+}
+
 func TestDetectProjectType_PackageSwift(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "Package.swift"), []byte("// swift"), 0o644); err != nil {
@@ -384,6 +970,21 @@ func TestResolveDetectedBuildOption_PrefersDockerfileOverSwift(t *testing.T) {
 	}
 }
 
+func TestResolveDetectedBuildOption_PrefersContainerfileOverPython(t *testing.T) {
+	options := []BuildOption{
+		{Label: "Containerfile", Type: "docker", File: "Containerfile"},
+		{Label: "requirements.txt (Python)", Type: "python", File: "requirements.txt"},
+	}
+
+	got, err := resolveDetectedBuildOption(options, "", "")
+	if err != nil {
+		t.Fatalf("resolveDetectedBuildOption: %v", err)
+	}
+	if got == nil || got.Type != "docker" || got.File != "Containerfile" {
+		t.Fatalf("got %+v, want Containerfile docker option", got)
+	}
+}
+
 func TestResolveDetectedBuildOption_PrefersDockerfileOverPython(t *testing.T) {
 	options := []BuildOption{
 		{Label: "Dockerfile", Type: "docker", File: "Dockerfile"},
@@ -434,6 +1035,7 @@ func TestBuildOptionForType_DockerUsesExactDockerfile(t *testing.T) {
 
 func TestResolveDetectedBuildOption_NonInteractiveMultipleDockerfilesPrefersBase(t *testing.T) {
 	options := []BuildOption{
+		{Label: "Containerfile", Type: "docker", File: "Containerfile"},
 		{Label: "Dockerfile", Type: "docker", File: "Dockerfile"},
 		{Label: "Dockerfile.dev", Type: "docker", File: "Dockerfile.dev"},
 		{Label: "Dockerfile.prod", Type: "docker", File: "Dockerfile.prod"},
@@ -445,6 +1047,21 @@ func TestResolveDetectedBuildOption_NonInteractiveMultipleDockerfilesPrefersBase
 	}
 	if got == nil || got.File != "Dockerfile" {
 		t.Fatalf("got %+v, want base Dockerfile", got)
+	}
+}
+
+func TestResolveDetectedBuildOption_NonInteractiveContainerfileBase(t *testing.T) {
+	options := []BuildOption{
+		{Label: "Containerfile.dev", Type: "docker", File: "Containerfile.dev"},
+		{Label: "Containerfile", Type: "docker", File: "Containerfile"},
+	}
+
+	got, err := resolveDetectedBuildOption(options, "", "")
+	if err != nil {
+		t.Fatalf("resolveDetectedBuildOption: %v", err)
+	}
+	if got == nil || got.File != "Containerfile" {
+		t.Fatalf("got %+v, want base Containerfile", got)
 	}
 }
 
@@ -511,6 +1128,12 @@ func TestFilterBuildOptions_LocalProviderKeepsNativeOnly(t *testing.T) {
 }
 
 func TestEnsureProviderSupportsProjectType_LocalRejectsContainerProjects(t *testing.T) {
+	oldHintSupported := appleContainerLocalProviderHintSupported
+	t.Cleanup(func() {
+		appleContainerLocalProviderHintSupported = oldHintSupported
+	})
+	appleContainerLocalProviderHintSupported = func() bool { return true }
+
 	for _, projectType := range []string{"docker", "compose"} {
 		t.Run(projectType, func(t *testing.T) {
 			err := ensureProviderSupportsProjectType(&providers.LocalProvider{}, projectType, t.TempDir())
@@ -523,7 +1146,29 @@ func TestEnsureProviderSupportsProjectType_LocalRejectsContainerProjects(t *test
 					t.Fatalf("error = %q, want substring %q", msg, want)
 				}
 			}
+			if projectType == "docker" && !strings.Contains(msg, "--device apple-container") {
+				t.Fatalf("docker error = %q, want Apple Container hint on supported hosts", msg)
+			}
+			if projectType == "compose" && strings.Contains(msg, "apple-container") {
+				t.Fatalf("compose error = %q, must not suggest Apple Container", msg)
+			}
 		})
+	}
+}
+
+func TestEnsureProviderSupportsProjectType_LocalOmitsAppleContainerHintWhenUnsupported(t *testing.T) {
+	oldHintSupported := appleContainerLocalProviderHintSupported
+	t.Cleanup(func() {
+		appleContainerLocalProviderHintSupported = oldHintSupported
+	})
+	appleContainerLocalProviderHintSupported = func() bool { return false }
+
+	err := ensureProviderSupportsProjectType(&providers.LocalProvider{}, "docker", t.TempDir())
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if strings.Contains(err.Error(), "apple-container") {
+		t.Fatalf("error = %q, must not suggest Apple Container on unsupported hosts", err)
 	}
 }
 
@@ -958,10 +1603,43 @@ func TestStartRegistryProxy(t *testing.T) {
 	}
 	defer conn.Close()
 
-	conn.Write([]byte("PUSH"))
-	got := <-fakeRegistry
+	if _, err := conn.Write([]byte("PUSH")); err != nil {
+		t.Fatal(err)
+	}
+
+	var got string
+	select {
+	case got = <-fakeRegistry:
+	case <-time.After(2 * time.Second):
+		t.Fatal("proxy did not forward request")
+	}
 	if got != "PUSH" {
 		t.Errorf("proxy forwarded %q, want %q", got, "PUSH")
+	}
+}
+
+// TestRegistryProxyBindsLoopback guards WDY-1168: the registry proxy must bind
+// loopback only so the device registry tunnel is never exposed on other network
+// interfaces during a build. A regression to "0.0.0.0:0" binds the unspecified
+// address, which is not loopback and fails this test.
+func TestRegistryProxyBindsLoopback(t *testing.T) {
+	target, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer target.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	proxy, err := startRegistryProxy(ctx, registryProxyListenAddr, target.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer proxy.Close()
+
+	ip := proxy.listener.Addr().(*net.TCPAddr).IP
+	if !ip.IsLoopback() {
+		t.Fatalf("registry proxy bound to %s, want a loopback address", ip)
 	}
 }
 
@@ -1234,6 +1912,71 @@ func TestStartMTLSRegistryHTTPProxy_WrongCA(t *testing.T) {
 	}
 }
 
+func TestStartMTLSRegistryHTTPProxy_ClientAuthOnlyServerCert(t *testing.T) {
+	// Wendy device registry certs are mutual-auth identity certs that chain to
+	// the Wendy CA but may be issued with only a clientAuth EKU (no serverAuth).
+	// The proxy must accept them via chain validation rather than rejecting on
+	// EKU — otherwise the Apple Container push 502s with "incompatible key usage".
+	ca := generateTestCA(t)
+	serverLeaf := generateTestLeaf(t, ca, x509.ExtKeyUsageClientAuth)
+	clientLeaf := generateTestLeaf(t, ca, x509.ExtKeyUsageClientAuth)
+
+	serverTLSCert, err := tls.X509KeyPair([]byte(serverLeaf.pemStr), []byte(marshalKeyPEM(t, serverLeaf.key)))
+	if err != nil {
+		t.Fatalf("X509KeyPair: %v", err)
+	}
+	addr := startTestTLSServer(t, serverTLSCert, ca)
+
+	proxy, err := startMTLSRegistryHTTPProxy(addr, clientLeaf.pemStr, marshalKeyPEM(t, clientLeaf.key), ca.pemStr)
+	if err != nil {
+		t.Fatalf("startMTLSRegistryHTTPProxy: %v", err)
+	}
+	defer proxy.Close()
+
+	resp, err := http.Get("http://" + net.JoinHostPort("127.0.0.1", strconv.Itoa(proxy.Port())))
+	if err != nil {
+		t.Fatalf("proxy request: %v", err)
+	}
+	defer resp.Body.Close()
+	io.Copy(io.Discard, resp.Body)
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want 200 (clientAuth-only server cert should be accepted via chain validation)", resp.StatusCode)
+	}
+}
+
+func TestStartMTLSRegistryHTTPProxy_RejectsNonAuthCert(t *testing.T) {
+	// A leaf signed by the trusted CA but carrying a non-authentication EKU
+	// (codeSigning) must be rejected: the proxy accepts only serverAuth/clientAuth
+	// identity certs, so it cannot be abused to impersonate the registry.
+	ca := generateTestCA(t)
+	serverLeaf := generateTestLeaf(t, ca, x509.ExtKeyUsageCodeSigning)
+	clientLeaf := generateTestLeaf(t, ca, x509.ExtKeyUsageClientAuth)
+
+	serverTLSCert, err := tls.X509KeyPair([]byte(serverLeaf.pemStr), []byte(marshalKeyPEM(t, serverLeaf.key)))
+	if err != nil {
+		t.Fatalf("X509KeyPair: %v", err)
+	}
+	// Don't require client certs so we isolate the proxy's server-cert check.
+	addr := startTestTLSServer(t, serverTLSCert, nil)
+
+	proxy, err := startMTLSRegistryHTTPProxy(addr, clientLeaf.pemStr, marshalKeyPEM(t, clientLeaf.key), ca.pemStr)
+	if err != nil {
+		t.Fatalf("startMTLSRegistryHTTPProxy: %v", err)
+	}
+	defer proxy.Close()
+
+	resp, err := http.Get("http://" + net.JoinHostPort("127.0.0.1", strconv.Itoa(proxy.Port())))
+	if err != nil {
+		return // TLS rejection surfaced as a connection error — acceptable
+	}
+	defer resp.Body.Close()
+	io.Copy(io.Discard, resp.Body)
+	if resp.StatusCode == http.StatusOK {
+		t.Errorf("expected non-200 for a non-authentication (codeSigning) server cert, got 200")
+	}
+}
+
 func TestStartMTLSRegistryHTTPProxy_NoSAN(t *testing.T) {
 	// Device certs signed by the Wendy CA often lack a SAN for the target
 	// mDNS hostname. Verify the proxy accepts such certs via chain validation
@@ -1341,9 +2084,23 @@ func TestResolveDockerfile_SingleVariant(t *testing.T) {
 	}
 }
 
+func TestResolveDockerfile_Containerfile(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "Containerfile"), []byte("FROM scratch"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := resolveDockerfile(dir, "", false)
+	if err != nil {
+		t.Fatalf("resolveDockerfile: %v", err)
+	}
+	if got != "Containerfile" {
+		t.Fatalf("got %q, want Containerfile", got)
+	}
+}
+
 func TestResolveDockerfile_MultipleNonInteractivePrefersBase(t *testing.T) {
 	dir := t.TempDir()
-	for _, name := range []string{"Dockerfile", "Dockerfile.prod", "Dockerfile.dev"} {
+	for _, name := range []string{"Containerfile", "Dockerfile", "Dockerfile.prod", "Dockerfile.dev"} {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte("FROM scratch"), 0o644); err != nil {
 			t.Fatal(err)
 		}
@@ -1374,16 +2131,53 @@ func TestResolveDockerfile_MultipleNonInteractiveVariantOnlyPrefersFirst(t *test
 }
 
 func TestValidateDockerfileName(t *testing.T) {
-	valid := []string{"Dockerfile", "Dockerfile.prod", "Dockerfile.dev", "Dockerfile-prod", "Dockerfile.my.variant", "./Dockerfile.prod"}
+	valid := []string{"Dockerfile", "Dockerfile.prod", "Dockerfile.dev", "Dockerfile-prod", "Dockerfile.my.variant", "./Dockerfile.prod", "Containerfile", "Containerfile.prod", "Containerfile-dev"}
 	for _, name := range valid {
 		if err := validateDockerfileName(name); err != nil {
 			t.Errorf("validateDockerfileName(%q) unexpected error: %v", name, err)
 		}
 	}
-	invalid := []string{"-flag", "dockerfile", "DOCKERFILE", "not-a-dockerfile", "Dockerfile/evil", "subdir/Dockerfile.prod", "../Dockerfile", ".hidden", "Dockerfile.dockerignore", "Dockerfile.prod.dockerignore", "Dockerfile.-prod", "Dockerfile..hidden", "Dockerfile-.prod"}
+	invalid := []string{"-flag", "dockerfile", "containerfile", "DOCKERFILE", "CONTAINERFILE", "not-a-dockerfile", "Dockerfile/evil", "subdir/Dockerfile.prod", "../Dockerfile", ".hidden", "Dockerfile.dockerignore", "Dockerfile.prod.dockerignore", "Containerfile.dockerignore", "Dockerfile.-prod", "Dockerfile..hidden", "Dockerfile-.prod", "Containerfile.-prod"}
 	for _, name := range invalid {
 		if err := validateDockerfileName(name); err == nil {
 			t.Errorf("validateDockerfileName(%q) expected error, got nil", name)
+		}
+	}
+}
+
+func TestValidateBuildArgPair(t *testing.T) {
+	valid := map[string]string{
+		"WENDY_PLATFORM":    "nvidia-jetson",
+		"_PRIVATE_ARG":      "value-without-equals",
+		"WENDY_DEVICE_TYPE": "jetson-agx-orin",
+	}
+	for k, v := range valid {
+		if err := validateBuildArgPair(k, v); err != nil {
+			t.Fatalf("validateBuildArgPair(%q, %q): %v", k, v, err)
+		}
+	}
+
+	invalid := map[string]string{
+		"":          "value",
+		"BAD-NAME":  "value",
+		"1BAD":      "value",
+		"BAD=NAME":  "value",
+		"BAD\nKEY":  "value",
+		"GOOD":      "bad\nvalue",
+		"ALSO_GOOD": "bad\x00value",
+		"LEADING":   "--flag-like",
+		"SHELL":     "$(echo bad)",
+		"DIGEST":    "image@sha256:abc",
+		"PLUS":      "v1+metadata",
+		"EQUALS":    "value=with=equals",
+		"SLASH":     "linux/arm64",
+		"COLON":     "8080:80",
+		"COMMA":     "left,right",
+		"COMMAFLAG": ",--cache",
+	}
+	for k, v := range invalid {
+		if err := validateBuildArgPair(k, v); err == nil {
+			t.Fatalf("validateBuildArgPair(%q, %q) = nil, want error", k, v)
 		}
 	}
 }
@@ -1414,6 +2208,41 @@ func TestConfinedDockerfilePath_Valid(t *testing.T) {
 	}
 	if got == "" {
 		t.Fatal("expected non-empty resolved path")
+	}
+}
+
+func TestAppleContainerBuildFilePathUsesTmpAliasWhenAvailable(t *testing.T) {
+	oldGOOS := imageBuilderHostGOOS
+	t.Cleanup(func() {
+		imageBuilderHostGOOS = oldGOOS
+	})
+	imageBuilderHostGOOS = func() string { return "darwin" }
+
+	dir, err := os.MkdirTemp("/tmp", "wendy-apple-buildfile.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = os.RemoveAll(dir)
+	})
+	if err := os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte("FROM scratch\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	privateDir := "/private" + dir
+	dirCanonical, dirErr := filepath.EvalSymlinks(dir)
+	privateCanonical, privateErr := filepath.EvalSymlinks(privateDir)
+	if dirErr != nil || privateErr != nil || dirCanonical != privateCanonical {
+		t.Skip("/private/tmp is not an alias for /tmp on this host")
+	}
+
+	got, err := appleContainerBuildFilePath(privateDir, "Dockerfile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(dir, "Dockerfile")
+	if got != want {
+		t.Fatalf("build file path = %q, want %q", got, want)
 	}
 }
 

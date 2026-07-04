@@ -1,0 +1,9 @@
+{
+  "pages": [
+    "login",
+    "logout",
+    "status",
+    "discover",
+    "tunnel"
+  ]
+}

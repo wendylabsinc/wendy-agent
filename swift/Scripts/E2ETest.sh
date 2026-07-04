@@ -66,6 +66,7 @@ AGENT_INFO_JSON=""
 ISOLATION="${WENDY_E2E_ISOLATION:-per-test}"
 VERBOSE="${WENDY_E2E_VERBOSE:-false}"
 PARALLEL="${WENDY_E2E_PARALLEL:-false}"
+TEST_TIMEOUT_SECONDS="${WENDY_E2E_TEST_TIMEOUT_SECONDS:-5400}"
 TEST_FILTERS=()
 
 normalize_bool() {
@@ -98,6 +99,39 @@ normalize_isolation() {
     *)
       echo "ERROR: WENDY_E2E_ISOLATION must be none, per-run, or per-test." >&2
       exit 64
+      ;;
+  esac
+}
+
+normalize_timeout_seconds() {
+  local name="$1"
+  local value="$2"
+  if [[ ! "$value" =~ ^(0|[1-9][0-9]*)$ ]]; then
+    echo "ERROR: $name must be a non-negative integer number of seconds." >&2
+    exit 64
+  fi
+  if (( 10#$value > 86400 )); then
+    echo "ERROR: $name must be 86400 seconds or less." >&2
+    exit 64
+  fi
+  printf "%s" "$((10#$value))"
+}
+
+normalized_agent_os() {
+  local value="${AGENT_OS:-}"
+  if [[ -z "$value" ]]; then
+    value="$(uname -s)"
+  fi
+  printf '%s' "$value" | tr '[:upper:]' '[:lower:]'
+}
+
+managed_agent_is_macos() {
+  case "$(normalized_agent_os)" in
+    macos|darwin)
+      return 0
+      ;;
+    *)
+      return 1
       ;;
   esac
 }
@@ -162,6 +196,9 @@ Options:
   --parallel            Allow SwiftPM to run tests in parallel. Only valid when
                         both CLI and agent machines use local transport.
   --no-parallel         Do not run SwiftPM tests in parallel.
+  --test-timeout SECONDS
+                        Kill the SwiftPM test process after this many seconds;
+                        defaults to WENDY_E2E_TEST_TIMEOUT_SECONDS or 5400.
   --verbose             Print each E2E machine command before it runs.
   --no-verbose          Do not print each E2E machine command before it runs.
   --help                Show this help message.
@@ -189,6 +226,7 @@ Environment:
   WENDY_E2E_TRANSPORT                 Optional transport label for report metadata.
   WENDY_E2E_ISOLATION                 none, per-run, or per-test; defaults to per-test.
   WENDY_E2E_PARALLEL                  Boolean; enables SwiftPM parallel tests.
+  WENDY_E2E_TEST_TIMEOUT_SECONDS      SwiftPM test process timeout in seconds; 0 disables.
   WENDY_E2E_VERBOSE                   Boolean; prints machine commands.
 
 Boolean values accept true/false, 1/0, yes/no, on/off, enabled/disabled.
@@ -285,6 +323,14 @@ while [[ $# -gt 0 ]]; do
       PARALLEL="false"
       shift
       ;;
+    --test-timeout)
+      if [[ $# -lt 2 || -z "$2" ]]; then
+        echo "ERROR: --test-timeout requires a numeric argument." >&2
+        exit 64
+      fi
+      TEST_TIMEOUT_SECONDS="$2"
+      shift 2
+      ;;
     --verbose)
       VERBOSE="true"
       shift
@@ -341,6 +387,7 @@ fi
 
 ISOLATION="$(normalize_isolation "$ISOLATION")"
 PARALLEL="$(normalize_bool "WENDY_E2E_PARALLEL" "$PARALLEL")"
+TEST_TIMEOUT_SECONDS="$(normalize_timeout_seconds "WENDY_E2E_TEST_TIMEOUT_SECONDS" "$TEST_TIMEOUT_SECONDS")"
 VERBOSE="$(normalize_bool "WENDY_E2E_VERBOSE" "$VERBOSE")"
 MANAGED_AGENT="$(normalize_bool "WENDY_E2E_MANAGED_AGENT" "$MANAGED_AGENT")"
 
@@ -363,6 +410,10 @@ fi
 if [[ "$MANAGED_AGENT" == "true" && -n "$AGENT_ADDRESS" ]]; then
   echo "ERROR: --managed-agent cannot be combined with --agent-address." >&2
   echo "Use --device-address for the local device address instead." >&2
+  exit 64
+fi
+if [[ "$MANAGED_AGENT" == "true" ]] && managed_agent_is_macos && [[ "$(uname -s)" != "Darwin" ]]; then
+  echo "ERROR: macOS managed agents can only run on macOS runners." >&2
   exit 64
 fi
 
@@ -463,7 +514,7 @@ rm -rf "$RUN_DIR"
 if [[ -z "$AGENT_ADDRESS" ]]; then
   rm -rf "$AGENT_RUN_DIR"
 fi
-mkdir -p "$RUN_DIR"
+(umask 077; mkdir -p "$RUN_DIR")
 
 if [[ "$MANAGED_AGENT" == "true" && -z "$DEVICE_ADDRESS" ]]; then
   DEVICE_ADDRESS="127.0.0.1:${WENDY_AGENT_PORT:-50051}"
@@ -593,6 +644,13 @@ wendy_path="\$cli_bin_dir/wendy"
 
 mkdir -p "\$cli_bin_dir"
 cd "\$cli_repo_dir/go"
+# The Linux CLI links libusb via cgo (Thor flashing); fail with a clear message
+# instead of an opaque cgo error when the CLI machine lacks the dev headers.
+if [[ "\$(uname -s)" == "Linux" ]] && ! pkg-config --exists libusb-1.0 2>/dev/null; then
+  echo "ERROR: building the wendy CLI on Linux needs libusb dev headers" >&2
+  echo "  (apt install libusb-1.0-0-dev / dnf install libusb1-devel)" >&2
+  exit 1
+fi
 go build -o "\$wendy_path" ./cmd/wendy
 
 resolved="\$(PATH="\$cli_bin_dir:\$PATH" command -v wendy || true)"
@@ -612,23 +670,119 @@ EOF
   echo "    Version: $version"
 }
 
+managed_agent_path() {
+  if managed_agent_is_macos; then
+    printf '%s/swift/Build/WendyAgentMac.app' "$REPO_DIR"
+  else
+    printf '%s/wendy-agent' "$AGENT_BIN_DIR"
+  fi
+}
+
+managed_agent_executable_path() {
+  if managed_agent_is_macos; then
+    printf '%s/Contents/MacOS/WendyAgentMac' "$(managed_agent_path)"
+  else
+    managed_agent_path
+  fi
+}
+
+has_mac_development_signing_identity() {
+  local security_command=(security find-identity -v -p codesigning)
+  if [[ -n "${KEYCHAIN_PATH:-}" ]]; then
+    case "$KEYCHAIN_PATH" in
+      *..*|*$'\n'*|*$'\r'*)
+        echo "ERROR: KEYCHAIN_PATH contains invalid path components." >&2
+        return 1
+        ;;
+    esac
+    if [[ "$KEYCHAIN_PATH" != *.keychain && "$KEYCHAIN_PATH" != *.keychain-db ]]; then
+      echo "ERROR: KEYCHAIN_PATH must end in .keychain or .keychain-db." >&2
+      return 1
+    fi
+    security_command+=("$KEYCHAIN_PATH")
+  fi
+
+  if [[ -n "${SIGNING_IDENTITY:-}" ]]; then
+    # This value is only used with grep -F -- below; keep that fixed-string usage.
+    local identity_pattern='^[A-Za-z0-9][A-Za-z0-9 .,:_@()+&-]*$'
+    if ! [[ "$SIGNING_IDENTITY" =~ $identity_pattern ]]; then
+      echo "ERROR: SIGNING_IDENTITY contains invalid characters." >&2
+      return 1
+    fi
+    "${security_command[@]}" 2>/dev/null | grep -qF -- "$SIGNING_IDENTITY"
+  else
+    "${security_command[@]}" 2>/dev/null | grep -qF -- 'Apple Development'
+  fi
+}
+
+build_unsigned_managed_mac_app() {
+  local agent_path
+  agent_path="$(managed_agent_path)"
+
+  echo "==> No Apple Development signing identity; building unsigned WendyAgentMac Debug app"
+  if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
+    echo "::warning::No Apple Development signing identity available; Swift macOS E2Es will use an unsigned Debug WendyAgentMac.app."
+  fi
+  xcodebuild build \
+    -workspace WendyAgent.xcworkspace \
+    -scheme WendyAgentMac \
+    -configuration Debug \
+    -destination 'platform=macOS' \
+    -derivedDataPath "$REPO_DIR/swift/Build/Xcode" \
+    WENDY_AGENT_VERSION="${WENDY_AGENT_VERSION:-0000.00.00-000000-dev}" \
+    CODE_SIGNING_ALLOWED=NO \
+    CODE_SIGNING_REQUIRED=NO \
+    -skipMacroValidation
+  rm -rf "$agent_path"
+  ditto \
+    "$REPO_DIR/swift/Build/Xcode/Build/Products/Debug/WendyAgentMac.app" \
+    "$agent_path"
+  [[ -x "$agent_path/Contents/MacOS/WendyAgentMac" ]] || {
+    echo "ERROR: built WendyAgentMac executable is missing." >&2
+    exit 1
+  }
+  mkdir -p "$RUN_DIR/managed-agent"
+  shasum -a 256 "$agent_path/Contents/MacOS/WendyAgentMac" \
+    | tee "$RUN_DIR/managed-agent/WendyAgentMac.sha256"
+}
+
+managed_mac_app_is_running() {
+  [[ "$(osascript -e 'application id "sh.wendy.WendyAgentMac" is running' 2>/dev/null || true)" == "true" ]]
+}
+
 build_managed_agent() {
-  local agent_path="$AGENT_BIN_DIR/wendy-agent"
+  local agent_path
+  agent_path="$(managed_agent_path)"
 
   echo "==> Building managed wendy-agent"
+  echo "    Agent OS: $(normalized_agent_os)"
   echo "    Output: $agent_path"
 
-  mkdir -p "$AGENT_BIN_DIR"
-  (
-    cd "$REPO_DIR/go"
-    go build -o "$agent_path" ./cmd/wendy-agent
-  )
-
-  "$agent_path" --version
+  if managed_agent_is_macos; then
+    (
+      cd "$REPO_DIR/swift"
+      ./Scripts/Quit.sh
+      if has_mac_development_signing_identity; then
+        OUTPUT_DIR="$REPO_DIR/swift/Build" bash ./Scripts/Build.sh --dev
+      else
+        build_unsigned_managed_mac_app
+      fi
+    )
+    /usr/libexec/PlistBuddy -c 'Print :WLWendyAgentVersion' \
+      "$agent_path/Contents/Info.plist" 2>/dev/null || true
+  else
+    mkdir -p "$AGENT_BIN_DIR"
+    (
+      cd "$REPO_DIR/go"
+      go build -o "$agent_path" ./cmd/wendy-agent
+    )
+    "$agent_path" --version
+  fi
 }
 
 start_managed_agent() {
-  local agent_path="$AGENT_BIN_DIR/wendy-agent"
+  local agent_path
+  agent_path="$(managed_agent_executable_path)"
   local managed_dir="$RUN_DIR/managed-agent"
   local config_dir="$managed_dir/config"
   local stdout_path="$managed_dir/stdout.log"
@@ -648,26 +802,55 @@ start_managed_agent() {
 
   echo "==> Starting managed wendy-agent"
   echo "    Address: ${DEVICE_ADDRESS##*@}"
-  echo "    Config:  $config_dir"
-  echo "    Logs:    $stdout_path, $stderr_path"
+  echo "    Logs:    managed-agent/stdout.log, managed-agent/stderr.log"
 
-  mkdir -p "$config_dir/home" "$config_dir/xdg-config" "$config_dir/xdg-data"
-  env -i \
-    HOME="$config_dir/home" \
-    LOGNAME="wendy-e2e-agent" \
-    PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
-    TMPDIR="${TMPDIR:-/tmp}" \
-    USER="wendy-e2e-agent" \
-    WENDY_CONFIG_PATH="$config_dir" \
-    XDG_CONFIG_HOME="$config_dir/xdg-config" \
-    XDG_DATA_HOME="$config_dir/xdg-data" \
-    WENDY_AGENT_PORT="$port" \
-    WENDY_OTEL_PORT=0 \
-    WENDY_OTEL_HTTP_PORT=0 \
-    WENDY_REGISTRY_ADDR=127.0.0.1:0 \
-    "$agent_path" >"$stdout_path" 2>"$stderr_path" &
-  MANAGED_AGENT_PID=$!
-  (umask 077; printf '%s\n' "$MANAGED_AGENT_PID" > "$pid_path")
+  (umask 077; mkdir -p "$managed_dir")
+  if managed_agent_is_macos; then
+    "$REPO_DIR/swift/Scripts/Quit.sh" || true
+    (umask 077; mkdir -p "$config_dir/home")
+    (umask 077; : >"$stdout_path"; : >"$stderr_path")
+    env -i \
+      HOME="$config_dir/home" \
+      LOGNAME="wendy-e2e-agent" \
+      PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
+      TMPDIR="${TMPDIR:-/tmp}" \
+      USER="wendy-e2e-agent" \
+      open \
+        -n \
+        -g \
+        --stdout "$stdout_path" \
+        --stderr "$stderr_path" \
+        --env "HOME=$config_dir/home" \
+        --env "LOGNAME=wendy-e2e-agent" \
+        --env "PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
+        --env "TMPDIR=${TMPDIR:-/tmp}" \
+        --env "USER=wendy-e2e-agent" \
+        --env "WENDY_AGENT_HOST=127.0.0.1" \
+        --env "WENDY_AGENT_PORT=$port" \
+        --env "WENDY_OTEL_PORT=0" \
+        "$(managed_agent_path)"
+    sleep 1
+  else
+    mkdir -p "$config_dir/home" "$config_dir/state" "$config_dir/xdg-config" "$config_dir/xdg-data"
+    chmod 700 "$managed_dir" "$config_dir" "$config_dir/home" "$config_dir/state" "$config_dir/xdg-config" "$config_dir/xdg-data"
+    (umask 077; : > "$pid_path")
+    env -i \
+      HOME="$config_dir/home" \
+      LOGNAME="wendy-e2e-agent" \
+      PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
+      TMPDIR="${TMPDIR:-/tmp}" \
+      USER="wendy-e2e-agent" \
+      WENDY_CONFIG_PATH="$config_dir" \
+      XDG_CONFIG_HOME="$config_dir/xdg-config" \
+      XDG_DATA_HOME="$config_dir/xdg-data" \
+      WENDY_AGENT_PORT="$port" \
+      WENDY_OTEL_PORT=0 \
+      WENDY_OTEL_HTTP_PORT=0 \
+      WENDY_REGISTRY_ADDR=127.0.0.1:0 \
+      "$agent_path" >"$stdout_path" 2>"$stderr_path" &
+    MANAGED_AGENT_PID=$!
+    (umask 077; printf '%s\n' "$MANAGED_AGENT_PID" > "$pid_path")
+  fi
 
   if ! valid_device_address "$DEVICE_ADDRESS"; then
     echo "ERROR: invalid --device-address." >&2
@@ -676,8 +859,14 @@ start_managed_agent() {
 
   local attempt max_attempts=30
   for ((attempt = 1; attempt <= max_attempts; attempt++)); do
-    if ! kill -0 "$MANAGED_AGENT_PID" 2>/dev/null; then
-      echo "ERROR: managed wendy-agent exited before becoming ready; see $stderr_path in the E2E artifact." >&2
+    if managed_agent_is_macos; then
+      if ! managed_mac_app_is_running; then
+        echo "ERROR: WendyAgentMac exited before becoming ready; see managed-agent/stderr.log in the E2E artifact." >&2
+        tail -20 "$stderr_path" >&2 || true
+        return 1
+      fi
+    elif ! kill -0 "$MANAGED_AGENT_PID" 2>/dev/null; then
+      echo "ERROR: managed wendy-agent exited before becoming ready; see managed-agent/stderr.log in the E2E artifact." >&2
       return 1
     fi
     if "$CLI_BIN_DIR/wendy" --json --device "$DEVICE_ADDRESS" device info >/dev/null 2>&1; then
@@ -687,11 +876,19 @@ start_managed_agent() {
     sleep 1
   done
 
-  echo "ERROR: managed wendy-agent did not become ready at $DEVICE_ADDRESS; see $stderr_path in the E2E artifact." >&2
+  echo "ERROR: managed wendy-agent did not become ready at $DEVICE_ADDRESS; see managed-agent/stderr.log in the E2E artifact." >&2
   return 1
 }
 
 stop_managed_agent() {
+  if managed_agent_is_macos; then
+    local quit_log="$RUN_DIR/managed-agent/quit.log"
+    if ! "$REPO_DIR/swift/Scripts/Quit.sh" >"$quit_log" 2>&1; then
+      echo "WARN: WendyAgentMac quit script reported an error; see managed-agent/quit.log" >&2
+    fi
+    MANAGED_AGENT_PID=""
+    return
+  fi
   if [[ -z "${MANAGED_AGENT_PID:-}" ]]; then
     return
   fi
@@ -720,7 +917,10 @@ prepare_managed_agent_auth_fixture() {
   local auth_dir="$RUN_DIR/managed-agent/cli-auth"
   mkdir -p "$auth_dir"
   CLI_AUTH_CONFIG_PATH="$auth_dir/config.json"
-  printf '{}\n' > "$CLI_AUTH_CONFIG_PATH"
+  # Managed E2Es run with throwaway HOME directories. Pre-dismiss only the
+  # ambient shell-completion install prompt so PTY-backed command tests do not
+  # block after printing their real command output.
+  printf '{"completionPromptDismissed":true}\n' > "$CLI_AUTH_CONFIG_PATH"
   chmod 600 "$CLI_AUTH_CONFIG_PATH" 2>/dev/null || true
 }
 
@@ -784,6 +984,86 @@ normalize_xunit_output() {
   fi
 }
 
+run_swift_test_with_timeout() {
+  local timeout_seconds="$1"
+  local timeout_path="$2"
+  shift 2
+
+  python3 - "$timeout_seconds" "$timeout_path" "$@" <<'PY'
+import json
+import os
+import signal
+import subprocess
+import sys
+import time
+
+
+def utc_now():
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def github_annotation_escape(value):
+    return value.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+
+
+timeout_seconds = int(sys.argv[1])
+timeout_path = sys.argv[2]
+command = sys.argv[3:]
+started_at = time.time()
+process = subprocess.Popen(command, start_new_session=True)
+try:
+    exit_status = process.wait(timeout=None if timeout_seconds == 0 else timeout_seconds)
+except subprocess.TimeoutExpired:
+    elapsed = time.time() - started_at
+    message = (
+        f"Swift E2E test process exceeded {timeout_seconds} seconds and was "
+        "terminated before the GitHub Actions job timeout."
+    )
+    print(f"::error::{github_annotation_escape(message)}", flush=True)
+    print(f"==> {message}", flush=True)
+    try:
+        # start_new_session=True calls setsid(), so the child PID is also its process group ID.
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    killed_with = "SIGTERM"
+    try:
+        process.wait(timeout=30)
+    except subprocess.TimeoutExpired:
+        print("==> Swift E2E test process did not exit after SIGTERM; sending SIGKILL", flush=True)
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        killed_with = "SIGKILL"
+        try:
+            process.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            print("==> WARNING: Swift E2E test process did not exit after SIGKILL", flush=True)
+
+    os.makedirs(os.path.dirname(timeout_path), exist_ok=True)
+    with open(timeout_path, "w", encoding="utf-8") as handle:
+        json.dump(
+            {
+                "kind": "wendy-e2e-timeout",
+                "phase": "swift test",
+                "timeoutSeconds": timeout_seconds,
+                "elapsedSeconds": round(elapsed, 3),
+                "terminatedAt": utc_now(),
+                "signal": killed_with,
+                "exitStatus": 124,
+                "message": message,
+            },
+            handle,
+            indent=2,
+            sort_keys=True,
+        )
+        handle.write("\n")
+    exit_status = 124
+sys.exit(exit_status)
+PY
+}
+
 write_attempt_info() {
   local status="$1"
   local info_path="$RUN_DIR/attempt.json"
@@ -825,6 +1105,7 @@ write_attempt_info() {
     printf '    "runID": '; json_string_or_null "${GITHUB_RUN_ID:-}"; echo ","
     printf '    "runAttempt": '; json_string_or_null "${GITHUB_RUN_ATTEMPT:-}"; echo ","
     printf '    "job": '; json_string_or_null "${GITHUB_JOB:-}"; echo ","
+    printf '    "actor": '; json_string_or_null "${GITHUB_ACTOR:-}"; echo ","
     printf '    "sha": '; json_string_or_null "$github_sha"; echo
     echo '  },'
     echo '  "target": {'
@@ -856,7 +1137,18 @@ write_attempt_info() {
     printf '    "go": '; json_string_or_null "$go_version"; echo ","
     printf '    "wendy": '; json_string_or_null "${WENDY_CLI_VERSION:-}"; echo ","
     printf '    "wendyPath": '; json_string "$CLI_BIN_DIR/wendy"; echo
-    echo '  }'
+    if [[ -f "$RUN_DIR/timeout.json" ]]; then
+      echo '  },'
+      echo '  "failure": {'
+      printf '    "kind": '; json_string "timeout"; echo ","
+      printf '    "phase": '; json_string "swift test"; echo ","
+      printf '    "timeoutSeconds": %s,\n' "$TEST_TIMEOUT_SECONDS"
+      printf '    "message": '; json_string "Swift E2E test process exceeded ${TEST_TIMEOUT_SECONDS} seconds and was terminated before the GitHub Actions job timeout."; echo ","
+      printf '    "evidence": '; json_string "timeout.json"; echo
+      echo '  }'
+    else
+      echo '  }'
+    fi
     echo "}"
   } > "$info_path"
   ATTEMPT_INFO_WRITTEN="true"
@@ -940,6 +1232,7 @@ echo "    Filters:  ${TEST_FILTERS[*]}"
 echo "    Isolation: $ISOLATION"
 echo "    Verbose:  $VERBOSE"
 echo "    Parallel: $PARALLEL"
+echo "    Timeout:  ${TEST_TIMEOUT_SECONDS}s"
 echo "    HTML:     <deferred to Scripts/E2EReport.sh>"
 echo "    CLI target: ${CLI_USER:+$CLI_USER@}${CLI_ADDRESS:-<local>}:${CLI_REPO_DIR:-<no-repo>}"
 echo "    CLI OS:   ${CLI_OS:-<current>}"
@@ -958,7 +1251,12 @@ echo "    Managed agent: $MANAGED_AGENT"
 set +e
 (
   cd "$PACKAGE_DIR"
-  env "${SWIFT_TEST_ENV[@]}" \
+  # Export is intentional: run_swift_test_with_timeout launches python3, which
+  # inherits this environment before spawning swift test.
+  export "${SWIFT_TEST_ENV[@]}"
+  run_swift_test_with_timeout \
+    "$TEST_TIMEOUT_SECONDS" \
+    "$RUN_DIR/timeout.json" \
     swift "${SWIFT_TEST_ARGS[@]}" \
     --xunit-output "$TEST_RESULTS_OUTPUT_PATH"
 )

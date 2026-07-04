@@ -24,7 +24,57 @@ import (
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
-const maxConcurrentBuilds = 4
+const (
+	maxConcurrentBuilds = 4
+
+	// Builds and pushes are fused in one buildx invocation, so build concurrency
+	// also bounds how many multi-GB images push through the single device-registry
+	// mTLS tunnel at once. Large groups (e.g. the 14-service go2 template, with a
+	// ~10 GB GPU image) collapse that tunnel under full fan-out, so groups at or
+	// above largeGroupThreshold are throttled to largeGroupConcurrency concurrent
+	// builds (WDY-1690). This is the heuristic default; users can override it with
+	// --max-concurrency (WDY-1693).
+	largeGroupThreshold   = 8
+	largeGroupConcurrency = 2
+)
+
+// multiBuildConcurrency returns the auto (heuristic) number of service images to
+// build+push at once for a group of numServices, throttling large groups to
+// protect the shared device registry tunnel (WDY-1690).
+func multiBuildConcurrency(numServices int) int {
+	n := maxConcurrentBuilds
+	if numServices >= largeGroupThreshold {
+		n = largeGroupConcurrency
+	}
+	if n > numServices {
+		n = numServices
+	}
+	if n < 1 {
+		n = 1
+	}
+	return n
+}
+
+// resolveBuildConcurrency returns the effective build+push concurrency for
+// buildCount services. A positive override (--max-concurrency, WDY-1693) takes
+// precedence over the auto heuristic; either way the result is clamped to
+// [1, buildCount].
+func resolveBuildConcurrency(buildCount, override int) int {
+	if buildCount < 1 {
+		return 1
+	}
+	n := multiBuildConcurrency(buildCount)
+	if override > 0 {
+		n = override
+	}
+	if n > buildCount {
+		n = buildCount
+	}
+	if n < 1 {
+		n = 1
+	}
+	return n
+}
 
 func resolveServiceSubset(services map[string]*appconfig.ServiceConfig, only string) (map[string]*appconfig.ServiceConfig, error) {
 	if only == "" {
@@ -68,6 +118,96 @@ func serviceTopoOrder(services map[string]*appconfig.ServiceConfig) ([]string, e
 	return appconfig.ServiceTopoOrder(services)
 }
 
+// buildServiceImage is the per-service build+push step. It is a package var so
+// stress/concurrency tests can substitute a fake builder and exercise the
+// parallel scheduling, skip handling, and failure-map collection without Docker.
+var buildServiceImage = buildAndPushImageForAgent
+
+// serviceFingerprintKey namespaces a deploy fingerprint per service within an
+// app group, so each service's build inputs are tracked independently.
+func serviceFingerprintKey(appID, service string) string {
+	return appID + "/svc/" + service
+}
+
+// deviceContainerNames returns the lowercased set of container identities the
+// device currently knows about (any running state). ListContainers reports one
+// entry per app group whose AppName is the bare app id; per-service identities
+// live in its Services list. We record both the bare app id (single-container
+// apps) and each "<appId>_<service>" name (multi-service apps), matching
+// AppConfig.ContainerName / multiServiceContainerName so callers can look a
+// service up directly. Best-effort: on any RPC error it returns an empty set, so
+// callers simply don't skip anything.
+func deviceContainerNames(ctx context.Context, conn *grpcclient.AgentConnection) map[string]bool {
+	present := map[string]bool{}
+	stream, err := conn.ContainerService.ListContainers(ctx, &agentpb.ListContainersRequest{})
+	if err != nil {
+		return present
+	}
+	for {
+		resp, recvErr := stream.Recv()
+		if recvErr == io.EOF {
+			break
+		}
+		if recvErr != nil {
+			return present
+		}
+		c := resp.GetContainer()
+		if c == nil {
+			continue
+		}
+		app := c.GetAppName()
+		present[strings.ToLower(app)] = true
+		for _, s := range c.GetServices() {
+			if s.GetName() != "" {
+				present[strings.ToLower(app+"_"+s.GetName())] = true
+			}
+		}
+	}
+	return present
+}
+
+// planServicePushSkips decides, per service, whether its build+push can be
+// skipped because the build inputs are unchanged since the last successful push
+// to this device AND the device still has that service's container (so the image
+// is in the device registry). It returns the skip set and the freshly computed
+// per-service input hashes, so the caller can persist fingerprints for the
+// services it actually builds. Best-effort throughout: any error for a service
+// (or WENDY_PUSH_SKIP=0) just means "don't skip it". The single buildkitd content
+// store and the device registry are unaffected; a wrong "present" guess at worst
+// surfaces as a normal create-time pull failure (hardened with a registry digest
+// check in a follow-up, WDY-1692).
+func planServicePushSkips(ctx context.Context, conn *grpcclient.AgentConnection, cwd, appID, deviceKey, platform string, services map[string]*appconfig.ServiceConfig, buildArgs map[string]string) (skip map[string]bool, hashes map[string]string) {
+	skip = map[string]bool{}
+	hashes = map[string]string{}
+	if os.Getenv("WENDY_PUSH_SKIP") == "0" {
+		return skip, hashes
+	}
+
+	present := deviceContainerNames(ctx, conn)
+	for name, svc := range services {
+		contextDir := filepath.Join(cwd, svc.Context)
+		dockerfile, err := resolveDockerfile(contextDir, "", false)
+		if err != nil {
+			continue
+		}
+		hash, err := computeBuildInputHash(contextDir, dockerfile, platform, buildArgs)
+		if err != nil {
+			continue
+		}
+		hashes[name] = hash
+
+		fp, ok := loadDeployFingerprint(serviceFingerprintKey(appID, name), deviceKey)
+		if !ok || fp.InputHash != hash {
+			continue
+		}
+		if !present[strings.ToLower(multiServiceContainerName(appID, name))] {
+			continue
+		}
+		skip[name] = true
+	}
+	return skip, hashes
+}
+
 // runMultiServiceWithAgent orchestrates the full build → push → create →
 // stream pipeline for a multi-service wendy.json on a single agent.
 func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd string, appCfg *appconfig.AppConfig, opts runOptions) error {
@@ -96,11 +236,6 @@ func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 	}
 
 	regPort := registryPort(agentOS)
-	registryAddr, proxyCleanup, err := resolveRegistryForAgent(ctx, conn, regPort)
-	if err != nil {
-		return err
-	}
-	defer proxyCleanup()
 
 	buildArgs := map[string]string{
 		"WENDY_PLATFORM": wendyPlatform(versionResp.GetDeviceType()),
@@ -109,42 +244,80 @@ func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 		cliLogln("Warning: building with WENDY_DEBUG=true — do not deploy to production.")
 		buildArgs["WENDY_DEBUG"] = "true"
 	}
-	if dt := versionResp.GetDeviceType(); dt != "" {
-		buildArgs["WENDY_DEVICE_TYPE"] = dt
+	applyDeviceBuildArgHints(buildArgs, versionResp)
+
+	// Ensure the Apple Container system is up once, before the parallel builds,
+	// so an explicit --builder apple-container prompts/starts a single time
+	// rather than racing across service goroutines.
+	if err := ensureAppleContainerSystemForBuilder(ctx, opts.builder, opts.yes); err != nil {
+		return err
 	}
-	if versionResp.HasGpu != nil {
-		buildArgs["WENDY_HAS_GPU"] = fmt.Sprintf("%t", versionResp.GetHasGpu())
-	}
-	if v := versionResp.GetGpuVendor(); v != "" {
-		buildArgs["WENDY_GPU_VENDOR"] = v
-	}
-	if jv := versionResp.GetJetpackVersion(); jv != "" {
-		buildArgs["WENDY_JETPACK_VERSION"] = jv
-	}
-	if cv := versionResp.GetCudaVersion(); cv != "" {
-		buildArgs["WENDY_CUDA_VERSION"] = cv
+
+	// Decide which services can skip build+push entirely: those whose build
+	// inputs are unchanged since the last successful push to this device and whose
+	// container is still present (so the image is in the device registry). This
+	// avoids re-pushing unchanged images — notably the multi-GB GPU base — and the
+	// HEAD-check storm that re-push triggers (WDY-1692).
+	deviceKey := deviceFingerprintKey(versionResp)
+	skip, hashes := planServicePushSkips(ctx, conn, cwd, appCfg.AppID, deviceKey, platform, services, buildArgs)
+	if n := len(skip); n > 0 {
+		cliLogln("%d of %d services unchanged and already on device; skipping their build/push.", n, len(services))
 	}
 
 	// Build all service images in parallel, then create and start containers.
-	if err := buildServicesParallel(ctx, cwd, appCfg.AppID, services, registryAddr, platform, buildArgs, conn.IsMTLS); err != nil {
-		return err
+	failed, buildErr := buildServicesParallel(ctx, conn, regPort, cwd, appCfg.AppID, services, platform, buildArgs, opts.builder, skip, opts.maxConcurrency)
+	if buildErr != nil {
+		return buildErr
 	}
 
-	// Create containers in dependency order.
-	ordered, err := serviceTopoOrder(services)
+	// Record fingerprints for the services we actually built+pushed, so the next
+	// run can skip them. Skipped services already have a matching fingerprint;
+	// failed services must not be recorded (their image isn't on the device).
+	for name := range services {
+		if skip[name] || failed[name] != nil {
+			continue
+		}
+		if h, ok := hashes[name]; ok {
+			saveDeployFingerprint(serviceFingerprintKey(appCfg.AppID, name), deviceKey, deployFingerprint{InputHash: h, AppVersion: appCfg.Version})
+		}
+	}
+
+	// Default (all-or-nothing): any build/push failure aborts the whole group so
+	// no half-deployed group is left behind. --keep-going deploys what built and
+	// reports the rest (WDY-1691).
+	if len(failed) > 0 && !opts.keepGoing {
+		return joinServiceErrors(failed)
+	}
+
+	// Determine which services can actually be deployed: those that built and
+	// whose dependencies all built too. partialErr is surfaced at the end so the
+	// command still exits non-zero after deploying the healthy subset.
+	deployServices := services
+	var partialErr error
+	if len(failed) > 0 {
+		deployable, dropped := resolveDeployableServices(services, failed)
+		deployServices = deployable
+		cliNotice("Partial deploy: %d deploying, %d failed (%s)%s.",
+			len(deployable), len(failed), strings.Join(sortedServiceErrorKeys(failed), ", "),
+			droppedSummary(dropped))
+		partialErr = joinServiceErrors(failed)
+		if len(deployable) == 0 {
+			cliNotice("No services left to deploy.")
+			return partialErr
+		}
+	}
+
+	// Create (and start) containers in dependency order.
+	ordered, err := serviceTopoOrder(deployServices)
 	if err != nil {
 		return err
 	}
-	for _, name := range ordered {
+	createService := func(name string) error {
 		svc := services[name]
 		deviceImage := fmt.Sprintf("localhost:%d/%s-%s:latest", regPort,
 			strings.ToLower(appCfg.AppID), strings.ToLower(name))
 
-		serviceCfg := &appconfig.AppConfig{
-			AppID:        fmt.Sprintf("%s-%s", appCfg.AppID, name),
-			Platform:     appCfg.Platform,
-			Entitlements: svc.Entitlements,
-		}
+		serviceCfg := multiServiceCreateConfig(appCfg, name, svc)
 		appConfigData, err := json.Marshal(serviceCfg)
 		if err != nil {
 			return fmt.Errorf("marshaling config for service %s: %w", name, err)
@@ -153,7 +326,7 @@ func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 		restartPolicy := resolveRestartPolicy(opts)
 		createReq := &agentpb.CreateContainerRequest{
 			ImageName:     deviceImage,
-			AppName:       serviceCfg.AppID,
+			AppName:       serviceCfg.ContainerName(),
 			AppConfig:     appConfigData,
 			RestartPolicy: restartPolicy,
 		}
@@ -163,28 +336,68 @@ func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 			return fmt.Errorf("creating container for service %s: %w", name, err)
 		}
 		cliLogln("Service %s container created.", name)
-	}
-
-	if opts.deploy {
-		cliLogln("App group %s created (not started, --deploy).", appCfg.AppID)
 		return nil
 	}
 
-	// Start all containers and multiplex log output with per-service prefixes.
-	return startAndStreamServices(ctx, conn, appCfg.AppID, ordered, opts)
+	if opts.deploy {
+		// Create-only: no service ever starts, so shared-namespace groups
+		// cannot join here — the join happens at create time against the
+		// primary's running task. Such groups should be deployed without
+		// --deploy (or started service-by-service in dependency order).
+		for _, name := range ordered {
+			if err := createService(name); err != nil {
+				return err
+			}
+		}
+		cliLogln("App group %s created (not started, --deploy).", appCfg.AppID)
+		return partialErr
+	}
+
+	// Create and start each service in dependency order, multiplexing log
+	// output with per-service prefixes. Interleaving create and start is
+	// load-bearing for shared-ipc/shared-network groups: a secondary's
+	// namespace join is resolved at container create time against the
+	// primary's running task, so the primary must be started before the
+	// next service is created.
+	if err := startAndStreamServices(ctx, conn, appCfg.AppID, ordered, opts, createService); err != nil {
+		return err
+	}
+	// In --keep-going mode, exit non-zero after deploying the healthy subset so
+	// callers/CI still see that some services failed.
+	return partialErr
+}
+
+// droppedSummary formats the services skipped because a dependency failed, for
+// the partial-deploy notice. Returns "" when nothing was dropped.
+func droppedSummary(dropped map[string]string) string {
+	if len(dropped) == 0 {
+		return ""
+	}
+	names := make([]string, 0, len(dropped))
+	for n := range dropped {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return fmt.Sprintf(", %d skipped (failed dependency: %s)", len(names), strings.Join(names, ", "))
 }
 
 // buildServicesParallel builds all service images concurrently (up to
-// maxConcurrentBuilds at a time). Progress is shown via a Bubbletea multi-
-// spinner in interactive terminals and via plain log lines otherwise.
+// maxConcurrentBuilds at a time). Services in skip are already on the device with
+// unchanged inputs, so their build+push is skipped (WDY-1692). Progress is shown
+// via a Bubbletea multi-spinner in interactive terminals and via plain log lines
+// otherwise.
 func buildServicesParallel(
 	ctx context.Context,
+	conn *grpcclient.AgentConnection,
+	regPort int,
 	cwd, appID string,
 	services map[string]*appconfig.ServiceConfig,
-	registryAddr, platform string,
+	platform string,
 	buildArgs map[string]string,
-	useMTLS bool,
-) error {
+	builder string,
+	skip map[string]bool,
+	maxConcurrency int,
+) (map[string]error, error) {
 	names := make([]string, 0, len(services))
 	for n := range services {
 		names = append(names, n)
@@ -199,13 +412,29 @@ func buildServicesParallel(
 	}
 
 	results := make(chan result, len(names))
-	sem := make(chan struct{}, maxConcurrentBuilds)
+
+	// Concurrency (and the tunnel pressure it controls) is driven by the services
+	// actually built — skipped ones push nothing.
+	buildCount := 0
+	for _, n := range names {
+		if !skip[n] {
+			buildCount++
+		}
+	}
+	concurrency := resolveBuildConcurrency(buildCount, maxConcurrency)
+	switch {
+	case maxConcurrency > 0 && concurrency < buildCount:
+		cliLogln("Building up to %d service(s) at a time (--max-concurrency).", concurrency)
+	case maxConcurrency <= 0 && concurrency < maxConcurrentBuilds && concurrency < buildCount:
+		cliLogln("Throttling to %d concurrent builds for %d services to protect the device registry tunnel (WDY-1690); override with --max-concurrency.", concurrency, buildCount)
+	}
+	sem := make(chan struct{}, concurrency)
 
 	var prog *tea.Program
 	if isInteractiveTerminal() {
 		title := fmt.Sprintf("Building %d service(s)...", len(names))
 		m := tui.NewMultiSpinner(title, names)
-		prog = tea.NewProgram(m)
+		prog = tui.NewProgressProgram(m)
 	}
 
 	var wg sync.WaitGroup
@@ -213,6 +442,19 @@ func buildServicesParallel(
 		wg.Add(1)
 		go func(name string, svc *appconfig.ServiceConfig) {
 			defer wg.Done()
+
+			// Unchanged service already on the device: skip build+push entirely.
+			if skip[name] {
+				if prog != nil {
+					prog.Send(tui.MultiSpinnerStartMsg{Name: name})
+					prog.Send(tui.MultiSpinnerDoneMsg{Name: name, Err: nil, Dur: 0})
+				} else {
+					cliLogln("Service %s unchanged; skipping build/push (already on device).", name)
+				}
+				results <- result{name: name}
+				return
+			}
+
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
@@ -224,27 +466,39 @@ func buildServicesParallel(
 
 			start := time.Now()
 			contextDir := filepath.Join(cwd, svc.Context)
-			imageName := fmt.Sprintf("%s/%s-%s:latest",
-				registryAddr, strings.ToLower(appID), strings.ToLower(name))
+			repo := fmt.Sprintf("%s-%s", strings.ToLower(appID), strings.ToLower(name))
+			dockerfile, dockerfileErr := resolveDockerfile(contextDir, "", false)
 
 			var buildOut io.Writer
 			var logBuf bytes.Buffer
+			var tally func() tui.BuildTally = func() tui.BuildTally { return tui.BuildTally{} }
 			if prog != nil {
-				// In interactive mode, buffer all output (setup logs + build output).
-				// On error the buffer is printed after the spinner exits.
-				buildOut = &logBuf
+				// Parse this service's stream into per-row detail updates and
+				// cache/rebuild tallies. Raw output is still buffered for the
+				// on-failure dump.
+				emit, getTally := newServiceProgressEmitter(prog, name)
+				tally = getTally
+				parser := tui.NewBuildParser(emit)
+				buildOut = io.MultiWriter(parser, &logBuf)
 			} else {
 				buildOut = os.Stdout
 			}
-			logOut := buildOut
+			var logOutW io.Writer = &logBuf
 			if prog == nil {
-				logOut = os.Stderr
+				logOutW = os.Stderr
 			}
-			err := buildAndPushImage(ctx, contextDir, registryAddr, imageName, platform, "", buildArgs, buildOut, logOut, useMTLS)
+			err := dockerfileErr
+			if err == nil {
+				// Pass the per-service repo as the build's cache key so each concurrent
+				// build gets its own isolated local buildx cache dir (WDY-1689); sharing
+				// one dir corrupts BuildKit's cache-export ingest store under concurrency.
+				err = buildServiceImage(ctx, conn, regPort, builder, contextDir, repo, platform, dockerfile, buildArgs, repo, buildOut, logOutW)
+			}
 			dur := time.Since(start)
 
 			if prog != nil {
-				prog.Send(tui.MultiSpinnerDoneMsg{Name: name, Err: err, Dur: dur})
+				t := tally()
+				prog.Send(tui.MultiSpinnerDoneMsg{Name: name, Err: err, Dur: dur, Cached: t.Cached, Rebuilt: t.Rebuilt})
 			} else if err != nil {
 				cliLogln("Service %s build failed: %v", name, err)
 			} else {
@@ -266,34 +520,161 @@ func buildServicesParallel(
 
 	if prog != nil {
 		if _, runErr := prog.Run(); runErr != nil {
-			return fmt.Errorf("build progress TUI: %w", runErr)
+			return nil, fmt.Errorf("build progress TUI: %w", runErr)
 		}
 	}
 
-	// Collect errors. For failed services, print their buffered output now that
-	// the spinner has exited and the terminal is clean.
-	var errs []error
+	// Collect per-service failures. For failed services, print their buffered
+	// output now that the spinner has exited and the terminal is clean. The caller
+	// decides whether any failure aborts the group (default) or only its own
+	// service is dropped (--keep-going, WDY-1691).
+	failed := map[string]error{}
 	for r := range results {
 		if r.err != nil {
-			errs = append(errs, fmt.Errorf("service %s: %w", r.name, r.err))
+			failed[r.name] = r.err
 			if r.log != "" {
 				fmt.Fprintf(os.Stderr, "\n[%s] build log:\n%s", r.name, r.log)
 			}
 		}
 	}
-	if len(errs) > 0 {
-		return errors.Join(errs...)
+	return failed, nil
+}
+
+// sortedServiceErrorKeys returns the service names in failed, sorted, for stable
+// error/report output.
+func sortedServiceErrorKeys(failed map[string]error) []string {
+	names := make([]string, 0, len(failed))
+	for n := range failed {
+		names = append(names, n)
 	}
-	return nil
+	sort.Strings(names)
+	return names
+}
+
+// joinServiceErrors builds a single error from a per-service failure map, in
+// stable order.
+func joinServiceErrors(failed map[string]error) error {
+	var errs []error
+	for _, n := range sortedServiceErrorKeys(failed) {
+		errs = append(errs, fmt.Errorf("service %s: %w", n, failed[n]))
+	}
+	return errors.Join(errs...)
+}
+
+// resolveDeployableServices returns the subset of services that can be deployed:
+// those that built successfully and whose (transitive) dependencies all built
+// successfully too. dropped maps each service that is skipped *because of a failed
+// dependency* (not its own failure) to a human-readable reason. Failed services
+// are reported separately via the failed map. A dependency cycle is treated as
+// not deployable (serviceTopoOrder reports the cycle itself).
+func resolveDeployableServices(services map[string]*appconfig.ServiceConfig, failed map[string]error) (deployable map[string]*appconfig.ServiceConfig, dropped map[string]string) {
+	deployable = map[string]*appconfig.ServiceConfig{}
+	dropped = map[string]string{}
+
+	const (
+		unknown  = 0
+		yes      = 1
+		no       = 2
+		visiting = 3
+	)
+	state := map[string]int{}
+
+	var canDeploy func(name string) bool
+	canDeploy = func(name string) bool {
+		switch state[name] {
+		case yes:
+			return true
+		case no, visiting:
+			return false
+		}
+		state[name] = visiting
+		svc, ok := services[name]
+		if !ok || svc == nil || failed[name] != nil {
+			state[name] = no
+			return false
+		}
+		for _, dep := range svc.DependsOn {
+			if !canDeploy(dep) {
+				state[name] = no
+				dropped[name] = fmt.Sprintf("dependency %q was not deployed", dep)
+				return false
+			}
+		}
+		state[name] = yes
+		return true
+	}
+
+	for name := range services {
+		if canDeploy(name) {
+			deployable[name] = services[name]
+		}
+	}
+	return deployable, dropped
 }
 
 var serviceLogStyle = lipgloss.NewStyle().Foreground(tui.ColorInfo)
+
+// newServiceProgressEmitter returns an emit callback for tui.NewBuildParser that
+// forwards the active step as a MultiSpinner detail line and accumulates the
+// cached/rebuilt tally for the service's done row.
+func newServiceProgressEmitter(prog *tea.Program, name string) (func(tui.BuildStepEvent), func() tui.BuildTally) {
+	var t tui.BuildTally
+	emit := func(e tui.BuildStepEvent) {
+		switch e.Status {
+		case tui.BuildStepRunning:
+			prog.Send(tui.MultiSpinnerDetailMsg{Name: name, Detail: e.Display})
+		case tui.BuildStepCached:
+			if e.Kind == tui.BuildVertexStep {
+				t.Cached++
+			}
+		case tui.BuildStepDone:
+			if e.Kind == tui.BuildVertexStep {
+				t.Rebuilt++
+			}
+		}
+	}
+	return emit, func() tui.BuildTally { return t }
+}
+
+// multiServiceCreateConfig builds the per-service AppConfig transmitted to
+// the agent for a standalone multi-service app. The group identity and
+// runtime context (isolation, frameworks, shared entitlements) must travel
+// with every service: the agent keys namespace sharing, ROS 2 env injection,
+// and container naming on these fields (WDY-878, WDY-884).
+func multiServiceCreateConfig(appCfg *appconfig.AppConfig, name string, svc *appconfig.ServiceConfig) *appconfig.AppConfig {
+	cfg := &appconfig.AppConfig{
+		AppID:       appCfg.AppID,
+		ServiceName: name,
+		Version:     appCfg.Version,
+		Platform:    appCfg.Platform,
+		Isolation:   appCfg.Isolation,
+		Frameworks:  appCfg.Frameworks,
+	}
+	cfg.Entitlements = append(append([]appconfig.Entitlement{}, appCfg.Entitlements...), svc.Entitlements...)
+	cfg.Entitlements = deduplicateEntitlements(cfg.Entitlements)
+	if svc.Frameworks != nil {
+		cfg.Frameworks = svc.Frameworks
+	}
+	return cfg
+}
+
+// multiServiceContainerName returns the container name the agent derives for
+// a service: "{appId}_{serviceName}" (WDY-878). Start/stop calls must address
+// the same name the create path produced.
+func multiServiceContainerName(appID, serviceName string) string {
+	return appID + "_" + serviceName
+}
 
 // startAndStreamServices starts all service containers and streams their
 // combined output to stdout/stderr with a "[serviceName] " prefix per line.
 // This is a best-effort multiplexer; proper per-service log routing is handled
 // by WDY-893 (multiplexed AttachContainer).
-func startAndStreamServices(ctx context.Context, conn *grpcclient.AgentConnection, appID string, ordered []string, opts runOptions) error {
+// createService is invoked for each service, in dependency order, immediately
+// before that service is started — after every earlier service is already
+// running. This ordering is required for shared-ipc/shared-network groups:
+// the agent resolves a secondary's namespace join at container create time
+// against the primary's running task.
+func startAndStreamServices(ctx context.Context, conn *grpcclient.AgentConnection, appID string, ordered []string, opts runOptions, createService func(name string) error) error {
 	runCtx, runCancel := context.WithCancel(ctx)
 	defer runCancel()
 
@@ -313,7 +694,7 @@ func startAndStreamServices(ctx context.Context, conn *grpcclient.AgentConnectio
 			go func(name string) {
 				defer stopWg.Done()
 				_, _ = conn.ContainerService.StopContainer(stopCtx, &agentpb.StopContainerRequest{
-					AppName: fmt.Sprintf("%s-%s", appID, name),
+					AppName: multiServiceContainerName(appID, name),
 				})
 			}(name)
 		}
@@ -322,7 +703,10 @@ func startAndStreamServices(ctx context.Context, conn *grpcclient.AgentConnectio
 
 	if opts.detach {
 		for _, name := range ordered {
-			containerName := fmt.Sprintf("%s-%s", appID, name)
+			if err := createService(name); err != nil {
+				return err
+			}
+			containerName := multiServiceContainerName(appID, name)
 			stream, err := conn.ContainerService.StartContainer(runCtx, &agentpb.StartContainerRequest{
 				AppName: containerName,
 			})
@@ -344,21 +728,33 @@ func startAndStreamServices(ctx context.Context, conn *grpcclient.AgentConnectio
 	}
 	lines := make(chan logLine, 256)
 
+	// Create and start sequentially in dependency order; the first Recv
+	// blocks until the agent's Started ack, guaranteeing each service's task
+	// is running before the next service's container is created.
 	var wg sync.WaitGroup
 	for _, name := range ordered {
+		if err := createService(name); err != nil {
+			runCancel()
+			wg.Wait()
+			return err
+		}
+		containerName := multiServiceContainerName(appID, name)
+		stream, err := conn.ContainerService.StartContainer(runCtx, &agentpb.StartContainerRequest{
+			AppName: containerName,
+		})
+		if err != nil {
+			runCancel()
+			wg.Wait()
+			return fmt.Errorf("starting service %s: %w", name, err)
+		}
+		if _, err := stream.Recv(); err != nil && err != io.EOF {
+			runCancel()
+			wg.Wait()
+			return fmt.Errorf("waiting for service %s to start: %w", name, err)
+		}
 		wg.Add(1)
-		go func(name string) {
+		go func(name string, stream agentpb.WendyContainerService_StartContainerClient) {
 			defer wg.Done()
-			containerName := fmt.Sprintf("%s-%s", appID, name)
-			stream, err := conn.ContainerService.StartContainer(runCtx, &agentpb.StartContainerRequest{
-				AppName: containerName,
-			})
-			if err != nil {
-				if runCtx.Err() == nil {
-					cliLogln("Warning: starting service %s: %v", name, err)
-				}
-				return
-			}
 			for {
 				resp, recvErr := stream.Recv()
 				if recvErr == io.EOF {
@@ -385,7 +781,7 @@ func startAndStreamServices(ctx context.Context, conn *grpcclient.AgentConnectio
 					}
 				}
 			}
-		}(name)
+		}(name, stream)
 	}
 
 	go func() {

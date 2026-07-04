@@ -80,13 +80,15 @@ func TestOfferCertRefreshAndRetry(t *testing.T) {
 	setup := func(interactive, accept bool, refreshErr error) (restore func(), refreshCalls, retryCalls *int) {
 		origInteractive := isInteractiveTerminalFn
 		origJSON := jsonOutput
-		origPrompt := promptYesNoFn
+		origPrompt := confirmFn
+		origPromptNo := confirmDefaultNoFn
 		origRefresh := refreshAllCertsFn
 		refreshCalls = new(int)
 		retryCalls = new(int)
 		isInteractiveTerminalFn = func() bool { return interactive }
 		jsonOutput = false
-		promptYesNoFn = func(string) bool { return accept }
+		confirmFn = func(string) bool { return accept }
+		confirmDefaultNoFn = func(string) bool { return accept }
 		refreshAllCertsFn = func(context.Context) error {
 			*refreshCalls++
 			return refreshErr
@@ -94,7 +96,8 @@ func TestOfferCertRefreshAndRetry(t *testing.T) {
 		return func() {
 			isInteractiveTerminalFn = origInteractive
 			jsonOutput = origJSON
-			promptYesNoFn = origPrompt
+			confirmFn = origPrompt
+			confirmDefaultNoFn = origPromptNo
 			refreshAllCertsFn = origRefresh
 		}, refreshCalls, retryCalls
 	}
@@ -121,6 +124,40 @@ func TestOfferCertRefreshAndRetry(t *testing.T) {
 		defer restore()
 
 		_, ok := offerCertRefreshAndRetry(context.Background(), certErr, func() (*grpcclient.AgentConnection, error) {
+			*retryCalls++
+			return nil, nil
+		})
+		if ok || *refreshCalls != 0 || *retryCalls != 0 {
+			t.Fatalf("ok=%v refreshCalls=%d retryCalls=%d, want false, 0, 0", ok, *refreshCalls, *retryCalls)
+		}
+	})
+
+	t.Run("enrolled timeout offers refresh and retries when accepted", func(t *testing.T) {
+		restore, refreshCalls, retryCalls := setup(true, true, nil)
+		defer restore()
+
+		timeoutErr := newProvisionedAgentUnauthorizedError(
+			errors.New("dial tcp 192.168.1.50:50052: i/o timeout"))
+		wantConn := &grpcclient.AgentConnection{Host: "device.local"}
+		conn, ok := offerCertRefreshAndRetry(context.Background(), timeoutErr, func() (*grpcclient.AgentConnection, error) {
+			*retryCalls++
+			return wantConn, nil
+		})
+		if !ok || conn != wantConn {
+			t.Fatalf("offerCertRefreshAndRetry() = (%v, %v), want (%v, true)", conn, ok, wantConn)
+		}
+		if *refreshCalls != 1 || *retryCalls != 1 {
+			t.Fatalf("refreshCalls=%d retryCalls=%d, want 1 and 1", *refreshCalls, *retryCalls)
+		}
+	})
+
+	t.Run("enrolled timeout declined does not refresh or retry", func(t *testing.T) {
+		restore, refreshCalls, retryCalls := setup(true, false, nil)
+		defer restore()
+
+		timeoutErr := newProvisionedAgentUnauthorizedError(
+			errors.New("dial tcp 192.168.1.50:50052: i/o timeout"))
+		_, ok := offerCertRefreshAndRetry(context.Background(), timeoutErr, func() (*grpcclient.AgentConnection, error) {
 			*retryCalls++
 			return nil, nil
 		})

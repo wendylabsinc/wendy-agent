@@ -170,9 +170,10 @@ func TestBubbleTable_CropsWideViewAndScrolls(t *testing.T) {
 func TestProgressModel_Init(t *testing.T) {
 	p := NewProgress("Downloading...")
 	cmd := p.Init()
-	// ProgressModel.Init returns nil since there's no initial tick needed.
-	if cmd != nil {
-		t.Error("expected nil Init cmd for progress model")
+	// ProgressModel.Init returns the hint rotation tick so educational hints
+	// rotate while the bar is running.
+	if cmd == nil {
+		t.Error("expected non-nil Init cmd to start hint rotation")
 	}
 }
 

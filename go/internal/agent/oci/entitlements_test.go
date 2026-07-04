@@ -2,6 +2,8 @@ package oci
 
 import (
 	"errors"
+	"fmt"
+	"net"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -269,9 +271,43 @@ func TestApplyEntitlements_Network_Host(t *testing.T) {
 		t.Error("host network entitlement did not remove network namespace")
 	}
 
-	// CAP_NET_ADMIN should be added.
-	if !slices.Contains(spec.Process.Capabilities.Bounding, "CAP_NET_ADMIN") {
-		t.Error("host network entitlement did not add CAP_NET_ADMIN")
+	// WDY-1094: plain "host" grants network *visibility* only. It must NOT grant
+	// CAP_NET_ADMIN — that lets a container reconfigure host interfaces, routes,
+	// and netfilter. Reconfiguration requires the explicit "host-admin" opt-in.
+	if slices.Contains(spec.Process.Capabilities.Bounding, "CAP_NET_ADMIN") {
+		t.Error("plain host network entitlement must not grant CAP_NET_ADMIN (WDY-1094)")
+	}
+}
+
+// TestApplyEntitlements_Network_HostAdmin verifies the explicit opt-in: mode
+// "host-admin" is host networking AND grants CAP_NET_ADMIN for apps that
+// genuinely need to reconfigure the network (WDY-1094).
+func TestApplyEntitlements_Network_HostAdmin(t *testing.T) {
+	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
+	cfg := &appconfig.AppConfig{
+		AppID: "test-app",
+		Entitlements: []appconfig.Entitlement{
+			{Type: appconfig.EntitlementNetwork, Mode: "host-admin"},
+		},
+	}
+
+	if err := ApplyEntitlements(spec, cfg, ApplyOptions{}); err != nil {
+		t.Fatalf("ApplyEntitlements() error = %v", err)
+	}
+
+	// host-admin is host networking: the network namespace is removed.
+	if hasNamespace(spec, "network") {
+		t.Error("host-admin entitlement did not remove network namespace")
+	}
+	// host-admin is the opt-in that grants CAP_NET_ADMIN.
+	for _, set := range [][]string{
+		spec.Process.Capabilities.Bounding,
+		spec.Process.Capabilities.Effective,
+		spec.Process.Capabilities.Permitted,
+	} {
+		if !slices.Contains(set, "CAP_NET_ADMIN") {
+			t.Error("host-admin entitlement must grant CAP_NET_ADMIN in all capability sets")
+		}
 	}
 }
 
@@ -462,7 +498,7 @@ func TestApplyEntitlements_Bluetooth_NoProxy(t *testing.T) {
 		},
 	}
 
-	if err := ApplyEntitlements(spec, cfg, ApplyOptions{DBusProxyAvailable: false}); err != nil {
+	if err := ApplyEntitlements(spec, cfg, ApplyOptions{DBusProxySocketDir: ""}); err != nil {
 		t.Fatalf("ApplyEntitlements() error = %v", err)
 	}
 
@@ -490,7 +526,12 @@ func TestApplyEntitlements_Bluetooth_Proxy(t *testing.T) {
 		},
 	}
 
-	if err := ApplyEntitlements(spec, cfg, ApplyOptions{DBusProxyAvailable: true}); err != nil {
+	// The caller (containerd client) passes the exact directory the proxy
+	// created, keyed by container name. Here a multi-service container name is
+	// used to guard against the regression where the mount source was rebuilt
+	// from the bare app ID and dropped the service suffix (WDY-1688).
+	const proxyDir = "/run/wendy/dbus-proxy/bt-app_btscan"
+	if err := ApplyEntitlements(spec, cfg, ApplyOptions{DBusProxySocketDir: proxyDir}); err != nil {
 		t.Fatalf("ApplyEntitlements() error = %v", err)
 	}
 
@@ -504,12 +545,11 @@ func TestApplyEntitlements_Bluetooth_Proxy(t *testing.T) {
 		t.Error("bluetooth proxy should not add /run/dbus mount")
 	}
 
-	// Verify source points to proxy directory.
+	// Verify source points to the exact directory the caller supplied.
 	for _, m := range spec.Mounts {
 		if m.Destination == "/var/run/dbus" {
-			expected := "/run/wendy/dbus-proxy/bt-app"
-			if m.Source != expected {
-				t.Errorf("proxy /var/run/dbus source = %q, want %q", m.Source, expected)
+			if m.Source != proxyDir {
+				t.Errorf("proxy /var/run/dbus source = %q, want %q", m.Source, proxyDir)
 			}
 		}
 	}
@@ -924,8 +964,8 @@ func TestApplyEntitlements_Empty(t *testing.T) {
 	}
 }
 
-// TestApplyI2C_PathTraversal verifies that a crafted device name cannot escape /dev/i2c-
-// (WDY-1015).
+// TestApplyI2C_PathTraversal verifies that a crafted device name is rejected and
+// cannot escape /dev/i2c- (WDY-1015).
 func TestApplyI2C_PathTraversal(t *testing.T) {
 	traversalCases := []string{
 		"../sda",
@@ -936,6 +976,13 @@ func TestApplyI2C_PathTraversal(t *testing.T) {
 		"i2c-",
 		"i2c-1a",
 	}
+	// A crafted name is rejected by name validation before any stat, but inject a
+	// permissive stat so a regression that skips the name check would still be
+	// caught by the mount assertions below.
+	origStat := statDeviceNode
+	defer func() { statDeviceNode = origStat }()
+	statDeviceNode = func(string) (int64, int64, error) { return i2cMajor, 0, nil }
+
 	for _, device := range traversalCases {
 		t.Run(device, func(t *testing.T) {
 			spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
@@ -945,16 +992,14 @@ func TestApplyI2C_PathTraversal(t *testing.T) {
 					{Type: appconfig.EntitlementI2C, Device: device},
 				},
 			}
-			if err := ApplyEntitlements(spec, cfg, ApplyOptions{}); err != nil {
-				t.Fatalf("ApplyEntitlements() error = %v", err)
+			// A crafted name must be rejected with an error; either way it must
+			// never produce a mount escaping /dev or the named bad path.
+			if err := ApplyEntitlements(spec, cfg, ApplyOptions{}); err == nil {
+				t.Errorf("crafted device=%q was accepted; want rejection", device)
 			}
 			for _, m := range spec.Mounts {
-				if !slices.Contains([]string{"/dev/snd", "/dev/input", "/dev/bus/usb"}, m.Destination) &&
-					len(m.Destination) >= 9 && m.Destination[:9] != "/dev/i2c-" {
-					if m.Destination == "/dev/sda" || m.Destination == "/dev/mem" ||
-						m.Destination == "/etc/passwd" {
-						t.Errorf("path traversal via device=%q mounted %q", device, m.Destination)
-					}
+				if m.Destination == "/dev/sda" || m.Destination == "/dev/mem" || m.Destination == "/etc/passwd" {
+					t.Errorf("path traversal via device=%q mounted %q", device, m.Destination)
 				}
 				if m.Destination == "/dev/"+device {
 					t.Errorf("unsanitized device=%q was mounted as %q", device, m.Destination)
@@ -964,8 +1009,15 @@ func TestApplyI2C_PathTraversal(t *testing.T) {
 	}
 }
 
-// TestApplyI2C_ValidDevice verifies that a legitimate i2c-N device is still mounted.
+// TestApplyI2C_ValidDevice verifies a legitimate i2c-N bus is bind-mounted and
+// gets a cgroup allow rule scoped to its exact major:minor (never the whole I2C
+// major), mirroring the serial entitlement (WDY-1601).
 func TestApplyI2C_ValidDevice(t *testing.T) {
+	const fakeMinor int64 = 3
+	origStat := statDeviceNode
+	defer func() { statDeviceNode = origStat }()
+	statDeviceNode = func(string) (int64, int64, error) { return i2cMajor, fakeMinor, nil }
+
 	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
 	cfg := &appconfig.AppConfig{
 		AppID: "test-app",
@@ -978,6 +1030,207 @@ func TestApplyI2C_ValidDevice(t *testing.T) {
 	}
 	if !hasMountDest(spec, "/dev/i2c-1") {
 		t.Error("valid i2c-1 device was not mounted")
+	}
+	if !hasMajorMinorRule(spec, i2cMajor, fakeMinor) {
+		t.Errorf("i2c-1 missing scoped cgroup allow rule for %d:%d", i2cMajor, fakeMinor)
+	}
+	if hasWholeMajorRule(spec, i2cMajor) {
+		t.Error("i2c-1 emitted a whole-major rule (no minor) — must be device-scoped")
+	}
+	if acc, _ := majorRuleAccess(spec, i2cMajor); strings.Contains(acc, "m") {
+		t.Errorf("i2c rule must not grant mknod, got Access=%q", acc)
+	}
+}
+
+// TestApplyI2C_DeviceAbsent verifies a clear error (and no mount) when the
+// declared I2C bus is not present on the host.
+func TestApplyI2C_DeviceAbsent(t *testing.T) {
+	origStat := statDeviceNode
+	defer func() { statDeviceNode = origStat }()
+	statDeviceNode = func(string) (int64, int64, error) { return 0, 0, errors.New("no such device") }
+
+	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
+	cfg := &appconfig.AppConfig{
+		AppID:        "test-app",
+		Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementI2C, Device: "i2c-1"}},
+	}
+	if err := ApplyEntitlements(spec, cfg, ApplyOptions{}); err == nil {
+		t.Fatal("ApplyEntitlements() = nil error for absent i2c bus, want error")
+	}
+	if hasMountDest(spec, "/dev/i2c-1") {
+		t.Error("absent i2c bus should not be mounted")
+	}
+}
+
+// TestEntitlements_OmitMknod verifies the whole-major device entitlements grant
+// "rw", never "rwm": the host owns the device nodes and bind-mounts them, so the
+// container never needs the mknod bit (WDY-1601). The minor-scoped entitlements
+// (serial, i2c) and camera are covered by their own tests.
+func TestEntitlements_OmitMknod(t *testing.T) {
+	// applyGPU branches on the board (a Raspberry Pi also exposes vcio); pin to
+	// Generic so the result is deterministic regardless of the host running the test.
+	origBoard := boardDetect
+	defer func() { boardDetect = origBoard }()
+	boardDetect = func() board.Info { return board.Info{Kind: board.Generic} }
+
+	cases := []struct {
+		name  string
+		ent   appconfig.Entitlement
+		major int64
+	}{
+		{"usb", appconfig.Entitlement{Type: appconfig.EntitlementUSB}, 189},
+		{"gpio", appconfig.Entitlement{Type: appconfig.EntitlementGPIO}, 254},
+		{"spi", appconfig.Entitlement{Type: appconfig.EntitlementSPI}, 153},
+		{"input", appconfig.Entitlement{Type: appconfig.EntitlementInput}, 13},
+		{"gpu", appconfig.Entitlement{Type: appconfig.EntitlementGPU}, 195},
+		{"audio", appconfig.Entitlement{Type: appconfig.EntitlementAudio}, 116},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
+			cfg := &appconfig.AppConfig{AppID: "test", Entitlements: []appconfig.Entitlement{tc.ent}}
+			if err := ApplyEntitlements(spec, cfg, ApplyOptions{}); err != nil {
+				t.Fatalf("ApplyEntitlements() error = %v", err)
+			}
+			acc, ok := majorRuleAccess(spec, tc.major)
+			if !ok {
+				t.Fatalf("%s entitlement did not emit an allow rule for major %d", tc.name, tc.major)
+			}
+			if acc != "rw" {
+				t.Errorf("%s entitlement major %d must grant \"rw\", got %q", tc.name, tc.major, acc)
+			}
+			if strings.Contains(acc, "m") {
+				t.Errorf("%s entitlement major %d must not grant mknod, got Access=%q", tc.name, tc.major, acc)
+			}
+		})
+	}
+}
+
+// TestApplySerial_ValidDevice verifies a legitimate serial tty is bind-mounted,
+// gets a cgroup allow rule scoped to the device's exact major:minor (never the
+// whole major), and adds the dialout GID.
+func TestApplySerial_ValidDevice(t *testing.T) {
+	cases := []struct {
+		device string
+		major  int64
+	}{
+		{"ttyACM0", 166},
+		{"ttyUSB0", 188},
+	}
+	// Inject a fake stat so the test needs no real device nodes (which require
+	// root + mknod). Returns the device's expected major and a fixed minor.
+	const fakeMinor int64 = 7
+	origStat := statDeviceNode
+	defer func() { statDeviceNode = origStat }()
+
+	for _, tc := range cases {
+		t.Run(tc.device, func(t *testing.T) {
+			statDeviceNode = func(string) (int64, int64, error) { return tc.major, fakeMinor, nil }
+			spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
+			cfg := &appconfig.AppConfig{
+				AppID: "test-app",
+				Entitlements: []appconfig.Entitlement{
+					{Type: appconfig.EntitlementSerial, Device: tc.device},
+				},
+			}
+			if err := ApplyEntitlements(spec, cfg, ApplyOptions{}); err != nil {
+				t.Fatalf("ApplyEntitlements() error = %v", err)
+			}
+			if !hasMountDest(spec, "/dev/"+tc.device) {
+				t.Errorf("serial device %q was not mounted", tc.device)
+			}
+			if !hasMajorMinorRule(spec, tc.major, fakeMinor) {
+				t.Errorf("serial device %q missing scoped cgroup allow rule for %d:%d", tc.device, tc.major, fakeMinor)
+			}
+			if hasWholeMajorRule(spec, tc.major) {
+				t.Errorf("serial device %q emitted a whole-major rule (no minor) — must be device-scoped", tc.device)
+			}
+			if !hasGID(spec, dialoutGroupGID) {
+				t.Errorf("serial device %q did not add dialout GID %d", tc.device, dialoutGroupGID)
+			}
+		})
+	}
+}
+
+// TestApplySerial_DeviceAbsent verifies a clear error (and no spec mutation)
+// when the declared serial device is not present on the host.
+func TestApplySerial_DeviceAbsent(t *testing.T) {
+	origStat := statDeviceNode
+	defer func() { statDeviceNode = origStat }()
+	statDeviceNode = func(string) (int64, int64, error) { return 0, 0, errors.New("no such device") }
+
+	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
+	cfg := &appconfig.AppConfig{
+		AppID:        "test-app",
+		Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementSerial, Device: "ttyACM0"}},
+	}
+	if err := ApplyEntitlements(spec, cfg, ApplyOptions{}); err == nil {
+		t.Fatal("ApplyEntitlements() = nil error for absent serial device, want error")
+	}
+	if hasMountDest(spec, "/dev/ttyACM0") {
+		t.Error("absent serial device should not be mounted")
+	}
+}
+
+// TestStatDeviceNode_RejectsSymlink verifies the shared resolver refuses a
+// symlinked node (runc can't follow symlinks through a bind mount, and a
+// symlink would let the validated node differ from the bound one).
+func TestStatDeviceNode_RejectsSymlink(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "real")
+	if err := os.WriteFile(target, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := statDeviceNode(link); err == nil {
+		t.Error("statDeviceNode followed a symlink; want rejection")
+	}
+}
+
+// TestApplySerial_PathTraversal verifies a crafted device name cannot escape
+// /dev or emit an unscoped cgroup rule.
+func TestApplySerial_PathTraversal(t *testing.T) {
+	traversalCases := []string{
+		"ttyACM0/../sda",
+		"../mem",
+		"../../etc/passwd",
+		"sda",
+		"ttyACM",
+		"ttyACMx",
+	}
+	// A real device node never gets stat'd for these — they're rejected by name
+	// before the stat — but inject a permissive stat so a regression that skips
+	// the name check would still be caught by the mount assertions below.
+	origStat := statDeviceNode
+	defer func() { statDeviceNode = origStat }()
+	statDeviceNode = func(string) (int64, int64, error) { return 166, 0, nil }
+
+	for _, device := range traversalCases {
+		t.Run(device, func(t *testing.T) {
+			spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
+			cfg := &appconfig.AppConfig{
+				AppID: "test-app",
+				Entitlements: []appconfig.Entitlement{
+					{Type: appconfig.EntitlementSerial, Device: device},
+				},
+			}
+			// A crafted name must be rejected with an error; either way it must
+			// never produce a mount escaping /dev or the named bad path.
+			if err := ApplyEntitlements(spec, cfg, ApplyOptions{}); err == nil {
+				t.Errorf("crafted device=%q was accepted; want rejection", device)
+			}
+			for _, m := range spec.Mounts {
+				if m.Destination == "/dev/sda" || m.Destination == "/dev/mem" || m.Destination == "/etc/passwd" {
+					t.Errorf("path traversal via device=%q mounted %q", device, m.Destination)
+				}
+				if m.Destination == "/dev/"+device {
+					t.Errorf("unsanitized device=%q was mounted as %q", device, m.Destination)
+				}
+			}
+		})
 	}
 }
 
@@ -1092,6 +1345,25 @@ func installFakeCameraGlobs(t *testing.T, files map[string]int64) {
 		}
 		return 0, os.ErrNotExist
 	}
+}
+
+func hasMajorMinorRule(spec *Spec, major, minor int64) bool {
+	for _, d := range spec.Linux.Resources.Devices {
+		if d.Allow && d.Major != nil && *d.Major == major && d.Minor != nil && *d.Minor == minor {
+			return true
+		}
+	}
+	return false
+}
+
+// hasWholeMajorRule reports an allow rule for a whole major (no minor scope).
+func hasWholeMajorRule(spec *Spec, major int64) bool {
+	for _, d := range spec.Linux.Resources.Devices {
+		if d.Allow && d.Major != nil && *d.Major == major && d.Minor == nil {
+			return true
+		}
+	}
+	return false
 }
 
 func hasMajorRule(spec *Spec, want int64) bool {
@@ -1223,6 +1495,91 @@ func TestApplyCamera_NonJetsonOmitsNvhost(t *testing.T) {
 	}
 }
 
+// installFakeDriGlobs redirects driGlobs at a tempdir of fake /dev/dri nodes and
+// stubs statMajor to report their majors, mirroring installFakeCameraGlobs.
+func installFakeDriGlobs(t *testing.T, files map[string]int64) {
+	t.Helper()
+	dir := t.TempDir()
+	majorsByPath := map[string]int64{}
+	for name, major := range files {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, nil, 0o644); err != nil {
+			t.Fatalf("write %s: %v", p, err)
+		}
+		majorsByPath[p] = major
+	}
+	origGlobs := driGlobs
+	origStat := statMajor
+	t.Cleanup(func() {
+		driGlobs = origGlobs
+		statMajor = origStat
+	})
+	driGlobs = []string{filepath.Join(dir, "*")}
+	statMajor = func(p string) (int64, error) {
+		if m, ok := majorsByPath[p]; ok {
+			return m, nil
+		}
+		return 0, os.ErrNotExist
+	}
+}
+
+func TestApplyDisplay_AllowsDrmMajor(t *testing.T) {
+	installFakeDriGlobs(t, map[string]int64{"card0": 226, "renderD128": 226})
+	boardDetect = func() board.Info { return board.Info{Kind: board.Generic} }
+	origRender := lookupRenderGID
+	t.Cleanup(func() { lookupRenderGID = origRender })
+	lookupRenderGID = func() (uint32, bool) { return 0, false }
+
+	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
+	cfg := &appconfig.AppConfig{AppID: "test", Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementDisplay}}}
+	if err := ApplyEntitlements(spec, cfg, ApplyOptions{}); err != nil {
+		t.Fatalf("ApplyEntitlements: %v", err)
+	}
+	if !hasMajorRule(spec, 226) {
+		t.Error("expected cgroup allow for DRM major 226")
+	}
+	if countMajorRule(spec, 226) != 1 {
+		t.Errorf("DRM major rule should be deduplicated, got %d", countMajorRule(spec, 226))
+	}
+}
+
+func TestApplyDisplay_AddsVideoAndRenderGIDs(t *testing.T) {
+	installFakeDriGlobs(t, map[string]int64{"renderD128": 226})
+	boardDetect = func() board.Info { return board.Info{Kind: board.Generic} }
+	origRender := lookupRenderGID
+	t.Cleanup(func() { lookupRenderGID = origRender })
+	lookupRenderGID = func() (uint32, bool) { return 107, true }
+
+	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
+	cfg := &appconfig.AppConfig{AppID: "test", Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementDisplay}}}
+	if err := ApplyEntitlements(spec, cfg, ApplyOptions{}); err != nil {
+		t.Fatalf("ApplyEntitlements: %v", err)
+	}
+	if !hasGID(spec, videoGroupGID) {
+		t.Error("expected video GID in AdditionalGids")
+	}
+	if !hasGID(spec, 107) {
+		t.Error("expected resolved render GID in AdditionalGids")
+	}
+}
+
+func TestApplyDisplay_NonDisplayAppUnchanged(t *testing.T) {
+	installFakeDriGlobs(t, map[string]int64{"renderD128": 226})
+	boardDetect = func() board.Info { return board.Info{Kind: board.Generic} }
+
+	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
+	cfg := &appconfig.AppConfig{AppID: "test", Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementNetwork}}}
+	if err := ApplyEntitlements(spec, cfg, ApplyOptions{}); err != nil {
+		t.Fatalf("ApplyEntitlements: %v", err)
+	}
+	if hasMajorRule(spec, 226) {
+		t.Error("non-display app must not get the DRM major rule")
+	}
+	if hasGID(spec, 107) {
+		t.Error("non-display app must not get a render GID")
+	}
+}
+
 // TestApplyCamera_DeviceRulesOmitMknod locks in least privilege: every cgroup
 // device rule the camera entitlement adds — the static v4l2 major and every
 // dynamically-discovered media/dma-heap/v4l-subdev/nvhost/nvmap major — must
@@ -1255,6 +1612,267 @@ func TestApplyCamera_DeviceRulesOmitMknod(t *testing.T) {
 		}
 		if acc != "rw" {
 			t.Errorf("camera major %d Access = %q, want %q", major, acc, "rw")
+		}
+	}
+}
+
+func hasMount(spec *Spec, dest string) bool {
+	for _, m := range spec.Mounts {
+		if m.Destination == dest {
+			return true
+		}
+	}
+	return false
+}
+
+func TestApplyAdmin_MountsSocketWhenPresent(t *testing.T) {
+	dir := t.TempDir()
+	sock := filepath.Join(dir, "s")
+	l, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer l.Close()
+	origPath := adminAgentSocketPath
+	t.Cleanup(func() { adminAgentSocketPath = origPath })
+	adminAgentSocketPath = sock
+
+	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
+	cfg := &appconfig.AppConfig{AppID: "test", Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementAdmin}}}
+	if err := ApplyEntitlements(spec, cfg, ApplyOptions{}); err != nil {
+		t.Fatalf("ApplyEntitlements: %v", err)
+	}
+	if !hasMount(spec, "/run/wendy/agent.sock") {
+		t.Error("expected /run/wendy/agent.sock bind mount")
+	}
+	if !hasEnv(spec, "WENDY_AGENT_SOCKET=/run/wendy/agent.sock") {
+		t.Error("expected WENDY_AGENT_SOCKET env")
+	}
+}
+
+func TestApplyAdmin_NoSocketWhenAbsent(t *testing.T) {
+	origPath := adminAgentSocketPath
+	t.Cleanup(func() { adminAgentSocketPath = origPath })
+	adminAgentSocketPath = filepath.Join(t.TempDir(), "missing.sock")
+
+	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
+	cfg := &appconfig.AppConfig{AppID: "test", Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementAdmin}}}
+	if err := ApplyEntitlements(spec, cfg, ApplyOptions{}); err != nil {
+		t.Fatalf("ApplyEntitlements: %v", err)
+	}
+	if hasMount(spec, "/run/wendy/agent.sock") {
+		t.Error("must not mount a missing socket")
+	}
+}
+
+func TestApplyAdmin_NonAdminAppUnchanged(t *testing.T) {
+	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
+	cfg := &appconfig.AppConfig{AppID: "test", Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementNetwork}}}
+	if err := ApplyEntitlements(spec, cfg, ApplyOptions{}); err != nil {
+		t.Fatalf("ApplyEntitlements: %v", err)
+	}
+	if hasMount(spec, "/run/wendy/agent.sock") || hasEnv(spec, "WENDY_AGENT_SOCKET=/run/wendy/agent.sock") {
+		t.Error("non-admin app must not get the agent socket")
+	}
+}
+
+// ---------- GPU fallback device derivation (WDY-1804) ----------
+
+// installFakeNvidiaDevTree builds a fake /dev with the Jetson AGX Thor
+// (JetPack 7.2) NVIDIA node layout and injects each node's real-world
+// major:minor via statCharDevice (plain files can't carry device numbers
+// without root/mknod). Restored on cleanup.
+func installFakeNvidiaDevTree(t *testing.T, numbers map[string][2]int64) string {
+	t.Helper()
+	dev := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dev, "nvidia-caps"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name := range numbers {
+		if err := os.WriteFile(filepath.Join(dev, name), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	origGlobs := nvidiaDeviceGlobs
+	origStat := statCharDevice
+	origBoard := boardDetect
+	t.Cleanup(func() {
+		nvidiaDeviceGlobs = origGlobs
+		statCharDevice = origStat
+		boardDetect = origBoard
+	})
+
+	nvidiaDeviceGlobs = []string{
+		filepath.Join(dev, "nvidia*"),
+		filepath.Join(dev, "nvidia-caps", "*"),
+	}
+	statCharDevice = func(p string) (int64, int64, error) {
+		rel, err := filepath.Rel(dev, p)
+		if err != nil {
+			return 0, 0, err
+		}
+		if nums, ok := numbers[rel]; ok {
+			return nums[0], nums[1], nil
+		}
+		// e.g. the nvidia-caps directory itself, matched by the nvidia* glob.
+		return 0, 0, fmt.Errorf("%s is not a character device node", p)
+	}
+	boardDetect = func() board.Info { return board.Info{Kind: board.Jetson} }
+	return dev
+}
+
+func gpuSpec(t *testing.T) *Spec {
+	t.Helper()
+	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
+	cfg := &appconfig.AppConfig{
+		AppID:        "test-app",
+		Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementGPU}},
+	}
+	if err := ApplyEntitlements(spec, cfg, ApplyOptions{}); err != nil {
+		t.Fatalf("ApplyEntitlements() error = %v", err)
+	}
+	return spec
+}
+
+func deviceForPath(spec *Spec, path string) (LinuxDevice, bool) {
+	for _, d := range spec.Linux.Devices {
+		if d.Path == path {
+			return d, true
+		}
+	}
+	return LinuxDevice{}, false
+}
+
+func TestApplyGPU_DerivesDevicesFromLiveNodes(t *testing.T) {
+	// Ground truth from a Jetson AGX Thor (WendyOS-0.16.1, JetPack 7.2,
+	// driver 595.78): uvm/uvm-tools live on dynamic major 487, the caps
+	// nodes on 501, and a second GPU node nvidia1 exists.
+	dev := installFakeNvidiaDevTree(t, map[string][2]int64{
+		"nvidia0":                 {195, 0},
+		"nvidia1":                 {195, 1},
+		"nvidiactl":               {195, 255},
+		"nvidia-modeset":          {195, 254},
+		"nvidia-uvm":              {487, 0},
+		"nvidia-uvm-tools":        {487, 1},
+		"nvidia-caps/nvidia-cap1": {501, 1},
+		"nvidia-caps/nvidia-cap2": {501, 2},
+	})
+
+	spec := gpuSpec(t)
+
+	// Every live node must be added with its real major:minor.
+	for name, want := range map[string][2]int64{
+		"nvidia1":                 {195, 1},
+		"nvidiactl":               {195, 255},
+		"nvidia-uvm":              {487, 0},
+		"nvidia-uvm-tools":        {487, 1},
+		"nvidia-caps/nvidia-cap1": {501, 1},
+	} {
+		d, ok := deviceForPath(spec, filepath.Join(dev, name))
+		if !ok {
+			t.Errorf("GPU entitlement did not add %s", name)
+			continue
+		}
+		if d.Major != want[0] || d.Minor != want[1] || d.Type != "c" {
+			t.Errorf("%s = c %d:%d, want c %d:%d", name, d.Major, d.Minor, want[0], want[1])
+		}
+	}
+
+	// One rw (no mknod) allow rule per discovered major:minor pair — never a
+	// whole-major rule: dynamic majors (487) come from a shared kernel pool,
+	// so an unscoped rule could cover unrelated drivers on another boot.
+	wantRules := map[[2]int64]bool{
+		{195, 0}: true, {195, 1}: true, {195, 255}: true, {195, 254}: true,
+		{487, 0}: true, {487, 1}: true, {501, 1}: true, {501, 2}: true,
+	}
+	gotRules := map[[2]int64]int{}
+	for _, d := range spec.Linux.Resources.Devices {
+		if !d.Allow || d.Major == nil {
+			continue
+		}
+		if d.Minor == nil {
+			t.Errorf("major %d rule has no minor; whole-major rules are forbidden on the derived path", *d.Major)
+			continue
+		}
+		if d.Access != "rw" {
+			t.Errorf("rule %d:%d Access = %q, want %q (mknod must be withheld)", *d.Major, *d.Minor, d.Access, "rw")
+		}
+		gotRules[[2]int64{*d.Major, *d.Minor}]++
+	}
+	for pair := range wantRules {
+		if gotRules[pair] != 1 {
+			t.Errorf("rule %d:%d count = %d, want exactly 1", pair[0], pair[1], gotRules[pair])
+		}
+	}
+
+	// The nvidia-caps directory itself (matched by the nvidia* glob) must not
+	// become a device.
+	if _, ok := deviceForPath(spec, filepath.Join(dev, "nvidia-caps")); ok {
+		t.Error("GPU entitlement added the nvidia-caps directory as a device")
+	}
+
+	// The static list must not leak in alongside the derived nodes.
+	if _, ok := deviceForPath(spec, "/dev/nvidia0"); ok {
+		t.Error("GPU entitlement added static /dev/nvidia0 despite live nodes")
+	}
+}
+
+func TestApplyGPU_StaticFallbackWhenNoLiveNodes(t *testing.T) {
+	// Empty fake /dev: the glob finds nothing (e.g. driver module not yet
+	// loaded), so the historical static major-195 list must be preserved.
+	installFakeNvidiaDevTree(t, map[string][2]int64{})
+
+	spec := gpuSpec(t)
+
+	for _, path := range []string{
+		"/dev/nvidia0",
+		"/dev/nvidiactl",
+		"/dev/nvidia-uvm",
+		"/dev/nvidia-uvm-tools",
+		"/dev/nvidia-modeset",
+	} {
+		d, ok := deviceForPath(spec, path)
+		if !ok {
+			t.Errorf("static fallback did not add %s", path)
+			continue
+		}
+		if d.Major != 195 || d.Minor != 0 {
+			t.Errorf("%s = %d:%d, want 195:0", path, d.Major, d.Minor)
+		}
+	}
+	if got := countMajorRule(spec, 195); got != 1 {
+		t.Errorf("major 195 allow rules = %d, want exactly 1", got)
+	}
+}
+
+func TestApplyGPU_UnexpectedNodeNameRejected(t *testing.T) {
+	// A character device planted under a matching glob but with a non-NVIDIA
+	// name must not be granted to the container.
+	dev := installFakeNvidiaDevTree(t, map[string][2]int64{
+		"nvidia0":                     {195, 0},
+		"nvidia":                      {195, 3}, // bare "nvidia" is not a real node name
+		"nvidia-evil":                 {8, 0},   // e.g. a block-ish major smuggled behind a char node
+		"nvidia-caps/nvidia-backdoor": {501, 99},
+	})
+
+	spec := gpuSpec(t)
+
+	if _, ok := deviceForPath(spec, filepath.Join(dev, "nvidia-evil")); ok {
+		t.Error("GPU entitlement granted a node with an unexpected name")
+	}
+	if _, ok := deviceForPath(spec, filepath.Join(dev, "nvidia")); ok {
+		t.Error("GPU entitlement granted the bare 'nvidia' name")
+	}
+	if _, ok := deviceForPath(spec, filepath.Join(dev, "nvidia-caps", "nvidia-backdoor")); ok {
+		t.Error("GPU entitlement granted a caps node with an unexpected name")
+	}
+	if _, ok := deviceForPath(spec, filepath.Join(dev, "nvidia0")); !ok {
+		t.Error("GPU entitlement dropped the legitimate nvidia0 node")
+	}
+	for _, d := range spec.Linux.Resources.Devices {
+		if d.Allow && d.Major != nil && *d.Major == 8 {
+			t.Error("GPU entitlement emitted an allow rule for the rejected node's major")
 		}
 	}
 }

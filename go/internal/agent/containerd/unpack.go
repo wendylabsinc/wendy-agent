@@ -110,7 +110,7 @@ func (c *Client) UnpackImage(ctx context.Context, img containerd.Image, progress
 	}()
 
 	cs := c.client.ContentStore()
-	sn := c.client.SnapshotService("")
+	sn := c.client.SnapshotService(c.snapshotter)
 
 	// Resolve through index if needed (platform selection).
 	manifest, err := images.Manifest(ctx, cs, img.Target(), img.Platform())

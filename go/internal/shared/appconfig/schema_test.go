@@ -1,0 +1,134 @@
+package appconfig
+
+import (
+	"encoding/json"
+	"os"
+	"testing"
+)
+
+// TestSchemaJSON_HasFrameworksAndServices verifies that the embedded
+// wendy.schema.json contains top-level "frameworks" and "services" properties
+// and that the ros2 domainId maximum equals the Go constant ROS2DomainIDMax
+// (WDY-1700). This test acts as a sync guard: it fails when someone changes
+// ROS2DomainIDMax without updating the schema.
+func TestSchemaJSON_HasFrameworksAndServices(t *testing.T) {
+	var schema map[string]any
+	if err := json.Unmarshal([]byte(SchemaJSON), &schema); err != nil {
+		t.Fatalf("schema is not valid JSON: %v", err)
+	}
+
+	props, _ := schema["properties"].(map[string]any)
+	if _, ok := props["frameworks"]; !ok {
+		t.Error("schema missing top-level 'frameworks' property")
+	}
+	if _, ok := props["services"]; !ok {
+		t.Error("schema missing top-level 'services' property")
+	}
+
+	defs, _ := schema["$defs"].(map[string]any)
+	fw, _ := defs["frameworks"].(map[string]any)
+	if fw == nil {
+		t.Fatal("schema missing $defs.frameworks")
+	}
+
+	// Walk $defs.frameworks.properties.ros2.properties.domainId.maximum directly.
+	fwProps, _ := fw["properties"].(map[string]any)
+	ros2, _ := fwProps["ros2"].(map[string]any)
+	if ros2 == nil {
+		t.Fatal("$defs.frameworks missing ros2 property")
+	}
+	ros2Props, _ := ros2["properties"].(map[string]any)
+	domainId, _ := ros2Props["domainId"].(map[string]any)
+	if domainId == nil {
+		t.Fatal("$defs.frameworks.ros2 missing domainId property")
+	}
+	maxRaw, ok := domainId["maximum"]
+	if !ok {
+		t.Fatal("$defs.frameworks.ros2.domainId missing 'maximum'")
+	}
+	if got := int(maxRaw.(float64)); got != ROS2DomainIDMax {
+		t.Errorf("schema domainId maximum = %d, want %d (Go constant ROS2DomainIDMax)", got, ROS2DomainIDMax)
+	}
+
+	// Verify rmw enum length matches the number of keys in ros2RMWAliases.
+	rmw, _ := ros2Props["rmw"].(map[string]any)
+	if rmw == nil {
+		t.Fatal("$defs.frameworks.ros2 missing rmw property")
+	}
+	enumRaw, _ := rmw["enum"].([]any)
+	if got, want := len(enumRaw), len(ros2RMWAliases); got != want {
+		t.Errorf("schema rmw enum has %d entries, want %d (keys of ros2RMWAliases)", got, want)
+	}
+
+	// Verify exact parity: each enum value must be a key in ros2RMWAliases, and vice versa.
+	want := make(map[string]bool, len(ros2RMWAliases))
+	for k := range ros2RMWAliases {
+		want[k] = true
+	}
+	for _, v := range enumRaw {
+		s, _ := v.(string)
+		if !want[s] {
+			t.Errorf("schema rmw enum value %q is not a key of ros2RMWAliases", s)
+		}
+		delete(want, s)
+	}
+	for k := range want {
+		t.Errorf("ros2RMWAliases key %q is missing from schema rmw enum", k)
+	}
+}
+
+func TestSchemaJSON_HasResources(t *testing.T) {
+	var schema map[string]any
+	if err := json.Unmarshal([]byte(SchemaJSON), &schema); err != nil {
+		t.Fatalf("schema is not valid JSON: %v", err)
+	}
+
+	props, _ := schema["properties"].(map[string]any)
+	if _, ok := props["resources"]; !ok {
+		t.Error("schema missing top-level 'resources' property")
+	}
+
+	defs, _ := schema["$defs"].(map[string]any)
+	rl, _ := defs["resourceLimits"].(map[string]any)
+	if rl == nil {
+		t.Fatal("schema missing $defs.resourceLimits")
+	}
+	rlProps, _ := rl["properties"].(map[string]any)
+	for _, key := range []string{"memory", "cpus", "pids"} {
+		if _, ok := rlProps[key]; !ok {
+			t.Errorf("$defs.resourceLimits missing %q property", key)
+		}
+	}
+
+	// The service def must also reference resourceLimits so per-service limits
+	// validate in editors.
+	svc, _ := defs["service"].(map[string]any)
+	svcProps, _ := svc["properties"].(map[string]any)
+	if _, ok := svcProps["resources"]; !ok {
+		t.Error("$defs.service missing 'resources' property")
+	}
+}
+
+func TestSchemaJSON_DeclaresROS2ExampleKeys(t *testing.T) {
+	// The flagship ROS 2 example must validate against the schema (WDY-1700):
+	// every top-level key it uses must be a declared property, else
+	// additionalProperties:false rejects it in editors.
+	data, err := os.ReadFile("../../../../Examples/ROS2/wendy.json")
+	if err != nil {
+		t.Fatalf("reading ROS 2 example: %v", err)
+	}
+	var example map[string]any
+	if err := json.Unmarshal(data, &example); err != nil {
+		t.Fatalf("example is not valid JSON: %v", err)
+	}
+	var schema map[string]any
+	if err := json.Unmarshal([]byte(SchemaJSON), &schema); err != nil {
+		t.Fatalf("schema is not valid JSON: %v", err)
+	}
+	props := schema["properties"].(map[string]any)
+	for k := range example {
+		if _, ok := props[k]; !ok {
+			t.Errorf("ROS 2 example uses top-level key %q not declared in schema properties (additionalProperties:false would reject it)", k)
+		}
+	}
+}

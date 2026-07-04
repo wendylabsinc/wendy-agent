@@ -1,71 +1,57 @@
-# ROS2
+# ROS 2 — demo_nodes_cpp talker/listener
 
-Demonstrates the `frameworks.ros2` config that auto-injects `ROS_DOMAIN_ID`
-and `RMW_IMPLEMENTATION` env vars into each container (WDY-880, PR #897),
-combined with `isolation: shared-network` so the talker and listener share
-a network namespace — exactly what ROS2 DDS multicast discovery requires
-(WDY-881).
+A real ROS 2 graph using `demo_nodes_cpp` on `ros:humble` with CycloneDDS.
+This example exists specifically to exercise `wendy device ros2` without
+robot hardware — no physical robot or Jetson is required.
 
 ```
 ROS2/
-├── wendy.json   ← frameworks.ros2 config + isolation: shared-network
-├── talker/      ← publishes messages; verifies injected ROS2 env vars
-└── listener/    ← subscribes; verifies injected ROS2 env vars
+├── wendy.json   ← frameworks.ros2 config + isolation: shared-ipc
+├── talker/      ← ros2 run demo_nodes_cpp talker (publishes /chatter)
+└── listener/    ← ros2 run demo_nodes_cpp listener (subscribes /chatter)
 ```
 
-> **Note:** These containers use plain Python to show the injected env vars
-> without needing a full ROS2 install.  On a real `ros:humble` or `ros:iron`
-> image the same `wendy.json` works unchanged — `rclpy` picks up
-> `ROS_DOMAIN_ID` and `RMW_IMPLEMENTATION` automatically.
+## What it demonstrates
 
-## What `frameworks.ros2` provides (WDY-880)
-
-Add the `frameworks.ros2` block to `wendy.json` and Wendy injects two env
-vars into the container at start time:
-
-| Env var | Source | Example |
-|---|---|---|
-| `ROS_DOMAIN_ID` | `frameworks.ros2.domainId` | `42` |
-| `RMW_IMPLEMENTATION` | `frameworks.ros2.rmw` | `rmw_cyclonedds_cpp` |
-
-These are injected after user-supplied env and Wendy system vars. OTEL vars
-(when applicable) are injected last. OCI last-wins semantics apply throughout.
-
-You can set `frameworks.ros2` at the **top level** of `wendy.json` (applies
-to single-service apps) or **per service** inside `services.<name>.frameworks`
-(allows different domain IDs or RMW implementations per service).
+- `frameworks.ros2` auto-injects `ROS_DOMAIN_ID=42` and `RMW_IMPLEMENTATION=rmw_cyclonedds_cpp`
+  into both containers (WDY-880, PR #897). The `distro` field selects the ROS 2 CLI sidecar
+  image for `wendy device ros2` inspection and is not injected as an environment variable.
+- `isolation: shared-ipc` shares the network and IPC namespaces plus `/dev/shm`
+  so CycloneDDS can perform zero-copy intra-host transport.
+- The runtime sets `ROS_LOCALHOST_ONLY=1` automatically — DDS communication
+  stays on the loopback interface, not multicast on a physical network.
+- `listener` declares `dependsOn: [talker]` so Wendy starts services in order.
 
 ## wendy.json
 
 ```jsonc
 {
   "appId": "sh.wendy.examples.ros2",
-  "isolation": "shared-network",      // DDS multicast needs a shared netns
+  "platform": "linux",
+  "version": "1.0.0",
+  "isolation": "shared-ipc",
   "frameworks": {
-    "ros2": {
-      "domainId": 42,
-      "rmw": "rmw_cyclonedds_cpp"
-    }
+    "ros2": { "domainId": 42, "rmw": "rmw_cyclonedds_cpp", "distro": "humble" }
   },
   "services": {
     "talker": { "context": "./talker" },
     "listener": {
       "context": "./listener",
       "dependsOn": ["talker"],
-      "frameworks": {                  // per-service override (same values here)
-        "ros2": { "domainId": 42, "rmw": "rmw_cyclonedds_cpp" }
+      "frameworks": {
+        "ros2": { "domainId": 42, "rmw": "rmw_cyclonedds_cpp", "distro": "humble" }
       }
     }
   }
 }
 ```
 
-## Isolation modes for ROS2
+## What `frameworks.ros2` provides (WDY-880)
 
-| Mode | Namespaces shared | Good for |
+| Env var | Source | Example |
 |---|---|---|
-| `shared-network` | network + UTS | Multi-node ROS2: DDS uses multicast; all nodes must share a network namespace for discovery to work |
-| `shared-ipc` | IPC + network + UTS + `/dev/shm` | Same as above, plus zero-copy via `/dev/shm` (e.g. `rclcpp` intra-process) |
+| `ROS_DOMAIN_ID` | `frameworks.ros2.domainId` | `42` |
+| `RMW_IMPLEMENTATION` | `frameworks.ros2.rmw` | `rmw_cyclonedds_cpp` |
 
 ## Run
 
@@ -74,24 +60,27 @@ cd Examples/ROS2
 wendy run
 ```
 
-Expected output:
+Expected output (once both containers are up):
 
 ```
-[talker] ROS_DOMAIN_ID      = 42
-[talker] RMW_IMPLEMENTATION = rmw_cyclonedds_cpp
-[talker] WENDY_HOSTNAME     = talker.local
-[talker] ✓ ROS2 env vars injected by Wendy from frameworks.ros2 config
-[talker] published #0: 'hello world 0'
-[listener] ROS_DOMAIN_ID      = 42
-[listener] RMW_IMPLEMENTATION = rmw_cyclonedds_cpp
-[listener] WENDY_HOSTNAME     = listener.local
-[listener] ✓ ROS2 env vars injected by Wendy from frameworks.ros2 config
-[listener] waiting for talker messages on /dev/shm/ros2-channel ...
-[listener] received seq #0
-[talker] published #1: 'hello world 1'
-[listener] received seq #1
+[talker]   [INFO] [talker]: Publishing: 'Hello World: 0'
+[listener] [INFO] [listener]: I heard: [Hello World: 0]
+[talker]   [INFO] [talker]: Publishing: 'Hello World: 1'
+[listener] [INFO] [listener]: I heard: [Hello World: 1]
 ...
-[listener] ✓ received all messages — shared-network isolation works
+```
+
+## Exercising `wendy device ros2`
+
+With the example running on a connected device:
+
+```sh
+wendy device ros2 nodes          # list active nodes (/talker, /listener)
+wendy device ros2 topics         # list topics (/chatter, /rosout, ...)
+wendy device ros2 services       # list services
+wendy device ros2 graph          # full node/topic/service graph
+wendy device ros2 echo /chatter  # stream messages published by talker
+wendy device ros2 hz /chatter    # measure publish rate (~10 Hz)
 ```
 
 ## See also

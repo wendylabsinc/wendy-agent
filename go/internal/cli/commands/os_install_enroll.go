@@ -52,22 +52,19 @@ var (
 // includes an explicit skip option (WDY-1476). Returns (nil, nil) when the
 // user chooses to skip enrollment.
 func selectEnrollmentAuth(cfg *config.Config, cloudGRPC string, interactive bool) (*config.AuthConfig, error) {
-	if len(cfg.Auth) == 0 {
-		return nil, fmt.Errorf("not logged in; run 'wendy auth login' first")
+	// Short-circuit for: not-logged-in, --cloud-grpc, single session, and a
+	// valid persisted default. A nil picker makes the multi-session-no-default
+	// case return ErrMultipleSessions so we can fall back to the skip-capable
+	// picker below (WDY-1476).
+	auth, err := config.ResolveAuth(cfg, cloudGRPC, nil)
+	if err == nil {
+		return auth, nil
 	}
-	if cloudGRPC != "" {
-		for i := range cfg.Auth {
-			if cfg.Auth[i].CloudGRPC == cloudGRPC {
-				return authEntryWithCerts(&cfg.Auth[i])
-			}
-		}
-		return nil, fmt.Errorf("no auth session for %s; run 'wendy auth login --cloud-grpc %s' first", cloudGRPC, cloudGRPC)
-	}
-	if len(cfg.Auth) == 1 {
-		return authEntryWithCerts(&cfg.Auth[0])
+	if !errors.Is(err, config.ErrMultipleSessions) {
+		return nil, err
 	}
 	if !interactive {
-		return nil, fmt.Errorf("multiple auth sessions exist; pass --cloud-grpc to select one")
+		return nil, err // message mentions --cloud-grpc
 	}
 
 	items := make([]tui.PickerItem, 0, len(cfg.Auth)+1)
@@ -118,7 +115,7 @@ func authEntryWithCerts(a *config.AuthConfig) (*config.AuthConfig, error) {
 // enrollment is skipped (user choice, auto mode without a TTY/sessions, or an
 // acknowledged failure). The install must not proceed past a failed
 // enrollment without explicit user acknowledgement (WDY-1476).
-func resolvePreEnrollment(ctx context.Context, cfg *config.Config, opts preEnrollOptions, interactive bool, deviceName string) ([]byte, error) {
+func resolvePreEnrollment(ctx context.Context, cfg *config.Config, opts preEnrollOptions, interactive bool, deviceName string) (*PreProvisionedState, error) {
 	switch opts.mode {
 	case preEnrollSkip:
 		return nil, nil
@@ -151,11 +148,23 @@ func resolvePreEnrollment(ctx context.Context, cfg *config.Config, opts preEnrol
 		return nil, nil
 	}
 
-	fmt.Printf("Pre-enrolling device with Wendy Cloud (org: %d)...\n", auth.Certificates[0].OrganizationID)
-	js, enrollErr := preEnrollDeviceFn(ctx, auth, deviceName, nil)
+	org, orgErr := resolveOrg(ctx, auth, false)
+	if orgErr != nil {
+		if errors.Is(orgErr, ErrUserCancelled) {
+			return nil, orgErr
+		}
+		if !interactive {
+			return nil, fmt.Errorf("--pre-enroll: resolving organization: %w", orgErr)
+		}
+		fmt.Printf("Cannot resolve organization: %v\n", orgErr)
+		return nil, ackContinueUnenrolled()
+	}
+
+	fmt.Printf("Pre-enrolling device with Wendy Cloud (org: %s / ID: %d)...\n", org.Name, org.ID)
+	state, enrollErr := preEnrollDeviceFn(ctx, auth, deviceName, org.ID, nil)
 	if enrollErr == nil {
 		fmt.Println("Device pre-enrolled. It will be secure from first boot.")
-		return js, nil
+		return state, nil
 	}
 	if !interactive {
 		return nil, fmt.Errorf("--pre-enroll: pre-enrollment failed: %w", enrollErr)

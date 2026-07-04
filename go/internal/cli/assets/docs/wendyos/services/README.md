@@ -14,8 +14,8 @@ WendyOS is a Yocto-based Linux distribution managed entirely by systemd. This do
 | `gadget-setup.service` | `recipes-core/gadget-setup` | Configures the USB gadget composite device (NCM or ECM network + ACM serial console) using Linux configfs |
 | `wendyos-usbgadget-unbind.service` | `recipes-core/gadget-setup` | Tears down the USB gadget on shutdown |
 | `wendyos-agent.service` | `recipes-core/wendyos-agent` | Runs the `wendy-agent` binary; provides device management, gRPC API, WiFi control, and container orchestration |
-| `wendyos-agent-updater.service` | `recipes-core/wendyos-agent` | One-shot agent self-update (downloads from GitHub releases) |
-| `wendyos-agent-updater.timer` | `recipes-core/wendyos-agent` | Triggers the updater 5 min after boot, then daily at 03:00 with a random 30-min jitter |
+| `wendyos-agent-updater.service` | `recipes-core/wendyos-agent` | One-shot agent self-update (downloads from GitHub releases). Also stopped during `UpdateOS` to prevent cgroup SIGTERM propagation to the in-flight Mender process |
+| `wendyos-agent-updater.timer` | `recipes-core/wendyos-agent` | Triggers the updater 5 min after boot, then daily at 03:00 with a random 30-min jitter. Stopped for the duration of any `UpdateOS` call so the updater cannot interrupt an in-flight Mender OTA; re-started when the call returns |
 | `containerd.service` | upstream (meta-virtualization) | Container runtime; `wendy-agent` requires it before starting |
 | `var-lib-containerd.mount` | `recipes-core/systemd-mount-containerd` | Bind-mounts `/data/containerd` to `/var/lib/containerd` so container images persist on the data partition |
 | `home.mount` | `recipes-core/systemd-mount-home` | Bind-mounts `/data/home` to `/home` |

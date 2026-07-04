@@ -22,6 +22,7 @@ Options:
   -w, --wendy PATH              Path to wendy binary (default: wendy on PATH)
   --templates-dir PATH          Use local templates repo instead of cloning
   --templates-branch BRANCH     Git branch when cloning (default: main)
+  --target TARGET               Template target to test (default: wendyos)
   --skip-run                    Only test generation, skip deploying to device
   --template NAME               Only test a specific template (e.g. simple-api)
   --exclude-template NAME       Skip a specific template (repeatable)
@@ -32,6 +33,7 @@ Examples:
   $(basename "$0") --skip-run                              # generate + validate only
   $(basename "$0") --skip-run --language python             # filter to one language
   $(basename "$0") --skip-run --template simple-api         # filter to one template
+  $(basename "$0") --skip-run --target darwin --template mac-llm --language swift
   $(basename "$0") -h wendyos-merry-aurora                  # full run with device
   $(basename "$0") --templates-dir ../WendyTemplates        # use local templates
 EOF
@@ -46,6 +48,7 @@ WENDY="wendy"
 TEMPLATES_DIR=""
 TEMPLATES_DIR_PROVIDED=false
 TEMPLATES_BRANCH="main"
+TARGET="wendyos"
 SKIP_RUN=false
 FILTER_TEMPLATE=""
 FILTER_LANGUAGE=""
@@ -57,6 +60,7 @@ while [[ $# -gt 0 ]]; do
         -w|--wendy)             WENDY="$2"; shift 2 ;;
         --templates-dir)        TEMPLATES_DIR="$2"; TEMPLATES_DIR_PROVIDED=true; shift 2 ;;
         --templates-branch)     TEMPLATES_BRANCH="$2"; shift 2 ;;
+        --target)               TARGET="$2"; shift 2 ;;
         --skip-run)             SKIP_RUN=true; shift ;;
         --template)             FILTER_TEMPLATE="$2"; shift 2 ;;
         --exclude-template)     EXCLUDE_TEMPLATES+=("$2"); shift 2 ;;
@@ -65,6 +69,16 @@ while [[ $# -gt 0 ]]; do
         *)                      echo "Unknown option: $1"; usage ;;
     esac
 done
+
+# SECURITY: TARGET is passed into jq and generated shell commands below. Keep
+# this allowlist before all TARGET uses, and only add fixed literal target names.
+case "$TARGET" in
+    wendyos|wendy-lite|darwin) ;;
+    *)
+        echo -e "${RED}ERROR: Unknown target '$TARGET' (valid: wendyos, wendy-lite, darwin)${RESET}"
+        exit 1
+        ;;
+esac
 
 # Add .local suffix only for bare mDNS hostnames (no dots or colons).
 # Leave IPs, FQDNs, and IPv6 addresses unchanged.
@@ -119,7 +133,7 @@ echo -e "${BOLD}==> Phase 3: Load template registry${RESET}"
 TEMPLATES=()
 while IFS= read -r name; do
     TEMPLATES+=("$name")
-done < <(jq -r '.templates[].name' "$META_JSON")
+done < <(jq -r --arg target "$TARGET" '.templates[] | select((.targets // ["wendyos"]) | index($target)) | .name' "$META_JSON")
 
 LANGUAGES=()
 while IFS= read -r key; do
@@ -151,6 +165,7 @@ if [[ -n "$FILTER_LANGUAGE" ]]; then
     LANGUAGES=("$FILTER_LANGUAGE")
 fi
 
+echo "Target: $TARGET"
 echo "Templates: ${TEMPLATES[*]}"
 echo "Languages: ${LANGUAGES[*]}"
 echo "Combinations: $(( ${#TEMPLATES[@]} * ${#LANGUAGES[@]} ))"
@@ -197,7 +212,7 @@ for lang in "${LANGUAGES[@]}"; do
                 --app-id '$app_id' \
                 --template '$tmpl' \
                 --language '$lang' \
-                --target wendyos \
+                --target '$TARGET' \
                 --assistant skip \
                 --git-init no"
     done
@@ -246,6 +261,9 @@ echo -e "${BOLD}==> Phase 6: Deploy to device${RESET}"
 DEPLOY_RC=0
 if [[ "$SKIP_RUN" == true ]]; then
     echo "Skipping device deployment (--skip-run)"
+    echo ""
+elif [[ "$TARGET" != "wendyos" ]]; then
+    echo "Skipping WendyOS device deployment for target '$TARGET'"
     echo ""
 else
     wendyos_args=(--samples-dir "$WORK_DIR")

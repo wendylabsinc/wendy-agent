@@ -21,6 +21,7 @@ It stays **unmodified and fully compatible with Docker Desktop**.
 // wendy.json
 {
   "appId": "sh.wendy.examples.hellocompose",
+  "platform": "linux",
   "services": {
     "api": {
       // GPU access declared here, not in docker-compose.yml

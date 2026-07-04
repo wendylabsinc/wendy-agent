@@ -6,6 +6,8 @@ import (
 	"io"
 	"net"
 	"time"
+
+	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 )
 
 // l2capNetConn adapts a *Connection to net.Conn so the TLS client can run over
@@ -94,18 +96,23 @@ func (e *timeoutErr) Error() string   { return "BLE L2CAP: i/o timeout" }
 func (e *timeoutErr) Timeout() bool   { return true }
 func (e *timeoutErr) Temporary() bool { return true }
 
-// NewClientTLSConfig builds a *tls.Config for the BLE client using the
-// provided certificate and private key PEM strings. The server certificate
-// is not verified against a CA pool because the agent uses a self-signed PKI
-// chain — the same approach used by the LAN gRPC client (ConnectWithTLS).
-func NewClientTLSConfig(certPEM, keyPEM string) (*tls.Config, error) {
+// NewClientTLSConfig builds a *tls.Config for the BLE client.
+// InsecureSkipVerify bypasses Go's built-in verifier (ML-DSA chain certs
+// fail to parse; no TLS hostname over L2CAP); opts.PinStore and chain
+// verification are handled by the VerifyConnection callback.
+func NewClientTLSConfig(certPEM, keyPEM string, opts certs.ServerVerifyOpts) (*tls.Config, error) {
 	cert, err := tls.X509KeyPair([]byte(certPEM), []byte(keyPEM))
 	if err != nil {
 		return nil, fmt.Errorf("loading BLE client certificate: %w", err)
 	}
+	verifyConn, err := certs.BuildServerVerifyConnection(opts)
+	if err != nil {
+		return nil, fmt.Errorf("building BLE server certificate verifier: %w", err)
+	}
 	return &tls.Config{
 		Certificates:       []tls.Certificate{cert},
-		InsecureSkipVerify: true, //nolint:gosec — agent uses self-signed PKI chain
+		InsecureSkipVerify: true, //nolint:gosec — hostname bypass only; VerifyConnection validates server cert against Wendy PKI
+		VerifyConnection:   verifyConn,
 		MinVersion:         tls.VersionTLS12,
 	}, nil
 }

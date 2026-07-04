@@ -30,6 +30,14 @@ func scanLocalWifiNetworks() ([]localWifiNetwork, error) {
 	return parseNetshNetworks(string(output)), nil
 }
 
+// cachedLocalWifiNetworks returns no networks on Windows: netsh already reads
+// the WLAN service's cached scan list (see scanLocalWifiNetworks), so the
+// single scan is effectively instant and a separate cached pre-paint would
+// just run netsh twice. streamLocalWifiScan falls through to the fresh scan.
+func cachedLocalWifiNetworks() []localWifiNetwork {
+	return nil
+}
+
 // wifiScanCacheHint is appended to empty-scan messages on Windows because
 // netsh reads cached results — see scanLocalWifiNetworks for details.
 const wifiScanCacheHint = "Windows scans for nearby networks periodically; if your network is missing, wait a few seconds and try again, or pass --ssid to specify it directly"

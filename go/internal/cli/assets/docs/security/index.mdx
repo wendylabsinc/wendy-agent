@@ -1,0 +1,131 @@
+---
+title: Security
+description: WendyOS security posture — architecture, control status, threat model, and disclosure
+---
+
+## Security Posture
+
+WendyOS is built with security as a core design requirement: mutual TLS on every CLI↔agent and
+cloud connection, post-quantum cryptography for data in transit, zero-trust certificate-based
+device enrollment, sandboxed apps with explicit entitlements, and a
+[published threat model](/docs/security/threat-model).
+
+Every control below is either already running in production code or is tracked with an
+explicit work item. Where a control is still in progress or planned, this page says so.
+
+## Architecture
+
+WendyOS components communicate across clearly defined trust boundaries. The CLI and mobile app
+reach the agent only through authenticated channels; containers are isolated from the host with
+explicit entitlements; and cloud connectivity requires a certificate issued by Wendy's PKI.
+
+```
+┌──────────────────────────────────────────────────────────┐
+│  Wendy Device (Edge)                                     │
+│                                                          │
+│  ┌─────────────┐    gRPC mTLS     ┌──────────────────┐  │
+│  │  wendy CLI  │◄────────────────►│  wendy-agent     │  │
+│  │  (user)     │                  │  (root daemon)   │  │
+│  └─────────────┘                  │                  │  │
+│                                   │  ┌─────────────┐ │  │
+│  ┌─────────────┐    BLE L2CAP     │  │ containerd  │ │  │
+│  │  Mobile App │◄────────────────►│  │ (containers)│ │  │
+│  │  (user)     │   mTLS (post)    │  └─────────────┘ │  │
+│  └─────────────┘                  │                  │  │
+│                                   │  ┌─────────────┐ │  │
+│                                   │  │ OCI Registry│ │  │
+│                                   │  │ :5000       │ │  │
+│                                   └──────────────────┘  │
+│                                          │               │
+│                          ┌───────────────┼──────────────┐│
+│                          │D-Bus          │gRPC TLS      ││
+│                   ┌──────▼──────┐ ┌─────▼────────────┐ ││
+│                   │NetworkMgr / │ │ Wendy Cloud       │ ││
+│                   │BlueZ        │ │ (pki-core, tunnel)│ ││
+│                   └─────────────┘ └──────────────────┘ ││
+└──────────────────────────────────────────────────────────┘
+```
+
+**Provisioning and mTLS transition.** Unprovisioned devices accept a plaintext channel by
+design — provisioning is the mitigation. The provisioning window is time-bounded and warned to
+operators; pre-enrollment at imaging time eliminates it entirely. Once provisioned, all
+communication moves to mTLS on port 50052, and the plaintext port is shut down.
+
+**Container isolation.** Apps run as non-root (`appuser`, UID 1000) inside containerd with a
+baseline seccomp profile, explicit capability grants, and entitlement-gated access to hardware,
+Bluetooth (D-Bus proxied), and host networking. No entitlement, no access.
+
+## Control Status
+
+| Control | Status | Target |
+|---------|--------|--------|
+| CLI↔agent mTLS (port 50052) | ✅ Shipped | — |
+| Post-quantum data-in-transit | ✅ Shipped | — |
+| Zero-trust cloud enrollment (PKI) | ✅ Shipped | — |
+| CLI device/org pinning on set-default | ✅ Shipped | — |
+| Container seccomp baseline | ✅ Shipped | — |
+| CAP_NET_ADMIN gated behind explicit host-admin entitlement | ✅ Shipped | — |
+| D-Bus proxy hard-fail (no silent unfiltered fallback) | ✅ Shipped | — |
+| containerd socket bind-mount denied | ✅ Shipped | — |
+| Default PID limits per container (fork-bomb guard) | ✅ Shipped | — |
+| Hook command injection fix; debug port bound to loopback | ✅ Shipped | — |
+| Container image signature verification (cosign) | 🛠 In progress | Q3 2026 |
+| Signed agent & OS updates | 🛠 In progress | Q3 2026 |
+| Reproducible builds / SBOM / SLSA provenance | 🛠 In progress | Q3 2026 |
+| Cloud CA pinning in firmware | 🛠 In progress | Q3 2026 |
+| Certificate revocation (OCSP/CRL) | 🛠 In progress | Q3 2026 |
+| Operator-scoped permissions in developer certificates | 🛠 In progress | Q3 2026 |
+| Hardware-backed key protection / root of trust (HSM/TPM) | 🛠 In progress | — |
+| Container user namespaces (UID remap) | 📋 Planned | — |
+| Audit logging (tamper-evident, remote sink) | 📋 Planned | — |
+| Enrollment token ECDH protection | 📋 Planned | — |
+| Default network mode bridge/CNI | 📋 Planned | — |
+| Secure-boot lockdown via fuse burning (supported platforms) | 📋 Planned | — |
+
+For the full STRIDE analysis behind these controls — threat IDs, severity ratings, existing
+mitigations, and recommended hardening — see the
+[WendyOS Threat Model](/docs/security/threat-model).
+
+## Trust & Disclosure
+
+### Vulnerability Disclosure
+
+Report vulnerabilities to **security@wendy.dev** rather than filing a public issue. We take all
+reports seriously, respond promptly, and keep you updated through remediation.
+
+We do not currently offer a formal bug-bounty program, but responsible disclosure is always
+recognized and credited where the reporter consents.
+
+### Compliance
+
+We are actively working toward **SOC 2** compliance. This is in progress — we are not yet
+certified — and we will update this page as we reach milestones. If you have specific compliance
+or due-diligence requirements, reach out to **security@wendy.dev**.
+
+### Supply Chain
+
+The signing infrastructure for reproducible builds, SBOM generation, and SLSA provenance is
+under active development (🛠 In progress). Container image signing and agent binary signing
+depend on this foundation. We will update this page and the changelog below when those controls
+ship.
+
+Until then: container images are verified by SHA256 digest; agent updates require a valid mTLS
+connection to submit.
+
+### Security Changelog
+
+Controls shipped in recent releases:
+
+- D-Bus proxy hard-fail — container start refused when `xdg-dbus-proxy` is absent; raw host socket never mounted
+- `/run/containerd/*` bind mounts denied in the container spec builder
+- `CAP_NET_ADMIN` separated from host networking; requires explicit `host-admin` entitlement
+- Baseline seccomp profile applied to all containers (blocks `ptrace`, `unshare`, `clone(CLONE_NEWUSER)`, `kexec`, kernel-module loading)
+- Default PID limit (4096) applied to every container regardless of manifest declarations
+- Hook command injection fix — hooks execute via `exec.Command`, not `sh -c`
+- Debug port (`debugpy`) bound to loopback `127.0.0.1:5678`, not `0.0.0.0`
+- CLI pins device organization and cloud host on `set-default`; subsequent connections verify the pin
+
+## Stay Updated
+
+Security features are announced on our [blog](https://wendy.dev/blog) and in our
+[Discord community](https://discord.gg/xYeUxq9TXv).

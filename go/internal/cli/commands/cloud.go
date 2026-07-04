@@ -21,11 +21,41 @@ func newCloudCmd() *cobra.Command {
 		Short: "Manage Wendy Cloud resources",
 	}
 
-	cmd.AddCommand(newCloudEnrollDeviceCmd())
-	cmd.AddCommand(newCloudDiscoverCmd())
-	cmd.AddCommand(newCloudRunCmd())
-	cmd.AddCommand(newCloudTunnelCmd())
-	cmd.AddCommand(newCloudDeviceCmd())
+	cmd.AddGroup(
+		&cobra.Group{ID: "auth", Title: "Authentication:"},
+		&cobra.Group{ID: "devices", Title: "Devices:"},
+		&cobra.Group{ID: "connectivity", Title: "Connectivity:"},
+	)
+
+	addToGroup := func(groupID string, cmds ...*cobra.Command) {
+		for _, c := range cmds {
+			c.GroupID = groupID
+			cmd.AddCommand(c)
+		}
+	}
+
+	// Authentication: the common Wendy Cloud auth flow surfaced under
+	// `wendy cloud`. These reuse the same constructors as the (now hidden)
+	// top-level `wendy auth` command; the advanced session commands
+	// (refresh-certs, use, default) remain reachable only via `wendy auth`.
+	addToGroup("auth",
+		newAuthLoginCmd(),
+		newAuthLogoutCmd(),
+		newAuthStatusCmd(),
+	)
+	// Devices: enroll, discover, and operate cloud-connected devices. The
+	// hidden `run` command stays registered (and runnable) but off the help
+	// menu; it is hidden via its own constructor.
+	addToGroup("devices",
+		newCloudEnrollDeviceCmd(),
+		newCloudDiscoverCmd(),
+		newCloudDeviceCmd(),
+		newCloudRunCmd(),
+	)
+	// Connectivity: networking helpers that reach a device through the cloud.
+	addToGroup("connectivity",
+		newCloudTunnelCmd(),
+	)
 	return cmd
 }
 
@@ -36,7 +66,7 @@ func newCloudDeviceCmd() *cobra.Command {
 	cmd := newDeviceCmd()
 	cmd.Short = "Manage WendyOS devices through Wendy Cloud"
 	cmd.Long = "Mirror of 'wendy device', but connects to the target device through the Wendy Cloud tunnel broker."
-	cmd.PersistentFlags().StringVar(&cloudGRPC, "cloud-grpc", "", "Cloud gRPC endpoint (required when multiple auth sessions exist)")
+	cmd.PersistentFlags().StringVar(&cloudGRPC, "cloud-grpc", "", "Cloud gRPC endpoint (optional when a default session is set via 'wendy auth use')")
 	cmd.PersistentFlags().StringVar(&brokerURL, "broker-url", os.Getenv("WENDY_BROKER_URL"), "Tunnel broker host:port (default: cloud :443 endpoint, otherwise <cloud-host>:50052)")
 
 	wrapCloudDeviceCommands(cmd, func() cloudDeviceConfig {
@@ -103,6 +133,6 @@ func newCloudEnrollDeviceCmd() *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&name, "name", "", "Device name")
-	cmd.Flags().StringVar(&cloudGRPC, "cloud-grpc", "", "Cloud/pki-core gRPC endpoint to use (required when multiple auth sessions exist)")
+	cmd.Flags().StringVar(&cloudGRPC, "cloud-grpc", "", "Cloud/pki-core gRPC endpoint to use (optional when a default session is set via 'wendy auth use')")
 	return cmd
 }

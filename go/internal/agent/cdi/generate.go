@@ -12,8 +12,8 @@ import (
 )
 
 var cdiSpecPaths = []string{
-	"/etc/cdi/nvidia.yaml",
 	"/var/run/cdi/nvidia.yaml",
+	"/etc/cdi/nvidia.yaml",
 }
 
 const cdiOutputDir = "/var/run/cdi"

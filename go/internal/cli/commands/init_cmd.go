@@ -12,7 +12,6 @@ import (
 	"slices"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
@@ -21,6 +20,7 @@ import (
 const (
 	targetWendyOS   = "wendyos"
 	targetWendyLite = "wendy-lite"
+	targetDarwin    = "darwin"
 
 	langSwift  = "swift"
 	langPython = "python"
@@ -49,6 +49,14 @@ var wendyLiteLanguages = []struct {
 	description string
 }{
 	{langSwift, "Swift", "Swift compiled to WASM"},
+}
+
+var darwinLanguages = []struct {
+	key         string
+	name        string
+	description string
+}{
+	{langSwift, "Swift", "Native macOS application for Wendy Agent for Mac"},
 }
 
 // Entitlement questions asked during interactive setup.
@@ -150,6 +158,14 @@ func newInitCmd() *cobra.Command {
     --no-extra-entitlements \
     --assistant skip
 
+  # Native macOS app for Wendy Agent for Mac
+  wendy init \
+    --app-id mac-llm \
+    --target darwin \
+    --language swift \
+    --template mac-llm \
+    --assistant skip
+
   # Enable all entitlements at once
   wendy init \
     --app-id full-app \
@@ -193,7 +209,7 @@ func newInitCmd() *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&opts.appID, "app-id", "", "Application ID to write into wendy.json")
-	cmd.Flags().StringVar(&opts.target, "target", "", "Target platform: wendyos or wendy-lite")
+	cmd.Flags().StringVar(&opts.target, "target", "", "Target platform: wendyos (writes \"linux\" to wendy.json), wendy-lite, or darwin")
 	cmd.Flags().StringVar(&opts.language, "language", "", "Project language: python, swift, rust, node, or cpp")
 	cmd.Flags().StringVar(&opts.template, "template", "", "Project template (e.g. simple-api, fullstack)")
 	cmd.Flags().StringVar(&opts.branch, "branch", "", fmt.Sprintf("Branch of the templates repo to use (default: %s)", templateRepoBranch))
@@ -290,9 +306,14 @@ func runInitWizard(args []string, opts initOptions) error {
 	}
 
 	// Step 4: Generate wendy.json.
-	platform := appconfig.PlatformWendyOS
-	if target == targetWendyLite {
+	// WendyOS is Linux, so the WendyOS target writes the plain "linux"
+	// platform. wendy-lite and darwin need distinct values.
+	platform := appconfig.PlatformLinux
+	switch target {
+	case targetWendyLite:
 		platform = appconfig.PlatformWendyLite
+	case targetDarwin:
+		platform = appconfig.PlatformDarwin
 	}
 
 	cfg := appconfig.AppConfig{
@@ -351,9 +372,12 @@ func resolveInitTemplateForTarget(target string, opts initOptions) (string, *rep
 			return name, meta, err
 		}
 
-		// Explicit template name: validate it.
+		// Explicit template name: validate it and ensure it supports the target.
 		for _, t := range meta.Templates {
 			if t.Name == tmpl {
+				if !templateTargetMatch(t, target) {
+					return "", nil, fmt.Errorf("template %q is not available for target %q", opts.template, target)
+				}
 				return tmpl, meta, nil
 			}
 		}
@@ -383,8 +407,8 @@ func resolveInitTemplateForTarget(target string, opts initOptions) (string, *rep
 }
 
 // templateTargetMatch returns true if the template supports the given target.
-// Templates without a Targets list default to WendyOS only; Wendy Lite templates
-// must explicitly include "wendy-lite" in their Targets list.
+// Templates without a Targets list default to WendyOS only; Wendy Lite and
+// native macOS templates must explicitly include their target in the list.
 func templateTargetMatch(t repoMetaTemplate, target string) bool {
 	if len(t.Targets) == 0 {
 		return target == targetWendyOS
@@ -439,11 +463,12 @@ func pickTemplateOrSkipForTarget(target string, meta *repoMeta) (string, error) 
 }
 
 // resolveTemplateLanguage picks the language for the template flow.
-// Wendy Lite always uses Swift; WendyOS offers the languages available for the selected template.
+// Wendy Lite and native macOS always use Swift; WendyOS offers the languages
+// available for the selected template.
 func resolveTemplateLanguage(target, tmpl string, meta *repoMeta, opts initOptions) (string, error) {
-	if target == targetWendyLite {
+	if target == targetWendyLite || target == targetDarwin {
 		if opts.languageSet && normalizeInitChoice(opts.language) != langSwift {
-			return "", fmt.Errorf("%s templates require %s", targetWendyLite, langSwift)
+			return "", fmt.Errorf("%s templates require %s", target, langSwift)
 		}
 		languages, err := templateLanguagesForTemplate(context.Background(), meta, tmpl, opts.branch)
 		if err != nil {
@@ -523,7 +548,7 @@ func fetchRepoMetaWithUI(branch string) (*repoMeta, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	prog := tea.NewProgram(tui.NewSpinner("Fetching template registry..."))
+	prog := tui.NewProgressProgram(tui.NewSpinner("Fetching template registry..."))
 
 	var (
 		meta     *repoMeta
@@ -566,7 +591,7 @@ func downloadTemplateArchiveWithUI(language, tmpl, branch string) (map[string][]
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	prog := tea.NewProgram(tui.NewProgress(title).WithoutErrorView())
+	prog := tui.NewProgressProgram(tui.NewProgress(title).WithoutErrorView())
 
 	var (
 		files    map[string][]byte
@@ -618,6 +643,13 @@ func runTemplateFlow(cwd, destDir, appID, tmpl, target string, meta *repoMeta, o
 		return err
 	}
 
+	// Resolve entitlement flags up front so an invalid combination fails
+	// before any files are scaffolded.
+	requestedEntitlements, err := templateEntitlementsFromFlags(target, opts)
+	if err != nil {
+		return err
+	}
+
 	// Parse --var overrides.
 	varOverrides, err := parseVarFlags(opts.vars)
 	if err != nil {
@@ -659,12 +691,20 @@ func runTemplateFlow(cwd, destDir, appID, tmpl, target string, meta *repoMeta, o
 		return err
 	}
 
+	addedEntitlements, err := mergeTemplateEntitlements(filepath.Join(destDir, "wendy.json"), requestedEntitlements)
+	if err != nil {
+		return err
+	}
+
 	cliSuccess("\nScaffolded %s project from template %q", language, tmpl)
-	cliLogln("  Directory: %s/", destDir)
+	cliLogln("  Directory: %s", tui.Path(destDir+"/"))
 	for _, v := range manifest.Variables {
 		if val, ok := vals[v.Name]; ok {
 			cliLogln("  %s: %v", v.Name, val)
 		}
+	}
+	if len(addedEntitlements) > 0 {
+		cliLogln("  Entitlements added from flags: %s", strings.Join(addedEntitlements, ", "))
 	}
 
 	// Offer git init.
@@ -679,7 +719,7 @@ func finishTemplateInit(cwd, destDir, appID string) error {
 	cliSuccess("\nYour project is ready!")
 	cliLogln("Next steps:")
 	for _, step := range templateNextSteps(cwd, destDir, appID) {
-		cliLogln("  %s", step)
+		cliLogln("  %s", tui.Command(step))
 	}
 	if filepath.Clean(destDir) != filepath.Clean(cwd) {
 		cliLogln("Note: run the cd command in your shell; a CLI process cannot change its parent shell directory.")
@@ -728,9 +768,21 @@ func templateNextSteps(cwd, destDir, appID string) []string {
 	return []string{"cd " + shellQuote(appID), "wendy run"}
 }
 
-// resolveInitDestAndID determines the destination directory and app ID for template flow.
-// In fully interactive mode it asks whether to initialize in the current directory
-// or create a new project subdirectory.
+// confirmInitCurrentDir and promptInitProjectName are variables so tests can
+// replace the Bubble Tea prompts with canned answers.
+var confirmInitCurrentDir = func() (bool, error) {
+	return tui.ConfirmDefaultYes("Initialize in the current directory?")
+}
+
+var promptInitProjectName = func() (string, error) {
+	return tui.PromptText("Project name", "directory name and app identifier", validateNewProjectName)
+}
+
+// resolveInitDestAndID determines the destination directory and app ID for
+// the template flow. An explicit app ID (positional or --app-id) answers
+// both; otherwise the user is asked on an interactive terminal. Flags that
+// answer other questions (--target, entitlement flags, ...) never suppress
+// these prompts (WDY-1805).
 func resolveInitDestAndID(cwd string, args []string, opts initOptions) (string, string, error) {
 	// Explicit app ID provided: always create a new subdirectory.
 	if len(args) > 0 || opts.appIDSet {
@@ -741,28 +793,30 @@ func resolveInitDestAndID(cwd string, args []string, opts initOptions) (string, 
 		return filepath.Join(cwd, appID), appID, nil
 	}
 
-	// Fully interactive (no directive flags): ask where to set up the project.
-	if !opts.targetSet && !opts.entitlementsSet && !opts.allEntitlements && !opts.noExtraEntitlements {
-		fmt.Println()
-		useCurrentDir, err := tui.ConfirmDefaultYes("Initialize in the current directory?")
-		if err != nil {
-			return "", "", err
-		}
-		if useCurrentDir {
-			return cwd, strings.TrimSpace(filepath.Base(cwd)), nil
-		}
-
-		fmt.Println()
-		appID, err := tui.PromptText("Project name", "directory name and app identifier", validateNewProjectName)
-		if err != nil {
-			return "", "", err
-		}
-		appID = strings.TrimSpace(appID)
-		return filepath.Join(cwd, appID), appID, nil
+	if !isInteractiveTerminal() {
+		return "", "", fmt.Errorf("an app ID is required when running non-interactively; pass --app-id or an [app-id] argument")
 	}
 
-	// Semi-interactive or non-interactive without explicit app ID: infer from cwd.
-	return cwd, strings.TrimSpace(filepath.Base(cwd)), nil
+	fmt.Println()
+	useCurrentDir, err := confirmInitCurrentDir()
+	if err != nil {
+		return "", "", err
+	}
+	if useCurrentDir {
+		appID := strings.TrimSpace(filepath.Base(cwd))
+		if err := validateNewProjectName(appID); err != nil {
+			return "", "", fmt.Errorf("current directory name %q cannot be used as the app ID: %w; rerun with --app-id", appID, err)
+		}
+		return cwd, appID, nil
+	}
+
+	fmt.Println()
+	appID, err := promptInitProjectName()
+	if err != nil {
+		return "", "", err
+	}
+	appID = strings.TrimSpace(appID)
+	return filepath.Join(cwd, appID), appID, nil
 }
 
 func validateNewProjectName(value string) error {
@@ -856,9 +910,9 @@ func resolveInitAppID(cwd string, args []string, opts initOptions) (string, erro
 
 func resolveInitTarget(opts initOptions) (string, error) {
 	if opts.targetSet {
-		target := normalizeInitChoice(opts.target)
+		target := normalizeInitTarget(opts.target)
 		if !isValidInitTarget(target) {
-			return "", fmt.Errorf("invalid target %q (valid: %s, %s)", opts.target, targetWendyOS, targetWendyLite)
+			return "", fmt.Errorf("invalid target %q (valid: %s, %s, %s)", opts.target, targetWendyOS, targetWendyLite, targetDarwin)
 		}
 		return target, nil
 	}
@@ -866,7 +920,8 @@ func resolveInitTarget(opts initOptions) (string, error) {
 	fmt.Println()
 	return pickFromItems("What is your target device?", []tui.PickerItem{
 		{Name: "WendyOS", Description: "Full Linux-based edge device (Jetson, Raspberry Pi, ...)", Value: targetWendyOS, SortKey: "0"},
-		{Name: "Wendy Lite", Description: "Microcontroller running WASM (ESP32)", Value: targetWendyLite, SortKey: "1"},
+		{Name: "macOS", Description: "Native macOS app deployed to Wendy Agent for Mac", Value: targetDarwin, SortKey: "1"},
+		{Name: "Wendy Lite", Description: "Microcontroller running WASM (ESP32)", Value: targetWendyLite, SortKey: "2"},
 	})
 }
 
@@ -911,6 +966,9 @@ func pickInitLanguage(target string) (string, error) {
 		// Only WASM-capable languages (currently just Swift).
 		cliNotice("Wendy Lite requires a WASM-compatible language.")
 		return langSwift, nil
+	case targetDarwin:
+		cliNotice("Wendy Agent for Mac currently supports native Swift apps.")
+		return langSwift, nil
 
 	default:
 		var items []tui.PickerItem
@@ -926,7 +984,12 @@ func pickInitLanguage(target string) (string, error) {
 }
 
 var askEntitlementQuestions = func(target, language string) ([]appconfig.Entitlement, error) {
-	// Always include network.
+	if target == targetDarwin {
+		cliLogln("Native macOS apps do not use WendyOS container entitlements.")
+		return nil, nil
+	}
+
+	// Always include network for WendyOS/Wendy Lite containerized targets.
 	entitlements := []appconfig.Entitlement{
 		{Type: appconfig.EntitlementNetwork},
 	}
@@ -971,6 +1034,13 @@ func initEntitlementsProvided(opts initOptions) bool {
 }
 
 func buildInitEntitlementsFromFlags(target string, opts initOptions) ([]appconfig.Entitlement, error) {
+	if target == targetDarwin {
+		if opts.entitlementsSet || opts.allEntitlements || opts.gpioPinsSet || opts.i2cDeviceSet || opts.persistNameSet || opts.persistPathSet {
+			return nil, fmt.Errorf("%s apps do not support WendyOS container entitlements", targetDarwin)
+		}
+		return nil, nil
+	}
+
 	entitlements := []appconfig.Entitlement{{Type: appconfig.EntitlementNetwork}}
 	seen := map[string]bool{appconfig.EntitlementNetwork: true}
 
@@ -1059,12 +1129,138 @@ func buildInitEntitlementsFromFlags(target string, opts initOptions) ([]appconfi
 	return entitlements, nil
 }
 
+// templateEntitlementsFromFlags resolves entitlement-related init flags for
+// the template flow. The template's wendy.json is scaffolded verbatim, so
+// requested entitlements must be merged in afterwards — without that step the
+// flags were silently ignored (WDY-1810).
+func templateEntitlementsFromFlags(target string, opts initOptions) ([]appconfig.Entitlement, error) {
+	if !initEntitlementsProvided(opts) {
+		return nil, nil
+	}
+	return buildInitEntitlementsFromFlags(target, opts)
+}
+
+// mergeTemplateEntitlements merges requested entitlements into the scaffolded
+// wendy.json at cfgPath and reports the entitlement types it added. Only the
+// entitlements key is rewritten; template entries are kept verbatim, and a
+// requested entitlement already covered by the template is skipped so the
+// template's more specific configuration (network mode, ports, ...) wins.
+func mergeTemplateEntitlements(cfgPath string, requested []appconfig.Entitlement) ([]string, error) {
+	if len(requested) == 0 {
+		return nil, nil
+	}
+
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		return nil, fmt.Errorf("reading scaffolded wendy.json to merge entitlement flags: %w", err)
+	}
+
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, fmt.Errorf("parsing scaffolded wendy.json: %w", err)
+	}
+
+	var existingRaw []json.RawMessage
+	if rawEnts, ok := raw["entitlements"]; ok {
+		if err := json.Unmarshal(rawEnts, &existingRaw); err != nil {
+			return nil, fmt.Errorf("parsing scaffolded wendy.json entitlements: %w", err)
+		}
+	}
+	existing := make([]appconfig.Entitlement, len(existingRaw))
+	for i, entRaw := range existingRaw {
+		if err := json.Unmarshal(entRaw, &existing[i]); err != nil {
+			return nil, fmt.Errorf("parsing scaffolded wendy.json entitlements[%d]: %w", i, err)
+		}
+	}
+
+	mergedRaw := existingRaw
+	var added []string
+	for _, req := range requested {
+		if templateEntitlementCovers(existing, req) {
+			continue
+		}
+		entRaw, err := json.Marshal(req)
+		if err != nil {
+			return nil, fmt.Errorf("marshaling %q entitlement: %w", req.Type, err)
+		}
+		mergedRaw = append(mergedRaw, entRaw)
+		existing = append(existing, req)
+		added = append(added, req.Type)
+	}
+	if len(added) == 0 {
+		return nil, nil
+	}
+
+	rawMerged, err := json.Marshal(mergedRaw)
+	if err != nil {
+		return nil, fmt.Errorf("marshaling merged entitlements: %w", err)
+	}
+	raw["entitlements"] = rawMerged
+
+	out, err := json.MarshalIndent(raw, "", "  ")
+	if err != nil {
+		return nil, fmt.Errorf("marshaling scaffolded wendy.json: %w", err)
+	}
+	out = append(out, '\n')
+	if err := os.WriteFile(cfgPath, out, 0o644); err != nil {
+		return nil, fmt.Errorf("writing scaffolded wendy.json: %w", err)
+	}
+	return added, nil
+}
+
+// templateEntitlementCovers reports whether the template's entitlements
+// already grant what req asks for.
+func templateEntitlementCovers(existing []appconfig.Entitlement, req appconfig.Entitlement) bool {
+	for _, e := range existing {
+		if e.Type != req.Type {
+			continue
+		}
+		switch req.Type {
+		case appconfig.EntitlementPersist:
+			if e.Name == req.Name {
+				return true
+			}
+		case appconfig.EntitlementI2C, appconfig.EntitlementSerial:
+			if e.Device == req.Device {
+				return true
+			}
+		case appconfig.EntitlementGPIO:
+			// A gpio entry without pins grants access to all GPIO chips.
+			if len(e.Pins) == 0 || pinsSubset(req.Pins, e.Pins) {
+				return true
+			}
+		default:
+			return true
+		}
+	}
+	return false
+}
+
+func pinsSubset(sub, super []int) bool {
+	for _, p := range sub {
+		if !slices.Contains(super, p) {
+			return false
+		}
+	}
+	return true
+}
+
 func normalizeInitChoice(value string) string {
 	return strings.ToLower(strings.TrimSpace(value))
 }
 
+func normalizeInitTarget(value string) string {
+	target := normalizeInitChoice(value)
+	switch target {
+	case "mac", "macos", "mac-os":
+		return targetDarwin
+	default:
+		return target
+	}
+}
+
 func isValidInitTarget(target string) bool {
-	return target == targetWendyOS || target == targetWendyLite
+	return target == targetWendyOS || target == targetWendyLite || target == targetDarwin
 }
 
 func isValidInitLanguage(language string) bool {
@@ -1074,6 +1270,9 @@ func isValidInitLanguage(language string) bool {
 func validateInitLanguage(target, language string) error {
 	if target == targetWendyLite && language != langSwift {
 		return fmt.Errorf("%s requires %s", targetWendyLite, langSwift)
+	}
+	if target == targetDarwin && language != langSwift {
+		return fmt.Errorf("%s requires %s", targetDarwin, langSwift)
 	}
 	return nil
 }
@@ -1101,12 +1300,6 @@ func validateInitAssistantOptions(opts initOptions) error {
 		return fmt.Errorf("%s is not installed or not on PATH", choice)
 	}
 	return nil
-}
-
-// promptYesNo displays a styled yes/no prompt. It is a variable so tests can
-// replace it with a non-TTY implementation.
-var promptYesNo = func(question string) (bool, error) {
-	return tui.Confirm(question)
 }
 
 func scaffoldProject(dir, appID, target, language string) error {
@@ -1272,11 +1465,7 @@ func installWendySkills(autoInstall bool) error {
 	fmt.Println()
 
 	if !autoInstall {
-		install, err := promptYesNo("Install Wendy skills for Claude Code?")
-		if err != nil {
-			return err
-		}
-		if !install {
+		if !confirmDefaultNoFn("Install Wendy skills for Claude Code?") {
 			return nil
 		}
 
@@ -1309,7 +1498,7 @@ func installWendySkills(autoInstall bool) error {
 
 func runAIAssistantChoice(choice, appID, target, language string, entitlements []appconfig.Entitlement, installClaudeSkills bool, interactive bool) error {
 	if choice == assistantSkip {
-		cliSuccess("\nYour project is ready! Run `wendy run` to build and deploy.")
+		cliSuccess("\nYour project is ready! Run %s to build and deploy.", tui.Command("wendy run"))
 		return nil
 	}
 
@@ -1344,6 +1533,8 @@ func buildAssistantPrompt(appID, target, language string, entitlements []appconf
 
 	if target == targetWendyLite {
 		sb.WriteString("It targets Wendy Lite (ESP32 microcontroller running WASM).\n")
+	} else if target == targetDarwin {
+		sb.WriteString("It targets Wendy Agent for Mac as a native macOS app.\n")
 	} else {
 		sb.WriteString("It targets WendyOS (a Linux-based edge device like NVIDIA Jetson or Raspberry Pi).\n")
 	}

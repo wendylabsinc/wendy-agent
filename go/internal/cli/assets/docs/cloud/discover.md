@@ -41,7 +41,7 @@ cloud returned more than 10000 devices
 |------|---------|-------------|
 | `--all` | `false` | Include offline (not currently connected) devices. By default only online devices are shown. |
 | `--broker-url` | `$WENDY_BROKER_URL` (or derived from cloud endpoint) | Tunnel broker `host:port` used for version fetching and in-place updates. |
-| `--cloud-grpc` | `""` | Cloud gRPC endpoint. Required when multiple auth sessions exist. |
+| `--cloud-grpc` | `""` | Cloud gRPC endpoint. Overrides session selection. When multiple sessions are stored and no default is set, an interactive terminal shows a session picker; a non-interactive environment errors. |
 
 ## Related
 

@@ -55,6 +55,15 @@ The bypass applies only to that PowerShell invocation. Run it from a non-elevate
 | `protoc` + `protoc-gen-go` + `protoc-gen-go-grpc` | Regenerating protobuf code | See [Protobuf section](#regenerating-protobuf-code) |
 | `golangci-lint` | Local linting (mirrors CI) | `go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest` |
 | `containerd` | Running the agent locally on Linux | `sudo apt install containerd` |
+| Node.js 24 + npm | Optional; only for developer screencast tooling in `screencast/` | [nodejs.org](https://nodejs.org) or `nvm install 24` |
+
+### Environment Variables
+
+Local `.env*` files are ignored by git, while `.env.example` files may be
+committed as templates. Do not commit real credentials.
+
+For screencast voiceover variables, use `screencast/.env.example` and see
+[screencast tooling](screencasts.md).
 
 ## Cloning
 
@@ -196,7 +205,7 @@ Then run the agent with:
 sudo ./bin/wendy-agent
 ```
 
-The agent listens on port `50051` (plaintext, pre-provisioning) and port `50052` (mTLS, post-provisioning). The OTEL collector listens on `4317` (gRPC) and `4318` (HTTP). All ports can be overridden via environment variables — see [debugging.md](debugging.md).
+The agent listens on port `50051` (plaintext, pre-provisioning) and port `50052` (mTLS, post-provisioning). It also serves a local unix socket at `/run/wendy/agent.sock` for on-device containers with the admin entitlement. The OTEL collector listens on `4317` (gRPC) and `4318` (HTTP). All ports can be overridden via environment variables — see [debugging.md](debugging.md).
 
 ## Dependency License Checks
 

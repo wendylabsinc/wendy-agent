@@ -175,13 +175,19 @@ func (x *RestartPolicy) GetOnFailureMaxRetries() int32 {
 }
 
 type AppContainer struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	AppName       string                 `protobuf:"bytes,1,opt,name=app_name,json=appName,proto3" json:"app_name,omitempty"`
-	AppVersion    string                 `protobuf:"bytes,2,opt,name=app_version,json=appVersion,proto3" json:"app_version,omitempty"`
-	RunningState  AppRunningState        `protobuf:"varint,3,opt,name=running_state,json=runningState,proto3,enum=wendy.agent.services.v2.AppRunningState" json:"running_state,omitempty"`
-	FailureCount  uint32                 `protobuf:"varint,4,opt,name=failure_count,json=failureCount,proto3" json:"failure_count,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state        protoimpl.MessageState `protogen:"open.v1"`
+	AppName      string                 `protobuf:"bytes,1,opt,name=app_name,json=appName,proto3" json:"app_name,omitempty"`
+	AppVersion   string                 `protobuf:"bytes,2,opt,name=app_version,json=appVersion,proto3" json:"app_version,omitempty"`
+	RunningState AppRunningState        `protobuf:"varint,3,opt,name=running_state,json=runningState,proto3,enum=wendy.agent.services.v2.AppRunningState" json:"running_state,omitempty"`
+	FailureCount uint32                 `protobuf:"varint,4,opt,name=failure_count,json=failureCount,proto3" json:"failure_count,omitempty"`
+	// Exit diagnostics for the last run, only meaningful when running_state is
+	// STOPPED. Fields 5-8 are left for the in-flight provenance PR #1234, so
+	// these start at 9 to guarantee no wire-number collision on either merge
+	// order.
+	ExitCode          int32  `protobuf:"varint,9,opt,name=exit_code,json=exitCode,proto3" json:"exit_code,omitempty"`                            // process exit code of the last run; -1 = task never started.
+	TerminationReason string `protobuf:"bytes,10,opt,name=termination_reason,json=terminationReason,proto3" json:"termination_reason,omitempty"` // exited | crashed | oom_killed | start_failed | entitlement_denied; empty if unknown.
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *AppContainer) Reset() {
@@ -242,6 +248,20 @@ func (x *AppContainer) GetFailureCount() uint32 {
 	return 0
 }
 
+func (x *AppContainer) GetExitCode() int32 {
+	if x != nil {
+		return x.ExitCode
+	}
+	return 0
+}
+
+func (x *AppContainer) GetTerminationReason() string {
+	if x != nil {
+		return x.TerminationReason
+	}
+	return ""
+}
+
 var File_wendy_agent_services_v2_shared_proto protoreflect.FileDescriptor
 
 const file_wendy_agent_services_v2_shared_proto_rawDesc = "" +
@@ -249,13 +269,16 @@ const file_wendy_agent_services_v2_shared_proto_rawDesc = "" +
 	"$wendy/agent/services/v2/shared.proto\x12\x17wendy.agent.services.v2\"\x84\x01\n" +
 	"\rRestartPolicy\x12>\n" +
 	"\x04mode\x18\x01 \x01(\x0e2*.wendy.agent.services.v2.RestartPolicyModeR\x04mode\x123\n" +
-	"\x16on_failure_max_retries\x18\x02 \x01(\x05R\x13onFailureMaxRetries\"\xbe\x01\n" +
+	"\x16on_failure_max_retries\x18\x02 \x01(\x05R\x13onFailureMaxRetries\"\x8a\x02\n" +
 	"\fAppContainer\x12\x19\n" +
 	"\bapp_name\x18\x01 \x01(\tR\aappName\x12\x1f\n" +
 	"\vapp_version\x18\x02 \x01(\tR\n" +
 	"appVersion\x12M\n" +
 	"\rrunning_state\x18\x03 \x01(\x0e2(.wendy.agent.services.v2.AppRunningStateR\frunningState\x12#\n" +
-	"\rfailure_count\x18\x04 \x01(\rR\ffailureCount*\xa0\x01\n" +
+	"\rfailure_count\x18\x04 \x01(\rR\ffailureCount\x12\x1b\n" +
+	"\texit_code\x18\t \x01(\x05R\bexitCode\x12-\n" +
+	"\x12termination_reason\x18\n" +
+	" \x01(\tR\x11terminationReason*\xa0\x01\n" +
 	"\x11RestartPolicyMode\x12#\n" +
 	"\x1fRESTART_POLICY_MODE_UNSPECIFIED\x10\x00\x12&\n" +
 	"\"RESTART_POLICY_MODE_UNLESS_STOPPED\x10\x01\x12\x1a\n" +

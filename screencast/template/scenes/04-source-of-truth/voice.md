@@ -1,0 +1,1 @@
+The source of truth is screencast script dot md. It describes the audience, goal, tone, and each scene. For every scene, it says what the narration should say and what the viewer should see. The script is not a build file. It is the creative plan. The agent uses it to generate renderable scene folders.

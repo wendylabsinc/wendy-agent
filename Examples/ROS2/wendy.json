@@ -1,26 +1,17 @@
 {
   "appId": "sh.wendy.examples.ros2",
+  "platform": "linux",
   "version": "1.0.0",
-  "isolation": "shared-network",
+  "isolation": "shared-ipc",
   "frameworks": {
-    "ros2": {
-      "domainId": 42,
-      "rmw": "rmw_cyclonedds_cpp"
-    }
+    "ros2": { "domainId": 42, "rmw": "rmw_cyclonedds_cpp", "distro": "humble" }
   },
   "services": {
-    "talker": {
-      "context": "./talker"
-    },
+    "talker": { "context": "./talker" },
     "listener": {
       "context": "./listener",
       "dependsOn": ["talker"],
-      "frameworks": {
-        "ros2": {
-          "domainId": 42,
-          "rmw": "rmw_cyclonedds_cpp"
-        }
-      }
+      "frameworks": { "ros2": { "domainId": 42, "rmw": "rmw_cyclonedds_cpp", "distro": "humble" } }
     }
   }
 }

@@ -2,6 +2,7 @@ package commands
 
 import (
 	"context"
+	"encoding/json"
 	"net"
 	"os"
 	"os/exec"
@@ -149,6 +150,9 @@ func TestRunMacOSSwiftPMWithAgent_UsesRunArgsFromAppConfig(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "Package.swift"), []byte("// test package\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile Package.swift: %v", err)
 	}
+	if err := os.WriteFile(filepath.Join(dir, "Brewfile.wendy"), []byte("brew \"jq\"\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile Brewfile.wendy: %v", err)
+	}
 
 	binDir := filepath.Join(dir, "bin")
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
@@ -198,6 +202,13 @@ func TestRunMacOSSwiftPMWithAgent_UsesRunArgsFromAppConfig(t *testing.T) {
 	if len(got.UserArgs) != 2 || got.UserArgs[0] != "--port" || got.UserArgs[1] != "8080" {
 		t.Fatalf("UserArgs = %v, want %v", got.UserArgs, appCfg.Run.Args)
 	}
+	var sentConfig appconfig.AppConfig
+	if err := json.Unmarshal(got.AppConfig, &sentConfig); err != nil {
+		t.Fatalf("unmarshal AppConfig: %v", err)
+	}
+	if sentConfig.Brewfile != "Brewfile.wendy" {
+		t.Fatalf("AppConfig Brewfile = %q, want Brewfile.wendy", sentConfig.Brewfile)
+	}
 
 	acked := make(map[string]bool)
 	for _, path := range state.ackedPaths {
@@ -211,6 +222,143 @@ func TestRunMacOSSwiftPMWithAgent_UsesRunArgsFromAppConfig(t *testing.T) {
 	}
 	if !acked["MySwiftApp.resources/config.json"] {
 		t.Fatalf("missing ack for MySwiftApp.resources/config.json; got %v", state.ackedPaths)
+	}
+	if !acked["Brewfile.wendy"] {
+		t.Fatalf("missing ack for Brewfile.wendy; got %v", state.ackedPaths)
+	}
+}
+
+func TestResolveNativeBrewfileSyncEntry_IgnoresProjectRootBrewfile(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "Brewfile"), []byte("brew \"jq\"\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile Brewfile: %v", err)
+	}
+
+	cfg := &appconfig.AppConfig{AppID: "sh.wendy.MySwiftApp"}
+	entry, err := resolveNativeBrewfileSyncEntry(dir, cfg)
+	if err != nil {
+		t.Fatalf("resolveNativeBrewfileSyncEntry: %v", err)
+	}
+	if entry != nil {
+		t.Fatalf("entry = %+v, want nil for project-root Brewfile", entry)
+	}
+	if cfg.Brewfile != "" {
+		t.Fatalf("cfg.Brewfile = %q, want empty", cfg.Brewfile)
+	}
+}
+
+func TestResolveNativeBrewfileSyncEntry_RejectsSymlinkBrewfile(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "RealBrewfile")
+	link := filepath.Join(dir, "Brewfile.wendy")
+	if err := os.WriteFile(target, []byte("brew \"jq\"\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile RealBrewfile: %v", err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatalf("Symlink Brewfile.wendy: %v", err)
+	}
+
+	cfg := &appconfig.AppConfig{AppID: "sh.wendy.MySwiftApp"}
+	_, err := resolveNativeBrewfileSyncEntry(dir, cfg)
+	if err == nil {
+		t.Fatal("resolveNativeBrewfileSyncEntry succeeded; want symlink rejection")
+	}
+	if !strings.Contains(err.Error(), "regular file") {
+		t.Fatalf("error = %v, want regular file", err)
+	}
+}
+
+func TestAppendNativeBrewfileSyncEntry_DeduplicatesSameSource(t *testing.T) {
+	dir := t.TempDir()
+	brewfilePath := filepath.Join(dir, "ops", "Brewfile")
+	if err := os.MkdirAll(filepath.Dir(brewfilePath), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(brewfilePath, []byte("brew \"jq\"\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile Brewfile: %v", err)
+	}
+
+	cfg := &appconfig.AppConfig{AppID: "sh.wendy.MySwiftApp", Brewfile: "ops/Brewfile"}
+	entries := []fileSyncEntry{{localPath: brewfilePath, remotePath: "ops/Brewfile"}}
+	got, err := appendNativeBrewfileSyncEntry(entries, dir, cfg)
+	if err != nil {
+		t.Fatalf("appendNativeBrewfileSyncEntry: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("entries count = %d, want 1", len(got))
+	}
+}
+
+func TestAppendNativeBrewfileSyncEntry_RejectsConflictingFilesMapping(t *testing.T) {
+	dir := t.TempDir()
+	appBrewfilePath := filepath.Join(dir, "ops", "Brewfile")
+	devBrewfilePath := filepath.Join(dir, "dev", "Brewfile")
+	for _, path := range []string{appBrewfilePath, devBrewfilePath} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("MkdirAll: %v", err)
+		}
+	}
+	if err := os.WriteFile(appBrewfilePath, []byte("brew \"jq\"\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile app Brewfile: %v", err)
+	}
+	if err := os.WriteFile(devBrewfilePath, []byte("brew \"mas\"\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile dev Brewfile: %v", err)
+	}
+
+	cfg := &appconfig.AppConfig{AppID: "sh.wendy.MySwiftApp", Brewfile: "ops/Brewfile"}
+	entries := []fileSyncEntry{{localPath: devBrewfilePath, remotePath: "ops/Brewfile"}}
+	_, err := appendNativeBrewfileSyncEntry(entries, dir, cfg)
+	if err == nil {
+		t.Fatal("expected conflict error")
+	}
+	if !strings.Contains(err.Error(), "conflicts with another synced file") {
+		t.Fatalf("error = %q, want conflict message", err.Error())
+	}
+}
+
+func TestAppendNativeBrewfileSyncEntry_DeduplicatesDirectoryCoveringSameSource(t *testing.T) {
+	dir := t.TempDir()
+	brewfilePath := filepath.Join(dir, "ops", "Brewfile")
+	if err := os.MkdirAll(filepath.Dir(brewfilePath), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(brewfilePath, []byte("brew \"jq\"\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile Brewfile: %v", err)
+	}
+
+	cfg := &appconfig.AppConfig{AppID: "sh.wendy.MySwiftApp", Brewfile: "ops/Brewfile"}
+	entries := []fileSyncEntry{{localPath: filepath.Join(dir, "ops"), remotePath: "ops"}}
+	got, err := appendNativeBrewfileSyncEntry(entries, dir, cfg)
+	if err != nil {
+		t.Fatalf("appendNativeBrewfileSyncEntry: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("entries count = %d, want 1", len(got))
+	}
+}
+
+func TestAppendNativeBrewfileSyncEntry_AppendsWhenDirectoryDoesNotContainBrewfile(t *testing.T) {
+	dir := t.TempDir()
+	brewfilePath := filepath.Join(dir, "ops", "Brewfile")
+	assetsDir := filepath.Join(dir, "assets")
+	if err := os.MkdirAll(filepath.Dir(brewfilePath), 0o755); err != nil {
+		t.Fatalf("MkdirAll ops: %v", err)
+	}
+	if err := os.MkdirAll(assetsDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll assets: %v", err)
+	}
+	if err := os.WriteFile(brewfilePath, []byte("brew \"jq\"\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile Brewfile: %v", err)
+	}
+
+	cfg := &appconfig.AppConfig{AppID: "sh.wendy.MySwiftApp", Brewfile: "ops/Brewfile"}
+	entries := []fileSyncEntry{{localPath: assetsDir, remotePath: "ops"}}
+	got, err := appendNativeBrewfileSyncEntry(entries, dir, cfg)
+	if err != nil {
+		t.Fatalf("appendNativeBrewfileSyncEntry: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("entries count = %d, want 2", len(got))
 	}
 }
 
@@ -269,14 +417,18 @@ func TestPreflightMissingAppConfigForMacTarget_RejectsContainerProjectBeforeConf
 	}
 }
 
-func TestPreflightMissingAppConfigForMacTarget_AllowsNativeSwiftProject(t *testing.T) {
+func TestPreflightMissingAppConfigForMacTarget_RejectsNativeSwiftProjectWithoutDarwinPlatform(t *testing.T) {
 	state := &fakeMacRunState{}
 	conn, cleanup := startFakeMacRunServer(t, state)
 	defer cleanup()
 
 	target := &SelectedDevice{Agent: conn}
-	if err := preflightMissingAppConfigForMacTarget(context.Background(), target, "swift"); err != nil {
-		t.Fatalf("preflightMissingAppConfigForMacTarget swift error = %v, want nil", err)
+	err := preflightMissingAppConfigForMacTarget(context.Background(), target, "swift")
+	if err == nil {
+		t.Fatal("preflightMissingAppConfigForMacTarget swift error = nil, want unsupported Mac project error")
+	}
+	if got := err.Error(); !strings.Contains(got, "Project/target mismatch") || !strings.Contains(got, "platform: \"darwin\"") {
+		t.Fatalf("preflightMissingAppConfigForMacTarget swift error = %q, want Mac project guidance", got)
 	}
 }
 
@@ -392,6 +544,38 @@ func TestRunComposeWithAgent_RejectsMacAgentBeforeRegistrySetup(t *testing.T) {
 	}
 	if len(state.createReqs) != 0 {
 		t.Fatalf("CreateContainer calls = %d, want 0", len(state.createReqs))
+	}
+}
+
+func TestRunMacOSNativeContainer_OverwritesPrepopulatedAppConfig(t *testing.T) {
+	state := &fakeMacRunState{}
+	conn, cleanup := startFakeMacRunServer(t, state)
+	defer cleanup()
+
+	appCfg := &appconfig.AppConfig{
+		AppID:    "sh.wendy.MySwiftApp",
+		Platform: appconfig.PlatformDarwin,
+		Brewfile: "Brewfile.wendy",
+	}
+	createReq := &agentpb.CreateContainerRequest{
+		AppName:   appCfg.AppID,
+		Cmd:       "MySwiftApp",
+		AppConfig: []byte(`{"appId":"sh.wendy.MySwiftApp","brewfile":"stale/Brewfile"}`),
+	}
+
+	if err := runMacOSNativeContainer(context.Background(), conn, appCfg, createReq, runOptions{deploy: true}); err != nil {
+		t.Fatalf("runMacOSNativeContainer: %v", err)
+	}
+
+	if len(state.createReqs) != 1 {
+		t.Fatalf("CreateContainer calls = %d, want 1", len(state.createReqs))
+	}
+	var sentConfig appconfig.AppConfig
+	if err := json.Unmarshal(state.createReqs[0].AppConfig, &sentConfig); err != nil {
+		t.Fatalf("unmarshal AppConfig: %v", err)
+	}
+	if sentConfig.Brewfile != "Brewfile.wendy" {
+		t.Fatalf("AppConfig Brewfile = %q, want Brewfile.wendy", sentConfig.Brewfile)
 	}
 }
 

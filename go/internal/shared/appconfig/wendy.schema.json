@@ -24,8 +24,8 @@
     },
     "platform": {
       "type": "string",
-      "enum": ["wendyos", "wendy-lite", "darwin"],
-      "description": "Target platform: wendyos (Linux edge devices), wendy-lite (ESP32 WASM), or darwin (native macOS via Wendy Agent for Mac)."
+      "pattern": "^(linux|wendyos|darwin)(/[A-Za-z0-9._-]+){0,2}$|^wendy-lite$",
+      "description": "Target platform: linux (default Linux edge devices), wendyos (compatibility alias for linux), wendy-lite (ESP32 WASM), or darwin (native macOS via Wendy for Mac)."
     },
     "language": {
       "type": "string",
@@ -61,6 +61,23 @@
       "items": {
         "$ref": "#/$defs/fileSyncEntry"
       }
+    },
+    "brewfile": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?:\\./)?(?!/)(?!.*[\\\\%\\u0000-\\u001F])(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*(?:/)\\.(?:/|$))(?!.*//)(?!.*/$).+$",
+      "description": "Optional Homebrew Bundle manifest for native Darwin deployments, relative to wendy.json. If omitted, a project-root Brewfile.wendy is auto-detected for native Mac runs."
+    },
+    "isolation": {
+      "type": "string",
+      "description": "Namespace isolation mode for multi-container deployments (e.g. shared-ipc, shared-network, isolated)."
+    },
+    "frameworks": { "$ref": "#/$defs/frameworks" },
+    "resources": { "$ref": "#/$defs/resourceLimits" },
+    "services": {
+      "type": "object",
+      "description": "Per-service build and runtime configuration for a multi-service app.",
+      "additionalProperties": { "$ref": "#/$defs/service" }
     }
   },
   "$defs": {
@@ -74,8 +91,8 @@
             "type": { "const": "network" },
             "mode": {
               "type": "string",
-              "enum": ["host", "none"],
-              "description": "Network mode. \"host\" shares the host network stack; \"none\" disables networking."
+              "enum": ["host", "host-admin", "none"],
+              "description": "Network mode. \"host\" shares the host network stack (visibility only); \"host-admin\" additionally grants CAP_NET_ADMIN to reconfigure host networking; \"none\" disables networking."
             }
           },
           "required": ["type"],
@@ -217,6 +234,36 @@
           "required": ["type"],
           "additionalProperties": false,
           "description": "HID input device access (barcode scanners, keyboards, etc.)."
+        },
+        {
+          "properties": {
+            "type": { "const": "serial" },
+            "device": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^(ttyACM|ttyUSB)[0-9]+$",
+              "description": "USB serial tty node name, e.g. \"ttyACM0\" or \"ttyUSB0\" (bare name, not a path). USB-only; on-board UARTs (ttyAMA, ttyS) are not supported."
+            }
+          },
+          "required": ["type", "device"],
+          "additionalProperties": false,
+          "description": "Serial tty device access (USB-attached servo buses, sensors, microcontrollers)."
+        },
+        {
+          "properties": {
+            "type": { "const": "display" }
+          },
+          "required": ["type"],
+          "additionalProperties": false,
+          "description": "Present to a locally-attached monitor as a Wayland client: GPU render nodes (/dev/dri) plus the WendyOS compositor's Wayland socket. At most one per app; requires a display-enabled WendyOS image."
+        },
+        {
+          "properties": {
+            "type": { "const": "admin" }
+          },
+          "required": ["type"],
+          "additionalProperties": false,
+          "description": "Full local control of the agent over its unix socket, with no authentication. The entitlement-gated socket mount is the entire trust boundary — grant only to fully-trusted first-party apps. At most one per app."
         }
       ]
     },
@@ -319,6 +366,73 @@
           "items": {
             "type": "string"
           }
+        }
+      }
+    },
+    "frameworks": {
+      "type": "object",
+      "description": "Optional framework-level configuration (e.g. ROS 2).",
+      "additionalProperties": false,
+      "properties": {
+        "ros2": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "ROS 2 runtime configuration injected into the container.",
+          "properties": {
+            "domainId": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 232,
+              "description": "ROS_DOMAIN_ID. When omitted, a stable hash of appId in [0,232] is used."
+            },
+            "rmw": {
+              "type": "string",
+              "enum": [
+                "cyclonedds", "fastrtps", "fastdds", "connextdds", "gurumdds",
+                "rmw_cyclonedds_cpp", "rmw_fastrtps_cpp", "rmw_connextdds", "rmw_gurumdds_cpp"
+              ],
+              "description": "RMW middleware. Short names or full identifiers. Defaults to rmw_cyclonedds_cpp."
+            },
+            "distro": {
+              "type": "string",
+              "description": "ROS 2 distribution (e.g. humble, jazzy). Defaults to humble."
+            }
+          }
+        }
+      }
+    },
+    "service": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "A single service within a multi-service app.",
+      "properties": {
+        "context": { "type": "string", "description": "Build context directory relative to wendy.json." },
+        "dependsOn": { "type": "array", "items": { "type": "string" }, "description": "Service names this service starts after." },
+        "entitlements": { "type": "array", "items": { "$ref": "#/$defs/entitlement" } },
+        "frameworks": { "$ref": "#/$defs/frameworks" },
+        "resources": { "$ref": "#/$defs/resourceLimits" }
+      }
+    },
+    "resourceLimits": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Per-app or per-service resource ceilings enforced by the agent via cgroups. Omitted fields leave that resource unbounded.",
+      "properties": {
+        "memory": {
+          "type": "string",
+          "pattern": "^[0-9]+(Ki|Mi|Gi|Ti|K|M|G|T)?$",
+          "description": "Hard memory limit. A number of bytes, optionally with a binary (Ki, Mi, Gi, Ti) or decimal (K, M, G, T) suffix, e.g. \"512Mi\". The container is OOM-killed if it exceeds this."
+        },
+        "cpus": {
+          "type": "string",
+          "pattern": "^[0-9]+(\\.[0-9]+)?$",
+          "description": "Maximum number of CPU cores as a decimal, e.g. \"0.5\", \"1.5\", \"2\". Enforced as a CFS quota over a 100ms period."
+        },
+        "pids": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4194304,
+          "description": "Maximum number of processes/threads the container may create. Guards against fork bombs. Omit to use the agent's conservative default cap."
         }
       }
     }

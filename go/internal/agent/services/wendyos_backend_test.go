@@ -1,0 +1,208 @@
+package services
+
+import (
+	"strings"
+	"testing"
+
+	"github.com/wendylabsinc/wendy/go/internal/agent/oshealth"
+)
+
+func TestParseWendyOSProgress(t *testing.T) {
+	tests := []struct {
+		name        string
+		line        string
+		wantPhase   string
+		wantPercent int32
+		wantOK      bool
+	}{
+		{
+			name:        "well-formed progress line",
+			line:        `{"phase":"write","percent":42,"msg":"writing slot"}`,
+			wantPhase:   "write",
+			wantPercent: 42,
+			wantOK:      true,
+		},
+		{
+			name:        "commit phase at 100",
+			line:        `{"phase":"commit","percent":100}`,
+			wantPhase:   "commit",
+			wantPercent: 100,
+			wantOK:      true,
+		},
+		{
+			name:   "non-JSON line is ignored",
+			line:   "wendyos-update: writing artifact",
+			wantOK: false,
+		},
+		{
+			name:   "JSON without a phase is ignored",
+			line:   `{"current_slot":"a","pending":false}`,
+			wantOK: false,
+		},
+		{
+			name:   "blank line is ignored",
+			line:   "   ",
+			wantOK: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			phase, percent, ok := parseWendyOSProgress(tt.line)
+			if ok != tt.wantOK {
+				t.Fatalf("parseWendyOSProgress(%q) ok = %v, want %v", tt.line, ok, tt.wantOK)
+			}
+			if !tt.wantOK {
+				return
+			}
+			if phase != tt.wantPhase || percent != tt.wantPercent {
+				t.Fatalf("parseWendyOSProgress(%q) = (%q, %d), want (%q, %d)",
+					tt.line, phase, percent, tt.wantPhase, tt.wantPercent)
+			}
+		})
+	}
+}
+
+func TestParseWendyOSRebootRequired(t *testing.T) {
+	tests := []struct {
+		name   string
+		output string
+		want   bool
+	}{
+		{
+			name:   "reboot required",
+			output: `{"phase":"rollback","origin_slot":"a","reboot_required":true}`,
+			want:   true,
+		},
+		{
+			name:   "already on origin slot, no reboot needed",
+			output: `{"phase":"rollback","origin_slot":"a","reboot_required":false}`,
+			want:   false,
+		},
+		{
+			name: "summary line among other output",
+			output: "wendyos-update: rollback\n" +
+				`{"phase":"rollback","origin_slot":"b","reboot_required":false}` + "\n",
+			want: false,
+		},
+		{
+			name:   "no JSON line: fails safe to reboot",
+			output: "wendyos-update: rolled back",
+			want:   true,
+		},
+		{
+			name:   "malformed JSON: fails safe to reboot",
+			output: `{"phase":"rollback","reboot_required":`,
+			want:   true,
+		},
+		{
+			name:   "empty output: fails safe to reboot",
+			output: "",
+			want:   true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := parseWendyOSRebootRequired(tt.output); got != tt.want {
+				t.Errorf("parseWendyOSRebootRequired(%q) = %v, want %v", tt.output, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCommitStatusForExitCode(t *testing.T) {
+	tests := []struct {
+		code int
+		want oshealth.UpdaterStatus
+	}{
+		{code: 0, want: oshealth.UpdaterOK},
+		{code: 2, want: oshealth.UpdaterNothingPending},
+		{code: 1, want: oshealth.UpdaterError},
+		{code: 4, want: oshealth.UpdaterError}, // verify failed at commit
+	}
+	for _, tt := range tests {
+		if got := commitStatusForExitCode(tt.code); got != tt.want {
+			t.Errorf("commitStatusForExitCode(%d) = %v, want %v", tt.code, got, tt.want)
+		}
+	}
+}
+
+func TestWendyOSInstallErrorMessage(t *testing.T) {
+	tail := []string{"wendyos-update: validating artifact", "wendyos-update: checksum mismatch"}
+
+	tests := []struct {
+		name        string
+		exitCode    int
+		wantContain string
+	}{
+		{name: "artifact rejected", exitCode: 3, wantContain: "rejected"},
+		{name: "generic error", exitCode: 1, wantContain: "wendyos-update install failed"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			msg := wendyOSInstallErrorMessage(tt.exitCode, tail)
+			if !strings.Contains(strings.ToLower(msg), strings.ToLower(tt.wantContain)) {
+				t.Fatalf("wendyOSInstallErrorMessage(%d) = %q, want it to contain %q",
+					tt.exitCode, msg, tt.wantContain)
+			}
+			// The captured tail must be surfaced so failures are diagnosable.
+			if !strings.Contains(msg, "checksum mismatch") {
+				t.Fatalf("wendyOSInstallErrorMessage(%d) = %q, want it to include the output tail", tt.exitCode, msg)
+			}
+		})
+	}
+}
+
+func TestIsStaleDeploymentError(t *testing.T) {
+	tests := []struct {
+		name string
+		tail []string
+		want bool
+	}{
+		{
+			name: "the in-flight rejection wendyos-update actually prints",
+			tail: []string{
+				"wendyos-update: install: downloading url=https://example/img.wendy status=200 OK",
+				`wendyos-update: an update is already in flight (phase "failed", artifact wendyos-image-jetson-orin-nano-devkit-nvme-wendyos-0.16.1); run rollback or mark-good first`,
+			},
+			want: true,
+		},
+		{
+			name: "match is case-insensitive",
+			tail: []string{`An update is Already In Flight (phase "failed")`},
+			want: true,
+		},
+		{
+			name: "an artifact rejection is not a stale-deployment error",
+			tail: []string{"wendyos-update: checksum mismatch", "wendyos-update: artifact rejected"},
+			want: false,
+		},
+		{
+			name: "empty tail",
+			tail: nil,
+			want: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isStaleDeploymentError(tt.tail); got != tt.want {
+				t.Fatalf("isStaleDeploymentError(%q) = %v, want %v", tt.tail, got, tt.want)
+			}
+		})
+	}
+}
+
+// exit 4 (verify failed) is a commit-time code in the wendyos-update contract;
+// install never emits it. The install error mapper must therefore not mislabel
+// a stray exit 4 as a verification failure — it falls through to the generic
+// message so it is not confused with a real install-time verify code.
+func TestWendyOSInstallErrorMessageDoesNotClaimVerifyFailure(t *testing.T) {
+	msg := wendyOSInstallErrorMessage(4, nil)
+	if strings.Contains(strings.ToLower(msg), "verif") {
+		t.Fatalf("wendyOSInstallErrorMessage(4) = %q, want no verification-failure wording (exit 4 is commit-time)", msg)
+	}
+	if !strings.Contains(msg, "wendyos-update install failed") {
+		t.Fatalf("wendyOSInstallErrorMessage(4) = %q, want the generic install-failed message", msg)
+	}
+}

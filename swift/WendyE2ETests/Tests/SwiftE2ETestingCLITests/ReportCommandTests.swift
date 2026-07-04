@@ -105,6 +105,76 @@ struct `report command` {
         #expect(html.contains("title=\"macos-to-&lt;img src=x onerror=&quot;alert(1)&quot;&gt;\""))
         #expect(html.contains("macos-to-no-observations"))
     }
+
+    @Test
+    func `renders failed target for failed attempt artifact without observations`() throws {
+        let rootURL = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+
+        let packageURL = rootURL.appendingPathComponent("Package", isDirectory: true)
+        let testsURL = packageURL.appendingPathComponent("Tests", isDirectory: true)
+        let supportURL = packageURL.appendingPathComponent("Support", isDirectory: true)
+        let runURL = rootURL.appendingPathComponent("Run", isDirectory: true)
+        let attemptURL =
+            runURL
+            .appendingPathComponent("attempts", isDirectory: true)
+            .appendingPathComponent("macos-jetson-orin-nano", isDirectory: true)
+            .appendingPathComponent("0001", isDirectory: true)
+
+        try FileManager.default.createDirectory(at: testsURL, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: supportURL, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: attemptURL, withIntermediateDirectories: true)
+        try """
+        {
+          "exitStatus": 1
+        }
+        """.write(
+            to: attemptURL.appendingPathComponent("attempt.json"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try """
+        <!doctype html>
+        <html>
+          <body>
+            {{TARGET_OVERVIEW}}
+            <!-- Repeat this .card section once per test file. -->
+            <footer></footer>
+          </body>
+        </html>
+        """.write(
+            to: supportURL.appendingPathComponent("e2e-report.template.html"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        var command = try ReportCommand.parse([
+            "--package-dir", packageURL.path,
+            "--run-dir", runURL.path,
+        ])
+        try command.run()
+
+        let html = try String(
+            contentsOf: runURL.appendingPathComponent("index.html"),
+            encoding: .utf8
+        )
+
+        #expect(html.contains("macos-jetson-orin-nano"))
+        #expect(html.contains("<td><span class=\"badge fail\">Failed</span></td>"))
+        #expect(
+            html.contains(
+                """
+                  <td class="numeric">1</td>
+                  <td class="numeric">0</td>
+                  <td class="numeric">0</td>
+                  <td class="numeric">0</td>
+                  <td class="numeric">1</td>
+                  <td class="numeric">0</td>
+                  <td class="numeric">0</td>
+                """
+            )
+        )
+    }
 }
 
 private func writeReportTestMetadata(to observationURL: URL) throws {

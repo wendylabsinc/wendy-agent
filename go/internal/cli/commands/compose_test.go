@@ -490,10 +490,11 @@ func TestApplyComposeCompanion(t *testing.T) {
 	})
 
 	t.Run("sets appId, serviceName, isolation and group frameworks", func(t *testing.T) {
+		domainZero := 0
 		companion := &appconfig.AppConfig{
 			AppID:      "com.example.robot",
 			Isolation:  "shared-ipc",
-			Frameworks: &appconfig.FrameworksConfig{ROS2: &appconfig.ROS2Config{DomainID: 0}},
+			Frameworks: &appconfig.FrameworksConfig{ROS2: &appconfig.ROS2Config{DomainID: &domainZero}},
 		}
 		got := baseAppCfg()
 		applyComposeCompanion(got, companion, "camera")
@@ -533,8 +534,9 @@ func TestApplyComposeCompanion(t *testing.T) {
 	})
 
 	t.Run("per-service frameworks override group frameworks", func(t *testing.T) {
-		groupROS2 := &appconfig.ROS2Config{DomainID: 0}
-		svcROS2 := &appconfig.ROS2Config{DomainID: 42}
+		groupID, svcID := 0, 42
+		groupROS2 := &appconfig.ROS2Config{DomainID: &groupID}
+		svcROS2 := &appconfig.ROS2Config{DomainID: &svcID}
 		companion := &appconfig.AppConfig{
 			AppID:      "com.example.robot",
 			Frameworks: &appconfig.FrameworksConfig{ROS2: groupROS2},
@@ -549,13 +551,14 @@ func TestApplyComposeCompanion(t *testing.T) {
 		if got.Frameworks == nil || got.Frameworks.ROS2 == nil {
 			t.Fatal("Frameworks.ROS2 should be set")
 		}
-		if got.Frameworks.ROS2.DomainID != 42 {
-			t.Errorf("DomainID = %d, want 42 (per-service override)", got.Frameworks.ROS2.DomainID)
+		if got.Frameworks.ROS2.DomainID == nil || *got.Frameworks.ROS2.DomainID != 42 {
+			t.Errorf("DomainID = %v, want 42 (per-service override)", got.Frameworks.ROS2.DomainID)
 		}
 	})
 
 	t.Run("group frameworks apply when service has no frameworks", func(t *testing.T) {
-		groupROS2 := &appconfig.ROS2Config{DomainID: 5}
+		domainFive := 5
+		groupROS2 := &appconfig.ROS2Config{DomainID: &domainFive}
 		companion := &appconfig.AppConfig{
 			AppID:      "com.example.robot",
 			Frameworks: &appconfig.FrameworksConfig{ROS2: groupROS2},
@@ -565,7 +568,7 @@ func TestApplyComposeCompanion(t *testing.T) {
 		}
 		got := baseAppCfg()
 		applyComposeCompanion(got, companion, "camera")
-		if got.Frameworks == nil || got.Frameworks.ROS2 == nil || got.Frameworks.ROS2.DomainID != 5 {
+		if got.Frameworks == nil || got.Frameworks.ROS2 == nil || got.Frameworks.ROS2.DomainID == nil || *got.Frameworks.ROS2.DomainID != 5 {
 			t.Errorf("expected group-level ROS2 DomainID=5, got %+v", got.Frameworks)
 		}
 	})

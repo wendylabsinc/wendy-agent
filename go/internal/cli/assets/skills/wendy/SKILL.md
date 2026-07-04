@@ -33,6 +33,7 @@ Whenever you invoke a wendy command, use the JSON structure options to provide s
 - Configure WiFi: `wendy device wifi connect`
 - Install WendyOS on an external drive: `wendy os install`
 - Set a device as default using `wendy device set-default`
+- Check the default device with `wendy device get-default`
 
 ### `wendy init` — Create a New Wendy Lite Project
 
@@ -66,7 +67,7 @@ This sends WiFi SSID and password to the device so it can connect to the local n
 
 ## Setup and Configuration
 
-Wendy CLI connects to a device over gRPC (TCP) port 50051. If Wendy CLI is not installed yet, run `curl -fsSL https://install.wendy.sh/cli.sh | bash`.
+Wendy CLI connects to a device over gRPC (TCP) port 50051. If Wendy CLI is not installed yet, run `curl -fsSL https://install.wendy.dev/cli.sh | bash`.
 
 Devices are discovered over USB or LAN. If a device is not found, ask the user to check the connection or to connect it over USB.
 If a device is not yet installed, use `wendy os install` to install the OS to an external drive. For NVIDIA Jetson devices, the OS is commonly installed to NVMe.
@@ -77,7 +78,7 @@ WendyOS is a Linux-based containerized operating system. It uses Linux container
 
 WendyOS uses Swift.org as its flagship language. This uses Swift Package Manager and the Swift Container Plugin to build and run your app. Wendy CLI will cross compile Swift for you.
 
-Other programming languages are supported, but require the use of a Dockerfile to build your app.
+Other programming languages are supported, but require the use of a Dockerfile or Containerfile to build your app.
 
 ### Entitlements
 
@@ -98,7 +99,8 @@ See `references/wendy.json.md` for detailed entitlement configuration.
 |-------------|----------|
 | `network` (host mode) | Web servers, HTTP APIs, incoming connections |
 | `gpu` | ML inference/computer vision (Jetson), board telemetry (Raspberry Pi) |
-| `video` | Camera access, video capture |
+| `display` | Present to local monitor as Wayland client |
+| `camera` | Camera access, video capture |
 | `audio` | Microphone, speakers |
 | `bluetooth` | BLE devices, Bluetooth communication |
 
@@ -148,7 +150,7 @@ The local collector handles forwarding telemetry to your backend infrastructure.
 
 | Problem | Solution |
 |---------|----------|
-| Device not found | Check USB/LAN connection, run `wendy discover` |
+| Device not found | Check USB/LAN connection, run `wendy discover`. On Linux with USB-C, run `wendy device usb-setup` first. |
 | Network access denied | Add network entitlement with host mode |
 | GPU not detected | Add gpu entitlement (Jetson for CUDA, Raspberry Pi for board telemetry) |
 | Camera not found | Add camera entitlement, verify camera at `/dev/video0` (for CSI cameras also check `/run/udev` is present on host) |
@@ -158,7 +160,7 @@ The local collector handles forwarding telemetry to your backend infrastructure.
 
 Load these files as needed for specific topics:
 
-- **`references/wendy.json.md`** - App configuration, entitlements (network, gpu, video, audio, bluetooth), common configurations, CLI commands
+- **`references/wendy.json.md`** - App configuration, entitlements (network, gpu, display, camera, audio, bluetooth), common configurations, CLI commands
 
 ## Further Reading
 

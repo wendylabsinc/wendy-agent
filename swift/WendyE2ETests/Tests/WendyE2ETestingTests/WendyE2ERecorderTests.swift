@@ -39,6 +39,9 @@ struct `recorder` {
         #expect(metadata.suiteName == "recorder")
         #expect(metadata.testName == "writes test metadata JSON")
         #expect(metadata.functionName.contains("writes test metadata JSON"))
+        #expect(metadata.declarationLine > 0)
+        #expect(metadata.sourceStartLine <= metadata.declarationLine)
+        #expect(metadata.declarationLine <= metadata.sourceEndLine)
     }
 
     @Test

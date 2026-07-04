@@ -28,7 +28,10 @@ public struct WendyE2ERecorder: Sendable {
             suiteName: identity.suite,
             testName: identity.testName,
             functionName: function,
-            line: line
+            line: line,
+            declarationLine: identity.declarationLine,
+            sourceStartLine: identity.sourceStartLine,
+            sourceEndLine: identity.sourceEndLine
         )
     }
 
@@ -155,6 +158,9 @@ public struct WendyE2ERecorder: Sendable {
         let testName: String
         let functionName: String
         let line: Int
+        let declarationLine: Int
+        let sourceStartLine: Int
+        let sourceEndLine: Int
     }
 
     private struct TestIdentity: Sendable {
@@ -162,12 +168,17 @@ public struct WendyE2ERecorder: Sendable {
         let fileName: String
         let suite: String
         let testName: String
+        let declarationLine: Int
+        let sourceStartLine: Int
+        let sourceEndLine: Int
     }
 
     private struct TestDeclaration: Sendable {
         let suite: String
         let testName: String
         let line: Int
+        let sourceStartLine: Int
+        let sourceEndLine: Int
     }
 
     private enum RecorderError: Error, CustomStringConvertible {
@@ -321,11 +332,10 @@ public struct WendyE2ERecorder: Sendable {
         if let declaration = Self.testDeclaration(containing: line, in: declarations),
             declaration.testName == testName
         {
-            return TestIdentity(
+            return Self.testIdentity(
                 filePath: filePath,
                 fileName: fileName,
-                suite: declaration.suite,
-                testName: declaration.testName
+                declaration: declaration
             )
         }
         if let declaration = Self.nearestTestDeclaration(
@@ -333,11 +343,10 @@ public struct WendyE2ERecorder: Sendable {
             named: testName,
             in: declarations
         ) {
-            return TestIdentity(
+            return Self.testIdentity(
                 filePath: filePath,
                 fileName: fileName,
-                suite: declaration.suite,
-                testName: declaration.testName
+                declaration: declaration
             )
         }
 
@@ -355,6 +364,7 @@ public struct WendyE2ERecorder: Sendable {
         let lines = source.components(separatedBy: .newlines)
         var suite = fallbackSuite
         var pendingTest = false
+        var pendingSourceStartLine: Int?
         var declarations: [TestDeclaration] = []
 
         for (offset, line) in lines.enumerated() {
@@ -364,6 +374,10 @@ public struct WendyE2ERecorder: Sendable {
 
             if line.contains("@Test") {
                 pendingTest = true
+                pendingSourceStartLine = Self.testSourceStartLine(
+                    beforeAttributeAt: offset,
+                    in: lines
+                )
             }
 
             guard let testName = Self.functionName(in: line) else {
@@ -375,14 +389,133 @@ public struct WendyE2ERecorder: Sendable {
                     TestDeclaration(
                         suite: suite,
                         testName: testName,
-                        line: offset + 1
+                        line: offset + 1,
+                        sourceStartLine: pendingSourceStartLine ?? offset + 1,
+                        sourceEndLine: Self.testSourceEndLine(fromDeclarationAt: offset, in: lines)
                     )
                 )
                 pendingTest = false
+                pendingSourceStartLine = nil
             }
         }
 
         return declarations
+    }
+
+    private static func testIdentity(
+        filePath: String,
+        fileName: String,
+        declaration: TestDeclaration
+    ) -> TestIdentity {
+        TestIdentity(
+            filePath: filePath,
+            fileName: fileName,
+            suite: declaration.suite,
+            testName: declaration.testName,
+            declarationLine: declaration.line,
+            sourceStartLine: declaration.sourceStartLine,
+            sourceEndLine: declaration.sourceEndLine
+        )
+    }
+
+    private static func testSourceStartLine(
+        beforeAttributeAt attributeOffset: Int,
+        in lines: [String]
+    ) -> Int {
+        var start = attributeOffset
+        while start > 0 {
+            let previousOffset = start - 1
+            let previous = lines[previousOffset].trimmingCharacters(in: .whitespaces)
+            guard !previous.isEmpty else { break }
+
+            if previous.hasPrefix("@") || previous.hasPrefix("///") || previous.hasPrefix("//!")
+                || previous.hasPrefix("// AI:") || previous.hasPrefix("//")
+            {
+                start = previousOffset
+                continue
+            }
+
+            if previous.hasSuffix("*/") {
+                var blockStart = previousOffset
+                while blockStart > 0, !lines[blockStart].contains("/*") {
+                    blockStart -= 1
+                }
+                if lines[blockStart].contains("/*") {
+                    start = blockStart
+                    continue
+                }
+            }
+
+            break
+        }
+        return start + 1
+    }
+
+    // Best-effort source range extraction for review artifacts. This is not a
+    // Swift parser or a security boundary; it only keeps source.md focused on
+    // the declaring test body for the E2E test styles used in this package.
+    private static func testSourceEndLine(
+        fromDeclarationAt declarationOffset: Int,
+        in lines: [String]
+    ) -> Int {
+        var depth = 0
+        var sawOpeningBrace = false
+        for offset in declarationOffset..<lines.count {
+            for character in Self.sourceLineForBraceCounting(lines[offset]) {
+                switch character {
+                case "{":
+                    depth += 1
+                    sawOpeningBrace = true
+                case "}":
+                    depth -= 1
+                    if sawOpeningBrace, depth <= 0 {
+                        return offset + 1
+                    }
+                default:
+                    break
+                }
+            }
+        }
+        return declarationOffset + 1
+    }
+
+    private static func sourceLineForBraceCounting(_ line: String) -> String {
+        let characters = Array(line)
+        var result = ""
+        var index = 0
+        var inString = false
+        var escaped = false
+
+        while index < characters.count {
+            let character = characters[index]
+            if !inString, character == "/", index + 1 < characters.count,
+                characters[index + 1] == "/"
+            {
+                break
+            }
+
+            if character == "\"" {
+                if inString {
+                    if !escaped { inString = false }
+                } else {
+                    inString = true
+                }
+                escaped = false
+                index += 1
+                continue
+            }
+
+            if inString {
+                escaped = character == "\\" && !escaped
+                if character != "\\" { escaped = false }
+                index += 1
+                continue
+            }
+
+            result.append(character)
+            index += 1
+        }
+        return result
     }
 
     private static func testDeclaration(

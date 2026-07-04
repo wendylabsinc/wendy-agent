@@ -18,7 +18,16 @@ service WendyContainerService {
     rpc ListVolumes(ListVolumesRequest) returns (ListVolumesResponse);
     rpc RemoveVolume(RemoveVolumeRequest) returns (RemoveVolumeResponse);
     rpc ListContainerStats(ListContainerStatsRequest) returns (ListContainerStatsResponse);
+    rpc GetResourceStats(GetResourceStatsRequest) returns (GetResourceStatsResponse);
+    rpc GetContainerPorts(GetContainerPortsRequest) returns (GetContainerPortsResponse);
     rpc StreamMCP(stream MCPChunk) returns (stream MCPChunk);
+    rpc QueryChunks(QueryChunksRequest) returns (QueryChunksResponse);
+    rpc WriteChunks(stream WriteChunksRequest) returns (WriteChunksResponse);
+    // QueryLayers reports which uncompressed layers (by diff ID) the device
+    // already has in its content store, with their sizes. The CLI uses this to
+    // skip decompressing and content-chunking layers the device can reuse as-is
+    // — for those layers no dedup is possible, so chunking would be pure waste.
+    rpc QueryLayers(QueryLayersRequest) returns (QueryLayersResponse);
 }
 
 message ListContainersRequest {}
@@ -36,6 +45,44 @@ message WriteLayerRequest {
 }
 
 message WriteLayerResponse {}
+
+message QueryChunksRequest {
+    // Candidate chunk hashes (raw 32-byte sha256 digests).
+    repeated bytes chunk_hashes = 1;
+}
+
+message QueryChunksResponse {
+    // Subset of the requested hashes that the device does NOT have.
+    repeated bytes missing_hashes = 1;
+}
+
+message WriteChunksRequest {
+    bytes hash = 1;   // raw 32-byte sha256 of data
+    bytes data = 2;
+}
+
+message WriteChunksResponse {}
+
+message QueryLayersRequest {
+    // Uncompressed layer digests (diff IDs, "sha256:<hex>") to check for
+    // presence in the device's content store.
+    repeated string diff_ids = 1;
+}
+
+message QueryLayersResponse {
+    // The subset of the requested layers the device already has. Layers absent
+    // from this list are not present and must be pushed.
+    repeated PresentLayer present = 1;
+}
+
+message PresentLayer {
+    // The uncompressed layer digest (diff ID) that the device has.
+    string diff_id = 1;
+    // Uncompressed blob size as stored in the content store. The CLI puts this
+    // in the reassembly header so AssembleImage references the layer correctly
+    // without the CLI having to decompress it to learn its size.
+    int64 size = 2;
+}
 
 message LayerHeader {
     // The hash identity of the layer.
@@ -66,6 +113,12 @@ message RunContainerLayersRequest {
 
     // User-provided runtime arguments to append to the container entrypoint.
     repeated string user_args = 8;
+
+    // OCI image config JSON (the config blob produced by the image builder),
+    // carrying Cmd/Entrypoint/Env/WorkingDir/User. Required by the chunk-diff
+    // path so the assembled image preserves the original runtime config; when
+    // empty the agent synthesises a minimal config (legacy behaviour).
+    bytes image_config = 9;
 }
 
 message CreateContainerRequest {
@@ -145,6 +198,11 @@ message RunContainerLayerHeader {
         COMPRESSION_ZSTD = 1;
         COMPRESSION_NONE = 2;
     }
+
+    // Ordered list of chunk hashes (raw 32-byte sha256) that, concatenated in
+    // order, reconstruct the uncompressed layer tar. When set, the agent
+    // reassembles the layer from chunks instead of receiving inline bytes.
+    repeated bytes chunk_hashes = 9;
 }
 
 message RunContainerLayersResponse {
@@ -214,6 +272,69 @@ message ListContainerStatsRequest {}
 
 message ListContainerStatsResponse {
     repeated ContainerStats stats = 1;
+}
+
+// --- Resource stats (host + per-container, for `wendy device top`) ---
+
+message GetResourceStatsRequest {}
+
+message GetResourceStatsResponse {
+    HostStats host = 1;
+    repeated ResourceContainerStats containers = 2;
+}
+
+// HostStats carries cumulative host counters; the client computes percentages
+// from deltas between consecutive samples.
+message HostStats {
+    uint64 cpu_total_jiffies = 1;    // sum of all fields on the /proc/stat "cpu" line
+    uint64 cpu_idle_jiffies = 2;     // idle + iowait fields
+    uint32 cpu_count = 3;            // online logical CPUs
+    int64 mem_total_bytes = 4;
+    int64 mem_available_bytes = 5;
+    repeated GpuStats gpus = 6;      // empty when no GPU / no sampler tool present
+    // Every readable thermal sensor on the device (CPU, GPU, SoC, junction, …),
+    // from /sys/class/thermal. Empty when no zones are readable.
+    repeated ThermalZone thermal_zones = 7;
+}
+
+// ThermalZone is one temperature sensor read from /sys/class/thermal.
+message ThermalZone {
+    string name = 1;     // sensor type, e.g. "cpu-thermal", "gpu-thermal", "soc0-thermal", "tj-thermal"
+    double temp_c = 2;   // current temperature in degrees Celsius
+}
+
+message GpuStats {
+    uint32 index = 1;
+    string name = 2;
+    double util_percent = 3;         // instantaneous utilization as reported by the sampler
+    int64 mem_used_bytes = 4;
+    int64 mem_total_bytes = 5;
+    optional double temp_c = 6;
+    optional double power_w = 7;
+}
+
+// ResourceContainerStats mirrors ContainerStats keying: app_name is the
+// containerd container ID (appID, or appID_serviceName for multi-service apps).
+message ResourceContainerStats {
+    string app_name = 1;
+    uint64 cpu_usage_nanos = 2;      // cumulative user+sys CPU nanoseconds
+    int64 memory_bytes = 3;          // current cgroup memory usage
+}
+
+// --- Container open ports (listening/bound sockets, for `wendy device top`) ---
+
+message GetContainerPortsRequest {
+    string app_name = 1;
+}
+
+message GetContainerPortsResponse {
+    repeated PortEntry ports = 1;
+}
+
+message PortEntry {
+    string protocol = 1;   // "tcp", "tcp6", "udp", "udp6"
+    uint32 port = 2;       // local port the socket is bound to
+    string address = 3;    // local bind address (e.g. "0.0.0.0", "::", "127.0.0.1")
 }
 
 message MCPChunk {

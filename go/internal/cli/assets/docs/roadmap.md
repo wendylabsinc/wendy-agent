@@ -17,7 +17,7 @@ This page mirrors the current public roadmap language for engineering and docs r
 
 ## Available Beta
 
-- **Wendy for Mac**: deploy native macOS apps to Apple Silicon Mac targets with [Wendy Agent for Mac](/docs/installation/wendy-agent-macos). Beta limitations are documented in the macOS install guide.
+- **Headless Mac**: deploy native macOS apps to Apple Silicon Mac targets with [Headless Mac](/docs/installation/wendy-agent-macos). Beta limitations are documented in the macOS install guide.
 
 ## Shipped
 
@@ -31,5 +31,4 @@ This page mirrors the current public roadmap language for engineering and docs r
 
 - **RISC-V support**.
 - **3D geospatial digital twin** targeted for Q3.
-- **ROS 2 support** — _planned, not yet shipped_: officially designated as a development priority. Many prospective users and partners expect first-class Robot Operating System 2 (ROS 2) compatibility; scope and timeline are still being defined.
 - **Wendy Swift initiative** — _planned, separate release track, not yet shipped_: Swift support is being developed as a separate initiative from the primary release cycle so that its launch is not diluted by adjacent releases. Target window is approximately one week after the Pipecat Agent template refresh ([WDY-1228](https://linear.app/wendylabsinc/issue/WDY-1228)).

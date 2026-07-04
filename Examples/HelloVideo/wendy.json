@@ -1,5 +1,6 @@
 {
     "appId": "sh.wendy.examples.hellohttp",
+    "platform": "linux",
     "version": "1.0.0",
     "language": "swift",
     "entitlements": [

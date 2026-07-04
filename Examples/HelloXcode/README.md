@@ -26,6 +26,7 @@ has multiple schemes:
 ```json
 {
   "appId": "helloxcode",
+  "platform": "linux",
   "version": "0.1.0",
   "language": "swift",
   "xcode": {

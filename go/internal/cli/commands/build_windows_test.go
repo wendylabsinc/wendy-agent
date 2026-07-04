@@ -12,7 +12,7 @@ import (
 // Swift project fails fast on Windows with an actionable message instead of
 // shelling out to a non-existent `swift` binary.
 func TestBuildProject_SwiftRejectedOnWindows(t *testing.T) {
-	err := buildProject(context.Background(), t.TempDir(), &BuildOption{Type: "swift"}, "test-app", "linux/arm64")
+	err := buildProject(context.Background(), t.TempDir(), &BuildOption{Type: "swift"}, "test-app", "linux/arm64", "")
 	if err == nil {
 		t.Fatal("buildProject(swift) on Windows: error = nil, want non-nil")
 	}

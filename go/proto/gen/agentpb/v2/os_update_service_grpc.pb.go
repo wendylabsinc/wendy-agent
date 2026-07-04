@@ -19,7 +19,8 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	WendyOSUpdateService_UpdateOS_FullMethodName = "/wendy.agent.services.v2.WendyOSUpdateService/UpdateOS"
+	WendyOSUpdateService_UpdateOS_FullMethodName          = "/wendy.agent.services.v2.WendyOSUpdateService/UpdateOS"
+	WendyOSUpdateService_GetOSUpdateStatus_FullMethodName = "/wendy.agent.services.v2.WendyOSUpdateService/GetOSUpdateStatus"
 )
 
 // WendyOSUpdateServiceClient is the client API for WendyOSUpdateService service.
@@ -27,6 +28,10 @@ const (
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type WendyOSUpdateServiceClient interface {
 	UpdateOS(ctx context.Context, in *UpdateOSRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[UpdateOSResponse], error)
+	// Report the outcome of the most recent OS update attempt: committed
+	// after post-reboot healthchecks passed, or rolled back with details on
+	// which critical services failed and why.
+	GetOSUpdateStatus(ctx context.Context, in *GetOSUpdateStatusRequest, opts ...grpc.CallOption) (*GetOSUpdateStatusResponse, error)
 }
 
 type wendyOSUpdateServiceClient struct {
@@ -56,11 +61,25 @@ func (c *wendyOSUpdateServiceClient) UpdateOS(ctx context.Context, in *UpdateOSR
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type WendyOSUpdateService_UpdateOSClient = grpc.ServerStreamingClient[UpdateOSResponse]
 
+func (c *wendyOSUpdateServiceClient) GetOSUpdateStatus(ctx context.Context, in *GetOSUpdateStatusRequest, opts ...grpc.CallOption) (*GetOSUpdateStatusResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetOSUpdateStatusResponse)
+	err := c.cc.Invoke(ctx, WendyOSUpdateService_GetOSUpdateStatus_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // WendyOSUpdateServiceServer is the server API for WendyOSUpdateService service.
 // All implementations must embed UnimplementedWendyOSUpdateServiceServer
 // for forward compatibility.
 type WendyOSUpdateServiceServer interface {
 	UpdateOS(*UpdateOSRequest, grpc.ServerStreamingServer[UpdateOSResponse]) error
+	// Report the outcome of the most recent OS update attempt: committed
+	// after post-reboot healthchecks passed, or rolled back with details on
+	// which critical services failed and why.
+	GetOSUpdateStatus(context.Context, *GetOSUpdateStatusRequest) (*GetOSUpdateStatusResponse, error)
 	mustEmbedUnimplementedWendyOSUpdateServiceServer()
 }
 
@@ -73,6 +92,9 @@ type UnimplementedWendyOSUpdateServiceServer struct{}
 
 func (UnimplementedWendyOSUpdateServiceServer) UpdateOS(*UpdateOSRequest, grpc.ServerStreamingServer[UpdateOSResponse]) error {
 	return status.Error(codes.Unimplemented, "method UpdateOS not implemented")
+}
+func (UnimplementedWendyOSUpdateServiceServer) GetOSUpdateStatus(context.Context, *GetOSUpdateStatusRequest) (*GetOSUpdateStatusResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetOSUpdateStatus not implemented")
 }
 func (UnimplementedWendyOSUpdateServiceServer) mustEmbedUnimplementedWendyOSUpdateServiceServer() {}
 func (UnimplementedWendyOSUpdateServiceServer) testEmbeddedByValue()                              {}
@@ -106,13 +128,36 @@ func _WendyOSUpdateService_UpdateOS_Handler(srv interface{}, stream grpc.ServerS
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type WendyOSUpdateService_UpdateOSServer = grpc.ServerStreamingServer[UpdateOSResponse]
 
+func _WendyOSUpdateService_GetOSUpdateStatus_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetOSUpdateStatusRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WendyOSUpdateServiceServer).GetOSUpdateStatus(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WendyOSUpdateService_GetOSUpdateStatus_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WendyOSUpdateServiceServer).GetOSUpdateStatus(ctx, req.(*GetOSUpdateStatusRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // WendyOSUpdateService_ServiceDesc is the grpc.ServiceDesc for WendyOSUpdateService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
 var WendyOSUpdateService_ServiceDesc = grpc.ServiceDesc{
 	ServiceName: "wendy.agent.services.v2.WendyOSUpdateService",
 	HandlerType: (*WendyOSUpdateServiceServer)(nil),
-	Methods:     []grpc.MethodDesc{},
+	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "GetOSUpdateStatus",
+			Handler:    _WendyOSUpdateService_GetOSUpdateStatus_Handler,
+		},
+	},
 	Streams: []grpc.StreamDesc{
 		{
 			StreamName:    "UpdateOS",

@@ -2,5 +2,5 @@
   "appId": "sh.wendy.examples.HelloMac",
   "version": "1.0.0",
   "language": "swift",
-  "platform": "darwin"
+  "platform": "linux"
 }

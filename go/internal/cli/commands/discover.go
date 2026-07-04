@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/spinner"
 	bubbleTable "github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -53,6 +54,11 @@ func newDiscoverCmd() *cobra.Command {
 				return fmt.Errorf("unknown discovery type: %s (valid: usb, lan, bluetooth, external, all)", discoverType)
 			}
 
+			// Pre-flight: on Linux, if a USB-C Wendy device is tethered but its
+			// host link isn't configured, offer to set it up so it shows up in
+			// the scan below. No-op on other platforms / non-interactive runs.
+			_ = maybeOfferUSBSetup(cmd.Context())
+
 			timeoutSet := cmd.Flags().Changed("timeout")
 
 			if jsonOutput {
@@ -60,14 +66,16 @@ func newDiscoverCmd() *cobra.Command {
 					timeout = 5 * time.Second
 				}
 				opts.Timeout = timeout
+				// JSON output always lists every target so scripts/MCP keep the
+				// full set regardless of WENDY_SHOW_LOCAL_DEVICES.
 				return discoverJSON(cmd.Context(), opts)
 			}
 
 			if timeoutSet {
 				opts.Timeout = timeout
-				return discoverOnce(cmd.Context(), opts)
+				return discoverOnce(cmd.Context(), opts, providers.ShowLocalDevices())
 			}
-			return discoverContinuous(cmd.Context(), opts)
+			return discoverContinuous(cmd.Context(), opts, providers.ShowLocalDevices())
 		},
 	}
 
@@ -77,12 +85,18 @@ func newDiscoverCmd() *cobra.Command {
 	return cmd
 }
 
-// discoverExternalDevices queries all registered providers for their devices.
-// This uses AllProviders (not just available ones) so devices are discoverable
-// even when the build toolchain isn't installed.
-func discoverExternalDevices(ctx context.Context) []models.ExternalDevice {
+// discoverExternalDevices queries registered providers for their devices. This
+// uses AllProviders (not just available ones) so devices are discoverable even
+// when the build toolchain isn't installed. Unless includeLocal is set (see
+// providers.ShowLocalDevices), local run targets (this machine, Docker/OrbStack,
+// Apple Container) are skipped so the table lists separate WendyOS devices by
+// default.
+func discoverExternalDevices(ctx context.Context, includeLocal bool) []models.ExternalDevice {
 	var all []models.ExternalDevice
 	for _, p := range providers.AllProviders() {
+		if !includeLocal && providers.IsLocalProviderKey(p.Key()) {
+			continue
+		}
 		devices, err := p.DiscoverDevices(ctx)
 		if err != nil {
 			continue
@@ -116,7 +130,8 @@ func discoverJSON(ctx context.Context, opts discovery.DiscoveryOptions) error {
 	sortLANDevicesForDiscover(collection.LANDevices)
 
 	if shouldIncludeExternal(opts) {
-		collection.ExternalDevices = discoverExternalDevices(ctx)
+		// JSON output always includes local run targets (see newDiscoverCmd).
+		collection.ExternalDevices = discoverExternalDevices(ctx, true)
 	}
 
 	data, err := json.MarshalIndent(collection, "", "  ")
@@ -128,7 +143,8 @@ func discoverJSON(ctx context.Context, opts discovery.DiscoveryOptions) error {
 }
 
 // discoverOnce runs a single scan with the given timeout and prints results.
-func discoverOnce(ctx context.Context, opts discovery.DiscoveryOptions) error {
+// includeLocal surfaces local run targets that are hidden by default.
+func discoverOnce(ctx context.Context, opts discovery.DiscoveryOptions, includeLocal bool) error {
 	s := tui.NewSpinner("Scanning for WendyOS devices...")
 
 	includeExternal := shouldIncludeExternal(opts)
@@ -140,13 +156,13 @@ func discoverOnce(ctx context.Context, opts discovery.DiscoveryOptions) error {
 			annotateLANUSBFromEthernet(collection)
 			sortLANDevicesForDiscover(collection.LANDevices)
 			if includeExternal {
-				collection.ExternalDevices = discoverExternalDevices(ctx)
+				collection.ExternalDevices = discoverExternalDevices(ctx, includeLocal)
 			}
 		}
 		return tui.SpinnerDoneMsg{Result: collection, Err: err}
 	}
 
-	p := tea.NewProgram(s)
+	p := tui.NewProgressProgram(s)
 	go func() {
 		p.Send(work())
 	}()
@@ -165,6 +181,7 @@ func discoverOnce(ctx context.Context, opts discovery.DiscoveryOptions) error {
 	collection, ok := result.(*models.DevicesCollection)
 	if !ok || collection == nil || collection.IsEmpty() {
 		fmt.Println("No devices found.")
+		fmt.Println(noDevicesHint())
 		return nil
 	}
 
@@ -172,10 +189,29 @@ func discoverOnce(ctx context.Context, opts discovery.DiscoveryOptions) error {
 	return nil
 }
 
+// noDevicesHint returns short, OS-appropriate guidance shown when discovery
+// finds nothing. mDNS discovery needs multicast on the path; on Linux the
+// browse uses Avahi (or raw multicast) and is commonly defeated by a stopped
+// avahi-daemon or a firewall blocking UDP 5353.
+func noDevicesHint() string {
+	if runtime.GOOS == "linux" {
+		return "Hints:\n" +
+			"  • Is avahi-daemon running?   systemctl status avahi-daemon\n" +
+			"  • Firewall blocking mDNS?    sudo ufw allow 5353/udp   (if ufw is active)\n" +
+			"  • USB-C tethered device?     re-run 'wendy discover' and accept the USB setup prompt\n" +
+			"  • Or connect directly by IP: wendy device connect <ip>:50051"
+	}
+	return "Hints:\n" +
+		"  • Device powered on and on the same network (or USB-C tethered).\n" +
+		"  • mDNS uses UDP 5353 — make sure a firewall isn't blocking it.\n" +
+		"  • Or connect directly by IP: wendy device connect <ip>:50051"
+}
+
 // discoverContinuous runs scans in a loop, refreshing the table until Ctrl+C.
-func discoverContinuous(ctx context.Context, opts discovery.DiscoveryOptions) error {
+// includeLocal surfaces local run targets that are hidden by default.
+func discoverContinuous(ctx context.Context, opts discovery.DiscoveryOptions, includeLocal bool) error {
 	opts.Timeout = 3 * time.Second // per-scan timeout
-	m := newDiscoverModel(ctx, opts)
+	m := newDiscoverModel(ctx, opts, includeLocal)
 	p := tea.NewProgram(m)
 	if _, err := p.Run(); err != nil {
 		return fmt.Errorf("TUI error: %w", err)
@@ -196,8 +232,17 @@ type btScanMsg struct {
 }
 type extScanMsg struct{ devices []models.ExternalDevice }
 
+// lanProbeMsg carries the result of an async agent version/OS probe for one LAN
+// device. dev holds the resolved metadata when err is nil.
+type lanProbeMsg struct {
+	name string
+	dev  models.LANDevice
+	err  error
+}
+
 // discoverDeviceInfo is the JSON structure copied to the clipboard.
 type discoverDeviceInfo struct {
+	ID          int32  `json:"id,omitempty"`
 	Name        string `json:"name"`
 	Type        string `json:"type"`
 	USB         string `json:"usb,omitempty"`
@@ -247,10 +292,13 @@ type discoverModel struct {
 	bleWarning         string
 	flashMessage       string
 	flashIsError       bool
-	updatingDeviceName string // non-empty while a background update is running
+	updatingDeviceName string                    // non-empty while a background update is running
+	spinner            spinner.Model             // animates Agent/OS cells while LAN probes run
+	probe              map[string]tui.ProbeState // LAN display name (lowercased) -> probe state
+	includeLocal       bool                      // surface local run targets hidden by default
 }
 
-func newDiscoverModel(ctx context.Context, opts discovery.DiscoveryOptions) discoverModel {
+func newDiscoverModel(ctx context.Context, opts discovery.DiscoveryOptions, includeLocal bool) discoverModel {
 	m := discoverModel{
 		ctx:             ctx,
 		opts:            opts,
@@ -258,6 +306,11 @@ func newDiscoverModel(ctx context.Context, opts discovery.DiscoveryOptions) disc
 		bleSeen:         make(map[string]time.Time),
 		table:           newDiscoverTable(true),
 		includeExternal: shouldIncludeExternal(opts),
+		includeLocal:    includeLocal,
+		// Empty style so View() yields a bare frame rune for the plain table
+		// cells (matches tui.newProbeSpinner).
+		spinner: spinner.New(spinner.WithSpinner(spinner.Dot)),
+		probe:   make(map[string]tui.ProbeState),
 	}
 	m.refreshTable()
 	return m
@@ -291,10 +344,22 @@ func (m discoverModel) scanEthernet() tea.Cmd {
 
 func (m discoverModel) scanLAN() tea.Cmd {
 	return func() tea.Msg {
+		// Discover devices only; version/OS are resolved asynchronously per
+		// device (see probeLANCmd) so rows appear immediately with a
+		// "connecting" spinner instead of blocking on the probe.
 		devices, _ := discovery.DiscoverLAN(m.ctx, m.opts.Timeout)
-		devices = resolveLANVersions(m.ctx, devices)
 		sortLANDevicesForDiscover(devices)
 		return lanScanMsg{devices: devices}
+	}
+}
+
+// probeLANCmd resolves a single LAN device's agent version/OS in the background
+// and reports the result as a lanProbeMsg.
+func (m discoverModel) probeLANCmd(dev models.LANDevice) tea.Cmd {
+	ctx := m.ctx
+	return func() tea.Msg {
+		resolved, _, err := resolveLANVersion(ctx, dev)
+		return lanProbeMsg{name: dev.DisplayName, dev: resolved, err: err}
 	}
 }
 
@@ -308,7 +373,7 @@ func (m discoverModel) scanBluetooth() tea.Cmd {
 
 func (m discoverModel) scanExternal() tea.Cmd {
 	return func() tea.Msg {
-		return extScanMsg{devices: discoverExternalDevices(m.ctx)}
+		return extScanMsg{devices: discoverExternalDevices(m.ctx, m.includeLocal)}
 	}
 }
 
@@ -329,6 +394,7 @@ func (m discoverModel) Init() tea.Cmd {
 	if m.includeExternal {
 		cmds = append(cmds, m.scanExternal())
 	}
+	cmds = append(cmds, m.spinner.Tick)
 	return tea.Batch(cmds...)
 }
 
@@ -384,7 +450,7 @@ func (m discoverModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.flashIsError = true
 				return m, clearFlashAfter(3 * time.Second)
 			}
-			if item.info.Version == "" || version.CompareVersions(version.Version, item.info.Version) <= 0 {
+			if !agentBehindCLI(version.Version, item.info.Version) {
 				m.flashMessage = "Device is already up to date."
 				m.flashIsError = false
 				return m, clearFlashAfter(3 * time.Second)
@@ -454,8 +520,54 @@ func (m discoverModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.collection.LANDevices = msg.devices
 		m.hasResults = true
+
+		// Assign a probe state to each device and kick off a background probe
+		// for any whose version isn't known yet. nextProbeState keeps resolved
+		// rows sticky and avoids flipping a failed row back to the spinner.
+		cmds := []tea.Cmd{m.scanLAN()}
+		for i := range m.collection.LANDevices {
+			d := &m.collection.LANDevices[i]
+			key := strings.ToLower(d.DisplayName)
+			if d.AgentVersion != "" {
+				m.probe[key] = nextProbeState(m.probe[key], tui.ProbeOK)
+				continue
+			}
+			prev := m.probe[key]
+			m.probe[key] = nextProbeState(prev, tui.ProbePending)
+			if prev != tui.ProbePending {
+				cmds = append(cmds, m.probeLANCmd(*d))
+			}
+		}
 		m.refreshTable()
-		return m, m.scanLAN()
+		return m, tea.Batch(cmds...)
+	case lanProbeMsg:
+		key := strings.ToLower(msg.name)
+		for i := range m.collection.LANDevices {
+			d := &m.collection.LANDevices[i]
+			if !strings.EqualFold(d.DisplayName, msg.name) {
+				continue
+			}
+			if msg.err == nil {
+				d.AgentVersion = msg.dev.AgentVersion
+				d.DeviceType = msg.dev.DeviceType
+				d.OS = msg.dev.OS
+				d.OSVersion = msg.dev.OSVersion
+				d.CPUArchitecture = msg.dev.CPUArchitecture
+				m.probe[key] = nextProbeState(m.probe[key], tui.ProbeOK)
+			} else {
+				m.probe[key] = nextProbeState(m.probe[key], tui.ProbeFailed)
+			}
+			break
+		}
+		m.refreshTable()
+		return m, nil
+	case spinner.TickMsg:
+		var cmd tea.Cmd
+		m.spinner, cmd = m.spinner.Update(msg)
+		if m.anyProbePending() {
+			m.refreshTable()
+		}
+		return m, cmd
 	case btScanMsg:
 		now := time.Now()
 
@@ -569,7 +681,7 @@ func (m discoverModel) View() string {
 	}
 
 	if !m.collection.IsEmpty() {
-		sb.WriteString(m.tableView() + "\n")
+		sb.WriteString(tui.ColorizeProbeGlyphs(m.tableView()) + "\n")
 		sb.WriteString(m.viewLine(dimStyle.Render("  "+tui.DeviceTableLegend)) + "\n")
 		if hint := m.selectedHint(); hint != "" {
 			sb.WriteString(m.viewLine(hintWarnStyle.Render("  ⚠  "+hint)) + "\n")
@@ -591,8 +703,34 @@ func (m discoverModel) View() string {
 	return sb.String()
 }
 
+// anyProbePending reports whether any LAN device still has a probe in flight.
+func (m discoverModel) anyProbePending() bool {
+	for _, st := range m.probe {
+		if st == tui.ProbePending {
+			return true
+		}
+	}
+	return false
+}
+
 func (m *discoverModel) refreshTable() {
 	m.tableItems = discoverTableItems(m.collection)
+	// Stamp each LAN row with its probe state (and the current spinner frame
+	// while connecting) so the Agent/OS columns animate / show the error glyph.
+	frame := m.spinner.View()
+	for i := range m.tableItems {
+		name := m.tableItems[i].lanName
+		if name == "" {
+			continue
+		}
+		st := m.probe[strings.ToLower(name)]
+		m.tableItems[i].picker.Probe = st
+		if st == tui.ProbePending {
+			m.tableItems[i].picker.ProbeFrame = frame
+			// Still connecting: don't show the no-access hint yet.
+			m.tableItems[i].picker.Hint = ""
+		}
+	}
 	pickerItems := discoverPickerItems(m.tableItems)
 	cols, rows := tui.PickerDeviceTableData(pickerItems, discoverDefaultKey(), true)
 	m.table.SetColumns(cols)
@@ -730,10 +868,14 @@ func newDiscoverTable(interactive bool) tui.BubbleTable {
 	return tui.NewBubbleTable(interactive, nil)
 }
 
+// These back the `wendy cloud discover` table. The Address column is omitted:
+// cloud devices are addressed by name/ID via the broker tunnel, so the IP adds
+// noise. (The interactive `wendy discover` table uses tui.PickerDeviceTableData,
+// not these.) The full address is still available in the clipboard JSON.
 var (
-	discoverTableHeaders   = []string{"", "Name", "Type", "Address", "Version"}
-	discoverTableMinWidths = []int{3, 12, 10, 14, 10}
-	discoverTableMaxWidths = []int{3, 33, 20, 28, 16}
+	discoverTableHeaders   = []string{"", "Name", "Type", "Version"}
+	discoverTableMinWidths = []int{3, 12, 10, 10}
+	discoverTableMaxWidths = []int{3, 33, 20, 16}
 )
 
 var deviceTypeNames = map[string]string{
@@ -742,6 +884,7 @@ var deviceTypeNames = map[string]string{
 	"raspberry-pi-5":   "Raspberry Pi 5",
 	"jetson-agx-orin":  "Jetson AGX Orin",
 	"jetson-orin-nano": "Jetson Orin Nano",
+	"jetson-agx-thor":  "Jetson AGX Thor",
 	"x86_64":           "x86-64",
 }
 
@@ -780,10 +923,31 @@ func lanNoAccessHint(lan *models.LANDevice, agentVersion string) string {
 	return ""
 }
 
+// agentBehindCLI reports whether agentVer is an older release than cliVer and
+// should be flagged as outdated. A dev build on either side (see version.IsDev)
+// is treated as the latest version, so a dev CLI never flags real agents and a
+// dev agent is never flagged (WDY-1770). An empty agentVer is treated as
+// unknown (not behind).
+func agentBehindCLI(cliVer, agentVer string) bool {
+	if agentVer == "" || version.IsDev(cliVer) || version.IsDev(agentVer) {
+		return false
+	}
+	return version.CompareVersions(cliVer, agentVer) > 0
+}
+
+// cliBehindAgent reports whether cliVer is an older release than agentVer, with
+// the same dev-build handling as agentBehindCLI.
+func cliBehindAgent(cliVer, agentVer string) bool {
+	if agentVer == "" || version.IsDev(cliVer) || version.IsDev(agentVer) {
+		return false
+	}
+	return version.CompareVersions(cliVer, agentVer) < 0
+}
+
 // markOutdated prefixes the version string with "* " when the agent is behind
 // the CLI, serving as a visible indicator in discover-style tables.
 func markOutdated(agentVer string) string {
-	if agentVer != "" && version.CompareVersions(version.Version, agentVer) > 0 {
+	if agentBehindCLI(version.Version, agentVer) {
 		return "* " + agentVer
 	}
 	return agentVer
@@ -916,7 +1080,7 @@ func discoverTableItems(collection *models.DevicesCollection) []discoverTableIte
 				Address:      d.Hostname,
 				AgentVersion: discoverAgentVersionDisplay(d.AgentVersion),
 				DedupKey:     d.DisplayName,
-				SortKey:      usbFirstSortKey(d.DisplayName, d.USBVersion),
+				SortKey:      deviceSortKey(d.DisplayName, d.USBVersion),
 			},
 			info: discoverDeviceInfo{
 				Name:    d.DisplayName,
@@ -950,11 +1114,12 @@ func discoverTableItems(collection *models.DevicesCollection) []discoverTableIte
 				USB:          usb,
 				Address:      address,
 				AgentVersion: discoverAgentVersionDisplay(d.AgentVersion),
+				OS:           d.OS,
 				OSVersion:    d.OSVersion,
 				Provisioned:  provisioned,
 				Hint:         lanNoAccessHint(d.LAN, d.AgentVersion),
 				DedupKey:     d.DisplayName,
-				SortKey:      usbFirstSortKey(d.DisplayName, usb),
+				SortKey:      deviceSortKey(d.DisplayName, usb),
 			},
 			info: discoverDeviceInfo{
 				Name:        d.DisplayName,
@@ -981,6 +1146,7 @@ func discoverTableItems(collection *models.DevicesCollection) []discoverTableIte
 				Type:         deviceType,
 				Address:      addr,
 				AgentVersion: discoverAgentVersionDisplay(d.AgentVersion),
+				OS:           d.OS,
 				OSVersion:    d.OSVersion,
 				DedupKey:     d.DisplayName,
 				SortKey:      externalProviderSortKey(d.ProviderKey, d.DisplayName),
@@ -1019,7 +1185,7 @@ func discoverAgentVersionDisplay(agentVer string) string {
 	if displayVersion == "" {
 		return ""
 	}
-	if version.CompareVersions(version.Version, agentVer) > 0 {
+	if agentBehindCLI(version.Version, agentVer) {
 		displayVersion += " ⚠"
 	}
 	return displayVersion
@@ -1047,8 +1213,10 @@ func externalProviderDisplayName(key string) string {
 
 func externalProviderSortKey(providerKey, name string) string {
 	switch providerKey {
+	case providers.ProviderKeyAppleContainer:
+		return "~0_apple_container_" + strings.ToLower(name)
 	case providers.ProviderKeyDocker:
-		return "~0_" + strings.ToLower(name)
+		return "~0_docker_" + strings.ToLower(name)
 	case providers.ProviderKeyLocal:
 		return "~1_" + strings.ToLower(name)
 	}
@@ -1056,11 +1224,11 @@ func externalProviderSortKey(providerKey, name string) string {
 }
 
 // externalProviderAddress returns the provider-qualified ID shown in the
-// Address column. Docker and the local machine have fixed, meaningless IDs
-// ("docker: docker", "local: local"), so their address is hidden.
+// Address column. Local runtime providers have fixed, meaningless IDs, so
+// their address is hidden.
 func externalProviderAddress(providerKey, id string) string {
 	switch providerKey {
-	case providers.ProviderKeyDocker, providers.ProviderKeyLocal:
+	case providers.ProviderKeyAppleContainer, providers.ProviderKeyDocker, providers.ProviderKeyLocal:
 		return ""
 	}
 	return fmt.Sprintf("%s: %s", providerKey, id)
@@ -1068,6 +1236,8 @@ func externalProviderAddress(providerKey, id string) string {
 
 func externalProviderPickerHint(providerKey string) string {
 	switch providerKey {
+	case providers.ProviderKeyAppleContainer:
+		return "Hint: Use Apple Container for local Dockerfile/Containerfile runs on Apple silicon Macs. Compose projects still require Docker."
 	case providers.ProviderKeyDocker:
 		return "Hint: Use Docker for local container or Compose runs when you do not need WendyOS hardware."
 	case providers.ProviderKeyLocal:

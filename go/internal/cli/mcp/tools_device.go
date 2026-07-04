@@ -33,7 +33,7 @@ func (s *mcpServer) registerDeviceTools(srv *server.MCPServer) {
 	), s.handleDeviceDisconnect)
 
 	srv.AddTool(mcpgo.NewTool("device_info",
-		mcpgo.WithDescription("Get agent version, OS, CPU architecture, and feature set of connected device"),
+		mcpgo.WithDescription("Get agent version, OS, CPU architecture, GPU info, and feature set of connected device"),
 	), s.handleDeviceInfo)
 
 	srv.AddTool(mcpgo.NewTool("device_set_default",
@@ -173,6 +173,9 @@ func (s *mcpServer) handleDeviceInfo(ctx context.Context, _ mcpgo.CallToolReques
 	}
 	if resp.CudaVersion != nil {
 		info["cuda_version"] = resp.GetCudaVersion()
+	}
+	if resp.GpuArch != nil {
+		info["gpu_arch"] = resp.GetGpuArch()
 	}
 	b, _ := json.MarshalIndent(info, "", "  ")
 	return mcpgo.NewToolResultText(string(b)), nil

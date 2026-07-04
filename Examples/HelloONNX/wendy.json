@@ -1,5 +1,6 @@
 {
     "appId": "sh.wendy.examples.helloonnx",
+    "platform": "linux",
     "version": "1.0.0",
     "language": "python",
     "entitlements": [

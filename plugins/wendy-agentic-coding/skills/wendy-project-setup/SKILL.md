@@ -27,7 +27,7 @@ wendy init --app-id <app-id> --target wendyos --language rust --template simple-
 
 Template init can still prompt if the selected template has required variables that are not supplied with `--var`. Pass every required template variable, and set `--git-init yes` or `--git-init no`, when the goal is a fully non-interactive agent run.
 
-If the user names an archetype such as `realsense-camera`, `camera-feed`, `camera-feed-yolo`, `voice-assistant`, `audio`, `fullstack`, or `simple-api`, inspect the matching template's `template.json`, `wendy.json`, `Dockerfile`, and source files before creating the destination app.
+If the user names an archetype such as `realsense-camera`, `camera-feed`, `camera-feed-yolo`, `voice-assistant`, `audio`, `fullstack`, or `simple-api`, inspect the matching template's `template.json`, `wendy.json`, `Dockerfile` or `Containerfile`, and source files before creating the destination app.
 
 Project with entitlements:
 
@@ -58,7 +58,7 @@ wendy init \
 Useful `wendy init` flags:
 
 - `--app-id`: application ID written to `wendy.json`.
-- `--target`: `wendyos` or `wendy-lite`.
+- `--target`: `wendyos` (writes `"platform": "linux"` to wendy.json), `wendy-lite`, or `darwin` (native macOS for Wendy Agent for Mac). Omit for default `wendyos` behavior.
 - `--language`: `python`, `swift`, `rust`, `node`, or `cpp`.
 - `--template`: template name; a bare `--template` opens a picker, so avoid bare usage in agent workflows.
 - `--branch`: templates repo branch.

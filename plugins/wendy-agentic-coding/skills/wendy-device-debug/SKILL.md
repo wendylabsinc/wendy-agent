@@ -15,7 +15,7 @@ Use this for live-device and cross-layer runtime bugs. Static code reading is no
    - CLI behavior: command parsing, target selection, build provider, gRPC request.
    - Agent behavior: service implementation, containerd adapter, OCI spec, logs.
    - WendyOS behavior: image version, device type, mounts, CDI, system services.
-   - App behavior: Dockerfile, `wendy.json`, entitlements, environment, startup logs.
+   - App behavior: Dockerfile/Containerfile, `wendy.json`, entitlements, environment, startup logs.
 4. Use `wendy-device-ops` for CLI-native inspection before SSH when the agent and CLI can still answer the question.
 5. If SSH access is available from local instructions or the user, inspect the live device early. Use containerd and `nerdctl`, not Docker.
 
@@ -44,7 +44,7 @@ For Jetson GPU issues, verify all of:
 
 - `/etc/wendyos/device-type` exists and identifies a Jetson variant.
 - The agent maps the device type to the expected Wendy platform.
-- `/etc/cdi/nvidia.yaml` exists and exposes the expected device nodes.
+- GPU provisioning is in place: on JetPack 6 this means `/etc/cdi/nvidia.yaml` exists; on JetPack 5 (L4T r35, where nvidia-ctk predates CDI) the L4T CSV fallback (`/etc/nvidia-container-runtime/host-files-for-container.d/*.csv`) is used instead.
 - The application handles CUDA absence gracefully and exposes enough debug state.
 
 ## Repo files to inspect

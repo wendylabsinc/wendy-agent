@@ -25,7 +25,7 @@ password = hunter2
 
 The agent calls `nmcli device wifi connect <ssid> password <password>`, which creates a persistent NetworkManager profile in `/etc/NetworkManager/system-connections/`. Omit `password` for open networks.
 
-`wendy os install` writes this file automatically when you supply `--wifi-ssid` and `--wifi-password` flags or respond to the interactive prompt.
+`wendy install` writes this file automatically when you supply `--wifi-ssid` and `--wifi-password` flags or respond to the interactive prompt.
 
 See [Config Partition](../config-partition.md) for the full `wendy.conf` specification.
 

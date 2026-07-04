@@ -32,7 +32,10 @@ func TestProgressViewByteInfo(t *testing.T) {
 		if !strings.Contains(view, "(50.0 MiB)") {
 			t.Errorf("View() = %q; want it to contain %q", view, "(50.0 MiB)")
 		}
-		if strings.Contains(view, "/") {
+		// A total renders as "(written / total)"; match the separator
+		// specifically so an unrelated "/" in a rotating hint (e.g.
+		// "Claude/Codex") doesn't trip this check.
+		if strings.Contains(view, " / ") {
 			t.Errorf("View() = %q; must not render a total when none is known", view)
 		}
 	})

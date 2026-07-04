@@ -6,6 +6,7 @@ import (
 	"os/user"
 	"path"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
@@ -25,17 +26,26 @@ const (
 	videoGroupGID uint32 = 44
 	// inputGroupGID is the standard input group GID (for /dev/input devices).
 	inputGroupGID uint32 = 105
+	// dialoutGroupGID is the standard dialout group GID (owns serial tty nodes
+	// like /dev/ttyACM* and /dev/ttyUSB* on Debian/Ubuntu hosts).
+	dialoutGroupGID uint32 = 20
 	// v4l2Major is the standard Video4Linux character device major.
 	v4l2Major int64 = 81
 )
 
 // ApplyOptions configures optional behavior for entitlement application.
 type ApplyOptions struct {
-	// DBusProxyAvailable indicates that xdg-dbus-proxy is available and the
-	// caller will set up a filtered proxy socket for Bluetooth containers.
-	// When true, the bluetooth entitlement mounts from the proxy socket
-	// directory instead of the host D-Bus socket directly.
-	DBusProxyAvailable bool
+	// DBusProxySocketDir is the host directory holding the xdg-dbus-proxy
+	// filtered socket prepared for this container — the path returned by
+	// dbusproxy.Manager.Start. When non-empty, the bluetooth entitlement
+	// bind-mounts it at /var/run/dbus so the container sees an org.bluez-only
+	// D-Bus. It must be the exact directory the proxy created (which is keyed
+	// by the container name, not the bare app ID); reconstructing it from the
+	// app ID alone drops the per-service suffix and the mount source won't
+	// exist. When empty, the bluetooth entitlement adds no mount and only sets
+	// DBUS_SYSTEM_BUS_ADDRESS — mounting the raw host D-Bus socket directly
+	// would expose every system service, so it is never done.
+	DBusProxySocketDir string
 }
 
 // ApplyEntitlements modifies an OCI spec in-place based on app config entitlements.
@@ -71,17 +81,31 @@ func ApplyEntitlements(spec *Spec, cfg *appconfig.AppConfig, opts ApplyOptions) 
 		case appconfig.EntitlementPersist:
 			applyPersist(spec, ent, cfg.AppID)
 		case appconfig.EntitlementBluetooth:
-			applyBluetooth(spec, cfg.AppID, opts.DBusProxyAvailable)
+			applyBluetooth(spec, opts.DBusProxySocketDir)
 		case appconfig.EntitlementUSB:
 			applyUSB(spec)
 		case appconfig.EntitlementI2C:
-			applyI2C(spec, ent)
+			if err := applyI2C(spec, ent); err != nil {
+				return err
+			}
 		case appconfig.EntitlementGPIO:
 			applyGPIO(spec, ent)
 		case appconfig.EntitlementSPI:
 			applySPI(spec)
 		case appconfig.EntitlementInput:
 			applyInput(spec)
+		case appconfig.EntitlementSerial:
+			if err := applySerial(spec, ent); err != nil {
+				return err
+			}
+		case appconfig.EntitlementDisplay:
+			applyDisplay(spec)
+			if !didSetDeviceCapabilities {
+				didSetDeviceCapabilities = true
+				SetDeviceCapabilities(spec)
+			}
+		case appconfig.EntitlementAdmin:
+			applyAdmin(spec)
 		}
 	}
 	return nil
@@ -145,32 +169,79 @@ func applyGPU(spec *Spec) {
 	// Add the nvidia group GID for device access.
 	spec.Process.User.AdditionalGids = appendUnique(spec.Process.User.AdditionalGids, nvidiaGroupGID)
 
-	// Add NVIDIA device nodes.
-	nvidiaDevices := []string{
-		"/dev/nvidia0",
-		"/dev/nvidiactl",
-		"/dev/nvidia-uvm",
-		"/dev/nvidia-uvm-tools",
-		"/dev/nvidia-modeset",
-	}
+	// Derive the device list from the live host nodes: nvidia-uvm's major is
+	// dynamically allocated on modern drivers (487 on Thor/JetPack 7, not the
+	// classic 195), and the node set varies per board (Thor adds /dev/nvidia1
+	// and /dev/nvidia-caps/*). A hardcoded list would mknod wrong-major nodes
+	// AND the cgroup rule would block the right ones — guaranteed CUDA failure
+	// exactly when this fallback is needed (WDY-1804).
+	nodes := discoverNvidiaDeviceNodes()
 
-	for _, devPath := range nvidiaDevices {
-		spec.Linux.Devices = append(spec.Linux.Devices, LinuxDevice{
-			Path:  devPath,
-			Type:  "c",
-			Major: 195, // NVIDIA major number.
-			Minor: 0,
+	if len(nodes) == 0 {
+		// No /dev/nvidia* on the host (e.g. driver module not yet loaded).
+		// Keep the historical static list so runc still creates the classic
+		// major-195 nodes in the container. Whole-major rule: 195 is the
+		// statically reserved NVIDIA major, and the real nodes' minors are
+		// unknowable here by definition.
+		staticPaths := []string{
+			"/dev/nvidia0",
+			"/dev/nvidiactl",
+			"/dev/nvidia-uvm",
+			"/dev/nvidia-uvm-tools",
+			"/dev/nvidia-modeset",
+		}
+		for _, devPath := range staticPaths {
+			spec.Linux.Devices = append(spec.Linux.Devices, LinuxDevice{
+				Path:  devPath,
+				Type:  "c",
+				Major: 195, // NVIDIA major number.
+				Minor: 0,
+			})
+		}
+		major := int64(195)
+		spec.Linux.Resources.Devices = append(spec.Linux.Resources.Devices, LinuxDeviceCgroup{
+			Allow:  true,
+			Type:   "c",
+			Major:  &major,
+			Access: "rw",
 		})
+	} else {
+		// One allow rule per discovered major:minor pair — never whole-major.
+		// Dynamic majors (nvidia-uvm's 487 on Thor) come from a shared kernel
+		// pool, so a whole-major rule could cover unrelated drivers that
+		// happen to land on the same number on another boot or kernel. The
+		// exact pairs are known here because these very nodes are mknod'd
+		// into the container below (no hotplug re-minting on this path).
+		// Access is "rw", not "rwm": the container only opens the nodes, so
+		// the mknod bit is withheld as least privilege.
+		// Note on TOCTOU scope: spec.Linux.Devices entries are mknod'd by the
+		// runtime inside the container's own /dev tmpfs from the major:minor
+		// recorded here — the host path is never re-opened by the runtime on
+		// this (root) path, so a post-scan swap of the host node cannot
+		// change what the container receives.
+		seen := map[[2]int64]bool{}
+		for _, n := range nodes {
+			spec.Linux.Devices = append(spec.Linux.Devices, LinuxDevice{
+				Path:  n.path,
+				Type:  "c",
+				Major: n.major,
+				Minor: n.minor,
+			})
+			key := [2]int64{n.major, n.minor}
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			maj, min := n.major, n.minor
+			spec.Linux.Resources.Devices = append(spec.Linux.Resources.Devices, LinuxDeviceCgroup{
+				Allow:  true,
+				Type:   "c",
+				Major:  &maj,
+				Minor:  &min,
+				Access: "rw",
+			})
+		}
 	}
-
-	// Allow access to NVIDIA character devices (major 195).
-	major := int64(195)
-	spec.Linux.Resources.Devices = append(spec.Linux.Resources.Devices, LinuxDeviceCgroup{
-		Allow:  true,
-		Type:   "c",
-		Major:  &major,
-		Access: "rwm",
-	})
 
 	// Add environment variables for NVIDIA.
 	spec.Process.Env = append(spec.Process.Env,
@@ -184,6 +255,73 @@ func applyGPU(spec *Spec) {
 	if boardDetect().IsRaspberryPi() {
 		applyVCIO(spec)
 	}
+}
+
+// nvidiaDeviceGlobs are the NVIDIA device-node patterns the GPU entitlement
+// scans to build its fallback device list. /dev/nvidia* covers nvidia0..N,
+// nvidiactl, nvidia-uvm, nvidia-uvm-tools and nvidia-modeset; nvidia-caps/*
+// covers the capability nodes (major 501 on Thor). Behind a var so tests can
+// redirect into a tempdir.
+var nvidiaDeviceGlobs = []string{"/dev/nvidia*", "/dev/nvidia-caps/*"}
+
+// nvidiaDeviceNameRe is the allowlist of node names the GPU entitlement will
+// grant from the globs above. Glob results are host filesystem input; an
+// unexpected name (say, a planted /dev/nvidia-evil char device) is rejected
+// rather than handed to the container.
+var nvidiaDeviceNameRe = regexp.MustCompile(`^(nvidia[0-9]+|nvidiactl|nvidia-uvm|nvidia-uvm-tools|nvidia-modeset|nvidia-cap[0-9]+)$`)
+
+type nvidiaDeviceNode struct {
+	path         string
+	major, minor int64
+}
+
+// discoverNvidiaDeviceNodes stats the live NVIDIA nodes matching
+// nvidiaDeviceGlobs and returns their real major:minor numbers. Non-device
+// matches (e.g. the /dev/nvidia-caps directory itself), stat errors, and
+// character devices whose name is not on the NVIDIA allowlist are skipped —
+// a host without the driver loaded simply returns nothing.
+func discoverNvidiaDeviceNodes() []nvidiaDeviceNode {
+	var nodes []nvidiaDeviceNode
+	for _, glob := range nvidiaDeviceGlobs {
+		matches, err := filepath.Glob(glob)
+		if err != nil {
+			continue
+		}
+		for _, p := range matches {
+			major, minor, err := statCharDevice(p)
+			if err != nil {
+				continue
+			}
+			if !nvidiaDeviceNameRe.MatchString(filepath.Base(p)) {
+				continue
+			}
+			nodes = append(nodes, nvidiaDeviceNode{path: p, major: major, minor: minor})
+		}
+	}
+	return nodes
+}
+
+// statCharDevice resolves a host path to its character-device major:minor,
+// rejecting anything that is not a real character device node (directories,
+// regular files, symlinks). A single Lstat supplies both the type check and
+// the device numbers, so the checked inode IS the reported inode — there is
+// no follow-up stat for a concurrent symlink swap to redirect (TOCTOU), and
+// symlinks are never followed. Behind a var so tests can inject device
+// numbers without root/mknod.
+var statCharDevice = func(p string) (major, minor int64, err error) {
+	fi, err := os.Lstat(p)
+	if err != nil {
+		return 0, 0, err
+	}
+	if fi.Mode()&os.ModeCharDevice == 0 {
+		return 0, 0, fmt.Errorf("%s is not a character device node", p)
+	}
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	if !ok {
+		return 0, 0, fmt.Errorf("%s: no raw stat data available", p)
+	}
+	rdev := uint64(st.Rdev)
+	return int64(unix.Major(rdev)), int64(unix.Minor(rdev)), nil
 }
 
 // vcioDevicePath is the host VideoCore mailbox device. Behind a var so tests
@@ -213,6 +351,83 @@ func applyVCIO(spec *Spec) {
 	allowMajorsFromGlob(spec, vcioDevicePath)
 }
 
+// applyDisplay grants an app the ability to present to the local display as a
+// Wayland client: GPU render-node access via /dev/dri plus, when present, the
+// compositor's Wayland socket. It is the ONLY entitlement that exposes
+// /dev/dri — apps without it keep the default no-display-GPU sandbox. On Jetson
+// the NVIDIA EGL/GLES userspace is injected from the host via CDI; here we only
+// ensure the driver advertises graphics+display capabilities.
+func applyDisplay(spec *Spec) {
+	// /dev/dri/card* is group "video"; renderD* is group "render".
+	spec.Process.User.AdditionalGids = appendUnique(spec.Process.User.AdditionalGids, videoGroupGID)
+	if gid, ok := lookupRenderGID(); ok {
+		spec.Process.User.AdditionalGids = appendUnique(spec.Process.User.AdditionalGids, gid)
+	}
+
+	// Allow the DRM major(s) behind /dev/dri (typically 226), discovered at apply
+	// time. "rw", no mknod: the host creates the nodes; the bind below surfaces them.
+	for _, glob := range driGlobs {
+		allowMajorsFromGlob(spec, glob)
+	}
+
+	// Bind the host /dev/dri tree so the container can open card*/renderD* nodes.
+	// nosuid/noexec but NOT nodev — the whole point is to open device nodes.
+	// Skipped when absent so a missing source cannot stop the container starting.
+	if _, err := os.Stat("/dev/dri"); err == nil {
+		spec.Mounts = append(spec.Mounts, Mount{
+			Destination: "/dev/dri",
+			Source:      "/dev/dri",
+			Type:        "bind",
+			Options:     []string{"rbind", "rw", "nosuid", "noexec"},
+		})
+	}
+
+	// On Jetson the NVIDIA graphics userspace is injected by CDI; ensure the
+	// driver capabilities include graphics/display (compute-only otherwise).
+	if boardDetect().IsJetson() {
+		spec.Process.Env = append(spec.Process.Env,
+			"NVIDIA_VISIBLE_DEVICES=all",
+			"NVIDIA_DRIVER_CAPABILITIES=all",
+		)
+	}
+
+	// Bind the compositor's Wayland socket if it exists. Conditional (like the
+	// PipeWire socket) so a device with no running compositor still starts the
+	// container — the socket simply isn't there yet (no-op-safe for Phase 1).
+	const waylandHostSock = "/run/wendyos/wayland-0"
+	if fi, err := os.Lstat(waylandHostSock); err == nil && fi.Mode()&os.ModeSocket != 0 {
+		spec.Mounts = append(spec.Mounts, Mount{
+			Destination: "/run/wendyos/wayland-0",
+			Source:      waylandHostSock,
+			Type:        "bind",
+			Options:     []string{"rbind", "nosuid", "noexec"},
+		})
+		spec.Process.Env = append(spec.Process.Env,
+			"XDG_RUNTIME_DIR=/run/wendyos",
+			"WAYLAND_DISPLAY=wayland-0",
+		)
+	}
+}
+
+// applyAdmin grants a container access to the wendy-agent's local control socket
+// (full gRPC, no mTLS). It is the entire trust boundary: only containers that
+// declare the admin entitlement get the socket, so anything with this can fully
+// control the device's apps. The mount is conditional on the host socket
+// existing so an app still starts if the agent socket is down (no-op-safe).
+func applyAdmin(spec *Spec) {
+	fi, err := os.Lstat(adminAgentSocketPath)
+	if err != nil || fi.Mode()&os.ModeSocket == 0 {
+		return
+	}
+	spec.Mounts = append(spec.Mounts, Mount{
+		Destination: "/run/wendy/agent.sock",
+		Source:      adminAgentSocketPath,
+		Type:        "bind",
+		Options:     []string{"rbind", "nosuid", "noexec"},
+	})
+	spec.Process.Env = append(spec.Process.Env, "WENDY_AGENT_SOCKET=/run/wendy/agent.sock")
+}
+
 // applyNetwork configures the network namespace.
 func applyNetwork(spec *Spec, ent appconfig.Entitlement) {
 	mode := ent.Mode
@@ -220,7 +435,7 @@ func applyNetwork(spec *Spec, ent appconfig.Entitlement) {
 		mode = "host"
 	}
 
-	if mode == "host" {
+	if mode == "host" || mode == "host-admin" {
 		// Remove the network namespace to use host networking.
 		var namespaces []LinuxNamespace
 		for _, ns := range spec.Linux.Namespaces {
@@ -245,10 +460,18 @@ func applyNetwork(spec *Spec, ent appconfig.Entitlement) {
 			}
 		}
 
-		// Add CAP_NET_ADMIN and CAP_NET_RAW for host networking.
-		spec.Process.Capabilities.Bounding = appendUnique(spec.Process.Capabilities.Bounding, "CAP_NET_ADMIN")
-		spec.Process.Capabilities.Effective = appendUnique(spec.Process.Capabilities.Effective, "CAP_NET_ADMIN")
-		spec.Process.Capabilities.Permitted = appendUnique(spec.Process.Capabilities.Permitted, "CAP_NET_ADMIN")
+		// SECURITY (WDY-1094): CAP_NET_ADMIN lets a container reconfigure host
+		// network interfaces, routes, and netfilter — a privilege that plain
+		// host networking (visibility: bind ports, see interfaces) does not
+		// require. Grant it only for the explicit "host-admin" opt-in, so the
+		// reconfiguration capability is separate from, and auditable apart from,
+		// the visibility entitlement. (CAP_NET_RAW for ping etc. comes from the
+		// baseline capability set, not from here, so it is unaffected.)
+		if mode == "host-admin" {
+			spec.Process.Capabilities.Bounding = appendUnique(spec.Process.Capabilities.Bounding, "CAP_NET_ADMIN")
+			spec.Process.Capabilities.Effective = appendUnique(spec.Process.Capabilities.Effective, "CAP_NET_ADMIN")
+			spec.Process.Capabilities.Permitted = appendUnique(spec.Process.Capabilities.Permitted, "CAP_NET_ADMIN")
+		}
 
 		// Mount a resolv.conf from the host so DNS works inside the container.
 		// The container has its own mount namespace, so its rootfs resolv.conf
@@ -311,13 +534,16 @@ func applyAudio(spec *Spec) {
 		Options:     []string{"rbind", "nosuid", "noexec"},
 	})
 
-	// Allow all sound devices (major 116).
+	// Allow all sound devices (major 116). Whole-major is kept: /dev/snd is a
+	// directory of nodes (controlC*, pcmC*D*, seq, timer, …) whose minors aren't
+	// known at apply time. Access is "rw", not "rwm": the host owns the nodes and
+	// the /dev/snd bind above surfaces them, so the mknod bit is withheld.
 	major := int64(116)
 	spec.Linux.Resources.Devices = append(spec.Linux.Resources.Devices, LinuxDeviceCgroup{
 		Allow:  true,
 		Type:   "c",
 		Major:  &major,
-		Access: "rwm",
+		Access: "rw",
 	})
 
 	// isSocket reports whether path is a Unix domain socket. Uses Lstat
@@ -396,6 +622,31 @@ var boardDetect = board.Detect
 // in-container enumerator returns nothing (WDY-1342). Behind a var so tests
 // can point it at a path that exists on the test host.
 var udevRuntimeDir = "/run/udev"
+
+// driGlobs are the DRM/KMS device-node patterns the display entitlement scans
+// to discover the render major(s) (typically 226). Behind a var so tests can
+// redirect into a tempdir.
+var driGlobs = []string{"/dev/dri/*"}
+
+// lookupRenderGID resolves the host "render" group GID, which owns
+// /dev/dri/renderD*. Behind a var so tests can stub it. Returns ok=false when
+// the host has no render group (then only the video GID is added).
+var lookupRenderGID = func() (uint32, bool) {
+	g, err := user.LookupGroup("render")
+	if err != nil {
+		return 0, false
+	}
+	gid, err := strconv.ParseUint(g.Gid, 10, 32)
+	if err != nil {
+		return 0, false
+	}
+	return uint32(gid), true
+}
+
+// adminAgentSocketPath is the host wendy-agent local control socket bind-mounted
+// into containers granted the admin entitlement. Behind a var so tests can point
+// it at a temp socket.
+var adminAgentSocketPath = "/run/wendy/agent.sock"
 
 // applyCamera adds camera/V4L2 device access, plus the additional kernel
 // device majors that libcamera (and on Jetson, nvargus/nvhost) require. The
@@ -602,16 +853,18 @@ func applyPersist(spec *Spec, ent appconfig.Entitlement, appID string) {
 }
 
 // applyBluetooth adds D-Bus socket mounts for Bluetooth access.
-// When proxyAvailable is true, it mounts from the xdg-dbus-proxy filtered
-// socket directory (only org.bluez allowed). Otherwise, it falls back to
-// mounting the host D-Bus sockets directly (unrestricted access).
-func applyBluetooth(spec *Spec, appID string, proxyAvailable bool) {
-	if proxyAvailable {
+// When proxySocketDir is non-empty, it mounts that xdg-dbus-proxy filtered
+// socket directory (only org.bluez allowed) at /var/run/dbus. The directory
+// is supplied by the caller (the value dbusproxy.Manager.Start returned for
+// this container) rather than reconstructed here, so the mount source always
+// matches what the proxy actually created. When empty, it adds no mount and
+// never falls back to the raw host D-Bus sockets.
+func applyBluetooth(spec *Spec, proxySocketDir string) {
+	if proxySocketDir != "" {
 		// Mount the filtered proxy socket directory.
-		proxyDir := filepath.Join("/run/wendy/dbus-proxy", appID)
 		spec.Mounts = append(spec.Mounts, Mount{
 			Destination: "/var/run/dbus",
-			Source:      proxyDir,
+			Source:      proxySocketDir,
 			Type:        "bind",
 			Options:     []string{"rbind", "nosuid", "noexec"},
 		})
@@ -637,47 +890,198 @@ func applyUSB(spec *Spec) {
 		Options:     []string{"rbind", "rw"},
 	})
 
-	// Allow USB devices (major 189).
+	// Allow USB devices (major 189). Whole-major is kept: /dev/bus/usb is a tree
+	// of per-device nodes that hotplug re-mints under new minors, so the minors
+	// aren't known at apply time. Access is "rw", not "rwm": the host owns the
+	// nodes and the bind above surfaces them, so the mknod bit is withheld.
 	major := int64(189)
 	spec.Linux.Resources.Devices = append(spec.Linux.Resources.Devices, LinuxDeviceCgroup{
 		Allow:  true,
 		Type:   "c",
 		Major:  &major,
-		Access: "rwm",
+		Access: "rw",
 	})
 }
 
-// applyI2C adds I2C device access for a specific bus.
-func applyI2C(spec *Spec, ent appconfig.Entitlement) {
-	// Validate device name is i2c-N before constructing a path from it.
+// i2cMajor is the standard I2C character-device major (i2c-dev).
+const i2cMajor int64 = 89
+
+// applyI2C adds access to a single named I2C bus (e.g. /dev/i2c-1). The bus is a
+// single, stable node — not a hotplug or directory device — so it is scoped to
+// the node's exact major:minor (via addScopedCharDevice), mirroring serial,
+// rather than granted the whole I2C major. Returns an error when the bus is
+// absent or malformed so the container fails fast with a clear message.
+func applyI2C(spec *Spec, ent appconfig.Entitlement) error {
+	// Validate device name is i2c-N before constructing a path from it
+	// (defense-in-depth against path traversal; appconfig validates this too).
 	if !strings.HasPrefix(ent.Device, "i2c-") {
-		return
+		return fmt.Errorf("i2c: device must be in i2c-N format, got %q", ent.Device)
 	}
 	suffix := ent.Device[len("i2c-"):]
 	if suffix == "" {
-		return
+		return fmt.Errorf("i2c: device must be in i2c-N format, got %q", ent.Device)
 	}
 	for _, c := range suffix {
 		if c < '0' || c > '9' {
-			return
+			return fmt.Errorf("i2c: device must be in i2c-N format, got %q", ent.Device)
 		}
 	}
 	devPath := filepath.Clean(fmt.Sprintf("/dev/%s", ent.Device))
+
+	// Resolve the exact node and scope the cgroup rule to this one bus's
+	// major:minor with "rw" (no mknod), never the whole I2C major.
+	major, _, err := addScopedCharDevice(spec, devPath)
+	if err != nil {
+		return fmt.Errorf("i2c bus %s unavailable (need a real, present bus node): %w", devPath, err)
+	}
+	// Defense-in-depth: the resolved node must actually be on the I2C major, so a
+	// node that isn't an i2c bus can't smuggle in access to an unrelated major.
+	if major != i2cMajor {
+		return fmt.Errorf("i2c bus %s has unexpected major %d (want %d); refusing", devPath, major, i2cMajor)
+	}
+	return nil
+}
+
+// serialDeviceMajors maps a serial tty node-name prefix to its kernel character
+// device major. ttyACM = USB CDC-ACM (cdc_acm), ttyUSB = USB-serial bridges
+// (FTDI/CH340/CP210x via usbserial). The entitlement is deliberately USB-only:
+// on-board UARTs (ttyAMA, ttyS) are excluded because ttyS in particular shares
+// its major with a board's system-console UART, adding attack surface for no
+// peripheral benefit. Prefixes are validated upstream by appconfig.isValidSerialDevice.
+var serialDeviceMajors = map[string]int64{
+	"ttyACM": 166,
+	"ttyUSB": 188,
+}
+
+// serialDeviceMajor returns the cgroup device major for a serial tty node name
+// (e.g. "ttyACM0" → 166) and whether the name is a recognized, well-formed node
+// (known prefix followed by one or more digits). The full-name validation here
+// is defense-in-depth against a malformed device slipping past appconfig
+// validation: it guarantees applySerial never bind-mounts a path like
+// "ttyACM0/../sda" that filepath.Clean would resolve outside the intended node.
+func serialDeviceMajor(device string) (int64, bool) {
+	for _, prefix := range appconfig.SerialDevicePrefixes {
+		if !strings.HasPrefix(device, prefix) {
+			continue
+		}
+		suffix := device[len(prefix):]
+		if suffix == "" {
+			return 0, false
+		}
+		for _, c := range suffix {
+			if c < '0' || c > '9' {
+				return 0, false
+			}
+		}
+		major, ok := serialDeviceMajors[prefix]
+		return major, ok
+	}
+	return 0, false
+}
+
+// statDeviceNode resolves a host device node to its character-device
+// major:minor. It rejects a node that does not exist or is a symlink: runc
+// cannot resolve a symlink target through a bind mount, and a symlink would let
+// the validated node differ from the one ultimately bound. Lstat does not
+// follow the link (mirrors the approach in applyAudio). Behind a var so tests
+// can inject device numbers without root/mknod.
+//
+// This is the shared stat/scope/symlink resolver for every entitlement that
+// surfaces a single, named device node (serial, i2c). Whole-major entitlements
+// (usb, gpio, spi, input, gpu, audio, camera) don't use it because they expose a
+// directory or hotplug node set whose minors aren't known at apply time.
+var statDeviceNode = func(p string) (major, minor int64, err error) {
+	fi, err := os.Lstat(p)
+	if err != nil {
+		return 0, 0, err
+	}
+	if fi.Mode()&os.ModeSymlink != 0 {
+		return 0, 0, fmt.Errorf("%s is a symlink; want a real device node", p)
+	}
+	var st syscall.Stat_t
+	if err := syscall.Stat(p, &st); err != nil {
+		return 0, 0, err
+	}
+	rdev := uint64(st.Rdev)
+	return int64(unix.Major(rdev)), int64(unix.Minor(rdev)), nil
+}
+
+// addScopedCharDevice resolves a single host character-device node, bind-mounts
+// it, and emits a cgroup allow rule scoped to its exact major:minor. It returns
+// the resolved major:minor so callers can validate the node is the device they
+// expect. The cgroup rule is "rw" (no mknod): the host owns the node and the
+// bind mount surfaces it, so the container only ever opens it — it never needs
+// to create one. The mount is nosuid/noexec: a device node is opened for I/O,
+// never executed and never a setuid surface. On a stat error (missing node or
+// symlink) nothing is appended and the error is returned, so the caller fails
+// fast with a clear message instead of a cryptic mount error at container start.
+func addScopedCharDevice(spec *Spec, devPath string) (major, minor int64, err error) {
+	major, minor, err = statDeviceNode(devPath)
+	if err != nil {
+		return 0, 0, err
+	}
 	spec.Mounts = append(spec.Mounts, Mount{
 		Destination: devPath,
 		Source:      devPath,
 		Type:        "bind",
-		Options:     []string{"rbind", "rw"},
+		Options:     []string{"rbind", "rw", "nosuid", "noexec"},
 	})
-
-	// Allow I2C devices (major 89).
-	major := int64(89)
+	maj, min := major, minor
 	spec.Linux.Resources.Devices = append(spec.Linux.Resources.Devices, LinuxDeviceCgroup{
 		Allow:  true,
 		Type:   "c",
-		Major:  &major,
-		Access: "rwm",
+		Major:  &maj,
+		Minor:  &min,
+		Access: "rw",
 	})
+	return major, minor, nil
+}
+
+// applySerial adds access to a single serial tty device (e.g. a USB-attached
+// servo bus or sensor on /dev/ttyACM0). Unlike the usb entitlement — which
+// exposes raw libusb access via /dev/bus/usb (major 189) — this grants the
+// kernel tty node that pyserial/termios open, which is a different device major
+// (166 for ttyACM, 188 for ttyUSB). The device field is a bare node name
+// validated by appconfig.isValidSerialDevice, so it cannot contain a path
+// separator or escape /dev.
+func applySerial(spec *Spec, ent appconfig.Entitlement) error {
+	wantMajor, ok := serialDeviceMajor(ent.Device)
+	if !ok {
+		return fmt.Errorf("serial: unrecognized device name %q", ent.Device)
+	}
+	devPath := filepath.Clean(fmt.Sprintf("/dev/%s", ent.Device))
+
+	// Resolve the exact node and scope the cgroup rule to this one device
+	// (major:minor), never the whole kernel major. A whole-major rule would
+	// expose every other device sharing that major on the host — every ttyACM*
+	// or ttyUSB* adapter (SOC2-CC6, ISO27001-A.8, NIST-AC-3). addScopedCharDevice
+	// also fails fast and clearly when the device is not connected, instead of a
+	// cryptic mount error at start.
+	major, _, err := addScopedCharDevice(spec, devPath)
+	if err != nil {
+		return fmt.Errorf("serial device %s unavailable (need a real, connected tty node): %w", devPath, err)
+	}
+	// Defense-in-depth: the resolved node must be the character-device major its
+	// name implies, so a node that isn't the expected serial device can't smuggle
+	// in access to an unrelated major. (The scoped rule above is discarded with
+	// the whole spec when this returns an error, so nothing is granted.)
+	if major != wantMajor {
+		return fmt.Errorf("serial device %s has unexpected major %d (want %d for %q); refusing", devPath, major, wantMajor, ent.Device)
+	}
+
+	// Serial tty nodes are group-owned by dialout; resolve its GID on the host so
+	// a non-root process can open the port, falling back to the Debian/Ubuntu
+	// default when the group is absent (mirrors applySPI's group lookup). This GID
+	// applies process-tree-wide, but the major:minor cgroup rule above is the real
+	// access gate — membership alone reaches no device the cgroup rule denies.
+	dialoutGID := dialoutGroupGID
+	if grp, gerr := user.LookupGroup("dialout"); gerr == nil {
+		if gid, perr := strconv.ParseUint(grp.Gid, 10, 32); perr == nil {
+			dialoutGID = uint32(gid)
+		}
+	}
+	spec.Process.User.AdditionalGids = appendUnique(spec.Process.User.AdditionalGids, dialoutGID)
+	return nil
 }
 
 // applyGPIO adds GPIO device access for specified pins.
@@ -695,13 +1099,16 @@ func applyGPIO(spec *Spec, ent appconfig.Entitlement) {
 		}
 	}
 
-	// Allow GPIO devices (major 254).
+	// Allow GPIO devices (major 254). Whole-major is kept: a host can expose up to
+	// eight /dev/gpiochip* nodes and access is chip-level (pins are validated, not
+	// gated per-node), so all chips share the major. Access is "rw", not "rwm":
+	// the host owns the nodes and the binds above surface them, so mknod is withheld.
 	major := int64(254)
 	spec.Linux.Resources.Devices = append(spec.Linux.Resources.Devices, LinuxDeviceCgroup{
 		Allow:  true,
 		Type:   "c",
 		Major:  &major,
-		Access: "rwm",
+		Access: "rw",
 	})
 
 	_ = ent.Pins // Pins are used for documentation/validation; access is chip-level.
@@ -731,13 +1138,17 @@ func applySPI(spec *Spec) {
 		}
 	}
 
-	// Allow SPI devices (major 153).
+	// Allow SPI devices (major 153). Whole-major is kept: a host can expose up to
+	// sixteen /dev/spidev*.* nodes (bus.chipselect) and the entitlement grants the
+	// SPI subsystem rather than one bus, so the minors aren't fixed at apply time.
+	// Access is "rw", not "rwm": the host owns the nodes and the binds above
+	// surface them, so the mknod bit is withheld.
 	spiMajor := int64(153)
 	spec.Linux.Resources.Devices = append(spec.Linux.Resources.Devices, LinuxDeviceCgroup{
 		Allow:  true,
 		Type:   "c",
 		Major:  &spiMajor,
-		Access: "rwm",
+		Access: "rw",
 	})
 }
 
@@ -754,13 +1165,16 @@ func applyInput(spec *Spec) {
 		Options:     []string{"rbind", "nosuid", "noexec"},
 	})
 
-	// Allow input devices (major 13).
+	// Allow input devices (major 13). Whole-major is kept: /dev/input is a
+	// directory of event/mouse/js nodes that hotplug re-mints under new minors, so
+	// the minors aren't known at apply time. Access is "rw", not "rwm": the host
+	// owns the nodes and the bind above surfaces them, so the mknod bit is withheld.
 	major := int64(13)
 	spec.Linux.Resources.Devices = append(spec.Linux.Resources.Devices, LinuxDeviceCgroup{
 		Allow:  true,
 		Type:   "c",
 		Major:  &major,
-		Access: "rwm",
+		Access: "rw",
 	})
 }
 

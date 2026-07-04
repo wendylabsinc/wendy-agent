@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net"
+	"strings"
 	"testing"
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
@@ -135,5 +136,35 @@ func TestRun_MissingProjectPath(t *testing.T) {
 	}
 	if !result.IsError {
 		t.Fatal("expected IsError=true when project_path is missing")
+	}
+}
+
+func TestCloudAuthEntry_UsesDefaultWhenMultiple(t *testing.T) {
+	srv := New(&config.Config{
+		DefaultCloudGRPC: "two:123",
+		Auth: []config.AuthConfig{
+			{CloudGRPC: "one:123", Certificates: []config.CertificateInfo{{OrganizationID: 1}}},
+			{CloudGRPC: "two:123", Certificates: []config.CertificateInfo{{OrganizationID: 2}}},
+		},
+	}, nil)
+	auth, err := srv.cloudAuthEntry("")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if auth.CloudGRPC != "two:123" {
+		t.Fatalf("want default session two:123, got %s", auth.CloudGRPC)
+	}
+}
+
+func TestCloudAuthEntry_ErrorsMentionsCloudGRPCParam(t *testing.T) {
+	srv := New(&config.Config{
+		Auth: []config.AuthConfig{
+			{CloudGRPC: "one:123", Certificates: []config.CertificateInfo{{OrganizationID: 1}}},
+			{CloudGRPC: "two:123", Certificates: []config.CertificateInfo{{OrganizationID: 2}}},
+		},
+	}, nil)
+	_, err := srv.cloudAuthEntry("")
+	if err == nil || !strings.Contains(err.Error(), "cloud_grpc") {
+		t.Fatalf("want error mentioning cloud_grpc param, got %v", err)
 	}
 }

@@ -3,7 +3,9 @@ package interceptor
 import (
 	"context"
 	"crypto/x509"
+	"strings"
 
+	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -11,6 +13,57 @@ import (
 	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 )
+
+// OrgMode selects how the mTLS gate enforces organization-equality between the
+// connecting client certificate and the device's own organization.
+type OrgMode int
+
+const (
+	// OrgModeOff disables the org check entirely; any validly-issued client cert
+	// is accepted regardless of its organization.
+	OrgModeOff OrgMode = iota
+	// OrgModeGrace enforces org-equality for certs that carry an org identity but
+	// allows legacy certs that carry no org identity (logging a warning), easing
+	// migration before cert rotation completes.
+	OrgModeGrace
+	// OrgModeStrict enforces org-equality and additionally requires every client
+	// cert to carry an org identity; legacy certs without one are rejected.
+	OrgModeStrict
+)
+
+// String returns the canonical lowercase name of the mode for logging.
+func (m OrgMode) String() string {
+	switch m {
+	case OrgModeOff:
+		return "off"
+	case OrgModeStrict:
+		return "strict"
+	case OrgModeGrace:
+		return "grace"
+	default:
+		return "grace"
+	}
+}
+
+// ParseOrgMode maps the WENDY_MTLS_ORG_ENFORCEMENT env value to a mode.
+// An empty string yields (OrgModeGrace, true) — grace is the default. The values
+// "grace", "strict", and "off" (case-insensitive, surrounding whitespace trimmed)
+// yield the corresponding mode and true. Any other value yields (OrgModeGrace,
+// false) so the caller can warn and fall back to grace.
+func ParseOrgMode(s string) (OrgMode, bool) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "":
+		return OrgModeGrace, true
+	case "grace":
+		return OrgModeGrace, true
+	case "strict":
+		return OrgModeStrict, true
+	case "off":
+		return OrgModeOff, true
+	default:
+		return OrgModeGrace, false
+	}
+}
 
 func peerAddr(ctx context.Context) string {
 	p, ok := peer.FromContext(ctx)
@@ -34,7 +87,14 @@ func peerAddr(ctx context.Context) string {
 // Audit logging: the certificate serial number (not PII) is logged at Debug level.
 // Subject CN is intentionally omitted from per-call logs to satisfy data-minimisation
 // requirements — it may contain a username or device identifier.
-func CheckMTLS(ctx context.Context, logger *zap.Logger) error {
+//
+// Organization enforcement: after the certificate is structurally validated, the
+// caller's organization (extracted from the leaf via certs.OrgFromClientCert) is
+// compared against expectedOrgID under the given mode. This prevents a validly-issued
+// user cert from one organization being accepted by a device belonging to another
+// (cross-tenant access). Only org IDs (ints, non-PII), the serial, and the remote
+// address are logged — never the CN/subject, which may carry a username.
+func CheckMTLS(ctx context.Context, logger *zap.Logger, expectedOrgID int32, mode OrgMode) error {
 	p, ok := peer.FromContext(ctx)
 	if !ok || p.AuthInfo == nil {
 		logger.Warn("rejected unauthenticated gRPC caller",
@@ -87,23 +147,63 @@ func CheckMTLS(ctx context.Context, logger *zap.Logger) error {
 		zap.String("remote", peerAddr(ctx)),
 		zap.String("serial", leaf.SerialNumber.String()),
 	)
-	return nil
+
+	// Organization-equality enforcement. OrgModeOff disables the check entirely,
+	// preserving pre-WDY-1535 behaviour. For grace/strict we extract the cert's org
+	// and compare it to this device's org (expectedOrgID).
+	if mode == OrgModeOff {
+		return nil
+	}
+	org, hasOrg, err := certs.OrgFromClientCert(leaf)
+	switch {
+	case err != nil:
+		// An org claim was present but malformed/ambiguous/non-positive. This is
+		// anomalous; reject in BOTH grace and strict. The CN/subject is not logged.
+		logger.Warn("rejected cert with undeterminable organization",
+			zap.String("remote", peerAddr(ctx)),
+			zap.String("serial", leaf.SerialNumber.String()),
+			zap.Error(err))
+		return status.Errorf(codes.PermissionDenied, "certificate organization could not be determined")
+	case hasOrg && org == expectedOrgID:
+		return nil
+	case hasOrg && org != expectedOrgID:
+		logger.Warn("rejected cert from non-permitted organization",
+			zap.String("remote", peerAddr(ctx)),
+			zap.String("serial", leaf.SerialNumber.String()),
+			zap.Int32("presentedOrg", org),
+			zap.Int32("expectedOrg", expectedOrgID))
+		return status.Errorf(codes.PermissionDenied, "certificate organization not permitted")
+	default:
+		// !hasOrg: a legacy cert with no org identity.
+		if mode == OrgModeStrict {
+			logger.Warn("rejected cert with no organization identity under strict mode",
+				zap.String("remote", peerAddr(ctx)),
+				zap.String("serial", leaf.SerialNumber.String()))
+			return status.Errorf(codes.PermissionDenied, "certificate organization identity required")
+		}
+		logger.Warn("client certificate has no organization identity; allowed under grace mode (set WENDY_MTLS_ORG_ENFORCEMENT=strict after cert rotation)",
+			zap.String("remote", peerAddr(ctx)),
+			zap.String("serial", leaf.SerialNumber.String()))
+		return nil
+	}
 }
 
-// UnaryMTLSInterceptor rejects unary calls that do not carry verified mTLS peer credentials.
-func UnaryMTLSInterceptor(logger *zap.Logger) grpc.UnaryServerInterceptor {
+// UnaryMTLSInterceptor rejects unary calls that do not carry verified mTLS peer
+// credentials or whose client organization is not permitted under the given mode.
+func UnaryMTLSInterceptor(logger *zap.Logger, expectedOrgID int32, mode OrgMode) grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
-		if err := CheckMTLS(ctx, logger); err != nil {
+		if err := CheckMTLS(ctx, logger, expectedOrgID, mode); err != nil {
 			return nil, err
 		}
 		return handler(ctx, req)
 	}
 }
 
-// StreamMTLSInterceptor rejects streaming calls that do not carry verified mTLS peer credentials.
-func StreamMTLSInterceptor(logger *zap.Logger) grpc.StreamServerInterceptor {
+// StreamMTLSInterceptor rejects streaming calls that do not carry verified mTLS peer
+// credentials or whose client organization is not permitted under the given mode.
+func StreamMTLSInterceptor(logger *zap.Logger, expectedOrgID int32, mode OrgMode) grpc.StreamServerInterceptor {
 	return func(srv interface{}, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
-		if err := CheckMTLS(ss.Context(), logger); err != nil {
+		if err := CheckMTLS(ss.Context(), logger, expectedOrgID, mode); err != nil {
 			return err
 		}
 		return handler(srv, ss)
