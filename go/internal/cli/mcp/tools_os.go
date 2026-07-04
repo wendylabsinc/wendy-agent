@@ -93,6 +93,9 @@ func (s *mcpServer) handleOSUpdate(ctx context.Context, req mcpgo.CallToolReques
 			} else {
 				sb.WriteString("update complete\n")
 			}
+		case *agentpb.UpdateOSResponse_ArmingRedundancy_:
+			return mcpgo.NewToolResultText(resp.GetArmingRedundancy().GetMessage() +
+				"\nThe device is rebooting; re-run the OS update once it is back online."), nil
 		case *agentpb.UpdateOSResponse_Failed_:
 			return mcpgo.NewToolResultError(fmt.Sprintf("update failed: %s", resp.GetFailed().GetErrorMessage())), nil
 		}

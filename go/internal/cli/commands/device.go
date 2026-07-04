@@ -2037,7 +2037,15 @@ func maybeCheckOSUpdate(ctx context.Context, preUpdateVersion *agentpb.GetAgentV
 		otaURL = u
 	}
 
-	if err := streamOSUpdate(ctx, conn, otaURL, ""); err != nil {
+	// redial mirrors reconnectAgentAfterRestart above: prefer the cloud-tunnel
+	// Reconnect closure (pinned to this device's asset id) when present, and
+	// only fall back to a direct LAN re-dial of priorConn.Host otherwise. This
+	// keeps the arm-retry re-dial from drifting to a different device on the
+	// cloud path.
+	redial := func(c context.Context) (*grpcclient.AgentConnection, error) {
+		return reconnectAgentAfterRestart(c, priorConn)
+	}
+	if err := streamOSUpdateWithArmRetry(ctx, priorConn.Host, conn, redial, otaURL, ""); err != nil {
 		return osUpdateOutcome{}, err
 	}
 

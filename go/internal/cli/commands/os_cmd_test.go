@@ -1,6 +1,8 @@
 package commands
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +12,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
@@ -604,5 +607,55 @@ func TestEvaluateOSUpdateOutcome(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestStreamOSUpdateWithArmRetryResumesAfterArming(t *testing.T) {
+	prevStream := streamOSUpdateFn
+	prevWait := waitForDeviceOnlineFn
+	defer func() { streamOSUpdateFn = prevStream; waitForDeviceOnlineFn = prevWait }()
+
+	waitForDeviceOnlineFn = func(context.Context, string) error { return nil }
+
+	calls := 0
+	streamOSUpdateFn = func(context.Context, *grpcclient.AgentConnection, string, string) error {
+		calls++
+		if calls == 1 {
+			return errArmingRebooted // first attempt: agent armed + rebooted
+		}
+		return nil // second attempt: succeeds
+	}
+
+	redialed := 0
+	redial := func(context.Context) (*grpcclient.AgentConnection, error) {
+		redialed++
+		return &grpcclient.AgentConnection{}, nil
+	}
+
+	err := streamOSUpdateWithArmRetry(context.Background(), "dev.local", &grpcclient.AgentConnection{}, redial, "http://x/y.wendy", "")
+	if err != nil {
+		t.Fatalf("want nil after resume, got %v", err)
+	}
+	if calls != 2 || redialed != 1 {
+		t.Fatalf("calls=%d redialed=%d, want calls=2 redialed=1", calls, redialed)
+	}
+}
+
+func TestStreamOSUpdateWithArmRetryStopsOnSecondArming(t *testing.T) {
+	prevStream := streamOSUpdateFn
+	prevWait := waitForDeviceOnlineFn
+	defer func() { streamOSUpdateFn = prevStream; waitForDeviceOnlineFn = prevWait }()
+
+	waitForDeviceOnlineFn = func(context.Context, string) error { return nil }
+	streamOSUpdateFn = func(context.Context, *grpcclient.AgentConnection, string, string) error {
+		return errArmingRebooted // never converges
+	}
+	redial := func(context.Context) (*grpcclient.AgentConnection, error) {
+		return &grpcclient.AgentConnection{}, nil
+	}
+
+	err := streamOSUpdateWithArmRetry(context.Background(), "dev.local", &grpcclient.AgentConnection{}, redial, "http://x/y.wendy", "")
+	if err == nil || errors.Is(err, errArmingRebooted) {
+		t.Fatalf("want a terminal reflash-style error, got %v", err)
 	}
 }
