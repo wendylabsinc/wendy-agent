@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -394,6 +395,13 @@ func streamOSUpdate(ctx context.Context, conn *grpcclient.AgentConnection, artif
 	spin := tui.NewSpinner("Downloading update...")
 	p := tui.NewProgressProgram(spin)
 
+	// armed is set when the agent reports it armed A/B rootfs redundancy and is
+	// rebooting. It is deliberately NOT routed through SpinnerDoneMsg.Err: the
+	// spinner renders "Error: <err>" on its final frame for any non-nil err, and
+	// arming is a normal, about-to-retry-and-succeed flow, not a failure. The
+	// flag is set BEFORE the clean SpinnerDoneMsg is sent and read only after
+	// p.Run() returns, so there is no race with the render goroutine.
+	var armed atomic.Bool
 	go func() {
 		for {
 			resp, err := stream.Recv()
@@ -414,7 +422,8 @@ func streamOSUpdate(ctx context.Context, conn *grpcclient.AgentConnection, artif
 			}
 			if arming := resp.GetArmingRedundancy(); arming != nil {
 				fmt.Println(arming.GetMessage())
-				p.Send(tui.SpinnerDoneMsg{Err: errArmingRebooted})
+				armed.Store(true)
+				p.Send(tui.SpinnerDoneMsg{})
 				return
 			}
 			if failed := resp.GetFailed(); failed != nil {
@@ -438,6 +447,9 @@ func streamOSUpdate(ctx context.Context, conn *grpcclient.AgentConnection, artif
 	if _, spinErr := spinModel.Result(); spinErr != nil {
 		return spinErr
 	}
+	if armed.Load() {
+		return errArmingRebooted
+	}
 	return nil
 }
 
@@ -450,6 +462,13 @@ func streamOSUpdateWithArmRetry(ctx context.Context, host string, conn *grpcclie
 	err := streamOSUpdateFn(ctx, conn, artifactURL, updaterBackend)
 	if !errors.Is(err, errArmingRebooted) {
 		return err
+	}
+	// A cloud-tunneled device's LAN address is unreachable from here, so
+	// waitForDeviceOnline/redial (both LAN-targeted) would hang for the full
+	// 10-minute poll budget before failing opaquely. Turn that into an instant,
+	// actionable message; the user reconnects through the tunnel out-of-band.
+	if _, isCloud := cloudDeviceConfigFromContext(ctx); isCloud {
+		return fmt.Errorf("A/B rootfs redundancy was armed and the device is rebooting; reconnect once it is back online and re-run the update")
 	}
 	fmt.Println("Waiting for device to come back online after arming redundancy...")
 	if err := waitForDeviceOnlineFn(ctx, host); err != nil {
