@@ -26,6 +26,10 @@ const (
 	consentSuppress
 )
 
+// analyticsEnabledFn is a seam for tests to stub analytics.Enabled without
+// depending on the real analytics opt-in state.
+var analyticsEnabledFn = analytics.Enabled
+
 // MaybeRunCrashReport offers to submit a redacted diagnostic report after an
 // unrecoverable failure. Strict no-op for recoverable errors, in CI, when
 // analytics is disabled, when suppressed, or non-interactively. Never errors
@@ -34,7 +38,7 @@ func MaybeRunCrashReport(ctx context.Context, executed *cobra.Command, err error
 	if err == nil || diag.Classify(err) != diag.Unrecoverable {
 		return
 	}
-	if env.IsCI() || !env.CrashReport() || !analytics.Enabled() || !isInteractiveTerminal() {
+	if env.IsCI() || !env.CrashReport() || !analyticsEnabledFn() || !isInteractiveTerminal() {
 		return
 	}
 	cfg, cerr := config.Load()
@@ -62,6 +66,8 @@ func MaybeRunCrashReport(ctx context.Context, executed *cobra.Command, err error
 
 	fmt.Fprintln(out, "\nThe following (redacted) information will be sent:")
 	fmt.Fprintln(out, info.Block())
+	fmt.Fprintf(out, "Error class: %s\n", bundle.ErrorClass)
+	fmt.Fprintf(out, "Severity: %s\n", bundle.Severity)
 	fmt.Fprintf(out, "Error: %s\n", bundle.ErrorChain)
 	printTail(out, "Recent log lines:", bundle.LogTail)
 	printTail(out, "Build output:", bundle.BuildOutputTail)
