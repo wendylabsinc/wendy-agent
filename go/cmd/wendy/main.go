@@ -31,8 +31,9 @@ func main() {
 		}
 		fmt.Fprintln(os.Stderr, tui.ErrorMessage(formatError(err).Error()))
 		// TODO(WDY-1228): re-enable the opt-in crash-report prompt once the cloud
-		// DiagnosticsService backend ships. The plumbing (diag capture, redaction,
-		// bundle assembly, gRPC submit) is landed and unit-tested; only this
+		// telemetry service's crashreports endpoints ship. The plumbing (diag
+		// capture, redaction, bundle assembly, submission over the anonymous
+		// telemetry HTTP channel) is landed and unit-tested; only this
 		// user-facing trigger is held so we don't surface a local-file-only flow.
 		//   commands.MaybeRunCrashReport(context.Background(), executed, err, errorClass(err))
 		os.Exit(1)
