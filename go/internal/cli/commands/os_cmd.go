@@ -421,7 +421,10 @@ func streamOSUpdate(ctx context.Context, conn *grpcclient.AgentConnection, artif
 				return
 			}
 			if arming := resp.GetArmingRedundancy(); arming != nil {
-				fmt.Println(arming.GetMessage())
+				// p.Println (not fmt.Println) queues the text to render safely
+				// above the still-running inline spinner program; a raw print
+				// would interleave with / be clobbered by the spinner's frame.
+				p.Println(arming.GetMessage())
 				armed.Store(true)
 				p.Send(tui.SpinnerDoneMsg{})
 				return
