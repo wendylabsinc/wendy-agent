@@ -19,11 +19,11 @@ import (
 )
 
 // wendyOSUpdater drives the in-house wendyos-update engine
-// (github.com/wendylabsinc/wendyos-update), the primary OS A/B update backend.
-// Its CLI mirrors mender-update's verbs: `commit` reports "nothing pending"
-// with exit 2, the differences being structured JSON-lines progress on stdout
-// and a richer install reject code (exit 3 = artifact rejected). A verify
-// failure surfaces as exit 4 from `commit` (not install), handled by the gate.
+// (github.com/wendylabsinc/wendyos-update), the OS A/B update backend. Its CLI
+// verbs are install/commit/rollback: `commit` reports "nothing pending" with
+// exit 2, install streams structured JSON-lines progress on stdout, and a
+// rejected artifact reports a richer reject code (exit 3). A verify failure
+// surfaces as exit 4 from `commit` (not install), handled by the gate.
 type wendyOSUpdater struct {
 	logger *zap.Logger
 }
@@ -52,7 +52,8 @@ const wendyOSDetectTimeout = 10 * time.Second
 // detect reports whether wendyos-update can update this device. The binary
 // must be present AND `wendyos-update status` must succeed: status resolves the
 // platform connector, so a clean exit confirms a supported board. On
-// unsupported boards it errors and the agent falls back to mender.
+// unsupported boards it errors, so chooseUpdater (install-time selection)
+// reports no backend available.
 func (w wendyOSUpdater) detect() bool {
 	binary, found := resolveWendyOSBinary()
 	if !found {
@@ -89,7 +90,7 @@ func (w wendyOSUpdater) install(ctx context.Context, artifactURL string, onProgr
 	// Clear it with the rollback the tool itself prescribes (mark-good would
 	// commit the failed slot, which we must not do), then retry the install once.
 	w.logger.Warn("wendyos-update rejected the install: a previous deployment is stuck in flight; clearing it with rollback and retrying")
-	if res := runUpdaterCommit(w.logger, binary, "rollback"); res.Status == oshealth.MenderError {
+	if res := runUpdaterCommit(w.logger, binary, "rollback"); res.Status == oshealth.UpdaterError {
 		w.logger.Error("failed to clear the stuck wendyos-update deployment; surfacing the original install error",
 			zap.String("output", res.Output), zap.Error(res.Err))
 		return err
@@ -122,7 +123,7 @@ func (w wendyOSUpdater) runInstall(ctx context.Context, binary, artifactURL stri
 		return false, fmt.Errorf("failed to start wendyos-update: %v", err)
 	}
 
-	outputTail := newLineRing(menderErrorTailLines)
+	outputTail := newLineRing(updaterOutputTailLines)
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() {
@@ -179,24 +180,60 @@ func isStaleDeploymentError(tail []string) bool {
 	return false
 }
 
-func (w wendyOSUpdater) commit() oshealth.MenderResult {
+func (w wendyOSUpdater) commit() oshealth.UpdaterResult {
 	binary, found := resolveWendyOSBinary()
 	if !found {
-		return oshealth.MenderResult{Status: oshealth.MenderUnavailable}
+		return oshealth.UpdaterResult{Status: oshealth.UpdaterUnavailable}
 	}
 	return runUpdaterCommit(w.logger, binary, "commit")
 }
 
-func (w wendyOSUpdater) rollback() oshealth.MenderResult {
+func (w wendyOSUpdater) rollback() oshealth.UpdaterResult {
 	binary, found := resolveWendyOSBinary()
 	if !found {
-		return oshealth.MenderResult{Status: oshealth.MenderUnavailable}
+		return oshealth.UpdaterResult{Status: oshealth.UpdaterUnavailable}
 	}
-	return runUpdaterCommit(w.logger, binary, "rollback")
+	res := runUpdaterCommit(w.logger, binary, "rollback")
+	if res.Status == oshealth.UpdaterOK {
+		res.RebootRequired = parseWendyOSRebootRequired(res.Output)
+	}
+	return res
 }
 
-// resolveWendyOSBinary finds the wendyos-update binary, preferring PATH and
-// then probing absolute candidates (mirrors resolveMenderBinary).
+// wendyOSRollbackLine is the JSON-lines summary `wendyos-update rollback`
+// prints on stdout: {"phase":"rollback","origin_slot":"...","reboot_required":bool}.
+type wendyOSRollbackLine struct {
+	Phase          string `json:"phase"`
+	RebootRequired bool   `json:"reboot_required"`
+}
+
+// parseWendyOSRebootRequired scans a successful rollback's combined output for
+// its JSON summary line and reports whether a reboot is actually needed to
+// finish the rollback, as opposed to the firmware having already fallen back
+// to the previous slot on its own (rollback was then pure bookkeeping). Fails
+// safe to true — the old always-reboot behavior — when the line is missing or
+// malformed, e.g. an older wendyos-update that predates this field.
+func parseWendyOSRebootRequired(output string) bool {
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "{") {
+			continue
+		}
+		var rec wendyOSRollbackLine
+		if err := json.Unmarshal([]byte(line), &rec); err != nil {
+			continue
+		}
+		if rec.Phase == "rollback" {
+			return rec.RebootRequired
+		}
+	}
+	return true
+}
+
+// resolveWendyOSBinary finds the wendyos-update binary. It checks PATH via
+// exec.LookPath and then probes absolute paths directly. The os.Stat fallback
+// is restricted to absolute paths to avoid accidentally executing a file from
+// the current working directory.
 func resolveWendyOSBinary() (string, bool) {
 	candidates := []string{
 		"wendyos-update",

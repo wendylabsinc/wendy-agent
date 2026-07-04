@@ -71,7 +71,7 @@ func TestFormatOSUpdateInfoEmpty(t *testing.T) {
 	if got := formatOSUpdateInfo(nil); got != "" {
 		t.Errorf("formatOSUpdateInfo(nil) = %q, want empty", got)
 	}
-	// No record and no engine snapshot (e.g. a mender device with no update
+	// No record and no engine snapshot (e.g. a device with no update
 	// history) — the section must disappear entirely.
 	if got := formatOSUpdateInfo(&agentpb.GetOSUpdateStatusResponse{}); got != "" {
 		t.Errorf("formatOSUpdateInfo(empty) = %q, want empty", got)
@@ -79,7 +79,7 @@ func TestFormatOSUpdateInfoEmpty(t *testing.T) {
 }
 
 func TestFormatOSUpdateInfoRecordOnly(t *testing.T) {
-	// Old agents (or mender devices) report only the persisted record.
+	// Old agents report only the persisted record.
 	resp := &agentpb.GetOSUpdateStatusResponse{
 		HasResult:    true,
 		Outcome:      agentpb.GetOSUpdateStatusResponse_OUTCOME_COMMITTED,

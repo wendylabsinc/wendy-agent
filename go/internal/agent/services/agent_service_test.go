@@ -366,7 +366,7 @@ func TestUpdateAgent_LockExclusion(t *testing.T) {
 	installer.Unlock()
 }
 
-func TestUpdateOS_NonWendyOSFailsBeforeMender(t *testing.T) {
+func TestUpdateOS_NonWendyOSFailsBeforeUpdate(t *testing.T) {
 	client, cleanup := startAgentServer(t,
 		&mockNetworkManager{},
 		&mockHardwareDiscoverer{},
@@ -376,7 +376,7 @@ func TestUpdateOS_NonWendyOSFailsBeforeMender(t *testing.T) {
 	defer cleanup()
 
 	stream, err := client.UpdateOS(context.Background(), &agentpb.UpdateOSRequest{
-		ArtifactUrl: "http://example.invalid/update.mender",
+		ArtifactUrl: "http://example.invalid/update.wendy",
 	})
 	if err != nil {
 		t.Fatalf("UpdateOS: %v", err)

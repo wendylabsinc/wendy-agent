@@ -4,7 +4,7 @@ GitHub release lookups use the `GITHUB_TOKEN` environment variable for authentic
 
 ## OS update step
 
-After the agent is updated, the command checks for an OS update on WendyOS devices that advertise an OTA backend — the in-house **wendyos-update** engine or **mender** (auto-selection prefers wendyos-update). When a newer image is available it prompts before applying (default no); use `--yes` to apply without prompting, and `--nightly` to track the nightly channel for both the agent and the OS. Non-interactive runs report the available update without applying it. Devices without an OTA backend, and non-WendyOS hosts, skip this step silently — `device update` still succeeds as an agent-only update.
+After the agent is updated, the command checks for an OS update on WendyOS devices that advertise the in-house **wendyos-update** OTA engine. When a newer image is available it prompts before applying (default no); use `--yes` to apply without prompting, and `--nightly` to track the nightly channel for both the agent and the OS. Non-interactive runs report the available update without applying it. Devices without an OTA backend, and non-WendyOS hosts, skip this step silently — `device update` still succeeds as an agent-only update.
 
 ## `--binary` survives the OS update
 

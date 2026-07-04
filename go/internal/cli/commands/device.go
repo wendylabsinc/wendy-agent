@@ -93,8 +93,69 @@ func newDeviceCmd() *cobra.Command {
 	addToGroup("manage",
 		newDeviceTelemetryStreamCmd(),
 		newPsCmd(),
+		newDeviceListCmd(),
+		newDevicePushAgentCmd(),
 	)
 
+	return cmd
+}
+
+// newDeviceListCmd is a hidden alias for the top-level `wendy discover`
+// command, so `wendy device list` reaches the same device-discovery flow that
+// users may reach for out of habit. It reuses the discover command wholesale
+// (flags, JSON output, USB-setup pre-flight) and only renames it and hides it
+// from the `device` help listing.
+func newDeviceListCmd() *cobra.Command {
+	cmd := newDiscoverCmd()
+	cmd.Use = "list"
+	cmd.Aliases = []string{"ls"}
+	cmd.Hidden = true
+	return cmd
+}
+
+// newDevicePushAgentCmd uploads a locally-built agent binary to the device via
+// the same UpdateAgent RPC `wendy device update` uses, bypassing the GitHub
+// release fetch. Hidden: it is a developer/diagnostic tool for running a
+// patched agent on a device (e.g. to capture verbose engine diagnostics),
+// not part of the normal update workflow.
+func newDevicePushAgentCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:    "push-agent <path-to-agent-binary>",
+		Short:  "Upload a locally-built agent binary to the device (dev/diagnostic)",
+		Args:   cobra.ExactArgs(1),
+		Hidden: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := cmd.Context()
+			binaryData, err := os.ReadFile(args[0])
+			if err != nil {
+				return fmt.Errorf("reading agent binary %q: %w", args[0], err)
+			}
+
+			conn, err := connectToAgent(ctx, SuppressUpdateCheck())
+			if err != nil {
+				return err
+			}
+			defer conn.Close()
+			addr := hostPort(conn.Host, defaultAgentPort)
+
+			h := sha256.Sum256(binaryData)
+			fmt.Fprintf(os.Stderr, "Uploading %d bytes to %s...\n", len(binaryData), conn.Host)
+			if err := deviceUpdateUpload(ctx, conn.AgentService, binaryData, hex.EncodeToString(h[:])); err != nil {
+				return fmt.Errorf("uploading agent: %w", err)
+			}
+			conn.Close()
+
+			fmt.Fprint(os.Stderr, "Waiting for agent to restart...")
+			newConn, err := waitForAgentRestart(ctx, addr)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, " failed.")
+				return fmt.Errorf("agent did not come back after update: %w", err)
+			}
+			defer newConn.Close()
+			fmt.Fprintln(os.Stderr, " ready.")
+			return nil
+		},
+	}
 	return cmd
 }
 
@@ -1887,6 +1948,13 @@ func maybeCheckOSUpdate(ctx context.Context, preUpdateVersion *agentpb.GetAgentV
 	}
 	defer conn.Close()
 
+	// The OS version running before this update, for the post-reboot outcome
+	// check (reportOSUpdateOutcome). The agent update just applied does not
+	// change the OS, so the version carried in preUpdateVersion is the
+	// pre-OS-update OS; the auto-select branch below refreshes it from the
+	// just-restarted agent.
+	preUpdateOSVersion := preUpdateVersion.GetOsVersion()
+
 	var otaURL string
 	if artifactURLOverride != "" {
 		// Explicit artifact: apply it as-is, no manifest lookup or version
@@ -1929,6 +1997,7 @@ func maybeCheckOSUpdate(ctx context.Context, preUpdateVersion *agentpb.GetAgentV
 		}
 
 		currentOS := versionResp.GetOsVersion()
+		preUpdateOSVersion = currentOS
 		fromVer := strings.TrimPrefix(currentOS, "WendyOS-")
 		if fromVer == "" {
 			fromVer = "unknown"
@@ -1937,7 +2006,8 @@ func maybeCheckOSUpdate(ctx context.Context, preUpdateVersion *agentpb.GetAgentV
 		decision := decideOSUpdate(currentOS, latestVer, nightly, assumeYes, isInteractiveTerminal())
 
 		// Don't offer an update the device is guaranteed to reject (e.g. a
-		// wendyos-update release for a Mender-era device): explain instead of
+		// wendyos-update release for a device whose image predates the
+		// wendyos-update stack): explain instead of
 		// prompting. Checked after already-current so an up-to-date device is
 		// not warned about an artifact it would never install. Non-fatal — the
 		// agent update above already succeeded.
@@ -1980,6 +2050,13 @@ func maybeCheckOSUpdate(ctx context.Context, preUpdateVersion *agentpb.GetAgentV
 		return osUpdateOutcome{applied: true}, err
 	}
 	fmt.Println("Device is back online.")
+	// The device coming back online does NOT mean the update stuck — a rollback
+	// also reboots and reconnects. Query the recorded outcome and surface a
+	// rollback as an error so `wendy device update` exits non-zero instead of
+	// silently reporting success (mirrors `wendy os update`).
+	if err := reportOSUpdateOutcome(ctx, priorConn.Host, preUpdateOSVersion); err != nil {
+		return osUpdateOutcome{applied: true, online: true}, err
+	}
 	return osUpdateOutcome{applied: true, online: true}, nil
 }
 
@@ -2063,7 +2140,7 @@ func newDeviceUpdateCmd() *cobra.Command {
 		Long: "Updates the agent binary on the device (downloaded from GitHub, or --binary for a local file), then checks for a newer WendyOS image. " +
 			"When an OS update is available it prompts before applying (default no); use --yes to apply without prompting. Non-interactive runs report the available update without applying it. " +
 			"--nightly selects the nightly channel for both the agent and the OS. " +
-			"--artifact-url applies a specific OS artifact (.wendy or .mender) instead of the manifest's latest; this works over the cloud tunnel (the device downloads the artifact directly from the URL).",
+			"--artifact-url applies a specific OS update artifact instead of the manifest's latest; this works over the cloud tunnel (the device downloads the artifact directly from the URL).",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 
@@ -2257,7 +2334,7 @@ func newDeviceUpdateCmd() *cobra.Command {
 	cmd.Flags().StringVar(&binaryPath, "binary", "", "Path to a local agent binary to upload (skips download); re-applied after an OS update so it survives the reboot")
 	cmd.Flags().BoolVar(&nightly, "nightly", false, "Use the latest nightly (prerelease) build for both the agent and the OS")
 	cmd.Flags().BoolVarP(&assumeYes, "yes", "y", false, "Apply an available OS update without prompting")
-	cmd.Flags().StringVar(&artifactURL, "artifact-url", "", "Apply this OS artifact URL (.wendy or .mender) instead of the manifest's latest")
+	cmd.Flags().StringVar(&artifactURL, "artifact-url", "", "Apply this OS update artifact URL instead of the manifest's latest")
 
 	return cmd
 }

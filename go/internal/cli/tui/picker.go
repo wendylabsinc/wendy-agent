@@ -88,8 +88,18 @@ func probeColumnValue(state ProbeState, version, frame string) string {
 // formatOSNameVersion joins an OS/distro name and its version into a single
 // display string (e.g. "ubuntu" + "24.04" -> "ubuntu 24.04"). Either part may
 // be empty; the result never has leading or trailing space.
+//
+// When the version string already begins with the OS name (case-insensitive),
+// the name is dropped to avoid a redundant prefix. WendyOS reports the distro
+// ID "wendyos" alongside a version like "WendyOS-0.16.2", which would otherwise
+// render as the ugly "wendyos WendyOS-0.16.2"; here it becomes "WendyOS-0.16.2".
 func formatOSNameVersion(os, version string) string {
-	return strings.TrimSpace(strings.TrimSpace(os) + " " + strings.TrimSpace(version))
+	os = strings.TrimSpace(os)
+	version = strings.TrimSpace(version)
+	if os != "" && version != "" && len(version) >= len(os) && strings.EqualFold(version[:len(os)], os) {
+		return version
+	}
+	return strings.TrimSpace(os + " " + version)
 }
 
 // PickerItem represents a selectable row in the device picker.

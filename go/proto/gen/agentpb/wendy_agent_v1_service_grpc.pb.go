@@ -72,7 +72,7 @@ type WendyAgentServiceClient interface {
 	ConnectBluetoothPeripheral(ctx context.Context, in *ConnectBluetoothPeripheralRequest, opts ...grpc.CallOption) (*ConnectBluetoothPeripheralResponse, error)
 	DisconnectBluetoothPeripheral(ctx context.Context, in *DisconnectBluetoothPeripheralRequest, opts ...grpc.CallOption) (*DisconnectBluetoothPeripheralResponse, error)
 	ForgetBluetoothPeripheral(ctx context.Context, in *ForgetBluetoothPeripheralRequest, opts ...grpc.CallOption) (*ForgetBluetoothPeripheralResponse, error)
-	// Update the operating system using a Mender artifact
+	// Update the operating system using an OS update artifact
 	UpdateOS(ctx context.Context, in *UpdateOSRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[UpdateOSResponse], error)
 	// Dump the current kernel ring buffer (dmesg) for inspection. By default
 	// the agent streams the buffered records and then keeps following new
@@ -358,7 +358,7 @@ type WendyAgentServiceServer interface {
 	ConnectBluetoothPeripheral(context.Context, *ConnectBluetoothPeripheralRequest) (*ConnectBluetoothPeripheralResponse, error)
 	DisconnectBluetoothPeripheral(context.Context, *DisconnectBluetoothPeripheralRequest) (*DisconnectBluetoothPeripheralResponse, error)
 	ForgetBluetoothPeripheral(context.Context, *ForgetBluetoothPeripheralRequest) (*ForgetBluetoothPeripheralResponse, error)
-	// Update the operating system using a Mender artifact
+	// Update the operating system using an OS update artifact
 	UpdateOS(*UpdateOSRequest, grpc.ServerStreamingServer[UpdateOSResponse]) error
 	// Dump the current kernel ring buffer (dmesg) for inspection. By default
 	// the agent streams the buffered records and then keeps following new

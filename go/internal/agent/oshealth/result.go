@@ -10,15 +10,43 @@ const resultFile = "last-update-result.json"
 type Outcome string
 
 const (
-	// OutcomeCommitted: healthchecks passed and the update was committed.
+	// OutcomeCommitted: the updater accepted the commit (its own health
+	// verdict, when it renders one) and the update was committed.
 	OutcomeCommitted Outcome = "committed"
-	// OutcomeRolledBack: healthchecks failed and the previous OS was restored.
+	// OutcomeRolledBack: the updater rejected the commit (or the update
+	// otherwise failed healthchecks) and the previous OS was restored.
 	OutcomeRolledBack Outcome = "rolled_back"
-	// OutcomeRollbackFailed: healthchecks failed but the rollback could not run.
+	// OutcomeRollbackFailed: the update failed healthchecks but the rollback
+	// could not run.
 	OutcomeRollbackFailed Outcome = "rollback_failed"
-	// OutcomeCommitFailed: healthchecks passed but committing the update failed.
+	// OutcomeCommitFailed: no health verdict was rendered — the updater binary
+	// was missing at commit, or the agent's own commit timeout fired. The
+	// update stays pending and is retried on the next agent start.
 	OutcomeCommitFailed Outcome = "commit_failed"
 )
+
+// ServiceStatus is the verdict of a single critical-service healthcheck.
+//
+// A gate only populates ServiceResult when it runs its own CheckAll — a
+// backend that delegates healthchecking to its own commit (wendyos-update
+// runs /etc/wendyos-update/health.d) renders its verdict through the commit
+// result instead, so its UpdateResult.Services is empty.
+type ServiceStatus string
+
+const (
+	StatusHealthy ServiceStatus = "healthy"
+	// StatusSkipped: the unit is not present on this device or is
+	// intentionally disabled, so it does not gate the update.
+	StatusSkipped ServiceStatus = "skipped"
+	StatusFailed  ServiceStatus = "failed"
+)
+
+// ServiceResult is the outcome of checking one critical service.
+type ServiceResult struct {
+	Unit   string        `json:"unit"`
+	Status ServiceStatus `json:"status"`
+	Reason string        `json:"reason,omitempty"`
+}
 
 // UpdateResult is the persisted outcome of the most recent OS update attempt.
 // It is written by the healthcheck gate on the freshly booted slot and, after

@@ -145,3 +145,104 @@ type fakePinChecker struct {
 func (f *fakePinChecker) CheckAndUpdate(leaf *x509.Certificate, displayName string) error {
 	return f.onCheck(leaf, displayName)
 }
+
+func TestBuildServerVerifyConnection_OnServerIdentityFiresOnSuccess(t *testing.T) {
+	serverCert, chainPEM := selfSignedCert(t, "device", "urn:wendy:org:7:asset:42")
+
+	var got certs.WendyIdentity
+	var calls int
+	verifyConn, err := certs.BuildServerVerifyConnection(certs.ServerVerifyOpts{
+		ChainPEM:      string(chainPEM),
+		ExpectedOrgID: 7,
+		OnServerIdentity: func(id certs.WendyIdentity) {
+			got = id
+			calls++
+		},
+	})
+	if err != nil {
+		t.Fatalf("BuildServerVerifyConnection: %v", err)
+	}
+
+	cs := tls.ConnectionState{PeerCertificates: []*x509.Certificate{serverCert}}
+	if err := verifyConn(cs); err != nil {
+		t.Fatalf("expected nil, got %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("OnServerIdentity calls = %d, want 1", calls)
+	}
+	if got.OrgID != 7 {
+		t.Errorf("captured OrgID = %d, want 7", got.OrgID)
+	}
+}
+
+func TestBuildServerVerifyConnection_OnServerIdentityFiresOnMismatch(t *testing.T) {
+	serverCert, chainPEM := selfSignedCert(t, "device", "urn:wendy:org:7:asset:42")
+
+	var got certs.WendyIdentity
+	verifyConn, err := certs.BuildServerVerifyConnection(certs.ServerVerifyOpts{
+		ChainPEM:         string(chainPEM),
+		ExpectedOrgID:    5,
+		OnServerIdentity: func(id certs.WendyIdentity) { got = id },
+	})
+	if err != nil {
+		t.Fatalf("BuildServerVerifyConnection: %v", err)
+	}
+
+	cs := tls.ConnectionState{PeerCertificates: []*x509.Certificate{serverCert}}
+	err = verifyConn(cs)
+	var mismatch *certs.OrgMismatchError
+	if !errors.As(err, &mismatch) {
+		t.Fatalf("expected OrgMismatchError, got %v", err)
+	}
+	if got.OrgID != 7 {
+		t.Errorf("captured OrgID = %d, want 7 (must fire even though org check rejects)", got.OrgID)
+	}
+}
+
+func TestBuildServerVerifyConnection_OnServerIdentityFiresOnChainFailure(t *testing.T) {
+	// serverCert (org 9) verified against an UNRELATED CA chain → chain verify fails.
+	serverCert, _ := selfSignedCert(t, "device", "urn:wendy:org:9:asset:1")
+	_, unrelatedChain := selfSignedCert(t, "other-ca", "")
+
+	var got certs.WendyIdentity
+	var calls int
+	verifyConn, err := certs.BuildServerVerifyConnection(certs.ServerVerifyOpts{
+		ChainPEM:         string(unrelatedChain),
+		ExpectedOrgID:    9,
+		OnServerIdentity: func(id certs.WendyIdentity) { got = id; calls++ },
+	})
+	if err != nil {
+		t.Fatalf("BuildServerVerifyConnection: %v", err)
+	}
+
+	cs := tls.ConnectionState{PeerCertificates: []*x509.Certificate{serverCert}}
+	if err := verifyConn(cs); err == nil {
+		t.Fatal("expected chain-verification error, got nil")
+	}
+	if calls != 1 || got.OrgID != 9 {
+		t.Errorf("OnServerIdentity fired %d time(s) with OrgID %d, want 1 call with OrgID 9 (must fire before chain check)", calls, got.OrgID)
+	}
+}
+
+func TestBuildServerVerifyConnection_OnServerIdentitySilentWhenNoIdentity(t *testing.T) {
+	// CN carries no Wendy identity → sink must not be called.
+	serverCert, chainPEM := selfSignedCert(t, "plain-cn", "")
+
+	var calls int
+	verifyConn, err := certs.BuildServerVerifyConnection(certs.ServerVerifyOpts{
+		ChainPEM:         string(chainPEM),
+		ExpectedOrgID:    0,
+		OnServerIdentity: func(id certs.WendyIdentity) { calls++ },
+	})
+	if err != nil {
+		t.Fatalf("BuildServerVerifyConnection: %v", err)
+	}
+
+	cs := tls.ConnectionState{PeerCertificates: []*x509.Certificate{serverCert}}
+	if err := verifyConn(cs); err != nil {
+		t.Fatalf("expected nil, got %v", err)
+	}
+	if calls != 0 {
+		t.Errorf("OnServerIdentity calls = %d, want 0 (no Wendy identity in cert)", calls)
+	}
+}

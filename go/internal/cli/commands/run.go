@@ -875,7 +875,7 @@ func runMacOSNativeContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 
 	if opts.detach {
 		stream, err := conn.ContainerService.StartContainer(contextWithPostStartAgentHook(ctx, appCfg), &agentpb.StartContainerRequest{
-			AppName: appCfg.AppID,
+			AppName: appCfg.ContainerName(),
 		})
 		if err != nil {
 			return fmt.Errorf("starting container: %w", err)
@@ -891,7 +891,7 @@ func runMacOSNativeContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 	defer runCancel()
 
 	stream, err := conn.ContainerService.StartContainer(contextWithPostStartAgentHook(runCtx, appCfg), &agentpb.StartContainerRequest{
-		AppName: appCfg.AppID,
+		AppName: appCfg.ContainerName(),
 	})
 	if err != nil {
 		return fmt.Errorf("starting container: %w", err)
@@ -905,7 +905,7 @@ func runMacOSNativeContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 		<-sigCh
 		cliLogln("\nStopping container...")
 		_, _ = conn.ContainerService.StopContainer(context.Background(), &agentpb.StopContainerRequest{
-			AppName: appCfg.AppID,
+			AppName: appCfg.ContainerName(),
 		})
 		runCancel()
 	}()
@@ -996,12 +996,26 @@ func runSwiftWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cw
 	}
 	restartPolicy := resolveRestartPolicy(opts)
 
+	// wendy.json run.args are the default arguments; explicit `wendy run -- ...`
+	// args take precedence. The agent replaces the image entrypoint whenever
+	// Cmd/UserArgs are set, so pass the product binary as Cmd alongside them —
+	// swift-container-plugin images use /<product> as their entrypoint.
+	userArgs := opts.userArgs
+	if len(userArgs) == 0 && appCfg.Run != nil {
+		userArgs = appCfg.Run.Args
+	}
+	var cmd string
+	if len(userArgs) > 0 {
+		cmd = "/" + product
+	}
+
 	createReq := &agentpb.CreateContainerRequest{
 		ImageName:     deviceImage,
 		AppName:       appCfg.AppID,
 		AppConfig:     appConfigData,
 		RestartPolicy: restartPolicy,
-		UserArgs:      opts.userArgs,
+		Cmd:           cmd,
+		UserArgs:      userArgs,
 	}
 
 	return startAndStreamContainer(ctx, conn, appCfg, createReq, opts)
@@ -1549,7 +1563,7 @@ func startAndStreamContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 
 	if opts.detach {
 		stream, err := conn.ContainerService.StartContainer(contextWithPostStartAgentHook(ctx, appCfg), &agentpb.StartContainerRequest{
-			AppName: appCfg.AppID,
+			AppName: appCfg.ContainerName(),
 		})
 		if err != nil {
 			return fmt.Errorf("starting container: %w", err)
@@ -1572,7 +1586,7 @@ func startAndStreamContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 	runCtx, runCancel := context.WithCancel(ctx)
 	defer runCancel()
 
-	outStream, stdinAttempted, err := openContainerStream(runCtx, conn.ContainerService, appCfg.AppID, appCfg)
+	outStream, stdinAttempted, err := openContainerStream(runCtx, conn.ContainerService, appCfg.ContainerName(), appCfg)
 	if err != nil {
 		return err
 	}
@@ -1586,7 +1600,7 @@ func startAndStreamContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 		<-sigCh
 		cliLogln("\nStopping container...")
 		_, _ = conn.ContainerService.StopContainer(context.Background(), &agentpb.StopContainerRequest{
-			AppName: appCfg.AppID,
+			AppName: appCfg.ContainerName(),
 		})
 		runCancel()
 	}()
@@ -1619,7 +1633,7 @@ func startAndStreamContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 			if stdinAttempted && !gotFirstResponse && status.Code(recvErr) == codes.Unimplemented {
 				cliNotice("Notice: stdin not attached (not supported by agent)")
 				startStream, startErr := conn.ContainerService.StartContainer(contextWithPostStartAgentHook(runCtx, appCfg), &agentpb.StartContainerRequest{
-					AppName: appCfg.AppID,
+					AppName: appCfg.ContainerName(),
 				})
 				if startErr != nil {
 					return fmt.Errorf("starting container: %w", startErr)
@@ -1832,8 +1846,23 @@ func resolveRestartPolicy(opts runOptions) *agentpb.RestartPolicy {
 // streamRunContainer drains a RunContainer server stream, writing stdout/stderr
 // to the corresponding OS streams. When opts.deploy or opts.detach is set the
 // function returns as soon as the Started message is received (mirroring the
-// behaviour of startAndStreamContainer for those flags).
+// behaviour of startAndStreamContainer for those flags). In attached mode the
+// Started message triggers readiness + the host-side postStart hook (again
+// mirroring startAndStreamContainer), then log streaming continues.
 func streamRunContainer(ctx context.Context, conn *grpcclient.AgentConnection, stream grpc.ServerStreamingClient[agentpb.RunContainerLayersResponse], appCfg *appconfig.AppConfig, opts runOptions) error {
+	// The attached-mode postStart hook is tied to hookCtx so it is terminated
+	// when the stream ends (matching startAndStreamContainer's runCtx handling).
+	// Cleanup runs in a defer so the hook is killed and reaped on every exit
+	// path, including stream errors.
+	hookCtx, hookCancel := context.WithCancel(ctx)
+	var postStartCmd *exec.Cmd
+	defer func() {
+		hookCancel()
+		if postStartCmd != nil {
+			_ = postStartCmd.Wait()
+		}
+	}()
+	hookFired := false
 	for {
 		resp, err := stream.Recv()
 		if err == io.EOF {
@@ -1859,6 +1888,19 @@ func streamRunContainer(ctx context.Context, conn *grpcclient.AgentConnection, s
 				announceReachableURL(ctx, conn, appCfg)
 				startPostStartHook(context.Background(), appCfg, conn.Host)
 				return nil
+			}
+			// Attached: mirror startAndStreamContainer's attached branch — wait
+			// for readiness, announce the URL, and fire the host-side postStart
+			// hook — then keep streaming logs. (#1300: this used to be skipped,
+			// so the hook only fired on runs that took the registry-push path.)
+			// hookFired guards against a malformed stream sending Started twice.
+			if !hookFired {
+				hookFired = true
+				if err := waitForReadiness(ctx, appCfg.Readiness, conn.Host); err != nil {
+					warnReadiness(ctx, conn, appCfg.AppID, err)
+				}
+				announceReachableURL(ctx, conn, appCfg)
+				postStartCmd = startPostStartHook(hookCtx, appCfg, conn.Host)
 			}
 			continue
 		}

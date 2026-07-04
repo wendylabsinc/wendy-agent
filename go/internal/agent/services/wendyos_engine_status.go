@@ -25,6 +25,10 @@ type wendyOSEngineStatus struct {
 	Slots       []wendyOSEngineSlot   `json:"slots"`
 	System      []wendyOSEngineKV     `json:"system"`
 	Pending     *wendyOSEnginePending `json:"pending"`
+	// Diagnostics is the connector's raw display-only snapshot, emitted only
+	// by `status --json --verbose` (e.g. tegra RootfsStatusSlot bytes, EFI
+	// boot-chain/capsule vars, or the uboot env). Additive; keys vary by board.
+	Diagnostics map[string]string `json:"diagnostics"`
 }
 
 type wendyOSEngineSlot struct {
@@ -87,6 +91,9 @@ func parseWendyOSEngineStatus(out []byte) (*agentpb.OSUpdateEngineStatus, error)
 			TargetSlot:      slotName(st.Pending.TargetSlot),
 		}
 	}
+	if len(st.Diagnostics) > 0 {
+		resp.Diagnostics = st.Diagnostics
+	}
 	return resp, nil
 }
 
@@ -110,7 +117,12 @@ func probeWendyOSEngineStatus(ctx context.Context, logger *zap.Logger) *agentpb.
 	}
 	ctx, cancel := context.WithTimeout(ctx, wendyOSStatusProbeTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, binary, "status", "--json")
+	// --verbose adds the connector's raw Diagnostics map (tegra
+	// RootfsStatusSlot bytes / EFI boot-chain + capsule vars, or the uboot
+	// env) — the only on-device signal that tells a firmware-flagged trial
+	// slot apart from a healthy one without shell access. The output stays a
+	// superset of the plain --json contract, so parsing is unaffected.
+	cmd := exec.CommandContext(ctx, binary, "status", "--json", "--verbose")
 	cmd.Env = envWithPath("/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
 	out, err := cmd.Output()
 	if err != nil {
@@ -160,6 +172,9 @@ func engineStatusToProtoV2(v1 *agentpb.OSUpdateEngineStatus) *agentpbv2.OSUpdate
 			Phase:           p.GetPhase(),
 			TargetSlot:      p.GetTargetSlot(),
 		}
+	}
+	if d := v1.GetDiagnostics(); len(d) > 0 {
+		resp.Diagnostics = d
 	}
 	return resp
 }

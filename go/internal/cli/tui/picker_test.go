@@ -519,6 +519,9 @@ func TestFormatOSNameVersion(t *testing.T) {
 		{name: "name only", os: "arch", version: "", want: "arch"},
 		{name: "both empty", os: "", version: "", want: ""},
 		{name: "trims surrounding space", os: " ubuntu ", version: " 24.04 ", want: "ubuntu 24.04"},
+		{name: "drops redundant distro prefix", os: "wendyos", version: "WendyOS-0.16.2", want: "WendyOS-0.16.2"},
+		{name: "drops redundant prefix case-insensitive", os: "WendyOS", version: "wendyos 1.0", want: "wendyos 1.0"},
+		{name: "keeps name when version is not a prefix match", os: "ubuntu", version: "24.04", want: "ubuntu 24.04"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

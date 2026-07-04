@@ -13,12 +13,14 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/encoding/protojson"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
@@ -44,7 +46,7 @@ func newOSCmd() *cobra.Command {
 const (
 	osUpdateUnsupportedMessage      = "This setup cannot be updated with wendy os update. Use this machine’s normal OS update tools instead. To use WendyOS OTA updates, install WendyOS on supported hardware with wendy os install."
 	linuxOSUpdateUnsupportedMessage = "This Linux host has wendy-agent installed, but it cannot be updated with WendyOS OTA artifacts. Use the Linux distribution’s package manager, such as apt, dnf, or pacman, to update this machine."
-	wendyOSMissingUpdaterMessage    = "This WendyOS image does not support OTA updates because no update backend (wendyos-update or mender) was found. Reinstall or upgrade to a WendyOS image with OTA support."
+	wendyOSMissingUpdaterMessage    = "This WendyOS image does not support OTA updates because the wendyos-update engine was not found on the device. Reinstall or upgrade to a WendyOS image with OTA support."
 )
 
 func validateOSUpdateIdentity(versionResp *agentpb.GetAgentVersionResponse) error {
@@ -82,54 +84,43 @@ func validateOSUpdateTarget(versionResp *agentpb.GetAgentVersionResponse) error 
 }
 
 // hasOTABackend reports whether the device advertises an OS update backend the
-// agent can drive: the in-house wendyos-update engine or mender. Both
-// `wendy os update` and `wendy device update` gate their OS-update step on this,
-// so a device with either backend is offered an update and the two paths cannot
-// drift on which backends count. (The agent picks one per the request's
-// --updater value; auto-selection prefers wendyos-update.)
+// agent can drive: the in-house wendyos-update engine. Both `wendy os update`
+// and `wendy device update` gate their OS-update step on this, so the two
+// paths cannot drift on which backends count.
 func hasOTABackend(versionResp *agentpb.GetAgentVersionResponse) bool {
-	return agentVersionHasFeature(versionResp, "wendyos-update") ||
-		agentVersionHasFeature(versionResp, "mender")
+	return agentVersionHasFeature(versionResp, "wendyos-update")
 }
 
-// requiredOTAFeatureForArtifact maps an artifact URL to the featureset entry
-// of the only backend that can install it: .wendy → "wendyos-update",
-// .mender(.xz) → "mender", "" when the extension is unknown. Mirrors the
-// agent's requiredUpdaterForArtifact — the formats are mutually unreadable.
+// requiredOTAFeatureForArtifact maps an artifact URL to the featureset entry of
+// the only backend that can install it: .wendy → "wendyos-update", "" when the
+// extension is unknown. Mirrors the agent's requiredUpdaterForArtifact.
 func requiredOTAFeatureForArtifact(artifactURL string) string {
 	path := artifactURL
 	if u, err := url.Parse(artifactURL); err == nil && u.Path != "" {
 		path = u.Path
 	}
-	switch {
-	case strings.HasSuffix(path, ".wendy"):
+	if strings.HasSuffix(path, ".wendy") {
 		return "wendyos-update"
-	case strings.HasSuffix(path, ".mender"), strings.HasSuffix(path, ".mender.xz"):
-		return "mender"
-	default:
-		return ""
 	}
+	return ""
 }
 
 // osUpdateStackMismatch reports whether the artifact's OTA stack is one the
 // device cannot run, so the CLI can explain the situation instead of offering
-// an update that is guaranteed to fail on the device. The wendy-on-mender case
-// is the stack-migration wall: the partition layout changed between the
-// stacks, so the device must be reflashed — no OTA can cross it. Devices that
-// advertise no backend at all are left to the agent's own selection error
-// (older agents predate the featureset entries).
+// an update that is guaranteed to fail on the device. A device that advertises
+// a featureset without the required backend is on an image that predates the
+// wendyos-update stack: its partition layout is incompatible, so no OTA can
+// cross it and the device must be reflashed. Devices that advertise no
+// featureset at all are left to the agent's own selection error (older agents
+// predate the featureset entries).
 func osUpdateStackMismatch(versionResp *agentpb.GetAgentVersionResponse, artifactURL string) error {
 	required := requiredOTAFeatureForArtifact(artifactURL)
-	if required == "" || !hasOTABackend(versionResp) || agentVersionHasFeature(versionResp, required) {
+	if required == "" || len(versionResp.GetFeatureset()) == 0 || agentVersionHasFeature(versionResp, required) {
 		return nil
 	}
-	if required == "wendyos-update" {
-		return errors.New("this update uses the wendyos-update OTA stack, but the device runs the legacy Mender stack; " +
-			"the disk layout changed between the stacks, so the update cannot be applied over the air — " +
-			"reflash the device with a current WendyOS image to continue receiving OS updates")
-	}
-	return errors.New("this update is a legacy Mender artifact, but the device runs the wendyos-update stack; " +
-		"select a wendyos-update (.wendy) release instead")
+	return errors.New("this OS update uses the wendyos-update stack, which this device does not support " +
+		"(its image predates the wendyos-update stack, and the partition layout is incompatible); " +
+		"reflash the device with a current WendyOS image to continue receiving OS updates")
 }
 
 // isWendyOSUpdateTarget reports whether the device is a WendyOS OTA target. The
@@ -195,7 +186,6 @@ func decideOSUpdate(currentOSVersion, latestVersion string, nightly, assumeYes, 
 func newOSUpdateCmd() *cobra.Command {
 	var artifactURL string
 	var nightly bool
-	var updaterBackend string
 
 	cmd := &cobra.Command{
 		Use:   "update [artifact-path]",
@@ -206,15 +196,10 @@ directory as a positional argument, or use --artifact-url for a remote URL.
 When a local file is provided, the CLI serves it via a temporary HTTP server
 so the device can download it directly.
 
-By default the device uses the in-house wendyos-update engine when it supports
-the board, falling back to mender. Use --updater to force a backend.`,
+The device uses its in-house wendyos-update engine to apply the update.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-
-			if err := validateUpdaterBackend(updaterBackend); err != nil {
-				return err
-			}
 
 			// Determine the artifact URL: local path, remote URL, or manifest picker.
 			if len(args) > 0 && artifactURL != "" {
@@ -350,15 +335,13 @@ the board, falling back to mender. Use --updater to force a backend.`,
 			}
 
 			// Refuse a doomed update before anything streams: a .wendy artifact
-			// cannot be installed by a Mender-stack device (and vice versa). An
-			// explicit --updater choice is left to the agent's own validation.
-			if updaterBackend == "" || updaterBackend == "auto" {
-				if err := osUpdateStackMismatch(versionResp, artifactURL); err != nil {
-					return err
-				}
+			// cannot be installed by a device whose image predates the
+			// wendyos-update stack.
+			if err := osUpdateStackMismatch(versionResp, artifactURL); err != nil {
+				return err
 			}
 
-			if err := streamOSUpdate(ctx, conn, artifactURL, updaterBackend); err != nil {
+			if err := streamOSUpdate(ctx, conn, artifactURL, ""); err != nil {
 				return err
 			}
 
@@ -374,8 +357,6 @@ the board, falling back to mender. Use --updater to force a backend.`,
 
 	cmd.Flags().StringVar(&artifactURL, "artifact-url", "", "OS update artifact URL (remote)")
 	cmd.Flags().BoolVar(&nightly, "nightly", false, "Use the latest nightly (prerelease) build for both agent and OS")
-	cmd.Flags().StringVar(&updaterBackend, "updater", "auto",
-		"OS update backend: auto (prefer wendyos-update, fall back to mender), wendyos, or mender")
 
 	return cmd
 }
@@ -441,21 +422,9 @@ func streamOSUpdate(ctx context.Context, conn *grpcclient.AgentConnection, artif
 	return nil
 }
 
-// validateUpdaterBackend rejects an unknown --updater value before contacting
-// the device. The accepted set mirrors the agent's selectUpdater.
-func validateUpdaterBackend(updater string) error {
-	switch updater {
-	case "", "auto", "wendyos", "wendyos-update", "mender":
-		return nil
-	default:
-		return fmt.Errorf("invalid --updater %q (expected auto, wendyos, or mender)", updater)
-	}
-}
-
 // resolveArtifactPath resolves a local file path or directory to an OS update
 // artifact. A direct file path is returned as-is (any extension). A directory
-// is searched for an artifact the device can install: a .wendy artifact (the
-// in-house engine) or a .mender artifact (the fallback).
+// is searched for a .wendy artifact the device can install.
 func resolveArtifactPath(path string) (string, error) {
 	absPath, err := filepath.Abs(path)
 	if err != nil {
@@ -478,36 +447,22 @@ func resolveArtifactPath(path string) (string, error) {
 
 	for _, e := range entries {
 		name := e.Name()
-		if strings.HasSuffix(name, ".wendy") ||
-			strings.HasSuffix(name, ".mender") || strings.HasSuffix(name, ".mender.xz") {
+		if strings.HasSuffix(name, ".wendy") {
 			fmt.Printf("Found artifact: %s\n", name)
 			return filepath.Join(absPath, name), nil
 		}
 	}
 
-	return "", fmt.Errorf("no .wendy or .mender artifact found in directory: %s", absPath)
+	return "", fmt.Errorf("no .wendy artifact found in directory: %s", absPath)
 }
 
-// artifactSuffix returns the OS-update artifact extension embedded in a URL or
-// path: ".mender.xz", ".wendy", or ".mender". A wendyos-update (.wendy)
-// artifact and a Mender (.mender) artifact share the manifest's
-// ota_update_path, and the install backends key off the artifact, so the
-// extension must survive a local download+serve round-trip — serving a .wendy
-// artifact under a .mender name makes wendyos-update reject it. Falls back to
-// ".mender" when no known suffix is present (backward-compatible default).
+// artifactSuffix returns the OS-update artifact extension to use when caching
+// or serving artifactURL locally: ".wendy", whether or not the URL itself
+// carries that extension. wendyos-update keys off the artifact's extension,
+// so the extension must survive a local download+serve round-trip — serving
+// an artifact under the wrong name makes wendyos-update reject it.
 func artifactSuffix(artifactURL string) string {
-	name := artifactURL
-	if u, err := url.Parse(artifactURL); err == nil && u.Path != "" {
-		name = u.Path
-	}
-	switch {
-	case strings.HasSuffix(name, ".mender.xz"):
-		return ".mender.xz"
-	case strings.HasSuffix(name, ".wendy"):
-		return ".wendy"
-	default:
-		return ".mender"
-	}
+	return ".wendy"
 }
 
 // artifactURLPath generates a short hash prefix for the URL path.
@@ -753,6 +708,11 @@ func evaluateOSUpdateOutcome(
 		b.WriteString("Update failed post-reboot healthchecks, and the automatic rollback could not be performed. " +
 			"The device may be in a degraded state.\n")
 		writeFailedServices(&b, resp.GetServices())
+		// When the updater ran its own health gate (wendyos-update health.d),
+		// there are no per-service results — the reason is carried in the note.
+		if note := resp.GetNote(); note != "" {
+			fmt.Fprintf(&b, "Reason: %s\n", note)
+		}
 		if re := resp.GetRollbackError(); re != "" {
 			fmt.Fprintf(&b, "Rollback error: %s\n", re)
 		}
@@ -760,7 +720,7 @@ func evaluateOSUpdateOutcome(
 			errors.New("OS update healthchecks failed and automatic rollback did not run")
 
 	default: // OUTCOME_COMMIT_FAILED
-		msg := "Update healthchecks passed, but the update could not be committed. " +
+		msg := "The update could not be committed: no health verdict was rendered. " +
 			"The device retries the commit on its next agent restart; if it is never committed, the OS reverts on the next reboot."
 		if note := resp.GetNote(); note != "" {
 			msg += "\nReason: " + note
@@ -789,14 +749,32 @@ reason. Useful for diagnosing an update without shell access to the device.`,
 			}
 			defer conn.Close()
 
-			resp, err := conn.AgentService.GetOSUpdateStatus(ctx, &agentpb.GetOSUpdateStatusRequest{})
+			// Ask for the live wendyos-update engine snapshot too. The persisted
+			// record is written by the agent's boot-time gate and can be absent
+			// (e.g. a delegated-health commit that never wrote one), but the
+			// engine status is authoritative on every wendyos-update device and
+			// is what lets a nightly commit be told apart from a rollback without
+			// shell access — nightlies keep the same WendyOS-x.y.z version string.
+			resp, err := conn.AgentService.GetOSUpdateStatus(ctx, &agentpb.GetOSUpdateStatusRequest{IncludeEngineStatus: true})
 			if err != nil {
 				if status.Code(err) == codes.Unimplemented {
 					return fmt.Errorf("this device's agent does not report OS update status; update the agent first")
 				}
 				return fmt.Errorf("querying OS update status: %w", err)
 			}
+			if jsonOutput {
+				out, mErr := protojson.MarshalOptions{Multiline: true, Indent: "  "}.Marshal(resp)
+				if mErr != nil {
+					return fmt.Errorf("encoding OS update status as JSON: %w", mErr)
+				}
+				fmt.Println(string(out))
+				return nil
+			}
 			fmt.Println(formatOSUpdateStatus(resp))
+			if es := resp.GetEngineStatus(); es != nil {
+				fmt.Println()
+				fmt.Print(formatEngineStatus(es))
+			}
 			return nil
 		},
 	}
@@ -820,7 +798,7 @@ func formatOSUpdateStatus(resp *agentpb.GetOSUpdateStatusResponse) string {
 	case agentpb.GetOSUpdateStatusResponse_OUTCOME_ROLLBACK_FAILED:
 		b.WriteString("Last OS update: healthchecks failed and the rollback could not be performed.\n")
 	case agentpb.GetOSUpdateStatusResponse_OUTCOME_COMMIT_FAILED:
-		b.WriteString("Last OS update: healthchecks passed but the commit failed.\n")
+		b.WriteString("Last OS update: the commit did not complete (no health verdict was rendered); it will be retried.\n")
 	default:
 		b.WriteString("Last OS update: outcome unknown.\n")
 	}
@@ -839,6 +817,73 @@ func formatOSUpdateStatus(resp *agentpb.GetOSUpdateStatusResponse) string {
 		fmt.Fprintf(&b, "Rollback error: %s\n", re)
 	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+// formatEngineStatus renders the live wendyos-update engine snapshot: the
+// booted slot and its health, and any pending (un-committed) update. This is
+// the ground truth for "did the update stick?" on a device with no shell
+// access, and unlike the OS version string it distinguishes a committed
+// nightly from a rolled-back one.
+func formatEngineStatus(es *agentpb.OSUpdateEngineStatus) string {
+	var b strings.Builder
+	b.WriteString("Engine status (wendyos-update):\n")
+	if c := es.GetConnector(); c != "" {
+		fmt.Fprintf(&b, "  Connector:    %s\n", c)
+	}
+	if cs := es.GetCurrentSlot(); cs != "" {
+		fmt.Fprintf(&b, "  Booted slot:  %s\n", cs)
+	}
+	for _, s := range es.GetSlots() {
+		marker := " "
+		if s.GetBooted() {
+			marker = "*"
+		}
+		fmt.Fprintf(&b, "  %s slot %s", marker, s.GetSlot())
+		if h := s.GetRootfsHealth(); h != "" {
+			fmt.Fprintf(&b, " health=%s", h)
+		}
+		if d := s.GetDistro(); d != "" {
+			fmt.Fprintf(&b, " distro=%s", d)
+		}
+		if r := s.GetRetries(); r != "" {
+			fmt.Fprintf(&b, " retries=%s", r)
+		}
+		if n := s.GetNote(); n != "" {
+			fmt.Fprintf(&b, " note=%q", n)
+		}
+		b.WriteString("\n")
+	}
+	if p := es.GetPending(); p != nil {
+		fmt.Fprintf(&b, "  Pending update: %s", p.GetArtifactName())
+		if v := p.GetArtifactVersion(); v != "" {
+			fmt.Fprintf(&b, " (%s)", v)
+		}
+		if ph := p.GetPhase(); ph != "" {
+			fmt.Fprintf(&b, " phase=%s", ph)
+		}
+		if ts := p.GetTargetSlot(); ts != "" {
+			fmt.Fprintf(&b, " target_slot=%s", ts)
+		}
+		b.WriteString("\n")
+	}
+	if d := es.GetDiagnostics(); len(d) > 0 {
+		b.WriteString("  Diagnostics (raw):\n")
+		for _, k := range sortedKeys(d) {
+			fmt.Fprintf(&b, "    %s = %s\n", k, d[k])
+		}
+	}
+	return b.String()
+}
+
+// sortedKeys returns a map's keys in lexical order so diagnostic output is
+// stable across calls (Go map iteration order is randomized).
+func sortedKeys(m map[string]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func writeFailedServices(b *strings.Builder, services []*agentpb.GetOSUpdateStatusResponse_ServiceResult) {
@@ -960,7 +1005,8 @@ func drainOSUpdateStream(stream agentpb.WendyAgentService_UpdateOSClient) error 
 	}
 }
 
-// phaseLabel converts a Mender phase string to a user-friendly spinner label.
+// phaseLabel converts an update-progress phase string to a user-friendly
+// spinner label.
 func phaseLabel(phase string) string {
 	switch phase {
 	case "downloading":
@@ -1088,9 +1134,9 @@ func downloadArtifactToTemp(artifactURL string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolving cache dir: %w", err)
 	}
-	// Preserve the artifact's real extension (.wendy / .mender / .mender.xz) so
-	// the locally served filename matches the artifact type; the device's
-	// install backend keys off it.
+	// Preserve the artifact's real extension (.wendy) so the locally served
+	// filename matches the artifact type; the device's install backend keys
+	// off it.
 	tmpFile, err := os.CreateTemp(cacheDir, "wendyos-*"+artifactSuffix(artifactURL))
 	if err != nil {
 		return "", fmt.Errorf("creating temp file: %w", err)

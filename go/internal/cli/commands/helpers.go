@@ -11,6 +11,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -100,6 +101,87 @@ func (e tlsHandshakeRejectedError) Unwrap() error {
 
 func (e tlsHandshakeRejectedError) Error() string {
 	return "TLS handshake rejected by device (possible clock skew or cert mismatch).\n  Check the device clock: ssh wendy@<host> 'timedatectl status'\n  For full TLS details rerun with WENDY_TLS_DEBUG=1"
+}
+
+// orgMismatchDeviceError reports that the device's server certificate belongs
+// to an org the user holds no credentials for — a genuine cross-org mismatch
+// distinct from a same-org handshake failure (clock skew / stale cert).
+type orgMismatchDeviceError struct {
+	deviceOrg int32
+	userOrgs  []int32 // distinct orgs the CLI has credentials for
+}
+
+func (e orgMismatchDeviceError) Error() string {
+	parts := make([]string, len(e.userOrgs))
+	for i, o := range e.userOrgs {
+		parts[i] = fmt.Sprintf("org %d", o)
+	}
+	have := "none"
+	if len(parts) > 0 {
+		have = strings.Join(parts, ", ")
+	}
+	return fmt.Sprintf(
+		"The device's certificate indicates it belongs to org %d; your credentials cover %s.\n"+
+			"Your account isn't a member of org %d — run 'wendy cloud login' with an account that can access org %d.",
+		e.deviceOrg, have, e.deviceOrg, e.deviceOrg)
+}
+
+// orgInCerts reports whether any of the given certs carries the org ID.
+func orgInCerts(org int32, certs []config.CertificateInfo) bool {
+	for i := range certs {
+		if int32(certs[i].OrganizationID) == org {
+			return true
+		}
+	}
+	return false
+}
+
+// newOrgMismatchDeviceError builds an orgMismatchDeviceError, deduplicating the
+// user's org IDs (in first-seen order) for the message.
+func newOrgMismatchDeviceError(deviceOrg int32, userCerts []config.CertificateInfo) error {
+	var userOrgs []int32
+	seen := map[int32]bool{}
+	for i := range userCerts {
+		o := int32(userCerts[i].OrganizationID)
+		if o == 0 || seen[o] {
+			continue
+		}
+		seen[o] = true
+		userOrgs = append(userOrgs, o)
+	}
+	return orgMismatchDeviceError{deviceOrg: deviceOrg, userOrgs: userOrgs}
+}
+
+type orgMismatchWithCause struct {
+	mismatch error
+	cause    error
+}
+
+func (e orgMismatchWithCause) Error() string {
+	return e.mismatch.Error()
+}
+
+func (e orgMismatchWithCause) Unwrap() []error {
+	if e.cause == nil {
+		return []error{e.mismatch}
+	}
+	return []error{e.mismatch, e.cause}
+}
+
+// chooseRejectionError picks the error for an mTLS cert-rejection outcome. A
+// genuine cross-org mismatch (the device's observed org is set and is not one
+// the user holds a cert for) gets the actionable orgMismatchDeviceError; every
+// other case (same-org failure such as clock skew, or no org observed) falls
+// through to errTLSHandshakeRejected, whose downstream handling offers the
+// clock-skew and refresh-certs remedies.
+func chooseRejectionError(observedDeviceOrg int32, allCerts []config.CertificateInfo, cause error) error {
+	if observedDeviceOrg != 0 && !orgInCerts(observedDeviceOrg, allCerts) {
+		return orgMismatchWithCause{
+			mismatch: newOrgMismatchDeviceError(observedDeviceOrg, allCerts),
+			cause:    cause,
+		}
+	}
+	return newTLSHandshakeRejectedError(cause)
 }
 
 type provisionedAgentUnauthorizedError struct {
@@ -811,6 +893,14 @@ func connectToAgent(ctx context.Context, opts ...resolveOption) (*grpcclient.Age
 			if errors.Is(connErr, ErrUserCancelled) {
 				return nil, connErr
 			}
+			// A cross-org mismatch is a credentials problem, not a reachability
+			// one: surface it directly rather than routing it into clock-skew
+			// retry, cert-refresh, or the default-device picker (none of which can
+			// resolve "you have no credentials for this device's org").
+			var orgMismatch orgMismatchDeviceError
+			if errors.As(connErr, &orgMismatch) {
+				return nil, connErr
+			}
 			retriedConn, connErr, retried := retryOnHandshakeTimeout(ctx, connErr, func() (*grpcclient.AgentConnection, error) {
 				return connectResolvedAgentWithProvisionedHint(ctx, hostname, addr, isDefault, provisionedMTLS)
 			})
@@ -1084,6 +1174,7 @@ func connectWithAutoTLSDiagnostics(ctx context.Context, plaintextAddr string) (*
 			// all port+1 probe failures were cert rejections (none were just "unreachable").
 			var plaintextAddrCertReject bool
 			var mtlsPortCertFails, mtlsPortNonCertFails int
+			var observedDeviceOrg int32 // org read from the device's server cert on a failed mTLS probe (0 = none)
 			for addrIdx, mtlsAddr := range mtlsAddrs {
 				for i := range allCerts {
 					conn, tlsErr := grpcclient.ConnectWithTLSAndPins(ctx, mtlsAddr, &allCerts[i], pins)
@@ -1110,6 +1201,9 @@ func connectWithAutoTLSDiagnostics(ctx context.Context, plaintextAddr string) (*
 					if tlsDebug {
 						fmt.Fprintf(os.Stderr, "[tls-debug] GetAgentVersion(%s) error: %v\n", mtlsAddr, probeErr)
 					}
+					if org, ok := conn.ObservedServerOrg(); ok {
+						observedDeviceOrg = org
+					}
 					conn.Close()
 					if addrIdx == 0 {
 						if isCertRejectionError(probeErr) {
@@ -1125,7 +1219,13 @@ func connectWithAutoTLSDiagnostics(ctx context.Context, plaintextAddr string) (*
 				}
 			}
 			if plaintextAddrCertReject || (mtlsPortCertFails > 0 && mtlsPortNonCertFails == 0) {
-				return nil, lastMTLSErr, newTLSHandshakeRejectedError(lastMTLSErr)
+				// A genuine cross-org mismatch (device's org is one we hold no cert
+				// for) gets a clear, actionable message. A same-org failure (observed
+				// org is one we have, e.g. clock skew / stale cert) or no observed org
+				// falls through to the generic handshake-rejected error, which
+				// connectToAgent already post-processes with clock-skew and
+				// refresh-certs remedies.
+				return nil, lastMTLSErr, chooseRejectionError(observedDeviceOrg, allCerts, lastMTLSErr)
 			}
 		}
 	}
@@ -1798,8 +1898,8 @@ func pickerItemDeviceID(item tui.PickerItem) string {
 	if entry.externalDevice != nil {
 		return entry.externalDevice.ProviderKey
 	}
-	if entry.mergedDevice != nil && entry.mergedDevice.External != nil {
-		return entry.mergedDevice.External.ProviderKey
+	if entry.mergedDevice != nil && len(entry.mergedDevice.Externals) > 0 {
+		return entry.mergedDevice.Externals[0].ProviderKey
 	}
 	return ""
 }
@@ -1870,11 +1970,23 @@ func mergePickerItem(existing *tui.PickerItem, incoming tui.PickerItem) {
 	if nd.Bluetooth != nil && md.Bluetooth == nil {
 		md.Bluetooth = nd.Bluetooth
 	}
-	if nd.External != nil && md.External == nil {
-		md.External = nd.External
-		if md.LAN == nil {
-			existing.Address = incoming.Address
+	for _, ext := range nd.Externals {
+		found := false
+		for _, e := range md.Externals {
+			if e.ID == ext.ID {
+				found = true
+				break
+			}
 		}
+		if !found {
+			md.Externals = append(md.Externals, ext)
+			sort.Slice(md.Externals, func(i, j int) bool {
+				return md.Externals[i].Rank() > md.Externals[j].Rank()
+			})
+		}
+	}
+	if md.LAN == nil && len(nd.Externals) > 0 && existing.Address == "" {
+		existing.Address = incoming.Address
 	}
 
 	if md.AgentVersion == "" {
@@ -2092,7 +2204,7 @@ func pickDevice(ctx context.Context, excludeProviders map[string]bool, excludeBl
 							items = append(items, tui.PickerItem{
 								Name:         devices[i].DisplayName,
 								DedupKey:     devices[i].DisplayName,
-								Type:         "LAN (Lite)",
+								Type:         devices[i].ConnectionType() + " (Lite)",
 								Address:      devices[i].ConnectionInfo["ip"],
 								AgentVersion: devices[i].AgentVersion,
 								OS:           devices[i].OS,
@@ -2102,7 +2214,7 @@ func pickDevice(ctx context.Context, excludeProviders map[string]bool, excludeBl
 									AgentVersion:    devices[i].AgentVersion,
 									OSVersion:       devices[i].OSVersion,
 									CPUArchitecture: devices[i].CPUArchitecture,
-									External:        &devices[i],
+									Externals:       []*models.ExternalDevice{&devices[i]},
 								}},
 							})
 						} else {
@@ -2241,9 +2353,9 @@ func pickDevice(ctx context.Context, excludeProviders map[string]bool, excludeBl
 		if d.Bluetooth != nil {
 			sel.Bluetooth = d.Bluetooth
 		}
-		if d.External != nil {
-			sel.External = d.External
-			sel.Provider = providers.ProviderForKey(d.External.ProviderKey)
+		if len(d.Externals) > 0 {
+			sel.External = d.Externals[0]
+			sel.Provider = providers.ProviderForKey(d.Externals[0].ProviderKey)
 		}
 		if sel.Bluetooth != nil || sel.External != nil {
 			return sel, nil

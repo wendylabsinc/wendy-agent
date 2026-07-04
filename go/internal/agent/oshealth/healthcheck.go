@@ -12,24 +12,6 @@ import (
 	"go.uber.org/zap"
 )
 
-// ServiceStatus is the verdict of a single service healthcheck.
-type ServiceStatus string
-
-const (
-	StatusHealthy ServiceStatus = "healthy"
-	// StatusSkipped: the unit is not present on this device or is
-	// intentionally disabled, so it does not gate the update.
-	StatusSkipped ServiceStatus = "skipped"
-	StatusFailed  ServiceStatus = "failed"
-)
-
-// ServiceResult is the outcome of checking one critical service.
-type ServiceResult struct {
-	Unit   string        `json:"unit"`
-	Status ServiceStatus `json:"status"`
-	Reason string        `json:"reason,omitempty"`
-}
-
 const defaultPollInterval = 500 * time.Millisecond
 
 // Checker polls systemd until critical services are active or their timeout

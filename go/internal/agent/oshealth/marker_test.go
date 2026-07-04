@@ -12,7 +12,7 @@ func TestPendingMarkerRoundTrip(t *testing.T) {
 	m := PendingMarker{
 		CreatedAt:    time.Date(2026, 6, 9, 12, 0, 0, 0, time.UTC),
 		OldOSVersion: "WendyOS-0.10.4",
-		ArtifactURL:  "http://192.168.1.10:8080/artifact.mender",
+		ArtifactURL:  "http://192.168.1.10:8080/artifact.wendy",
 		AgentVersion: "1.2.3",
 		Backend:      "wendyos-update",
 	}
