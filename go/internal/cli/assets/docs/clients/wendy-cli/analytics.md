@@ -58,6 +58,8 @@ Analytics can be disabled in several ways:
 
 ## Crash reports & fix subscriptions
 
+> **Availability:** Crash reporting is not yet active. The client-side plumbing (redaction, preview, and submission) has shipped, but the prompt stays dormant until the Wendy Cloud diagnostics backend is available. The behaviour described below documents the flow for when it turns on.
+
 When the CLI encounters an **unrecoverable failure** (for example, a docker build error), it may offer to send a redacted crash report to Wendy Labs. This is strictly **opt-in**: the CLI shows a preview of exactly what will be sent before asking for confirmation.
 
 ### What is sent

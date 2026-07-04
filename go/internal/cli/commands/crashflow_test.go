@@ -11,7 +11,7 @@ import (
 )
 
 func TestMaybeRunCrashReportSkipsRecoverable(t *testing.T) {
-	t.Setenv("CI", "")            // ensure not classified as CI
+	t.Setenv("CI", "") // ensure not classified as CI
 	t.Setenv("WENDY_CRASHREPORT", "true")
 	// Recoverable error must be a no-op (no panic, returns cleanly).
 	MaybeRunCrashReport(context.Background(), &cobra.Command{Use: "wendy"},

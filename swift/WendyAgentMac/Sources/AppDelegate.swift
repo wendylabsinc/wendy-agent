@@ -48,7 +48,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
             self.showWelcomeAndPermissionsWindow()
         }
 
-        CrashFixNotifications.shared.registerForPush()
+        // TODO(WDY-1228): re-enable push registration once the cloud
+        // DiagnosticsService and an authenticated Mac cloud channel exist. Held
+        // for now so we don't prompt users for notification permission for a
+        // subscribe path that is still a no-op stub (see DiagnosticsClient).
+        //   CrashFixNotifications.shared.registerForPush()
     }
 
     func application(

@@ -8,8 +8,8 @@ import (
 	"runtime"
 	"strings"
 
-	cloudpb "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
 	"github.com/wendylabsinc/wendy/go/internal/shared/version"
+	cloudpb "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
 )
 
 // Info is an environment snapshot. Target* fields are empty until
