@@ -46,6 +46,10 @@ type Config struct {
 	// answering at that hostname is caught. Renewal/re-enrollment within the
 	// same org+cloud does not trip it. Keyed by normalized hostname.
 	DevicePins map[string]DevicePin `json:"devicePins,omitempty"`
+	// CrashReport holds opt-in crash-reporting state: the suppression flag,
+	// tracking ids awaiting a fix, the last status-poll time, and pending
+	// fix notices to surface on the next run. Nil until first used.
+	CrashReport *CrashReportConfig `json:"crashReport,omitempty"`
 }
 
 // AuthConfig holds authentication details for a cloud environment.
@@ -69,6 +73,20 @@ type CertificateInfo struct {
 // AnalyticsConfig holds analytics preferences.
 type AnalyticsConfig struct {
 	Enabled bool `json:"enabled"`
+}
+
+// CrashReportConfig holds opt-in crash-reporting preferences and state.
+type CrashReportConfig struct {
+	Suppressed           bool        `json:"suppressed,omitempty"`
+	SubscribedReports    []string    `json:"subscribedReports,omitempty"`
+	LastCrashStatusCheck string      `json:"lastCrashStatusCheck,omitempty"` // RFC3339 UTC
+	PendingFixNotices    []FixNotice `json:"pendingFixNotices,omitempty"`
+}
+
+// FixNotice records that a reported crash was fixed in a given release.
+type FixNotice struct {
+	TrackingID     string `json:"trackingId"`
+	FixedInRelease string `json:"fixedInRelease,omitempty"`
 }
 
 // ConfigDir returns the path to the ~/.wendy directory, creating it if necessary.
