@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -144,7 +145,7 @@ func (w wendyOSUpdater) runInstall(ctx context.Context, binary, artifactURL stri
 		scanner := bufio.NewScanner(stderr)
 		scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
 		for scanner.Scan() {
-			line := scanner.Text()
+			line := stripSyslogPriority(scanner.Text())
 			outputTail.push(line)
 			w.logger.Debug("wendyos-update output", zap.String("line", line))
 		}
@@ -280,6 +281,18 @@ func parseWendyOSProgress(line string) (string, int32, bool) {
 		return "", 0, false
 	}
 	return p.Phase, p.Percent, true
+}
+
+// syslogPriorityPrefix matches a leading syslog <PRI> token: '<' + 1-3 digits + '>'.
+var syslogPriorityPrefix = regexp.MustCompile(`^<[0-9]{1,3}>`)
+
+// stripSyslogPriority cleans one line of wendyos-update stderr for display: it
+// removes a well-formed leading syslog <PRI> prefix (e.g. "<6>", "<3>") and the
+// redundant repeated "wendyos-update: " program tag. Lines that don't match are
+// returned unchanged, so this never corrupts unexpected output.
+func stripSyslogPriority(line string) string {
+	line = syslogPriorityPrefix.ReplaceAllString(line, "")
+	return strings.TrimPrefix(line, "wendyos-update: ")
 }
 
 // wendyOSInstallErrorMessage builds the user-facing error for a failed

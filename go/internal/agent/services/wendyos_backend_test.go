@@ -206,3 +206,27 @@ func TestWendyOSInstallErrorMessageDoesNotClaimVerifyFailure(t *testing.T) {
 		t.Fatalf("wendyOSInstallErrorMessage(4) = %q, want the generic install-failed message", msg)
 	}
 }
+
+func TestStripSyslogPriority(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"info prefix + tag", "<6>wendyos-update: install: downloading url=x", "install: downloading url=x"},
+		{"error prefix + tag", "<3>wendyos-update: artifact rejected: rootfs A/B redundancy is not armed", "artifact rejected: rootfs A/B redundancy is not armed"},
+		{"prefix only, no tag", "<6>some raw line", "some raw line"},
+		{"tag only, no prefix", "wendyos-update: hello", "hello"},
+		{"no prefix, no tag", "plain message", "plain message"},
+		{"malformed prefix passes through", "<abc>wendyos-update: x", "<abc>wendyos-update: x"},
+		{"too many digits passes through", "<9999>x", "<9999>x"},
+		{"empty", "", ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := stripSyslogPriority(c.in); got != c.want {
+				t.Fatalf("stripSyslogPriority(%q) = %q, want %q", c.in, got, c.want)
+			}
+		})
+	}
+}
