@@ -84,6 +84,10 @@ func NewRootCmd() *cobra.Command {
 			}
 			premark("  prerun: dueCLIUpdateCheck")
 
+			if dueCrashStatusCheck(cfg) {
+				scheduleCrashStatusCheck(cfg)
+			}
+
 			return nil
 		},
 		PersistentPostRunE: func(cmd *cobra.Command, args []string) error {
@@ -99,6 +103,8 @@ func NewRootCmd() *cobra.Command {
 			}
 
 			maybePromptInstallCompletions(cmd, firstRun, updateShown)
+
+			notifyCrashFix(cmd)
 			return nil
 		},
 	}
