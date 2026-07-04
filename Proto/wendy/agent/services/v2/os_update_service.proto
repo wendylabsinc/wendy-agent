@@ -22,6 +22,9 @@ message UpdateOSResponse {
         Progress progress = 1;
         Completed completed = 2;
         Failed failed = 3;
+        // The device is arming Jetson A/B rootfs redundancy and rebooting; the
+        // client should wait for the device to return and re-issue UpdateOS.
+        ArmingRedundancy arming_redundancy = 4;
     }
 
     message Progress {
@@ -35,6 +38,15 @@ message UpdateOSResponse {
 
     message Failed {
         string error_message = 1;
+    }
+
+    // Emitted instead of installing when a Jetson's firmware is not armed for
+    // A/B rootfs switching: the agent arms RootfsRedundancyLevel and reboots.
+    message ArmingRedundancy {
+        // Human-readable status shown while the device arms and reboots.
+        string message = 1;
+        // Always true today: arming only takes effect after a reboot.
+        bool will_reboot = 2;
     }
 }
 
