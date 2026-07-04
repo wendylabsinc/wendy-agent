@@ -147,3 +147,22 @@ func TestTrackHookFiresEvenWhenDisabled(t *testing.T) {
 		t.Error("client must remain nil when disabled")
 	}
 }
+
+func TestDistinctIDStable(t *testing.T) {
+	t.Setenv("HOME", t.TempDir()) // config.ConfigDir uses HOME/.wendy
+	id1, err := DistinctID()
+	if err != nil || id1 == "" {
+		t.Fatalf("DistinctID: %v id=%q", err, id1)
+	}
+	id2, _ := DistinctID()
+	if id1 != id2 {
+		t.Errorf("DistinctID not stable: %q != %q", id1, id2)
+	}
+}
+
+func TestTelemetryBaseURLOverride(t *testing.T) {
+	t.Setenv("WENDY_TELEMETRY_HOST", "http://localhost:8082")
+	if got := TelemetryBaseURL(); got != "http://localhost:8082/v1/telemetry" {
+		t.Errorf("override base = %q", got)
+	}
+}

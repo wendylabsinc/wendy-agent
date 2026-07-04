@@ -166,6 +166,30 @@ func parseBool(s string) bool {
 	return strings.EqualFold(s, "true")
 }
 
+// DistinctID returns the stable anonymous install id, loading or creating the
+// ~/.wendy/analytics_id file. Independent of whether tracking is enabled.
+func DistinctID() (string, error) {
+	if distinctID != "" {
+		return distinctID, nil
+	}
+	id, err := loadOrCreateID()
+	if err != nil {
+		return "", err
+	}
+	distinctID = id
+	return id, nil
+}
+
+// TelemetryBaseURL returns the base telemetry URL (…/v1/telemetry). It honors
+// WENDY_TELEMETRY_HOST (scheme+host override) for local development.
+func TelemetryBaseURL() string {
+	if host := strings.TrimSpace(os.Getenv("WENDY_TELEMETRY_HOST")); host != "" {
+		return strings.TrimRight(host, "/") + "/v1/telemetry"
+	}
+	// Derive from the events endpoint constant by trimming the trailing path.
+	return strings.TrimSuffix(telemetryEndpoint, "/events")
+}
+
 func loadOrCreateID() (string, error) {
 	dir, err := config.ConfigDir()
 	if err != nil {
