@@ -4,63 +4,81 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
 
+	"github.com/wendylabsinc/wendy/go/internal/cli/analytics"
 	"github.com/wendylabsinc/wendy/go/internal/cli/crashreport"
 	"github.com/wendylabsinc/wendy/go/internal/cli/diag"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/env"
 	"github.com/wendylabsinc/wendy/go/internal/shared/platforminfo"
-	cloudpb "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
+)
+
+type crashConsent int
+
+const (
+	consentSkip crashConsent = iota
+	consentSend
+	consentSuppress
 )
 
 // MaybeRunCrashReport offers to submit a redacted diagnostic report after an
-// unrecoverable failure. It is a strict no-op for recoverable errors, in CI,
-// when disabled via WENDY_CRASHREPORT=false, or in a non-interactive terminal.
-// It must never produce an error or alter the process exit code.
+// unrecoverable failure. Strict no-op for recoverable errors, in CI, when
+// analytics is disabled, when suppressed, or non-interactively. Never errors
+// or changes the exit code.
 func MaybeRunCrashReport(ctx context.Context, executed *cobra.Command, err error, errorClass string) {
 	if err == nil || diag.Classify(err) != diag.Unrecoverable {
 		return
 	}
-	if env.IsCI() || !env.CrashReport() || !isInteractiveTerminal() {
+	if env.IsCI() || !env.CrashReport() || !analytics.Enabled() || !isInteractiveTerminal() {
+		return
+	}
+	cfg, cerr := config.Load()
+	if cerr != nil {
+		return
+	}
+	if cfg.CrashReport != nil && cfg.CrashReport.Suppressed {
 		return
 	}
 
 	out := executed.ErrOrStderr()
 	fmt.Fprintln(out, "\nThis looks like an unrecoverable failure.")
-	if !crashPromptYesNo("Submit an anonymous, redacted diagnostic report to help us fix it?", false) {
+	switch crashConsentPrompt("Submit an anonymous, redacted diagnostic report to help us fix it?") {
+	case consentSuppress:
+		setCrashSuppressed(cfg)
+		fmt.Fprintln(out, "Okay — we won't ask again. Re-enable with 'wendy analytics enable' semantics later.")
 		return
+	case consentSkip:
+		return
+	case consentSend:
 	}
 
 	info := platforminfo.Collect()
 	bundle := crashreport.Build(info, errorClass, string(diag.Unrecoverable), diag.Chain(err), diag.Recent(), buildOutputTail())
-	bundle.Contact = "" // optional; left blank unless we later prompt for it
 
 	fmt.Fprintln(out, "\nThe following (redacted) information will be sent:")
 	fmt.Fprintln(out, info.Block())
 	fmt.Fprintf(out, "Error: %s\n", bundle.ErrorChain)
-	if len(bundle.LogTail) > 0 {
-		fmt.Fprintln(out, "\nRecent log lines:")
-		for _, l := range bundle.LogTail {
-			fmt.Fprintln(out, l)
-		}
-	}
-	if len(bundle.BuildOutputTail) > 0 {
-		fmt.Fprintln(out, "\nBuild output:")
-		for _, l := range bundle.BuildOutputTail {
-			fmt.Fprintln(out, l)
-		}
-	}
+	printTail(out, "Recent log lines:", bundle.LogTail)
+	printTail(out, "Build output:", bundle.BuildOutputTail)
+
 	if !crashPromptYesNo("Send this report?", false) {
 		fmt.Fprintln(out, "Report not sent.")
 		return
 	}
+	notify := crashPromptYesNo("Notify me when a release fixes this?", true)
 
-	client := dialDiagnosticsClient() // nil on failure → file fallback
-	res, ferr := crashreport.Submit(ctx, client, bundle)
+	anonID, aerr := analytics.DistinctID()
+	if aerr != nil {
+		fmt.Fprintln(out, "Could not prepare report.")
+		return
+	}
+	endpoint := analytics.TelemetryBaseURL() + "/crashreports"
+	res, ferr := crashreport.SubmitHTTP(ctx, endpoint, anonID, bundle, notify)
 	if ferr != nil {
 		fmt.Fprintf(out, "Could not save report: %v\n", ferr)
 		return
@@ -70,64 +88,75 @@ func MaybeRunCrashReport(ctx context.Context, executed *cobra.Command, err error
 		if res.StatusURL != "" {
 			fmt.Fprintf(out, "Track status: %s\n", res.StatusURL)
 		}
-		offerSubscribe(ctx, client, executed, res.TrackingID)
+		if notify {
+			addSubscribedReport(cfg, res.TrackingID)
+			fmt.Fprintln(out, "You'll see a note on your next 'wendy' run once it's fixed.")
+		}
 		return
 	}
 	fmt.Fprintf(out, "\nCloud unavailable; report saved locally: %s\n", res.LocalFile)
 	fmt.Fprintln(out, "Attach it to an issue at https://github.com/wendylabsinc/wendyos/issues")
 }
 
-// offerSubscribe asks whether to be notified when a release fixes the report.
-// APNS device tokens come from the Mac app; the CLI subscribes without one and
-// receives the fix via the cross-platform notification channel.
-func offerSubscribe(ctx context.Context, client cloudpb.DiagnosticsServiceClient, executed *cobra.Command, trackingID string) {
-	out := executed.ErrOrStderr()
-	if !crashPromptYesNo("Notify me when a release fixes this?", true) {
+func printTail(out io.Writer, header string, lines []string) {
+	if len(lines) == 0 {
 		return
 	}
-	if _, err := crashreport.Subscribe(ctx, client, trackingID, "", ""); err != nil {
-		fmt.Fprintf(out, "Could not subscribe now; you can still check %s later.\n", trackingID)
-		return
+	fmt.Fprintln(out, "\n"+header)
+	for _, l := range lines {
+		fmt.Fprintln(out, l)
 	}
-	fmt.Fprintln(out, "Subscribed. You'll see a notification on your next 'wendy' run once it's fixed.")
 }
 
-// dialDiagnosticsClient best-effort dials the cloud DiagnosticsService using the
-// default auth session. Returns nil on any failure so Submit uses the file
-// fallback. (Reuses dialCloudGRPC from cloud_tunnel.go.)
-func dialDiagnosticsClient() cloudpb.DiagnosticsServiceClient {
-	cfg, err := config.Load()
+func setCrashSuppressed(cfg *config.Config) {
+	if cfg.CrashReport == nil {
+		cfg.CrashReport = &config.CrashReportConfig{}
+	}
+	cfg.CrashReport.Suppressed = true
+	_ = config.Save(cfg)
+}
+
+func addSubscribedReport(cfg *config.Config, trackingID string) {
+	if cfg.CrashReport == nil {
+		cfg.CrashReport = &config.CrashReportConfig{}
+	}
+	cfg.CrashReport.SubscribedReports = append(cfg.CrashReport.SubscribedReports, trackingID)
+	_ = config.Save(cfg)
+}
+
+// buildOutputTail returns recent build output lines for a report. Nil for now.
+func buildOutputTail() []string { return nil }
+
+// crashConsentPrompt prints a 3-way prompt and returns the parsed choice.
+func crashConsentPrompt(prompt string) crashConsent {
+	fmt.Fprint(os.Stderr, prompt+" [y]es / [n]o / [d]on't ask again: ")
+	line, err := bufio.NewReader(os.Stdin).ReadString('\n')
 	if err != nil {
-		return nil
+		return consentSkip
 	}
-	auth, ok := cfg.DefaultAuth()
-	if !ok || auth == nil || auth.CloudGRPC == "" {
-		return nil
-	}
-	conn, err := dialCloudGRPC(auth)
-	if err != nil {
-		return nil
-	}
-	return cloudpb.NewDiagnosticsServiceClient(conn)
+	return parseCrashConsent(line)
 }
 
-// buildOutputTail returns recent build output lines for inclusion in a crash
-// report. Returns nil for now; Task 12 wires real build output.
-func buildOutputTail() []string {
-	return nil
+func parseCrashConsent(line string) crashConsent {
+	s := strings.ToLower(strings.TrimSpace(line))
+	switch {
+	case s == "y" || s == "yes":
+		return consentSend
+	case strings.HasPrefix(s, "d"):
+		return consentSuppress
+	default:
+		return consentSkip
+	}
 }
 
-// crashPromptYesNo prints prompt with a [y/N] or [Y/n] suffix to stderr, reads
-// one line from stdin, and returns the parsed answer. Empty input or a read
-// error returns def.
+// crashPromptYesNo prints a [y/N] or [Y/n] prompt and returns the answer.
 func crashPromptYesNo(prompt string, def bool) bool {
 	suffix := " [y/N] "
 	if def {
 		suffix = " [Y/n] "
 	}
 	fmt.Fprint(os.Stderr, prompt+suffix)
-	r := bufio.NewReader(os.Stdin)
-	line, err := r.ReadString('\n')
+	line, err := bufio.NewReader(os.Stdin).ReadString('\n')
 	if err != nil {
 		return def
 	}
