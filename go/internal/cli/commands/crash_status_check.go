@@ -30,8 +30,18 @@ func dueCrashStatusCheck(cfg *config.Config) bool {
 	return now.Sub(t) >= crashStatusCheckInterval
 }
 
+// scheduleCrashStatusCheck launches a background poll for crash-fix status.
+// The cfg parameter is only used by the caller's dueCrashStatusCheck gate; the
+// goroutine below loads its own fresh config copy (mirroring notifyCrashFix /
+// notifyCLIUpdate) rather than closing over and mutating the caller's shared
+// *config.Config, since scheduleCLIUpdateCheck's goroutine may be racing to
+// save the same pointer concurrently.
 func scheduleCrashStatusCheck(cfg *config.Config) {
 	go func() {
+		cfg, err := config.Load()
+		if err != nil || cfg.CrashReport == nil {
+			return
+		}
 		anonID, err := analytics.DistinctID()
 		if err != nil {
 			return
