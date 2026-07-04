@@ -1,10 +1,29 @@
-// Package osnotify sends best-effort OS-level desktop notifications.
-//
-// This is currently a no-op stub; a follow-up task wires it up to real
-// platform notification mechanisms (e.g. notify-send on Linux,
-// osascript/UserNotifications on macOS).
+// Package osnotify sends best-effort desktop notifications. Missing tooling is
+// a silent no-op; it never errors and never blocks meaningfully.
 package osnotify
 
-// Notify shows a best-effort OS notification with the given title and body.
-// It is currently a no-op.
-func Notify(title, body string) {}
+import (
+	"os/exec"
+)
+
+type cmdRunner func(name string, args ...string) error
+
+var (
+	runner   cmdRunner = execRunner
+	lookPath           = exec.LookPath
+)
+
+func execRunner(name string, args ...string) error {
+	cmd := exec.Command(name, args...)
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	// Detach: don't block the CLI on the notifier.
+	go func() { _ = cmd.Wait() }()
+	return nil
+}
+
+// Notify shows a desktop notification if platform tooling is available.
+func Notify(title, body string) {
+	notify(title, body) // platform-specific
+}
