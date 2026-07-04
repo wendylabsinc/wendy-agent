@@ -763,6 +763,10 @@ func (s *AgentService) UpdateOS(req *agentpb.UpdateOSRequest, stream grpc.Server
 	}
 	s.logger.Info("UpdateOS using backend", zap.String("backend", updater.name()))
 
+	if handled, err := armRedundancyPreflightV1(s.logger, stream); handled {
+		return err
+	}
+
 	sendProgress := func(phase string, percent int32) {
 		_ = stream.Send(&agentpb.UpdateOSResponse{
 			ResponseType: &agentpb.UpdateOSResponse_Progress_{
@@ -806,6 +810,34 @@ func sendOSUpdateFailure(stream grpc.ServerStreamingServer[agentpb.UpdateOSRespo
 			Failed: &agentpb.UpdateOSResponse_Failed{ErrorMessage: msg},
 		},
 	})
+}
+
+// armRedundancyPreflightV1 is the v1 twin of armRedundancyPreflightV2. See that
+// function for semantics.
+func armRedundancyPreflightV1(logger *zap.Logger, stream grpc.ServerStreamingServer[agentpb.UpdateOSResponse]) (bool, error) {
+	armer := makeRedundancyArmer(logger)
+	switch armer.decide() {
+	case armImpossibleNoSlot:
+		return true, sendOSUpdateFailure(stream, redundancyNoSlotMessage)
+	case armFailedPreviously:
+		return true, sendOSUpdateFailure(stream, redundancyArmFailedMessage)
+	case armPossible:
+		if err := stream.Send(&agentpb.UpdateOSResponse{
+			ResponseType: &agentpb.UpdateOSResponse_ArmingRedundancy_{
+				ArmingRedundancy: &agentpb.UpdateOSResponse_ArmingRedundancy{
+					Message: redundancyArmingMessage, WillReboot: true,
+				},
+			},
+		}); err != nil {
+			return true, err
+		}
+		if err := armer.arm(); err != nil {
+			return true, sendOSUpdateFailure(stream, "arming rootfs A/B redundancy failed: "+err.Error())
+		}
+		return true, nil
+	default:
+		return false, nil
+	}
 }
 
 // envWithPath returns os.Environ() with the PATH entry replaced by the given value.

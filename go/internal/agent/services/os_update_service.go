@@ -44,6 +44,10 @@ func (s *OSUpdateService) UpdateOS(req *agentpbv2.UpdateOSRequest, stream grpc.S
 	}
 	s.logger.Info("UpdateOS using backend", zap.String("backend", updater.name()))
 
+	if handled, err := armRedundancyPreflightV2(s.logger, stream); handled {
+		return err
+	}
+
 	sendProgress := func(phase string, percent int32) {
 		_ = stream.Send(&agentpbv2.UpdateOSResponse{
 			ResponseType: &agentpbv2.UpdateOSResponse_Progress_{
@@ -72,4 +76,34 @@ func sendOSUpdateFailureV2(stream grpc.ServerStreamingServer[agentpbv2.UpdateOSR
 			Failed: &agentpbv2.UpdateOSResponse_Failed{ErrorMessage: msg},
 		},
 	})
+}
+
+// armRedundancyPreflightV2 arms Jetson A/B rootfs redundancy before an OTA when
+// required. It returns handled=true when it has produced a terminal outcome on
+// the stream (a Failed message, or an ArmingRedundancy+reboot); the caller then
+// returns err. handled=false means the install should proceed normally.
+func armRedundancyPreflightV2(logger *zap.Logger, stream grpc.ServerStreamingServer[agentpbv2.UpdateOSResponse]) (bool, error) {
+	armer := makeRedundancyArmer(logger)
+	switch armer.decide() {
+	case armImpossibleNoSlot:
+		return true, sendOSUpdateFailureV2(stream, redundancyNoSlotMessage)
+	case armFailedPreviously:
+		return true, sendOSUpdateFailureV2(stream, redundancyArmFailedMessage)
+	case armPossible:
+		if err := stream.Send(&agentpbv2.UpdateOSResponse{
+			ResponseType: &agentpbv2.UpdateOSResponse_ArmingRedundancy_{
+				ArmingRedundancy: &agentpbv2.UpdateOSResponse_ArmingRedundancy{
+					Message: redundancyArmingMessage, WillReboot: true,
+				},
+			},
+		}); err != nil {
+			return true, err
+		}
+		if err := armer.arm(); err != nil {
+			return true, sendOSUpdateFailureV2(stream, "arming rootfs A/B redundancy failed: "+err.Error())
+		}
+		return true, nil // device is rebooting; the CLI reconnects and retries
+	default: // armNotNeeded
+		return false, nil
+	}
 }
