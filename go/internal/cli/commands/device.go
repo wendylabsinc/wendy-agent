@@ -94,7 +94,6 @@ func newDeviceCmd() *cobra.Command {
 		newDeviceTelemetryStreamCmd(),
 		newPsCmd(),
 		newDeviceListCmd(),
-		newDevicePushAgentCmd(),
 	)
 
 	return cmd
@@ -110,52 +109,6 @@ func newDeviceListCmd() *cobra.Command {
 	cmd.Use = "list"
 	cmd.Aliases = []string{"ls"}
 	cmd.Hidden = true
-	return cmd
-}
-
-// newDevicePushAgentCmd uploads a locally-built agent binary to the device via
-// the same UpdateAgent RPC `wendy device update` uses, bypassing the GitHub
-// release fetch. Hidden: it is a developer/diagnostic tool for running a
-// patched agent on a device (e.g. to capture verbose engine diagnostics),
-// not part of the normal update workflow.
-func newDevicePushAgentCmd() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:    "push-agent <path-to-agent-binary>",
-		Short:  "Upload a locally-built agent binary to the device (dev/diagnostic)",
-		Args:   cobra.ExactArgs(1),
-		Hidden: true,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			ctx := cmd.Context()
-			binaryData, err := os.ReadFile(args[0])
-			if err != nil {
-				return fmt.Errorf("reading agent binary %q: %w", args[0], err)
-			}
-
-			conn, err := connectToAgent(ctx, SuppressUpdateCheck())
-			if err != nil {
-				return err
-			}
-			defer conn.Close()
-			addr := hostPort(conn.Host, defaultAgentPort)
-
-			h := sha256.Sum256(binaryData)
-			fmt.Fprintf(os.Stderr, "Uploading %d bytes to %s...\n", len(binaryData), conn.Host)
-			if err := deviceUpdateUpload(ctx, conn.AgentService, binaryData, hex.EncodeToString(h[:])); err != nil {
-				return fmt.Errorf("uploading agent: %w", err)
-			}
-			conn.Close()
-
-			fmt.Fprint(os.Stderr, "Waiting for agent to restart...")
-			newConn, err := waitForAgentRestart(ctx, addr)
-			if err != nil {
-				fmt.Fprintln(os.Stderr, " failed.")
-				return fmt.Errorf("agent did not come back after update: %w", err)
-			}
-			defer newConn.Close()
-			fmt.Fprintln(os.Stderr, " ready.")
-			return nil
-		},
-	}
 	return cmd
 }
 
@@ -1948,13 +1901,6 @@ func maybeCheckOSUpdate(ctx context.Context, preUpdateVersion *agentpb.GetAgentV
 	}
 	defer conn.Close()
 
-	// The OS version running before this update, for the post-reboot outcome
-	// check (reportOSUpdateOutcome). The agent update just applied does not
-	// change the OS, so the version carried in preUpdateVersion is the
-	// pre-OS-update OS; the auto-select branch below refreshes it from the
-	// just-restarted agent.
-	preUpdateOSVersion := preUpdateVersion.GetOsVersion()
-
 	var otaURL string
 	if artifactURLOverride != "" {
 		// Explicit artifact: apply it as-is, no manifest lookup or version
@@ -1997,7 +1943,6 @@ func maybeCheckOSUpdate(ctx context.Context, preUpdateVersion *agentpb.GetAgentV
 		}
 
 		currentOS := versionResp.GetOsVersion()
-		preUpdateOSVersion = currentOS
 		fromVer := strings.TrimPrefix(currentOS, "WendyOS-")
 		if fromVer == "" {
 			fromVer = "unknown"
@@ -2050,13 +1995,6 @@ func maybeCheckOSUpdate(ctx context.Context, preUpdateVersion *agentpb.GetAgentV
 		return osUpdateOutcome{applied: true}, err
 	}
 	fmt.Println("Device is back online.")
-	// The device coming back online does NOT mean the update stuck — a rollback
-	// also reboots and reconnects. Query the recorded outcome and surface a
-	// rollback as an error so `wendy device update` exits non-zero instead of
-	// silently reporting success (mirrors `wendy os update`).
-	if err := reportOSUpdateOutcome(ctx, priorConn.Host, preUpdateOSVersion); err != nil {
-		return osUpdateOutcome{applied: true, online: true}, err
-	}
 	return osUpdateOutcome{applied: true, online: true}, nil
 }
 
