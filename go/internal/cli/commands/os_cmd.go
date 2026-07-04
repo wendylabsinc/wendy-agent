@@ -13,12 +13,14 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/encoding/protojson"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
@@ -708,14 +710,32 @@ reason. Useful for diagnosing an update without shell access to the device.`,
 			}
 			defer conn.Close()
 
-			resp, err := conn.AgentService.GetOSUpdateStatus(ctx, &agentpb.GetOSUpdateStatusRequest{})
+			// Ask for the live wendyos-update engine snapshot too. The persisted
+			// record is written by the agent's boot-time gate and can be absent
+			// (e.g. a delegated-health commit that never wrote one), but the
+			// engine status is authoritative on every wendyos-update device and
+			// is what lets a nightly commit be told apart from a rollback without
+			// shell access — nightlies keep the same WendyOS-x.y.z version string.
+			resp, err := conn.AgentService.GetOSUpdateStatus(ctx, &agentpb.GetOSUpdateStatusRequest{IncludeEngineStatus: true})
 			if err != nil {
 				if status.Code(err) == codes.Unimplemented {
 					return fmt.Errorf("this device's agent does not report OS update status; update the agent first")
 				}
 				return fmt.Errorf("querying OS update status: %w", err)
 			}
+			if jsonOutput {
+				out, mErr := protojson.MarshalOptions{Multiline: true, Indent: "  "}.Marshal(resp)
+				if mErr != nil {
+					return fmt.Errorf("encoding OS update status as JSON: %w", mErr)
+				}
+				fmt.Println(string(out))
+				return nil
+			}
 			fmt.Println(formatOSUpdateStatus(resp))
+			if es := resp.GetEngineStatus(); es != nil {
+				fmt.Println()
+				fmt.Print(formatEngineStatus(es))
+			}
 			return nil
 		},
 	}
@@ -758,6 +778,73 @@ func formatOSUpdateStatus(resp *agentpb.GetOSUpdateStatusResponse) string {
 		fmt.Fprintf(&b, "Rollback error: %s\n", re)
 	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+// formatEngineStatus renders the live wendyos-update engine snapshot: the
+// booted slot and its health, and any pending (un-committed) update. This is
+// the ground truth for "did the update stick?" on a device with no shell
+// access, and unlike the OS version string it distinguishes a committed
+// nightly from a rolled-back one.
+func formatEngineStatus(es *agentpb.OSUpdateEngineStatus) string {
+	var b strings.Builder
+	b.WriteString("Engine status (wendyos-update):\n")
+	if c := es.GetConnector(); c != "" {
+		fmt.Fprintf(&b, "  Connector:    %s\n", c)
+	}
+	if cs := es.GetCurrentSlot(); cs != "" {
+		fmt.Fprintf(&b, "  Booted slot:  %s\n", cs)
+	}
+	for _, s := range es.GetSlots() {
+		marker := " "
+		if s.GetBooted() {
+			marker = "*"
+		}
+		fmt.Fprintf(&b, "  %s slot %s", marker, s.GetSlot())
+		if h := s.GetRootfsHealth(); h != "" {
+			fmt.Fprintf(&b, " health=%s", h)
+		}
+		if d := s.GetDistro(); d != "" {
+			fmt.Fprintf(&b, " distro=%s", d)
+		}
+		if r := s.GetRetries(); r != "" {
+			fmt.Fprintf(&b, " retries=%s", r)
+		}
+		if n := s.GetNote(); n != "" {
+			fmt.Fprintf(&b, " note=%q", n)
+		}
+		b.WriteString("\n")
+	}
+	if p := es.GetPending(); p != nil {
+		fmt.Fprintf(&b, "  Pending update: %s", p.GetArtifactName())
+		if v := p.GetArtifactVersion(); v != "" {
+			fmt.Fprintf(&b, " (%s)", v)
+		}
+		if ph := p.GetPhase(); ph != "" {
+			fmt.Fprintf(&b, " phase=%s", ph)
+		}
+		if ts := p.GetTargetSlot(); ts != "" {
+			fmt.Fprintf(&b, " target_slot=%s", ts)
+		}
+		b.WriteString("\n")
+	}
+	if d := es.GetDiagnostics(); len(d) > 0 {
+		b.WriteString("  Diagnostics (raw):\n")
+		for _, k := range sortedKeys(d) {
+			fmt.Fprintf(&b, "    %s = %s\n", k, d[k])
+		}
+	}
+	return b.String()
+}
+
+// sortedKeys returns a map's keys in lexical order so diagnostic output is
+// stable across calls (Go map iteration order is randomized).
+func sortedKeys(m map[string]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func writeFailedServices(b *strings.Builder, services []*agentpb.GetOSUpdateStatusResponse_ServiceResult) {
