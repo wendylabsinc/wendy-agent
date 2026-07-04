@@ -93,8 +93,22 @@ func newDeviceCmd() *cobra.Command {
 	addToGroup("manage",
 		newDeviceTelemetryStreamCmd(),
 		newPsCmd(),
+		newDeviceListCmd(),
 	)
 
+	return cmd
+}
+
+// newDeviceListCmd is a hidden alias for the top-level `wendy discover`
+// command, so `wendy device list` reaches the same device-discovery flow that
+// users may reach for out of habit. It reuses the discover command wholesale
+// (flags, JSON output, USB-setup pre-flight) and only renames it and hides it
+// from the `device` help listing.
+func newDeviceListCmd() *cobra.Command {
+	cmd := newDiscoverCmd()
+	cmd.Use = "list"
+	cmd.Aliases = []string{"ls"}
+	cmd.Hidden = true
 	return cmd
 }
 

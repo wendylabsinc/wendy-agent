@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/spf13/cobra"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
@@ -74,6 +75,32 @@ func TestDeviceCmd_HasPs(t *testing.T) {
 	}
 	if !found {
 		t.Error("expected 'ps' subcommand on device command")
+	}
+}
+
+// TestDeviceCmd_HasHiddenListAlias verifies `wendy device list` exists as a
+// hidden alias for `wendy discover`: it must be registered, hidden from the
+// help listing, and carry the discover command's flags (proving it delegates
+// to the same flow rather than being a stub).
+func TestDeviceCmd_HasHiddenListAlias(t *testing.T) {
+	cmd := newDeviceCmd()
+	var list *cobra.Command
+	for _, sub := range cmd.Commands() {
+		if sub.Name() == "list" {
+			list = sub
+			break
+		}
+	}
+	if list == nil {
+		t.Fatal("expected hidden 'list' subcommand on device command")
+	}
+	if !list.Hidden {
+		t.Error("'device list' should be hidden")
+	}
+	// The alias reuses the discover command, so its distinctive --type flag
+	// must be present.
+	if list.Flags().Lookup("type") == nil {
+		t.Error("'device list' should expose discover's --type flag")
 	}
 }
 
