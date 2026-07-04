@@ -7,12 +7,24 @@ package rcm
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/google/gousb"
 )
+
+// isUSBAccessErr reports whether err is a libusb LIBUSB_ERROR_ACCESS (-3), raised
+// when the OS refuses to let wendy seize the recovery device — on macOS because
+// its own kernel driver is bound to the re-enumerated device (root needed), on
+// Linux because of udev permissions. gousb's macOS auto-detach path wraps the
+// libusb error in a formatted string that errors.Is cannot see through, so we also
+// match the "bad access [code" text — the same fallback used at the ADB stage.
+func isUSBAccessErr(err error) bool {
+	return errors.Is(err, gousb.ErrorAccess) ||
+		strings.Contains(err.Error(), "bad access [code")
+}
 
 // Device represents a Jetson in RCM mode.
 type Device struct {
@@ -26,17 +38,25 @@ type Device struct {
 
 func openDevice(ctx *gousb.Context, dev *gousb.Device) (*Device, error) {
 	// On Linux a kernel driver bound to the interface makes the claim fail with
-	// "busy"; auto-detach clears it. No-op on macOS (gousb swallows NOT_SUPPORTED).
+	// "busy"; auto-detach clears it. On macOS the detach can instead fail with
+	// LIBUSB_ERROR_ACCESS (the OS won't let a non-root process seize its driver) —
+	// that surfaces at Config/DefaultInterface below, classified via isUSBAccessErr.
 	_ = dev.SetAutoDetach(true)
 
 	cfg, err := dev.Config(1)
 	if err != nil {
+		if isUSBAccessErr(err) {
+			return nil, fmt.Errorf("%w: claiming USB interface: %v", ErrUSBAccess, err)
+		}
 		return nil, fmt.Errorf("claiming config: %w", err)
 	}
 
 	iface, done, err := dev.DefaultInterface()
 	if err != nil {
 		cfg.Close()
+		if isUSBAccessErr(err) {
+			return nil, fmt.Errorf("%w: claiming USB interface: %v", ErrUSBAccess, err)
+		}
 		return nil, fmt.Errorf("claiming interface: %w", err)
 	}
 

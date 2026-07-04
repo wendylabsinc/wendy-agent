@@ -2,7 +2,56 @@
 
 package rcm
 
-import "testing"
+import (
+	"errors"
+	"fmt"
+	"testing"
+
+	"github.com/google/gousb"
+)
+
+func TestIsUSBAccessErr(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{
+			name: "raw gousb access error",
+			err:  gousb.ErrorAccess,
+			want: true,
+		},
+		{
+			name: "wrapped gousb access error",
+			err:  fmt.Errorf("claiming config: %w", gousb.ErrorAccess),
+			want: true,
+		},
+		{
+			// The exact shape gousb's macOS auto-detach path produces: a formatted
+			// string that errors.Is cannot see through, so the text fallback matters.
+			name: "libusb bad-access string",
+			err:  errors.New("Can't detach kernel driver of the device vid=0955,pid=7026,bus=2,addr=1 and interface 0: libusb: bad access [code -3]"),
+			want: true,
+		},
+		{
+			name: "unrelated gousb error",
+			err:  gousb.ErrorTimeout,
+			want: false,
+		},
+		{
+			name: "unrelated plain error",
+			err:  errors.New("device missing bulk IN or OUT endpoints"),
+			want: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isUSBAccessErr(tt.err); got != tt.want {
+				t.Errorf("isUSBAccessErr(%v) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
+	}
+}
 
 // utf16Desc builds a USB string descriptor (bLength, 0x03, then UTF-16LE of s).
 func utf16Desc(s string) []byte {
