@@ -4,7 +4,6 @@ import (
 	"regexp"
 
 	"github.com/wendylabsinc/wendy/go/internal/shared/platforminfo"
-	cloudpb "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
 )
 
 const maxTail = 200
@@ -32,20 +31,6 @@ func Build(info platforminfo.Info, errorClass, severity, errorChain string, logT
 		ErrorChain:      Redact(errorChain),
 		LogTail:         RedactLines(lastN(logTail, maxTail)),
 		BuildOutputTail: RedactLines(lastN(buildTail, maxTail)),
-	}
-}
-
-// Request converts the bundle to the wire request.
-func (b Bundle) Request() *cloudpb.SubmitReportRequest {
-	return &cloudpb.SubmitReportRequest{
-		PlatformInfo:    b.Info.Proto(),
-		ErrorClass:      b.ErrorClass,
-		Severity:        b.Severity,
-		ErrorChain:      b.ErrorChain,
-		LogTail:         b.LogTail,
-		BuildOutputTail: b.BuildOutputTail,
-		Contact:         b.Contact,
-		RedactedFields:  map[string]string{},
 	}
 }
 

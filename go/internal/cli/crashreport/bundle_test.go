@@ -27,17 +27,6 @@ func TestBuildRedactsAndBounds(t *testing.T) {
 	}
 }
 
-func TestRequestRoundTrip(t *testing.T) {
-	b := Build(platforminfo.Info{CLIVersion: "0.1"}, "other", "unrecoverable", "boom", nil, nil)
-	req := b.Request()
-	if req.GetSeverity() != "unrecoverable" || req.GetErrorChain() != "boom" {
-		t.Errorf("request mismatch: %+v", req)
-	}
-	if req.GetPlatformInfo().GetCliVersion() != "0.1" {
-		t.Errorf("platform info missing")
-	}
-}
-
 func TestValidTrackingID(t *testing.T) {
 	cases := map[string]bool{"WDY-7Q4ZK2": true, "wdy-7q4zk2": false, "WDY-12345": false, "": false}
 	for id, want := range cases {

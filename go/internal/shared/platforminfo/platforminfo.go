@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"github.com/wendylabsinc/wendy/go/internal/shared/version"
-	cloudpb "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
 )
 
 // Info is an environment snapshot. Target* fields are empty until
@@ -108,25 +107,6 @@ func (i Info) Block() string {
 		}
 	}
 	return strings.Join(lines, "\n")
-}
-
-// Proto converts the snapshot to the wire type.
-func (i Info) Proto() *cloudpb.PlatformInfo {
-	return &cloudpb.PlatformInfo{
-		CliVersion:           i.CLIVersion,
-		DevOs:                i.DevOS,
-		DevOsVersion:         i.DevOSVersion,
-		DevArch:              i.DevArch,
-		DevKernel:            i.DevKernel,
-		TargetAgentVersion:   i.TargetAgentVersion,
-		TargetOs:             i.TargetOS,
-		TargetOsVersion:      i.TargetOSVersion,
-		TargetHardware:       i.TargetHardware,
-		TargetGpuVendor:      i.TargetGPUVendor,
-		TargetJetpackVersion: i.TargetJetpackVersion,
-		TargetCudaVersion:    i.TargetCUDAVersion,
-		TargetStorageMedium:  i.TargetStorageMedium,
-	}
 }
 
 func emptyDash(s string) string {

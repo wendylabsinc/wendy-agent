@@ -46,11 +46,3 @@ func TestOneLineAppendsTarget(t *testing.T) {
 		t.Errorf("OneLine should include target info: %q", line)
 	}
 }
-
-func TestProtoRoundTrip(t *testing.T) {
-	i := Info{CLIVersion: "0.10.2", DevOS: "linux", DevArch: "amd64", TargetHardware: "rpi5"}
-	p := i.Proto()
-	if p.GetCliVersion() != "0.10.2" || p.GetTargetHardware() != "rpi5" {
-		t.Errorf("proto mismatch: %+v", p)
-	}
-}
