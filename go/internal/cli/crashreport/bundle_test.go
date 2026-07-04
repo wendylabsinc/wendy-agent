@@ -1,6 +1,7 @@
 package crashreport
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -42,6 +43,25 @@ func TestValidTrackingID(t *testing.T) {
 	for id, want := range cases {
 		if ValidTrackingID(id) != want {
 			t.Errorf("ValidTrackingID(%q) = %v, want %v", id, !want, want)
+		}
+	}
+}
+
+func TestBundlePayloadJSON(t *testing.T) {
+	b := Build(
+		platforminfo.Info{CLIVersion: "1.2.3", DevOS: "darwin"},
+		"other", "unrecoverable", "boom",
+		[]string{"line1"}, nil,
+	)
+	p := b.Payload("anon-123", true)
+	data, err := json.Marshal(p)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	s := string(data)
+	for _, want := range []string{`"anonymous_id":"anon-123"`, `"notify_on_fix":true`, `"error_class":"other"`, `"cli_version":"1.2.3"`, `"error_chain":"boom"`} {
+		if !strings.Contains(s, want) {
+			t.Errorf("payload missing %s: %s", want, s)
 		}
 	}
 }

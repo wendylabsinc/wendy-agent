@@ -15,20 +15,19 @@ import (
 // Info is an environment snapshot. Target* fields are empty until
 // WithAgentVersion is called with a connected device's version response.
 type Info struct {
-	CLIVersion   string
-	DevOS        string
-	DevOSVersion string
-	DevArch      string
-	DevKernel    string
-
-	TargetAgentVersion   string
-	TargetOS             string
-	TargetOSVersion      string
-	TargetHardware       string
-	TargetGPUVendor      string
-	TargetJetpackVersion string
-	TargetCUDAVersion    string
-	TargetStorageMedium  string
+	CLIVersion           string `json:"cli_version,omitempty"`
+	DevOS                string `json:"dev_os,omitempty"`
+	DevOSVersion         string `json:"dev_os_version,omitempty"`
+	DevArch              string `json:"dev_arch,omitempty"`
+	DevKernel            string `json:"dev_kernel,omitempty"`
+	TargetAgentVersion   string `json:"target_agent_version,omitempty"`
+	TargetOS             string `json:"target_os,omitempty"`
+	TargetOSVersion      string `json:"target_os_version,omitempty"`
+	TargetHardware       string `json:"target_hardware,omitempty"`
+	TargetGPUVendor      string `json:"target_gpu_vendor,omitempty"`
+	TargetJetpackVersion string `json:"target_jetpack_version,omitempty"`
+	TargetCUDAVersion    string `json:"target_cuda_version,omitempty"`
+	TargetStorageMedium  string `json:"target_storage_medium,omitempty"`
 }
 
 // Collect gathers developer-machine fields. It never returns an error;
