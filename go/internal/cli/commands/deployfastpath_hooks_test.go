@@ -2,6 +2,7 @@ package commands
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -178,11 +179,17 @@ func TestStreamRunContainer_AttachedFiresHostPostStartHook(t *testing.T) {
 	appCfg := &appconfig.AppConfig{
 		AppID: "attached-app",
 		Hooks: &appconfig.HooksConfig{
-			PostStart: &appconfig.HookCommand{CLI: "touch " + sentinel},
+			// Shell-quote the path so temp dirs with spaces or metacharacters
+			// can't split or alter the hook command.
+			PostStart: &appconfig.HookCommand{CLI: fmt.Sprintf("touch %q", sentinel)},
 		},
 	}
 	conn := &grpcclient.AgentConnection{Host: "localhost"}
-	stream := &attachedRunStream{waitFor: sentinel, deadline: time.Now().Add(5 * time.Second)}
+	// Generous deadline: the hook is a fire-and-forget child process, and the
+	// stream (and with it the hook's context) ends when the deadline passes,
+	// so a too-tight deadline on a loaded CI runner would kill the hook before
+	// it runs and flake the test.
+	stream := &attachedRunStream{waitFor: sentinel, deadline: time.Now().Add(15 * time.Second)}
 
 	if err := streamRunContainer(context.Background(), conn, stream, appCfg, runOptions{}); err != nil {
 		t.Fatalf("streamRunContainer returned error: %v", err)
