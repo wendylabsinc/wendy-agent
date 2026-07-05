@@ -47,6 +47,14 @@ func TestNewOSInstallCmd_NightlyVersionMutualExclusion(t *testing.T) {
 	}
 }
 
+func TestOSInstallPRMutualExclusion(t *testing.T) {
+	cmd := newOSInstallCmd()
+	cmd.SetArgs([]string{"--pr", "123", "--nightly"})
+	if err := cmd.Execute(); err == nil {
+		t.Fatal("expected error for --pr with --nightly")
+	}
+}
+
 func TestNewOSInstallCmd_PositionalArgsIncompatibleWithFlags(t *testing.T) {
 	tests := []struct {
 		name string
